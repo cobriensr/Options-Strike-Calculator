@@ -35,7 +35,17 @@
  * bar older than the freshness gate (found by value, 96 hours back) or when it sits
  * in a run of consecutive rows with one stored price that spans more than the gate
  * (the September outage rows, whose last good bar is weeks old); the recompute must
- * be fresh and differ.
+ * be fresh and differ. The "not written" lists in the report are what is left after
+ * every planned step with the opt-in steps on. --rewrite-stale-at-write is refused
+ * when more than 10% of a thin root's after-span stale rows sit on contaminated days.
+ *
+ * Before any write, the apply saves its whole plan: plan.json names a backup-*.jsonl in
+ * --work-dir that holds every row to change (the step that writes it, the row as it is
+ * now and the new values), and the apply reads the steps back from that file. If a run
+ * fails between steps, run the same command again: it finishes the steps that are not
+ * marked from the saved plan, without planning again (a fresh plan no longer finds the
+ * rows a finished step wrote). A row that holds neither the plan's old value nor its new
+ * value stops that step before it writes; a different command or --force plans again.
  *
  * Options:
  *   --backup <file>         the Phase 2 backup JSONL (docs/tmp/futures-contract-repair/backup-*.jsonl);
@@ -69,7 +79,7 @@
  *                           on the contaminated days (the report prints their share, and the stale rows on the
  *                           flagged days as information). It changes the plan, so a dry run takes it too and
  *                           --apply must repeat it
- *   --force                 with --apply, redo stores that have a done marker
+ *   --force                 with --apply, redo stores that have a done marker and plan again instead of resuming
  *   --env-file <path>       .env.local to load (default: the nearest one up the tree);
  *                           a path that does not exist is an error, never a fallback
  */

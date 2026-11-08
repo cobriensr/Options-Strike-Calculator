@@ -35,6 +35,7 @@ import {
   checkApplyGate,
   checkJunkGate,
   checkStaleGate,
+  checkStaleShare,
   compareGlobex,
   compareSnapshot,
   ctTradingDay,
@@ -52,6 +53,7 @@ import {
   snapshotProblems,
   volumeRatioWriteText,
   type SnapshotChange,
+  type StaleStats,
   type Control,
   type FireChange,
   type SnapshotValues,
@@ -610,6 +612,56 @@ describe('parseDetectorDays', () => {
     ],
   ])('refuses %s', (_name, text, message) => {
     expect(() => parseDetectorDays(text, 'f.json')).toThrow(message);
+  });
+});
+
+describe('checkStaleShare', () => {
+  /** A thin root's stale stats: `afterSpan` planned rows and `contaminated` rows left on a contaminated day (null: no detector file). */
+  const stale = (
+    afterSpan: number,
+    contaminated: number | null,
+  ): StaleStats => ({
+    count: afterSpan,
+    inSpan: 0,
+    afterSpan,
+    left: 0,
+    unchecked: 0,
+    detector:
+      contaminated == null
+        ? null
+        : {
+            contaminatedListed: 1,
+            flaggedListed: 1,
+            contaminatedRows: new Map([['2026-07-14', contaminated]]),
+            flaggedRows: new Map(),
+          },
+    frozenAdded: 0,
+    frozenAddedInOutage: 0,
+    largest: [],
+    runs: 0,
+    rowsInRuns: 0,
+    longest: [],
+  });
+
+  it('passes a root with no detector file (ES, NQ), nothing left, and exactly 10%', () => {
+    expect(
+      checkStaleShare([
+        { symbol: 'ES', stale: stale(100, null) },
+        { symbol: 'RTY', stale: stale(100, 0) },
+        { symbol: 'CL', stale: stale(9, 1) },
+      ]),
+    ).toEqual([]);
+  });
+
+  it('refuses a root over 10%, naming it and its share, and passes the others', () => {
+    expect(
+      checkStaleShare([
+        { symbol: 'ZN', stale: stale(80, 20) },
+        { symbol: 'GC', stale: stale(95, 5) },
+      ]),
+    ).toEqual([
+      'ZN: 20.0% of its after-span stale rows fall on contaminated days, over 10%: its source is not clean enough for --rewrite-stale-at-write',
+    ]);
   });
 });
 

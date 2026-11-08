@@ -35,7 +35,7 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { neonConfig } from '@neondatabase/serverless';
 import { isMarketHours } from '../../api/_lib/cron-helpers.js';
 import { getDb, withDbRetry } from '../../api/_lib/db.js';
@@ -170,7 +170,8 @@ export const STALE_UNTIL_MS = Date.UTC(2026, 9, 1);
 const CONTAMINATED_SHARE_STOP_PCT = 10;
 /**
  * The September outage, 2026-09-04 to 09-28: the snapshot cron priced every root
- * from its last bar for 24 days. Only a report line counts the frozen-run rows in it.
+ * from its last bar for 24 days. It only labels one report line, the count of
+ * frozen-run rows inside it; it has no effect on which rows are written.
  */
 const OUTAGE = {
   fromMs: Date.UTC(2026, 8, 4),
@@ -1208,6 +1209,8 @@ export interface SnapshotSymbolReport {
   symbol: Sym;
   inRange: number;
   rowsToWrite: number;
+  /** Rows in both the normal write set and the stale plan: written once per field, by two steps. */
+  alsoStale: number;
   byField: Record<SnapshotField, number>;
   /** Fields no repaired bar feeds where today's method differs from the stored value. Not written. */
   drift: Record<SnapshotField, number>;
@@ -1738,6 +1741,13 @@ function endRun(stats: StaleStats, state: { run: FrozenRun | null }): void {
  * the freshness gate from its first row to its last; null otherwise. A market that
  * moved cannot print one price for longer than a bar can be stale, so such a run is
  * frozen. A run of a market that really was flat recomputes equal: nothing to write.
+ *
+ * The span is measured between cron timestamps, which carry jitter, so a run of four
+ * rows at a nominal five minutes (15 minutes) is frozen about half the time, and it
+ * does not split at a time gap (a weekend or a break), so identical prices on either
+ * side of a closure join. Both are harmless in the direction ruling 8 states: a row
+ * of a flat run recomputes equal and is not written; a row whose bar landed late gets
+ * today's value.
  */
 export function frozenRunsOf(
   rows: readonly { tsMs: number; stored: { price: number } }[],
@@ -1879,6 +1889,7 @@ async function planSnapshots(
       symbol,
       inRange: rows.length,
       rowsToWrite: 0,
+      alsoStale: 0,
       byField: emptyFields(),
       drift: emptyFields(),
       affectedLeftAlone: 0,
@@ -2069,7 +2080,8 @@ async function planSnapshots(
           report.unaffectedLeftAlone += 1;
         }
         const latest = inputs.latest;
-        if (latest != null) {
+        // A row in the junk plan is deleted by the opt-in step: not "not written".
+        if (latest != null && junkHit == null) {
           noteUnwritten(
             report.unwritten,
             row,
@@ -2081,9 +2093,6 @@ async function planSnapshots(
       }
       if (outcome.kind === 'same') continue;
       const writable = outcome.fields.filter((f) => affected.has(f));
-      for (const f of outcome.fields) {
-        if (!affected.has(f)) report.drift[f] += 1;
-      }
       // The writer had no freshness gate until 2026-09-30: it priced from the last
       // bar it had while minutes were missing, and they have landed since. A row
       // that matches such a bar by value and has a fresh recompute is a
@@ -2129,32 +2138,40 @@ async function planSnapshots(
           }
         }
       }
-      if (outcome.fields.includes('price') && !writable.includes('price')) {
+      // The "not written" lists are what is left after every planned step with the
+      // opt-in steps on: a field the stale step writes is not in them.
+      const staleWrites = (f: SnapshotField): boolean =>
+        stalePlanned && staleFields.includes(f);
+      for (const f of outcome.fields) {
+        if (!affected.has(f) && !staleWrites(f)) report.drift[f] += 1;
+      }
+      if (
+        outcome.fields.includes('price') &&
+        !writable.includes('price') &&
+        !staleWrites('price')
+      ) {
         noteUnwritten(
           report.unwritten,
           row,
           outcome.to.price,
           'method drift, price not affected',
         );
-        // The drift list is the safety net for rows nothing will write: a row
-        // in the stale-at-write plan is left out of it.
-        if (!(stalePlanned && staleFields.includes('price'))) {
-          noteUnwritten(
-            report.driftTop,
-            row,
-            outcome.to.price,
-            'recomputable, price not affected',
-            DRIFT_LIST_CAP,
-          );
-          if (
-            Math.abs(row.stored.price - outcome.to.price) >
-            UNWRITTEN_FLAG_SHARE * Math.abs(row.stored.price)
-          ) {
-            report.driftOverMark += 1;
-          }
+        // The drift list is the safety net for rows nothing will write.
+        noteUnwritten(
+          report.driftTop,
+          row,
+          outcome.to.price,
+          'recomputable, price not affected',
+          DRIFT_LIST_CAP,
+        );
+        if (
+          Math.abs(row.stored.price - outcome.to.price) >
+          UNWRITTEN_FLAG_SHARE * Math.abs(row.stored.price)
+        ) {
+          report.driftOverMark += 1;
         }
       }
-      if (largeUnmatched) {
+      if (largeUnmatched && !staleWrites('price')) {
         noteUnmatchedLarge(report.unmatchedLarge, row, outcome.to.price);
       }
       if (stalePlanned) {
@@ -2209,6 +2226,7 @@ async function planSnapshots(
         frozen.last = idx;
       }
       if (writable.length === 0) continue;
+      if (stalePlanned) report.alsoStale += 1;
       report.rowsToWrite += 1;
       for (const f of writable) report.byField[f] += 1;
       changes.push({
@@ -2579,6 +2597,31 @@ function mergeStateText(m: MergeStateReport): string[] {
   ];
 }
 
+/** The share of a thin root's after-span stale rows (planned or left) that fall on contaminated days, in percent. */
+function contaminatedSharePct(st: StaleStats, d: DetectorStats): number {
+  const rows = [...d.contaminatedRows.values()].reduce((a, b) => a + b, 0);
+  return (rows / Math.max(1, rows + st.afterSpan)) * 100;
+}
+
+/**
+ * `--rewrite-stale-at-write` is refused when more than the stop share of a thin
+ * root's after-span stale rows sit on contaminated days: that root's source is
+ * not clean enough to rewrite from.
+ */
+export function checkStaleShare(
+  symbols: readonly Pick<SnapshotSymbolReport, 'symbol' | 'stale'>[],
+): string[] {
+  return symbols.flatMap(({ symbol, stale }) => {
+    if (stale.detector == null) return [];
+    const share = contaminatedSharePct(stale, stale.detector);
+    return share > CONTAMINATED_SHARE_STOP_PCT
+      ? [
+          `${symbol}: ${share.toFixed(1)}% of its after-span stale rows fall on contaminated days, over ${CONTAMINATED_SHARE_STOP_PCT}%: its source is not clean enough for --rewrite-stale-at-write`,
+        ]
+      : [];
+  });
+}
+
 const dayCounts = (byDay: Map<string, number>): string[] =>
   [...byDay.entries()]
     .sort(([a], [b]) => a.localeCompare(b))
@@ -2591,7 +2634,7 @@ const dayCounts = (byDay: Map<string, number>): string[] =>
  */
 function detectorDaysText(st: StaleStats, d: DetectorStats): string[] {
   const rows = [...d.contaminatedRows.values()].reduce((a, b) => a + b, 0);
-  const share = (rows / Math.max(1, rows + st.afterSpan)) * 100;
+  const share = contaminatedSharePct(st, d);
   const verdict =
     share > CONTAMINATED_SHARE_STOP_PCT
       ? `OVER ${CONTAMINATED_SHARE_STOP_PCT}%: stop and report before committing`
@@ -2651,7 +2694,7 @@ function closeChangedText(v: ValueRuleStats): string[] {
 
 function unmatchedLargeText(u: UnmatchedLarge): string[] {
   const out = [
-    `    stored price matches no pre-repair bar and differs from the recompute by over 0.15% (not written; the open D1 question): ${u.count} rows`,
+    `    stored price matches no pre-repair bar and differs from the recompute by over 0.15% (not written, after every planned step with the opt-in steps on; the open D1 question): ${u.count} rows`,
   ];
   if (u.count === 0) return out;
   out.push(
@@ -2699,6 +2742,35 @@ function junkText(junk: JunkRow[]): string[] {
   return out;
 }
 
+/**
+ * Rows touched, per root and in total, so the owner can reconcile the three
+ * totals against the distinct rows: the normal step's rows, the stale step's and
+ * the junk deletes overlap only where a row is in both of the first two.
+ */
+function touchedText(r: SnapshotStore): string[] {
+  const line = (
+    label: string,
+    normal: number,
+    stale: number,
+    both: number,
+    junk: number,
+  ): string =>
+    `  rows touched, ${label}: normal step only ${normal - both}, stale step only ${stale - both}, both ${both}, junk delete ${junk}; distinct rows ${normal + stale - both + junk} (${normal} + ${stale} + ${junk} - ${both})`;
+  const out: string[] = [];
+  let normal = 0;
+  let stale = 0;
+  let both = 0;
+  for (const s of r.symbols) {
+    const junk = r.junk.filter((j) => j.symbol === s.symbol).length;
+    out.push(line(s.symbol, s.rowsToWrite, s.stale.count, s.alsoStale, junk));
+    normal += s.rowsToWrite;
+    stale += s.stale.count;
+    both += s.alsoStale;
+  }
+  out.push(line('all roots', normal, stale, both, r.junk.length));
+  return out;
+}
+
 function snapshotsText(r: SnapshotStore): string[] {
   const top = r.changes
     .filter((c) => c.fields.includes('price'))
@@ -2712,13 +2784,14 @@ function snapshotsText(r: SnapshotStore): string[] {
     'futures_snapshots (ES, NQ, RTY, CL, GC, ZN): only the fields a repaired bar feeds are written',
     `  rows in range: ${r.inScope}, rows to write: ${r.changes.length}`,
   ];
+  out.push(...touchedText(r));
   for (const s of r.symbols) {
     out.push(
       `  ${s.symbol}: rows in range ${s.inRange}, rows to write ${s.rowsToWrite} (${byFieldText(s.byField)})`,
       `    left alone, stale or missing recompute: ${s.affectedLeftAlone} with an affected field, ${s.unaffectedLeftAlone} with none`,
       `      the ${s.affectedLeftAlone} with an affected field (kept as stored): ${leftAloneText(s.leftAlone)}`,
       `    ${volumeRatioWriteText(r.changes, s.symbol)}`,
-      `    information, unaffected fields where today's method differs from the stored value (not written): ${byFieldText(s.drift)}`,
+      `    information, unaffected fields where today's method differs from the stored value (not written, after every planned step with the opt-in steps on): ${byFieldText(s.drift)}`,
       `    method control, rows from ${isoSecond(SNAPSHOT_CONTROL_FROM_MS)}: ${s.controlMatched} of ${s.controlRows} match over ${s.controlDays} days`,
       ...(s.thin == null ? [] : thinControlText(s.symbol, s.thin)),
       `    attribution inputs disagreeing with computeSnapshot: ${s.attributionInconsistent}`,
@@ -2727,7 +2800,7 @@ function snapshotsText(r: SnapshotStore): string[] {
       olderMatchesText(s.valueRule),
       ...closeChangedText(s.valueRule),
       `    unmatched (no pre-repair bar matched the stored value, so the field is left to the other rule): price=${s.unmatched.price} change1hPct=${s.unmatched.change1hPct} changeDayPct=${s.unmatched.changeDayPct}`,
-      `    the ${s.unwritten.length} largest price differences not written (stored vs recomputed, or vs the latest closed bar when the recompute is stale):`,
+      `    the ${s.unwritten.length} largest price differences not written, after every planned step with the opt-in steps on (stored vs recomputed, or vs the latest closed bar when the recompute is stale):`,
       ...s.unwritten.map((u) => `      ${u.line}`),
       ...driftText(s),
       ...unmatchedLargeText(s.unmatchedLarge),
@@ -2839,7 +2912,7 @@ export function formatReport(
  * touched. The guard compares the values the row would hold afterwards, so a
  * row that already holds them is not rewritten.
  */
-function updateSnapshots(sql: Sql, rows: SnapshotChange[]) {
+function updateSnapshots(sql: Sql, rows: SnapshotWrite[]) {
   const sets = (field: SnapshotField) =>
     rows.map((c) => c.fields.includes(field));
   return sql`
@@ -2875,7 +2948,7 @@ function updateSnapshots(sql: Sql, rows: SnapshotChange[]) {
  * kept, and only into a row that still says autoFilled in the UPDATE itself: a
  * hand save made after the plan was read is never written over.
  */
-function updatePremarket(sql: Sql, rows: PremarketChange[]) {
+function updatePremarket(sql: Sql, rows: PremarketWrite[]) {
   return sql`
     UPDATE market_snapshots m
        SET pre_market_data = m.pre_market_data || r.patch::jsonb
@@ -2892,7 +2965,7 @@ function updatePremarket(sql: Sql, rows: PremarketChange[]) {
 }
 
 /** A NULL basis is never set: the UPDATE itself requires a value to replace. */
-function updateFires(sql: Sql, rows: FireChange[]) {
+function updateFires(sql: Sql, rows: FireWrite[]) {
   return sql`
     UPDATE ws_gamma_setup_fires f
        SET es_basis_change_5m = r.value
@@ -2919,15 +2992,50 @@ async function writeInTransactions<C>(
 
 // ── Backup, marker, verify ──────────────────────────────────────────────────
 
+/** A store, or one of the two opt-in steps that follow the snapshot updates. */
+type ApplyStep = Store | 'stale' | 'junk';
+
+/**
+ * One JSONL line of the plan file: the row as it is now (`row`), the step that
+ * writes it and the values that step writes (`to`). The apply reads the plan back
+ * from this file, so a run that fails between steps can finish from it.
+ */
 interface BackupEntry {
+  step: ApplyStep;
   store: Store;
   id: number;
+  /** Snapshot rows, in all three of their steps. */
+  symbol?: string;
+  /** Snapshot and stale lines: the fields this step writes. */
+  fields?: SnapshotField[];
   row: Row;
   to: unknown;
+  /** Only on a stale line: the new values of the fields the snapshot step writes on the same row. */
+  also?: Partial<Record<SnapshotField, number | null>>;
   /** Only on a deleted row: its `to` is null and `row` is everything the restore needs. */
   op?: 'delete';
-  /** Only on a stale-at-write line: the snapshot step wrote the row's other fields, in its own line. */
-  step?: 'stale';
+}
+
+/** What a step needs to write one row. */
+type SnapshotWrite = Pick<
+  SnapshotChange,
+  'id' | 'symbol' | 'fields' | 'to' | 'row'
+>;
+type PremarketWrite = Pick<PremarketChange, 'id' | 'to' | 'row'>;
+type FireWrite = Pick<FireChange, 'id' | 'to' | 'row'>;
+type JunkWrite = Pick<JunkRow, 'id' | 'symbol' | 'storedPrice' | 'row'>;
+/** `fields` are the stale step's; `also` are the snapshot step's on the same row, and `to` holds both. */
+interface StaleWrite extends SnapshotWrite {
+  also: SnapshotField[];
+}
+
+/** The plan as read back from the file, by step. */
+interface LoadedPlan {
+  snapshots: SnapshotWrite[];
+  premarket: PremarketWrite[];
+  fires: FireWrite[];
+  stale: StaleWrite[];
+  junk: JunkWrite[];
 }
 
 /** The values a change would write: for a snapshot only its affected fields, not the whole recompute. */
@@ -2940,33 +3048,53 @@ function backedUpValues(
   return c.to;
 }
 
-/** One JSONL line per row about to change, full row included; the line count is checked back. */
+/**
+ * One JSONL line per row about to change, full row included, with the step that
+ * writes it; the line count is checked back. This file is the plan the apply
+ * reads. `normalPending` is whether the snapshot step runs in this apply: if it
+ * does not, a stale line has no `also` fields to expect.
+ */
 function writeBackup(
   workDir: string,
   plans: Plans,
   junk: JunkRow[],
   stale: StaleRewrite[],
+  normalPending: boolean,
 ): string {
   const entries: BackupEntry[] = [];
   for (const store of STORES) {
     const result = plans[store];
     for (const c of result?.changes ?? []) {
-      entries.push({ store, id: c.id, row: c.row, to: backedUpValues(c) });
+      entries.push({
+        step: store,
+        store,
+        id: c.id,
+        ...('symbol' in c && { symbol: c.symbol, fields: c.fields }),
+        row: c.row,
+        to: backedUpValues(c),
+      });
     }
   }
   for (const r of stale) {
     entries.push({
+      step: 'stale',
       store: 'snapshots',
       id: r.change.id,
+      symbol: r.change.symbol,
+      fields: r.change.fields,
       row: r.change.row,
       to: backedUpValues(r.change),
-      step: 'stale',
+      also: normalPending
+        ? Object.fromEntries(r.alsoWritten.map((f) => [f, r.change.to[f]]))
+        : {},
     });
   }
   for (const j of junk) {
     entries.push({
+      step: 'junk',
       store: 'snapshots',
       id: j.id,
+      symbol: j.symbol,
       row: j.row,
       to: null,
       op: 'delete',
@@ -2986,8 +3114,131 @@ function writeBackup(
   return path;
 }
 
-/** A store, or one of the two opt-in steps that follow the snapshot updates. */
-type ApplyStep = Store | 'stale' | 'junk';
+const APPLY_STEPS: readonly ApplyStep[] = [...STORES, 'stale', 'junk'];
+
+/** The snapshot values of a plan line: the step's fields and, on a stale line, the snapshot step's. */
+function snapshotValuesOf(e: BackupEntry): SnapshotValues {
+  const v = { ...(e.to as Row), ...(e.also ?? {}) } as Partial<SnapshotValues>;
+  return {
+    price: v.price ?? Number(e.row.price),
+    change1hPct: v.change1hPct ?? null,
+    changeDayPct: v.changeDayPct ?? null,
+    volumeRatio: v.volumeRatio ?? null,
+  };
+}
+
+/** Reads a plan file back into the rows each step writes; a line it cannot read is an error. */
+function readPlan(path: string): LoadedPlan {
+  const plan: LoadedPlan = {
+    snapshots: [],
+    premarket: [],
+    fires: [],
+    stale: [],
+    junk: [],
+  };
+  const lines = readFileSync(path, 'utf8')
+    .split('\n')
+    .filter((l) => l !== '');
+  for (const [i, line] of lines.entries()) {
+    const where = `${path} line ${i + 1}`;
+    let e: BackupEntry;
+    try {
+      e = JSON.parse(line) as BackupEntry;
+    } catch (err) {
+      throw new Error(`${where} is not JSON`, { cause: err });
+    }
+    if (
+      !APPLY_STEPS.includes(e.step) ||
+      typeof e.id !== 'number' ||
+      e.row == null ||
+      typeof e.row !== 'object'
+    ) {
+      throw new Error(`${where} is not a plan line`);
+    }
+    const fields = e.fields ?? [];
+    if (
+      !fields.every((f) => (SNAPSHOT_KEYS as readonly string[]).includes(f))
+    ) {
+      throw new Error(`${where} names a field that is not a snapshot field`);
+    }
+    if (e.step === 'snapshots' || e.step === 'stale') {
+      if (typeof e.symbol !== 'string' || e.fields == null) {
+        throw new Error(`${where} has no symbol or fields`);
+      }
+      const write: SnapshotWrite = {
+        id: e.id,
+        symbol: e.symbol as Sym,
+        fields,
+        to: snapshotValuesOf(e),
+        row: e.row,
+      };
+      if (e.step === 'snapshots') plan.snapshots.push(write);
+      else
+        plan.stale.push({
+          ...write,
+          also: Object.keys(e.also ?? {}) as SnapshotField[],
+        });
+    } else if (e.step === 'premarket') {
+      plan.premarket.push({ id: e.id, to: e.to as GlobexValues, row: e.row });
+    } else if (e.step === 'fires') {
+      plan.fires.push({ id: e.id, to: e.to as number, row: e.row });
+    } else {
+      if (typeof e.symbol !== 'string')
+        throw new Error(`${where} has no symbol`);
+      plan.junk.push({
+        id: e.id,
+        symbol: e.symbol as Sym,
+        storedPrice: Number(e.row.price),
+        row: e.row,
+      });
+    }
+  }
+  return plan;
+}
+
+/** The rows a step has in a plan. */
+const stepRows = (plan: LoadedPlan, step: ApplyStep): number =>
+  plan[stepKey(step)].length;
+const stepKey = (step: ApplyStep): keyof LoadedPlan =>
+  step === 'stale' ? 'stale' : step === 'junk' ? 'junk' : step;
+
+/**
+ * `plan.json` names the plan file of an apply and what it was approved for. A run
+ * that fails between steps leaves it with some steps marked and some not; the next
+ * run with the same work dir finishes the rest from the plan file, without planning
+ * again.
+ */
+interface PlanPointer {
+  createdAt: string;
+  /** The plan file, in the same work dir. */
+  backup: string;
+  /** The steps this plan carries, in order. */
+  steps: ApplyStep[];
+  /** The totals of the dry run's plan: each store's rows, and the opt-in steps' (null when not asked for). */
+  expect: Record<Store, number> & { junk: number | null; stale: number | null };
+}
+
+const pointerPath = (workDir: string): string => join(workDir, 'plan.json');
+
+function writePlanPointer(workDir: string, pointer: PlanPointer): void {
+  writeFileSync(pointerPath(workDir), `${JSON.stringify(pointer, null, 2)}\n`);
+}
+
+function readPlanPointer(workDir: string): PlanPointer | null {
+  if (!existsSync(pointerPath(workDir))) return null;
+  const text = readFileSync(pointerPath(workDir), 'utf8');
+  try {
+    const p = JSON.parse(text) as PlanPointer;
+    if (typeof p.backup !== 'string' || !Array.isArray(p.steps)) {
+      throw new Error('missing backup or steps');
+    }
+    return p;
+  } catch (err) {
+    throw new Error(`${pointerPath(workDir)} is not a plan pointer`, {
+      cause: err,
+    });
+  }
+}
 
 export const markerPath = (workDir: string, store: ApplyStep): string =>
   join(workDir, `${store}.applied`);
@@ -3021,7 +3272,7 @@ function compareRows(
   }
 }
 
-async function verifySnapshots(changes: SnapshotChange[]): Promise<void> {
+async function verifySnapshots(changes: SnapshotWrite[]): Promise<void> {
   for (const group of chunks(changes, WRITE_CHUNK)) {
     const ids = group.map((c) => c.id);
     const actual = await readRows<{ id: string; row: Row }>(
@@ -3054,7 +3305,7 @@ async function verifySnapshots(changes: SnapshotChange[]): Promise<void> {
   }
 }
 
-async function verifyPremarket(changes: PremarketChange[]): Promise<void> {
+async function verifyPremarket(changes: PremarketWrite[]): Promise<void> {
   for (const group of chunks(changes, WRITE_CHUNK)) {
     const ids = group.map((c) => c.id);
     const actual = await readRows<{ id: string; row: Row }>(
@@ -3081,7 +3332,7 @@ async function verifyPremarket(changes: PremarketChange[]): Promise<void> {
   }
 }
 
-async function verifyFires(changes: FireChange[]): Promise<void> {
+async function verifyFires(changes: FireWrite[]): Promise<void> {
   for (const group of chunks(changes, WRITE_CHUNK)) {
     const ids = group.map((c) => c.id);
     const actual = await readRows<{ id: string; row: Row }>(
@@ -3101,7 +3352,7 @@ async function verifyFires(changes: FireChange[]): Promise<void> {
  * Deletes by id and symbol, and only while the row still holds the price it
  * was planned with, so a row that changed since the plan is left alone.
  */
-function deleteJunk(sql: Sql, rows: JunkRow[]) {
+function deleteJunk(sql: Sql, rows: JunkWrite[]) {
   return sql`
     DELETE FROM futures_snapshots f
      USING unnest(${rows.map((j) => j.id)}::int[],
@@ -3125,7 +3376,11 @@ async function countSnapshotsInScope(): Promise<number> {
 }
 
 /** The rows are gone, and nothing else is: the scope holds exactly that many fewer. */
-async function verifyJunk(junk: JunkRow[], before: number): Promise<void> {
+async function verifyJunk(
+  junk: JunkWrite[],
+  before: number,
+  present: number,
+): Promise<void> {
   for (const group of chunks(junk, WRITE_CHUNK)) {
     const ids = group.map((j) => j.id);
     const left = await readRows<{ id: string }>(
@@ -3142,36 +3397,169 @@ async function verifyJunk(junk: JunkRow[], before: number): Promise<void> {
     }
   }
   const after = await countSnapshotsInScope();
-  if (after !== before - junk.length) {
+  if (after !== before - present) {
     throw new Error(
-      `verify failed for junk: ${before} rows in scope before, ${after} after, ${before - junk.length} expected`,
+      `verify failed for junk: ${before} rows in scope before, ${after} after, ${before - present} expected`,
     );
   }
 }
 
-/** The same guarded UPDATE and verify as the snapshot writes, for the stale-at-write rows. */
-async function applyStale(
-  rewrites: StaleRewrite[],
-  normalApplied: boolean,
-): Promise<number> {
-  const changes = rewrites.map((r) => r.change);
-  await writeInTransactions(changes, updateSnapshots);
-  // The row now holds the normal step's fields too, when that step ran in this run.
-  await verifySnapshots(
-    rewrites.map((r) => ({
-      ...r.change,
-      fields: normalApplied
-        ? [...new Set([...r.change.fields, ...r.alsoWritten])]
-        : r.change.fields,
-    })),
+/**
+ * Before a step writes a row, the row must still hold what the plan read (the old
+ * value) or what the step writes (the new one, when an earlier run got that far).
+ * Any other value was put there since: the step stops before it writes anything.
+ */
+function refuseChanged(step: ApplyStep, bad: string[], total: number): void {
+  if (bad.length === 0) return;
+  throw new Error(
+    `${bad.length} of ${total} row(s) hold neither the planned old value nor the new one, so ${step} is not written: ${bad.slice(0, 3).join('; ')}`,
   );
-  return changes.length;
 }
 
-async function applyJunk(junk: JunkRow[]): Promise<number> {
+async function preflightSnapshots(
+  step: ApplyStep,
+  writes: SnapshotWrite[],
+): Promise<void> {
+  const bad: string[] = [];
+  for (const group of chunks(writes, WRITE_CHUNK)) {
+    const ids = group.map((w) => w.id);
+    const actual = await readRows<{ id: string; row: Row }>(
+      (sql) => sql`
+        SELECT id::text AS id, to_jsonb(f) AS row
+          FROM futures_snapshots f WHERE id = ANY(${ids}::int[])`,
+    );
+    const found = new Map(actual.map((r) => [Number(r.id), r.row]));
+    for (const w of group) {
+      const have = found.get(w.id);
+      if (have == null) {
+        bad.push(`id ${w.id}: row is gone`);
+        continue;
+      }
+      for (const f of w.fields) {
+        const col = SNAPSHOT_COLUMNS[f];
+        const now = stable(have[col]);
+        if (now !== stable(w.row[col]) && now !== stable(w.to[f])) {
+          bad.push(
+            `id ${w.id}: ${col} holds ${now}, planned ${stable(w.row[col])} to ${stable(w.to[f])}`,
+          );
+        }
+      }
+    }
+  }
+  refuseChanged(step, bad, writes.length);
+}
+
+async function preflightPremarket(writes: PremarketWrite[]): Promise<void> {
+  const bad: string[] = [];
+  for (const group of chunks(writes, WRITE_CHUNK)) {
+    const ids = group.map((w) => w.id);
+    const actual = await readRows<{ id: string; row: Row }>(
+      (sql) => sql`
+        SELECT id::text AS id, to_jsonb(m) AS row
+          FROM market_snapshots m WHERE id = ANY(${ids}::int[])`,
+    );
+    const found = new Map(actual.map((r) => [Number(r.id), r.row]));
+    for (const w of group) {
+      const have = found.get(w.id);
+      if (have == null) {
+        bad.push(`id ${w.id}: row is gone`);
+        continue;
+      }
+      const was = (w.row.pre_market_data ?? {}) as Row;
+      const now = (have.pre_market_data ?? {}) as Row;
+      for (const [key, value] of Object.entries(w.to)) {
+        if (
+          stable(now[key]) !== stable(was[key]) &&
+          stable(now[key]) !== stable(value)
+        ) {
+          bad.push(
+            `id ${w.id}: ${key} holds ${stable(now[key])}, planned ${stable(was[key])} to ${stable(value)}`,
+          );
+        }
+      }
+    }
+  }
+  refuseChanged('premarket', bad, writes.length);
+}
+
+async function preflightFires(writes: FireWrite[]): Promise<void> {
+  const bad: string[] = [];
+  for (const group of chunks(writes, WRITE_CHUNK)) {
+    const ids = group.map((w) => w.id);
+    const actual = await readRows<{ id: string; row: Row }>(
+      (sql) => sql`
+        SELECT id::text AS id, to_jsonb(f) AS row
+          FROM ws_gamma_setup_fires f WHERE id = ANY(${ids}::bigint[])`,
+    );
+    const found = new Map(actual.map((r) => [Number(r.id), r.row]));
+    for (const w of group) {
+      const have = found.get(w.id);
+      if (have == null) {
+        bad.push(`id ${w.id}: row is gone`);
+        continue;
+      }
+      const now = stable(have.es_basis_change_5m);
+      if (now !== stable(w.row.es_basis_change_5m) && now !== stable(w.to)) {
+        bad.push(
+          `id ${w.id}: es_basis_change_5m holds ${now}, planned ${stable(w.row.es_basis_change_5m)} to ${stable(w.to)}`,
+        );
+      }
+    }
+  }
+  refuseChanged('fires', bad, writes.length);
+}
+
+/** How many of the rows are still there; one that is there must still hold its planned price. */
+async function preflightJunk(junk: JunkWrite[]): Promise<number> {
+  const bad: string[] = [];
+  let present = 0;
+  for (const group of chunks(junk, WRITE_CHUNK)) {
+    const ids = group.map((j) => j.id);
+    const actual = await readRows<{ id: string; row: Row }>(
+      (sql) => sql`
+        SELECT id::text AS id, to_jsonb(f) AS row
+          FROM futures_snapshots f WHERE id = ANY(${ids}::int[])`,
+    );
+    const found = new Map(actual.map((r) => [Number(r.id), r.row]));
+    for (const j of group) {
+      const have = found.get(j.id);
+      if (have == null) continue;
+      present += 1;
+      if (stable(have.price) !== stable(j.row.price)) {
+        bad.push(
+          `id ${j.id}: price holds ${stable(have.price)}, planned ${stable(j.row.price)}`,
+        );
+      }
+    }
+  }
+  refuseChanged('junk', bad, junk.length);
+  return present;
+}
+
+/** The snapshot fields' columns, for the check before a write. */
+const SNAPSHOT_COLUMNS: Record<SnapshotField, string> = {
+  price: 'price',
+  change1hPct: 'change_1h_pct',
+  changeDayPct: 'change_day_pct',
+  volumeRatio: 'volume_ratio',
+};
+
+/** The same guarded UPDATE and verify as the snapshot writes, for the stale-at-write rows. */
+async function applyStale(rewrites: StaleWrite[]): Promise<number> {
+  await preflightSnapshots('stale', rewrites);
+  await writeInTransactions(rewrites, updateSnapshots);
+  // The row holds the snapshot step's fields too: that step runs first.
+  await verifySnapshots(
+    rewrites.map((r) => ({ ...r, fields: [...r.fields, ...r.also] })),
+  );
+  return rewrites.length;
+}
+
+async function applyJunk(junk: JunkWrite[]): Promise<number> {
+  const present = await preflightJunk(junk);
   const before = await countSnapshotsInScope();
   await writeInTransactions(junk, deleteJunk);
-  await verifyJunk(junk, before);
+  await verifyJunk(junk, before, present);
   return junk.length;
 }
 
@@ -3428,6 +3816,12 @@ async function run(opts: RecomputeOptions): Promise<number> {
     );
   }
   mkdirSync(opts.workDir, { recursive: true });
+  // A run that failed between steps left a plan with some steps marked: finish it.
+  const saved =
+    opts.apply && !opts.force ? readPlanPointer(opts.workDir) : null;
+  if (saved != null && resumable(opts.workDir, saved)) {
+    return await resume(opts, saved);
+  }
   const startedAt = Date.now();
   const backupBars =
     needsBackup(opts) && opts.backup != null
@@ -3517,6 +3911,9 @@ async function run(opts: RecomputeOptions): Promise<number> {
     ...checkApplyGate(gateInputs, approved),
     ...checkJunkGate(opts, plans.snapshots?.junk.length ?? 0),
     ...checkStaleGate(opts, plans.snapshots?.staleRewrites.length ?? 0),
+    ...(opts.rewriteStaleAtWrite
+      ? checkStaleShare(plans.snapshots?.symbols ?? [])
+      : []),
   ];
   if (problems.length > 0) {
     const listed = problems.map((p) => `  ${p}`).join('\n');
@@ -3573,6 +3970,7 @@ async function run(opts: RecomputeOptions): Promise<number> {
     },
     junkPending ? junk : [],
     stalePending ? stale : [],
+    pending.includes('snapshots'),
   );
   console.log(`backup: ${backup}`);
 
@@ -3581,55 +3979,142 @@ async function run(opts: RecomputeOptions): Promise<number> {
     ...(stalePending ? (['stale'] as const) : []),
     ...(junkPending ? (['junk'] as const) : []),
   ];
-  for (const store of steps) {
-    // The apply can outlast the close, so the guard is checked before every store.
+  writePlanPointer(opts.workDir, {
+    createdAt: new Date().toISOString(),
+    backup: basename(backup),
+    steps,
+    expect: {
+      snapshots: plans.snapshots?.changes.length ?? 0,
+      premarket: plans.premarket?.changes.length ?? 0,
+      fires: plans.fires?.changes.length ?? 0,
+      junk: opts.deleteJunkStale ? junk.length : null,
+      stale: opts.rewriteStaleAtWrite ? stale.length : null,
+    },
+  });
+  // Apply from the file just written, the same way a resumed run does.
+  return await applySteps(opts.workDir, readPlan(backup), steps);
+}
+
+async function applyStep(step: ApplyStep, plan: LoadedPlan): Promise<number> {
+  if (step === 'junk') return await applyJunk(plan.junk);
+  if (step === 'stale') return await applyStale(plan.stale);
+  if (step === 'snapshots') {
+    await preflightSnapshots(step, plan.snapshots);
+    await writeInTransactions(plan.snapshots, updateSnapshots);
+    await verifySnapshots(plan.snapshots);
+    return plan.snapshots.length;
+  }
+  if (step === 'premarket') {
+    await preflightPremarket(plan.premarket);
+    await writeInTransactions(plan.premarket, updatePremarket);
+    await verifyPremarket(plan.premarket);
+    return plan.premarket.length;
+  }
+  await preflightFires(plan.fires);
+  await writeInTransactions(plan.fires, updateFires);
+  await verifyFires(plan.fires);
+  return plan.fires.length;
+}
+
+/** Runs the steps in order, each checked, written, verified and then marked. Exit code 0, or 2 at the open. */
+async function applySteps(
+  workDir: string,
+  plan: LoadedPlan,
+  steps: ApplyStep[],
+): Promise<number> {
+  for (const step of steps) {
+    // The apply can outlast the close, so the guard is checked before every step.
     if (isMarketHours()) {
       console.error(
-        `apply stopped before ${store}: market hours began (09:25 ET). Finished stores are marked; run a fresh dry run after the close.`,
+        `apply stopped before ${step}: market hours began (09:25 ET). Finished steps are marked; run the same command again after the close to finish from the saved plan.`,
       );
       return 2;
     }
     try {
-      let done: number;
-      if (store === 'junk') done = await applyJunk(junk);
-      else if (store === 'stale') {
-        done = await applyStale(stale, pending.includes('snapshots'));
-      } else done = await applyStore(store, plans);
+      const done = await applyStep(step, plan);
       console.log(
-        `${store}: ${done} row(s) ${store === 'junk' ? 'deleted' : 'changed'} and verified`,
+        `${step}: ${done} row(s) ${step === 'junk' ? 'deleted' : 'changed'} and verified`,
       );
     } catch (err) {
       throw new Error(
-        `apply failed: ${store}: ${err instanceof Error ? err.message : String(err)}`,
+        `apply failed: ${step}: ${err instanceof Error ? err.message : String(err)}`,
         { cause: err },
       );
     }
-    let marked: number;
-    if (store === 'junk') marked = junk.length;
-    else if (store === 'stale') marked = stale.length;
-    else marked = plans[store]?.changes.length ?? 0;
-    writeMarker(opts.workDir, store, marked);
+    writeMarker(workDir, step, stepRows(plan, step));
   }
   return 0;
 }
 
-async function applyStore(store: Store, plans: Plans): Promise<number> {
-  if (store === 'snapshots') {
-    const changes = plans.snapshots?.changes ?? [];
-    await writeInTransactions(changes, updateSnapshots);
-    await verifySnapshots(changes);
-    return changes.length;
+/** The steps of a saved plan that no marker covers. */
+const stepsLeft = (workDir: string, saved: PlanPointer): ApplyStep[] =>
+  saved.steps.filter((step) => !existsSync(markerPath(workDir, step)));
+
+/** Some steps of the saved plan are done and some are not, and its plan file is there. */
+function resumable(workDir: string, saved: PlanPointer): boolean {
+  const left = stepsLeft(workDir, saved).length;
+  return (
+    left > 0 &&
+    left < saved.steps.length &&
+    existsSync(join(workDir, saved.backup))
+  );
+}
+
+/** The command must be the one the plan was made for: the same totals and the same opt-in steps. */
+function checkResume(opts: RecomputeOptions, saved: PlanPointer): string[] {
+  const problems: string[] = [];
+  for (const store of opts.stores) {
+    const given = expectations(opts)[store];
+    if (given !== saved.expect[store]) {
+      problems.push(
+        `${EXPECT_FLAGS[store].flag} ${given} was given, the saved plan has ${saved.expect[store]}`,
+      );
+    }
   }
-  if (store === 'premarket') {
-    const changes = plans.premarket?.changes ?? [];
-    await writeInTransactions(changes, updatePremarket);
-    await verifyPremarket(changes);
-    return changes.length;
+  if (opts.deleteJunkStale !== (saved.expect.junk != null)) {
+    problems.push(
+      `the saved plan ${saved.expect.junk == null ? 'has no' : 'has a'} junk delete, --delete-junk-stale was ${opts.deleteJunkStale ? 'given' : 'not given'}`,
+    );
+  } else if (opts.expectJunkDeletes !== saved.expect.junk) {
+    problems.push(
+      `--expect-junk-deletes ${opts.expectJunkDeletes} was given, the saved plan has ${saved.expect.junk}`,
+    );
   }
-  const changes = plans.fires?.changes ?? [];
-  await writeInTransactions(changes, updateFires);
-  await verifyFires(changes);
-  return changes.length;
+  if (opts.rewriteStaleAtWrite !== (saved.expect.stale != null)) {
+    problems.push(
+      `the saved plan ${saved.expect.stale == null ? 'has no' : 'has a'} stale rewrite, --rewrite-stale-at-write was ${opts.rewriteStaleAtWrite ? 'given' : 'not given'}`,
+    );
+  } else if (opts.expectStaleRewrites !== saved.expect.stale) {
+    problems.push(
+      `--expect-stale-rewrites ${opts.expectStaleRewrites} was given, the saved plan has ${saved.expect.stale}`,
+    );
+  }
+  return problems;
+}
+
+/**
+ * Finishes an apply that failed between steps, from the plan file it saved and
+ * without planning again (planning takes the better part of an hour, and a fresh
+ * plan no longer finds the rows a finished step already wrote).
+ */
+async function resume(
+  opts: RecomputeOptions,
+  saved: PlanPointer,
+): Promise<number> {
+  const problems = checkResume(opts, saved);
+  if (problems.length > 0) {
+    const listed = problems.map((p) => `  ${p}`).join('\n');
+    throw new Error(`Refusing to resume. Nothing was written.\n${listed}`);
+  }
+  const left = stepsLeft(opts.workDir, saved);
+  console.log(
+    `Resuming from ${saved.backup}: ${left.join(', ')} left of ${saved.steps.join(', ')}; no planning`,
+  );
+  return await applySteps(
+    opts.workDir,
+    readPlan(join(opts.workDir, saved.backup)),
+    left,
+  );
 }
 
 /** Runs the recompute and returns the process exit code: 0 done, 1 failed or refused, 2 stopped at the open. */

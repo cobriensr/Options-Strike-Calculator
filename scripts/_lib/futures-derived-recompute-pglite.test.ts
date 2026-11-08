@@ -995,9 +995,16 @@ describe('dry run on real SQL (pglite)', () => {
       /ES 2026-04-12T22:30:02\.641Z id \d+ price\/1h\/day\/vr 8283\.5\/0\/null\/null -> 6771\.25\/null\/null\/1 \[writes price, change1hPct, volumeRatio\]/,
     );
     // The largest price differences that are not written, with the flag over 0.15%.
-    expect(text).toContain('the 3 largest price differences not written');
+    // The two ES rows priced from a deleted bar are in the junk plan (the opt-in
+    // delete removes them), so they are not "not written": one row is left.
+    expect(text).toContain(
+      'the 1 largest price differences not written, after every planned step with the opt-in steps on',
+    );
     expect(text).toMatch(
-      /ES 2026-05-14T14:31:30\.250Z id \d+: stored 7500, recomputed 7290, difference 210\.00, left alone, stale \(a field is affected\), against the latest closed bar \[over 0\.15% of the price\]/,
+      /ES 2026-06-24T14:31:30\.250Z id \d+: stored 7000, recomputed 7490, difference 490\.00, left alone, stale \(nothing affected\), against the latest closed bar \[over 0\.15% of the price\]/,
+    );
+    expect(text).not.toMatch(
+      /ES 2026-05-14T14:31:30\.250Z id \d+: stored 7500, recomputed 7290/,
     );
     expect(text).toContain('unmatched (no pre-repair bar matched');
     // The NQ volume ratio is stored 0.3, today's method says 0.4615, and no
@@ -1226,7 +1233,7 @@ describe('dry run on real SQL (pglite)', () => {
     expect(await dump()).toBe(before);
     const text = report();
     expect(text).toContain(
-      'stored price matches no pre-repair bar and differs from the recompute by over 0.15% (not written; the open D1 question): 1 rows',
+      'stored price matches no pre-repair bar and differs from the recompute by over 0.15% (not written, after every planned step with the opt-in steps on; the open D1 question): 1 rows',
     );
     expect(text).toContain(
       `ES 2026-05-12T14:32:00.250Z id ${id}: stored 7100, recomputed 7007, difference 93.00`,
@@ -2200,6 +2207,43 @@ describe('--delete-junk-stale on real SQL (pglite)', () => {
     expect(existsSync(markerPath(workDir, 'junk'))).toBe(false);
   });
 
+  it('finishes the delete from the saved plan after a rejected delete, and refuses when a planned row changed meanwhile', async () => {
+    hooks.failWriteAt = { nth: 2, error: new Error('deadlock detected') };
+    expect(await junkRun()).toBe(1);
+    expect(await surviving([ids.s6, ids.s9])).toEqual([ids.s6, ids.s9]);
+    hooks.failWriteAt = null;
+    hooks.writes = 0;
+    vi.mocked(console.error).mockClear();
+    // A row changed by hand since the plan: the resume stops before deleting anything.
+    await pg.query(`UPDATE futures_snapshots SET price = 7501 WHERE id = $1`, [
+      ids.s6,
+    ]);
+    expect(await junkRun()).toBe(1);
+    expect(errored()).toMatch(
+      /apply failed: junk: 1 of 2 row\(s\) hold neither the planned old value nor the new one, so junk is not written: id \d+: price holds 7501/,
+    );
+    expect(hooks.writes).toBe(0);
+    expect(await surviving([ids.s6, ids.s9])).toEqual([ids.s6, ids.s9]);
+    // Put the row back, and let the other be gone already (a delete that failed
+    // part way): the resume deletes what is left, from the plan, with no planning.
+    await pg.query(`UPDATE futures_snapshots SET price = 7500 WHERE id = $1`, [
+      ids.s6,
+    ]);
+    await pg.query(`DELETE FROM futures_snapshots WHERE id = $1`, [ids.s9]);
+    vi.mocked(console.log).mockClear();
+    vi.mocked(console.error).mockClear();
+    expect(await junkRun()).toBe(0);
+    expect(errored()).toBe('');
+    expect(await surviving([ids.s6, ids.s9])).toEqual([]);
+    expect(existsSync(markerPath(workDir, 'junk'))).toBe(true);
+    const logged = vi
+      .mocked(console.log)
+      .mock.calls.map((c) => String(c[0]))
+      .join('\n');
+    expect(logged).toContain('Resuming from');
+    expect(logged).not.toContain('rows in range');
+  });
+
   it('is done once: the marker skips it, and the fresh plan then lists no row', async () => {
     expect(await junkRun()).toBe(0);
     vi.mocked(console.log).mockClear();
@@ -2322,7 +2366,12 @@ describe('--rewrite-stale-at-write on real SQL (pglite)', () => {
     }
     return ids;
   };
-  // 8 rows: ES 6 in the span (F1a-c, F1d, FX, VR) and 1 after it (POST), RTY 1 after it.
+  /** No contaminated day (06-22 and 06-23 only have a flagged bar): the 10% rule does not refuse the apply. */
+  const applyDetector = () =>
+    detector({
+      RTY: { contaminated: [], flagged: ['2026-06-22', '2026-06-23'] },
+    });
+  // 10 rows: ES 6 in the span (F1a-c, F1d, FX, VR) and 1 after it (POST), RTY 3 after it (THINPOST and the two on 06-23).
   const staleRun = (over: Partial<RecomputeOptions> = {}) =>
     run({
       stores: ['snapshots'],
@@ -2330,9 +2379,9 @@ describe('--rewrite-stale-at-write on real SQL (pglite)', () => {
       expectPremarket: null,
       expectFires: null,
       rewriteStaleAtWrite: true,
-      expectStaleRewrites: 8,
-      detectorDays: detector(),
+      expectStaleRewrites: 10,
       ...over,
+      detectorDays: over.detectorDays ?? applyDetector(),
     });
   const price = async (id: number): Promise<string | null> =>
     (await snapshotValues(id))[0] ?? null;
@@ -2364,6 +2413,26 @@ describe('--rewrite-stale-at-write on real SQL (pglite)', () => {
     );
     // Every root has the line.
     expect(text.match(/stale-at-write rows \(/g)).toHaveLength(6);
+    // The rows touched reconcile: the VR row is in both steps, so it counts once in the distinct total.
+    const touched = (
+      /rows touched, ES: normal step only (\d+), stale step only (\d+), both (\d+), junk delete (\d+); distinct rows (\d+) \((\d+) \+ (\d+) \+ (\d+) - (\d+)\)/.exec(
+        text,
+      ) ?? []
+    )
+      .slice(1)
+      .map(Number);
+    const [
+      normalOnly = -1,
+      staleOnly = -1,
+      both = -1,
+      junkDel = -1,
+      distinct = -1,
+    ] = touched;
+    // The base fixture has two ES rows priced from a deleted bar.
+    expect([staleOnly, both, junkDel]).toEqual([6, 1, 2]);
+    expect(distinct).toBe(normalOnly + staleOnly + both + junkDel);
+    expect(touched.slice(5)).toEqual([normalOnly + both, 7, 2, 1]);
+    expect(text).toContain('rows touched, all roots: normal step only');
     // F1c rewrites 7007 to 7012 (the 14:30 bar is 30 minutes older), all four fields.
     expect(text).toContain(
       `ES 2026-06-10T15:00:00.250Z id ${s.f1c}: price 7007 -> 7012 (5.00), the matched bar of 2026-06-10T14:30:00Z is 30 min older; writes price, change1hPct, changeDayPct, volumeRatio`,
@@ -2534,6 +2603,213 @@ describe('--rewrite-stale-at-write on real SQL (pglite)', () => {
     expect(Number(heading?.[1])).toBeGreaterThanOrEqual(12);
   });
 
+  it("refuses --apply when more than 10% of a thin root's after-span stale rows are on contaminated days", async () => {
+    await seedStale();
+    const before = await dump();
+    // 06-23 is contaminated for RTY: 2 of its 3 after-span stale rows.
+    expect(
+      await staleRun({ detectorDays: detector(), expectStaleRewrites: 8 }),
+    ).toBe(1);
+    expect(errored()).toMatch(
+      /RTY: 66\.7% of its after-span stale rows fall on contaminated days, over 10%: its source is not clean enough for --rewrite-stale-at-write/,
+    );
+    expect(hooks.writes).toBe(0);
+    expect(backups()).toEqual([]);
+    expect(await dump()).toBe(before);
+  });
+
+  it('reaches the last millisecond before 2026-10-01 and not the first after', async () => {
+    await frozenDay('ES', '2026-09-30', '2026-09-29');
+    // A bar under 15 minutes old at the edge row, so its recompute is fresh.
+    await bar('ES', '2026-09-30T23:55:00Z', 7015, 100);
+    const last = await snapshotRow(
+      'ES',
+      '2026-09-30T23:59:59.999Z',
+      '2026-09-30',
+      [7007, 0.1, 0.1, 0.4615],
+    );
+    const first = await snapshotRow(
+      'ES',
+      '2026-10-01T00:00:00.000Z',
+      '2026-10-01',
+      [7007, 0.1, 0.1, 0.4615],
+    );
+    const code = await staleRun({ expectSnapshots: 4, expectStaleRewrites: 1 });
+    expect([code, errored()]).toEqual([0, '']);
+    expect(await price(last)).toBe('7015.0000');
+    expect(await price(first)).toBe('7007.0000');
+  });
+
+  describe('after a partial apply', () => {
+    /** The snapshots step commits, then the stale step's write rejects. */
+    async function failAtTheStaleStep() {
+      const s = await seedStale();
+      hooks.failWriteAt = { nth: 2, error: new Error('deadlock detected') };
+      expect(await staleRun()).toBe(1);
+      expect(errored()).toMatch(/apply failed: stale: deadlock detected/);
+      expect(existsSync(markerPath(workDir, 'snapshots'))).toBe(true);
+      expect(existsSync(markerPath(workDir, 'stale'))).toBe(false);
+      expect(existsSync(join(workDir, 'plan.json'))).toBe(true);
+      // The next run is a fresh process: no failure armed, nothing counted.
+      hooks.failWriteAt = null;
+      hooks.writes = 0;
+      vi.mocked(console.log).mockClear();
+      vi.mocked(console.error).mockClear();
+      return s;
+    }
+
+    it('finishes the stale writes from the saved plan, without planning and without writing anything twice', async () => {
+      const s = await failAtTheStaleStep();
+      const files = backups();
+      expect(files).toHaveLength(1);
+      // The snapshot step wrote VR's volume ratio; the stale step wrote nothing yet.
+      const vrAfterFirst = await snapshotValues(s.vr);
+      expect(vrAfterFirst[0]).toBe('7007.0000');
+      expect(await price(s.f1c)).toBe('7007.0000');
+      // A step that failed part way has some rows at the new value already: the resume takes them.
+      await pg.query(
+        `UPDATE futures_snapshots SET price = 7012 WHERE id = $1`,
+        [s.f1c],
+      );
+
+      expect(await staleRun()).toBe(0);
+      expect(errored()).toBe('');
+      const logged = vi
+        .mocked(console.log)
+        .mock.calls.map((c) => String(c[0]))
+        .join('\n');
+      expect(logged).toContain(
+        `Resuming from ${files[0]}: stale left of snapshots, stale; no planning`,
+      );
+      expect(logged).not.toContain('rows in range');
+      // One write transaction: the stale step. The snapshot step and the backup are not repeated.
+      expect(hooks.writes).toBe(1);
+      expect(backups()).toEqual(files);
+      expect(existsSync(markerPath(workDir, 'stale'))).toBe(true);
+      // The stale fields are written, and the snapshot step's field is as it was.
+      expect(await price(s.f1c)).toBe('7012.0000');
+      expect(await price(s.vr)).toBe('7010.0000');
+      const vrNow = await snapshotValues(s.vr);
+      expect(vrNow[3]).toBe(vrAfterFirst[3]);
+    });
+
+    it('refuses to finish when a planned row holds neither its old value nor its new one, and writes nothing', async () => {
+      const s = await failAtTheStaleStep();
+      await pg.query(
+        `UPDATE futures_snapshots SET price = 1234 WHERE id = $1`,
+        [s.f1c],
+      );
+      const before = await dump();
+      expect(await staleRun()).toBe(1);
+      expect(errored()).toMatch(
+        /apply failed: stale: 1 of 10 row\(s\) hold neither the planned old value nor the new one, so stale is not written: id \d+: price holds 1234, planned 7007 to 7012/,
+      );
+      expect(hooks.writes).toBe(0);
+      expect(await dump()).toBe(before);
+      expect(existsSync(markerPath(workDir, 'stale'))).toBe(false);
+    });
+
+    it('refuses to finish when a planned row is gone', async () => {
+      const s = await failAtTheStaleStep();
+      await pg.query(`DELETE FROM futures_snapshots WHERE id = $1`, [s.f1b]);
+      expect(await staleRun()).toBe(1);
+      expect(errored()).toMatch(
+        /apply failed: stale: 1 of 10 row\(s\) hold neither the planned old value nor the new one, so stale is not written: id \d+: row is gone/,
+      );
+      expect(hooks.writes).toBe(0);
+    });
+
+    it('refuses a plan file or a pointer it cannot read, before writing anything', async () => {
+      await failAtTheStaleStep();
+      const file = join(workDir, backups()[0]!);
+      const plan = readFileSync(file, 'utf8');
+      writeFileSync(file, 'not json\n');
+      expect(await staleRun()).toBe(1);
+      expect(errored()).toMatch(/backup-.*\.jsonl line 1 is not JSON/);
+      writeFileSync(
+        file,
+        `${JSON.stringify({ step: 'bogus', id: 1, row: {} })}\n`,
+      );
+      vi.mocked(console.error).mockClear();
+      expect(await staleRun()).toBe(1);
+      expect(errored()).toMatch(/backup-.*\.jsonl line 1 is not a plan line/);
+      writeFileSync(file, plan);
+      writeFileSync(join(workDir, 'plan.json'), 'nope');
+      vi.mocked(console.error).mockClear();
+      expect(await staleRun()).toBe(1);
+      expect(errored()).toMatch(/plan\.json is not a plan pointer/);
+      expect(hooks.writes).toBe(0);
+    });
+
+    it('plans again when the run failed before any step finished', async () => {
+      await seedStale();
+      hooks.failWriteAt = { nth: 1, error: new Error('deadlock detected') };
+      expect(await staleRun()).toBe(1);
+      expect(existsSync(markerPath(workDir, 'snapshots'))).toBe(false);
+      expect(existsSync(join(workDir, 'plan.json'))).toBe(true);
+      hooks.failWriteAt = null;
+      vi.mocked(console.log).mockClear();
+      vi.mocked(console.error).mockClear();
+      expect(await staleRun()).toBe(0);
+      const logged = vi
+        .mocked(console.log)
+        .mock.calls.map((c) => String(c[0]))
+        .join('\n');
+      expect(logged).toContain('rows in range');
+      expect(logged).not.toContain('Resuming');
+      expect(existsSync(markerPath(workDir, 'stale'))).toBe(true);
+    });
+
+    it('writes the stale fields of a row whose snapshot fields an earlier run left marked done', async () => {
+      const s = await seedStale();
+      expect(await run({ expectSnapshots: 5 })).toBe(0);
+      // The volume ratio goes back to its old value: the fresh plan still has the snapshot step's change.
+      await pg.query(
+        `UPDATE futures_snapshots SET volume_ratio = 0.4615 WHERE id = $1`,
+        [s.vr],
+      );
+      vi.mocked(console.log).mockClear();
+      vi.mocked(console.error).mockClear();
+      const code = await staleRun({ expectSnapshots: 1 });
+      expect([code, errored()]).toEqual([0, '']);
+      const logged = vi
+        .mocked(console.log)
+        .mock.calls.map((c) => String(c[0]))
+        .join('\n');
+      expect(logged).toContain(
+        'WARNING: snapshots is marked done but the fresh plan still changes 1 row(s)',
+      );
+      expect(await price(s.vr)).toBe('7010.0000');
+      expect((await snapshotValues(s.vr))[3]).toBe('0.4615');
+    });
+
+    it('refuses to finish with a command that is not the one the plan was made for', async () => {
+      await failAtTheStaleStep();
+      const before = await dump();
+      expect(await staleRun({ expectStaleRewrites: 9 })).toBe(1);
+      expect(errored()).toMatch(
+        /Refusing to resume\. Nothing was written\.\n {2}--expect-stale-rewrites 9 was given, the saved plan has 10/,
+      );
+      vi.mocked(console.error).mockClear();
+      expect(await staleRun({ expectSnapshots: 6 })).toBe(1);
+      expect(errored()).toMatch(
+        /--expect-snapshots 6 was given, the saved plan has 5/,
+      );
+      vi.mocked(console.error).mockClear();
+      expect(
+        await staleRun({
+          rewriteStaleAtWrite: false,
+          expectStaleRewrites: null,
+        }),
+      ).toBe(1);
+      expect(errored()).toMatch(
+        /the saved plan has a stale rewrite, --rewrite-stale-at-write was not given/,
+      );
+      expect(hooks.writes).toBe(0);
+      expect(await dump()).toBe(before);
+    });
+  });
+
   describe('the frozen-run clause', () => {
     it('writes a run of 20 minutes at a price no bar has, and not a run of exactly 15, and reports the clause rows and the run', async () => {
       await frozenDay('ES', '2026-06-11', '2026-06-10');
@@ -2557,10 +2833,20 @@ describe('--rewrite-stale-at-write on real SQL (pglite)', () => {
       expect(text).toContain(
         '2026-06-11T14:50:00.250Z .. 2026-06-11T15:10:00.250Z, 5 rows, price 7123, recompute 7010 to 7012',
       );
-      // The run of exactly 15 minutes stays on the safety-net list.
+      // The run of exactly 15 minutes stays on the safety-net list and in the other
+      // not-written lists; the 20-minute run, which the stale step writes, is in none of them.
       expect(text).toContain(
         `id ${short[0]}: stored 7124, recomputed 7010, difference 114.00, recomputable, price not affected`,
       );
+      expect(text).toContain(
+        `id ${short[0]}: stored 7124, recomputed 7010, difference 114.00, method drift, price not affected [over 0.15% of the price]`,
+      );
+      expect(text).toContain(
+        `id ${short[0]}: stored 7124, recomputed 7010, difference 114.00, no pre-repair bar has the stored price [over 0.15% of the price]`,
+      );
+      for (const id of long) {
+        expect(text).not.toContain(`id ${id}: stored 7123, recomputed`);
+      }
       const code = await staleRun({
         expectSnapshots: 4,
         expectStaleRewrites: 5,
@@ -2583,6 +2869,27 @@ describe('--rewrite-stale-at-write on real SQL (pglite)', () => {
       expect(report()).toContain(
         '2026-06-17T14:50:00.250Z .. 2026-06-17T15:10:00.250Z, 5 rows, price 7123, recompute 6990 to 7010',
       );
+    });
+
+    it('leaves the rows the stale step writes out of the unaffected-field counts', async () => {
+      await frozenDay('ES', '2026-06-11', '2026-06-10');
+      const long = await run20('ES', '2026-06-11', 7123);
+      const driftPrice = (t: string): number =>
+        Number(
+          /ES: rows in range[\s\S]*?\(not written, after every planned step with the opt-in steps on\): price=(\d+)/.exec(
+            t,
+          )?.[1],
+        );
+      expect(await dry({ detectorDays: detector() })).toBe(0);
+      const withRun = driftPrice(report());
+      // The five rows are in the stale plan, so taking them away changes nothing here.
+      await pg.query(
+        `DELETE FROM futures_snapshots WHERE id = ANY($1::int[])`,
+        [long],
+      );
+      expect(await dry({ detectorDays: detector() })).toBe(0);
+      expect(driftPrice(report())).toBe(withRun);
+      expect(Number.isNaN(withRun)).toBe(false);
     });
 
     it('leaves a flat run whose recompute equals the stored values: a second plan writes nothing', async () => {
@@ -2680,6 +2987,9 @@ describe('--rewrite-stale-at-write on real SQL (pglite)', () => {
     // After the span end: the ES row and the thin root's row are rewritten.
     expect(await price(s.post)).toBe('7010.0000');
     expect(await price(s.thinPost)).toBe('7010.0000');
+    // The two rows on 06-23 have a flagged bar there, not a contaminated day: rewritten too.
+    expect(await price(s.thinFlagged)).toBe('7010.0000');
+    expect(await price(s.thinFlagged2)).toBe('7010.0000');
     // Left: exactly 15 minutes old, no matching bar, a thin root in the span, the freshness gate's day.
     for (const id of [s.f2, s.rty, s.oct1]) {
       expect(await price(id)).toBe('7007.0000');
@@ -2687,7 +2997,7 @@ describe('--rewrite-stale-at-write on real SQL (pglite)', () => {
     for (const id of [s.u, s.u2]) {
       expect(await price(id)).toBe('7123.0000');
     }
-    // One backup file, written before the first write: 5 normal lines and 8 stale lines.
+    // One backup file, written before the first write: 5 normal lines and 10 stale lines.
     expect(backedUp).toHaveLength(1);
     const lines = readFileSync(join(workDir, backedUp[0]!), 'utf8')
       .split('\n')
@@ -2702,10 +3012,15 @@ describe('--rewrite-stale-at-write on real SQL (pglite)', () => {
             to: Record<string, unknown> | null;
           },
       );
-    expect(lines).toHaveLength(13);
+    // Every line says which step wrote it.
+    expect(lines.map((l) => l.step).sort()).toEqual([
+      ...Array<string>(5).fill('snapshots'),
+      ...Array<string>(10).fill('stale'),
+    ]);
+    expect(lines).toHaveLength(15);
     const ofVr = lines.filter((l) => l.id === s.vr);
     expect(ofVr).toHaveLength(2);
-    const normal = ofVr.find((l) => l.step == null)!;
+    const normal = ofVr.find((l) => l.step === 'snapshots')!;
     const stale = ofVr.find((l) => l.step === 'stale')!;
     expect(Object.keys(normal.to ?? {})).toEqual(['volumeRatio']);
     expect(Object.keys(stale.to ?? {}).sort()).toEqual(
@@ -2729,7 +3044,7 @@ describe('--rewrite-stale-at-write on real SQL (pglite)', () => {
     );
     expect(await staleRun({ expectStaleRewrites: 7 })).toBe(1);
     expect(errored()).toMatch(
-      /the fresh plan rewrites 8 stale-at-write rows, --expect-stale-rewrites 7 was given/,
+      /the fresh plan rewrites 10 stale-at-write rows, --expect-stale-rewrites 7 was given/,
     );
     expect(hooks.writes).toBe(0);
     expect(backups()).toEqual([]);
