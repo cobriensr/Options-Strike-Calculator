@@ -2,19 +2,31 @@
 
 /**
  * Tests for the one-time futures bar rebuild from REST prints. Module-
- * boundary mocks only: the DB (getDb / withDbRetry), the UW fetch
- * (uwFetch / withRetry) and the market-hours clock. The bar rules
- * themselves (dedup, OHLC, side) are covered where they live, in
- * api/__tests__/futures-flow-repair.test.ts; this file checks what the
- * script does with the minutes.
+ * boundary mocks only: the DB (getDb / withDbRetry), the front-month table
+ * (futures-front-month.js) and its volume refresh, the UW fetch (uwFetch /
+ * withRetry) and the market-hours clock. The bar rules themselves (dedup,
+ * OHLC, side) are covered where they live, in
+ * api/__tests__/futures-flow-repair.test.ts, and the session pieces and
+ * the schedule read in futures-flow-backfill.test.ts; this file checks what
+ * the script does with the minutes.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { mockSql, mockUwFetch, mockIsMarketHours } = vi.hoisted(() => ({
+const {
+  mockSql,
+  mockUwFetch,
+  mockIsMarketHours,
+  mockStored,
+  mockSchedule,
+  mockRefresh,
+} = vi.hoisted(() => ({
   mockSql: vi.fn(),
   mockUwFetch: vi.fn(),
   mockIsMarketHours: vi.fn(() => false),
+  mockStored: vi.fn(),
+  mockSchedule: vi.fn(),
+  mockRefresh: vi.fn(),
 }));
 
 vi.mock('../../api/_lib/db.js', () => ({
@@ -27,6 +39,13 @@ vi.mock('../../api/_lib/api-helpers.js', () => ({
 }));
 vi.mock('../../api/_lib/cron-helpers.js', () => ({
   isMarketHours: mockIsMarketHours,
+}));
+vi.mock('../../api/_lib/futures-front-month.js', () => ({
+  fetchStoredFrontMonths: mockStored,
+  fetchFrontMonthSchedule: mockSchedule,
+}));
+vi.mock('../../api/_lib/futures-volume-refresh.js', () => ({
+  refreshFrontMonthVolumes: mockRefresh,
 }));
 vi.mock('../../api/_lib/logger.js', () => ({
   default: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -48,7 +67,7 @@ import {
 // ── Fixtures ──────────────────────────────────────────────
 
 const NOW = '2026-11-06T23:00:00Z'; // a Friday evening, after the close
-const DAY = '2026-09-15'; // ES roll week: candidates ESU6, ESZ6, ESH7
+const DAY = '2026-09-15'; // ES roll week; the sessions open at 22:00Z (CDT)
 const DAY_START = '2026-09-14T23:59:00.000000Z'; // before 00:00 UTC of DAY
 const PX = '6700.250000000';
 
@@ -90,6 +109,41 @@ function print(
 
 /** The print that ends a contract's paging: it is before 00:00 UTC. */
 const ENDER = print(1, DAY_START, 1, 'buy');
+
+function nextDay(date: string): string {
+  return new Date(Date.parse(`${date}T00:00:00Z`) + 86_400_000)
+    .toISOString()
+    .slice(0, 10);
+}
+
+/**
+ * Routes the front-month table. Every date is decided, on `${root}U6`
+ * unless `contracts` names the date; `undecided` dates have no stored row.
+ * The schedule answers only the dates it is asked about, like the real one.
+ */
+function routeFrontMonth(
+  contracts: Record<string, string> = {},
+  undecided: readonly string[] = [],
+) {
+  const contractOn = (root: string, date: string) =>
+    contracts[date] ?? `${root}U6`;
+  mockStored.mockImplementation(
+    async (root: string, from: string, to: string) => {
+      const stored = new Map<string, string>();
+      for (let d = from; d <= to; d = nextDay(d)) {
+        if (!undecided.includes(d)) stored.set(d, contractOn(root, d));
+      }
+      return stored;
+    },
+  );
+  mockSchedule.mockImplementation(
+    async (root: string, dates: readonly string[]) => ({
+      contractFor: (d: string) =>
+        dates.includes(d) ? contractOn(root, d) : undefined,
+      contracts: [...new Set(dates.map((d) => contractOn(root, d)))],
+    }),
+  );
+}
 
 /** UW /trades pages per contract, served in order; unknown contracts 404. */
 function routeTrades(pages: Record<string, unknown[][]>) {
@@ -164,7 +218,20 @@ function inserted(i = 0) {
     sellVolume: v[8] as Array<number | null>,
     buyPrints: v[9] as Array<number | null>,
     sellPrints: v[10] as Array<number | null>,
+    contract: v[11] as Array<string | null>,
   };
+}
+
+/** The `older_than` of UW call `i`: where that contract's paging started. */
+function olderThan(i: number): string | null {
+  const path = mockUwFetch.mock.calls[i]![1] as string;
+  return new URL(`https://uw.test${path}`).searchParams.get('older_than');
+}
+
+function tradesContracts(): string[] {
+  return mockUwFetch.mock.calls.map(
+    (c) => /^\/futures\/([^/]+)\/trades/.exec(c[1] as string)![1]!,
+  );
 }
 
 let logs: string[];
@@ -176,6 +243,8 @@ beforeEach(() => {
   vi.setSystemTime(new Date(NOW));
   mockIsMarketHours.mockReturnValue(false);
   routeSql();
+  routeFrontMonth();
+  mockRefresh.mockResolvedValue({ contracts: [], offered: 0, inserted: 0 });
   logs = [];
   vi.spyOn(console, 'log').mockImplementation((...a: unknown[]) => {
     logs.push(a.join(' '));
@@ -292,7 +361,7 @@ describe('roundTo4dp', () => {
 // ── runBarBackfill: building bars ─────────────────────────
 
 describe('runBarBackfill', () => {
-  it('inserts only the minutes that have no bar yet, from the leader’s prints, with open/high/low/close/volume/flow', async () => {
+  it('inserts only the minutes that have no bar yet, from the scheduled contract’s prints, with open/high/low/close/volume/flow and the contract', async () => {
     routeSql({ ES: [storedRow('2026-09-15T14:01:00Z')] });
     routeTrades({
       ESU6: [
@@ -304,8 +373,6 @@ describe('runBarBackfill', () => {
           ENDER,
         ],
       ],
-      ESZ6: [[]],
-      ESH7: [[]],
     });
 
     const code = await run();
@@ -325,13 +392,18 @@ describe('runBarBackfill', () => {
       sellVolume: [0, 1],
       buyPrints: [1, 1],
       sellPrints: [0, 1],
+      // Each bar carries the contract its trade date was decided on.
+      contract: ['ESU6', 'ESU6'],
     });
 
-    // Every candidate is paged over the whole UTC day, newest first from 24:00.
-    const first = mockUwFetch.mock.calls[0]![1] as string;
-    expect(
-      new URL(`https://uw.test${first}`).searchParams.get('older_than'),
-    ).toBe('2026-09-16T00:00:00.000000Z');
+    // One contract, one chain over the whole UTC day, newest first from 24:00.
+    expect(tradesContracts()).toEqual(['ESU6']);
+    expect(olderThan(0)).toBe('2026-09-16T00:00:00.000000Z');
+    expect(mockSchedule).toHaveBeenCalledWith(
+      'ES',
+      ['2026-09-15', '2026-09-16'],
+      'script',
+    );
     const stored = mockSql.mock.calls[0]!;
     expect((stored[0] as readonly string[]).join('?')).toContain(
       'FROM futures_bars',
@@ -346,11 +418,11 @@ describe('runBarBackfill', () => {
       /ES 2026-09-15 {2}missing 1379 {2}built 2 {2}inserted 2 {2}unbuildable 0/,
     );
     expect(out()).not.toContain('uw-key');
-    // ESU6 printed; the two empty candidates don't make it a no-prints day.
     expect(out()).not.toMatch(/prints 0/);
   });
 
-  it('on a roll day writes only the leader’s bar for each minute, and leaves a minute empty when the leader did not print', async () => {
+  it('on a roll the day splits at the session open: each piece is paged for its own contract only and its bars carry it', async () => {
+    routeFrontMonth({ '2026-09-16': 'ESZ6' });
     routeTrades({
       ESU6: [
         [
@@ -363,29 +435,149 @@ describe('runBarBackfill', () => {
         [
           print(
             11,
-            '2026-09-15T14:01:30.000000Z',
+            '2026-09-15T22:01:30.000000Z',
             10,
             'sell',
             '6750.500000000',
           ),
-          print(10, '2026-09-15T14:00:10.000000Z', 1, 'buy', '6749.000000000'),
+          print(10, '2026-09-15T22:00:10.000000Z', 1, 'buy', '6749.000000000'),
+          print(9, '2026-09-15T21:30:00.000000Z', 1, 'buy', '6749.000000000'),
+        ],
+      ],
+    });
+
+    const code = await run();
+
+    expect(code).toBe(0);
+    // 22:00Z is 17:00 CDT: the next session, decided on ESZ6. ESU6 is paged
+    // to the 16:00 CT halt (21:00Z) and ESZ6 from the open, neither beyond.
+    expect(tradesContracts()).toEqual(['ESU6', 'ESZ6']);
+    expect(olderThan(0)).toBe('2026-09-15T21:00:00.000000Z');
+    expect(olderThan(1)).toBe('2026-09-16T00:00:00.000000Z');
+    // 14:01 is a minute ESU6 did not print: a gap, whatever ESZ6 did.
+    expect(inserted().ts).toEqual([
+      '2026-09-15T14:00:00.000Z',
+      '2026-09-15T14:02:00.000Z',
+      '2026-09-15T22:00:00.000Z',
+      '2026-09-15T22:01:00.000Z',
+    ]);
+    expect(inserted().open).toEqual([
+      '6700.250000000',
+      '6701.000000000',
+      '6749.000000000',
+      '6750.500000000',
+    ]);
+    expect(inserted().contract).toEqual(['ESU6', 'ESU6', 'ESZ6', 'ESZ6']);
+    expect(out()).toMatch(/front ESU6\/ESZ6/);
+  });
+
+  it('splits at 23:00Z in winter, when the sessions open at 17:00 CST', async () => {
+    vi.setSystemTime(new Date('2026-11-14T03:00:00Z'));
+    routeFrontMonth({ '2026-11-12': 'ESZ6', '2026-11-13': 'ESH7' });
+    routeTrades({
+      ESZ6: [
+        [
+          print(2, '2026-11-12T15:00:30.000000Z', 2, 'buy', '6800.250000000'),
+          print(1, '2026-11-11T23:59:00.000000Z', 1, 'buy'),
+        ],
+      ],
+      ESH7: [
+        [
+          print(4, '2026-11-12T23:10:30.000000Z', 7, 'sell', '6850.500000000'),
+          // Before the 23:00Z open, in the halt: it ends the piece.
+          print(3, '2026-11-12T22:30:00.000000Z', 1, 'sell'),
+        ],
+      ],
+    });
+
+    const code = await run({ dates: ['2026-11-12'] });
+
+    expect(code).toBe(0);
+    expect(tradesContracts()).toEqual(['ESZ6', 'ESH7']);
+    expect(olderThan(0)).toBe('2026-11-12T22:00:00.000000Z');
+    expect(olderThan(1)).toBe('2026-11-13T00:00:00.000000Z');
+    expect(inserted().ts).toEqual([
+      '2026-11-12T15:00:00.000Z',
+      '2026-11-12T23:10:00.000Z',
+    ]);
+    expect(inserted().contract).toEqual(['ESZ6', 'ESH7']);
+  });
+
+  it('stores a scheduled name that is no outright of the root as a NULL contract, with one warning for the root-day', async () => {
+    // A decision row only this rule writes, so canonical by construction;
+    // the column's CHECK would fail the whole chunk for a name like this.
+    routeFrontMonth({ [DAY]: 'NQU6', '2026-09-16': 'NQU6' });
+    routeTrades({
+      NQU6: [
+        [
+          print(3, '2026-09-15T14:01:30.000000Z', 1, 'buy'),
+          print(2, '2026-09-15T14:00:30.000000Z', 1, 'buy'),
           ENDER,
         ],
       ],
-      ESH7: [[]],
     });
 
-    await run();
+    const code = await run();
 
-    // 14:00 ESU6 leads (5 vs 1); 14:01 ESZ6 overtakes (11 vs 5); 14:02 ESZ6
-    // still leads (11 vs 8) but printed nothing: no bar, never ESU6's.
-    expect(inserted().ts).toEqual([
-      '2026-09-15T14:00:00.000Z',
-      '2026-09-15T14:01:00.000Z',
-    ]);
-    expect(inserted().open).toEqual(['6700.250000000', '6750.500000000']);
-    expect(out()).toMatch(/unbuildable 1 \(invalid price 0, leader absent 1\)/);
-    expect(out()).toMatch(/front ESU6\/ESZ6/);
+    expect(code).toBe(0);
+    expect(inserted().ts).toHaveLength(2);
+    expect(inserted().contract).toEqual([null, null]);
+    expect(
+      logs.filter((l) =>
+        /ES 2026-09-15 {2}WARNING: .*NQU6 is not an outright of ES/.test(l),
+      ),
+    ).toHaveLength(1);
+  });
+
+  describe('the front-month table', () => {
+    it('every date stored: no volume refresh, the schedule is read as stored', async () => {
+      routeTrades({ ESU6: [[ENDER]] });
+
+      await run();
+
+      expect(mockStored).toHaveBeenCalledWith('ES', '2026-09-15', '2026-09-16');
+      expect(mockRefresh).not.toHaveBeenCalled();
+    });
+
+    it('an undecided date: refreshes the root’s volumes over 1m, then asks for the schedule', async () => {
+      routeFrontMonth({}, ['2026-09-16']);
+      routeTrades({ ESU6: [[ENDER]] });
+
+      await run();
+
+      expect(mockRefresh).toHaveBeenCalledWith('uw-key', 'ES', '1m');
+      expect(mockRefresh.mock.invocationCallOrder[0]!).toBeLessThan(
+        mockSchedule.mock.invocationCallOrder[0]!,
+      );
+    });
+
+    it('a failed volume refresh fails the root-day by name, decides nothing, pages nothing and writes nothing', async () => {
+      routeFrontMonth({}, ['2026-09-16']);
+      mockRefresh.mockRejectedValue(
+        new Error(
+          'stale daily candles for ES: the newest ESU6 candle is 09-10',
+        ),
+      );
+
+      const code = await run();
+
+      expect(code).toBe(1);
+      expect(out()).toMatch(/ES 2026-09-15 FAILED: stale daily candles for ES/);
+      expect(mockSchedule).not.toHaveBeenCalled();
+      expect(mockUwFetch).not.toHaveBeenCalled();
+      expect(insertCalls()).toHaveLength(0);
+    });
+
+    it('a rejected schedule read fails the root-day by name before any UW call', async () => {
+      mockSchedule.mockRejectedValue(new Error('connection terminated'));
+
+      const code = await run();
+
+      expect(code).toBe(1);
+      expect(out()).toMatch(/ES 2026-09-15 FAILED: connection terminated/);
+      expect(mockUwFetch).not.toHaveBeenCalled();
+      expect(insertCalls()).toHaveLength(0);
+    });
   });
 
   it('skips a minute whose ohlc is null (a print with no usable price) and counts it', async () => {
@@ -398,8 +590,6 @@ describe('runBarBackfill', () => {
           ENDER,
         ],
       ],
-      ESZ6: [[]],
-      ESH7: [[]],
     });
 
     const code = await run();
@@ -409,7 +599,7 @@ describe('runBarBackfill', () => {
       '2026-09-15T14:00:00.000Z',
       '2026-09-15T14:02:00.000Z',
     ]);
-    expect(out()).toMatch(/built 2 .*unbuildable 1 \(invalid price 1, leader/);
+    expect(out()).toMatch(/built 2 .*unbuildable 1 /);
   });
 
   it('writes flow by the live NULL-vs-0 rule: no known side → all four NULL, a "none" print → known zeros, otherwise the counts', async () => {
@@ -424,8 +614,6 @@ describe('runBarBackfill', () => {
           ENDER,
         ],
       ],
-      ESZ6: [[]],
-      ESH7: [[]],
     });
 
     await run();
@@ -453,8 +641,6 @@ describe('runBarBackfill', () => {
           ENDER,
         ],
       ],
-      ESZ6: [[]],
-      ESH7: [[]],
     });
 
     await run();
@@ -476,6 +662,9 @@ describe('runBarBackfill', () => {
 
     expect(code).toBe(0);
     expect(mockUwFetch).not.toHaveBeenCalled();
+    // Nothing to build: no schedule to read, no decision to make.
+    expect(mockStored).not.toHaveBeenCalled();
+    expect(mockSchedule).not.toHaveBeenCalled();
     expect(insertCalls()).toHaveLength(0);
     expect(out()).toMatch(/1 root-days with nothing to do/);
   });
@@ -499,8 +688,6 @@ describe('runBarBackfill', () => {
           ENDER,
         ],
       ],
-      ESZ6: [[]],
-      ESH7: [[]],
     });
 
     await run();
@@ -524,8 +711,6 @@ describe('runBarBackfill', () => {
           ENDER,
         ],
       ],
-      ESZ6: [[]],
-      ESH7: [[]],
     });
 
     const code = await run({ dryRun: true });
@@ -540,8 +725,6 @@ describe('runBarBackfill', () => {
     function routeZn(rows: unknown[]) {
       routeTrades({
         ZNU6: [[...rows, ENDER]],
-        ZNZ6: [[]],
-        ZNH7: [[]],
       });
     }
 
@@ -635,11 +818,7 @@ describe('runBarBackfill', () => {
       });
       routeTrades({
         ZNU6: [[ENDER], [ENDER]],
-        ZNZ6: [[], []],
-        ZNH7: [[], []],
         ESU6: [[ENDER], [ENDER]],
-        ESZ6: [[], []],
-        ESH7: [[], []],
       });
 
       await run({
@@ -652,7 +831,7 @@ describe('runBarBackfill', () => {
       expect(out()).toMatch(/ES {2}matched 0 of 2 stored \(0\.00%\)/);
     });
 
-    it('marks a root-day whose candidates returned no prints', async () => {
+    it('marks a root-day whose scheduled contract returned no prints', async () => {
       routeSql({ ZN: [storedRow('2026-09-15T14:05:00Z')] });
       routeZn([]);
 
@@ -685,11 +864,12 @@ describe('runBarBackfill', () => {
       expect(out()).toMatch(/differ 5 /);
     });
 
-    it('a root-day with no stored bar makes no UW call', async () => {
+    it('a root-day with no stored bar makes no UW call and reads no schedule', async () => {
       const code = await run({ compare: true, roots: ['ZN'] });
 
       expect(code).toBe(0);
       expect(mockUwFetch).not.toHaveBeenCalled();
+      expect(mockStored).not.toHaveBeenCalled();
     });
   });
 
@@ -776,8 +956,6 @@ describe('runBarBackfill', () => {
     });
     routeTrades({
       ESU6: [[print(2, '2026-09-15T14:00:30.000000Z', 1, 'buy'), ENDER]],
-      ESZ6: [[]],
-      ESH7: [[]],
     });
 
     const code = await run();
@@ -841,8 +1019,6 @@ describe('runBarBackfill', () => {
       .mockReturnValue(true); // before 09-16
     routeTrades({
       ESU6: [[print(2, '2026-09-15T14:00:30.000000Z', 1, 'buy'), ENDER]],
-      ESZ6: [[]],
-      ESH7: [[]],
     });
 
     const code = await run({ dates: [DAY, '2026-09-16'] });
@@ -861,18 +1037,16 @@ describe('runBarBackfill', () => {
   it('stops before the next date once the page budget is spent, and exits 1 with the dates to resume', async () => {
     routeTrades({
       ESU6: [[print(2, '2026-09-15T14:00:30.000000Z', 1, 'buy'), ENDER]],
-      ESZ6: [[]],
-      ESH7: [[]],
     });
 
-    const code = await run({ dates: [DAY, '2026-09-16'], maxPages: 2 });
+    const code = await run({ dates: [DAY, '2026-09-16'], maxPages: 1 });
 
     expect(code).toBe(1);
-    // 09-15 used 3 pages; 09-16 never starts.
-    expect(out()).toMatch(/Page budget spent \(3 of 2\).*--from 2026-09-16/is);
+    // 09-15 used 1 page; 09-16 never starts.
+    expect(out()).toMatch(/Page budget spent \(1 of 1\).*--from 2026-09-16/is);
     expect(insertCalls()).toHaveLength(1);
     expect(out()).toMatch(
-      /Incomplete: stopped before 2026-09-16\. Resume with 2026-09-16 --roots ES --max-pages 2$/m,
+      /Incomplete: stopped before 2026-09-16\. Resume with 2026-09-16 --roots ES --max-pages 1$/m,
     );
   });
 
@@ -883,8 +1057,6 @@ describe('runBarBackfill', () => {
       .mockReturnValue(true); // before 09-16
     routeTrades({
       ESU6: [[print(2, '2026-09-15T14:00:30.000000Z', 1, 'buy'), ENDER]],
-      ESZ6: [[]],
-      ESH7: [[]],
     });
 
     const code = await run({
@@ -903,8 +1075,6 @@ describe('runBarBackfill', () => {
   it('a run that reaches its last date is not marked incomplete', async () => {
     routeTrades({
       ESU6: [[], []],
-      ESZ6: [[], []],
-      ESH7: [[], []],
     });
 
     const code = await run({ dates: [DAY, '2026-09-16'], maxPages: 100_000 });
@@ -913,12 +1083,12 @@ describe('runBarBackfill', () => {
     expect(out()).not.toMatch(/Incomplete/);
   });
 
-  it('marks a root-day whose candidates returned no prints, so a UW history hole shows', async () => {
-    routeTrades({ ESU6: [[]], ESZ6: [[]], ESH7: [[]] });
+  it('marks a root-day whose scheduled contract returned no prints, so a UW history hole shows', async () => {
+    routeTrades({ ESU6: [[]] });
 
     const code = await run();
 
     expect(code).toBe(0);
-    expect(out()).toMatch(/ES 2026-09-15 .*built 0 .*pages 3 {2}prints 0$/m);
+    expect(out()).toMatch(/ES 2026-09-15 .*built 0 .*pages 1 {2}prints 0$/m);
   });
 });

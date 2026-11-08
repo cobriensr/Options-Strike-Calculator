@@ -11,44 +11,56 @@
  *
  * Per root and UTC day, oldest first:
  *   1. The day's stored bars (`fetchFuturesBars`). No missing Globex-open
- *      minute → nothing to do, no UW call, so a re-run skips what it
- *      already filled. A root-day with any missing minute (a sparse
- *      overnight tape, a holiday) is paged again on every re-run.
- *   2. Every candidate contract's prints over the whole day [00:00, 24:00)
- *      UTC (`pageDayContracts`): the front month's tally runs from 00:00.
- *   3. `replayFrontMonth` picks each minute's leader, the same rule the
- *      live handler and the nightly repair use. Back months are never
- *      written, and a minute where the leader printed nothing stays empty
- *      (a back month trades at a carry basis).
- *   4. A bar for each leader minute that has no bar yet and whose `ohlc`
+ *      minute → nothing to do, no UW call and no front-month read, so a
+ *      re-run skips what it already filled. A root-day with any missing
+ *      minute (a sparse overnight tape, a holiday) is paged again on every
+ *      re-run.
+ *   2. The day's Globex-open span [00:00, 24:00) UTC is cut at the session
+ *      open into pieces, each led by the contract its CME trade date was
+ *      decided on (`sessionPieces`, from the stored `futures_front_month`;
+ *      see `futures-flow-backfill.ts` for how an undecided date is
+ *      handled), and `pageDayContracts` pages that contract's prints over
+ *      that piece's window only.
+ *   3. A minute's bar comes only from its piece's contract, the one its
+ *      trade date was decided on, and carries that name. A minute where
+ *      that contract printed nothing stays empty (a back month trades at a
+ *      carry basis).
+ *   4. A bar for each such minute that has no bar yet and whose `ohlc`
  *      is known (`fetchContractFlow`: null when a counted print had no
  *      usable price or a size of 0 or over 2^31 - 1, which the live
  *      handler would have dropped). Flow
  *      follows the live NULL-vs-0 rule: no print with a known side
  *      (`sideSeen` false) → all four flow columns NULL, otherwise the four
- *      counts, `none`-side prints counting toward volume only.
+ *      counts, `none`-side prints counting toward volume only. The
+ *      `contract` is checked with `parseContract` first: a name that is no
+ *      outright of the root would fail the column's CHECK for the whole
+ *      chunk, so its bars are stored with a NULL contract and the root-day
+ *      prints one warning.
  *   5. `insertFuturesBars`: ON CONFLICT DO NOTHING, so a bar the live
  *      handler wrote is never replaced.
  *
- * `--dry-run` does steps 1-4 and writes nothing. `--compare` writes
- * nothing either: for minutes that already have a bar it counts how many
+ * `--dry-run` does steps 1-4 and writes no bars. `--compare` writes no bars
+ * either: for minutes that already have a bar it counts how many
  * REST-built bars equal the stored bar (prices rounded to 4 dp, as the
  * NUMERIC(12,4) column stores them) and prints the first few differences.
  * That is the acceptance check against a day of full live bars. Its
  * percentage is matched / (compared + stored-only): a stored bar no print
- * rebuilds is a leader or roll disagreement, so it counts against the
- * root.
+ * rebuilds is a contract or roll disagreement, so it counts against the
+ * root. Both modes still read the front-month table the way a real run
+ * does, so a date with no row yet gets its volumes and its one decision
+ * stored: the same rows any writer would add.
  *
  * The current UTC day is never processed: the live handler is still
  * writing it, and a bar built from a minute still in progress would be
  * locked in by DO NOTHING.
  *
  * Operational limits are the flow backfill's (`futures-flow-backfill.ts`,
- * which supplies the argument parser, plan, paging and date loop): at most
- * UW_CONCURRENCY_CAP requests in flight, no start during market hours and
- * a stop between dates if they begin, a page budget checked between dates.
- * A run that fails a root-day or stops before its last date exits 1, and
- * ends by naming the failed root-days and the arguments that re-run them.
+ * which supplies the argument parser, plan, session pieces, paging and
+ * date loop): at most UW_CONCURRENCY_CAP requests in flight, no start
+ * during market hours and a stop between dates if they begin, a page
+ * budget checked between dates. A run that fails a root-day or stops
+ * before its last date exits 1, and ends by naming the failed root-days
+ * and the arguments that re-run them.
  *
  * Open and close can differ from a live bar. Live timestamps are epoch
  * milliseconds, and among prints sharing a millisecond the first arrival
@@ -65,7 +77,7 @@ import {
   type StoredFuturesBar,
 } from '../../api/_lib/futures-bars.js';
 import {
-  replayFrontMonth,
+  parseContract,
   type FuturesRoot,
 } from '../../api/_lib/futures-contracts.js';
 import type { FlowMinute } from '../../api/_lib/futures-flow-repair.js';
@@ -74,15 +86,19 @@ import {
   DAY_MS,
   MINUTE_MS,
   RootDayError,
+  createScheduleReader,
   pageDayContracts,
   parseArgs,
   planDates,
   refuseDuringMarketHours,
   runPlannedDays,
+  sessionPieces,
   type BackfillOptions,
   type DayLoopResult,
   type DayPlan,
+  type PagedMinute,
   type PagingTally,
+  type ScheduleReader,
 } from './futures-flow-backfill.js';
 
 /** Differences printed per root-day in `--compare`. */
@@ -134,8 +150,8 @@ export function roundTo4dp(price: string): string {
 }
 
 /**
- * The bar for a leader's minute, or null when its prices aren't known.
- * Flow is NULL (unknown) unless some print had a known side.
+ * The bar for a minute of the scheduled contract, or null when its prices
+ * aren't known. Flow is NULL (unknown) unless some print had a known side.
  */
 function toBar(m: FlowMinute): FuturesBarRow | null {
   if (m.ohlc === null) return null;
@@ -148,30 +164,6 @@ function toBar(m: FlowMinute): FuturesBarRow | null {
     buyPrints: m.sideSeen ? m.buyPrints : null,
     sellPrints: m.sideSeen ? m.sellPrints : null,
   };
-}
-
-interface Leader {
-  contract: string;
-  minute: FlowMinute;
-}
-
-/**
- * Each minute's front-month row, and the minutes some contract printed in
- * but whose leader did not (left empty, never filled from a back month).
- */
-function pickLeaders(byContract: ReadonlyMap<string, readonly FlowMinute[]>): {
-  leaders: Map<string, Leader>;
-  absent: Set<string>;
-} {
-  const leaders = new Map<string, Leader>();
-  for (const { contract, row } of replayFrontMonth(byContract)) {
-    leaders.set(row.ts, { contract, minute: row });
-  }
-  const absent = new Set<string>();
-  for (const rows of byContract.values()) {
-    for (const r of rows) if (!leaders.has(r.ts)) absent.add(r.ts);
-  }
-  return { leaders, absent };
 }
 
 /** Globex-open minutes of the UTC day that have no stored bar. */
@@ -221,7 +213,7 @@ interface CompareCounts {
   /** Stored minutes the prints rebuild. */
   compared: number;
   matched: number;
-  /** Stored minutes no print rebuilds (leader absent, or no usable price). */
+  /** Stored minutes no print rebuilds (contract silent, or no usable price). */
   storedOnly: number;
   /** Rebuildable minutes with no stored bar. */
   restOnly: number;
@@ -241,17 +233,20 @@ interface BarRootDayResult {
   inserted: number;
   /** Missing minutes whose prints had no usable price. */
   invalidPrice: number;
-  /** Missing minutes the front month did not print in. */
-  leaderAbsent: number;
   malformed: number;
   pages: number;
   /**
-   * No candidate contract returned a counted print all day: a hole in
-   * UW's history, a holiday, or a wrong candidate list.
+   * No scheduled contract returned a counted print all day: a hole in
+   * UW's history, a holiday, or a wrong schedule.
    */
   noPrints: boolean;
   /** Contracts that led at least one built minute. */
   leaders: string[];
+  /**
+   * Scheduled names that are no outright of the root: their built bars
+   * are stored with a NULL contract.
+   */
+  unstorable: string[];
   compare: CompareCounts | null;
 }
 
@@ -263,18 +258,18 @@ function emptyResult(over: Partial<BarRootDayResult>): BarRootDayResult {
     built: 0,
     inserted: 0,
     invalidPrice: 0,
-    leaderAbsent: 0,
     malformed: 0,
     pages: 0,
     noPrints: false,
     leaders: [],
+    unstorable: [],
     compare: null,
     ...over,
   };
 }
 
 function compareStored(
-  leaders: ReadonlyMap<string, Leader>,
+  minutes: ReadonlyMap<string, PagedMinute>,
   stored: readonly StoredFuturesBar[],
 ): CompareCounts {
   const counts: CompareCounts = {
@@ -285,12 +280,12 @@ function compareStored(
     diffs: [],
   };
   const have = new Set(stored.map((b) => b.ts));
-  for (const [ts, lead] of leaders) {
-    if (!have.has(ts) && toBar(lead.minute) !== null) counts.restOnly += 1;
+  for (const [ts, paged] of minutes) {
+    if (!have.has(ts) && toBar(paged.minute) !== null) counts.restOnly += 1;
   }
   for (const b of stored) {
-    const lead = leaders.get(b.ts);
-    const rest = lead ? toBar(lead.minute) : null;
+    const paged = minutes.get(b.ts);
+    const rest = paged ? toBar(paged.minute) : null;
     if (rest === null) {
       counts.storedOnly += 1;
       continue;
@@ -308,6 +303,7 @@ function compareStored(
 
 async function backfillBarRootDay(
   apiKey: string,
+  schedules: ScheduleReader,
   root: FuturesRoot,
   date: string,
   mode: Mode,
@@ -330,37 +326,38 @@ async function backfillBarRootDay(
   // run's budget.
   const tally: PagingTally = { pages: 0, malformed: 0 };
   try {
-    const byContract = await pageDayContracts(
-      apiKey,
-      root,
-      date,
-      dayEndMs,
-      tally,
-    );
-    const { leaders, absent } = pickLeaders(byContract);
+    const pieces = await sessionPieces(schedules, root, dayStartMs, dayEndMs);
+    const minutes = await pageDayContracts(apiKey, pieces, tally);
     const base = emptyResult({
       stored: stored.length,
       missing,
       malformed: tally.malformed,
       pages: tally.pages,
-      noPrints: [...byContract.values()].every((rows) => rows.length === 0),
+      noPrints: minutes.size === 0,
     });
     if (mode === 'compare') {
-      return { ...base, compare: compareStored(leaders, stored) };
+      return { ...base, compare: compareStored(minutes, stored) };
     }
 
     const bars: FuturesBarRow[] = [];
     const front = new Set<string>();
+    // The column's CHECK runs before the conflict arbiter, so one name that
+    // is no outright of this root would fail the whole 500-row chunk, bars
+    // already stored included. A decision row is canonical by
+    // construction; a bad one is stored as NULL (unknown) and warned about.
+    const unstorable = new Set<string>();
     let invalidPrice = 0;
-    for (const [ts, lead] of leaders) {
+    for (const [ts, { contract, minute }] of minutes) {
       if (storedTs.has(ts)) continue;
-      const bar = toBar(lead.minute);
+      const bar = toBar(minute);
       if (bar === null) {
         invalidPrice += 1;
         continue;
       }
-      bars.push(bar);
-      front.add(lead.contract);
+      const storable = parseContract(root, contract, ts) !== null;
+      if (!storable) unstorable.add(contract);
+      bars.push({ ...bar, contract: storable ? contract : null });
+      front.add(contract);
     }
     const inserted =
       mode === 'write' ? await insertFuturesBars(root, bars) : bars.length;
@@ -369,8 +366,8 @@ async function backfillBarRootDay(
       built: bars.length,
       inserted,
       invalidPrice,
-      leaderAbsent: [...absent].filter((ts) => !storedTs.has(ts)).length,
       leaders: [...front],
+      unstorable: [...unstorable],
     };
   } catch (err) {
     throw new RootDayError(err, tally.pages);
@@ -444,8 +441,8 @@ export async function runBarBackfill(
   const plan = planDates(opts, lastDay);
   const label = {
     write: '',
-    dry: ' (DRY RUN: no writes)',
-    compare: ' (COMPARE: no writes)',
+    dry: ' (DRY RUN: no bars written)',
+    compare: ' (COMPARE: no bars written)',
   }[mode];
   console.log(
     `Futures bar backfill from REST prints${label}: ` +
@@ -460,10 +457,12 @@ export async function runBarBackfill(
     { matched: number; compared: number; storedOnly: number; restOnly: number }
   >();
 
+  const schedules = createScheduleReader(opts.apiKey);
   const loop = await runPlannedDays(
     plan,
     opts.maxPages,
-    (root, date) => backfillBarRootDay(opts.apiKey, root, date, mode),
+    (root, date) =>
+      backfillBarRootDay(opts.apiKey, schedules, root, date, mode),
     (root, date, res) => {
       if (res.skipped) {
         totals.nothingToDo += 1;
@@ -494,21 +493,26 @@ export async function runBarBackfill(
         for (const d of c.diffs) console.log(`    ${d}`);
         return;
       }
-      const unbuildable = res.invalidPrice + res.leaderAbsent;
       totals.built += res.built;
       totals.inserted += res.inserted;
-      totals.unbuildable += unbuildable;
+      totals.unbuildable += res.invalidPrice;
       console.log(
         `  ${root} ${date}  missing ${res.missing}  built ${res.built}` +
-          `  ${verb} ${res.inserted}  unbuildable ${unbuildable}` +
-          ` (invalid price ${res.invalidPrice}, leader absent ${res.leaderAbsent})` +
+          `  ${verb} ${res.inserted}  unbuildable ${res.invalidPrice}` +
           `  malformed ${res.malformed}  front ${front}  pages ${res.pages}${marker}`,
       );
+      if (res.unstorable.length > 0) {
+        console.error(
+          `  ${root} ${date}  WARNING: scheduled contract ` +
+            `${res.unstorable.join(', ')} is not an outright of ${root}: ` +
+            `its bars carry a NULL contract`,
+        );
+      }
     },
   );
 
   if (mode === 'compare') {
-    // A stored bar REST can't rebuild is a leader or roll disagreement, so
+    // A stored bar REST can't rebuild is a contract or roll disagreement, so
     // it counts against the root: the denominator is every stored bar.
     for (const [root, s] of byRoot) {
       const stored = s.compared + s.storedOnly;

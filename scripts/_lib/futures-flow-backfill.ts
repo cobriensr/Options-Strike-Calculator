@@ -6,16 +6,19 @@
  *
  * Per root and UTC day, oldest day first:
  *   1. The day's NULL-flow bars in Globex-open minutes
- *      (`fetchNullFlowBars`). None → nothing to do, no UW call: a re-run
- *      resumes where the last one stopped.
- *   2. Every candidate contract's prints from 00:00 UTC to the last NULL
- *      minute (`fetchContractFlow`). The front month's tally runs from
- *      00:00 UTC, so the whole span is needed even for one late minute.
- *      The candidates come from the CME listing cycle, because
- *      `/futures/contracts` lists only contracts active in the last 30
- *      sessions and the roll replay needs expired ones (ESU6 in July).
- *   3. `replayFrontMonth` over those minutes picks each minute's contract,
- *      the same rule the live handler and the nightly repair use.
+ *      (`fetchNullFlowBars`). None → nothing to do, no UW call and no
+ *      front-month read: a re-run resumes where the last one stopped.
+ *   2. The contract of each CME trade date the NULL minutes fall on, from
+ *      the stored per-session front month (`futures_front_month`,
+ *      `api/_lib/futures-front-month.ts`). The table is read first; only
+ *      when a date has no row yet are the root's contract volumes
+ *      refreshed (`refreshFrontMonthVolumes`, once per root per run) and
+ *      the date decided (`fetchFrontMonthSchedule`, source 'script').
+ *   3. The NULL minutes' span is cut at the session open into pieces, each
+ *      led by one contract (`sessionPieces`), and only that contract's
+ *      prints are paged, over that piece's window (`fetchContractFlow`).
+ *      A minute's contract is the one its trade date was decided on, so no
+ *      tally is needed and a late minute pages only its own piece.
  *   4. `matchFlowToBars` keeps a minute only when REST volume is within 2%
  *      of the bar's volume (most bars before 2026-09-29 are Databento-era
  *      OHLCV), and `writeFlowMinutes` writes it with the conditional
@@ -24,25 +27,31 @@
  * A day whose minutes all failed the 2% rule still has NULL bars, so a
  * re-run pages it again; pass `--from` to skip ahead.
  *
- * Operational limits: at most UW_CONCURRENCY_CAP requests in flight (one
- * root-day per slot, its candidates paged one after another), each
- * through the crons' shared Redis slots; no start during market hours and
- * a stop between dates if they begin; the page budget is checked between
- * dates, so a run overshoots it by at most one date.
+ * `--dry-run` writes no bars. It still reads the front-month table the way
+ * a real run does, so a date with no row yet gets its volumes and its one
+ * decision stored: the same rows any writer would add.
  *
- * The argument parser, date plan, contract candidates, per-day paging,
- * date loop and market-hours guard are exported for
- * `futures-bar-backfill.ts` (the September bar rebuild), which runs the
- * same loop over the same prints.
+ * Operational limits: at most UW_CONCURRENCY_CAP requests in flight (one
+ * root-day per slot, its pieces paged one after another), each through the
+ * crons' shared Redis slots; no start during market hours and a stop
+ * between dates if they begin; the page budget is checked between dates,
+ * so a run overshoots it by at most one date.
+ *
+ * The argument parser, date plan, session pieces, per-day paging, date
+ * loop and market-hours guard are exported for `futures-bar-backfill.ts`
+ * (the September bar rebuild), which runs the same loop over the same
+ * prints.
  *
  * Spec: docs/superpowers/specs/2026-10-28-uw-futures-orderflow-design.md
- * (Phase 6b, as amended by probe 0a).
+ * (Phase 6b, as amended by probe 0a) and
+ * docs/superpowers/specs/2026-11-06-futures-session-front-month.md
+ * (Phase 4b).
  */
 
 import { isMarketHours } from '../../api/_lib/cron-helpers.js';
 import {
   FUTURES_ROOTS,
-  replayFrontMonth,
+  cmeTradeDate,
   type FuturesRoot,
 } from '../../api/_lib/futures-contracts.js';
 import {
@@ -53,8 +62,15 @@ import {
   type FlowMinute,
   type PageBudget,
 } from '../../api/_lib/futures-flow-repair.js';
+import {
+  fetchFrontMonthSchedule,
+  fetchStoredFrontMonths,
+  type FrontMonthSchedule,
+} from '../../api/_lib/futures-front-month.js';
+import { refreshFrontMonthVolumes } from '../../api/_lib/futures-volume-refresh.js';
 import { UW_CONCURRENCY_CAP } from '../../api/_lib/uw-concurrency.js';
 import { mapWithConcurrency } from '../../api/_lib/uw-fetch.js';
+import { isFuturesMarketOpen } from '../../src/utils/timezone.js';
 
 /**
  * First UTC day UW's REST /trades history reaches, per root (probe 0a,
@@ -74,37 +90,14 @@ export const UW_TRADES_HISTORY_START: Readonly<Record<FuturesRoot, string>> = {
 export const DEFAULT_MAX_PAGES = 20_000;
 
 /**
- * A guard against a runaway cursor, not a budget: an ES UTC day is about
- * 1,025 pages, and a roll day pages two busy contracts.
+ * A guard against a runaway cursor, not a budget: a piece is at most one
+ * UTC day of one contract, and an ES day is about 1,025 pages.
  */
-const MAX_PAGES_PER_CONTRACT_DAY = 5_000;
-
-const MONTH_CODES = 'FGHJKMNQUVXZ';
-
-/**
- * Contract months each root's front month moves through: quarterly for
- * the equity indexes and ZN, every month for CL, the even months for GC
- * (its odd months never lead).
- */
-const CONTRACT_CYCLE: Readonly<Record<FuturesRoot, string>> = {
-  ES: 'HMUZ',
-  NQ: 'HMUZ',
-  RTY: 'HMUZ',
-  ZN: 'HMUZ',
-  CL: MONTH_CODES,
-  GC: 'GJMQVZ',
-};
-
-/**
- * Three listed months from the date's month on cover the front month and
- * the one it rolls to on every root: CL's front is the next month or the
- * one after (it expires in the month before its own), and an expired
- * month simply has no prints that day.
- */
-const CANDIDATES_PER_DAY = 3;
+const MAX_PAGES_PER_PIECE = 5_000;
 
 export const DAY_MS = 86_400_000;
 export const MINUTE_MS = 60_000;
+const HOUR_MS = 3_600_000;
 const DATE_RX = /^\d{4}-\d{2}-\d{2}$/;
 
 // ── Arguments ───────────────────────────────────────────────
@@ -268,23 +261,114 @@ export function planDates(opts: BackfillOptions, today: string): DayPlan[] {
   return plan;
 }
 
+// ── Sessions ────────────────────────────────────────────────
+
+/** The Globex-open part of a window that falls on one CME trade date. */
+export interface SessionSpan {
+  tradeDate: string;
+  fromMs: number;
+  toMs: number;
+}
+
 /**
- * The CANDIDATES_PER_DAY listed contracts of `root` from `date`'s month
- * on, in UW's symbol form (`ESU6`: root, month code, last year digit).
+ * The Globex-open parts of [fromMs, toMs), one span per CME trade date,
+ * oldest first: the window cut at each session open (22:00Z in summer,
+ * 23:00Z in winter) with the halt hour and the weekend left out, so a
+ * Friday has no span on Saturday's date.
+ *
+ * Every open, close and change of trade date falls on a whole UTC hour
+ * (Chicago's offset is whole hours), so the window is walked an hour at a
+ * time: an hour is open or closed throughout, and sits on one trade date.
+ * A window's own bounds may be mid-hour; they clip the first and last hour.
  */
-export function contractCandidates(root: FuturesRoot, date: string): string[] {
-  const year = Number(date.slice(0, 4));
-  const month = Number(date.slice(5, 7)) - 1;
-  const out: string[] = [];
-  // Every cycle lists at least one month a quarter, so a year is enough.
-  for (let i = 0; i < 12; i += 1) {
-    const code = MONTH_CODES[(month + i) % 12]!;
-    if (!CONTRACT_CYCLE[root].includes(code)) continue;
-    const y = year + Math.floor((month + i) / 12);
-    out.push(`${root}${code}${y % 10}`);
-    if (out.length === CANDIDATES_PER_DAY) break;
+export function sessionSpans(fromMs: number, toMs: number): SessionSpan[] {
+  const spans: SessionSpan[] = [];
+  for (let start = fromMs; start < toMs; ) {
+    const end = Math.min(toMs, (Math.floor(start / HOUR_MS) + 1) * HOUR_MS);
+    const at = new Date(start);
+    if (isFuturesMarketOpen(at)) {
+      const tradeDate = cmeTradeDate(at.toISOString());
+      const last = spans.at(-1);
+      if (last?.tradeDate === tradeDate) last.toMs = end;
+      else spans.push({ tradeDate, fromMs: start, toMs: end });
+    }
+    start = end;
   }
-  return out;
+  return spans;
+}
+
+/** A window led by one contract: the part of a session it is the front of. */
+export interface SessionPiece {
+  contract: string;
+  fromMs: number;
+  toMs: number;
+}
+
+/**
+ * Reads a root's front months for ascending, distinct trade dates, as
+ * `fetchFrontMonthSchedule` returns them. See `createScheduleReader`.
+ */
+export type ScheduleReader = (
+  root: FuturesRoot,
+  tradeDates: readonly string[],
+) => Promise<FrontMonthSchedule>;
+
+/**
+ * A schedule reader for one run. It reads the stored decisions first and
+ * touches UW only when a date has none: then it refreshes the root's
+ * contract volumes (daily candles over `1m`, as the gap cron does) and
+ * `fetchFrontMonthSchedule` decides the date. The refresh comes first
+ * because a decision made from old volume is permanent. Each root is
+ * refreshed once per run; a refresh that fails is not remembered, so the
+ * root's next root-day tries again. Any failure here (UW, a stale candle,
+ * the database) rejects, nothing is decided from the stale volume, and the
+ * date loop reports the root-day as `<root> <date> FAILED: <message>`.
+ */
+export function createScheduleReader(apiKey: string): ScheduleReader {
+  const refreshed = new Set<FuturesRoot>();
+  return async (root, tradeDates) => {
+    const stored = await fetchStoredFrontMonths(
+      root,
+      tradeDates[0]!,
+      tradeDates.at(-1)!,
+    );
+    if (!refreshed.has(root) && tradeDates.some((d) => !stored.has(d))) {
+      await refreshFrontMonthVolumes(apiKey, root, '1m');
+      refreshed.add(root);
+    }
+    return fetchFrontMonthSchedule(root, tradeDates, 'script');
+  };
+}
+
+/**
+ * The pieces of [fromMs, toMs) for `root`: one per run of trade dates that
+ * share a contract, each with that contract. Nothing is paged here. An
+ * empty window (no Globex-open minute) has no piece and reads no schedule.
+ * Throws if the schedule has no contract for a date it was asked about.
+ */
+export async function sessionPieces(
+  schedules: ScheduleReader,
+  root: FuturesRoot,
+  fromMs: number,
+  toMs: number,
+): Promise<SessionPiece[]> {
+  const spans = sessionSpans(fromMs, toMs);
+  if (spans.length === 0) return [];
+  const schedule = await schedules(
+    root,
+    spans.map((s) => s.tradeDate),
+  );
+  const pieces: SessionPiece[] = [];
+  for (const span of spans) {
+    const contract = schedule.contractFor(span.tradeDate);
+    if (contract === undefined) {
+      throw new Error(`${root}: no front month for ${span.tradeDate}`);
+    }
+    const last = pieces.at(-1);
+    if (last?.contract === contract) last.toMs = span.toMs;
+    else pieces.push({ contract, fromMs: span.fromMs, toMs: span.toMs });
+  }
+  return pieces;
 }
 
 // ── One root-day ────────────────────────────────────────────
@@ -320,49 +404,56 @@ export interface PagingTally {
   malformed: number;
 }
 
+/** A minute's counted prints, with the contract they are the front of. */
+export interface PagedMinute {
+  contract: string;
+  minute: FlowMinute;
+}
+
 /**
- * Pages every candidate contract of `root` over [00:00 UTC of `date`,
- * `endMs`), one after another, and returns each one's counted minutes.
- * The front month's tally runs from 00:00 UTC, so the whole span is
- * needed even for one late minute. Throws on an upstream error, and when
- * a contract needs more than MAX_PAGES_PER_CONTRACT_DAY pages.
+ * Pages each piece's contract over that piece's window only, one piece
+ * after another, and returns the counted minutes keyed by minute, oldest
+ * first. Pieces are disjoint windows, so a minute has one contract: the
+ * one its trade date was decided on, and no other. Throws on an upstream
+ * error, and when a piece needs more than MAX_PAGES_PER_PIECE pages.
  */
 export async function pageDayContracts(
   apiKey: string,
-  root: FuturesRoot,
-  date: string,
-  endMs: number,
+  pieces: readonly SessionPiece[],
   tally: PagingTally,
-): Promise<Map<string, FlowMinute[]>> {
-  const dayStartMs = Date.parse(`${date}T00:00:00Z`);
-  const byContract = new Map<string, FlowMinute[]>();
-  for (const contract of contractCandidates(root, date)) {
+): Promise<Map<string, PagedMinute>> {
+  const paged = new Map<string, PagedMinute>();
+  for (const { contract, fromMs, toMs } of pieces) {
     const budget: PageBudget = {
-      pagesLeft: MAX_PAGES_PER_CONTRACT_DAY,
+      pagesLeft: MAX_PAGES_PER_PIECE,
       deadlineMs: Number.POSITIVE_INFINITY,
     };
     const flow = await fetchContractFlow(
       apiKey,
       contract,
-      dayStartMs,
-      endMs,
+      fromMs,
+      toMs,
       budget,
     ).finally(() => {
-      tally.pages += MAX_PAGES_PER_CONTRACT_DAY - budget.pagesLeft;
+      tally.pages += MAX_PAGES_PER_PIECE - budget.pagesLeft;
     });
     tally.malformed += flow.malformed;
     if (flow.stop === 'budget') {
       throw new Error(
-        `${contract}: more than ${MAX_PAGES_PER_CONTRACT_DAY} pages for one day`,
+        `${contract}: more than ${MAX_PAGES_PER_PIECE} pages for one day`,
       );
     }
-    byContract.set(contract, [...flow.minutes.values()]);
+    for (const minute of flow.minutes.values()) {
+      paged.set(minute.ts, { contract, minute });
+    }
   }
-  return byContract;
+  // A piece's minutes come newest first; ISO minutes sort chronologically.
+  return new Map([...paged].sort(([a], [b]) => (a < b ? -1 : 1)));
 }
 
 async function backfillRootDay(
   apiKey: string,
+  schedules: ScheduleReader,
   root: FuturesRoot,
   date: string,
   dryRun: boolean,
@@ -382,26 +473,28 @@ async function backfillRootDay(
       leaders: [],
     };
   }
-  const endMs = Date.parse(bars.at(-1)!.ts) + MINUTE_MS;
 
   // A fetch that throws part-way still charges the pages it used to the
   // run's budget.
   const tally: PagingTally = { pages: 0, malformed: 0 };
   try {
-    const byContract = await pageDayContracts(apiKey, root, date, endMs, tally);
+    const pieces = await sessionPieces(
+      schedules,
+      root,
+      Date.parse(bars[0]!.ts),
+      Date.parse(bars.at(-1)!.ts) + MINUTE_MS,
+    );
+    const paged = await pageDayContracts(apiKey, pieces, tally);
 
-    const leaderOf = new Map<string, string>();
-    const front = new Map<string, FlowMinute>();
-    for (const { contract, row } of replayFrontMonth(byContract)) {
-      front.set(row.ts, row);
-      leaderOf.set(row.ts, contract);
-    }
+    const front = new Map(
+      [...paged].map(([ts, { minute }]) => [ts, minute] as const),
+    );
     const { updates, skippedTolerance } = matchFlowToBars(bars, front);
     const written = dryRun
       ? updates.length
       : await writeFlowMinutes(root, updates);
     const leaders = [
-      ...new Set(updates.flatMap((u) => leaderOf.get(u.ts) ?? [])),
+      ...new Set(updates.flatMap((u) => paged.get(u.ts)?.contract ?? [])),
     ];
     return {
       nullMinutes: bars.length,
@@ -532,17 +625,19 @@ export async function runBackfill(
   const plan = planDates(opts, today);
   const verb = opts.dryRun ? 'would write' : 'repaired';
   console.log(
-    `Futures order-flow backfill${opts.dryRun ? ' (DRY RUN: no writes)' : ''}: ` +
+    `Futures order-flow backfill${opts.dryRun ? ' (DRY RUN: no bars written)' : ''}: ` +
       `${plan.length} dates, ${plan[0]?.date ?? '-'} → ${plan.at(-1)?.date ?? '-'}, ` +
       `roots ${opts.roots.join(',')}, page budget ${opts.maxPages}`,
   );
 
+  const schedules = createScheduleReader(opts.apiKey);
   let written = 0;
   let skipped = 0;
   const { pages, failures } = await runPlannedDays(
     plan,
     opts.maxPages,
-    (root, date) => backfillRootDay(opts.apiKey, root, date, opts.dryRun),
+    (root, date) =>
+      backfillRootDay(opts.apiKey, schedules, root, date, opts.dryRun),
     (root, date, res) => {
       written += res.written;
       skipped += res.skippedTolerance;
