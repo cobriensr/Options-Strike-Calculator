@@ -20,7 +20,7 @@
  * which the live cron no longer does.
  *
  * Every row it inserts is also appended to flow_data_revisions, in the same
- * statement, under the writer name "backfill-zero-dte-flow" (spec P0.7): a
+ * statement, under the writer name "backfill-zero-dte-flow" (spec P0.8): a
  * refill keeps the log of what was stored before it.
  *
  * Usage:
@@ -84,7 +84,7 @@ async function fetchZeroDteFlow(date, totals) {
 function storeCandles(ticks, date, totals) {
   // Sampled to 5-min rows and stored with ONE statement for the day. DO NOTHING,
   // and every row it inserts is logged to flow_data_revisions in the same
-  // statement (zero_dte_index is in the revision log, P0.7). An insert error is
+  // statement (zero_dte_index is in the revision log, P0.8). An insert error is
   // printed and counted in totals.failed, which sets the exit code.
   return storeSampledDay(sql, ticks, {
     date,
