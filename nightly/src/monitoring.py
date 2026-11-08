@@ -1,4 +1,5 @@
-"""Sentry for the nightly job: init, the event scrubber and per-day reports.
+"""Sentry for the nightly job: init, the event scrubber and the per-day and per-step
+reports.
 
 Nothing that leaves through Sentry may carry market data or a credential (review
 finding b11). The leak paths, and what closes each:
@@ -8,7 +9,9 @@ finding b11). The leak paths, and what closes each:
 - Signed URLs: httpx logs every request line at INFO, and the SDK's httpx
   integration puts the raw query in a breadcrumb's `http.query`. `scrub_event`
   strips the query from every URL anywhere in the event and drops those keys.
-- polars error text quotes cell values, so a polars exception's value is replaced.
+- Data-library error text quotes values: polars and pyarrow quote cells, psycopg2's
+  `DETAIL: Failing row contains (...)` quotes a row and its connect errors name the Neon
+  host. So the value of an exception from one of those libraries is replaced.
 - Anything else is cut to MAX_EXCEPTION_VALUE characters.
 
 Every Sentry event is an explicit capture: the logging integration records
@@ -24,12 +27,15 @@ from typing import Any
 import sentry_sdk
 from sentry_sdk.integrations.logging import LoggingIntegration
 
+from steps import StepOutcome
 from tape_job import RELAND_IDENTICAL, DayOutcome
 
 log = logging.getLogger(__name__)
 
-POLARS_REDACTED = "<redacted polars message>"
+DATA_LIBRARY_REDACTED = "<redacted data-library message>"
 MAX_EXCEPTION_VALUE = 300
+# Root packages whose exceptions quote data. A polars runtime ships as `_polars_*`.
+_DATA_LIBRARY_ROOTS = frozenset({"polars", "pandas", "pyarrow", "numpy", "psycopg2"})
 # Statuses that are expected now and then (UW posts late; old days age out).
 _WARNING_STATUSES = frozenset({"not_posted", "unavailable"})
 # A URL up to its query or fragment, which is dropped. The run before `?` is bounded
@@ -62,8 +68,11 @@ def init_sentry(dsn: str | None) -> None:
 
 
 def scrub_event(event: dict[str, Any], hint: dict[str, Any]) -> dict[str, Any] | None:
-    """`before_send`: the event with polars text, URL queries and frame locals removed
-    and exception values cut to MAX_EXCEPTION_VALUE characters.
+    """`before_send`: the event with data-library text, URL queries and frame locals
+    removed and exception values cut to MAX_EXCEPTION_VALUE characters.
+
+    A chained exception (`__cause__`, `__context__`) is its own entry in
+    `exception.values`, so each link is checked on its own.
 
     The SDK also calls this for cron check-ins, which pass through unchanged. If it
     raised, the SDK would drop the event, so it only reads shapes it checks for.
@@ -71,8 +80,8 @@ def scrub_event(event: dict[str, Any], hint: dict[str, Any]) -> dict[str, Any] |
     scrubbed: dict[str, Any] = _scrubbed_copy(event)
     for value in _values_of(scrubbed.get("exception")):
         text = value.get("value")
-        if _from_polars(value):
-            value["value"] = POLARS_REDACTED
+        if _from_data_library(value):
+            value["value"] = DATA_LIBRARY_REDACTED
         elif isinstance(text, str):
             value["value"] = text[:MAX_EXCEPTION_VALUE]
     return scrubbed
@@ -134,6 +143,29 @@ def report_outcome(outcome: DayOutcome) -> None:
     )
 
 
+def report_step(outcome: StepOutcome) -> None:
+    """One Sentry message for a step that was skipped, failed without raising, or
+    finished with work left. A clean step sends nothing, and neither does one that
+    raised: run_steps already sent that exception.
+
+    The title names the status only, one of a closed set; the step and status are
+    tags, and `counts` (names and ints) and `detail` (a fixed phrase) go in extra.
+    The fingerprint is the step, status and detail, so a step that repeats the same
+    reason night after night stays one issue. Sentry's new-issue rule mails once for
+    it until the issue is resolved (accepted by the owner, 2026-11-06), and a new
+    reason opens, and mails as, its own issue.
+    """
+    if outcome.status == "ok" or (outcome.status == "failed" and outcome.error is not None):
+        return
+    sentry_sdk.capture_message(
+        f"nightly step {outcome.status}",
+        level="warning" if outcome.status == "partial" else "error",
+        tags={"step": outcome.name, "status": outcome.status},
+        extras={"counts": dict(outcome.counts), "detail": outcome.detail},
+        fingerprint=["nightly-step", outcome.name, outcome.status, outcome.detail],
+    )
+
+
 def _values_of(container: object) -> list[dict[str, Any]]:
     """The dict items of `container["values"]`, the SDK's list wrapper."""
     if not isinstance(container, dict):
@@ -154,19 +186,19 @@ def _frames(value: dict[str, Any]) -> list[dict[str, Any]]:
     return [f for f in frames if isinstance(f, dict)]
 
 
-def _from_polars(value: dict[str, Any]) -> bool:
-    """A polars exception class, or any exception raised from a polars frame."""
-    if _is_polars_module(value.get("module")):
+def _from_data_library(value: dict[str, Any]) -> bool:
+    """A data-library exception class, or any exception raised from a data-library frame."""
+    if _is_data_library_module(value.get("module")):
         return True
     frames = _frames(value)
-    return bool(frames) and _is_polars_module(frames[-1].get("module"))
+    return bool(frames) and _is_data_library_module(frames[-1].get("module"))
 
 
-def _is_polars_module(module: object) -> bool:
+def _is_data_library_module(module: object) -> bool:
     if not isinstance(module, str):
         return False
     root = module.split(".", 1)[0]
-    return root == "polars" or root.startswith("_polars")
+    return root in _DATA_LIBRARY_ROOTS or root.startswith("_polars")
 
 
 def _scrubbed_copy(value: Any, *, frame: bool = False) -> Any:

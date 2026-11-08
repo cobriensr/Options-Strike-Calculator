@@ -1,7 +1,8 @@
-"""Tests for the Sentry layer: init options, event scrubbing and per-day reports.
+"""Tests for the Sentry layer: init options, event scrubbing and the per-day and per-step
+reports.
 
 Exception events come from the installed SDK's own `event_from_exception`, so they
-have the shape `before_send` receives. One test runs events through a real
+have the shape `before_send` receives. Some tests run events through a real
 `sentry_sdk.Client` built from `init_sentry`'s options, with an in-memory transport,
 so nothing is sent and the wire bytes can be read back.
 """
@@ -12,11 +13,17 @@ import json
 import logging
 import warnings
 from collections.abc import Iterator
-from datetime import date
+from datetime import UTC, date, datetime
+from time import monotonic
 from typing import Any, get_args
 from unittest.mock import create_autospec, patch
 
+import numpy as np
+import pandas as pd
 import polars as pl
+import psycopg2
+import psycopg2.errors
+import pyarrow as pa
 import pytest
 import sentry_sdk
 from sentry_sdk.consts import SPANDATA
@@ -25,15 +32,19 @@ from sentry_sdk.integrations.logging import LoggingIntegration
 from sentry_sdk.transport import Transport
 from sentry_sdk.utils import event_from_exception, has_data_collection_enabled
 
-from monitoring import init_sentry, report_outcome, scrub_event
+from config import load_settings
+from monitoring import init_sentry, report_outcome, report_step, scrub_event
+from steps import Step, StepContext, StepOutcome, StepResult, run_steps
 from tape_job import RELAND_IDENTICAL, DayOutcome, DayStatus
 
 SIGNED_URL = "https://storage.googleapis.com/b/o.zip?X-Goog-Signature=abc&X-Goog-Credential=def"
 SIGNED_QUERY = "X-Goog-Signature=abc&X-Goog-Credential=def"
 URL_PATH = "https://storage.googleapis.com/b/o.zip"
 FAKE_DSN = "https://public@sentry.invalid/1"
-REDACTED = "<redacted polars message>"
+REDACTED = "<redacted data-library message>"
 DAY = date(2026, 10, 28)
+# What a failed Neon connect puts in the message of psycopg2's OperationalError.
+NEON_HOST = "ep-cool-darkness-123456-pooler.us-east-2.aws.neon.tech"
 # Built at runtime: the SDK sends source lines as frame context, and a literal there
 # would look like a leak of the runtime value.
 TAPE_VALUE = "-".join(("SECRET", "TAPE", "VALUE"))
@@ -163,8 +174,104 @@ def test_scrub_redacts_polars_cause_but_keeps_our_message() -> None:
     assert by_type == {"InvalidOperationError": REDACTED, "RuntimeError": "convert failed"}
 
 
-def test_scrub_redacts_builtin_error_raised_inside_polars() -> None:
-    # A builtin exception class raised from a polars frame can quote values too.
+def _data_library_errors() -> list[Any]:
+    """One real exception per data library, each with a message that quotes a value."""
+    return [
+        pytest.param(_polars_error(), "polars", id="polars"),
+        pytest.param(
+            pd.errors.ParserError(f"Error tokenizing data: {TAPE_VALUE}"), "pandas", id="pandas"
+        ),
+        pytest.param(
+            pa.ArrowInvalid(f"Could not convert {TAPE_VALUE!r} to int64"), "pyarrow", id="pyarrow"
+        ),
+        pytest.param(
+            np.exceptions.AxisError(f"axis {TAPE_VALUE} is out of bounds"), "numpy", id="numpy"
+        ),
+        pytest.param(
+            psycopg2.errors.NotNullViolation(
+                'null value in column "score" violates not-null constraint\n'
+                f"DETAIL:  Failing row contains (12, {TAPE_VALUE})."
+            ),
+            "psycopg2",
+            id="psycopg2-errors",
+        ),
+        pytest.param(
+            psycopg2.OperationalError(f'connection to server at "{NEON_HOST}" failed'),
+            "psycopg2",
+            id="psycopg2-connect",
+        ),
+    ]
+
+
+@pytest.mark.parametrize(("exc", "root"), _data_library_errors())
+def test_scrub_redacts_data_library_messages(exc: BaseException, root: str) -> None:
+    # Each library quotes cell values or the failing row in its error text.
+    event = _exception_event(_raised(exc))
+    (value,) = _values(event)
+    assert value["module"].split(".")[0] == root
+    assert TAPE_VALUE in value["value"] or NEON_HOST in value["value"]  # the leak guarded
+
+    scrubbed = scrub_event(event, {})
+
+    assert scrubbed is not None
+    (value,) = _values(scrubbed)
+    assert value["value"] == REDACTED
+    assert value["type"] == type(exc).__name__  # the class name still reaches Sentry
+    assert TAPE_VALUE not in json.dumps(scrubbed)
+    assert NEON_HOST not in json.dumps(scrubbed)
+
+
+@pytest.mark.parametrize(
+    "module", ["polars", "polars.exceptions", "_polars_runtime_32", "_polars_runtime_32.errors"]
+)
+def test_scrub_redacts_every_polars_module_spelling(module: str) -> None:
+    event = {
+        "level": "error",
+        "exception": {"values": [{"module": module, "type": "E", "value": TAPE_VALUE}]},
+    }
+
+    scrubbed = scrub_event(event, {})
+
+    assert scrubbed is not None
+    assert _values(scrubbed)[0]["value"] == REDACTED
+
+
+@pytest.mark.parametrize(
+    "module",
+    [
+        "polarsx",
+        "xpolars.errors",
+        "pandas_ext.errors",
+        "numpy_financial",
+        "psycopg2_pool",
+        "pyarrow_hotfix",
+    ],
+)
+def test_scrub_keeps_messages_from_look_alike_modules(module: str) -> None:
+    # Only the root package counts: a name that merely starts with a library's does not.
+    event = {
+        "level": "error",
+        "exception": {"values": [{"module": module, "type": "E", "value": "kept message"}]},
+    }
+
+    scrubbed = scrub_event(event, {})
+
+    assert scrubbed is not None
+    assert _values(scrubbed)[0]["value"] == "kept message"
+
+
+@pytest.mark.parametrize(
+    "frame_module",
+    [
+        "polars.io.csv.functions",
+        "pandas.core.frame",
+        "pyarrow.parquet.core",
+        "numpy.lib._function_base_impl",
+        "psycopg2.extras",
+    ],
+)
+def test_scrub_redacts_builtin_error_raised_inside_a_data_library(frame_module: str) -> None:
+    # A builtin exception class raised from a library's frame can quote values too.
     event = {
         "level": "error",
         "exception": {
@@ -177,7 +284,7 @@ def test_scrub_redacts_builtin_error_raised_inside_polars() -> None:
                     "stacktrace": {
                         "frames": [
                             {"module": "tape_convert", "function": "convert_zip", "lineno": 1},
-                            {"module": "polars.io.csv.functions", "function": "scan", "lineno": 2},
+                            {"module": frame_module, "function": "scan", "lineno": 2},
                         ]
                     },
                 }
@@ -189,6 +296,33 @@ def test_scrub_redacts_builtin_error_raised_inside_polars() -> None:
 
     assert scrubbed is not None
     assert _values(scrubbed)[0]["value"] == REDACTED
+
+
+def test_scrub_keeps_a_builtin_error_raised_in_our_own_frame() -> None:
+    # The innermost frame decides: a library frame further out does not redact it.
+    event = {
+        "level": "error",
+        "exception": {
+            "values": [
+                {
+                    "module": None,
+                    "type": "ValueError",
+                    "value": "bad window",
+                    "stacktrace": {
+                        "frames": [
+                            {"module": "pandas.core.frame", "function": "apply", "lineno": 1},
+                            {"module": "enrich_step", "function": "window", "lineno": 2},
+                        ]
+                    },
+                }
+            ]
+        },
+    }
+
+    scrubbed = scrub_event(event, {})
+
+    assert scrubbed is not None
+    assert _values(scrubbed)[0]["value"] == "bad window"
 
 
 def test_scrub_strips_signed_url_query() -> None:
@@ -635,3 +769,134 @@ def test_report_titles_are_a_closed_set(capture_message) -> None:
         "nightly tape day skipped_disk",
         "nightly tape day skipped_deadline",
     }
+
+
+# --- report_step -----------------------------------------------------------------
+
+
+def _step_outcome(
+    status: str,
+    *,
+    error: str | None = None,
+    detail: str = "",
+    name: str = "enrich-outcomes",
+    counts: dict[str, int] | None = None,
+) -> StepOutcome:
+    return StepOutcome(
+        name,
+        status,  # type: ignore[arg-type]
+        {"days_left": 3} if counts is None else counts,
+        detail,
+        1.5,
+        error,
+    )
+
+
+@pytest.mark.parametrize(
+    ("status", "title", "level"),
+    [
+        pytest.param("partial", "nightly step partial", "warning", id="partial"),
+        pytest.param("failed", "nightly step failed", "error", id="failed-without-an-exception"),
+        pytest.param("skipped_deadline", "nightly step skipped_deadline", "error", id="skipped"),
+    ],
+)
+def test_report_step_sends_one_event_for_a_step_that_did_not_finish_clean(
+    capture_message, status: str, title: str, level: str
+) -> None:
+    report_step(_step_outcome(status, detail="work left"))
+
+    capture_message.assert_called_once()
+    (message,) = capture_message.call_args.args
+    kwargs = capture_message.call_args.kwargs
+    assert message == title
+    assert kwargs["level"] == level
+    assert kwargs["tags"] == {"step": "enrich-outcomes", "status": status}
+    assert kwargs["extras"] == {"counts": {"days_left": 3}, "detail": "work left"}
+    assert kwargs["fingerprint"] == ["nightly-step", "enrich-outcomes", status, "work left"]
+
+
+@pytest.mark.parametrize(
+    ("status", "error"),
+    [
+        pytest.param("ok", None, id="ok"),
+        # The exception event was already sent by run_steps; a second one would double it.
+        pytest.param("failed", "KeyError", id="raised"),
+    ],
+)
+def test_report_step_sends_nothing_for_ok_or_a_step_that_raised(
+    capture_message, status: str, error: str | None
+) -> None:
+    report_step(_step_outcome(status, error=error, detail="whatever"))
+    capture_message.assert_not_called()
+
+
+def test_report_step_groups_one_reason_into_one_issue(capture_message) -> None:
+    # Sentry mails on new issues only: the same step, status and reason night after night
+    # is one issue (the owner accepted that on 2026-11-06); a new reason opens another.
+    report_step(_step_outcome("partial", detail="work left", counts={"days_left": 3}))
+    report_step(_step_outcome("partial", detail="work left", counts={"days_left": 9}))
+    report_step(_step_outcome("partial", detail="a different reason"))
+    report_step(_step_outcome("partial", detail="work left", name="outcome-check"))
+    report_step(_step_outcome("failed", detail="work left"))
+
+    prints = [c.kwargs["fingerprint"] for c in capture_message.call_args_list]
+    assert prints[0] == prints[1]
+    assert len({tuple(p) for p in prints}) == 4
+    assert prints[2] == ["nightly-step", "enrich-outcomes", "partial", "a different reason"]
+
+
+def test_report_step_titles_are_a_closed_set(capture_message) -> None:
+    # Titles name the status only, never the step, its detail or its counts.
+    for name in ("enrich-outcomes", "outcome-check"):
+        for status in ("partial", "failed", "skipped_deadline"):
+            report_step(_step_outcome(status, detail=f"detail-{name}", name=name))
+    titles = {c.args[0] for c in capture_message.call_args_list}
+    assert titles == {
+        "nightly step partial",
+        "nightly step failed",
+        "nightly step skipped_deadline",
+    }
+
+
+def test_report_step_through_the_sdk(sdk_transport: _MemoryTransport) -> None:
+    report_step(_step_outcome("partial", detail="work left"))
+    sentry_sdk.get_client().flush(timeout=5)
+
+    (event,) = [e for e in map(json.loads, sdk_transport.payloads) if "level" in e]
+    assert event["message"] == "nightly step partial"
+    assert event["level"] == "warning"
+    assert event["tags"]["step"] == "enrich-outcomes"
+    assert event["tags"]["status"] == "partial"
+    assert event["extra"] == {"counts": {"days_left": 3}, "detail": "work left"}
+    assert event["fingerprint"] == ["nightly-step", "enrich-outcomes", "partial", "work left"]
+    assert event["server_name"] == "nightly"
+
+
+def test_a_step_that_raises_sends_a_tagged_event_without_the_database_host(
+    sdk_transport: _MemoryTransport,
+) -> None:
+    # connect_db lets a failed connect's OperationalError propagate, and its message
+    # carries the Neon host. run_steps captures it; the scrubber must cut the text, on
+    # the exception and on its cause.
+    def run(ctx: StepContext) -> StepResult:
+        try:
+            raise psycopg2.OperationalError(f'connection to server at "{NEON_HOST}" failed')
+        except psycopg2.OperationalError as exc:
+            raise RuntimeError("could not reach the database") from exc
+
+    run_steps(
+        [Step("enrich-outcomes", run, 0)],
+        settings=load_settings(),
+        now_utc=datetime(2026, 11, 7, 7, 15, tzinfo=UTC),
+        last_session=date(2026, 11, 6),
+        run_deadline=monotonic() + 100.0,
+        tape=(),
+    )
+    sentry_sdk.get_client().flush(timeout=5)
+
+    wire = b"".join(sdk_transport.payloads)
+    assert NEON_HOST.encode() not in wire
+    (event,) = [e for e in map(json.loads, sdk_transport.payloads) if "exception" in e]
+    assert event["tags"]["step"] == "enrich-outcomes"
+    by_type = {v["type"]: v["value"] for v in _values(event)}
+    assert by_type == {"OperationalError": REDACTED, "RuntimeError": "could not reach the database"}
