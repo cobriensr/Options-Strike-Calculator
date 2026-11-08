@@ -2,12 +2,15 @@
  * One-time seed of the per-session front-month tables from UW's daily
  * candles: `futures_contract_volume` (volume per contract and trade date,
  * for the sessions before the current one) and `futures_front_month` (the
- * contract per root and trade date, from 2026-07-22 through the running
- * session). The rule is `ensureFrontMonth`'s, run in memory over the
- * sessions; a decision row that is already stored is kept, and the walk
- * carries on from it. Writes are ON CONFLICT DO NOTHING, so a re-run
- * writes only what is missing. About 30 light UW calls; no market-hours
- * guard. Logic and rules: scripts/_lib/futures-front-month-backfill.ts.
+ * contract per root and trade date, from 2026-07-28 through the running
+ * session). It starts at 2026-07-27, the first full session in UW's daily
+ * candles: 07-21 to 07-24 hold only a sliver of each session, and a roll
+ * read off that noise would stick. The rule is `ensureFrontMonth`'s, run
+ * in memory over the sessions; a decision row that is already stored is
+ * kept, and the walk carries on from it. Writes are ON CONFLICT DO
+ * NOTHING, so a re-run writes only what is missing. About 30 light UW
+ * calls; no market-hours guard. Logic and rules:
+ * scripts/_lib/futures-front-month-backfill.ts.
  *
  * Usage (env from .env.local in the working directory, like the other
  * scripts: DATABASE_URL and UW_API_KEY, never printed; .env.local points at

@@ -43,8 +43,14 @@ vi.mock('../../api/_lib/futures-front-month.js', async () => {
   };
 });
 
-import type { FuturesRoot } from '../../api/_lib/futures-contracts.js';
-import type { DailyContractVolume } from '../../api/_lib/futures-daily-candles.js';
+import {
+  FUTURES_ROOTS,
+  type FuturesRoot,
+} from '../../api/_lib/futures-contracts.js';
+import {
+  cycleContracts,
+  type DailyContractVolume,
+} from '../../api/_lib/futures-daily-candles.js';
 import type {
   ContractVolumeRow,
   FrontMonthRow,
@@ -158,7 +164,7 @@ describe('requiredContracts', () => {
   it('leaves out the contracts that stopped trading before the first decision', () => {
     // CLN6 (July 2026) stopped in June and CLQ6 (August) on 2026-07-21, its
     // last session: UW serves no candles for either, and neither can be the
-    // incumbent or the challenger from 07-22 on.
+    // incumbent or the challenger from 07-28 on.
     const required = requiredContracts(
       'CL',
       ['CLN6', 'CLQ6', 'CLU6', 'CLV6', 'CLX6', 'CLZ6', 'CLF7'],
@@ -196,6 +202,25 @@ describe('requiredContracts', () => {
     ).toEqual(['ESU6', 'ESZ6', 'ESH7', 'ESM7']);
   });
 
+  it('gives the same lists for every root whatever the first decision date in July: the bound is the 1st of the next month', () => {
+    const required = (root: FuturesRoot) =>
+      requiredContracts(
+        root,
+        cycleContracts(root, '2026-07', monthPlus(TODAY, 6)),
+        TODAY,
+      );
+    expect(
+      Object.fromEntries(FUTURES_ROOTS.map((r) => [r, required(r)])),
+    ).toEqual({
+      ES: ['ESU6', 'ESZ6', 'ESH7'],
+      NQ: ['NQU6', 'NQZ6', 'NQH7'],
+      RTY: ['RTYU6', 'RTYZ6', 'RTYH7'],
+      ZN: ['ZNU6', 'ZNZ6', 'ZNH7'],
+      CL: ['CLU6', 'CLV6', 'CLX6', 'CLZ6', 'CLF7'],
+      GC: ['GCQ6', 'GCV6', 'GCZ6', 'GCG7'],
+    });
+  });
+
   it('requires the whole list when fewer than two contracts follow the current month', () => {
     expect(requiredContracts('ES', ['ESU6', 'ESZ6'], TODAY)).toEqual([
       'ESU6',
@@ -209,7 +234,8 @@ describe('requiredContracts', () => {
 describe('volumeRowsToStore', () => {
   const candles: DailyContractVolume[] = [
     { contract: 'ESU6', tradeDate: '2026-06-30', volume: 9 },
-    { contract: 'ESU6', tradeDate: '2026-07-20', volume: 8 },
+    // A sliver of a session: UW's daily candles for 07-21 to 07-24 are partial.
+    { contract: 'ESU6', tradeDate: '2026-07-24', volume: 8 },
     { contract: 'ESU6', tradeDate: SEED_START, volume: 7 },
     { contract: 'ESZ6', tradeDate: '2026-11-05', volume: 6 },
     { contract: 'ESZ6', tradeDate: TODAY, volume: 5 },
@@ -227,6 +253,12 @@ describe('volumeRowsToStore', () => {
     const stored = volumeRowsToStore('ES', candles, TODAY);
     expect(stored.map((r) => r.tradeDate)).not.toContain(TODAY);
   });
+
+  it('drops the partial sessions before the seed start', () => {
+    const stored = volumeRowsToStore('ES', candles, TODAY);
+    expect(stored.map((r) => r.tradeDate)).not.toContain('2026-07-24');
+    expect(stored.every((r) => r.tradeDate >= SEED_START)).toBe(true);
+  });
 });
 
 // ── walkFrontMonths ───────────────────────────────────────
@@ -238,29 +270,29 @@ describe('walkFrontMonths', () => {
     const walk = walkFrontMonths(
       'ES',
       [
-        ...vol('2026-07-21', ['ESU6', 100], ['ESZ6', 10]),
-        ...vol('2026-07-22', ['ESU6', 100], ['ESZ6', 99]),
-        ...vol('2026-07-23', ['ESU6', 100], ['ESZ6', 101]),
-        ...vol('2026-07-24', ['ESU6', 50], ['ESZ6', 200]),
-        ...vol('2026-07-27', ['ESU6', 40], ['ESZ6', 300]),
+        ...vol('2026-07-27', ['ESU6', 100], ['ESZ6', 10]),
+        ...vol('2026-07-28', ['ESU6', 100], ['ESZ6', 99]),
+        ...vol('2026-07-29', ['ESU6', 100], ['ESZ6', 101]),
+        ...vol('2026-07-30', ['ESU6', 50], ['ESZ6', 200]),
+        ...vol('2026-08-03', ['ESU6', 40], ['ESZ6', 300]),
       ],
       NO_STORED,
-      '2026-07-28',
+      '2026-08-04',
     );
-    // 07-23's volume crosses (101 > 100); 07-24 is the first Z6 session.
+    // 07-29's volume crosses (101 > 100); 07-30 is the first Z6 session.
     expect(walk.series.map((s) => [s.tradeDate, s.contract])).toEqual([
-      ['2026-07-22', 'ESU6'],
-      ['2026-07-23', 'ESU6'],
-      ['2026-07-24', 'ESZ6'],
-      ['2026-07-27', 'ESZ6'],
-      ['2026-07-28', 'ESZ6'],
+      ['2026-07-28', 'ESU6'],
+      ['2026-07-29', 'ESU6'],
+      ['2026-07-30', 'ESZ6'],
+      ['2026-08-03', 'ESZ6'],
+      ['2026-08-04', 'ESZ6'],
     ]);
     expect(walk.switches).toEqual([
       {
-        tradeDate: '2026-07-24',
+        tradeDate: '2026-07-30',
         from: 'ESU6',
         to: 'ESZ6',
-        volumeDate: '2026-07-23',
+        volumeDate: '2026-07-29',
         fromVolume: 100,
         toVolume: 101,
         source: 'candles',
@@ -273,13 +305,13 @@ describe('walkFrontMonths', () => {
       'ES',
       [
         ...vol(SEED_START, ['ESU6', 10], ['ESZ6', 500]),
-        ...vol('2026-07-22', ['ESU6', 10], ['ESZ6', 500]),
+        ...vol('2026-07-28', ['ESU6', 10], ['ESZ6', 500]),
       ],
       NO_STORED,
-      '2026-07-23',
+      '2026-07-29',
     );
     expect(walk.series[0]).toMatchObject({
-      tradeDate: '2026-07-22',
+      tradeDate: '2026-07-28',
       contract: 'ESZ6',
     });
   });
@@ -289,18 +321,18 @@ describe('walkFrontMonths', () => {
       'ES',
       [
         ...vol(SEED_START, ['ESU6', 100]),
-        ...vol('2026-07-22', ['ESU6', 100]),
-        ...vol('2026-07-24', ['ESU6', 100]),
+        ...vol('2026-07-28', ['ESU6', 100]),
+        ...vol('2026-07-30', ['ESU6', 100]),
       ],
       NO_STORED,
-      '2026-07-28',
+      '2026-08-04',
     );
-    // The seed start itself is only the first decision's input; 07-23 has
-    // no candles and so no row; the current date is decided from 07-24.
+    // The seed start itself is only the first decision's input; 07-29 has
+    // no candles and so no row; the current date is decided from 07-30.
     expect(walk.rows).toEqual([
-      row('2026-07-22', 'ESU6'),
-      row('2026-07-24', 'ESU6'),
       row('2026-07-28', 'ESU6'),
+      row('2026-07-30', 'ESU6'),
+      row('2026-08-04', 'ESU6'),
     ]);
   });
 
@@ -310,33 +342,33 @@ describe('walkFrontMonths', () => {
       [
         ...vol(SEED_START, ['ESZ6', 100], ['ESH7', 10]),
         // ESZ6 leads in every session: the candles alone never choose ESH7.
-        ...vol('2026-07-22', ['ESZ6', 100], ['ESH7', 90]),
-        ...vol('2026-07-23', ['ESZ6', 100], ['ESH7', 90]),
-        ...vol('2026-07-24', ['ESZ6', 200], ['ESH7', 100]),
-        ...vol('2026-07-27', ['ESZ6', 200], ['ESH7', 100]),
+        ...vol('2026-07-28', ['ESZ6', 100], ['ESH7', 90]),
+        ...vol('2026-07-29', ['ESZ6', 100], ['ESH7', 90]),
+        ...vol('2026-07-30', ['ESZ6', 200], ['ESH7', 100]),
+        ...vol('2026-08-03', ['ESZ6', 200], ['ESH7', 100]),
       ],
-      // But ESH7 is stored for 07-23, and the walk goes on from it: an
+      // But ESH7 is stored for 07-29, and the walk goes on from it: an
       // earlier month is never chosen again, however it out-trades ESH7.
-      new Map([['2026-07-23', 'ESH7']]),
-      '2026-07-28',
+      new Map([['2026-07-29', 'ESH7']]),
+      '2026-08-04',
     );
     expect(walk.series).toEqual([
-      { tradeDate: '2026-07-22', contract: 'ESZ6', source: 'candles' },
-      { tradeDate: '2026-07-23', contract: 'ESH7', source: 'stored' },
-      { tradeDate: '2026-07-24', contract: 'ESH7', source: 'candles' },
-      { tradeDate: '2026-07-27', contract: 'ESH7', source: 'candles' },
-      { tradeDate: '2026-07-28', contract: 'ESH7', source: 'candles' },
+      { tradeDate: '2026-07-28', contract: 'ESZ6', source: 'candles' },
+      { tradeDate: '2026-07-29', contract: 'ESH7', source: 'stored' },
+      { tradeDate: '2026-07-30', contract: 'ESH7', source: 'candles' },
+      { tradeDate: '2026-08-03', contract: 'ESH7', source: 'candles' },
+      { tradeDate: '2026-08-04', contract: 'ESH7', source: 'candles' },
     ]);
     // The stored date is not written again, and what the candles said is
     // reported.
     expect(walk.rows.map((r) => r.tradeDate)).toEqual([
-      '2026-07-22',
-      '2026-07-24',
-      '2026-07-27',
       '2026-07-28',
+      '2026-07-30',
+      '2026-08-03',
+      '2026-08-04',
     ]);
     expect(walk.kept).toEqual([
-      { tradeDate: '2026-07-23', stored: 'ESH7', candles: 'ESZ6' },
+      { tradeDate: '2026-07-29', stored: 'ESH7', candles: 'ESZ6' },
     ]);
   });
 
@@ -345,27 +377,27 @@ describe('walkFrontMonths', () => {
       'ES',
       [
         ...vol(SEED_START, ['ESZ6', 100], ['ESH7', 10]),
-        // The candles cross at once: ESH7 on 07-23 and every day after...
-        ...vol('2026-07-22', ['ESZ6', 100], ['ESH7', 101]),
-        ...vol('2026-07-23', ['ESZ6', 100], ['ESH7', 101]),
-        ...vol('2026-07-24', ['ESZ6', 100], ['ESH7', 101]),
-        ...vol('2026-07-27', ['ESZ6', 100], ['ESH7', 101]),
+        // The candles cross at once: ESH7 on 07-29 and every day after...
+        ...vol('2026-07-28', ['ESZ6', 100], ['ESH7', 101]),
+        ...vol('2026-07-29', ['ESZ6', 100], ['ESH7', 101]),
+        ...vol('2026-07-30', ['ESZ6', 100], ['ESH7', 101]),
+        ...vol('2026-08-03', ['ESZ6', 100], ['ESH7', 101]),
       ],
       // ...but a later row is already stored as ESZ6, and a row is never
       // updated. Rolling to ESH7 first would make the series step back.
-      new Map([['2026-07-27', 'ESZ6']]),
-      '2026-07-28',
+      new Map([['2026-08-03', 'ESZ6']]),
+      '2026-08-04',
     );
     expect(walk.series.map((s) => [s.tradeDate, s.contract])).toEqual([
-      ['2026-07-22', 'ESZ6'],
-      ['2026-07-23', 'ESZ6'],
-      ['2026-07-24', 'ESZ6'],
-      ['2026-07-27', 'ESZ6'],
-      ['2026-07-28', 'ESH7'],
+      ['2026-07-28', 'ESZ6'],
+      ['2026-07-29', 'ESZ6'],
+      ['2026-07-30', 'ESZ6'],
+      ['2026-08-03', 'ESZ6'],
+      ['2026-08-04', 'ESH7'],
     ]);
     expect(walk.clamped).toEqual([
-      { tradeDate: '2026-07-23', wanted: 'ESH7', ceiling: 'ESZ6' },
-      { tradeDate: '2026-07-24', wanted: 'ESH7', ceiling: 'ESZ6' },
+      { tradeDate: '2026-07-29', wanted: 'ESH7', ceiling: 'ESZ6' },
+      { tradeDate: '2026-07-30', wanted: 'ESH7', ceiling: 'ESZ6' },
     ]);
     expect(
       findOutOfOrder(
@@ -380,19 +412,19 @@ describe('walkFrontMonths', () => {
       'ES',
       [
         ...vol(SEED_START, ['ESZ6', 100], ['ESH7', 10]),
-        ...vol('2026-07-22', ['ESZ6', 100], ['ESH7', 10]),
-        ...vol('2026-07-27', ['ESZ6', 10], ['ESH7', 100]),
+        ...vol('2026-07-28', ['ESZ6', 100], ['ESH7', 10]),
+        ...vol('2026-08-03', ['ESZ6', 10], ['ESH7', 100]),
       ],
-      new Map([['2026-07-25', 'ESZ6']]),
-      '2026-07-28',
+      new Map([['2026-08-01', 'ESZ6']]),
+      '2026-08-04',
     );
     expect(walk.series).toEqual([
-      { tradeDate: '2026-07-22', contract: 'ESZ6', source: 'candles' },
-      { tradeDate: '2026-07-25', contract: 'ESZ6', source: 'stored' },
-      { tradeDate: '2026-07-27', contract: 'ESZ6', source: 'candles' },
-      { tradeDate: '2026-07-28', contract: 'ESH7', source: 'candles' },
+      { tradeDate: '2026-07-28', contract: 'ESZ6', source: 'candles' },
+      { tradeDate: '2026-08-01', contract: 'ESZ6', source: 'stored' },
+      { tradeDate: '2026-08-03', contract: 'ESZ6', source: 'candles' },
+      { tradeDate: '2026-08-04', contract: 'ESH7', source: 'candles' },
     ]);
-    expect(walk.rows.map((r) => r.tradeDate)).not.toContain('2026-07-25');
+    expect(walk.rows.map((r) => r.tradeDate)).not.toContain('2026-08-01');
     expect(walk.kept).toEqual([]);
   });
 
@@ -415,12 +447,12 @@ describe('walkFrontMonths', () => {
 
   it.each([
     ['no candles at all', []],
-    ['no candles on the seed start', vol('2026-07-22', ['ESU6', 100])],
+    ['no candles on the seed start', vol('2026-07-28', ['ESU6', 100])],
   ])('throws, naming the date, with %s', (_label, volumes) => {
     expect(() =>
-      walkFrontMonths('ES', volumes, new Map(), '2026-07-28'),
+      walkFrontMonths('ES', volumes, new Map(), '2026-08-04'),
     ).toThrow(
-      /^no candle volume on 2026-07-21, the session the first decision/,
+      /^no candle volume on 2026-07-27, the session the first decision/,
     );
   });
 });
@@ -430,13 +462,13 @@ describe('walkFrontMonths', () => {
 describe('findOutOfOrder', () => {
   it.each<[string, Array<[string, string]>]>([
     ['an empty series', []],
-    ['a single date', [['2026-07-22', 'ESU6']]],
+    ['a single date', [['2026-07-28', 'ESU6']]],
     [
       'a forward series with repeats',
       [
-        ['2026-07-22', 'ESU6'],
-        ['2026-07-23', 'ESU6'],
-        ['2026-07-24', 'ESZ6'],
+        ['2026-07-28', 'ESU6'],
+        ['2026-07-29', 'ESU6'],
+        ['2026-07-30', 'ESZ6'],
       ],
     ],
     [
@@ -455,16 +487,16 @@ describe('findOutOfOrder', () => {
       findOutOfOrder(
         'ES',
         new Map([
-          ['2026-07-22', 'ESZ6'],
-          ['2026-07-23', 'ESU6'],
-          ['2026-07-24', 'ESH7'],
-          ['2026-07-27', 'ESZ6'],
+          ['2026-07-28', 'ESZ6'],
+          ['2026-07-29', 'ESU6'],
+          ['2026-07-30', 'ESH7'],
+          ['2026-08-03', 'ESZ6'],
         ]),
       ),
     ).toEqual({
-      earlierDate: '2026-07-22',
+      earlierDate: '2026-07-28',
       earlierContract: 'ESZ6',
-      laterDate: '2026-07-23',
+      laterDate: '2026-07-29',
       laterContract: 'ESU6',
     });
   });
@@ -474,11 +506,11 @@ describe('findOutOfOrder', () => {
       findOutOfOrder(
         'ES',
         new Map([
-          ['2026-07-23', 'ESU6'],
-          ['2026-07-22', 'ESZ6'],
+          ['2026-07-29', 'ESU6'],
+          ['2026-07-28', 'ESZ6'],
         ]),
       ),
-    ).toMatchObject({ earlierDate: '2026-07-22', laterDate: '2026-07-23' });
+    ).toMatchObject({ earlierDate: '2026-07-28', laterDate: '2026-07-29' });
   });
 });
 
@@ -486,9 +518,9 @@ describe('findOutOfOrder', () => {
 
 /** Candle dates of the synthetic history; the last is the running session. */
 const CANDLE_DATES = [
-  '2026-07-21',
-  '2026-07-22',
-  '2026-07-23',
+  '2026-07-27',
+  '2026-07-28',
+  '2026-07-29',
   '2026-11-05',
   '2026-11-06',
 ];
@@ -496,18 +528,18 @@ const CANDLE_DATES = [
 /**
  * Per contract (by its month and year) and date, a history in which the
  * September contract leads at first, the December one out-trades it on
- * 07-22 (so it is the front from 07-23), and the March one never trades
+ * 07-28 (so it is the front from 07-29), and the March one never trades
  * much. Any other contract has a volume of 1.
  */
 const SEPTEMBER: Record<string, number> = {
-  '2026-07-21': 100,
-  '2026-07-22': 100,
-  '2026-07-23': 50,
+  '2026-07-27': 100,
+  '2026-07-28': 100,
+  '2026-07-29': 50,
 };
 const DECEMBER: Record<string, number> = {
-  '2026-07-21': 10,
-  '2026-07-22': 120,
-  '2026-07-23': 200,
+  '2026-07-27': 10,
+  '2026-07-28': 120,
+  '2026-07-29': 200,
   '2026-11-05': 500,
 };
 const SHAPE: Record<string, (date: string) => number> = {
@@ -600,15 +632,15 @@ describe('runFrontMonthSeed', () => {
       '6m',
     );
     expect(writtenDecisions()).toEqual([
-      row('2026-07-22', 'ESU6'),
-      row('2026-07-23', 'ESZ6'),
+      row('2026-07-28', 'ESU6'),
+      row('2026-07-29', 'ESZ6'),
       row('2026-11-05', 'ESZ6'),
       row('2026-11-06', 'ESZ6'),
     ]);
     const output = logs.join('\n');
     // The switch: date, from -> to, and the deciding session's two volumes.
     expect(output).toMatch(
-      /2026-07-23\s+ESU6 → ESZ6.*2026-07-22.*ESZ6 120.*ESU6 100/,
+      /2026-07-29\s+ESU6 → ESZ6.*2026-07-28.*ESZ6 120.*ESU6 100/,
     );
     expect(output).toMatch(/volumes: inserted 12 of 12/);
     expect(output).toMatch(/decisions: inserted 4 of 4/);
@@ -619,7 +651,7 @@ describe('runFrontMonthSeed', () => {
     await run();
     const dates = new Set(writtenVolumes().map((r) => r.tradeDate));
     expect(dates).toEqual(
-      new Set(['2026-07-21', '2026-07-22', '2026-07-23', '2026-11-05']),
+      new Set(['2026-07-27', '2026-07-28', '2026-07-29', '2026-11-05']),
     );
     expect(writtenVolumes()).toHaveLength(12);
     // The running session still gets its decision row.
@@ -633,7 +665,7 @@ describe('runFrontMonthSeed', () => {
     );
     // The stored rows are read once before the walk and once after the writes.
     expect(mockFetchStored).toHaveBeenCalledTimes(2);
-    expect(mockFetchStored).toHaveBeenCalledWith('ES', '2026-07-22', TODAY);
+    expect(mockFetchStored).toHaveBeenCalledWith('ES', '2026-07-28', TODAY);
     expect(mockFetchStored.mock.invocationCallOrder[0]).toBeLessThan(
       mockInsertVolumes.mock.invocationCallOrder[0]!,
     );
@@ -643,17 +675,57 @@ describe('runFrontMonthSeed', () => {
   });
 
   it('keeps a stored row and carries on from it', async () => {
-    // Stored: ESZ6 on 07-22, a session before the candles roll.
-    mockFetchStored.mockResolvedValueOnce(new Map([['2026-07-22', 'ESZ6']]));
+    // Stored: ESZ6 on 07-28, a session before the candles roll.
+    mockFetchStored.mockResolvedValueOnce(new Map([['2026-07-28', 'ESZ6']]));
     expect(await run()).toBe(0);
     expect(writtenDecisions()).toEqual([
-      row('2026-07-23', 'ESZ6'),
+      row('2026-07-29', 'ESZ6'),
       row('2026-11-05', 'ESZ6'),
       row('2026-11-06', 'ESZ6'),
     ]);
     // A kept row that the candles disagree with is reported, not an error.
-    expect(logs.join('\n')).toMatch(/kept.*2026-07-22.*ESZ6.*candles.*ESU6/);
+    expect(logs.join('\n')).toMatch(/kept.*2026-07-28.*ESZ6.*candles.*ESU6/);
     expect(errors).toEqual([]);
+  });
+
+  it('ignores the partial sessions before the seed start: December ahead of September on 07-23 does not roll', async () => {
+    // UW's daily candles for 07-21 to 07-24 hold only a sliver of each
+    // session (prod, 2026-11-08: RTY September traded 73 to 1,685 a day,
+    // then 144,241 on 07-27). A roll only moves forward, so a roll on that
+    // noise would hold December through September.
+    const sessions: Record<string, [september: number, december: number]> = {
+      '2026-07-23': [73, 218],
+      '2026-07-24': [1685, 90],
+      '2026-07-27': [144_241, 90_000],
+      '2026-07-28': [150_000, 100_000],
+      '2026-11-05': [150_000, 100_000],
+      [TODAY]: [10, 10],
+    };
+    mockFetchVolumes.mockImplementation(
+      async (_key: string, _root: string, contracts: readonly string[]) =>
+        contracts.flatMap((contract) =>
+          Object.entries(sessions).map(([tradeDate, [sep, dec]]) => ({
+            contract,
+            tradeDate,
+            volume: { ESU6: sep, ESZ6: dec }[contract] ?? 1,
+          })),
+        ),
+    );
+    expect(await run()).toBe(0);
+
+    // The first decision (07-28) takes September, which leads on 07-27, and
+    // nothing rolls after it.
+    expect(writtenDecisions()).toEqual([
+      row('2026-07-28', 'ESU6'),
+      row('2026-11-05', 'ESU6'),
+      row('2026-11-06', 'ESU6'),
+    ]);
+    expect(logs.join('\n')).toMatch(/ES: 3 decisions 2026-07-28 → /);
+    expect(logs.join('\n')).not.toMatch(/ESU6 → ESZ6/);
+    // And the slivers are not stored as volume either.
+    expect(writtenVolumes().every((r) => r.tradeDate >= SEED_START)).toBe(true);
+    // Three sessions (07-27, 07-28, 11-05) of three contracts.
+    expect(writtenVolumes()).toHaveLength(9);
   });
 
   it('fails a root on a fetch error, by name, and still runs the others', async () => {
@@ -790,20 +862,20 @@ describe('runFrontMonthSeed', () => {
       // The second read (after the writes) holds a series that steps back.
       return esReads === 2
         ? new Map([
-            ['2026-07-22', 'ESZ6'],
-            ['2026-07-23', 'ESU6'],
+            ['2026-07-28', 'ESZ6'],
+            ['2026-07-29', 'ESU6'],
           ])
         : new Map();
     });
     expect(await run(['ES', 'NQ'])).toBe(1);
-    expect(errors.join('\n')).toMatch(/ES.*2026-07-22 ESZ6.*2026-07-23 ESU6/);
+    expect(errors.join('\n')).toMatch(/ES.*2026-07-28 ESZ6.*2026-07-29 ESU6/);
     expect(errors.join('\n')).toMatch(/Failed roots: ES/);
     // The writes happened (and are reported); NQ ran after ES.
     expect(logs.join('\n')).toMatch(/ES.*decisions: inserted 4 of 4/);
     expect(writtenDecisions().some((r) => r.product === 'NQ')).toBe(true);
   });
 
-  it('fails a root with no volume on 2026-07-21, naming the date, writing nothing for it, and runs the others', async () => {
+  it('fails a root with no volume on 2026-07-27, naming the date, writing nothing for it, and runs the others', async () => {
     mockFetchVolumes.mockImplementation(
       async (_key: string, root: string, contracts: readonly string[]) =>
         rollCandles(contracts).filter(
@@ -812,7 +884,7 @@ describe('runFrontMonthSeed', () => {
     );
     expect(await run(['NQ', 'ES'])).toBe(1);
     expect(errors[0]).toMatch(
-      /^ {2}NQ FAILED: no candle volume on 2026-07-21,/,
+      /^ {2}NQ FAILED: no candle volume on 2026-07-27,/,
     );
     expect(errors.join('\n')).toMatch(/Failed roots: NQ\./);
     expect(writtenVolumes().every((r) => r.product === 'ES')).toBe(true);
@@ -831,14 +903,14 @@ describe('runFrontMonthSeed', () => {
       mockFetchStored.mockImplementation(async (root: string) =>
         root === 'ES'
           ? new Map([
-              ['2026-07-22', 'ESZ6'],
-              ['2026-07-23', 'ESU6'],
+              ['2026-07-28', 'ESZ6'],
+              ['2026-07-29', 'ESU6'],
             ])
           : new Map(),
       );
       expect(await run(['ES', 'NQ'], { dryRun })).toBe(1);
       expect(errors[0]).toMatch(
-        /^ {2}ES FAILED: the series to write steps back: 2026-07-22 ESZ6, then 2026-07-23 ESU6/,
+        /^ {2}ES FAILED: the series to write steps back: 2026-07-28 ESZ6, then 2026-07-29 ESU6/,
       );
       expect(errors.join('\n')).toMatch(/Failed roots: ES\./);
       expect(writtenVolumes().every((r) => r.product === 'NQ')).toBe(true);
@@ -856,7 +928,7 @@ describe('runFrontMonthSeed', () => {
     expect(mockFetchStored).toHaveBeenCalledTimes(2);
     const output = logs.join('\n');
     expect(output).toMatch(/DRY RUN/);
-    expect(output).toMatch(/2026-07-23\s+ESU6 → ESZ6/);
+    expect(output).toMatch(/2026-07-29\s+ESU6 → ESZ6/);
     expect(output).toMatch(/would insert 12 volume rows and 4 decision rows/);
   });
 

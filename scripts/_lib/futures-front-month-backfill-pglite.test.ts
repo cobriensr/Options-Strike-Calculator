@@ -83,7 +83,7 @@ import {
 // ── Histories ─────────────────────────────────────────────
 
 const HISTORIES = 30;
-const FIRST_DECISION = '2026-07-22';
+const FIRST_DECISION = '2026-07-28';
 
 /** mulberry32: a small seeded PRNG, so a failure names a reproducible seed. */
 function prng(seed: number): () => number {
@@ -132,7 +132,10 @@ interface History {
 /**
  * CL lists a contract every month, so a history can hold up to four of them
  * (CLU6 and CLV6 are always there: the empty-result rule requires them in
- * August). ES holds the two it lists in July and August.
+ * August). ES holds the two it lists in July and August. A history runs 8
+ * to 22 sessions from the seed start (2026-07-27), so the current date stays
+ * in August: in September the empty-result rule would also require ESH7 and
+ * CLX6, which these histories do not carry.
  */
 function buildHistory(index: number): History {
   const rand = prng(1000 + index * 7919);
@@ -141,7 +144,7 @@ function buildHistory(index: number): History {
     root === 'ES'
       ? ['ESU6', 'ESZ6']
       : ['CLU6', 'CLV6', 'CLX6', 'CLZ6'].slice(0, 2 + Math.floor(rand() * 3));
-  const sessions = weekdaysFrom(SEED_START, 8 + Math.floor(rand() * 21));
+  const sessions = weekdaysFrom(SEED_START, 8 + Math.floor(rand() * 15));
   const last = sessions.at(-1) ?? SEED_START;
   // The running session, or the day after the last one with candles (a
   // weekend, or a weekday whose first candle UW has not posted yet).
@@ -392,9 +395,9 @@ describe('the seed against ensureFrontMonth, on real SQL', () => {
   );
 
   it('the histories between them rolled, kept stored rows, clamped, and crossed weekends', () => {
-    // 34 rolls decided by the candles over these histories (5 more switches
+    // 26 rolls decided by the candles over these histories (more switches
     // land on stored rows); histories that never rolled would read 0.
-    expect(seen.switches).toBeGreaterThan(30);
+    expect(seen.switches).toBeGreaterThan(20);
     expect(seen.kept).toBeGreaterThan(0);
     expect(seen.lowered).toBeGreaterThan(0);
     expect(seen.clampWarnings).toBe(seen.lowered);

@@ -3,8 +3,8 @@
  * candles (docs/superpowers/specs/2026-11-06-futures-session-front-month.md,
  * Phase 3b): `futures_contract_volume` (each contract's volume per trade
  * date) and `futures_front_month` (the contract chosen per root and trade
- * date), from 2026-07-21, the first daily candle on NQ, RTY, CL, GC and ZN,
- * to the running session.
+ * date), from 2026-07-27 (`SEED_START`, the first full session in UW's
+ * daily candles; 07-21 to 07-24 are only slivers), to the running session.
  *
  * Per root, in this order:
  *   1. `fetchDailyContractVolumes` over the root's listed contracts from
@@ -67,13 +67,19 @@ import {
 } from '../../api/_lib/futures-front-month.js';
 
 /**
- * The first trade date with a daily candle on every root. Its volumes
- * start the first decision; no earlier volume is stored.
+ * The first full session in UW's daily candles (owner, 2026-11-08). UW
+ * serves daily candles from 2026-07-21, but 07-21 to 07-24 hold only a
+ * sliver of each session on every root: RTY September traded 73 to 1,685
+ * contracts a day, then 144,241 on 07-27. A roll only moves forward, so
+ * decisions read off that noise could roll a contract early and hold it
+ * through its expiry (a dry run rolled RTY to December on 07-24, from 218
+ * against 73). Those sessions are never stored and never read; the volumes
+ * of this session start the first decision.
  */
-export const SEED_START = '2026-07-21';
+export const SEED_START = '2026-07-27';
 
 /** The first decision row: the session after `SEED_START`. */
-const FIRST_DECISION_DATE = '2026-07-22';
+const FIRST_DECISION_DATE = '2026-07-28';
 
 /** The first contract month listed for each root. */
 const FROM_MONTH = '2026-07';
@@ -169,7 +175,9 @@ function monthNumber(expiry: ParsedContract): number {
  * in July) keeps every contract that stops in July; the first day of the
  * next month drops them. That is CLQ6, whose last session is 2026-07-21 and
  * which UW serves no candles for (probe 2026-11-07). None of the other
- * roots has a contract that stops in July.
+ * roots has a contract that stops in July. Any first decision date in July
+ * gives the same bound (2026-08-01), so moving the seed start within July
+ * does not change the required contracts.
  */
 const REQUIRED_FROM = `${monthPlus(FIRST_DECISION_DATE, 1)}-01`;
 
@@ -182,7 +190,7 @@ const REQUIRED_FROM = `${monthPlus(FIRST_DECISION_DATE, 1)}-01`;
  * that stopped trading before then (CLN6, June 2026; CLQ6, whose last
  * session is 2026-07-21) is not required: UW has no candles for it, and it
  * can be neither the incumbent nor the challenger of any decision from
- * 07-22 on. With fewer than two contracts after the current month, every
+ * 07-28 on. With fewer than two contracts after the current month, every
  * listed contract from the first one on is required. `contracts` is in
  * expiry order.
  */
