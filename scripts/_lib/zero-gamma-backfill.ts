@@ -16,6 +16,10 @@
  * Spec: docs/superpowers/specs/live-data-integrity-2026-11-06.md (P0.4, F8).
  */
 
+import type { getDb } from '../../api/_lib/db.js';
+
+type Sql = ReturnType<typeof getDb>;
+
 export interface BackfillArgs {
   /** Weekdays to go back from today. */
   days: number;
@@ -50,6 +54,30 @@ export function parseArgs(argv: readonly string[]): BackfillArgs {
     }
   }
   return { days: days ?? 30, allowExisting };
+}
+
+/**
+ * How many `zero_gamma_levels` rows of `ticker` fall on the ET calendar day
+ * `date` (`YYYY-MM-DD`) with a `ts` that is not one of `labels` (the keys this
+ * run would write). The ET-day bounds are ET midnight to the next ET midnight,
+ * built through `::timestamp AT TIME ZONE` so they are right across the EDT and
+ * EST offsets and do not depend on the session time zone.
+ */
+export async function countForeignRows(
+  sql: Sql,
+  ticker: string,
+  date: string,
+  labels: readonly string[],
+): Promise<number> {
+  const rows = (await sql`
+    SELECT COUNT(*)::int AS n
+    FROM zero_gamma_levels
+    WHERE ticker = ${ticker}
+      AND ts >= (${date}::date::timestamp AT TIME ZONE 'America/New_York')
+      AND ts < ((${date}::date + 1)::timestamp AT TIME ZONE 'America/New_York')
+      AND ts <> ALL(${labels}::timestamptz[])
+  `) as Array<{ n: number }>;
+  return rows[0]?.n ?? 0;
 }
 
 export type DateGuard = { write: true } | { write: false; reason: string };

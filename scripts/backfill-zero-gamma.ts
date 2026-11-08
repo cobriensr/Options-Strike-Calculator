@@ -55,7 +55,11 @@ import {
   getPrimaryExpiry,
   type ZeroGammaTicker,
 } from '../api/_lib/zero-gamma-tickers.ts';
-import { guardDate, parseArgs } from './_lib/zero-gamma-backfill.ts';
+import {
+  countForeignRows,
+  guardDate,
+  parseArgs,
+} from './_lib/zero-gamma-backfill.ts';
 
 let args: ReturnType<typeof parseArgs>;
 try {
@@ -240,18 +244,14 @@ async function main() {
       }
 
       // Duplicate guard: rows on this ET date whose ts is not one this run
-      // would write (the cron's old compute-time stamps). The ET-day bounds go
-      // through ::timestamp so they do not depend on the session time zone.
-      const labels = snapshots.map((s) => zeroGammaLabelTs(s.ts));
-      const foreign = (await sql`
-        SELECT COUNT(*)::int AS n
-        FROM zero_gamma_levels
-        WHERE ticker = ${ticker}
-          AND ts >= (${date}::date::timestamp AT TIME ZONE 'America/New_York')
-          AND ts < ((${date}::date + 1)::timestamp AT TIME ZONE 'America/New_York')
-          AND ts <> ALL(${labels}::timestamptz[])
-      `) as Array<{ n: number }>;
-      const guard = guardDate(foreign[0]?.n ?? 0, args.allowExisting);
+      // would write (the cron's old compute-time stamps).
+      const foreign = await countForeignRows(
+        sql,
+        ticker,
+        date,
+        snapshots.map((s) => zeroGammaLabelTs(s.ts)),
+      );
+      const guard = guardDate(foreign, args.allowExisting);
       if (!guard.write) {
         totals[ticker]!.skippedDates += 1;
         dailySummary.push(`${ticker}: SKIPPED, ${guard.reason}`);

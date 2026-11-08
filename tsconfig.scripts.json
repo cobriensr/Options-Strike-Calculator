@@ -66,6 +66,7 @@
     "scripts/backfill-zero-gamma.ts",
     "scripts/_lib/zero-gamma-backfill.ts",
     "scripts/_lib/zero-gamma-backfill.test.ts",
+    "scripts/_lib/zero-gamma-backfill-pglite.test.ts",
     "scripts/tag-periscope-source.mts",
     "scripts/_lib/tag-periscope-source.ts",
     "scripts/_lib/tag-periscope-source.test.ts",
