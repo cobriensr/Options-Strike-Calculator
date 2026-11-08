@@ -64,6 +64,9 @@ export default [
       // tracked). Local-only scripts there, such as hook tests, would
       // otherwise fail the gate in the main checkout but never in CI.
       '.claude',
+      // Gitignored superpowers working files (subagent handoffs, review
+      // scratch). Sessions leave .mjs scripts there that fail lint.
+      '.superpowers',
       // Parallel-session git worktrees live under .worktrees/ (gitignored).
       // Each carries its own tsconfig.json, and letting eslint traverse them
       // trips typescript-eslint's "multiple candidate TSConfigRootDirs" error
