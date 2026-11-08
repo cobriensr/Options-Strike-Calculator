@@ -13,7 +13,6 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
-from urllib.parse import urlsplit, urlunsplit
 
 from _pipeline_retry import connect_with_retry
 from _tape_reader import TapeReader
@@ -24,21 +23,25 @@ from constants import DB_CONNECT_TIMEOUT_SECONDS, DB_STATEMENT_TIMEOUT_MS
 if TYPE_CHECKING:
     from psycopg2.extensions import connection
 
-# "-pooler" ending the first host label, which runs to the first dot or the port colon.
-_POOLED_FIRST_LABEL = re.compile(r"^([^.:]*)-pooler(?=[.:]|$)")
+# "-pooler" ending the first host label of a postgres URL, a label that runs to the first
+# ".", ":", "/", "?" or "#". The user-info group is possessive (`?+`): once an "@" has
+# closed it the match never retries without it, so a user name ending in "-pooler" is not
+# taken for a host label.
+_POOLED_FIRST_LABEL = re.compile(
+    r"^(postgres(?:ql)?://(?:[^/?#]*@)?+[^.:/?#]*?)-pooler(?=[.:/?#]|$)", re.IGNORECASE
+)
 
 
 def direct_dsn(url: str) -> str:
     """The URL with `-pooler` removed from the end of its first host label.
 
     Neon's pooler rejects the startup `options` a statement timeout needs, and its
-    direct host differs only by that suffix (same credentials). User, password, port,
-    path and query are untouched, and so is a `-pooler` anywhere else in the host.
+    direct host differs only by that suffix (same credentials). Every other byte is
+    kept, so a `-pooler` anywhere else, and any character in the password, survive. It
+    is a substitution on the raw string: a urlsplit round trip raises on brackets (with
+    the host in its message), drops tabs and drops an empty trailing `?`.
     """
-    parts = urlsplit(url)
-    userinfo, at, hostport = parts.netloc.rpartition("@")
-    host = _POOLED_FIRST_LABEL.sub(r"\1", hostport)
-    return urlunsplit(parts._replace(netloc=f"{userinfo}{at}{host}"))
+    return _POOLED_FIRST_LABEL.sub(r"\1", url, count=1)
 
 
 @contextmanager
@@ -74,7 +77,7 @@ def open_reader(settings: Settings, cache_dir: Path) -> TapeReader:
     """
     cache_dir.mkdir(parents=True, exist_ok=True)
     for entry in cache_dir.iterdir():
-        if entry.is_dir():
+        if entry.is_dir() and not entry.is_symlink():
             shutil.rmtree(entry)
         else:
             entry.unlink()

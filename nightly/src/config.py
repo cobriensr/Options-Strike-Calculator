@@ -4,8 +4,10 @@ A missing required variable fails `load_settings()` with a ValidationError that
 names the field. There is no `.env` reading and no CLI flag for secrets.
 
 A malformed SENTRY_DSN, or a DATABASE_URL that is not a postgres URL, fails boot too,
-with a fixed message that never echoes it. `load_sentry_dsn()` reads that one variable alone, so a run whose other settings are
-invalid can still report that to Sentry.
+with a fixed message that never echoes it. `hide_input_in_errors` keeps every input out
+of a ValidationError's text, so a bare `str(exc)` quotes no setting. `load_sentry_dsn()`
+reads SENTRY_DSN alone, so a run whose other settings are invalid can still report that
+to Sentry.
 """
 
 from __future__ import annotations
@@ -34,7 +36,7 @@ SentryDsn = Annotated[str | None, AfterValidator(_valid_dsn)]
 class Settings(BaseSettings):
     """Nightly job configuration."""
 
-    model_config = SettingsConfigDict(extra="ignore")
+    model_config = SettingsConfigDict(extra="ignore", hide_input_in_errors=True)
 
     uw_api_key: SecretStr
     r2_access_key_id: SecretStr
@@ -63,7 +65,7 @@ class Settings(BaseSettings):
 class _SentryOnly(BaseSettings):
     """SENTRY_DSN alone, read the same way Settings reads it."""
 
-    model_config = SettingsConfigDict(extra="ignore")
+    model_config = SettingsConfigDict(extra="ignore", hide_input_in_errors=True)
 
     sentry_dsn: SentryDsn = None
 

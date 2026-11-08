@@ -61,10 +61,15 @@ one is missing. There is no `.env` reading and no secrets on the command line.
 | `R2_SECRET_ACCESS_KEY` | yes      | Cloudflare R2 secret                                 |
 | `R2_ENDPOINT_URL`      | yes      | R2 S3 endpoint; must start with `https://`           |
 | `R2_BUCKET_FULLTAPE`   | yes      | Bucket that holds the `fulltape/` prefix             |
+| `DATABASE_URL`         | yes      | Neon URL; scheme `postgres://` or `postgresql://`    |
 | `SENTRY_DSN`           | no       | Without it Sentry is off; a malformed one fails boot |
 
 The same variable names are in the repo `CLAUDE.md` env table. The bucket also
 holds `gexbot-eod/`, written by another job; this service never touches it.
+
+`DATABASE_URL` may be Neon's pooled URL. The job connects to the direct host
+instead (`-pooler` removed from the first host label, same credentials), because
+the pooler rejects the statement timeout the job sets at connect.
 
 ## Where the days live in R2
 

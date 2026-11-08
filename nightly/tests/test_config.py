@@ -15,7 +15,7 @@ import pytest
 from pydantic import ValidationError
 
 import resources
-from config import load_sentry_dsn, load_settings
+from config import _SentryOnly, load_sentry_dsn, load_settings
 from constants import DB_CONNECT_TIMEOUT_SECONDS, DB_STATEMENT_TIMEOUT_MS
 
 VALID_DSN = "https://public@o0.ingest.sentry.invalid/1"
@@ -103,11 +103,32 @@ def test_database_url_scheme_checked_without_echo(
     monkeypatch.setenv("DATABASE_URL", url)
     with pytest.raises(ValidationError) as exc:
         load_settings()
-    errors = exc.value.errors(include_input=False, include_context=False)
-    (error,) = errors
+    (error,) = exc.value.errors(include_input=False, include_context=False)
     assert error["loc"] == ("database_url",)
     assert error["msg"] == "Value error, database_url must start with postgres:// or postgresql://"
-    assert "pw-7f3a" not in repr(errors)
+    # The text a bare `str(exc)` or `repr(exc)` prints is what could reach a log.
+    for text in (str(exc.value), repr(exc.value)):
+        assert "pw-7f3a" not in text
+        assert "db.invalid" not in text
+
+
+def test_validation_errors_quote_no_input(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A missing field would otherwise quote the other settings, secrets included."""
+    monkeypatch.delenv("UW_API_KEY")
+    with pytest.raises(ValidationError) as exc:
+        load_settings()
+    for text in (str(exc.value), repr(exc.value)):
+        assert "uw_api_key" in text
+        assert "input_value" not in text
+        assert "localhost" not in text
+
+
+def test_sentry_only_errors_quote_no_input(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SENTRY_DSN", MALFORMED_DSNS[0])
+    with pytest.raises(ValidationError) as exc:
+        _SentryOnly()
+    for text in (str(exc.value), repr(exc.value)):
+        assert MALFORMED_DSNS[0] not in text
 
 
 def test_database_url_not_in_repr() -> None:
@@ -138,6 +159,7 @@ def test_malformed_sentry_dsn_fails_without_echoing_it(
     (error,) = exc.value.errors(include_input=False, include_context=False)
     assert error["loc"] == ("sentry_dsn",)
     assert error["msg"] == "Value error, invalid sentry dsn"
+    assert dsn not in str(exc.value)
 
 
 def test_dsn_alone_loads_when_other_settings_are_invalid(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -190,6 +212,40 @@ UNTOUCHED_URLS = [
         ),
         # A raw "@" inside the password does not move the host boundary.
         (f"postgresql://u:p@ss@{POOLED_HOST}/db", f"postgresql://u:p@ss@{DIRECT_HOST}/db"),
+        # The host ends at "/" or "?" as well as at the port colon.
+        ("postgresql://u:p@ep-a-1-pooler/db", "postgresql://u:p@ep-a-1/db"),
+        (
+            "postgresql://u:p@ep-a-1-pooler?sslmode=require",
+            "postgresql://u:p@ep-a-1?sslmode=require",
+        ),
+        # A percent-encoded password is carried through as written.
+        (
+            "postgresql://u:p%40ss%2Fx@ep-a-1-pooler.x.tech/db",
+            "postgresql://u:p%40ss%2Fx@ep-a-1.x.tech/db",
+        ),
+        # Characters urllib's urlsplit rejects or rewrites: brackets (it raises, with the
+        # host in the message), a tab (it drops it) and an empty trailing "?" (it drops it).
+        (
+            "postgresql://u:pa[s]s@ep-a-1-pooler.x.tech/db",
+            "postgresql://u:pa[s]s@ep-a-1.x.tech/db",
+        ),
+        (
+            "postgresql://u:pa\tss@ep-a-1-pooler.x.tech/db",
+            "postgresql://u:pa\tss@ep-a-1.x.tech/db",
+        ),
+        (f"postgresql://u:p@{POOLED_HOST}/db?", f"postgresql://u:p@{DIRECT_HOST}/db?"),
+        # Hostnames are case-insensitive.
+        ("postgresql://u:p@EP-A-1-POOLER.X.TECH/db", "postgresql://u:p@EP-A-1.X.TECH/db"),
+        # A user name ending in "-pooler" is not a host label, even on a direct host.
+        (
+            "postgresql://svc-pooler:p@ep-a-1.x.tech/db",
+            "postgresql://svc-pooler:p@ep-a-1.x.tech/db",
+        ),
+        # Nothing here is a pooled Neon host, and none of it may raise.
+        ("postgresql://u:p@[::1]:5432/db", "postgresql://u:p@[::1]:5432/db"),
+        ("postgresql://u:p@[::1/db", "postgresql://u:p@[::1/db"),
+        ("not a url", "not a url"),
+        ("", ""),
     ],
 )
 def test_direct_dsn_strips_pooler_label(url: str, expected: str) -> None:
@@ -308,6 +364,26 @@ def test_open_reader_creates_a_missing_cache_dir(
 
     assert cache.is_dir()
     assert list(cache.iterdir()) == []
+
+
+def test_open_reader_removes_a_symlink_without_touching_its_target(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep.parquet").write_bytes(b"day")
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    try:
+        (cache / "link").symlink_to(outside, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("this OS or user cannot create symlinks")
+    monkeypatch.setattr(resources, "TapeReader", MagicMock())
+
+    resources.open_reader(load_settings(), cache)
+
+    assert list(cache.iterdir()) == []
+    assert (outside / "keep.parquet").read_bytes() == b"day"
 
 
 def test_open_reader_builds_the_reader_from_the_r2_settings(
