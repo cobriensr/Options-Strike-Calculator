@@ -15,8 +15,17 @@
  * is NULL only when the calculator found no sign change in ±3% of spot.
  * Matches the live cron's behavior.
  *
- * Idempotency: deletes existing `zero_gamma_levels` rows in the date range
- * for each ticker before re-inserting. Safe to re-run with the same window.
+ * Idempotency (R6): each row is keyed on its source ladder, `ts` = the
+ * snapshot's own timestamp, and inserted ON CONFLICT (ticker, ts) DO NOTHING.
+ * Re-running a window writes nothing new and never deletes or overwrites a
+ * row (it used to DELETE the whole window first). The live cron
+ * (compute-zero-gamma) keys its rows the same way since P0.4 of
+ * docs/superpowers/specs/live-data-integrity-2026-11-06.md. Rows the cron
+ * wrote BEFORE that change are stamped with their compute time, not the
+ * ladder time, so for a date that has them this script adds a second row per
+ * ladder about a minute off. Run it for dates with no zero_gamma_levels rows,
+ * or after the frozen and pre-open rows are deleted (spec P2.2, which needs
+ * owner approval).
  *
  * Usage:
  *   DATABASE_URL="postgresql://..." npx tsx scripts/backfill-zero-gamma.ts
@@ -180,28 +189,20 @@ async function main() {
   );
   console.log(`Days: ${tradingDays.length} (${startDate} to ${endDate})\n`);
 
-  // Idempotency: clear existing rows in the date range per ticker so a
-  // re-run produces the same data without duplicates.
-  for (const ticker of ZERO_GAMMA_TICKERS) {
-    const deleted = (await sql`
-      DELETE FROM zero_gamma_levels
-      WHERE ticker = ${ticker}
-        AND ts >= ${startDate}::date
-        AND ts < (${endDate}::date + INTERVAL '1 day')
-      RETURNING id
-    `) as Array<{ id: number }>;
-    if (deleted.length > 0) {
-      console.log(`  cleared ${deleted.length} existing ${ticker} rows`);
-    }
-  }
-  console.log('');
-
+  // No DELETE: a row is keyed on its source ladder (ticker, ts), so an
+  // ON CONFLICT DO NOTHING insert is idempotent on its own and never
+  // destroys a row the live cron wrote.
   const totals: Record<
     string,
-    { snapshots: number; stored: number; nullLevels: number }
+    {
+      snapshots: number;
+      stored: number;
+      existing: number;
+      nullLevels: number;
+    }
   > = {};
   for (const ticker of ZERO_GAMMA_TICKERS) {
-    totals[ticker] = { snapshots: 0, stored: 0, nullLevels: 0 };
+    totals[ticker] = { snapshots: 0, stored: 0, existing: 0, nullLevels: 0 };
   }
 
   for (const date of tradingDays) {
@@ -216,6 +217,7 @@ async function main() {
       }
 
       let storedHere = 0;
+      let existingHere = 0;
       let nullHere = 0;
       let lastLevel: number | null = null;
       let lastSpot: number | null = null;
@@ -226,7 +228,7 @@ async function main() {
         if (zeroGamma == null) nullHere += 1;
         const netGamma = netGammaAtSpot(result.curve, snap.spot);
 
-        await sql`
+        const inserted = (await sql`
           INSERT INTO zero_gamma_levels (
             ticker, spot, zero_gamma, confidence,
             net_gamma_at_spot, gamma_curve, ts
@@ -235,20 +237,18 @@ async function main() {
             ${ticker}, ${snap.spot}, ${zeroGamma}, ${result.confidence},
             ${netGamma}, ${JSON.stringify(result.curve)}::jsonb, ${snap.ts}
           )
-          ON CONFLICT (ticker, ts) DO UPDATE SET
-            spot              = EXCLUDED.spot,
-            zero_gamma        = EXCLUDED.zero_gamma,
-            confidence        = EXCLUDED.confidence,
-            net_gamma_at_spot = EXCLUDED.net_gamma_at_spot,
-            gamma_curve       = EXCLUDED.gamma_curve
-        `;
-        storedHere += 1;
+          ON CONFLICT (ticker, ts) DO NOTHING
+          RETURNING id
+        `) as Array<{ id: number }>;
+        if (inserted.length > 0) storedHere += 1;
+        else existingHere += 1;
         lastLevel = zeroGamma;
         lastSpot = snap.spot;
       }
 
       totals[ticker]!.snapshots += snapshots.length;
       totals[ticker]!.stored += storedHere;
+      totals[ticker]!.existing += existingHere;
       totals[ticker]!.nullLevels += nullHere;
 
       const levelDisplay =
@@ -256,7 +256,7 @@ async function main() {
           ? `ZG=${lastLevel.toFixed(2)} (Δ${(lastSpot! - lastLevel).toFixed(2)})`
           : `ZG=null`;
       dailySummary.push(
-        `${ticker}: ${storedHere} snap${storedHere === 1 ? '' : 's'}, ${levelDisplay}`,
+        `${ticker}: ${storedHere} new, ${existingHere} already stored, ${levelDisplay}`,
       );
     }
     console.log(`  ${date}: ${dailySummary.join(' | ')}`);
@@ -267,7 +267,7 @@ async function main() {
     const t = totals[ticker]!;
     const pct = t.stored > 0 ? Math.round((t.nullLevels / t.stored) * 100) : 0;
     console.log(
-      `  ${ticker}: ${t.stored} rows stored (${t.nullLevels} null-level = ${pct}% — no sign change in ±3% grid)`,
+      `  ${ticker}: ${t.stored} rows stored, ${t.existing} already there (${t.nullLevels} null-level = ${pct}% of the computed — no sign change in ±3% grid)`,
     );
   }
 }

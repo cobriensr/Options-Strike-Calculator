@@ -15,17 +15,29 @@ vi.mock('../_lib/logger.js', () => ({
 }));
 
 vi.mock('../_lib/sentry.js', () => ({
-  Sentry: { setTag: vi.fn(), captureException: vi.fn() },
+  Sentry: {
+    setTag: vi.fn(),
+    captureException: vi.fn(),
+    captureMessage: vi.fn(),
+    addBreadcrumb: vi.fn(),
+  },
   metrics: { increment: vi.fn() },
 }));
 
 import handler from '../cron/compute-zero-gamma.js';
+import logger from '../_lib/logger.js';
+import { Sentry, metrics } from '../_lib/sentry.js';
 
-const MARKET_TIME = new Date('2026-03-24T14:00:00.000Z');
+const MARKET_TIME = new Date('2026-03-24T14:00:00.000Z'); // 10:00 ET
+const BEFORE_0940_ET = new Date('2026-03-24T13:39:59.000Z');
+const AT_0940_ET = new Date('2026-03-24T13:40:00.000Z');
 const OFF_HOURS_TIME = new Date('2026-03-24T11:00:00.000Z');
 const WEEKEND_TIME = new Date('2026-03-28T14:00:00.000Z');
 
 const TICKERS = ['SPX', 'SPY', 'QQQ'] as const;
+
+// The newest ladder fetch-strike-exposure stored: 5 minutes before MARKET_TIME.
+const LADDER_TS = '2026-03-24T13:55:00.000Z';
 
 /**
  * Build a strike_exposures row. `timestamp` is shared across all rows in a
@@ -37,7 +49,7 @@ function makeStrikeRow(
   callGamma: number,
   putGamma: number,
   price = 7105,
-  timestamp = '2026-03-24T13:55:00.000Z',
+  timestamp = LADDER_TS,
 ) {
   return {
     strike: String(strike),
@@ -60,20 +72,21 @@ function balancedChain() {
 }
 
 /**
- * Queue per-ticker mock responses. Each ticker contributes 4 SQL calls
- * (latest_ts SELECT, rows SELECT, prev net_gamma SELECT, INSERT) when a
- * snapshot exists, or 1 (latest_ts SELECT) when the snapshot is empty.
- * The prev-net-gamma SELECT was added by the dealer-regime sign-flip
- * detection in compute-zero-gamma.ts (commit 5f8eee8b).
+ * Queue one ticker's SQL calls, in the order the handler makes them:
+ * latest_ts SELECT, rows SELECT, INSERT ... RETURNING id, and, only when the
+ * INSERT stored a row, the previous-ladder net_gamma SELECT. A stale or empty
+ * ticker stops after the latest_ts SELECT.
  */
+function queueStored(prev: unknown[] = []) {
+  mockSql
+    .mockResolvedValueOnce([{ latest_ts: LADDER_TS }])
+    .mockResolvedValueOnce(balancedChain())
+    .mockResolvedValueOnce([{ id: 1 }]) // INSERT stored the ladder
+    .mockResolvedValueOnce(prev); // previous ladder's net_gamma
+}
+
 function queueAllTickersHappyPath() {
-  for (let i = 0; i < TICKERS.length; i += 1) {
-    mockSql
-      .mockResolvedValueOnce([{ latest_ts: '2026-03-24T13:55:00.000Z' }])
-      .mockResolvedValueOnce(balancedChain())
-      .mockResolvedValueOnce([]) // prev net_gamma SELECT (no prior row)
-      .mockResolvedValueOnce([]); // INSERT
-  }
+  for (let i = 0; i < TICKERS.length; i += 1) queueStored();
 }
 
 function authedReq() {
@@ -82,6 +95,25 @@ function authedReq() {
     headers: { authorization: 'Bearer test-secret' },
   });
 }
+
+type Body = {
+  status: string;
+  failedLegs: number;
+  totalLegs: number;
+  skippedLegs: number;
+  perTicker: Record<
+    string,
+    {
+      stored: boolean;
+      reason?: string;
+      skip?: string;
+      error?: string;
+      spot?: number;
+      zeroGamma?: number | null;
+      confidence?: number;
+    }
+  >;
+};
 
 describe('compute-zero-gamma handler', () => {
   const originalEnv = process.env;
@@ -155,51 +187,16 @@ describe('compute-zero-gamma handler', () => {
     expect(res._json).toMatchObject({ skipped: true });
   });
 
-  // ── No snapshot available (per-ticker) ───────────────────
-
-  it('records "no snapshot" per ticker without inserting when latest_ts is null', async () => {
-    // 3 latest_ts SELECTs (one per ticker), all returning null.
-    for (let i = 0; i < TICKERS.length; i += 1) {
-      mockSql.mockResolvedValueOnce([{ latest_ts: null }]);
-    }
-
-    const res = mockResponse();
-    await handler(authedReq(), res);
-
-    expect(res._status).toBe(200);
-    const body = res._json as {
-      perTicker: Record<string, { stored: boolean; reason?: string }>;
-    };
-    for (const ticker of TICKERS) {
-      expect(body.perTicker[ticker]).toMatchObject({
-        stored: false,
-        reason: 'No strike_exposures snapshot',
-      });
-    }
-    // 3 SELECTs total, no INSERTs.
-    expect(mockSql).toHaveBeenCalledTimes(3);
-  });
-
   // ── Happy path: 3 tickers, 3 INSERTs ─────────────────────
 
-  it('inserts a gated zero_gamma row for every ticker', async () => {
+  it('inserts a zero_gamma row for every ticker', async () => {
     queueAllTickersHappyPath();
 
     const res = mockResponse();
     await handler(authedReq(), res);
 
     expect(res._status).toBe(200);
-    const body = res._json as {
-      perTicker: Record<
-        string,
-        {
-          stored: boolean;
-          ticker?: string;
-          spot?: number;
-          zeroGamma?: number | null;
-        }
-      >;
-    };
+    const body = res._json as Body;
     for (const ticker of TICKERS) {
       const entry = body.perTicker[ticker];
       expect(entry).toBeDefined();
@@ -209,6 +206,7 @@ describe('compute-zero-gamma handler', () => {
     }
     // 3 tickers × 4 SQL calls = 12
     expect(mockSql).toHaveBeenCalledTimes(12);
+    expect(Sentry.captureMessage).not.toHaveBeenCalled();
   });
 
   it('queries each ticker at today (0DTE) as the primary expiry', async () => {
@@ -245,11 +243,12 @@ describe('compute-zero-gamma handler', () => {
       makeStrikeRow(7110, 600_000_000, 400_000_000),
     ];
 
-    // SPX has the no-flip chain; the rest skip via null latest_ts.
+    // SPX has the no-flip chain; the rest have no snapshot.
     mockSql
-      .mockResolvedValueOnce([{ latest_ts: '2026-03-24T13:55:00.000Z' }])
+      .mockResolvedValueOnce([{ latest_ts: LADDER_TS }])
       .mockResolvedValueOnce(noFlipChain)
-      .mockResolvedValueOnce([]); // SPX INSERT
+      .mockResolvedValueOnce([{ id: 1 }]) // SPX INSERT
+      .mockResolvedValueOnce([]); // SPX previous ladder
     for (let i = 0; i < TICKERS.length - 1; i += 1) {
       mockSql.mockResolvedValueOnce([{ latest_ts: null }]);
     }
@@ -258,12 +257,7 @@ describe('compute-zero-gamma handler', () => {
     await handler(authedReq(), res);
 
     expect(res._status).toBe(200);
-    const body = res._json as {
-      perTicker: Record<
-        string,
-        { stored: boolean; zeroGamma?: number | null; confidence?: number }
-      >;
-    };
+    const body = res._json as Body;
     expect(body.perTicker.SPX!.stored).toBe(true);
     expect(body.perTicker.SPX!.zeroGamma).toBeNull();
     expect(body.perTicker.SPX!.confidence).toBe(0);
@@ -271,24 +265,25 @@ describe('compute-zero-gamma handler', () => {
 
   // ── Insert wiring: verify exact arguments reach SQL ──────
 
-  it('passes ticker, spot, confidence, and curve JSON to the INSERT', async () => {
+  it('passes ticker, spot, confidence, curve JSON and the ladder timestamp to the INSERT', async () => {
     queueAllTickersHappyPath();
 
     const res = mockResponse();
     await handler(authedReq(), res);
     expect(res._status).toBe(200);
 
-    // INSERT for each ticker is the 4th SQL call within that ticker's
-    // 4-call group. Indices: SPX=3, SPY=7, QQQ=11.
+    // The INSERT for each ticker is the 3rd SQL call of that ticker's group
+    // of 4. Indices: SPX=2, SPY=6, QQQ=10.
     type SqlCall = unknown[];
     const calls = mockSql.mock.calls as SqlCall[];
-    const insertIndices = [3, 7, 11];
+    const insertIndices = [2, 6, 10];
     insertIndices.forEach((idx, tickerIdx) => {
       const insertCall = calls[idx];
       expect(insertCall).toBeDefined();
       const values = insertCall!.slice(1) as unknown[];
-      // Source order: ticker, spot, zeroGamma, confidence, netGamma, curveJson
-      const [ticker, spot, , confidence, netGamma, curveJson] = values;
+      // Source order: ticker, spot, zeroGamma, confidence, netGamma,
+      // curveJson, ts
+      const [ticker, spot, , confidence, netGamma, curveJson, ts] = values;
       expect(ticker).toBe(TICKERS[tickerIdx]);
       expect(spot).toBe(7105);
       expect(typeof confidence).toBe('number');
@@ -298,34 +293,289 @@ describe('compute-zero-gamma handler', () => {
       expect(Array.isArray(parsed)).toBe(true);
       expect(parsed[0]).toHaveProperty('spot');
       expect(parsed[0]).toHaveProperty('netGamma');
+      // R6: the row is keyed on its source ladder, so the same ladder
+      // recomputed at 14:00 or 14:05 hits ON CONFLICT (ticker, ts) and
+      // writes nothing. Not the compute time (14:00, the column default).
+      expect(ts).toBe(LADDER_TS);
+      expect(ts).not.toBe(MARKET_TIME.toISOString());
     });
   });
 
-  // ── Per-ticker fault isolation ───────────────────────────
-
-  it('isolates per-ticker DB failures — surviving tickers still complete', async () => {
-    // SPX: SELECT throws. SPY/QQQ: full happy path (4 SQL calls each
-    // — latest_ts, rows, prev net_gamma, INSERT).
-    mockSql.mockRejectedValueOnce(new Error('SPX latest_ts query failed'));
-    for (let i = 0; i < TICKERS.length - 1; i += 1) {
+  it('writes nothing, and says so, when the ladder was already stored (a recompute of the same source)', async () => {
+    // fetch-strike-exposure stored no newer ladder, so latest_ts is the one
+    // the previous run already used: the INSERT conflicts and returns no row.
+    for (let i = 0; i < TICKERS.length; i += 1) {
       mockSql
-        .mockResolvedValueOnce([{ latest_ts: '2026-03-24T13:55:00.000Z' }])
+        .mockResolvedValueOnce([{ latest_ts: LADDER_TS }])
         .mockResolvedValueOnce(balancedChain())
-        .mockResolvedValueOnce([]) // prev net_gamma SELECT
-        .mockResolvedValueOnce([]); // INSERT
+        .mockResolvedValueOnce([]); // INSERT ... RETURNING id: conflict
     }
 
     const res = mockResponse();
     await handler(authedReq(), res);
 
+    const body = res._json as Body;
+    for (const ticker of TICKERS) {
+      expect(body.perTicker[ticker]).toMatchObject({
+        stored: false,
+        reason: 'ladder already stored',
+      });
+    }
+    // No previous-ladder read and no sign-flip log for a ladder not stored.
+    expect(mockSql).toHaveBeenCalledTimes(9);
+    expect(Sentry.addBreadcrumb).not.toHaveBeenCalled();
+    // Every ticker skipped: not a success.
+    expect(body.status).toBe('skipped');
+  });
+
+  // ── Sign flip compares against the previous ladder ───────
+
+  it('reads the previous ladder strictly before this ladder and logs a sign flip', async () => {
+    // balancedChain() is net long at spot (positive); the previous ladder was
+    // net short (negative), so the regime flipped.
+    queueStored([{ net_gamma_at_spot: '-250000000' }]);
+    for (let i = 0; i < TICKERS.length - 1; i += 1) {
+      mockSql.mockResolvedValueOnce([{ latest_ts: null }]);
+    }
+
+    const res = mockResponse();
+    await handler(authedReq(), res);
     expect(res._status).toBe(200);
-    const body = res._json as {
-      perTicker: Record<string, { stored: boolean; error?: string }>;
-    };
+
+    // SPX's previous-ladder SELECT is its 4th call. It binds the ticker and
+    // this ladder's timestamp, so it never reads the row it just wrote.
+    const prevCall = (mockSql.mock.calls as unknown[][])[3]!;
+    const values = prevCall.slice(1) as unknown[];
+    expect(values).toEqual(['SPX', LADDER_TS]);
+    expect(Sentry.addBreadcrumb).toHaveBeenCalledWith(
+      expect.objectContaining({ category: 'dealer-regime' }),
+    );
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'dealer_regime_sign_flip' }),
+      'dealer-regime sign flip',
+    );
+  });
+
+  it('logs no sign flip when the previous ladder has the same sign', async () => {
+    queueStored([{ net_gamma_at_spot: '250000000' }]);
+    for (let i = 0; i < TICKERS.length - 1; i += 1) {
+      mockSql.mockResolvedValueOnce([{ latest_ts: null }]);
+    }
+
+    await handler(authedReq(), mockResponse());
+
+    expect(Sentry.addBreadcrumb).not.toHaveBeenCalled();
+  });
+
+  // ── R-stale and the empty source: one rule, three kinds ──
+
+  const MINUTE = 60_000;
+  const agoIso = (ms: number) =>
+    new Date(MARKET_TIME.getTime() - ms).toISOString();
+
+  // Each way the source ladder is unusable, the latest_ts it produces, the
+  // reason in the response, and the metric it counts.
+  const SKIPS: Array<{
+    kind: string;
+    metric: string;
+    latestTs: string | null;
+  }> = [
+    {
+      kind: 'stale_source',
+      metric: 'stale_source_skip',
+      // 16 minutes old, same ET day.
+      latestTs: agoIso(16 * MINUTE),
+    },
+    {
+      kind: 'stale',
+      metric: 'stale_cache_skip',
+      // Friday's 15:55 ET ladder at Monday's... here, yesterday's close.
+      latestTs: '2026-03-23T19:55:00.000Z',
+    },
+    { kind: 'empty', metric: 'empty_ladder_skip', latestTs: null },
+  ];
+
+  function queueSkippedTickers(latestTs: string | null) {
+    for (let i = 0; i < TICKERS.length; i += 1) {
+      mockSql.mockResolvedValueOnce([{ latest_ts: latestTs }]);
+    }
+  }
+
+  it.each(SKIPS)(
+    '$kind: stores nothing, reads no rows, reports skipped (never success) and counts $metric',
+    async ({ kind, metric, latestTs }) => {
+      queueSkippedTickers(latestTs);
+
+      const res = mockResponse();
+      await handler(authedReq(), res);
+
+      expect(res._status).toBe(200);
+      const body = res._json as Body;
+      expect(body.status).toBe('skipped');
+      expect(body.skippedLegs).toBe(TICKERS.length);
+      expect(body.failedLegs).toBe(0);
+      for (const ticker of TICKERS) {
+        expect(body.perTicker[ticker]).toMatchObject({
+          stored: false,
+          skip: kind,
+        });
+      }
+      // One latest_ts SELECT per ticker: no rows read, nothing inserted.
+      expect(mockSql).toHaveBeenCalledTimes(TICKERS.length);
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ kind, ticker: 'SPX' }),
+        expect.stringContaining('skipping store'),
+      );
+      expect(metrics.increment).toHaveBeenCalledWith(
+        `compute_zero_gamma.${metric}`,
+      );
+      expect(metrics.increment).toHaveBeenCalledTimes(TICKERS.length);
+    },
+  );
+
+  it.each(SKIPS)(
+    '$kind: sends a Sentry error naming the kind and ticker from 09:40 ET',
+    async ({ kind, latestTs }) => {
+      vi.setSystemTime(AT_0940_ET);
+      // Keep the ages relative to the new clock for the stale_source case.
+      const ts =
+        kind === 'stale_source'
+          ? new Date(AT_0940_ET.getTime() - 16 * MINUTE).toISOString()
+          : latestTs;
+      queueSkippedTickers(ts);
+
+      await handler(authedReq(), mockResponse());
+
+      expect(Sentry.captureMessage).toHaveBeenCalledTimes(TICKERS.length);
+      const messages = vi
+        .mocked(Sentry.captureMessage)
+        .mock.calls.map(([m]) => m);
+      for (const ticker of TICKERS) {
+        expect(
+          messages.some(
+            (m) =>
+              m.includes('compute-zero-gamma') &&
+              m.includes(`${kind} ladder for ${ticker}`),
+          ),
+        ).toBe(true);
+      }
+      for (const [, level] of vi.mocked(Sentry.captureMessage).mock.calls) {
+        expect(level).toBe('error');
+      }
+    },
+  );
+
+  it.each(SKIPS)(
+    '$kind: stays quiet in Sentry before 09:40 ET, still warns and counts',
+    async ({ kind, metric, latestTs }) => {
+      vi.setSystemTime(BEFORE_0940_ET);
+      const ts =
+        kind === 'stale_source'
+          ? new Date(BEFORE_0940_ET.getTime() - 16 * MINUTE).toISOString()
+          : latestTs;
+      queueSkippedTickers(ts);
+
+      const res = mockResponse();
+      await handler(authedReq(), res);
+
+      expect((res._json as Body).status).toBe('skipped');
+      expect(Sentry.captureMessage).not.toHaveBeenCalled();
+      expect(Sentry.captureException).not.toHaveBeenCalled();
+      expect(logger.warn).toHaveBeenCalled();
+      expect(metrics.increment).toHaveBeenCalledWith(
+        `compute_zero_gamma.${metric}`,
+      );
+    },
+  );
+
+  it('computes from a source exactly 15 minutes old and skips one a second older', async () => {
+    // 15:00 old: allowed. The threshold is "older than 15 minutes".
+    mockSql
+      .mockResolvedValueOnce([{ latest_ts: agoIso(15 * MINUTE) }])
+      .mockResolvedValueOnce(balancedChain())
+      .mockResolvedValueOnce([{ id: 1 }])
+      .mockResolvedValueOnce([]);
+    // SPY: 15:01 old, skipped. QQQ: no snapshot.
+    mockSql
+      .mockResolvedValueOnce([{ latest_ts: agoIso(15 * MINUTE + 1000) }])
+      .mockResolvedValueOnce([{ latest_ts: null }]);
+
+    const res = mockResponse();
+    await handler(authedReq(), res);
+
+    const body = res._json as Body;
+    expect(body.perTicker.SPX).toMatchObject({ stored: true });
+    expect(body.perTicker.SPY).toMatchObject({
+      stored: false,
+      skip: 'stale_source',
+    });
+  });
+
+  it('a skipped ticker does not stop the others, and the run is not "skipped"', async () => {
+    // SPX stale; SPY and QQQ store.
+    mockSql.mockResolvedValueOnce([{ latest_ts: agoIso(16 * MINUTE) }]);
+    queueStored();
+    queueStored();
+
+    const res = mockResponse();
+    await handler(authedReq(), res);
+
+    const body = res._json as Body;
+    expect(body.perTicker.SPX).toMatchObject({
+      stored: false,
+      skip: 'stale_source',
+    });
+    expect(body.perTicker.SPY).toMatchObject({ stored: true });
+    expect(body.perTicker.QQQ).toMatchObject({ stored: true });
+    expect(body.status).toBe('success');
+    expect(body.skippedLegs).toBe(1);
+  });
+
+  it('skips as "all_zero" when the newest ladder has no gamma on any strike', async () => {
+    const zeroChain = [
+      makeStrikeRow(7095, 0, 0),
+      makeStrikeRow(7100, 0, 0),
+      makeStrikeRow(7105, 0, 0),
+    ];
+    for (let i = 0; i < TICKERS.length; i += 1) {
+      mockSql
+        .mockResolvedValueOnce([{ latest_ts: LADDER_TS }])
+        .mockResolvedValueOnce(zeroChain);
+    }
+
+    const res = mockResponse();
+    await handler(authedReq(), res);
+
+    const body = res._json as Body;
+    expect(body.status).toBe('skipped');
+    expect(body.perTicker.SPX).toMatchObject({
+      stored: false,
+      skip: 'all_zero',
+    });
+    expect(metrics.increment).toHaveBeenCalledWith(
+      'compute_zero_gamma.zero_snapshot_skip',
+    );
+    // 2 SQL calls per ticker, no INSERT.
+    expect(mockSql).toHaveBeenCalledTimes(6);
+  });
+
+  // ── Per-ticker fault isolation ───────────────────────────
+
+  it('isolates per-ticker DB failures — surviving tickers still complete', async () => {
+    mockSql.mockRejectedValueOnce(new Error('SPX latest_ts query failed'));
+    queueStored();
+    queueStored();
+
+    const res = mockResponse();
+    await handler(authedReq(), res);
+
+    expect(res._status).toBe(200);
+    const body = res._json as Body;
     expect(body.perTicker.SPX).toMatchObject({ stored: false });
     expect(body.perTicker.SPX!.error).toBeDefined();
     expect(body.perTicker.SPY).toMatchObject({ stored: true });
     expect(body.perTicker.QQQ).toMatchObject({ stored: true });
+    expect(Sentry.captureException).toHaveBeenCalledTimes(1);
   });
 
   // ── Aggregate status (AUD-M8) ────────────────────────────
@@ -337,8 +587,7 @@ describe('compute-zero-gamma handler', () => {
     await handler(authedReq(), res);
 
     expect(res._status).toBe(200);
-    const body = res._json as { status: string };
-    expect(body.status).toBe('success');
+    expect((res._json as Body).status).toBe('success');
   });
 
   it('reports a non-success status when ALL tickers fail', async () => {
@@ -353,12 +602,7 @@ describe('compute-zero-gamma handler', () => {
 
     // HTTP stays 200; the cron-level status carries the failure signal.
     expect(res._status).toBe(200);
-    const body = res._json as {
-      status: string;
-      failedLegs: number;
-      totalLegs: number;
-      perTicker: Record<string, { stored: boolean; error?: string }>;
-    };
+    const body = res._json as Body;
     expect(body.status).not.toBe('success');
     expect(body.status).toBe('error');
     expect(body.failedLegs).toBe(TICKERS.length);
@@ -370,32 +614,57 @@ describe('compute-zero-gamma handler', () => {
   });
 
   it('reports status "partial" when some tickers fail and others store', async () => {
-    // SPX throws; SPY + QQQ succeed (4 SQL calls each).
     mockSql.mockRejectedValueOnce(new Error('SPX latest_ts failed'));
-    for (let i = 0; i < TICKERS.length - 1; i += 1) {
-      mockSql
-        .mockResolvedValueOnce([{ latest_ts: '2026-03-24T13:55:00.000Z' }])
-        .mockResolvedValueOnce(balancedChain())
-        .mockResolvedValueOnce([]) // prev net_gamma SELECT
-        .mockResolvedValueOnce([]); // INSERT
-    }
+    queueStored();
+    queueStored();
 
     const res = mockResponse();
     await handler(authedReq(), res);
 
     expect(res._status).toBe(200);
-    const body = res._json as {
-      status: string;
-      failedLegs: number;
-      totalLegs: number;
-    };
+    const body = res._json as Body;
     expect(body.status).toBe('partial');
     expect(body.failedLegs).toBe(1);
     expect(body.totalLegs).toBe(TICKERS.length);
   });
 
-  it('reports status "success" when every ticker has no snapshot (quiet window)', async () => {
-    // No snapshots anywhere → no real work; an empty run is not a failure.
+  it('is an error, not a success, when the INSERT is rejected (R4)', async () => {
+    const dbError = new Error('insert rejected');
+    for (let i = 0; i < TICKERS.length; i += 1) {
+      mockSql
+        .mockResolvedValueOnce([{ latest_ts: LADDER_TS }])
+        .mockResolvedValueOnce(balancedChain())
+        .mockRejectedValueOnce(dbError);
+    }
+
+    const res = mockResponse();
+    await handler(authedReq(), res);
+
+    const body = res._json as Body;
+    expect(body.status).toBe('error');
+    expect(body.failedLegs).toBe(TICKERS.length);
+    expect(Sentry.captureException).toHaveBeenCalledTimes(TICKERS.length);
+    expect(Sentry.captureException).toHaveBeenCalledWith(dbError);
+  });
+
+  it('is an error when the rows SELECT is rejected', async () => {
+    const dbError = new Error('rows select rejected');
+    for (let i = 0; i < TICKERS.length; i += 1) {
+      mockSql
+        .mockResolvedValueOnce([{ latest_ts: LADDER_TS }])
+        .mockRejectedValueOnce(dbError);
+    }
+
+    const res = mockResponse();
+    await handler(authedReq(), res);
+
+    expect((res._json as Body).status).toBe('error');
+    expect(Sentry.captureException).toHaveBeenCalledWith(dbError);
+  });
+
+  it('reports "skipped", not "success", when every ticker has no snapshot (quiet window)', async () => {
+    // No snapshots anywhere → nothing computed. Not a failure, but not a
+    // success either: every ticker was skipped.
     for (let i = 0; i < TICKERS.length; i += 1) {
       mockSql.mockResolvedValueOnce([{ latest_ts: null }]);
     }
@@ -404,13 +673,17 @@ describe('compute-zero-gamma handler', () => {
     await handler(authedReq(), res);
 
     expect(res._status).toBe(200);
-    const body = res._json as {
-      status: string;
-      failedLegs: number;
-      totalLegs: number;
-    };
-    expect(body.status).toBe('success');
+    const body = res._json as Body;
+    expect(body.status).toBe('skipped');
     expect(body.failedLegs).toBe(0);
     expect(body.totalLegs).toBe(0);
+    for (const ticker of TICKERS) {
+      expect(body.perTicker[ticker]).toMatchObject({
+        stored: false,
+        reason: 'No strike_exposures snapshot',
+      });
+    }
+    // 3 SELECTs total, no INSERTs.
+    expect(mockSql).toHaveBeenCalledTimes(3);
   });
 });

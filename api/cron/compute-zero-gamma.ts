@@ -22,9 +22,27 @@
  * stored whenever the calculator can find a sign change in ±3% of spot.
  * `confidence` is recorded alongside for UI styling / filtering.
  *
- * `zero_gamma` is NULL only when:
- *   - the gamma profile has no sign change in the ±3% grid, OR
- *   - the ticker has no fresh strike_exposures snapshot (we log + skip).
+ * `zero_gamma` is NULL only when the gamma profile has no sign change in the
+ * ±3% grid.
+ *
+ * What it will not compute from (docs/superpowers/specs/
+ * live-data-integrity-2026-11-06.md, P0.4; F8 was 2,051 frozen rows and ~324
+ * pre-open rows up to 120 SPX points off):
+ *   - R-stale: a ticker whose newest `strike_exposures` snapshot is from an
+ *     earlier ET day, or from today but older than 15 minutes, is skipped
+ *     (`stale` / `stale_source`). Before, a stalled source ladder was
+ *     recomputed every 5 minutes into a fresh-looking row.
+ *   - no snapshot at all (`empty`) or no gamma on any strike (`all_zero`).
+ *   Every skip follows the one rule in api/_lib/ladder-skip.ts: a warning, a
+ *   metric, and from 09:40 ET a Sentry error. A run in which every ticker was
+ *   skipped reports `skipped`, never `success`.
+ *
+ * R6: the row is keyed on its source, `ts` = the ladder's own timestamp (the
+ * 5-minute bucket fetch-strike-exposure stores), not the compute time. The
+ * `ts` column default (NOW()) made `ON CONFLICT (ticker, ts) DO NOTHING` a
+ * no-op, so recomputing one ladder wrote a new row each run. Now it writes
+ * nothing. A row is labelled with the time of the ladder it came from, up
+ * to 5 minutes before the cron ran.
  *
  * Cadence: 5-min at +1 offset from fetch-strike-exposure source — ensures
  * the source rows are committed before we read them. Cron line:
@@ -46,6 +64,8 @@ import {
   deriveCronStatus,
   type CronResult,
 } from '../_lib/cron-instrumentation.js';
+import { reportLadderSkip } from '../_lib/ladder-skip.js';
+import { isBeforeEtDay, type LadderSkipKind } from '../_lib/strike-ladder.js';
 import { computeZeroGammaLevel, type GexStrike } from '../_lib/zero-gamma.js';
 import {
   ZERO_GAMMA_TICKERS,
@@ -72,20 +92,28 @@ interface SnapshotBundle {
 }
 
 /**
- * Load the most recent per-strike gamma snapshot for the given ticker at
- * its primary expiry.
+ * R-stale: the oldest a source ladder may be and still be computed from. The
+ * source is written every 5 minutes, and this cron runs 1 minute after it,
+ * so a healthy ladder is at most about 6 minutes old (its 5-minute bucket
+ * plus the offset). 15 minutes tolerates one missed fetch; the dealer-regime
+ * tile calls a row older than 15 minutes stale too (REGIME_CONSTANTS.staleAgeMs).
+ */
+const SOURCE_MAX_AGE_MS = 15 * 60_000;
+
+/**
+ * The newest per-strike snapshot time for the ticker at its primary expiry,
+ * or null when `strike_exposures` has no row for it today.
  *
  * `strike_exposures` holds per-(date, timestamp, ticker, strike, expiry)
- * rows written every 5 minutes. We want a single coherent snapshot: the
- * latest timestamp that has at least one row for (ticker, primary expiry),
- * plus every strike on that timestamp. Returns null if no rows exist.
+ * rows written every 5 minutes. A single coherent snapshot is the latest
+ * timestamp that has at least one row for (ticker, primary expiry).
  */
-async function loadLatestSnapshot(
+async function loadLatestTs(
   sql: ReturnType<typeof getDb>,
   ticker: ZeroGammaTicker,
   today: string,
   expiry: string,
-): Promise<SnapshotBundle | null> {
+): Promise<string | null> {
   const latestTsRows = (await withDbRetry(
     () => sql`
       SELECT MAX(timestamp) AS latest_ts
@@ -101,11 +129,26 @@ async function loadLatestSnapshot(
   const latestTsRaw = latestTsRows[0]?.latest_ts ?? null;
   if (latestTsRaw == null) return null;
 
-  const latestTs =
-    latestTsRaw instanceof Date
-      ? latestTsRaw.toISOString()
-      : new Date(latestTsRaw).toISOString();
+  return latestTsRaw instanceof Date
+    ? latestTsRaw.toISOString()
+    : new Date(latestTsRaw).toISOString();
+}
 
+type SnapshotLoad =
+  | { kind: 'ok'; snapshot: SnapshotBundle }
+  /** No row, or no usable spot, at that timestamp. */
+  | { kind: 'empty' }
+  /** Rows, but no gamma on any strike. */
+  | { kind: 'all_zero' };
+
+/** Every strike on the snapshot at `latestTs`. */
+async function loadSnapshot(
+  sql: ReturnType<typeof getDb>,
+  ticker: ZeroGammaTicker,
+  today: string,
+  expiry: string,
+  latestTs: string,
+): Promise<SnapshotLoad> {
   const rows = (await withDbRetry(
     () => sql`
       SELECT strike, price, call_gamma_oi, put_gamma_oi, timestamp
@@ -120,10 +163,13 @@ async function loadLatestSnapshot(
     10_000,
   )) as StrikeExposureRow[];
 
-  if (rows.length === 0) return null;
+  if (rows.length === 0) return { kind: 'empty' };
 
+  // `price` is the helper spot fetch-strike-exposure stores on every row of a
+  // ladder (P0.3; UW's own per-strike price can lag by hours), so the first
+  // row's price is the spot. Rows stored before that change carry UW's price.
   const spot = Number(rows[0]!.price);
-  if (!Number.isFinite(spot) || spot <= 0) return null;
+  if (!Number.isFinite(spot) || spot <= 0) return { kind: 'empty' };
 
   // Combine call + put OI gamma into signed dealer gamma per strike.
   // UW already publishes signed values on these columns — sum per strike.
@@ -142,9 +188,9 @@ async function loadLatestSnapshot(
     strikes.push({ strike, gamma });
   }
 
-  if (strikes.length === 0) return null;
+  if (strikes.length === 0) return { kind: 'all_zero' };
 
-  return { spot, timestamp: latestTs, strikes };
+  return { kind: 'ok', snapshot: { spot, timestamp: latestTs, strikes } };
 }
 
 /**
@@ -177,6 +223,10 @@ function netGammaAtSpot(
 
 interface TickerOutcome {
   stored: boolean;
+  /** Not computed or not written, and not a failure. */
+  skipped?: true;
+  /** Which of the one-rule skip kinds (api/_lib/ladder-skip.ts), if any. */
+  skip?: LadderSkipKind;
   reason?: string;
   spot?: number;
   zeroGamma?: number | null;
@@ -184,9 +234,32 @@ interface TickerOutcome {
 }
 
 /**
- * Process one ticker end-to-end: load snapshot → compute → insert.
- * Throws on DB errors (caught by the caller's per-ticker try/catch so one
- * bad ticker does not abort the rest of the loop).
+ * One ticker's skip: report it by the one rule, and say so in the response.
+ * `reportLadderSkip` warns, counts the metric and, from 09:40 ET, sends a
+ * Sentry error.
+ */
+function skipTicker(
+  kind: LadderSkipKind,
+  ticker: ZeroGammaTicker,
+  expiry: string,
+  today: string,
+  reason: string,
+  detail: Record<string, unknown> = {},
+): TickerOutcome {
+  reportLadderSkip({
+    job: 'compute-zero-gamma',
+    kind,
+    ticker,
+    expiry,
+    detail: { today, ...detail },
+  });
+  return { stored: false, skipped: true, skip: kind, reason };
+}
+
+/**
+ * Process one ticker end-to-end: check the source's age → load snapshot →
+ * compute → insert. Throws on DB errors (caught by the caller's per-ticker
+ * try/catch so one bad ticker does not abort the rest of the loop).
  */
 async function processTicker(
   sql: ReturnType<typeof getDb>,
@@ -194,15 +267,66 @@ async function processTicker(
   today: string,
 ): Promise<TickerOutcome> {
   const expiry = getPrimaryExpiry(ticker, today);
-  const snapshot = await loadLatestSnapshot(sql, ticker, today, expiry);
+  const latestTs = await loadLatestTs(sql, ticker, today, expiry);
 
-  if (snapshot == null) {
-    logger.info(
-      { ticker, today, expiry },
-      'compute-zero-gamma: no strike_exposures snapshot — skipping ticker',
+  if (latestTs == null) {
+    return skipTicker(
+      'empty',
+      ticker,
+      expiry,
+      today,
+      'No strike_exposures snapshot',
     );
-    return { stored: false, reason: 'No strike_exposures snapshot' };
   }
+
+  // R-stale: never compute from a source that has stopped moving. The row
+  // that comes out is keyed on the ladder, but a fresh-looking compute of
+  // yesterday's close (the pre-open ladder) or of a ladder that froze an hour
+  // ago is still a wrong "current" level.
+  if (isBeforeEtDay(latestTs, today)) {
+    return skipTicker(
+      'stale',
+      ticker,
+      expiry,
+      today,
+      'stale snapshot (earlier ET day)',
+      { snapshotTs: latestTs },
+    );
+  }
+  const ageMs = Date.now() - Date.parse(latestTs);
+  if (ageMs > SOURCE_MAX_AGE_MS) {
+    return skipTicker(
+      'stale_source',
+      ticker,
+      expiry,
+      today,
+      'stale snapshot (older than 15 minutes)',
+      { snapshotTs: latestTs, ageMinutes: Math.round(ageMs / 60_000) },
+    );
+  }
+
+  const loaded = await loadSnapshot(sql, ticker, today, expiry, latestTs);
+  if (loaded.kind === 'empty') {
+    return skipTicker(
+      'empty',
+      ticker,
+      expiry,
+      today,
+      'No strike_exposures snapshot',
+      { snapshotTs: latestTs },
+    );
+  }
+  if (loaded.kind === 'all_zero') {
+    return skipTicker(
+      'all_zero',
+      ticker,
+      expiry,
+      today,
+      'No gamma on any strike of the snapshot',
+      { snapshotTs: latestTs },
+    );
+  }
+  const snapshot = loaded.snapshot;
 
   const result = computeZeroGammaLevel(snapshot.strikes, snapshot.spot);
 
@@ -215,9 +339,41 @@ async function processTicker(
   const netGamma = netGammaAtSpot(result.curve, snapshot.spot);
   const gammaCurveJson = JSON.stringify(result.curve);
 
-  // Sign-flip detection: read the previous row's net γ before inserting.
-  // When the sign changes between successive cron ticks, dealer-gamma
-  // regime flipped (long-γ ↔ short-γ at spot) — a load-bearing event for
+  // R6: keyed on the source ladder. `ts` is the ladder's own timestamp, so
+  // computing the same ladder again conflicts on (ticker, ts) and RETURNING
+  // yields no row: nothing is written, and nothing below runs for it.
+  const inserted = (await withDbRetry(
+    () => sql`
+      INSERT INTO zero_gamma_levels (
+        ticker, spot, zero_gamma, confidence,
+        net_gamma_at_spot, gamma_curve, ts
+      )
+      VALUES (
+        ${ticker}, ${snapshot.spot}, ${zeroGamma}, ${result.confidence},
+        ${netGamma}, ${gammaCurveJson}::jsonb, ${snapshot.timestamp}::timestamptz
+      )
+      ON CONFLICT (ticker, ts) DO NOTHING
+      RETURNING id
+    `,
+    2,
+    10_000,
+  )) as Array<{ id: number }>;
+  if (inserted.length === 0) {
+    logger.info(
+      { ticker, snapshotTs: snapshot.timestamp },
+      'compute-zero-gamma: ladder already stored — nothing to write',
+    );
+    return {
+      stored: false,
+      skipped: true,
+      reason: 'ladder already stored',
+    };
+  }
+
+  // Sign-flip detection: compare this ladder's net γ with the previous
+  // LADDER's (`ts` strictly before this one's, so never the row just written).
+  // When the sign changes between successive ladders, dealer-gamma regime
+  // flipped (long-γ ↔ short-γ at spot) — a load-bearing event for
   // post-mortem context on trades that misfire around the transition.
   // We log + breadcrumb here rather than alert because the flip is
   // expected behavior, just one we want to be able to grep for.
@@ -226,6 +382,7 @@ async function processTicker(
       SELECT net_gamma_at_spot::numeric AS net_gamma_at_spot
       FROM zero_gamma_levels
       WHERE ticker = ${ticker}
+        AND ts < ${snapshot.timestamp}::timestamptz
       ORDER BY ts DESC
       LIMIT 1
     `,
@@ -273,22 +430,6 @@ async function processTicker(
     );
   }
 
-  await withDbRetry(
-    () => sql`
-      INSERT INTO zero_gamma_levels (
-        ticker, spot, zero_gamma, confidence,
-        net_gamma_at_spot, gamma_curve
-      )
-      VALUES (
-        ${ticker}, ${snapshot.spot}, ${zeroGamma}, ${result.confidence},
-        ${netGamma}, ${gammaCurveJson}::jsonb
-      )
-      ON CONFLICT (ticker, ts) DO NOTHING
-    `,
-    2,
-    10_000,
-  );
-
   logger.info(
     {
       ticker,
@@ -324,22 +465,22 @@ export default withCronInstrumentation(
       TickerOutcome | { stored: false; error: string }
     > = {};
 
-    // Track per-leg outcome for deriveCronStatus. A ticker with no snapshot
-    // is a no-op skip (no data to work on), not a failure — it is excluded
-    // from BOTH counters so a quiet window reports 'success', not 'error'.
-    // `total` is the count of tickers that had real work (snapshot present),
-    // `failed` is the count that threw.
+    // Track per-leg outcome for deriveCronStatus. A skipped ticker (no
+    // snapshot, a stale or all-zero source, a ladder already stored) is not a
+    // failure — it is excluded from BOTH counters. `total` is the count of
+    // tickers that stored a row or threw, `failed` is the count that threw.
     let failedLegs = 0;
     let totalLegs = 0;
+    let skippedLegs = 0;
 
     for (const ticker of ZERO_GAMMA_TICKERS) {
       try {
         const outcome = await processTicker(sql, ticker, today);
         perTicker[ticker] = outcome;
-        // Only count tickers that had a snapshot to work on. A skipped
-        // (no-snapshot) ticker is excluded from the leg counters.
         if (outcome.stored) {
           totalLegs += 1;
+        } else if (outcome.skipped) {
+          skippedLegs += 1;
         }
       } catch (err) {
         // The wrapper sets `cron.job` once at entry; we only need the ticker
@@ -355,12 +496,17 @@ export default withCronInstrumentation(
 
     // Collapse the per-leg outcome into a single status. When every ticker
     // that had work failed (or every ticker threw), this returns 'error'
-    // instead of masking total failure as 'success'.
-    const status = deriveCronStatus(failedLegs, totalLegs);
+    // instead of masking total failure as 'success'. A run in which nothing
+    // was stored and every ticker was skipped did not do its job either:
+    // 'skipped', never 'success'.
+    let status = deriveCronStatus(failedLegs, totalLegs);
+    if (status === 'success' && totalLegs === 0 && skippedLegs > 0) {
+      status = 'skipped';
+    }
 
     return {
       status,
-      metadata: { perTicker, failedLegs, totalLegs },
+      metadata: { perTicker, failedLegs, totalLegs, skippedLegs },
     };
   },
   { requireApiKey: false },
