@@ -156,12 +156,14 @@ export default function MarketRegimeSection({
                   <PreTradeSignals
                     quotes={historySnapshot ? null : market.data.quotes}
                     yesterday={
-                      historySnapshot?.yesterday
-                        ? {
-                            yesterday: historySnapshot.yesterday,
-                            twoDaysAgo: null,
-                            asOf: '',
-                          }
+                      historySnapshot
+                        ? historySnapshot.yesterday
+                          ? {
+                              yesterday: historySnapshot.yesterday,
+                              twoDaysAgo: null,
+                              asOf: '',
+                            }
+                          : null
                         : market.data.yesterday
                     }
                     movers={historySnapshot ? null : market.data.movers}

@@ -7,7 +7,11 @@ import type { HistorySnapshot } from '../../hooks/useHistoryData';
 import type { MarketDataState } from '../../hooks/useMarketData';
 import type { ComputedSignals } from '../../hooks/useComputedSignals';
 import type { ClusterMultiplier } from '../../hooks/useClusterMultiplier';
-import type { HistoryCandle } from '../../types/api';
+import type {
+  DaySummary,
+  HistoryCandle,
+  QuotesResponse,
+} from '../../types/api';
 import { computeClusterSignal } from '../../utils/volatility-cluster';
 
 const defaultSignals: ComputedSignals = {
@@ -514,6 +518,105 @@ describe('MarketRegimeSection', () => {
       renderWith({ ...hotCluster, isEdited: true, reset });
       fireEvent.click(screen.getByRole('button', { name: 'Reset to data' }));
       expect(reset).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // The live feed's yesterday is the day before TODAY. Like quotes and
+  // movers, it must not stand in for a history snapshot's.
+  describe('Pre-Trade Signals yesterday', () => {
+    const RV_IV_CARD = 'Realized vs. Implied Vol';
+    const liveYesterday: DaySummary = {
+      date: '2026-03-11',
+      open: 5700,
+      high: 5760,
+      low: 5675,
+      close: 5740,
+      rangePct: 1.5,
+      rangePts: 85,
+    };
+    const quote = (price: number) => ({
+      price,
+      open: price,
+      high: price,
+      low: price,
+      prevClose: price,
+      change: 0,
+      changePct: 0,
+    });
+    const liveQuotes: QuotesResponse = {
+      spy: quote(570),
+      spx: quote(5700),
+      vix: quote(18),
+      vix1d: null,
+      vix9d: null,
+      vvix: null,
+      marketOpen: true,
+      asOf: '2026-03-12T15:00:00Z',
+    };
+    const liveMarket: MarketDataState = {
+      ...mockMarket,
+      data: {
+        ...mockMarket.data,
+        quotes: liveQuotes,
+        yesterday: { yesterday: liveYesterday, twoDaysAgo: null, asOf: '' },
+      },
+    };
+    const snapshotWith = (
+      yesterday: HistorySnapshot['yesterday'],
+    ): HistorySnapshot => ({
+      spot: 5700,
+      spy: 570,
+      runningOHLC: { open: 5690, high: 5720, low: 5680, last: 5700 },
+      openingRange: null,
+      yesterday,
+      vix: 18,
+      vixPrevClose: 18,
+      vix1d: 14,
+      vix9d: 16,
+      vvix: 90,
+      previousClose: 5695,
+      candle: {
+        datetime: 1710000000000,
+        time: '10:00',
+        open: 5695,
+        high: 5705,
+        low: 5690,
+        close: 5700,
+      },
+      candleIndex: 6,
+      totalCandles: 78,
+    });
+
+    function renderWith(historySnapshot?: HistorySnapshot) {
+      render(
+        <MarketRegimeSection
+          dVix="18"
+          results={makeResults()}
+          errors={{}}
+          skewPct={0}
+          selectedDate="2026-03-12"
+          market={liveMarket}
+          cluster={noCluster}
+          historySnapshot={historySnapshot}
+          signals={defaultSignals}
+          chain={null}
+        />,
+      );
+    }
+
+    it("shows the snapshot's own previous day", () => {
+      renderWith(snapshotWith({ ...liveYesterday, date: '2026-03-10' }));
+      expect(screen.getByText(RV_IV_CARD)).toBeInTheDocument();
+    });
+
+    it('shows nothing, not the live feed’s day, when the snapshot has no previous day', () => {
+      renderWith(snapshotWith(null));
+      expect(screen.queryByText(RV_IV_CARD)).not.toBeInTheDocument();
+    });
+
+    it('uses the live feed when there is no snapshot (today)', () => {
+      renderWith();
+      expect(screen.getByText(RV_IV_CARD)).toBeInTheDocument();
     });
   });
 });
