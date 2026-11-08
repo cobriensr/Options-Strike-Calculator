@@ -40,7 +40,10 @@
  *
  * `insertContractVolumes` and `insertFrontMonthRows` are the bulk inserts
  * the history seed (Phase 3) uses. They write `source = 'candles'`.
- * `fetchStoredFrontMonths` is its read of the decisions already stored.
+ * Candle volume rows are DO NOTHING per contract, but never into a session
+ * that has a `live` row: one source per (product, trade date), the first
+ * writer wins. `fetchStoredFrontMonths` is its read of the decisions already
+ * stored.
  *
  * The HTTP driver returns BIGINT as a string and DATE as a JS `Date`.
  * Volumes are read as `float8` (exact below 2^53) and dates are only ever
@@ -523,15 +526,29 @@ export interface ContractVolumeRow {
 /**
  * Seeds `futures_contract_volume` from daily candles: batched `INSERT …
  * SELECT FROM unnest(…) ON CONFLICT DO NOTHING`, 500 rows a statement,
- * `source = 'candles'`. A row already stored (the live tally's included) is
- * never revised. Returns the rows this call inserted: a retry after an
- * attempt that timed out client-side but committed counts 0 for those rows.
- * Every row is checked first, so a bad one writes nothing: a non-canonical
- * contract (the caller folds `ESZ26` into `ESZ6` and sums), a volume that
- * is not a whole number of contracts, 0 or more, or a trade date that is
- * not before the current one (a session still running has only partial
- * volume, and the next date's decision reads it). Throws on a rejected
- * INSERT; batches already inserted stay.
+ * `source = 'candles'`. A row already stored is never revised.
+ *
+ * One source per (product, trade date), the first writer wins: a session
+ * that already has a `live` row gets no candle row at all, not even for a
+ * contract the live tally never saw (`WHERE NOT EXISTS` in the same
+ * statement, so no extra round trip). Why: the decision compares the
+ * incumbent's volume with a challenger's. After a uw-stream restart
+ * mid-session the live tally holds only part of the incumbent's session, and
+ * a full-session candle row for the challenger beside it would roll early.
+ * One source on both sides of the comparison is no worse than the live rule.
+ * Live rows land while the session runs and candle rows only after it ends,
+ * so live wins wherever uw-stream saw the session and candles fill the ones
+ * it missed entirely. A session with only candle rows still takes a contract
+ * the seed did not fetch, so a refresh can add it.
+ *
+ * Returns the rows this call inserted, so a skipped row is not counted: a
+ * retry after an attempt that timed out client-side but committed counts 0
+ * for those rows. Every row is checked first, so a bad one writes nothing: a
+ * non-canonical contract (the caller folds `ESZ26` into `ESZ6` and sums), a
+ * volume that is not a whole number of contracts, 0 or more, or a trade date
+ * that is not before the current one (a session still running has only
+ * partial volume, and the next date's decision reads it). Throws on a
+ * rejected INSERT; batches already inserted stay.
  */
 export async function insertContractVolumes(
   rows: ReadonlyArray<ContractVolumeRow>,
@@ -570,6 +587,12 @@ export async function insertContractVolumes(
           ${chunk.map((r) => r.contract)}::text[],
           ${chunk.map((r) => r.volume)}::bigint[]
         ) AS t(product, trade_date, contract, volume)
+        WHERE NOT EXISTS (
+          SELECT 1 FROM futures_contract_volume v
+          WHERE v.product = t.product
+            AND v.trade_date = t.trade_date
+            AND v.source = 'live'
+        )
         ON CONFLICT (product, trade_date, contract) DO NOTHING
         RETURNING contract
       `,

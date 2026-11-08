@@ -171,13 +171,14 @@ async function putVolumes(
   product: string,
   tradeDate: string,
   volumes: Record<string, number>,
+  source: 'live' | 'candles' = 'live',
 ) {
   for (const [contract, volume] of Object.entries(volumes)) {
     await db.query(
       `INSERT INTO futures_contract_volume
          (product, trade_date, contract, volume, source)
-       VALUES ($1, $2, $3, $4, 'live')`,
-      [product, tradeDate, contract, volume],
+       VALUES ($1, $2, $3, $4, $5)`,
+      [product, tradeDate, contract, volume, source],
     );
   }
 }
@@ -1229,8 +1230,8 @@ describe('insertContractVolumes', () => {
     ]);
   });
 
-  it('ON CONFLICT DO NOTHING: a stored row, whatever its source, is left alone and not counted', async () => {
-    await putVolumes('ES', '2026-11-05', { ESZ6: 777 });
+  it('ON CONFLICT DO NOTHING: a stored candle row is left alone and not counted, and a contract the seed missed still lands', async () => {
+    await putVolumes('ES', '2026-11-05', { ESZ6: 777 }, 'candles');
 
     const n = await insertContractVolumes([
       row({ volume: 1 }),
@@ -1251,12 +1252,172 @@ describe('insertContractVolumes', () => {
         trade_date: '2026-11-05',
         contract: 'ESZ6',
         volume: '777',
-        source: 'live',
+        source: 'candles',
       },
     ]);
     await expect(
       insertContractVolumes([row({ contract: 'ESH7' })]),
     ).resolves.toBe(0);
+  });
+
+  describe('one source per session: the first writer wins', () => {
+    it('a session with a live row takes no candle row, not even for a contract the live tally never saw, and counts 0', async () => {
+      await putVolumes('ES', '2026-11-05', { ESZ6: 300 });
+
+      const n = await insertContractVolumes([
+        row({ volume: 1 }),
+        row({ contract: 'ESH7', volume: 2 }),
+        row({ contract: 'ESM7', volume: 3 }),
+      ]);
+
+      expect(n).toBe(0);
+      expect(await volumeRows()).toEqual([
+        {
+          product: 'ES',
+          trade_date: '2026-11-05',
+          contract: 'ESZ6',
+          volume: '300',
+          source: 'live',
+        },
+      ]);
+    });
+
+    it('a session with only candle rows still takes a new contract’s row, and keeps the rows it has', async () => {
+      await putVolumes('ES', '2026-11-05', { ESZ6: 777 }, 'candles');
+
+      const n = await insertContractVolumes([
+        row({ volume: 1 }),
+        row({ contract: 'ESH7', volume: 2 }),
+      ]);
+
+      expect(n).toBe(1);
+      expect(await volumeRows()).toEqual([
+        {
+          product: 'ES',
+          trade_date: '2026-11-05',
+          contract: 'ESH7',
+          volume: '2',
+          source: 'candles',
+        },
+        {
+          product: 'ES',
+          trade_date: '2026-11-05',
+          contract: 'ESZ6',
+          volume: '777',
+          source: 'candles',
+        },
+      ]);
+    });
+
+    it('a session with no rows gets every row', async () => {
+      const n = await insertContractVolumes([
+        row({ volume: 1 }),
+        row({ contract: 'ESH7', volume: 2 }),
+        row({ contract: 'ESM7', volume: 3 }),
+      ]);
+
+      expect(n).toBe(3);
+      expect((await volumeRows()).map((r) => [r.contract, r.source])).toEqual([
+        ['ESH7', 'candles'],
+        ['ESM7', 'candles'],
+        ['ESZ6', 'candles'],
+      ]);
+    });
+
+    it('in one batch over three sessions, a live one, a candle-only one and an empty one, only the right rows land and the count is exact', async () => {
+      await putVolumes('ES', '2026-11-03', { ESZ6: 100 });
+      await putVolumes('ES', '2026-11-04', { ESZ6: 200 }, 'candles');
+
+      const n = await insertContractVolumes([
+        row({ tradeDate: '2026-11-03', volume: 11 }),
+        row({ tradeDate: '2026-11-03', contract: 'ESH7', volume: 12 }),
+        row({ tradeDate: '2026-11-04', volume: 21 }),
+        row({ tradeDate: '2026-11-04', contract: 'ESH7', volume: 22 }),
+        row({ tradeDate: '2026-11-05', volume: 31 }),
+        row({ tradeDate: '2026-11-05', contract: 'ESH7', volume: 32 }),
+      ]);
+
+      expect(n).toBe(3);
+      expect(
+        (await volumeRows()).map((r) => [
+          r.trade_date,
+          r.contract,
+          r.volume,
+          r.source,
+        ]),
+      ).toEqual([
+        ['2026-11-03', 'ESZ6', '100', 'live'],
+        ['2026-11-04', 'ESH7', '22', 'candles'],
+        ['2026-11-04', 'ESZ6', '200', 'candles'],
+        ['2026-11-05', 'ESH7', '32', 'candles'],
+        ['2026-11-05', 'ESZ6', '31', 'candles'],
+      ]);
+    });
+
+    it('a live row of another product does not block', async () => {
+      await putVolumes('NQ', '2026-11-05', { NQZ6: 300 });
+
+      const n = await insertContractVolumes([
+        row({ volume: 1 }),
+        row({ contract: 'ESH7', volume: 2 }),
+      ]);
+
+      expect(n).toBe(2);
+      expect(
+        (await volumeRows()).map((r) => [r.product, r.contract, r.source]),
+      ).toEqual([
+        ['ES', 'ESH7', 'candles'],
+        ['ES', 'ESZ6', 'candles'],
+        ['NQ', 'NQZ6', 'live'],
+      ]);
+    });
+
+    it('a live row of another date does not block', async () => {
+      await putVolumes('ES', '2026-11-04', { ESZ6: 300 });
+      await putVolumes('ES', '2026-11-06', { ESZ6: 400 });
+
+      const n = await insertContractVolumes([
+        row({ volume: 1 }),
+        row({ contract: 'ESH7', volume: 2 }),
+      ]);
+
+      expect(n).toBe(2);
+      expect(
+        (await volumeRows()).map((r) => [r.trade_date, r.contract, r.source]),
+      ).toEqual([
+        ['2026-11-04', 'ESZ6', 'live'],
+        ['2026-11-05', 'ESH7', 'candles'],
+        ['2026-11-05', 'ESZ6', 'candles'],
+        ['2026-11-06', 'ESZ6', 'live'],
+      ]);
+    });
+
+    it('is the same statement: no read before the insert, one statement per 500-row chunk, and a live session in either chunk is skipped', async () => {
+      const day = (i: number) =>
+        new Date(Date.UTC(2020, 0, 1 + i)).toISOString().slice(0, 10);
+      // The live rows name a contract the batch does not, so only the guard,
+      // not the primary key, can keep the batch's rows out of those dates.
+      await putVolumes('ES', day(10), { ESH7: 5 });
+      await putVolumes('ES', day(550), { ESH7: 5 });
+      const rows = Array.from({ length: 600 }, (_, i) =>
+        row({ tradeDate: day(i), volume: i }),
+      );
+
+      await expect(insertContractVolumes(rows)).resolves.toBe(598);
+
+      expect(pg.queries).toHaveLength(2);
+      expect(count(VOLUME_INSERT)).toBe(2);
+      const stored = await volumeRows();
+      expect(stored).toHaveLength(600);
+      expect(
+        stored.filter((r) => r.source === 'live').map((r) => r.trade_date),
+      ).toEqual([day(10), day(550)]);
+      expect(
+        stored.filter(
+          (r) => r.source === 'candles' && r.trade_date === day(10),
+        ),
+      ).toEqual([]);
+    });
   });
 
   it('inserts in 500-row statements', async () => {
