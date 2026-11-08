@@ -138,8 +138,9 @@ import {
 // A root whose refresh fails makes no more calls, so a UW that hangs on
 // every call costs ~5 min (6 × 48s). The order-flow pass starts no new
 // range or page after FLOW_DEADLINE_MS, but one started just before it can
-// still refresh a root and load its candles (~3 calls, ~144 s) and fetch a
-// page (~48 s) and write: ~600 + 200 s worst case. The Sentry monitor's
+// still refresh a root (~48 s), load its candles (two contracts at a roll,
+// ~96 s) and fetch a page (~48 s) and write: ~540 + 192 s of UW calls, which
+// leaves ~68 s of the 800 s for the database work. The Sentry monitor's
 // 14 min max runtime (cron-schedules.ts) covers the full 800 s. Typical
 // runs finish in a minute or two.
 export const config = {
@@ -167,10 +168,13 @@ const VOLUME_RANGE = '1m';
 const FLOW_PAGE_BUDGET = 600;
 // No order-flow range or page starts this long after the run began, so a
 // slow UW can't carry the run past maxDuration (800 s). Work started just
-// before it can add one root's candle load (~96 s worst case under
-// withRetry, if the OHLC pass didn't load them) and one page (~48 s).
-// What's left resumes on the next run.
-const FLOW_DEADLINE_MS = 600_000;
+// before it can add one root's volume refresh (~48 s worst case under
+// withRetry), its candle loads (~96 s for two contracts, if the OHLC pass
+// didn't load them) and one page (~48 s): 540 + 192 s, which leaves ~68 s
+// for the schedule read, the freshness read and the write. It only binds
+// when UW is slow; a normal run is about a minute of paging. What's left
+// resumes on the next run.
+const FLOW_DEADLINE_MS = 540_000;
 // Longest span one order-flow fetch covers, so a long range is repaired
 // oldest first (UW pages newest-first within a fetch).
 const FLOW_PIECE_MS = 60 * 60_000;

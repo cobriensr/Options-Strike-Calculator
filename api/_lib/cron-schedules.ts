@@ -612,9 +612,12 @@ export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
     schedule: '0 6 * * 1-6',
     checkinMargin: DEFAULT_MARGIN,
     // 14 min covers its 800 s maxDuration (13.3 min). The OHLC pass alone
-    // can take ~10 min when UW hangs, and the order-flow pass can run up to
-    // its 600 s deadline plus one candle load and one page, so the 10 min
-    // long-runner default would page on a run Vercel still lets finish.
+    // can take ~10 min if every UW call burns its retries and still succeeds
+    // (6 roots × one volume refresh + one candle call × 48 s); a hang that
+    // errors ends a root after its refresh (~5 min). The order-flow pass can
+    // run up to its 540 s deadline plus one refresh, its candle loads and one
+    // page, so the 10 min long-runner default would page on a run Vercel
+    // still lets finish.
     maxRuntime: 14,
   },
   'backup-tables': {

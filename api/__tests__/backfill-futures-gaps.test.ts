@@ -761,6 +761,58 @@ describe('backfill-futures-gaps handler', () => {
     ]);
   });
 
+  it('builds minutes either side of the winter session open (23:00Z, 17:00 CST) from their own session’s contract', async () => {
+    vi.setSystemTime(new Date('2026-12-01T06:00:00Z'));
+    // Mon 15:57 → 17:02 CST. 21:58–21:59Z are 11-30's session (ESZ6); the
+    // halt is 22:00–23:00Z, and 23:00–23:01Z are the next session's (ESH7).
+    mockSql
+      .mockResolvedValueOnce([
+        gapRow('ES', '2026-11-30T21:57:00Z', '2026-11-30T23:02:00Z'),
+      ])
+      .mockResolvedValueOnce([{}, {}, {}, {}]);
+    mockFetchSchedule.mockResolvedValue(
+      scheduleOf({ '2026-11-30': 'ESZ6', '2026-12-01': 'ESH7' }),
+    );
+    routeUw({
+      [candlesPath('ESZ6')]: [
+        candle('2026-11-30T21:58:00Z', 7740, 10),
+        candle('2026-11-30T21:59:00Z', 7741, 10),
+        // The old contract still prints after the open, in size.
+        candle('2026-11-30T23:00:00Z', 7742, 9_000),
+        candle('2026-11-30T23:01:00Z', 7743, 9_000),
+      ],
+      [candlesPath('ESH7')]: [
+        // The new contract printed before the open: not its session yet.
+        candle('2026-11-30T21:58:00Z', 7840, 9_000),
+        candle('2026-11-30T23:00:00Z', 7842, 10),
+        candle('2026-11-30T23:01:00Z', 7843, 10),
+      ],
+    });
+
+    await run();
+
+    // The halt minutes are no session's, so the two dates are the sessions'.
+    expect(mockFetchSchedule).toHaveBeenCalledWith(
+      'ES',
+      ['2026-11-30', '2026-12-01'],
+      'cron',
+    );
+    const values = sqlValues(insertCalls()[0]!);
+    expect(values).toContainEqual([
+      '2026-11-30T21:58:00.000Z',
+      '2026-11-30T21:59:00.000Z',
+      '2026-11-30T23:00:00.000Z',
+      '2026-11-30T23:01:00.000Z',
+    ]);
+    expect(values).toContainEqual([7740, 7741, 7842, 7843]);
+    expect(insertedContracts(insertCalls()[0]!)).toEqual([
+      'ESZ6',
+      'ESZ6',
+      'ESH7',
+      'ESH7',
+    ]);
+  });
+
   it('leaves a minute empty when the scheduled contract has no candle for it, never filling it from another month', async () => {
     mockSql
       .mockResolvedValueOnce([
@@ -1393,6 +1445,48 @@ describe('backfill-futures-gaps order-flow pass', () => {
         extra: expect.objectContaining({ unrepairable: 1, deferred: 0 }),
       }),
     );
+  });
+
+  it('starts no order-flow range 540 s after the run began: it is deferred, with no refresh, schedule or UW call', async () => {
+    mockSql.mockResolvedValueOnce([]).mockImplementationOnce(async () => {
+      vi.setSystemTime(Date.now() + 541_000);
+      return [nullFlowRow('ES', '2026-09-29T14:01:00Z', 10, true)];
+    });
+
+    const res = await run();
+
+    expect(mockRefresh).not.toHaveBeenCalled();
+    expect(mockFetchSchedule).not.toHaveBeenCalled();
+    expect(mockUwFetch).not.toHaveBeenCalled();
+    expect(res._json).toMatchObject({
+      status: 'success',
+      flow_ranges_deferred: 1,
+      flow_pages: 0,
+    });
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(
+      BACKLOG_WARNING,
+      expect.objectContaining({ level: 'warning' }),
+    );
+  });
+
+  it('still starts an order-flow range 539 s into the run', async () => {
+    mockSql
+      .mockResolvedValueOnce([])
+      .mockImplementationOnce(async () => {
+        vi.setSystemTime(Date.now() + 539_000);
+        return [nullFlowRow('ES', '2026-09-29T14:01:00Z', 10, true)];
+      })
+      .mockResolvedValueOnce([{ ts: 'x' }]);
+    routeUwWithTrades(ES_CANDLES, { ESZ6: [ES_1401_PAGE] });
+
+    const res = await run();
+
+    expect(updateCalls()).toHaveLength(1);
+    expect(res._json).toMatchObject({
+      status: 'success',
+      flow_ranges_deferred: 0,
+      flow_minutes_repaired: 1,
+    });
   });
 
   it('stops at 600 pages per run, oldest range first, and defers the rest to the next run', async () => {
