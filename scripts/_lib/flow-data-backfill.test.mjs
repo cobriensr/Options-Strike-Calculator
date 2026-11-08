@@ -21,6 +21,7 @@ import {
 import {
   ETF_TIDE,
   FLOW_DATA_TARGET,
+  loggedFlowDataTarget,
   MARKET_TIDE,
   NET_FLOW,
   planFlowDays,
@@ -84,14 +85,15 @@ function ticks(n, date = D1, overrides = {}) {
 
 /**
  * A sql handle whose query() answers like Postgres' RETURNING id: one row per
- * row inserted (six columns a row), minus `conflicts` rows that ON CONFLICT DO
+ * row inserted (six columns a row; a statement that logs to the revision log
+ * binds one more value, the writer), minus `conflicts` rows that ON CONFLICT DO
  * NOTHING skipped.
  */
 function fakeSql({ conflicts = 0 } = {}) {
   return {
     query: vi.fn(async (_text, values) =>
       Array.from(
-        { length: Math.max(0, values.length / 6 - conflicts) },
+        { length: Math.max(0, Math.floor(values.length / 6) - conflicts) },
         (_, i) => ({ id: i }),
       ),
     ),
@@ -988,7 +990,11 @@ describe.each(CASES)('processFlowDay: $name', (testCase) => {
     const firstWrites = sql.query.mock.calls.filter(
       ([, v]) => v[2] === sources[0],
     );
-    expect(firstWrites.map(([, v]) => v.length / 6)).toEqual([9, 12, 12]);
+    // Six values a row; a statement that logs to the revision log has the
+    // writer after them (ETF tide).
+    expect(firstWrites.map(([, v]) => Math.floor(v.length / 6))).toEqual([
+      9, 12, 12,
+    ]);
   });
 
   it('fails the day as db when the write rejects, says which item, and exits 1: no warn-and-carry-on', async () => {
@@ -1095,6 +1101,85 @@ describe('processFlowDay: a net-flow total that leaves its column', () => {
       'qqq_flow',
     ]);
     expect(summarizeRun(run).exitCode).toBe(1);
+  });
+});
+
+// ── The revision log ───────────────────────────────────────
+
+describe('the revision log (spec P0.7)', () => {
+  const etf = CASES.find((c) => c.name === 'ETF tide');
+
+  beforeEach(() => atTime(TODAY, ['Date', 'setTimeout']));
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  const write = async (testCase) => {
+    stubFetch(testCase, (_item, date) => testCase.answer(2, date));
+    const sql = fakeSql();
+    const run = await runWorker([D1], (date) =>
+      processFlowDay(
+        date,
+        { apiKey: 'uw-key-for-tests', sql, dryRun: false, waitForSlot: noWait },
+        testCase.spec,
+      ),
+    );
+    return { sql, run };
+  };
+
+  it('names the flow_data target and the log table, and keeps the key', () => {
+    expect(loggedFlowDataTarget('some-script')).toEqual({
+      ...FLOW_DATA_TARGET,
+      revisionLog: { table: 'flow_data_revisions', writer: 'some-script' },
+    });
+    expect(FLOW_DATA_TARGET).not.toHaveProperty('revisionLog');
+  });
+
+  it('logs the ETF tide rows it inserts to flow_data_revisions, in the same statement, under its own name', async () => {
+    const { sql, run } = await write(etf);
+
+    expect(run.days[0].ok).toBe(true);
+    expect(sql.query).toHaveBeenCalledTimes(2);
+    for (const [text, values] of sql.query.mock.calls) {
+      expect(text).toMatch(/^WITH ins AS \(INSERT INTO flow_data /);
+      expect(text).toContain(
+        'ON CONFLICT (date, timestamp, source) DO NOTHING',
+      );
+      expect(text).toContain('INSERT INTO flow_data_revisions');
+      // 2 rows of 6 values, then the writer.
+      expect(values).toHaveLength(13);
+      expect(values.at(-1)).toBe('backfill-etf-tide');
+    }
+  });
+
+  it.each(['market tide', 'net flow'])(
+    'does not log %s: it is a first-write-wins source outside the log',
+    async (name) => {
+      const { sql } = await write(CASES.find((c) => c.name === name));
+
+      for (const [text, values] of sql.query.mock.calls) {
+        expect(text).not.toContain('flow_data_revisions');
+        expect(values.length % 6).toBe(0);
+      }
+    },
+  );
+
+  it('names the writer of the two inline scripts in their own code', () => {
+    // The inline scripts (backfill-zero-dte-flow.mjs, backfill-greek-flow.mjs)
+    // run on import and cannot be loaded here; they must go through the logged
+    // target with their own names, and write no flow_data row by hand.
+    for (const [file, writer] of [
+      ['backfill-zero-dte-flow.mjs', 'backfill-zero-dte-flow'],
+      ['backfill-greek-flow.mjs', 'backfill-greek-flow'],
+    ]) {
+      const source = readFileSync(
+        path.resolve(process.cwd(), 'scripts', file),
+        'utf8',
+      );
+      expect(source).toContain(`loggedFlowDataTarget('${writer}')`);
+      expect(source).not.toMatch(/INSERT INTO flow_data\b/);
+    }
   });
 });
 

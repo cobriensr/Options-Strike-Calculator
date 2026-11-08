@@ -1826,6 +1826,71 @@ describe('storeRows', () => {
     expect(values).toEqual(['2026-08-12', 'L1', 1, '2026-08-12', 'L2', 2]);
   });
 
+  describe('with a revision log', () => {
+    const LOGGED = {
+      ...TARGET,
+      revisionLog: { table: 'demo_rows_log', writer: 'demo-script' },
+    };
+
+    it('appends the inserted rows to the log table in the same statement, with the writer and is_first true', async () => {
+      const sql = fakeSql();
+
+      const stored = await storeRows(sql, LOGGED, [row(1), row(2)], {
+        dryRun: false,
+      });
+
+      expect(stored).toBe(2);
+      expect(sql.query).toHaveBeenCalledTimes(1);
+      const [text, values] = sql.query.mock.calls[0];
+      expect(text).toBe(
+        'WITH ins AS (INSERT INTO demo_rows (day, label, amount) VALUES ' +
+          '($1, $2, $3), ($4, $5, $6) ON CONFLICT (day, label) DO NOTHING ' +
+          'RETURNING id, day, label, amount), ' +
+          'logged AS (INSERT INTO demo_rows_log (day, label, amount, writer, is_first) ' +
+          'SELECT day, label, amount, $7::text, true FROM ins) ' +
+          'SELECT id FROM ins',
+      );
+      expect(values).toEqual([
+        '2026-08-12',
+        'L1',
+        1,
+        '2026-08-12',
+        'L2',
+        2,
+        'demo-script',
+      ]);
+    });
+
+    it('counts only the rows the conflict let in, as without a log', async () => {
+      const sql = fakeSql({ conflicts: 1 });
+
+      expect(
+        await storeRows(sql, LOGGED, [row(1), row(2)], { dryRun: false }),
+      ).toBe(1);
+    });
+
+    it('writes nothing, logged or not, on a dry run or for no rows', async () => {
+      const sql = fakeSql();
+
+      expect(await storeRows(sql, LOGGED, [row(1)], { dryRun: true })).toBe(0);
+      expect(await storeRows(sql, LOGGED, [], { dryRun: false })).toBe(0);
+      expect(sql.query).not.toHaveBeenCalled();
+    });
+
+    it('chunks like an unlogged write: each statement carries its own log entries and the writer', async () => {
+      const sql = fakeSql();
+      const rows = Array.from({ length: 501 }, (_, i) => row(i));
+
+      await storeRows(sql, LOGGED, rows, { dryRun: false });
+
+      expect(sql.query).toHaveBeenCalledTimes(2);
+      for (const [text, values] of sql.query.mock.calls) {
+        expect(text).toContain('INSERT INTO demo_rows_log');
+        expect(values.at(-1)).toBe('demo-script');
+      }
+    });
+  });
+
   it('sends a missing field as NULL', async () => {
     const sql = fakeSql();
     await storeRows(sql, TARGET, [{ day: '2026-08-12', label: 'L1' }], {
