@@ -333,8 +333,7 @@ describe('refreshFrontMonthVolumes freshness check', () => {
 
     const failure = refreshFrontMonthVolumes(KEY, 'ES', '1m');
 
-    await expect(failure).rejects.toThrow(/stale daily candles/);
-    await expect(failure).rejects.toThrow(/ES/);
+    await expect(failure).rejects.toThrow(/stale daily candles for ES:/);
     await expect(failure).rejects.toThrow(/ESZ6.*2026-09-28/);
     await expect(failure).rejects.toThrow(/last session.*2026-09-29/);
     expect(mockInsertVolumes).not.toHaveBeenCalled();
