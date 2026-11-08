@@ -11,8 +11,6 @@ import { READ_CHUNK_SIZE } from '../_lib/option-outcome-aggregate.js';
 const {
   mockSql,
   mockCronGuard,
-  mockFetchIntraday,
-  mockSimulateInversion,
   mockMetricsIncrement,
   mockCaptureMessage,
   mockCaptureException,
@@ -21,8 +19,6 @@ const {
   return {
     mockSql: Object.assign(tagged, { query: vi.fn() }),
     mockCronGuard: vi.fn(),
-    mockFetchIntraday: vi.fn(),
-    mockSimulateInversion: vi.fn(),
     mockMetricsIncrement: vi.fn(),
     mockCaptureMessage: vi.fn(),
     mockCaptureException: vi.fn(),
@@ -65,14 +61,6 @@ vi.mock('../_lib/api-helpers.js', () => ({
   cronGuard: mockCronGuard,
 }));
 
-vi.mock('../_lib/option-intraday.js', () => ({
-  fetchAndCacheOptionIntraday: mockFetchIntraday,
-}));
-
-vi.mock('../_lib/flow-inversion.js', () => ({
-  simulateFlowInversion: mockSimulateInversion,
-}));
-
 import handler from '../cron/enrich-lottery-outcomes.js';
 import { TransientDbError } from '../_lib/db.js';
 
@@ -113,36 +101,17 @@ function agg(id: number, o: Row = {}): Row {
   };
 }
 
-/** An inversion candidate (settled, inside the lookback). */
-function invFire(id: number, chain = 'AAA261002C00100000') {
-  return {
-    id: String(id),
-    optionChainId: chain,
-    underlyingSymbol: chain.slice(0, 3),
-    optionType: 'C',
-    date: '2026-10-01',
-    triggerTimeCt: new Date('2026-10-01T13:59:00Z'),
-    entryPrice: 1,
-  };
-}
-
 interface Router {
   tapeCandidates?: Row[];
-  inversionCandidates?: Row[];
-  flowRows?: Row[];
   /** Rows the aggregate query returns, or a function of its window ids. */
   aggregate?: (ids: number[]) => Row[] | Promise<Row[]>;
   /** Ids an outcome UPDATE reports as locked (default: all of them). */
   lockReturns?: (ids: number[]) => number[] | Promise<number[]>;
-  inversionReturns?: (ids: number[]) => number[] | Promise<number[]>;
   prune?: () => Promise<Row[]>;
   /** Empty 5-min buckets the continuity probe reports. */
   gaps?: Row[];
-  /** (chain, date) rows already tombstoned 'empty' in the intraday cache. */
-  emptyIntraday?: Row[];
-  /** Override the candidate SELECTs (e.g. to reject). */
+  /** Override the candidate SELECT (e.g. to reject). */
   tapeSelect?: () => Promise<Row[]>;
-  inversionSelect?: () => Promise<Row[]>;
 }
 
 const text = (call: unknown[]): string => {
@@ -160,26 +129,11 @@ function route(r: Router): void {
       }
       if (sqlText.includes('UPDATE lottery_finder_fires')) {
         const ids = (values[0] as number[]) ?? [];
-        if (sqlText.includes('enriched_at = NOW()')) {
-          const locked = await (r.lockReturns ?? ((x) => x))(ids);
-          return locked.map((id) => ({ id: String(id) }));
-        }
-        const filled = await (r.inversionReturns ?? ((x) => x))(ids);
-        return filled.map((id) => ({ id: String(id) }));
-      }
-      if (sqlText.includes('net_flow_per_ticker_history')) {
-        return r.flowRows ?? [];
-      }
-      if (sqlText.includes('FROM option_intraday_nbbo_fetches')) {
-        return r.emptyIntraday ?? [];
+        const locked = await (r.lockReturns ?? ((x) => x))(ids);
+        return locked.map((id) => ({ id: String(id) }));
       }
       if (sqlText.includes('WHERE enriched_at IS NULL')) {
         return r.tapeSelect ? r.tapeSelect() : (r.tapeCandidates ?? []);
-      }
-      if (sqlText.includes('WHERE realized_flow_inversion_pct IS NULL')) {
-        return r.inversionSelect
-          ? r.inversionSelect()
-          : (r.inversionCandidates ?? []);
       }
       throw new Error(`unrouted SQL: ${sqlText.slice(0, 80)}`);
     },
@@ -203,8 +157,6 @@ const callsMatching = (needle: string): unknown[][] =>
 
 /** The outcome UPDATE's unnest arrays: ids, trail, hard, tier, eod, peak, mtp. */
 const lockCalls = () => callsMatching('enriched_at = NOW()');
-const inversionWrites = () =>
-  callsMatching('SET realized_flow_inversion_pct = u.inv');
 
 async function run() {
   const res = mockResponse();
@@ -233,12 +185,6 @@ beforeEach(() => {
   mockSql.mockReset();
   mockSql.query.mockReset();
   mockCronGuard.mockReturnValue(GUARD);
-  mockFetchIntraday.mockResolvedValue([]);
-  mockSimulateInversion.mockReturnValue({
-    exitPct: null,
-    exitTs: null,
-    status: 'no_post_trigger_prices',
-  });
   vi.useFakeTimers({ toFake: ['Date'] });
   vi.setSystemTime(new Date(RUN_AT));
   route({});
@@ -292,6 +238,53 @@ describe('enrich-lottery-outcomes: tape pass', () => {
     expect(lockText).toContain('RETURNING f.id');
     expect(lock![0] as string[]).toSatisfy((s: string[]) =>
       s[1]!.startsWith('::bigint[]'),
+    );
+  });
+
+  it('tags the lock as a provisional feed write: outcome_source ws_cron, outcome_version 1', async () => {
+    route({ tapeCandidates: [fire(1)], aggregate: () => [agg(1)] });
+
+    await run();
+
+    const lockText = text(lockCalls()[0]!).replaceAll(/\s+/g, ' ');
+    expect(lockText).toContain("outcome_source = 'ws_cron'");
+    expect(lockText).toContain('outcome_version = 1');
+  });
+
+  it('writes no flow inversion and reports no inversion metadata (the nightly tape pass owns the column)', async () => {
+    route({ tapeCandidates: [fire(1)], aggregate: () => [agg(1)] });
+
+    const res = await run();
+
+    const statements = [
+      ...mockSql.mock.calls.map(text),
+      ...(mockSql.query.mock.calls as Array<[string, unknown[]]>).map(
+        (c) => c[0],
+      ),
+    ];
+    expect(statements.length).toBeGreaterThan(0);
+    expect(
+      statements.filter((s) =>
+        /realized_flow_inversion_pct|option_intraday|net_flow_per_ticker_history/.test(
+          s,
+        ),
+      ),
+    ).toEqual([]);
+    expect(res._json).toMatchObject({
+      status: 'success',
+      rows: 1,
+      updated: 1,
+    });
+    expect(res._json).not.toHaveProperty('inversion');
+  });
+
+  it('needs no UW key: it only reads and writes the database', async () => {
+    await run();
+
+    expect(mockCronGuard).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({ marketHours: false, requireApiKey: false }),
     );
   });
 
@@ -494,7 +487,6 @@ describe('enrich-lottery-outcomes: tape pass', () => {
     expect(res._status).toBe(500);
     expect(mockCaptureMessage).toHaveBeenCalledTimes(1); // fire 1, chunk 1
     expect(lockCalls()).toHaveLength(1); // chunk 1's healthy fires landed
-    expect(inversionWrites()).toHaveLength(0);
   });
 
   it('surfaces a failed outcome UPDATE instead of reporting success', async () => {
@@ -508,6 +500,9 @@ describe('enrich-lottery-outcomes: tape pass', () => {
 
     expect(res._status).toBe(500);
     expect(res._json).not.toMatchObject({ status: 'success' });
+    expect(mockCaptureException).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'neon: write timeout' }),
+    );
   });
 
   it('skips fires with an unusable entry price without reading them', async () => {
@@ -517,162 +512,6 @@ describe('enrich-lottery-outcomes: tape pass', () => {
 
     expect(mockSql.query).not.toHaveBeenCalled();
     expect(res._json).toMatchObject({ status: 'success', skipped: 1 });
-  });
-});
-
-describe('enrich-lottery-outcomes: flow-inversion pass', () => {
-  const minutes = [{ ts: new Date('2026-10-01T14:05:00Z'), mid: 1.1 }];
-
-  it('selects NULL-inversion fires across the lookback, newest first', async () => {
-    await run();
-
-    const [call] = callsMatching('WHERE realized_flow_inversion_pct IS NULL');
-    const sqlText = text(call!).replaceAll(/\s+/g, ' ');
-    expect(sqlText).toContain('ORDER BY trigger_time_ct DESC');
-    expect(sqlText).toContain(
-      'trigger_time_ct >= NOW() - make_interval(days => ::int)',
-    );
-    expect(call!.slice(1)).toEqual([4, 4]);
-  });
-
-  it('calls UW once per chain and writes every computed inversion in one conditional UPDATE', async () => {
-    mockFetchIntraday.mockResolvedValue(minutes);
-    mockSimulateInversion
-      .mockReturnValueOnce({ exitPct: 55, exitTs: null, status: 'inversion' })
-      .mockReturnValueOnce({ exitPct: -20, exitTs: null, status: 'inversion' });
-    route({
-      inversionCandidates: [invFire(1), invFire(2)],
-      flowRows: [
-        {
-          ts: new Date('2026-10-01T14:01:00Z'),
-          netCallPrem: '100',
-          netPutPrem: '5',
-        },
-        {
-          ts: new Date('2026-10-01T14:02:00Z'),
-          netCallPrem: 'bad',
-          netPutPrem: '5',
-        },
-      ],
-    });
-
-    const res = await run();
-
-    expect(mockFetchIntraday).toHaveBeenCalledTimes(1);
-    expect(mockFetchIntraday).toHaveBeenCalledWith(
-      'test-key',
-      'AAA261002C00100000',
-      '2026-10-01',
-    );
-    // Matched side for a call is net_call_prem; the unparseable minute drops.
-    const flowArg = mockSimulateInversion.mock.calls[0]![1] as unknown[];
-    expect(flowArg).toEqual([
-      { ts: new Date('2026-10-01T14:01:00Z'), value: 100 },
-    ]);
-    const [write] = inversionWrites();
-    expect(write!.slice(1)).toEqual([
-      [1, 2],
-      [55, -20],
-    ]);
-    expect(text(write!)).toContain('AND f.realized_flow_inversion_pct IS NULL');
-    expect(res._json).toMatchObject({
-      status: 'success',
-      inversion: { chains: 1, filled: 2 },
-    });
-  });
-
-  it('leaves an undefined inversion NULL and writes nothing for it', async () => {
-    mockFetchIntraday.mockResolvedValue(minutes);
-    route({ inversionCandidates: [invFire(1)] });
-
-    const res = await run();
-
-    expect(inversionWrites()).toHaveLength(0);
-    expect(res._json).toMatchObject({
-      inversion: { filled: 0, undefinedExit: 1 },
-    });
-  });
-
-  it('does not touch flow history when UW has no intraday minutes', async () => {
-    route({ inversionCandidates: [invFire(1)] });
-
-    const res = await run();
-
-    expect(callsMatching('net_flow_per_ticker_history')).toHaveLength(0);
-    expect(res._json).toMatchObject({ inversion: { noIntradayMinutes: 1 } });
-  });
-
-  it('skips unsettled fires (no UW call before the session settles)', async () => {
-    vi.setSystemTime(new Date('2026-10-01T20:10:00Z'));
-    route({ inversionCandidates: [invFire(1)] });
-
-    await run();
-
-    expect(mockFetchIntraday).not.toHaveBeenCalled();
-  });
-
-  it('starts no chain once the run budget is spent', async () => {
-    route({
-      tapeCandidates: [fire(1)],
-      aggregate: (ids) => {
-        vi.setSystemTime(new Date(Date.parse(RUN_AT) + 240_000));
-        return ids.map((id) => agg(id));
-      },
-      inversionCandidates: [invFire(5)],
-    });
-
-    const res = await run();
-
-    expect(mockFetchIntraday).not.toHaveBeenCalled();
-    expect(res._json).toMatchObject({
-      inversion: { chains: 1, deferredChains: 1 },
-    });
-  });
-
-  it('counts and reports a failing chain without sinking the others (partial)', async () => {
-    mockFetchIntraday.mockImplementation(
-      async (_key: string, chain: string) => {
-        if (chain.startsWith('BAD')) throw new Error('neon: cache read failed');
-        return minutes;
-      },
-    );
-    mockSimulateInversion.mockReturnValue({
-      exitPct: 12,
-      exitTs: null,
-      status: 'inversion',
-    });
-    route({
-      inversionCandidates: [
-        invFire(1, 'BAD261002C00100000'),
-        invFire(2, 'AAA261002C00100000'),
-      ],
-    });
-
-    const res = await run();
-
-    expect(inversionWrites()[0]!.slice(1)).toEqual([[2], [12]]);
-    expect(mockCaptureException).toHaveBeenCalledTimes(1);
-    expect(res._json).toMatchObject({
-      status: 'partial',
-      inversion: { chainErrors: 1, filled: 1 },
-    });
-  });
-
-  it('surfaces a failed inversion UPDATE instead of reporting success', async () => {
-    mockFetchIntraday.mockResolvedValue(minutes);
-    mockSimulateInversion.mockReturnValue({
-      exitPct: 12,
-      exitTs: null,
-      status: 'inversion',
-    });
-    route({
-      inversionCandidates: [invFire(1)],
-      inversionReturns: () => Promise.reject(new Error('neon: write timeout')),
-    });
-
-    const res = await run();
-
-    expect(res._status).toBe(500);
   });
 });
 
@@ -732,8 +571,6 @@ describe('enrich-lottery-outcomes: kept-tickers retention prune', () => {
 });
 
 describe('enrich-lottery-outcomes: failure paths and feed gaps', () => {
-  const minutes = [{ ts: new Date('2026-10-01T14:05:00Z'), mid: 1.1 }];
-
   it('never stamps a fire whose ticker went silent mid-session after its entry (continuity gap)', async () => {
     // uw-stream died 16:00-16:05Z and was redeployed before the close: the
     // close tail is live, but fire 1's path is missing five minutes.
@@ -796,118 +633,8 @@ describe('enrich-lottery-outcomes: failure paths and feed gaps', () => {
 
     expect(res._status).toBe(500);
     expect(lockCalls()).toHaveLength(0);
-  });
-
-  it('fails the run (500) when the inversion candidate SELECT is rejected', async () => {
-    route({
-      inversionSelect: () => Promise.reject(new Error('neon: timeout')),
-    });
-
-    const res = await run();
-
-    expect(res._status).toBe(500);
-  });
-
-  it('reports a UW outage as a chain error (partial + Sentry), not as missing data', async () => {
-    mockFetchIntraday.mockRejectedValue(new Error('UW API 503: outage'));
-    route({ inversionCandidates: [invFire(1)] });
-
-    const res = await run();
-
-    expect(res._json).toMatchObject({
-      status: 'partial',
-      inversion: { chainErrors: 1, noIntradayMinutes: 0, filled: 0 },
-    });
     expect(mockCaptureException).toHaveBeenCalledWith(
-      expect.objectContaining({ message: 'UW API 503: outage' }),
-      expect.objectContaining({
-        fingerprint: ['enrich-lottery-outcomes', 'flow-inversion-chain'],
-      }),
+      expect.objectContaining({ message: 'neon: timeout' }),
     );
-  });
-
-  it('drops a rejected flow load from the cache so the next chain on the ticker re-queries', async () => {
-    // The second chain asks for the ticker's flow only after the first load
-    // has rejected (concurrent askers share the in-flight load by design).
-    mockFetchIntraday.mockImplementation(async (_k: string, chain: string) => {
-      if (chain === 'AAA261002C00105000') {
-        await new Promise((resolve) => setTimeout(resolve, 25));
-      }
-      return minutes;
-    });
-    mockSimulateInversion.mockReturnValue({
-      exitPct: 12,
-      exitTs: null,
-      status: 'inversion',
-    });
-    let flowReads = 0;
-    route({
-      inversionCandidates: [
-        invFire(1, 'AAA261002C00100000'),
-        invFire(2, 'AAA261002C00105000'),
-      ],
-    });
-    const routed = mockSql.getMockImplementation()!;
-    mockSql.mockImplementation(
-      async (strings: TemplateStringsArray, ...values: unknown[]) => {
-        if (strings.join(' ').includes('net_flow_per_ticker_history')) {
-          flowReads += 1;
-          if (flowReads === 1) throw new Error('neon: connection reset');
-          return [];
-        }
-        return routed(strings, ...values);
-      },
-    );
-
-    const res = await run();
-
-    expect(flowReads).toBe(2);
-    expect(res._json).toMatchObject({
-      status: 'partial',
-      inversion: { chainErrors: 1, filled: 1 },
-    });
-  });
-
-  it('skips chains UW already answered with no data, without a UW call', async () => {
-    route({
-      inversionCandidates: [
-        invFire(1, 'AAA261002C00100000'),
-        invFire(2, 'AAA261002C00105000'),
-      ],
-      emptyIntraday: [{ chain: 'AAA261002C00100000', date: '2026-10-01' }],
-    });
-
-    const res = await run();
-
-    expect(mockFetchIntraday).toHaveBeenCalledTimes(1);
-    expect(mockFetchIntraday).toHaveBeenCalledWith(
-      'test-key',
-      'AAA261002C00105000',
-      '2026-10-01',
-    );
-    expect(res._json).toMatchObject({
-      inversion: { chains: 2, emptyChains: 1 },
-    });
-  });
-
-  it('writes inversions in batches of 500 as they accumulate', async () => {
-    mockFetchIntraday.mockResolvedValue(minutes);
-    mockSimulateInversion.mockReturnValue({
-      exitPct: 7,
-      exitTs: null,
-      status: 'inversion',
-    });
-    route({
-      inversionCandidates: Array.from({ length: 501 }, (_, i) =>
-        invFire(i + 1),
-      ),
-    });
-
-    const res = await run();
-
-    expect(inversionWrites().map((c) => (c[1] as number[]).length)).toEqual([
-      500, 1,
-    ]);
-    expect(res._json).toMatchObject({ inversion: { filled: 501 } });
   });
 });

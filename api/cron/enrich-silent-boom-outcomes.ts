@@ -9,6 +9,11 @@
  * the 5-min spike bucket start; the outcome window is [bucket_ct, close +
  * 15 min] on the alert's ET date.
  *
+ * Provenance: the write tags the row outcome_source = 'ws_cron',
+ * outcome_version = 1. A ws_cron outcome is provisional. The websocket feed
+ * drops prints it cannot replay, so the nightly Full Tape pass re-examines
+ * every day and replaces it (owner, 2026-11-06: the tape has the final say).
+ *
  * Shares the enrichment pass with enrich-lottery-outcomes
  * (api/_lib/option-outcome-aggregate.ts):
  *   - Candidates: enriched_at IS NULL and bucket_ct inside the
@@ -103,6 +108,9 @@ async function selectCandidates(sql: Sql): Promise<OutcomeCandidate[]> {
  * ONE batched UPDATE per chunk; the r30/r60/r120 arrays keep their NULLs.
  * Conditional on enriched_at IS NULL (idempotent under overlap); RETURNING
  * counts the rows this run actually locked.
+ *
+ * outcome_source / outcome_version are inline literals: bump the version when
+ * the computation changes; migration #201's CHECKs pin the vocabulary.
  */
 async function lockOutcomes(
   sql: Sql,
@@ -118,7 +126,9 @@ async function lockOutcomes(
              realized_120m_pct = u.r120,
              realized_eod_pct = u.eod,
              realized_trail30_10_pct = u.trail30,
-             enriched_at = NOW()
+             enriched_at = NOW(),
+             outcome_source = 'ws_cron',
+             outcome_version = 1
         FROM unnest(
                ${updates.map((u) => u.id)}::bigint[],
                ${updates.map((u) => u.peak)}::float8[],

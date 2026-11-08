@@ -1,66 +1,61 @@
 /**
  * GET /api/cron/enrich-lottery-outcomes
  *
- * Enriches lottery_finder_fires with realized outcomes, newest first, in
- * two time-boxed passes per run:
+ * Enriches lottery_finder_fires with realized outcomes, newest first, in one
+ * time-boxed tape pass per run: realized_trail30_10 / hard30m /
+ * tier50_holdeod / eod_pct, peak_ceiling_pct and minutes_to_peak, read from
+ * ws_option_trades, then enriched_at = NOW().
+ *   - Candidates: enriched_at IS NULL and trigger_time_ct inside the
+ *     WS_OPTION_TRADES_RETENTION_DAYS window, newest first.
+ *     cleanup-ws-option-trades only deletes rows older than ET midnight
+ *     N days back, which is at or before NOW() - N days, so a candidate's
+ *     whole tape is still there. Older fires are NOT candidates: that
+ *     cleanup deletes in physical order and leaves old days PARTIALLY
+ *     pruned (rows from June still exist), so an old fire would read a
+ *     fragment of its tape.
+ *   - Tape window: [entry_time_ct, close + 15 min] of the fire's ET date
+ *     (explicit upper bound: a 1-3 DTE contract keeps printing on later
+ *     days). Settle gate: nothing is read until that window plus a 5-min
+ *     ingest grace has passed, so a manual mid-session run never locks
+ *     today's fires on a partial tape.
+ *   - One statement per chain-grouped chunk computes every policy per fire
+ *     in SQL (api/_lib/option-outcome-aggregate.ts); writes are batched.
+ *   - A fire is left UNENRICHED (never stamped with empty outcomes):
+ *       tapeGap    — its ticker has an empty 5-min bucket after the entry
+ *                    or a quiet close tail: the feed (or its uw-stream
+ *                    shard) was down, so the tape is truncated. Sentry
+ *                    warning, status 'error'.
+ *       noPrints   — the ticker was live but the contract has no print at
+ *                    all, although the entry itself is a print. Sentry
+ *                    warning, status 'partial'.
+ *       unreadable — the aggregate row is missing or inconsistent (a bug).
+ *                    Sentry warning, status 'partial'.
+ *     It is retried while inside the retention window, then ages out.
+ *     Recover it from the parquet tape with
+ *     scripts/enrich_lottery_outcomes.py.
  *
- * 1. TAPE pass: realized_trail30_10 / hard30m / tier50_holdeod / eod_pct,
- *    peak_ceiling_pct and minutes_to_peak, read from ws_option_trades, then
- *    enriched_at = NOW().
- *    - Candidates: enriched_at IS NULL and trigger_time_ct inside the
- *      WS_OPTION_TRADES_RETENTION_DAYS window, newest first.
- *      cleanup-ws-option-trades only deletes rows older than ET midnight
- *      N days back, which is at or before NOW() - N days, so a candidate's
- *      whole tape is still there. Older fires are NOT candidates: that
- *      cleanup deletes in physical order and leaves old days PARTIALLY
- *      pruned (rows from June still exist), so an old fire would read a
- *      fragment of its tape.
- *    - Tape window: [entry_time_ct, close + 15 min] of the fire's ET date
- *      (explicit upper bound: a 1-3 DTE contract keeps printing on later
- *      days). Settle gate: nothing is read until that window plus a 5-min
- *      ingest grace has passed, so a manual mid-session run never locks
- *      today's fires on a partial tape.
- *    - One statement per chain-grouped chunk computes every policy per fire
- *      in SQL (api/_lib/option-outcome-aggregate.ts); writes are batched.
- *    - A fire is left UNENRICHED (never stamped with empty outcomes):
- *        tapeGap    — its ticker has an empty 5-min bucket after the entry
- *                     or a quiet close tail: the feed (or its uw-stream
- *                     shard) was down, so the tape is truncated. Sentry
- *                     warning, status 'error'.
- *        noPrints   — the ticker was live but the contract has no print at
- *                     all, although the entry itself is a print. Sentry
- *                     warning, status 'partial'.
- *        unreadable — the aggregate row is missing or inconsistent (a bug).
- *                     Sentry warning, status 'partial'.
- *      It is retried while inside the retention window, then ages out.
- *      Recover it from the parquet tape with
- *      scripts/enrich_lottery_outcomes.py.
+ * Provenance: the write tags the row outcome_source = 'ws_cron',
+ * outcome_version = 1. A ws_cron outcome is provisional. The websocket feed
+ * drops prints it cannot replay, so the nightly Full Tape pass re-examines
+ * every day and replaces it (owner, 2026-11-06: the tape has the final say).
  *
- * 2. FLOW-INVERSION pass: realized_flow_inversion_pct from the UW per-minute
- *    intraday tape (cached in option_intraday_nbbo) and the matched-side
- *    net flow. It does not read ws_option_trades, so its candidates are
- *    every settled fire with a NULL inversion in the last
- *    INVERSION_LOOKBACK_DAYS. Work is grouped by (chain, date): one UW call
- *    per chain, at most UW's 3 in flight. Chains UW already answered with no
- *    data ('empty' in option_intraday_nbbo_fetches, one batched lookup) are
- *    skipped. A fire whose inversion is genuinely undefined (e.g. no flow
- *    peak) stays NULL and is retried from the cache, without a UW call, until
- *    it ages out. A UW or DB failure on a chain is counted, sent to Sentry
- *    and makes the run 'partial'. Results are written every WRITE_BATCH, so
- *    a timeout loses at most one batch.
+ * Flow inversion: this cron writes none (owner, 2026-11-06).
+ * realized_flow_inversion_pct comes only from the nightly Full Tape pass
+ * (tagged fulltape), a night after the session. The pass this cron used to
+ * run read UW's per-minute intraday tape, and on a cache miss it fed those
+ * minutes to simulateFlowInversion newest-first and unsorted, so its values
+ * were wrong.
  *
- * Budget: maxDuration is 300 s. The tape pass starts no chunk after
- * TAPE_PASS_BUDGET_MS and the inversion pass starts no chain after
- * RUN_BUDGET_MS; whatever is left is picked up by the next run. A
+ * Budget: maxDuration is 300 s. The pass starts no chunk after
+ * TAPE_PASS_BUDGET_MS; whatever is left is picked up by the next run. A
  * 4.4K-fire day measured 109 s of tape reads (worst chunk 11.7 s) on
- * 2026-10-01. UW intraday costs about 1.2 s per chain at ~750 chains/day, so
- * the schedule has three post-close slots: `40 21,22,23 * * 1-5`. All three
- * come after the 20:20/21:20 UTC (EDT/EST) settle instant. The ~100 s after
- * the last start covers a normal chunk or chain several times over. A
- * statement that hits withDbRetry's full 3 x 30 s can still overrun; the
- * writes are per chunk / per batch, so a kill loses only the in-flight one.
- * The writes are conditional (`AND enriched_at IS NULL`, `AND
- * realized_flow_inversion_pct IS NULL`), so overlapping runs are idempotent.
+ * 2026-10-01. The schedule keeps three post-close slots, `40 21,22,23 * *
+ * 1-5`, so a later slot retries the tape gaps an earlier one left. All three
+ * come after the 20:20/21:20 UTC (EDT/EST) settle instant. The ~150 s after
+ * the last start covers a normal chunk several times over. A statement that
+ * hits withDbRetry's full 3 x 30 s can still overrun; the writes are per
+ * chunk, so a kill loses only the in-flight one. The write is conditional
+ * (`AND enriched_at IS NULL`), so overlapping runs are idempotent.
  *
  * Out of reach: fires older than the retention window that were never
  * enriched (06-25 onward, ~183K, starved by the old oldest-first drain) and
@@ -68,13 +63,13 @@
  * 06-24). This cron deliberately never touches them; the parquet script is
  * the recovery path.
  *
- * Environment: CRON_SECRET, UW_API_KEY
+ * Environment: CRON_SECRET. DB only, so no UW key.
  *
  * Spec: docs/superpowers/specs/lottery-enrichment-starvation-2026-10-02.md
  */
 
 import { getDb, withDbRetry, safeDbVoid } from '../_lib/db.js';
-import { Sentry, metrics } from '../_lib/sentry.js';
+import { metrics } from '../_lib/sentry.js';
 import {
   KEPT_RETENTION_DAYS,
   WS_OPTION_TRADES_RETENTION_DAYS,
@@ -84,39 +79,19 @@ import {
   type CronContext,
   type CronResult,
 } from '../_lib/cron-instrumentation.js';
-import { fetchAndCacheOptionIntraday } from '../_lib/option-intraday.js';
-import {
-  simulateFlowInversion,
-  type FlowMinute,
-} from '../_lib/flow-inversion.js';
 import {
   enrichOutcomeWindows,
   outcomePassStatus,
   prepareWindows,
-  sessionTapeBounds,
   type OutcomeCandidate,
   type OutcomePassResult,
 } from '../_lib/option-outcome-aggregate.js';
-import { mapWithConcurrency } from '../_lib/uw-fetch.js';
 
 type Sql = ReturnType<typeof getDb>;
 type DbNumeric = string | number;
-type DbTimestamp = string | Date;
 
 /** The tape pass starts no new chunk after this much of the run. */
 const TAPE_PASS_BUDGET_MS = 150_000;
-
-/** The inversion pass starts no new chain after this much of the run. */
-const RUN_BUDGET_MS = 200_000;
-
-/** Covers a Friday fire on Monday's runs (Fri 20:00Z → Mon 23:40Z < 4 d). */
-const INVERSION_LOOKBACK_DAYS = 4;
-
-/** UW caps in-flight requests at 3 (see mapWithConcurrency). */
-const INVERSION_CONCURRENCY = 3;
-
-/** Rows per batched UPDATE (R5). */
-const WRITE_BATCH = 500;
 
 interface TapeUpdate {
   id: number;
@@ -127,41 +102,6 @@ interface TapeUpdate {
   peak: number;
   minToPeak: number;
 }
-
-interface InversionCandidate {
-  id: DbNumeric;
-  optionChainId: string;
-  underlyingSymbol: string;
-  optionType: 'C' | 'P';
-  date: string;
-  triggerTimeCt: DbTimestamp;
-  entryPrice: DbNumeric | null;
-}
-
-/** One UW intraday call's worth of work: every fire on a (chain, date). */
-interface InversionGroup {
-  chain: string;
-  ticker: string;
-  optionType: 'C' | 'P';
-  date: string;
-  fires: Array<{ id: number; entryPx: number; triggerTime: Date }>;
-}
-
-interface FlowRow {
-  ts: Date;
-  netCallPrem: DbNumeric | null;
-  netPutPrem: DbNumeric | null;
-}
-
-const toNum = (v: DbNumeric | null): number =>
-  v == null ? Number.NaN : Number(v);
-
-const toDate = (v: DbTimestamp): Date => (v instanceof Date ? v : new Date(v));
-
-const elapsedMs = (ctx: CronContext): number => Date.now() - ctx.startTimeMs;
-
-/** Finite and > 0 (rejects NaN from an unparseable price). */
-const isPositive = (n: number): boolean => Number.isFinite(n) && n > 0;
 
 /**
  * In-window unenriched fires, newest first. The ET-date lower bound lets
@@ -193,6 +133,9 @@ async function selectTapeCandidates(sql: Sql): Promise<OutcomeCandidate[]> {
  * ONE batched UPDATE per chunk. Conditional on enriched_at IS NULL so an
  * overlapping run never rewrites a locked fire; RETURNING counts the rows
  * this run actually locked.
+ *
+ * outcome_source / outcome_version are inline literals: bump the version when
+ * the computation changes; migration #201's CHECKs pin the vocabulary.
  */
 async function lockTapeOutcomes(
   sql: Sql,
@@ -207,7 +150,9 @@ async function lockTapeOutcomes(
              realized_eod_pct = u.eod,
              peak_ceiling_pct = u.peak,
              minutes_to_peak = u.mtp,
-             enriched_at = NOW()
+             enriched_at = NOW(),
+             outcome_source = 'ws_cron',
+             outcome_version = 1
         FROM unnest(
                ${updates.map((u) => u.id)}::bigint[],
                ${updates.map((u) => u.trail30_10)}::float8[],
@@ -258,256 +203,6 @@ async function runTapePass(
   return { candidates: candidates.length, skipped, inFlight, ...pass };
 }
 
-async function selectInversionCandidates(
-  sql: Sql,
-): Promise<InversionCandidate[]> {
-  return (await withDbRetry(
-    () => sql`
-      SELECT id,
-             option_chain_id AS "optionChainId",
-             underlying_symbol AS "underlyingSymbol",
-             option_type AS "optionType",
-             date::text AS date,
-             trigger_time_ct AS "triggerTimeCt",
-             entry_price::float8 AS "entryPrice"
-        FROM lottery_finder_fires
-       WHERE realized_flow_inversion_pct IS NULL
-         AND date >= ((NOW() - make_interval(days => ${INVERSION_LOOKBACK_DAYS}::int))
-                      AT TIME ZONE 'America/New_York')::date
-         AND trigger_time_ct >= NOW() - make_interval(days => ${INVERSION_LOOKBACK_DAYS}::int)
-       ORDER BY trigger_time_ct DESC
-       LIMIT 30000
-    `,
-    2,
-    10_000,
-  )) as InversionCandidate[];
-}
-
-/**
- * Per-minute matched-side flow for one (ticker, date, side). The cache holds
- * the in-flight promise so concurrent chains on the same ticker share one
- * SELECT; a rejected load is dropped so the next chain retries it.
- */
-function loadMatchedFlow(
-  cache: Map<string, Promise<FlowMinute[]>>,
-  sql: Sql,
-  ticker: string,
-  date: string,
-  optionType: 'C' | 'P',
-): Promise<FlowMinute[]> {
-  const key = `${ticker}|${date}|${optionType}`;
-  const hit = cache.get(key);
-  if (hit !== undefined) return hit;
-  const load = (async () => {
-    const rows = (await withDbRetry(
-      () => sql`
-        SELECT ts, net_call_prem AS "netCallPrem", net_put_prem AS "netPutPrem"
-          FROM net_flow_per_ticker_history
-         WHERE ticker = ${ticker}
-           AND ts >= ${`${date}T00:00:00Z`}::timestamptz
-           AND ts <  ${`${date}T00:00:00Z`}::timestamptz + INTERVAL '1 day'
-         ORDER BY ts ASC
-      `,
-      2,
-      10_000,
-    )) as FlowRow[];
-    const out: FlowMinute[] = [];
-    for (const r of rows) {
-      const value = toNum(optionType === 'C' ? r.netCallPrem : r.netPutPrem);
-      if (Number.isFinite(value)) out.push({ ts: toDate(r.ts), value });
-    }
-    return out;
-  })();
-  cache.set(key, load);
-  load.catch(() => cache.delete(key));
-  return load;
-}
-
-/** One conditional write of up to WRITE_BATCH computed inversions. */
-async function writeInversionBatch(
-  sql: Sql,
-  batch: ReadonlyArray<{ id: number; pct: number }>,
-): Promise<number> {
-  const rows = (await withDbRetry(
-    () => sql`
-      UPDATE lottery_finder_fires AS f
-         SET realized_flow_inversion_pct = u.inv
-        FROM unnest(
-               ${batch.map((r) => r.id)}::bigint[],
-               ${batch.map((r) => r.pct)}::float8[]
-             ) AS u(id, inv)
-       WHERE f.id = u.id
-         AND f.realized_flow_inversion_pct IS NULL
-      RETURNING f.id
-    `,
-    2,
-    30_000,
-  )) as Array<{ id: DbNumeric }>;
-  return rows.length;
-}
-
-const groupKey = (chain: string, date: string): string => `${chain}|${date}`;
-
-/**
- * (chain, date) pairs UW already answered with no intraday rows. ONE lookup
- * on the option_intraday_nbbo_fetches PK instead of a status SELECT per
- * chain on every slot; those chains can never yield an inversion (the fetch
- * ran after the settle instant), so they are skipped.
- */
-async function readEmptyIntradayKeys(
-  sql: Sql,
-  groups: readonly InversionGroup[],
-): Promise<Set<string>> {
-  if (groups.length === 0) return new Set();
-  const rows = (await withDbRetry(
-    () => sql`
-      SELECT f.option_chain AS chain, f.date::text AS date
-        FROM option_intraday_nbbo_fetches f
-        JOIN unnest(
-               ${groups.map((g) => g.chain)}::text[],
-               ${groups.map((g) => g.date)}::date[]
-             ) AS u(chain, date)
-          ON f.option_chain = u.chain AND f.date = u.date
-       WHERE f.status = 'empty'
-    `,
-    2,
-    10_000,
-  )) as Array<{ chain: string; date: string }>;
-  return new Set(rows.map((r) => groupKey(r.chain, r.date)));
-}
-
-interface InversionPassResult {
-  candidates: number;
-  chains: number;
-  /** Chains skipped because UW already returned no intraday rows. */
-  emptyChains: number;
-  filled: number;
-  undefinedExit: number;
-  noIntradayMinutes: number;
-  deferredChains: number;
-  chainErrors: number;
-}
-
-async function runInversionPass(
-  sql: Sql,
-  ctx: CronContext,
-): Promise<InversionPassResult> {
-  const candidates = await selectInversionCandidates(sql);
-  const nowMs = Date.now();
-  const groups = new Map<string, InversionGroup>();
-  for (const c of candidates) {
-    const bounds = sessionTapeBounds(c.date);
-    const entryPx = toNum(c.entryPrice);
-    const triggerTime = toDate(c.triggerTimeCt);
-    if (
-      bounds === null ||
-      bounds.settledAt.getTime() > nowMs ||
-      !isPositive(entryPx) ||
-      Number.isNaN(triggerTime.getTime())
-    ) {
-      continue;
-    }
-    const key = groupKey(c.optionChainId, c.date);
-    let group = groups.get(key);
-    if (group === undefined) {
-      group = {
-        chain: c.optionChainId,
-        ticker: c.underlyingSymbol,
-        optionType: c.optionType,
-        date: c.date,
-        fires: [],
-      };
-      groups.set(key, group);
-    }
-    group.fires.push({ id: Number(c.id), entryPx, triggerTime });
-  }
-
-  const emptyKeys = await readEmptyIntradayKeys(sql, [...groups.values()]);
-  // Groups keep first-seen order, so the newest chains go first.
-  const work = [...groups.values()].filter(
-    (g) => !emptyKeys.has(groupKey(g.chain, g.date)),
-  );
-  const result: InversionPassResult = {
-    candidates: candidates.length,
-    chains: groups.size,
-    emptyChains: groups.size - work.length,
-    filled: 0,
-    undefinedExit: 0,
-    noIntradayMinutes: 0,
-    deferredChains: 0,
-    chainErrors: 0,
-  };
-  const pending: Array<{ id: number; pct: number }> = [];
-  const flowCache = new Map<string, Promise<FlowMinute[]>>();
-  let firstError: unknown;
-
-  /** Write full batches (or everything when `all`); a failure propagates. */
-  const flush = async (all: boolean): Promise<void> => {
-    while (pending.length >= WRITE_BATCH || (all && pending.length > 0)) {
-      const batch = pending.splice(0, WRITE_BATCH);
-      result.filled += await writeInversionBatch(sql, batch);
-    }
-  };
-
-  await mapWithConcurrency(work, INVERSION_CONCURRENCY, async (group) => {
-    if (elapsedMs(ctx) > RUN_BUDGET_MS) {
-      result.deferredChains += 1;
-      return;
-    }
-    try {
-      const minutes = await fetchAndCacheOptionIntraday(
-        ctx.apiKey,
-        group.chain,
-        group.date,
-      );
-      if (minutes.length === 0) {
-        result.noIntradayMinutes += group.fires.length;
-        return;
-      }
-      const flow = await loadMatchedFlow(
-        flowCache,
-        sql,
-        group.ticker,
-        group.date,
-        group.optionType,
-      );
-      for (const f of group.fires) {
-        const { exitPct } = simulateFlowInversion(
-          minutes,
-          flow,
-          f.entryPx,
-          f.triggerTime,
-        );
-        if (exitPct != null && Number.isFinite(exitPct)) {
-          pending.push({ id: f.id, pct: exitPct });
-        } else {
-          result.undefinedExit += 1;
-        }
-      }
-    } catch (err) {
-      // One chain's UW/DB failure must not sink the others; it is counted,
-      // logged, reported once below, and retried next run.
-      result.chainErrors += 1;
-      firstError ??= err;
-      ctx.logger.warn(
-        { err, chain: group.chain, date: group.date },
-        'enrich-lottery-outcomes: flow-inversion failed for chain',
-      );
-    }
-    // Outside the catch: a failed WRITE propagates (the run is not success).
-    await flush(false);
-  });
-
-  if (firstError !== undefined) {
-    Sentry.captureException(firstError, {
-      fingerprint: ['enrich-lottery-outcomes', 'flow-inversion-chain'],
-      extra: { chainErrors: result.chainErrors, chains: work.length },
-    });
-  }
-  await flush(true);
-  return result;
-}
-
 /**
  * Best-effort retention prune for `lottery_kept_tickers` (the DB-backed
  * never-vanish kept-set). The table grows one row per (trade_date,
@@ -553,7 +248,6 @@ export default withCronInstrumentation(
     const sql = getDb();
 
     const tape = await runTapePass(sql, ctx);
-    const inversion = await runInversionPass(sql, ctx);
 
     // Best-effort, AFTER the enrichment writes have landed, so a prune
     // failure can never roll back or fail the primary job.
@@ -570,7 +264,6 @@ export default withCronInstrumentation(
       noPrints: tape.noPrintsIds.length,
       unreadable: tape.unreadableIds.length,
       readFailed: tape.readFailedIds.length,
-      inversion,
     };
 
     ctx.logger.info(metadata, 'enrich-lottery-outcomes completed');
@@ -587,17 +280,10 @@ export default withCronInstrumentation(
         metadata,
       };
     }
-    return {
-      status:
-        tapeStatus === 'partial' || inversion.chainErrors > 0
-          ? 'partial'
-          : 'success',
-      rows: tape.locked,
-      metadata,
-    };
+    return { status: tapeStatus, rows: tape.locked, metadata };
   },
   // marketHours: false is REQUIRED — every slot runs after the close
   // (cronGuard defaults to marketHours: true and would reject the request).
-  // UW_API_KEY stays required for the flow-inversion pass.
-  { marketHours: false },
+  // DB-only since the flow-inversion pass was removed, so no UW key.
+  { marketHours: false, requireApiKey: false },
 );

@@ -360,7 +360,7 @@ export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
   },
   'enrich-lottery-outcomes': {
     // Three post-close slots: each run is time-boxed (~4 min) and the
-    // later slots drain what the first could not (tape + UW inversion).
+    // later slots retry the tape gaps and reads the first could not finish.
     schedule: '40 21,22,23 * * 1-5',
     checkinMargin: DEFAULT_MARGIN,
     maxRuntime: LONG_RUNNER_MAX_RUNTIME,

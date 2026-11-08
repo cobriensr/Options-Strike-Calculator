@@ -199,6 +199,16 @@ describe('enrich-silent-boom-outcomes', () => {
     expect(lockText).toContain('RETURNING s.id');
   });
 
+  it('tags the lock as a provisional feed write: outcome_source ws_cron, outcome_version 1', async () => {
+    route({ candidates: [alert(1)], aggregate: () => [agg(1)] });
+
+    await run();
+
+    const lockText = text(lockCalls()[0]!).replaceAll(/\s+/g, ' ');
+    expect(lockText).toContain("outcome_source = 'ws_cron'");
+    expect(lockText).toContain('outcome_version = 1');
+  });
+
   it('reads the tape from bucket_ct to an explicit close + 15 min upper bound', async () => {
     route({ candidates: [alert(1)], aggregate: () => [agg(1)] });
 
