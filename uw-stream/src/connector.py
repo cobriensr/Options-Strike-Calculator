@@ -13,10 +13,10 @@ is a pure transport.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import random
 import time
 from dataclasses import dataclass
+from typing import Any
 
 import orjson
 import websockets
@@ -175,6 +175,11 @@ class Connector:
         # Facts about the current (or just-dropped) socket for the disconnect
         # log line. Replaced at the top of every ``_connect_once``.
         self._session_diag = _SessionDiag()
+        # The most recent connection, kept for ``abort``. Deliberately not
+        # cleared when ``_connect_once`` exits: a connector cancelled twice
+        # while closing leaves through that exit with its socket still open
+        # (see ``abort``), and this is then the only handle on it.
+        self._ws: Any = None
 
     async def run(self) -> None:
         """Run forever, reconnecting as needed."""
@@ -265,6 +270,26 @@ class Connector:
             if not self._established:
                 backoff = min(backoff * 2, _MAX_BACKOFF_S)
 
+    def abort(self) -> None:
+        """Drop the socket now, with no closing handshake. Safe to call at any time.
+
+        For ``main._shutdown``, after the connector task has been cancelled.
+        Cancelling the task starts websockets' closing handshake, and the
+        library calls ``transport.abort()`` only when that handshake times out,
+        never when it is cancelled. If the handshake is hung, ``run_bounded``
+        cancels the task a second time at the step's deadline, which leaves the
+        handshake with the socket still open, for as long as UW keeps it. The
+        shutdown then releases the lease while this socket is up, and the next
+        deploy connects from another host with a socket of ours still counted
+        against the token. Aborting the transport here closes it first.
+
+        A no-op before the first connection, and on a transport that is already
+        closed.
+        """
+        ws = self._ws
+        if ws is not None:
+            ws.transport.abort()
+
     async def _connect_once(self) -> None:
         """Open one WS, join channels, drain messages until the socket dies.
 
@@ -292,6 +317,7 @@ class Connector:
             ping_timeout=_PING_TIMEOUT_S,
             max_size=2**22,  # 4 MB; option_trades can carry big arrays
         ) as ws:
+            self._ws = ws
             # Stamp the connect time and both socket addresses while the
             # transport is up. The local port is what matches a drop to
             # Railway's network-flow logs.
@@ -382,8 +408,11 @@ class Connector:
                 session_dur = time.monotonic() - session_start
                 self._established = session_dur >= _MIN_HEALTHY_SESSION_S
                 reconcile_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await reconcile_task
+                # gather() hands back the reconcile task's own CancelledError as
+                # a result. Suppressing CancelledError around a plain await
+                # would also swallow a shutdown cancel that lands here, and the
+                # connector would reconnect instead of stopping.
+                await asyncio.gather(reconcile_task, return_exceptions=True)
 
     async def _subscribe_all(self, ws) -> None:
         """Send a join frame for every configured channel.

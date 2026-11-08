@@ -1296,3 +1296,163 @@ def test_format_addr(addr: object, expected: str | None) -> None:
     import connector as connector_mod
 
     assert connector_mod._format_addr(addr) == expected
+
+
+# --- Shutdown: abort() and a shutdown cancel in the receive-loop finally -----
+
+
+class _TransportStub:
+    """The slice of an asyncio transport ``Connector.abort`` uses."""
+
+    def __init__(self) -> None:
+        self.aborted = 0
+
+    def abort(self) -> None:
+        self.aborted += 1
+
+
+class _IdleWS:
+    """A connected socket with a transport, whose receive loop idles forever."""
+
+    local_address = _LOCAL_ADDR
+    remote_address = _REMOTE_ADDR
+
+    def __init__(self, transport: _TransportStub) -> None:
+        self.transport = transport
+        self.protocol = SimpleNamespace(close_rcvd=None, close_sent=None)
+
+    def __aiter__(self):
+        return self._iter()
+
+    async def _iter(self):
+        await asyncio.sleep(3600)
+        yield b""  # makes this an async generator
+
+
+def test_abort_before_any_connection_is_a_no_op() -> None:
+    Connector(channels=["flow-alerts"], receive_queue=asyncio.Queue(maxsize=1)).abort()
+
+
+@pytest.mark.asyncio
+async def test_abort_closes_a_real_websockets_connection() -> None:
+    # The other abort tests use a stub transport; this one checks the attribute
+    # path (connection.transport.abort) against the installed websockets.
+    from websockets.protocol import State
+
+    async def _server_handler(connection) -> None:
+        await connection.wait_closed()
+
+    async with websockets.serve(_server_handler, "127.0.0.1", 0) as server:
+        port = server.sockets[0].getsockname()[1]
+        async with websockets.connect(f"ws://127.0.0.1:{port}") as ws:
+            connector = Connector(channels=["flow-alerts"], receive_queue=asyncio.Queue(maxsize=1))
+            connector._ws = ws
+
+            connector.abort()
+
+            await asyncio.wait_for(ws.wait_closed(), timeout=2.0)
+            assert ws.protocol.state is State.CLOSED
+            connector.abort()  # on an already closed transport: still a no-op
+
+
+@pytest.mark.asyncio
+async def test_abort_drops_the_socket_of_a_connector_cancelled_mid_close(monkeypatch) -> None:
+    """websockets calls transport.abort() only when its closing handshake times
+    out, not when the handshake is cancelled. _shutdown's stop_producers step
+    cancels the connector once (it enters the close) and, if the close does not
+    finish in time, run_bounded cancels it again, which unwinds it out of the
+    handshake with the socket still open. Connector.abort() is how _shutdown
+    closes that socket before it releases the lease.
+    """
+    import connector as connector_mod
+
+    transport = _TransportStub()
+    ws = _IdleWS(transport)
+    in_close = asyncio.Event()
+
+    class _HungCloseCtx:
+        async def __aenter__(self):
+            return ws
+
+        async def __aexit__(self, exc_type, exc, tb):
+            in_close.set()
+            await asyncio.Event().wait()  # the peer never answers the close frame
+
+    async def _noop_subscribe(_ws) -> None:
+        return None
+
+    connector = Connector(channels=["flow-alerts"], receive_queue=asyncio.Queue(maxsize=1))
+    monkeypatch.setattr(connector_mod.websockets, "connect", lambda *_a, **_k: _HungCloseCtx())
+    monkeypatch.setattr(connector, "_subscribe_all", _noop_subscribe)
+
+    task = asyncio.create_task(connector.run())
+    await asyncio.sleep(0.05)  # connected, idling in the receive loop
+    task.cancel()  # the step's cancel: unwinds into the hung close
+    await asyncio.wait_for(in_close.wait(), timeout=1.0)
+    task.cancel()  # run_bounded's cancel at the step's deadline
+    await asyncio.wait({task}, timeout=1.0)
+
+    assert task.cancelled()
+    assert transport.aborted == 0  # the handshake never got as far as aborting
+
+    connector.abort()
+
+    assert transport.aborted == 1
+
+
+@pytest.mark.asyncio
+async def test_a_shutdown_cancel_during_the_receive_loop_finally_is_not_swallowed(
+    monkeypatch,
+) -> None:
+    """The receive loop's finally cancels the reconcile task and awaits it. That
+    await sat inside ``contextlib.suppress(CancelledError)``, which also
+    swallowed a shutdown cancel landing there: the connector then went on to
+    reconnect instead of stopping.
+    """
+    import connector as connector_mod
+
+    in_finally = asyncio.Event()
+    release = asyncio.Event()
+    connects = 0
+
+    async def _slow_to_cancel(_ws) -> None:
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            in_finally.set()
+            await release.wait()  # still unwinding when the shutdown cancel arrives
+            raise
+
+    async def _noop_subscribe(_ws) -> None:
+        return None
+
+    def _fake_connect(*_a, **_k):
+        nonlocal connects
+        connects += 1
+        if connects > 1:
+            # Reached only if the shutdown cancel was swallowed. Ending the run
+            # here makes that a failed assertion below rather than a hang.
+            raise asyncio.CancelledError()
+        # The session ends by itself, which starts the finally.
+        return _ConnectCtx(_SessionWS([], pre_frame_delay_s=0.02))
+
+    connector = Connector(channels=["flow-alerts"], receive_queue=asyncio.Queue(maxsize=1))
+    monkeypatch.setattr(connector_mod.websockets, "connect", _fake_connect)
+    monkeypatch.setattr(connector, "_subscribe_all", _noop_subscribe)
+    monkeypatch.setattr(connector, "_reconcile_subscriptions", _slow_to_cancel)
+    monkeypatch.setattr(connector_mod, "_INITIAL_BACKOFF_S", 0.0)
+
+    task = asyncio.create_task(connector.run())
+    try:
+        await asyncio.wait_for(in_finally.wait(), timeout=1.0)  # session over, reconcile unwinding
+        task.cancel()  # the shutdown cancel
+        done, _ = await asyncio.wait({task}, timeout=1.0)
+
+        assert task in done, "the connector went on instead of stopping"
+        assert task.cancelled()
+        assert connects == 1
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()
+            await asyncio.wait({task}, timeout=1.0)
