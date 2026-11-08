@@ -14,6 +14,19 @@ line names the class only, never the text or a traceback. A BaseException (SIGTE
 SystemExit, Ctrl-C) propagates, so the run ends and `main` reports it. A result that
 breaks the StepResult contract fails that step alone.
 
+Rules for a step's author, because the scrubber cannot catch these:
+- Do not let a raw conversion error escape. A builtin raised by C code directly under
+  step code has no data-library frame, so no rule can tell that its text quotes a cell:
+  `np.array([cell]).astype("int64")` and `int(cell)` raise `invalid literal for int()
+  ... '<cell>'`, and that text would reach Sentry (cut to 300 characters, not redacted).
+  Catch it and raise a fixed-message exception with `from None`. A plain `from exc` keeps
+  the original, with its text, in the chain Sentry sends. (Inside a callback that polars
+  or pandas calls, such as `map_elements` or `apply`, the library's frames are on the
+  stack and the scrubber does redact it.)
+- `StepResult.detail` is a fixed phrase: no dates, counts, ids or exception text. It is
+  part of the Sentry fingerprint (`monitoring.report_step`), so a detail that varies
+  opens a new issue, and sends a new email, every night.
+
 Outcomes go to `on_outcome` as each step is decided (`monitoring.report_step`), so a run
 killed mid-way has already reported the steps that finished. Logs follow the service
 rule: counts, durations, step names and exception class names, never exception text or
@@ -61,8 +74,10 @@ class StepContext:
 @dataclass(frozen=True)
 class StepResult:
     """A step's report. `counts` maps snake_case names to ints >= 0 (never row data, and
-    plain ints: a numpy integer is not one); `detail` is a fixed phrase that is safe to
-    log and to send to Sentry. `partial` means work is left for the next night."""
+    plain ints: a numpy integer is not one). `detail` is a fixed phrase, safe to log and
+    to send to Sentry: no dates, counts, ids or exception text, since it is part of the
+    Sentry fingerprint and a varying one opens a new issue and email every night.
+    `partial` means work is left for the next night."""
 
     status: StepStatus
     counts: Mapping[str, int]

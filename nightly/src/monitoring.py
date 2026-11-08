@@ -11,7 +11,10 @@ finding b11). The leak paths, and what closes each:
   strips the query from every URL anywhere in the event and drops those keys.
 - Data-library error text quotes values: polars and pyarrow quote cells, psycopg2's
   `DETAIL: Failing row contains (...)` quotes a row and its connect errors name the Neon
-  host. So the value of an exception from one of those libraries is replaced.
+  host. So the value of an exception from one of those libraries, or raised with one of
+  their frames on its stack (a callback they call), is replaced. A builtin raised by C
+  code directly under first-party code has no such frame and is only cut (below), so a
+  step must not let a raw conversion error escape (see steps.py).
 - Anything else is cut to MAX_EXCEPTION_VALUE characters.
 
 Every Sentry event is an explicit capture: the logging integration records
@@ -187,11 +190,16 @@ def _frames(value: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _from_data_library(value: dict[str, Any]) -> bool:
-    """A data-library exception class, or any exception raised from a data-library frame."""
+    """A data-library exception class, or any exception with a data-library frame
+    anywhere in its stack.
+
+    Not just the innermost frame: a callback that a library calls (polars
+    `map_elements`, pandas `apply`) raises a builtin such as `int()`'s ValueError from
+    our own lambda, with the library's frames above it, and its text quotes the cell.
+    """
     if _is_data_library_module(value.get("module")):
         return True
-    frames = _frames(value)
-    return bool(frames) and _is_data_library_module(frames[-1].get("module"))
+    return any(_is_data_library_module(frame.get("module")) for frame in _frames(value))
 
 
 def _is_data_library_module(module: object) -> bool:

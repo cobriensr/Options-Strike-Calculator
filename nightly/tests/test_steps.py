@@ -323,9 +323,70 @@ def test_invalid_result_is_failed(
     assert INVALID in caplog.text
 
 
-def test_empty_counts_and_detail_are_valid(settings: Settings, clock) -> None:
-    (outcome,) = _run([_returning(StepResult("ok", {}))], settings)
-    assert outcome == StepOutcome("returns", "ok", {}, "", 0.0)
+@pytest.mark.parametrize(
+    "result",
+    [
+        pytest.param(StepResult("ok", {}), id="empty-counts"),
+        pytest.param(StepResult("ok", {"rows": 0}), id="zero-count"),  # nothing to do is a count
+        pytest.param(StepResult("partial", {"rows": 7, "days_left": 2}, "work left"), id="partial"),
+        pytest.param(StepResult("failed", {"rows": 0}, "nothing landed"), id="failed-result"),
+    ],
+)
+def test_valid_results_keep_their_status_counts_and_detail(
+    settings: Settings, clock, result: StepResult
+) -> None:
+    (outcome,) = _run([_returning(result)], settings)
+    assert outcome == StepOutcome("returns", result.status, dict(result.counts), result.detail, 0.0)
+    assert outcome.error is None
+
+
+# --- the log line -----------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("step", "run_deadline", "level"),
+    [
+        pytest.param(
+            _returning(StepResult("ok", {"rows": 1})), RUN_DEADLINE, logging.INFO, id="ok"
+        ),
+        pytest.param(
+            _returning(StepResult("partial", {"rows": 1})),
+            RUN_DEADLINE,
+            logging.WARNING,
+            id="partial",
+        ),
+        pytest.param(
+            _returning(StepResult("failed", {"rows": 1})),
+            RUN_DEADLINE,
+            logging.WARNING,
+            id="failed",
+        ),
+        pytest.param(_returning(None), RUN_DEADLINE, logging.WARNING, id="invalid-result"),
+        pytest.param(_raising(OSError("x")), RUN_DEADLINE, logging.WARNING, id="raised"),
+        pytest.param(
+            Step("returns", lambda ctx: StepResult("ok", {}), 10_000),
+            START + 1.0,
+            logging.WARNING,
+            id="skipped",
+        ),
+    ],
+)
+def test_only_a_clean_step_logs_at_info(
+    settings: Settings,
+    clock,
+    capture_exception: Mock,
+    caplog: pytest.LogCaptureFixture,
+    step: Step,
+    run_deadline: float,
+    level: int,
+) -> None:
+    with caplog.at_level(logging.DEBUG, logger="steps"):
+        _run([step], settings, run_deadline=run_deadline)
+
+    records = [r for r in caplog.records if r.name == "steps"]
+    assert len(records) == 1
+    assert records[0].levelno == level
+    assert records[0].getMessage().startswith(f"step {step.name} ")
 
 
 # --- hard stops and the outcome callback -----------------------------------------
@@ -414,12 +475,28 @@ def _wrapped_implicitly() -> None:
         raise RuntimeError("could not reach the database")  # noqa: B904 - the chain is the case
 
 
+def _connect_fails_while_handling_another() -> None:
+    try:
+        raise OSError("socket closed")
+    except OSError:
+        _connect_fails()  # the OperationalError is raised last, with the OSError as context
+
+
+WRAPPED = {"RuntimeError": "could not reach the database"}
+
+
 @pytest.mark.parametrize(
-    ("raiser", "class_name", "entries"),
+    ("raiser", "class_name", "kept"),
     [
-        pytest.param(_connect_fails, "OperationalError", 1, id="direct"),
-        pytest.param(_wrapped_with_cause, "RuntimeError", 2, id="chained-cause"),
-        pytest.param(_wrapped_implicitly, "RuntimeError", 2, id="chained-context"),
+        pytest.param(_connect_fails, "OperationalError", {}, id="direct"),
+        pytest.param(_wrapped_with_cause, "RuntimeError", WRAPPED, id="chained-cause"),
+        pytest.param(_wrapped_implicitly, "RuntimeError", WRAPPED, id="chained-context"),
+        pytest.param(
+            _connect_fails_while_handling_another,
+            "OperationalError",
+            {"OSError": "socket closed"},
+            id="data-library-error-last-in-the-chain",
+        ),
     ],
 )
 def test_a_failed_connect_leaks_no_host_to_the_log_or_the_event(
@@ -429,7 +506,7 @@ def test_a_failed_connect_leaks_no_host_to_the_log_or_the_event(
     caplog: pytest.LogCaptureFixture,
     raiser: Callable[[], None],
     class_name: str,
-    entries: int,
+    kept: dict[str, str],
 ) -> None:
     # connect_db lets the OperationalError from a failed connect propagate unchanged, and
     # its message carries the Neon host. Neither the log nor the event may carry it.
@@ -450,7 +527,9 @@ def test_a_failed_connect_leaks_no_host_to_the_log_or_the_event(
     event, _hint = event_from_exception(captured)
     event = json.loads(json.dumps(event, default=str))
     assert HOST in json.dumps(event)  # the leak this guards against: it is in the raw event
-    assert len(event["exception"]["values"]) == entries  # a chain adds an entry per link
+    values = event["exception"]["values"]
+    assert len(values) == 1 + len(kept)  # a chain adds an entry per link
+    assert values[-1]["type"] == class_name  # the exception that escaped is the last entry
 
     scrubbed = scrub_event(event, {})
 
@@ -459,6 +538,56 @@ def test_a_failed_connect_leaks_no_host_to_the_log_or_the_event(
     for needle in (HOST, "neondb_owner", "password authentication"):
         assert needle not in text
     by_type = {v["type"]: v["value"] for v in scrubbed["exception"]["values"]}
-    assert by_type["OperationalError"] == REDACTED
-    if entries == 2:
-        assert by_type["RuntimeError"] == "could not reach the database"
+    # The data-library link is redacted wherever it sits; every other link keeps its text.
+    assert by_type == {"OperationalError": REDACTED, **kept}
+
+
+def _convert_a_cell() -> None:
+    int(ROW_VALUE)
+
+
+def _convert_and_re_raise_fixed_from_none() -> None:
+    try:
+        _convert_a_cell()
+    except ValueError:
+        raise RuntimeError("could not convert a cell") from None
+
+
+def _convert_and_re_raise_fixed_from_exc() -> None:
+    try:
+        _convert_a_cell()
+    except ValueError as exc:
+        raise RuntimeError("could not convert a cell") from exc
+
+
+@pytest.mark.parametrize(
+    ("raiser", "leaks"),
+    [
+        pytest.param(_convert_and_re_raise_fixed_from_none, False, id="from-none"),
+        # The rule in steps.py: a plain `from exc` keeps the original, and its text, in the
+        # chain, and the scrubber cannot tell that a first-party ValueError quotes a cell.
+        pytest.param(_convert_and_re_raise_fixed_from_exc, True, id="from-exc"),
+    ],
+)
+def test_a_fixed_message_raised_from_none_keeps_a_raw_conversion_error_out_of_the_event(
+    settings: Settings,
+    clock,
+    capture_exception: Mock,
+    raiser: Callable[[], None],
+    leaks: bool,
+) -> None:
+    def run(ctx: StepContext) -> StepResult:
+        raiser()
+        return StepResult("ok", {})
+
+    _run([Step("enrich-outcomes", run, 0)], settings)
+
+    (captured,) = capture_exception.call_args.args
+    event, _hint = event_from_exception(captured)
+    scrubbed = scrub_event(json.loads(json.dumps(event, default=str)), {})
+
+    assert scrubbed is not None
+    assert (ROW_VALUE in json.dumps(scrubbed)) is leaks
+    values = scrubbed["exception"]["values"]
+    assert values[-1]["value"] == "could not convert a cell"
+    assert len(values) == (2 if leaks else 1)

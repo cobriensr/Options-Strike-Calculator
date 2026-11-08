@@ -298,20 +298,21 @@ def test_scrub_redacts_builtin_error_raised_inside_a_data_library(frame_module: 
     assert _values(scrubbed)[0]["value"] == REDACTED
 
 
-def test_scrub_keeps_a_builtin_error_raised_in_our_own_frame() -> None:
-    # The innermost frame decides: a library frame further out does not redact it.
-    event = {
+def _builtin_error_event(*frame_modules: str) -> dict[str, Any]:
+    """A ValueError quoting a cell, raised with frames from the given modules (outermost
+    first)."""
+    return {
         "level": "error",
         "exception": {
             "values": [
                 {
                     "module": None,
                     "type": "ValueError",
-                    "value": "bad window",
+                    "value": f"invalid literal for int() with base 10: {TAPE_VALUE!r}",
                     "stacktrace": {
                         "frames": [
-                            {"module": "pandas.core.frame", "function": "apply", "lineno": 1},
-                            {"module": "enrich_step", "function": "window", "lineno": 2},
+                            {"module": module, "function": "f", "lineno": n}
+                            for n, module in enumerate(frame_modules, start=1)
                         ]
                     },
                 }
@@ -319,10 +320,100 @@ def test_scrub_keeps_a_builtin_error_raised_in_our_own_frame() -> None:
         },
     }
 
+
+@pytest.mark.parametrize("library_frame", ["pandas.core.apply", "polars.series.series"])
+def test_scrub_redacts_a_builtin_error_raised_in_a_callback_a_library_called(
+    library_frame: str,
+) -> None:
+    # `map_elements(lambda x: int(x))` and `DataFrame.apply(..., axis=1)` run our lambda
+    # under the library's frames, so the innermost frame is ours and the cell is quoted.
+    event = _builtin_error_event("main", "enrich_step", library_frame, "enrich_step")
+
     scrubbed = scrub_event(event, {})
 
     assert scrubbed is not None
-    assert _values(scrubbed)[0]["value"] == "bad window"
+    assert _values(scrubbed)[0]["value"] == REDACTED
+    assert TAPE_VALUE not in json.dumps(scrubbed)
+
+
+def _polars_callback_error() -> BaseException:
+    try:
+        with warnings.catch_warnings():
+            # polars suggests a native expression for this lambda; the callback is the case.
+            warnings.simplefilter("ignore", pl.exceptions.PolarsInefficientMapWarning)
+            pl.DataFrame({"a": [TAPE_VALUE]}).select(
+                pl.col("a").map_elements(lambda x: int(x), return_dtype=pl.Int64)
+            )
+    except ValueError as exc:
+        return exc
+    raise AssertionError("polars accepted the cast")
+
+
+def _pandas_callback_error() -> BaseException:
+    try:
+        pd.DataFrame({"a": [TAPE_VALUE]}).apply(lambda row: int(row["a"]), axis=1)
+    except ValueError as exc:
+        return exc
+    raise AssertionError("pandas accepted the cast")
+
+
+@pytest.mark.parametrize(
+    "make_error",
+    [
+        pytest.param(_polars_callback_error, id="polars-map_elements"),
+        pytest.param(_pandas_callback_error, id="pandas-apply"),
+    ],
+)
+def test_scrub_redacts_the_real_callback_errors(make_error) -> None:
+    event = _exception_event(make_error())
+    (value,) = _values(event)
+    assert value["type"] == "ValueError"
+    assert value["module"] is None  # a builtin: only the stack says a library was involved
+    assert TAPE_VALUE in value["value"]  # the leak this guards against
+    modules = [frame["module"] for frame in value["stacktrace"]["frames"]]
+    assert modules[-1] == __name__  # innermost: our lambda, not the library
+    assert any(m.split(".")[0] in ("polars", "pandas") for m in modules)
+
+    scrubbed = scrub_event(event, {})
+
+    assert scrubbed is not None
+    assert _values(scrubbed)[0]["value"] == REDACTED
+    assert TAPE_VALUE not in json.dumps(scrubbed)
+
+
+def test_scrub_keeps_a_builtin_error_with_only_first_party_frames() -> None:
+    # No library on the stack: nothing marks the text as data, so it is only cut.
+    event = _builtin_error_event("main", "steps", "enrich_step")
+
+    scrubbed = scrub_event(event, {})
+
+    assert scrubbed is not None
+    assert (
+        _values(scrubbed)[0]["value"] == f"invalid literal for int() with base 10: {TAPE_VALUE!r}"
+    )
+
+
+def test_scrub_redacts_a_data_library_error_raised_while_handling_another() -> None:
+    # The SDK lists a chain oldest first, so the escaping exception is the last entry.
+    try:
+        try:
+            raise OSError("socket closed")
+        except OSError:
+            raise psycopg2.errors.NotNullViolation(  # noqa: B904 - the implicit chain is the case
+                f"DETAIL:  Failing row contains (12, {TAPE_VALUE})."
+            )
+    except psycopg2.errors.NotNullViolation as outer:
+        event = _exception_event(outer)
+    assert [v["type"] for v in _values(event)] == ["OSError", "NotNullViolation"]
+
+    scrubbed = scrub_event(event, {})
+
+    assert scrubbed is not None
+    assert {v["type"]: v["value"] for v in _values(scrubbed)} == {
+        "OSError": "socket closed",
+        "NotNullViolation": REDACTED,
+    }
+    assert TAPE_VALUE not in json.dumps(scrubbed)
 
 
 def test_scrub_strips_signed_url_query() -> None:
