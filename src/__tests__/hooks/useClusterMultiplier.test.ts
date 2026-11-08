@@ -222,6 +222,115 @@ describe('useClusterMultiplier: the owner edits yesterday', () => {
   });
 });
 
+describe('useClusterMultiplier: seeing and clearing an edit', () => {
+  it('is not edited until the owner types', () => {
+    const { result } = renderHook(() => useClusterMultiplier(args()));
+    expect(result.current.isEdited).toBe(false);
+    act(() => result.current.setInput('high', '6950'));
+    expect(result.current.isEdited).toBe(true);
+  });
+
+  it('reset() returns to the value computed from the data', () => {
+    const { result } = renderHook(() =>
+      useClusterMultiplier(args({ yesterday: HOT_DAY })),
+    );
+    const fromData = result.current.signal;
+    const fieldsFromData = result.current.inputs;
+    act(() => result.current.setInput('high', '6696.04'));
+    expect(result.current.signal.mult).toBe(0.956);
+    expect(result.current.isEdited).toBe(true);
+
+    act(() => result.current.reset());
+
+    expect(result.current.isEdited).toBe(false);
+    expect(result.current.signal).toEqual(fromData);
+    expect(result.current.signal.mult).toBe(1.203);
+    expect(result.current.inputs).toEqual(fieldsFromData);
+  });
+
+  it('after a reset the data drives again: late yesterday data shows through', () => {
+    const { result, rerender } = renderHook(
+      (a: Args) => useClusterMultiplier(a),
+      { initialProps: args({ yesterday: null }) },
+    );
+    act(() => result.current.setInput('high', '6850'));
+    act(() => result.current.reset());
+    rerender(args({ yesterday: HOT_DAY }));
+    expect(result.current.signal.mult).toBe(1.203);
+  });
+
+  it('reset() with no edit changes nothing', () => {
+    const { result } = renderHook(() => useClusterMultiplier(args()));
+    const before = result.current.signal.mult;
+    act(() => result.current.reset());
+    expect(result.current.isEdited).toBe(false);
+    expect(result.current.signal.mult).toBe(before);
+  });
+
+  it('keeps reset() the same function between renders', () => {
+    const { result, rerender } = renderHook(
+      (a: Args) => useClusterMultiplier(a),
+      { initialProps: args() },
+    );
+    const first = result.current.reset;
+    rerender(args({ vix: 30 }));
+    expect(result.current.reset).toBe(first);
+  });
+
+  // Date A, then B, then A again. One edit is kept, tagged with its date.
+  describe('across dates (scope A, B, A)', () => {
+    const A = '2026-11-06';
+    const B = '2026-11-05';
+
+    it('an edit on A is hidden on B and shows again back on A', () => {
+      const { result, rerender } = renderHook(
+        (a: Args) => useClusterMultiplier(a),
+        { initialProps: args({ scope: A }) },
+      );
+      act(() => result.current.setInput('high', '6950'));
+      expect(result.current.isEdited).toBe(true);
+      expect(result.current.signal.mult).toBe(1.203);
+
+      rerender(args({ scope: B }));
+      expect(result.current.isEdited).toBe(false);
+      expect(result.current.signal.mult).toBe(0.969);
+
+      rerender(args({ scope: A }));
+      expect(result.current.isEdited).toBe(true);
+      expect(result.current.signal.mult).toBe(1.203);
+      expect(result.current.inputs.high).toBe('6950');
+    });
+
+    it('an edit on B replaces the one on A: back on A shows the data', () => {
+      const { result, rerender } = renderHook(
+        (a: Args) => useClusterMultiplier(a),
+        { initialProps: args({ scope: A }) },
+      );
+      act(() => result.current.setInput('high', '6950'));
+      rerender(args({ scope: B }));
+      act(() => result.current.setInput('low', '6700'));
+      expect(result.current.isEdited).toBe(true);
+
+      rerender(args({ scope: A }));
+      expect(result.current.isEdited).toBe(false);
+      expect(result.current.inputs.high).toBe('6850.00');
+    });
+
+    it('reset() clears the edit wherever it was made', () => {
+      const { result, rerender } = renderHook(
+        (a: Args) => useClusterMultiplier(a),
+        { initialProps: args({ scope: A }) },
+      );
+      act(() => result.current.setInput('high', '6950'));
+      rerender(args({ scope: B }));
+      act(() => result.current.reset());
+      rerender(args({ scope: A }));
+      expect(result.current.isEdited).toBe(false);
+      expect(result.current.signal.mult).toBe(0.969);
+    });
+  });
+});
+
 describe('useClusterMultiplier: what the consumers get, no panel mounted', () => {
   // The put and call multipliers and the delta ceilings come from
   // useRegimeClassification, which takes this hook's value as clusterMult. The
