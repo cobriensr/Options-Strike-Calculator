@@ -436,7 +436,7 @@ export async function fetchStoredFrontMonths(
       FROM futures_front_month
       WHERE product = ${product}
         AND trade_date BETWEEN ${fromDate}::date AND ${toDate}::date
-      ORDER BY trade_date
+      ORDER BY futures_front_month.trade_date
     `,
     RETRIES,
     ATTEMPT_TIMEOUT_MS,

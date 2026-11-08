@@ -942,6 +942,15 @@ describe('fetchStoredFrontMonths', () => {
     }
   });
 
+  it('sorts by the DATE column, not by the text alias of the same name', async () => {
+    await fetchStoredFrontMonths('ES', '2026-11-03', '2026-11-05');
+
+    // A bare `ORDER BY trade_date` binds to the output alias
+    // (`trade_date::text`). Text and date order agree for every date this
+    // can be asked for, so no result differs: the statement is what is pinned.
+    expect(pg.queries[0]).toMatch(/ORDER BY futures_front_month\.trade_date/);
+  });
+
   it('with the same first and last date returns that one day', async () => {
     await putFront('ES', '2026-11-04', 'ESZ6');
     await putFront('ES', '2026-11-05', 'ESH7');

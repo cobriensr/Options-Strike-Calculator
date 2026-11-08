@@ -86,13 +86,30 @@ describe('cycleContracts', () => {
     },
   );
 
-  it('names ten years without two contracts sharing a name, and refuses an eleventh year', () => {
-    const names = cycleContracts('ES', '2026-01', '2035-12');
-    expect(names).toHaveLength(40);
-    expect(new Set(names).size).toBe(40);
+  // Two included months exactly 120 apart would share a name (ESM6 of 2026
+  // and of 2036), so a span is refused from 120 months between its ends.
+  it.each([
+    ['2026-01', '2035-12', 40],
+    // Eleven calendar years, but no two included months 120 apart.
+    ['2026-06', '2036-05', 40],
+  ] as const)(
+    'names %s to %s, ten years, without two contracts sharing a name',
+    (from, to, expected) => {
+      const names = cycleContracts('ES', from, to);
 
-    expect(() => cycleContracts('ES', '2026-01', '2036-01')).toThrow(
-      /cycleContracts.*ES.*2026-01.*2036-01/,
+      expect(names).toHaveLength(expected);
+      expect(new Set(names).size).toBe(expected);
+    },
+  );
+
+  it.each([
+    // The first month of an eleventh year.
+    ['2026-01', '2036-01'],
+    // Exactly 120 months apart: ESM6 twice.
+    ['2026-06', '2036-06'],
+  ])('refuses %s to %s, naming the function, the root and both', (from, to) => {
+    expect(() => cycleContracts('ES', from, to)).toThrow(
+      new RegExp(`cycleContracts.*ES.*${from}.*${to}`),
     );
   });
 
@@ -335,26 +352,38 @@ describe('fetchDailyContractVolumes', () => {
     );
 
     it.each([
-      ['a missing date', { v: 5 }],
-      ['a date that is not a date', candle('tomorrow', 5)],
-      ['a date with a time', candle('2026-11-04T00:00:00Z', 5)],
-      ['a date that is not on the calendar', candle('2026-02-30', 5)],
-      ['a missing volume', { date: '2026-11-04' }],
-      ['a negative volume', candle('2026-11-04', -1)],
-      ['a fractional volume', candle('2026-11-04', 1.5)],
-      ['a volume beyond 2^53', candle('2026-11-04', 2 ** 53)],
-      ['a volume sent as a string', candle('2026-11-04', '12')],
-      ['a null volume', candle('2026-11-04', null)],
-      ['a row that is null', null],
-      ['a row that is a string', 'x'],
+      ['a missing date', { v: 5 }, 'date'],
+      ['a date that is not a date', candle('tomorrow', 5), 'date'],
+      ['a date with a time', candle('2026-11-04T00:00:00Z', 5), 'date'],
+      ['a date that is not on the calendar', candle('2026-02-30', 5), 'date'],
+      ['a missing volume', { date: '2026-11-04' }, 'v'],
+      ['a negative volume', candle('2026-11-04', -1), 'v'],
+      ['a fractional volume', candle('2026-11-04', 1.5), 'v'],
+      ['a volume beyond 2^53', candle('2026-11-04', 2 ** 53), 'v'],
+      ['a volume sent as a string', candle('2026-11-04', '12'), 'v'],
+      ['a null volume', candle('2026-11-04', null), 'v'],
+      // No field to name: the row itself is the wrong type.
+      ['a row that is null', null, 'row'],
+      ['a row that is a string', 'x', 'row'],
     ])(
-      'throws, naming the root, the contract and the row, on %s',
-      async (_what, bad) => {
+      'throws, naming the root, the contract, the row and the field, on %s',
+      async (_what, bad, field) => {
         mockUwFetch.mockResolvedValueOnce([candle('2026-11-03', 5), bad]);
 
-        await expect(
-          fetchDailyContractVolumes(KEY, 'ES', ['ESZ6'], '6m'),
-        ).rejects.toThrow(/fetchDailyContractVolumes.*ES.*ESZ6.*row 1/);
+        const err = await fetchDailyContractVolumes(
+          KEY,
+          'ES',
+          ['ESZ6'],
+          '6m',
+        ).catch((e: unknown) => e);
+
+        expect(err).toBeInstanceOf(Error);
+        expect((err as Error).message).toMatch(
+          /fetchDailyContractVolumes.*ES.*ESZ6.*row 1/,
+        );
+        expect((err as Error).message).toContain(
+          `row 1 is malformed (${field}: `,
+        );
       },
     );
 
@@ -412,5 +441,22 @@ describe('fetchDailyContractVolumes', () => {
         expect(mockUwFetch).not.toHaveBeenCalled();
       },
     );
+  });
+
+  it('throws before any call, naming the first contract that is listed twice and the root', async () => {
+    // ESU6 repeats at the third place, ESZ6 at the fourth.
+    const err = await fetchDailyContractVolumes(
+      KEY,
+      'ES',
+      ['ESU6', 'ESZ6', 'ESU6', 'ESZ6'],
+      '6m',
+    ).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toMatch(
+      /fetchDailyContractVolumes.*ES.*ESU6.*more than once/,
+    );
+    expect((err as Error).message).not.toMatch(/ESZ6/);
+    expect(mockUwFetch).not.toHaveBeenCalled();
   });
 });
