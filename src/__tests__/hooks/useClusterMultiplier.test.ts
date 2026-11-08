@@ -1,6 +1,7 @@
 import { act, renderHook } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import { useClusterMultiplier } from '../../hooks/useClusterMultiplier';
+import { useRegimeClassification } from '../../hooks/useRegimeClassification';
 
 /**
  * F24: the cluster multiplier used to exist only inside the Volatility
@@ -218,5 +219,49 @@ describe('useClusterMultiplier: the owner edits yesterday', () => {
       result.current.setInput('low', '5000');
     });
     expect(result.current.signal.rangePct).toBeCloseTo(2, 12);
+  });
+});
+
+describe('useClusterMultiplier: what the consumers get, no panel mounted', () => {
+  // The put and call multipliers and the delta ceilings come from
+  // useRegimeClassification, which takes this hook's value as clusterMult. The
+  // saved snapshot, the ceilings and the analyze context all read them from
+  // there, so they are right with the card closed once this value is.
+  function regime(clusterMult: number) {
+    return {
+      vix: 22,
+      spot: 6800,
+      T: 0.003,
+      skewPct: 3,
+      clusterMult,
+      selectedDate: '2026-11-06',
+      liveYesterdayOpen: 6800,
+      liveYesterdayClose: 6700, // down 1.47%
+      historySnapshot: null,
+    };
+  }
+
+  it('the put/call multipliers and ceilings use the computed value', () => {
+    const { result } = renderHook(() => {
+      const cluster = useClusterMultiplier(args({ yesterday: HOT_DAY }));
+      return useRegimeClassification(regime(cluster.signal.mult));
+    });
+    const { result: unclustered } = renderHook(() =>
+      useRegimeClassification(regime(1)),
+    );
+
+    // Down day, mult 1.203: put 1 + 0.203 x 1.3, call 1 + 0.203 x 1.1.
+    expect(result.current.clusterPutMult).toBeCloseTo(1.2639, 4);
+    expect(result.current.clusterCallMult).toBeCloseTo(1.2233, 4);
+    // The default 1 the card-closed app used to save: symmetric and neutral.
+    expect(unclustered.current.clusterPutMult).toBe(1);
+    expect(unclustered.current.clusterCallMult).toBe(1);
+    // A wider expected range pushes the 90th-percentile strikes out.
+    expect(result.current.p90HlPct).toBeGreaterThan(
+      unclustered.current.p90HlPct!,
+    );
+    expect(result.current.icCeiling).toBeLessThan(
+      unclustered.current.icCeiling!,
+    );
   });
 });

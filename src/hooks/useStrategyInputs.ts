@@ -10,7 +10,10 @@
  *      - showIC (default true)
  *      - contracts (default 20)
  *      - skewPct (default 3)
- *      - clusterMult (default 1)
+ *
+ *      (The volatility-clustering multiplier is not input state: it is
+ *      derived in useClusterMultiplier from the VIX, spot and yesterday's
+ *      range.)
  *
  *   2. Hedge sizing (FE-MATH-009)
  *      - breakevenTarget — multiplier of spot-to-hedge-strike
@@ -43,8 +46,6 @@ export interface UseStrategyInputsReturn {
   setContracts: Dispatch<SetStateAction<number>>;
   skewPct: number;
   setSkewPct: Dispatch<SetStateAction<number>>;
-  clusterMult: number;
-  setClusterMult: Dispatch<SetStateAction<number>>;
   // Hedge
   breakevenTarget: number;
   setBreakevenTarget: Dispatch<SetStateAction<number>>;
@@ -65,7 +66,6 @@ export function useStrategyInputs(): UseStrategyInputsReturn {
   const [showIC, setShowIC] = useState(true);
   const [contracts, setContracts] = useState(20);
   const [skewPct, setSkewPct] = useState(3);
-  const [clusterMult, setClusterMult] = useState(1);
 
   // Hedge breakeven coverage target — audit FE-MATH-009.
   const [breakevenTarget, setBreakevenTarget] = useState(1.5);
@@ -88,8 +88,6 @@ export function useStrategyInputs(): UseStrategyInputsReturn {
     setContracts,
     skewPct,
     setSkewPct,
-    clusterMult,
-    setClusterMult,
     breakevenTarget,
     setBreakevenTarget,
     showBWB,

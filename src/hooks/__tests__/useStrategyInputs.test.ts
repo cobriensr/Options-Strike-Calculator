@@ -5,13 +5,12 @@ import { useStrategyInputs } from '../useStrategyInputs';
 
 describe('useStrategyInputs', () => {
   describe('IC & skew defaults', () => {
-    it('seeds wingWidth=20, showIC=true, contracts=20, skewPct=3, clusterMult=1', () => {
+    it('seeds wingWidth=20, showIC=true, contracts=20, skewPct=3', () => {
       const { result } = renderHook(() => useStrategyInputs());
       expect(result.current.wingWidth).toBe(20);
       expect(result.current.showIC).toBe(true);
       expect(result.current.contracts).toBe(20);
       expect(result.current.skewPct).toBe(3);
-      expect(result.current.clusterMult).toBe(1);
     });
   });
 
@@ -45,12 +44,10 @@ describe('useStrategyInputs', () => {
       act(() => result.current.setShowIC(false));
       act(() => result.current.setContracts(10));
       act(() => result.current.setSkewPct(5));
-      act(() => result.current.setClusterMult(2));
       expect(result.current.wingWidth).toBe(25);
       expect(result.current.showIC).toBe(false);
       expect(result.current.contracts).toBe(10);
       expect(result.current.skewPct).toBe(5);
-      expect(result.current.clusterMult).toBe(2);
     });
 
     it('updates hedge breakevenTarget', () => {
