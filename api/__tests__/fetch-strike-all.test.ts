@@ -51,6 +51,9 @@ import { reportCronRun } from '../_lib/axiom.js';
 const MARKET_TIME = new Date('2026-03-24T14:00:00.000Z');
 // Fixed "outside hours" date: Tuesday 6:00 AM ET
 const OFF_HOURS_TIME = new Date('2026-03-24T11:00:00.000Z');
+// EDT (UTC-4): the last second before, and the first second of, 09:40 ET.
+const BEFORE_0940_ET = new Date('2026-03-24T13:39:59.000Z');
+const AT_0940_ET = new Date('2026-03-24T13:40:00.000Z');
 // Fixed weekend date: Saturday
 const WEEKEND_TIME = new Date('2026-03-28T14:00:00.000Z');
 
@@ -303,21 +306,6 @@ describe('fetch-strike-all handler', () => {
     expect(mockTransaction).toHaveBeenCalledTimes(1);
   });
 
-  it('returns correct response for empty API data', async () => {
-    process.env.UW_API_KEY = 'uwkey';
-    stubUw({ pages: [[]] });
-
-    const res = mockResponse();
-    await handler(cronRequest(), res);
-
-    expect(res._status).toBe(200);
-    expect(res._json).toMatchObject({
-      stored: false,
-      reason: 'No strike data',
-    });
-    expect(mockTransaction).not.toHaveBeenCalled();
-  });
-
   it('counts skipped duplicates correctly', async () => {
     process.env.UW_API_KEY = 'uwkey';
     // Override: all rows conflict (DO NOTHING returns empty)
@@ -499,12 +487,12 @@ describe('fetch-strike-all handler', () => {
 
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
+      success: false,
       skipped: true,
-      reason: 'stale_cache',
+      reason: 'stale',
       dataEtDate: '2026-03-23',
       today: '2026-03-24',
     });
-    expect(res._json).not.toMatchObject({ success: true });
     expect(mockTransaction).not.toHaveBeenCalled();
     expect(mockSql).not.toHaveBeenCalled();
     expect(logger.warn).toHaveBeenCalledWith(
@@ -521,6 +509,131 @@ describe('fetch-strike-all handler', () => {
       'fetch-strike-all',
       expect.objectContaining({ status: 'skipped' }),
     );
+  });
+
+  // ── One rule for every ladder that is not stored (R4) ─────
+
+  // Each kind, the UW answer that produces it, and the metric it counts.
+  const SKIP_KINDS: Array<{
+    kind: string;
+    metric: string;
+    uw: Parameters<typeof stubUw>[0];
+  }> = [
+    {
+      kind: 'stale',
+      metric: 'stale_cache_skip',
+      uw: { pages: [ladder(5, { time: '2026-03-23T19:55:00Z' })] },
+    },
+    {
+      kind: 'stale_spot',
+      metric: 'stale_spot_skip',
+      uw: { spot: [makeSpotRow({ time: '2026-03-23T19:55:00Z' })] },
+    },
+    {
+      kind: 'all_zero',
+      metric: 'zero_snapshot_skip',
+      uw: {
+        pages: [ladder(5, { call_gamma_oi: '0', put_gamma_oi: '0' })],
+      },
+    },
+    { kind: 'empty', metric: 'empty_ladder_skip', uw: { pages: [[]] } },
+    {
+      kind: 'outside_window',
+      metric: 'outside_window_skip',
+      uw: { pages: [[makeStrikeRow({ strike: '4000' })]] },
+    },
+  ];
+
+  it.each(SKIP_KINDS)(
+    '$kind: stores nothing, answers success false, skipped, and reports skipped',
+    async ({ kind, metric, uw }) => {
+      process.env.UW_API_KEY = 'uwkey';
+      stubUw(uw);
+
+      const res = mockResponse();
+      await handler(cronRequest(), res);
+
+      expect(res._status).toBe(200);
+      expect(res._json).toMatchObject({
+        job: 'fetch-strike-all',
+        success: false,
+        skipped: true,
+        reason: kind,
+      });
+      expect(mockTransaction).not.toHaveBeenCalled();
+      expect(mockSql).not.toHaveBeenCalled();
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ kind, ticker: 'SPX' }),
+        expect.stringContaining('skipping store'),
+      );
+      expect(metrics.increment).toHaveBeenCalledWith(
+        `fetch_strike_all.${metric}`,
+      );
+      expect(reportCronRun).toHaveBeenCalledWith(
+        'fetch-strike-all',
+        expect.objectContaining({ status: 'skipped', kind }),
+      );
+      expect(reportCronRun).not.toHaveBeenCalledWith(
+        'fetch-strike-all',
+        expect.objectContaining({ status: 'ok' }),
+      );
+    },
+  );
+
+  it.each(SKIP_KINDS)(
+    '$kind: sends a Sentry error naming the kind from 09:40 ET',
+    async ({ kind, uw }) => {
+      process.env.UW_API_KEY = 'uwkey';
+      vi.setSystemTime(AT_0940_ET);
+      stubUw(uw);
+
+      await handler(cronRequest(), mockResponse());
+
+      expect(Sentry.captureMessage).toHaveBeenCalledTimes(1);
+      expect(Sentry.captureMessage).toHaveBeenCalledWith(
+        expect.stringMatching(
+          new RegExp(`fetch-strike-all: ${kind} ladder for SPX`),
+        ),
+        'error',
+      );
+    },
+  );
+
+  it.each(SKIP_KINDS)(
+    '$kind: stays quiet in Sentry before 09:40 ET (the rollover), still warns and counts',
+    async ({ kind, metric, uw }) => {
+      process.env.UW_API_KEY = 'uwkey';
+      vi.setSystemTime(BEFORE_0940_ET);
+      stubUw(uw);
+
+      const res = mockResponse();
+      await handler(cronRequest(), res);
+
+      expect(res._json).toMatchObject({ success: false, reason: kind });
+      expect(Sentry.captureMessage).not.toHaveBeenCalled();
+      expect(Sentry.captureException).not.toHaveBeenCalled();
+      expect(logger.warn).toHaveBeenCalled();
+      expect(metrics.increment).toHaveBeenCalledWith(
+        `fetch_strike_all.${metric}`,
+      );
+    },
+  );
+
+  it('stale_spot: does not even ask UW for the ladder', async () => {
+    process.env.UW_API_KEY = 'uwkey';
+    const fetchMock = stubUw({
+      spot: [makeSpotRow({ time: '2026-03-23T19:55:00Z' })],
+    });
+
+    const res = mockResponse();
+    await handler(cronRequest(), res);
+
+    expect(res._json).toMatchObject({
+      reason: 'stale_spot',
+      spotTime: '2026-03-23T19:55:00Z',
+      dataEtDate: '2026-03-23',
+    });
+    expect(strikeCalls(fetchMock)).toHaveLength(0);
   });
 
   // ── Spot unavailable ──────────────────────────────────────
@@ -595,6 +708,32 @@ describe('fetch-strike-all handler', () => {
       expect.objectContaining({ message: 'Network error' }),
     );
   });
+
+  it.each(['spot', 'strike'])(
+    'is a 500 with the parse error captured when UW answers 2xx but the %s body is not JSON',
+    async (which) => {
+      process.env.UW_API_KEY = 'uwkey';
+      const parseError = new SyntaxError('Unexpected token < in JSON');
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (input: string) => {
+          const isStrike = new URL(input).pathname.endsWith('/strike');
+          if ((which === 'strike') === isStrike) {
+            return { ok: true, json: () => Promise.reject(parseError) };
+          }
+          return uwOk(isStrike ? [makeStrikeRow()] : [makeSpotRow()]);
+        }),
+      );
+
+      const res = mockResponse();
+      await handler(cronRequest(), res);
+
+      expect(res._status).toBe(500);
+      expect(res._json).toMatchObject({ error: 'Internal error' });
+      expect(Sentry.captureException).toHaveBeenCalledWith(parseError);
+      expect(mockTransaction).not.toHaveBeenCalled();
+    },
+  );
 
   it('is a 500 with nothing stored when page 1 fails after page 0 succeeded', async () => {
     process.env.UW_API_KEY = 'uwkey';
@@ -714,16 +853,17 @@ describe('fetch-strike-all handler', () => {
 
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
-      success: true,
-      stored: 0,
-      rejected: true,
+      success: false,
+      skipped: true,
+      reason: 'all_zero',
+      rows: 11,
     });
     // Neither the insert transaction nor the data-quality SELECT should run.
     expect(mockTransaction).not.toHaveBeenCalled();
     expect(mockSql).not.toHaveBeenCalled();
     expect(logger.warn).toHaveBeenCalledWith(
-      expect.objectContaining({ rows: 11 }),
-      'fetch-strike-all: rejecting all-zero gamma snapshot',
+      expect.objectContaining({ kind: 'all_zero', rows: 11 }),
+      'fetch-strike-all: rejecting all-zero gamma snapshot, skipping store',
     );
     expect(metrics.increment).toHaveBeenCalledWith(
       'fetch_strike_all.zero_snapshot_skip',
@@ -751,9 +891,9 @@ describe('fetch-strike-all handler', () => {
 
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
-      success: true,
-      stored: 0,
-      rejected: true,
+      success: false,
+      skipped: true,
+      reason: 'all_zero',
     });
     expect(mockTransaction).not.toHaveBeenCalled();
   });
@@ -779,7 +919,7 @@ describe('fetch-strike-all handler', () => {
 
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({ success: true, stored: 11 });
-    expect(res._json).not.toMatchObject({ rejected: true });
+    expect(res._json).not.toMatchObject({ skipped: true });
     expect(mockTransaction).toHaveBeenCalledTimes(1);
   });
 
@@ -824,18 +964,18 @@ describe('fetch-strike-all handler', () => {
     await handler(cronRequest(), res);
 
     expect(res._status).toBe(200);
-    // Both strikes are outside the range → filtered.length === 0
+    // Both strikes are outside the range: not stored, and not a success
     expect(res._json).toMatchObject({
-      success: true,
-      totalStrikes: 2,
-      stored: 0,
-      skipped: 0,
+      success: false,
+      skipped: true,
+      reason: 'outside_window',
+      rows: 2,
     });
     // No transaction should be called when all strikes are filtered out
     expect(mockTransaction).not.toHaveBeenCalled();
   });
 
-  it('returns stored: 0 when all strikes are outside the range', async () => {
+  it('is skipped, not a success, when every strike is far outside the range', async () => {
     process.env.UW_API_KEY = 'uwkey';
 
     stubUw({
@@ -854,11 +994,14 @@ describe('fetch-strike-all handler', () => {
 
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
-      success: true,
-      totalStrikes: 3,
-      stored: 0,
-      skipped: 0,
+      success: false,
+      skipped: true,
+      reason: 'outside_window',
+      rows: 3,
     });
     expect(mockTransaction).not.toHaveBeenCalled();
+    expect(metrics.increment).toHaveBeenCalledWith(
+      'fetch_strike_all.outside_window_skip',
+    );
   });
 });
