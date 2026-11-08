@@ -2,6 +2,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { MARKET_MECHANICS_CONTEXT } from '../_lib/market-mechanics.js';
+import { SPOTGAMMA_MECHANICS_CONTEXT } from '../_lib/spotgamma-mechanics.js';
 
 const PROMPT = MARKET_MECHANICS_CONTEXT;
 
@@ -51,5 +52,54 @@ describe('market mechanics framework — corrected gamma/charm claims', () => {
     const charm = section('charm_and_0dte_regime');
     expect(charm).toContain('default, not a guarantee');
     expect(charm).toContain('late-session drift');
+  });
+});
+
+describe('market mechanics framework — charm hedge direction', () => {
+  // As time passes OTM delta decays toward 0, so a dealer short an OTM put
+  // or long an OTM call BUYS futures; short calls / long puts SELL. The old
+  // text had charm pulling price toward high-OI strikes from both sides,
+  // which inverts the put-side direction and the long-call hedge action.
+
+  it('drops the inverted charm-direction claims', () => {
+    expect(PROMPT).not.toContain('upward pressure toward high-OI put strikes');
+    expect(PROMPT).not.toContain(
+      'downward pressure toward high-OI call strikes',
+    );
+    expect(PROMPT).not.toContain('gravitational pull toward large-OI strikes');
+    expect(PROMPT).not.toContain(
+      "the dealer's long call position contributes less positive delta, and the dealer SELLS",
+    );
+    expect(PROMPT).not.toContain(
+      'The charm-driven convergence that had been building toward that strike',
+    );
+  });
+
+  it('ties charm direction to dealer positioning, not OI location', () => {
+    const charm = section('charm_and_0dte_regime');
+    expect(charm).toContain('not a pull toward any strike');
+    expect(charm).toContain(
+      'depends on how dealers are positioned, not on where OI sits',
+    );
+    expect(charm).toContain(
+      'flip the sign relative to OTM for the same position',
+    );
+    expect(charm).not.toContain('per-strike decoder');
+  });
+
+  it('makes the straddle-cone charm funnel conditional on dealer side', () => {
+    const cone = section('straddle_cone_mechanics');
+    expect(cone).not.toContain(
+      'Dealers long OTM gamma (hedging their short ATM straddle)',
+    );
+    expect(cone).toContain('When dealers are long the wings');
+    expect(cone).toContain('lean against a move toward either edge');
+  });
+
+  it('drops the magnetic-pull claim from the SpotGamma blue-zone bullet', () => {
+    expect(SPOTGAMMA_MECHANICS_CONTEXT).not.toContain(
+      'gradual magnetic pull downward',
+    );
+    expect(SPOTGAMMA_MECHANICS_CONTEXT).toContain('does not pull price down');
   });
 });

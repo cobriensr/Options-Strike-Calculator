@@ -348,9 +348,9 @@ convergence boundary.
   in a blue zone drifting toward the pin — charm is working in your
   favor.
 - Price inside blue zone with convergence boundary BELOW: charm is
-  buying futures while price moves toward the pin from above. This
-  decelerates downward moves to the pin. Not a hard support — more a
-  gradual magnetic pull downward toward the convergence.
+  buying futures while price moves down toward the pin from above. The
+  buying slows the decline and can stall it short of the boundary; it
+  does not pull price down. Not a hard support.
 - Price has entered the RED zone above the convergence boundary: charm
   selling is now active overhead. Expect the red zone to cap or reverse
   the move as the session approaches close.

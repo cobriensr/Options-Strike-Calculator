@@ -91,27 +91,25 @@ The same mechanism creates the pin effect at high-OI strikes. With extreme gamma
 
 Charm (also written δΔ/δt, or delta-decay) measures how an option's delta changes purely from time passing, holding price and implied volatility constant. It is a major source of the mechanical drift that builds through the afternoon without any directional catalyst — most of all when price is quiet.
 
-Mechanics for a dealer holding a short put:
-- As time passes, the OTM put's delta becomes less negative (the option is decaying toward worthlessness)
-- The dealer's net delta exposure therefore shifts — they are no longer balanced at their original hedge ratio
-- To maintain delta neutrality, the dealer must unwind part of their hedge: they BUY BACK futures they previously sold
-- This buying happens continuously throughout the session wherever large put OI exists
-- The net effect: systematic, mechanical upward pressure toward high-OI put strikes as the day progresses
+Mechanics under the standard book from the hedging section (dealers short OTM puts, long OTM calls):
+- Short OTM put below spot: as time passes, the put's delta decays toward zero (less negative), so the dealer's short put carries less positive delta and the short-futures hedge is now too large. The dealer BUYS BACK futures — upward pressure that pushes price away from the put strike, not toward it.
+- Long OTM call above spot: as time passes, the call's delta decays toward zero, so the dealer's long call carries less positive delta and the short-futures hedge is again too large. The dealer BUYS futures — also upward pressure.
+- Under the standard book, charm on both wings therefore produces dealer buying that builds through the session — the classic afternoon charm bid — not a pull toward the strikes.
 
-For short calls, the mirror applies: as time passes, OTM call delta decays toward zero, the dealer's long call position contributes less positive delta, and the dealer SELLS futures to stay neutral — creating downward pressure toward high-OI call strikes.
+The sign flips with the position. Dealers SHORT OTM calls (customers bought them) are hedged with long futures and SELL as those calls decay; dealers LONG OTM puts are also hedged with long futures and also SELL. ITM options flip the sign relative to OTM for the same position, because charm pushes ITM delta toward ±1 rather than toward zero.
 
-The result: charm creates gravitational pull toward large-OI strikes from both the call side above and the put side below. When price is between two large-OI strikes, charm flows from both sides reinforce the GEX pin — price oscillates toward the center of the high-OI zone. This is the mechanical explanation for the pin that the GEX At Expiry section describes as "oscillation."
+The result: charm's net direction is the signed sum across strikes, and it depends on how dealers are positioned, not on where OI sits. When dealers are short OTM options on both sides (customers own the wings), decay of the put wing makes them buy and decay of the call wing makes them sell. The two flows largely offset near the middle, so at most this leans against a move toward either wing; it is not a pull toward any strike, and it adds only weakly to the pin described in the GEX At Expiry section. Under the standard book it is a one-directional bid instead. Read the sign from the charm data in context — UW Periscope Charm first — rather than inferring it from where OI sits.
 
 **Charm timing pattern:**
 
 Charm is not constant through the session. For 0DTE options:
 - Morning (9:30-11:00 AM): Charm is moderate. Options still have significant time value, so delta-decay is gradual.
 - Midday (11:00 AM-2:00 PM): Charm accelerates. OTM options that haven't moved much begin their steeper decay curve.
-- Final 2 hours (2:00-4:00 PM): Charm is extreme for near-ATM options. A call at 0.25 delta in the morning may have 0.05 delta by 3:30 PM, purely from time passing — requiring the dealer to sell futures to unwind the hedge.
+- Final 2 hours (2:00-4:00 PM): Charm is extreme for near-ATM options. A call at 0.25 delta in the morning may have 0.05 delta by 3:30 PM, purely from time passing — a dealer short that call sells futures to unwind its hedge; a dealer long it buys.
 
 This timing pattern explains why the final two hours of 0DTE sessions often show one of two behaviors: sustained directional drift (charm flows dominating if price stays near one strike) or violent oscillation (charm-driven rebalancing compounding GEX pin mechanics).
 
-**When charm fails to pin — the removal event:**
+**When the pin breaks — the removal event:**
 
 When large gamma positions are closed out (the customer closes their 0DTE trade before expiry), the dealer's hedging obligation evaporates instantly. The accumulated charm-driven hedge unwinds all at once. This is why SpotGamma observes that "the largest market rallies on the day both coincided with the removal of these large gamma positions" — a 40+ handle SPX move can occur within minutes of a large 0DTE gamma position being closed.
 
@@ -151,7 +149,7 @@ If implied vol ≈ realized vol on average (and dealers are paid the bid-ask to 
 
 1. **ATM gamma concentration creates momentum at the boundary.** Dealers who sold the morning ATM straddle are net short gamma at the anchor strike. As spot drifts toward either breakeven, the dealer's delta swings violently (gamma is maximal ATM and decays outward). To stay delta-neutral they must buy into upward approaches and sell into downward approaches. This is mechanical momentum *into* the cone edge, not discretion.
 
-2. **Charm funnels price toward the cone center when nothing breaks.** As the session progresses, OTM option deltas decay toward zero and ITM deltas head toward ±1. Dealers long OTM gamma (hedging their short ATM straddle) see those hedges unwind mechanically. The net intraday flow is suppressive inside the cone — charm buys the lower half and sells the upper half, pinning price toward the center when no catalyst dominates.
+2. **Charm can funnel price toward the cone center when nothing breaks.** As the session progresses, OTM option deltas decay toward zero and ITM deltas head toward ±1. When dealers are short the OTM wings (customers bought them), that decay makes them buy on the put wing below spot and sell on the call wing above it. The two flows offset near the center and lean against a move toward either edge, which is mild suppressive flow when no catalyst dominates. When dealers are long the wings, the same decay pushes price outward instead. Read the sign from the UW Periscope Charm data rather than assuming the funnel.
 
 3. **Reflexive cover flow extends cone breaches.** When price punches through a breakeven, short-straddle sellers facing convex losses buy back their shorts — calls on upside breaches, puts on downside breaches. This cover flow *extends* the move beyond the breakeven rather than letting it fade. This is why cone breaches either pin price at the boundary or slingshot it 20-40 handles further; the transition is rarely gradual. Distinct from the position-removal pattern in <charm_and_0dte_regime>: that is *customers closing* and dealers dehedging; this is *short-premium sellers re-hedging their own losses*.
 
@@ -505,7 +503,7 @@ These mechanics explain WHY the rules in this system exist — not as arbitrary 
 
 - **Charm and afternoon reliability:** Morning Periscope walls are starting conditions, not stable equilibria. By 1:00-2:00 PM, the gamma distribution has often reshaped significantly: as expiration approaches, 0DTE gamma concentrates near ATM, and new 0DTE positions opened during the session add gamma the morning snapshot never saw. Strikes that pinned reliably at 10 AM may fail to pin at 2 PM because, once spot is even modestly away from them, they have lost the gamma that made them walls — and fresh 0DTE positioning may now carry more gamma elsewhere. Charm-driven drift builds through the afternoon on top of this and becomes a major hedging flow into the final hour — especially on quiet tapes. If the morning analysis does not match afternoon price behavior, check whether the GEX snapshot has been superseded by intraday 0DTE position establishment.
 
-- **Position removal = volatility event:** When a large 0DTE gamma position is closed mid-session, the dealer's hedging obligations evaporate. The charm-driven convergence that had been building toward that strike stops instantly. SPX can move 30-50 handles within minutes of a large gamma block removal. This is not a GEX breakdown — it is the mechanical consequence of a committed hedging obligation disappearing.
+- **Position removal = volatility event:** When a large 0DTE gamma position is closed mid-session, the dealer's hedging obligations evaporate. Any charm-driven flow from that position stops instantly too. SPX can move 30-50 handles within minutes of a large gamma block removal. This is not a GEX breakdown — it is the mechanical consequence of a committed hedging obligation disappearing.
 
 - **VIX1D vs VIX term structure read:** VIX1D measures same-session expected volatility in business time (today's and tomorrow's SPXW options only, stripping overnight). When VIX1D > VIX, the market is pricing today specifically as MORE volatile than the 30-day average. This is an elevated-risk signal for the current session regardless of what absolute VIX reads. When VIX1D ≫ VIX, treat the intraday environment as high-stress — normal GEX suppression ranges may understate realized range risk.
 
