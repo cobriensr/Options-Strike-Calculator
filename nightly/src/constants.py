@@ -25,6 +25,12 @@ DOWNLOAD_DEADLINE_SECONDS = 1800
 DOWNLOAD_MAX_ATTEMPTS = 4
 MIN_FREE_DISK_BYTES = 15 * 2**30
 WORK_DIR = Path("/tmp/nightly")
+# Neon connections. A child process builds PGCONNECT_TIMEOUT and PGOPTIONS from these two
+# values, never from literals.
+DB_CONNECT_TIMEOUT_SECONDS = 15
+# The largest query, list_work_dates' scan of the 2.47 GB lottery_finder_fires, runs in
+# seconds; past 300 s it is a hang.
+DB_STATEMENT_TIMEOUT_MS = 300_000
 # Trading days after which a never-posted day is marked unavailable.
 UNAVAILABLE_AGE_TRADING_DAYS = 5
 # UW's 403 names this token's boundary, and a full plan reaches back about 2 years: a

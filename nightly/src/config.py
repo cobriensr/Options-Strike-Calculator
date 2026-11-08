@@ -3,8 +3,8 @@
 A missing required variable fails `load_settings()` with a ValidationError that
 names the field. There is no `.env` reading and no CLI flag for secrets.
 
-A malformed SENTRY_DSN fails boot too, with a fixed message that never echoes it.
-`load_sentry_dsn()` reads that one variable alone, so a run whose other settings are
+A malformed SENTRY_DSN, or a DATABASE_URL that is not a postgres URL, fails boot too,
+with a fixed message that never echoes it. `load_sentry_dsn()` reads that one variable alone, so a run whose other settings are
 invalid can still report that to Sentry.
 """
 
@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     r2_secret_access_key: SecretStr
     r2_endpoint_url: str
     r2_bucket_fulltape: str
+    database_url: SecretStr
     sentry_dsn: SentryDsn = None
 
     @field_validator("r2_endpoint_url")
@@ -48,6 +49,14 @@ class Settings(BaseSettings):
     def _require_https(cls, value: str) -> str:
         if not value.startswith("https://"):
             raise ValueError("r2_endpoint_url must start with https://")
+        return value
+
+    @field_validator("database_url")
+    @classmethod
+    def _require_postgres_scheme(cls, value: SecretStr) -> SecretStr:
+        # Fixed message: the URL carries the password, and a ValueError's text is shown.
+        if not value.get_secret_value().startswith(("postgres://", "postgresql://")):
+            raise ValueError("database_url must start with postgres:// or postgresql://")
         return value
 
 

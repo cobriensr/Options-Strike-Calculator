@@ -1,12 +1,22 @@
 """Tests for nightly settings: required vars fail by name, secrets stay out of repr,
-and a malformed SENTRY_DSN fails boot without being echoed."""
+and a malformed SENTRY_DSN or DATABASE_URL fails boot without being echoed. The last
+section covers resources.py: the direct DSN, the DB connection and the tape reader."""
 
 from __future__ import annotations
 
+import logging
+from functools import partial
+from pathlib import Path
+from unittest.mock import MagicMock
+
+import _pipeline_retry
+import psycopg2
 import pytest
 from pydantic import ValidationError
 
+import resources
 from config import load_sentry_dsn, load_settings
+from constants import DB_CONNECT_TIMEOUT_SECONDS, DB_STATEMENT_TIMEOUT_MS
 
 VALID_DSN = "https://public@o0.ingest.sentry.invalid/1"
 MALFORMED_DSNS = [
@@ -23,6 +33,14 @@ REQUIRED = [
     "R2_SECRET_ACCESS_KEY",
     "R2_ENDPOINT_URL",
     "R2_BUCKET_FULLTAPE",
+    "DATABASE_URL",
+]
+# The password is the marker a failing test would find echoed.
+BAD_SCHEME_DATABASE_URLS = [
+    "mysql://user:pw-7f3a@db.invalid/app",
+    "https://user:pw-7f3a@db.invalid/app",
+    "user:pw-7f3a@db.invalid/app",
+    "",
 ]
 
 
@@ -61,6 +79,42 @@ def test_secrets_not_in_repr() -> None:
     assert "test-key" not in text
     assert "test-access-key-id" not in text
     assert "test-secret-access-key" not in text
+
+
+def test_missing_database_url_names_field(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("DATABASE_URL")
+    with pytest.raises(ValidationError) as exc:
+        load_settings()
+    assert "database_url" in str(exc.value)
+
+
+@pytest.mark.parametrize("scheme", ["postgres", "postgresql"])
+def test_database_url_accepts_both_postgres_schemes(
+    monkeypatch: pytest.MonkeyPatch, scheme: str
+) -> None:
+    monkeypatch.setenv("DATABASE_URL", f"{scheme}://u:p@db.invalid/app")
+    assert load_settings().database_url.get_secret_value() == f"{scheme}://u:p@db.invalid/app"
+
+
+@pytest.mark.parametrize("url", BAD_SCHEME_DATABASE_URLS)
+def test_database_url_scheme_checked_without_echo(
+    monkeypatch: pytest.MonkeyPatch, url: str
+) -> None:
+    monkeypatch.setenv("DATABASE_URL", url)
+    with pytest.raises(ValidationError) as exc:
+        load_settings()
+    errors = exc.value.errors(include_input=False, include_context=False)
+    (error,) = errors
+    assert error["loc"] == ("database_url",)
+    assert error["msg"] == "Value error, database_url must start with postgres:// or postgresql://"
+    assert "pw-7f3a" not in repr(errors)
+
+
+def test_database_url_not_in_repr() -> None:
+    settings = load_settings()
+    for text in (repr(settings), str(settings)):
+        assert "postgresql://" not in text
+        assert "test:test" not in text
 
 
 def test_valid_sentry_dsn_loads(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -102,3 +156,182 @@ def test_dsn_alone_is_none_when_unset_or_malformed(
     else:
         monkeypatch.setenv("SENTRY_DSN", dsn)
     assert load_sentry_dsn() is None
+
+
+# --- resources ------------------------------------------------------------------------
+
+POOLED_HOST = "ep-a-1-pooler.us-east-2.aws.neon.tech"
+DIRECT_HOST = "ep-a-1.us-east-2.aws.neon.tech"
+NEON_QUERY = "sslmode=require&channel_binding=require"
+POOLED_URL = f"postgresql://u:p@{POOLED_HOST}:5432/db?{NEON_QUERY}"
+DIRECT_URL = f"postgresql://u:p@{DIRECT_HOST}:5432/db?{NEON_QUERY}"
+UNTOUCHED_URLS = [
+    DIRECT_URL,
+    # "-pooler" in the first label but not at its end
+    "postgresql://u:p@ep-pooler-a-1.us-east-2.aws.neon.tech/db",
+    # "-pooler" ending a later label
+    "postgresql://u:p@ep-a-1.us-east-2-pooler.aws.neon.tech/db",
+]
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        (POOLED_URL, DIRECT_URL),
+        *[(url, url) for url in UNTOUCHED_URLS],
+        # No port and the postgres:// scheme.
+        (f"postgres://u:p@{POOLED_HOST}/db", f"postgres://u:p@{DIRECT_HOST}/db"),
+        # A host with no dots: the label ends at the port.
+        ("postgresql://u:p@ep-a-1-pooler:5432/db", "postgresql://u:p@ep-a-1:5432/db"),
+        # Only the host changes: "-pooler" in user, password, path and query stays.
+        (
+            f"postgresql://u-pooler:p-pooler@{POOLED_HOST}/db-pooler?application_name=a-pooler",
+            f"postgresql://u-pooler:p-pooler@{DIRECT_HOST}/db-pooler?application_name=a-pooler",
+        ),
+        # A raw "@" inside the password does not move the host boundary.
+        (f"postgresql://u:p@ss@{POOLED_HOST}/db", f"postgresql://u:p@ss@{DIRECT_HOST}/db"),
+    ],
+)
+def test_direct_dsn_strips_pooler_label(url: str, expected: str) -> None:
+    assert resources.direct_dsn(url) == expected
+
+
+def test_connect_db_sets_timeouts_and_autocommit_and_closes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DATABASE_URL", POOLED_URL)
+    conn = MagicMock()
+    connect = MagicMock(return_value=conn)
+    monkeypatch.setattr(resources, "connect_with_retry", connect)
+
+    with resources.connect_db(load_settings()) as got:
+        assert got is conn
+        assert conn.autocommit is True
+        conn.close.assert_not_called()
+
+    conn.close.assert_called_once_with()
+    connect.assert_called_once_with(
+        DIRECT_URL,
+        error_detail=False,
+        connect_timeout=DB_CONNECT_TIMEOUT_SECONDS,
+        application_name="nightly",
+        options=f"-c statement_timeout={DB_STATEMENT_TIMEOUT_MS}",
+        keepalives=1,
+        keepalives_idle=30,
+        keepalives_interval=10,
+        keepalives_count=5,
+    )
+
+
+def test_connect_db_closes_when_the_body_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    conn = MagicMock()
+    monkeypatch.setattr(resources, "connect_with_retry", MagicMock(return_value=conn))
+
+    with pytest.raises(RuntimeError, match="boom"), resources.connect_db(load_settings()):
+        raise RuntimeError("boom")
+
+    conn.close.assert_called_once_with()
+
+
+def test_connect_db_closes_when_autocommit_cannot_be_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Refusing:
+        def __init__(self) -> None:
+            self.close = MagicMock()
+
+        @property
+        def autocommit(self) -> bool:
+            return False
+
+        @autocommit.setter
+        def autocommit(self, value: bool) -> None:
+            raise psycopg2.ProgrammingError
+
+    conn = Refusing()
+    monkeypatch.setattr(resources, "connect_with_retry", MagicMock(return_value=conn))
+
+    with pytest.raises(psycopg2.ProgrammingError), resources.connect_db(load_settings()):
+        pytest.fail("connect_db yielded a connection it could not put in autocommit")
+
+    conn.close.assert_called_once_with()
+
+
+def test_terminal_connect_failure_leaves_no_host_text_in_any_log(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The real retry helper runs, so its `[retry]` lines are the output under test."""
+    caplog.set_level(logging.DEBUG)
+    monkeypatch.setenv("DATABASE_URL", f"postgresql://u:p@{POOLED_HOST}/db")
+    failure = psycopg2.OperationalError(f'could not translate host name "{DIRECT_HOST}" to address')
+    driver = MagicMock(side_effect=failure)
+    monkeypatch.setattr(psycopg2, "connect", driver)
+    no_wait = partial(_pipeline_retry.connect_with_retry, sleep=lambda _: None)
+    monkeypatch.setattr(resources, "connect_with_retry", no_wait)
+
+    with pytest.raises(psycopg2.OperationalError) as raised, resources.connect_db(load_settings()):
+        pytest.fail("connect_db yielded after every attempt failed")
+
+    assert raised.value is failure
+    assert driver.call_count == _pipeline_retry.DEFAULT_ATTEMPTS
+    seen = capsys.readouterr()
+    assert "[retry]" in seen.err
+    assert "OperationalError" in seen.err
+    everything = seen.out + seen.err + caplog.text
+    assert "ep-a-1" not in everything
+    assert "neon.tech" not in everything
+
+
+def test_open_reader_clears_the_cache_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    cache = tmp_path / "cache"
+    (cache / "nested").mkdir(parents=True)
+    (cache / "2026-11-05-fulltape.parquet").write_bytes(b"day")
+    (cache / "2026-11-06-fulltape.parquet.part").write_bytes(b"partial")
+    (cache / "nested" / "leftover").write_bytes(b"x")
+    seen_at_build: list[list[str]] = []
+    reader_cls = MagicMock(side_effect=lambda **_: seen_at_build.append(sorted(cache.iterdir())))
+    monkeypatch.setattr(resources, "TapeReader", reader_cls)
+
+    resources.open_reader(load_settings(), cache)
+
+    assert seen_at_build == [[]]
+    assert cache.is_dir()
+
+
+def test_open_reader_creates_a_missing_cache_dir(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    cache = tmp_path / "missing" / "cache"
+    monkeypatch.setattr(resources, "TapeReader", MagicMock())
+
+    resources.open_reader(load_settings(), cache)
+
+    assert cache.is_dir()
+    assert list(cache.iterdir()) == []
+
+
+def test_open_reader_builds_the_reader_from_the_r2_settings(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    reader_cls = MagicMock()
+    monkeypatch.setattr(resources, "TapeReader", reader_cls)
+
+    reader = resources.open_reader(load_settings(), tmp_path)
+
+    assert reader is reader_cls.return_value
+    reader_cls.assert_called_once_with(
+        endpoint_url="https://example.r2.cloudflarestorage.com",
+        access_key_id="test-access-key-id",
+        secret_access_key="test-secret-access-key",
+        bucket="test-bucket",
+        cache_dir=tmp_path,
+    )
+
+
+def test_a_real_psycopg2_connect_is_blocked_in_tests(db_block_attempts: list[str]) -> None:
+    before = len(db_block_attempts)
+    with pytest.raises(BaseException, match="tests must not connect to a database") as raised:
+        psycopg2.connect("postgresql://u:p@localhost/db")
+    assert not isinstance(raised.value, Exception)  # an `except Exception` cannot swallow it
+    assert db_block_attempts[before:] == ["psycopg2.connect"]
+    del db_block_attempts[before:]  # provoked on purpose: the session-end check ignores it
