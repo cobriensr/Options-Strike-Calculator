@@ -344,7 +344,7 @@ def load_zero_gamma(
     """
     df = pd.read_sql_query(
         """
-        SELECT ts, zero_gamma_strike AS zero_gamma, confidence
+        SELECT ts, zero_gamma, confidence
         FROM zero_gamma_levels
         WHERE ticker = %s
           AND ts >= %s
