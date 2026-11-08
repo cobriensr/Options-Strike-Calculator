@@ -315,15 +315,15 @@ Files: `api/cron/backfill-futures-gaps.ts`, `api/__tests__/backfill-futures-gaps
 
 Files: `scripts/_lib/futures-flow-backfill.ts` and its test, `scripts/_lib/futures-bar-backfill.ts` and its test.
 
-- [ ] **Failing tests:**
+- [x] **Failing tests:**
   - A UTC day is split at the session open into pieces, and each piece pages only that session's contract.
   - A late minute pages only its own piece, not the day from 00:00.
   - The bar backfill writes each bar's `contract`.
-- [ ] **Then the change:**
-  - `pageDayContracts` takes `{ contract, fromMs, toMs }` pieces. The fixed three candidates and the 00:00 UTC tally go. Pages drop by about two thirds: one contract instead of three candidates.
+- [x] **Then the change:**
+  - `pageDayContracts` takes `{ contract, fromMs, toMs }` pieces. The fixed three candidates and the 00:00 UTC tally go. Pages drop by only 5–15% on a Sept-style bar run, since a back month is a small share of volume outside roll week (Phase 4b's model; the earlier "two thirds" was wrong). The flow script gains most, because a late NULL minute no longer pages from 00:00 UTC.
   - `futures-flow-backfill.ts` imports `CONTRACT_CYCLE` and `MONTH_CODES` from `futures-contracts.ts` instead of keeping its own copies.
-- [ ] Remove anything this leaves unused.
-- [ ] Gate, review, commit.
+- [x] Remove anything this leaves unused.
+- [x] Gate, review, commit. Done 2026-11-08: 343dc127, 887c4cb1, b86b8f11, 09f9fcdb plus review fixes. The scripts refuse trade dates before 07-28, and `--dry-run` and `--compare` read stored decisions only.
 
 ### Phase 4c: remove the old replay (small)
 
@@ -406,6 +406,8 @@ The new `--repair` mode works per root and UTC day:
   - Before any write, every row to be updated or deleted is appended in full to `docs/tmp/uw-futures-run/front-month-repair-<runId>.jsonl`, so the run can be undone.
   - UPDATE and DELETE only touch a row whose open and close are unchanged since the read (R6), and both are batched with unnest (R5): new `updateFuturesBars` and `deleteFuturesBars` in `api/_lib/futures-bars.ts`. The keep-class tag is a batched `UPDATE … SET contract = … WHERE contract IS NULL`.
   - The market-hours guard applies, along with `--max-pages`, and the exit code is 1 on any failed root-day.
+  - **Run order (Phase 4b review):** run `--repair` before the flow script over 09-04 onward. `--repair` rewrites the flow of a bar built from another contract. The flow script's 2% volume check isn't like for like on such a bar, and pre-Phase-5 bars have no `contract` to guard on.
+  - **`--max-pages`:** raise it to about 150,000 for this run, from the default 20,000 (see the estimate below).
 
 Steps:
 - [ ] **Failing tests:**
@@ -440,8 +442,8 @@ Steps:
 Between steps 5 and 6, the cron fills gaps by the new rule while live bars still follow the old one. Phase 6 covers that window.
 
 **Estimate for Phase 6:**
-- About 46 trading days, paging one contract per session piece: roughly 1,200–2,000 pages per day across the six roots, so about 60–90k pages.
-- The Sept run did 43,130 pages in about 54 minutes (≈ 800 pages/min), so expect 1.5–2 hours.
+- About 46 trading days. The Sept run paged about 2,500–3,000 pages per weekday across the six roots, and paging one contract per piece saves only 5–15% of that (Phase 4b's model): a back month is a small share of volume outside roll week. So about 115–140k pages (corrected 2026-11-08, from 60–90k).
+- The Sept run did 43,130 pages in about 54 minutes (≈ 800 pages/min), so expect 2.4–2.9 hours.
 
 ## Constants
 
@@ -462,4 +464,6 @@ Between steps 5 and 6, the cron fills gaps by the new rule while live bars still
 3. **No incumbent and no volume** (the seed never ran for a root). Default: the cycle seed with a warning, not an error. It can only make that root roll one session late, and the gap cron refills within its 3-day window.
 4. **Bars that are short but from the right contract.** Phase 6 leaves live bars that are short because of websocket drops but come from the right contract. Replacing them with the fuller REST bars is a separate decision.
 5. **A tie in V keeps the incumbent.**
-6. **History before 2026-09-04 is not re-derived.** Its `contract` stays NULL. The other spec's repaired April–June ES/NQ bars keep that repair's switch points (one June roll per root), not a session-open pick: UW has no trades or daily candles before July, and that spec's own sources would be needed to move them. Default: leave them.
+6. **History before 2026-09-04 is not re-derived.** Its `contract` stays NULL.
+   - Between 07-28 (the first stored decision) and 09-03, the bars keep their own switch points, and three rolls fall inside: GC on 07-30, CL on 08-19 and ZN on 08-28 (Phase 4b review, 2026-11-08).
+   - The history scripts refuse dates before 07-28. Repairing 07-28..09-03 would mean starting Phase 6 there instead of 09-04. The other spec's repaired April–June ES/NQ bars keep that repair's switch points (one June roll per root), not a session-open pick: UW has no trades or daily candles before July, and that spec's own sources would be needed to move them. Default: leave them.
