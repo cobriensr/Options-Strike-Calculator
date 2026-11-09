@@ -14,6 +14,7 @@
  * in UTC like Neon, because computeSnapshot groups days with DATE(ts).
  */
 
+import { createHash } from 'node:crypto';
 import {
   existsSync,
   mkdtempSync,
@@ -64,6 +65,20 @@ const hooks = vi.hoisted(() => ({
   cronToday: '2026-05-28',
   /** The tool's backup file keeps only its first line, as a short disk write would. */
   shortBackup: false,
+  /** The write batch sizes (see futures-derived-batch.ts): a test shrinks them so a small step takes several transactions. */
+  writeChunk: 500,
+  chunksPerTransaction: 10,
+}));
+
+// The batch sizes are the module's own constants; a test makes them small through
+// the hooks, so a step of a few rows takes several write transactions.
+vi.mock('./futures-derived-batch.js', () => ({
+  get WRITE_CHUNK() {
+    return hooks.writeChunk;
+  },
+  get CHUNKS_PER_TRANSACTION() {
+    return hooks.chunksPerTransaction;
+  },
 }));
 
 // Only the tool's own backup-<stamp>.jsonl write is cut short.
@@ -822,6 +837,43 @@ const backups = (): string[] =>
     ? readdirSync(workDir).filter((f) => f.startsWith('backup-'))
     : [];
 
+// plan.json and the plan file it names, for the tests that cut, edit or break them.
+interface Pointer {
+  backup: string;
+  steps: string[];
+  rows: Record<string, number>;
+  lines: number;
+  sha256: string;
+  expect: Record<string, number | null>;
+  command: {
+    workDir: string;
+    stores: string[];
+    backup: string | null;
+    detectorDays: string | null;
+  };
+}
+const pointerFile = (): string => join(workDir, 'plan.json');
+const readPointer = (): Pointer =>
+  JSON.parse(readFileSync(pointerFile(), 'utf8')) as Pointer;
+const writePointer = (p: unknown): void =>
+  writeFileSync(pointerFile(), JSON.stringify(p, null, 2));
+const planFile = (): string => join(workDir, readPointer().backup);
+const startedFile = (step: string): string => join(workDir, `${step}.started`);
+/** Writes the plan file and records its line count and sha256 in plan.json, as the tool would have. */
+const resealPlan = (text: string): void => {
+  writeFileSync(planFile(), text);
+  writePointer({
+    ...readPointer(),
+    lines: text.split('\n').filter(Boolean).length,
+    sha256: createHash('sha256').update(text).digest('hex'),
+  });
+};
+const loggedText = (): string =>
+  vi
+    .mocked(console.log)
+    .mock.calls.map((c) => String(c[0]))
+    .join('\n');
+
 async function dump(): Promise<string> {
   const out: unknown[] = [];
   for (const t of [
@@ -889,6 +941,8 @@ beforeEach(async () => {
   hooks.dropWrites = false;
   hooks.plainReadOnly = true;
   hooks.shortBackup = false;
+  hooks.writeChunk = 500;
+  hooks.chunksPerTransaction = 10;
   hooks.writes = 0;
   await reset();
   // The first reset computes the clean-era snapshots through computeSnapshot.
@@ -1012,11 +1066,13 @@ describe('dry run on real SQL (pglite)', () => {
     expect(text).toMatch(
       /unaffected fields where today's method differs[^\n]*: price=0 change1hPct=0 changeDayPct=0 volumeRatio=1/,
     );
-    // S6 is stale with an affected price (a deleted bar); S4 is stale with nothing affected.
+    // S6 and S9 are stale with an affected price (a deleted bar) and are in the junk
+    // plan, which the opt-in delete removes: they are not "left alone". S4 is stale
+    // with nothing affected, and is.
     expect(text).toContain(
-      'left alone, stale or missing recompute: 2 with an affected field, 1 with none',
+      'left alone, stale or missing recompute (the rows in the junk plan are not counted here): 0 with an affected field, 1 with none',
     );
-    expect(text).toMatch(
+    expect(text).not.toMatch(
       /id \d+ price\/1h\/day\/vr 7500\/0\/0\/1 -> stale[^\n]*\[affected: /,
     );
     // The method control: every clean-era row, 216 per symbol over 3 days.
@@ -1060,9 +1116,10 @@ describe('dry run on real SQL (pglite)', () => {
     );
     expect(text).toContain('volume-ratio writes: 1; from or to null: 1');
     expect(text).toContain('volume-ratio writes: 0; from or to null: 0');
-    // The stale row with an affected field (S6, a deleted bar), broken down.
+    // S6 and S9, the stale rows with an affected field, are in the junk plan: not in this breakdown.
+    expect(text).not.toContain('the 2 with an affected field (kept as stored)');
     expect(text).toContain(
-      'the 2 with an affected field (kept as stored): stale 2, missing 0; by affected field price=2 change1hPct=2 changeDayPct=2 volumeRatio=2; in the 16:15-17:00 CT daily break 1, elsewhere 1; first and last date 2026-05-14 to 2026-05-15',
+      'the 0 with an affected field (kept as stored): stale 0, missing 0;',
     );
     expect(text).toMatch(
       /ES 2026-10-21T14:31:30\.250Z id \d+: price 7007 -> 7007, change1hPct 0\.1 -> 0\.1, changeDayPct 0\.1 -> 0\.1, volumeRatio 0\.1111 -> 0\.\d+ \*/,
@@ -1909,15 +1966,10 @@ describe('--apply on real SQL (pglite)', () => {
       `UPDATE ws_gamma_setup_fires SET es_basis_change_5m = 0.1 WHERE id = $1`,
       [ids.f3],
     );
-    const logged = () =>
-      vi
-        .mocked(console.log)
-        .mock.calls.map((c) => String(c[0]))
-        .join('\n');
     expect(
       await run({ expectSnapshots: 0, expectPremarket: 0, expectFires: 1 }),
     ).toBe(0);
-    expect(logged()).toMatch(
+    expect(loggedText()).toMatch(
       /fires is marked done but the fresh plan still changes 1 row\(s\)/,
     );
     expect(await fireValue(ids.f3)).toBe('0.1');
@@ -2016,6 +2068,77 @@ describe('--apply on real SQL (pglite)', () => {
 });
 
 // ── Method identity with the cron ───────────────────────────────────────────
+
+describe('the check before each step writes, on every step (pglite)', () => {
+  /** The nth write transaction rejects; the next run is a fresh process. */
+  async function failAt(nth: number, step: string): Promise<void> {
+    hooks.failWriteAt = { nth, error: new Error('deadlock detected') };
+    expect(await run()).toBe(1);
+    expect(errored()).toMatch(
+      new RegExp(`apply failed: ${step}: deadlock detected`),
+    );
+    // The step had recorded its start before the write that failed.
+    expect(existsSync(startedFile(step))).toBe(true);
+    expect(existsSync(markerPath(workDir, step as 'snapshots'))).toBe(false);
+    hooks.failWriteAt = null;
+    hooks.writes = 0;
+    vi.mocked(console.log).mockClear();
+    vi.mocked(console.error).mockClear();
+  }
+
+  it('refuses a snapshot row changed by hand, before the first step wrote a batch', async () => {
+    await failAt(1, 'snapshots');
+    expect(existsSync(startedFile('snapshots'))).toBe(true);
+    await pg.query(`UPDATE futures_snapshots SET price = 1111 WHERE id = $1`, [
+      ids.s10,
+    ]);
+    expect(await run()).toBe(1);
+    expect(errored()).toMatch(
+      /apply failed: snapshots: 1 of 4 row\(s\) hold neither the planned old value nor the new one, so snapshots is not written: id \d+: price holds 1111, planned /,
+    );
+    expect(hooks.writes).toBe(0);
+    expect(existsSync(markerPath(workDir, 'snapshots'))).toBe(false);
+  });
+
+  it('refuses a pre-market row changed by hand, after the premarket step died', async () => {
+    await failAt(2, 'premarket');
+    await pg.query(
+      `UPDATE market_snapshots
+          SET pre_market_data = jsonb_set(pre_market_data, '{globexHigh}', '9999'::jsonb)
+        WHERE id = $1`,
+      [ids.p1],
+    );
+    expect(await run()).toBe(1);
+    expect(errored()).toMatch(
+      /apply failed: premarket: 1 of 1 row\(s\) hold neither the planned old value nor the new one, so premarket is not written: id \d+: globexHigh holds 9999, planned /,
+    );
+    expect(hooks.writes).toBe(0);
+    expect(existsSync(markerPath(workDir, 'premarket'))).toBe(false);
+  });
+
+  it('refuses a fire changed by hand, after the fires step died', async () => {
+    await failAt(3, 'fires');
+    await pg.query(
+      `UPDATE ws_gamma_setup_fires SET es_basis_change_5m = 9.99 WHERE id = $1`,
+      [ids.f1],
+    );
+    expect(await run()).toBe(1);
+    expect(errored()).toMatch(
+      /apply failed: fires: 1 of 3 row\(s\) hold neither the planned old value nor the new one, so fires is not written: id \d+: es_basis_change_5m holds 9.99, planned /,
+    );
+    expect(hooks.writes).toBe(0);
+    expect(existsSync(markerPath(workDir, 'fires'))).toBe(false);
+  });
+
+  it('names a read that rejects inside the check, and writes nothing', async () => {
+    await failAt(2, 'premarket');
+    hooks.failRead = new Error('read rejected');
+    expect(await run()).toBe(1);
+    expect(errored()).toMatch(/apply failed: premarket: read rejected/);
+    expect(hooks.writes).toBe(0);
+    expect(existsSync(markerPath(workDir, 'premarket'))).toBe(false);
+  });
+});
 
 describe('--delete-junk-stale on real SQL (pglite)', () => {
   /** Rows of the whole table, by id. */
@@ -2210,6 +2333,7 @@ describe('--delete-junk-stale on real SQL (pglite)', () => {
   it('finishes the delete from the saved plan after a rejected delete, and refuses when a planned row changed meanwhile', async () => {
     hooks.failWriteAt = { nth: 2, error: new Error('deadlock detected') };
     expect(await junkRun()).toBe(1);
+    expect(existsSync(join(workDir, 'junk.started'))).toBe(true);
     expect(await surviving([ids.s6, ids.s9])).toEqual([ids.s6, ids.s9]);
     hooks.failWriteAt = null;
     hooks.writes = 0;
@@ -2684,6 +2808,104 @@ describe('--rewrite-stale-at-write on real SQL (pglite)', () => {
     expect(await price(exact)).toBe('7005.0000');
   });
 
+  describe('a step that dies after some of its batches committed', () => {
+    /** Four ES rows on 05-20, whose 20-day volume window holds the deleted bar: the snapshot step writes their volume ratio and the stale step the rest. */
+    async function seedOverlap(): Promise<number[]> {
+      await frozenDay('ES', '2026-05-20', '2026-05-19');
+      const ids: number[] = [];
+      for (const time of [
+        '14:50:00.250',
+        '14:55:00.250',
+        '15:00:00.250',
+        '15:05:00.250',
+      ]) {
+        ids.push(await at('ES', '2026-05-20', time, 7007));
+      }
+      return ids;
+    }
+    // Four plus the four rows of the base fixture are 8 snapshot rows; 4 stale rows.
+    const overlapRun = () =>
+      staleRun({ expectSnapshots: 8, expectStaleRewrites: 4 });
+
+    /** The finished state: every planned field at its new value, and no row written twice by one step. */
+    async function expectFinished(overlap: number[]): Promise<void> {
+      const finalPrice = ['7010.0000', '7010.0000', '7012.0000', '7012.0000'];
+      const finalDay = ['0.1429', '0.1429', '0.1714', '0.1714'];
+      for (const [i, id] of overlap.entries()) {
+        const [price, hour, day, ratio] = await snapshotValues(id);
+        expect(price).toBe(finalPrice[i]);
+        expect(hour).toBeNull();
+        expect(day).toBe(finalDay[i]);
+        // The snapshot step's field: not the 0.4615 the row was seeded with.
+        expect(ratio).not.toBeNull();
+        expect(ratio).not.toBe('0.4615');
+      }
+      // The overlap rows are written by two steps, every other row by one, and no step writes a row twice.
+      const counts = new Map<number, number>();
+      for (const id of await touches('futures_snapshots')) {
+        counts.set(id, (counts.get(id) ?? 0) + 1);
+      }
+      expect(counts.size).toBe(8);
+      for (const [id, n] of counts) {
+        expect(n, `row ${id}`).toBe(overlap.includes(id) ? 2 : 1);
+      }
+      expect(existsSync(markerPath(workDir, 'snapshots'))).toBe(true);
+      expect(existsSync(markerPath(workDir, 'stale'))).toBe(true);
+      // One plan file, the first run's.
+      expect(backups()).toHaveLength(1);
+    }
+
+    it('resumes the snapshots step after its first batches committed, and still writes the stale fields of the overlap rows', async () => {
+      const overlap = await seedOverlap();
+      hooks.writeChunk = 2;
+      hooks.chunksPerTransaction = 1;
+      // 8 rows take 4 transactions: two commit (4 rows), the third dies.
+      hooks.failWriteAt = { nth: 3, error: new Error('deadlock detected') };
+      expect(await overlapRun()).toBe(1);
+      expect(errored()).toMatch(/apply failed: snapshots: deadlock detected/);
+      expect(existsSync(startedFile('snapshots'))).toBe(true);
+      expect(existsSync(markerPath(workDir, 'snapshots'))).toBe(false);
+      expect(await touches('futures_snapshots')).toHaveLength(4);
+
+      hooks.failWriteAt = null;
+      hooks.writes = 0;
+      vi.mocked(console.log).mockClear();
+      vi.mocked(console.error).mockClear();
+      expect(await overlapRun()).toBe(0);
+      expect(errored()).toBe('');
+      expect(loggedText()).toContain(
+        'snapshots, stale left of snapshots, stale; no planning',
+      );
+      expect(loggedText()).not.toContain('rows in range');
+      await expectFinished(overlap);
+    });
+
+    it('resumes the stale step after its first batch committed', async () => {
+      const overlap = await seedOverlap();
+      hooks.writeChunk = 2;
+      hooks.chunksPerTransaction = 1;
+      // 4 transactions for the snapshot step, then the stale step's first (2 rows) commits and its second dies.
+      hooks.failWriteAt = { nth: 6, error: new Error('deadlock detected') };
+      expect(await overlapRun()).toBe(1);
+      expect(errored()).toMatch(/apply failed: stale: deadlock detected/);
+      expect(existsSync(markerPath(workDir, 'snapshots'))).toBe(true);
+      expect(existsSync(startedFile('stale'))).toBe(true);
+      expect(existsSync(markerPath(workDir, 'stale'))).toBe(false);
+      expect(await touches('futures_snapshots')).toHaveLength(10);
+
+      hooks.failWriteAt = null;
+      hooks.writes = 0;
+      vi.mocked(console.log).mockClear();
+      vi.mocked(console.error).mockClear();
+      expect(await overlapRun()).toBe(0);
+      expect(errored()).toBe('');
+      expect(loggedText()).toContain(
+        'stale left of snapshots, stale; no planning',
+      );
+      await expectFinished(overlap);
+    });
+  });
+
   describe('after a partial apply', () => {
     /** The snapshots step commits, then the stale step's write rejects. */
     async function failAtTheStaleStep() {
@@ -2765,42 +2987,191 @@ describe('--rewrite-stale-at-write on real SQL (pglite)', () => {
 
     it('refuses a plan file or a pointer it cannot read, before writing anything', async () => {
       await failAtTheStaleStep();
-      const file = join(workDir, backups()[0]!);
-      const plan = readFileSync(file, 'utf8');
-      writeFileSync(file, 'not json\n');
-      expect(await staleRun()).toBe(1);
-      expect(errored()).toMatch(/backup-.*\.jsonl line 1 is not JSON/);
-      writeFileSync(
-        file,
-        `${JSON.stringify({ step: 'bogus', id: 1, row: {} })}\n`,
+      const refuses = async (pattern: RegExp): Promise<void> => {
+        vi.mocked(console.error).mockClear();
+        expect(await staleRun()).toBe(1);
+        expect(errored()).toMatch(pattern);
+      };
+      resealPlan('not json\n');
+      await refuses(/backup-.*\.jsonl line 1 is not JSON/);
+      resealPlan(`${JSON.stringify({ step: 'bogus', id: 1, row: {} })}\n`);
+      await refuses(/backup-.*\.jsonl line 1 is not a plan line/);
+      resealPlan(
+        `${JSON.stringify({ step: 'stale', id: 1, row: {}, symbol: 'ES', fields: ['bogus'], to: {} })}\n`,
       );
-      vi.mocked(console.error).mockClear();
-      expect(await staleRun()).toBe(1);
-      expect(errored()).toMatch(/backup-.*\.jsonl line 1 is not a plan line/);
-      writeFileSync(file, plan);
-      writeFileSync(join(workDir, 'plan.json'), 'nope');
-      vi.mocked(console.error).mockClear();
-      expect(await staleRun()).toBe(1);
-      expect(errored()).toMatch(/plan\.json is not a plan pointer/);
+      await refuses(/line 1 names a field that is not a snapshot field/);
+      resealPlan(
+        `${JSON.stringify({ step: 'stale', id: 1, row: {}, to: {} })}\n`,
+      );
+      await refuses(/line 1 has no symbol or fields/);
+      writeFileSync(pointerFile(), 'nope');
+      await refuses(/plan\.json is not a plan pointer/);
       expect(hooks.writes).toBe(0);
     });
 
-    it('plans again when the run failed before any step finished', async () => {
+    it('refuses a plan file cut at a line boundary, before writing anything', async () => {
+      await failAtTheStaleStep();
+      const lines = readFileSync(planFile(), 'utf8')
+        .split('\n')
+        .filter(Boolean);
+      writeFileSync(planFile(), `${lines.slice(0, -2).join('\n')}\n`);
+      expect(await staleRun()).toBe(1);
+      expect(errored()).toMatch(
+        /backup-.*\.jsonl has 13 lines, plan\.json recorded 15/,
+      );
+      expect(hooks.writes).toBe(0);
+      expect(existsSync(markerPath(workDir, 'stale'))).toBe(false);
+    });
+
+    it('refuses a plan file with one value edited, on its sha256', async () => {
+      await failAtTheStaleStep();
+      const text = readFileSync(planFile(), 'utf8');
+      const edited = text.replace('"price":7012', '"price":7013');
+      expect(edited).not.toBe(text);
+      writeFileSync(planFile(), edited);
+      expect(await staleRun()).toBe(1);
+      expect(errored()).toMatch(
+        /backup-.*\.jsonl has sha256 [0-9a-f]{64}, plan\.json recorded [0-9a-f]{64}/,
+      );
+      expect(hooks.writes).toBe(0);
+    });
+
+    it('refuses a plan.json whose expect differs from the rows its steps hold', async () => {
+      await failAtTheStaleStep();
+      const pointer = readPointer();
+      pointer.expect.stale = 11;
+      writePointer(pointer);
+      // The command is the one the pointer now says; the rows are 10.
+      expect(await staleRun({ expectStaleRewrites: 11 })).toBe(1);
+      expect(errored()).toMatch(
+        /step stale: plan\.json recorded 10 rows, its expect says 11/,
+      );
+      // And rows that differ from what the plan file holds.
+      pointer.expect.stale = 10;
+      pointer.rows.stale = 12;
+      writePointer(pointer);
+      vi.mocked(console.error).mockClear();
+      expect(await staleRun()).toBe(1);
+      expect(errored()).toMatch(
+        /step stale: the plan file has 10 rows, plan\.json recorded 12/,
+      );
+      expect(hooks.writes).toBe(0);
+    });
+
+    it('names a plan file that is gone, and a pointer key that is missing or wrong', async () => {
+      await failAtTheStaleStep();
+      const pointer = readPointer();
+      const file = planFile();
+      const text = readFileSync(file, 'utf8');
+      rmSync(file);
+      expect(await staleRun()).toBe(1);
+      expect(errored()).toMatch(
+        /the plan file backup-.*\.jsonl that .*plan\.json names is missing from .*, though a step is started or applied \(snapshots, stale\)/,
+      );
+      writeFileSync(file, text);
+      for (const [mutate, pattern] of [
+        [(p: Record<string, unknown>) => delete p.expect, /it has no "expect"/],
+        [
+          (p: Record<string, unknown>) => delete p.command,
+          /it has no "command"/,
+        ],
+        [(p: Record<string, unknown>) => delete p.sha256, /it has no "sha256"/],
+        [
+          (p: Record<string, unknown>) => (p.steps = ['bogus']),
+          /"bogus" is not a step/,
+        ],
+        [
+          (p: Record<string, unknown>) => (p.rows = {}),
+          /it has no "rows" for "snapshots"/,
+        ],
+      ] as const) {
+        const broken = { ...pointer } as unknown as Record<string, unknown>;
+        mutate(broken);
+        writePointer(broken);
+        vi.mocked(console.error).mockClear();
+        expect(await staleRun()).toBe(1);
+        expect(errored()).toMatch(pattern);
+      }
+      expect(hooks.writes).toBe(0);
+    });
+
+    it('refuses to finish with another --stores, --backup, --detector-days or --work-dir than the plan was made with', async () => {
+      await failAtTheStaleStep();
+      const before = await dump();
+      const refuses = async (
+        over: Partial<RecomputeOptions>,
+        pattern: RegExp,
+      ): Promise<void> => {
+        vi.mocked(console.error).mockClear();
+        expect(await staleRun(over)).toBe(1);
+        expect(errored()).toMatch(/Refusing to resume\. Nothing was written\./);
+        expect(errored()).toMatch(pattern);
+        expect(errored()).toMatch(
+          /use --force to plan again, or remove plan\.json/,
+        );
+      };
+      await refuses(
+        { stores: ['snapshots', 'premarket'], expectPremarket: 1 },
+        /--stores snapshots premarket was given, the saved plan was made with --stores snapshots\n/,
+      );
+      await refuses(
+        { backup: join(dir, 'other-backup.jsonl') },
+        /--backup .*other-backup\.jsonl was given, the saved plan was made with --backup .*phase2-backup\.jsonl/,
+      );
+      const other = join(dir, 'other-detector.json');
+      writeFileSync(
+        other,
+        JSON.stringify({
+          RTY: { contaminated: [], flagged: [] },
+          CL: { contaminated: [], flagged: [] },
+          GC: { contaminated: [], flagged: [] },
+          ZN: { contaminated: [], flagged: [] },
+        }),
+      );
+      await refuses(
+        { detectorDays: other },
+        /--detector-days .*other-detector\.json was given, the saved plan was made with --detector-days .*detector_days\.json/,
+      );
+      const pointer = readPointer();
+      pointer.command.workDir = join(dir, 'elsewhere');
+      writePointer(pointer);
+      await refuses(
+        {},
+        /--work-dir .*work was given, the saved plan was made in .*elsewhere/,
+      );
+      expect(hooks.writes).toBe(0);
+      expect(await dump()).toBe(before);
+    });
+
+    it('resumes a first step whose first write was rejected: it had started', async () => {
       await seedStale();
       hooks.failWriteAt = { nth: 1, error: new Error('deadlock detected') };
       expect(await staleRun()).toBe(1);
+      expect(existsSync(startedFile('snapshots'))).toBe(true);
       expect(existsSync(markerPath(workDir, 'snapshots'))).toBe(false);
+      hooks.failWriteAt = null;
+      vi.mocked(console.log).mockClear();
+      vi.mocked(console.error).mockClear();
+      expect(await staleRun()).toBe(0);
+      expect(loggedText()).toContain('Resuming from');
+      expect(loggedText()).not.toContain('rows in range');
+      expect(existsSync(markerPath(workDir, 'snapshots'))).toBe(true);
+      expect(existsSync(markerPath(workDir, 'stale'))).toBe(true);
+    });
+
+    it('plans again when no step had started: the process died between the plan and its first step', async () => {
+      await seedStale();
+      hooks.failWriteAt = { nth: 1, error: new Error('deadlock detected') };
+      expect(await staleRun()).toBe(1);
+      // No step marker of any kind.
+      rmSync(startedFile('snapshots'));
       expect(existsSync(join(workDir, 'plan.json'))).toBe(true);
       hooks.failWriteAt = null;
       vi.mocked(console.log).mockClear();
       vi.mocked(console.error).mockClear();
       expect(await staleRun()).toBe(0);
-      const logged = vi
-        .mocked(console.log)
-        .mock.calls.map((c) => String(c[0]))
-        .join('\n');
-      expect(logged).toContain('rows in range');
-      expect(logged).not.toContain('Resuming');
+      expect(loggedText()).toContain('rows in range');
+      expect(loggedText()).not.toContain('Resuming');
       expect(existsSync(markerPath(workDir, 'stale'))).toBe(true);
     });
 

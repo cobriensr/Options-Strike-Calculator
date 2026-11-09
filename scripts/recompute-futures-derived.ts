@@ -42,11 +42,17 @@
  *
  * Before any write, the apply saves its whole plan: plan.json names a backup-*.jsonl in
  * --work-dir that holds every row to change (the step that writes it, the row as it is
- * now and the new values), and the apply reads the steps back from that file. If a run
- * fails between steps, run the same command again: it finishes the steps that are not
- * marked from the saved plan, without planning again (a fresh plan no longer finds the
- * rows a finished step wrote). A row that holds neither the plan's old value nor its new
- * value stops that step before it writes; a different command or --force plans again.
+ * now and the new values), with each step's row count and the file's line count and
+ * sha256, and the apply reads the steps back from that file; a file that is cut, edited
+ * or does not match plan.json is refused. Just before a step's first write it records
+ * <step>.started, and when it is done <step>.applied. If a run fails once a step has
+ * started or applied, run the same command again: it finishes the steps that are not
+ * applied from the saved plan, without planning again (a fresh plan no longer finds the
+ * rows a started step wrote). Inside a started step a row that already holds the new
+ * value is done; a row that holds neither the plan's old value nor its new value stops
+ * that step before it writes. A different command (other totals, opt-in flags, --stores,
+ * --backup, --detector-days or --work-dir) is refused, not planned again: use --force to
+ * plan again, or remove plan.json. A run that failed before any step started plans again.
  *
  * Options:
  *   --backup <file>         the Phase 2 backup JSONL (docs/tmp/futures-contract-repair/backup-*.jsonl);

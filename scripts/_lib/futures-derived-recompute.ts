@@ -34,8 +34,9 @@
  * scripts/recompute-futures-derived.ts.
  */
 
+import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { basename, join, resolve } from 'node:path';
 import { neonConfig } from '@neondatabase/serverless';
 import { isMarketHours } from '../../api/_lib/cron-helpers.js';
 import { getDb, withDbRetry } from '../../api/_lib/db.js';
@@ -91,6 +92,10 @@ import {
   type ValueHit,
   type WindowAggregate,
 } from './futures-derived-attribution.js';
+import {
+  CHUNKS_PER_TRANSACTION,
+  WRITE_CHUNK,
+} from './futures-derived-batch.js';
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -177,9 +182,6 @@ const OUTAGE = {
   fromMs: Date.UTC(2026, 8, 4),
   toMs: Date.UTC(2026, 8, 29),
 } as const;
-/** Rows per UPDATE statement (R5), statements per write transaction. */
-const WRITE_CHUNK = 500;
-const CHUNKS_PER_TRANSACTION = 10;
 /** UTC days per snapshot read page: keeps a response well under Neon's 64 MiB cap. */
 const READ_PAGE_DAYS = 7;
 /** A transient Neon failure is retried this many times per recompute. */
@@ -2077,13 +2079,15 @@ async function planSnapshots(
             row: row.row,
           });
         }
-        if (affected.size > 0) {
+        // A row in the junk plan is deleted by the opt-in step: it is listed in the
+        // junk section, not as left alone.
+        if (junkHit == null && affected.size > 0) {
           report.affectedLeftAlone += 1;
           noteLeftAlone(report.leftAlone, result.kind, affected, row.tsMs);
           unrecomputable.push(
             `${snapshotLine(row, null, outcome.why)} [affected: ${[...affected].sort().join(', ')}]`,
           );
-        } else {
+        } else if (junkHit == null) {
           report.unaffectedLeftAlone += 1;
         }
         const latest = inputs.latest;
@@ -2803,7 +2807,7 @@ function snapshotsText(r: SnapshotStore): string[] {
   for (const s of r.symbols) {
     out.push(
       `  ${s.symbol}: rows in range ${s.inRange}, rows to write ${s.rowsToWrite} (${byFieldText(s.byField)})`,
-      `    left alone, stale or missing recompute: ${s.affectedLeftAlone} with an affected field, ${s.unaffectedLeftAlone} with none`,
+      `    left alone, stale or missing recompute (the rows in the junk plan are not counted here): ${s.affectedLeftAlone} with an affected field, ${s.unaffectedLeftAlone} with none`,
       `      the ${s.affectedLeftAlone} with an affected field (kept as stored): ${leftAloneText(s.leftAlone)}`,
       `    ${volumeRatioWriteText(r.changes, s.symbol)}`,
       `    information, unaffected fields where today's method differs from the stored value (not written, after every planned step with the opt-in steps on): ${byFieldText(s.drift)}`,
@@ -3075,7 +3079,7 @@ function writeBackup(
   junk: JunkRow[],
   stale: StaleRewrite[],
   normalPending: boolean,
-): string {
+): WrittenPlan {
   const entries: BackupEntry[] = [];
   for (const store of STORES) {
     const result = plans[store];
@@ -3118,16 +3122,28 @@ function writeBackup(
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const path = join(workDir, `backup-${stamp}.jsonl`);
   writeFileSync(path, entries.map((e) => `${JSON.stringify(e)}\n`).join(''));
-  const written = readFileSync(path, 'utf8')
-    .split('\n')
-    .filter((l) => l !== '').length;
+  const text = readFileSync(path, 'utf8');
+  const written = text.split('\n').filter((l) => l !== '').length;
   if (written !== entries.length) {
     throw new Error(
       `backup ${path} has ${written} lines, expected ${entries.length}`,
     );
   }
-  return path;
+  const rows: Partial<Record<ApplyStep, number>> = {};
+  for (const e of entries) rows[e.step] = (rows[e.step] ?? 0) + 1;
+  return { path, rows, lines: written, sha256: sha256Of(text) };
 }
+
+/** The plan file as written: its path, the rows of each step, its line count and the sha256 of its bytes. */
+interface WrittenPlan {
+  path: string;
+  rows: Partial<Record<ApplyStep, number>>;
+  lines: number;
+  sha256: string;
+}
+
+const sha256Of = (text: string): string =>
+  createHash('sha256').update(text).digest('hex');
 
 const APPLY_STEPS: readonly ApplyStep[] = [...STORES, 'stale', 'junk'];
 
@@ -3142,8 +3158,14 @@ function snapshotValuesOf(e: BackupEntry): SnapshotValues {
   };
 }
 
-/** Reads a plan file back into the rows each step writes; a line it cannot read is an error. */
-function readPlan(path: string): LoadedPlan {
+/**
+ * Reads a plan file back into the rows each step writes. Before a line is read the
+ * file must be the one `plan.json` recorded: the same number of lines and the same
+ * sha256; and after, each step must hold the rows the pointer recorded for it, which
+ * must equal the totals it was approved for. Any mismatch is an error that names the
+ * step or the file and both values, before a write.
+ */
+function readPlan(path: string, pointer: PlanPointer): LoadedPlan {
   const plan: LoadedPlan = {
     snapshots: [],
     premarket: [],
@@ -3151,9 +3173,19 @@ function readPlan(path: string): LoadedPlan {
     stale: [],
     junk: [],
   };
-  const lines = readFileSync(path, 'utf8')
-    .split('\n')
-    .filter((l) => l !== '');
+  const text = readFileSync(path, 'utf8');
+  const lines = text.split('\n').filter((l) => l !== '');
+  if (lines.length !== pointer.lines) {
+    throw new Error(
+      `${path} has ${lines.length} lines, plan.json recorded ${pointer.lines}`,
+    );
+  }
+  const digest = sha256Of(text);
+  if (digest !== pointer.sha256) {
+    throw new Error(
+      `${path} has sha256 ${digest}, plan.json recorded ${pointer.sha256}`,
+    );
+  }
   for (const [i, line] of lines.entries()) {
     const where = `${path} line ${i + 1}`;
     let e: BackupEntry;
@@ -3208,8 +3240,31 @@ function readPlan(path: string): LoadedPlan {
       });
     }
   }
+  for (const step of pointer.steps) {
+    const have = stepRows(plan, step);
+    const recorded = pointer.rows[step];
+    const approved = approvedRows(pointer, step);
+    if (have !== recorded) {
+      throw new Error(
+        `step ${step}: the plan file has ${have} rows, plan.json recorded ${recorded}`,
+      );
+    }
+    if (recorded !== approved) {
+      throw new Error(
+        `step ${step}: plan.json recorded ${recorded} rows, its expect says ${approved}`,
+      );
+    }
+  }
   return plan;
 }
+
+/** The rows a step was approved for in the dry run's totals. */
+const approvedRows = (pointer: PlanPointer, step: ApplyStep): number | null =>
+  step === 'stale'
+    ? pointer.expect.stale
+    : step === 'junk'
+      ? pointer.expect.junk
+      : pointer.expect[step];
 
 /** The rows a step has in a plan. */
 const stepRows = (plan: LoadedPlan, step: ApplyStep): number =>
@@ -3229,8 +3284,20 @@ interface PlanPointer {
   backup: string;
   /** The steps this plan carries, in order. */
   steps: ApplyStep[];
+  /** The rows each of those steps writes, as counted when the plan file was written. */
+  rows: Partial<Record<ApplyStep, number>>;
+  /** The plan file's line count and the sha256 of its bytes: a cut or edited file is refused. */
+  lines: number;
+  sha256: string;
   /** The totals of the dry run's plan: each store's rows, and the opt-in steps' (null when not asked for). */
   expect: Record<Store, number> & { junk: number | null; stale: number | null };
+  /** What the command was: a resume repeats it. */
+  command: {
+    workDir: string;
+    stores: Store[];
+    backup: string | null;
+    detectorDays: string | null;
+  };
 }
 
 const pointerPath = (workDir: string): string => join(workDir, 'plan.json');
@@ -3240,19 +3307,51 @@ function writePlanPointer(workDir: string, pointer: PlanPointer): void {
 }
 
 function readPlanPointer(workDir: string): PlanPointer | null {
-  if (!existsSync(pointerPath(workDir))) return null;
-  const text = readFileSync(pointerPath(workDir), 'utf8');
+  const where = pointerPath(workDir);
+  if (!existsSync(where)) return null;
+  let p: PlanPointer;
   try {
-    const p = JSON.parse(text) as PlanPointer;
-    if (typeof p.backup !== 'string' || !Array.isArray(p.steps)) {
-      throw new Error('missing backup or steps');
-    }
-    return p;
+    p = JSON.parse(readFileSync(where, 'utf8')) as PlanPointer;
   } catch (err) {
-    throw new Error(`${pointerPath(workDir)} is not a plan pointer`, {
-      cause: err,
-    });
+    throw new Error(`${where} is not a plan pointer`, { cause: err });
   }
+  const bad = (what: string): Error =>
+    new Error(`${where} is not a plan pointer: ${what}`);
+  if (p == null || typeof p !== 'object') throw bad('it is not an object');
+  if (typeof p.backup !== 'string') throw bad('it has no "backup"');
+  if (!Array.isArray(p.steps)) throw bad('it has no "steps"');
+  for (const step of p.steps) {
+    if (!APPLY_STEPS.includes(step)) {
+      throw bad(`"${String(step)}" is not a step`);
+    }
+  }
+  if (p.rows == null || typeof p.rows !== 'object')
+    throw bad('it has no "rows"');
+  for (const step of p.steps) {
+    if (typeof p.rows[step] !== 'number') {
+      throw bad(`it has no "rows" for "${step}"`);
+    }
+  }
+  if (typeof p.lines !== 'number') throw bad('it has no "lines"');
+  if (typeof p.sha256 !== 'string') throw bad('it has no "sha256"');
+  if (p.expect == null || typeof p.expect !== 'object') {
+    throw bad('it has no "expect"');
+  }
+  if (p.command == null || typeof p.command !== 'object') {
+    throw bad('it has no "command"');
+  }
+  return p;
+}
+
+/** `<step>.started`: written once the step's rows are checked and just before its first write. */
+const startedPath = (workDir: string, step: ApplyStep): string =>
+  join(workDir, `${step}.started`);
+
+function writeStarted(workDir: string, step: ApplyStep, rows: number): void {
+  writeFileSync(
+    startedPath(workDir, step),
+    `${JSON.stringify({ step, rows, startedAt: new Date().toISOString() })}\n`,
+  );
 }
 
 export const markerPath = (workDir: string, store: ApplyStep): string =>
@@ -3560,8 +3659,12 @@ const SNAPSHOT_COLUMNS: Record<SnapshotField, string> = {
 };
 
 /** The same guarded UPDATE and verify as the snapshot writes, for the stale-at-write rows. */
-async function applyStale(rewrites: StaleWrite[]): Promise<number> {
+async function applyStale(
+  rewrites: StaleWrite[],
+  begin: () => void,
+): Promise<number> {
   await preflightSnapshots('stale', rewrites);
+  begin();
   await writeInTransactions(rewrites, updateSnapshots);
   // The row holds the snapshot step's fields too: that step runs first.
   await verifySnapshots(
@@ -3570,8 +3673,12 @@ async function applyStale(rewrites: StaleWrite[]): Promise<number> {
   return rewrites.length;
 }
 
-async function applyJunk(junk: JunkWrite[]): Promise<number> {
+async function applyJunk(
+  junk: JunkWrite[],
+  begin: () => void,
+): Promise<number> {
   const present = await preflightJunk(junk);
+  begin();
   const before = await countSnapshotsInScope();
   await writeInTransactions(junk, deleteJunk);
   await verifyJunk(junk, before, present);
@@ -3976,7 +4083,7 @@ async function run(opts: RecomputeOptions): Promise<number> {
   }
   if (pending.length === 0 && !stalePending && !junkPending) return 0;
 
-  const backup = writeBackup(
+  const written = writeBackup(
     opts.workDir,
     {
       snapshots: pending.includes('snapshots') ? plans.snapshots : undefined,
@@ -3987,17 +4094,22 @@ async function run(opts: RecomputeOptions): Promise<number> {
     stalePending ? stale : [],
     pending.includes('snapshots'),
   );
-  console.log(`backup: ${backup}`);
+  console.log(`backup: ${written.path}`);
 
   const steps: ApplyStep[] = [
     ...pending,
     ...(stalePending ? (['stale'] as const) : []),
     ...(junkPending ? (['junk'] as const) : []),
   ];
-  writePlanPointer(opts.workDir, {
+  const pointer: PlanPointer = {
     createdAt: new Date().toISOString(),
-    backup: basename(backup),
+    backup: basename(written.path),
     steps,
+    rows: Object.fromEntries(
+      steps.map((step) => [step, written.rows[step] ?? 0]),
+    ),
+    lines: written.lines,
+    sha256: written.sha256,
     expect: {
       snapshots: plans.snapshots?.changes.length ?? 0,
       premarket: plans.premarket?.changes.length ?? 0,
@@ -4005,27 +4117,44 @@ async function run(opts: RecomputeOptions): Promise<number> {
       junk: opts.deleteJunkStale ? junk.length : null,
       stale: opts.rewriteStaleAtWrite ? stale.length : null,
     },
-  });
+    command: {
+      workDir: resolve(opts.workDir),
+      stores: opts.stores,
+      backup: opts.backup,
+      detectorDays: opts.detectorDays,
+    },
+  };
+  writePlanPointer(opts.workDir, pointer);
   // Apply from the file just written, the same way a resumed run does.
-  return await applySteps(opts.workDir, readPlan(backup), steps);
+  return await applySteps(opts.workDir, readPlan(written.path, pointer), steps);
 }
 
-async function applyStep(step: ApplyStep, plan: LoadedPlan): Promise<number> {
-  if (step === 'junk') return await applyJunk(plan.junk);
-  if (step === 'stale') return await applyStale(plan.stale);
+async function applyStep(
+  step: ApplyStep,
+  plan: LoadedPlan,
+  workDir: string,
+): Promise<number> {
+  // Every row of the step is checked first; then the step is recorded as started,
+  // so a run that dies after its first batch commits is resumed, not planned again.
+  const begin = (): void => writeStarted(workDir, step, stepRows(plan, step));
+  if (step === 'junk') return await applyJunk(plan.junk, begin);
+  if (step === 'stale') return await applyStale(plan.stale, begin);
   if (step === 'snapshots') {
     await preflightSnapshots(step, plan.snapshots);
+    begin();
     await writeInTransactions(plan.snapshots, updateSnapshots);
     await verifySnapshots(plan.snapshots);
     return plan.snapshots.length;
   }
   if (step === 'premarket') {
     await preflightPremarket(plan.premarket);
+    begin();
     await writeInTransactions(plan.premarket, updatePremarket);
     await verifyPremarket(plan.premarket);
     return plan.premarket.length;
   }
   await preflightFires(plan.fires);
+  begin();
   await writeInTransactions(plan.fires, updateFires);
   await verifyFires(plan.fires);
   return plan.fires.length;
@@ -4046,7 +4175,7 @@ async function applySteps(
       return 2;
     }
     try {
-      const done = await applyStep(step, plan);
+      const done = await applyStep(step, plan, workDir);
       console.log(
         `${step}: ${done} row(s) ${step === 'junk' ? 'deleted' : 'changed'} and verified`,
       );
@@ -4065,19 +4194,52 @@ async function applySteps(
 const stepsLeft = (workDir: string, saved: PlanPointer): ApplyStep[] =>
   saved.steps.filter((step) => !existsSync(markerPath(workDir, step)));
 
-/** Some steps of the saved plan are done and some are not, and its plan file is there. */
+/**
+ * A saved plan is resumed when one of its steps is started or applied and not all
+ * are applied. A step that is started has begun writing and may have committed some
+ * batches, so a fresh plan would no longer find the rows it wrote. Its plan file must
+ * be there: if it is gone the run stops and says so.
+ */
 function resumable(workDir: string, saved: PlanPointer): boolean {
-  const left = stepsLeft(workDir, saved).length;
-  return (
-    left > 0 &&
-    left < saved.steps.length &&
-    existsSync(join(workDir, saved.backup))
+  const applied = saved.steps.filter((s) => existsSync(markerPath(workDir, s)));
+  const begun = saved.steps.filter(
+    (s) => existsSync(startedPath(workDir, s)) || applied.includes(s),
   );
+  if (begun.length === 0 || applied.length === saved.steps.length) return false;
+  if (!existsSync(join(workDir, saved.backup))) {
+    throw new Error(
+      `the plan file ${saved.backup} that ${pointerPath(workDir)} names is missing from ${workDir}, though a step is started or applied (${begun.join(', ')}): it cannot be resumed (use --force to plan again)`,
+    );
+  }
+  return true;
 }
 
-/** The command must be the one the plan was made for: the same totals and the same opt-in steps. */
+/** The command must be the one the plan was made for: its inputs, its totals and its opt-in steps. */
 function checkResume(opts: RecomputeOptions, saved: PlanPointer): string[] {
   const problems: string[] = [];
+  const c = saved.command;
+  if (resolve(opts.workDir) !== c.workDir) {
+    problems.push(
+      `--work-dir ${opts.workDir} was given, the saved plan was made in ${c.workDir}`,
+    );
+  }
+  const stores = (list: readonly string[]): string =>
+    [...list].sort().join(' ');
+  if (stores(opts.stores) !== stores(c.stores)) {
+    problems.push(
+      `--stores ${opts.stores.join(' ')} was given, the saved plan was made with --stores ${c.stores.join(' ')}`,
+    );
+  }
+  if (opts.backup !== c.backup) {
+    problems.push(
+      `--backup ${opts.backup} was given, the saved plan was made with --backup ${c.backup}`,
+    );
+  }
+  if (opts.detectorDays !== c.detectorDays) {
+    problems.push(
+      `--detector-days ${opts.detectorDays} was given, the saved plan was made with --detector-days ${c.detectorDays}`,
+    );
+  }
   for (const store of opts.stores) {
     const given = expectations(opts)[store];
     if (given !== saved.expect[store]) {
@@ -4119,7 +4281,9 @@ async function resume(
   const problems = checkResume(opts, saved);
   if (problems.length > 0) {
     const listed = problems.map((p) => `  ${p}`).join('\n');
-    throw new Error(`Refusing to resume. Nothing was written.\n${listed}`);
+    throw new Error(
+      `Refusing to resume. Nothing was written.\n${listed}\n  use --force to plan again, or remove plan.json`,
+    );
   }
   const left = stepsLeft(opts.workDir, saved);
   console.log(
@@ -4127,7 +4291,7 @@ async function resume(
   );
   return await applySteps(
     opts.workDir,
-    readPlan(join(opts.workDir, saved.backup)),
+    readPlan(join(opts.workDir, saved.backup), saved),
     left,
   );
 }
