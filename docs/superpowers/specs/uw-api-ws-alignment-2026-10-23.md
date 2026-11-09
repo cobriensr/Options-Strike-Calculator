@@ -63,7 +63,7 @@ Fix the live data bugs that UW's more explicit 2026-09/10 docs exposed, and star
 
 | Phase | Scope | Files |
 |---|---|---|
-| R1 | Shared UW spot helper; walk/limit strike pages in strike-all; fix the backfill; backfill 2026-09-25 → yesterday | `api/_lib/uw-spot.ts` (new), `api/__tests__/uw-spot.test.ts` (new), `api/cron/fetch-strike-all.ts`, `api/__tests__/fetch-strike-all.test.ts`, `scripts/backfill-strike-all.mjs` |
+| R1 | Shared UW spot helper; walk/limit strike pages in strike-all; fix the backfill; backfill 2026-09-25 → yesterday | `api/_lib/uw-spot.ts` (new), `api/__tests__/uw-spot.test.ts` (new), `api/cron/fetch-strike-all.ts`, `api/__tests__/fetch-strike-all.test.ts`, `scripts/backfill-strike-all.ts` |
 | R2 | Trailing rv_30d in the cron + backfill; rewrite vol_realized history | `api/cron/fetch-vol-surface.ts`, `api/__tests__/fetch-vol-surface.test.ts`, `scripts/backfill-vol-surface.mjs` |
 | R3 | Per-expiry gamma from `call_gex`/`put_gex` | `api/cron/fetch-greek-exposure.ts`, `api/__tests__/fetch-greek-exposure.test.ts`, `scripts/backfill-greek-exposure.mjs` |
 | R4 | Adopt the spot helper in the remaining preflights (D7) | `api/cron/fetch-gex-0dte.ts`, `api/cron/fetch-gex-strike-expiry-etfs.ts`, `api/cron/fetch-strike-exposure.ts` + their tests |

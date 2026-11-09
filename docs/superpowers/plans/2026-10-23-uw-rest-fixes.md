@@ -81,7 +81,7 @@ R1 → R11 → R2 → R3 → R4 → R5 → R6 → R7 → R8 → R9 → R10 → R
   2. Fetch `/stock/SPX/spot-exposures/strike` with `min_strike = spot − ATM_RANGE`, `max_strike = spot + ATM_RANGE` (confirm both params in the live doc), `limit=500`, and 0-based `page`. Walk pages via `uwFetchPaged`, continuing ONLY while a page returns exactly 500 rows, with a page cap of 10.
   3. Keep the ±`ATM_RANGE` filter as a safety net.
   4. Stored `price` = helper spot. Snapshot `timestamp` = max `time` across the returned rows.
-- **backfill-strike-all.mjs:**
+- **backfill-strike-all.ts:**
   - Use the same logic for a given date. Spot comes from `/stock/SPX/spot-exposures?date=D` (newest row); walk pages the same way.
   - Delete the false comment at :37-43 ("exposes no offset/cursor/next-page parameter").
   - Keep the existing ON CONFLICT semantics. Print per-date row counts; stop on the first error.

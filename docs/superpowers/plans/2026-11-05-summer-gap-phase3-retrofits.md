@@ -56,7 +56,7 @@ Parent spec: `docs/superpowers/specs/summer-gap-rebuild-2026-10-29.md`, phase 3.
 
 **P3.5 Strike exposures and all-DTE vega flow.** `backfill-greek-flow-etf.mjs` (conflict target `(ticker, timestamp, expiry)` per migration #129), `backfill-strike-exposure.mjs` (drop NDX, max `time` across rows, holiday-aware next trading day, batched), `backfill-strike-exposure-lottery.mjs` (resume probe scoped to the requested range so 07-22 isn't skipped, failures counted, max `time`).
 
-**P3.6 uw-rest-fixes R1.** As specified in that plan: `api/_lib/uw-spot.ts` + test, `api/cron/fetch-strike-all.ts` + test, `scripts/backfill-strike-all.mjs` (paging, helper spot, max `time`). Also retrofit the backfill to the shared shape. Live cron change: deploys to Vercel.
+**P3.6 uw-rest-fixes R1.** Done in P0.3 of `docs/superpowers/specs/live-data-integrity-2026-11-06.md`: `api/_lib/uw-spot.ts`, `api/cron/fetch-strike-all.ts`, `api/_lib/strike-all-fetch.ts` and `scripts/backfill-strike-all.ts` (paging, helper spot, max `time`; the `.mjs` is gone). Nothing is left to dispatch here.
 
 **P3.7 uw-rest-fixes R2.** As specified: `api/cron/fetch-vol-surface.ts` + test, `scripts/backfill-vol-surface.mjs`. Trailing rv_30d (window ending on D), iv_30d from the `date == D` row, COALESCE `iv_rank`. The backfill rewrites every stored date and fills missing days including the gap. Commit body names the methodology change.
 
