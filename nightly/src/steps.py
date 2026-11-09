@@ -19,10 +19,11 @@ Rules for a step's author, because the scrubber cannot catch these:
   step code has no data-library frame, so no rule can tell that its text quotes a cell:
   `np.array([cell]).astype("int64")` and `int(cell)` raise `invalid literal for int()
   ... '<cell>'`, and that text would reach Sentry (cut to 300 characters, not redacted).
-  Catch it and raise a fixed-message exception with `from None`. A plain `from exc` keeps
-  the original, with its text, in the chain Sentry sends. (Inside a callback that polars
-  or pandas calls, such as `map_elements` or `apply`, the library's frames are on the
-  stack and the scrubber does redact it.)
+  Catch it and raise a fixed-message exception with `from None`. A raise without
+  `from None`, whether `from exc` or nothing at all inside the `except`, keeps the
+  original, with its text, in the chain Sentry sends. (Inside a callback that polars or
+  pandas calls, such as `map_elements` or `apply`, the library's frames are on the stack
+  and the scrubber does redact it.)
 - `StepResult.detail` is a fixed phrase: no dates, counts, ids or exception text. It is
   part of the Sentry fingerprint (`monitoring.report_step`), so a detail that varies
   opens a new issue, and sends a new email, every night.
