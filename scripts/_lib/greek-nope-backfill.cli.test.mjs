@@ -166,4 +166,25 @@ describe('the backfill scripts, run end to end', () => {
       expect(statements(result)).toHaveLength(script.statements);
     },
   );
+
+  it('the stub throws on any host but Unusual Whales and the test database (no real network from a child process)', () => {
+    const result = spawnSync(
+      process.execPath,
+      [
+        '--import',
+        pathToFileURL(
+          path.resolve(
+            process.cwd(),
+            'scripts/_lib/greek-nope-backfill-stub.mjs',
+          ),
+        ).href,
+        '-e',
+        "fetch('https://example.com/x').catch((e) => { console.error(e.message); process.exit(3); })",
+      ],
+      { encoding: 'utf8', timeout: 60_000 },
+    );
+
+    expect(result.status).toBe(3);
+    expect(result.stderr).toContain('unexpected host example.com');
+  });
 });

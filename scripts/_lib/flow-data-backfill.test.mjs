@@ -1231,6 +1231,17 @@ describe('sampleFiveMinuteRows and storeSampledDay (the two inline scripts)', ()
     ]);
   });
 
+  it('floors a window to the epoch-aligned 5 minutes, also on the day the clocks fall back (2026-11-01)', () => {
+    // 07:07Z is 03:07 EDT, an hour into the repeated 01:00-02:00 hour; the
+    // window is epoch-aligned (300 s), not a wall-clock one.
+    const rows = sampleFiveMinuteRows(
+      [{ timestamp: '2026-11-01T07:07:00Z', a: 'x', b: 'y', c: 1 }],
+      { ...options(), date: '2026-11-01' },
+    );
+
+    expect(rows.map((r) => r.timestamp)).toEqual(['2026-11-01T07:05:00.000Z']);
+  });
+
   it('writes a whole day with ONE statement, not one per candle (R5)', async () => {
     // 390 minutes is 78 windows.
     const sql = fakeSql();
@@ -1289,84 +1300,116 @@ describe('sampleFiveMinuteRows and storeSampledDay (the two inline scripts)', ()
   });
 });
 
+// Each test below spawns node: Windows process spawn under full-suite load is
+// slow, so the spawn and the test share one generous limit.
+const SPAWN_TIMEOUT = 60_000;
+
 /**
  * The two scripts run end to end as child processes, with the network replaced
  * by inline-backfill-stub.mjs (UW answers a canned day; the database answers
  * like Postgres, or refuses with a missing-table error). The exit code and the
  * number of statements cannot be seen any other way: the scripts run on import.
  */
-describe('the inline backfill scripts, run end to end', () => {
-  const SCRIPTS = [
-    {
-      file: 'backfill-greek-flow.mjs',
-      writer: 'backfill-greek-flow',
-      failedLine: /Insert failures: 1/,
-    },
-    {
-      file: 'backfill-zero-dte-flow.mjs',
-      writer: 'backfill-zero-dte-flow',
-      failedLine: /Failed \(API \+ insert errors\): 1/,
-    },
-  ];
-
-  function run(file, sqlMode) {
-    const clean = { ...process.env };
-    delete clean.SENTRY_DSN;
-    return spawnSync(
-      process.execPath,
-      [
-        '--import',
-        // A file URL: on Windows node rejects a bare absolute path here.
-        pathToFileURL(
-          path.resolve(process.cwd(), 'scripts/_lib/inline-backfill-stub.mjs'),
-        ).href,
-        path.resolve(process.cwd(), 'scripts', file),
-        '1',
-      ],
+describe(
+  'the inline backfill scripts, run end to end',
+  { timeout: SPAWN_TIMEOUT },
+  () => {
+    const SCRIPTS = [
       {
-        env: {
-          ...clean,
-          UW_API_KEY: 'uw-key-for-tests',
-          DATABASE_URL: 'postgresql://user:pass@db.invalid/db',
-          STUB_SQL: sqlMode,
+        file: 'backfill-greek-flow.mjs',
+        writer: 'backfill-greek-flow',
+        failedLine: /Insert failures: 1/,
+      },
+      {
+        file: 'backfill-zero-dte-flow.mjs',
+        writer: 'backfill-zero-dte-flow',
+        failedLine: /Failed \(API \+ insert errors\): 1/,
+      },
+    ];
+
+    function run(file, sqlMode) {
+      const clean = { ...process.env };
+      delete clean.SENTRY_DSN;
+      return spawnSync(
+        process.execPath,
+        [
+          '--import',
+          // A file URL: on Windows node rejects a bare absolute path here.
+          pathToFileURL(
+            path.resolve(
+              process.cwd(),
+              'scripts/_lib/inline-backfill-stub.mjs',
+            ),
+          ).href,
+          path.resolve(process.cwd(), 'scripts', file),
+          '1',
+        ],
+        {
+          env: {
+            ...clean,
+            UW_API_KEY: 'uw-key-for-tests',
+            DATABASE_URL: 'postgresql://user:pass@db.invalid/db',
+            STUB_SQL: sqlMode,
+          },
+          encoding: 'utf8',
+          timeout: SPAWN_TIMEOUT,
         },
-        encoding: 'utf8',
-        timeout: 60_000,
+      );
+    }
+    const statements = (result) =>
+      result.stderr.split('\n').filter((line) => line.startsWith('sql '));
+
+    it.each(SCRIPTS)(
+      '$file stores a day with one logged statement under its own name and exits 0',
+      ({ file, writer }) => {
+        const result = run(file, 'ok');
+
+        expect(result.status).toBe(0);
+        expect(result.stdout).toContain('10 ticks → 2 candles (2 new)');
+        // One statement for the day, not one per candle: 2 rows of six values,
+        // then the writer.
+        expect(statements(result)).toEqual([`sql 13 ${writer}`]);
       },
     );
-  }
-  const statements = (result) =>
-    result.stderr.split('\n').filter((line) => line.startsWith('sql '));
 
-  it.each(SCRIPTS)(
-    '$file stores a day with one logged statement under its own name and exits 0',
-    ({ file, writer }) => {
-      const result = run(file, 'ok');
+    it.each(SCRIPTS)(
+      '$file exits 1 and says so when the insert fails (R4), not 0 with "Newly stored: 0"',
+      ({ file, failedLine }) => {
+        const result = run(file, 'error');
 
-      expect(result.status).toBe(0);
-      expect(result.stdout).toContain('10 ticks → 2 candles (2 new)');
-      // One statement for the day, not one per candle: 2 rows of six values,
-      // then the writer.
-      expect(statements(result)).toEqual([`sql 13 ${writer}`]);
-    },
-  );
+        expect(result.status).toBe(1);
+        expect(result.stderr).toContain(
+          'Insert error: relation "flow_data_revisions" does not exist',
+        );
+        expect(result.stdout).toContain('Newly stored: 0');
+        expect(result.stdout).toMatch(failedLine);
+        // The failed day made one attempt, not one per candle.
+        expect(statements(result)).toHaveLength(1);
+      },
+    );
 
-  it.each(SCRIPTS)(
-    '$file exits 1 and says so when the insert fails (R4), not 0 with "Newly stored: 0"',
-    ({ file, failedLine }) => {
-      const result = run(file, 'error');
-
-      expect(result.status).toBe(1);
-      expect(result.stderr).toContain(
-        'Insert error: relation "flow_data_revisions" does not exist',
+    it('the stub throws on any host but Unusual Whales and the test database (no real network from a child process)', () => {
+      const result = spawnSync(
+        process.execPath,
+        [
+          '--import',
+          pathToFileURL(
+            path.resolve(
+              process.cwd(),
+              'scripts/_lib/inline-backfill-stub.mjs',
+            ),
+          ).href,
+          '-e',
+          "fetch('https://example.com/x').catch((e) => { console.error(e.message); process.exit(3); })",
+        ],
+        { encoding: 'utf8', timeout: SPAWN_TIMEOUT },
       );
-      expect(result.stdout).toContain('Newly stored: 0');
-      expect(result.stdout).toMatch(failedLine);
-      // The failed day made one attempt, not one per candle.
-      expect(statements(result)).toHaveLength(1);
-    },
-  );
-});
+
+      expect(result.status).toBe(3);
+      expect(result.stderr).toContain('unexpected host example.com');
+    });
+  },
+);
 
 // ── The flags ──────────────────────────────────────────────
 
@@ -1580,9 +1623,6 @@ describe('runFlowScript', () => {
 });
 
 // ── The scripts' own flags and env, through plain node ─────
-
-// Each test spawns node: Windows process spawn under full-suite load is slow.
-const SPAWN_TIMEOUT = 60_000;
 
 describe(
   'the flow_data scripts exit before any network on bad flags or a missing key',

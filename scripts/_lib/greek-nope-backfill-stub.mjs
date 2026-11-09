@@ -67,8 +67,18 @@ const BOOLEAN_FIELD = {
   format: 'text',
 };
 
+// The only two hosts a script run here may reach: Unusual Whales (canned), and
+// the Neon HTTP driver for the test's DATABASE_URL (`...@db.invalid/db`), which
+// swaps the first host label for `api` and so posts to https://api.invalid/sql.
+// Anything else would be a real network call from a test: fail it loudly.
+const ALLOWED_HOSTS = new Set(['api.unusualwhales.com', 'api.invalid']);
+
 globalThis.fetch = async (url, init) => {
   const text = String(url);
+  const { host } = new URL(text);
+  if (!ALLOWED_HOSTS.has(host)) {
+    throw new Error(`greek-nope-backfill-stub: unexpected host ${host}`);
+  }
   if (text.includes('api.unusualwhales.com')) {
     if (text.includes('/nope')) {
       return json({
