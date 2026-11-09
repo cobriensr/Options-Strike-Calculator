@@ -117,7 +117,9 @@ export type SettleFailureKind =
   | 'schwab_logged_out'
   | 'schwab_error'
   | 'empty_payload'
-  | 'malformed_payload';
+  | 'malformed_payload'
+  /** A throw from our own parse or plan code: not Schwab's fault. */
+  | 'unexpected';
 
 /** Why a symbol's fetch could not be used, by name. */
 export class SettleFailure extends Error {

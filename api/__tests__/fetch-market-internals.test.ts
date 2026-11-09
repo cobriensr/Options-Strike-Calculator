@@ -49,6 +49,7 @@ import handler from '../cron/fetch-market-internals.js';
 import { Sentry } from '../_lib/sentry.js';
 import { schwabFetch } from '../_lib/schwab-fetch.js';
 import { reportCronRun } from '../_lib/axiom.js';
+import { _resetDsnCacheForTest } from '../_lib/cron-instrumentation.js';
 import type { InternalSymbol } from '../../src/types/market-internals.js';
 
 // 2026-11-06 is a Friday on EST (UTC-5): 22:30Z is 17:30 ET, after the close.
@@ -670,6 +671,43 @@ describe('fetch-market-internals (post-close settle)', () => {
     expect(writtenFor(writes, '$ADD')).toHaveLength(5 * 390);
   });
 
+  it("an error thrown by our own parsing is that symbol's failure, named unexpected, not schwab_error", async () => {
+    const writes = recordWrites();
+    // Schwab answered fine (ok: true); the throw comes from reading the body.
+    mockSchwab(SESSIONS, {
+      $VOLD: {
+        ok: true as const,
+        data: {
+          get candles(): unknown {
+            throw new TypeError('plan bug');
+          },
+        },
+      },
+    });
+
+    const out = (await call())._json as Body;
+
+    expect(out.status).toBe('partial');
+    expect(out.results.find((r) => r.symbol === '$VOLD')).toMatchObject({
+      failure: 'unexpected',
+      error: 'plan bug',
+    });
+    expect(out.results.filter((r) => r.failure === 'schwab_error')).toEqual([]);
+    expect(writtenFor(writes, '$VOLD')).toEqual([]);
+    expect(writtenFor(writes, '$ADD')).toHaveLength(5 * 390);
+    // Captured with its own stage, so Sentry does not file it as a Schwab outage.
+    expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'plan bug' }),
+      expect.objectContaining({
+        tags: expect.objectContaining({
+          stage: 'unexpected',
+          symbol: '$VOLD',
+        }),
+      }),
+    );
+  });
+
   // ── Malformed and empty payloads ───────────────────────────
 
   it.each([
@@ -855,5 +893,88 @@ describe('fetch-market-internals (post-close settle)', () => {
     expect(messages().some(([, o]) => o.tags.stage === 'symbol_all_zero')).toBe(
       true,
     );
+  });
+
+  // ── Sentry cron monitor (withCronCheckin) ──────────────────
+  //
+  // The schedule is pinned in cron-schedules.test.ts against vercel.json and
+  // SCHEDULE_MAP; this drives the real wrapper to show the job actually checks
+  // in under its own slug with that schedule, once a weekday at 22:30 UTC.
+
+  describe('Sentry cron check-ins', () => {
+    const fetchMock = vi.fn();
+
+    beforeEach(() => {
+      // The outer beforeEach copied process.env, so this DSN is dropped when
+      // the outer afterEach restores it.
+      process.env.SENTRY_DSN = 'https://pubkey@o1.ingest.us.sentry.io/42';
+      _resetDsnCacheForTest();
+      fetchMock
+        .mockReset()
+        .mockResolvedValue(new Response(null, { status: 202 }));
+      vi.stubGlobal('fetch', fetchMock);
+    });
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+      _resetDsnCacheForTest();
+    });
+
+    interface CheckInBody {
+      check_in_id: string;
+      monitor_slug: string;
+      status: string;
+      monitor_config?: Record<string, unknown>;
+    }
+
+    /** The check-in POSTs, in order. */
+    async function checkIns(count: number) {
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(count));
+      return fetchMock.mock.calls.map(([url, init]) => ({
+        url: url as string,
+        body: JSON.parse((init as { body: string }).body) as CheckInBody,
+      }));
+    }
+
+    it('checks in under its own slug, in_progress then ok, with the 30 22 * * 1-5 UTC schedule', async () => {
+      recordWrites();
+
+      const res = await call();
+
+      expect(res._status).toBe(200);
+      const calls = await checkIns(2);
+      expect(calls[0]!.url).toContain('/cron/fetch-market-internals/');
+      expect(calls.map((c) => c.body.monitor_slug)).toEqual([
+        'fetch-market-internals',
+        'fetch-market-internals',
+      ]);
+      expect(calls.map((c) => c.body.status)).toEqual(['in_progress', 'ok']);
+      expect(calls[1]!.body.check_in_id).toBe(calls[0]!.body.check_in_id);
+      expect(calls[0]!.body.monitor_config).toMatchObject({
+        schedule: { type: 'crontab', value: '30 22 * * 1-5' },
+        timezone: 'UTC',
+        failure_issue_threshold: 1,
+      });
+    });
+
+    it('sends an error check-in, not ok, when every symbol fails', async () => {
+      recordWrites();
+      vi.mocked(schwabFetch).mockResolvedValue(
+        fail(502, 'SCHWAB_API_503') as never,
+      );
+
+      const res = await call();
+
+      expect((res._json as Body).status).toBe('error');
+      const calls = await checkIns(2);
+      expect(calls.map((c) => c.body.status)).toEqual(['in_progress', 'error']);
+    });
+
+    it('sends no check-in for a request without the cron bearer', async () => {
+      const res = await call({}, { authorization: 'Bearer wrong' });
+
+      expect(res._status).toBe(401);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
   });
 });

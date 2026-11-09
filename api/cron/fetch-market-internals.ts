@@ -22,6 +22,8 @@
  *     leg fails (`schwab_error`, Sentry exception). A lapsed login is
  *     `schwab_logged_out` (no exception: the error check-in is the alert).
  *   - An empty or malformed answer -> `empty_payload` / `malformed_payload`.
+ *   - Any other throw from our own parse or plan code -> `unexpected` (Sentry
+ *     exception), never filed as a Schwab failure.
  *   - A rejected write -> `db_write`, the symbol's rows of this run are not
  *     stored.
  *   - Every leg failed -> status `error`; some -> `partial`.
@@ -132,11 +134,18 @@ async function settleSymbol(
 ): Promise<LegResult> {
   let leg = emptyLeg(symbol);
   let plan: SymbolPlan;
+  let result: Awaited<ReturnType<typeof schwabFetch<unknown>>>;
   try {
-    // schwabFetch retries 5xx and network errors itself; a 4xx is final.
-    const result = await schwabFetch<unknown>(
+    // schwabFetch retries 5xx and network errors itself; a 4xx is final. It
+    // can still reject (the token store, a body that is not JSON): that is a
+    // Schwab-side failure.
+    result = await schwabFetch<unknown>(
       pricehistoryPath(symbol, startMs, endMs),
     );
+  } catch (err) {
+    return failedLeg(leg, 'schwab_error', err);
+  }
+  try {
     if (!result.ok) {
       throw new SettleFailure(
         result.code === 'SCHWAB_TOKEN_EXPIRED'
@@ -158,9 +167,11 @@ async function settleSymbol(
       problems: sessionProblems(plan),
     };
   } catch (err) {
+    // A SettleFailure names itself. Anything else thrown here came out of our
+    // own parse or plan code, so it is `unexpected`, not a Schwab outage.
     return failedLeg(
       leg,
-      err instanceof SettleFailure ? err.kind : 'schwab_error',
+      err instanceof SettleFailure ? err.kind : 'unexpected',
       err,
     );
   }
