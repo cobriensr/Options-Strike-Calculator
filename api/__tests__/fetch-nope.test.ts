@@ -1,6 +1,6 @@
 // @vitest-environment node
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
 // fetch-nope now uses bulkUpsert, which calls sql.query() internally
@@ -15,7 +15,12 @@ vi.mock('../_lib/db.js', () => ({
 }));
 
 vi.mock('../_lib/sentry.js', () => ({
-  Sentry: { captureException: vi.fn(), setTag: vi.fn() },
+  Sentry: {
+    captureException: vi.fn(),
+    captureMessage: vi.fn(),
+    setTag: vi.fn(),
+  },
+  metrics: { increment: vi.fn() },
 }));
 
 vi.mock('../_lib/axiom.js', () => ({
@@ -39,7 +44,7 @@ vi.mock('../_lib/api-helpers.js', () => ({
 }));
 
 import handler, { type UwNopeRow } from '../cron/fetch-nope.js';
-import { Sentry } from '../_lib/sentry.js';
+import { Sentry, metrics } from '../_lib/sentry.js';
 import { reportCronRun } from '../_lib/axiom.js';
 
 // ── Fixtures ─────────────────────────────────────────────────
@@ -70,6 +75,13 @@ describe('fetch-nope handler', () => {
     mockQuery.mockResolvedValue([]);
     mockCronGuard.mockReturnValue(GUARD);
     mockUwFetch.mockResolvedValue([]);
+    // The empty-payload rule reads the clock (09:40 ET); pin it.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-04-14T18:46:00Z')); // 14:46 ET
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   // ── Happy path ─────────────────────────────────────────────
@@ -101,7 +113,12 @@ describe('fetch-nope handler', () => {
 
   // ── Empty UW response ──────────────────────────────────────
 
-  it('returns 200 with upserted:0 when UW returns no rows', async () => {
+  // An empty answer is not a clean run (R4): UW serves the whole session on
+  // every call, so no rows during market hours means it has nothing. Skipped,
+  // never success; counted always; a Sentry error from 09:40 ET only (before
+  // that it is the pre-open / rollover).
+
+  it('after 09:40 ET an empty UW answer is skipped, counted and raised to Sentry as an error, and writes nothing', async () => {
     mockUwFetch.mockResolvedValueOnce([]);
 
     const req = mockRequest({
@@ -114,9 +131,37 @@ describe('fetch-nope handler', () => {
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({
       job: 'fetch-nope',
+      status: 'skipped',
       fetched: 0,
       upserted: 0,
     });
+    expect(metrics.increment).toHaveBeenCalledWith('fetch_nope.empty_payload');
+    expect(Sentry.captureMessage).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(
+      'fetch-nope: UW returned no NOPE rows (09:40 ET or later)',
+      'error',
+    );
+    expect(mockQuery).not.toHaveBeenCalled();
+    expect(reportCronRun).toHaveBeenCalledWith(
+      'fetch-nope',
+      expect.objectContaining({ status: 'skipped' }),
+    );
+  });
+
+  it('before 09:40 ET an empty UW answer is skipped and counted, but quiet in Sentry', async () => {
+    vi.setSystemTime(new Date('2026-04-14T13:35:00Z')); // 09:35 ET
+    mockUwFetch.mockResolvedValueOnce([]);
+
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._json).toMatchObject({ status: 'skipped', fetched: 0 });
+    expect(metrics.increment).toHaveBeenCalledWith('fetch_nope.empty_payload');
+    expect(Sentry.captureMessage).not.toHaveBeenCalled();
     expect(mockQuery).not.toHaveBeenCalled();
   });
 

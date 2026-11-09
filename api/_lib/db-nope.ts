@@ -2,7 +2,8 @@
  * NOPE (Net Options Pricing Effect) database operations.
  *
  * Reads nope_ticks for Claude's analyze context and the ML pipeline.
- * Writes happen only via the fetch-nope cron.
+ * Writes happen via the fetch-nope cron and the scripts/backfill-nope.mjs
+ * backfill, both through bulkUpsert with the nope_ticks_revisions log.
  */
 
 import { getDb } from './db.js';

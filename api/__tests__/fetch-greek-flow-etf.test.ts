@@ -1,6 +1,6 @@
 // @vitest-environment node
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
 const mockSql = vi.fn();
@@ -11,7 +11,11 @@ vi.mock('../_lib/db.js', () => ({
 }));
 
 vi.mock('../_lib/sentry.js', () => ({
-  Sentry: { captureException: vi.fn(), setTag: vi.fn() },
+  Sentry: {
+    captureException: vi.fn(),
+    captureMessage: vi.fn(),
+    setTag: vi.fn(),
+  },
   metrics: { increment: vi.fn() },
 }));
 
@@ -621,22 +625,59 @@ describe('fetch-greek-flow-etf handler', () => {
     expect(Sentry.captureException).toHaveBeenCalledTimes(1);
   });
 
-  it("all-empty input: every fetch returns empty 200 → status 'success' + all_empty metric", async () => {
+  describe('all-empty input (R4)', () => {
     // Both all-DTE fetches succeed but return [] (no ticks). Non-expiry day,
-    // so no per-expiry scopes. No fetch failed, no scope had input → no real
-    // work. Status stays 'success' but a distinct metric + warn flag the gap.
-    setupMocks({ spyAll: [], qqqAll: [] });
+    // so no per-expiry scopes. No fetch failed, no scope had input → nothing
+    // to write. UW serves the whole session on every call, so during market
+    // hours that is a stalled feed, not a clean run: the run is `skipped`
+    // (never `success`), the metric is counted, and from 09:40 ET a Sentry
+    // error says so (before it, the pre-open, it stays quiet).
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+    });
 
-    const req = AUTHORIZED_REQ();
-    const res = mockResponse();
-    await handler(req, res);
+    afterEach(() => {
+      vi.useRealTimers();
+    });
 
-    expect(res._status).toBe(200);
-    expect(res._json).toMatchObject({ status: 'success' });
-    expect(metrics.increment).toHaveBeenCalledWith('greek_flow_etf.all_empty');
-    // No data → no upsert, and the empty window is not escalated to Sentry.
-    expect(mockSql).not.toHaveBeenCalled();
-    expect(Sentry.captureException).not.toHaveBeenCalled();
+    it('after 09:40 ET: skipped, counted, and a Sentry error; nothing written', async () => {
+      vi.setSystemTime(new Date('2026-04-27T14:32:00Z')); // 10:32 ET
+      setupMocks({ spyAll: [], qqqAll: [] });
+
+      const req = AUTHORIZED_REQ();
+      const res = mockResponse();
+      await handler(req, res);
+
+      expect(res._status).toBe(200);
+      expect(res._json).toMatchObject({ status: 'skipped' });
+      expect(metrics.increment).toHaveBeenCalledWith(
+        'greek_flow_etf.all_empty',
+      );
+      expect(Sentry.captureMessage).toHaveBeenCalledTimes(1);
+      expect(Sentry.captureMessage).toHaveBeenCalledWith(
+        'fetch-greek-flow-etf: every UW fetch returned no ticks, nothing stored (09:40 ET or later)',
+        'error',
+      );
+      // No data → no upsert, and no exception.
+      expect(mockSql).not.toHaveBeenCalled();
+      expect(Sentry.captureException).not.toHaveBeenCalled();
+    });
+
+    it('before 09:40 ET: skipped and counted, but quiet in Sentry', async () => {
+      vi.setSystemTime(new Date('2026-04-27T13:35:00Z')); // 09:35 ET
+      setupMocks({ spyAll: [], qqqAll: [] });
+
+      const req = AUTHORIZED_REQ();
+      const res = mockResponse();
+      await handler(req, res);
+
+      expect(res._json).toMatchObject({ status: 'skipped' });
+      expect(metrics.increment).toHaveBeenCalledWith(
+        'greek_flow_etf.all_empty',
+      );
+      expect(Sentry.captureMessage).not.toHaveBeenCalled();
+      expect(mockSql).not.toHaveBeenCalled();
+    });
   });
 
   // ── 8-field INSERT column regression test ────────────────

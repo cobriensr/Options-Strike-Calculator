@@ -42,7 +42,7 @@ import {
   uwFetch,
   withRetry,
 } from '../_lib/api-helpers.js';
-import { Sentry, metrics } from '../_lib/sentry.js';
+import { Sentry } from '../_lib/sentry.js';
 import {
   deriveCronStatus,
   withCronInstrumentation,
@@ -52,6 +52,7 @@ import {
   upsertGreekFlowTicks,
   type GreekFlowTick,
 } from '../_lib/greek-flow-etf-store.js';
+import { reportSkippedWrite } from '../_lib/ladder-skip.js';
 
 /** Stored on every vega_flow_etf revision this run writes (spec P0.9). */
 const WRITER = 'fetch-greek-flow-etf';
@@ -80,10 +81,12 @@ export default withCronInstrumentation(
     //
     //   - fetch failed                              → failed leg
     //   - fetch ok, 0 ticks                         → no-op, EXCLUDED
-    //   - fetch ok, ticks > 0, rows landed          → success leg
-    //   - fetch ok, ticks > 0, ZERO rows persisted  → failed leg (#2)
+    //   - fetch ok, ticks > 0, write ok             → success leg (an
+    //     unchanged re-send persists zero rows and is still a success)
+    //   - fetch ok, ticks > 0, the write failed     → failed leg (#2)
+    //     (`inserted === 0 && failed > 0`)
     //
-    // The "ZERO rows persisted" case is the critical fix: upsertGreekFlowTicks
+    // The failed-write case is the critical fix: upsertGreekFlowTicks
     // swallows its own batched-INSERT error and RESOLVES with
     // { inserted: 0, failed: N } instead of throwing, so a fulfilled upsert
     // with inserted === 0 && failed > 0 is total data loss that previously
@@ -258,8 +261,10 @@ export default withCronInstrumentation(
       //
       //   - fetch failed                              → failed leg
       //   - fetch ok, 0 input ticks                   → no-op, EXCLUDED
-      //   - fetch ok, ticks > 0, rows landed          → success leg
-      //   - fetch ok, ticks > 0, ZERO rows persisted  → failed leg (#2)
+      //   - fetch ok, ticks > 0, write ok             → success leg (an
+      //     unchanged re-send persists zero rows and is still a success)
+      //   - fetch ok, ticks > 0, the write failed     → failed leg (#2)
+      //     (`inserted === 0 && failed > 0`)
       if (fetchFailed) {
         // The fetch couldn't even produce data for this scope — already
         // logged + captured to Sentry at the fetch site.
@@ -355,19 +360,24 @@ export default withCronInstrumentation(
     //   none failed (or no work at all) → 'success'.
     let status = deriveCronStatus(failedLegs, totalLegs);
 
-    // #6a observability: totalLegs === 0 with no fetch failures means every
-    // UW fetch returned an empty 200 — a possible silent data outage. Keep
-    // status 'success' (genuinely quiet windows exist, no paging), but emit
-    // a distinct metric + warn so a total data gap is still visible.
+    // totalLegs === 0 with no fetch failures means every UW fetch returned an
+    // empty 200. UW serves the whole session on every call, so during market
+    // hours that is a stalled feed, not a clean run (R4): nothing stored,
+    // `skipped` (never `success`), the metric counted, and from 09:40 ET a
+    // Sentry error (before it, the pre-open, it stays quiet).
     const allEmptyInput =
       totalLegs === 0 && !spyAllFetchFailed && !qqqAllFetchFailed;
     if (allEmptyInput) {
-      metrics.increment('greek_flow_etf.all_empty');
-      ctx.logger.warn(
-        { spy: spyMeta, qqq: qqqMeta },
-        'fetch-greek-flow-etf: all UW fetches returned empty 200 (possible data gap)',
-      );
-      status = 'success';
+      reportSkippedWrite({
+        job: 'fetch-greek-flow-etf',
+        metric: 'greek_flow_etf.all_empty',
+        warning:
+          'fetch-greek-flow-etf: all UW fetches returned empty 200 (possible data gap)',
+        detail: { spy: spyMeta, qqq: qqqMeta },
+        alert:
+          'fetch-greek-flow-etf: every UW fetch returned no ticks, nothing stored',
+      });
+      status = 'skipped';
     }
 
     ctx.logger.info(

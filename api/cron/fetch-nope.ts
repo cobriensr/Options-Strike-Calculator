@@ -21,6 +21,10 @@
  * which erased both the first-seen value and the first-ingest time.
  * `ingested_at` is never written here: the column default sets it on insert.
  *
+ * An empty UW answer is a skip, never a success (R4): the run reports
+ * `skipped`, counts `fetch_nope.empty_payload`, and from 09:40 ET raises a
+ * Sentry error (`reportSkippedWrite`); before that it is the pre-open.
+ *
  * Environment: UW_API_KEY, CRON_SECRET
  */
 
@@ -31,6 +35,7 @@ import {
   type CronResult,
 } from '../_lib/cron-instrumentation.js';
 import { getDb } from '../_lib/db.js';
+import { reportSkippedWrite } from '../_lib/ladder-skip.js';
 
 export interface UwNopeRow {
   timestamp: string;
@@ -57,9 +62,21 @@ export default withCronInstrumentation(
 
     const rows = await withRetry(() => uwFetch<UwNopeRow>(apiKey, NOPE_PATH));
 
+    // An empty answer is not a clean run (R4): UW serves the whole session on
+    // every call, so no rows at all during market hours means it has nothing.
+    // Warn and count it always; from 09:40 ET it is a Sentry error (before that
+    // it is the pre-open or the rollover). Skipped, never a success.
     if (rows.length === 0) {
+      reportSkippedWrite({
+        job: 'fetch-nope',
+        metric: 'fetch_nope.empty_payload',
+        warning: 'fetch-nope: UW returned no NOPE rows',
+        detail: { date: ctx.today },
+        alert: 'fetch-nope: UW returned no NOPE rows',
+      });
       return {
-        status: 'success',
+        status: 'skipped',
+        message: 'UW returned no NOPE rows',
         metadata: { fetched: 0, upserted: 0 },
       };
     }
