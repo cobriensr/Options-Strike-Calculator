@@ -32,7 +32,7 @@
  *
  * Schwab: the token record is read from the PRODUCTION Upstash Redis and, when
  * it has run out, refreshed in place with a compare-and-set (never over a
- * re-login). So this script also refuses to start on a weekday 13:00–21:59 UTC,
+ * re-login). So this script also refuses to start on a weekday 13:00–22:59 UTC,
  * when the Schwab crons run, and the market-hours guard below applies too;
  * --allow-market-hours lifts both (a market holiday). --dry-run still calls
  * Schwab and UW and writes nothing to Neon; it may refresh the Schwab token

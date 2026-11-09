@@ -63,15 +63,16 @@ export function redactBody(body) {
 /**
  * First and last UTC hour of the Schwab crons' day: vercel.json registers
  * fetch-spx-candles-1m and fetch-strike-iv as `* 13-21 * * 1-5`, and
- * compute-cone and fetch-outcomes inside it. (fetch-market-internals no
- * longer runs in this window: it settles once at 22:30 UTC, after it.)
+ * compute-cone and fetch-outcomes inside it. fetch-market-internals settles
+ * once after them at 22:30 UTC (`30 22 * * 1-5`), and it too reads and
+ * refreshes the Schwab token, so the window runs to the end of hour 22.
  */
 const BUSY_FIRST_UTC_HOUR = 13;
-const BUSY_LAST_UTC_HOUR = 21;
+const BUSY_LAST_UTC_HOUR = 22;
 
 /**
  * The refusal to print when a script that refreshes the Schwab token would
- * start on a weekday from 13:00 to 21:59 UTC, else null. A refresh from here
+ * start on a weekday from 13:00 to 22:59 UTC, else null. A refresh from here
  * could race the crons' own. The window is the crons' registered hours, not
  * the market's: it is a little wider than the session on purpose.
  *
@@ -89,7 +90,7 @@ export function schwabCronsBusyRefusal() {
     hour <= BUSY_LAST_UTC_HOUR;
   if (!busy) return null;
   return (
-    'Refusing to run on a weekday 13:00–21:59 UTC: the Schwab crons are ' +
+    'Refusing to run on a weekday 13:00–22:59 UTC: the Schwab crons are ' +
     'active, and a token refresh here could race theirs. Run outside that ' +
     'window, or pass --allow-market-hours (e.g. on a market holiday, when ' +
     'the crons skip).'

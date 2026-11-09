@@ -63,7 +63,11 @@ describe('schwabCronsBusyRefusal', () => {
     ['Friday 13:00 UTC', '2026-11-06T13:00:00Z', true],
     ['Friday 17:30 UTC', '2026-11-06T17:30:00Z', true],
     ['Friday 21:59 UTC', '2026-11-06T21:59:00Z', true],
-    ['Friday 22:00 UTC', '2026-11-06T22:00:00Z', false],
+    // fetch-market-internals settles at 22:30 UTC (vercel.json `30 22 * * 1-5`).
+    ['Friday 22:00 UTC', '2026-11-06T22:00:00Z', true],
+    ['Friday 22:30 UTC (the settle cron)', '2026-11-06T22:30:00Z', true],
+    ['Friday 22:59 UTC', '2026-11-06T22:59:00Z', true],
+    ['Friday 23:00 UTC', '2026-11-06T23:00:00Z', false],
     ['Saturday 15:00 UTC', '2026-11-07T15:00:00Z', false],
     ['Sunday 15:00 UTC', '2026-11-08T15:00:00Z', false],
     ['Monday 13:00 UTC', '2026-11-09T13:00:00Z', true],
@@ -73,7 +77,7 @@ describe('schwabCronsBusyRefusal', () => {
     const message = schwabCronsBusyRefusal();
     expect(message !== null).toBe(refused);
     if (refused) {
-      expect(message).toContain('13:00–21:59 UTC');
+      expect(message).toContain('13:00–22:59 UTC');
       expect(message).toContain('--allow-market-hours');
     }
   });

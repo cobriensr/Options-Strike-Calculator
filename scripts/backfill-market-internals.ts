@@ -19,7 +19,7 @@
  * WARNING: this runs against PRODUCTION. `.env.local` points at the
  * production Neon branch AND the production Upstash Redis that holds the live
  * Schwab token record. Both modes read Schwab and the table, and refresh the
- * token if it has run out, so it refuses to start on a weekday 13:00-21:59
+ * token if it has run out, so it refuses to start on a weekday 13:00-22:59
  * UTC while the Schwab crons are active (the token refresh could race theirs).
  * Its refresh write is a compare-and-set (scripts/_lib/schwab-local.mjs).
  *
