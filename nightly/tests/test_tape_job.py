@@ -1304,6 +1304,51 @@ def test_run_deadline_skips_remaining_days(
     assert tape.downloads == [J8]
 
 
+def test_run_tape_honours_a_given_deadline(
+    s3, settings: Settings, tape: FakeTape, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _seed(s3, J2)
+    _seed(s3, J5)
+    clock = SimpleNamespace(now=1000.0)
+    monkeypatch.setattr(tape_job, "monotonic", lambda: clock.now)
+
+    # The default deadline, a whole run away, would let every day start.
+    outcomes = run_tape(settings, JAN_NOW, deadline=clock.now - 1)
+
+    assert _statuses(outcomes) == [
+        (J8, "skipped_deadline", SKIPPED_DEADLINE),
+        (J7, "skipped_deadline", SKIPPED_DEADLINE),
+        (J6, "skipped_deadline", SKIPPED_DEADLINE),
+    ]
+    assert tape.downloads == []
+
+
+@pytest.mark.parametrize(
+    ("left", "probes"),
+    [(PROBE_BUDGET_SECONDS, True), (PROBE_BUDGET_SECONDS - 1, False)],
+    ids=["budget-left", "one-second-short"],
+)
+def test_the_given_deadline_bounds_the_rewrite_probes(
+    s3,
+    settings: Settings,
+    tape: FakeTape,
+    monkeypatch: pytest.MonkeyPatch,
+    left: int,
+    probes: bool,
+) -> None:
+    # Nothing is missing, so the run goes straight to the probes: the given deadline
+    # (not a whole run from now) decides whether one starts.
+    for d in (J2, J5, J6, J7, J8):
+        _seed(s3, d, _replaced(d))
+    tape.probe_result = {d: old_etag(d) for d in (J2, J5, J6, J7, J8)}
+    clock = SimpleNamespace(now=1000.0)
+    monkeypatch.setattr(tape_job, "monotonic", lambda: clock.now)
+
+    assert run_tape(settings, JAN_NOW, deadline=clock.now + left) == []
+
+    assert tape.probes == ([J8, J7, J6, J5, J2] if probes else [])
+
+
 def test_rewrite_probes_run_after_the_planned_days(s3, settings: Settings, tape: FakeTape) -> None:
     for d in (J2, J5, J6):
         _seed(s3, d, _replaced(d))

@@ -221,6 +221,7 @@ def run_tape(
     settings: Settings,
     now_utc: datetime,
     on_outcome: Callable[[DayOutcome], None] | None = None,
+    deadline: float | None = None,
 ) -> list[DayOutcome]:
     """Land the planned days, then probe for rewrites and re-land the rewritten days;
     one outcome per day.
@@ -228,7 +229,9 @@ def run_tape(
     Before each day it checks the run time left and free disk in WORK_DIR. Less than
     DAY_BUDGET_SECONDS before the deadline, too little disk, or the disk check itself
     failing marks that day and every later one skipped. A day that starts can finish
-    inside its budget, so the run ends by its deadline.
+    inside its budget, so the run ends by its deadline. `deadline` is the `monotonic()`
+    time the tape must stop by, which the caller sets early enough to leave later work
+    its share of the run; None means RUN_DEADLINE_SECONDS from now.
 
     The probes come after the planned days, so a slow probe never costs a missing
     day. They cover the newest days of the run's one listing, never a day this run
@@ -249,7 +252,8 @@ def run_tape(
       day can be planned.
     Once days start, every failure is a day's outcome.
     """
-    deadline = monotonic() + RUN_DEADLINE_SECONDS
+    if deadline is None:
+        deadline = monotonic() + RUN_DEADLINE_SECONDS
     last_session = last_completed_session(now_utc)
     _clear_stale_work_dirs()
     WORK_DIR.mkdir(parents=True, exist_ok=True)

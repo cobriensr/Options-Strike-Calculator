@@ -1,10 +1,12 @@
-"""Tests for the entrypoint: exit codes, cron check-ins, the watchdog, hard stops and
-what it logs.
+"""Tests for the entrypoint: exit codes, cron check-ins, the watchdog, hard stops, the
+step pipeline and what it logs.
 
-run_tape, capture_checkin and init_sentry are patched at main's module boundary,
-each wrapped in create_autospec of the real function. The fake run_tape hands each
-outcome to `on_outcome` as the real one does. The sentry_sdk capture and flush calls
-are patched on the sentry_sdk module, so nothing reaches Sentry.
+run_tape, capture_checkin, init_sentry and last_completed_session are patched at main's
+module boundary, each wrapped in create_autospec of the real function. The fake run_tape
+hands each outcome to `on_outcome` as the real one does. The step tests patch
+main.STEPS and either main.run_steps (to see what it is given) or nothing (a real
+run_steps over real Step objects). The sentry_sdk capture and flush calls are patched on
+the sentry_sdk module, so nothing reaches Sentry.
 """
 
 from __future__ import annotations
@@ -27,9 +29,12 @@ import pytest
 import sentry_sdk
 from sentry_sdk.crons import capture_checkin
 
+import calendar_nyse
 import main
 import monitoring
+import steps
 import tape_job
+from calendar_nyse import CalendarExhausted
 from constants import (
     DAY_BUDGET_SECONDS,
     DOWNLOAD_DEADLINE_SECONDS,
@@ -37,9 +42,11 @@ from constants import (
     RUN_DEADLINE_SECONDS,
     WATCHDOG_GRACE_SECONDS,
 )
+from steps import OutcomeStatus, Step, StepContext, StepOutcome, StepResult, reserve_seconds
 from tape_job import DayOutcome
 
 DAY = date(2026, 10, 28)
+LAST_SESSION = date(2026, 10, 27)
 SIGNED_URL = "https://storage.googleapis.com/b/o.zip?X-Goog-Signature=abc&X-Goog-Credential=def"
 CHECK_IN_ID = "4ae9c77bdd354824943c5f9f5cc1def6"
 MONITOR_CONFIG = {
@@ -112,6 +119,15 @@ def _restore_process_state() -> Iterator[None]:
     signal.signal(signal.SIGTERM, sigterm)
 
 
+@pytest.fixture(autouse=True)
+def last_session(monkeypatch: pytest.MonkeyPatch) -> Mock:
+    """main resolves the last session before the tape; pin it so no test reads the
+    calendar table or the clock. A test that needs it to fail sets a side_effect."""
+    mock = create_autospec(calendar_nyse.last_completed_session, return_value=LAST_SESSION)
+    monkeypatch.setattr(main, "last_completed_session", mock)
+    return mock
+
+
 def _run_tape(
     monkeypatch: pytest.MonkeyPatch,
     *,
@@ -120,7 +136,9 @@ def _run_tape(
 ) -> Mock:
     """Patch main.run_tape. With `return_value`, each outcome goes to on_outcome first."""
 
-    def run(settings: Any, now_utc: datetime, on_outcome: Any = None) -> list[DayOutcome]:
+    def run(
+        settings: Any, now_utc: datetime, on_outcome: Any = None, deadline: float | None = None
+    ) -> list[DayOutcome]:
         outcomes = list(return_value or [])
         for outcome in outcomes:
             if on_outcome is not None:
@@ -178,7 +196,9 @@ def test_all_landed_exits_0_and_checks_in_ok(
     (settings, now_utc), kwargs = run_tape.call_args
     sentry.init.assert_called_once_with(settings.sentry_dsn)
     assert now_utc.tzinfo is not None
-    assert kwargs == {"on_outcome": monitoring.report_outcome}
+    assert kwargs["on_outcome"] is monitoring.report_outcome
+    assert isinstance(kwargs["deadline"], float)
+    assert set(kwargs) == {"on_outcome", "deadline"}
     assert _final_checkin(sentry) == "ok"
     _assert_flushed_last(sentry)
 
@@ -244,7 +264,9 @@ def test_every_day_is_reported_once_as_it_finishes(
     ]
     sent_during_run: list[int] = []
 
-    def run(settings: Any, now_utc: datetime, on_outcome: Any = None) -> list[DayOutcome]:
+    def run(
+        settings: Any, now_utc: datetime, on_outcome: Any = None, deadline: float | None = None
+    ) -> list[DayOutcome]:
         for outcome in outcomes:
             on_outcome(outcome)
             sent_during_run.append(sentry.capture_message.call_count)
@@ -286,6 +308,228 @@ def test_run_tape_raising_exits_1_and_checks_in_error(
     assert FakeTimer.instances[0].cancelled
 
 
+# --- steps -----------------------------------------------------------------------
+
+START = 1_000.0  # the fake clock's start, in monotonic() seconds
+
+
+@pytest.fixture
+def clock(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
+    clock = SimpleNamespace(now=START)
+    monkeypatch.setattr(main, "monotonic", lambda: clock.now)
+    return clock
+
+
+def _ok_step(ctx: StepContext) -> StepResult:
+    return StepResult("ok", {})
+
+
+def _outcome(status: OutcomeStatus, name: str = "fake-step") -> StepOutcome:
+    return StepOutcome(name, status, {}, "", 1.0)
+
+
+def _run_steps(
+    monkeypatch: pytest.MonkeyPatch,
+    outcomes: list[StepOutcome] | None = None,
+    *,
+    side_effect: Any = None,
+) -> Mock:
+    """Patch main.run_steps, to see what main gives it and to set what it returns."""
+    mock = create_autospec(steps.run_steps, return_value=outcomes or [], side_effect=side_effect)
+    monkeypatch.setattr(main, "run_steps", mock)
+    return mock
+
+
+def test_steps_run_after_tape_and_a_failed_step_exits_1(
+    monkeypatch: pytest.MonkeyPatch, sentry: SimpleNamespace
+) -> None:
+    order: list[str] = []
+    seen: list[StepContext] = []
+    tape_days = [DayOutcome(DAY, "landed", rows=10, bytes=100)]
+
+    def tape(
+        settings: Any, now_utc: datetime, on_outcome: Any = None, deadline: float | None = None
+    ) -> list[DayOutcome]:
+        order.append("tape")
+        return tape_days
+
+    def step(ctx: StepContext) -> StepResult:
+        order.append("step")
+        seen.append(ctx)
+        return StepResult("failed", {"rows": 0}, "no rows")
+
+    run_tape = _run_tape(monkeypatch, side_effect=tape)
+    monkeypatch.setattr(main, "STEPS", (Step("fake-step", step, 60),))
+
+    assert main.main() == 1
+
+    assert order == ["tape", "step"]
+    (ctx,) = seen
+    (tape_settings, tape_now), _ = run_tape.call_args
+    assert ctx.settings is tape_settings
+    assert ctx.now_utc is tape_now
+    assert ctx.last_session == LAST_SESSION
+    assert ctx.tape == tuple(tape_days)
+    assert _final_checkin(sentry) == "error"
+    # The step's outcome reached Sentry through monitoring.report_step.
+    sentry.capture_message.assert_called_once()
+    assert sentry.capture_message.call_args.kwargs["level"] == "error"
+    assert sentry.capture_message.call_args.kwargs["tags"] == {
+        "step": "fake-step",
+        "status": "failed",
+    }
+    _assert_flushed_last(sentry)
+
+
+def test_partial_step_exits_0(monkeypatch: pytest.MonkeyPatch, sentry: SimpleNamespace) -> None:
+    _run_tape(monkeypatch, return_value=[DayOutcome(DAY, "landed", rows=10, bytes=100)])
+    monkeypatch.setattr(
+        main,
+        "STEPS",
+        (Step("fake-step", lambda ctx: StepResult("partial", {"left": 3}, "work left"), 60),),
+    )
+
+    assert main.main() == 0
+
+    # Work is left for the next night: a Sentry warning, but the run is healthy.
+    assert _final_checkin(sentry) == "ok"
+    sentry.capture_message.assert_called_once()
+    assert sentry.capture_message.call_args.kwargs["level"] == "warning"
+    assert sentry.capture_message.call_args.kwargs["tags"] == {
+        "step": "fake-step",
+        "status": "partial",
+    }
+
+
+@pytest.mark.parametrize(
+    ("statuses", "code"),
+    [
+        (["ok"], 0),
+        (["ok", "ok"], 0),
+        (["skipped_deadline"], 1),
+        (["failed"], 1),
+        (["ok", "skipped_deadline", "ok"], 1),
+        (["failed", "ok"], 1),
+    ],
+    ids=["ok", "all-ok", "skipped", "failed", "skipped-among-ok", "failed-first"],
+)
+def test_step_outcomes_set_the_exit_code(
+    monkeypatch: pytest.MonkeyPatch,
+    sentry: SimpleNamespace,
+    statuses: list[OutcomeStatus],
+    code: int,
+) -> None:
+    _run_tape(monkeypatch, return_value=[DayOutcome(DAY, "landed", rows=10, bytes=100)])
+    _run_steps(monkeypatch, [_outcome(s, f"step-{i}") for i, s in enumerate(statuses)])
+
+    assert main.main() == code
+
+    assert _final_checkin(sentry) == ("ok" if code == 0 else "error")
+
+
+def test_steps_run_after_a_failed_tape_day_and_the_tape_code_stands(
+    monkeypatch: pytest.MonkeyPatch, sentry: SimpleNamespace
+) -> None:
+    failed_day = DayOutcome(DAY, "failed", "transient")
+    _run_tape(monkeypatch, return_value=[failed_day])
+    run_steps = _run_steps(monkeypatch, [_outcome("ok")])
+
+    assert main.main() == 1
+
+    run_steps.assert_called_once()
+    assert run_steps.call_args.kwargs["tape"] == (failed_day,)
+    assert _final_checkin(sentry) == "error"
+
+
+def test_steps_run_when_run_tape_raises(
+    monkeypatch: pytest.MonkeyPatch, sentry: SimpleNamespace
+) -> None:
+    error = OSError("listing failed")
+    _run_tape(monkeypatch, side_effect=error)
+    run_steps = _run_steps(monkeypatch, [_outcome("ok")])
+
+    assert main.main() == 1
+
+    sentry.capture_exception.assert_called_once_with(error)
+    run_steps.assert_called_once()
+    assert run_steps.call_args.kwargs["tape"] == ()
+    assert run_steps.call_args.kwargs["last_session"] == LAST_SESSION
+    assert _final_checkin(sentry) == "error"
+
+
+def test_steps_get_the_runs_context(
+    monkeypatch: pytest.MonkeyPatch,
+    sentry: SimpleNamespace,
+    clock: SimpleNamespace,
+    last_session: Mock,
+) -> None:
+    days = [DayOutcome(DAY, "landed", rows=10, bytes=100)]
+    run_tape = _run_tape(monkeypatch, return_value=days)
+    registered = (Step("fake-step", _ok_step, 60),)
+    monkeypatch.setattr(main, "STEPS", registered)
+    run_steps = _run_steps(monkeypatch, [_outcome("ok")])
+
+    assert main.main() == 0
+
+    (tape_settings, tape_now), _ = run_tape.call_args
+    run_steps.assert_called_once()
+    args, kwargs = run_steps.call_args
+    assert args == (registered,)
+    assert kwargs == {
+        "settings": tape_settings,
+        "now_utc": tape_now,
+        "last_session": LAST_SESSION,
+        "run_deadline": START + RUN_DEADLINE_SECONDS,
+        "tape": tuple(days),
+        "on_outcome": monitoring.report_step,
+    }
+    # The session comes from the same instant the tape gets.
+    last_session.assert_called_once_with(tape_now)
+
+
+def test_tape_deadline_reserves_step_minimums(
+    monkeypatch: pytest.MonkeyPatch, sentry: SimpleNamespace, clock: SimpleNamespace
+) -> None:
+    monkeypatch.setattr(main, "STEPS", (Step("first", _ok_step, 100), Step("second", _ok_step, 50)))
+    run_tape = _run_tape(monkeypatch, return_value=[])
+    _run_steps(monkeypatch)
+
+    main.main()
+
+    assert run_tape.call_args.kwargs["deadline"] == START + RUN_DEADLINE_SECONDS - 150
+
+
+def test_no_steps_when_the_session_cannot_be_resolved(
+    monkeypatch: pytest.MonkeyPatch, sentry: SimpleNamespace, last_session: Mock
+) -> None:
+    error = CalendarExhausted("the NYSE holiday table does not cover 2029")
+    last_session.side_effect = error
+    run_tape = _run_tape(monkeypatch, return_value=[])
+    run_steps = _run_steps(monkeypatch)
+
+    assert main.main() == 1
+
+    run_tape.assert_not_called()
+    run_steps.assert_not_called()
+    sentry.capture_exception.assert_called_once_with(error)
+    assert _final_checkin(sentry) == "error"
+    _assert_flushed_last(sentry)
+
+
+def test_a_hard_stop_during_the_steps_checks_in_error_and_reraises(
+    monkeypatch: pytest.MonkeyPatch, sentry: SimpleNamespace
+) -> None:
+    _run_tape(monkeypatch, return_value=[DayOutcome(DAY, "landed", rows=10, bytes=100)])
+    _run_steps(monkeypatch, side_effect=SystemExit(143))
+
+    with pytest.raises(SystemExit):
+        main.main()
+
+    assert _final_checkin(sentry) == "error"
+    _assert_flushed_last(sentry)
+    assert FakeTimer.instances[0].cancelled
+
+
 # --- watchdog --------------------------------------------------------------------
 
 
@@ -294,7 +538,9 @@ def test_watchdog_is_a_daemon_timer_cancelled_before_the_final_checkin(
 ) -> None:
     started: list[bool] = []
 
-    def run(settings: Any, now_utc: datetime, on_outcome: Any = None) -> list[DayOutcome]:
+    def run(
+        settings: Any, now_utc: datetime, on_outcome: Any = None, deadline: float | None = None
+    ) -> list[DayOutcome]:
         (timer,) = FakeTimer.instances
         timer.recorder = sentry.recorder
         started.append(timer.started)
@@ -326,6 +572,9 @@ def test_deadline_constants_bound_the_run() -> None:
     # not outlast the watchdog's grace.
     assert PROBE_BUDGET_SECONDS == 1200
     assert WATCHDOG_GRACE_SECONDS < PROBE_BUDGET_SECONDS < RUN_DEADLINE_SECONDS
+    # The budget table's one assertion: whatever steps are registered, at least two
+    # tape days still fit a night.
+    assert reserve_seconds(main.STEPS) + 2 * DAY_BUDGET_SECONDS <= RUN_DEADLINE_SECONDS
 
 
 @pytest.fixture
@@ -371,7 +620,9 @@ def test_expire_exits_3_even_if_sentry_raises(
 def test_hard_stop_checks_in_error_and_reraises(
     monkeypatch: pytest.MonkeyPatch, sentry: SimpleNamespace, stop: BaseException
 ) -> None:
-    def run(settings: Any, now_utc: datetime, on_outcome: Any = None) -> list[DayOutcome]:
+    def run(
+        settings: Any, now_utc: datetime, on_outcome: Any = None, deadline: float | None = None
+    ) -> list[DayOutcome]:
         (timer,) = FakeTimer.instances
         timer.recorder = sentry.recorder
         raise stop
@@ -552,7 +803,9 @@ def test_summary_line_counts_bytes_and_duration(
 def test_http_request_logs_are_quieted(
     monkeypatch: pytest.MonkeyPatch, sentry: SimpleNamespace, caplog: pytest.LogCaptureFixture
 ) -> None:
-    def run(settings: Any, now_utc: datetime, on_outcome: Any = None) -> list[DayOutcome]:
+    def run(
+        settings: Any, now_utc: datetime, on_outcome: Any = None, deadline: float | None = None
+    ) -> list[DayOutcome]:
         # What httpx logs for every request and redirect hop, signed URL and all.
         logging.getLogger("httpx").info('HTTP Request: GET %s "HTTP/1.1 200 OK"', SIGNED_URL)
         logging.getLogger("httpcore.http11").info("send_request_headers.started")

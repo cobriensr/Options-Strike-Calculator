@@ -1,9 +1,13 @@
-"""Entrypoint for the nightly tape job: `python -m main`.
+"""Entrypoint for the nightly job: `python -m main`.
 
-Runs the tape job once under the `nightly-tape` Sentry cron monitor and exits:
-- 0 when every planned day landed, re-landed or was correctly marked unavailable;
-- 1 when any day failed, was not posted, or was skipped for disk or deadline, and
-  when the run failed before its first day;
+Runs the tape job, then the post-tape steps (`pipeline.STEPS`), once under the
+`nightly-tape` Sentry cron monitor and exits:
+- 0 when every planned day landed, re-landed or was correctly marked unavailable, and
+  every step finished `ok` or `partial` (work left for the next night, which sends a
+  Sentry warning only);
+- 1 when any day failed, was not posted, or was skipped for disk or deadline, when any
+  step failed or was skipped for its deadline, and when the run failed before its first
+  day (the steps still run, unless the last session could not be resolved);
 - 2 on bad config. With a valid SENTRY_DSN, an error check-in and one fixed event
   name the invalid fields; without one, the monitor reports the run as missed;
 - 3 from the watchdog, which ends a run still going WATCHDOG_GRACE_SECONDS past its
@@ -11,8 +15,9 @@ Runs the tape job once under the `nightly-tape` Sentry cron monitor and exits:
 - 143 on SIGTERM, raised as SystemExit so each day's cleanup and an error check-in
   still run.
 
-Each day is reported to Sentry as soon as it finishes, so a run killed mid-way loses
-at most the day in flight.
+Each day and each step is reported to Sentry as soon as it finishes, so a run killed
+mid-way loses at most the one in flight. The tape and the steps share RUN_DEADLINE_SECONDS:
+the tape stops early enough to leave the steps their minimum run times.
 
 Logs follow the service rule: counts, sizes, dates, durations, field names and
 exception class names, never exception text, signed URLs or tape values.
@@ -36,10 +41,12 @@ import sentry_sdk
 from pydantic import ValidationError
 from sentry_sdk.crons import MonitorStatus, capture_checkin
 
-from calendar_nyse import table_expiry_warning
+from calendar_nyse import last_completed_session, table_expiry_warning
 from config import Settings, load_sentry_dsn, load_settings
 from constants import RUN_DEADLINE_SECONDS, WATCHDOG_GRACE_SECONDS
-from monitoring import init_sentry, report_outcome
+from monitoring import init_sentry, report_outcome, report_step
+from pipeline import STEPS
+from steps import OutcomeStatus, reserve_seconds, run_steps
 from tape_job import DayOutcome, DayStatus, run_tape
 
 log = logging.getLogger(__name__)
@@ -55,6 +62,7 @@ MONITOR_CONFIG = {
     "max_runtime": 330,
 }
 _SUCCESS: frozenset[DayStatus] = frozenset({"landed", "relanded", "unavailable"})
+_STEP_SUCCESS: frozenset[OutcomeStatus] = frozenset({"ok", "partial"})
 
 
 def main() -> int:
@@ -166,17 +174,43 @@ def _expire(check_in_id: str | None, started: float) -> None:
 
 
 def _run(settings: Settings, now_utc: datetime, started: float) -> int:
+    run_deadline = started + RUN_DEADLINE_SECONDS
+    last_session: date | None = None
+    outcomes: list[DayOutcome] = []
     try:
-        # Each day is reported from the callback as it finishes, never again here.
-        outcomes = run_tape(settings, now_utc, on_outcome=report_outcome)
+        last_session = last_completed_session(now_utc)
+        # The tape stops early enough to leave every step its minimum run time. Each
+        # day is reported from the callback as it finishes, never again here.
+        outcomes = run_tape(
+            settings,
+            now_utc,
+            on_outcome=report_outcome,
+            deadline=run_deadline - reserve_seconds(STEPS),
+        )
     except Exception as exc:
-        # Raised before any day started (see run_tape). The scrubbed event carries
-        # the traceback; the log line names the class only.
+        # Raised before any day started (see run_tape), or the session did not
+        # resolve. The scrubbed event carries the traceback; the log line names the
+        # class only.
         sentry_sdk.capture_exception(exc)
         log.error("tape run failed before the first day: %s", type(exc).__name__)
-        return 1
-    _log_summary(outcomes, monotonic() - started)
-    return 0 if all(o.status in _SUCCESS for o in outcomes) else 1
+        tape_code = 1
+    else:
+        _log_summary(outcomes, monotonic() - started)
+        tape_code = 0 if all(o.status in _SUCCESS for o in outcomes) else 1
+    if last_session is None:
+        return tape_code  # nothing to key the steps on
+    # The steps run whatever the tape did, and report themselves as each finishes.
+    step_outcomes = run_steps(
+        STEPS,
+        settings=settings,
+        now_utc=now_utc,
+        last_session=last_session,
+        run_deadline=run_deadline,
+        tape=tuple(outcomes),
+        on_outcome=report_step,
+    )
+    step_code = 0 if all(o.status in _STEP_SUCCESS for o in step_outcomes) else 1
+    return max(tape_code, step_code)
 
 
 def _log_summary(outcomes: list[DayOutcome], duration: float) -> None:
