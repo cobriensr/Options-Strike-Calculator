@@ -87,6 +87,7 @@ import {
   isBeforeEtDay,
   judgeLadder,
   strikeWindow,
+  UW_STRIKE_PAGE_LIMIT,
   type LadderSkipKind,
 } from '../_lib/strike-ladder.js';
 import { fetchUwSpot } from '../_lib/uw-spot.js';
@@ -108,9 +109,6 @@ const ATM_RANGE_BY_TICKER: Record<Ticker, number> = {
   SPY: 20,
   QQQ: 20,
 };
-
-// UW's documented maximum `limit`; a windowed page this full is not trusted.
-const PAGE_LIMIT = 500;
 
 // ── Helpers ─────────────────────────────────────────────────
 
@@ -196,7 +194,7 @@ async function fetchStrikeExposure(
     'expirations[]': expiry,
     min_strike: String(minStrike),
     max_strike: String(maxStrike),
-    limit: String(PAGE_LIMIT),
+    limit: String(UW_STRIKE_PAGE_LIMIT),
   });
 
   return uwFetch<StrikeRow>(
@@ -282,7 +280,7 @@ async function runOne(
   const rows = await withRetry(() =>
     fetchStrikeExposure(apiKey, ticker, expiry, spot),
   );
-  if (rows.length >= PAGE_LIMIT) {
+  if (rows.length >= UW_STRIKE_PAGE_LIMIT) {
     throw new Error(
       `fetch-strike-exposure: ${ticker} ${expiry} returned a full page of ${rows.length} rows inside a ±${ATM_RANGE_BY_TICKER[ticker]} window, ladder may be cut off`,
     );

@@ -39,6 +39,13 @@ interface TimedRow {
  *   - empty: UW returned no strike rows (or the source has none).
  *   - outside_window: rows came back but none is inside the stored range.
  */
+/**
+ * UW's documented maximum `limit` on the strike endpoints
+ * (`/spot-exposures/strike` and `/spot-exposures/expiry-strike`). One constant
+ * for both crons and the backfill: a windowed page this full is not trusted.
+ */
+export const UW_STRIKE_PAGE_LIMIT = 500;
+
 export type LadderSkipKind =
   | 'stale'
   | 'stale_spot'

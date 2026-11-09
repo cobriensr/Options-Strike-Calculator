@@ -20,7 +20,11 @@ import {
   STRIKE_ALL_ATM_RANGE,
   type StrikeAllRow,
 } from '../../api/_lib/strike-all-fetch.js';
-import { isBeforeEtDay, judgeLadder } from '../../api/_lib/strike-ladder.js';
+import {
+  isBeforeEtDay,
+  judgeLadder,
+  type LadderSkipKind,
+} from '../../api/_lib/strike-ladder.js';
 import { roundTo5Min } from '../../api/_lib/uw-fetch.js';
 
 export type DatePlan =
@@ -38,14 +42,7 @@ export type DatePlan =
   | {
       ok: false;
       /** What was wrong: a LadderSkipKind, or malformed / wrong_day. */
-      kind:
-        | 'stale'
-        | 'stale_spot'
-        | 'all_zero'
-        | 'empty'
-        | 'outside_window'
-        | 'malformed'
-        | 'wrong_day';
+      kind: LadderSkipKind | 'malformed' | 'wrong_day';
       message: string;
     };
 

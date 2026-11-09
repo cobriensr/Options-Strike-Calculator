@@ -10,13 +10,13 @@
  * `page` from 0 until a page comes back empty; its pages are dense, so a page
  * shorter than the limit is the last (probed 2026-11-07: with `limit=50` the
  * pages held 50, 31 and 0 rows). The walk therefore continues only while a
- * page holds exactly PAGE_SIZE rows, which saves the empty request, and
- * throws at MAX_PAGES: a ±range window holds well under one page, so a walk
- * that long means UW is not honouring the window, and a ladder cut off
- * somewhere is not stored.
+ * page holds exactly UW_STRIKE_PAGE_LIMIT rows, which saves the empty
+ * request, and throws at MAX_PAGES: a ±range window holds well under one
+ * page, so a walk that long means UW is not honouring the window, and a
+ * ladder cut off somewhere is not stored.
  */
 
-import { strikeWindow } from './strike-ladder.js';
+import { strikeWindow, UW_STRIKE_PAGE_LIMIT } from './strike-ladder.js';
 import { uwFetchPaged } from './uw-fetch-paged.js';
 
 /** One row of the all-expiry ladder, as UW sends it (numbers as strings). */
@@ -44,8 +44,6 @@ export interface StrikeAllRow {
 
 /** Stored strikes are spot ± this many points. */
 export const STRIKE_ALL_ATM_RANGE = 200;
-// UW's documented maximum `limit`.
-const PAGE_SIZE = 500;
 const MAX_PAGES = 10;
 
 /**
@@ -66,16 +64,16 @@ export async function fetchStrikeAllLadder<T>(
         ...(date === undefined ? {} : { date }),
         min_strike: String(minStrike),
         max_strike: String(maxStrike),
-        limit: String(PAGE_SIZE),
+        limit: String(UW_STRIKE_PAGE_LIMIT),
         page: String(page),
       });
       return `/stock/SPX/spot-exposures/strike?${params}`;
     },
-    onPage: (batch) => ({ done: batch.length < PAGE_SIZE }),
+    onPage: (batch) => ({ done: batch.length < UW_STRIKE_PAGE_LIMIT }),
   });
   if (reachedPageCap) {
     throw new Error(
-      `strike-all ladder: ${MAX_PAGES} full pages of ${PAGE_SIZE} strikes, ladder may be cut off`,
+      `strike-all ladder: ${MAX_PAGES} full pages of ${UW_STRIKE_PAGE_LIMIT} strikes, ladder may be cut off`,
     );
   }
   return rows;
