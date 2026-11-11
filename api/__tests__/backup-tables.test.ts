@@ -30,7 +30,12 @@ vi.mock('../_lib/logger.js', () => ({
 }));
 
 vi.mock('../_lib/sentry.js', () => ({
-  Sentry: { setTag: vi.fn(), captureException: vi.fn() },
+  Sentry: {
+    setTag: vi.fn(),
+    captureException: vi.fn(),
+    captureMessage: vi.fn(),
+    flush: vi.fn(),
+  },
 }));
 
 vi.mock('@vercel/blob', () => ({
@@ -43,30 +48,108 @@ vi.mock('../_lib/axiom.js', () => ({
   reportCronRun: vi.fn(),
 }));
 
+// withCronCheckin hands its completion check-in to waitUntil; outside a
+// Vercel runtime there is nothing to hold open.
+vi.mock('@vercel/functions', () => ({
+  waitUntil: vi.fn(),
+}));
+
 import handler from '../cron/backup-tables.js';
+import { _resetDsnCacheForTest } from '../_lib/cron-instrumentation.js';
 import { Sentry } from '../_lib/sentry.js';
 import { reportCronRun } from '../_lib/axiom.js';
 
 // Fixed date: Sunday 5 AM UTC (typical cron run)
 const BACKUP_TIME = new Date('2026-03-29T05:00:00.000Z');
 
+const TEST_DSN =
+  'https://abcdef0123456789@o111111.ingest.us.sentry.io/4511060900642816';
+
+// The export order is policy, so it is pinned whole. The three revision
+// tables come first: once UW restates a value the first-seen number cannot be
+// fetched again, so they are the only copy and must land before anything slow
+// can starve them. The rest run smallest to largest, so a spent budget costs
+// the biggest, re-derivable tables first. strike_exposures (74M rows) is
+// absent on purpose.
+const TABLE_ORDER = [
+  'flow_data_revisions',
+  'nope_ticks_revisions',
+  'vega_flow_etf_revisions',
+  'market_snapshots',
+  'analyses',
+  'outcomes',
+  'positions',
+  'lessons',
+  'lesson_reports',
+  'training_features',
+  'day_labels',
+  'economic_events',
+  'schema_migrations',
+  'spot_exposures',
+  'flow_data',
+  'greek_exposure',
+] as const;
+
+const FIRST_TABLE = TABLE_ORDER[0];
+
+// The Sentry check-in POSTs are the only fetch this handler makes, so the
+// status of each one is what Sentry's cron monitor sees.
+const fetchMock = vi.fn<typeof fetch>();
+
+function checkInStatuses(): string[] {
+  return fetchMock.mock.calls.map(
+    ([, init]) => (JSON.parse(String(init?.body)) as { status: string }).status,
+  );
+}
+
+// `vi.setSystemTime` without fake timers mocks Date only, as in beforeEach:
+// the clock is frozen, so a test moves it by hand.
+function advanceClock(ms: number): void {
+  vi.setSystemTime(Date.now() + ms);
+}
+
+async function runBackup() {
+  const res = mockResponse();
+  await handler(
+    mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer test-secret' },
+    }),
+    res,
+  );
+  return res;
+}
+
 describe('backup-tables handler', () => {
   const originalEnv = process.env;
+  // The table the handler is querying: `sql.unsafe(name)` is evaluated just
+  // before the tagged template runs, so a mock can key on it instead of on
+  // call order.
+  let currentTable = '';
 
   beforeEach(() => {
     vi.resetAllMocks();
-    mockSql.unsafe = vi.fn((raw: string) => raw);
+    currentTable = '';
+    mockSql.unsafe = vi.fn((raw: string) => {
+      currentTable = raw;
+      return raw;
+    });
     mockSql.mockResolvedValue([]);
     mockPut.mockResolvedValue({ url: 'https://blob.test/file' });
     mockList.mockResolvedValue({ blobs: [] });
     mockDel.mockResolvedValue(undefined);
+    fetchMock.mockImplementation(async () => new Response('', { status: 202 }));
+    vi.stubGlobal('fetch', fetchMock);
     process.env = { ...originalEnv };
     process.env.CRON_SECRET = 'test-secret';
+    process.env.SENTRY_DSN = TEST_DSN;
+    _resetDsnCacheForTest();
     vi.setSystemTime(BACKUP_TIME);
   });
 
   afterEach(() => {
     process.env = originalEnv;
+    vi.unstubAllGlobals();
     vi.useRealTimers();
   });
 
@@ -133,33 +216,69 @@ describe('backup-tables handler', () => {
     expect(res._status).not.toBe(401);
   });
 
+  // ── Table list ────────────────────────────────────────────
+
+  it('exports the tables in the pinned order', async () => {
+    await runBackup();
+
+    expect(mockSql.unsafe.mock.calls.map(([name]) => name)).toEqual([
+      ...TABLE_ORDER,
+    ]);
+  });
+
+  it('backs up the three revision tables first and the largest table last', async () => {
+    await runBackup();
+
+    const order = mockSql.unsafe.mock.calls.map(([name]) => name);
+    expect(order.slice(0, 3).sort()).toEqual([
+      'flow_data_revisions',
+      'nope_ticks_revisions',
+      'vega_flow_etf_revisions',
+    ]);
+    expect(order.at(-1)).toBe('greek_exposure');
+  });
+
+  // strike_exposures is 74M rows (12 GB heap, ~48 GB as JSONL) and grows by
+  // ~1M rows per trading day. Paged with OFFSET into one Buffer it killed the
+  // function every Sunday after 2026-05-17 (504 at 300 s, or out of memory),
+  // before the closing check-in. Its backup is a separate decision.
+  it('does not export strike_exposures', async () => {
+    mockSql.mockResolvedValue([{ id: 1 }]);
+
+    const res = await runBackup();
+
+    expect(mockSql.unsafe).not.toHaveBeenCalledWith('strike_exposures');
+    expect(
+      mockPut.mock.calls.some(([path]) => String(path).includes('strike')),
+    ).toBe(false);
+    const json = res._json as { tables: Record<string, unknown> };
+    expect(json.tables).not.toHaveProperty('strike_exposures');
+  });
+
   // ── Happy path: successful backup ─────────────────────────
 
-  it('exports all 17 tables and returns expected response shape', async () => {
+  it('exports all 16 tables and returns expected response shape', async () => {
     const fakeRow = { id: 1, name: 'test' };
     mockSql.mockResolvedValue([fakeRow]);
 
-    const req = mockRequest({
-      method: 'GET',
-      headers: { authorization: 'Bearer test-secret' },
-    });
-    const res = mockResponse();
-    await handler(req, res);
+    const res = await runBackup();
 
     expect(res._status).toBe(200);
 
     const json = res._json as Record<string, unknown>;
     expect(json.date).toBe('2026-03-29');
-    expect(json.totalRows).toBe(17); // 1 row x 17 tables
+    expect(json.totalRows).toBe(16); // 1 row x 16 tables
     expect(json.pruned).toBe(0);
     expect(json.errors).toBeUndefined();
+    expect(json.skipped).toBeUndefined();
+    expect(json.unfinished).toBeUndefined();
 
-    // All 17 tables should appear in results
+    // All 16 tables should appear in results
     const tables = json.tables as Record<
       string,
       { rows: number; bytes: number }
     >;
-    expect(Object.keys(tables)).toHaveLength(17);
+    expect(Object.keys(tables)).toHaveLength(16);
     expect(tables.market_snapshots).toEqual({
       rows: 1,
       bytes: expect.any(Number),
@@ -168,21 +287,25 @@ describe('backup-tables handler', () => {
       rows: 1,
       bytes: expect.any(Number),
     });
+
+    // A complete run is the only one Sentry's monitor sees as ok, and it
+    // raises no incomplete-backup error.
+    expect(checkInStatuses()).toEqual(['in_progress', 'ok']);
+    expect(Sentry.captureMessage).not.toHaveBeenCalled();
+    expect(reportCronRun).toHaveBeenCalledWith(
+      'backup-tables',
+      expect.objectContaining({ status: 'ok', errors: 0 }),
+    );
   });
 
   it('calls sql tagged template with unsafe table name for each table', async () => {
     mockSql.mockResolvedValue([]);
 
-    const req = mockRequest({
-      method: 'GET',
-      headers: { authorization: 'Bearer test-secret' },
-    });
-    const res = mockResponse();
-    await handler(req, res);
+    await runBackup();
 
-    // 17 tables = 17 tagged-template calls + 17 unsafe interpolations
-    expect(mockSql).toHaveBeenCalledTimes(17);
-    expect(mockSql.unsafe).toHaveBeenCalledTimes(17);
+    // 16 tables = 16 tagged-template calls + 16 unsafe interpolations
+    expect(mockSql).toHaveBeenCalledTimes(16);
+    expect(mockSql.unsafe).toHaveBeenCalledTimes(16);
     expect(mockSql.unsafe).toHaveBeenCalledWith('market_snapshots');
     expect(mockSql.unsafe).toHaveBeenCalledWith('schema_migrations');
     // The revision log (spec P0.8) is the only copy of a first-seen value.
@@ -199,16 +322,11 @@ describe('backup-tables handler', () => {
     ];
     mockSql.mockResolvedValue(rows);
 
-    const req = mockRequest({
-      method: 'GET',
-      headers: { authorization: 'Bearer test-secret' },
-    });
-    const res = mockResponse();
-    await handler(req, res);
+    await runBackup();
 
-    // Check the first put call (market_snapshots)
+    // Check the first put call (the first table in the export order)
     const firstCall = mockPut.mock.calls[0]!;
-    expect(firstCall[0]).toBe('backups/2026-03-29/market_snapshots.jsonl');
+    expect(firstCall[0]).toBe(`backups/2026-03-29/${FIRST_TABLE}.jsonl`);
 
     // Body is a Buffer to dodge V8's ~512 MiB String.maxLength on large
     // tables (RangeError d758f914 fix). Decode for byte-exact comparison.
@@ -222,28 +340,23 @@ describe('backup-tables handler', () => {
       contentType: 'application/x-ndjson',
     });
 
-    // 17 put calls total
-    expect(mockPut).toHaveBeenCalledTimes(17);
+    // 16 put calls total
+    expect(mockPut).toHaveBeenCalledTimes(16);
   });
 
   it('computes totalBytes correctly from JSONL content', async () => {
     const row = { id: 1 };
     mockSql.mockResolvedValue([row]);
 
-    const req = mockRequest({
-      method: 'GET',
-      headers: { authorization: 'Bearer test-secret' },
-    });
-    const res = mockResponse();
-    await handler(req, res);
+    const res = await runBackup();
 
     const json = res._json as Record<string, unknown>;
     // .byteLength (not .length) matches the Buffer body produced by
     // exportTable. ASCII JSON: byteLength === string length; the
     // assertion stays stable across UTF-8 row payloads regardless.
     const expectedPerTable = Buffer.byteLength(JSON.stringify(row));
-    // 17 tables, each with one row
-    expect(json.totalBytes).toBe(expectedPerTable * 17);
+    // 16 tables, each with one row
+    expect(json.totalBytes).toBe(expectedPerTable * 16);
   });
 
   // SENTRY-EMERALD-DESERT-6T: Vercel Blob's put() rejects empty bodies
@@ -254,12 +367,7 @@ describe('backup-tables handler', () => {
   it('skips put() for empty tables but still records them in results', async () => {
     mockSql.mockResolvedValue([]);
 
-    const req = mockRequest({
-      method: 'GET',
-      headers: { authorization: 'Bearer test-secret' },
-    });
-    const res = mockResponse();
-    await handler(req, res);
+    const res = await runBackup();
 
     expect(res._status).toBe(200);
     const json = res._json as Record<string, unknown>;
@@ -270,13 +378,13 @@ describe('backup-tables handler', () => {
     // put() is NOT called when every table is empty.
     expect(mockPut).not.toHaveBeenCalled();
 
-    // All 17 tables still appear in results so a downstream consumer can
+    // All 16 tables still appear in results so a downstream consumer can
     // tell "table absent because empty" vs "table missing because failed".
     const tables = json.tables as Record<
       string,
       { rows: number; bytes: number }
     >;
-    expect(Object.keys(tables)).toHaveLength(17);
+    expect(Object.keys(tables)).toHaveLength(16);
     expect(tables.market_snapshots).toEqual({ rows: 0, bytes: 0 });
 
     // Happy path with no errors → status 'ok'
@@ -290,9 +398,9 @@ describe('backup-tables handler', () => {
   // response at 64 MiB. exportTable now pages via LIMIT/OFFSET so a
   // single oversized table can't abort the whole backup row.
   it('pages large tables via LIMIT/OFFSET chunks', async () => {
-    // Mock 50001 rows for `market_snapshots` (first table) — should
-    // require 2 chunks: [50000 rows] + [1 row]. All other tables stay
-    // small (1 row each) → 1 chunk.
+    // Mock 50001 rows for the first table — should require 2 chunks:
+    // [50000 rows] + [1 row]. All other tables stay small (1 row each) →
+    // 1 chunk.
     const bigTable: Record<string, unknown>[] = Array.from(
       { length: 50_000 },
       (_, i) => ({ id: i }),
@@ -301,16 +409,11 @@ describe('backup-tables handler', () => {
     const small: Record<string, unknown>[] = [{ id: 1 }];
 
     mockSql
-      .mockResolvedValueOnce(bigTable) // market_snapshots chunk 1
-      .mockResolvedValueOnce(tail) // market_snapshots chunk 2
+      .mockResolvedValueOnce(bigTable) // first table chunk 1
+      .mockResolvedValueOnce(tail) // first table chunk 2
       .mockResolvedValue(small); // every other table chunk 1
 
-    const req = mockRequest({
-      method: 'GET',
-      headers: { authorization: 'Bearer test-secret' },
-    });
-    const res = mockResponse();
-    await handler(req, res);
+    const res = await runBackup();
 
     expect(res._status).toBe(200);
     const json = res._json as Record<string, unknown>;
@@ -318,41 +421,197 @@ describe('backup-tables handler', () => {
       string,
       { rows: number; bytes: number }
     >;
-    // market_snapshots collected both pages: 50000 + 1 = 50001 rows.
-    expect(tables.market_snapshots!.rows).toBe(50_001);
-    // Total = 50001 (market_snapshots) + 16 × 1 (every other table)
-    expect(json.totalRows).toBe(50_017);
-    // 18 sql calls total: 2 for market_snapshots + 1 for each of the
-    // remaining 16 tables.
-    expect(mockSql).toHaveBeenCalledTimes(18);
+    // The first table collected both pages: 50000 + 1 = 50001 rows.
+    expect(tables[FIRST_TABLE]!.rows).toBe(50_001);
+    // Total = 50001 (first table) + 15 × 1 (every other table)
+    expect(json.totalRows).toBe(50_016);
+    // 17 sql calls total: 2 for the first table + 1 for each of the
+    // remaining 15 tables.
+    expect(mockSql).toHaveBeenCalledTimes(17);
   });
+
+  // ── Time budget ───────────────────────────────────────────
+  // Vercel kills the function at maxDuration (300 s) before the closing
+  // check-in, so Sentry shows only a "timeout" and opens no issue. The loop
+  // stops starting tables at 240 s and the run ends loudly instead.
+
+  it('stops starting tables once the time budget is spent and names the rest', async () => {
+    // Every query takes 100 s: three tables start (t = 0, 100, 200); at
+    // t = 300 the budget (240 s) is gone.
+    mockSql.mockImplementation(async () => {
+      advanceClock(100_000);
+      return [{ id: 1 }];
+    });
+
+    const res = await runBackup();
+
+    const expectedSkipped = TABLE_ORDER.slice(3);
+    expect(mockSql).toHaveBeenCalledTimes(3);
+    expect(mockPut).toHaveBeenCalledTimes(3);
+
+    // Never a 2xx: withCronCheckin sends its `error` check-in off the
+    // response status, not off the Axiom status.
+    expect(res._status).toBe(500);
+    const json = res._json as {
+      tables: Record<string, unknown>;
+      skipped: string[];
+      unfinished?: string[];
+      errors: string[];
+    };
+    expect(Object.keys(json.tables)).toEqual(TABLE_ORDER.slice(0, 3));
+    expect(json.skipped).toEqual(expectedSkipped);
+    expect(json.unfinished).toBeUndefined();
+    for (const table of expectedSkipped) {
+      expect(json.errors.some((e) => e.startsWith(`${table}:`))).toBe(true);
+    }
+
+    expect(checkInStatuses()).toEqual(['in_progress', 'error']);
+    expect(reportCronRun).toHaveBeenCalledWith(
+      'backup-tables',
+      expect.objectContaining({
+        status: 'partial',
+        errors: expectedSkipped.length,
+        skippedTables: expectedSkipped,
+      }),
+    );
+
+    // An error-level Sentry event names every table that is missing.
+    expect(Sentry.setTag).toHaveBeenCalledWith('cron.job', 'backup-tables');
+    expect(Sentry.captureMessage).toHaveBeenCalledTimes(1);
+    const [message, context] = vi.mocked(Sentry.captureMessage).mock.calls[0]!;
+    expect(context).toMatchObject({
+      level: 'error',
+      fingerprint: ['backup-tables', 'incomplete'],
+    });
+    for (const table of expectedSkipped) expect(message).toContain(table);
+    // withCronCheckin never flushes, so the handler has to.
+    expect(Sentry.flush).toHaveBeenCalledTimes(1);
+  });
+
+  it('starts a table that is still inside the budget', async () => {
+    // Two queries of 119 s: the third table starts at t = 238 s, inside the
+    // 240 s budget, and finishes. Nothing is skipped.
+    let queries = 0;
+    mockSql.mockImplementation(async () => {
+      queries += 1;
+      if (queries <= 2) advanceClock(119_000);
+      return [{ id: 1 }];
+    });
+
+    const res = await runBackup();
+
+    expect(res._status).toBe(200);
+    expect(mockSql).toHaveBeenCalledTimes(16);
+    expect(Sentry.captureMessage).not.toHaveBeenCalled();
+  });
+
+  it('stops a table that crosses the time budget mid-table and uploads nothing for it', async () => {
+    // The first table has plenty of full pages and each query takes 150 s:
+    // page 1 starts at t = 0, page 2 at t = 150, and at t = 300 the budget is
+    // gone before page 3. The queue ends after page 4 so a broken guard fails
+    // an assertion instead of paging forever.
+    const fullPage = Array.from({ length: 50_000 }, (_, i) => ({ id: i }));
+    let queries = 0;
+    mockSql.mockImplementation(async () => {
+      queries += 1;
+      advanceClock(150_000);
+      return queries <= 4 ? fullPage : [];
+    });
+
+    const res = await runBackup();
+
+    expect(mockSql).toHaveBeenCalledTimes(2);
+    // A truncated file would pass for a complete backup, so none is written.
+    expect(mockPut).not.toHaveBeenCalled();
+
+    expect(res._status).toBe(500);
+    const json = res._json as {
+      tables: Record<string, unknown>;
+      skipped: string[];
+      unfinished: string[];
+      errors: string[];
+    };
+    expect(json.unfinished).toEqual([FIRST_TABLE]);
+    expect(json.skipped).toEqual(TABLE_ORDER.slice(1));
+    expect(json.tables).toEqual({});
+    expect(json.errors.some((e) => e.startsWith(`${FIRST_TABLE}:`))).toBe(true);
+
+    // Nothing was backed up, so the run is an error, not a partial.
+    expect(reportCronRun).toHaveBeenCalledWith(
+      'backup-tables',
+      expect.objectContaining({
+        status: 'error',
+        unfinishedTables: [FIRST_TABLE],
+      }),
+    );
+    expect(checkInStatuses()).toEqual(['in_progress', 'error']);
+
+    expect(Sentry.captureMessage).toHaveBeenCalledTimes(1);
+    const [message, context] = vi.mocked(Sentry.captureMessage).mock.calls[0]!;
+    expect(context).toMatchObject({ level: 'error' });
+    expect(message).toContain(FIRST_TABLE);
+  });
+
+  // ── Size cap ──────────────────────────────────────────────
+  // The whole table sits in memory (the rows, then a second copy in
+  // Buffer.concat) inside a 4096 MB function. The 2026-11-01 run died at
+  // 4096/4096 MB. A table past the cap ends loudly instead.
+
+  it('stops a table that outgrows the size cap, uploads nothing for it, and goes on', async () => {
+    // 49,999 rows of ~11 KB is ~548 MB of JSONL, past the 512 MiB cap. One
+    // page, so the time budget is never involved.
+    const pad = 'x'.repeat(10_950);
+    const hugePage = Array.from({ length: 49_999 }, (_, i) => ({ id: i, pad }));
+    mockSql.mockResolvedValueOnce(hugePage).mockResolvedValue([{ id: 1 }]);
+
+    const res = await runBackup();
+
+    expect(res._status).toBe(500);
+    const json = res._json as {
+      tables: Record<string, unknown>;
+      skipped?: string[];
+      unfinished: string[];
+      errors: string[];
+    };
+    expect(json.unfinished).toEqual([FIRST_TABLE]);
+    expect(json.skipped).toBeUndefined();
+    // The size cap does not end the run: the other 15 tables are backed up.
+    expect(Object.keys(json.tables)).toEqual(TABLE_ORDER.slice(1));
+    expect(mockPut).toHaveBeenCalledTimes(15);
+    expect(
+      mockPut.mock.calls.some(([path]) => String(path).includes(FIRST_TABLE)),
+    ).toBe(false);
+
+    expect(reportCronRun).toHaveBeenCalledWith(
+      'backup-tables',
+      expect.objectContaining({ status: 'partial' }),
+    );
+    expect(checkInStatuses()).toEqual(['in_progress', 'error']);
+    expect(Sentry.captureMessage).toHaveBeenCalledTimes(1);
+    const [message, context] = vi.mocked(Sentry.captureMessage).mock.calls[0]!;
+    expect(context).toMatchObject({ level: 'error' });
+    expect(message).toContain(FIRST_TABLE);
+  }, 60_000);
 
   // ── Individual table failure ──────────────────────────────
 
   it('continues when a single table export fails', async () => {
-    let callCount = 0;
     mockSql.mockImplementation(async () => {
-      callCount++;
-      // Fail on the 3rd table (outcomes)
-      if (callCount === 3) {
+      if (currentTable === 'outcomes') {
         throw new Error('relation "outcomes" does not exist');
       }
       return [{ id: 1 }];
     });
 
-    const req = mockRequest({
-      method: 'GET',
-      headers: { authorization: 'Bearer test-secret' },
-    });
-    const res = mockResponse();
-    await handler(req, res);
+    const res = await runBackup();
 
-    expect(res._status).toBe(200);
+    // A table that did not back up is an error check-in, not an ok one.
+    expect(res._status).toBe(500);
     const json = res._json as Record<string, unknown>;
 
-    // 16 successful, 1 failed
+    // 15 successful, 1 failed
     const tables = json.tables as Record<string, unknown>;
-    expect(Object.keys(tables)).toHaveLength(16);
+    expect(Object.keys(tables)).toHaveLength(15);
     expect(tables.outcomes).toBeUndefined();
 
     // errors array should contain the failed table
@@ -360,19 +619,23 @@ describe('backup-tables handler', () => {
     expect(errors).toHaveLength(1);
     expect(errors[0]).toContain('outcomes');
     expect(errors[0]).toContain('relation "outcomes" does not exist');
+    // A DB reject is neither skipped nor unfinished.
+    expect(json.skipped).toBeUndefined();
+    expect(json.unfinished).toBeUndefined();
 
     // Sentry should capture the exception
     expect(Sentry.setTag).toHaveBeenCalledWith('cron.job', 'backup-tables');
     expect(Sentry.captureException).toHaveBeenCalledTimes(1);
 
-    // put() should only be called 16 times (not for the failed table)
-    expect(mockPut).toHaveBeenCalledTimes(16);
+    // put() should only be called 15 times (not for the failed table)
+    expect(mockPut).toHaveBeenCalledTimes(15);
 
     // Partial-failure → status 'partial' so the dashboard reflects reality
     expect(reportCronRun).toHaveBeenCalledWith(
       'backup-tables',
       expect.objectContaining({ status: 'partial', errors: 1 }),
     );
+    expect(checkInStatuses()).toEqual(['in_progress', 'error']);
   });
 
   it('continues when put() fails for a table', async () => {
@@ -386,28 +649,26 @@ describe('backup-tables handler', () => {
       return { url: 'https://blob.test/file' };
     });
 
-    const req = mockRequest({
-      method: 'GET',
-      headers: { authorization: 'Bearer test-secret' },
-    });
-    const res = mockResponse();
-    await handler(req, res);
+    const res = await runBackup();
 
-    expect(res._status).toBe(200);
+    expect(res._status).toBe(500);
     const json = res._json as Record<string, unknown>;
 
-    // 16 successful tables, 1 failed
+    // 15 successful tables, 1 failed
     const tables = json.tables as Record<string, unknown>;
-    expect(Object.keys(tables)).toHaveLength(16);
+    expect(Object.keys(tables)).toHaveLength(15);
 
     const errors = json.errors as string[];
     expect(errors).toHaveLength(1);
     expect(errors[0]).toContain('Blob upload failed');
+    expect(errors[0]).toContain(TABLE_ORDER[1]);
 
+    expect(Sentry.captureException).toHaveBeenCalledTimes(1);
     expect(reportCronRun).toHaveBeenCalledWith(
       'backup-tables',
       expect.objectContaining({ status: 'partial', errors: 1 }),
     );
+    expect(checkInStatuses()).toEqual(['in_progress', 'error']);
   });
 
   it('handles non-Error throws in table export', async () => {
@@ -420,12 +681,7 @@ describe('backup-tables handler', () => {
       return [];
     });
 
-    const req = mockRequest({
-      method: 'GET',
-      headers: { authorization: 'Bearer test-secret' },
-    });
-    const res = mockResponse();
-    await handler(req, res);
+    const res = await runBackup();
 
     const json = res._json as Record<string, unknown>;
     const errors = json.errors as string[];
@@ -444,14 +700,9 @@ describe('backup-tables handler', () => {
       return [{ id: 1 }];
     });
 
-    const req = mockRequest({
-      method: 'GET',
-      headers: { authorization: 'Bearer test-secret' },
-    });
-    const res = mockResponse();
-    await handler(req, res);
+    const res = await runBackup();
 
-    expect(res._status).toBe(200);
+    expect(res._status).toBe(500);
     const json = res._json as Record<string, unknown>;
     const errors = json.errors as string[];
     expect(errors).toHaveLength(2);
@@ -479,12 +730,7 @@ describe('backup-tables handler', () => {
       ],
     });
 
-    const req = mockRequest({
-      method: 'GET',
-      headers: { authorization: 'Bearer test-secret' },
-    });
-    const res = mockResponse();
-    await handler(req, res);
+    const res = await runBackup();
 
     expect(res._status).toBe(200);
     expect(mockList).toHaveBeenCalledWith({ prefix: 'backups/' });
@@ -497,6 +743,40 @@ describe('backup-tables handler', () => {
 
     const json = res._json as Record<string, unknown>;
     expect(json.pruned).toBe(2);
+  });
+
+  // Pruning is the step after the table loop, so a loop that never finished
+  // used to take it down with it (no prune since 2026-05-17). A run cut short
+  // by the budget still prunes, exactly as a complete one does.
+  it('still prunes after the table loop stopped on the time budget', async () => {
+    mockSql.mockImplementation(async () => {
+      advanceClock(100_000);
+      return [{ id: 1 }];
+    });
+    mockList.mockResolvedValue({
+      blobs: [
+        {
+          pathname: 'backups/2026-02-15/market_snapshots.jsonl',
+          url: 'https://blob.test/old1',
+        },
+        {
+          pathname: 'backups/2026-03-22/analyses.jsonl',
+          url: 'https://blob.test/recent',
+        },
+      ],
+    });
+
+    const res = await runBackup();
+
+    expect(res._status).toBe(500);
+    expect(mockList).toHaveBeenCalledWith({ prefix: 'backups/' });
+    expect(mockDel).toHaveBeenCalledWith(['https://blob.test/old1']);
+    const json = res._json as Record<string, unknown>;
+    expect(json.pruned).toBe(1);
+    expect(reportCronRun).toHaveBeenCalledWith(
+      'backup-tables',
+      expect.objectContaining({ status: 'partial', pruned: 1 }),
+    );
   });
 
   it('does not delete blobs within retention window', async () => {
@@ -518,12 +798,7 @@ describe('backup-tables handler', () => {
       ],
     });
 
-    const req = mockRequest({
-      method: 'GET',
-      headers: { authorization: 'Bearer test-secret' },
-    });
-    const res = mockResponse();
-    await handler(req, res);
+    const res = await runBackup();
 
     expect(mockDel).not.toHaveBeenCalled();
     const json = res._json as Record<string, unknown>;
@@ -544,12 +819,7 @@ describe('backup-tables handler', () => {
       ],
     });
 
-    const req = mockRequest({
-      method: 'GET',
-      headers: { authorization: 'Bearer test-secret' },
-    });
-    const res = mockResponse();
-    await handler(req, res);
+    const res = await runBackup();
 
     expect(mockDel).not.toHaveBeenCalled();
     const json = res._json as Record<string, unknown>;
@@ -559,14 +829,11 @@ describe('backup-tables handler', () => {
   it('handles pruning failure without crashing the backup', async () => {
     mockList.mockRejectedValue(new Error('Blob list failed'));
 
-    const req = mockRequest({
-      method: 'GET',
-      headers: { authorization: 'Bearer test-secret' },
-    });
-    const res = mockResponse();
-    await handler(req, res);
+    const res = await runBackup();
 
-    expect(res._status).toBe(200);
+    // Retention silently stopping is how the backups went unpruned for six
+    // months, so a failed prune is an error check-in too.
+    expect(res._status).toBe(500);
     const json = res._json as Record<string, unknown>;
     // Pruning error appears in errors array
     const errors = json.errors as string[];
@@ -577,6 +844,7 @@ describe('backup-tables handler', () => {
     // Sentry should capture the pruning error
     expect(Sentry.setTag).toHaveBeenCalledWith('cron.job', 'backup-tables');
     expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+    expect(checkInStatuses()).toEqual(['in_progress', 'error']);
 
     // Backup data should still be present
     expect(json.totalRows).toBeDefined();
@@ -586,12 +854,7 @@ describe('backup-tables handler', () => {
   it('handles non-Error throws in pruning', async () => {
     mockList.mockRejectedValue('blob service down');
 
-    const req = mockRequest({
-      method: 'GET',
-      headers: { authorization: 'Bearer test-secret' },
-    });
-    const res = mockResponse();
-    await handler(req, res);
+    const res = await runBackup();
 
     const json = res._json as Record<string, unknown>;
     const errors = json.errors as string[];
@@ -606,12 +869,7 @@ describe('backup-tables handler', () => {
     vi.setSystemTime(new Date('2026-12-25T05:00:00.000Z'));
     mockSql.mockResolvedValue([{ id: 1 }]);
 
-    const req = mockRequest({
-      method: 'GET',
-      headers: { authorization: 'Bearer test-secret' },
-    });
-    const res = mockResponse();
-    await handler(req, res);
+    const res = await runBackup();
 
     const json = res._json as Record<string, unknown>;
     expect(json.date).toBe('2026-12-25');
@@ -626,12 +884,7 @@ describe('backup-tables handler', () => {
   it('returns all required fields in the response', async () => {
     mockSql.mockResolvedValue([{ id: 1 }]);
 
-    const req = mockRequest({
-      method: 'GET',
-      headers: { authorization: 'Bearer test-secret' },
-    });
-    const res = mockResponse();
-    await handler(req, res);
+    const res = await runBackup();
 
     const json = res._json as Record<string, unknown>;
     expect(json).toHaveProperty('date');
@@ -646,24 +899,21 @@ describe('backup-tables handler', () => {
   it('includes errors field only when there are errors', async () => {
     // Success case: no errors field
     mockSql.mockResolvedValue([]);
-    const req1 = mockRequest({
-      method: 'GET',
-      headers: { authorization: 'Bearer test-secret' },
-    });
-    const res1 = mockResponse();
-    await handler(req1, res1);
+    const res1 = await runBackup();
     expect((res1._json as Record<string, unknown>).errors).toBeUndefined();
 
-    // Error case: errors field present
+    // Error case: errors field present, and with no table backed up the run
+    // is an error rather than a partial.
     vi.resetAllMocks();
+    fetchMock.mockImplementation(async () => new Response('', { status: 202 }));
     mockSql.mockRejectedValue(new Error('DB down'));
     mockList.mockResolvedValue({ blobs: [] });
-    const req2 = mockRequest({
-      method: 'GET',
-      headers: { authorization: 'Bearer test-secret' },
-    });
-    const res2 = mockResponse();
-    await handler(req2, res2);
+    const res2 = await runBackup();
     expect((res2._json as Record<string, unknown>).errors).toBeDefined();
+    expect(res2._status).toBe(500);
+    expect(reportCronRun).toHaveBeenCalledWith(
+      'backup-tables',
+      expect.objectContaining({ status: 'error', tables: 0 }),
+    );
   });
 });

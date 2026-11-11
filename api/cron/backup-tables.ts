@@ -9,6 +9,11 @@
  *
  * Designed to run weekly on Sundays at 5 AM UTC via Vercel Cron.
  *
+ * A run that does not back up every table in TABLES (a table failed, ran out of
+ * time, outgrew the size cap, or pruning failed) answers 500, because
+ * `withCronCheckin` sends its `error` check-in off the response status. It
+ * also raises one error-level Sentry event that names the missing tables.
+ *
  * Environment: CRON_SECRET, BLOB_READ_WRITE_TOKEN (auto-provisioned by Vercel Blob)
  */
 
@@ -22,15 +27,12 @@ import { withCronCheckin } from '../_lib/cron-instrumentation.js';
 
 export const config = { maxDuration: 300 };
 
-// All tables in dependency order (parents before children)
+// Priority order, not dependency order (the files are independent JSONL).
+// The three revision tables come first: once UW restates a value the
+// first-seen number cannot be fetched again, so they are the only copy and
+// must land before anything slow can starve them. The rest run smallest to
+// largest, so a spent time budget costs the biggest tables first.
 const TABLES = [
-  'market_snapshots',
-  'analyses',
-  'outcomes',
-  'positions',
-  'lessons',
-  'lesson_reports',
-  'flow_data',
   // The revision log (spec P0.8): once UW restates a value, the first-seen number
   // cannot be fetched again, so this table is the only copy. `id` is its first
   // column, so ORDER BY 1 pages it stably.
@@ -39,18 +41,50 @@ const TABLES = [
   // reason, same `id`-first layout. The seed rows in them are labelled
   // 'seed_restated' and are already restated, so these tables are the only copy
   // of every value stored from the migration on.
-  'vega_flow_etf_revisions',
   'nope_ticks_revisions',
-  'greek_exposure',
-  'spot_exposures',
-  'strike_exposures',
+  'vega_flow_etf_revisions',
+  'market_snapshots',
+  'analyses',
+  'outcomes',
+  'positions',
+  'lessons',
+  'lesson_reports',
   'training_features',
   'day_labels',
   'economic_events',
   'schema_migrations',
+  'spot_exposures',
+  'flow_data',
+  'greek_exposure',
+  // strike_exposures is NOT here on purpose. At ~74M rows (12 GB heap, ~48 GB
+  // as JSONL, +1M rows per trading day) the OFFSET paging below cannot finish
+  // it in 300 s or 4 GB: a page costs 2.4 s at offset 0 and 117 s at offset
+  // 20M. It killed the function every Sunday after 2026-05-17 (504 at 300 s,
+  // or out of memory), before the closing check-in. Whether and how to back it
+  // up is the owner's call (docs/superpowers/specs/live-data-integrity-2026-11-06.md).
 ] as const;
 
 const RETENTION_WEEKS = 4;
+
+// Time budget for the whole table loop, against `maxDuration` 300 s. No table
+// or page starts after 240 s. That leaves 60 s for what can still be running
+// at that moment plus what follows the loop: one page query (withDbRetry: 3
+// attempts x 10 s timeout + 1 s and 2 s backoff, ~33 s), the put() of a table
+// already in memory (the 130 MB greek_exposure took ~2 s on 2026-11-08), then
+// the prune (one list, one del), reportCronRun and the closing check-in (5 s
+// abort). A normal run needs ~50 s in all, so this stops a runaway table
+// instead of limiting the run. Vercel kills the function before the closing
+// check-in, so a run that hits the 300 s wall shows up only as a Sentry
+// "timeout" and opens no issue.
+const TABLE_LOOP_BUDGET_MS = 240_000;
+
+// Size cap for one table's JSONL. exportTable holds the whole table in memory:
+// one Buffer per row plus a second copy in Buffer.concat, so ~3x the body at
+// peak, inside a 4096 MB function (the 2026-11-01 run died at 4096/4096 MB).
+// 512 MiB peaks near 1.5 GB and is ~4x the largest table today (greek_exposure,
+// 130 MB on 2026-11-08). A table past it is reported, not backed up, until
+// the export streams (audit Phase 3.13).
+const EXPORT_MAX_BYTES = 512 * 1024 * 1024;
 
 // Neon's serverless HTTP driver caps responses at 64 MiB (67,108,864
 // bytes). One unbounded SELECT * on a tape table that has grown past
@@ -58,6 +92,20 @@ const RETENTION_WEEKS = 4;
 // 507. Chunk via LIMIT/OFFSET; 50k rows × ~1 KB/row = ~50 MB per
 // round-trip, comfortably under the limit. See SENTRY-EMERALD-DESERT-6V.
 const EXPORT_CHUNK_ROWS = 50_000;
+
+type ExportResult =
+  | { complete: true; body: Buffer; rowCount: number }
+  | {
+      complete: false;
+      reason: 'time_budget' | 'size_cap';
+      rowCount: number;
+      bytes: number;
+    };
+
+const INCOMPLETE_REASON = {
+  time_budget: 'time budget spent',
+  size_cap: 'size cap reached',
+} as const;
 
 /**
  * Export a single table as a JSONL `Buffer`.
@@ -81,16 +129,25 @@ const EXPORT_CHUNK_ROWS = 50_000;
  * skip rows mid-export — most tables have an `id` PK; for the few that
  * don't (schema_migrations) the row count is small enough that a single
  * chunk covers it.
+ *
+ * Stops, returning `complete: false`, when `deadline` (epoch ms) has passed
+ * before a page starts, or when the body passes `EXPORT_MAX_BYTES`. The partial
+ * body is dropped: a truncated file would pass for a complete backup.
  */
 async function exportTable(
   tableName: string,
-): Promise<{ body: Buffer; rowCount: number }> {
+  deadline: number,
+): Promise<ExportResult> {
   const sql = getDb();
   const chunks: Buffer[] = [];
   const NEWLINE = Buffer.from('\n');
   let rowCount = 0;
+  let bytes = 0;
   let offset = 0;
   while (true) {
+    if (Date.now() >= deadline) {
+      return { complete: false, reason: 'time_budget', rowCount, bytes };
+    }
     const rows = (await withDbRetry(
       () => sql`
         SELECT * FROM ${sql.unsafe(tableName)}
@@ -103,14 +160,22 @@ async function exportTable(
     )) as Record<string, unknown>[];
     if (rows.length === 0) break;
     for (const row of rows) {
-      if (chunks.length > 0) chunks.push(NEWLINE);
-      chunks.push(Buffer.from(JSON.stringify(row)));
+      if (chunks.length > 0) {
+        chunks.push(NEWLINE);
+        bytes += NEWLINE.byteLength;
+      }
+      const chunk = Buffer.from(JSON.stringify(row));
+      chunks.push(chunk);
+      bytes += chunk.byteLength;
+      rowCount += 1;
+      if (bytes > EXPORT_MAX_BYTES) {
+        return { complete: false, reason: 'size_cap', rowCount, bytes };
+      }
     }
-    rowCount += rows.length;
     if (rows.length < EXPORT_CHUNK_ROWS) break;
     offset += EXPORT_CHUNK_ROWS;
   }
-  return { body: Buffer.concat(chunks), rowCount };
+  return { complete: true, body: Buffer.concat(chunks), rowCount };
 }
 
 /**
@@ -152,12 +217,42 @@ export default withCronCheckin('backup-tables', async (req, res) => {
   const startTime = Date.now();
   const results: Record<string, { rows: number; bytes: number }> = {};
   const errors: string[] = [];
+  // Never started: the time budget was spent first.
+  const skipped: string[] = [];
+  // Started, then stopped by the time budget or the size cap. Nothing uploaded.
+  const unfinished: string[] = [];
+  const deadline = startTime + TABLE_LOOP_BUDGET_MS;
 
   logger.info({ date: today, tables: TABLES.length }, 'Starting weekly backup');
 
-  for (const table of TABLES) {
+  for (const [index, table] of TABLES.entries()) {
+    if (Date.now() >= deadline) {
+      for (const rest of TABLES.slice(index)) {
+        skipped.push(rest);
+        errors.push(`${rest}: skipped, ${INCOMPLETE_REASON.time_budget}`);
+      }
+      break;
+    }
     try {
-      const { body, rowCount } = await exportTable(table);
+      const exported = await exportTable(table, deadline);
+      if (!exported.complete) {
+        unfinished.push(table);
+        const reason = INCOMPLETE_REASON[exported.reason];
+        errors.push(
+          `${table}: not backed up, ${reason} after ${exported.rowCount} rows (${exported.bytes} bytes)`,
+        );
+        logger.error(
+          {
+            table,
+            reason: exported.reason,
+            rows: exported.rowCount,
+            bytes: exported.bytes,
+          },
+          'Table backup stopped',
+        );
+        continue;
+      }
+      const { body, rowCount } = exported;
 
       // Vercel Blob's put() rejects empty bodies with "body is required"
       // (SENTRY-EMERALD-DESERT-6T). Skip the upload for empty tables but
@@ -191,7 +286,32 @@ export default withCronCheckin('backup-tables', async (req, res) => {
     }
   }
 
-  // Prune old backups
+  // A table that was skipped or stopped is not in the backup. Each DB or Blob
+  // failure above has its own exception; this one event names the tables the
+  // budget and the size cap cost, and it goes out before the prune so a slow
+  // prune cannot cost the run its report.
+  const notBackedUp = [...skipped, ...unfinished];
+  if (notBackedUp.length > 0) {
+    Sentry.setTag('cron.job', 'backup-tables');
+    Sentry.captureMessage(
+      `backup-tables: ${notBackedUp.length} table(s) not backed up: ${notBackedUp.join(', ')}`,
+      {
+        level: 'error',
+        fingerprint: ['backup-tables', 'incomplete'],
+        extra: {
+          date: today,
+          skipped,
+          unfinished,
+          elapsedMs: Date.now() - startTime,
+        },
+      },
+    );
+    // No flush in withCronCheckin; hold the event until it has left.
+    await Sentry.flush(2000);
+  }
+
+  // Prune old backups. It runs after a budget-limited loop exactly as after a
+  // complete one: the budget leaves it room (see TABLE_LOOP_BUDGET_MS).
   let pruned: string[] = [];
   try {
     pruned = await pruneOldBackups(today);
@@ -214,27 +334,39 @@ export default withCronCheckin('backup-tables', async (req, res) => {
       totalRows,
       totalBytes,
       errors: errors.length,
+      skipped: skipped.length,
+      unfinished: unfinished.length,
     },
     'Weekly backup complete',
   );
 
+  const backedUp = Object.keys(results).length;
+  let status: 'ok' | 'partial' | 'error' = 'ok';
+  if (errors.length > 0) status = backedUp > 0 ? 'partial' : 'error';
+
   await reportCronRun('backup-tables', {
-    status: errors.length > 0 ? 'partial' : 'ok',
+    status,
     date: today,
-    tables: Object.keys(results).length,
+    tables: backedUp,
     totalRows,
     totalBytes,
     pruned: pruned.length,
     errors: errors.length,
+    skippedTables: skipped,
+    unfinishedTables: unfinished,
     durationMs: Date.now() - startTime,
   });
 
-  res.status(200).json({
+  // withCronCheckin reads the response status, not the status above: a 2xx
+  // would send Sentry an `ok` check-in for a run that left tables out.
+  res.status(errors.length > 0 ? 500 : 200).json({
     date: today,
     tables: results,
     totalRows,
     totalBytes,
     pruned: pruned.length,
+    skipped: skipped.length > 0 ? skipped : undefined,
+    unfinished: unfinished.length > 0 ? unfinished : undefined,
     errors: errors.length > 0 ? errors : undefined,
   });
 });
