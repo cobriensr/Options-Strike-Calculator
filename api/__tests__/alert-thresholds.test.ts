@@ -16,12 +16,6 @@ describe('ALERT_THRESHOLDS', () => {
       RATIO_ROC_PREMIUM_MIN: 500_000,
       COOLDOWN_MINUTES: 5,
       COMBINED_WINDOW_MINUTES: 30,
-      SMS_MIN_SEVERITY: 'warning',
     });
-  });
-
-  it('SMS_MIN_SEVERITY is a valid severity level', () => {
-    const validSeverities = ['warning', 'critical', 'extreme'];
-    expect(validSeverities).toContain(ALERT_THRESHOLDS.SMS_MIN_SEVERITY);
   });
 });

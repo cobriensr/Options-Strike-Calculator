@@ -22,22 +22,12 @@ vi.mock('../_lib/alert-thresholds.js', () => ({
   ALERT_THRESHOLDS: {
     COOLDOWN_MINUTES: 5,
     COMBINED_WINDOW_MINUTES: 30,
-    SMS_MIN_SEVERITY: 'critical' as const,
   },
 }));
 
-vi.mock('../_lib/sentry.js', () => ({
-  Sentry: { captureException: vi.fn(), captureMessage: vi.fn() },
-}));
-
-import {
-  writeAlertIfNew,
-  sendTwilioSms,
-  checkForCombinedAlert,
-} from '../_lib/alerts.js';
-import type { AlertPayload } from '../_lib/alerts.js';
+import { writeAlertIfNew, checkForCombinedAlert } from '../_lib/alerts.js';
+import type { AlertPayload, AlertSeverity } from '../_lib/alerts.js';
 import logger from '../_lib/logger.js';
-import { Sentry } from '../_lib/sentry.js';
 
 const MARKET_TIME = new Date('2026-03-24T16:00:00Z');
 
@@ -54,6 +44,18 @@ function makeAlert(overrides: Partial<AlertPayload> = {}): AlertPayload {
   };
 }
 
+/** The static SQL text of the nth tagged-template call, with each
+ *  interpolated value replaced by "?". */
+function sqlText(callIndex: number): string {
+  const strings = mockSql.mock.calls[callIndex]![0] as readonly string[];
+  return strings.join('?');
+}
+
+/** The interpolated values of the nth tagged-template call. */
+function sqlValues(callIndex: number): unknown[] {
+  return mockSql.mock.calls[callIndex]!.slice(1);
+}
+
 describe('writeAlertIfNew', () => {
   beforeEach(() => {
     vi.resetAllMocks();
@@ -63,6 +65,7 @@ describe('writeAlertIfNew', () => {
 
   afterEach(() => {
     vi.useRealTimers();
+    vi.unstubAllGlobals();
   });
 
   it('writes alert and returns true when no cooldown active', async () => {
@@ -100,13 +103,13 @@ describe('writeAlertIfNew', () => {
     });
     await writeAlertIfNew('2026-03-24', alert);
 
+    // Exact-match object: a stray extra key (a delivery flag, say) fails.
     expect(vi.mocked(logger.warn)).toHaveBeenCalledWith(
       {
         type: 'ratio_surge',
         severity: 'critical',
         direction: 'BULLISH',
         title: 'BULLISH Ratio Surge',
-        smsSent: false,
       },
       'Market alert fired',
     );
@@ -130,7 +133,8 @@ describe('writeAlertIfNew', () => {
     await writeAlertIfNew('2026-03-24', makeAlert({ type: 'combined' }));
 
     // The first mockSql call is the cooldown SELECT
-    expect(mockSql).toHaveBeenCalled();
+    expect(sqlText(0)).toContain('SELECT 1 FROM market_alerts');
+    expect(sqlValues(0)).toEqual(['combined', '2026-03-24', 5]);
   });
 
   it('serializes currentValues and deltaValues as JSON in INSERT', async () => {
@@ -146,6 +150,17 @@ describe('writeAlertIfNew', () => {
     expect(result).toBe(true);
     // Two calls: cooldown check + INSERT
     expect(mockSql).toHaveBeenCalledTimes(2);
+    expect(sqlValues(1)).toEqual([
+      '2026-03-24',
+      MARKET_TIME.toISOString(),
+      'iv_spike',
+      'warning',
+      'BEARISH',
+      alert.title,
+      alert.body,
+      '{"iv":0.277}',
+      '{"ivDelta":0.048}',
+    ]);
   });
 
   it('handles different alert types correctly', async () => {
@@ -166,119 +181,64 @@ describe('writeAlertIfNew', () => {
       'Market alert fired',
     );
   });
-});
 
-// ── sendTwilioSms ─────────────────────────────────────────
+  it('INSERT no longer names the sms_sent column', async () => {
+    mockSql.mockResolvedValueOnce([]);
+    mockSql.mockResolvedValueOnce([]);
 
-describe('sendTwilioSms', () => {
-  const originalEnv = process.env;
+    await writeAlertIfNew('2026-03-24', makeAlert());
 
-  beforeEach(() => {
-    vi.resetAllMocks();
-    mockSql.mockResolvedValue([]);
-    vi.setSystemTime(MARKET_TIME);
+    // The column stays in the table with its DEFAULT FALSE; the writer just
+    // no longer sets it.
+    const insert = sqlText(1);
+    expect(insert).toContain('INSERT INTO market_alerts');
+    expect(insert).not.toContain('sms_sent');
+    expect(sqlValues(1)).toHaveLength(9);
   });
 
-  afterEach(() => {
-    process.env = originalEnv;
-    vi.useRealTimers();
-    vi.unstubAllGlobals();
+  it.each<AlertSeverity>(['warning', 'critical', 'extreme'])(
+    'makes no outbound HTTP call for a %s alert',
+    async (severity) => {
+      const mockFetch = vi.fn();
+      vi.stubGlobal('fetch', mockFetch);
+      mockSql.mockResolvedValueOnce([]);
+      mockSql.mockResolvedValueOnce([]);
+
+      const result = await writeAlertIfNew(
+        '2026-03-24',
+        makeAlert({ severity }),
+      );
+
+      expect(result).toBe(true);
+      expect(mockFetch).not.toHaveBeenCalled();
+    },
+  );
+
+  // ── Failure modes (R4) ──────────────────────────────────
+
+  it('rejects, writes nothing and logs no alert when the cooldown query fails', async () => {
+    mockSql.mockRejectedValueOnce(new Error('connection lost'));
+
+    await expect(writeAlertIfNew('2026-03-24', makeAlert())).rejects.toThrow(
+      'connection lost',
+    );
+
+    // Only the cooldown SELECT ran: no INSERT, no "alert fired" log.
+    expect(mockSql).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(logger.warn)).not.toHaveBeenCalled();
   });
 
-  it('returns false when env vars are missing', async () => {
-    delete process.env.TWILIO_ACCOUNT_SID;
-    delete process.env.TWILIO_AUTH_TOKEN;
-    delete process.env.TWILIO_PHONE_FROM;
-    delete process.env.ALERT_PHONE_TO;
+  it('rejects and logs no alert when the INSERT fails', async () => {
+    mockSql.mockResolvedValueOnce([]); // cooldown check
+    mockSql.mockRejectedValueOnce(new Error('insert failed'));
 
-    const result = await sendTwilioSms(makeAlert());
-
-    expect(result).toBe(false);
-  });
-
-  it('returns false when Twilio API returns non-ok response', async () => {
-    process.env.TWILIO_ACCOUNT_SID = 'AC123';
-    process.env.TWILIO_AUTH_TOKEN = 'token456';
-    process.env.TWILIO_PHONE_FROM = '+15551234567';
-    process.env.ALERT_PHONE_TO = '+15559876543';
-
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockResolvedValue({
-        ok: false,
-        status: 401,
-        text: async () => 'Unauthorized',
-      }),
+    await expect(writeAlertIfNew('2026-03-24', makeAlert())).rejects.toThrow(
+      'insert failed',
     );
 
-    const result = await sendTwilioSms(makeAlert());
-
-    expect(result).toBe(false);
-    expect(vi.mocked(logger.error)).toHaveBeenCalledWith(
-      expect.objectContaining({ status: 401 }),
-      'Twilio SMS failed',
-    );
-  });
-
-  it('returns true and calls fetch with correct URL/headers/body', async () => {
-    process.env.TWILIO_ACCOUNT_SID = 'AC123';
-    process.env.TWILIO_AUTH_TOKEN = 'token456';
-    process.env.TWILIO_PHONE_FROM = '+15551234567';
-    process.env.ALERT_PHONE_TO = '+15559876543';
-
-    const mockFetch = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ sid: 'SM123' }),
-    });
-    vi.stubGlobal('fetch', mockFetch);
-
-    const alert = makeAlert({ severity: 'critical', title: 'Test Alert' });
-    const result = await sendTwilioSms(alert);
-
-    expect(result).toBe(true);
-    expect(mockFetch).toHaveBeenCalledWith(
-      'https://api.twilio.com/2010-04-01/Accounts/AC123/Messages.json',
-      expect.objectContaining({
-        method: 'POST',
-        headers: expect.objectContaining({
-          Authorization: `Basic ${btoa('AC123:token456')}`,
-          'Content-Type': 'application/x-www-form-urlencoded',
-        }),
-      }),
-    );
-    expect(vi.mocked(logger.info)).toHaveBeenCalledWith(
-      { to: '+15559876543', type: 'iv_spike' },
-      'SMS alert sent',
-    );
-  });
-
-  it('handles network error gracefully (returns false)', async () => {
-    process.env.TWILIO_ACCOUNT_SID = 'AC123';
-    process.env.TWILIO_AUTH_TOKEN = 'token456';
-    process.env.TWILIO_PHONE_FROM = '+15551234567';
-    process.env.ALERT_PHONE_TO = '+15559876543';
-
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockRejectedValue(new Error('Network timeout')),
-    );
-
-    const result = await sendTwilioSms(makeAlert());
-
-    // Fallback preserved: a network throw still resolves to false, never
-    // propagates.
-    expect(result).toBe(false);
-    expect(vi.mocked(logger.error)).toHaveBeenCalledWith(
-      expect.objectContaining({ err: expect.any(Error) }),
-      'Twilio SMS error',
-    );
-    // The swallowed network failure is now visible in Sentry.
-    expect(vi.mocked(Sentry.captureException)).toHaveBeenCalledWith(
-      expect.any(Error),
-      expect.objectContaining({
-        tags: expect.objectContaining({ alertType: 'iv_spike' }),
-      }),
-    );
+    expect(mockSql).toHaveBeenCalledTimes(2);
+    // A failed write must not be reported as a fired alert.
+    expect(vi.mocked(logger.warn)).not.toHaveBeenCalled();
   });
 });
 
@@ -317,7 +277,7 @@ describe('checkForCombinedAlert', () => {
     ]);
     // 2. writeAlertIfNew cooldown check → no cooldown
     mockSql.mockResolvedValueOnce([]);
-    // 3. writeAlertIfNew INSERT (SMS returns false — no env vars)
+    // 3. writeAlertIfNew INSERT
     mockSql.mockResolvedValueOnce([]);
 
     const result = await checkForCombinedAlert('2026-03-24', 'iv_spike');
@@ -380,127 +340,34 @@ describe('checkForCombinedAlert', () => {
       'Market alert fired',
     );
   });
-});
 
-// ── writeAlertIfNew SMS integration ───────────────────────
+  it('rejects when the other-alert lookup fails', async () => {
+    mockSql.mockRejectedValueOnce(new Error('connection lost'));
 
-describe('writeAlertIfNew SMS integration', () => {
-  const originalEnv = process.env;
+    await expect(
+      checkForCombinedAlert('2026-03-24', 'iv_spike'),
+    ).rejects.toThrow('connection lost');
 
-  beforeEach(() => {
-    vi.resetAllMocks();
-    mockSql.mockResolvedValue([]);
-    vi.setSystemTime(MARKET_TIME);
-    process.env = { ...originalEnv };
+    expect(mockSql).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(logger.warn)).not.toHaveBeenCalled();
   });
 
-  afterEach(() => {
-    process.env = originalEnv;
-    vi.useRealTimers();
-    vi.unstubAllGlobals();
-  });
+  it('rejects and logs no combined alert when its INSERT fails', async () => {
+    mockSql.mockResolvedValueOnce([
+      {
+        direction: 'BEARISH',
+        current_values: { ratio: 1.8 },
+        delta_values: { ratioDelta: 0.5 },
+      },
+    ]);
+    mockSql.mockResolvedValueOnce([]); // writeAlertIfNew cooldown
+    mockSql.mockRejectedValueOnce(new Error('insert failed'));
 
-  it('calls sendTwilioSms when severity is critical', async () => {
-    process.env.TWILIO_ACCOUNT_SID = 'AC123';
-    process.env.TWILIO_AUTH_TOKEN = 'token456';
-    process.env.TWILIO_PHONE_FROM = '+15551234567';
-    process.env.ALERT_PHONE_TO = '+15559876543';
+    await expect(
+      checkForCombinedAlert('2026-03-24', 'iv_spike'),
+    ).rejects.toThrow('insert failed');
 
-    const mockFetch = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ sid: 'SM123' }),
-    });
-    vi.stubGlobal('fetch', mockFetch);
-
-    // 1. cooldown check → no cooldown
-    mockSql.mockResolvedValueOnce([]);
-    // 2. INSERT
-    mockSql.mockResolvedValueOnce([]);
-
-    const result = await writeAlertIfNew(
-      '2026-03-24',
-      makeAlert({ severity: 'critical' }),
-    );
-
-    expect(result).toBe(true);
-    expect(mockFetch).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(logger.warn)).toHaveBeenCalledWith(
-      expect.objectContaining({ smsSent: true }),
-      'Market alert fired',
-    );
-  });
-
-  it('calls sendTwilioSms when severity is extreme', async () => {
-    process.env.TWILIO_ACCOUNT_SID = 'AC123';
-    process.env.TWILIO_AUTH_TOKEN = 'token456';
-    process.env.TWILIO_PHONE_FROM = '+15551234567';
-    process.env.ALERT_PHONE_TO = '+15559876543';
-
-    const mockFetch = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ sid: 'SM456' }),
-    });
-    vi.stubGlobal('fetch', mockFetch);
-
-    mockSql.mockResolvedValueOnce([]);
-    mockSql.mockResolvedValueOnce([]);
-
-    const result = await writeAlertIfNew(
-      '2026-03-24',
-      makeAlert({ severity: 'extreme' }),
-    );
-
-    expect(result).toBe(true);
-    expect(mockFetch).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(logger.warn)).toHaveBeenCalledWith(
-      expect.objectContaining({ smsSent: true }),
-      'Market alert fired',
-    );
-  });
-
-  it('does NOT call sendTwilioSms when severity is warning', async () => {
-    process.env.TWILIO_ACCOUNT_SID = 'AC123';
-    process.env.TWILIO_AUTH_TOKEN = 'token456';
-    process.env.TWILIO_PHONE_FROM = '+15551234567';
-    process.env.ALERT_PHONE_TO = '+15559876543';
-
-    const mockFetch = vi.fn();
-    vi.stubGlobal('fetch', mockFetch);
-
-    mockSql.mockResolvedValueOnce([]);
-    mockSql.mockResolvedValueOnce([]);
-
-    const result = await writeAlertIfNew(
-      '2026-03-24',
-      makeAlert({ severity: 'warning' }),
-    );
-
-    expect(result).toBe(true);
-    expect(mockFetch).not.toHaveBeenCalled();
-    expect(vi.mocked(logger.warn)).toHaveBeenCalledWith(
-      expect.objectContaining({ smsSent: false }),
-      'Market alert fired',
-    );
-  });
-
-  it('sets sms_sent to false when Twilio env vars are missing', async () => {
-    delete process.env.TWILIO_ACCOUNT_SID;
-    delete process.env.TWILIO_AUTH_TOKEN;
-    delete process.env.TWILIO_PHONE_FROM;
-    delete process.env.ALERT_PHONE_TO;
-
-    mockSql.mockResolvedValueOnce([]);
-    mockSql.mockResolvedValueOnce([]);
-
-    const result = await writeAlertIfNew(
-      '2026-03-24',
-      makeAlert({ severity: 'critical' }),
-    );
-
-    expect(result).toBe(true);
-    expect(vi.mocked(logger.warn)).toHaveBeenCalledWith(
-      expect.objectContaining({ smsSent: false }),
-      'Market alert fired',
-    );
+    expect(mockSql).toHaveBeenCalledTimes(3);
+    expect(vi.mocked(logger.warn)).not.toHaveBeenCalled();
   });
 });

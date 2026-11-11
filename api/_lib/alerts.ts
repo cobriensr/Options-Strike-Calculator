@@ -3,12 +3,11 @@
  *
  * The monitor-flow-ratio cron uses these functions to write alerts to
  * the market_alerts table with cooldown dedup.
- * Also handles combined alert detection and Twilio SMS delivery.
+ * Also handles combined alert detection.
  */
 
 import { getDb } from './db.js';
 import logger from './logger.js';
-import { Sentry } from './sentry.js';
 import { ALERT_THRESHOLDS } from './alert-thresholds.js';
 
 // ── Types ──────────────────────────────────────────────────
@@ -26,14 +25,6 @@ export interface AlertPayload {
   currentValues: Record<string, number>;
   deltaValues: Record<string, number>;
 }
-
-// ── Severity ordering (for SMS gate) ───────────────────────
-
-const SEVERITY_RANK: Record<AlertSeverity, number> = {
-  warning: 1,
-  critical: 2,
-  extreme: 3,
-};
 
 // ── Cooldown check ─────────────────────────────────────────
 
@@ -53,72 +44,10 @@ async function isOnCooldown(today: string, type: AlertType): Promise<boolean> {
   return rows.length > 0;
 }
 
-// ── Twilio SMS ─────────────────────────────────────────────
-
-/**
- * Send an SMS via Twilio REST API. No SDK — just a raw fetch.
- * Returns true if sent, false if env vars missing or send failed.
- */
-export async function sendTwilioSms(alert: AlertPayload): Promise<boolean> {
-  const sid = process.env.TWILIO_ACCOUNT_SID;
-  const token = process.env.TWILIO_AUTH_TOKEN;
-  const from = process.env.TWILIO_PHONE_FROM;
-  const to = process.env.ALERT_PHONE_TO;
-
-  if (!sid || !token || !from || !to) return false;
-
-  const smsBody = `[${alert.severity.toUpperCase()}] ${alert.direction} — ${alert.title}\n${alert.body}`;
-
-  try {
-    const credentials = btoa(`${sid}:${token}`);
-    const res = await fetch(
-      `https://api.twilio.com/2010-04-01/Accounts/${sid}/Messages.json`,
-      {
-        method: 'POST',
-        headers: {
-          Authorization: `Basic ${credentials}`,
-          'Content-Type': 'application/x-www-form-urlencoded',
-        },
-        body: new URLSearchParams({ To: to, From: from, Body: smsBody }),
-        signal: AbortSignal.timeout(10_000),
-      },
-    );
-
-    if (!res.ok) {
-      const text = await res
-        .text()
-        .catch((e) => `[parse error: ${(e as Error).message}]`);
-      logger.error(
-        { status: res.status, body: text.slice(0, 200) },
-        'Twilio SMS failed',
-      );
-      Sentry.captureMessage('Twilio SMS non-OK', {
-        level: 'error',
-        extra: {
-          status: res.status,
-          body: text.slice(0, 200),
-          alertType: alert.type,
-        },
-      });
-      return false;
-    }
-
-    logger.info({ to, type: alert.type }, 'SMS alert sent');
-    return true;
-  } catch (err) {
-    logger.error({ err }, 'Twilio SMS error');
-    Sentry.captureException(err, {
-      tags: { alertType: alert.type },
-    });
-    return false;
-  }
-}
-
 // ── Write alert ────────────────────────────────────────────
 
 /**
  * Write an alert to market_alerts if not on cooldown.
- * Sends SMS when severity >= SMS_MIN_SEVERITY and Twilio is configured.
  * Returns true if the alert was actually written.
  */
 export async function writeAlertIfNew(
@@ -133,20 +62,15 @@ export async function writeAlertIfNew(
   const sql = getDb();
   const now = new Date().toISOString();
 
-  const minSeverity = ALERT_THRESHOLDS.SMS_MIN_SEVERITY;
-  const shouldSms = SEVERITY_RANK[alert.severity] >= SEVERITY_RANK[minSeverity];
-  const smsSent = shouldSms ? await sendTwilioSms(alert) : false;
-
   await sql`
     INSERT INTO market_alerts (
       date, timestamp, type, severity, direction,
-      title, body, current_values, delta_values, sms_sent
+      title, body, current_values, delta_values
     )
     VALUES (
       ${today}, ${now}, ${alert.type}, ${alert.severity}, ${alert.direction},
       ${alert.title}, ${alert.body},
-      ${JSON.stringify(alert.currentValues)}, ${JSON.stringify(alert.deltaValues)},
-      ${smsSent}
+      ${JSON.stringify(alert.currentValues)}, ${JSON.stringify(alert.deltaValues)}
     )
   `;
 
@@ -156,7 +80,6 @@ export async function writeAlertIfNew(
       severity: alert.severity,
       direction: alert.direction,
       title: alert.title,
-      smsSent,
     },
     'Market alert fired',
   );
