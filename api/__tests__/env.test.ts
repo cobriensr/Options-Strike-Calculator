@@ -204,30 +204,4 @@ describe('requireEnvGroup', () => {
       );
     });
   });
-
-  describe('twilio', () => {
-    it('returns all four values when set', () => {
-      vi.stubEnv('TWILIO_ACCOUNT_SID', 'sid');
-      vi.stubEnv('TWILIO_AUTH_TOKEN', 'token');
-      vi.stubEnv('TWILIO_PHONE_FROM', '+1111');
-      vi.stubEnv('ALERT_PHONE_TO', '+2222');
-      const result = requireEnvGroup('twilio');
-      expect(result).toEqual({
-        accountSid: 'sid',
-        authToken: 'token',
-        phoneFrom: '+1111',
-        phoneTo: '+2222',
-      });
-    });
-
-    it('throws listing all four when none are set', () => {
-      delete process.env.TWILIO_ACCOUNT_SID;
-      delete process.env.TWILIO_AUTH_TOKEN;
-      delete process.env.TWILIO_PHONE_FROM;
-      delete process.env.ALERT_PHONE_TO;
-      expect(() => requireEnvGroup('twilio')).toThrow(
-        'TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_FROM, ALERT_PHONE_TO',
-      );
-    });
-  });
 });

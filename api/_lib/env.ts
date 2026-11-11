@@ -63,14 +63,6 @@ const apiKeysSchema = z.object({
   FINNHUB_API_KEY: z.string().min(1).optional(),
 });
 
-/** Twilio SMS alerting (all four must be present to send). */
-const twilioSchema = z.object({
-  TWILIO_ACCOUNT_SID: z.string().min(1).optional(),
-  TWILIO_AUTH_TOKEN: z.string().min(1).optional(),
-  TWILIO_PHONE_FROM: z.string().min(1).optional(),
-  ALERT_PHONE_TO: z.string().min(1).optional(),
-});
-
 /** Observability: Sentry, Axiom, logging. */
 const observabilitySchema = z.object({
   SENTRY_DSN: z.string().min(1).optional(),
@@ -103,7 +95,6 @@ const vercelSchema = z.object({
 const envSchema = coreSchema
   .merge(authSchema)
   .merge(apiKeysSchema)
-  .merge(twilioSchema)
   .merge(observabilitySchema)
   .merge(r2Schema)
   .merge(vercelSchema);
@@ -209,12 +200,6 @@ export function isRedisConfigured(): boolean {
 interface EnvGroups {
   schwab: { clientId: string; clientSecret: string };
   redis: { url: string; token: string };
-  twilio: {
-    accountSid: string;
-    authToken: string;
-    phoneFrom: string;
-    phoneTo: string;
-  };
 }
 
 /**
@@ -250,23 +235,6 @@ export function requireEnvGroup<K extends keyof EnvGroups>(
       if (!token) missing.push('KV_REST_API_TOKEN / UPSTASH_REDIS_REST_TOKEN');
       if (missing.length) throwGroupError(group, missing);
       return { url: url!, token: token! } as EnvGroups[K];
-    }
-    case 'twilio': {
-      const accountSid = env.TWILIO_ACCOUNT_SID;
-      const authToken = env.TWILIO_AUTH_TOKEN;
-      const phoneFrom = env.TWILIO_PHONE_FROM;
-      const phoneTo = env.ALERT_PHONE_TO;
-      if (!accountSid) missing.push('TWILIO_ACCOUNT_SID');
-      if (!authToken) missing.push('TWILIO_AUTH_TOKEN');
-      if (!phoneFrom) missing.push('TWILIO_PHONE_FROM');
-      if (!phoneTo) missing.push('ALERT_PHONE_TO');
-      if (missing.length) throwGroupError(group, missing);
-      return {
-        accountSid: accountSid!,
-        authToken: authToken!,
-        phoneFrom: phoneFrom!,
-        phoneTo: phoneTo!,
-      } as EnvGroups[K];
     }
     default: {
       const _exhaustive: never = group;

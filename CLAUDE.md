@@ -326,7 +326,6 @@ Required env vars (pulled via `vercel env pull .env.local`):
 | `VITE_VAPID_PUBLIC_KEY`, `VITE_SENTRY_DSN`               | Frontend build-time (opt.)                                  |
 | `SENTRY_ORG`, `SENTRY_PROJECT`                           | Source-map upload at build (opt.)                           |
 | `FRED_API_KEY`, `FINNHUB_API_KEY`                        | Event calendar (opt.)                                       |
-| `TWILIO_*`, `ALERT_PHONE_TO`                             | SMS alerts (opt.)                                           |
 | `DAY_ANALOG_BACKEND`                                     | Analog-day backend (opt.; `features`, else text embeddings) |
 | `LOG_LEVEL`                                              | pino log level (opt.)                                       |
 | `WS_CHANNELS`, `VERCEL_NOTIFY_URL`                       | uw-stream (Railway only)                                    |
