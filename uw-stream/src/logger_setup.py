@@ -3,8 +3,8 @@
 Format mirrors the sidecar so Railway log drains can parse both
 services with the same pipeline.
 
-Also exposes ``RateLimitedLogger``: a per-(scope, kind) throttle for
-warning paths that can fire at the WS message rate (e.g. malformed
+Also exposes ``RateLimitedLogger``: a per-(scope, kind, key, level) throttle
+for warning and error paths that can fire at the WS message rate (e.g. malformed
 envelope on every frame after a UW wire-format change). Without this,
 ``log.warning(...)`` on a thousands-per-second hot path would burn the
 asyncio loop on JSON serialization and stdout writes alone, on top of
@@ -140,7 +140,7 @@ class _Bucket:
 
 
 class RateLimitedLogger:
-    """Per-(scope, kind) log throttle with periodic summary flushes.
+    """Per-(scope, kind, key, level) log throttle with periodic summary flushes.
 
     Usage::
 
@@ -152,11 +152,15 @@ class RateLimitedLogger:
             extra={"sample": "..."},
         )
 
-    First call per (scope, kind) within the window logs at warning level
-    immediately. Subsequent calls in the same window only increment a
+    ``key`` (default empty) gives each value its own window, and ``error()``
+    logs at error level in a window of its own, apart from ``warning()``'s.
+
+    First call per window logs immediately, at the level of the method
+    called. Subsequent calls in the same window only increment a
     suppressed counter. When the next call lands AFTER the window
     expires, it emits a summary line ``"<msg>: N suppressed in last
-    Ns"`` and resets the window.
+    Ns"`` (a warning, carrying the ``key`` when there is one) and resets
+    the window.
 
     A monotonic clock (``time.monotonic``) drives the windows so wall-
     clock jumps (NTP corrections, container migrations) don't reset
@@ -240,6 +244,9 @@ class RateLimitedLogger:
                     extra={
                         "scope": scope,
                         "kind": kind,
+                        # A keyed window's head message is the same for every
+                        # key; the key is what says whose summary this is.
+                        **({"key": key} if key else {}),
                         "suppressed_count": bucket.suppressed_count,
                         "interval_s": self._interval_s,
                     },

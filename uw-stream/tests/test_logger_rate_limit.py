@@ -341,6 +341,39 @@ def test_distinct_keys_have_separate_windows(monkeypatch):
     assert [kw["extra"]["product"] for _args, kw in captured] == ["ES", "NQ"]
 
 
+def test_the_summary_line_of_a_keyed_window_names_its_key(monkeypatch):
+    """Six roots' summaries read alike (the head message is the same), so the
+    key is what tells them apart."""
+    captured = _capture_warnings(monkeypatch)
+    clock = _FakeClock()
+    rl = RateLimitedLogger(interval_s=60.0, clock=clock)
+
+    for key in ("ES", "NQ"):
+        for _ in range(3):
+            rl.warning(scope="front_month", kind="failed", message="lookup failed", key=key)
+    clock.advance(61.0)
+    for key in ("ES", "NQ"):
+        rl.warning(scope="front_month", kind="failed", message="lookup failed", key=key)
+
+    summaries = [kw["extra"] for _args, kw in captured if "suppressed_count" in kw["extra"]]
+    assert [(s["key"], s["suppressed_count"]) for s in summaries] == [("ES", 2), ("NQ", 2)]
+
+
+def test_the_summary_line_of_an_unkeyed_window_has_no_key_field(monkeypatch):
+    captured = _capture_warnings(monkeypatch)
+    clock = _FakeClock()
+    rl = RateLimitedLogger(interval_s=60.0, clock=clock)
+
+    for _ in range(3):
+        rl.warning(scope="router", kind="malformed", message="bad frame")
+    clock.advance(61.0)
+    rl.warning(scope="router", kind="malformed", message="bad frame")
+
+    summary = captured[1][1]["extra"]
+    assert summary["suppressed_count"] == 2
+    assert "key" not in summary
+
+
 def test_a_call_without_a_key_is_its_own_window_not_a_keyed_one(monkeypatch):
     captured = _capture_warnings(monkeypatch)
     rl = RateLimitedLogger(interval_s=60.0, clock=_FakeClock())
