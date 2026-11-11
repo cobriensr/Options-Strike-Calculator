@@ -193,10 +193,23 @@ Design notes worth knowing before touching the handler:
   (ESU6 → ESZ6) needs no expiry calendar.
 - **UW re-delivers every futures print 2–11×.** Naive summing inflated
   volume 1.93×–3.09× over a live probe, so prints are deduped on
-  `(sym, trade_id)` within each minute bucket.
+  `(contract, trade_id)` within each minute bucket.
 - `futures_bars.symbol` holds the **root** (`'ES'`), so the many contract
-  months on the wire are collapsed to the one with the greatest
-  cumulative session volume — a self-rolling front-month pick.
+  months on the wire are collapsed to **one contract per root per CME
+  trade date** (a session runs 17:00 CT to 17:00 CT; the trade date is the
+  Chicago date of the instant plus 7 h). It is decided once, from the
+  previous session's volume, and stored in `futures_front_month`; the
+  rule lives in `src/futures_front_month.py` and is held to the same case
+  fixture as its TypeScript twin (`api/__tests__/fixtures/futures-roll-cases.json`).
+  The handler's own deduped tally of outright prints per
+  (root, trade date, contract) is saved to `futures_contract_volume`
+  (source `live`) about once a minute and before a new date's decision is
+  asked for, and reloaded after a restart, so a restart never changes a
+  decided session's contract. Every bar carries `futures_bars.contract`,
+  the canonical name (`ESZ6`, also for `ESZ26`). A date whose decision
+  can't be had (Neon unreachable at the 17:00 CT open) is a gap, logged as
+  `kind="front_month_unknown"` at error level, and asked again at the
+  next flush.
 - Only minutes **strictly older** than the newest minute seen for a
   product are written. That is what makes `ON CONFLICT DO NOTHING`
   correct: a partial bar written early could never be revised. The
