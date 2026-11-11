@@ -55,6 +55,12 @@ const hooks = vi.hoisted(() => ({
   /** Write transactions resolve with no rows and run nothing. */
   dropWrites: false,
   writes: 0,
+  /** The nth (1-based) read-only transaction rejects with this error. */
+  failReadAt: null as null | { nth: number; error: Error },
+  reads: 0,
+  /** The nth (1-based) plain query (what computeSnapshot issues) rejects with this error. */
+  failPlainAt: null as null | { nth: number; error: Error },
+  plainReads: 0,
   /** The write batch sizes: a test shrinks them so a small step takes several transactions. */
   writeChunk: 500,
   chunksPerTransaction: 10,
@@ -87,6 +93,13 @@ vi.mock('../../api/_lib/db.js', async (importOriginal) => {
           params,
           then: (onFulfilled, onRejected) => {
             hooks.plainFetch.push(neonConfig.fetchFunction);
+            hooks.plainReads += 1;
+            if (hooks.failPlainAt?.nth === hooks.plainReads) {
+              return Promise.reject(hooks.failPlainAt.error).then(
+                onFulfilled,
+                onRejected,
+              );
+            }
             return pg
               .transaction(async (tx) => {
                 await tx.query('SET TRANSACTION READ ONLY');
@@ -107,7 +120,11 @@ vi.mock('../../api/_lib/db.js', async (importOriginal) => {
             texts: queries.map((q) => q.text),
             fetchFn: neonConfig.fetchFunction,
           });
-          if (!readOnly) {
+          if (readOnly) {
+            hooks.reads += 1;
+            if (hooks.failReadAt?.nth === hooks.reads)
+              throw hooks.failReadAt.error;
+          } else {
             hooks.writes += 1;
             await hooks.beforeWrite?.(queries.map((q) => q.text));
             if (hooks.failWriteAt?.nth === hooks.writes)
@@ -347,6 +364,10 @@ beforeEach(async () => {
   hooks.writeChunk = 500;
   hooks.chunksPerTransaction = 10;
   hooks.writes = 0;
+  hooks.failReadAt = null;
+  hooks.reads = 0;
+  hooks.failPlainAt = null;
+  hooks.plainReads = 0;
   await reset();
 });
 
@@ -461,6 +482,87 @@ describe('the frozen-stale dry run on real SQL (pglite)', () => {
       await pg.query(`ALTER TABLE futures_bars_gone RENAME TO futures_bars`);
     }
     expect(existsSync(join(workDir, 'report.txt'))).toBe(false);
+  });
+});
+
+// ── Reads that reject ───────────────────────────────────────────────────────
+
+describe('a read that rejects while the frozen rows are planned (pglite)', () => {
+  /** Exit 1, the error named, and under --apply nothing written: no backup, no plan.json, no marker. */
+  async function expectNothingWritten(message: RegExp): Promise<void> {
+    const before = await dump();
+    expect(await run()).toBe(1);
+    expect(errored()).toMatch(message);
+    expect(existsSync(join(workDir, 'report.txt'))).toBe(false);
+    expect(hooks.writes).toBe(0);
+    expect(backups()).toEqual([]);
+    expect(existsSync(join(workDir, 'plan.json'))).toBe(false);
+    expect(existsSync(markerPath(workDir, 'frozen'))).toBe(false);
+    expect(await dump()).toBe(before);
+    expect(neonConfig.fetchFunction).toBeUndefined();
+  }
+
+  it('stops when the computeSnapshot confirmation of a candidate rejects', async () => {
+    // Plain query 1 is the session check; 2 is the first computeSnapshot read.
+    hooks.failPlainAt = {
+      nth: 2,
+      error: new Error('permission denied for table futures_bars'),
+    };
+    await expectNothingWritten(/permission denied for table futures_bars/);
+    expect(hooks.plainReads).toBeGreaterThanOrEqual(2);
+  });
+
+  it('stops when the count of the rows that stay rejects', async () => {
+    // Read-only transactions: 1 session check, 2 the ES candidates, 3 the ES kept count.
+    hooks.failReadAt = {
+      nth: 3,
+      error: new Error('permission denied for table futures_snapshots'),
+    };
+    await expectNothingWritten(/permission denied for table futures_snapshots/);
+    expect(hooks.reads).toBe(3);
+  });
+});
+
+// ── The closed-bar lag ──────────────────────────────────────────────────────
+
+describe('the 60 second closed-bar lag of the candidate query (pglite)', () => {
+  // Bars at 13:00 (close 6000) and 14:00 (close 6050). A bar stamped T covers
+  // [T, T + 1 min), so it counts for a row only from T + 60 s on.
+  let lag: { open: number; repeat: number; closed: number; later: number };
+  beforeEach(async () => {
+    await pg.query(`TRUNCATE futures_bars, futures_snapshots RESTART IDENTITY`);
+    await bar('ES', '2026-09-18T13:00:00Z', 6000);
+    await bar('ES', '2026-09-18T14:00:00Z', 6050);
+    lag = {
+      // 14:00 is still open: the latest closed bar is 13:00's, 60 min old, and 6050 is not 6000.
+      open: await snap('ES', '2026-09-18T14:00:30Z', 6050),
+      // The same stale state, but the price is the last closed bar's close: it stays.
+      repeat: await snap('ES', '2026-09-18T14:00:45Z', 6000),
+      // 14:00 has closed (ts <= at - 60 s): the latest closed bar is 1 min old. Fresh, it stays.
+      closed: await snap('ES', '2026-09-18T14:01:00Z', 6100),
+      // Fresh too, and priced 6000 like the 13:00 bar: only a longer lag would count it as a repeat.
+      later: await snap('ES', '2026-09-18T14:01:30Z', 6000),
+    };
+  });
+
+  it('deletes a row priced from a bar that was still open when it was written, and keeps the rows after the bar closed', async () => {
+    expect(await dry()).toBe(0);
+    const text = report();
+    expect(text).toContain('rows to delete: 1');
+    expect(text).toMatch(
+      /ES: 1, first 2026-09-18T14:00:30Z, last 2026-09-18T14:00:30Z;/,
+    );
+    // The 14:01:00 row (stale if the lag were longer) is not even a candidate, and the
+    // one stale row that repeats 13:00's close is the 14:00:45 row alone.
+    expect(text).toMatch(
+      /ES: 1,[^\n]*\n\s+candidates 1, computeSnapshot calls fresh \(kept\) 0\n\s+kept, stale and equal to the last bar's close: 1; kept, no bar at all: 0/,
+    );
+
+    expect(await run({ expectFrozenDeletes: 1 })).toBe(0);
+    expect(await surviving([lag.open])).toEqual([]);
+    expect(await surviving([lag.repeat, lag.closed, lag.later])).toHaveLength(
+      3,
+    );
   });
 });
 

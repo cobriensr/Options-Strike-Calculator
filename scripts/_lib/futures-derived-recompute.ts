@@ -2548,7 +2548,9 @@ async function planFires(): Promise<StoreResult<FireChange>> {
 
 /**
  * The roots Phase 2 repaired. The thin roots (RTY, CL, GC, ZN) have more stale
- * rows of the same kind and stay: they are D1.
+ * rows of the same kind and stay: they are D1. The same two as EXACT_CONTROL_ROOTS
+ * today, but for another reason (those print every second), so a change to one
+ * should not move the other.
  */
 const FROZEN_ROOTS: readonly Sym[] = ['ES', 'NQ'];
 
@@ -4099,6 +4101,8 @@ export function parseRecomputeArgs(argv: string[]): RecomputeArgs {
           (v) => !(STORES as readonly string[]).includes(v),
         );
         if (bad != null) throw new Error(`unknown store "${bad}"`);
+        // The last --stores wins, so an earlier `--stores frozen` is dropped.
+        args.frozen = false;
         args.stores = values as Store[];
       }
     } else if (flag === '--expect-snapshots')

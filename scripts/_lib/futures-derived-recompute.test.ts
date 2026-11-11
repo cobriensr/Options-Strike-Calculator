@@ -228,6 +228,22 @@ describe('parseRecomputeArgs', () => {
     });
   });
 
+  it('lets the last --stores win, so a repeated flag never leaves frozen set beside other stores', () => {
+    expect(
+      parseRecomputeArgs([
+        '--stores',
+        'frozen',
+        '--stores',
+        'snapshots',
+        '--backup',
+        'b.jsonl',
+      ]),
+    ).toMatchObject({ frozen: false, stores: ['snapshots'] });
+    expect(
+      parseRecomputeArgs(['--stores', 'snapshots', '--stores', 'frozen']),
+    ).toMatchObject({ frozen: true, stores: [] });
+  });
+
   it('asks only for the expectations of the stores it was given', () => {
     const args = parseRecomputeArgs([
       '--apply',
