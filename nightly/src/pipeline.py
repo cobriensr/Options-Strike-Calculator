@@ -5,10 +5,30 @@
 entry's `min_seconds` comes out of the tape's catch-up window and an earlier step can
 never starve a later one. `test_deadline_constants_bound_the_run` keeps at least two
 tape days in every night whatever is registered here.
+
+Import isolation (D2): this module imports no step module. `lazy_step` imports a step's
+module when the step runs, so a step module that fails to import (a missing dependency, a
+syntax error) fails that step alone, as an Exception `run_steps` catches, and never stops
+`main` from landing the tape or running the other steps.
 """
 
 from __future__ import annotations
 
-from steps import Step
+import importlib
 
-STEPS: tuple[Step, ...] = ()
+from constants import OUTCOME_CHECK_BUDGET_SECONDS
+from steps import Step, StepContext, StepResult
+
+
+def lazy_step(name: str, module: str, min_seconds: int) -> Step:
+    """A step that runs `module.run(ctx)`, importing `module` when it runs, not before."""
+
+    def run(ctx: StepContext) -> StepResult:
+        return importlib.import_module(module).run(ctx)
+
+    return Step(name, run, min_seconds)
+
+
+STEPS: tuple[Step, ...] = (
+    lazy_step("outcome-check", "outcome_check", OUTCOME_CHECK_BUDGET_SECONDS),
+)

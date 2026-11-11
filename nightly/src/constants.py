@@ -33,6 +33,14 @@ DB_CONNECT_TIMEOUT_SECONDS = 15
 DB_STATEMENT_TIMEOUT_MS = 300_000
 # Trading days after which a never-posted day is marked unavailable.
 UNAVAILABLE_AGE_TRADING_DAYS = 5
+# The outcome check looks at the last 3 sessions, so a night that missed two (the enrich
+# crons run 21:40-23:45 UTC, before this job) is still caught on the third.
+OUTCOME_CHECK_SESSIONS = 3
+# One statement under DB_STATEMENT_TIMEOUT_MS: the check sends a single query.
+OUTCOME_CHECK_BUDGET_SECONDS = 300
+# A table-day whose fires have outcomes for less than this share is "mostly null" (owner
+# answer 2 on the phase 2 plan).
+LOW_OUTCOME_SHARE = 0.95
 # UW's 403 names this token's boundary, and a full plan reaches back about 2 years: a
 # boundary newer than this many days before the last session means the entitlement
 # shrank, not that UW lacks the day, so it never marks one.
