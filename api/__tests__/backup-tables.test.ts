@@ -512,13 +512,19 @@ describe('backup-tables handler', () => {
     expect(Sentry.flush).toHaveBeenCalledTimes(1);
   });
 
-  it('starts a table that is still inside the budget', async () => {
-    // Two queries of 104 s: the third table starts at t = 208 s, inside the
-    // 210 s budget, and finishes. Nothing is skipped.
+  // The next two tests are one pair that pins the budget to 210_000 ms. The
+  // third table starts at 2 x the step: 209_998 ms with a step of 104_999 ms
+  // (must run), 210_000 ms with a step of 105_000 ms (must be skipped). Both
+  // pass only for a budget of 209_999 or 210_000 ms: a shorter one fails the
+  // first test, a longer one fails the second, and so does a `>` where the
+  // loop has `>=`.
+  it('starts a table 2 ms inside the budget', async () => {
+    // Two queries of 104_999 ms: the third table starts at t = 209_998 ms,
+    // inside the 210_000 ms budget, and finishes. Nothing is skipped.
     let queries = 0;
     mockSql.mockImplementation(async () => {
       queries += 1;
-      if (queries <= 2) advanceClock(104_000);
+      if (queries <= 2) advanceClock(104_999);
       return [{ id: 1 }];
     });
 
@@ -529,15 +535,16 @@ describe('backup-tables handler', () => {
     expect(Sentry.captureMessage).not.toHaveBeenCalled();
   });
 
-  it('does not start a table 220 s in: the budget is 210 s, not 240 s', async () => {
-    // Two queries of 110 s put the third table's start at t = 220 s. A 240 s
-    // budget would start it; the pathological tail (5 s in_progress check-in,
-    // one 33 s page, its put, the closing check-in) then no longer fits in
-    // 300 s with the margin the 210 s budget keeps.
+  it('does not start a table that would begin exactly at the 210 s budget', async () => {
+    // Two queries of 105_000 ms put the third table's start at t = 210_000 ms,
+    // on the deadline, so it is skipped. A longer budget (the old 240 s one
+    // among them) would start it; the pathological tail (5 s in_progress
+    // check-in, one 33 s page, its put, the closing check-in) then no longer
+    // fits in 300 s with the margin the 210 s budget keeps.
     let queries = 0;
     mockSql.mockImplementation(async () => {
       queries += 1;
-      if (queries <= 2) advanceClock(110_000);
+      if (queries <= 2) advanceClock(105_000);
       return [{ id: 1 }];
     });
 
@@ -971,6 +978,39 @@ describe('backup-tables handler', () => {
     expect(json.status).toBe('partial');
     expect(json.totalRows).toBeDefined();
     expect(json.pruned).toBe(0);
+  });
+
+  // list() worked and found a folder to delete; the delete itself failed.
+  it('surfaces a failed del() of the stale folders as a pruning error', async () => {
+    mockList.mockResolvedValue(STALE_BACKUP);
+    mockDel.mockRejectedValue(new Error('Blob delete failed'));
+
+    const res = await runBackup();
+
+    expect(mockDel).toHaveBeenCalledWith(['https://blob.test/old1']);
+    expect(res._status).toBe(500);
+    const json = res._json as Record<string, unknown>;
+    const errors = json.errors as string[];
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain('pruning');
+    expect(errors[0]).toContain('Blob delete failed');
+    // Nothing is reported as deleted, and the prune was attempted, not skipped.
+    expect(json.pruned).toBe(0);
+    expect(json.pruneSkipped).toBeUndefined();
+    // All 16 tables landed and only the prune failed: still 'partial'.
+    expect(json.status).toBe('partial');
+    expect(Object.keys(json.tables as object)).toHaveLength(16);
+
+    expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'Blob delete failed' }),
+    );
+    expect(Sentry.flush).toHaveBeenCalledTimes(1);
+    expect(checkInStatuses()).toEqual(['in_progress', 'error']);
+    expect(reportCronRun).toHaveBeenCalledWith(
+      'backup-tables',
+      expect.objectContaining({ status: 'partial', errors: 1, pruned: 0 }),
+    );
   });
 
   it('handles non-Error throws in pruning', async () => {

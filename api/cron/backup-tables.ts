@@ -361,6 +361,9 @@ export default withCronCheckin('backup-tables', async (req, res) => {
     'Weekly backup complete',
   );
 
+  // 'partial' is any run with an error where at least one table landed. That
+  // includes a run where all 16 tables landed and only the prune failed.
+  // 'error' is a run where no table landed.
   const backedUp = Object.keys(results).length;
   let status: 'ok' | 'partial' | 'error' = 'ok';
   if (errors.length > 0) status = backedUp > 0 ? 'partial' : 'error';
