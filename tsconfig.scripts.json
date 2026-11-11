@@ -43,6 +43,8 @@
     "scripts/_lib/futures-contract-repair.ts",
     "scripts/_lib/futures-contract-repair.test.ts",
     "scripts/_lib/futures-contract-repair-pglite.test.ts",
+    "scripts/_lib/futures-thin-roots.ts",
+    "scripts/_lib/futures-thin-roots.test.ts",
     "scripts/recompute-futures-derived.ts",
     "scripts/_lib/futures-derived-recompute.ts",
     "scripts/_lib/futures-derived-attribution.ts",
