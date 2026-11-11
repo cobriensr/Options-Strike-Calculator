@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import importlib
 
-from constants import OUTCOME_CHECK_BUDGET_SECONDS
+from constants import ENRICH_DAY_BUDGET_SECONDS, OUTCOME_CHECK_BUDGET_SECONDS
 from steps import Step, StepContext, StepResult
 
 
@@ -30,5 +30,6 @@ def lazy_step(name: str, module: str, min_seconds: int) -> Step:
 
 
 STEPS: tuple[Step, ...] = (
+    lazy_step("enrich-outcomes", "enrich_step", ENRICH_DAY_BUDGET_SECONDS),
     lazy_step("outcome-check", "outcome_check", OUTCOME_CHECK_BUDGET_SECONDS),
 )

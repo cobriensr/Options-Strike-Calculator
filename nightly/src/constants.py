@@ -44,6 +44,16 @@ OUTCOME_CHECK_BUDGET_SECONDS = 300
 # A table-day whose fires have outcomes for less than this share is "mostly null" (owner
 # answer 2 on the phase 2 plan).
 LOW_OUTCOME_SHARE = 0.95
+# Where the enrichment step's tape days land: its own directory, which `open_reader` empties.
+ENRICH_CACHE_DIR = WORK_DIR / "enrich"
+# A day starts only with this much step time left: its download (up to the reader's 600 s
+# deadline) plus both enrich passes. 3 x the slowest local day (79 s, Task 6) is below the
+# 900 s floor; the plan's budget table caps this at 1,800.
+ENRICH_DAY_BUDGET_SECONDS = 900
+# Failed days plus all-NULL days after which the step stops for the night. A broken tape
+# layout or chain format fails or nulls every day, and each would cost a download; this
+# bounds the wasted downloads and the Sentry exceptions (one per failed day).
+ENRICH_MAX_DAY_FAILURES = 3
 # UW's 403 names this token's boundary, and a full plan reaches back about 2 years: a
 # boundary newer than this many days before the last session means the entitlement
 # shrank, not that UW lacks the day, so it never marks one.
