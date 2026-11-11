@@ -1,0 +1,247 @@
+# strike_exposures backup: implementation plan (2026-11-11)
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Give `strike_exposures` a real backup: one Parquet file per session day in the private R2 bucket. Export every stored day now, and from then on export each new day every night. The table is about 96 % rows that exist nowhere else.
+
+**Architecture:**
+- One Python module, `scripts/strike_exposures_backup.py`. It reads one day in a single read-only REPEATABLE READ snapshot, keyset-paging on the table's unique key, and writes an exact-typed Parquet file.
+- It uploads that file to `backups/strike_exposures/<date>.parquet` and verifies the upload. It decides which days need work from the objects already in R2 plus an id high-water mark.
+- Phase A runs it by hand: the one-time history export, plus `verify` and `restore`.
+- Phase B registers the same module as a step in the Railway `nightly` service. That waits until nightly phase 2, which brings Neon access and the step runner, is on main.
+
+**Tech stack:** Python 3.12, psycopg2 2.9.11, pyarrow 23.0.1, boto3 1.43.x. These are the `ml/.venv` pins, and nightly phase 2 pins the same psycopg2 and pyarrow. Tests use pytest under `scripts/conftest.py`, which blocks every real DB connect and every boto3 call.
+
+**Evidence and owner decisions:**
+- Database facts: `docs/tmp/live-data-integrity-2026-11-06/strike-exposures-backup-db-facts.md`.
+- Re-derive verdict: `docs/tmp/live-data-integrity-2026-11-06/strike-exposures-backup-uw-rederive.md`.
+- Both files are gitignored, so their key numbers are copied below.
+- Owner, 2026-11-11: back the table up for real. Run the daily export in the `nightly` service. Keep every file.
+
+## Why
+
+- **Size.** 74.17M rows, 20.17 GiB in Neon, 179 dates from 2026-01-12 on, with a gap from 07-23 to 09-07. About 1.05M rows per trading day, flat since June:
+  - Friday: 2.7M to 3.6M rows;
+  - Monday and Wednesday: 0.72M to 1.0M;
+  - Tuesday and Thursday: 0.35M to 0.48M.
+- **It was never backed up.** The weekly `backup-tables` cron dies on it, and the 2026-11-11 fix drops it from that job.
+- **It can't be re-derived.** UW's REST history is one end-of-day book per date. The per-minute websocket rollup series from 05-15 on (about 71.3M rows) and the 5-minute cron snapshots from 03-25 on (about 2.7M) exist only in this table. The websocket source table is deleted at 12:00 UTC the next day.
+- **It is insert-only.** All 7 writers use `ON CONFLICT DO NOTHING`, and `pg_stat_user_tables` shows 0 updates and 0 deletes. A past day can still gain rows after its first night, from a late rollup, `rescue-rollup-ws-gex-strike-expiry.mjs` or a backfill script. So a day's file is replaced when its day gains rows.
+
+## Phases
+
+| Phase | Ships | Size | Blocked on |
+| --- | --- | --- | --- |
+| A | `scripts/strike_exposures_backup.py` with `export`, `status`, `verify` and `restore`, plus tests. Then the one-time export of every stored day. | 3 code tasks and 1 run | nothing |
+| B | A `nightly` step that exports each new session and changed days every night, plus a weekly full count check. | 1 to 2 tasks | nightly phase 2 on main (`feat/nightly-phase2`, another session) |
+
+Phase A alone is a complete backup that someone has to re-run by hand. Phase B removes the "by hand".
+
+## Files
+
+**Phase A:**
+- Create `scripts/strike_exposures_backup.py`: the module and CLI (`main(argv)`).
+- Create `scripts/test_strike_exposures_backup.py`: the tests. Run them with `ml/.venv/Scripts/pytest scripts/test_strike_exposures_backup.py -q`. CI runs `scripts/test_*.py`.
+- Modify `docs/superpowers/specs/strike-exposures-backup-2026-11-11.md` (this file): add the run log for Task 4.
+
+**Phase B** (sketch; plan it in full once phase 2 is on main):
+- `nightly/src/steps.py` registry, or a new `nightly/src/strike_exposures_step.py`.
+- `nightly/Dockerfile`, plus the 6-place file-set rule written at the top of that Dockerfile on the phase 2 branch.
+- `nightly/README.md` and the tests.
+
+## Data dependencies
+
+- **New:** the R2 prefix `backups/strike_exposures/` in the existing bucket (`R2_BUCKET_FULLTAPE`). It sits beside `fulltape/`, `gexbot-eod/` and `backups/lottery-flow-inversion/`. Nightly's tape listing reads only `fulltape/`, so it never sees these keys.
+- **New:** one state object, `backups/strike_exposures/_state.json`.
+- **No migration and no new env var.**
+  - Phase A reads `DATABASE_URL` and `R2_ENDPOINT_URL`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` and `R2_BUCKET_FULLTAPE` from `.env.local`, through `scripts/_cli_paths.load_env_file`.
+  - Phase B uses the env nightly phase 2 already has.
+- **Neon load.** A full export reads about 74M rows, roughly 3,700 pages of 20,000. Run it outside 13:00 to 23:00 UTC, to stay clear of market hours and the 22:30 UTC rollup.
+
+## Global constraints
+
+- **Exact values.** NUMERIC must become Parquet `decimal128` with the column's own precision and scale: `strike` and `price` are (10,2), and the 16 greek columns are (30,4). Never float. timestamptz becomes `timestamp[us, tz=UTC]`. `date` and `expiry` become `date32`.
+- **Ids are kept.** A restore re-inserts the original ids.
+- **One snapshot per day.**
+  - Each day is read inside `BEGIN ISOLATION LEVEL REPEATABLE READ, READ ONLY`. Its `count(*)` comes from the same snapshot.
+  - A written row count that differs from that count is an error, and nothing is uploaded.
+  - Every statement runs with `SET LOCAL statement_timeout = '60s'`.
+- **Paging.**
+  - Keyset on the unique key, in index order: `WHERE date = %s AND ("timestamp", ticker, strike, expiry) > (%s, %s, %s, %s) ORDER BY date, "timestamp", ticker, strike, expiry LIMIT %s`.
+  - The first page drops the row comparison.
+  - Never OFFSET, and never `LIMIT` without the `ORDER BY`: that combination becomes a Seq Scan and times out on a Friday.
+- **Which days.**
+  - Only dates before today's ET date. Today's rows are never exported until the session is over and the next run comes.
+  - A date with 0 rows is skipped, not exported.
+- **Uploads are verified.**
+  - `put_object`, then `head_object`. The upload counts only if `ContentLength` equals the local file size and the object metadata `rows` equals the snapshot count.
+  - `_state.json` is written only after every day in the run has verified.
+- **Object metadata.** Keys `rows`, `min-id`, `max-id`, `sha256` (of the file), `exported-at` (ISO UTC) and `format` (`"1"`). Values are ASCII only.
+- **No secrets.** Never print a secret or a connection string, and never put a cell value in an error. Logs carry dates, counts, byte sizes and durations.
+- **R2 client.** One boto3 client per thread (memory `boto3-shared-client-tls`). Phase A is single-threaded.
+- **Restore.**
+  - Default is `--dry-run`. Writes need `--apply`.
+  - It inserts in batches of 500 rows with `INSERT ... ON CONFLICT DO NOTHING` and the original `id` and `created_at`. It never UPDATEs or DELETEs.
+  - Running `--apply` against production needs the owner's explicit OK, each time.
+
+## Thresholds and constants
+
+| Name | Value | Why |
+| --- | --- | --- |
+| `PAGE_ROWS` | 20_000 | Measured at 0.76 to 1.29 s per page on the unique-key keyset (db-facts) |
+| `STATEMENT_TIMEOUT` | `'60s'` | 2x the 30 s probe budget. A page must never get near it |
+| `PREFIX` | `backups/strike_exposures/` | |
+| `STATE_KEY` | `backups/strike_exposures/_state.json` | Holds `{"high_water_id": int, "updated_at": iso}` |
+| `FORMAT_VERSION` | `"1"` | Raise it when the column list or the types change |
+| `RESTORE_BATCH` | 500 | Repo batch rule (R5) |
+| Parquet | zstd, one row group per page | |
+
+## Deciding which days to export (`plan_days`)
+
+A day is due when any of these holds:
+
+1. **It has no object.** The days in the DB come from a loose index scan over `idx_strike_exp_date_ticker`: a recursive CTE, `SELECT min(date) ... WHERE date > prev`. Never use `SELECT DISTINCT date`, which reads 74M index entries.
+2. **It gained rows since the last run.**
+   - The query is `SELECT date, count(*) FROM strike_exposures WHERE id > :high_water_id GROUP BY date`, a range scan on the pkey.
+   - For each date it returns, take the full-day count (one index-only count). The day is due if that count differs from the object's metadata `rows`.
+3. **`--verify-counts` was passed.** Every day's count is compared with its object's `rows`. That is about 74M index entries, a few minutes, outside market hours. Phase B runs it once a week.
+
+The new `high_water_id` is `SELECT max(id)` read in the planning snapshot.
+
+**The out-of-order commit gap.** A row with a lower id that commits after that snapshot is missed by rule 2. Rule 3 catches it. There are no writers at 07:15 UTC, so in practice the gap only opens if a backfill script runs at the same time as the export.
+
+## Review focus
+
+1. **A cell at the edge of its type survives the round trip.** That covers a NULL greek, a NULL `price`, the 26-digit integer part of a (30,4) value, a negative value, `expiry = '1970-01-01'` (the all-expiry sentinel), and a DST-boundary timestamp. Exporting then reading back must give identical Python values (`Decimal`, aware `datetime`, `date`). Owned by Task 1.
+2. **Rows inserted during an export** never produce a file with the wrong count. The snapshot count must equal the rows written, or the export raises. Owned by Task 1.
+3. **A truncated or failed upload** (a size mismatch on `head_object`, or a `ClientError`) uploads no state and makes the run exit non-zero. The next run redoes the day. Owned by Task 2.
+4. **An interrupted history run** resumes. Re-running skips the days already verified in R2 and does only the rest. Owned by Task 2.
+5. **Restore can't clobber.** `restore` without `--apply` writes nothing. With `--apply`, a day already fully in the DB inserts 0 rows. Owned by Task 3.
+
+---
+
+## Phase A
+
+### Task 1: Read a day in one snapshot and write it as exact-typed Parquet
+
+**Files:**
+- Create `scripts/strike_exposures_backup.py`, holding `COLUMNS`, `ARROW_SCHEMA`, `DayFile`, `iter_day_pages` and `write_day_parquet`.
+- Create `scripts/test_strike_exposures_backup.py`.
+- Add this spec file to the same commit.
+
+**Interfaces it produces:**
+- `COLUMNS: tuple[str, ...]`: the 24 columns in table order, `id` through `created_at` (db-facts §1).
+- `ARROW_SCHEMA: pa.Schema`: the types are under Global constraints.
+- `@dataclass(frozen=True) class DayFile: day: date; path: Path; rows: int; min_id: int; max_id: int; size: int; sha256: str`.
+- `iter_day_pages(cur, day: date, page_rows: int = PAGE_ROWS) -> Iterator[list[tuple]]`: keyset pages, in key order.
+- `write_day_parquet(conn, day: date, out_dir: Path, page_rows: int = PAGE_ROWS) -> DayFile | None`. It opens the REPEATABLE READ, READ ONLY transaction and sets the timeout. It counts, streams the pages into a `pq.ParquetWriter` and checks the count, then always closes the transaction. It returns `None` for a 0-row day.
+
+**Steps:**
+- [ ] **Step 1:** Write the failing tests. Use a fake psycopg2 connection or cursor: a small class that records the SQL and serves canned pages and a count. No real connection is possible under `scripts/conftest.py`.
+  - `test_round_trip_exact_values`: a page that holds the review-focus cells, including `Decimal('12345678901234567890123456.1234')`, `Decimal('-0.0001')`, `None` greeks, `expiry=date(1970,1,1)`, and a timestamp of `2026-11-01T06:30:00+00:00`. `pq.read_table(path).to_pylist()` must equal the input rows, value for value and type for type.
+  - `test_count_mismatch_raises_and_leaves_no_file`: snapshot count 3, pages yield 2. It raises `BackupError` and no `.parquet` stays in `out_dir`.
+  - `test_zero_row_day_returns_none`.
+  - `test_keyset_sql`: the first query has no row comparison; later queries carry the last key of the previous page. Every page query has `ORDER BY date, "timestamp", ticker, strike, expiry`, a `LIMIT`, and no `OFFSET`. The transaction starts `REPEATABLE READ` and `READ ONLY` and sets `statement_timeout`.
+  - `test_dayfile_fields`: `rows`, `min_id`, `max_id`, `size == path.stat().st_size`, and `sha256` equal to the file's hashlib digest.
+- [ ] **Step 2:** Run `ml/.venv/Scripts/pytest scripts/test_strike_exposures_backup.py -q`. Expected: it FAILS on import.
+- [ ] **Step 3:** Implement Task 1's interfaces in `scripts/strike_exposures_backup.py`. `BackupError(Exception)` has fixed messages: no cell values, only the date and counts.
+- [ ] **Step 4:** Run the tests again. Expected: they PASS.
+- [ ] **Step 5:** Run `npm run review`, then commit the module, the test and this spec.
+
+### Task 2: Upload with verification, plan the days, and the `export` / `status` CLI
+
+**Files:**
+- Modify `scripts/strike_exposures_backup.py`.
+- Modify `scripts/test_strike_exposures_backup.py`.
+
+**Interfaces it consumes:** `write_day_parquet` and `DayFile` from Task 1.
+
+**Interfaces it produces:**
+- `object_key(day: date) -> str`, which returns `f"{PREFIX}{day.isoformat()}.parquet"`.
+- `upload_day(s3, bucket: str, f: DayFile) -> None`. It does `put_object` with the metadata, then `head_object`. It raises `BackupError` on a size or `rows` mismatch.
+- `exported_days(s3, bucket: str) -> dict[date, dict[str, str]]`. It lists `PREFIX` with a paginator, skips `_state.json`, and returns each day's metadata from `head_object`.
+- `plan_days(conn, s3, bucket: str, today_et: date, verify_counts: bool = False) -> Plan`, where `@dataclass(frozen=True) class Plan: due: list[date]; high_water_id: int`. It applies the rules under "Deciding which days to export" and only includes dates before `today_et`.
+- `read_state(s3, bucket) -> int | None` and `write_state(s3, bucket, high_water_id: int) -> None`.
+- `main(argv: list[str] | None = None) -> int`, with these subcommands:
+  - `export [--date D] [--limit-days N] [--verify-counts] [--dry-run]`. `--dry-run` writes the local files and prints the plan, but uploads nothing and writes no state.
+  - `status`, which lists the DB days and object days, and the missing and stale ones.
+  - Exit codes: 0 when every due day verified; 1 when any day failed (the other days still run); 2 for bad config.
+
+**Steps:**
+- [ ] **Step 1:** Write the failing tests. The functions take the boto3 client as their `s3` argument, which is the production call shape: `main` builds the client and passes it in. The tests pass a dict-backed fake with `put_object`, `head_object`, `get_paginator`, `get_object` and `delete_object`. Tests that run `main` monkeypatch the module's `psycopg2.connect` and `boto3.client` to return the fakes, which is mocking at the module boundary (R3). botocore's real `_make_api_call` is blocked in this suite.
+  - `test_upload_verifies_size_and_rows`: the stub's `head_object` reports a `ContentLength` 1 byte short. It raises `BackupError`, and `write_state` is never called.
+  - `test_plan_missing_and_gained_days`: the DB has 3 days, R2 has 2 of them, and one of those 2 gained rows past the high-water mark. Plan = the missing day plus the day that gained rows, in date order. Today is excluded.
+  - `test_plan_verify_counts_finds_out_of_order_rows`: no id passes the high-water mark, but one day's count differs from its object's `rows`. It is due only with `verify_counts=True`.
+  - `test_export_resumes`: day 1 is already in the stub with the matching `rows`, and days 2 and 3 are missing. `main(["export"])` uploads only days 2 and 3. Running it a second time uploads nothing.
+  - `test_export_failure_exit_1_no_state`: one day's upload fails. The other day still uploads, the exit code is 1, and the state is not advanced.
+  - `test_status_output`: it prints counts and dates only, and never a connection string.
+- [ ] **Step 2:** Run the tests. Expected: they FAIL.
+- [ ] **Step 3:** Implement Task 2's interfaces. `main` loads env through `_cli_paths.load_env_file`, then opens one psycopg2 connection and one boto3 client. It writes the day files to a `tempfile.TemporaryDirectory()` and deletes each one after it verifies.
+- [ ] **Step 4:** Run the tests. Expected: they PASS.
+- [ ] **Step 5:** Run `npm run review` and commit.
+
+### Task 3: `verify` and `restore`
+
+**Files:**
+- Modify `scripts/strike_exposures_backup.py`.
+- Modify `scripts/test_strike_exposures_backup.py`.
+
+**Interfaces it produces:**
+- `verify_day(conn, s3, bucket: str, day: date) -> VerifyResult`, where `@dataclass(frozen=True) class VerifyResult: day: date; db_rows: int; file_rows: int; only_in_db: int; only_in_file: int; value_diffs: int`.
+  - It streams the DB day (same snapshot rules as Task 1) and the downloaded file. Both are in key order, so it merge-compares them on the unique key.
+  - `ok` means every count is equal and `only_in_db`, `only_in_file` and `value_diffs` are all 0.
+- `restore_day(conn, s3, bucket: str, day: date, apply: bool) -> int`.
+  - It returns the number of rows that would be inserted (dry run) or that were inserted (apply).
+  - With `apply`, it inserts batches of `RESTORE_BATCH` with the original `id`, all 24 columns, and `ON CONFLICT DO NOTHING`. A batch failure raises with a fixed message.
+- The CLI gains `verify --date D [--date D ...]` (exit 0 only if every day is ok) and `restore --date D [--apply]`.
+
+**Steps:**
+- [ ] **Step 1:** Write the failing tests.
+  - `test_verify_identical_day_ok`.
+  - `test_verify_counts_each_difference`: one row missing from the file, one extra in the file, and one changed greek give `only_in_db=1`, `only_in_file=1` and `value_diffs=1`.
+  - `test_restore_dry_run_writes_nothing`: the fake connection records no INSERT.
+  - `test_restore_apply_batches_on_conflict_do_nothing`: 1,201 rows go in 3 INSERTs. Each one has `ON CONFLICT DO NOTHING` and the `id` column, and none of them has `UPDATE` or `DELETE`.
+  - `test_restore_apply_already_present_inserts_zero`: the fake reports rowcount 0. The function returns 0.
+- [ ] **Step 2:** Run the tests. Expected: they FAIL.
+- [ ] **Step 3:** Implement Task 3's interfaces.
+- [ ] **Step 4:** Run the tests. Expected: they PASS.
+- [ ] **Step 5:** Run `npm run review` and commit.
+
+### Task 4: One-time history export (an operation run by the main session, not an implementer task)
+
+- [ ] **Step 1: dry run.** Outside 13:00 to 23:00 UTC, run `export --dry-run --date 2026-11-10` (a Tuesday) and `export --dry-run --date 2026-11-06` (a Friday). Record each Parquet size and its time.
+- [ ] **Step 2: the full export.** Run `export` with no `--date`. It plans every stored day before today: 178 days at the time of writing. Record the elapsed time, the total bytes and the per-day failures. Re-run until the exit code is 0.
+- [ ] **Step 3: verify.** Run `verify` on 2026-01-12, 2026-05-15 (the first per-minute day), 2026-11-06 and the newest exported day. Every one must be ok.
+- [ ] **Step 4: status.** Run `status`, and record 0 missing and 0 stale.
+- [ ] **Step 5: record.** Add a "Run log" section to this file with the numbers above, then commit it. Update the memory file `project_flow_data_live_bugs_2026_11_06.md` and the `r2-storage` skill's key-layout list (local `.claude/`, with the new prefix).
+
+## Phase B (plan in full once `feat/nightly-phase2` is on main)
+
+- **The nightly step.** Add a `strike_exposures_backup` step to the phase 2 step runner, running after the tape each night.
+  - It runs `plan_days` and exports the due days within its own deadline (`StepContext.deadline`).
+  - Its `StepResult` counts are `days_due`, `days_exported`, `days_failed` and `bytes`.
+  - `detail` is a fixed phrase (phase 2 rule).
+  - It runs `verify_counts=True` on Saturday's run.
+  - A failed day turns the step's status to `partial` or `failed`, which goes through `monitoring.report_step`. Sentry rule 6262727 (nightly, any new issue) emails on it.
+- **The module ships in the image.** It is added under the six-place rule at the top of `nightly/Dockerfile` on the phase 2 branch:
+  - a COPY line;
+  - the Railway watch paths;
+  - the `.dockerignore` re-admit;
+  - `IMAGE_FILES` in `test_image_layout.py`;
+  - the CI paths filter;
+  - the README watch-path list.
+- **Exception text.** The step must follow phase 2's scrubbing rule for raw conversion errors (`steps.py` docstring).
+- **Push window.** A push that touches `nightly/src` must not land between 07:15 and 12:30 UTC, because it redeploys the service and kills a run in progress.
+
+## Open questions
+
+1. **Neon point-in-time restore window.**
+   - It covers short-term mistakes, such as a bad migration or a bad delete, faster than this backup does.
+   - The window depends on the Neon plan. It was not checked: the Neon tools were not connected on 2026-11-11.
+   - Default: the owner checks it in the Neon console. This backup does not depend on it.
+2. **Parquet size.** Estimated at under 6 GB in all, from 7.7x to 8.9x gzip on JSONL. Task 4 Step 1 measures it. R2 storage is about $0.015 per GB-month, so the size does not change the design.
+3. **Out of scope, recorded so they aren't lost.**
+   - Rollup failures on 09-18, 09-25, 10-12, 10-13 and 10-15 to 10-22, which hold REST rows only.
+   - The R1 strike-all backfill, which was never run.
+   - UW vanna, which appears rescaled by about 5.848 at some point after 03-24 (seen on 2026-03-02's re-fetch).
+   - Each one belongs to the live-data-integrity work, not this backup.
