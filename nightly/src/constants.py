@@ -36,7 +36,10 @@ UNAVAILABLE_AGE_TRADING_DAYS = 5
 # The outcome check looks at the last 3 sessions, so a night that missed two (the enrich
 # crons run 21:40-23:45 UTC, before this job) is still caught on the third.
 OUTCOME_CHECK_SESSIONS = 3
-# One statement under DB_STATEMENT_TIMEOUT_MS: the check sends a single query.
+# One statement under DB_STATEMENT_TIMEOUT_MS: the check sends a single query. Connect
+# retries are not in it (about 31 s of backoff plus 6 x DB_CONNECT_TIMEOUT_SECONDS per
+# resolved address), so they can run the step past RUN_DEADLINE_SECONDS, bounded by
+# WATCHDOG_GRACE_SECONDS.
 OUTCOME_CHECK_BUDGET_SECONDS = 300
 # A table-day whose fires have outcomes for less than this share is "mostly null" (owner
 # answer 2 on the phase 2 plan).

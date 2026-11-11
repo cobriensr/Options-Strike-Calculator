@@ -136,7 +136,8 @@ def test_healthy_sessions_pass_quietly(
     result = run(_ctx(settings))
 
     assert result.status == "ok"
-    assert result.counts == {"days_checked": 3, "null_days": 0, "low_days": 0}
+    # Every count is in (table, day) pairs with rows: 2 tables x 3 sessions.
+    assert result.counts == {"days_checked": 6, "null_days": 0, "low_days": 0}
     assert result.detail == ""
     capture_message.assert_not_called()
 
@@ -149,7 +150,7 @@ def test_low_days_alone_warn_but_do_not_fail_the_step(
     result = run(_ctx(settings))
 
     assert result.status == "ok"
-    assert result.counts == {"days_checked": 3, "null_days": 0, "low_days": 1}
+    assert result.counts == {"days_checked": 1, "null_days": 0, "low_days": 1}
     assert result.detail == ""
     capture_message.assert_called_once()
     assert capture_message.call_args.args == (LOW_TITLE,)
@@ -164,7 +165,7 @@ def test_run_checks_the_recent_sessions_in_one_query(
     result = run(_ctx(settings, last_session=date(2026, 11, 27)))
 
     assert result.status == "ok"
-    assert result.counts == {"days_checked": 3, "null_days": 0, "low_days": 0}
+    assert result.counts == {"days_checked": 0, "null_days": 0, "low_days": 0}  # no rows, no pairs
     db.cursor.execute.assert_called_once()
     (_sql, params) = db.cursor.execute.call_args.args
     assert params == {"days": [date(2026, 11, 24), date(2026, 11, 25), date(2026, 11, 27)]}
@@ -227,7 +228,7 @@ def test_a_null_day_alerts_with_the_day_error_and_the_step_failure(
     assert outcome.status == "failed"
     assert outcome.error is None
     assert outcome.detail == FAILED_DETAIL
-    assert outcome.counts == {"days_checked": 3, "null_days": 1, "low_days": 0}
+    assert outcome.counts == {"days_checked": 1, "null_days": 1, "low_days": 0}
     titles = [c.args[0] for c in capture_message.call_args_list]
     assert titles == [NULL_TITLE, "nightly step failed"]
     step_alert = capture_message.call_args_list[1]
@@ -363,7 +364,7 @@ def test_null_alerts_are_bounded_by_tables_times_sessions(
     assert {c.args[0] for c in capture_message.call_args_list} == {NULL_TITLE}
     assert {c.kwargs["level"] for c in capture_message.call_args_list} == {"error"}
     assert result.status == "failed"
-    assert result.counts == {"days_checked": 3, "null_days": bound, "low_days": 0}
+    assert result.counts == {"days_checked": bound, "null_days": bound, "low_days": 0}
 
 
 def test_day_without_rows_is_not_alerted(
@@ -382,7 +383,7 @@ def test_day_without_rows_is_not_alerted(
     result = run(_ctx(settings))
 
     assert result.status == "ok"
-    assert result.counts == {"days_checked": 3, "null_days": 0, "low_days": 0}
+    assert result.counts == {"days_checked": 2, "null_days": 0, "low_days": 0}
     capture_message.assert_not_called()
 
 

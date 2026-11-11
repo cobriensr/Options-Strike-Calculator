@@ -125,7 +125,8 @@ def run(ctx: StepContext) -> StepResult:
     with connect_db(ctx.settings) as conn:
         shares = outcome_shares(conn, sessions)
     null_days, low_days = report_shares(shares)
-    counts = {"days_checked": len(sessions), "null_days": null_days, "low_days": low_days}
+    # A day here is one (table, day) pair with rows, in all three counts.
+    counts = {"days_checked": len(shares), "null_days": null_days, "low_days": low_days}
     if null_days:
         # The detail is part of the `nightly step failed` fingerprint: keep it fixed.
         return StepResult("failed", counts, "a recent session has no outcomes")

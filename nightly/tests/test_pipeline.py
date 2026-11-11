@@ -20,6 +20,7 @@ from unittest.mock import Mock, create_autospec
 import pytest
 import sentry_sdk
 
+import main
 import outcome_check
 from config import Settings, load_settings
 from constants import OUTCOME_CHECK_BUDGET_SECONDS
@@ -78,6 +79,12 @@ def test_outcome_check_is_registered_with_its_budget() -> None:
     (step,) = (s for s in STEPS if s.name == "outcome-check")
 
     assert step.min_seconds == OUTCOME_CHECK_BUDGET_SECONDS
+
+
+def test_main_runs_the_registered_steps() -> None:
+    # test_main.py empties main.STEPS for every test, so nothing there sees main's
+    # own binding: this file's tests do not use that fixture.
+    assert main.STEPS is STEPS
 
 
 def test_the_registered_outcome_check_runs_the_outcome_check_module(
