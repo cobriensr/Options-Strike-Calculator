@@ -136,6 +136,18 @@ async function runBackup() {
   return res;
 }
 
+// runBackup plus the real milliseconds it took. `vi.setSystemTime` mocks Date
+// only, so performance.now() still measures the handler's real timers.
+async function runBackupTimed() {
+  const start = performance.now();
+  const res = await runBackup();
+  return { res, elapsedMs: performance.now() - start };
+}
+
+// An abort test leaves the Blob call 50 ms. If the deadline in the handler
+// were later than the tests assume, the abort would take that much longer.
+const MAX_REAL_MS_AT_DEADLINE = 2_000;
+
 describe('backup-tables handler', () => {
   const originalEnv = process.env;
   // The table the handler is querying: `sql.unsafe(name)` is evaluated just
@@ -421,7 +433,7 @@ describe('backup-tables handler', () => {
     // put() is NOT called when every table is empty.
     expect(mockPut).not.toHaveBeenCalled();
 
-    // All 16 tables still appear in results so a downstream consumer can
+    // Every table still appears in results so a downstream consumer can
     // tell "table absent because empty" vs "table missing because failed".
     const tables = json.tables as Record<
       string,
@@ -479,10 +491,11 @@ describe('backup-tables handler', () => {
   // stops starting tables at 210 s and the run ends loudly instead.
 
   it('stops starting tables once the time budget is spent and names the rest', async () => {
-    // Every query takes 100 s: three tables start (t = 0, 100, 200); at
-    // t = 300 the budget (210 s) is gone.
+    // Every query takes 70 s: three tables start (t = 0, 70, 140) and their
+    // puts run at t = 70, 140 and 210, before the Blob deadline; at t = 210
+    // the budget (210 s) is gone.
     mockSql.mockImplementation(async () => {
-      advanceClock(100_000);
+      advanceClock(70_000);
       return [{ id: 1 }];
     });
 
@@ -865,8 +878,11 @@ describe('backup-tables handler', () => {
       );
       jumpNearBlobDeadlineAt(FIRST_TABLE, 50);
 
-      const res = await runBackup();
+      const { res, elapsedMs } = await runBackupTimed();
 
+      // The abort comes ~50 ms after the put starts. A later deadline in the
+      // handler than the 240 s these tests assume would make this much slower.
+      expect(elapsedMs).toBeLessThan(MAX_REAL_MS_AT_DEADLINE);
       // The signal reached the put and was aborted, so @vercel/blob stops
       // sending instead of retrying in the background.
       expect(signal).toBeInstanceOf(AbortSignal);
@@ -902,21 +918,24 @@ describe('backup-tables handler', () => {
     mockPut.mockImplementation(() => new Promise(() => undefined));
     jumpNearBlobDeadlineAt(FIRST_TABLE, 50);
 
-    const res = await runBackup();
+    const { res, elapsedMs } = await runBackupTimed();
 
+    expect(elapsedMs).toBeLessThan(MAX_REAL_MS_AT_DEADLINE);
     const errors = (res._json as { errors: string[] }).errors;
     expect(errors[0]).toContain(`put backups/2026-03-29/${FIRST_TABLE}.jsonl`);
     expect(errors[0]).toContain('did not finish before the run deadline');
   });
 
   it('lets a slow put finish when it is inside the Blob deadline', async () => {
-    // 5 s before the deadline, a put that takes 20 ms: not cut off. This also
-    // keeps the deadline from drifting early (a 235 s one would abort it).
+    // 500 ms before the deadline, a put that takes 20 ms: not cut off. With
+    // the abort tests above (50 ms left, under 2 s real), this pins the
+    // deadline to 240 s within about 2 s: an earlier one would abort this put,
+    // a later one would stretch those.
     mockPut.mockImplementation(async () => {
       await new Promise((resolve) => setTimeout(resolve, 20));
       return { url: 'https://blob.test/file' };
     });
-    jumpNearBlobDeadlineAt(FIRST_TABLE, 5_000);
+    jumpNearBlobDeadlineAt(FIRST_TABLE, 500);
 
     const res = await runBackup();
 
@@ -930,6 +949,98 @@ describe('backup-tables handler', () => {
     );
     const opts = mockPut.mock.calls[0]![2] as { abortSignal: AbortSignal };
     expect(opts.abortSignal.aborted).toBe(false);
+  });
+
+  // A table that starts at 209.9 s with Neon paging for another 33 s reaches
+  // its put after 240 s. Starting it would send a doomed upload (up to ~130 MB
+  // for greek_exposure) that the race has already given up on.
+  it('does not start a put once the Blob deadline has passed', async () => {
+    jumpNearBlobDeadlineAt(FIRST_TABLE, -100);
+
+    const res = await runBackup();
+
+    expect(mockPut).not.toHaveBeenCalled();
+    expect(res._status).toBe(500);
+    const errors = (res._json as { errors: string[] }).errors;
+    expect(errors[0]).toContain(`put backups/2026-03-29/${FIRST_TABLE}.jsonl`);
+    expect(errors[0]).toContain('did not finish before the run deadline');
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: expect.stringContaining('did not finish before the run'),
+      }),
+    );
+    expect(Sentry.flush).toHaveBeenCalledTimes(1);
+    // An incomplete run does not prune.
+    expect(mockList).not.toHaveBeenCalled();
+    expect(mockDel).not.toHaveBeenCalled();
+    expect(checkInStatuses()).toEqual(['in_progress', 'error']);
+  });
+
+  it('does not start the prune list once the Blob deadline has passed', async () => {
+    // The last table is empty (no put), but its query carries the clock past
+    // the deadline, so the prune's list must not start.
+    mockSql.mockImplementation(async () => {
+      if (currentTable === 'greek_exposure') {
+        advanceClock(BLOB_DEADLINE_MS + 100);
+        return [];
+      }
+      return [{ id: 1 }];
+    });
+
+    const res = await runBackup();
+
+    expect(mockList).not.toHaveBeenCalled();
+    expect(res._status).toBe(500);
+    const errors = (res._json as { errors: string[] }).errors;
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain('pruning');
+    expect(errors[0]).toContain('list backups/');
+    expect(errors[0]).toContain('did not finish before the run deadline');
+  });
+
+  it('does not start the prune del once the Blob deadline has passed', async () => {
+    // list() finds a stale folder but takes the clock past the deadline, so
+    // the del must not start.
+    mockList.mockImplementation(async () => {
+      advanceClock(BLOB_DEADLINE_MS + 100);
+      return STALE_BACKUP;
+    });
+
+    const res = await runBackup();
+
+    expect(mockList).toHaveBeenCalledTimes(1);
+    expect(mockDel).not.toHaveBeenCalled();
+    expect(res._status).toBe(500);
+    const errors = (res._json as { errors: string[] }).errors;
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain('pruning');
+    expect(errors[0]).toContain('del 1 blobs');
+    expect(errors[0]).toContain('did not finish before the run deadline');
+  });
+
+  // The deadline timer of a call that finishes in time must be cleared: left
+  // armed for 240 s it keeps the table's body alive (~366 MiB across the run).
+  it('clears the deadline timer of every Blob call that finishes in time', async () => {
+    const setSpy = vi.spyOn(globalThis, 'setTimeout');
+    const clearSpy = vi.spyOn(globalThis, 'clearTimeout');
+    try {
+      mockSql.mockResolvedValue([{ id: 1 }]);
+
+      await runBackup();
+
+      // The clock is frozen, so exactly the Blob deadline timers are armed for
+      // BLOB_DEADLINE_MS: 16 puts and the prune's list (nothing to delete).
+      const deadlineTimers = setSpy.mock.calls.flatMap(([, delay], i) =>
+        delay === BLOB_DEADLINE_MS ? [setSpy.mock.results[i]!.value] : [],
+      );
+      expect(deadlineTimers).toHaveLength(17);
+      for (const timer of deadlineTimers) {
+        expect(clearSpy).toHaveBeenCalledWith(timer);
+      }
+    } finally {
+      setSpy.mockRestore();
+      clearSpy.mockRestore();
+    }
   });
 
   it.each(['list', 'del'] as const)(
@@ -949,8 +1060,9 @@ describe('backup-tables handler', () => {
       else mockDel.mockImplementation(hang);
       jumpNearBlobDeadlineAt('greek_exposure', 50);
 
-      const res = await runBackup();
+      const { res, elapsedMs } = await runBackupTimed();
 
+      expect(elapsedMs).toBeLessThan(MAX_REAL_MS_AT_DEADLINE);
       expect(signal?.aborted).toBe(true);
       expect(res._status).toBe(500);
       const json = res._json as {
@@ -1024,8 +1136,10 @@ describe('backup-tables handler', () => {
   // lose its last good copy on the 5th failing run: the folders still holding
   // it age out while the new ones lack it.
   it('does not prune after the table loop stopped on the time budget', async () => {
+    // 70 s per query: three tables start and put before the Blob deadline,
+    // then the 210 s budget stops the loop.
     mockSql.mockImplementation(async () => {
-      advanceClock(100_000);
+      advanceClock(70_000);
       return [{ id: 1 }];
     });
     mockList.mockResolvedValue(STALE_BACKUP);

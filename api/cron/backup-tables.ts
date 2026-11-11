@@ -96,21 +96,31 @@ const TABLE_LOOP_BUDGET_MS = 210_000;
 // minutes: 1 s + 2 s + ... + 512 s). blobCallBefore
 // therefore aborts an AbortController (AbortError, so the package stops
 // sending) and races the call against the deadline (so this run gets its
-// rejection on time, backoff or not).
+// rejection on time, backoff or not), and it starts no call after the
+// deadline. An abort that lands mid-backoff still leaves the package's
+// sleeping setTimeout armed after the response, for up to about 256 s (the
+// longest sleep that can still be running at 240 s is the 8th retry's, 128 to
+// 256 s). It holds the body Buffer but sends nothing: the next attempt sees
+// the aborted signal and bails.
 //
-// What follows the deadline, counted from invocation:
+// What follows, counted from invocation:
 //     5 s  the `in_progress` check-in withCronCheckin sends before startTime
 //          (its fetch aborts at 5 s) and that counts against maxDuration
-//   240 s  this deadline
+//   243 s  the latest the table loop can end: the 240 s deadline, or a page
+//          started at 209.99 s that takes 33 s (withDbRetry), after which the
+//          put is refused because the deadline has passed
 //     2 s  Sentry.flush
-//    40 s  reportCronRun: @axiomhq/js 1.6.1 aborts an ingest at 20 s, and
-//          reportCronRun ingests a second time when the first was rejected
+//    42 s  reportCronRun: @axiomhq/js 1.6.1 aborts an ingest at 20 s, and
+//          fetch-retry waits 1 s and retries at once on the aborted signal,
+//          so 21 s per ingest (fetchClient.js:12-26); the event always carries
+//          `meta`, so a rejected first ingest is followed by a second (axiom.ts)
 //     5 s  the closing check-in
-//   292 s  in all, 8 s to spare.
+//   297 s  in all, 3 s to spare. That needs Neon and Axiom to fail at the same
+//          time; with a healthy Neon (the loop ends by 240 s) it is 294 s.
 // A normal run ends its last Blob call near 60 s. The slowest tail that is not
 // a Blob fault (a page in flight at 210 s that takes 33 s, then a 14 s put)
-// ends at ~257 s, so the deadline can cut a call off first only while Neon is
-// retrying as well. That costs one table reported as failed, loudly.
+// would end at ~257 s, so the deadline can cut a call off first only while
+// Neon is retrying as well. That costs one table reported as failed, loudly.
 const BLOB_DEADLINE_MS = 240_000;
 
 // Size cap for one table's JSONL. exportTable holds the whole table in memory:
@@ -217,23 +227,27 @@ async function exportTable(
  * Run one @vercel/blob call so it cannot outlive `deadline` (epoch ms). At the
  * deadline the call's signal is aborted and this rejects, whatever the package
  * is doing (see BLOB_DEADLINE_MS for why both are needed). `what` names the
- * call in the error. A deadline already past aborts the call at once.
+ * call in the error. A deadline already past fails at once without starting
+ * the call: a table can reach its put after the deadline (a page that took
+ * 33 s), and starting it would send an upload of up to ~130 MB that nothing
+ * waits for.
  */
 async function blobCallBefore<T>(
   deadline: number,
   what: string,
   call: (abortSignal: AbortSignal) => Promise<T>,
 ): Promise<T> {
+  const msLeft = deadline - Date.now();
+  if (msLeft <= 0) {
+    throw new Error(`${what} did not finish before the run deadline`);
+  }
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   const deadlineHit = new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(
-      () => {
-        controller.abort();
-        reject(new Error(`${what} did not finish before the run deadline`));
-      },
-      Math.max(0, deadline - Date.now()),
-    );
+    timer = setTimeout(() => {
+      controller.abort();
+      reject(new Error(`${what} did not finish before the run deadline`));
+    }, msLeft);
   });
   try {
     return await Promise.race([call(controller.signal), deadlineHit]);
