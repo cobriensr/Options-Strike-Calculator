@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import asyncpg.exceptions
 import pytest
 
+import db
 from db import (
     MAX_INSERT_PARAMS,
     _build_multi_row_insert,
@@ -837,3 +838,97 @@ class TestBulkUpsertIfNewerGuards:
 
         assert conn.execute.await_count == 1
         sleep_mock.assert_not_awaited()
+
+
+# ----------------------------------------------------------------------
+# fetch / execute — one statement through the retry wrapper
+# ----------------------------------------------------------------------
+
+
+class TestFetchAndExecute:
+    @pytest.mark.asyncio
+    async def test_fetch_runs_one_statement_with_bound_args_and_returns_the_rows(self):
+        conn = MagicMock()
+        conn.fetch = AsyncMock(return_value=[{"contract": "ESZ6"}])
+        pool = _mock_pool_with_conn(conn)
+
+        with patch("db.get_pool", return_value=pool):
+            rows = await db.fetch("label", "SELECT contract FROM t WHERE p = $1", "ES")
+
+        assert rows == [{"contract": "ESZ6"}]
+        conn.fetch.assert_awaited_once_with("SELECT contract FROM t WHERE p = $1", "ES")
+
+    @pytest.mark.asyncio
+    async def test_execute_returns_the_command_status(self):
+        conn = MagicMock()
+        conn.execute = AsyncMock(return_value="INSERT 0 1")
+        pool = _mock_pool_with_conn(conn)
+
+        with patch("db.get_pool", return_value=pool):
+            status = await db.execute("label", "INSERT INTO t VALUES ($1)", 5)
+
+        assert status == "INSERT 0 1"
+        conn.execute.assert_awaited_once_with("INSERT INTO t VALUES ($1)", 5)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("helper", ["fetch", "execute"])
+    async def test_a_transient_error_is_retried_on_a_fresh_connection(self, helper):
+        conn = MagicMock()
+        setattr(conn, helper, AsyncMock(side_effect=[TimeoutError("command_timeout"), "ok"]))
+        pool = _mock_pool_with_conn(conn)
+
+        with patch("db.get_pool", return_value=pool), patch("asyncio.sleep", new=AsyncMock()):
+            assert await getattr(db, helper)("label", "SELECT 1") == "ok"
+
+        assert getattr(conn, helper).await_count == 2
+        assert pool.acquire.call_count == 2
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("helper", ["fetch", "execute"])
+    async def test_a_persistent_transient_error_is_raised_after_the_last_attempt(self, helper):
+        conn = MagicMock()
+        setattr(conn, helper, AsyncMock(side_effect=TimeoutError("persistent")))
+        pool = _mock_pool_with_conn(conn)
+
+        with (
+            patch("db.get_pool", return_value=pool),
+            patch("asyncio.sleep", new=AsyncMock()),
+            pytest.raises(TimeoutError),
+        ):
+            await getattr(db, helper)("label", "SELECT 1")
+
+        assert getattr(conn, helper).await_count == 3
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("helper", ["fetch", "execute"])
+    async def test_a_genuine_error_is_not_retried(self, helper):
+        conn = MagicMock()
+        setattr(conn, helper, AsyncMock(side_effect=asyncpg.exceptions.UndefinedTableError("x")))
+        pool = _mock_pool_with_conn(conn)
+
+        with (
+            patch("db.get_pool", return_value=pool),
+            patch("asyncio.sleep", new=AsyncMock()) as sleep_mock,
+            pytest.raises(asyncpg.exceptions.UndefinedTableError),
+        ):
+            await getattr(db, helper)("label", "SELECT 1")
+
+        assert getattr(conn, helper).await_count == 1
+        sleep_mock.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("helper", ["fetch", "execute"])
+    async def test_single_attempt_stops_the_retry_for_the_shutdown_drain(self, helper):
+        conn = MagicMock()
+        setattr(conn, helper, AsyncMock(side_effect=TimeoutError("slow")))
+        pool = _mock_pool_with_conn(conn)
+
+        with (
+            patch("db.get_pool", return_value=pool),
+            patch("asyncio.sleep", new=AsyncMock()),
+            db.single_attempt(),
+            pytest.raises(TimeoutError),
+        ):
+            await getattr(db, helper)("label", "SELECT 1")
+
+        assert getattr(conn, helper).await_count == 1

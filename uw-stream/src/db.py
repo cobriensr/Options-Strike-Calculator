@@ -308,6 +308,36 @@ async def close_pool() -> None:
     log.info("asyncpg pool closed")
 
 
+async def fetch(label: str, sql: str, *args: Any) -> list[asyncpg.Record]:
+    """Run one read statement with bound ``$n`` args and return its rows.
+
+    Goes through ``_with_db_retry`` like the bulk writers, so a transient
+    Neon failure retries on a fresh pool connection. ``sql`` is a constant of
+    the caller's; values only ever travel as ``args``.
+    """
+
+    async def _attempt() -> list[asyncpg.Record]:
+        async with get_pool().acquire() as conn:
+            return await conn.fetch(sql, *args)
+
+    return await _with_db_retry(label, _attempt)
+
+
+async def execute(label: str, sql: str, *args: Any) -> str:
+    """Run one write statement with bound ``$n`` args; return its command tag.
+
+    Retried on a transient failure like ``fetch``, so the statement must
+    converge when replayed: an ``ON CONFLICT DO NOTHING`` insert, or an upsert
+    that only raises a value.
+    """
+
+    async def _attempt() -> str:
+        async with get_pool().acquire() as conn:
+            return await conn.execute(sql, *args)
+
+    return await _with_db_retry(label, _attempt)
+
+
 async def bulk_insert_ignore_conflict(
     table: str,
     columns: list[str],
