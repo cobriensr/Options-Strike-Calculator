@@ -171,7 +171,9 @@ class RateLimitedLogger:
     ) -> None:
         self._interval_s = interval_s
         self._clock = clock
-        self._state: dict[tuple[str, str], _Bucket] = {}
+        # (scope, kind, key, level) -> window. A caller's ``key`` must come
+        # from a small closed set (a product), so this stays bounded.
+        self._state: dict[tuple[str, str, str, str], _Bucket] = {}
 
     def warning(
         self,
@@ -180,17 +182,51 @@ class RateLimitedLogger:
         kind: str,
         message: str,
         extra: dict | None = None,
+        key: str = "",
     ) -> None:
-        """Log a warning, throttled per (scope, kind).
+        """Log a warning, throttled per (scope, kind, key).
 
         ``extra`` is forwarded to the underlying logger only on the
         first call per window — the summary line carries just the
         suppressed count so we never dump an unbounded ``extra`` payload
         thousands of times.
+
+        ``key`` splits one (scope, kind) into several windows, one per
+        value, for a failure that must be named for each root it hits
+        (six roots failing at once log six lines, not one).
         """
-        key = (scope, kind)
+        self._log("warning", log.warning, scope, kind, message, extra, key)
+
+    def error(
+        self,
+        *,
+        scope: str,
+        kind: str,
+        message: str,
+        extra: dict | None = None,
+        key: str = "",
+    ) -> None:
+        """``warning`` at error level, so the line reaches Sentry.
+
+        An error and a warning of one kind have separate windows: a transient
+        failure just before a genuine one must not hide it. The summary line
+        that closes a window is a warning either way.
+        """
+        self._log("error", log.error, scope, kind, message, extra, key)
+
+    def _log(
+        self,
+        level: str,
+        emit,
+        scope: str,
+        kind: str,
+        message: str,
+        extra: dict | None,
+        key: str,
+    ) -> None:
+        bucket_key = (scope, kind, key, level)
         now = self._clock()
-        bucket = self._state.get(key)
+        bucket = self._state.get(bucket_key)
 
         if bucket is None or (now - bucket.first_logged_at) >= self._interval_s:
             # New window — flush any prior bucket's summary, then log
@@ -208,14 +244,14 @@ class RateLimitedLogger:
                         "interval_s": self._interval_s,
                     },
                 )
-            log.warning(
+            emit(
                 message,
                 extra={"scope": scope, "kind": kind, **(extra or {})},
             )
             # head_message is the truthful summary subject — never
             # overwritten on suppressed paths so the eventual summary
             # quotes the message that ACTUALLY logged at window start.
-            self._state[key] = _Bucket(
+            self._state[bucket_key] = _Bucket(
                 first_logged_at=now,
                 suppressed_count=0,
                 head_message=message,

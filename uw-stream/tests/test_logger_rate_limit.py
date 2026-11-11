@@ -309,6 +309,97 @@ def test_patched_logger_module_singleton_does_not_blow_up_on_reset():
 
 
 # ──────────────────────────────────────────────────────────────────────────
+# ``key`` (a per-product window) and ``error`` (a window that reaches Sentry).
+#
+# futures_front_month throttles its failures per root: six roots failing at
+# once must each be named, where one (scope, kind) window would name one.
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def _capture(monkeypatch, level: str) -> list[tuple[tuple, dict]]:
+    import logger_setup as ls_mod
+
+    captured: list[tuple[tuple, dict]] = []
+    monkeypatch.setattr(ls_mod.log, level, lambda *a, **k: captured.append((a, k)))
+    return captured
+
+
+def test_distinct_keys_have_separate_windows(monkeypatch):
+    captured = _capture_warnings(monkeypatch)
+    rl = RateLimitedLogger(interval_s=60.0, clock=_FakeClock())
+
+    for product in ("ES", "NQ"):
+        for _ in range(3):
+            rl.warning(
+                scope="front_month",
+                kind="failed",
+                message="lookup failed",
+                extra={"product": product},
+                key=product,
+            )
+
+    assert [kw["extra"]["product"] for _args, kw in captured] == ["ES", "NQ"]
+
+
+def test_a_call_without_a_key_is_its_own_window_not_a_keyed_one(monkeypatch):
+    captured = _capture_warnings(monkeypatch)
+    rl = RateLimitedLogger(interval_s=60.0, clock=_FakeClock())
+
+    rl.warning(scope="s", kind="k", message="m", key="ES")
+    rl.warning(scope="s", kind="k", message="m")
+    rl.warning(scope="s", kind="k", message="m")
+
+    assert len(captured) == 2
+
+
+def test_error_logs_at_error_level_and_throttles_like_warning(monkeypatch):
+    errors = _capture(monkeypatch, "error")
+    warnings = _capture_warnings(monkeypatch)
+    clock = _FakeClock()
+    rl = RateLimitedLogger(interval_s=60.0, clock=clock)
+
+    for _ in range(5):
+        rl.error(
+            scope="front_month",
+            kind="failed",
+            message="lookup failed",
+            extra={"err": "boom"},
+            key="ES",
+        )
+    assert len(errors) == 1
+    args, kwargs = errors[0]
+    assert args[0] == "lookup failed"
+    assert kwargs["extra"] == {
+        "scope": "front_month",
+        "kind": "failed",
+        "err": "boom",
+    }
+    assert warnings == []
+
+    # The next window's summary is a warning (a breadcrumb), then a new error.
+    clock.advance(61.0)
+    rl.error(scope="front_month", kind="failed", message="lookup failed", key="ES")
+    assert len(errors) == 2
+    assert len(warnings) == 1
+    assert 4 in warnings[0][0]
+    assert warnings[0][1]["extra"]["suppressed_count"] == 4
+
+
+def test_a_warning_does_not_hide_an_error_of_the_same_kind(monkeypatch):
+    """A transient failure (a warning) a few seconds before a genuine one of
+    the same kind must not swallow the error that reaches Sentry."""
+    errors = _capture(monkeypatch, "error")
+    warnings = _capture_warnings(monkeypatch)
+    rl = RateLimitedLogger(interval_s=60.0, clock=_FakeClock())
+
+    rl.warning(scope="s", kind="k", message="m", key="ES")
+    rl.error(scope="s", kind="k", message="m", key="ES")
+
+    assert len(warnings) == 1
+    assert len(errors) == 1
+
+
+# ──────────────────────────────────────────────────────────────────────────
 # AUD-L12b: token scrubbing in the PLAIN-LOG path (JsonFormatter).
 #
 # Sentry already scrubbed ``?token=<key>`` via sentry_setup._before_send, but
