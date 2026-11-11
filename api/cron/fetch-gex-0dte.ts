@@ -68,6 +68,7 @@ import {
   isBeforeEtDay,
   judgeLadder,
   strikeWindow,
+  UW_STRIKE_PAGE_LIMIT,
   type LadderSkipKind,
 } from '../_lib/strike-ladder.js';
 import { fetchUwSpot } from '../_lib/uw-spot.js';
@@ -121,7 +122,7 @@ async function fetchStrike0dte(
     'expirations[]': expiry,
     min_strike: String(minStrike),
     max_strike: String(maxStrike),
-    limit: '500',
+    limit: String(UW_STRIKE_PAGE_LIMIT),
   });
 
   return uwFetch<StrikeRow>(

@@ -27,6 +27,19 @@ interface TimedRow {
 }
 
 /**
+ * UW's documented maximum `limit` on the strike endpoints
+ * (`/spot-exposures/strike` and `/spot-exposures/expiry-strike`). The one
+ * constant for the strike crons (`fetch-strike-exposure`, `fetch-strike-all`,
+ * `fetch-gex-0dte`) and `fetch-strike-all`'s TypeScript backfill: a windowed
+ * page this full is not trusted. The two plain-node backfills
+ * (`scripts/backfill-strike-exposure.mjs` and `-lottery.mjs`) cannot import it:
+ * this module's runtime import of `src/utils/timezone.js` is a `.js` specifier
+ * that Node's type stripping does not map to the `.ts` file. They keep their
+ * own `'500'`.
+ */
+export const UW_STRIKE_PAGE_LIMIT = 500;
+
+/**
  * Why a ladder was not stored. The crons and the backfill treat every kind
  * the same way (api/_lib/ladder-skip.ts): never stored, a warning, a metric,
  * and from 09:40 ET a Sentry error.
@@ -39,13 +52,6 @@ interface TimedRow {
  *   - empty: UW returned no strike rows (or the source has none).
  *   - outside_window: rows came back but none is inside the stored range.
  */
-/**
- * UW's documented maximum `limit` on the strike endpoints
- * (`/spot-exposures/strike` and `/spot-exposures/expiry-strike`). One constant
- * for both crons and the backfill: a windowed page this full is not trusted.
- */
-export const UW_STRIKE_PAGE_LIMIT = 500;
-
 export type LadderSkipKind =
   | 'stale'
   | 'stale_spot'
