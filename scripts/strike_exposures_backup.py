@@ -6,11 +6,14 @@ private R2 bucket: docs/superpowers/specs/strike-exposures-backup-2026-11-11.md.
 
 This part of the module reads and writes one day:
 
+- `_read_snapshot` is the one way to read in a snapshot: a REPEATABLE READ,
+  READ ONLY transaction on a connection that was idle, with the connection's
+  autocommit put back afterwards. Later reads (the planning query, `verify`)
+  use it too.
 - `iter_day_pages` keyset-pages the day on the table's unique key.
-- `write_day_parquet` reads the day inside one REPEATABLE READ, READ ONLY
-  transaction, checks the rows written against the count taken from the same
-  snapshot, and returns a `DayFile` (None for a day with no rows). A day whose
-  count does not match leaves no file behind.
+- `write_day_parquet` reads the day in a snapshot, checks the rows written
+  against the count taken from the same snapshot, and returns a `DayFile`
+  (None for a day with no rows). Whatever goes wrong, no file is left behind.
 
 The types are exact. NUMERIC columns keep the column's own precision and scale
 as decimal128 (never float), timestamptz is timestamp[us, tz=UTC], and the
@@ -24,17 +27,16 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import pyarrow as pa
 import pyarrow.parquet as pq
-
-if TYPE_CHECKING:
-    from psycopg2.extensions import connection as PgConnection
-    from psycopg2.extensions import cursor as PgCursor
+from psycopg2.extensions import TRANSACTION_STATUS_IDLE
+from psycopg2.extensions import connection as PgConnection
+from psycopg2.extensions import cursor as PgCursor
 
 # 12 to 14 MiB of JSON per page, 0.76 to 1.29 s on the unique-key keyset.
 PAGE_ROWS = 20_000
@@ -113,6 +115,36 @@ class DayFile:
     sha256: str
 
 
+@contextmanager
+def _read_snapshot(conn: PgConnection) -> Iterator[PgCursor]:
+    """Yield a cursor inside one REPEATABLE READ, READ ONLY transaction.
+
+    Every statement in the block sees the same snapshot, and rows committed
+    meanwhile are invisible to it. The transaction always ends in a ROLLBACK,
+    and `conn.autocommit` is put back as it was, on success and on failure.
+
+    The BEGIN is ours, so autocommit is on while it runs (with it off, psycopg2
+    would open a transaction at the session's isolation level first). And the
+    connection must be idle: a BEGIN inside an open transaction is only a
+    server WARNING, and the read would silently run in the caller's
+    transaction, outside the snapshot.
+    """
+    if conn.info.transaction_status != TRANSACTION_STATUS_IDLE:
+        raise BackupError('the connection is already inside a transaction')
+    previous = conn.autocommit
+    conn.autocommit = True
+    try:
+        with conn.cursor() as cur:
+            cur.execute('BEGIN ISOLATION LEVEL REPEATABLE READ, READ ONLY')
+            try:
+                cur.execute(f"SET LOCAL statement_timeout = '{STATEMENT_TIMEOUT}'")
+                yield cur
+            finally:
+                cur.execute('ROLLBACK')
+    finally:
+        conn.autocommit = previous
+
+
 def iter_day_pages(
     cur: PgCursor, day: date, page_rows: int = PAGE_ROWS
 ) -> Iterator[list[tuple]]:
@@ -144,7 +176,6 @@ def _count_error(day: date, expected: int, written: int) -> BackupError:
 
 
 def _write_page(writer: pq.ParquetWriter, rows: list[tuple], day: date) -> None:
-    # Arrow's own messages can quote the offending cell, so they are replaced.
     try:
         arrays = [
             pa.array(values, type=field.type)
@@ -152,9 +183,13 @@ def _write_page(writer: pq.ParquetWriter, rows: list[tuple], day: date) -> None:
         ]
         writer.write_table(pa.Table.from_arrays(arrays, schema=ARROW_SCHEMA))
     except (pa.ArrowException, ArithmeticError):
-        raise BackupError(
-            f'{day.isoformat()}: a page did not fit the Parquet schema'
-        ) from None
+        pass
+    else:
+        return
+    # Raised here and not in the handler: Arrow's message can quote the
+    # offending cell, and inside the handler it would ride along as the
+    # exception's __context__ into any log or Sentry event.
+    raise BackupError(f'{day.isoformat()}: a page did not fit the Parquet schema')
 
 
 def _stream_to_parquet(
@@ -162,28 +197,24 @@ def _stream_to_parquet(
 ) -> tuple[int, int, int]:
     """Write the day to `path`; return (rows, min_id, max_id).
 
-    Raises when the rows do not add up to `expected`. Whatever the failure,
-    no file is left at `path`.
+    Raises when the rows do not add up to `expected`. The file it leaves on a
+    failure is `write_day_parquet`'s to delete.
     """
     written = 0
     min_id: int | None = None
     max_id: int | None = None
-    try:
-        with pq.ParquetWriter(path, ARROW_SCHEMA, compression='zstd') as writer:
-            for rows in iter_day_pages(cur, day, page_rows):
-                _write_page(writer, rows, day)
-                written += len(rows)
-                if written > expected:
-                    # Stops a keyset that never advances from filling the disk.
-                    raise _count_error(day, expected, written)
-                ids = [row[_ID] for row in rows]
-                min_id = min(ids) if min_id is None else min(min_id, *ids)
-                max_id = max(ids) if max_id is None else max(max_id, *ids)
-        if written != expected:
-            raise _count_error(day, expected, written)
-    except BaseException:
-        path.unlink(missing_ok=True)
-        raise
+    with pq.ParquetWriter(path, ARROW_SCHEMA, compression='zstd') as writer:
+        for rows in iter_day_pages(cur, day, page_rows):
+            _write_page(writer, rows, day)
+            written += len(rows)
+            if written > expected:
+                # Stops a keyset that never advances from filling the disk.
+                raise _count_error(day, expected, written)
+            ids = [row[_ID] for row in rows]
+            min_id = min(ids) if min_id is None else min(min_id, *ids)
+            max_id = max(ids) if max_id is None else max(max_id, *ids)
+    if written != expected:
+        raise _count_error(day, expected, written)
     return written, min_id, max_id
 
 
@@ -192,21 +223,19 @@ def write_day_parquet(
 ) -> DayFile | None:
     """Export one session day to `out_dir/<day>.parquet`.
 
-    The day is read in one `REPEATABLE READ, READ ONLY` transaction, so the
-    count and every page come from the same snapshot and rows inserted while
-    the export runs are invisible to it. The transaction always ends in a
-    ROLLBACK. Returns None for a day with no rows and writes no file for it.
+    The day is read in one snapshot (`_read_snapshot`), so the count and every
+    page come from the same moment and rows inserted while the export runs are
+    invisible to it. Returns None for a day with no rows and writes no file for
+    it. The connection must be idle, and its autocommit is left as it was.
 
-    It sets `conn.autocommit` because the BEGIN is its own: with autocommit
-    off, psycopg2 would open a transaction with the session's isolation level
-    first. The connection must not be inside a transaction when this is called.
+    Any failure, including a ROLLBACK that fails after the file is complete,
+    deletes the file: a file is only ever returned from a day that added up.
+    A database error propagates as it is; a ROLLBACK that fails on top of it
+    keeps it as `__context__`.
     """
-    conn.autocommit = True
     path = out_dir / f'{day.isoformat()}.parquet'
-    with conn.cursor() as cur:
-        cur.execute('BEGIN ISOLATION LEVEL REPEATABLE READ, READ ONLY')
-        try:
-            cur.execute(f"SET LOCAL statement_timeout = '{STATEMENT_TIMEOUT}'")
+    try:
+        with _read_snapshot(conn) as cur:
             cur.execute(_COUNT_SQL, (day,))
             expected = cur.fetchone()[0]
             if expected == 0:
@@ -214,16 +243,18 @@ def write_day_parquet(
             rows, min_id, max_id = _stream_to_parquet(
                 cur, day, path, expected, page_rows
             )
-        finally:
-            cur.execute('ROLLBACK')
-    with path.open('rb') as f:
-        sha256 = hashlib.file_digest(f, 'sha256').hexdigest()
+        with path.open('rb') as f:
+            sha256 = hashlib.file_digest(f, 'sha256').hexdigest()
+        size = path.stat().st_size
+    except BaseException:
+        path.unlink(missing_ok=True)
+        raise
     return DayFile(
         day=day,
         path=path,
         rows=rows,
         min_id=min_id,
         max_id=max_id,
-        size=path.stat().st_size,
+        size=size,
         sha256=sha256,
     )
