@@ -464,7 +464,14 @@ def test_steps_get_the_runs_context(
     last_session: Mock,
 ) -> None:
     days = [DayOutcome(DAY, "landed", rows=10, bytes=100)]
-    run_tape = _run_tape(monkeypatch, return_value=days)
+
+    def long_tape(
+        settings: Any, now_utc: datetime, on_outcome: Any = None, deadline: float | None = None
+    ) -> list[DayOutcome]:
+        clock.now += 4_000.0  # the tape takes a while before the steps start
+        return days
+
+    run_tape = _run_tape(monkeypatch, side_effect=long_tape)
     registered = (Step("fake-step", _ok_step, 60),)
     monkeypatch.setattr(main, "STEPS", registered)
     run_steps = _run_steps(monkeypatch, [_outcome("ok")])
@@ -479,6 +486,7 @@ def test_steps_get_the_runs_context(
         "settings": tape_settings,
         "now_utc": tape_now,
         "last_session": LAST_SESSION,
+        # Fixed at the run's start: a long tape does not push the steps' deadline out.
         "run_deadline": START + RUN_DEADLINE_SECONDS,
         "tape": tuple(days),
         "on_outcome": monitoring.report_step,
