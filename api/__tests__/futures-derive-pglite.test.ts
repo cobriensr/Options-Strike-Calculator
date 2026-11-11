@@ -23,7 +23,7 @@ import {
 import type { PGlite as PGliteType } from '@electric-sql/pglite';
 import { PGlite } from '@electric-sql/pglite';
 
-import { neonOverPglite } from './pglite-migrations';
+import { applyMigration, neonOverPglite } from './pglite-migrations';
 
 const holder = vi.hoisted(() => ({ pg: null as PGliteType | null }));
 
@@ -46,19 +46,10 @@ beforeAll(async () => {
   pg = await PGlite.create();
   holder.pg = pg;
   await pg.query(`SET TIME ZONE 'UTC'`);
-  await pg.query(`
-    CREATE TABLE futures_bars (
-      id      BIGSERIAL PRIMARY KEY,
-      symbol  TEXT NOT NULL,
-      ts      TIMESTAMPTZ NOT NULL,
-      open    NUMERIC(12,4) NOT NULL,
-      high    NUMERIC(12,4) NOT NULL,
-      low     NUMERIC(12,4) NOT NULL,
-      close   NUMERIC(12,4) NOT NULL,
-      volume  BIGINT NOT NULL DEFAULT 0,
-      UNIQUE(symbol, ts)
-    )
-  `);
+  // futures_bars from the real migrations: #42 creates it (and copies es_bars,
+  // which #12 creates), #193 adds the order-flow columns, #204 the contract
+  // column.
+  for (const id of [12, 42, 193, 204]) await applyMigration(pg, id);
 }, 60_000);
 
 afterAll(async () => {

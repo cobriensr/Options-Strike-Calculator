@@ -214,7 +214,10 @@ export async function computeSnapshot(
 
   // 1H change: bar at or before (at - 60m), and no more than
   // MAX_BAR_AGE_MS before it — otherwise, after a feed gap, the
-  // "hour-ago" bar would be from before the outage.
+  // "hour-ago" bar would be from before the outage. Deliberately not shifted
+  // by BAR_CLOSE_LAG_MS: it is the bound the cron has always used and the
+  // Phase 4 recompute reproduces stored rows with it, so the 1h change spans
+  // about 59 minutes.
   const oneHourAgoMs = atMs - 60 * 60 * 1000;
   const hourAgoRows = await sql`
     SELECT close, ts FROM futures_bars

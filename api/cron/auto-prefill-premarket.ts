@@ -78,7 +78,10 @@ export function getOvernightEndCT(todayET: string): string {
   return iso;
 }
 
-/** The four numbers the cron stores for one trade date's overnight window. */
+/**
+ * The Globex H/L/C/VWAP the cron stores for one trade date's overnight
+ * window, and the window's bar count.
+ */
 export interface Globex {
   globexHigh: number;
   globexLow: number;

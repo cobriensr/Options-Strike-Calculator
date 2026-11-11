@@ -43,6 +43,7 @@ import { getDb, withDbRetry } from '../../api/_lib/db.js';
 import {
   FUTURES_SYMBOLS,
   MAX_BAR_AGE_MS,
+  VOLUME_WINDOW_MS,
   computeSnapshot,
   type FuturesSymbol,
   type SnapshotResult,
@@ -136,7 +137,7 @@ export const SPAN = {
 } as const;
 
 /** computeSnapshot reads back 20 days for its volume baseline (futures-derive.ts). */
-export const SNAPSHOT_LOOKBACK_MS = 20 * DAY_MS;
+export const SNAPSHOT_LOOKBACK_MS = VOLUME_WINDOW_MS;
 /** computeEsBasisChange5m reads a 6-minute SPX window (gamma-detector.ts). */
 export const BASIS_LOOKBACK_MS = 6 * MINUTE_MS;
 
