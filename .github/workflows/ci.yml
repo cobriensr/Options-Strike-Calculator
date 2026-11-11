@@ -64,6 +64,9 @@ jobs:
               # SQL out of this Python file and runs it, so an edit to the
               # file must run this job (ml/** alone starts only the ml job).
               - 'ml/src/utils/__init__.py'
+              # api/__tests__/futures-front-month-python-sql-pglite.test.ts
+              # does the same for the SQL in uw-stream's front-month module.
+              - 'uw-stream/src/futures_front_month.py'
             # Listing ci.yml means an edit to a job's definition runs that job.
             ml:
               - 'ml/**'
