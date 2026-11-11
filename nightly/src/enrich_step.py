@@ -10,25 +10,31 @@ Order matters in two places:
 - Both scripts are configured for the tape before the work days are listed, because
   `list_work_dates` reads the module's SOURCE_TAG when it runs.
 - A day the tape job re-landed tonight has its `outcome_tape_version` marker cleared first
-  (both tables), because its rows carry the marker of the tape it replaced and the work
-  set would never look at them again. Only the marker is cleared, so the old outcomes stay
-  until the new tape replaces them. Inversions are not reset: their work set needs the
-  value to be NULL, and clearing values is destructive.
+  (both tables in one statement, so both clear or neither does), because its rows carry the
+  marker of the tape it replaced and the work set would never look at them again. Only the
+  marker is cleared, so the old outcomes stay until the new tape replaces them. Inversions
+  are not reset: their work set needs the value to be NULL, and clearing values is
+  destructive. If the statement fails nothing is cleared and the step fails; the next night
+  the tape job no longer reports the day as re-landed, so its rows keep the old tape's
+  outcomes until OUTCOME_VERSION is next bumped.
 
 A day with no landed tape waits (`days_waiting_tape`). For a landed one the step fetches the
-tape (before opening a connection, so Neon never idles through a download), runs both
+tape (before opening a connection, so Neon never idles through a download; the download is
+bounded at FETCH_DEADLINE_SECONDS, or by the step's deadline if that is nearer), runs both
 passes on one fresh connection, and counts the (table, day) pairs whose fires all came back
 without an outcome (`null_days`) or mostly so (`low_days`, a count only). Pass 3, the ticker
 refit, never runs: the ticker EMA is retired.
 
-Failures: an Exception in a day is counted in `days_failed`, sent once through
-`capture_exception` tagged with the step and the day (`monitoring.scrub_event` cuts a data
-library's text), and the loop goes on. The loop stops, leaving the rest as `days_left`,
-when `days_failed + null_days` reaches ENRICH_MAX_DAY_FAILURES: a broken tape layout or
-chain format makes every day fail or come back all-NULL, and each would cost a download.
-A landed day whose file the scripts cannot find is the same case, so it fails the day. It
-also stops when less than ENRICH_DAY_BUDGET_SECONDS is left. A failure to connect, to list
-the days or the tape, or to clear a marker is not a day's: it propagates to `run_steps`.
+Failures: an Exception in a day (its download, its own connection, either pass, the shares
+query) is counted in `days_failed`, sent once through `capture_exception` tagged with the
+step and the day (`monitoring.scrub_event` cuts a data library's text), and the loop goes
+on. The loop stops, leaving the rest as `days_left`, when `days_failed + null_days` reaches
+ENRICH_MAX_DAY_FAILURES: a broken tape layout or chain format makes every day fail or come
+back all-NULL, and each would cost a download. A landed day whose file the scripts cannot
+find is the same case, so it fails the day. It also stops when less than
+ENRICH_DAY_BUDGET_SECONDS is left. Only the setup is not a day's: a failure of its
+connection, the marker UPDATE, the listing of the days or the listing of the tape
+propagates to `run_steps`.
 
 The step sends no share alert. The outcome check reports the last three sessions, so the
 latest session would be reported twice, and a long backfill would send an email a day.
@@ -36,8 +42,9 @@ latest session would be reported twice, and a long backfill would send an email 
 Status: `failed` if a day failed or came back all-NULL, else `partial` if days are left,
 else `ok`; the details are fixed phrases (they are part of the Sentry fingerprint).
 
-Logs carry one line per day: the date, the day's non-zero counts and the seconds. Never an
-exception's text (it can carry the Neon host) or row data.
+Logs carry one line per day: the date, a status word (`ok`, `no outcomes` for a day with an
+all-NULL pair, or `failed (<ExceptionClass>)`), the day's non-zero counts and the seconds.
+Never an exception's text (it can carry the Neon host) or row data.
 
 Import order: the lottery script before the silent boom one. The silent boom script puts
 <repo>/ml/src first on sys.path, which holds an older enrich_lottery_outcomes.py.
@@ -52,6 +59,7 @@ from time import monotonic
 from typing import TYPE_CHECKING
 
 import sentry_sdk
+from _tape_reader import FETCH_DEADLINE_SECONDS
 from enrich_lottery_outcomes import configure_archive as configure_lottery_archive
 from enrich_lottery_outcomes import enrich_one_date as enrich_lottery_day
 from enrich_lottery_outcomes import list_work_dates as list_lottery_work_dates
@@ -118,27 +126,34 @@ _COUNT_NAMES = (
     *_DAY_COUNT_NAMES,
 )
 
-# The only table names that reach SQL come from OUTCOME_TABLES, never from input.
-_RESET_MARKER_SQL = tuple(
-    f"UPDATE {table} SET outcome_tape_version = NULL "
-    "WHERE date = ANY(%s::date[]) AND outcome_tape_version IS NOT NULL"
-    for table in OUTCOME_TABLES
+# One statement for every table, so the clearing is atomic on an autocommit connection: a
+# data-modifying CTE per table, each a full UPDATE whatever the final SELECT reads, and
+# `%(days)s` (one date[]) in each branch. The table names come only from OUTCOME_TABLES,
+# never from input.
+_RESET_MARKERS_SQL = (
+    "WITH "
+    + ", ".join(
+        f"t{n} AS (UPDATE {table} SET outcome_tape_version = NULL "
+        "WHERE date = ANY(%(days)s::date[]) AND outcome_tape_version IS NOT NULL RETURNING 1)"
+        for n, table in enumerate(OUTCOME_TABLES)
+    )
+    + " SELECT "
+    + " + ".join(f"(SELECT count(*) FROM t{n})" for n in range(len(OUTCOME_TABLES)))
 )
 
 
 def reset_tape_markers(conn: connection, days: Sequence[date]) -> int:
     """Clear `outcome_tape_version` on the fires of `days` in both tables; the rows cleared.
 
-    The connection is autocommit, so each table's UPDATE commits on its own. Every row it
-    clears is work again for the tape's guard, and stays work until a pass examines it.
+    One statement, so both tables clear or neither does. Every row it clears is work again
+    for the tape's guard, and stays work until a pass examines it.
     """
     if not days:
         return 0
-    cleared = 0
     with conn.cursor() as cursor:
-        for sql in _RESET_MARKER_SQL:
-            cursor.execute(sql, (list(days),))
-            cleared += cursor.rowcount
+        # A list, never a tuple: psycopg2 adapts a tuple as a row, which `ANY(...::date[])` rejects.
+        cursor.execute(_RESET_MARKERS_SQL, {"days": list(days)})
+        (cleared,) = cursor.fetchone()
     return cleared
 
 
@@ -217,7 +232,7 @@ def _enrich_day(ctx: StepContext, reader: TapeReader, day: date, counts: dict[st
 def _write_day(ctx: StepContext, reader: TapeReader, day: date, tally: dict[str, int]) -> None:
     iso = day.isoformat()
     # The download comes first: the connection must not idle through it.
-    if reader.fetch_day(day, deadline=ctx.deadline) is None:
+    if reader.fetch_day(day, deadline=_fetch_deadline(ctx)) is None:
         raise RuntimeError(_MISSING_FILE)
     with connect_db(ctx.settings) as conn:
         lottery = enrich_lottery_day(conn, iso, select="all")
@@ -232,6 +247,17 @@ def _write_day(ctx: StepContext, reader: TapeReader, day: date, tally: dict[str,
                 tally["null_days"] += 1
             elif kind == "low":
                 tally["low_days"] += 1
+
+
+def _fetch_deadline(ctx: StepContext) -> float:
+    """The deadline for one download: FETCH_DEADLINE_SECONDS from now, or the step's if sooner.
+
+    ENRICH_DAY_BUDGET_SECONDS assumes a download of at most that long; without the bound a
+    slow one could spend everything up to the step's deadline. "Now" is read off
+    `ctx.seconds_left()`, the clock the step's own deadline is on.
+    """
+    now = ctx.deadline - ctx.seconds_left()
+    return min(ctx.deadline, now + FETCH_DEADLINE_SECONDS)
 
 
 def _add_counts(
@@ -249,7 +275,12 @@ def _require_file(result: LotteryDayResult | SilentBoomDayResult) -> None:
 
 
 def _log_day(iso: str, tally: dict[str, int], error: str | None, seconds: float) -> None:
-    status = "ok" if error is None else f"failed ({error})"
+    if error is not None:
+        status = f"failed ({error})"
+    elif tally["null_days"]:
+        status = "no outcomes"  # not "ok": this day fails the step
+    else:
+        status = "ok"
     shown = "".join(f" {name}={n}" for name, n in tally.items() if n)
     level = logging.WARNING if error or tally["null_days"] else logging.INFO
     log.log(level, "enrich %s %s%s in %.1fs", iso, status, shown, seconds)

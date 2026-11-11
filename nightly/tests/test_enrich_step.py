@@ -27,9 +27,10 @@ from unittest.mock import MagicMock, call, create_autospec
 import _tape_reader
 import enrich_lottery_outcomes
 import enrich_silent_boom_outcomes
+import psycopg2
 import pytest
 import sentry_sdk
-from _tape_reader import TapeReader
+from _tape_reader import FETCH_DEADLINE_SECONDS, TapeReader, TapeReadError
 
 import enrich_step
 import resources
@@ -184,7 +185,7 @@ def night(monkeypatch: pytest.MonkeyPatch) -> Night:
     events: list[str] = []
     conn = MagicMock(name="conn")
     cursor = MagicMock(name="cursor")
-    cursor.rowcount = 0
+    cursor.fetchone.return_value = (0,)  # the marker reset's one summed count
     conn.cursor.return_value.__enter__.return_value = cursor
 
     @contextmanager
@@ -295,13 +296,12 @@ def test_days_run_newest_first_with_one_fetch_each(
 ) -> None:
     # The two tables list different days; the work set is their union, each day once.
     night.work(lottery=[DAYS[0], DAYS[1]], silent_boom=[DAYS[1], DAYS[2]])
-    ctx = _ctx(settings, clock)
 
-    result = enrich_step.run(ctx)
+    result = enrich_step.run(_ctx(settings, clock))
 
     newest_first = [DAYS[2], DAYS[1], DAYS[0]]
     assert night.reader.fetch_day.call_args_list == [
-        call(day, deadline=ctx.deadline) for day in newest_first
+        call(day, deadline=clock.now + FETCH_DEADLINE_SECONDS) for day in newest_first
     ]
     assert _isos(night.events, "lottery") == [d.isoformat() for d in newest_first]
     assert _isos(night.events, "silent_boom") == [d.isoformat() for d in newest_first]
@@ -333,11 +333,12 @@ def test_day_not_landed_waits_and_is_untouched(
 ) -> None:
     night.work(lottery=[DAYS[1], DAYS[2]], silent_boom=[DAYS[2]])
     night.landed([DAYS[1]])  # tonight's tape for DAYS[2] has not landed
-    ctx = _ctx(settings, clock)
 
-    result = enrich_step.run(ctx)
+    result = enrich_step.run(_ctx(settings, clock))
 
-    assert night.reader.fetch_day.call_args_list == [call(DAYS[1], deadline=ctx.deadline)]
+    assert night.reader.fetch_day.call_args_list == [
+        call(DAYS[1], deadline=clock.now + FETCH_DEADLINE_SECONDS)
+    ]
     assert _isos(night.events, "lottery") == [DAYS[1].isoformat()]
     assert _isos(night.events, "silent_boom") == [DAYS[1].isoformat()]
     assert _isos(night.events, "shares") == [str(DAYS[1])]
@@ -392,6 +393,40 @@ def test_a_day_does_not_start_without_its_budget(
     assert result.status == "partial"
     assert result.counts["days_left"] == 1
     assert result.counts["days_processed"] == 0
+
+
+def test_a_download_is_bounded_by_the_readers_deadline_from_now(
+    night: Night, settings: Settings, clock: Clock
+) -> None:
+    # The day budget assumes a download of at most FETCH_DEADLINE_SECONDS: a step deadline
+    # hours away must not let one slow download spend all of it.
+    night.work(lottery=DAYS[:2])
+    night.enrich_lottery.side_effect = lambda *_a, **_k: clock.advance(100) or LotteryResult()
+    ctx = _ctx(settings, clock, left=50_000)
+    started = clock.now
+
+    enrich_step.run(ctx)
+
+    # "Now" is read for each day, on the clock the step's own deadline is on.
+    assert night.reader.fetch_day.call_args_list == [
+        call(DAYS[1], deadline=started + FETCH_DEADLINE_SECONDS),
+        call(DAYS[0], deadline=started + 100 + FETCH_DEADLINE_SECONDS),
+    ]
+    assert started + 100 + FETCH_DEADLINE_SECONDS < ctx.deadline
+
+
+def test_a_download_never_outlasts_the_step_deadline(
+    night: Night, settings: Settings, clock: Clock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # With the real budget a day starts with more than FETCH_DEADLINE_SECONDS left, so the
+    # step's own deadline is the nearer one only if the budget is smaller than that.
+    monkeypatch.setattr(enrich_step, "ENRICH_DAY_BUDGET_SECONDS", 100)
+    night.work(lottery=[DAYS[1]])
+    ctx = _ctx(settings, clock, left=FETCH_DEADLINE_SECONDS - 100)
+
+    enrich_step.run(ctx)
+
+    night.reader.fetch_day.assert_called_once_with(DAYS[1], deadline=ctx.deadline)
 
 
 def test_a_failing_day_does_not_stop_the_others(
@@ -768,11 +803,17 @@ def test_the_download_comes_before_the_day_connection(
 # --- re-landed days -------------------------------------------------------------------
 
 
-def _reset_sql(table: str) -> str:
-    return (
-        f"UPDATE {table} SET outcome_tape_version = NULL "
-        "WHERE date = ANY(%s::date[]) AND outcome_tape_version IS NOT NULL"
-    )
+# One statement, so both tables clear or neither does: a data-modifying CTE per table,
+# summed in the one row it returns.
+_UPDATE = (
+    "UPDATE {table} SET outcome_tape_version = NULL "
+    "WHERE date = ANY(%(days)s::date[]) AND outcome_tape_version IS NOT NULL RETURNING 1"
+)
+RESET_SQL = (
+    f"WITH t0 AS ({_UPDATE.format(table=LOTTERY)}), "
+    f"t1 AS ({_UPDATE.format(table=SILENT_BOOM)}) "
+    "SELECT (SELECT count(*) FROM t0) + (SELECT count(*) FROM t1)"
+)
 
 
 def test_a_relanded_day_has_its_marker_reset_before_the_work_is_listed(
@@ -780,22 +821,18 @@ def test_a_relanded_day_has_its_marker_reset_before_the_work_is_listed(
 ) -> None:
     relanded = DayOutcome(DAYS[3], "relanded", rows=10, bytes=100)
     landed = DayOutcome(DAYS[4], "landed", rows=10, bytes=100)
-    night.cursor.execute.side_effect = lambda sql, params: night.events.append(
-        f"reset {sql.split()[1]}"
-    )
+    night.cursor.execute.side_effect = lambda sql, params: night.events.append("reset")
     night.work(lottery=[DAYS[3]])
 
     enrich_step.run(_ctx(settings, clock, tape=(landed, relanded)))
 
-    assert night.cursor.execute.call_args_list == [
-        call(_reset_sql(table), ([DAYS[3]],)) for table in OUTCOME_TABLES
-    ]
+    # Named parameter, and a list: a tuple would adapt as a row, not as the date[].
+    night.cursor.execute.assert_called_once_with(RESET_SQL, {"days": [DAYS[3]]})
     assert night.events[: night.events.index("close")] == [
         "configure lottery",
         "configure silent_boom",
         "connect",
-        f"reset {LOTTERY}",
-        f"reset {SILENT_BOOM}",
+        "reset",
         "list lottery",
         "list silent_boom",
     ]
@@ -803,11 +840,26 @@ def test_a_relanded_day_has_its_marker_reset_before_the_work_is_listed(
     assert night.list_lottery.call_args.args[0] is night.conn
 
 
-def test_the_rows_reset_are_counted(night: Night, settings: Settings, clock: Clock) -> None:
-    def execute(sql: str, params: object) -> None:
-        night.cursor.rowcount = 7 if LOTTERY in sql else 3
+def test_the_reset_is_one_statement_over_every_outcome_table(
+    night: Night, settings: Settings, clock: Clock
+) -> None:
+    tape = (DayOutcome(DAYS[3], "relanded", rows=10, bytes=100),)
 
-    night.cursor.execute.side_effect = execute
+    enrich_step.run(_ctx(settings, clock, tape=tape))
+
+    ((sql, _params),) = [c.args for c in night.cursor.execute.call_args_list]  # exactly one
+    for table in OUTCOME_TABLES:
+        assert _UPDATE.format(table=table) in sql
+    assert sql.count("UPDATE ") == len(OUTCOME_TABLES)
+    assert sql.count("%(days)s") == len(OUTCOME_TABLES)
+    assert sql.count("outcome_tape_version IS NOT NULL") == len(OUTCOME_TABLES)
+
+
+def test_the_rows_reset_are_counted_from_the_statements_one_row(
+    night: Night, settings: Settings, clock: Clock
+) -> None:
+    night.cursor.fetchone.return_value = (10,)
+    night.cursor.rowcount = 99  # a SELECT's rowcount: not the number of rows cleared
 
     result = enrich_step.run(
         _ctx(settings, clock, tape=(DayOutcome(DAYS[3], "relanded", rows=10, bytes=100),))
@@ -825,10 +877,8 @@ def test_only_the_relanded_days_are_reset(night: Night, settings: Settings, cloc
 
     enrich_step.run(_ctx(settings, clock, tape=tape))
 
-    # One UPDATE per table, both re-landed days in each, the landed one in neither.
-    assert [c.args[1] for c in night.cursor.execute.call_args_list] == [
-        ([DAYS[4], DAYS[2]],)
-    ] * len(OUTCOME_TABLES)
+    # Both re-landed days in the one statement, the landed one not in it.
+    night.cursor.execute.assert_called_once_with(RESET_SQL, {"days": [DAYS[4], DAYS[2]]})
 
 
 @pytest.mark.parametrize(
@@ -999,6 +1049,74 @@ def test_a_setup_failure_propagates_for_the_runner_to_report(
     night.enrich_lottery.assert_not_called()
 
 
+@pytest.mark.parametrize("stage", ["fetch", "connect", "shares"])
+def test_a_failure_at_any_stage_of_a_day_is_that_days_alone(
+    night: Night,
+    settings: Settings,
+    clock: Clock,
+    capture_exception: MagicMock,
+    stage: str,
+) -> None:
+    # The fetch is the likeliest real failure (R2 refuses a read, the disk is full, the
+    # deadline passes); the day's own connection and its shares query are Neon's. Each
+    # raises, not returns None, and each must stay inside the day.
+    failing, after = DAYS[4], DAYS[3]  # newest first: `failing` runs first
+    night.work(lottery=[after, failing])
+    if stage == "fetch":
+        failure: Exception = TapeReadError("fixture")
+        fetch = night.reader.fetch_day.side_effect
+
+        def fetch_day(day: date, deadline: float | None = None) -> Path:
+            if day == failing:
+                raise failure
+            return fetch(day, deadline)
+
+        night.reader.fetch_day.side_effect = fetch_day
+    elif stage == "connect":
+        failure = psycopg2.OperationalError("fixture")
+        connect = night.connect.side_effect
+        opened: list[None] = []
+
+        def failing_connect(settings: Settings):
+            opened.append(None)
+            if len(opened) == 2:  # the first is the setup connection, the second is the day's
+                raise failure
+            return connect(settings)
+
+        night.connect.side_effect = failing_connect
+    else:
+        failure = psycopg2.OperationalError("fixture")
+        shares = night.shares.side_effect
+
+        def failing_shares(conn: MagicMock, days: list[date]) -> list[DayShare]:
+            if days == [failing]:
+                raise failure
+            return shares(conn, days)
+
+        night.shares.side_effect = failing_shares
+
+    result = enrich_step.run(_ctx(settings, clock))
+
+    capture_exception.assert_called_once_with(
+        failure, tags={"step": STEP_NAME, "day": failing.isoformat()}
+    )
+    assert result.status == "failed"
+    assert (result.counts["days_failed"], result.counts["days_processed"]) == (1, 1)
+    assert night.reader.release.call_args_list == [call(failing), call(after)]
+    assert night.reader.fetch_day.call_count == 2
+    assert _isos(night.events, "lottery")[-1] == after.isoformat()  # the next day still worked
+    assert _isos(night.events, "silent_boom")[-1] == after.isoformat()
+    if stage == "fetch":
+        # Nothing was opened or run for the day whose download failed.
+        assert night.connect.call_count == 2  # the setup connection and `after`'s
+        assert _isos(night.events, "lottery") == [after.isoformat()]
+        assert _isos(night.events, "silent_boom") == [after.isoformat()]
+    elif stage == "connect":
+        assert _isos(night.events, "lottery") == [after.isoformat()]
+    else:
+        assert _isos(night.events, "lottery") == [failing.isoformat(), after.isoformat()]
+
+
 def test_a_base_exception_ends_the_step_after_the_day_is_released(
     night: Night, settings: Settings, clock: Clock, capture_exception: MagicMock
 ) -> None:
@@ -1028,13 +1146,14 @@ def test_one_log_line_per_day_with_counts_and_seconds(
     with caplog.at_level(logging.INFO, logger="enrich_step"):
         enrich_step.run(_ctx(settings, clock))
 
-    lines = [r.getMessage() for r in caplog.records if r.name == "enrich_step"]
-    waiting, done = lines  # newest first
+    records = [r for r in caplog.records if r.name == "enrich_step"]
+    waiting, done = (r.getMessage() for r in records)  # newest first
     assert waiting == f"enrich {DAYS[2].isoformat()} waiting for the tape"
     # Date, the day's non-zero counts, seconds: nothing else.
     assert re.fullmatch(
         rf"enrich {DAYS[1].isoformat()} ok lottery_outcomes_written=5 in \d+\.\ds", done
     )
+    assert [r.levelno for r in records] == [logging.INFO, logging.INFO]
 
 
 def test_logs_and_the_result_carry_no_exception_text(
@@ -1069,8 +1188,14 @@ def test_a_failed_day_is_logged_as_a_warning(
 
     failed, null = [r for r in caplog.records if r.name == "enrich_step"]
     assert (failed.levelno, null.levelno) == (logging.WARNING, logging.WARNING)
-    assert "failed (ValueError)" in failed.getMessage()
-    assert "null_days=1" in null.getMessage()
+    # The status word is ok | no outcomes | failed (<Class>): a day that fails the step
+    # (all-NULL shares) is never "ok".
+    assert re.fullmatch(
+        rf"enrich {DAYS[2].isoformat()} failed \(ValueError\) in \d+\.\ds", failed.getMessage()
+    )
+    assert re.fullmatch(
+        rf"enrich {DAYS[1].isoformat()} no outcomes null_days=1 in \d+\.\ds", null.getMessage()
+    )
 
 
 # --- the registered step, under the real runner ---------------------------------------
