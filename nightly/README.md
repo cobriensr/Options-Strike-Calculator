@@ -33,12 +33,14 @@ Each run:
    - `outcome-check` alerts when the fires of a recent session have no outcomes
      (see "Alert meanings").
 
-   Each step has its own deadline, which leaves every later step its reserve, so
-   an earlier step never starves a later one. A step that starts with less than
-   its own reserve left is skipped (`skipped_deadline`) and the later ones still
-   run. A step that raises fails that step alone: the tape and the other steps are
-   unaffected. A step's module is imported when the step runs, so one that fails
-   to import fails only that step.
+   Each step has its own deadline, which leaves every later step its reserve. A
+   step never starts work its budget cannot cover, but a unit of work that
+   overruns (a day of enrichment, say) cuts into the next step's reserve, and only
+   the watchdog bounds the run. A step that starts with less than its own reserve
+   left is skipped (`skipped_deadline`) and the later ones still run. A step that
+   raises fails that step alone: the tape and the other steps are unaffected. A
+   step's module is imported when the step runs, so one that fails to import fails
+   only that step.
 
 5. Reports each day and each step to Sentry as soon as it finishes, then exits.
 
@@ -325,26 +327,47 @@ the columns existed, or it has no outcome yet. A `ws_cron` source next to a non-
 **Each night.** A day with work but no landed tape waits (`days_waiting_tape`, no
 alert); the step works it once the tape lands. For a landed day the step downloads
 its tape to `/tmp/nightly/enrich` (`ENRICH_CACHE_DIR`, emptied when the step opens its
-reader, one day on disk at a time, each download bounded at 600 s by
-`FETCH_DEADLINE_SECONDS` in `_tape_reader.py`), runs both scripts on one fresh Neon
-connection, and releases the file. It stops for the night, leaving the rest as
-`days_left`, when less than `ENRICH_DAY_BUDGET_SECONDS` (900 s) of its time is left,
-or when failed days plus all-NULL (table, day) pairs reach `ENRICH_MAX_DAY_FAILURES`
-(3): a broken tape layout or chain format fails or nulls every day, and each costs a
-download. A day that raises is counted, sent to Sentry once, and the loop goes on.
+reader, one day on disk at a time, each download held to 600 s by
+`FETCH_DEADLINE_SECONDS` in `_tape_reader.py`, a bound checked between reads, so a
+stalled read can pass it), runs both scripts on one fresh Neon connection, and
+releases the file. It stops for the night, leaving the rest as `days_left`, when less
+than `ENRICH_DAY_BUDGET_SECONDS` (900 s) of its time is left, or when failed days,
+all-NULL (table, day) pairs and unpriced passes together reach
+`ENRICH_MAX_DAY_FAILURES` (3). A day that raises is counted, sent to Sentry once, and
+the loop goes on.
 
-The step's result is `failed` if a day failed or came back all-NULL, else `partial`
-if days are left, else `ok`. Its counts are in the log line `step enrich-outcomes ...`
-and in the `counts` extra of the step alerts: `days_processed`, `days_failed`,
-`days_waiting_tape`, `days_left`, `tape_markers_reset` (rows whose marker was
-cleared), `null_days` and `low_days` (these two count (table, day) pairs), and per
+A tape layout or chain format the scripts cannot read shows as one of three signals,
+each catching what the others miss, and each day it goes unseen would cost a download:
+
+- A day raises: `days_failed`.
+- All of a table-day's fires come back without an outcome: `null_days`. That holds only
+  for fires with no value from another writer (the history the crons never filled).
+  Fires that hold a feed value keep it when the tape cannot price them, so their share
+  stays near 100%.
+- A pass wrote nothing and tagged at least `ENRICH_UNPRICED_FLOOR` (20) rows:
+  `unpriced_passes`. It sees what `null_days` cannot: fires that hold a feed value, and
+  the inversion pass, which has no share at all. It counts (pass, day) units, up to
+  three on a day (the Lottery Finder outcome pass, its inversion pass and the Silent
+  Boom pass). The outcome passes count the fires they kept plus the ones they
+  stamped, the inversion pass the fires it tagged undefined. Rows tagged, not rows
+  selected, because tagging marks a fire examined and locks it out of the work set.
+  A day whose net flow is missing leaves its fires as `inversion_input_missing`,
+  untagged, and is not flagged. A total break can trip three passes on one day, so
+  the step stops after that day, which limits the stamping to one day.
+
+The step's result is `failed` if a day failed, came back all-NULL or had an unpriced
+pass, else `partial` if days are left, else `ok`. Its counts are in the log line
+`step enrich-outcomes ...` and in the `counts` extra of the step alerts:
+`days_processed`, `days_failed`, `days_waiting_tape`, `days_left`,
+`tape_markers_reset` (rows whose marker was cleared), `null_days` and `low_days`
+(these two count (table, day) pairs), `unpriced_passes` ((pass, day) units), and per
 table `lottery_` / `silent_boom_` plus `outcomes_written`, `stamped_no_outcome`,
 `outcomes_replaced` (the tape's value overwrote an earlier outcome) and
 `outcomes_kept` (the tape could not price a fire that held a value, which stayed).
 The Lottery Finder pass adds `inversion_written`, `inversion_stamped` and
 `inversion_input_missing`. The log line for each day names its date, a status
-(`ok`, `no outcomes` or `failed (<ExceptionClass>)`) and its non-zero counts, never
-an exception's text.
+(`failed (<ExceptionClass>)`, else `priced none`, else `no outcomes`, else `ok`) and
+its non-zero counts, never an exception's text.
 
 **A day landed or re-landed tonight.** The rows of a day whose object the tape job
 put in R2 tonight (`landed` or `relanded`) may carry the marker of the tape it
@@ -380,8 +403,25 @@ UPDATE silent_boom_alerts SET outcome_tape_version = NULL
 
 The next night's step redoes the day: the tape's values replace the old ones where
 it can price a fire, and the old ones stay where it cannot. Clearing outcome values
-is never needed, and inversions are not redone this way. The day must be landed in
-R2, or it waits.
+is never needed, and inversions are not redone this way, except for a day that came
+back `priced none` (next paragraph). The day must be landed in R2, or it waits.
+
+**A `priced none` day.** The inversion pass tagged the fires it could not price
+`inversion_source = 'fulltape'` and left their value NULL. That tag takes them out of
+the inversion work set (`realized_flow_inversion_pct IS NULL AND inversion_source IS
+NULL`), and the marker reset above does not touch it. After the cause is fixed, clear
+the day's markers as above, then clear those tags. The version goes with the source,
+because migration #201's check allows both NULL or both set:
+
+```sql
+UPDATE lottery_finder_fires SET inversion_source = NULL, inversion_version = NULL
+ WHERE date = '<day>' AND inversion_source = 'fulltape'
+   AND realized_flow_inversion_pct IS NULL;
+```
+
+No value is lost, because the rows it touches have none. It also reopens the fires the
+tape had rightly found undefined; the next pass tags them again. The outcome passes
+need nothing more than the marker reset.
 
 **Dry run on a workstation.** From the repo root, with the four `R2_*` variables and
 a database URL in the environment or in `.env.local` (which points at the production
@@ -421,7 +461,7 @@ Otherwise it is empty. It never changes the grouping.
 | `nightly tape day relanded`              | warning | A day was re-landed after its UW ETag changed. Sent for every re-land, one issue per day; `warnings` lists any flags.                                                                                            |
 | `nightly re-land identical content`      | warning | A re-land whose `rows` and `source-bytes` equal the old object's: likely ETag churn, not a rewrite. One issue per day.                                                                                           |
 | `nightly rewrite check unavailable`      | warning | No probed day could be compared, so a rewrite would go unseen. `days` is how many were left unchecked.                                                                                                           |
-| `nightly step failed`                    | error   | A step finished `failed` without raising. `enrich-outcomes`: a day failed or came back with no outcomes. `outcome-check`: a recent session has no outcomes. Read the alerts below and the run log.               |
+| `nightly step failed`                    | error   | A step finished `failed` without raising. `enrich-outcomes`: a day failed, came back with no outcomes or priced none. `outcome-check`: a recent session has no outcomes. Read the alerts below and the run log.  |
 | `nightly step partial`                   | warning | A step ran out of time with work left for the next night (`days_left` in `counts`). Expected while the history drains; look only if it persists.                                                                 |
 | `nightly step skipped_deadline`          | error   | A step started with less than its own reserve left, so it did not run (the later steps still did). The tape or an earlier step overran its share; the next night runs it again.                                  |
 | `nightly outcomes all null`              | error   | `outcome-check`: a table has fires on one of the last 3 sessions (`OUTCOME_CHECK_SESSIONS`) and none has an outcome. Tags `table`, `day`; extras `rows`, `with_outcome`. One issue per table and day. See below. |
@@ -452,9 +492,17 @@ the day's `enrich <day>` line in the run log:
   `fulltape/{day}-fulltape.parquet`; the step works the day once it lands.
 - `failed (<ExceptionClass>)`: the step retries the day next night with no action.
 - `no outcomes`: the tape examined the fires and priced none of them, so a retry
-  alone changes nothing. Suspect a changed tape layout or option-chain id format,
-  which would null every day (the step stops after 3). Fix the cause, then clear the
+  alone changes nothing. Suspect a changed tape layout or option-chain id format.
+  This status shows only for fires that hold no value from another writer; where they
+  hold one, the same break shows as `priced none`. Fix the cause, then clear the
   day's markers by hand (see "Enrichment").
+- `priced none`: a pass wrote nothing and tagged at least 20 fires (`unpriced_passes`
+  in the `step enrich-outcomes` line says how many passes). The tape priced none of
+  them, and the fires kept whatever value another writer had left, so the shares and
+  `nightly outcomes all null` stay quiet. Suspect the same layout or chain id change.
+  A total break trips three passes on its first day, which stops the step there. Fix
+  the cause, then clear the day's markers and its inversion tags by hand (see "A
+  `priced none` day" under "Enrichment").
 - No `enrich <day>` line at all. Either the day had no work left, so an earlier
   night already examined it and priced none of it (treat it as `no outcomes`), or
   the step did not reach the day. Look for `nightly step skipped_deadline`, an

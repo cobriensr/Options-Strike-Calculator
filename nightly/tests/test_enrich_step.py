@@ -40,6 +40,7 @@ from constants import (
     ENRICH_CACHE_DIR,
     ENRICH_DAY_BUDGET_SECONDS,
     ENRICH_MAX_DAY_FAILURES,
+    ENRICH_UNPRICED_FLOOR,
     TAPE_START,
     WORK_DIR,
 )
@@ -76,6 +77,7 @@ COUNT_NAMES = {
     "days_left",
     "days_failed",
     "null_days",
+    "unpriced_passes",
     "low_days",
     "tape_markers_reset",
     "lottery_outcomes_written",
@@ -595,6 +597,250 @@ def test_no_work_days_is_ok_and_opens_no_reader(
     assert night.connect.call_count == 1
 
 
+# --- unpriced passes ------------------------------------------------------------------
+
+# A pass is unpriced when it wrote nothing and tagged ENRICH_UNPRICED_FLOOR rows or more: a
+# tape that prices nothing still leaves the shares near 100% where the fires hold a feed
+# value, so these counts are the only sign of it. Each entry builds the two scripts' results
+# for a day on which one pass tagged `tagged` rows and wrote `written`; the rest stay at 0.
+# The outcome passes tag what they stamp plus what they keep, so each has a mixed entry too.
+
+
+def _halves(n: int) -> tuple[int, int]:
+    return n // 2, n - n // 2
+
+
+PASSES = {
+    "lottery-stamped": lambda tagged, written: (
+        LotteryResult(outcomes_written=written, stamped_no_outcome=tagged),
+        SilentBoomResult(),
+    ),
+    "lottery-kept": lambda tagged, written: (
+        LotteryResult(outcomes_written=written, outcomes_kept=tagged),
+        SilentBoomResult(),
+    ),
+    "lottery-kept-and-stamped": lambda tagged, written: (
+        LotteryResult(
+            outcomes_written=written,
+            outcomes_kept=_halves(tagged)[0],
+            stamped_no_outcome=_halves(tagged)[1],
+        ),
+        SilentBoomResult(),
+    ),
+    "lottery-flow": lambda tagged, written: (
+        LotteryResult(flow_written=written, flow_stamped_undefined=tagged),
+        SilentBoomResult(),
+    ),
+    "silent-boom-stamped": lambda tagged, written: (
+        LotteryResult(),
+        SilentBoomResult(outcomes_written=written, stamped_no_outcome=tagged),
+    ),
+    "silent-boom-kept": lambda tagged, written: (
+        LotteryResult(),
+        SilentBoomResult(outcomes_written=written, alerts_kept=tagged),
+    ),
+    "silent-boom-kept-and-stamped": lambda tagged, written: (
+        LotteryResult(),
+        SilentBoomResult(
+            outcomes_written=written,
+            alerts_kept=_halves(tagged)[0],
+            stamped_no_outcome=_halves(tagged)[1],
+        ),
+    ),
+}
+
+
+@pytest.mark.parametrize("name", PASSES)
+@pytest.mark.parametrize(
+    ("tagged", "written", "unpriced"),
+    [
+        (ENRICH_UNPRICED_FLOOR, 0, 1),
+        (ENRICH_UNPRICED_FLOOR + 1, 0, 1),
+        (ENRICH_UNPRICED_FLOOR - 1, 0, 0),
+        (ENRICH_UNPRICED_FLOOR, 1, 0),
+        (10 * ENRICH_UNPRICED_FLOOR, 1, 0),
+    ],
+)
+def test_a_pass_that_tags_the_floor_and_writes_nothing_is_unpriced(
+    night: Night,
+    settings: Settings,
+    clock: Clock,
+    capture_exception: MagicMock,
+    name: str,
+    tagged: int,
+    written: int,
+    unpriced: int,
+) -> None:
+    assert ENRICH_UNPRICED_FLOOR == 20
+    iso = DAYS[1].isoformat()
+    night.work(lottery=[DAYS[1]], silent_boom=[DAYS[1]])
+    night.lottery_results[iso], night.silent_boom_results[iso] = PASSES[name](tagged, written)
+
+    result = enrich_step.run(_ctx(settings, clock))
+
+    # The shares are healthy (the default), so the pass's own counts decide the status.
+    assert result.counts["unpriced_passes"] == unpriced
+    assert result.status == ("failed" if unpriced else "ok")
+    assert result.detail == (FAILED_DETAIL if unpriced else "")
+    # Counted, not raised: the day is processed and the step sends nothing from inside.
+    assert (result.counts["days_processed"], result.counts["days_failed"]) == (1, 0)
+    assert result.counts["null_days"] == 0
+    capture_exception.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("lottery", "silent_boom"),
+    [
+        (LotteryResult(fires_selected=40), SilentBoomResult()),
+        (LotteryResult(), SilentBoomResult(alerts_selected=40)),
+        (LotteryResult(flow_selected=40), SilentBoomResult()),
+    ],
+    ids=["lottery-outcome", "silent-boom", "lottery-flow"],
+)
+def test_fires_selected_but_not_tagged_are_not_unpriced(
+    night: Night,
+    settings: Settings,
+    clock: Clock,
+    lottery: LotteryResult,
+    silent_boom: SilentBoomResult,
+) -> None:
+    # Tagging is what locks a fire out of the work set, so it is what counts: a pass that
+    # selected fires and changed none (another writer got there first) did no damage.
+    iso = DAYS[1].isoformat()
+    night.work(lottery=[DAYS[1]], silent_boom=[DAYS[1]])
+    night.lottery_results[iso], night.silent_boom_results[iso] = lottery, silent_boom
+
+    result = enrich_step.run(_ctx(settings, clock))
+
+    assert result.counts["unpriced_passes"] == 0
+    assert result.status == "ok"
+
+
+def test_a_day_whose_fires_all_keep_a_feed_value_fails_the_step(
+    night: Night, settings: Settings, clock: Clock
+) -> None:
+    # The feed's values keep the shares at 100%, so null_days sees nothing; the tape
+    # priced none of the 40 fires, and each was marked examined.
+    night.work(lottery=[DAYS[1]])
+    night.lottery_results[DAYS[1].isoformat()] = LotteryResult(fires_selected=40, outcomes_kept=40)
+
+    result = enrich_step.run(_ctx(settings, clock))
+
+    assert night.shares.call_count == 1  # read, and healthy
+    assert result.status == "failed"
+    assert result.detail == FAILED_DETAIL
+    assert result.counts["unpriced_passes"] == 1
+    assert result.counts["lottery_outcomes_kept"] == 40
+    assert (result.counts["null_days"], result.counts["days_failed"]) == (0, 0)
+
+
+def test_a_flow_pass_that_only_waits_for_net_flow_is_not_unpriced(
+    night: Night, settings: Settings, clock: Clock
+) -> None:
+    # A day whose net flow is missing leaves its fires as flow_input_missing, untagged: it
+    # selected plenty, wrote nothing and tagged fewer than the floor.
+    night.work(lottery=[DAYS[1]])
+    stamped = ENRICH_UNPRICED_FLOOR - 1
+    night.lottery_results[DAYS[1].isoformat()] = LotteryResult(
+        flow_selected=100, flow_stamped_undefined=stamped, flow_input_missing=100 - stamped
+    )
+
+    result = enrich_step.run(_ctx(settings, clock))
+
+    assert result.counts["unpriced_passes"] == 0
+    assert result.counts["lottery_inversion_input_missing"] == 100 - stamped
+    assert result.status == "ok"
+
+
+def test_an_unpriced_pass_and_two_null_pairs_share_the_cap(
+    night: Night, settings: Settings, clock: Clock
+) -> None:
+    night.work(lottery=DAYS)
+    night.lottery_results[DAYS[4].isoformat()] = LotteryResult(fires_selected=40, outcomes_kept=40)
+    night.share_rows[DAYS[3]] = [
+        DayShare(LOTTERY, DAYS[3], 40, 0),
+        DayShare(SILENT_BOOM, DAYS[3], 4, 0),
+    ]
+
+    result = enrich_step.run(_ctx(settings, clock))
+
+    assert night.reader.fetch_day.call_count == 2  # 1 + 2 reach the cap of 3
+    counts = result.counts
+    assert (counts["days_failed"], counts["null_days"], counts["unpriced_passes"]) == (0, 2, 1)
+    assert counts["days_left"] == 3
+    assert result.status == "failed"
+
+
+def test_a_total_break_stops_the_step_after_its_first_day(
+    night: Night, settings: Settings, clock: Clock
+) -> None:
+    # Three passes can come back unpriced on one day, which reaches the cap by itself: a
+    # tape that prices nothing stamps one day's fires, not three days'.
+    night.work(lottery=DAYS, silent_boom=DAYS)
+    for day in DAYS:
+        night.lottery_results[day.isoformat()] = LotteryResult(
+            outcomes_kept=ENRICH_UNPRICED_FLOOR, flow_stamped_undefined=ENRICH_UNPRICED_FLOOR
+        )
+        night.silent_boom_results[day.isoformat()] = SilentBoomResult(
+            alerts_kept=ENRICH_UNPRICED_FLOOR
+        )
+
+    result = enrich_step.run(_ctx(settings, clock))
+
+    assert night.reader.fetch_day.call_count == 1
+    assert result.status == "failed"
+    assert result.counts["unpriced_passes"] == 3
+    assert result.counts["days_processed"] == 1
+    assert result.counts["days_left"] == 4
+
+
+def test_a_pass_that_returned_unpriced_counts_when_a_later_pass_raises(
+    night: Night, settings: Settings, clock: Clock, capture_exception: MagicMock
+) -> None:
+    # The lottery pass returned before the silent boom pass raised, like its other counts,
+    # and the flag feeds the cap: 1 unpriced + 1 failed on the first day, 1 null on the next.
+    night.work(lottery=DAYS[2:], silent_boom=DAYS[2:])
+    night.lottery_results[DAYS[4].isoformat()] = LotteryResult(outcomes_kept=ENRICH_UNPRICED_FLOOR)
+    night.silent_boom_results[DAYS[4].isoformat()] = RuntimeError("boom")
+    night.null_share(DAYS[3])
+
+    result = enrich_step.run(_ctx(settings, clock))
+
+    assert result.counts["unpriced_passes"] == 1
+    assert result.counts["days_failed"] == 1
+    assert result.counts["null_days"] == 1
+    assert night.reader.fetch_day.call_count == 2  # the cap of 3 stopped it before DAYS[2]
+    assert result.counts["days_left"] == 1
+
+
+def test_a_pass_that_raised_before_returning_is_not_unpriced(
+    night: Night, settings: Settings, clock: Clock, capture_exception: MagicMock
+) -> None:
+    night.work(lottery=[DAYS[1]], silent_boom=[DAYS[1]])
+    night.lottery_results[DAYS[1].isoformat()] = RuntimeError("boom")
+    night.silent_boom_results[DAYS[1].isoformat()] = SilentBoomResult(
+        alerts_kept=ENRICH_UNPRICED_FLOOR
+    )
+
+    result = enrich_step.run(_ctx(settings, clock))
+
+    night.enrich_silent_boom.assert_not_called()  # the lottery pass raised first
+    assert result.counts["unpriced_passes"] == 0
+    assert result.counts["days_failed"] == 1
+
+
+def test_a_missing_file_is_not_an_unpriced_pass(
+    night: Night, settings: Settings, clock: Clock, capture_exception: MagicMock
+) -> None:
+    night.work(lottery=[DAYS[1]])
+    night.lottery_results[DAYS[1].isoformat()] = LotteryResult(archive_missing=True)
+
+    result = enrich_step.run(_ctx(settings, clock))
+
+    assert result.counts["unpriced_passes"] == 0
+    assert result.counts["days_failed"] == 1
+
+
 # --- the archive layout ---------------------------------------------------------------
 
 
@@ -964,6 +1210,7 @@ def test_each_script_count_maps_to_its_own_step_count(
         "days_left": 0,
         "days_failed": 0,
         "null_days": 0,
+        "unpriced_passes": 0,
         "low_days": 0,
         "tape_markers_reset": 0,
         "lottery_outcomes_written": 2,
@@ -1212,6 +1459,51 @@ def test_a_failed_day_is_logged_as_a_warning(
     )
 
 
+def test_a_day_with_an_unpriced_pass_is_logged_priced_none_as_a_warning(
+    night: Night, settings: Settings, clock: Clock, caplog: pytest.LogCaptureFixture
+) -> None:
+    night.work(lottery=[DAYS[1]])
+    night.lottery_results[DAYS[1].isoformat()] = LotteryResult(outcomes_kept=ENRICH_UNPRICED_FLOOR)
+
+    with caplog.at_level(logging.INFO, logger="enrich_step"):
+        enrich_step.run(_ctx(settings, clock))
+
+    (record,) = [r for r in caplog.records if r.name == "enrich_step"]
+    assert record.levelno == logging.WARNING
+    assert re.fullmatch(
+        rf"enrich {DAYS[1].isoformat()} priced none unpriced_passes=1 "
+        rf"lottery_outcomes_kept={ENRICH_UNPRICED_FLOOR} in \d+\.\ds",
+        record.getMessage(),
+    )
+
+
+def test_priced_none_outranks_no_outcomes_and_failed_outranks_both(
+    night: Night, settings: Settings, clock: Clock, caplog: pytest.LogCaptureFixture
+) -> None:
+    # failed (<Class>), then priced none, then no outcomes, then ok.
+    night.work(lottery=[DAYS[1], DAYS[2]], silent_boom=[DAYS[2]])
+    unpriced = LotteryResult(outcomes_kept=ENRICH_UNPRICED_FLOOR)
+    night.lottery_results[DAYS[1].isoformat()] = unpriced  # also all-NULL (below)
+    night.null_share(DAYS[1])
+    night.lottery_results[DAYS[2].isoformat()] = unpriced  # then the silent boom pass raises
+    night.silent_boom_results[DAYS[2].isoformat()] = ValueError("x")
+
+    with caplog.at_level(logging.INFO, logger="enrich_step"):
+        enrich_step.run(_ctx(settings, clock))
+
+    failed, priced_none = (r.getMessage() for r in caplog.records if r.name == "enrich_step")
+    assert re.fullmatch(
+        rf"enrich {DAYS[2].isoformat()} failed \(ValueError\) unpriced_passes=1 "
+        rf"lottery_outcomes_kept={ENRICH_UNPRICED_FLOOR} in \d+\.\ds",
+        failed,
+    )
+    assert re.fullmatch(
+        rf"enrich {DAYS[1].isoformat()} priced none null_days=1 unpriced_passes=1 "
+        rf"lottery_outcomes_kept={ENRICH_UNPRICED_FLOOR} in \d+\.\ds",
+        priced_none,
+    )
+
+
 # --- the registered step, under the real runner ---------------------------------------
 
 
@@ -1270,6 +1562,29 @@ def test_a_null_day_reports_one_step_failure_and_no_share_alert(
     ]
 
 
+def test_an_unpriced_pass_reports_one_step_failure_and_no_share_alert(
+    night: Night, settings: Settings, capture_message: MagicMock
+) -> None:
+    night.work(lottery=[DAYS[1]])
+    night.lottery_results[DAYS[1].isoformat()] = LotteryResult(fires_selected=40, outcomes_kept=40)
+
+    outcome = _run_registered(settings)
+
+    assert outcome.status == "failed"
+    assert outcome.error is None
+    assert outcome.detail == FAILED_DETAIL
+    assert outcome.counts["unpriced_passes"] == 1
+    assert set(outcome.counts) == COUNT_NAMES  # a valid StepResult: names and ints
+    capture_message.assert_called_once()
+    assert capture_message.call_args.args == ("nightly step failed",)
+    assert capture_message.call_args.kwargs["fingerprint"] == [
+        "nightly-step",
+        STEP_NAME,
+        "failed",
+        FAILED_DETAIL,
+    ]
+
+
 def test_work_left_reports_a_partial_step_as_a_warning(
     night: Night, settings: Settings, capture_message: MagicMock, clock: Clock
 ) -> None:
@@ -1315,6 +1630,7 @@ def test_a_clean_night_reports_nothing(
     assert outcome.status == "ok"
     assert outcome.detail == ""
     assert outcome.counts["days_processed"] == 2
+    assert outcome.counts["unpriced_passes"] == 0  # present, and zero
     capture_message.assert_not_called()
 
 

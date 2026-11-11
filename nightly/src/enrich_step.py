@@ -26,29 +26,48 @@ A day with no landed tape waits (`days_waiting_tape`). For a landed one the step
 tape (before opening a connection, so Neon never idles through a download; the download is
 bounded at FETCH_DEADLINE_SECONDS, or by the step's deadline if that is nearer), runs both
 passes on one fresh connection, and counts the (table, day) pairs whose fires all came back
-without an outcome (`null_days`) or mostly so (`low_days`, a count only). Pass 3, the ticker
-refit, never runs: the ticker EMA is retired.
+without an outcome (`null_days`) or mostly so (`low_days`, a count only), and the passes
+that priced nothing (`unpriced_passes`, below). Pass 3, the ticker refit, never runs: the
+ticker EMA is retired.
 
 Failures: an Exception in a day (its download, its own connection, either pass, the shares
 query) is counted in `days_failed`, sent once through `capture_exception` tagged with the
 step and the day (`monitoring.scrub_event` cuts a data library's text), and the loop goes
-on. The loop stops, leaving the rest as `days_left`, when `days_failed + null_days` reaches
-ENRICH_MAX_DAY_FAILURES: a broken tape layout or chain format makes every day fail or come
-back all-NULL, and each would cost a download. A landed day whose file the scripts cannot
-find is the same case, so it fails the day. It also stops when less than
-ENRICH_DAY_BUDGET_SECONDS is left. Only the setup is not a day's: a failure of its
-connection, the marker UPDATE, the listing of the days or the listing of the tape
-propagates to `run_steps`.
+on. A landed day whose file the scripts cannot find is the same case, so it fails the day.
+
+A tape layout or chain format the scripts cannot read breaks the step in one of three ways,
+and each has its own signal:
+- A day raises: `days_failed`.
+- A table-day whose fires hold no value from another writer comes back all-NULL, so the
+  share of its fires with an outcome is 0: `null_days`.
+- A pass prices nothing for fires that do hold a value (the feed's, which the tape keeps
+  when it cannot price a fire): the share stays near 100% and `null_days` sees nothing, but
+  every examined fire is marked and locked out of the work set. The inversion pass has no
+  share at all. So a pass that wrote nothing and tagged ENRICH_UNPRICED_FLOOR rows or more is
+  unpriced: `unpriced_passes`, counted in (pass, day) units, up to three on a day. The
+  lottery outcome pass counts what it kept and stamped, the silent boom pass the same, and
+  the lottery flow pass what it tagged undefined (a day whose net flow is missing leaves its
+  fires as `flow_input_missing`, untagged, and is not flagged). A pass counts once it has
+  returned, even if a later pass of the day raises.
+
+The loop stops, leaving the rest as `days_left`, when `days_failed + null_days +
+unpriced_passes` reaches ENRICH_MAX_DAY_FAILURES; each day would cost a download. A total
+break can trip three passes on one day, so the step stops after that day, which limits the
+stamping to one day. It also stops when less than ENRICH_DAY_BUDGET_SECONDS is left. Only the
+setup is not a day's: a failure of its connection, the marker UPDATE, the listing of the
+days or the listing of the tape propagates to `run_steps`.
 
 The step sends no share alert. The outcome check reports the last three sessions, so the
 latest session would be reported twice, and a long backfill would send an email a day.
 
-Status: `failed` if a day failed or came back all-NULL, else `partial` if days are left,
-else `ok`; the details are fixed phrases (they are part of the Sentry fingerprint).
+Status: `failed` if a day failed, came back all-NULL or had an unpriced pass, else `partial`
+if days are left, else `ok`; the details are fixed phrases (they are part of the Sentry
+fingerprint).
 
-Logs carry one line per day: the date, a status word (`ok`, `no outcomes` for a day with an
-all-NULL pair, or `failed (<ExceptionClass>)`), the day's non-zero counts and the seconds.
-Never an exception's text (it can carry the Neon host) or row data.
+Logs carry one line per day: the date, a status word (`failed (<ExceptionClass>)`, else
+`priced none` for a day with an unpriced pass, else `no outcomes` for a day with an all-NULL
+pair, else `ok`), the day's non-zero counts and the seconds. Never an exception's text (it
+can carry the Neon host) or row data.
 
 Import order: the lottery script before the silent boom one. The silent boom script puts
 <repo>/ml/src first on sys.path, which holds an older enrich_lottery_outcomes.py.
@@ -75,6 +94,7 @@ from constants import (
     ENRICH_CACHE_DIR,
     ENRICH_DAY_BUDGET_SECONDS,
     ENRICH_MAX_DAY_FAILURES,
+    ENRICH_UNPRICED_FLOOR,
     TAPE_START,
 )
 from outcome_check import OUTCOME_TABLES, classify_share, outcome_shares
@@ -117,6 +137,7 @@ _SILENT_BOOM_COUNTS = (
 # What one day adds to the night's counts, and then every count the step reports.
 _DAY_COUNT_NAMES = (
     "null_days",
+    "unpriced_passes",
     "low_days",
     *(name for _, name in _LOTTERY_COUNTS),
     *(name for _, name in _SILENT_BOOM_COUNTS),
@@ -206,17 +227,17 @@ def _enrich_days(ctx: StepContext, days: Sequence[date], counts: dict[str, int])
 
 
 def _must_stop(ctx: StepContext, counts: dict[str, int]) -> bool:
-    """Less than a day's budget left, or the failure cap reached (failed and all-NULL days)."""
-    return (
-        ctx.seconds_left() < ENRICH_DAY_BUDGET_SECONDS
-        or counts["days_failed"] + counts["null_days"] >= ENRICH_MAX_DAY_FAILURES
-    )
+    """Less than a day's budget left, or the failure cap reached (failed days, all-NULL
+    pairs and unpriced passes)."""
+    broken = counts["days_failed"] + counts["null_days"] + counts["unpriced_passes"]
+    return ctx.seconds_left() < ENRICH_DAY_BUDGET_SECONDS or broken >= ENRICH_MAX_DAY_FAILURES
 
 
 def _enrich_day(ctx: StepContext, reader: TapeReader, day: date, counts: dict[str, int]) -> None:
     """One landed day: its counts join `counts` whether it finished or raised.
 
-    The writes made before a raise are in the database, so they count.
+    The counts of the passes that returned are kept. A pass that raised reports none of its
+    writes, though some may already be committed (the connection is autocommit).
     """
     iso = day.isoformat()
     started = monotonic()
@@ -244,9 +265,11 @@ def _write_day(ctx: StepContext, reader: TapeReader, day: date, tally: dict[str,
     with connect_db(ctx.settings) as conn:
         lottery = enrich_lottery_day(conn, iso, select="all")
         _add_counts(tally, lottery, _LOTTERY_COUNTS)
+        tally["unpriced_passes"] += _lottery_unpriced_passes(lottery)
         _require_file(lottery)
         silent_boom = enrich_silent_boom_day(conn, iso, select="all")
         _add_counts(tally, silent_boom, _SILENT_BOOM_COUNTS)
+        tally["unpriced_passes"] += _silent_boom_unpriced_passes(silent_boom)
         _require_file(silent_boom)
         for share in outcome_shares(conn, [day]):
             kind = classify_share(share)
@@ -276,6 +299,28 @@ def _add_counts(
         tally[count_name] += getattr(result, field_name)
 
 
+def _priced_none(written: int, tagged: int) -> int:
+    """1 for a pass that wrote nothing and tagged ENRICH_UNPRICED_FLOOR rows or more, else 0.
+
+    Rows tagged, not rows selected: tagging is what marks a fire examined.
+    """
+    return int(written == 0 and tagged >= ENRICH_UNPRICED_FLOOR)
+
+
+def _lottery_unpriced_passes(result: LotteryDayResult) -> int:
+    """How many of the lottery script's two passes, outcomes and flow, priced nothing."""
+    outcomes = _priced_none(
+        result.outcomes_written, result.outcomes_kept + result.stamped_no_outcome
+    )
+    flow = _priced_none(result.flow_written, result.flow_stamped_undefined)
+    return outcomes + flow
+
+
+def _silent_boom_unpriced_passes(result: SilentBoomDayResult) -> int:
+    """1 if the silent boom script's one pass priced nothing."""
+    return _priced_none(result.outcomes_written, result.alerts_kept + result.stamped_no_outcome)
+
+
 def _require_file(result: LotteryDayResult | SilentBoomDayResult) -> None:
     if result.archive_missing:
         raise RuntimeError(_MISSING_FILE)
@@ -284,17 +329,19 @@ def _require_file(result: LotteryDayResult | SilentBoomDayResult) -> None:
 def _log_day(iso: str, tally: dict[str, int], error: str | None, seconds: float) -> None:
     if error is not None:
         status = f"failed ({error})"
+    elif tally["unpriced_passes"]:
+        status = "priced none"  # not "ok": this day fails the step
     elif tally["null_days"]:
         status = "no outcomes"  # not "ok": this day fails the step
     else:
         status = "ok"
     shown = "".join(f" {name}={n}" for name, n in tally.items() if n)
-    level = logging.WARNING if error or tally["null_days"] else logging.INFO
+    level = logging.INFO if status == "ok" else logging.WARNING
     log.log(level, "enrich %s %s%s in %.1fs", iso, status, shown, seconds)
 
 
 def _result(counts: dict[str, int]) -> StepResult:
-    if counts["days_failed"] or counts["null_days"]:
+    if counts["days_failed"] or counts["null_days"] or counts["unpriced_passes"]:
         return StepResult("failed", counts, _FAILED_DETAIL)
     if counts["days_left"]:
         return StepResult("partial", counts, _PARTIAL_DETAIL)

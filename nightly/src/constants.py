@@ -25,8 +25,8 @@ DOWNLOAD_DEADLINE_SECONDS = 1800
 DOWNLOAD_MAX_ATTEMPTS = 4
 MIN_FREE_DISK_BYTES = 15 * 2**30
 WORK_DIR = Path("/tmp/nightly")
-# Neon connections. A child process builds PGCONNECT_TIMEOUT and PGOPTIONS from these two
-# values, never from literals.
+# Neon connections. Phase 3's child processes will build PGCONNECT_TIMEOUT and PGOPTIONS
+# from these two values, never from literals.
 DB_CONNECT_TIMEOUT_SECONDS = 15
 # The largest query, list_work_dates' scan of the 2.47 GB lottery_finder_fires, runs in
 # seconds; past 300 s it is a hang.
@@ -51,10 +51,20 @@ ENRICH_CACHE_DIR = WORK_DIR / "enrich"
 # passes. 3 x the slowest local day (79 s, Task 6) is below the 900 s floor; the plan's
 # budget table caps this at 1,800.
 ENRICH_DAY_BUDGET_SECONDS = 900
-# Failed days plus all-NULL (table, day) pairs after which the step stops for the night. A
-# broken tape layout or chain format fails or nulls every day, and each would cost a
-# download; this bounds the wasted downloads and the Sentry exceptions (one per failed day).
+# Failed days, all-NULL (table, day) pairs and unpriced passes (below) after which the step
+# stops for the night. A tape layout or chain format the scripts cannot read shows as one of
+# them, each catching what the others miss: a day that raises; a table-day whose fires hold no
+# value from another writer, so none gets an outcome; or a pass that wrote nothing where the
+# fires do hold a value (the shares stay near 100%) or in the inversion pass (no share).
+# Each would cost a download; this bounds the wasted downloads, the fires stamped and the
+# Sentry exceptions (one per failed day).
 ENRICH_MAX_DAY_FAILURES = 3
+# A pass is unpriced when it wrote nothing and tagged at least this many rows. Rows tagged,
+# not rows selected: tagging marks a fire examined and locks it out of the work set. A
+# broken chain id hits every fire, and a lottery day has thousands. About 20% of flow results
+# are legitimately undefined, so 20 in a row that are all undefined is negligible. A day
+# re-listed for a few leftover fires stays under it.
+ENRICH_UNPRICED_FLOOR = 20
 # UW's 403 names this token's boundary, and a full plan reaches back about 2 years: a
 # boundary newer than this many days before the last session means the entitlement
 # shrank, not that UW lacks the day, so it never marks one.
