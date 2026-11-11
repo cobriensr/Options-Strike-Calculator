@@ -1,6 +1,6 @@
 # 0DTE SPX Strike Calculator
 
-Single-owner 0DTE SPX options trading tool. Vite + React 19 frontend, Vercel Serverless Functions backend (TypeScript), Python ML scripts, Railway Python services: uw-stream (Unusual Whales websocket ingestion, including futures bars), the sidecar (Take-It SHAP scoring, frozen historical archive) and nightly (cron job that lands the UW Full Tape in R2). Multi-leg trades are flagged from the exchange's own trade code on the anchor print (`api/_lib/anchor-legs.ts`); the Railway multileg classifier is retired.
+Single-owner 0DTE SPX options trading tool. Vite + React 19 frontend, Vercel Serverless Functions backend (TypeScript), Python ML scripts, Railway Python services: uw-stream (Unusual Whales websocket ingestion, including futures bars), the sidecar (Take-It SHAP scoring, frozen historical archive) and nightly (cron job that lands the UW Full Tape in R2, then fills fire outcomes in Neon from it). Multi-leg trades are flagged from the exchange's own trade code on the anchor print (`api/_lib/anchor-legs.ts`); the Railway multileg classifier is retired.
 
 ## Architecture
 
@@ -49,13 +49,16 @@ uw-stream/        UnusualWhales websocket consumer (Python, Railway, NOT Vercel)
                   Sentry tagged server_name=uw-stream; UW_API_KEY required (Advanced tier for WS access).
                   Own Dockerfile, README.md, requirements.txt (runtime) + requirements-dev.txt (test/lint), conftest.py — own pytest suite under tests/.
 
-nightly/          Full Tape lander (Python, Railway cron service `nightly`, NOT Vercel). Tue–Sat 07:15 UTC
+nightly/          Full Tape lander and post-tape steps (Python, Railway cron service `nightly`, NOT Vercel). Tue–Sat 07:15 UTC
                   (a cron set on the Railway service, the morning after each session) it downloads each missing session's UW options Full Tape, converts it
                   to Parquet with polars and uploads one object per day to Cloudflare R2
-                  (fulltape/{date}-fulltape.parquet), newest missing day first, up to 30 days of catch-up. Re-lands a
-                  recent day whose UW ETag changed, and marks a day unavailable only on UW's own evidence. Runs once
-                  and exits: 0 ok, 1 a day did not land, 2 bad config, 3 watchdog, 143 SIGTERM. Sentry server_name=nightly plus
-                  the `nightly-tape` cron monitor. Writes nothing to Neon. Env: UW_API_KEY, R2_*, DATABASE_URL, SENTRY_DSN.
+                  (fulltape/{date}-fulltape.parquet), newest missing day first. The tape plans up to 30 days and starts a day only
+                  inside the window the steps' reserve leaves (see nightly/README.md). Re-lands a recent day whose UW ETag
+                  changed, and marks a day unavailable only on UW's own evidence. Then the steps (`pipeline.STEPS`): `enrich-outcomes`
+                  fills the outcome, provenance and marker columns of lottery_finder_fires and silent_boom_alerts from the tape (its
+                  only Neon writes), `outcome-check` alerts on recent sessions with no outcomes. Runs once and exits: 0 ok,
+                  1 a day did not land or a step failed or was skipped, 2 bad config, 3 watchdog, 143 SIGTERM. Sentry
+                  server_name=nightly plus the `nightly-tape` cron monitor. Env: UW_API_KEY, R2_*, DATABASE_URL, SENTRY_DSN.
                   Own Dockerfile, README.md (runbook and alert meanings), requirements.txt + requirements-dev.txt,
                   conftest.py — own pytest suite under tests/. Spec: docs/superpowers/specs/2026-10-28-nightly-pipeline-automation-design.md.
 
@@ -248,7 +251,7 @@ When adding a migration to `MIGRATIONS` in `api/_lib/db-migrations.ts`, you must
 ### Testing
 
 - **Tests ship with the feature** — see "Tests Are Mandatory (TDD Preferred)" above. Code without tests is not done.
-- **No test touches a real database or production store** — blocks in `src/__tests__/setup.ts` and the `ml/` and `scripts/` conftests fail the run that reaches a database or production store; `sidecar/`, `uw-stream/` and `nightly/` block databases only. Use pglite or `vi.mock`; a new suite or client extends its block. Known gaps: `docs/superpowers/specs/tests-no-db-2026-11-04.md`.
+- **No test touches a real database or production store** — blocks in `src/__tests__/setup.ts` and the `ml/` and `scripts/` conftests fail the run that reaches a database or production store; `sidecar/` blocks databases only, `uw-stream/` and `nightly/` also block non-loopback sockets (R2 for nightly). Use pglite or `vi.mock`; a new suite or client extends its block. Known gaps: `docs/superpowers/specs/tests-no-db-2026-11-04.md`.
 - **Unit tests** — Vitest with `@testing-library/react`. Frontend tests mostly in `src/__tests__/` (some colocated: `src/hooks/__tests__/`, component `__tests__/` folders), backend tests in `api/__tests__/`.
 - **E2E tests** — Playwright with `@axe-core/playwright` for accessibility. Specs in `e2e/`. Use semantic selectors (`getByRole`, `getByLabel`, `data-testid`).
 - **Coverage** — `npm run test:coverage` for V8 coverage.
@@ -356,6 +359,7 @@ see `docs/superpowers/specs/archive-volume-seed-2026-04-18.md`.
 - **Long-running functions**: `api/analyze.ts`, `api/cron/curate-lessons.ts` and `api/cron/curate-periscope-lessons.ts` (780s), `api/cron/backfill-futures-gaps.ts` (800s), and 300s crons such as `api/cron/build-features.ts`. Full list: `vercel.json` `functions`.
 - **DB setup**: `POST /api/journal/init` creates all tables and runs all migrations
 - **Railway services**: `sidecar/`, `uw-stream/` and `nightly/` (a cron service that runs once and exits), each with its own Dockerfile and env vars in Railway, not Vercel. `sidecar/` and `uw-stream/` keep `railway.toml` `watchPatterns`. `nightly/` has no `railway.toml`: its cron schedule, restart policy and watch paths are set on the Railway service (see `nightly/README.md`). Sidecar env: `DATABASE_URL` (only for its `/health` db check), `SENTRY_DSN`, `TAKEIT_*`, `ARCHIVE_*`. Nightly env: `UW_API_KEY`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_ENDPOINT_URL`, `R2_BUCKET_FULLTAPE`, `DATABASE_URL`, optional `SENTRY_DSN`.
+- **Nightly pushes** — push any change to a `nightly` watch path after 15:00 CT and outside 07:15–12:30 UTC. The watch paths include six shared files (`scripts/_tape_reader.py`, `scripts/_cli_paths.py`, `scripts/_pipeline_retry.py`, `scripts/enrich_lottery_outcomes.py`, `scripts/enrich_silent_boom_outcomes.py`, `ml/src/lottery_exit_policies.py`; `IMAGE_FILES` in `nightly/tests/test_image_layout.py`) and the root `.dockerignore`, because the image builds from the repo root. Why: a push to one redeploys the service, and a deploy during a run (about 07:15–12:30 UTC) can kill it. Easy to miss: those files look like ordinary `scripts/` and `ml/` edits.
 
 ## Anthropic Integration
 

@@ -1,7 +1,9 @@
 # nightly
 
 Railway cron service (`nightly`) that lands the Unusual Whales options Full Tape
-in Cloudflare R2: one Parquet object per trading day. It runs once and exits.
+in Cloudflare R2: one Parquet object per trading day. After the tape it fills the
+Lottery Finder and Silent Boom outcomes in Neon from that tape, and checks that
+recent sessions have them. It runs once and exits.
 
 ## What it does
 
@@ -9,7 +11,8 @@ Each run:
 
 1. Lists the days already in R2 and plans the newest missing sessions, up to 30
    days of catch-up (`CATCHUP_MAX_DAYS`). The calendar starts at 2026-01-02
-   (`TAPE_START`).
+   (`TAPE_START`). A planned day starts only inside the window under "How much of
+   the run the tape gets", so a long backlog can take more than one night.
 2. For each planned day, newest first: downloads the zip from UW, converts it to
    Parquet with polars (zstd level 3), checks it (see "Row and day checks"), and
    uploads it to R2. The upload is checked against the local byte count. A
@@ -17,13 +20,50 @@ Each run:
 3. Then probes the newest 5 days of the run's listing (`REWRITE_RECHECK_DAYS`),
    and re-lands each day whose UW ETag changed since it landed. The probes come
    after the planned days, so a slow probe never costs a missing day. A probe
-   starts only with at least 1200 s (`PROBE_BUDGET_SECONDS`) left before the run
-   deadline, so a stalled one ends before the watchdog; the rest are probed the
-   next night. A run whose planned days were skipped for disk or deadline probes
-   nothing.
-4. Reports each day to Sentry as soon as it finishes, then exits.
+   starts only with at least 1200 s (`PROBE_BUDGET_SECONDS`) left before the tape
+   deadline (below), so a stalled one ends before the watchdog; the rest are
+   probed the next night. A run whose planned days were skipped for disk or
+   deadline probes nothing.
+4. Runs the steps in `STEPS` (`src/pipeline.py`), in order, whatever the tape did,
+   including when it raised or every day failed.
+   - `enrich-outcomes` fills the outcome columns of `lottery_finder_fires` and
+     `silent_boom_alerts` from the tape in R2 (see "Enrichment").
+   - `outcome-check` alerts when the fires of a recent session have no outcomes
+     (see "Alert meanings").
+
+   Each step has its own deadline, which leaves every later step its reserve, so
+   an earlier step never starves a later one. A step that starts with less than
+   its own reserve left is skipped (`skipped_deadline`) and the later ones still
+   run. A step that raises fails that step alone: the tape and the other steps are
+   unaffected. A step's module is imported when the step runs, so one that fails
+   to import fails only that step.
+
+5. Reports each day and each step to Sentry as soon as it finishes, then exits.
 
 Logs go to stdout: Railway labels every stderr line an error.
+
+### How much of the run the tape gets
+
+The tape and the steps share the 5 h run. The tape stops at the run deadline less
+the steps' reserve (`reserve_seconds(STEPS)`, the sum of their `min_seconds`), and
+starts a day only with `DAY_BUDGET_SECONDS` of that left. So a day starts only in
+the first `RUN_DEADLINE_SECONDS − reserve − DAY_BUDGET_SECONDS` seconds of the run:
+
+| Quantity                                                                             | Seconds             |
+| ------------------------------------------------------------------------------------ | ------------------- |
+| Run deadline (`RUN_DEADLINE_SECONDS`)                                                | 18,000 (5 h)        |
+| Steps' reserve: `ENRICH_DAY_BUDGET_SECONDS` 900 + `OUTCOME_CHECK_BUDGET_SECONDS` 300 | 1,200               |
+| Tape deadline: 18,000 − 1,200                                                        | 16,800 (4 h 40 min) |
+| Minimum left to start a day (`DAY_BUDGET_SECONDS`)                                   | 3,600               |
+| Window in which a day may start: 16,800 − 3,600                                      | 13,200 (3 h 40 min) |
+
+A night starts about 13,200 divided by the seconds one day takes. Every step added
+to `STEPS` takes its `min_seconds` out of the window. The plan puts it at 11,400 s
+once phase 4's refit step is in, and at 6,900 s once phase 3's research and report
+steps are too (enrich budget at 900 s; the stage table in D2 of
+`docs/superpowers/plans/2026-10-29-nightly-pipeline-phase2.md`).
+`test_deadline_constants_bound_the_run` (`tests/test_main.py`) fails if the reserve
+leaves less than two `DAY_BUDGET_SECONDS` of the run for the tape.
 
 Constants (deadlines, retries, thresholds) live in `src/constants.py`, not in
 env vars. Design and decisions:
@@ -41,11 +81,36 @@ config-file path (config-as-code is deprecated).
   both.
 - Restart policy `NEVER`: a failed run alerts and waits for the next night
   instead of looping and re-downloading the tape.
-- Watch paths `/nightly/Dockerfile`, `/nightly/requirements.txt` and
-  `/nightly/src/**`: only the image inputs redeploy, so doc and test edits don't.
+- Root directory `/` (the repo root) and Dockerfile path `/nightly/Dockerfile`.
+  The build context is the repo root because the image copies six files from
+  outside `nightly/`, the enrich scripts and what they import (`IMAGE_FILES` in
+  `tests/test_image_layout.py`; build it with `docker build -f nightly/Dockerfile .`).
+- Watch paths, exactly these ten: only the image inputs redeploy, so doc and test
+  edits don't.
+  - `/nightly/Dockerfile`
+  - `/nightly/requirements.txt`
+  - `/nightly/src/**`
+  - `/.dockerignore`
+  - `/scripts/_tape_reader.py`
+  - `/scripts/_cli_paths.py`
+  - `/scripts/_pipeline_retry.py`
+  - `/scripts/enrich_lottery_outcomes.py`
+  - `/scripts/enrich_silent_boom_outcomes.py`
+  - `/ml/src/lottery_exit_policies.py`
+
+A file added to or removed from the image changes six places together, listed at
+the top of the `Dockerfile`: its `COPY` lines, these watch paths, the root
+`.dockerignore`, `IMAGE_FILES`, the `nightly` filter in `.github/workflows/ci.yml`
+and this list. `test_readme_lists_every_watch_path` fails when this list lacks one
+of `IMAGE_FILES`.
 
 **Push hazard.** A redeploy during a run (about 07:15 to 12:30 UTC) can stop the
-run. Code pushes to `nightly/src` should avoid that window. A killed run isn't
+run. A push that touches any watch path redeploys the service, and the list
+includes files that other work edits: `scripts/_tape_reader.py`,
+`scripts/_cli_paths.py`, `scripts/_pipeline_retry.py`,
+`scripts/enrich_lottery_outcomes.py`, `scripts/enrich_silent_boom_outcomes.py`,
+`ml/src/lottery_exit_policies.py` and the root `.dockerignore`. Push any change to
+a watch path after 15:00 CT and outside 07:15 to 12:30 UTC. A killed run isn't
 retried until the next night unless someone runs
 `railway cron run --service nightly`.
 
@@ -67,9 +132,13 @@ one is missing. There is no `.env` reading and no secrets on the command line.
 The same variable names are in the repo `CLAUDE.md` env table. The bucket also
 holds `gexbot-eod/`, written by another job; this service never touches it.
 
-`DATABASE_URL` may be Neon's pooled URL. The job connects to the direct host
-instead (`-pooler` removed from the first host label, same credentials), because
-the pooler rejects the statement timeout the job sets at connect.
+`DATABASE_URL` is a Railway reference to uw-stream's variable
+(`${{uw-stream.DATABASE_URL}}`), so a rotation reaches both services. The steps
+use it: `enrich-outcomes` updates rows in `lottery_finder_fires` and
+`silent_boom_alerts`, and `outcome-check` reads them. It may be Neon's pooled
+URL. The job connects to the direct host instead (`-pooler` removed from the
+first host label, same credentials), because the pooler rejects the statement
+timeout the job sets at connect (`DB_STATEMENT_TIMEOUT_MS`, 300 s).
 
 ## Where the days live in R2
 
@@ -118,7 +187,8 @@ Each planned day ends in one of these:
 - `skipped_disk`: free disk in the work dir was below 15 GiB, or the disk check
   failed. This day and every later one in the run are skipped.
 - `skipped_deadline`: less than 3600 s (`DAY_BUDGET_SECONDS`) was left before the
-  5 h run deadline. This day and every later one in the run are skipped.
+  tape deadline (the 5 h run deadline less the steps' reserve, see "How much of the
+  run the tape gets"). This day and every later one in the run are skipped.
 
 ## When a day is marked unavailable, and how to undo it
 
@@ -172,7 +242,9 @@ land; the warning on those two days is expected.
 Delete the day's object, `fulltape/{d}-fulltape.parquet`. The next run sees the
 day as missing and lands it again. A run plans at most the newest 30 missing
 days, so a day deleted from further back waits until the days after it have
-landed.
+landed. The new object counts as `landed`, not `relanded`, so `enrich-outcomes`
+does not clear that day's markers (see "Enrichment"); redo them by hand if the
+day's outcomes should be redone.
 
 ## Re-lands
 
@@ -192,6 +264,128 @@ landed days triggers a re-land on its own.
 - When there were days to probe but none could be compared (every probe failed,
   returned no ETag or was left for lack of probe budget), the run sends one
   warning, `nightly rewrite check unavailable`, with the day count in `days`.
+- The same night, `enrich-outcomes` clears the re-landed day's outcome markers, so
+  the new tape's outcomes replace the old ones (see "Enrichment").
+
+## Enrichment
+
+The `enrich-outcomes` step fills the outcomes of Lottery Finder fires
+(`lottery_finder_fires`) and Silent Boom alerts (`silent_boom_alerts`) in Neon from
+the tape in R2. It runs the two owner scripts in place,
+`scripts/enrich_lottery_outcomes.py` and `scripts/enrich_silent_boom_outcomes.py`,
+with `select="all"` for the Full Tape: the same work as `--r2 --select all` on a
+workstation. The tape has the final say over outcomes (owner, 2026-11-06), since
+the websocket feed drops prints and cannot replay them.
+
+**What counts as work.** A fire is work until the tape has examined it at the
+current version. The scripts use one predicate both to list the work and as the
+guard on the tape's writes (`OUTCOME_WORK_ALL['fulltape']`):
+
+```sql
+outcome_tape_version IS NULL OR outcome_tape_version < OUTCOME_VERSION
+```
+
+`OUTCOME_VERSION` is 1 in both scripts. What another writer left in the row (the
+crons' values, `enriched_at`, untagged history) does not matter. Each night the
+step lists every day from `TAPE_START` through the last session that has work in
+either table and works them newest first. So it backs up a day the closing crons
+missed, and it backfills the history: the history drains over the nights until no
+day has work left. Bumping `OUTCOME_VERSION` makes all of it work again, over
+several nights. Lottery Finder's inversion pass keeps its own work set,
+`realized_flow_inversion_pct IS NULL AND inversion_source IS NULL`; a day whose only
+work is inversion is listed once the matched side's net flow exists.
+
+**What it writes.** For each fire:
+
+- The tape can price it: the outcome columns are set and replace what another writer
+  left, and the row gets `outcome_source = 'fulltape'`, `outcome_version = 1` and
+  `outcome_tape_version = 1`.
+- The tape cannot price it (no chain, no print at or after entry, an unusable entry
+  price or a non-finite outcome): any value another writer left stays ("kept for
+  now"), and the row is only marked examined, so it is not picked again until the
+  version changes. A fire with no earlier outcome is also tagged
+  `outcome_source = 'fulltape'` with its outcomes left NULL. That is "tagged with
+  NULL outcomes": the fire was examined and stamped (`stamped_no_outcome`) without
+  an outcome. It means tried, not pending.
+
+**Provenance columns** (migrations #201 and #202):
+
+| Column                                  | Values                                 | Meaning                                                                                                                                             |
+| --------------------------------------- | -------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `outcome_source`                        | `fulltape`, `bot_eod`, `ws_cron`, NULL | Who wrote the outcomes: a script reading the Full Tape (this step, or `--r2` locally), the Bot-EOD script (fills only), the two Vercel enrich crons |
+| `outcome_version`                       | 1, NULL                                | The computation (`OUTCOME_VERSION`); set exactly when the source is                                                                                 |
+| `outcome_tape_version`                  | 1, NULL                                | The tape pass that examined the row (`OUTCOME_VERSION` when it ran); NULL means the tape has not                                                    |
+| `inversion_source`, `inversion_version` | `fulltape`, `bot_eod`; 1               | The same for `realized_flow_inversion_pct` (`INVERSION_VERSION`), on `lottery_finder_fires` only                                                    |
+
+NULL source and version mean the row was written before the columns existed. A
+`ws_cron` source next to a non-NULL `outcome_tape_version` is a feed value the tape
+could not price and kept.
+
+**Each night.** A day with work but no landed tape waits (`days_waiting_tape`, no
+alert); the step works it once the tape lands. For a landed day the step downloads
+its tape to `/tmp/nightly/enrich` (`ENRICH_CACHE_DIR`, emptied when the step opens its
+reader, one day on disk at a time, each download bounded at 600 s by
+`FETCH_DEADLINE_SECONDS` in `_tape_reader.py`), runs both scripts on one fresh Neon
+connection, and releases the file. It stops for the night, leaving the rest as
+`days_left`, when less than `ENRICH_DAY_BUDGET_SECONDS` (900 s) of its time is left,
+or when failed days plus all-NULL (table, day) pairs reach `ENRICH_MAX_DAY_FAILURES`
+(3): a broken tape layout or chain format fails or nulls every day, and each costs a
+download. A day that raises is counted, sent to Sentry once, and the loop goes on.
+
+The step's result is `failed` if a day failed or came back all-NULL, else `partial`
+if days are left, else `ok`. Its counts are in the log line `step enrich-outcomes ...`
+and in the `counts` extra of the step alerts: `days_processed`, `days_failed`,
+`days_waiting_tape`, `days_left`, `tape_markers_reset`, `null_days` and `low_days`
+(the last two count (table, day) pairs), and per table
+`lottery_` / `silent_boom_` plus `outcomes_written`, `stamped_no_outcome`,
+`outcomes_replaced` (the tape's value overwrote an earlier outcome) and
+`outcomes_kept` (the tape could not price a fire that held a value, which stayed).
+The Lottery Finder pass adds `inversion_written`, `inversion_stamped` and
+`inversion_input_missing`. The log line for each day names its date, a status
+(`ok`, `no outcomes` or `failed (<ExceptionClass>)`) and its non-zero counts, never
+an exception's text.
+
+**A re-landed day.** The rows of a day the tape job re-lands tonight carry the
+marker of the tape it replaced, so the work set would never look at them again.
+Before it lists the work, the step clears `outcome_tape_version` on that day's fires
+in both tables, in one statement so that both clear or neither does
+(`tape_markers_reset` counts the rows). Only the marker is cleared: the old
+outcomes stay until the new tape replaces them, where it can price a fire. A
+re-landed day keeps the old tape's inversions, because their work set needs the
+value to be NULL and clearing values is destructive. If the statement fails, nothing
+is cleared and the step fails. The next night the tape job no longer reports the
+day as re-landed, so its rows keep the old tape's outcomes until `OUTCOME_VERSION` is
+next bumped or someone clears the markers by hand.
+
+**Re-trying a day, by hand only.** To make the step look at a day again, for
+example after fixing what made a tape come back with no outcomes, clear that day's
+markers in both tables (the reset the step runs for a re-landed day), and run both
+statements:
+
+```sql
+UPDATE lottery_finder_fires SET outcome_tape_version = NULL
+ WHERE date = '<day>' AND outcome_tape_version IS NOT NULL;
+UPDATE silent_boom_alerts SET outcome_tape_version = NULL
+ WHERE date = '<day>' AND outcome_tape_version IS NOT NULL;
+```
+
+The next night's step redoes the day: the tape's values replace the old ones where
+it can price a fire, and the old ones stay where it cannot. Clearing outcome values
+is never needed, and inversions are not redone this way. The day must be landed in
+R2, or it waits.
+
+**Dry run on a workstation.** From the repo root, with the four `R2_*` variables and
+`DATABASE_URL` in the environment or in `.env.local` (which points at the production
+database), `--dry-run` reads Neon and R2 and writes nothing. Every summary line
+says "would":
+
+```bash
+ml/.venv/Scripts/python scripts/enrich_lottery_outcomes.py --r2 --select all --dry-run --date 2026-10-20
+ml/.venv/Scripts/python scripts/enrich_silent_boom_outcomes.py --r2 --select all --dry-run --date 2026-10-20
+```
+
+Without `--dry-run` the same command writes to the database. Without `--date` the
+newest landed day is used.
 
 ## Alert meanings
 
@@ -206,22 +400,51 @@ text is log-safe by contract: a `TapeValidationError`'s or `R2VerifyError`'s
 message (names, counts and keys only), or a botocore `ClientError`'s error code.
 Otherwise it is empty. It never changes the grouping.
 
-| Sentry title                             | Level   | Meaning                                                                                                                |
-| ---------------------------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `nightly tape day failed`                | error   | A day did not land. `detail` names the kind; `reason` may say more. Retried next night.                                |
-| `nightly tape day skipped_disk`          | error   | Free disk too low; the rest of the run was skipped.                                                                    |
-| `nightly tape day skipped_deadline`      | error   | The run ran out of time; the rest was skipped.                                                                         |
-| `nightly tape day not_posted`            | warning | UW had not posted a recent day. Usually clears itself.                                                                 |
-| `nightly tape day unavailable`           | warning | A marker was written; one issue per day. Check it was expected.                                                        |
-| `nightly tape day landed with warnings`  | warning | Landed, but a plausibility check flagged it (row ratio or time window) or cleanup failed.                              |
-| `nightly tape day relanded`              | warning | A day was re-landed after its UW ETag changed. Sent for every re-land, one issue per day; `warnings` lists any flags.  |
-| `nightly re-land identical content`      | warning | A re-land whose `rows` and `source-bytes` equal the old object's: likely ETag churn, not a rewrite. One issue per day. |
-| `nightly rewrite check unavailable`      | warning | No probed day could be compared, so a rewrite would go unseen. `days` is how many were left unchecked.                 |
-| `nightly config invalid`                 | error   | Bad config. `fields` names the invalid settings. Sent only if `SENTRY_DSN` is valid.                                   |
-| `NYSE holiday table ends in {year}; ...` | warning | From Oct 1 of the table's last year. Add the next year to `calendar_nyse.py`, or the job refuses to run.               |
+| Sentry title                             | Level   | Meaning                                                                                                                                                                                                          |
+| ---------------------------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `nightly tape day failed`                | error   | A day did not land. `detail` names the kind; `reason` may say more. Retried next night.                                                                                                                          |
+| `nightly tape day skipped_disk`          | error   | Free disk too low; the rest of the run was skipped.                                                                                                                                                              |
+| `nightly tape day skipped_deadline`      | error   | The run ran out of time; the rest was skipped.                                                                                                                                                                   |
+| `nightly tape day not_posted`            | warning | UW had not posted a recent day. Usually clears itself.                                                                                                                                                           |
+| `nightly tape day unavailable`           | warning | A marker was written; one issue per day. Check it was expected.                                                                                                                                                  |
+| `nightly tape day landed with warnings`  | warning | Landed, but a plausibility check flagged it (row ratio or time window) or cleanup failed.                                                                                                                        |
+| `nightly tape day relanded`              | warning | A day was re-landed after its UW ETag changed. Sent for every re-land, one issue per day; `warnings` lists any flags.                                                                                            |
+| `nightly re-land identical content`      | warning | A re-land whose `rows` and `source-bytes` equal the old object's: likely ETag churn, not a rewrite. One issue per day.                                                                                           |
+| `nightly rewrite check unavailable`      | warning | No probed day could be compared, so a rewrite would go unseen. `days` is how many were left unchecked.                                                                                                           |
+| `nightly step failed`                    | error   | A step finished `failed` without raising. `enrich-outcomes`: a day failed or came back with no outcomes. `outcome-check`: a recent session has no outcomes. Read the alerts below and the run log.               |
+| `nightly step partial`                   | warning | A step ran out of time with work left for the next night (`days_left` in `counts`). Expected while the history drains; look only if it persists.                                                                 |
+| `nightly step skipped_deadline`          | error   | A step started with less than its own reserve left, so it did not run (the later steps still did). The tape or an earlier step overran its share; the next night runs it again.                                  |
+| `nightly outcomes all null`              | error   | `outcome-check`: a table has fires on one of the last 3 sessions (`OUTCOME_CHECK_SESSIONS`) and none has an outcome. Tags `table`, `day`; extras `rows`, `with_outcome`. One issue per table and day. See below. |
+| `nightly outcomes mostly null`           | warning | `outcome-check`: fewer than 95% (`LOW_OUTCOME_SHARE`) of a table-day's fires have an outcome. One warning per run; `days` lists `table:day`. Fires the tape cannot price stay without one (see "Enrichment").    |
+| exception tagged `step`                  | error   | A step raised (a database error, an import error). The step is `failed` and the log names the exception class; no `nightly step failed` event follows.                                                           |
+| exception tagged `step` and `day`        | error   | One day of `enrich-outcomes` raised (its download, its connection, either script's pass). Counted in `days_failed`; the step goes on with the next day and retries this one next night.                          |
+| `nightly config invalid`                 | error   | Bad config. `fields` names the invalid settings. Sent only if `SENTRY_DSN` is valid.                                                                                                                             |
+| `NYSE holiday table ends in {year}; ...` | warning | From Oct 1 of the table's last year. Add the next year to `calendar_nyse.py`, or the job refuses to run.                                                                                                         |
 
 A run that fails before its first day (R2 listing, work dir setup, an exhausted
-calendar) sends the exception itself as an error event.
+calendar) sends the exception itself as an error event. The steps still run.
+
+A step alert carries the tags `step` and `status`, and the extras `counts` (names
+and integers) and `detail` (a fixed phrase). An `ok` step sends nothing. The
+fingerprint is the step, status and `detail`, so the same reason night after night
+stays one issue, and Sentry's new-issue rule mails once for it until the issue is
+resolved (owner, 2026-11-06). Resolve it after a fix so the next failure mails
+again. A new reason opens, and mails as, its own issue. Exception events go through
+the scrubber: a data library's message is replaced and any other is cut to 300
+characters.
+
+**When `nightly outcomes all null` fires.** The enrich crons (21:40 to 23:45 UTC)
+and tonight's `enrich-outcomes` both left that table-day without an outcome. Find
+the day's `enrich <day>` line in the run log:
+
+- `waiting for the tape`: the day's tape is not in R2 yet. Check
+  `fulltape/{day}-fulltape.parquet`; the step works the day once it lands.
+- `failed (<ExceptionClass>)`: the step retries the day next night with no action.
+- `no outcomes`, or no line for the day at all (it had no work left, so an earlier
+  night already examined it): the tape examined the fires and priced none of them,
+  so a retry alone changes nothing. Suspect a changed tape layout or option-chain id
+  format, which would null every day (the step stops after 3). Fix the cause, then
+  clear the day's markers by hand (see "Enrichment").
 
 The Sentry cron monitor `nightly-tape` (crontab `15 7 * * 2-6`, UTC) checks the
 run in and out:
@@ -236,11 +459,12 @@ run in and out:
 
 Exit codes:
 
-- `0`: every planned day landed, re-landed or was correctly marked unavailable.
-  Also `0` when there was nothing to do.
+- `0`: every planned day landed, re-landed or was correctly marked unavailable,
+  and every step finished `ok` or `partial` (work left for the next night, which
+  sends a warning only). Also `0` when there was nothing to do.
 - `1`: at least one day `failed`, was `not_posted`, or was skipped for disk or
-  deadline; or the run failed before its first day. Read the Sentry events for
-  the days.
+  deadline; a step failed or was skipped for its deadline; or the run failed
+  before its first day. Read the Sentry events for the days and the steps.
 - `2`: bad config. The log and the `nightly config invalid` event name the
   fields, never their values. Fix the env vars in Railway.
 - `3`: the watchdog. The run was still going 900 s past its 5 h deadline
@@ -264,13 +488,15 @@ Set the env vars above in your shell (not a file in the repo), then:
 ```bash
 cd nightly
 pip install -r requirements-dev.txt
-PYTHONPATH=src python -m main
+PYTHONPATH=src:../scripts python -m main
 ```
 
-The modules import each other flat, so `src/` must be on the path: the
-Dockerfile sets `PYTHONPATH=/app/src`, and a local shell needs `PYTHONPATH=src`.
-A local run uses the real R2 bucket and the real UW key. It uses
-`/tmp/nightly` as its work dir, which is a Unix path.
+The modules import each other flat, so `src/` and the repo's `scripts/` must be on
+the path: the Dockerfile sets `PYTHONPATH=/app/src:/app/scripts`, and a local shell
+run from `nightly/` needs `PYTHONPATH=src:../scripts`. A local run uses the real R2
+bucket, the real UW key and the database `DATABASE_URL` names, which
+`enrich-outcomes` updates. It uses `/tmp/nightly` as its work dir, which is a Unix
+path.
 
 ## Tests
 
@@ -279,5 +505,8 @@ cd nightly
 python -m pytest
 ```
 
-`conftest.py` and `pyproject.toml` put `src/` on the path. Lint with
-`ruff check . && ruff format --check .` (ruff `>=0.17,<0.18`, line length 100).
+`conftest.py` and `pyproject.toml` put `src/` on the path, and `conftest.py` appends
+the repo's `scripts/` for the shared modules. No test may connect to a database or a
+non-loopback address: `conftest.py` stubs `psycopg2._connect` and fails the session
+if anything tried, and refuses non-loopback sockets (tests use moto for R2). Lint
+with `ruff check . && ruff format --check .` (ruff `>=0.17,<0.18`, line length 100).

@@ -25,6 +25,7 @@ from pathlib import Path, PurePosixPath
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DOCKERFILE = REPO_ROOT / "nightly" / "Dockerfile"
 DOCKERIGNORE = REPO_ROOT / ".dockerignore"
+README = REPO_ROOT / "nightly" / "README.md"
 
 IMAGE_FILES: tuple[str, ...] = (
     "scripts/_tape_reader.py",
@@ -33,6 +34,12 @@ IMAGE_FILES: tuple[str, ...] = (
     "scripts/enrich_lottery_outcomes.py",
     "scripts/enrich_silent_boom_outcomes.py",
     "ml/src/lottery_exit_policies.py",
+)
+# The watch paths of the Railway `nightly` service besides IMAGE_FILES and .dockerignore.
+NIGHTLY_WATCH_PATHS: tuple[str, ...] = (
+    "/nightly/Dockerfile",
+    "/nightly/requirements.txt",
+    "/nightly/src/**",
 )
 
 
@@ -103,6 +110,19 @@ def test_dockerignore_readmits_image_files():
     positions = [entries.index(pattern) for pattern in expected]
 
     assert positions == sorted(positions), f"patterns are out of order: {positions}"
+
+
+def test_readme_lists_every_watch_path():
+    # One backticked path per bullet, so a path named only in prose does not count: the
+    # list is what the owner copies into the Railway service's watch paths.
+    listed = set(
+        re.findall(r"^\s*- `(/[^`\s]+)`", README.read_text(encoding="utf-8"), re.MULTILINE)
+    )
+    expected = [*NIGHTLY_WATCH_PATHS, "/.dockerignore", *(f"/{f}" for f in IMAGE_FILES)]
+
+    missing = [path for path in expected if path not in listed]
+
+    assert not missing, f"nightly/README.md's watch-path list lacks {missing}"
 
 
 def _image_pythonpath(root: Path) -> str:
