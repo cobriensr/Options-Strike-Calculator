@@ -8,6 +8,8 @@
  *   npx tsx scripts/recompute-futures-derived.ts --backup <file> --apply --expect-snapshots N --expect-premarket M --expect-fires K
  *   npx tsx scripts/recompute-futures-derived.ts --stores fires    # a dry run of one store, no backup needed
  *   npx tsx scripts/recompute-futures-derived.ts --backup <file> --apply --expect-snapshots N --expect-premarket M --expect-fires K --delete-junk-stale --expect-junk-deletes J --rewrite-stale-at-write --expect-stale-rewrites S --detector-days <file>
+ *   npx tsx scripts/recompute-futures-derived.ts --stores frozen --work-dir <dir>   # a dry run of the frozen-stale delete, no backup needed
+ *   npx tsx scripts/recompute-futures-derived.ts --apply --stores frozen --work-dir <dir> --delete-frozen-stale --expect-frozen-deletes N
  *
  * The default is a DRY RUN: it reads the database DATABASE_URL points at
  * (production, in .env.local) through read-only transactions, prints the
@@ -40,6 +42,21 @@
  * every planned step with the opt-in steps on. --rewrite-stale-at-write is refused
  * when more than 10% of a thin root's after-span stale rows sit on contaminated days.
  *
+ * The ES and NQ snapshot rows before 2026-10-01 that computeSnapshot cannot price
+ * (no closed bar within the freshness gate) are left as stored, except the ones whose
+ * stored price is not the close of the latest closed bar at any age: those are frozen
+ * on an older bar, and `--stores frozen --delete-frozen-stale` deletes them (owner OK
+ * 2026-11-11, off by default). It runs alone: it plans no other store and needs no Phase 2
+ * backup, so a plan takes seconds, not the full plan's hour. Candidates come from SQL and
+ * computeSnapshot confirms each one. A row that repeats the last bar's close stays, as
+ * do the thin roots (RTY, CL, GC, ZN: D1) and every row from 2026-10-01 on. The dry run
+ * lists the count per root, the first and last ts, how many rows fall in the 16:15 to
+ * 17:00 CT break, on a weekend or holiday and elsewhere, the 10 largest differences
+ * from the bar's close and the apply command. The delete uses the same plan.json, backup
+ * file, <step>.started / <step>.applied markers and resume as the other steps (step
+ * "frozen"), guarded by id, symbol and the planned price, and verifies that the rows are
+ * gone and that nothing else before 2026-10-01 left the table.
+ *
  * Before any write, the apply saves its whole plan: plan.json names a backup-*.jsonl in
  * --work-dir that holds every row to change (the step that writes it, the row as it is
  * now and the new values), with each step's row count and the file's line count and
@@ -61,7 +78,8 @@
  *                           markers (default docs/tmp/futures-derived-recompute)
  *   --stores s1 s2 ...      only these of snapshots, premarket, fires (default all). A dry run
  *                           plans only these; --apply still plans and checks all three and
- *                           writes only these
+ *                           writes only these. `--stores frozen` stands alone: it plans the
+ *                           frozen-stale rows and no store, with or without --apply
  *   --apply                 write (backup first); needs an --expect-* per store in the run
  *   --expect-snapshots N    the futures_snapshots rows to write in the approved dry run
  *   --expect-premarket M    the pre_market_data rows to write in that dry run
@@ -78,6 +96,12 @@
  *                           stale.applied; its backup lines say step "stale"). Needs the snapshots store
  *   --expect-stale-rewrites S the rows that rewrite changes in the dry run you approved;
  *                           required with --rewrite-stale-at-write, --apply refuses when it differs
+ *   --delete-frozen-stale   with --apply --stores frozen, delete the ES and NQ snapshot rows before
+ *                           2026-10-01 that computeSnapshot cannot price and whose price is not
+ *                           the close of the latest closed bar (own done marker frozen.applied;
+ *                           the full rows go to the backup first)
+ *   --expect-frozen-deletes N  the rows that delete removes in the dry run you approved;
+ *                           required with --delete-frozen-stale, --apply refuses when it differs
  *   --detector-days <file>  a JSON file {"RTY": {"contaminated": [...], "flagged": [...]}, "CL": {...}, "GC": {...},
  *                           "ZN": {...}} of the CT trading days the Phase 1 detector found in that root's bars
  *                           after the span end (docs/tmp/es-contract-month-2026-11-06/b-after-span/): a
