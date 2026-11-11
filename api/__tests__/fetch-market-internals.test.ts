@@ -46,7 +46,7 @@ vi.mock('../_lib/axiom.js', () => ({
 }));
 
 import handler from '../cron/fetch-market-internals.js';
-import { Sentry } from '../_lib/sentry.js';
+import { Sentry, metrics } from '../_lib/sentry.js';
 import { schwabFetch } from '../_lib/schwab-fetch.js';
 import { reportCronRun } from '../_lib/axiom.js';
 import { _resetDsnCacheForTest } from '../_lib/cron-instrumentation.js';
@@ -224,6 +224,8 @@ type Body = {
     problems: Array<{ kind: string; date: string; symbol: string }>;
   }>;
   problems: Array<{ kind: string; date: string; symbol: string }>;
+  /** Problems on today's own session: not final yet at 22:30 UTC. */
+  pending: Array<{ kind: string; date: string; symbol: string }>;
   allZero: Array<{ symbol: string; date: string }>;
 };
 
@@ -500,6 +502,11 @@ describe('fetch-market-internals (post-close settle)', () => {
     expect(alert![1].tags.cron).toBe('fetch-market-internals');
   });
 
+  // The problems below are on 11-05, a session a night old: it has had its
+  // chance to settle, so each is a Sentry error and the run is partial. The
+  // same problems on 11-06, today's own session at 22:30 UTC, are pending (see
+  // "Same-day sessions" below).
+
   it('refuses a $TICK session that has no negative value, writes the other sessions and symbols, and reports tick_clamped', async () => {
     const writes = recordWrites();
     const clamp = (i: number): Ohlc => {
@@ -509,7 +516,7 @@ describe('fetch-market-internals (post-close settle)', () => {
     mockSchwab(SESSIONS, {
       $TICK: ok(
         SESSIONS.flatMap((d) =>
-          dayBars(d, d === '2026-11-06' ? clamp : tickLike),
+          dayBars(d, d === '2026-11-05' ? clamp : tickLike),
         ),
       ),
     });
@@ -519,12 +526,12 @@ describe('fetch-market-internals (post-close settle)', () => {
     expect(out.status).toBe('partial');
     const tick = writtenFor(writes, '$TICK');
     expect(tick).toHaveLength(4 * 390);
-    expect(tick.some((t) => t.startsWith('2026-11-06'))).toBe(false);
+    expect(tick.some((t) => t.startsWith('2026-11-05'))).toBe(false);
     expect(writtenFor(writes, '$ADD')).toHaveLength(5 * 390);
     expect(out.problems).toEqual([
       expect.objectContaining({
         symbol: '$TICK',
-        date: '2026-11-06',
+        date: '2026-11-05',
         kind: 'tick_clamped',
       }),
     ]);
@@ -538,8 +545,10 @@ describe('fetch-market-internals (post-close settle)', () => {
     recordWrites();
     mockSchwab(SESSIONS, {
       $VOLD: ok([
-        ...SESSIONS.slice(0, 4).flatMap((d) => dayBars(d, steady)),
-        ...dayBars('2026-11-06', steady, 389),
+        ...['2026-11-02', '2026-11-03', '2026-11-04', '2026-11-06'].flatMap(
+          (d) => dayBars(d, steady),
+        ),
+        ...dayBars('2026-11-05', steady, 389),
       ]),
     });
 
@@ -549,7 +558,7 @@ describe('fetch-market-internals (post-close settle)', () => {
     expect(out.problems).toEqual([
       expect.objectContaining({
         symbol: '$VOLD',
-        date: '2026-11-06',
+        date: '2026-11-05',
         kind: 'incomplete',
         bars: 389,
         expected: 390,
@@ -560,7 +569,11 @@ describe('fetch-market-internals (post-close settle)', () => {
   it('reports a session Schwab sent no bar for at all (0 of 390)', async () => {
     recordWrites();
     mockSchwab(SESSIONS, {
-      $TRIN: ok(SESSIONS.slice(0, 4).flatMap((d) => dayBars(d, steady))),
+      $TRIN: ok(
+        ['2026-11-02', '2026-11-03', '2026-11-04', '2026-11-06'].flatMap((d) =>
+          dayBars(d, steady),
+        ),
+      ),
     });
 
     const out = (await call())._json as Body;
@@ -569,11 +582,191 @@ describe('fetch-market-internals (post-close settle)', () => {
     expect(out.problems).toEqual([
       expect.objectContaining({
         symbol: '$TRIN',
-        date: '2026-11-06',
+        date: '2026-11-05',
         kind: 'incomplete',
         bars: 0,
       }),
     ]);
+  });
+
+  // ── Same-day sessions are pending, older ones are not ──────
+  //
+  // Observed in production (Sentry SENTRY-EMERALD-DESERT-KJ, "settled series
+  // unusable for session(s)"): at 22:30 UTC on 2026-11-09 and 2026-11-10 the
+  // error fired for TODAY's session only ($TICK tick_clamped with 0 bars,
+  // $ADD and $VOLD incomplete with 0 bars): Schwab's same-day settled series
+  // is not final yet for those symbols. The next evening's run heals it (11-09
+  // came back with all four symbols at 390 bars). So a problem on the newest
+  // session, when that is the run's own ET date, is pending: logged, counted,
+  // listed in the report, and not an error. Any older session has had a full
+  // night, so it is.
+
+  const sessionAlerts = () =>
+    messages().filter(([, o]) => o.tags.stage === 'session_problem');
+  const without = (day: string) => SESSIONS.filter((d) => d !== day);
+
+  it("a problem on today's session is pending: counted and listed, quiet in Sentry, and the run is a success", async () => {
+    const writes = recordWrites();
+    const clamp = (i: number): Ohlc => {
+      const [o, h, l, c] = tickLike(i);
+      return [Math.max(o, 0), Math.max(h, 0), Math.max(l, 0), Math.max(c, 0)];
+    };
+    const addBars = SESSIONS.flatMap((d) => dayBars(d, steady));
+    addBars[addBars.length - 5] = {
+      ...addBars.at(-5)!,
+      open: 0,
+      high: 0,
+      low: 0,
+      close: 0,
+    };
+    mockSchwab(SESSIONS, {
+      // clamped today, the pattern seen on 11-10
+      $TICK: ok(
+        SESSIONS.flatMap((d) =>
+          dayBars(d, d === '2026-11-06' ? clamp : tickLike),
+        ),
+      ),
+      // a zero bar today: 389 valid bars
+      $ADD: ok(addBars),
+      // short today
+      $VOLD: ok([
+        ...without('2026-11-06').flatMap((d) => dayBars(d, steady)),
+        ...dayBars('2026-11-06', steady, 389),
+      ]),
+      // nothing at all for today
+      $TRIN: ok(without('2026-11-06').flatMap((d) => dayBars(d, steady))),
+    });
+
+    const out = (await call())._json as Body;
+
+    expect(out.status).toBe('success');
+    expect(out.problems).toEqual([]);
+    expect(out.pending.map((p) => [p.symbol, p.date, p.kind]).sort()).toEqual(
+      [
+        ['$TICK', '2026-11-06', 'tick_clamped'],
+        ['$ADD', '2026-11-06', 'incomplete'],
+        ['$VOLD', '2026-11-06', 'incomplete'],
+        ['$TRIN', '2026-11-06', 'incomplete'],
+      ].sort(),
+    );
+    expect(sessionAlerts()).toEqual([]);
+    expect(metrics.increment).toHaveBeenCalledTimes(4);
+    expect(metrics.increment).toHaveBeenCalledWith(
+      'market_internals.session_pending',
+    );
+    // What Schwab did send is still stored: pending only changes the alert.
+    expect(writtenFor(writes, '$VOLD')).toHaveLength(4 * 390 + 389);
+    expect(writtenFor(writes, '$ADD')).toHaveLength(5 * 390 - 1);
+    expect(Sentry.captureException).not.toHaveBeenCalled();
+  });
+
+  it('a problem on the previous session, a night old, still alerts and makes the run partial', async () => {
+    recordWrites();
+    mockSchwab(SESSIONS, {
+      $VOLD: ok([
+        ...without('2026-11-05').flatMap((d) => dayBars(d, steady)),
+        ...dayBars('2026-11-05', steady, 389),
+      ]),
+    });
+
+    const out = (await call())._json as Body;
+
+    expect(out.status).toBe('partial');
+    expect(out.problems).toEqual([
+      expect.objectContaining({ symbol: '$VOLD', date: '2026-11-05' }),
+    ]);
+    expect(out.pending).toEqual([]);
+    expect(sessionAlerts()).toHaveLength(1);
+    expect(metrics.increment).not.toHaveBeenCalled();
+  });
+
+  it('a run with an old problem and a pending one alerts for the old one only', async () => {
+    recordWrites();
+    mockSchwab(SESSIONS, {
+      $VOLD: ok([
+        ...without('2026-11-05').flatMap((d) => dayBars(d, steady)),
+        ...dayBars('2026-11-05', steady, 389),
+      ]),
+      $TRIN: ok(without('2026-11-06').flatMap((d) => dayBars(d, steady))),
+    });
+
+    const out = (await call())._json as Body;
+
+    expect(out.status).toBe('partial');
+    expect(out.problems.map((p) => [p.symbol, p.date])).toEqual([
+      ['$VOLD', '2026-11-05'],
+    ]);
+    expect(out.pending.map((p) => [p.symbol, p.date])).toEqual([
+      ['$TRIN', '2026-11-06'],
+    ]);
+    const alerts = sessionAlerts();
+    expect(alerts).toHaveLength(1);
+    // The Sentry event names the old problem and not the pending one.
+    const extra = alerts[0]![1].extra as {
+      problems: Array<{ symbol: string; date: string }>;
+    };
+    expect(extra.problems.map((p) => [p.symbol, p.date])).toEqual([
+      ['$VOLD', '2026-11-05'],
+    ]);
+    expect(metrics.increment).toHaveBeenCalledTimes(1);
+  });
+
+  it('on a half day the same rule holds: a short 11-27 is pending, a short 11-25 alerts', async () => {
+    vi.setSystemTime(HALF_DAY_EVENING);
+    recordWrites();
+    const bars = (d: string, count: number) =>
+      dayBars(d, steady, d === '2026-11-27' ? count : 390);
+    vi.mocked(schwabFetch).mockImplementation(((path: string) => {
+      const symbol = new URLSearchParams(path.split('?')[1]).get(
+        'symbol',
+      ) as InternalSymbol;
+      // $ADD: today's half day is short (209 of 210). $VOLD: 11-25 is short.
+      return Promise.resolve(
+        ok(
+          HALF_DAY_SESSIONS.flatMap((d) => {
+            if (symbol === '$ADD' && d === '2026-11-27') return bars(d, 209);
+            if (symbol === '$VOLD' && d === '2026-11-25') {
+              return dayBars(d, steady, 389);
+            }
+            return d === '2026-11-27'
+              ? dayBars(d, seriesFor(symbol), 210)
+              : dayBars(d, seriesFor(symbol));
+          }),
+        ),
+      );
+    }) as never);
+
+    const out = (await call())._json as Body;
+
+    expect(out.status).toBe('partial');
+    expect(out.pending.map((p) => [p.symbol, p.date])).toEqual([
+      ['$ADD', '2026-11-27'],
+    ]);
+    expect(out.problems.map((p) => [p.symbol, p.date])).toEqual([
+      ['$VOLD', '2026-11-25'],
+    ]);
+    expect(sessionAlerts()).toHaveLength(1);
+  });
+
+  it("a problem on the newest session is not pending when that session is not the run's own day (a forced Saturday run)", async () => {
+    vi.setSystemTime(SATURDAY);
+    recordWrites();
+    mockSchwab(SESSIONS, {
+      $VOLD: ok([
+        ...without('2026-11-06').flatMap((d) => dayBars(d, steady)),
+        ...dayBars('2026-11-06', steady, 389),
+      ]),
+    });
+
+    const out = (await call({ force: '1' }))._json as Body;
+
+    // Friday's session ended a day ago: it is an error, not pending.
+    expect(out.status).toBe('partial');
+    expect(out.problems.map((p) => [p.symbol, p.date])).toEqual([
+      ['$VOLD', '2026-11-06'],
+    ]);
+    expect(out.pending).toEqual([]);
+    expect(sessionAlerts()).toHaveLength(1);
   });
 
   // ── Schwab failures are not success ────────────────────────
@@ -802,13 +995,19 @@ describe('fetch-market-internals (post-close settle)', () => {
   it('a write failure does not hide a session problem found before it', async () => {
     mockTransaction.mockRejectedValue(new Error('connection lost'));
     mockSchwab(SESSIONS, {
-      $VOLD: ok(SESSIONS.slice(0, 4).flatMap((d) => dayBars(d, steady))),
+      // 11-05 missing: a night old, so a real problem (11-06 would be pending).
+      $VOLD: ok(without('2026-11-05').flatMap((d) => dayBars(d, steady))),
     });
 
     const out = (await call())._json as Body;
 
     expect(out.problems).toEqual([
-      expect.objectContaining({ symbol: '$VOLD', kind: 'incomplete', bars: 0 }),
+      expect.objectContaining({
+        symbol: '$VOLD',
+        date: '2026-11-05',
+        kind: 'incomplete',
+        bars: 0,
+      }),
     ]);
   });
 
@@ -895,7 +1094,7 @@ describe('fetch-market-internals (post-close settle)', () => {
     );
   });
 
-  // ── Sentry cron monitor (withCronCheckin) ──────────────────
+  // ── Sentry cron monitor (withCronInstrumentation) ──────────
   //
   // The schedule is pinned in cron-schedules.test.ts against vercel.json and
   // SCHEDULE_MAP; this drives the real wrapper to show the job actually checks

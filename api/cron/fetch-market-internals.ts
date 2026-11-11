@@ -31,6 +31,13 @@
  *     session came back unusable (incomplete bar count, an all-zero bar, the
  *     $TICK clamp signature) or when a symbol-session is stored all zero. A
  *     warning would email nobody (spec P0.1, the alert-routing note).
+ *   - Except today's own session: at 22:30 UTC Schwab's same-day series is
+ *     not final for every symbol (2026-11-09 and 2026-11-10), and the next
+ *     evening's run heals it. A problem there is *pending*: logged, counted
+ *     (`market_internals.session_pending`), listed in the report as `pending`,
+ *     and neither a Sentry error nor a reason for `partial`. A stored
+ *     all-zero symbol-session is not subject to this: this job never stores an
+ *     all-zero bar, so only rows from before the settle can trip it.
  *
  * `?force=1` skips the time gate (CRON_SECRET is still required), so a
  * weekend run settles the five sessions that ended the day before.
@@ -38,7 +45,8 @@
  * Environment: CRON_SECRET (the Schwab token is managed internally)
  */
 
-import { Sentry } from '../_lib/sentry.js';
+import { Sentry, metrics } from '../_lib/sentry.js';
+import { getETDateStr } from '../../src/utils/timezone.js';
 import logger from '../_lib/logger.js';
 import { schwabFetch } from '../_lib/schwab-fetch.js';
 import { mapWithConcurrency } from '../_lib/uw-fetch.js';
@@ -60,6 +68,7 @@ import {
   sessionProblems,
   sessionRowCounts,
   settleSessions,
+  splitPendingProblems,
   upsertInternalBars,
   type SessionOutcome,
   type SessionProblem,
@@ -201,10 +210,33 @@ export default withCronInstrumentation(
     );
 
     const failedLegs = legs.filter((l) => l.failure !== undefined);
-    const problems = legs.flatMap((l) => l.problems);
 
-    // A session Schwab sent unusable, or sent short: say so once per run,
-    // naming every symbol-session. Error level: a warning emails nobody.
+    // Today's own session is not final at this hour (see
+    // splitPendingProblems): its problems are pending, the older ones are not.
+    const today = getETDateStr(new Date(ctx.startTimeMs));
+    const { pending, unusable: problems } = splitPendingProblems(
+      legs.flatMap((l) => l.problems),
+      sessions,
+      today,
+    );
+
+    // Pending: say so in the log and the metric and the report, and nothing
+    // more. The next evening's run fetches this session again, and an error
+    // here would be noise (11-09 and 11-10 each raised one for the same-day
+    // session, and 11-09 was complete a night later).
+    if (pending.length > 0) {
+      logger.info(
+        { pending, today },
+        `${JOB}: today's settled series is not final yet, left for the next run`,
+      );
+      for (let i = 0; i < pending.length; i += 1) {
+        metrics.increment('market_internals.session_pending');
+      }
+    }
+
+    // A session Schwab sent unusable, or sent short, that has had a night to
+    // settle: say so once per run, naming every symbol-session. Error level: a
+    // warning emails nobody.
     if (problems.length > 0) {
       logger.warn(
         { problems },
@@ -289,6 +321,7 @@ export default withCronInstrumentation(
         zeroBars: total((l) => l.zeroBars),
         failureCount: failedLegs.length,
         problems,
+        pending,
         allZero,
         qualityCheckFailed,
         results: legs,

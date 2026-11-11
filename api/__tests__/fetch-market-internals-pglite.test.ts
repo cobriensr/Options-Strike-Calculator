@@ -195,6 +195,7 @@ const run = async () => {
     updated: number;
     unchanged: number;
     problems: Array<{ symbol: string; date: string; kind: string }>;
+    pending: Array<{ symbol: string; date: string; kind: string }>;
     allZero: Array<{ symbol: string; date: string }>;
     results: Array<{
       symbol: string;
@@ -354,11 +355,14 @@ describe('fetch-market-internals over real SQL', () => {
 
     const out = await run();
 
+    // Partial because of the stored all-zero rows (the old cron's, from before
+    // the settle). Today's incomplete $ADD is pending, not a second alert.
     expect(out.status).toBe('partial');
     expect(out.allZero).toEqual([
       expect.objectContaining({ symbol: '$ADD', date: '2026-11-06' }),
     ]);
-    expect(out.problems).toEqual([
+    expect(out.problems).toEqual([]);
+    expect(out.pending).toEqual([
       expect.objectContaining({
         symbol: '$ADD',
         date: '2026-11-06',
@@ -383,8 +387,9 @@ describe('fetch-market-internals over real SQL', () => {
       const [o, h, l, c] = settled(symbol, i);
       return [Math.max(o, 0), Math.max(h, 0), Math.max(l, 0), Math.max(c, 0)];
     };
+    // 11-05, a night old: a real problem, so an error and a partial run.
     mockSchwab((symbol, day) =>
-      symbol === '$TICK' && day === '2026-11-06'
+      symbol === '$TICK' && day === '2026-11-05'
         ? dayBars(day, symbol, clamped)
         : dayBars(day, symbol),
     );
@@ -395,10 +400,52 @@ describe('fetch-market-internals over real SQL', () => {
     expect(out.problems).toEqual([
       expect.objectContaining({
         symbol: '$TICK',
+        date: '2026-11-05',
+        kind: 'tick_clamped',
+      }),
+    ]);
+    expect(out.pending).toEqual([]);
+    expect(
+      await count(
+        `symbol = '$TICK' AND ts >= '2026-11-05T14:30Z' AND ts < '2026-11-06T14:30Z'`,
+      ),
+    ).toBe(0);
+    expect(await count(`symbol = '$TICK'`)).toBe(4 * 390);
+  });
+
+  it("today's own clamped $TICK session is pending: not stored, not an error, the run is a success", async () => {
+    // The 2026-11-10 pattern: at 22:30 UTC Schwab's same-day $TICK series is
+    // not final yet (clamped), and the next evening's run heals it.
+    const clamped = (symbol: InternalSymbol, i: number): Ohlc => {
+      const [o, h, l, c] = settled(symbol, i);
+      return [Math.max(o, 0), Math.max(h, 0), Math.max(l, 0), Math.max(c, 0)];
+    };
+    mockSchwab((symbol, day) =>
+      symbol === '$TICK' && day === '2026-11-06'
+        ? dayBars(day, symbol, clamped)
+        : dayBars(day, symbol),
+    );
+
+    const out = await run();
+
+    expect(out.status).toBe('success');
+    expect(out.problems).toEqual([]);
+    expect(out.pending).toEqual([
+      expect.objectContaining({
+        symbol: '$TICK',
         date: '2026-11-06',
         kind: 'tick_clamped',
       }),
     ]);
+    expect(
+      vi
+        .mocked(Sentry.captureMessage)
+        .mock.calls.filter(
+          ([, o]) =>
+            (o as { tags: { stage: string } }).tags.stage === 'session_problem',
+        ),
+    ).toEqual([]);
+    // The clamped session is still refused: nothing of it is stored.
     expect(await count(`symbol = '$TICK' AND ts >= '2026-11-06T14:30Z'`)).toBe(
       0,
     );

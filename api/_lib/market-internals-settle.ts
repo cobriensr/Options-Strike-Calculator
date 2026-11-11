@@ -421,6 +421,37 @@ export function sessionProblems(plan: SymbolPlan): SessionProblem[] {
   return problems;
 }
 
+/**
+ * Split session problems into the ones to raise and the ones still pending.
+ *
+ * Schwab's SAME-day settled series is not final at the 22:30 UTC run for every
+ * symbol. Observed in production on 2026-11-09 and 2026-11-10 (Sentry issue
+ * SENTRY-EMERALD-DESERT-KJ, "settled series unusable for session(s)"): both
+ * evenings the error fired for today's own session only (11-10: `$TICK`
+ * `tick_clamped` with 0 bars, `$ADD` and `$VOLD` `incomplete` with 0 bars),
+ * and the next evening's run found 11-09 complete for all four symbols. So a
+ * problem on the newest session, when that session is the run's own ET date,
+ * is *pending*: the next run heals it, and an error now would be noise. A
+ * problem on any older session has had a full night to settle and is
+ * `unusable`: that is the Sentry error. Before the close the window holds no
+ * session of today (`settleSessions`), and on a forced weekend run the newest
+ * session is a day or more old, so neither is ever pending.
+ */
+export function splitPendingProblems(
+  problems: readonly SessionProblem[],
+  sessions: readonly string[],
+  today: string,
+): { pending: SessionProblem[]; unusable: SessionProblem[] } {
+  const newest = sessions.at(-1);
+  const pending: SessionProblem[] = [];
+  const unusable: SessionProblem[] = [];
+  for (const problem of problems) {
+    const isPending = problem.date === newest && problem.date === today;
+    (isPending ? pending : unusable).push(problem);
+  }
+  return { pending, unusable };
+}
+
 /** The symbol-sessions stored all-zero over more than ALL_ZERO_MIN_ROWS rows. */
 export function allZeroSessions(
   counts: readonly SessionRowCount[],

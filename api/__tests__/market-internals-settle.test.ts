@@ -28,7 +28,9 @@ import {
   pricehistoryPath,
   sessionProblems,
   settleSessions,
+  splitPendingProblems,
   type InternalBarRow,
+  type SessionProblem,
   type SettleCandle,
 } from '../_lib/market-internals-settle.js';
 
@@ -498,6 +500,55 @@ describe('sessionProblems', () => {
         zeroBars: 1,
       },
     ]);
+  });
+});
+
+describe('splitPendingProblems', () => {
+  const problem = (symbol: string, date: string): SessionProblem => ({
+    symbol: symbol as SessionProblem['symbol'],
+    date,
+    kind: 'incomplete',
+    bars: 0,
+    expected: FULL_DAY,
+    zeroBars: 0,
+  });
+  const SESSIONS = ['2026-11-04', '2026-11-05', '2026-11-06'];
+
+  it("a problem on the newest session is pending only when that is the run's own ET day", () => {
+    const todays = problem('$ADD', '2026-11-06');
+
+    expect(splitPendingProblems([todays], SESSIONS, '2026-11-06')).toEqual({
+      pending: [todays],
+      unusable: [],
+    });
+    // A forced Saturday run: the newest session is a day old, so it is not.
+    expect(splitPendingProblems([todays], SESSIONS, '2026-11-07')).toEqual({
+      pending: [],
+      unusable: [todays],
+    });
+  });
+
+  it('a problem on any older session is unusable, and the two are told apart in one list', () => {
+    const old = problem('$VOLD', '2026-11-05');
+    const older = problem('$TRIN', '2026-11-04');
+    const todays = problem('$TICK', '2026-11-06');
+
+    expect(
+      splitPendingProblems([old, todays, older], SESSIONS, '2026-11-06'),
+    ).toEqual({ pending: [todays], unusable: [old, older] });
+  });
+
+  it('no problems, or an empty window, give nothing pending and nothing unusable', () => {
+    expect(splitPendingProblems([], SESSIONS, '2026-11-06')).toEqual({
+      pending: [],
+      unusable: [],
+    });
+    expect(
+      splitPendingProblems([problem('$ADD', '2026-11-06')], [], '2026-11-06'),
+    ).toEqual({
+      pending: [],
+      unusable: [problem('$ADD', '2026-11-06')],
+    });
   });
 });
 
