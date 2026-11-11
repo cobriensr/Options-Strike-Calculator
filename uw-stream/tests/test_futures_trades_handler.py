@@ -5,10 +5,15 @@ Covers the two halves of the handler:
 - ``_transform`` — the stateless per-print normalizer: target-product
   equality filter (micros excluded), Decimal price parsing, epoch-ms
   minute flooring, and defensive rejection of malformed prints.
-- ``_flush`` — the stateful bar aggregator: per-print dedup, front-month
-  selection by cumulative session volume, OHLCV folding, and the
-  completed-minutes-only emit rule that keeps
-  ``ON CONFLICT DO NOTHING`` correct.
+- ``_flush`` — the stateful bar aggregator: per-print dedup, the per-session
+  tally, the contract each minute is built from (one per root per CME trade
+  date, decided in ``futures_front_month``), OHLCV folding, and the
+  completed-minutes-only emit rule that keeps ``ON CONFLICT DO NOTHING``
+  correct.
+
+The database layer of the rule (``ensure_front``, ``load_tally``,
+``save_tally``) is replaced at the module boundary by ``_FakeFront``, the
+``front`` fixture; its own tests are in tests/test_futures_front_month.py.
 
 Payload shape and ``executed_at`` units were captured from the live UW
 feed on 2026-09-08 (see the handler module docstring).
@@ -16,12 +21,13 @@ feed on 2026-09-08 (see the handler module docstring).
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
+import futures_front_month as front_month
 from handlers import futures_trades as ft
 from handlers.futures_trades import (
     _COLUMNS,
@@ -48,11 +54,81 @@ _PINNED_NOW_MS = _BASE_MS + 10 * 86_400_000
 
 _C = {name: i for i, name in enumerate(_COLUMNS)}
 
+# The CME trade date of _BASE_MS: 05:56Z is 00:56 CDT, and 00:56 + 7 h is 09-08.
+_D = date(2026, 9, 8)
+# The 17:00 CDT open of trade date 09-09 is 22:00Z on 09-08.
+_OPEN_09_09_MS = 1788904800000  # 2026-09-08T22:00:00Z
+
 
 @pytest.fixture(autouse=True)
 def _pin_wall_clock(monkeypatch):
     """Pin ``_now_ms`` so the future-timestamp bound is deterministic."""
     monkeypatch.setattr(timestamps, "_now_ms", lambda: _PINNED_NOW_MS)
+
+
+class _FakeFront:
+    """The database layer of the front-month rule, replaced at the module
+    boundary: ``ensure_front``, ``load_tally`` and ``save_tally``.
+
+    Every root's contract is ``<ROOT>U6`` unless a test sets ``decisions`` (a
+    ``None`` there is a failed lookup). ``events`` is the call order across the
+    three, for the tests that pin "save the tally before asking".
+    """
+
+    def __init__(self) -> None:
+        self.decisions: dict[tuple[str, date], str | None] = {}
+        self.defaults: dict[str, str] = {"CL": "CLV6"}
+        self.stored: dict[tuple[str, date], dict[str, int]] = {}
+        self.ensure_calls: list[tuple[str, date]] = []
+        self.load_calls: list[tuple[str, date]] = []
+        self.saves: list[list[tuple[str, date, str, int]]] = []
+        self.events: list[str] = []
+        self.fail_load: Exception | None = None
+        self.fail_save: Exception | None = None
+
+    async def ensure_front(self, product: str, trade_date: date) -> str | None:
+        self.events.append("ensure")
+        self.ensure_calls.append((product, trade_date))
+        key = (product, trade_date)
+        if key in self.decisions:
+            return self.decisions[key]
+        return self.defaults.get(product, f"{product}U6")
+
+    async def load_tally(self, product: str, trade_date: date) -> dict[str, int]:
+        self.events.append("load")
+        self.load_calls.append((product, trade_date))
+        if self.fail_load is not None:
+            raise self.fail_load
+        return dict(self.stored.get((product, trade_date), {}))
+
+    async def save_tally(self, rows) -> None:
+        self.events.append("save")
+        if self.fail_save is not None:
+            raise self.fail_save
+        self.saves.append(list(rows))
+
+    @property
+    def saved_volume(self) -> dict[tuple[str, date, str], int]:
+        """The latest volume saved for each (product, trade date, contract)."""
+        latest: dict[tuple[str, date, str], int] = {}
+        for batch in self.saves:
+            for product, day, contract, volume in batch:
+                latest[(product, day, contract)] = volume
+        return latest
+
+
+@pytest.fixture(autouse=True)
+def front(monkeypatch) -> _FakeFront:
+    fake = _FakeFront()
+    monkeypatch.setattr(front_month, "ensure_front", fake.ensure_front)
+    monkeypatch.setattr(front_month, "load_tally", fake.load_tally)
+    monkeypatch.setattr(front_month, "save_tally", fake.save_tally)
+    return fake
+
+
+def _counts(handler, product: str = "ES", day: date = _D) -> dict[str, int]:
+    """The handler's deduped outright volume per contract for one session."""
+    return handler._tally[(product, day)].counts
 
 
 def _floor_minute_utc(v):
@@ -390,22 +466,23 @@ class TestMinuteFlooring:
 
 
 # ----------------------------------------------------------------------
-# 5. Front-month selection by cumulative session volume
+# 5. The contract of a minute: one per root per CME trade date, decided in
+#    futures_front_month, never by the volume the process has seen
 # ----------------------------------------------------------------------
 
 
 class TestFrontMonthSelection:
     @pytest.mark.asyncio
-    async def test_higher_session_volume_contract_wins(self, handler):
+    async def test_the_decided_contract_is_the_bar_whatever_the_volume(self, handler):
         payloads = [
-            # Front month ESU6: 10 lots.
+            # Decided contract ESU6: 10 lots.
             _print(sym="ESU6", price="7700.00", size=10, trade_id=1),
-            # Back month ESZ6: 1 lot, wildly different price.
+            # Back month ESZ6: 50 lots, wildly different price.
             _print(
                 sym="ESZ6",
                 executed_at=_BASE_MS + 10,
                 price="7900.00",
-                size=1,
+                size=50,
                 trade_id=2,
             ),
             _print(sym="ESU6", executed_at=_BASE_MS + 60_000, trade_id=3),
@@ -415,47 +492,33 @@ class TestFrontMonthSelection:
         assert len(rows) == 1
         assert rows[0][_C["volume"]] == 10  # only ESU6
         assert rows[0][_C["high"]] == Decimal("7700.00")  # ESZ6's 7900 excluded
+        assert rows[0][_C["contract"]] == "ESU6"
 
     @pytest.mark.asyncio
-    async def test_roll_follows_liquidity_crossover(self, handler):
-        """When the back month overtakes on session volume, it becomes front."""
+    async def test_a_back_month_overtaking_mid_session_does_not_roll_the_session(
+        self, handler, front
+    ):
+        """The old rule rolled at the liquidity crossover. The roll is now the
+        next session's decision, so the whole session stays on ESU6."""
         payloads = [
-            # Minute :56 — ESU6 leads.
+            # Minute :56, ESU6 leads.
             _print(sym="ESU6", price="7700.00", size=5, trade_id=1),
-            _print(
-                sym="ESZ6",
-                executed_at=_BASE_MS + 10,
-                price="7900.00",
-                size=1,
-                trade_id=2,
-            ),
-            # Minute :57 — ESZ6 takes over on cumulative session volume.
-            _print(
-                sym="ESZ6",
-                executed_at=_BASE_MS + 60_000,
-                price="7910.00",
-                size=50,
-                trade_id=3,
-            ),
-            _print(
-                sym="ESU6",
-                executed_at=_BASE_MS + 60_010,
-                price="7701.00",
-                size=1,
-                trade_id=4,
-            ),
-            # Minute :58 — completes :57.
+            _print(sym="ESZ6", executed_at=_BASE_MS + 10, price="7900.00", size=1, trade_id=2),
+            # Minute :57, ESZ6 takes the lead on volume.
+            _print(sym="ESZ6", executed_at=_BASE_MS + 60_000, price="7910.00", size=50, trade_id=3),
+            _print(sym="ESU6", executed_at=_BASE_MS + 60_010, price="7701.00", size=1, trade_id=4),
+            # Minute :58 completes :57.
             _print(sym="ESZ6", executed_at=_BASE_MS + 120_000, trade_id=5),
         ]
         rows = await _flush_capture(handler, payloads)
 
-        assert len(rows) == 2
-        # :56 emitted while ESU6 still led (5 vs 1).
-        assert rows[0][_C["close"]] == Decimal("7700.00")
-        assert rows[0][_C["volume"]] == 5
-        # :57 emitted after ESZ6 crossed over (51 vs 6).
-        assert rows[1][_C["close"]] == Decimal("7910.00")
-        assert rows[1][_C["volume"]] == 50
+        assert [(r[_C["close"]], r[_C["volume"]], r[_C["contract"]]) for r in rows] == [
+            (Decimal("7700.00"), 5, "ESU6"),
+            (Decimal("7701.00"), 1, "ESU6"),
+        ]
+        assert front.ensure_calls == [("ES", _D)]
+        # The volume is still counted: it is the next session's input.
+        assert _counts(handler) == {"ESU6": 6, "ESZ6": 52}
 
     @pytest.mark.asyncio
     async def test_front_month_is_per_product_not_global(self, handler):
@@ -488,109 +551,523 @@ class TestFrontMonthSelection:
         assert set(by_symbol) == {"ES", "NQ"}
         assert by_symbol["ES"][_C["volume"]] == 3
         assert by_symbol["NQ"][_C["volume"]] == 7
+        assert by_symbol["ES"][_C["contract"]] == "ESU6"
+        assert by_symbol["NQ"][_C["contract"]] == "NQU6"
 
     @pytest.mark.asyncio
-    async def test_session_volume_tally_resets_on_new_utc_day(self, handler):
-        day1 = _BASE_MS
-        day2 = _BASE_MS + 86_400_000  # +24h, next UTC date
+    async def test_one_decision_per_root_and_trade_date_is_asked_once(self, handler, front):
         payloads = [
-            # Day 1: ESU6 dominates.
-            _print(sym="ESU6", price="7700.00", size=100, trade_id=1),
-            _print(sym="ESU6", executed_at=day1 + 60_000, trade_id=2),
-            # Day 2: only ESZ6 trades. Without a reset, ESU6's stale 101
-            # lots would keep it "front month" for the day-2 minute — and
-            # since ESU6 has no bar in that minute, _collect_completed
-            # would find no bar for the elected sym and emit NOTHING,
-            # silently dropping the day-2 bar entirely.
-            _print(sym="ESZ6", executed_at=day2, price="7950.00", size=4, trade_id=3),
-            _print(sym="ESZ6", executed_at=day2 + 60_000, trade_id=4),
+            _print(product="ES", sym="ESU6", trade_id=1),
+            _print(product="NQ", sym="NQU6", executed_at=_BASE_MS + 10, trade_id=2),
+            _print(product="ES", sym="ESU6", executed_at=_BASE_MS + 60_000, trade_id=3),
+            _print(product="NQ", sym="NQU6", executed_at=_BASE_MS + 60_010, trade_id=4),
+        ]
+        await _flush_capture(handler, payloads)
+        await _flush_capture(
+            handler, [_print(product="ES", sym="ESU6", executed_at=_BASE_MS + 120_000, trade_id=5)]
+        )
+
+        assert sorted(front.ensure_calls) == [("ES", _D), ("NQ", _D)]
+
+    @pytest.mark.asyncio
+    async def test_the_16_59_and_17_00_ct_minutes_take_different_contracts(self, handler, front):
+        """The session opens at 17:00 CT. After a roll, the minute before the
+        open belongs to the old session's contract and the open to the new."""
+        front.decisions[("ES", _D)] = "ESU6"
+        front.decisions[("ES", date(2026, 9, 9))] = "ESZ6"
+        before_open = _OPEN_09_09_MS - 60_000  # 21:59Z = 16:59 CDT, trade date 09-08
+        payloads = [
+            _print(sym="ESU6", executed_at=before_open, price="7700.00", size=3, trade_id=1),
+            _print(sym="ESZ6", executed_at=before_open + 10, price="7900.00", size=9, trade_id=2),
+            _print(sym="ESU6", executed_at=_OPEN_09_09_MS, price="7701.00", size=2, trade_id=3),
+            _print(
+                sym="ESZ6", executed_at=_OPEN_09_09_MS + 10, price="7901.00", size=8, trade_id=4
+            ),
+            # 17:01 completes the 17:00 minute.
+            _print(sym="ESZ6", executed_at=_OPEN_09_09_MS + 60_000, trade_id=5),
         ]
         rows = await _flush_capture(handler, payloads)
 
-        # Three minutes complete: both day-1 minutes (finished the moment
-        # the day-2 prints arrived and advanced ES's newest minute) plus
-        # day-2 05:56. Only day-2 05:57 is still in progress.
-        day2_minute = datetime(2026, 9, 9, 5, 56, tzinfo=UTC)
-        assert [r[_C["ts"]] for r in rows] == [
-            datetime(2026, 9, 8, 5, 56, tzinfo=UTC),
-            datetime(2026, 9, 8, 5, 57, tzinfo=UTC),
-            day2_minute,
-        ]
-
-        # The assertion that actually pins the reset: the day-2 bar exists
-        # and carries ESZ6's price and volume, not ESU6's stale lead.
-        day2_bar = {r[_C["ts"]]: r for r in rows}[day2_minute]
-        assert day2_bar[_C["close"]] == Decimal("7950.00")
-        assert day2_bar[_C["volume"]] == 4
-        # Day 1's 101 ESU6 lots are gone from the tally, not merely outvoted.
-        assert handler._session_volume == {"ES": {"ESZ6": 5}}
+        by_ts = {r[_C["ts"]]: r for r in rows}
+        old_session = by_ts[datetime(2026, 9, 8, 21, 59, tzinfo=UTC)]
+        new_session = by_ts[datetime(2026, 9, 8, 22, 0, tzinfo=UTC)]
+        assert (old_session[_C["contract"]], old_session[_C["volume"]]) == ("ESU6", 3)
+        assert old_session[_C["close"]] == Decimal("7700.00")
+        assert (new_session[_C["contract"]], new_session[_C["volume"]]) == ("ESZ6", 8)
+        assert new_session[_C["close"]] == Decimal("7901.00")
+        assert front.ensure_calls == [("ES", _D), ("ES", date(2026, 9, 9))]
 
     @pytest.mark.asyncio
-    async def test_prior_day_straggler_keeps_its_minutes_front_month(self, handler):
-        """23:59 is the held-back minute when the first 00:00 print rolls
-        the tally. A 23:59 back-month straggler then lands in the EMPTY
-        new-day tally; it must not re-elect itself front for 23:59 (a
-        permanent carry-basis spike) or lead the new day (a 00:01 gap)."""
-        at_2359_50 = 1788911990000  # 2026-09-08T23:59:50Z
+    async def test_a_back_month_leading_after_midnight_utc_does_not_change_the_contract(
+        self, handler, front
+    ):
+        """Midnight UTC is 19:00 CDT, inside one session. The old rule reset its
+        tally there, and a back month leading the first minutes took the front."""
+        front.decisions[("ES", date(2026, 9, 9))] = "ESZ6"
+        midnight = 1788912000000  # 2026-09-09T00:00:00Z
+        payloads = [
+            _print(sym="ESZ6", executed_at=midnight - 30_000, price="7700.00", size=5, trade_id=1),
+            _print(
+                sym="ESH7", executed_at=midnight + 10_000, price="7755.00", size=500, trade_id=2
+            ),
+            _print(sym="ESZ6", executed_at=midnight + 15_000, price="7701.00", size=1, trade_id=3),
+            # 00:01 completes 23:59 and 00:00.
+            _print(sym="ESZ6", executed_at=midnight + 70_000, trade_id=4),
+        ]
+        rows = await _flush_capture(handler, payloads)
+
+        assert [(r[_C["ts"]], r[_C["contract"]], r[_C["volume"]]) for r in rows] == [
+            (datetime(2026, 9, 8, 23, 59, tzinfo=UTC), "ESZ6", 5),
+            (datetime(2026, 9, 9, 0, 0, tzinfo=UTC), "ESZ6", 1),
+        ]
+        assert front.ensure_calls == [("ES", date(2026, 9, 9))]
+        assert _counts(handler, day=date(2026, 9, 9)) == {"ESZ6": 7, "ESH7": 500}
+
+    @pytest.mark.asyncio
+    async def test_a_new_utc_day_in_one_session_keeps_the_tally(self, handler):
+        """The tally belongs to the trade date, not the UTC date."""
         await _flush_capture(
             handler,
-            [_print(sym="ESZ6", executed_at=at_2359_50 - 60_000, price="7700.00", size=500)],
+            [
+                _print(sym="ESU6", executed_at=1788911990000, size=5, trade_id=1),  # 23:59:50Z
+                _print(sym="ESU6", executed_at=1788912010000, size=7, trade_id=2),  # 00:00:10Z
+            ],
         )
+        assert _counts(handler, day=date(2026, 9, 9)) == {"ESU6": 12}
+        assert (("ES", date(2026, 9, 8))) not in handler._tally
+
+    @pytest.mark.asyncio
+    async def test_session_roll_starts_a_new_tally(self, handler):
+        day2 = _OPEN_09_09_MS
         await _flush_capture(
             handler,
-            [_print(sym="ESZ6", executed_at=at_2359_50, price="7700.00", size=50, trade_id=2)],
+            [
+                _print(sym="ESU6", executed_at=day2 - 60_000, size=100, trade_id=1),
+                _print(sym="ESU6", executed_at=day2, size=4, trade_id=2),
+                _print(sym="ESZ6", executed_at=day2 + 1_000, size=6, trade_id=3),
+            ],
         )
+        assert _counts(handler) == {"ESU6": 100}
+        assert _counts(handler, day=date(2026, 9, 9)) == {"ESU6": 4, "ESZ6": 6}
+
+    @pytest.mark.asyncio
+    async def test_a_late_print_for_the_last_minute_of_the_old_session_keeps_its_contract(
+        self, handler, front
+    ):
+        """The old session's last minute is still open when the first print of
+        the new session arrives, and a straggler for it can follow. It builds
+        the old session's bar, on the old session's contract, and is counted in
+        the old session's tally: never re-elected from the new session."""
+        front.decisions[("ES", _D)] = "ESU6"
+        front.decisions[("ES", date(2026, 9, 9))] = "ESZ6"
+        last_minute = _OPEN_09_09_MS - 10_000  # 21:59:50Z
         rows = await _flush_capture(
             handler,
             [
-                # 00:00:05 — first print of the new UTC day; rolls the tally.
-                _print(sym="ESZ6", executed_at=at_2359_50 + 15_000, price="7701.00", trade_id=3),
-                # 23:59:50.1 — prior-day back-month straggler.
+                _print(sym="ESU6", executed_at=last_minute, price="7700.00", size=4, trade_id=1),
+                # 17:00:05 CT, the first print of the new session.
+                _print(sym="ESZ6", executed_at=_OPEN_09_09_MS + 5_000, price="7900.00", trade_id=2),
+                # Stragglers for 16:59: a back month and the decided contract.
                 _print(
-                    sym="ESH7", executed_at=at_2359_50 + 100, price="7755.00", size=5, trade_id=4
+                    sym="ESH7", executed_at=last_minute + 5_000, price="7755.00", size=5, trade_id=3
                 ),
-                # 00:01:05 — completes 23:59 and 00:00.
-                _print(sym="ESZ6", executed_at=at_2359_50 + 75_000, price="7701.00", trade_id=5),
+                _print(
+                    sym="ESU6", executed_at=last_minute + 8_000, price="7702.00", size=1, trade_id=4
+                ),
+                # 17:01 completes 16:59 and 17:00.
+                _print(sym="ESZ6", executed_at=_OPEN_09_09_MS + 65_000, trade_id=5),
             ],
         )
 
         by_ts = {r[_C["ts"]]: r for r in rows}
-        bar_2359 = by_ts[datetime(2026, 9, 8, 23, 59, tzinfo=UTC)]
-        assert bar_2359[_C["close"]] == Decimal("7700.00")  # ESZ6, not ESH7's 7755
-        assert bar_2359[_C["volume"]] == 50
-        assert "ESH7" not in handler._session_volume["ES"]
-        assert handler._front_sym[("ES", datetime(2026, 9, 9, 0, 1, tzinfo=UTC))] == "ESZ6"
+        old = by_ts[datetime(2026, 9, 8, 21, 59, tzinfo=UTC)]
+        assert (old[_C["contract"]], old[_C["volume"]], old[_C["close"]]) == (
+            "ESU6",
+            5,
+            Decimal("7702.00"),
+        )
+        assert by_ts[datetime(2026, 9, 8, 22, 0, tzinfo=UTC)][_C["contract"]] == "ESZ6"
+        assert _counts(handler) == {"ESU6": 5, "ESH7": 5}
+        assert _counts(handler, day=date(2026, 9, 9)) == {"ESZ6": 2}
+        assert front.ensure_calls == [("ES", _D), ("ES", date(2026, 9, 9))]
 
     @pytest.mark.asyncio
-    async def test_prior_day_straggler_without_a_snapshot_is_a_logged_gap(self, handler):
-        """A prior-day minute first seen after the roll has no front-month
-        snapshot from its own day, so it becomes the existing logged gap
-        rather than being elected from the new day's tally."""
-        at_2359_50 = 1788911990000  # 2026-09-08T23:59:50Z
+    async def test_a_straggler_uses_the_stored_decision_of_its_own_session(self, handler, front):
+        """A restart can see the old session's straggler first: its decision is
+        read from the store, not taken from the session the next print is in."""
+        front.decisions[("ES", _D)] = "ESU6"
+        front.decisions[("ES", date(2026, 9, 9))] = "ESZ6"
+        rows = await _flush_capture(
+            handler,
+            [
+                _print(sym="ESZ6", executed_at=_OPEN_09_09_MS + 5_000, trade_id=1),
+                _print(sym="ESU6", executed_at=_OPEN_09_09_MS - 5_000, price="7701.00", trade_id=2),
+                _print(sym="ESZ6", executed_at=_OPEN_09_09_MS + 65_000, trade_id=3),
+            ],
+        )
+
+        by_ts = {r[_C["ts"]]: r for r in rows}
+        assert by_ts[datetime(2026, 9, 8, 21, 59, tzinfo=UTC)][_C["contract"]] == "ESU6"
+        assert by_ts[datetime(2026, 9, 8, 22, 0, tzinfo=UTC)][_C["contract"]] == "ESZ6"
+        assert sorted(front.ensure_calls) == [("ES", _D), ("ES", date(2026, 9, 9))]
+
+    @pytest.mark.asyncio
+    async def test_a_restart_inside_a_session_keeps_its_contract_and_carries_the_tally_on(
+        self, handler, front
+    ):
+        """A new process starts counting from zero. The old rule would have
+        elected whichever contract printed most since the restart; the stored
+        decision and the stored tally make the restart invisible."""
+        front.decisions[("ES", _D)] = "ESU6"
+        front.stored[("ES", _D)] = {"ESU6": 5000, "ESZ6": 1200}
+        payloads = [
+            _print(sym="ESU6", price="7700.00", size=5, trade_id=1),
+            # Since the restart the back month has printed 20 times as much.
+            _print(sym="ESZ6", executed_at=_BASE_MS + 10, price="7900.00", size=100, trade_id=2),
+            _print(sym="ESU6", executed_at=_BASE_MS + 60_000, trade_id=3),
+            _print(sym="ESU6", executed_at=_BASE_MS + 120_000, trade_id=4),
+        ]
+        rows = await _flush_capture(handler, payloads)
+
+        assert [(r[_C["contract"]], r[_C["volume"]]) for r in rows] == [("ESU6", 5), ("ESU6", 1)]
+        assert front.load_calls == [("ES", _D)]
+        assert _counts(handler) == {"ESU6": 5007, "ESZ6": 1300}
+        assert front.saved_volume == {("ES", _D, "ESU6"): 5007, ("ES", _D, "ESZ6"): 1300}
+
+    @pytest.mark.asyncio
+    async def test_the_tally_is_saved_before_a_new_sessions_decision_is_asked_for(
+        self, handler, front
+    ):
+        """The decision for the new session reads the volume of the one that
+        just ended, so that volume is in the table first."""
+        await _flush_capture(handler, [_print(sym="ESU6", size=4, trade_id=1)])
+        assert front.saves == []  # one open minute: nothing emitted, nothing saved
+        front.events.clear()
+
+        await _flush_capture(
+            handler, [_print(sym="ESZ6", executed_at=_OPEN_09_09_MS + 5_000, trade_id=2)]
+        )
+
+        assert front.events[:3] == ["load", "save", "ensure"]
+        assert front.saves[0] == [("ES", _D, "ESU6", 4)]
+
+    @pytest.mark.asyncio
+    async def test_a_lookup_that_fails_at_the_open_is_a_logged_gap_and_the_next_flush_retries(
+        self, handler, front
+    ):
+        """Neon unreachable while deciding the new session: the minute is a
+        gap with an error log, the failure is not cached, and the next flush
+        asks again."""
+        new_day = date(2026, 9, 9)
+        front.decisions[("ES", new_day)] = None  # ensure_front found nothing
+        first = [
+            _print(sym="ESU6", executed_at=_OPEN_09_09_MS - 5_000, trade_id=1),
+            _print(sym="ESZ6", executed_at=_OPEN_09_09_MS + 5_000, trade_id=2),
+            # 17:01 completes 16:59 (old session, fine) and 17:00 (unknown).
+            _print(sym="ESZ6", executed_at=_OPEN_09_09_MS + 65_000, trade_id=3),
+        ]
+        with patch("handlers.futures_trades.log") as mock_log:
+            rows = await _flush_capture(handler, first)
+
+        assert [r[_C["ts"]] for r in rows] == [datetime(2026, 9, 8, 21, 59, tzinfo=UTC)]
+        assert mock_log.error.call_count == 1
+        extra = mock_log.error.call_args.kwargs["extra"]
+        assert extra["kind"] == "front_month_unknown"
+        assert extra["scope"] == "futures_trades"
+        assert extra["product"] == "ES"
+        assert extra["trade_date"] == "2026-09-09"
+        assert ("ES", new_day) not in handler._decided
+
+        # Neon is back. The 17:01 minute completes on the next flush.
+        front.decisions[("ES", new_day)] = "ESZ6"
+        rows = await _flush_capture(
+            handler, [_print(sym="ESZ6", executed_at=_OPEN_09_09_MS + 125_000, trade_id=4)]
+        )
+
+        assert [(r[_C["ts"]], r[_C["contract"]]) for r in rows] == [
+            (datetime(2026, 9, 8, 22, 1, tzinfo=UTC), "ESZ6")
+        ]
+        assert front.ensure_calls.count(("ES", new_day)) == 2
+        assert handler._decided[("ES", new_day)] == "ESZ6"
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_decision_is_logged_once_per_window_and_product(self, handler, front):
+        front.decisions[("ES", _D)] = None
+        front.decisions[("NQ", _D)] = None
+        minutes = [_BASE_MS + i * 60_000 for i in range(4)]
+        payloads = [
+            _print(product=p, sym=f"{p}U6", executed_at=ms, trade_id=i * 2 + (p == "NQ"))
+            for i, ms in enumerate(minutes)
+            for p in ("ES", "NQ")
+        ]
+        with patch("handlers.futures_trades.log") as mock_log:
+            rows = await _flush_capture(handler, payloads)
+            assert rows == []
+            logged = [(c.kwargs["extra"]["product"]) for c in mock_log.error.call_args_list]
+            assert sorted(logged) == ["ES", "NQ"]  # three gaps each, one line each
+
+            # The window expires: the next unknown minute logs again, with the total.
+            for product in ("ES", "NQ"):
+                handler._unknown_logged_at[product] -= MALFORMED_PAYLOAD_LOG_INTERVAL_S
+            await _flush_capture(handler, [_print(executed_at=_BASE_MS + 5 * 60_000, trade_id=99)])
+            await _flush_capture(handler, [_print(executed_at=_BASE_MS + 6 * 60_000, trade_id=100)])
+
+        later = [c.kwargs["extra"] for c in mock_log.error.call_args_list][2:]
+        assert [e["product"] for e in later] == ["ES"]
+        assert later[0]["unknown_total"] == 7
+
+    @pytest.mark.asyncio
+    async def test_a_decision_that_is_known_is_not_asked_for_again(self, handler, front):
+        await _flush_capture(handler, [_print(trade_id=1)])
+        await _flush_capture(handler, [_print(executed_at=_BASE_MS + 60_000, trade_id=2)])
+        await _flush_capture(handler, [_print(executed_at=_BASE_MS + 120_000, trade_id=3)])
+        assert front.ensure_calls == [("ES", _D)]
+        assert front.load_calls == [("ES", _D)]
+
+    @pytest.mark.asyncio
+    async def test_every_emitted_bar_carries_its_contract(self, handler):
+        payloads = [
+            _print(trade_id=1),
+            _print(executed_at=_BASE_MS + 60_000, trade_id=2),
+            _print(executed_at=_BASE_MS + 120_000, trade_id=3),
+            _print(executed_at=_BASE_MS + 180_000, trade_id=4),
+        ]
+        rows = await _flush_capture(handler, payloads)
+        assert len(rows) == 3
+        assert {r[_C["contract"]] for r in rows} == {"ESU6"}
+        assert _COLUMNS[-1] == "contract"
+
+    @pytest.mark.asyncio
+    async def test_two_spellings_of_one_contract_are_one_tally_key_and_one_bar(self, handler):
+        payloads = [
+            _print(sym="ESU6", price="7700.00", size=4, trade_id=1),
+            _print(sym="ESU26", executed_at=_BASE_MS + 10, price="7701.00", size=6, trade_id=2),
+            _print(sym="ESU6", executed_at=_BASE_MS + 20, price="7702.00", size=1, trade_id=3),
+            _print(sym="ESU6", executed_at=_BASE_MS + 60_000, trade_id=4),
+        ]
+        rows = await _flush_capture(handler, payloads)
+
+        assert len(rows) == 1
+        assert rows[0][_C["volume"]] == 11
+        assert rows[0][_C["close"]] == Decimal("7702.00")
+        assert rows[0][_C["contract"]] == "ESU6"
+        assert _counts(handler) == {"ESU6": 12}
+        assert {key[2] for key in handler._bars} == {"ESU6"}
+
+    @pytest.mark.asyncio
+    async def test_a_redelivery_under_the_other_spelling_is_still_a_duplicate(self, handler):
+        payloads = [
+            _print(sym="ESU6", size=3, trade_id=42),
+            _print(sym="ESU26", size=3, trade_id=42),
+            _print(sym="ESU6", executed_at=_BASE_MS + 60_000, trade_id=43),
+        ]
+        rows = await _flush_capture(handler, payloads)
+        assert rows[0][_C["volume"]] == 3
+
+    def test_the_two_digit_spelling_is_canonical_in_the_normalized_print(self, handler):
+        printed = handler._transform(_print(sym="ESU26"))
+        assert printed.contract == "ESU6"
+        assert printed.trade_date == _D
+
+    def test_a_two_digit_year_outside_the_window_is_dropped_with_a_warning(self, handler):
+        with patch("handlers.futures_trades.rate_limited_log") as mock_log:
+            assert handler._transform(_print(sym="ESZ36")) is None
+        call = mock_log.warning.call_args
+        assert call.kwargs["scope"] == "futures_trades"
+        assert call.kwargs["kind"] == "contract_out_of_window"
+        assert call.kwargs["extra"] == {"product": "ES", "sym": "ESZ36"}
+
+    @pytest.mark.asyncio
+    async def test_a_contract_name_the_column_check_would_refuse_is_written_as_null(self, handler):
+        """futures_bars.contract has a CHECK (migration #204). One bad name in
+        the multi-row INSERT would fail the whole flush, so the bar is kept
+        with a NULL contract and a warning instead."""
+        handler._decided[("ES", _D)] = "NQU6"  # another root's contract
+        handler._bars[("ES", _BASE_MINUTE, "NQU6")] = ft._Bar(
+            open=Decimal("1"),
+            high=Decimal("1"),
+            low=Decimal("1"),
+            close=Decimal("1"),
+            volume=3,
+            first_at=_BASE_MINUTE,
+            last_at=_BASE_MINUTE,
+        )
+        handler._newest_minute["ES"] = _BASE_MINUTE + timedelta(minutes=1)
+
+        with patch("handlers.futures_trades.rate_limited_log") as mock_log:
+            rows = handler._collect_completed()
+
+        assert len(rows) == 1
+        assert rows[0][_C["contract"]] is None
+        assert rows[0][_C["volume"]] == 3
+        call = mock_log.warning.call_args
+        assert call.kwargs["kind"] == "invalid_contract"
+        assert call.kwargs["extra"]["contract"] == "NQU6"
+
+
+# ----------------------------------------------------------------------
+# 5b. The session tally: deduped outright volume per contract, saved to
+#     futures_contract_volume (source live) for the next session's decision
+# ----------------------------------------------------------------------
+
+
+class TestSessionTally:
+    @pytest.mark.asyncio
+    async def test_saved_when_minutes_are_emitted_and_not_before(self, handler, front):
+        await _flush_capture(handler, [_print(size=4, trade_id=1)])
+        assert front.saves == []  # the only minute is still open
+
         await _flush_capture(
             handler,
-            [_print(sym="ESZ6", executed_at=at_2359_50 - 120_000, price="7700.00", size=500)],
+            [
+                _print(sym="ESZ6", executed_at=_BASE_MS + 10, size=6, trade_id=2),
+                _print(executed_at=_BASE_MS + 60_000, size=1, trade_id=3),
+            ],
         )
+
+        assert front.saves == [[("ES", _D, "ESU6", 5), ("ES", _D, "ESZ6", 6)]]
+        assert front.saved_volume == {("ES", _D, "ESU6"): 5, ("ES", _D, "ESZ6"): 6}
+
+    @pytest.mark.asyncio
+    async def test_the_saved_volume_is_cumulative_and_only_changed_sessions_are_saved(
+        self, handler, front
+    ):
+        await _flush_capture(
+            handler,
+            [
+                _print(product="ES", sym="ESU6", size=3, trade_id=1),
+                _print(product="NQ", sym="NQU6", executed_at=_BASE_MS + 5, size=2, trade_id=2),
+                _print(product="ES", sym="ESU6", executed_at=_BASE_MS + 60_000, trade_id=3),
+                _print(product="NQ", sym="NQU6", executed_at=_BASE_MS + 60_005, trade_id=4),
+            ],
+        )
+        await _flush_capture(
+            handler,
+            [_print(product="ES", sym="ESU6", executed_at=_BASE_MS + 120_000, size=9, trade_id=5)],
+        )
+
+        # Second save: ES only (NQ saw nothing new), with the running total.
+        assert [(p, c, v) for p, _, c, v in front.saves[1]] == [("ES", "ESU6", 3 + 1 + 9)]
+
+    @pytest.mark.asyncio
+    async def test_only_deduped_outright_prints_are_counted(self, handler):
+        spread = _print(sym="ESZ6-ESH7", size=1000, trade_id=1)
+        block = _print(size=500, trade_id=2, is_block=True)
+        dup = _print(size=3, trade_id=3)
+        await _flush_capture(
+            handler,
+            [spread, block, dup, dict(dup), dict(dup), _print(trade_id=4, size=2)],
+        )
+        assert _counts(handler) == {"ESU6": 5}
+
+    @pytest.mark.asyncio
+    async def test_a_save_that_fails_keeps_the_bars_and_is_retried_with_the_running_total(
+        self, handler, front
+    ):
+        front.fail_save = RuntimeError("neon down")
+        payloads = [
+            _print(size=4, trade_id=1),
+            _print(executed_at=_BASE_MS + 60_000, size=1, trade_id=2),
+        ]
+        with patch("handlers.futures_trades.rate_limited_log") as mock_log:
+            rows = await _flush_capture(handler, payloads)
+
+        assert len(rows) == 1  # the bar is written
+        assert front.saves == []
+        call = mock_log.warning.call_args
+        assert call.kwargs["kind"] == "tally_save_failed"
+        assert call.kwargs["extra"]["err_type"] == "RuntimeError"
+        assert handler._tally[("ES", _D)].dirty is True
+
+        front.fail_save = None
+        await _flush_capture(handler, [_print(executed_at=_BASE_MS + 120_000, size=2, trade_id=3)])
+        assert front.saved_volume == {("ES", _D, "ESU6"): 4 + 1 + 2}
+        assert handler._tally[("ES", _D)].dirty is False
+
+    @pytest.mark.asyncio
+    async def test_a_tally_that_cannot_be_loaded_counts_on_and_merges_when_it_loads(
+        self, handler, front
+    ):
+        front.fail_load = TimeoutError("command_timeout")
         with patch("handlers.futures_trades.rate_limited_log") as mock_log:
             rows = await _flush_capture(
                 handler,
                 [
-                    _print(sym="ESZ6", executed_at=at_2359_50 + 15_000, trade_id=2),
-                    _print(
-                        sym="ESH7",
-                        executed_at=at_2359_50 + 100,
-                        price="7755.00",
-                        size=5,
-                        trade_id=3,
-                    ),
-                    _print(sym="ESZ6", executed_at=at_2359_50 + 75_000, trade_id=4),
+                    _print(size=4, trade_id=1),
+                    _print(executed_at=_BASE_MS + 60_000, size=1, trade_id=2),
                 ],
             )
 
-        assert datetime(2026, 9, 8, 23, 59, tzinfo=UTC) not in {r[_C["ts"]] for r in rows}
-        assert all(r[_C["close"]] != Decimal("7755.00") for r in rows)
-        kinds = [c.kwargs.get("kind") for c in mock_log.warning.call_args_list]
-        assert "front_sym_absent" in kinds
+        assert [r[_C["contract"]] for r in rows] == ["ESU6"]  # the bar does not wait for it
+        kinds = [c.kwargs["kind"] for c in mock_log.warning.call_args_list]
+        assert kinds == ["tally_load_failed"]
+        assert mock_log.warning.call_args.kwargs["extra"]["err_type"] == "TimeoutError"
+        assert front.saves == []  # nothing saved over a tally that was never read
+        assert handler._tally[("ES", _D)].loaded is False
+
+        front.fail_load = None
+        front.stored[("ES", _D)] = {"ESU6": 100, "ESZ6": 30}
+        await _flush_capture(handler, [_print(executed_at=_BASE_MS + 120_000, size=2, trade_id=3)])
+
+        assert handler._tally[("ES", _D)].loaded is True
+        assert _counts(handler) == {"ESU6": 100 + 4 + 1 + 2, "ESZ6": 30}
+        assert front.saved_volume == {("ES", _D, "ESU6"): 107, ("ES", _D, "ESZ6"): 30}
+
+    @pytest.mark.asyncio
+    async def test_a_tally_that_could_not_be_saved_holds_back_the_next_sessions_decision(
+        self, handler, front
+    ):
+        new_day = date(2026, 9, 9)
+        front.decisions[("ES", new_day)] = "ESZ6"
+        await _flush_capture(handler, [_print(sym="ESU6", executed_at=_OPEN_09_09_MS - 30_000)])
+        front.fail_save = RuntimeError("neon down")
+
+        # The first print of the new session: it cannot be decided from a
+        # volume that is not in the table yet, so it is not asked for.
+        await _flush_capture(
+            handler, [_print(sym="ESZ6", executed_at=_OPEN_09_09_MS + 5_000, trade_id=2)]
+        )
+        assert front.ensure_calls == [("ES", _D)]
+        assert ("ES", new_day) not in handler._decided
+
+        front.fail_save = None
+        rows = await _flush_capture(
+            handler, [_print(sym="ESZ6", executed_at=_OPEN_09_09_MS + 65_000, trade_id=3)]
+        )
+
+        assert ("ES", new_day) in front.ensure_calls
+        assert [(r[_C["ts"]], r[_C["contract"]]) for r in rows] == [
+            (datetime(2026, 9, 8, 22, 0, tzinfo=UTC), "ESZ6")
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_tally_that_could_not_be_loaded_holds_back_the_next_sessions_decision(
+        self, handler, front
+    ):
+        new_day = date(2026, 9, 9)
+        front.fail_load = TimeoutError("command_timeout")
+        await _flush_capture(handler, [_print(sym="ESU6", executed_at=_OPEN_09_09_MS - 30_000)])
+        await _flush_capture(
+            handler, [_print(sym="ESZ6", executed_at=_OPEN_09_09_MS + 5_000, trade_id=2)]
+        )
+        assert ("ES", new_day) not in front.ensure_calls
+
+    @pytest.mark.asyncio
+    async def test_state_is_bounded_to_two_sessions_per_product(self, handler):
+        for day in range(5):
+            base = _BASE_MS + day * 86_400_000
+            await _flush_capture(
+                handler,
+                [
+                    _print(sym="ESU6", executed_at=base, trade_id=day * 2),
+                    _print(sym="ESU6", executed_at=base + 60_000, trade_id=day * 2 + 1),
+                ],
+            )
+            assert len(handler._tally) <= 2
+            assert len(handler._decided) <= 2
+
+        assert sorted(d for (_, d) in handler._tally) == [date(2026, 9, 11), date(2026, 9, 12)]
+        assert set(handler._decided) == set(handler._tally)
 
 
 # ----------------------------------------------------------------------
@@ -725,6 +1202,7 @@ class TestCompletedMinutesOnly:
             "sell_volume",
             "buy_prints",
             "sell_prints",
+            "contract",
         ]
 
 
@@ -783,21 +1261,23 @@ class TestDuplicateSuppression:
         assert rows[0][_C["volume"]] == 3  # not 12
 
     @pytest.mark.asyncio
-    async def test_duplicates_do_not_inflate_front_month_tally(self, handler):
-        """Dedup must run before the session-volume tally, or a heavily
-        re-delivered back month could win front-month selection."""
+    async def test_duplicates_do_not_inflate_the_session_tally(self, handler, front):
+        """Dedup must run before the session tally: the tally is what the next
+        session's front-month decision is made from and what is saved."""
         back = _print(sym="ESZ6", price="7900.00", size=2, trade_id=99)
         payloads = [
             _print(sym="ESU6", price="7700.00", size=5, trade_id=1),
-            # Back month delivered 5x — 10 lots naive, 2 lots deduped.
+            # Back month delivered 5x: 10 lots naive, 2 lots deduped.
             *[dict(back) for _ in range(5)],
             _print(sym="ESU6", executed_at=_BASE_MS + 60_000, trade_id=2),
         ]
         rows = await _flush_capture(handler, payloads)
 
         assert len(rows) == 1
-        assert rows[0][_C["close"]] == Decimal("7700.00")  # ESU6 still front
+        assert rows[0][_C["close"]] == Decimal("7700.00")
         assert rows[0][_C["volume"]] == 5
+        assert _counts(handler) == {"ESU6": 6, "ESZ6": 2}
+        assert front.saved_volume[("ES", _D, "ESZ6")] == 2
 
     @pytest.mark.asyncio
     async def test_distinct_trade_ids_at_same_instant_both_count(self, handler):
@@ -877,19 +1357,6 @@ class TestMemoryBounding:
         remaining = {key[1] for key in handler._bars}
         assert remaining == {datetime(2026, 9, 8, 5, 57, tzinfo=UTC)}
 
-    @pytest.mark.asyncio
-    async def test_session_volume_tally_does_not_grow_across_days(self, handler):
-        payloads = []
-        for day in range(3):
-            base = _BASE_MS + day * 86_400_000
-            payloads.append(_print(sym=f"ESX{day}", executed_at=base, trade_id=day * 2))
-            payloads.append(
-                _print(sym=f"ESX{day}", executed_at=base + 60_000, trade_id=day * 2 + 1)
-            )
-        await _flush_capture(handler, payloads)
-        # Only the final day's contract remains in the tally.
-        assert handler._session_volume == {"ES": {"ESX2": 2}}
-
 
 # ----------------------------------------------------------------------
 # 10. Channel wiring — the handler is dead code until the registry knows
@@ -962,8 +1429,8 @@ class TestFutureDatedTimestamps:
     ``_newest_minute`` only ever moves forward, so a far-future stamp
     would make every subsequent real minute compare as "completed" and
     get written as a one-print PARTIAL bar — locked in forever by
-    ON CONFLICT DO NOTHING. It would also freeze ``_session_date``,
-    permanently disabling the front-month roll.
+    ON CONFLICT DO NOTHING. It would also put a session in the tally that
+    does not exist yet, and ask for its front-month decision.
     """
 
     def test_far_future_timestamp_rejected(self):
@@ -1000,7 +1467,7 @@ class TestFutureDatedTimestamps:
         assert rl.warning.call_args.kwargs["kind"] == "bad_executed_at"
 
     @pytest.mark.asyncio
-    async def test_future_print_does_not_advance_newest_minute(self, handler):
+    async def test_future_print_does_not_advance_newest_minute(self, handler, front):
         """The regression this whole class exists for: a rejected future
         print must leave ``_newest_minute`` untouched, so the in-progress
         minute stays in progress instead of flushing as a partial bar."""
@@ -1013,7 +1480,8 @@ class TestFutureDatedTimestamps:
 
         assert rows == []  # :56 is still the newest minute, still open
         assert handler._newest_minute == {"ES": _BASE_MINUTE}
-        assert handler._session_date == _BASE_MINUTE.date()
+        assert list(handler._tally) == [("ES", _D)]
+        assert front.ensure_calls == [("ES", _D)]
 
 
 class TestFrontMonthSilentForAMinute:
@@ -1030,7 +1498,7 @@ class TestFrontMonthSilentForAMinute:
     @pytest.mark.asyncio
     async def test_minute_is_skipped_not_filled_with_back_month_price(self, handler):
         payloads = [
-            # :56 — ESU6 takes a commanding session-volume lead.
+            # :56 — the decided contract, ESU6, prints.
             _print(sym="ESU6", price="7700.00", size=2000, trade_id=1),
             # :57 — only the back month prints, 200 points away.
             _print(
@@ -1067,7 +1535,6 @@ class TestFrontMonthSilentForAMinute:
         # Only the in-progress :58 minute survives, for one contract.
         assert {key[1] for key in handler._bars} == {datetime(2026, 9, 8, 5, 58, tzinfo=UTC)}
         assert {key[1] for key in handler._seen} == {datetime(2026, 9, 8, 5, 58, tzinfo=UTC)}
-        assert {key[1] for key in handler._front_sym} == {datetime(2026, 9, 8, 5, 58, tzinfo=UTC)}
 
 
 class TestDedupOutageIsVisible:
@@ -1249,11 +1716,12 @@ class TestOrderFlow:
         ],
     )
     @pytest.mark.asyncio
-    async def test_spread_print_never_wins_front_month_flag_or_sym(
-        self, handler, spread_sym, is_spread
+    async def test_spread_print_never_enters_the_tally_or_a_bar(
+        self, handler, front, spread_sym, is_spread
     ):
-        """A calendar spread is its own sym. Counted, its volume would win
-        the front-month argmax and write the spread's price as ES."""
+        """A calendar spread is its own sym. Counted, its volume would sit in
+        the tally the next decision reads and write the spread's price as ES."""
+        front.decisions[("ES", _D)] = "ESZ6"
         spread = _print(sym=spread_sym, price="45.50", size=1000, trade_id=1, is_spread=is_spread)
         payloads = [
             spread,
@@ -1267,7 +1735,8 @@ class TestOrderFlow:
         assert len(rows) == 1
         assert rows[0][_C["volume"]] == 5
         assert rows[0][_C["low"]] == Decimal("7706.25")  # not the spread's 45.50
-        assert spread_sym not in handler._session_volume["ES"]
+        assert _counts(handler) == {"ESZ6": 6}
+        assert front.saved_volume == {("ES", _D, "ESZ6"): 6}
         # Expected traffic, skipped quietly.
         assert mock_log.warning.call_args_list == []
 
@@ -1293,7 +1762,7 @@ class TestOrderFlow:
         ],
     )
     def test_outright_sym_matcher(self, product, sym, expected):
-        assert ft._is_outright(product, sym) is expected
+        assert front_month.is_outright(product, sym) is expected
 
     def test_unrecognized_alphanumeric_sym_warns(self, handler):
         """A separator-free sym that isn't an outright is most likely a
@@ -1349,7 +1818,7 @@ class TestLatePrints:
             handler, [front, back, _print(sym="ESU6", executed_at=_BASE_MS + 60_000, trade_id=3)]
         )
         assert [r[_C["ts"]] for r in first] == [_BASE_MINUTE]
-        assert handler._session_volume == {"ES": {"ESU6": 11, "ESZ6": 1}}
+        assert _counts(handler) == {"ESU6": 11, "ESZ6": 1}
 
         with patch("handlers.futures_trades.rate_limited_log") as mock_log:
             # A back-month copy used to trip a false front_sym_absent; a
@@ -1359,7 +1828,7 @@ class TestLatePrints:
 
         assert late_back == []
         assert late_front == []
-        assert handler._session_volume == {"ES": {"ESU6": 11, "ESZ6": 1}}
+        assert _counts(handler) == {"ESU6": 11, "ESZ6": 1}
         assert all(key[1] != _BASE_MINUTE for key in handler._bars)
         kinds = [c.kwargs.get("kind") for c in mock_log.warning.call_args_list]
         assert "front_sym_absent" not in kinds
