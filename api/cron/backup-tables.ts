@@ -14,6 +14,8 @@
  * time, outgrew the size cap, or pruning failed) answers 500, because
  * `withCronCheckin` sends its `error` check-in off the response status. It
  * also raises one error-level Sentry event that names the missing tables.
+ * Every Blob call is aborted at `BLOB_DEADLINE_MS`, so a degraded Blob cannot
+ * hold the run until Vercel kills it before that check-in.
  *
  * Environment: CRON_SECRET, BLOB_READ_WRITE_TOKEN (auto-provisioned by Vercel Blob)
  */
@@ -68,25 +70,48 @@ const TABLES = [
 const RETENTION_WEEKS = 4;
 
 // Time budget for the whole table loop, against `maxDuration` 300 s. No table
-// or page starts after 210 s. What can still be running at that moment, on a
-// healthy service, adds up as:
-//     5 s  the `in_progress` check-in withCronCheckin sends before the handler
-//          (its fetch aborts at 5 s) and that counts against maxDuration
-//   210 s  this budget
-//    33 s  one page query already in flight (withDbRetry: 3 attempts x 10 s
-//          timeout + 1 s and 2 s backoff)
-//    14 s  its put() (generous: the whole export plus put of greek_exposure,
-//          the largest table, took 14 s on 2026-11-08, 05:00:11 to 05:00:25)
-//     2 s  Sentry.flush after an incomplete run
-//     5 s  the closing check-in
-//   269 s  in all, which leaves 31 s for the prune (one list, one del; it runs
-//          only when every table landed) and reportCronRun.
-// A normal run needs ~50 s, so the margin costs nothing. This is not a bound
-// on a degraded Blob: @vercel/blob 2.4.0's put, list and del retry up to 10
-// times with backoff (VERCEL_BLOB_RETRIES, default 10) and this cron passes no
-// abortSignal. Past 300 s Vercel kills the function before the closing
-// check-in, so the run shows up only as a Sentry "timeout" and opens no issue.
+// or page starts after 210 s. A page query already in flight can still take
+// ~33 s (withDbRetry: 3 attempts x 10 s timeout + 1 s and 2 s backoff) and
+// the put() after it ~14 s (generous: the whole export plus put of
+// greek_exposure, the largest table, took 14 s on 2026-11-08, 05:00:11 to
+// 05:00:25), so the last Blob call of a Neon-retrying run starts near 243 s.
+// BLOB_DEADLINE_MS below is what keeps that inside maxDuration. A normal run
+// needs ~50 s, so this stops a runaway table instead of limiting the run.
 const TABLE_LOOP_BUDGET_MS = 210_000;
+
+// Deadline for every Blob call (put, list, del), measured from startTime. A
+// call still running at it is aborted and fails, so the run goes on to answer
+// 500 and raise its Sentry error instead of being killed at maxDuration 300 s
+// before the closing check-in. The backup-tables monitor is muted, so a silent
+// kill would tell no one.
+//
+// Why a deadline of our own: @vercel/blob 2.4.0 retries a failing call up to
+// 10 times (VERCEL_BLOB_RETRIES) with a backoff of 1 s, 2 s, 4 s ... (each x1
+// to x2) that never looks at the abort signal, and it stops only when an
+// attempt starts and sees an AbortError. So its own rejection can come minutes
+// late, and a signal made with AbortSignal.timeout() is worse: that aborts with
+// a TimeoutError, which it does not treat as an abort, so it retries on
+// regardless (checked against the installed package with a local server that
+// answers 503: 9.9 s with 3 retries; the default 10 back off for at least 17
+// minutes: 1 s + 2 s + ... + 512 s). blobCallBefore
+// therefore aborts an AbortController (AbortError, so the package stops
+// sending) and races the call against the deadline (so this run gets its
+// rejection on time, backoff or not).
+//
+// What follows the deadline, counted from invocation:
+//     5 s  the `in_progress` check-in withCronCheckin sends before startTime
+//          (its fetch aborts at 5 s) and that counts against maxDuration
+//   240 s  this deadline
+//     2 s  Sentry.flush
+//    40 s  reportCronRun: @axiomhq/js 1.6.1 aborts an ingest at 20 s, and
+//          reportCronRun ingests a second time when the first was rejected
+//     5 s  the closing check-in
+//   292 s  in all, 8 s to spare.
+// A normal run ends its last Blob call near 60 s. The slowest tail that is not
+// a Blob fault (a page in flight at 210 s that takes 33 s, then a 14 s put)
+// ends at ~257 s, so the deadline can cut a call off first only while Neon is
+// retrying as well. That costs one table reported as failed, loudly.
+const BLOB_DEADLINE_MS = 240_000;
 
 // Size cap for one table's JSONL. exportTable holds the whole table in memory:
 // one Buffer per row plus a second copy in Buffer.concat, so ~3x the body at
@@ -189,13 +214,48 @@ async function exportTable(
 }
 
 /**
- * Delete backup folders older than the retention window.
+ * Run one @vercel/blob call so it cannot outlive `deadline` (epoch ms). At the
+ * deadline the call's signal is aborted and this rejects, whatever the package
+ * is doing (see BLOB_DEADLINE_MS for why both are needed). `what` names the
+ * call in the error. A deadline already past aborts the call at once.
  */
-async function pruneOldBackups(currentDate: string): Promise<string[]> {
+async function blobCallBefore<T>(
+  deadline: number,
+  what: string,
+  call: (abortSignal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadlineHit = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(
+      () => {
+        controller.abort();
+        reject(new Error(`${what} did not finish before the run deadline`));
+      },
+      Math.max(0, deadline - Date.now()),
+    );
+  });
+  try {
+    return await Promise.race([call(controller.signal), deadlineHit]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Delete backup folders older than the retention window. Its Blob calls stop
+ * at `deadline`.
+ */
+async function pruneOldBackups(
+  currentDate: string,
+  deadline: number,
+): Promise<string[]> {
   const cutoff = new Date(currentDate);
   cutoff.setDate(cutoff.getDate() - RETENTION_WEEKS * 7);
 
-  const { blobs } = await list({ prefix: 'backups/' });
+  const { blobs } = await blobCallBefore(deadline, 'list backups/', (signal) =>
+    list({ prefix: 'backups/', abortSignal: signal }),
+  );
   const toDelete: string[] = [];
 
   for (const blob of blobs) {
@@ -211,7 +271,9 @@ async function pruneOldBackups(currentDate: string): Promise<string[]> {
   }
 
   if (toDelete.length > 0) {
-    await del(toDelete);
+    await blobCallBefore(deadline, `del ${toDelete.length} blobs`, (signal) =>
+      del(toDelete, { abortSignal: signal }),
+    );
   }
 
   return toDelete;
@@ -232,6 +294,7 @@ export default withCronCheckin('backup-tables', async (req, res) => {
   // Started, then stopped by the time budget or the size cap. Nothing uploaded.
   const unfinished: string[] = [];
   const deadline = startTime + TABLE_LOOP_BUDGET_MS;
+  const blobDeadline = startTime + BLOB_DEADLINE_MS;
 
   logger.info({ date: today, tables: TABLES.length }, 'Starting weekly backup');
 
@@ -276,11 +339,14 @@ export default withCronCheckin('backup-tables', async (req, res) => {
       }
 
       const path = `backups/${today}/${table}.jsonl`;
-      await put(path, body, {
-        access: 'private',
-        allowOverwrite: true,
-        contentType: 'application/x-ndjson',
-      });
+      await blobCallBefore(blobDeadline, `put ${path}`, (signal) =>
+        put(path, body, {
+          access: 'private',
+          allowOverwrite: true,
+          contentType: 'application/x-ndjson',
+          abortSignal: signal,
+        }),
+      );
 
       results[table] = { rows: rowCount, bytes: body.byteLength };
       logger.info(
@@ -328,7 +394,7 @@ export default withCronCheckin('backup-tables', async (req, res) => {
     );
   } else {
     try {
-      pruned = await pruneOldBackups(today);
+      pruned = await pruneOldBackups(today, blobDeadline);
       if (pruned.length > 0) {
         logger.info({ count: pruned.length }, 'Pruned old backups');
       }

@@ -93,6 +93,9 @@ const TABLE_ORDER = [
 
 const FIRST_TABLE = TABLE_ORDER[0];
 
+// Every Blob call (put, list, del) is aborted this long after the run starts.
+const BLOB_DEADLINE_MS = 240_000;
+
 // One folder past the 4-week retention window of BACKUP_TIME (cutoff
 // 2026-03-01): the prune would delete it, so a test that expects the prune to
 // be skipped can show nothing was listed or deleted.
@@ -139,6 +142,16 @@ describe('backup-tables handler', () => {
   // before the tagged template runs, so a mock can key on it instead of on
   // call order.
   let currentTable = '';
+
+  // Queries answer instantly, but the one for `table` first moves the frozen
+  // clock to `msLeft` before the Blob deadline. The Blob call that follows is
+  // then given a real `msLeft` ms by the handler's own timer.
+  function jumpNearBlobDeadlineAt(table: string, msLeft: number): void {
+    mockSql.mockImplementation(async () => {
+      if (currentTable === table) advanceClock(BLOB_DEADLINE_MS - msLeft);
+      return [{ id: 1 }];
+    });
+  }
 
   beforeEach(() => {
     vi.resetAllMocks();
@@ -350,11 +363,25 @@ describe('backup-tables handler', () => {
       JSON.stringify(rows[0]) + '\n' + JSON.stringify(rows[1]);
     expect(Buffer.isBuffer(firstCall[1])).toBe(true);
     expect((firstCall[1] as Buffer).toString('utf-8')).toBe(expectedJsonl);
+    // The signal is what lets the run abort a put that outlives the Blob
+    // deadline; it is a live signal, not yet aborted, on a healthy run.
     expect(firstCall[2]).toEqual({
       access: 'private',
       allowOverwrite: true,
       contentType: 'application/x-ndjson',
+      abortSignal: expect.any(AbortSignal),
     });
+    expect(
+      mockPut.mock.calls.every(
+        ([, , opts]) => (opts as { abortSignal: AbortSignal }).abortSignal,
+      ),
+    ).toBe(true);
+    expect(
+      mockPut.mock.calls.some(
+        ([, , opts]) =>
+          (opts as { abortSignal: AbortSignal }).abortSignal.aborted,
+      ),
+    ).toBe(false);
 
     // 16 put calls total
     expect(mockPut).toHaveBeenCalledTimes(16);
@@ -797,6 +824,161 @@ describe('backup-tables handler', () => {
     expect(Sentry.captureException).toHaveBeenCalledTimes(2);
   });
 
+  // ── Blob deadline ─────────────────────────────────────────
+  // @vercel/blob retries a failing call up to 10 times with a backoff that
+  // does not watch an abort signal, so a degraded Blob would hold the run until
+  // Vercel killed it at 300 s, before the closing check-in. Every put, list and
+  // del is aborted at the Blob deadline instead, and the run reports it.
+
+  const ABORT_REJECTIONS: [
+    string,
+    (opts: { abortSignal: AbortSignal }) => unknown,
+  ][] = [
+    [
+      'stuck in its retry backoff (never settles)',
+      () => new Promise(() => undefined),
+    ],
+    [
+      'rejects the way @vercel/blob does on abort',
+      ({ abortSignal }) =>
+        new Promise((_resolve, reject) => {
+          abortSignal.addEventListener('abort', () =>
+            reject(new Error('Vercel Blob: The request was aborted.')),
+          );
+        }),
+    ],
+  ];
+
+  it.each(ABORT_REJECTIONS)(
+    'aborts a put still running at the Blob deadline and reports the table: %s',
+    async (_label, hang) => {
+      let signal: AbortSignal | undefined;
+      mockPut.mockImplementation(
+        (
+          _path: unknown,
+          _body: unknown,
+          opts: { abortSignal: AbortSignal },
+        ) => {
+          signal = opts.abortSignal;
+          return hang(opts);
+        },
+      );
+      jumpNearBlobDeadlineAt(FIRST_TABLE, 50);
+
+      const res = await runBackup();
+
+      // The signal reached the put and was aborted, so @vercel/blob stops
+      // sending instead of retrying in the background.
+      expect(signal).toBeInstanceOf(AbortSignal);
+      expect(signal?.aborted).toBe(true);
+      expect(mockPut).toHaveBeenCalledTimes(1);
+
+      expect(res._status).toBe(500);
+      const json = res._json as {
+        status: string;
+        tables: Record<string, unknown>;
+        errors: string[];
+      };
+      expect(json.status).toBe('error');
+      expect(json.tables).toEqual({});
+      expect(json.errors[0]).toMatch(
+        new RegExp(`^${FIRST_TABLE}: .*(aborted|did not finish before)`),
+      );
+
+      expect(Sentry.captureException).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: expect.stringMatching(/aborted|did not finish before/),
+        }),
+      );
+      expect(Sentry.flush).toHaveBeenCalledTimes(1);
+      // An incomplete run does not prune.
+      expect(mockList).not.toHaveBeenCalled();
+      expect(mockDel).not.toHaveBeenCalled();
+      expect(checkInStatuses()).toEqual(['in_progress', 'error']);
+    },
+  );
+
+  it('names the deadline in the error when the put never settles', async () => {
+    mockPut.mockImplementation(() => new Promise(() => undefined));
+    jumpNearBlobDeadlineAt(FIRST_TABLE, 50);
+
+    const res = await runBackup();
+
+    const errors = (res._json as { errors: string[] }).errors;
+    expect(errors[0]).toContain(`put backups/2026-03-29/${FIRST_TABLE}.jsonl`);
+    expect(errors[0]).toContain('did not finish before the run deadline');
+  });
+
+  it('lets a slow put finish when it is inside the Blob deadline', async () => {
+    // 5 s before the deadline, a put that takes 20 ms: not cut off. This also
+    // keeps the deadline from drifting early (a 235 s one would abort it).
+    mockPut.mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return { url: 'https://blob.test/file' };
+    });
+    jumpNearBlobDeadlineAt(FIRST_TABLE, 5_000);
+
+    const res = await runBackup();
+
+    const json = res._json as {
+      tables: Record<string, unknown>;
+      errors: string[];
+    };
+    expect(Object.keys(json.tables)).toEqual([FIRST_TABLE]);
+    expect(json.errors.some((e) => e.startsWith(`${FIRST_TABLE}:`))).toBe(
+      false,
+    );
+    const opts = mockPut.mock.calls[0]![2] as { abortSignal: AbortSignal };
+    expect(opts.abortSignal.aborted).toBe(false);
+  });
+
+  it.each(['list', 'del'] as const)(
+    'aborts a %s still running at the Blob deadline and reports a pruning error',
+    async (call) => {
+      // All 16 tables land; the clock reaches the deadline during the last
+      // query, so the prune's list (or del) gets 50 ms and then hangs. A del
+      // needs something to delete, so list finds a stale folder.
+      if (call === 'del') mockList.mockResolvedValue(STALE_BACKUP);
+      let signal: AbortSignal | undefined;
+      const hang = (...args: unknown[]) => {
+        const opts = args.at(-1) as { abortSignal: AbortSignal };
+        signal = opts.abortSignal;
+        return new Promise(() => undefined);
+      };
+      if (call === 'list') mockList.mockImplementation(hang);
+      else mockDel.mockImplementation(hang);
+      jumpNearBlobDeadlineAt('greek_exposure', 50);
+
+      const res = await runBackup();
+
+      expect(signal?.aborted).toBe(true);
+      expect(res._status).toBe(500);
+      const json = res._json as {
+        status: string;
+        tables: Record<string, unknown>;
+        errors: string[];
+        pruneSkipped?: boolean;
+      };
+      // Every table landed; only the prune failed.
+      expect(Object.keys(json.tables)).toHaveLength(16);
+      expect(json.status).toBe('partial');
+      expect(json.pruneSkipped).toBeUndefined();
+      expect(json.errors).toHaveLength(1);
+      expect(json.errors[0]).toContain('pruning');
+      expect(json.errors[0]).toContain(`${call} `);
+      expect(json.errors[0]).toContain(
+        'did not finish before the run deadline',
+      );
+      expect(Sentry.captureException).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message: expect.stringContaining('did not finish before'),
+        }),
+      );
+      expect(Sentry.flush).toHaveBeenCalledTimes(1);
+      expect(checkInStatuses()).toEqual(['in_progress', 'error']);
+    },
+  );
+
   // ── Pruning logic ────────────────────────────────────────
 
   it('prunes blobs older than 4 weeks', async () => {
@@ -821,13 +1003,17 @@ describe('backup-tables handler', () => {
     const res = await runBackup();
 
     expect(res._status).toBe(200);
-    expect(mockList).toHaveBeenCalledWith({ prefix: 'backups/' });
+    // list() and del() carry the same abort signal as put().
+    expect(mockList).toHaveBeenCalledWith({
+      prefix: 'backups/',
+      abortSignal: expect.any(AbortSignal),
+    });
 
     // Two old blobs should be deleted
-    expect(mockDel).toHaveBeenCalledWith([
-      'https://blob.test/old1',
-      'https://blob.test/old2',
-    ]);
+    expect(mockDel).toHaveBeenCalledWith(
+      ['https://blob.test/old1', 'https://blob.test/old2'],
+      { abortSignal: expect.any(AbortSignal) },
+    );
 
     const json = res._json as Record<string, unknown>;
     expect(json.pruned).toBe(2);
@@ -892,7 +1078,9 @@ describe('backup-tables handler', () => {
     const res = await runBackup();
 
     expect(res._status).toBe(200);
-    expect(mockDel).toHaveBeenCalledWith(['https://blob.test/old1']);
+    expect(mockDel).toHaveBeenCalledWith(['https://blob.test/old1'], {
+      abortSignal: expect.any(AbortSignal),
+    });
     const json = res._json as Record<string, unknown>;
     expect(json.pruned).toBe(1);
     expect(json.pruneSkipped).toBeUndefined();
@@ -987,7 +1175,9 @@ describe('backup-tables handler', () => {
 
     const res = await runBackup();
 
-    expect(mockDel).toHaveBeenCalledWith(['https://blob.test/old1']);
+    expect(mockDel).toHaveBeenCalledWith(['https://blob.test/old1'], {
+      abortSignal: expect.any(AbortSignal),
+    });
     expect(res._status).toBe(500);
     const json = res._json as Record<string, unknown>;
     const errors = json.errors as string[];
