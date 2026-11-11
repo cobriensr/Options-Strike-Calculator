@@ -235,14 +235,13 @@ What you need a paid account / API key for, in rough priority order.
 
 ### Optional integrations
 
-| Service              | Powers                                                                                                                 | Cost                           | Env vars                                                                         |
-| -------------------- | ---------------------------------------------------------------------------------------------------------------------- | ------------------------------ | -------------------------------------------------------------------------------- |
-| **FRED**             | Dynamic economic events (PCE, PPI, JOLTS)                                                                              | Free                           | `FRED_API_KEY`                                                                   |
-| **Finnhub**          | Mega-cap earnings calendar                                                                                             | Free tier OK                   | `FINNHUB_API_KEY`                                                                |
-| **Gexbot**           | Dealer gamma/charm/vanna feed for the Periscope, GEX Landscape, GEXBot and Periscope Lottery panels (empty without it) | Check Gexbot pricing           | `GEXBOT_API_KEY`                                                                 |
-| **Twilio**           | SMS alerts for 0DTE put/call flow-ratio surges                                                                         | Pay-per-message (~$0.0075/SMS) | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_PHONE_FROM`, `ALERT_PHONE_TO` |
-| **Web Push (VAPID)** | PWA browser push notifications                                                                                         | Free (uses FCM relay)          | `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT`                         |
-| **Axiom**            | Per-cron-run events (row counts, data quality) for dashboards and alerts                                               | Free tier                      | `AXIOM_DATASET`, `AXIOM_API_KEY`                                                 |
+| Service              | Powers                                                                                                                 | Cost                  | Env vars                                                 |
+| -------------------- | ---------------------------------------------------------------------------------------------------------------------- | --------------------- | -------------------------------------------------------- |
+| **FRED**             | Dynamic economic events (PCE, PPI, JOLTS)                                                                              | Free                  | `FRED_API_KEY`                                           |
+| **Finnhub**          | Mega-cap earnings calendar                                                                                             | Free tier OK          | `FINNHUB_API_KEY`                                        |
+| **Gexbot**           | Dealer gamma/charm/vanna feed for the Periscope, GEX Landscape, GEXBot and Periscope Lottery panels (empty without it) | Check Gexbot pricing  | `GEXBOT_API_KEY`                                         |
+| **Web Push (VAPID)** | PWA browser push notifications                                                                                         | Free (uses FCM relay) | `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT` |
+| **Axiom**            | Per-cron-run events (row counts, data quality) for dashboards and alerts                                               | Free tier             | `AXIOM_DATASET`, `AXIOM_API_KEY`                         |
 
 ---
 
@@ -259,7 +258,6 @@ For an active solo trader running the full stack:
 | Railway services                | varies (check your bill)   |
 | OpenAI embeddings               | <$5                        |
 | Upstash / Vercel Blob / Sentry  | Free tier                  |
-| Twilio (occasional SMS)         | <$5                        |
 | Schwab / FRED / Finnhub / VAPID | Free                       |
 
 **Realistic total: ~$250–500/month**, with UW the biggest line item. Dropping the Railway services removes that line item. The calculator, the Schwab-backed panels and the AI analysis still work, but every websocket-fed panel goes empty: futures context, Lottery Finder, Silent Boom, dark pool levels, Interval B/A, and the opening-flow and flow-regime signals (all fed by `uw-stream`). You also lose Take-It SHAP flags (`sidecar`). Spread-leg badges come from the exchange's own multi-leg trade code, so they need no extra service.

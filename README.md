@@ -27,7 +27,7 @@ npm run dev                      # frontend only,  http://localhost:5173
 npm run dev:full                 # full stack via vercel dev,  http://localhost:3000
 ```
 
-[.env.example](.env.example) is the starting template for `.env.local`. [api/\_lib/env.ts](api/_lib/env.ts) validates the core server vars (database, Redis, auth, API keys, Twilio, observability); some optional integrations read `process.env` directly. Two setup paths (frontend only, or full stack against live data) are documented in [docs/LOCAL_DEV.md](docs/LOCAL_DEV.md).
+[.env.example](.env.example) is the starting template for `.env.local`. [api/\_lib/env.ts](api/_lib/env.ts) validates the core server vars (database, Redis, auth, API keys, observability); some optional integrations read `process.env` directly. Two setup paths (frontend only, or full stack against live data) are documented in [docs/LOCAL_DEV.md](docs/LOCAL_DEV.md).
 
 ## Stack
 
