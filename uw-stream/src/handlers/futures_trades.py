@@ -109,8 +109,10 @@ Filtering rationale (in handler order):
    call (a decision, a tally load, a tally save) is cut at 8 s. A call that
    failed is not repeated for that root and date for 30 s, and one that TIMED
    OUT pauses every root's front-month calls for the same 30 s, so a hung Neon
-   costs one box and not one per call. Failures that aren't a Neon blip log
-   at error level, per root. A print for a trade date more than 3 days old is
+   costs one box and not one per call. The call that timed out itself waits
+   60 s, so the first call after a pause is another root's and one root's
+   repeating hang can't hold back the rest. Failures that aren't a Neon
+   blip log at error level, per root. A print for a trade date more than 3 days old is
    dropped before any of this (``kind="stale_session_dropped"``).
 
 Bar aggregation is stateful, which does not fit ``_transform``'s 1:1
@@ -201,6 +203,13 @@ _LOOKUP_TIMEOUT_S = 8.0
 # (about 2 s) of every undecided root, again and again. Half a minute is about
 # the time a Neon restart takes and keeps the gap to a few minutes.
 _RETRY_AFTER_S = 30.0
+
+# How long the call that TIMED OUT waits: twice the retry-after, while the pause
+# it starts for every other root is one. Were the two equal, the timed-out call
+# would be the first call after every pause, and if it timed out each time it
+# would re-arm the pause before any other root got a turn: one root's hang would
+# black out all six. Doubled, the first call after a pause is another root's.
+_TIMED_OUT_COOLING_S = 2 * _RETRY_AFTER_S
 
 # A print for a trade date older than the current one by more than this many
 # days is dropped before the front-month path. parse_timestamp accepts any
@@ -633,8 +642,13 @@ class FuturesTradesHandler(Handler):
         deadline = self._retry_after.get((call, product, day))
         return deadline is not None and time.monotonic() < deadline
 
-    def _cool(self, call: str, product: str, day: date | None) -> None:
-        self._retry_after[(call, product, day)] = time.monotonic() + _RETRY_AFTER_S
+    def _cool(
+        self, call: str, product: str, day: date | None, exc: BaseException | None = None
+    ) -> None:
+        """Hold a failed ``call`` back for the retry-after, or for
+        ``_TIMED_OUT_COOLING_S`` when ``exc`` is the timeout that cut it."""
+        cooling = _TIMED_OUT_COOLING_S if isinstance(exc, TimeoutError) else _RETRY_AFTER_S
+        self._retry_after[(call, product, day)] = time.monotonic() + cooling
 
     def _boxed_out(self) -> bool:
         """True while a call that timed out holds every root's front-month calls."""
@@ -676,9 +690,11 @@ class FuturesTradesHandler(Handler):
 
         The first sight of a (product, trade date) loads it, so a restart
         carries on counting. A load that failed is retried here once its
-        retry-after has run out, and the volume counted meanwhile is added to
-        what is stored: the table holds only what earlier processes saw, never
-        this one's counts (a session isn't saved until it is loaded).
+        retry-after has run out (60 s for a load that timed out), and the volume
+        counted meanwhile is added to what is stored: the table holds only what
+        earlier processes saw, never this one's counts (a session isn't saved
+        until it is loaded). Nothing is loaded while a timeout holds every
+        root's calls (``_boxed_out``).
         """
         for (product, day), tally in list(self._tally.items()):
             if tally.loaded or self._cooling("load", product, day) or self._boxed_out():
@@ -686,7 +702,7 @@ class FuturesTradesHandler(Handler):
             try:
                 stored = await self._timed(front_month.load_tally(product, day))
             except Exception as exc:
-                self._cool("load", product, day)
+                self._cool("load", product, day, exc)
                 self._note_failure("tally_load_failed", "tally load failed", product, day, exc)
                 continue
             for contract, volume in stored.items():
@@ -720,7 +736,7 @@ class FuturesTradesHandler(Handler):
         except Exception as exc:
             # ensure_front swallows its own failures; what reaches here is the
             # time box cancelling it.
-            self._cool("decide", product, day)
+            self._cool("decide", product, day, exc)
             self._note_failure("lookup_timeout", "front-month lookup timed out", product, day, exc)
             return
         if contract is None:
@@ -761,7 +777,7 @@ class FuturesTradesHandler(Handler):
                 await self._timed(front_month.save_tally(rows))
             except Exception as exc:
                 for p in sorted({p for p, _ in dirty}):
-                    self._cool("save", p, None)
+                    self._cool("save", p, None, exc)
                     self._note_failure("tally_save_failed", "tally save failed", p, None, exc)
                 return False
             for key, counts in changed.items():

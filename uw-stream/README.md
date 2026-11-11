@@ -218,10 +218,14 @@ Design notes worth knowing before touching the handler:
   (`cause_kind`, `cause_err_type`). Each front-month database call is
   cut at 8 s, and a call that failed is not repeated for that root and
   date for 30 s, so an outage costs a flush one failed call and not a
-  retry per root per flush. A tally that could not be saved or loaded
-  holds back that root's next decision until it can. A failure that is not
-  a Neon blip (a bad row, a rejected statement) is logged at error level, one
-  line per root per minute, so it reaches Sentry; a blip stays a warning.
+  retry per root per flush. A call that times out also pauses every
+  root's front-month calls for 30 s (the roots it skips name that timeout
+  as the cause of their gaps), and the timed-out call itself waits 60 s,
+  so one root's hang can't hold back the others. A tally that could not
+  be saved or loaded holds back that root's next decision until it can. A
+  failure that is not a Neon blip (a bad row, a rejected statement) is
+  logged at error level, one line per root per minute, so it reaches
+  Sentry; a blip stays a warning.
   A print for a trade date more than 3 days old never reaches the
   front-month path (`kind="stale_session_dropped"`).
 - Only minutes **strictly older** than the newest minute seen for a

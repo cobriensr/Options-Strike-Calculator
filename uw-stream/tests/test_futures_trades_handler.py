@@ -22,6 +22,7 @@ feed on 2026-09-08 (see the handler module docstring).
 from __future__ import annotations
 
 import asyncio
+import time
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from unittest.mock import AsyncMock, patch
@@ -802,12 +803,12 @@ class TestFrontMonthSelection:
         assert front.saves[0] == [("ES", _D, "ESU6", 4)]
 
     @pytest.mark.asyncio
-    async def test_a_lookup_that_fails_at_the_open_is_a_logged_gap_and_the_next_flush_retries(
+    async def test_a_lookup_that_fails_at_the_open_is_a_logged_gap_and_is_asked_again_later(
         self, handler, front
     ):
         """Neon unreachable while deciding the new session: the minute is a
-        gap with an error log, the failure is not cached, and the next flush
-        asks again."""
+        gap with an error log, the failure is not cached, and it is asked
+        again after the retry-after."""
         new_day = date(2026, 9, 9)
         front.decisions[("ES", new_day)] = None  # ensure_front found nothing
         first = [
@@ -1477,9 +1478,11 @@ class TestOneBoxPerHang:
         await asyncio.wait_for(_flush_capture(handler, _six_roots(3)), timeout=5)
         assert _front_month_calls(front) == 2
 
-        # Recovered: after the next pause every root loads, saves and is decided.
+        # Recovered: once the pause and the two timed-out calls' cooling (twice
+        # the pause) are over, every root loads, saves and is decided.
         front.hang_load = front.hang_ensure = set()
         front.hang_save = False
+        _let_the_retry_after_run_out(handler)
         _let_the_retry_after_run_out(handler)
         rows = await _flush_capture(handler, _six_roots(4))
 
@@ -1497,9 +1500,52 @@ class TestOneBoxPerHang:
         await asyncio.wait_for(_flush_capture(handler, _six_roots(0, 2)), timeout=5)
         deadline = handler._box_until
         assert deadline is not None
+        # The pause is the retry-after, 30 s: neither a flush's worth nor a minute.
+        remaining = deadline - time.monotonic()
+        assert ft._RETRY_AFTER_S - 5 < remaining <= ft._RETRY_AFTER_S
         # Set once, from the call that timed out: later flushes don't push it out.
         await asyncio.wait_for(_flush_capture(handler, _six_roots(2)), timeout=5)
         assert handler._box_until == deadline
+
+    @pytest.mark.asyncio
+    async def test_a_skipped_roots_older_cause_is_replaced_by_the_timeout(
+        self, handler, front, monkeypatch
+    ):
+        monkeypatch.setattr(ft, "_LOOKUP_TIMEOUT_S", 0.05)
+        # ES fails for another reason first: its decision comes back None.
+        front.decisions[("ES", _D)] = None
+        front.failures["ES"] = ("ensure_front_failed", "UndefinedTableError")
+        await _flush_capture(handler, [_print(product="ES", sym="ESU6", trade_id=1)])
+        assert handler._cause["ES"] == ("ensure_front_failed", "UndefinedTableError")
+
+        # Its cooling is over, and NQ's load hangs and starts the pause. ES's
+        # decision is now skipped for the pause, and its gap says so.
+        _let_the_retry_after_run_out(handler)
+        front.hang_load = {"NQ"}
+        with patch("handlers.futures_trades.log") as mock_log:
+            await asyncio.wait_for(
+                _flush_capture(
+                    handler,
+                    [
+                        _print(product="ES", sym="ESU6", executed_at=_BASE_MS + 60_000, trade_id=2),
+                        _print(
+                            product="ES", sym="ESU6", executed_at=_BASE_MS + 120_000, trade_id=3
+                        ),
+                        _print(product="NQ", sym="NQU6", executed_at=_BASE_MS + 61_000, trade_id=4),
+                    ],
+                ),
+                timeout=5,
+            )
+
+        extra = next(
+            c.kwargs["extra"]
+            for c in mock_log.error.call_args_list
+            if c.kwargs["extra"]["product"] == "ES"
+        )
+        assert (extra["cause_kind"], extra["cause_err_type"]) == (
+            "tally_load_failed",
+            "TimeoutError",
+        )
 
     @pytest.mark.asyncio
     async def test_a_failure_that_is_not_a_timeout_leaves_the_other_roots_calls_going(
@@ -1571,6 +1617,158 @@ class TestOneBoxPerHang:
         await _flush_capture(handler, [_print(executed_at=_BASE_MS + 180_000, trade_id=4)])
         assert front.save_attempts == 2
         assert handler._tally[("ES", _D)].dirty is False
+
+
+class TestTimedOutCallsCoolLonger:
+    """A call that timed out waits twice the pause; one that failed any other way, once.
+
+    The pause is 30 s for everyone. If the call that caused it cooled for the same
+    30 s it would be the first call after every pause, and a call that keeps timing
+    out would re-arm the pause before any other root got a turn.
+    """
+
+    @staticmethod
+    def _remaining(handler, key) -> float:
+        return handler._retry_after[key] - time.monotonic()
+
+    def test_the_constants(self):
+        assert ft._TIMED_OUT_COOLING_S == 2 * ft._RETRY_AFTER_S == 60.0
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("call", ["load", "decide"])
+    async def test_a_timed_out_call_cools_for_twice_the_retry_after(
+        self, handler, front, monkeypatch, call
+    ):
+        monkeypatch.setattr(ft, "_LOOKUP_TIMEOUT_S", 0.05)
+        if call == "load":
+            front.hang_load = {"ES"}
+        else:
+            front.hang_ensure = {"ES"}
+        await asyncio.wait_for(
+            _flush_capture(handler, [_print(trade_id=1), _print(executed_at=_BASE_MS + 60_000)]),
+            timeout=5,
+        )
+
+        remaining = self._remaining(handler, (call, "ES", _D))
+        assert ft._TIMED_OUT_COOLING_S - 5 < remaining <= ft._TIMED_OUT_COOLING_S
+        # ...while the pause for the other roots is the plain retry-after.
+        assert 0 < handler._box_until - time.monotonic() <= ft._RETRY_AFTER_S
+
+    @pytest.mark.asyncio
+    async def test_every_key_of_a_bulk_save_that_timed_out_cools_for_twice(
+        self, handler, front, monkeypatch
+    ):
+        monkeypatch.setattr(ft, "_LOOKUP_TIMEOUT_S", 0.05)
+        front.hang_save = True
+        # Every root is loaded and decided, then one bulk save for all six hangs.
+        await asyncio.wait_for(_flush_capture(handler, _six_roots(0, 2)), timeout=5)
+
+        assert front.save_attempts == 1
+        for product in _SIX:
+            remaining = self._remaining(handler, ("save", product, None))
+            assert ft._TIMED_OUT_COOLING_S - 5 < remaining <= ft._TIMED_OUT_COOLING_S
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("call", ["load", "decide", "save"])
+    async def test_a_failure_that_is_not_a_timeout_cools_for_the_retry_after(
+        self, handler, front, call
+    ):
+        if call == "load":
+            front.fail_load = _blip()
+        elif call == "decide":
+            front.decisions[("ES", _D)] = None
+        else:
+            front.fail_save = RuntimeError("neon down")
+        await _flush_capture(
+            handler, [_print(trade_id=1), _print(executed_at=_BASE_MS + 60_000, trade_id=2)]
+        )
+
+        key = (call, "ES", None if call == "save" else _D)
+        remaining = self._remaining(handler, key)
+        assert ft._RETRY_AFTER_S - 5 < remaining <= ft._RETRY_AFTER_S
+
+
+class TestOneRootHang:
+    """One root's call hangs on every try; the other five roots are still served.
+
+    Aged by the retry-after (30 s) between flushes, with the pause and the timed-out
+    call's cooling (60 s) on one clock.
+    """
+
+    @staticmethod
+    async def _cycles(handler, cycles: int):
+        """The open, then ``cycles`` flushes each 30 s later; the rows and the
+        decided roots after the first of them."""
+        rows = []
+        await asyncio.wait_for(_flush_capture(handler, _six_roots(0, 2)), timeout=5)
+        decided_after_first = None
+        for cycle in range(1, cycles + 1):
+            _let_the_retry_after_run_out(handler)
+            rows += await asyncio.wait_for(
+                _flush_capture(handler, _six_roots(cycle + 1)), timeout=5
+            )
+            if decided_after_first is None:
+                decided_after_first = {p for p, _ in handler._decided}
+        return rows, decided_after_first
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("call", ["load", "decide"])
+    @pytest.mark.parametrize("victim", _SIX)
+    async def test_the_other_roots_are_loaded_decided_and_written_every_cycle(
+        self, handler, front, monkeypatch, victim, call
+    ):
+        monkeypatch.setattr(ft, "_LOOKUP_TIMEOUT_S", 0.05)
+        if call == "load":
+            front.hang_load = {victim}
+            cause = ("tally_load_failed", "TimeoutError")
+        else:
+            front.hang_ensure = {victim}
+            cause = ("lookup_timeout", "TimeoutError")
+        others = set(_SIX) - {victim}
+
+        with patch("handlers.futures_trades.log") as mock_log:
+            rows, decided_after_first = await self._cycles(handler, 3)
+
+        # The first cycle after the open already serves every other root.
+        assert decided_after_first == others
+        assert {p for p, _ in handler._decided} == others
+        assert {r[_C["symbol"]] for r in rows} == others
+        # Each of them was loaded and asked once, never held by the victim.
+        assert {p for p, _ in front.load_calls} >= others
+        assert {p for p, _ in front.ensure_calls} >= others
+        # The victim's minutes are gaps that name its timeout.
+        victim_gaps = [
+            c.kwargs["extra"]
+            for c in mock_log.error.call_args_list
+            if c.kwargs["extra"]["product"] == victim
+        ]
+        assert victim_gaps
+        assert {(g["cause_kind"], g["cause_err_type"]) for g in victim_gaps} == {cause}
+
+    @pytest.mark.asyncio
+    async def test_the_hung_call_is_asked_again_after_sixty_seconds_and_then_served(
+        self, handler, front, monkeypatch
+    ):
+        monkeypatch.setattr(ft, "_LOOKUP_TIMEOUT_S", 0.05)
+        front.hang_load = {"ES"}
+        await asyncio.wait_for(_flush_capture(handler, _six_roots(0, 2)), timeout=5)
+        assert front.load_calls.count(("ES", _D)) == 1
+
+        # 30 s on: the pause is over, ES's own call is not.
+        _let_the_retry_after_run_out(handler)
+        await asyncio.wait_for(_flush_capture(handler, _six_roots(2)), timeout=5)
+        assert front.load_calls.count(("ES", _D)) == 1
+        assert ("ES", _D) not in handler._decided
+
+        # 60 s on, Neon answers: ES loads, is decided and writes its bars.
+        front.hang_load = set()
+        _let_the_retry_after_run_out(handler)
+        rows = await asyncio.wait_for(_flush_capture(handler, _six_roots(3)), timeout=5)
+
+        assert front.load_calls.count(("ES", _D)) == 2
+        assert handler._tally[("ES", _D)].loaded is True
+        assert handler._decided[("ES", _D)] == "ESU6"
+        assert {r[_C["symbol"]] for r in rows} == set(_SIX)
 
 
 class TestFailuresReachSentry:
