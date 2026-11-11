@@ -221,7 +221,8 @@ Design notes worth knowing before touching the handler:
   retry per root per flush. A call that times out also pauses every
   root's front-month calls for 30 s (the roots it skips name that timeout
   as the cause of their gaps), and the timed-out call itself waits 60 s,
-  so one root's hang can't hold back the others. A tally that could not
+  and 120 s after a second timeout in a row, so a hang confined to a few
+  roots no longer blacks out the others. A tally that could not
   be saved or loaded holds back that root's next decision until it can. A
   failure that is not a Neon blip (a bad row, a rejected statement) is
   logged at error level, one line per root per minute, so it reaches
