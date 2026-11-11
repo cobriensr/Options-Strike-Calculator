@@ -545,6 +545,35 @@ describe('runBackfill: failures are named, and the other symbols still run', () 
     });
   });
 
+  it('a throw from our own planning is named unexpected, not schwab_error, and the other symbols still run', async () => {
+    // Schwab answers fine; one $VOLD bar carries a finite time that is not a
+    // date (new Date(1e20) is invalid), so planning throws a RangeError.
+    stubSchwab((symbol, day) =>
+      symbol === '$VOLD' && day === SESSIONS[0]
+        ? [
+            ...dayBars(day, symbol),
+            { datetime: 1e20, open: 1, high: 1, low: 1, close: 1 },
+          ]
+        : dayBars(day, symbol),
+    );
+
+    const report = await runBackfill({
+      apply: false,
+      sessions: SESSIONS,
+      getToken: token,
+    });
+
+    expect(report.failures).toEqual([
+      {
+        symbol: '$VOLD',
+        failure: 'unexpected',
+        error: expect.stringContaining('Invalid time value'),
+      },
+    ]);
+    // The three other symbols were planned.
+    expect(report.days.every((d) => d.inserted > 0)).toBe(true);
+  });
+
   it('a rejected write', async () => {
     stubSchwab();
     const real = holder.sql as {

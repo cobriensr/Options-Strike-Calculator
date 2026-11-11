@@ -227,18 +227,32 @@ export async function runBackfill(opts: {
   const { startMs, endMs } = fetchWindow(opts.sessions);
 
   for (const symbol of SETTLE_SYMBOLS) {
-    let plan: SymbolPlan;
+    let body: unknown;
     try {
       const token = await opts.getToken();
-      const body = await fetchPriceHistory(
+      body = await fetchPriceHistory(
         pricehistoryPath(symbol, startMs, endMs),
         token,
       );
-      plan = planSymbol(symbol, parsePriceHistory(body).candles, opts.sessions);
     } catch (err) {
+      // fetchPriceHistory names its own failures; what else can throw here is
+      // the token (getToken: Redis, a refresh), which is a Schwab-side failure.
       failures.push({
         symbol,
         failure: err instanceof SettleFailure ? err.kind : 'schwab_error',
+        error: err instanceof Error ? err.message : String(err),
+      });
+      continue;
+    }
+    let plan: SymbolPlan;
+    try {
+      plan = planSymbol(symbol, parsePriceHistory(body).candles, opts.sessions);
+    } catch (err) {
+      // A SettleFailure names itself (empty or malformed payload). Anything
+      // else came out of our own parse or plan code: not Schwab's fault.
+      failures.push({
+        symbol,
+        failure: err instanceof SettleFailure ? err.kind : 'unexpected',
         error: err instanceof Error ? err.message : String(err),
       });
       continue;
