@@ -21,6 +21,7 @@ feed on 2026-09-08 (see the handler module docstring).
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from unittest.mock import AsyncMock, patch
@@ -56,6 +57,9 @@ _C = {name: i for i, name in enumerate(_COLUMNS)}
 
 # The CME trade date of _BASE_MS: 05:56Z is 00:56 CDT, and 00:56 + 7 h is 09-08.
 _D = date(2026, 9, 8)
+# The clock of front_month while the handler runs: trade date 09-10, so the
+# stale-session floor (3 days back) is 09-07.
+_FRONT_NOW = datetime(2026, 9, 10, 5, 56, tzinfo=UTC)
 # The 17:00 CDT open of trade date 09-09 is 22:00Z on 09-08.
 _OPEN_09_09_MS = 1788904800000  # 2026-09-08T22:00:00Z
 
@@ -82,27 +86,45 @@ class _FakeFront:
         self.ensure_calls: list[tuple[str, date]] = []
         self.load_calls: list[tuple[str, date]] = []
         self.saves: list[list[tuple[str, date, str, int]]] = []
+        self.save_attempts = 0
         self.events: list[str] = []
         self.fail_load: Exception | None = None
+        self.fail_load_for: dict[str, Exception] = {}
         self.fail_save: Exception | None = None
+        # Roots whose call never returns, for the time box.
+        self.hang_ensure: set[str] = set()
+        self.hang_load: set[str] = set()
+        # What ``front_month.last_failure`` says about a root whose ensure_front
+        # came back None: (kind, exception class name).
+        self.failures: dict[str, tuple[str, str]] = {}
 
     async def ensure_front(self, product: str, trade_date: date) -> str | None:
         self.events.append("ensure")
         self.ensure_calls.append((product, trade_date))
+        if product in self.hang_ensure:
+            await asyncio.Event().wait()
         key = (product, trade_date)
         if key in self.decisions:
             return self.decisions[key]
         return self.defaults.get(product, f"{product}U6")
 
+    def last_failure(self, product: str) -> tuple[str, str] | None:
+        return self.failures.get(product)
+
     async def load_tally(self, product: str, trade_date: date) -> dict[str, int]:
         self.events.append("load")
         self.load_calls.append((product, trade_date))
+        if product in self.hang_load:
+            await asyncio.Event().wait()
+        if product in self.fail_load_for:
+            raise self.fail_load_for[product]
         if self.fail_load is not None:
             raise self.fail_load
         return dict(self.stored.get((product, trade_date), {}))
 
     async def save_tally(self, rows) -> None:
         self.events.append("save")
+        self.save_attempts += 1
         if self.fail_save is not None:
             raise self.fail_save
         self.saves.append(list(rows))
@@ -123,12 +145,22 @@ def front(monkeypatch) -> _FakeFront:
     monkeypatch.setattr(front_month, "ensure_front", fake.ensure_front)
     monkeypatch.setattr(front_month, "load_tally", fake.load_tally)
     monkeypatch.setattr(front_month, "save_tally", fake.save_tally)
+    monkeypatch.setattr(front_month, "last_failure", fake.last_failure)
+    # The clock the stale-session floor reads: 09-10, two days after the
+    # sessions most tests print in.
+    monkeypatch.setattr(front_month, "_now", lambda: _FRONT_NOW)
     return fake
 
 
 def _counts(handler, product: str = "ES", day: date = _D) -> dict[str, int]:
     """The handler's deduped outright volume per contract for one session."""
     return handler._tally[(product, day)].counts
+
+
+def _let_the_retry_after_run_out(handler) -> None:
+    """Age every failed call by the retry-after, without sleeping through it."""
+    for key in handler._retry_after:
+        handler._retry_after[key] -= ft._RETRY_AFTER_S
 
 
 def _floor_minute_utc(v):
@@ -778,8 +810,10 @@ class TestFrontMonthSelection:
         assert extra["trade_date"] == "2026-09-09"
         assert ("ES", new_day) not in handler._decided
 
-        # Neon is back. The 17:01 minute completes on the next flush.
+        # Neon is back, and the retry-after has run out. The 17:01 minute
+        # completes on the next flush.
         front.decisions[("ES", new_day)] = "ESZ6"
+        _let_the_retry_after_run_out(handler)
         rows = await _flush_capture(
             handler, [_print(sym="ESZ6", executed_at=_OPEN_09_09_MS + 125_000, trade_id=4)]
         )
@@ -974,12 +1008,15 @@ class TestSessionTally:
 
         assert len(rows) == 1  # the bar is written
         assert front.saves == []
-        call = mock_log.warning.call_args
+        call = mock_log.error.call_args  # not transient: an error, which reaches Sentry
         assert call.kwargs["kind"] == "tally_save_failed"
+        assert call.kwargs["key"] == "ES"
         assert call.kwargs["extra"]["err_type"] == "RuntimeError"
+        assert mock_log.warning.call_args_list == []
         assert handler._tally[("ES", _D)].dirty is True
 
         front.fail_save = None
+        _let_the_retry_after_run_out(handler)
         await _flush_capture(handler, [_print(executed_at=_BASE_MS + 120_000, size=2, trade_id=3)])
         assert front.saved_volume == {("ES", _D, "ESU6"): 4 + 1 + 2}
         assert handler._tally[("ES", _D)].dirty is False
@@ -999,19 +1036,24 @@ class TestSessionTally:
             )
 
         assert [r[_C["contract"]] for r in rows] == ["ESU6"]  # the bar does not wait for it
+        # A timeout is transient: a warning, in the root's own window.
         kinds = [c.kwargs["kind"] for c in mock_log.warning.call_args_list]
         assert kinds == ["tally_load_failed"]
+        assert mock_log.warning.call_args.kwargs["key"] == "ES"
         assert mock_log.warning.call_args.kwargs["extra"]["err_type"] == "TimeoutError"
+        assert mock_log.error.call_args_list == []
         assert front.saves == []  # nothing saved over a tally that was never read
         assert handler._tally[("ES", _D)].loaded is False
 
         front.fail_load = None
+        _let_the_retry_after_run_out(handler)
         front.stored[("ES", _D)] = {"ESU6": 100, "ESZ6": 30}
         await _flush_capture(handler, [_print(executed_at=_BASE_MS + 120_000, size=2, trade_id=3)])
 
         assert handler._tally[("ES", _D)].loaded is True
         assert _counts(handler) == {"ESU6": 100 + 4 + 1 + 2, "ESZ6": 30}
-        assert front.saved_volume == {("ES", _D, "ESU6"): 107, ("ES", _D, "ESZ6"): 30}
+        # ESZ6's 30 is what the table already holds: not sent back.
+        assert front.saved_volume == {("ES", _D, "ESU6"): 107}
 
     @pytest.mark.asyncio
     async def test_a_tally_that_could_not_be_saved_holds_back_the_next_sessions_decision(
@@ -1031,6 +1073,7 @@ class TestSessionTally:
         assert ("ES", new_day) not in handler._decided
 
         front.fail_save = None
+        _let_the_retry_after_run_out(handler)
         rows = await _flush_capture(
             handler, [_print(sym="ESZ6", executed_at=_OPEN_09_09_MS + 65_000, trade_id=3)]
         )
@@ -1068,6 +1111,467 @@ class TestSessionTally:
 
         assert sorted(d for (_, d) in handler._tally) == [date(2026, 9, 11), date(2026, 9, 12)]
         assert set(handler._decided) == set(handler._tally)
+
+    @pytest.mark.asyncio
+    async def test_only_the_contracts_that_rose_are_saved(self, handler, front):
+        """A cumulative payload is diffed against what the table already has
+        (R5): ESZ6 did not move, so it is not rewritten."""
+        await _flush_capture(
+            handler,
+            [
+                _print(sym="ESU6", size=4, trade_id=1),
+                _print(sym="ESZ6", executed_at=_BASE_MS + 5, size=6, trade_id=2),
+                _print(sym="ESU6", executed_at=_BASE_MS + 60_000, size=1, trade_id=3),
+            ],
+        )
+        assert front.saves == [[("ES", _D, "ESU6", 5), ("ES", _D, "ESZ6", 6)]]
+
+        await _flush_capture(
+            handler, [_print(sym="ESU6", executed_at=_BASE_MS + 120_000, size=2, trade_id=4)]
+        )
+        assert front.saves[1] == [("ES", _D, "ESU6", 7)]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_save_leaves_the_mark_so_the_next_save_sends_it_again(
+        self, handler, front
+    ):
+        front.fail_save = RuntimeError("neon down")
+        await _flush_capture(
+            handler,
+            [
+                _print(sym="ESU6", size=4, trade_id=1),
+                _print(sym="ESZ6", executed_at=_BASE_MS + 5, size=6, trade_id=2),
+                _print(sym="ESU6", executed_at=_BASE_MS + 60_000, size=1, trade_id=3),
+            ],
+        )
+        assert handler._tally[("ES", _D)].saved == {}
+
+        front.fail_save = None
+        _let_the_retry_after_run_out(handler)
+        await _flush_capture(
+            handler, [_print(sym="ESU6", executed_at=_BASE_MS + 120_000, size=2, trade_id=4)]
+        )
+
+        # Nothing was acknowledged, so both contracts go, ESZ6 included.
+        assert front.saves == [[("ES", _D, "ESU6", 7), ("ES", _D, "ESZ6", 6)]]
+        assert handler._tally[("ES", _D)].saved == {"ESU6": 7, "ESZ6": 6}
+
+    @pytest.mark.asyncio
+    async def test_a_loaded_tally_is_not_sent_back_until_it_rises(self, handler, front):
+        front.stored[("ES", _D)] = {"ESU6": 100, "ESZ6": 30}
+        await _flush_capture(
+            handler,
+            [
+                _print(sym="ESU6", size=4, trade_id=1),
+                _print(sym="ESU6", executed_at=_BASE_MS + 60_000, size=1, trade_id=2),
+            ],
+        )
+        assert front.saves == [[("ES", _D, "ESU6", 105)]]  # ESZ6's 30 is already stored
+
+
+# ----------------------------------------------------------------------
+# 5c. The front-month calls are time-boxed and not repeated at once, and a
+#     failure that is not a Neon blip reaches Sentry with its cause
+# ----------------------------------------------------------------------
+
+
+class TestFrontMonthCallsAreBounded:
+    def test_the_time_box_and_the_retry_after(self):
+        # 8 s caps one call so a hung connection can't hold a flush for the
+        # ~92 s asyncpg would take; 30 s keeps a failing root from costing a
+        # retry's backoff on every flush.
+        assert ft._LOOKUP_TIMEOUT_S == 8.0
+        assert ft._RETRY_AFTER_S == 30.0
+
+    @pytest.mark.asyncio
+    async def test_a_hanging_decision_is_cut_at_the_time_box_and_other_roots_get_their_bars(
+        self, handler, front, monkeypatch
+    ):
+        monkeypatch.setattr(ft, "_LOOKUP_TIMEOUT_S", 0.05)
+        front.hang_ensure = {"ES"}
+        payloads = [
+            _print(product="ES", sym="ESU6", trade_id=1),
+            _print(product="NQ", sym="NQU6", executed_at=_BASE_MS + 5, trade_id=2),
+            _print(product="ES", sym="ESU6", executed_at=_BASE_MS + 60_000, trade_id=3),
+            _print(product="NQ", sym="NQU6", executed_at=_BASE_MS + 60_005, trade_id=4),
+        ]
+        with (
+            patch("handlers.futures_trades.log") as mock_log,
+            patch("handlers.futures_trades.rate_limited_log") as mock_rl,
+        ):
+            rows = await asyncio.wait_for(_flush_capture(handler, payloads), timeout=5)
+
+        assert [r[_C["symbol"]] for r in rows] == ["NQ"]
+        assert ("ES", _D) not in handler._decided
+        # The cut is a TimeoutError: transient, so a warning, in ES's window.
+        assert mock_rl.error.call_args_list == []
+        call = mock_rl.warning.call_args
+        assert call.kwargs["kind"] == "lookup_timeout"
+        assert call.kwargs["key"] == "ES"
+        # ...and the gap it costs is an error that names the cause.
+        extra = mock_log.error.call_args.kwargs["extra"]
+        assert (extra["kind"], extra["product"]) == ("front_month_unknown", "ES")
+        assert (extra["cause_kind"], extra["cause_err_type"]) == ("lookup_timeout", "TimeoutError")
+
+    @pytest.mark.asyncio
+    async def test_a_hanging_tally_load_is_cut_at_the_time_box(self, handler, front, monkeypatch):
+        monkeypatch.setattr(ft, "_LOOKUP_TIMEOUT_S", 0.05)
+        front.hang_load = {"ES"}
+        rows = await asyncio.wait_for(
+            _flush_capture(
+                handler,
+                [_print(trade_id=1), _print(executed_at=_BASE_MS + 60_000, trade_id=2)],
+            ),
+            timeout=5,
+        )
+        assert [r[_C["contract"]] for r in rows] == ["ESU6"]  # the decision did not wait on it
+        assert handler._tally[("ES", _D)].loaded is False
+
+    @pytest.mark.asyncio
+    async def test_a_failed_decision_is_not_asked_again_inside_the_retry_after(
+        self, handler, front
+    ):
+        front.decisions[("ES", _D)] = None
+        front.failures["ES"] = ("ensure_front_failed", "UndefinedTableError")
+        await _flush_capture(
+            handler, [_print(trade_id=1), _print(executed_at=_BASE_MS + 60_000, trade_id=2)]
+        )
+        await _flush_capture(handler, [_print(executed_at=_BASE_MS + 120_000, trade_id=3)])
+        assert front.ensure_calls == [("ES", _D)]  # once, not once per flush
+
+        _let_the_retry_after_run_out(handler)
+        front.decisions[("ES", _D)] = "ESU6"
+        await _flush_capture(handler, [_print(executed_at=_BASE_MS + 180_000, trade_id=4)])
+
+        assert front.ensure_calls == [("ES", _D), ("ES", _D)]
+        assert handler._decided[("ES", _D)] == "ESU6"
+        assert ("decide", "ES", _D) not in handler._retry_after  # a success clears it
+
+    @pytest.mark.asyncio
+    async def test_a_failed_tally_load_is_not_retried_inside_the_retry_after(self, handler, front):
+        front.fail_load = TimeoutError("command_timeout")
+        await _flush_capture(
+            handler, [_print(trade_id=1), _print(executed_at=_BASE_MS + 60_000, trade_id=2)]
+        )
+        await _flush_capture(handler, [_print(executed_at=_BASE_MS + 120_000, trade_id=3)])
+        assert front.load_calls == [("ES", _D)]
+
+        _let_the_retry_after_run_out(handler)
+        await _flush_capture(handler, [_print(executed_at=_BASE_MS + 180_000, trade_id=4)])
+        assert front.load_calls == [("ES", _D), ("ES", _D)]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_tally_save_is_not_retried_inside_the_retry_after(self, handler, front):
+        front.decisions[("ES", date(2026, 9, 9))] = "ESZ6"
+        await _flush_capture(handler, [_print(sym="ESU6", executed_at=_OPEN_09_09_MS - 30_000)])
+        front.fail_save = RuntimeError("neon down")
+        await _flush_capture(
+            handler, [_print(sym="ESZ6", executed_at=_OPEN_09_09_MS + 5_000, trade_id=2)]
+        )
+        await _flush_capture(
+            handler, [_print(sym="ESZ6", executed_at=_OPEN_09_09_MS + 65_000, trade_id=3)]
+        )
+        # The decision's save, then nothing: not at the next decision, not at
+        # the next emitted minute.
+        assert front.save_attempts == 1
+
+        _let_the_retry_after_run_out(handler)
+        await _flush_capture(
+            handler, [_print(sym="ESZ6", executed_at=_OPEN_09_09_MS + 125_000, trade_id=4)]
+        )
+        assert front.save_attempts == 2
+
+    @pytest.mark.asyncio
+    async def test_one_roots_failure_does_not_delay_another_roots_bars(self, handler, front):
+        front.decisions[("ES", _D)] = None
+        first = await _flush_capture(
+            handler,
+            [
+                _print(product="ES", sym="ESU6", trade_id=1),
+                _print(product="NQ", sym="NQU6", executed_at=_BASE_MS + 5, trade_id=2),
+                _print(product="ES", sym="ESU6", executed_at=_BASE_MS + 60_000, trade_id=3),
+                _print(product="NQ", sym="NQU6", executed_at=_BASE_MS + 60_005, trade_id=4),
+            ],
+        )
+        second = await _flush_capture(
+            handler,
+            [
+                _print(product="ES", sym="ESU6", executed_at=_BASE_MS + 120_000, trade_id=5),
+                _print(product="NQ", sym="NQU6", executed_at=_BASE_MS + 120_005, trade_id=6),
+            ],
+        )
+
+        assert [r[_C["symbol"]] for r in first] == ["NQ"]
+        assert [(r[_C["symbol"]], r[_C["ts"]].minute) for r in second] == [("NQ", 57)]
+        # ES was asked once in all that, NQ once.
+        assert sorted(front.ensure_calls) == [("ES", _D), ("NQ", _D)]
+
+    @pytest.mark.asyncio
+    async def test_retry_afters_go_with_their_sessions(self, handler, front):
+        front.decisions[("ES", _D)] = None
+        for day in range(4):
+            base = _BASE_MS + day * 86_400_000
+            await _flush_capture(
+                handler,
+                [
+                    _print(trade_id=day * 2, executed_at=base),
+                    _print(trade_id=day * 2 + 1, executed_at=base + 60_000),
+                ],
+            )
+        assert ("decide", "ES", _D) not in handler._retry_after
+        assert all(
+            day is None or (product, day) in handler._tally
+            for (_op, product, day) in handler._retry_after
+        )
+
+
+class TestFailuresReachSentry:
+    @pytest.mark.asyncio
+    async def test_a_genuine_load_error_is_an_error_a_blip_is_a_warning(self, handler, front):
+        front.fail_load = ValueError("unexpected row")
+        with patch("handlers.futures_trades.rate_limited_log") as mock_rl:
+            await _flush_capture(handler, [_print(trade_id=1)])
+        assert mock_rl.warning.call_args_list == []
+        assert mock_rl.error.call_args.kwargs["kind"] == "tally_load_failed"
+        assert mock_rl.error.call_args.kwargs["extra"]["err_type"] == "ValueError"
+
+    @pytest.mark.asyncio
+    async def test_each_root_is_named_in_its_own_window(self, handler, front):
+        front.fail_load_for = {"ES": ValueError("bad"), "NQ": ValueError("bad")}
+        with patch("handlers.futures_trades.rate_limited_log") as mock_rl:
+            await _flush_capture(
+                handler,
+                [
+                    _print(product="ES", sym="ESU6", trade_id=1),
+                    _print(product="NQ", sym="NQU6", executed_at=_BASE_MS + 5, trade_id=2),
+                ],
+            )
+        assert sorted(c.kwargs["key"] for c in mock_rl.error.call_args_list) == ["ES", "NQ"]
+        assert sorted(c.kwargs["extra"]["product"] for c in mock_rl.error.call_args_list) == [
+            "ES",
+            "NQ",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_gap_names_the_cause_of_a_failed_load(self, handler, front):
+        new_day = date(2026, 9, 9)
+        front.fail_load = TimeoutError("command_timeout")
+        await _flush_capture(handler, [_print(sym="ESU6", executed_at=_OPEN_09_09_MS - 30_000)])
+        await _flush_capture(
+            handler, [_print(sym="ESZ6", executed_at=_OPEN_09_09_MS + 5_000, trade_id=2)]
+        )
+        with patch("handlers.futures_trades.log") as mock_log:
+            await _flush_capture(
+                handler, [_print(sym="ESZ6", executed_at=_OPEN_09_09_MS + 65_000, trade_id=3)]
+            )
+
+        assert ("ES", new_day) not in handler._decided
+        extra = mock_log.error.call_args.kwargs["extra"]
+        assert extra["kind"] == "front_month_unknown"
+        assert (extra["cause_kind"], extra["cause_err_type"]) == (
+            "tally_load_failed",
+            "TimeoutError",
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_gap_names_the_cause_of_a_failed_save(self, handler, front):
+        new_day = date(2026, 9, 9)
+        await _flush_capture(handler, [_print(sym="ESU6", executed_at=_OPEN_09_09_MS - 30_000)])
+        front.fail_save = RuntimeError("neon down")
+        await _flush_capture(
+            handler, [_print(sym="ESZ6", executed_at=_OPEN_09_09_MS + 5_000, trade_id=2)]
+        )
+        with patch("handlers.futures_trades.log") as mock_log:
+            await _flush_capture(
+                handler, [_print(sym="ESZ6", executed_at=_OPEN_09_09_MS + 65_000, trade_id=3)]
+            )
+
+        assert ("ES", new_day) not in handler._decided
+        extra = mock_log.error.call_args.kwargs["extra"]
+        assert (extra["cause_kind"], extra["cause_err_type"]) == (
+            "tally_save_failed",
+            "RuntimeError",
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_gap_names_the_cause_ensure_front_recorded(self, handler, front):
+        front.decisions[("ES", _D)] = None
+        front.failures["ES"] = ("ensure_front_failed", "UndefinedTableError")
+        with patch("handlers.futures_trades.log") as mock_log:
+            await _flush_capture(
+                handler,
+                [
+                    _print(trade_id=1),
+                    _print(executed_at=_BASE_MS + 60_000, trade_id=2),
+                    _print(executed_at=_BASE_MS + 120_000, trade_id=3),
+                ],
+            )
+        extra = mock_log.error.call_args.kwargs["extra"]
+        assert (extra["cause_kind"], extra["cause_err_type"]) == (
+            "ensure_front_failed",
+            "UndefinedTableError",
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_gap_with_no_known_cause_says_so_and_a_success_clears_the_cause(
+        self, handler, front
+    ):
+        front.decisions[("ES", _D)] = None
+        front.failures["ES"] = ("front_month_fill_capped", "")
+        await _flush_capture(handler, [_print(trade_id=1)])
+        assert handler._cause["ES"] == ("front_month_fill_capped", "")
+
+        _let_the_retry_after_run_out(handler)
+        front.decisions[("ES", _D)] = "ESU6"
+        await _flush_capture(handler, [_print(executed_at=_BASE_MS + 60_000, trade_id=2)])
+        assert "ES" not in handler._cause
+
+
+class TestRootsAreIndependent:
+    @pytest.mark.asyncio
+    async def test_one_roots_unloaded_tally_does_not_hold_back_another_roots_decision(
+        self, handler, front
+    ):
+        """NQ's tally could not be loaded and now holds volume the table doesn't
+        have. That holds back NQ's next decision. ES's volume is in the table,
+        and its decision must not wait on NQ."""
+        new_day = date(2026, 9, 9)
+        front.fail_load_for = {"NQ": TimeoutError("command_timeout")}
+        await _flush_capture(
+            handler, [_print(product="NQ", sym="NQU6", executed_at=_OPEN_09_09_MS - 30_000)]
+        )
+        assert handler._tally[("NQ", _D)].dirty is True
+        assert handler._tally[("NQ", _D)].loaded is False
+
+        await _flush_capture(
+            handler, [_print(product="ES", sym="ESZ6", executed_at=_OPEN_09_09_MS + 5_000)]
+        )
+        assert ("ES", new_day) in front.ensure_calls
+
+        await _flush_capture(
+            handler, [_print(product="NQ", sym="NQZ6", executed_at=_OPEN_09_09_MS + 6_000)]
+        )
+        assert ("NQ", new_day) not in front.ensure_calls  # its own tally is the one stuck
+
+
+# ----------------------------------------------------------------------
+# 5d. Prints that can't be part of a session
+# ----------------------------------------------------------------------
+
+
+class TestStaleAndLatePrints:
+    @pytest.mark.asyncio
+    async def test_a_print_older_than_three_trade_dates_never_reaches_the_front_month_path(
+        self, handler, front
+    ):
+        old = _BASE_MS - 3 * 86_400_000  # trade date 09-05; the floor is 09-07
+        with patch("handlers.futures_trades.rate_limited_log") as mock_rl:
+            rows = await _flush_capture(
+                handler,
+                [
+                    _print(executed_at=old, trade_id=1),
+                    _print(executed_at=old + 60_000, trade_id=2),
+                    _print(executed_at=old + 120_000, trade_id=3),
+                ],
+            )
+
+        assert rows == []
+        assert front.ensure_calls == []
+        assert front.load_calls == []
+        assert handler._tally == {}
+        assert handler._bars == {}
+        assert handler._newest_minute == {}
+        # One line for the date, however many prints.
+        assert [c.kwargs["kind"] for c in mock_rl.warning.call_args_list] == [
+            "stale_session_dropped"
+        ]
+        extra = mock_rl.warning.call_args.kwargs["extra"]
+        assert (extra["product"], extra["trade_date"], extra["floor"]) == (
+            "ES",
+            "2026-09-05",
+            "2026-09-07",
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_floor_is_inclusive_and_the_next_stale_date_is_logged_again(
+        self, handler, front
+    ):
+        day = 86_400_000
+        with patch("handlers.futures_trades.rate_limited_log") as mock_rl:
+            await _flush_capture(
+                handler,
+                [
+                    _print(executed_at=_BASE_MS - day, trade_id=1),  # 09-07: the floor, kept
+                    _print(executed_at=_BASE_MS - 2 * day, trade_id=2),  # 09-06: dropped
+                    _print(executed_at=_BASE_MS - 2 * day + 1, trade_id=3),  # same date
+                    _print(executed_at=_BASE_MS - 4 * day, trade_id=4),  # 09-04: another date
+                ],
+            )
+
+        assert [("ES", date(2026, 9, 7))] == list(handler._tally)
+        dates = [c.kwargs["extra"]["trade_date"] for c in mock_rl.warning.call_args_list]
+        assert dates == ["2026-09-06", "2026-09-04"]
+
+    @pytest.mark.asyncio
+    async def test_a_late_print_is_not_looked_up(self, handler, front):
+        """Prints at or before the newest emitted minute are dropped by
+        ``_ingest``; they must not cost a tally load and a decision first."""
+        await _flush_capture(
+            handler,
+            [_print(trade_id=1), _print(executed_at=_BASE_MS + 60_000, trade_id=2)],
+        )
+        front.ensure_calls.clear()
+        front.load_calls.clear()
+
+        # Re-delivered copies for the emitted minute, and a straggler stamped
+        # in the previous session (09-07, inside the floor).
+        await _flush_capture(
+            handler,
+            [dict(_print(trade_id=1)), _print(executed_at=_BASE_MS - 86_400_000, trade_id=9)],
+        )
+
+        assert front.ensure_calls == []
+        assert front.load_calls == []
+        assert list(handler._tally) == [("ES", _D)]
+
+
+class TestShutdown:
+    @pytest.mark.asyncio
+    async def test_a_clean_shutdown_saves_the_tail_of_the_tally(self, handler, front):
+        for payload in [
+            _print(size=4, trade_id=1),
+            _print(executed_at=_BASE_MS + 5, size=3, trade_id=2),
+        ]:
+            await handler.enqueue(payload)
+        handler._stopped.set()  # no consumer running
+
+        with patch("handlers.futures_trades.db") as mock_db:
+            mock_db.bulk_insert_ignore_conflict = AsyncMock(return_value=0)
+            await handler.drain()
+
+        # One open minute: nothing was emitted, so only the drain's own save
+        # can have put these 7 lots in the table.
+        assert mock_db.bulk_insert_ignore_conflict.called is False
+        assert front.saved_volume == {("ES", _D, "ESU6"): 7}
+
+    @pytest.mark.asyncio
+    async def test_a_save_that_fails_at_shutdown_does_not_raise(self, handler, front):
+        await handler.enqueue(_print(size=4, trade_id=1))
+        handler._stopped.set()
+        front.fail_save = RuntimeError("neon down")
+
+        with patch("handlers.futures_trades.db") as mock_db:
+            mock_db.bulk_insert_ignore_conflict = AsyncMock(return_value=0)
+            assert await handler.drain() == 1
+
+        assert front.save_attempts == 1
+        assert front.saves == []
+
+    @pytest.mark.asyncio
+    async def test_nothing_to_save_at_shutdown_is_no_statement(self, handler, front):
+        handler._stopped.set()
+        await handler.drain()
+        assert front.save_attempts == 0
 
 
 # ----------------------------------------------------------------------

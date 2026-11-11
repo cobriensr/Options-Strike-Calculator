@@ -1,9 +1,14 @@
 """The per-session front-month rule for the futures_trades handler.
 
 Python copy of ``api/_lib/futures-contracts.ts`` (the pure rule) and
-``api/_lib/futures-front-month.ts`` (the store). Both copies run the cases in
-``api/__tests__/fixtures/futures-roll-cases.json``, so they cannot drift
-apart. Plan: ``docs/superpowers/specs/2026-11-06-futures-session-front-month.md``.
+``api/_lib/futures-front-month.ts`` (the store). Both copies run the
+``cmeTradeDate`` and ``decideFrontMonth`` lists of
+``api/__tests__/fixtures/futures-roll-cases.json``, so the rule cannot drift
+apart. Its third list, ``pickScheduledFront``, is TypeScript-only: it is the
+REST minute builder, which picks the larger-volume spelling's row, where the
+live handler folds both spellings' prints into one bar. The SQL here is run
+on PGlite by ``api/__tests__/futures-front-month-python-sql-pglite.test.ts``.
+Plan: ``docs/superpowers/specs/2026-11-06-futures-session-front-month.md``.
 
 A bar's contract is one contract per root per CME trade date. A session runs
 from 17:00 America/Chicago on the evening before its trade date to 17:00 on
@@ -352,6 +357,55 @@ def current_trade_date() -> date:
     return trade_date(_now())
 
 
+# root -> (kind, exception class name) of the last ``ensure_front`` that came
+# back None, cleared by its next success. At most one entry per root (six), so
+# the handler can say WHY a session has no contract when it logs the gap.
+_last_failure: dict[str, tuple[str, str]] = {}
+
+
+def last_failure(product: str) -> tuple[str, str] | None:
+    """The cause of the last ``ensure_front`` for ``product`` that returned
+    None, as (kind, exception class name; empty for a cause with none), or
+    None when its last call succeeded."""
+    return _last_failure.get(product)
+
+
+def _fail(
+    kind: str,
+    product: str,
+    day: date,
+    message: str,
+    exc: BaseException | None = None,
+    *,
+    warn: bool = False,
+    **extra,
+) -> None:
+    """Record and report one ``ensure_front`` failure, per root.
+
+    A transient database error (a timeout, a dropped connection) is a warning,
+    and so is a failure the caller passes ``warn=True`` for: the caller asks
+    again, and the handler escalates the minutes it costs. Any other failure (a
+    bad row, a rejected statement, the fill cap) is an error, so it reaches
+    Sentry before the next open turns it into a day of gaps. Throttled per
+    root, so six roots failing at once are six lines.
+    """
+    err_type = type(exc).__name__ if exc is not None else ""
+    _last_failure[product] = (kind, err_type)
+    report = (
+        rate_limited_log.warning
+        if warn or (exc is not None and db.is_transient_db_error(exc))
+        else rate_limited_log.error
+    )
+    detail = {"err_type": err_type, "err": str(exc)} if exc is not None else {}
+    report(
+        scope=_SCOPE,
+        kind=kind,
+        message=message,
+        extra={"product": product, "trade_date": day.isoformat(), **detail, **extra},
+        key=product,
+    )
+
+
 @dataclass
 class _Inputs:
     """What the decision for one date starts from."""
@@ -527,12 +581,6 @@ async def _decide_and_store(product: str, day: date, inputs: _Inputs) -> str:
 
 
 async def _ensure_front(product: str, day: date) -> str | None:
-    current = current_trade_date()
-    if day > current:
-        raise ValueError(
-            f"{product} trade date {day} is after the current trade date {current}: "
-            "a date later than that has no volume to decide from"
-        )
     stored = await _read_stored(product, day)
     if stored is not None:
         return _stored_canonical(product, day, stored)
@@ -540,18 +588,13 @@ async def _ensure_front(product: str, day: date) -> str | None:
     first = await _read_inputs(product, day)
     for filled, gap_day in enumerate(first.undecided):
         if filled >= FILL_CAP:
-            rate_limited_log.warning(
-                scope=_SCOPE,
-                kind="front_month_fill_capped",
-                message=(
-                    "front-month fill hit its cap; the date stays undecided until the next call"
-                ),
-                extra={
-                    "product": product,
-                    "trade_date": day.isoformat(),
-                    "undecided": len(first.undecided),
-                    "filled": filled,
-                },
+            _fail(
+                "front_month_fill_capped",
+                product,
+                day,
+                "front-month fill hit its cap; the date stays undecided until the next call",
+                undecided=len(first.undecided),
+                filled=filled,
             )
             return None
         await _decide_and_store(product, gap_day, await _read_inputs(product, gap_day))
@@ -565,28 +608,46 @@ async def ensure_front(product: str, trade_date: date) -> str | None:
     there is one, else decided now (see the module docstring) with
     ``source = 'live'``.
 
-    None means "unknown, ask again": a database error, a stored row or
-    incumbent that is no outright of the product, a date after the current
-    trade date, or the fill cap. Each is logged by name through
-    ``rate_limited_log`` (kind ``ensure_front_failed`` or
-    ``front_month_fill_capped``), because the caller asks again on every flush
-    and the log must not grow with it. A cancel is not swallowed.
+    None means "unknown, ask again", and ``last_failure(product)`` says why:
+
+    - ``date_after_current_trade_date``: a stamp a little ahead of our clock at
+      the open, which clears itself (a warning);
+    - ``front_month_fill_capped``: ten or more sessions to fill first (an error);
+    - ``ensure_front_failed``: a database error (a warning when transient, an
+      error otherwise), or a stored row, incumbent or ceiling that is no
+      outright of the product, or a row missing after its insert (errors).
+
+    Each is logged through ``rate_limited_log``, one window per root and
+    level, because the caller asks again and the log must not grow with it. A
+    cancel is not swallowed (the handler's time box relies on it).
     """
-    try:
-        return await _ensure_front(product, trade_date)
-    except Exception as exc:
-        rate_limited_log.warning(
-            scope=_SCOPE,
-            kind="ensure_front_failed",
-            message="front-month lookup failed; the date stays undecided",
-            extra={
-                "product": product,
-                "trade_date": trade_date.isoformat(),
-                "err_type": type(exc).__name__,
-                "err": str(exc),
-            },
+    current = current_trade_date()
+    if trade_date > current:
+        _fail(
+            "date_after_current_trade_date",
+            product,
+            trade_date,
+            "front-month date is after the current trade date; asked again later",
+            # A date later than the current one has no volume to decide from,
+            # and a clock behind the feed corrects itself: not an error.
+            warn=True,
+            current_trade_date=current.isoformat(),
         )
         return None
+    try:
+        contract = await _ensure_front(product, trade_date)
+    except Exception as exc:
+        _fail(
+            "ensure_front_failed",
+            product,
+            trade_date,
+            "front-month lookup failed; the date stays undecided",
+            exc,
+        )
+        return None
+    if contract is not None:
+        _last_failure.pop(product, None)
+    return contract
 
 
 async def load_tally(product: str, trade_date: date) -> dict[str, int]:

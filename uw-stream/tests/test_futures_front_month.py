@@ -26,6 +26,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 from zoneinfo import ZoneInfo
 
+import asyncpg.exceptions
 import pytest
 
 import futures_front_month as ffm
@@ -315,6 +316,12 @@ class _Store:
         self.front.setdefault((product, day), contract)  # ON CONFLICT DO NOTHING
 
 
+@pytest.fixture(autouse=True)
+def _no_failures_carried_over(monkeypatch):
+    """``last_failure`` is a process-wide record per root; start each test empty."""
+    monkeypatch.setattr(ffm, "_last_failure", {})
+
+
 @pytest.fixture
 def store(monkeypatch):
     s = _Store()
@@ -408,11 +415,16 @@ class TestEnsureFront:
 
         assert store.inserted == []
         assert store.reads_of_inputs == 0
-        extra = rate_limited.warning.call_args.kwargs["extra"]
-        assert rate_limited.warning.call_args.kwargs["kind"] == "ensure_front_failed"
-        assert extra["product"] == "ES"
-        assert extra["trade_date"] == "2026-11-11"
-        assert "2026-11-10" in extra["err"]
+        # A warning, not an error: a stamp a little ahead of our clock at the
+        # open clears itself within the skew, so it is not a Sentry event.
+        assert rate_limited.error.call_args_list == []
+        call = rate_limited.warning.call_args
+        assert call.kwargs["kind"] == "date_after_current_trade_date"
+        assert call.kwargs["key"] == "ES"
+        assert call.kwargs["extra"]["product"] == "ES"
+        assert call.kwargs["extra"]["trade_date"] == "2026-11-11"
+        assert call.kwargs["extra"]["current_trade_date"] == "2026-11-10"
+        assert ffm.last_failure("ES") == ("date_after_current_trade_date", "")
 
     @pytest.mark.asyncio
     async def test_the_current_trade_date_follows_the_17_00_ct_open_not_the_utc_date(
@@ -434,8 +446,10 @@ class TestEnsureFront:
         store.decide("ES", "2026-11-06", "NQZ6")
 
         assert await ffm.ensure_front("ES", _day("2026-11-06")) is None
-        assert rate_limited.warning.call_args.kwargs["kind"] == "ensure_front_failed"
-        assert "NQZ6" in rate_limited.warning.call_args.kwargs["extra"]["err"]
+        # Corrupt data is not transient: an error, which reaches Sentry.
+        assert rate_limited.warning.call_args_list == []
+        assert rate_limited.error.call_args.kwargs["kind"] == "ensure_front_failed"
+        assert "NQZ6" in rate_limited.error.call_args.kwargs["extra"]["err"]
 
     @pytest.mark.asyncio
     async def test_a_corrupt_incumbent_is_a_logged_none_and_writes_nothing(self, store, logs):
@@ -444,7 +458,7 @@ class TestEnsureFront:
 
         assert await ffm.ensure_front("ES", _day("2026-11-06")) is None
         assert store.inserted == []
-        assert "incumbent" in rate_limited.warning.call_args.kwargs["extra"]["err"]
+        assert "incumbent" in rate_limited.error.call_args.kwargs["extra"]["err"]
 
 
 class TestEnsureFrontOrder:
@@ -655,7 +669,7 @@ class TestEnsureFrontOrder:
         assert await ffm.ensure_front("ES", _day("2026-11-05")) is None
 
         assert store.inserted == []
-        err = rate_limited.warning.call_args.kwargs["extra"]["err"]
+        err = rate_limited.error.call_args.kwargs["extra"]["err"]
         assert "next stored decision" in err
         assert "NQZ6" in err
 
@@ -689,11 +703,16 @@ class TestEnsureFrontFillCap:
             f"2026-10-{n:02d}" for n in range(2, 12)
         ]
         assert ("ES", _day("2026-10-14")) not in store.front
-        assert rate_limited.warning.call_count == 1
-        assert rate_limited.warning.call_args.kwargs["kind"] == "front_month_fill_capped"
-        extra = rate_limited.warning.call_args.kwargs["extra"]
+        # An error: ten sessions without a decision is not routine, and it
+        # costs a gap in every minute until the fill catches up.
+        assert rate_limited.error.call_count == 1
+        assert rate_limited.warning.call_args_list == []
+        assert rate_limited.error.call_args.kwargs["kind"] == "front_month_fill_capped"
+        assert rate_limited.error.call_args.kwargs["key"] == "ES"
+        extra = rate_limited.error.call_args.kwargs["extra"]
         assert extra["product"] == "ES"
         assert extra["trade_date"] == "2026-10-14"
+        assert ffm.last_failure("ES") == ("front_month_fill_capped", "")
 
         # The next call carries on from where the fill stopped.
         assert await ffm.ensure_front("ES", _day("2026-10-14")) == "ESZ6"
@@ -710,6 +729,7 @@ class TestEnsureFrontFillCap:
         assert await ffm.ensure_front("ES", _day("2026-10-12")) == "ESZ6"
         assert len(store.inserted) == 11
         assert rate_limited.warning.call_args_list == []
+        assert rate_limited.error.call_args_list == []
 
     @pytest.mark.asyncio
     async def test_the_cap_is_ten(self):
@@ -728,13 +748,92 @@ class TestEnsureFrontDatabaseFailures:
 
         assert await ffm.ensure_front("ES", _day("2026-11-06")) is None
 
+        # A timeout is transient: a warning, and its window is the root's own.
+        assert rate_limited.error.call_args_list == []
         assert rate_limited.warning.call_count == 1
         assert rate_limited.warning.call_args.kwargs["scope"] == "futures_front_month"
         assert rate_limited.warning.call_args.kwargs["kind"] == "ensure_front_failed"
+        assert rate_limited.warning.call_args.kwargs["key"] == "ES"
         extra = rate_limited.warning.call_args.kwargs["extra"]
         assert extra["err_type"] == "TimeoutError"
         assert extra["err"] == "command_timeout"
         assert extra["product"] == "ES"
+        assert ffm.last_failure("ES") == ("ensure_front_failed", "TimeoutError")
+
+    @pytest.mark.asyncio
+    async def test_a_genuine_database_error_is_an_error_that_reaches_sentry(
+        self, store, logs, monkeypatch
+    ):
+        _, rate_limited = logs
+
+        async def missing_table(product, day):
+            raise asyncpg.exceptions.UndefinedTableError("relation does not exist")
+
+        monkeypatch.setattr(ffm, "_read_stored", missing_table)
+
+        assert await ffm.ensure_front("NQ", _day("2026-11-06")) is None
+
+        assert rate_limited.warning.call_args_list == []
+        assert rate_limited.error.call_count == 1
+        assert rate_limited.error.call_args.kwargs["kind"] == "ensure_front_failed"
+        assert rate_limited.error.call_args.kwargs["key"] == "NQ"
+        assert rate_limited.error.call_args.kwargs["extra"]["err_type"] == "UndefinedTableError"
+        assert ffm.last_failure("NQ") == ("ensure_front_failed", "UndefinedTableError")
+
+    @pytest.mark.asyncio
+    async def test_a_failing_insert_is_a_logged_none_and_the_row_is_not_there(
+        self, store, logs, monkeypatch
+    ):
+        """The write rejects (a grant, a constraint): R4's write-failure case."""
+        _, rate_limited = logs
+        store.decide("ES", "2026-11-05", "ESZ6")
+
+        async def rejected(product, day, contract):
+            raise asyncpg.exceptions.InsufficientPrivilegeError("permission denied")
+
+        monkeypatch.setattr(ffm, "_insert_decision", rejected)
+
+        assert await ffm.ensure_front("ES", _day("2026-11-06")) is None
+
+        assert ("ES", _day("2026-11-06")) not in store.front
+        assert rate_limited.error.call_args.kwargs["extra"]["err_type"] == (
+            "InsufficientPrivilegeError"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_transient_failure_of_the_insert_stays_a_warning(
+        self, store, logs, monkeypatch
+    ):
+        _, rate_limited = logs
+
+        async def timed_out(product, day, contract):
+            raise TimeoutError("command_timeout")
+
+        monkeypatch.setattr(ffm, "_insert_decision", timed_out)
+
+        assert await ffm.ensure_front("ES", _day("2026-11-06")) is None
+        assert rate_limited.error.call_args_list == []
+        assert rate_limited.warning.call_args.kwargs["extra"]["err_type"] == "TimeoutError"
+
+    @pytest.mark.asyncio
+    async def test_the_last_failure_is_per_root_and_a_success_clears_it(self, store, monkeypatch):
+        real_read = store.read_stored
+
+        async def flaky(product, day):
+            if product == "ES":
+                raise TimeoutError("slow")
+            return await real_read(product, day)
+
+        monkeypatch.setattr(ffm, "_read_stored", flaky)
+        assert await ffm.ensure_front("ES", _day("2026-11-06")) is None
+        assert await ffm.ensure_front("NQ", _day("2026-11-06")) == "NQZ6"
+
+        assert ffm.last_failure("ES") == ("ensure_front_failed", "TimeoutError")
+        assert ffm.last_failure("NQ") is None
+
+        monkeypatch.setattr(ffm, "_read_stored", real_read)
+        assert await ffm.ensure_front("ES", _day("2026-11-06")) == "ESZ6"
+        assert ffm.last_failure("ES") is None
 
     @pytest.mark.asyncio
     async def test_a_failure_part_way_through_the_fill_keeps_what_was_written_and_a_retry_finishes(
@@ -780,7 +879,7 @@ class TestEnsureFrontDatabaseFailures:
         monkeypatch.setattr(ffm, "_insert_decision", lost)
 
         assert await ffm.ensure_front("ES", _day("2026-11-06")) is None
-        err = rate_limited.warning.call_args.kwargs["extra"]["err"]
+        err = rate_limited.error.call_args.kwargs["extra"]["err"]
         assert "missing after its insert" in err
         assert "ES" in err
         assert "2026-11-06" in err

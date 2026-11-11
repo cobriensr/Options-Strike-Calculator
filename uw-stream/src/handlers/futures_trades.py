@@ -136,16 +136,19 @@ Consequences worth knowing:
 
 from __future__ import annotations
 
+import asyncio
 import math
 import time
 from collections import defaultdict
+from collections.abc import Awaitable
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any, NamedTuple
 
 import db
 import futures_front_month as front_month
+from db import is_transient_db_error, single_attempt
 from handlers.base import Handler
 from logger_setup import MALFORMED_PAYLOAD_LOG_INTERVAL_S, log, rate_limited_log
 from utils import timestamps
@@ -177,6 +180,25 @@ _COLUMNS: list[str] = [
 # session and the one before it, for a straggler. Older ones are evicted at
 # the end of each flush.
 _SESSIONS_KEPT = 2
+
+# The longest one front-month database call (a decision, a tally load or a
+# tally save) may hold the flush. Without it a connection that hangs costs
+# asyncpg's whole command_timeout and connect timeout, about 92 s a call, and
+# every root's bars wait behind it while the 50,000-slot queue fills.
+_LOOKUP_TIMEOUT_S = 8.0
+
+# After a front-month call fails or times out, the same call for the same
+# root (and trade date) is not made again for this long; its minutes are gaps
+# meanwhile. Without it a Neon outage costs each flush the retry backoff
+# (about 2 s) of every undecided root, again and again. Half a minute is about
+# the time a Neon restart takes and keeps the gap to a few minutes.
+_RETRY_AFTER_S = 30.0
+
+# A print for a trade date older than the current one by more than this many
+# days is dropped before the front-month path. parse_timestamp accepts any
+# stamp from 2000 on, and such a print would make ensure_front write a
+# permanent decision row for a session that never traded.
+_STALE_SESSION_DAYS = 3
 
 # UW's documented ``side`` values, case-sensitive. Anything else (absent,
 # null, another spelling) is unknown and never coerced into a side.
@@ -282,8 +304,19 @@ class _Tally:
     # carries on from it). Until it has, the counts are not saved: the table
     # would be overwritten by a lower number, and the stored volume lost.
     loaded: bool = False
-    # ``counts`` holds volume the table does not.
-    dirty: bool = False
+    # The count per contract the table is known to hold: what was loaded, or
+    # what the last successful save sent. A save sends only the contracts
+    # above it, and a failed save leaves it alone so the next one resends.
+    saved: dict[str, int] = field(default_factory=dict)
+
+    def unsaved(self) -> dict[str, int]:
+        """The counts that are above what the table holds."""
+        return {c: v for c, v in self.counts.items() if v > self.saved.get(c, 0)}
+
+    @property
+    def dirty(self) -> bool:
+        """``counts`` holds volume the table does not."""
+        return any(v > self.saved.get(c, 0) for c, v in self.counts.items())
 
 
 class FuturesTradesHandler(Handler):
@@ -324,6 +357,16 @@ class FuturesTradesHandler(Handler):
         # target product at most).
         self._unknown_minutes: int = 0
         self._unknown_logged_at: dict[str, float] = {}
+        # (call, product, trade_date) -> monotonic time before which that call
+        # is not made again. call is "load" or "decide" with the session's trade
+        # date, or "save" with None (one statement per root). Dropped with the
+        # session at eviction, so bounded by roots x 2 sessions x 2 calls + roots.
+        self._retry_after: dict[tuple[str, str, date | None], float] = {}
+        # product -> (kind, exception class) of its last front-month failure, for
+        # the front_month_unknown line. Cleared by that root's next decision.
+        self._cause: dict[str, tuple[str, str]] = {}
+        # product -> the last stale trade date logged for it (one line per date).
+        self._stale_logged: dict[str, date] = {}
 
     # ------------------------------------------------------------------
     # Producer side.
@@ -486,11 +529,16 @@ class FuturesTradesHandler(Handler):
         number of prints consumed. A batch that only extends in-progress
         minutes legitimately writes nothing and returns 0.
 
-        Before the batch is folded, every (product, trade date) in it that has
-        no decision yet is asked for (``_prepare``). When minutes are emitted
+        Prints for a session older than ``_STALE_SESSION_DAYS`` are dropped
+        first. Before the rest is folded, every (product, trade date) in it
+        that has no decision yet is asked for (``_prepare``), leaving out the
+        prints ``_ingest`` is about to drop as late. When minutes are emitted
         the tally is saved, so about once a minute while the market trades.
         """
-        await self._prepare({(row.product, row.trade_date) for row in rows})
+        rows = self._drop_stale(rows)
+        await self._prepare(
+            {(row.product, row.trade_date) for row in rows if not self._is_late(row)}
+        )
 
         for row in rows:
             self._ingest(row)
@@ -510,9 +558,47 @@ class FuturesTradesHandler(Handler):
         )
 
     # ------------------------------------------------------------------
-    # The session's tally and decision. Neither lookup raises: a Neon outage
-    # must cost the minutes of one product at most, never the batch.
+    # The session's tally and decision. None of these raises: a Neon outage
+    # must cost the minutes of one product at most, never the batch. Each
+    # database call is time-boxed (``_LOOKUP_TIMEOUT_S``) and, once it has
+    # failed, not made again for ``_RETRY_AFTER_S``.
     # ------------------------------------------------------------------
+    def _is_late(self, print_: _Print) -> bool:
+        """True for a print at or before its product's newest emitted minute."""
+        emitted_through = self._emitted_through.get(print_.product)
+        return emitted_through is not None and print_.minute_ts <= emitted_through
+
+    def _drop_stale(self, rows: list[tuple]) -> list[tuple]:
+        """The prints whose trade date is within ``_STALE_SESSION_DAYS`` of now.
+
+        An older one can't belong to a session this process has anything to say
+        about, and would otherwise be looked up, decided and written as a
+        decision row for a date that never traded. Logged once per date.
+        """
+        floor = front_month.current_trade_date() - timedelta(days=_STALE_SESSION_DAYS)
+        fresh = [row for row in rows if row.trade_date >= floor]
+        if len(fresh) != len(rows):
+            for row in rows:
+                if row.trade_date < floor:
+                    self._note_stale(row, floor)
+        return fresh
+
+    def _note_stale(self, print_: _Print, floor: date) -> None:
+        if self._stale_logged.get(print_.product) == print_.trade_date:
+            return
+        self._stale_logged[print_.product] = print_.trade_date
+        rate_limited_log.warning(
+            scope="futures_trades",
+            kind="stale_session_dropped",
+            message="futures_trades print is for a trade date too old to decide; dropped",
+            extra={
+                "product": print_.product,
+                "trade_date": print_.trade_date.isoformat(),
+                "floor": floor.isoformat(),
+            },
+            key=print_.product,
+        )
+
     async def _prepare(self, sessions: set[tuple[str, date]]) -> None:
         """Make sure each session in the batch has a tally and a decision."""
         for key in sessions:
@@ -522,26 +608,69 @@ class FuturesTradesHandler(Handler):
             if key not in self._decided:
                 await self._decide(key)
 
+    @staticmethod
+    async def _timed[T](call: Awaitable[T]) -> T:
+        """Await a front-month database call for at most ``_LOOKUP_TIMEOUT_S``."""
+        async with asyncio.timeout(_LOOKUP_TIMEOUT_S):
+            return await call
+
+    def _cooling(self, call: str, product: str, day: date | None) -> bool:
+        """True while a failed ``call`` for this root and date waits out its retry-after."""
+        deadline = self._retry_after.get((call, product, day))
+        return deadline is not None and time.monotonic() < deadline
+
+    def _cool(self, call: str, product: str, day: date | None) -> None:
+        self._retry_after[(call, product, day)] = time.monotonic() + _RETRY_AFTER_S
+
+    def _note_failure(
+        self, kind: str, message: str, product: str, day: date | None, exc: BaseException
+    ) -> None:
+        """Remember and report a failed front-month call, per root.
+
+        A transient database error (a timeout among them) is a warning, which
+        the minutes it costs escalate as ``front_month_unknown``. Anything else
+        (a bad row, a rejected statement) is an error, so it reaches Sentry
+        before the next open. One window per root and level.
+        """
+        err_type = type(exc).__name__
+        self._cause[product] = (kind, err_type)
+        report = rate_limited_log.warning if is_transient_db_error(exc) else rate_limited_log.error
+        report(
+            scope="futures_trades",
+            kind=kind,
+            message=f"futures_trades {message}; asked again in {_RETRY_AFTER_S:.0f}s",
+            extra={
+                "product": product,
+                "trade_date": day.isoformat() if day is not None else None,
+                "err_type": err_type,
+                "err": str(exc),
+            },
+            key=product,
+        )
+
     async def _load_missing(self) -> None:
         """Merge the stored tally into every session that hasn't had it yet.
 
         The first sight of a (product, trade date) loads it, so a restart
-        carries on counting. A load that failed is retried here at the next
-        flush, and the volume counted meanwhile is added to what is stored: the
-        table holds only what earlier processes saw, never this one's counts
-        (a session isn't saved until it is loaded).
+        carries on counting. A load that failed is retried here once its
+        retry-after has run out, and the volume counted meanwhile is added to
+        what is stored: the table holds only what earlier processes saw, never
+        this one's counts (a session isn't saved until it is loaded).
         """
         for (product, day), tally in list(self._tally.items()):
-            if tally.loaded:
+            if tally.loaded or self._cooling("load", product, day):
                 continue
             try:
-                stored = await front_month.load_tally(product, day)
+                stored = await self._timed(front_month.load_tally(product, day))
             except Exception as exc:
-                self._warn_tally("tally_load_failed", "tally load failed", product, day, exc)
+                self._cool("load", product, day)
+                self._note_failure("tally_load_failed", "tally load failed", product, day, exc)
                 continue
             for contract, volume in stored.items():
                 tally.counts[contract] = tally.counts.get(contract, 0) + volume
+                tally.saved[contract] = volume
             tally.loaded = True
+            self._retry_after.pop(("load", product, day), None)
 
     async def _decide(self, key: tuple[str, date]) -> None:
         """Ask for one session's contract, after saving the tally.
@@ -549,61 +678,71 @@ class FuturesTradesHandler(Handler):
         The decision for a session reads the volume of the one before it, so
         that volume must be in the table first: with the tally unsaved the
         lookup is not made, and the session stays undecided until the next
-        flush. A lookup that returns None is not cached either.
+        flush. A lookup that fails, times out or returns None is not cached,
+        and is not repeated inside the retry-after.
         """
         product, day = key
-        if not await self._save_tally(product):
+        if self._cooling("decide", product, day):
             return
-        contract = await front_month.ensure_front(product, day)
-        if contract is not None:
-            self._decided[key] = contract
+        if not await self._save_tally(product):
+            self._cause.setdefault(product, ("tally_unsaved", ""))
+            return
+        try:
+            contract = await self._timed(front_month.ensure_front(product, day))
+        except Exception as exc:
+            # ensure_front swallows its own failures; what reaches here is the
+            # time box cancelling it.
+            self._cool("decide", product, day)
+            self._note_failure("lookup_timeout", "front-month lookup timed out", product, day, exc)
+            return
+        if contract is None:
+            self._cool("decide", product, day)
+            self._cause[product] = front_month.last_failure(product) or ("ensure_front_failed", "")
+            return
+        self._decided[key] = contract
+        self._retry_after.pop(("decide", product, day), None)
+        self._cause.pop(product, None)
 
     async def _save_tally(self, product: str | None = None) -> bool:
         """Save the tallies that changed, one statement, for one product or all.
 
-        False when a save failed, or when a tally with unsaved volume has not
-        been loaded (it can't be saved yet), so a caller that needs the table
-        current knows it isn't. Never raises.
+        Only the contracts above what the table holds are sent. False when a
+        save failed or is waiting out its retry-after, or when a tally with
+        unsaved volume has not been loaded (it can't be saved yet), so a caller
+        that needs the table current knows it isn't. Never raises. For one
+        product the unloaded tallies of other roots don't count.
         """
         sessions = [key for key in self._tally if product is None or key[0] == product]
         stuck = any(not self._tally[key].loaded and self._tally[key].dirty for key in sessions)
         dirty = [key for key in sessions if self._tally[key].loaded and self._tally[key].dirty]
+        if product is None:
+            dirty = [key for key in dirty if not self._cooling("save", key[0], None)]
+        elif dirty and self._cooling("save", product, None):
+            return False
         if dirty:
+            changed = {key: self._tally[key].unsaved() for key in dirty}
             rows = [
                 (p, day, contract, volume)
-                for p, day in dirty
-                for contract, volume in self._tally[(p, day)].counts.items()
+                for (p, day), counts in changed.items()
+                for contract, volume in counts.items()
             ]
             try:
-                await front_month.save_tally(rows)
+                await self._timed(front_month.save_tally(rows))
             except Exception as exc:
-                self._warn_tally(
-                    "tally_save_failed", "tally save failed", dirty[0][0], dirty[0][1], exc
-                )
+                for p in sorted({p for p, _ in dirty}):
+                    self._cool("save", p, None)
+                    self._note_failure("tally_save_failed", "tally save failed", p, None, exc)
                 return False
-            for key in dirty:
-                self._tally[key].dirty = False
+            for key, counts in changed.items():
+                self._tally[key].saved.update(counts)
         return not stuck
-
-    @staticmethod
-    def _warn_tally(kind: str, message: str, product: str, day: date, exc: Exception) -> None:
-        rate_limited_log.warning(
-            scope="futures_trades",
-            kind=kind,
-            message=f"futures_trades {message}; retried at the next flush",
-            extra={
-                "product": product,
-                "trade_date": day.isoformat(),
-                "err_type": type(exc).__name__,
-                "err": str(exc),
-            },
-        )
 
     def _evict_old_sessions(self) -> None:
         """Keep each product's ``_SESSIONS_KEPT`` newest trade dates.
 
         Run at the end of every flush, after the minutes that needed an older
-        decision have been emitted, so the maps stay bounded by roots x 2.
+        decision have been emitted, so the maps stay bounded by roots x 2. The
+        retry-afters of an evicted session go with it.
         """
         by_product: dict[str, list[date]] = defaultdict(list)
         for product, day in self._tally:
@@ -612,6 +751,21 @@ class FuturesTradesHandler(Handler):
             for day in sorted(days)[:-_SESSIONS_KEPT]:
                 del self._tally[(product, day)]
                 self._decided.pop((product, day), None)
+                self._retry_after.pop(("load", product, day), None)
+                self._retry_after.pop(("decide", product, day), None)
+
+    async def _drain_inner(self) -> int:
+        """The base drain, then one save of the tally.
+
+        The final flush saves only when a minute completes, so without this a
+        clean shutdown loses the volume since the last emitted minute (under a
+        minute of it). One attempt, no retry (``single_attempt``): Railway's
+        SIGKILL comes at a fixed deadline. A failure is logged, never raised.
+        """
+        flushed = await super()._drain_inner()
+        with single_attempt():
+            await self._save_tally()
+        return flushed
 
     def _ingest(self, print_: _Print) -> None:
         """Fold one print into the accumulator (dedup, tally, OHLCV, flow)."""
@@ -622,9 +776,8 @@ class FuturesTradesHandler(Handler):
         # one-print bar that DO NOTHING discards (or, for a minute that was
         # a gap, write a permanent partial bar), and could log a false
         # front_sym_absent.
-        emitted_through = self._emitted_through.get(print_.product)
-        if emitted_through is not None and print_.minute_ts <= emitted_through:
-            self._note_late_drop(print_, emitted_through)
+        if self._is_late(print_):
+            self._note_late_drop(print_, self._emitted_through[print_.product])
             return
 
         minute_key = (print_.product, print_.minute_ts)
@@ -661,7 +814,6 @@ class FuturesTradesHandler(Handler):
         # session's last minute counts there, not in the new session's tally.
         tally = self._tally[(print_.product, print_.trade_date)]
         tally.counts[print_.contract] = tally.counts.get(print_.contract, 0) + print_.size
-        tally.dirty = True
 
         bar_key = (print_.product, print_.minute_ts, print_.contract)
         bar = self._bars.get(bar_key)
@@ -718,9 +870,10 @@ class FuturesTradesHandler(Handler):
 
         Error, not warning: a session with no decision loses every minute of
         that root until Neon answers, and only an error reaches Sentry. One
-        line per product per window (``rate_limited_log`` only throttles
-        warnings, so this keeps its own windows, one entry per product at most),
-        with the running total.
+        line per product per window (this keeps its own windows, one entry per
+        product at most), with the running total and the cause: the kind and
+        exception class of the root's last front-month failure, None when the
+        session simply has not been asked for yet.
         """
         self._unknown_minutes += 1
         now = time.monotonic()
@@ -728,6 +881,7 @@ class FuturesTradesHandler(Handler):
         if last is not None and now - last < MALFORMED_PAYLOAD_LOG_INTERVAL_S:
             return
         self._unknown_logged_at[product] = now
+        cause_kind, cause_err_type = self._cause.get(product, (None, None))
         log.error(
             "futures_trades front-month contract unknown for a completed minute; bar skipped",
             extra={
@@ -737,6 +891,8 @@ class FuturesTradesHandler(Handler):
                 "trade_date": day.isoformat(),
                 "minute_ts": minute_ts.isoformat(),
                 "unknown_total": self._unknown_minutes,
+                "cause_kind": cause_kind,
+                "cause_err_type": cause_err_type,
             },
         )
 

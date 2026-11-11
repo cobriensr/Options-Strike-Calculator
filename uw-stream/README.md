@@ -199,17 +199,31 @@ Design notes worth knowing before touching the handler:
   trade date** (a session runs 17:00 CT to 17:00 CT; the trade date is the
   Chicago date of the instant plus 7 h). It is decided once, from the
   previous session's volume, and stored in `futures_front_month`; the
-  rule lives in `src/futures_front_month.py` and is held to the same case
-  fixture as its TypeScript twin (`api/__tests__/fixtures/futures-roll-cases.json`).
-  The handler's own deduped tally of outright prints per
+  rule lives in `src/futures_front_month.py`. Its trade-date and
+  decision cases run against the same fixture as the TypeScript twin
+  (`api/__tests__/fixtures/futures-roll-cases.json`); the fixture's third
+  list, `pickScheduledFront`, is TypeScript-only, because that is the REST
+  minute builder and this handler folds both year spellings of a contract
+  into one bar. The handler's own deduped tally of outright prints per
   (root, trade date, contract) is saved to `futures_contract_volume`
-  (source `live`) about once a minute and before a new date's decision is
-  asked for, and reloaded after a restart, so a restart never changes a
-  decided session's contract. Every bar carries `futures_bars.contract`,
-  the canonical name (`ESZ6`, also for `ESZ26`). A date whose decision
-  can't be had (Neon unreachable at the 17:00 CT open) is a gap, logged as
-  `kind="front_month_unknown"` at error level, and asked again at the
-  next flush.
+  (source `live`, only the contracts whose count rose) about once a minute,
+  before a new date's decision is asked for, and once more on a clean
+  shutdown (a crash loses at most the volume since the last save). A
+  restart reloads it, so it never changes a decided session's contract.
+  Every bar carries `futures_bars.contract`, the canonical name (`ESZ6`,
+  also for `ESZ26`).
+- **When the decision can't be had** (Neon unreachable at the 17:00 CT
+  open), the session's minutes are gaps, logged as
+  `kind="front_month_unknown"` at error level with the cause
+  (`cause_kind`, `cause_err_type`). Each front-month database call is
+  cut at 8 s, and a call that failed is not repeated for that root and
+  date for 30 s, so an outage costs a flush one failed call and not a
+  retry per root per flush. A tally that could not be saved or loaded
+  holds back that root's next decision until it can. A failure that is not
+  a Neon blip (a bad row, a rejected statement) is logged at error level, one
+  line per root per minute, so it reaches Sentry; a blip stays a warning.
+  A print for a trade date more than 3 days old never reaches the
+  front-month path (`kind="stale_session_dropped"`).
 - Only minutes **strictly older** than the newest minute seen for a
   product are written. That is what makes `ON CONFLICT DO NOTHING`
   correct: a partial bar written early could never be revised. The
