@@ -25,7 +25,9 @@ Each run:
    probed the next night. A run whose planned days were skipped for disk or
    deadline probes nothing.
 4. Runs the steps in `STEPS` (`src/pipeline.py`), in order, whatever the tape did,
-   including when it raised or every day failed.
+   including when it raised or every day failed. The one exception: if the last
+   session cannot be resolved (the NYSE holiday table does not cover the year,
+   `CalendarExhausted`), no step runs.
    - `enrich-outcomes` fills the outcome columns of `lottery_finder_fires` and
      `silent_boom_alerts` from the tape in R2 (see "Enrichment").
    - `outcome-check` alerts when the fires of a recent session have no outcomes
@@ -105,14 +107,11 @@ and this list. `test_readme_lists_every_watch_path` fails when this list lacks o
 of `IMAGE_FILES`.
 
 **Push hazard.** A redeploy during a run (about 07:15 to 12:30 UTC) can stop the
-run. A push that touches any watch path redeploys the service, and the list
-includes files that other work edits: `scripts/_tape_reader.py`,
-`scripts/_cli_paths.py`, `scripts/_pipeline_retry.py`,
-`scripts/enrich_lottery_outcomes.py`, `scripts/enrich_silent_boom_outcomes.py`,
-`ml/src/lottery_exit_policies.py` and the root `.dockerignore`. Push any change to
-a watch path after 15:00 CT and outside 07:15 to 12:30 UTC. A killed run isn't
-retried until the next night unless someone runs
-`railway cron run --service nightly`.
+run. A push that touches any watch path redeploys the service, and the list above
+includes files that other work edits: the shared scripts under `scripts/`, the one
+under `ml/src/` and the root `.dockerignore`. Push any change to a watch path
+after 15:00 CT and outside 07:15 to 12:30 UTC. A killed run isn't retried until
+the next night unless someone runs `railway cron run --service nightly`.
 
 ## Env vars
 
@@ -242,9 +241,10 @@ land; the warning on those two days is expected.
 Delete the day's object, `fulltape/{d}-fulltape.parquet`. The next run sees the
 day as missing and lands it again. A run plans at most the newest 30 missing
 days, so a day deleted from further back waits until the days after it have
-landed. The new object counts as `landed`, not `relanded`, so `enrich-outcomes`
-does not clear that day's markers (see "Enrichment"); redo them by hand if the
-day's outcomes should be redone.
+landed. The new object counts as `landed`, not `relanded`. The same night
+`enrich-outcomes` clears the outcome markers of every day the tape landed, so the
+new tape's outcomes replace the old ones with no step by hand. If that clear does
+not run that night, see "A day landed or re-landed tonight" under "Enrichment".
 
 ## Re-lands
 
@@ -264,8 +264,9 @@ landed days triggers a re-land on its own.
 - When there were days to probe but none could be compared (every probe failed,
   returned no ETag or was left for lack of probe budget), the run sends one
   warning, `nightly rewrite check unavailable`, with the day count in `days`.
-- The same night, `enrich-outcomes` clears the re-landed day's outcome markers, so
-  the new tape's outcomes replace the old ones (see "Enrichment").
+- The same night, `enrich-outcomes` clears the outcome markers of every day the
+  tape landed, re-landed days included, so the new tape's outcomes replace the old
+  ones (see "Enrichment").
 
 ## Enrichment
 
@@ -310,16 +311,16 @@ work is inversion is listed once the matched side's net flow exists.
 
 **Provenance columns** (migrations #201 and #202):
 
-| Column                                  | Values                                 | Meaning                                                                                                                                             |
-| --------------------------------------- | -------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `outcome_source`                        | `fulltape`, `bot_eod`, `ws_cron`, NULL | Who wrote the outcomes: a script reading the Full Tape (this step, or `--r2` locally), the Bot-EOD script (fills only), the two Vercel enrich crons |
-| `outcome_version`                       | 1, NULL                                | The computation (`OUTCOME_VERSION`); set exactly when the source is                                                                                 |
-| `outcome_tape_version`                  | 1, NULL                                | The tape pass that examined the row (`OUTCOME_VERSION` when it ran); NULL means the tape has not                                                    |
-| `inversion_source`, `inversion_version` | `fulltape`, `bot_eod`; 1               | The same for `realized_flow_inversion_pct` (`INVERSION_VERSION`), on `lottery_finder_fires` only                                                    |
+| Column                                  | Values                                 | Meaning                                                                                                                                                                       |
+| --------------------------------------- | -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `outcome_source`                        | `fulltape`, `bot_eod`, `ws_cron`, NULL | Who wrote the outcomes: a script reading the Full Tape from R2 or a local directory (this step, or a local run), the Bot-EOD script (fills only), the two Vercel enrich crons |
+| `outcome_version`                       | 1, NULL                                | The computation (`OUTCOME_VERSION`); set exactly when the source is                                                                                                           |
+| `outcome_tape_version`                  | 1, NULL                                | The tape pass that examined the row (`OUTCOME_VERSION` when it ran); NULL means the tape has not                                                                              |
+| `inversion_source`, `inversion_version` | `fulltape`, `bot_eod`; 1               | The same for `realized_flow_inversion_pct` (`INVERSION_VERSION`), on `lottery_finder_fires` only                                                                              |
 
-NULL source and version mean the row was written before the columns existed. A
-`ws_cron` source next to a non-NULL `outcome_tape_version` is a feed value the tape
-could not price and kept.
+A NULL source and version mean no writer has tagged the row: it was written before
+the columns existed, or it has no outcome yet. A `ws_cron` source next to a non-NULL
+`outcome_tape_version` is a feed value the tape could not price and kept.
 
 **Each night.** A day with work but no landed tape waits (`days_waiting_tape`, no
 alert); the step works it once the tape lands. For a landed day the step downloads
@@ -335,9 +336,9 @@ download. A day that raises is counted, sent to Sentry once, and the loop goes o
 The step's result is `failed` if a day failed or came back all-NULL, else `partial`
 if days are left, else `ok`. Its counts are in the log line `step enrich-outcomes ...`
 and in the `counts` extra of the step alerts: `days_processed`, `days_failed`,
-`days_waiting_tape`, `days_left`, `tape_markers_reset`, `null_days` and `low_days`
-(the last two count (table, day) pairs), and per table
-`lottery_` / `silent_boom_` plus `outcomes_written`, `stamped_no_outcome`,
+`days_waiting_tape`, `days_left`, `tape_markers_reset` (rows whose marker was
+cleared), `null_days` and `low_days` (these two count (table, day) pairs), and per
+table `lottery_` / `silent_boom_` plus `outcomes_written`, `stamped_no_outcome`,
 `outcomes_replaced` (the tape's value overwrote an earlier outcome) and
 `outcomes_kept` (the tape could not price a fire that held a value, which stayed).
 The Lottery Finder pass adds `inversion_written`, `inversion_stamped` and
@@ -345,22 +346,30 @@ The Lottery Finder pass adds `inversion_written`, `inversion_stamped` and
 (`ok`, `no outcomes` or `failed (<ExceptionClass>)`) and its non-zero counts, never
 an exception's text.
 
-**A re-landed day.** The rows of a day the tape job re-lands tonight carry the
-marker of the tape it replaced, so the work set would never look at them again.
-Before it lists the work, the step clears `outcome_tape_version` on that day's fires
-in both tables, in one statement so that both clear or neither does
-(`tape_markers_reset` counts the rows). Only the marker is cleared: the old
-outcomes stay until the new tape replaces them, where it can price a fire. A
-re-landed day keeps the old tape's inversions, because their work set needs the
-value to be NULL and clearing values is destructive. If the statement fails, nothing
-is cleared and the step fails. The next night the tape job no longer reports the
-day as re-landed, so its rows keep the old tape's outcomes until `OUTCOME_VERSION` is
-next bumped or someone clears the markers by hand.
+**A day landed or re-landed tonight.** The rows of a day whose object the tape job
+put in R2 tonight (`landed` or `relanded`) may carry the marker of the tape it
+replaced, or of a local Full Tape run, so the work set would never look at them
+again. That is the case for a re-land the ETag probe found (`relanded`) and for a
+day whose object was deleted by hand to force one, which lands as `landed`. Before
+it lists the work, the step clears `outcome_tape_version` on those days' fires in
+both tables, in one statement so that both clear or neither does
+(`tape_markers_reset` counts the rows). A first land has no markers, so for it the
+clear changes nothing. Only the marker is cleared: the old outcomes stay until the
+new tape replaces them, where it can price a fire. A re-landed day keeps the old
+tape's inversions, because their work set needs the value to be NULL and clearing
+values is destructive.
+
+The clear is lost when it does not run on the night the day lands: the statement
+fails, the step is skipped for its deadline or fails before the statement (an
+import error, its Neon connection), or the run is killed after the land. Nothing is
+cleared, and the next night the tape job no longer reports the day, so its rows
+keep the old tape's outcomes until `OUTCOME_VERSION` is next bumped or someone
+clears the markers by hand (below).
 
 **Re-trying a day, by hand only.** To make the step look at a day again, for
-example after fixing what made a tape come back with no outcomes, clear that day's
-markers in both tables (the reset the step runs for a re-landed day), and run both
-statements:
+example after fixing what made a tape come back with no outcomes, or after the
+clear above was lost, clear that day's markers in both tables (the reset the step
+runs for a day landed tonight), and run both statements:
 
 ```sql
 UPDATE lottery_finder_fires SET outcome_tape_version = NULL
@@ -375,9 +384,10 @@ is never needed, and inversions are not redone this way. The day must be landed 
 R2, or it waits.
 
 **Dry run on a workstation.** From the repo root, with the four `R2_*` variables and
-`DATABASE_URL` in the environment or in `.env.local` (which points at the production
+a database URL in the environment or in `.env.local` (which points at the production
 database), `--dry-run` reads Neon and R2 and writes nothing. Every summary line
-says "would":
+says "would". The scripts use `DATABASE_URL_UNPOOLED` if it is set and `DATABASE_URL`
+otherwise, so check which one your shell exports:
 
 ```bash
 ml/.venv/Scripts/python scripts/enrich_lottery_outcomes.py --r2 --select all --dry-run --date 2026-10-20
@@ -421,8 +431,9 @@ Otherwise it is empty. It never changes the grouping.
 | `nightly config invalid`                 | error   | Bad config. `fields` names the invalid settings. Sent only if `SENTRY_DSN` is valid.                                                                                                                             |
 | `NYSE holiday table ends in {year}; ...` | warning | From Oct 1 of the table's last year. Add the next year to `calendar_nyse.py`, or the job refuses to run.                                                                                                         |
 
-A run that fails before its first day (R2 listing, work dir setup, an exhausted
-calendar) sends the exception itself as an error event. The steps still run.
+A run that fails before its first day (R2 listing, work dir setup) sends the
+exception itself as an error event, and the steps still run. If the last session
+cannot be resolved (an exhausted calendar), the exception is sent and no step runs.
 
 A step alert carries the tags `step` and `status`, and the extras `counts` (names
 and integers) and `detail` (a fixed phrase). An `ok` step sends nothing. The
@@ -440,11 +451,14 @@ the day's `enrich <day>` line in the run log:
 - `waiting for the tape`: the day's tape is not in R2 yet. Check
   `fulltape/{day}-fulltape.parquet`; the step works the day once it lands.
 - `failed (<ExceptionClass>)`: the step retries the day next night with no action.
-- `no outcomes`, or no line for the day at all (it had no work left, so an earlier
-  night already examined it): the tape examined the fires and priced none of them,
-  so a retry alone changes nothing. Suspect a changed tape layout or option-chain id
-  format, which would null every day (the step stops after 3). Fix the cause, then
-  clear the day's markers by hand (see "Enrichment").
+- `no outcomes`: the tape examined the fires and priced none of them, so a retry
+  alone changes nothing. Suspect a changed tape layout or option-chain id format,
+  which would null every day (the step stops after 3). Fix the cause, then clear the
+  day's markers by hand (see "Enrichment").
+- No `enrich <day>` line at all. Either the day had no work left, so an earlier
+  night already examined it and priced none of it (treat it as `no outcomes`), or
+  the step did not reach the day. Look for `nightly step skipped_deadline`, an
+  exception tagged `step`, or `days_left` in the `step enrich-outcomes` line.
 
 The Sentry cron monitor `nightly-tape` (crontab `15 7 * * 2-6`, UTC) checks the
 run in and out:

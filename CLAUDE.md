@@ -52,13 +52,12 @@ uw-stream/        UnusualWhales websocket consumer (Python, Railway, NOT Vercel)
 nightly/          Full Tape lander and post-tape steps (Python, Railway cron service `nightly`, NOT Vercel). Tue–Sat 07:15 UTC
                   (a cron set on the Railway service, the morning after each session) it downloads each missing session's UW options Full Tape, converts it
                   to Parquet with polars and uploads one object per day to Cloudflare R2
-                  (fulltape/{date}-fulltape.parquet), newest missing day first. The tape plans up to 30 days and starts a day only
-                  inside the window the steps' reserve leaves (see nightly/README.md). Re-lands a recent day whose UW ETag
-                  changed, and marks a day unavailable only on UW's own evidence. Then the steps (`pipeline.STEPS`): `enrich-outcomes`
-                  fills the outcome, provenance and marker columns of lottery_finder_fires and silent_boom_alerts from the tape (its
-                  only Neon writes), `outcome-check` alerts on recent sessions with no outcomes. Runs once and exits: 0 ok,
-                  1 a day did not land or a step failed or was skipped, 2 bad config, 3 watchdog, 143 SIGTERM. Sentry
-                  server_name=nightly plus the `nightly-tape` cron monitor. Env: UW_API_KEY, R2_*, DATABASE_URL, SENTRY_DSN.
+                  (fulltape/{date}-fulltape.parquet), newest missing day first. Plans up to 30 days, starts a day only inside the window the
+                  steps' reserve leaves (nightly/README.md). Re-lands a recent day whose UW ETag changed, and marks a day unavailable only
+                  on UW's own evidence. Then `enrich-outcomes` fills the outcome, provenance and marker columns of lottery_finder_fires and
+                  silent_boom_alerts from the tape (its only Neon writes) and `outcome-check` alerts on sessions with no outcomes.
+                  Runs once and exits: 0 ok, 1 a day did not land or a step failed or was skipped, 2 bad config, 3 watchdog, 143 SIGTERM.
+                  Sentry server_name=nightly plus the `nightly-tape` cron monitor. Env: UW_API_KEY, R2_*, DATABASE_URL, SENTRY_DSN.
                   Own Dockerfile, README.md (runbook and alert meanings), requirements.txt + requirements-dev.txt,
                   conftest.py — own pytest suite under tests/. Spec: docs/superpowers/specs/2026-10-28-nightly-pipeline-automation-design.md.
 
@@ -359,7 +358,7 @@ see `docs/superpowers/specs/archive-volume-seed-2026-04-18.md`.
 - **Long-running functions**: `api/analyze.ts`, `api/cron/curate-lessons.ts` and `api/cron/curate-periscope-lessons.ts` (780s), `api/cron/backfill-futures-gaps.ts` (800s), and 300s crons such as `api/cron/build-features.ts`. Full list: `vercel.json` `functions`.
 - **DB setup**: `POST /api/journal/init` creates all tables and runs all migrations
 - **Railway services**: `sidecar/`, `uw-stream/` and `nightly/` (a cron service that runs once and exits), each with its own Dockerfile and env vars in Railway, not Vercel. `sidecar/` and `uw-stream/` keep `railway.toml` `watchPatterns`. `nightly/` has no `railway.toml`: its cron schedule, restart policy and watch paths are set on the Railway service (see `nightly/README.md`). Sidecar env: `DATABASE_URL` (only for its `/health` db check), `SENTRY_DSN`, `TAKEIT_*`, `ARCHIVE_*`. Nightly env: `UW_API_KEY`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_ENDPOINT_URL`, `R2_BUCKET_FULLTAPE`, `DATABASE_URL`, optional `SENTRY_DSN`.
-- **Nightly pushes** — push any change to a `nightly` watch path after 15:00 CT and outside 07:15–12:30 UTC. The watch paths include six shared files (`scripts/_tape_reader.py`, `scripts/_cli_paths.py`, `scripts/_pipeline_retry.py`, `scripts/enrich_lottery_outcomes.py`, `scripts/enrich_silent_boom_outcomes.py`, `ml/src/lottery_exit_policies.py`; `IMAGE_FILES` in `nightly/tests/test_image_layout.py`) and the root `.dockerignore`, because the image builds from the repo root. Why: a push to one redeploys the service, and a deploy during a run (about 07:15–12:30 UTC) can kill it. Easy to miss: those files look like ordinary `scripts/` and `ml/` edits.
+- **Nightly pushes** — push any change to a `nightly` watch path after 15:00 CT and outside 07:15–12:30 UTC. The image builds from the repo root, so the watch paths include shared files under `scripts/` and `ml/src/` and the root `.dockerignore` (the list is in `nightly/README.md`). Why: a push to one redeploys the service, and a deploy during a run (about 07:15–12:30 UTC) can kill it. Easy to miss: those files look like ordinary `scripts/` and `ml/` edits.
 
 ## Anthropic Integration
 

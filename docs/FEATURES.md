@@ -614,7 +614,7 @@ As of 2026-10-29:
   - `uw-stream`: the Unusual Whales websocket consumer. It ingests per-trade option prints, flow alerts and futures trades (building 1-minute bars for 6 CME futures), with further handlers for net flow, per-strike GEX, dark pool prints and Interval B/A alerts
   - spread-leg badge: the exchange's multi-leg trade code on the anchor print, via `api/_lib/anchor-legs.ts` (replaced the Railway classifier, 2026-10-28)
   - `sidecar`: Take-It SHAP explanations (filled by the `takeit-fill-shap` cron) and DuckDB queries over the frozen historical Parquet archive
-  - `nightly`: the Full Tape lander, a cron service (Tue–Sat 07:15 UTC) that converts each missing session's UW options Full Tape to Parquet and uploads it to Cloudflare R2. It writes nothing to Neon
+  - `nightly`: the Full Tape lander, a cron service (Tue–Sat 07:15 UTC) that converts each missing session's UW options Full Tape to Parquet and uploads it to Cloudflare R2, then fills the outcomes of Lottery Finder fires and Silent Boom alerts in Neon from that tape
 - The ML pipeline (`ml/`) runs as a GitHub Actions workflow that is currently paused (last run 2026-04-17)
 
 ---
