@@ -1,8 +1,8 @@
-# Futures bars: repair the April–June contract-month mix, and make the live roll safe
+# Futures bars: repair the April–June contract-month mix
 
 ## Goal
 
-Replace the `futures_bars` rows that merged several contract months (2026-04-05 evening to 2026-06-15 09:10 CT) with true front-month bars wherever a source exists. Recompute what was saved from them. Then fix the live writer so the December roll (ESZ6 → ESH7, around 12-10) can't flip the series between months.
+Replace the `futures_bars` rows that merged several contract months (2026-04-05 evening to 2026-06-15 09:10 CT) with true front-month bars wherever a source exists. Recompute what was saved from them. The live roll fix (the December ESZ6 → ESH7 roll) moved to `2026-11-06-futures-session-front-month.md`; see Phase 6.
 
 Owner go-ahead: 2026-11-06 ("yep go ahead" to the ES contract-month bug; backfill per the standing always-backfill rule).
 
@@ -128,95 +128,41 @@ Same pattern as Phase 2: dry run, backup, owner OK, apply, verify.
 - **The frozen-run span (fix round 6).** `frozenRunsOf` measures a run between cron timestamps, which carry jitter, so a run of four rows at a nominal five minutes is frozen about half the time; it does not split at a time gap, so identical prices on either side of a closure join. Both are harmless in the direction ruling 8 states: a flat run recomputes equal and is not written, and a row whose bar landed late gets today's value.
 - **Dry run of 2026-11-07:** 25,365 snapshot rows, 35 pre-market rows and 0 fire values to write (before ruling 6); every control passes.
 
+**Done 2026-11-11 (owner OK "Apply all", 2026-11-10).**
+- **Apply**, 2026-11-11 06:34Z, exit 0, one run. Snapshots 25,389, pre-market 35, fires 0, stale-at-write 96,794 changed and verified; junk-stale 1,964 deleted and verified; 116,861 distinct rows. Backup and plan: `docs/tmp/futures-derived-recompute/backup-2026-11-11T06-34-38-759Z.jsonl` and `plan.json` (gitignored), log `apply-run.log`.
+- **Independent after-check** (`docs/tmp/futures-derived-recompute/verify-apply.md`, read-only):
+  - every touched row (114,897 snapshot ids, 35 pre-market ids) holds the planned value in each written field and its old value elsewhere, and the 1,964 junk ids are gone;
+  - row counts equal rows in range minus the deletes, and no live row since 10-01 was touched;
+  - a fresh dry run plans 0 for every step except 7 ES stale volume-ratio rows. Those are a second-pass coincidence: the repaired price now matches an older pre-repair bar by value. They are left as stored, like the other unaffected drift;
+  - the controls pass (snapshots 12,051 of 12,051, pre-market subset 110 of 110, fires 166 of 166).
+- **Left as stored, by design:** rows with no fresh bar within 15 minutes, for which `computeSnapshot` returns stale and nothing can be recomputed. ES 3,300 and NQ 3,024 before 10-01, of which 504 each hold a price frozen on an older bar rather than the last bar's close (for example 10 ES rows in the 04-13 16:15–17:00 CT break at 6784.25, and one row a day just after each September reopen at the outage price). Whether to delete those is open (owner question, 2026-11-11). The thin roots have more such rows (GC most), part of D1.
+- **Periscope regrade** (owner OK, 2026-11-11): `scripts/grade-periscope-day.mjs` for 05-07 (40 slots) and 05-08 (38), after a backup of the 77 old rows (`docs/tmp/futures-derived-recompute/periscope-grades-backup-2026-05-07-08.jsonl`). Only the ES/NQ trade simulations changed; on 05-08, ES went from 81% wins and +2.60% to 38% and −1.32%, and NQ to 69% and +1.55%. One never-graded 05-07 slot was added.
+
 ### Phase 5: RTY, CL, GC, ZN (needs owner decision D1)
 
 There's no source for these four. See D1.
 
-### Phase 6: a roll-safe live writer before the December roll (owner chose D2 = A, 2026-11-06)
+### Phase 6: a roll-safe live writer, moved to the session front-month plan
 
-Today's uw-stream `futures_trades` handler never mixes months inside a bar. But it picks each minute's contract by volume since 00:00 UTC, with no memory:
-- the series can step back and forth between ESZ6 and ESH7 around the crossover;
-- the 00:00Z reset and any restart can flip it back on thin volume.
+**Superseded 2026-11-07 (owner, "mix").** The rule is no longer this spec's 120-close roll-forward streak. It is one contract per root and CME trade date, picked at the 17:00 CT open from the prior session's per-contract volume, forward only and stored once. That plan, `docs/superpowers/specs/2026-11-06-futures-session-front-month.md`, owns the rule end to end: the gap cron, the uw-stream handler and the history scripts. Why: on a typical ES roll the streak switches about 10:30 CT, which puts a calendar-spread step of about 55 points inside the session the owner trades.
 
-The gap cron and the history backfills copy the same rule through `replayFrontMonth` (`api/_lib/futures-contracts.ts`). The writers, the migration path and the readers are mapped in `docs/tmp/es-contract-month-2026-11-06/g-roll-writers.md` (main checkout).
-
-**The rule: roll forward only.**
-- **A `contract` column on `futures_bars`** (migration #203).
-  - It holds the dated outright the bar was built from (ESZ6, CLF7, …).
-  - It's nullable. NULL means unknown, as in all history before this phase. Every writer fills it from now on.
-  - A `NOT VALID` CHECK allows only the row's own root, one CME month code and a one- or two-digit year. That's exactly the handler's existing sym test, so it can't reject a bar the handler would write.
-  - No index. Seed lookups are bounded to 7 days on the existing `(symbol, ts DESC)` index.
-- **Expiry order comes from the contract code:**
-  - the month letter gives the month;
-  - the year digit gives the year, resolved to the one year in [ref − 1, ref + 8] that ends in that digit, where ref is the UTC year of the replay's first minute, or of the print where the handler first sees the contract (at 2026, `H7` → 2027, `Z5` → 2025 and `Z4` → 2034). The window keeps ref − 1 on purpose: a seed tagged late in one year and read early the next (`ESZ6` in January 2027) must still read as 2026. Read as 2036, it would lock the root for good. A contract ten years out that's misread as past is harmless, because an earlier contract never takes over;
-  - a two-digit year is read as 20YY.
-- **Each root has one current front.**
-  - **Challenger:** the later-expiring contract with the largest volume since 00:00 UTC. A tie goes to the nearer expiry.
-  - **Lead:** the challenger leads when its volume is strictly greater than the front's.
-  - **Takeover:** the challenger takes over once it has led for **N = 120 consecutive wall-clock minute closes**. A lead persists through minutes with no prints. The streak restarts when the challenger changes, when it loses the lead, and at 00:00 UTC. The bar of the minute after the 120th close is the first on the new contract.
-  - **Never backward:** an earlier expiry never takes over, so the 00:00Z reset and restarts can't flip back.
-  - **An expired front** is covered by the same rule: its volume stops and the next contract's streak starts on its first lead. Up to N minutes of bars after the expiry are then missing, and the gap cron, running the same rule, doesn't fill them. In 128 ES/NQ rolls the front never expired before the takeover: the crossover came 3.6–7.6 days before the old front's last bar.
-- **Seed (the front at startup or at a hole).**
-  - The `contract` of the root's newest tagged bar in the last 7 days, at or before that point.
-  - With none, it's the first contract in the root's listing cycle whose last-trade month isn't before the current UTC month. CL stops trading the month before its contract month, so CL in November seeds CLZ6, not CLX6. The rule above rolls forward from there.
-    - Why the cycle and not prices: at a cold start the live handler has no candidate list, and the session's first print can be a back month.
-    - The cycle needs no prints, so the TS and Python copies agree exactly.
-    - A seed that's too early (even an expired contract) can only make the roll late; a late one could never come back.
-  - Restarts lose the in-memory volume tally. The challenger then needs 120 leading closes counted from the restart.
-- **Why N = 120** (`docs/tmp/es-contract-month-2026-11-06/h-roll-tuning.md`). The rule was replayed on the archive's per-contract minute volumes: 64 ES and 64 NQ rolls, 2010–2026, plus 278,112 simulated hourly restarts.
-  - N = 1 is unsafe. NQ 2015-03-09 stepped 96 market-open hours early on 0.9% of the front's volume.
-  - N = 5–30 leak 1–2 early NQ steps after a restart.
-  - N = 60 is the smallest N with no early step on ES/NQ, but RTY- and CL-like thinning of the archive let 0–2 through at 5-minute restart offsets.
-  - N = 120 lets none through for any of the four thin proxies.
-  - Cost against N = 1: a median of +1 h later. The worst lag is +22.7 market-open hours (+40.7 clock hours over a weekend) on ES/NQ, and +32 market-open hours on the CL-like proxy.
-  - An early step can't be undone. A late one stays on a still-liquid old front.
-  - RTY, CL, GC and ZN have no per-contract history anywhere, so their own roll shapes (CL monthly, GC's off-cycle months) are untested.
-- **Same rule in every writer.** The TS copy is in `futures-contracts.ts`, the Python copy in the handler. One shared case fixture is read by both test suites, so the copies can't drift.
-  - The uw-stream handler: seeded lazily per root from the DB.
-  - `api/cron/backfill-futures-gaps.ts`:
-    - one seed per hole, with holes taken in time order, so a hole can seed from bars the run just wrote;
-    - the seed contract is fetched even when it's outside the top-2 candidates;
-    - the volume tally is replayed from 00:00 UTC of the hole's day.
-  - The history backfills (`scripts/_lib/futures-bar-backfill.ts`, `scripts/_lib/futures-flow-backfill.ts`): the bar backfill writes the contract it already knows.
-- Tests cover:
-  - the roll-day crossover (one step, and no step back after 00:00Z);
-  - a transient lead shorter than N;
-  - a restart mid-roll;
-  - an expiry handover;
-  - a decade rollover;
-  - the NULL-seed fallback;
-  - a stray far-dated contract.
-
-**Tasks, one implementer at a time:**
-- **6a.** Migration #203, `db.test.ts`, and the `contract` field in `api/_lib/futures-bars.ts` (insert and fetch), with PGlite tests.
-- **6b.** The parser and the forward-only rule in `api/_lib/futures-contracts.ts`, plus the shared case fixture.
-- **6c.** The gap cron: per-hole seeds, and it writes `contract`.
-- **6d.** The uw-stream handler: Python parser and rule, seed, `contract` column, and tests reading the shared fixture.
-- **6e.** The two history scripts. Not needed by 12-09.
-
-**Deploy order: migration, then Vercel, then Railway.**
-- The handler swallows flush errors, so a handler that sends `contract` to a DB without the column drops every bar.
-- Before applying #203, check for other sessions' pending migrations: `migrateDb` applies all of them.
-- Everything is outside market hours and before 2026-12-09, the ESZ6 → ESH7 roll.
+- It took this spec's 6a and 6b work: the `futures_bars.contract` column (migration #204 there, renumbered from this branch's #203) and the contract-code parser. The six commits stay reachable from `archive/futures-p6-roll-forward`.
+- Prod has #204 and #205, applied 2026-11-08. That plan's Phases 1 to 5a are on main as of 2026-11-11. Its uw-stream step lands before the 2026-12-09 ESZ6 → ESH7 roll.
+- The repaired April–June ES and NQ bars keep Phase 2's switch points, with `contract` NULL. That is open question 6 in that plan, with the default "leave them".
 
 ## Files
 
 - Phase 1: `ml/src/futures_contract_repair.py` (or a small package), `ml/tests/test_futures_contract_repair.py`, a Makefile/CLI entry.
 - Phase 2: `scripts/repair-futures-contract-mix.ts`, `scripts/_lib/futures-contract-repair.ts`, `scripts/_lib/futures-contract-repair.test.ts`.
-- Phase 4: `scripts/recompute-futures-derived.ts`, its `_lib` module and its test.
-- Phase 6 (by D2):
-  - 6a: `api/_lib/db-migrations.ts`, `api/__tests__/db.test.ts`, `api/_lib/futures-bars.ts`, `api/__tests__/futures-bars-pglite.test.ts`;
-  - 6b: `api/_lib/futures-contracts.ts`, its test, the shared fixture;
-  - 6c: `api/cron/backfill-futures-gaps.ts` and its test;
-  - 6d: `uw-stream/src/handlers/futures_trades.py` and its tests;
-  - 6e: `scripts/_lib/futures-bar-backfill.ts`, `scripts/_lib/futures-flow-backfill.ts` and their tests.
+- Phase 4: `scripts/recompute-futures-derived.ts`; `scripts/_lib/futures-derived-recompute.ts`, `futures-derived-attribution.ts` and `futures-derived-batch.ts`, with `futures-derived-recompute.test.ts` and `futures-derived-recompute-pglite.test.ts`; `api/_lib/futures-derive.ts` (closed-bar rule, exported constants) with `api/__tests__/futures-derive-pglite.test.ts` and the updated cron and endpoint tests; `api/cron/auto-prefill-premarket.ts` (exports its window helpers and Globex query).
+- Phase 6: none here; see the session front-month plan.
 - This spec, updated with results after each phase.
 
 ## Data dependencies
 
 - Reads: local archive `ml/data/archive/` (main checkout; pass the path, it isn't in the worktree), Postgres `futures_trade_ticks`, `futures_bars`.
 - Writes (Phases 3–5 only, each after an owner-approved dry run): `futures_bars`, `futures_snapshots`, `market_snapshots`, `ws_gamma_setup_fires`, `periscope_grades`.
-- No new env var. Phase 6 adds migration #203 (`futures_bars.contract`).
+- No new env var and no migration in this spec. The `futures_bars.contract` column is #204 in the session front-month plan.
 
 ## Thresholds and constants
 
@@ -225,16 +171,11 @@ The gap cron and the history backfills copy the same rule through `replayFrontMo
 - Cluster gap: ES 25 pts; NQ derived (carry ~277, clean p99.99 range 116).
 - Ground truth gate: ≥ 99.9% exact minutes, volume within 1%.
 - Write batches: 500 rows.
-- Phase 6 roll guard:
-  - N = 120 consecutive wall-clock minute closes, same for all six roots;
-  - the volume tally resets at 00:00 UTC;
-  - the seed lookback is 7 days;
-  - a one-digit year resolves to [ref − 1, ref + 8].
 
 ## Open questions
 
 - **D1, RTY/CL/GC/ZN with no source.** Every minute in the window is suspect, flagged or not. Default: delete those roots' rows inside the window, except the clean days 04-13..04-17, 06-01 and 06-08, after a JSONL backup, so readers see "no data" instead of wrong prices. The alternatives are keeping them with a quality marker, or leaving them and recording the gap.
-- **D2, the roll rule: DECIDED 2026-11-06, option A** (roll forward only, with a `contract` column). Design in Phase 6, with the guard N = 120 tuned on history. A fixed roll calendar per root was rejected.
+- **D2, the roll rule: DECIDED 2026-11-06 (option A), then superseded 2026-11-07** by the owner's "mix": the `contract` column and the parser stay, and the per-session pick replaces the 120-close streak. See Phase 6.
 - **Order flow for 04-20..06-15.** The ticks carry an aggressor side, so ES/NQ buy/sell volume could be filled for that span. Default: out of scope. It's Databento's side flag, not UW's, and the flow isn't shown anywhere.
 - **Research files built on the bad bars** (NQ flow-leadership 05-02, iv-anomaly leadership 04-25): default is to list them for a re-run after Phase 3 and not re-run them unasked.
 
