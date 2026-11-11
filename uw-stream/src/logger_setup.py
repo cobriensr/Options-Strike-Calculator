@@ -119,7 +119,7 @@ log = get_logger()
 # Rate-limited warning helper for hot paths.
 # ----------------------------------------------------------------------
 
-# Window over which a (scope, kind) tuple emits at most one warning. A
+# Window over which a (scope, kind, key, level) tuple emits at most one line. A
 # UW wire-format change can flip thousands of payloads per second into
 # a warning branch — without this throttle, log.warning() alone would
 # saturate the asyncio loop on JSON serialization + stdout writes.
@@ -128,7 +128,7 @@ MALFORMED_PAYLOAD_LOG_INTERVAL_S = 60
 
 @dataclass
 class _Bucket:
-    """Per-(scope, kind) throttle state.
+    """Per-(scope, kind, key, level) throttle state.
 
     Named fields beat indexed-list access (``bucket[0]/[1]/[2]``) for
     readability and let mypy/ruff catch typos at static-analysis time.
