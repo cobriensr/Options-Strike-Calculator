@@ -18,7 +18,11 @@
  * NULL basis) is reported and left alone; a NULL basis is never set, and no
  * fire is added or deleted. The one delete is opt-in (`--delete-junk-stale`, off
  * by default): a stale snapshot row whose price is the close of a bar Phase 2
- * deleted, which cannot be recomputed and whose `price` cannot be blanked.
+ * deleted, which cannot be recomputed and whose `price` cannot be blanked. A
+ * second one runs alone (`--stores frozen --delete-frozen-stale`, off by default,
+ * owner OK 2026-11-11): the ES and NQ snapshot rows before 2026-10-01 that
+ * computeSnapshot cannot price and whose price is not the close of the latest
+ * closed bar, so they are frozen on an older bar (planFrozen).
  *
  * Before trusting any in-span difference, each store recomputes a control set
  * of rows outside the repaired span, where the bars were never bad. It must
@@ -41,6 +45,7 @@ import { neonConfig } from '@neondatabase/serverless';
 import { isMarketHours } from '../../api/_lib/cron-helpers.js';
 import { getDb, withDbRetry } from '../../api/_lib/db.js';
 import {
+  BAR_CLOSE_LAG_MS,
   FUTURES_SYMBOLS,
   MAX_BAR_AGE_MS,
   VOLUME_WINDOW_MS,
@@ -58,8 +63,10 @@ import {
   queryGlobex,
   type Globex,
 } from '../../api/cron/auto-prefill-premarket.js';
+import { isHoliday } from '../../src/data/marketHours.js';
 import {
   getCTDateStr,
+  getCTDayOfWeek,
   getCTTime,
   getETDateStr,
   getETMarketOpenUtcIso,
@@ -539,6 +546,28 @@ export function checkJunkGate(
   if (o.expectJunkDeletes !== planned) {
     return [
       `the fresh plan deletes ${planned} junk-priced rows, --expect-junk-deletes ${o.expectJunkDeletes} was given`,
+    ];
+  }
+  return [];
+}
+
+/**
+ * Why `--apply --delete-frozen-stale` must refuse: the rows it would delete must be
+ * the count the owner approved from the dry run. Empty without the flag.
+ */
+export function checkFrozenGate(
+  o: Pick<RecomputeOptions, 'deleteFrozenStale' | 'expectFrozenDeletes'>,
+  planned: number,
+): string[] {
+  if (!o.deleteFrozenStale) return [];
+  if (o.expectFrozenDeletes == null) {
+    return [
+      '--delete-frozen-stale needs --expect-frozen-deletes N: the count of the dry run you approved',
+    ];
+  }
+  if (o.expectFrozenDeletes !== planned) {
+    return [
+      `the fresh plan deletes ${planned} frozen-stale rows, --expect-frozen-deletes ${o.expectFrozenDeletes} was given`,
     ];
   }
   return [];
@@ -1279,6 +1308,49 @@ export interface JunkRow {
   row: Row;
 }
 
+/**
+ * An ES or NQ snapshot row that computeSnapshot cannot price (stale or missing) and
+ * whose stored price is not the close of the latest closed bar: frozen on an older
+ * bar, and not recomputable. The opt-in `--delete-frozen-stale` deletes it.
+ */
+export interface FrozenRow {
+  id: number;
+  symbol: Sym;
+  tsMs: number;
+  storedPrice: number;
+  /** The latest closed bar at the row (ts <= at - 60 s, at any age) and its close. */
+  barTsMs: number;
+  barClose: number;
+  row: Row;
+}
+
+/** Where a snapshot row falls in the futures week. */
+type Closure = 'break' | 'weekendOrHoliday' | 'elsewhere';
+
+/** One root's frozen-stale rows, and the rows of the root that stay. */
+export interface FrozenSymbolReport {
+  symbol: Sym;
+  /** Rows the SQL found: the latest closed bar is older than the freshness gate and the price differs from its close. */
+  candidates: number;
+  /** Candidates that computeSnapshot calls fresh: kept. */
+  fresh: number;
+  /** Rows to delete. */
+  rows: number;
+  byClosure: Record<Closure, number>;
+  firstMs: number | null;
+  lastMs: number | null;
+  /** Kept: the latest closed bar is older than the gate and the price is its close. */
+  repeatsLastClose: number;
+  /** Kept: no bar at or before the row. */
+  noBar: number;
+}
+
+export interface FrozenPlan {
+  /** Rows to delete, ES then NQ, each by time. */
+  rows: FrozenRow[];
+  symbols: FrozenSymbolReport[];
+}
+
 export interface SnapshotInfoDay {
   rows: number;
   matched: number;
@@ -1325,6 +1397,8 @@ export interface Plans {
   snapshots?: SnapshotStore;
   premarket?: PremarketStore;
   fires?: StoreResult<FireChange>;
+  /** Planned alone (`--stores frozen`), with no other store. */
+  frozen?: FrozenPlan;
 }
 
 const emptyFields = (): Record<SnapshotField, number> => ({
@@ -2470,6 +2544,156 @@ async function planFires(): Promise<StoreResult<FireChange>> {
   };
 }
 
+// ── Frozen-stale ES and NQ rows ─────────────────────────────────────────────
+
+/**
+ * The roots Phase 2 repaired. The thin roots (RTY, CL, GC, ZN) have more stale
+ * rows of the same kind and stay: they are D1.
+ */
+const FROZEN_ROOTS: readonly Sym[] = ['ES', 'NQ'];
+
+/** The largest |stored - last bar close| differences the report lists. */
+const TOP_FROZEN = 10;
+
+interface RawFrozen {
+  id: string;
+  ts: string;
+  price: string;
+  bar_ts: string;
+  bar_close: string;
+  row: Row;
+}
+
+/**
+ * The root's snapshot rows before STALE_UNTIL_MS whose latest closed bar (ts <= the
+ * row - BAR_CLOSE_LAG_MS, at any age) is older than MAX_BAR_AGE_MS and whose price is
+ * not that bar's close. The SQL only keeps computeSnapshot, which has the last word on
+ * whether a row is stale (planFrozen), off the rows that cannot qualify. A row with no
+ * bar at all has no close to differ from and is not a candidate.
+ */
+async function readFrozenCandidates(symbol: Sym): Promise<FrozenRow[]> {
+  const page = await readRows<RawFrozen>(
+    (sql) => sql`
+      SELECT f.id::text AS id,
+             to_char(f.ts AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS ts,
+             f.price::text AS price,
+             to_char(b.ts AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS bar_ts,
+             b.close::text AS bar_close,
+             to_jsonb(f) AS row
+        FROM futures_snapshots f
+        JOIN LATERAL (
+               SELECT ts, close FROM futures_bars
+                WHERE symbol = f.symbol
+                  AND ts <= f.ts - ${BAR_CLOSE_LAG_MS / 1000}::float8 * interval '1 second'
+                ORDER BY ts DESC LIMIT 1) b ON true
+       WHERE f.symbol = ${symbol}
+         AND f.ts < ${iso(STALE_UNTIL_MS)}::timestamptz
+         AND (extract(epoch FROM f.ts) - extract(epoch FROM b.ts)) * 1000 > ${MAX_BAR_AGE_MS}
+         AND f.price <> b.close
+       ORDER BY f.ts`,
+  );
+  return page.map((r) => ({
+    id: Number(r.id),
+    symbol,
+    tsMs: Date.parse(r.ts),
+    storedPrice: Number(r.price),
+    barTsMs: Date.parse(r.bar_ts),
+    barClose: Number(r.bar_close),
+    row: r.row,
+  }));
+}
+
+/** The root's rows before STALE_UNTIL_MS that stay although the latest closed bar is old or missing. */
+async function readFrozenKept(
+  symbol: Sym,
+): Promise<{ repeatsLastClose: number; noBar: number }> {
+  const [counts] = await readRows<{ repeats: string; no_bar: string }>(
+    (sql) => sql`
+      SELECT count(*) FILTER (
+               WHERE (extract(epoch FROM f.ts) - extract(epoch FROM b.ts)) * 1000 > ${MAX_BAR_AGE_MS}
+                 AND f.price = b.close)::text AS repeats,
+             count(*) FILTER (WHERE b.ts IS NULL)::text AS no_bar
+        FROM futures_snapshots f
+        LEFT JOIN LATERAL (
+               SELECT ts, close FROM futures_bars
+                WHERE symbol = f.symbol
+                  AND ts <= f.ts - ${BAR_CLOSE_LAG_MS / 1000}::float8 * interval '1 second'
+                ORDER BY ts DESC LIMIT 1) b ON true
+       WHERE f.symbol = ${symbol}
+         AND f.ts < ${iso(STALE_UNTIL_MS)}::timestamptz`,
+  );
+  return {
+    repeatsLastClose: Number(counts?.repeats ?? 0),
+    noBar: Number(counts?.no_bar ?? 0),
+  };
+}
+
+/**
+ * Where a row falls in the futures week, for the dry run's count. Globex is closed
+ * from Friday 17:00 CT to Sunday 17:00 CT, and on a NYSE full-day holiday by CT date;
+ * the 16:15 to 17:00 CT break comes after those (so a Sunday 16:30 is a weekend row,
+ * a Friday 16:30 a break row).
+ */
+function closureOf(tsMs: number): Closure {
+  const at = new Date(tsMs);
+  const day = getCTDayOfWeek(at);
+  const { hour } = getCTTime(at);
+  const weekend =
+    day === 6 || (day === 0 && hour < 17) || (day === 5 && hour >= 17);
+  if (weekend || isHoliday(getCTDateStr(at))) return 'weekendOrHoliday';
+  return inDailyBreak(tsMs) ? 'break' : 'elsewhere';
+}
+
+/**
+ * The ES and NQ snapshot rows to delete (owner OK 2026-11-11): before STALE_UNTIL_MS,
+ * computeSnapshot returns stale or missing (no closed bar within the freshness gate, so
+ * today's code would not have written the row and nothing can be recomputed), and the
+ * stored price is not the close of the latest closed bar at any age (a row that repeats
+ * the last known price stays; one that does not is frozen on an older bar). SQL finds
+ * the candidates; computeSnapshot confirms each, so no full plan is needed.
+ */
+async function planFrozen(): Promise<FrozenPlan> {
+  const rows: FrozenRow[] = [];
+  const symbols: FrozenSymbolReport[] = [];
+  for (const symbol of FROZEN_ROOTS) {
+    const candidates = await readFrozenCandidates(symbol);
+    const kept = await readFrozenKept(symbol);
+    console.log(`frozen ${symbol}: ${candidates.length} candidate(s)`);
+    const verdicts = await mapPool(
+      candidates,
+      CONCURRENCY,
+      `${symbol} frozen candidates`,
+      async (c) => {
+        const at = new Date(c.tsMs);
+        const result = await withDbRetry(
+          () => computeSnapshot(symbol, getETDateStr(at), at),
+          COMPUTE_RETRIES,
+        );
+        return result.kind;
+      },
+    );
+    const mine = candidates.filter((_, i) => verdicts[i] !== 'fresh');
+    const byClosure: Record<Closure, number> = {
+      break: 0,
+      weekendOrHoliday: 0,
+      elsewhere: 0,
+    };
+    for (const r of mine) byClosure[closureOf(r.tsMs)] += 1;
+    symbols.push({
+      symbol,
+      candidates: candidates.length,
+      fresh: candidates.length - mine.length,
+      rows: mine.length,
+      byClosure,
+      firstMs: mine[0]?.tsMs ?? null,
+      lastMs: mine.at(-1)?.tsMs ?? null,
+      ...kept,
+    });
+    rows.push(...mine);
+  }
+  return { rows, symbols };
+}
+
 // ── Report ──────────────────────────────────────────────────────────────────
 
 function controlText(c: Control): string[] {
@@ -2898,6 +3122,42 @@ function firesText(r: StoreResult<FireChange>): string[] {
   ];
 }
 
+const frozenGap = (r: FrozenRow): number =>
+  Math.abs(r.storedPrice - r.barClose);
+
+function frozenText(plan: FrozenPlan): string[] {
+  const out = [
+    'Frozen-stale ES and NQ snapshot rows (--stores frozen; --delete-frozen-stale deletes them, off by default; owner OK 2026-11-11)',
+    `  A row before ${isoSecond(STALE_UNTIL_MS)} that computeSnapshot cannot price (the latest closed bar, ts <= at - ${BAR_CLOSE_LAG_MS / 1000} s, is over ${MAX_BAR_AGE_MS / MINUTE_MS} minutes old, or there is none) and whose stored price is not that bar's close.`,
+    `  rows to delete: ${plan.rows.length}`,
+  ];
+  for (const s of plan.symbols) {
+    const where =
+      s.firstMs == null || s.lastMs == null
+        ? ''
+        : `, first ${isoSecond(s.firstMs)}, last ${isoSecond(s.lastMs)}; 16:15-17:00 CT break ${s.byClosure.break}, weekend or holiday ${s.byClosure.weekendOrHoliday}, elsewhere ${s.byClosure.elsewhere}`;
+    out.push(
+      `    ${s.symbol}: ${s.rows}${where}`,
+      `      candidates ${s.candidates}, computeSnapshot calls fresh (kept) ${s.fresh}`,
+      `      kept, stale and equal to the last bar's close: ${s.repeatsLastClose}; kept, no bar at all: ${s.noBar}`,
+    );
+  }
+  const largest = [...plan.rows]
+    .sort((a, b) => frozenGap(b) - frozenGap(a))
+    .slice(0, TOP_FROZEN);
+  if (largest.length > 0) {
+    out.push(
+      `  the ${largest.length} largest |stored - last bar close|:`,
+      ...largest.map(
+        (r) =>
+          `    ${r.symbol} ${isoSecond(r.tsMs)} id ${r.id}: stored ${r.storedPrice}, the bar of ${isoSecond(r.barTsMs)} closed at ${r.barClose} (${Math.round((r.tsMs - r.barTsMs) / MINUTE_MS)} min old), difference ${frozenGap(r).toFixed(2)}`,
+      ),
+    );
+  }
+  out.push('  RTY, CL, GC and ZN stay: their stale rows are D1.');
+  return out;
+}
+
 export function formatReport(
   plans: Plans,
   header: string[],
@@ -2908,12 +3168,16 @@ export function formatReport(
   if (plans.snapshots) out.push(...snapshotsText(plans.snapshots), '');
   if (plans.premarket) out.push(...premarketText(plans.premarket), '');
   if (plans.fires) out.push(...firesText(plans.fires), '');
-  out.push(
-    gateProblems.length === 0
-      ? 'Apply gate: every check passes.'
-      : 'APPLY WOULD REFUSE:',
-    ...gateProblems.map((p) => `  ${p}`),
-  );
+  if (plans.frozen) out.push(...frozenText(plans.frozen), '');
+  // The frozen delete has no control set: its one check is the count at --apply.
+  if (plans.frozen == null) {
+    out.push(
+      gateProblems.length === 0
+        ? 'Apply gate: every check passes.'
+        : 'APPLY WOULD REFUSE:',
+      ...gateProblems.map((p) => `  ${p}`),
+    );
+  }
   if (applyCommand != null) {
     out.push(
       '',
@@ -3012,8 +3276,11 @@ async function writeInTransactions<C>(
 
 // ── Backup, marker, verify ──────────────────────────────────────────────────
 
-/** A store, or one of the two opt-in steps that follow the snapshot updates. */
-type ApplyStep = Store | 'stale' | 'junk';
+/** A store, or one of the opt-in steps: the stale rewrite and the two deletes. */
+type ApplyStep = Store | 'stale' | 'junk' | 'frozen';
+
+/** The opt-in steps that delete futures_snapshots rows. */
+type DeleteStep = 'junk' | 'frozen';
 
 /**
  * One JSONL line of the plan file: the row as it is now (`row`), the step that
@@ -3043,7 +3310,8 @@ type SnapshotWrite = Pick<
 >;
 type PremarketWrite = Pick<PremarketChange, 'id' | 'to' | 'row'>;
 type FireWrite = Pick<FireChange, 'id' | 'to' | 'row'>;
-type JunkWrite = Pick<JunkRow, 'id' | 'symbol' | 'storedPrice' | 'row'>;
+/** What a delete step needs to delete one row: only while it still holds the planned price. */
+type DeleteWrite = Pick<JunkRow, 'id' | 'symbol' | 'storedPrice' | 'row'>;
 /** `fields` are the stale step's; `also` are the snapshot step's on the same row, and `to` holds both. */
 interface StaleWrite extends SnapshotWrite {
   also: SnapshotField[];
@@ -3055,7 +3323,8 @@ interface LoadedPlan {
   premarket: PremarketWrite[];
   fires: FireWrite[];
   stale: StaleWrite[];
-  junk: JunkWrite[];
+  junk: DeleteWrite[];
+  frozen: DeleteWrite[];
 }
 
 /** The values a change would write: for a snapshot only its affected fields, not the whole recompute. */
@@ -3077,8 +3346,7 @@ function backedUpValues(
 function writeBackup(
   workDir: string,
   plans: Plans,
-  junk: JunkRow[],
-  stale: StaleRewrite[],
+  optIn: { junk: JunkRow[]; stale: StaleRewrite[]; frozen: FrozenRow[] },
   normalPending: boolean,
 ): WrittenPlan {
   const entries: BackupEntry[] = [];
@@ -3095,7 +3363,7 @@ function writeBackup(
       });
     }
   }
-  for (const r of stale) {
+  for (const r of optIn.stale) {
     entries.push({
       step: 'stale',
       store: 'snapshots',
@@ -3109,16 +3377,22 @@ function writeBackup(
         : {},
     });
   }
-  for (const j of junk) {
-    entries.push({
-      step: 'junk',
-      store: 'snapshots',
-      id: j.id,
-      symbol: j.symbol,
-      row: j.row,
-      to: null,
-      op: 'delete',
-    });
+  const deletes: [DeleteStep, { id: number; symbol: Sym; row: Row }[]][] = [
+    ['junk', optIn.junk],
+    ['frozen', optIn.frozen],
+  ];
+  for (const [step, rows] of deletes) {
+    for (const d of rows) {
+      entries.push({
+        step,
+        store: 'snapshots',
+        id: d.id,
+        symbol: d.symbol,
+        row: d.row,
+        to: null,
+        op: 'delete',
+      });
+    }
   }
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const path = join(workDir, `backup-${stamp}.jsonl`);
@@ -3146,7 +3420,12 @@ interface WrittenPlan {
 const sha256Of = (text: string): string =>
   createHash('sha256').update(text).digest('hex');
 
-const APPLY_STEPS: readonly ApplyStep[] = [...STORES, 'stale', 'junk'];
+const APPLY_STEPS: readonly ApplyStep[] = [
+  ...STORES,
+  'stale',
+  'junk',
+  'frozen',
+];
 
 /** The snapshot values of a plan line: the step's fields and, on a stale line, the snapshot step's. */
 function snapshotValuesOf(e: BackupEntry): SnapshotValues {
@@ -3173,6 +3452,7 @@ function readPlan(path: string, pointer: PlanPointer): LoadedPlan {
     fires: [],
     stale: [],
     junk: [],
+    frozen: [],
   };
   const text = readFileSync(path, 'utf8');
   const lines = text.split('\n').filter((l) => l !== '');
@@ -3233,7 +3513,7 @@ function readPlan(path: string, pointer: PlanPointer): LoadedPlan {
     } else {
       if (typeof e.symbol !== 'string')
         throw new Error(`${where} has no symbol`);
-      plan.junk.push({
+      plan[e.step].push({
         id: e.id,
         symbol: e.symbol as Sym,
         storedPrice: Number(e.row.price),
@@ -3261,17 +3541,11 @@ function readPlan(path: string, pointer: PlanPointer): LoadedPlan {
 
 /** The rows a step was approved for in the dry run's totals. */
 const approvedRows = (pointer: PlanPointer, step: ApplyStep): number | null =>
-  step === 'stale'
-    ? pointer.expect.stale
-    : step === 'junk'
-      ? pointer.expect.junk
-      : pointer.expect[step];
+  pointer.expect[step];
 
 /** The rows a step has in a plan. */
 const stepRows = (plan: LoadedPlan, step: ApplyStep): number =>
-  plan[stepKey(step)].length;
-const stepKey = (step: ApplyStep): keyof LoadedPlan =>
-  step === 'stale' ? 'stale' : step === 'junk' ? 'junk' : step;
+  plan[step].length;
 
 /**
  * `plan.json` names the plan file of an apply and what it was approved for. A run
@@ -3291,7 +3565,11 @@ interface PlanPointer {
   lines: number;
   sha256: string;
   /** The totals of the dry run's plan: each store's rows, and the opt-in steps' (null when not asked for). */
-  expect: Record<Store, number> & { junk: number | null; stale: number | null };
+  expect: Record<Store, number> & {
+    junk: number | null;
+    stale: number | null;
+    frozen: number | null;
+  };
   /** What the command was: a resume repeats it. */
   command: {
     workDir: string;
@@ -3467,54 +3745,65 @@ async function verifyFires(changes: FireWrite[]): Promise<void> {
  * Deletes by id and symbol, and only while the row still holds the price it
  * was planned with, so a row that changed since the plan is left alone.
  */
-function deleteJunk(sql: Sql, rows: JunkWrite[]) {
+function deleteSnapshots(sql: Sql, rows: DeleteWrite[]) {
   return sql`
     DELETE FROM futures_snapshots f
-     USING unnest(${rows.map((j) => j.id)}::int[],
-                  ${rows.map((j) => j.symbol)}::text[],
-                  ${rows.map((j) => j.storedPrice)}::numeric[])
+     USING unnest(${rows.map((d) => d.id)}::int[],
+                  ${rows.map((d) => d.symbol)}::text[],
+                  ${rows.map((d) => d.storedPrice)}::numeric[])
            AS r(id, symbol, price)
      WHERE f.id = r.id AND f.symbol = r.symbol AND f.price = r.price
     RETURNING f.id`;
 }
 
-/** Snapshot rows in the recompute's scope: the past, so no live writer adds to it. */
-async function countSnapshotsInScope(): Promise<number> {
-  const { snapshots } = scopeRanges();
+/**
+ * The rows a delete step's verify counts before and after, which hold all of its
+ * planned rows: the recompute's snapshot scope for the junk delete, every row before
+ * STALE_UNTIL_MS (the frozen delete's date limit) for the frozen one. Both lie in the
+ * past, so no live writer adds to them.
+ */
+function deleteScope(step: DeleteStep): Range {
+  return step === 'junk'
+    ? scopeRanges().snapshots
+    : { fromMs: 0, toMs: STALE_UNTIL_MS };
+}
+
+async function countSnapshotsIn(range: Range): Promise<number> {
   const rows = await readRows<{ n: string }>(
     (sql) => sql`
       SELECT count(*)::text AS n FROM futures_snapshots
-       WHERE ts >= ${iso(snapshots.fromMs)}::timestamptz
-         AND ts < ${iso(snapshots.toMs)}::timestamptz`,
+       WHERE ts >= ${iso(range.fromMs)}::timestamptz
+         AND ts < ${iso(range.toMs)}::timestamptz`,
   );
   return Number(rows[0]?.n ?? 0);
 }
 
 /** The rows are gone, and nothing else is: the scope holds exactly that many fewer. */
-async function verifyJunk(
-  junk: JunkWrite[],
+async function verifyDeletes(
+  step: DeleteStep,
+  planned: DeleteWrite[],
   before: number,
   present: number,
 ): Promise<void> {
-  for (const group of chunks(junk, WRITE_CHUNK)) {
-    const ids = group.map((j) => j.id);
+  for (const group of chunks(planned, WRITE_CHUNK)) {
+    const ids = group.map((d) => d.id);
     const left = await readRows<{ id: string }>(
       (sql) => sql`
         SELECT id::text AS id FROM futures_snapshots WHERE id = ANY(${ids}::int[])`,
     );
     if (left.length > 0) {
       throw new Error(
-        `verify failed for junk: ${left.length} of ${group.length} row(s) are still there: ${left
+        `verify failed for ${step}: ${left.length} of ${group.length} row(s) are still there: ${left
           .slice(0, 3)
           .map((r) => r.id)
           .join(', ')}`,
       );
     }
   }
-  const after = await countSnapshotsInScope();
+  const after = await countSnapshotsIn(deleteScope(step));
   if (after !== before - present) {
     throw new Error(
-      `verify failed for junk: ${before} rows in scope before, ${after} after, ${before - present} expected`,
+      `verify failed for ${step}: ${before} rows in scope before, ${after} after, ${before - present} expected`,
     );
   }
 }
@@ -3625,29 +3914,32 @@ async function preflightFires(writes: FireWrite[]): Promise<void> {
 }
 
 /** How many of the rows are still there; one that is there must still hold its planned price. */
-async function preflightJunk(junk: JunkWrite[]): Promise<number> {
+async function preflightDeletes(
+  step: DeleteStep,
+  planned: DeleteWrite[],
+): Promise<number> {
   const bad: string[] = [];
   let present = 0;
-  for (const group of chunks(junk, WRITE_CHUNK)) {
-    const ids = group.map((j) => j.id);
+  for (const group of chunks(planned, WRITE_CHUNK)) {
+    const ids = group.map((d) => d.id);
     const actual = await readRows<{ id: string; row: Row }>(
       (sql) => sql`
         SELECT id::text AS id, to_jsonb(f) AS row
           FROM futures_snapshots f WHERE id = ANY(${ids}::int[])`,
     );
     const found = new Map(actual.map((r) => [Number(r.id), r.row]));
-    for (const j of group) {
-      const have = found.get(j.id);
+    for (const d of group) {
+      const have = found.get(d.id);
       if (have == null) continue;
       present += 1;
-      if (stable(have.price) !== stable(j.row.price)) {
+      if (stable(have.price) !== stable(d.row.price)) {
         bad.push(
-          `id ${j.id}: price holds ${stable(have.price)}, planned ${stable(j.row.price)}`,
+          `id ${d.id}: price holds ${stable(have.price)}, planned ${stable(d.row.price)}`,
         );
       }
     }
   }
-  refuseChanged('junk', bad, junk.length);
+  refuseChanged(step, bad, planned.length);
   return present;
 }
 
@@ -3674,16 +3966,18 @@ async function applyStale(
   return rewrites.length;
 }
 
-async function applyJunk(
-  junk: JunkWrite[],
+/** The junk and frozen deletes: the same guarded DELETE and verify, each in its own scope. */
+async function applyDeletes(
+  step: DeleteStep,
+  planned: DeleteWrite[],
   begin: () => void,
 ): Promise<number> {
-  const present = await preflightJunk(junk);
+  const present = await preflightDeletes(step, planned);
   begin();
-  const before = await countSnapshotsInScope();
-  await writeInTransactions(junk, deleteJunk);
-  await verifyJunk(junk, before, present);
-  return junk.length;
+  const before = await countSnapshotsIn(deleteScope(step));
+  await writeInTransactions(planned, deleteSnapshots);
+  await verifyDeletes(step, planned, before, present);
+  return planned.length;
 }
 
 // ── Arguments ───────────────────────────────────────────────────────────────
@@ -3694,6 +3988,11 @@ export interface RecomputeOptions {
   apply: boolean;
   force: boolean;
   stores: Store[];
+  /**
+   * `--stores frozen`: plan, and with the delete write, only the frozen-stale ES and
+   * NQ snapshot rows, and no store (`stores` is empty). It needs no Phase 2 backup.
+   */
+  frozen: boolean;
   /** The Phase 2 backup JSONL: required for the snapshots and premarket stores. */
   backup: string | null;
   /** The rows to write in the dry run the owner approved. Null on a dry run. */
@@ -3716,6 +4015,14 @@ export interface RecomputeOptions {
   rewriteStaleAtWrite: boolean;
   /** The rows that rewrite changes in the dry run the owner approved. */
   expectStaleRewrites: number | null;
+  /**
+   * Also delete the ES and NQ snapshot rows before 2026-10-01 that computeSnapshot
+   * cannot price and whose price is not the close of the latest closed bar (frozen
+   * on an older bar). Off by default; needs `frozen`. Owner OK 2026-11-11.
+   */
+  deleteFrozenStale: boolean;
+  /** The rows that delete removes in the dry run the owner approved. */
+  expectFrozenDeletes: number | null;
   /**
    * The Phase 1 detector's days for RTY, CL, GC and ZN after the span end (a JSON
    * file, see parseDetectorDays). Their rows on the contaminated days are left out
@@ -3749,6 +4056,7 @@ export function parseRecomputeArgs(argv: string[]): RecomputeArgs {
     apply: false,
     force: false,
     stores: [...STORES],
+    frozen: false,
     backup: null,
     expectSnapshots: null,
     expectPremarket: null,
@@ -3757,6 +4065,8 @@ export function parseRecomputeArgs(argv: string[]): RecomputeArgs {
     expectJunkDeletes: null,
     rewriteStaleAtWrite: false,
     expectStaleRewrites: null,
+    deleteFrozenStale: false,
+    expectFrozenDeletes: null,
     detectorDays: null,
     envFile: null,
   };
@@ -3776,11 +4086,21 @@ export function parseRecomputeArgs(argv: string[]): RecomputeArgs {
         values.push(argv[i] ?? '');
       }
       if (values.length === 0) throw new Error('--stores needs a value');
-      const bad = values.find(
-        (v) => !(STORES as readonly string[]).includes(v),
-      );
-      if (bad != null) throw new Error(`unknown store "${bad}"`);
-      args.stores = values as Store[];
+      if (values.includes('frozen')) {
+        if (values.length > 1) {
+          throw new Error(
+            '--stores frozen runs alone: it plans no other store',
+          );
+        }
+        args.frozen = true;
+        args.stores = [];
+      } else {
+        const bad = values.find(
+          (v) => !(STORES as readonly string[]).includes(v),
+        );
+        if (bad != null) throw new Error(`unknown store "${bad}"`);
+        args.stores = values as Store[];
+      }
     } else if (flag === '--expect-snapshots')
       args.expectSnapshots = parseCount(flag, next());
     else if (flag === '--expect-premarket')
@@ -3800,6 +4120,9 @@ export function parseRecomputeArgs(argv: string[]): RecomputeArgs {
     else if (flag === '--delete-junk-stale') args.deleteJunkStale = true;
     else if (flag === '--expect-junk-deletes')
       args.expectJunkDeletes = parseCount(flag, next());
+    else if (flag === '--delete-frozen-stale') args.deleteFrozenStale = true;
+    else if (flag === '--expect-frozen-deletes')
+      args.expectFrozenDeletes = parseCount(flag, next());
     else throw new Error(`unknown argument ${flag}`);
   }
   if (args.force && !args.apply)
@@ -3847,6 +4170,34 @@ export function parseRecomputeArgs(argv: string[]): RecomputeArgs {
       );
     }
   }
+  if (
+    !args.apply &&
+    (args.deleteFrozenStale || args.expectFrozenDeletes != null)
+  ) {
+    throw new Error(
+      `${args.deleteFrozenStale ? '--delete-frozen-stale' : '--expect-frozen-deletes'} only applies with --apply`,
+    );
+  }
+  if (args.expectFrozenDeletes != null && !args.deleteFrozenStale) {
+    throw new Error('--expect-frozen-deletes needs --delete-frozen-stale');
+  }
+  if (args.deleteFrozenStale) {
+    if (!args.frozen) {
+      throw new Error(
+        '--delete-frozen-stale deletes frozen-stale rows, so --stores must be frozen',
+      );
+    }
+    if (args.expectFrozenDeletes == null) {
+      throw new Error(
+        '--delete-frozen-stale needs --expect-frozen-deletes N: the count of the dry run you approved',
+      );
+    }
+  }
+  if (args.apply && args.frozen && !args.deleteFrozenStale) {
+    throw new Error(
+      '--apply with --stores frozen needs --delete-frozen-stale and --expect-frozen-deletes N: the count of the dry run you approved',
+    );
+  }
   const given = expectations(args);
   if (!args.apply) {
     for (const store of STORES) {
@@ -3867,6 +4218,15 @@ export function parseRecomputeArgs(argv: string[]): RecomputeArgs {
       );
     }
   }
+  if (args.frozen) {
+    for (const store of STORES) {
+      if (given[store] != null) {
+        throw new Error(
+          `${EXPECT_FLAGS[store].flag} does not apply with --stores frozen`,
+        );
+      }
+    }
+  }
   if (needsBackup(args) && args.backup == null) {
     throw new Error(
       '--backup <file> is required with --apply or with the snapshots or premarket store: the Phase 2 backup JSONL',
@@ -3878,10 +4238,12 @@ export function parseRecomputeArgs(argv: string[]): RecomputeArgs {
 /**
  * `--apply` plans all three stores whatever `--stores` says, because its gate
  * needs every check to hold; `--stores` then limits only what is written. So it
- * needs the Phase 2 backup too.
+ * needs the Phase 2 backup too. `--stores frozen` plans no store, so it needs none.
  */
 const needsBackup = (o: RecomputeOptions): boolean =>
-  o.apply || o.stores.includes('snapshots') || o.stores.includes('premarket');
+  (o.apply && !o.frozen) ||
+  o.stores.includes('snapshots') ||
+  o.stores.includes('premarket');
 
 function expectations(o: RecomputeOptions): Record<Store, number | null> {
   return {
@@ -3899,6 +4261,17 @@ function expectations(o: RecomputeOptions): Record<Store, number | null> {
  * any (leave out its two flags to apply without it).
  */
 function applyCommand(opts: RecomputeOptions, plans: Plans): string | null {
+  if (plans.frozen != null) {
+    return plans.frozen.rows.length === 0
+      ? null
+      : [
+          'npx tsx scripts/recompute-futures-derived.ts --apply',
+          `--work-dir ${opts.workDir}`,
+          '--stores frozen',
+          '--delete-frozen-stale',
+          `--expect-frozen-deletes ${plans.frozen.rows.length}`,
+        ].join(' ');
+  }
   const planned = STORES.filter((store) => plans[store] != null);
   if (planned.length === 0) return null;
   const junk = plans.snapshots?.junk.length ?? 0;
@@ -3924,6 +4297,30 @@ function applyCommand(opts: RecomputeOptions, plans: Plans): string | null {
       ? []
       : [`--detector-days ${opts.detectorDays}`]),
   ].join(' ');
+}
+
+/**
+ * Whether an opt-in step still runs: it was asked for, it has no done marker (or
+ * `--force`) and the fresh plan lists rows. Says so when a marker skips it.
+ */
+function optInPending(
+  opts: RecomputeOptions,
+  step: 'junk' | 'stale' | 'frozen',
+  asked: boolean,
+  rows: number,
+  what: string,
+  verb: string,
+): boolean {
+  if (!asked) return false;
+  if (!opts.force && existsSync(markerPath(opts.workDir, step))) {
+    console.log(
+      rows > 0
+        ? `WARNING: ${what} is marked done but the fresh plan still lists ${rows} row(s); it is skipped. Use --force to redo it.`
+        : `${what} is marked done and has nothing left to ${verb}`,
+    );
+    return false;
+  }
+  return rows > 0;
 }
 
 /** Exit codes: 0 done, 1 failed or refused, 2 stopped between stores (market hours began). */
@@ -3963,7 +4360,12 @@ async function run(opts: RecomputeOptions): Promise<number> {
 
   const plans: Plans = {};
   // A dry run plans what it was asked for; --apply plans every store, to check it.
-  const planned: Store[] = opts.apply ? [...STORES] : opts.stores;
+  // --stores frozen plans no store at all.
+  const planned: Store[] = opts.frozen
+    ? []
+    : opts.apply
+      ? [...STORES]
+      : opts.stores;
   let session: string[];
   neonConfig.fetchFunction = readOnlyFetch;
   try {
@@ -3980,6 +4382,7 @@ async function run(opts: RecomputeOptions): Promise<number> {
       plans.premarket = await planPremarket(data);
     if (planned.includes('snapshots'))
       plans.snapshots = await planSnapshots(data, detectorDays);
+    if (opts.frozen) plans.frozen = await planFrozen();
   } finally {
     neonConfig.fetchFunction = undefined;
   }
@@ -3993,21 +4396,29 @@ async function run(opts: RecomputeOptions): Promise<number> {
   const controlProblems = checkApplyGate(gateInputs);
   const span = `${isoSecond(SPAN.startMs)} .. ${isoSecond(SPAN.endMs)} (end exclusive)`;
   const scope = scopeRanges();
+  const elapsed = `elapsed ${Math.round((Date.now() - startedAt) / 1000)}s`;
+  const header = opts.frozen
+    ? [
+        `frozen-stale scope: ES and NQ futures_snapshots rows before ${isoSecond(STALE_UNTIL_MS)}`,
+        ...session,
+        elapsed,
+      ]
+    : [
+        `repaired span ${span}`,
+        `snapshot scope ${isoSecond(scope.snapshots.fromMs)} .. ${isoSecond(scope.snapshots.toMs)} (span end + 20 days)`,
+        `fire scope ${isoSecond(scope.fires.fromMs)} .. ${isoSecond(scope.fires.toMs)} (span end + 6 minutes)`,
+        `stale-at-write test reaches ${isoSecond(STALE_UNTIL_MS)} (the freshness gate shipped on 2026-09-30); ES and NQ from the span start, the thin roots from the span end + 20 days (${isoSecond(scope.snapshots.toMs)}) and off the contaminated days in ${opts.detectorDays ?? 'no file (their rows after the span end are left)'}`,
+        ...(opts.backup == null
+          ? []
+          : [
+              `Phase 2 backup ${opts.backup}: ${backupBars.length} rows (${backupBars.filter((b) => b.op === 'update').length} updated, ${backupBars.filter((b) => b.op === 'delete').length} deleted)`,
+            ]),
+        ...session,
+        elapsed,
+      ];
   const report = formatReport(
     plans,
-    [
-      `repaired span ${span}`,
-      `snapshot scope ${isoSecond(scope.snapshots.fromMs)} .. ${isoSecond(scope.snapshots.toMs)} (span end + 20 days)`,
-      `fire scope ${isoSecond(scope.fires.fromMs)} .. ${isoSecond(scope.fires.toMs)} (span end + 6 minutes)`,
-      `stale-at-write test reaches ${isoSecond(STALE_UNTIL_MS)} (the freshness gate shipped on 2026-09-30); ES and NQ from the span start, the thin roots from the span end + 20 days (${isoSecond(scope.snapshots.toMs)}) and off the contaminated days in ${opts.detectorDays ?? 'no file (their rows after the span end are left)'}`,
-      ...(opts.backup == null
-        ? []
-        : [
-            `Phase 2 backup ${opts.backup}: ${backupBars.length} rows (${backupBars.filter((b) => b.op === 'update').length} updated, ${backupBars.filter((b) => b.op === 'delete').length} deleted)`,
-          ]),
-      ...session,
-      `elapsed ${Math.round((Date.now() - startedAt) / 1000)}s`,
-    ],
+    header,
     controlProblems,
     applyCommand(opts, plans),
   );
@@ -4034,6 +4445,7 @@ async function run(opts: RecomputeOptions): Promise<number> {
     ...checkApplyGate(gateInputs, approved),
     ...checkJunkGate(opts, plans.snapshots?.junk.length ?? 0),
     ...checkStaleGate(opts, plans.snapshots?.staleRewrites.length ?? 0),
+    ...checkFrozenGate(opts, plans.frozen?.rows.length ?? 0),
     ...(opts.rewriteStaleAtWrite
       ? checkStaleShare(plans.snapshots?.symbols ?? [])
       : []),
@@ -4057,32 +4469,35 @@ async function run(opts: RecomputeOptions): Promise<number> {
     pending.push(store);
   }
   const junk = plans.snapshots?.junk ?? [];
-  let junkPending = false;
-  if (opts.deleteJunkStale) {
-    if (!opts.force && existsSync(markerPath(opts.workDir, 'junk'))) {
-      console.log(
-        junk.length > 0
-          ? `WARNING: the junk delete is marked done but the fresh plan still lists ${junk.length} row(s); it is skipped. Use --force to redo it.`
-          : 'the junk delete is marked done and has nothing left to delete',
-      );
-    } else {
-      junkPending = junk.length > 0;
-    }
-  }
+  const junkPending = optInPending(
+    opts,
+    'junk',
+    opts.deleteJunkStale,
+    junk.length,
+    'the junk delete',
+    'delete',
+  );
   const stale = plans.snapshots?.staleRewrites ?? [];
-  let stalePending = false;
-  if (opts.rewriteStaleAtWrite) {
-    if (!opts.force && existsSync(markerPath(opts.workDir, 'stale'))) {
-      console.log(
-        stale.length > 0
-          ? `WARNING: the stale-at-write rewrite is marked done but the fresh plan still lists ${stale.length} row(s); it is skipped. Use --force to redo it.`
-          : 'the stale-at-write rewrite is marked done and has nothing left to rewrite',
-      );
-    } else {
-      stalePending = stale.length > 0;
-    }
+  const stalePending = optInPending(
+    opts,
+    'stale',
+    opts.rewriteStaleAtWrite,
+    stale.length,
+    'the stale-at-write rewrite',
+    'rewrite',
+  );
+  const frozen = plans.frozen?.rows ?? [];
+  const frozenPending = optInPending(
+    opts,
+    'frozen',
+    opts.deleteFrozenStale,
+    frozen.length,
+    'the frozen-stale delete',
+    'delete',
+  );
+  if (pending.length === 0 && !stalePending && !junkPending && !frozenPending) {
+    return 0;
   }
-  if (pending.length === 0 && !stalePending && !junkPending) return 0;
 
   const written = writeBackup(
     opts.workDir,
@@ -4091,8 +4506,11 @@ async function run(opts: RecomputeOptions): Promise<number> {
       premarket: pending.includes('premarket') ? plans.premarket : undefined,
       fires: pending.includes('fires') ? plans.fires : undefined,
     },
-    junkPending ? junk : [],
-    stalePending ? stale : [],
+    {
+      junk: junkPending ? junk : [],
+      stale: stalePending ? stale : [],
+      frozen: frozenPending ? frozen : [],
+    },
     pending.includes('snapshots'),
   );
   console.log(`backup: ${written.path}`);
@@ -4101,6 +4519,7 @@ async function run(opts: RecomputeOptions): Promise<number> {
     ...pending,
     ...(stalePending ? (['stale'] as const) : []),
     ...(junkPending ? (['junk'] as const) : []),
+    ...(frozenPending ? (['frozen'] as const) : []),
   ];
   const pointer: PlanPointer = {
     createdAt: new Date().toISOString(),
@@ -4117,6 +4536,7 @@ async function run(opts: RecomputeOptions): Promise<number> {
       fires: plans.fires?.changes.length ?? 0,
       junk: opts.deleteJunkStale ? junk.length : null,
       stale: opts.rewriteStaleAtWrite ? stale.length : null,
+      frozen: opts.deleteFrozenStale ? frozen.length : null,
     },
     command: {
       workDir: resolve(opts.workDir),
@@ -4138,7 +4558,8 @@ async function applyStep(
   // Every row of the step is checked first; then the step is recorded as started,
   // so a run that dies after its first batch commits is resumed, not planned again.
   const begin = (): void => writeStarted(workDir, step, stepRows(plan, step));
-  if (step === 'junk') return await applyJunk(plan.junk, begin);
+  if (step === 'junk') return await applyDeletes(step, plan.junk, begin);
+  if (step === 'frozen') return await applyDeletes(step, plan.frozen, begin);
   if (step === 'stale') return await applyStale(plan.stale, begin);
   if (step === 'snapshots') {
     await preflightSnapshots(step, plan.snapshots);
@@ -4178,7 +4599,7 @@ async function applySteps(
     try {
       const done = await applyStep(step, plan, workDir);
       console.log(
-        `${step}: ${done} row(s) ${step === 'junk' ? 'deleted' : 'changed'} and verified`,
+        `${step}: ${done} row(s) ${step === 'junk' || step === 'frozen' ? 'deleted' : 'changed'} and verified`,
       );
     } catch (err) {
       throw new Error(
@@ -4265,6 +4686,17 @@ function checkResume(opts: RecomputeOptions, saved: PlanPointer): string[] {
   } else if (opts.expectStaleRewrites !== saved.expect.stale) {
     problems.push(
       `--expect-stale-rewrites ${opts.expectStaleRewrites} was given, the saved plan has ${saved.expect.stale}`,
+    );
+  }
+  // A plan.json from before the frozen delete has no key for it: none was asked for.
+  const savedFrozen = saved.expect.frozen ?? null;
+  if (opts.deleteFrozenStale !== (savedFrozen != null)) {
+    problems.push(
+      `the saved plan ${savedFrozen == null ? 'has no' : 'has a'} frozen delete, --delete-frozen-stale was ${opts.deleteFrozenStale ? 'given' : 'not given'}`,
+    );
+  } else if (opts.expectFrozenDeletes !== savedFrozen) {
+    problems.push(
+      `--expect-frozen-deletes ${opts.expectFrozenDeletes} was given, the saved plan has ${savedFrozen}`,
     );
   }
   return problems;

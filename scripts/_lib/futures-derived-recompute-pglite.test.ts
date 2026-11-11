@@ -807,6 +807,9 @@ function options(over: Partial<RecomputeOptions> = {}): RecomputeOptions {
     expectJunkDeletes: null,
     rewriteStaleAtWrite: false,
     expectStaleRewrites: null,
+    frozen: false,
+    deleteFrozenStale: false,
+    expectFrozenDeletes: null,
     detectorDays: null,
     ...over,
   };

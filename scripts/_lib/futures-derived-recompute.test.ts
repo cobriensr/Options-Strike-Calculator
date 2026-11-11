@@ -33,6 +33,7 @@ import {
   BARS_LEAD_MS,
   STALE_UNTIL_MS,
   checkApplyGate,
+  checkFrozenGate,
   checkJunkGate,
   checkStaleGate,
   checkStaleShare,
@@ -100,6 +101,9 @@ describe('parseRecomputeArgs', () => {
       expectJunkDeletes: null,
       rewriteStaleAtWrite: false,
       expectStaleRewrites: null,
+      frozen: false,
+      deleteFrozenStale: false,
+      expectFrozenDeletes: null,
       detectorDays: null,
       envFile: null,
     });
@@ -136,6 +140,9 @@ describe('parseRecomputeArgs', () => {
       expectJunkDeletes: null,
       rewriteStaleAtWrite: false,
       expectStaleRewrites: null,
+      frozen: false,
+      deleteFrozenStale: false,
+      expectFrozenDeletes: null,
       detectorDays: null,
       envFile: '.env.test',
     });
@@ -191,6 +198,34 @@ describe('parseRecomputeArgs', () => {
     ]);
     expect(args.deleteJunkStale).toBe(true);
     expect(args.expectJunkDeletes).toBe(1964);
+  });
+
+  it('takes --stores frozen on its own: no other store and no Phase 2 backup, in a dry run and under --apply', () => {
+    expect(parseRecomputeArgs(['--stores', 'frozen'])).toMatchObject({
+      apply: false,
+      frozen: true,
+      stores: [],
+      backup: null,
+      deleteFrozenStale: false,
+      expectFrozenDeletes: null,
+    });
+    expect(
+      parseRecomputeArgs([
+        '--apply',
+        '--stores',
+        'frozen',
+        '--delete-frozen-stale',
+        '--expect-frozen-deletes',
+        '1008',
+      ]),
+    ).toMatchObject({
+      apply: true,
+      frozen: true,
+      stores: [],
+      backup: null,
+      deleteFrozenStale: true,
+      expectFrozenDeletes: 1008,
+    });
   });
 
   it('asks only for the expectations of the stores it was given', () => {
@@ -397,6 +432,90 @@ describe('parseRecomputeArgs', () => {
       ],
       /--expect-junk-deletes needs a whole number, got "all"/,
     ],
+    // The frozen-stale delete is opt-in, counted, and runs alone.
+    [
+      ['--stores', 'frozen', 'snapshots'],
+      /--stores frozen runs alone: it plans no other store/,
+    ],
+    [
+      ['--stores', 'fires', 'frozen'],
+      /--stores frozen runs alone: it plans no other store/,
+    ],
+    [
+      ['--delete-frozen-stale'],
+      /--delete-frozen-stale only applies with --apply/,
+    ],
+    [
+      ['--expect-frozen-deletes', '3'],
+      /--expect-frozen-deletes only applies with --apply/,
+    ],
+    [
+      ['--apply', '--stores', 'frozen', '--expect-frozen-deletes', '3'],
+      /--expect-frozen-deletes needs --delete-frozen-stale/,
+    ],
+    [
+      ['--apply', '--stores', 'frozen', '--delete-frozen-stale'],
+      /--delete-frozen-stale needs --expect-frozen-deletes N: the count of the dry run you approved/,
+    ],
+    [
+      ['--apply', '--stores', 'frozen'],
+      /--apply with --stores frozen needs --delete-frozen-stale and --expect-frozen-deletes N: the count of the dry run you approved/,
+    ],
+    [
+      [
+        '--apply',
+        '--stores',
+        'frozen',
+        '--delete-frozen-stale',
+        '--expect-frozen-deletes',
+        'many',
+      ],
+      /--expect-frozen-deletes needs a whole number, got "many"/,
+    ],
+    [
+      [
+        '--apply',
+        '--backup',
+        'b.jsonl',
+        '--expect-snapshots',
+        '1',
+        '--expect-premarket',
+        '1',
+        '--expect-fires',
+        '1',
+        '--delete-frozen-stale',
+        '--expect-frozen-deletes',
+        '3',
+      ],
+      /--delete-frozen-stale deletes frozen-stale rows, so --stores must be frozen/,
+    ],
+    [
+      [
+        '--apply',
+        '--stores',
+        'frozen',
+        '--delete-frozen-stale',
+        '--expect-frozen-deletes',
+        '3',
+        '--expect-snapshots',
+        '1',
+      ],
+      /--expect-snapshots does not apply with --stores frozen/,
+    ],
+    [
+      [
+        '--apply',
+        '--stores',
+        'frozen',
+        '--delete-frozen-stale',
+        '--expect-frozen-deletes',
+        '3',
+        '--delete-junk-stale',
+        '--expect-junk-deletes',
+        '1',
+      ],
+      /--delete-junk-stale deletes from futures_snapshots, so --stores must include snapshots/,
+    ],
   ])('rejects %j', (argv, message) => {
     expect(() => parseRecomputeArgs(argv)).toThrow(message);
   });
@@ -433,6 +552,45 @@ describe('checkJunkGate', () => {
       checkJunkGate({ deleteJunkStale: true, expectJunkDeletes: 6 }, 7),
     ).toEqual([
       'the fresh plan deletes 7 junk-priced rows, --expect-junk-deletes 6 was given',
+    ]);
+  });
+});
+
+describe('checkFrozenGate', () => {
+  it('has nothing to say without the flag, whatever the count', () => {
+    expect(
+      checkFrozenGate(
+        { deleteFrozenStale: false, expectFrozenDeletes: null },
+        7,
+      ),
+    ).toEqual([]);
+    expect(
+      checkFrozenGate({ deleteFrozenStale: false, expectFrozenDeletes: 3 }, 7),
+    ).toEqual([]);
+  });
+
+  it('passes the approved count, including zero', () => {
+    expect(
+      checkFrozenGate({ deleteFrozenStale: true, expectFrozenDeletes: 7 }, 7),
+    ).toEqual([]);
+    expect(
+      checkFrozenGate({ deleteFrozenStale: true, expectFrozenDeletes: 0 }, 0),
+    ).toEqual([]);
+  });
+
+  it('refuses a missing count and a different count, naming both', () => {
+    expect(
+      checkFrozenGate(
+        { deleteFrozenStale: true, expectFrozenDeletes: null },
+        7,
+      ),
+    ).toEqual([
+      '--delete-frozen-stale needs --expect-frozen-deletes N: the count of the dry run you approved',
+    ]);
+    expect(
+      checkFrozenGate({ deleteFrozenStale: true, expectFrozenDeletes: 6 }, 7),
+    ).toEqual([
+      'the fresh plan deletes 7 frozen-stale rows, --expect-frozen-deletes 6 was given',
     ]);
   });
 });
@@ -1136,6 +1294,9 @@ describe('runRecompute guards', () => {
   let dir: string;
 
   beforeEach(() => {
+    // A Sunday, so the --apply market-hours guard does not depend on when the suite runs.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-11-08T12:00:00Z'));
     dir = mkdtempSync(join(tmpdir(), 'recompute-guards-'));
     vi.spyOn(console, 'log').mockImplementation(() => undefined);
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
@@ -1166,6 +1327,9 @@ describe('runRecompute guards', () => {
     expectJunkDeletes: null,
     rewriteStaleAtWrite: false,
     expectStaleRewrites: null,
+    frozen: false,
+    deleteFrozenStale: false,
+    expectFrozenDeletes: null,
     detectorDays: null,
     ...over,
   });
