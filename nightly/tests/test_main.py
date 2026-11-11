@@ -3,10 +3,11 @@ step pipeline and what it logs.
 
 run_tape, capture_checkin, init_sentry and last_completed_session are patched at main's
 module boundary, each wrapped in create_autospec of the real function. The fake run_tape
-hands each outcome to `on_outcome` as the real one does. The step tests patch
-main.STEPS and either main.run_steps (to see what it is given) or nothing (a real
-run_steps over real Step objects). The sentry_sdk capture and flush calls are patched on
-the sentry_sdk module, so nothing reaches Sentry.
+hands each outcome to `on_outcome` as the real one does. Every test starts with
+main.STEPS empty (the registered steps do real work); the step tests patch main.STEPS and
+either main.run_steps (to see what it is given) or nothing (a real run_steps over real
+Step objects). The sentry_sdk capture and flush calls are patched on the sentry_sdk
+module, so nothing reaches Sentry.
 """
 
 from __future__ import annotations
@@ -32,6 +33,7 @@ from sentry_sdk.crons import capture_checkin
 import calendar_nyse
 import main
 import monitoring
+import pipeline
 import steps
 import tape_job
 from calendar_nyse import CalendarExhausted
@@ -126,6 +128,14 @@ def last_session(monkeypatch: pytest.MonkeyPatch) -> Mock:
     mock = create_autospec(calendar_nyse.last_completed_session, return_value=LAST_SESSION)
     monkeypatch.setattr(main, "last_completed_session", mock)
     return mock
+
+
+@pytest.fixture(autouse=True)
+def _no_registered_steps(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The registered steps (pipeline.STEPS) do real work: the outcome check opens a
+    database connection, which the conftest blocks. A test that runs main starts with no
+    steps, and one about steps patches main.STEPS itself."""
+    monkeypatch.setattr(main, "STEPS", ())
 
 
 def _run_tape(
@@ -581,8 +591,9 @@ def test_deadline_constants_bound_the_run() -> None:
     assert PROBE_BUDGET_SECONDS == 1200
     assert WATCHDOG_GRACE_SECONDS < PROBE_BUDGET_SECONDS < RUN_DEADLINE_SECONDS
     # The budget table's one assertion: whatever steps are registered, at least two
-    # tape days still fit a night.
-    assert reserve_seconds(main.STEPS) + 2 * DAY_BUDGET_SECONDS <= RUN_DEADLINE_SECONDS
+    # tape days still fit a night. The real registry, not main.STEPS, which every test
+    # here empties.
+    assert reserve_seconds(pipeline.STEPS) + 2 * DAY_BUDGET_SECONDS <= RUN_DEADLINE_SECONDS
 
 
 @pytest.fixture
