@@ -343,14 +343,14 @@ Who writes first: live rows land while the session runs, and candle rows only af
 
 Files: `api/_lib/futures-front-month.ts`, `api/__tests__/futures-front-month-pglite.test.ts`.
 
-- [ ] **Failing PGlite tests:**
+- [x] **Failing PGlite tests:**
   - A date with `live` rows gets no candle rows, not even for a contract the live tally never saw.
   - A date with only candle rows keeps today's per-contract DO NOTHING, so a refresh still adds a contract the seed didn't fetch.
   - A date with no rows gets every row.
   - The return value counts only the rows inserted.
   - The statement count is unchanged.
-- [ ] **Then the change:** `insertContractVolumes` skips any row whose (product, trade date) already has a `live` row. Do it in the same unnest statement (`WHERE NOT EXISTS`), not a separate read.
-- [ ] Gate, review, commit, push. It must be on main before Phase 5b deploys.
+- [x] **Then the change:** `insertContractVolumes` skips any row whose (product, trade date) already has a `live` row. Do it in the same unnest statement (`WHERE NOT EXISTS`), not a separate read.
+- [x] Gate, review, commit, push. It must be on main before Phase 5b deploys. Done 2026-11-08: 2f273278, on main.
 
 ### Phase 5b: uw-stream decides live (large; push after a 17:00 CT open)
 
@@ -381,7 +381,7 @@ Handler changes:
 - **One source per session** (Phase 5a): `save_tally` skips a session that already has candle rows, and the cron's refresh skips a session that has live rows. Test the live side: a session with candle rows gets no live rows.
 
 Steps:
-- [ ] **Rewrite the front-month tests** (today's lines ~399–529, 786, 881) to the new rule, with the database mocked:
+- [x] **Rewrite the front-month tests** (today's lines ~399–529, 786, 881) to the new rule, with the database mocked:
   - **Session open:** after a roll, the 16:59 CT and 17:00 CT minutes take different contracts.
   - **Midnight UTC:** a back month leading in the first minutes after midnight UTC doesn't change the contract.
   - **Restart:** a restart carries the tally on from the table and keeps the session's contract.
@@ -398,7 +398,7 @@ Steps:
   - **Duplicates** still don't inflate the tally.
   - **Two spellings** (`ESZ26`, `ESZ6`) fold into one tally key and one bar.
   - **Fixture:** the parity test against the shared fixture passes.
-- [ ] Implement. Run pytest + ruff in uw-stream, then gate, review and commit.
+- [x] Implement. Run pytest + ruff in uw-stream, then gate, review and commit. Done 2026-11-11, local: 9639b13b, d5230dde, 24b1ab54, 640b7624, then four review rounds, d2d3c7a6 to 5d232c99 (time box, retry-after, a 30 s pause after a timeout, a backed-off cooling for a call that keeps timing out). pytest 1286.
 - [ ] **Deploy after the 17:00 CT open,** not just after 15:00 CT, and only with #204 in prod.
   - **Why the timing matters:** uw-stream's first tally starts at its first boot. If it deployed at 15:30 CT, the next session's decision would rest on 30 minutes of volume. After the open, the session that just closed has a final daily candle.
   - **Steps:**
