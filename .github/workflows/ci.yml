@@ -76,6 +76,10 @@ jobs:
               - '.github/workflows/ci.yml'
             uw_stream:
               - 'uw-stream/**'
+              # uw-stream/tests/test_futures_front_month.py runs this shared
+              # case file against the Python copy of the front-month rule, so
+              # an edit to it must run this job (the api tests run it too).
+              - 'api/__tests__/fixtures/futures-roll-cases.json'
               - '.github/workflows/ci.yml'
             nightly:
               - 'nightly/**'
