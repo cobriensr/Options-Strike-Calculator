@@ -105,15 +105,17 @@ Filtering rationale (in handler order):
    tally. A decision that can't be had (Neon unreachable at the open) is not
    cached: the minutes of that session become gaps, logged under
    ``kind="front_month_unknown"`` at error level with the cause, and it is
-   asked for again after the retry-after (30 s). Each front-month database
-   call (a decision, a tally load, a tally save) is cut at 8 s. A call that
-   failed is not repeated for that root and date for 30 s, and one that TIMED
-   OUT pauses every root's front-month calls for the same 30 s, so a hung Neon
-   costs one box and not one per call. The call that timed out itself waits
-   60 s, so the first call after a pause is another root's and one root's
-   repeating hang can't hold back the rest. Failures that aren't a Neon
-   blip log at error level, per root. A print for a trade date more than 3 days old is
-   dropped before any of this (``kind="stale_session_dropped"``).
+   asked for again after the retry-after (30 s), or after 60 s and then 120 s
+   when the lookup keeps timing out. Each front-month database call (a
+   decision, a tally load, a tally save) is cut at 8 s. A call that failed is
+   not repeated for that root and date for 30 s, and one that TIMED OUT pauses
+   every root's front-month calls for the same 30 s, so a hung Neon costs one
+   box and not one per call. The call that timed out itself waits 60 s, and
+   120 s after each further timeout in a row, so the first call after a pause
+   is another root's and a hang confined to a few roots can't hold back the
+   rest. Failures that aren't a Neon blip log at error level, per root. A
+   print for a trade date more than 3 days old is dropped before any of this
+   (``kind="stale_session_dropped"``).
 
 Bar aggregation is stateful, which does not fit ``_transform``'s 1:1
 payload→row contract. So ``_transform`` normalizes a single print and
@@ -197,19 +199,30 @@ _SESSIONS_KEPT = 2
 # every root's bars wait behind it while the 50,000-slot queue fills.
 _LOOKUP_TIMEOUT_S = 8.0
 
-# After a front-month call fails or times out, the same call for the same
-# root (and trade date) is not made again for this long; its minutes are gaps
-# meanwhile. Without it a Neon outage costs each flush the retry backoff
-# (about 2 s) of every undecided root, again and again. Half a minute is about
-# the time a Neon restart takes and keeps the gap to a few minutes.
+# After a front-month call fails, the same call for the same root (and trade
+# date) is not made again for this long; its minutes are gaps meanwhile. A
+# call that TIMED OUT waits longer (``_TIMED_OUT_COOLING_S``). Without it a
+# Neon outage costs each flush the retry backoff (about 2 s) of every
+# undecided root, again and again. Half a minute is about the time a Neon
+# restart takes and keeps the gap to a few minutes.
 _RETRY_AFTER_S = 30.0
 
-# How long the call that TIMED OUT waits: twice the retry-after, while the pause
-# it starts for every other root is one. Were the two equal, the timed-out call
-# would be the first call after every pause, and if it timed out each time it
-# would re-arm the pause before any other root got a turn: one root's hang would
-# black out all six. Doubled, the first call after a pause is another root's.
+# How long the call that TIMED OUT waits the first time: twice the retry-after,
+# while the pause it starts for every other root is one. Were the two equal,
+# the timed-out call would be the first call after every pause, and if it
+# timed out each time it would re-arm the pause before any other root got a
+# turn: one root's hang would black out all six. Doubled, the first call after
+# a pause is another root's. Each further timeout of the same call in a row
+# doubles it again, up to ``_TIMED_OUT_COOLING_MAX_S``.
 _TIMED_OUT_COOLING_S = 2 * _RETRY_AFTER_S
+
+# The cap of that backoff. Every hung call re-arms one 30 s pause each time it
+# is tried, so k hung calls that come due one after another keep the pause on
+# for ever. Once every hung call's cooling exceeds k x 30 s the pauses have
+# free windows, and the healthy roots are served in them. 120 s leaves room
+# for up to 3 hung calls and keeps a root's wait after a Neon-wide outage to
+# 2 min at most.
+_TIMED_OUT_COOLING_MAX_S = 4 * _RETRY_AFTER_S
 
 # A print for a trade date older than the current one by more than this many
 # days is dropped before the front-month path. parse_timestamp accepts any
@@ -379,6 +392,11 @@ class FuturesTradesHandler(Handler):
         # date, or "save" with None (one statement per root). Dropped with the
         # session at eviction, so bounded by roots x 2 sessions x 2 calls + roots.
         self._retry_after: dict[tuple[str, str, date | None], float] = {}
+        # The same keys -> the cooling that key's last timeout set, for the keys
+        # whose last outcome was a timeout (the streak of consecutive timeouts).
+        # Every other outcome of a key drops it, and it leaves with the key's
+        # ``_retry_after`` entry at eviction, so it is no larger than that dict.
+        self._timeout_backoff: dict[tuple[str, str, date | None], float] = {}
         # product -> (kind, exception class) of its last front-month failure, for
         # the front_month_unknown line. Cleared by that root's next decision.
         self._cause: dict[str, tuple[str, str]] = {}
@@ -644,26 +662,54 @@ class FuturesTradesHandler(Handler):
 
     def _cool(
         self, call: str, product: str, day: date | None, exc: BaseException | None = None
-    ) -> None:
-        """Hold a failed ``call`` back for the retry-after, or for
-        ``_TIMED_OUT_COOLING_S`` when ``exc`` is the timeout that cut it."""
-        cooling = _TIMED_OUT_COOLING_S if isinstance(exc, TimeoutError) else _RETRY_AFTER_S
-        self._retry_after[(call, product, day)] = time.monotonic() + cooling
+    ) -> float:
+        """Hold a failed ``call`` back, and return the seconds it waits.
+
+        The retry-after for a failure and for a ``None`` decision (``exc``
+        None); either ends the call's streak of timeouts. A timeout backs off
+        per consecutive timeout of the same call: ``_TIMED_OUT_COOLING_S`` the
+        first time, doubled each time after, up to
+        ``_TIMED_OUT_COOLING_MAX_S``.
+        """
+        key = (call, product, day)
+        if isinstance(exc, TimeoutError):
+            last = self._timeout_backoff.get(key)
+            cooling = (
+                _TIMED_OUT_COOLING_S if last is None else min(2 * last, _TIMED_OUT_COOLING_MAX_S)
+            )
+            self._timeout_backoff[key] = cooling
+        else:
+            cooling = _RETRY_AFTER_S
+            self._timeout_backoff.pop(key, None)
+        self._retry_after[key] = time.monotonic() + cooling
+        return cooling
+
+    def _clear_cooling(self, call: str, product: str, day: date | None) -> None:
+        """Forget a call's cooling and timeout streak: it worked, or its session is gone."""
+        self._retry_after.pop((call, product, day), None)
+        self._timeout_backoff.pop((call, product, day), None)
 
     def _boxed_out(self) -> bool:
         """True while a call that timed out holds every root's front-month calls."""
         return self._box_until is not None and time.monotonic() < self._box_until
 
     def _note_failure(
-        self, kind: str, message: str, product: str, day: date | None, exc: BaseException
+        self,
+        kind: str,
+        message: str,
+        product: str,
+        day: date | None,
+        exc: BaseException,
+        wait: float,
     ) -> None:
         """Remember and report a failed front-month call, per root.
 
         A transient database error (a timeout among them) is a warning, which
         the minutes it costs escalate as ``front_month_unknown``. Anything else
         (a bad row, a rejected statement) is an error, so it reaches Sentry
-        before the next open. One window per root and level. A timeout also
-        pauses every root's front-month calls for the retry-after
+        before the next open. One window per root and level. ``wait`` is the
+        seconds ``_cool`` held the call back, which the line says. A timeout
+        also pauses every root's front-month calls for the retry-after
         (``_boxed_out``); any other failure cools its own call only.
         """
         err_type = type(exc).__name__
@@ -675,7 +721,7 @@ class FuturesTradesHandler(Handler):
         report(
             scope="futures_trades",
             kind=kind,
-            message=f"futures_trades {message}; asked again after {_RETRY_AFTER_S:.0f}s",
+            message=f"futures_trades {message}; asked again after {wait:.0f}s",
             extra={
                 "product": product,
                 "trade_date": day.isoformat() if day is not None else None,
@@ -690,11 +736,11 @@ class FuturesTradesHandler(Handler):
 
         The first sight of a (product, trade date) loads it, so a restart
         carries on counting. A load that failed is retried here once its
-        retry-after has run out (60 s for a load that timed out), and the volume
-        counted meanwhile is added to what is stored: the table holds only what
-        earlier processes saw, never this one's counts (a session isn't saved
-        until it is loaded). Nothing is loaded while a timeout holds every
-        root's calls (``_boxed_out``).
+        retry-after has run out (60 s, then 120 s, for a load that keeps timing
+        out), and the volume counted meanwhile is added to what is stored: the
+        table holds only what earlier processes saw, never this one's counts (a
+        session isn't saved until it is loaded). Nothing is loaded while a
+        timeout holds every root's calls (``_boxed_out``).
         """
         for (product, day), tally in list(self._tally.items()):
             if tally.loaded or self._cooling("load", product, day) or self._boxed_out():
@@ -702,14 +748,16 @@ class FuturesTradesHandler(Handler):
             try:
                 stored = await self._timed(front_month.load_tally(product, day))
             except Exception as exc:
-                self._cool("load", product, day, exc)
-                self._note_failure("tally_load_failed", "tally load failed", product, day, exc)
+                wait = self._cool("load", product, day, exc)
+                self._note_failure(
+                    "tally_load_failed", "tally load failed", product, day, exc, wait
+                )
                 continue
             for contract, volume in stored.items():
                 tally.counts[contract] = tally.counts.get(contract, 0) + volume
                 tally.saved[contract] = volume
             tally.loaded = True
-            self._retry_after.pop(("load", product, day), None)
+            self._clear_cooling("load", product, day)
 
     async def _decide(self, key: tuple[str, date]) -> None:
         """Ask for one session's contract, after saving the tally.
@@ -718,7 +766,8 @@ class FuturesTradesHandler(Handler):
         that volume must be in the table first: with the tally unsaved the
         lookup is not made, and the session stays undecided until it can be.
         A lookup that fails, times out or returns None is not cached, and is
-        not repeated inside the retry-after. While a timeout holds every root's
+        not repeated for 30 s after a failure or a None, or for 60 s and then
+        120 s after consecutive timeouts. While a timeout holds every root's
         calls (``_boxed_out``) none is made, and the root's gap names that
         timeout as its cause.
         """
@@ -736,15 +785,17 @@ class FuturesTradesHandler(Handler):
         except Exception as exc:
             # ensure_front swallows its own failures; what reaches here is the
             # time box cancelling it.
-            self._cool("decide", product, day, exc)
-            self._note_failure("lookup_timeout", "front-month lookup timed out", product, day, exc)
+            wait = self._cool("decide", product, day, exc)
+            self._note_failure(
+                "lookup_timeout", "front-month lookup timed out", product, day, exc, wait
+            )
             return
         if contract is None:
             self._cool("decide", product, day)
             self._cause[product] = front_month.last_failure(product) or ("ensure_front_failed", "")
             return
         self._decided[key] = contract
-        self._retry_after.pop(("decide", product, day), None)
+        self._clear_cooling("decide", product, day)
         self._cause.pop(product, None)
 
     async def _save_tally(self, product: str | None = None) -> bool:
@@ -777,13 +828,13 @@ class FuturesTradesHandler(Handler):
                 await self._timed(front_month.save_tally(rows))
             except Exception as exc:
                 for p in sorted({p for p, _ in dirty}):
-                    self._cool("save", p, None, exc)
-                    self._note_failure("tally_save_failed", "tally save failed", p, None, exc)
+                    wait = self._cool("save", p, None, exc)
+                    self._note_failure("tally_save_failed", "tally save failed", p, None, exc, wait)
                 return False
             for key, counts in changed.items():
                 self._tally[key].saved.update(counts)
             for p in {p for p, _ in dirty}:
-                self._retry_after.pop(("save", p, None), None)
+                self._clear_cooling("save", p, None)
         return not stuck
 
     def _evict_old_sessions(self) -> None:
@@ -791,7 +842,7 @@ class FuturesTradesHandler(Handler):
 
         Run at the end of every flush, after the minutes that needed an older
         decision have been emitted, so the maps stay bounded by roots x 2. The
-        retry-afters of an evicted session go with it.
+        retry-afters and timeout streaks of an evicted session go with it.
         """
         by_product: dict[str, list[date]] = defaultdict(list)
         for product, day in self._tally:
@@ -800,8 +851,8 @@ class FuturesTradesHandler(Handler):
             for day in sorted(days)[:-_SESSIONS_KEPT]:
                 del self._tally[(product, day)]
                 self._decided.pop((product, day), None)
-                self._retry_after.pop(("load", product, day), None)
-                self._retry_after.pop(("decide", product, day), None)
+                self._clear_cooling("load", product, day)
+                self._clear_cooling("decide", product, day)
 
     async def _drain_inner(self) -> int:
         """The base drain, then one save of the tally.

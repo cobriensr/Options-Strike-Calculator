@@ -182,6 +182,13 @@ def _let_the_retry_after_run_out(handler) -> None:
         handler._box_until -= ft._RETRY_AFTER_S
 
 
+def _age_by(handler, seconds: float) -> None:
+    """Run the clock on by ``seconds``, a multiple of the retry-after, in the
+    retry-after steps of the helper above."""
+    for _ in range(round(seconds / ft._RETRY_AFTER_S)):
+        _let_the_retry_after_run_out(handler)
+
+
 def _floor_minute_utc(v):
     """Parse + floor, the way ``_transform`` does it.
 
@@ -1633,6 +1640,7 @@ class TestTimedOutCallsCoolLonger:
 
     def test_the_constants(self):
         assert ft._TIMED_OUT_COOLING_S == 2 * ft._RETRY_AFTER_S == 60.0
+        assert ft._TIMED_OUT_COOLING_MAX_S == 4 * ft._RETRY_AFTER_S == 120.0
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("call", ["load", "decide"])
@@ -1769,6 +1777,277 @@ class TestOneRootHang:
         assert handler._tally[("ES", _D)].loaded is True
         assert handler._decided[("ES", _D)] == "ESU6"
         assert {r[_C["symbol"]] for r in rows} == set(_SIX)
+
+
+def _hang(front: _FakeFront, call: str, hung: bool = True) -> None:
+    """Make ES's ``call`` hang on every try, or answer again."""
+    if call == "load":
+        front.hang_load = {"ES"} if hung else set()
+    elif call == "decide":
+        front.hang_ensure = {"ES"} if hung else set()
+    else:
+        front.hang_save = hung
+
+
+def _es_key(call: str) -> tuple[str, str, date | None]:
+    """ES's key in ``_retry_after`` for ``call``."""
+    return (call, "ES", None if call == "save" else _D)
+
+
+async def _flush_es(handler, n: int) -> None:
+    """Flush ES prints in minutes 2n and 2n + 1: the session is in the batch and a
+    minute completes, so a load, a decision and a save are all due."""
+    await asyncio.wait_for(
+        _flush_capture(
+            handler,
+            [
+                _print(executed_at=_BASE_MS + 2 * n * 60_000, trade_id=2 * n + 1),
+                _print(executed_at=_BASE_MS + (2 * n + 1) * 60_000, trade_id=2 * n + 2),
+            ],
+        ),
+        timeout=5,
+    )
+
+
+class TestTimedOutCoolingBacksOff:
+    """A call that keeps timing out waits 60 s, then 120 s; any other outcome starts it over.
+
+    One key at a time: ES's load, decision or save hangs, the clock is run on past
+    each cooling by hand, and each flush after it is one more try.
+    """
+
+    @staticmethod
+    def _assert_cooling(handler, key, seconds: float) -> None:
+        remaining = handler._retry_after[key] - time.monotonic()
+        assert seconds - 5 < remaining <= seconds
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("call", ["load", "decide", "save"])
+    async def test_consecutive_timeouts_cool_60_then_120_then_120(
+        self, handler, front, monkeypatch, call
+    ):
+        monkeypatch.setattr(ft, "_LOOKUP_TIMEOUT_S", 0.05)
+        _hang(front, call)
+        for n, cooling in enumerate((60.0, 120.0, 120.0)):
+            await _flush_es(handler, n)
+            # Each try is a fresh stamp: with no try the deadline would be in the past.
+            self._assert_cooling(handler, _es_key(call), cooling)
+            _age_by(handler, cooling)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("call", ["load", "decide", "save"])
+    async def test_a_success_clears_the_streak(self, handler, front, monkeypatch, call):
+        monkeypatch.setattr(ft, "_LOOKUP_TIMEOUT_S", 0.05)
+        _hang(front, call)
+        for n, cooling in enumerate((60.0, 120.0)):
+            await _flush_es(handler, n)
+            _age_by(handler, cooling)
+        assert _es_key(call) in handler._timeout_backoff
+
+        _hang(front, call, hung=False)
+        await _flush_es(handler, 2)
+
+        assert _es_key(call) not in handler._retry_after
+        assert _es_key(call) not in handler._timeout_backoff
+
+    @pytest.mark.asyncio
+    async def test_a_save_that_works_again_starts_the_streak_over(
+        self, handler, front, monkeypatch
+    ):
+        monkeypatch.setattr(ft, "_LOOKUP_TIMEOUT_S", 0.05)
+        _hang(front, "save")
+        for n, cooling in enumerate((60.0, 120.0)):
+            await _flush_es(handler, n)
+            _age_by(handler, cooling)
+        _hang(front, "save", hung=False)
+        await _flush_es(handler, 2)  # saved; the streak is over
+
+        _hang(front, "save")
+        await _flush_es(handler, 3)
+
+        self._assert_cooling(handler, _es_key("save"), 60.0)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("call", ["load", "save"])
+    async def test_a_failure_that_is_not_a_timeout_clears_the_streak(
+        self, handler, front, monkeypatch, call
+    ):
+        monkeypatch.setattr(ft, "_LOOKUP_TIMEOUT_S", 0.05)
+        _hang(front, call)
+        await _flush_es(handler, 0)
+        self._assert_cooling(handler, _es_key(call), 60.0)
+        _age_by(handler, 60.0)
+
+        # The next try fails without hanging: the plain retry-after, streak gone.
+        _hang(front, call, hung=False)
+        if call == "load":
+            front.fail_load = _blip()
+        else:
+            front.fail_save = RuntimeError("neon down")
+        await _flush_es(handler, 1)
+        self._assert_cooling(handler, _es_key(call), 30.0)
+        assert _es_key(call) not in handler._timeout_backoff
+        _age_by(handler, 30.0)
+
+        # A timeout after it is a first timeout again: 60 s, not 120.
+        front.fail_load = front.fail_save = None
+        _hang(front, call)
+        await _flush_es(handler, 2)
+        self._assert_cooling(handler, _es_key(call), 60.0)
+
+    @pytest.mark.asyncio
+    async def test_a_none_decision_clears_the_streak(self, handler, front, monkeypatch):
+        monkeypatch.setattr(ft, "_LOOKUP_TIMEOUT_S", 0.05)
+        _hang(front, "decide")
+        await _flush_es(handler, 0)
+        self._assert_cooling(handler, _es_key("decide"), 60.0)
+        _age_by(handler, 60.0)
+
+        _hang(front, "decide", hung=False)
+        front.decisions[("ES", _D)] = None
+        await _flush_es(handler, 1)
+        self._assert_cooling(handler, _es_key("decide"), 30.0)
+        assert _es_key("decide") not in handler._timeout_backoff
+        _age_by(handler, 30.0)
+
+        del front.decisions[("ES", _D)]
+        _hang(front, "decide")
+        await _flush_es(handler, 2)
+        self._assert_cooling(handler, _es_key("decide"), 60.0)
+
+    @pytest.mark.asyncio
+    async def test_a_bulk_save_that_times_out_twice_cools_every_key_120(
+        self, handler, front, monkeypatch
+    ):
+        monkeypatch.setattr(ft, "_LOOKUP_TIMEOUT_S", 0.05)
+        front.hang_save = True
+        await asyncio.wait_for(_flush_capture(handler, _six_roots(0, 2)), timeout=5)
+        assert front.save_attempts == 1
+        for product in _SIX:
+            self._assert_cooling(handler, ("save", product, None), 60.0)
+
+        _age_by(handler, 60.0)
+        await asyncio.wait_for(_flush_capture(handler, _six_roots(2)), timeout=5)
+
+        assert front.save_attempts == 2
+        for product in _SIX:
+            self._assert_cooling(handler, ("save", product, None), 120.0)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("call", ["load", "decide"])
+    async def test_an_evicted_sessions_streak_goes_with_it(self, handler, front, monkeypatch, call):
+        monkeypatch.setattr(ft, "_LOOKUP_TIMEOUT_S", 0.05)
+        _hang(front, call)
+        for day in range(4):
+            base = _BASE_MS + day * 86_400_000
+            await asyncio.wait_for(
+                _flush_capture(
+                    handler,
+                    [
+                        _print(executed_at=base, trade_id=day * 2),
+                        _print(executed_at=base + 60_000, trade_id=day * 2 + 1),
+                    ],
+                ),
+                timeout=5,
+            )
+            if day == 0:
+                assert _es_key(call) in handler._timeout_backoff
+            _age_by(handler, 60.0)
+
+        assert ("ES", _D) not in handler._tally  # evicted
+        assert _es_key(call) not in handler._timeout_backoff
+        # What is left is the kept sessions' streaks, each with its cooling.
+        assert set(handler._timeout_backoff) <= set(handler._retry_after)
+        assert all(
+            day is None or (product, day) in handler._tally
+            for (_call, product, day) in handler._timeout_backoff
+        )
+
+
+class TestTheLogLineNamesTheWait:
+    """The line says how long the key will actually wait: 30 s, or its backed-off cooling."""
+
+    @staticmethod
+    def _messages(mock_rl) -> list[str]:
+        calls = mock_rl.warning.call_args_list + mock_rl.error.call_args_list
+        return [c.kwargs["message"] for c in calls]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("call", ["load", "decide", "save"])
+    async def test_a_first_timeout_says_60s_and_a_second_says_120s(
+        self, handler, front, monkeypatch, call
+    ):
+        monkeypatch.setattr(ft, "_LOOKUP_TIMEOUT_S", 0.05)
+        _hang(front, call)
+        with patch("handlers.futures_trades.rate_limited_log") as mock_rl:
+            await _flush_es(handler, 0)
+            _age_by(handler, 60.0)
+            await _flush_es(handler, 1)
+
+        messages = self._messages(mock_rl)
+        assert len(messages) == 2
+        assert messages[0].endswith("; asked again after 60s")
+        assert messages[1].endswith("; asked again after 120s")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("call", ["load", "save"])
+    async def test_a_failure_that_is_not_a_timeout_says_30s(self, handler, front, call):
+        if call == "load":
+            front.fail_load = _blip()
+        else:
+            front.fail_save = RuntimeError("neon down")
+        with patch("handlers.futures_trades.rate_limited_log") as mock_rl:
+            await _flush_es(handler, 0)
+
+        messages = self._messages(mock_rl)
+        assert len(messages) == 1
+        assert messages[0].endswith("; asked again after 30s")
+
+
+class TestSeveralHungKeys:
+    """Several keys time out on every try; the roots whose calls work are still served.
+
+    The clock runs in 30 s steps: the open, then one flush per step. Every timeout
+    pauses all front-month calls for one step, and the first call after a pause is
+    the next hung key coming due. A key waits 60 s (2 steps) after its first timeout
+    and 120 s (4 steps) after each later one. So the pauses follow one another for as
+    long as some hung key is due at the end of the last one, and a key that has
+    timed out twice is out for 4 steps, longer than the k <= 3 steps the other hung
+    keys need to take their turns. The chain therefore ends after at most 2k
+    timeouts (the first two of each key): by step 2k at the latest, no hung key is
+    due, and that flush loads and decides the healthy roots.
+    """
+
+    @staticmethod
+    async def _steps(handler, steps: int) -> list[tuple]:
+        """The open, then ``steps`` flushes each one step later; the rows written."""
+        rows = []
+        await asyncio.wait_for(_flush_capture(handler, _six_roots(0, 2)), timeout=5)
+        for step in range(1, steps + 1):
+            _let_the_retry_after_run_out(handler)
+            rows += await asyncio.wait_for(_flush_capture(handler, _six_roots(step + 1)), timeout=5)
+        return rows
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("call", ["load", "decide"])
+    @pytest.mark.parametrize(
+        "hung",
+        [("ES", "NQ"), ("RTY", "ZN"), ("ES", "NQ", "RTY"), ("CL", "GC", "ZN")],
+        ids="-".join,
+    )
+    async def test_the_healthy_roots_are_loaded_decided_and_written_within_2k_steps(
+        self, handler, front, monkeypatch, hung, call
+    ):
+        monkeypatch.setattr(ft, "_LOOKUP_TIMEOUT_S", 0.05)
+        setattr(front, "hang_load" if call == "load" else "hang_ensure", set(hung))
+        healthy = set(_SIX) - set(hung)
+
+        rows = await self._steps(handler, 2 * len(hung))
+
+        assert {p for p, _ in handler._decided} == healthy
+        assert {r[_C["symbol"]] for r in rows} == healthy
+        assert {p for p, _ in front.load_calls} >= healthy
+        assert {p for p, _ in front.ensure_calls} >= healthy
 
 
 class TestFailuresReachSentry:
