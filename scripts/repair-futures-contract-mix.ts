@@ -7,6 +7,8 @@
  *   npx tsx scripts/repair-futures-contract-mix.ts                 # dry run
  *   npx tsx scripts/repair-futures-contract-mix.ts --apply --expect-updates N --expect-deletes M
  *   npx tsx scripts/repair-futures-contract-mix.ts --apply --expect-updates 1 --expect-deletes 1 --dates 2026-04-07
+ *   npx tsx scripts/repair-futures-contract-mix.ts --thin-roots --work-dir <dir>                           # Phase 5a dry run
+ *   npx tsx scripts/repair-futures-contract-mix.ts --thin-roots --apply --expect-deletes N --work-dir <dir>
  *
  * The default is a DRY RUN: it reads the database DATABASE_URL points at
  * (production, in .env.local) through read-only transactions, prints the
@@ -15,13 +17,28 @@
  * after the owner has seen the dry run. Exit codes: 0 done, 1 failed or
  * refused, 2 stopped between days because market hours began.
  *
+ * --thin-roots (Phase 5a, owner decision D1, 2026-11-11) needs no Phase 1 output.
+ * RTY, CL, GC and ZN have no rebuild source, so it deletes their bars from
+ * 2026-04-05 22:00Z through each root's last bad bar (14:10Z on 2026-06-15; ZN
+ * 14:11Z), except the CT trading days 04-13 to 04-17, 06-01 and 06-08 (scope in
+ * scripts/_lib/futures-thin-roots.ts). It never updates a row and never touches
+ * ES or NQ. The dry run lists per root the rows to delete, the first and last,
+ * the rows kept, the kept-day bars Phase 1's strict test flags, and the apply
+ * command; the backup is in this tool's format, which recompute-futures-derived.ts
+ * reads as its --backup (Phase 5b).
+ *
  * Options:
- *   --dir <dir>        Phase 1 output (default ml/data/futures-contract-repair)
+ *   --dir <dir>        Phase 1 output (default ml/data/futures-contract-repair);
+ *                      refused with --thin-roots
  *   --work-dir <dir>   report.txt, delete-list.csv, backup-*.jsonl and the
- *                      {day}.applied markers (default docs/tmp/futures-contract-repair)
+ *                      {day}.applied markers (default docs/tmp/futures-contract-repair;
+ *                      with --thin-roots, its thin-roots subfolder)
  *   --apply            write (backup first, one UTC day per transaction); needs
- *                      --expect-updates and --expect-deletes
- *   --expect-updates N the rows to update in the dry run the owner approved
+ *                      --expect-updates and --expect-deletes (with --thin-roots,
+ *                      --expect-deletes only)
+ *   --thin-roots       Phase 5a: delete the RTY, CL, GC and ZN window bars (above)
+ *   --expect-updates N the rows to update in the dry run the owner approved;
+ *                      refused with --thin-roots, which never updates
  *   --expect-deletes M the rows to delete in that dry run; --apply refuses, before
  *                      any write, when the fresh plan's totals differ
  *   --dates d1 d2 ...  only these UTC days

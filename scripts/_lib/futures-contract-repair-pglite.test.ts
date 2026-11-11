@@ -98,6 +98,7 @@ vi.mock('../../api/_lib/db.js', async (importOriginal) => {
 
 import { neonOverPglite } from '../../api/__tests__/pglite-migrations';
 import { MIGRATIONS } from '../../api/_lib/db-migrations.js';
+import { parseBackup } from './futures-derived-attribution.js';
 import { dayDigest, markerPath, runRepair } from './futures-contract-repair.js';
 
 // ── Schema and seed helpers ─────────────────────────────────────────────────
@@ -449,6 +450,7 @@ const run = (over: Partial<Parameters<typeof runRepair>[0]> = {}) => {
     workDir,
     apply,
     force: false,
+    thinRoots: false,
     dates: [],
     expectUpdates: apply ? 5 : null,
     expectDeletes: apply ? 18 : null,
@@ -1232,5 +1234,504 @@ describe('dry run on real SQL (pglite)', () => {
     expect(await run()).toBe(1);
     expect(errored()).toMatch(/Refusing to --apply during market hours/);
     expect(hooks.writes).toBe(0);
+  });
+});
+
+// ── --thin-roots (Phase 5a, D1) ─────────────────────────────────────────────
+
+const THIN_PRICE: Record<string, [number, number, number, number]> = {
+  RTY: [2000, 2001, 1999, 2000],
+  CL: [70, 70.5, 69.5, 70],
+  GC: [3300, 3301, 3299, 3300],
+  ZN: [110, 110.1, 109.9, 110],
+};
+
+/** [ts, deleted for every thin root]. ZN's last bad bar is one minute later than the rest. */
+const THIN_TIMES: [string, boolean][] = [
+  ['2026-04-05T21:59:00Z', false], // before the window
+  ['2026-04-05T22:00:00Z', true], // first minute of the window
+  ['2026-04-06T15:00:00Z', true],
+  ['2026-04-12T21:59:00Z', true], // trading day 04-12, one minute before the clean block
+  ['2026-04-12T22:00:00Z', false], // trading day 04-13
+  ['2026-04-13T14:00:00Z', false],
+  ['2026-04-17T21:59:00Z', false], // last minute of trading day 04-17
+  ['2026-04-17T22:00:00Z', true], // trading day 04-18
+  ['2026-05-31T21:59:00Z', true],
+  ['2026-05-31T22:00:00Z', false], // trading day 06-01
+  ['2026-06-01T21:59:00Z', false],
+  ['2026-06-01T22:00:00Z', true], // trading day 06-02
+  ['2026-06-07T22:00:00Z', false], // trading day 06-08
+  ['2026-06-08T21:59:00Z', false],
+  ['2026-06-08T22:00:00Z', true], // trading day 06-09
+  ['2026-06-15T14:10:00Z', true], // last bad bar for RTY, CL, GC
+  ['2026-06-15T14:12:00Z', false],
+  ['2026-06-16T14:00:00Z', false],
+];
+
+/**
+ * Deletes in the fixture: the 8 minutes above for each root, plus CL's mid-window
+ * row and ZN's 14:11Z bar (RTY 8, CL 9, GC 8, ZN 9).
+ */
+const THIN_DELETES = 34;
+
+function thinFixture(): SeedRow[] {
+  const rows: SeedRow[] = [];
+  for (const symbol of ['RTY', 'CL', 'GC', 'ZN']) {
+    const p = THIN_PRICE[symbol] ?? FLAT;
+    for (const [ts] of THIN_TIMES) rows.push({ symbol, ts, p, v: 10 });
+    rows.push({ symbol, ts: '2026-06-15T14:11:00Z', p, v: 10 }); // ZN's last bad bar; kept for the others
+  }
+  // ES and NQ in the window, on minutes the thin roots lose.
+  for (const symbol of ['ES', 'NQ']) {
+    for (const ts of [
+      '2026-04-05T22:00:00Z',
+      '2026-05-05T15:00:00Z',
+      '2026-06-15T14:10:00Z',
+    ]) {
+      rows.push({ symbol, ts, p: FLAT, v: 10 });
+    }
+  }
+  // Order-flow columns on a row that goes.
+  rows.push({
+    symbol: 'CL',
+    ts: '2026-05-05T15:00:00Z',
+    p: THIN_PRICE.CL ?? FLAT,
+    v: 10,
+    flow: [3, 4, 1, 2],
+  });
+  return rows;
+}
+
+describe('--thin-roots on real SQL (pglite)', () => {
+  const runThin = (over: Partial<Parameters<typeof runRepair>[0]> = {}) => {
+    const apply = over.apply ?? true;
+    return runRepair({
+      dir: join(dir, 'no-phase-1-output'),
+      workDir,
+      apply,
+      force: false,
+      thinRoots: true,
+      dates: [],
+      expectUpdates: null,
+      expectDeletes: apply ? THIN_DELETES : null,
+      ...over,
+    });
+  };
+  const DELETED_DAYS = [
+    '2026-04-05',
+    '2026-04-06',
+    '2026-04-12',
+    '2026-04-17',
+    '2026-05-05',
+    '2026-05-31',
+    '2026-06-01',
+    '2026-06-08',
+    '2026-06-15',
+  ];
+
+  beforeEach(async () => {
+    await reset({ pgRows: thinFixture(), rebuilt: [] });
+  });
+
+  it('deletes a thin-root bar in the window and keeps every bar of the clean days', async () => {
+    const before = await table(pg);
+    expect(await runThin()).toBe(0);
+    const after = await table(pg);
+
+    for (const symbol of ['RTY', 'CL', 'GC', 'ZN']) {
+      for (const [ts, deleted] of THIN_TIMES) {
+        expect(after.has(`${symbol} ${ts}`), `${symbol} ${ts}`).toBe(!deleted);
+      }
+    }
+    expect(after.has('CL 2026-05-05T15:00:00Z')).toBe(false); // mid-window
+    // A kept row is exactly as it was, id included.
+    expect(after.get('GC 2026-04-13T14:00:00Z')).toEqual(
+      before.get('GC 2026-04-13T14:00:00Z'),
+    );
+    expect(logged()).toContain(`total deletes ${THIN_DELETES}`);
+  });
+
+  it('lands the boundaries: 21:59Z vs 22:00Z on 04-05, 14:10 vs 14:11 for CL, 14:11 vs 14:12 for ZN', async () => {
+    await runThin();
+    const after = await table(pg);
+    for (const symbol of ['RTY', 'CL', 'GC', 'ZN']) {
+      expect(after.has(`${symbol} 2026-04-05T21:59:00Z`)).toBe(true);
+      expect(after.has(`${symbol} 2026-04-05T22:00:00Z`)).toBe(false);
+    }
+    for (const symbol of ['RTY', 'CL', 'GC']) {
+      expect(after.has(`${symbol} 2026-06-15T14:10:00Z`)).toBe(false);
+      expect(after.has(`${symbol} 2026-06-15T14:11:00Z`)).toBe(true);
+    }
+    expect(after.has('ZN 2026-06-15T14:11:00Z')).toBe(false);
+    expect(after.has('ZN 2026-06-15T14:12:00Z')).toBe(true);
+    // The clean block: the minute either side of each clean day.
+    expect(after.has('RTY 2026-04-12T21:59:00Z')).toBe(false);
+    expect(after.has('RTY 2026-04-12T22:00:00Z')).toBe(true);
+    expect(after.has('RTY 2026-04-17T21:59:00Z')).toBe(true);
+    expect(after.has('RTY 2026-04-17T22:00:00Z')).toBe(false);
+  });
+
+  it('leaves ES and NQ untouched, in the window or not', async () => {
+    const before = await table(pg);
+    await runThin();
+    const after = await table(pg);
+    for (const symbol of ['ES', 'NQ']) {
+      for (const ts of [
+        '2026-04-05T22:00:00Z',
+        '2026-05-05T15:00:00Z',
+        '2026-06-15T14:10:00Z',
+      ]) {
+        expect(after.get(`${symbol} ${ts}`)).toEqual(
+          before.get(`${symbol} ${ts}`),
+        );
+      }
+    }
+  });
+
+  it('needs no Phase 1 output: the manifest folder does not exist', async () => {
+    expect(existsSync(join(dir, 'no-phase-1-output'))).toBe(false);
+    expect(await runThin()).toBe(0);
+    expect(errored()).not.toMatch(/manifest/);
+  });
+
+  it('backs up every row it deletes before the first write, in the format parseBackup reads', async () => {
+    let backups: string[] | null = null;
+    hooks.beforeWrite = () => {
+      backups ??= readdirSync(workDir)
+        .filter((f) => f.startsWith('backup-'))
+        .map((f) => readFileSync(join(workDir, f), 'utf8'));
+    };
+    const before = await table(pg);
+    await runThin();
+
+    expect(backups).not.toBeNull();
+    const files = backups as unknown as string[];
+    expect(files).toHaveLength(1);
+    const text = files[0] ?? '';
+    const lines = text.split('\n').filter((l) => l !== '');
+    expect(lines).toHaveLength(THIN_DELETES);
+    const entries = lines.map(
+      (l) =>
+        JSON.parse(l) as {
+          op: string;
+          reason: string;
+          row: Record<string, string | null>;
+        },
+    );
+    expect(entries.every((e) => e.op === 'delete')).toBe(true);
+    expect(entries.every((e) => e.reason === 'thin_root')).toBe(true);
+    // The full pre-delete row: id and the order-flow columns included.
+    const withFlow = entries.find((e) => e.row.buy_volume != null);
+    expect(withFlow).toMatchObject({
+      row: {
+        id: before.get('CL 2026-05-05T15:00:00Z')?.id,
+        symbol: 'CL',
+        ts: '2026-05-05T15:00:00Z',
+        buy_volume: '3',
+        sell_prints: '2',
+      },
+    });
+
+    // 5b passes this file as --backup, so Phase 4's reader must take every line.
+    const parsed = parseBackup(text, 'thin-backup');
+    expect(parsed).toHaveLength(THIN_DELETES);
+    expect(parsed.every((b) => b.op === 'delete')).toBe(true);
+    expect(parsed.filter((b) => b.symbol === 'ZN')).toHaveLength(9);
+    expect(
+      parsed.find(
+        (b) =>
+          b.symbol === 'CL' && b.tsMs === Date.parse('2026-06-15T14:10:00Z'),
+      ),
+    ).toMatchObject({ close: 70, volume: 10 });
+  });
+
+  it('refuses, before any write, when --expect-deletes is not the fresh plan', async () => {
+    const before = await table(pg);
+
+    expect(await runThin({ expectDeletes: THIN_DELETES - 1 })).toBe(1);
+
+    expect(errored()).toContain(
+      `the fresh plan has ${THIN_DELETES} deletes, but --expect-deletes ${THIN_DELETES - 1} was given`,
+    );
+    expect(hooks.writes).toBe(0);
+    expect(await table(pg)).toEqual(before);
+    expect(
+      readdirSync(workDir).filter(
+        (f) => f.startsWith('backup-') || f.endsWith('.applied'),
+      ),
+    ).toEqual([]);
+  });
+
+  it('refuses when no total is given', async () => {
+    expect(await runThin({ expectDeletes: null })).toBe(1);
+    expect(errored()).toContain('--expect-deletes missing was given');
+    expect(hooks.writes).toBe(0);
+  });
+
+  it('writes one transaction and one marker per UTC day', async () => {
+    expect(await runThin()).toBe(0);
+    expect(hooks.writes).toBe(DELETED_DAYS.length);
+    for (const day of DELETED_DAYS) {
+      expect(existsSync(markerPath(workDir, day)), day).toBe(true);
+    }
+    const marker = JSON.parse(
+      readFileSync(markerPath(workDir, '2026-04-06'), 'utf8'),
+    ) as Record<string, string>;
+    expect(marker.gitHead).toBe('thin-roots');
+    expect(marker.ndjsonSha256).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('resumes after a failed day from the markers: finished days stay done, the rest follow', async () => {
+    hooks.failWriteAt = { nth: 3, error: new Error('connection lost') };
+
+    expect(await runThin()).toBe(1);
+
+    expect(errored()).toMatch(/apply failed: day 2026-04-12: connection lost/);
+    expect(existsSync(markerPath(workDir, '2026-04-05'))).toBe(true);
+    expect(existsSync(markerPath(workDir, '2026-04-06'))).toBe(true);
+    expect(existsSync(markerPath(workDir, '2026-04-12'))).toBe(false);
+    const mid = await table(pg);
+    expect(mid.has('RTY 2026-04-05T22:00:00Z')).toBe(false); // day 1 landed
+    expect(mid.has('RTY 2026-04-12T21:59:00Z')).toBe(true); // day 3 did not
+    expect(hooks.writes).toBe(3);
+
+    // The fresh dry run reports only the days left; its total finishes the job.
+    const left = THIN_DELETES - 8; // days 04-05 and 04-06 took 4 rows each
+    hooks.failWriteAt = null;
+    vi.setSystemTime(new Date('2026-11-08T12:05:00Z')); // a backup is named by its time
+    expect(await runThin({ expectDeletes: left })).toBe(0);
+    expect(logged()).toContain(`total deletes ${left}`);
+
+    const after = await table(pg);
+    for (const [ts, deleted] of THIN_TIMES) {
+      expect(after.has(`CL ${ts}`), ts).toBe(!deleted);
+    }
+    for (const day of DELETED_DAYS) {
+      expect(existsSync(markerPath(workDir, day)), day).toBe(true);
+    }
+    // The second backup holds only the rows the second run deleted.
+    const backups = readdirSync(workDir)
+      .filter((f) => f.startsWith('backup-'))
+      .sort();
+    expect(backups).toHaveLength(2);
+    const second = readFileSync(join(workDir, backups[1] ?? ''), 'utf8')
+      .split('\n')
+      .filter((l) => l !== '');
+    expect(second).toHaveLength(left);
+  });
+
+  it('a second --apply changes 0 rows, forced or not', async () => {
+    expect(await runThin()).toBe(0);
+    const once = await table(pg);
+    const writes = hooks.writes;
+
+    expect(await runThin({ expectDeletes: 0 })).toBe(0);
+    expect(await runThin({ expectDeletes: 0, force: true })).toBe(0);
+
+    expect(logged()).toContain('total deletes 0');
+    expect(hooks.writes).toBe(writes);
+    expect(await table(pg)).toEqual(once);
+  });
+
+  it('does not delete a row whose values changed since the backup; the day fails', async () => {
+    let fired = false;
+    hooks.beforeWrite = async () => {
+      if (fired) return;
+      fired = true;
+      await pg.query(
+        `UPDATE futures_bars SET close = close + 1
+          WHERE symbol = 'RTY' AND ts = '2026-04-05T22:00:00Z'`,
+      );
+    };
+
+    expect(await runThin()).toBe(1);
+
+    expect(errored()).toMatch(
+      /apply failed: day 2026-04-05: verify failed for RTY 2026-04-05.*value check/s,
+    );
+    const mid = await table(pg);
+    expect(mid.get('RTY 2026-04-05T22:00:00Z')?.close).toBe('2001.0000'); // kept, as changed
+    expect(mid.has('CL 2026-04-05T22:00:00Z')).toBe(false); // the others went
+    expect(existsSync(markerPath(workDir, '2026-04-05'))).toBe(false);
+  });
+
+  it('fails the day when a delete did not land, instead of marking it done', async () => {
+    hooks.dropWrites = true;
+    expect(await runThin()).toBe(1);
+    expect(errored()).toMatch(/apply failed: day 2026-04-05: verify failed/);
+    expect(readdirSync(workDir).filter((f) => f.endsWith('.applied'))).toEqual(
+      [],
+    );
+  });
+
+  it('re-plans a marked day when other rows than the marked ones are back', async () => {
+    await runThin();
+    // 05-05 had one planned delete, CL's mid-window bar. It comes back as a
+    // different row (new id, same prices), so only the row itself differs.
+    await pg.query(
+      `INSERT INTO futures_bars (symbol, ts, open, high, low, close, volume,
+                                 buy_volume, sell_volume, buy_prints, sell_prints)
+       VALUES ('CL', '2026-05-05T15:00:00Z', 70, 70.5, 69.5, 70, 10, 3, 4, 1, 2)`,
+    );
+
+    expect(await runThin({ expectDeletes: 1 })).toBe(0);
+
+    expect(logged()).toContain(
+      'marker for 2026-05-05 was written for different planned deletes; re-planning',
+    );
+    expect((await table(pg)).has('CL 2026-05-05T15:00:00Z')).toBe(false);
+  });
+
+  it('skips a marked day whose rows are back unchanged, with a warning, unless --force', async () => {
+    const before = await table(pg);
+    await runThin();
+    // The four rows of 04-06 come back as they were, ids included.
+    for (const symbol of ['RTY', 'CL', 'GC', 'ZN']) {
+      const r = before.get(`${symbol} 2026-04-06T15:00:00Z`);
+      await pg.query(
+        `INSERT INTO futures_bars (id, symbol, ts, open, high, low, close, volume)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        [r?.id, symbol, r?.ts, r?.open, r?.high, r?.low, r?.close, r?.volume],
+      );
+    }
+    const writes = hooks.writes;
+
+    expect(await runThin({ expectDeletes: 4 })).toBe(0);
+
+    expect(logged()).toContain(
+      'WARNING: 2026-04-06 is marked done but the fresh plan still has 0 update(s) and 4 delete(s) for it.',
+    );
+    expect(hooks.writes).toBe(writes);
+    expect((await table(pg)).has('CL 2026-04-06T15:00:00Z')).toBe(true);
+
+    expect(await runThin({ expectDeletes: 4, force: true })).toBe(0);
+    expect(hooks.writes).toBe(writes + 1);
+    expect((await table(pg)).has('CL 2026-04-06T15:00:00Z')).toBe(false);
+  });
+
+  it('with --dates deletes only those days', async () => {
+    expect(await runThin({ dates: ['2026-04-06'], expectDeletes: 4 })).toBe(0);
+    const after = await table(pg);
+    for (const symbol of ['RTY', 'CL', 'GC', 'ZN']) {
+      expect(after.has(`${symbol} 2026-04-06T15:00:00Z`)).toBe(false);
+      expect(after.has(`${symbol} 2026-04-05T22:00:00Z`)).toBe(true);
+    }
+    expect(readdirSync(workDir).filter((f) => f.endsWith('.applied'))).toEqual([
+      '2026-04-06.applied',
+    ]);
+  });
+
+  it('splits a big day into DELETE statements of at most 500 rows', async () => {
+    const day = '2026-04-08T00:00:00Z';
+    const rows: SeedRow[] = [];
+    for (let i = 0; i < 1100; i += 1) {
+      rows.push({
+        symbol: 'CL',
+        ts: minute(day, i),
+        p: THIN_PRICE.CL ?? FLAT,
+        v: 10,
+      });
+    }
+    await reset({ pgRows: rows, rebuilt: [] });
+
+    expect(await runThin({ expectDeletes: 1100 })).toBe(0);
+
+    const writes = hooks.calls.filter((c) => !c.readOnly);
+    expect(writes).toHaveLength(1);
+    expect(
+      writes[0]?.texts.filter((t) => t.includes('DELETE FROM futures_bars')),
+    ).toHaveLength(3);
+    expect((await table(pg)).size).toBe(0);
+  });
+
+  it('stops between days when market hours begin: exit 2, finished days marked', async () => {
+    hooks.beforeWrite = () => {
+      if (hooks.writes === 1) {
+        vi.setSystemTime(new Date('2026-11-09T16:00:00Z')); // Monday 11:00 ET
+      }
+    };
+
+    expect(await runThin()).toBe(2);
+
+    expect(hooks.writes).toBe(1);
+    expect(errored()).toContain(
+      'apply stopped before day 2026-04-06: market hours began (09:25 ET). 1 day(s) done and marked;',
+    );
+    expect(existsSync(markerPath(workDir, '2026-04-05'))).toBe(true);
+    expect(existsSync(markerPath(workDir, '2026-04-06'))).toBe(false);
+  });
+
+  it('refuses --apply during market hours; the dry run is allowed', async () => {
+    vi.setSystemTime(new Date('2026-11-09T16:00:00Z')); // Monday 11:00 ET
+    expect(await runThin({ apply: false })).toBe(0);
+    expect(await runThin()).toBe(1);
+    expect(errored()).toMatch(/Refusing to --apply during market hours/);
+    expect(hooks.writes).toBe(0);
+  });
+
+  describe('dry run', () => {
+    it('writes nothing: read-only transactions only, no marker, no backup', async () => {
+      const before = await table(pg);
+
+      expect(await runThin({ apply: false })).toBe(0);
+
+      expect(await table(pg)).toEqual(before);
+      expect(hooks.calls.length).toBeGreaterThan(0);
+      expect(hooks.calls.every((c) => c.readOnly)).toBe(true);
+      expect(
+        hooks.calls
+          .flatMap((c) => c.texts)
+          .some((t) => /\b(UPDATE|DELETE|INSERT)\b/.test(t)),
+      ).toBe(false);
+      expect(readdirSync(workDir).sort()).toEqual([
+        'delete-list.csv',
+        'report.txt',
+      ]);
+    });
+
+    it('lists per root the deletes, the first and last, and the kept rows, and prints the apply command', async () => {
+      await runThin({ apply: false });
+      const text = logged();
+
+      expect(text).toContain('DRY RUN');
+      expect(text).toMatch(
+        /RTY {2}window rows 15 {2}delete 8 {2}keep 7 \(clean days\)/,
+      );
+      expect(text).toMatch(
+        /CL {3}window rows 16 {2}delete 9 {2}keep 7 \(clean days\)/,
+      );
+      expect(text).toMatch(
+        /ZN {3}window rows 16 {2}delete 9 {2}keep 7 \(clean days\)/,
+      );
+      expect(text).toContain(
+        'first delete 2026-04-05T22:00:00Z  last delete 2026-06-15T14:10:00Z',
+      );
+      expect(text).toContain(
+        'first delete 2026-04-05T22:00:00Z  last delete 2026-06-15T14:11:00Z',
+      );
+      expect(text).toContain('RTY 2026-04-13 2');
+      expect(text).toContain(`total deletes ${THIN_DELETES}`);
+      expect(text).toContain(
+        `npx tsx scripts/repair-futures-contract-mix.ts --thin-roots --apply --expect-deletes ${THIN_DELETES} --work-dir ${workDir}`,
+      );
+      expect(readFileSync(join(workDir, 'report.txt'), 'utf8')).toContain(
+        'Apply, after the close',
+      );
+      const csv = readFileSync(join(workDir, 'delete-list.csv'), 'utf8')
+        .trim()
+        .split('\n');
+      expect(csv).toHaveLength(1 + THIN_DELETES);
+      expect(csv.filter((l) => l.includes(',thin_root,'))).toHaveLength(
+        THIN_DELETES,
+      );
+    });
+
+    it('exits non-zero with the reason when a read fails, and writes nothing', async () => {
+      hooks.failRead = new Error('relation "futures_bars" does not exist');
+      expect(await runThin({ apply: false })).toBe(1);
+      expect(errored()).toContain('relation "futures_bars" does not exist');
+      expect(existsSync(workDir)).toBe(false);
+      expect(hooks.writes).toBe(0);
+    });
   });
 });

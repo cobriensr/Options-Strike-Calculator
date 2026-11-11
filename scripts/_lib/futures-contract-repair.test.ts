@@ -12,12 +12,16 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  THIN_EXCURSION_X,
   archiveChanges,
   buildPlan,
+  buildThinRootsPlan,
   classifySession,
   dayDigest,
+  deleteCsv,
   excursions,
   formatReport,
+  formatThinRootsReport,
   loadManifest,
   loadRebuild,
   loadTicklessWindows,
@@ -27,6 +31,7 @@ import {
   parseRepairArgs,
   roundNumeric,
   runRepair,
+  thinDayDigest,
   tickChanges,
   toBar,
   unsplittableCount,
@@ -1350,6 +1355,7 @@ describe('parseRepairArgs', () => {
       workDir: 'docs/tmp/futures-contract-repair',
       apply: false,
       force: false,
+      thinRoots: false,
       dates: [],
       expectUpdates: null,
       expectDeletes: null,
@@ -1381,11 +1387,74 @@ describe('parseRepairArgs', () => {
       workDir: 'out',
       apply: true,
       force: true,
+      thinRoots: false,
       dates: ['2026-04-07', '2026-04-08'],
       expectUpdates: 39061,
       expectDeletes: 0,
       envFile: '.env.test',
     });
+  });
+
+  it('with --thin-roots, keeps its markers and backups in their own folder', () => {
+    expect(parseRepairArgs(['--thin-roots'])).toMatchObject({
+      thinRoots: true,
+      workDir: 'docs/tmp/futures-contract-repair/thin-roots',
+      apply: false,
+      expectUpdates: null,
+      expectDeletes: null,
+    });
+    expect(parseRepairArgs(['--thin-roots', '--work-dir', 'out']).workDir).toBe(
+      'out',
+    );
+  });
+
+  it('with --thin-roots, --apply needs only --expect-deletes, and --dates still narrows it', () => {
+    expect(
+      parseRepairArgs([
+        '--thin-roots',
+        '--apply',
+        '--expect-deletes',
+        '228795',
+        '--dates',
+        '2026-04-06',
+      ]),
+    ).toMatchObject({
+      thinRoots: true,
+      apply: true,
+      expectUpdates: null,
+      expectDeletes: 228795,
+      dates: ['2026-04-06'],
+    });
+  });
+
+  it.each([
+    [['--thin-roots', '--dir', 'in'], /--dir does not apply with --thin-roots/],
+    [
+      [
+        '--thin-roots',
+        '--apply',
+        '--expect-updates',
+        '0',
+        '--expect-deletes',
+        '5',
+      ],
+      /--expect-updates does not apply with --thin-roots/,
+    ],
+    [
+      ['--thin-roots', '--expect-updates', '0'],
+      /--expect-updates does not apply with --thin-roots/,
+    ],
+    [
+      ['--thin-roots', '--apply'],
+      /--apply --thin-roots needs --expect-deletes N/,
+    ],
+    [
+      ['--thin-roots', '--expect-deletes', '5'],
+      /--expect-deletes only applies with --apply/,
+    ],
+    [['--thin-roots', '--force'], /--force only applies with --apply/],
+  ])('rejects %j', (argv, message) => {
+    expect(() => parseRepairArgs(argv)).toThrow(message);
   });
 
   it.each([
@@ -1451,6 +1520,7 @@ describe('runRepair guards', () => {
     workDir: join(dir, 'work'),
     apply: true,
     force: false,
+    thinRoots: false,
     dates: [],
     expectUpdates: null,
     expectDeletes: null,
@@ -1482,5 +1552,278 @@ describe('runRepair guards', () => {
     expect(console.error).toHaveBeenCalledWith(
       expect.stringMatching(/manifest\.json not found/),
     );
+  });
+
+  it('refuses --apply --thin-roots during market hours before it reads anything', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-11-09T16:00:00Z')); // Monday 11:00 ET
+    expect(
+      await runRepair(options({ thinRoots: true, expectDeletes: 5 })),
+    ).toBe(1);
+    expect(console.error).toHaveBeenCalledWith(
+      expect.stringMatching(/Refusing to --apply during market hours/),
+    );
+  });
+});
+
+// ── Thin roots (D1) ─────────────────────────────────────────────────────────
+
+describe('buildThinRootsPlan', () => {
+  let nextId = 1;
+  const flat = (
+    symbol: string,
+    iso: string,
+    p: [number, number, number, number] = [100, 100.5, 99.5, 100],
+  ): PgBar => {
+    const id = String(nextId);
+    nextId += 1;
+    return pg(symbol, iso, p, 100, id);
+  };
+  const keys = (deletes: { symbol: string; tsMs: number }[]): string[] =>
+    deletes.map(
+      (d) => `${d.symbol} ${new Date(d.tsMs).toISOString().slice(0, 16)}`,
+    );
+
+  beforeEach(() => {
+    nextId = 1;
+  });
+
+  it('deletes the window bars outside the clean days and keeps the rest', () => {
+    const plan = buildThinRootsPlan({
+      RTY: [
+        flat('RTY', '2026-04-05T21:59:00Z'), // before the window
+        flat('RTY', '2026-04-05T22:00:00Z'), // first minute
+        flat('RTY', '2026-05-05T15:00:00Z'),
+        flat('RTY', '2026-04-13T14:00:00Z'), // clean day
+        flat('RTY', '2026-06-15T14:10:00Z'), // last bad bar
+        flat('RTY', '2026-06-15T14:11:00Z'), // after it
+      ],
+    });
+    expect(keys(plan.deletes)).toEqual([
+      'RTY 2026-04-05T22:00',
+      'RTY 2026-05-05T15:00',
+      'RTY 2026-06-15T14:10',
+    ]);
+    const rty = plan.roots.find((r) => r.root === 'RTY');
+    expect(rty).toMatchObject({ deletes: 3, kept: 1, windowRows: 4 });
+  });
+
+  it.each([
+    ['CL', '14:10', '14:11'],
+    ['GC', '14:10', '14:11'],
+    ['ZN', '14:11', '14:12'],
+  ])('%s: the last bar deleted is %sZ and %sZ stays', (root, last, after) => {
+    const plan = buildThinRootsPlan({
+      [root]: [
+        flat(root, `2026-06-15T${last}:00Z`),
+        flat(root, `2026-06-15T${after}:00Z`),
+      ],
+    });
+    expect(keys(plan.deletes)).toEqual([`${root} 2026-06-15T${last}`]);
+  });
+
+  it('keeps every bar of the seven clean days and deletes the minute either side of each', () => {
+    const edges = [
+      ['2026-04-12T21:59:00Z', true], // trading day 04-12
+      ['2026-04-12T22:00:00Z', false], // trading day 04-13
+      ['2026-04-17T21:59:00Z', false], // trading day 04-17
+      ['2026-04-17T22:00:00Z', true], // trading day 04-18
+      ['2026-05-31T21:59:00Z', true],
+      ['2026-05-31T22:00:00Z', false], // trading day 06-01
+      ['2026-06-01T21:59:00Z', false],
+      ['2026-06-01T22:00:00Z', true], // trading day 06-02
+      ['2026-06-07T21:59:00Z', true],
+      ['2026-06-07T22:00:00Z', false], // trading day 06-08
+      ['2026-06-08T21:59:00Z', false],
+      ['2026-06-08T22:00:00Z', true], // trading day 06-09
+    ] as const;
+    const plan = buildThinRootsPlan({
+      GC: edges.map(([iso]) => flat('GC', iso)),
+    });
+    expect(keys(plan.deletes)).toEqual(
+      edges
+        .filter(([, deleted]) => deleted)
+        .map(([iso]) => `GC ${iso.slice(0, 16)}`),
+    );
+  });
+
+  it('never plans a delete for ES, NQ or any other symbol', () => {
+    const plan = buildThinRootsPlan({
+      ES: [flat('ES', '2026-05-05T15:00:00Z')],
+      NQ: [flat('NQ', '2026-05-05T15:00:00Z')],
+      DX: [flat('DX', '2026-05-05T15:00:00Z')],
+      CL: [flat('CL', '2026-05-05T15:00:00Z')],
+    });
+    expect(keys(plan.deletes)).toEqual(['CL 2026-05-05T15:00']);
+    expect(plan.roots.map((r) => r.root)).toEqual(['RTY', 'CL', 'GC', 'ZN']);
+  });
+
+  it('plans every root and sorts the deletes by symbol, then time', () => {
+    const plan = buildThinRootsPlan({
+      ZN: [flat('ZN', '2026-05-05T15:00:00Z')],
+      CL: [
+        flat('CL', '2026-05-06T15:00:00Z'),
+        flat('CL', '2026-05-05T15:00:00Z'),
+      ],
+      GC: [],
+      RTY: [flat('RTY', '2026-05-05T15:00:00Z')],
+    });
+    expect(keys(plan.deletes)).toEqual([
+      'CL 2026-05-05T15:00',
+      'CL 2026-05-06T15:00',
+      'RTY 2026-05-05T15:00',
+      'ZN 2026-05-05T15:00',
+    ]);
+  });
+
+  it('carries the full row of each delete, for the backup', () => {
+    const bar = flat('CL', '2026-05-05T15:00:00Z', [70, 71, 69, 70.5]);
+    const [d] = buildThinRootsPlan({ CL: [bar] }).deletes;
+    expect(d).toMatchObject({
+      symbol: 'CL',
+      tsMs: bar.tsMs,
+      id: bar.id,
+      reason: 'thin_root',
+      alsoNoRebuild: false,
+      f: null,
+      excursion: null,
+    });
+    expect(d?.row).toEqual(bar.row);
+  });
+
+  it('reports the first and last delete and the rows kept on each clean day', () => {
+    const plan = buildThinRootsPlan({
+      CL: [
+        flat('CL', '2026-04-06T01:00:00Z'),
+        flat('CL', '2026-04-13T14:00:00Z'),
+        flat('CL', '2026-04-13T14:01:00Z'),
+        flat('CL', '2026-06-01T14:00:00Z'),
+        flat('CL', '2026-06-12T14:00:00Z'),
+      ],
+    });
+    const cl = plan.roots.find((r) => r.root === 'CL');
+    expect(cl?.firstDeleteMs).toBe(Date.parse('2026-04-06T01:00:00Z'));
+    expect(cl?.lastDeleteMs).toBe(Date.parse('2026-06-12T14:00:00Z'));
+    expect(cl?.keptByDay).toEqual({ '2026-04-13': 2, '2026-06-01': 1 });
+    expect(cl).toMatchObject({ kept: 3, deletes: 2, windowRows: 5 });
+    const gc = plan.roots.find((r) => r.root === 'GC');
+    expect(gc).toMatchObject({
+      deletes: 0,
+      kept: 0,
+      firstDeleteMs: null,
+      lastDeleteMs: null,
+    });
+  });
+
+  it("counts the bars Phase 1's strict test flags on the kept days, and only those", () => {
+    const run = (start: string, spikeAt: number): PgBar[] =>
+      Array.from({ length: 20 }, (_, i) =>
+        flat(
+          'CL',
+          new Date(Date.parse(start) + i * 60_000).toISOString(),
+          i === spikeAt ? [100, 104, 99.5, 100] : [100, 100.5, 99.5, 100],
+        ),
+      );
+    const plan = buildThinRootsPlan({
+      CL: [
+        ...run('2026-04-13T14:00:00Z', 10), // clean day: spike at 14:10
+        ...run('2026-04-14T14:00:00Z', 99), // clean day: no spike
+        ...run('2026-05-05T14:00:00Z', 10), // deleted day: spike not counted
+      ],
+    });
+    const cl = plan.roots.find((r) => r.root === 'CL');
+    expect(THIN_EXCURSION_X.CL).toBe(1.8);
+    expect(cl?.flaggedKept).toHaveLength(1);
+    expect(cl?.flaggedKept[0]).toMatchObject({
+      tsMs: Date.parse('2026-04-13T14:10:00Z'),
+      f: 100,
+      e: 4,
+    });
+    expect(cl?.deletes).toBe(20);
+  });
+
+  it('uses the thresholds of b-forensics section 3.2', () => {
+    expect(THIN_EXCURSION_X).toEqual({ RTY: 14, CL: 1.8, GC: 20, ZN: 0.125 });
+  });
+});
+
+describe('thinDayDigest', () => {
+  const dels = (iso: string, id: string, close = 100) =>
+    buildThinRootsPlan({
+      CL: [pg('CL', iso, [100, 101, 99, close], 100, id)],
+    }).deletes;
+
+  it('is the same for the same rows in any order, and differs when an id or a value does', () => {
+    const a = dels('2026-05-05T15:00:00Z', '1');
+    const b = dels('2026-05-05T15:01:00Z', '2');
+    expect(thinDayDigest([...a, ...b])).toBe(thinDayDigest([...b, ...a]));
+    expect(thinDayDigest([...a, ...b])).toMatch(/^[0-9a-f]{64}$/);
+    expect(thinDayDigest(a)).not.toBe(thinDayDigest([...a, ...b]));
+    expect(thinDayDigest(a)).not.toBe(
+      thinDayDigest(dels('2026-05-05T15:00:00Z', '9')),
+    );
+    expect(thinDayDigest(a)).not.toBe(
+      thinDayDigest(dels('2026-05-05T15:00:00Z', '1', 100.25)),
+    );
+  });
+});
+
+describe('formatThinRootsReport', () => {
+  const COMMAND =
+    'npx tsx scripts/repair-futures-contract-mix.ts --thin-roots --apply --expect-deletes 3 --work-dir out';
+  const plan = () =>
+    buildThinRootsPlan({
+      RTY: [
+        pg('RTY', '2026-04-06T01:00:00Z', [2000, 2001, 1999, 2000], 10, '1'),
+        pg('RTY', '2026-04-13T14:00:00Z', [2000, 2001, 1999, 2000], 10, '2'),
+      ],
+      CL: [
+        pg('CL', '2026-04-06T01:00:00Z', [70, 71, 69, 70], 10, '3'),
+        pg('CL', '2026-04-06T01:01:00Z', [70, 71, 69, 70], 10, '4'),
+      ],
+    });
+
+  it('names the scope, each root, the totals and the apply command', () => {
+    const text = formatThinRootsReport(plan(), COMMAND);
+    expect(text).toContain('Thin-roots delete (D1)');
+    expect(text).toContain('2026-04-05T22:00:00Z');
+    expect(text).toContain(
+      '2026-04-13, 2026-04-14, 2026-04-15, 2026-04-16, 2026-04-17, 2026-06-01, 2026-06-08',
+    );
+    expect(text).toMatch(
+      /RTY {2}window rows 2 {2}delete 1 {2}keep 1 \(clean days\)/,
+    );
+    expect(text).toMatch(/CL {3}window rows 2 {2}delete 2 {2}keep 0/);
+    expect(text).toContain('first delete 2026-04-06T01:00:00Z');
+    expect(text).toContain('RTY 2026-04-13 1');
+    expect(text).toContain('RTY 2026-04-06 deleted 1');
+    expect(text).toContain('total deletes 3');
+    expect(text).toContain(COMMAND);
+  });
+
+  it('lists the strict-test flags on the kept days with their F and E', () => {
+    const bars = Array.from({ length: 20 }, (_, i) =>
+      pg(
+        'RTY',
+        new Date(Date.parse('2026-04-13T14:00:00Z') + i * 60_000).toISOString(),
+        i === 7 ? [2000, 2040, 1999, 2000] : [2000, 2001, 1999, 2000],
+        10,
+        String(100 + i),
+      ),
+    );
+    const text = formatThinRootsReport(
+      buildThinRootsPlan({ RTY: bars }),
+      COMMAND,
+    );
+    expect(text).toContain('strict test on the kept days (X=14): 1 flagged');
+    expect(text).toContain('RTY 2026-04-13T14:07:00Z F=2000 E=40');
+  });
+
+  it('does not list a million rows: the delete list goes to the csv, not the report', () => {
+    const text = formatThinRootsReport(plan(), COMMAND);
+    expect(text).not.toContain('Delete list');
+    const csv = deleteCsv(plan().deletes).trim().split('\n');
+    expect(csv).toHaveLength(1 + 3);
+    expect(csv.filter((l) => l.includes(',thin_root,'))).toHaveLength(3);
   });
 });

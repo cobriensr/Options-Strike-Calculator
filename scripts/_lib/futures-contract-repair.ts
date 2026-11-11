@@ -23,6 +23,14 @@
  * row it will change, writes one UTC day per transaction, re-reads the day and
  * only then drops a done marker. The entry script is
  * scripts/repair-futures-contract-mix.ts.
+ *
+ * `--thin-roots` is Phase 5a (owner decision D1, 2026-11-11): RTY, CL, GC and ZN
+ * have no rebuild source, so it reads no Phase 1 output and deletes their bars
+ * from 2026-04-05 22:00Z through each root's last bad bar, except the seven
+ * clean CT trading days (scope in futures-thin-roots.ts). It never updates a row
+ * and never touches ES or NQ. It runs on the same machinery: a dry run, a
+ * full-row backup in this tool's format, one UTC day per transaction, a DELETE
+ * guarded by id, symbol and values, a verify and a `{day}.applied` marker.
  */
 
 import {
@@ -38,6 +46,16 @@ import { z } from 'zod';
 import { isMarketHours } from '../../api/_lib/cron-helpers.js';
 import { getDb, withDbRetry } from '../../api/_lib/db.js';
 import { getCTTime } from '../../src/utils/timezone.js';
+import {
+  CLEAN_TRADING_DAYS,
+  THIN_LAST_BAD_MS,
+  THIN_ROOTS,
+  THIN_WINDOW_START_MS,
+  ctTradingDay,
+  inThinWindow,
+  isThinDeleteBar,
+  type ThinRoot,
+} from './futures-thin-roots.js';
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -45,7 +63,7 @@ export const ROOTS = ['ES', 'NQ'] as const;
 export type Root = (typeof ROOTS)[number];
 
 /** Roots that lose their off-session junk rows (ES/NQ are in `ROOTS`). */
-export const JUNK_ONLY_ROOTS = ['RTY', 'CL', 'GC', 'ZN'] as const;
+export const JUNK_ONLY_ROOTS = THIN_ROOTS;
 
 /** [start, end): Friday 16:00 CDT to Sunday 17:00 CDT (b-forensics.md 1.4). */
 export const JUNK_WINDOW = {
@@ -58,6 +76,20 @@ export const ROLL_WEEK = { first: '2026-06-09', last: '2026-06-15' } as const;
 
 /** Excursion threshold X per root (b-forensics.md 3.2, strict column). */
 export const EXCURSION_X: Record<Root, number> = { ES: 25, NQ: 120 };
+
+/** The same strict thresholds for the four roots `--thin-roots` deletes from. */
+export const THIN_EXCURSION_X: Record<ThinRoot, number> = {
+  RTY: 14,
+  CL: 1.8,
+  GC: 20,
+  ZN: 0.125,
+};
+
+/** The flagged kept-day bars the report lists per root; the rest are counted. */
+const FLAGGED_LIST_CAP = 20;
+
+/** The `gitHead` a `--thin-roots` done marker carries: there is no Phase 1 run. */
+export const THIN_ROOTS_STAMP = 'thin-roots';
 
 /** Centred median of this many closes, at least MEDIAN_MIN of them present. */
 const MEDIAN_WINDOW = 11;
@@ -680,7 +712,8 @@ const pickedValue = (u: PlannedUpdate, field: Field): number | null =>
 export type DeleteReason =
   | 'junk_window'
   | 'archive_no_rebuild'
-  | 'tick_excursion';
+  | 'tick_excursion'
+  | 'thin_root';
 
 export interface PlannedDelete {
   symbol: string;
@@ -850,7 +883,10 @@ export interface DayPlan {
 }
 
 /** One entry per UTC day that has a write, oldest first. */
-export function groupByDay(plan: RepairPlan, only: string[] = []): DayPlan[] {
+export function groupByDay(
+  plan: { updates?: PlannedUpdate[]; deletes: PlannedDelete[] },
+  only: string[] = [],
+): DayPlan[] {
   const days = new Map<string, DayPlan>();
   const dayOf = (tsMs: number): DayPlan | null => {
     const day = utcDay(tsMs);
@@ -862,9 +898,213 @@ export function groupByDay(plan: RepairPlan, only: string[] = []): DayPlan[] {
     }
     return entry;
   };
-  for (const u of plan.updates) dayOf(u.tsMs)?.updates.push(u);
+  for (const u of plan.updates ?? []) dayOf(u.tsMs)?.updates.push(u);
   for (const d of plan.deletes) dayOf(d.tsMs)?.deletes.push(d);
   return [...days.values()].sort((a, b) => a.day.localeCompare(b.day));
+}
+
+// ── Thin roots (D1) ─────────────────────────────────────────────────────────
+
+export interface FlaggedKeptBar {
+  tsMs: number;
+  /** The centred median of 11 closes the bar is measured against. */
+  f: number;
+  /** max |field - F| over the four prices. */
+  e: number;
+}
+
+export interface ThinRootReport {
+  root: ThinRoot;
+  /** Rows in the window, kept or deleted. */
+  windowRows: number;
+  deletes: number;
+  /** Rows kept because they sit on a clean trading day. */
+  kept: number;
+  /** Rows kept, by CT trading day. */
+  keptByDay: Record<string, number>;
+  firstDeleteMs: number | null;
+  lastDeleteMs: number | null;
+  /** Kept-day bars the Phase 1 strict test flags (b-forensics.md 3.1, X in THIN_EXCURSION_X). */
+  flaggedKept: FlaggedKeptBar[];
+}
+
+export interface ThinRootsPlan {
+  deletes: PlannedDelete[];
+  roots: ThinRootReport[];
+}
+
+/**
+ * The `--thin-roots` plan: every RTY, CL, GC and ZN bar in the window outside
+ * the clean days. `bars` holds the PG bars by symbol; a symbol that is not one
+ * of the four is ignored. The strict test runs over each root's whole series
+ * (the median needs its neighbours) and is counted on the kept days only.
+ * Pure: nothing here reads or writes.
+ */
+export function buildThinRootsPlan(
+  bars: Record<string, PgBar[]>,
+): ThinRootsPlan {
+  const deletes: PlannedDelete[] = [];
+  const roots: ThinRootReport[] = [];
+  for (const root of THIN_ROOTS) {
+    const series = [...(bars[root] ?? [])].sort((a, b) => a.tsMs - b.tsMs);
+    const ex = excursions(series, THIN_EXCURSION_X[root]);
+    const report: ThinRootReport = {
+      root,
+      windowRows: 0,
+      deletes: 0,
+      kept: 0,
+      keptByDay: {},
+      firstDeleteMs: null,
+      lastDeleteMs: null,
+      flaggedKept: [],
+    };
+    series.forEach((bar, i) => {
+      if (!inThinWindow(root, bar.tsMs)) return;
+      report.windowRows += 1;
+      if (isThinDeleteBar(root, bar.tsMs)) {
+        report.deletes += 1;
+        report.firstDeleteMs ??= bar.tsMs;
+        report.lastDeleteMs = bar.tsMs;
+        deletes.push({
+          symbol: root,
+          tsMs: bar.tsMs,
+          id: bar.id,
+          reason: 'thin_root',
+          alsoNoRebuild: false,
+          row: bar.row,
+          f: null,
+          excursion: null,
+        });
+        return;
+      }
+      report.kept += 1;
+      const day = ctTradingDay(bar.tsMs);
+      report.keptByDay[day] = (report.keptByDay[day] ?? 0) + 1;
+      const test = ex[i];
+      if (test?.flagged) {
+        report.flaggedKept.push({
+          tsMs: bar.tsMs,
+          f: test.f ?? 0,
+          e: test.e ?? 0,
+        });
+      }
+    });
+    roots.push(report);
+  }
+  deletes.sort(bySymbolTime);
+  return { deletes, roots };
+}
+
+/**
+ * The plan narrowed to `days` (UTC days with a delete, from `groupByDay`): the
+ * deletes and each root's delete count and first and last delete follow; the
+ * window and kept counts stay, they describe the rows read.
+ */
+function restrictThinPlan(
+  plan: ThinRootsPlan,
+  days: readonly DayPlan[],
+): ThinRootsPlan {
+  const keep = new Set(days.map((d) => d.day));
+  const deletes = plan.deletes.filter((d) => keep.has(utcDay(d.tsMs)));
+  return {
+    deletes,
+    roots: plan.roots.map((r) => {
+      const mine = deletes.filter((d) => d.symbol === r.root);
+      return {
+        ...r,
+        deletes: mine.length,
+        firstDeleteMs: mine[0]?.tsMs ?? null,
+        lastDeleteMs: mine.at(-1)?.tsMs ?? null,
+      };
+    }),
+  };
+}
+
+/** The command that applies this dry run's plan, to print under it. */
+function thinApplyCommand(opts: RepairOptions, deletes: number): string {
+  const parts = [
+    'npx tsx scripts/repair-futures-contract-mix.ts',
+    '--thin-roots',
+    '--apply',
+    `--expect-deletes ${deletes}`,
+    `--work-dir ${opts.workDir}`,
+  ];
+  if (opts.dates.length > 0) parts.push(`--dates ${opts.dates.join(' ')}`);
+  return parts.join(' ');
+}
+
+function dayCounts(deletes: PlannedDelete[]): string[] {
+  const lines: string[] = [];
+  for (const root of THIN_ROOTS) {
+    const byDay = groupBy(
+      deletes.filter((d) => d.symbol === root),
+      (d) => utcDay(d.tsMs),
+    );
+    for (const [day, rows] of [...byDay].sort(([a], [b]) => (a < b ? -1 : 1))) {
+      lines.push(`  ${root} ${day} deleted ${rows.length}`);
+    }
+  }
+  return lines;
+}
+
+/** The thin-roots dry-run summary. The row-by-row list is the csv, not this. */
+export function formatThinRootsReport(
+  plan: ThinRootsPlan,
+  applyCommand: string,
+): string {
+  const out: string[] = [];
+  const lastBad = THIN_ROOTS.map(
+    (r) => `${r} ${isoMinute(THIN_LAST_BAD_MS[r])}`,
+  ).join(', ');
+  out.push(
+    'Thin-roots delete (D1): RTY, CL, GC and ZN have no rebuild source, so their bars in the contract-mix window go.',
+    `  window: ${isoMinute(THIN_WINDOW_START_MS)} through each root's last bad bar, inclusive (${lastBad})`,
+    `  kept: the CT trading days ${CLEAN_TRADING_DAYS.join(', ')} (trading day = the CT date of ts + 7 h)`,
+    '',
+    'Per root:',
+  );
+  for (const r of plan.roots) {
+    const first = r.firstDeleteMs == null ? 'none' : isoMinute(r.firstDeleteMs);
+    const last = r.lastDeleteMs == null ? 'none' : isoMinute(r.lastDeleteMs);
+    out.push(
+      `  ${r.root.padEnd(3)}  window rows ${r.windowRows}  delete ${r.deletes}  keep ${r.kept} (clean days)`,
+      `       first delete ${first}  last delete ${last}`,
+      `       strict test on the kept days (X=${THIN_EXCURSION_X[r.root]}): ${r.flaggedKept.length} flagged of ${r.kept}`,
+    );
+    for (const f of r.flaggedKept.slice(0, FLAGGED_LIST_CAP)) {
+      out.push(
+        `         ${r.root} ${isoMinute(f.tsMs)} F=${num(f.f)} E=${num(f.e)}`,
+      );
+    }
+    if (r.flaggedKept.length > FLAGGED_LIST_CAP) {
+      out.push(
+        `         ... and ${r.flaggedKept.length - FLAGGED_LIST_CAP} more`,
+      );
+    }
+  }
+
+  out.push('', 'Rows kept on each clean day:');
+  for (const r of plan.roots) {
+    for (const [day, n] of Object.entries(r.keptByDay).sort(([a], [b]) =>
+      a < b ? -1 : 1,
+    )) {
+      out.push(`  ${r.root} ${day} ${n}`);
+    }
+  }
+
+  out.push('', 'Deleted per root and UTC day:', ...dayCounts(plan.deletes));
+
+  const split = plan.roots.map((r) => `${r.root} ${r.deletes}`).join(', ');
+  out.push(
+    '',
+    'Totals:',
+    `  total deletes ${plan.deletes.length} (${split}); this mode never updates a row and never touches ES or NQ`,
+    '  the full delete list, one line per row with every value, is delete-list.csv',
+    '',
+    'Apply, after the close and the owner OK of this dry run:',
+    `  ${applyCommand}`,
+  );
+  return out.join('\n');
 }
 
 // ── Report ──────────────────────────────────────────────────────────────────
@@ -1132,6 +1372,21 @@ async function readSnapshot(m: Manifest): Promise<PgSnapshot> {
   return snapshot;
 }
 
+/** The four thin roots over the window, each to its last bad bar. */
+async function readThinSnapshot(): Promise<PgSnapshot> {
+  const snapshot: PgSnapshot = { rows: {}, cover: {} };
+  for (const root of THIN_ROOTS) {
+    const cover = {
+      fromMs: THIN_WINDOW_START_MS,
+      toMs: THIN_LAST_BAD_MS[root] + MINUTE_MS,
+    };
+    snapshot.cover[root] = cover;
+    snapshot.rows[root] = await readPaged(root, cover.fromMs, cover.toMs);
+    console.log(`read ${root}: ${snapshot.rows[root]?.length ?? 0} rows`);
+  }
+  return snapshot;
+}
+
 // ── Database writes ─────────────────────────────────────────────────────────
 
 type Sql = ReturnType<typeof getDb>;
@@ -1298,11 +1553,15 @@ export type MarkerState =
   | { state: 'done' }
   | { state: 'stale'; reason: string };
 
-/** 'done' only when the marker was written for this Phase 1 run and these bars. */
+/**
+ * 'done' only when the marker was written for this Phase 1 run and these bars.
+ * `bars` names what the digest covers in the "different ..." message.
+ */
 export function markerState(
   workDir: string,
   day: string,
   expected: MarkerStamp,
+  bars = 'rebuilt bars',
 ): MarkerState {
   const path = markerPath(workDir, day);
   if (!existsSync(path)) return { state: 'none' };
@@ -1320,7 +1579,7 @@ export function markerState(
     };
   }
   if (parsed.data.ndjsonSha256 !== expected.ndjsonSha256) {
-    return { state: 'stale', reason: 'was written for different rebuilt bars' };
+    return { state: 'stale', reason: `was written for different ${bars}` };
   }
   return { state: 'done' };
 }
@@ -1336,6 +1595,18 @@ const canon = (r: PgRow): string =>
     r.buy_prints,
     r.sell_prints,
   ].join('|');
+
+/**
+ * SHA-256 over a `--thin-roots` day's planned deletes (symbol and the full row,
+ * in any order). It stands where `dayDigest` does for the Phase 1 bars: a
+ * marker written for other rows than the fresh plan's is re-planned.
+ */
+export function thinDayDigest(deletes: readonly PlannedDelete[]): string {
+  const hash = createHash('sha256');
+  const lines = deletes.map((d) => `${d.symbol}|${canon(d.row)}\n`).sort();
+  for (const line of lines) hash.update(line);
+  return hash.digest('hex');
+}
 
 /**
  * Re-read the day and require the rows to equal the pre-write rows with the
@@ -1398,12 +1669,17 @@ async function verifyDay(day: DayPlan, snap: PgSnapshot): Promise<void> {
 // ── Arguments ───────────────────────────────────────────────────────────────
 
 export interface RepairOptions {
-  /** Phase 1 output folder: manifest.json, ndjson/, tickless_windows.csv. */
+  /** Phase 1 output folder: manifest.json, ndjson/, tickless_windows.csv. Unused with `thinRoots`. */
   dir: string;
   /** Report, delete list, backups and done markers. */
   workDir: string;
   apply: boolean;
   force: boolean;
+  /**
+   * Phase 5a: delete the RTY, CL, GC and ZN bars in the window (futures-thin-roots.ts),
+   * with no Phase 1 input. Never updates a row, so `expectUpdates` stays null.
+   */
+  thinRoots: boolean;
   /** Only these UTC days; empty means all. */
   dates: string[];
   /**
@@ -1435,17 +1711,48 @@ function parseCount(flag: string, value: string): number {
   return Number.parseInt(value, 10);
 }
 
+/** `--thin-roots` keeps its backups and markers apart from Phase 2's. */
+const THIN_WORK_DIR = 'docs/tmp/futures-contract-repair/thin-roots';
+
+/** The rules that differ in `--thin-roots` mode; the shared ones ran before. */
+function checkThinRootsArgs(
+  args: RepairArgs,
+  given: { dir: boolean; workDir: boolean },
+): void {
+  if (given.dir) {
+    throw new Error(
+      '--dir does not apply with --thin-roots: it reads no Phase 1 output',
+    );
+  }
+  if (args.expectUpdates != null) {
+    throw new Error(
+      '--expect-updates does not apply with --thin-roots: the mode never updates a row',
+    );
+  }
+  if (args.apply && args.expectDeletes == null) {
+    throw new Error(
+      '--apply --thin-roots needs --expect-deletes N: the total of the dry run you approved',
+    );
+  }
+  if (!args.apply && args.expectDeletes != null) {
+    throw new Error('--expect-deletes only applies with --apply');
+  }
+  if (!given.workDir) args.workDir = THIN_WORK_DIR;
+}
+
 export function parseRepairArgs(argv: string[]): RepairArgs {
   const args: RepairArgs = {
     dir: 'ml/data/futures-contract-repair',
     workDir: 'docs/tmp/futures-contract-repair',
     apply: false,
     force: false,
+    thinRoots: false,
     dates: [],
     expectUpdates: null,
     expectDeletes: null,
     envFile: null,
   };
+  const given = { dir: false, workDir: false };
   for (let i = 0; i < argv.length; i += 1) {
     const flag = argv[i] ?? '';
     const next = (): string => {
@@ -1469,15 +1776,24 @@ export function parseRepairArgs(argv: string[]): RepairArgs {
       args.expectUpdates = parseCount(flag, next());
     else if (flag === '--expect-deletes')
       args.expectDeletes = parseCount(flag, next());
-    else if (flag === '--dir') args.dir = next();
-    else if (flag === '--work-dir') args.workDir = next();
-    else if (flag === '--env-file') args.envFile = next();
+    else if (flag === '--dir') {
+      args.dir = next();
+      given.dir = true;
+    } else if (flag === '--work-dir') {
+      args.workDir = next();
+      given.workDir = true;
+    } else if (flag === '--env-file') args.envFile = next();
     else if (flag === '--apply') args.apply = true;
     else if (flag === '--force') args.force = true;
+    else if (flag === '--thin-roots') args.thinRoots = true;
     else throw new Error(`unknown argument ${flag}`);
   }
   if (args.force && !args.apply)
     throw new Error('--force only applies with --apply');
+  if (args.thinRoots) {
+    checkThinRootsArgs(args, given);
+    return args;
+  }
   const expects = [args.expectUpdates, args.expectDeletes];
   if (args.apply && expects.some((n) => n == null)) {
     throw new Error(
@@ -1494,6 +1810,52 @@ export function parseRepairArgs(argv: string[]): RepairArgs {
 
 // ── Run ─────────────────────────────────────────────────────────────────────
 
+/**
+ * `--thin-roots`: read the four roots over the window, plan the deletes, print
+ * the summary and write report.txt and delete-list.csv. With `--apply`, check
+ * the total against `--expect-deletes` before any write, then apply by UTC day.
+ */
+async function runThinRoots(opts: RepairOptions): Promise<number> {
+  console.log(
+    `Futures thin-roots delete (D1)${opts.apply ? '' : ' (DRY RUN: read-only, no writes)'}`,
+  );
+  const snap = await readThinSnapshot();
+  const bars: Record<string, PgBar[]> = {};
+  for (const [symbol, rows] of Object.entries(snap.rows))
+    bars[symbol] = rows.map(toBar);
+  const full = buildThinRootsPlan(bars);
+  const days = groupByDay(full, opts.dates);
+  const plan = restrictThinPlan(full, days);
+
+  mkdirSync(opts.workDir, { recursive: true });
+  const report = formatThinRootsReport(
+    plan,
+    thinApplyCommand(opts, plan.deletes.length),
+  );
+  console.log(`\n${report}`);
+  writeFileSync(join(opts.workDir, 'report.txt'), `${report}\n`);
+  writeFileSync(join(opts.workDir, 'delete-list.csv'), deleteCsv(plan.deletes));
+  console.log(`\nreport: ${join(opts.workDir, 'report.txt')}`);
+  console.log(`delete list: ${join(opts.workDir, 'delete-list.csv')}`);
+  if (!opts.apply) return 0;
+
+  if (plan.deletes.length !== opts.expectDeletes) {
+    throw new Error(
+      `Refusing to --apply: the fresh plan has ${plan.deletes.length} deletes, ` +
+        `but --expect-deletes ${opts.expectDeletes ?? 'missing'} was given. ` +
+        'Nothing was written. Review a fresh dry run (after a partial --apply it reports only the days left) and pass its total.',
+    );
+  }
+  const planned = days.map((day) => ({
+    day,
+    stamp: {
+      gitHead: THIN_ROOTS_STAMP,
+      ndjsonSha256: thinDayDigest(day.deletes),
+    } satisfies MarkerStamp,
+  }));
+  return applyPlanned(opts, planned, snap, 'planned deletes');
+}
+
 /** Exit codes: 0 done, 1 failed or refused, 2 stopped between days (market hours began). */
 async function run(opts: RepairOptions): Promise<number> {
   if (opts.apply && isMarketHours()) {
@@ -1501,6 +1863,7 @@ async function run(opts: RepairOptions): Promise<number> {
       'Refusing to --apply during market hours (09:25 to 16:05 ET): run after the close.',
     );
   }
+  if (opts.thinRoots) return runThinRoots(opts);
   const m = loadManifest(opts.dir);
   const unsplittable = Math.max(m.unsplittable, unsplittableCount(opts.dir));
   if (unsplittable > 0) {
@@ -1559,12 +1922,31 @@ async function run(opts: RepairOptions): Promise<number> {
       ndjsonSha256: dayDigest(texts, day.day),
     } satisfies MarkerStamp,
   }));
-  const pending: typeof planned = [];
+  return applyPlanned(opts, planned, snap, 'rebuilt bars');
+}
+
+interface StampedDay {
+  day: DayPlan;
+  stamp: MarkerStamp;
+}
+
+/**
+ * Backs up, writes and verifies the days that have no done marker, one UTC day
+ * per transaction. The same loop applies the Phase 2 plan and `--thin-roots`;
+ * `bars` names what a stale marker's digest covered. Exit codes as `run`.
+ */
+async function applyPlanned(
+  opts: RepairOptions,
+  planned: StampedDay[],
+  snap: PgSnapshot,
+  bars: string,
+): Promise<number> {
+  const pending: StampedDay[] = [];
   for (const entry of planned) {
     const { day } = entry;
     const state = opts.force
       ? ({ state: 'none' } as const)
-      : markerState(opts.workDir, day.day, entry.stamp);
+      : markerState(opts.workDir, day.day, entry.stamp, bars);
     if (state.state === 'done') {
       // A done day that still has changes has drifted since it was applied.
       // The totals above count it; it is skipped, so say so.

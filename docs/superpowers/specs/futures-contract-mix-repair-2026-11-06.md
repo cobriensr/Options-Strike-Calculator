@@ -140,9 +140,15 @@ Same pattern as Phase 2: dry run, backup, owner OK, apply, verify.
 - **Frozen-stale delete**, 2026-11-11 21:38Z, exit 0: 1,008 rows (ES 504, NQ 504, 2026-04-13 to 09-29) deleted and verified, equal to the dry run. Backup `docs/tmp/futures-derived-recompute/frozen-apply/backup-2026-11-11T21-38-37-908Z.jsonl` (1,008 lines) with its `plan.json`, log `frozen-apply-run.log`. A read-only check found none of the 1,008 ids left. The first try at 21:05Z was refused by the tool's own market-hours guard, which runs to 16:05 ET inclusive, and wrote nothing.
 - **Periscope regrade** (owner OK, 2026-11-11): `scripts/grade-periscope-day.mjs` for 05-07 (40 slots) and 05-08 (38), after a backup of the 77 old rows (`docs/tmp/futures-derived-recompute/periscope-grades-backup-2026-05-07-08.jsonl`). Only the ES/NQ trade simulations changed; on 05-08, ES went from 81% wins and +2.60% to 38% and −1.32%, and NQ to 69% and +1.55%. One never-graded 05-07 slot was added.
 
-### Phase 5: RTY, CL, GC, ZN (needs owner decision D1)
+### Phase 5: RTY, CL, GC, ZN (D1 decided 2026-11-11: delete)
 
-There's no source for these four. See D1.
+There's no source for these four. The owner chose the default on 2026-11-11 ("Delete them"): their bars in the window go, except the seven clean days, and the snapshots computed from them follow, so readers see no data instead of wrong prices. Each half runs after an owner-approved dry run.
+
+- **5a, the bars.** `scripts/repair-futures-contract-mix.ts --thin-roots` deletes every RTY, CL, GC and ZN bar from 2026-04-05T22:00Z through the root's last bad bar (2026-06-15T14:10Z; ZN 14:11Z), except the bars on CT trading days 04-13 to 04-17, 06-01 and 06-08 (trading day = the CT date of ts + 7 h). The read-only count on 2026-11-11 (through 14:11Z for every root): CL 69,232 in the window and 9,360 on the clean days, GC 54,843 and 174, RTY 68,610 and 9,283, ZN 61,691 and 6,764, so about 228,800 deleted. It uses Phase 2's machinery: a dry run, a full-row backup in Phase 2's format first, one UTC day per transaction with `{day}.applied` markers, `--expect-deletes`, a DELETE guarded by id and symbol, after the close. The dry run also lists the bars Phase 1's strict test flags on the kept days, per root.
+- **5b, the snapshots.** `scripts/recompute-futures-derived.ts` with the 5a backup as `--backup` and `--roots RTY CL GC ZN`, after 5a has applied:
+  - A field that read a deleted bar is recomputed by today's `computeSnapshot` on the bars that are left. That is mostly `volume_ratio` on the clean days and in the 20 days after the span end, whose 20-day window loses the deleted days, plus 06-15's `change_day_pct`, whose session-open bars are gone.
+  - A row priced from a deleted bar is now stale and can't be recomputed, so `--delete-junk-stale` deletes it (the existing junk-stale rule).
+  - Ruling 9's guard is lifted once no thin-root bar is left in the span outside the clean days (the tool checks this read-only and prints it). The stale-at-write rewrite then covers the thin roots from the span start, like ES and NQ, and the frozen-stale delete covers them too. Before 5a, both still leave the thin roots as now.
 
 ### Phase 6: a roll-safe live writer, moved to the session front-month plan
 
@@ -176,7 +182,7 @@ There's no source for these four. See D1.
 
 ## Open questions
 
-- **D1, RTY/CL/GC/ZN with no source.** Every minute in the window is suspect, flagged or not. Default: delete those roots' rows inside the window, except the clean days 04-13..04-17, 06-01 and 06-08, after a JSONL backup, so readers see "no data" instead of wrong prices. The alternatives are keeping them with a quality marker, or leaving them and recording the gap.
+- **D1, RTY/CL/GC/ZN with no source: DECIDED 2026-11-11 (owner, "Delete them").** Every minute in the window is suspect, flagged or not. Delete those roots' rows inside the window, except the clean days 04-13..04-17, 06-01 and 06-08, after a JSONL backup, so readers see "no data" instead of wrong prices, and the snapshots computed from them with them. See Phase 5. Rejected: keeping them with a quality marker, or leaving them and recording the gap.
 - **D2, the roll rule: DECIDED 2026-11-06 (option A), then superseded 2026-11-07** by the owner's "mix": the `contract` column and the parser stay, and the per-session pick replaces the 120-close streak. See Phase 6.
 - **Order flow for 04-20..06-15.** The ticks carry an aggressor side, so ES/NQ buy/sell volume could be filled for that span. Default: out of scope. It's Databento's side flag, not UW's, and the flow isn't shown anywhere.
 - **Research files built on the bad bars** (NQ flow-leadership 05-02, iv-anomaly leadership 04-25): default is to list them for a re-run after Phase 3 and not re-run them unasked.
