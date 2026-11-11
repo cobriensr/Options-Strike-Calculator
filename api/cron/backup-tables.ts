@@ -2,7 +2,8 @@
  * GET /api/cron/backup-tables
  *
  * Weekly logical backup of all database tables to Vercel Blob as JSONL.
- * Keeps a rolling 4-week retention window — deletes older backups automatically.
+ * Keeps a rolling 4-week retention window — deletes older backups automatically,
+ * but only after a run that backed up every table (see `pruneSkipped`).
  *
  * Each run creates one JSONL file per table under:
  *   backups/{YYYY-MM-DD}/{table_name}.jsonl
@@ -67,16 +68,25 @@ const TABLES = [
 const RETENTION_WEEKS = 4;
 
 // Time budget for the whole table loop, against `maxDuration` 300 s. No table
-// or page starts after 240 s. That leaves 60 s for what can still be running
-// at that moment plus what follows the loop: one page query (withDbRetry: 3
-// attempts x 10 s timeout + 1 s and 2 s backoff, ~33 s), the put() of a table
-// already in memory (the 130 MB greek_exposure took ~2 s on 2026-11-08), then
-// the prune (one list, one del), reportCronRun and the closing check-in (5 s
-// abort). A normal run needs ~50 s in all, so this stops a runaway table
-// instead of limiting the run. Vercel kills the function before the closing
-// check-in, so a run that hits the 300 s wall shows up only as a Sentry
-// "timeout" and opens no issue.
-const TABLE_LOOP_BUDGET_MS = 240_000;
+// or page starts after 210 s. What can still be running at that moment, on a
+// healthy service, adds up as:
+//     5 s  the `in_progress` check-in withCronCheckin sends before the handler
+//          (its fetch aborts at 5 s) and that counts against maxDuration
+//   210 s  this budget
+//    33 s  one page query already in flight (withDbRetry: 3 attempts x 10 s
+//          timeout + 1 s and 2 s backoff)
+//    14 s  its put() (generous: the whole export plus put of greek_exposure,
+//          the largest table, took 14 s on 2026-11-08, 05:00:11 to 05:00:25)
+//     2 s  Sentry.flush after an incomplete run
+//     5 s  the closing check-in
+//   269 s  in all, which leaves 31 s for the prune (one list, one del; it runs
+//          only when every table landed) and reportCronRun.
+// A normal run needs ~50 s, so the margin costs nothing. This is not a bound
+// on a degraded Blob: @vercel/blob 2.4.0's put, list and del retry up to 10
+// times with backoff (VERCEL_BLOB_RETRIES, default 10) and this cron passes no
+// abortSignal. Past 300 s Vercel kills the function before the closing
+// check-in, so the run shows up only as a Sentry "timeout" and opens no issue.
+const TABLE_LOOP_BUDGET_MS = 210_000;
 
 // Size cap for one table's JSONL. exportTable holds the whole table in memory:
 // one Buffer per row plus a second copy in Buffer.concat, so ~3x the body at
@@ -288,42 +298,53 @@ export default withCronCheckin('backup-tables', async (req, res) => {
 
   // A table that was skipped or stopped is not in the backup. Each DB or Blob
   // failure above has its own exception; this one event names the tables the
-  // budget and the size cap cost, and it goes out before the prune so a slow
-  // prune cannot cost the run its report.
+  // budget and the size cap cost.
   const notBackedUp = [...skipped, ...unfinished];
   if (notBackedUp.length > 0) {
+    const elapsedMs = Date.now() - startTime;
     Sentry.setTag('cron.job', 'backup-tables');
     Sentry.captureMessage(
       `backup-tables: ${notBackedUp.length} table(s) not backed up: ${notBackedUp.join(', ')}`,
       {
         level: 'error',
         fingerprint: ['backup-tables', 'incomplete'],
-        extra: {
-          date: today,
-          skipped,
-          unfinished,
-          elapsedMs: Date.now() - startTime,
-        },
+        extra: { date: today, skipped, unfinished, elapsedMs },
       },
     );
-    // No flush in withCronCheckin; hold the event until it has left.
-    await Sentry.flush(2000);
+    logger.error({ skipped, unfinished, elapsedMs }, 'Tables not backed up');
   }
 
-  // Prune old backups. It runs after a budget-limited loop exactly as after a
-  // complete one: the budget leaves it room (see TABLE_LOOP_BUDGET_MS).
+  // Prune old backups, but only after a run that backed up every table. The
+  // prune deletes the oldest weekly folders: after an incomplete run, a table
+  // that fails every week would lose its last good copy on the 5th failing
+  // run, when the folders still holding it age out. A prune failure adds its
+  // own error, so it is judged by the next run, not this one.
   let pruned: string[] = [];
-  try {
-    pruned = await pruneOldBackups(today);
-    if (pruned.length > 0) {
-      logger.info({ count: pruned.length }, 'Pruned old backups');
+  const pruneSkipped = errors.length > 0;
+  if (pruneSkipped) {
+    logger.warn(
+      { errors: errors.length },
+      'Pruning skipped, backup incomplete',
+    );
+  } else {
+    try {
+      pruned = await pruneOldBackups(today);
+      if (pruned.length > 0) {
+        logger.info({ count: pruned.length }, 'Pruned old backups');
+      }
+    } catch (err) {
+      Sentry.setTag('cron.job', 'backup-tables');
+      Sentry.captureException(err);
+      logger.error({ err }, 'Backup pruning failed');
+      errors.push(`pruning: ${err instanceof Error ? err.message : 'Unknown'}`);
     }
-  } catch (err) {
-    Sentry.setTag('cron.job', 'backup-tables');
-    Sentry.captureException(err);
-    logger.error({ err }, 'Backup pruning failed');
-    errors.push(`pruning: ${err instanceof Error ? err.message : 'Unknown'}`);
   }
+
+  // withCronCheckin never flushes, so every exception captured above (a table,
+  // a put, the prune) would sit in the SDK queue when the instance freezes.
+  // One flush covers them all; it is after the prune because the prune can add
+  // an error of its own.
+  if (errors.length > 0) await Sentry.flush(2000);
 
   const totalRows = Object.values(results).reduce((s, r) => s + r.rows, 0);
   const totalBytes = Object.values(results).reduce((s, r) => s + r.bytes, 0);
@@ -351,6 +372,7 @@ export default withCronCheckin('backup-tables', async (req, res) => {
     totalRows,
     totalBytes,
     pruned: pruned.length,
+    pruneSkipped,
     errors: errors.length,
     skippedTables: skipped,
     unfinishedTables: unfinished,
@@ -360,11 +382,13 @@ export default withCronCheckin('backup-tables', async (req, res) => {
   // withCronCheckin reads the response status, not the status above: a 2xx
   // would send Sentry an `ok` check-in for a run that left tables out.
   res.status(errors.length > 0 ? 500 : 200).json({
+    status,
     date: today,
     tables: results,
     totalRows,
     totalBytes,
     pruned: pruned.length,
+    pruneSkipped: pruneSkipped ? true : undefined,
     skipped: skipped.length > 0 ? skipped : undefined,
     unfinished: unfinished.length > 0 ? unfinished : undefined,
     errors: errors.length > 0 ? errors : undefined,

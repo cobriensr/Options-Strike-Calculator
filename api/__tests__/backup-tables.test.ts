@@ -58,6 +58,7 @@ import handler from '../cron/backup-tables.js';
 import { _resetDsnCacheForTest } from '../_lib/cron-instrumentation.js';
 import { Sentry } from '../_lib/sentry.js';
 import { reportCronRun } from '../_lib/axiom.js';
+import logger from '../_lib/logger.js';
 
 // Fixed date: Sunday 5 AM UTC (typical cron run)
 const BACKUP_TIME = new Date('2026-03-29T05:00:00.000Z');
@@ -91,6 +92,18 @@ const TABLE_ORDER = [
 ] as const;
 
 const FIRST_TABLE = TABLE_ORDER[0];
+
+// One folder past the 4-week retention window of BACKUP_TIME (cutoff
+// 2026-03-01): the prune would delete it, so a test that expects the prune to
+// be skipped can show nothing was listed or deleted.
+const STALE_BACKUP = {
+  blobs: [
+    {
+      pathname: 'backups/2026-02-15/market_snapshots.jsonl',
+      url: 'https://blob.test/old1',
+    },
+  ],
+};
 
 // The Sentry check-in POSTs are the only fetch this handler makes, so the
 // status of each one is what Sentry's cron monitor sees.
@@ -269,9 +282,11 @@ describe('backup-tables handler', () => {
     expect(json.date).toBe('2026-03-29');
     expect(json.totalRows).toBe(16); // 1 row x 16 tables
     expect(json.pruned).toBe(0);
+    expect(json.status).toBe('ok');
     expect(json.errors).toBeUndefined();
     expect(json.skipped).toBeUndefined();
     expect(json.unfinished).toBeUndefined();
+    expect(json.pruneSkipped).toBeUndefined();
 
     // All 16 tables should appear in results
     const tables = json.tables as Record<
@@ -292,6 +307,7 @@ describe('backup-tables handler', () => {
     // raises no incomplete-backup error.
     expect(checkInStatuses()).toEqual(['in_progress', 'ok']);
     expect(Sentry.captureMessage).not.toHaveBeenCalled();
+    expect(Sentry.flush).not.toHaveBeenCalled();
     expect(reportCronRun).toHaveBeenCalledWith(
       'backup-tables',
       expect.objectContaining({ status: 'ok', errors: 0 }),
@@ -433,11 +449,11 @@ describe('backup-tables handler', () => {
   // ── Time budget ───────────────────────────────────────────
   // Vercel kills the function at maxDuration (300 s) before the closing
   // check-in, so Sentry shows only a "timeout" and opens no issue. The loop
-  // stops starting tables at 240 s and the run ends loudly instead.
+  // stops starting tables at 210 s and the run ends loudly instead.
 
   it('stops starting tables once the time budget is spent and names the rest', async () => {
     // Every query takes 100 s: three tables start (t = 0, 100, 200); at
-    // t = 300 the budget (240 s) is gone.
+    // t = 300 the budget (210 s) is gone.
     mockSql.mockImplementation(async () => {
       advanceClock(100_000);
       return [{ id: 1 }];
@@ -453,11 +469,13 @@ describe('backup-tables handler', () => {
     // response status, not off the Axiom status.
     expect(res._status).toBe(500);
     const json = res._json as {
+      status: string;
       tables: Record<string, unknown>;
       skipped: string[];
       unfinished?: string[];
       errors: string[];
     };
+    expect(json.status).toBe('partial');
     expect(Object.keys(json.tables)).toEqual(TABLE_ORDER.slice(0, 3));
     expect(json.skipped).toEqual(expectedSkipped);
     expect(json.unfinished).toBeUndefined();
@@ -484,17 +502,23 @@ describe('backup-tables handler', () => {
       fingerprint: ['backup-tables', 'incomplete'],
     });
     for (const table of expectedSkipped) expect(message).toContain(table);
+    // The pino line names them too: the response and the Axiom event are
+    // read later, the log is what shows during the run.
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ skipped: expectedSkipped, unfinished: [] }),
+      'Tables not backed up',
+    );
     // withCronCheckin never flushes, so the handler has to.
     expect(Sentry.flush).toHaveBeenCalledTimes(1);
   });
 
   it('starts a table that is still inside the budget', async () => {
-    // Two queries of 119 s: the third table starts at t = 238 s, inside the
-    // 240 s budget, and finishes. Nothing is skipped.
+    // Two queries of 104 s: the third table starts at t = 208 s, inside the
+    // 210 s budget, and finishes. Nothing is skipped.
     let queries = 0;
     mockSql.mockImplementation(async () => {
       queries += 1;
-      if (queries <= 2) advanceClock(119_000);
+      if (queries <= 2) advanceClock(104_000);
       return [{ id: 1 }];
     });
 
@@ -503,6 +527,26 @@ describe('backup-tables handler', () => {
     expect(res._status).toBe(200);
     expect(mockSql).toHaveBeenCalledTimes(16);
     expect(Sentry.captureMessage).not.toHaveBeenCalled();
+  });
+
+  it('does not start a table 220 s in: the budget is 210 s, not 240 s', async () => {
+    // Two queries of 110 s put the third table's start at t = 220 s. A 240 s
+    // budget would start it; the pathological tail (5 s in_progress check-in,
+    // one 33 s page, its put, the closing check-in) then no longer fits in
+    // 300 s with the margin the 210 s budget keeps.
+    let queries = 0;
+    mockSql.mockImplementation(async () => {
+      queries += 1;
+      if (queries <= 2) advanceClock(110_000);
+      return [{ id: 1 }];
+    });
+
+    const res = await runBackup();
+
+    expect(mockSql).toHaveBeenCalledTimes(2);
+    expect((res._json as { skipped: string[] }).skipped).toEqual(
+      TABLE_ORDER.slice(2),
+    );
   });
 
   it('stops a table that crosses the time budget mid-table and uploads nothing for it', async () => {
@@ -526,11 +570,13 @@ describe('backup-tables handler', () => {
 
     expect(res._status).toBe(500);
     const json = res._json as {
+      status: string;
       tables: Record<string, unknown>;
       skipped: string[];
       unfinished: string[];
       errors: string[];
     };
+    expect(json.status).toBe('error');
     expect(json.unfinished).toEqual([FIRST_TABLE]);
     expect(json.skipped).toEqual(TABLE_ORDER.slice(1));
     expect(json.tables).toEqual({});
@@ -550,6 +596,13 @@ describe('backup-tables handler', () => {
     const [message, context] = vi.mocked(Sentry.captureMessage).mock.calls[0]!;
     expect(context).toMatchObject({ level: 'error' });
     expect(message).toContain(FIRST_TABLE);
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({
+        skipped: TABLE_ORDER.slice(1),
+        unfinished: [FIRST_TABLE],
+      }),
+      'Tables not backed up',
+    );
   });
 
   // ── Size cap ──────────────────────────────────────────────
@@ -602,12 +655,14 @@ describe('backup-tables handler', () => {
       }
       return [{ id: 1 }];
     });
+    mockList.mockResolvedValue(STALE_BACKUP);
 
     const res = await runBackup();
 
     // A table that did not back up is an error check-in, not an ok one.
     expect(res._status).toBe(500);
     const json = res._json as Record<string, unknown>;
+    expect(json.status).toBe('partial');
 
     // 15 successful, 1 failed
     const tables = json.tables as Record<string, unknown>;
@@ -623,12 +678,30 @@ describe('backup-tables handler', () => {
     expect(json.skipped).toBeUndefined();
     expect(json.unfinished).toBeUndefined();
 
-    // Sentry should capture the exception
+    // Sentry should capture the exception itself, not just a count, and
+    // flush it: withCronCheckin never does.
     expect(Sentry.setTag).toHaveBeenCalledWith('cron.job', 'backup-tables');
     expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: 'relation "outcomes" does not exist',
+      }),
+    );
+    expect(Sentry.flush).toHaveBeenCalledTimes(1);
 
     // put() should only be called 15 times (not for the failed table)
     expect(mockPut).toHaveBeenCalledTimes(15);
+
+    // A backup that is missing a table must not delete the older ones: a
+    // table that failed every week would lose its last good copy on the 5th.
+    expect(mockList).not.toHaveBeenCalled();
+    expect(mockDel).not.toHaveBeenCalled();
+    expect(json.pruned).toBe(0);
+    expect(json.pruneSkipped).toBe(true);
+    expect(logger.warn).toHaveBeenCalledWith(
+      { errors: 1 },
+      'Pruning skipped, backup incomplete',
+    );
 
     // Partial-failure → status 'partial' so the dashboard reflects reality
     expect(reportCronRun).toHaveBeenCalledWith(
@@ -648,6 +721,7 @@ describe('backup-tables handler', () => {
       }
       return { url: 'https://blob.test/file' };
     });
+    mockList.mockResolvedValue(STALE_BACKUP);
 
     const res = await runBackup();
 
@@ -664,6 +738,13 @@ describe('backup-tables handler', () => {
     expect(errors[0]).toContain(TABLE_ORDER[1]);
 
     expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'Blob upload failed' }),
+    );
+    expect(Sentry.flush).toHaveBeenCalledTimes(1);
+    expect(mockList).not.toHaveBeenCalled();
+    expect(mockDel).not.toHaveBeenCalled();
+    expect(json.pruneSkipped).toBe(true);
     expect(reportCronRun).toHaveBeenCalledWith(
       'backup-tables',
       expect.objectContaining({ status: 'partial', errors: 1 }),
@@ -745,38 +826,69 @@ describe('backup-tables handler', () => {
     expect(json.pruned).toBe(2);
   });
 
-  // Pruning is the step after the table loop, so a loop that never finished
-  // used to take it down with it (no prune since 2026-05-17). A run cut short
-  // by the budget still prunes, exactly as a complete one does.
-  it('still prunes after the table loop stopped on the time budget', async () => {
+  // The prune deletes the oldest weekly folders, so it runs only after a run
+  // that backed up every table. A table that fails every week would otherwise
+  // lose its last good copy on the 5th failing run: the folders still holding
+  // it age out while the new ones lack it.
+  it('does not prune after the table loop stopped on the time budget', async () => {
     mockSql.mockImplementation(async () => {
       advanceClock(100_000);
       return [{ id: 1 }];
     });
-    mockList.mockResolvedValue({
-      blobs: [
-        {
-          pathname: 'backups/2026-02-15/market_snapshots.jsonl',
-          url: 'https://blob.test/old1',
-        },
-        {
-          pathname: 'backups/2026-03-22/analyses.jsonl',
-          url: 'https://blob.test/recent',
-        },
-      ],
-    });
+    mockList.mockResolvedValue(STALE_BACKUP);
 
     const res = await runBackup();
 
     expect(res._status).toBe(500);
-    expect(mockList).toHaveBeenCalledWith({ prefix: 'backups/' });
+    expect(mockList).not.toHaveBeenCalled();
+    expect(mockDel).not.toHaveBeenCalled();
+    const json = res._json as Record<string, unknown>;
+    expect(json.pruned).toBe(0);
+    expect(json.pruneSkipped).toBe(true);
+    expect(logger.warn).toHaveBeenCalledWith(
+      { errors: TABLE_ORDER.length - 3 },
+      'Pruning skipped, backup incomplete',
+    );
+    expect(reportCronRun).toHaveBeenCalledWith(
+      'backup-tables',
+      expect.objectContaining({
+        status: 'partial',
+        pruned: 0,
+        pruneSkipped: true,
+      }),
+    );
+  });
+
+  it('does not prune after a table was cut off mid-table', async () => {
+    const fullPage = Array.from({ length: 50_000 }, (_, i) => ({ id: i }));
+    let queries = 0;
+    mockSql.mockImplementation(async () => {
+      queries += 1;
+      advanceClock(150_000);
+      return queries <= 4 ? fullPage : [];
+    });
+    mockList.mockResolvedValue(STALE_BACKUP);
+
+    const res = await runBackup();
+
+    expect(mockList).not.toHaveBeenCalled();
+    expect(mockDel).not.toHaveBeenCalled();
+    expect((res._json as Record<string, unknown>).pruneSkipped).toBe(true);
+  });
+
+  it('prunes again once a run backs up every table', async () => {
+    // Last week was incomplete and skipped the prune; this week's clean run
+    // makes up for it, so the stale folder goes now.
+    mockSql.mockResolvedValue([{ id: 1 }]);
+    mockList.mockResolvedValue(STALE_BACKUP);
+
+    const res = await runBackup();
+
+    expect(res._status).toBe(200);
     expect(mockDel).toHaveBeenCalledWith(['https://blob.test/old1']);
     const json = res._json as Record<string, unknown>;
     expect(json.pruned).toBe(1);
-    expect(reportCronRun).toHaveBeenCalledWith(
-      'backup-tables',
-      expect.objectContaining({ status: 'partial', pruned: 1 }),
-    );
+    expect(json.pruneSkipped).toBeUndefined();
   });
 
   it('does not delete blobs within retention window', async () => {
@@ -841,12 +953,22 @@ describe('backup-tables handler', () => {
     expect(errors[0]).toContain('pruning');
     expect(errors[0]).toContain('Blob list failed');
 
-    // Sentry should capture the pruning error
+    // Sentry should capture the pruning error, and flush it: this exception
+    // is raised after the table loop, so only a flush after the prune sends it.
     expect(Sentry.setTag).toHaveBeenCalledWith('cron.job', 'backup-tables');
     expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'Blob list failed' }),
+    );
+    expect(Sentry.flush).toHaveBeenCalledTimes(1);
     expect(checkInStatuses()).toEqual(['in_progress', 'error']);
 
+    // The prune was attempted (all tables backed up), so it was not skipped.
+    expect(mockList).toHaveBeenCalledTimes(1);
+    expect(json.pruneSkipped).toBeUndefined();
+
     // Backup data should still be present
+    expect(json.status).toBe('partial');
     expect(json.totalRows).toBeDefined();
     expect(json.pruned).toBe(0);
   });
@@ -910,6 +1032,7 @@ describe('backup-tables handler', () => {
     mockList.mockResolvedValue({ blobs: [] });
     const res2 = await runBackup();
     expect((res2._json as Record<string, unknown>).errors).toBeDefined();
+    expect((res2._json as Record<string, unknown>).status).toBe('error');
     expect(res2._status).toBe(500);
     expect(reportCronRun).toHaveBeenCalledWith(
       'backup-tables',
