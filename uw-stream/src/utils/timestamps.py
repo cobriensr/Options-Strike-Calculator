@@ -14,8 +14,8 @@ bad stamp poisons state that is never revised:
 
 - a far-future ``futures_trades`` print pins the handler's newest minute,
   so every later real minute flushes as a one-print partial bar that
-  ON CONFLICT DO NOTHING keeps forever, and the UTC session date freezes,
-  disabling the front-month roll;
+  ON CONFLICT DO NOTHING keeps forever, and it would put a session in the
+  tally that has not traded yet and ask for its front-month decision;
 - a far-future ``futures_blocks`` ``reported_at`` wins every later upsert
   guard comparison and freezes the row against real updates.
 

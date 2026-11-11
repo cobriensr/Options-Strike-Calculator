@@ -30,10 +30,13 @@
  *     the expiry order and the cold-start seed, and `canonicalContract`
  *     the one name a contract has everywhere.
  *
- * The uw-stream handler will carry a Python copy of the per-session rule
- * (Phase 5). Both copies are to run the cases in
- * `api/__tests__/fixtures/futures-roll-cases.json`, so they can't drift
- * apart.
+ * The uw-stream handler carries a Python copy of the per-session rule
+ * (`uw-stream/src/futures_front_month.py`). Both copies run the
+ * `cmeTradeDate` and `decideFrontMonth` lists of
+ * `api/__tests__/fixtures/futures-roll-cases.json`, so the rule can't drift
+ * apart. Its third list, `pickScheduledFront`, is TypeScript-only: the live
+ * handler folds the spellings of a contract into one bar where this builder
+ * picks the larger-volume spelling's row.
  */
 
 import { getCTDateStr } from '../../src/utils/timezone.js';
@@ -136,8 +139,9 @@ const MONTHS_STOPPED_EARLY: Readonly<Record<FuturesRoot, number>> = {
 const YEARS_BEFORE_REF = 1;
 
 /**
- * Root + one month code + one or two ASCII digits: the uw-stream handler's
- * `_OUTRIGHT_SYM` fullmatch and the CHECK on `futures_bars.contract`.
+ * Root + one month code + one or two ASCII digits: uw-stream's
+ * `OUTRIGHT_SYM` fullmatch (`futures_front_month.is_outright`, which the
+ * handler uses) and the CHECK on `futures_bars.contract`.
  * Anchored on both ends; without the `m` flag `$` matches only at the very
  * end, so a trailing newline fails (unlike Python's `$`).
  */
