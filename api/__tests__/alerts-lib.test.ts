@@ -182,18 +182,35 @@ describe('writeAlertIfNew', () => {
     );
   });
 
-  it('INSERT no longer names the sms_sent column', async () => {
+  it('INSERT leaves sms_sent to its column default', async () => {
     mockSql.mockResolvedValueOnce([]);
     mockSql.mockResolvedValueOnce([]);
 
     await writeAlertIfNew('2026-03-24', makeAlert());
 
     // The column stays in the table with its DEFAULT FALSE; the writer just
-    // no longer sets it.
+    // no longer sets it. Compare the parsed column list, not the raw text, so
+    // whitespace changes don't fail it and a dropped or added column does.
     const insert = sqlText(1);
-    expect(insert).toContain('INSERT INTO market_alerts');
-    expect(insert).not.toContain('sms_sent');
-    expect(sqlValues(1)).toHaveLength(9);
+    const columnList = /INSERT INTO market_alerts\s*\(([^)]*)\)/.exec(
+      insert,
+    )?.[1];
+    const columns = (columnList ?? '')
+      .split(',')
+      .map((column) => column.trim())
+      .filter((column) => column !== '');
+    expect(columns).toEqual([
+      'date',
+      'timestamp',
+      'type',
+      'severity',
+      'direction',
+      'title',
+      'body',
+      'current_values',
+      'delta_values',
+    ]);
+    expect(sqlValues(1)).toHaveLength(columns.length);
   });
 
   it.each<AlertSeverity>(['warning', 'critical', 'extreme'])(
