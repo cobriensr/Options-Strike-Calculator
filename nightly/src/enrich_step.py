@@ -9,14 +9,18 @@ history, drained over the nights until no day has work left.
 Order matters in two places:
 - Both scripts are configured for the tape before the work days are listed, because
   `list_work_dates` reads the module's SOURCE_TAG when it runs.
-- A day the tape job re-landed tonight has its `outcome_tape_version` marker cleared first
-  (both tables in one statement, so both clear or neither does), because its rows carry the
-  marker of the tape it replaced and the work set would never look at them again. Only the
-  marker is cleared, so the old outcomes stay until the new tape replaces them. Inversions
-  are not reset: their work set needs the value to be NULL, and clearing values is
-  destructive. If the statement fails nothing is cleared and the step fails; the next night
-  the tape job no longer reports the day as re-landed, so its rows keep the old tape's
-  outcomes until OUTCOME_VERSION is next bumped.
+- A day the tape job put in R2 tonight (`landed` or `relanded`) has its `outcome_tape_version`
+  marker cleared first (both tables in one statement, so both clear or neither does),
+  because its rows may carry the marker of the tape it replaced and the work set would never
+  look at them again. A re-land the ETag probe found is `relanded`, but a day whose object
+  was deleted by hand lands as `landed`, so both count. A first land has no markers, so for
+  it the clear changes nothing. Only the marker is cleared, so the old outcomes stay until
+  the new tape replaces them. Inversions are not reset: their work set needs the value to be
+  NULL, and clearing values is destructive. If the clear does not run that night (the
+  statement fails, the step is skipped or raises before it, or the run is killed after the
+  land) nothing is cleared, and the next night the tape job no longer reports the day, so its
+  rows keep the old tape's outcomes until OUTCOME_VERSION is next bumped or someone clears
+  the markers by hand.
 
 A day with no landed tape waits (`days_waiting_tape`). For a landed one the step fetches the
 tape (before opening a connection, so Neon never idles through a download; the download is
@@ -125,6 +129,9 @@ _COUNT_NAMES = (
     "tape_markers_reset",
     *_DAY_COUNT_NAMES,
 )
+# The tape job's statuses for a day it put in R2 tonight. A re-land that the ETag probe found
+# is `relanded`; a day whose object was deleted by hand lands again as `landed`.
+_LANDED_STATUSES = frozenset({"landed", "relanded"})
 
 # One statement for every table, so the clearing is atomic on an autocommit connection: a
 # data-modifying CTE per table, each a full UPDATE whatever the final SELECT reads, and
@@ -173,10 +180,10 @@ def run(ctx: StepContext) -> StepResult:
     counts = dict.fromkeys(_COUNT_NAMES, 0)
     for configure in (configure_lottery_archive, configure_silent_boom_archive):
         configure(ENRICH_CACHE_DIR, "fulltape")
-    relanded = [outcome.day for outcome in ctx.tape if outcome.status == "relanded"]
+    landed = [outcome.day for outcome in ctx.tape if outcome.status in _LANDED_STATUSES]
     # One short connection for the setup; each day opens its own after its download.
     with connect_db(ctx.settings) as conn:
-        counts["tape_markers_reset"] = reset_tape_markers(conn, relanded)
+        counts["tape_markers_reset"] = reset_tape_markers(conn, landed)
         days = work_days(conn, ctx.last_session)
     if days:
         _enrich_days(ctx, days, counts)

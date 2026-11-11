@@ -820,11 +820,10 @@ def test_a_relanded_day_has_its_marker_reset_before_the_work_is_listed(
     night: Night, settings: Settings, clock: Clock
 ) -> None:
     relanded = DayOutcome(DAYS[3], "relanded", rows=10, bytes=100)
-    landed = DayOutcome(DAYS[4], "landed", rows=10, bytes=100)
     night.cursor.execute.side_effect = lambda sql, params: night.events.append("reset")
     night.work(lottery=[DAYS[3]])
 
-    enrich_step.run(_ctx(settings, clock, tape=(landed, relanded)))
+    enrich_step.run(_ctx(settings, clock, tape=(relanded,)))
 
     # Named parameter, and a list: a tuple would adapt as a row, not as the date[].
     night.cursor.execute.assert_called_once_with(RESET_SQL, {"days": [DAYS[3]]})
@@ -868,24 +867,39 @@ def test_the_rows_reset_are_counted_from_the_statements_one_row(
     assert result.counts["tape_markers_reset"] == 10
 
 
-def test_only_the_relanded_days_are_reset(night: Night, settings: Settings, clock: Clock) -> None:
+def test_a_day_landed_afresh_is_reset_too(night: Night, settings: Settings, clock: Clock) -> None:
+    # Deleting a day's R2 object to force a re-land makes the tape job report it as
+    # `landed`, not `relanded`; its rows still carry the replaced tape's marker.
+    tape = (DayOutcome(DAYS[3], "landed", rows=10, bytes=100),)
+    night.cursor.fetchone.return_value = (4,)
+
+    result = enrich_step.run(_ctx(settings, clock, tape=tape))
+
+    night.cursor.execute.assert_called_once_with(RESET_SQL, {"days": [DAYS[3]]})
+    assert result.counts["tape_markers_reset"] == 4
+
+
+def test_every_day_landed_or_relanded_tonight_is_reset_in_one_statement(
+    night: Night, settings: Settings, clock: Clock
+) -> None:
     tape = (
         DayOutcome(DAYS[4], "relanded", rows=10, bytes=100),
         DayOutcome(DAYS[3], "landed", rows=10, bytes=100),
         DayOutcome(DAYS[2], "relanded", rows=10, bytes=100),
+        DayOutcome(DAYS[1], "failed", detail="download"),
     )
 
     enrich_step.run(_ctx(settings, clock, tape=tape))
 
-    # Both re-landed days in the one statement, the landed one not in it.
-    night.cursor.execute.assert_called_once_with(RESET_SQL, {"days": [DAYS[4], DAYS[2]]})
+    # The three days that landed, in the tape's order; the failed day is not in it.
+    night.cursor.execute.assert_called_once_with(RESET_SQL, {"days": [DAYS[4], DAYS[3], DAYS[2]]})
 
 
 @pytest.mark.parametrize(
     "status",
-    ["landed", "not_posted", "unavailable", "failed", "skipped_disk", "skipped_deadline"],
+    ["not_posted", "unavailable", "failed", "skipped_disk", "skipped_deadline"],
 )
-def test_a_day_that_was_not_relanded_is_not_reset(
+def test_a_day_that_did_not_land_is_not_reset(
     night: Night, settings: Settings, clock: Clock, status: str
 ) -> None:
     tape = (DayOutcome(DAYS[3], status, rows=10, bytes=100),)  # type: ignore[arg-type]
