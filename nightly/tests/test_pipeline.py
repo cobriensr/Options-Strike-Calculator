@@ -20,10 +20,11 @@ from unittest.mock import Mock, create_autospec
 import pytest
 import sentry_sdk
 
+import enrich_step
 import main
 import outcome_check
 from config import Settings, load_settings
-from constants import OUTCOME_CHECK_BUDGET_SECONDS
+from constants import ENRICH_DAY_BUDGET_SECONDS, OUTCOME_CHECK_BUDGET_SECONDS
 from pipeline import STEPS, lazy_step
 from steps import Step, StepContext, StepOutcome, StepResult, run_steps
 
@@ -81,6 +82,19 @@ def test_outcome_check_is_registered_with_its_budget() -> None:
     assert step.min_seconds == OUTCOME_CHECK_BUDGET_SECONDS
 
 
+def test_enrich_is_registered_with_its_budget() -> None:
+    (step,) = (s for s in STEPS if s.name == "enrich-outcomes")
+
+    assert step.min_seconds == ENRICH_DAY_BUDGET_SECONDS
+
+
+def test_the_outcome_check_runs_after_the_enrichment() -> None:
+    # The check reads what the enrichment just wrote; the other order alerts on yesterday's gaps.
+    names = [step.name for step in STEPS]
+
+    assert names.index("enrich-outcomes") < names.index("outcome-check")
+
+
 def test_main_runs_the_registered_steps() -> None:
     # test_main.py empties main.STEPS for every test, so nothing there sees main's
     # own binding: this file's tests do not use that fixture.
@@ -102,14 +116,36 @@ def test_the_registered_outcome_check_runs_the_outcome_check_module(
     fake.assert_called_once_with(ctx)
 
 
+def test_the_registered_enrichment_runs_the_enrich_step_module(
+    monkeypatch: pytest.MonkeyPatch, settings: Settings
+) -> None:
+    # The module is named by a string: a typo there would only fail at 07:15 UTC.
+    (step,) = (s for s in STEPS if s.name == "enrich-outcomes")
+    result = StepResult("ok", {"days_processed": 1})
+    fake = create_autospec(enrich_step.run, return_value=result)
+    monkeypatch.setattr(enrich_step, "run", fake)
+    ctx = _ctx(settings)
+
+    assert step.run(ctx) is result
+
+    fake.assert_called_once_with(ctx)
+
+
 def test_pipeline_imports_no_step_module_at_load() -> None:
     # The child puts src/ and scripts/ on sys.path as the conftest does; it needs no
-    # database, network or environment variable to import the registry.
+    # database, network or environment variable to import the registry. The scripts
+    # (numpy, pandas, psycopg2) are the heavy part of a step module: none loads either.
     env = {
         **os.environ,
         "PYTHONPATH": os.pathsep.join([str(NIGHTLY_DIR / "src"), str(SCRIPTS_DIR)]),
     }
-    code = "import sys, pipeline; print('outcome_check' in sys.modules)"
+    loaded = (
+        "outcome_check",
+        "enrich_step",
+        "enrich_lottery_outcomes",
+        "enrich_silent_boom_outcomes",
+    )
+    code = f"import sys, pipeline; print([name in sys.modules for name in {loaded!r}])"
 
     result = subprocess.run(
         [sys.executable, "-c", code],
@@ -122,7 +158,7 @@ def test_pipeline_imports_no_step_module_at_load() -> None:
     )
 
     assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "False"
+    assert result.stdout.strip() == "[False, False, False, False]"
 
 
 # --- lazy_step ------------------------------------------------------------------------

@@ -134,7 +134,9 @@ def test_scripts_import_in_the_image_layout(tmp_path: Path):
             sys.executable,
             "-P",
             "-c",
-            "import enrich_lottery_outcomes, enrich_silent_boom_outcomes, _tape_reader",
+            # The steps too: lazy_step defers them, so a missing file would go unseen until 07:15.
+            "import pipeline, outcome_check, enrich_step, "
+            "enrich_lottery_outcomes, enrich_silent_boom_outcomes, _tape_reader",
         ],
         cwd=tmp_path,
         env={**os.environ, "PYTHONPATH": _image_pythonpath(tmp_path)},
