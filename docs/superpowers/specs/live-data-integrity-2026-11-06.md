@@ -290,6 +290,25 @@ Tier 0 must be live before **Mon 2026-11-09 09:25 ET**. Each phase is ≤5 files
 - **P1.3 Vol surface (F20).** Pass `date=`, check the row's own date, and skip market holidays.
 - **P1.4 Backfill rule.** Add to the summer gap plan and `scripts/README.md` that a backfill's full write waits for `check-data-integrity` on a dry run, plus parity against live days, not only row counts.
   - Don't run the ETF tide or zero_dte_index backfills for any day until `flow-data-backfill.mjs` uses the window-end label. From the deploy of this fix (planned 2026-11-09) the live rows use it, and DO NOTHING would interleave the two conventions.
+- **P1.5 Weekly table backup never completes (audit T8 / IO-2, Phase 3.13 of `llm-antipattern-audit-2026-09-08.md`). Must ship before Sun 2026-11-15 05:00 UTC, the next run.** `api/cron/backup-tables.ts` has not finished a run since 2026-05-17, and Sentry showed only a `timeout` and opened no issue. It matters here because the three revision tables (P0.8, P0.9) are the only copy of their data and ride in the same run. Write-up with the probes: `docs/tmp/live-data-integrity-2026-11-06/backup-timeout-findings.md` (local).
+  - **Root cause.** `strike_exposures` (about 74M rows, 12 GB heap, about 48 GB as JSONL, +1M rows per trading day) sat in the weekly table loop. `exportTable` pages it with `LIMIT 50000 OFFSET n` into one `Buffer[]`, and the cost of a page grows with the offset: 2.4 s at offset 0, 15.3 s at 1M, 52.1 s at 5M, 117.1 s at 20M (50k rows each). In the 270 s left after the nine small tables it reaches under 2 % of the table. Vercel then kills the function, before the closing Sentry check-in:
+    - 2026-11-08: 504 at 300.6 s, 4281 MB used (`maxDuration` 300 s);
+    - 2026-11-01: 500 at 258.7 s, 4096 of 4096 MB (out of memory).
+  - **Evidence.**
+    - Vercel Blob `backups/` (read-only listing, 2026-11-11): 30 weekly folders. Since 05-24 each holds 9 of 14 tables, and `strike_exposures`, `training_features`, `day_labels`, `economic_events` and `schema_migrations` are missing every week. `strike_exposures` was never in any backup.
+    - Pruning is the step after the loop, so it has not run since about 05-17: the oldest folder is 2026-04-19 against a 4-week policy.
+    - Why 05-24 and not earlier (inferred from file timestamps and the commit time; the 05-17 Sentry error was not opened): on 05-17 the table failed fast (`RangeError: Invalid string length`), the error was caught per table, and the run finished. Commit 81b41e9c (Buffer instead of string, landed after that run) turned the fast failure into a slow one that eats the function.
+  - **Fix (built 2026-11-11, `api/cron/backup-tables.ts` and its test).**
+    - `strike_exposures` is out of `TABLES`, with a comment, and a test pins its absence.
+    - **Time budget.** No table or page starts after `TABLE_LOOP_BUDGET_MS` (240 s of the 300 s `maxDuration`; the arithmetic is in the code comment). A table not yet started is *skipped*; a table cut off mid-table is *unfinished* and nothing is uploaded for it, since a truncated file would pass for a backup. **Size cap.** `EXPORT_MAX_BYTES` (512 MiB, about 4x the largest table today) stops a table that would put the 4096 MB function at risk; it is reported as unfinished and the loop goes on.
+    - **Loud.** Both lists are named in the response (`skipped`, `unfinished`, `errors`), in the pino log, in the Axiom event (`skippedTables`, `unfinishedTables`, inside `meta`) and in one Sentry `captureMessage` at level `error` (fingerprint `backup-tables` / `incomplete`). `withCronCheckin` sends its check-in from the response status (`>= 400` is `error`) and ignores the Axiom status, so any run that leaves a table out, or fails a table or the prune, now answers **500**. Before, a failed table answered 200 and Sentry's monitor saw `ok`. The Axiom status is `partial` when some tables landed and `error` when none did.
+    - **Order.** The three revision tables first (only copy), then the small tables, then `spot_exposures`, `flow_data` and `greek_exposure` last, so a spent budget costs the largest re-derivable tables first.
+    - **Prune** is unchanged and runs after a budget-limited loop exactly as after a complete one (tested).
+  - **Run time with today's sizes.** About 50 s: the nine tables of 11-08 took 25 s (greek_exposure 14 s of it); the three revision tables add about 160 MiB, about 15 to 20 s; the four tables missing since May are under 1 MiB; the prune and check-ins a few seconds. The folder will be about 366 MiB. The 240 s budget is a stop for a runaway table, not a limit the run feels.
+  - **Deferred (audit Phase 3.13).** Stream instead of `Buffer.concat`: keyset paging (`WHERE id > $last ORDER BY id LIMIT n`, sized by bytes, about 20k rows for the wide tables) feeding a multipart streamed `put` (`multipart: true` with a web stream; template at `scripts/upload-archive-to-blob.mjs`). That is constant memory, removes the size cap, and the OFFSET cost. Until then a table past 512 MiB (greek_exposure, about 130 MB, is the nearest) is reported every week instead of backed up.
+  - **Open owner decisions.**
+    - **First prune.** The first run to reach `pruneOldBackups` deletes every folder older than 28 days. On 11-15 the cutoff is 10-18, so 26 folders (2026-04-19 to 10-11, about 2 GB) go in one `del`. Options: let it run (the stated policy), keep them, or cap the deletion. Not changed yet.
+    - **`strike_exposures` backup.** Options: a separate daily cron that writes one closed day per run (keyset on the unique index, gzip, multipart `put` to `backups/strike_exposures/{date}.jsonl.gz`, skip days already present, backfill under a time budget; about 650 MB of JSONL per day before gzip); or rely on Neon point-in-time restore (window unverified); or accept it as re-derivable if UW can re-serve it (unverified).
 
 **Tier 2: repair history (owner approval for every DELETE or UPDATE; the predicates go to the owner first)**
 
@@ -340,6 +359,7 @@ Tier 0 must be live before **Mon 2026-11-09 09:25 ET**. Each phase is ≤5 files
   - `api/_lib/data-integrity-checks.ts`, `api/cron/audit-data-integrity.ts`, `scripts/check-data-integrity.ts`
   - `vercel.json`, `api/_lib/cron-schedules.ts`
   - `api/_lib/build-features*.ts`, `api/cron/fetch-vol-surface.ts`
+  - `api/cron/backup-tables.ts` (P1.5)
   - tests
 - **Tier 2:** backfill scripts under `scripts/` (P3.3 retrofits), plus one-shot repair scripts with dry-run defaults.
 
@@ -391,3 +411,5 @@ Tier 0 must be live before **Mon 2026-11-09 09:25 ET**. Each phase is ≤5 files
 - **Snapshot quote staleness:** 10 minutes.
 - **All-zero floor:** every value column zero across the snapshot. For `flow_data` days, the P3.2 floor: 10 rows.
 - **Integrity-check thresholds:** tuned in P1.1 on 06-01 → 11-05 and recorded here as built.
+- **Backup table loop budget (P1.5):** `TABLE_LOOP_BUDGET_MS` 240 s of the 300 s `maxDuration`; 60 s is left for one page query (about 33 s with retries), a put, the prune and the closing check-in.
+- **Backup size cap (P1.5):** `EXPORT_MAX_BYTES` 512 MiB per table (about 1.5 GB peak of the 4096 MB function).
