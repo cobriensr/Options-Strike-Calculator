@@ -104,8 +104,14 @@ Filtering rationale (in handler order):
    new session's first print arrives, keeps that session's contract and
    tally. A decision that can't be had (Neon unreachable at the open) is not
    cached: the minutes of that session become gaps, logged under
-   ``kind="front_month_unknown"`` at error level, and the next flush asks
-   again.
+   ``kind="front_month_unknown"`` at error level with the cause, and it is
+   asked for again after the retry-after (30 s). Each front-month database
+   call (a decision, a tally load, a tally save) is cut at 8 s. A call that
+   failed is not repeated for that root and date for 30 s, and one that TIMED
+   OUT pauses every root's front-month calls for the same 30 s, so a hung Neon
+   costs one box and not one per call. Failures that aren't a Neon blip log
+   at error level, per root. A print for a trade date more than 3 days old is
+   dropped before any of this (``kind="stale_session_dropped"``).
 
 Bar aggregation is stateful, which does not fit ``_transform``'s 1:1
 payload→row contract. So ``_transform`` normalizes a single print and
@@ -124,10 +130,12 @@ Consequences worth knowing:
   month did is emitted as a GAP, logged under ``kind="front_sym_absent"``.
   Substituting the back month's price would inject a carry-basis spike
   into the root series that DO NOTHING could never revise.
-- The tally is saved about once a minute (whenever minutes are emitted) and
-  before a new trade date's decision is asked for, so that decision reads
-  the session that just ended. At most two sessions per root are kept in
-  memory.
+- The tally is saved about once a minute (whenever minutes are emitted),
+  before a new trade date's decision is asked for (so that decision reads
+  the session that just ended) and once on a clean shutdown, so a SIGTERM
+  loses none of it and only a crash loses the volume since the last save.
+  Only the contracts whose count rose are sent. At most two sessions per
+  root are kept in memory.
 - ``write_attempted`` (bumped by ``_safe_flush`` with the incoming row
   count) counts per-trade prints while ``write_count`` counts emitted
   bars, so for this channel the two are not comparable and their ratio
@@ -339,7 +347,7 @@ class FuturesTradesHandler(Handler):
         self._tally: dict[tuple[str, date], _Tally] = {}
         # (product, trade_date) -> the canonical contract the session's bars
         # are built from. Only a lookup that succeeded is here, so a failed
-        # one is asked again at the next flush. Bounded with ``_tally``.
+        # one is asked again after the retry-after. Bounded with ``_tally``.
         self._decided: dict[tuple[str, date], str] = {}
         # (product, minute_ts) -> {(contract, trade_id)} already counted.
         self._seen: dict[tuple[str, datetime], set[tuple[str, int]]] = {}
@@ -365,6 +373,12 @@ class FuturesTradesHandler(Handler):
         # product -> (kind, exception class) of its last front-month failure, for
         # the front_month_unknown line. Cleared by that root's next decision.
         self._cause: dict[str, tuple[str, str]] = {}
+        # After a call TIMES OUT no front-month call is made, for any root, until
+        # this monotonic time (None: no pause). One hang is one box, not one per
+        # call: six roots would otherwise cost 12 calls x 8 s at the open and again
+        # 30 s later. ``_box_cause`` is what a skipped root's gap names.
+        self._box_until: float | None = None
+        self._box_cause: tuple[str, str] = ("lookup_timeout", "TimeoutError")
         # product -> the last stale trade date logged for it (one line per date).
         self._stale_logged: dict[str, date] = {}
 
@@ -622,6 +636,10 @@ class FuturesTradesHandler(Handler):
     def _cool(self, call: str, product: str, day: date | None) -> None:
         self._retry_after[(call, product, day)] = time.monotonic() + _RETRY_AFTER_S
 
+    def _boxed_out(self) -> bool:
+        """True while a call that timed out holds every root's front-month calls."""
+        return self._box_until is not None and time.monotonic() < self._box_until
+
     def _note_failure(
         self, kind: str, message: str, product: str, day: date | None, exc: BaseException
     ) -> None:
@@ -630,15 +648,20 @@ class FuturesTradesHandler(Handler):
         A transient database error (a timeout among them) is a warning, which
         the minutes it costs escalate as ``front_month_unknown``. Anything else
         (a bad row, a rejected statement) is an error, so it reaches Sentry
-        before the next open. One window per root and level.
+        before the next open. One window per root and level. A timeout also
+        pauses every root's front-month calls for the retry-after
+        (``_boxed_out``); any other failure cools its own call only.
         """
         err_type = type(exc).__name__
         self._cause[product] = (kind, err_type)
+        if isinstance(exc, TimeoutError):
+            self._box_until = time.monotonic() + _RETRY_AFTER_S
+            self._box_cause = (kind, err_type)
         report = rate_limited_log.warning if is_transient_db_error(exc) else rate_limited_log.error
         report(
             scope="futures_trades",
             kind=kind,
-            message=f"futures_trades {message}; asked again in {_RETRY_AFTER_S:.0f}s",
+            message=f"futures_trades {message}; asked again after {_RETRY_AFTER_S:.0f}s",
             extra={
                 "product": product,
                 "trade_date": day.isoformat() if day is not None else None,
@@ -658,7 +681,7 @@ class FuturesTradesHandler(Handler):
         this one's counts (a session isn't saved until it is loaded).
         """
         for (product, day), tally in list(self._tally.items()):
-            if tally.loaded or self._cooling("load", product, day):
+            if tally.loaded or self._cooling("load", product, day) or self._boxed_out():
                 continue
             try:
                 stored = await self._timed(front_month.load_tally(product, day))
@@ -677,12 +700,17 @@ class FuturesTradesHandler(Handler):
 
         The decision for a session reads the volume of the one before it, so
         that volume must be in the table first: with the tally unsaved the
-        lookup is not made, and the session stays undecided until the next
-        flush. A lookup that fails, times out or returns None is not cached,
-        and is not repeated inside the retry-after.
+        lookup is not made, and the session stays undecided until it can be.
+        A lookup that fails, times out or returns None is not cached, and is
+        not repeated inside the retry-after. While a timeout holds every root's
+        calls (``_boxed_out``) none is made, and the root's gap names that
+        timeout as its cause.
         """
         product, day = key
         if self._cooling("decide", product, day):
+            return
+        if self._boxed_out():
+            self._cause[product] = self._box_cause
             return
         if not await self._save_tally(product):
             self._cause.setdefault(product, ("tally_unsaved", ""))
@@ -707,10 +735,11 @@ class FuturesTradesHandler(Handler):
         """Save the tallies that changed, one statement, for one product or all.
 
         Only the contracts above what the table holds are sent. False when a
-        save failed or is waiting out its retry-after, or when a tally with
-        unsaved volume has not been loaded (it can't be saved yet), so a caller
-        that needs the table current knows it isn't. Never raises. For one
-        product the unloaded tallies of other roots don't count.
+        save failed or is waiting out its retry-after (or a timeout holds every
+        root's calls), or when a tally with unsaved volume has not been loaded
+        (it can't be saved yet), so a caller that needs the table current knows
+        it isn't. Never raises. For one product the unloaded tallies of other
+        roots don't count.
         """
         sessions = [key for key in self._tally if product is None or key[0] == product]
         stuck = any(not self._tally[key].loaded and self._tally[key].dirty for key in sessions)
@@ -718,6 +747,8 @@ class FuturesTradesHandler(Handler):
         if product is None:
             dirty = [key for key in dirty if not self._cooling("save", key[0], None)]
         elif dirty and self._cooling("save", product, None):
+            return False
+        if dirty and self._boxed_out():
             return False
         if dirty:
             changed = {key: self._tally[key].unsaved() for key in dirty}
@@ -735,6 +766,8 @@ class FuturesTradesHandler(Handler):
                 return False
             for key, counts in changed.items():
                 self._tally[key].saved.update(counts)
+            for p in {p for p, _ in dirty}:
+                self._retry_after.pop(("save", p, None), None)
         return not stuck
 
     def _evict_old_sessions(self) -> None:
@@ -960,7 +993,8 @@ class FuturesTradesHandler(Handler):
             elif front is None:
                 # No decision for this minute's session (Neon unreachable at
                 # the open): nothing says which contract the bar is, so the
-                # minute is a gap. Not cached, so the next flush asks again.
+                # minute is a gap. Not cached, so it is asked for again after
+                # the retry-after.
                 self._note_unknown(product, day, minute_ts)
             else:
                 # The session's contract printed nothing in this
