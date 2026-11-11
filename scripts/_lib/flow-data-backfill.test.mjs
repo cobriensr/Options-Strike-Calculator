@@ -1231,9 +1231,11 @@ describe('sampleFiveMinuteRows and storeSampledDay (the two inline scripts)', ()
     ]);
   });
 
-  it('floors a window to the epoch-aligned 5 minutes, also on the day the clocks fall back (2026-11-01)', () => {
-    // 07:07Z is 03:07 EDT, an hour into the repeated 01:00-02:00 hour; the
-    // window is epoch-aligned (300 s), not a wall-clock one.
+  it('floors a tick to its 5-minute window start on the day the clocks fall back (2026-11-01)', () => {
+    // The clocks fell back at 06:00Z, so 07:07Z is 02:07 EST. Every offset
+    // from UTC is a whole hour, so flooring the epoch to 300 s and flooring
+    // the wall clock to 5 minutes give the same window: this pins the window
+    // key on a DST day (07:05Z), not epoch against wall-clock flooring.
     const rows = sampleFiveMinuteRows(
       [{ timestamp: '2026-11-01T07:07:00Z', a: 'x', b: 'y', c: 1 }],
       { ...options(), date: '2026-11-01' },
