@@ -36,11 +36,8 @@
  *     window, which is at most 24 h (from T-24h to the expiry T). A lapsed
  *     key must outlive its nag day, which is at most 25 h (the DST fall-back
  *     day). 48 h covers both with margin.
- *   - Release: when no device received it, the claim is released so the
- *     next hourly run retries. If that release fails, the reminder is not
- *     retried until its key expires, but the next kind still fires.
- *   - Known gap: a run killed between the claim and the send (a function
- *     timeout) loses that one reminder; the next kind still fires.
+ *   - Release and known gap: as in `push-once.ts`. A reminder lost to either
+ *     is not retried until its key expires, but the next kind still fires.
  *
  * Push TTL is REMINDER_PUSH_TTL_SEC (6 h). The push service drops a message
  * it cannot deliver within its TTL, and the claim would then block a retry,

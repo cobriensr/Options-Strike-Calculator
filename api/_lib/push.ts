@@ -175,9 +175,10 @@ export async function sendPushToOwner(
 
   // Best-effort, like the last_used_at stamp below: the pushes have already
   // landed, so a failed cleanup must not turn a delivered fan-out into a
-  // throw. Callers that release an idempotency claim on a throw (the Schwab
-  // re-auth reminder) would otherwise re-send every hour. The rows are
-  // retried on the next fan-out, which gets 410/404 from them again.
+  // throw. `sendOwnerPushOnce` (`api/_lib/push-once.ts`) releases its
+  // idempotency claim on a throw, so a throw here would re-send on every
+  // run. The rows are retried on the next fan-out, which gets 410/404 from
+  // them again.
   if (expiredIds.length > 0) {
     try {
       await sql`

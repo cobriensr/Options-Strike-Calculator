@@ -21,9 +21,15 @@
  *     every send failed or expired), or when the send threw, the claim is
  *     released so the next run retries. A failed release is logged and
  *     captured, not thrown: the claim then holds until its TTL and that push
- *     is not retried.
+ *     is not retried. Releasing on a throw is safe only because
+ *     `sendPushToOwner` throws before any device is contacted (VAPID setup
+ *     and the subscription read, `push.ts`) and swallows its post-send steps,
+ *     so a future change that throws after sending must revisit this.
  *   - Known gap: a run killed between the claim and the send (a function
- *     timeout) loses that one push until the key expires.
+ *     timeout) loses that one push until the key expires. Rarer: the Upstash
+ *     client retries a thrown fetch itself, so a SET NX that succeeded
+ *     server-side but lost its response can come back as not claimed, and
+ *     that run reports "already sent" with nothing sent.
  *
  * `pushTtlSec` is how long the push service holds the message for an
  * unreachable device. A message dropped at its TTL is lost while the claim
