@@ -1,18 +1,19 @@
 /**
  * GET /api/cron/check-live-snapshots
  *
- * Every 15 minutes during the session, pushes a phone alert when no live
- * `market_snapshots` row has saved in the last 30 minutes. Live rows save
- * only from the owner's own browser (`useSnapshotSave`), so a closed, asleep,
- * signed-out or stuck trading browser shows up here the same morning instead
- * of days later.
+ * Every 15 minutes during the session, pushes a phone alert when live
+ * `market_snapshots` rows were saving today and none has saved in the last
+ * 30 minutes. Live rows save only from the owner's own browser
+ * (`useSnapshotSave`), so an asleep, signed-out or stuck trading browser shows
+ * up here the same morning instead of days later.
  *
  * A live row is a `market_snapshots` row with `date` = today (ET), `is_backtest
  * = false` and `entry_time <> 'pre-market'` (the pre-market form writes its
  * own row, which is not a calculator snapshot). The latest `created_at` among
- * them is the last live save. With none today the clock starts at the 09:30
- * ET open, so a day with no live row is exactly 30 minutes stale at the first
- * check and pushes then.
+ * them is the last live save. With none today the app has not started saving,
+ * so there is no stall to report: the check succeeds with "no live snapshot
+ * yet today" and sends nothing (owner amendment, 2026-11-12). A whole day with
+ * no saves therefore sends nothing, which the owner accepted.
  *
  * Window (`isLiveSnapshotWatchWindow`): a trading day, 10:00 ET (09:00 CT)
  * through the close minus 15 minutes (15:45 ET / 14:45 CT; 12:45 ET / 11:45
@@ -24,22 +25,44 @@
  * Detection time: a save is stale at 30 minutes and a check runs every 15,
  * so the alert lands 30-45 minutes after the last save. Example: saves stop
  * at 11:10 CT. The 11:30 check sees 20 minutes (no push); the 11:45 check
- * sees 35 and pushes "Last live snapshot 11:10 AM CT". Later checks find the
- * day's claim and skip.
+ * sees 35 and pushes "Last live snapshot 11:10 AM CT". Later checks find that
+ * stall's claim and skip. If saves resume at 12:00 and stop again at 13:05,
+ * the 13:45 check pushes again for the new stall.
+ *
+ * Deliberate close (owner amendment, 2026-11-12): the app tells the server
+ * when the owner closes its page (`POST /api/snapshot-close`), which writes
+ * `snapshot-app-closed:{ET date}` = the ISO time of the latest close signal.
+ * Only when the last save is stale, before claiming, the cron reads that key:
+ *   - A marker at or after the last save means the owner closed the app after
+ *     it last saved: success "app closed at {time} CT", no claim, no push.
+ *   - A marker before the last save (the app was reopened and saved since) is
+ *     ignored, and the stall pushes as usual.
+ *   - A Redis read failure propagates (500, an `error` check-in), as a claim
+ *     failure does. It must not read as "closed", which would silence a real
+ *     stall.
+ *   - An unreadable marker value reads as no marker, with a warning. A bad
+ *     marker must not silence a real stall either.
  *
  * Idempotency (R6) comes from a claim key taken with SET NX BEFORE sending,
  * by `sendOwnerPushOnce` (`api/_lib/push-once.ts`, which documents the
  * claim, the fenced release and the fail-closed behavior):
- *   - Key: `snapshot-stale-alert:{ET date}`. The date is the event, not
- *     `NOW()`, so every check on a day maps to the same key and at most one
- *     push goes out per trading day.
+ *   - Key: `snapshot-stale-alert:{ET date}:{last save epoch ms}`. The last
+ *     save is the event that began the stall, not `NOW()`. During one stall it
+ *     does not change, so every later check maps to the same key and skips.
+ *     Saves that resume and stop again make a new `MAX(created_at)`, hence a
+ *     new key and a new push: one push per stall.
  *   - Expire: CLAIM_TTL_SEC = 24 h. The key must outlive the window in which
- *     the same date can be derived: the first claim is at 10:00 ET at the
+ *     the same stall can be derived: the first claim is at 10:00 ET at the
  *     earliest and the last check that day is at 15:45 ET, so 5 h 45 min at
- *     most. 24 h covers it with margin, and the next trading day derives a
- *     new key.
- *   - Release and known gap: as in `push-once.ts`. A day's alert lost to
- *     either is lost for that day: the key outlives the window.
+ *     most. 24 h covers it with margin, and the next trading day's date
+ *     changes the key.
+ *   - Release and known gap: as in `push-once.ts`. A stall's alert lost to
+ *     either is lost for that stall: the key outlives the window.
+ *
+ * The notification tag is per stall too (`snapshot-stale-{date}-{ms}`).
+ * `src/sw.ts` shows the notification with the payload's tag and no
+ * `renotify`, so a second stall that reused the day's tag would silently
+ * replace the first notification without alerting.
  *
  * Push TTL is PUSH_TTL_SEC (1 h): a late delivery is still useful inside the
  * session, and the claim blocks a retry once the push service accepted it.
@@ -55,19 +78,22 @@ import {
 } from '../_lib/cron-instrumentation.js';
 import { getDb, withDbRetry } from '../_lib/db.js';
 import { neonIso } from '../_lib/db-date.js';
+import logger from '../_lib/logger.js';
 import { sendOwnerPushOnce, undeliveredReason } from '../_lib/push-once.js';
+import { redis } from '../_lib/redis.js';
 import { Sentry } from '../_lib/sentry.js';
 import { getMarketCloseHourET } from '../../src/data/marketHours.js';
 import {
   getCTTime,
   getETDateStr,
   getETDayOfWeek,
-  getETMarketOpenUtcIso,
   getETTime,
 } from '../../src/utils/timezone.js';
 
 const JOB_NAME = 'check-live-snapshots';
 const KEY_PREFIX = 'snapshot-stale-alert';
+/** Written by `api/snapshot-close.ts`: `{prefix}:{ET date}` = ISO close time. */
+const CLOSED_KEY_PREFIX = 'snapshot-app-closed';
 const MINUTE_MS = 60_000;
 /** Live rows save every 5 min while the page is open: 30 min is six misses. */
 const STALE_AFTER_MIN = 30;
@@ -111,6 +137,30 @@ function formatCtClock(ms: number): string {
   return `${hour % 12 || 12}:${minutes} ${meridiem} CT`;
 }
 
+/**
+ * When the owner last closed the app today, in epoch ms, or null when there is
+ * no marker or its value is unreadable.
+ *
+ * A Redis error propagates: a failed read must not read as "closed", which
+ * would silence a real stall. An unreadable value is warned about and reads as
+ * no marker, for the same reason. Upstash returns a digits-only value as a
+ * number, hence the string check.
+ */
+async function readCloseMarkerMs(today: string): Promise<number | null> {
+  const marker = await redis.get<unknown>(`${CLOSED_KEY_PREFIX}:${today}`);
+  if (marker == null) return null;
+  const closedAtMs =
+    typeof marker === 'string' ? Date.parse(marker) : Number.NaN;
+  if (!Number.isFinite(closedAtMs)) {
+    logger.warn(
+      { today, marker },
+      `${JOB_NAME}: close marker unreadable; treating as not closed`,
+    );
+    return null;
+  }
+  return closedAtMs;
+}
+
 export default withCronInstrumentation(
   JOB_NAME,
   async ({ today }): Promise<CronResult> => {
@@ -127,19 +177,24 @@ export default withCronInstrumentation(
       10_000,
     )) as LastLiveRow[];
     const lastLive = rows[0]?.last_live_at;
-    const lastLiveAt = lastLive == null ? null : neonIso(lastLive);
+    // No live row today: saves have not started, so nothing has stalled.
+    if (lastLive == null) {
+      return {
+        status: 'success',
+        message: 'no live snapshot yet today',
+        metadata: { lastLiveAt: null },
+      };
+    }
 
-    // The last live save, or the open when there is none. An unreadable
-    // reference must fail loud: NaN compares false, which would read as
-    // "current" and silence the alert.
-    const referenceMs = Date.parse(
-      lastLiveAt ?? getETMarketOpenUtcIso(today) ?? '',
-    );
-    if (!Number.isFinite(referenceMs)) {
+    const lastLiveAt = neonIso(lastLive);
+    // An unreadable save time must fail loud: NaN compares false, which would
+    // read as "current" and silence the alert.
+    const lastSaveMs = Date.parse(lastLiveAt);
+    if (!Number.isFinite(lastSaveMs)) {
       throw new Error(`live snapshot reference time unreadable for ${today}`);
     }
 
-    const sinceMs = Date.now() - referenceMs;
+    const sinceMs = Date.now() - lastSaveMs;
     const minutesSince = Math.floor(sinceMs / MINUTE_MS);
     if (sinceMs < STALE_AFTER_MIN * MINUTE_MS) {
       return {
@@ -149,21 +204,28 @@ export default withCronInstrumentation(
       };
     }
 
-    const lastSave =
-      lastLiveAt === null
-        ? 'No live snapshot since the open.'
-        : `Last live snapshot ${formatCtClock(referenceMs)}.`;
+    // Stale. A close at or after the last save is the owner leaving, not a
+    // stall. Read before claiming, so a close never takes the claim.
+    const closedAtMs = await readCloseMarkerMs(today);
+    if (closedAtMs !== null && closedAtMs >= lastSaveMs) {
+      return {
+        status: 'success',
+        message: `app closed at ${formatCtClock(closedAtMs)}`,
+        metadata: { lastLiveAt, closedAt: new Date(closedAtMs).toISOString() },
+      };
+    }
+
     // Throws if the claim or the send throws (the wrapper captures it and
     // reports status 'error'); the claim fails closed, see the header.
     const outcome = await sendOwnerPushOnce({
-      key: `${KEY_PREFIX}:${today}`,
+      key: `${KEY_PREFIX}:${today}:${lastSaveMs}`,
       claimTtlSec: CLAIM_TTL_SEC,
       payload: {
         title: 'Live snapshots stopped saving',
-        body: `${lastSave} ${OPEN_APP_HINT}`,
-        // Dated, so each day's alert shows afresh instead of silently
-        // replacing yesterday's if it is still open.
-        tag: `snapshot-stale-${today}`,
+        body: `Last live snapshot ${formatCtClock(lastSaveMs)}. ${OPEN_APP_HINT}`,
+        // Per stall, so a second stall shows a second notification instead of
+        // silently replacing the first (see the header).
+        tag: `snapshot-stale-${today}-${lastSaveMs}`,
         requireInteraction: true,
         url: '/',
       },
@@ -174,7 +236,7 @@ export default withCronInstrumentation(
     if (!outcome.claimed) {
       return {
         status: 'skipped',
-        message: 'alert already sent today',
+        message: 'alert already sent for this stall',
         metadata,
       };
     }

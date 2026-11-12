@@ -1,16 +1,19 @@
 // @vitest-environment node
 
 /**
- * /api/cron/check-live-snapshots — pushes a phone alert when no live
- * market_snapshots row has saved for 30 minutes during the session, at most
- * once per trading day.
+ * /api/cron/check-live-snapshots — pushes a phone alert when a live
+ * market_snapshots row has saved today and then none has for 30 minutes
+ * during the session, once per stall. A day with no live row yet sends
+ * nothing, and neither does a stall that follows a deliberate close of the
+ * app (the `snapshot-app-closed:{date}` marker, written by
+ * `POST /api/snapshot-close`).
  *
  * Mocks sit at the external boundaries: Neon (`getDb`), the Upstash client
- * (the claim key), the web-push fan-out, Sentry, the logger and Axiom. The
- * real `cronGuard`, `withCronInstrumentation` and `sendOwnerPushOnce` run,
- * so the 401, the time window, the claim and its release go through the same
- * code production does. Only `Date` is faked, so the clock is exact and the
- * wrapper's own timers still run.
+ * (the claim key and the close marker), the web-push fan-out, Sentry, the
+ * logger and Axiom. The real `cronGuard`, `withCronInstrumentation` and
+ * `sendOwnerPushOnce` run, so the 401, the time window, the claim and its
+ * release go through the same code production does. Only `Date` is faked, so
+ * the clock is exact and the wrapper's own timers still run.
  */
 
 import { readFileSync } from 'node:fs';
@@ -22,18 +25,18 @@ import { mockRequest, mockResponse } from './helpers';
 const {
   mockSql,
   mockRedisSet,
+  mockRedisGet,
   mockRedisEval,
   mockSendPush,
-  mockOpenIso,
   mockSentry,
   mockLogger,
   mockReportCronRun,
 } = vi.hoisted(() => ({
   mockSql: vi.fn(),
   mockRedisSet: vi.fn(),
+  mockRedisGet: vi.fn(),
   mockRedisEval: vi.fn(),
   mockSendPush: vi.fn(),
-  mockOpenIso: vi.fn(),
   mockSentry: {
     setTag: vi.fn(),
     captureException: vi.fn(),
@@ -51,6 +54,7 @@ vi.mock('../_lib/db.js', () => ({
 vi.mock('@upstash/redis', () => ({
   Redis: class MockRedis {
     set = mockRedisSet;
+    get = mockRedisGet;
     eval = mockRedisEval;
   },
 }));
@@ -66,13 +70,6 @@ vi.mock('../_lib/sentry.js', () => ({
 
 vi.mock('../_lib/axiom.js', () => ({ reportCronRun: mockReportCronRun }));
 
-// Real timezone helpers, except the market-open lookup, which only returns
-// null for a malformed date and so needs a seam to be reached.
-vi.mock('../../src/utils/timezone.js', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../src/utils/timezone.js')>()),
-  getETMarketOpenUtcIso: mockOpenIso,
-}));
-
 import handler, {
   isLiveSnapshotWatchWindow,
 } from '../cron/check-live-snapshots.js';
@@ -87,11 +84,25 @@ const UNDELIVERED = 'snapshot.stale_alert.undelivered';
 // Wed Nov 11 2026, 11:00 AM CT (12:00 ET, EST).
 const TODAY = '2026-11-11';
 const NOW = Date.parse('2026-11-11T17:00:00Z');
-const KEY = `snapshot-stale-alert:${TODAY}`;
+const CLOSED_KEY = `snapshot-app-closed:${TODAY}`;
 
 function minutesAgo(min: number, from = NOW): Date {
   return new Date(from - min * MINUTE_MS);
 }
+
+/** The claim key for the stall that began after this last save. */
+function claimKeyFor(lastSave: Date, date = TODAY): string {
+  return `snapshot-stale-alert:${date}:${lastSave.getTime()}`;
+}
+
+/** The notification tag for the stall that began after this last save. */
+function tagFor(lastSave: Date, date = TODAY): string {
+  return `snapshot-stale-${date}-${lastSave.getTime()}`;
+}
+
+// The last save most stale-path tests use: 35 min before NOW, 10:25 AM CT.
+const STALE_SAVE = minutesAgo(35);
+const STALE_KEY = claimKeyFor(STALE_SAVE);
 
 /** Queue the one SELECT MAX(created_at) the handler issues. */
 function queueLastLive(lastLiveAt: Date | string | null): void {
@@ -123,18 +134,16 @@ function claimToken(): string {
 describe('cron check-live-snapshots', () => {
   const originalEnv = process.env;
 
-  beforeEach(async () => {
+  beforeEach(() => {
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(NOW);
     process.env = { ...originalEnv, CRON_SECRET: 'test-secret' };
     // The cron calls no UW API: it must run whatever the shell exports.
     delete process.env.UW_API_KEY;
-    const timezone = await vi.importActual<
-      typeof import('../../src/utils/timezone.js')
-    >('../../src/utils/timezone.js');
-    mockOpenIso.mockReset().mockImplementation(timezone.getETMarketOpenUtcIso);
     mockSql.mockReset();
     mockRedisSet.mockReset().mockResolvedValue('OK');
+    // No close marker unless a test sets one.
+    mockRedisGet.mockReset().mockResolvedValue(null);
     mockRedisEval.mockReset().mockResolvedValue(1);
     mockSendPush
       .mockReset()
@@ -142,6 +151,7 @@ describe('cron check-live-snapshots', () => {
     mockSentry.captureException.mockClear();
     mockSentry.captureMessage.mockClear();
     mockLogger.error.mockClear();
+    mockLogger.warn.mockClear();
     mockReportCronRun.mockReset().mockResolvedValue(undefined);
   });
 
@@ -220,6 +230,7 @@ describe('cron check-live-snapshots', () => {
         reason: 'Outside time window',
       });
       expect(mockSql).not.toHaveBeenCalled();
+      expect(mockRedisGet).not.toHaveBeenCalled();
       expect(mockSendPush).not.toHaveBeenCalled();
     });
 
@@ -304,6 +315,8 @@ describe('cron check-live-snapshots', () => {
         lastLiveAt: lastLive.toISOString(),
         minutesSince: 20,
       });
+      // Current: no close marker read, no claim, no push.
+      expect(mockRedisGet).not.toHaveBeenCalled();
       expect(mockRedisSet).not.toHaveBeenCalled();
       expect(mockSendPush).not.toHaveBeenCalled();
     });
@@ -336,7 +349,7 @@ describe('cron check-live-snapshots', () => {
         (d: Date) => d.toISOString().replace('T', ' ').replace('Z', '+00'),
       ],
     ])('reads a last save returned as %s', async (_shape, toDriver) => {
-      queueLastLive(toDriver(minutesAgo(35)));
+      queueLastLive(toDriver(STALE_SAVE));
       await runCron();
       expect(mockSendPush).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -344,16 +357,28 @@ describe('cron check-live-snapshots', () => {
         }),
         { ttlSec: PUSH_TTL_SEC },
       );
+      // The same save keys the same stall, whatever shape the driver used.
+      expect(mockRedisSet).toHaveBeenCalledWith(
+        STALE_KEY,
+        expect.any(String),
+        expect.anything(),
+      );
     });
   });
 
   describe('a stale last save', () => {
-    it('pushes once, claimed on the ET date, with the last save time', async () => {
-      queueLastLive(minutesAgo(35)); // 10:25 AM CT
+    it('pushes once, claimed and tagged per stall, with the last save time', async () => {
+      queueLastLive(STALE_SAVE); // 10:25 AM CT
 
       const res = await runCron();
 
-      expect(mockRedisSet).toHaveBeenCalledWith(KEY, expect.any(String), {
+      // The key and the tag carry the last save's epoch ms, so they come from
+      // the stall and not from the day.
+      expect(STALE_KEY).toBe(
+        `snapshot-stale-alert:${TODAY}:${STALE_SAVE.getTime()}`,
+      );
+      expect(mockRedisSet).toHaveBeenCalledTimes(1);
+      expect(mockRedisSet).toHaveBeenCalledWith(STALE_KEY, expect.any(String), {
         nx: true,
         ex: CLAIM_TTL_SEC,
       });
@@ -362,7 +387,7 @@ describe('cron check-live-snapshots', () => {
         {
           title: 'Live snapshots stopped saving',
           body: `Last live snapshot 10:25 AM CT. ${OPEN_APP}`,
-          tag: `snapshot-stale-${TODAY}`,
+          tag: `snapshot-stale-${TODAY}-${STALE_SAVE.getTime()}`,
           requireInteraction: true,
           url: '/',
         },
@@ -380,7 +405,7 @@ describe('cron check-live-snapshots', () => {
     });
 
     it('claims before it sends', async () => {
-      queueLastLive(minutesAgo(35));
+      queueLastLive(STALE_SAVE);
       await runCron();
       expect(mockRedisSet.mock.invocationCallOrder[0]).toBeLessThan(
         mockSendPush.mock.invocationCallOrder[0]!,
@@ -405,8 +430,8 @@ describe('cron check-live-snapshots', () => {
       );
     });
 
-    it('says the alert already went out when an earlier run holds the claim', async () => {
-      queueLastLive(minutesAgo(35));
+    it('says the alert already went out when an earlier run holds the stall’s claim', async () => {
+      queueLastLive(STALE_SAVE);
       mockRedisSet.mockResolvedValueOnce(null);
 
       const res = await runCron();
@@ -414,14 +439,14 @@ describe('cron check-live-snapshots', () => {
       expect(res._status).toBe(200);
       expect(bodyOf(res)).toMatchObject({
         status: 'skipped',
-        message: 'alert already sent today',
+        message: 'alert already sent for this stall',
       });
       expect(mockSendPush).not.toHaveBeenCalled();
       expect(mockRedisEval).not.toHaveBeenCalled();
     });
 
     it('reports partial and keeps the claim when some devices failed', async () => {
-      queueLastLive(minutesAgo(35));
+      queueLastLive(STALE_SAVE);
       mockSendPush.mockResolvedValueOnce({ sent: 1, expired: 0, failed: 1 });
 
       const res = await runCron();
@@ -437,62 +462,201 @@ describe('cron check-live-snapshots', () => {
     });
   });
 
-  describe('no live row today', () => {
-    // 09:00 CT = 10:00 ET: exactly 30 min after the 09:30 ET open.
-    const WINDOW_OPEN = Date.parse('2026-11-11T15:00:00Z');
+  describe('one push per stall', () => {
+    /** SET NX over a set of held keys, as Upstash does, so a rerun sees an earlier claim. */
+    function installClaimStore(): Set<string> {
+      const held = new Set<string>();
+      mockRedisSet.mockImplementation((key: string) => {
+        if (held.has(key)) return Promise.resolve(null);
+        held.add(key);
+        return Promise.resolve('OK');
+      });
+      return held;
+    }
 
-    it('measures from the open and pushes at the first check', async () => {
-      vi.setSystemTime(WINDOW_OPEN);
+    it('pushes again when saves resume and stop again, under a new key and tag', async () => {
+      const held = installClaimStore();
+
+      // Stall 1: the last save is 10:25 AM CT, and the 11:00 AM CT check pushes.
+      queueLastLive(STALE_SAVE);
+      const first = await runCron();
+      expect(bodyOf(first)).toMatchObject({
+        status: 'success',
+        message: 'stale alert sent',
+      });
+      expect(mockSendPush).toHaveBeenCalledTimes(1);
+
+      // 11:15 AM CT, the same stall (the last save has not changed): skipped.
+      vi.setSystemTime(NOW + 15 * MINUTE_MS);
+      queueLastLive(STALE_SAVE);
+      const sameStall = await runCron();
+      expect(bodyOf(sameStall)).toMatchObject({
+        status: 'skipped',
+        message: 'alert already sent for this stall',
+      });
+      expect(mockSendPush).toHaveBeenCalledTimes(1);
+
+      // Saves resume and the last one lands at 12:05 PM CT. The 12:45 PM CT
+      // check sees a 40-minute gap: a new stall.
+      const secondSave = new Date('2026-11-11T18:05:00Z');
+      vi.setSystemTime(Date.parse('2026-11-11T18:45:00Z'));
+      queueLastLive(secondSave);
+      const secondStall = await runCron();
+      expect(bodyOf(secondStall)).toMatchObject({
+        status: 'success',
+        message: 'stale alert sent',
+        minutesSince: 40,
+      });
+
+      expect(mockSendPush).toHaveBeenCalledTimes(2);
+      expect([...held]).toEqual([
+        claimKeyFor(STALE_SAVE),
+        claimKeyFor(secondSave),
+      ]);
+      // A second tag, so the phone shows a second notification instead of
+      // silently replacing the first (sw.ts sets no `renotify`).
+      const tags = mockSendPush.mock.calls.map(
+        ([payload]) => (payload as { tag: string }).tag,
+      );
+      expect(tags).toEqual([tagFor(STALE_SAVE), tagFor(secondSave)]);
+      expect(tags[0]).not.toBe(tags[1]);
+    });
+  });
+
+  describe('no live row today', () => {
+    // 09:00 CT is the first check of the window and 14:45 CT the last.
+    it.each([
+      ['09:00 CT (EST)', '2026-11-11T15:00:00Z'],
+      ['14:45 CT (EST)', '2026-11-11T20:45:00Z'],
+      ['09:00 CT (EDT)', '2026-10-14T14:00:00Z'],
+    ])('reports success and sends nothing at %s', async (_label, iso) => {
+      vi.setSystemTime(Date.parse(iso));
       queueLastLive(null);
 
       const res = await runCron();
 
-      expect(mockRedisSet).toHaveBeenCalledWith(KEY, expect.any(String), {
-        nx: true,
-        ex: CLAIM_TTL_SEC,
-      });
-      expect(mockSendPush).toHaveBeenCalledWith(
-        {
-          title: 'Live snapshots stopped saving',
-          body: `No live snapshot since the open. ${OPEN_APP}`,
-          tag: `snapshot-stale-${TODAY}`,
-          requireInteraction: true,
-          url: '/',
-        },
-        { ttlSec: PUSH_TTL_SEC },
-      );
+      expect(res._status).toBe(200);
       expect(bodyOf(res)).toMatchObject({
+        job: JOB,
         status: 'success',
+        message: 'no live snapshot yet today',
         lastLiveAt: null,
-        minutesSince: 30,
       });
+      expect(mockRedisGet).not.toHaveBeenCalled();
+      expect(mockRedisSet).not.toHaveBeenCalled();
+      expect(mockSendPush).not.toHaveBeenCalled();
+      expect(mockSentry.captureMessage).not.toHaveBeenCalled();
+      expect(mockSentry.captureException).not.toHaveBeenCalled();
     });
 
     it('treats an empty result like no row', async () => {
-      vi.setSystemTime(WINDOW_OPEN);
+      vi.setSystemTime(Date.parse('2026-11-11T15:00:00Z'));
       mockSql.mockResolvedValueOnce([]);
+
+      const res = await runCron();
+
+      expect(bodyOf(res)).toMatchObject({
+        status: 'success',
+        message: 'no live snapshot yet today',
+        lastLiveAt: null,
+      });
+      expect(mockRedisSet).not.toHaveBeenCalled();
+      expect(mockSendPush).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('a deliberate close', () => {
+    // STALE_SAVE is 10:25 AM CT and the check runs at 11:00 AM CT.
+    it.each([
+      ['at the last save', 0, '10:25 AM CT'],
+      ['after the last save', 10 * MINUTE_MS, '10:35 AM CT'],
+    ])(
+      'reports success and sends nothing when the app closed %s',
+      async (_label, afterSaveMs, clock) => {
+        const closedAt = new Date(STALE_SAVE.getTime() + afterSaveMs);
+        queueLastLive(STALE_SAVE);
+        mockRedisGet.mockResolvedValueOnce(closedAt.toISOString());
+
+        const res = await runCron();
+
+        expect(res._status).toBe(200);
+        expect(bodyOf(res)).toMatchObject({
+          job: JOB,
+          status: 'success',
+          message: `app closed at ${clock}`,
+          lastLiveAt: STALE_SAVE.toISOString(),
+          closedAt: closedAt.toISOString(),
+        });
+        expect(mockRedisGet).toHaveBeenCalledTimes(1);
+        expect(mockRedisGet).toHaveBeenCalledWith(CLOSED_KEY);
+        expect(mockRedisSet).not.toHaveBeenCalled();
+        expect(mockSendPush).not.toHaveBeenCalled();
+        expect(mockSentry.captureMessage).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([
+      ['1 ms before the last save', 1],
+      ['an hour before the last save', 60 * MINUTE_MS],
+    ])(
+      'ignores a close marker from %s and pushes the stall',
+      async (_label, beforeSaveMs) => {
+        // The app was reopened and saved after it closed, then stalled.
+        queueLastLive(STALE_SAVE);
+        mockRedisGet.mockResolvedValueOnce(
+          new Date(STALE_SAVE.getTime() - beforeSaveMs).toISOString(),
+        );
+
+        const res = await runCron();
+
+        expect(bodyOf(res)).toMatchObject({
+          status: 'success',
+          message: 'stale alert sent',
+          sent: 1,
+        });
+        expect(mockRedisGet).toHaveBeenCalledWith(CLOSED_KEY);
+        expect(mockRedisSet).toHaveBeenCalledWith(
+          STALE_KEY,
+          expect.any(String),
+          expect.anything(),
+        );
+        expect(mockSendPush).toHaveBeenCalledTimes(1);
+        expect(mockLogger.warn).not.toHaveBeenCalled();
+      },
+    );
+
+    it('pushes the stall when there is no marker', async () => {
+      queueLastLive(STALE_SAVE);
+
       await runCron();
-      expect(mockSendPush).toHaveBeenCalledWith(
-        expect.objectContaining({
-          body: `No live snapshot since the open. ${OPEN_APP}`,
-        }),
-        expect.anything(),
-      );
+
+      expect(mockRedisGet).toHaveBeenCalledWith(CLOSED_KEY);
+      expect(mockSendPush).toHaveBeenCalledTimes(1);
     });
 
-    it('measures from the EDT open too', async () => {
-      // Wed Oct 14 2026: 09:00 CT = 10:00 ET = 14:00 UTC, 30 min after the
-      // 13:30 UTC open.
-      vi.setSystemTime(Date.parse('2026-10-14T14:00:00Z'));
-      queueLastLive(null);
-      const res = await runCron();
-      expect(bodyOf(res)).toMatchObject({ minutesSince: 30 });
-      expect(mockRedisSet).toHaveBeenCalledWith(
-        'snapshot-stale-alert:2026-10-14',
-        expect.any(String),
-        expect.anything(),
-      );
-    });
+    it.each([
+      ['text', 'not a time'],
+      ['a number', 1_762_876_800_000],
+    ])(
+      'warns and pushes the stall when the marker is %s, not a time',
+      async (_shape, marker) => {
+        queueLastLive(STALE_SAVE);
+        mockRedisGet.mockResolvedValueOnce(marker);
+
+        const res = await runCron();
+
+        expect(bodyOf(res)).toMatchObject({
+          status: 'success',
+          message: 'stale alert sent',
+        });
+        expect(mockSendPush).toHaveBeenCalledTimes(1);
+        expect(mockLogger.warn).toHaveBeenCalledTimes(1);
+        expect(mockLogger.warn).toHaveBeenCalledWith(
+          { today: TODAY, marker },
+          'check-live-snapshots: close marker unreadable; treating as not closed',
+        );
+      },
+    );
   });
 
   describe('failure modes', () => {
@@ -515,7 +679,7 @@ describe('cron check-live-snapshots', () => {
     ])(
       'reports error, captures an error and releases the claim when %s',
       async (_case, result, reason) => {
-        queueLastLive(minutesAgo(35));
+        queueLastLive(STALE_SAVE);
         mockSendPush.mockResolvedValueOnce(result);
 
         const res = await runCron();
@@ -539,18 +703,19 @@ describe('cron check-live-snapshots', () => {
             message: `alert not delivered: ${reason}`,
           }),
         );
-        // Released with this run's token, so the next 15-min check retries.
+        // Released with this run's token, so the next 15-min check retries
+        // the same stall.
         expect(mockRedisEval).toHaveBeenCalledTimes(1);
         expect(mockRedisEval).toHaveBeenCalledWith(
           expect.any(String),
-          [KEY],
+          [STALE_KEY],
           [claimToken()],
         );
       },
     );
 
     it('reports 500 and captures the error when the push throws', async () => {
-      queueLastLive(minutesAgo(35));
+      queueLastLive(STALE_SAVE);
       const boom = new Error('push service down');
       mockSendPush.mockRejectedValueOnce(boom);
 
@@ -568,13 +733,13 @@ describe('cron check-live-snapshots', () => {
       );
       expect(mockRedisEval).toHaveBeenCalledWith(
         expect.any(String),
-        [KEY],
+        [STALE_KEY],
         [claimToken()],
       );
     });
 
     it('sends nothing and captures the error when the claim throws', async () => {
-      queueLastLive(minutesAgo(35));
+      queueLastLive(STALE_SAVE);
       const boom = new Error('redis down');
       mockRedisSet.mockRejectedValueOnce(boom);
 
@@ -582,6 +747,27 @@ describe('cron check-live-snapshots', () => {
 
       expect(res._status).toBe(500);
       expect(mockSentry.captureException).toHaveBeenCalledWith(boom);
+      expect(mockSendPush).not.toHaveBeenCalled();
+    });
+
+    it('fails the run, not "closed", when the close marker read throws', async () => {
+      queueLastLive(STALE_SAVE);
+      const boom = new Error('redis read down');
+      mockRedisGet.mockRejectedValueOnce(boom);
+
+      const res = await runCron();
+
+      expect(res._status).toBe(500);
+      expect(bodyOf(res)).toEqual({ job: JOB, error: 'Internal error' });
+      expect(mockSentry.captureException).toHaveBeenCalledWith(boom);
+      expect(mockReportCronRun).toHaveBeenCalledWith(
+        JOB,
+        expect.objectContaining({
+          status: 'error',
+          message: 'redis read down',
+        }),
+      );
+      expect(mockRedisSet).not.toHaveBeenCalled();
       expect(mockSendPush).not.toHaveBeenCalled();
     });
 
@@ -605,21 +791,6 @@ describe('cron check-live-snapshots', () => {
       expect(mockSendPush).not.toHaveBeenCalled();
     });
 
-    it('fails loud, not current, when the open cannot be read', async () => {
-      queueLastLive(null);
-      mockOpenIso.mockReturnValueOnce(null);
-
-      const res = await runCron();
-
-      expect(res._status).toBe(500);
-      expect(mockSentry.captureException).toHaveBeenCalledWith(
-        expect.objectContaining({
-          message: `live snapshot reference time unreadable for ${TODAY}`,
-        }),
-      );
-      expect(mockSendPush).not.toHaveBeenCalled();
-    });
-
     it('fails loud, not current, when the last save is not a time', async () => {
       queueLastLive('not a timestamp');
 
@@ -631,6 +802,8 @@ describe('cron check-live-snapshots', () => {
           message: `live snapshot reference time unreadable for ${TODAY}`,
         }),
       );
+      expect(mockRedisGet).not.toHaveBeenCalled();
+      expect(mockRedisSet).not.toHaveBeenCalled();
       expect(mockSendPush).not.toHaveBeenCalled();
     });
   });
