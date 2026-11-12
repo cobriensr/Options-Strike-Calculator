@@ -94,25 +94,64 @@ calls `fetchMarketEvents`. The `EventItem` interface moves to the lib module, an
 Add `scripts/backfill-snapshot-event-flags.ts`, a thin CLI, with its logic in
 `scripts/_lib/snapshot-event-flag-backfill.ts`.
 
-- It reads every snapshot date, then calls `fetchMarketEvents(min, max)` once. That's
-  one FRED call per release, not one per date.
-- It refuses to run unless the result is `complete`, and refuses when the snapshot
-  read returns 0 dates.
-- For each date it compares each row's names to the computed names as **sets**, so
-  order alone never causes a write.
-  - Where the sets differ, a guarded UPDATE sets the computed names and the flag:
-    `WHERE date = $d AND event_names IS DISTINCT FROM $computed`, with `unnest`
-    batches if it's per row.
+- It reads every snapshot date (capped at today, ET), then calls
+  `fetchMarketEvents` once per calendar month, in turn.
+  - That's 7 FRED calls a month, not 7 a date: about 80 for the year, under FRED's
+    per-key limit.
+  - Ruling 2026-11-11: monthly, not one call for the whole range. One Finnhub call
+    for a year of every US earnings release risks a truncated answer, and a
+    truncated answer would silently drop mega-cap earnings.
+- It refuses to run when:
+  - any month's result is not `complete`;
+  - the snapshot read returns 0 dates;
+  - `FRED_API_KEY` or `FINNHUB_API_KEY` is unset. Without Finnhub, the list is
+    "complete" with no earnings, and the run would strip every stored earnings name.
+- `--keep-earnings` keeps a stored name ending in ` Earnings` that the computed list
+  lacks. The owner picks it after the dry run if Finnhub turns out not to return
+  past earnings. It's off by default.
+- For each row it compares the stored names to the computed names as **sets**, so
+  order alone never causes a write. NULL counts as empty.
+  - A row is written when the sets differ, or when `is_event_day` differs from
+    "computed names non-empty".
+  - The write is per row, in `unnest` batches of 500. Each row is guarded on the
+    values it was read with (`event_names IS NOT DISTINCT FROM old AND
+    is_event_day IS NOT DISTINCT FROM old`), so a save that lands mid-run is never
+    overwritten.
 - `training_features.is_event_day` follows: computed names non-empty, guarded by
-  `IS DISTINCT FROM`.
+  `IS DISTINCT FROM`. Only snapshot dates are read; a date with no
+  `training_features` row is skipped.
 - It's a dry run by default. `--apply` writes an undo file under
   `docs/tmp/snapshot-event-flags/` first, then runs one `sql.transaction`.
+  - The undo file is `undo-{timestamp}.json`. It holds each planned row's `id` and old
+    `is_event_day` / `event_names`, and each planned feature row's `date` and old flag.
+    No restore script is built; it is the record to restore from.
+  - A guarded row that no longer matches is skipped and listed in the report. A second
+    run right after the apply plans 0 writes.
 - The dry run prints:
   - the database host;
-  - per-name counts of days gained and lost;
-  - every date that loses a flag, with its old and new names;
-  - row totals for both tables.
+  - the months fetched;
+  - per event name, the number of **days** gaining and losing it (a day counts once,
+    however many of its rows change);
+  - every date that ends with no event flag having had one, with its old and new names;
+  - the dates that gain a flag, as a count and a list;
+  - the rows planned in each table, and the total.
 - The apply is a production write: the owner runs or approves it after reading the dry run.
+- Implementation notes:
+  - The keys are checked first, before the database is read.
+  - The snapshot read is paged by `id`, 5,000 rows a query. The write is one request
+    with a statement per 500 rows.
+  - Names travel as one JSON string per row (rows' arrays differ in length, and an SQL
+    array of arrays must be rectangular). The guard compares `to_jsonb(event_names)`
+    with the JSON read, so order and duplicates count in the guard even though they
+    don't in the plan.
+  - With `--keep-earnings`, a kept name is added per row, and a date's feature flag
+    follows the rows as they will be: set when any of its rows ends with a name.
+  - A date "has a flag" when any of its rows has `is_event_day` true or a name.
+- It overlaps the econ label backfill's snapshot steps: 04-29 gains FOMC, and 05-06
+  loses it.
+  - Both compute from the corrected FOMC schedule.
+  - Both guard every write on the values they read, so whichever runs second finds
+    nothing to change on those dates.
 
 ## Phases
 
@@ -138,6 +177,8 @@ Each phase gets `npm run review`, a code review, then commits of 5 files or fewe
 
 - Day cache: `events:day:v1:{date}`, TTL 7 days (`CACHE_TTL_SEC`, shared with `/api/events`).
 - Failed-lookup cache: the same key, TTL 5 minutes (`INCOMPLETE_CACHE_TTL_SEC`).
+- Backfill: 5,000 rows per read page (`READ_PAGE`), 500 per UPDATE (`WRITE_CHUNK`),
+  undo files in `docs/tmp/snapshot-event-flags/` (`UNDO_DIR`).
 - `complete` (phase 1 ruling) means every FRED release answered with a well-formed
   body, and so did Finnhub if a Finnhub key is set.
 - The event-day definition is unchanged: any event on the date.
