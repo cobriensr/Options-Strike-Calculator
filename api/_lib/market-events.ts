@@ -277,6 +277,11 @@ async function fetchMegaCapEarnings(
 const FRED_BASE = 'https://api.stlouisfed.org/fred';
 const DAY_CACHE_KEY = 'events:day:v1';
 export const CACHE_TTL_SEC = 7 * 24 * 60 * 60; // 7 days (key is date-scoped)
+// An incomplete or failed lookup is kept briefly, not for the day. Without it
+// a lookup that keeps failing repays 7 FRED calls on every snapshot save, and
+// a replay saves about 24 times a minute: about 170 FRED calls a minute, more
+// than FRED allows per key. Five minutes caps that to one retry per window.
+const INCOMPLETE_CACHE_TTL_SEC = 5 * 60;
 
 interface FredReleaseResult {
   entries: FredReleaseDateEntry[];
@@ -467,12 +472,38 @@ export async function fetchMarketEvents(
 // SINGLE-DATE LOOKUP
 // ============================================================
 
+interface DayCacheEntry {
+  data: EventItem[];
+  cachedAt: number;
+  /** Absent on a complete entry, and on one phase 1 wrote: both read as complete. */
+  complete?: boolean;
+}
+
+async function writeDayCache(
+  cacheKey: string,
+  entry: DayCacheEntry,
+  ttlSec: number,
+): Promise<void> {
+  try {
+    await redis.set(cacheKey, entry, { ex: ttlSec });
+  } catch (err) {
+    logger.error({ err }, 'Failed to cache day events in Redis');
+  }
+}
+
 /**
  * The events on one date: `fetchMarketEvents(date, date)` behind a Redis
- * key per date. Only a `complete` result is written (7 days), so a FRED
- * blip or a missing key is retried on the next call instead of pinning a
- * degraded day. A Redis read or write failure is logged and the lookup goes
- * on without the cache. A fetch failure rejects.
+ * key per date, with two lifetimes:
+ *   - a `complete` result is kept 7 days (`CACHE_TTL_SEC`);
+ *   - an incomplete result, or a fetch that rejects, is kept 5 minutes as
+ *     `{ data, cachedAt, complete: false }`, so a lookup that keeps failing is
+ *     not repaid on every call, and a FRED blip or a missing key is retried
+ *     within minutes instead of pinning a degraded day. A rejected fetch
+ *     caches `data: []`, then rethrows the original error.
+ * A hit returns the entry's events with `complete: false` only when the entry
+ * says so; an entry without the field (phase 1 wrote none) reads as complete.
+ * A Redis read or write failure is logged and the lookup goes on without the
+ * cache; a failed write never hides the result or the original rejection.
  *
  * `date` is YYYY-MM-DD, today or earlier in ET. A future date would cache a
  * schedule that can still change for up to 7 days, so callers skip future
@@ -484,28 +515,38 @@ export async function getEventsForDate(
   const cacheKey = `${DAY_CACHE_KEY}:${date}`;
 
   try {
-    const cached = await redis.get<{ data: EventItem[]; cachedAt: number }>(
-      cacheKey,
-    );
+    const cached = await redis.get<DayCacheEntry>(cacheKey);
     if (cached && Array.isArray(cached.data)) {
-      return { events: cached.data, complete: true };
+      return { events: cached.data, complete: cached.complete !== false };
     }
   } catch (err) {
     logger.error({ err }, 'Failed to read day events from Redis');
   }
 
-  const result = await fetchMarketEvents(date, date);
+  let result: MarketEventsResult;
+  try {
+    result = await fetchMarketEvents(date, date);
+  } catch (err) {
+    await writeDayCache(
+      cacheKey,
+      { data: [], cachedAt: Date.now(), complete: false },
+      INCOMPLETE_CACHE_TTL_SEC,
+    );
+    throw err;
+  }
 
   if (result.complete) {
-    try {
-      await redis.set(
-        cacheKey,
-        { data: result.events, cachedAt: Date.now() },
-        { ex: CACHE_TTL_SEC },
-      );
-    } catch (err) {
-      logger.error({ err }, 'Failed to cache day events in Redis');
-    }
+    await writeDayCache(
+      cacheKey,
+      { data: result.events, cachedAt: Date.now() },
+      CACHE_TTL_SEC,
+    );
+  } else {
+    await writeDayCache(
+      cacheKey,
+      { data: result.events, cachedAt: Date.now(), complete: false },
+      INCOMPLETE_CACHE_TTL_SEC,
+    );
   }
 
   return result;

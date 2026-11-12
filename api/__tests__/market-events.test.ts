@@ -524,7 +524,7 @@ describe('market-events', () => {
       );
     });
 
-    it('does not cache an incomplete result', async () => {
+    it('caches an incomplete result for five minutes, marked complete: false', async () => {
       vi.stubGlobal(
         'fetch',
         vi.fn().mockResolvedValue({ ok: false, status: 503 }),
@@ -534,17 +534,98 @@ describe('market-events', () => {
 
       expect(result.complete).toBe(false);
       expect(result.events.map((e) => e.event)).toEqual(['FOMC + SEP']);
-      expect(redis.set).not.toHaveBeenCalled();
+      expect(redis.set).toHaveBeenCalledTimes(1);
+      expect(redis.set).toHaveBeenCalledWith(
+        `events:day:v1:${FOMC_SEP_DAY}`,
+        { data: result.events, cachedAt: expect.any(Number), complete: false },
+        { ex: 300 },
+      );
     });
 
-    it('does not cache the static-only result when FRED_API_KEY is unset', async () => {
+    it('caches the static-only result for five minutes when FRED_API_KEY is unset', async () => {
       delete process.env.FRED_API_KEY;
       stubFredFetch();
 
       const result = await getEventsForDate(FOMC_SEP_DAY);
 
       expect(result.complete).toBe(false);
+      expect(redis.set).toHaveBeenCalledTimes(1);
+      expect(redis.set).toHaveBeenCalledWith(
+        `events:day:v1:${FOMC_SEP_DAY}`,
+        { data: result.events, cachedAt: expect.any(Number), complete: false },
+        { ex: 300 },
+      );
+    });
+
+    it('returns an incomplete cached entry as incomplete and makes no fetch', async () => {
+      const partial = [event({ event: 'FOMC + SEP', source: 'static' })];
+      vi.mocked(redis.get).mockResolvedValue({
+        data: partial,
+        cachedAt: 1_700_000_000_000,
+        complete: false,
+      });
+      const fetchMock = stubFredFetch();
+
+      const result = await getEventsForDate(CPI_DAY);
+
+      expect(result).toEqual({ events: partial, complete: false });
+      expect(fetchMock).not.toHaveBeenCalled();
       expect(redis.set).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['has no complete field (written by phase 1)', {}, true],
+      ['says complete: true', { complete: true }, true],
+      ['says complete: false', { complete: false }, false],
+    ])('reads a cached entry that %s', async (_label, flag, expected) => {
+      vi.mocked(redis.get).mockResolvedValue({
+        data: [event()],
+        cachedAt: 1_700_000_000_000,
+        ...flag,
+      });
+      const fetchMock = stubFredFetch();
+
+      const result = await getEventsForDate(CPI_DAY);
+
+      expect(result.complete).toBe(expected);
+      expect(result.events.map((e) => e.event)).toEqual(['CPI']);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('writes a complete result for seven days with no complete: false, and reads it back as complete', async () => {
+      stubFredFetch({ 10: [CPI_DAY] });
+
+      await getEventsForDate(CPI_DAY);
+
+      expect(redis.set).toHaveBeenCalledTimes(1);
+      const [key, entry, options] = vi.mocked(redis.set).mock.calls[0] ?? [];
+      expect(key).toBe(DAY_KEY);
+      expect(options).toEqual({ ex: 7 * 24 * 60 * 60 });
+      expect((entry as { complete?: boolean }).complete).not.toBe(false);
+
+      vi.mocked(redis.get).mockResolvedValue(entry);
+      const fetchMock = stubFredFetch();
+      const again = await getEventsForDate(CPI_DAY);
+      expect(again.complete).toBe(true);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('still returns the incomplete result, and logs, when its short cache write throws', async () => {
+      vi.mocked(redis.set).mockRejectedValue(new Error('redis write failed'));
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({ ok: false, status: 503 }),
+      );
+
+      const result = await getEventsForDate(FOMC_SEP_DAY);
+
+      expect(result.complete).toBe(false);
+      expect(result.events.map((e) => e.event)).toEqual(['FOMC + SEP']);
+      expect(redis.set).toHaveBeenCalledTimes(1);
+      expect(logger.error).toHaveBeenCalledWith(
+        { err: expect.any(Error) },
+        'Failed to cache day events in Redis',
+      );
     });
 
     it('still fetches, and logs, when the Redis read throws', async () => {
@@ -589,40 +670,84 @@ describe('market-events', () => {
       expect(result.events.map((e) => e.event)).toEqual(['CPI']);
     });
 
-    it('rejects, and caches nothing, when a FRED fetch throws', async () => {
+    it('caches an empty incomplete entry for five minutes, then rejects, when a FRED fetch throws', async () => {
       vi.stubGlobal(
         'fetch',
         vi.fn().mockRejectedValue(new Error('network down')),
       );
 
       await expect(getEventsForDate(CPI_DAY)).rejects.toThrow('network down');
-      expect(redis.set).not.toHaveBeenCalled();
+      expect(redis.set).toHaveBeenCalledTimes(1);
+      expect(redis.set).toHaveBeenCalledWith(
+        DAY_KEY,
+        { data: [], cachedAt: expect.any(Number), complete: false },
+        { ex: 300 },
+      );
     });
 
-    it('rejects, and caches nothing, when a FRED body is not JSON', async () => {
+    it('caches an empty incomplete entry for five minutes, then rejects, when a FRED body is not JSON', async () => {
       stubSources({ fred: unparseable });
 
       await expect(getEventsForDate(CPI_DAY)).rejects.toThrow(
         'Unexpected token <',
       );
-      expect(redis.set).not.toHaveBeenCalled();
+      expect(redis.set).toHaveBeenCalledTimes(1);
+      expect(redis.set).toHaveBeenCalledWith(
+        DAY_KEY,
+        { data: [], cachedAt: expect.any(Number), complete: false },
+        { ex: 300 },
+      );
     });
 
-    it('returns the statics, and caches nothing, when FRED answers 200 with {}', async () => {
+    it('rethrows the original error, and logs, when the write after a rejected fetch throws', async () => {
+      vi.mocked(redis.set).mockRejectedValue(new Error('redis write failed'));
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockRejectedValue(new Error('network down')),
+      );
+
+      await expect(getEventsForDate(CPI_DAY)).rejects.toThrow('network down');
+      expect(redis.set).toHaveBeenCalledTimes(1);
+      expect(logger.error).toHaveBeenCalledWith(
+        { err: expect.any(Error) },
+        'Failed to cache day events in Redis',
+      );
+    });
+
+    it('answers a repeat call from the failure entry without fetching again', async () => {
+      const fetchMock = vi.fn().mockRejectedValue(new Error('network down'));
+      vi.stubGlobal('fetch', fetchMock);
+      await expect(getEventsForDate(CPI_DAY)).rejects.toThrow('network down');
+      const [, entry] = vi.mocked(redis.set).mock.calls[0] ?? [];
+      fetchMock.mockClear();
+
+      vi.mocked(redis.get).mockResolvedValue(entry);
+      const again = await getEventsForDate(CPI_DAY);
+
+      expect(again).toEqual({ events: [], complete: false });
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('returns the statics, and caches them for five minutes, when FRED answers 200 with {}', async () => {
       stubSources({ fred: okJson({}) });
 
       const result = await getEventsForDate(FOMC_SEP_DAY);
 
       expect(result.complete).toBe(false);
       expect(result.events.map((e) => e.event)).toEqual(['FOMC + SEP']);
-      expect(redis.set).not.toHaveBeenCalled();
+      expect(redis.set).toHaveBeenCalledTimes(1);
+      expect(redis.set).toHaveBeenCalledWith(
+        `events:day:v1:${FOMC_SEP_DAY}`,
+        { data: result.events, cachedAt: expect.any(Number), complete: false },
+        { ex: 300 },
+      );
       expect(Sentry.captureMessage).toHaveBeenCalledWith(
         'FRED API malformed payload',
         expect.objectContaining({ level: 'warning' }),
       );
     });
 
-    it('caches nothing when the Finnhub body is not JSON', async () => {
+    it('caches the day for five minutes when the Finnhub body is not JSON', async () => {
       process.env.FINNHUB_API_KEY = 'finnhub-key';
       stubSources({
         finnhub: unparseable,
@@ -632,7 +757,12 @@ describe('market-events', () => {
       const result = await getEventsForDate(CPI_DAY);
 
       expect(result.complete).toBe(false);
-      expect(redis.set).not.toHaveBeenCalled();
+      expect(redis.set).toHaveBeenCalledTimes(1);
+      expect(redis.set).toHaveBeenCalledWith(
+        DAY_KEY,
+        { data: [], cachedAt: expect.any(Number), complete: false },
+        { ex: 300 },
+      );
       expect(logger.error).toHaveBeenCalledWith(
         { err: expect.any(SyntaxError) },
         'Finnhub earnings fetch failed',
@@ -643,15 +773,23 @@ describe('market-events', () => {
       ['answers non-OK', nonOk],
       ['cannot be reached', networkDown],
       ['answers 200 with {}', okJson({})],
-    ])('caches nothing when Finnhub %s', async (_label, finnhub) => {
-      process.env.FINNHUB_API_KEY = 'finnhub-key';
-      stubSources({ finnhub });
+    ])(
+      'caches the day for five minutes when Finnhub %s',
+      async (_label, finnhub) => {
+        process.env.FINNHUB_API_KEY = 'finnhub-key';
+        stubSources({ finnhub });
 
-      const result = await getEventsForDate(CPI_DAY);
+        const result = await getEventsForDate(CPI_DAY);
 
-      expect(result.complete).toBe(false);
-      expect(redis.set).not.toHaveBeenCalled();
-    });
+        expect(result.complete).toBe(false);
+        expect(redis.set).toHaveBeenCalledTimes(1);
+        expect(redis.set).toHaveBeenCalledWith(
+          DAY_KEY,
+          { data: [], cachedAt: expect.any(Number), complete: false },
+          { ex: 300 },
+        );
+      },
+    );
 
     it('caches a day Finnhub reports no earnings for', async () => {
       process.env.FINNHUB_API_KEY = 'finnhub-key';

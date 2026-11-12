@@ -74,6 +74,20 @@ calls `fetchMarketEvents`. The `EventItem` interface moves to the lib module, an
   - The save still succeeds. A FRED outage must not lose snapshots, and the union is
     never worse than today's client value.
 - One lookup per request. No new env var.
+- **Short cache for a failed lookup** (ruling 2026-11-11, from the phase 1 review).
+  - Without it, a lookup that keeps failing is repaid on every save: 7 FRED calls
+    with 30 s timeouts, plus Finnhub.
+  - A replay saves about 24 times a minute, so 7 calls per save is about 170 FRED
+    calls a minute, more than FRED's per-key limit allows.
+  - The case is plausible: Finnhub may refuse past ranges, which phase 1 counts as
+    incomplete.
+  - So `getEventsForDate` caches an incomplete result for 5 minutes, under the same
+    key, as `{ data, cachedAt, complete: false }`, and a hit returns it with
+    `complete: false`.
+  - A fetch that rejects caches `{ data: [], complete: false }` for 5 minutes, then
+    rethrows.
+  - A complete result still caches for 7 days. An entry without a `complete` field
+    (written by phase 1) reads as complete.
 
 ### History backfill (phase 3)
 
@@ -102,11 +116,11 @@ Add `scripts/backfill-snapshot-event-flags.ts`, a thin CLI, with its logic in
 
 ## Phases
 
-| # | Scope | Files |
-|---|---|---|
-| 1 | Shared event source, `/api/events` refactor (no behavior change) | `api/_lib/market-events.ts` (new), `api/events.ts`, `api/__tests__/market-events.test.ts` (new), `api/__tests__/events.test.ts` |
-| 2 | Snapshot save uses the server's events | `api/snapshot.ts`, `api/__tests__/snapshot.test.ts`, `api/_lib/validation/snapshot.ts` (comment only, if needed) |
-| 3 | History backfill script | `scripts/backfill-snapshot-event-flags.ts`, `scripts/_lib/snapshot-event-flag-backfill.ts`, its unit + pglite + CLI tests, `tsconfig.scripts.json`, `scripts/README.md` |
+| #   | Scope                                                                   | Files                                                                                                                                                                     |
+| --- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | Shared event source, `/api/events` refactor (no behavior change)        | `api/_lib/market-events.ts` (new), `api/events.ts`, `api/__tests__/market-events.test.ts` (new), `api/__tests__/events.test.ts`                                           |
+| 2   | Snapshot save uses the server's events; short cache for a failed lookup | `api/_lib/market-events.ts`, `api/__tests__/market-events.test.ts`, `api/snapshot.ts`, `api/__tests__/snapshot.test.ts`, `api/_lib/validation/snapshot.ts` (comment only) |
+| 3   | History backfill script                                                 | `scripts/backfill-snapshot-event-flags.ts`, `scripts/_lib/snapshot-event-flag-backfill.ts`, its unit + pglite + CLI tests, `tsconfig.scripts.json`, `scripts/README.md`   |
 
 Each phase gets `npm run review`, a code review, then commits of 5 files or fewer.
 
@@ -123,6 +137,9 @@ Each phase gets `npm run review`, a code review, then commits of 5 files or fewe
 ## Constants
 
 - Day cache: `events:day:v1:{date}`, TTL 7 days (`CACHE_TTL_SEC`, shared with `/api/events`).
+- Failed-lookup cache: the same key, TTL 5 minutes (`INCOMPLETE_CACHE_TTL_SEC`).
+- `complete` (phase 1 ruling) means every FRED release answered with a well-formed
+  body, and so did Finnhub if a Finnhub key is set.
 - The event-day definition is unchanged: any event on the date.
 
 ## Open questions
