@@ -16,7 +16,10 @@ transaction open fails at teardown. `fail_on` makes one statement raise.
 from __future__ import annotations
 
 import hashlib
+import io
+import json
 import sys
+import tempfile
 import traceback
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
@@ -27,6 +30,8 @@ import psycopg2
 import psycopg2.errors
 import pyarrow.parquet as pq
 import pytest
+from boto3.exceptions import S3UploadFailedError
+from botocore.exceptions import ClientError
 from psycopg2.extensions import TRANSACTION_STATUS_IDLE, TRANSACTION_STATUS_INTRANS
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -115,6 +120,9 @@ class FakeCursor:
         text = ' '.join(sql.split())
         assert text.count('%s') == len(params or ()), text
         conn.statements.append((text, params))
+        assert (
+            conn.in_txn or not conn.autocommit or text.startswith('BEGIN')
+        ), f'statement outside the snapshot: {text}'
         if not conn.autocommit and not text.startswith('BEGIN'):
             conn.in_txn = True  # psycopg2 opens a transaction before a statement
         if text.startswith('BEGIN'):
@@ -125,46 +133,65 @@ class FakeCursor:
             # A ROLLBACK that fails leaves a dead connection, not an open transaction.
             conn.in_txn = False
             conn.fail('rollback')
-        elif text.startswith('SELECT count(*)'):
+        elif text == 'SELECT count(*) FROM strike_exposures WHERE expiry IS NULL':
+            conn.fail('null_expiry')
+            self._result = [(conn.null_expiry,)]
+        elif text == 'SELECT count(*) FROM strike_exposures WHERE date = %s':
             conn.fail('count')
-            self._result = [(conn.count,)]
+            self._result = [(conn.count_for(params[0]),)]
+        elif text.startswith('WITH RECURSIVE'):
+            conn.fail('days')
+            self._result = [(day,) for day in conn.days()]
+        elif text == 'SELECT max(id) FROM strike_exposures':
+            conn.fail('max_id')
+            self._result = [(conn.max_id(),)]
+        elif text == 'SELECT date FROM strike_exposures WHERE id > %s GROUP BY date':
+            conn.fail('delta')
+            self._result = [(day,) for day in conn.days_after(params[0])]
         elif text.startswith('SELECT ') and 'LIMIT %s' in text:
             conn.fail(f'page{len(conn.page_queries)}')
             self._result = conn.serve_page(params, keyed='> (%s' in text)
         else:
+            assert text.startswith('SET LOCAL statement_timeout'), f'unexpected: {text}'
             self._result = []
 
     def fetchone(self) -> tuple:
+        assert self.conn.in_txn, 'fetch outside the snapshot'
         return self._result[0]
 
     def fetchall(self) -> list[tuple]:
+        assert self.conn.in_txn, 'fetch outside the snapshot'
         return self._result
 
 
 class FakeConnection:
     """A psycopg2 connection over a list of rows.
 
-    `count` is what the snapshot count query says; it defaults to the number
-    of rows. `stuck` makes every page the first page again, as a keyset that
-    never advances would, and gives up after 10 page queries so a missing
+    The rows may span several days. A day's count is the number of its rows,
+    unless `count` overrides it. `null_expiry` is what the NULL-expiry count
+    says. `stuck` makes every page the first page again, as a keyset that
+    never advances would, and gives up after 20 page queries so a missing
     guard fails instead of hanging. `fail_on` maps an event ('count', 'page1',
-    'page2', ..., 'rollback') to the exception its statement raises. The event
-    named by `closes_on` also kills the connection, as a dropped link does:
-    `closed` becomes 2, and from then on a statement or an autocommit change
-    raises InterfaceError, as psycopg2 does on a closed connection.
+    'page2', ..., 'rollback', and the planning reads 'null_expiry', 'days',
+    'max_id', 'delta') to the exception its statement raises. The event named
+    by `closes_on` also kills the connection, as a dropped link does: `closed`
+    becomes 2, and from then on a statement or an autocommit change raises
+    InterfaceError, as psycopg2 does on a closed connection.
     """
 
     def __init__(
         self,
         rows: list[tuple],
         count: int | None = None,
+        null_expiry: int = 0,
         stuck: bool = False,
         fail_on: dict[str, Exception] | None = None,
         closes_on: str | None = None,
         autocommit: bool = False,
     ) -> None:
         self.rows = sorted(rows, key=key_of)
-        self.count = len(rows) if count is None else count
+        self.count = count
+        self.null_expiry = null_expiry
         self.stuck = stuck
         self.fail_on = fail_on or {}
         self.closes_on = closes_on
@@ -186,6 +213,23 @@ class FakeConnection:
     def cursor(self) -> FakeCursor:
         return FakeCursor(self)
 
+    def close(self) -> None:
+        self.closed = self.closed or 1
+
+    def count_for(self, day: date) -> int:
+        if self.count is not None:
+            return self.count
+        return sum(1 for r in self.rows if r[sbk.COLUMNS.index('date')] == day)
+
+    def days(self) -> list[date]:
+        return sorted({r[sbk.COLUMNS.index('date')] for r in self.rows})
+
+    def max_id(self) -> int | None:
+        return max((r[0] for r in self.rows), default=None)
+
+    def days_after(self, last_id: int) -> list[date]:
+        return sorted({r[sbk.COLUMNS.index('date')] for r in self.rows if r[0] > last_id})
+
     @property
     def info(self) -> SimpleNamespace:
         status = TRANSACTION_STATUS_INTRANS if self.in_txn else TRANSACTION_STATUS_IDLE
@@ -203,7 +247,7 @@ class FakeConnection:
             raise self.fail_on[event]
 
     def serve_page(self, params: tuple, keyed: bool) -> list[tuple]:
-        assert len(self.page_queries) <= 10, 'paging did not stop'
+        assert len(self.page_queries) <= 20, 'paging did not stop'
         day, *after, limit = params
         if self.stuck:
             return self.rows[:limit]
@@ -578,3 +622,774 @@ def test_stat_failure_deletes_the_file(
 
     assert list(tmp_path.iterdir()) == []
     assert conn.statements[-1][0] == 'ROLLBACK'
+
+
+# ── Task 2: upload, plan, export and status ──────────────────────────────────
+
+BUCKET = 'test-bucket'
+D1, D2, D3 = date(2026, 11, 2), date(2026, 11, 3), date(2026, 11, 4)
+TODAY = date(2026, 11, 6)
+DSN_SECRET = 'DB-PASSWORD-MARKER'
+R2_SECRET = 'R2-SECRET-MARKER'
+ENV = {
+    'DATABASE_URL': f'postgresql://user:{DSN_SECRET}@ep-marker.example.invalid/db',
+    'R2_ENDPOINT_URL': 'https://acct-marker.r2.example.invalid',
+    'R2_ACCESS_KEY_ID': 'ACCESS-KEY-MARKER',
+    'R2_SECRET_ACCESS_KEY': R2_SECRET,
+    'R2_BUCKET_FULLTAPE': BUCKET,
+}
+STATE_KEY = 'backups/strike_exposures/_state.json'
+
+
+def day_rows(day: date, ids: list[int]) -> list[tuple]:
+    """One day's rows with the given ids, in key order."""
+    start = datetime(day.year, day.month, day.day, 15, 0, tzinfo=UTC)
+    return [
+        make_row(
+            id=row_id,
+            date=day,
+            expiry=day,
+            timestamp=start + timedelta(minutes=n, microseconds=123457),
+        )
+        for n, row_id in enumerate(ids)
+    ]
+
+
+def three_days() -> list[tuple]:
+    """D1 has 2 rows, D2 has 3 and D3 has 1; ids 1 to 6."""
+    return day_rows(D1, [1, 2]) + day_rows(D2, [3, 4, 5]) + day_rows(D3, [6])
+
+
+def key(day: date) -> str:
+    return f'backups/strike_exposures/{day.isoformat()}.parquet'
+
+
+class FakePaginator:
+    def __init__(self, s3: FakeS3) -> None:
+        self.s3 = s3
+
+    def paginate(self, Bucket: str, Prefix: str = ''):
+        assert Bucket == BUCKET
+        self.s3.calls.append(('list', Prefix))
+        if self.s3.list_error is not None:
+            raise self.s3.list_error
+        keys = sorted(k for k in self.s3.objects if k.startswith(Prefix))
+        if not keys:
+            yield {'KeyCount': 0}  # boto3 gives a page without 'Contents'
+        size = self.s3.page_size
+        for start in range(0, len(keys), size):
+            yield {
+                'Contents': [
+                    {'Key': k, 'Size': len(self.s3.objects[k]['Body'])}
+                    for k in keys[start : start + size]
+                ]
+            }
+
+
+class FakeS3:
+    """A dict-backed stand-in for the boto3 S3 client calls the module makes.
+
+    Signatures follow boto3 1.43. `upload_errors` makes upload_file raise for a
+    key, `lost` makes an upload that returns fine never show up, `short_by`
+    makes head_object report that many bytes fewer, `meta_override` replaces
+    the metadata head_object reports, and `delete_error` makes delete_object
+    raise. `page_size` is small so list pagination is exercised.
+    """
+
+    def __init__(self, page_size: int = 2) -> None:
+        self.objects: dict[str, dict] = {}
+        self.calls: list[tuple[str, str]] = []
+        self.upload_errors: dict[str, Exception] = {}
+        self.lost: set[str] = set()
+        self.short_by: dict[str, int] = {}
+        self.meta_override: dict[str, dict[str, str]] = {}
+        self.delete_error: Exception | None = None
+        self.put_error: Exception | None = None
+        self.list_error: Exception | None = None
+        self.page_size = page_size
+        self.transfer_configs: list[object] = []
+        self.extra_args: dict[str, dict] = {}
+        self.files_seen: list[list[str]] = []
+
+    def put_day(self, day: date, rows: int, **metadata: str) -> None:
+        self.objects[key(day)] = {
+            'Body': b'old',
+            'Metadata': {'rows': str(rows), **metadata},
+        }
+
+    def keys(self, kind: str) -> list[str]:
+        return [k for c, k in self.calls if c == kind]
+
+    def state(self) -> dict | None:
+        if STATE_KEY not in self.objects:
+            return None
+        return json.loads(self.objects[STATE_KEY]['Body'])
+
+    def upload_file(self, Filename, Bucket, Key, ExtraArgs=None, Callback=None, Config=None):
+        assert Bucket == BUCKET
+        self.calls.append(('upload', Key))
+        self.transfer_configs.append(Config)
+        self.extra_args[Key] = ExtraArgs or {}
+        self.files_seen.append(sorted(p.name for p in Path(Filename).parent.iterdir()))
+        if Key in self.upload_errors:
+            raise self.upload_errors[Key]
+        if Key not in self.lost:
+            self.objects[Key] = {
+                'Body': Path(Filename).read_bytes(),
+                'Metadata': dict((ExtraArgs or {}).get('Metadata', {})),
+            }
+
+    def head_object(self, Bucket, Key):
+        assert Bucket == BUCKET
+        self.calls.append(('head', Key))
+        if Key not in self.objects:
+            raise ClientError(
+                {'Error': {'Code': '404', 'Message': 'Not Found'}}, 'HeadObject'
+            )
+        obj = self.objects[Key]
+        return {
+            'ContentLength': len(obj['Body']) - self.short_by.get(Key, 0),
+            'Metadata': dict(self.meta_override.get(Key, obj['Metadata'])),
+        }
+
+    def get_object(self, Bucket, Key):
+        assert Bucket == BUCKET
+        self.calls.append(('get', Key))
+        if Key not in self.objects:
+            raise ClientError(
+                {'Error': {'Code': 'NoSuchKey', 'Message': 'missing'}}, 'GetObject'
+            )
+        return {'Body': io.BytesIO(self.objects[Key]['Body'])}
+
+    def put_object(self, Bucket, Key, Body, ContentType=None):
+        assert Bucket == BUCKET
+        self.calls.append(('put', Key))
+        if self.put_error is not None:
+            raise self.put_error
+        self.objects[Key] = {'Body': Body, 'Metadata': {}}
+
+    def delete_object(self, Bucket, Key):
+        assert Bucket == BUCKET
+        self.calls.append(('delete', Key))
+        if self.delete_error is not None:
+            raise self.delete_error
+        self.objects.pop(Key, None)
+
+    def get_paginator(self, name: str) -> FakePaginator:
+        assert name == 'list_objects_v2'
+        return FakePaginator(self)
+
+
+class Cli:
+    """Runs sbk.main with the env, the database and the R2 client faked."""
+
+    def __init__(self, monkeypatch, capsys, work: Path) -> None:
+        self.monkeypatch = monkeypatch
+        self.capsys = capsys
+        self.work = work
+        self.connects: list[tuple] = []
+        self.clients: list[tuple] = []
+        for name, value in ENV.items():
+            monkeypatch.setenv(name, value)
+        monkeypatch.setattr(sbk, 'load_env_file', lambda path: None)
+        monkeypatch.setattr(sbk, '_today_et', lambda: TODAY)
+        monkeypatch.setattr(tempfile, 'tempdir', str(work))
+
+    def run(self, conn, s3, *argv: str) -> tuple[int, str]:
+        def connect(*args, **kwargs):
+            self.connects.append((args, kwargs))
+            if isinstance(conn, Exception):
+                raise conn
+            return conn
+
+        def client(*args, **kwargs):
+            self.clients.append((args, kwargs))
+            return s3
+
+        self.monkeypatch.setattr(sbk.psycopg2, 'connect', connect)
+        self.monkeypatch.setattr(sbk.boto3, 'client', client)
+        connects_before = len(self.connects)
+        code = sbk.main(list(argv))
+        out = self.capsys.readouterr()
+        if not isinstance(conn, Exception) and len(self.connects) > connects_before:
+            assert not conn.in_txn, 'main left a transaction open'
+            assert conn.closed, 'main left the connection open'
+        assert list(self.work.iterdir()) == [], 'main left day files behind'
+        return code, out.out + out.err
+
+
+@pytest.fixture
+def cli(monkeypatch, capsys, tmp_path):
+    work = tmp_path / 'work'
+    work.mkdir()
+    return Cli(monkeypatch, capsys, work)
+
+
+def day_file(tmp_path: Path, day: date = D1, ids: list[int] | None = None) -> sbk.DayFile:
+    conn = FakeConnection(day_rows(day, ids or [1, 2]))
+    result = sbk.write_day_parquet(conn, day, tmp_path)
+    assert result is not None
+    return result
+
+
+def test_object_key() -> None:
+    assert sbk.object_key(D1) == 'backups/strike_exposures/2026-11-02.parquet'
+
+
+def test_upload_day_stores_metadata_and_verifies(tmp_path: Path) -> None:
+    f = day_file(tmp_path)
+    s3 = FakeS3()
+
+    sbk.upload_day(s3, BUCKET, f)
+
+    meta = s3.objects[key(D1)]['Metadata']
+    assert set(meta) == {'rows', 'min-id', 'max-id', 'sha256', 'exported-at', 'format'}
+    assert (meta['rows'], meta['min-id'], meta['max-id']) == ('2', '1', '2')
+    assert meta['sha256'] == f.sha256
+    assert meta['format'] == '1'
+    assert datetime.fromisoformat(meta['exported-at']).utcoffset() == timedelta(0)
+    assert all(value.isascii() for value in meta.values())
+    assert s3.objects[key(D1)]['Body'] == f.path.read_bytes()
+    # One thread: a client shared across upload threads once skipped TLS checks.
+    assert s3.transfer_configs[0].use_threads is False
+    assert s3.keys('head') == [key(D1)]
+    assert s3.keys('delete') == []
+
+
+@pytest.mark.parametrize(
+    ('s3_setup', 'message'),
+    [
+        pytest.param(lambda s3: s3.short_by.update({key(D1): 1}), 'R2 holds', id='size'),
+        pytest.param(
+            lambda s3: s3.meta_override.update({key(D1): {'rows': '3'}}),
+            'rows metadata',
+            id='rows',
+        ),
+        pytest.param(lambda s3: s3.lost.add(key(D1)), 'could not verify', id='missing'),
+    ],
+)
+def test_upload_verifies_size_and_rows(tmp_path: Path, s3_setup, message: str) -> None:
+    f = day_file(tmp_path)
+    s3 = FakeS3()
+    s3_setup(s3)
+
+    with pytest.raises(sbk.BackupError, match=message):
+        sbk.upload_day(s3, BUCKET, f)
+
+    # An object that failed its check must not count as exported.
+    assert s3.keys('delete') == [key(D1)]
+    assert key(D1) not in s3.objects
+
+
+def test_upload_that_cannot_be_deleted_says_the_object_may_remain(tmp_path: Path) -> None:
+    f = day_file(tmp_path)
+    s3 = FakeS3()
+    s3.short_by[key(D1)] = 1
+    s3.delete_error = ClientError({'Error': {'Code': 'AccessDenied'}}, 'DeleteObject')
+
+    with pytest.raises(sbk.BackupError, match='may remain') as raised:
+        sbk.upload_day(s3, BUCKET, f)
+
+    assert isinstance(raised.value.__cause__, sbk.BackupError)
+
+
+def test_upload_error_propagates_and_deletes_nothing(tmp_path: Path) -> None:
+    f = day_file(tmp_path)
+    s3 = FakeS3()
+    error = ClientError({'Error': {'Code': 'SlowDown'}}, 'PutObject')
+    s3.upload_errors[key(D1)] = error
+
+    with pytest.raises(ClientError) as raised:
+        sbk.upload_day(s3, BUCKET, f)
+
+    assert raised.value is error
+    assert s3.keys('head') == [] and s3.keys('delete') == []
+
+
+def test_exported_days_lists_every_page_and_skips_non_day_keys() -> None:
+    s3 = FakeS3(page_size=2)
+    for n, day in enumerate([D1, D2, D3, date(2026, 11, 5), date(2026, 11, 9)]):
+        s3.put_day(day, n + 1)
+    s3.objects[STATE_KEY] = {'Body': b'{}', 'Metadata': {}}
+    s3.objects['backups/strike_exposures/notes.txt'] = {'Body': b'', 'Metadata': {}}
+    s3.objects['backups/other/2026-11-02.parquet'] = {'Body': b'', 'Metadata': {}}
+    s3.objects['backups/strike_exposures/2026-13-45.parquet'] = {
+        'Body': b'',
+        'Metadata': {'rows': '9'},
+    }
+
+    found = sbk.exported_days(s3, BUCKET)
+
+    assert {day: meta['rows'] for day, meta in found.items()} == {
+        D1: '1',
+        D2: '2',
+        D3: '3',
+        date(2026, 11, 5): '4',
+        date(2026, 11, 9): '5',
+    }
+    assert s3.keys('list') == ['backups/strike_exposures/']
+    assert STATE_KEY not in s3.keys('head')
+
+
+def test_exported_days_of_an_empty_prefix() -> None:
+    assert sbk.exported_days(FakeS3(), BUCKET) == {}
+
+
+def test_state_round_trip_and_missing() -> None:
+    s3 = FakeS3()
+    assert sbk.read_state(s3, BUCKET) is None
+
+    sbk.write_state(s3, BUCKET, 94_224_463)
+
+    assert sbk.read_state(s3, BUCKET) == 94_224_463
+    stored = s3.state()
+    assert stored is not None and set(stored) == {'high_water_id', 'updated_at'}
+    assert datetime.fromisoformat(stored['updated_at']).utcoffset() == timedelta(0)
+
+
+@pytest.mark.parametrize(
+    'body',
+    [b'not json', b'[]', b'{}', b'{"high_water_id": "7"}', b'{"high_water_id": true}', b'{"high_water_id": -1}'],
+)
+def test_malformed_state_raises(body: bytes) -> None:
+    s3 = FakeS3()
+    s3.objects[STATE_KEY] = {'Body': body, 'Metadata': {}}
+
+    with pytest.raises(sbk.BackupError, match='state object is malformed'):
+        sbk.read_state(s3, BUCKET)
+
+
+def test_state_read_error_other_than_missing_propagates() -> None:
+    s3 = FakeS3()
+    error = ClientError({'Error': {'Code': 'AccessDenied'}}, 'GetObject')
+
+    def denied(**_kwargs):
+        raise error
+
+    s3.get_object = denied  # type: ignore[method-assign]
+
+    with pytest.raises(ClientError) as raised:
+        sbk.read_state(s3, BUCKET)
+
+    assert raised.value is error
+
+
+def test_plan_missing_and_gained_days(make_conn) -> None:
+    # D2 gained a row (id 5) after the high-water mark, D3 has no object, and
+    # today's rows (7, 8) are never planned.
+    conn = make_conn(three_days()[:-1] + day_rows(D3, [6]) + day_rows(TODAY, [7, 8]))
+    s3 = FakeS3()
+    s3.put_day(D1, 2)
+    s3.put_day(D2, 2)
+    sbk.write_state(s3, BUCKET, 4)
+
+    plan = sbk.plan_days(conn, s3, BUCKET, TODAY)
+
+    assert plan.due == [D2, D3]
+    assert plan.missing == [D3]
+    assert plan.stale == [D2]
+    assert plan.high_water_id == 8
+    assert plan.db_days == [D1, D2, D3]
+    assert plan.object_days == [D1, D2]
+    counted = [p for t, p in conn.statements if t.startswith('SELECT count(*)') and p]
+    assert counted == [(D2,)]  # one count per delta day that has an object
+    assert conn.autocommit is False
+
+
+def test_plan_verify_counts_finds_out_of_order_rows(make_conn) -> None:
+    # Nothing is past the high-water mark, but D2's object holds 2 of its 3 rows.
+    conn = make_conn(three_days()[:5])
+    s3 = FakeS3()
+    s3.put_day(D1, 2)
+    s3.put_day(D2, 2)
+    sbk.write_state(s3, BUCKET, 5)
+
+    assert sbk.plan_days(conn, s3, BUCKET, TODAY).due == []
+    plan = sbk.plan_days(conn, s3, BUCKET, TODAY, verify_counts=True)
+
+    assert plan.due == [D2]
+    assert plan.stale == [D2]
+    assert plan.high_water_id == 5
+
+
+def test_plan_without_state_checks_every_day(make_conn) -> None:
+    conn = make_conn(three_days())
+    s3 = FakeS3()
+    s3.put_day(D1, 2)
+    s3.put_day(D2, 2)
+
+    plan = sbk.plan_days(conn, s3, BUCKET, TODAY)
+
+    assert plan.due == [D2, D3]
+    counted = [p for t, p in conn.statements if t.startswith('SELECT count(*)') and p]
+    assert counted == [(D1,), (D2,)]
+    assert not any('id > %s' in t for t, _ in conn.statements)
+
+
+def test_plan_treats_an_object_without_rows_metadata_as_stale(make_conn) -> None:
+    conn = make_conn(day_rows(D1, [1, 2]))
+    s3 = FakeS3()
+    s3.objects[key(D1)] = {'Body': b'old', 'Metadata': {}}
+    s3.put_day(date(2025, 1, 6), 4)  # a day the table no longer has: ignored
+
+    plan = sbk.plan_days(conn, s3, BUCKET, TODAY, verify_counts=True)
+
+    assert plan.due == [D1]
+
+
+def test_plan_of_an_empty_table(make_conn) -> None:
+    plan = sbk.plan_days(make_conn([]), FakeS3(), BUCKET, TODAY)
+
+    assert plan.due == [] and plan.high_water_id == 0 and plan.db_days == []
+
+
+def test_plan_reads_in_one_snapshot(make_conn) -> None:
+    conn = make_conn(three_days())
+    s3 = FakeS3()
+    sbk.write_state(s3, BUCKET, 3)
+
+    sbk.plan_days(conn, s3, BUCKET, TODAY)
+
+    texts = [text for text, _ in conn.statements]
+    assert texts[0] == 'BEGIN ISOLATION LEVEL REPEATABLE READ, READ ONLY'
+    assert texts[-1] == 'ROLLBACK'
+    assert sum(t.startswith('BEGIN') for t in texts) == 1
+    assert texts[2] == 'SELECT count(*) FROM strike_exposures WHERE expiry IS NULL'
+    assert conn.autocommit is False
+
+
+def test_plan_refuses_a_table_with_null_expiry(make_conn) -> None:
+    conn = make_conn(three_days(), null_expiry=2)
+
+    with pytest.raises(sbk.BackupError, match='2 row.* NULL expiry'):
+        sbk.plan_days(conn, FakeS3(), BUCKET, TODAY)
+
+    assert [text for text, _ in conn.statements][-2:] == [
+        'SELECT count(*) FROM strike_exposures WHERE expiry IS NULL',
+        'ROLLBACK',
+    ]
+
+
+@pytest.mark.parametrize('event', ['null_expiry', 'days', 'max_id', 'delta', 'count'])
+def test_plan_database_error_propagates_after_a_rollback(make_conn, event: str) -> None:
+    error = psycopg2.OperationalError('injected')
+    conn = make_conn(three_days(), fail_on={event: error})
+    s3 = FakeS3()
+    s3.put_day(D1, 2)
+    s3.put_day(D2, 2)
+    sbk.write_state(s3, BUCKET, 2)
+
+    with pytest.raises(psycopg2.OperationalError) as raised:
+        sbk.plan_days(conn, s3, BUCKET, TODAY)
+
+    assert raised.value is error
+    assert conn.statements[-1][0] == 'ROLLBACK'
+
+
+def test_export_resumes(cli) -> None:
+    # D1 is already in R2 with its 2 rows; D2 and D3 are not.
+    s3 = FakeS3()
+    s3.put_day(D1, 2)
+    first = FakeConnection(three_days())
+
+    code, out = cli.run(first, s3, 'export')
+
+    assert code == 0
+    assert s3.keys('upload') == [key(D2), key(D3)]
+    assert s3.state()['high_water_id'] == 6
+    assert '2026-11-03: 3 rows' in out and '2026-11-04: 1 rows' in out
+    for secret in (DSN_SECRET, R2_SECRET, 'ACCESS-KEY-MARKER'):
+        assert secret not in out
+
+    second = FakeConnection(three_days())
+    code, _ = cli.run(second, s3, 'export')
+
+    assert code == 0
+    assert s3.keys('upload') == [key(D2), key(D3)]  # nothing new
+    assert not any('SELECT "id"' in t for t, _ in second.statements)
+
+
+def test_export_failure_exit_1_no_state(cli) -> None:
+    s3 = FakeS3()
+    s3.upload_errors[key(D2)] = S3UploadFailedError(
+        f'Failed to upload /tmp/x to {BUCKET}/{key(D2)}: SlowDown'
+    )
+
+    code, out = cli.run(FakeConnection(three_days()), s3, 'export')
+
+    assert code == 1
+    assert s3.keys('upload') == [key(D1), key(D2), key(D3)]  # D3 ran after D2 failed
+    assert sorted(k for k in s3.objects if k.endswith('.parquet')) == [key(D1), key(D3)]
+    assert s3.state() is None
+    assert '2026-11-03' in out and 'S3UploadFailedError' in out
+    assert BUCKET not in out  # the class name only, not the error text
+    # Each day's file is gone before the next day's upload, the failed one too.
+    assert s3.files_seen == [
+        ['2026-11-02.parquet'],
+        ['2026-11-03.parquet'],
+        ['2026-11-04.parquet'],
+    ]
+
+    s3.upload_errors.clear()
+    code, _ = cli.run(FakeConnection(three_days()), s3, 'export')
+
+    assert code == 0
+    assert s3.keys('upload')[3:] == [key(D2)]  # the next run redoes only D2
+    assert s3.state() is not None
+
+
+def test_truncated_upload_exits_1_and_the_next_run_redoes_the_day(cli) -> None:
+    s3 = FakeS3()
+    s3.short_by[key(D2)] = 1
+
+    code, out = cli.run(FakeConnection(three_days()), s3, 'export')
+
+    assert code == 1
+    assert key(D2) not in s3.objects  # deleted, so it does not count as exported
+    assert s3.state() is None
+    assert '2026-11-03' in out
+
+    s3.short_by.clear()
+    code, _ = cli.run(FakeConnection(three_days()), s3, 'export')
+
+    assert code == 0
+    assert s3.keys('upload')[3:] == [key(D2)]
+    assert s3.state() is not None
+
+
+def test_database_error_on_a_live_connection_fails_the_day_and_goes_on(cli) -> None:
+    s3 = FakeS3()
+    conn = FakeConnection(
+        three_days(), fail_on={'page2': psycopg2.errors.QueryCanceled('injected')}
+    )
+
+    code, out = cli.run(conn, s3, 'export')
+
+    assert code == 1
+    assert s3.keys('upload') == [key(D1), key(D3)]
+    assert s3.state() is None
+    assert '2026-11-03' in out and 'QueryCanceled' in out
+
+
+def test_dropped_connection_stops_the_run(cli) -> None:
+    s3 = FakeS3()
+    error = psycopg2.OperationalError('server closed the connection unexpectedly')
+    conn = FakeConnection(three_days(), fail_on={'page2': error}, closes_on='page2')
+
+    code, out = cli.run(conn, s3, 'export')
+
+    assert code == 1
+    assert s3.keys('upload') == [key(D1)]
+    assert len(conn.page_queries) == 2
+    assert s3.state() is None
+    assert 'connection lost' in out
+    assert '2026-11-03' in out
+    assert '2026-11-04' not in out  # D3 was never tried, so it is not a failure too
+
+    code, _ = cli.run(FakeConnection(three_days()), s3, 'export')
+
+    assert code == 0  # a re-run resumes with D2 and D3
+    assert s3.keys('upload') == [key(D1), key(D2), key(D3)]
+
+
+def test_planning_failure_exits_1(cli) -> None:
+    s3 = FakeS3()
+    conn = FakeConnection(three_days(), fail_on={'days': psycopg2.OperationalError('x')})
+
+    code, out = cli.run(conn, s3, 'export')
+
+    assert code == 1
+    assert s3.keys('upload') == [] and s3.state() is None
+    assert 'planning' in out and 'OperationalError' in out
+
+
+def test_state_write_failure_exits_1(cli) -> None:
+    s3 = FakeS3()
+    s3.put_error = ClientError({'Error': {'Code': 'AccessDenied'}}, 'PutObject')
+
+    code, out = cli.run(FakeConnection(three_days()), s3, 'export')
+
+    assert code == 1
+    assert s3.keys('upload') == [key(D1), key(D2), key(D3)]
+    assert 'FAILED state: ClientError' in out
+    assert s3.state() is None
+
+
+def test_r2_listing_failure_fails_the_plan(cli) -> None:
+    s3 = FakeS3()
+    s3.list_error = ClientError({'Error': {'Code': 'AccessDenied'}}, 'ListObjectsV2')
+
+    code, out = cli.run(FakeConnection(three_days()), s3, 'export')
+
+    assert code == 1
+    assert 'FAILED planning: ClientError' in out
+    assert s3.keys('upload') == [] and s3.keys('put') == []
+
+
+@pytest.mark.parametrize(
+    'argv',
+    [
+        pytest.param(['export', '--limit-days', '0'], id='limit-is-zero'),
+        pytest.param(['export', '--limit-days', 'many'], id='limit-is-not-a-number'),
+        pytest.param(['export', '--date', 'yesterday'], id='date-is-not-a-date'),
+        pytest.param([], id='no-command'),
+        pytest.param(['frobnicate'], id='unknown-command'),
+    ],
+)
+def test_bad_arguments_exit_2_before_touching_anything(cli, argv: list[str]) -> None:
+    with pytest.raises(SystemExit) as raised:
+        cli.run(FakeConnection(three_days()), FakeS3(), *argv)
+
+    assert raised.value.code == 2
+    assert cli.connects == [] and cli.clients == []
+
+
+def test_dry_run_uploads_nothing_and_writes_no_state(cli) -> None:
+    s3 = FakeS3()
+
+    code, out = cli.run(FakeConnection(three_days()), s3, 'export', '--dry-run')
+
+    assert code == 0
+    assert s3.keys('upload') == [] and s3.keys('put') == [] and s3.state() is None
+    assert out.count('dry run') >= 3 and '2026-11-02: 2 rows' in out
+
+
+def test_date_forces_one_day_and_keeps_the_state(cli) -> None:
+    s3 = FakeS3()
+    s3.put_day(D2, 3)  # already exported and current: --date exports it anyway
+
+    code, _ = cli.run(FakeConnection(three_days()), s3, 'export', '--date', '2026-11-03')
+
+    assert code == 0
+    assert s3.keys('upload') == [key(D2)]
+    assert s3.state() is None  # a one-day run says nothing about the other days
+
+
+def test_limit_days_is_a_partial_run(cli) -> None:
+    s3 = FakeS3()
+
+    code, out = cli.run(FakeConnection(three_days()), s3, 'export', '--limit-days', '2')
+
+    assert code == 0
+    assert s3.keys('upload') == [key(D1), key(D2)]
+    assert s3.state() is None
+    assert 'partial' in out
+
+    code, _ = cli.run(FakeConnection(three_days()), s3, 'export', '--limit-days', '5')
+
+    assert code == 0
+    assert s3.keys('upload')[2:] == [key(D3)]
+    assert s3.state() is not None  # the limit covered everything that was due
+
+
+def test_verify_counts_flag_reaches_the_plan(cli) -> None:
+    s3 = FakeS3()
+    s3.put_day(D1, 2)
+    s3.put_day(D2, 2)  # D2 holds 3 rows now
+    s3.put_day(D3, 1)
+    sbk.write_state(s3, BUCKET, 6)
+
+    quiet, _ = cli.run(FakeConnection(three_days()), s3, 'export')
+    assert quiet == 0 and s3.keys('upload') == []
+
+    code, _ = cli.run(FakeConnection(three_days()), s3, 'export', '--verify-counts')
+
+    assert code == 0
+    assert s3.keys('upload') == [key(D2)]
+
+
+def test_a_day_with_no_rows_is_skipped(cli) -> None:
+    s3 = FakeS3()
+
+    code, out = cli.run(FakeConnection(three_days()), s3, 'export', '--date', '2026-11-05')
+
+    assert code == 0
+    assert s3.keys('upload') == []
+    assert 'no rows' in out
+
+
+def test_date_not_before_today_is_refused(cli) -> None:
+    code, out = cli.run(FakeConnection(three_days()), FakeS3(), 'export', '--date', '2026-11-06')
+
+    assert code == 2
+    assert 'before today' in out
+    assert cli.connects == []
+
+
+def test_missing_env_exits_2_naming_only_the_variable(cli, monkeypatch) -> None:
+    monkeypatch.delenv('R2_BUCKET_FULLTAPE')
+
+    code, out = cli.run(FakeConnection(three_days()), FakeS3(), 'export')
+
+    assert code == 2
+    assert 'R2_BUCKET_FULLTAPE' in out
+    assert DSN_SECRET not in out and R2_SECRET not in out
+    assert cli.connects == [] and cli.clients == []
+
+
+def test_main_builds_its_clients_from_the_environment(cli) -> None:
+    cli.run(FakeConnection([]), FakeS3(), 'status')
+
+    (dsn,), connect_kwargs = cli.connects[0]
+    assert dsn == ENV['DATABASE_URL']
+    assert connect_kwargs['application_name'] == 'strike-exposures-backup'
+    assert cli.clients[0][0] == ('s3',)
+    client_kwargs = cli.clients[0][1]
+    assert client_kwargs['endpoint_url'] == ENV['R2_ENDPOINT_URL']
+    assert client_kwargs['aws_access_key_id'] == ENV['R2_ACCESS_KEY_ID']
+    assert client_kwargs['aws_secret_access_key'] == R2_SECRET
+    assert client_kwargs['region_name'] == 'auto'
+    assert client_kwargs['verify'] is True
+
+
+def test_database_connect_failure_hides_the_dsn(cli) -> None:
+    error = psycopg2.ProgrammingError(f'could not connect to {ENV["DATABASE_URL"]}')
+
+    code, out = cli.run(error, FakeS3(), 'export')
+
+    assert code == 1
+    assert 'ProgrammingError' in out
+    assert DSN_SECRET not in out and 'ep-marker' not in out
+
+
+def test_status_output(cli) -> None:
+    rows = three_days() + day_rows(TODAY, [7, 8])
+    s3 = FakeS3()
+    s3.put_day(D1, 2)
+    s3.put_day(D2, 2)  # D2 holds 3 rows
+    s3.put_day(date(2026, 11, 9), 1)  # a future day in R2 is not a database day
+    sbk.write_state(s3, BUCKET, 8)  # nothing is past the mark: only a full count sees D2
+
+    code, out = cli.run(FakeConnection(rows), s3, 'status')
+
+    assert code == 0
+    assert 'database days: 3 (2026-11-02 to 2026-11-04)' in out
+    assert 'exported days: 3' in out
+    assert 'missing: 1 (2026-11-04)' in out
+    assert 'stale: 1 (2026-11-03)' in out
+    assert 'high-water id: 8' in out
+    for secret in (DSN_SECRET, R2_SECRET, 'ACCESS-KEY-MARKER', 'ep-marker'):
+        assert secret not in out
+    assert s3.keys('upload') == []
+    assert s3.keys('put') == [STATE_KEY]  # only the setup's; status wrote nothing
+    assert s3.state()['high_water_id'] == 8
+
+
+def test_status_failure_exits_1(cli) -> None:
+    conn = FakeConnection(three_days(), fail_on={'days': psycopg2.OperationalError('x')})
+
+    code, out = cli.run(conn, FakeS3(), 'status')
+
+    assert code == 1
+    assert 'FAILED status: OperationalError' in out
+
+
+def test_status_of_a_complete_backup(cli) -> None:
+    s3 = FakeS3()
+    for day, rows in ((D1, 2), (D2, 3), (D3, 1)):
+        s3.put_day(day, rows)
+
+    code, out = cli.run(FakeConnection(three_days()), s3, 'status')
+
+    assert code == 0
+    assert 'missing: 0\n' in out and 'stale: 0\n' in out

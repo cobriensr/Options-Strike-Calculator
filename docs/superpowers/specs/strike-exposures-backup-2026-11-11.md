@@ -75,8 +75,8 @@ Phase A alone is a complete backup that someone has to re-run by hand. Phase B r
   - Only dates before today's ET date. Today's rows are never exported until the session is over and the next run comes.
   - A date with 0 rows is skipped, not exported.
 - **Uploads are verified.**
-  - `put_object`, then `head_object`. The upload counts only if `ContentLength` equals the local file size and the object metadata `rows` equals the snapshot count.
-  - `_state.json` is written only after every day in the run has verified.
+  - `upload_file` (one thread, as nightly's `R2Store`), then `head_object`. The upload counts only if `ContentLength` equals the local file size and the object metadata `rows` equals the snapshot count. An object that fails that check is deleted, so a key that exists means a day that verified.
+  - `_state.json` is written only after every day in the run has verified, and only by a run that did everything that was due: not with `--date`, not when `--limit-days` left days undone, not with `--dry-run`.
 - **Object metadata.** Keys `rows`, `min-id`, `max-id`, `sha256` (of the file), `exported-at` (ISO UTC) and `format` (`"1"`). Values are ASCII only.
 - **No secrets.** Never print a secret or a connection string, and never put a cell value in an error. Logs carry dates, counts, byte sizes and durations.
 - **R2 client.** One boto3 client per thread (memory `boto3-shared-client-tls`). Phase A is single-threaded.
@@ -107,11 +107,15 @@ A day is due when any of these holds:
 
 1. **It has no object.** The days in the DB come from a loose index scan over `idx_strike_exp_date_ticker`: a recursive CTE, `SELECT min(date) ... WHERE date > prev`. Never use `SELECT DISTINCT date`, which reads 74M index entries.
 2. **It gained rows since the last run.**
-   - The query is `SELECT date, count(*) FROM strike_exposures WHERE id > :high_water_id GROUP BY date`, a range scan on the pkey.
-   - For each date it returns, take the full-day count (one index-only count). The day is due if that count differs from the object's metadata `rows`.
-3. **`--verify-counts` was passed.** Every day's count is compared with its object's `rows`. That is about 74M index entries, a few minutes, outside market hours. Phase B runs it once a week.
+   - The query is `SELECT date FROM strike_exposures WHERE id > :high_water_id GROUP BY date`, a range scan on the pkey.
+   - For each date it returns that has an object, take the full-day count (one index-only count). The day is due if that count differs from the object's metadata `rows`. A day with no object is due without a count.
+3. **`--verify-counts` was passed, or there is no stored high-water mark.** Every day that has an object has its count compared with the object's `rows`. That is about 74M index entries, a few minutes, outside market hours. Phase B runs it once a week. With no `_state.json` the delta query is skipped and this runs instead, because the mark is what bounds the delta.
 
-The new `high_water_id` is `SELECT max(id)` read in the planning snapshot.
+The new `high_water_id` is `SELECT max(id)` read in the planning snapshot (0 for an empty table).
+
+The whole plan is one `_read_snapshot` block. The day counts are one query each: a single `GROUP BY` over every day would run past the 60 s timeout. Before anything else the block counts rows with a NULL `expiry` and raises `BackupError` if there are any, because the keyset paging and the restore's conflict key both assume none (none today).
+
+R2 is read before the snapshot opens: the object list and one `head_object` per day for its metadata, then `_state.json`. A malformed `_state.json` raises `BackupError` rather than being treated as missing.
 
 **The out-of-order commit gap.** A row with a lower id that commits after that snapshot is missed by rule 2. Rule 3 catches it. There are no writers at 07:15 UTC, so in practice the gap only opens if a backfill script runs at the same time as the export.
 
@@ -178,23 +182,33 @@ The new `high_water_id` is `SELECT max(id)` read in the planning snapshot.
 
 **Interfaces it produces:**
 - `object_key(day: date) -> str`, which returns `f"{PREFIX}{day.isoformat()}.parquet"`.
-- `upload_day(s3, bucket: str, f: DayFile) -> None`. It does `put_object` with the metadata, then `head_object`. It raises `BackupError` on a size or `rows` mismatch.
+- `upload_day(s3, bucket: str, f: DayFile) -> None`. It does `upload_file` with the metadata in `ExtraArgs` and `TransferConfig(multipart_threshold=64 MiB, use_threads=False, preferred_transfer_client='classic')`, as `nightly/src/r2_store.py` does, then `head_object`.
+  - It raises `BackupError` on a size or `rows` mismatch or a failed `head_object`, and deletes the key first (best effort). If the delete fails the error says the object may remain.
+  - An `upload_file` error propagates as boto3 raised it, and the old object, if any, is untouched.
 - `exported_days(s3, bucket: str) -> dict[date, dict[str, str]]`. It lists `PREFIX` with a paginator, skips `_state.json`, and returns each day's metadata from `head_object`.
-- `plan_days(conn, s3, bucket: str, today_et: date, verify_counts: bool = False) -> Plan`, where `@dataclass(frozen=True) class Plan: due: list[date]; high_water_id: int`. It applies the rules under "Deciding which days to export" and only includes dates before `today_et`.
+- `plan_days(conn, s3, bucket: str, today_et: date, verify_counts: bool = False) -> Plan`, where `@dataclass(frozen=True) class Plan: due: list[date]; high_water_id: int; missing: list[date]; stale: list[date]; db_days: list[date]; object_days: list[date]`. `due` is `missing` plus `stale`, oldest first. It applies the rules under "Deciding which days to export" and only includes dates before `today_et`. `status` prints the other fields.
 - `read_state(s3, bucket) -> int | None` and `write_state(s3, bucket, high_water_id: int) -> None`.
 - `main(argv: list[str] | None = None) -> int`, with these subcommands:
-  - `export [--date D] [--limit-days N] [--verify-counts] [--dry-run]`. `--dry-run` writes the local files and prints the plan, but uploads nothing and writes no state.
-  - `status`, which lists the DB days and object days, and the missing and stale ones.
-  - Exit codes: 0 when every due day verified; 1 when any day failed (the other days still run); 2 for bad config.
+  - `export [--date D] [--limit-days N] [--verify-counts] [--dry-run]`. `--dry-run` writes the local files, prints each day's rows, bytes and time, deletes the file, and uploads nothing and writes no state. `--date D` exports exactly that day, due or not, and must be before today.
+  - `status`, which lists the DB days and object days, and the missing and stale ones. It counts every day, like `--verify-counts`, so it takes minutes on production.
+  - Exit codes: 0 when every due day verified; 1 when any day failed or the plan or the connection did; 2 for bad config or arguments.
+  - A day that fails with a database, R2, I/O or `BackupError` error is logged by date and error class, and the run goes on to the next day. A `BackupError`'s own fixed text is added; no other error's text is printed. The exit code is 1 and the state is not advanced.
+  - If a failed day left the connection closed (`conn.closed`), the run stops there with exit 1 and tries no more days; a re-run resumes.
+  - The connection is opened fresh and used only inside `_read_snapshot` (`plan_days` and `write_day_parquet`).
 
 **Steps:**
-- [ ] **Step 1:** Write the failing tests. The functions take the boto3 client as their `s3` argument, which is the production call shape: `main` builds the client and passes it in. The tests pass a dict-backed fake with `put_object`, `head_object`, `get_paginator`, `get_object` and `delete_object`. Tests that run `main` monkeypatch the module's `psycopg2.connect` and `boto3.client` to return the fakes, which is mocking at the module boundary (R3). botocore's real `_make_api_call` is blocked in this suite.
+- [ ] **Step 1:** Write the failing tests. The functions take the boto3 client as their `s3` argument, which is the production call shape: `main` builds the client and passes it in. The tests pass a dict-backed fake with `upload_file`, `head_object`, `get_paginator`, `get_object`, `put_object` and `delete_object`, whose signatures were checked against boto3 1.43.121. Tests that run `main` monkeypatch the module's `psycopg2.connect` and `boto3.client` to return the fakes, which is mocking at the module boundary (R3). botocore's real `_make_api_call` is blocked in this suite.
   - `test_upload_verifies_size_and_rows`: the stub's `head_object` reports a `ContentLength` 1 byte short. It raises `BackupError`, and `write_state` is never called.
   - `test_plan_missing_and_gained_days`: the DB has 3 days, R2 has 2 of them, and one of those 2 gained rows past the high-water mark. Plan = the missing day plus the day that gained rows, in date order. Today is excluded.
   - `test_plan_verify_counts_finds_out_of_order_rows`: no id passes the high-water mark, but one day's count differs from its object's `rows`. It is due only with `verify_counts=True`.
   - `test_export_resumes`: day 1 is already in the stub with the matching `rows`, and days 2 and 3 are missing. `main(["export"])` uploads only days 2 and 3. Running it a second time uploads nothing.
   - `test_export_failure_exit_1_no_state`: one day's upload fails. The other day still uploads, the exit code is 1, and the state is not advanced.
   - `test_status_output`: it prints counts and dates only, and never a connection string.
+  - Added in the build, all through the same fakes (the DB fake also refuses a statement or a fetch outside the snapshot):
+    - `upload_day`: the metadata keys and values, one thread, a size, `rows` or missing-object failure deletes the key, a delete that fails says the object may remain, an `upload_file` error propagates and deletes nothing.
+    - `exported_days` reads every page and skips `_state.json` and other keys. `read_state` / `write_state` round-trip; missing is `None`, malformed raises, another `ClientError` propagates.
+    - `plan_days`: counts only the delta days that have an object (and every day with `verify_counts` or no state); object without `rows` metadata is stale; an empty table; one snapshot; a NULL expiry raises; a database error propagates after the ROLLBACK.
+    - `main`: a truncated upload exits 1, deletes the key, and the next run redoes the day; a database error on a live connection fails that day and the run goes on; a dropped connection stops the run and a re-run resumes; each day's file is deleted before the next day; `--dry-run`, `--date` and a short `--limit-days` keep the state; `--verify-counts` reaches the plan; a day with no rows is skipped; `--date` today is refused; a missing variable exits 2 naming only the variable; the clients are built from the environment (`region_name='auto'`, `verify=True`); a failed connect hides the DSN; a failed state write, an R2 listing error and a `plan_days` failure on `status` each exit 1 and name the step and error class; a bad argument (`--limit-days 0`, a non-date `--date`, no or an unknown command) exits 2 before any connection; `status` writes nothing.
 - [ ] **Step 2:** Run the tests. Expected: they FAIL.
 - [ ] **Step 3:** Implement Task 2's interfaces. `main` loads env through `_cli_paths.load_env_file`, then opens one psycopg2 connection and one boto3 client. It writes the day files to a `tempfile.TemporaryDirectory()` and deletes each one after it verifies.
 - [ ] **Step 4:** Run the tests. Expected: they PASS.
@@ -246,7 +260,7 @@ The new `high_water_id` is `SELECT max(id)` read in the planning snapshot.
   - `detail` is a fixed phrase (phase 2 rule).
   - It runs `verify_counts=True` on Saturday's run.
   - A failed day turns the step's status to `partial` or `failed`, which goes through `monitoring.report_step`. Sentry rule 6262727 (nightly, any new issue) emails on it.
-- **The module ships in the image.** It is added under the six-place rule at the top of `nightly/Dockerfile` on the phase 2 branch:
+- **The module ships in the image.** `strike_exposures_backup.py` imports `scripts/_cli_paths.py` (`format_dates`, `load_env_file`) and `scripts/_pipeline_retry.py` (`connect_with_retry`) at the top, so the image needs those two files as well, or the step moves those imports into `main`. It is added under the six-place rule at the top of `nightly/Dockerfile` on the phase 2 branch:
   - a COPY line;
   - the Railway watch paths;
   - the `.dockerignore` re-admit;
