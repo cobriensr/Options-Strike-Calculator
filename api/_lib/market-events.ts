@@ -6,6 +6,10 @@
  *   - Static: FOMC dates, half-day/early close dates
  *   - Finnhub API: Mega-cap earnings (AAPL, MSFT, NVDA, AMZN, GOOG, META, TSLA)
  *
+ * The first two are the macro events (`fetchMacroEvents`). They alone make up
+ * the stored snapshot flag (owner decision 2026-11-12); the earnings join them
+ * only in `fetchMarketEvents`, for `/api/events` and the app's banner.
+ *
  * Environment variables, read from `process.env` on every call:
  *   FRED_API_KEY    — Free key from https://fred.stlouisfed.org/docs/api/api_key.html
  *   FINNHUB_API_KEY — Free key from https://finnhub.io/register (optional, earnings only)
@@ -212,6 +216,16 @@ interface FinnhubEarningsResponse {
   earningsCalendar: FinnhubEarningsEntry[];
 }
 
+/**
+ * True for a name built by `fetchMegaCapEarnings`, whose event name is the
+ * template `${symbol} Earnings`. It pairs with that template: change one and
+ * change the other. The leading space and the end anchor are part of the rule,
+ * so `Earnings Season` and `NVDA Earnings Call` are not earnings names.
+ */
+export function isEarningsEventName(name: string): boolean {
+  return / Earnings$/.test(name);
+}
+
 interface EarningsResult {
   events: EventItem[];
   /** False on a non-OK status, a thrown fetch or body, or a malformed payload. */
@@ -286,7 +300,8 @@ async function fetchMegaCapEarnings(
 // ============================================================
 
 const FRED_BASE = 'https://api.stlouisfed.org/fred';
-const DAY_CACHE_KEY = 'events:day:v1';
+// v2: the day lookup is macro-only. A v1 entry can hold Finnhub earnings.
+const DAY_CACHE_KEY = 'events:day:v2';
 export const CACHE_TTL_SEC = 7 * 24 * 60 * 60; // 7 days (key is date-scoped)
 // An incomplete or failed lookup is kept briefly, not for the day. Without it
 // a lookup that keeps failing repays 7 FRED calls on every snapshot save, and
@@ -353,27 +368,38 @@ async function fetchReleaseDates(
 // MAIN FETCH
 // ============================================================
 
+/** Sort by date, then severity (high first), then event name. */
+function sortEvents(events: EventItem[]): EventItem[] {
+  return events.sort((a, b) => {
+    if (a.date !== b.date) return a.date.localeCompare(b.date);
+    if (a.severity !== b.severity) return a.severity === 'high' ? -1 : 1;
+    return a.event.localeCompare(b.event);
+  });
+}
+
 /**
- * Every event from `startDate` to `endDate` (inclusive, YYYY-MM-DD), sorted
- * by date, then severity (high first), then event name. FRED's
- * `release/dates` returns all history and the range is filtered here, so a
- * past range works as well as a forward one. Finnhub earnings rows are kept
- * to the same range.
+ * The macro events from `startDate` to `endDate` (inclusive, YYYY-MM-DD),
+ * sorted by date, then severity (high first), then event name: the tracked
+ * FRED releases, FOMC, and the half-day and closure statics. This is the whole
+ * definition of an event day for the stored snapshot flag (owner decision
+ * 2026-11-12): mega-cap earnings are left out because Finnhub's free key
+ * serves only about a month of past earnings, so they cannot be rebuilt for
+ * older dates. It never calls Finnhub and never reads `FINNHUB_API_KEY`.
  *
- * `complete` is true only when every source that is configured answered
- * with a well-formed payload: FRED (required) and, when `FINNHUB_API_KEY` is
- * set, Finnhub. Without `FRED_API_KEY` it returns the static events (and
- * earnings, with a Finnhub key) with `complete: false`; it does not throw.
- * A FRED non-OK status or malformed payload, and a Finnhub failure of any
- * kind, are logged and return `complete: false`. A FRED network error or
- * unparseable body rejects.
+ * FRED's `release/dates` returns all history and the range is filtered here,
+ * so a past range works as well as a forward one.
+ *
+ * `complete` is true only when `FRED_API_KEY` is set and every FRED release
+ * answered with a well-formed payload. Without the key it returns the static
+ * events with `complete: false`; it does not throw. A FRED non-OK status or
+ * malformed payload is logged and returns `complete: false`. A FRED network
+ * error or unparseable body rejects.
  */
-export async function fetchMarketEvents(
+export async function fetchMacroEvents(
   startDate: string,
   endDate: string,
 ): Promise<MarketEventsResult> {
   const fredKey = process.env.FRED_API_KEY;
-  const finnhubKey = process.env.FINNHUB_API_KEY; // optional — earnings only
 
   const releaseMap = new Map<number, FredReleaseConfig>();
   for (const r of TRACKED_RELEASES) releaseMap.set(r.id, r);
@@ -382,29 +408,20 @@ export async function fetchMarketEvents(
     logger.warn('FRED_API_KEY not configured; returning static events only');
   }
 
-  // Fetch FRED releases + Finnhub earnings in parallel
-  const fredPromises = fredKey
-    ? TRACKED_RELEASES.map((r) =>
-        fetchReleaseDates(r.id, fredKey, startDate, endDate),
-      )
-    : [];
-  const earningsPromise: Promise<EarningsResult> = finnhubKey
-    ? fetchMegaCapEarnings(finnhubKey, startDate, endDate)
-    : Promise.resolve({ events: [], ok: true });
+  const fredResults = await Promise.all(
+    fredKey
+      ? TRACKED_RELEASES.map((r) =>
+          fetchReleaseDates(r.id, fredKey, startDate, endDate),
+        )
+      : [],
+  );
 
-  const [fredResults, earnings] = await Promise.all([
-    Promise.all(fredPromises),
-    earningsPromise,
-  ]);
-
-  // Either source failing means the list may be missing events: a FRED
-  // release (e.g. CPI) or a mega-cap earnings day. Treat the whole fetch as
-  // incomplete so the caller does not cache a degraded result for the day
-  // (or, in a snapshot save, trust it over the client's names). No FRED key
-  // means no economic events at all, which is incomplete too. No Finnhub key
-  // means earnings are not part of the list, so that leg counts as OK.
-  const complete =
-    Boolean(fredKey) && fredResults.every((r) => r.ok) && earnings.ok;
+  // A FRED release failing means the list may be missing an event (e.g. CPI):
+  // treat the whole fetch as incomplete so the caller does not cache a
+  // degraded result for the day (or, in a snapshot save, trust it over the
+  // client's names). No FRED key means no economic events at all, which is
+  // incomplete too.
+  const complete = Boolean(fredKey) && fredResults.every((r) => r.ok);
 
   const events: EventItem[] = [];
 
@@ -467,17 +484,41 @@ export async function fetchMarketEvents(
     }
   }
 
-  // Add mega-cap earnings
-  events.push(...earnings.events);
+  return { events: sortEvents(events), complete };
+}
 
-  // Sort by date, then severity (high first), then event name
-  events.sort((a, b) => {
-    if (a.date !== b.date) return a.date.localeCompare(b.date);
-    if (a.severity !== b.severity) return a.severity === 'high' ? -1 : 1;
-    return a.event.localeCompare(b.event);
-  });
+/**
+ * Every event from `startDate` to `endDate` (inclusive, YYYY-MM-DD) for
+ * `/api/events` and the app's banner: the macro events from
+ * `fetchMacroEvents`, plus the mega-cap earnings from Finnhub when
+ * `FINNHUB_API_KEY` is set, sorted as there. Finnhub earnings rows are kept to
+ * the same range. The two sources are fetched in parallel.
+ *
+ * `complete` is true only when the macro fetch is complete and, when a
+ * Finnhub key is set, Finnhub answered with a well-formed payload. A Finnhub
+ * failure of any kind is logged and returns `complete: false`; the macro
+ * failures and rejections are as in `fetchMacroEvents`.
+ */
+export async function fetchMarketEvents(
+  startDate: string,
+  endDate: string,
+): Promise<MarketEventsResult> {
+  const finnhubKey = process.env.FINNHUB_API_KEY; // optional — earnings only
 
-  return { events, complete };
+  // Macro first: its FRED requests go out before Finnhub's, as they always did.
+  const macroPromise = fetchMacroEvents(startDate, endDate);
+  const earningsPromise: Promise<EarningsResult> = finnhubKey
+    ? fetchMegaCapEarnings(finnhubKey, startDate, endDate)
+    : Promise.resolve({ events: [], ok: true });
+
+  const [macro, earnings] = await Promise.all([macroPromise, earningsPromise]);
+
+  // No Finnhub key means earnings are not part of the list, so that leg
+  // counts as OK.
+  return {
+    events: sortEvents([...macro.events, ...earnings.events]),
+    complete: macro.complete && earnings.ok,
+  };
 }
 
 // ============================================================
@@ -487,7 +528,7 @@ export async function fetchMarketEvents(
 interface DayCacheEntry {
   data: EventItem[];
   cachedAt: number;
-  /** Absent on a complete entry, and on one phase 1 wrote: both read as complete. */
+  /** Absent on a complete entry, which reads as complete. */
   complete?: boolean;
 }
 
@@ -504,8 +545,9 @@ async function writeDayCache(
 }
 
 /**
- * The events on one date: `fetchMarketEvents(date, date)` behind a Redis
- * key per date, with two lifetimes:
+ * The macro events on one date: `fetchMacroEvents(date, date)` behind a Redis
+ * key per date (`events:day:v2:{date}`), with two lifetimes. Earnings are not
+ * part of it, so a Finnhub failure can neither delay nor degrade the answer.
  *   - a `complete` result is kept 7 days (`CACHE_TTL_SEC`);
  *   - an incomplete result, or a fetch that rejects, is kept 5 minutes as
  *     `{ data, cachedAt, complete: false }`, so a lookup that keeps failing is
@@ -513,7 +555,7 @@ async function writeDayCache(
  *     within minutes instead of pinning a degraded day. A rejected fetch
  *     caches `data: []`, then rethrows the original error.
  * A hit returns the entry's events with `complete: false` only when the entry
- * says so; an entry without the field (phase 1 wrote none) reads as complete.
+ * says so; an entry without the field is a complete one.
  * `fromCache` is true on a hit and false after a fetch, so a caller can tell
  * the call that found a failure from the calls the failure entry then serves.
  * A Redis read or write failure is logged and the lookup goes on without the
@@ -541,7 +583,7 @@ export async function getEventsForDate(date: string): Promise<DayEventsResult> {
 
   let result: MarketEventsResult;
   try {
-    result = await fetchMarketEvents(date, date);
+    result = await fetchMacroEvents(date, date);
   } catch (err) {
     await writeDayCache(
       cacheKey,
@@ -573,11 +615,13 @@ export async function getEventsForDate(date: string): Promise<DayEventsResult> {
 // ============================================================
 
 /**
- * The `event_names` a snapshot stores for a date's events: each event's name
- * in the order given, duplicates kept. This is the one definition shared by
- * the snapshot save and the history backfill, and it matches the client's
- * rule in `useRangeAnalysis`, so the two writers cannot drift apart.
+ * The `event_names` a snapshot stores for a date's events: each macro event's
+ * name in the order given, duplicates kept, and no Finnhub earnings (the
+ * stored flag is macro-only, owner decision 2026-11-12). This is the one
+ * definition shared by the snapshot save and the history backfill, so the two
+ * writers cannot drift apart. The app's own list still carries earnings, so a
+ * client's names may hold some: see `isEarningsEventName`.
  */
 export function eventNamesForSnapshot(events: readonly EventItem[]): string[] {
-  return events.map((e) => e.event);
+  return events.filter((e) => e.source !== 'finnhub').map((e) => e.event);
 }

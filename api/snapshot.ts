@@ -21,12 +21,14 @@
  *     the date's own replay.
  *
  * The server decides the event flag and names. It looks the date up in
- * `getEventsForDate` (FRED, the FOMC and early-close calendar, Finnhub) and
- * stores `is_event_day` and `event_names` from that, whatever the client sent:
- * the client only knows events from today forward, so a replay or the day's
- * first live save would otherwise store a past event day as a plain one. When
- * the lookup is incomplete or fails, the save still goes ahead with the
- * server's partial names plus any the client sent, and the gap is reported:
+ * `getEventsForDate` (FRED, and the FOMC and early-close calendar) and stores
+ * `is_event_day` and `event_names` from that, whatever the client sent: the
+ * client only knows events from today forward, so a replay or the day's first
+ * live save would otherwise store a past event day as a plain one. The flag is
+ * macro-only (owner decision 2026-11-12): mega-cap earnings never count, and
+ * a client's earnings names are dropped. When the lookup is incomplete or
+ * fails, the save still goes ahead with the server's partial names plus the
+ * client's non-earnings names, and the gap is reported:
  * snapshot.event_lookup_incomplete counts every such save, while the warning
  * log and the Sentry warning fire once per fetch (or failure), not for each
  * save the cached incomplete entry then serves.
@@ -47,6 +49,7 @@ import logger from './_lib/logger.js';
 import {
   eventNamesForSnapshot,
   getEventsForDate,
+  isEarningsEventName,
 } from './_lib/market-events.js';
 import { getETToday } from '../src/utils/timezone.js';
 
@@ -54,8 +57,9 @@ import { getETToday } from '../src/utils/timezone.js';
  * The `is_event_day` and `event_names` a snapshot for `date` stores. A
  * complete lookup is the whole answer and the client's values are ignored.
  * An incomplete or failed one keeps the server's names in order, duplicates
- * included, then appends each client name not already listed, and is
- * reported. It never throws: the lookup's failure must not cost the save.
+ * included, then appends each client name that is not an earnings name and
+ * not already listed, and is reported. It never throws: the lookup's failure
+ * must not cost the save.
  */
 async function resolveEventFlags(
   date: string,
@@ -83,8 +87,11 @@ async function resolveEventFlags(
   }
 
   const eventNames = [...serverNames];
+  // A live client's list comes from /api/events, which carries earnings.
   for (const name of clientNames ?? []) {
-    if (!eventNames.includes(name)) eventNames.push(name);
+    if (!isEarningsEventName(name) && !eventNames.includes(name)) {
+      eventNames.push(name);
+    }
   }
   // Count every incomplete save. Warn once per fetch: the cache serves an
   // incomplete entry for 5 minutes and a replay saves about 24 times a

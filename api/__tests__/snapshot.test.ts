@@ -472,20 +472,23 @@ describe('POST /api/snapshot', () => {
   describe('the event flag and names', () => {
     const LOOKUP_MSG = 'snapshot: event lookup incomplete';
 
-    function eventItem(name: string): EventItem {
+    function eventItem(
+      name: string,
+      source: EventItem['source'] = 'fred',
+    ): EventItem {
       return {
         date: TODAY,
         event: name,
         description: name,
         time: '8:30 AM',
         severity: 'high',
-        source: 'fred',
+        source,
       };
     }
 
     function lookup(names: string[], complete: boolean, fromCache = false) {
       vi.mocked(getEventsForDate).mockResolvedValue({
-        events: names.map(eventItem),
+        events: names.map((name) => eventItem(name)),
         complete,
         fromCache,
       });
@@ -580,6 +583,87 @@ describe('POST /api/snapshot', () => {
         eventNames: [],
       });
       expectNothingReported();
+    });
+
+    // The stored flag is macro-only (owner decision 2026-11-12). A live
+    // client's names come from /api/events, which includes earnings.
+    it('stores no earnings name on a complete lookup, even when the events hold one and the client sent one', async () => {
+      vi.mocked(getEventsForDate).mockResolvedValue({
+        events: [
+          eventItem('CPI'),
+          eventItem('NVDA Earnings', 'finnhub'),
+          eventItem('AAPL Earnings', 'finnhub'),
+        ],
+        complete: true,
+        fromCache: false,
+      });
+
+      await save({ isEventDay: true, eventNames: ['CPI', 'TSLA Earnings'] });
+
+      expect(saveSnapshot).toHaveBeenCalledWith({
+        date: TODAY,
+        entryTime: '10:30 AM CT',
+        isEventDay: true,
+        eventNames: ['CPI'],
+      });
+    });
+
+    it('stores a not-event day when the only event is earnings', async () => {
+      vi.mocked(getEventsForDate).mockResolvedValue({
+        events: [eventItem('NVDA Earnings', 'finnhub')],
+        complete: true,
+        fromCache: false,
+      });
+
+      await save({ isEventDay: true, eventNames: ['NVDA Earnings'] });
+
+      expect(saveSnapshot).toHaveBeenCalledWith({
+        date: TODAY,
+        entryTime: '10:30 AM CT',
+        isEventDay: false,
+        eventNames: [],
+      });
+    });
+
+    it('drops the client’s earnings names when the lookup is incomplete, keeping its macro names', async () => {
+      lookup([], false);
+
+      const res = await save({
+        isEventDay: true,
+        eventNames: ['CPI', 'NVDA Earnings', 'AAPL Earnings'],
+      });
+
+      expect(res._json).toEqual({ id: 11, saved: true });
+      expect(saveSnapshot).toHaveBeenCalledWith({
+        date: TODAY,
+        entryTime: '10:30 AM CT',
+        isEventDay: true,
+        eventNames: ['CPI'],
+      });
+      expectLookupReported(undefined);
+    });
+
+    it('stores a not-event day when the lookup is incomplete and the client sent only earnings', async () => {
+      lookup([], false);
+
+      await save({ isEventDay: true, eventNames: ['NVDA Earnings'] });
+
+      expect(saveSnapshot).toHaveBeenCalledWith({
+        date: TODAY,
+        entryTime: '10:30 AM CT',
+        isEventDay: false,
+        eventNames: [],
+      });
+    });
+
+    it('drops the client’s earnings names when the lookup rejects', async () => {
+      vi.mocked(getEventsForDate).mockRejectedValue(new Error('FRED down'));
+
+      await save({ eventNames: ['FOMC', 'MSFT Earnings'] });
+
+      expect(saveSnapshot).toHaveBeenCalledWith(
+        expect.objectContaining({ isEventDay: true, eventNames: ['FOMC'] }),
+      );
     });
 
     it('adds the client-only names after the server names on an incomplete lookup, and reports it', async () => {

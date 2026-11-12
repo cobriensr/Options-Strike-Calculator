@@ -17,8 +17,10 @@ vi.mock('../_lib/sentry.js', () => ({
 import {
   CACHE_TTL_SEC,
   eventNamesForSnapshot,
+  fetchMacroEvents,
   fetchMarketEvents,
   getEventsForDate,
+  isEarningsEventName,
   type EventItem,
 } from '../_lib/market-events.js';
 import { redis } from '../_lib/redis.js';
@@ -27,7 +29,7 @@ import { Sentry } from '../_lib/sentry.js';
 
 const CPI_DAY = '2026-05-12';
 const FOMC_SEP_DAY = '2026-06-17';
-const DAY_KEY = `events:day:v1:${CPI_DAY}`;
+const DAY_KEY = `events:day:v2:${CPI_DAY}`;
 
 /**
  * FRED answers every tracked release with its own dates. Finnhub answers
@@ -58,7 +60,9 @@ function stubFredFetch(datesByRelease: Record<number, readonly string[]> = {}) {
   return fetchMock;
 }
 
-function urlsCalled(fetchMock: ReturnType<typeof stubFredFetch>): string[] {
+function urlsCalled(fetchMock: {
+  mock: { calls: ReadonlyArray<readonly [string]> };
+}): string[] {
   return fetchMock.mock.calls.map(([url]) => url);
 }
 
@@ -477,6 +481,49 @@ describe('market-events', () => {
       ]);
     });
 
+    it('merges the macro events and the earnings into one sorted list', async () => {
+      process.env.FINNHUB_API_KEY = 'finnhub-key';
+      // 06-16: PPI (medium) and AAPL earnings (high). 06-17: CPI, the FOMC +
+      // SEP static and NVDA earnings, all high, so the name breaks the tie.
+      const fetchMock = vi.fn((url: string) => {
+        if (url.startsWith('https://finnhub.io/')) {
+          return okJson({
+            earningsCalendar: [
+              earning('NVDA', FOMC_SEP_DAY),
+              earning('AAPL', '2026-06-16'),
+            ],
+          })();
+        }
+        const releaseId = Number(new URL(url).searchParams.get('release_id'));
+        const dates: Record<number, string> = {
+          10: FOMC_SEP_DAY,
+          51: '2026-06-16',
+        };
+        const date = dates[releaseId];
+        return okJson({
+          release_dates:
+            date == null
+              ? []
+              : [{ release_id: releaseId, release_name: 'x', date }],
+        })();
+      });
+      vi.stubGlobal('fetch', fetchMock);
+
+      const { events, complete } = await fetchMarketEvents(
+        '2026-06-16',
+        FOMC_SEP_DAY,
+      );
+
+      expect(complete).toBe(true);
+      expect(events.map((e) => [e.date, e.event])).toEqual([
+        ['2026-06-16', 'AAPL Earnings'],
+        ['2026-06-16', 'PPI'],
+        [FOMC_SEP_DAY, 'CPI'],
+        [FOMC_SEP_DAY, 'FOMC + SEP'],
+        [FOMC_SEP_DAY, 'NVDA Earnings'],
+      ]);
+    });
+
     it('rejects when a FRED fetch throws', async () => {
       vi.stubGlobal(
         'fetch',
@@ -534,6 +581,98 @@ describe('market-events', () => {
     });
   });
 
+  // The stored snapshot flag counts macro events only (owner decision
+  // 2026-11-12): the tracked FRED releases, FOMC and the half-day statics.
+  describe('fetchMacroEvents', () => {
+    it('returns the FRED releases and the statics for the date, sorted, complete', async () => {
+      stubFredFetch({ 10: [FOMC_SEP_DAY], 53: [FOMC_SEP_DAY] });
+
+      const { events, complete } = await fetchMacroEvents(
+        FOMC_SEP_DAY,
+        FOMC_SEP_DAY,
+      );
+
+      expect(complete).toBe(true);
+      expect(events.map((e) => [e.event, e.source])).toEqual([
+        ['CPI', 'fred'],
+        ['FOMC + SEP', 'static'],
+        ['GDP', 'fred'],
+      ]);
+    });
+
+    it('makes no Finnhub call, even with a Finnhub key set', async () => {
+      process.env.FINNHUB_API_KEY = 'finnhub-key';
+      const fetchMock = stubSources({
+        finnhub: okJson({ earningsCalendar: [earning('NVDA', CPI_DAY)] }),
+      });
+
+      const { events, complete } = await fetchMacroEvents(CPI_DAY, CPI_DAY);
+
+      expect(complete).toBe(true);
+      expect(events).toEqual([]);
+      expect(urlsCalled(fetchMock).length).toBeGreaterThan(0);
+      expect(
+        urlsCalled(fetchMock).filter((url) => url.includes('finnhub')),
+      ).toEqual([]);
+    });
+
+    it.each([
+      ['answers non-OK', nonOk],
+      ['cannot be reached', networkDown],
+      ['sends a body that is not JSON', unparseable],
+    ])('stays complete when a Finnhub that %s', async (_label, finnhub) => {
+      process.env.FINNHUB_API_KEY = 'finnhub-key';
+      stubSources({ finnhub });
+
+      const { complete } = await fetchMacroEvents(CPI_DAY, CPI_DAY);
+
+      expect(complete).toBe(true);
+      expect(logger.error).not.toHaveBeenCalled();
+    });
+
+    it('is incomplete when a FRED release answers non-OK, and keeps the statics', async () => {
+      stubSources({ fred: nonOk });
+
+      const { events, complete } = await fetchMacroEvents(
+        FOMC_SEP_DAY,
+        FOMC_SEP_DAY,
+      );
+
+      expect(complete).toBe(false);
+      expect(events.map((e) => e.event)).toEqual(['FOMC + SEP']);
+      expect(Sentry.captureMessage).toHaveBeenCalledWith(
+        'FRED API non-OK',
+        expect.objectContaining({ level: 'warning' }),
+      );
+    });
+
+    it('is incomplete, with the statics only, when FRED_API_KEY is unset', async () => {
+      delete process.env.FRED_API_KEY;
+      process.env.FINNHUB_API_KEY = 'finnhub-key';
+      const fetchMock = stubFredFetch();
+
+      const { events, complete } = await fetchMacroEvents(
+        FOMC_SEP_DAY,
+        FOMC_SEP_DAY,
+      );
+
+      expect(complete).toBe(false);
+      expect(events.map((e) => e.event)).toEqual(['FOMC + SEP']);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('rejects when a FRED fetch throws', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockRejectedValue(new Error('network down')),
+      );
+
+      await expect(fetchMacroEvents(CPI_DAY, CPI_DAY)).rejects.toThrow(
+        'network down',
+      );
+    });
+  });
+
   describe('getEventsForDate', () => {
     it('returns the cached events on a hit and makes no fetch', async () => {
       const cached = [event()];
@@ -579,7 +718,7 @@ describe('market-events', () => {
 
       expect(result).toEqual({ events: [], complete: true, fromCache: false });
       expect(redis.set).toHaveBeenCalledWith(
-        'events:day:v1:2026-05-14',
+        'events:day:v2:2026-05-14',
         { data: [], cachedAt: expect.any(Number) },
         { ex: CACHE_TTL_SEC },
       );
@@ -598,7 +737,7 @@ describe('market-events', () => {
       expect(result.events.map((e) => e.event)).toEqual(['FOMC + SEP']);
       expect(redis.set).toHaveBeenCalledTimes(1);
       expect(redis.set).toHaveBeenCalledWith(
-        `events:day:v1:${FOMC_SEP_DAY}`,
+        `events:day:v2:${FOMC_SEP_DAY}`,
         { data: result.events, cachedAt: expect.any(Number), complete: false },
         { ex: 300 },
       );
@@ -613,7 +752,7 @@ describe('market-events', () => {
       expect(result.complete).toBe(false);
       expect(redis.set).toHaveBeenCalledTimes(1);
       expect(redis.set).toHaveBeenCalledWith(
-        `events:day:v1:${FOMC_SEP_DAY}`,
+        `events:day:v2:${FOMC_SEP_DAY}`,
         { data: result.events, cachedAt: expect.any(Number), complete: false },
         { ex: 300 },
       );
@@ -804,7 +943,7 @@ describe('market-events', () => {
       expect(result.events.map((e) => e.event)).toEqual(['FOMC + SEP']);
       expect(redis.set).toHaveBeenCalledTimes(1);
       expect(redis.set).toHaveBeenCalledWith(
-        `events:day:v1:${FOMC_SEP_DAY}`,
+        `events:day:v2:${FOMC_SEP_DAY}`,
         { data: result.events, cachedAt: expect.any(Number), complete: false },
         { ex: 300 },
       );
@@ -814,85 +953,61 @@ describe('market-events', () => {
       );
     });
 
-    it('caches the day for five minutes when the Finnhub body is not JSON', async () => {
-      process.env.FINNHUB_API_KEY = 'finnhub-key';
-      stubSources({
-        finnhub: unparseable,
-        fred: okJson({ release_dates: [] }),
-      });
-
-      const result = await getEventsForDate(CPI_DAY);
-
-      expect(result.complete).toBe(false);
-      expect(redis.set).toHaveBeenCalledTimes(1);
-      expect(redis.set).toHaveBeenCalledWith(
-        DAY_KEY,
-        { data: [], cachedAt: expect.any(Number), complete: false },
-        { ex: 300 },
-      );
-      expect(logger.error).toHaveBeenCalledWith(
-        { err: expect.any(SyntaxError) },
-        'Finnhub earnings fetch failed',
-      );
-    });
-
+    // The stored flag is macro-only (owner decision 2026-11-12): the day lookup
+    // never asks Finnhub, so nothing Finnhub does can change what it returns.
     it.each([
       ['answers non-OK', nonOk],
       ['cannot be reached', networkDown],
+      ['sends a body that is not JSON', unparseable],
       ['answers 200 with {}', okJson({})],
+      [
+        'has earnings on the date',
+        okJson({ earningsCalendar: [earning('NVDA', CPI_DAY)] }),
+      ],
     ])(
-      'caches the day for five minutes when Finnhub %s',
+      'never calls Finnhub, so a Finnhub that %s changes nothing: complete, no earnings, kept seven days',
       async (_label, finnhub) => {
         process.env.FINNHUB_API_KEY = 'finnhub-key';
-        stubSources({ finnhub });
+        const fetchMock = stubSources({ finnhub });
 
         const result = await getEventsForDate(CPI_DAY);
 
-        expect(result.complete).toBe(false);
+        expect(result).toEqual({
+          events: [],
+          complete: true,
+          fromCache: false,
+        });
+        expect(
+          urlsCalled(fetchMock).filter((url) => url.includes('finnhub')),
+        ).toEqual([]);
         expect(redis.set).toHaveBeenCalledTimes(1);
         expect(redis.set).toHaveBeenCalledWith(
           DAY_KEY,
-          { data: [], cachedAt: expect.any(Number), complete: false },
-          { ex: 300 },
+          { data: [], cachedAt: expect.any(Number) },
+          { ex: CACHE_TTL_SEC },
         );
       },
     );
 
-    it('caches a day Finnhub reports no earnings for', async () => {
-      process.env.FINNHUB_API_KEY = 'finnhub-key';
-      stubSources({ finnhub: okJson({ earningsCalendar: [] }) });
-
-      const result = await getEventsForDate(CPI_DAY);
-
-      expect(result).toEqual({ events: [], complete: true, fromCache: false });
-      expect(redis.set).toHaveBeenCalledWith(
-        DAY_KEY,
-        { data: [], cachedAt: expect.any(Number) },
-        { ex: CACHE_TTL_SEC },
+    it('reads and writes the v2 key, and ignores a v1 entry that may hold earnings', async () => {
+      const v1Entry = {
+        data: [event({ event: 'NVDA Earnings', source: 'finnhub' })],
+        cachedAt: 1_700_000_000_000,
+      };
+      vi.mocked(redis.get).mockImplementation((key: string) =>
+        Promise.resolve(key === `events:day:v1:${CPI_DAY}` ? v1Entry : null),
       );
-    });
-
-    it('returns, and caches, only the Finnhub earnings on the asked date', async () => {
-      process.env.FINNHUB_API_KEY = 'finnhub-key';
-      stubSources({
-        finnhub: okJson({
-          earningsCalendar: [
-            earning('AAPL', '2026-05-11'),
-            earning('MSFT', CPI_DAY),
-            earning('NVDA', '2026-05-13'),
-          ],
-        }),
-      });
+      stubFredFetch({ 10: [CPI_DAY] });
 
       const result = await getEventsForDate(CPI_DAY);
 
-      expect(result.complete).toBe(true);
-      expect(result.events.map((e) => [e.date, e.event])).toEqual([
-        [CPI_DAY, 'MSFT Earnings'],
-      ]);
+      expect(redis.get).toHaveBeenCalledTimes(1);
+      expect(redis.get).toHaveBeenCalledWith(`events:day:v2:${CPI_DAY}`);
+      expect(result.fromCache).toBe(false);
+      expect(result.events.map((e) => e.event)).toEqual(['CPI']);
       expect(redis.set).toHaveBeenCalledWith(
-        DAY_KEY,
-        { data: result.events, cachedAt: expect.any(Number) },
+        `events:day:v2:${CPI_DAY}`,
+        expect.anything(),
         { ex: CACHE_TTL_SEC },
       );
     });
@@ -905,24 +1020,52 @@ describe('market-events', () => {
   });
 
   describe('eventNamesForSnapshot', () => {
-    it('returns the names in the given order, duplicates kept', () => {
+    it('returns the macro names in the given order, duplicates kept, and drops the Finnhub events', () => {
       const events = [
         event({ event: 'FOMC + SEP', source: 'static' }),
+        event({ event: 'AAPL Earnings', source: 'finnhub' }),
         event({ event: 'CPI' }),
         event({ event: 'CPI' }),
         event({ event: 'NVDA Earnings', source: 'finnhub' }),
+        event({ event: 'EARLY CLOSE', source: 'static' }),
       ];
 
       expect(eventNamesForSnapshot(events)).toEqual([
         'FOMC + SEP',
         'CPI',
         'CPI',
-        'NVDA Earnings',
+        'EARLY CLOSE',
       ]);
+    });
+
+    it('returns an empty list when only earnings are left', () => {
+      expect(
+        eventNamesForSnapshot([
+          event({ event: 'NVDA Earnings', source: 'finnhub' }),
+        ]),
+      ).toEqual([]);
     });
 
     it('returns an empty list for no events', () => {
       expect(eventNamesForSnapshot([])).toEqual([]);
+    });
+  });
+
+  describe('isEarningsEventName', () => {
+    it.each([
+      ['NVDA Earnings', true],
+      ['AAPL Earnings', true],
+      ['CPI', false],
+      ['FOMC + SEP', false],
+      ['EARLY CLOSE', false],
+      // The leading space and the end anchor are both part of the rule.
+      ['Earnings Season', false],
+      ['Earnings', false],
+      ['NVDA Earnings Call', false],
+      ['NVDA Earnings ', false],
+      ['', false],
+    ])('%j -> %s', (name, expected) => {
+      expect(isEarningsEventName(name)).toBe(expected);
     });
   });
 });
