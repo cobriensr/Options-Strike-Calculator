@@ -274,8 +274,10 @@ async function pruneOldBackups(
   currentDate: string,
   deadline: number,
 ): Promise<string[]> {
+  // new Date('YYYY-MM-DD') is UTC midnight, so count the 28 days in UTC too.
+  // A local-time setDate is an hour off when a DST change falls inside them.
   const cutoff = new Date(currentDate);
-  cutoff.setDate(cutoff.getDate() - RETENTION_WEEKS * 7);
+  cutoff.setUTCDate(cutoff.getUTCDate() - RETENTION_WEEKS * 7);
 
   const { blobs } = await blobCallBefore(deadline, 'list backups/', (signal) =>
     list({ prefix: 'backups/', abortSignal: signal }),

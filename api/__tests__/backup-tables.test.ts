@@ -1228,6 +1228,35 @@ describe('backup-tables handler', () => {
     expect(json.pruned).toBe(0);
   });
 
+  // The cutoff is the run's date minus 28 days, counted in UTC days, as it is on
+  // Vercel. A local-time count is an hour off when a DST change falls inside
+  // the 28 days (2027-03-14 here): on a machine west of UTC the cutoff moved
+  // past the cutoff day's own folder and deleted it a day early. A UTC machine
+  // passes either way; one on Central time fails it.
+  it('keeps the folder dated on the cutoff day and deletes the day before, across a DST change', async () => {
+    // Current date is 2027-03-28, cutoff = 2027-02-28
+    mockList.mockResolvedValue({
+      blobs: [
+        {
+          pathname: 'backups/2027-02-27/analyses.jsonl',
+          url: 'https://blob.test/day-before',
+        },
+        {
+          pathname: 'backups/2027-02-28/analyses.jsonl',
+          url: 'https://blob.test/cutoff-day',
+        },
+      ],
+    });
+
+    const res = await runBackup();
+
+    expect(mockDel).toHaveBeenCalledTimes(1);
+    expect(mockDel).toHaveBeenCalledWith(['https://blob.test/day-before'], {
+      abortSignal: expect.any(AbortSignal),
+    });
+    expect((res._json as Record<string, unknown>).pruned).toBe(1);
+  });
+
   it('skips blobs with non-matching pathname format', async () => {
     mockList.mockResolvedValue({
       blobs: [
@@ -1338,8 +1367,9 @@ describe('backup-tables handler', () => {
   // before the October-November repairs. The 4-week rule applies only to
   // folders dated after the floor. Dates here are the ET dates in the folder
   // names; the 4-week cutoff of a run is its date minus 28 days, and no folder
-  // below sits on that day (a cutoff day is judged by Date arithmetic that a
-  // non-UTC test machine shifts by an hour).
+  // in these tests sits on that day (the cutoff day has its own test above).
+  // Production folders hold about 9 files, so a folder here holds two or more:
+  // a count of files instead of folders then shows.
 
   function backupFile(date: string, table = 'analyses') {
     return {
@@ -1348,7 +1378,7 @@ describe('backup-tables handler', () => {
     };
   }
 
-  // One file per weekly folder from `from` through `through`, both inclusive.
+  // Two files per weekly folder from `from` through `through`, both inclusive.
   function weeklyFolders(from: string, through: string) {
     const files = [];
     for (
@@ -1356,19 +1386,26 @@ describe('backup-tables handler', () => {
       day <= Date.parse(through);
       day += 7 * 86_400_000
     ) {
-      files.push(backupFile(new Date(day).toISOString().slice(0, 10)));
+      const date = new Date(day).toISOString().slice(0, 10);
+      files.push(backupFile(date), backupFile(date, 'outcomes'));
     }
     return files;
   }
 
   it('deletes nothing on the first complete run, 2026-11-15, even with the folders back to 2026-04-19', async () => {
-    // Cutoff 2026-10-18: without the floor the 26 folders 04-19 to 10-11 go
-    // in one del().
+    // Cutoff 2026-10-18: without the floor the 26 folders 04-19 to 10-11 (52
+    // files) go in one del(). The weekly folders stop at 10-11 and skip 10-18
+    // and 10-25, so none sits on the cutoff day; 11-01 and 11-08 are inside
+    // the 4 weeks.
     vi.setSystemTime(new Date('2026-11-15T05:00:00.000Z'));
     mockSql.mockResolvedValue([{ id: 1 }]);
     mockList.mockResolvedValue({
       blobs: [
-        ...weeklyFolders('2026-04-19', '2026-11-08'),
+        ...weeklyFolders('2026-04-19', '2026-10-11'),
+        backupFile('2026-11-01'),
+        backupFile('2026-11-01', 'outcomes'),
+        backupFile('2026-11-08'),
+        backupFile('2026-11-08', 'outcomes'),
         // The folder this run has just written.
         backupFile('2026-11-15', FIRST_TABLE),
       ],
@@ -1384,7 +1421,8 @@ describe('backup-tables handler', () => {
     expect(json.pruneSkipped).toBeUndefined();
     expect(mockDel).not.toHaveBeenCalled();
     expect(json.pruned).toBe(0);
-    // The 26 folders the 4-week rule alone would have deleted.
+    // The 26 folders (not their 52 files) the 4-week rule alone would have
+    // deleted.
     expect(logger.info).toHaveBeenCalledWith(
       { foldersKept: 26, protectedThrough: '2026-11-15' },
       'Backup folders kept by the protection floor',
@@ -1398,8 +1436,10 @@ describe('backup-tables handler', () => {
     mockList.mockResolvedValue({
       blobs: [
         backupFile('2026-04-19'),
+        backupFile('2026-04-19', 'outcomes'),
         backupFile('2026-11-08'),
         backupFile('2026-11-15'),
+        backupFile('2026-11-15', 'outcomes'),
         backupFile('2026-11-22'),
         backupFile('2026-11-29'),
         backupFile('2026-12-06'),
@@ -1422,7 +1462,8 @@ describe('backup-tables handler', () => {
       { abortSignal: expect.any(AbortSignal) },
     );
     expect((res._json as Record<string, unknown>).pruned).toBe(3);
-    // 04-19, 11-08 and 11-15: older than the cutoff, kept by the floor.
+    // 04-19, 11-08 and 11-15: three folders (five files) older than the
+    // cutoff, kept by the floor.
     expect(logger.info).toHaveBeenCalledWith(
       { foldersKept: 3, protectedThrough: '2026-11-15' },
       'Backup folders kept by the protection floor',
