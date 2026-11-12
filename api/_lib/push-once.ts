@@ -6,7 +6,8 @@
  * Shared by the Schwab re-auth reminder and the stale-snapshot alert.
  *
  *   - Key: the caller's. It must be derived from the event itself (a login
- *     expiry, a CT date), never from `NOW()`, so a rerun maps to the same key.
+ *     expiry, a CT nag day, an ET trading date), never from `NOW()`, so a
+ *     rerun maps to the same key.
  *   - Value: a random token per run, so a release is fenced. It deletes the
  *     key only while the key still holds this run's token, and never a claim
  *     that expired and was re-taken by a later run.
@@ -35,7 +36,7 @@
  * `pushTtlSec` is how long the push service holds the message for an
  * unreachable device. A message dropped at its TTL is lost while the claim
  * still blocks a retry, so a caller whose push must reach a phone that is
- * offline or asleep passes hours, not the 60 s live-alert default.
+ * offline or asleep passes an hour or more, not the 60 s live-alert default.
  */
 
 import { randomUUID } from 'node:crypto';

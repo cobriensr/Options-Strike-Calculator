@@ -142,7 +142,8 @@ export default withCronInstrumentation(
     const status = await getSchwabAuthStatus();
     if (status.state === 'unknown') {
       // The token store is unreachable or the record is malformed (the
-      // status read logged which). No reminder can be judged, so page.
+      // status read logged which). No reminder can be judged, so page (the
+      // page is the error check-in; this message is context).
       Sentry.captureMessage('schwab.reauth_reminder.status_unknown', {
         level: 'warning',
         fingerprint: ['schwab.reauth_reminder.status_unknown'],
