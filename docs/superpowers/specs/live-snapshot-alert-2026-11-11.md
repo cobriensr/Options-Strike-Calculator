@@ -1,6 +1,7 @@
 # Live snapshot alert
 
-**Date:** 2026-11-11 · **Status:** approved by the owner (option B), in progress
+**Date:** 2026-11-11 · **Status:** Tasks 1-2 shipped 2026-11-12; Task 3 (owner
+amendment, 2026-11-12) in progress
 
 ## Goal
 
@@ -23,6 +24,37 @@ after the fact; this alert makes the gap visible while it can still be fixed.
 - Not included: a "rows save but repeat the same SPX/VIX" rule. Offered, not
   chosen (see Open questions).
 
+**Amendment (owner, 2026-11-12), replaces "at most one push per trading
+day":** alert only after saves have started that day, and send one push per
+stall.
+
+- A day with no live row sends no push: the owner doesn't want to have to open
+  the app by 9:00 CT. Under the original rule, a day where the app opened late
+  spent the day's only push at 9:00, and a real stall later went unnoticed.
+- Each stall gets its own push. If saves resume and stop again, a second push
+  goes out.
+- Trade-off the owner accepted: a whole day with no saves (browser open but
+  signed out) sends nothing. `owner-session-long-lived-2026-11-11.md` removes
+  the usual cause.
+
+**Second amendment (owner, 2026-11-12): a deliberate close is not a stall.**
+When the owner's page is closed (tab or browser closed, or navigated away), it
+tells the server, and the next checks send no push until the app saves again.
+A signed-out page, failing saves, a tab Chrome froze or discarded, and a crash
+still push, because none of them sends the close signal. Trade-off the owner
+accepted: shutting the laptop lid with the app open sends no close signal, so
+it pushes like a stall. A close signal that doesn't arrive (it is
+best-effort) also pushes.
+
+**Third amendment (owner, 2026-11-12): phones don't save.** Without this,
+tapping the alert on the phone opens the app, the phone saves one live row
+(the stall looks over), and closing the phone sends the close signal, so the
+trading computer could stay broken with no further push. Touch-first devices
+(phones, tablets) don't save live snapshots or send the close signal;
+computers do. A per-browser switch in the app overrides the default either
+way. Past-date and backtest saves are not affected. Trade-off the owner
+accepted: a second computer left open also counts.
+
 ## Thresholds / constants
 
 | Name | Value | Why |
@@ -36,11 +68,12 @@ after the fact; this alert makes the gap visible while it can still be fixed.
 | Sentry monitor `failureIssueThreshold` | 2 | One lost completion check-in should not page; two in a row page within 30 min, and a run that reaches no device errors on consecutive ticks. |
 
 Example: saves stop at 11:10 AM CT. The 11:30 check sees a 20-minute gap (no
-push); the 11:45 check sees 35 minutes and pushes "Last live snapshot 11:10 AM
-CT". The later checks find the day's claim and skip.
+push). The 11:45 check sees 35 minutes and pushes "Last live snapshot 11:10 AM
+CT". The later checks find that stall's claim and skip. If saves resume at
+12:00 and stop again at 13:05, the 13:45 check pushes again for the new stall.
 
-"No row yet today" measures from the 08:30 CT open, so at 9:00 a day with no
-live row is exactly 30 minutes stale and pushes.
+Since the Task 3 amendment, a day with no live row yet sends nothing: the
+check reports `success` with "no live snapshot yet today".
 
 ## What counts as a live row
 
@@ -56,16 +89,19 @@ only today's rows are read and the old inverted flag does not matter.
 
 - No migration, no new table, no new env var.
 - Reads `market_snapshots` (Neon). Writes one Upstash Redis claim key per
-  alerted day: `snapshot-stale-alert:{date}`.
+  alerted stall: `snapshot-stale-alert:{date}:{last save epoch ms}` (Task 3;
+  Tasks 1-2 keyed per day).
 - New Vercel cron: `/api/cron/check-live-snapshots`.
+- Task 3: a new owner-only endpoint, `POST /api/snapshot-close`, and one Redis
+  key per day, `snapshot-app-closed:{date}` (24 h expiry).
 
 ## Open questions (defaults picked)
 
 1. **Frozen-values rule** ("the last 3 live rows have identical SPX"). Default:
    not built. The owner can ask for it later; it would be a second check in the
    same job.
-2. **No-trade days** (owner away on a trading day). Default: no snooze. The
-   cost is one push that day.
+2. **No-trade days** (owner away on a trading day). Settled by the 2026-11-12
+   amendment: a day with no live row sends no push.
 
 ## Phases
 
@@ -75,6 +111,14 @@ only today's rows are read and the old inverted flag does not matter.
    to a shared module first and the reminder uses it. Behavior unchanged.
 2. **The new cron** (Task 2, 4 files + this doc). Shippable on its own after
    Task 1.
+3. **Server: alert only after saves start, once per stall, never after a
+   deliberate close** (Task 3, owner amendments 2026-11-12; 4 files + this
+   doc). Shippable alone: with no close signal yet, it behaves like the first
+   amendment.
+4. **Client: which browser saves live snapshots** (Task 4; 4 files). The
+   device default and the per-browser switch, not yet wired into saving.
+5. **Client: gate live saves on the device, send the close signal** (Task 5;
+   3 files). Needs Task 3's endpoint and Task 4's helper.
 
 ## Files
 
@@ -85,6 +129,15 @@ only today's rows are read and the old inverted flag does not matter.
 - Task 2: `api/cron/check-live-snapshots.ts` (new),
   `api/__tests__/cron-check-live-snapshots.test.ts` (new), `vercel.json`,
   `api/_lib/cron-schedules.ts`.
+- Task 3: `api/cron/check-live-snapshots.ts`,
+  `api/__tests__/cron-check-live-snapshots.test.ts`, `api/snapshot-close.ts`
+  (new), `api/__tests__/snapshot-close.test.ts` (new), this doc.
+- Task 4: `src/lib/live-save-device.ts` (new),
+  `src/__tests__/live-save-device.test.ts` (new), the settings surface that
+  hosts the switch (likely `src/components/PanelPrefsModal/PanelPrefsModal.tsx`)
+  and its test.
+- Task 5: `src/hooks/useSnapshotSave.ts`,
+  `src/__tests__/hooks/useSnapshotSave.test.ts`, `src/main.tsx`.
 
 ## Global Constraints
 
@@ -232,3 +285,165 @@ cron pattern from CLAUDE.md, fake timers for the clock):**
 
 **Acceptance:** `npm run review` green; `cron-schedules.test.ts` passes with
 the new entry.
+
+## Task 3: Server — alert only after saves start, once per stall, never after a deliberate close
+
+**Goal:** both 2026-11-12 amendments in Decisions, server side. Files:
+`api/cron/check-live-snapshots.ts`, `api/__tests__/cron-check-live-snapshots.test.ts`,
+`api/snapshot-close.ts` (new), `api/__tests__/snapshot-close.test.ts` (new),
+and this doc. Commit the doc's uncommitted amendment edits as-is, in their own
+`docs(spec): …` commit.
+
+**`api/snapshot-close.ts` (new): `POST /api/snapshot-close`.**
+
+- Owner only, with `guardOwnerEndpoint`. POST only (405 otherwise).
+  `rejectIfRateLimited(req, res, 'snapshot-close', 30)`, following
+  `api/snapshot.ts`.
+- No body. It writes the Redis key `snapshot-app-closed:{ET date}`, with the
+  server's current time (ISO) as the value and `CLAIM_TTL`-style expiry of 24 h
+  (`SET key value EX 86400`, overwriting). The key is date-derived (R6); the
+  value is a marker time, and the last write wins, which is the intent.
+- Answers 204. A Redis failure is a 500 with Sentry via the usual error path.
+  The client never reads the answer.
+- A guest or public caller gets the guard's 401, with no write.
+
+**Cron additions (`api/cron/check-live-snapshots.ts`), on top of the bullets
+below:**
+
+- When the last save is stale, read `snapshot-app-closed:{today}` before
+  claiming. If it holds a time at or after the last save, the owner closed the
+  app after it last saved: return `{ status: 'success', message: 'app closed
+  at {h:mm AM/PM} CT', metadata: { lastLiveAt, closedAt } }`, with no claim and
+  no push.
+- A close marker older than the last save (the app was reopened and saved
+  since) is ignored, and the stall pushes as usual.
+- A Redis read failure propagates: a 500 and an `error` check-in, the same as
+  a claim failure. It must not read as "closed".
+- An unparseable marker value reads as no marker (stall pushes), with a
+  `logger.warn`. A bad marker must not silence a real stall.
+
+**Per-stall and no-row changes:**
+
+- **No live row today → no push.** Return `{ status: 'success', message:
+  'no live snapshot yet today', metadata: { lastLiveAt: null } }`. Drop the
+  09:30 ET open fallback and the "No live snapshot since the open." body.
+  Remove `getETMarketOpenUtcIso` from the imports if nothing else uses it
+  (orphan cleanup). Keep the throw on an unparseable stored timestamp: NaN
+  must not read as "current".
+- **Per-stall claim key:** `snapshot-stale-alert:{today}:{lastSaveMs}`, where
+  `lastSaveMs` is the parsed `MAX(created_at)` in epoch ms. It comes from the
+  event (R6). During one stall the last save doesn't change, so every later
+  check finds the same key and skips. A save that resumes and stops again has
+  a new `MAX(created_at)`, hence a new key and a new push. `CLAIM_TTL_SEC`
+  stays 24 h: it outlives any stall in the window, and the next day's date
+  changes the key.
+- **Per-stall notification tag:** `snapshot-stale-{today}-{lastSaveMs}`.
+  `src/sw.ts` shows the notification with the payload's `tag` and no
+  `renotify`, so a second stall that reused the day's tag would silently
+  replace the first notification without alerting.
+- **Not claimed:** the message becomes `alert already sent for this stall`.
+- **Header comment:** rewrite the key and TTL lines and the "one push per
+  day" wording to describe per stall and no push before the first save. Keep
+  the window, the 45-min worst case and the `Spec:` line.
+- **Window unchanged:** 10:00 ET to the close − 15 min. The schedule,
+  `vercel.json` and `SCHEDULE_MAP` don't change.
+- **Tests:**
+  - Replace "no live row at 09:00 CT → push with the 'since the open' body"
+    with: no live row today → `success`, message `no live snapshot yet today`,
+    no claim and no push. Cover it at 09:00 CT and at 14:45 CT.
+  - Last save 35 min ago → the key and tag carry that save's epoch ms.
+  - Two stalls in one day: the first pushes; a later check in the same stall
+    is `skipped` with the new message; after a newer last save goes stale,
+    a second push goes out with a different key and tag.
+  - The existing undelivered, claim-throw, push-throw, DB-reject and
+    malformed-timestamp cases still pass, adjusted for the key.
+  - Mutation-check: a per-day key fails the two-stall test; the open fallback
+    put back fails the no-row test.
+  - Close marker: a stale last save with a marker at or after it → `success`
+    "app closed", no claim, no push; a marker older than the last save → push;
+    a Redis read that throws → 500, no push; an unparseable marker → push plus
+    a warn. Mutation-check the `>=` comparison.
+  - `snapshot-close.test.ts`: owner POST → 204 and the key written with a
+    24 h expiry under the ET date; GET → 405; guest and public → 401 with no
+    write; rate-limited → 429; Redis throws → 500.
+
+**Acceptance:** `npm run review` green.
+
+## Task 4: Client — which browser saves live snapshots
+
+**Goal:** the third amendment's device rule and its per-browser switch. It is
+not wired into saving yet; Task 5 does that. Files:
+`src/lib/live-save-device.ts` (new), `src/__tests__/live-save-device.test.ts`
+(new), and the settings surface that hosts the switch and its test.
+
+- `src/lib/live-save-device.ts`:
+  - `isTouchFirstDevice(): boolean` is
+    `matchMedia('(hover: none) and (pointer: coarse)').matches`. Phones and
+    tablets match. A touchscreen laptop doesn't, because its primary pointer
+    is fine and can hover.
+  - `getLiveSaveOverride(): 'on' | 'off' | null` and
+    `setLiveSaveOverride(value: 'on' | 'off' | null)` use the `localStorage`
+    key `sc-live-save-device`. `null` clears it. Every access is wrapped in
+    try/catch: a storage that throws reads as no override.
+  - `isLiveSaveDevice(): boolean` returns the override if set, else
+    `!isTouchFirstDevice()`. Any unknown stored value reads as no override.
+  - Subscribers: `subscribeLiveSaveDevice(cb): () => void`, notified on set,
+    following the small subscriber-set pattern in `src/lib/sw-update.ts`, so
+    the hook in Task 5 re-renders when the switch flips in this tab.
+    Cross-tab sync isn't needed.
+- The switch: an owner-only control labelled "Save live snapshots from this
+  browser". It shows the effective value, with a note when it's the device
+  default ("Default for this device: on" or "off"), and offers "Use device
+  default". Put it in the existing settings surface that fits best. Check
+  `src/components/PanelPrefsModal/PanelPrefsModal.tsx` and
+  `src/components/AppHeader/` first, and say in the report where it went and
+  why. It must meet the `fixing-accessibility` rules: a labelled control,
+  keyboard reachable, with its state announced.
+- Tests:
+  - the helper truth table: touch-first with no override → off; desktop with
+    no override → on; override on or off beats the device; a garbage stored
+    value → device default; `localStorage` throwing → device default;
+    subscribers fire on set and unsubscribe cleanly;
+  - the switch: it renders the effective state, toggling writes the override,
+    "Use device default" clears it, and it doesn't render for a guest.
+
+**Acceptance:** `npm run review` green.
+
+## Task 5: Client — gate live saves on the device, send the close signal
+
+**Goal:** only a live-save device saves live rows and sends the close signal.
+Files: `src/hooks/useSnapshotSave.ts`,
+`src/__tests__/hooks/useSnapshotSave.test.ts`, `src/main.tsx`.
+
+- **Gate live saves.** In `useSnapshotSave`, a live save (today, with live
+  quotes) posts only when `isLiveSaveDevice()` (Task 4) is true. Past-date and
+  backtest saves are unchanged. Subscribe to the switch so flipping it takes
+  effect without a reload.
+- **Close signal.** While the hook is `enabled` and `isLiveSaveDevice()` is
+  true, register a `pagehide` listener in an effect with cleanup (R1). On
+  `pagehide`, call `navigator.sendBeacon('/api/snapshot-close')`. If
+  `sendBeacon` is missing or returns false, fall back to
+  `fetch('/api/snapshot-close', { method: 'POST', keepalive: true })` with the
+  rejection swallowed. The page is going away, so nothing can be reported.
+- `pagehide` fires on a tab or window close, a reload and navigating away. A
+  reload's marker is overtaken by the next save, so it never hides a stall.
+  Use `pagehide`, not `beforeunload` or `unload`: `pagehide` is the one that
+  fires reliably and doesn't block the back/forward cache. Don't use
+  `visibilitychange`, because hiding a tab is not closing it.
+- `src/main.tsx`: add `{ path: '/api/snapshot-close', method: 'POST' }` to
+  the `initBotId` `protect` list, next to `/api/snapshot` (CLAUDE.md rule for
+  any endpoint that calls `checkBot`).
+- Tests:
+  - owner, enabled and a live-save device → a `pagehide` event sends one
+    beacon to `/api/snapshot-close`;
+  - not a live-save device (mock `isLiveSaveDevice` false) → no live save
+    and no beacon, while a past-date save still posts;
+  - disabled (a guest, or nothing to save) → no beacon;
+  - `sendBeacon` returning false → the keepalive fetch;
+  - flipping the switch on re-enables live saves without a remount;
+  - unmount removes the listener (a later `pagehide` sends nothing).
+
+  Existing save tests stay unchanged, apart from mocking `isLiveSaveDevice`
+  to true at the module boundary (R3).
+
+**Acceptance:** `npm run review` green.
