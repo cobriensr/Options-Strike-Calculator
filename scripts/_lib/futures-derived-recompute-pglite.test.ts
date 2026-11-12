@@ -799,6 +799,7 @@ function options(over: Partial<RecomputeOptions> = {}): RecomputeOptions {
     apply: true,
     force: false,
     stores: [...ALL],
+    roots: ['ES', 'NQ', 'ZN', 'RTY', 'CL', 'GC'],
     backup: backupPath,
     expectSnapshots: 4,
     expectPremarket: 1,
@@ -2790,7 +2791,9 @@ describe('--rewrite-stale-at-write on real SQL (pglite)', () => {
 
   it('starts a thin root at the first millisecond of the 20 days after the span end', async () => {
     // 2026-07-05T14:11:00.000Z is the span end + 20 days: the row at that instant is
-    // rewritten, the one a millisecond before it is not.
+    // rewritten, the one a millisecond before it is not. Phase 5a has not applied
+    // for RTY here: a month-mixed bar is left in the span, so ruling 9 holds.
+    await bar('RTY', '2026-05-04T14:00:00Z', 7000, 100);
     await bar('RTY', '2026-07-05T13:30:00Z', 7007, 100);
     await bar('RTY', '2026-07-05T14:00:00Z', 7005, 100);
     const before = await snapshotRow(

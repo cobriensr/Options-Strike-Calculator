@@ -104,6 +104,15 @@ import {
   CHUNKS_PER_TRANSACTION,
   WRITE_CHUNK,
 } from './futures-derived-batch.js';
+import {
+  CLEAN_TRADING_DAYS,
+  THIN_LAST_BAD_MS,
+  THIN_ROOTS,
+  THIN_WINDOW_START_MS,
+  ctTradingDay,
+} from './futures-thin-roots.js';
+
+export { ctTradingDay };
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -129,6 +138,28 @@ type Sym = FuturesSymbol;
 const EXACT_CONTROL_ROOTS: readonly Sym[] = ['ES', 'NQ'];
 const isThinRoot = (symbol: Sym): boolean =>
   !EXACT_CONTROL_ROOTS.includes(symbol);
+
+/** premarket and fires read ES only. */
+const ES_ONLY_STORES: readonly Store[] = ['premarket', 'fires'];
+
+/**
+ * The stores a run covers: premarket and fires read ES only, so without ES in
+ * `--roots` they plan nothing and are left out here.
+ */
+const storesOf = (o: Pick<RecomputeOptions, 'stores' | 'roots'>): Store[] =>
+  o.stores.filter((s) => !ES_ONLY_STORES.includes(s) || o.roots.includes('ES'));
+
+/**
+ * The D1 lift of ruling 9 (Phase 5b, owner decision 2026-11-11). Ruling 9 kept a
+ * thin root out of the stale-at-write rewrite before the span end + 20 days, and
+ * out of the frozen-stale delete, because its bars in the span were still
+ * month-mixed. Phase 5a deletes those bars except the seven clean days. A root
+ * with none left in the span has nothing mixed to read, so both steps take it
+ * in; a root that still has one keeps today's behavior, so a run before 5a
+ * changes nothing. `spanBars` is the count per thin root, from `readThinSpanBars`.
+ */
+const liftedRoots = (spanBars: ReadonlyMap<Sym, number>): Sym[] =>
+  [...spanBars].filter(([, bars]) => bars === 0).map(([symbol]) => symbol);
 
 /** What the gate counts as a match in the snapshot control. */
 const SNAPSHOT_CONTROL_LABEL =
@@ -769,6 +800,43 @@ async function loadSymbolData(
   return out;
 }
 
+/**
+ * Per thin root among `roots`, the bars from the first bad evening through the
+ * root's last bad bar (what Phase 5a deletes) that sit outside the seven clean CT
+ * trading days. Zero means 5a has applied for that root. The trading day is the CT
+ * date of ts + 7 hours, as `ctTradingDay` computes it.
+ */
+async function readThinSpanBars(
+  roots: readonly Sym[],
+): Promise<Map<Sym, number>> {
+  const out = new Map<Sym, number>();
+  for (const symbol of roots) {
+    if (!(THIN_ROOTS as readonly string[]).includes(symbol)) continue;
+    const last = THIN_LAST_BAD_MS[symbol as (typeof THIN_ROOTS)[number]];
+    const [row] = await readRows<{ bars: string }>(
+      (sql) => sql`
+        SELECT count(*)::text AS bars
+          FROM futures_bars
+         WHERE symbol = ${symbol}
+           AND ts >= ${iso(THIN_WINDOW_START_MS)}::timestamptz
+           AND ts <= ${iso(last)}::timestamptz
+           AND to_char((ts + interval '7 hours') AT TIME ZONE 'America/Chicago', 'YYYY-MM-DD')
+               <> ALL(${[...CLEAN_TRADING_DAYS]}::text[])`,
+    );
+    out.set(symbol, Number(row?.bars ?? 0));
+  }
+  return out;
+}
+
+/** The lift per thin root, for the header: "RTY 1 (kept), CL 0 (lifted)". Empty when no thin root is in the run. */
+function liftLine(spanBars: ReadonlyMap<Sym, number>): string {
+  if (spanBars.size === 0) return '';
+  const parts = [...spanBars].map(
+    ([symbol, bars]) => `${symbol} ${bars} (${bars === 0 ? 'lifted' : 'kept'})`,
+  );
+  return `D1 lift of ruling 9, thin-root bars left in the span outside the clean days: ${parts.join(', ')}`;
+}
+
 // ── Snapshots ───────────────────────────────────────────────────────────────
 
 interface SnapshotRow {
@@ -1202,6 +1270,11 @@ export interface StaleStats {
   window: number;
   /** A thin root's rows after the span end that are left because no --detector-days file was given. */
   unchecked: number;
+  /**
+   * Planned rows only the D1 lift lets in: a lifted thin root's rows before the span
+   * end + 20 days, which ruling 9 would have left (in `left` or `window`).
+   */
+  liftedAdded: number;
   /** Thin roots with a --detector-days file only. */
   detector: DetectorStats | null;
   /** Planned rows that only the frozen-run clause makes stale (no bar matches the stored price), and those in the outage. */
@@ -1272,6 +1345,11 @@ export interface SnapshotSymbolReport {
   mergeState: MergeStateReport | null;
   /** A thin root's rows before the span end are left (D1: its bars there are still month-mixed). */
   stale: StaleStats;
+  /**
+   * A thin root's bars left in the span outside the clean days (Phase 5a deletes
+   * them): 0 lifts ruling 9 for the root. Null for ES and NQ.
+   */
+  spanBars: number | null;
   /** Rows where the mirrored input rule disagrees with computeSnapshot. */
   attributionInconsistent: number;
   controlRows: number;
@@ -1343,12 +1421,16 @@ export interface FrozenSymbolReport {
   repeatsLastClose: number;
   /** Kept: no bar at or before the row. */
   noBar: number;
+  /** A thin root in the plan because the D1 lift opened it (no bar left in the span outside the clean days). */
+  lifted: boolean;
 }
 
 export interface FrozenPlan {
-  /** Rows to delete, ES then NQ, each by time. */
+  /** Rows to delete, by root in the order given, each by time. */
   rows: FrozenRow[];
   symbols: FrozenSymbolReport[];
+  /** Thin roots in `--roots` that stay out: a bar is left in the span, so ruling 9 still holds. */
+  kept: Sym[];
 }
 
 export interface SnapshotInfoDay {
@@ -1858,14 +1940,6 @@ export function frozenRunsOf(
 }
 
 /**
- * The CT trading day of a snapshot row, as the Phase 1 detector keys its flags
- * (feat.py: the CT date of the time plus 7 hours, so the Globex session that opens
- * at 17:00 CT belongs to the next calendar day).
- */
-export const ctTradingDay = (tsMs: number): string =>
-  getCTDateStr(new Date(tsMs + 7 * 60 * MINUTE_MS));
-
-/**
  * The days the Phase 1 detector found in a thin root's bars after the span end:
  * `{"RTY": {"contaminated": ["2026-07-14", ...], "flagged": [...]}, "CL": {...},
  * "GC": {...}, "ZN": {...}}`, CT trading days. Every thin root must be listed, so
@@ -1950,6 +2024,8 @@ function noteMergeState(
 async function planSnapshots(
   data: Map<Sym, SymbolData>,
   detectorDays: Map<Sym, DetectorDays> | null,
+  roots: readonly Sym[],
+  spanBars: ReadonlyMap<Sym, number>,
 ): Promise<SnapshotStore> {
   const scope = scopeRanges().snapshots;
   const changes: SnapshotChange[] = [];
@@ -1963,9 +2039,10 @@ async function planSnapshots(
   const staleRewrites: StaleRewrite[] = [];
   const readTo = Math.max(scope.toMs, STALE_UNTIL_MS);
 
-  for (const symbol of SYMBOLS) {
+  for (const symbol of roots) {
     const sd = data.get(symbol);
     if (sd == null) throw new Error(`no bars were read for ${symbol}`);
+    const lifted = spanBars.get(symbol) === 0;
     const rows = await readSnapshots(symbol, scope.fromMs, readTo);
     console.log(`snapshots ${symbol}: ${rows.length} rows in range`);
     const report: SnapshotSymbolReport = {
@@ -2007,6 +2084,7 @@ async function planSnapshots(
         left: 0,
         window: 0,
         unchecked: 0,
+        liftedAdded: 0,
         detector:
           detectorDays?.get(symbol) == null
             ? null
@@ -2045,6 +2123,7 @@ async function planSnapshots(
       controlMatched: 0,
       controlDays: 0,
       thin: null,
+      spanBars: spanBars.get(symbol) ?? null,
     };
 
     const frozen: { run: FrozenRun | null; last: number } = {
@@ -2191,7 +2270,9 @@ async function planSnapshots(
       // reads the hour-ago bar, the day-open bar and a 20-day volume window that
       // reach back into the span. After that the inputs are today's continuous-front
       // bars, except on the days the Phase 1 detector confirmed contaminated, and
-      // only when a detector-days file says so.
+      // only when a detector-days file says so. A lifted root (Phase 5a took its
+      // bars in the span, `lifted`) has nothing mixed to read: its rows from the
+      // span start are in, and the detector-days rule starts at the span end.
       const staleBar =
         byValue.priceBar != null &&
         row.tsMs - byValue.priceBar.tsMs > MAX_BAR_AGE_MS
@@ -2207,12 +2288,15 @@ async function planSnapshots(
         const stats = report.stale.detector;
         const days = detectorDays?.get(symbol);
         const day = ctTradingDay(row.tsMs);
-        if (row.tsMs < SPAN.endMs) {
+        if (!lifted && row.tsMs < SPAN.endMs) {
           report.stale.left += 1;
           stalePlanned = false;
-        } else if (row.tsMs < scope.toMs) {
+        } else if (!lifted && row.tsMs < scope.toMs) {
           report.stale.window += 1;
           stalePlanned = false;
+        } else if (row.tsMs < SPAN.endMs) {
+          // Lifted, before the span end: its bars there are gone or clean, so no
+          // detector day can contaminate the inputs.
         } else if (stats == null || days == null) {
           report.stale.unchecked += 1;
           stalePlanned = false;
@@ -2293,6 +2377,8 @@ async function planSnapshots(
             ? `; ${neighbourText(sd.bars, inputs.latest.tsMs)}`
             : '',
         );
+        // Ruling 9 would have left this row; the lift took it in.
+        if (lifted && row.tsMs < scope.toMs) report.stale.liftedAdded += 1;
         const open = frozen.run;
         if (
           open != null &&
@@ -2548,9 +2634,10 @@ async function planFires(): Promise<StoreResult<FireChange>> {
 
 /**
  * The roots Phase 2 repaired. The thin roots (RTY, CL, GC, ZN) have more stale
- * rows of the same kind and stay: they are D1. The same two as EXACT_CONTROL_ROOTS
- * today, but for another reason (those print every second), so a change to one
- * should not move the other.
+ * rows of the same kind and stay (D1) until Phase 5a has taken their bars in the
+ * span: a thin root with none left joins this list for the run (the D1 lift, see
+ * liftedRoots). The same two as EXACT_CONTROL_ROOTS today, but for another reason
+ * (those print every second), so a change to one should not move the other.
  */
 const FROZEN_ROOTS: readonly Sym[] = ['ES', 'NQ'];
 
@@ -2654,10 +2741,15 @@ function closureOf(tsMs: number): Closure {
  * the last known price stays; one that does not is frozen on an older bar). SQL finds
  * the candidates; computeSnapshot confirms each, so no full plan is needed.
  */
-async function planFrozen(): Promise<FrozenPlan> {
+async function planFrozen(
+  roots: readonly Sym[],
+  spanBars: ReadonlyMap<Sym, number>,
+): Promise<FrozenPlan> {
   const rows: FrozenRow[] = [];
   const symbols: FrozenSymbolReport[] = [];
-  for (const symbol of FROZEN_ROOTS) {
+  const lifted = new Set(liftedRoots(spanBars));
+  for (const symbol of roots) {
+    if (!FROZEN_ROOTS.includes(symbol) && !lifted.has(symbol)) continue;
     const candidates = await readFrozenCandidates(symbol);
     const kept = await readFrozenKept(symbol);
     console.log(`frozen ${symbol}: ${candidates.length} candidate(s)`);
@@ -2690,10 +2782,15 @@ async function planFrozen(): Promise<FrozenPlan> {
       firstMs: mine[0]?.tsMs ?? null,
       lastMs: mine.at(-1)?.tsMs ?? null,
       ...kept,
+      lifted: lifted.has(symbol),
     });
     rows.push(...mine);
   }
-  return { rows, symbols };
+  return {
+    rows,
+    symbols,
+    kept: roots.filter((r) => spanBars.has(r) && !lifted.has(r)),
+  };
 }
 
 // ── Report ──────────────────────────────────────────────────────────────────
@@ -2904,8 +3001,12 @@ function staleText(st: StaleStats): string[] {
     (st.unchecked > 0
       ? `; ${st.unchecked} more after it are left (no --detector-days file: the source is unchecked)`
       : '');
+  const lift =
+    st.liftedAdded > 0
+      ? `; ${st.liftedAdded} of the planned rows only because the D1 lift took in the rows before the span end + 20 days`
+      : '';
   const out = [
-    `    stale-at-write rows (opt-in --rewrite-stale-at-write; the stored price is the close of a bar older than ${MAX_BAR_AGE_MS / MINUTE_MS} min at the row, the recompute is fresh, every differing field the normal step does not write): ${st.count} planned (${st.inSpan} in the span, ${st.afterSpan} after it, up to ${isoSecond(STALE_UNTIL_MS)})${left}`,
+    `    stale-at-write rows (opt-in --rewrite-stale-at-write; the stored price is the close of a bar older than ${MAX_BAR_AGE_MS / MINUTE_MS} min at the row, the recompute is fresh, every differing field the normal step does not write): ${st.count} planned (${st.inSpan} in the span, ${st.afterSpan} after it, up to ${isoSecond(STALE_UNTIL_MS)})${lift}${left}`,
     ...(st.detector == null ? [] : detectorDaysText(st, st.detector)),
     `      the frozen-run clause (consecutive rows with one stored price spanning more than ${MAX_BAR_AGE_MS / MINUTE_MS} min, a fresh recompute that differs) adds ${st.frozenAdded} of these rows, ${st.frozenAddedInOutage} of them in the ${isoDay(OUTAGE.fromMs)} to ${isoDay(OUTAGE.toMs - DAY_MS).slice(5)} outage`,
   ];
@@ -3017,6 +3118,30 @@ function touchedText(r: SnapshotStore): string[] {
   return out;
 }
 
+/** The roots in the order the snapshots section's title has always listed them. */
+const TITLE_ORDER: readonly Sym[] = ['ES', 'NQ', 'RTY', 'CL', 'GC', 'ZN'];
+
+/**
+ * The rows each step plans, per root: the normal step, the stale-at-write rewrite
+ * (with the rows only the D1 lift lets in) and the junk delete.
+ */
+function stepsByRootText(r: SnapshotStore): string[] {
+  return r.symbols.map((s) => {
+    const junk = r.junk.filter((j) => j.symbol === s.symbol).length;
+    return `  rows planned, ${s.symbol}: normal step ${s.rowsToWrite} rows, stale-at-write ${s.stale.count} rows (${s.stale.liftedAdded} added by the D1 lift), junk delete ${junk} rows`;
+  });
+}
+
+/** One thin root's D1 lift of ruling 9: the bars it has left in the span, and what that changes. */
+function liftText(s: SnapshotSymbolReport): string[] {
+  if (s.spanBars == null) return [];
+  return [
+    s.spanBars === 0
+      ? `    D1 lift of ruling 9: no bar is left in the span outside the clean days, so the stale-at-write rewrite covers this root from the span start (${s.stale.liftedAdded} planned rows only the lift lets in)`
+      : `    ruling 9 still holds: ${s.spanBars} bar(s) are left in the span outside the clean days, so the stale-at-write rewrite leaves this root's rows before the span end + 20 days`,
+  ];
+}
+
 function snapshotsText(r: SnapshotStore): string[] {
   const top = r.changes
     .filter((c) => c.fields.includes('price'))
@@ -3026,11 +3151,14 @@ function snapshotsText(r: SnapshotStore): string[] {
         Math.abs(a.to.price - a.from.price),
     )
     .slice(0, TOP_N);
+  const titled = TITLE_ORDER.filter((s) =>
+    r.symbols.some((x) => x.symbol === s),
+  );
   const out = [
-    'futures_snapshots (ES, NQ, RTY, CL, GC, ZN): only the fields a repaired bar feeds are written',
+    `futures_snapshots (${titled.join(', ')}): only the fields a repaired bar feeds are written`,
     `  rows in range: ${r.inScope}, rows to write: ${r.changes.length}`,
   ];
-  out.push(...touchedText(r));
+  out.push(...touchedText(r), ...stepsByRootText(r));
   for (const s of r.symbols) {
     out.push(
       `  ${s.symbol}: rows in range ${s.inRange}, rows to write ${s.rowsToWrite} (${byFieldText(s.byField)})`,
@@ -3051,6 +3179,7 @@ function snapshotsText(r: SnapshotStore): string[] {
       ...driftText(s),
       ...unmatchedLargeText(s.unmatchedLarge),
       ...(s.mergeState == null ? [] : mergeStateText(s.mergeState)),
+      ...liftText(s),
       ...staleText(s.stale),
     );
   }
@@ -3128,8 +3257,9 @@ const frozenGap = (r: FrozenRow): number =>
   Math.abs(r.storedPrice - r.barClose);
 
 function frozenText(plan: FrozenPlan): string[] {
+  const roots = plan.symbols.map((s) => s.symbol);
   const out = [
-    'Frozen-stale ES and NQ snapshot rows (--stores frozen; --delete-frozen-stale deletes them, off by default; owner OK 2026-11-11)',
+    `Frozen-stale ${roots.length === 0 ? 'no root' : roots.join(', ')} snapshot rows (--stores frozen; --delete-frozen-stale deletes them, off by default; owner OK 2026-11-11 for ES and NQ, D1 lift for a thin root with no bar left in the span)`,
     `  A row before ${isoSecond(STALE_UNTIL_MS)} that computeSnapshot cannot price (the latest closed bar, ts <= at - ${BAR_CLOSE_LAG_MS / 1000} s, is over ${MAX_BAR_AGE_MS / MINUTE_MS} minutes old, or there is none) and whose stored price is not that bar's close.`,
     `  rows to delete: ${plan.rows.length}`,
   ];
@@ -3139,7 +3269,7 @@ function frozenText(plan: FrozenPlan): string[] {
         ? ''
         : `, first ${isoSecond(s.firstMs)}, last ${isoSecond(s.lastMs)}; 16:15-17:00 CT break ${s.byClosure.break}, weekend or holiday ${s.byClosure.weekendOrHoliday}, elsewhere ${s.byClosure.elsewhere}`;
     out.push(
-      `    ${s.symbol}: ${s.rows}${where}`,
+      `    ${s.symbol}: ${s.rows}${where}${s.lifted ? ' (added by the D1 lift)' : ''}`,
       `      candidates ${s.candidates}, computeSnapshot calls fresh (kept) ${s.fresh}`,
       `      kept, stale and equal to the last bar's close: ${s.repeatsLastClose}; kept, no bar at all: ${s.noBar}`,
     );
@@ -3156,7 +3286,16 @@ function frozenText(plan: FrozenPlan): string[] {
       ),
     );
   }
-  out.push('  RTY, CL, GC and ZN stay: their stale rows are D1.');
+  const staying = THIN_ROOTS.filter((r) => plan.kept.includes(r));
+  if (staying.length > 0) {
+    const names =
+      staying.length === 1
+        ? (staying[0] ?? '')
+        : `${staying.slice(0, -1).join(', ')} and ${staying.at(-1) ?? ''}`;
+    out.push(
+      `  ${names} ${staying.length === 1 ? 'stays' : 'stay'}: ${staying.length === 1 ? 'its' : 'their'} stale rows are D1 (a bar is left in the span outside the clean days, so ruling 9 still holds).`,
+    );
+  }
   return out;
 }
 
@@ -3576,6 +3715,8 @@ interface PlanPointer {
   command: {
     workDir: string;
     stores: Store[];
+    /** A plan.json from before `--roots` has none: it covered all six. */
+    roots?: Sym[];
     backup: string | null;
     detectorDays: string | null;
   };
@@ -3991,6 +4132,12 @@ export interface RecomputeOptions {
   force: boolean;
   stores: Store[];
   /**
+   * `--roots`: every step (snapshots, the stale-at-write rewrite, the junk delete and
+   * the frozen-stale delete) covers only these roots, in the order given. Premarket
+   * and fires are ES-only, so they plan nothing without ES here. Default: all six.
+   */
+  roots: Sym[];
+  /**
    * `--stores frozen`: plan, and with the delete write, only the frozen-stale ES and
    * NQ snapshot rows, and no store (`stores` is empty). It needs no Phase 2 backup.
    */
@@ -4058,6 +4205,7 @@ export function parseRecomputeArgs(argv: string[]): RecomputeArgs {
     apply: false,
     force: false,
     stores: [...STORES],
+    roots: [...SYMBOLS],
     frozen: false,
     backup: null,
     expectSnapshots: null,
@@ -4105,6 +4253,19 @@ export function parseRecomputeArgs(argv: string[]): RecomputeArgs {
         args.frozen = false;
         args.stores = values as Store[];
       }
+    } else if (flag === '--roots') {
+      const values: string[] = [];
+      while (argv[i + 1] != null && !argv[i + 1]?.startsWith('--')) {
+        i += 1;
+        values.push(argv[i] ?? '');
+      }
+      if (values.length === 0) throw new Error('--roots needs a value');
+      const bad = values.find(
+        (v) => !(SYMBOLS as readonly string[]).includes(v),
+      );
+      if (bad != null) throw new Error(`unknown root "${bad}"`);
+      // The last --roots wins; a root named twice counts once.
+      args.roots = [...new Set(values)] as Sym[];
     } else if (flag === '--expect-snapshots')
       args.expectSnapshots = parseCount(flag, next());
     else if (flag === '--expect-premarket')
@@ -4212,7 +4373,16 @@ export function parseRecomputeArgs(argv: string[]): RecomputeArgs {
       }
     }
   } else {
-    const missing = args.stores.filter((s) => given[s] == null);
+    // premarket and fires are ES-only: without ES in --roots they plan nothing,
+    // so a total for one is a mistake, not something to ignore.
+    for (const store of ES_ONLY_STORES) {
+      if (given[store] != null && !args.roots.includes('ES')) {
+        throw new Error(
+          `${EXPECT_FLAGS[store].flag} does not apply: ${store} is ES-only and --roots has no ES`,
+        );
+      }
+    }
+    const missing = storesOf(args).filter((s) => given[s] == null);
     if (missing.length > 0) {
       const names = missing.map(
         (s) => `${EXPECT_FLAGS[s].flag} ${EXPECT_FLAGS[s].letter}`,
@@ -4246,8 +4416,8 @@ export function parseRecomputeArgs(argv: string[]): RecomputeArgs {
  */
 const needsBackup = (o: RecomputeOptions): boolean =>
   (o.apply && !o.frozen) ||
-  o.stores.includes('snapshots') ||
-  o.stores.includes('premarket');
+  storesOf(o).includes('snapshots') ||
+  storesOf(o).includes('premarket');
 
 function expectations(o: RecomputeOptions): Record<Store, number | null> {
   return {
@@ -4265,6 +4435,11 @@ function expectations(o: RecomputeOptions): Record<Store, number | null> {
  * any (leave out its two flags to apply without it).
  */
 function applyCommand(opts: RecomputeOptions, plans: Plans): string | null {
+  // --roots is part of the command whenever it narrows the default.
+  const roots =
+    opts.roots.length === SYMBOLS.length
+      ? []
+      : [`--roots ${opts.roots.join(' ')}`];
   if (plans.frozen != null) {
     return plans.frozen.rows.length === 0
       ? null
@@ -4272,6 +4447,7 @@ function applyCommand(opts: RecomputeOptions, plans: Plans): string | null {
           'npx tsx scripts/recompute-futures-derived.ts --apply',
           `--work-dir ${opts.workDir}`,
           '--stores frozen',
+          ...roots,
           '--delete-frozen-stale',
           `--expect-frozen-deletes ${plans.frozen.rows.length}`,
         ].join(' ');
@@ -4284,6 +4460,7 @@ function applyCommand(opts: RecomputeOptions, plans: Plans): string | null {
     'npx tsx scripts/recompute-futures-derived.ts --apply',
     `--work-dir ${opts.workDir}`,
     ...(opts.backup == null ? [] : [`--backup ${opts.backup}`]),
+    ...roots,
     ...(planned.length === STORES.length
       ? []
       : [`--stores ${planned.join(' ')}`]),
@@ -4364,29 +4541,45 @@ async function run(opts: RecomputeOptions): Promise<number> {
 
   const plans: Plans = {};
   // A dry run plans what it was asked for; --apply plans every store, to check it.
-  // --stores frozen plans no store at all.
+  // --stores frozen plans no store at all. Premarket and fires are ES-only, so
+  // without ES in --roots they plan nothing (storesOf).
   const planned: Store[] = opts.frozen
     ? []
-    : opts.apply
-      ? [...STORES]
-      : opts.stores;
+    : storesOf({
+        stores: opts.apply ? [...STORES] : opts.stores,
+        roots: opts.roots,
+      });
   let session: string[];
+  let spanBars = new Map<Sym, number>();
   neonConfig.fetchFunction = readOnlyFetch;
   try {
     session = await assertReadOnlySession();
     for (const line of session) console.log(line);
-    const data = needsBackup(opts)
-      ? await loadSymbolData(
-          planned.includes('snapshots') ? SYMBOLS : ['ES'],
-          backupBars,
-        )
-      : new Map<Sym, SymbolData>();
+    // The D1 lift of ruling 9: what the stale-at-write rewrite and the frozen-stale
+    // delete may cover depends on whether Phase 5a has taken the thin-root bars.
+    if (planned.includes('snapshots') || opts.frozen) {
+      spanBars = await readThinSpanBars(opts.roots);
+      const line = liftLine(spanBars);
+      if (line !== '') console.log(line);
+    }
+    const data =
+      needsBackup(opts) && planned.length > 0
+        ? await loadSymbolData(
+            planned.includes('snapshots') ? opts.roots : ['ES'],
+            backupBars,
+          )
+        : new Map<Sym, SymbolData>();
     if (planned.includes('fires')) plans.fires = await planFires();
     if (planned.includes('premarket'))
       plans.premarket = await planPremarket(data);
     if (planned.includes('snapshots'))
-      plans.snapshots = await planSnapshots(data, detectorDays);
-    if (opts.frozen) plans.frozen = await planFrozen();
+      plans.snapshots = await planSnapshots(
+        data,
+        detectorDays,
+        opts.roots,
+        spanBars,
+      );
+    if (opts.frozen) plans.frozen = await planFrozen(opts.roots, spanBars);
   } finally {
     neonConfig.fetchFunction = undefined;
   }
@@ -4401,17 +4594,29 @@ async function run(opts: RecomputeOptions): Promise<number> {
   const span = `${isoSecond(SPAN.startMs)} .. ${isoSecond(SPAN.endMs)} (end exclusive)`;
   const scope = scopeRanges();
   const elapsed = `elapsed ${Math.round((Date.now() - startedAt) / 1000)}s`;
+  const rootsLine = `roots ${opts.roots.join(', ')}${opts.roots.includes('ES') ? '' : ' (premarket and fires are ES-only: not planned)'}`;
+  const lift = liftLine(spanBars);
+  const frozenScope = (plans.frozen?.symbols ?? []).map((s) => s.symbol);
+  const lifted = [...liftedRoots(spanBars)];
+  const thinFrom =
+    lifted.length === 0
+      ? 'the thin roots'
+      : `${lifted.join(', ')} (D1 lift) from the span start too, the other thin roots`;
   const header = opts.frozen
     ? [
-        `frozen-stale scope: ES and NQ futures_snapshots rows before ${isoSecond(STALE_UNTIL_MS)}`,
+        `frozen-stale scope: ${frozenScope.length === 0 ? 'no root' : frozenScope.join(', ')} futures_snapshots rows before ${isoSecond(STALE_UNTIL_MS)}`,
+        rootsLine,
+        ...(lift === '' ? [] : [lift]),
         ...session,
         elapsed,
       ]
     : [
         `repaired span ${span}`,
+        rootsLine,
+        ...(lift === '' ? [] : [lift]),
         `snapshot scope ${isoSecond(scope.snapshots.fromMs)} .. ${isoSecond(scope.snapshots.toMs)} (span end + 20 days)`,
         `fire scope ${isoSecond(scope.fires.fromMs)} .. ${isoSecond(scope.fires.toMs)} (span end + 6 minutes)`,
-        `stale-at-write test reaches ${isoSecond(STALE_UNTIL_MS)} (the freshness gate shipped on 2026-09-30); ES and NQ from the span start, the thin roots from the span end + 20 days (${isoSecond(scope.snapshots.toMs)}) and off the contaminated days in ${opts.detectorDays ?? 'no file (their rows after the span end are left)'}`,
+        `stale-at-write test reaches ${isoSecond(STALE_UNTIL_MS)} (the freshness gate shipped on 2026-09-30); ES and NQ from the span start, ${thinFrom} from the span end + 20 days (${isoSecond(scope.snapshots.toMs)}), all of them off the contaminated days in ${opts.detectorDays ?? 'no file (their rows after the span end are left)'}`,
         ...(opts.backup == null
           ? []
           : [
@@ -4444,7 +4649,8 @@ async function run(opts: RecomputeOptions): Promise<number> {
   // Every planned store's checks must hold; only the stores to be written have
   // an approved total to equal.
   const approved: Partial<Record<Store, number | null>> = {};
-  for (const store of opts.stores) approved[store] = expectations(opts)[store];
+  for (const store of storesOf(opts))
+    approved[store] = expectations(opts)[store];
   const problems = [
     ...checkApplyGate(gateInputs, approved),
     ...checkJunkGate(opts, plans.snapshots?.junk.length ?? 0),
@@ -4460,7 +4666,7 @@ async function run(opts: RecomputeOptions): Promise<number> {
   }
 
   const pending: Store[] = [];
-  for (const store of opts.stores) {
+  for (const store of storesOf(opts)) {
     const changes = plans[store]?.changes.length ?? 0;
     if (!opts.force && existsSync(markerPath(opts.workDir, store))) {
       console.log(
@@ -4545,6 +4751,7 @@ async function run(opts: RecomputeOptions): Promise<number> {
     command: {
       workDir: resolve(opts.workDir),
       stores: opts.stores,
+      roots: opts.roots,
       backup: opts.backup,
       detectorDays: opts.detectorDays,
     },
@@ -4656,6 +4863,12 @@ function checkResume(opts: RecomputeOptions, saved: PlanPointer): string[] {
       `--stores ${opts.stores.join(' ')} was given, the saved plan was made with --stores ${c.stores.join(' ')}`,
     );
   }
+  const savedRoots = c.roots ?? [...SYMBOLS];
+  if (stores(opts.roots) !== stores(savedRoots)) {
+    problems.push(
+      `--roots ${opts.roots.join(' ')} was given, the saved plan was made with --roots ${savedRoots.join(' ')}`,
+    );
+  }
   if (opts.backup !== c.backup) {
     problems.push(
       `--backup ${opts.backup} was given, the saved plan was made with --backup ${c.backup}`,
@@ -4666,7 +4879,7 @@ function checkResume(opts: RecomputeOptions, saved: PlanPointer): string[] {
       `--detector-days ${opts.detectorDays} was given, the saved plan was made with --detector-days ${c.detectorDays}`,
     );
   }
-  for (const store of opts.stores) {
+  for (const store of storesOf(opts)) {
     const given = expectations(opts)[store];
     if (given !== saved.expect[store]) {
       problems.push(

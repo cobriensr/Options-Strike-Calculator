@@ -251,6 +251,11 @@ async function reset(): Promise<void> {
   await bar('ES', '2026-09-17T14:00:00Z', 6500);
   await bar('ES', '2026-09-30T20:00:00Z', 6600);
   await bar('ES', '2026-10-01T14:00:00Z', 6300);
+  // The world before Phase 5a: every thin root still has a bar in the span on a day
+  // that is not clean, so ruling 9 holds for it (the D1 lift needs none left).
+  for (const symbol of ['RTY', 'CL', 'GC', 'ZN']) {
+    await bar(symbol, '2026-05-04T14:00:00Z', 1000);
+  }
   ids = {
     frozen: await snap('ES', '2026-09-14T15:00:30Z', 6050),
     repeat: await snap('ES', '2026-09-14T15:05:30Z', 6000),
@@ -288,6 +293,7 @@ function options(over: Partial<RecomputeOptions> = {}): RecomputeOptions {
     apply: true,
     force: false,
     stores: [],
+    roots: ['ES', 'NQ', 'ZN', 'RTY', 'CL', 'GC'],
     frozen: true,
     backup: null,
     expectSnapshots: null,

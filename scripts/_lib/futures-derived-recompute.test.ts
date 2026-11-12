@@ -93,6 +93,7 @@ describe('parseRecomputeArgs', () => {
       apply: false,
       force: false,
       stores: ['snapshots', 'premarket', 'fires'],
+      roots: ['ES', 'NQ', 'ZN', 'RTY', 'CL', 'GC'],
       backup: 'b.jsonl',
       expectSnapshots: null,
       expectPremarket: null,
@@ -132,6 +133,7 @@ describe('parseRecomputeArgs', () => {
       apply: true,
       force: true,
       stores: ['snapshots', 'premarket', 'fires'],
+      roots: ['ES', 'NQ', 'ZN', 'RTY', 'CL', 'GC'],
       backup: 'backup.jsonl',
       expectSnapshots: 31012,
       expectPremarket: 36,
@@ -226,6 +228,120 @@ describe('parseRecomputeArgs', () => {
       deleteFrozenStale: true,
       expectFrozenDeletes: 1008,
     });
+  });
+
+  it('takes --roots in the order given, once each, and defaults to all six', () => {
+    expect(
+      parseRecomputeArgs([
+        '--backup',
+        'b.jsonl',
+        '--roots',
+        'RTY',
+        'CL',
+        'GC',
+        'ZN',
+      ]).roots,
+    ).toEqual(['RTY', 'CL', 'GC', 'ZN']);
+    expect(
+      parseRecomputeArgs(['--backup', 'b.jsonl', '--roots', 'GC', 'RTY', 'GC'])
+        .roots,
+    ).toEqual(['GC', 'RTY']);
+    expect(parseRecomputeArgs(['--backup', 'b.jsonl']).roots).toEqual([
+      'ES',
+      'NQ',
+      'ZN',
+      'RTY',
+      'CL',
+      'GC',
+    ]);
+  });
+
+  it('lets the last --roots win', () => {
+    expect(
+      parseRecomputeArgs([
+        '--backup',
+        'b.jsonl',
+        '--roots',
+        'ES',
+        '--roots',
+        'CL',
+      ]).roots,
+    ).toEqual(['CL']);
+  });
+
+  it('takes --roots with --stores frozen', () => {
+    expect(
+      parseRecomputeArgs(['--stores', 'frozen', '--roots', 'RTY', 'CL']),
+    ).toMatchObject({ frozen: true, roots: ['RTY', 'CL'] });
+  });
+
+  it('asks no premarket or fires total when --roots has no ES: those stores are ES-only and plan nothing', () => {
+    const args = parseRecomputeArgs([
+      '--apply',
+      '--backup',
+      'b.jsonl',
+      '--roots',
+      'RTY',
+      'CL',
+      'GC',
+      'ZN',
+      '--expect-snapshots',
+      '12',
+    ]);
+    expect(args.expectSnapshots).toBe(12);
+    expect(args.expectPremarket).toBeNull();
+    expect(args.expectFires).toBeNull();
+    // With ES back in, the totals are asked for again.
+    expect(() =>
+      parseRecomputeArgs([
+        '--apply',
+        '--backup',
+        'b.jsonl',
+        '--roots',
+        'ES',
+        'RTY',
+        '--expect-snapshots',
+        '12',
+      ]),
+    ).toThrow(/--apply needs --expect-premarket M and --expect-fires K/);
+  });
+
+  it.each([
+    [['--roots'], /--roots needs a value/],
+    [['--roots', '--apply'], /--roots needs a value/],
+    [['--roots', 'RTY', 'SPX'], /unknown root "SPX"/],
+    [['--roots', 'rty'], /unknown root "rty"/],
+    [
+      [
+        '--apply',
+        '--backup',
+        'b.jsonl',
+        '--roots',
+        'RTY',
+        '--expect-snapshots',
+        '1',
+        '--expect-premarket',
+        '0',
+      ],
+      /--expect-premarket does not apply: premarket is ES-only and --roots has no ES/,
+    ],
+    [
+      [
+        '--apply',
+        '--backup',
+        'b.jsonl',
+        '--roots',
+        'CL',
+        'GC',
+        '--expect-snapshots',
+        '1',
+        '--expect-fires',
+        '0',
+      ],
+      /--expect-fires does not apply: fires is ES-only and --roots has no ES/,
+    ],
+  ])('rejects %j', (argv, message) => {
+    expect(() => parseRecomputeArgs(argv)).toThrow(message);
   });
 
   it('lets the last --stores win, so a repeated flag never leaves frozen set beside other stores', () => {
@@ -801,6 +917,7 @@ describe('checkStaleShare', () => {
     left: 0,
     window: 0,
     unchecked: 0,
+    liftedAdded: 0,
     detector:
       contaminated == null
         ? null
@@ -1334,6 +1451,14 @@ describe('runRecompute guards', () => {
       | 'snapshots'
       | 'premarket'
       | 'fires'
+    )[],
+    roots: ['ES', 'NQ', 'ZN', 'RTY', 'CL', 'GC'] as (
+      | 'ES'
+      | 'NQ'
+      | 'ZN'
+      | 'RTY'
+      | 'CL'
+      | 'GC'
     )[],
     backup: join(dir, 'backup.jsonl'),
     expectSnapshots: 1,
