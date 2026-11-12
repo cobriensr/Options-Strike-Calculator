@@ -29,7 +29,7 @@ import { Sentry } from '../_lib/sentry.js';
 
 const CPI_DAY = '2026-05-12';
 const FOMC_SEP_DAY = '2026-06-17';
-const DAY_KEY = `events:day:v2:${CPI_DAY}`;
+const DAY_KEY = `events:day:v3:${CPI_DAY}`;
 
 /**
  * FRED answers every tracked release with its own dates. Finnhub answers
@@ -50,7 +50,6 @@ function stubFredFetch(datesByRelease: Record<number, readonly string[]> = {}) {
         Promise.resolve({
           release_dates: (datesByRelease[releaseId] ?? []).map((date) => ({
             release_id: releaseId,
-            release_name: `release ${releaseId}`,
             date,
           })),
         }),
@@ -159,7 +158,7 @@ describe('market-events', () => {
     it('keeps only the single date requested from FRED history', async () => {
       stubFredFetch({
         10: ['2026-04-10', CPI_DAY, '2026-06-10'],
-        51: ['2026-05-13'],
+        46: ['2026-05-13'],
       });
 
       const { events, complete } = await fetchMarketEvents(CPI_DAY, CPI_DAY);
@@ -222,7 +221,7 @@ describe('market-events', () => {
       stubFredFetch({
         10: [FOMC_SEP_DAY],
         53: [FOMC_SEP_DAY],
-        51: ['2026-06-16'],
+        46: ['2026-06-16'],
       });
 
       const { events } = await fetchMarketEvents('2026-06-16', FOMC_SEP_DAY);
@@ -341,9 +340,7 @@ describe('market-events', () => {
             ok: true,
             json: () =>
               Promise.resolve({
-                release_dates: isCpi
-                  ? [{ release_id: 10, release_name: 'CPI', date: CPI_DAY }]
-                  : [],
+                release_dates: isCpi ? [{ release_id: 10, date: CPI_DAY }] : [],
               }),
           });
         }),
@@ -514,14 +511,11 @@ describe('market-events', () => {
         const releaseId = Number(new URL(url).searchParams.get('release_id'));
         const dates: Record<number, string> = {
           10: FOMC_SEP_DAY,
-          51: '2026-06-16',
+          46: '2026-06-16',
         };
         const date = dates[releaseId];
         return okJson({
-          release_dates:
-            date == null
-              ? []
-              : [{ release_id: releaseId, release_name: 'x', date }],
+          release_dates: date == null ? [] : [{ release_id: releaseId, date }],
         })();
       });
       vi.stubGlobal('fetch', fetchMock);
@@ -618,6 +612,37 @@ describe('market-events', () => {
         ['FOMC + SEP', 'static'],
         ['GDP', 'fred'],
       ]);
+    });
+
+    // Pins the FRED release-ID map. On 2026-11-12 release 51 (U.S.
+    // International Trade) was found mapped to PPI and 110 (Personal Income by
+    // State) to JOLTS; the real releases are 46 and 192. Each ID below was
+    // checked against FRED's `fred/release?release_id=<id>` on that date. A
+    // wrong ID returns 200 with another release's dates, so nothing else in
+    // the suite would notice.
+    it('asks FRED for exactly the seven tracked releases and names each one right', async () => {
+      const releases = [
+        [10, 'CPI', '2026-05-01'],
+        [50, 'NFP', '2026-05-02'],
+        [53, 'GDP', '2026-05-03'],
+        [54, 'PCE', '2026-05-04'],
+        [46, 'PPI', '2026-05-05'],
+        [9, 'Retail Sales', '2026-05-06'],
+        [192, 'JOLTS', '2026-05-07'],
+      ] as const;
+      const fetchMock = stubFredFetch(
+        Object.fromEntries(releases.map(([id, , date]) => [id, [date]])),
+      );
+
+      const { events } = await fetchMacroEvents('2026-05-01', '2026-05-07');
+
+      const requestedIds = urlsCalled(fetchMock)
+        .map((url) => Number(new URL(url).searchParams.get('release_id')))
+        .sort((a, b) => a - b);
+      expect(requestedIds).toEqual([9, 10, 46, 50, 53, 54, 192]);
+      expect(events.map((e) => [e.date, e.event])).toEqual(
+        releases.map(([, name, date]) => [date, name]),
+      );
     });
 
     it('makes no Finnhub call, even with a Finnhub key set', async () => {
@@ -738,7 +763,7 @@ describe('market-events', () => {
 
       expect(result).toEqual({ events: [], complete: true, fromCache: false });
       expect(redis.set).toHaveBeenCalledWith(
-        'events:day:v2:2026-05-14',
+        'events:day:v3:2026-05-14',
         { data: [], cachedAt: expect.any(Number) },
         { ex: CACHE_TTL_SEC },
       );
@@ -757,7 +782,7 @@ describe('market-events', () => {
       expect(result.events.map((e) => e.event)).toEqual(['FOMC + SEP']);
       expect(redis.set).toHaveBeenCalledTimes(1);
       expect(redis.set).toHaveBeenCalledWith(
-        `events:day:v2:${FOMC_SEP_DAY}`,
+        `events:day:v3:${FOMC_SEP_DAY}`,
         { data: result.events, cachedAt: expect.any(Number), complete: false },
         { ex: 300 },
       );
@@ -772,7 +797,7 @@ describe('market-events', () => {
       expect(result.complete).toBe(false);
       expect(redis.set).toHaveBeenCalledTimes(1);
       expect(redis.set).toHaveBeenCalledWith(
-        `events:day:v2:${FOMC_SEP_DAY}`,
+        `events:day:v3:${FOMC_SEP_DAY}`,
         { data: result.events, cachedAt: expect.any(Number), complete: false },
         { ex: 300 },
       );
@@ -963,7 +988,7 @@ describe('market-events', () => {
       expect(result.events.map((e) => e.event)).toEqual(['FOMC + SEP']);
       expect(redis.set).toHaveBeenCalledTimes(1);
       expect(redis.set).toHaveBeenCalledWith(
-        `events:day:v2:${FOMC_SEP_DAY}`,
+        `events:day:v3:${FOMC_SEP_DAY}`,
         { data: result.events, cachedAt: expect.any(Number), complete: false },
         { ex: 300 },
       );
@@ -1009,27 +1034,25 @@ describe('market-events', () => {
       },
     );
 
-    it('reads and writes the v2 key, and ignores a v1 entry that may hold earnings', async () => {
-      const v1Entry = {
-        data: [event({ event: 'NVDA Earnings', source: 'finnhub' })],
+    it('reads and writes the v3 key, and ignores a v2 entry built from the wrong PPI and JOLTS release IDs', async () => {
+      const v2Entry = {
+        data: [event({ event: 'PPI', severity: 'medium' })],
         cachedAt: 1_700_000_000_000,
       };
       vi.mocked(redis.get).mockImplementation((key: string) =>
-        Promise.resolve(key === `events:day:v1:${CPI_DAY}` ? v1Entry : null),
+        Promise.resolve(key === `events:day:v2:${CPI_DAY}` ? v2Entry : null),
       );
       stubFredFetch({ 10: [CPI_DAY] });
 
       const result = await getEventsForDate(CPI_DAY);
 
       expect(redis.get).toHaveBeenCalledTimes(1);
-      expect(redis.get).toHaveBeenCalledWith(`events:day:v2:${CPI_DAY}`);
+      expect(redis.get).toHaveBeenCalledWith(DAY_KEY);
       expect(result.fromCache).toBe(false);
       expect(result.events.map((e) => e.event)).toEqual(['CPI']);
-      expect(redis.set).toHaveBeenCalledWith(
-        `events:day:v2:${CPI_DAY}`,
-        expect.anything(),
-        { ex: CACHE_TTL_SEC },
-      );
+      expect(redis.set).toHaveBeenCalledWith(DAY_KEY, expect.anything(), {
+        ex: CACHE_TTL_SEC,
+      });
     });
   });
 

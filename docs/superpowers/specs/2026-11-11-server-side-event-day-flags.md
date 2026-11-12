@@ -15,6 +15,21 @@ month of past earnings, so earnings cannot be rebuilt for older dates. A macro-o
 flag can be rebuilt exactly for any date, so live saves and the backfill always agree
 and the ML feature means the same thing every day.
 
+Correction 2026-11-12: two FRED release IDs in `TRACKED_RELEASES`
+(`api/_lib/market-events.ts`) were wrong, each checked against the live FRED API
+(`fred/release?release_id=<id>`).
+
+- PPI was release 51, which is "U.S. International Trade in Goods and Services". The
+  Producer Price Index is release **46**.
+- JOLTS was release 110, which is "Personal Income by State". The Job Openings and Labor
+  Turnover Survey is release **192**.
+- The other five (10 CPI, 50 NFP, 53 GDP, 54 PCE, 9 Retail Sales) were right.
+- Until the fix, `/api/events` and every stored PPI or JOLTS name marked trade-balance
+  and state-income days and missed every real PPI and JOLTS day. The history backfill
+  reads the corrected map, so its dry run moves those two names to the right days.
+- The cache keys moved to `events:day:v3` and `events:v3`, so no entry built from the
+  wrong IDs is served.
+
 ## Findings
 
 1. **Past dates always save as non-event days.** `useRangeAnalysis.ts:184` takes the
@@ -39,6 +54,9 @@ and the ML feature means the same thing every day.
    FRED parameter.
 6. **Stored names to date:** GDP, Retail Sales, NFP, PCE, CPI, PPI, FOMC + SEP, JOLTS,
    FOMC, NVDA Earnings, CLOSED.
+   - The stored PPI and JOLTS names are wrong: they came from the wrong release IDs (see
+     the correction above), so they sit on trade-balance and state-income days. The
+     other names did not depend on those two IDs.
    - Until now an event day was any event on the date, earnings and early close
      included.
    - Owner decision 2026-11-12: from here the definition is macro-only. Earnings no
@@ -72,8 +90,9 @@ Exports:
 - `getEventsForDate(date): Promise<DayEventsResult>`, where
   `DayEventsResult = { events: EventItem[]; complete: boolean } & { fromCache: boolean }`
   - It's `fetchMacroEvents(date, date)` behind a Redis cache under key
-    `events:day:v2:{date}`. The key moved from v1 on 2026-11-12 because a v1 entry can
-    hold earnings.
+    `events:day:v3:{date}`. The key moved from v1 on 2026-11-12 because a v1 entry can
+    hold earnings, and from v2 to v3 the same day because a v2 entry can name the wrong
+    PPI and JOLTS days (see the correction above).
   - A complete result is cached for the same 7-day TTL as `/api/events`; an incomplete or
     rejected one for 5 minutes (see "Short cache for a failed lookup").
   - `fromCache` is true on a cache hit and false after a fetch.
@@ -86,7 +105,8 @@ Exports:
   to drop a client's earnings names, and the backfill report uses it to explain the
   removals.
 
-`api/events.ts` keeps its URL, query parameter, cache key and response shape. It only
+`api/events.ts` keeps its URL, query parameter and response shape. Its cache key is
+`events:v3:{startDate}:{days}` since the 2026-11-12 correction (it was `events:v2`). It only
 calls `fetchMarketEvents`. The `EventItem` interface moves to the lib module, and
 `api/events.ts` imports it from there.
 
@@ -225,7 +245,10 @@ Each phase gets `npm run review`, a code review, then commits of 5 files or fewe
 
 ## Constants
 
-- Day cache: `events:day:v2:{date}`, TTL 7 days (`CACHE_TTL_SEC`, shared with `/api/events`).
+- Day cache: `events:day:v3:{date}`, TTL 7 days (`CACHE_TTL_SEC`, shared with `/api/events`).
+- `/api/events` cache: `events:v3:{startDate}:{days}`, same TTL.
+- FRED release IDs: 10 CPI, 50 NFP, 53 GDP, 54 PCE, 46 PPI, 9 Retail Sales, 192 JOLTS
+  (PPI and JOLTS corrected 2026-11-12 from 51 and 110).
 - Failed-lookup cache: the same key, TTL 5 minutes (`INCOMPLETE_CACHE_TTL_SEC`).
 - Backfill: 5,000 rows per read page (`READ_PAGE`), 500 per UPDATE (`WRITE_CHUNK`),
   undo files in `docs/tmp/snapshot-event-flags/` (`UNDO_DIR`).

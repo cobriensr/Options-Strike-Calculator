@@ -32,7 +32,9 @@ import {
 } from './_lib/market-events.js';
 import { getETDateStr } from '../src/utils/timezone.js';
 
-const REDIS_KEY = 'events:v2';
+// v3: the PPI and JOLTS release IDs were corrected, so a v2 entry can name the
+// wrong days.
+const REDIS_KEY = 'events:v3';
 
 // ============================================================
 // HANDLER

@@ -149,16 +149,8 @@ describe('GET /api/events', () => {
         json: () =>
           Promise.resolve({
             release_dates: [
-              {
-                release_id: 10,
-                release_name: 'CPI',
-                date: tomorrow,
-              },
-              {
-                release_id: 53,
-                release_name: 'GDP',
-                date: tomorrow,
-              },
+              { release_id: 10, date: tomorrow },
+              { release_id: 53, date: tomorrow },
             ],
           }),
       }),
@@ -362,6 +354,49 @@ describe('GET /api/events', () => {
     expect(res._status).toBe(200);
     // Full success → write-through to the date-scoped cache.
     expect(redis.set).toHaveBeenCalledTimes(1);
+
+    vi.unstubAllGlobals();
+  });
+
+  it('reads and writes the v3 key, and ignores a v2 entry built from the wrong PPI and JOLTS release IDs', async () => {
+    process.env.FRED_API_KEY = 'fred-key';
+    const v2Entry = {
+      data: [
+        {
+          date: '2026-03-18',
+          event: 'PPI',
+          severity: 'medium',
+          source: 'fred',
+        },
+      ],
+      cachedAt: 1_700_000_000_000,
+    };
+    vi.mocked(redis.get).mockImplementation((key: string) =>
+      Promise.resolve(key.startsWith('events:v2:') ? v2Entry : null),
+    );
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({ release_dates: [] }),
+      }),
+    );
+
+    const res = mockResponse();
+    await handler(mockRequest({ method: 'GET', query: { days: '30' } }), res);
+
+    expect(res._status).toBe(200);
+    expect((res._json as { cached: boolean }).cached).toBe(false);
+    expect(redis.get).toHaveBeenCalledTimes(1);
+    expect(redis.get).toHaveBeenCalledWith(
+      expect.stringMatching(/^events:v3:\d{4}-\d{2}-\d{2}:30$/),
+    );
+    expect(redis.set).toHaveBeenCalledWith(
+      expect.stringMatching(/^events:v3:\d{4}-\d{2}-\d{2}:30$/),
+      expect.anything(),
+      expect.anything(),
+    );
 
     vi.unstubAllGlobals();
   });

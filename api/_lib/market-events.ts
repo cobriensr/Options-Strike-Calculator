@@ -36,7 +36,6 @@ export interface EventItem {
 
 interface FredReleaseDateEntry {
   release_id: number;
-  release_name: string;
   date: string;
 }
 
@@ -70,6 +69,10 @@ interface FredReleaseConfig {
   readonly severity: 'high' | 'medium';
 }
 
+// FRED release IDs, each checked against
+// https://api.stlouisfed.org/fred/release?release_id=<id> on 2026-11-12.
+// 51 (International Trade) and 110 (Personal Income by State) were once mapped
+// to PPI and JOLTS by mistake; the real ones are 46 and 192.
 const TRACKED_RELEASES: readonly FredReleaseConfig[] = [
   {
     id: 10,
@@ -100,7 +103,7 @@ const TRACKED_RELEASES: readonly FredReleaseConfig[] = [
     severity: 'high',
   },
   {
-    id: 51,
+    id: 46,
     event: 'PPI',
     description: 'Producer Price Index',
     time: '8:30 AM',
@@ -114,7 +117,7 @@ const TRACKED_RELEASES: readonly FredReleaseConfig[] = [
     severity: 'medium',
   },
   {
-    id: 110,
+    id: 192,
     event: 'JOLTS',
     description: 'Job Openings and Labor Turnover Survey',
     time: '10:00 AM',
@@ -300,8 +303,10 @@ async function fetchMegaCapEarnings(
 // ============================================================
 
 const FRED_BASE = 'https://api.stlouisfed.org/fred';
-// v2: the day lookup is macro-only. A v1 entry can hold Finnhub earnings.
-const DAY_CACHE_KEY = 'events:day:v2';
+// v3: the PPI and JOLTS release IDs were corrected, so a v2 entry can name the
+// wrong days. v2: the day lookup is macro-only; a v1 entry can hold Finnhub
+// earnings.
+const DAY_CACHE_KEY = 'events:day:v3';
 export const CACHE_TTL_SEC = 7 * 24 * 60 * 60; // 7 days (key is date-scoped)
 // An incomplete or failed lookup is kept briefly, not for the day. Without it
 // a lookup that keeps failing repays 7 FRED calls on every snapshot save, and
@@ -546,7 +551,7 @@ async function writeDayCache(
 
 /**
  * The macro events on one date: `fetchMacroEvents(date, date)` behind a Redis
- * key per date (`events:day:v2:{date}`), with two lifetimes. Earnings are not
+ * key per date (`events:day:v3:{date}`), with two lifetimes. Earnings are not
  * part of it, so a Finnhub failure can neither delay nor degrade the answer.
  *   - a `complete` result is kept 7 days (`CACHE_TTL_SEC`);
  *   - an incomplete result, or a fetch that rejects, is kept 5 minutes as
