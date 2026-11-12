@@ -56,7 +56,8 @@ ENRICH_DAY_BUDGET_SECONDS = 900
 # stops for the night. A tape layout or chain format the scripts cannot read shows as one of
 # them, each catching what the others miss: a day that raises; a table-day whose fires hold no
 # value from another writer, so none gets an outcome; or a pass that wrote nothing where the
-# fires do hold a value (the shares stay near 100%) or in the inversion pass (no share).
+# fires do hold a value (the shares stay near 100%) or in the inversion pass (no share), the
+# inversion pass only on a day no inversion was resolved on before it (see enrich_step).
 # Each would cost a download; this bounds the wasted downloads, the fires stamped and the
 # Sentry exceptions (one per failed day).
 ENRICH_MAX_DAY_FAILURES = 3
@@ -64,7 +65,8 @@ ENRICH_MAX_DAY_FAILURES = 3
 # not rows selected: tagging marks a fire examined and locks it out of the work set. A
 # broken chain id hits every fire, and a lottery day has thousands. About 20% of flow results
 # are legitimately undefined, so 20 in a row that are all undefined is negligible. A day
-# re-listed for a few leftover fires stays under it.
+# re-listed for a few leftover fires stays under it; one re-listed for hundreds of them (the
+# inversion pass after another writer priced the rest) is not judged by it.
 ENRICH_UNPRICED_FLOOR = 20
 # UW's 403 names this token's boundary, and a full plan reaches back about 2 years: a
 # boundary newer than this many days before the last session means the entitlement

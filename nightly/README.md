@@ -347,29 +347,47 @@ each catching what the others miss, and each day it goes unseen would cost a dow
 - A pass wrote nothing and tagged at least `ENRICH_UNPRICED_FLOOR` (20) rows:
   `unpriced_passes`. It sees what `null_days` cannot: fires that hold a feed value, and
   the inversion pass, which has no share at all. It counts (pass, day) units, up to
-  three on a day (the Lottery Finder outcome pass, its inversion pass and the Silent
-  Boom pass). The outcome passes count the fires they kept plus the ones they
-  stamped, the inversion pass the fires it tagged undefined. Rows tagged, not rows
-  selected, because tagging marks a fire examined and locks it out of the work set.
-  A day whose net flow is missing leaves its fires as `inversion_input_missing`,
-  untagged, and is not flagged. A total break trips all three passes on one day when
-  that day's silent boom pass tagged at least 20 alerts, so the step stops after that
-  day, which limits the stamping to one day. On a thinner silent boom day only the two
-  lottery passes trip, which makes 2, and the stop comes on the next broken day.
+  three on a fresh day (the Lottery Finder outcome pass, its inversion pass and the
+  Silent Boom pass) and up to two on a leftover day (below). The outcome passes count
+  the fires they kept plus the ones they stamped, the inversion pass the fires it
+  tagged undefined. Rows tagged, not rows selected, because tagging marks a fire
+  examined and locks it out of the work set. A day whose net flow is missing leaves
+  its fires as `inversion_input_missing`, untagged, and is not flagged. A total break
+  trips all three passes on one fresh day when that day's silent boom pass tagged at
+  least 20 alerts, so the step stops after that day, which limits the stamping to one
+  day. On a thinner silent boom day only the two lottery passes trip, which makes 2,
+  and the stop comes on the next broken day. On a leftover day a total break trips at
+  most the two outcome passes, so the stop comes on the next broken day.
+
+The inversion pass is judged only on a **fresh day**, one where no fire had an
+inversion value or tag before the pass ran. Its work set is the fires still blank, so
+on a **leftover day** (something priced it earlier, such as the old Vercel cron's
+inversions) it holds only that writer's leftovers, which the tape correctly prices
+none of. On 2026-11-05 the set was 430 of 14,443 fires, all of them leftovers; it
+stamped 430, wrote none, and that alone failed the step. Before the lottery script
+runs, the step counts the day's fires outside the work set (`inversions_resolved`:
+`NOT (realized_flow_inversion_pct IS NULL AND inversion_source IS NULL)`, on the day's
+own connection). When the count is not 0 the day is a leftover day. An inversion
+pass that would have been unpriced is then counted in `inversion_leftovers_unpriced`
+and logged, and the day stays `ok`. It neither fails the step nor counts toward the
+cap. The two outcome passes are judged on every day.
 
 The step's result is `failed` if a day failed, came back all-NULL or had an unpriced
 pass, else `partial` if days are left, else `ok`. Its counts are in the log line
 `step enrich-outcomes ...` and in the `counts` extra of the step alerts:
 `days_processed`, `days_failed`, `days_waiting_tape`, `days_left`,
 `tape_markers_reset` (rows whose marker was cleared), `null_days` and `low_days`
-(these two count (table, day) pairs), `unpriced_passes` ((pass, day) units), and per
+(these two count (table, day) pairs), `unpriced_passes` ((pass, day) units),
+`inversion_leftovers_unpriced` (inversion passes that wrote nothing and tagged 20
+fires or more on a leftover day; outside the cap and never a failure), and per
 table `lottery_` / `silent_boom_` plus `outcomes_written`, `stamped_no_outcome`,
 `outcomes_replaced` (the tape's value overwrote an earlier outcome) and
 `outcomes_kept` (the tape could not price a fire that held a value, which stayed).
 The Lottery Finder pass adds `inversion_written`, `inversion_stamped` and
 `inversion_input_missing`. The log line for each day names its date, a status
 (`failed (<ExceptionClass>)`, else `priced none`, else `no outcomes`, else `ok`) and
-its non-zero counts, never an exception's text.
+its non-zero counts, never an exception's text. A leftover day's inversion pass shows
+as `inversion_leftovers_unpriced=1` and leaves the status alone.
 
 **A day landed or re-landed tonight.** The rows of a day whose object the tape job
 put in R2 tonight (`landed` or `relanded`) may carry the marker of the tape it
@@ -424,6 +442,11 @@ UPDATE lottery_finder_fires SET inversion_source = NULL, inversion_version = NUL
 No value is lost, because the rows it touches have none. It also reopens the fires the
 tape had rightly found undefined; the next pass tags them again. The outcome passes
 need nothing more than the marker reset.
+
+Only a fresh day can come back `priced none` from the inversion pass. A leftover day
+logs `ok` with `inversion_leftovers_unpriced=1` and needs none of this: the fires the
+tape cannot price stay tagged undefined, which is right. On such a day a broken tape
+shows through the outcome passes, which are judged on every day.
 
 **Dry run on a workstation.** From the repo root, with the four `R2_*` variables and
 a database URL in the environment or in `.env.local` (which points at the production
@@ -505,7 +528,9 @@ the day's `enrich <day>` line in the run log:
   it, then clear the day's markers and its inversion tags by hand (see "A
   `priced none` day" under "Enrichment"). A total break usually trips three passes on
   its first day, which stops the step there; on a day with fewer than 20 silent boom
-  alerts it trips two, and the stop comes on the next broken day.
+  alerts it trips two, and the stop comes on the next broken day. The inversion pass
+  counts only on a fresh day: on a leftover day it logs `ok` with
+  `inversion_leftovers_unpriced=1` instead, and a total break trips at most two passes.
 - No `enrich <day>` line at all. Either the day had no work left, so an earlier
   night already examined it and priced none of it (treat it as `no outcomes`), or
   the step did not reach the day. Look for `nightly step skipped_deadline`, an

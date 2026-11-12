@@ -45,32 +45,46 @@ and each has its own signal:
   when it cannot price a fire): the share stays near 100% and `null_days` sees nothing, but
   every examined fire is marked and locked out of the work set. The inversion pass has no
   share at all. So a pass that wrote nothing and tagged ENRICH_UNPRICED_FLOOR rows or more is
-  unpriced: `unpriced_passes`, counted in (pass, day) units, up to three on a day. The
-  lottery outcome pass counts what it kept and stamped, the silent boom pass the same, and
-  the lottery flow pass what it tagged undefined (a day whose net flow is missing leaves its
-  fires as `flow_input_missing`, untagged, and is not flagged). A pass counts once it has
-  returned, even if a later pass of the day raises.
+  unpriced: `unpriced_passes`, counted in (pass, day) units. The lottery outcome pass counts
+  what it kept and stamped, the silent boom pass the same, and the lottery flow pass what it
+  tagged undefined (a day whose net flow is missing leaves its fires as `flow_input_missing`,
+  untagged, and is not flagged). A pass counts once it has returned, even if a later pass of
+  the day raises.
+
+The flow pass is judged only on a fresh day, one on which no fire had an inversion resolved
+(a value or a tag) before the pass ran. Its work set is the fires still blank, so on a day
+something priced earlier (the old Vercel cron's inversions) it holds only that run's
+leftovers, fires the cron could not price either, and the tape correctly prices none of them:
+a zero there is expected (2026-11-03..05 stamped 244, 322 and 430 and wrote none, and three
+such days stopped the step with 177 days left). `inversions_resolved` counts those fires on
+the day's connection before the lottery script runs; when it is not 0 the day is a leftover
+day, and a flow pass that would have been unpriced is counted in
+`inversion_leftovers_unpriced` and logged, nothing more. The two outcome passes are judged on
+every day, so on a leftover day only they can trip.
 
 The loop stops, leaving the rest as `days_left`, when `days_failed + null_days +
 unpriced_passes` reaches ENRICH_MAX_DAY_FAILURES; each day would cost a download. A total
-break trips all three passes on one day when that day's silent boom pass tagged at least
+break trips all three passes on one fresh day when that day's silent boom pass tagged at least
 ENRICH_UNPRICED_FLOOR alerts, so the step stops after that day, which limits the stamping to
 one day. On a thinner silent boom day only the two lottery passes trip, which makes 2, and the
-stop comes on the next broken day. It also stops when less than ENRICH_DAY_BUDGET_SECONDS is
-left. Only the setup is not a day's: a failure of its connection, the marker UPDATE, the
-listing of the days or the listing of the tape propagates to `run_steps`.
+stop comes on the next broken day. On a leftover day the flow pass is not counted, so a total
+break trips at most the two outcome passes and the stop comes on the next broken day. It also
+stops when less than ENRICH_DAY_BUDGET_SECONDS is left. Only the setup is not a day's: a
+failure of its connection, the marker UPDATE, the listing of the days or the listing of the
+tape propagates to `run_steps`.
 
 The step sends no share alert. The outcome check reports the last three sessions, so the
 latest session would be reported twice, and a long backfill would send an email a day.
 
 Status: `failed` if a day failed, came back all-NULL or had an unpriced pass, else `partial`
 if days are left, else `ok`; the details are fixed phrases (they are part of the Sentry
-fingerprint).
+fingerprint). A leftover day's flow pass is not an unpriced pass.
 
 Logs carry one line per day: the date, a status word (`failed (<ExceptionClass>)`, else
 `priced none` for a day with an unpriced pass, else `no outcomes` for a day with an all-NULL
-pair, else `ok`), the day's non-zero counts and the seconds. Never an exception's text (it
-can carry the Neon host) or row data.
+pair, else `ok`), the day's non-zero counts and the seconds. A leftover flow pass shows as
+`inversion_leftovers_unpriced=1` and leaves the status word alone. Never an exception's text
+(it can carry the Neon host) or row data.
 
 Import order: the lottery script before the silent boom one. The silent boom script puts
 <repo>/ml/src first on sys.path, which holds an older enrich_lottery_outcomes.py.
@@ -86,6 +100,7 @@ from typing import TYPE_CHECKING
 
 import sentry_sdk
 from _tape_reader import FETCH_DEADLINE_SECONDS
+from enrich_lottery_outcomes import INVERSION_WORK
 from enrich_lottery_outcomes import configure_archive as configure_lottery_archive
 from enrich_lottery_outcomes import enrich_one_date as enrich_lottery_day
 from enrich_lottery_outcomes import list_work_dates as list_lottery_work_dates
@@ -141,6 +156,7 @@ _SILENT_BOOM_COUNTS = (
 _DAY_COUNT_NAMES = (
     "null_days",
     "unpriced_passes",
+    "inversion_leftovers_unpriced",
     "low_days",
     *(name for _, name in _LOTTERY_COUNTS),
     *(name for _, name in _SILENT_BOOM_COUNTS),
@@ -173,6 +189,14 @@ _RESET_MARKERS_SQL = (
 )
 
 
+# The fires of one day outside the flow pass's work set. INVERSION_WORK is the script's own
+# text, so the work set has one definition and this is its exact complement (the script's
+# `fetch_flow_unfilled` filters on the date and INVERSION_WORK alone). A constant, never input.
+_INVERSIONS_RESOLVED_SQL = (
+    f"SELECT count(*) FROM lottery_finder_fires WHERE date = %s AND NOT ({INVERSION_WORK})"
+)
+
+
 def reset_tape_markers(conn: connection, days: Sequence[date]) -> int:
     """Clear `outcome_tape_version` on the fires of `days` in both tables; the rows cleared.
 
@@ -186,6 +210,20 @@ def reset_tape_markers(conn: connection, days: Sequence[date]) -> int:
         cursor.execute(_RESET_MARKERS_SQL, {"days": list(days)})
         (cleared,) = cursor.fetchone()
     return cleared
+
+
+def inversions_resolved(conn: connection, day: str) -> int:
+    """The lottery fires of `day` (ISO date) that are not in the flow pass's work set.
+
+    These are the fires with an inversion value or tag already, written by something that ran
+    before. Call it before the day's lottery pass: the pass's own tags would count too. A day
+    where this is not 0 is a leftover day, whose flow work set holds only what that writer
+    could not price (see the module docstring).
+    """
+    with conn.cursor() as cursor:
+        cursor.execute(_INVERSIONS_RESOLVED_SQL, (day,))
+        (resolved,) = cursor.fetchone()
+    return resolved
 
 
 def work_days(conn: connection, through: date) -> list[date]:
@@ -266,9 +304,11 @@ def _write_day(ctx: StepContext, reader: TapeReader, day: date, tally: dict[str,
     if reader.fetch_day(day, deadline=_fetch_deadline(ctx)) is None:
         raise RuntimeError(_MISSING_FILE)
     with connect_db(ctx.settings) as conn:
+        # Before the lottery pass, whose own tags would otherwise count as resolved.
+        resolved = inversions_resolved(conn, iso)
         lottery = enrich_lottery_day(conn, iso, select="all")
         _add_counts(tally, lottery, _LOTTERY_COUNTS)
-        tally["unpriced_passes"] += _lottery_unpriced_passes(lottery)
+        _add_lottery_unpriced(tally, lottery, resolved)
         _require_file(lottery)
         silent_boom = enrich_silent_boom_day(conn, iso, select="all")
         _add_counts(tally, silent_boom, _SILENT_BOOM_COUNTS)
@@ -310,13 +350,22 @@ def _priced_none(written: int, tagged: int) -> int:
     return int(written == 0 and tagged >= ENRICH_UNPRICED_FLOOR)
 
 
-def _lottery_unpriced_passes(result: LotteryDayResult) -> int:
-    """How many of the lottery script's two passes, outcomes and flow, priced nothing."""
-    outcomes = _priced_none(
+def _add_lottery_unpriced(tally: dict[str, int], result: LotteryDayResult, resolved: int) -> None:
+    """Add the lottery script's two passes that priced nothing, outcomes and flow.
+
+    `resolved` is `inversions_resolved` for the day. The outcome pass is judged on every day.
+    The flow pass counts as unpriced only on a fresh day (`resolved` 0); when something had
+    resolved inversions before it, its work set is that writer's leftovers, a zero is
+    expected, and it is counted apart, outside the failure cap.
+    """
+    tally["unpriced_passes"] += _priced_none(
         result.outcomes_written, result.outcomes_kept + result.stamped_no_outcome
     )
     flow = _priced_none(result.flow_written, result.flow_stamped_undefined)
-    return outcomes + flow
+    if resolved:
+        tally["inversion_leftovers_unpriced"] += flow
+    else:
+        tally["unpriced_passes"] += flow
 
 
 def _silent_boom_unpriced_passes(result: SilentBoomDayResult) -> int:

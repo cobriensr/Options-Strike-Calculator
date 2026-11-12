@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from pathlib import Path
 from time import monotonic
-from unittest.mock import MagicMock, call, create_autospec
+from unittest.mock import DEFAULT, MagicMock, call, create_autospec
 
 import _tape_reader
 import enrich_lottery_outcomes
@@ -70,6 +70,9 @@ MISSING_MESSAGE = "landed tape missing from the enrich cache"
 
 LotteryResult = enrich_lottery_outcomes.DayResult
 SilentBoomResult = enrich_silent_boom_outcomes.DayResult
+INVERSION_WORK = enrich_lottery_outcomes.INVERSION_WORK
+# A day the old Vercel cron priced before the tape: the flow work set is only what it left.
+LEFTOVERS = 430
 
 COUNT_NAMES = {
     "days_processed",
@@ -78,6 +81,7 @@ COUNT_NAMES = {
     "days_failed",
     "null_days",
     "unpriced_passes",
+    "inversion_leftovers_unpriced",
     "low_days",
     "tape_markers_reset",
     "lottery_outcomes_written",
@@ -162,6 +166,17 @@ class Night:
     silent_boom_results: dict[str, SilentBoomResult | BaseException] = field(default_factory=dict)
     # What outcome_shares returns for one day. Absent: both tables fully enriched.
     share_rows: dict[date, list[DayShare]] = field(default_factory=dict)
+    # The fires of one ISO date outside the flow work set, which the day's count query returns.
+    # Absent: none, a day nothing had resolved.
+    resolved: dict[str, int] = field(default_factory=dict)
+
+    def fresh_day(self, day: date) -> None:
+        """A day no inversion was resolved on before the pass: the flow pass is judged."""
+        self.resolved[day.isoformat()] = 0
+
+    def leftover_day(self, day: date, resolved: int = 14_000) -> None:
+        """A day something priced earlier: the flow work set holds only what it left."""
+        self.resolved[day.isoformat()] = resolved
 
     def work(self, lottery: list[date], silent_boom: list[date] | None = None) -> None:
         """The days the two list_work_dates calls return (ascending ISO strings, as the real ones)."""
@@ -180,6 +195,11 @@ class Night:
 
 def _healthy_shares(day: date) -> list[DayShare]:
     return [DayShare(LOTTERY, day, 100, 100), DayShare(SILENT_BOOM, day, 5, 5)]
+
+
+def _is_resolved_count(sql: str) -> bool:
+    """The day's count of fires outside the flow work set, as against the marker reset."""
+    return "lottery_finder_fires" in sql and "NOT (" in sql
 
 
 @pytest.fixture
@@ -242,6 +262,19 @@ def night(monkeypatch: pytest.MonkeyPatch) -> Night:
     )
     n.list_lottery.return_value = []
     n.list_silent_boom.return_value = []
+
+    def record_execute(sql: str, params: tuple[str] | None = None) -> None:
+        if _is_resolved_count(sql):
+            events.append(f"resolved {params[0] if params else None}")
+
+    def answer_fetchone() -> object:
+        sql, params = cursor.execute.call_args.args
+        if _is_resolved_count(sql):
+            return (n.resolved.get(params[0], 0),)
+        return DEFAULT  # the marker reset's one summed count: `fetchone.return_value`
+
+    cursor.execute.side_effect = record_execute
+    cursor.fetchone.side_effect = answer_fetchone
 
     def enrich(kind: str, results: dict, empty):
         def run(_conn: MagicMock, iso: str, *_args: object, **_kwargs: object):
@@ -577,6 +610,7 @@ def test_the_shares_are_read_from_the_day_connection_after_both_tables(
     assert day_events == [
         f"fetch {DAYS[1]}",
         "connect",
+        f"resolved {iso}",
         f"lottery {iso}",
         f"silent_boom {iso}",
         f"shares {DAYS[1]}",
@@ -674,12 +708,14 @@ def test_a_pass_that_tags_the_floor_and_writes_nothing_is_unpriced(
     assert ENRICH_UNPRICED_FLOOR == 20
     iso = DAYS[1].isoformat()
     night.work(lottery=[DAYS[1]], silent_boom=[DAYS[1]])
+    night.fresh_day(DAYS[1])  # the flow pass is judged only on a day nothing had resolved
     night.lottery_results[iso], night.silent_boom_results[iso] = PASSES[name](tagged, written)
 
     result = enrich_step.run(_ctx(settings, clock))
 
     # The shares are healthy (the default), so the pass's own counts decide the status.
     assert result.counts["unpriced_passes"] == unpriced
+    assert result.counts["inversion_leftovers_unpriced"] == 0
     assert result.status == ("failed" if unpriced else "ok")
     assert result.detail == (FAILED_DETAIL if unpriced else "")
     # Counted, not raised: the day is processed and the step sends nothing from inside.
@@ -708,6 +744,7 @@ def test_fires_selected_but_not_tagged_are_not_unpriced(
     # selected fires and changed none (another writer got there first) did no damage.
     iso = DAYS[1].isoformat()
     night.work(lottery=[DAYS[1]], silent_boom=[DAYS[1]])
+    night.fresh_day(DAYS[1])
     night.lottery_results[iso], night.silent_boom_results[iso] = lottery, silent_boom
 
     result = enrich_step.run(_ctx(settings, clock))
@@ -740,6 +777,7 @@ def test_a_flow_pass_that_only_waits_for_net_flow_is_not_unpriced(
     # A day whose net flow is missing leaves its fires as flow_input_missing, untagged: it
     # selected plenty, wrote nothing and tagged fewer than the floor.
     night.work(lottery=[DAYS[1]])
+    night.fresh_day(DAYS[1])
     stamped = ENRICH_UNPRICED_FLOOR - 1
     night.lottery_results[DAYS[1].isoformat()] = LotteryResult(
         flow_selected=100, flow_stamped_undefined=stamped, flow_input_missing=100 - stamped
@@ -778,6 +816,7 @@ def test_a_total_break_stops_the_step_after_its_first_day(
     # tape that prices nothing stamps one day's fires, not three days'.
     night.work(lottery=DAYS, silent_boom=DAYS)
     for day in DAYS:
+        night.fresh_day(day)
         night.lottery_results[day.isoformat()] = LotteryResult(
             outcomes_kept=ENRICH_UNPRICED_FLOOR, flow_stamped_undefined=ENRICH_UNPRICED_FLOOR
         )
@@ -839,6 +878,258 @@ def test_a_missing_file_is_not_an_unpriced_pass(
 
     assert result.counts["unpriced_passes"] == 0
     assert result.counts["days_failed"] == 1
+
+
+# --- leftover days: the flow pass is judged only where nothing had resolved -----------
+
+# The flow pass's work set is the fires still without an inversion. On a day the old Vercel
+# cron priced first, that is only the cron's leftovers, which the tape correctly prices none
+# of (2026-11-03..05: 244, 322 and 430 fires stamped, none written, and the cap stopped the
+# step with 177 days left). So the pass is judged only on a day whose count of fires outside
+# its work set, taken before it runs, is 0. A leftover day is counted and logged, not failed.
+
+
+def _flow_priced_none(stamped: int = LEFTOVERS) -> LotteryResult:
+    return LotteryResult(flow_selected=stamped, flow_stamped_undefined=stamped)
+
+
+def test_a_fresh_days_flow_pass_that_prices_none_fails_the_step(
+    night: Night, settings: Settings, clock: Clock, caplog: pytest.LogCaptureFixture
+) -> None:
+    iso = DAYS[1].isoformat()
+    night.work(lottery=[DAYS[1]])
+    night.fresh_day(DAYS[1])
+    night.lottery_results[iso] = _flow_priced_none()
+
+    with caplog.at_level(logging.INFO, logger="enrich_step"):
+        result = enrich_step.run(_ctx(settings, clock))
+
+    assert result.counts["unpriced_passes"] == 1
+    assert result.counts["inversion_leftovers_unpriced"] == 0
+    assert (result.status, result.detail) == ("failed", FAILED_DETAIL)
+    (record,) = [r for r in caplog.records if r.name == "enrich_step"]
+    assert record.levelno == logging.WARNING
+    assert re.fullmatch(
+        rf"enrich {iso} priced none unpriced_passes=1 "
+        rf"lottery_inversion_stamped={LEFTOVERS} in \d+\.\ds",
+        record.getMessage(),
+    )
+
+
+@pytest.mark.parametrize(
+    ("stamped", "written", "leftover"),
+    [
+        (ENRICH_UNPRICED_FLOOR, 0, 1),
+        (LEFTOVERS, 0, 1),
+        (ENRICH_UNPRICED_FLOOR - 1, 0, 0),
+        (ENRICH_UNPRICED_FLOOR, 1, 0),
+        (LEFTOVERS, 5, 0),
+    ],
+)
+def test_a_leftover_days_flow_pass_is_counted_and_never_fails_the_step(
+    night: Night,
+    settings: Settings,
+    clock: Clock,
+    capture_exception: MagicMock,
+    stamped: int,
+    written: int,
+    leftover: int,
+) -> None:
+    iso = DAYS[1].isoformat()
+    night.work(lottery=[DAYS[1]])
+    night.leftover_day(DAYS[1])
+    night.lottery_results[iso] = LotteryResult(
+        flow_selected=stamped + written, flow_written=written, flow_stamped_undefined=stamped
+    )
+
+    result = enrich_step.run(_ctx(settings, clock))
+
+    # The same pass that fails a fresh day: only a pass the floor would flag is a leftover.
+    assert result.counts["unpriced_passes"] == 0
+    assert result.counts["inversion_leftovers_unpriced"] == leftover
+    assert (result.status, result.detail) == ("ok", "")
+    assert (result.counts["days_processed"], result.counts["days_failed"]) == (1, 0)
+    capture_exception.assert_not_called()
+
+
+def test_a_leftover_day_is_logged_ok_at_info_with_its_count(
+    night: Night, settings: Settings, clock: Clock, caplog: pytest.LogCaptureFixture
+) -> None:
+    iso = DAYS[1].isoformat()
+    night.work(lottery=[DAYS[1]])
+    night.leftover_day(DAYS[1])
+    night.lottery_results[iso] = _flow_priced_none()
+
+    with caplog.at_level(logging.INFO, logger="enrich_step"):
+        enrich_step.run(_ctx(settings, clock))
+
+    (record,) = [r for r in caplog.records if r.name == "enrich_step"]
+    assert record.levelno == logging.INFO
+    assert re.fullmatch(
+        rf"enrich {iso} ok inversion_leftovers_unpriced=1 "
+        rf"lottery_inversion_stamped={LEFTOVERS} in \d+\.\ds",
+        record.getMessage(),
+    )
+
+
+def test_leftover_days_do_not_use_up_the_failure_cap(
+    night: Night, settings: Settings, clock: Clock
+) -> None:
+    # The first production run stopped on three of these with 177 days left. More than the
+    # cap, in a row, must all be worked.
+    assert len(DAYS) > ENRICH_MAX_DAY_FAILURES
+    night.work(lottery=DAYS)
+    for day in DAYS:
+        night.leftover_day(day)
+        night.lottery_results[day.isoformat()] = _flow_priced_none()
+
+    result = enrich_step.run(_ctx(settings, clock))
+
+    assert night.reader.fetch_day.call_count == len(DAYS)
+    assert (result.counts["days_processed"], result.counts["days_left"]) == (len(DAYS), 0)
+    assert result.counts["inversion_leftovers_unpriced"] == len(DAYS)
+    assert result.counts["unpriced_passes"] == 0
+    assert (result.status, result.detail) == ("ok", "")
+
+
+def test_a_total_break_on_leftover_days_trips_two_passes_a_day(
+    night: Night, settings: Settings, clock: Clock
+) -> None:
+    # The cap arithmetic: a fresh day trips all three passes and stops the step after one
+    # day; on a leftover day the flow pass is not one of them, so it takes two days.
+    night.work(lottery=DAYS, silent_boom=DAYS)
+    for day in DAYS:
+        night.leftover_day(day)
+        night.lottery_results[day.isoformat()] = LotteryResult(
+            outcomes_kept=ENRICH_UNPRICED_FLOOR,
+            flow_selected=ENRICH_UNPRICED_FLOOR,
+            flow_stamped_undefined=ENRICH_UNPRICED_FLOOR,
+        )
+        night.silent_boom_results[day.isoformat()] = SilentBoomResult(
+            alerts_kept=ENRICH_UNPRICED_FLOOR
+        )
+
+    result = enrich_step.run(_ctx(settings, clock))
+
+    assert night.reader.fetch_day.call_count == 2  # 2 after the first day, 4 after the second
+    assert result.counts["unpriced_passes"] == 4
+    assert result.counts["inversion_leftovers_unpriced"] == 2
+    assert result.counts["days_left"] == 3
+    assert result.status == "failed"
+
+
+@pytest.mark.parametrize("name", [n for n in PASSES if n != "lottery-flow"])
+def test_a_leftover_days_outcome_passes_are_still_judged(
+    night: Night, settings: Settings, clock: Clock, name: str
+) -> None:
+    # Only the flow pass has a work set that another writer shrinks: an outcome pass that
+    # stamps or keeps the floor and writes nothing is a real break on any day.
+    iso = DAYS[1].isoformat()
+    night.work(lottery=[DAYS[1]], silent_boom=[DAYS[1]])
+    night.leftover_day(DAYS[1])
+    night.lottery_results[iso], night.silent_boom_results[iso] = PASSES[name](LEFTOVERS, 0)
+
+    result = enrich_step.run(_ctx(settings, clock))
+
+    assert result.counts["unpriced_passes"] == 1
+    assert result.counts["inversion_leftovers_unpriced"] == 0
+    assert (result.status, result.detail) == ("failed", FAILED_DETAIL)
+
+
+def test_a_leftover_day_with_an_unpriced_outcome_pass_still_counts_its_flow_leftovers(
+    night: Night, settings: Settings, clock: Clock, caplog: pytest.LogCaptureFixture
+) -> None:
+    iso = DAYS[1].isoformat()
+    night.work(lottery=[DAYS[1]])
+    night.leftover_day(DAYS[1])
+    night.lottery_results[iso] = LotteryResult(
+        outcomes_kept=ENRICH_UNPRICED_FLOOR,
+        flow_selected=LEFTOVERS,
+        flow_stamped_undefined=LEFTOVERS,
+    )
+
+    with caplog.at_level(logging.INFO, logger="enrich_step"):
+        result = enrich_step.run(_ctx(settings, clock))
+
+    # One unpriced pass (the outcome pass) toward the cap; the flow pass is only logged.
+    assert result.counts["unpriced_passes"] == 1
+    assert result.counts["inversion_leftovers_unpriced"] == 1
+    assert result.status == "failed"
+    (record,) = [r for r in caplog.records if r.name == "enrich_step"]
+    assert record.levelno == logging.WARNING
+    assert " priced none unpriced_passes=1 inversion_leftovers_unpriced=1 " in record.getMessage()
+
+
+def test_the_count_is_taken_for_each_day(night: Night, settings: Settings, clock: Clock) -> None:
+    # A leftover day must not excuse the fresh day after it.
+    night.work(lottery=[DAYS[3], DAYS[4]])
+    night.leftover_day(DAYS[4])
+    night.fresh_day(DAYS[3])
+    for day in (DAYS[3], DAYS[4]):
+        night.lottery_results[day.isoformat()] = _flow_priced_none()
+
+    result = enrich_step.run(_ctx(settings, clock))
+
+    assert result.counts["inversion_leftovers_unpriced"] == 1  # DAYS[4], run first
+    assert result.counts["unpriced_passes"] == 1  # DAYS[3]
+    assert result.status == "failed"
+
+
+def test_the_count_runs_on_the_day_connection_before_the_lottery_pass(
+    night: Night, settings: Settings, clock: Clock
+) -> None:
+    iso = DAYS[1].isoformat()
+    night.work(lottery=[DAYS[1]])
+
+    enrich_step.run(_ctx(settings, clock))
+
+    # No tape landed tonight, so the setup ran no statement: this is the day's one.
+    ((sql, params),) = [c.args for c in night.cursor.execute.call_args_list]
+    assert " ".join(sql.split()) == (
+        f"SELECT count(*) FROM lottery_finder_fires WHERE date = %s AND NOT ({INVERSION_WORK})"
+    )
+    assert params == (iso,)  # a parameter, never formatted into the SQL
+    assert iso not in sql
+    day_connect = max(i for i, event in enumerate(night.events) if event == "connect")
+    assert night.events[day_connect : day_connect + 3] == [
+        "connect",
+        f"resolved {iso}",
+        f"lottery {iso}",
+    ]
+    assert night.conn.cursor.call_count == 1
+
+
+def test_inversions_resolved_is_the_count_the_query_returns(night: Night) -> None:
+    night.leftover_day(DAYS[1], 7)
+
+    assert enrich_step.inversions_resolved(night.conn, DAYS[1].isoformat()) == 7
+    assert enrich_step.inversions_resolved(night.conn, DAYS[2].isoformat()) == 0
+
+
+def test_a_failing_count_fails_that_day_before_either_pass(
+    night: Night, settings: Settings, clock: Clock, capture_exception: MagicMock
+) -> None:
+    failing, after = DAYS[4], DAYS[3]  # newest first: `failing` runs first
+    night.work(lottery=[after, failing], silent_boom=[after, failing])
+    failure = psycopg2.OperationalError("fixture")
+
+    def execute(sql: str, params: tuple[str] | None = None) -> None:
+        if _is_resolved_count(sql) and params == (failing.isoformat(),):
+            raise failure
+
+    night.cursor.execute.side_effect = execute
+
+    result = enrich_step.run(_ctx(settings, clock))
+
+    capture_exception.assert_called_once_with(
+        failure, tags={"step": STEP_NAME, "day": failing.isoformat()}
+    )
+    assert (result.status, result.detail) == ("failed", FAILED_DETAIL)
+    assert (result.counts["days_failed"], result.counts["days_processed"]) == (1, 1)
+    # Neither script touched the failing day, which the next night retries; the next day ran.
+    for enrich in (night.enrich_lottery, night.enrich_silent_boom):
+        assert [c.args[1] for c in enrich.call_args_list] == [after.isoformat()]
+    assert night.reader.release.call_args_list == [call(failing), call(after)]
 
 
 # --- the archive layout ---------------------------------------------------------------
@@ -1031,6 +1322,7 @@ def test_the_download_comes_before_the_day_connection(
     assert after_setup == [
         f"fetch {DAYS[1]}",
         "connect",
+        f"resolved {DAYS[1]}",
         f"lottery {DAYS[1]}",
         f"silent_boom {DAYS[1]}",
         f"shares {DAYS[1]}",
@@ -1038,6 +1330,7 @@ def test_the_download_comes_before_the_day_connection(
         f"release {DAYS[1]}",
         f"fetch {DAYS[0]}",
         "connect",
+        f"resolved {DAYS[0]}",
         f"lottery {DAYS[0]}",
         f"silent_boom {DAYS[0]}",
         f"shares {DAYS[0]}",
@@ -1066,13 +1359,18 @@ def test_a_relanded_day_has_its_marker_reset_before_the_work_is_listed(
     night: Night, settings: Settings, clock: Clock
 ) -> None:
     relanded = DayOutcome(DAYS[3], "relanded", rows=10, bytes=100)
-    night.cursor.execute.side_effect = lambda sql, params: night.events.append("reset")
+    night.cursor.execute.side_effect = lambda sql, params: (
+        night.events.append("reset") if sql == RESET_SQL else None
+    )
     night.work(lottery=[DAYS[3]])
 
     enrich_step.run(_ctx(settings, clock, tape=(relanded,)))
 
-    # Named parameter, and a list: a tuple would adapt as a row, not as the date[].
-    night.cursor.execute.assert_called_once_with(RESET_SQL, {"days": [DAYS[3]]})
+    # Named parameter, and a list: a tuple would adapt as a row, not as the date[]. The day
+    # that follows runs its own count query on the cursor, so look at the reset alone.
+    resets = [c for c in night.cursor.execute.call_args_list if c.args[0] == RESET_SQL]
+    assert resets == [call(RESET_SQL, {"days": [DAYS[3]]})]
+    assert night.cursor.execute.call_args_list[0] == resets[0]  # before anything is listed
     assert night.events[: night.events.index("close")] == [
         "configure lottery",
         "configure silent_boom",
@@ -1211,6 +1509,7 @@ def test_each_script_count_maps_to_its_own_step_count(
         "days_failed": 0,
         "null_days": 0,
         "unpriced_passes": 0,
+        "inversion_leftovers_unpriced": 0,
         "low_days": 0,
         "tape_markers_reset": 0,
         "lottery_outcomes_written": 2,
@@ -1583,6 +1882,24 @@ def test_an_unpriced_pass_reports_one_step_failure_and_no_share_alert(
         "failed",
         FAILED_DETAIL,
     ]
+
+
+def test_a_leftover_day_reports_nothing_under_the_real_runner(
+    night: Night, settings: Settings, capture_message: MagicMock, capture_exception: MagicMock
+) -> None:
+    night.work(lottery=[DAYS[1]])
+    night.leftover_day(DAYS[1])
+    night.lottery_results[DAYS[1].isoformat()] = _flow_priced_none()
+
+    outcome = _run_registered(settings)
+
+    assert outcome.status == "ok"
+    assert outcome.detail == ""
+    assert outcome.counts["inversion_leftovers_unpriced"] == 1
+    assert outcome.counts["unpriced_passes"] == 0
+    assert set(outcome.counts) == COUNT_NAMES  # a valid StepResult: names and ints
+    capture_message.assert_not_called()
+    capture_exception.assert_not_called()
 
 
 def test_work_left_reports_a_partial_step_as_a_warning(
