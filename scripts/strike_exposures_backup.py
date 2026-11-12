@@ -26,7 +26,15 @@ Putting it in R2 and deciding which days are due:
   that gained rows since the last run (an id high-water mark kept in
   `_state.json`), and, with `verify_counts` (or no mark, or too many ids since
   it), any whose row count differs from the object's.
-- `main` is the CLI: `export` and `status`.
+Checking and restoring a day:
+
+- `verify_day` compares a day in the database with its file in R2, row by row
+  on the unique key, and counts the rows only in one side and the rows whose
+  values differ.
+- `restore_day` puts a day's file back into the table. It is a dry run unless
+  `apply` is true. It inserts with ON CONFLICT on the unique key DO NOTHING in
+  batches, keeps the original ids, and then moves the id sequence past them.
+- `main` is the CLI: `export`, `status`, `verify` and `restore`.
 
 The types are exact. NUMERIC columns keep the column's own precision and scale
 as decimal128 (never float), timestamptz is timestamp[us, tz=UTC], and the
@@ -43,8 +51,14 @@ environment; run outside 13:00 to 23:00 UTC, the day's rollup lands at 22:30):
     ml/.venv/Scripts/python scripts/strike_exposures_backup.py export --dry-run \\
         --date 2026-11-10
     ml/.venv/Scripts/python scripts/strike_exposures_backup.py status
+    ml/.venv/Scripts/python scripts/strike_exposures_backup.py verify --date 2026-11-10
+    ml/.venv/Scripts/python scripts/strike_exposures_backup.py restore --date 2026-11-10
 
-Exit codes: 0 ok, 1 a day (or the plan) failed, 2 bad config or arguments.
+`restore` only reports what it would insert until it is given `--apply`, and
+running it with `--apply` against production needs the owner's go-ahead.
+
+Exit codes: 0 ok, 1 a day (or the plan) failed or did not verify, 2 bad config
+or arguments.
 """
 
 from __future__ import annotations
@@ -72,6 +86,7 @@ from boto3.exceptions import Boto3Error
 from boto3.s3.transfer import TransferConfig
 from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
+from psycopg2 import sql
 from psycopg2.extensions import TRANSACTION_STATUS_IDLE, TRANSACTION_STATUS_UNKNOWN
 from psycopg2.extensions import connection as PgConnection
 from psycopg2.extensions import cursor as PgCursor
@@ -95,6 +110,8 @@ FORMAT_VERSION = '1'
 # skipped and every day is counted instead, which is about 45 to 60 s over many
 # statements of at most about 1.3 s each.
 DELTA_MAX_IDS = 5_000_000
+# Rows per INSERT in a restore (the repo's batch rule, R5).
+RESTORE_BATCH = 500
 
 _DAY_KEY = re.compile(re.escape(PREFIX) + r'(\d{4}-\d{2}-\d{2})\.parquet$')
 # One thread, as nightly's R2Store: a client shared across upload threads once
@@ -196,6 +213,21 @@ class DayFile:
     sha256: str
 
 
+def _require_idle(conn: PgConnection) -> None:
+    """Raise BackupError unless the connection is open and in no transaction.
+
+    A BEGIN inside an open transaction is only a server WARNING, so the work
+    would silently run in the caller's transaction.
+    """
+    status = conn.info.transaction_status
+    if status == TRANSACTION_STATUS_UNKNOWN:  # what psycopg2 reports once closed
+        raise BackupError(f'the connection is closed (status {status})')
+    if status != TRANSACTION_STATUS_IDLE:
+        raise BackupError(
+            f'the connection is already inside a transaction (status {status})'
+        )
+
+
 @contextmanager
 def _read_snapshot(conn: PgConnection) -> Iterator[PgCursor]:
     """Yield a cursor inside one REPEATABLE READ, READ ONLY transaction.
@@ -217,13 +249,7 @@ def _read_snapshot(conn: PgConnection) -> Iterator[PgCursor]:
 
     One thread per connection: this changes the connection's autocommit.
     """
-    status = conn.info.transaction_status
-    if status == TRANSACTION_STATUS_UNKNOWN:  # what psycopg2 reports once closed
-        raise BackupError(f'the connection is closed (status {status})')
-    if status != TRANSACTION_STATUS_IDLE:
-        raise BackupError(
-            f'the connection is already inside a transaction (status {status})'
-        )
+    _require_idle(conn)
     previous = conn.autocommit
     conn.autocommit = True
     try:
@@ -235,6 +261,36 @@ def _read_snapshot(conn: PgConnection) -> Iterator[PgCursor]:
             finally:
                 if not conn.closed:
                     cur.execute('ROLLBACK')
+    finally:
+        if not conn.closed:
+            conn.autocommit = previous
+
+
+@contextmanager
+def _write_transaction(conn: PgConnection) -> Iterator[PgCursor]:
+    """Yield a cursor inside one read-write transaction.
+
+    The block ends in COMMIT, or in ROLLBACK if it raises, so a restore of a
+    day is all or nothing. The rest is as in `_read_snapshot`: an idle
+    connection is required, autocommit is on for the BEGIN and put back, the
+    statements run under the same timeout (which also bounds a wait for a
+    lock), and a connection that dropped is not sent a ROLLBACK, so the
+    original error reaches the caller.
+    """
+    _require_idle(conn)
+    previous = conn.autocommit
+    conn.autocommit = True
+    try:
+        with conn.cursor() as cur:
+            cur.execute('BEGIN')
+            try:
+                cur.execute(f"SET LOCAL statement_timeout = '{STATEMENT_TIMEOUT}'")
+                yield cur
+            except BaseException:
+                if not conn.closed:
+                    cur.execute('ROLLBACK')
+                raise
+            cur.execute('COMMIT')
     finally:
         if not conn.closed:
             conn.autocommit = previous
@@ -594,6 +650,291 @@ def plan_days(
     )
 
 
+@dataclass(frozen=True)
+class VerifyResult:
+    """How a day in the database compares with its file in R2."""
+
+    day: date
+    db_rows: int
+    file_rows: int
+    only_in_db: int
+    only_in_file: int
+    value_diffs: int
+
+    @property
+    def ok(self) -> bool:
+        return (
+            self.db_rows == self.file_rows
+            and self.only_in_db == 0
+            and self.only_in_file == 0
+            and self.value_diffs == 0
+        )
+
+
+_TIMESTAMP = COLUMNS.index('timestamp')
+# What tells two rows of one timestamp apart. The date is the same for the day.
+_KEY_IN_TIMESTAMP = tuple(COLUMNS.index(c) for c in ('ticker', 'strike', 'expiry'))
+
+
+def _row_groups(pages: Iterator[list[tuple]]) -> Iterator[tuple[datetime, list[tuple]]]:
+    """Yield (timestamp, rows) for each run of rows that share a timestamp.
+
+    The rows must come in timestamp order, as both the database (ORDER BY the
+    unique key) and the files written from it do; otherwise the merge in
+    `_compare_days` would pair the wrong groups.
+    """
+    previous = None
+    group: list[tuple] = []
+    for page in pages:
+        for row in page:
+            stamp = row[_TIMESTAMP]
+            if group and stamp != previous:
+                if stamp < previous:
+                    raise BackupError('the rows are not in timestamp order')
+                yield previous, group
+                group = []
+            group.append(row)
+            previous = stamp
+    if group:
+        yield previous, group
+
+
+@dataclass
+class _Counts:
+    db_rows: int = 0
+    file_rows: int = 0
+    only_in_db: int = 0
+    only_in_file: int = 0
+    value_diffs: int = 0
+
+
+def _compare_days(
+    db_pages: Iterator[list[tuple]], file_pages: Iterator[list[tuple]]
+) -> _Counts:
+    """Compare a day's rows from the database with the same day from its file.
+
+    The two are merged on the timestamp, which both sort the same way. Inside
+    one timestamp rows are matched by (ticker, strike, expiry) through a dict
+    and not by order: Postgres sorts tickers by its collation and Python by code
+    point, and the two can disagree. One timestamp holds a few thousand rows at
+    most, so the dicts stay small however long the day is.
+    """
+    counts = _Counts()
+    db_groups, file_groups = _row_groups(db_pages), _row_groups(file_pages)
+    db, file = next(db_groups, None), next(file_groups, None)
+    while db is not None or file is not None:
+        if file is None or (db is not None and db[0] < file[0]):
+            counts.db_rows += len(db[1])
+            counts.only_in_db += len(db[1])
+            db = next(db_groups, None)
+        elif db is None or file[0] < db[0]:
+            counts.file_rows += len(file[1])
+            counts.only_in_file += len(file[1])
+            file = next(file_groups, None)
+        else:
+            counts.db_rows += len(db[1])
+            counts.file_rows += len(file[1])
+            db_by_key = _by_key(db[1])
+            file_by_key = _by_key(file[1])
+            counts.only_in_db += len(db_by_key.keys() - file_by_key.keys())
+            counts.only_in_file += len(file_by_key.keys() - db_by_key.keys())
+            counts.value_diffs += sum(
+                1 for k in db_by_key.keys() & file_by_key.keys() if db_by_key[k] != file_by_key[k]
+            )
+            db, file = next(db_groups, None), next(file_groups, None)
+    return counts
+
+
+def _by_key(rows: list[tuple]) -> dict[tuple, tuple]:
+    by_key = {tuple(row[i] for i in _KEY_IN_TIMESTAMP): row for row in rows}
+    if len(by_key) != len(rows):
+        raise BackupError('a timestamp repeats a key')
+    return by_key
+
+
+def _file_pages(parquet: pq.ParquetFile, batch_rows: int) -> Iterator[list[tuple]]:
+    """A day file's rows as tuples in COLUMNS order, `batch_rows` at a time."""
+    for batch in parquet.iter_batches(batch_size=batch_rows):
+        yield list(zip(*(column.to_pylist() for column in batch.columns)))
+
+
+@contextmanager
+def _downloaded_day(s3, bucket: str, day: date) -> Iterator[pq.ParquetFile]:
+    """Download a day's object to a temporary file and yield it as a ParquetFile.
+
+    The object has to match what `upload_day` recorded about it: its sha256, its
+    schema (the table's) and its row count. A file that does not is refused
+    before anything is read from or written to the database. The temporary
+    directory is gone when the block ends.
+    """
+    day_text = day.isoformat()
+    key = object_key(day)
+    try:
+        response = s3.get_object(Bucket=bucket, Key=key)
+    except ClientError as exc:
+        if exc.response.get('Error', {}).get('Code') not in ('NoSuchKey', '404'):
+            raise
+        missing = True
+    else:
+        missing = False
+    if missing:
+        raise BackupError(f'{day_text}: no object in R2')
+    metadata = response.get('Metadata', {})
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / f'{day_text}.parquet'
+        digest = hashlib.sha256()
+        body = response['Body']
+        with path.open('wb') as out:
+            while chunk := body.read(1 << 20):
+                out.write(chunk)
+                digest.update(chunk)
+        if digest.hexdigest() != metadata.get('sha256'):
+            raise BackupError(f'{day_text}: the file does not match its sha256 metadata')
+        try:
+            parquet = pq.ParquetFile(path)
+        except pa.ArrowException:
+            parquet = None
+        if parquet is None:  # raised here: Arrow's text must not ride along as context
+            raise BackupError(f'{day_text}: the file is not a readable Parquet file')
+        try:
+            if not parquet.schema_arrow.equals(ARROW_SCHEMA):
+                raise BackupError(f"{day_text}: the file's schema is not the table's")
+            if str(parquet.metadata.num_rows) != metadata.get('rows'):
+                raise BackupError(f'{day_text}: the file does not hold the rows its metadata says')
+            yield parquet
+        finally:
+            parquet.close()
+
+
+def verify_day(
+    conn: PgConnection, s3, bucket: str, day: date, page_rows: int = PAGE_ROWS
+) -> VerifyResult:
+    """Compare a day in the database with its file in R2.
+
+    The file is downloaded and checked first, then the day is read from the
+    database in one snapshot and merged against it. A day is `ok` when both
+    sides hold the same rows with the same values, ids and created_at included.
+    """
+    with _downloaded_day(s3, bucket, day) as parquet:
+        with _read_snapshot(conn) as cur:
+            counts = _compare_days(
+                iter_day_pages(cur, day, page_rows), _file_pages(parquet, page_rows)
+            )
+    return VerifyResult(
+        day=day,
+        db_rows=counts.db_rows,
+        file_rows=counts.file_rows,
+        only_in_db=counts.only_in_db,
+        only_in_file=counts.only_in_file,
+        value_diffs=counts.value_diffs,
+    )
+
+
+_INSERT_HEAD = (
+    'INSERT INTO strike_exposures (' + ', '.join(f'"{c}"' for c in COLUMNS) + ') VALUES '
+)
+_ROW_PLACEHOLDERS = '(' + ', '.join(['%s'] * len(COLUMNS)) + ')'
+# Only the unique key is the conflict target. A restored row whose id is held by
+# a different row then raises on the primary key instead of being skipped.
+_INSERT_TAIL = ' ON CONFLICT (date, "timestamp", ticker, strike, expiry) DO NOTHING'
+_LOCK_SQL = 'LOCK TABLE strike_exposures IN SHARE ROW EXCLUSIVE MODE'
+_SEQUENCE_NAME_SQL = "SELECT pg_get_serial_sequence('strike_exposures', 'id')"
+_SETVAL_SQL = 'SELECT setval(%s, GREATEST((SELECT max(id) FROM strike_exposures), %s))'
+
+
+def _insert_batch(cur: PgCursor, rows: list[tuple], day: date, number: int) -> int:
+    """Insert one batch and return how many rows went in."""
+    values = ', '.join([_ROW_PLACEHOLDERS] * len(rows))
+    params = [value for row in rows for value in row]
+    try:
+        cur.execute(_INSERT_HEAD + values + _INSERT_TAIL, params)
+    except (psycopg2.IntegrityError, psycopg2.DataError) as exc:
+        # The server's text quotes the offending key or value, so only the
+        # class is kept, and it is raised below, outside the handler.
+        rejected = type(exc).__name__
+    else:
+        return cur.rowcount
+    raise BackupError(f'{day.isoformat()}: batch {number} was rejected by the table ({rejected})')
+
+
+def _insert_day(conn: PgConnection, parquet: pq.ParquetFile, day: date) -> int:
+    """Insert a day's file in one transaction; return how many rows went in."""
+    inserted = 0
+    with _write_transaction(conn) as cur:
+        for number, rows in enumerate(_file_pages(parquet, RESTORE_BATCH), start=1):
+            inserted += _insert_batch(cur, rows, day, number)
+    return inserted
+
+
+def _move_id_sequence(conn: PgConnection) -> None:
+    """Move the id sequence past every id in the table, in one short transaction.
+
+    The table is locked in SHARE ROW EXCLUSIVE mode first, which keeps live
+    writers (and so `nextval`) out until the `setval` commits; without it an
+    id handed out between the read and the `setval` could be handed out again.
+    GREATEST keeps the sequence from moving backwards. In production it is
+    ahead of max(id), because rolled-back inserts use ids up.
+    """
+    with _write_transaction(conn) as cur:
+        cur.execute(_LOCK_SQL)
+        cur.execute(_SEQUENCE_NAME_SQL)
+        name = cur.fetchone()[0]
+        if name is None:
+            raise BackupError('strike_exposures.id has no sequence')
+        # `name` comes from the catalog, already quoted for use as an identifier.
+        # last_value is read from the sequence itself: pg_sequences shows NULL to
+        # a role without the privilege, and GREATEST ignores NULL.
+        cur.execute(sql.SQL('SELECT last_value FROM {}').format(sql.SQL(name)))
+        last_value = cur.fetchone()[0]
+        if last_value is None:
+            raise BackupError('the id sequence has no last_value')
+        cur.execute(_SETVAL_SQL, (name, last_value))
+
+
+def restore_day(
+    conn: PgConnection,
+    s3,
+    bucket: str,
+    day: date,
+    apply: bool,
+    page_rows: int = PAGE_ROWS,
+) -> int:
+    """Put a day's file back into the table; return the rows (to be) inserted.
+
+    Without `apply` nothing is written: it reads the day and counts the file's
+    rows whose unique key the table does not have. With `apply` it inserts the
+    file in batches of RESTORE_BATCH inside one transaction, with the original
+    ids and created_at, so a rejected batch (an id held by a different row)
+    undoes the whole day. A row whose key is already there is left alone, so
+    restoring a day twice inserts nothing the second time.
+
+    If rows went in, the id sequence is then moved past them. That is a second
+    transaction: when it fails the rows stay, and the error says so and how
+    many, because the sequence has to be moved by hand before the writers
+    insert again.
+    """
+    with _downloaded_day(s3, bucket, day) as parquet:
+        if not apply:
+            with _read_snapshot(conn) as cur:
+                counts = _compare_days(
+                    iter_day_pages(cur, day, page_rows), _file_pages(parquet, page_rows)
+                )
+            return counts.only_in_file
+        inserted = _insert_day(conn, parquet, day)
+    if inserted:
+        try:
+            _move_id_sequence(conn)
+        except (BackupError, psycopg2.Error) as exc:
+            cause = exc
+        else:
+            return inserted
+        raise BackupError(
+            f'{day.isoformat()}: {inserted} row(s) restored, but the id sequence was not moved; '
+            'move it by hand before the writers run'
+        ) from cause
+    return inserted
+
+
 def _today_et() -> date:
     return datetime.now(ZoneInfo('America/New_York')).date()
 
@@ -692,6 +1033,46 @@ def _status(conn, s3, bucket: str, today: date) -> int:
     return 0
 
 
+def _verify(args: argparse.Namespace, conn, s3, bucket: str) -> int:
+    """Verify each --date; exit 0 only if every day is ok."""
+    problems = 0
+    for day in dict.fromkeys(args.date):  # in the order given, each once
+        try:
+            result = verify_day(conn, s3, bucket, day)
+        except _RUN_FAILURES as exc:
+            problems += 1
+            _log_failure(day.isoformat(), exc)
+            if conn.closed:
+                print('connection lost; stopping the run', file=sys.stderr, flush=True)
+                break
+            continue
+        if result.ok:
+            print(f'{day.isoformat()}: ok, {result.db_rows} rows', flush=True)
+            continue
+        problems += 1
+        print(
+            f'{day.isoformat()}: MISMATCH db rows {result.db_rows}, file rows '
+            f'{result.file_rows}, only in db {result.only_in_db}, only in file '
+            f'{result.only_in_file}, changed {result.value_diffs}',
+            flush=True,
+        )
+    return 1 if problems else 0
+
+
+def _restore(args: argparse.Namespace, conn, s3, bucket: str) -> int:
+    day = args.date.isoformat()
+    try:
+        rows = restore_day(conn, s3, bucket, args.date, apply=args.apply)
+    except _RUN_FAILURES as exc:
+        _log_failure(day, exc)
+        return 1
+    if args.apply:
+        print(f'{day}: inserted {rows} rows', flush=True)
+    else:
+        print(f'{day}: would insert {rows} rows (a dry run; add --apply to write)', flush=True)
+    return 0
+
+
 def _positive_int(text: str) -> int:
     value = int(text)
     if value < 1:
@@ -721,6 +1102,25 @@ def _parser() -> argparse.ArgumentParser:
     )
     commands.add_parser(
         'status', help="list database and R2 days, checking every day's count"
+    )
+    verify = commands.add_parser(
+        'verify', help='compare days in the database with their files in R2'
+    )
+    verify.add_argument(
+        '--date',
+        type=date.fromisoformat,
+        action='append',
+        required=True,
+        help='a day to verify; repeat for more',
+    )
+    restore = commands.add_parser(
+        'restore', help='put a day back from its file in R2 (a dry run unless --apply)'
+    )
+    restore.add_argument('--date', type=date.fromisoformat, required=True)
+    restore.add_argument(
+        '--apply',
+        action='store_true',
+        help='write the rows; needs the owner go-ahead on production',
     )
     return parser
 
@@ -767,6 +1167,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == 'status':
             return _status(conn, s3, bucket, today)
+        if args.command == 'verify':
+            return _verify(args, conn, s3, bucket)
+        if args.command == 'restore':
+            return _restore(args, conn, s3, bucket)
         return _export(args, conn, s3, bucket, today)
     finally:
         conn.close()

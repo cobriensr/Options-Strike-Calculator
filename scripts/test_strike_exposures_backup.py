@@ -76,6 +76,9 @@ GREEKS = (
     'put_vanna_oi',
 )
 PAGE_SQL_TAIL = 'ORDER BY date, "timestamp", ticker, strike, expiry LIMIT %s'
+# Text a database error carries that no log may show: the DETAIL line of a
+# unique violation quotes the offending key.
+DETAIL_MARKER = 'KEY-VALUE-IN-THE-DETAIL-LINE'
 
 
 def make_row(**overrides) -> tuple:
@@ -121,6 +124,7 @@ def plain_rows(n: int, ids: list[int] | None = None) -> list[tuple]:
 class FakeCursor:
     def __init__(self, conn: FakeConnection) -> None:
         self.conn = conn
+        self.rowcount = -1
         self._result: list[tuple] = []
 
     def __enter__(self) -> FakeCursor:
@@ -129,11 +133,13 @@ class FakeCursor:
     def __exit__(self, *exc) -> bool:
         return False
 
-    def execute(self, sql: str, params: tuple | None = None) -> None:
+    def execute(self, sql, params: tuple | None = None) -> None:
         conn = self.conn
         if conn.closed:
             raise psycopg2.InterfaceError('cursor already closed')
-        text = ' '.join(sql.split())
+        # A psycopg2.sql object is rendered; a plain string is used as it is.
+        raw = sql if isinstance(sql, str) else sql.as_string(None)
+        text = ' '.join(raw.split())
         assert text.count('%s') == len(params or ()), text
         conn.statements.append((text, params))
         assert (
@@ -145,10 +151,35 @@ class FakeCursor:
             assert not conn.in_txn, 'BEGIN inside an open transaction'
             assert conn.autocommit is True, 'BEGIN with autocommit off'
             conn.in_txn = True
+            conn.rows_at_begin = list(conn.rows)
+        elif text == 'COMMIT':
+            conn.in_txn = False
+            conn.rows_at_begin = None
+            conn.fail('commit')
         elif text == 'ROLLBACK':
             # A ROLLBACK that fails leaves a dead connection, not an open transaction.
             conn.in_txn = False
+            if conn.rows_at_begin is not None:
+                conn.rows = conn.rows_at_begin  # the transaction's writes are undone
+                conn.rows_at_begin = None
             conn.fail('rollback')
+        elif text.startswith('INSERT INTO strike_exposures'):
+            conn.fail(f'insert{len(conn.inserts)}')
+            self.rowcount = conn.apply_insert(params)
+        elif text == 'LOCK TABLE strike_exposures IN SHARE ROW EXCLUSIVE MODE':
+            conn.fail('lock')
+        elif text == "SELECT pg_get_serial_sequence('strike_exposures', 'id')":
+            conn.fail('seq_name')
+            self._result = [(conn.sequence_name,)]
+        elif text.startswith('SELECT last_value FROM '):
+            conn.fail('seq_value')
+            assert text == f'SELECT last_value FROM {conn.sequence_name}', text
+            self._result = [(conn.sequence_value,)]
+        elif text == 'SELECT setval(%s, GREATEST((SELECT max(id) FROM strike_exposures), %s))':
+            conn.fail('setval')
+            assert params[0] == conn.sequence_name
+            conn.sequence_value = max(conn.max_id() or 0, params[1])
+            self._result = [(conn.sequence_value,)]
         elif text == 'SELECT count(*) FROM strike_exposures WHERE expiry IS NULL':
             conn.fail('null_expiry')
             self._result = [(conn.null_expiry,)]
@@ -193,6 +224,13 @@ class FakeConnection:
     by `closes_on` also kills the connection, as a dropped link does: `closed`
     becomes 2, and from then on a statement or an autocommit change raises
     InterfaceError, as psycopg2 does on a closed connection.
+
+    The restore side: an INSERT adds the rows whose unique key is not there yet
+    (ON CONFLICT DO NOTHING) and raises UniqueViolation for a new key whose id
+    is taken, `rowcount` says how many went in, and ROLLBACK undoes a
+    transaction's inserts. The events 'insert1', 'insert2', ..., 'lock',
+    'seq_name', 'seq_value', 'setval' and 'commit' can fail. `sequence_name`
+    and `sequence_value` are what pg_get_serial_sequence and the sequence say.
     """
 
     def __init__(
@@ -204,6 +242,8 @@ class FakeConnection:
         fail_on: dict[str, Exception] | None = None,
         closes_on: str | None = None,
         autocommit: bool = False,
+        sequence_name: str | None = 'public.strike_exposures_id_seq',
+        sequence_value: int | None = 0,
     ) -> None:
         self.rows = sorted(rows, key=key_of)
         self.count = count
@@ -215,6 +255,9 @@ class FakeConnection:
         self._autocommit = autocommit
         self.in_txn = False
         self.statements: list[tuple[str, tuple | None]] = []
+        self.sequence_name = sequence_name
+        self.sequence_value = sequence_value
+        self.rows_at_begin: list[tuple] | None = None
 
     @property
     def autocommit(self) -> bool:
@@ -261,6 +304,37 @@ class FakeConnection:
     @property
     def page_queries(self) -> list[tuple[str, tuple]]:
         return [(t, p) for t, p in self.statements if 'LIMIT %s' in t]
+
+    @property
+    def inserts(self) -> list[tuple[str, tuple]]:
+        return [(t, p) for t, p in self.statements if t.startswith('INSERT INTO')]
+
+    def apply_insert(self, params: tuple) -> int:
+        """INSERT ... ON CONFLICT (unique key) DO NOTHING; return the rowcount."""
+        width = len(sbk.COLUMNS)
+        incoming = [tuple(params[i : i + width]) for i in range(0, len(params), width)]
+        index = {name: sbk.COLUMNS.index(name) for name in ('id', 'date')}
+
+        def unique_key(row: tuple) -> tuple:
+            return (row[index['date']], *key_of(row))
+
+        keys = {unique_key(r) for r in self.rows}
+        ids = {r[index['id']] for r in self.rows}
+        inserted = 0
+        for row in incoming:
+            if unique_key(row) in keys:
+                continue  # the conflict target: skipped, not an error
+            if row[index['id']] in ids:
+                raise psycopg2.errors.UniqueViolation(
+                    'duplicate key value violates unique constraint "strike_exposures_pkey"'
+                    f'\nDETAIL:  Key (id)=({row[index["id"]]}) already exists. {DETAIL_MARKER}'
+                )
+            keys.add(unique_key(row))
+            ids.add(row[index['id']])
+            self.rows.append(row)
+            inserted += 1
+        self.rows.sort(key=key_of)
+        return inserted
 
     def fail(self, event: str) -> None:
         if event in self.fail_on:
@@ -797,7 +871,8 @@ class FakeS3:
             raise ClientError(
                 {'Error': {'Code': 'NoSuchKey', 'Message': 'missing'}}, 'GetObject'
             )
-        return {'Body': io.BytesIO(self.objects[Key]['Body'])}
+        obj = self.objects[Key]
+        return {'Body': io.BytesIO(obj['Body']), 'Metadata': dict(obj['Metadata'])}
 
     def put_object(self, Bucket, Key, Body, ContentType=None):
         assert Bucket == BUCKET
@@ -1633,3 +1708,645 @@ def test_status_of_a_complete_backup(cli) -> None:
 
     assert code == 0
     assert 'missing: 0\n' in out and 'stale: 0\n' in out
+
+
+# ── Task 3: verify and restore ───────────────────────────────────────────────
+
+SEQUENCE = 'audit."Id Seq"'  # not the table's real sequence name: it must be looked up
+
+
+def grouped_rows(day: date = D1, first_id: int = 1) -> list[tuple]:
+    """18 rows: 3 timestamps, each with 3 tickers and 2 strikes, so a timestamp
+    holds 6 rows and a small page boundary falls inside one."""
+    start = datetime(day.year, day.month, day.day, 15, 0, tzinfo=UTC)
+    rows = []
+    row_id = first_id
+    for minute in range(3):
+        for ticker in ('NDX', 'SPX', 'SPXW'):
+            for strike in ('5500.00', '5505.00'):
+                rows.append(
+                    make_row(
+                        id=row_id,
+                        date=day,
+                        expiry=day,
+                        ticker=ticker,
+                        strike=Decimal(strike),
+                        timestamp=start + timedelta(minutes=minute, microseconds=123457),
+                    )
+                )
+                row_id += 1
+    return rows
+
+
+def back_up(s3: FakeS3, rows: list[tuple], tmp_path: Path, day: date = D1) -> sbk.DayFile:
+    """Export `rows` the way the tool does and upload them, to a fake R2."""
+    out_dir = tmp_path / 'export'
+    out_dir.mkdir(exist_ok=True)
+    result = sbk.write_day_parquet(FakeConnection(rows), day, out_dir)
+    assert result is not None
+    sbk.upload_day(s3, BUCKET, result)
+    return result
+
+
+def changed(row: tuple, **overrides) -> tuple:
+    """`row` with some columns replaced."""
+    values = dict(zip(sbk.COLUMNS, row))
+    values.update(overrides)
+    return tuple(values[name] for name in sbk.COLUMNS)
+
+
+def test_verify_identical_day_ok(make_conn, tmp_path: Path) -> None:
+    rows = grouped_rows()
+    s3 = FakeS3()
+    back_up(s3, rows, tmp_path)
+    conn = make_conn(rows)
+
+    result = sbk.verify_day(conn, s3, BUCKET, D1, page_rows=4)
+
+    assert result == sbk.VerifyResult(D1, 18, 18, 0, 0, 0)
+    assert result.ok
+    assert len(conn.page_queries) == 5  # 4 + 4 + 4 + 4 + 2: pages cut a timestamp's rows
+    assert conn.statements[0][0] == 'BEGIN ISOLATION LEVEL REPEATABLE READ, READ ONLY'
+    assert conn.statements[-1][0] == 'ROLLBACK'
+
+
+def test_verify_counts_each_difference(make_conn, tmp_path: Path) -> None:
+    rows = grouped_rows()
+    missing_from_file = rows[2]
+    extra_in_file = make_row(
+        id=500, date=D1, expiry=D1, ticker='ZZZ', timestamp=rows[8][2]
+    )  # in the second timestamp's group
+    in_file = [r for r in rows if r != missing_from_file]
+    in_file[10] = changed(in_file[10], call_gamma_oi=Decimal('9.9999'))
+    s3 = FakeS3()
+    back_up(s3, in_file + [extra_in_file], tmp_path)
+
+    result = sbk.verify_day(make_conn(rows), s3, BUCKET, D1, page_rows=4)
+
+    assert (result.only_in_db, result.only_in_file, result.value_diffs) == (1, 1, 1)
+    # The two sides hold 18 rows each, and the day is still not ok.
+    assert (result.db_rows, result.file_rows) == (18, 18)
+    assert not result.ok
+
+
+@pytest.mark.parametrize(
+    ('column', 'value'),
+    [
+        pytest.param('id', 999, id='id'),
+        pytest.param('price', None, id='null-price'),
+        pytest.param('created_at', datetime(2026, 11, 2, 22, 31, tzinfo=UTC), id='created-at'),
+        pytest.param('put_vanna_oi', Decimal('-0.0001'), id='greek'),
+    ],
+)
+def test_verify_sees_a_change_in_any_column(
+    make_conn, tmp_path: Path, column: str, value
+) -> None:
+    rows = grouped_rows()
+    in_file = list(rows)
+    in_file[7] = changed(in_file[7], **{column: value})
+    s3 = FakeS3()
+    back_up(s3, in_file, tmp_path)
+
+    result = sbk.verify_day(make_conn(rows), s3, BUCKET, D1)
+
+    assert (result.only_in_db, result.only_in_file, result.value_diffs) == (0, 0, 1)
+
+
+def test_verify_a_whole_timestamp_missing_on_either_side(make_conn, tmp_path: Path) -> None:
+    rows = grouped_rows()
+    first_minute = rows[:6]
+    last_minute = rows[12:]
+    short_file, full_file = FakeS3(), FakeS3()
+    back_up(short_file, [r for r in rows if r not in first_minute], tmp_path)
+    back_up(full_file, rows, tmp_path)
+
+    only_in_db = sbk.verify_day(make_conn(rows), short_file, BUCKET, D1, page_rows=5)
+    only_in_file = sbk.verify_day(
+        make_conn([r for r in rows if r not in last_minute]), full_file, BUCKET, D1, page_rows=5
+    )
+
+    assert (only_in_db.only_in_db, only_in_db.only_in_file, only_in_db.value_diffs) == (6, 0, 0)
+    assert (only_in_file.only_in_db, only_in_file.only_in_file, only_in_file.value_diffs) == (0, 6, 0)
+
+
+def test_verify_an_empty_database_day(make_conn, tmp_path: Path) -> None:
+    s3 = FakeS3()
+    back_up(s3, grouped_rows(), tmp_path)
+
+    result = sbk.verify_day(make_conn([]), s3, BUCKET, D1)
+
+    assert (result.db_rows, result.file_rows, result.only_in_file) == (0, 18, 18)
+
+
+def test_compare_does_not_depend_on_how_tickers_sort_within_a_timestamp() -> None:
+    # Postgres orders tickers by its collation and Python by code point. Within
+    # one timestamp the two sides may disagree, so rows are matched by key.
+    rows = grouped_rows()
+    db_pages = [rows[:6], rows[6:12], rows[12:]]
+    file_pages = [list(reversed(rows[:6])), rows[6:9] + rows[11:8:-1], rows[12:]]
+
+    counts = sbk._compare_days(iter(db_pages), iter(file_pages))
+
+    assert (counts.db_rows, counts.file_rows) == (18, 18)
+    assert (counts.only_in_db, counts.only_in_file, counts.value_diffs) == (0, 0, 0)
+
+
+def test_compare_refuses_rows_that_are_not_in_timestamp_order() -> None:
+    rows = grouped_rows()
+    shuffled = rows[6:12] + rows[:6]  # the second minute before the first
+
+    with pytest.raises(sbk.BackupError, match='not in timestamp order'):
+        sbk._compare_days(iter([rows]), iter([shuffled]))
+
+
+def test_compare_refuses_a_repeated_key() -> None:
+    rows = grouped_rows()
+
+    with pytest.raises(sbk.BackupError, match='repeats a key'):
+        sbk._compare_days(iter([rows]), iter([rows[:3] + rows[:1] + rows[3:]]))
+
+
+def test_verify_without_an_object_says_so(make_conn) -> None:
+    conn = make_conn(grouped_rows())
+
+    with pytest.raises(sbk.BackupError, match='2026-11-02: no object in R2') as raised:
+        sbk.verify_day(conn, FakeS3(), BUCKET, D1)
+
+    assert raised.value.__context__ is None
+    assert conn.statements == []
+
+
+def test_an_access_error_is_not_reported_as_a_missing_object(make_conn) -> None:
+    s3 = FakeS3()
+    error = ClientError({'Error': {'Code': 'AccessDenied'}}, 'GetObject')
+
+    def denied(**_kwargs):
+        raise error
+
+    s3.get_object = denied  # type: ignore[method-assign]
+
+    with pytest.raises(ClientError) as raised:
+        sbk.verify_day(make_conn(grouped_rows()), s3, BUCKET, D1)
+
+    assert raised.value is error
+
+
+def _tamper_sha(s3: FakeS3, f: sbk.DayFile) -> None:
+    s3.objects[key(D1)]['Metadata']['sha256'] = '0' * 64
+
+
+def _tamper_missing_sha(s3: FakeS3, f: sbk.DayFile) -> None:
+    del s3.objects[key(D1)]['Metadata']['sha256']
+
+
+def _tamper_body(s3: FakeS3, f: sbk.DayFile) -> None:
+    s3.objects[key(D1)]['Body'] = s3.objects[key(D1)]['Body'][:-1] + b'x'
+
+
+def _tamper_rows(s3: FakeS3, f: sbk.DayFile) -> None:
+    s3.objects[key(D1)]['Metadata']['rows'] = '19'
+
+
+def _replace_with(body: bytes, rows: str) -> object:
+    def replace(s3: FakeS3, f: sbk.DayFile) -> None:
+        s3.objects[key(D1)]['Body'] = body
+        s3.objects[key(D1)]['Metadata'].update(
+            sha256=hashlib.sha256(body).hexdigest(), rows=rows
+        )
+
+    return replace
+
+
+def _other_schema_file() -> bytes:
+    import pyarrow as pa
+
+    table = pa.table({'id': pa.array([1, 2], pa.int32())})
+    sink = io.BytesIO()
+    pq.write_table(table, sink)
+    return sink.getvalue()
+
+
+BAD_FILES = [
+    pytest.param(_tamper_sha, 'sha256', id='sha256-differs'),
+    pytest.param(_tamper_missing_sha, 'sha256', id='sha256-missing'),
+    pytest.param(_tamper_body, 'sha256', id='body-differs'),
+    pytest.param(_tamper_rows, 'rows', id='rows-metadata-differs'),
+    pytest.param(_replace_with(b'not parquet', '1'), 'not a readable Parquet', id='not-parquet'),
+    pytest.param(_replace_with(_other_schema_file(), '2'), 'schema', id='other-schema'),
+]
+
+
+@pytest.mark.parametrize(('tamper', 'message'), BAD_FILES)
+def test_verify_refuses_a_file_that_does_not_match_its_object(
+    make_conn, tmp_path: Path, tamper, message: str
+) -> None:
+    rows = grouped_rows()
+    s3 = FakeS3()
+    f = back_up(s3, rows, tmp_path)
+    tamper(s3, f)
+    conn = make_conn(rows)
+
+    with pytest.raises(sbk.BackupError, match=message) as raised:
+        sbk.verify_day(conn, s3, BUCKET, D1)
+
+    assert raised.value.__context__ is None  # no Arrow text in the chain
+    assert conn.statements == []  # the file is checked before the database is read
+
+
+def test_verify_database_error_propagates_after_a_rollback(make_conn, tmp_path: Path) -> None:
+    rows = grouped_rows()
+    s3 = FakeS3()
+    back_up(s3, rows, tmp_path)
+    error = psycopg2.errors.QueryCanceled('injected')
+    conn = make_conn(rows, fail_on={'page2': error})
+
+    with pytest.raises(psycopg2.errors.QueryCanceled) as raised:
+        sbk.verify_day(conn, s3, BUCKET, D1, page_rows=4)
+
+    assert raised.value is error
+    assert conn.statements[-1][0] == 'ROLLBACK'
+
+
+def test_restore_dry_run_writes_nothing(make_conn, tmp_path: Path) -> None:
+    rows = grouped_rows()
+    s3 = FakeS3()
+    back_up(s3, rows, tmp_path)
+    in_db = rows[:5] + rows[7:]  # two rows are missing from the database
+    conn = make_conn(in_db)
+
+    would_insert = sbk.restore_day(conn, s3, BUCKET, D1, apply=False, page_rows=4)
+
+    assert would_insert == 2
+    texts = [text for text, _ in conn.statements]
+    assert texts[0] == 'BEGIN ISOLATION LEVEL REPEATABLE READ, READ ONLY'
+    assert texts[-1] == 'ROLLBACK'
+    assert not any(t.startswith(('INSERT', 'LOCK', 'COMMIT')) or 'setval' in t for t in texts)
+    assert conn.rows == sorted(in_db, key=key_of)
+
+
+def test_restore_apply_batches_on_conflict_do_nothing(make_conn, tmp_path: Path) -> None:
+    rows = day_rows(D1, list(range(1, 1202)))
+    s3 = FakeS3()
+    back_up(s3, rows, tmp_path)
+    conn = make_conn([])
+
+    inserted = sbk.restore_day(conn, s3, BUCKET, D1, apply=True)
+
+    assert inserted == 1201
+    assert [len(params) // len(sbk.COLUMNS) for _, params in conn.inserts] == [500, 500, 201]
+    for text, _ in conn.inserts:
+        assert text.startswith('INSERT INTO strike_exposures ("id", "date", "timestamp", ')
+        assert text.endswith(' ON CONFLICT (date, "timestamp", ticker, strike, expiry) DO NOTHING')
+        assert 'UPDATE' not in text and 'DELETE' not in text
+    # The rows came back exactly, ids and created_at included.
+    assert conn.rows == sorted(rows, key=key_of)
+    assert not conn.in_txn
+
+
+def test_restore_apply_already_present_inserts_zero(make_conn, tmp_path: Path) -> None:
+    rows = day_rows(D1, list(range(1, 602)))
+    s3 = FakeS3()
+    back_up(s3, rows, tmp_path)
+    conn = make_conn(rows, sequence_name=SEQUENCE, sequence_value=5000)
+
+    inserted = sbk.restore_day(conn, s3, BUCKET, D1, apply=True)
+
+    assert inserted == 0
+    assert len(conn.inserts) == 2  # 500 + 101, both skipped by the conflict clause
+    texts = [text for text, _ in conn.statements]
+    assert texts[-1] == 'COMMIT'
+    assert not any(t.startswith('LOCK') or 'setval' in t or 'pg_get_serial' in t for t in texts)
+    assert conn.sequence_value == 5000
+
+
+@pytest.mark.parametrize(
+    ('start', 'moved_to'),
+    [
+        pytest.param(3, 7, id='behind-the-restored-ids'),
+        pytest.param(5000, 5000, id='already-ahead'),
+    ],
+)
+def test_restore_apply_locks_then_moves_the_sequence(
+    make_conn, tmp_path: Path, start: int, moved_to: int
+) -> None:
+    rows = day_rows(D1, list(range(1, 8)))
+    s3 = FakeS3()
+    back_up(s3, rows, tmp_path)
+    conn = make_conn([], sequence_name=SEQUENCE, sequence_value=start)
+
+    assert sbk.restore_day(conn, s3, BUCKET, D1, apply=True) == 7
+
+    texts = [text for text, _ in conn.statements]
+    assert texts[-7:] == [
+        'BEGIN',
+        "SET LOCAL statement_timeout = '60s'",
+        'LOCK TABLE strike_exposures IN SHARE ROW EXCLUSIVE MODE',
+        "SELECT pg_get_serial_sequence('strike_exposures', 'id')",
+        f'SELECT last_value FROM {SEQUENCE}',
+        'SELECT setval(%s, GREATEST((SELECT max(id) FROM strike_exposures), %s))',
+        'COMMIT',
+    ]
+    # The insert transaction is over before the sequence one starts.
+    assert texts[-9:-7] == [conn.inserts[-1][0], 'COMMIT']
+    assert conn.statements[-2][1] == (SEQUENCE, start)
+    assert conn.sequence_value == moved_to
+    assert 'strike_exposures_id_seq' not in ' '.join(texts)  # looked up, not spelled out
+    assert not conn.in_txn and conn.autocommit is False
+
+
+@pytest.mark.parametrize(
+    'conn_kwargs',
+    [
+        pytest.param({'sequence_name': None}, id='no-sequence'),
+        pytest.param({'sequence_value': None}, id='last-value-is-null'),
+        pytest.param(
+            {'fail_on': {'seq_value': psycopg2.errors.InsufficientPrivilege('permission denied')}},
+            id='no-privilege-to-read-it',
+        ),
+        pytest.param(
+            {'fail_on': {'lock': psycopg2.errors.QueryCanceled('canceling statement')}},
+            id='lock-times-out',
+        ),
+        pytest.param(
+            {'fail_on': {'setval': psycopg2.OperationalError('injected')}}, id='setval-fails'
+        ),
+    ],
+)
+def test_restore_apply_fails_when_the_sequence_cannot_be_moved(
+    make_conn, tmp_path: Path, conn_kwargs: dict
+) -> None:
+    rows = day_rows(D1, list(range(1, 8)))
+    s3 = FakeS3()
+    back_up(s3, rows, tmp_path)
+    conn = make_conn([], **{'sequence_name': SEQUENCE, 'sequence_value': 3, **conn_kwargs})
+
+    with pytest.raises(sbk.BackupError) as raised:
+        sbk.restore_day(conn, s3, BUCKET, D1, apply=True)
+
+    assert str(raised.value) == (
+        '2026-11-02: 7 row(s) restored, but the id sequence was not moved; '
+        'move it by hand before the writers run'
+    )
+    assert conn.statements[-1][0] == 'ROLLBACK'
+    assert not conn.in_txn
+    assert conn.sequence_value in (3, None)  # never moved
+    assert len(conn.rows) == 7  # the rows were committed before
+
+
+def test_restore_apply_id_collision_raises(make_conn, tmp_path: Path) -> None:
+    rows = day_rows(D1, list(range(1, 1202)))
+    s3 = FakeS3()
+    back_up(s3, rows, tmp_path)
+    # An unrelated row (another day, another ticker) already holds id 700, which
+    # is in the second batch of 500.
+    squatter = make_row(id=700, date=D2, expiry=D2, ticker='OTHER')
+    conn = make_conn([squatter], sequence_name=SEQUENCE)
+
+    with pytest.raises(sbk.BackupError) as raised:
+        sbk.restore_day(conn, s3, BUCKET, D1, apply=True)
+
+    assert str(raised.value) == '2026-11-02: batch 2 was rejected by the table (UniqueViolation)'
+    # No value from the database's own message, and nothing chained.
+    assert DETAIL_MARKER not in str(raised.value)
+    assert DETAIL_MARKER not in ''.join(traceback.format_exception(raised.value))
+    assert raised.value.__context__ is None
+    # The first batch was inserted and then rolled back with the rest.
+    assert len(conn.inserts) == 2
+    assert conn.rows == [squatter]
+    assert conn.statements[-1][0] == 'ROLLBACK'
+    texts = [text for text, _ in conn.statements]
+    assert not any(t.startswith('LOCK') or 'setval' in t for t in texts)
+
+
+@pytest.mark.parametrize(
+    'error_type',
+    [
+        psycopg2.errors.NotNullViolation,  # an IntegrityError
+        psycopg2.errors.NumericValueOutOfRange,  # a DataError
+    ],
+)
+def test_restore_apply_scrubs_any_rejection_by_the_table(
+    make_conn, tmp_path: Path, error_type: type
+) -> None:
+    rows = day_rows(D1, list(range(1, 8)))
+    s3 = FakeS3()
+    back_up(s3, rows, tmp_path)
+    error = error_type(f'rejected: {DETAIL_MARKER}')
+    conn = make_conn([], fail_on={'insert1': error})
+
+    with pytest.raises(sbk.BackupError) as raised:
+        sbk.restore_day(conn, s3, BUCKET, D1, apply=True)
+
+    assert str(raised.value) == (
+        f'2026-11-02: batch 1 was rejected by the table ({error_type.__name__})'
+    )
+    assert DETAIL_MARKER not in ''.join(traceback.format_exception(raised.value))
+    assert raised.value.__context__ is None
+    assert conn.statements[-1][0] == 'ROLLBACK'
+
+
+def test_restore_apply_other_database_error_propagates(make_conn, tmp_path: Path) -> None:
+    rows = day_rows(D1, list(range(1, 8)))
+    s3 = FakeS3()
+    back_up(s3, rows, tmp_path)
+    error = psycopg2.OperationalError('server closed the connection')
+    conn = make_conn([], fail_on={'insert1': error})
+
+    with pytest.raises(psycopg2.OperationalError) as raised:
+        sbk.restore_day(conn, s3, BUCKET, D1, apply=True)
+
+    assert raised.value is error
+    assert conn.statements[-1][0] == 'ROLLBACK'
+    assert conn.rows == []
+
+
+@pytest.mark.parametrize('apply', [False, True])
+@pytest.mark.parametrize(('tamper', 'message'), BAD_FILES)
+def test_restore_refuses_a_file_that_does_not_match_its_object(
+    make_conn, tmp_path: Path, tamper, message: str, apply: bool
+) -> None:
+    rows = day_rows(D1, [1, 2])
+    s3 = FakeS3()
+    f = back_up(s3, rows, tmp_path)
+    tamper(s3, f)
+    conn = make_conn([])
+
+    with pytest.raises(sbk.BackupError, match=message):
+        sbk.restore_day(conn, s3, BUCKET, D1, apply=apply)
+
+    assert conn.statements == []
+
+
+def test_restore_refuses_a_connection_inside_a_transaction(make_conn, tmp_path: Path) -> None:
+    rows = day_rows(D1, [1, 2])
+    s3 = FakeS3()
+    back_up(s3, rows, tmp_path)
+    conn = make_conn([])
+    conn.in_txn = True
+
+    with pytest.raises(sbk.BackupError, match=r'already inside a transaction \(status 2\)'):
+        sbk.restore_day(conn, s3, BUCKET, D1, apply=True)
+
+    assert conn.statements == []
+    conn.in_txn = False  # the caller's transaction, closed for the teardown check
+
+
+def test_a_write_transaction_is_rolled_back_when_its_block_raises(make_conn) -> None:
+    conn = make_conn([])
+
+    with pytest.raises(KeyError):
+        with sbk._write_transaction(conn):
+            raise KeyError('boom')
+
+    assert [text for text, _ in conn.statements] == [
+        'BEGIN',
+        "SET LOCAL statement_timeout = '60s'",
+        'ROLLBACK',
+    ]
+    assert conn.autocommit is False
+
+
+def test_a_dropped_connection_in_a_write_transaction_keeps_its_error(make_conn, tmp_path: Path) -> None:
+    rows = day_rows(D1, [1, 2])
+    s3 = FakeS3()
+    back_up(s3, rows, tmp_path)
+    error = psycopg2.OperationalError('server closed the connection unexpectedly')
+    conn = make_conn([], fail_on={'insert1': error}, closes_on='insert1')
+
+    with pytest.raises(psycopg2.OperationalError) as raised:
+        sbk.restore_day(conn, s3, BUCKET, D1, apply=True)
+
+    assert raised.value is error
+    assert 'ROLLBACK' not in [text for text, _ in conn.statements]
+
+
+def test_verify_command_ok(cli, tmp_path: Path) -> None:
+    rows = grouped_rows()
+    s3 = FakeS3()
+    back_up(s3, rows, tmp_path)
+
+    code, out = cli.run(FakeConnection(rows), s3, 'verify', '--date', '2026-11-02')
+
+    assert code == 0
+    assert '2026-11-02: ok, 18 rows' in out
+    for secret in (DSN_SECRET, R2_SECRET, 'ACCESS-KEY-MARKER'):
+        assert secret not in out
+
+
+def test_verify_command_mismatch_exits_1(cli, tmp_path: Path) -> None:
+    rows = grouped_rows()
+    s3 = FakeS3()
+    back_up(s3, rows[1:], tmp_path)
+
+    code, out = cli.run(FakeConnection(rows), s3, 'verify', '--date', '2026-11-02')
+
+    assert code == 1
+    assert '2026-11-02: MISMATCH' in out
+    assert 'db rows 18' in out and 'file rows 17' in out
+    assert 'only in db 1' in out and 'only in file 0' in out and 'changed 0' in out
+
+
+def test_verify_command_goes_on_after_a_failed_day(cli, tmp_path: Path) -> None:
+    d1_rows, d3_rows = grouped_rows(D1, 1), grouped_rows(D3, 101)
+    s3 = FakeS3()
+    back_up(s3, d1_rows, tmp_path, D1)
+    back_up(s3, d3_rows, tmp_path, D3)  # D2 has no object
+    conn = FakeConnection(d1_rows + grouped_rows(D2, 51) + d3_rows)
+
+    code, out = cli.run(
+        conn, s3, 'verify', '--date', '2026-11-02', '--date', '2026-11-03', '--date', '2026-11-04'
+    )
+
+    assert code == 1
+    assert '2026-11-02: ok' in out and '2026-11-04: ok' in out
+    assert 'FAILED 2026-11-03: BackupError (2026-11-03: no object in R2)' in out
+
+
+def test_verify_command_stops_when_the_connection_drops(cli, tmp_path: Path) -> None:
+    d1_rows, d2_rows = grouped_rows(D1, 1), grouped_rows(D2, 51)
+    s3 = FakeS3()
+    back_up(s3, d1_rows, tmp_path, D1)
+    back_up(s3, d2_rows, tmp_path, D2)
+    back_up(s3, grouped_rows(D3, 101), tmp_path, D3)
+    error = psycopg2.OperationalError('server closed the connection unexpectedly')
+    conn = FakeConnection(
+        d1_rows + d2_rows + grouped_rows(D3, 101), fail_on={'page2': error}, closes_on='page2'
+    )
+
+    code, out = cli.run(
+        conn, s3, 'verify', '--date', '2026-11-02', '--date', '2026-11-03', '--date', '2026-11-04'
+    )
+
+    assert code == 1
+    assert '2026-11-02: ok' in out and 'connection lost' in out
+    assert '2026-11-04' not in out  # never tried
+
+
+def test_verify_command_checks_a_repeated_date_once(cli, tmp_path: Path) -> None:
+    rows = grouped_rows()
+    s3 = FakeS3()
+    back_up(s3, rows, tmp_path)
+    conn = FakeConnection(rows)
+
+    code, out = cli.run(
+        conn, s3, 'verify', '--date', '2026-11-02', '--date', '2026-11-02'
+    )
+
+    assert code == 0
+    assert out.count('2026-11-02: ok') == 1
+    assert len(conn.page_queries) == 1
+
+
+def test_verify_command_needs_a_date(cli) -> None:
+    with pytest.raises(SystemExit) as raised:
+        cli.run(FakeConnection([]), FakeS3(), 'verify')
+
+    assert raised.value.code == 2
+
+
+def test_restore_command_dry_run_is_the_default(cli, tmp_path: Path) -> None:
+    rows = day_rows(D1, [1, 2, 3])
+    s3 = FakeS3()
+    back_up(s3, rows, tmp_path)
+    conn = FakeConnection(rows[:1])
+
+    code, out = cli.run(conn, s3, 'restore', '--date', '2026-11-02')
+
+    assert code == 0
+    assert '2026-11-02: would insert 2 rows (a dry run; add --apply to write)' in out
+    assert conn.inserts == [] and len(conn.rows) == 1
+
+
+def test_restore_command_apply(cli, tmp_path: Path) -> None:
+    rows = day_rows(D1, [1, 2, 3])
+    s3 = FakeS3()
+    back_up(s3, rows, tmp_path)
+    conn = FakeConnection(rows[:1], sequence_name=SEQUENCE)
+
+    code, out = cli.run(conn, s3, 'restore', '--date', '2026-11-02', '--apply')
+
+    assert code == 0
+    assert '2026-11-02: inserted 2 rows' in out
+    assert conn.rows == sorted(rows, key=key_of)
+    for secret in (DSN_SECRET, R2_SECRET, 'ACCESS-KEY-MARKER'):
+        assert secret not in out
+
+
+def test_restore_command_failure_exits_1(cli, tmp_path: Path) -> None:
+    rows = day_rows(D1, [1, 2, 3])
+    s3 = FakeS3()
+    back_up(s3, rows, tmp_path)
+    squatter = make_row(id=2, date=D2, expiry=D2, ticker='OTHER')
+
+    code, out = cli.run(FakeConnection([squatter]), s3, 'restore', '--date', '2026-11-02', '--apply')
+
+    assert code == 1
+    assert 'FAILED 2026-11-02: BackupError' in out
+    assert DETAIL_MARKER not in out
+
+
+def test_restore_command_needs_a_date(cli) -> None:
+    with pytest.raises(SystemExit) as raised:
+        cli.run(FakeConnection([]), FakeS3(), 'restore', '--apply')
+
+    assert raised.value.code == 2

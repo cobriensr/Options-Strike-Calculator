@@ -230,25 +230,39 @@ R2 is read before the snapshot opens: the object list and one `head_object` per 
 - Modify `scripts/test_strike_exposures_backup.py`.
 
 **Interfaces it produces:**
-- `verify_day(conn, s3, bucket: str, day: date) -> VerifyResult`, where `@dataclass(frozen=True) class VerifyResult: day: date; db_rows: int; file_rows: int; only_in_db: int; only_in_file: int; value_diffs: int`.
-  - It streams the DB day inside `_read_snapshot` (Task 1) and the downloaded file. Both are in key order, so it merge-compares them on the unique key.
+- `verify_day(conn, s3, bucket: str, day: date, page_rows: int = PAGE_ROWS) -> VerifyResult`, where `@dataclass(frozen=True) class VerifyResult: day: date; db_rows: int; file_rows: int; only_in_db: int; only_in_file: int; value_diffs: int`. `page_rows` is the page size for both sides, so tests can cut a timestamp's rows across pages.
+  - The object is downloaded first (`_downloaded_day`) and refused, before the database is touched, unless its bytes hash to the `sha256` metadata, it opens as Parquet, its schema is the table's, and its row count is the `rows` metadata. A missing object is `BackupError("no object in R2")`; any other `get_object` error propagates as it is. Arrow's text is not chained.
+  - It then streams the DB day inside `_read_snapshot` (Task 1) and the file, and merges them on the timestamp, which both sort the same way (a stream that goes backwards raises). Inside one timestamp it matches rows by (ticker, strike, expiry) through a dict, not by order, because Postgres sorts tickers by its collation and Python by code point. A key repeated inside a timestamp raises. One timestamp is a few thousand rows at most, so memory stays small for a 3.6M-row day.
+  - A row on both sides counts as a value diff when any of the 24 columns differs, `id` and `created_at` included.
   - `ok` means every count is equal and `only_in_db`, `only_in_file` and `value_diffs` are all 0.
-- `restore_day(conn, s3, bucket: str, day: date, apply: bool) -> int`.
-  - It returns the number of rows that would be inserted (dry run) or that were inserted (apply).
-  - With `apply`, it inserts batches of `RESTORE_BATCH` with the original `id`, all 24 columns, and `ON CONFLICT (date, "timestamp", ticker, strike, expiry) DO NOTHING`. A batch failure, including an `id` already taken by a different row, raises with a fixed message.
-  - If rows were inserted, it then runs the `setval` statement under Global constraints (Restore). If none were, it does not.
-- The CLI gains `verify --date D [--date D ...]` (exit 0 only if every day is ok) and `restore --date D [--apply]`.
+- `restore_day(conn, s3, bucket: str, day: date, apply: bool, page_rows: int = PAGE_ROWS) -> int`.
+  - It returns the number of rows that would be inserted (dry run) or that were inserted (apply). The same download checks run first, for both.
+  - Dry run: it reads the day in `_read_snapshot` and returns the file's rows whose key the table does not have (`only_in_file`). It writes nothing and does not look for id clashes: those surface on `--apply`.
+  - With `apply`, it inserts the file in batches of `RESTORE_BATCH` with the original `id`, all 24 columns, and `ON CONFLICT (date, "timestamp", ticker, strike, expiry) DO NOTHING`, all in one `_write_transaction` (BEGIN, the same timeout, COMMIT, or ROLLBACK if anything raises), so a day goes in whole or not at all. A batch the table rejects (an `IntegrityError` such as an `id` already taken by a different row, or a `DataError`) raises `BackupError("<date>: batch N was rejected by the table (<error class>)")` with nothing chained, because the server's text quotes the key or value. Any other database error propagates as it is.
+  - If rows were inserted, it then moves the id sequence (Global constraints, Restore), in a second transaction. If none were, it does not. When the second step fails the rows stay committed and the error says so: `<date>: N row(s) restored, but the id sequence was not moved; move it by hand before the writers run`.
+- `_write_transaction(conn)`, the read-write twin of `_read_snapshot`: the same idle check (a closed connection gets its own text), autocommit on for the BEGIN and put back, a cursor, and no ROLLBACK or restore on a dropped connection.
+- The CLI gains `verify --date D [--date D ...]` and `restore --date D [--apply]`.
+  - `verify` checks each distinct date in the order given. It prints `<date>: ok, N rows` or `<date>: MISMATCH db rows .., file rows .., only in db .., only in file .., changed ..`; a day that fails (no object, a bad file, a database error) is logged by date and error class and the run goes on, unless the connection dropped. Exit 0 only if every day is ok.
+  - `restore` prints `<date>: would insert N rows (a dry run; add --apply to write)` or `<date>: inserted N rows`, and exits 1 with the date and error class on a failure. `--apply` against production needs the owner's explicit OK, each time.
+
+**Known hole, left to the owner to decide:** if the sequence step fails after rows were committed, running `restore --apply` again inserts 0 rows and so skips the sequence step. The error text tells the operator to move the sequence by hand. Making the step run whenever the file's `max-id` metadata is above the sequence's `last_value` would close it.
 
 **Steps:**
 - [ ] **Step 1:** Write the failing tests.
-  - `test_verify_identical_day_ok`.
-  - `test_verify_counts_each_difference`: one row missing from the file, one extra in the file, and one changed greek give `only_in_db=1`, `only_in_file=1` and `value_diffs=1`.
-  - `test_restore_dry_run_writes_nothing`: the fake connection records no INSERT.
+  - `test_verify_identical_day_ok`: pages of 4 cut a timestamp's 6 rows.
+  - `test_verify_counts_each_difference`: one row missing from the file, one extra in the file, and one changed greek give `only_in_db=1`, `only_in_file=1` and `value_diffs=1`; both sides hold 18 rows and the day is still not `ok`.
+  - A change in `id`, `price` (to NULL), `created_at` or a greek is a value diff; a whole timestamp missing on either side is counted row by row; an empty database day against a full file.
+  - `_compare_days` directly: tickers in a different order inside a timestamp match; rows that go back in time raise; a repeated key raises.
+  - A missing object says so with nothing chained; an access error is not reported as a missing object. A file whose sha256, bytes, row count, Parquet validity or schema is wrong is refused with the database untouched, for `verify` and for `restore` (dry run and apply).
+  - A database error during `verify` propagates after the ROLLBACK.
+  - `test_restore_dry_run_writes_nothing`: the fake connection records no INSERT, LOCK, COMMIT or `setval`, and the returned count is the file rows the table lacks.
   - `test_restore_apply_batches_on_conflict_do_nothing`: 1,201 rows go in 3 INSERTs. Each one has `ON CONFLICT (date, "timestamp", ticker, strike, expiry) DO NOTHING` and the `id` column, and none of them has `UPDATE` or `DELETE`.
   - `test_restore_apply_already_present_inserts_zero`: the fake reports rowcount 0. The function returns 0 and issues no `LOCK` and no `setval`.
-  - `test_restore_apply_locks_then_moves_the_sequence`: after INSERTs that report rows inserted, the statements run in this order, after the last INSERT: `BEGIN`, `LOCK TABLE strike_exposures IN SHARE ROW EXCLUSIVE MODE`, `SELECT pg_get_serial_sequence('strike_exposures', 'id')`, a read of the sequence's `last_value`, a `setval` on that name with `GREATEST(max(id), last_value)`, `COMMIT`. No statement spells out `strike_exposures_id_seq`.
-  - `test_restore_apply_fails_when_the_sequence_cannot_be_read`: a NULL sequence name, a NULL `last_value`, and a `last_value` read that raises (no privilege) each raise `BackupError` with a fixed message, roll back, and issue no `setval`. The rows already inserted stay (they are committed).
-  - `test_restore_apply_id_collision_raises`: the fake raises `UniqueViolation` on an INSERT. The function raises `BackupError` with a fixed message and issues no `LOCK` and no `setval`.
+  - `test_restore_apply_locks_then_moves_the_sequence`: after INSERTs that report rows inserted and their COMMIT, the statements run in this order: `BEGIN`, `SET LOCAL statement_timeout`, `LOCK TABLE strike_exposures IN SHARE ROW EXCLUSIVE MODE`, `SELECT pg_get_serial_sequence('strike_exposures', 'id')`, a read of the sequence's `last_value`, a `setval` on that name with `GREATEST(max(id), last_value)`, `COMMIT`. The fake sequence has an unusual name (`audit."Id Seq"`) and no statement spells out `strike_exposures_id_seq`, so the name is looked up. A sequence behind the restored ids is moved to `max(id)`; one far ahead stays put.
+  - `test_restore_apply_fails_when_the_sequence_cannot_be_moved`: a NULL sequence name, a NULL `last_value`, a `last_value` read that raises (no privilege), a LOCK that times out and a failing `setval` each raise `BackupError("<date>: N row(s) restored, but the id sequence was not moved; move it by hand before the writers run")`, roll back, and leave the sequence unmoved. The rows already inserted stay (they are committed).
+  - `test_restore_apply_id_collision_raises`: an unrelated row holds an id in the second of three batches. The function raises `BackupError("<date>: batch 2 was rejected by the table (UniqueViolation)")`, with the server's DETAIL text nowhere in it or its traceback and nothing chained. The first batch is rolled back with the rest, and no `LOCK` or `setval` is issued. The same for a `NotNullViolation` (an `IntegrityError`) and a `NumericValueOutOfRange` (a `DataError`); an `OperationalError` propagates as it is, and on a dropped connection no ROLLBACK is sent.
+  - `_write_transaction`: a block that raises ends in ROLLBACK; a connection inside a transaction or a closed one is refused with no statement.
+  - The CLI: `verify` ok, a mismatch exits 1 with the counts, a failed day does not stop the others, a dropped connection stops the run, a repeated date is checked once, a missing `--date` exits 2; `restore` is a dry run by default, `--apply` writes, a failure exits 1 with no database text, a missing `--date` exits 2.
 - [ ] **Step 2:** Run the tests. Expected: they FAIL.
 - [ ] **Step 3:** Implement Task 3's interfaces.
 - [ ] **Step 4:** Run the tests. Expected: they PASS.
