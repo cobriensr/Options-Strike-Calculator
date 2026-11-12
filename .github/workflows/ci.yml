@@ -129,7 +129,9 @@ jobs:
     needs: [changes]
     if: needs.changes.outputs.app == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # Vitest with V8 coverage takes about 14.5 min on the 4-vCPU runner, after
+    # about 3.5 min of tsc, eslint and the build, so 20 min cancelled passing runs.
+    timeout-minutes: 30
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
       # Vitest + V8 coverage across 330 test files pushes past Node's
