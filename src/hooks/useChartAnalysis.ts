@@ -38,6 +38,10 @@ const MAX_ATTEMPTS = 3;
 // Each attempt gets a full 800s timeout (exceeds backend maxDuration
 // of 780s so the server-side limit is the binding constraint).
 const PER_ATTEMPT_TIMEOUT = 800_000;
+// A retry prompt left unanswered this long cancels itself. The run parks on the
+// prompt and keeps its hold on a waiting update, which would otherwise stay
+// blocked, in every open tab, for as long as the page lives.
+const RETRY_PROMPT_TIMEOUT = 30 * 60 * 1000;
 
 async function compressImage(
   file: File,
@@ -408,9 +412,20 @@ export function useChartAnalysis(opts: {
             error: result.error,
           });
 
-          // Pause the loop until the user decides
+          // Pause the loop until the user decides, or until the prompt has
+          // waited `RETRY_PROMPT_TIMEOUT`. One timer per parked prompt: every
+          // way out of the prompt (retry, cancel, cancelAnalysis, unmount)
+          // goes through the resolver, which clears it.
           const action = await new Promise<'retry' | 'cancel'>((resolve) => {
-            retryResolverRef.current = resolve;
+            const answer = (choice: 'retry' | 'cancel'): void => {
+              clearTimeout(timer);
+              resolve(choice);
+            };
+            const timer = setTimeout(
+              () => answer('cancel'),
+              RETRY_PROMPT_TIMEOUT,
+            );
+            retryResolverRef.current = answer;
           });
 
           if (action === 'cancel') {

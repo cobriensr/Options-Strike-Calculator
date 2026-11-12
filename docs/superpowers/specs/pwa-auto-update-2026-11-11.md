@@ -42,6 +42,10 @@ gaps make that easy:
   apply would reload a visible tab mid-session. No tab applies while any other
   tab of the app is unsafe: visible during the cash session, or holding the
   update (a chart analysis in flight). Tasks 2 and 3 ship together.
+- **Owner, 2026-11-12, after the final review: keep `hidden → yes` during the
+  session.** That includes a window Chrome reports as hidden because another
+  application fully covers it. The owner accepted that such a window may
+  reload mid-session.
 
 ## Thresholds / constants
 
@@ -50,7 +54,10 @@ gaps make that easy:
 | `UPDATE_CHECK_INTERVAL_MS` | 15 min | A deploy reaches an open window within 15 min; the check is one small `sw.js` request. |
 | Visible-check throttle | 1 min | Tab switching must not fire a request each time. |
 | `FETCH_TIMEOUT_MS` | 30 s | The `sw.js` pre-fetch gives up before the 1-min focus throttle, so a stalled check can't hold the in-flight guard. |
-| Safe-moment re-check | every 60 s while an update waits, plus on `visibilitychange` | So a waiting update applies within a minute of a safe moment. |
+| Safe-moment re-check | every 60 s: from startup where Web Locks exist (the tab agreement), otherwise only while an update waits. Plus `visibilitychange` where there are no locks | So a waiting update applies within a minute of a safe moment, and the session's edges are noticed under a visible tab. With the agreement a visibility change only updates the lock and never starts an apply attempt (Task 3). |
+| Policy look-ahead | 1 tick (60 s) | A visible tab counts as unsafe from a tick before the open, so it already holds its lock when the session starts. |
+| `APPLY_STALL_MS` | 30 s | An automatic apply with no `controllerchange` after this long reports one warning per page and goes back to waiting (Task 2). |
+| `RETRY_PROMPT_TIMEOUT` | 30 min | A retry prompt nobody answers cancels itself, so the run's hold on a waiting update ends (Task 2). |
 
 ## Safe-moment rule
 
@@ -94,15 +101,20 @@ None: no API, table, env var or migration. Frontend only (Vercel deploy).
   scheduler (`src/__tests__/sw-update.test.ts`).
 - Task 2: `src/lib/sw-update-policy.ts` (new) + test, `src/lib/sw-update.ts`,
   `src/hooks/useChartAnalysis.ts` (hold while an analysis runs), their tests.
-- Task 3: `src/lib/sw-update.ts` and `src/__tests__/sw-update.test.ts`, or a
-  new `src/lib/sw-update-tabs.ts` + test if the cross-tab part reads better on
-  its own.
+- Task 3: `src/lib/sw-update-tabs.ts` (new, the Web Locks calls) +
+  `src/__tests__/sw-update-tabs.test.ts` (new), `src/lib/sw-update.ts`,
+  `src/main.tsx`.
 
 ## Global Constraints
 
 - Skills to load: `progressive-web-app`, `react-expert`, `test-master`.
 - Every interval and listener has a cleanup (R1). Module-level state stays
-  bounded (one timer, one listener set).
+  bounded. Ruling (2026-11-12, final review): the steady state is two timers
+  and two `visibilitychange` listeners per tab, the 15-minute check
+  (`startUpdateChecks`) and the 60 s watch (`startWatch`, shared by the tab
+  agreement and a waiting update); each has its own cleanup. Plus, while they
+  last, one stall timeout after an automatic apply and one timer per parked
+  retry prompt.
 - Routine failures of an update check are not reported to Sentry: anything
   while offline, and a TypeError or `TimeoutError` from the `sw.js` fetch
   (laptop waking, flaky Wi-Fi). Anything else is a `captureUnlessAuth`
@@ -126,6 +138,12 @@ None: no API, table, env var or migration. Frontend only (Vercel deploy).
   than once per minute. Skip when `navigator.onLine === false` or a check is
   already in flight. Follow the plugin's documented pattern (it fetches
   `swUrl` with `cache: 'no-store'` first so an offline server doesn't throw).
+- Each check first looks at `registration.waiting` and marks an update if one
+  waits (ruling, 2026-11-12, final review): workbox-window stops listening for
+  `updatefound` after the first external update, so a later deploy can leave a
+  worker waiting with no `onNeedRefresh`, and the tab on the old bundle for
+  good. It does so before any gate (in flight, installing, offline) and before
+  the fetch.
 - Returns a stop function that clears the interval and removes the listener;
   `resetUpdateState()` also stops it for tests.
 - Tests (fake timers): checks at 15 and 30 min; a visible event checks once
@@ -163,11 +181,27 @@ None: no API, table, env var or migration. Frontend only (Vercel deploy).
       automatic apply. A click after an automatic apply repeats the idempotent
       `updateSW(true)`; there is no "applied" flag, so a manual retry after a
       failed `updateSW` keeps working.
+  - Ruling (2026-11-12, final review): a failed or stalled automatic apply is
+    not silent or final. In the installed plugin `updateSW(true)` never
+    rejects (`messageSkipWaiting` is fire-and-forget, and does nothing when no
+    worker waits), so the signal is a `controllerchange` that never comes.
+    After an automatic apply the module starts one 30 s timeout, cleared by the
+    same `controllerchange` listener that reloads the page. On expiry it
+    reports one warning, tagged `sw_update_apply_stalled`, at most once per
+    page, and goes back to waiting for a safe moment, so the next one retries.
+    The banner's Reload arms no timeout and takes over from one that runs.
+    `resetUpdateState()` clears it.
 - `src/hooks/useChartAnalysis.ts`: take a hold for the life of the analyze
   request and release it in `finally`. If the host panel unmounts mid-run, the
   request is not aborted and keeps its hold until it ends, but a retry prompt
   parked at unmount is cancelled and a run that fails after unmount ends
-  instead of prompting, so the hold can't outlive the run.
+  instead of prompting, so the hold can't outlive the run. A retry prompt left
+  parked on a mounted host cancels itself after 30 minutes (ruling, 2026-11-12,
+  final review), through the same resolver as the Cancel button, so the
+  existing "Retry cancelled." path runs and `finally` releases the hold. One
+  timer per parked prompt, cleared when it is answered, cancelled or the host
+  unmounts. Otherwise a prompt nobody answers would block every tab's updates
+  until the page reloads.
 - Tests: waiting update + hidden → applies; visible during the session → does
   not, then hidden → applies; hold open → never applies, release then applies
   on the next evaluation; applies at most once; timers and listeners cleaned
@@ -204,7 +238,10 @@ every open tab of the app is safe, not just the tab doing the applying.
   tracker, releases a held lock, and clears everything. Starting the tracker
   twice doesn't stack.
 - **Where it starts:** from `main.tsx` alongside `startUpdateChecks`, or
-  lazily from the module. Pick one and say why.
+  lazily from the module. Pick one and say why. Settled: `main.tsx`
+  (`startTabAgreement()`). Every tab has to announce itself from startup,
+  update or not, which a lazy start can't do, and an import-time start would
+  put a timer and a listener into every test that imports the module.
 - **Tests:** stub `navigator.locks` with a small in-memory fake at the global
   boundary (`vi.stubGlobal`). Its exclusive `ifAvailable` returns `null` while
   any shared holder exists, which is how "another tab" is simulated: the test
@@ -218,6 +255,25 @@ every open tab of the app is safe, not just the tab doing the applying.
   - Apply still happens at most once, and reset releases everything.
   - Mutation-check: dropping the exclusive check, and never releasing the
     shared lock.
+- **Rulings (2026-11-12, Task 3 review and final review):**
+  - **A tab switch must not race an apply.** While the tracker runs, a
+    `visibilitychange` only brings this tab's shared lock in step with its
+    policy; it never starts an apply attempt. Only the 60 s tick asks, and the
+    tick isn't correlated with another tab's transition. Otherwise tab A,
+    hidden by a switch, could ask a few milliseconds before tab B, now
+    visible, had its shared lock granted, and reload B. Without Web Locks the
+    tab keeps Task 2's behavior and evaluates on `visibilitychange`.
+  - **One tick of look-ahead.** The policy is read now and again one tick
+    (60 s) later, and the tab is safe only if both are. A visible tab then
+    holds its shared lock from a tick before the open, so another tab's
+    attempt in the open's first minute can't reload it.
+  - **The applying tab waits for its own release.** It awaits the shared
+    request's promise (the release is processed after the request is queued)
+    before it asks for the exclusive lock; a test with a stalled release pins
+    this, and the test fake takes ten microtask turns to release.
+  - **Reset hygiene.** `resetUpdateState()` clears the in-flight flag and
+    bumps an epoch; an apply attempt that began before a reset ends without
+    touching what began after it.
 
 **Acceptance:** `npm run review` green; the banner test is unchanged and
 passing.

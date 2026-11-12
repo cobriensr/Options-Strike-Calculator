@@ -4,9 +4,12 @@
  * Renders nothing until vite-plugin-pwa's onNeedRefresh fires (a new SW
  * has installed and is in the waiting state). Then surfaces a small
  * fixed-position banner with a Reload button. Clicking Reload calls
- * `updateSW(true)`, which posts SKIP_WAITING to the new SW; the new SW
- * takes control, controllerchange fires, and the existing listener in
- * main.tsx reloads the page.
+ * `applyUpdate()` (src/lib/sw-update.ts), which attaches a one-shot
+ * controllerchange listener and calls `updateSW(true)`, which posts
+ * SKIP_WAITING to the new SW; the new SW takes control, controllerchange
+ * fires, and that listener reloads the page. The same apply also runs by
+ * itself at a safe moment, once every open tab agrees (see sw-update.ts), so
+ * the banner mostly shows while the tab is in use during the session.
  *
  * Visible to everyone (owner + guest + public) — universal chrome.
  *

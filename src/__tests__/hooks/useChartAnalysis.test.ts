@@ -793,3 +793,126 @@ describe('useChartAnalysis: hold when the host unmounts', () => {
     expect(release).toHaveBeenCalledTimes(1);
   });
 });
+
+// A mounted host can park the run on a retry prompt that nobody ever answers
+// (a closed laptop, an abandoned tab). The prompt cancels itself after 30
+// minutes, so the run ends and its hold on a waiting update goes with it.
+describe('useChartAnalysis: a retry prompt nobody answers', () => {
+  const PARKED_MS = 30 * 60 * 1000;
+  const MINUTE_MS = 60 * 1000;
+
+  async function park() {
+    vi.useFakeTimers();
+    mockFetch.mockResolvedValue(makeErrorResponse('Server overloaded', 500));
+    const hook = renderHook(() => useChartAnalysis(defaultOpts()));
+    act(() => {
+      hook.result.current.analyze();
+    });
+    await act(async () => {});
+    expect(hook.result.current.retryPrompt?.attempt).toBe(1);
+    return hook;
+  }
+
+  async function wait(ms: number) {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ms);
+    });
+  }
+
+  it('cancels a prompt parked for 30 minutes, ends the run and releases the hold', async () => {
+    const { result } = await park();
+    expect(release).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(1);
+
+    await wait(PARKED_MS - 1);
+    expect(result.current.retryPrompt).not.toBeNull();
+    expect(release).not.toHaveBeenCalled();
+
+    await wait(1);
+    expect(result.current.retryPrompt).toBeNull();
+    expect(result.current.error).toBe('Retry cancelled.');
+    expect(result.current.loading).toBe(false);
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves a prompt answered at 29 minutes alone and clears its timer', async () => {
+    const { result } = await park();
+    mockFetch.mockResolvedValue(makeSuccessResponse());
+
+    await wait(PARKED_MS - MINUTE_MS);
+    act(() => {
+      result.current.confirmRetry();
+    });
+    await wait(0);
+
+    expect(result.current.analysis).toEqual(sampleAnalysis);
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+
+    await wait(2 * PARKED_MS);
+    expect(result.current.error).toBeNull();
+    expect(result.current.analysis).toEqual(sampleAnalysis);
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it('clears the timer when the user cancels the retry', async () => {
+    const { result } = await park();
+
+    act(() => {
+      result.current.cancelRetry();
+    });
+    await wait(0);
+
+    expect(vi.getTimerCount()).toBe(0);
+    await wait(2 * PARKED_MS);
+    expect(result.current.error).toBe('Retry cancelled.');
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it('clears the timer when the analysis is cancelled at the prompt', async () => {
+    const { result } = await park();
+
+    act(() => {
+      result.current.cancelAnalysis();
+    });
+    await wait(0);
+
+    expect(vi.getTimerCount()).toBe(0);
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it('clears the timer when the host unmounts', async () => {
+    const { unmount } = await park();
+
+    unmount();
+    await wait(0);
+
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('gives each prompt its own 30 minutes', async () => {
+    const { result } = await park();
+
+    await wait(20 * MINUTE_MS);
+    act(() => {
+      result.current.confirmRetry();
+    });
+    await wait(0);
+    expect(result.current.retryPrompt?.attempt).toBe(2);
+    expect(vi.getTimerCount()).toBe(1);
+
+    // 29 minutes into the second prompt, which the first timer would have
+    // cancelled 10 minutes earlier.
+    await wait(PARKED_MS - MINUTE_MS);
+    expect(result.current.retryPrompt?.attempt).toBe(2);
+    expect(release).not.toHaveBeenCalled();
+
+    await wait(MINUTE_MS);
+    expect(result.current.retryPrompt).toBeNull();
+    expect(result.current.error).toBe('Retry cancelled.');
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+});

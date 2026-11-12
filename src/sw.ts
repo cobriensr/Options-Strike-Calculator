@@ -4,8 +4,10 @@
  *
  * ## Preserved Workbox behavior (was in `vite.config.ts > workbox`)
  *
- * - `skipWaiting: true` / `clientsClaim: true` — handled by the `install`
- *   / `activate` listeners at the bottom of this file.
+ * - `clientsClaim: true` — the `activate` listener at the bottom of this file.
+ *   `skipWaiting` is no longer automatic (prompt mode): no `install` listener
+ *   calls it, and it runs only on the page's `SKIP_WAITING` message, which the
+ *   `message` listener below handles.
  * - `cleanupOutdatedCaches: true` — handled by `cleanupOutdatedCaches()`.
  * - `globPatterns: ['**\/*.{js,css,html,png,woff2}']` — now lives in
  *   `vite.config.ts > VitePWA > injectManifest.globPatterns`.
