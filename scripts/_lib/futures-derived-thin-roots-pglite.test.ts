@@ -420,7 +420,23 @@ const errored = (): string =>
     .mocked(console.error)
     .mock.calls.map((c) => String(c[0]))
     .join('\n');
-const report = (): string => readFileSync(join(workDir, 'report.txt'), 'utf8');
+/**
+ * The report the last run wrote: its path is the last "report:" line a run
+ * printed. A dry run writes report.txt; an --apply leaves that file alone and
+ * writes apply-<time>-report.txt.
+ */
+const report = (): string => {
+  const line = vi
+    .mocked(console.log)
+    .mock.calls.map((c) => String(c[0]))
+    .reverse()
+    .find((l) => /^\s*report: /.test(l));
+  const path =
+    line == null
+      ? join(workDir, 'report.txt')
+      : line.replace(/^\s*report: /, '').trim();
+  return readFileSync(path, 'utf8');
+};
 
 interface Snapshot {
   id: number;

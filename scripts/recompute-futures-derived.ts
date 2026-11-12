@@ -30,7 +30,7 @@
  *
  * The default is a DRY RUN: it reads the database DATABASE_URL points at
  * (production, in .env.local) through read-only transactions, prints the
- * summary and writes only report.txt into --work-dir. --apply WRITES to that
+ * summary and writes only report.txt (and merge-state.txt) into --work-dir. --apply WRITES to that
  * database, after the close, only after the owner has seen the dry run, and
  * only when every check passes: the snapshot method control (rows written by
  * today's code) recomputes to exactly what is stored (for RTY, CL, GC and ZN a
@@ -90,10 +90,14 @@
  * plan again, or remove plan.json. A run that failed before any step started plans again.
  *
  * Options:
- *   --backup <file>         the Phase 2 backup JSONL (docs/tmp/futures-contract-repair/backup-*.jsonl);
- *                           required with --apply or with the snapshots or premarket store
+ *   --backup <file>         the bar backup JSONL of the repair tool: for Phase 2 a
+ *                           docs/tmp/futures-contract-repair/backup-<stamp>.jsonl, for Phase 5a the single
+ *                           docs/tmp/futures-contract-repair/thin-roots/backup-thin-roots.jsonl, never a
+ *                           part of it or a copy; required with --apply or with the snapshots or premarket store
  *   --work-dir <dir>        report.txt, backup-*.jsonl and the {store}.applied
- *                           markers (default docs/tmp/futures-derived-recompute)
+ *                           markers (default docs/tmp/futures-derived-recompute). A dry run writes report.txt
+ *                           (and merge-state.txt); an --apply leaves those alone and writes
+ *                           apply-<time>-report.txt (and apply-<time>-merge-state.txt)
  *   --stores s1 s2 ...      only these of snapshots, premarket, fires (default all). A dry run
  *                           plans only these; --apply still plans and checks all three and
  *                           writes only these. `--stores frozen` stands alone: it plans the

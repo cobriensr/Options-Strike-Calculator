@@ -848,7 +848,23 @@ const errored = (): string =>
     .mocked(console.error)
     .mock.calls.map((c) => String(c[0]))
     .join('\n');
-const report = (): string => readFileSync(join(workDir, 'report.txt'), 'utf8');
+/**
+ * The report the last run wrote: its path is the last "report:" line a run
+ * printed. A dry run writes report.txt; an --apply leaves that file alone and
+ * writes apply-<time>-report.txt.
+ */
+const report = (): string => {
+  const line = vi
+    .mocked(console.log)
+    .mock.calls.map((c) => String(c[0]))
+    .reverse()
+    .find((l) => /^\s*report: /.test(l));
+  const path =
+    line == null
+      ? join(workDir, 'report.txt')
+      : line.replace(/^\s*report: /, '').trim();
+  return readFileSync(path, 'utf8');
+};
 const backups = (): string[] =>
   existsSync(workDir)
     ? readdirSync(workDir).filter((f) => f.startsWith('backup-'))
@@ -1425,7 +1441,16 @@ describe('dry run on real SQL (pglite)', () => {
     const rows = Number(
       /^ {2}rows in range: \d+, rows to write: (\d+)$/m.exec(text)?.[1],
     );
+    const dryReport = readFileSync(join(workDir, 'report.txt'));
     expect(await run({ expectSnapshots: rows })).toBe(0);
+    // It leaves the dry run's report.txt and merge-state.txt alone and writes its
+    // own merge-state copy beside its report copy, from the same plan.
+    expect(readFileSync(join(workDir, 'report.txt'))).toEqual(dryReport);
+    expect(readFileSync(join(workDir, 'merge-state.txt'), 'utf8')).toBe(detail);
+    const files = readdirSync(workDir);
+    const copy = files.find((f) => /^apply-.*-merge-state\.txt$/.test(f));
+    expect(copy).toBeDefined();
+    expect(readFileSync(join(workDir, copy ?? ''), 'utf8')).toBe(detail);
     expect((await snapshotValues(a))[0]).toBe('7007.0000');
     expect((await snapshotValues(b))[0]).toBe('7007.0000');
     // D keeps its price, 1h and day change (its volume ratio is rewritten: the
@@ -1769,6 +1794,28 @@ describe('--apply refuses before any write', () => {
 // ── --apply ─────────────────────────────────────────────────────────────────
 
 describe('--apply on real SQL (pglite)', () => {
+  it("keeps the dry run's report.txt through an --apply: the apply writes its own copy under a name with its time", async () => {
+    expect(await dry()).toBe(0);
+    const dryReport = readFileSync(join(workDir, 'report.txt'));
+
+    expect(await run()).toBe(0);
+
+    // The approved report is byte for byte what the dry run wrote.
+    expect(readFileSync(join(workDir, 'report.txt'))).toEqual(dryReport);
+    const copies = readdirSync(workDir).filter((f) =>
+      /^apply-.*-report\.txt$/.test(f),
+    );
+    expect(copies).toHaveLength(1);
+    const applied = readFileSync(join(workDir, copies[0] ?? ''), 'utf8');
+    expect(applied).toContain('Apply gate: every check passes.');
+    // The run printed the copy's path, and `report()` follows it.
+    expect(report()).toBe(applied);
+    // The plan, the backup and the markers are where they were.
+    expect(existsSync(join(workDir, 'plan.json'))).toBe(true);
+    expect(backups()).toHaveLength(1);
+    expect(existsSync(markerPath(workDir, 'snapshots'))).toBe(true);
+  });
+
   it('writes only the repair-affected fields of the rows that differ, and keeps everything else', async () => {
     const hand = JSON.stringify(await premarketData(ids.p1hand));
     const untouchedP3 = JSON.stringify(await premarketData(ids.p3));

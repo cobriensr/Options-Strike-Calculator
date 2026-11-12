@@ -329,7 +329,23 @@ const logged = (): string =>
     .mocked(console.log)
     .mock.calls.map((c) => String(c[0]))
     .join('\n');
-const report = (): string => readFileSync(join(workDir, 'report.txt'), 'utf8');
+/**
+ * The report the last run wrote: its path is the last "report:" line a run
+ * printed. A dry run writes report.txt; an --apply leaves that file alone and
+ * writes apply-<time>-report.txt.
+ */
+const report = (): string => {
+  const line = vi
+    .mocked(console.log)
+    .mock.calls.map((c) => String(c[0]))
+    .reverse()
+    .find((l) => /^\s*report: /.test(l));
+  const path =
+    line == null
+      ? join(workDir, 'report.txt')
+      : line.replace(/^\s*report: /, '').trim();
+  return readFileSync(path, 'utf8');
+};
 const backups = (): string[] =>
   existsSync(workDir)
     ? readdirSync(workDir).filter((f) => f.startsWith('backup-'))
@@ -785,6 +801,31 @@ describe('--delete-frozen-stale on real SQL (pglite)', () => {
       const texts = hooks.calls.flatMap((c) => c.texts).join('\n');
       expect(texts).not.toMatch(/FROM futures_bars/);
       expect(backups()).toHaveLength(1);
+    });
+
+    it("leaves the dry run's report and the first apply's copy as they are when it finishes from the saved plan", async () => {
+      expect(await dry()).toBe(0);
+      const dryReport = readFileSync(join(workDir, 'report.txt'));
+      hooks.failWriteAt = { nth: 2, error: new Error('deadlock detected') };
+      expect(await run()).toBe(1);
+      const copies = readdirSync(workDir).filter((f) =>
+        /^apply-.*-report\.txt$/.test(f),
+      );
+      expect(copies).toHaveLength(1);
+      const firstApply = readFileSync(join(workDir, copies[0] ?? ''));
+
+      hooks.failWriteAt = null;
+      vi.setSystemTime(new Date('2026-11-08T12:30:00Z')); // a new apply would be named by its time
+      expect(await run()).toBe(0);
+
+      // The resume plans nothing and writes no report: both files are untouched.
+      expect(logged()).toContain('Resuming from');
+      expect(readFileSync(join(workDir, 'report.txt'))).toEqual(dryReport);
+      expect(
+        readdirSync(workDir).filter((f) => /^apply-.*-report\.txt$/.test(f)),
+      ).toEqual(copies);
+      expect(readFileSync(join(workDir, copies[0] ?? ''))).toEqual(firstApply);
+      expect(existsSync(markerPath(workDir, 'frozen'))).toBe(true);
     });
 
     it('refuses to finish when a planned row holds another price, and writes nothing', async () => {

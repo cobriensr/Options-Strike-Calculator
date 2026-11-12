@@ -2962,7 +2962,7 @@ function mergeStateText(m: MergeStateReport): string[] {
     `    the merge-state rule (a row with no value match whose stored price lies in the pre-repair [low, high] of a bar Phase 2 changed within ${LATE_BAR_MAX_AGE_MIN} min of the latest closed bar, and not in its current range): ${m.added} rows added (${byFieldText(m.fields)}), ${m.written} of them in the write set because of it`,
     ...m.rows.map((l) => `      ${l}`),
     `    rows that meet the same test but match an unrepaired bar by value (not attributed by the rule; they stay as stored): ${v.meeting} (price already attributed by another rule ${v.attributed}; not attributed ${v.notAttributed}, of which a recompute that differs in price ${v.wouldWrite})`,
-    '    every bar of the added rows: merge-state.txt',
+    '    every bar of the added rows: merge-state.txt (an --apply writes apply-<time>-merge-state.txt)',
   ];
 }
 
@@ -4659,13 +4659,19 @@ async function run(opts: RecomputeOptions): Promise<number> {
     applyCommand(opts, plans),
   );
   console.log(`\n${report}`);
-  writeFileSync(join(opts.workDir, 'report.txt'), `${report}\n`);
-  console.log(`\nreport: ${join(opts.workDir, 'report.txt')}`);
+  // report.txt and merge-state.txt are what the owner approves from a dry run, so an
+  // --apply leaves them alone and writes its own copies under names with its time.
+  const prefix = opts.apply
+    ? `apply-${new Date().toISOString().replace(/[:.]/g, '-')}-`
+    : '';
+  const reportPath = join(opts.workDir, `${prefix}report.txt`);
+  writeFileSync(reportPath, `${report}\n`);
+  console.log(`\nreport: ${reportPath}`);
   const mergeDetail =
     plans.snapshots?.symbols.flatMap((r) => r.mergeState?.detail ?? []) ?? [];
   if (mergeDetail.length > 0) {
     writeFileSync(
-      join(opts.workDir, 'merge-state.txt'),
+      join(opts.workDir, `${prefix}merge-state.txt`),
       `${mergeDetail.join('\n')}\n`,
     );
   }
