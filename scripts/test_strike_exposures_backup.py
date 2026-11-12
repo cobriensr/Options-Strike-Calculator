@@ -165,9 +165,15 @@ class FakeCursor:
             conn.local_settings = {}
         elif text == 'COMMIT':
             conn.in_txn = False
+            written = conn.rows_at_begin
             conn.rows_at_begin = None
             conn.local_settings = {}  # SET LOCAL ends with the transaction
-            conn.fail('commit')
+            try:
+                conn.fail('commit')
+            except Exception:
+                if not conn.closed and written is not None:
+                    conn.rows = written  # a COMMIT that fails on a live link rolled back
+                raise  # on a dropped link the writes stand: committed, acknowledgement lost
         elif text == 'ROLLBACK':
             # A ROLLBACK that fails leaves a dead connection, not an open transaction.
             conn.in_txn = False
@@ -262,9 +268,12 @@ class FakeConnection:
     is taken, `rowcount` says how many went in, and ROLLBACK undoes a
     transaction's inserts. The events 'insert1', 'insert2', ..., 'lock',
     'seq_name', 'seq_value', 'setval', 'taken_ids' (the restore dry run's id
-    lookup) and 'commit' can fail. `sequence_name`, `sequence_value` and
-    `sequence_is_called` are what pg_get_serial_sequence and the sequence say:
-    with is_called false the next nextval returns last_value itself.
+    lookup) and 'commit' can fail. A COMMIT that fails on a live connection
+    undoes the transaction's inserts; one that kills the connection leaves them
+    in, the worst case for a caller (committed, acknowledgement lost).
+    `sequence_name`, `sequence_value` and `sequence_is_called` are what
+    pg_get_serial_sequence and the sequence say: with is_called false the next
+    nextval returns last_value itself.
     """
 
     def __init__(
@@ -1895,6 +1904,31 @@ def test_verify_sees_a_change_in_any_column(
     result = sbk.verify_day(make_conn(rows), s3, BUCKET, D1)
 
     assert (result.only_in_db, result.only_in_file, result.value_diffs) == (0, 0, 1)
+    # Both sides hold 18 rows and every row is paired: a changed value alone
+    # must make the day not ok.
+    assert (result.db_rows, result.file_rows) == (18, 18)
+    assert not result.ok
+
+
+@pytest.mark.parametrize(
+    ('db_rows', 'file_rows', 'only_in_db', 'only_in_file', 'value_diffs', 'ok'),
+    [
+        pytest.param(5, 5, 0, 0, 0, True, id='nothing-differs'),
+        pytest.param(0, 0, 0, 0, 0, True, id='an-empty-day-on-both-sides'),
+        pytest.param(5, 4, 0, 0, 0, False, id='fewer-rows-in-the-file'),
+        pytest.param(4, 5, 0, 0, 0, False, id='fewer-rows-in-the-database'),
+        pytest.param(5, 5, 1, 0, 0, False, id='a-row-only-in-the-database'),
+        pytest.param(5, 5, 0, 1, 0, False, id='a-row-only-in-the-file'),
+        pytest.param(5, 5, 0, 0, 1, False, id='a-changed-value'),
+    ],
+)
+def test_a_verify_result_is_ok_only_when_every_count_agrees(
+    db_rows: int, file_rows: int, only_in_db: int, only_in_file: int, value_diffs: int, ok: bool
+) -> None:
+    # Each count alone must be able to fail the day: `verify` exits 0 on `ok`.
+    result = sbk.VerifyResult(D1, db_rows, file_rows, only_in_db, only_in_file, value_diffs)
+
+    assert result.ok is ok
 
 
 def test_verify_a_whole_timestamp_missing_on_either_side(make_conn, tmp_path: Path) -> None:
@@ -1910,8 +1944,72 @@ def test_verify_a_whole_timestamp_missing_on_either_side(make_conn, tmp_path: Pa
         make_conn([r for r in rows if r not in last_minute]), full_file, BUCKET, D1, page_rows=5
     )
 
-    assert (only_in_db.only_in_db, only_in_db.only_in_file, only_in_db.value_diffs) == (6, 0, 0)
-    assert (only_in_file.only_in_db, only_in_file.only_in_file, only_in_file.value_diffs) == (0, 6, 0)
+    # Each side's rows are counted in a group the other side lacks, too.
+    assert only_in_db == sbk.VerifyResult(D1, 18, 12, 6, 0, 0)
+    assert only_in_file == sbk.VerifyResult(D1, 12, 18, 0, 6, 0)
+    assert not only_in_db.ok and not only_in_file.ok
+
+
+def multi_expiry_rows() -> list[tuple]:
+    """5 rows in 2 timestamps; the first holds SPXW 5500 at three expiries.
+
+    The expiries are the sentinel 1970-01-01, the day itself and the next day,
+    the way SPX carries one strike at several expiries at once. Two rows of the
+    first timestamp differ in nothing but their expiry.
+    """
+    t0 = datetime(2026, 11, 2, 15, 0, tzinfo=UTC)
+    t1 = datetime(2026, 11, 2, 15, 1, tzinfo=UTC)
+    sentinel, same_day, next_day = date(1970, 1, 1), DAY, date(2026, 11, 3)
+    return [
+        make_row(id=1, timestamp=t0, ticker='SPXW', expiry=sentinel),
+        make_row(id=2, timestamp=t0, ticker='SPXW', expiry=same_day),
+        make_row(id=3, timestamp=t0, ticker='SPXW', expiry=next_day),
+        make_row(id=4, timestamp=t0, ticker='SPXW', strike=Decimal('5505.00'), expiry=same_day),
+        make_row(id=5, timestamp=t1, ticker='SPXW', expiry=same_day),
+    ]
+
+
+def test_verify_pairs_rows_that_differ_only_in_their_expiry(make_conn, tmp_path: Path) -> None:
+    rows = multi_expiry_rows()
+    s3 = FakeS3()
+    back_up(s3, rows, tmp_path)
+
+    # Pages of 2 cut the three-expiry group across pages.
+    same = sbk.verify_day(make_conn(rows), s3, BUCKET, D1, page_rows=2)
+
+    assert same == sbk.VerifyResult(D1, 5, 5, 0, 0, 0)
+    # A change in the sentinel's row is that row's value diff, nothing else.
+    in_file = [changed(rows[0], call_gamma_oi=Decimal('9.9999')), *rows[1:]]
+    other = FakeS3()
+    back_up(other, in_file, tmp_path)
+
+    different = sbk.verify_day(make_conn(rows), other, BUCKET, D1, page_rows=2)
+
+    assert different == sbk.VerifyResult(D1, 5, 5, 0, 0, 1)
+
+
+def test_verify_counts_an_expiry_the_other_side_lacks(make_conn, tmp_path: Path) -> None:
+    rows = multi_expiry_rows()
+    # The file has the next-day expiry as the day after that: a different row,
+    # not a changed value of the same one.
+    in_file = [*rows[:2], changed(rows[2], expiry=date(2026, 11, 4)), *rows[3:]]
+    s3 = FakeS3()
+    back_up(s3, in_file, tmp_path)
+
+    result = sbk.verify_day(make_conn(rows), s3, BUCKET, D1)
+
+    assert result == sbk.VerifyResult(D1, 5, 5, 1, 1, 0)
+
+
+def test_restore_dry_run_counts_the_expiry_the_table_lacks(make_conn, tmp_path: Path) -> None:
+    rows = multi_expiry_rows()
+    s3 = FakeS3()
+    back_up(s3, rows, tmp_path)
+    conn = make_conn([r for r in rows if r != rows[1]])
+
+    result = sbk.restore_day(conn, s3, BUCKET, D1, apply=False, page_rows=2)
+
+    assert result == sbk.RestoreResult(rows=1, id_clashes=0)
 
 
 def test_verify_an_empty_database_day(make_conn, tmp_path: Path) -> None:
@@ -2351,26 +2449,43 @@ def test_restore_apply_locks_then_moves_the_sequence(
     assert not conn.in_txn and conn.autocommit is False
 
 
-@pytest.mark.parametrize(
-    'conn_kwargs',
-    [
-        pytest.param({'sequence_name': None}, id='no-sequence'),
-        pytest.param({'sequence_value': None}, id='last-value-is-null'),
-        pytest.param(
-            {'fail_on': {'seq_value': psycopg2.errors.InsufficientPrivilege('permission denied')}},
-            id='no-privilege-to-read-it',
-        ),
-        pytest.param(
-            {'fail_on': {'lock': psycopg2.errors.QueryCanceled('canceling statement')}},
-            id='lock-times-out',
-        ),
-        pytest.param(
-            {'fail_on': {'setval': psycopg2.OperationalError('injected')}}, id='setval-fails'
-        ),
-    ],
-)
+SEQUENCE_STEP_FAILURES = [
+    pytest.param(
+        {'sequence_name': None},
+        sbk.BackupError,
+        'strike_exposures.id has no sequence',
+        id='no-sequence',
+    ),
+    pytest.param(
+        {'sequence_value': None},
+        sbk.BackupError,
+        'the id sequence has no last_value',
+        id='last-value-is-null',
+    ),
+    pytest.param(
+        {'fail_on': {'seq_value': psycopg2.errors.InsufficientPrivilege('permission denied')}},
+        psycopg2.errors.InsufficientPrivilege,
+        'permission denied',
+        id='no-privilege-to-read-it',
+    ),
+    pytest.param(
+        {'fail_on': {'lock': psycopg2.errors.QueryCanceled('canceling statement')}},
+        psycopg2.errors.QueryCanceled,
+        'canceling statement',
+        id='lock-times-out',
+    ),
+    pytest.param(
+        {'fail_on': {'setval': psycopg2.OperationalError('injected')}},
+        psycopg2.OperationalError,
+        'injected',
+        id='setval-fails',
+    ),
+]
+
+
+@pytest.mark.parametrize(('conn_kwargs', 'cause_type', 'cause_text'), SEQUENCE_STEP_FAILURES)
 def test_restore_apply_fails_when_the_sequence_cannot_be_moved(
-    make_conn, tmp_path: Path, conn_kwargs: dict
+    make_conn, tmp_path: Path, conn_kwargs: dict, cause_type: type, cause_text: str
 ) -> None:
     rows = day_rows(D1, list(range(1, 8)))
     s3 = FakeS3()
@@ -2384,10 +2499,33 @@ def test_restore_apply_fails_when_the_sequence_cannot_be_moved(
         '2026-11-02: 7 row(s) restored, but the id sequence was not moved; '
         'move it by hand before the writers run'
     )
+    # The step's own error stays attached as the cause, for whoever debugs it.
+    assert type(raised.value.__cause__) is cause_type
+    assert str(raised.value.__cause__) == cause_text
     assert conn.statements[-1][0] == 'ROLLBACK'
     assert not conn.in_txn
     assert conn.sequence_value in (3, None)  # never moved
     assert len(conn.rows) == 7  # the rows were committed before
+
+
+def test_the_cli_shows_nothing_of_a_failed_sequence_steps_own_error(cli, tmp_path: Path) -> None:
+    # The cause carries the server's text, which can quote a value. The CLI
+    # prints the BackupError's fixed text and never walks the chain.
+    rows = day_rows(D1, [1, 2, 3])
+    s3 = FakeS3()
+    back_up(s3, rows, tmp_path)
+    cause = psycopg2.OperationalError(f'could not extend the sequence: {DETAIL_MARKER}')
+    conn = FakeConnection([], sequence_name=SEQUENCE, fail_on={'setval': cause})
+
+    code, out = cli.run(conn, s3, 'restore', '--date', '2026-11-02', '--apply')
+
+    assert code == 1
+    assert (
+        'FAILED 2026-11-02: BackupError (2026-11-02: 3 row(s) restored, but the id sequence '
+        'was not moved; move it by hand before the writers run)'
+    ) in out
+    assert DETAIL_MARKER not in out and 'OperationalError' not in out
+    assert 'connection lost' not in out  # the link is fine; only the sequence step failed
 
 
 def test_restore_apply_id_collision_raises(make_conn, tmp_path: Path) -> None:
@@ -2517,6 +2655,96 @@ def test_a_dropped_connection_in_a_write_transaction_keeps_its_error(make_conn, 
     assert 'ROLLBACK' not in [text for text, _ in conn.statements]
 
 
+def test_a_connection_that_drops_at_commit_keeps_its_error_and_stops_the_restore(
+    make_conn, tmp_path: Path
+) -> None:
+    # Whether the COMMIT reached the server is unknown, so nothing else is sent:
+    # no ROLLBACK, and no sequence step on top of rows that may not be there.
+    rows = day_rows(D1, [1, 2])
+    s3 = FakeS3()
+    back_up(s3, rows, tmp_path)
+    error = psycopg2.OperationalError('server closed the connection unexpectedly')
+    conn = make_conn([], sequence_name=SEQUENCE, fail_on={'commit': error}, closes_on='commit')
+
+    with pytest.raises(psycopg2.OperationalError) as raised:
+        sbk.restore_day(conn, s3, BUCKET, D1, apply=True)
+
+    assert raised.value is error
+    texts = [text for text, _ in conn.statements]
+    assert texts[-1] == 'COMMIT'
+    assert 'ROLLBACK' not in texts
+    assert not any(t.startswith('LOCK') or 'setval' in t for t in texts)
+    assert conn.closed
+
+
+def test_a_commit_that_fails_on_a_live_connection_propagates_and_restores_autocommit(
+    make_conn, tmp_path: Path
+) -> None:
+    rows = day_rows(D1, [1, 2])
+    s3 = FakeS3()
+    back_up(s3, rows, tmp_path)
+    error = psycopg2.errors.QueryCanceled('canceling statement due to statement timeout')
+    conn = make_conn([], sequence_name=SEQUENCE, fail_on={'commit': error})
+
+    with pytest.raises(psycopg2.errors.QueryCanceled) as raised:
+        sbk.restore_day(conn, s3, BUCKET, D1, apply=True)
+
+    assert raised.value is error
+    assert conn.autocommit is False and not conn.in_txn
+    texts = [text for text, _ in conn.statements]
+    assert not any(t.startswith('LOCK') or 'setval' in t for t in texts)
+    assert conn.rows == []  # the failed COMMIT left nothing behind
+
+
+def put_file(s3: FakeS3, rows: list[tuple], day: date = D1) -> None:
+    """Store `rows` as the day's object exactly as given, rows of other days too,
+    with a sha256 and a row count that match the bytes."""
+    sink = io.BytesIO()
+    with pq.ParquetWriter(sink, sbk.ARROW_SCHEMA, compression='zstd') as writer:
+        sbk._write_page(writer, rows, day)
+    body = sink.getvalue()
+    s3.objects[key(day)] = {
+        'Body': body,
+        'Metadata': {
+            'rows': str(len(rows)),
+            'sha256': hashlib.sha256(body).hexdigest(),
+            'format': sbk.FORMAT_VERSION,
+        },
+    }
+
+
+@pytest.mark.parametrize('apply', [False, True])
+def test_restore_refuses_a_file_with_rows_of_another_day(
+    make_conn, apply: bool
+) -> None:
+    # The sha256 and the row count only say this is the file that was uploaded.
+    # The stray rows are in the middle, so neither the first nor the last row
+    # gives them away.
+    rows = day_rows(D1, [1, 2, 3, 4, 5])
+    stray = [changed(rows[1], date=D2), changed(rows[2], date=D2)]
+    s3 = FakeS3()
+    put_file(s3, [rows[0], *stray, *rows[3:]])
+    conn = make_conn([], sequence_name=SEQUENCE)
+
+    with pytest.raises(sbk.BackupError) as raised:
+        sbk.restore_day(conn, s3, BUCKET, D1, apply=apply)
+
+    assert str(raised.value) == '2026-11-02: 2 row(s) in the file belong to another day'
+    assert raised.value.__context__ is None
+    # Refused before the database is touched: no BEGIN, and so no INSERT.
+    assert conn.statements == []
+    assert conn.inserts == [] and conn.rows == []
+
+
+def test_restore_takes_a_file_whose_rows_all_belong_to_its_day(make_conn) -> None:
+    rows = day_rows(D1, [1, 2, 3])
+    s3 = FakeS3()
+    put_file(s3, rows)
+    conn = make_conn([], sequence_name=SEQUENCE)
+
+    assert sbk.restore_day(conn, s3, BUCKET, D1, apply=True).rows == 3
+
+
 def test_verify_command_ok(cli, tmp_path: Path) -> None:
     rows = grouped_rows()
     s3 = FakeS3()
@@ -2615,8 +2843,8 @@ def test_restore_command_dry_run_is_the_default(cli, tmp_path: Path) -> None:
 
 
 def test_restore_command_dry_run_exits_1_when_ids_are_taken(cli, tmp_path: Path) -> None:
-    # A dry run that says "restorable" must not fail later on --apply. It names
-    # the count and nothing about the rows: no id, no ticker.
+    # A dry run that finds taken ids must not report the day as restorable. It
+    # names the count and nothing about the rows: no id, no ticker.
     rows = day_rows(D1, [1, 2, 424242])
     s3 = FakeS3()
     back_up(s3, rows, tmp_path)
@@ -2678,6 +2906,91 @@ def test_restore_command_apply(cli, tmp_path: Path) -> None:
     assert conn.rows == sorted(rows, key=key_of)
     for secret in (DSN_SECRET, R2_SECRET, 'ACCESS-KEY-MARKER'):
         assert secret not in out
+
+
+LOST_DURING_APPLY = (
+    'connection lost during --apply; whether the rows were committed is unknown. '
+    'Run restore without --apply to see what is left'
+)
+
+
+def test_restore_command_apply_that_loses_the_connection_says_the_outcome_is_unknown(
+    cli, tmp_path: Path
+) -> None:
+    # A drop at COMMIT may or may not have committed the day. The failure line
+    # alone ("OperationalError") would not tell the owner that.
+    rows = day_rows(D1, [1, 2, 3])
+    s3 = FakeS3()
+    back_up(s3, rows, tmp_path)
+    error = psycopg2.OperationalError(f'server closed the connection {DETAIL_MARKER}')
+    conn = FakeConnection([], sequence_name=SEQUENCE, fail_on={'commit': error}, closes_on='commit')
+
+    code, out = cli.run(conn, s3, 'restore', '--date', '2026-11-02', '--apply')
+
+    assert code == 1
+    assert 'FAILED 2026-11-02: OperationalError\n' in out
+    assert LOST_DURING_APPLY in out
+    assert DETAIL_MARKER not in out
+
+
+@pytest.mark.parametrize(
+    ('argv', 'conn_kwargs', 'failure'),
+    [
+        pytest.param(
+            ['--apply'],
+            {'fail_on': {'commit': psycopg2.errors.QueryCanceled('canceling statement')}},
+            'FAILED 2026-11-02: QueryCanceled\n',
+            id='a-failed-commit-on-a-live-connection',
+        ),
+        pytest.param(
+            [],
+            {
+                'fail_on': {'page1': psycopg2.OperationalError('server closed the connection')},
+                'closes_on': 'page1',
+            },
+            'FAILED 2026-11-02: OperationalError\n',
+            id='a-dry-run-writes-nothing-so-nothing-is-unknown',
+        ),
+        pytest.param(
+            ['--apply'],
+            {
+                'fail_on': {'setval': psycopg2.OperationalError('server closed the connection')},
+                'closes_on': 'setval',
+            },
+            'FAILED 2026-11-02: BackupError (2026-11-02: 3 row(s) restored, but the id sequence '
+            'was not moved; move it by hand before the writers run)\n',
+            id='a-drop-after-the-rows-committed-already-says-what-happened',
+        ),
+    ],
+)
+def test_restore_command_does_not_claim_an_unknown_outcome_when_it_knows_better(
+    cli, tmp_path: Path, argv: list[str], conn_kwargs: dict, failure: str
+) -> None:
+    rows = day_rows(D1, [1, 2, 3])
+    s3 = FakeS3()
+    back_up(s3, rows, tmp_path)
+    conn = FakeConnection([], sequence_name=SEQUENCE, **conn_kwargs)
+
+    code, out = cli.run(conn, s3, 'restore', '--date', '2026-11-02', *argv)
+
+    assert code == 1
+    assert failure in out
+    assert 'unknown' not in out
+
+
+def test_restore_command_refuses_a_file_with_rows_of_another_day(cli) -> None:
+    rows = day_rows(D1, [1, 2, 3])
+    s3 = FakeS3()
+    put_file(s3, [rows[0], changed(rows[1], date=D2), rows[2]])
+    conn = FakeConnection([], sequence_name=SEQUENCE)
+
+    code, out = cli.run(conn, s3, 'restore', '--date', '2026-11-02', '--apply')
+
+    assert code == 1
+    assert (
+        'FAILED 2026-11-02: BackupError (2026-11-02: 1 row(s) in the file belong to another day)'
+    ) in out
+    assert conn.statements == []
 
 
 def test_restore_command_failure_exits_1(cli, tmp_path: Path) -> None:

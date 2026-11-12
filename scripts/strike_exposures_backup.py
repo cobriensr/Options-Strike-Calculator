@@ -32,8 +32,9 @@ Checking and restoring a day:
   on the unique key, and counts the rows only in one side and the rows whose
   values differ.
 - `restore_day` puts a day's file back into the table. It is a dry run unless
-  `apply` is true. It inserts with ON CONFLICT on the unique key DO NOTHING in
-  batches, keeps the original ids, and then moves the id sequence past them.
+  `apply` is true, and it refuses a file that holds another day's rows. It
+  inserts with ON CONFLICT on the unique key DO NOTHING in batches, keeps the
+  original ids, and then moves the id sequence past them.
 - `main` is the CLI: `export`, `status`, `verify` and `restore`.
 
 The types are exact. NUMERIC columns keep the column's own precision and scale
@@ -330,8 +331,8 @@ def iter_day_pages(
         cur.execute(statement)
     after: tuple = ()
     while True:
-        sql = _PAGE_SQL + (_AFTER_KEY_SQL if after else '') + _ORDER_SQL
-        cur.execute(sql, (day, *after, page_rows))
+        query = _PAGE_SQL + (_AFTER_KEY_SQL if after else '') + _ORDER_SQL
+        cur.execute(query, (day, *after, page_rows))
         rows = cur.fetchall()
         if not rows:
             return
@@ -1012,6 +1013,20 @@ class RestoreResult:
     id_clashes: int = 0
 
 
+def _check_file_day(parquet: pq.ParquetFile, day: date) -> None:
+    """Raise BackupError unless every row in the file is a row of `day`.
+
+    A restore puts in whatever the file holds, and the sha256 and the row count
+    only say it is the file that was uploaded. A row with another date (or none)
+    counts as stray. The message has the date and the count, no row data.
+    """
+    dates = parquet.read(columns=['date']).column('date')
+    matching = pc.sum(pc.equal(dates, pa.scalar(day, pa.date32()))).as_py() or 0
+    stray = len(dates) - matching
+    if stray:
+        raise BackupError(f'{day.isoformat()}: {stray} row(s) in the file belong to another day')
+
+
 def restore_day(
     conn: PgConnection,
     s3,
@@ -1021,6 +1036,10 @@ def restore_day(
     page_rows: int = PAGE_ROWS,
 ) -> RestoreResult:
     """Put a day's file back into the table; say how many rows went in.
+
+    The file is checked first (`_downloaded_day`, then that every row is the
+    day's own, `_check_file_day`), for a dry run and an apply alike, and a file
+    that fails leaves the database untouched.
 
     Without `apply` nothing is written: it reads the day and counts the file's
     rows whose unique key the table does not have, and how many of those have
@@ -1037,6 +1056,7 @@ def restore_day(
     sequence has to be moved by hand before the writers insert again.
     """
     with _downloaded_day(s3, bucket, day) as parquet:
+        _check_file_day(parquet, day)
         if not apply:
             with _read_snapshot(conn) as cur:
                 clashes = _IdClashes(cur)
@@ -1198,6 +1218,16 @@ def _restore(args: argparse.Namespace, conn, s3, bucket: str) -> int:
         result = restore_day(conn, s3, bucket, args.date, apply=args.apply)
     except _RUN_FAILURES as exc:
         _log_failure(day, exc)
+        if args.apply and conn.closed and not isinstance(exc, BackupError):
+            # A drop at COMMIT may or may not have committed the day, and the
+            # failure line alone does not say so. A BackupError already says what
+            # happened (the rows are in; only the sequence was not moved).
+            print(
+                'connection lost during --apply; whether the rows were committed is '
+                'unknown. Run restore without --apply to see what is left',
+                file=sys.stderr,
+                flush=True,
+            )
         return 1
     if args.apply:
         print(f'{day}: inserted {result.rows} rows', flush=True)
