@@ -42,6 +42,7 @@ gaps make that easy:
 | --- | --- | --- |
 | `UPDATE_CHECK_INTERVAL_MS` | 15 min | A deploy reaches an open window within 15 min; the check is one small `sw.js` request. |
 | Visible-check throttle | 1 min | Tab switching must not fire a request each time. |
+| `FETCH_TIMEOUT_MS` | 30 s | The `sw.js` pre-fetch gives up before the 1-min focus throttle, so a stalled check can't hold the in-flight guard. |
 | Safe-moment re-check | every 60 s while an update waits, plus on `visibilitychange` | So a waiting update applies within a minute of a safe moment. |
 
 ## Safe-moment rule
@@ -92,9 +93,13 @@ None: no API, table, env var or migration. Frontend only (Vercel deploy).
 - Skills to load: `progressive-web-app`, `react-expert`, `test-master`.
 - Every interval and listener has a cleanup (R1). Module-level state stays
   bounded (one timer, one listener set).
-- Network failures of an update check are expected (offline, laptop waking)
-  and are not reported to Sentry; anything else is a `captureUnlessAuth`
-  warning, as `applyUpdate` does.
+- Routine failures of an update check are not reported to Sentry: anything
+  while offline, and a TypeError or `TimeoutError` from the `sw.js` fetch
+  (laptop waking, flaky Wi-Fi). Anything else is a `captureUnlessAuth`
+  warning, as `applyUpdate` does. That includes a rejected `update()` after the
+  fetch returned 200, which is how a new `sw.js` that fails to evaluate shows
+  up. It is reported once per error name until a check succeeds (ruling,
+  2026-11-11, Task 1 review).
 - No change to `src/sw.ts` or `vite.config.ts` unless the vite-plugin-pwa docs
   require it. Check the installed plugin's docs for the periodic-update pattern
   (Context7 or `node_modules/vite-plugin-pwa`) rather than assuming it.
@@ -115,8 +120,9 @@ None: no API, table, env var or migration. Frontend only (Vercel deploy).
   `resetUpdateState()` also stops it for tests.
 - Tests (fake timers): checks at 15 and 30 min; a visible event checks once
   and a second within a minute doesn't; hidden events don't check; offline
-  skips; a rejected `update()` doesn't throw and isn't captured as an error
-  when offline/network; stop clears everything; no check before
+  skips; a fetch-stage network failure or timeout doesn't throw and isn't
+  captured; a rejected `update()` after a 200 is captured once; stop clears
+  everything; no check before
   `onRegisteredSW`.
 
 **Acceptance:** `npm run review` green.
