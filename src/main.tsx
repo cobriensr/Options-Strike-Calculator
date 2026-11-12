@@ -7,7 +7,11 @@ import './index.css';
 import StrikeCalculator from './App';
 import ErrorBoundary from './components/ErrorBoundary';
 import { ToastProvider } from './components/Toast';
-import { markNeedsRefresh, setUpdateFn } from './lib/sw-update';
+import {
+  markNeedsRefresh,
+  setUpdateFn,
+  startUpdateChecks,
+} from './lib/sw-update';
 import { installAuthInterceptor } from './utils/authInterceptor';
 
 if (import.meta.env.DEV) {
@@ -92,9 +96,14 @@ Sentry.init({
 // is wired up lazily in `applyUpdate()` so that first-install
 // controllerchange events don't trigger a spurious reload mid-load (which
 // was aborting in-flight XHRs as NS_BINDING_ABORTED on every page open).
+// `onRegisteredSW` starts the periodic check: browsers look for a new SW only
+// on a page load, and this single-page app can stay open for days.
 const updateSW = registerSW({
   onNeedRefresh() {
     markNeedsRefresh();
+  },
+  onRegisteredSW(swUrl, registration) {
+    startUpdateChecks(registration, swUrl);
   },
 });
 setUpdateFn(updateSW);
