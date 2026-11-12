@@ -5,15 +5,12 @@
  * when nobody is trading in this window.
  */
 
-import { getMarketCloseHourET } from '../data/marketHours';
+import { CASH_OPEN_MIN_ET, getMarketCloseHourET } from '../data/marketHours';
 import {
   getETDateStr,
   getETDayOfWeek,
   getETTotalMinutes,
 } from '../utils/timezone';
-
-/** 09:30 ET (08:30 CT), the cash open, in ET minutes after midnight. */
-const CASH_OPEN_MIN_ET = 9 * 60 + 30;
 
 export interface SafeMomentContext {
   /** `document.visibilityState === 'hidden'`. */

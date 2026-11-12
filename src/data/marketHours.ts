@@ -236,7 +236,7 @@ export function priorTradingDay(date: string): string {
 }
 
 /** 9:30 ET, the cash open, in ET minutes after midnight. */
-const CASH_OPEN_MIN_ET = 9 * 60 + 30;
+export const CASH_OPEN_MIN_ET = 9 * 60 + 30;
 
 /**
  * Expected one-minute bars in the cash session on `date`: 390 on a full
