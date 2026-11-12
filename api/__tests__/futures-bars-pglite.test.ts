@@ -11,6 +11,12 @@
  * the NUMERIC(12,4) column rounds UW's 9-decimal strings, NULL flow and
  * contract arrays reach the columns as NULL, a bad value rejects the
  * insert, and the real `withDbRetry` does not retry a CHECK violation.
+ *
+ * The history repair's three guarded writes (`updateFuturesBars`,
+ * `tagFuturesBars`, `deleteFuturesBars`) are checked here too: each
+ * touches a row only while its open and close are what the caller read,
+ * compares them as numbers, returns the minutes it changed, and runs in
+ * 500-row statements.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -43,9 +49,14 @@ vi.mock('../_lib/db.js', async () => {
 
 import { isRetryableDbError, TransientDbError } from '../_lib/db.js';
 import {
+  deleteFuturesBars,
   fetchFuturesBars,
   insertFuturesBars,
+  tagFuturesBars,
+  updateFuturesBars,
+  type BarGuard,
   type FuturesBarRow,
+  type StoredFuturesBar,
 } from '../_lib/futures-bars.js';
 
 type NeonSql = Parameters<NonNullable<Migration['statements']>>[0];
@@ -470,6 +481,402 @@ describe('futures-bars SQL (pglite)', () => {
       await expect(fetchFuturesBars('ES', T0, T2)).rejects.toThrow(
         /futures_bars/,
       );
+    });
+  });
+
+  // ── The history repair's guarded writes ──────────────────
+
+  /** The open/close a caller holds after reading `symbol`'s bars. */
+  async function guards(symbol = 'ES'): Promise<BarGuard[]> {
+    const read: StoredFuturesBar[] = await fetchFuturesBars(
+      symbol,
+      T0,
+      '2026-09-05T00:00:00.000Z',
+    );
+    return read.map((b) => ({ ts: b.ts, wasOpen: b.open, wasClose: b.close }));
+  }
+
+  /** Changes a stored bar behind the caller's back, as a concurrent writer would. */
+  async function changeBehindBack(
+    column: 'open' | 'close',
+    ts: string,
+  ): Promise<void> {
+    await pg.db!.query(
+      `UPDATE futures_bars SET ${column} = ${column} + 1
+        WHERE symbol = 'ES' AND ts = $1`,
+      [ts],
+    );
+  }
+
+  describe('updateFuturesBars', () => {
+    it('rewrites the prices, volume, all four flow columns and the contract of the guarded minute, and returns its ts; other minutes and symbols stay', async () => {
+      const wrong = {
+        open: 6767.25,
+        high: 6768,
+        low: 6767,
+        close: 6767.5,
+        volume: 5,
+        buyVolume: 5,
+        sellVolume: 0,
+        buyPrints: 1,
+        sellPrints: 0,
+        contract: 'ESZ6',
+      };
+      await insertFuturesBars('ES', [bar(0, wrong), bar(1, wrong)]);
+      await insertFuturesBars('NQ', [bar(0, { ...wrong, contract: 'NQZ6' })]);
+      const [g0] = await guards();
+
+      const done = await updateFuturesBars('ES', [
+        {
+          ...bar(0, {
+            open: '6700.250000000',
+            high: '6702.500000000',
+            low: '6700.250000000',
+            close: '6702.500000000',
+            volume: 9,
+            buyVolume: 4,
+            sellVolume: 5,
+            buyPrints: 2,
+            sellPrints: 3,
+            contract: 'ESU6',
+          }),
+          ...g0!,
+        },
+      ]);
+
+      expect(done).toEqual([T0]);
+      const [first, second] = await rows();
+      expect(first).toEqual({
+        symbol: 'ES',
+        ts: '2026-09-04T00:00:00Z',
+        open: '6700.2500',
+        high: '6702.5000',
+        low: '6700.2500',
+        close: '6702.5000',
+        volume: '9',
+        buy_volume: '4',
+        sell_volume: '5',
+        buy_prints: 2,
+        sell_prints: 3,
+        contract: 'ESU6',
+      });
+      expect(second).toMatchObject({ open: '6767.2500', contract: 'ESZ6' });
+      expect((await rows('NQ'))[0]).toMatchObject({
+        open: '6767.2500',
+        contract: 'NQZ6',
+      });
+    });
+
+    it('NULL flow and a NULL contract overwrite what was stored (unknown replaces a wrong known)', async () => {
+      await insertFuturesBars('ES', [
+        bar(0, {
+          buyVolume: 5,
+          sellVolume: 0,
+          buyPrints: 1,
+          sellPrints: 0,
+          contract: 'ESZ6',
+        }),
+      ]);
+      const [g0] = await guards();
+
+      await updateFuturesBars('ES', [
+        { ...bar(0, { open: 7000, contract: null }), ...g0! },
+      ]);
+
+      expect((await rows())[0]).toMatchObject({
+        open: '7000.0000',
+        buy_volume: null,
+        sell_volume: null,
+        buy_prints: null,
+        sell_prints: null,
+        contract: null,
+      });
+    });
+
+    it.each(['open', 'close'] as const)(
+      'skips a minute whose %s changed since the read, leaving it as the other writer left it, and returns only the minutes it changed',
+      async (column) => {
+        await insertFuturesBars('ES', [bar(0), bar(1)]);
+        const [g0, g1] = await guards();
+        await changeBehindBack(column, T0);
+        const before = await rows();
+
+        const done = await updateFuturesBars('ES', [
+          { ...bar(0, { open: 1, high: 1, low: 1, close: 1 }), ...g0! },
+          { ...bar(1, { open: 2, high: 2, low: 2, close: 2 }), ...g1! },
+        ]);
+
+        expect(done).toEqual([T1]);
+        const after = await rows();
+        expect(after[0]).toEqual(before[0]);
+        expect(after[1]).toMatchObject({ open: '2.0000', close: '2.0000' });
+      },
+    );
+
+    it('compares the guard as a number: 6700.25, "6700.25" and "6700.2500" all match the stored 6700.2500', async () => {
+      await insertFuturesBars('ES', [
+        bar(0, { open: 6700.25, close: 6700.25 }),
+        bar(1, { open: 6700.25, close: 6700.25 }),
+        bar(2, { open: 6700.25, close: 6700.25 }),
+      ]);
+      const same = { open: 5, high: 5, low: 5, close: 5 };
+
+      const done = await updateFuturesBars('ES', [
+        { ...bar(0, same), wasOpen: 6700.25, wasClose: 6700.25 },
+        { ...bar(1, same), wasOpen: '6700.25', wasClose: '6700.25' },
+        { ...bar(2, same), wasOpen: '6700.2500', wasClose: '6700.2500' },
+      ]);
+
+      expect(done).toEqual([
+        '2026-09-04T00:00:00.000Z',
+        '2026-09-04T00:01:00.000Z',
+        '2026-09-04T00:02:00.000Z',
+      ]);
+    });
+
+    it('updates in 500-row statements and returns every changed minute in order', async () => {
+      await insertFuturesBars(
+        'ES',
+        Array.from({ length: 1201 }, (_, i) => bar(i)),
+      );
+      const g = await guards();
+
+      const done = await updateFuturesBars(
+        'ES',
+        g.map((x, i) => ({
+          ...bar(i, { open: 1, high: 1, low: 1, close: 1 }),
+          ...x,
+        })),
+      );
+
+      expect(done).toHaveLength(1201);
+      expect(done[1200]).toBe('2026-09-04T20:00:00.000Z');
+      expect(
+        pg.queries.filter((q) => q.includes('UPDATE futures_bars')),
+      ).toHaveLength(3);
+      expect((await rows()).every((r) => r.open === '1.0000')).toBe(true);
+    });
+
+    it('nothing to update → no query', async () => {
+      await expect(updateFuturesBars('ES', [])).resolves.toEqual([]);
+      expect(pg.queries).toHaveLength(0);
+    });
+
+    it('a value the column cannot hold rejects the statement and changes nothing in it', async () => {
+      await insertFuturesBars('ES', [bar(0), bar(1)]);
+      const [g0, g1] = await guards();
+      const before = await rows();
+
+      await expect(
+        updateFuturesBars('ES', [
+          { ...bar(0, { open: 1 }), ...g0! },
+          { ...bar(1, { high: '1000000000' }), ...g1! },
+        ]),
+      ).rejects.toThrow(/numeric field overflow/);
+
+      expect(await rows()).toEqual(before);
+    });
+
+    it('a contract that fails the CHECK rejects at once (no retry) and changes nothing', async () => {
+      await insertFuturesBars('ES', [bar(0)]);
+      const [g0] = await guards();
+      const before = await rows();
+
+      const err = await updateFuturesBars('ES', [
+        { ...bar(0, { contract: 'NQZ6' }), ...g0! },
+      ]).catch((e: unknown) => e);
+
+      expect((err as Error).message).toMatch(/futures_bars_contract_chk/);
+      expect(isRetryableDbError(err)).toBe(false);
+      expect(
+        pg.queries.filter((q) => q.includes('UPDATE futures_bars')),
+      ).toHaveLength(1);
+      expect(await rows()).toEqual(before);
+    });
+  });
+
+  describe('tagFuturesBars', () => {
+    it('sets the contract only where it is NULL: a tagged minute keeps its contract and is not returned', async () => {
+      await insertFuturesBars('ES', [
+        bar(0),
+        bar(1, { contract: 'ESZ6' }),
+        bar(2),
+      ]);
+      const [g0, g1, g2] = await guards();
+
+      const done = await tagFuturesBars('ES', [
+        { ...g0!, contract: 'ESU6' },
+        { ...g1!, contract: 'ESU6' },
+        { ...g2!, contract: 'ESU6' },
+      ]);
+
+      expect(done).toEqual([T0, T2]);
+      expect((await rows()).map((r) => r.contract)).toEqual([
+        'ESU6',
+        'ESZ6',
+        'ESU6',
+      ]);
+    });
+
+    it('changes only the contract: prices, volume and flow are left as stored', async () => {
+      await insertFuturesBars('ES', [
+        bar(0, { buyVolume: 6, sellVolume: 4, buyPrints: 3, sellPrints: 2 }),
+      ]);
+      const [g0] = await guards();
+      const before = (await rows())[0];
+
+      await tagFuturesBars('ES', [{ ...g0!, contract: 'ESU6' }]);
+
+      expect((await rows())[0]).toEqual({ ...before, contract: 'ESU6' });
+    });
+
+    it.each(['open', 'close'] as const)(
+      'skips a minute whose %s changed since the read',
+      async (column) => {
+        await insertFuturesBars('ES', [bar(0), bar(1)]);
+        const [g0, g1] = await guards();
+        await changeBehindBack(column, T0);
+
+        const done = await tagFuturesBars('ES', [
+          { ...g0!, contract: 'ESU6' },
+          { ...g1!, contract: 'ESU6' },
+        ]);
+
+        expect(done).toEqual([T1]);
+        expect((await rows()).map((r) => r.contract)).toEqual([null, 'ESU6']);
+      },
+    );
+
+    it('tags in 500-row statements', async () => {
+      await insertFuturesBars(
+        'ES',
+        Array.from({ length: 501 }, (_, i) => bar(i)),
+      );
+      const g = await guards();
+
+      const done = await tagFuturesBars(
+        'ES',
+        g.map((x) => ({ ...x, contract: 'ESU6' })),
+      );
+
+      expect(done).toHaveLength(501);
+      expect(
+        pg.queries.filter((q) => q.includes('UPDATE futures_bars')),
+      ).toHaveLength(2);
+    });
+
+    it('nothing to tag → no query', async () => {
+      await expect(tagFuturesBars('ES', [])).resolves.toEqual([]);
+      expect(pg.queries).toHaveLength(0);
+    });
+
+    it('a contract that fails the CHECK rejects the statement and tags nothing in it', async () => {
+      await insertFuturesBars('ES', [bar(0), bar(1)]);
+      const [g0, g1] = await guards();
+
+      await expect(
+        tagFuturesBars('ES', [
+          { ...g0!, contract: 'ESU6' },
+          { ...g1!, contract: 'NQU6' },
+        ]),
+      ).rejects.toThrow(/futures_bars_contract_chk/);
+
+      expect((await rows()).map((r) => r.contract)).toEqual([null, null]);
+    });
+  });
+
+  describe('deleteFuturesBars', () => {
+    it('deletes the guarded minutes of the symbol and returns their ts; other minutes and symbols stay', async () => {
+      await insertFuturesBars('ES', [bar(0), bar(1), bar(2)]);
+      await insertFuturesBars('NQ', [bar(0)]);
+      const [g0, , g2] = await guards();
+
+      const done = await deleteFuturesBars('ES', [g0!, g2!]);
+
+      expect(done).toEqual([T0, T2]);
+      expect((await rows()).map((r) => r.ts)).toEqual(['2026-09-04T00:01:00Z']);
+      expect(await rows('NQ')).toHaveLength(1);
+    });
+
+    it.each(['open', 'close'] as const)(
+      'skips a minute whose %s changed since the read: the row stays and is not returned',
+      async (column) => {
+        await insertFuturesBars('ES', [bar(0), bar(1)]);
+        const [g0, g1] = await guards();
+        await changeBehindBack(column, T0);
+
+        const done = await deleteFuturesBars('ES', [g0!, g1!]);
+
+        expect(done).toEqual([T1]);
+        expect((await rows()).map((r) => r.ts)).toEqual([
+          '2026-09-04T00:00:00Z',
+        ]);
+      },
+    );
+
+    it('a minute with no row (already deleted, or never there) is not an error and is not returned', async () => {
+      await insertFuturesBars('ES', [bar(0)]);
+      const [g0] = await guards();
+
+      await expect(deleteFuturesBars('ES', [g0!])).resolves.toEqual([T0]);
+      await expect(deleteFuturesBars('ES', [g0!])).resolves.toEqual([]);
+    });
+
+    it('deletes in 500-row statements', async () => {
+      await insertFuturesBars(
+        'ES',
+        Array.from({ length: 1001 }, (_, i) => bar(i)),
+      );
+      const g = await guards();
+
+      const done = await deleteFuturesBars('ES', g);
+
+      expect(done).toHaveLength(1001);
+      expect(
+        pg.queries.filter((q) => q.includes('DELETE FROM futures_bars')),
+      ).toHaveLength(3);
+      expect(await rows()).toEqual([]);
+    });
+
+    it('nothing to delete → no query', async () => {
+      await expect(deleteFuturesBars('ES', [])).resolves.toEqual([]);
+      expect(pg.queries).toHaveLength(0);
+    });
+
+    it('a rejected DELETE propagates', async () => {
+      await insertFuturesBars('ES', [bar(0)]);
+      const [g0] = await guards();
+      await pg.db!.query('DROP TABLE futures_bars');
+
+      await expect(deleteFuturesBars('ES', [g0!])).rejects.toThrow(
+        /futures_bars/,
+      );
+    });
+  });
+
+  describe('fill (insertFuturesBars) in the repair', () => {
+    it('never overwrites: a fill for a minute that gained a bar since the read leaves its prices, flow and NULL contract as stored', async () => {
+      await insertFuturesBars('ES', [
+        bar(0, { open: 1111, buyVolume: 9, sellVolume: 9 }),
+      ]);
+
+      const n = await insertFuturesBars('ES', [
+        bar(0, {
+          open: 2222,
+          volume: 99,
+          buyVolume: 1,
+          sellVolume: 1,
+          contract: 'ESU6',
+        }),
+      ]);
+
+      expect(n).toBe(0);
+      expect((await rows())[0]).toMatchObject({
+        open: '1111.0000',
+        volume: '10',
+        buy_volume: '9',
+        contract: null,
+      });
     });
   });
 });
