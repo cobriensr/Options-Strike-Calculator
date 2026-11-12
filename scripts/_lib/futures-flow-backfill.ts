@@ -681,11 +681,12 @@ export interface DayLoopResult {
  * time, and hands each finished root-day to `report`. A root-day that
  * throws is logged with its pages, counted as a failure, and the run goes
  * on. Returns the pages used, the failed root-days, the trade dates a
- * read-only run found no front month for (per root), and where it stopped
- * early (if it did).
+ * read-only run found no front month for (per root; a result without an
+ * `undecided` list, like the bar repair's, reports none because it fails
+ * the root-day instead), and where it stopped early (if it did).
  */
 export async function runPlannedDays<
-  R extends { pages: number; undecided: readonly string[] },
+  R extends { pages: number; undecided?: readonly string[] },
 >(
   plan: readonly DayPlan[],
   maxPages: number,
@@ -741,9 +742,10 @@ export async function runPlannedDays<
         continue;
       }
       pages += r.ok.pages;
-      if (r.ok.undecided.length > 0) {
+      const missing = r.ok.undecided ?? [];
+      if (missing.length > 0) {
         const dates = undecided.get(r.root) ?? new Set<string>();
-        for (const d of r.ok.undecided) dates.add(d);
+        for (const d of missing) dates.add(d);
         undecided.set(r.root, dates);
       }
       report(r.root, day.date, r.ok);

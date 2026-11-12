@@ -115,7 +115,7 @@ import {
   renameSync,
   writeFileSync,
 } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 
 import { z } from 'zod';
 
@@ -579,6 +579,12 @@ export function inKeepBand(
 export interface RepairPlan {
   /** In the band and left alone: already tagged, or no storable contract. */
   keep: number;
+  /**
+   * Of `keep`, the bars tagged with a contract other than the scheduled one.
+   * They are left alone (the tag only fills a NULL), so this is the count of
+   * wrong-contract bars that survive.
+   */
+  keepOtherTag: number;
   /** In the band with a NULL contract: only the contract is set. */
   tags: Array<{ old: StoredFuturesBar; contract: string }>;
   /** Outside the band with a rebuilt minute: replaced in full. */
@@ -591,7 +597,9 @@ export interface RepairPlan {
   held: number;
   /**
    * Stored bars the rebuild cannot judge: a closed minute, a minute outside
-   * every piece (an undecided trade date), or prints with no usable price.
+   * every piece, or prints with no usable price. The pieces of a root-day
+   * cover every open minute (an undecided trade date fails the root-day
+   * first), so the second case is a guard.
    */
   unjudged: number;
   /** Minutes with no stored bar whose prints have no usable price. */
@@ -622,8 +630,8 @@ function pieceAt(
 
 /**
  * Sorts every minute of a root-day (see the module comment). Pure. A stored
- * bar is judged only in a Globex-open minute inside a piece (a trade date
- * with a stored front month); any other is `unjudged`.
+ * bar is judged only in a Globex-open minute inside a piece; any other is
+ * `unjudged`.
  */
 export function planRepair({
   root,
@@ -634,6 +642,7 @@ export function planRepair({
 }: RepairInput): RepairPlan {
   const plan: RepairPlan = {
     keep: 0,
+    keepOtherTag: 0,
     tags: [],
     rewrites: [],
     deletes: [],
@@ -677,6 +686,13 @@ export function planRepair({
       plan.tags.push({ old, contract });
     } else {
       plan.keep += 1;
+      if (
+        old.contract !== null &&
+        contract !== null &&
+        old.contract !== contract
+      ) {
+        plan.keepOtherTag += 1;
+      }
     }
   }
 
@@ -858,6 +874,12 @@ function openBackup(workDir: string, runId: string): string {
  * for every row the plan changes: the stored row in full and what it
  * becomes (rewrite, tag), the stored row (delete), or the new bar (fill).
  * Undo is the reverse of each line. Throws when the file cannot be written.
+ *
+ * A `fill` line is the bar the run meant to insert, written before the
+ * insert, which is ON CONFLICT DO NOTHING: another writer may have taken the
+ * minute since. So a fill is undone only where the stored row still equals
+ * `after` on ts, open, close and contract, never by deleting on (symbol, ts)
+ * alone. The `id` column is not recorded.
  */
 function appendBackup(
   path: string,
@@ -880,6 +902,8 @@ function appendBackup(
 
 interface RepairCounts {
   keep: number;
+  /** Of `keep`: tagged with a contract other than the scheduled one. */
+  keepOtherTag: number;
   keepTag: number;
   rewrite: number;
   delete: number;
@@ -909,7 +933,6 @@ interface RepairRootDayResult {
   noPrints: boolean;
   leaders: string[];
   unstorable: string[];
-  undecided: string[];
   /** The first few rewrites and deletes, ready to print. */
   samples: string[];
 }
@@ -1012,6 +1035,15 @@ async function repairRootDay(
       dayStartMs,
       dayEndMs,
     );
+    // The repair reads the stored front months and never decides one, and a
+    // bar on a date with none cannot be judged: the root-day fails, and
+    // nothing is paged or written for it.
+    if (undecided.length > 0) {
+      throw new Error(
+        `${root}: no stored front month for ${undecided.join(', ')}; ` +
+          `run scripts/backfill-futures-front-month.ts`,
+      );
+    }
     const cachePath = join(run.workDir, CACHE_DIR, `${root}-${date}.json`);
     const cached =
       run.noCache || pieces.length === 0
@@ -1021,26 +1053,38 @@ async function repairRootDay(
       minutes: await pageDayContracts(apiKey, pieces, tally),
       malformed: tally.malformed,
     };
-    // pageDayContracts throws when a piece needs more pages than its guard
-    // allows, so a day that gets here was paged back to the start of every
-    // piece, or to the start of UW's history for its contract (the helper
-    // cannot tell the two apart; the latter would show up as deletes in the
-    // dry run). A day with no counted print is not saved: a hole in UW's
+    // A day is saved only when every piece was paged back to its start
+    // (`exhausted` 0) and no minute was withheld: a hit then stands in for
+    // paging, and the stop signals need not be stored. pageDayContracts
+    // throws on the page guard, so a budget-stopped day never gets here.
+    // A day with no counted print is not saved either: a hole in UW's
     // history may be filled later.
-    if (cached === null && day.minutes.size > 0) {
+    if (
+      cached === null &&
+      tally.exhausted === 0 &&
+      tally.withheld === 0 &&
+      day.minutes.size > 0
+    ) {
       writeRepairCache(cachePath, root, date, pieces, day);
     }
 
     const noPrints = pieces.length > 0 && day.minutes.size === 0;
     // A minute with no rebuilt bar is a gap only if the day was rebuilt in
-    // full. A malformed print withholds its minute, and a day with no print
-    // at all is a hole in UW's history: neither may delete stored bars.
+    // full. A piece that ran out of UW history (exhausted), a minute
+    // withheld as untrustworthy (a malformed print, a burst of one
+    // microsecond's prints) and a day with no print at all (a hole in UW's
+    // history) each leave minutes missing that were not quiet: none of them
+    // may delete a stored bar.
     const plan = planRepair({
       root,
       stored,
       minutes: day.minutes,
       pieces,
-      holdDeletes: noPrints || day.malformed > 0,
+      holdDeletes:
+        noPrints ||
+        day.malformed > 0 ||
+        tally.exhausted > 0 ||
+        tally.withheld > 0,
     });
 
     let applied: AppliedCounts | null = null;
@@ -1054,6 +1098,7 @@ async function repairRootDay(
       stored: stored.length,
       counts: {
         keep: plan.keep,
+        keepOtherTag: plan.keepOtherTag,
         keepTag: plan.tags.length,
         rewrite: plan.rewrites.length,
         delete: plan.deletes.length,
@@ -1069,7 +1114,6 @@ async function repairRootDay(
       noPrints,
       leaders: [...new Set(pieces.map((p) => p.contract))],
       unstorable: plan.unstorable,
-      undecided,
       samples: sampleLines(plan, pieces),
     };
   } catch (err) {
@@ -1088,16 +1132,18 @@ function modeOf(opts: BarBackfillOptions): Mode {
   return opts.dryRun ? 'dry' : 'write';
 }
 
-/** The run's mode flag as `rerunArgs` appends it, with its leading space. */
+/**
+ * The run's mode flag as `rerunArgs` appends it, with its leading space. A
+ * repair's line names its work dir in full, so a re-run from another
+ * directory finds the same cache and backup.
+ */
 function modeFlag(opts: BarBackfillOptions): string {
   if (opts.compare) return ' --compare';
   if (opts.repair) {
     const flags = ['--repair'];
     if (opts.dryRun) flags.push('--dry-run');
     if (opts.noCache) flags.push('--no-cache');
-    if (opts.workDir !== DEFAULT_WORK_DIR) {
-      flags.push('--work-dir', opts.workDir);
-    }
+    flags.push('--work-dir', resolve(opts.workDir));
     return ` ${flags.join(' ')}`;
   }
   return opts.dryRun ? ' --dry-run' : '';
@@ -1130,23 +1176,6 @@ interface RootTotals {
   counts: RepairCounts;
 }
 
-/**
- * Says, once, which trade dates each root had no stored front month for.
- * The repair never decides one, so the fix is the front-month backfill.
- */
-function logRepairUndecided(
-  byRoot: ReadonlyMap<FuturesRoot, ReadonlySet<string>>,
-): void {
-  for (const [root, dates] of byRoot) {
-    if (dates.size === 0) continue;
-    console.log(
-      `  ${root}  undecided trade dates ${dates.size}: ` +
-        `${[...dates].sort().join(', ')} (left alone; decide them with ` +
-        `scripts/backfill-futures-front-month.ts, then repair again)`,
-    );
-  }
-}
-
 /** The root-day's line: every count, then where its prints came from. */
 function repairLine(
   root: FuturesRoot,
@@ -1159,7 +1188,8 @@ function repairLine(
     `  ${root} ${date}  stored ${res.stored}  keep ${c.keep}  ` +
     `keep+tag ${c.keepTag}  rewrite ${c.rewrite}  delete ${c.delete}  ` +
     `fill ${c.fill}  held ${c.held}  unjudged ${c.unjudged}  ` +
-    `unbuildable ${c.unbuildable}  malformed ${res.malformed}  ${source}  ` +
+    `unbuildable ${c.unbuildable}  keep-other-tag ${c.keepOtherTag}  ` +
+    `malformed ${res.malformed}  ${source}  ` +
     `front ${res.leaders.join('/') || '-'}`;
   const a = res.applied;
   if (a !== null) {
@@ -1178,8 +1208,6 @@ function repairLine(
   }
   // A hole in UW's history shows here, not as a clean empty day.
   if (res.noPrints) line += '  prints 0';
-  if (res.undecided.length > 0)
-    line += `  undecided ${res.undecided.join(',')}`;
   return line;
 }
 
@@ -1199,15 +1227,19 @@ async function runRepair(
     .replace(/\.\d{3}Z$/, 'Z')
     .replaceAll(':', '-');
 
+  // Every path the run opens or prints is absolute, so the backup and the
+  // cache are found again whatever directory a later run starts from.
+  const workDir = resolve(opts.workDir);
+
   // The backup file comes first: a run that cannot record what it changes
   // changes nothing.
   let backupPath: string | null = null;
   if (!opts.dryRun) {
     try {
-      backupPath = openBackup(opts.workDir, runId);
+      backupPath = openBackup(workDir, runId);
     } catch (err) {
       console.error(
-        `Cannot create the backup file in ${opts.workDir}: ` +
+        `Cannot create the backup file in ${workDir}: ` +
           `${err instanceof Error ? err.message : String(err)}. ` +
           `Nothing was read or written.`,
       );
@@ -1230,7 +1262,7 @@ async function runRepair(
   const run: RepairRun = {
     dryRun: opts.dryRun,
     noCache: opts.noCache,
-    workDir: opts.workDir,
+    workDir,
     runId,
     backupPath,
   };
@@ -1251,6 +1283,7 @@ async function runRepair(
         stored: 0,
         counts: {
           keep: 0,
+          keepOtherTag: 0,
           keepTag: 0,
           rewrite: 0,
           delete: 0,
@@ -1290,11 +1323,15 @@ async function runRepair(
     },
   );
 
-  logRepairUndecided(loop.undecided);
+  const left = { held: 0, unjudged: 0, unbuildable: 0, keepOtherTag: 0 };
   for (const root of opts.roots) {
     const total = byRoot.get(root);
     if (total === undefined) continue;
     const c = total.counts;
+    left.held += c.held;
+    left.unjudged += c.unjudged;
+    left.unbuildable += c.unbuildable;
+    left.keepOtherTag += c.keepOtherTag;
     let line =
       `  ${root}  stored ${total.stored}  keep ${c.keep}  ` +
       `keep+tag ${c.keepTag}  rewrite ${c.rewrite}  delete ${c.delete}  ` +
@@ -1302,18 +1339,33 @@ async function runRepair(
     if (c.held > 0) line += `  held ${c.held}`;
     if (c.unjudged > 0) line += `  unjudged ${c.unjudged}`;
     if (c.unbuildable > 0) line += `  unbuildable ${c.unbuildable}`;
+    if (c.keepOtherTag > 0) line += `  keep-other-tag ${c.keepOtherTag}`;
     console.log(line);
   }
-  const verbs = opts.dryRun
-    ? `would rewrite ${planned.rewrite}, delete ${planned.delete}, ` +
-      `tag ${planned.tag}, fill ${planned.fill}`
-    : `rewrote ${applied.rewrite}, deleted ${applied.delete}, ` +
-      `tagged ${applied.tag}, filled ${applied.fill}`;
-  console.log(
-    `\nDone: ${verbs}; ${source.cache} root-days from the cache, ` +
-      `${source.paged} paged; ${loop.pages} pages, ` +
-      `${loop.failures} failed root-days.`,
+  // The Done line carries every total a clean second dry run is judged on:
+  // a delete held back, a bar left unjudged (and so untagged) or a
+  // wrong-contract bar kept all read as zero deletes and zero rewrites.
+  const sum = (n: typeof planned) => n.rewrite + n.delete + n.tag + n.fill;
+  const done = [
+    opts.dryRun
+      ? `would rewrite ${planned.rewrite}, delete ${planned.delete}, ` +
+        `tag ${planned.tag}, fill ${planned.fill}`
+      : `rewrote ${applied.rewrite}, deleted ${applied.delete}, ` +
+        `tagged ${applied.tag}, filled ${applied.fill}`,
+  ];
+  if (!opts.dryRun) {
+    done.push(
+      `planned ${sum(planned)}, applied ${sum(applied)} ` +
+        `(changed since read ${sum(planned) - sum(applied)})`,
+    );
+  }
+  done.push(
+    `held ${left.held}, unjudged ${left.unjudged}, ` +
+      `unbuildable ${left.unbuildable}, keep-other-tag ${left.keepOtherTag}`,
+    `${source.cache} root-days from the cache, ${source.paged} paged`,
+    `${loop.pages} pages, ${loop.failures} failed root-days.`,
   );
+  console.log(`\nDone: ${done.join('; ')}`);
   if (backupPath !== null) console.log(`Backup: ${backupPath}`);
   reportIncomplete(opts, plan, loop);
   // Dates the loop never reached are as unfinished as failed root-days.

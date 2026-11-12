@@ -21,7 +21,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -1561,6 +1561,27 @@ describe('planRepair', () => {
     expect(p.rewrites).toEqual([]);
   });
 
+  it('counts the kept bars tagged with another contract apart (keepOtherTag, a subset of keep): not the scheduled one, a NULL one, or one with no storable scheduled name', () => {
+    const p = plan(
+      [
+        bar('14:00', '6700.2500', { contract: 'ESZ6' }), // another contract
+        bar('14:01', '6700.2500', { contract: 'ESU6' }), // the scheduled one
+        bar('14:02', '6700.2500'), // NULL: tagged, not kept
+        bar('14:03', '6700.2500', { contract: 'ESZ6' }), // scheduled name unstorable
+      ],
+      [
+        minute('14:00', '6700.250000000'),
+        minute('14:01', '6700.250000000'),
+        minute('14:02', '6700.250000000'),
+        minute('14:03', '6700.250000000', '6700.250000000', {}, 'NQU6'),
+      ],
+    );
+
+    expect(p.keep).toBe(3);
+    expect(p.keepOtherTag).toBe(1);
+    expect(p.tags.map((t) => t.old.ts)).toEqual([T('14:02')]);
+  });
+
   it('a fill carries the rebuilt bar and the scheduled contract', () => {
     const p = plan([], [minute('14:04', '6700.500000000', '6700.750000000')]);
 
@@ -1906,31 +1927,65 @@ describe('runBarBackfill --repair', () => {
       expect(mockStored).toHaveBeenCalledWith('ES', '2026-09-15', '2026-09-16');
     });
 
-    it('an undecided trade date is neither paged nor touched: its stored bars are unjudged, the date is reported and the run still exits 0', async () => {
-      routeFrontMonth({}, ['2026-09-16']);
-      routeRepairSql({
-        ES: [
-          sRow('00', '6700.2500'),
-          // Trade date 2026-09-16 (after the 17:00 CT open at 22:00Z).
-          storedRow('2026-09-15T22:30:00Z', { contract: null }),
-        ],
-      });
-      routeTrades({
-        ESU6: [[print(2, '2026-09-15T14:00:30.000000Z', 5, 'buy'), ENDER]],
-      });
+    it.each([
+      ['a write run', {}],
+      ['a dry run', { dryRun: true }],
+    ])(
+      'an undecided trade date fails the root-day by name before anything is paged or written, and the run exits 1 (%s)',
+      async (_mode, over) => {
+        routeFrontMonth({}, ['2026-09-16']);
+        routeRepairSql({
+          ES: [
+            sRow('00', '6700.2500'),
+            // Trade date 2026-09-16 (after the 17:00 CT open at 22:00Z).
+            storedRow('2026-09-15T22:30:00Z', { contract: null }),
+          ],
+        });
+        routeTrades({
+          ESU6: [[print(2, '2026-09-15T14:00:30.000000Z', 5, 'buy'), ENDER]],
+        });
 
-      const code = await repair();
+        const code = await repair(over);
 
-      expect(code).toBe(0);
-      expect(olderThan(0)).toBe('2026-09-15T21:00:00.000000Z');
-      expect(writes('delete')).toEqual([]);
-      expect(writes('update')).toEqual([]);
-      expect(out()).toMatch(/ES 2026-09-15 .*unjudged 1 /);
-      expect(out()).toMatch(/ES {2}undecided trade dates 1: 2026-09-16/);
-      expect(out()).not.toMatch(/a real run decides them/);
+        expect(code).toBe(1);
+        expect(out()).toMatch(
+          /ES 2026-09-15 FAILED: ES: no stored front month for 2026-09-16; run scripts\/backfill-futures-front-month\.ts \(after 0 pages\)/,
+        );
+        expect(out()).toMatch(/Failed root-days: ES 2026-09-15$/m);
+        expect(mockUwFetch).not.toHaveBeenCalled();
+        expect(allWrites()).toEqual([]);
+        expect(backupLines()).toEqual([]);
+        expect(existsSync(cachePath())).toBe(false);
+        // The repair reads the front-month table; it never decides a date.
+        expect(mockRefresh).not.toHaveBeenCalled();
+        expect(mockSchedule).not.toHaveBeenCalled();
+        expect(out()).not.toMatch(/undecided trade dates/);
+      },
+    );
+
+    it('a root with an undecided date fails only its own root-day; another root still repairs', async () => {
+      mockStored.mockImplementation(
+        async (root: string, from: string, to: string) => {
+          const stored = new Map<string, string>();
+          for (let d = from; d <= to; d = nextDay(d)) {
+            if (root !== 'ES' || d !== '2026-09-16') {
+              stored.set(d, `${root}U6`);
+            }
+          }
+          return stored;
+        },
+      );
+      routeRepairSql({ ES: scenarioStored(), NQ: [] });
+      routeTrades({ NQU6: [[ENDER]] });
+
+      const code = await repair({ roots: ['ES', 'NQ'] });
+
+      expect(code).toBe(1);
+      expect(out()).toMatch(/ES 2026-09-15 FAILED: ES: no stored front month/);
+      expect(out()).toMatch(/NQ 2026-09-15 {2}stored 0 /);
     });
 
-    it('a stored bar tagged with another contract and inside the band is left alone', async () => {
+    it('a stored bar tagged with another contract and inside the band is left alone, and counted as keep-other-tag', async () => {
       routeRepairSql({ ES: [sRow('00', '6700.2500', { contract: 'ESZ6' })] });
       routeTrades({
         ESU6: [[print(5, '2026-09-15T14:00:30.000000Z', 5, 'buy'), ENDER]],
@@ -1940,6 +1995,9 @@ describe('runBarBackfill --repair', () => {
 
       expect(allWrites()).toEqual([]);
       expect(out()).toMatch(/stored 1 {2}keep 1 {2}keep\+tag 0 /);
+      expect(out()).toMatch(/ES 2026-09-15 .* keep-other-tag 1 /);
+      expect(out()).toMatch(/^ {2}ES {2}stored 1 .* keep-other-tag 1$/m);
+      expect(out()).toMatch(/keep-other-tag 1; /);
     });
 
     it('a rewrite sets the scheduled contract over a stored one that was tagged wrongly', async () => {
@@ -2118,6 +2176,63 @@ describe('runBarBackfill --repair', () => {
         /wrote rewrite 0 {2}delete 0 {2}tag 1 {2}fill 1 {2}changed since read 3/,
       );
       expect(out()).toMatch(/Done: rewrote 0, deleted 0, tagged 1, filled 1;/);
+      // The total the owner reads on the one line that is easy to find.
+      expect(out()).toMatch(
+        /Done: .*; planned 5, applied 2 \(changed since read 3\); held 0, /,
+      );
+    });
+
+    it('a write run that applied everything it planned says so on the Done line, and a dry run has no planned/applied clause', async () => {
+      routeRepairSql({ ES: scenarioStored() });
+      routeTrades({ ESU6: [SCENARIO_PRINTS] });
+      await repair();
+      const write = out();
+      logs.length = 0;
+      routeTrades({ ESU6: [SCENARIO_PRINTS] });
+
+      await repair({ dryRun: true });
+
+      expect(write).toMatch(
+        /Done: rewrote 1, deleted 1, tagged 2, filled 1; planned 5, applied 5 \(changed since read 0\); held 0, unjudged 0, unbuildable 0, keep-other-tag 0; /,
+      );
+      expect(out()).toMatch(
+        /Done: would rewrite 1, delete 1, tag 2, fill 1; held 0, unjudged 0, unbuildable 0, keep-other-tag 0; /,
+      );
+      expect(out()).not.toMatch(/planned \d+, applied/);
+    });
+
+    it('the Done line totals what a clean second dry run must show as zero: held, unjudged, unbuildable and keep-other-tag, over every root-day', async () => {
+      // 14:02 and 14:03 have no rebuilt minute (held: the malformed print
+      // withholds 14:01 and the day is not trusted); 14:04 has prints with
+      // no usable price (unbuildable); the 21:30Z halt bar is unjudged;
+      // 14:05 is kept with another contract.
+      routeRepairSql({
+        ES: [
+          sRow('02', '6700.2500'),
+          sRow('03', '6700.2500'),
+          sRow('05', '6700.2500', { contract: 'ESZ6' }),
+          storedRow('2026-09-15T21:30:00Z', { contract: null }),
+        ],
+      });
+      routeTrades({
+        ESU6: [
+          [
+            print(8, '2026-09-15T14:05:30.000000Z', 1, 'buy'),
+            print(7, '2026-09-15T14:04:30.000000Z', 1, 'buy', null),
+            print(6, '2026-09-15T14:01:30.000000Z', 1, 'up'), // malformed
+            ENDER,
+          ],
+        ],
+      });
+
+      await repair({ dryRun: true });
+
+      expect(out()).toMatch(
+        /Done: would rewrite 0, delete 0, tag 0, fill 0; held 2, unjudged 1, unbuildable 1, keep-other-tag 1; /,
+      );
+      expect(out()).toMatch(
+        /^ {2}ES {2}stored 4 {2}keep 1 {2}keep\+tag 0 {2}rewrite 0 {2}delete 0 {2}fill 0 {2}held 2 {2}unjudged 1 {2}unbuildable 1 {2}keep-other-tag 1$/m,
+      );
     });
 
     it('a rejected backup directory fails the run before any read, page or write', async () => {
@@ -2235,16 +2350,60 @@ describe('runBarBackfill --repair', () => {
       );
     });
 
-    it('the re-run line leaves out the work dir when it is the default', async () => {
+    it('the re-run line names the work dir in full even when it is the default, so a re-run from another directory finds the same cache and backup', async () => {
       mockSql.mockRejectedValue(new Error('connection terminated'));
-      mockIsMarketHours.mockReturnValue(false);
 
-      // Dry run: the default dir is never written to, so nothing is created.
+      // Fails on the first read, before any cache file is touched.
       await run({ repair: true, dryRun: true, workDir: DEFAULT_WORK_DIR });
 
       expect(logs).toContain(
-        'Re-run with 2026-09-15 --roots ES --max-pages 20000 --repair --dry-run',
+        `Re-run with 2026-09-15 --roots ES --max-pages 20000 --repair --dry-run --work-dir ${resolve(DEFAULT_WORK_DIR)}`,
       );
+      expect(isAbsolute(resolve(DEFAULT_WORK_DIR))).toBe(true);
+    });
+
+    describe('a relative work dir', () => {
+      // `path.resolve` reads process.cwd(), so the test moves the "current
+      // directory" into its temp dir instead of writing into the repo.
+      beforeEach(() => {
+        vi.spyOn(process, 'cwd').mockReturnValue(workDir);
+      });
+
+      it('is resolved against the current directory: the backup, the printed paths and the re-run line are all absolute', async () => {
+        routeRepairSql({ ES: scenarioStored() }, { reject: 'insert' });
+        routeTrades({ ESU6: [SCENARIO_PRINTS] });
+
+        const code = await repair({ workDir: join('out', 'run') });
+
+        const dir = join(workDir, 'out', 'run');
+        const backup = join(dir, `front-month-repair-${RUN_ID}.jsonl`);
+        expect(code).toBe(1);
+        expect(existsSync(backup)).toBe(true);
+        expect(logs).toContain(
+          `Backup of every row this run rewrites, deletes or tags, and every fill: ${backup}`,
+        );
+        expect(logs).toContain(
+          `Re-run with 2026-09-15 --roots ES --max-pages 20000 --repair --work-dir ${dir}`,
+        );
+        // The cache went to the same absolute place.
+        expect(
+          existsSync(
+            join(dir, 'front-month-repair-cache', 'ES-2026-09-15.json'),
+          ),
+        ).toBe(true);
+      });
+
+      it('an unwritable one is named in full in the refusal', async () => {
+        const blocker = join(workDir, 'blocker');
+        writeFileSync(blocker, 'a file where the directory should be');
+
+        const code = await repair({ workDir: join('blocker', 'run') });
+
+        expect(code).toBe(1);
+        expect(out()).toContain(
+          `Cannot create the backup file in ${join(blocker, 'run')}:`,
+        );
+      });
     });
   });
 
@@ -2281,6 +2440,122 @@ describe('runBarBackfill --repair', () => {
       expect(code).toBe(0);
       expect(allWrites()).toEqual([]);
       expect(out()).toMatch(/ES 2026-09-15 .*held 5 .*prints 0$/m);
+    });
+
+    it('a roll-day piece whose contract UW has no history for (an empty first page: exhausted) holds its deletes while the other piece repairs; nothing is cached', async () => {
+      routeFrontMonth({ '2026-09-16': 'ESZ6' });
+      routeRepairSql({
+        ES: [
+          sRow('00', '6700.2500'), // piece 1, ESU6: no rebuilt minute at all
+          storedRow('2026-09-15T22:01:00Z', {
+            // piece 2, ESZ6: rebuilt
+            open: '6750.5000',
+            high: '6750.5000',
+            low: '6750.5000',
+            close: '6750.5000',
+            contract: null,
+          }),
+        ],
+      });
+      routeTrades({
+        ESU6: [[]],
+        ESZ6: [
+          [
+            print(
+              10,
+              '2026-09-15T22:01:30.000000Z',
+              1,
+              'sell',
+              '6750.500000000',
+            ),
+            print(9, '2026-09-15T21:30:00.000000Z', 1, 'buy'),
+          ],
+        ],
+      });
+
+      const code = await repair();
+
+      expect(code).toBe(0);
+      // Without the hold the 14:00 bar is a delete: the piece printed nothing.
+      expect(writes('delete')).toEqual([]);
+      expect(out()).toMatch(
+        /ES 2026-09-15 {2}stored 2 {2}keep 0 {2}keep\+tag 1 {2}rewrite 0 {2}delete 0 {2}fill 0 {2}held 1 /,
+      );
+      expect(tagged().ts).toEqual(['2026-09-15T22:01:00.000Z']);
+      expect(out()).toMatch(/held 1, unjudged 0, /);
+      expect(existsSync(cachePath())).toBe(false);
+    });
+
+    it('a minute withheld as untrustworthy (a page of only already-seen prints, no malformed print) holds the day’s deletes; nothing is cached', async () => {
+      const burst = '2026-09-15T14:05:30.000000Z';
+      const page = [
+        print(13, burst, 1, 'buy'),
+        print(12, burst, 1, 'buy'),
+        print(11, burst, 1, 'buy'),
+      ];
+      routeRepairSql({
+        ES: [
+          sRow('00', '6700.2500'),
+          sRow('05', '6700.2500'), // the withheld minute
+          sRow('06', '6700.2500'),
+        ],
+      });
+      routeTrades({
+        ESU6: [
+          page,
+          page, // the +1 µs cursor returns the same prints: all seen
+          [print(5, '2026-09-15T14:00:30.000000Z', 5, 'buy'), ENDER],
+        ],
+      });
+
+      const code = await repair();
+
+      expect(code).toBe(0);
+      expect(writes('delete')).toEqual([]);
+      expect(out()).toMatch(/ES 2026-09-15 .* held 2 .*malformed 0 /);
+      expect(tagged().ts).toEqual([M('00')]);
+      expect(existsSync(cachePath())).toBe(false);
+    });
+
+    it('a malformed print outside the piece (on the page that crosses its start) withholds no minute, but still holds the day’s deletes; the cache keeps that, so a later run holds too', async () => {
+      routeRepairSql({
+        ES: [sRow('00', '6700.2500'), sRow('02', '6700.2500')],
+      });
+      const pages = () => [
+        [
+          print(5, '2026-09-15T14:00:30.000000Z', 5, 'buy'),
+          print(4, '2026-09-14T23:59:30.000000Z', 1, 'up'), // malformed, before 00:00Z
+        ],
+      ];
+      routeTrades({ ESU6: pages() });
+
+      await repair();
+
+      expect(writes('delete')).toEqual([]);
+      expect(out()).toMatch(/ES 2026-09-15 .* held 1 .*malformed 1 /);
+      expect(readCache().malformed).toBe(1);
+      logs.length = 0;
+      mockUwFetch.mockClear();
+
+      await repair();
+
+      expect(mockUwFetch).not.toHaveBeenCalled();
+      expect(writes('delete')).toEqual([]);
+      expect(out()).toMatch(/ES 2026-09-15 .* held 1 .*from cache/);
+    });
+
+    it('a root-day whose pieces were all paged back to their start and withheld nothing still deletes what the scheduled contract did not print', async () => {
+      routeRepairSql({
+        ES: [sRow('00', '6700.2500'), sRow('02', '6700.2500')],
+      });
+      routeTrades({
+        ESU6: [[print(5, '2026-09-15T14:00:30.000000Z', 5, 'buy'), ENDER]],
+      });
+
+      await repair();
+
+      expect(deleted().ts).toEqual([M('02')]);
+      expect(out()).toMatch(/held 0 /);
     });
   });
 

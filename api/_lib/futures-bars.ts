@@ -25,7 +25,8 @@
  * bar, `tagFuturesBars` sets a NULL contract and `deleteFuturesBars`
  * removes one. Each takes the open and close the caller read and touches a
  * row only while both still hold, so a bar changed since the read is
- * skipped and left for the next run, and none of them is ever applied twice.
+ * skipped and left for the next run, and a re-run applies nothing that
+ * already holds.
  */
 
 import { getDb, withDbRetry } from './db.js';
