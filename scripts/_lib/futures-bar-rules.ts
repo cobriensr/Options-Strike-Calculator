@@ -70,7 +70,7 @@ export function storableContract(
 
 export const PRICE_FIELDS = ['open', 'high', 'low', 'close'] as const;
 
-// ── Run ─────────────────────────────────────────────────────
+// ── Re-run lines ────────────────────────────────────────────
 
 /**
  * The run's mode flag as `rerunArgs` appends it, with its leading space. A

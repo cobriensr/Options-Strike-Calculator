@@ -412,7 +412,7 @@ Steps:
 
 ### Phase 6: repair history, 2026-09-04 → the Phase 5 deploy (medium-large; outside market hours)
 
-Files: `scripts/_lib/futures-bar-backfill.ts` and its test, `scripts/backfill-futures-bars.ts`, `api/_lib/futures-bars.ts`, `api/__tests__/futures-bars-pglite.test.ts`.
+Files: `scripts/_lib/futures-bar-backfill.ts`, `scripts/_lib/futures-bar-repair.ts` and `scripts/_lib/futures-bar-rules.ts` with their tests (`futures-bar-backfill.test.ts`, `futures-bar-repair.test.ts`, and the shared `futures-bar-test-helpers.ts`), `scripts/backfill-futures-bars.ts`, `api/_lib/futures-bars.ts`, `api/__tests__/futures-bars-pglite.test.ts`.
 
 The new `--repair` mode works per root and UTC day:
 - **Rebuild:** read the existing bars, page the scheduled contract for each session piece (Phase 4b), and rebuild each minute with the `FlowMinute` builder in `futures-flow-repair.ts` (`ohlc` plus flow).

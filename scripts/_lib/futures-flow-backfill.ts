@@ -46,8 +46,8 @@
  *
  * The argument parser, date plan, session pieces, per-day paging, date
  * loop and market-hours guard are exported for `futures-bar-backfill.ts`
- * (the September bar rebuild), which runs the same loop over the same
- * prints.
+ * (the September bar rebuild) and `futures-bar-repair.ts`, which run the
+ * same loop over the same prints.
  *
  * Spec: docs/superpowers/specs/2026-10-28-uw-futures-orderflow-design.md
  * (Phase 6b, as amended by probe 0a) and

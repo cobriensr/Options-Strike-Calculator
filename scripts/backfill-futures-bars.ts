@@ -78,9 +78,9 @@
 
 import { config as loadEnv } from 'dotenv';
 
-// Load env BEFORE importing the backfill: the UW limiter's Redis client is
-// built at import time, and without KV_REST_API_* it fails open, so the
-// run would not share the crons' concurrency slots.
+// Load env BEFORE importing the backfill and repair modules: the UW limiter's
+// Redis client is built at import time, and without KV_REST_API_* it fails
+// open, so the run would not share the crons' concurrency slots.
 loadEnv({ path: '.env.local' });
 const { parseBarArgs, runBarBackfill } =
   await import('./_lib/futures-bar-backfill.js');
