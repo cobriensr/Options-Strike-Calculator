@@ -4,32 +4,39 @@
  * The logic is in scripts/_lib/snapshot-event-flag-backfill.ts, which lists
  * what it repairs.
  *
- *   npx tsx scripts/backfill-snapshot-event-flags.ts            # dry run
- *   npx tsx scripts/backfill-snapshot-event-flags.ts --apply    # writes
+ * The stored flag is macro-only (owner decision 2026-11-12): the FRED
+ * releases, FOMC, and half days and closures. Mega-cap earnings never count,
+ * so a stored earnings name (NVDA Earnings, ...) is removed, by design.
+ * Finnhub is not used.
+ *
+ * Run it from the repo root, with the FRED key in the shell (it is not in
+ * .env.local; dotenv never overrides a variable already set):
+ *
+ *   PowerShell:
+ *     $env:FRED_API_KEY = '<key>'
+ *     npx tsx scripts/backfill-snapshot-event-flags.ts            # dry run
+ *     npx tsx scripts/backfill-snapshot-event-flags.ts --apply    # writes
+ *   bash:
+ *     FRED_API_KEY=<key> npx tsx scripts/backfill-snapshot-event-flags.ts
+ *     FRED_API_KEY=<key> npx tsx scripts/backfill-snapshot-event-flags.ts --apply
  *
  * Both modes READ the database DATABASE_URL points at (production, in
- * .env.local) and call FRED and Finnhub. The default is a dry run: it prints
- * what would change and writes nothing. `--apply` first writes an undo file
- * under docs/tmp/snapshot-event-flags/ (relative to the working directory, so
- * run it from the repo root), then writes everything in one transaction. A
- * second `--apply` plans zero writes and says so.
- *
- * Needs FRED_API_KEY and FINNHUB_API_KEY in the shell (neither is in
- * .env.local; dotenv never overrides a variable already set). The run refuses
- * if either is unset: without Finnhub every stored earnings name would be
- * stripped.
+ * .env.local) and call FRED. The default is a dry run: it prints what would
+ * change and writes nothing. `--apply` first writes an undo file under
+ * docs/tmp/snapshot-event-flags/ (relative to the working directory), then
+ * writes everything in one transaction. A second `--apply` plans zero writes
+ * and says so. The run refuses if FRED_API_KEY is unset.
  *
  * ORDER, in production:
  *   1. The snapshot save that computes the flag on the server (phase 2) is
  *      deployed, so saves made after this run are right too.
- *   2. Run the dry run and read the per-name counts. If an earnings name
- *      (NVDA Earnings, ...) loses many days, Finnhub is not returning past
- *      earnings: re-run with --keep-earnings, which keeps a stored
- *      "<TICKER> Earnings" name the computed list lacks.
+ *   2. Run the dry run and read the per-name counts. Earnings names show up as
+ *      losses, with a note that says so; that is expected.
  *   3. Run --apply. It does not matter whether it runs before or after the
  *      economic-event label backfill: both compute from the corrected FOMC
- *      schedule and guard every write on the values they read, so the second
- *      one finds nothing to change on 04-29 and 05-06.
+ *      schedule and guard every write on the values they read. That holds for
+ *      the FOMC names only: if the econ backfill runs first, this one can
+ *      still add other events' names on 04-29.
  *
  * A "Redis not configured" log line at start is expected: the env file loads
  * after the imports, and this script never uses Redis.
@@ -37,7 +44,6 @@
  * Options:
  *   --apply            write (without it: dry run)
  *   --dry-run          the default, said aloud; contradicts --apply
- *   --keep-earnings    keep a stored earnings name the computed list lacks
  *   --env-file <path>  .env.local to load (default: the nearest one up the
  *                      tree); a path that does not exist is an error, never a
  *                      fallback. Under `npx tsx`, Node itself also reads this
@@ -46,8 +52,8 @@
  *   --help, -h         print the usage and exit
  *
  * Exit codes: 0 done (or nothing to change), 1 any error (bad argument, no
- * env file, an unset key, an empty table, an incomplete month, a DB error; a
- * failed apply rolled back).
+ * env file, an unset FRED key, an empty table, an incomplete month, a DB
+ * error; a failed apply rolled back).
  */
 
 import { config } from 'dotenv';
@@ -69,11 +75,7 @@ async function main(): Promise<number> {
   }
   config({ path: resolveEnvFile(args.envFile, '.'), quiet: true });
   console.log(`Database host: ${dbHost(process.env.DATABASE_URL)}`);
-  const result = await runBackfill({
-    apply: args.apply,
-    keepEarnings: args.keepEarnings,
-    undoDir: UNDO_DIR,
-  });
+  const result = await runBackfill({ apply: args.apply, undoDir: UNDO_DIR });
   console.log(formatReport(result));
   return 0;
 }
