@@ -71,7 +71,7 @@ import re
 import sys
 import tempfile
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
@@ -81,6 +81,7 @@ from zoneinfo import ZoneInfo
 import boto3
 import psycopg2
 import pyarrow as pa
+import pyarrow.compute as pc
 import pyarrow.parquet as pq
 from boto3.exceptions import Boto3Error
 from boto3.s3.transfer import TransferConfig
@@ -729,7 +730,9 @@ class _Counts:
 
 
 def _compare_days(
-    db_pages: Iterator[list[tuple]], file_pages: Iterator[list[tuple]]
+    db_pages: Iterator[list[tuple]],
+    file_pages: Iterator[list[tuple]],
+    on_only_in_file: Callable[[list[tuple]], None] | None = None,
 ) -> _Counts:
     """Compare a day's rows from the database with the same day from its file.
 
@@ -738,6 +741,9 @@ def _compare_days(
     and not by order: Postgres sorts tickers by its collation and Python by code
     point, and the two can disagree. One timestamp holds a few thousand rows at
     most, so the dicts stay small however long the day is.
+
+    `on_only_in_file` is called with the file's rows that the database lacks,
+    as they are found, so a caller can act on them without keeping them all.
     """
     counts = _Counts()
     db_groups, file_groups = _row_groups(db_pages), _row_groups(file_pages)
@@ -750,6 +756,8 @@ def _compare_days(
         elif db is None or file[0] < db[0]:
             counts.file_rows += len(file[1])
             counts.only_in_file += len(file[1])
+            if on_only_in_file is not None:
+                on_only_in_file(file[1])
             file = next(file_groups, None)
         else:
             counts.db_rows += len(db[1])
@@ -757,7 +765,10 @@ def _compare_days(
             db_by_key = _by_key(db[1])
             file_by_key = _by_key(file[1])
             counts.only_in_db += len(db_by_key.keys() - file_by_key.keys())
-            counts.only_in_file += len(file_by_key.keys() - db_by_key.keys())
+            file_only = file_by_key.keys() - db_by_key.keys()
+            counts.only_in_file += len(file_only)
+            if file_only and on_only_in_file is not None:
+                on_only_in_file([file_by_key[k] for k in file_only])
             counts.value_diffs += sum(
                 1 for k in db_by_key.keys() & file_by_key.keys() if db_by_key[k] != file_by_key[k]
             )
@@ -886,6 +897,32 @@ def _insert_day(conn: PgConnection, parquet: pq.ParquetFile, day: date) -> int:
     return inserted
 
 
+def _read_id_sequence(cur: PgCursor) -> tuple[str, int]:
+    """The id sequence's name and its last_value, read from the sequence itself.
+
+    pg_sequences is not used: it shows NULL to a role without the privilege,
+    and GREATEST ignores NULL, so a missing privilege would pass for "nothing
+    to do". Reading the sequence raises instead.
+    """
+    cur.execute(_SEQUENCE_NAME_SQL)
+    name = cur.fetchone()[0]
+    if name is None:
+        raise BackupError('strike_exposures.id has no sequence')
+    # `name` comes from the catalog, already quoted for use as an identifier.
+    cur.execute(sql.SQL('SELECT last_value FROM {}').format(sql.SQL(name)))
+    last_value = cur.fetchone()[0]
+    if last_value is None:
+        raise BackupError('the id sequence has no last_value')
+    return name, last_value
+
+
+def _sequence_is_behind(conn: PgConnection, max_id: int) -> bool:
+    """Whether the id sequence has not reached `max_id` yet. Read only, no lock."""
+    with _read_snapshot(conn) as cur:
+        _, last_value = _read_id_sequence(cur)
+    return last_value < max_id
+
+
 def _move_id_sequence(conn: PgConnection) -> None:
     """Move the id sequence past every id in the table, in one short transaction.
 
@@ -897,18 +934,56 @@ def _move_id_sequence(conn: PgConnection) -> None:
     """
     with _write_transaction(conn) as cur:
         cur.execute(_LOCK_SQL)
-        cur.execute(_SEQUENCE_NAME_SQL)
-        name = cur.fetchone()[0]
-        if name is None:
-            raise BackupError('strike_exposures.id has no sequence')
-        # `name` comes from the catalog, already quoted for use as an identifier.
-        # last_value is read from the sequence itself: pg_sequences shows NULL to
-        # a role without the privilege, and GREATEST ignores NULL.
-        cur.execute(sql.SQL('SELECT last_value FROM {}').format(sql.SQL(name)))
-        last_value = cur.fetchone()[0]
-        if last_value is None:
-            raise BackupError('the id sequence has no last_value')
+        name, last_value = _read_id_sequence(cur)
         cur.execute(_SETVAL_SQL, (name, last_value))
+
+
+_TAKEN_IDS_SQL = 'SELECT id FROM strike_exposures WHERE id = ANY(%s)'
+
+
+class _IdClashes:
+    """Counts the ids, among rows a restore would insert, that other rows hold.
+
+    The rows are fed in as the compare finds them and checked in batches of
+    RESTORE_BATCH ids, so a day that is missing entirely is not held in memory.
+    A row the table lacks has, by definition, a unique key the table does not
+    have, so any row holding its id is a different row and `--apply` would fail
+    on the primary key.
+    """
+
+    def __init__(self, cur: PgCursor) -> None:
+        self._cur = cur
+        self._ids: list[int] = []
+        self.taken = 0
+
+    def add(self, rows: list[tuple]) -> None:
+        self._ids.extend(row[_ID] for row in rows)
+        while len(self._ids) >= RESTORE_BATCH:
+            self._ask(self._ids[:RESTORE_BATCH])
+            del self._ids[:RESTORE_BATCH]
+
+    def finish(self) -> int:
+        if self._ids:
+            self._ask(self._ids)
+            self._ids = []
+        return self.taken
+
+    def _ask(self, ids: list[int]) -> None:
+        self._cur.execute(_TAKEN_IDS_SQL, (ids,))
+        self.taken += len(self._cur.fetchall())
+
+
+@dataclass(frozen=True)
+class RestoreResult:
+    """What `restore_day` did, or with a dry run what it would do.
+
+    `rows` is the rows inserted (or that would be). `id_clashes` is only ever
+    non-zero for a dry run: the number of those rows whose id another row holds.
+    An apply with a clash raises instead.
+    """
+
+    rows: int
+    id_clashes: int = 0
 
 
 def restore_day(
@@ -918,41 +993,51 @@ def restore_day(
     day: date,
     apply: bool,
     page_rows: int = PAGE_ROWS,
-) -> int:
-    """Put a day's file back into the table; return the rows (to be) inserted.
+) -> RestoreResult:
+    """Put a day's file back into the table; say how many rows went in.
 
     Without `apply` nothing is written: it reads the day and counts the file's
-    rows whose unique key the table does not have. With `apply` it inserts the
-    file in batches of RESTORE_BATCH inside one transaction, with the original
-    ids and created_at, so a rejected batch (an id held by a different row)
-    undoes the whole day. A row whose key is already there is left alone, so
-    restoring a day twice inserts nothing the second time.
+    rows whose unique key the table does not have, and how many of those have
+    an id that another row holds (which `--apply` would fail on). With `apply`
+    it inserts the file in batches of RESTORE_BATCH inside one transaction, with
+    the original ids and created_at, so a rejected batch undoes the whole day.
+    A row whose key is already there is left alone, so restoring a day twice
+    inserts nothing the second time.
 
-    If rows went in, the id sequence is then moved past them. That is a second
-    transaction: when it fails the rows stay, and the error says so and how
-    many, because the sequence has to be moved by hand before the writers
-    insert again.
+    The id sequence is then moved past the file's ids, in a second transaction,
+    when rows went in or when the sequence is still behind the file's largest id
+    (which is what a re-run finds after a sequence step that failed). When that
+    step fails the rows stay, and the error says so and how many, because the
+    sequence has to be moved by hand before the writers insert again.
     """
     with _downloaded_day(s3, bucket, day) as parquet:
         if not apply:
             with _read_snapshot(conn) as cur:
+                clashes = _IdClashes(cur)
                 counts = _compare_days(
-                    iter_day_pages(cur, day, page_rows), _file_pages(parquet, page_rows)
+                    iter_day_pages(cur, day, page_rows),
+                    _file_pages(parquet, page_rows),
+                    on_only_in_file=clashes.add,
                 )
-            return counts.only_in_file
+                return RestoreResult(rows=counts.only_in_file, id_clashes=clashes.finish())
+        max_id = _file_max_id(parquet)
         inserted = _insert_day(conn, parquet, day)
-    if inserted:
-        try:
+    try:
+        if inserted or _sequence_is_behind(conn, max_id):
             _move_id_sequence(conn)
-        except (BackupError, psycopg2.Error) as exc:
-            cause = exc
-        else:
-            return inserted
-        raise BackupError(
-            f'{day.isoformat()}: {inserted} row(s) restored, but the id sequence was not moved; '
-            'move it by hand before the writers run'
-        ) from cause
-    return inserted
+    except (BackupError, psycopg2.Error) as exc:
+        cause = exc
+    else:
+        return RestoreResult(rows=inserted)
+    raise BackupError(
+        f'{day.isoformat()}: {inserted} row(s) restored, but the id sequence was not moved; '
+        'move it by hand before the writers run'
+    ) from cause
+
+
+def _file_max_id(parquet: pq.ParquetFile) -> int:
+    """The largest id in a day file. Read from the id column, not from metadata."""
+    return pc.max(parquet.read(columns=['id']).column('id')).as_py() or 0
 
 
 def _today_et() -> date:
@@ -1082,14 +1167,22 @@ def _verify(args: argparse.Namespace, conn, s3, bucket: str) -> int:
 def _restore(args: argparse.Namespace, conn, s3, bucket: str) -> int:
     day = args.date.isoformat()
     try:
-        rows = restore_day(conn, s3, bucket, args.date, apply=args.apply)
+        result = restore_day(conn, s3, bucket, args.date, apply=args.apply)
     except _RUN_FAILURES as exc:
         _log_failure(day, exc)
         return 1
     if args.apply:
-        print(f'{day}: inserted {rows} rows', flush=True)
-    else:
-        print(f'{day}: would insert {rows} rows (a dry run; add --apply to write)', flush=True)
+        print(f'{day}: inserted {result.rows} rows', flush=True)
+        return 0
+    if result.id_clashes:
+        # A count only: the ids and the rows that hold them stay out of the log.
+        print(
+            f'{day}: would insert {result.rows} rows, but {result.id_clashes} id(s) '
+            'already taken; --apply would fail',
+            flush=True,
+        )
+        return 1
+    print(f'{day}: would insert {result.rows} rows (a dry run; add --apply to write)', flush=True)
     return 0
 
 

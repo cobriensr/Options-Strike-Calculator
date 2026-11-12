@@ -84,6 +84,8 @@ NO_SORT_STATEMENTS = [
     'SET LOCAL enable_sort = off',
     'SET LOCAL enable_incremental_sort = off',
 ]
+# A restore dry run asks, for the rows the table lacks, which ids other rows hold.
+TAKEN_IDS_SQL = 'SELECT id FROM strike_exposures WHERE id = ANY(%s)'
 # Text a database error carries that no log may show: the DETAIL line of a
 # unique violation quotes the offending key.
 DETAIL_MARKER = 'KEY-VALUE-IN-THE-DETAIL-LINE'
@@ -197,6 +199,10 @@ class FakeCursor:
         elif text == 'SELECT count(*) FROM strike_exposures WHERE date = %s':
             conn.fail('count')
             self._result = [(conn.count_for(params[0]),)]
+        elif text == TAKEN_IDS_SQL:
+            conn.fail('taken_ids')
+            wanted = set(params[0])
+            self._result = [(r[0],) for r in conn.rows if r[0] in wanted]
         elif text.startswith('WITH RECURSIVE'):
             conn.fail('days')
             self._result = [(day,) for day in conn.days()]
@@ -2048,14 +2054,55 @@ def test_restore_dry_run_writes_nothing(make_conn, tmp_path: Path) -> None:
     in_db = rows[:5] + rows[7:]  # two rows are missing from the database
     conn = make_conn(in_db)
 
-    would_insert = sbk.restore_day(conn, s3, BUCKET, D1, apply=False, page_rows=4)
+    result = sbk.restore_day(conn, s3, BUCKET, D1, apply=False, page_rows=4)
 
-    assert would_insert == 2
+    assert result == sbk.RestoreResult(rows=2, id_clashes=0)
     texts = [text for text, _ in conn.statements]
     assert texts[0] == 'BEGIN ISOLATION LEVEL REPEATABLE READ, READ ONLY'
     assert texts[-1] == 'ROLLBACK'
     assert not any(t.startswith(('INSERT', 'LOCK', 'COMMIT')) or 'setval' in t for t in texts)
     assert conn.rows == sorted(in_db, key=key_of)
+    # The two missing rows sit inside timestamps that are otherwise present.
+    asked = [params[0] for text, params in conn.statements if text == TAKEN_IDS_SQL]
+    assert asked == [[rows[5][0], rows[6][0]]]
+
+
+def test_restore_dry_run_counts_ids_that_other_rows_hold(make_conn, tmp_path: Path) -> None:
+    rows = day_rows(D1, list(range(1, 1202)))
+    s3 = FakeS3()
+    back_up(s3, rows, tmp_path)
+    # Unrelated rows (another day, other tickers) hold ids 700 and 1150, which the
+    # file would insert. The file's first row is already in the table with its
+    # own id: it is not one of the rows to insert, so it is not a clash.
+    conn = make_conn(
+        [
+            make_row(id=700, date=D2, expiry=D2, ticker='OTHER'),
+            make_row(id=1150, date=D2, expiry=D2, ticker='ANOTHER'),
+            rows[0],
+        ]
+    )
+
+    result = sbk.restore_day(conn, s3, BUCKET, D1, apply=False)
+
+    assert result == sbk.RestoreResult(rows=1200, id_clashes=2)
+    # Asked in batches of 500 ids, inside the snapshot, and only for the 1,200
+    # rows to insert.
+    asked = [params[0] for text, params in conn.statements if text == TAKEN_IDS_SQL]
+    assert [len(ids) for ids in asked] == [500, 500, 200]
+    assert asked[0][0] == 2 and asked[-1][-1] == 1201
+    assert conn.statements[-1][0] == 'ROLLBACK'
+
+
+def test_restore_dry_run_with_nothing_to_insert_asks_about_no_ids(
+    make_conn, tmp_path: Path
+) -> None:
+    rows = day_rows(D1, [1, 2, 3])
+    s3 = FakeS3()
+    back_up(s3, rows, tmp_path)
+    conn = make_conn(rows)
+
+    assert sbk.restore_day(conn, s3, BUCKET, D1, apply=False) == sbk.RestoreResult(0, 0)
+    assert not any(text == TAKEN_IDS_SQL for text, _ in conn.statements)
 
 
 def test_restore_apply_batches_on_conflict_do_nothing(make_conn, tmp_path: Path) -> None:
@@ -2064,9 +2111,9 @@ def test_restore_apply_batches_on_conflict_do_nothing(make_conn, tmp_path: Path)
     back_up(s3, rows, tmp_path)
     conn = make_conn([])
 
-    inserted = sbk.restore_day(conn, s3, BUCKET, D1, apply=True)
+    result = sbk.restore_day(conn, s3, BUCKET, D1, apply=True)
 
-    assert inserted == 1201
+    assert result == sbk.RestoreResult(rows=1201, id_clashes=0)
     assert [len(params) // len(sbk.COLUMNS) for _, params in conn.inserts] == [500, 500, 201]
     for text, _ in conn.inserts:
         assert text.startswith('INSERT INTO strike_exposures ("id", "date", "timestamp", ')
@@ -2078,19 +2125,95 @@ def test_restore_apply_batches_on_conflict_do_nothing(make_conn, tmp_path: Path)
 
 
 def test_restore_apply_already_present_inserts_zero(make_conn, tmp_path: Path) -> None:
+    # Everything is in already and the sequence is far past the file's ids: the
+    # sequence is read (a re-run has to know) but not locked or set.
     rows = day_rows(D1, list(range(1, 602)))
     s3 = FakeS3()
     back_up(s3, rows, tmp_path)
     conn = make_conn(rows, sequence_name=SEQUENCE, sequence_value=5000)
 
-    inserted = sbk.restore_day(conn, s3, BUCKET, D1, apply=True)
+    result = sbk.restore_day(conn, s3, BUCKET, D1, apply=True)
 
-    assert inserted == 0
+    assert result == sbk.RestoreResult(rows=0, id_clashes=0)
     assert len(conn.inserts) == 2  # 500 + 101, both skipped by the conflict clause
     texts = [text for text, _ in conn.statements]
-    assert texts[-1] == 'COMMIT'
-    assert not any(t.startswith('LOCK') or 'setval' in t or 'pg_get_serial' in t for t in texts)
+    assert texts[-5:] == [
+        'BEGIN ISOLATION LEVEL REPEATABLE READ, READ ONLY',
+        "SET LOCAL statement_timeout = '60s'",
+        "SELECT pg_get_serial_sequence('strike_exposures', 'id')",
+        f'SELECT last_value FROM {SEQUENCE}',
+        'ROLLBACK',
+    ]
+    assert not any(t.startswith('LOCK') or 'setval' in t for t in texts)
     assert conn.sequence_value == 5000
+
+
+def test_a_rerun_after_a_failed_sequence_step_moves_the_sequence(
+    make_conn, tmp_path: Path
+) -> None:
+    rows = day_rows(D1, list(range(1, 8)))
+    s3 = FakeS3()
+    back_up(s3, rows, tmp_path)
+    failing = psycopg2.OperationalError('injected')
+    conn = make_conn([], sequence_name=SEQUENCE, sequence_value=3, fail_on={'setval': failing})
+    with pytest.raises(sbk.BackupError, match='restored, but the id sequence was not moved'):
+        sbk.restore_day(conn, s3, BUCKET, D1, apply=True)
+    assert len(conn.rows) == 7 and conn.sequence_value == 3
+    conn.fail_on = {}
+    first_run = len(conn.statements)
+
+    result = sbk.restore_day(conn, s3, BUCKET, D1, apply=True)
+
+    # Nothing to insert this time, and the sequence still moves.
+    assert result == sbk.RestoreResult(rows=0, id_clashes=0)
+    assert conn.sequence_value == 7
+    texts = [text for text, _ in conn.statements[first_run:]]
+    assert 'LOCK TABLE strike_exposures IN SHARE ROW EXCLUSIVE MODE' in texts
+    assert texts[-1] == 'COMMIT' and 'SELECT setval' in texts[-2]
+
+
+@pytest.mark.parametrize(
+    ('start', 'moves'),
+    [
+        pytest.param(899, True, id='one-behind-the-files-max-id'),
+        pytest.param(900, False, id='at-the-files-max-id'),
+        pytest.param(901, False, id='past-it'),
+    ],
+)
+def test_a_rerun_moves_the_sequence_only_when_it_is_behind_the_files_max_id(
+    make_conn, tmp_path: Path, start: int, moves: bool
+) -> None:
+    # The largest id (900) is in the middle of the file, in neither the first
+    # nor the last row.
+    rows = plain_rows(3, ids=[5, 900, 70])
+    s3 = FakeS3()
+    back_up(s3, rows, tmp_path)
+    conn = make_conn(rows, sequence_name=SEQUENCE, sequence_value=start)
+
+    result = sbk.restore_day(conn, s3, BUCKET, D1, apply=True)
+
+    assert result.rows == 0
+    texts = [text for text, _ in conn.statements]
+    assert any(t.startswith('LOCK') for t in texts) is moves
+    assert any('setval' in t for t in texts) is moves
+    assert conn.sequence_value == (900 if moves else start)
+
+
+def test_a_failed_sequence_read_on_a_rerun_says_so(make_conn, tmp_path: Path) -> None:
+    rows = day_rows(D1, [1, 2, 3])
+    s3 = FakeS3()
+    back_up(s3, rows, tmp_path)
+    denied = psycopg2.errors.InsufficientPrivilege('permission denied')
+    conn = make_conn(rows, sequence_name=SEQUENCE, fail_on={'seq_value': denied})
+
+    with pytest.raises(sbk.BackupError) as raised:
+        sbk.restore_day(conn, s3, BUCKET, D1, apply=True)
+
+    assert str(raised.value) == (
+        '2026-11-02: 0 row(s) restored, but the id sequence was not moved; '
+        'move it by hand before the writers run'
+    )
+    assert conn.statements[-1][0] == 'ROLLBACK' and not conn.in_txn
 
 
 @pytest.mark.parametrize(
@@ -2108,7 +2231,7 @@ def test_restore_apply_locks_then_moves_the_sequence(
     back_up(s3, rows, tmp_path)
     conn = make_conn([], sequence_name=SEQUENCE, sequence_value=start)
 
-    assert sbk.restore_day(conn, s3, BUCKET, D1, apply=True) == 7
+    assert sbk.restore_day(conn, s3, BUCKET, D1, apply=True).rows == 7
 
     texts = [text for text, _ in conn.statements]
     assert texts[-7:] == [
@@ -2389,6 +2512,23 @@ def test_restore_command_dry_run_is_the_default(cli, tmp_path: Path) -> None:
     assert code == 0
     assert '2026-11-02: would insert 2 rows (a dry run; add --apply to write)' in out
     assert conn.inserts == [] and len(conn.rows) == 1
+
+
+def test_restore_command_dry_run_exits_1_when_ids_are_taken(cli, tmp_path: Path) -> None:
+    # A dry run that says "restorable" must not fail later on --apply. It names
+    # the count and nothing about the rows: no id, no ticker.
+    rows = day_rows(D1, [1, 2, 424242])
+    s3 = FakeS3()
+    back_up(s3, rows, tmp_path)
+    squatter = make_row(id=424242, date=D2, expiry=D2, ticker='OTHER')
+    conn = FakeConnection([squatter])
+
+    code, out = cli.run(conn, s3, 'restore', '--date', '2026-11-02')
+
+    assert code == 1
+    assert '2026-11-02: would insert 3 rows, but 1 id(s) already taken; --apply would fail' in out
+    assert '424242' not in out and 'OTHER' not in out
+    assert conn.inserts == []
 
 
 def test_restore_command_apply(cli, tmp_path: Path) -> None:
