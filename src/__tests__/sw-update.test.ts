@@ -1,5 +1,21 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { resetUpdateState, startUpdateChecks } from '../lib/sw-update';
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+  type Mock,
+} from 'vitest';
+import {
+  applyUpdate,
+  getNeedsRefresh,
+  holdAutoUpdate,
+  markNeedsRefresh,
+  resetUpdateState,
+  setUpdateFn,
+  startUpdateChecks,
+} from '../lib/sw-update';
 import { captureUnlessAuth } from '../lib/sentry-helpers';
 
 vi.mock('../lib/sentry-helpers', () => ({ captureUnlessAuth: vi.fn() }));
@@ -7,7 +23,11 @@ vi.mock('../lib/sentry-helpers', () => ({ captureUnlessAuth: vi.fn() }));
 // The spec'd values, written out so a changed constant fails a test.
 const INTERVAL_MS = 15 * 60 * 1000;
 const VISIBLE_THROTTLE_MS = 60 * 1000;
+const SAFE_MOMENT_INTERVAL_MS = 60 * 1000;
 const SW_URL = '/sw.js';
+
+type UpdateSWFn = (reloadPage?: boolean) => Promise<void>;
+type UpdateSWMock = Mock<UpdateSWFn>;
 
 type FakeRegistration = {
   installing: object | null;
@@ -524,5 +544,323 @@ describe('startUpdateChecks cleanup', () => {
     expect(vi.getTimerCount()).toBe(0);
     await advance(INTERVAL_MS);
     expect(second.update).not.toHaveBeenCalled();
+  });
+});
+
+// Wednesday 2026-12-02 at 10:00 CST, in the cash session, and Saturday
+// 2026-12-05 at 10:00 CST, outside it. The policy itself is table-tested in
+// sw-update-policy.test.ts; these tests drive it through the real clock.
+const IN_SESSION = new Date('2026-12-02T16:00:00Z');
+const OUT_OF_SESSION = new Date('2026-12-05T16:00:00Z');
+
+describe('a waiting update applies at a safe moment', () => {
+  let updateSW: UpdateSWMock;
+
+  beforeEach(() => {
+    vi.setSystemTime(IN_SESSION);
+    updateSW = vi.fn<UpdateSWFn>().mockResolvedValue(undefined);
+    setUpdateFn(updateSW);
+  });
+
+  it('does nothing while no update waits', async () => {
+    const addListener = vi.spyOn(document, 'addEventListener');
+    changeVisibility('hidden');
+    await advance(10 * SAFE_MOMENT_INTERVAL_MS);
+
+    expect(updateSW).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+    expect(addListener).not.toHaveBeenCalled();
+  });
+
+  it('applies a hidden tab at the next 60 second tick, once', async () => {
+    changeVisibility('hidden');
+    markNeedsRefresh();
+    expect(updateSW).not.toHaveBeenCalled();
+
+    await advance(SAFE_MOMENT_INTERVAL_MS - 1);
+    expect(updateSW).not.toHaveBeenCalled();
+
+    await advance(1);
+    expect(updateSW).toHaveBeenCalledTimes(1);
+    expect(updateSW).toHaveBeenCalledWith(true);
+  });
+
+  it('leaves the first evaluation to the next tick, so an immediate Reload is the only apply', async () => {
+    // The banner's own test marks an update with the real clock and then
+    // clicks Reload; an apply inside markNeedsRefresh would run twice
+    // whenever the clock is outside the session.
+    vi.setSystemTime(OUT_OF_SESSION);
+    markNeedsRefresh();
+    applyUpdate();
+
+    expect(updateSW).toHaveBeenCalledTimes(1);
+    await advance(SAFE_MOMENT_INTERVAL_MS);
+    expect(updateSW).toHaveBeenCalledTimes(1);
+  });
+
+  it('holds a visible tab in the session, then applies when it is hidden', async () => {
+    markNeedsRefresh();
+
+    await advance(15 * SAFE_MOMENT_INTERVAL_MS);
+    changeVisibility('visible');
+    await advance(0);
+    expect(updateSW).not.toHaveBeenCalled();
+
+    changeVisibility('hidden');
+    expect(updateSW).toHaveBeenCalledTimes(1);
+  });
+
+  it('applies a visible tab at the first tick after the session closes', async () => {
+    // 14:58:30 CT; the ticks land on 14:59:30 (still open) and 15:00:30.
+    vi.setSystemTime(new Date('2026-12-02T20:58:30Z'));
+    markNeedsRefresh();
+
+    await advance(SAFE_MOMENT_INTERVAL_MS);
+    expect(updateSW).not.toHaveBeenCalled();
+
+    await advance(SAFE_MOMENT_INTERVAL_MS - 1);
+    expect(updateSW).not.toHaveBeenCalled();
+
+    await advance(1);
+    expect(updateSW).toHaveBeenCalledTimes(1);
+  });
+
+  it('applies a visible tab outside the session at the next tick', async () => {
+    vi.setSystemTime(OUT_OF_SESSION);
+    markNeedsRefresh();
+    expect(updateSW).not.toHaveBeenCalled();
+
+    await advance(SAFE_MOMENT_INTERVAL_MS);
+    expect(updateSW).toHaveBeenCalledTimes(1);
+  });
+
+  it('re-evaluates on a visibility change without waiting for the tick', () => {
+    vi.setSystemTime(OUT_OF_SESSION);
+    markNeedsRefresh();
+
+    changeVisibility('visible');
+
+    expect(updateSW).toHaveBeenCalledTimes(1);
+  });
+
+  it('applies at most once however many safe moments follow', async () => {
+    changeVisibility('hidden');
+    markNeedsRefresh();
+    await advance(SAFE_MOMENT_INTERVAL_MS);
+    expect(updateSW).toHaveBeenCalledTimes(1);
+
+    changeVisibility('visible');
+    changeVisibility('hidden');
+    markNeedsRefresh();
+    await advance(10 * SAFE_MOMENT_INTERVAL_MS);
+
+    expect(updateSW).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('stops waiting once the banner Reload applies the update', async () => {
+    markNeedsRefresh();
+
+    applyUpdate();
+    expect(updateSW).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+
+    changeVisibility('hidden');
+    await advance(SAFE_MOMENT_INTERVAL_MS);
+    expect(updateSW).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps waiting when no update function is registered yet', async () => {
+    resetUpdateState();
+    changeVisibility('hidden');
+    markNeedsRefresh();
+
+    await advance(SAFE_MOMENT_INTERVAL_MS);
+    expect(vi.getTimerCount()).toBe(1);
+
+    setUpdateFn(updateSW);
+    await advance(SAFE_MOMENT_INTERVAL_MS);
+    expect(updateSW).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports a failed apply once and does not try again', async () => {
+    const failure = new Error('postMessage failed');
+    updateSW.mockRejectedValue(failure);
+    changeVisibility('hidden');
+    markNeedsRefresh();
+
+    await advance(SAFE_MOMENT_INTERVAL_MS);
+    await advance(10 * SAFE_MOMENT_INTERVAL_MS);
+
+    expect(updateSW).toHaveBeenCalledTimes(1);
+    expect(captureUnlessAuth).toHaveBeenCalledTimes(1);
+    expect(captureUnlessAuth).toHaveBeenCalledWith(failure, {
+      level: 'warning',
+      tags: { context: 'sw_update_apply' },
+    });
+  });
+});
+
+describe('holdAutoUpdate', () => {
+  let updateSW: UpdateSWMock;
+
+  beforeEach(() => {
+    vi.setSystemTime(IN_SESSION);
+    updateSW = vi.fn<UpdateSWFn>().mockResolvedValue(undefined);
+    setUpdateFn(updateSW);
+    changeVisibility('hidden');
+  });
+
+  it('blocks a safe moment until released, then applies at the next tick', async () => {
+    const release = holdAutoUpdate();
+    markNeedsRefresh();
+
+    await advance(10 * SAFE_MOMENT_INTERVAL_MS);
+    changeVisibility('visible');
+    changeVisibility('hidden');
+    expect(updateSW).not.toHaveBeenCalled();
+
+    release();
+    expect(updateSW).not.toHaveBeenCalled();
+    await advance(0);
+    expect(updateSW).not.toHaveBeenCalled();
+
+    await advance(SAFE_MOMENT_INTERVAL_MS);
+    expect(updateSW).toHaveBeenCalledTimes(1);
+  });
+
+  it('blocks a hold taken while the update already waits', async () => {
+    markNeedsRefresh();
+    await advance(SAFE_MOMENT_INTERVAL_MS / 2);
+
+    const release = holdAutoUpdate();
+    await advance(SAFE_MOMENT_INTERVAL_MS);
+    expect(updateSW).not.toHaveBeenCalled();
+
+    release();
+    await advance(SAFE_MOMENT_INTERVAL_MS);
+    expect(updateSW).toHaveBeenCalledTimes(1);
+  });
+
+  it('applies on a visibility change after the release without waiting for the tick', () => {
+    const release = holdAutoUpdate();
+    markNeedsRefresh();
+    release();
+
+    changeVisibility('hidden');
+
+    expect(updateSW).toHaveBeenCalledTimes(1);
+  });
+
+  it('stays blocked until every hold is released', async () => {
+    const releaseFirst = holdAutoUpdate();
+    const releaseSecond = holdAutoUpdate();
+    markNeedsRefresh();
+
+    releaseFirst();
+    await advance(2 * SAFE_MOMENT_INTERVAL_MS);
+    expect(updateSW).not.toHaveBeenCalled();
+
+    releaseSecond();
+    await advance(SAFE_MOMENT_INTERVAL_MS);
+    expect(updateSW).toHaveBeenCalledTimes(1);
+  });
+
+  it('counts a release once however often it is called', async () => {
+    const releaseFirst = holdAutoUpdate();
+    holdAutoUpdate();
+    markNeedsRefresh();
+
+    releaseFirst();
+    releaseFirst();
+    releaseFirst();
+    await advance(2 * SAFE_MOMENT_INTERVAL_MS);
+
+    expect(updateSW).not.toHaveBeenCalled();
+  });
+
+  it('ignores a release from before resetUpdateState', async () => {
+    const staleRelease = holdAutoUpdate();
+    resetUpdateState();
+    setUpdateFn(updateSW);
+    changeVisibility('hidden');
+    holdAutoUpdate();
+    markNeedsRefresh();
+
+    staleRelease();
+    await advance(2 * SAFE_MOMENT_INTERVAL_MS);
+
+    expect(updateSW).not.toHaveBeenCalled();
+  });
+
+  it('is cleared by resetUpdateState', async () => {
+    holdAutoUpdate();
+    resetUpdateState();
+    setUpdateFn(updateSW);
+    changeVisibility('hidden');
+    markNeedsRefresh();
+
+    await advance(SAFE_MOMENT_INTERVAL_MS);
+
+    expect(updateSW).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('the safe-moment wait cleans up', () => {
+  beforeEach(() => {
+    vi.setSystemTime(IN_SESSION);
+    setUpdateFn(vi.fn().mockResolvedValue(undefined));
+  });
+
+  it('adds one interval and one listener when an update waits, and removes both on apply', () => {
+    const addListener = vi.spyOn(document, 'addEventListener');
+    const removeListener = vi.spyOn(document, 'removeEventListener');
+
+    markNeedsRefresh();
+
+    expect(vi.getTimerCount()).toBe(1);
+    const added = addListener.mock.calls.filter(
+      ([type]) => type === 'visibilitychange',
+    );
+    expect(added).toHaveLength(1);
+
+    changeVisibility('hidden');
+
+    expect(vi.getTimerCount()).toBe(0);
+    expect(removeListener).toHaveBeenCalledWith(
+      'visibilitychange',
+      added[0]?.[1],
+    );
+  });
+
+  it('is torn down by resetUpdateState while an update still waits', () => {
+    const removeListener = vi.spyOn(document, 'removeEventListener');
+    markNeedsRefresh();
+    expect(getNeedsRefresh()).toBe(true);
+
+    resetUpdateState();
+
+    expect(getNeedsRefresh()).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(removeListener).toHaveBeenCalledWith(
+      'visibilitychange',
+      expect.any(Function),
+    );
+  });
+
+  it('runs apart from the update checks, which carry on after an apply', async () => {
+    start(makeRegistration());
+    expect(vi.getTimerCount()).toBe(1);
+    markNeedsRefresh();
+    expect(vi.getTimerCount()).toBe(2);
+
+    changeVisibility('hidden');
+    expect(vi.getTimerCount()).toBe(1);
+
+    await advance(INTERVAL_MS);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    resetUpdateState();
+    expect(vi.getTimerCount()).toBe(0);
   });
 });

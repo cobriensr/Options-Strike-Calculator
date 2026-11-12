@@ -10,16 +10,24 @@
  *
  * It also owns the periodic check for a new service worker
  * (`startUpdateChecks`): browsers look for one only on a page load, and this
- * single-page app can stay open for days.
+ * single-page app can stay open for days. Once an update waits, it applies it
+ * by itself at the first safe moment (`isSafeToApplyUpdate`), unless something
+ * holds it (`holdAutoUpdate`); the banner's Reload still applies it at once.
  */
 
 import { claimReport } from './response-guard';
 import { captureUnlessAuth } from './sentry-helpers';
+import { isSafeToApplyUpdate } from './sw-update-policy';
 
 type UpdateSW = (reloadPage?: boolean) => Promise<void>;
 
 /** How often an open window asks the server for a new service worker. */
 const UPDATE_CHECK_INTERVAL_MS = 15 * 60 * 1000;
+/**
+ * How often a waiting update asks whether this is a safe moment to apply it,
+ * so it applies within a minute of one arriving.
+ */
+const SAFE_MOMENT_INTERVAL_MS = 60 * 1000;
 /**
  * A tab-focus check is skipped when any check started within this window, so
  * switching tabs can't fire a request each time.
@@ -36,6 +44,13 @@ let needsRefresh = false;
 const subscribers = new Set<() => void>();
 // The one interval + visibilitychange listener `startUpdateChecks` owns.
 let stopUpdateChecks: (() => void) | null = null;
+// The one interval + visibilitychange listener that waits for a safe moment.
+// It exists only while an update waits: `applyUpdate` and
+// `resetUpdateState` end it.
+let stopSafeMomentWatch: (() => void) | null = null;
+// One token per open `holdAutoUpdate`, so a release is idempotent by
+// construction and a release from before a reset finds nothing to remove.
+const holds = new Set<symbol>();
 
 function notifyAll(): void {
   for (const s of subscribers) s();
@@ -46,19 +61,66 @@ export function setUpdateFn(fn: UpdateSW): void {
   updateSWFn = fn;
 }
 
-/** Called from the registerSW `onNeedRefresh` callback. */
+/**
+ * Called from the registerSW `onNeedRefresh` callback. Starts the wait for a
+ * safe moment. The first evaluation is one tick away, not inside this call:
+ * the banner shows first, and its own Reload click right after (as in its
+ * test, whatever the hour) is the only apply.
+ */
 export function markNeedsRefresh(): void {
   if (needsRefresh) return;
   needsRefresh = true;
   notifyAll();
+  watchForSafeMoment();
 }
 
 /** Reset (used in tests). Not called from app code. */
 export function resetUpdateState(): void {
   stopUpdateChecks?.();
+  stopSafeMomentWatch?.();
+  holds.clear();
   needsRefresh = false;
   updateSWFn = null;
   subscribers.clear();
+}
+
+/**
+ * Keep a waiting update from applying by itself until the returned release
+ * runs, e.g. while a chart analysis is in flight. Holds stack, and calling a
+ * release again does nothing. A release doesn't apply the update: the next
+ * evaluation does, within a minute or on a visibility change. A user who left
+ * the tab during a long analysis and comes back in that minute finds the
+ * result instead of a reload.
+ */
+export function holdAutoUpdate(): () => void {
+  const hold = Symbol('auto-update-hold');
+  holds.add(hold);
+  return (): void => {
+    holds.delete(hold);
+  };
+}
+
+function applyIfSafe(): void {
+  const safe = isSafeToApplyUpdate({
+    hidden: document.visibilityState === 'hidden',
+    now: new Date(),
+    busy: holds.size > 0,
+  });
+  if (safe) applyUpdate();
+}
+
+/**
+ * Evaluate the safe-moment policy every `SAFE_MOMENT_INTERVAL_MS` and on every
+ * visibility change, until `applyUpdate` ends the watch.
+ */
+function watchForSafeMoment(): void {
+  const timer = setInterval(applyIfSafe, SAFE_MOMENT_INTERVAL_MS);
+  document.addEventListener('visibilitychange', applyIfSafe);
+  stopSafeMomentWatch = (): void => {
+    clearInterval(timer);
+    document.removeEventListener('visibilitychange', applyIfSafe);
+    stopSafeMomentWatch = null;
+  };
 }
 
 export function getNeedsRefresh(): boolean {
@@ -72,9 +134,13 @@ export function getNeedsRefresh(): boolean {
  * unrelated controllerchange events — first-install activation in particular
  * — don't trigger spurious reloads mid-load. Calling when no update is
  * pending is a no-op.
+ *
+ * Also ends the wait for a safe moment, so the banner's Reload and the
+ * automatic apply can't both run: the update applies once per page.
  */
 export function applyUpdate(): void {
   if (!updateSWFn) return;
+  stopSafeMomentWatch?.();
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.addEventListener(
       'controllerchange',
