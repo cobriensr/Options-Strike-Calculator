@@ -386,8 +386,21 @@ jobs:
 
       # The only check of the .dockerignore semantics: nightly/tests/test_image_layout.py
       # reads text and cannot see a later pattern re-exclude a file, but a COPY of an
-      # ignored path fails this build. Nothing is pushed or run.
+      # ignored path fails this build. Nothing is pushed.
       - name: Build the image
+        id: build
         if: ${{ !cancelled() }}
         working-directory: .
-        run: docker build -f nightly/Dockerfile .
+        run: docker build -f nightly/Dockerfile -t nightly-ci .
+
+      # The tests above run in the dev environment, a superset of the runtime
+      # requirements (moto alone pulls in requests, werkzeug and cryptography), so a
+      # shared script that gains an import the image lacks still passes them. This
+      # imports the steps inside the built image, which has only requirements.txt.
+      # Importing loads no settings and opens no connection; no network keeps it so.
+      - name: Import the steps in the image
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        working-directory: .
+        run: >-
+          docker run --rm --network none --entrypoint python nightly-ci
+          -c "import pipeline, outcome_check, enrich_step"
