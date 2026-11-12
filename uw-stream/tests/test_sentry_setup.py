@@ -49,6 +49,20 @@ class TestBeforeSendFingerprinting:
             "ConnectionDoesNotExistError",
         ]
 
+    def test_admin_shutdown_gets_transient_fingerprint(self):
+        """A Neon restart sends 57P01. Every handler's flush raises it, so the
+        fingerprint is what keeps one restart to one Sentry issue.
+        """
+        event = {}
+        out = _before_send(
+            event,
+            _hint_with(asyncpg.exceptions.AdminShutdownError("terminating connection")),
+        )
+        assert out["fingerprint"] == [
+            "uw-stream-transient-db",
+            "AdminShutdownError",
+        ]
+
     def test_value_error_keeps_default_fingerprint(self):
         """Non-transient errors must NOT be re-fingerprinted — Sentry's
         default stack-based grouping is appropriate for real bugs.

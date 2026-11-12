@@ -11,6 +11,7 @@ row.
 
 from __future__ import annotations
 
+import socket
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import asyncpg.exceptions
@@ -475,6 +476,52 @@ class TestIsTransientDbError:
     def test_asyncpg_connection_does_not_exist_is_transient(self):
         assert is_transient_db_error(asyncpg.exceptions.ConnectionDoesNotExistError("57P01"))
 
+    # Neon restart, scale-down and connection-limit paths. Each case is its own
+    # entry in ``_TRANSIENT_DB_EXC`` (none of them is a subclass of another entry),
+    # so a case per class is what keeps a dropped entry from going unnoticed.
+    @pytest.mark.parametrize(
+        "exc",
+        [
+            asyncpg.exceptions.AdminShutdownError("terminating connection (57P01)"),
+            asyncpg.exceptions.CrashShutdownError("terminating connection (57P02)"),
+            asyncpg.exceptions.CannotConnectNowError("the database system is starting up"),
+            asyncpg.exceptions.TooManyConnectionsError("too many connections for role"),
+            ConnectionError("connection lost"),
+            ConnectionRefusedError("refused"),
+            ConnectionResetError("reset by peer"),
+            BrokenPipeError("broken pipe"),
+            socket.gaierror(socket.EAI_NONAME, "name or service not known"),
+        ],
+        ids=[
+            "admin_shutdown",
+            "crash_shutdown",
+            "cannot_connect_now",
+            "too_many_connections",
+            "connection_error",
+            "connection_refused",
+            "connection_reset",
+            "broken_pipe",
+            "gaierror",
+        ],
+    )
+    def test_neon_restart_family_is_transient(self, exc):
+        assert is_transient_db_error(exc)
+
+    # A retry cannot fix a missing or unreadable file, and a cancelled or
+    # timed-out statement most likely recurs: retrying it only doubles the load
+    # on a DB that is already struggling.
+    @pytest.mark.parametrize(
+        "exc",
+        [
+            asyncpg.exceptions.QueryCanceledError("canceling statement due to statement timeout"),
+            FileNotFoundError("no such file"),
+            PermissionError("denied"),
+        ],
+        ids=["query_canceled", "file_not_found", "permission_error"],
+    )
+    def test_retry_cannot_fix_these_so_they_are_not_transient(self, exc):
+        assert not is_transient_db_error(exc)
+
     def test_value_error_is_not_transient(self):
         assert not is_transient_db_error(ValueError("bad row"))
 
@@ -503,6 +550,43 @@ class TestBulkInsertRetry:
 
         assert result == 1
         assert conn.execute.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_retries_after_neon_restart_then_succeeds_and_warns(self):
+        """A Neon restart sends 57P01 (AdminShutdownError), which used to
+        escape the retry. The first attempt raises it, the second lands the
+        write, and the retry is logged at warning level (not error) with the
+        exception class so one restart reads as one event.
+        """
+        conn = MagicMock()
+        conn.execute = AsyncMock(
+            side_effect=[
+                asyncpg.exceptions.AdminShutdownError("terminating connection"),
+                "INSERT 0 1",
+            ]
+        )
+        pool = _mock_pool_with_conn(conn)
+
+        with (
+            patch("db.get_pool", return_value=pool),
+            patch("asyncio.sleep", new=AsyncMock()),
+            patch("db.log") as log_mock,
+        ):
+            result = await bulk_insert_ignore_conflict(
+                table="t",
+                columns=["a", "b"],
+                rows=[(1, 2)],
+                conflict_cols=["a"],
+            )
+
+        assert result == 1
+        assert conn.execute.await_count == 2
+        log_mock.warning.assert_called_once()
+        assert log_mock.warning.call_args.args == ("db transient error; retrying",)
+        extra = log_mock.warning.call_args.kwargs["extra"]
+        assert extra["err_type"] == "AdminShutdownError"
+        assert extra["attempt"] == 1
+        log_mock.error.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_retries_acquires_fresh_connection_each_attempt(self):

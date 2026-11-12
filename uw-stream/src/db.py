@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import socket
 from collections.abc import Awaitable, Callable, Iterator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -55,12 +56,32 @@ _pool: asyncpg.Pool | None = None
 # ``PostgresConnectionError`` family covers Neon scale-down / restart
 # fault paths; ``InterfaceError`` is raised when the underlying socket is
 # already closed before we issue the next query.
+#
+# A Neon restart does not arrive as a connection-class error. The server
+# sends SQLSTATE 57P01 (``AdminShutdownError``) to the live connections, 57P02
+# (``CrashShutdownError``) after a crash, 57P03 (``CannotConnectNowError``)
+# while it starts back up, and 53300 (``TooManyConnectionsError``) at the
+# connection limit. None of them subclasses an entry above. A pool acquire that
+# reconnects meanwhile can raise the stdlib ``ConnectionError`` family
+# (refused, reset, aborted, broken pipe) or ``socket.gaierror`` (DNS).
+#
+# Deliberately left out:
+# - ``QueryCanceledError`` (57014): a statement timeout or cancel would most
+#   likely recur, and a retry doubles the load on a DB that is struggling.
+# - bare ``OSError``: it also covers ``FileNotFoundError`` and
+#   ``PermissionError``, which a retry cannot fix.
 _TRANSIENT_DB_EXC: tuple[type[BaseException], ...] = (
     TimeoutError,
     asyncpg.exceptions.PostgresConnectionError,
     asyncpg.exceptions.ConnectionDoesNotExistError,
     asyncpg.exceptions.ConnectionFailureError,
     asyncpg.exceptions.InterfaceError,
+    asyncpg.exceptions.AdminShutdownError,
+    asyncpg.exceptions.CrashShutdownError,
+    asyncpg.exceptions.CannotConnectNowError,
+    asyncpg.exceptions.TooManyConnectionsError,
+    ConnectionError,
+    socket.gaierror,
 )
 
 # Conservative defaults: 3 total attempts (initial + 2 retries) with a
