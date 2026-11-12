@@ -9,6 +9,7 @@ shows one issue per exception type, regardless of which handler raised.
 
 from __future__ import annotations
 
+import aiohttp
 import asyncpg.exceptions
 
 from sentry_setup import _before_send
@@ -62,6 +63,18 @@ class TestBeforeSendFingerprinting:
             "uw-stream-transient-db",
             "AdminShutdownError",
         ]
+
+    def test_aiohttp_connection_reset_keeps_default_fingerprint(self):
+        """The notify push (aiohttp) can capture a ClientConnectionResetError,
+        which is also a stdlib ConnectionResetError. It is not a database
+        failure, so it must not be filed under the transient-DB group.
+        """
+        event = {}
+        out = _before_send(
+            event,
+            _hint_with(aiohttp.ClientConnectionResetError("Cannot write to closing transport")),
+        )
+        assert "fingerprint" not in out
 
     def test_value_error_keeps_default_fingerprint(self):
         """Non-transient errors must NOT be re-fingerprinted — Sentry's

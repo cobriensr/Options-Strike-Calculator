@@ -14,6 +14,7 @@ from __future__ import annotations
 import socket
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import aiohttp
 import asyncpg.exceptions
 import pytest
 
@@ -520,6 +521,22 @@ class TestIsTransientDbError:
         ids=["query_canceled", "file_not_found", "permission_error"],
     )
     def test_retry_cannot_fix_these_so_they_are_not_transient(self, exc):
+        assert not is_transient_db_error(exc)
+
+    # aiohttp's connection errors also inherit the stdlib classes in the tuple:
+    # ClientConnectionResetError is a ConnectionResetError, ConnectionTimeoutError
+    # a TimeoutError. They come from the notify push to Vercel, never from
+    # Postgres, so the predicate must not call them transient: the retry would
+    # not reach them, and the Sentry fingerprint would file them as a DB outage.
+    @pytest.mark.parametrize(
+        "exc",
+        [
+            aiohttp.ClientConnectionResetError("Cannot write to closing transport"),
+            aiohttp.ConnectionTimeoutError("connect timeout"),
+        ],
+        ids=["client_connection_reset", "connection_timeout"],
+    )
+    def test_aiohttp_client_errors_are_not_transient_db_errors(self, exc):
         assert not is_transient_db_error(exc)
 
     def test_value_error_is_not_transient(self):

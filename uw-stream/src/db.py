@@ -15,6 +15,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any
 
+import aiohttp
 import asyncpg
 import asyncpg.exceptions
 import orjson
@@ -64,6 +65,13 @@ _pool: asyncpg.Pool | None = None
 # connection limit. None of them subclasses an entry above. A pool acquire that
 # reconnects meanwhile can raise the stdlib ``ConnectionError`` family
 # (refused, reset, aborted, broken pipe) or ``socket.gaierror`` (DNS).
+#
+# asyncpg itself raises a bare ``ConnectionError`` in ``connect_utils.py``
+# (0.32.0 line numbers): at 959 for an error response before the TLS exchange
+# and at 1015 for a close during the TLS handshake. Both are how a Neon that
+# is starting up looks. At 965 ("rejected SSL upgrade") it is a config fault a
+# retry cannot fix; only a pool reconnect can reach it (the boot connect is not
+# retried), and the cost is two short backoffs before it surfaces.
 #
 # Deliberately left out:
 # - ``QueryCanceledError`` (57014): a statement timeout or cancel would most
@@ -118,7 +126,15 @@ def is_transient_db_error(exc: BaseException) -> bool:
     the same set of exceptions that the retry wrapper considers transient —
     keeps the "collapse 7 channel stacks into one Sentry group" guarantee
     aligned with the actual retry policy.
+
+    An ``aiohttp.ClientError`` is never one, even when it also subclasses a class
+    in the tuple (``ClientConnectionResetError`` is a ``ConnectionResetError``,
+    ``ConnectionTimeoutError`` a ``TimeoutError``). It comes from the notify push
+    to Vercel, not from Postgres, and the Sentry fingerprint would file it as a
+    database outage.
     """
+    if isinstance(exc, aiohttp.ClientError):
+        return False
     return isinstance(exc, _TRANSIENT_DB_EXC)
 
 
