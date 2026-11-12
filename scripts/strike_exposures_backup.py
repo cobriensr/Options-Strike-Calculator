@@ -203,6 +203,11 @@ _RUN_FAILURES = (
     ClientError,
     Boto3Error,
     OSError,
+    # A day file that passed its sha256, schema and row count can still hold a
+    # page Arrow cannot read (ArrowInvalid is a ValueError, not an OSError) or a
+    # string that is not UTF-8. Only the class is logged, never Arrow's text.
+    pa.ArrowException,
+    UnicodeDecodeError,
 )
 
 
@@ -797,8 +802,9 @@ def _downloaded_day(s3, bucket: str, day: date) -> Iterator[pq.ParquetFile]:
 
     The object has to match what `upload_day` recorded about it: its sha256, its
     schema (the table's) and its row count. A file that does not is refused
-    before anything is read from or written to the database. The temporary
-    directory is gone when the block ends.
+    before anything is read from or written to the database. The file is read
+    through a handle this function closes, and the temporary directory is gone
+    when the block ends, whatever raised inside it.
     """
     day_text = day.isoformat()
     key = object_key(day)
@@ -823,20 +829,29 @@ def _downloaded_day(s3, bucket: str, day: date) -> Iterator[pq.ParquetFile]:
                 digest.update(chunk)
         if digest.hexdigest() != metadata.get('sha256'):
             raise BackupError(f'{day_text}: the file does not match its sha256 metadata')
-        try:
-            parquet = pq.ParquetFile(path)
-        except pa.ArrowException:
-            parquet = None
-        if parquet is None:  # raised here: Arrow's text must not ride along as context
-            raise BackupError(f'{day_text}: the file is not a readable Parquet file')
-        try:
-            if not parquet.schema_arrow.equals(ARROW_SCHEMA):
-                raise BackupError(f"{day_text}: the file's schema is not the table's")
-            if str(parquet.metadata.num_rows) != metadata.get('rows'):
-                raise BackupError(f'{day_text}: the file does not hold the rows its metadata says')
-            yield parquet
-        finally:
-            parquet.close()
+        # The handle is ours and is closed before the temporary directory goes. A
+        # file Arrow opens from a path stays open for as long as an error that came
+        # out of it is alive, and on Windows removing the directory then fails with
+        # WinError 32 and replaces the real error.
+        with path.open('rb') as handle:
+            try:
+                parquet = pq.ParquetFile(handle)
+            except (pa.ArrowException, OSError, ValueError):
+                # A damaged footer is an OSError (Thrift), an ArrowInvalid or a
+                # UnicodeDecodeError, depending on where it is damaged.
+                parquet = None
+            if parquet is None:  # raised here: Arrow's text must not ride along as context
+                raise BackupError(f'{day_text}: the file is not a readable Parquet file')
+            try:
+                if not parquet.schema_arrow.equals(ARROW_SCHEMA):
+                    raise BackupError(f"{day_text}: the file's schema is not the table's")
+                if str(parquet.metadata.num_rows) != metadata.get('rows'):
+                    raise BackupError(
+                        f'{day_text}: the file does not hold the rows its metadata says'
+                    )
+                yield parquet
+            finally:
+                parquet.close()
 
 
 def verify_day(

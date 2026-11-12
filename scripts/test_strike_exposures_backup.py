@@ -40,6 +40,7 @@ from types import SimpleNamespace
 
 import psycopg2
 import psycopg2.errors
+import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 from boto3.exceptions import S3UploadFailedError
@@ -2103,8 +2104,6 @@ def _replace_with(body: bytes, rows: str) -> object:
 
 
 def _other_schema_file() -> bytes:
-    import pyarrow as pa
-
     table = pa.table({'id': pa.array([1, 2], pa.int32())})
     sink = io.BytesIO()
     pq.write_table(table, sink)
@@ -2276,7 +2275,7 @@ def test_restore_dry_run_reports_a_sequence_that_is_behind_the_file(
         pytest.param(901, False, False, id='not-called-one-past-it'),
     ],
 )
-def test_restore_dry_run_applies_the_same_is_called_rule_as_the_apply(
+def test_restore_dry_run_reports_a_sequence_behind_the_file_by_the_is_called_rule(
     make_conn, tmp_path: Path, start: int, is_called: bool, behind: bool
 ) -> None:
     rows = plain_rows(3, ids=[5, 900, 70])
@@ -3166,3 +3165,199 @@ def test_restore_command_needs_a_date(cli) -> None:
         cli.run(FakeConnection([]), FakeS3(), 'restore', '--apply')
 
     assert raised.value.code == 2
+
+
+# ── Day files that pass sha256, schema and row count but cannot be read ──────
+#
+# The object's sha256 only says the bytes are the ones that were uploaded. A
+# file damaged before it was hashed, or one whose hash was recomputed, still
+# passes it, and then Arrow or the UTF-8 decoder fails while the day is read.
+
+DAMAGED_DAY_COMMANDS = [
+    pytest.param(('verify', '--date', '2026-11-02'), id='verify'),
+    pytest.param(('restore', '--date', '2026-11-02'), id='restore-dry-run'),
+    pytest.param(('restore', '--date', '2026-11-02', '--apply'), id='restore-apply'),
+]
+DAMAGED_DAY_CALLS = [
+    pytest.param(lambda conn, s3: sbk.verify_day(conn, s3, BUCKET, D1), id='verify'),
+    pytest.param(
+        lambda conn, s3: sbk.restore_day(conn, s3, BUCKET, D1, apply=False), id='restore-dry-run'
+    ),
+    pytest.param(
+        lambda conn, s3: sbk.restore_day(conn, s3, BUCKET, D1, apply=True), id='restore-apply'
+    ),
+]
+
+
+def _footer_start(body: bytearray) -> int:
+    return len(body) - 8 - int.from_bytes(body[-8:-4], 'little')
+
+
+def damage_the_footer(body: bytearray) -> None:
+    """Break the Thrift metadata at the start of the footer: the file will not open."""
+    start = _footer_start(body)
+    for i in range(start + 4, start + 44):
+        body[i] ^= 0xFF
+
+
+def damage_a_column_name(body: bytearray) -> None:
+    """Put a byte that is not UTF-8 into a column name in the footer: the file will not open,
+    and the failure is a UnicodeDecodeError."""
+    at = bytes(body).find(b'ticker', _footer_start(body))
+    assert at >= 0
+    body[at] = 0xFF
+
+
+def damage_a_data_page(body: bytearray) -> None:
+    """Break the first page header: the file opens and then fails to read."""
+    for i in range(8, 60):
+        body[i] ^= 0xFF
+
+
+def damage_a_ticker(body: bytearray) -> None:
+    """Put a byte that is not UTF-8 into a ticker value: the file reads, then fails to decode."""
+    at = bytes(body).find(b'SPXW')
+    assert at >= 0
+    body[at] = 0xFF
+
+
+def put_damaged(s3: FakeS3, rows: list[tuple], tmp_path: Path, damage) -> None:
+    """Back `rows` up, damage the object's bytes, and fix its sha256 so the file passes it."""
+    f = back_up(s3, rows, tmp_path)
+    body = bytearray(s3.objects[key(D1)]['Body'])
+    damage(body)
+    _replace_with(bytes(body), str(len(rows)))(s3, f)
+
+
+@pytest.mark.parametrize('damage', [damage_the_footer, damage_a_column_name])
+@pytest.mark.parametrize('call', DAMAGED_DAY_CALLS)
+def test_a_footer_damaged_file_with_a_matching_sha256_is_refused_with_fixed_text(
+    make_conn, tmp_path: Path, call, damage
+) -> None:
+    # Before the handle was closed on this path, removing the temporary directory
+    # failed with WinError 32 on Windows and replaced this error. The footer
+    # fails as an OSError or as a UnicodeDecodeError, depending on the damage.
+    rows = grouped_rows()
+    s3 = FakeS3()
+    put_damaged(s3, rows, tmp_path, damage)
+    conn = make_conn(rows)
+
+    with pytest.raises(sbk.BackupError, match='not a readable Parquet file') as raised:
+        call(conn, s3)
+
+    assert raised.value.__context__ is None  # no Arrow text in the chain
+    assert conn.statements == []  # refused before the database is touched
+
+
+@pytest.mark.parametrize('call', DAMAGED_DAY_CALLS)
+def test_a_data_damaged_file_with_a_matching_sha256_fails_with_its_own_error(
+    make_conn, tmp_path: Path, call
+) -> None:
+    rows = grouped_rows()
+    s3 = FakeS3()
+    put_damaged(s3, rows, tmp_path, damage_a_data_page)
+    conn = make_conn(rows, sequence_name=SEQUENCE)
+
+    with pytest.raises(Exception) as raised:  # noqa: B017 - the point is which class
+        call(conn, s3)
+
+    # An error the CLI reports by class, and not the PermissionError that
+    # removing the temporary directory raised while a handle was still open.
+    assert isinstance(raised.value, sbk._RUN_FAILURES)
+    assert not isinstance(raised.value, PermissionError)
+    assert not conn.in_txn and conn.rows == sorted(rows, key=key_of)  # nothing written
+
+
+@pytest.mark.parametrize('damage', [damage_the_footer, None], ids=['damaged', 'sound'])
+def test_the_day_file_is_opened_through_a_handle_that_is_closed_afterwards(
+    make_conn, tmp_path: Path, monkeypatch, damage
+) -> None:
+    # Arrow keeps a file it opened from a path until its error is gone, and
+    # Windows will not delete an open file. A handle of our own is closed first.
+    rows = grouped_rows()
+    s3 = FakeS3()
+    if damage is None:
+        back_up(s3, rows, tmp_path)
+    else:
+        put_damaged(s3, rows, tmp_path, damage)
+    opened = []
+    real = pq.ParquetFile
+
+    def spy(source, *args, **kwargs):
+        opened.append(source)
+        return real(source, *args, **kwargs)
+
+    monkeypatch.setattr(sbk.pq, 'ParquetFile', spy)
+
+    try:
+        sbk.verify_day(make_conn(rows), s3, BUCKET, D1)
+    except sbk.BackupError:
+        assert damage is not None
+    assert len(opened) == 1
+    assert not isinstance(opened[0], (str, Path)), 'Arrow was given a path to open'
+    assert opened[0].closed
+
+
+@pytest.mark.parametrize('damage', [damage_the_footer, damage_a_data_page])
+@pytest.mark.parametrize('argv', DAMAGED_DAY_COMMANDS)
+def test_the_cli_fails_the_day_of_a_damaged_file_and_prints_the_class_only(
+    cli, tmp_path: Path, argv: tuple[str, ...], damage
+) -> None:
+    rows = grouped_rows()
+    s3 = FakeS3()
+    put_damaged(s3, rows, tmp_path, damage)
+    conn = FakeConnection(rows, sequence_name=SEQUENCE)
+
+    code, out = cli.run(conn, s3, *argv)
+
+    assert code == 1
+    assert out.startswith('FAILED 2026-11-02: ') and out.count('\n') == 1
+    assert 'thrift' not in out.lower() and 'deserializ' not in out.lower()
+    assert 'PermissionError' not in out and 'WinError' not in out
+    assert conn.rows == sorted(rows, key=key_of)
+
+
+@pytest.mark.parametrize(
+    ('argv', 'method'),
+    [
+        pytest.param(('verify', '--date', '2026-11-02'), 'iter_batches', id='verify'),
+        pytest.param(('restore', '--date', '2026-11-02'), 'read', id='restore-dry-run'),
+        pytest.param(('restore', '--date', '2026-11-02', '--apply'), 'read', id='restore-apply'),
+    ],
+)
+def test_the_cli_fails_the_day_when_arrow_rejects_a_page_and_shows_none_of_its_text(
+    cli, tmp_path: Path, monkeypatch, argv: tuple[str, ...], method: str
+) -> None:
+    # pa.ArrowInvalid is a ValueError, which the run's failures did not include.
+    rows = grouped_rows()
+    s3 = FakeS3()
+    back_up(s3, rows, tmp_path)
+
+    def reject(*args, **kwargs):
+        raise pa.ArrowInvalid(f'Column 1 named date expected length 0 but got length 18 {DETAIL_MARKER}')
+
+    monkeypatch.setattr(pq.ParquetFile, method, reject)
+    conn = FakeConnection(rows, sequence_name=SEQUENCE)
+
+    code, out = cli.run(conn, s3, *argv)
+
+    assert code == 1
+    assert out == 'FAILED 2026-11-02: ArrowInvalid\n'
+    assert conn.rows == sorted(rows, key=key_of)
+
+
+@pytest.mark.parametrize('argv', DAMAGED_DAY_COMMANDS)
+def test_the_cli_fails_the_day_of_a_file_with_a_ticker_that_is_not_utf8(
+    cli, tmp_path: Path, argv: tuple[str, ...]
+) -> None:
+    rows = grouped_rows()
+    s3 = FakeS3()
+    put_damaged(s3, rows, tmp_path, damage_a_ticker)
+    conn = FakeConnection(rows if argv[0] == 'verify' else [], sequence_name=SEQUENCE)
+
+    code, out = cli.run(conn, s3, *argv)
+
+    assert code == 1
+    assert out == 'FAILED 2026-11-02: UnicodeDecodeError\n'  # not the byte or its position
+    assert not conn.in_txn
+    assert conn.rows == (sorted(rows, key=key_of) if argv[0] == 'verify' else [])
