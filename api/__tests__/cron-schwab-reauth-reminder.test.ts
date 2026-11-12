@@ -320,6 +320,7 @@ describe('cron schwab-reauth-reminder', () => {
       expect(mockSentry.captureMessage).toHaveBeenCalledWith(
         'schwab.reauth_reminder.undelivered',
         expect.objectContaining({
+          level: 'error',
           extra: expect.objectContaining({ reason: 'no push subscriptions' }),
         }),
       );
@@ -336,6 +337,7 @@ describe('cron schwab-reauth-reminder', () => {
       expect(mockSentry.captureMessage).toHaveBeenCalledWith(
         'schwab.reauth_reminder.undelivered',
         expect.objectContaining({
+          level: 'error',
           extra: expect.objectContaining({ reason: 'every send failed' }),
         }),
       );
@@ -352,6 +354,7 @@ describe('cron schwab-reauth-reminder', () => {
       expect(mockSentry.captureMessage).toHaveBeenCalledWith(
         'schwab.reauth_reminder.undelivered',
         expect.objectContaining({
+          level: 'error',
           extra: expect.objectContaining({
             reason: 'every subscription expired',
           }),

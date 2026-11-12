@@ -184,8 +184,10 @@ export default withCronInstrumentation(
     const metadata = { state: status.state, kind, ...result };
     if (result.sent === 0) {
       const reason = undeliveredReason(result);
+      // Level 'error': the phone alert itself was lost. A warning gets
+      // medium priority, and the only Issue Stream rule mails high priority.
       Sentry.captureMessage('schwab.reauth_reminder.undelivered', {
-        level: 'warning',
+        level: 'error',
         fingerprint: ['schwab.reauth_reminder.undelivered'],
         extra: { kind, reason, ...result },
       });
