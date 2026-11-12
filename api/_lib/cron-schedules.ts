@@ -255,12 +255,17 @@ export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
     // (15:45 ET), so ET-local `*/15 10-15` is the span served in BOTH
     // regimes. Ticks past the window on a half-day (13:00 ET close, last
     // check 12:45 ET) are satisfied by the wrapper's paired skip check-in.
-    // 15-min cadence → default failure threshold: one missed check is a
-    // missed alert opportunity, not noise.
+    // Failure threshold 2: at the ~5% transient check-in miss rate behind
+    // HIGH_FREQ_FAILURE_THRESHOLD, 24 ticks a day would raise a false
+    // monitor issue on about 70% of days at the default of 1. Two misses in
+    // a row page within 30 min. A real outage still trips it: a run that
+    // reaches no device returns `error` and releases its claim, so the next
+    // tick errors too.
     schedule: '*/15 10-15 * * 1-5',
     timezone: MARKET_HOURS_TZ,
     checkinMargin: DEFAULT_MARGIN,
     maxRuntime: DEFAULT_MAX_RUNTIME,
+    failureIssueThreshold: 2,
   },
   'cleanup-gexbot': {
     schedule: '15 12 * * 1-5',

@@ -13,6 +13,9 @@
  * wrapper's own timers still run.
  */
 
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
@@ -124,6 +127,8 @@ describe('cron check-live-snapshots', () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(NOW);
     process.env = { ...originalEnv, CRON_SECRET: 'test-secret' };
+    // The cron calls no UW API: it must run whatever the shell exports.
+    delete process.env.UW_API_KEY;
     const timezone = await vi.importActual<
       typeof import('../../src/utils/timezone.js')
     >('../../src/utils/timezone.js');
@@ -167,6 +172,20 @@ describe('cron check-live-snapshots', () => {
       expect(mockSql).not.toHaveBeenCalled();
       expect(mockSendPush).not.toHaveBeenCalled();
     });
+
+    it('returns 405 for a POST and reads nothing', async () => {
+      const res = mockResponse();
+      await handler(
+        mockRequest({
+          method: 'POST',
+          headers: { authorization: 'Bearer test-secret' },
+        }),
+        res,
+      );
+      expect(res._status).toBe(405);
+      expect(mockSql).not.toHaveBeenCalled();
+      expect(mockSendPush).not.toHaveBeenCalled();
+    });
   });
 
   describe('isLiveSnapshotWatchWindow', () => {
@@ -203,6 +222,46 @@ describe('cron check-live-snapshots', () => {
       expect(mockSql).not.toHaveBeenCalled();
       expect(mockSendPush).not.toHaveBeenCalled();
     });
+
+    // The window is local to the cron, so cron-schedules.test.ts cannot tie it
+    // to vercel.json. Sweep the ticks vercel.json fires on a full Wednesday in
+    // each DST regime and check the window admits 10:00-15:45 ET in both.
+    const FIRED_SCHEDULE = '*/15 14-20 * * 1-5';
+
+    it('sweeps the schedule vercel.json fires', () => {
+      const { crons } = JSON.parse(
+        readFileSync(resolve(process.cwd(), 'vercel.json'), 'utf8'),
+      ) as { crons: { path: string; schedule: string }[] };
+      expect(
+        crons
+          .filter((c) => c.path === '/api/cron/check-live-snapshots')
+          .map((c) => c.schedule),
+      ).toEqual([FIRED_SCHEDULE]);
+    });
+
+    it.each([
+      ['EDT', '2026-10-14', 240],
+      ['EST', '2026-11-11', 300],
+    ])(
+      '%s: the fired ticks admit 10:00 through 15:45 ET',
+      (_regime, date, utcOffsetMin) => {
+        const midnightUtc = Date.parse(`${date}T00:00:00Z`);
+        const admitted: string[] = [];
+        for (let hour = 14; hour <= 20; hour += 1) {
+          for (const minute of [0, 15, 30, 45]) {
+            const utcMin = hour * 60 + minute;
+            vi.setSystemTime(midnightUtc + utcMin * MINUTE_MS);
+            if (!isLiveSnapshotWatchWindow()) continue;
+            const etMin = utcMin - utcOffsetMin;
+            const etHour = String(Math.floor(etMin / 60)).padStart(2, '0');
+            admitted.push(`${etHour}:${String(etMin % 60).padStart(2, '0')}`);
+          }
+        }
+        expect(admitted).toHaveLength(24);
+        expect(admitted[0]).toBe('10:00');
+        expect(admitted.at(-1)).toBe('15:45');
+      },
+    );
   });
 
   describe('the last live save', () => {
@@ -447,7 +506,7 @@ describe('cron check-live-snapshots', () => {
         'no push subscriptions',
       ],
     ])(
-      'reports error, captures a warning and releases the claim when %s',
+      'reports error, captures an error and releases the claim when %s',
       async (_case, result, reason) => {
         queueLastLive(minutesAgo(35));
         mockSendPush.mockResolvedValueOnce(result);
@@ -462,7 +521,7 @@ describe('cron check-live-snapshots', () => {
         });
         expect(mockSentry.captureMessage).toHaveBeenCalledTimes(1);
         expect(mockSentry.captureMessage).toHaveBeenCalledWith(UNDELIVERED, {
-          level: 'warning',
+          level: 'error',
           fingerprint: [UNDELIVERED],
           extra: expect.objectContaining({ reason, today: TODAY, ...result }),
         });

@@ -33,6 +33,7 @@ after the fact; this alert makes the gap visible while it can still be fixed.
 | Cadence | every 15 min | Worst-case detection is 30 + 15 = 45 min. |
 | `CLAIM_TTL_SEC` | 24 h | The claim only has to outlive one day's window (under 6 h). |
 | `PUSH_TTL_SEC` | 1 h | A late delivery is still useful within the session; the claim blocks a retry once the push service accepted it. |
+| Sentry monitor `failureIssueThreshold` | 2 | At the ~5% transient check-in miss rate, 24 ticks a day would raise a false monitor issue on about 70% of days at 1; 2 misses in a row page within 30 min, and an undelivered run errors on consecutive ticks. |
 
 Example: saves stop at 11:10 AM CT. The 11:30 check sees a 20-minute gap (no
 push); the 11:45 check sees 35 minutes and pushes "Last live snapshot 11:10 AM
@@ -190,7 +191,9 @@ the reminder file no longer contains its own Lua script or release function.
   - `tag: snapshot-stale-{today}`, `requireInteraction: true`, `url: '/'`
 - Not claimed → `skipped`, message `alert already sent today`.
 - `sent === 0` → `error`, message `alert not delivered: {undeliveredReason}`,
-  plus `Sentry.captureMessage('snapshot.stale_alert.undelivered', { level: 'warning', fingerprint: [...] })`.
+  plus `Sentry.captureMessage('snapshot.stale_alert.undelivered', { level: 'error', fingerprint: [...] })`
+  (`error`, not `warning`: the only Issue Stream rule mails high priority, and a
+  lost phone alert must reach the owner).
 - Sent with failures → `partial`; otherwise `success`, message `stale alert sent`.
 - Format the CT time with an existing helper if one fits (search
   `src/utils/timezone.ts` and `formatSchwabExpiryCt` in

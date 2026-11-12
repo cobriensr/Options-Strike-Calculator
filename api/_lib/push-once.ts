@@ -29,7 +29,8 @@
  *     timeout) loses that one push until the key expires. Rarer: the Upstash
  *     client retries a thrown fetch itself, so a SET NX that succeeded
  *     server-side but lost its response can come back as not claimed, and
- *     that run reports "already sent" with nothing sent.
+ *     that run reports "already sent" with nothing sent; the key then holds
+ *     a token no run releases, so that push is lost until the key expires.
  *
  * `pushTtlSec` is how long the push service holds the message for an
  * unreachable device. A message dropped at its TTL is lost while the claim

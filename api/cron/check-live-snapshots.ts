@@ -38,11 +38,8 @@
  *     earliest and the last check that day is at 15:45 ET, so 5 h 45 min at
  *     most. 24 h covers it with margin, and the next trading day derives a
  *     new key.
- *   - Release: when no device received the push, the claim is released so
- *     the next 15-minute check retries. If that release fails, the day's
- *     alert is not retried until the key expires.
- *   - Known gap: a run killed between the claim and the send (a function
- *     timeout) loses that day's alert.
+ *   - Release and known gap: as in `push-once.ts`. A day's alert lost to
+ *     either is not retried until the key expires (24 h).
  *
  * Push TTL is PUSH_TTL_SEC (1 h): a late delivery is still useful inside the
  * session, and the claim blocks a retry once the push service accepted it.
@@ -185,8 +182,10 @@ export default withCronInstrumentation(
     const { result } = outcome;
     if (result.sent === 0) {
       const reason = undeliveredReason(result);
+      // Level 'error': the phone alert itself was lost. A warning gets
+      // medium priority, and the only Issue Stream rule mails high priority.
       Sentry.captureMessage('snapshot.stale_alert.undelivered', {
-        level: 'warning',
+        level: 'error',
         fingerprint: ['snapshot.stale_alert.undelivered'],
         extra: { reason, ...metadata, ...result },
       });
