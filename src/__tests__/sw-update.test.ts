@@ -90,8 +90,59 @@ describe('startUpdateChecks scheduling', () => {
     await advance(INTERVAL_MS);
     expect(fetchMock).toHaveBeenCalledWith(
       SW_URL,
-      expect.objectContaining({ cache: 'no-store' }),
+      expect.objectContaining({
+        cache: 'no-store',
+        signal: expect.any(AbortSignal),
+      }),
     );
+  });
+
+  it('gives the worker script fetch a 30 second timeout signal', async () => {
+    const signal = new AbortController().signal;
+    const timeout = vi.spyOn(AbortSignal, 'timeout').mockReturnValue(signal);
+    start(makeRegistration());
+
+    await advance(INTERVAL_MS);
+
+    expect(timeout).toHaveBeenCalledWith(30_000);
+    expect(fetchMock).toHaveBeenCalledWith(SW_URL, {
+      cache: 'no-store',
+      signal,
+    });
+  });
+
+  it.each([200, 503])(
+    'cancels the unread body of a %i worker script response',
+    async (status) => {
+      const cancel = vi.fn().mockResolvedValue(undefined);
+      fetchMock.mockResolvedValue({ status, body: { cancel } });
+      start(makeRegistration());
+
+      await advance(INTERVAL_MS);
+
+      expect(cancel).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('carries on, with no unhandled rejection, when cancelling the body fails', async () => {
+    // A plain function, not vi.fn(): the spy tracks the promise it returns,
+    // which would count as handling it and hide an unhandled rejection.
+    let cancelCalls = 0;
+    const body = {
+      cancel: () => {
+        cancelCalls += 1;
+        return Promise.reject(new TypeError('stream is locked'));
+      },
+    };
+    fetchMock.mockResolvedValue({ status: 200, body });
+    const registration = makeRegistration();
+    start(registration);
+
+    await advance(INTERVAL_MS);
+
+    expect(cancelCalls).toBe(1);
+    expect(registration.update).toHaveBeenCalledTimes(1);
+    expect(captureUnlessAuth).not.toHaveBeenCalled();
   });
 
   it('skips update() when the worker script fetch is not a 200', async () => {
@@ -241,17 +292,89 @@ describe('startUpdateChecks failures', () => {
     expect(captureUnlessAuth).not.toHaveBeenCalled();
   });
 
-  it('does not throw or report when update() rejects with a network error', async () => {
+  it('treats a timeout of the script fetch as routine and releases the guard', async () => {
+    fetchMock
+      .mockRejectedValueOnce(new DOMException('timed out', 'TimeoutError'))
+      .mockResolvedValue({ status: 200 });
     const registration = makeRegistration();
-    registration.update.mockRejectedValue(
-      new TypeError('Failed to update a ServiceWorker: Failed to fetch'),
-    );
+    start(registration);
+
+    await advance(INTERVAL_MS);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(registration.update).not.toHaveBeenCalled();
+    expect(captureUnlessAuth).not.toHaveBeenCalled();
+
+    await advance(INTERVAL_MS);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(registration.update).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports a TypeError from update() after a 200 as a warning', async () => {
+    const failure = new TypeError('ServiceWorker script evaluation failed');
+    const registration = makeRegistration();
+    registration.update.mockRejectedValue(failure);
     start(registration);
 
     await advance(INTERVAL_MS);
 
     expect(registration.update).toHaveBeenCalledTimes(1);
-    expect(captureUnlessAuth).not.toHaveBeenCalled();
+    expect(captureUnlessAuth).toHaveBeenCalledTimes(1);
+    expect(captureUnlessAuth).toHaveBeenCalledWith(failure, {
+      level: 'warning',
+      tags: { context: 'sw_update_check' },
+    });
+  });
+
+  it('does not report the same update() failure again on the next tick', async () => {
+    const registration = makeRegistration();
+    registration.update.mockRejectedValue(new TypeError('evaluation failed'));
+    start(registration);
+
+    await advance(INTERVAL_MS);
+    await advance(INTERVAL_MS);
+
+    expect(registration.update).toHaveBeenCalledTimes(2);
+    expect(captureUnlessAuth).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports the same update() failure again after a successful check', async () => {
+    const failure = new TypeError('evaluation failed');
+    const registration = makeRegistration();
+    registration.update
+      .mockRejectedValueOnce(failure)
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValue(failure);
+    start(registration);
+
+    await advance(3 * INTERVAL_MS);
+
+    expect(registration.update).toHaveBeenCalledTimes(3);
+    expect(captureUnlessAuth).toHaveBeenCalledTimes(2);
+  });
+
+  it('reports a failure of a different kind while another is latched', async () => {
+    const registration = makeRegistration();
+    registration.update
+      .mockRejectedValueOnce(new TypeError('evaluation failed'))
+      .mockRejectedValue(new DOMException('gone', 'InvalidStateError'));
+    start(registration);
+
+    await advance(2 * INTERVAL_MS);
+
+    expect(captureUnlessAuth).toHaveBeenCalledTimes(2);
+  });
+
+  it('drops the latch when the checks restart', async () => {
+    const registration = makeRegistration();
+    registration.update.mockRejectedValue(new TypeError('evaluation failed'));
+    start(registration);
+    await advance(INTERVAL_MS);
+    expect(captureUnlessAuth).toHaveBeenCalledTimes(1);
+
+    start(registration);
+    await advance(INTERVAL_MS);
+
+    expect(captureUnlessAuth).toHaveBeenCalledTimes(2);
   });
 
   it('does not report any failure that lands while the browser is offline', async () => {

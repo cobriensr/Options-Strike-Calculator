@@ -13,6 +13,7 @@
  * single-page app can stay open for days.
  */
 
+import { claimReport } from './response-guard';
 import { captureUnlessAuth } from './sentry-helpers';
 
 type UpdateSW = (reloadPage?: boolean) => Promise<void>;
@@ -24,6 +25,11 @@ const UPDATE_CHECK_INTERVAL_MS = 15 * 60 * 1000;
  * switching tabs can't fire a request each time.
  */
 const VISIBLE_CHECK_THROTTLE_MS = 60 * 1000;
+/**
+ * The sw.js fetch (about 29 KB) gives up after this, so a stalled connection
+ * frees the in-flight guard before the next focus check.
+ */
+const FETCH_TIMEOUT_MS = 30 * 1000;
 
 let updateSWFn: UpdateSW | null = null;
 let needsRefresh = false;
@@ -91,16 +97,33 @@ export function applyUpdate(): void {
   });
 }
 
+/** Where a check was when it failed: fetching sw.js, or in `update()`. */
+type CheckStage = 'fetch' | 'update';
+
 /**
- * `fetch()` rejects with a TypeError on a network error, and
- * `ServiceWorkerRegistration.update()` with a TypeError when it can't fetch
- * the worker script (offline, DNS, a laptop just waking up). Anything that
- * lands while the browser reports offline is the same condition. Neither is
- * worth a Sentry event; the next tick retries. `update()` also uses a
- * TypeError for a script that fails to evaluate, which this can't tell apart.
+ * Whether a failed check is routine, so it needs no Sentry event: the browser
+ * reports offline, or the sw.js fetch hit a network error (`fetch()` rejects
+ * with a TypeError) or timed out (a `TimeoutError` DOMException), as when a
+ * laptop wakes up. The next tick retries. A rejection from `update()` is not
+ * routine, even a TypeError: the 200 just showed the server answers, and
+ * `update()` rejects with a TypeError when the new script fails to evaluate,
+ * which would leave every open window on the old bundle.
  */
-function isNetworkFailure(err: unknown): boolean {
-  return err instanceof TypeError || navigator.onLine === false;
+function isRoutineFailure(err: unknown, stage: CheckStage): boolean {
+  if (navigator.onLine === false) return true;
+  return stage === 'fetch' && (err instanceof TypeError || isTimeout(err));
+}
+
+function isTimeout(err: unknown): boolean {
+  return errorName(err) === 'TimeoutError';
+}
+
+/** The latch key for a failure: its `name`, or its type when it has none. */
+function errorName(err: unknown): string {
+  if (typeof err === 'object' && err !== null && 'name' in err) {
+    if (typeof err.name === 'string') return err.name;
+  }
+  return typeof err;
 }
 
 /**
@@ -113,7 +136,13 @@ function isNetworkFailure(err: unknown): boolean {
  * Follows vite-plugin-pwa's "Periodic Service Worker Updates > Handling Edge
  * Cases" guide: skip while a worker is installing or the browser is offline,
  * and only call `update()` after the script URL answers 200 uncached, so a
- * server that is down can't make `update()` throw.
+ * server that is down can't make `update()` throw. That fetch times out after
+ * `FETCH_TIMEOUT_MS`.
+ *
+ * A failure is reported to Sentry as a warning unless it is routine (see
+ * `isRoutineFailure`), and a repeat of the last reported kind stays quiet until
+ * a check succeeds, so a script that keeps failing doesn't send an event per
+ * tick. The latch belongs to the run, so a restart drops it.
  *
  * Owns one interval and one listener. A second call stops the first and
  * starts afresh, so timers never stack; the returned stop function only
@@ -128,6 +157,7 @@ export function startUpdateChecks(
 
   let inFlight = false;
   let lastCheckStartedAt = Number.NEGATIVE_INFINITY;
+  const lastReported: { current: string | null } = { current: null };
 
   const check = async (): Promise<void> => {
     if (inFlight || registration.installing || navigator.onLine === false) {
@@ -135,11 +165,25 @@ export function startUpdateChecks(
     }
     inFlight = true;
     lastCheckStartedAt = Date.now();
+    let stage: CheckStage = 'fetch';
     try {
-      const response = await fetch(swUrl, { cache: 'no-store' });
-      if (response.status === 200) await registration.update();
+      const response = await fetch(swUrl, {
+        cache: 'no-store',
+        signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+      });
+      // Only the status matters; release the unread body. A failed cancel
+      // changes nothing.
+      response.body?.cancel().catch(() => undefined);
+      if (response.status === 200) {
+        stage = 'update';
+        await registration.update();
+        lastReported.current = null;
+      }
     } catch (err: unknown) {
-      if (!isNetworkFailure(err)) {
+      if (
+        !isRoutineFailure(err, stage) &&
+        claimReport(lastReported, errorName(err))
+      ) {
         captureUnlessAuth(err, {
           level: 'warning',
           tags: { context: 'sw_update_check' },
