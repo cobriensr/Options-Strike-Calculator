@@ -134,12 +134,30 @@ None: no API, table, env var or migration. Frontend only (Vercel deploy).
   both DST regimes, on a half-day before and after the noon CT close, a
   weekend and a holiday.
 - `src/lib/sw-update.ts`: when `needsRefresh` becomes true, evaluate the
-  policy now, on every `visibilitychange`, and every 60 s; on the first true,
+  policy on every `visibilitychange` and every 60 s; on the first true,
   call `applyUpdate()` once and stop evaluating. Export
   `holdAutoUpdate(): () => void` (a counted hold; the returned release is
   idempotent) that makes `busy` true while any hold is open.
+  - Accepted rulings (2026-11-12, Task 2 review):
+    - The first evaluation runs on the first 60 s tick or `visibilitychange`, not
+      inside `markNeedsRefresh`. This keeps the banner test independent of the
+      clock: it marks an update with the real clock and clicks Reload, and an
+      apply inside `markNeedsRefresh` would make that two calls whenever the
+      clock is outside the session.
+    - Releasing the last hold doesn't evaluate at once; the next tick or
+      `visibilitychange` does (within 60 s), so someone who hid the tab during a
+      long analysis and returns inside that minute still sees the result.
+    - Holds are `Set<symbol>` tokens, so a release is idempotent and a release
+      from before `resetUpdateState()` can't release a newer hold.
+    - `applyUpdate` ends the wait for a safe moment, so a Reload click stops the
+      automatic apply. A click after an automatic apply repeats the idempotent
+      `updateSW(true)`; there is no "applied" flag, so a manual retry after a
+      failed `updateSW` keeps working.
 - `src/hooks/useChartAnalysis.ts`: take a hold for the life of the analyze
-  request and release it in `finally`.
+  request and release it in `finally`. If the host panel unmounts mid-run, the
+  request is not aborted and keeps its hold until it ends, but a retry prompt
+  parked at unmount is cancelled and a run that fails after unmount ends
+  instead of prompting, so the hold can't outlive the run.
 - Tests: waiting update + hidden → applies; visible during the session → does
   not, then hidden → applies; hold open → never applies, release then applies
   on the next evaluation; applies at most once; timers and listeners cleaned
