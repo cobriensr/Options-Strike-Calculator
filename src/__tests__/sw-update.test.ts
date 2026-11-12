@@ -670,6 +670,25 @@ describe('a waiting update applies at a safe moment', () => {
     expect(updateSW).toHaveBeenCalledTimes(1);
   });
 
+  it('lets the banner Reload repeat an apply that already ran', async () => {
+    // The banner stays up until the page reloads, so a click can land after
+    // the automatic apply. It re-sends the idempotent updateSW(true), breaks
+    // nothing and reports nothing; there is no "applied" flag, so a manual
+    // retry after a failed updateSW still works.
+    changeVisibility('hidden');
+    markNeedsRefresh();
+    await advance(SAFE_MOMENT_INTERVAL_MS);
+    expect(updateSW).toHaveBeenCalledTimes(1);
+
+    expect(() => applyUpdate()).not.toThrow();
+    await advance(0);
+
+    expect(updateSW).toHaveBeenCalledTimes(2);
+    expect(updateSW).toHaveBeenLastCalledWith(true);
+    expect(captureUnlessAuth).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it('keeps waiting when no update function is registered yet', async () => {
     resetUpdateState();
     changeVisibility('hidden');

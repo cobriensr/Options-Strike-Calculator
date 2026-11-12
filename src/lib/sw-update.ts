@@ -135,8 +135,11 @@ export function getNeedsRefresh(): boolean {
  * — don't trigger spurious reloads mid-load. Calling when no update is
  * pending is a no-op.
  *
- * Also ends the wait for a safe moment, so the banner's Reload and the
- * automatic apply can't both run: the update applies once per page.
+ * Also ends the wait for a safe moment, so a Reload click stops the automatic
+ * apply. The reverse isn't guarded: a click after an automatic apply repeats
+ * `updateSW(true)`, a second SKIP_WAITING and a second one-shot listener,
+ * which is harmless. There is deliberately no "applied" flag, because the
+ * manual retry after a failed `updateSW` (see below) has to keep working.
  */
 export function applyUpdate(): void {
   if (!updateSWFn) return;
