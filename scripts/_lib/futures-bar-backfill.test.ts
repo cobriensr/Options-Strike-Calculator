@@ -2350,23 +2350,32 @@ describe('runBarBackfill --repair', () => {
       );
     });
 
-    it('the re-run line names the work dir in full even when it is the default, so a re-run from another directory finds the same cache and backup', async () => {
-      mockSql.mockRejectedValue(new Error('connection terminated'));
-
-      // Fails on the first read, before any cache file is touched.
-      await run({ repair: true, dryRun: true, workDir: DEFAULT_WORK_DIR });
-
-      expect(logs).toContain(
-        `Re-run with 2026-09-15 --roots ES --max-pages 20000 --repair --dry-run --work-dir ${resolve(DEFAULT_WORK_DIR)}`,
-      );
-      expect(isAbsolute(resolve(DEFAULT_WORK_DIR))).toBe(true);
-    });
-
     describe('a relative work dir', () => {
-      // `path.resolve` reads process.cwd(), so the test moves the "current
-      // directory" into its temp dir instead of writing into the repo.
+      // The run's current directory is the test's temp dir, a real chdir, so
+      // a relative path that were opened without being resolved would still
+      // land in the temp dir and never in the repo. afterEach runs before
+      // the outer one that removes the temp dir (Windows cannot remove the
+      // current directory).
+      let startDir: string;
       beforeEach(() => {
-        vi.spyOn(process, 'cwd').mockReturnValue(workDir);
+        startDir = process.cwd();
+        process.chdir(workDir);
+      });
+      afterEach(() => {
+        process.chdir(startDir);
+      });
+
+      it('the re-run line names the work dir in full even when it is the default, so a re-run from another directory finds the same cache and backup', async () => {
+        mockSql.mockRejectedValue(new Error('connection terminated'));
+
+        // Fails on the first read, before any cache file is touched.
+        await run({ repair: true, dryRun: true, workDir: DEFAULT_WORK_DIR });
+
+        expect(logs).toContain(
+          `Re-run with 2026-09-15 --roots ES --max-pages 20000 --repair --dry-run --work-dir ${resolve(DEFAULT_WORK_DIR)}`,
+        );
+        expect(isAbsolute(resolve(DEFAULT_WORK_DIR))).toBe(true);
+        expect(existsSync(join(workDir, 'docs'))).toBe(false);
       });
 
       it('is resolved against the current directory: the backup, the printed paths and the re-run line are all absolute', async () => {
@@ -2717,7 +2726,10 @@ describe('runBarBackfill --repair', () => {
       routeRepairSql({ ES: scenarioStored() });
       routeTrades({ ESU6: [SCENARIO_PRINTS] });
       await repair({ dryRun: true });
-      const stale = { ...readCache(), version: REPAIR_CACHE_VERSION - 1 };
+      // Version 1 is what the first --repair commit wrote: that file could
+      // hold a day with an exhausted piece or a withheld minute.
+      expect(REPAIR_CACHE_VERSION).toBeGreaterThan(1);
+      const stale = { ...readCache(), version: 1 };
       writeFileSync(cachePath(), JSON.stringify(stale));
       mockUwFetch.mockClear();
       routeTrades({ ESU6: [SCENARIO_PRINTS] });

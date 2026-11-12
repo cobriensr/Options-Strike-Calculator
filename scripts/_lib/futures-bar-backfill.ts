@@ -724,8 +724,13 @@ export function planRepair({
 /** `<ROOT>-<date>.json` files live in this folder of the work dir. */
 const CACHE_DIR = 'front-month-repair-cache';
 
-/** Bump when the cache file's content or meaning changes. */
-export const REPAIR_CACHE_VERSION = 1;
+/**
+ * Bump when the cache file's content or meaning changes. Version 1 (the
+ * first `--repair` commit) could hold a day with an exhausted piece or a
+ * withheld minute; version 2 is written only for a day with neither, so a
+ * version 1 file is never read as a hit.
+ */
+export const REPAIR_CACHE_VERSION = 2;
 
 const CacheHeaderSchema = z.object({ version: z.number() });
 
