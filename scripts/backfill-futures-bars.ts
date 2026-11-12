@@ -3,15 +3,29 @@
  * four aggressor-flow columns) from Unusual Whales REST prints, by the
  * live uw-stream handler's rules. Built for the UTC days 2026-09-04 →
  * 09-28, which hold no bar for any root. Writes only minutes that have no
- * bar (ON CONFLICT DO NOTHING), so it never replaces a live bar. A
- * root-day with no missing Globex-open minute makes no UW call, so a
- * re-run skips what it already filled; one that still has a missing
- * minute (a sparse overnight tape, a holiday) is paged again. Each bar
+ * bar (ON CONFLICT DO NOTHING), so it never replaces a live bar (--repair,
+ * below, is the one mode that does). A root-day with no missing
+ * Globex-open minute makes no UW call, so a re-run skips what it already
+ * filled; one that still has a missing minute (a sparse overnight tape, a
+ * holiday) is paged again. Each bar
  * comes from, and records, the contract its CME trade date was decided on
  * (futures_front_month; a real run decides a date with no row yet), and
  * only that contract is paged. A root-day on a trade date before
  * 2026-07-28, where the table starts, fails by name. Logic and rules:
  * scripts/_lib/futures-bar-backfill.ts.
+ *
+ * --repair rewrites the bars already stored (2026-09-04 → the Phase 5
+ * deploy, 2026-11-11) to the same rule: a stored bar whose prices lie
+ * within a tick of the scheduled contract's prints is kept, and gets its
+ * contract where that is NULL; one outside them is rewritten from the
+ * prints, or deleted when the scheduled contract printed nothing countable;
+ * a minute with no bar and countable prints is filled. A write run first
+ * appends every row it rewrites, deletes or tags (in full, with the new
+ * values), and every fill, to <work dir>/front-month-repair-<run id>.jsonl,
+ * and refuses to start without that file. Run it before
+ * backfill-futures-flow.ts over 2026-09-04 onward: it rewrites the flow of
+ * a bar built from another contract. It reads the stored front months and
+ * never decides a trade date; one without a row is left alone and reported.
  *
  * Usage (env from .env.local, like the other scripts: DATABASE_URL and
  * UW_API_KEY, never printed). Run after the close: it refuses to start
@@ -23,22 +37,39 @@
  *   npx tsx scripts/backfill-futures-bars.ts --dry-run --from 2026-09-04 --to 2026-09-28 --max-pages 60000
  *   npx tsx scripts/backfill-futures-bars.ts --from 2026-09-04 --to 2026-09-28 --max-pages 60000
  *   npx tsx scripts/backfill-futures-bars.ts 2026-09-04 2026-09-05 --roots ES,NQ
+ *   npx tsx scripts/backfill-futures-bars.ts --repair --dry-run --from 2026-09-04 --to 2026-11-11 --max-pages 150000
+ *   npx tsx scripts/backfill-futures-bars.ts --repair --from 2026-09-04 --to 2026-11-11 --max-pages 150000
  * Flags: --from/--to YYYY-MM-DD (UTC, inclusive) or explicit dates ·
  *        --roots ES,NQ,... (default all six) · --max-pages N (default
  *        20000, checked between dates: a real run over September needs
- *        more) · --dry-run (read, page and build; write nothing) ·
- *        --compare (write nothing; count how many REST-built bars equal
- *        the bars already stored, and print the first few differences).
- *        Neither writes a front-month row: a trade date with no stored
+ *        more, and the full --repair range about 150000) · --dry-run
+ *        (read, page and build; write nothing) · --compare (write nothing;
+ *        count how many REST-built bars equal the bars already stored, and
+ *        print the first few differences) · --repair (not with --compare;
+ *        with --dry-run it counts each class per root and writes nothing) ·
+ *        --no-cache (--repair: page again and refresh the cache) ·
+ *        --work-dir DIR (--repair: where the backup and the cache go,
+ *        default docs/tmp/uw-futures-run).
+ *        None of them writes a front-month row: a trade date with no stored
  *        front month is skipped and reported.
  * The current UTC day is never processed.
+ *
+ * --repair keeps each completed root-day's rebuilt minutes in
+ * <work dir>/front-month-repair-cache/<ROOT>-<date>.json, so the dry run,
+ * the write run and the check dry run page each root-day once. A file is
+ * used only for the same version, root, day and contract per session
+ * piece; a corrupt one is paged again with a warning. Stored bars are
+ * always read fresh. Pages served from the cache do not count against
+ * --max-pages.
  *
  * Exit code 1 when any root-day failed, or the run stopped before its
  * last date (market hours began, or the page budget was spent). The log
  * ends with the failed root-days and the arguments that re-run them or
  * resume the rest.
  *
- * Spec: docs/superpowers/specs/2026-11-06-futures-sept-bar-backfill.md
+ * Spec: docs/superpowers/specs/2026-11-06-futures-sept-bar-backfill.md and,
+ * for --repair, docs/superpowers/specs/2026-11-06-futures-session-front-month.md
+ * (Phase 6)
  */
 
 import { config as loadEnv } from 'dotenv';
