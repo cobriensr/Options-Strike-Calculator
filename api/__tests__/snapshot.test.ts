@@ -413,10 +413,135 @@ describe('POST /api/snapshot', () => {
       expect(Sentry.captureMessage).not.toHaveBeenCalled();
     });
 
+    // A closed day owns no snapshot rows (production held 187 of them on 13
+    // non-trading dates). The client guards only its live path, so a stale
+    // tab, a direct POST or a backtest save still reaches the server.
+    describe('a non-trading day', () => {
+      const SATURDAY = '2026-03-07';
+      const GOOD_FRIDAY = '2026-04-03';
+      const FUTURE_SATURDAY = '2026-04-11';
+
+      beforeEach(() => {
+        // Monday 2026-04-06 11:00 EDT: both closed dates are in the past.
+        vi.setSystemTime(new Date('2026-04-06T15:00:00Z'));
+      });
+
+      it.each([
+        ['a Saturday', SATURDAY],
+        ['Good Friday', GOOD_FRIDAY],
+      ])(
+        'skips a backtest save for %s and reports it',
+        async (_label, date) => {
+          const res = mockResponse();
+          await handler(
+            mockRequest({
+              method: 'POST',
+              body: {
+                date,
+                entryTime: '10:30 AM CT',
+                isBacktest: true,
+                spx: 6800,
+              },
+            }),
+            res,
+          );
+
+          expect(res._status).toBe(200);
+          expect(res._json).toEqual({
+            id: null,
+            saved: false,
+            skipped: 'non-trading-day',
+          });
+          expect(saveSnapshot).not.toHaveBeenCalled();
+          // The skip comes before the event lookup, which would call FRED.
+          expect(getEventsForDate).not.toHaveBeenCalled();
+          expect(Sentry.captureMessage).toHaveBeenCalledTimes(1);
+          expect(Sentry.captureMessage).toHaveBeenCalledWith(
+            'snapshot.save_for_non_trading_day',
+            expect.objectContaining({
+              level: 'warning',
+              extra: expect.objectContaining({ date }),
+            }),
+          );
+          expect(logger.warn).toHaveBeenCalledTimes(1);
+          expect(logger.warn).toHaveBeenCalledWith(
+            expect.objectContaining({ date, entryTime: '10:30 AM CT' }),
+            expect.stringContaining('non-trading day'),
+          );
+          expect(logger.error).not.toHaveBeenCalled();
+          expect(Sentry.captureException).not.toHaveBeenCalled();
+        },
+      );
+
+      it('skips a live save when today itself is a closed day', async () => {
+        // 11:00 EDT on Good Friday: the live-for-other-date guard lets it
+        // through (the date is today), the trading-day guard does not.
+        vi.setSystemTime(new Date('2026-04-03T15:00:00Z'));
+        const res = mockResponse();
+        await handler(
+          mockRequest({
+            method: 'POST',
+            body: { date: GOOD_FRIDAY, entryTime: '10:30 AM CT' },
+          }),
+          res,
+        );
+
+        expect(res._json).toEqual({
+          id: null,
+          saved: false,
+          skipped: 'non-trading-day',
+        });
+        expect(saveSnapshot).not.toHaveBeenCalled();
+        expect(Sentry.captureMessage).toHaveBeenCalledWith(
+          'snapshot.save_for_non_trading_day',
+          expect.objectContaining({ level: 'warning' }),
+        );
+        expect(logger.warn).toHaveBeenCalledWith(
+          expect.objectContaining({ date: GOOD_FRIDAY }),
+          expect.stringContaining('non-trading day'),
+        );
+      });
+
+      it('leaves the two earlier skips ahead of it', async () => {
+        // A live save for a past Saturday is a stale client first; a save for
+        // a future Saturday is a future date first.
+        const live = mockResponse();
+        await handler(
+          mockRequest({
+            method: 'POST',
+            body: { date: SATURDAY, entryTime: '10:30 AM CT' },
+          }),
+          live,
+        );
+        expect((live._json as { skipped?: string }).skipped).toBe(
+          'live-for-other-date',
+        );
+
+        const future = mockResponse();
+        await handler(
+          mockRequest({
+            method: 'POST',
+            body: {
+              date: FUTURE_SATURDAY,
+              entryTime: '10:30 AM CT',
+              isBacktest: true,
+            },
+          }),
+          future,
+        );
+        expect((future._json as { skipped?: string }).skipped).toBe(
+          'future-date',
+        );
+        expect(saveSnapshot).not.toHaveBeenCalled();
+      });
+    });
+
     it.each([
       ['a live save for today', TODAY, false],
       ['a backtest save for today (scrubbed back)', TODAY, true],
       ['a backtest save for a past date', YESTERDAY, true],
+      // A half-day trades, so it is not a closed day.
+      ['a backtest save for an early-close day', '2025-12-24', true],
     ])('passes %s through', async (_label, date, isBacktest) => {
       vi.mocked(saveSnapshot).mockResolvedValue(7);
       const res = mockResponse();

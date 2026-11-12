@@ -7,6 +7,11 @@
  *
  * Runs ~15 min after fetch-outcomes to ensure settlement data is available.
  * On first run, backfills all historical dates. After that, only processes today.
+ * Weekends and NYSE holidays are never built, whatever selects the date.
+ *
+ * A date's static features (VIX, regime, SPX open, ...) come from its
+ * market_snapshots row nearest 10:00 AM CT (pickFeatureSnapshot), and
+ * is_event_day is true when any of its rows says so.
  *
  * Feature engineering is split into focused modules:
  *   build-features-flow.ts   - flow checkpoint NCP/NPP + agreement
@@ -32,7 +37,11 @@ import {
   getETDayOfWeekFromDateStr,
   getETDateStr,
 } from '../../src/utils/timezone.js';
-import { getMarketCloseHourET } from '../../src/data/marketHours.js';
+import {
+  getMarketCloseHourET,
+  isTradingDay,
+} from '../../src/data/marketHours.js';
+import { parseEntryTimeMinutes } from '../../src/utils/entry-time.js';
 import type { FeatureRow, SnapshotRow } from '../_lib/build-features-types.js';
 import { num } from '../_lib/build-features-types.js';
 import { engineerFlowFeatures } from '../_lib/build-features-flow.js';
@@ -85,6 +94,57 @@ function toDateStr(val: unknown): string {
   return s;
 }
 
+// Snapshot sampling
+
+/**
+ * Every date's static features come from the snapshot nearest this clock time,
+ * in minutes after midnight CT: 10:00 AM CT (owner decision 2026-11-12).
+ */
+const FEATURE_SAMPLE_MINUTES_CT = 600;
+
+/** The two fields `pickFeatureSnapshot` reads from a market_snapshots row. */
+type SnapshotCandidate = Pick<SnapshotRow, 'spx_open'> & { entry_time: string };
+
+/** The first of `rows` nearest the sample time; a tie goes to the earlier. */
+function nearestToSampleTime<T extends SnapshotCandidate>(
+  rows: readonly T[],
+): T | undefined {
+  let best: T | undefined;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  let bestMinutes = Number.NaN;
+  for (const row of rows) {
+    const minutes = parseEntryTimeMinutes(row.entry_time);
+    // "pre-market" and other labels the parser cannot read have no time.
+    if (Number.isNaN(minutes)) continue;
+    const distance = Math.abs(minutes - FEATURE_SAMPLE_MINUTES_CT);
+    if (
+      distance < bestDistance ||
+      (distance === bestDistance && minutes < bestMinutes)
+    ) {
+      best = row;
+      bestDistance = distance;
+      bestMinutes = minutes;
+    }
+  }
+  return best;
+}
+
+/**
+ * The snapshot a date's static features are read from. Among rows with a
+ * usable `spx_open` (not NULL, not NaN: early snapshots store NaN before the
+ * cash open) and a readable `entry_time`, the one nearest 10:00 AM CT, the
+ * earlier on a tie. When no row qualifies, the same rule over every row with
+ * a readable time, and when none has one (only "pre-market"), the first row.
+ * `rows` must be in id order, and `entry_time` is compared as a clock time:
+ * as text "10:00 AM CT" sorts before "8:30 AM CT".
+ */
+export function pickFeatureSnapshot<T extends SnapshotCandidate>(
+  rows: readonly T[],
+): T | undefined {
+  const withOpen = rows.filter((row) => num(row.spx_open) != null);
+  return nearestToSampleTime(withOpen) ?? nearestToSampleTime(rows) ?? rows[0];
+}
+
 // Build features for a single date
 
 async function buildFeaturesForDate(
@@ -94,28 +154,26 @@ async function buildFeaturesForDate(
   const features: FeatureRow = { date: dateStr };
 
   // 1. Static features from market_snapshots
-  // Prefer the earliest entry that has spx_open populated (many early/
-  // pre-market snapshots store NaN before cash open). Fall back to the
-  // absolute earliest if no snapshot has spx_open.
-  const snapshots = await withDbRetry(
+  // Read every row of the date (about 80 at most) and sample one in
+  // TypeScript: entry_time is text, so SQL cannot order it by clock time.
+  const snapshots = (await withDbRetry(
     () => sql`
-      SELECT vix, vix1d, vix9d, vvix, vix1d_vix_ratio, vix_vix9d_ratio,
+      SELECT entry_time,
+             vix, vix1d, vix9d, vvix, vix1d_vix_ratio, vix_vix9d_ratio,
              regime_zone, cluster_mult, dow_mult_hl, dow_label,
              spx_open, sigma, hours_remaining,
              ic_ceiling, put_spread_ceiling, call_spread_ceiling,
              opening_range_signal, opening_range_pct_consumed, is_event_day
       FROM market_snapshots
       WHERE date = ${dateStr}
-      ORDER BY (spx_open IS NULL OR spx_open = 'NaN') ASC,
-               entry_time ASC
-      LIMIT 1
+      ORDER BY id ASC
     `,
     2,
     10_000,
-  );
+  )) as (SnapshotRow & { entry_time: string })[];
 
-  if (snapshots.length > 0) {
-    const s = snapshots[0] as SnapshotRow;
+  const s = pickFeatureSnapshot(snapshots);
+  if (s) {
     features.vix = num(s.vix);
     features.vix1d = num(s.vix1d);
     features.vix9d = num(s.vix9d);
@@ -134,7 +192,14 @@ async function buildFeaturesForDate(
     features.call_spread_ceiling = num(s.call_spread_ceiling);
     features.opening_range_signal = s.opening_range_signal;
     features.opening_range_pct_consumed = num(s.opening_range_pct_consumed);
-    features.is_event_day = s.is_event_day;
+    // The flag is the date's, not the sampled row's: bool_or over every row,
+    // which is NULL only when no row carries a flag. A row saved before the
+    // event lookup could name the day stays false while a later one is true.
+    const eventFlags = snapshots
+      .map((row) => row.is_event_day)
+      .filter((flag) => flag != null);
+    features.is_event_day =
+      eventFlags.length > 0 ? eventFlags.includes(true) : null;
   }
 
   // Fall back to outcomes.day_open if snapshots didn't provide spx_open
@@ -278,8 +343,18 @@ const wrappedCron = withCronInstrumentation(
       }
     }
 
-    // Filter to valid YYYY-MM-DD dates only
-    dates = dates.filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d));
+    // Keep valid YYYY-MM-DD dates that were trading days. A weekend or
+    // holiday has no session to featurize: its UW responses are empty, so
+    // the row would be a phantom. This one filter covers ?date=, backfill
+    // and the empty-table first run.
+    const wellFormed = dates.filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d));
+    dates = wellFormed.filter(isTradingDay);
+    if (dates.length < wellFormed.length) {
+      log.info(
+        { skipped: wellFormed.filter((d) => !isTradingDay(d)) },
+        'build-features: skipped non-trading days',
+      );
+    }
 
     let featuresBuilt = 0;
     let labelsExtracted = 0;

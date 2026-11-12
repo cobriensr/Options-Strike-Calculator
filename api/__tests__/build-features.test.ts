@@ -24,7 +24,11 @@ vi.mock('../_lib/sentry.js', async (importOriginal) => {
   };
 });
 
-import handler, { config } from '../cron/build-features.js';
+import handler, {
+  config,
+  pickFeatureSnapshot,
+} from '../cron/build-features.js';
+import logger from '../_lib/logger.js';
 
 // Fixed times for deterministic tests
 // Tuesday 2026-03-24 at 5:30 PM ET = 21:30 UTC (inside post-close window)
@@ -43,6 +47,65 @@ const WEEKEND_TIME = new Date('2026-03-28T21:30:00.000Z');
 function prefillHandlerPreamble() {
   mockSql.mockResolvedValueOnce([]); // SET statement_timeout
   mockSql.mockResolvedValueOnce([]); // flow_data coverage diagnostic
+}
+
+function sqlText(call: unknown[]): string {
+  return (call[0] as TemplateStringsArray).join(' ');
+}
+
+/** Every training_features INSERT the run made, as raw mock calls. */
+function featureUpserts(): unknown[][] {
+  return mockSql.mock.calls.filter(
+    (call) =>
+      Array.isArray(call[0]) &&
+      sqlText(call).includes('INSERT INTO training_features'),
+  );
+}
+
+/**
+ * The value the first training_features INSERT binds for `column`. The index
+ * comes from the INSERT's own column list, which upsertFeatures keeps in the
+ * same order as its values, so a reordered column list does not break it.
+ */
+function featureUpsertValue(column: string): unknown {
+  const call = featureUpserts()[0];
+  expect(call).toBeDefined();
+  const list = /INSERT INTO training_features\s*\(([^)]*)\)/.exec(
+    sqlText(call!),
+  )![1]!;
+  const index = list
+    .split(',')
+    .map((c) => c.trim())
+    .indexOf(column);
+  expect(index).toBeGreaterThanOrEqual(0);
+  // call[0] is the strings array, so value n sits at call[n + 1].
+  return call![index + 1];
+}
+
+/**
+ * Answer the date's market_snapshots query with `rows`; every other query
+ * resolves to []. Keyed on the SQL text so it does not depend on call order.
+ */
+function mockSnapshotRows(rows: Record<string, unknown>[]) {
+  mockSql.mockImplementation((strings: TemplateStringsArray) =>
+    Promise.resolve(
+      strings.join(' ').includes('FROM market_snapshots') ? rows : [],
+    ),
+  );
+}
+
+/** A market_snapshots row as the Neon driver returns it (NUMERIC as text). */
+function snapshotRow(
+  entryTime: string,
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    entry_time: entryTime,
+    vix: '18',
+    spx_open: '5700',
+    is_event_day: false,
+    ...overrides,
+  };
 }
 
 describe('build-features handler', () => {
@@ -404,6 +467,267 @@ describe('build-features handler', () => {
     expect(res._json).toMatchObject({ dates: 1 });
   });
 
+  // ── Closed days ───────────────────────────────────────────
+  // A weekend or NYSE holiday has no session to featurize: its UW responses
+  // are empty, so the row would be a phantom (production held one on Good
+  // Friday 2026-04-03). One filter on the date list covers ?date=, backfill
+  // and the empty-table first run.
+
+  it.each([
+    ['Good Friday', '2026-04-03'],
+    ['a Saturday', '2026-03-28'],
+    ['a Sunday', '2026-03-29'],
+    ['an impossible date', '2026-02-30'],
+  ])('?date= on %s builds nothing', async (_label, date) => {
+    prefillHandlerPreamble();
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { date },
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'success',
+      dates: 0,
+      featuresBuilt: 0,
+      labelsExtracted: 0,
+      errors: 0,
+    });
+    expect(featureUpserts()).toHaveLength(0);
+    // Only the preamble (SET statement_timeout, coverage diagnostic) ran: no
+    // per-date query, so no snapshot read and no label extraction either.
+    expect(mockSql).toHaveBeenCalledTimes(2);
+    expect(mockCaptureException).not.toHaveBeenCalled();
+  });
+
+  /** Answer the flow_data date list and the training_features count. */
+  function mockDateList(dates: string[], trainingFeaturesCount?: string) {
+    mockSql.mockImplementation((strings: TemplateStringsArray) => {
+      const text = strings.join(' ');
+      if (text.includes('SELECT DISTINCT date FROM flow_data')) {
+        return Promise.resolve(dates.map((date) => ({ date })));
+      }
+      if (text.includes('SELECT COUNT(*) AS cnt FROM training_features')) {
+        return Promise.resolve([{ cnt: trainingFeaturesCount }]);
+      }
+      return Promise.resolve([]);
+    });
+  }
+
+  it('a backfill skips Good Friday and the weekend and builds the trading days', async () => {
+    mockDateList([
+      '2026-04-02', // Thursday
+      '2026-04-03', // Good Friday
+      '2026-04-04', // Saturday
+      '2026-04-05', // Sunday
+      '2026-04-06', // Monday
+    ]);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { backfill: 'true' },
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'success',
+      dates: 2,
+      featuresBuilt: 2,
+      errors: 0,
+    });
+    expect(featureUpserts().map((call) => call[1])).toEqual([
+      '2026-04-02',
+      '2026-04-06',
+    ]);
+    // The skipped dates are named, so a run that built fewer rows than the
+    // flow_data list held can be explained from the log.
+    expect(logger.info).toHaveBeenCalledWith(
+      { skipped: ['2026-04-03', '2026-04-04', '2026-04-05'] },
+      'build-features: skipped non-trading days',
+    );
+  });
+
+  it('the empty-table first run skips a closed day in the flow_data dates', async () => {
+    mockDateList(['2026-03-23', '2026-03-28', '2026-03-24'], '0');
+
+    const req = mockRequest({
+      method: 'GET',
+      query: {},
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._json).toMatchObject({ dates: 2, featuresBuilt: 2 });
+    expect(featureUpserts().map((call) => call[1])).toEqual([
+      '2026-03-23',
+      '2026-03-24',
+    ]);
+  });
+
+  it('does not log a skip when every date is a trading day', async () => {
+    mockDateList(['2026-03-23', '2026-03-24']);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { backfill: 'true' },
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    await handler(req, mockResponse());
+
+    expect(logger.info).not.toHaveBeenCalledWith(
+      expect.anything(),
+      'build-features: skipped non-trading days',
+    );
+  });
+
+  // ── The day's snapshot sample and event flag ──────────────
+  // buildFeaturesForDate reads every market_snapshots row of the date. It
+  // samples the one nearest 10:00 AM CT (pickFeatureSnapshot) and ORs
+  // is_event_day over all of them, so neither depends on which row the
+  // sample lands on.
+
+  it('reads the date’s rows in id order, without a LIMIT', async () => {
+    mockSnapshotRows([snapshotRow('10:00 AM CT')]);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-03-24' },
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    await handler(req, mockResponse());
+
+    const call = mockSql.mock.calls.find(
+      (c) =>
+        Array.isArray(c[0]) && sqlText(c).includes('FROM market_snapshots'),
+    );
+    expect(call).toBeDefined();
+    const text = sqlText(call!);
+    // pickFeatureSnapshot falls back to the first row, which must be the
+    // lowest id, and needs the labels to choose by clock rather than by text.
+    expect(text).toMatch(/\bentry_time\b/);
+    expect(text).toMatch(/ORDER BY id ASC/);
+    expect(text).not.toMatch(/\bLIMIT\b/);
+    expect(call![1]).toBe('2026-03-24');
+  });
+
+  it('samples the 10:00 AM CT row, not the text-first one', async () => {
+    // Listed in id order. A text ORDER BY would put "10:00 AM CT" before
+    // "8:30 AM CT" and the old query took whichever sorted first.
+    mockSnapshotRows([
+      snapshotRow('8:30 AM CT', { vix: '17' }),
+      snapshotRow('10:00 AM CT', { vix: '18' }),
+      snapshotRow('11:05 AM CT', { vix: '19' }),
+    ]);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-03-24' },
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    await handler(req, mockResponse());
+
+    expect(featureUpsertValue('vix')).toBe(18);
+  });
+
+  it('samples the nearest row that has an SPX open', async () => {
+    // The 10:00 row saved before the open data arrived (NaN), so the 10:05
+    // row stands in; the pre-market row has no usable time or open.
+    mockSnapshotRows([
+      snapshotRow('pre-market', { vix: '16', spx_open: 'NaN' }),
+      snapshotRow('10:00 AM CT', { vix: '18', spx_open: 'NaN' }),
+      snapshotRow('10:05 AM CT', { vix: '19', spx_open: '5712.5' }),
+    ]);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-03-24' },
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    await handler(req, mockResponse());
+
+    expect(featureUpsertValue('vix')).toBe(19);
+    expect(featureUpsertValue('spx_open')).toBe(5712.5);
+  });
+
+  it.each([
+    ['the middle row is an event day', [false, true, false], true],
+    ['the last row is an event day', [false, false, true], true],
+    ['only the sampled row is an event day', [true, false, false], true],
+    ['no row is an event day', [false, false], false],
+    ['the others are null', [null, true, null], true],
+    ['every flag is null', [null, null], null],
+    ['the sampled flag is null and the other false', [null, false], false],
+  ])(
+    'stores is_event_day from every row of the date when %s',
+    async (_label, flags, expected) => {
+      // The first row is the 10:00 AM CT one, so it is the sampled row: the
+      // flag must not come from it alone.
+      const times = ['10:00 AM CT', '10:30 AM CT', '11:05 AM CT'];
+      mockSnapshotRows(
+        flags.map((flag, i) => snapshotRow(times[i]!, { is_event_day: flag })),
+      );
+
+      const req = mockRequest({
+        method: 'GET',
+        query: { date: '2026-03-24' },
+        headers: { authorization: 'Bearer test-secret' },
+      });
+      await handler(req, mockResponse());
+
+      expect(featureUpsertValue('is_event_day')).toBe(expected);
+    },
+  );
+
+  it('leaves is_event_day unset for a date with no snapshot rows', async () => {
+    mockSnapshotRows([]);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-03-24' },
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    await handler(req, mockResponse());
+
+    expect(featureUpserts()).toHaveLength(1);
+    expect(featureUpsertValue('is_event_day')).toBeUndefined();
+    expect(featureUpsertValue('vix')).toBeUndefined();
+  });
+
+  it('counts a rejected snapshot read as an error, not a built date', async () => {
+    mockSql.mockImplementation((strings: TemplateStringsArray) =>
+      strings.join(' ').includes('FROM market_snapshots')
+        ? Promise.reject(new Error('snapshot read failed'))
+        : Promise.resolve([]),
+    );
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-03-24' },
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+
+    expect(res._json).toMatchObject({
+      status: 'error',
+      dates: 1,
+      featuresBuilt: 0,
+      errors: 1,
+    });
+    expect(featureUpserts()).toHaveLength(0);
+    expect(mockCaptureException).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'snapshot read failed' }),
+    );
+  });
+
   // ── Single-date param ─────────────────────────────────────
 
   it('processes only the date in ?date= when provided', async () => {
@@ -511,12 +835,13 @@ describe('build-features handler', () => {
     expect(captured!.is_friday).toBe(false);
   });
 
-  it('writes correct day_of_week for the spring-forward DST Sunday (2026-03-08)', async () => {
-    // 2026-03-08 is the second Sunday of March 2026 (DST starts).
-    // dow must be 0 (Sunday) regardless of EST/EDT. A regression that
-    // re-hardcodes -05:00 to mean EST would still get this right by
-    // accident — but the surrounding-day asserts in the timezone unit
-    // tests guarantee continuity across the boundary.
+  it('writes correct day_of_week for the Monday after spring-forward (2026-03-09)', async () => {
+    // DST started on Sunday 2026-03-08, which build-features no longer builds
+    // (a weekend), so the first date past the boundary is Monday 2026-03-09.
+    // dow must be 1 regardless of EST/EDT. A regression that re-hardcodes
+    // -05:00 to mean EST would still get this right by accident — but the
+    // surrounding-day asserts in the timezone unit tests guarantee continuity
+    // across the boundary.
     let captured: { day_of_week: unknown; is_friday: unknown } | null = null;
     mockSql.mockImplementation((strings: TemplateStringsArray, ...rest) => {
       if (strings.some((s) => s.includes('INSERT INTO training_features'))) {
@@ -527,7 +852,7 @@ describe('build-features handler', () => {
 
     const req = mockRequest({
       method: 'GET',
-      query: { date: '2026-03-08' },
+      query: { date: '2026-03-09' },
       headers: { authorization: 'Bearer test-secret' },
     });
     const res = mockResponse();
@@ -535,7 +860,7 @@ describe('build-features handler', () => {
 
     expect(res._status).toBe(200);
     expect(captured).not.toBeNull();
-    expect(captured!.day_of_week).toBe(0);
+    expect(captured!.day_of_week).toBe(1);
     expect(captured!.is_friday).toBe(false);
   });
 
@@ -711,9 +1036,11 @@ describe('build-features handler', () => {
     // Call 1 (handler): SELECT DISTINCT date
     mockSql.mockResolvedValueOnce([{ date: DATE }]);
 
-    // Call 2 (buildFeaturesForDate): market_snapshots
+    // Call 2 (buildFeaturesForDate): market_snapshots (the date's rows,
+    // chosen in TypeScript; this one is its 10:00 AM CT sample)
     mockSql.mockResolvedValueOnce([
       {
+        entry_time: '10:00 AM CT',
         vix: '18.5',
         vix1d: '15.2',
         vix9d: '20.1',
@@ -1713,5 +2040,166 @@ describe('build-features handler', () => {
 
     expect(res._status).toBe(200);
     expect(res._json).toMatchObject({ labelsExtracted: 1 });
+  });
+});
+
+// ── pickFeatureSnapshot ─────────────────────────────────────
+// The rows arrive in id order (the query's ORDER BY id ASC). Each case lists
+// [entry_time, spx_open] pairs and the index of the row it must pick.
+
+describe('pickFeatureSnapshot', () => {
+  type Pair = [entryTime: string, spxOpen: string | null];
+
+  function pick(pairs: Pair[]) {
+    const rows = pairs.map(([entry_time, spx_open]) => ({
+      entry_time,
+      spx_open,
+    }));
+    return { rows, picked: pickFeatureSnapshot(rows) };
+  }
+
+  it.each<[string, Pair[], number]>([
+    [
+      'the row at 10:00 over earlier and later ones',
+      [
+        ['8:30 AM CT', '5700'],
+        ['10:00 AM CT', '5701'],
+        ['10:05 AM CT', '5702'],
+      ],
+      1,
+    ],
+    [
+      '"10:00 AM CT" over "8:30 AM CT", though text order puts it first',
+      [
+        ['10:00 AM CT', '5701'],
+        ['8:30 AM CT', '5700'],
+      ],
+      0,
+    ],
+    [
+      'the later row when it is closer to 10:00 than the earlier one',
+      [
+        ['9:57 AM CT', '5700'],
+        ['10:01 AM CT', '5701'],
+      ],
+      1,
+    ],
+    [
+      'the earlier row on a tie, with the later one listed first',
+      [
+        ['10:05 AM CT', '5702'],
+        ['9:55 AM CT', '5701'],
+      ],
+      1,
+    ],
+    [
+      'the earlier row on a tie, with the earlier one listed first',
+      [
+        ['9:55 AM CT', '5701'],
+        ['10:05 AM CT', '5702'],
+      ],
+      0,
+    ],
+    [
+      'the clock-earlier row on a tie that text order would reverse',
+      [
+        ['10:30 AM CT', '5702'],
+        ['9:30 AM CT', '5701'],
+      ],
+      1,
+    ],
+    [
+      'the next row when the 10:00 one has a NaN open',
+      [
+        ['10:00 AM CT', 'NaN'],
+        ['10:05 AM CT', '5702'],
+      ],
+      1,
+    ],
+    [
+      'the next row when the 10:00 one has a null open',
+      [
+        ['10:00 AM CT', null],
+        ['11:05 AM CT', '5702'],
+      ],
+      1,
+    ],
+    [
+      'a usable row far from 10:00 over a closer one with no open',
+      [
+        ['10:00 AM CT', 'NaN'],
+        ['10:05 AM CT', 'NaN'],
+        ['1:30 PM CT', '5702'],
+      ],
+      2,
+    ],
+    [
+      'the 11:05 row over a pre-market one',
+      [
+        ['pre-market', '5700'],
+        ['11:05 AM CT', '5702'],
+      ],
+      1,
+    ],
+    [
+      'an ET label read on the CT clock (11:00 AM ET is 10:00 AM CT)',
+      [
+        ['10:05 AM CT', '5700'],
+        ['11:00 AM ET', '5701'],
+      ],
+      1,
+    ],
+    [
+      'a bare label read as CT',
+      [
+        ['9:00 AM', '5700'],
+        ['10:02 AM', '5701'],
+      ],
+      1,
+    ],
+    [
+      'the nearest parseable row when none has an open',
+      [
+        ['pre-market', 'NaN'],
+        ['8:30 AM CT', 'NaN'],
+        ['10:05 AM CT', null],
+        ['2:00 PM CT', 'NaN'],
+      ],
+      2,
+    ],
+    ['the only row, though it is pre-market', [['pre-market', '5700']], 0],
+    [
+      'the first row when no label parses',
+      [
+        ['pre-market', 'NaN'],
+        ['open', '5700'],
+      ],
+      0,
+    ],
+    [
+      'a parseable row with no open over a pre-market row that has one',
+      [
+        ['pre-market', '5700'],
+        ['10:00 AM CT', 'NaN'],
+      ],
+      1,
+    ],
+  ])('picks %s', (_label, pairs, expectedIndex) => {
+    const { rows, picked } = pick(pairs);
+    expect(picked).toBe(rows[expectedIndex]);
+  });
+
+  it('returns undefined for a date with no rows', () => {
+    expect(pickFeatureSnapshot([])).toBeUndefined();
+  });
+
+  it('does not reorder or mutate the rows it is given', () => {
+    const { rows } = pick([
+      ['10:05 AM CT', '5702'],
+      ['9:55 AM CT', '5701'],
+    ]);
+    const before = structuredClone(rows);
+    pickFeatureSnapshot(rows);
+    expect(rows).toEqual(before);
   });
 });

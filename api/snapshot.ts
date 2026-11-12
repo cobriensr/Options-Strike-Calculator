@@ -18,7 +18,12 @@
  *     (snapshot.live_save_for_other_date). A tab still on an older
  *     bundle (the PWA updates on prompt) writes today's live quotes under
  *     the date it shows, and the upsert would then protect that row from
- *     the date's own replay.
+ *     the date's own replay;
+ *   - a weekend or NYSE holiday, live or backtest, is skipped: 200 { id:
+ *     null, saved: false, skipped: 'non-trading-day' }, with a warning log
+ *     and a Sentry warning (snapshot.save_for_non_trading_day). The two skips
+ *     above are checked first, so a closed date that is also in the future,
+ *     or a live save for another closed date, reports the earlier reason.
  *
  * The server decides the event flag and names. It looks the date up in
  * `getEventsForDate` (FRED, and the FOMC and early-close calendar) and stores
@@ -51,6 +56,7 @@ import {
   getEventsForDate,
   isEarningsEventName,
 } from './_lib/market-events.js';
+import { isTradingDay } from '../src/data/marketHours.js';
 import { getETToday } from '../src/utils/timezone.js';
 
 /**
@@ -152,6 +158,23 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res
         .status(200)
         .json({ id: null, saved: false, skipped: 'live-for-other-date' });
+    }
+    // A weekend or NYSE holiday owns no snapshot rows, live or replayed. The
+    // client guards only its live path, so a stale tab, a direct POST or a
+    // backtest save can still get here.
+    if (!isTradingDay(date)) {
+      logger.warn(
+        { date, entryTime, isBacktest },
+        'Skipped a snapshot save for a non-trading day',
+      );
+      Sentry.captureMessage('snapshot.save_for_non_trading_day', {
+        level: 'warning',
+        extra: { date, entryTime, isBacktest },
+      });
+      done({ status: 200 });
+      return res
+        .status(200)
+        .json({ id: null, saved: false, skipped: 'non-trading-day' });
     }
 
     const { isEventDay, eventNames } = await resolveEventFlags(
