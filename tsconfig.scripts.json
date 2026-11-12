@@ -51,6 +51,7 @@
     "scripts/_lib/futures-derived-recompute.test.ts",
     "scripts/_lib/futures-derived-recompute-pglite.test.ts",
     "scripts/_lib/futures-derived-frozen-pglite.test.ts",
+    "scripts/_lib/futures-derived-thin-roots-pglite.test.ts",
     "scripts/backfill-futures-bars.ts",
     "scripts/_lib/futures-bar-backfill.ts",
     "scripts/_lib/futures-bar-backfill.test.ts",

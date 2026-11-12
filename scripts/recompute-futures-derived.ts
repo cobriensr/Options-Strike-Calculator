@@ -10,6 +10,23 @@
  *   npx tsx scripts/recompute-futures-derived.ts --backup <file> --apply --expect-snapshots N --expect-premarket M --expect-fires K --delete-junk-stale --expect-junk-deletes J --rewrite-stale-at-write --expect-stale-rewrites S --detector-days <file>
  *   npx tsx scripts/recompute-futures-derived.ts --stores frozen --work-dir <dir>   # a dry run of the frozen-stale delete, no backup needed
  *   npx tsx scripts/recompute-futures-derived.ts --apply --stores frozen --work-dir <dir> --delete-frozen-stale --expect-frozen-deletes N
+ *   npx tsx scripts/recompute-futures-derived.ts --backup <5a backup.jsonl> --roots RTY CL GC ZN --work-dir <new dir> --detector-days <file>   # Phase 5b dry run
+ *
+ * Phase 5b (owner decision D1, 2026-11-11) runs this tool for RTY, CL, GC and ZN after
+ * Phase 5a (scripts/repair-futures-contract-mix.ts --thin-roots) deleted their bars in the
+ * span: --backup is the 5a backup, which names whole deleted days, and --roots limits every
+ * step to those roots. A field that read a deleted bar is recomputed by today's computeSnapshot
+ * on the bars that are left (mostly volume_ratio on the clean days and in the 20 days after
+ * the span end); a row priced from a deleted bar that is now stale goes to --delete-junk-stale.
+ * Use a work dir of its own: the markers and plan.json of an earlier run in --work-dir would
+ * skip or resume its steps.
+ *
+ * The D1 lift of ruling 9: at plan time, read-only, the dry run counts each thin root's bars from
+ * the span start through its last bad bar outside the seven clean CT trading days (04-13 to
+ * 04-17, 06-01, 06-08) and prints it. A root with none left (5a has applied) is lifted: the
+ * stale-at-write rewrite covers it from the span start, like ES and NQ, and the frozen-stale
+ * delete (--stores frozen) covers it too. A root with any left keeps today's behavior, so a run
+ * before 5a changes nothing. The --detector-days rule for rows after the span end applies as before.
  *
  * The default is a DRY RUN: it reads the database DATABASE_URL points at
  * (production, in .env.local) through read-only transactions, prints the
@@ -32,7 +49,8 @@
  * rewrites those rows from today's bars (off by default). It covers every ES and NQ
  * row before 2026-10-01, and the thin roots' rows from the span end + 20 days (their
  * bars before the span end are still month-mixed, D1, and a snapshot in the 20 days
- * after reads some of them) except on the days the Phase 1 detector
+ * after reads some of them; from the span start for a root the D1 lift below has
+ * opened) except on the days the Phase 1 detector
  * confirmed contaminated in --detector-days. Without that file the thin roots' rows
  * after the span end are left too. A row is stale when its price is the close of a
  * bar older than the freshness gate (found by value, 96 hours back) or when it sits
@@ -80,6 +98,10 @@
  *                           plans only these; --apply still plans and checks all three and
  *                           writes only these. `--stores frozen` stands alone: it plans the
  *                           frozen-stale rows and no store, with or without --apply
+ *   --roots r1 r2 ...       only these of ES, NQ, ZN, RTY, CL, GC (default all six), in every step:
+ *                           snapshots, the stale-at-write rewrite, the junk delete and the frozen-stale
+ *                           delete. Premarket and fires are ES-only: without ES here they plan nothing,
+ *                           and their --expect-* totals are refused. A resume must repeat the same roots
  *   --apply                 write (backup first); needs an --expect-* per store in the run
  *   --expect-snapshots N    the futures_snapshots rows to write in the approved dry run
  *   --expect-premarket M    the pre_market_data rows to write in that dry run
