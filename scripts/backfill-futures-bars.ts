@@ -12,7 +12,7 @@
  * (futures_front_month; a real run decides a date with no row yet), and
  * only that contract is paged. A root-day on a trade date before
  * 2026-07-28, where the table starts, fails by name. Logic and rules:
- * scripts/_lib/futures-bar-backfill.ts.
+ * scripts/_lib/futures-bar-backfill.ts (--repair: futures-bar-repair.ts).
  *
  * --repair rewrites the bars already stored (2026-09-04 → the Phase 5
  * deploy, 2026-11-11) to the same rule: a stored bar whose prices lie
@@ -84,6 +84,7 @@ import { config as loadEnv } from 'dotenv';
 loadEnv({ path: '.env.local' });
 const { parseBarArgs, runBarBackfill } =
   await import('./_lib/futures-bar-backfill.js');
+const { runRepair } = await import('./_lib/futures-bar-repair.js');
 
 let options: ReturnType<typeof parseBarArgs>;
 try {
@@ -100,7 +101,8 @@ if (!process.env.DATABASE_URL || !apiKey) {
 }
 
 try {
-  process.exitCode = await runBarBackfill({ ...options, apiKey });
+  const runMode = options.repair ? runRepair : runBarBackfill;
+  process.exitCode = await runMode({ ...options, apiKey });
 } catch (err) {
   console.error('Backfill failed:', err);
   process.exitCode = 1;

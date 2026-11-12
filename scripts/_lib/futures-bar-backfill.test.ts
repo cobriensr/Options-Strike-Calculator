@@ -74,15 +74,18 @@ import { isFuturesMarketOpen } from '../../src/utils/timezone.js';
 import {
   BAR_USAGE,
   DEFAULT_WORK_DIR,
-  FUTURES_TICK_SIZE,
-  REPAIR_CACHE_VERSION,
-  inKeepBand,
   parseBarArgs,
-  planRepair,
-  roundTo4dp,
   runBarBackfill,
   type BarBackfillOptions,
 } from './futures-bar-backfill.js';
+import {
+  FUTURES_TICK_SIZE,
+  REPAIR_CACHE_VERSION,
+  inKeepBand,
+  planRepair,
+  runRepair,
+} from './futures-bar-repair.js';
+import { roundTo4dp } from './futures-bar-rules.js';
 import type { PagedMinute, SessionPiece } from './futures-flow-backfill.js';
 
 // ── Fixtures ──────────────────────────────────────────────
@@ -109,7 +112,8 @@ function opts(over: Partial<BarBackfillOptions> = {}): BarBackfillOptions {
 }
 
 function run(over: Partial<BarBackfillOptions> = {}) {
-  return runBarBackfill({ ...opts(over), apiKey: 'uw-key' });
+  const o = { ...opts(over), apiKey: 'uw-key' };
+  return o.repair ? runRepair(o) : runBarBackfill(o);
 }
 
 /** A regular REST /trades print (probe 0a shape). */
