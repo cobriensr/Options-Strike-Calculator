@@ -83,7 +83,7 @@ None: no API, table, env var or migration. Frontend only (Vercel deploy).
 ## Files
 
 - Task 1: `src/lib/sw-update.ts`, `src/main.tsx`, a new test for the check
-  scheduler (e.g. `src/__tests__/lib/sw-update.test.ts`).
+  scheduler (`src/__tests__/sw-update.test.ts`).
 - Task 2: `src/lib/sw-update-policy.ts` (new) + test, `src/lib/sw-update.ts`,
   `src/hooks/useChartAnalysis.ts` (hold while an analysis runs), their tests.
 
