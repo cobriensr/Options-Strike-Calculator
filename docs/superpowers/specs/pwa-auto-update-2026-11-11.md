@@ -35,6 +35,13 @@ gaps make that easy:
   moment (rule below). The banner stays, so a manual Reload still works.
 - Not chosen now: stamping the build SHA on each snapshot save / rejecting
   stale builds (option 3).
+- **Amendment (owner, 2026-11-12): tabs agree first (Task 3).** The owner
+  sometimes has two or more tabs of the app open in one browser.
+  SKIP_WAITING is per origin, and vite-plugin-pwa's prompt mode reloads
+  every controlled tab on `controllerchange`, so a hidden tab's automatic
+  apply would reload a visible tab mid-session. No tab applies while any other
+  tab of the app is unsafe: visible during the cash session, or holding the
+  update (a chart analysis in flight). Tasks 2 and 3 ship together.
 
 ## Thresholds / constants
 
@@ -87,6 +94,9 @@ None: no API, table, env var or migration. Frontend only (Vercel deploy).
   scheduler (`src/__tests__/sw-update.test.ts`).
 - Task 2: `src/lib/sw-update-policy.ts` (new) + test, `src/lib/sw-update.ts`,
   `src/hooks/useChartAnalysis.ts` (hold while an analysis runs), their tests.
+- Task 3: `src/lib/sw-update.ts` and `src/__tests__/sw-update.test.ts`, or a
+  new `src/lib/sw-update-tabs.ts` + test if the cross-tab part reads better on
+  its own.
 
 ## Global Constraints
 
@@ -136,7 +146,7 @@ None: no API, table, env var or migration. Frontend only (Vercel deploy).
 - `src/lib/sw-update.ts`: when `needsRefresh` becomes true, evaluate the
   policy on every `visibilitychange` and every 60 s; on the first true,
   call `applyUpdate()` once and stop evaluating. Export
-  `holdAutoUpdate(): () => void` (a counted hold; the returned release is
+  `holdAutoUpdate(): () => void` (stacking holds; the returned release is
   idempotent) that makes `busy` true while any hold is open.
   - Accepted rulings (2026-11-12, Task 2 review):
     - The first evaluation runs on the first 60 s tick or `visibilitychange`, not
@@ -164,3 +174,50 @@ None: no API, table, env var or migration. Frontend only (Vercel deploy).
   up.
 
 **Acceptance:** `npm run review` green; banner test unchanged and passing.
+
+## Task 3: Tabs agree before any tab applies
+
+**Goal:** the 2026-11-12 amendment. A waiting update is applied only when
+every open tab of the app is safe, not just the tab doing the applying.
+
+- **Mechanism: the Web Locks API** (`navigator.locks`; Chrome 69+, Firefox
+  96+, Safari 15.4+), lock name `sw-update-unsafe`.
+  - **Every tab, from startup, whether or not an update waits:** while the tab
+    is unsafe, it holds a shared lock. Unsafe is `busy || (!hidden && in the
+    cash session)`, the same inputs and helpers as `isSafeToApplyUpdate`, so
+    reuse the policy instead of restating it. The tab takes the lock when it
+    becomes unsafe and releases it when it becomes safe. Re-check on
+    `visibilitychange`, on hold and release, and on a 60 s tick so the session
+    edges (09:30 ET, the day's close) are noticed while the tab stays visible.
+    Holding the lock means keeping the `request` callback's promise pending
+    and resolving it to release.
+  - **The applying tab:** when its own policy is true, it asks for the lock in
+    exclusive mode with `ifAvailable: true`. If it gets the lock, no other tab
+    is unsafe, so it calls `applyUpdate()` inside the callback. If it gets
+    `null`, it keeps waiting, and the next tick or `visibilitychange` tries
+    again. A tab never blocks on its own shared lock, because it releases the
+    lock whenever its own policy turns safe.
+- **No `navigator.locks`:** fall back to Task 2's per-tab behavior and say so
+  in a comment. Every browser the owner uses has it.
+- **Module state stays bounded (R1):** one tracker, with one listener, one
+  timer and one pending lock at a time. `resetUpdateState()` stops the
+  tracker, releases a held lock, and clears everything. Starting the tracker
+  twice doesn't stack.
+- **Where it starts:** from `main.tsx` alongside `startUpdateChecks`, or
+  lazily from the module. Pick one and say why.
+- **Tests:** stub `navigator.locks` with a small in-memory fake at the global
+  boundary (`vi.stubGlobal`). Its exclusive `ifAvailable` returns `null` while
+  any shared holder exists, which is how "another tab" is simulated: the test
+  holds a shared lock itself.
+  - Another tab unsafe (it holds the shared lock) → this hidden tab doesn't
+    apply. When that lock is released, it applies on the next tick.
+  - This tab becomes visible during the session → it takes the shared lock.
+    Becoming hidden, or the session ending → it releases it.
+  - A hold → the shared lock is taken. The last release → it is released.
+  - No `navigator.locks` → Task 2 behavior unchanged.
+  - Apply still happens at most once, and reset releases everything.
+  - Mutation-check: dropping the exclusive check, and never releasing the
+    shared lock.
+
+**Acceptance:** `npm run review` green; the banner test is unchanged and
+passing.
