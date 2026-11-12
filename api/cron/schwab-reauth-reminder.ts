@@ -26,25 +26,19 @@
  * 1–7 h apart. That is rare: the 7-day clock starts at a login, and logins
  * happen during the trading session.
  *
- * Idempotency (R6) comes from a claim key taken with SET NX BEFORE sending:
+ * Idempotency (R6) comes from a claim key taken with SET NX BEFORE sending,
+ * by `sendOwnerPushOnce` (`api/_lib/push-once.ts`, which documents the
+ * claim, the fenced release and the fail-closed behavior):
  *   - Keys: `schwab:reauth-reminder:{24h|2h}:{refreshExpiresAt}`, derived
  *     from the login itself, so a re-login (new expiry) gets fresh keys;
  *     and `schwab:reauth-reminder:lapsed:{nag day}`, a time bucket.
- *   - Value: a random token per run, so a release is fenced. It deletes
- *     the key only while the key still holds this run's token.
- *   - Renew: none. One SET NX, one send.
  *   - Expire: CLAIM_TTL_SEC = 48 h. A 24h/2h key must outlive its reminder
  *     window, which is at most 24 h (from T-24h to the expiry T). A lapsed
  *     key must outlive its nag day, which is at most 25 h (the DST fall-back
  *     day). 48 h covers both with margin.
- *   - Fail: the claim FAILS CLOSED. If SET NX throws (Redis down), nothing
- *     is sent and the run errors (captured), because sending without a
- *     claim would repeat the push every hour.
- *   - Release: when no device received it (no live subscriptions, or every
- *     send failed), or when the send threw, the claim is released so the
- *     next hourly run retries. A failed release is captured. That reminder
- *     is then not retried until its key expires, but the next kind still
- *     fires.
+ *   - Release: when no device received it, the claim is released so the
+ *     next hourly run retries. If that release fails, the reminder is not
+ *     retried until its key expires, but the next kind still fires.
  *   - Known gap: a run killed between the claim and the send (a function
  *     timeout) loses that one reminder; the next kind still fires.
  *
@@ -57,19 +51,12 @@
  * Spec: docs/superpowers/specs/schwab-reauth-2026-09-29.md (A3).
  */
 
-import { randomUUID } from 'node:crypto';
-
 import {
   withCronInstrumentation,
   type CronResult,
 } from '../_lib/cron-instrumentation.js';
-import logger from '../_lib/logger.js';
-import {
-  sendPushToOwner,
-  type FanOutResult,
-  type PushPayload,
-} from '../_lib/push.js';
-import { redis } from '../_lib/redis.js';
+import type { PushPayload } from '../_lib/push.js';
+import { sendOwnerPushOnce, undeliveredReason } from '../_lib/push-once.js';
 import { getSchwabAuthStatus } from '../_lib/schwab.js';
 import { Sentry } from '../_lib/sentry.js';
 import {
@@ -96,20 +83,6 @@ interface Reminder {
   key: string;
   payload: PushPayload;
 }
-
-/**
- * Fenced release, as a STATIC script: delete the claim only if it still
- * holds this run's token.
- *
- * KEYS[1] = claim key; ARGV[1] = this run's claim token
- * Returns: 1 = released, 0 = no longer ours (expired or re-claimed)
- */
-const RELEASE_CLAIM_LUA = `
-  if redis.call('GET', KEYS[1]) == ARGV[1] then
-    return redis.call('DEL', KEYS[1])
-  end
-  return 0
-`;
 
 function lapsedReminder(now: number, detail: string): Reminder {
   // The CT date of `now` shifted back by the start hour, so the day rolls
@@ -166,20 +139,6 @@ function reminderFor(
   };
 }
 
-/** Release a claim so the next hourly run retries the reminder. */
-async function releaseClaim(key: string, token: string): Promise<void> {
-  try {
-    await redis.eval(RELEASE_CLAIM_LUA, [key], [token]);
-  } catch (err) {
-    // The claim now holds until its TTL, so this reminder is not retried.
-    logger.error(
-      { err, key },
-      `${JOB_NAME}: claim release failed; the reminder will not be retried`,
-    );
-    Sentry.captureException(err);
-  }
-}
-
 export default withCronInstrumentation(
   JOB_NAME,
   async (): Promise<CronResult> => {
@@ -207,13 +166,16 @@ export default withCronInstrumentation(
     }
 
     const { kind, key, payload } = reminder;
-    const claimToken = randomUUID();
-    // Throws on a Redis error: fail closed (see the header).
-    const claimed = await redis.set(key, claimToken, {
-      nx: true,
-      ex: CLAIM_TTL_SEC,
+    // Throws if the claim or the send throws (the wrapper captures it and
+    // reports status 'error'); the claim fails closed, see the header.
+    const outcome = await sendOwnerPushOnce({
+      key,
+      claimTtlSec: CLAIM_TTL_SEC,
+      payload,
+      pushTtlSec: REMINDER_PUSH_TTL_SEC,
+      job: JOB_NAME,
     });
-    if (claimed !== 'OK') {
+    if (!outcome.claimed) {
       return {
         status: 'skipped',
         message: `${kind} reminder already sent`,
@@ -221,25 +183,10 @@ export default withCronInstrumentation(
       };
     }
 
-    let result: FanOutResult;
-    try {
-      result = await sendPushToOwner(payload, {
-        ttlSec: REMINDER_PUSH_TTL_SEC,
-      });
-    } catch (err) {
-      await releaseClaim(key, claimToken);
-      throw err; // the wrapper captures it and reports status 'error'
-    }
-
+    const { result } = outcome;
     const metadata = { state: status.state, kind, ...result };
     if (result.sent === 0) {
-      await releaseClaim(key, claimToken);
-      const reason =
-        result.failed > 0
-          ? 'every send failed'
-          : result.expired > 0
-            ? 'every subscription expired'
-            : 'no push subscriptions';
+      const reason = undeliveredReason(result);
       Sentry.captureMessage('schwab.reauth_reminder.undelivered', {
         level: 'warning',
         fingerprint: ['schwab.reauth_reminder.undelivered'],
