@@ -273,7 +273,9 @@ class FakeConnection:
     in, the worst case for a caller (committed, acknowledgement lost).
     `sequence_name`, `sequence_value` and `sequence_is_called` are what
     pg_get_serial_sequence and the sequence say: with is_called false the next
-    nextval returns last_value itself.
+    nextval returns last_value itself. The sequence starts far ahead of every
+    id a test uses, so a restore test about something else does not also meet a
+    sequence that is behind the file; the tests about that set it.
     """
 
     def __init__(
@@ -286,7 +288,7 @@ class FakeConnection:
         closes_on: str | None = None,
         autocommit: bool = False,
         sequence_name: str | None = 'public.strike_exposures_id_seq',
-        sequence_value: int | None = 0,
+        sequence_value: int | None = 1_000_000,
         sequence_is_called: bool = True,
     ) -> None:
         self.rows = sorted(rows, key=key_of)
@@ -2233,6 +2235,79 @@ def test_restore_dry_run_reads_the_id_sequence_and_changes_nothing(
 
 
 @pytest.mark.parametrize(
+    ('in_db', 'start', 'to_insert', 'behind'),
+    [
+        # After a restore whose COMMIT dropped, the rows are in and the sequence
+        # (reset, or restored from a backup) is behind: the dry run must say so.
+        pytest.param(7, 3, 0, True, id='behind-with-nothing-to-insert'),
+        pytest.param(1, 3, 6, True, id='behind-with-rows-to-insert'),
+        pytest.param(7, 5000, 0, False, id='ahead-with-nothing-to-insert'),
+        pytest.param(1, 5000, 6, False, id='ahead-with-rows-to-insert'),
+    ],
+)
+def test_restore_dry_run_reports_a_sequence_that_is_behind_the_file(
+    make_conn, tmp_path: Path, in_db: int, start: int, to_insert: int, behind: bool
+) -> None:
+    rows = day_rows(D1, list(range(1, 8)))
+    s3 = FakeS3()
+    back_up(s3, rows, tmp_path)
+    conn = make_conn(rows[:in_db], sequence_name=SEQUENCE, sequence_value=start)
+
+    result = sbk.restore_day(conn, s3, BUCKET, D1, apply=False)
+
+    assert result == sbk.RestoreResult(
+        rows=to_insert, id_clashes=0, sequence_behind=behind
+    )
+    texts = [text for text, _ in conn.statements]
+    assert not any(t.startswith(('LOCK', 'INSERT', 'COMMIT')) or 'setval' in t for t in texts)
+    assert conn.sequence_value == start  # reported, not moved
+
+
+@pytest.mark.parametrize(
+    ('start', 'is_called', 'behind'),
+    [
+        # The apply's rule, with the file's largest id (900) in the middle of
+        # the file: the next id is last_value + 1 once called, else last_value.
+        pytest.param(899, True, True, id='called-one-behind-the-files-max-id'),
+        pytest.param(900, True, False, id='called-at-the-files-max-id'),
+        pytest.param(901, True, False, id='called-past-it'),
+        pytest.param(899, False, True, id='not-called-one-behind'),
+        pytest.param(900, False, True, id='not-called-at-the-files-max-id'),
+        pytest.param(901, False, False, id='not-called-one-past-it'),
+    ],
+)
+def test_restore_dry_run_applies_the_same_is_called_rule_as_the_apply(
+    make_conn, tmp_path: Path, start: int, is_called: bool, behind: bool
+) -> None:
+    rows = plain_rows(3, ids=[5, 900, 70])
+    s3 = FakeS3()
+    back_up(s3, rows, tmp_path)
+    conn = make_conn(
+        rows, sequence_name=SEQUENCE, sequence_value=start, sequence_is_called=is_called
+    )
+
+    result = sbk.restore_day(conn, s3, BUCKET, D1, apply=False)
+
+    assert result == sbk.RestoreResult(rows=0, id_clashes=0, sequence_behind=behind)
+    assert conn.sequence_value == start and conn.sequence_is_called is is_called
+
+
+def test_restore_dry_run_takes_the_largest_id_from_the_whole_file(
+    make_conn, tmp_path: Path
+) -> None:
+    # The table holds the row with the largest id (900); the rows it lacks have
+    # smaller ids. The sequence is behind the file, not behind the missing rows.
+    rows = plain_rows(3, ids=[5, 900, 70])
+    s3 = FakeS3()
+    back_up(s3, rows, tmp_path)
+    conn = make_conn(rows[1:2], sequence_name=SEQUENCE, sequence_value=899)
+
+    result = sbk.restore_day(conn, s3, BUCKET, D1, apply=False)
+
+    assert result == sbk.RestoreResult(rows=2, id_clashes=0, sequence_behind=True)
+
+
+@pytest.mark.parametrize(
     ('conn_kwargs', 'reason'),
     [
         pytest.param(
@@ -2859,6 +2934,86 @@ def test_restore_command_dry_run_exits_1_when_ids_are_taken(cli, tmp_path: Path)
     assert conn.inserts == []
 
 
+SEQUENCE_BEHIND_LINE = (
+    "2026-11-02: the id sequence is behind the file's ids; --apply will move it"
+)
+
+
+@pytest.mark.parametrize(
+    ('in_db', 'would_insert'),
+    [
+        pytest.param(3, 'would insert 0 rows', id='nothing-to-insert'),
+        pytest.param(1, 'would insert 2 rows', id='rows-to-insert'),
+    ],
+)
+def test_restore_command_dry_run_says_when_the_sequence_is_behind(
+    cli, tmp_path: Path, in_db: int, would_insert: str
+) -> None:
+    # The rows may all be in already (a restore whose COMMIT dropped after it
+    # committed). A dry run that only said "would insert 0 rows" would leave the
+    # sequence behind and live inserts failing on the primary key.
+    rows = day_rows(D1, [1, 2, 3])
+    s3 = FakeS3()
+    back_up(s3, rows, tmp_path)
+    conn = FakeConnection(rows[:in_db], sequence_name=SEQUENCE, sequence_value=1)
+
+    code, out = cli.run(conn, s3, 'restore', '--date', '2026-11-02')
+
+    assert code == 0
+    assert f'2026-11-02: {would_insert} (a dry run; add --apply to write)' in out
+    assert SEQUENCE_BEHIND_LINE in out
+    assert out.count('behind') == 1
+    assert conn.inserts == [] and conn.sequence_value == 1
+
+
+def test_restore_command_dry_run_says_nothing_of_a_sequence_that_is_ahead(
+    cli, tmp_path: Path
+) -> None:
+    rows = day_rows(D1, [1, 2, 3])
+    s3 = FakeS3()
+    back_up(s3, rows, tmp_path)
+    conn = FakeConnection(rows[:1], sequence_name=SEQUENCE, sequence_value=3)  # next id is 4
+
+    code, out = cli.run(conn, s3, 'restore', '--date', '2026-11-02')
+
+    assert code == 0
+    assert 'would insert 2 rows' in out
+    assert 'behind' not in out
+
+
+def test_restore_command_dry_run_with_taken_ids_does_not_promise_the_sequence_move(
+    cli, tmp_path: Path
+) -> None:
+    # --apply would fail on the primary key and roll back, so it would not move
+    # the sequence either: the taken-ids line is the whole story.
+    rows = day_rows(D1, [1, 2, 3])
+    s3 = FakeS3()
+    back_up(s3, rows, tmp_path)
+    squatter = make_row(id=2, date=D2, expiry=D2, ticker='OTHER')
+    conn = FakeConnection([squatter], sequence_name=SEQUENCE, sequence_value=1)
+
+    code, out = cli.run(conn, s3, 'restore', '--date', '2026-11-02')
+
+    assert code == 1
+    assert '1 id(s) already taken; --apply would fail' in out
+    assert 'will move it' not in out
+
+
+def test_restore_command_apply_says_nothing_about_a_sequence_it_moves(
+    cli, tmp_path: Path
+) -> None:
+    rows = day_rows(D1, [1, 2, 3])
+    s3 = FakeS3()
+    back_up(s3, rows, tmp_path)
+    conn = FakeConnection([], sequence_name=SEQUENCE, sequence_value=1)
+
+    code, out = cli.run(conn, s3, 'restore', '--date', '2026-11-02', '--apply')
+
+    assert code == 0
+    assert '2026-11-02: inserted 3 rows' in out
+    assert 'behind' not in out and conn.sequence_value == 3
+
+
 def test_restore_command_dry_run_clash_query_failure_exits_1_with_the_class_only(
     cli, tmp_path: Path
 ) -> None:
@@ -2910,7 +3065,7 @@ def test_restore_command_apply(cli, tmp_path: Path) -> None:
 
 LOST_DURING_APPLY = (
     'connection lost during --apply; whether the rows were committed is unknown. '
-    'Run restore without --apply to see what is left'
+    'Run restore without --apply to see what is left; re-running --apply is safe'
 )
 
 

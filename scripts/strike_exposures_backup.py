@@ -921,36 +921,45 @@ def _read_id_sequence(cur: PgCursor) -> tuple[str, int, bool]:
     return name, last_value, is_called
 
 
-def _check_id_sequence_readable(cur: PgCursor, day: date) -> None:
-    """Raise BackupError if the id sequence cannot be read (a restore dry run).
+def _readable_id_sequence(cur: PgCursor, day: date) -> tuple[int, bool]:
+    """The id sequence's (last_value, is_called), for a restore dry run.
 
-    `--apply` has to read the sequence to move it; a dry run that could not read
-    it would call a day restorable that `--apply` then half does. A missing
-    privilege, no sequence and a NULL last_value are the unreadable cases. Any
-    other database error propagates as it is.
+    Raises BackupError if it cannot be read. `--apply` has to read the sequence
+    to move it; a dry run that could not read it would call a day restorable
+    that `--apply` then half does. A missing privilege, no sequence and a NULL
+    last_value are the unreadable cases. Any other database error propagates as
+    it is.
     """
     try:
-        _read_id_sequence(cur)
+        _, last_value, is_called = _read_id_sequence(cur)
     except BackupError as exc:
         reason = str(exc)
     except psycopg2.errors.InsufficientPrivilege:
         reason = 'permission denied'
     else:
-        return
+        return last_value, is_called
     raise BackupError(f'{day.isoformat()}: the id sequence cannot be read ({reason})')
+
+
+def _is_behind(last_value: int, is_called: bool, max_id: int) -> bool:
+    """Whether a sequence in this state would hand out an id up to `max_id`.
+
+    The next id is last_value + 1 once the sequence has been used, but
+    last_value itself when is_called is false (after `setval(s, n, false)` or a
+    RESTART), so is_called has to be read too.
+    """
+    next_id = last_value + 1 if is_called else last_value
+    return next_id <= max_id
 
 
 def _sequence_is_behind(conn: PgConnection, max_id: int) -> bool:
     """Whether the id sequence would hand out an id the file holds.
 
-    The next id is last_value + 1 once the sequence has been used, but
-    last_value itself when is_called is false (after `setval(s, n, false)` or a
-    RESTART), so is_called has to be read too. Read only, no lock.
+    Read only, no lock.
     """
     with _read_snapshot(conn) as cur:
         _, last_value, is_called = _read_id_sequence(cur)
-    next_id = last_value + 1 if is_called else last_value
-    return next_id <= max_id
+    return _is_behind(last_value, is_called, max_id)
 
 
 def _move_id_sequence(conn: PgConnection) -> None:
@@ -1006,11 +1015,14 @@ class RestoreResult:
 
     `rows` is the rows inserted (or that would be). `id_clashes` is only ever
     non-zero for a dry run: the number of those rows whose id another row holds.
-    An apply with a clash raises instead.
+    An apply with a clash raises instead. `sequence_behind` is also only ever
+    true for a dry run: the id sequence would hand out an id the file holds, so
+    `--apply` will move it (an apply moves it, or raises, and says nothing here).
     """
 
     rows: int
     id_clashes: int = 0
+    sequence_behind: bool = False
 
 
 def _check_file_day(parquet: pq.ParquetFile, day: date) -> None:
@@ -1043,11 +1055,14 @@ def restore_day(
 
     Without `apply` nothing is written: it reads the day and counts the file's
     rows whose unique key the table does not have, and how many of those have
-    an id that another row holds (which `--apply` would fail on). With `apply`
-    it inserts the file in batches of RESTORE_BATCH inside one transaction, with
-    the original ids and created_at, so a rejected batch undoes the whole day.
-    A row whose key is already there is left alone, so restoring a day twice
-    inserts nothing the second time.
+    an id that another row holds (which `--apply` would fail on). It also reads
+    the id sequence and says whether it is behind the file's largest id, which
+    is what a restore leaves when its COMMIT dropped after it committed.
+
+    With `apply` it inserts the file in batches of RESTORE_BATCH inside one
+    transaction, with the original ids and created_at, so a rejected batch
+    undoes the whole day. A row whose key is already there is left alone, so
+    restoring a day twice inserts nothing the second time.
 
     The id sequence is then moved past the file's ids, in a second transaction,
     when rows went in or when the sequence is still behind the file's largest id
@@ -1057,6 +1072,7 @@ def restore_day(
     """
     with _downloaded_day(s3, bucket, day) as parquet:
         _check_file_day(parquet, day)
+        max_id = _file_max_id(parquet)
         if not apply:
             with _read_snapshot(conn) as cur:
                 clashes = _IdClashes(cur)
@@ -1066,9 +1082,12 @@ def restore_day(
                     on_only_in_file=clashes.add,
                 )
                 taken = clashes.finish()
-                _check_id_sequence_readable(cur, day)
-                return RestoreResult(rows=counts.only_in_file, id_clashes=taken)
-        max_id = _file_max_id(parquet)
+                last_value, is_called = _readable_id_sequence(cur, day)
+                return RestoreResult(
+                    rows=counts.only_in_file,
+                    id_clashes=taken,
+                    sequence_behind=_is_behind(last_value, is_called, max_id),
+                )
         inserted = _insert_day(conn, parquet, day)
     try:
         if inserted or _sequence_is_behind(conn, max_id):
@@ -1224,7 +1243,8 @@ def _restore(args: argparse.Namespace, conn, s3, bucket: str) -> int:
             # happened (the rows are in; only the sequence was not moved).
             print(
                 'connection lost during --apply; whether the rows were committed is '
-                'unknown. Run restore without --apply to see what is left',
+                'unknown. Run restore without --apply to see what is left; '
+                're-running --apply is safe',
                 file=sys.stderr,
                 flush=True,
             )
@@ -1234,6 +1254,7 @@ def _restore(args: argparse.Namespace, conn, s3, bucket: str) -> int:
         return 0
     if result.id_clashes:
         # A count only: the ids and the rows that hold them stay out of the log.
+        # No word about the sequence: that --apply fails and moves nothing.
         print(
             f'{day}: would insert {result.rows} rows, but {result.id_clashes} id(s) '
             'already taken; --apply would fail',
@@ -1241,6 +1262,10 @@ def _restore(args: argparse.Namespace, conn, s3, bucket: str) -> int:
         )
         return 1
     print(f'{day}: would insert {result.rows} rows (a dry run; add --apply to write)', flush=True)
+    if result.sequence_behind:
+        # Also with nothing to insert: the rows can be in already (a restore whose
+        # COMMIT dropped after it committed) with the sequence left behind them.
+        print(f"{day}: the id sequence is behind the file's ids; --apply will move it", flush=True)
     return 0
 
 
