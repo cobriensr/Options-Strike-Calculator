@@ -15,6 +15,7 @@ import zipfile
 from collections.abc import Iterator
 from datetime import UTC, date, datetime
 from pathlib import Path
+from time import monotonic
 
 import boto3
 import httpx
@@ -24,6 +25,7 @@ from moto import mock_aws
 
 import tape_job
 from config import Settings, load_settings
+from constants import RUN_DEADLINE_SECONDS
 from r2_store import tape_key
 from tape_job import run_tape
 from tests.test_tape_convert import _csv_bytes, _row
@@ -38,6 +40,11 @@ EARLIER = [date(2026, 1, 2), date(2026, 1, 5), date(2026, 1, 6), date(2026, 1, 7
 UW_URL = "https://api.unusualwhales.com/api/option-trades/full-tape/2026-01-08"
 GCS_URL = "https://storage.googleapis.com/uw-full-tape/2026-01-08-fulltape.zip"
 LAST_MODIFIED = "Fri, 09 Jan 2026 05:12:00 GMT"
+
+
+def _deadline() -> float:
+    """The tape's deadline for a night with no steps to reserve time for: a whole run away."""
+    return monotonic() + RUN_DEADLINE_SECONDS
 
 
 def _tape_zip(rows: int) -> bytes:
@@ -112,7 +119,7 @@ def test_a_day_lands_then_relands_when_its_etag_changes(
     )
 
     # Night 1: the day is missing, so it lands.
-    first = run_tape(settings, NOW)
+    first = run_tape(settings, NOW, deadline=_deadline())
 
     assert [(o.day, o.status, o.detail, o.rows) for o in first] == [(DAY, "landed", "", 3)]
     head = s3.head_object(Bucket=BUCKET, Key=tape_key(DAY))
@@ -131,7 +138,7 @@ def test_a_day_lands_then_relands_when_its_etag_changes(
     # ETag, and the day is re-landed with the old object copied aside first.
     served.update(etag='"etag-2"', body=_tape_zip(4))
 
-    second = run_tape(settings, NOW)
+    second = run_tape(settings, NOW, deadline=_deadline())
 
     assert [(o.day, o.status, o.detail, o.rows, o.warnings) for o in second] == [
         (DAY, "relanded", "", 4, ())

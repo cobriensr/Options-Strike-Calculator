@@ -46,7 +46,6 @@ from constants import (
     PLAUSIBLE_MIN_ROW_RATIO,
     PROBE_BUDGET_SECONDS,
     REWRITE_RECHECK_DAYS,
-    RUN_DEADLINE_SECONDS,
     SCHEMA_VERSION,
     TAPE_START,
     UNAVAILABLE_AGE_TRADING_DAYS,
@@ -221,7 +220,8 @@ def run_tape(
     settings: Settings,
     now_utc: datetime,
     on_outcome: Callable[[DayOutcome], None] | None = None,
-    deadline: float | None = None,
+    *,
+    deadline: float,
 ) -> list[DayOutcome]:
     """Land the planned days, then probe for rewrites and re-land the rewritten days;
     one outcome per day.
@@ -231,7 +231,8 @@ def run_tape(
     failing marks that day and every later one skipped. A day that starts can finish
     inside its budget, so the run ends by its deadline. `deadline` is the `monotonic()`
     time the tape must stop by, which the caller sets early enough to leave later work
-    its share of the run; None means RUN_DEADLINE_SECONDS from now.
+    its share of the run. It has no default: one that gave the tape the whole run would
+    leave the steps no reserve.
 
     The probes come after the planned days, so a slow probe never costs a missing
     day. They cover the newest days of the run's one listing, never a day this run
@@ -252,8 +253,6 @@ def run_tape(
       day can be planned.
     Once days start, every failure is a day's outcome.
     """
-    if deadline is None:
-        deadline = monotonic() + RUN_DEADLINE_SECONDS
     last_session = last_completed_session(now_utc)
     _clear_stale_work_dirs()
     WORK_DIR.mkdir(parents=True, exist_ok=True)

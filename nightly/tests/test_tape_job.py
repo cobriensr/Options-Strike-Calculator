@@ -49,7 +49,7 @@ from constants import (
 )
 from r2_store import R2Store, R2VerifyError, tape_key
 from tape_convert import ConvertResult, TapeValidationError
-from tape_job import RELAND_IDENTICAL, DayOutcome, land_day, plan_days, rewritten_days, run_tape
+from tape_job import RELAND_IDENTICAL, DayOutcome, land_day, plan_days, rewritten_days
 from tests.test_uw_client import LIVE_HISTORIC_BODY
 from uw_client import SourceInfo, TapeDownloadError
 
@@ -79,6 +79,23 @@ ROWS = 8_000_000  # a full day: real days run 7.68M-14.93M rows
 def _et(day: date, hour: int, minute: int = 0) -> datetime:
     """An Eastern wall-clock time, as the UTC instant ConvertResult carries."""
     return datetime(day.year, day.month, day.day, hour, minute, tzinfo=EASTERN).astimezone(UTC)
+
+
+def _run_tape(
+    settings: Settings,
+    now_utc: datetime,
+    on_outcome: Callable[[DayOutcome], None] | None = None,
+    *,
+    deadline: float | None = None,
+) -> list[DayOutcome]:
+    """run_tape with a whole run's time left unless the test gives a deadline.
+
+    The default is read off tape_job's clock, so a test that patches `tape_job.monotonic`
+    gets a deadline on that clock.
+    """
+    if deadline is None:
+        deadline = tape_job.monotonic() + RUN_DEADLINE_SECONDS
+    return tape_job.run_tape(settings, now_utc, on_outcome, deadline=deadline)
 
 
 def zip_body(day: date) -> bytes:
@@ -1005,7 +1022,7 @@ def test_the_days_log_line_carries_the_reason(
     tape.convert_error[J7] = TapeValidationError("missing 1 core column(s): price")
 
     with caplog.at_level(logging.INFO, logger="tape_job"):
-        run_tape(settings, JAN_NOW)
+        _run_tape(settings, JAN_NOW)
 
     lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("tape 2026-01-0")]
     assert (
@@ -1221,7 +1238,7 @@ def test_a_rewrite_check_with_nothing_to_probe_sends_nothing(
 def test_run_tape_with_nothing_missing_does_nothing(s3, settings: Settings, tape: FakeTape) -> None:
     for d in (J2, J5, J6, J7, J8):
         _seed(s3, d)
-    assert run_tape(settings, JAN_NOW) == []
+    assert _run_tape(settings, JAN_NOW) == []
     assert tape.downloads == []
 
 
@@ -1230,7 +1247,7 @@ def test_one_bad_day_does_not_stop_others(s3, settings: Settings, tape: FakeTape
     _seed(s3, J5)
     tape.convert_error[J7] = TapeValidationError("missing 1 core column(s): price")
 
-    outcomes = run_tape(settings, JAN_NOW)
+    outcomes = _run_tape(settings, JAN_NOW)
 
     assert _statuses(outcomes) == [
         (J8, "landed", ""),
@@ -1250,7 +1267,7 @@ def test_low_disk_skips_remaining_days(s3, settings: Settings, tape: FakeTape) -
     _seed(s3, J5)
     tape.free = [MIN_FREE_DISK_BYTES, MIN_FREE_DISK_BYTES - 1]
 
-    outcomes = run_tape(settings, JAN_NOW)
+    outcomes = _run_tape(settings, JAN_NOW)
 
     assert _statuses(outcomes) == [
         (J8, "landed", ""),
@@ -1268,7 +1285,7 @@ def test_disk_check_error_skips_remaining_days_and_keeps_outcomes(
     tape.free = [MIN_FREE_DISK_BYTES, PermissionError(13, f"denied {URL}")]
 
     with caplog.at_level(logging.WARNING, logger="tape_job"):
-        outcomes = run_tape(settings, JAN_NOW)
+        outcomes = _run_tape(settings, JAN_NOW)
 
     assert _statuses(outcomes) == [
         (J8, "landed", ""),
@@ -1293,7 +1310,7 @@ def test_run_deadline_skips_remaining_days(
 
     tape.on_download = slow
 
-    outcomes = run_tape(settings, JAN_NOW)
+    outcomes = _run_tape(settings, JAN_NOW)
 
     # The slow day itself finishes: the deadline is checked between days.
     assert _statuses(outcomes) == [
@@ -1304,6 +1321,15 @@ def test_run_deadline_skips_remaining_days(
     assert tape.downloads == [J8]
 
 
+def test_run_tape_requires_a_deadline_keyword() -> None:
+    # A caller that left it out would silently give the tape a whole run, and the steps
+    # no reserve. The helper above fills it in for these tests.
+    deadline = inspect.signature(tape_job.run_tape).parameters["deadline"]
+
+    assert deadline.kind is inspect.Parameter.KEYWORD_ONLY
+    assert deadline.default is inspect.Parameter.empty
+
+
 def test_run_tape_honours_a_given_deadline(
     s3, settings: Settings, tape: FakeTape, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1312,8 +1338,8 @@ def test_run_tape_honours_a_given_deadline(
     clock = SimpleNamespace(now=1000.0)
     monkeypatch.setattr(tape_job, "monotonic", lambda: clock.now)
 
-    # The default deadline, a whole run away, would let every day start.
-    outcomes = run_tape(settings, JAN_NOW, deadline=clock.now - 1)
+    # The helper's default deadline, a whole run away, would let every day start.
+    outcomes = _run_tape(settings, JAN_NOW, deadline=clock.now - 1)
 
     assert _statuses(outcomes) == [
         (J8, "skipped_deadline", SKIPPED_DEADLINE),
@@ -1344,7 +1370,7 @@ def test_the_given_deadline_bounds_the_rewrite_probes(
     clock = SimpleNamespace(now=1000.0)
     monkeypatch.setattr(tape_job, "monotonic", lambda: clock.now)
 
-    assert run_tape(settings, JAN_NOW, deadline=clock.now + left) == []
+    assert _run_tape(settings, JAN_NOW, deadline=clock.now + left) == []
 
     assert tape.probes == ([J8, J7, J6, J5, J2] if probes else [])
 
@@ -1354,7 +1380,7 @@ def test_rewrite_probes_run_after_the_planned_days(s3, settings: Settings, tape:
         _seed(s3, d, _replaced(d))
     tape.probe_result = {J6: '"rewritten"', J5: old_etag(J5), J2: old_etag(J2)}
 
-    outcomes = run_tape(settings, JAN_NOW)
+    outcomes = _run_tape(settings, JAN_NOW)
 
     # The days this run landed (J8, J7) are not probed: the window is the listing's.
     assert [e for e in tape.events if e[0] != "convert"] == [
@@ -1378,7 +1404,7 @@ def test_the_probe_window_is_the_runs_listing(s3, settings: Settings, tape: Fake
     newest = listed[::-1][:REWRITE_RECHECK_DAYS]  # 01-29 back to 01-23
     tape.probe_result = {d: old_etag(d) for d in newest}
 
-    outcomes = run_tape(settings, now)
+    outcomes = _run_tape(settings, now)
 
     assert _statuses(outcomes) == [(date(2026, 1, 30), "landed", "")]
     # The day this run landed takes no slot: five days of the listing are probed.
@@ -1392,7 +1418,7 @@ def test_a_run_whose_planned_days_were_skipped_probes_nothing(
         _seed(s3, d, _replaced(d))  # no probe results: any probe fails the test
     tape.free = [MIN_FREE_DISK_BYTES, MIN_FREE_DISK_BYTES - 1]
 
-    outcomes = run_tape(settings, JAN_NOW)
+    outcomes = _run_tape(settings, JAN_NOW)
 
     assert _statuses(outcomes) == [(J8, "landed", ""), (J7, "skipped_disk", SKIPPED_DISK)]
     assert tape.probes == []
@@ -1412,7 +1438,7 @@ def test_run_deadline_passing_during_probes_stops_them(
     tape.on_probe = slow
     tape.probe_result = {J6: '"rewritten"'}
 
-    outcomes = run_tape(settings, JAN_NOW)
+    outcomes = _run_tape(settings, JAN_NOW)
 
     # The planned days land first. The probe of the newest etagged day overran the
     # run deadline: no more probes, and the re-land it found is skipped.
@@ -1453,7 +1479,7 @@ def test_a_day_starts_only_with_its_budget_left(
 
     tape.on_download = first_day_takes
 
-    outcomes = run_tape(settings, JAN_NOW)
+    outcomes = _run_tape(settings, JAN_NOW)
 
     if second_day_starts:
         assert _statuses(outcomes) == [(J8, "landed", ""), (J7, "landed", "")]
@@ -1475,7 +1501,7 @@ def test_outcomes_are_reported_as_each_day_finishes(s3, settings: Settings, tape
     reported_before_download: list[int] = []
     tape.on_download = lambda day: reported_before_download.append(len(reported))
 
-    outcomes = run_tape(
+    outcomes = _run_tape(
         settings, JAN_NOW, on_outcome=lambda o: reported.append((o.day, o.status, o.detail))
     )
 
@@ -1501,7 +1527,7 @@ def test_a_raising_outcome_callback_does_not_stop_the_run(
         raise RuntimeError(f"report failed {URL}")
 
     with caplog.at_level(logging.WARNING, logger="tape_job"):
-        outcomes = run_tape(settings, JAN_NOW, on_outcome=report)
+        outcomes = _run_tape(settings, JAN_NOW, on_outcome=report)
 
     assert _statuses(outcomes) == [(J8, "landed", ""), (J7, "landed", ""), (J6, "landed", "")]
     assert calls == [J8, J7, J6]
@@ -1517,7 +1543,7 @@ def test_keyboard_interrupt_propagates_and_cleans_work_dir(
     tape.download_error[J8] = KeyboardInterrupt()
 
     with pytest.raises(KeyboardInterrupt):
-        run_tape(settings, JAN_NOW)
+        _run_tape(settings, JAN_NOW)
 
     assert tape.downloads == [J8]
     assert not (tape.work / J8.isoformat()).exists()
@@ -1562,7 +1588,7 @@ def test_stale_day_dirs_are_removed_before_the_run(
     kept.append(tape.work / "2026-01-06")
 
     with caplog.at_level(logging.WARNING, logger="tape_job"):
-        assert run_tape(settings, JAN_NOW) == []
+        assert _run_tape(settings, JAN_NOW) == []
 
     assert not stale.exists()
     assert all(path.exists() for path in kept)
@@ -1593,7 +1619,7 @@ def test_stale_day_dir_link_is_left_alone(
     _link_dir(link, outside)
 
     with caplog.at_level(logging.WARNING, logger="tape_job"):
-        assert run_tape(settings, JAN_NOW) == []
+        assert _run_tape(settings, JAN_NOW) == []
 
     assert (outside / "keep.txt").read_bytes() == b"keep"
     assert link.is_symlink() or link.is_junction()
@@ -1616,7 +1642,7 @@ def test_stale_day_dir_that_cannot_be_removed_does_not_stop_the_run(
 
     _rmtree(monkeypatch, stuck)
     with caplog.at_level(logging.WARNING, logger="tape_job"):
-        assert run_tape(settings, JAN_NOW) == []
+        assert _run_tape(settings, JAN_NOW) == []
 
     assert "removed 0 stale day dir(s) from WORK_DIR; 1 could not be removed" in caplog.text
 
@@ -1632,7 +1658,7 @@ def test_a_run_writes_at_most_two_markers(s3, settings: Settings, tape: FakeTape
     for d in gone:
         tape.download_error[d] = gcs_404(d)
 
-    outcomes = run_tape(settings, now)
+    outcomes = _run_tape(settings, now)
 
     assert MAX_MARKERS_PER_RUN == 2
     assert _statuses(outcomes) == [
@@ -1643,7 +1669,7 @@ def test_a_run_writes_at_most_two_markers(s3, settings: Settings, tape: FakeTape
     assert R2Store(settings).unavailable() == set(gone[:2])
 
     # The capped day is retried, and marked, by the next run.
-    assert _statuses(run_tape(settings, now)) == [(gone[2], "unavailable", "not_posted")]
+    assert _statuses(_run_tape(settings, now)) == [(gone[2], "unavailable", "not_posted")]
     assert R2Store(settings).unavailable() == set(gone)
 
 
@@ -1667,7 +1693,7 @@ def test_a_failed_marker_write_does_not_count_toward_the_cap(
 
     monkeypatch.setattr(R2Store, "mark_unavailable", mark)
 
-    outcomes = run_tape(settings, now)
+    outcomes = _run_tape(settings, now)
 
     assert _statuses(outcomes) == [
         (gone[0], "failed", "ClientError"),
@@ -1680,7 +1706,7 @@ def test_listing_error_propagates(s3, settings: Settings, tape: FakeTape) -> Non
     missing = settings.model_copy(update={"r2_bucket_fulltape": "missing-bucket"})
 
     with pytest.raises(ClientError) as caught:
-        run_tape(missing, JAN_NOW)
+        _run_tape(missing, JAN_NOW)
 
     assert caught.value.response["Error"]["Code"] == "NoSuchBucket"
     assert tape.downloads == []
@@ -1701,7 +1727,7 @@ def test_rewrite_relands_after_supersede(s3, settings: Settings, tape: FakeTape)
     tape.rows[missing] = 7_770_000
 
     with patch.object(tape_job, "land_day", autospec=True, side_effect=land_day) as spy:
-        outcomes = run_tape(settings, now)
+        outcomes = _run_tape(settings, now)
 
     # The plan's days first, then the re-land.
     assert _statuses(outcomes) == [(missing, "landed", ""), (rewritten, "relanded", "")]
@@ -1738,7 +1764,7 @@ def test_baseline_rows_come_from_the_20_nearest_landed_days_on_either_side(
     tape.rows[target] = 2_000_000
 
     with patch.object(tape_job, "land_day", autospec=True, side_effect=land_day) as spy:
-        [outcome] = run_tape(settings, FEB_NOW)
+        [outcome] = _run_tape(settings, FEB_NOW)
 
     # Nearest first; on a tie in distance, the earlier day first. The two legacy days
     # are skipped, so the 20 reach two days further out: 01-07 and 01-06.
@@ -1787,7 +1813,7 @@ def test_a_day_beside_legacy_days_still_gets_20_baseline_values(
     tape.rows[target] = 2_000_000
 
     with patch.object(tape_job, "land_day", autospec=True, side_effect=land_day) as spy:
-        [outcome] = run_tape(settings, now)
+        [outcome] = _run_tape(settings, now)
 
     assert len(valued) == 20
     assert _bound(spy).arguments["baseline_rows"] == [ROWS] * 20
@@ -1808,7 +1834,7 @@ def test_a_backfill_day_with_only_later_landed_days_gets_a_baseline(
     tape.rows[first] = 2_000_000
 
     with patch.object(tape_job, "land_day", autospec=True, side_effect=land_day) as spy:
-        outcomes = run_tape(settings, FEB_NOW)
+        outcomes = _run_tape(settings, FEB_NOW)
 
     assert [o.day for o in outcomes] == trading_days(TAPE_START, first)[::-1]
     assert all(o.status == "landed" for o in outcomes)
