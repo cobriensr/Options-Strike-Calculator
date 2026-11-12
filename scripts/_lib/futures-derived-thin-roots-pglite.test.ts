@@ -48,6 +48,8 @@ const hooks = vi.hoisted(() => ({
   writes: 0,
   /** Tables a transaction or plain query named, so a test can say what was never read. */
   texts: [] as string[],
+  /** A read-only transaction whose queries this all returns rows for gets those rows and is not run. */
+  answer: null as null | ((text: string) => unknown[] | null),
 }));
 
 vi.mock('../../api/_lib/db.js', async (importOriginal) => {
@@ -84,6 +86,10 @@ vi.mock('../../api/_lib/db.js', async (importOriginal) => {
         ) => {
           const readOnly = opts?.readOnly === true;
           hooks.texts.push(...queries.map((q) => q.text));
+          if (readOnly && hooks.answer != null) {
+            const answers = queries.map((q) => hooks.answer?.(q.text) ?? null);
+            if (answers.every((a) => a != null)) return answers as unknown[][];
+          }
           if (!readOnly) {
             hooks.writes += 1;
             if (hooks.failWriteAt?.nth === hooks.writes)
@@ -444,6 +450,7 @@ beforeEach(async () => {
   hooks.failWriteAt = null;
   hooks.writes = 0;
   hooks.texts = [];
+  hooks.answer = null;
   neonConfig.fetchFunction = undefined;
   await reset();
 });
@@ -477,6 +484,42 @@ describe('5b: the snapshots after 5a deleted whole days of thin-root bars', () =
     // The command to apply it carries the roots, and --stores narrowed to what plans.
     expect(text).toMatch(
       /--apply --work-dir \S+ --backup \S+ --roots RTY CL --stores snapshots --expect-snapshots 6 --delete-junk-stale --expect-junk-deletes 2 --rewrite-stale-at-write --expect-stale-rewrites 2/,
+    );
+  });
+
+  it('says what the backup holds, with the deleted rows per root, so the 5a total can be checked against it', async () => {
+    expect(await run()).toBe(0);
+    expect(report()).toContain(
+      `bar backup ${backupPath}: 64 rows (0 updated, 64 deleted; deleted by root: RTY 32, CL 32)`,
+    );
+  });
+
+  describe('the read that counts the bars left in the span', () => {
+    it.each([
+      [
+        'no row',
+        [] as unknown[],
+        'the thin-root bar count for RTY returned no row',
+      ],
+      [
+        'a count that is not a whole number',
+        [{ bars: 'many' }],
+        'the thin-root bar count for RTY is "many", not a whole number',
+      ],
+      [
+        'a negative count',
+        [{ bars: '-3' }],
+        'the thin-root bar count for RTY is "-3", not a whole number',
+      ],
+    ])(
+      'stops the run, and lifts nothing, when it returns %s',
+      async (_name, rows, message) => {
+        hooks.answer = (text) =>
+          text.includes('count(*)::text AS bars') ? rows : null;
+        expect(await run()).toBe(1);
+        expect(errored()).toContain(message);
+        expect(existsSync(join(workDir, 'report.txt'))).toBe(false);
+      },
     );
   });
 
@@ -654,6 +697,75 @@ describe('5b: ruling 9 is lifted per root once no thin-root bar is left in the s
     expect(report()).toContain(
       'rows planned, RTY: normal step 4 rows, stale-at-write 2 rows (2 added by the D1 lift), junk delete 1 rows',
     );
+  });
+
+  it("rewrites a lifted thin root's stale-at-write row before the span end, and nothing else, on apply", async () => {
+    const before = await snapshots();
+    const code = await run({
+      apply: true,
+      expectSnapshots: 6,
+      rewriteStaleAtWrite: true,
+      expectStaleRewrites: 2,
+    });
+    expect([code, errored()]).toEqual([0, '']);
+
+    const after = await snapshots();
+    for (const symbol of THIN) {
+      const row = after.get(ids.stale[symbol] as number);
+      // The 14:40 bar that landed after the row was written is what it says now.
+      expect(row?.price).toBe(`${BASE[symbol] + 10}.0000`);
+      expect(row?.change_1h_pct).toBeNull();
+      expect(row?.change_day_pct).toBeNull();
+      expect(row?.volume_ratio).not.toBe('1.0000');
+      // A row the stale step does not name keeps its price.
+      expect(after.get(ids.clean[symbol] as number)?.price).toBe(
+        before.get(ids.clean[symbol] as number)?.price,
+      );
+      expect(after.get(ids.frozen[symbol] as number)).toEqual(
+        before.get(ids.frozen[symbol] as number),
+      );
+    }
+    expect(existsSync(markerPath(workDir, 'stale'))).toBe(true);
+  });
+
+  it("deletes a lifted thin root's frozen row on apply, and only that", async () => {
+    const before = await snapshots();
+    const code = await run({
+      apply: true,
+      frozen: true,
+      stores: [],
+      backup: null,
+      deleteFrozenStale: true,
+      expectFrozenDeletes: 2,
+    });
+    expect([code, errored()]).toEqual([0, '']);
+
+    const after = await snapshots();
+    expect(after.size).toBe(before.size - 2);
+    for (const symbol of THIN) {
+      expect(after.has(ids.frozen[symbol] as number)).toBe(false);
+      expect(after.get(ids.stale[symbol] as number)).toEqual(
+        before.get(ids.stale[symbol] as number),
+      );
+    }
+    expect(existsSync(markerPath(workDir, 'frozen'))).toBe(true);
+  });
+
+  it('leaves the frozen row of a thin root with a bar left in the span, on apply', async () => {
+    await reset({ leftBar: true });
+    const code = await run({
+      apply: true,
+      frozen: true,
+      stores: [],
+      backup: null,
+      deleteFrozenStale: true,
+      expectFrozenDeletes: 1,
+    });
+    expect([code, errored()]).toEqual([0, '']);
+
+    const after = await snapshots();
+    expect(after.has(ids.frozen.RTY as number)).toBe(true); // kept: RTY has a bar left
+    expect(after.has(ids.frozen.CL as number)).toBe(false);
   });
 
   it('prints the frozen apply command with the roots', async () => {

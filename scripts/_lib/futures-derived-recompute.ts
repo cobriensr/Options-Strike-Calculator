@@ -110,6 +110,7 @@ import {
   THIN_ROOTS,
   THIN_WINDOW_START_MS,
   ctTradingDay,
+  isThinRoot,
 } from './futures-thin-roots.js';
 
 export { ctTradingDay };
@@ -136,7 +137,7 @@ type Sym = FuturesSymbol;
  * explains (ruling 4).
  */
 const EXACT_CONTROL_ROOTS: readonly Sym[] = ['ES', 'NQ'];
-const isThinRoot = (symbol: Sym): boolean =>
+const isNotExactControlRoot = (symbol: Sym): boolean =>
   !EXACT_CONTROL_ROOTS.includes(symbol);
 
 /** premarket and fires read ES only. */
@@ -794,7 +795,7 @@ async function loadSymbolData(
       ),
     });
     console.log(
-      `bars ${symbol}: ${bars.length} read; Phase 2 backup ${mine.length} rows (${mine.filter((b) => b.op === 'delete').length} deleted)`,
+      `bars ${symbol}: ${bars.length} read; bar backup ${mine.length} rows (${mine.filter((b) => b.op === 'delete').length} deleted)`,
     );
   }
   return out;
@@ -811,8 +812,8 @@ async function readThinSpanBars(
 ): Promise<Map<Sym, number>> {
   const out = new Map<Sym, number>();
   for (const symbol of roots) {
-    if (!(THIN_ROOTS as readonly string[]).includes(symbol)) continue;
-    const last = THIN_LAST_BAD_MS[symbol as (typeof THIN_ROOTS)[number]];
+    if (!isThinRoot(symbol)) continue;
+    const last = THIN_LAST_BAD_MS[symbol];
     const [row] = await readRows<{ bars: string }>(
       (sql) => sql`
         SELECT count(*)::text AS bars
@@ -823,9 +824,37 @@ async function readThinSpanBars(
            AND to_char((ts + interval '7 hours') AT TIME ZONE 'America/Chicago', 'YYYY-MM-DD')
                <> ALL(${[...CLEAN_TRADING_DAYS]}::text[])`,
     );
-    out.set(symbol, Number(row?.bars ?? 0));
+    // A count that did not come back must not read as 0: 0 lifts ruling 9, which
+    // opens two destructive steps.
+    if (row == null) {
+      throw new Error(`the thin-root bar count for ${symbol} returned no row`);
+    }
+    const bars = Number(row.bars);
+    if (!/^\d+$/.test(String(row.bars)) || !Number.isSafeInteger(bars)) {
+      throw new Error(
+        `the thin-root bar count for ${symbol} is "${String(row.bars)}", not a whole number`,
+      );
+    }
+    out.set(symbol, bars);
   }
   return out;
+}
+
+/**
+ * The header's backup line: the rows in the file, how many were updated and
+ * deleted, and the deleted rows per root, so the total the delete printed (5a:
+ * 228,793) and its four root counts can be checked against it.
+ */
+function backupLine(
+  path: string,
+  bars: readonly BackupBar[],
+  roots: readonly Sym[],
+): string {
+  const deleted = bars.filter((b) => b.op === 'delete');
+  const byRoot = roots
+    .map((r) => `${r} ${deleted.filter((b) => b.symbol === r).length}`)
+    .join(', ');
+  return `bar backup ${path}: ${bars.length} rows (${bars.length - deleted.length} updated, ${deleted.length} deleted; deleted by root: ${byRoot})`;
 }
 
 /** The lift per thin root, for the header: "RTY 1 (kept), CL 0 (lifted)". Empty when no thin root is in the run. */
@@ -1958,7 +1987,7 @@ export function parseDetectorDays(
       { cause: err },
     );
   }
-  const thin = SYMBOLS.filter(isThinRoot);
+  const thin = SYMBOLS.filter(isNotExactControlRoot);
   if (parsed == null || typeof parsed !== 'object' || Array.isArray(parsed)) {
     throw new Error(`${source} must be an object with a day list per root`);
   }
@@ -2284,7 +2313,7 @@ async function planSnapshots(
           ? []
           : outcome.fields.filter((f) => !writable.includes(f));
       let stalePlanned = staleFields.length > 0;
-      if (stalePlanned && isThinRoot(symbol)) {
+      if (stalePlanned && isNotExactControlRoot(symbol)) {
         const stats = report.stale.detector;
         const days = detectorDays?.get(symbol);
         const day = ctTradingDay(row.tsMs);
@@ -2373,7 +2402,7 @@ async function planSnapshots(
           report.stale,
           rewrite,
           row,
-          isThinRoot(symbol) && inputs.latest != null
+          isNotExactControlRoot(symbol) && inputs.latest != null
             ? `; ${neighbourText(sd.bars, inputs.latest.tsMs)}`
             : '',
         );
@@ -2420,7 +2449,7 @@ async function planSnapshots(
     endRun(report.stale, frozen);
 
     const controlOfSymbol = await snapshotControl(symbol, report);
-    if (isThinRoot(symbol)) {
+    if (isNotExactControlRoot(symbol)) {
       const { thin, explained } = await explainThinControl(
         symbol,
         controlOfSymbol,
@@ -4597,7 +4626,7 @@ async function run(opts: RecomputeOptions): Promise<number> {
   const rootsLine = `roots ${opts.roots.join(', ')}${opts.roots.includes('ES') ? '' : ' (premarket and fires are ES-only: not planned)'}`;
   const lift = liftLine(spanBars);
   const frozenScope = (plans.frozen?.symbols ?? []).map((s) => s.symbol);
-  const lifted = [...liftedRoots(spanBars)];
+  const lifted = liftedRoots(spanBars);
   const thinFrom =
     lifted.length === 0
       ? 'the thin roots'
@@ -4619,9 +4648,7 @@ async function run(opts: RecomputeOptions): Promise<number> {
         `stale-at-write test reaches ${isoSecond(STALE_UNTIL_MS)} (the freshness gate shipped on 2026-09-30); ES and NQ from the span start, ${thinFrom} from the span end + 20 days (${isoSecond(scope.snapshots.toMs)}), all of them off the contaminated days in ${opts.detectorDays ?? 'no file (their rows after the span end are left)'}`,
         ...(opts.backup == null
           ? []
-          : [
-              `Phase 2 backup ${opts.backup}: ${backupBars.length} rows (${backupBars.filter((b) => b.op === 'update').length} updated, ${backupBars.filter((b) => b.op === 'delete').length} deleted)`,
-            ]),
+          : [backupLine(opts.backup, backupBars, opts.roots)]),
         ...session,
         elapsed,
       ];

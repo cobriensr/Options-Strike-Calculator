@@ -286,6 +286,19 @@ async function bar(
 }
 
 /**
+ * The world before Phase 5a: each of `symbols` (RTY by default) still has a
+ * month-mixed bar in the span on a day that is not clean, so the D1 lift leaves
+ * ruling 9 in force for it. Every test of ruling 9 calls this, so none of them
+ * depends on a bar another seed happens to place in the span. The day is 05-04,
+ * outside the 20-day volume windows of the rows these tests use.
+ */
+async function leaveThinBarsInSpan(symbols: string[] = ['RTY']): Promise<void> {
+  for (const symbol of symbols) {
+    await bar(symbol, '2026-05-04T14:00:00Z', 7000, 100);
+  }
+}
+
+/**
  * One trading day of bars: a prior-day bar of volume 1000 (500 for NQ), the
  * open bar, the hour-ago bar and the last closed bar, 100 each (50 for NQ).
  * `openHour` is the UTC hour of the cash open at :30 (13 in EDT, 14 in EST). A
@@ -1018,8 +1031,10 @@ describe('dry run on real SQL (pglite)', () => {
     // Session proof: both paths read-only, and the backup that drives the attribution.
     expect(text).toContain('read-only transaction: on');
     expect(text).toContain('plain query during planning: on');
-    expect(text).toContain('Phase 2 backup');
-    expect(text).toContain('7 rows (4 updated, 3 deleted)');
+    expect(text).toContain('bar backup');
+    expect(text).toContain(
+      '7 rows (4 updated, 3 deleted; deleted by root: ES 2, NQ 0, ZN 0, RTY 1, CL 0, GC 0)',
+    );
     // Snapshots: ES has 6 rows in range, NQ 1 (S3) and RTY 1; four are written.
     expect(text).toContain('rows in range: 8, rows to write: 4');
     expect(text).toContain(
@@ -1165,7 +1180,7 @@ describe('dry run on real SQL (pglite)', () => {
     expect(text).toContain('ws_gamma_setup_fires.es_basis_change_5m');
     expect(text).not.toContain('futures_snapshots (ES, NQ)');
     expect(text).not.toContain('market_snapshots.pre_market_data');
-    expect(text).not.toContain('Phase 2 backup');
+    expect(text).not.toContain('bar backup');
     // The command names only the planned store, and offers no junk delete (it needs snapshots).
     expect(text).toContain(
       `--apply --work-dir ${workDir} --stores fires --expect-fires 3`,
@@ -2418,6 +2433,7 @@ describe('--rewrite-stale-at-write on real SQL (pglite)', () => {
    * the freshness gate shipped: left.
    */
   async function seedStale() {
+    await leaveThinBarsInSpan();
     for (const [symbol, date, prior] of [
       ['ES', '2026-06-10', '2026-06-09'],
       ['RTY', '2026-06-10', '2026-06-09'],
@@ -2666,6 +2682,7 @@ describe('--rewrite-stale-at-write on real SQL (pglite)', () => {
 
   it('states a contaminated share of exactly 10% as within, and a listed day with no stale row as nothing left', async () => {
     // RTY on 07-06: 9 stale rows a minute apart; on 07-07 one more, on a contaminated day. 1 of 10 is 10%.
+    await leaveThinBarsInSpan();
     await frozenDay('RTY', '2026-07-06', '2026-07-03');
     await frozenDay('RTY', '2026-07-07', '2026-07-06');
     for (let m = 48; m < 57; m += 1) {
@@ -2771,6 +2788,7 @@ describe('--rewrite-stale-at-write on real SQL (pglite)', () => {
 
   it("leaves a thin root's stale row 10 days after the span end next to a price step at the span end, and rewrites one 21 days after", async () => {
     // A step at the span end, as CL had (71.87 to 80.15): 7000 before it, 7200 from the first bar after.
+    await leaveThinBarsInSpan();
     await bar('RTY', '2026-06-15T14:10:00Z', 7000, 100);
     await bar('RTY', '2026-06-15T14:11:00Z', 7200, 100);
     await frozenDay('RTY', '2026-06-25', '2026-06-24');
@@ -2793,7 +2811,7 @@ describe('--rewrite-stale-at-write on real SQL (pglite)', () => {
     // 2026-07-05T14:11:00.000Z is the span end + 20 days: the row at that instant is
     // rewritten, the one a millisecond before it is not. Phase 5a has not applied
     // for RTY here: a month-mixed bar is left in the span, so ruling 9 holds.
-    await bar('RTY', '2026-05-04T14:00:00Z', 7000, 100);
+    await leaveThinBarsInSpan();
     await bar('RTY', '2026-07-05T13:30:00Z', 7007, 100);
     await bar('RTY', '2026-07-05T14:00:00Z', 7005, 100);
     const before = await snapshotRow(
@@ -3344,6 +3362,7 @@ describe('--rewrite-stale-at-write on real SQL (pglite)', () => {
     });
 
     it("leaves a thin root's run in the span, and rewrites the same run after the span end", async () => {
+      await leaveThinBarsInSpan();
       await frozenDay('RTY', '2026-06-11', '2026-06-10');
       await frozenDay('RTY', '2026-07-08', '2026-07-07');
       const inSpan = await run20('RTY', '2026-06-11', 7123);
