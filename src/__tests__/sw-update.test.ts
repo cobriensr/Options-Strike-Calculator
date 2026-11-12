@@ -1017,6 +1017,58 @@ describe('an automatic apply waits for the new worker to take control', () => {
     expect(reload).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps one controllerchange listener across stalled applies, so one change reloads once', async () => {
+    const add = vi.spyOn(serviceWorker, 'addEventListener');
+    markNeedsRefresh();
+
+    // Applies at 60 s and 150 s; the first stalls at 90 s without a change.
+    await advance(150 * 1000);
+    expect(updateSW).toHaveBeenCalledTimes(2);
+
+    serviceWorker.dispatchEvent(new Event('controllerchange'));
+
+    expect(reload).toHaveBeenCalledTimes(1);
+    const listeners = add.mock.calls
+      .filter(([type]) => type === 'controllerchange')
+      .map(([, listener]) => listener);
+    expect(listeners).toHaveLength(2);
+    expect(new Set(listeners).size).toBe(1);
+  });
+
+  it('keeps one controllerchange listener when a Reload click follows an automatic apply', async () => {
+    markNeedsRefresh();
+    await advance(SAFE_MOMENT_INTERVAL_MS);
+    applyUpdate();
+    expect(updateSW).toHaveBeenCalledTimes(2);
+
+    serviceWorker.dispatchEvent(new Event('controllerchange'));
+
+    expect(reload).toHaveBeenCalledTimes(1);
+  });
+
+  it('reloads once per controllerchange wait, and a later apply waits again', async () => {
+    markNeedsRefresh();
+    await advance(SAFE_MOMENT_INTERVAL_MS);
+
+    serviceWorker.dispatchEvent(new Event('controllerchange'));
+    serviceWorker.dispatchEvent(new Event('controllerchange'));
+    expect(reload).toHaveBeenCalledTimes(1);
+
+    applyUpdate();
+    serviceWorker.dispatchEvent(new Event('controllerchange'));
+    expect(reload).toHaveBeenCalledTimes(2);
+  });
+
+  it('detaches the controllerchange listener on a reset', async () => {
+    markNeedsRefresh();
+    await advance(SAFE_MOMENT_INTERVAL_MS);
+
+    resetUpdateState();
+    serviceWorker.dispatchEvent(new Event('controllerchange'));
+
+    expect(reload).not.toHaveBeenCalled();
+  });
+
   it('reports one warning, and applies again at the next safe tick, when no controllerchange comes within 30 s', async () => {
     markNeedsRefresh();
     await advance(SAFE_MOMENT_INTERVAL_MS);

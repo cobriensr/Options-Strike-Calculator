@@ -118,6 +118,7 @@ export function resetUpdateState(): void {
   stopWatch?.();
   resetUnsafeLock();
   clearApplyStall();
+  detachControllerChange();
   applyStallReported = false;
   askingTabs = false;
   epoch += 1;
@@ -131,12 +132,12 @@ export function resetUpdateState(): void {
  * Keep a waiting update from applying by itself until the returned release
  * runs, e.g. while a chart analysis is in flight. Holds stack, and calling a
  * release again does nothing. A release doesn't apply the update: it applies
- * at the next evaluation, which is any tab's next tick, up to 60 s later. A
- * user who left the tab during a long analysis and comes back within that time
- * during the session finds the result instead of a reload; outside the
- * session the update applies once that evaluation runs. A hold and the last
- * release also update the shared lock at once, so the other tabs know this one
- * is busy.
+ * at the next evaluation, any tab's next tick (up to 60 s later) or, without
+ * Web Locks, this tab's own visibility change. A user who left the tab during
+ * a long analysis and comes back within that time during the session finds the
+ * result instead of a reload; outside the session the update applies once that
+ * evaluation runs. A hold and the last release also update the shared lock at
+ * once, so the other tabs know this one is busy.
  */
 export function holdAutoUpdate(): () => void {
   const hold = Symbol('auto-update-hold');
@@ -313,20 +314,21 @@ export function getNeedsRefresh(): boolean {
 /**
  * Trigger the update. Attaches a one-shot `controllerchange` listener so the
  * page reloads exactly when the new SW takes control, then posts SKIP_WAITING
- * to the waiting SW. Listener is scoped to this call (not global) so that
- * unrelated controllerchange events — first-install activation in particular
- * — don't trigger spurious reloads mid-load. Calling when no update is
- * pending is a no-op.
+ * to the waiting SW. The listener is attached only by an apply (not at
+ * startup) so that unrelated controllerchange events — first-install
+ * activation in particular — don't trigger spurious reloads mid-load. Calling
+ * when no update is pending is a no-op.
  *
  * Also ends the wait for a safe moment, so a Reload click stops the automatic
  * apply. The reverse isn't guarded: a click after an automatic apply repeats
- * `updateSW(true)`, a second SKIP_WAITING and a second one-shot listener,
- * which is harmless. There is deliberately no "applied" flag, because the
- * manual retry after a failed `updateSW` (see below) has to keep working.
- * A click doesn't ask the other tabs: the owner chose to reload now, and the
- * agreement binds only the automatic apply. It arms no stall timeout either
- * (see `startApply`): the banner stays, so the user can click again, and a
- * click takes over from the timeout of an earlier automatic apply.
+ * `updateSW(true)`, a second SKIP_WAITING, which is harmless (the one
+ * `controllerchange` listener is shared, see `onControllerChange`). There is
+ * deliberately no "applied" flag, because the manual retry after a failed
+ * `updateSW` (see below) has to keep working. A click doesn't ask the other
+ * tabs: the owner chose to reload now, and the agreement binds only the
+ * automatic apply. It arms no stall timeout either (see `startApply`): the
+ * banner stays, so the user can click again, and a click takes over from the
+ * timeout of an earlier automatic apply.
  */
 export function applyUpdate(): void {
   startApply(false);
@@ -352,10 +354,7 @@ function startApply(automatic: boolean): void {
   if (hasContainer) {
     navigator.serviceWorker.addEventListener(
       'controllerchange',
-      () => {
-        clearApplyStall();
-        window.location.reload();
-      },
+      onControllerChange,
       { once: true },
     );
   }
@@ -371,6 +370,24 @@ function startApply(automatic: boolean): void {
   if (automatic && hasContainer) {
     applyStallTimer = setTimeout(onApplyStalled, APPLY_STALL_MS);
   }
+}
+
+/**
+ * The page reloads when the new worker takes control. One function for every
+ * apply, so a repeat `addEventListener` with it is ignored and at most one
+ * listener lives however many applies stall or get clicked.
+ */
+function onControllerChange(): void {
+  clearApplyStall();
+  window.location.reload();
+}
+
+function detachControllerChange(): void {
+  if (!('serviceWorker' in navigator)) return;
+  navigator.serviceWorker.removeEventListener(
+    'controllerchange',
+    onControllerChange,
+  );
 }
 
 function clearApplyStall(): void {
