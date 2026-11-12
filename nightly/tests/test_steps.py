@@ -8,6 +8,7 @@ SDK's own `event_from_exception`, and runs it through `monitoring.scrub_event`.
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 from collections.abc import Callable
@@ -61,13 +62,17 @@ def capture_exception(monkeypatch: pytest.MonkeyPatch) -> Mock:
     return mock
 
 
+def _discard(outcome: StepOutcome) -> None:
+    """The reporter for a test that does not look at the reports."""
+
+
 def _run(
     step_list: list[Step],
     settings: Settings,
     *,
     run_deadline: float = RUN_DEADLINE,
     tape: tuple[DayOutcome, ...] | list[DayOutcome] = (),
-    on_outcome: Callable[[StepOutcome], None] | None = None,
+    on_outcome: Callable[[StepOutcome], None] = _discard,
 ) -> list[StepOutcome]:
     return run_steps(
         step_list,
@@ -99,6 +104,15 @@ def _raising(exc: BaseException, name: str = "raises") -> Step:
         raise exc
 
     return Step(name, run, 0)
+
+
+def test_run_steps_requires_an_on_outcome_keyword() -> None:
+    # A caller that left it out would run its steps and report none of them to Sentry.
+    # The `_run` helper above supplies a no-op reporter for the tests that ignore reports.
+    on_outcome = inspect.signature(run_steps).parameters["on_outcome"]
+
+    assert on_outcome.kind is inspect.Parameter.KEYWORD_ONLY
+    assert on_outcome.default is inspect.Parameter.empty
 
 
 # --- order and deadlines ---------------------------------------------------------

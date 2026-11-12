@@ -2,9 +2,10 @@
 from the others.
 
 `run_steps` runs the steps in order, every night, whatever the tape did. Each step gets
-a deadline that leaves every later step its `min_seconds`, so an earlier step can never
-starve a later one, and a step that starts with less than its own minimum left is
-skipped (`skipped_deadline`) while the later ones still run.
+a deadline that leaves every later step its `min_seconds`. A step never starts work its
+budget cannot cover, but a unit of work that overruns cuts into the next step's reserve,
+and only the watchdog bounds the run. A step that starts with less than its own minimum
+left is skipped (`skipped_deadline`) while the later ones still run.
 
 Isolation: an Exception from a step becomes a `failed` outcome carrying the exception's
 class name, plus one `capture_exception` tagged with the step. The event reaches Sentry
@@ -120,13 +121,14 @@ def run_steps(
     last_session: date,
     run_deadline: float,
     tape: Sequence[DayOutcome],
-    on_outcome: Callable[[StepOutcome], None] | None = None,
+    on_outcome: Callable[[StepOutcome], None],
 ) -> list[StepOutcome]:
     """Run `steps` in order and return one outcome per step.
 
     Step i gets `deadline = run_deadline - reserve_seconds(steps[i + 1:])`. Every
     Exception a step raises is its outcome; only a BaseException escapes. An Exception
-    from `on_outcome` is logged by class name and the run goes on.
+    from `on_outcome` is logged by class name and the run goes on. `on_outcome` has no
+    default: a caller that left it out would run its steps and report none of them.
     """
     tape_days = tuple(tape)
     reserved = reserve_seconds(steps)
@@ -137,8 +139,7 @@ def run_steps(
         outcome = _run_one(step, context)
         outcomes.append(outcome)
         _log_outcome(outcome)
-        if on_outcome is not None:
-            _notify(on_outcome, outcome)
+        _notify(on_outcome, outcome)
     return outcomes
 
 

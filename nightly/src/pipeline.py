@@ -2,9 +2,10 @@
 
 `main` hands `STEPS` to `steps.run_steps` after `run_tape`, every night. It also gives
 `run_tape` a deadline that leaves `reserve_seconds(STEPS)` of the run for them, so each
-entry's `min_seconds` comes out of the tape's catch-up window and an earlier step can
-never starve a later one. `test_deadline_constants_bound_the_run` keeps at least two
-tape days in every night whatever is registered here.
+entry's `min_seconds` comes out of the tape's catch-up window. A step never starts work
+its budget cannot cover, but a unit of work that overruns cuts into the next step's
+reserve, and only the watchdog bounds the run. `test_deadline_constants_bound_the_run`
+keeps at least two tape days in every night whatever is registered here.
 
 Import isolation (D2): this module imports no step module. `lazy_step` imports a step's
 module when the step runs, so a step module that fails to import (a missing dependency, a

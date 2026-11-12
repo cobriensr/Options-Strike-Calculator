@@ -982,6 +982,7 @@ def test_a_step_that_raises_sends_a_tagged_event_without_the_database_host(
         last_session=date(2026, 11, 6),
         run_deadline=monotonic() + 100.0,
         tape=(),
+        on_outcome=lambda _outcome: None,  # the exception event is under test, not the report
     )
     sentry_sdk.get_client().flush(timeout=5)
 

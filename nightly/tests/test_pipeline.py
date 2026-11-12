@@ -61,6 +61,7 @@ def _run(settings: Settings, step_list: list[Step]) -> list[StepOutcome]:
         last_session=LAST_SESSION,
         run_deadline=monotonic() + 1_000,
         tape=(),
+        on_outcome=lambda _outcome: None,  # these tests read the returned outcomes
     )
 
 
