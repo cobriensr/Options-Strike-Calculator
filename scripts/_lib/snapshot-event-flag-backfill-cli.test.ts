@@ -30,8 +30,9 @@ vi.mock('./anchor-backfill.js', () => ({ resolveEnvFile }));
 // `runBackfill` is mocked, so nothing here fetches. The stub keeps the real
 // module, with its Sentry and Redis clients, out of every fresh import.
 vi.mock('../../api/_lib/market-events.js', () => ({
-  fetchMarketEvents: vi.fn(),
+  fetchMacroEvents: vi.fn(),
   eventNamesForSnapshot: vi.fn(),
+  isEarningsEventName: vi.fn(),
 }));
 vi.mock('./snapshot-event-flag-backfill.js', async (importOriginal) => ({
   ...(await importOriginal<
@@ -43,15 +44,9 @@ vi.mock('./snapshot-event-flag-backfill.js', async (importOriginal) => ({
 import { buildPlan } from './snapshot-event-flag-backfill.js';
 
 const CLEAN_RESULT = {
-  plan: buildPlan({
-    snapshots: [],
-    features: [],
-    namesByDate: new Map(),
-    keepEarnings: false,
-  }),
+  plan: buildPlan({ snapshots: [], features: [], namesByDate: new Map() }),
   months: [],
   apply: false,
-  keepEarnings: false,
   undoFile: null,
   outcome: null,
 };
@@ -64,7 +59,6 @@ const SKIPPED_RESULT = {
     ],
     features: [],
     namesByDate: new Map([['2026-05-12', ['CPI']]]),
-    keepEarnings: false,
   }),
   apply: true,
   undoFile: 'docs/tmp/snapshot-event-flags/undo-x.json',
@@ -125,7 +119,6 @@ describe('backfill-snapshot-event-flags CLI', () => {
     expect(runBackfill).toHaveBeenCalledTimes(1);
     expect(runBackfill).toHaveBeenCalledWith({
       apply: false,
-      keepEarnings: false,
       undoDir: UNDO_DIR,
     });
     const out = printed(log);
@@ -143,22 +136,14 @@ describe('backfill-snapshot-event-flags CLI', () => {
     );
   });
 
-  it('forwards --apply and --keep-earnings, loads the env file --env-file names, and exits 0 with the warning when the apply skipped rows', async () => {
+  it('forwards --apply, loads the env file --env-file names, and exits 0 with the warning when the apply skipped rows', async () => {
     runBackfill.mockResolvedValue(SKIPPED_RESULT);
 
-    expect(
-      await runCli(
-        '--apply',
-        '--keep-earnings',
-        '--env-file',
-        'other/.env.local',
-      ),
-    ).toBe(0);
+    expect(await runCli('--apply', '--env-file', 'other/.env.local')).toBe(0);
 
     expect(runBackfill).toHaveBeenCalledTimes(1);
     expect(runBackfill).toHaveBeenCalledWith({
       apply: true,
-      keepEarnings: true,
       undoDir: UNDO_DIR,
     });
     expect(resolveEnvFile).toHaveBeenCalledWith('other/.env.local', '.');
@@ -180,7 +165,11 @@ describe('backfill-snapshot-event-flags CLI', () => {
     expect(out).toContain(
       'Usage: npx tsx scripts/backfill-snapshot-event-flags.ts',
     );
-    expect(out).toContain('--keep-earnings');
+    // The help names the one key the run needs, and the macro-only rule.
+    expect(out).toContain('Needs FRED_API_KEY in the environment');
+    expect(out).toContain('Finnhub is not used');
+    expect(out).not.toContain('--keep-earnings');
+    expect(out).not.toContain('FINNHUB_API_KEY');
     expect(out).not.toContain('Database host');
     expect(resolveEnvFile).not.toHaveBeenCalled();
     expect(config).not.toHaveBeenCalled();
@@ -217,13 +206,13 @@ describe('backfill-snapshot-event-flags CLI', () => {
     const undoFile = `${UNDO_DIR}/undo-2026-11-11T15-30-00-123Z.json`;
     runBackfill.mockRejectedValue(
       new Error(
-        `Refusing to run. FINNHUB_API_KEY is not set: ... The undo file ${undoFile} was written before it.`,
+        `The apply did not complete. The undo file ${undoFile} was written before it.`,
       ),
     );
 
     expect(await runCli('--apply')).toBe(1);
 
-    expect(printed(error)).toMatch(/FINNHUB_API_KEY is not set/);
+    expect(printed(error)).toMatch(/The apply did not complete/);
     expect(printed(error)).toContain(undoFile);
   });
 });

@@ -7,16 +7,16 @@
  * on real Postgres in snapshot-event-flag-backfill-pglite.test.ts.
  *
  * Two module boundaries are mocked: `db.js` (a tagged-template stub that
- * answers the snapshot read) and `market-events.js` (`fetchMarketEvents`
- * only; the real `eventNamesForSnapshot` runs). Nothing reaches FRED,
- * Finnhub, Redis or a database.
+ * answers the snapshot read) and `market-events.js` (`fetchMacroEvents`
+ * only; the real `eventNamesForSnapshot` and `isEarningsEventName` run).
+ * Nothing reaches FRED, Finnhub, Redis or a database.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { mockSql, fetchMarketEvents } = vi.hoisted(() => ({
+const { mockSql, fetchMacroEvents } = vi.hoisted(() => ({
   mockSql: vi.fn(),
-  fetchMarketEvents: vi.fn(),
+  fetchMacroEvents: vi.fn(),
 }));
 
 vi.mock('../../api/_lib/db.js', () => ({
@@ -25,7 +25,7 @@ vi.mock('../../api/_lib/db.js', () => ({
 }));
 vi.mock('../../api/_lib/market-events.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../api/_lib/market-events.js')>()),
-  fetchMarketEvents,
+  fetchMacroEvents,
 }));
 
 import type { EventItem } from '../../api/_lib/market-events.js';
@@ -35,7 +35,7 @@ import {
   formatReport,
   monthRanges,
   parseArgs,
-  requireApiKeys,
+  requireFredKey,
   runBackfill,
   type BackfillResult,
   type FeatureRow,
@@ -58,13 +58,12 @@ const feat = (date: string, isEventDay: boolean | null): FeatureRow => ({
 const plan = (
   snapshots: SnapshotRow[],
   computed: Record<string, string[]>,
-  opts: { features?: FeatureRow[]; keepEarnings?: boolean } = {},
+  opts: { features?: FeatureRow[] } = {},
 ): Plan =>
   buildPlan({
     snapshots,
     features: opts.features ?? [],
     namesByDate: new Map(Object.entries(computed)),
-    keepEarnings: opts.keepEarnings ?? false,
   });
 
 const eventItem = (date: string, event: string): EventItem => ({
@@ -77,26 +76,21 @@ const eventItem = (date: string, event: string): EventItem => ({
 });
 
 describe('parseArgs', () => {
-  it('is a dry run, keeping nothing, unless told otherwise', () => {
+  it('is a dry run unless told otherwise', () => {
     expect(parseArgs([])).toEqual({
       apply: false,
-      keepEarnings: false,
       envFile: null,
       help: false,
     });
     expect(parseArgs(['--dry-run']).apply).toBe(false);
     expect(parseArgs(['--apply']).apply).toBe(true);
-    expect(parseArgs(['--keep-earnings']).keepEarnings).toBe(true);
     expect(parseArgs(['--help']).help).toBe(true);
     expect(parseArgs(['-h']).help).toBe(true);
   });
 
   it('takes --env-file with a value', () => {
-    expect(
-      parseArgs(['--apply', '--keep-earnings', '--env-file', 'x/.env.local']),
-    ).toEqual({
+    expect(parseArgs(['--apply', '--env-file', 'x/.env.local'])).toEqual({
       apply: true,
-      keepEarnings: true,
       envFile: 'x/.env.local',
       help: false,
     });
@@ -108,6 +102,8 @@ describe('parseArgs', () => {
     [['--force'], /unknown argument --force/],
     [['apply'], /unknown argument apply/],
     [['--apply', '--dry-run'], /--apply and --dry-run contradict/],
+    // Earnings are no longer part of the stored flag: nothing to keep.
+    [['--keep-earnings'], /unknown argument --keep-earnings/],
   ])('rejects %j', (argv, message) => {
     expect(() => parseArgs(argv)).toThrow(message);
   });
@@ -156,29 +152,26 @@ describe('monthRanges', () => {
   });
 });
 
-describe('requireApiKeys', () => {
-  it('passes when both keys are set', () => {
-    expect(() =>
-      requireApiKeys({ FRED_API_KEY: 'f', FINNHUB_API_KEY: 'h' }),
-    ).not.toThrow();
+describe('requireFredKey', () => {
+  it('passes with only the FRED key set: Finnhub is not needed', () => {
+    expect(() => requireFredKey({ FRED_API_KEY: 'f' })).not.toThrow();
   });
 
   it('names a missing FRED key', () => {
-    expect(() => requireApiKeys({ FINNHUB_API_KEY: 'h' })).toThrow(
-      /FRED_API_KEY is not set/,
+    expect(() => requireFredKey({})).toThrow(
+      /Refusing to run\. FRED_API_KEY is not set/,
     );
   });
 
-  it('names a missing Finnhub key and says why it is required', () => {
-    expect(() => requireApiKeys({ FRED_API_KEY: 'f' })).toThrow(
-      /FINNHUB_API_KEY is not set.*strip every stored earnings name/s,
-    );
-  });
-
-  it('treats an empty value as unset, and names both when both are missing', () => {
-    expect(() =>
-      requireApiKeys({ FRED_API_KEY: '', FINNHUB_API_KEY: '' }),
-    ).toThrow(/FRED_API_KEY is not set.*FINNHUB_API_KEY is not set/s);
+  it('treats an empty value as unset, and does not ask for a Finnhub key', () => {
+    let message = '';
+    try {
+      requireFredKey({ FRED_API_KEY: '', FINNHUB_API_KEY: '' });
+    } catch (e) {
+      message = (e as Error).message;
+    }
+    expect(message).toMatch(/FRED_API_KEY is not set/);
+    expect(message).not.toMatch(/FINNHUB/);
   });
 });
 
@@ -254,73 +247,35 @@ describe('buildPlan: which snapshot rows are written', () => {
   });
 });
 
-describe('buildPlan: --keep-earnings', () => {
-  const rows = [snap(1, '2026-05-20', true, ['CPI', 'NVDA Earnings'])];
-
-  it('drops a stored earnings name that the computed list lacks by default', () => {
-    const p = plan(rows, { '2026-05-20': ['CPI'] });
+// The stored flag is macro-only (owner decision 2026-11-12), so a stored
+// earnings name is simply one the computed list lacks.
+describe('buildPlan: stored earnings names', () => {
+  it('removes a stored earnings name and keeps the macro one', () => {
+    const p = plan([snap(1, '2026-05-20', true, ['CPI', 'NVDA Earnings'])], {
+      '2026-05-20': ['CPI'],
+    });
     expect(p.snapshotChanges[0]?.to).toEqual({
       isEventDay: true,
       eventNames: ['CPI'],
     });
+    expect(p.nameDays).toEqual([{ name: 'NVDA Earnings', gained: 0, lost: 1 }]);
   });
 
-  it('appends it to the computed names when kept', () => {
-    const p = plan(rows, { '2026-05-20': ['PPI'] }, { keepEarnings: true });
-    expect(p.snapshotChanges[0]?.to).toEqual({
-      isEventDay: true,
-      eventNames: ['PPI', 'NVDA Earnings'],
-    });
-  });
-
-  it('writes nothing when the kept names make the row already right', () => {
-    const p = plan(rows, { '2026-05-20': ['CPI'] }, { keepEarnings: true });
-    expect(p.snapshotChanges).toEqual([]);
-  });
-
-  it('does not duplicate an earnings name the computed list has, or keep one twice', () => {
+  it('turns the flag off, on the snapshot and the feature row, for an earnings-only day', () => {
     const p = plan(
-      [
-        snap(1, '2026-05-20', true, [
-          'AAPL Earnings',
-          'TSLA Earnings',
-          'TSLA Earnings',
-        ]),
-      ],
-      { '2026-05-20': ['AAPL Earnings', 'CPI'] },
-      { keepEarnings: true },
-    );
-    expect(p.snapshotChanges[0]?.to.eventNames).toEqual([
-      'AAPL Earnings',
-      'CPI',
-      'TSLA Earnings',
-    ]);
-  });
-
-  it('keeps only names ending in " Earnings", not other stored names', () => {
-    const p = plan(
-      [snap(1, '2026-05-20', true, ['FOMC', 'Earnings', 'NVDA Earnings Call'])],
-      { '2026-05-20': [] },
-      { keepEarnings: true },
+      [snap(1, '2026-05-20', true, ['NVDA Earnings'])],
+      {},
+      { features: [feat('2026-05-20', true)] },
     );
     expect(p.snapshotChanges[0]?.to).toEqual({
       isEventDay: false,
       eventNames: [],
     });
-  });
-
-  it('turns a flag on for a day whose only name is a kept earnings name', () => {
-    const p = plan(
-      [snap(1, '2026-05-20', false, ['NVDA Earnings'])],
-      {},
-      { keepEarnings: true, features: [feat('2026-05-20', false)] },
-    );
-    expect(p.snapshotChanges[0]?.to).toEqual({
-      isEventDay: true,
-      eventNames: ['NVDA Earnings'],
-    });
     expect(p.featureChanges).toEqual([
-      { date: '2026-05-20', from: false, to: true },
+      { date: '2026-05-20', from: true, to: false },
+    ]);
+    expect(p.lostFlagDates).toEqual([
+      { date: '2026-05-20', oldNames: ['NVDA Earnings'] },
     ]);
   });
 });
@@ -457,9 +412,8 @@ describe('fetchMonthlyNames', () => {
   const april = { month: '2026-04', start: '2026-04-01', end: '2026-04-09' };
 
   beforeEach(() => {
-    fetchMarketEvents.mockReset();
+    fetchMacroEvents.mockReset();
     vi.stubEnv('FRED_API_KEY', 'fred-secret-value');
-    vi.stubEnv('FINNHUB_API_KEY', 'finnhub-secret-value');
   });
 
   afterEach(() => {
@@ -469,7 +423,7 @@ describe('fetchMonthlyNames', () => {
   it('calls the lookup once per month, in turn, with the month range', async () => {
     let inFlight = 0;
     let maxInFlight = 0;
-    fetchMarketEvents.mockImplementation(async () => {
+    fetchMacroEvents.mockImplementation(async () => {
       inFlight += 1;
       maxInFlight = Math.max(maxInFlight, inFlight);
       await new Promise((resolve) => setTimeout(resolve, 1));
@@ -479,7 +433,7 @@ describe('fetchMonthlyNames', () => {
 
     await fetchMonthlyNames([march, april]);
 
-    expect(fetchMarketEvents.mock.calls).toEqual([
+    expect(fetchMacroEvents.mock.calls).toEqual([
       ['2026-03-05', '2026-03-31'],
       ['2026-04-01', '2026-04-09'],
     ]);
@@ -487,7 +441,7 @@ describe('fetchMonthlyNames', () => {
   });
 
   it('maps each date to the names the shared definition gives, in event order', async () => {
-    fetchMarketEvents.mockResolvedValueOnce({
+    fetchMacroEvents.mockResolvedValueOnce({
       events: [
         eventItem('2026-03-06', 'NFP'),
         eventItem('2026-03-12', 'CPI'),
@@ -506,35 +460,33 @@ describe('fetchMonthlyNames', () => {
   });
 
   it('refuses an incomplete month and names it, before fetching the next', async () => {
-    fetchMarketEvents
+    fetchMacroEvents
       .mockResolvedValueOnce({ events: [], complete: true })
       .mockResolvedValueOnce({ events: [], complete: false });
 
     await expect(
       fetchMonthlyNames([march, april, { ...april, month: '2026-05' }]),
     ).rejects.toThrow(/events for 2026-04 .*are incomplete/);
-    expect(fetchMarketEvents).toHaveBeenCalledTimes(2);
+    expect(fetchMacroEvents).toHaveBeenCalledTimes(2);
   });
 
-  it('tells the owner where the cause is logged and that a Finnhub refusal of past dates repeats', async () => {
-    fetchMarketEvents.mockResolvedValueOnce({ events: [], complete: false });
+  it('tells the owner where the cause is logged, that nothing was written, and to re-run', async () => {
+    fetchMacroEvents.mockResolvedValueOnce({ events: [], complete: false });
 
     const failure = await fetchMonthlyNames([march]).catch((e: unknown) => e);
 
     expect(failure).toBeInstanceOf(Error);
     const message = (failure as Error).message;
+    expect(message).toContain('a FRED release answered');
     expect(message).toContain('the cause is logged just above');
-    expect(message).toMatch(
-      /Finnhub rejects past dates, this repeats on every run/,
-    );
     expect(message).toContain('Nothing was written');
+    expect(message).toContain('re-run later');
+    expect(message).not.toMatch(/Finnhub/);
   });
 
-  it('refuses a month whose lookup rejects, names it, and never echoes a key', async () => {
-    fetchMarketEvents.mockRejectedValueOnce(
-      new Error(
-        'GET https://x?api_key=fred-secret-value&token=finnhub-secret-value failed',
-      ),
+  it('refuses a month whose lookup rejects, names it, and never echoes the key', async () => {
+    fetchMacroEvents.mockRejectedValueOnce(
+      new Error('GET https://x?api_key=fred-secret-value failed'),
     );
 
     const failure = await fetchMonthlyNames([march]).catch((e: unknown) => e);
@@ -543,16 +495,15 @@ describe('fetchMonthlyNames', () => {
     const message = (failure as Error).message;
     expect(message).toMatch(/events for 2026-03 .*could not be fetched/);
     expect(message).not.toContain('fred-secret-value');
-    expect(message).not.toContain('finnhub-secret-value');
   });
 });
 
 describe('runBackfill refusals', () => {
   beforeEach(() => {
     mockSql.mockReset();
-    fetchMarketEvents.mockReset();
+    fetchMacroEvents.mockReset();
     vi.stubEnv('FRED_API_KEY', 'f');
-    vi.stubEnv('FINNHUB_API_KEY', 'h');
+    vi.stubEnv('FINNHUB_API_KEY', '');
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(new Date('2026-11-11T15:00:00Z'));
   });
@@ -562,22 +513,41 @@ describe('runBackfill refusals', () => {
     vi.unstubAllEnvs();
   });
 
-  const opts = { apply: true, keepEarnings: false, undoDir: 'unused' };
+  const opts = { apply: true, undoDir: 'unused' };
 
-  it.each([
-    ['FRED_API_KEY', 'FINNHUB_API_KEY'],
-    ['FINNHUB_API_KEY', 'FRED_API_KEY'],
-  ])(
-    'refuses before reading or fetching anything when %s is unset',
-    async (missing) => {
-      vi.stubEnv(missing, '');
+  it('refuses before reading or fetching anything when FRED_API_KEY is unset', async () => {
+    vi.stubEnv('FRED_API_KEY', '');
 
-      await expect(runBackfill(opts)).rejects.toThrow(`${missing} is not set`);
+    await expect(runBackfill(opts)).rejects.toThrow('FRED_API_KEY is not set');
 
-      expect(mockSql).not.toHaveBeenCalled();
-      expect(fetchMarketEvents).not.toHaveBeenCalled();
-    },
-  );
+    expect(mockSql).not.toHaveBeenCalled();
+    expect(fetchMacroEvents).not.toHaveBeenCalled();
+  });
+
+  it('proceeds with only FRED_API_KEY set: reads, fetches the macro events and plans', async () => {
+    mockSql
+      .mockResolvedValueOnce([
+        { id: 1, day: '2026-03-12', is_event_day: false, event_names: [] },
+      ])
+      .mockResolvedValueOnce([]); // no training_features row
+    fetchMacroEvents.mockResolvedValueOnce({
+      events: [eventItem('2026-03-12', 'CPI')],
+      complete: true,
+    });
+
+    const result = await runBackfill({ ...opts, apply: false });
+
+    expect(fetchMacroEvents.mock.calls).toEqual([['2026-03-12', '2026-03-12']]);
+    expect(result.plan.snapshotChanges).toEqual([
+      {
+        id: 1,
+        date: '2026-03-12',
+        from: { isEventDay: false, eventNames: [] },
+        to: { isEventDay: true, eventNames: ['CPI'] },
+      },
+    ]);
+    expect(result.outcome).toBeNull();
+  });
 
   it('refuses when there are no snapshot rows, before any fetch', async () => {
     mockSql.mockResolvedValueOnce([]);
@@ -586,7 +556,7 @@ describe('runBackfill refusals', () => {
       /no market_snapshots rows dated 2026-11-11 or earlier/,
     );
 
-    expect(fetchMarketEvents).not.toHaveBeenCalled();
+    expect(fetchMacroEvents).not.toHaveBeenCalled();
   });
 
   // The order is keys, then the snapshot read, then the lookups: a read that
@@ -597,7 +567,7 @@ describe('runBackfill refusals', () => {
     await expect(runBackfill(opts)).rejects.toThrow('connection lost');
 
     expect(mockSql).toHaveBeenCalledTimes(1);
-    expect(fetchMarketEvents).not.toHaveBeenCalled();
+    expect(fetchMacroEvents).not.toHaveBeenCalled();
   });
 
   it('refuses an incomplete month, names it and writes nothing', async () => {
@@ -605,7 +575,7 @@ describe('runBackfill refusals', () => {
       { id: 1, day: '2026-02-10', is_event_day: false, event_names: [] },
       { id: 2, day: '2026-03-04', is_event_day: false, event_names: [] },
     ]);
-    fetchMarketEvents
+    fetchMacroEvents
       .mockResolvedValueOnce({ events: [], complete: true })
       .mockResolvedValueOnce({ events: [], complete: false });
 
@@ -634,7 +604,6 @@ describe('formatReport', () => {
     ),
     months,
     apply: false,
-    keepEarnings: false,
     undoFile: null,
     outcome: null,
     ...over,
@@ -697,11 +666,53 @@ describe('formatReport', () => {
     expect(text).toContain('Total planned writes: 6');
   });
 
-  it('says whether earnings are being kept', () => {
-    expect(formatReport(result())).toContain('--keep-earnings: off');
-    expect(formatReport(result({ keepEarnings: true }))).toContain(
-      '--keep-earnings: on',
-    );
+  describe('the by-design line for removed earnings names', () => {
+    const BY_DESIGN =
+      'Earnings names are removed by design: the stored flag is macro-only (owner decision 2026-11-12).';
+    const withStored = (stored: string[]) =>
+      formatReport(
+        result({
+          plan: plan([snap(1, '2026-05-20', true, stored)], {
+            '2026-05-20': ['CPI'],
+          }),
+        }),
+      );
+
+    it('is printed under the per-name counts when a stored earnings name is lost', () => {
+      const text = withStored(['CPI', 'NVDA Earnings']);
+      expect(text).toMatch(/NVDA Earnings\s+gain 0\s+lose 1/);
+      expect(text).toContain(BY_DESIGN);
+      expect(text.indexOf(BY_DESIGN)).toBeGreaterThan(
+        text.indexOf('NVDA Earnings'),
+      );
+      // It is a note, not one of the report's WARNING lines.
+      expect(text).not.toContain('WARNING');
+    });
+
+    it('is printed once, however many earnings names are lost', () => {
+      const text = withStored(['CPI', 'NVDA Earnings', 'AAPL Earnings']);
+      expect(text.split(BY_DESIGN)).toHaveLength(2);
+    });
+
+    it('is not printed when only macro names are lost', () => {
+      expect(formatReport(result())).not.toContain(BY_DESIGN);
+    });
+
+    it('is not printed for a name that merely looks like earnings', () => {
+      expect(withStored(['CPI', 'Earnings Season'])).not.toContain(BY_DESIGN);
+    });
+
+    it('is not printed when an earnings name is only gained, not lost', () => {
+      const text = formatReport(
+        result({
+          plan: plan([snap(1, '2026-05-20', false, [])], {
+            '2026-05-20': ['NVDA Earnings'],
+          }),
+        }),
+      );
+      expect(text).toMatch(/NVDA Earnings\s+gain 1\s+lose 0/);
+      expect(text).not.toContain(BY_DESIGN);
+    });
   });
 
   it('reports a flag-only old state when a date had a flag but no names', () => {

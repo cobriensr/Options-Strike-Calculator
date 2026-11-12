@@ -10,7 +10,7 @@
  * the production migration (#9), and market_snapshots, which initDb creates,
  * is the same columns the backfill uses with the production types. Only the DB
  * handle is replaced (getDb() returns a neon-shaped client over pglite) and
- * `fetchMarketEvents`, so no FRED, Finnhub, Redis or real database is reached.
+ * `fetchMacroEvents`, so no FRED, Finnhub, Redis or real database is reached.
  * The real `eventNamesForSnapshot` runs.
  *
  * "Today" is pinned to 2026-11-11 (ET). The seed has a row dated 11-12, which
@@ -45,8 +45,8 @@ import {
 } from '../../api/__tests__/pglite-migrations.js';
 
 const holder = vi.hoisted(() => ({ sql: null as unknown }));
-const { fetchMarketEvents } = vi.hoisted(() => ({
-  fetchMarketEvents: vi.fn(),
+const { fetchMacroEvents } = vi.hoisted(() => ({
+  fetchMacroEvents: vi.fn(),
 }));
 
 vi.mock('../../api/_lib/db.js', async (importOriginal) => ({
@@ -55,7 +55,7 @@ vi.mock('../../api/_lib/db.js', async (importOriginal) => ({
 }));
 vi.mock('../../api/_lib/market-events.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../api/_lib/market-events.js')>()),
-  fetchMarketEvents,
+  fetchMacroEvents,
 }));
 
 import type { EventItem } from '../../api/_lib/market-events.js';
@@ -210,15 +210,14 @@ beforeEach(async () => {
   );
   await seedAll();
   undoDir = mkdtempSync(join(tmpdir(), 'snapshot-event-flags-'));
-  fetchMarketEvents.mockReset();
-  fetchMarketEvents.mockImplementation((start: string, end: string) =>
+  fetchMacroEvents.mockReset();
+  fetchMacroEvents.mockImplementation((start: string, end: string) =>
     Promise.resolve({
       events: CALENDAR.filter((e) => e.date >= start && e.date <= end),
       complete: true,
     }),
   );
   vi.stubEnv('FRED_API_KEY', 'f');
-  vi.stubEnv('FINNHUB_API_KEY', 'h');
   vi.useFakeTimers({ toFake: ['Date'] });
   vi.setSystemTime(NOW);
 });
@@ -230,8 +229,8 @@ afterEach(() => {
   rmSync(undoDir, { recursive: true, force: true });
 });
 
-const run = (over: { apply?: boolean; keepEarnings?: boolean } = {}) =>
-  runBackfill({ apply: false, keepEarnings: false, undoDir, ...over });
+const run = (over: { apply?: boolean } = {}) =>
+  runBackfill({ apply: false, undoDir, ...over });
 
 /** The rows a default apply leaves, in id order. */
 const SETTLED = [
@@ -299,7 +298,7 @@ describe('snapshot event-flag backfill (pglite)', () => {
   it('looks events up once per month with snapshot dates, in turn, and never past today', async () => {
     await run();
 
-    expect(fetchMarketEvents.mock.calls).toEqual([
+    expect(fetchMacroEvents.mock.calls).toEqual([
       ['2026-05-06', '2026-05-31'],
       ['2026-06-01', '2026-06-30'],
       ['2026-07-01', '2026-07-31'],
@@ -611,7 +610,6 @@ describe('snapshot event-flag backfill (pglite)', () => {
         ['2026-05-09', ['NFP']],
         ['2026-05-11', ['new "one"', 'b\\s']],
       ]),
-      keepEarnings: false,
     });
     expect(plan.snapshotChanges.map((c) => c.id)).toEqual([1, 2, 3, 4]);
 
@@ -694,21 +692,36 @@ describe('snapshot event-flag backfill (pglite)', () => {
     }
   });
 
-  it('--keep-earnings leaves a stored earnings name the calendar lacks', async () => {
-    const result = await run({ apply: true, keepEarnings: true });
+  // The stored flag is macro-only (owner decision 2026-11-12): a date whose
+  // only stored event is an earnings name ends unflagged, and so does its
+  // training_features row.
+  it('an earnings-only date ends false and empty, its training_features flips to false, and the report says it is by design', async () => {
+    await seedFeature('2026-05-20', true);
 
-    expect(result.outcome?.written.market_snapshots).toBe(7);
+    const result = await run({ apply: true });
+
     const after = await dump();
     expect(after.snapshots[12]).toEqual({
       id: 13,
       date: '2026-05-20',
-      is_event_day: true,
-      event_names: ['NVDA Earnings'],
+      is_event_day: false,
+      event_names: [],
+    });
+    expect(
+      after.features.find((f) => f.date === '2026-05-20')?.is_event_day,
+    ).toBe(false);
+    expect(result.outcome?.written).toEqual({
+      market_snapshots: 8,
+      training_features: 6,
     });
     expect(result.plan.lostFlagDates.map((d) => d.date)).toEqual([
       '2026-05-06',
+      '2026-05-20',
       '2026-07-02',
     ]);
+    expect(formatReport(result)).toContain(
+      'Earnings names are removed by design: the stored flag is macro-only (owner decision 2026-11-12).',
+    );
   });
 
   it('refuses an empty market_snapshots before any lookup or write', async () => {
@@ -719,14 +732,14 @@ describe('snapshot event-flag backfill (pglite)', () => {
       /no market_snapshots rows dated 2026-11-11 or earlier/,
     );
 
-    expect(fetchMarketEvents).not.toHaveBeenCalled();
+    expect(fetchMacroEvents).not.toHaveBeenCalled();
     expect(transaction).not.toHaveBeenCalled();
     expect(readdirSync(undoDir)).toEqual([]);
   });
 
   it('refuses an incomplete month and writes nothing, no undo file either', async () => {
     const before = await dump();
-    fetchMarketEvents.mockImplementation((start: string) =>
+    fetchMacroEvents.mockImplementation((start: string) =>
       Promise.resolve({ events: [], complete: !start.startsWith('2026-07') }),
     );
     const transaction = vi.spyOn(pgSql(), 'transaction');

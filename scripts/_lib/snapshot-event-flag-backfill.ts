@@ -6,16 +6,23 @@
  *
  * Past snapshots were saved with the client's event list, which was empty for
  * every past date. This sets, from the same sources `/api/snapshot` now uses
- * (`fetchMarketEvents` and `eventNamesForSnapshot` in
+ * (`fetchMacroEvents` and `eventNamesForSnapshot` in
  * api/_lib/market-events.ts):
  *   1. market_snapshots.event_names and is_event_day, for every row dated
  *      today (ET) or earlier;
  *   2. training_features.is_event_day, for the snapshot dates that have a row.
  *
+ * The stored flag is macro-only (owner decision 2026-11-12): the FRED
+ * releases, FOMC, and half days and closures. Mega-cap earnings never count,
+ * because Finnhub's free key serves only about a month of past earnings, so a
+ * stored earnings name shows up here as a loss, by design. Only FRED_API_KEY
+ * is needed.
+ *
  * Events are fetched once per calendar month that has a snapshot date, in
- * turn, never in parallel: 7 FRED calls a month, and one Finnhub call over a
- * month, so no answer is truncated. The run refuses before writing when a
- * key is unset, the table is empty, or any month comes back incomplete.
+ * turn, never in parallel: 7 FRED calls a month. The monthly chunks keep each
+ * fetch small and feed the whole-month 0-events check. The run refuses before
+ * writing when the key is unset, the table is empty, or any month comes back
+ * incomplete.
  *
  * Dry run is the default and writes nothing. `--apply` writes an undo file,
  * then the whole plan in ONE `sql.transaction`. Every snapshot UPDATE is
@@ -30,7 +37,8 @@ import { join } from 'node:path';
 import { getDb, withDbRetry } from '../../api/_lib/db.js';
 import {
   eventNamesForSnapshot,
-  fetchMarketEvents,
+  fetchMacroEvents,
+  isEarningsEventName,
   type EventItem,
   type MarketEventsResult,
 } from '../../api/_lib/market-events.js';
@@ -43,9 +51,6 @@ export const WRITE_CHUNK = 500;
 /** Where `--apply` leaves its undo file, relative to the working directory. */
 export const UNDO_DIR = 'docs/tmp/snapshot-event-flags';
 
-/** A stored name `--keep-earnings` keeps when the computed list lacks it. */
-const EARNINGS_NAME = / Earnings$/;
-
 /** Failed rows listed in the report before "and N more". */
 const SKIPPED_SHOWN = 20;
 
@@ -53,7 +58,6 @@ const SKIPPED_SHOWN = 20;
 
 export interface CliArgs {
   apply: boolean;
-  keepEarnings: boolean;
   envFile: string | null;
   help: boolean;
 }
@@ -61,14 +65,14 @@ export interface CliArgs {
 export const USAGE = `Usage: npx tsx scripts/backfill-snapshot-event-flags.ts [options]
 
 Sets market_snapshots.is_event_day and event_names, and
-training_features.is_event_day, from the server's event sources.
-Needs FRED_API_KEY and FINNHUB_API_KEY in the environment.
+training_features.is_event_day, from the server's macro event sources: the
+FRED releases, FOMC, and half days and closures. Mega-cap earnings are not part
+of the stored flag (owner decision 2026-11-12), so a stored earnings name is
+removed. Needs FRED_API_KEY in the environment; Finnhub is not used.
 
 Options:
   --apply            write (without it: dry run, which writes nothing)
   --dry-run          the default, said aloud; contradicts --apply
-  --keep-earnings    keep a stored "<TICKER> Earnings" name the computed list
-                     lacks (use it if Finnhub returns no past earnings)
   --env-file <path>  .env.local to load (default: the nearest one up the tree)
   --help, -h         print this and exit`;
 
@@ -76,14 +80,12 @@ Options:
 export function parseArgs(argv: readonly string[]): CliArgs {
   let apply = false;
   let dryRun = false;
-  let keepEarnings = false;
   let help = false;
   let envFile: string | null = null;
   for (let i = 0; i < argv.length; i += 1) {
     const flag = argv[i] ?? '';
     if (flag === '--apply') apply = true;
     else if (flag === '--dry-run') dryRun = true;
-    else if (flag === '--keep-earnings') keepEarnings = true;
     else if (flag === '--help' || flag === '-h') help = true;
     else if (flag === '--env-file') {
       i += 1;
@@ -95,42 +97,32 @@ export function parseArgs(argv: readonly string[]): CliArgs {
     } else throw new Error(`unknown argument ${flag}`);
   }
   if (apply && dryRun) throw new Error('--apply and --dry-run contradict');
-  return { apply, keepEarnings, envFile, help };
+  return { apply, envFile, help };
 }
 
-// ── Keys ────────────────────────────────────────────────────────────────────
+// ── Key ─────────────────────────────────────────────────────────────────────
 
 /**
- * Both keys are required. Without Finnhub, `fetchMarketEvents` still reports
- * the list complete, but it holds no earnings, so the run would strip every
- * stored earnings name. Messages name the variable, never its value.
+ * Only the FRED key is needed: the macro events come from FRED and the static
+ * calendars, and Finnhub is never called. Without the key
+ * `fetchMacroEvents` reports the list incomplete, so the run would refuse
+ * later anyway; this says why first. The message names the variable, never its
+ * value.
  */
-export function requireApiKeys(
+export function requireFredKey(
   env: Readonly<Record<string, string | undefined>>,
 ): void {
-  const problems: string[] = [];
   if (!env.FRED_API_KEY) {
-    problems.push(
-      'FRED_API_KEY is not set: no economic release can be fetched without it.',
+    throw new Error(
+      'Refusing to run. FRED_API_KEY is not set: no economic release can be fetched without it.',
     );
-  }
-  if (!env.FINNHUB_API_KEY) {
-    problems.push(
-      'FINNHUB_API_KEY is not set: without it the computed names hold no earnings, and the run would strip every stored earnings name.',
-    );
-  }
-  if (problems.length > 0) {
-    throw new Error(`Refusing to run. ${problems.join(' ')}`);
   }
 }
 
-/** Replace both key values in `text`, so an upstream error cannot echo them. */
-function redactKeys(text: string): string {
-  let out = text;
-  for (const key of [process.env.FRED_API_KEY, process.env.FINNHUB_API_KEY]) {
-    if (key) out = out.replaceAll(key, '[redacted]');
-  }
-  return out;
+/** Replace the key value in `text`, so an upstream error cannot echo it. */
+function redactKey(text: string): string {
+  const key = process.env.FRED_API_KEY;
+  return key ? text.replaceAll(key, '[redacted]') : text;
 }
 
 // ── Months ──────────────────────────────────────────────────────────────────
@@ -196,17 +188,17 @@ export async function fetchMonthlyNames(
     const label = `events for ${m.month} (${m.start}..${m.end})`;
     let result: MarketEventsResult;
     try {
-      result = await fetchMarketEvents(m.start, m.end);
+      result = await fetchMacroEvents(m.start, m.end);
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       throw new Error(
-        `${label} could not be fetched: ${redactKeys(reason)}. Nothing was written.`,
+        `${label} could not be fetched: ${redactKey(reason)}. Nothing was written.`,
         { cause: err },
       );
     }
     if (!result.complete) {
       throw new Error(
-        `${label} are incomplete: a FRED release or Finnhub answered with an error or a malformed body (the cause is logged just above). Nothing was written. If Finnhub rejects past dates, this repeats on every run and waiting will not help; otherwise re-run later.`,
+        `${label} are incomplete: a FRED release answered with an error or a malformed body (the cause is logged just above). Nothing was written. Fix the cause and re-run later.`,
       );
     }
     const byDate = new Map<string, EventItem[]>();
@@ -282,7 +274,6 @@ export interface PlanInput {
   features: readonly FeatureRow[];
   /** Computed names per date; a date missing from the map has none. */
   namesByDate: ReadonlyMap<string, readonly string[]>;
-  keepEarnings: boolean;
 }
 
 /** Equal as sets: order and duplicates do not count. */
@@ -290,29 +281,6 @@ function sameSet(a: readonly string[], b: readonly string[]): boolean {
   const left = new Set(a);
   const right = new Set(b);
   return left.size === right.size && [...left].every((n) => right.has(n));
-}
-
-/**
- * The names a row ends with: the computed ones, plus, with `keepEarnings`,
- * each stored earnings name they lack (once, in stored order).
- */
-function namesFor(
-  stored: readonly string[],
-  computed: readonly string[],
-  keepEarnings: boolean,
-): string[] {
-  if (!keepEarnings) return [...computed];
-  const kept: string[] = [];
-  for (const name of stored) {
-    if (
-      EARNINGS_NAME.test(name) &&
-      !computed.includes(name) &&
-      !kept.includes(name)
-    ) {
-      kept.push(name);
-    }
-  }
-  return [...computed, ...kept];
 }
 
 interface DateTally {
@@ -333,7 +301,7 @@ const addDay = (map: Map<string, Set<string>>, name: string, date: string) =>
  * the date's snapshot rows ends with a name.
  */
 export function buildPlan(input: PlanInput): Plan {
-  const { snapshots, features, namesByDate, keepEarnings } = input;
+  const { snapshots, features, namesByDate } = input;
   const dates = new Map<string, DateTally>();
   const gained = new Map<string, Set<string>>();
   const lost = new Map<string, Set<string>>();
@@ -341,11 +309,7 @@ export function buildPlan(input: PlanInput): Plan {
 
   for (const row of snapshots) {
     const stored = row.eventNames ?? [];
-    const next = namesFor(
-      stored,
-      namesByDate.get(row.date) ?? [],
-      keepEarnings,
-    );
+    const next = [...(namesByDate.get(row.date) ?? [])];
     const nextFlag = next.length > 0;
 
     const tally = dates.get(row.date) ?? {
@@ -632,7 +596,6 @@ export interface BackfillResult {
   months: MonthFetch[];
   /** Whether --apply was passed. */
   apply: boolean;
-  keepEarnings: boolean;
   /** Null for a dry run, and for an apply with nothing to write. */
   undoFile: string | null;
   /** Null for a dry run, and for an apply with nothing to write. */
@@ -640,7 +603,7 @@ export interface BackfillResult {
 }
 
 /**
- * Check the keys, read the snapshots, fetch the events month by month, plan,
+ * Check the key, read the snapshots, fetch the events month by month, plan,
  * and (with `apply`) write the undo file and then the plan in one
  * transaction. A plan with nothing to change writes nothing and opens no
  * transaction. Every refusal throws before anything is written, in both
@@ -649,10 +612,9 @@ export interface BackfillResult {
  */
 export async function runBackfill(opts: {
   apply: boolean;
-  keepEarnings: boolean;
   undoDir: string;
 }): Promise<BackfillResult> {
-  requireApiKeys(process.env);
+  requireFredKey(process.env);
   const sql = getDb();
   const today = getETToday();
   const snapshots = await readSnapshots(sql, today);
@@ -664,13 +626,8 @@ export async function runBackfill(opts: {
   const dates = [...new Set(snapshots.map((s) => s.date))].sort();
   const { namesByDate, fetched } = await fetchMonthlyNames(monthRanges(dates));
   const features = await readFeatures(sql, dates);
-  const plan = buildPlan({
-    snapshots,
-    features,
-    namesByDate,
-    keepEarnings: opts.keepEarnings,
-  });
-  const base = { plan, months: fetched, keepEarnings: opts.keepEarnings };
+  const plan = buildPlan({ snapshots, features, namesByDate });
+  const base = { plan, months: fetched };
   if (!opts.apply || totalPlanned(plan) === 0) {
     return { ...base, apply: opts.apply, undoFile: null, outcome: null };
   }
@@ -718,12 +675,20 @@ function skippedLine(
 function nameLines(plan: Plan): string[] {
   if (plan.nameDays.length === 0) return ['Event names: no name changes.'];
   const width = Math.max(...plan.nameDays.map((n) => n.name.length));
-  return [
+  const lines = [
     'Event names, days gaining / losing the name:',
     ...plan.nameDays.map(
       (n) => `  ${n.name.padEnd(width)}  gain ${n.gained}  lose ${n.lost}`,
     ),
   ];
+  // The flag is macro-only, so every stored earnings name is a loss. Say so,
+  // so the owner does not read the losses as a Finnhub fault.
+  if (plan.nameDays.some((n) => n.lost > 0 && isEarningsEventName(n.name))) {
+    lines.push(
+      'Earnings names are removed by design: the stored flag is macro-only (owner decision 2026-11-12).',
+    );
+  }
+  return lines;
 }
 
 function flagLines(plan: Plan): string[] {
@@ -750,14 +715,13 @@ function flagLines(plan: Plan): string[] {
 
 /** The printable summary of a dry run or an apply. */
 export function formatReport(result: BackfillResult): string {
-  const { plan, months, apply, keepEarnings, undoFile, outcome } = result;
+  const { plan, months, apply, undoFile, outcome } = result;
   const first = plan.snapshotDates[0] ?? '?';
   const last = plan.snapshotDates.at(-1) ?? '?';
   const lines = [
     `Snapshot event-flag backfill: ${
       apply ? 'APPLY (one transaction)' : 'DRY RUN (writes nothing)'
     }`,
-    `--keep-earnings: ${keepEarnings ? 'on' : 'off'}`,
     '',
     `Read: ${plural(plan.snapshotRows, 'market_snapshots row')} on ${plural(plan.snapshotDates.length, 'date')} (${first} to ${last})`,
     `Months fetched (${months.length}, one lookup each, in turn):`,
