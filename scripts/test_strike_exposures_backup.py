@@ -80,16 +80,17 @@ def key_of(row: tuple) -> tuple:
     return tuple(row[sbk.COLUMNS.index(name)] for name in KEY_NAMES)
 
 
-def plain_rows(n: int) -> list[tuple]:
-    """n ordinary rows with distinct timestamps and ids that do not follow key order.
+def plain_rows(n: int, ids: list[int] | None = None) -> list[tuple]:
+    """n ordinary rows with distinct timestamps, in key order.
 
-    The timestamps carry microseconds, so a continuation key that rounds or
-    truncates one re-reads the row before it.
+    The ids count down from 100 unless `ids` gives them. The timestamps carry
+    microseconds, so a continuation key that rounds or truncates one re-reads
+    the row before it.
     """
     start = datetime(2026, 11, 2, 15, 0, tzinfo=UTC)
     return [
         make_row(
-            id=100 - i,
+            id=100 - i if ids is None else ids[i],
             timestamp=start + timedelta(minutes=i, microseconds=123457),
         )
         for i in range(n)
@@ -109,6 +110,8 @@ class FakeCursor:
 
     def execute(self, sql: str, params: tuple | None = None) -> None:
         conn = self.conn
+        if conn.closed:
+            raise psycopg2.InterfaceError('cursor already closed')
         text = ' '.join(sql.split())
         assert text.count('%s') == len(params or ()), text
         conn.statements.append((text, params))
@@ -145,7 +148,10 @@ class FakeConnection:
     of rows. `stuck` makes every page the first page again, as a keyset that
     never advances would, and gives up after 10 page queries so a missing
     guard fails instead of hanging. `fail_on` maps an event ('count', 'page1',
-    'page2', ..., 'rollback') to the exception its statement raises.
+    'page2', ..., 'rollback') to the exception its statement raises. The event
+    named by `closes_on` also kills the connection, as a dropped link does:
+    `closed` becomes 2, and from then on a statement or an autocommit change
+    raises InterfaceError, as psycopg2 does on a closed connection.
     """
 
     def __init__(
@@ -154,15 +160,28 @@ class FakeConnection:
         count: int | None = None,
         stuck: bool = False,
         fail_on: dict[str, Exception] | None = None,
+        closes_on: str | None = None,
         autocommit: bool = False,
     ) -> None:
         self.rows = sorted(rows, key=key_of)
         self.count = len(rows) if count is None else count
         self.stuck = stuck
         self.fail_on = fail_on or {}
-        self.autocommit = autocommit
+        self.closes_on = closes_on
+        self.closed = 0
+        self._autocommit = autocommit
         self.in_txn = False
         self.statements: list[tuple[str, tuple | None]] = []
+
+    @property
+    def autocommit(self) -> bool:
+        return self._autocommit
+
+    @autocommit.setter
+    def autocommit(self, value: bool) -> None:
+        if self.closed:
+            raise psycopg2.InterfaceError('connection already closed')
+        self._autocommit = value
 
     def cursor(self) -> FakeCursor:
         return FakeCursor(self)
@@ -178,6 +197,9 @@ class FakeConnection:
 
     def fail(self, event: str) -> None:
         if event in self.fail_on:
+            if event == self.closes_on:
+                self.closed = 2
+                self.in_txn = False  # a dead connection holds no transaction
             raise self.fail_on[event]
 
     def serve_page(self, params: tuple, keyed: bool) -> list[tuple]:
@@ -394,10 +416,17 @@ def test_keyset_sql(make_conn, tmp_path: Path) -> None:
         assert params == (DAY, *key_of(previous_last), 2)
 
 
-def test_dayfile_fields(make_conn, tmp_path: Path) -> None:
-    # Ids 100, 99, 98 in key order, in pages of 2: the max is on the first page
-    # and the min on the second, so both bounds must span pages.
-    conn = make_conn(plain_rows(3))
+@pytest.mark.parametrize(
+    'ids',
+    [
+        # In pages of 2 the extreme ids sit on opposite pages, in either order,
+        # so a bound taken from the first or the last page alone is wrong.
+        pytest.param([98, 99, 100], id='ascending'),
+        pytest.param([100, 99, 98], id='descending'),
+    ],
+)
+def test_dayfile_fields(make_conn, tmp_path: Path, ids: list[int]) -> None:
+    conn = make_conn(plain_rows(3, ids=ids))
 
     result = sbk.write_day_parquet(conn, DAY, tmp_path, page_rows=2)
 
@@ -457,7 +486,7 @@ def test_connection_inside_a_transaction_is_refused(make_conn, tmp_path: Path) -
     conn = make_conn(plain_rows(2))
     conn.in_txn = True
 
-    with pytest.raises(sbk.BackupError, match='already inside a transaction'):
+    with pytest.raises(sbk.BackupError, match=r'already inside a transaction \(status 2\)'):
         sbk.write_day_parquet(conn, DAY, tmp_path)
 
     assert conn.statements == []
@@ -497,6 +526,24 @@ def test_rollback_failure_keeps_the_original_error_in_context(
     assert conn.autocommit is False
 
 
+@pytest.mark.parametrize('event', ['count', 'page1', 'page2'])
+def test_dropped_connection_surfaces_the_original_error(
+    make_conn, tmp_path: Path, event: str
+) -> None:
+    # Once the link is gone, psycopg2 raises InterfaceError for the ROLLBACK
+    # and for the autocommit restore. Neither may replace the real error.
+    error = psycopg2.OperationalError('server closed the connection unexpectedly')
+    conn = make_conn(plain_rows(5), fail_on={event: error}, closes_on=event)
+
+    with pytest.raises(psycopg2.OperationalError) as raised:
+        sbk.write_day_parquet(conn, DAY, tmp_path, page_rows=2)
+
+    assert raised.value is error
+    assert raised.value.__context__ is None
+    assert 'ROLLBACK' not in [text for text, _ in conn.statements]
+    assert list(tmp_path.iterdir()) == []
+
+
 def test_digest_failure_deletes_the_file(
     make_conn, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -504,6 +551,26 @@ def test_digest_failure_deletes_the_file(
         raise OSError('disk')
 
     monkeypatch.setattr(sbk.hashlib, 'file_digest', broken)
+    conn = make_conn(plain_rows(2))
+
+    with pytest.raises(OSError, match='disk'):
+        sbk.write_day_parquet(conn, DAY, tmp_path)
+
+    assert list(tmp_path.iterdir()) == []
+    assert conn.statements[-1][0] == 'ROLLBACK'
+
+
+def test_stat_failure_deletes_the_file(
+    make_conn, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    real_stat = Path.stat
+
+    def stat_fails_on_the_day_file(self: Path, *args, **kwargs):
+        if self.name == '2026-11-02.parquet':
+            raise OSError('disk')
+        return real_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, 'stat', stat_fails_on_the_day_file)
     conn = make_conn(plain_rows(2))
 
     with pytest.raises(OSError, match='disk'):

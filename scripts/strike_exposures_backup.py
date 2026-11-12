@@ -20,7 +20,8 @@ as decimal128 (never float), timestamptz is timestamp[us, tz=UTC], and the
 `id` column is kept so a restore can put the original rows back. Nullability
 follows the table, so a NULL in a NOT NULL column fails the write.
 
-A `BackupError` message carries the date and counts only, never a cell value.
+A `BackupError` message is fixed text plus a date, counts or a status code,
+never a cell value.
 """
 
 from __future__ import annotations
@@ -101,7 +102,8 @@ _ORDER_SQL = ' ORDER BY date, "timestamp", ticker, strike, expiry LIMIT %s'
 
 
 class BackupError(Exception):
-    """A day could not be exported. The message names the date and counts only."""
+    """A backup step failed. The message is fixed text plus a date, counts or a
+    status code, and never a cell value."""
 
 
 @dataclass(frozen=True)
@@ -128,9 +130,19 @@ def _read_snapshot(conn: PgConnection) -> Iterator[PgCursor]:
     connection must be idle: a BEGIN inside an open transaction is only a
     server WARNING, and the read would silently run in the caller's
     transaction, outside the snapshot.
+
+    A connection that dropped mid-read (`conn.closed` is set) cannot ROLLBACK
+    or take an autocommit change: psycopg2 raises InterfaceError for both,
+    which would replace the OperationalError that explains the failure. So
+    neither is tried, and the original error propagates.
+
+    One thread per connection: this changes the connection's autocommit.
     """
-    if conn.info.transaction_status != TRANSACTION_STATUS_IDLE:
-        raise BackupError('the connection is already inside a transaction')
+    status = conn.info.transaction_status
+    if status != TRANSACTION_STATUS_IDLE:
+        raise BackupError(
+            f'the connection is already inside a transaction (status {status})'
+        )
     previous = conn.autocommit
     conn.autocommit = True
     try:
@@ -140,9 +152,11 @@ def _read_snapshot(conn: PgConnection) -> Iterator[PgCursor]:
                 cur.execute(f"SET LOCAL statement_timeout = '{STATEMENT_TIMEOUT}'")
                 yield cur
             finally:
-                cur.execute('ROLLBACK')
+                if not conn.closed:
+                    cur.execute('ROLLBACK')
     finally:
-        conn.autocommit = previous
+        if not conn.closed:
+            conn.autocommit = previous
 
 
 def iter_day_pages(
@@ -230,8 +244,9 @@ def write_day_parquet(
 
     Any failure, including a ROLLBACK that fails after the file is complete,
     deletes the file: a file is only ever returned from a day that added up.
-    A database error propagates as it is; a ROLLBACK that fails on top of it
-    keeps it as `__context__`.
+    A database error propagates as it is. On a connection the error dropped,
+    nothing more is sent (see `_read_snapshot`), so it is the error the caller
+    sees. A ROLLBACK that fails on a live connection keeps it as `__context__`.
     """
     path = out_dir / f'{day.isoformat()}.parquet'
     try:

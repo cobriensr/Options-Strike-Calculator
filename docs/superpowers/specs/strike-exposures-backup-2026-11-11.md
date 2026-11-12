@@ -64,7 +64,7 @@ Phase A alone is a complete backup that someone has to re-run by hand. Phase B r
 - **Ids are kept.** A restore re-inserts the original ids.
 - **One snapshot per day.**
   - Each day is read inside `BEGIN ISOLATION LEVEL REPEATABLE READ, READ ONLY`. Its `count(*)` comes from the same snapshot.
-  - Every read in a snapshot goes through the private context manager `_read_snapshot(conn)` (Task 1). It refuses a connection that is not idle, because a BEGIN inside an open transaction is only a server WARNING and the read would silently run in the caller's transaction. It turns autocommit on for the BEGIN and puts the caller's setting back after the ROLLBACK, on success and on failure.
+  - Every read in a snapshot goes through the private context manager `_read_snapshot(conn)` (Task 1). It refuses a connection that is not idle, because a BEGIN inside an open transaction is only a server WARNING and the read would silently run in the caller's transaction. It turns autocommit on for the BEGIN and puts the caller's setting back after the ROLLBACK, on success and on failure. If the connection dropped (`conn.closed`), it sends no ROLLBACK and restores nothing, so the `OperationalError` that explains the failure reaches the caller. Used by one thread per connection.
   - A written row count that differs from that count is an error, and nothing is uploaded.
   - Every statement runs with `SET LOCAL statement_timeout = '60s'`.
 - **Paging.**
@@ -83,7 +83,10 @@ Phase A alone is a complete backup that someone has to re-run by hand. Phase B r
 - **Restore.**
   - Default is `--dry-run`. Writes need `--apply`.
   - It inserts in batches of 500 rows with `INSERT ... ON CONFLICT (date, "timestamp", ticker, strike, expiry) DO NOTHING` and the original `id` and `created_at`. It never UPDATEs or DELETEs. The conflict target is the unique key and nothing else, so a restored row whose `id` is already taken by a different row raises instead of being skipped silently.
-  - After an `--apply` that inserted rows, it moves the id sequence past the restored ids: `SELECT setval('strike_exposures_id_seq', GREATEST((SELECT max(id) FROM strike_exposures), (SELECT last_value FROM strike_exposures_id_seq)))`. `GREATEST` keeps the sequence from ever moving backwards. Without this, the next live insert after a restore into an emptied or partial table could be handed a restored id. Run the restore outside the hours the writers run.
+  - After an `--apply` that inserted rows, it moves the id sequence past the restored ids, in one short transaction: `BEGIN`, `LOCK TABLE strike_exposures IN SHARE ROW EXCLUSIVE MODE`, then `setval(pg_get_serial_sequence('strike_exposures', 'id'), GREATEST((SELECT max(id) FROM strike_exposures), <the sequence's last_value>))`, then `COMMIT`. The sequence's last_value comes from `pg_sequences`, matched on the name `pg_get_serial_sequence` returns, so no sequence name is written in the code.
+    - The lock keeps live writers out until the `setval` commits. Without it, an insert between reading `last_value` and the `setval` could have its id handed out again. SHARE ROW EXCLUSIVE blocks INSERT and not SELECT.
+    - `GREATEST` keeps the sequence from moving backwards while the lock is held. In production the sequence is ahead of `max(id)` (it was at 94.2M with `max(id)` at 94.22M, because rolled-back inserts consume ids), so a restore of old days leaves it where it is.
+    - Without the `setval`, the next live insert after a restore into an emptied or partial table could be handed a restored id.
   - Running `--apply` against production needs the owner's explicit OK, each time.
 
 ## Thresholds and constants
@@ -136,11 +139,13 @@ The new `high_water_id` is `SELECT max(id)` read in the planning snapshot.
 - `ARROW_SCHEMA: pa.Schema`: the types are under Global constraints.
 - `@dataclass(frozen=True) class DayFile: day: date; path: Path; rows: int; min_id: int; max_id: int; size: int; sha256: str`.
 - `_read_snapshot(conn) -> Iterator[cursor]`, a private `@contextmanager`: the one way to read in a snapshot. Task 2's planning read and Task 3's `verify_day` reuse it.
-  - It raises `BackupError` (fixed message) unless `conn.info.transaction_status` is `TRANSACTION_STATUS_IDLE`.
+  - It raises `BackupError` (fixed message, with the numeric status) unless `conn.info.transaction_status` is `TRANSACTION_STATUS_IDLE`.
   - It saves `conn.autocommit`, sets it to True, runs `BEGIN ISOLATION LEVEL REPEATABLE READ, READ ONLY` and `SET LOCAL statement_timeout = '60s'`, yields a cursor, then always runs `ROLLBACK` and restores `autocommit`. A ROLLBACK that fails on top of another error keeps that error as `__context__`.
+  - If `conn.closed` is set, it skips both the ROLLBACK and the restore: psycopg2 raises `InterfaceError` for each on a dead connection, which would replace the original `OperationalError`.
+  - One thread per connection.
 - `iter_day_pages(cur, day: date, page_rows: int = PAGE_ROWS) -> Iterator[list[tuple]]`: keyset pages, in key order.
 - `write_day_parquet(conn, day: date, out_dir: Path, page_rows: int = PAGE_ROWS) -> DayFile | None`. It reads inside `_read_snapshot`. It counts, streams the pages into a `pq.ParquetWriter` and checks the count. It returns `None` for a 0-row day.
-  - On any failure, including a ROLLBACK, digest or stat that fails after the file is complete, it deletes the file. A database error propagates unwrapped.
+  - On any failure, including a ROLLBACK, digest or stat that fails after the file is complete, it deletes the file. A database error propagates unwrapped, and on a dropped connection nothing more is sent, so that error is the one the caller sees.
   - A page that does not fit the schema raises `BackupError` after the handler, so Arrow's text (which can quote a cell) is not in the exception chain.
 
 **Steps:**
@@ -154,10 +159,12 @@ The new `high_water_id` is `SELECT max(id)` read in the planning snapshot.
     - A database error on the count, on page 1 and on page 2 (`QueryCanceled` and `OperationalError`) propagates as the same object, ends in ROLLBACK, leaves `out_dir` empty and restores `autocommit`.
     - `autocommit` is restored from both starting values, on success and on failure.
     - A connection already in a transaction is refused with no statement issued.
-    - A ROLLBACK that fails deletes a complete file, and keeps the original error as `__context__`. A failing digest deletes the file.
+    - A ROLLBACK that fails deletes a complete file, and keeps the original error as `__context__`. A failing digest or stat deletes the file.
+    - A connection that dropped on the count, page 1 or page 2 surfaces the `OperationalError` itself: no ROLLBACK is sent and no `InterfaceError` follows.
+    - `min_id` and `max_id` are right with ascending and with descending ids across pages.
     - A page that does not fit the schema (a str in an int column, int32 overflow, a NULL in a NOT NULL column, a decimal too wide, a float for NUMERIC) raises `BackupError` with `__context__` None and no cell value in the traceback.
 - [ ] **Step 2:** Run `ml/.venv/Scripts/pytest scripts/test_strike_exposures_backup.py -q`. Expected: it FAILS on import.
-- [ ] **Step 3:** Implement Task 1's interfaces in `scripts/strike_exposures_backup.py`. `BackupError(Exception)` has fixed messages: no cell values, only the date and counts.
+- [ ] **Step 3:** Implement Task 1's interfaces in `scripts/strike_exposures_backup.py`. `BackupError(Exception)` has fixed messages: no cell values, only a date, counts or a status code.
 - [ ] **Step 4:** Run the tests again. Expected: they PASS.
 - [ ] **Step 5:** Run `npm run review`, then commit the module, the test and this spec.
 
@@ -215,9 +222,9 @@ The new `high_water_id` is `SELECT max(id)` read in the planning snapshot.
   - `test_verify_counts_each_difference`: one row missing from the file, one extra in the file, and one changed greek give `only_in_db=1`, `only_in_file=1` and `value_diffs=1`.
   - `test_restore_dry_run_writes_nothing`: the fake connection records no INSERT.
   - `test_restore_apply_batches_on_conflict_do_nothing`: 1,201 rows go in 3 INSERTs. Each one has `ON CONFLICT (date, "timestamp", ticker, strike, expiry) DO NOTHING` and the `id` column, and none of them has `UPDATE` or `DELETE`.
-  - `test_restore_apply_already_present_inserts_zero`: the fake reports rowcount 0. The function returns 0 and issues no `setval`.
-  - `test_restore_apply_moves_the_sequence`: after INSERTs that report rows inserted, one `setval('strike_exposures_id_seq', GREATEST(...))` statement runs, after the last INSERT.
-  - `test_restore_apply_id_collision_raises`: the fake raises `UniqueViolation` on an INSERT. The function raises `BackupError` with a fixed message and issues no `setval`.
+  - `test_restore_apply_already_present_inserts_zero`: the fake reports rowcount 0. The function returns 0 and issues no `LOCK` and no `setval`.
+  - `test_restore_apply_locks_then_moves_the_sequence`: after INSERTs that report rows inserted, the statements run in this order, after the last INSERT: `BEGIN`, `LOCK TABLE strike_exposures IN SHARE ROW EXCLUSIVE MODE`, a `setval(pg_get_serial_sequence('strike_exposures', 'id'), GREATEST(...))`, `COMMIT`. No statement names `strike_exposures_id_seq`.
+  - `test_restore_apply_id_collision_raises`: the fake raises `UniqueViolation` on an INSERT. The function raises `BackupError` with a fixed message and issues no `LOCK` and no `setval`.
 - [ ] **Step 2:** Run the tests. Expected: they FAIL.
 - [ ] **Step 3:** Implement Task 3's interfaces.
 - [ ] **Step 4:** Run the tests. Expected: they PASS.
