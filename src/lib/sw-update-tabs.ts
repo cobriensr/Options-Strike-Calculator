@@ -67,7 +67,9 @@ async function requestShared(
       return ended;
     });
   } catch (err: unknown) {
-    // Forget the hold so the next evaluation asks again.
+    // Fails open: a tab whose shared request is rejected holds no lock, so the
+    // other tabs count it as safe even while it is not. Forget the hold so the
+    // next evaluation asks again.
     if (sharedHold === hold) sharedHold = null;
     reportFailure('shared', err);
   }
@@ -84,8 +86,10 @@ export function holdUnsafeLock(): void {
     end = resolve;
   });
   const hold: SharedHold = { end, over: Promise.resolve() };
-  hold.over = requestShared(ended, hold);
+  // Set before the request: a request that throws at once runs the failure
+  // path synchronously, which has to find this hold to clear it.
   sharedHold = hold;
+  hold.over = requestShared(ended, hold);
 }
 
 /**
@@ -118,6 +122,8 @@ export async function runIfNoTabUnsafe(fn: () => void): Promise<void> {
     );
     lastReported.current = null;
   } catch (err: unknown) {
+    // Fails closed: with no answer from the lock manager nothing applies, and
+    // the next tick asks again. The banner's Reload still works.
     reportFailure('exclusive', err);
   }
 }

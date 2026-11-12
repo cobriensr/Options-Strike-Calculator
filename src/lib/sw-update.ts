@@ -53,6 +53,11 @@ const VISIBLE_CHECK_THROTTLE_MS = 60 * 1000;
  * frees the in-flight guard before the next focus check.
  */
 const FETCH_TIMEOUT_MS = 30 * 1000;
+/**
+ * How long an automatic apply waits for the new worker to take control
+ * (`controllerchange`) before the wait for a safe moment starts again.
+ */
+const APPLY_STALL_MS = 30 * 1000;
 
 let updateSWFn: UpdateSW | null = null;
 let needsRefresh = false;
@@ -71,6 +76,13 @@ let awaitingSafeMoment = false;
 let stopTabAgreement: (() => void) | null = null;
 // An apply attempt that asks the other tabs is in flight. One at a time.
 let askingTabs = false;
+// Bumped by `resetUpdateState`, so an attempt that began before a reset can
+// tell, and ends without touching what began after it.
+let epoch = 0;
+// The one timeout of an automatic apply that waits for `controllerchange`, and
+// whether this page has reported a stall already (at most once per page).
+let applyStallTimer: ReturnType<typeof setTimeout> | null = null;
+let applyStallReported = false;
 // One token per open `holdAutoUpdate`, so a release is idempotent by
 // construction and a release from before a reset finds nothing to remove.
 const holds = new Set<symbol>();
@@ -105,6 +117,10 @@ export function resetUpdateState(): void {
   stopTabAgreement = null;
   stopWatch?.();
   resetUnsafeLock();
+  clearApplyStall();
+  applyStallReported = false;
+  askingTabs = false;
+  epoch += 1;
   holds.clear();
   needsRefresh = false;
   updateSWFn = null;
@@ -114,11 +130,13 @@ export function resetUpdateState(): void {
 /**
  * Keep a waiting update from applying by itself until the returned release
  * runs, e.g. while a chart analysis is in flight. Holds stack, and calling a
- * release again does nothing. A release doesn't apply the update: the next
- * evaluation does, within a minute or on a visibility change. A user who left
- * the tab during a long analysis and comes back in that minute finds the
- * result instead of a reload. A hold and the last release also update the
- * shared lock at once, so the other tabs know this one is busy.
+ * release again does nothing. A release doesn't apply the update: it applies
+ * at the next evaluation, which is any tab's next tick, up to 60 s later. A
+ * user who left the tab during a long analysis and comes back within that time
+ * during the session finds the result instead of a reload; outside the
+ * session the update applies once that evaluation runs. A hold and the last
+ * release also update the shared lock at once, so the other tabs know this one
+ * is busy.
  */
 export function holdAutoUpdate(): () => void {
   const hold = Symbol('auto-update-hold');
@@ -130,13 +148,20 @@ export function holdAutoUpdate(): () => void {
   };
 }
 
-/** Whether this tab may be reloaded right now: the policy on its live state. */
+/**
+ * Whether this tab may be reloaded: the policy on its live state, now and one
+ * tick from now. The second reading makes a visible tab unsafe from a tick
+ * before the open, so it already holds its shared lock when the session starts
+ * and another tab's attempt in the open's first minute can't reload it. At the
+ * close it costs nothing: a tab is safe once both readings are.
+ */
 function isOwnPolicySafe(): boolean {
-  return isSafeToApplyUpdate({
-    hidden: document.visibilityState === 'hidden',
-    now: new Date(),
-    busy: holds.size > 0,
-  });
+  const hidden = document.visibilityState === 'hidden';
+  const busy = holds.size > 0;
+  const now = Date.now();
+  return [now, now + SAFE_MOMENT_INTERVAL_MS].every((at) =>
+    isSafeToApplyUpdate({ hidden, now: new Date(at), busy }),
+  );
 }
 
 /**
@@ -160,8 +185,8 @@ function syncUnsafeLock(): void {
 }
 
 /**
- * One evaluation, run every `SAFE_MOMENT_INTERVAL_MS` and on every visibility
- * change while the watch lives.
+ * One evaluation, run every `SAFE_MOMENT_INTERVAL_MS` while the watch lives
+ * (and, without the tab agreement, on every visibility change too).
  *
  * Tracking: keep the shared lock in step with the policy, and when the tab is
  * safe and an update waits, try to apply it once the other tabs agree.
@@ -171,7 +196,7 @@ function syncUnsafeLock(): void {
 function evaluate(): void {
   const safe = isOwnPolicySafe();
   if (!stopTabAgreement) {
-    if (safe && awaitingSafeMoment) applyUpdate();
+    if (safe && awaitingSafeMoment) startApply(true);
     return;
   }
   const released = matchLockToPolicy(safe);
@@ -179,12 +204,27 @@ function evaluate(): void {
 }
 
 /**
+ * The watch's `visibilitychange` listener. Switching tabs hides this tab and
+ * shows another within a few milliseconds, and the other tab's shared lock is
+ * granted a moment after that. An apply attempt set off by this change could
+ * ask before that lock exists and reload the tab the owner just switched to.
+ * So with the tab agreement running a visibility change only brings the lock
+ * in step with the policy, and the tick, which isn't correlated with another
+ * tab's transition, asks. Without the agreement the tab decides alone, on the
+ * change, as before.
+ */
+function onWatchVisibilityChange(): void {
+  if (stopTabAgreement) syncUnsafeLock();
+  else evaluate();
+}
+
+/**
  * Apply if no other tab is unsafe. Waits for this tab's own shared lock to be
  * gone first, since an exclusive request is refused while any lock is held,
  * this tab's included. When another tab is unsafe the request is answered with
- * null and nothing happens; the next tick or visibility change asks again.
- * The tab is checked again inside the lock, as it may have turned unsafe while
- * the request was in flight. One attempt at a time.
+ * null and nothing happens; the next tick asks again. The tab is checked again
+ * inside the lock, as it may have turned unsafe while the request was in
+ * flight. One attempt at a time.
  */
 function applyWhenTabsAgree(released: Promise<void>): void {
   if (askingTabs) return;
@@ -193,17 +233,22 @@ function applyWhenTabsAgree(released: Promise<void>): void {
 }
 
 async function askTabsToApply(released: Promise<void>): Promise<void> {
+  const startedIn = epoch;
   try {
     await released;
-    // A reset or a Reload click during the wait ends the attempt.
-    if (awaitingSafeMoment) await runIfNoTabUnsafe(applyIfStillSafe);
+    // A reset ends the attempt, and so does a Reload click, which ends the
+    // wait: a wait that began after a reset is not this attempt's to apply.
+    if (epoch === startedIn && awaitingSafeMoment) {
+      await runIfNoTabUnsafe(applyIfStillSafe);
+    }
   } finally {
-    askingTabs = false;
+    // After a reset the flag belongs to a newer attempt.
+    if (epoch === startedIn) askingTabs = false;
   }
 }
 
 function applyIfStillSafe(): void {
-  if (awaitingSafeMoment && isOwnPolicySafe()) applyUpdate();
+  if (awaitingSafeMoment && isOwnPolicySafe()) startApply(true);
 }
 
 /**
@@ -214,10 +259,10 @@ function applyIfStillSafe(): void {
 function startWatch(): void {
   if (stopWatch) return;
   const timer = setInterval(evaluate, SAFE_MOMENT_INTERVAL_MS);
-  document.addEventListener('visibilitychange', evaluate);
+  document.addEventListener('visibilitychange', onWatchVisibilityChange);
   const stop = (): void => {
     clearInterval(timer);
-    document.removeEventListener('visibilitychange', evaluate);
+    document.removeEventListener('visibilitychange', onWatchVisibilityChange);
     if (stopWatch === stop) stopWatch = null;
   };
   stopWatch = stop;
@@ -233,8 +278,12 @@ function stopWatchIfIdle(): void {
  * unsafe (`!isSafeToApplyUpdate`, i.e. visible during the cash session, or
  * holding the update) it holds the shared lock `sw-update-unsafe`, and it lets
  * go when it turns safe. The policy is re-checked on a visibility change, on a
- * hold and its release, and every `SAFE_MOMENT_INTERVAL_MS`, so the session's
- * edges are noticed under a tab that stays visible. See sw-update-tabs.ts.
+ * hold and its release, and every `SAFE_MOMENT_INTERVAL_MS`. A tab counts as
+ * unsafe from one tick before the open (`isOwnPolicySafe` looks one tick
+ * ahead), so it already holds its lock when the session starts, not a tick
+ * later, when another tab's attempt could have reloaded it. Only the tick asks
+ * the other tabs; a visibility change just updates the lock. See
+ * sw-update-tabs.ts.
  *
  * Does nothing in a browser without the Web Locks API (every browser the owner
  * uses has it): each tab then decides alone, the per-tab rule. It shares the
@@ -275,32 +324,72 @@ export function getNeedsRefresh(): boolean {
  * which is harmless. There is deliberately no "applied" flag, because the
  * manual retry after a failed `updateSW` (see below) has to keep working.
  * A click doesn't ask the other tabs: the owner chose to reload now, and the
- * agreement binds only the automatic apply.
+ * agreement binds only the automatic apply. It arms no stall timeout either
+ * (see `startApply`): the banner stays, so the user can click again, and a
+ * click takes over from the timeout of an earlier automatic apply.
  */
 export function applyUpdate(): void {
+  startApply(false);
+}
+
+/**
+ * The apply itself, by the user's click (`automatic` false) or by this module
+ * at a safe moment. `updateSW(true)` only posts SKIP_WAITING to the waiting
+ * worker: in the installed vite-plugin-pwa/workbox-window it never rejects, and
+ * it does nothing when no worker waits, so a failed or lost apply makes no
+ * sound. It shows up as a `controllerchange` that never comes, which the
+ * automatic path watches for: after `APPLY_STALL_MS` without one it reports a
+ * warning (once per page) and goes back to waiting for a safe moment, so the
+ * next one retries. The same `controllerchange` that reloads the page clears
+ * the timeout. Nothing to wait for without a service worker container.
+ */
+function startApply(automatic: boolean): void {
   if (!updateSWFn) return;
   awaitingSafeMoment = false;
   stopWatchIfIdle();
-  if ('serviceWorker' in navigator) {
+  clearApplyStall();
+  const hasContainer = 'serviceWorker' in navigator;
+  if (hasContainer) {
     navigator.serviceWorker.addEventListener(
       'controllerchange',
       () => {
+        clearApplyStall();
         window.location.reload();
       },
       { once: true },
     );
   }
-  // updateSW failures are surfaced by vite-plugin-pwa internally; on the
-  // off chance the postMessage round-trip fails, the user can still reload
-  // manually. Capture at warning level (not error) — the manual-reload
-  // path keeps the UX usable, but persistent SW update failures across
-  // users would indicate a real PWA regression worth investigating.
+  // Defensive: nothing in the installed plugin rejects here (see above). If
+  // one ever does, capture at warning level, as the manual-reload path keeps
+  // the UX usable.
   updateSWFn(true).catch((err: unknown) => {
     captureUnlessAuth(err, {
       level: 'warning',
       tags: { context: 'sw_update_apply' },
     });
   });
+  if (automatic && hasContainer) {
+    applyStallTimer = setTimeout(onApplyStalled, APPLY_STALL_MS);
+  }
+}
+
+function clearApplyStall(): void {
+  if (applyStallTimer === null) return;
+  clearTimeout(applyStallTimer);
+  applyStallTimer = null;
+}
+
+function onApplyStalled(): void {
+  applyStallTimer = null;
+  if (!applyStallReported) {
+    applyStallReported = true;
+    captureUnlessAuth(
+      new Error('The new service worker did not take control after an apply'),
+      { level: 'warning', tags: { context: 'sw_update_apply_stalled' } },
+    );
+  }
+  awaitingSafeMoment = true;
+  startWatch();
 }
 
 /** Where a check was when it failed: fetching sw.js, or in `update()`. */
@@ -366,6 +455,12 @@ export function startUpdateChecks(
   const lastReported: { current: string | null } = { current: null };
 
   const check = async (): Promise<void> => {
+    // workbox-window stops listening for `updatefound` after the first
+    // external update, so a later deploy can leave a worker waiting with no
+    // `onNeedRefresh`, and the tab on the old bundle for good. A waiting
+    // worker is local state: look before any gate. (`markNeedsRefresh` does
+    // nothing when an update is already marked.)
+    if (registration.waiting) markNeedsRefresh();
     if (inFlight || registration.installing || navigator.onLine === false) {
       return;
     }

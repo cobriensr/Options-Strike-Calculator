@@ -58,13 +58,26 @@ interface HeldLock {
  * later step after the callback's promise settles, with the `request()` promise
  * settling after that. Every step runs on its own microtask, so a request made
  * right after a release is evaluated first, as in a browser, where the lock
- * task queue lives in another process.
+ * task queue lives in another process. A release takes `RELEASE_HOPS`
+ * microtasks, so code that waits a fixed few turns instead of for the
+ * `request()` promise still asks too early, and `stallReleases()` holds
+ * releases back for as long as a test likes.
  */
+const RELEASE_HOPS = 10;
+
+/** Run `step` after `hops` microtask turns. */
+function afterMicrotasks(hops: number, step: () => void): void {
+  if (hops <= 0) step();
+  else queueMicrotask(() => afterMicrotasks(hops - 1, step));
+}
+
 class FakeLockManager {
   readonly requests: RequestRecord[] = [];
   private readonly heldLocks: HeldLock[] = [];
   private readonly queue: LockRequest[] = [];
   private readonly failures: Partial<Record<LockMode, Error>> = {};
+  private readonly throwing: Partial<Record<LockMode, Error>> = {};
+  private stalled: Array<() => void> | null = null;
 
   /** What the app under test sees as `navigator.locks.request`. */
   request(
@@ -79,6 +92,8 @@ class FakeLockManager {
         ? optionsOrCallback
         : maybeCallback;
     if (!callback) throw new TypeError('callback required');
+    const thrown = this.throwing[options.mode ?? 'exclusive'];
+    if (thrown) throw thrown;
     return this.enqueue('this', name, options, callback);
   }
 
@@ -104,8 +119,28 @@ class FakeLockManager {
     this.failures[mode] = error;
   }
 
+  /** `request()` itself throws, before it returns a promise. */
+  throwOnRequest(mode: LockMode, error: Error): void {
+    this.throwing[mode] = error;
+  }
+
   recover(mode: LockMode): void {
     delete this.failures[mode];
+    delete this.throwing[mode];
+  }
+
+  /**
+   * Hold back every release from now on. The returned function lets the held
+   * releases through; releases after a later `stallReleases()` wait for that
+   * one's function instead.
+   */
+  stallReleases(): () => void {
+    const batch: Array<() => void> = [];
+    this.stalled = batch;
+    return () => {
+      if (this.stalled === batch) this.stalled = null;
+      for (const step of batch.splice(0)) step();
+    };
   }
 
   private enqueue(
@@ -164,11 +199,15 @@ class FakeLockManager {
     } catch (err: unknown) {
       waiting = Promise.reject(err);
     }
+    const finish = (): void => {
+      this.heldLocks.splice(this.heldLocks.indexOf(lock), 1);
+      this.process();
+      request.resolve(waiting);
+    };
     const release = (): void =>
-      queueMicrotask(() => {
-        this.heldLocks.splice(this.heldLocks.indexOf(lock), 1);
-        this.process();
-        request.resolve(waiting);
+      afterMicrotasks(RELEASE_HOPS, () => {
+        if (this.stalled) this.stalled.push(finish);
+        else finish();
       });
     waiting.then(release, release);
   }
@@ -295,19 +334,36 @@ describe('the shared lock follows this tab', () => {
     expect(locks.held('this')).toEqual([]);
   });
 
-  it('takes the lock when the session opens under a tab that stays visible', async () => {
-    // 08:28:30 CT; the ticks land on 08:29:30 (closed) and 08:30:30.
+  it('takes the lock one tick before the session opens under a tab that stays visible', async () => {
+    // 08:28:30 CT is 09:28:30 ET: closed now, and still closed a tick later.
     vi.setSystemTime(new Date('2026-12-02T14:28:30Z'));
     startTabAgreement();
     await settle();
     expect(locks.held('this')).toEqual([]);
 
+    // At 08:29:30 CT the next tick lands inside the session, so the tab holds
+    // its lock already, half a minute before the open.
     await advance(TICK_MS);
-    expect(locks.held('this')).toEqual([]);
+    expect(locks.held('this')).toEqual(['shared']);
 
     await advance(TICK_MS);
     expect(locks.held('this')).toEqual(['shared']);
   });
+
+  it.each([
+    ['09:28:59 ET, a tick and a second before the open', '14:28:59Z', []],
+    ['09:29:00 ET, a tick before the open', '14:29:00Z', ['shared']],
+    ['09:29:30 ET, half a tick before the open', '14:29:30Z', ['shared']],
+  ] as const)(
+    'a visible tab holds the lock at the start only from a tick before the open: %s',
+    async (_label, time, expected) => {
+      vi.setSystemTime(new Date(`2026-12-02T${time}`));
+      startTabAgreement();
+      await settle();
+
+      expect(locks.held('this')).toEqual(expected);
+    },
+  );
 
   it('asks once, however many evaluations find the tab still unsafe', async () => {
     startTabAgreement();
@@ -458,7 +514,7 @@ describe('an update applies only when every tab is safe', () => {
     expect(updateSW).not.toHaveBeenCalled();
   });
 
-  it('applies in the evaluation that makes the tab safe, without blocking on its own shared lock', async () => {
+  it('lets go of its lock when hidden, asks nothing then, and applies at the next tick', async () => {
     startTabAgreement();
     markNeedsRefresh();
     await settle();
@@ -466,12 +522,64 @@ describe('an update applies only when every tab is safe', () => {
 
     changeVisibility('hidden');
     await settle();
+    expect(locks.held('this')).toEqual([]);
+    expect(requestsOf('this', 'exclusive')).toEqual([]);
+    expect(updateSW).not.toHaveBeenCalled();
 
-    // Not at the next tick: the tab let go of its shared lock first, so its
-    // exclusive request found nothing held.
+    await advance(TICK_MS);
     expect(updateSW).toHaveBeenCalledTimes(1);
     expect(requestsOf('this', 'exclusive')).toHaveLength(1);
     expect(locks.held('this')).toEqual([]);
+  });
+
+  it('does not apply on the visibility change of a tab switch, which races the other tab taking its lock', async () => {
+    startTabAgreement();
+    markNeedsRefresh();
+    await settle();
+
+    // The owner switches tabs: this one is hidden at once, and the other one
+    // becomes visible and takes its shared lock a few milliseconds later.
+    changeVisibility('hidden');
+    await advance(5);
+    expect(requestsOf('this', 'exclusive')).toEqual([]);
+    locks.holdSharedAsOtherTab();
+    await advance(TICK_MS);
+
+    expect(requestsOf('this', 'exclusive')).toHaveLength(1);
+    expect(updateSW).not.toHaveBeenCalled();
+  });
+
+  it('asks only after its own release has gone through, however long the browser takes', async () => {
+    startTabAgreement();
+    markNeedsRefresh();
+    await settle();
+    expect(locks.held('this')).toEqual(['shared']);
+
+    const resume = locks.stallReleases();
+    // No event: the tick is what finds the tab safe, while it still holds its
+    // shared lock.
+    visibility = 'hidden';
+    await advance(TICK_MS);
+    expect(requestsOf('this', 'exclusive')).toEqual([]);
+    expect(updateSW).not.toHaveBeenCalled();
+
+    resume();
+    await settle();
+
+    expect(requestsOf('this', 'exclusive')).toHaveLength(1);
+    expect(updateSW).toHaveBeenCalledTimes(1);
+  });
+
+  it('applies at the tick that finds the tab safe, past a release that takes many turns', async () => {
+    startTabAgreement();
+    markNeedsRefresh();
+    await settle();
+
+    visibility = 'hidden';
+    await advance(TICK_MS);
+
+    expect(updateSW).toHaveBeenCalledTimes(1);
+    expect(requestsOf('this', 'exclusive')).toHaveLength(1);
   });
 
   it('applies at the tick when the session ends under a visible tab, in the same tick', async () => {
@@ -503,14 +611,18 @@ describe('an update applies only when every tab is safe', () => {
     expect(updateSW).not.toHaveBeenCalled();
   });
 
-  it('keeps one request in flight when a tick and a visibility change land together', async () => {
-    changeVisibility('hidden');
+  it('keeps one attempt in flight when ticks land while the first still waits for its release', async () => {
     startTabAgreement();
     markNeedsRefresh();
     await settle();
 
-    vi.advanceTimersByTime(TICK_MS);
-    changeVisibility('hidden');
+    const resume = locks.stallReleases();
+    visibility = 'hidden';
+    await advance(3 * TICK_MS);
+    // A second and third attempt would have asked, and been refused, by now.
+    expect(requestsOf('this', 'exclusive')).toEqual([]);
+
+    resume();
     await settle();
 
     expect(requestsOf('this', 'exclusive')).toHaveLength(1);
@@ -560,6 +672,29 @@ describe('an update applies only when every tab is safe', () => {
   });
 });
 
+describe('an automatic apply that no controllerchange follows', () => {
+  it('reports once, then asks the other tabs again at the next tick', async () => {
+    Object.defineProperty(navigator, 'serviceWorker', {
+      configurable: true,
+      value: new EventTarget(),
+    });
+    changeVisibility('hidden');
+    startTabAgreement();
+    markNeedsRefresh();
+    await advance(TICK_MS);
+    expect(updateSW).toHaveBeenCalledTimes(1);
+
+    // 30 s without a controllerchange: reported, and the wait starts again.
+    await advance(30_000);
+    expect(captureUnlessAuth).toHaveBeenCalledTimes(1);
+    expect(requestsOf('this', 'exclusive')).toHaveLength(1);
+
+    await advance(TICK_MS);
+    expect(requestsOf('this', 'exclusive')).toHaveLength(2);
+    expect(updateSW).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe('the tracker and a waiting update share one watch', () => {
   it('adds one timer and one listener for both, and the tracker outlives the apply', async () => {
     const addListener = vi.spyOn(document, 'addEventListener');
@@ -571,7 +706,7 @@ describe('the tracker and a waiting update share one watch', () => {
     expect(visibilityListeners(addListener)).toBe(1);
 
     changeVisibility('hidden');
-    await settle();
+    await advance(TICK_MS);
     expect(updateSW).toHaveBeenCalledTimes(1);
     expect(vi.getTimerCount()).toBe(1);
     expect(removeListener).not.toHaveBeenCalled();
@@ -651,6 +786,62 @@ describe('resetUpdateState', () => {
     expect(updateSW).not.toHaveBeenCalled();
   });
 
+  it('keeps a stale attempt from applying for a wait that started after the reset', async () => {
+    changeVisibility('hidden');
+    startTabAgreement();
+    markNeedsRefresh();
+    await settle();
+    vi.advanceTimersByTime(TICK_MS);
+
+    resetUpdateState();
+    setUpdateFn(updateSW);
+    startTabAgreement();
+    markNeedsRefresh();
+    await settle();
+
+    // The new wait applies at its own tick, not through the old attempt.
+    expect(requestsOf('this', 'exclusive')).toEqual([]);
+    expect(updateSW).not.toHaveBeenCalled();
+  });
+
+  it('lets a new attempt start while a stale one waits, and keeps the stale one from clearing the new one', async () => {
+    // Attempt 1 waits for the release of the first lock, which stalls.
+    startTabAgreement();
+    markNeedsRefresh();
+    await settle();
+    const resumeFirst = locks.stallReleases();
+    visibility = 'hidden';
+    vi.advanceTimersByTime(TICK_MS);
+
+    // A reset, then the same tab starts over, visible, with a second lock.
+    resetUpdateState();
+    setUpdateFn(updateSW);
+    visibility = 'visible';
+    startTabAgreement();
+    markNeedsRefresh();
+    await settle();
+    expect(locks.held('this')).toEqual(['shared', 'shared']);
+
+    // Attempt 2 waits for the release of the second lock, which stalls too.
+    const resumeSecond = locks.stallReleases();
+    visibility = 'hidden';
+    vi.advanceTimersByTime(TICK_MS);
+
+    // Attempt 1 comes through, finds a new epoch and ends without a trace.
+    resumeFirst();
+    await settle();
+    expect(requestsOf('this', 'exclusive')).toEqual([]);
+
+    // Attempt 2 is still in flight, so the next tick starts no third one.
+    await advance(TICK_MS);
+    expect(requestsOf('this', 'exclusive')).toEqual([]);
+
+    resumeSecond();
+    await settle();
+    expect(requestsOf('this', 'exclusive')).toHaveLength(1);
+    expect(updateSW).toHaveBeenCalledTimes(1);
+  });
+
   it('lets the tracker start afresh', async () => {
     startTabAgreement();
     resetUpdateState();
@@ -719,6 +910,27 @@ describe('when the Web Locks API fails', () => {
 
     await advance(2 * TICK_MS);
     expect(requestsOf('this', 'shared')).toHaveLength(3);
+    expect(captureUnlessAuth).toHaveBeenCalledTimes(1);
+
+    locks.recover('shared');
+    await advance(TICK_MS);
+    expect(locks.held('this')).toEqual(['shared']);
+  });
+
+  it('treats a request that throws before it returns a promise as a failed one, asked again at the next tick', async () => {
+    const thrown = new TypeError('Illegal invocation');
+    locks.throwOnRequest('shared', thrown);
+    startTabAgreement();
+    await settle();
+
+    expect(captureUnlessAuth).toHaveBeenCalledTimes(1);
+    expect(captureUnlessAuth).toHaveBeenCalledWith(thrown, {
+      level: 'warning',
+      tags: { context: 'sw_update_tabs' },
+    });
+    expect(locks.held('this')).toEqual([]);
+
+    await advance(TICK_MS);
     expect(captureUnlessAuth).toHaveBeenCalledTimes(1);
 
     locks.recover('shared');

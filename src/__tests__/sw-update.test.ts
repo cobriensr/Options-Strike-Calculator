@@ -31,11 +31,16 @@ type UpdateSWMock = Mock<UpdateSWFn>;
 
 type FakeRegistration = {
   installing: object | null;
+  waiting: object | null;
   update: ReturnType<typeof vi.fn>;
 };
 
 function makeRegistration(): FakeRegistration {
-  return { installing: null, update: vi.fn().mockResolvedValue(undefined) };
+  return {
+    installing: null,
+    waiting: null,
+    update: vi.fn().mockResolvedValue(undefined),
+  };
 }
 
 function start(registration: FakeRegistration): () => void {
@@ -219,6 +224,74 @@ describe('startUpdateChecks scheduling', () => {
     await advance(0);
     expect(fetchMock).not.toHaveBeenCalled();
     expect(() => stop()).not.toThrow();
+  });
+});
+
+describe('startUpdateChecks and a worker that already waits', () => {
+  it('marks a waiting worker whose update event was missed, at the next check', async () => {
+    // workbox-window stops listening for updatefound after the first external
+    // update, so a second deploy can leave a worker waiting with no event.
+    const registration = makeRegistration();
+    registration.waiting = {};
+    start(registration);
+    expect(getNeedsRefresh()).toBe(false);
+
+    await advance(INTERVAL_MS);
+
+    expect(getNeedsRefresh()).toBe(true);
+  });
+
+  it('marks it before the script fetch, so a failed fetch or a 503 cannot hide it', async () => {
+    fetchMock.mockRejectedValue(new Error('unexpected'));
+    const registration = makeRegistration();
+    registration.waiting = {};
+    start(registration);
+
+    await advance(INTERVAL_MS);
+
+    expect(getNeedsRefresh()).toBe(true);
+  });
+
+  it('marks it while the browser is offline too', async () => {
+    onLine.mockReturnValue(false);
+    const registration = makeRegistration();
+    registration.waiting = {};
+    start(registration);
+
+    await advance(INTERVAL_MS);
+
+    expect(getNeedsRefresh()).toBe(true);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('marks it on a tab-focus check as well', async () => {
+    const registration = makeRegistration();
+    registration.waiting = {};
+    start(registration);
+
+    changeVisibility('visible');
+    await advance(0);
+
+    expect(getNeedsRefresh()).toBe(true);
+  });
+
+  it('marks nothing when no worker waits', async () => {
+    start(makeRegistration());
+
+    await advance(2 * INTERVAL_MS);
+
+    expect(getNeedsRefresh()).toBe(false);
+  });
+
+  it('keeps one waiting wait, however many checks find the worker', async () => {
+    const registration = makeRegistration();
+    registration.waiting = {};
+    start(registration);
+
+    await advance(3 * INTERVAL_MS);
+
+    // The update-check timer plus the one safe-moment watch.
+    expect(vi.getTimerCount()).toBe(2);
   });
 });
 
@@ -625,6 +698,19 @@ describe('a waiting update applies at a safe moment', () => {
     expect(updateSW).toHaveBeenCalledTimes(1);
   });
 
+  it('holds a visible tab in the last minute before the open, since the reload could land after it', async () => {
+    // 08:28:30 CT; the first tick lands on 08:29:30, 30 s before the open, and
+    // the next one is inside the session.
+    vi.setSystemTime(new Date('2026-12-02T14:28:30Z'));
+    markNeedsRefresh();
+
+    await advance(SAFE_MOMENT_INTERVAL_MS);
+    expect(updateSW).not.toHaveBeenCalled();
+
+    await advance(SAFE_MOMENT_INTERVAL_MS);
+    expect(updateSW).not.toHaveBeenCalled();
+  });
+
   it('applies a visible tab outside the session at the next tick', async () => {
     vi.setSystemTime(OUT_OF_SESSION);
     markNeedsRefresh();
@@ -702,7 +788,10 @@ describe('a waiting update applies at a safe moment', () => {
     expect(updateSW).toHaveBeenCalledTimes(1);
   });
 
-  it('reports a failed apply once and does not try again', async () => {
+  it('reports a rejected updateSW once and does not try again', async () => {
+    // The installed plugin's updateSW(true) doesn't reject (it posts
+    // SKIP_WAITING without waiting), so this pins the defensive .catch only.
+    // No service worker container here, so no stall timeout is armed.
     const failure = new Error('postMessage failed');
     updateSW.mockRejectedValue(failure);
     changeVisibility('hidden');
@@ -881,5 +970,145 @@ describe('the safe-moment wait cleans up', () => {
 
     resetUpdateState();
     expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+describe('an automatic apply waits for the new worker to take control', () => {
+  const STALL_MS = 30 * 1000;
+  let updateSW: UpdateSWMock;
+  let serviceWorker: EventTarget;
+  let reload: Mock;
+  let realLocation: Location;
+
+  beforeEach(() => {
+    vi.setSystemTime(IN_SESSION);
+    updateSW = vi.fn<UpdateSWFn>().mockResolvedValue(undefined);
+    setUpdateFn(updateSW);
+    changeVisibility('hidden');
+    serviceWorker = new EventTarget();
+    Object.defineProperty(navigator, 'serviceWorker', {
+      configurable: true,
+      value: serviceWorker,
+    });
+    reload = vi.fn();
+    realLocation = globalThis.location;
+    Object.defineProperty(globalThis, 'location', {
+      configurable: true,
+      writable: true,
+      value: { ...realLocation, reload },
+    });
+  });
+
+  afterEach(() => {
+    Object.defineProperty(globalThis, 'location', {
+      configurable: true,
+      writable: true,
+      value: realLocation,
+    });
+    Reflect.deleteProperty(navigator, 'serviceWorker');
+  });
+
+  it('reloads on the controllerchange the apply waits for', async () => {
+    markNeedsRefresh();
+    await advance(SAFE_MOMENT_INTERVAL_MS);
+
+    serviceWorker.dispatchEvent(new Event('controllerchange'));
+
+    expect(reload).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports one warning, and applies again at the next safe tick, when no controllerchange comes within 30 s', async () => {
+    markNeedsRefresh();
+    await advance(SAFE_MOMENT_INTERVAL_MS);
+    expect(updateSW).toHaveBeenCalledTimes(1);
+
+    await advance(STALL_MS - 1);
+    expect(captureUnlessAuth).not.toHaveBeenCalled();
+
+    await advance(1);
+    expect(captureUnlessAuth).toHaveBeenCalledTimes(1);
+    expect(captureUnlessAuth).toHaveBeenCalledWith(expect.any(Error), {
+      level: 'warning',
+      tags: { context: 'sw_update_apply_stalled' },
+    });
+    expect(updateSW).toHaveBeenCalledTimes(1);
+
+    // The wait is back, with a fresh tick (t = 90 s + 60 s) that applies again.
+    await advance(SAFE_MOMENT_INTERVAL_MS);
+    expect(updateSW).toHaveBeenCalledTimes(2);
+  });
+
+  it('reports a repeated stall only once per page', async () => {
+    markNeedsRefresh();
+
+    // Applies at 60 s, 150 s and 240 s; stalls at 90 s, 180 s and 270 s.
+    await advance(270 * 1000);
+
+    expect(updateSW).toHaveBeenCalledTimes(3);
+    expect(captureUnlessAuth).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports again after a reset, which starts the page afresh', async () => {
+    markNeedsRefresh();
+    await advance(SAFE_MOMENT_INTERVAL_MS + STALL_MS);
+    expect(captureUnlessAuth).toHaveBeenCalledTimes(1);
+
+    resetUpdateState();
+    setUpdateFn(updateSW);
+    changeVisibility('hidden');
+    markNeedsRefresh();
+    await advance(SAFE_MOMENT_INTERVAL_MS + STALL_MS);
+
+    expect(captureUnlessAuth).toHaveBeenCalledTimes(2);
+  });
+
+  it('clears the timeout when the controllerchange arrives, so nothing is reported', async () => {
+    markNeedsRefresh();
+    await advance(SAFE_MOMENT_INTERVAL_MS);
+    await advance(STALL_MS - 1000);
+    expect(vi.getTimerCount()).toBe(1);
+
+    serviceWorker.dispatchEvent(new Event('controllerchange'));
+    expect(vi.getTimerCount()).toBe(0);
+
+    await advance(10 * SAFE_MOMENT_INTERVAL_MS);
+    expect(captureUnlessAuth).not.toHaveBeenCalled();
+    expect(updateSW).toHaveBeenCalledTimes(1);
+  });
+
+  it('arms no timeout for the banner Reload, which the user can click again', async () => {
+    markNeedsRefresh();
+
+    applyUpdate();
+    expect(vi.getTimerCount()).toBe(0);
+
+    await advance(10 * SAFE_MOMENT_INTERVAL_MS);
+    expect(captureUnlessAuth).not.toHaveBeenCalled();
+    expect(updateSW).toHaveBeenCalledTimes(1);
+  });
+
+  it('is taken over by a Reload click, which retries by hand', async () => {
+    markNeedsRefresh();
+    await advance(SAFE_MOMENT_INTERVAL_MS);
+    expect(vi.getTimerCount()).toBe(1);
+
+    applyUpdate();
+    expect(vi.getTimerCount()).toBe(0);
+
+    await advance(10 * SAFE_MOMENT_INTERVAL_MS);
+    expect(captureUnlessAuth).not.toHaveBeenCalled();
+    expect(updateSW).toHaveBeenCalledTimes(2);
+  });
+
+  it('is cleared by resetUpdateState', async () => {
+    markNeedsRefresh();
+    await advance(SAFE_MOMENT_INTERVAL_MS);
+    expect(vi.getTimerCount()).toBe(1);
+
+    resetUpdateState();
+    expect(vi.getTimerCount()).toBe(0);
+
+    await advance(10 * SAFE_MOMENT_INTERVAL_MS);
+    expect(captureUnlessAuth).not.toHaveBeenCalled();
   });
 });
