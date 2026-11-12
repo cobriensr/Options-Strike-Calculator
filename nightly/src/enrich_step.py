@@ -53,14 +53,15 @@ and each has its own signal:
 
 The flow pass is judged only on a fresh day, one on which no fire had an inversion resolved
 (a value or a tag) before the pass ran. Its work set is the fires still blank, so on a day
-something priced earlier (the old Vercel cron's inversions) it holds only that run's
+something priced earlier (the old Vercel cron's inversions) it holds only the cron's
 leftovers, fires the cron could not price either, and the tape correctly prices none of them:
 a zero there is expected (2026-11-03..05 stamped 244, 322 and 430 and wrote none, and three
-such days stopped the step with 177 days left). `inversions_resolved` counts those fires on
-the day's connection before the lottery script runs; when it is not 0 the day is a leftover
-day, and a flow pass that would have been unpriced is counted in
-`inversion_leftovers_unpriced` and logged, nothing more. The two outcome passes are judged on
-every day, so on a leftover day only they can trip.
+such days stopped the step with 177 days left). `inversions_resolved` counts the opposite
+set, the fires outside that work set (the ones already priced or tagged), on the day's
+connection before the lottery script runs; when it is not 0 the day is a leftover day, and a
+flow pass that would have been unpriced is counted in `inversion_leftovers_unpriced` and
+logged, nothing more. The two outcome passes are judged on every day, so on a leftover day
+only they can trip.
 
 The loop stops, leaving the rest as `days_left`, when `days_failed + null_days +
 unpriced_passes` reaches ENRICH_MAX_DAY_FAILURES; each day would cost a download. A total

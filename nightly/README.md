@@ -446,7 +446,11 @@ need nothing more than the marker reset.
 Only a fresh day can come back `priced none` from the inversion pass. A leftover day
 logs `ok` with `inversion_leftovers_unpriced=1` and needs none of this: the fires the
 tape cannot price stay tagged undefined, which is right. On such a day a broken tape
-shows through the outcome passes, which are judged on every day.
+shows through the outcome passes only when the day also has outcome work. A leftover
+day listed for inversion work alone (late net flow) has none, and there a broken tape
+trips nothing: the inversion pass tags the remaining blank fires undefined and the
+step stays `ok`. That is the owner's ruling (2026-11-12), taken to stop false alarms
+on the days something else priced first.
 
 **Dry run on a workstation.** From the repo root, with the four `R2_*` variables and
 a database URL in the environment or in `.env.local` (which points at the production

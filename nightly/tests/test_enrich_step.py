@@ -952,6 +952,23 @@ def test_a_leftover_days_flow_pass_is_counted_and_never_fails_the_step(
     capture_exception.assert_not_called()
 
 
+def test_a_single_resolved_fire_makes_a_leftover_day(
+    night: Night, settings: Settings, clock: Clock
+) -> None:
+    # The gate is "not 0", not "many": one fire already resolved (a hand-run script's, say)
+    # takes the day off the fresh side, however many others are still blank.
+    iso = DAYS[1].isoformat()
+    night.work(lottery=[DAYS[1]])
+    night.leftover_day(DAYS[1], resolved=1)
+    night.lottery_results[iso] = _flow_priced_none()
+
+    result = enrich_step.run(_ctx(settings, clock))
+
+    assert result.counts["unpriced_passes"] == 0
+    assert result.counts["inversion_leftovers_unpriced"] == 1
+    assert (result.status, result.detail) == ("ok", "")
+
+
 def test_a_leftover_day_is_logged_ok_at_info_with_its_count(
     night: Night, settings: Settings, clock: Clock, caplog: pytest.LogCaptureFixture
 ) -> None:
