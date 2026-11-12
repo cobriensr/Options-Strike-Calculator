@@ -46,6 +46,8 @@ const hooks = vi.hoisted(() => ({
   failWriteAt: null as null | { nth: number; error: Error },
   /** Every read-only transaction rejects with this error. */
   failRead: null as null | Error,
+  /** Runs at the start of every read-only transaction: a test moves the clock mid-plan with it. */
+  onRead: null as null | (() => void),
   /** Write transactions resolve with no rows and run nothing. */
   dropWrites: false,
   writes: 0,
@@ -73,6 +75,7 @@ vi.mock('../../api/_lib/db.js', async (importOriginal) => {
           ) => {
             const readOnly = opts?.readOnly === true;
             hooks.calls.push({ readOnly, texts: queries.map((q) => q.text) });
+            if (readOnly) hooks.onRead?.();
             if (readOnly && hooks.failRead) throw hooks.failRead;
             if (!readOnly) {
               hooks.writes += 1;
@@ -524,6 +527,7 @@ beforeEach(async () => {
   hooks.calls = [];
   hooks.beforeWrite = null;
   hooks.failRead = null;
+  hooks.onRead = null;
   hooks.failWriteAt = null;
   hooks.dropWrites = false;
   hooks.writes = 0;
@@ -1634,20 +1638,66 @@ describe('--thin-roots on real SQL (pglite)', () => {
     const list = readFileSync(join(workDir, 'delete-list.csv'));
 
     // A refused apply, then one that fails on its third day: both used to
-    // overwrite the approved list with the fresh plan.
+    // overwrite the approved list with the fresh plan. The clock moves between
+    // them, as it does in production, so each apply has its own copies.
     expect(await runThin({ expectDeletes: THIN_DELETES - 1 })).toBe(1);
+    vi.setSystemTime(new Date('2026-11-08T12:05:00Z'));
     hooks.failWriteAt = { nth: 3, error: new Error('connection lost') };
     expect(await runThin()).toBe(1);
 
     expect(readFileSync(join(workDir, 'report.txt'))).toEqual(report);
     expect(readFileSync(join(workDir, 'delete-list.csv'))).toEqual(list);
     const files = readdirSync(workDir);
-    expect(files.filter((f) => /^apply-.*-report\.txt$/.test(f))).toHaveLength(
-      1,
+    const reports = files.filter((f) => /^apply-.*-report\.txt$/.test(f));
+    const lists = files.filter((f) => /^apply-.*-delete-list\.csv$/.test(f));
+    expect(reports).toHaveLength(2);
+    expect(lists).toHaveLength(2);
+    // The refused apply planned all 34; the failed one planned the same and
+    // each copy holds its own run's plan.
+    for (const name of lists) {
+      expect(
+        readFileSync(join(workDir, name), 'utf8').trim().split('\n'),
+      ).toHaveLength(1 + THIN_DELETES);
+    }
+  });
+
+  it('appends nothing to the backup when the open refuses the run before its first day', async () => {
+    const file = join(workDir, 'backup-thin-roots.jsonl');
+    // The clock passes the start guard, then reaches the open while the plan is read.
+    hooks.onRead = () => vi.setSystemTime(new Date('2026-11-09T16:00:00Z'));
+
+    expect(await runThin()).toBe(2);
+
+    expect(errored()).toContain(
+      'apply stopped before day 2026-04-05: market hours began (09:25 ET). 0 day(s) done and marked;',
     );
+    expect(existsSync(file)).toBe(false);
+    expect(hooks.writes).toBe(0);
+
+    // With a backup already there from a run that failed, a refusal at the
+    // open leaves it as it was, even when a new row is pending.
+    hooks.onRead = null;
+    vi.setSystemTime(new Date('2026-11-08T12:00:00Z'));
+    hooks.failWriteAt = { nth: 2, error: new Error('connection lost') };
+    expect(await runThin()).toBe(1);
+    const held = readFileSync(file);
     expect(
-      files.filter((f) => /^apply-.*-delete-list\.csv$/.test(f)),
-    ).toHaveLength(1);
+      held
+        .toString('utf8')
+        .split('\n')
+        .filter((l) => l !== ''),
+    ).toHaveLength(THIN_DELETES);
+    await pg.query(
+      `INSERT INTO futures_bars (symbol, ts, open, high, low, close, volume)
+       VALUES ('GC', '2026-05-06T15:00:00Z', 3300, 3301, 3299, 3300, 10)`,
+    );
+    hooks.failWriteAt = null;
+    vi.setSystemTime(new Date('2026-11-08T12:10:00Z'));
+    hooks.onRead = () => vi.setSystemTime(new Date('2026-11-09T16:00:00Z'));
+
+    expect(await runThin({ expectDeletes: THIN_DELETES - 4 + 1 })).toBe(2);
+
+    expect(readFileSync(file)).toEqual(held);
   });
 
   it('a second --apply changes 0 rows, forced or not', async () => {
@@ -1787,19 +1837,21 @@ describe('--thin-roots on real SQL (pglite)', () => {
     expect(errored()).toContain(
       'apply stopped before day 2026-04-06: market hours began (09:25 ET). 1 day(s) done and marked;',
     );
-    // The way on names the mode and the one backup 5b takes.
+    // The way on names the mode and the one backup, and says when it is complete.
     expect(errored()).toContain(
       'run a fresh dry run and --apply --thin-roots with its total',
     );
     expect(errored()).toContain(join(workDir, 'backup-thin-roots.jsonl'));
+    expect(errored()).toContain('complete only after a run prints "done."');
     expect(existsSync(markerPath(workDir, '2026-04-05'))).toBe(true);
     expect(existsSync(markerPath(workDir, '2026-04-06'))).toBe(false);
   });
 
-  it('names the one backup in the error of a failed day', async () => {
+  it('names the one backup in the error of a failed day, and says it is complete only after "done."', async () => {
     hooks.failWriteAt = { nth: 2, error: new Error('connection lost') };
     expect(await runThin()).toBe(1);
     expect(errored()).toContain(join(workDir, 'backup-thin-roots.jsonl'));
+    expect(errored()).toContain('complete only after a run prints "done."');
   });
 
   it('refuses --apply during market hours; the dry run is allowed', async () => {

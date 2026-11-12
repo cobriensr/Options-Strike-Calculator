@@ -2083,15 +2083,38 @@ async function applyPlanned(
   );
   if (pending.length === 0) return 0;
 
+  const pendingDays = pending.map((p) => p.day);
+  const next = opts.thinRoots
+    ? 'run a fresh dry run and --apply --thin-roots with its total (--expect-deletes N).'
+    : 'run a fresh dry run and --apply with its totals.';
+  // `--thin-roots` keeps one backup across runs. It lists the pending rows before
+  // their deletes, so it is complete only once a run prints "done.".
+  const backupNote = opts.thinRoots
+    ? ` The backup is the one file ${join(opts.workDir, THIN_BACKUP_FILE)}; it is complete only after a run prints "done.".`
+    : '';
+  // Said before a day is written when the open has come; true stops the apply.
+  const stoppedAtOpen = (index: number): boolean => {
+    if (!isMarketHours()) return false;
+    const left = pending.slice(index).map((p) => p.day);
+    console.error(
+      `apply stopped before day ${left[0]?.day}: market hours began (09:25 ET). ` +
+        `${index} day(s) done and marked; ${left.length} left ` +
+        `(${left.reduce((n, d) => n + d.updates.length, 0)} updates, ${left.reduce((n, d) => n + d.deletes.length, 0)} deletes). ` +
+        `After the close, ${next}${backupNote}`,
+    );
+    return true;
+  };
+
+  // The first day's check comes before the backup, so a run the open refuses
+  // appends nothing to it.
+  if (stoppedAtOpen(0)) return 2;
+
   // Phase 2 writes a backup per run; `--thin-roots` keeps one cumulative file
   // that 5b takes as --backup, so a resumed apply never splits the deleted rows.
-  const pendingDays = pending.map((p) => p.day);
   let backup: string;
-  let backupNote = '';
   if (opts.thinRoots) {
     const kept = appendThinBackup(opts.workDir, pendingDays);
     backup = kept.path;
-    backupNote = ` The one backup of every row deleted so far, for 5b --backup: ${backup}.`;
     console.log(
       `backup: ${backup} (+${kept.added} rows, ${kept.total} in the file)`,
     );
@@ -2099,22 +2122,10 @@ async function applyPlanned(
     backup = writeBackup(opts.workDir, pendingDays);
     console.log(`backup: ${backup}`);
   }
-  const next = opts.thinRoots
-    ? 'run a fresh dry run and --apply --thin-roots with its total (--expect-deletes N).'
-    : 'run a fresh dry run and --apply with its totals.';
   for (const [index, { day, stamp }] of pending.entries()) {
     // A full apply can outlast the close, so the guard is checked before every
     // day, not only at the start. Finished days are already marked.
-    if (isMarketHours()) {
-      const left = pending.slice(index).map((p) => p.day);
-      console.error(
-        `apply stopped before day ${day.day}: market hours began (09:25 ET). ` +
-          `${index} day(s) done and marked; ${left.length} left ` +
-          `(${left.reduce((n, d) => n + d.updates.length, 0)} updates, ${left.reduce((n, d) => n + d.deletes.length, 0)} deletes). ` +
-          `After the close, ${next}${backupNote}`,
-      );
-      return 2;
-    }
+    if (stoppedAtOpen(index)) return 2;
     try {
       const { updated, deleted } = await writeDay(day);
       console.log(`${day.day} updated ${updated} deleted ${deleted}`);
