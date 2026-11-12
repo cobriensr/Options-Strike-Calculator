@@ -40,6 +40,13 @@ export interface MarketData {
 /** Timeout for individual API fetches (ms). Prevents hung requests from stacking. */
 const FETCH_TIMEOUT_MS = 10_000;
 
+/**
+ * How many days ahead of today the forward events list reaches. Shared with
+ * useEventsForDate, which fetches a date's own events only when the date falls
+ * outside this window.
+ */
+export const FORWARD_EVENT_DAYS = 30;
+
 // ============================================================
 // GENERIC FETCH HELPER
 // ============================================================
@@ -111,7 +118,7 @@ export async function fetchAllEndpoints(): Promise<EndpointResults> {
     fetchJson<QuotesResponse>('/api/quotes'),
     fetchJson<IntradayResponse>('/api/intraday'),
     fetchJson<YesterdayResponse>('/api/yesterday'),
-    fetchJson<EventsResponse>('/api/events?days=30'),
+    fetchJson<EventsResponse>(`/api/events?days=${FORWARD_EVENT_DAYS}`),
     fetchJson<MoversResponse>('/api/movers'),
   ]);
 
