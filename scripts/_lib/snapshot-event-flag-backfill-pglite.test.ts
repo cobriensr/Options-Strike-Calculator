@@ -60,6 +60,7 @@ vi.mock('../../api/_lib/market-events.js', async (importOriginal) => ({
 
 import type { EventItem } from '../../api/_lib/market-events.js';
 import {
+  buildPlan,
   formatReport,
   READ_PAGE,
   runBackfill,
@@ -431,6 +432,7 @@ describe('snapshot event-flag backfill (pglite)', () => {
     expect(text).toContain(
       'WARNING: 1 training_features row skipped, changed since the read: 2026-05-12',
     );
+    expect(text).toContain('Re-run (a dry run first) to pick them up.');
   });
 
   it('the guards make a replayed plan write zero rows', async () => {
@@ -456,12 +458,15 @@ describe('snapshot event-flag backfill (pglite)', () => {
     // After every real UPDATE has run, inside the same transaction.
     sql.transaction = (queries) => real([...queries, sql`SELECT 1 / 0`]);
 
-    try {
-      await expect(run({ apply: true })).rejects.toThrow(/division by zero/);
-    } finally {
-      sql.transaction = real;
-    }
+    const failure = await run({ apply: true }).catch((e: unknown) => e);
+    sql.transaction = real;
 
+    // The error names the undo file, so the CLI's printed message does too.
+    expect(failure).toBeInstanceOf(Error);
+    const message = (failure as Error).message;
+    expect(message).toMatch(/division by zero/);
+    expect(message).toContain('The apply did not complete');
+    expect(message).toContain(join(undoDir, UNDO_NAME));
     expect(await dump()).toEqual(before);
     // The undo file is written before the transaction opens, so it is there.
     expect(readdirSync(undoDir)).toEqual([UNDO_NAME]);
@@ -472,6 +477,221 @@ describe('snapshot event-flag backfill (pglite)', () => {
       market_snapshots: 8,
       training_features: 5,
     });
+  });
+
+  // withDbRetry waits 1 s before the second attempt: these two are real-timer.
+  it('retries a transient failure and writes the plan once', async () => {
+    const sql = pgSql();
+    const real = sql.transaction;
+    let attempts = 0;
+    sql.transaction = (queries) => {
+      attempts += 1;
+      // The first attempt never reaches the database.
+      if (attempts === 1) return Promise.reject(new Error('fetch failed'));
+      return real(queries);
+    };
+
+    const result = await run({ apply: true }).finally(() => {
+      sql.transaction = real;
+    });
+
+    expect(attempts).toBe(2);
+    expect(result.outcome).toEqual({
+      written: { market_snapshots: 8, training_features: 5 },
+      skipped: { snapshotIds: [], featureDates: [] },
+    });
+    const after = await dump();
+    expect(
+      after.snapshots.map((s) => [s.id, s.is_event_day, s.event_names]),
+    ).toEqual(SETTLED.map((s) => [...s]));
+    expect(readdirSync(undoDir)).toEqual([UNDO_NAME]);
+  });
+
+  it('a retry after a commit whose answer was lost writes nothing more and reports every row skipped', async () => {
+    const sql = pgSql();
+    const real = sql.transaction;
+    let attempts = 0;
+    sql.transaction = async (queries) => {
+      attempts += 1;
+      const rows = await real(queries);
+      // The first attempt commits, then its answer is lost.
+      if (attempts === 1) throw new Error('fetch failed');
+      return rows;
+    };
+
+    const result = await run({ apply: true }).finally(() => {
+      sql.transaction = real;
+    });
+
+    expect(attempts).toBe(2);
+    expect(result.outcome).toEqual({
+      written: { market_snapshots: 0, training_features: 0 },
+      skipped: {
+        snapshotIds: [1, 2, 3, 4, 7, 8, 10, 13],
+        featureDates: [
+          '2026-05-06',
+          '2026-05-12',
+          '2026-05-14',
+          '2026-06-17',
+          '2026-07-02',
+        ],
+      },
+    });
+    // The first attempt's write stands, and the report says to look again.
+    const after = await dump();
+    expect(
+      after.snapshots.map((s) => [s.id, s.is_event_day, s.event_names]),
+    ).toEqual(SETTLED.map((s) => [...s]));
+    expect(formatReport(result)).toContain(
+      'WARNING: 8 market_snapshots rows skipped',
+    );
+    expect(await run()).toMatchObject({
+      plan: { snapshotChanges: [], featureChanges: [] },
+    });
+  });
+
+  it('writes through the real neon driver serializer: NULL names, a NULL flag, {} and quoted names', async () => {
+    // The shim in neonOverPglite hands JS arrays to pglite as they are. The
+    // real driver turns an array into a Postgres literal and a NULL element
+    // into SQL NULL, which is what lets `IS NOT DISTINCT FROM` match a stored
+    // NULL. So build the real client, stub only its transport, and run what it
+    // sends on pglite. No network call is made.
+    const { neon, neonConfig } = await vi.importActual<
+      typeof import('@neondatabase/serverless')
+    >('@neondatabase/serverless');
+    await db.query(
+      'TRUNCATE market_snapshots, training_features RESTART IDENTITY',
+    );
+    const quoted = [
+      'q"uote',
+      'back\\slash',
+      'a,b',
+      '{br}',
+      'NULL',
+      'ünï 日本 😀',
+      "o'brien",
+    ];
+    await seedSnapshot('2026-05-07', '09:00', false, null); // 1: NULL names
+    await seedSnapshot('2026-05-08', '09:00', null, null); // 2: NULL names and flag
+    await seedSnapshot('2026-05-09', '09:00', null, []); // 3: {} and NULL flag
+    await seedSnapshot('2026-05-11', '09:00', true, quoted); // 4: awkward names
+    await seedSnapshot('2026-05-10', '09:00', false, []); // 5: already right
+    await seedFeature('2026-05-07', false);
+    await seedFeature('2026-05-08', null);
+
+    const snapshots = (
+      await db.query<{
+        id: number;
+        day: string;
+        is_event_day: boolean | null;
+        event_names: string[] | null;
+      }>(
+        `SELECT id, to_char(date, 'YYYY-MM-DD') AS day, is_event_day,
+                event_names
+           FROM market_snapshots ORDER BY id`,
+      )
+    ).rows.map((r) => ({
+      id: r.id,
+      date: r.day,
+      isEventDay: r.is_event_day,
+      eventNames: r.event_names,
+    }));
+    const features = (
+      await db.query<{ day: string; is_event_day: boolean | null }>(
+        `SELECT to_char(date, 'YYYY-MM-DD') AS day, is_event_day
+           FROM training_features ORDER BY date`,
+      )
+    ).rows.map((r) => ({ date: r.day, isEventDay: r.is_event_day }));
+    const plan = buildPlan({
+      snapshots,
+      features,
+      namesByDate: new Map([
+        ['2026-05-07', ['CPI']],
+        ['2026-05-08', ['CPI', 'PPI']],
+        ['2026-05-09', ['NFP']],
+        ['2026-05-11', ['new "one"', 'b\\s']],
+      ]),
+      keepEarnings: false,
+    });
+    expect(plan.snapshotChanges.map((c) => c.id)).toEqual([1, 2, 3, 4]);
+
+    const sent: Array<{
+      queries: Array<{ query: string; params: unknown[] }>;
+    }> = [];
+    const previous = neonConfig.fetchFunction;
+    neonConfig.fetchFunction = async (_url: string, init: { body: string }) => {
+      const body = JSON.parse(init.body) as (typeof sent)[number];
+      sent.push(body);
+      const results: unknown[] = [];
+      await db.transaction(async (tx) => {
+        for (const q of body.queries) {
+          const r = await tx.query(q.query, q.params);
+          results.push({
+            command: 'UPDATE',
+            rowCount: r.rows.length,
+            rows: r.rows.map((row) =>
+              Object.values(row as object).map((v) =>
+                v == null ? null : String(v),
+              ),
+            ),
+            fields: r.fields.map((f) => ({
+              name: f.name,
+              dataTypeID: f.dataTypeID,
+            })),
+            rowAsArray: true,
+          });
+        }
+      });
+      const payload = { results };
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers(),
+        json: async () => payload,
+        text: async () => JSON.stringify(payload),
+      };
+    };
+
+    try {
+      const sql = neon(
+        'postgresql://u:p@ep-fake-123.us-east-2.aws.neon.tech/db',
+      );
+
+      const outcome = await writePlan(sql as never, plan);
+
+      expect(outcome).toEqual({
+        written: { market_snapshots: 4, training_features: 2 },
+        skipped: { snapshotIds: [], featureDates: [] },
+      });
+      // What the driver put on the wire: NULL elements are SQL NULL, not text.
+      const params = sent[0]?.queries[0]?.params;
+      expect(params?.[1]).toMatch(/^\{NULL,NULL,"\[\]","/);
+      expect(params?.[2]).toBe('{"false",NULL,NULL,"true"}');
+      // And the rows are exactly the plan's, quoted names and all.
+      const after = await dump();
+      expect(
+        after.snapshots.map((s) => [s.id, s.is_event_day, s.event_names]),
+      ).toEqual([
+        [1, true, ['CPI']],
+        [2, true, ['CPI', 'PPI']],
+        [3, true, ['NFP']],
+        [4, true, ['new "one"', 'b\\s']],
+        [5, false, []],
+      ]);
+      expect(after.features).toEqual([
+        { date: '2026-05-07', is_event_day: true },
+        { date: '2026-05-08', is_event_day: true },
+      ]);
+      // A replay through the same serializer matches nothing.
+      const replay = await writePlan(sql as never, plan);
+      expect(replay.written).toEqual({
+        market_snapshots: 0,
+        training_features: 0,
+      });
+      expect(replay.skipped.snapshotIds).toEqual([1, 2, 3, 4]);
+    } finally {
+      neonConfig.fetchFunction = previous;
+    }
   });
 
   it('--keep-earnings leaves a stored earnings name the calendar lacks', async () => {

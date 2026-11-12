@@ -144,6 +144,18 @@ export interface MonthRange {
   end: string;
 }
 
+/** The last calendar day of `month` (`YYYY-MM`) as `YYYY-MM-DD`. */
+function lastDayOf(month: string): string {
+  const [year = 0, mon = 0] = month.split('-').map(Number);
+  // Day 0 of the next month is the last day of this one.
+  const day = new Date(Date.UTC(year, mon, 0)).getUTCDate();
+  return `${month}-${String(day).padStart(2, '0')}`;
+}
+
+/** True when the range is the whole calendar month, not clipped at either end. */
+const isWholeMonth = (m: MonthRange): boolean =>
+  m.start === `${m.month}-01` && m.end === lastDayOf(m.month);
+
 /**
  * The lookup ranges: one per calendar month that has a snapshot date, whole
  * months except the first and last, which are clipped to the min and max
@@ -156,11 +168,8 @@ export function monthRanges(dates: readonly string[]): MonthRange[] {
   if (first == null || last == null) return [];
   const months = [...new Set(sorted.map((d) => d.slice(0, 7)))];
   return months.map((month) => {
-    const [year = 0, mon = 0] = month.split('-').map(Number);
-    // Day 0 of the next month is the last day of this one.
-    const lastDay = new Date(Date.UTC(year, mon, 0)).getUTCDate();
     const monthStart = `${month}-01`;
-    const monthEnd = `${month}-${String(lastDay).padStart(2, '0')}`;
+    const monthEnd = lastDayOf(month);
     return {
       month,
       start: monthStart < first ? first : monthStart,
@@ -197,7 +206,7 @@ export async function fetchMonthlyNames(
     }
     if (!result.complete) {
       throw new Error(
-        `${label} are incomplete: a FRED release or Finnhub answered with an error or a malformed body. Nothing was written; re-run later.`,
+        `${label} are incomplete: a FRED release or Finnhub answered with an error or a malformed body (the cause is logged just above). Nothing was written. If Finnhub rejects past dates, this repeats on every run and waiting will not help; otherwise re-run later.`,
       );
     }
     const byDate = new Map<string, EventItem[]>();
@@ -635,8 +644,8 @@ export interface BackfillResult {
  * and (with `apply`) write the undo file and then the plan in one
  * transaction. A plan with nothing to change writes nothing and opens no
  * transaction. Every refusal throws before anything is written, in both
- * modes. A DB error propagates after withDbRetry; the transaction rolls back
- * as a whole.
+ * modes. A DB error propagates after withDbRetry and the transaction rolls
+ * back as a whole; one from the apply names the undo file already written.
  */
 export async function runBackfill(opts: {
   apply: boolean;
@@ -666,12 +675,23 @@ export async function runBackfill(opts: {
     return { ...base, apply: opts.apply, undoFile: null, outcome: null };
   }
   const undoFile = writeUndoFile(opts.undoDir, plan, new Date());
-  return {
-    ...base,
-    apply: true,
-    undoFile,
-    outcome: await writePlan(sql, plan),
-  };
+  try {
+    return {
+      ...base,
+      apply: true,
+      undoFile,
+      outcome: await writePlan(sql, plan),
+    };
+  } catch (err) {
+    // The file was written first; the owner must be able to find it even
+    // though no report follows. A failed transaction rolls back, but a lost
+    // connection can hide a commit, so point at the dry run too.
+    const reason = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      `${reason}. The apply did not complete. The undo file ${undoFile} was written before it; run a dry run to see what, if anything, changed.`,
+      { cause: err },
+    );
+  }
 }
 
 // ── Report ──────────────────────────────────────────────────────────────────
@@ -692,7 +712,7 @@ function skippedLine(
       : '';
   const prefix =
     label == null ? '' : `${items.length === 1 ? label.one : label.many} `;
-  return `WARNING: ${items.length} ${table} ${items.length === 1 ? 'row' : 'rows'} skipped, changed since the read: ${prefix}${shown}${more}`;
+  return `WARNING: ${items.length} ${table} ${items.length === 1 ? 'row' : 'rows'} skipped, changed since the read: ${prefix}${shown}${more}. Re-run (a dry run first) to pick them up.`;
 }
 
 function nameLines(plan: Plan): string[] {
@@ -741,10 +761,15 @@ export function formatReport(result: BackfillResult): string {
     '',
     `Read: ${plural(plan.snapshotRows, 'market_snapshots row')} on ${plural(plan.snapshotDates.length, 'date')} (${first} to ${last})`,
     `Months fetched (${months.length}, one lookup each, in turn):`,
-    ...months.map(
-      (m) =>
-        `  ${m.month} (${m.start}..${m.end}): ${plural(m.eventCount, 'event')}`,
-    ),
+    ...months.map((m) => {
+      // A whole calendar month always holds CPI and NFP, so none means the
+      // answer was empty or malformed even though it was marked complete.
+      const warning =
+        m.eventCount === 0 && isWholeMonth(m)
+          ? '  WARNING: 0 events in a whole month (CPI and NFP alone make that impossible), so the payload is probably bad'
+          : '';
+      return `  ${m.month} (${m.start}..${m.end}): ${plural(m.eventCount, 'event')}${warning}`;
+    }),
     '',
     ...nameLines(plan),
     '',

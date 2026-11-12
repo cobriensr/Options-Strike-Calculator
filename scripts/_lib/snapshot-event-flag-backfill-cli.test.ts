@@ -56,6 +56,24 @@ const CLEAN_RESULT = {
   outcome: null,
 };
 
+const SKIPPED_RESULT = {
+  ...CLEAN_RESULT,
+  plan: buildPlan({
+    snapshots: [
+      { id: 4, date: '2026-05-12', isEventDay: false, eventNames: [] },
+    ],
+    features: [],
+    namesByDate: new Map([['2026-05-12', ['CPI']]]),
+    keepEarnings: false,
+  }),
+  apply: true,
+  undoFile: 'docs/tmp/snapshot-event-flags/undo-x.json',
+  outcome: {
+    written: { market_snapshots: 0, training_features: 0 },
+    skipped: { snapshotIds: [4], featureDates: [] },
+  },
+};
+
 const originalArgv = process.argv;
 const originalDatabaseUrl = process.env.DATABASE_URL;
 
@@ -99,7 +117,7 @@ const UNDO_DIR = 'docs/tmp/snapshot-event-flags';
 describe('backfill-snapshot-event-flags CLI', () => {
   // Each case imports the CLI afresh, and every fresh import adds a process
   // 'beforeExit' listener (the logger). Past 10 imports in one file Node warns
-  // about a leak, so related checks share a case.
+  // about a leak, so related checks share a case. The static import of the lib at the top counts too, so keep this file to 9 CLI imports.
 
   it('is a dry run when no flag is given, and prints the host and report, never the credentials', async () => {
     expect(await runCli()).toBe(0);
@@ -125,7 +143,9 @@ describe('backfill-snapshot-event-flags CLI', () => {
     );
   });
 
-  it('forwards --apply and --keep-earnings, and loads the env file --env-file names', async () => {
+  it('forwards --apply and --keep-earnings, loads the env file --env-file names, and exits 0 with the warning when the apply skipped rows', async () => {
+    runBackfill.mockResolvedValue(SKIPPED_RESULT);
+
     expect(
       await runCli(
         '--apply',
@@ -146,6 +166,11 @@ describe('backfill-snapshot-event-flags CLI', () => {
       path: '/resolved/.env.local',
       quiet: true,
     });
+    // A skipped row is a warning, not a failure.
+    const out = printed(log);
+    expect(out).toContain('WARNING: 1 market_snapshots row skipped');
+    expect(out).toContain('Re-run (a dry run first) to pick them up.');
+    expect(error).not.toHaveBeenCalled();
   });
 
   it('prints the usage for --help and exits 0 without loading env or running', async () => {
@@ -188,13 +213,17 @@ describe('backfill-snapshot-event-flags CLI', () => {
     expect(runBackfill).not.toHaveBeenCalled();
   });
 
-  it('exits 1 and says why when the backfill refuses', async () => {
+  it('exits 1 and prints the failure in full, undo file path included', async () => {
+    const undoFile = `${UNDO_DIR}/undo-2026-11-11T15-30-00-123Z.json`;
     runBackfill.mockRejectedValue(
-      new Error('Refusing to run. FINNHUB_API_KEY is not set: ...'),
+      new Error(
+        `Refusing to run. FINNHUB_API_KEY is not set: ... The undo file ${undoFile} was written before it.`,
+      ),
     );
 
     expect(await runCli('--apply')).toBe(1);
 
     expect(printed(error)).toMatch(/FINNHUB_API_KEY is not set/);
+    expect(printed(error)).toContain(undoFile);
   });
 });

@@ -516,6 +516,20 @@ describe('fetchMonthlyNames', () => {
     expect(fetchMarketEvents).toHaveBeenCalledTimes(2);
   });
 
+  it('tells the owner where the cause is logged and that a Finnhub refusal of past dates repeats', async () => {
+    fetchMarketEvents.mockResolvedValueOnce({ events: [], complete: false });
+
+    const failure = await fetchMonthlyNames([march]).catch((e: unknown) => e);
+
+    expect(failure).toBeInstanceOf(Error);
+    const message = (failure as Error).message;
+    expect(message).toContain('the cause is logged just above');
+    expect(message).toMatch(
+      /Finnhub rejects past dates, this repeats on every run/,
+    );
+    expect(message).toContain('Nothing was written');
+  });
+
   it('refuses a month whose lookup rejects, names it, and never echoes a key', async () => {
     fetchMarketEvents.mockRejectedValueOnce(
       new Error(
@@ -575,6 +589,17 @@ describe('runBackfill refusals', () => {
     expect(fetchMarketEvents).not.toHaveBeenCalled();
   });
 
+  // The order is keys, then the snapshot read, then the lookups: a read that
+  // rejects stops the run before any FRED or Finnhub call.
+  it('surfaces a rejected snapshot read as it is and never fetches events', async () => {
+    mockSql.mockRejectedValueOnce(new Error('connection lost'));
+
+    await expect(runBackfill(opts)).rejects.toThrow('connection lost');
+
+    expect(mockSql).toHaveBeenCalledTimes(1);
+    expect(fetchMarketEvents).not.toHaveBeenCalled();
+  });
+
   it('refuses an incomplete month, names it and writes nothing', async () => {
     mockSql.mockResolvedValueOnce([
       { id: 1, day: '2026-02-10', is_event_day: false, event_names: [] },
@@ -622,6 +647,38 @@ describe('formatReport', () => {
     expect(text).toContain('2026-05-06 to 2026-05-12');
     expect(text).toContain('2026-05 (2026-05-06..2026-05-12): 4 events');
     expect(text).toContain('Dry run: nothing written');
+  });
+
+  // A whole calendar month always holds CPI and NFP, so 0 events there is a
+  // bad payload that was marked complete.
+  it.each([
+    ['a whole 31-day month', '2026-03', '2026-03-01', '2026-03-31'],
+    ['a whole leap February', '2028-02', '2028-02-01', '2028-02-29'],
+    ['a whole December', '2026-12', '2026-12-01', '2026-12-31'],
+  ])('warns on %s with 0 events', (_label, month, start, end) => {
+    const text = formatReport(
+      result({ months: [{ month, start, end, eventCount: 0 }] }),
+    );
+    expect(text).toContain(`${month} (${start}..${end}): 0 events`);
+    expect(text).toContain('WARNING: 0 events');
+  });
+
+  it.each([
+    ['a clipped first month', '2026-05', '2026-05-06', '2026-05-31', 0],
+    ['a clipped last month', '2026-11', '2026-11-01', '2026-11-11', 0],
+    ['a whole month that has events', '2026-03', '2026-03-01', '2026-03-31', 3],
+    [
+      'a whole February one day short',
+      '2028-02',
+      '2028-02-01',
+      '2028-02-28',
+      0,
+    ],
+  ])('does not warn on %s', (_label, month, start, end, eventCount) => {
+    const text = formatReport(
+      result({ months: [{ month, start, end, eventCount }] }),
+    );
+    expect(text).not.toContain('WARNING');
   });
 
   it('prints the per-name day counts, the lost dates with old and new names, and the gained count and dates', () => {
@@ -688,6 +745,10 @@ describe('formatReport', () => {
     expect(text).toContain(
       'WARNING: 1 training_features row skipped, changed since the read: 2026-05-12',
     );
+    // Both warnings say what to do about it.
+    expect(
+      text.match(/Re-run \(a dry run first\) to pick them up\./g),
+    ).toHaveLength(2);
   });
 
   it('prints no warning when nothing was skipped', () => {

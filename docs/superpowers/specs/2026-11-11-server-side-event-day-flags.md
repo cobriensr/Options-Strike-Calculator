@@ -98,6 +98,9 @@ Add `scripts/backfill-snapshot-event-flags.ts`, a thin CLI, with its logic in
   `fetchMarketEvents` once per calendar month, in turn.
   - That's 7 FRED calls a month, not 7 a date: about 80 for the year, under FRED's
     per-key limit.
+  - FRED is called with no throttle, about 7 calls a month. That stays under FRED's 120
+    a minute up to about 17 months of history. Past that, pace the months. A 429 shows
+    up as an incomplete-month refusal, which is safe.
   - Ruling 2026-11-11: monthly, not one call for the whole range. One Finnhub call
     for a year of every US earnings release risks a truncated answer, and a
     truncated answer would silently drop mega-cap earnings.
@@ -147,6 +150,10 @@ Add `scripts/backfill-snapshot-event-flags.ts`, a thin CLI, with its logic in
   - With `--keep-earnings`, a kept name is added per row, and a date's feature flag
     follows the rows as they will be: set when any of its rows ends with a name.
   - A date "has a flag" when any of its rows has `is_event_day` true or a name.
+  - The report prints `WARNING: 0 events` beside a whole calendar month with none: CPI
+    and NFP alone make that impossible, so the payload is bad. It warns and does not stop.
+  - A failed apply throws an error that names the undo file already written. A skipped
+    row prints a warning that says to re-run, dry run first; the exit code stays 0.
 - It overlaps the econ label backfill's snapshot steps: 04-29 gains FOMC, and 05-06
   loses it.
   - Both compute from the corrected FOMC schedule.
