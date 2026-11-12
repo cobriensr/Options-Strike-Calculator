@@ -27,7 +27,7 @@ import tape_job
 from config import Settings, load_settings
 from constants import RUN_DEADLINE_SECONDS
 from r2_store import tape_key
-from tape_job import run_tape
+from tape_job import DayOutcome, run_tape
 from tests.test_tape_convert import _csv_bytes, _row
 
 pytestmark = pytest.mark.respx(assert_all_called=True)
@@ -119,9 +119,11 @@ def test_a_day_lands_then_relands_when_its_etag_changes(
     )
 
     # Night 1: the day is missing, so it lands.
-    first = run_tape(settings, NOW, deadline=_deadline())
+    reported: list[DayOutcome] = []
+    first = run_tape(settings, NOW, on_outcome=reported.append, deadline=_deadline())
 
     assert [(o.day, o.status, o.detail, o.rows) for o in first] == [(DAY, "landed", "", 3)]
+    assert reported == first
     head = s3.head_object(Bucket=BUCKET, Key=tape_key(DAY))
     assert head["Metadata"]["source-etag"] == '"etag-1"'
     assert head["Metadata"]["rows"] == "3"
@@ -138,11 +140,13 @@ def test_a_day_lands_then_relands_when_its_etag_changes(
     # ETag, and the day is re-landed with the old object copied aside first.
     served.update(etag='"etag-2"', body=_tape_zip(4))
 
-    second = run_tape(settings, NOW, deadline=_deadline())
+    reported.clear()
+    second = run_tape(settings, NOW, on_outcome=reported.append, deadline=_deadline())
 
     assert [(o.day, o.status, o.detail, o.rows, o.warnings) for o in second] == [
         (DAY, "relanded", "", 4, ())
     ]
+    assert reported == second
     copy = s3.get_object(Bucket=BUCKET, Key="fulltape/_superseded/2026-01-08-etag-1.parquet")
     assert copy["Body"].read() == landed_first
     assert copy["Metadata"]["source-etag"] == '"etag-1"'

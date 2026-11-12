@@ -81,21 +81,25 @@ def _et(day: date, hour: int, minute: int = 0) -> datetime:
     return datetime(day.year, day.month, day.day, hour, minute, tzinfo=EASTERN).astimezone(UTC)
 
 
+def _discard(outcome: DayOutcome) -> None:
+    """The day reporter for a test that does not look at the reports."""
+
+
 def _run_tape(
     settings: Settings,
     now_utc: datetime,
-    on_outcome: Callable[[DayOutcome], None] | None = None,
+    on_outcome: Callable[[DayOutcome], None] = _discard,
     *,
     deadline: float | None = None,
 ) -> list[DayOutcome]:
-    """run_tape with a whole run's time left unless the test gives a deadline.
+    """run_tape with a no-op reporter and a whole run's time left, unless the test gives them.
 
-    The default is read off tape_job's clock, so a test that patches `tape_job.monotonic`
-    gets a deadline on that clock.
+    The default deadline is read off tape_job's clock, so a test that patches
+    `tape_job.monotonic` gets a deadline on that clock.
     """
     if deadline is None:
         deadline = tape_job.monotonic() + RUN_DEADLINE_SECONDS
-    return tape_job.run_tape(settings, now_utc, on_outcome, deadline=deadline)
+    return tape_job.run_tape(settings, now_utc, on_outcome=on_outcome, deadline=deadline)
 
 
 def zip_body(day: date) -> bytes:
@@ -1328,6 +1332,15 @@ def test_run_tape_requires_a_deadline_keyword() -> None:
 
     assert deadline.kind is inspect.Parameter.KEYWORD_ONLY
     assert deadline.default is inspect.Parameter.empty
+
+
+def test_run_tape_requires_an_on_outcome_keyword() -> None:
+    # A caller that left it out would land days and report none of them to Sentry. The
+    # helper above supplies a no-op reporter for the tests that ignore reports.
+    on_outcome = inspect.signature(tape_job.run_tape).parameters["on_outcome"]
+
+    assert on_outcome.kind is inspect.Parameter.KEYWORD_ONLY
+    assert on_outcome.default is inspect.Parameter.empty
 
 
 def test_run_tape_honours_a_given_deadline(

@@ -219,8 +219,8 @@ def land_day(
 def run_tape(
     settings: Settings,
     now_utc: datetime,
-    on_outcome: Callable[[DayOutcome], None] | None = None,
     *,
+    on_outcome: Callable[[DayOutcome], None],
     deadline: float,
 ) -> list[DayOutcome]:
     """Land the planned days, then probe for rewrites and re-land the rewritten days;
@@ -243,7 +243,8 @@ def run_tape(
 
     `on_outcome` gets each day's outcome as soon as it is decided, skipped days
     included, so a run killed mid-way has already reported its finished days. An
-    Exception from it is logged by class name and the run goes on.
+    Exception from it is logged by class name and the run goes on. It has no default: a
+    caller that left it out would land days and report none of them.
 
     It raises, with no outcomes, only before the first day:
     - ValueError for a naive `now_utc`, and CalendarExhausted when the NYSE holiday
@@ -269,8 +270,7 @@ def run_tape(
 
     def record(outcome: DayOutcome) -> None:
         outcomes.append(outcome)
-        if on_outcome is not None:
-            _notify(on_outcome, outcome)
+        _notify(on_outcome, outcome)
 
     def land_all(queue: list[tuple[date, Mapping[str, str] | None]]) -> bool:
         """Land each queued day in order; False once the run's limits skip the rest."""
