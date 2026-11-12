@@ -41,6 +41,9 @@ describe('GET /api/events', () => {
 
   beforeEach(() => {
     process.env = { ...originalEnv };
+    // A key in the shell would send the fetch stubs below a Finnhub request
+    // they do not answer; tests that want earnings set it themselves.
+    delete process.env.FINNHUB_API_KEY;
     vi.restoreAllMocks();
     vi.clearAllMocks();
     vi.mocked(redis.get).mockResolvedValue(null);
