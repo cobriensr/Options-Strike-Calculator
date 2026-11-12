@@ -241,7 +241,10 @@ Each phase gets `npm run review`, a code review, then commits of 5 files or fewe
   earnings decision is made (owner decision 2026-11-12). Finnhub still feeds
   `/api/events` and the banner.
 - ML: `training_features.is_event_day` changes meaning (earnings no longer count), so
-  experiments and plots made before the backfill are stale.
+  experiments and plots made before the backfill are stale. PPI and JOLTS days were also
+  mis-flagged until the 2026-11-12 ID correction (trade-balance and state-income days
+  flagged, real PPI and JOLTS days missed), so the same applies to anything built from
+  those flags.
 
 ## Constants
 

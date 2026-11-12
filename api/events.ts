@@ -13,7 +13,10 @@
  * later request can retry (AUD-M2).
  *
  * Query params:
- *   ?days=30  — how many days ahead to return (default 30, max 90)
+ *   ?days=30         — how many days to return (default 30, max 90)
+ *   ?from=YYYY-MM-DD — first day of the window (default today ET). A past date
+ *                      returns that date's events; the window is from..from+days.
+ *                      Bounds: 2025-01-01 to today + 90 days, else 400.
  *
  * Environment variables:
  *   FRED_API_KEY    — Free key from https://fred.stlouisfed.org/docs/api/api_key.html
@@ -21,7 +24,11 @@
  */
 
 import { Sentry, metrics } from './_lib/sentry.js';
-import { checkBot, setCacheHeaders } from './_lib/api-helpers.js';
+import {
+  checkBot,
+  respondIfInvalid,
+  setCacheHeaders,
+} from './_lib/api-helpers.js';
 import { withRequestScope } from './_lib/request-scope.js';
 import { redis } from './_lib/redis.js';
 import logger from './_lib/logger.js';
@@ -30,11 +37,13 @@ import {
   fetchMarketEvents,
   type EventItem,
 } from './_lib/market-events.js';
-import { getETDateStr } from '../src/utils/timezone.js';
+import { eventsQuerySchema } from './_lib/validation.js';
+import { getETToday } from '../src/utils/timezone.js';
 
 // v3: the PPI and JOLTS release IDs were corrected, so a v2 entry can name the
 // wrong days.
 const REDIS_KEY = 'events:v3';
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 // ============================================================
 // HANDLER
@@ -51,6 +60,9 @@ export default withRequestScope(
         return res.status(403).json({ error: 'Access denied' });
       }
 
+      const parsed = eventsQuerySchema.safeParse(req.query);
+      if (respondIfInvalid(parsed, res, done)) return;
+
       if (!process.env.FRED_API_KEY) {
         done({ status: 500 });
         logger.error('FRED_API_KEY not configured');
@@ -63,12 +75,15 @@ export default withRequestScope(
       const daysParam = Number(req.query?.days) || 30;
       const days = Math.min(Math.max(daysParam, 1), 90);
 
-      // Date range: today → today + days
-      const now = new Date();
-      const startDate = getETDateStr(now);
-      const endDate = getETDateStr(
-        new Date(now.getTime() + days * 24 * 60 * 60 * 1000),
-      );
+      // Date range: from (default today ET) → from + days. Calendar
+      // arithmetic on 12:00 UTC, so a DST change inside the window cannot
+      // shift the end date.
+      const startDate = parsed.data.from ?? getETToday();
+      const endDate = new Date(
+        Date.parse(`${startDate}T12:00:00Z`) + days * DAY_MS,
+      )
+        .toISOString()
+        .slice(0, 10);
 
       // Try Redis cache first
       const cacheKey = `${REDIS_KEY}:${startDate}:${days}`;

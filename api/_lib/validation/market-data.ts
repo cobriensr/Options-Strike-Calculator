@@ -2,10 +2,12 @@
  * Zod schemas for the UW / market-flow query endpoints (zero-gamma,
  * greek-flow, gex-strike-expiry, dealer-regime, pin-setup-status,
  * strike-trade-volume, net-flow-history, ticker-net-flow-current,
- * ticker-candles, gexbot).
+ * ticker-candles, gexbot) and the market-events query (events).
  */
 
 import { z } from 'zod';
+import { parseIsoDate } from '../../../src/data/marketHours.js';
+import { getETToday } from '../../../src/utils/timezone.js';
 import { STRIKE_IV_TICKERS } from '../constants.js';
 
 // ============================================================
@@ -282,6 +284,55 @@ export const tickerCandlesQuerySchema = z.object({
 });
 
 export type TickerCandlesQuery = z.infer<typeof tickerCandlesQuerySchema>;
+
+// ============================================================
+// /api/events
+// ============================================================
+
+const FROM_NOT_A_DATE = 'from must be a real date, YYYY-MM-DD';
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Query params for GET /api/events. Only `from` is validated here; `days`
+ * keeps the handler's own clamp to 1-90.
+ *
+ * `from` is optional and starts the window (`from .. from + days`); absent
+ * means today (ET). It must be a real calendar date on or after 2025-01-01
+ * (the static FOMC calendar in `fomc-schedule.ts` starts with 2025) and at
+ * most 90 days after today's ET date, so the public endpoint cannot be walked
+ * across an unbounded set of cache keys. The upper bound reads the clock when
+ * the query is parsed.
+ */
+export const eventsQuerySchema = z.object({
+  from: z
+    .string({ error: FROM_NOT_A_DATE })
+    .superRefine((value, ctx) => {
+      const date = parseIsoDate(value);
+      if (!date) {
+        ctx.addIssue({ code: 'custom', message: FROM_NOT_A_DATE });
+        return;
+      }
+      if (value < '2025-01-01') {
+        ctx.addIssue({
+          code: 'custom',
+          message: 'from must be 2025-01-01 or later',
+        });
+        return;
+      }
+      // Both sides are 12:00 UTC on their calendar date, so the quotient is
+      // a whole number of days.
+      const today = Date.parse(`${getETToday()}T12:00:00Z`);
+      if ((date.getTime() - today) / DAY_MS > 90) {
+        ctx.addIssue({
+          code: 'custom',
+          message: 'from must be no more than 90 days after today',
+        });
+      }
+    })
+    .optional(),
+});
+
+export type EventsQuery = z.infer<typeof eventsQuerySchema>;
 
 // ============================================================
 // /api/gexbot

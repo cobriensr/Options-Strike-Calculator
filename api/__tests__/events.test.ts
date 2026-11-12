@@ -13,7 +13,28 @@ vi.mock('../_lib/redis.js', () => ({
 vi.mock('../_lib/api-helpers.js', () => ({
   checkBot: vi.fn().mockResolvedValue({ isBot: false }),
   setCacheHeaders: vi.fn(),
+  respondIfInvalid: vi.fn(
+    (
+      parsed: { success: boolean; error?: { issues: { message: string }[] } },
+      res: { status: (n: number) => { json: (o: unknown) => void } },
+      done?: (opts: { status: number }) => void,
+    ) => {
+      if (parsed.success) return false;
+      done?.({ status: 400 });
+      res.status(400).json({
+        error: parsed.error?.issues[0]?.message ?? 'Invalid request body',
+      });
+      return true;
+    },
+  ),
 }));
+
+// Pass-through spy: the real fetch runs, and a test reads the window it got.
+vi.mock('../_lib/market-events.js', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('../_lib/market-events.js')>();
+  return { ...actual, fetchMarketEvents: vi.fn(actual.fetchMarketEvents) };
+});
 
 vi.mock('../_lib/sentry.js', () => ({
   Sentry: {
@@ -34,6 +55,7 @@ vi.mock('../_lib/sentry.js', () => ({
 import handler from '../events.js';
 import { redis } from '../_lib/redis.js';
 import { checkBot } from '../_lib/api-helpers.js';
+import { fetchMarketEvents } from '../_lib/market-events.js';
 import { Sentry } from '../_lib/sentry.js';
 
 describe('GET /api/events', () => {
@@ -646,5 +668,175 @@ describe('GET /api/events', () => {
 
     expect(res._status).toBe(403);
     expect((res._json as { error: string }).error).toBe('Access denied');
+  });
+
+  describe('?from= start date', () => {
+    // 13:00 ET on 2026-11-12. today + 90 days is 2027-02-10.
+    const NOW = '2026-11-12T18:00:00Z';
+    const BAD_DATE = 'from must be a real date, YYYY-MM-DD';
+
+    type EventsJson = {
+      events: { date: string; event: string }[];
+      startDate: string;
+      endDate: string;
+      cached: boolean;
+    };
+
+    afterEach(() => {
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    });
+
+    async function get(query: Record<string, string | string[]>, now = NOW) {
+      process.env.FRED_API_KEY = 'fred-key';
+      const fredFetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({ release_dates: [] }),
+      });
+      vi.stubGlobal('fetch', fredFetch);
+      vi.useFakeTimers({ now: new Date(now) });
+      const res = mockResponse();
+      await handler(mockRequest({ method: 'GET', query }), res);
+      return { res, fredFetch, json: res._json as EventsJson };
+    }
+
+    it('fetches from .. from + days for a past date and caches under its own key', async () => {
+      const { res, json } = await get({ from: '2026-04-29', days: '1' });
+
+      expect(res._status).toBe(200);
+      expect(fetchMarketEvents).toHaveBeenCalledTimes(1);
+      expect(fetchMarketEvents).toHaveBeenCalledWith(
+        '2026-04-29',
+        '2026-04-30',
+      );
+      expect(redis.get).toHaveBeenCalledWith('events:v3:2026-04-29:1');
+      expect(redis.set).toHaveBeenCalledWith(
+        'events:v3:2026-04-29:1',
+        expect.anything(),
+        expect.anything(),
+      );
+      expect(json.startDate).toBe('2026-04-29');
+      expect(json.endDate).toBe('2026-04-30');
+      // The April 2026 FOMC decision day comes back for a replay of that day.
+      expect(
+        json.events.some((e) => e.date === '2026-04-29' && e.event === 'FOMC'),
+      ).toBe(true);
+    });
+
+    it("does not serve today's cache entry for a past date", async () => {
+      vi.mocked(redis.get).mockImplementation((key: string) =>
+        Promise.resolve(
+          key === 'events:v3:2026-11-12:30'
+            ? { data: [{ date: '2026-11-12', event: 'CPI' }], cachedAt: 1 }
+            : null,
+        ),
+      );
+
+      const { json } = await get({ from: '2026-04-29', days: '30' });
+
+      expect(json.cached).toBe(false);
+      expect(json.events.some((e) => e.event === 'CPI')).toBe(false);
+      expect(redis.get).toHaveBeenCalledWith('events:v3:2026-04-29:30');
+    });
+
+    it('serves a cached past window without fetching, startDate echoing from', async () => {
+      vi.mocked(redis.get).mockImplementation((key: string) =>
+        Promise.resolve(
+          key === 'events:v3:2026-04-29:1'
+            ? {
+                data: [{ date: '2026-04-29', event: 'FOMC' }],
+                cachedAt: Date.now(),
+              }
+            : null,
+        ),
+      );
+
+      const { res, json } = await get({ from: '2026-04-29', days: '1' });
+
+      expect(res._headers['X-Cache']).toBe('HIT');
+      expect(json.cached).toBe(true);
+      expect(json.startDate).toBe('2026-04-29');
+      expect(json.endDate).toBe('2026-04-30');
+      expect(fetchMarketEvents).not.toHaveBeenCalled();
+    });
+
+    it('starts today (ET) when from is absent', async () => {
+      const { json } = await get({ days: '3' });
+
+      expect(fetchMarketEvents).toHaveBeenCalledWith(
+        '2026-11-12',
+        '2026-11-15',
+      );
+      expect(redis.get).toHaveBeenCalledWith('events:v3:2026-11-12:3');
+      expect(json.startDate).toBe('2026-11-12');
+      expect(json.endDate).toBe('2026-11-15');
+    });
+
+    it('takes today from the ET date, not the UTC date', async () => {
+      // 22:00 ET on 11-12 is already 11-13 in UTC.
+      await get({ days: '3' }, '2026-11-13T03:00:00Z');
+
+      expect(fetchMarketEvents).toHaveBeenCalledWith(
+        '2026-11-12',
+        '2026-11-15',
+      );
+    });
+
+    it('still clamps days to 90 when from is given', async () => {
+      const { json } = await get({ from: '2026-04-29', days: '200' });
+
+      expect(json.endDate).toBe('2026-07-28');
+      expect(redis.get).toHaveBeenCalledWith('events:v3:2026-04-29:90');
+    });
+
+    it.each(['2026-02-30', 'abc'])(
+      'answers 400 for the malformed from %s without fetching',
+      async (from) => {
+        const { res, fredFetch } = await get({ from });
+
+        expect(res._status).toBe(400);
+        expect((res._json as { error: string }).error).toBe(BAD_DATE);
+        expect(fetchMarketEvents).not.toHaveBeenCalled();
+        expect(fredFetch).not.toHaveBeenCalled();
+        expect(redis.get).not.toHaveBeenCalled();
+        expect(redis.set).not.toHaveBeenCalled();
+      },
+    );
+
+    it('answers 400 for a repeated from parameter', async () => {
+      const { res } = await get({ from: ['2026-04-29', '2026-04-30'] });
+
+      expect(res._status).toBe(400);
+      expect((res._json as { error: string }).error).toBe(BAD_DATE);
+      expect(fetchMarketEvents).not.toHaveBeenCalled();
+    });
+
+    it('answers 400 for a from before 2025-01-01', async () => {
+      const { res, fredFetch } = await get({ from: '2024-12-31' });
+
+      expect(res._status).toBe(400);
+      expect((res._json as { error: string }).error).toBe(
+        'from must be 2025-01-01 or later',
+      );
+      expect(fetchMarketEvents).not.toHaveBeenCalled();
+      expect(fredFetch).not.toHaveBeenCalled();
+    });
+
+    it('answers 400 for a from more than 90 days after today, and accepts 90', async () => {
+      const tooFar = await get({ from: '2027-02-11' });
+      expect(tooFar.res._status).toBe(400);
+      expect((tooFar.res._json as { error: string }).error).toBe(
+        'from must be no more than 90 days after today',
+      );
+      expect(fetchMarketEvents).not.toHaveBeenCalled();
+      expect(tooFar.fredFetch).not.toHaveBeenCalled();
+
+      const edge = await get({ from: '2027-02-10', days: '1' });
+      expect(edge.res._status).toBe(200);
+      expect(fetchMarketEvents).toHaveBeenCalledWith(
+        '2027-02-10',
+        '2027-02-11',
+      );
+    });
   });
 });
