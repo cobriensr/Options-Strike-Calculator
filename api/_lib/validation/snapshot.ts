@@ -190,6 +190,10 @@ export const snapshotBodySchema = z.object({
 
   // Events
   isEarlyClose: bool,
+  // isEventDay and eventNames: /api/snapshot replaces both with the server's
+  // own lookup (api/_lib/market-events.ts). They stay here so an older client
+  // that still sends them validates; an incomplete lookup falls back to the
+  // client's names.
   isEventDay: bool,
   eventNames: z.array(z.string()).nullable().optional(),
 

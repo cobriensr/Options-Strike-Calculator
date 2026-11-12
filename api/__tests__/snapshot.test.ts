@@ -16,11 +16,27 @@ vi.mock('../_lib/db.js', () => ({
 
 vi.mock('../_lib/sentry.js', () => ({
   Sentry: { captureException: vi.fn(), captureMessage: vi.fn() },
-  metrics: { request: vi.fn(() => vi.fn()), dbSave: vi.fn() },
+  metrics: {
+    request: vi.fn(() => vi.fn()),
+    dbSave: vi.fn(),
+    increment: vi.fn(),
+  },
 }));
 
 vi.mock('../_lib/logger.js', () => ({
   default: { error: vi.fn(), warn: vi.fn(), info: vi.fn() },
+}));
+
+// The real module loads for `eventNamesForSnapshot`, so the snapshot save and
+// the backfill keep one definition of the names; only the lookup is replaced.
+// Its Redis import is mocked so loading it creates no client.
+vi.mock('../_lib/redis.js', () => ({
+  redis: { get: vi.fn(), set: vi.fn() },
+}));
+
+vi.mock('../_lib/market-events.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../_lib/market-events.js')>()),
+  getEventsForDate: vi.fn(),
 }));
 
 import handler from '../snapshot.js';
@@ -32,6 +48,7 @@ import {
 import { saveSnapshot } from '../_lib/db.js';
 import { Sentry, metrics } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
+import { getEventsForDate, type EventItem } from '../_lib/market-events.js';
 
 // The clock is pinned (Date only) to 2026-03-10 11:00 EDT.
 const NOW = '2026-03-10T15:00:00Z';
@@ -56,7 +73,11 @@ describe('POST /api/snapshot', () => {
     vi.mocked(respondIfInvalid).mockReturnValue(false);
     vi.mocked(Sentry.captureException).mockClear();
     vi.mocked(metrics.dbSave).mockClear();
+    vi.mocked(metrics.increment).mockClear();
     vi.mocked(logger.error).mockClear();
+    vi.mocked(getEventsForDate)
+      .mockReset()
+      .mockResolvedValue({ events: [], complete: true });
   });
 
   it('returns 405 for non-POST methods', async () => {
@@ -137,6 +158,8 @@ describe('POST /api/snapshot', () => {
     expect(saveSnapshot).toHaveBeenCalledWith({
       date: '2026-03-10',
       entryTime: '09:35',
+      isEventDay: false,
+      eventNames: [],
     });
   });
 
@@ -171,6 +194,8 @@ describe('POST /api/snapshot', () => {
         date: TODAY,
         entryTime: '10:30 AM CT',
         ...SEVEN,
+        isEventDay: false,
+        eventNames: [],
       });
     });
 
@@ -200,6 +225,8 @@ describe('POST /api/snapshot', () => {
         date: TODAY,
         entryTime: '10:30 AM CT',
         ...nulls,
+        isEventDay: false,
+        eventNames: [],
       });
     });
 
@@ -220,6 +247,8 @@ describe('POST /api/snapshot', () => {
         date: TODAY,
         entryTime: '10:30 AM CT',
         spx: 6800,
+        isEventDay: false,
+        eventNames: [],
       });
     });
   });
@@ -431,6 +460,251 @@ describe('POST /api/snapshot', () => {
 
       expect(res._status).toBe(400);
       expect(saveSnapshot).not.toHaveBeenCalled();
+    });
+  });
+
+  // ── The event flag and names ────────────────────────────────
+  // The server decides both from getEventsForDate. A complete lookup replaces
+  // whatever the client sent; an incomplete or failed one keeps the client's
+  // names beside the server's, so a FRED outage never loses a flag the
+  // client already had.
+
+  describe('the event flag and names', () => {
+    const LOOKUP_MSG = 'snapshot: event lookup incomplete';
+
+    function eventItem(name: string): EventItem {
+      return {
+        date: TODAY,
+        event: name,
+        description: name,
+        time: '8:30 AM',
+        severity: 'high',
+        source: 'fred',
+      };
+    }
+
+    function lookup(names: string[], complete: boolean) {
+      vi.mocked(getEventsForDate).mockResolvedValue({
+        events: names.map(eventItem),
+        complete,
+      });
+    }
+
+    async function save(body: Record<string, unknown>) {
+      vi.mocked(saveSnapshot).mockResolvedValue(11);
+      const res = mockResponse();
+      await handler(
+        mockRequest({
+          method: 'POST',
+          body: { date: TODAY, entryTime: '10:30 AM CT', ...body },
+        }),
+        res,
+      );
+      return res;
+    }
+
+    function expectLookupReported(err: unknown) {
+      expect(metrics.increment).toHaveBeenCalledTimes(1);
+      expect(metrics.increment).toHaveBeenCalledWith(
+        'snapshot.event_lookup_incomplete',
+      );
+      expect(logger.warn).toHaveBeenCalledTimes(1);
+      expect(logger.warn).toHaveBeenCalledWith(
+        { date: TODAY, err },
+        LOOKUP_MSG,
+      );
+      expect(Sentry.captureMessage).toHaveBeenCalledTimes(1);
+      expect(Sentry.captureMessage).toHaveBeenCalledWith(LOOKUP_MSG, {
+        level: 'warning',
+        extra: { date: TODAY },
+      });
+    }
+
+    function expectNothingReported() {
+      expect(metrics.increment).not.toHaveBeenCalled();
+      expect(logger.warn).not.toHaveBeenCalled();
+      expect(Sentry.captureMessage).not.toHaveBeenCalled();
+    }
+
+    it('saves a CPI date as an event day although the client sent none', async () => {
+      lookup(['CPI'], true);
+
+      const res = await save({ isEventDay: false, eventNames: [] });
+
+      expect(res._json).toEqual({ id: 11, saved: true });
+      expect(saveSnapshot).toHaveBeenCalledWith({
+        date: TODAY,
+        entryTime: '10:30 AM CT',
+        isEventDay: true,
+        eventNames: ['CPI'],
+      });
+      expectNothingReported();
+    });
+
+    it('replaces the client names with the server names on a complete lookup', async () => {
+      lookup(['CPI', 'NVDA Earnings'], true);
+
+      await save({ isEventDay: true, eventNames: ['FOMC'] });
+
+      expect(saveSnapshot).toHaveBeenCalledWith(
+        expect.objectContaining({
+          isEventDay: true,
+          eventNames: ['CPI', 'NVDA Earnings'],
+        }),
+      );
+    });
+
+    it('saves a complete empty day as not an event day, whatever the client sent', async () => {
+      lookup([], true);
+
+      const res = await save({ isEventDay: true, eventNames: ['FOMC'] });
+
+      expect(res._json).toEqual({ id: 11, saved: true });
+      expect(saveSnapshot).toHaveBeenCalledWith({
+        date: TODAY,
+        entryTime: '10:30 AM CT',
+        isEventDay: false,
+        eventNames: [],
+      });
+      expectNothingReported();
+    });
+
+    it('adds the client-only names after the server names on an incomplete lookup, and reports it', async () => {
+      lookup(['CPI'], false);
+
+      const res = await save({ isEventDay: true, eventNames: ['FOMC', 'CPI'] });
+
+      expect(res._status).toBe(200);
+      expect(res._json).toEqual({ id: 11, saved: true });
+      expect(saveSnapshot).toHaveBeenCalledWith({
+        date: TODAY,
+        entryTime: '10:30 AM CT',
+        isEventDay: true,
+        eventNames: ['CPI', 'FOMC'],
+      });
+      expectLookupReported(undefined);
+    });
+
+    it('keeps the server duplicates, and appends none already present, on an incomplete lookup', async () => {
+      lookup(['CPI', 'CPI'], false);
+
+      await save({ eventNames: ['CPI'] });
+
+      expect(saveSnapshot).toHaveBeenCalledWith(
+        expect.objectContaining({
+          isEventDay: true,
+          eventNames: ['CPI', 'CPI'],
+        }),
+      );
+    });
+
+    it.each([
+      ['null', { eventNames: null }],
+      ['omitted', {}],
+    ])(
+      'saves a not-event day when the lookup is incomplete and the client names are %s',
+      async (_label, clientNames) => {
+        lookup([], false);
+
+        const res = await save(clientNames);
+
+        expect(res._json).toEqual({ id: 11, saved: true });
+        expect(saveSnapshot).toHaveBeenCalledWith({
+          date: TODAY,
+          entryTime: '10:30 AM CT',
+          isEventDay: false,
+          eventNames: [],
+        });
+        expectLookupReported(undefined);
+      },
+    );
+
+    it('uses the client names, reports the error, and still saves when the lookup rejects', async () => {
+      const failure = new Error('FRED unreachable');
+      vi.mocked(getEventsForDate).mockRejectedValue(failure);
+
+      const res = await save({ isEventDay: true, eventNames: ['FOMC', 'CPI'] });
+
+      expect(res._status).toBe(200);
+      expect(res._json).toEqual({ id: 11, saved: true });
+      expect(saveSnapshot).toHaveBeenCalledWith({
+        date: TODAY,
+        entryTime: '10:30 AM CT',
+        isEventDay: true,
+        eventNames: ['FOMC', 'CPI'],
+      });
+      expectLookupReported(failure);
+      // The lookup's failure is not the save's: the outer catch stays unused.
+      expect(Sentry.captureException).not.toHaveBeenCalled();
+      expect(logger.error).not.toHaveBeenCalled();
+      expect(metrics.dbSave).toHaveBeenCalledWith('market_snapshots', true);
+    });
+
+    it('treats an unusable lookup result as a failed lookup, not a failed save', async () => {
+      // A cache entry whose events hold a null makes eventNamesForSnapshot
+      // throw; the save must still go on with the client's names.
+      vi.mocked(getEventsForDate).mockResolvedValue({
+        events: [null as unknown as EventItem],
+        complete: true,
+      });
+
+      const res = await save({ isEventDay: true, eventNames: ['FOMC'] });
+
+      expect(res._json).toEqual({ id: 11, saved: true });
+      expect(saveSnapshot).toHaveBeenCalledWith(
+        expect.objectContaining({ isEventDay: true, eventNames: ['FOMC'] }),
+      );
+      expectLookupReported(expect.any(TypeError));
+      expect(Sentry.captureException).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['a live save for today', TODAY, undefined],
+      ['a backtest save for today', TODAY, true],
+      ['a backtest save for a past date', YESTERDAY, true],
+    ])(
+      'looks the day up once, with the body’s date, for %s',
+      async (_label, date, isBacktest) => {
+        lookup(['CPI'], true);
+
+        await save({ date, isBacktest });
+
+        expect(getEventsForDate).toHaveBeenCalledTimes(1);
+        expect(getEventsForDate).toHaveBeenCalledWith(date);
+      },
+    );
+
+    it.each([
+      ['a live save for a future date', TOMORROW, undefined],
+      ['a backtest save for a future date', TOMORROW, true],
+      ['a live save for a past date', YESTERDAY, undefined],
+    ])('makes no lookup for %s', async (_label, date, isBacktest) => {
+      const res = await save({ date, isBacktest });
+
+      expect(res._json).toMatchObject({ saved: false });
+      expect(saveSnapshot).not.toHaveBeenCalled();
+      expect(getEventsForDate).not.toHaveBeenCalled();
+    });
+
+    it('still takes the error path when the database rejects after a complete lookup', async () => {
+      lookup(['CPI'], true);
+      vi.mocked(saveSnapshot).mockRejectedValue(new Error('DB error'));
+
+      const res = mockResponse();
+      await handler(
+        mockRequest({
+          method: 'POST',
+          body: { date: TODAY, entryTime: '10:30 AM CT' },
+        }),
+        res,
+      );
+
+      expect(res._status).toBe(200);
+      expect(res._json).toEqual({ id: null, saved: false });
+      expect(metrics.dbSave).toHaveBeenCalledWith('market_snapshots', false);
+      expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+      expect(logger.error).toHaveBeenCalledTimes(1);
+      expectNothingReported();
     });
   });
 });

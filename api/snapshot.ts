@@ -20,6 +20,15 @@
  *     the date it shows, and the upsert would then protect that row from
  *     the date's own replay.
  *
+ * The server decides the event flag and names. It looks the date up in
+ * `getEventsForDate` (FRED, the FOMC and early-close calendar, Finnhub) and
+ * stores `is_event_day` and `event_names` from that, whatever the client sent:
+ * the client only knows events from today forward, so a replay or the day's
+ * first live save would otherwise store a past event day as a plain one. When
+ * the lookup is incomplete or fails, the save still goes ahead with the
+ * server's partial names plus any the client sent, and the gap is reported
+ * (snapshot.event_lookup_incomplete, a warning log and a Sentry warning).
+ *
  * Called automatically by the frontend whenever results are computed.
  */
 
@@ -33,7 +42,52 @@ import {
 import { saveSnapshot } from './_lib/db.js';
 import { snapshotBodySchema } from './_lib/validation.js';
 import logger from './_lib/logger.js';
+import {
+  eventNamesForSnapshot,
+  getEventsForDate,
+} from './_lib/market-events.js';
 import { getETToday } from '../src/utils/timezone.js';
+
+/**
+ * The `is_event_day` and `event_names` a snapshot for `date` stores. A
+ * complete lookup is the whole answer and the client's values are ignored.
+ * An incomplete or failed one keeps the server's names in order, duplicates
+ * included, then appends each client name not already listed, and is
+ * reported. It never throws: the lookup's failure must not cost the save.
+ */
+async function resolveEventFlags(
+  date: string,
+  clientNames: readonly string[] | null | undefined,
+): Promise<{ isEventDay: boolean; eventNames: string[] }> {
+  let serverNames: string[] = [];
+  let complete = false;
+  let lookupErr: unknown;
+  try {
+    const lookup = await getEventsForDate(date);
+    // `complete` is read last: if naming the events throws, the lookup counts
+    // as failed and `serverNames` is still empty.
+    serverNames = eventNamesForSnapshot(lookup.events);
+    complete = lookup.complete;
+  } catch (err) {
+    lookupErr = err;
+  }
+
+  if (complete) {
+    return { isEventDay: serverNames.length > 0, eventNames: serverNames };
+  }
+
+  const eventNames = [...serverNames];
+  for (const name of clientNames ?? []) {
+    if (!eventNames.includes(name)) eventNames.push(name);
+  }
+  metrics.increment('snapshot.event_lookup_incomplete');
+  logger.warn({ date, err: lookupErr }, 'snapshot: event lookup incomplete');
+  Sentry.captureMessage('snapshot: event lookup incomplete', {
+    level: 'warning',
+    extra: { date },
+  });
+  return { isEventDay: eventNames.length > 0, eventNames };
+}
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   const done = metrics.request('/api/snapshot');
@@ -82,7 +136,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         .json({ id: null, saved: false, skipped: 'live-for-other-date' });
     }
 
-    const id = await saveSnapshot(parsed.data);
+    const { isEventDay, eventNames } = await resolveEventFlags(
+      date,
+      parsed.data.eventNames,
+    );
+    const id = await saveSnapshot({ ...parsed.data, isEventDay, eventNames });
 
     metrics.dbSave('market_snapshots', true);
     res.setHeader('Cache-Control', 'no-store');
