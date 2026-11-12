@@ -12,7 +12,8 @@ Each run:
 1. Lists the days already in R2 and plans the newest missing sessions, up to 30
    days of catch-up (`CATCHUP_MAX_DAYS`). The calendar starts at 2026-01-02
    (`TAPE_START`). A planned day starts only inside the window under "How much of
-   the run the tape gets", so a long backlog can take more than one night.
+   the run the tape gets". At the measured pace (about 200 s a day) all 30 fit
+   today, so a night lands up to 30 days and a longer backlog takes more nights.
 2. For each planned day, newest first: downloads the zip from UW, converts it to
    Parquet with polars (zstd level 3), checks it (see "Row and day checks"), and
    uploads it to R2. The upload is checked against the local byte count. A
@@ -61,11 +62,18 @@ the first `RUN_DEADLINE_SECONDS − reserve − DAY_BUDGET_SECONDS` seconds of t
 | Minimum left to start a day (`DAY_BUDGET_SECONDS`)                                   | 3,600               |
 | Window in which a day may start: 16,800 − 3,600                                      | 13,200 (3 h 40 min) |
 
-A night starts about 13,200 divided by the seconds one day takes. Every step added
-to `STEPS` takes its `min_seconds` out of the window. The plan puts it at 11,400 s
-once phase 4's refit step is in, and at 6,900 s once phase 3's research and report
-steps are too (enrich budget at 900 s; the stage table in D2 of
-`docs/superpowers/plans/2026-10-29-nightly-pipeline-phase2.md`).
+A night starts about 13,200 divided by the seconds one day takes. On Railway a day
+takes 204 s to land at the median (86 days, 2026-10-29 to 11-12; 245 s at the 90th
+percentile, 324 s the slowest), and the two 30-day catch-up nights took 5,956 s and
+6,110 s. So the window could start about 64 days at the median pace and 40 at the
+slowest, and the 30-day cap (`CATCHUP_MAX_DAYS`), not the window, sets how many
+land. Every step added to `STEPS` takes its `min_seconds` out of the window. The
+plan puts it at 11,400 s once phase 4's refit step is in (still above 30 days at
+the slowest pace), and at 6,900 s once phase 3's research and report steps are too
+(enrich budget at 900 s; the stage table in D2 of
+`docs/superpowers/plans/2026-10-29-nightly-pipeline-phase2.md`). At 6,900 s the
+slowest pace starts about 21 days, so a full 30-day backlog may then take two
+nights.
 `test_deadline_constants_bound_the_run` (`tests/test_main.py`) fails if the reserve
 leaves less than two `DAY_BUDGET_SECONDS` of the run for the tape.
 
