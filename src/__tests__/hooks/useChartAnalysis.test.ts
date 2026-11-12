@@ -11,6 +11,13 @@ import type {
 // MOCKS
 // ============================================================
 
+// The hold a run takes on a waiting service-worker update, and its release.
+const { holdAutoUpdate, release } = vi.hoisted(() => {
+  const releaseHold = vi.fn();
+  return { holdAutoUpdate: vi.fn(() => releaseHold), release: releaseHold };
+});
+vi.mock('../../lib/sw-update', () => ({ holdAutoUpdate }));
+
 const originalFetch = globalThis.fetch;
 const mockFetch = vi.fn();
 
@@ -480,5 +487,185 @@ describe('useChartAnalysis: retry prompt', () => {
     const body2 = JSON.parse(analyzeCalls[1]![1].body);
     expect(body1.images).toHaveLength(1);
     expect(body2.images).toHaveLength(1);
+  });
+});
+
+// ============================================================
+// HOLD ON A WAITING UPDATE
+// ============================================================
+
+// A reload drops the request (up to 780 s) and a pending retry decision, so a
+// run keeps a waiting service-worker update from applying until it is over.
+describe('useChartAnalysis: hold on a waiting update', () => {
+  it('takes the hold before building the payload and releases it when the run ends', async () => {
+    // With a spot price, building the payload fetches positions first, so the
+    // run's first request is made before the analyze request is built.
+    const seen: { url: string; holds: number; releases: number }[] = [];
+    mockFetch.mockImplementation((url: string) => {
+      seen.push({
+        url,
+        holds: holdAutoUpdate.mock.calls.length,
+        releases: release.mock.calls.length,
+      });
+      return Promise.resolve(makeSuccessResponse());
+    });
+
+    const { result } = renderHook(() =>
+      useChartAnalysis(defaultOpts({ results: { spot: 5000 } })),
+    );
+    await act(async () => {
+      await result.current.analyze();
+    });
+
+    expect(seen).toEqual([
+      { url: '/api/positions?spx=5000', holds: 1, releases: 0 },
+      { url: '/api/analyze', holds: 1, releases: 0 },
+    ]);
+    expect(holdAutoUpdate).toHaveBeenCalledTimes(1);
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the hold while the request is in flight and releases it on cancel', async () => {
+    vi.useFakeTimers();
+    mockFetch.mockImplementation(
+      (_url: string, opts: { signal: AbortSignal }) =>
+        new Promise((_resolve, reject) => {
+          opts.signal.addEventListener('abort', () => {
+            reject(new DOMException('The operation was aborted', 'AbortError'));
+          });
+        }),
+    );
+    const { result } = renderHook(() => useChartAnalysis(defaultOpts()));
+
+    let analyzePromise: Promise<void> | undefined;
+    act(() => {
+      analyzePromise = result.current.analyze();
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10);
+    });
+    expect(result.current.loading).toBe(true);
+    expect(holdAutoUpdate).toHaveBeenCalledTimes(1);
+    expect(release).not.toHaveBeenCalled();
+
+    act(() => {
+      result.current.cancelAnalysis();
+    });
+    await act(async () => {
+      await analyzePromise;
+    });
+
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it('holds across the retry prompt and every attempt with one hold', async () => {
+    mockFetch
+      .mockResolvedValueOnce(makeErrorResponse('Server timeout', 500))
+      .mockResolvedValueOnce(makeSuccessResponse());
+    const { result } = renderHook(() => useChartAnalysis(defaultOpts()));
+
+    act(() => {
+      result.current.analyze();
+    });
+    await act(async () => {});
+
+    // The run is paused on the user's decision, loading is false, and the
+    // reload would still lose the retry.
+    expect(result.current.retryPrompt).not.toBeNull();
+    expect(result.current.loading).toBe(false);
+    expect(holdAutoUpdate).toHaveBeenCalledTimes(1);
+    expect(release).not.toHaveBeenCalled();
+
+    act(() => {
+      result.current.confirmRetry();
+    });
+    await act(async () => {});
+
+    expect(result.current.analysis).toEqual(sampleAnalysis);
+    expect(holdAutoUpdate).toHaveBeenCalledTimes(1);
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it('releases the hold when the user cancels the retry', async () => {
+    mockFetch.mockResolvedValue(makeErrorResponse('Server error', 500));
+    const { result } = renderHook(() => useChartAnalysis(defaultOpts()));
+
+    act(() => {
+      result.current.analyze();
+    });
+    await act(async () => {});
+    expect(release).not.toHaveBeenCalled();
+
+    act(() => {
+      result.current.cancelRetry();
+    });
+    await act(async () => {});
+
+    expect(result.current.error).toBe('Retry cancelled.');
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it('releases the hold once all attempts are exhausted', async () => {
+    mockFetch.mockResolvedValue(makeErrorResponse('Server down', 500));
+    const { result } = renderHook(() => useChartAnalysis(defaultOpts()));
+
+    act(() => {
+      result.current.analyze();
+    });
+    await act(async () => {});
+    act(() => {
+      result.current.confirmRetry();
+    });
+    await act(async () => {});
+    act(() => {
+      result.current.confirmRetry();
+    });
+    await act(async () => {});
+
+    expect(result.current.error).toMatch(/failed after 3 attempts/i);
+    expect(holdAutoUpdate).toHaveBeenCalledTimes(1);
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it('releases the hold on a fatal 4xx response', async () => {
+    mockFetch.mockResolvedValue(makeErrorResponse('Bad request', 400));
+    const { result } = renderHook(() => useChartAnalysis(defaultOpts()));
+
+    await act(async () => {
+      await result.current.analyze();
+    });
+
+    expect(result.current.error).toBe('Bad request');
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it('releases the hold when the run throws before the request', async () => {
+    // A null context makes buildPayload throw, which the hook's catch turns
+    // into an error message.
+    const { result } = renderHook(() =>
+      useChartAnalysis(defaultOpts({ context: null })),
+    );
+
+    await act(async () => {
+      await result.current.analyze();
+    });
+
+    expect(result.current.error).toMatch(/null/i);
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(holdAutoUpdate).toHaveBeenCalledTimes(1);
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it('takes no hold when there are no images to analyze', async () => {
+    const { result } = renderHook(() =>
+      useChartAnalysis(defaultOpts({ images: [] })),
+    );
+
+    await act(async () => {
+      await result.current.analyze();
+    });
+
+    expect(holdAutoUpdate).not.toHaveBeenCalled();
+    expect(release).not.toHaveBeenCalled();
   });
 });

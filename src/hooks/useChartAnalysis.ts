@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { captureUnlessAuth } from '../lib/sentry-helpers';
+import { holdAutoUpdate } from '../lib/sw-update';
 import type { CalculationResults } from '../types';
 import type {
   AnalysisMode,
@@ -341,6 +342,10 @@ export function useChartAnalysis(opts: {
 
   const analyze = useCallback(async () => {
     if (imagesRef.current.length === 0) return;
+    // A reload would drop the request (up to 780 s) and a pending retry
+    // decision, so a waiting service-worker update stays put until the whole
+    // run, retries included, is over.
+    const releaseHold = holdAutoUpdate();
     setLoading(true);
     setError(null);
     setAnalysis(null);
@@ -408,6 +413,7 @@ export function useChartAnalysis(opts: {
     } catch (err) {
       setError(getErrorMessage(err));
     } finally {
+      releaseHold();
       abortRef.current = null;
       setRetryPrompt(null);
       setLoading(false);
