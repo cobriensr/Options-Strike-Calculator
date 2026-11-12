@@ -1144,9 +1144,41 @@ def test_plan_says_how_it_counted(make_conn) -> None:
     )
     sbk.write_state(s3, BUCKET, 6)
     assert sbk.plan_days(conn, s3, BUCKET, TODAY).scope == 'delta'
-    assert sbk.plan_days(conn, s3, BUCKET, TODAY, verify_counts=True).scope == (
-        'every day: --verify-counts'
-    )
+    assert any('id > %s' in t for t, _ in conn.statements)
+
+    # Asked to count every day, it never runs the delta query, though a stored
+    # mark is there for it.
+    every_day = make_conn(three_days())
+    plan = sbk.plan_days(every_day, s3, BUCKET, TODAY, verify_counts=True)
+
+    assert plan.scope == 'every day: --verify-counts'
+    assert not any('id > %s' in t for t, _ in every_day.statements)
+
+
+def test_plan_counts_every_day_when_the_stored_mark_is_above_max_id(make_conn) -> None:
+    # After a point-in-time restore or a sequence reset the mark can be ahead of
+    # every id in the table. The delta would find nothing and say all is well.
+    conn = make_conn(three_days())
+    s3 = FakeS3()
+    s3.put_day(D1, 1)  # stale, with no rows past any mark
+    s3.put_day(D2, 3)
+    s3.put_day(D3, 1)
+    sbk.write_state(s3, BUCKET, 1000)
+
+    plan = sbk.plan_days(conn, s3, BUCKET, TODAY)
+
+    assert plan.scope == 'every day: the stored mark is above max(id)'
+    assert not any('id > %s' in t for t, _ in conn.statements)
+    assert plan.due == [D1]
+    assert plan.high_water_id == 6
+
+
+def test_a_stored_mark_equal_to_max_id_uses_the_delta(make_conn) -> None:
+    conn = make_conn(three_days())
+    s3 = FakeS3()
+    sbk.write_state(s3, BUCKET, 6)
+
+    assert sbk.plan_days(conn, s3, BUCKET, TODAY).scope == 'delta'
 
 
 def test_delta_limit_is_five_million_ids() -> None:
@@ -1562,7 +1594,9 @@ def test_status_output(cli) -> None:
     s3.put_day(date(2026, 11, 9), 1)  # a future day in R2 is not a database day
     sbk.write_state(s3, BUCKET, 8)  # nothing is past the mark: only a full count sees D2
 
-    code, out = cli.run(FakeConnection(rows), s3, 'status')
+    conn = FakeConnection(rows)
+
+    code, out = cli.run(conn, s3, 'status')
 
     assert code == 0
     assert 'database days: 3 (2026-11-02 to 2026-11-04)' in out
@@ -1570,7 +1604,10 @@ def test_status_output(cli) -> None:
     assert 'missing: 1 (2026-11-04)' in out
     assert 'stale: 1 (2026-11-03)' in out
     assert 'high-water id: 8' in out
-    assert 'counting: every day: --verify-counts' in out
+    # The user passed no flag: status says what it does, in its own words.
+    assert 'counting: every day (status)' in out
+    assert '--verify-counts' not in out
+    assert not any('id > %s' in t for t, _ in conn.statements)  # never the delta
     for secret in (DSN_SECRET, R2_SECRET, 'ACCESS-KEY-MARKER', 'ep-marker'):
         assert secret not in out
     assert s3.keys('upload') == []

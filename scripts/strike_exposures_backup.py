@@ -480,7 +480,6 @@ _DAYS_SQL = (
 )
 _MAX_ID_SQL = 'SELECT max(id) FROM strike_exposures'
 _DELTA_SQL = 'SELECT date FROM strike_exposures WHERE id > %s GROUP BY date'
-_DELTA_SCOPE = 'delta'
 
 
 @dataclass(frozen=True)
@@ -553,20 +552,27 @@ def plan_days(
         db_days = [row[0] for row in cur.fetchall() if row[0] < today_et]
         cur.execute(_MAX_ID_SQL)
         high_water_id = cur.fetchone()[0] or 0
+        # `scope` is the label that is printed; `use_delta` is what decides.
+        use_delta = False
         if verify_counts:
             scope = 'every day: --verify-counts'
         elif last_id is None:
             scope = 'every day: no stored high-water mark'
+        elif high_water_id < last_id:
+            # After a point-in-time restore or a sequence reset the mark can be
+            # ahead of every id: the delta would find nothing and call it fine.
+            scope = 'every day: the stored mark is above max(id)'
         elif high_water_id - last_id > DELTA_MAX_IDS:
             scope = f'every day: ids moved more than {DELTA_MAX_IDS} since the stored mark'
         else:
-            scope = _DELTA_SCOPE
+            scope = 'delta'
+            use_delta = True
         gained: set[date] = set()
-        if scope == _DELTA_SCOPE:
+        if use_delta:
             cur.execute(_DELTA_SQL, (last_id,))
             gained = {row[0] for row in cur.fetchall()}
         for day in db_days:
-            counted = scope != _DELTA_SCOPE or day in gained
+            counted = not use_delta or day in gained
             if day in exported and day not in untrusted and counted:
                 cur.execute(_COUNT_SQL, (day,))
                 counts[day] = cur.fetchone()[0]
@@ -676,7 +682,8 @@ def _status(conn, s3, bucket: str, today: date) -> int:
         if plan.db_days
         else ''
     )
-    print(f'counting: {plan.scope}')
+    # Not plan.scope: that says "--verify-counts", a flag status was never given.
+    print('counting: every day (status)')
     print(f'database days: {len(plan.db_days)}{span}')
     print(f'exported days: {len(plan.object_days)}')
     print(_dates_line('missing', plan.missing))
