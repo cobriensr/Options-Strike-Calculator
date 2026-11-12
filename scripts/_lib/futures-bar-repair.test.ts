@@ -1122,6 +1122,17 @@ describe('runRepair', () => {
       expect(backupFiles()).toEqual([]);
     });
 
+    it('throws on a run without --repair before it reads, fetches, writes or prints anything: the other modes run through runBarBackfill', async () => {
+      await expect(run({ repair: false, workDir })).rejects.toThrow(
+        'runRepair needs --repair; other modes run through runBarBackfill',
+      );
+
+      expect(mockSql).not.toHaveBeenCalled();
+      expect(mockUwFetch).not.toHaveBeenCalled();
+      expect(backupFiles()).toEqual([]);
+      expect(out()).toBe('');
+    });
+
     it('stops between dates once the page budget is spent, and the resume line keeps the repair flags', async () => {
       routeRepairSql({ ES: scenarioStored() });
       routeTrades({ ESU6: [SCENARIO_PRINTS] });

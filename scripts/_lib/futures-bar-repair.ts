@@ -745,6 +745,11 @@ function repairLine(
 export async function runRepair(
   opts: BarBackfillOptions & { apiKey: string },
 ): Promise<number> {
+  if (!opts.repair) {
+    throw new Error(
+      'runRepair needs --repair; other modes run through runBarBackfill',
+    );
+  }
   if (refuseDuringMarketHours()) return 1;
 
   const lastDay = new Date(Date.now() - DAY_MS).toISOString().slice(0, 10);

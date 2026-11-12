@@ -1053,6 +1053,16 @@ describe('runBarBackfill', () => {
     expect(mockUwFetch).not.toHaveBeenCalled();
   });
 
+  it('throws on a --repair run before it reads, fetches, writes or prints anything: that mode runs through runRepair', async () => {
+    await expect(run({ repair: true })).rejects.toThrow(
+      '--repair runs through runRepair',
+    );
+
+    expect(mockSql).not.toHaveBeenCalled();
+    expect(mockUwFetch).not.toHaveBeenCalled();
+    expect(out()).toBe('');
+  });
+
   it('stops before the next date when market hours begin mid-run, and says where to resume', async () => {
     mockIsMarketHours
       .mockReturnValueOnce(false) // the start guard

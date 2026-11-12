@@ -448,6 +448,7 @@ function modeOf(opts: BarBackfillOptions): Mode {
 export async function runBarBackfill(
   opts: BarBackfillOptions & { apiKey: string },
 ): Promise<number> {
+  if (opts.repair) throw new Error('--repair runs through runRepair');
   if (refuseDuringMarketHours()) return 1;
 
   const mode = modeOf(opts);
