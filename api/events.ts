@@ -1,7 +1,8 @@
 /**
  * GET /api/events
  *
- * Returns upcoming market events from multiple sources:
+ * Returns upcoming market events from multiple sources (built in
+ * `_lib/market-events.ts`):
  *   - FRED API: CPI, NFP, GDP, PCE, PPI, Retail Sales, JOLTS
  *   - Static: FOMC dates, half-day/early close dates
  *   - Finnhub API: Mega-cap earnings (AAPL, MSFT, NVDA, AMZN, GOOG, META, TSLA)
@@ -24,405 +25,14 @@ import { checkBot, setCacheHeaders } from './_lib/api-helpers.js';
 import { withRequestScope } from './_lib/request-scope.js';
 import { redis } from './_lib/redis.js';
 import logger from './_lib/logger.js';
-import { FOMC_DECISION_DATES, isSepMeeting } from './_lib/fomc-schedule.js';
+import {
+  CACHE_TTL_SEC,
+  fetchMarketEvents,
+  type EventItem,
+} from './_lib/market-events.js';
 import { getETDateStr } from '../src/utils/timezone.js';
-import { EARLY_CLOSE_DATES } from '../src/data/marketHours.js';
 
-// ============================================================
-// FRED RELEASE IDS → EVENT MAPPING
-// ============================================================
-
-interface FredReleaseConfig {
-  readonly id: number;
-  readonly event: string;
-  readonly description: string;
-  readonly time: string;
-  readonly severity: 'high' | 'medium';
-}
-
-const TRACKED_RELEASES: readonly FredReleaseConfig[] = [
-  {
-    id: 10,
-    event: 'CPI',
-    description: 'Consumer Price Index',
-    time: '8:30 AM',
-    severity: 'high',
-  },
-  {
-    id: 50,
-    event: 'NFP',
-    description: 'Employment Situation (Nonfarm Payrolls)',
-    time: '8:30 AM',
-    severity: 'high',
-  },
-  {
-    id: 53,
-    event: 'GDP',
-    description: 'Gross Domestic Product',
-    time: '8:30 AM',
-    severity: 'medium',
-  },
-  {
-    id: 54,
-    event: 'PCE',
-    description: 'Personal Income and Outlays (PCE Inflation)',
-    time: '8:30 AM',
-    severity: 'high',
-  },
-  {
-    id: 51,
-    event: 'PPI',
-    description: 'Producer Price Index',
-    time: '8:30 AM',
-    severity: 'medium',
-  },
-  {
-    id: 9,
-    event: 'Retail Sales',
-    description: 'Advance Monthly Sales for Retail and Food Services',
-    time: '8:30 AM',
-    severity: 'medium',
-  },
-  {
-    id: 110,
-    event: 'JOLTS',
-    description: 'Job Openings and Labor Turnover Survey',
-    time: '10:00 AM',
-    severity: 'medium',
-  },
-] as const;
-
-// ============================================================
-// STATIC HALF-DAY / EARLY CLOSE DATES
-// ============================================================
-
-/**
- * Early closes come from `EARLY_CLOSE_DATES` in `src/data/marketHours.ts`,
- * the same calendar every market-hours gate uses, so the two cannot drift
- * (this file once listed 2026-07-03 as an early close while NYSE was shut).
- * The reason label is derived from the month: Jul = Independence Day Eve,
- * Nov = Black Friday, Dec = Christmas Eve.
- *
- * Good Friday is the only full closure surfaced as a CLOSED event (no 0DTE
- * is possible); `MARKET_CLOSED_DATES` carries no holiday names, so these
- * stay listed by hand. Add next year's Good Friday here when you extend
- * the calendar.
- *
- * Sources: https://www.nyse.com/markets/hours-calendars
- */
-const GOOD_FRIDAYS: readonly string[] = [
-  '2025-04-18',
-  '2026-04-03',
-  '2027-03-26',
-  '2028-04-14',
-];
-
-const EARLY_CLOSE_REASON_BY_MONTH: Readonly<Record<string, string>> = {
-  '07': 'Independence Day Eve',
-  '11': 'Black Friday',
-  '12': 'Christmas Eve',
-};
-
-interface HalfDayEntry {
-  readonly date: string;
-  readonly type: 'early_close' | 'closed';
-  readonly closeTime?: string;
-  readonly reason: string;
-}
-
-function formatCloseTime(hourET: number): string {
-  const hour12 = hourET > 12 ? hourET - 12 : hourET;
-  return `${hour12}:00 ${hourET >= 12 ? 'PM' : 'AM'}`;
-}
-
-const ALL_HALF_DAYS: readonly HalfDayEntry[] = [
-  ...GOOD_FRIDAYS.map(
-    (date): HalfDayEntry => ({ date, type: 'closed', reason: 'Good Friday' }),
-  ),
-  ...[...EARLY_CLOSE_DATES].map(
-    ([date, hourET]): HalfDayEntry => ({
-      date,
-      type: 'early_close',
-      closeTime: formatCloseTime(hourET),
-      reason: EARLY_CLOSE_REASON_BY_MONTH[date.slice(5, 7)] ?? 'Early close',
-    }),
-  ),
-].sort((x, y) => x.date.localeCompare(y.date));
-
-// ============================================================
-// MEGA-CAP EARNINGS (FINNHUB)
-// ============================================================
-
-/**
- * The "Magnificent 7" — each represents 3–8% of SPX.
- * When one reports earnings (even after hours), the next morning's
- * SPX open can gap significantly.
- */
-const MEGA_CAP_SYMBOLS = new Set([
-  'AAPL',
-  'MSFT',
-  'NVDA',
-  'AMZN',
-  'GOOG',
-  'META',
-  'TSLA',
-]);
-
-const FINNHUB_BASE = 'https://finnhub.io/api/v1';
-
-interface FinnhubEarningsEntry {
-  date: string;
-  epsActual: number | null;
-  epsEstimate: number | null;
-  hour: string; // 'bmo' (before open), 'amc' (after close), 'dmh' (during)
-  quarter: number;
-  revenueActual: number | null;
-  revenueEstimate: number | null;
-  symbol: string;
-  year: number;
-}
-
-interface FinnhubEarningsResponse {
-  earningsCalendar: FinnhubEarningsEntry[];
-}
-
-async function fetchMegaCapEarnings(
-  apiKey: string,
-  startDate: string,
-  endDate: string,
-): Promise<EventItem[]> {
-  const events: EventItem[] = [];
-
-  try {
-    const params = new URLSearchParams({
-      from: startDate,
-      to: endDate,
-      token: apiKey,
-    });
-
-    const url = `${FINNHUB_BASE}/calendar/earnings?${params.toString()}`;
-    const res = await fetch(url, { signal: AbortSignal.timeout(30_000) });
-
-    if (!res.ok) {
-      logger.error({ status: res.status }, 'Finnhub earnings API error');
-      return [];
-    }
-
-    const data = (await res.json()) as FinnhubEarningsResponse;
-
-    for (const entry of data.earningsCalendar || []) {
-      if (!MEGA_CAP_SYMBOLS.has(entry.symbol)) continue;
-
-      const timeLabel =
-        entry.hour === 'bmo'
-          ? 'Before Open'
-          : entry.hour === 'amc'
-            ? 'After Close'
-            : entry.hour === 'dmh'
-              ? 'During Hours'
-              : '';
-
-      events.push({
-        date: entry.date,
-        event: `${entry.symbol} Earnings`,
-        description: `${entry.symbol} Q${entry.quarter} ${entry.year} earnings${timeLabel ? ' (' + timeLabel + ')' : ''}`,
-        time: timeLabel || 'TBD',
-        severity: 'high',
-        source: 'finnhub',
-      });
-    }
-  } catch (err) {
-    logger.error({ err }, 'Finnhub earnings fetch failed');
-  }
-
-  return events;
-}
-
-// ============================================================
-// TYPES
-// ============================================================
-
-interface FredReleaseDateEntry {
-  release_id: number;
-  release_name: string;
-  date: string;
-}
-
-interface FredReleaseDatesResponse {
-  release_dates: FredReleaseDateEntry[];
-}
-
-interface EventItem {
-  date: string;
-  event: string;
-  description: string;
-  time: string;
-  severity: 'high' | 'medium';
-  source: 'fred' | 'static' | 'finnhub';
-}
-
-// ============================================================
-// FRED API FETCH
-// ============================================================
-
-const FRED_BASE = 'https://api.stlouisfed.org/fred';
 const REDIS_KEY = 'events:v2';
-const CACHE_TTL_SEC = 7 * 24 * 60 * 60; // 7 days (key is date-scoped)
-
-interface FredReleaseResult {
-  entries: FredReleaseDateEntry[];
-  ok: boolean;
-}
-
-async function fetchReleaseDates(
-  releaseId: number,
-  apiKey: string,
-  startDate: string,
-  endDate: string,
-): Promise<FredReleaseResult> {
-  const params = new URLSearchParams({
-    release_id: String(releaseId),
-    api_key: apiKey,
-    file_type: 'json',
-    include_release_dates_with_no_data: 'true',
-    sort_order: 'asc',
-  });
-
-  const url = `${FRED_BASE}/release/dates?${params.toString()}`;
-  const res = await fetch(url, { signal: AbortSignal.timeout(30_000) });
-
-  if (!res.ok) {
-    logger.error({ releaseId, status: res.status }, 'FRED API error');
-    Sentry.captureMessage('FRED API non-OK', {
-      level: 'warning',
-      extra: { releaseId, status: res.status },
-    });
-    // Signal the error so the caller skips the day-scoped cache write —
-    // a transient FRED blip must not pin a degraded list for the day
-    // (e.g. a missing CPI flag on a CPI morning).
-    return { entries: [], ok: false };
-  }
-
-  const data = (await res.json()) as FredReleaseDatesResponse;
-
-  return {
-    entries: (data.release_dates || []).filter(
-      (r) => r.date >= startDate && r.date <= endDate,
-    ),
-    ok: true,
-  };
-}
-
-// ============================================================
-// MAIN FETCH
-// ============================================================
-
-interface AllEventsResult {
-  events: EventItem[];
-  /** True when every source returned OK — safe to cache for the full day. */
-  complete: boolean;
-}
-
-async function fetchAllEvents(
-  fredKey: string,
-  finnhubKey: string | undefined,
-  startDate: string,
-  endDate: string,
-): Promise<AllEventsResult> {
-  const releaseMap = new Map<number, FredReleaseConfig>();
-  for (const r of TRACKED_RELEASES) releaseMap.set(r.id, r);
-
-  // Fetch FRED releases + Finnhub earnings in parallel
-  const fredPromises = TRACKED_RELEASES.map((r) =>
-    fetchReleaseDates(r.id, fredKey, startDate, endDate),
-  );
-  const earningsPromise = finnhubKey
-    ? fetchMegaCapEarnings(finnhubKey, startDate, endDate)
-    : Promise.resolve([] as EventItem[]);
-
-  const [fredResults, earningsEvents] = await Promise.all([
-    Promise.all(fredPromises),
-    earningsPromise,
-  ]);
-
-  // Any FRED release erroring means the list may be missing economic
-  // events (e.g. CPI). Treat the whole fetch as incomplete so the caller
-  // does not cache a degraded result for the day.
-  const complete = fredResults.every((r) => r.ok);
-
-  const events: EventItem[] = [];
-
-  // Map FRED results to events
-  for (const { entries } of fredResults) {
-    for (const entry of entries) {
-      const config = releaseMap.get(entry.release_id);
-      if (!config) continue;
-
-      events.push({
-        date: entry.date,
-        event: config.event,
-        description: config.description,
-        time: config.time,
-        severity: config.severity,
-        source: 'fred',
-      });
-    }
-  }
-
-  // Add static FOMC dates within range
-  for (const fomcDate of FOMC_DECISION_DATES) {
-    if (fomcDate >= startDate && fomcDate <= endDate) {
-      const hasSEP = isSepMeeting(fomcDate);
-      events.push({
-        date: fomcDate,
-        event: hasSEP ? 'FOMC + SEP' : 'FOMC',
-        description: hasSEP
-          ? 'Fed rate decision + Summary of Economic Projections (dot plot)'
-          : 'Federal Reserve interest rate decision',
-        time: '2:00 PM',
-        severity: 'high',
-        source: 'static',
-      });
-    }
-  }
-
-  // Add half-day / early close dates within range
-  for (const hd of ALL_HALF_DAYS) {
-    if (hd.date >= startDate && hd.date <= endDate) {
-      if (hd.type === 'closed') {
-        events.push({
-          date: hd.date,
-          event: 'CLOSED',
-          description: `Market closed \u2014 ${hd.reason}`,
-          time: 'All Day',
-          severity: 'high',
-          source: 'static',
-        });
-      } else {
-        events.push({
-          date: hd.date,
-          event: 'EARLY CLOSE',
-          description: `Market closes at ${hd.closeTime} ET \u2014 ${hd.reason}. Time-to-expiry uses ${hd.closeTime} instead of 4:00 PM.`,
-          time: hd.closeTime!,
-          severity: 'high',
-          source: 'static',
-        });
-      }
-    }
-  }
-
-  // Add mega-cap earnings
-  events.push(...earningsEvents);
-
-  // Sort by date, then severity (high first), then event name
-  events.sort((a, b) => {
-    if (a.date !== b.date) return a.date.localeCompare(b.date);
-    if (a.severity !== b.severity) return a.severity === 'high' ? -1 : 1;
-    return a.event.localeCompare(b.event);
-  });
-
-  return { events, complete };
-}
 
 // ============================================================
 // HANDLER
@@ -439,15 +49,13 @@ export default withRequestScope(
         return res.status(403).json({ error: 'Access denied' });
       }
 
-      const fredKey = process.env.FRED_API_KEY;
-      if (!fredKey) {
+      if (!process.env.FRED_API_KEY) {
         done({ status: 500 });
         logger.error('FRED_API_KEY not configured');
         return res
           .status(500)
           .json({ error: 'Service temporarily unavailable' });
       }
-      const finnhubKey = process.env.FINNHUB_API_KEY; // optional — earnings only
 
       // Parse days parameter (default 30, max 90)
       const daysParam = Number(req.query?.days) || 30;
@@ -493,12 +101,7 @@ export default withRequestScope(
       }
 
       // Fetch from all sources
-      const { events, complete } = await fetchAllEvents(
-        fredKey,
-        finnhubKey,
-        startDate,
-        endDate,
-      );
+      const { events, complete } = await fetchMarketEvents(startDate, endDate);
 
       // Only cache when every source returned OK. A FRED blip degrades the
       // list to [] for those releases; caching that under the day-scoped key

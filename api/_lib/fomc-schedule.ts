@@ -1,7 +1,7 @@
 /**
  * The Fed's FOMC decision-day calendar: the one TypeScript home of it.
  *
- * `api/events.ts` lists the days, and the feature builder
+ * `api/_lib/market-events.ts` lists the days, and the feature builder
  * (`build-features-phase2.ts`) and the gamma detector (`gamma-detector.ts`)
  * ask `isFomcDecisionDay`. The ML code keeps two copies
  * (`ml/src/options_features/calendar.py` and
