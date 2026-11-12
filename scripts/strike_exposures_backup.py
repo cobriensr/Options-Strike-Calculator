@@ -179,6 +179,7 @@ _PAGE_SQL = (
     'SELECT ' + ', '.join(f'"{c}"' for c in COLUMNS) + ' FROM strike_exposures'
     ' WHERE date = %s'
 )
+_NO_SORT_SQL = ('SET LOCAL enable_sort = off', 'SET LOCAL enable_incremental_sort = off')
 _AFTER_KEY_SQL = ' AND ("timestamp", ticker, strike, expiry) > (%s, %s, %s, %s)'
 # Always ORDER BY the key: a LIMIT without it flips to a Seq Scan on a Friday
 # (2.8M of 74M rows) and times out.
@@ -305,7 +306,26 @@ def iter_day_pages(
     (keyset paging on the unique index). Never OFFSET, which re-reads every
     skipped row: 117 s at offset 20M. A page shorter than `page_rows` is the
     last one.
+
+    It turns both sorts off for the transaction before the first page, every
+    time it is called. It must run inside a transaction (`_read_snapshot`), where
+    SET LOCAL lasts until the end.
     """
+    # Planner trap, found on 2026-10-02 (3,518,489 rows, the largest day). For
+    # the pages after the first, WHERE date = D AND ("timestamp", ticker,
+    # strike, expiry) > (...) ORDER BY ... LIMIT 20000 left the unique-index
+    # scan for `Index Scan using idx_strike_exp_timestamp` + `Incremental Sort`,
+    # with the date and the row comparison as a Filter. LIMIT costing on that
+    # filtered timestamp scan makes it look cheap, but on the day's last page
+    # (fewer than 20,000 rows left) the scan runs on through every later
+    # timestamp in the table and hits the 60 s timeout. With both sorts off the
+    # planner keeps `Index Scan using
+    # strike_exposures_date_timestamp_ticker_strike_expiry_key` with both
+    # conditions in the Index Cond: 2.1 ms for 5,000 rows (EXPLAIN ANALYZE, a
+    # key 5,000 rows from the end). The underscore in enable_incremental_sort
+    # matters: enable_incrementalsort is an unrecognized parameter.
+    for statement in _NO_SORT_SQL:
+        cur.execute(statement)
     after: tuple = ()
     while True:
         sql = _PAGE_SQL + (_AFTER_KEY_SQL if after else '') + _ORDER_SQL

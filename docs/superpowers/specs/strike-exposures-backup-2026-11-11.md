@@ -71,6 +71,7 @@ Phase A alone is a complete backup that someone has to re-run by hand. Phase B r
   - Keyset on the unique key, in index order: `WHERE date = %s AND ("timestamp", ticker, strike, expiry) > (%s, %s, %s, %s) ORDER BY date, "timestamp", ticker, strike, expiry LIMIT %s`.
   - The first page drops the row comparison.
   - Never OFFSET, and never `LIMIT` without the `ORDER BY`: that combination becomes a Seq Scan and times out on a Friday.
+  - Both sorts are off for the transaction. `iter_day_pages` runs `SET LOCAL enable_sort = off` and `SET LOCAL enable_incremental_sort = off` before its first page, on every call, so the export and `verify` get them and the planning reads do not. Found by the first full history export, on 2026-10-02 (3,518,489 rows, the largest day): for the pages after the first, the planner left the unique-index scan for `Index Scan using idx_strike_exp_timestamp` plus `Incremental Sort`, with the date and the row comparison as a Filter. LIMIT costing on that filtered timestamp scan makes it look cheap, but on the day's last page (fewer than 20,000 rows left) it runs on through every later timestamp in the table and hits the 60 s timeout (`QueryCanceled`). 11-06 kept the unique-index plan. With both sorts off the planner takes `Index Scan using strike_exposures_date_timestamp_ticker_strike_expiry_key` with both conditions in the Index Cond: 2.1 ms for 5,000 rows (EXPLAIN ANALYZE, a key 5,000 rows from the end of 10-02). The underscore in `enable_incremental_sort` matters: `enable_incrementalsort` is an unrecognized parameter.
 - **Which days.**
   - Only dates before today's ET date. Today's rows are never exported until the session is over and the next run comes.
   - A date with 0 rows is skipped, not exported.
@@ -153,7 +154,7 @@ R2 is read before the snapshot opens: the object list and one `head_object` per 
   - It saves `conn.autocommit`, sets it to True, runs `BEGIN ISOLATION LEVEL REPEATABLE READ, READ ONLY` and `SET LOCAL statement_timeout = '60s'`, yields a cursor, then always runs `ROLLBACK` and restores `autocommit`. A ROLLBACK that fails on top of another error keeps that error as `__context__`.
   - If `conn.closed` is set, it skips both the ROLLBACK and the restore: psycopg2 raises `InterfaceError` for each on a dead connection, which would replace the original `OperationalError`.
   - One thread per connection.
-- `iter_day_pages(cur, day: date, page_rows: int = PAGE_ROWS) -> Iterator[list[tuple]]`: keyset pages, in key order.
+- `iter_day_pages(cur, day: date, page_rows: int = PAGE_ROWS) -> Iterator[list[tuple]]`: keyset pages, in key order. It first turns both sorts off for the transaction (see Global constraints, Paging), so it only runs inside a transaction.
 - `write_day_parquet(conn, day: date, out_dir: Path, page_rows: int = PAGE_ROWS) -> DayFile | None`. It reads inside `_read_snapshot`. It counts, streams the pages into a `pq.ParquetWriter` and checks the count. It returns `None` for a 0-row day.
   - On any failure, including a ROLLBACK, digest or stat that fails after the file is complete, it deletes the file. A database error propagates unwrapped, and on a dropped connection nothing more is sent, so that error is the one the caller sees.
   - A page that does not fit the schema raises `BackupError` after the handler, so Arrow's text (which can quote a cell) is not in the exception chain.
@@ -172,6 +173,7 @@ R2 is read before the snapshot opens: the object list and one `head_object` per 
     - A ROLLBACK that fails deletes a complete file, and keeps the original error as `__context__`. A failing digest or stat deletes the file.
     - A connection that dropped on the count, page 1 or page 2 surfaces the `OperationalError` itself: no ROLLBACK is sent and no `InterfaceError` follows.
     - `min_id` and `max_id` are right with ascending and with descending ids across pages.
+    - Every `iter_day_pages` call runs `SET LOCAL enable_sort = off` and `SET LOCAL enable_incremental_sort = off` before its first page, again on a second call in the same snapshot; `verify` and a restore dry run get them; the planning reads do not. The fake models `SET LOCAL` until the transaction ends, rejects an unknown parameter name, and fails any page query made while either sort is on, so a build that drops or misspells one fails every test that reads a page.
     - A page that does not fit the schema (a str in an int column, int32 overflow, a NULL in a NOT NULL column, a decimal too wide, a float for NUMERIC) raises `BackupError` with `__context__` None and no cell value in the traceback.
 - [ ] **Step 2:** Run `ml/.venv/Scripts/pytest scripts/test_strike_exposures_backup.py -q`. Expected: it FAILS on import.
 - [ ] **Step 3:** Implement Task 1's interfaces in `scripts/strike_exposures_backup.py`. `BackupError(Exception)` has fixed messages: no cell values, only a date, counts or a status code.

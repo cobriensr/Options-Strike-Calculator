@@ -76,6 +76,14 @@ GREEKS = (
     'put_vanna_oi',
 )
 PAGE_SQL_TAIL = 'ORDER BY date, "timestamp", ticker, strike, expiry LIMIT %s'
+# Run at the top of every iter_day_pages call. Without them the planner takes
+# the timestamp index for the day's last page and runs into the 60 s timeout.
+# The underscore in enable_incremental_sort matters: enable_incrementalsort is
+# an unrecognized parameter.
+NO_SORT_STATEMENTS = [
+    'SET LOCAL enable_sort = off',
+    'SET LOCAL enable_incremental_sort = off',
+]
 # Text a database error carries that no log may show: the DETAIL line of a
 # unique violation quotes the offending key.
 DETAIL_MARKER = 'KEY-VALUE-IN-THE-DETAIL-LINE'
@@ -152,13 +160,16 @@ class FakeCursor:
             assert conn.autocommit is True, 'BEGIN with autocommit off'
             conn.in_txn = True
             conn.rows_at_begin = list(conn.rows)
+            conn.local_settings = {}
         elif text == 'COMMIT':
             conn.in_txn = False
             conn.rows_at_begin = None
+            conn.local_settings = {}  # SET LOCAL ends with the transaction
             conn.fail('commit')
         elif text == 'ROLLBACK':
             # A ROLLBACK that fails leaves a dead connection, not an open transaction.
             conn.in_txn = False
+            conn.local_settings = {}
             if conn.rows_at_begin is not None:
                 conn.rows = conn.rows_at_begin  # the transaction's writes are undone
                 conn.rows_at_begin = None
@@ -196,11 +207,25 @@ class FakeCursor:
             conn.fail('delta')
             self._result = [(day,) for day in conn.days_after(params[0])]
         elif text.startswith('SELECT ') and 'LIMIT %s' in text:
+            # The planner flips to a timestamp-index scan on the day's last page
+            # unless both sorts are off for the transaction (see iter_day_pages).
+            assert conn.local_settings.get('enable_sort') == 'off', 'enable_sort is on'
+            assert (
+                conn.local_settings.get('enable_incremental_sort') == 'off'
+            ), 'enable_incremental_sort is on'
             conn.fail(f'page{len(conn.page_queries)}')
             self._result = conn.serve_page(params, keyed='> (%s' in text)
-        else:
-            assert text.startswith('SET LOCAL statement_timeout'), f'unexpected: {text}'
+        elif text.startswith('SET LOCAL '):
+            name, _, value = text.removeprefix('SET LOCAL ').partition(' = ')
+            assert name in (
+                'statement_timeout',
+                'enable_sort',
+                'enable_incremental_sort',
+            ), f'unrecognized configuration parameter: {name}'
+            conn.local_settings[name] = value.strip("'")
             self._result = []
+        else:
+            raise AssertionError(f'unexpected: {text}')
 
     def fetchone(self) -> tuple:
         assert self.conn.in_txn, 'fetch outside the snapshot'
@@ -258,6 +283,7 @@ class FakeConnection:
         self.sequence_name = sequence_name
         self.sequence_value = sequence_value
         self.rows_at_begin: list[tuple] | None = None
+        self.local_settings: dict[str, str] = {}  # SET LOCAL values, until the transaction ends
 
     @property
     def autocommit(self) -> bool:
@@ -540,11 +566,12 @@ def test_keyset_sql(make_conn, tmp_path: Path) -> None:
     assert texts[1] == "SET LOCAL statement_timeout = '60s'"
     assert texts[2] == 'SELECT count(*) FROM strike_exposures WHERE date = %s'
     assert conn.statements[2][1] == (DAY,)
+    assert texts[3:5] == NO_SORT_STATEMENTS
     assert texts[-1] == 'ROLLBACK'
 
     pages = conn.page_queries
     assert len(pages) == 3  # 2 + 2 + 1: the short page ends the day without a 4th query
-    assert len(conn.statements) == 3 + len(pages) + 1
+    assert len(conn.statements) == 5 + len(pages) + 1
     for text, _ in pages:
         assert text.endswith(PAGE_SQL_TAIL)
         assert 'OFFSET' not in text.upper()
@@ -556,6 +583,53 @@ def test_keyset_sql(make_conn, tmp_path: Path) -> None:
     for (text, params), previous_last in zip(pages[1:], (ordered[1], ordered[3])):
         assert key_clause in text
         assert params == (DAY, *key_of(previous_last), 2)
+
+
+def test_every_iter_day_pages_call_turns_the_sorts_off_before_its_first_page(make_conn) -> None:
+    # On 2026-10-02 (3.5M rows) the planner switched pages after the first to
+    # a timestamp-index scan with an incremental sort, and the day's last page
+    # then walked every later timestamp in the table until the timeout. With
+    # both sorts off it keeps the unique index.
+    conn = make_conn(plain_rows(5))
+
+    with sbk._read_snapshot(conn) as cur:
+        assert len(list(sbk.iter_day_pages(cur, DAY, 2))) == 3
+        assert len(list(sbk.iter_day_pages(cur, DAY, 2))) == 3
+
+    texts = [text for text, _ in conn.statements]
+    assert texts[2:4] == NO_SORT_STATEMENTS
+    assert all(t.startswith('SELECT') for t in texts[4:7])
+    assert texts[7:9] == NO_SORT_STATEMENTS  # again for the second call
+    assert all(t.startswith('SELECT') for t in texts[9:12])
+    assert texts[12] == 'ROLLBACK'
+
+
+def test_verify_and_a_restore_dry_run_read_their_pages_with_the_sorts_off(
+    make_conn, tmp_path: Path
+) -> None:
+    rows = grouped_rows()
+    s3 = FakeS3()
+    back_up(s3, rows, tmp_path)
+
+    for read in (
+        lambda conn: sbk.verify_day(conn, s3, BUCKET, D1),
+        lambda conn: sbk.restore_day(conn, s3, BUCKET, D1, apply=False),
+    ):
+        conn = make_conn(rows)
+        read(conn)
+        texts = [text for text, _ in conn.statements]
+        assert texts[2:4] == NO_SORT_STATEMENTS
+        assert texts[4].startswith('SELECT')
+
+
+def test_the_planning_reads_leave_the_planner_alone(make_conn) -> None:
+    conn = make_conn(three_days())
+    s3 = FakeS3()
+    sbk.write_state(s3, BUCKET, 3)
+
+    sbk.plan_days(conn, s3, BUCKET, TODAY)
+
+    assert not any('enable_' in text for text, _ in conn.statements)
 
 
 @pytest.mark.parametrize(
