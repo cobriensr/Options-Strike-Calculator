@@ -26,8 +26,10 @@
  * the client only knows events from today forward, so a replay or the day's
  * first live save would otherwise store a past event day as a plain one. When
  * the lookup is incomplete or fails, the save still goes ahead with the
- * server's partial names plus any the client sent, and the gap is reported
- * (snapshot.event_lookup_incomplete, a warning log and a Sentry warning).
+ * server's partial names plus any the client sent, and the gap is reported:
+ * snapshot.event_lookup_incomplete counts every such save, while the warning
+ * log and the Sentry warning fire once per fetch (or failure), not for each
+ * save the cached incomplete entry then serves.
  *
  * Called automatically by the frontend whenever results are computed.
  */
@@ -61,14 +63,18 @@ async function resolveEventFlags(
 ): Promise<{ isEventDay: boolean; eventNames: string[] }> {
   let serverNames: string[] = [];
   let complete = false;
+  let fromCache = false;
+  let threw = false;
   let lookupErr: unknown;
   try {
     const lookup = await getEventsForDate(date);
+    fromCache = lookup.fromCache;
     // `complete` is read last: if naming the events throws, the lookup counts
     // as failed and `serverNames` is still empty.
     serverNames = eventNamesForSnapshot(lookup.events);
     complete = lookup.complete;
   } catch (err) {
+    threw = true;
     lookupErr = err;
   }
 
@@ -80,12 +86,17 @@ async function resolveEventFlags(
   for (const name of clientNames ?? []) {
     if (!eventNames.includes(name)) eventNames.push(name);
   }
+  // Count every incomplete save. Warn once per fetch: the cache serves an
+  // incomplete entry for 5 minutes and a replay saves about 24 times a
+  // minute, so reporting each save would send about 120 events per failure.
   metrics.increment('snapshot.event_lookup_incomplete');
-  logger.warn({ date, err: lookupErr }, 'snapshot: event lookup incomplete');
-  Sentry.captureMessage('snapshot: event lookup incomplete', {
-    level: 'warning',
-    extra: { date },
-  });
+  if (threw || !fromCache) {
+    logger.warn({ date, err: lookupErr }, 'snapshot: event lookup incomplete');
+    Sentry.captureMessage('snapshot: event lookup incomplete', {
+      level: 'warning',
+      extra: { date },
+    });
+  }
   return { isEventDay: eventNames.length > 0, eventNames };
 }
 

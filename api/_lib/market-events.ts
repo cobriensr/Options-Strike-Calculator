@@ -46,6 +46,14 @@ export interface MarketEventsResult {
   complete: boolean;
 }
 
+/**
+ * What `getEventsForDate` answers: the events, plus whether a cache entry
+ * served them (`fromCache` true) or this call fetched them (false). A caller
+ * that reports a failed lookup uses it to report once per fetch, not once for
+ * every call the short failure entry then serves.
+ */
+export type DayEventsResult = MarketEventsResult & { fromCache: boolean };
+
 // ============================================================
 // FRED RELEASE IDS → EVENT MAPPING
 // ============================================================
@@ -243,6 +251,9 @@ async function fetchMegaCapEarnings(
 
     for (const entry of data.earningsCalendar) {
       if (!MEGA_CAP_SYMBOLS.has(entry.symbol)) continue;
+      // Keep the asked range, inclusive, as FRED's rows are kept: a stray row
+      // outside it would put a name on the wrong date.
+      if (!(entry.date >= startDate && entry.date <= endDate)) continue;
 
       const timeLabel =
         entry.hour === 'bmo'
@@ -346,7 +357,8 @@ async function fetchReleaseDates(
  * Every event from `startDate` to `endDate` (inclusive, YYYY-MM-DD), sorted
  * by date, then severity (high first), then event name. FRED's
  * `release/dates` returns all history and the range is filtered here, so a
- * past range works as well as a forward one.
+ * past range works as well as a forward one. Finnhub earnings rows are kept
+ * to the same range.
  *
  * `complete` is true only when every source that is configured answered
  * with a well-formed payload: FRED (required) and, when `FINNHUB_API_KEY` is
@@ -502,6 +514,8 @@ async function writeDayCache(
  *     caches `data: []`, then rethrows the original error.
  * A hit returns the entry's events with `complete: false` only when the entry
  * says so; an entry without the field (phase 1 wrote none) reads as complete.
+ * `fromCache` is true on a hit and false after a fetch, so a caller can tell
+ * the call that found a failure from the calls the failure entry then serves.
  * A Redis read or write failure is logged and the lookup goes on without the
  * cache; a failed write never hides the result or the original rejection.
  *
@@ -509,15 +523,17 @@ async function writeDayCache(
  * schedule that can still change for up to 7 days, so callers skip future
  * dates first (`api/snapshot.ts` already does).
  */
-export async function getEventsForDate(
-  date: string,
-): Promise<MarketEventsResult> {
+export async function getEventsForDate(date: string): Promise<DayEventsResult> {
   const cacheKey = `${DAY_CACHE_KEY}:${date}`;
 
   try {
     const cached = await redis.get<DayCacheEntry>(cacheKey);
     if (cached && Array.isArray(cached.data)) {
-      return { events: cached.data, complete: cached.complete !== false };
+      return {
+        events: cached.data,
+        complete: cached.complete !== false,
+        fromCache: true,
+      };
     }
   } catch (err) {
     logger.error({ err }, 'Failed to read day events from Redis');
@@ -549,7 +565,7 @@ export async function getEventsForDate(
     );
   }
 
-  return result;
+  return { ...result, fromCache: false };
 }
 
 // ============================================================

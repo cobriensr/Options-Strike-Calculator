@@ -77,7 +77,7 @@ describe('POST /api/snapshot', () => {
     vi.mocked(logger.error).mockClear();
     vi.mocked(getEventsForDate)
       .mockReset()
-      .mockResolvedValue({ events: [], complete: true });
+      .mockResolvedValue({ events: [], complete: true, fromCache: false });
   });
 
   it('returns 405 for non-POST methods', async () => {
@@ -483,10 +483,11 @@ describe('POST /api/snapshot', () => {
       };
     }
 
-    function lookup(names: string[], complete: boolean) {
+    function lookup(names: string[], complete: boolean, fromCache = false) {
       vi.mocked(getEventsForDate).mockResolvedValue({
         events: names.map(eventItem),
         complete,
+        fromCache,
       });
     }
 
@@ -503,11 +504,23 @@ describe('POST /api/snapshot', () => {
       return res;
     }
 
-    function expectLookupReported(err: unknown) {
-      expect(metrics.increment).toHaveBeenCalledTimes(1);
+    function expectCounted(times = 1) {
+      expect(metrics.increment).toHaveBeenCalledTimes(times);
       expect(metrics.increment).toHaveBeenCalledWith(
         'snapshot.event_lookup_incomplete',
       );
+    }
+
+    // The metric fires on every incomplete save; the warning and the Sentry
+    // message only once per fetch (or failure), not for each cached repeat.
+    function expectCountedOnly() {
+      expectCounted();
+      expect(logger.warn).not.toHaveBeenCalled();
+      expect(Sentry.captureMessage).not.toHaveBeenCalled();
+    }
+
+    function expectLookupReported(err: unknown) {
+      expectCounted();
       expect(logger.warn).toHaveBeenCalledTimes(1);
       expect(logger.warn).toHaveBeenCalledWith(
         { date: TODAY, err },
@@ -640,22 +653,74 @@ describe('POST /api/snapshot', () => {
       expect(metrics.dbSave).toHaveBeenCalledWith('market_snapshots', true);
     });
 
-    it('treats an unusable lookup result as a failed lookup, not a failed save', async () => {
-      // A cache entry whose events hold a null makes eventNamesForSnapshot
-      // throw; the save must still go on with the client's names.
-      vi.mocked(getEventsForDate).mockResolvedValue({
-        events: [null as unknown as EventItem],
-        complete: true,
-      });
+    it.each([
+      ['fetched', false],
+      ['read from the cache', true],
+    ])(
+      'treats an unusable lookup result, %s, as a failed lookup, not a failed save',
+      async (_label, fromCache) => {
+        // A cache entry whose events hold a null makes eventNamesForSnapshot
+        // throw; the save must still go on with the client's names, and the
+        // failure is reported even when the entry came from the cache.
+        vi.mocked(getEventsForDate).mockResolvedValue({
+          events: [null as unknown as EventItem],
+          complete: true,
+          fromCache,
+        });
+
+        const res = await save({ isEventDay: true, eventNames: ['FOMC'] });
+
+        expect(res._json).toEqual({ id: 11, saved: true });
+        expect(saveSnapshot).toHaveBeenCalledWith(
+          expect.objectContaining({ isEventDay: true, eventNames: ['FOMC'] }),
+        );
+        expectLookupReported(expect.any(TypeError));
+        expect(Sentry.captureException).not.toHaveBeenCalled();
+      },
+    );
+
+    it('warns, captures and counts an incomplete lookup that was just fetched', async () => {
+      lookup(['CPI'], false, false);
+
+      await save({ eventNames: ['FOMC'] });
+
+      expectLookupReported(undefined);
+    });
+
+    it('counts, but neither warns nor captures, an incomplete lookup served from the cache', async () => {
+      lookup(['CPI'], false, true);
 
       const res = await save({ isEventDay: true, eventNames: ['FOMC'] });
 
       expect(res._json).toEqual({ id: 11, saved: true });
-      expect(saveSnapshot).toHaveBeenCalledWith(
-        expect.objectContaining({ isEventDay: true, eventNames: ['FOMC'] }),
-      );
-      expectLookupReported(expect.any(TypeError));
-      expect(Sentry.captureException).not.toHaveBeenCalled();
+      // The union is still stored: only the reporting is once per fetch.
+      expect(saveSnapshot).toHaveBeenCalledWith({
+        date: TODAY,
+        entryTime: '10:30 AM CT',
+        isEventDay: true,
+        eventNames: ['CPI', 'FOMC'],
+      });
+      expectCountedOnly();
+    });
+
+    it('counts every save in a cached incomplete window but reports none of them', async () => {
+      lookup(['CPI'], false, true);
+
+      await save({});
+      await save({});
+      await save({});
+
+      expectCounted(3);
+      expect(logger.warn).not.toHaveBeenCalled();
+      expect(Sentry.captureMessage).not.toHaveBeenCalled();
+    });
+
+    it('reports a cached complete lookup as nothing at all', async () => {
+      lookup(['CPI'], true, true);
+
+      await save({});
+
+      expectNothingReported();
     });
 
     it.each([

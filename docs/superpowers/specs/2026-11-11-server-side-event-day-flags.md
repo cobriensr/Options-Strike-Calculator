@@ -47,10 +47,16 @@ Exports:
 - `fetchMarketEvents(startDate, endDate): Promise<{ events: EventItem[]; complete: boolean }>`
   - It's the current `fetchAllEvents`, unchanged in behavior.
   - Keys are read from `process.env` inside: FRED required, Finnhub optional, as today.
-  - A missing FRED key returns `complete: false` with the static events only. It does not throw.
-- `getEventsForDate(date): Promise<{ events: EventItem[]; complete: boolean }>`
+  - A missing FRED key returns `complete: false` with the static events, plus the
+    earnings when a Finnhub key is set. It does not throw.
+  - Finnhub results are clipped to the asked range, inclusive, as FRED's are. A stray
+    row outside it would otherwise put a name on the wrong date.
+- `getEventsForDate(date): Promise<DayEventsResult>`, where
+  `DayEventsResult = { events: EventItem[]; complete: boolean } & { fromCache: boolean }`
   - It's `fetchMarketEvents(date, date)` behind a Redis cache under key `events:day:v1:{date}`.
-  - It writes the cache only when `complete`, with the same 7-day TTL as `/api/events`.
+  - A complete result is cached for the same 7-day TTL as `/api/events`; an incomplete or
+    rejected one for 5 minutes (see "Short cache for a failed lookup").
+  - `fromCache` is true on a cache hit and false after a fetch.
   - A Redis read or write failure falls through to a fetch, as `/api/events` does today.
 - `eventNamesForSnapshot(events): string[]`: the event names in the order the
   sort gives. It stays one function so the save and the backfill can't drift apart.
@@ -61,7 +67,9 @@ calls `fetchMarketEvents`. The `EventItem` interface moves to the lib module, an
 
 ### Snapshot save (phase 2)
 
-`api/snapshot.ts` validates the body, then calls `getEventsForDate(date)`.
+`api/snapshot.ts` validates the body, then calls `getEventsForDate(date)`. The lookup
+runs after the future-date and live-for-other-date skips, so a skipped request makes no
+lookup.
 
 - **Lookup complete:** store the server's names. `is_event_day` = names non-empty.
   The client's `isEventDay` / `eventNames` are ignored, and stay in the schema so old
@@ -69,8 +77,12 @@ calls `fetchMarketEvents`. The `EventItem` interface moves to the lib module, an
 - **Lookup incomplete, or it throws:** store the union of the server's partial names
   and the client's names, server order first, then client-only names.
   `is_event_day` = union non-empty.
-  - Record `metrics.increment('snapshot.event_lookup_incomplete')` and a Sentry
-    warning (`snapshot: event lookup incomplete`), with the date as an extra.
+  - Count `metrics.increment('snapshot.event_lookup_incomplete')` on every such save.
+  - Log a warning and send a Sentry warning (`snapshot: event lookup incomplete`, the
+    date as an extra) once per fetch, not once per save: when the lookup threw, or the
+    result was incomplete and `fromCache` is false. A replay saves about 24 times a
+    minute and the failure entry is served for 5 minutes, so warning on every save
+    would send about 120 Sentry events per failure window.
   - The save still succeeds. A FRED outage must not lose snapshots, and the union is
     never worse than today's client value.
 - One lookup per request. No new env var.
@@ -158,7 +170,8 @@ Add `scripts/backfill-snapshot-event-flags.ts`, a thin CLI, with its logic in
   loses it.
   - Both compute from the corrected FOMC schedule.
   - Both guard every write on the values they read, so whichever runs second finds
-    nothing to change on those dates.
+    nothing to change on those dates. That holds for the FOMC names only: if the econ
+    backfill runs first, this one can still add other events' names on 04-29.
 
 ## Phases
 
@@ -176,9 +189,10 @@ Each phase gets `npm run review`, a code review, then commits of 5 files or fewe
 - Phase 3 needs `FRED_API_KEY`, plus `FINNHUB_API_KEY` for earnings, in the shell that
   runs it. Neither is in `.env.local` today. The owner supplies them; Claude never
   edits `.env*`.
-- The Finnhub earnings calendar for past dates is unverified: there's no local key.
-  The phase 3 dry run's per-name counts show whether earnings come back. If they
-  don't, earnings days stay as stored and the owner decides.
+- Finnhub's own spec (`https://finnhub.io/static/swagger.json`, `/calendar/earnings`
+  `freeTier`) says "1 month of historical earnings and new updates". Past earnings
+  beyond about a month don't come back on the free key. How history treats earnings
+  is an open owner decision (2026-11-12).
 
 ## Constants
 
