@@ -3,7 +3,8 @@
  *
  * Weekly logical backup of all database tables to Vercel Blob as JSONL.
  * Keeps a rolling 4-week retention window — deletes older backups automatically,
- * but only after a run that backed up every table (see `pruneSkipped`).
+ * but only after a run that backed up every table (see `pruneSkipped`), and
+ * never a folder dated on or before `PRUNE_PROTECTED_THROUGH` (2026-11-15).
  *
  * Each run creates one JSONL file per table under:
  *   backups/{YYYY-MM-DD}/{table_name}.jsonl
@@ -68,6 +69,15 @@ const TABLES = [
 ] as const;
 
 const RETENTION_WEEKS = 4;
+
+// A backup folder dated on or before this day (YYYY-MM-DD, the ET date in the
+// folder name) is never pruned, whatever its age; RETENTION_WEEKS applies only
+// to folders dated after it. Owner decision, 2026-11-12. Why: the folders
+// through 2026-11-15 are the only copies of these tables as they stood before
+// the October-November repairs (the 220 misdated snapshots, the replays, the
+// FOMC labels), and 2026-11-15 is the first complete backup since May. The
+// owner removes them by hand.
+const PRUNE_PROTECTED_THROUGH = '2026-11-15';
 
 // Time budget for the whole table loop, against `maxDuration` 300 s. No table
 // or page starts after 210 s. A page query already in flight can still take
@@ -257,8 +267,8 @@ async function blobCallBefore<T>(
 }
 
 /**
- * Delete backup folders older than the retention window. Its Blob calls stop
- * at `deadline`.
+ * Delete backup folders older than the retention window, except any dated on
+ * or before `PRUNE_PROTECTED_THROUGH`. Its Blob calls stop at `deadline`.
  */
 async function pruneOldBackups(
   currentDate: string,
@@ -271,6 +281,9 @@ async function pruneOldBackups(
     list({ prefix: 'backups/', abortSignal: signal }),
   );
   const toDelete: string[] = [];
+  // Folders past the retention window that the floor keeps. At most one entry
+  // per weekly folder, and it lives only for this call.
+  const keptByFloor = new Set<string>();
 
   for (const blob of blobs) {
     // Extract date from path: backups/2026-03-21/table.jsonl → 2026-03-21
@@ -278,10 +291,27 @@ async function pruneOldBackups(
     const match = datePattern.exec(blob.pathname);
     if (!match) continue;
 
-    const blobDate = new Date(match[1]!);
+    const folderDate = match[1]!;
+    const blobDate = new Date(folderDate);
     if (blobDate < cutoff) {
-      toDelete.push(blob.url);
+      // Zero-padded dates order the same as strings and as days, and the
+      // string compare does not depend on the time zone.
+      if (folderDate <= PRUNE_PROTECTED_THROUGH) {
+        keptByFloor.add(folderDate);
+      } else {
+        toDelete.push(blob.url);
+      }
     }
+  }
+
+  if (keptByFloor.size > 0) {
+    logger.info(
+      {
+        foldersKept: keptByFloor.size,
+        protectedThrough: PRUNE_PROTECTED_THROUGH,
+      },
+      'Backup folders kept by the protection floor',
+    );
   }
 
   if (toDelete.length > 0) {

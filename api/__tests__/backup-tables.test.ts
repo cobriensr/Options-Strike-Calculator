@@ -60,8 +60,10 @@ import { Sentry } from '../_lib/sentry.js';
 import { reportCronRun } from '../_lib/axiom.js';
 import logger from '../_lib/logger.js';
 
-// Fixed date: Sunday 5 AM UTC (typical cron run)
-const BACKUP_TIME = new Date('2026-03-29T05:00:00.000Z');
+// Fixed date: Sunday 5 AM UTC (typical cron run). It is after
+// PRUNE_PROTECTED_THROUGH (2026-11-15), so the folders these tests list are
+// the 4-week rule's to judge; the floor has its own tests below.
+const BACKUP_TIME = new Date('2027-03-28T05:00:00.000Z');
 
 const TEST_DSN =
   'https://abcdef0123456789@o111111.ingest.us.sentry.io/4511060900642816';
@@ -97,12 +99,12 @@ const FIRST_TABLE = TABLE_ORDER[0];
 const BLOB_DEADLINE_MS = 240_000;
 
 // One folder past the 4-week retention window of BACKUP_TIME (cutoff
-// 2026-03-01): the prune would delete it, so a test that expects the prune to
+// 2027-02-28): the prune would delete it, so a test that expects the prune to
 // be skipped can show nothing was listed or deleted.
 const STALE_BACKUP = {
   blobs: [
     {
-      pathname: 'backups/2026-02-15/market_snapshots.jsonl',
+      pathname: 'backups/2027-02-14/market_snapshots.jsonl',
       url: 'https://blob.test/old1',
     },
   ],
@@ -304,7 +306,7 @@ describe('backup-tables handler', () => {
     expect(res._status).toBe(200);
 
     const json = res._json as Record<string, unknown>;
-    expect(json.date).toBe('2026-03-29');
+    expect(json.date).toBe('2027-03-28');
     expect(json.totalRows).toBe(16); // 1 row x 16 tables
     expect(json.pruned).toBe(0);
     expect(json.status).toBe('ok');
@@ -367,7 +369,7 @@ describe('backup-tables handler', () => {
 
     // Check the first put call (the first table in the export order)
     const firstCall = mockPut.mock.calls[0]!;
-    expect(firstCall[0]).toBe(`backups/2026-03-29/${FIRST_TABLE}.jsonl`);
+    expect(firstCall[0]).toBe(`backups/2027-03-28/${FIRST_TABLE}.jsonl`);
 
     // Body is a Buffer to dodge V8's ~512 MiB String.maxLength on large
     // tables (RangeError d758f914 fix). Decode for byte-exact comparison.
@@ -922,7 +924,7 @@ describe('backup-tables handler', () => {
 
     expect(elapsedMs).toBeLessThan(MAX_REAL_MS_AT_DEADLINE);
     const errors = (res._json as { errors: string[] }).errors;
-    expect(errors[0]).toContain(`put backups/2026-03-29/${FIRST_TABLE}.jsonl`);
+    expect(errors[0]).toContain(`put backups/2027-03-28/${FIRST_TABLE}.jsonl`);
     expect(errors[0]).toContain('did not finish before the run deadline');
   });
 
@@ -962,7 +964,7 @@ describe('backup-tables handler', () => {
     expect(mockPut).not.toHaveBeenCalled();
     expect(res._status).toBe(500);
     const errors = (res._json as { errors: string[] }).errors;
-    expect(errors[0]).toContain(`put backups/2026-03-29/${FIRST_TABLE}.jsonl`);
+    expect(errors[0]).toContain(`put backups/2027-03-28/${FIRST_TABLE}.jsonl`);
     expect(errors[0]).toContain('did not finish before the run deadline');
     expect(Sentry.captureException).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1094,19 +1096,19 @@ describe('backup-tables handler', () => {
   // ── Pruning logic ────────────────────────────────────────
 
   it('prunes blobs older than 4 weeks', async () => {
-    // Current date is 2026-03-29, cutoff = 2026-03-01
+    // Current date is 2027-03-28, cutoff = 2027-02-28
     mockList.mockResolvedValue({
       blobs: [
         {
-          pathname: 'backups/2026-02-15/market_snapshots.jsonl',
+          pathname: 'backups/2027-02-14/market_snapshots.jsonl',
           url: 'https://blob.test/old1',
         },
         {
-          pathname: 'backups/2026-02-28/analyses.jsonl',
+          pathname: 'backups/2027-02-27/analyses.jsonl',
           url: 'https://blob.test/old2',
         },
         {
-          pathname: 'backups/2026-03-22/analyses.jsonl',
+          pathname: 'backups/2027-03-21/analyses.jsonl',
           url: 'https://blob.test/recent',
         },
       ],
@@ -1201,19 +1203,19 @@ describe('backup-tables handler', () => {
   });
 
   it('does not delete blobs within retention window', async () => {
-    // Current date is 2026-03-29, cutoff = 2026-03-01
+    // Current date is 2027-03-28, cutoff = 2027-02-28
     mockList.mockResolvedValue({
       blobs: [
         {
-          pathname: 'backups/2026-03-08/analyses.jsonl',
+          pathname: 'backups/2027-03-07/analyses.jsonl',
           url: 'https://blob.test/keep1',
         },
         {
-          pathname: 'backups/2026-03-15/analyses.jsonl',
+          pathname: 'backups/2027-03-14/analyses.jsonl',
           url: 'https://blob.test/keep2',
         },
         {
-          pathname: 'backups/2026-03-22/analyses.jsonl',
+          pathname: 'backups/2027-03-21/analyses.jsonl',
           url: 'https://blob.test/keep3',
         },
       ],
@@ -1327,6 +1329,144 @@ describe('backup-tables handler', () => {
     expect(errors).toHaveLength(1);
     expect(errors[0]).toContain('pruning');
     expect(errors[0]).toContain('Unknown');
+  });
+
+  // ── Protection floor ─────────────────────────────────────
+
+  // Owner decision 2026-11-12: a folder dated on or before 2026-11-15 is never
+  // pruned, whatever its age. Those folders are the only copies of the tables
+  // before the October-November repairs. The 4-week rule applies only to
+  // folders dated after the floor. Dates here are the ET dates in the folder
+  // names; the 4-week cutoff of a run is its date minus 28 days, and no folder
+  // below sits on that day (a cutoff day is judged by Date arithmetic that a
+  // non-UTC test machine shifts by an hour).
+
+  function backupFile(date: string, table = 'analyses') {
+    return {
+      pathname: `backups/${date}/${table}.jsonl`,
+      url: `https://blob.test/${date}/${table}`,
+    };
+  }
+
+  // One file per weekly folder from `from` through `through`, both inclusive.
+  function weeklyFolders(from: string, through: string) {
+    const files = [];
+    for (
+      let day = Date.parse(from);
+      day <= Date.parse(through);
+      day += 7 * 86_400_000
+    ) {
+      files.push(backupFile(new Date(day).toISOString().slice(0, 10)));
+    }
+    return files;
+  }
+
+  it('deletes nothing on the first complete run, 2026-11-15, even with the folders back to 2026-04-19', async () => {
+    // Cutoff 2026-10-18: without the floor the 26 folders 04-19 to 10-11 go
+    // in one del().
+    vi.setSystemTime(new Date('2026-11-15T05:00:00.000Z'));
+    mockSql.mockResolvedValue([{ id: 1 }]);
+    mockList.mockResolvedValue({
+      blobs: [
+        ...weeklyFolders('2026-04-19', '2026-11-08'),
+        // The folder this run has just written.
+        backupFile('2026-11-15', FIRST_TABLE),
+      ],
+    });
+
+    const res = await runBackup();
+
+    expect(res._status).toBe(200);
+    const json = res._json as Record<string, unknown>;
+    expect(json.date).toBe('2026-11-15');
+    // The prune ran (it was not skipped) and the floor kept every folder.
+    expect(mockList).toHaveBeenCalledTimes(1);
+    expect(json.pruneSkipped).toBeUndefined();
+    expect(mockDel).not.toHaveBeenCalled();
+    expect(json.pruned).toBe(0);
+    // The 26 folders the 4-week rule alone would have deleted.
+    expect(logger.info).toHaveBeenCalledWith(
+      { foldersKept: 26, protectedThrough: '2026-11-15' },
+      'Backup folders kept by the protection floor',
+    );
+  });
+
+  it('prunes the folders after the floor that the 4-week cutoff has passed, and keeps the floor and older', async () => {
+    // 2027-01-10: cutoff 2026-12-13.
+    vi.setSystemTime(new Date('2027-01-10T05:00:00.000Z'));
+    mockSql.mockResolvedValue([{ id: 1 }]);
+    mockList.mockResolvedValue({
+      blobs: [
+        backupFile('2026-04-19'),
+        backupFile('2026-11-08'),
+        backupFile('2026-11-15'),
+        backupFile('2026-11-22'),
+        backupFile('2026-11-29'),
+        backupFile('2026-12-06'),
+        // Inside the 4 weeks: kept by the 4-week rule.
+        backupFile('2026-12-20'),
+        backupFile('2027-01-03'),
+      ],
+    });
+
+    const res = await runBackup();
+
+    expect(res._status).toBe(200);
+    expect(mockDel).toHaveBeenCalledTimes(1);
+    expect(mockDel).toHaveBeenCalledWith(
+      [
+        'https://blob.test/2026-11-22/analyses',
+        'https://blob.test/2026-11-29/analyses',
+        'https://blob.test/2026-12-06/analyses',
+      ],
+      { abortSignal: expect.any(AbortSignal) },
+    );
+    expect((res._json as Record<string, unknown>).pruned).toBe(3);
+    // 04-19, 11-08 and 11-15: older than the cutoff, kept by the floor.
+    expect(logger.info).toHaveBeenCalledWith(
+      { foldersKept: 3, protectedThrough: '2026-11-15' },
+      'Backup folders kept by the protection floor',
+    );
+  });
+
+  it('keeps 2026-11-15 and deletes the first day after it', async () => {
+    // Every file of a folder is judged by the folder's date. 11-16 is not a
+    // weekly folder; it is here to pin the boundary to the day.
+    vi.setSystemTime(new Date('2027-01-10T05:00:00.000Z'));
+    mockSql.mockResolvedValue([{ id: 1 }]);
+    mockList.mockResolvedValue({
+      blobs: [
+        backupFile('2026-11-14', 'analyses'),
+        backupFile('2026-11-15', 'analyses'),
+        backupFile('2026-11-15', 'outcomes'),
+        backupFile('2026-11-16', 'analyses'),
+        backupFile('2026-11-16', 'outcomes'),
+        backupFile('2026-11-22', 'analyses'),
+      ],
+    });
+
+    await runBackup();
+
+    expect(mockDel).toHaveBeenCalledWith(
+      [
+        'https://blob.test/2026-11-16/analyses',
+        'https://blob.test/2026-11-16/outcomes',
+        'https://blob.test/2026-11-22/analyses',
+      ],
+      { abortSignal: expect.any(AbortSignal) },
+    );
+  });
+
+  it('does not log the floor when it kept nothing', async () => {
+    mockList.mockResolvedValue(STALE_BACKUP);
+
+    await runBackup();
+
+    expect(mockDel).toHaveBeenCalledTimes(1);
+    expect(logger.info).not.toHaveBeenCalledWith(
+      expect.anything(),
+      'Backup folders kept by the protection floor',
+    );
   });
 
   // ── Date in backup path ───────────────────────────────────
