@@ -452,6 +452,17 @@ export interface PagingTally {
   pages: number;
   /** Malformed prints skipped (each withholds its minute). */
   malformed: number;
+  /**
+   * Pieces whose paging stopped on UW's empty page (`exhausted`) instead of
+   * reaching the piece's start: UW holds no older prints for the contract,
+   * so the minutes before its oldest print are not rebuilt.
+   */
+  exhausted: number;
+  /**
+   * Minutes inside a piece's covered range that were dropped because their
+   * count could not be trusted (`ContractFlow.withheld`).
+   */
+  withheld: number;
 }
 
 /** A minute's counted prints, with the contract they are the front of. */
@@ -466,6 +477,12 @@ export interface PagedMinute {
  * first. Pieces are disjoint windows, so a minute has one contract: the
  * one its trade date was decided on, and no other. Throws on an upstream
  * error, and when a piece needs more than MAX_PAGES_PER_PIECE pages.
+ *
+ * A minute absent from the result is not always a quiet minute: the tally
+ * says when it may not be. `exhausted` counts the pieces whose paging ran
+ * into UW's empty page, and `withheld` the minutes dropped as untrustworthy.
+ * A caller that reads absence as "nothing printed" must not when either is
+ * above 0 (the bar repair holds its deletes).
  */
 export async function pageDayContracts(
   apiKey: string,
@@ -488,11 +505,13 @@ export async function pageDayContracts(
       tally.pages += MAX_PAGES_PER_PIECE - budget.pagesLeft;
     });
     tally.malformed += flow.malformed;
+    tally.withheld += flow.withheld;
     if (flow.stop === 'budget') {
       throw new Error(
         `${contract}: more than ${MAX_PAGES_PER_PIECE} pages for one day`,
       );
     }
+    if (flow.stop === 'exhausted') tally.exhausted += 1;
     for (const minute of flow.minutes.values()) {
       paged.set(minute.ts, { contract, minute });
     }
@@ -527,7 +546,12 @@ async function backfillRootDay(
 
   // A fetch that throws part-way still charges the pages it used to the
   // run's budget.
-  const tally: PagingTally = { pages: 0, malformed: 0 };
+  const tally: PagingTally = {
+    pages: 0,
+    malformed: 0,
+    exhausted: 0,
+    withheld: 0,
+  };
   try {
     const { pieces, undecided } = await sessionPieces(
       schedules,

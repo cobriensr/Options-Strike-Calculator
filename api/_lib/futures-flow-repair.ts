@@ -131,6 +131,15 @@ export interface ContractFlow {
   pages: number;
   /** Prints skipped as malformed (each withholds its minute). */
   malformed: number;
+  /**
+   * Minutes in [coveredFromMs, end) that are absent from `minutes` because
+   * their count could not be trusted: a malformed print, or a page of one
+   * microsecond's prints all seen before, so the rest of that instant was
+   * never fetched. Such a minute is not a quiet minute, so a caller that
+   * reads absence as "nothing printed" must treat the contract as unreliable
+   * when this is above 0.
+   */
+  withheld: number;
 }
 
 /** A bar's identity and volume, as the repair matches it. */
@@ -431,7 +440,20 @@ export async function fetchContractFlow(
     if (minuteMs < coveredFromMs || withheld.has(minuteMs)) continue;
     minutes.set(acc.flow.ts, finishMinute(acc));
   }
-  return { minutes, coveredFromMs, stop, pages, malformed };
+  // A withheld minute may have no counted print (a lone malformed one), so
+  // it is counted from the set, not from the minutes dropped above.
+  let withheldCount = 0;
+  for (const minuteMs of withheld) {
+    if (minuteMs >= coveredFromMs && minuteMs < endMs) withheldCount += 1;
+  }
+  return {
+    minutes,
+    coveredFromMs,
+    stop,
+    pages,
+    malformed,
+    withheld: withheldCount,
+  };
 }
 
 // ── Matching ────────────────────────────────────────────────

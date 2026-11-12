@@ -462,7 +462,12 @@ async function backfillBarRootDay(
 
   // A fetch that throws part-way still charges the pages it used to the
   // run's budget.
-  const tally: PagingTally = { pages: 0, malformed: 0 };
+  const tally: PagingTally = {
+    pages: 0,
+    malformed: 0,
+    exhausted: 0,
+    withheld: 0,
+  };
   try {
     const { pieces, undecided } = await sessionPieces(
       schedules,
@@ -994,7 +999,12 @@ async function repairRootDay(
 
   // A fetch that throws part-way still charges the pages it used to the
   // run's budget.
-  const tally: PagingTally = { pages: 0, malformed: 0 };
+  const tally: PagingTally = {
+    pages: 0,
+    malformed: 0,
+    exhausted: 0,
+    withheld: 0,
+  };
   try {
     const { pieces, undecided } = await sessionPieces(
       schedules,

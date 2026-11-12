@@ -53,13 +53,16 @@ vi.mock('../../api/_lib/sentry.js', () => ({
 }));
 
 import {
+  pageDayContracts,
   parseArgs,
   planDates,
   runBackfill,
   sessionPieces,
   sessionSpans,
   type BackfillOptions,
+  type PagingTally,
   type ScheduleReader,
+  type SessionPiece,
 } from './futures-flow-backfill.js';
 
 // ── Fixtures ──────────────────────────────────────────────
@@ -493,6 +496,106 @@ describe('sessionPieces', () => {
 
     expect(result).toEqual({ pieces: [], undecided: [] });
     expect(schedules).not.toHaveBeenCalled();
+  });
+});
+
+// ── pageDayContracts ──────────────────────────────────────
+
+describe('pageDayContracts', () => {
+  const piece = (contract: string, from: string, to: string): SessionPiece => ({
+    contract,
+    fromMs: Date.parse(from),
+    toMs: Date.parse(to),
+  });
+  const A = piece('ESU6', '2026-08-04T14:00:00Z', '2026-08-04T14:10:00Z');
+  const B = piece('ESZ6', '2026-08-04T15:00:00Z', '2026-08-04T15:10:00Z');
+  /** A print before 14:00: it ends piece A's paging. */
+  const BEFORE_A = print(1, '2026-08-04T13:59:00.000000Z', 1, 'buy');
+
+  function tally(): PagingTally {
+    return { pages: 0, malformed: 0, exhausted: 0, withheld: 0 };
+  }
+
+  it('a clean piece leaves exhausted and withheld at 0 and charges its pages', async () => {
+    routeTrades({
+      ESU6: [[print(3, '2026-08-04T14:05:10.000000Z', 2, 'buy'), BEFORE_A]],
+    });
+    const t = tally();
+
+    const minutes = await pageDayContracts('k', [A], t);
+
+    expect([...minutes.keys()]).toEqual(['2026-08-04T14:05:00.000Z']);
+    expect(t).toEqual({ pages: 1, malformed: 0, exhausted: 0, withheld: 0 });
+  });
+
+  it('adds up a day: a piece that ran out of UW history counts once as exhausted, a malformed print counts as malformed and as one withheld minute', async () => {
+    routeTrades({
+      ESU6: [
+        [
+          print(4, '2026-08-04T14:05:10.000000Z', 2, 'buy'),
+          print(3, '2026-08-04T14:03:10.000000Z', 7, 'up'), // malformed
+          BEFORE_A,
+        ],
+      ],
+      // UW holds nothing for the second contract: an empty first page.
+      ESZ6: [[]],
+    });
+    const t = tally();
+
+    const minutes = await pageDayContracts('k', [A, B], t);
+
+    // Only the first piece printed. The minute a piece did not rebuild is
+    // absent either way; the tally is what tells the two causes apart.
+    expect([...minutes.values()].map((m) => m.contract)).toEqual(['ESU6']);
+    expect(t).toEqual({ pages: 2, malformed: 1, exhausted: 1, withheld: 1 });
+  });
+
+  it('a page of only already-seen prints withholds its minute without any malformed print', async () => {
+    const atT = '2026-08-04T14:05:30.000000Z';
+    routeTrades({
+      ESU6: [
+        [print(2, atT, 1, 'buy'), print(1, atT, 1, 'buy')],
+        [print(2, atT, 1, 'buy'), print(1, atT, 1, 'buy')],
+        [print(9, '2026-08-04T13:59:00.000000Z', 1, 'buy')],
+      ],
+    });
+    const t = tally();
+
+    const minutes = await pageDayContracts('k', [A], t);
+
+    expect(minutes.size).toBe(0);
+    expect(t).toEqual({ pages: 3, malformed: 0, exhausted: 0, withheld: 1 });
+  });
+
+  it('adds to a tally that already holds counts, so one tally can span a root-day', async () => {
+    routeTrades({ ESU6: [[], []] });
+    const t: PagingTally = {
+      pages: 10,
+      malformed: 2,
+      exhausted: 3,
+      withheld: 4,
+    };
+
+    await pageDayContracts('k', [A, A], t);
+
+    expect(t).toEqual({ pages: 12, malformed: 2, exhausted: 5, withheld: 4 });
+  });
+
+  it('a piece that needs more pages than its guard throws, and the pages it used stay charged', async () => {
+    let call = 0;
+    mockUwFetch.mockImplementation(async () => {
+      call += 1;
+      // One print every 100 ms back from the piece's end; never reaches 14:00.
+      const at = new Date(Date.parse('2026-08-04T14:10:00Z') - call * 100);
+      return [print(call, at.toISOString().replace('Z', '000Z'), 1, 'buy')];
+    });
+    const t = tally();
+
+    await expect(pageDayContracts('k', [A], t)).rejects.toThrow(
+      /ESU6: more than 5000 pages for one day/,
+    );
+    expect(t.pages).toBe(5000);
+    expect(t.exhausted).toBe(0);
   });
 });
 

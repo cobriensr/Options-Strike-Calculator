@@ -150,6 +150,7 @@ describe('fetchContractFlow', () => {
     expect(out.coveredFromMs).toBe(START);
     expect(out.pages).toBe(2);
     expect(out.malformed).toBe(0);
+    expect(out.withheld).toBe(0);
     expect(b.pagesLeft).toBe(8);
     expect([...out.minutes.values()]).toEqual([
       flow('2026-10-28T14:02:00.000Z', 5, 3, 2, 1, 1, FLAT_OHLC),
@@ -194,6 +195,7 @@ describe('fetchContractFlow', () => {
       stop: 'exhausted',
       coveredFromMs: END,
       pages: 1,
+      withheld: 0,
     });
     expect(out.minutes.size).toBe(0);
   });
@@ -267,7 +269,64 @@ describe('fetchContractFlow', () => {
     const out = await fetchContractFlow('k', 'ESZ6', START, END, budget());
 
     expect(out.malformed).toBe(1);
+    expect(out.withheld).toBe(1);
     expect([...out.minutes.keys()]).toEqual(['2026-10-28T14:01:00.000Z']);
+  });
+
+  it('counts withheld minutes, not malformed prints: two in one minute withhold one', async () => {
+    mockUwFetch
+      .mockResolvedValueOnce([
+        print(4, '2026-10-28T14:02:50Z', 7, 'up'),
+        print(3, '2026-10-28T14:02:10Z', 7, 'up'),
+        print(2, '2026-10-28T14:01:10Z', 1, 'sell'),
+      ])
+      .mockResolvedValueOnce([print(1, '2026-10-28T13:59:00Z', 1, 'buy')]);
+
+    const out = await fetchContractFlow('k', 'ESZ6', START, END, budget());
+
+    expect(out.malformed).toBe(2);
+    expect(out.withheld).toBe(1);
+  });
+
+  it('a minute whose only print is malformed is still withheld: absence there is not a quiet minute', async () => {
+    mockUwFetch.mockResolvedValueOnce([
+      print(2, '2026-10-28T14:02:10Z', 7, 'up'),
+      print(1, '2026-10-28T13:59:00Z', 1, 'buy'),
+    ]);
+
+    const out = await fetchContractFlow('k', 'ESZ6', START, END, budget());
+
+    expect(out.minutes.size).toBe(0);
+    expect(out.withheld).toBe(1);
+  });
+
+  it('a malformed print before the range start withholds nothing in the range (malformed still counts it)', async () => {
+    mockUwFetch.mockResolvedValueOnce([
+      print(3, '2026-10-28T14:01:10Z', 1, 'sell'),
+      print(2, '2026-10-28T13:59:30Z', 7, 'up'),
+    ]);
+
+    const out = await fetchContractFlow('k', 'ESZ6', START, END, budget());
+
+    expect(out.stop).toBe('complete');
+    expect(out.malformed).toBe(1);
+    expect(out.withheld).toBe(0);
+  });
+
+  it('a withheld minute below the covered range is not counted: the stop already says it is uncovered', async () => {
+    mockUwFetch
+      .mockResolvedValueOnce([
+        print(3, '2026-10-28T14:02:30Z', 1, 'buy'),
+        print(2, '2026-10-28T14:01:20Z', 7, 'up'),
+      ])
+      .mockResolvedValueOnce([]);
+
+    const out = await fetchContractFlow('k', 'ESU6', START, END, budget());
+
+    expect(out.stop).toBe('exhausted');
+    expect(out.coveredFromMs).toBe(Date.parse('2026-10-28T14:02:00Z'));
+    expect(out.malformed).toBe(1);
+    expect(out.withheld).toBe(0);
   });
 
   it('a print with no usable executed_at throws: its minute cannot be placed', async () => {
@@ -296,6 +355,9 @@ describe('fetchContractFlow', () => {
     expect(cursorOf(1)).toBe('2026-10-28T14:01:30.000001Z');
     expect(cursorOf(2)).toBe('2026-10-28T14:01:30.000000Z');
     expect(out.stop).toBe('complete');
+    // Not malformed, but the 14:01 count may be short: it is withheld too.
+    expect(out.malformed).toBe(0);
+    expect(out.withheld).toBe(1);
     expect([...out.minutes.values()]).toEqual([
       flow('2026-10-28T14:00:00.000Z', 4, 0, 4, 0, 1, FLAT_OHLC),
     ]);
