@@ -111,7 +111,8 @@ FORMAT_VERSION = '1'
 # skipped and every day is counted instead, which is about 45 to 60 s over many
 # statements of at most about 1.3 s each.
 DELTA_MAX_IDS = 5_000_000
-# Rows per INSERT in a restore (the repo's batch rule, R5).
+# Rows per INSERT in a restore (the repo's batch rule, R5). It is also how many
+# ids a restore dry run looks up per query.
 RESTORE_BATCH = 500
 
 _DAY_KEY = re.compile(re.escape(PREFIX) + r'(\d{4}-\d{2}-\d{2})\.parquet$')
@@ -871,6 +872,8 @@ _INSERT_TAIL = ' ON CONFLICT (date, "timestamp", ticker, strike, expiry) DO NOTH
 _LOCK_SQL = 'LOCK TABLE strike_exposures IN SHARE ROW EXCLUSIVE MODE'
 _SEQUENCE_NAME_SQL = "SELECT pg_get_serial_sequence('strike_exposures', 'id')"
 _SETVAL_SQL = 'SELECT setval(%s, GREATEST((SELECT max(id) FROM strike_exposures), %s))'
+# Which of these ids does another row already hold? Asked by a restore dry run.
+_TAKEN_IDS_SQL = 'SELECT id FROM strike_exposures WHERE id = ANY(%s)'
 
 
 def _insert_batch(cur: PgCursor, rows: list[tuple], day: date, number: int) -> int:
@@ -897,30 +900,56 @@ def _insert_day(conn: PgConnection, parquet: pq.ParquetFile, day: date) -> int:
     return inserted
 
 
-def _read_id_sequence(cur: PgCursor) -> tuple[str, int]:
-    """The id sequence's name and its last_value, read from the sequence itself.
+def _read_id_sequence(cur: PgCursor) -> tuple[str, int, bool]:
+    """The id sequence's name, its last_value and its is_called, read from it.
 
     pg_sequences is not used: it shows NULL to a role without the privilege,
     and GREATEST ignores NULL, so a missing privilege would pass for "nothing
-    to do". Reading the sequence raises instead.
+    to do". Reading the sequence raises instead. The read is allowed in a READ
+    ONLY transaction.
     """
     cur.execute(_SEQUENCE_NAME_SQL)
     name = cur.fetchone()[0]
     if name is None:
         raise BackupError('strike_exposures.id has no sequence')
     # `name` comes from the catalog, already quoted for use as an identifier.
-    cur.execute(sql.SQL('SELECT last_value FROM {}').format(sql.SQL(name)))
-    last_value = cur.fetchone()[0]
+    cur.execute(sql.SQL('SELECT last_value, is_called FROM {}').format(sql.SQL(name)))
+    last_value, is_called = cur.fetchone()
     if last_value is None:
         raise BackupError('the id sequence has no last_value')
-    return name, last_value
+    return name, last_value, is_called
+
+
+def _check_id_sequence_readable(cur: PgCursor, day: date) -> None:
+    """Raise BackupError if the id sequence cannot be read (a restore dry run).
+
+    `--apply` has to read the sequence to move it; a dry run that could not read
+    it would call a day restorable that `--apply` then half does. A missing
+    privilege, no sequence and a NULL last_value are the unreadable cases. Any
+    other database error propagates as it is.
+    """
+    try:
+        _read_id_sequence(cur)
+    except BackupError as exc:
+        reason = str(exc)
+    except psycopg2.errors.InsufficientPrivilege:
+        reason = 'permission denied'
+    else:
+        return
+    raise BackupError(f'{day.isoformat()}: the id sequence cannot be read ({reason})')
 
 
 def _sequence_is_behind(conn: PgConnection, max_id: int) -> bool:
-    """Whether the id sequence has not reached `max_id` yet. Read only, no lock."""
+    """Whether the id sequence would hand out an id the file holds.
+
+    The next id is last_value + 1 once the sequence has been used, but
+    last_value itself when is_called is false (after `setval(s, n, false)` or a
+    RESTART), so is_called has to be read too. Read only, no lock.
+    """
     with _read_snapshot(conn) as cur:
-        _, last_value = _read_id_sequence(cur)
-    return last_value < max_id
+        _, last_value, is_called = _read_id_sequence(cur)
+    next_id = last_value + 1 if is_called else last_value
+    return next_id <= max_id
 
 
 def _move_id_sequence(conn: PgConnection) -> None:
@@ -934,11 +963,8 @@ def _move_id_sequence(conn: PgConnection) -> None:
     """
     with _write_transaction(conn) as cur:
         cur.execute(_LOCK_SQL)
-        name, last_value = _read_id_sequence(cur)
+        name, last_value, _ = _read_id_sequence(cur)
         cur.execute(_SETVAL_SQL, (name, last_value))
-
-
-_TAKEN_IDS_SQL = 'SELECT id FROM strike_exposures WHERE id = ANY(%s)'
 
 
 class _IdClashes:
@@ -1019,7 +1045,9 @@ def restore_day(
                     _file_pages(parquet, page_rows),
                     on_only_in_file=clashes.add,
                 )
-                return RestoreResult(rows=counts.only_in_file, id_clashes=clashes.finish())
+                taken = clashes.finish()
+                _check_id_sequence_readable(cur, day)
+                return RestoreResult(rows=counts.only_in_file, id_clashes=taken)
         max_id = _file_max_id(parquet)
         inserted = _insert_day(conn, parquet, day)
     try:

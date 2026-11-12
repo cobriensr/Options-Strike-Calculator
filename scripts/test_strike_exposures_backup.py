@@ -184,14 +184,15 @@ class FakeCursor:
         elif text == "SELECT pg_get_serial_sequence('strike_exposures', 'id')":
             conn.fail('seq_name')
             self._result = [(conn.sequence_name,)]
-        elif text.startswith('SELECT last_value FROM '):
+        elif text.startswith('SELECT last_value, is_called FROM '):
             conn.fail('seq_value')
-            assert text == f'SELECT last_value FROM {conn.sequence_name}', text
-            self._result = [(conn.sequence_value,)]
+            assert text == f'SELECT last_value, is_called FROM {conn.sequence_name}', text
+            self._result = [(conn.sequence_value, conn.sequence_is_called)]
         elif text == 'SELECT setval(%s, GREATEST((SELECT max(id) FROM strike_exposures), %s))':
             conn.fail('setval')
             assert params[0] == conn.sequence_name
             conn.sequence_value = max(conn.max_id() or 0, params[1])
+            conn.sequence_is_called = True  # setval(name, value) is_called defaults to true
             self._result = [(conn.sequence_value,)]
         elif text == 'SELECT count(*) FROM strike_exposures WHERE expiry IS NULL':
             conn.fail('null_expiry')
@@ -260,8 +261,10 @@ class FakeConnection:
     (ON CONFLICT DO NOTHING) and raises UniqueViolation for a new key whose id
     is taken, `rowcount` says how many went in, and ROLLBACK undoes a
     transaction's inserts. The events 'insert1', 'insert2', ..., 'lock',
-    'seq_name', 'seq_value', 'setval' and 'commit' can fail. `sequence_name`
-    and `sequence_value` are what pg_get_serial_sequence and the sequence say.
+    'seq_name', 'seq_value', 'setval', 'taken_ids' (the restore dry run's id
+    lookup) and 'commit' can fail. `sequence_name`, `sequence_value` and
+    `sequence_is_called` are what pg_get_serial_sequence and the sequence say:
+    with is_called false the next nextval returns last_value itself.
     """
 
     def __init__(
@@ -275,6 +278,7 @@ class FakeConnection:
         autocommit: bool = False,
         sequence_name: str | None = 'public.strike_exposures_id_seq',
         sequence_value: int | None = 0,
+        sequence_is_called: bool = True,
     ) -> None:
         self.rows = sorted(rows, key=key_of)
         self.count = count
@@ -288,6 +292,7 @@ class FakeConnection:
         self.statements: list[tuple[str, tuple | None]] = []
         self.sequence_name = sequence_name
         self.sequence_value = sequence_value
+        self.sequence_is_called = sequence_is_called
         self.rows_at_begin: list[tuple] | None = None
         self.local_settings: dict[str, str] = {}  # SET LOCAL values, until the transaction ends
 
@@ -2105,6 +2110,91 @@ def test_restore_dry_run_with_nothing_to_insert_asks_about_no_ids(
     assert not any(text == TAKEN_IDS_SQL for text, _ in conn.statements)
 
 
+def test_restore_dry_run_reads_the_id_sequence_and_changes_nothing(
+    make_conn, tmp_path: Path
+) -> None:
+    # If --apply could not read the sequence it could not move it, so the dry
+    # run proves it can, in the same read-only snapshot.
+    rows = day_rows(D1, [1, 2, 3])
+    s3 = FakeS3()
+    back_up(s3, rows, tmp_path)
+    conn = make_conn(rows[:1], sequence_name=SEQUENCE, sequence_value=3)
+
+    result = sbk.restore_day(conn, s3, BUCKET, D1, apply=False)
+
+    assert result == sbk.RestoreResult(rows=2, id_clashes=0)
+    texts = [text for text, _ in conn.statements]
+    assert texts[-3:] == [
+        "SELECT pg_get_serial_sequence('strike_exposures', 'id')",
+        f'SELECT last_value, is_called FROM {SEQUENCE}',
+        'ROLLBACK',
+    ]
+    assert sum(t.startswith('BEGIN') for t in texts) == 1  # one snapshot
+    assert not any(t.startswith(('LOCK', 'INSERT', 'COMMIT')) or 'setval' in t for t in texts)
+    assert conn.sequence_value == 3 and conn.rows == sorted(rows[:1], key=key_of)
+
+
+@pytest.mark.parametrize(
+    ('conn_kwargs', 'reason'),
+    [
+        pytest.param(
+            {'fail_on': {'seq_value': psycopg2.errors.InsufficientPrivilege('denied: ' + DETAIL_MARKER)}},
+            'permission denied',
+            id='no-privilege',
+        ),
+        pytest.param({'sequence_value': None}, 'the id sequence has no last_value', id='null-value'),
+        pytest.param({'sequence_name': None}, 'strike_exposures.id has no sequence', id='no-sequence'),
+    ],
+)
+def test_restore_dry_run_fails_when_the_id_sequence_cannot_be_read(
+    make_conn, tmp_path: Path, conn_kwargs: dict, reason: str
+) -> None:
+    rows = day_rows(D1, [1, 2, 3])
+    s3 = FakeS3()
+    back_up(s3, rows, tmp_path)
+    conn = make_conn(rows[:1], **{'sequence_name': SEQUENCE, **conn_kwargs})
+
+    with pytest.raises(sbk.BackupError) as raised:
+        sbk.restore_day(conn, s3, BUCKET, D1, apply=False)
+
+    assert str(raised.value) == f'2026-11-02: the id sequence cannot be read ({reason})'
+    assert raised.value.__context__ is None and DETAIL_MARKER not in str(raised.value)
+    assert conn.statements[-1][0] == 'ROLLBACK' and not conn.in_txn
+    assert conn.rows == sorted(rows[:1], key=key_of)  # a dry run wrote nothing
+
+
+def test_restore_dry_run_sequence_read_errors_other_than_a_privilege_propagate(
+    make_conn, tmp_path: Path
+) -> None:
+    rows = day_rows(D1, [1, 2, 3])
+    s3 = FakeS3()
+    back_up(s3, rows, tmp_path)
+    error = psycopg2.errors.QueryCanceled('canceling statement')
+    conn = make_conn(rows[:1], sequence_name=SEQUENCE, fail_on={'seq_value': error})
+
+    with pytest.raises(psycopg2.errors.QueryCanceled) as raised:
+        sbk.restore_day(conn, s3, BUCKET, D1, apply=False)
+
+    assert raised.value is error
+    assert conn.statements[-1][0] == 'ROLLBACK' and not conn.in_txn
+
+
+def test_restore_dry_run_clash_query_error_propagates_unwrapped(make_conn, tmp_path: Path) -> None:
+    rows = day_rows(D1, [1, 2, 3])
+    s3 = FakeS3()
+    back_up(s3, rows, tmp_path)
+    error = psycopg2.errors.QueryCanceled('canceling statement due to statement timeout')
+    conn = make_conn([], fail_on={'taken_ids': error})
+
+    with pytest.raises(psycopg2.errors.QueryCanceled) as raised:
+        sbk.restore_day(conn, s3, BUCKET, D1, apply=False)
+
+    assert raised.value is error
+    assert conn.statements[-1][0] == 'ROLLBACK'
+    assert not conn.in_txn
+    assert conn.rows == []
+
+
 def test_restore_apply_batches_on_conflict_do_nothing(make_conn, tmp_path: Path) -> None:
     rows = day_rows(D1, list(range(1, 1202)))
     s3 = FakeS3()
@@ -2141,7 +2231,7 @@ def test_restore_apply_already_present_inserts_zero(make_conn, tmp_path: Path) -
         'BEGIN ISOLATION LEVEL REPEATABLE READ, READ ONLY',
         "SET LOCAL statement_timeout = '60s'",
         "SELECT pg_get_serial_sequence('strike_exposures', 'id')",
-        f'SELECT last_value FROM {SEQUENCE}',
+        f'SELECT last_value, is_called FROM {SEQUENCE}',
         'ROLLBACK',
     ]
     assert not any(t.startswith('LOCK') or 'setval' in t for t in texts)
@@ -2173,22 +2263,31 @@ def test_a_rerun_after_a_failed_sequence_step_moves_the_sequence(
 
 
 @pytest.mark.parametrize(
-    ('start', 'moves'),
+    ('start', 'is_called', 'moves'),
     [
-        pytest.param(899, True, id='one-behind-the-files-max-id'),
-        pytest.param(900, False, id='at-the-files-max-id'),
-        pytest.param(901, False, id='past-it'),
+        # is_called true: last_value is the id last handed out, so the next one
+        # is last_value + 1, and 899 means the next nextval returns 900.
+        pytest.param(899, True, True, id='called-one-behind-the-files-max-id'),
+        pytest.param(900, True, False, id='called-at-the-files-max-id'),
+        pytest.param(901, True, False, id='called-past-it'),
+        # is_called false (after setval(s, n, false) or a RESTART): last_value is
+        # the id the next nextval returns, so 900 would hand out 900 again.
+        pytest.param(899, False, True, id='not-called-one-behind'),
+        pytest.param(900, False, True, id='not-called-at-the-files-max-id'),
+        pytest.param(901, False, False, id='not-called-one-past-it'),
     ],
 )
-def test_a_rerun_moves_the_sequence_only_when_it_is_behind_the_files_max_id(
-    make_conn, tmp_path: Path, start: int, moves: bool
+def test_a_rerun_moves_the_sequence_only_when_the_next_id_is_not_past_the_files_max_id(
+    make_conn, tmp_path: Path, start: int, is_called: bool, moves: bool
 ) -> None:
     # The largest id (900) is in the middle of the file, in neither the first
     # nor the last row.
     rows = plain_rows(3, ids=[5, 900, 70])
     s3 = FakeS3()
     back_up(s3, rows, tmp_path)
-    conn = make_conn(rows, sequence_name=SEQUENCE, sequence_value=start)
+    conn = make_conn(
+        rows, sequence_name=SEQUENCE, sequence_value=start, sequence_is_called=is_called
+    )
 
     result = sbk.restore_day(conn, s3, BUCKET, D1, apply=True)
 
@@ -2197,6 +2296,7 @@ def test_a_rerun_moves_the_sequence_only_when_it_is_behind_the_files_max_id(
     assert any(t.startswith('LOCK') for t in texts) is moves
     assert any('setval' in t for t in texts) is moves
     assert conn.sequence_value == (900 if moves else start)
+    assert conn.sequence_is_called is (True if moves else is_called)
 
 
 def test_a_failed_sequence_read_on_a_rerun_says_so(make_conn, tmp_path: Path) -> None:
@@ -2239,7 +2339,7 @@ def test_restore_apply_locks_then_moves_the_sequence(
         "SET LOCAL statement_timeout = '60s'",
         'LOCK TABLE strike_exposures IN SHARE ROW EXCLUSIVE MODE',
         "SELECT pg_get_serial_sequence('strike_exposures', 'id')",
-        f'SELECT last_value FROM {SEQUENCE}',
+        f'SELECT last_value, is_called FROM {SEQUENCE}',
         'SELECT setval(%s, GREATEST((SELECT max(id) FROM strike_exposures), %s))',
         'COMMIT',
     ]
@@ -2529,6 +2629,40 @@ def test_restore_command_dry_run_exits_1_when_ids_are_taken(cli, tmp_path: Path)
     assert '2026-11-02: would insert 3 rows, but 1 id(s) already taken; --apply would fail' in out
     assert '424242' not in out and 'OTHER' not in out
     assert conn.inserts == []
+
+
+def test_restore_command_dry_run_clash_query_failure_exits_1_with_the_class_only(
+    cli, tmp_path: Path
+) -> None:
+    rows = day_rows(D1, [1, 2, 424242])
+    s3 = FakeS3()
+    back_up(s3, rows, tmp_path)
+    error = psycopg2.errors.QueryCanceled(f'canceled while checking id 424242 {DETAIL_MARKER}')
+    conn = FakeConnection([], fail_on={'taken_ids': error})
+
+    code, out = cli.run(conn, s3, 'restore', '--date', '2026-11-02')
+
+    assert code == 1
+    assert 'FAILED 2026-11-02: QueryCanceled' in out
+    assert '424242' not in out and DETAIL_MARKER not in out
+    assert conn.inserts == []
+
+
+def test_restore_command_dry_run_exits_1_when_the_id_sequence_cannot_be_read(
+    cli, tmp_path: Path
+) -> None:
+    rows = day_rows(D1, [1, 2, 3])
+    s3 = FakeS3()
+    back_up(s3, rows, tmp_path)
+    denied = psycopg2.errors.InsufficientPrivilege('permission denied for sequence')
+    conn = FakeConnection(rows[:1], sequence_name=SEQUENCE, fail_on={'seq_value': denied})
+
+    code, out = cli.run(conn, s3, 'restore', '--date', '2026-11-02')
+
+    assert code == 1
+    assert 'FAILED 2026-11-02: BackupError' in out
+    assert 'the id sequence cannot be read (permission denied)' in out
+    assert 'would insert' not in out and conn.inserts == []
 
 
 def test_restore_command_apply(cli, tmp_path: Path) -> None:
