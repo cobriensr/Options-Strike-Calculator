@@ -352,8 +352,10 @@ each catching what the others miss, and each day it goes unseen would cost a dow
   stamped, the inversion pass the fires it tagged undefined. Rows tagged, not rows
   selected, because tagging marks a fire examined and locks it out of the work set.
   A day whose net flow is missing leaves its fires as `inversion_input_missing`,
-  untagged, and is not flagged. A total break can trip three passes on one day, so
-  the step stops after that day, which limits the stamping to one day.
+  untagged, and is not flagged. A total break trips all three passes on one day when
+  that day's silent boom pass tagged at least 20 alerts, so the step stops after that
+  day, which limits the stamping to one day. On a thinner silent boom day only the two
+  lottery passes trip, which makes 2, and the stop comes on the next broken day.
 
 The step's result is `failed` if a day failed, came back all-NULL or had an unpriced
 pass, else `partial` if days are left, else `ok`. Its counts are in the log line
@@ -491,22 +493,28 @@ the day's `enrich <day>` line in the run log:
 - `waiting for the tape`: the day's tape is not in R2 yet. Check
   `fulltape/{day}-fulltape.parquet`; the step works the day once it lands.
 - `failed (<ExceptionClass>)`: the step retries the day next night with no action.
-- `no outcomes`: the tape examined the fires and priced none of them, so a retry
-  alone changes nothing. Suspect a changed tape layout or option-chain id format.
-  This status shows only for fires that hold no value from another writer; where they
-  hold one, the same break shows as `priced none`. Fix the cause, then clear the
-  day's markers by hand (see "Enrichment").
+- `no outcomes`: the day came back with an all-NULL share (`null_days`) and no pass
+  tagged 20 fires or more. The tape examined the fires and priced none of them, so a
+  retry alone changes nothing. Suspect a changed tape layout or option-chain id format.
+  Fix the cause, then clear the day's markers by hand (see "Enrichment").
 - `priced none`: a pass wrote nothing and tagged at least 20 fires (`unpriced_passes`
-  in the `step enrich-outcomes` line says how many passes). The tape priced none of
-  them, and the fires kept whatever value another writer had left, so the shares and
-  `nightly outcomes all null` stay quiet. Suspect the same layout or chain id change.
-  A total break trips three passes on its first day, which stops the step there. Fix
-  the cause, then clear the day's markers and its inversion tags by hand (see "A
-  `priced none` day" under "Enrichment").
+  in the `step enrich-outcomes` line says how many passes). It outranks `no outcomes`,
+  so a day whose fires hold no value from another writer, and has 20 or more of them,
+  logs `priced none` with `null_days` beside it (for a recent session an `all null`
+  alert follows too). The cause is the same: a changed layout or chain id format. Fix
+  it, then clear the day's markers and its inversion tags by hand (see "A
+  `priced none` day" under "Enrichment"). A total break usually trips three passes on
+  its first day, which stops the step there; on a day with fewer than 20 silent boom
+  alerts it trips two, and the stop comes on the next broken day.
 - No `enrich <day>` line at all. Either the day had no work left, so an earlier
   night already examined it and priced none of it (treat it as `no outcomes`), or
   the step did not reach the day. Look for `nightly step skipped_deadline`, an
   exception tagged `step`, or `days_left` in the `step enrich-outcomes` line.
+
+A `priced none` day need not raise an `all null` alert. When its fires hold a value
+from another writer (the feed's), the shares stay near 100%, so `nightly outcomes all
+null` stays quiet and the step's own `nightly step failed` event and the `priced none`
+log line are the only signs.
 
 The Sentry cron monitor `nightly-tape` (crontab `15 7 * * 2-6`, UTC) checks the
 run in and out:

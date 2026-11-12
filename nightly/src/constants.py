@@ -46,10 +46,11 @@ OUTCOME_CHECK_BUDGET_SECONDS = 300
 LOW_OUTCOME_SHARE = 0.95
 # Where the enrichment step's tape days land: its own directory, which `open_reader` empties.
 ENRICH_CACHE_DIR = WORK_DIR / "enrich"
-# A day starts only with this much step time left: its download (which the step bounds at
-# the tape reader's FETCH_DEADLINE_SECONDS, 600 s, from the day's start) plus both enrich
-# passes. 3 x the slowest local day (79 s, Task 6) is below the 900 s floor; the plan's
-# budget table caps this at 1,800.
+# A day starts only with this much step time left: its download (held to the tape reader's
+# FETCH_DEADLINE_SECONDS, 600 s, from the day's start; the bound is checked between reads, so
+# a stalled read can pass it, and the watchdog bounds the run) plus both enrich passes.
+# 3 x the slowest local day (79 s, Task 6) is below the 900 s floor; the plan's budget table
+# caps this at 1,800.
 ENRICH_DAY_BUDGET_SECONDS = 900
 # Failed days, all-NULL (table, day) pairs and unpriced passes (below) after which the step
 # stops for the night. A tape layout or chain format the scripts cannot read shows as one of

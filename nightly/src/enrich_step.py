@@ -24,8 +24,9 @@ Order matters in two places:
 
 A day with no landed tape waits (`days_waiting_tape`). For a landed one the step fetches the
 tape (before opening a connection, so Neon never idles through a download; the download is
-bounded at FETCH_DEADLINE_SECONDS, or by the step's deadline if that is nearer), runs both
-passes on one fresh connection, and counts the (table, day) pairs whose fires all came back
+held to FETCH_DEADLINE_SECONDS, or to the step's deadline if that is nearer, a bound checked
+between reads, so a stalled read can pass it and only the watchdog bounds the run), runs
+both passes on one fresh connection, and counts the (table, day) pairs whose fires all came back
 without an outcome (`null_days`) or mostly so (`low_days`, a count only), and the passes
 that priced nothing (`unpriced_passes`, below). Pass 3, the ticker refit, never runs: the
 ticker EMA is retired.
@@ -52,10 +53,12 @@ and each has its own signal:
 
 The loop stops, leaving the rest as `days_left`, when `days_failed + null_days +
 unpriced_passes` reaches ENRICH_MAX_DAY_FAILURES; each day would cost a download. A total
-break can trip three passes on one day, so the step stops after that day, which limits the
-stamping to one day. It also stops when less than ENRICH_DAY_BUDGET_SECONDS is left. Only the
-setup is not a day's: a failure of its connection, the marker UPDATE, the listing of the
-days or the listing of the tape propagates to `run_steps`.
+break trips all three passes on one day when that day's silent boom pass tagged at least
+ENRICH_UNPRICED_FLOOR alerts, so the step stops after that day, which limits the stamping to
+one day. On a thinner silent boom day only the two lottery passes trip, which makes 2, and the
+stop comes on the next broken day. It also stops when less than ENRICH_DAY_BUDGET_SECONDS is
+left. Only the setup is not a day's: a failure of its connection, the marker UPDATE, the
+listing of the days or the listing of the tape propagates to `run_steps`.
 
 The step sends no share alert. The outcome check reports the last three sessions, so the
 latest session would be reported twice, and a long backfill would send an email a day.
