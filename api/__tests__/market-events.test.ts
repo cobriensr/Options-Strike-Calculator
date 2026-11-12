@@ -62,6 +62,35 @@ function urlsCalled(fetchMock: ReturnType<typeof stubFredFetch>): string[] {
   return fetchMock.mock.calls.map(([url]) => url);
 }
 
+type Reply = () => Promise<unknown>;
+
+const okJson =
+  (body: unknown): Reply =>
+  () =>
+    Promise.resolve({ ok: true, json: () => Promise.resolve(body) });
+
+const nonOk: Reply = () => Promise.resolve({ ok: false, status: 500 });
+
+/** A 200 whose body is not JSON, so `res.json()` rejects. */
+const unparseable: Reply = () =>
+  Promise.resolve({
+    ok: true,
+    json: () => Promise.reject(new SyntaxError('Unexpected token <')),
+  });
+
+const networkDown: Reply = () => Promise.reject(new Error('Network timeout'));
+
+/** FRED and Finnhub answer independently; an omitted source answers empty. */
+function stubSources({ fred, finnhub }: { fred?: Reply; finnhub?: Reply }) {
+  const fetchMock = vi.fn((url: string) =>
+    url.startsWith('https://finnhub.io/')
+      ? (finnhub ?? okJson({ earningsCalendar: [] }))()
+      : (fred ?? okJson({ release_dates: [] }))(),
+  );
+  vi.stubGlobal('fetch', fetchMock);
+  return fetchMock;
+}
+
 function event(overrides: Partial<EventItem> = {}): EventItem {
   return {
     date: CPI_DAY,
@@ -264,7 +293,7 @@ describe('market-events', () => {
       );
     });
 
-    it('keeps complete true when Finnhub answers non-OK', async () => {
+    it('is incomplete when Finnhub answers non-OK, and keeps the FRED events', async () => {
       process.env.FINNHUB_API_KEY = 'finnhub-key';
       vi.stubGlobal(
         'fetch',
@@ -287,7 +316,7 @@ describe('market-events', () => {
 
       const { events, complete } = await fetchMarketEvents(CPI_DAY, CPI_DAY);
 
-      expect(complete).toBe(true);
+      expect(complete).toBe(false);
       expect(events.map((e) => e.event)).toEqual(['CPI']);
       expect(logger.error).toHaveBeenCalledWith(
         { status: 500 },
@@ -295,7 +324,7 @@ describe('market-events', () => {
       );
     });
 
-    it('keeps complete true when the Finnhub fetch throws', async () => {
+    it('is incomplete when the Finnhub fetch throws', async () => {
       process.env.FINNHUB_API_KEY = 'finnhub-key';
       vi.stubGlobal(
         'fetch',
@@ -312,12 +341,84 @@ describe('market-events', () => {
 
       const { events, complete } = await fetchMarketEvents(CPI_DAY, CPI_DAY);
 
-      expect(complete).toBe(true);
+      expect(complete).toBe(false);
       expect(events).toEqual([]);
       expect(logger.error).toHaveBeenCalledWith(
         { err: expect.any(Error) },
         'Finnhub earnings fetch failed',
       );
+    });
+
+    it('is incomplete when the Finnhub body is not JSON', async () => {
+      process.env.FINNHUB_API_KEY = 'finnhub-key';
+      stubSources({ finnhub: unparseable });
+
+      const { events, complete } = await fetchMarketEvents(CPI_DAY, CPI_DAY);
+
+      expect(complete).toBe(false);
+      expect(events).toEqual([]);
+      expect(logger.error).toHaveBeenCalledWith(
+        { err: expect.any(SyntaxError) },
+        'Finnhub earnings fetch failed',
+      );
+    });
+
+    it.each([
+      ['an empty object', {}],
+      ['a null calendar', { earningsCalendar: null }],
+      ['a calendar that is not an array', { earningsCalendar: 'oops' }],
+      ['a null body', null],
+    ])(
+      'is incomplete when Finnhub answers 200 with %s',
+      async (_label, body) => {
+        process.env.FINNHUB_API_KEY = 'finnhub-key';
+        stubSources({ finnhub: okJson(body) });
+
+        const { events, complete } = await fetchMarketEvents(CPI_DAY, CPI_DAY);
+
+        expect(complete).toBe(false);
+        expect(events).toEqual([]);
+        expect(logger.error).toHaveBeenCalledWith(
+          'Finnhub earnings malformed payload',
+        );
+      },
+    );
+
+    it('stays complete when Finnhub answers 200 with an empty earnings calendar', async () => {
+      process.env.FINNHUB_API_KEY = 'finnhub-key';
+      stubSources({ finnhub: okJson({ earningsCalendar: [] }) });
+
+      const { events, complete } = await fetchMarketEvents(CPI_DAY, CPI_DAY);
+
+      expect(complete).toBe(true);
+      expect(events).toEqual([]);
+      expect(logger.error).not.toHaveBeenCalled();
+    });
+
+    it('stays complete, with the earnings, when Finnhub answers normally', async () => {
+      process.env.FINNHUB_API_KEY = 'finnhub-key';
+      stubSources({
+        finnhub: okJson({
+          earningsCalendar: [
+            {
+              date: CPI_DAY,
+              epsActual: null,
+              epsEstimate: 1,
+              hour: 'bmo',
+              quarter: 1,
+              revenueActual: null,
+              revenueEstimate: 1,
+              symbol: 'MSFT',
+              year: 2026,
+            },
+          ],
+        }),
+      });
+
+      const { events, complete } = await fetchMarketEvents(CPI_DAY, CPI_DAY);
+
+      expect(complete).toBe(true);
+      expect(events.map((e) => e.event)).toEqual(['MSFT Earnings']);
     });
 
     it('rejects when a FRED fetch throws', async () => {
@@ -329,6 +430,51 @@ describe('market-events', () => {
       await expect(fetchMarketEvents(CPI_DAY, CPI_DAY)).rejects.toThrow(
         'network down',
       );
+    });
+
+    it('rejects when a FRED body is not JSON', async () => {
+      stubSources({ fred: unparseable });
+
+      await expect(fetchMarketEvents(CPI_DAY, CPI_DAY)).rejects.toThrow(
+        'Unexpected token <',
+      );
+    });
+
+    it.each([
+      ['an empty object', {}],
+      ['a null release list', { release_dates: null }],
+      ['a release list that is not an array', { release_dates: 'oops' }],
+      ['a null body', null],
+    ])('is incomplete when FRED answers 200 with %s', async (_label, body) => {
+      stubSources({ fred: okJson(body) });
+
+      const { events, complete } = await fetchMarketEvents(
+        FOMC_SEP_DAY,
+        FOMC_SEP_DAY,
+      );
+
+      expect(complete).toBe(false);
+      expect(events.map((e) => e.event)).toEqual(['FOMC + SEP']);
+      expect(logger.error).toHaveBeenCalledWith(
+        expect.objectContaining({ releaseId: expect.any(Number) }),
+        'FRED API malformed payload',
+      );
+      expect(Sentry.captureMessage).toHaveBeenCalledWith(
+        'FRED API malformed payload',
+        {
+          level: 'warning',
+          extra: { releaseId: expect.any(Number) },
+        },
+      );
+    });
+
+    it('treats an empty release list as the normal no-events payload', async () => {
+      stubSources({ fred: okJson({ release_dates: [] }) });
+
+      const { complete } = await fetchMarketEvents(CPI_DAY, CPI_DAY);
+
+      expect(complete).toBe(true);
+      expect(Sentry.captureMessage).not.toHaveBeenCalled();
     });
   });
 
@@ -451,6 +597,74 @@ describe('market-events', () => {
 
       await expect(getEventsForDate(CPI_DAY)).rejects.toThrow('network down');
       expect(redis.set).not.toHaveBeenCalled();
+    });
+
+    it('rejects, and caches nothing, when a FRED body is not JSON', async () => {
+      stubSources({ fred: unparseable });
+
+      await expect(getEventsForDate(CPI_DAY)).rejects.toThrow(
+        'Unexpected token <',
+      );
+      expect(redis.set).not.toHaveBeenCalled();
+    });
+
+    it('returns the statics, and caches nothing, when FRED answers 200 with {}', async () => {
+      stubSources({ fred: okJson({}) });
+
+      const result = await getEventsForDate(FOMC_SEP_DAY);
+
+      expect(result.complete).toBe(false);
+      expect(result.events.map((e) => e.event)).toEqual(['FOMC + SEP']);
+      expect(redis.set).not.toHaveBeenCalled();
+      expect(Sentry.captureMessage).toHaveBeenCalledWith(
+        'FRED API malformed payload',
+        expect.objectContaining({ level: 'warning' }),
+      );
+    });
+
+    it('caches nothing when the Finnhub body is not JSON', async () => {
+      process.env.FINNHUB_API_KEY = 'finnhub-key';
+      stubSources({
+        finnhub: unparseable,
+        fred: okJson({ release_dates: [] }),
+      });
+
+      const result = await getEventsForDate(CPI_DAY);
+
+      expect(result.complete).toBe(false);
+      expect(redis.set).not.toHaveBeenCalled();
+      expect(logger.error).toHaveBeenCalledWith(
+        { err: expect.any(SyntaxError) },
+        'Finnhub earnings fetch failed',
+      );
+    });
+
+    it.each([
+      ['answers non-OK', nonOk],
+      ['cannot be reached', networkDown],
+      ['answers 200 with {}', okJson({})],
+    ])('caches nothing when Finnhub %s', async (_label, finnhub) => {
+      process.env.FINNHUB_API_KEY = 'finnhub-key';
+      stubSources({ finnhub });
+
+      const result = await getEventsForDate(CPI_DAY);
+
+      expect(result.complete).toBe(false);
+      expect(redis.set).not.toHaveBeenCalled();
+    });
+
+    it('caches a day Finnhub reports no earnings for', async () => {
+      process.env.FINNHUB_API_KEY = 'finnhub-key';
+      stubSources({ finnhub: okJson({ earningsCalendar: [] }) });
+
+      const result = await getEventsForDate(CPI_DAY);
+
+      expect(result).toEqual({ events: [], complete: true });
+      expect(redis.set).toHaveBeenCalledWith(
+        DAY_KEY,
+        { data: [], cachedAt: expect.any(Number) },
+        { ex: CACHE_TTL_SEC },
+      );
     });
   });
 

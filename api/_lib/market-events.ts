@@ -204,11 +204,17 @@ interface FinnhubEarningsResponse {
   earningsCalendar: FinnhubEarningsEntry[];
 }
 
+interface EarningsResult {
+  events: EventItem[];
+  /** False on a non-OK status, a thrown fetch or body, or a malformed payload. */
+  ok: boolean;
+}
+
 async function fetchMegaCapEarnings(
   apiKey: string,
   startDate: string,
   endDate: string,
-): Promise<EventItem[]> {
+): Promise<EarningsResult> {
   const events: EventItem[] = [];
 
   try {
@@ -223,12 +229,19 @@ async function fetchMegaCapEarnings(
 
     if (!res.ok) {
       logger.error({ status: res.status }, 'Finnhub earnings API error');
-      return [];
+      return { events: [], ok: false };
     }
 
-    const data = (await res.json()) as FinnhubEarningsResponse;
+    const data = (await res.json()) as Partial<FinnhubEarningsResponse> | null;
 
-    for (const entry of data.earningsCalendar || []) {
+    // A missing or non-array calendar is a bad payload, not "no earnings":
+    // an empty array is the normal answer for a quiet day.
+    if (!Array.isArray(data?.earningsCalendar)) {
+      logger.error('Finnhub earnings malformed payload');
+      return { events: [], ok: false };
+    }
+
+    for (const entry of data.earningsCalendar) {
       if (!MEGA_CAP_SYMBOLS.has(entry.symbol)) continue;
 
       const timeLabel =
@@ -251,9 +264,10 @@ async function fetchMegaCapEarnings(
     }
   } catch (err) {
     logger.error({ err }, 'Finnhub earnings fetch failed');
+    return { events: [], ok: false };
   }
 
-  return events;
+  return { events, ok: true };
 }
 
 // ============================================================
@@ -298,10 +312,21 @@ async function fetchReleaseDates(
     return { entries: [], ok: false };
   }
 
-  const data = (await res.json()) as FredReleaseDatesResponse;
+  const data = (await res.json()) as Partial<FredReleaseDatesResponse> | null;
+
+  // A 200 without a release list is a bad payload, not "no events": an empty
+  // array is FRED's normal answer, so only a missing or non-array list fails.
+  if (!Array.isArray(data?.release_dates)) {
+    logger.error({ releaseId }, 'FRED API malformed payload');
+    Sentry.captureMessage('FRED API malformed payload', {
+      level: 'warning',
+      extra: { releaseId },
+    });
+    return { entries: [], ok: false };
+  }
 
   return {
-    entries: (data.release_dates || []).filter(
+    entries: data.release_dates.filter(
       (r) => r.date >= startDate && r.date <= endDate,
     ),
     ok: true,
@@ -318,9 +343,13 @@ async function fetchReleaseDates(
  * `release/dates` returns all history and the range is filtered here, so a
  * past range works as well as a forward one.
  *
- * Without `FRED_API_KEY` it returns the static events (and earnings, with a
- * Finnhub key) with `complete: false`; it does not throw. A FRED or Finnhub
- * network error still rejects.
+ * `complete` is true only when every source that is configured answered
+ * with a well-formed payload: FRED (required) and, when `FINNHUB_API_KEY` is
+ * set, Finnhub. Without `FRED_API_KEY` it returns the static events (and
+ * earnings, with a Finnhub key) with `complete: false`; it does not throw.
+ * A FRED non-OK status or malformed payload, and a Finnhub failure of any
+ * kind, are logged and return `complete: false`. A FRED network error or
+ * unparseable body rejects.
  */
 export async function fetchMarketEvents(
   startDate: string,
@@ -342,20 +371,23 @@ export async function fetchMarketEvents(
         fetchReleaseDates(r.id, fredKey, startDate, endDate),
       )
     : [];
-  const earningsPromise = finnhubKey
+  const earningsPromise: Promise<EarningsResult> = finnhubKey
     ? fetchMegaCapEarnings(finnhubKey, startDate, endDate)
-    : Promise.resolve([] as EventItem[]);
+    : Promise.resolve({ events: [], ok: true });
 
-  const [fredResults, earningsEvents] = await Promise.all([
+  const [fredResults, earnings] = await Promise.all([
     Promise.all(fredPromises),
     earningsPromise,
   ]);
 
-  // Any FRED release erroring means the list may be missing economic
-  // events (e.g. CPI). Treat the whole fetch as incomplete so the caller
-  // does not cache a degraded result for the day. No FRED key means no
-  // economic events at all, which is incomplete too.
-  const complete = Boolean(fredKey) && fredResults.every((r) => r.ok);
+  // Either source failing means the list may be missing events: a FRED
+  // release (e.g. CPI) or a mega-cap earnings day. Treat the whole fetch as
+  // incomplete so the caller does not cache a degraded result for the day
+  // (or, in a snapshot save, trust it over the client's names). No FRED key
+  // means no economic events at all, which is incomplete too. No Finnhub key
+  // means earnings are not part of the list, so that leg counts as OK.
+  const complete =
+    Boolean(fredKey) && fredResults.every((r) => r.ok) && earnings.ok;
 
   const events: EventItem[] = [];
 
@@ -419,7 +451,7 @@ export async function fetchMarketEvents(
   }
 
   // Add mega-cap earnings
-  events.push(...earningsEvents);
+  events.push(...earnings.events);
 
   // Sort by date, then severity (high first), then event name
   events.sort((a, b) => {
@@ -441,6 +473,10 @@ export async function fetchMarketEvents(
  * blip or a missing key is retried on the next call instead of pinning a
  * degraded day. A Redis read or write failure is logged and the lookup goes
  * on without the cache. A fetch failure rejects.
+ *
+ * `date` is YYYY-MM-DD, today or earlier in ET. A future date would cache a
+ * schedule that can still change for up to 7 days, so callers skip future
+ * dates first (`api/snapshot.ts` already does).
  */
 export async function getEventsForDate(
   date: string,
