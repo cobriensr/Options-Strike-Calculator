@@ -225,10 +225,20 @@ describe('cron check-live-snapshots', () => {
 
     // The window is local to the cron, so cron-schedules.test.ts cannot tie it
     // to vercel.json. Sweep the ticks vercel.json fires on a full Wednesday in
-    // each DST regime and check the window admits 10:00-15:45 ET in both.
+    // each DST regime and check the window admits 10:00-15:45 ET in both. The
+    // ticks come from FIRED_SCHEDULE, which the first test pins to vercel.json.
     const FIRED_SCHEDULE = '*/15 14-20 * * 1-5';
+    const scheduleParts = /^\*\/(\d+) (\d+)-(\d+) /.exec(FIRED_SCHEDULE);
+    if (scheduleParts === null) throw new Error('unreadable FIRED_SCHEDULE');
+    const [stepMin, firstHour, lastHour] = scheduleParts
+      .slice(1)
+      .map(Number) as [number, number, number];
+    const firedUtcMinutes: number[] = [];
+    for (let min = firstHour * 60; min < (lastHour + 1) * 60; min += stepMin) {
+      firedUtcMinutes.push(min);
+    }
 
-    it('sweeps the schedule vercel.json fires', () => {
+    it('vercel.json fires the schedule the sweep walks', () => {
       const { crons } = JSON.parse(
         readFileSync(resolve(process.cwd(), 'vercel.json'), 'utf8'),
       ) as { crons: { path: string; schedule: string }[] };
@@ -247,15 +257,12 @@ describe('cron check-live-snapshots', () => {
       (_regime, date, utcOffsetMin) => {
         const midnightUtc = Date.parse(`${date}T00:00:00Z`);
         const admitted: string[] = [];
-        for (let hour = 14; hour <= 20; hour += 1) {
-          for (const minute of [0, 15, 30, 45]) {
-            const utcMin = hour * 60 + minute;
-            vi.setSystemTime(midnightUtc + utcMin * MINUTE_MS);
-            if (!isLiveSnapshotWatchWindow()) continue;
-            const etMin = utcMin - utcOffsetMin;
-            const etHour = String(Math.floor(etMin / 60)).padStart(2, '0');
-            admitted.push(`${etHour}:${String(etMin % 60).padStart(2, '0')}`);
-          }
+        for (const utcMin of firedUtcMinutes) {
+          vi.setSystemTime(midnightUtc + utcMin * MINUTE_MS);
+          if (!isLiveSnapshotWatchWindow()) continue;
+          const etMin = utcMin - utcOffsetMin;
+          const etHour = String(Math.floor(etMin / 60)).padStart(2, '0');
+          admitted.push(`${etHour}:${String(etMin % 60).padStart(2, '0')}`);
         }
         expect(admitted).toHaveLength(24);
         expect(admitted[0]).toBe('10:00');

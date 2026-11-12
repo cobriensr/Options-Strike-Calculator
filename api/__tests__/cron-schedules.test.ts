@@ -634,6 +634,14 @@ describe('cron-schedules SCHEDULE_MAP', () => {
     },
   );
 
+  it('check-live-snapshots is monitored ET-anchored with a failure threshold of 2', () => {
+    expect(SCHEDULE_MAP['check-live-snapshots']).toMatchObject({
+      schedule: '*/15 10-15 * * 1-5',
+      timezone: 'America/New_York',
+      failureIssueThreshold: 2,
+    });
+  });
+
   it('findUnservedEtTicks passes a window inside the union in both regimes', () => {
     expect(
       findUnservedEtTicks('* 10-15 * * 1-5', [

@@ -33,7 +33,7 @@ after the fact; this alert makes the gap visible while it can still be fixed.
 | Cadence | every 15 min | Worst-case detection is 30 + 15 = 45 min. |
 | `CLAIM_TTL_SEC` | 24 h | The claim only has to outlive one day's window (under 6 h). |
 | `PUSH_TTL_SEC` | 1 h | A late delivery is still useful within the session; the claim blocks a retry once the push service accepted it. |
-| Sentry monitor `failureIssueThreshold` | 2 | At the ~5% transient check-in miss rate, 24 ticks a day would raise a false monitor issue on about 70% of days at 1; 2 misses in a row page within 30 min, and an undelivered run errors on consecutive ticks. |
+| Sentry monitor `failureIssueThreshold` | 2 | One lost completion check-in should not page; two in a row page within 30 min, and a run that reaches no device errors on consecutive ticks. |
 
 Example: saves stop at 11:10 AM CT. The 11:30 check sees a 20-minute gap (no
 push); the 11:45 check sees 35 minutes and pushes "Last live snapshot 11:10 AM

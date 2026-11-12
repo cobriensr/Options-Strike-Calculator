@@ -39,7 +39,7 @@
  *     most. 24 h covers it with margin, and the next trading day derives a
  *     new key.
  *   - Release and known gap: as in `push-once.ts`. A day's alert lost to
- *     either is not retried until the key expires (24 h).
+ *     either is lost for that day: the key outlives the window.
  *
  * Push TTL is PUSH_TTL_SEC (1 h): a late delivery is still useful inside the
  * session, and the claim blocks a retry once the push service accepted it.
