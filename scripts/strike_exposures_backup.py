@@ -21,10 +21,11 @@ Putting it in R2 and deciding which days are due:
 - `upload_day` uploads a file with its metadata and checks the object back
   (size and rows). An object that fails the check is deleted, so a key that
   exists means a day that verified.
-- `plan_days` decides which days need a file: those with no object, those that
-  gained rows since the last run (an id high-water mark kept in
-  `_state.json`), and, with `verify_counts`, any whose row count differs from
-  the object's.
+- `plan_days` decides which days need a file: those with no object, those
+  whose object it cannot trust (an old format, or no usable `rows`), those
+  that gained rows since the last run (an id high-water mark kept in
+  `_state.json`), and, with `verify_counts` (or no mark, or too many ids since
+  it), any whose row count differs from the object's.
 - `main` is the CLI: `export` and `status`.
 
 The types are exact. NUMERIC columns keep the column's own precision and scale
@@ -71,7 +72,7 @@ from boto3.exceptions import Boto3Error
 from boto3.s3.transfer import TransferConfig
 from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
-from psycopg2.extensions import TRANSACTION_STATUS_IDLE
+from psycopg2.extensions import TRANSACTION_STATUS_IDLE, TRANSACTION_STATUS_UNKNOWN
 from psycopg2.extensions import connection as PgConnection
 from psycopg2.extensions import cursor as PgCursor
 
@@ -87,8 +88,15 @@ PREFIX = 'backups/strike_exposures/'
 STATE_KEY = PREFIX + '_state.json'
 # Raise it when the column list or the types change.
 FORMAT_VERSION = '1'
+# The id delta query costs about 5.6 s per 1M ids, because date is not in the
+# pkey and every row needs a heap fetch. A normal night is 0.5M to 2.8M ids; about
+# 10M (two missed weeks) passes the 60 s statement timeout, and then planning
+# would fail every night. Past this many ids since the stored mark the delta is
+# skipped and every day is counted instead, which is about 45 to 60 s over many
+# statements of at most about 1.3 s each.
+DELTA_MAX_IDS = 5_000_000
 
-_DAY_KEY = re.compile(re.escape(PREFIX) + r'(\d{4}-\d{2}-\d{2})\.parquet')
+_DAY_KEY = re.compile(re.escape(PREFIX) + r'(\d{4}-\d{2}-\d{2})\.parquet$')
 # One thread, as nightly's R2Store: a client shared across upload threads once
 # sent requests without TLS verification. Multipart from 64 MiB; a Friday is
 # about 215 MB.
@@ -210,6 +218,8 @@ def _read_snapshot(conn: PgConnection) -> Iterator[PgCursor]:
     One thread per connection: this changes the connection's autocommit.
     """
     status = conn.info.transaction_status
+    if status == TRANSACTION_STATUS_UNKNOWN:  # what psycopg2 reports once closed
+        raise BackupError(f'the connection is closed (status {status})')
     if status != TRANSACTION_STATUS_IDLE:
         raise BackupError(
             f'the connection is already inside a transaction (status {status})'
@@ -394,8 +404,8 @@ def upload_day(s3, bucket: str, f: DayFile) -> None:
             s3.delete_object(Bucket=bucket, Key=key)
         except Exception:
             raise BackupError(
-                f'{day}: could not verify the upload and could not delete it; '
-                'the object may remain'
+                f'{day}: could not verify the upload and could not delete {key}; '
+                'the object may remain, delete it by hand'
             ) from exc
         if isinstance(exc, BackupError):
             raise
@@ -470,6 +480,7 @@ _DAYS_SQL = (
 )
 _MAX_ID_SQL = 'SELECT max(id) FROM strike_exposures'
 _DELTA_SQL = 'SELECT date FROM strike_exposures WHERE id > %s GROUP BY date'
+_DELTA_SCOPE = 'delta'
 
 
 @dataclass(frozen=True)
@@ -477,7 +488,8 @@ class Plan:
     """What `plan_days` found. `due` is `missing` plus `stale`, oldest first.
 
     `db_days` are the table's days before today; `object_days` are every day
-    with an object; `high_water_id` is `max(id)` in the planning snapshot.
+    with an object; `high_water_id` is `max(id)` in the planning snapshot;
+    `scope` says which days had their rows counted and why.
     """
 
     due: list[date]
@@ -486,6 +498,13 @@ class Plan:
     stale: list[date]
     db_days: list[date]
     object_days: list[date]
+    scope: str
+
+
+def _object_rows(metadata: dict[str, str]) -> int | None:
+    """The row count an object says it holds, or None if it does not say."""
+    text = metadata.get('rows', '')
+    return int(text) if text.isascii() and text.isdecimal() else None
 
 
 def plan_days(
@@ -497,13 +516,18 @@ def plan_days(
 ) -> Plan:
     """Decide which days need a file. Only days before `today_et` are planned.
 
-    A day is due when it has no object (missing), or when its row count differs
-    from the object's `rows` metadata (stale). The count is taken for the days
-    that gained rows since the last complete run (ids above the stored
-    high-water mark) and, with `verify_counts` or when there is no stored mark,
-    for every day that has an object. The mark misses one thing: a row with a
-    lower id that commits after the planning snapshot. `verify_counts` catches
-    it.
+    A day is due when it has no object (missing), or when its object cannot be
+    trusted or its row count differs from the object's `rows` metadata (stale).
+    An object cannot be trusted when its `format` is not FORMAT_VERSION or its
+    `rows` is missing or not a count: it was written by something else, or by
+    another version of this module. That is decided without a count.
+
+    The count is taken for the days that gained rows since the last complete
+    run (ids above the stored high-water mark) and, for every day that has a
+    trusted object, with `verify_counts`, with no stored mark, or when more
+    than DELTA_MAX_IDS ids have been used since the mark (the delta query would
+    run too long). The mark misses one thing: a row with a lower id that
+    commits after the planning snapshot. `verify_counts` catches it.
 
     The database is read once, in one snapshot, with every result fetched
     inside it. The table must have no NULL expiry: the keyset paging and the
@@ -511,7 +535,11 @@ def plan_days(
     """
     exported = exported_days(s3, bucket)
     last_id = read_state(s3, bucket)
-    check_all = verify_counts or last_id is None
+    untrusted = {
+        day
+        for day, metadata in exported.items()
+        if metadata.get('format') != FORMAT_VERSION or _object_rows(metadata) is None
+    }
     counts: dict[date, int] = {}
     with _read_snapshot(conn) as cur:
         cur.execute(_NULL_EXPIRY_SQL)
@@ -525,19 +553,29 @@ def plan_days(
         db_days = [row[0] for row in cur.fetchall() if row[0] < today_et]
         cur.execute(_MAX_ID_SQL)
         high_water_id = cur.fetchone()[0] or 0
+        if verify_counts:
+            scope = 'every day: --verify-counts'
+        elif last_id is None:
+            scope = 'every day: no stored high-water mark'
+        elif high_water_id - last_id > DELTA_MAX_IDS:
+            scope = f'every day: ids moved more than {DELTA_MAX_IDS} since the stored mark'
+        else:
+            scope = _DELTA_SCOPE
         gained: set[date] = set()
-        if not check_all:
+        if scope == _DELTA_SCOPE:
             cur.execute(_DELTA_SQL, (last_id,))
             gained = {row[0] for row in cur.fetchall()}
         for day in db_days:
-            if day in exported and (check_all or day in gained):
+            counted = scope != _DELTA_SCOPE or day in gained
+            if day in exported and day not in untrusted and counted:
                 cur.execute(_COUNT_SQL, (day,))
                 counts[day] = cur.fetchone()[0]
     missing = [day for day in db_days if day not in exported]
     stale = [
         day
         for day in db_days
-        if day in counts and exported[day].get('rows') != str(counts[day])
+        if day in untrusted
+        or (day in counts and _object_rows(exported[day]) != counts[day])
     ]
     return Plan(
         due=sorted(missing + stale),
@@ -546,6 +584,7 @@ def plan_days(
         stale=stale,
         db_days=db_days,
         object_days=sorted(exported),
+        scope=scope,
     )
 
 
@@ -576,6 +615,7 @@ def _export(args: argparse.Namespace, conn, s3, bucket: str, today: date) -> int
     # The stored mark covers the whole table, so only a run that did everything
     # that was due may move it.
     partial = args.date is not None or len(days) < len(plan.due)
+    print(f'counting: {plan.scope}', flush=True)
     print(
         f'{len(plan.due)} day(s) due; exporting {len(days)}'
         + (' (partial run)' if partial else ''),
@@ -636,6 +676,7 @@ def _status(conn, s3, bucket: str, today: date) -> int:
         if plan.db_days
         else ''
     )
+    print(f'counting: {plan.scope}')
     print(f'database days: {len(plan.db_days)}{span}')
     print(f'exported days: {len(plan.object_days)}')
     print(_dates_line('missing', plan.missing))
@@ -689,15 +730,23 @@ def main(argv: list[str] | None = None) -> int:
         print(f'--date must be before today ({today.isoformat()})', file=sys.stderr)
         return 2
     bucket = os.environ['R2_BUCKET_FULLTAPE']
-    s3 = boto3.client(
-        's3',
-        endpoint_url=os.environ['R2_ENDPOINT_URL'],
-        aws_access_key_id=os.environ['R2_ACCESS_KEY_ID'],
-        aws_secret_access_key=os.environ['R2_SECRET_ACCESS_KEY'],
-        region_name='auto',
-        verify=True,
-        config=Config(signature_version='s3v4', retries={'mode': 'standard', 'max_attempts': 5}),
-    )
+    try:
+        s3 = boto3.client(
+            's3',
+            endpoint_url=os.environ['R2_ENDPOINT_URL'],
+            aws_access_key_id=os.environ['R2_ACCESS_KEY_ID'],
+            aws_secret_access_key=os.environ['R2_SECRET_ACCESS_KEY'],
+            region_name='auto',
+            verify=True,
+            config=Config(
+                signature_version='s3v4', retries={'mode': 'standard', 'max_attempts': 5}
+            ),
+        )
+    except (ValueError, BotoCoreError) as exc:
+        # botocore's text is "Invalid endpoint: <url>", and the URL holds the
+        # Cloudflare account id: log the class only. It is a config error.
+        _log_failure('R2 client', exc)
+        return 2
     try:
         conn = connect_with_retry(
             os.environ['DATABASE_URL'],

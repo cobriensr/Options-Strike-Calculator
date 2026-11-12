@@ -1,16 +1,28 @@
-"""Tests for scripts/strike_exposures_backup.py (day reader and Parquet writer).
+"""Tests for scripts/strike_exposures_backup.py, the strike_exposures backup.
 
 Run:
 
     ml/.venv/Scripts/pytest scripts/test_strike_exposures_backup.py -q
 
-No test reaches a database. The connection and cursor are fakes that hold a
-list of rows and serve count and keyset pages from it, reading the same
-parameters the module sends, so a page query that forgets its key or its LIMIT
-shows up as wrong data and not just as a wrong string. The fake also enforces
-the transaction rules the module relies on: a BEGIN needs autocommit on and no
-open transaction, every `%s` needs a parameter, and a test that leaves the
-transaction open fails at teardown. `fail_on` makes one statement raise.
+The file covers the whole module, in this order:
+
+- the day reader and Parquet writer (`_read_snapshot`, `iter_day_pages`,
+  `write_day_parquet`): types, keyset paging, the count check, the cleanup;
+- the R2 side (`upload_day`, `exported_days`, `read_state`, `write_state`);
+- the planner (`plan_days`): which days are due and how they are counted;
+- the CLI (`main`: `export` and `status`), run end to end on the fakes.
+
+No test reaches a database or R2. The connection and cursor are fakes that
+hold a list of rows and serve counts, planning reads and keyset pages from it,
+reading the same parameters the module sends, so a query that forgets its key
+or its LIMIT shows up as wrong data and not just as a wrong string. The fake
+also enforces the rules the module relies on: a BEGIN needs autocommit on and
+no open transaction, every `%s` needs a parameter, no statement or fetch runs
+outside the snapshot, and a test that leaves the transaction open fails at
+teardown. `fail_on` makes one statement raise, and a closed connection behaves
+as psycopg2's does. `FakeS3` is a dict-backed R2 client with boto3's
+signatures, and `Cli` runs `main` with the environment, `psycopg2.connect` and
+`boto3.client` replaced.
 """
 
 from __future__ import annotations
@@ -32,7 +44,11 @@ import pyarrow.parquet as pq
 import pytest
 from boto3.exceptions import S3UploadFailedError
 from botocore.exceptions import ClientError
-from psycopg2.extensions import TRANSACTION_STATUS_IDLE, TRANSACTION_STATUS_INTRANS
+from psycopg2.extensions import (
+    TRANSACTION_STATUS_IDLE,
+    TRANSACTION_STATUS_INTRANS,
+    TRANSACTION_STATUS_UNKNOWN,
+)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -211,6 +227,8 @@ class FakeConnection:
         self._autocommit = value
 
     def cursor(self) -> FakeCursor:
+        if self.closed:
+            raise psycopg2.InterfaceError('connection already closed')
         return FakeCursor(self)
 
     def close(self) -> None:
@@ -232,7 +250,12 @@ class FakeConnection:
 
     @property
     def info(self) -> SimpleNamespace:
-        status = TRANSACTION_STATUS_INTRANS if self.in_txn else TRANSACTION_STATUS_IDLE
+        if self.closed:
+            status = TRANSACTION_STATUS_UNKNOWN  # what psycopg2 reports once closed
+        elif self.in_txn:
+            status = TRANSACTION_STATUS_INTRANS
+        else:
+            status = TRANSACTION_STATUS_IDLE
         return SimpleNamespace(transaction_status=status)
 
     @property
@@ -344,6 +367,7 @@ def test_round_trip_exact_values(make_conn, tmp_path: Path) -> None:
     assert pq.read_schema(result.path).equals(sbk.ARROW_SCHEMA)
     # One row group per page: 4 rows in pages of 2.
     assert pq.ParquetFile(result.path).metadata.num_row_groups == 2
+    assert pq.ParquetFile(result.path).metadata.row_group(0).column(0).compression == 'ZSTD'
 
 
 def test_count_mismatch_raises_and_leaves_no_file(make_conn, tmp_path: Path) -> None:
@@ -624,6 +648,19 @@ def test_stat_failure_deletes_the_file(
     assert conn.statements[-1][0] == 'ROLLBACK'
 
 
+def test_a_closed_connection_is_refused_with_its_own_text(make_conn) -> None:
+    # psycopg2 reports status 4 (UNKNOWN) once a connection is closed. That is
+    # not "inside a transaction", and the message must not say it is.
+    conn = make_conn(plain_rows(2))
+    conn.closed = 2
+
+    with pytest.raises(sbk.BackupError, match=r'^the connection is closed \(status 4\)$'):
+        with sbk._read_snapshot(conn):
+            pytest.fail('the block must not run')
+
+    assert conn.statements == []
+
+
 # ── Task 2: upload, plan, export and status ──────────────────────────────────
 
 BUCKET = 'test-bucket'
@@ -712,9 +749,10 @@ class FakeS3:
         self.files_seen: list[list[str]] = []
 
     def put_day(self, day: date, rows: int, **metadata: str) -> None:
+        """An object as a past run left it: current format, `rows` rows."""
         self.objects[key(day)] = {
             'Body': b'old',
-            'Metadata': {'rows': str(rows), **metadata},
+            'Metadata': {'rows': str(rows), 'format': sbk.FORMAT_VERSION, **metadata},
         }
 
     def keys(self, kind: str) -> list[str]:
@@ -804,6 +842,8 @@ class Cli:
 
         def client(*args, **kwargs):
             self.clients.append((args, kwargs))
+            if isinstance(s3, Exception):
+                raise s3
             return s3
 
         self.monkeypatch.setattr(sbk.psycopg2, 'connect', connect)
@@ -851,7 +891,11 @@ def test_upload_day_stores_metadata_and_verifies(tmp_path: Path) -> None:
     assert all(value.isascii() for value in meta.values())
     assert s3.objects[key(D1)]['Body'] == f.path.read_bytes()
     # One thread: a client shared across upload threads once skipped TLS checks.
-    assert s3.transfer_configs[0].use_threads is False
+    # The rest is nightly's R2Store transfer setup, which is known to work on R2.
+    transfer = s3.transfer_configs[0]
+    assert transfer.use_threads is False
+    assert transfer.preferred_transfer_client == 'classic'
+    assert transfer.multipart_threshold == 64 * 2**20
     assert s3.keys('head') == [key(D1)]
     assert s3.keys('delete') == []
 
@@ -891,6 +935,9 @@ def test_upload_that_cannot_be_deleted_says_the_object_may_remain(tmp_path: Path
         sbk.upload_day(s3, BUCKET, f)
 
     assert isinstance(raised.value.__cause__, sbk.BackupError)
+    # The operator needs the key, and the instruction, to clean up by hand.
+    assert key(D1) in str(raised.value)
+    assert 'delete it by hand' in str(raised.value)
 
 
 def test_upload_error_propagates_and_deletes_nothing(tmp_path: Path) -> None:
@@ -913,6 +960,13 @@ def test_exported_days_lists_every_page_and_skips_non_day_keys() -> None:
     s3.objects[STATE_KEY] = {'Body': b'{}', 'Metadata': {}}
     s3.objects['backups/strike_exposures/notes.txt'] = {'Body': b'', 'Metadata': {}}
     s3.objects['backups/other/2026-11-02.parquet'] = {'Body': b'', 'Metadata': {}}
+    # Names that start or end like a day's file but are not one.
+    for stray in (
+        'backups/strike_exposures/2026-11-02.parquet.bak',
+        'backups/strike_exposures/sub/2026-11-02.parquet',
+        'backups/strike_exposures/2026-11-02.parquet/part',
+    ):
+        s3.objects[stray] = {'Body': b'', 'Metadata': {'rows': '9'}}
     s3.objects['backups/strike_exposures/2026-13-45.parquet'] = {
         'Body': b'',
         'Metadata': {'rows': '9'},
@@ -1026,15 +1080,108 @@ def test_plan_without_state_checks_every_day(make_conn) -> None:
     assert not any('id > %s' in t for t, _ in conn.statements)
 
 
-def test_plan_treats_an_object_without_rows_metadata_as_stale(make_conn) -> None:
+def test_plan_ignores_objects_for_days_the_table_no_longer_has(make_conn) -> None:
     conn = make_conn(day_rows(D1, [1, 2]))
     s3 = FakeS3()
-    s3.objects[key(D1)] = {'Body': b'old', 'Metadata': {}}
-    s3.put_day(date(2025, 1, 6), 4)  # a day the table no longer has: ignored
+    s3.put_day(D1, 2)
+    s3.put_day(date(2025, 1, 6), 4)
 
-    plan = sbk.plan_days(conn, s3, BUCKET, TODAY, verify_counts=True)
+    plan = sbk.plan_days(conn, s3, BUCKET, TODAY)
 
-    assert plan.due == [D1]
+    assert plan.due == []
+    assert plan.object_days == [date(2025, 1, 6), D1]
+
+
+@pytest.mark.parametrize(
+    ('field', 'value'),
+    [
+        pytest.param('format', None, id='format-missing'),
+        pytest.param('format', '0', id='format-is-old'),
+        pytest.param('rows', None, id='rows-missing'),
+        pytest.param('rows', '', id='rows-empty'),
+        pytest.param('rows', 'three', id='rows-not-a-number'),
+        pytest.param('rows', '-3', id='rows-negative'),
+        pytest.param('rows', ' 3', id='rows-padded'),
+        pytest.param('rows', '٣', id='rows-not-ascii'),
+    ],
+)
+def test_plan_distrusts_an_object_it_cannot_read(make_conn, field: str, value) -> None:
+    # D2's object is current but for one field. Nothing is past the high-water
+    # mark, so no count is taken: the object has to give itself away.
+    conn = make_conn(three_days())
+    s3 = FakeS3()
+    s3.put_day(D1, 2)
+    s3.put_day(D2, 3)
+    s3.put_day(D3, 1)
+    metadata = s3.objects[key(D2)]['Metadata']
+    if value is None:
+        del metadata[field]
+    else:
+        metadata[field] = value
+    sbk.write_state(s3, BUCKET, 6)
+
+    plan = sbk.plan_days(conn, s3, BUCKET, TODAY)
+
+    assert plan.due == [D2] and plan.stale == [D2] and plan.missing == []
+    assert not any(t.startswith('SELECT count(*)') and p for t, p in conn.statements)
+
+    # Counting every day does not spend a count on it either: the object has
+    # already given itself away.
+    every_day = make_conn(three_days())
+    plan = sbk.plan_days(every_day, s3, BUCKET, TODAY, verify_counts=True)
+
+    assert plan.due == [D2]
+    counted = [p for t, p in every_day.statements if t.startswith('SELECT count(*)') and p]
+    assert counted == [(D1,), (D3,)]
+
+
+def test_plan_says_how_it_counted(make_conn) -> None:
+    conn = make_conn(three_days())
+    s3 = FakeS3()
+
+    assert sbk.plan_days(conn, s3, BUCKET, TODAY).scope == (
+        'every day: no stored high-water mark'
+    )
+    sbk.write_state(s3, BUCKET, 6)
+    assert sbk.plan_days(conn, s3, BUCKET, TODAY).scope == 'delta'
+    assert sbk.plan_days(conn, s3, BUCKET, TODAY, verify_counts=True).scope == (
+        'every day: --verify-counts'
+    )
+
+
+def test_delta_limit_is_five_million_ids() -> None:
+    # Measured on prod: about 5.6 s per 1M ids (date is not in the pkey, so each
+    # id costs a heap fetch), and about 10M ids passes the 60 s timeout.
+    assert sbk.DELTA_MAX_IDS == 5_000_000
+
+
+@pytest.mark.parametrize(
+    ('top_id', 'uses_delta'),
+    [
+        pytest.param(5_000_002, True, id='at-the-limit'),
+        pytest.param(5_000_003, False, id='one-over'),
+    ],
+)
+def test_plan_counts_every_day_when_the_delta_is_too_wide(
+    make_conn, top_id: int, uses_delta: bool
+) -> None:
+    # The stored mark is 2, so the ids since then span top_id - 2. D1 is stale
+    # but has no new rows: only counting every day can find it.
+    conn = make_conn(day_rows(D1, [1, 2]) + day_rows(D2, [3, top_id]))
+    s3 = FakeS3()
+    s3.put_day(D1, 1)
+    s3.put_day(D2, 2)
+    sbk.write_state(s3, BUCKET, 2)
+
+    plan = sbk.plan_days(conn, s3, BUCKET, TODAY)
+
+    counted = [p[0] for t, p in conn.statements if t.startswith('SELECT count(*)') and p]
+    assert any('id > %s' in t for t, _ in conn.statements) is uses_delta
+    assert counted == ([D2] if uses_delta else [D1, D2])
+    assert plan.due == ([] if uses_delta else [D1])
+    assert plan.scope == (
+        'delta' if uses_delta else 'every day: ids moved more than 5000000 since the stored mark'
+    )
 
 
 def test_plan_of_an_empty_table(make_conn) -> None:
@@ -1098,13 +1245,15 @@ def test_export_resumes(cli) -> None:
     assert s3.keys('upload') == [key(D2), key(D3)]
     assert s3.state()['high_water_id'] == 6
     assert '2026-11-03: 3 rows' in out and '2026-11-04: 1 rows' in out
+    assert 'counting: every day: no stored high-water mark' in out
     for secret in (DSN_SECRET, R2_SECRET, 'ACCESS-KEY-MARKER'):
         assert secret not in out
 
     second = FakeConnection(three_days())
-    code, _ = cli.run(second, s3, 'export')
+    code, out = cli.run(second, s3, 'export')
 
     assert code == 0
+    assert 'counting: delta' in out
     assert s3.keys('upload') == [key(D2), key(D3)]  # nothing new
     assert not any('SELECT "id"' in t for t, _ in second.statements)
 
@@ -1169,6 +1318,26 @@ def test_database_error_on_a_live_connection_fails_the_day_and_goes_on(cli) -> N
     assert s3.keys('upload') == [key(D1), key(D3)]
     assert s3.state() is None
     assert '2026-11-03' in out and 'QueryCanceled' in out
+
+
+def test_an_os_error_on_one_day_fails_that_day_and_goes_on(cli, monkeypatch) -> None:
+    real_stat = Path.stat
+
+    def stat_fails_on_d2(self: Path, *args, **kwargs):
+        if self.name == '2026-11-03.parquet':
+            raise OSError('disk')
+        return real_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, 'stat', stat_fails_on_d2)
+    s3 = FakeS3()
+
+    code, out = cli.run(FakeConnection(three_days()), s3, 'export')
+
+    assert code == 1
+    assert s3.keys('upload') == [key(D1), key(D3)]
+    assert s3.state() is None
+    assert 'FAILED 2026-11-03: OSError' in out
+    assert 'disk' not in out  # the class name only
 
 
 def test_dropped_connection_stops_the_run(cli) -> None:
@@ -1265,6 +1434,22 @@ def test_date_forces_one_day_and_keeps_the_state(cli) -> None:
     assert s3.state() is None  # a one-day run says nothing about the other days
 
 
+def test_date_run_keeps_the_state_even_when_that_day_is_all_that_was_due(cli) -> None:
+    # D1 and D2 are current in R2, so D3 is the only due day and --date D3
+    # does everything that was due. It must still not move the mark: the flag
+    # means "just this day", and a run that was told so proves nothing else.
+    s3 = FakeS3()
+    s3.put_day(D1, 2)
+    s3.put_day(D2, 3)
+
+    code, out = cli.run(FakeConnection(three_days()), s3, 'export', '--date', '2026-11-04')
+
+    assert code == 0
+    assert s3.keys('upload') == [key(D3)]
+    assert '1 day(s) due; exporting 1' in out
+    assert s3.state() is None
+
+
 def test_limit_days_is_a_partial_run(cli) -> None:
     s3 = FakeS3()
 
@@ -1327,6 +1512,19 @@ def test_missing_env_exits_2_naming_only_the_variable(cli, monkeypatch) -> None:
     assert cli.connects == [] and cli.clients == []
 
 
+def test_a_bad_r2_endpoint_exits_2_without_showing_it(cli) -> None:
+    # botocore raises ValueError('Invalid endpoint: <url>'), and the URL holds
+    # the account id.
+    error = ValueError(f'Invalid endpoint: {ENV["R2_ENDPOINT_URL"]}')
+
+    code, out = cli.run(FakeConnection(three_days()), error, 'export')
+
+    assert code == 2
+    assert 'FAILED R2 client: ValueError' in out
+    assert 'acct-marker' not in out
+    assert cli.connects == []  # nothing else was opened
+
+
 def test_main_builds_its_clients_from_the_environment(cli) -> None:
     cli.run(FakeConnection([]), FakeS3(), 'status')
 
@@ -1340,6 +1538,10 @@ def test_main_builds_its_clients_from_the_environment(cli) -> None:
     assert client_kwargs['aws_secret_access_key'] == R2_SECRET
     assert client_kwargs['region_name'] == 'auto'
     assert client_kwargs['verify'] is True
+    # Nightly's R2Store settings, which are known to work against R2.
+    config = client_kwargs['config']
+    assert config.signature_version == 's3v4'
+    assert config.retries == {'mode': 'standard', 'max_attempts': 5}
 
 
 def test_database_connect_failure_hides_the_dsn(cli) -> None:
@@ -1368,6 +1570,7 @@ def test_status_output(cli) -> None:
     assert 'missing: 1 (2026-11-04)' in out
     assert 'stale: 1 (2026-11-03)' in out
     assert 'high-water id: 8' in out
+    assert 'counting: every day: --verify-counts' in out
     for secret in (DSN_SECRET, R2_SECRET, 'ACCESS-KEY-MARKER', 'ep-marker'):
         assert secret not in out
     assert s3.keys('upload') == []

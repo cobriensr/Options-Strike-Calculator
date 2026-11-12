@@ -83,7 +83,9 @@ Phase A alone is a complete backup that someone has to re-run by hand. Phase B r
 - **Restore.**
   - Default is `--dry-run`. Writes need `--apply`.
   - It inserts in batches of 500 rows with `INSERT ... ON CONFLICT (date, "timestamp", ticker, strike, expiry) DO NOTHING` and the original `id` and `created_at`. It never UPDATEs or DELETEs. The conflict target is the unique key and nothing else, so a restored row whose `id` is already taken by a different row raises instead of being skipped silently.
-  - After an `--apply` that inserted rows, it moves the id sequence past the restored ids, in one short transaction: `BEGIN`, `LOCK TABLE strike_exposures IN SHARE ROW EXCLUSIVE MODE`, then `setval(pg_get_serial_sequence('strike_exposures', 'id'), GREATEST((SELECT max(id) FROM strike_exposures), <the sequence's last_value>))`, then `COMMIT`. The sequence's last_value comes from `pg_sequences`, matched on the name `pg_get_serial_sequence` returns, so no sequence name is written in the code.
+  - After an `--apply` that inserted rows, it moves the id sequence past the restored ids, in one short transaction: `BEGIN`, `LOCK TABLE strike_exposures IN SHARE ROW EXCLUSIVE MODE`, then `setval(pg_get_serial_sequence('strike_exposures', 'id'), GREATEST((SELECT max(id) FROM strike_exposures), <the sequence's last_value>))`, then `COMMIT`. No sequence name is written in the code.
+    - `pg_get_serial_sequence` returns a `schema.name` already quoted for use as an identifier. The sequence's `last_value` is read straight from that sequence (`SELECT last_value FROM <that name>`, with the name placed by `psycopg2.sql.SQL`, since it comes from the catalog). A role without the privilege then gets an error. Reading it from `pg_sequences` instead would be wrong: that view shows NULL without the privilege, and `GREATEST` ignores NULL, so the `setval` would quietly fall back to `max(id)` and could move the sequence backwards. If `pg_sequences` is ever used, match it with `format('%I.%I', schemaname, sequencename)`, because the returned name is quoted.
+    - If `pg_get_serial_sequence` returns NULL (the column is not a serial) or `last_value` is NULL, the restore fails with a fixed message and runs no `setval`. It never falls back to `max(id)` alone.
     - The lock keeps live writers out until the `setval` commits. Without it, an insert between reading `last_value` and the `setval` could have its id handed out again. SHARE ROW EXCLUSIVE blocks INSERT and not SELECT.
     - `GREATEST` keeps the sequence from moving backwards while the lock is held. In production the sequence is ahead of `max(id)` (it was at 94.2M with `max(id)` at 94.22M, because rolled-back inserts consume ids), so a restore of old days leaves it where it is.
     - Without the `setval`, the next live insert after a restore into an emptied or partial table could be handed a restored id.
@@ -98,6 +100,7 @@ Phase A alone is a complete backup that someone has to re-run by hand. Phase B r
 | `PREFIX` | `backups/strike_exposures/` | |
 | `STATE_KEY` | `backups/strike_exposures/_state.json` | Holds `{"high_water_id": int, "updated_at": iso}` |
 | `FORMAT_VERSION` | `"1"` | Raise it when the column list or the types change |
+| `DELTA_MAX_IDS` | 5_000_000 | The id delta query (`WHERE id > $1 GROUP BY date`) costs about 5.6 s per 1M ids, because `date` is not in the pkey and every row needs a heap fetch (measured on prod, read-only, 2026-11-11; db-facts, "Planner statements"). A normal night is 0.5M to 2.8M ids. About 10M ids (roughly two missed weeks) passes the 60 s timeout, and then planning would fail every night and could not recover. Past this many ids since the stored mark, the delta is skipped and every day is counted: each count is at most about 1.3 s (the busiest Friday, 2.78M rows, measured 1.2 s), so about 45 to 60 s spread over many statements |
 | `RESTORE_BATCH` | 500 | Repo batch rule (R5) |
 | Parquet | zstd, one row group per page | |
 
@@ -109,7 +112,10 @@ A day is due when any of these holds:
 2. **It gained rows since the last run.**
    - The query is `SELECT date FROM strike_exposures WHERE id > :high_water_id GROUP BY date`, a range scan on the pkey.
    - For each date it returns that has an object, take the full-day count (one index-only count). The day is due if that count differs from the object's metadata `rows`. A day with no object is due without a count.
-3. **`--verify-counts` was passed, or there is no stored high-water mark.** Every day that has an object has its count compared with the object's `rows`. That is about 74M index entries, a few minutes, outside market hours. Phase B runs it once a week. With no `_state.json` the delta query is skipped and this runs instead, because the mark is what bounds the delta.
+3. **`--verify-counts` was passed, there is no stored high-water mark, or more than `DELTA_MAX_IDS` ids have been used since it.** Every day that has a trusted object has its count compared with the object's `rows`. That is about 74M index entries, a few minutes, outside market hours. Phase B runs it once a week. In the second and third cases the delta query is skipped and this runs instead: with no mark there is nothing to bound the delta, and past `DELTA_MAX_IDS` the delta query would run past the statement timeout (see the thresholds).
+4. **Its object cannot be trusted.** The object's `format` metadata is not `FORMAT_VERSION`, or its `rows` metadata is missing or is not a plain count (ASCII digits only). That is decided from the object, with no count: it was written by something else or by another version of this module.
+
+`plan_days` reports which counting path it took (`delta`, or `every day:` with the reason) in `Plan.scope`, and `export` and `status` print it as a `counting:` line.
 
 The new `high_water_id` is `SELECT max(id)` read in the planning snapshot (0 for an empty table).
 
@@ -143,7 +149,7 @@ R2 is read before the snapshot opens: the object list and one `head_object` per 
 - `ARROW_SCHEMA: pa.Schema`: the types are under Global constraints.
 - `@dataclass(frozen=True) class DayFile: day: date; path: Path; rows: int; min_id: int; max_id: int; size: int; sha256: str`.
 - `_read_snapshot(conn) -> Iterator[cursor]`, a private `@contextmanager`: the one way to read in a snapshot. Task 2's planning read and Task 3's `verify_day` reuse it.
-  - It raises `BackupError` (fixed message, with the numeric status) unless `conn.info.transaction_status` is `TRANSACTION_STATUS_IDLE`.
+  - It raises `BackupError` (fixed message, with the numeric status) unless `conn.info.transaction_status` is `TRANSACTION_STATUS_IDLE`. Status `TRANSACTION_STATUS_UNKNOWN` (4, what psycopg2 reports once a connection is closed) gets its own text, "the connection is closed".
   - It saves `conn.autocommit`, sets it to True, runs `BEGIN ISOLATION LEVEL REPEATABLE READ, READ ONLY` and `SET LOCAL statement_timeout = '60s'`, yields a cursor, then always runs `ROLLBACK` and restores `autocommit`. A ROLLBACK that fails on top of another error keeps that error as `__context__`.
   - If `conn.closed` is set, it skips both the ROLLBACK and the restore: psycopg2 raises `InterfaceError` for each on a dead connection, which would replace the original `OperationalError`.
   - One thread per connection.
@@ -183,15 +189,15 @@ R2 is read before the snapshot opens: the object list and one `head_object` per 
 **Interfaces it produces:**
 - `object_key(day: date) -> str`, which returns `f"{PREFIX}{day.isoformat()}.parquet"`.
 - `upload_day(s3, bucket: str, f: DayFile) -> None`. It does `upload_file` with the metadata in `ExtraArgs` and `TransferConfig(multipart_threshold=64 MiB, use_threads=False, preferred_transfer_client='classic')`, as `nightly/src/r2_store.py` does, then `head_object`.
-  - It raises `BackupError` on a size or `rows` mismatch or a failed `head_object`, and deletes the key first (best effort). If the delete fails the error says the object may remain.
+  - It raises `BackupError` on a size or `rows` mismatch or a failed `head_object`, and deletes the key first (best effort). If the delete fails the error names the key and says the object may remain and to delete it by hand.
   - An `upload_file` error propagates as boto3 raised it, and the old object, if any, is untouched.
 - `exported_days(s3, bucket: str) -> dict[date, dict[str, str]]`. It lists `PREFIX` with a paginator, skips `_state.json`, and returns each day's metadata from `head_object`.
-- `plan_days(conn, s3, bucket: str, today_et: date, verify_counts: bool = False) -> Plan`, where `@dataclass(frozen=True) class Plan: due: list[date]; high_water_id: int; missing: list[date]; stale: list[date]; db_days: list[date]; object_days: list[date]`. `due` is `missing` plus `stale`, oldest first. It applies the rules under "Deciding which days to export" and only includes dates before `today_et`. `status` prints the other fields.
+- `plan_days(conn, s3, bucket: str, today_et: date, verify_counts: bool = False) -> Plan`, where `@dataclass(frozen=True) class Plan: due: list[date]; high_water_id: int; missing: list[date]; stale: list[date]; db_days: list[date]; object_days: list[date]; scope: str`. `due` is `missing` plus `stale`, oldest first; `scope` says which counting path ran. It applies the rules under "Deciding which days to export" and only includes dates before `today_et`. `status` prints the other fields.
 - `read_state(s3, bucket) -> int | None` and `write_state(s3, bucket, high_water_id: int) -> None`.
 - `main(argv: list[str] | None = None) -> int`, with these subcommands:
   - `export [--date D] [--limit-days N] [--verify-counts] [--dry-run]`. `--dry-run` writes the local files, prints each day's rows, bytes and time, deletes the file, and uploads nothing and writes no state. `--date D` exports exactly that day, due or not, and must be before today.
   - `status`, which lists the DB days and object days, and the missing and stale ones. It counts every day, like `--verify-counts`, so it takes minutes on production.
-  - Exit codes: 0 when every due day verified; 1 when any day failed or the plan or the connection did; 2 for bad config or arguments.
+  - Exit codes: 0 when every due day verified; 1 when any day failed or the plan or the connection did; 2 for bad config or arguments, including an R2 client that cannot be built (a malformed `R2_ENDPOINT_URL`: botocore's error text holds the URL, so only its class is logged).
   - A day that fails with a database, R2, I/O or `BackupError` error is logged by date and error class, and the run goes on to the next day. A `BackupError`'s own fixed text is added; no other error's text is printed. The exit code is 1 and the state is not advanced.
   - If a failed day left the connection closed (`conn.closed`), the run stops there with exit 1 and tries no more days; a re-run resumes.
   - The connection is opened fresh and used only inside `_read_snapshot` (`plan_days` and `write_day_parquet`).
@@ -207,7 +213,10 @@ R2 is read before the snapshot opens: the object list and one `head_object` per 
   - Added in the build, all through the same fakes (the DB fake also refuses a statement or a fetch outside the snapshot):
     - `upload_day`: the metadata keys and values, one thread, a size, `rows` or missing-object failure deletes the key, a delete that fails says the object may remain, an `upload_file` error propagates and deletes nothing.
     - `exported_days` reads every page and skips `_state.json` and other keys. `read_state` / `write_state` round-trip; missing is `None`, malformed raises, another `ClientError` propagates.
-    - `plan_days`: counts only the delta days that have an object (and every day with `verify_counts` or no state); object without `rows` metadata is stale; an empty table; one snapshot; a NULL expiry raises; a database error propagates after the ROLLBACK.
+    - `plan_days`: counts only the delta days that have an object (and every day with `verify_counts`, no state, or a delta wider than `DELTA_MAX_IDS`: at the limit the delta is used, one id over it is not, and only counting every day finds a stale day with no new rows); an object whose `format` is not current or whose `rows` is missing, empty, non-numeric, negative, padded or non-ASCII is stale with no count, also when every day is counted; the counting path is reported; an empty table; one snapshot; a NULL expiry raises; a database error propagates after the ROLLBACK.
+    - Pins for settings that only a real R2 would prove wrong: `preferred_transfer_client == 'classic'`, `multipart_threshold == 64 MiB`, the client's `signature_version == 's3v4'` and `retries == {'mode': 'standard', 'max_attempts': 5}`, Parquet codec ZSTD, and that `2026-11-02.parquet.bak`, `sub/2026-11-02.parquet` and `2026-11-02.parquet/part` are not day files.
+    - `main` with `--date` on the only due day still keeps the state; an `OSError` on one day (a `Path.stat` that fails for that day's file) fails that day, exits 1 and the next day still uploads; a malformed endpoint exits 2 with the class only; `export` and `status` print the counting path.
+    - A closed connection (`closed` set: `cursor()` raises, status 4) is refused by `_read_snapshot` with its own text.
     - `main`: a truncated upload exits 1, deletes the key, and the next run redoes the day; a database error on a live connection fails that day and the run goes on; a dropped connection stops the run and a re-run resumes; each day's file is deleted before the next day; `--dry-run`, `--date` and a short `--limit-days` keep the state; `--verify-counts` reaches the plan; a day with no rows is skipped; `--date` today is refused; a missing variable exits 2 naming only the variable; the clients are built from the environment (`region_name='auto'`, `verify=True`); a failed connect hides the DSN; a failed state write, an R2 listing error and a `plan_days` failure on `status` each exit 1 and name the step and error class; a bad argument (`--limit-days 0`, a non-date `--date`, no or an unknown command) exits 2 before any connection; `status` writes nothing.
 - [ ] **Step 2:** Run the tests. Expected: they FAIL.
 - [ ] **Step 3:** Implement Task 2's interfaces. `main` loads env through `_cli_paths.load_env_file`, then opens one psycopg2 connection and one boto3 client. It writes the day files to a `tempfile.TemporaryDirectory()` and deletes each one after it verifies.
@@ -237,7 +246,8 @@ R2 is read before the snapshot opens: the object list and one `head_object` per 
   - `test_restore_dry_run_writes_nothing`: the fake connection records no INSERT.
   - `test_restore_apply_batches_on_conflict_do_nothing`: 1,201 rows go in 3 INSERTs. Each one has `ON CONFLICT (date, "timestamp", ticker, strike, expiry) DO NOTHING` and the `id` column, and none of them has `UPDATE` or `DELETE`.
   - `test_restore_apply_already_present_inserts_zero`: the fake reports rowcount 0. The function returns 0 and issues no `LOCK` and no `setval`.
-  - `test_restore_apply_locks_then_moves_the_sequence`: after INSERTs that report rows inserted, the statements run in this order, after the last INSERT: `BEGIN`, `LOCK TABLE strike_exposures IN SHARE ROW EXCLUSIVE MODE`, a `setval(pg_get_serial_sequence('strike_exposures', 'id'), GREATEST(...))`, `COMMIT`. No statement names `strike_exposures_id_seq`.
+  - `test_restore_apply_locks_then_moves_the_sequence`: after INSERTs that report rows inserted, the statements run in this order, after the last INSERT: `BEGIN`, `LOCK TABLE strike_exposures IN SHARE ROW EXCLUSIVE MODE`, `SELECT pg_get_serial_sequence('strike_exposures', 'id')`, a read of the sequence's `last_value`, a `setval` on that name with `GREATEST(max(id), last_value)`, `COMMIT`. No statement spells out `strike_exposures_id_seq`.
+  - `test_restore_apply_fails_when_the_sequence_cannot_be_read`: a NULL sequence name, a NULL `last_value`, and a `last_value` read that raises (no privilege) each raise `BackupError` with a fixed message, roll back, and issue no `setval`. The rows already inserted stay (they are committed).
   - `test_restore_apply_id_collision_raises`: the fake raises `UniqueViolation` on an INSERT. The function raises `BackupError` with a fixed message and issues no `LOCK` and no `setval`.
 - [ ] **Step 2:** Run the tests. Expected: they FAIL.
 - [ ] **Step 3:** Implement Task 3's interfaces.
@@ -269,6 +279,7 @@ R2 is read before the snapshot opens: the object list and one `head_object` per 
   - the README watch-path list.
 - **Exception text.** The step must follow phase 2's scrubbing rule for raw conversion errors (`steps.py` docstring).
 - **Push window.** A push that touches `nightly/src` must not land between 07:15 and 12:30 UTC, because it redeploys the service and kills a run in progress.
+- **Open item: no lease between a manual run and the nightly run.** Two overlapping exports can step on each other: `upload_day` deletes an object that fails its check, and a second run that re-uploads the same day at that moment can have its verified object deleted, or its head read the other run's object. It repairs itself, because the day is missing or stale on the next run, but nothing prevents it. A lease row (R6) would. Until then, do not run `export` by hand while the nightly step can run (07:15 to 12:30 UTC).
 
 ## Open questions
 
