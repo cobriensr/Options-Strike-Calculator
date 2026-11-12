@@ -248,6 +248,20 @@ export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
     checkinMargin: DEFAULT_MARGIN,
     maxRuntime: DEFAULT_MAX_RUNTIME,
   },
+  'check-live-snapshots': {
+    // ET-local schedule — see DST_TAIL_NOTE. vercel.json fires `*/15 14-20`
+    // UTC: 14:00-20:45 UTC is 09:00-15:45 ET in EST and 10:00-16:45 ET in
+    // EDT. The handler's own window is 10:00 ET through the close - 15 min
+    // (15:45 ET), so ET-local `*/15 10-15` is the span served in BOTH
+    // regimes. Ticks past the window on a half-day (13:00 ET close, last
+    // check 12:45 ET) are satisfied by the wrapper's paired skip check-in.
+    // 15-min cadence → default failure threshold: one missed check is a
+    // missed alert opportunity, not noise.
+    schedule: '*/15 10-15 * * 1-5',
+    timezone: MARKET_HOURS_TZ,
+    checkinMargin: DEFAULT_MARGIN,
+    maxRuntime: DEFAULT_MAX_RUNTIME,
+  },
   'cleanup-gexbot': {
     schedule: '15 12 * * 1-5',
     checkinMargin: DEFAULT_MARGIN,

@@ -551,9 +551,11 @@ describe('cron-schedules SCHEDULE_MAP', () => {
 
   it('ET-anchored entries use the America/New_York timezone', () => {
     // Lock the market-hours monitors fixed by the 2026-06-08 DST triage
-    // (plus the three GEXBot crons added 2026-10-28) so a future edit can't silently drop the timezone and
+    // (plus the three GEXBot crons added 2026-10-28 and check-live-snapshots
+    // added 2026-11-11) so a future edit can't silently drop the timezone and
     // reintroduce the EDT-tail "missed" flood.
     const expectedEt = [
+      'check-live-snapshots',
       'detect-periscope-call-lottery',
       'detect-periscope-put-lottery',
       'evaluate-round-trip',

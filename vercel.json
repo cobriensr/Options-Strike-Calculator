@@ -194,6 +194,10 @@
       "schedule": "45 21 * * 5"
     },
     {
+      "path": "/api/cron/check-live-snapshots",
+      "schedule": "*/15 14-20 * * 1-5"
+    },
+    {
       "path": "/api/cron/evaluate-round-trip",
       "schedule": "*/10 14-22 * * 1-5"
     },
