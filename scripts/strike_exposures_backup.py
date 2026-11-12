@@ -836,9 +836,12 @@ def _downloaded_day(s3, bucket: str, day: date) -> Iterator[pq.ParquetFile]:
         with path.open('rb') as handle:
             try:
                 parquet = pq.ParquetFile(handle)
-            except (pa.ArrowException, OSError, ValueError):
+            except (pa.ArrowException, OSError, ValueError) as exc:
                 # A damaged footer is an OSError (Thrift), an ArrowInvalid or a
-                # UnicodeDecodeError, depending on where it is damaged.
+                # UnicodeDecodeError, depending on where it is damaged. Arrow's own
+                # OSError has no errno; a disk error has one, and keeps its class.
+                if isinstance(exc, OSError) and exc.errno is not None:
+                    raise
                 parquet = None
             if parquet is None:  # raised here: Arrow's text must not ride along as context
                 raise BackupError(f'{day_text}: the file is not a readable Parquet file')

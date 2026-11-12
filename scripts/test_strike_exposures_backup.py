@@ -27,6 +27,7 @@ signatures, and `Cli` runs `main` with the environment, `psycopg2.connect` and
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import io
 import json
@@ -3296,6 +3297,103 @@ def test_the_day_file_is_opened_through_a_handle_that_is_closed_afterwards(
     assert len(opened) == 1
     assert not isinstance(opened[0], (str, Path)), 'Arrow was given a path to open'
     assert opened[0].closed
+
+
+class UnreadableHandle:
+    """A file handle whose reads fail as a failing disk's do: an OSError with an errno."""
+
+    def __init__(self, inner, code: int) -> None:
+        self._inner = inner
+        self._code = code
+
+    def read(self, *args):
+        raise OSError(self._code, 'disk error')
+
+    def readinto(self, *args):
+        raise OSError(self._code, 'disk error')
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
+# (errno, the class OSError(errno, ...) is built as): EACCES becomes a PermissionError.
+DISK_ERRORS = [
+    pytest.param(errno.EIO, 'OSError', id='EIO'),
+    pytest.param(errno.ENOSPC, 'OSError', id='ENOSPC'),
+    pytest.param(errno.EACCES, 'PermissionError', id='EACCES'),
+]
+
+
+def open_through(monkeypatch, wrap) -> None:
+    """Have the module's `pq.ParquetFile` read from `wrap(handle)` instead of its handle."""
+    real = pq.ParquetFile
+    monkeypatch.setattr(sbk.pq, 'ParquetFile', lambda source, *a, **kw: real(wrap(source), *a, **kw))
+
+
+@pytest.mark.parametrize(('code', 'class_name'), DISK_ERRORS)
+@pytest.mark.parametrize('call', DAMAGED_DAY_CALLS)
+def test_an_io_error_opening_the_day_file_keeps_its_own_class_and_errno(
+    make_conn, tmp_path: Path, monkeypatch, call, code: int, class_name: str
+) -> None:
+    # Only Arrow's own format errors (an ArrowInvalid, or an OSError with no
+    # errno from the Thrift footer) mean "not a readable Parquet file". A disk
+    # error carries an errno, whichever one, and must not be hidden behind that text.
+    rows = grouped_rows()
+    s3 = FakeS3()
+    back_up(s3, rows, tmp_path)
+    open_through(monkeypatch, lambda handle: UnreadableHandle(handle, code))
+    conn = make_conn(rows)
+
+    with pytest.raises(OSError) as raised:
+        call(conn, s3)
+
+    assert not isinstance(raised.value, sbk.BackupError)
+    assert raised.value.errno == code
+    assert type(raised.value).__name__ == class_name
+    assert conn.statements == []  # the file is opened before the database is touched
+
+
+@pytest.mark.parametrize(('code', 'class_name'), DISK_ERRORS)
+@pytest.mark.parametrize('argv', DAMAGED_DAY_COMMANDS)
+def test_the_cli_reports_an_io_error_opening_the_day_file_by_its_class(
+    cli, tmp_path: Path, monkeypatch, argv: tuple[str, ...], code: int, class_name: str
+) -> None:
+    rows = grouped_rows()
+    s3 = FakeS3()
+    back_up(s3, rows, tmp_path)
+    open_through(monkeypatch, lambda handle: UnreadableHandle(handle, code))
+    conn = FakeConnection(rows, sequence_name=SEQUENCE)
+
+    exit_code, out = cli.run(conn, s3, *argv)
+
+    assert exit_code == 1
+    # The class only; not "BackupError (... not a readable Parquet file)". OSError(EACCES, ...)
+    # is built as its subclass PermissionError, so that is the name the line shows for it.
+    assert out == f'FAILED 2026-11-02: {class_name}\n'
+    assert conn.rows == sorted(rows, key=key_of)
+
+
+@pytest.mark.parametrize('call', DAMAGED_DAY_CALLS)
+def test_an_error_outside_the_three_open_time_classes_is_not_masked(
+    make_conn, tmp_path: Path, monkeypatch, call
+) -> None:
+    # A bug in our own pyarrow call must surface as itself. The catch around the
+    # open is for a damaged file (ArrowException, OSError, ValueError), no wider.
+    rows = grouped_rows()
+    s3 = FakeS3()
+    back_up(s3, rows, tmp_path)
+
+    def broken(source, *args, **kwargs):
+        raise RuntimeError('a bug in our own call')
+
+    monkeypatch.setattr(sbk.pq, 'ParquetFile', broken)
+    conn = make_conn(rows)
+
+    with pytest.raises(RuntimeError, match='a bug in our own call') as raised:
+        call(conn, s3)
+
+    assert not isinstance(raised.value, sbk.BackupError)
+    assert conn.statements == []
 
 
 @pytest.mark.parametrize('damage', [damage_the_footer, damage_a_data_page])
