@@ -24,15 +24,23 @@
  * scripts/_lib/futures-thin-roots.ts). It never updates a row and never touches
  * ES or NQ. The dry run lists per root the rows to delete, the first and last,
  * the rows kept, the kept-day bars Phase 1's strict test flags, and the apply
- * command; the backup is in this tool's format, which recompute-futures-derived.ts
- * reads as its --backup (Phase 5b).
+ * command. Its backup is one file across every run, backup-thin-roots.jsonl in the
+ * work dir: each --apply adds the pending rows whose id it does not hold yet before
+ * its first write, and refuses if an id is there with other values. It is in this
+ * tool's format, and recompute-futures-derived.ts reads it as its --backup (Phase 5b).
+ * Pass that one file, never a copy of part of it.
+ *
+ * An --apply leaves the dry run's report.txt and delete-list.csv alone (they are
+ * what the owner approved) and writes apply-<time>-report.txt and
+ * apply-<time>-delete-list.csv.
  *
  * Options:
  *   --dir <dir>        Phase 1 output (default ml/data/futures-contract-repair);
  *                      refused with --thin-roots
- *   --work-dir <dir>   report.txt, delete-list.csv, backup-*.jsonl and the
- *                      {day}.applied markers (default docs/tmp/futures-contract-repair;
- *                      with --thin-roots, its thin-roots subfolder)
+ *   --work-dir <dir>   report.txt, delete-list.csv, backup-*.jsonl (with --thin-roots,
+ *                      the one backup-thin-roots.jsonl) and the {day}.applied markers
+ *                      (default docs/tmp/futures-contract-repair; with --thin-roots,
+ *                      its thin-roots subfolder)
  *   --apply            write (backup first, one UTC day per transaction); needs
  *                      --expect-updates and --expect-deletes (with --thin-roots,
  *                      --expect-deletes only)

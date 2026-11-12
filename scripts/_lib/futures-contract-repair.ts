@@ -38,6 +38,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  renameSync,
   writeFileSync,
 } from 'node:fs';
 import { createHash } from 'node:crypto';
@@ -1511,6 +1512,105 @@ function writeBackup(workDir: string, days: DayPlan[]): string {
   return path;
 }
 
+/**
+ * The one backup a `--thin-roots` apply keeps across runs. A run that stops
+ * (a failed day, the open) is finished by another, so a file per run would
+ * split the deleted rows between files and 5b takes a single `--backup`.
+ */
+export const THIN_BACKUP_FILE = 'backup-thin-roots.jsonl';
+
+const thinBackupLineSchema = z.object({
+  op: z.literal('delete'),
+  reason: z.string(),
+  row: z.record(z.string(), z.string().nullable()),
+});
+
+/** The first column in which a backed-up row and a database row differ, or null. */
+function firstDifference(
+  was: Record<string, string | null>,
+  now: PgRow,
+): keyof PgRow | null {
+  for (const column of Object.keys(now) as (keyof PgRow)[]) {
+    if ((was[column] ?? null) !== now[column]) return column;
+  }
+  return null;
+}
+
+/**
+ * Adds a line to `backup-thin-roots.jsonl` for each row of the pending days
+ * whose id the file does not hold yet, before the first write, so after any
+ * run of failed and resumed applies the file holds each deleted row once. A
+ * row whose id is in the file with other values refuses the run (nothing is
+ * written), and the line count is checked back. The file is replaced whole (a
+ * temporary file, then a rename), so an interrupted run leaves the old file or
+ * the new one, never a cut line.
+ */
+function appendThinBackup(
+  workDir: string,
+  days: readonly DayPlan[],
+): { path: string; added: number; total: number } {
+  const path = join(workDir, THIN_BACKUP_FILE);
+  const had = existsSync(path) ? readFileSync(path, 'utf8') : '';
+  const held = had.split('\n').filter((l) => l !== '');
+  const known = new Map<string, Record<string, string | null>>();
+  held.forEach((raw, i) => {
+    const where = `${path}:${i + 1}`;
+    let json: unknown;
+    try {
+      json = JSON.parse(raw);
+    } catch (err) {
+      throw new Error(
+        `${where}: not JSON (${err instanceof Error ? err.message : String(err)})`,
+        { cause: err },
+      );
+    }
+    const parsed = thinBackupLineSchema.safeParse(json);
+    const id = parsed.success ? parsed.data.row.id : undefined;
+    if (!parsed.success || id == null) {
+      throw new Error(
+        `${where}: not a backup entry (${parsed.success ? 'no row id' : issueText(parsed.error)})`,
+      );
+    }
+    if (known.has(id)) throw new Error(`${where}: id ${id} appears twice`);
+    known.set(id, parsed.data.row);
+  });
+
+  const fresh: string[] = [];
+  const queued = new Set<string>();
+  for (const d of days.flatMap((x) => x.deletes)) {
+    const was = known.get(d.id);
+    if (was != null) {
+      const column = firstDifference(was, d.row);
+      if (column != null) {
+        throw new Error(
+          `Refusing to --apply: ${path} already holds id ${d.id} (${d.symbol} ${isoMinute(d.tsMs)}) with a different ${column}: ` +
+            `file "${was[column] ?? 'null'}", database "${d.row[column] ?? 'null'}". Nothing was written.`,
+        );
+      }
+      continue;
+    }
+    if (queued.has(d.id)) continue;
+    queued.add(d.id);
+    fresh.push(JSON.stringify({ op: 'delete', reason: d.reason, row: d.row }));
+  }
+  if (fresh.length > 0) {
+    const tmp = `${path}.tmp`;
+    const lead = had === '' || had.endsWith('\n') ? '' : '\n';
+    const added = fresh.map((l) => `${l}\n`).join('');
+    writeFileSync(tmp, `${had}${lead}${added}`);
+    renameSync(tmp, path);
+    const written = readFileSync(path, 'utf8')
+      .split('\n')
+      .filter((l) => l !== '').length;
+    if (written !== held.length + fresh.length) {
+      throw new Error(
+        `backup ${path} has ${written} lines, expected ${held.length + fresh.length}`,
+      );
+    }
+  }
+  return { path, added: fresh.length, total: held.length + fresh.length };
+}
+
 export const markerPath = (workDir: string, day: string): string =>
   join(workDir, `${day}.applied`);
 
@@ -1561,7 +1661,7 @@ export function markerState(
   workDir: string,
   day: string,
   expected: MarkerStamp,
-  bars = 'rebuilt bars',
+  bars: string,
 ): MarkerState {
   const path = markerPath(workDir, day);
   if (!existsSync(path)) return { state: 'none' };
@@ -1811,6 +1911,28 @@ export function parseRepairArgs(argv: string[]): RepairArgs {
 // ── Run ─────────────────────────────────────────────────────────────────────
 
 /**
+ * Writes the report and the delete list. The dry run's two files are what the
+ * owner approves, so an `--apply` leaves them alone and writes its own copies
+ * under names that carry its time: a refused or partial apply plans only the
+ * days left and would otherwise overwrite the approved list.
+ */
+function writeReportFiles(
+  opts: RepairOptions,
+  report: string,
+  deletes: PlannedDelete[],
+): void {
+  const prefix = opts.apply
+    ? `apply-${new Date().toISOString().replace(/[:.]/g, '-')}-`
+    : '';
+  const reportPath = join(opts.workDir, `${prefix}report.txt`);
+  const listPath = join(opts.workDir, `${prefix}delete-list.csv`);
+  writeFileSync(reportPath, `${report}\n`);
+  writeFileSync(listPath, deleteCsv(deletes));
+  console.log(`\nreport: ${reportPath}`);
+  console.log(`delete list: ${listPath}`);
+}
+
+/**
  * `--thin-roots`: read the four roots over the window, plan the deletes, print
  * the summary and write report.txt and delete-list.csv. With `--apply`, check
  * the total against `--expect-deletes` before any write, then apply by UTC day.
@@ -1833,17 +1955,15 @@ async function runThinRoots(opts: RepairOptions): Promise<number> {
     thinApplyCommand(opts, plan.deletes.length),
   );
   console.log(`\n${report}`);
-  writeFileSync(join(opts.workDir, 'report.txt'), `${report}\n`);
-  writeFileSync(join(opts.workDir, 'delete-list.csv'), deleteCsv(plan.deletes));
-  console.log(`\nreport: ${join(opts.workDir, 'report.txt')}`);
-  console.log(`delete list: ${join(opts.workDir, 'delete-list.csv')}`);
+  writeReportFiles(opts, report, plan.deletes);
   if (!opts.apply) return 0;
 
   if (plan.deletes.length !== opts.expectDeletes) {
     throw new Error(
       `Refusing to --apply: the fresh plan has ${plan.deletes.length} deletes, ` +
         `but --expect-deletes ${opts.expectDeletes ?? 'missing'} was given. ` +
-        'Nothing was written. Review a fresh dry run (after a partial --apply it reports only the days left) and pass its total.',
+        'Nothing was written. Review a fresh dry run (after a partial --apply it reports only the days left) and pass its total. ' +
+        `The backup for 5b is the one file ${join(opts.workDir, THIN_BACKUP_FILE)}, kept across runs.`,
     );
   }
   const planned = days.map((day) => ({
@@ -1893,10 +2013,7 @@ async function run(opts: RepairOptions): Promise<number> {
   mkdirSync(opts.workDir, { recursive: true });
   const report = formatReport(plan, m);
   console.log(`\n${report}`);
-  writeFileSync(join(opts.workDir, 'report.txt'), `${report}\n`);
-  writeFileSync(join(opts.workDir, 'delete-list.csv'), deleteCsv(plan.deletes));
-  console.log(`\nreport: ${join(opts.workDir, 'report.txt')}`);
-  console.log(`delete list: ${join(opts.workDir, 'delete-list.csv')}`);
+  writeReportFiles(opts, report, plan.deletes);
   if (!opts.apply) return 0;
 
   // The plan must be the one the owner approved. Checked on the whole fresh
@@ -1966,11 +2083,25 @@ async function applyPlanned(
   );
   if (pending.length === 0) return 0;
 
-  const backup = writeBackup(
-    opts.workDir,
-    pending.map((p) => p.day),
-  );
-  console.log(`backup: ${backup}`);
+  // Phase 2 writes a backup per run; `--thin-roots` keeps one cumulative file
+  // that 5b takes as --backup, so a resumed apply never splits the deleted rows.
+  const pendingDays = pending.map((p) => p.day);
+  let backup: string;
+  let backupNote = '';
+  if (opts.thinRoots) {
+    const kept = appendThinBackup(opts.workDir, pendingDays);
+    backup = kept.path;
+    backupNote = ` The one backup of every row deleted so far, for 5b --backup: ${backup}.`;
+    console.log(
+      `backup: ${backup} (+${kept.added} rows, ${kept.total} in the file)`,
+    );
+  } else {
+    backup = writeBackup(opts.workDir, pendingDays);
+    console.log(`backup: ${backup}`);
+  }
+  const next = opts.thinRoots
+    ? 'run a fresh dry run and --apply --thin-roots with its total (--expect-deletes N).'
+    : 'run a fresh dry run and --apply with its totals.';
   for (const [index, { day, stamp }] of pending.entries()) {
     // A full apply can outlast the close, so the guard is checked before every
     // day, not only at the start. Finished days are already marked.
@@ -1980,7 +2111,7 @@ async function applyPlanned(
         `apply stopped before day ${day.day}: market hours began (09:25 ET). ` +
           `${index} day(s) done and marked; ${left.length} left ` +
           `(${left.reduce((n, d) => n + d.updates.length, 0)} updates, ${left.reduce((n, d) => n + d.deletes.length, 0)} deletes). ` +
-          'After the close, run a fresh dry run and --apply with its totals.',
+          `After the close, ${next}${backupNote}`,
       );
       return 2;
     }
@@ -1990,7 +2121,7 @@ async function applyPlanned(
       await verifyDay(day, snap);
     } catch (err) {
       throw new Error(
-        `apply failed: day ${day.day}: ${err instanceof Error ? err.message : String(err)}`,
+        `apply failed: day ${day.day}: ${err instanceof Error ? err.message : String(err)}${backupNote}`,
         { cause: err },
       );
     }
@@ -1999,6 +2130,7 @@ async function applyPlanned(
       `${JSON.stringify({ ...stamp, appliedAt: new Date().toISOString() })}\n`,
     );
   }
+  if (opts.thinRoots) console.log(`done. Backup for 5b --backup: ${backup}`);
   return 0;
 }
 

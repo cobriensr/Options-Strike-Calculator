@@ -624,6 +624,30 @@ describe('--apply on real SQL (pglite)', () => {
     expect(logged()).toContain('total updates 5, total deletes 18');
   });
 
+  it("keeps the dry run's report.txt and delete-list.csv through an --apply: the apply writes its own copies", async () => {
+    await run({ apply: false });
+    const report = readFileSync(join(workDir, 'report.txt'));
+    const list = readFileSync(join(workDir, 'delete-list.csv'));
+
+    expect(await run()).toBe(0);
+
+    expect(readFileSync(join(workDir, 'report.txt'))).toEqual(report);
+    expect(readFileSync(join(workDir, 'delete-list.csv'))).toEqual(list);
+    const files = readdirSync(workDir);
+    const applyReport = files.find((f) => /^apply-.*-report\.txt$/.test(f));
+    const applyList = files.find((f) => /^apply-.*-delete-list\.csv$/.test(f));
+    expect(applyReport).toBeDefined();
+    expect(applyList).toBeDefined();
+    expect(readFileSync(join(workDir, applyReport ?? ''), 'utf8')).toContain(
+      'total updates 5, total deletes 18',
+    );
+    expect(
+      readFileSync(join(workDir, applyList ?? ''), 'utf8')
+        .trim()
+        .split('\n'),
+    ).toHaveLength(1 + 18);
+  });
+
   it('deletes the junk window for all six roots and nothing just outside it', async () => {
     await run();
     const after = await table(pg);
@@ -1407,6 +1431,9 @@ describe('--thin-roots on real SQL (pglite)', () => {
     expect(backups).not.toBeNull();
     const files = backups as unknown as string[];
     expect(files).toHaveLength(1);
+    expect(readdirSync(workDir).filter((f) => f.startsWith('backup-'))).toEqual(
+      ['backup-thin-roots.jsonl'],
+    );
     const text = files[0] ?? '';
     const lines = text.split('\n').filter((l) => l !== '');
     expect(lines).toHaveLength(THIN_DELETES);
@@ -1498,7 +1525,6 @@ describe('--thin-roots on real SQL (pglite)', () => {
     // The fresh dry run reports only the days left; its total finishes the job.
     const left = THIN_DELETES - 8; // days 04-05 and 04-06 took 4 rows each
     hooks.failWriteAt = null;
-    vi.setSystemTime(new Date('2026-11-08T12:05:00Z')); // a backup is named by its time
     expect(await runThin({ expectDeletes: left })).toBe(0);
     expect(logged()).toContain(`total deletes ${left}`);
 
@@ -1509,15 +1535,119 @@ describe('--thin-roots on real SQL (pglite)', () => {
     for (const day of DELETED_DAYS) {
       expect(existsSync(markerPath(workDir, day)), day).toBe(true);
     }
-    // The second backup holds only the rows the second run deleted.
-    const backups = readdirSync(workDir)
-      .filter((f) => f.startsWith('backup-'))
-      .sort();
-    expect(backups).toHaveLength(2);
-    const second = readFileSync(join(workDir, backups[1] ?? ''), 'utf8')
-      .split('\n')
-      .filter((l) => l !== '');
-    expect(second).toHaveLength(left);
+    // One backup file across both runs, every deleted row exactly once, so the
+    // file 5b takes as --backup is always complete.
+    expect(readdirSync(workDir).filter((f) => f.startsWith('backup-'))).toEqual(
+      ['backup-thin-roots.jsonl'],
+    );
+    const text = readFileSync(join(workDir, 'backup-thin-roots.jsonl'), 'utf8');
+    const lines = text.split('\n').filter((l) => l !== '');
+    expect(lines).toHaveLength(THIN_DELETES);
+    const ids = lines.map(
+      (l) => (JSON.parse(l) as { row: { id: string } }).row.id,
+    );
+    expect(new Set(ids).size).toBe(THIN_DELETES);
+    expect(parseBackup(text, 'thin-backup')).toHaveLength(THIN_DELETES);
+    // The first run wrote all of it before its first write; the resume added nothing.
+    expect(logged()).toContain(
+      `(+${THIN_DELETES} rows, ${THIN_DELETES} in the file)`,
+    );
+    expect(logged()).toContain(`(+0 rows, ${THIN_DELETES} in the file)`);
+  });
+
+  it('adds to the one backup only the rows it lacks: a bar that appeared after a failed run is appended once', async () => {
+    hooks.failWriteAt = { nth: 3, error: new Error('connection lost') };
+    expect(await runThin()).toBe(1);
+    const file = join(workDir, 'backup-thin-roots.jsonl');
+    const first = readFileSync(file, 'utf8');
+    expect(first.split('\n').filter((l) => l !== '')).toHaveLength(
+      THIN_DELETES,
+    );
+
+    // A bar lands in the window after the failure.
+    await pg.query(
+      `INSERT INTO futures_bars (symbol, ts, open, high, low, close, volume)
+       VALUES ('GC', '2026-05-06T15:00:00Z', 3300, 3301, 3299, 3300, 10)`,
+    );
+    hooks.failWriteAt = null;
+    expect(await runThin({ expectDeletes: THIN_DELETES - 8 + 1 })).toBe(0);
+
+    const text = readFileSync(file, 'utf8');
+    const lines = text.split('\n').filter((l) => l !== '');
+    expect(lines).toHaveLength(THIN_DELETES + 1);
+    expect(text.startsWith(first)).toBe(true); // appended; nothing rewritten
+    expect(parseBackup(text, 'thin-backup')).toHaveLength(THIN_DELETES + 1);
+    expect(logged()).toContain(`(+1 rows, ${THIN_DELETES + 1} in the file)`);
+  });
+
+  it('refuses, before any write, when the backup file holds an id with a different row, naming the id and the field', async () => {
+    const before = await table(pg);
+    const row = before.get('CL 2026-04-06T15:00:00Z');
+    expect(row).toBeDefined();
+    mkdirSync(workDir, { recursive: true });
+    const file = join(workDir, 'backup-thin-roots.jsonl');
+    const seeded = `${JSON.stringify({
+      op: 'delete',
+      reason: 'thin_root',
+      row: { ...row, close: '1.0000' },
+    })}\n`;
+    writeFileSync(file, seeded);
+
+    expect(await runThin()).toBe(1);
+
+    expect(errored()).toMatch(
+      new RegExp(
+        `backup-thin-roots\\.jsonl already holds id ${row?.id} \\(CL 2026-04-06T15:00:00Z\\) with a different close: file "1\\.0000", database "70\\.0000"`,
+      ),
+    );
+    expect(hooks.writes).toBe(0);
+    expect(readFileSync(file, 'utf8')).toBe(seeded);
+    expect(await table(pg)).toEqual(before);
+    expect(readdirSync(workDir).filter((f) => f.endsWith('.applied'))).toEqual(
+      [],
+    );
+  });
+
+  it('refuses a backup file that holds the same id twice, naming the line', async () => {
+    const row = (await table(pg)).get('CL 2026-04-06T15:00:00Z');
+    mkdirSync(workDir, { recursive: true });
+    const line = `${JSON.stringify({ op: 'delete', reason: 'thin_root', row })}\n`;
+    writeFileSync(join(workDir, 'backup-thin-roots.jsonl'), line + line);
+    expect(await runThin()).toBe(1);
+    expect(errored()).toMatch(
+      new RegExp(`backup-thin-roots\\.jsonl:2: id ${row?.id} appears twice`),
+    );
+    expect(hooks.writes).toBe(0);
+  });
+
+  it('refuses a backup file with a line that is not a backup entry, naming the line', async () => {
+    mkdirSync(workDir, { recursive: true });
+    writeFileSync(join(workDir, 'backup-thin-roots.jsonl'), '{"op":"delete"\n');
+    expect(await runThin()).toBe(1);
+    expect(errored()).toMatch(/backup-thin-roots\.jsonl:1: /);
+    expect(hooks.writes).toBe(0);
+  });
+
+  it("keeps the dry run's report.txt and delete-list.csv through an apply: the apply writes its own copies", async () => {
+    await runThin({ apply: false });
+    const report = readFileSync(join(workDir, 'report.txt'));
+    const list = readFileSync(join(workDir, 'delete-list.csv'));
+
+    // A refused apply, then one that fails on its third day: both used to
+    // overwrite the approved list with the fresh plan.
+    expect(await runThin({ expectDeletes: THIN_DELETES - 1 })).toBe(1);
+    hooks.failWriteAt = { nth: 3, error: new Error('connection lost') };
+    expect(await runThin()).toBe(1);
+
+    expect(readFileSync(join(workDir, 'report.txt'))).toEqual(report);
+    expect(readFileSync(join(workDir, 'delete-list.csv'))).toEqual(list);
+    const files = readdirSync(workDir);
+    expect(files.filter((f) => /^apply-.*-report\.txt$/.test(f))).toHaveLength(
+      1,
+    );
+    expect(
+      files.filter((f) => /^apply-.*-delete-list\.csv$/.test(f)),
+    ).toHaveLength(1);
   });
 
   it('a second --apply changes 0 rows, forced or not', async () => {
@@ -1657,8 +1787,19 @@ describe('--thin-roots on real SQL (pglite)', () => {
     expect(errored()).toContain(
       'apply stopped before day 2026-04-06: market hours began (09:25 ET). 1 day(s) done and marked;',
     );
+    // The way on names the mode and the one backup 5b takes.
+    expect(errored()).toContain(
+      'run a fresh dry run and --apply --thin-roots with its total',
+    );
+    expect(errored()).toContain(join(workDir, 'backup-thin-roots.jsonl'));
     expect(existsSync(markerPath(workDir, '2026-04-05'))).toBe(true);
     expect(existsSync(markerPath(workDir, '2026-04-06'))).toBe(false);
+  });
+
+  it('names the one backup in the error of a failed day', async () => {
+    hooks.failWriteAt = { nth: 2, error: new Error('connection lost') };
+    expect(await runThin()).toBe(1);
+    expect(errored()).toContain(join(workDir, 'backup-thin-roots.jsonl'));
   });
 
   it('refuses --apply during market hours; the dry run is allowed', async () => {
@@ -1687,6 +1828,13 @@ describe('--thin-roots on real SQL (pglite)', () => {
         'delete-list.csv',
         'report.txt',
       ]);
+    });
+
+    it('prints the apply command with --dates when the dry run was narrowed to days', async () => {
+      await runThin({ apply: false, dates: ['2026-04-06'] });
+      expect(logged()).toContain(
+        `npx tsx scripts/repair-futures-contract-mix.ts --thin-roots --apply --expect-deletes 4 --work-dir ${workDir} --dates 2026-04-06`,
+      );
     });
 
     it('lists per root the deletes, the first and last, and the kept rows, and prints the apply command', async () => {

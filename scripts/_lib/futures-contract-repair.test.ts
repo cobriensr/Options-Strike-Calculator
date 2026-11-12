@@ -1306,17 +1306,21 @@ describe('dayDigest and markerState', () => {
   });
 
   it('is none without a marker', () => {
-    expect(markerState(dir, day, stamp('x'))).toEqual({ state: 'none' });
+    expect(markerState(dir, day, stamp('x'), 'rebuilt bars')).toEqual({
+      state: 'none',
+    });
   });
 
   it('is done when the marker names this Phase 1 run and these bars', () => {
     mark({ ...stamp('x'), appliedAt: '2026-11-08T12:00:00Z' });
-    expect(markerState(dir, day, stamp('x'))).toEqual({ state: 'done' });
+    expect(markerState(dir, day, stamp('x'), 'rebuilt bars')).toEqual({
+      state: 'done',
+    });
   });
 
   it('ignores a marker from another Phase 1 git SHA, naming both', () => {
     mark({ ...stamp('x', 'bbbbbbbb33334444'), appliedAt: 'now' });
-    expect(markerState(dir, day, stamp('x'))).toEqual({
+    expect(markerState(dir, day, stamp('x'), 'rebuilt bars')).toEqual({
       state: 'stale',
       reason: 'is from Phase 1 git bbbbbbbb, not aaaaaaaa',
     });
@@ -1324,9 +1328,17 @@ describe('dayDigest and markerState', () => {
 
   it('ignores a marker written for different rebuilt bars', () => {
     mark({ ...stamp('old'), appliedAt: 'now' });
-    expect(markerState(dir, day, stamp('new'))).toEqual({
+    expect(markerState(dir, day, stamp('new'), 'rebuilt bars')).toEqual({
       state: 'stale',
       reason: 'was written for different rebuilt bars',
+    });
+  });
+
+  it('names what the digest covers in the message', () => {
+    mark({ ...stamp('old'), appliedAt: 'now' });
+    expect(markerState(dir, day, stamp('new'), 'planned deletes')).toEqual({
+      state: 'stale',
+      reason: 'was written for different planned deletes',
     });
   });
 
@@ -1339,7 +1351,7 @@ describe('dayDigest and markerState', () => {
     ['JSON without the stamp', JSON.stringify({ appliedAt: 'now' })],
   ])('ignores a marker that is %s', (_label, body) => {
     mark(body);
-    expect(markerState(dir, day, stamp('x'))).toEqual({
+    expect(markerState(dir, day, stamp('x'), 'rebuilt bars')).toEqual({
       state: 'stale',
       reason: 'is unreadable',
     });
