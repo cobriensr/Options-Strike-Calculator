@@ -86,12 +86,15 @@
  *   - delete: a stored bar with no rebuilt minute: the scheduled contract
  *     printed nothing countable, which the rule calls a gap.
  *   - fill: no stored bar, a rebuilt minute: inserted, ON CONFLICT DO NOTHING.
- * A stored bar the rebuild cannot judge is left alone and counted: a closed
- * minute, a trade date with no stored front month (the repair never decides
- * one: run `scripts/backfill-futures-front-month.ts` first), or a minute
- * whose prints have no usable price. Deletes are held, not made, on a day
- * UW returned no counted print for, and on a day with a malformed print
- * (it withholds its minute, which would look like a gap).
+ * A stored bar the rebuild cannot judge is left alone and counted
+ * (`unjudged`): a closed minute, or a minute whose prints have no usable
+ * price. Deletes are held, not made (`held`), on a root-day where a delete
+ * could be a missing minute that was not quiet: UW returned no counted
+ * print at all, a piece ran out of UW history (`exhausted`), a minute was
+ * withheld as untrustworthy (`withheld`: a malformed print, a burst of one
+ * microsecond's prints) or any print was malformed. The repair reads the
+ * stored front months and never decides one: a trade date with none fails
+ * its root-day (run `scripts/backfill-futures-front-month.ts` first).
  *
  * Writes are guarded and batched (`updateFuturesBars`, `deleteFuturesBars`,
  * `tagFuturesBars`, `insertFuturesBars` in `api/_lib/futures-bars.ts`): each
@@ -104,8 +107,15 @@
  * A past day's REST tape does not change, so a completed root-day's rebuilt
  * minutes are cached in `<work dir>/front-month-repair-cache/`, keyed by
  * root and day and valid only for the same version and the same contract
- * per piece. The stored bars are always read fresh. `--no-cache` pages
- * again and refreshes the files.
+ * per piece. Only a day paged back to the start of every piece with nothing
+ * withheld is saved. The stored bars are always read fresh. `--no-cache`
+ * pages again and refreshes the files. The work dir is resolved to an
+ * absolute path, and the re-run lines name it.
+ *
+ * The `Done:` line totals `held`, `unjudged`, `unbuildable` and
+ * `keep-other-tag` (kept bars tagged with another contract) over the run,
+ * and a write run adds `planned N, applied M (changed since read K)`: a
+ * clean second dry run is judged on those, not on delete and rewrite alone.
  */
 
 import {

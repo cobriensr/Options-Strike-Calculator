@@ -25,7 +25,10 @@
  * and refuses to start without that file. Run it before
  * backfill-futures-flow.ts over 2026-09-04 onward: it rewrites the flow of
  * a bar built from another contract. It reads the stored front months and
- * never decides a trade date; one without a row is left alone and reported.
+ * never decides a trade date; a root-day on one without a row fails (exit 1)
+ * with nothing paged or written for it. Deletes are held, and counted, on a
+ * root-day where a missing minute may not have been quiet (UW returned no
+ * print, a piece ran out of UW history, a minute was withheld).
  *
  * Usage (env from .env.local, like the other scripts: DATABASE_URL and
  * UW_API_KEY, never printed). Run after the close: it refuses to start
@@ -51,7 +54,8 @@
  *        --work-dir DIR (--repair: where the backup and the cache go,
  *        default docs/tmp/uw-futures-run).
  *        None of them writes a front-month row: a trade date with no stored
- *        front month is skipped and reported.
+ *        front month is skipped and reported (--repair fails the root-day
+ *        instead). --repair resolves --work-dir to an absolute path.
  * The current UTC day is never processed.
  *
  * --repair keeps each completed root-day's rebuilt minutes in
