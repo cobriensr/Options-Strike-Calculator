@@ -53,9 +53,18 @@ vi.mock('../../api/_lib/db.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../api/_lib/db.js')>()),
   getDb: () => holder.sql,
 }));
+// The real module loads for `eventNamesForSnapshot` and `isEarningsEventName`.
+// The other fetchers can reach FRED or Finnhub, so they throw: a backfill that
+// calls one fails here, without a network call.
 vi.mock('../../api/_lib/market-events.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../api/_lib/market-events.js')>()),
   fetchMacroEvents,
+  fetchMarketEvents: () => {
+    throw new Error('backfill must use fetchMacroEvents');
+  },
+  getEventsForDate: () => {
+    throw new Error('backfill must use fetchMacroEvents');
+  },
 }));
 
 import type { EventItem } from '../../api/_lib/market-events.js';

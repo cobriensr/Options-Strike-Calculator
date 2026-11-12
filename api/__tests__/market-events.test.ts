@@ -95,6 +95,22 @@ function stubSources({ fred, finnhub }: { fred?: Reply; finnhub?: Reply }) {
   return fetchMock;
 }
 
+/**
+ * Ties `isEarningsEventName` to the names the fetcher really builds: every
+ * Finnhub event matches it, and no FRED or static event does. The regex's own
+ * table tests would stay green if the `${symbol} Earnings` template changed,
+ * and the snapshot's incomplete-path union would then let earnings through.
+ */
+function expectEarningsRegexMatchesTemplate(events: readonly EventItem[]) {
+  const earnings = events.filter((e) => e.source === 'finnhub');
+  const others = events.filter((e) => e.source !== 'finnhub');
+  expect(earnings.length).toBeGreaterThan(0);
+  expect(earnings.map((e) => isEarningsEventName(e.event))).not.toContain(
+    false,
+  );
+  expect(others.map((e) => isEarningsEventName(e.event))).not.toContain(true);
+}
+
 /** One Finnhub earnings row, the shape the calendar endpoint returns. */
 function earning(symbol: string, date: string) {
   return {
@@ -438,6 +454,7 @@ describe('market-events', () => {
 
       expect(complete).toBe(true);
       expect(events.map((e) => e.event)).toEqual(['MSFT Earnings']);
+      expectEarningsRegexMatchesTemplate(events);
     });
 
     it('keeps only the Finnhub earnings inside the requested range', async () => {
@@ -522,6 +539,9 @@ describe('market-events', () => {
         [FOMC_SEP_DAY, 'FOMC + SEP'],
         [FOMC_SEP_DAY, 'NVDA Earnings'],
       ]);
+      // FRED and static events sit beside the earnings here, so the rule is
+      // checked both ways.
+      expectEarningsRegexMatchesTemplate(events);
     });
 
     it('rejects when a FRED fetch throws', async () => {

@@ -27,9 +27,11 @@ vi.mock('../_lib/logger.js', () => ({
   default: { error: vi.fn(), warn: vi.fn(), info: vi.fn() },
 }));
 
-// The real module loads for `eventNamesForSnapshot`, so the snapshot save and
-// the backfill keep one definition of the names; only the lookup is replaced.
-// Its Redis import is mocked so loading it creates no client.
+// The real module loads for `eventNamesForSnapshot` and `isEarningsEventName`,
+// so the snapshot save and the backfill keep one definition of the names; only
+// the lookup is replaced. Its Redis import is mocked so loading it creates no
+// client. The other fetchers can reach FRED or Finnhub, so they throw: a save
+// that calls one fails here, without a network call.
 vi.mock('../_lib/redis.js', () => ({
   redis: { get: vi.fn(), set: vi.fn() },
 }));
@@ -37,6 +39,12 @@ vi.mock('../_lib/redis.js', () => ({
 vi.mock('../_lib/market-events.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../_lib/market-events.js')>()),
   getEventsForDate: vi.fn(),
+  fetchMacroEvents: () => {
+    throw new Error('snapshot must use getEventsForDate');
+  },
+  fetchMarketEvents: () => {
+    throw new Error('snapshot must use getEventsForDate');
+  },
 }));
 
 import handler from '../snapshot.js';
