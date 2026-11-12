@@ -669,3 +669,127 @@ describe('useChartAnalysis: hold on a waiting update', () => {
     expect(release).not.toHaveBeenCalled();
   });
 });
+
+// The host panel can unmount mid-run (hidden from the prefs modal, or an error
+// boundary catch). The request itself is not aborted, since its result still
+// saves server-side, so the hold stays until the request ends; but a retry
+// prompt nobody can answer must not park the run, or the hold would last until
+// the page reloads.
+describe('useChartAnalysis: hold when the host unmounts', () => {
+  const analyzeCalls = () =>
+    mockFetch.mock.calls.filter((call) => call[0] === '/api/analyze');
+
+  it('releases the hold when the host unmounts at the retry prompt', async () => {
+    mockFetch.mockResolvedValue(makeErrorResponse('Server overloaded', 500));
+    const { result, unmount } = renderHook(() =>
+      useChartAnalysis(defaultOpts()),
+    );
+
+    let settled = false;
+    act(() => {
+      result.current.analyze().then(() => {
+        settled = true;
+      });
+    });
+    await act(async () => {});
+    expect(result.current.retryPrompt).not.toBeNull();
+    expect(release).not.toHaveBeenCalled();
+    expect(settled).toBe(false);
+
+    unmount();
+    await act(async () => {});
+
+    expect(settled).toBe(true);
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(analyzeCalls()).toHaveLength(1);
+  });
+
+  it('keeps the hold through an in-flight request after unmount, then ends the run on its failure', async () => {
+    let failRequest: () => void = () => undefined;
+    mockFetch.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          failRequest = () =>
+            resolve(makeErrorResponse('Server overloaded', 500));
+        }),
+    );
+    const { result, unmount } = renderHook(() =>
+      useChartAnalysis(defaultOpts()),
+    );
+
+    let settled = false;
+    act(() => {
+      result.current.analyze().then(() => {
+        settled = true;
+      });
+    });
+    await act(async () => {});
+    expect(analyzeCalls()).toHaveLength(1);
+
+    unmount();
+    await act(async () => {});
+    expect(release).not.toHaveBeenCalled();
+    expect(settled).toBe(false);
+
+    failRequest();
+    await act(async () => {});
+
+    expect(settled).toBe(true);
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(analyzeCalls()).toHaveLength(1);
+  });
+
+  it('does not abort the request on unmount and keeps the hold until it ends', async () => {
+    let finishRequest: () => void = () => undefined;
+    let requestSignal: AbortSignal | undefined;
+    mockFetch.mockImplementation(
+      (_url: string, opts: { signal: AbortSignal }) =>
+        new Promise((resolve) => {
+          requestSignal = opts.signal;
+          finishRequest = () => resolve(makeSuccessResponse());
+        }),
+    );
+    const { result, unmount } = renderHook(() =>
+      useChartAnalysis(defaultOpts()),
+    );
+
+    act(() => {
+      result.current.analyze();
+    });
+    await act(async () => {});
+    unmount();
+    await act(async () => {});
+    expect(requestSignal?.aborted).toBe(false);
+    expect(release).not.toHaveBeenCalled();
+
+    finishRequest();
+    await act(async () => {});
+
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it('still parks at the retry prompt of a mounted host, even under StrictMode remounts', async () => {
+    mockFetch
+      .mockResolvedValueOnce(makeErrorResponse('Server overloaded', 500))
+      .mockResolvedValueOnce(makeSuccessResponse());
+    const { result } = renderHook(() => useChartAnalysis(defaultOpts()), {
+      reactStrictMode: true,
+    });
+
+    act(() => {
+      result.current.analyze();
+    });
+    await act(async () => {});
+
+    expect(result.current.retryPrompt?.attempt).toBe(1);
+    expect(release).not.toHaveBeenCalled();
+
+    act(() => {
+      result.current.confirmRetry();
+    });
+    await act(async () => {});
+
+    expect(result.current.analysis).toEqual(sampleAnalysis);
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+});

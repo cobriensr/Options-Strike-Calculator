@@ -132,6 +132,23 @@ export function useChartAnalysis(opts: {
     setError('Retry cancelled.');
   }, []);
 
+  // The host panel can unmount mid-run (hidden from the prefs modal, or an
+  // error boundary catch) and a run isn't aborted by that: its result still
+  // saves server-side. What must not outlive the host is a retry prompt nobody
+  // can answer, because the run would park on it for good and keep its hold on
+  // a waiting update until the page reloads. Unmounting cancels a parked
+  // prompt, and a run that fails after unmount ends instead of prompting.
+  // Setting the flag on mount keeps it right across a StrictMode remount.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      retryResolverRef.current?.('cancel');
+      retryResolverRef.current = null;
+    };
+  }, []);
+
   // Elapsed timer while loading. The eager reset on every `loading` flip
   // (true→false AND false→true) mirrors the legacy single-effect shape
   // where both branches called `setElapsed(0)` before either returning or
@@ -342,16 +359,16 @@ export function useChartAnalysis(opts: {
 
   const analyze = useCallback(async () => {
     if (imagesRef.current.length === 0) return;
-    // A reload would drop the request (up to 780 s) and a pending retry
-    // decision, so a waiting service-worker update stays put until the whole
-    // run, retries included, is over.
-    const releaseHold = holdAutoUpdate();
     setLoading(true);
     setError(null);
     setAnalysis(null);
     setRawResponse(null);
     setRetryPrompt(null);
 
+    // A reload would drop the request (up to 780 s) and a pending retry
+    // decision, so a waiting service-worker update stays put until the whole
+    // run, retries included, is over. The `finally` below is the only release.
+    const releaseHold = holdAutoUpdate();
     try {
       for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
         // Build a fresh payload each attempt so market data and
@@ -382,6 +399,8 @@ export function useChartAnalysis(opts: {
 
         // Retryable failure — prompt the user before continuing
         if (attempt < MAX_ATTEMPTS) {
+          // No one is left to answer the prompt; see `mountedRef`.
+          if (!mountedRef.current) break;
           setLoading(false);
           setRetryPrompt({
             attempt,
