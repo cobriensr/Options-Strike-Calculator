@@ -10,6 +10,7 @@ import { ToastProvider } from './components/Toast';
 import {
   markNeedsRefresh,
   setUpdateFn,
+  startTabAgreement,
   startUpdateChecks,
 } from './lib/sw-update';
 import { installAuthInterceptor } from './utils/authInterceptor';
@@ -98,6 +99,11 @@ Sentry.init({
 // was aborting in-flight XHRs as NS_BINDING_ABORTED on every page open).
 // `onRegisteredSW` starts the periodic check: browsers look for a new SW only
 // on a page load, and this single-page app can stay open for days.
+// `startTabAgreement` runs from startup, update or not, because applying an
+// update reloads every open tab: each tab has to be announcing its own safety
+// before any other tab asks. An import-time start would put a timer and a
+// listener into every test that imports the module.
+startTabAgreement();
 const updateSW = registerSW({
   onNeedRefresh() {
     markNeedsRefresh();
