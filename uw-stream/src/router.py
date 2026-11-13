@@ -46,7 +46,9 @@ class Router:
         Decouples the WS receive task (which only does ``put_nowait``)
         from JSON parsing + handler dispatch. ``state.receive_queue_depth``
         is updated each iteration so /metrics shows whether the router
-        is keeping up with the receive rate.
+        is keeping up with the receive rate, and ``receive_queue_hwm`` keeps
+        the deepest it got, which the depth alone loses once the router
+        catches up.
         """
         while True:
             raw = await receive_queue.get()
@@ -54,7 +56,10 @@ class Router:
                 await self.dispatch(raw)
             finally:
                 receive_queue.task_done()
-                state.receive_queue_depth = receive_queue.qsize()
+                depth = receive_queue.qsize()
+                state.receive_queue_depth = depth
+                if depth > state.receive_queue_hwm:
+                    state.receive_queue_hwm = depth
 
     async def dispatch(self, raw: str | bytes) -> None:
         """Parse one WS frame and route to the matching handler.

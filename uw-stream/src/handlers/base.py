@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import time
 from abc import ABC, abstractmethod
 
 from bounded import run_bounded
@@ -153,7 +154,13 @@ class Handler(ABC):
                 # Defensive — pydantic validates this, but in case.
                 state.handler(self.name).drop_count += 1
         finally:
-            state.handler(self.name).queue_depth = self.queue.qsize()
+            # Hot path: one state lookup, one compare. The consumer only ever
+            # lowers the depth, so the peak is always reached here.
+            metrics = state.handler(self.name)
+            depth = self.queue.qsize()
+            metrics.queue_depth = depth
+            if depth > metrics.interval_queue_hwm:
+                metrics.interval_queue_hwm = depth
 
     # ------------------------------------------------------------------
     # Consumer side — runs forever as a background task.
@@ -384,16 +391,28 @@ class Handler(ABC):
         ``lost_rows``: those rows are not retried after this. The exception is
         a task that is being cancelled: whatever the flush raised then is the
         cancel unwinding, so it is re-raised and nothing is counted.
+
+        The flush stats (``flushes``, ``flush_rows``, ``flush_seconds`` and the
+        interval maxima, see ``HandlerMetrics``) time the ``await
+        self._flush(rows)`` alone, so retries and backoff inside it count and
+        the failure bookkeeping below does not. They are recorded on success and
+        on failure, and on neither when the task is being cancelled.
         """
+        flush_s: float | None = None  # set once _flush has returned or raised
         try:
             # Inside the try so a hypothetical state.handler() failure
             # is caught by the same except — preserves the "flush wrapped
             # so a DB error never kills the drain loop" contract even if
             # the metrics surface ever grows beyond pure dict access.
             state.handler(self.name).write_attempted += len(rows)
-            inserted = await self._flush(rows)
+            started = time.monotonic()
+            try:
+                inserted = await self._flush(rows)
+            finally:
+                flush_s = time.monotonic() - started
             written = inserted if isinstance(inserted, int) else len(rows)
             state.handler(self.name).write_count += written
+            self._record_flush(len(rows), flush_s)
         except Exception as exc:
             # A cancel can reach us as an ordinary exception: unwinding a
             # cancelled query, asyncpg raises InterfaceError when the ROLLBACK
@@ -403,6 +422,8 @@ class Handler(ABC):
             # lost a second time (the deadline event already reported them).
             if (task := asyncio.current_task()) is not None and task.cancelling():
                 raise
+            if flush_s is not None:
+                self._record_flush(len(rows), flush_s)
             state.handler(self.name).lost_rows += len(rows)
             capture_exception(
                 exc,
@@ -413,6 +434,17 @@ class Handler(ABC):
                 "flush failed",
                 extra={"channel": self.name, "batch_size": len(rows), "err": str(exc)},
             )
+
+    def _record_flush(self, n_rows: int, seconds: float) -> None:
+        """Add one finished flush to the cumulative and interval flush stats."""
+        metrics = state.handler(self.name)
+        metrics.flushes += 1
+        metrics.flush_rows += n_rows
+        metrics.flush_seconds += seconds
+        if seconds > metrics.interval_flush_max_s:
+            metrics.interval_flush_max_s = seconds
+        if n_rows > metrics.interval_batch_max:
+            metrics.interval_batch_max = n_rows
 
     # ------------------------------------------------------------------
     # Subclass hooks.

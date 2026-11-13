@@ -89,6 +89,23 @@ class HandlerMetrics:
     so it is never part of ``drop_count``. Today only ``gex_strike_expiry``
     sets it (frames for an expiry other than today's); it stays 0 for every
     other handler.
+
+    The flush stats separate a slow Neon write, an exhausted pool and a blocked
+    event loop when trades land late. ``flushes``, ``flush_rows`` and
+    ``flush_seconds`` are cumulative: ``_safe_flush`` times each ``_flush`` call
+    (retries and backoff inside it included) and counts it whether it returned
+    or raised; a flush cut short by a cancel is not counted. ``flush_rows`` is
+    the rows passed to ``_flush``, so for ``futures_trades`` it counts prints
+    (like ``write_attempted``), not the bars written.
+
+    The ``interval_*`` fields are high-water marks since the last reset: the
+    per-minute pipeline reporter reads them and sets them back to 0, so they
+    describe the last minute, not the process lifetime. ``interval_flush_max_s``
+    is the longest single flush, ``interval_batch_max`` the most rows passed to
+    one flush (a backlog take can exceed ``ws_batch_size``), and
+    ``interval_queue_hwm`` the deepest the handler queue got. ``queue_depth``
+    alone cannot show that peak: the consumer has usually drained it by the
+    time anyone reads it.
     """
 
     queue_depth: int = 0
@@ -99,6 +116,12 @@ class HandlerMetrics:
     dupes_dropped: int = 0
     single_copy: int = 0
     filtered: int = 0
+    flushes: int = 0
+    flush_rows: int = 0
+    flush_seconds: float = 0.0
+    interval_flush_max_s: float = 0.0
+    interval_batch_max: int = 0
+    interval_queue_hwm: int = 0
 
 
 @dataclass
@@ -129,6 +152,10 @@ class State:
     # (drop-oldest semantics — the newest frame still gets enqueued).
     receive_queue_depth: int = 0
     receive_queue_drops: int = 0
+    # Deepest the receive queue got since the pipeline reporter last reset it
+    # (an interval field, like HandlerMetrics.interval_*). The router raises it
+    # where it sets the depth above.
+    receive_queue_hwm: int = 0
 
     @property
     def ws_connected(self) -> bool:
