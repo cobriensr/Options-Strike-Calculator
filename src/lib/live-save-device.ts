@@ -14,8 +14,10 @@
  * subscriber-set pattern as `sw-update.ts`, so a component re-renders when
  * the switch flips in this tab. Nothing is cached: every call reads
  * `localStorage`. Other tabs are never notified (there is no `storage`
- * listener), so a consumer that must follow another tab's change re-reads
- * `isLiveSaveDevice()` at the moment it acts.
+ * listener in this module), so a consumer that must follow another tab's
+ * change re-reads `isLiveSaveDevice()` at the moment it acts.
+ * `live-session-signal.ts` keeps a `storage` listener of its own, which
+ * refreshes its switch-off baseline.
  */
 
 const STORAGE_KEY = 'sc-live-save-device';

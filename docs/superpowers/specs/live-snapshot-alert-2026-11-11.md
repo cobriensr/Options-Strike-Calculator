@@ -563,7 +563,9 @@ when the app closes and while it stays open. Files:
     `isLiveSaveDevice()` fresh when each timer fires and inside the `pagehide`
     and `pageshow` handlers; don't trust an "active" flag set at start or on
     the notification. The subscription is only for reacting at once in this
-    tab (start the timers, send an open signal). No `storage` listener needed.
+    tab (start the timers, send an open signal). No `storage` listener was
+    needed for the signals; a refresh-only one was added on 2026-11-13 (see
+    the third amendment).
   - The subscriber must not throw: `setLiveSaveOverride` calls subscribers
     unguarded, inside the switch's `onChange`, so a throw would skip React's
     subscriber too. Wrap its body in try/catch and capture a failure once at
