@@ -163,6 +163,7 @@ import futures_front_month as front_month
 from db import is_transient_db_error, single_attempt
 from handlers.base import Handler
 from logger_setup import MALFORMED_PAYLOAD_LOG_INTERVAL_S, log, rate_limited_log
+from sentry_setup import capture_message
 from utils import timestamps
 
 _TABLE = "futures_bars"
@@ -969,11 +970,13 @@ class FuturesTradesHandler(Handler):
         """Count a minute skipped for want of a decision; log it at error level.
 
         Error, not warning: a session with no decision loses every minute of
-        that root until Neon answers, and only an error reaches Sentry. One
-        line per product per window (this keeps its own windows, one entry per
-        product at most), with the running total and the cause: the kind and
-        exception class of the root's last front-month failure, None when the
-        session simply has not been asked for yet.
+        that root until Neon answers, and an error is what reaches Sentry: the
+        line is also an explicit event, because the SDK does not turn an error
+        log record into one. One line and event per product per window (this
+        keeps its own windows, one entry per product at most), with the running
+        total and the cause: the kind and exception class of the root's last
+        front-month failure, None when the session simply has not been asked
+        for yet.
         """
         self._unknown_minutes += 1
         now = time.monotonic()
@@ -982,18 +985,23 @@ class FuturesTradesHandler(Handler):
             return
         self._unknown_logged_at[product] = now
         cause_kind, cause_err_type = self._cause.get(product, (None, None))
-        log.error(
-            "futures_trades front-month contract unknown for a completed minute; bar skipped",
-            extra={
-                "scope": "futures_trades",
-                "kind": "front_month_unknown",
-                "product": product,
-                "trade_date": day.isoformat(),
-                "minute_ts": minute_ts.isoformat(),
-                "unknown_total": self._unknown_minutes,
-                "cause_kind": cause_kind,
-                "cause_err_type": cause_err_type,
-            },
+        message = "futures_trades front-month contract unknown for a completed minute; bar skipped"
+        detail = {
+            "scope": "futures_trades",
+            "kind": "front_month_unknown",
+            "product": product,
+            "trade_date": day.isoformat(),
+            "minute_ts": minute_ts.isoformat(),
+            "unknown_total": self._unknown_minutes,
+            "cause_kind": cause_kind,
+            "cause_err_type": cause_err_type,
+        }
+        log.error(message, extra=detail)
+        capture_message(
+            message,
+            level="error",
+            tags={"component": "futures_trades", "kind": "front_month_unknown"},
+            context=detail,
         )
 
     @staticmethod

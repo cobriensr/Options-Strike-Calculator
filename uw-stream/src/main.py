@@ -529,6 +529,11 @@ async def _shutdown(
                 "handler drain raised",
                 extra={"handler": handler.name, "err": str(result)},
             )
+            # Explicit: the SDK does not turn the error log record into an event.
+            capture_exception(
+                result,
+                tags={"component": "main", "stage": "drain", "handler": handler.name},
+            )
         else:
             log.info(
                 "handler drained",

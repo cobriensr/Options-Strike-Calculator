@@ -101,12 +101,15 @@ async def test_shutdown_cancels_producers_before_draining(_reset_notify_state):
 
 
 @pytest.mark.asyncio
-async def test_shutdown_logs_but_survives_a_drain_failure(_reset_notify_state):
+async def test_shutdown_logs_but_survives_a_drain_failure(_reset_notify_state, monkeypatch):
     """A handler whose drain raises must not abort the shutdown — the
-    other handlers, notify flush, and task cancellation still run.
+    other handlers, notify flush, and task cancellation still run. The failure
+    goes to Sentry by name: the error log line alone is no longer an event.
     """
     events: list[str] = []
     calls = _reset_notify_state
+    captured: list[tuple[BaseException, dict]] = []
+    monkeypatch.setattr(main, "capture_exception", lambda exc, **kw: captured.append((exc, kw)))
 
     producer = asyncio.create_task(_forever(events, "connector"))
 
@@ -134,6 +137,11 @@ async def test_shutdown_logs_but_survives_a_drain_failure(_reset_notify_state):
     # Notify flush + close still happened.
     assert calls == ["notify_drain", "notify_close"]
     assert producer.cancelled()
+    # One event, for the handler that failed, and none for the one that drained.
+    ((exc, kwargs),) = captured
+    assert isinstance(exc, RuntimeError)
+    assert str(exc) == "drain blew up"
+    assert kwargs["tags"] == {"component": "main", "stage": "drain", "handler": "boom"}
 
 
 class _FakeLeaseSession:

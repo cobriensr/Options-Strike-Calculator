@@ -32,6 +32,7 @@ import pytest
 
 import db
 import futures_front_month as front_month
+import sentry_setup
 from handlers import futures_trades as ft
 from handlers.futures_trades import (
     _COLUMNS,
@@ -860,11 +861,17 @@ class TestFrontMonthSelection:
             for i, ms in enumerate(minutes)
             for p in ("ES", "NQ")
         ]
-        with patch("handlers.futures_trades.log") as mock_log:
+        with (
+            patch("handlers.futures_trades.log") as mock_log,
+            patch("handlers.futures_trades.capture_message") as capture,
+        ):
             rows = await _flush_capture(handler, payloads)
             assert rows == []
             logged = [(c.kwargs["extra"]["product"]) for c in mock_log.error.call_args_list]
             assert sorted(logged) == ["ES", "NQ"]  # three gaps each, one line each
+            # Each line is also one Sentry event: the throttle bounds both.
+            sent = [c.kwargs["context"]["product"] for c in capture.call_args_list]
+            assert sorted(sent) == ["ES", "NQ"]
 
             # The window expires: the next unknown minute logs again, with the total.
             for product in ("ES", "NQ"):
@@ -875,6 +882,7 @@ class TestFrontMonthSelection:
         later = [c.kwargs["extra"] for c in mock_log.error.call_args_list][2:]
         assert [e["product"] for e in later] == ["ES"]
         assert later[0]["unknown_total"] == 7
+        assert len(capture.call_args_list) == 3
 
     @pytest.mark.asyncio
     async def test_a_decision_that_is_known_is_not_asked_for_again(self, handler, front):
@@ -2059,6 +2067,65 @@ class TestFailuresReachSentry:
         assert mock_rl.warning.call_args_list == []
         assert mock_rl.error.call_args.kwargs["kind"] == "tally_load_failed"
         assert mock_rl.error.call_args.kwargs["extra"]["err_type"] == "ValueError"
+
+    @pytest.mark.asyncio
+    async def test_a_genuine_load_error_sends_an_error_event(self, handler, front, monkeypatch):
+        """Through the real throttled logger: the error line is also an event."""
+        monkeypatch.setattr(ft.rate_limited_log, "_state", {})
+        events: list[tuple[str, dict]] = []
+        monkeypatch.setattr(
+            sentry_setup, "capture_message", lambda msg, **kw: events.append((msg, kw))
+        )
+        front.fail_load = ValueError("unexpected row")
+
+        await _flush_capture(handler, [_print(trade_id=1)])
+
+        ((message, kwargs),) = events
+        assert message.startswith("futures_trades tally load failed; asked again after ")
+        assert kwargs["level"] == "error"
+        assert kwargs["tags"] == {"component": "futures_trades", "kind": "tally_load_failed"}
+        assert kwargs["context"]["err_type"] == "ValueError"
+        assert kwargs["context"]["product"] == "ES"
+
+    @pytest.mark.asyncio
+    async def test_a_blip_sends_no_event(self, handler, front, monkeypatch):
+        monkeypatch.setattr(ft.rate_limited_log, "_state", {})
+        events: list[tuple[str, dict]] = []
+        monkeypatch.setattr(
+            sentry_setup, "capture_message", lambda msg, **kw: events.append((msg, kw))
+        )
+        front.fail_load = _blip()
+
+        await _flush_capture(handler, [_print(trade_id=1)])
+
+        assert events == []
+
+    @pytest.mark.asyncio
+    async def test_a_gap_sends_an_error_event_with_the_cause(self, handler, front):
+        front.fail_load = _blip()
+        with (
+            patch("handlers.futures_trades.log") as mock_log,
+            patch("handlers.futures_trades.capture_message") as capture,
+        ):
+            await _flush_capture(handler, [_print(sym="ESU6", executed_at=_OPEN_09_09_MS - 30_000)])
+            await _flush_capture(
+                handler, [_print(sym="ESZ6", executed_at=_OPEN_09_09_MS + 5_000, trade_id=2)]
+            )
+            await _flush_capture(
+                handler, [_print(sym="ESZ6", executed_at=_OPEN_09_09_MS + 65_000, trade_id=3)]
+            )
+
+        capture.assert_called_once_with(
+            "futures_trades front-month contract unknown for a completed minute; bar skipped",
+            level="error",
+            tags={"component": "futures_trades", "kind": "front_month_unknown"},
+            context=mock_log.error.call_args.kwargs["extra"],
+        )
+        context = capture.call_args.kwargs["context"]
+        assert (context["cause_kind"], context["cause_err_type"]) == (
+            "tally_load_failed",
+            "ConnectionDoesNotExistError",
+        )
 
     @pytest.mark.asyncio
     async def test_each_root_is_named_in_its_own_window(self, handler, front):
