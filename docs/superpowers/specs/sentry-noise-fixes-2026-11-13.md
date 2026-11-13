@@ -37,9 +37,10 @@ One implementer stream at a time, in this order. Each phase ships on its own, wi
   - `ingestIndex` throws (~472-474), and the per-symbol catch calls `Sentry.captureException` (~604-609). That is two events per run.
 - **Fix.** Treat `SCHWAB_TOKEN_EXPIRED` the way five other Schwab callers already do (`compute-cone.ts:188`, `fetch-outcomes.ts:121`, `fetch-market-internals.ts:160`, `fetch-strike-iv.ts:349` and `:551`, `vix-term-structure.ts:206`): no per-symbol Sentry capture.
   - The run must still not report success, because no data was written (R4).
-  - The monitor may stay red during a lapse. It opens one incident after 3 failures (`failureIssueThreshold: 3`), which is one email, not 173.
+  - The monitor may stay red during a lapse. It opens one incident after 3 failures (`failureIssueThreshold: 3`). Once the monitor is unmuted, a lapse becomes one monitor incident and one email, instead of 346 exception events. (The 173 failed check-ins on 11-11 emailed nobody, because the monitor was muted.)
 - **Files.** `api/cron/fetch-spx-candles-1m.ts`, its test.
 - **Deploy.** Vercel. Push outside market hours.
+  - Precondition: push only after the `fetch-spx-candles-1m` monitor is unmuted and read back as unmuted (owner approved unmuting on 2026-11-13). Until then, the cron's exceptions are the only lapse alert that emails the owner: `login_lapsed` and `refresh_rejected` are warnings, which the email rule skips.
 
 ### Phase 2: a transient Neon error in a cron is a warning, not a Sentry error
 

@@ -1080,6 +1080,34 @@ describe('fetch-spx-candles-1m handler', () => {
     },
   );
 
+  it('Schwab quote fetch throws (rejects, not ok:false) → 500, one Sentry exception, Axiom error, nothing fetched or written', async () => {
+    // schwabFetch can still reject: the token store, or a 2xx body that is
+    // not JSON. That is a crash of the run, not a per-symbol failure, so it
+    // takes the outer catch, and it is not the logged-out carve-out.
+    const notJson = new SyntaxError('Unexpected token < in JSON at position 0');
+    mockSchwabFetch.mockRejectedValue(notJson);
+
+    const res = mockResponse();
+    await handler(AUTHORIZED_REQ(), res);
+
+    expect(res._status).toBe(500);
+    expect(res._json).toEqual({ error: 'Internal error' });
+    expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureException).toHaveBeenCalledWith(notJson);
+    expect(logger.error).toHaveBeenCalledWith(
+      { err: notJson },
+      'fetch-spx-candles-1m error',
+    );
+    expect(axiomEvent()).toEqual({
+      status: 'error',
+      error: 'Unexpected token < in JSON at position 0',
+      durationMs: expect.any(Number),
+    });
+    expect(mockUwFetch).not.toHaveBeenCalled();
+    expect(mockQuery).not.toHaveBeenCalled();
+    expect(mockTransaction).not.toHaveBeenCalled();
+  });
+
   it('Schwab omits the NDX price → status partial, SPX still stored', async () => {
     mockSchwabFetch.mockResolvedValue(schwabQuotes({ $NDX: { quote: {} } }));
 
@@ -1383,6 +1411,16 @@ describe('fetch-spx-candles-1m handler', () => {
 
       const calls = await checkIns(2);
       expect(calls.map((c) => c.body.status)).toEqual(['in_progress', 'error']);
+    });
+
+    it('sends an error check-in when the Schwab quote fetch throws', async () => {
+      mockSchwabFetch.mockRejectedValue(new Error('Redis: ECONNRESET'));
+
+      await handler(AUTHORIZED_REQ(), mockResponse());
+
+      const calls = await checkIns(2);
+      expect(calls.map((c) => c.body.status)).toEqual(['in_progress', 'error']);
+      expect(Sentry.captureException).toHaveBeenCalledTimes(1);
     });
 
     it('sends an error check-in on a Schwab lapse, with no exception filed', async () => {

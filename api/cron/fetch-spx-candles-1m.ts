@@ -66,23 +66,27 @@
  * Failures surface: a missing Schwab ratio, a UW error, an empty payload
  * (abnormal inside the gated window, which `date=today` fills with
  * pre-market bars from 04:00 ET) or a DB reject fails that symbol (one
- * Sentry exception each, tagged with the symbol). A failed data-quality
- * COUNT after a good write is a Sentry exception tagged
- * step=data_quality, but the symbol still counts as landed because its
- * rows are stored. The run reports 'partial' when one symbol fails and 'error'
- * when both do; 'ok' means both landed. 'error' responds 500, which turns
+ * Sentry exception each, tagged with the symbol, except a Schwab lapse,
+ * below). A failed data-quality COUNT after a good write is a Sentry
+ * exception tagged step=data_quality, but the symbol still counts as landed
+ * because its rows are stored. The run reports 'partial' when one symbol
+ * fails and 'error' when both do; 'ok' means both landed. 'error' responds 500, which turns
  * the Sentry cron monitor red (withCronCheckin keys its check-in on the
  * HTTP status). A failed HWM read is a crash: 500, Sentry, Axiom 'error'.
  *
  * One failure is not an exception: the Schwab quote failing with
- * SCHWAB_TOKEN_EXPIRED (the login lapsed). `handleLapsedLogin` files one
- * `schwab.auth.login_lapsed` per lapse, so both legs fail with a
+ * SCHWAB_TOKEN_EXPIRED (logged out). Both legs then fail with a
  * SchwabLoggedOutError that is logged at warn and not captured (a lapse used
- * to file two exceptions a minute until the owner re-authenticated). The run
- * still ends 'error' and responds 500, with `reason: 'schwab_logged_out'`:
- * no candles were stored, and a session of 1-minute bars missed is lost
- * data, so the cron monitor stays red and opens one incident at its failure
- * threshold. Any other Schwab failure keeps its per-symbol exception.
+ * to file two exceptions a minute until the owner re-authenticated).
+ * api/_lib/schwab.ts reports the lapse itself, once, by one of two routes:
+ * `schwab.auth.login_lapsed` (the 7-day login ran out, `handleLapsedLogin`)
+ * or `schwab.auth.refresh_rejected` (Schwab rejected the refresh token). A
+ * record that expired unread, e.g. over a weekend, reports nothing (see the
+ * caveat on `handleLapsedLogin`), and then this cron's red monitor is the
+ * only signal: one incident after 3 failures. The run still ends 'error' and
+ * responds 500, with `reason: 'schwab_logged_out'`: no candles were stored,
+ * and a session of 1-minute bars missed is lost data, so the monitor stays
+ * red. Any other Schwab failure keeps its per-symbol exception.
  *
  * Malformed candles (unparseable start_time, price, volume or
  * market_time) are dropped, counted and raised as one Sentry warning per
@@ -160,9 +164,12 @@ type RatioOutcome = RatioResult | typeof LOGGED_OUT | null;
 
 /**
  * Thrown for a symbol whose ratio is unavailable because Schwab is logged
- * out. That is expected until the owner re-authenticates, and
- * `handleLapsedLogin` (api/_lib/schwab.ts) already files one
- * `schwab.auth.login_lapsed` per lapse. The per-symbol catch therefore logs
+ * out. That is expected until the owner re-authenticates. api/_lib/schwab.ts
+ * reports the lapse itself, once: `schwab.auth.login_lapsed`
+ * (`handleLapsedLogin`) or, when Schwab rejects the refresh token,
+ * `schwab.auth.refresh_rejected`. A record that expired unread (e.g. over a
+ * weekend) reports nothing, and then this cron's red monitor (one incident
+ * after 3 failures) is the only signal. The per-symbol catch therefore logs
  * it and still fails the symbol, but files no Sentry exception, which used to
  * mean two a minute for the whole lapse.
  */
