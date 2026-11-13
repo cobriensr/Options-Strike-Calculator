@@ -15,10 +15,12 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
+import handlers.base
 from config import Settings, settings
 from health import HEALTH_STARTUP_GRACE_S, _is_trading_hours, build_app, healthz, metrics
 from state import state
@@ -492,6 +494,10 @@ async def test_metrics_reports_handler_counters_under_handlers(
     monkeypatch.setattr(db, "bulk_insert_ignore_conflict", _one_conflict_skip)
     monkeypatch.setattr(settings, "ws_queue_size", 1)
     monkeypatch.setattr(settings, "ws_backpressure_policy", "drop_newest")
+    # Two flushes, 0.25 s and 1.5 s by the handlers.base clock (only that module's
+    # ``time`` name is replaced, so asyncio's clock is untouched).
+    ticks = iter([10.0, 10.25, 20.0, 21.5])
+    monkeypatch.setattr(handlers.base, "time", SimpleNamespace(monotonic=lambda: next(ticks)))
     settings.internal_metrics_token = _TOKEN
 
     state.channel("net_flow:TSLA").subscribed = True
@@ -520,6 +526,12 @@ async def test_metrics_reports_handler_counters_under_handlers(
             "dupes_dropped": 0,
             "single_copy": 0,
             "filtered": 0,
+            "flushes": 2,  # the successful and the failed flush both count
+            "flush_rows": 5,
+            "flush_seconds": 1.75,
+            "interval_flush_max_s": 1.5,
+            "interval_batch_max": 3,
+            "interval_queue_hwm": 1,
         },
     }
     assert body["channels"] == {
@@ -584,6 +596,51 @@ async def test_metrics_reports_filtered_beside_the_drop_counters(
     assert row["drop_count"] == 0
 
 
+async def test_metrics_reports_the_flush_stats_and_both_queue_high_waters(
+    monkeypatch, _restore_metrics_token, _isolated_channel_handler_state
+):
+    """Each handler row carries the flush stats and its queue high-water, and the
+    top level carries the receive-queue high-water. Seconds are rounded to three
+    decimals; the high-waters stay at the peak after the queue has drained.
+    """
+    import db
+    from handlers.net_flow import NetFlowHandler
+
+    async def _landed(*, rows, **_kwargs) -> int:
+        return len(rows)
+
+    monkeypatch.setattr(db, "bulk_insert_ignore_conflict", _landed)
+    ticks = iter([5.0, 5.123456])
+    monkeypatch.setattr(handlers.base, "time", SimpleNamespace(monotonic=lambda: next(ticks)))
+    monkeypatch.setattr(state, "receive_queue_hwm", 9)
+    monkeypatch.setattr(state, "receive_queue_depth", 0)
+    settings.internal_metrics_token = _TOKEN
+
+    h = NetFlowHandler()
+    for seq in range(4):
+        await h.enqueue({"seq": seq})
+    while not h.queue.empty():  # the consumer drains it
+        h.queue.get_nowait()
+        h.queue.task_done()
+    await h.enqueue({"seq": 99})
+    await h._safe_flush([(1,), (2,)])
+
+    body = await _read_json(
+        await metrics(_StubRequest({"X-Metrics-Token": _TOKEN}))  # type: ignore[arg-type]
+    )
+
+    row = body["handlers"]["net_flow"]
+    assert row["queue_depth"] == 1
+    assert row["interval_queue_hwm"] == 4
+    assert row["flushes"] == 1
+    assert row["flush_rows"] == 2
+    assert row["flush_seconds"] == 0.123
+    assert row["interval_flush_max_s"] == 0.123
+    assert row["interval_batch_max"] == 2
+    assert body["receive_queue_hwm"] == 9
+    assert body["receive_queue_depth"] == 0
+
+
 @pytest.mark.parametrize(
     ("started_ago_s", "connected", "last_msg_ago_s", "expected"),
     [
@@ -645,6 +702,12 @@ async def test_metrics_lists_constructed_handler_with_zeroed_counters(
             "dupes_dropped": 0,
             "single_copy": 0,
             "filtered": 0,
+            "flushes": 0,
+            "flush_rows": 0,
+            "flush_seconds": 0.0,
+            "interval_flush_max_s": 0.0,
+            "interval_batch_max": 0,
+            "interval_queue_hwm": 0,
         },
     }
     assert body["channels"] == {}

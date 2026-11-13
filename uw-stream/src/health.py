@@ -152,6 +152,8 @@ async def metrics(request: web.Request) -> web.Response:
         "reconnects_last_hour": state.reconnects_last_hour(),
         "receive_queue_depth": state.receive_queue_depth,
         "receive_queue_drops": state.receive_queue_drops,
+        # Interval field: the pipeline reporter resets it each minute.
+        "receive_queue_hwm": state.receive_queue_hwm,
         # Per WS channel (keyed by the joined channel name): subscription state.
         "channels": {
             name: {
@@ -173,6 +175,13 @@ async def metrics(request: web.Request) -> web.Response:
                 "dupes_dropped": h.dupes_dropped,
                 "single_copy": h.single_copy,
                 "filtered": h.filtered,
+                "flushes": h.flushes,
+                "flush_rows": h.flush_rows,
+                "flush_seconds": round(h.flush_seconds, 3),
+                # Interval fields: the pipeline reporter resets these each minute.
+                "interval_flush_max_s": round(h.interval_flush_max_s, 3),
+                "interval_batch_max": h.interval_batch_max,
+                "interval_queue_hwm": h.interval_queue_hwm,
             }
             for name, h in state.handlers.items()
         },
