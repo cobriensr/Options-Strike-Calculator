@@ -1,7 +1,7 @@
 # Live snapshot alert
 
-**Date:** 2026-11-11 · **Status:** Tasks 1-3 shipped 2026-11-12 (Task 3 as
-91a117f5); Tasks 4-6 in progress
+**Date:** 2026-11-11 · **Status:** Tasks 1-5 shipped 2026-11-12 (Task 3 as
+91a117f5, Tasks 4-5 as ac9b6c45); Task 6 in progress
 
 ## Goal
 
@@ -150,8 +150,8 @@ only today's rows are read and the old inverted flag does not matter.
    deliberate close** (Task 3, owner amendments 2026-11-12; 4 files + this
    doc). Shippable alone: with no close signal yet, it behaves like the first
    amendment.
-4. **Client: which browser saves live snapshots** (Task 4; shipped as 8
-   files in three commits). The device default and the per-browser switch,
+4. **Client: which browser saves live snapshots** (Task 4; shipped as 9
+   files in four commits). The device default and the per-browser switch,
    not yet wired into saving.
 5. **Server: open tabs withdraw the close** (Task 5; 4 files + 1 doc).
    `DELETE /api/snapshot-close`, and the close key prefix shared by the
@@ -173,6 +173,7 @@ only today's rows are read and the old inverted flag does not matter.
   (new), `api/__tests__/snapshot-close.test.ts` (new), this doc.
 - Task 4 (as built): `src/lib/live-save-device.ts` (new),
   `src/__tests__/live-save-device.test.ts` (new),
+  `src/__tests__/live-save-device.node.test.ts` (new, node environment),
   `src/components/PanelPrefsModal/LiveSaveSwitch.tsx` (new) and its test,
   `PanelPrefsModal.tsx` (required `isOwner` prop) and its test, the
   `LazyPanelPrefsModal` test, and `src/App.tsx` (passes the strict
@@ -183,7 +184,9 @@ only today's rows are read and the old inverted flag does not matter.
 - Task 6: `src/lib/live-session-signal.ts` (new),
   `src/__tests__/live-session-signal.test.ts` (new),
   `src/hooks/useSnapshotSave.ts`,
-  `src/__tests__/hooks/useSnapshotSave.test.ts`, `src/main.tsx`.
+  `src/__tests__/hooks/useSnapshotSave.test.ts`, `src/main.tsx`; plus a
+  comment-only commit in `api/snapshot-close.ts` and
+  `api/cron/check-live-snapshots.ts` (Task 5 review).
 
 ## Global Constraints
 
@@ -537,9 +540,13 @@ when the app closes and while it stays open. Files:
     the cash session (ET trading day, open ≤ now < the day's close, with the
     `src/data/marketHours.ts` helpers the PWA policy uses), per the CLAUDE.md
     rule that polling gates on market hours. A 401 is silent (the owner
-    cookie is gone). Any other failure is captured once per page at warning
+    cookie is gone), and so is a 429 (the shared 30/min limit; the next
+    timer retries). Any other failure is captured once per page at warning
     level with tag `{ context: 'live_session_open_signal' }`: a lost open
-    signal can let a close stand.
+    signal can let a close stand. Keep it a plain same-origin `fetch` with no
+    body, no custom headers and no `mode`: the endpoint's cross-site safety
+    rests on DELETE needing a preflight it never answers (security review
+    2026-11-12).
   - **Close signal:** on `pagehide`, `navigator.sendBeacon('/api/snapshot-close')`
     (POST, no body). If `sendBeacon` is missing or returns false, fall back to
     `fetch('/api/snapshot-close', { method: 'POST', keepalive: true })` with the
@@ -568,8 +575,11 @@ when the app closes and while it stays open. Files:
   - `pagehide` → one beacon to `/api/snapshot-close`; `sendBeacon` false or
     missing → the keepalive POST;
   - `pageshow` persisted → an open signal; not persisted → none;
-  - an open signal answered 401 → nothing reported; 500 or a network error →
-    one warning per page with the tag;
+  - an open signal answered 401 or 429 → nothing reported; 500 or a network
+    error → one warning per page with the tag;
+  - another tab flips the switch off (stored override changes with no
+    notification here) → the next timer tick and the next `pagehide` send
+    nothing;
   - a reload (a `pagehide`, then a fresh start) → the beacon, then the
     DELETE;
   - the hook: not a live-save device → no live save while a past-date save
@@ -578,5 +588,14 @@ when the app closes and while it stays open. Files:
 
   Existing save tests stay unchanged, apart from mocking `isLiveSaveDevice`
   to true at the module boundary (R3).
+
+- **Comment-only commit (Task 5 review), its own `docs(snapshot)` commit:**
+  - `api/snapshot-close.ts` header: the close/last-save comparison is "at or
+    after the last save hides a stall" and "a close before the last save is
+    ignored" (the cron uses `closedAtMs >= lastSaveMs`); fix both lines that
+    say otherwise.
+  - `api/cron/check-live-snapshots.ts` header, "Deliberate close" paragraph:
+    add that open tabs withdraw the close with `DELETE /api/snapshot-close`,
+    so a reload or a closed sibling tab never hides a stall.
 
 **Acceptance:** `npm run review` green.
