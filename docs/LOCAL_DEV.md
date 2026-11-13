@@ -62,7 +62,7 @@ To exercise auth-gated endpoints (`/api/analyze`, owner writes), you need a Schw
 1. Register at <https://developer.schwab.com>.
 2. Create an app with **callback URL** `http://localhost:3000/api/auth/callback` (for local) and your prod origin (for prod). Schwab accepts a comma-separated list.
 3. Set `SCHWAB_CLIENT_ID` and `SCHWAB_CLIENT_SECRET` in `.env.local`.
-4. Set `APP_URL=http://localhost:3000`.
+4. Set `APP_URL=http://localhost:3000`. Locally it must be `http://localhost:3000` (or `http://127.0.0.1:3000`): it also decides whether the session cookies carry `Secure`, and only a localhost host drops it, so any other value gives you cookies a plain-http page may refuse.
 5. Set `OWNER_SECRET` (e.g. `openssl rand -hex 32`); the callback sets the `sc-owner` cookie to this value. Set `OWNER_SCHWAB_ACCOUNT_SHA256` to the lowercase sha256 hex of your Schwab account number (`.env.example` shows how to compute it). If it is unset, every login is refused and no tokens are stored.
 6. Visit `http://localhost:3000/api/auth/init` to start the flow; you'll land back at `/api/auth/callback` which sets the `sc-owner` cookie.
 

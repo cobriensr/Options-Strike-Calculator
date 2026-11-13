@@ -54,9 +54,12 @@ None: no table, migration or env var.
 ## Files
 
 - Task 1 (server): `api/_lib/auth-helpers.ts`, `api/auth/callback.ts`,
-  `api/auth/whoami.ts`, and their tests.
-- Task 2 (client): the startup/daily renewal call (`src/utils/auth.ts` or
-  `src/main.tsx`, wherever startup auth code lives) and its test.
+  `api/auth/whoami.ts`, `api/auth/guest-key.ts`, `api/auth/guest-logout.ts`,
+  and their tests. The last two take their `Secure` rule from the new
+  `isLocalDeployment()` helper in `auth-helpers.ts`.
+- Task 2 (client): the startup/daily renewal call, in
+  `src/lib/owner-session-renewal.ts`, started from `src/main.tsx`, and its
+  test.
 
 ## Global Constraints
 
