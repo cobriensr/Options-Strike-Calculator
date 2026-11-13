@@ -898,7 +898,7 @@ describe('GET /api/events', () => {
           expect.anything(),
           res,
           'events',
-          10,
+          30,
         );
         expect(fetchMarketEvents).not.toHaveBeenCalled();
         expect(fredFetch).not.toHaveBeenCalled();

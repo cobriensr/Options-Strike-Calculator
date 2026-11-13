@@ -18,7 +18,7 @@
  *   ?from=YYYY-MM-DD — first day of the window (default today ET). A past date
  *                      returns that date's events; the window is from..from+days.
  *                      Bounds: 2025-01-01 to today + 90 days, else 400. A `from`
- *                      lookup that misses the cache is limited to 10 a minute
+ *                      lookup that misses the cache is limited to 30 a minute
  *                      per IP (429); requests without `from` are never limited.
  *
  * Environment variables:
@@ -122,14 +122,16 @@ export default withRequestScope(
         // Redis unavailable — fetch fresh
       }
 
-      // A cache miss costs 7 FRED calls plus a Finnhub call, and FRED allows
-      // about 120 a minute per key, a key the app's default request shares.
-      // Limit per IP only the lookups that choose their own window (`from`):
-      // this caps one IP at 10 misses (about 70 FRED calls) a minute and
-      // leaves the default request unlimited. A cache hit never reaches here.
+      // A cache miss costs one Finnhub call, plus at most 7 FRED calls when a
+      // release's date list is cold in Redis, which happens about once per 12
+      // hours (`market-events.ts`). Finnhub's free key allows 60 calls a
+      // minute, and the default request shares it. Limit per IP only the
+      // lookups that choose their own window (`from`): this caps one IP at 30
+      // misses a minute and leaves the default request unlimited. A cache hit
+      // never reaches here.
       if (
         parsed.data.from &&
-        (await rejectIfRateLimited(req, res, 'events', 10))
+        (await rejectIfRateLimited(req, res, 'events', 30))
       ) {
         done({ status: 429 });
         return;

@@ -303,8 +303,10 @@ const DAY_MS = 24 * 60 * 60 * 1000;
  * public endpoint being walked across cache keys: they cap `from` to a finite
  * range, the handler truncates `days` to a whole number (1-90), and a per-IP
  * limit on `from` lookups that miss the cache caps how fast a caller can mint
- * new keys. Together those bound the key set and the upstream cost. The upper
- * bound reads the clock when the query is parsed.
+ * new keys (30 a minute, since a miss costs one Finnhub call and, with a
+ * release cold in Redis, at most 7 FRED calls). Together those bound the key
+ * set and the upstream cost. The upper bound reads the clock when the query is
+ * parsed.
  */
 export const eventsQuerySchema = z.object({
   from: z

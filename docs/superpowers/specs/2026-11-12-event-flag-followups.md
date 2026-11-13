@@ -28,6 +28,8 @@ Each was verified against production or the live FRED API, read-only.
   - `/api/snapshot` answers `200 { saved: false, skipped: 'non-trading-day' }`. It logs a warning for both live and backtest saves, and reports to Sentry only for live saves (b84a1d70).
   - `build-features` filters every date list with `isTradingDay`.
 - **`/api/events`** takes an optional `from` date, bounded to 2025-01-01 .. today + 90, so past dates fetch their own events. Earnings stay in the banner (parent spec).
+  - A `from` lookup that misses the cache is limited to 30 a minute per IP (429); the default request is never limited.
+  - The limit was 10 while a miss cost 7 FRED calls. Each FRED release's date list is now cached in Redis for 12 hours (`fred:release-dates:v1:<releaseId>`), so a miss costs one Finnhub call, plus at most 7 FRED calls when a list is cold. Finnhub's free key allows 60 calls a minute, and the default request shares it.
 - **The client still sends its event names.** Once past dates fetch their own events, the server's incomplete-lookup fallback works on replays too.
 - **The analysis script** takes its FOMC days from the Fed schedule (owner, 2026-11-06), CPI from `event_type = 'CPI'`, and NFP from `JOBS` employment-report rows without ADP. A DB error stops the script.
 - **Out of scope:** `analyze-prompts.ts:725` mentions `isEventDay`. The analyze prompt is the owner's to rework; this is flagged only.
