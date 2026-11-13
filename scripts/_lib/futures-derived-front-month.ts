@@ -63,11 +63,32 @@ const barRow = z.object({
   volume: z.number().finite(),
 });
 
+/**
+ * One schema per action, strict on the line's own keys: a fill that also carries
+ * a `row`, or a delete an `after`, is a line this reader does not understand, and
+ * the values it reads from `row` and `after` are the only ones that count.
+ */
+const lineKeys = { runId: z.string(), symbol: z.string() } as const;
 const lineSchemas = {
-  rewrite: z.object({ row: barRow, after: barRow }),
-  delete: z.object({ row: barRow }),
-  fill: z.object({ after: barRow }),
-  tag: z.object({
+  rewrite: z.strictObject({
+    ...lineKeys,
+    action: z.literal('rewrite'),
+    row: barRow,
+    after: barRow,
+  }),
+  delete: z.strictObject({
+    ...lineKeys,
+    action: z.literal('delete'),
+    row: barRow,
+  }),
+  fill: z.strictObject({
+    ...lineKeys,
+    action: z.literal('fill'),
+    after: barRow,
+  }),
+  tag: z.strictObject({
+    ...lineKeys,
+    action: z.literal('tag'),
     row: z.object({ ts: z.string() }),
     after: z.object({ contract: z.string() }),
   }),
@@ -188,9 +209,11 @@ export async function readFrontMonthBackup(
     const parsed = lineSchemas[action].safeParse(json);
     if (!parsed.success) {
       const issue = parsed.error.issues[0];
-      throw new Error(
-        `${where}: ${issue?.path.join('.') ?? ''} ${issue?.message ?? 'invalid'}`.trim(),
-      );
+      // A key the schema does not know has no path of its own: the message names it.
+      const what = [issue?.path.join('.'), issue?.message ?? 'invalid']
+        .filter((part) => part != null && part !== '')
+        .join(' ');
+      throw new Error(`${where}: ${what}`);
     }
     const data = parsed.data as Partial<{
       row: z.infer<typeof barRow>;
@@ -242,6 +265,33 @@ export async function readFrontMonthBackup(
   }
   return { bars, counts };
 }
+
+/** The UTC calendar date (YYYY-MM-DD) of a time: `ts AT TIME ZONE 'UTC'` in the tables. */
+const utcDateOf = (tsMs: number): string =>
+  new Date(tsMs).toISOString().slice(0, 10);
+
+/**
+ * The UTC dates on which Phase 6 rewrote, deleted or filled a bar of `symbol`
+ * (a delete and a rewrite keyed by the stored row's ts, a fill by the bar it
+ * added; a tag changes no bar and is not in `bars`). A snapshot row on one of
+ * these dates is on a repaired day; any other row the plan changes is reached
+ * only through the 20-day volume window, or across a UTC midnight. The owner's
+ * measured scope (15,255 rows) counted by this rule.
+ */
+export function repairedDays(
+  bars: readonly BackupBar[],
+  symbol: string,
+): Set<string> {
+  return new Set(
+    bars.filter((b) => b.symbol === symbol).map((b) => utcDateOf(b.tsMs)),
+  );
+}
+
+/** True when the UTC date of `tsMs` is one of `days`. */
+export const onRepairedDay = (
+  days: ReadonlySet<string>,
+  tsMs: number,
+): boolean => days.has(utcDateOf(tsMs));
 
 /**
  * The report header's backup line: the lines in the file, each action apart (a

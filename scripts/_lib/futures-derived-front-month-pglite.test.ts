@@ -840,6 +840,7 @@ const planLines = (): {
 const pointer = (): {
   command: { repair?: string; roots?: string[] };
   expect: Record<string, number | null>;
+  frontMonth?: unknown;
 } => JSON.parse(readFileSync(join(workDir, 'plan.json'), 'utf8'));
 
 async function dump(): Promise<string> {
@@ -984,6 +985,23 @@ describe('the front-month dry run on real SQL (pglite)', () => {
 
     // What it would write: the fill-day row, the rewritten day, the day that only shares its volume, the CL rows.
     expect(text).toContain('rows in range: 440, rows to write: 221');
+    // The 221 apart: rows on a repaired day (a UTC date with a rewrite, delete or fill of the root's
+    // bar) and rows reached only through the 20-day volume window. The owner's approved bound counts
+    // the first kind.
+    expect(text).toContain(
+      '    ES  repaired days: 2 to write of 2 (price 2, 1h 2, day 2, ratio 2) | window-only: 1 to write of 219 (price 0, 1h 0, day 0, ratio 1)',
+    );
+    expect(text).toContain(
+      '    CL  repaired days: 1 to write of 2 (price 1, 1h 1, day 1, ratio 1) | window-only: 217 to write of 217 (price 0, 1h 0, day 0, ratio 217)',
+    );
+    expect(text).toContain(
+      '    all roots  repaired days: 3 to write of 4 (price 3, 1h 3, day 3, ratio 3) | window-only: 218 to write of 436 (price 0, 1h 0, day 0, ratio 218)',
+    );
+    expect(text).toContain('rows in scope on repaired days, all roots: 4');
+    // The control cannot vouch for the thin roots' volume ratio, and the report says so.
+    expect(text).toContain(
+      'the control cannot vouch for the volume ratio of RTY, CL, GC and ZN',
+    );
     expect(text).toContain(
       'ES: rows in range 221, rows to write 3 (price=2 change1hPct=2 changeDayPct=2 volumeRatio=3)',
     );
@@ -1151,6 +1169,35 @@ describe('applying the front-month recompute on real SQL (pglite)', () => {
       fires: 1,
       junk: 1,
     });
+    // And how the 221 planned snapshot rows split: on the days Phase 6 changed a bar (A, B1 and C,
+    // out of the 4 rows there) and reached only through the 20-day window (B2, CL 11-12 and its
+    // control rows, which change only their volume ratio).
+    const group = (
+      inScope: number,
+      toWrite: number,
+      price: number,
+      change1h: number,
+      changeDay: number,
+      volumeRatio: number,
+    ) => ({ inScope, toWrite, price, change1h, changeDay, volumeRatio });
+    expect(pointer().frontMonth).toEqual({
+      snapshotRows: {
+        byRoot: {
+          ES: {
+            repairedDays: group(2, 2, 2, 2, 2, 2),
+            windowOnly: group(219, 1, 0, 0, 0, 1),
+          },
+          CL: {
+            repairedDays: group(2, 1, 1, 1, 1, 1),
+            windowOnly: group(217, 217, 0, 0, 0, 217),
+          },
+        },
+        all: {
+          repairedDays: group(4, 3, 3, 3, 3, 3),
+          windowOnly: group(436, 218, 0, 0, 0, 218),
+        },
+      },
+    });
 
     // A: the fill-day row, frozen on the 08-05 bar, follows the filled bars in all four fields.
     const [aPrice, a1h, aDay, aVr] = await snapshotValues(ids.a);
@@ -1256,6 +1303,14 @@ describe('applying the front-month recompute on real SQL (pglite)', () => {
     expect(await dry()).toBe(0);
     const again = report();
     expect(again).toContain('rows in range: 439, rows to write: 0');
+    // Nothing is left to write on either kind of day; the junk row is gone from the repaired ones.
+    expect(again).toContain(
+      '    ES  repaired days: 0 to write of 2 (price 0, 1h 0, day 0, ratio 0) | window-only: 0 to write of 219 (price 0, 1h 0, day 0, ratio 0)',
+    );
+    expect(again).toContain(
+      '    CL  repaired days: 0 to write of 1 (price 0, 1h 0, day 0, ratio 0) | window-only: 0 to write of 217 (price 0, 1h 0, day 0, ratio 0)',
+    );
+    expect(again).toContain('rows in scope on repaired days, all roots: 3');
     expect(again).toContain('rows in scope: 2, rows to write: 0');
     expect(again).toContain('rows in scope: 1, rows to change: 0');
     expect(again).toContain('Apply gate: every check passes.');

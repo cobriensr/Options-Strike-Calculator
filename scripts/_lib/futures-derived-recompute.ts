@@ -148,7 +148,9 @@ import {
 import {
   FRONT_MONTH,
   frontMonthBackupLine,
+  onRepairedDay,
   readFrontMonthBackup,
+  repairedDays,
   type FrontMonthBackup,
 } from './futures-derived-front-month.js';
 import {
@@ -1495,6 +1497,20 @@ export interface LeftAloneStats {
   lastMs: number | null;
 }
 
+/** One kind of day of a root: its rows in scope, the rows planned to write and the fields written. */
+export interface DayGroup {
+  inScope: number;
+  toWrite: number;
+  byField: Record<SnapshotField, number>;
+}
+
+export interface DaySplit {
+  /** A row whose UTC date has a rewrite, delete or fill of the root's bar in the Phase 6 backup. */
+  repairedDays: DayGroup;
+  /** Every other row: reached only through the 20-day volume window, or across a UTC midnight. */
+  windowOnly: DayGroup;
+}
+
 export interface SnapshotSymbolReport {
   symbol: Sym;
   inRange: number;
@@ -1548,6 +1564,12 @@ export interface SnapshotSymbolReport {
     rows: number;
     fields: Record<SnapshotField, number>;
   } | null;
+  /**
+   * Front-month only, null otherwise: the rows of the snapshot scope on the UTC dates
+   * Phase 6 changed a bar of this root, and the rest (reached only through the 20-day
+   * volume window, or across a UTC midnight), with what is planned for each.
+   */
+  daySplit: DaySplit | null;
   /** A thin root's control, split by explanation; null for ES and NQ, which must match exactly. */
   thin: ThinControl | null;
 }
@@ -1700,6 +1722,12 @@ const emptyFields = (): Record<SnapshotField, number> => ({
   change1hPct: 0,
   changeDayPct: 0,
   volumeRatio: 0,
+});
+
+const emptyDayGroup = (): DayGroup => ({
+  inScope: 0,
+  toWrite: 0,
+  byField: emptyFields(),
 });
 
 const utcDay = (tsMs: number): string => iso(tsMs).slice(0, 10);
@@ -2408,10 +2436,14 @@ async function planSnapshots(
       controlMatched: 0,
       controlDays: 0,
       controlSetAside: null,
+      daySplit: frontMonth
+        ? { repairedDays: emptyDayGroup(), windowOnly: emptyDayGroup() }
+        : null,
       thin: null,
       spanBars: spanBars.get(symbol) ?? null,
       volumeRatioLeft: 0,
     };
+    const repairedDaySet = frontMonth ? repairedDays(sd.backup, symbol) : null;
     // Front-month: every in-scope row with the fields a repaired bar feeds left out of
     // its difference, so what differs is the drift: classified, never written.
     const driftEvals: SnapshotEvaluation[] = [];
@@ -2427,6 +2459,16 @@ async function planSnapshots(
     );
     for (const [idx, evaluation] of evaluated.entries()) {
       const { row, result } = evaluation;
+      // Front-month: the row's day group, counted as the row is read and again if it is written.
+      const dayGroup =
+        report.daySplit == null || repairedDaySet == null
+          ? null
+          : report.daySplit[
+              onRepairedDay(repairedDaySet, row.tsMs)
+                ? 'repairedDays'
+                : 'windowOnly'
+            ];
+      if (dayGroup != null) dayGroup.inScope += 1;
       // A lifted thin root plans no volume ratio (owner ruling 2026-11-12).
       const outcome = lifted
         ? withoutVolumeRatio(evaluation.outcome, row.stored, report)
@@ -2710,6 +2752,10 @@ async function planSnapshots(
       if (stalePlanned) report.alsoStale += 1;
       report.rowsToWrite += 1;
       for (const f of writable) report.byField[f] += 1;
+      if (dayGroup != null) {
+        dayGroup.toWrite += 1;
+        for (const f of writable) dayGroup.byField[f] += 1;
+      }
       changes.push({
         id: row.id,
         symbol,
@@ -3545,6 +3591,108 @@ function setAsideText(
   return `    control fields set aside (a repaired bar feeds them, so the stored value is the repair's to change; the other fields of the row still had to match): ${a.rows} rows (${byFieldText(a.fields)})`;
 }
 
+/** A front-month snapshot store's day groups per root and over all roots; null for any other store. */
+function daySplitsOf(
+  store: SnapshotStore,
+): { byRoot: { symbol: Sym; split: DaySplit }[]; all: DaySplit } | null {
+  const byRoot = store.symbols.flatMap((s) =>
+    s.daySplit == null ? [] : [{ symbol: s.symbol, split: s.daySplit }],
+  );
+  if (byRoot.length === 0 || byRoot.length !== store.symbols.length) {
+    return null;
+  }
+  const sum = (kind: keyof DaySplit): DayGroup => {
+    const total = emptyDayGroup();
+    for (const { split } of byRoot) {
+      total.inScope += split[kind].inScope;
+      total.toWrite += split[kind].toWrite;
+      for (const f of SNAPSHOT_KEYS) total.byField[f] += split[kind].byField[f];
+    }
+    return total;
+  };
+  return {
+    byRoot,
+    all: { repairedDays: sum('repairedDays'), windowOnly: sum('windowOnly') },
+  };
+}
+
+const count = (n: number): string => n.toLocaleString('en-US');
+
+const dayGroupText = (g: DayGroup): string =>
+  `${count(g.toWrite)} to write of ${count(g.inScope)} (price ${count(g.byField.price)}, 1h ${count(g.byField.change1hPct)}, day ${count(g.byField.changeDayPct)}, ratio ${count(g.byField.volumeRatio)})`;
+
+/**
+ * The planned snapshot rows on the days Phase 6 changed a bar and on the rest. The owner
+ * approved the apply for a bound on the first kind (15,255 rows on repaired symbol-days,
+ * measured before any volume ratio was recomputed); a row reached only through the 20-day
+ * volume window, or across a UTC midnight, is outside it, so the two are shown apart.
+ */
+function daySplitText(r: SnapshotStore): string[] {
+  const splits = daySplitsOf(r);
+  if (splits == null) return [];
+  const line = (label: string, s: DaySplit): string =>
+    `    ${label}  repaired days: ${dayGroupText(s.repairedDays)} | window-only: ${dayGroupText(s.windowOnly)}`;
+  return [
+    "  rows by kind of day (repaired day: the row's UTC date has a rewrite, delete or fill of that root's bar in the Phase 6 backup, a tag does not count; window-only: every other row, reached only through the 20-day volume window or across a UTC midnight):",
+    ...splits.byRoot.map(({ symbol, split }) => line(symbol, split)),
+    line('all roots', splits.all),
+    `    rows in scope on repaired days, all roots: ${count(splits.all.repairedDays.inScope)}`,
+  ];
+}
+
+/** The same counts as plan.json carries them: front-month only, a flat object per kind of day. */
+export interface DayGroupCounts {
+  inScope: number;
+  toWrite: number;
+  price: number;
+  change1h: number;
+  changeDay: number;
+  volumeRatio: number;
+}
+
+export interface FrontMonthPlanBlock {
+  snapshotRows: {
+    byRoot: Record<
+      string,
+      { repairedDays: DayGroupCounts; windowOnly: DayGroupCounts }
+    >;
+    all: { repairedDays: DayGroupCounts; windowOnly: DayGroupCounts };
+  };
+}
+
+const dayGroupCounts = (g: DayGroup): DayGroupCounts => ({
+  inScope: g.inScope,
+  toWrite: g.toWrite,
+  price: g.byField.price,
+  change1h: g.byField.change1hPct,
+  changeDay: g.byField.changeDayPct,
+  volumeRatio: g.byField.volumeRatio,
+});
+
+const daySplitCounts = (s: DaySplit) => ({
+  repairedDays: dayGroupCounts(s.repairedDays),
+  windowOnly: dayGroupCounts(s.windowOnly),
+});
+
+/** The front-month block of plan.json; null when the plan has no snapshot store to split. */
+function frontMonthPlanBlock(
+  store: SnapshotStore | undefined,
+): FrontMonthPlanBlock | null {
+  const splits = store == null ? null : daySplitsOf(store);
+  if (splits == null) return null;
+  return {
+    snapshotRows: {
+      byRoot: Object.fromEntries(
+        splits.byRoot.map(({ symbol, split }) => [
+          symbol,
+          daySplitCounts(split),
+        ]),
+      ),
+      all: daySplitCounts(splits.all),
+    },
+  };
+}
+
 function snapshotsText(r: SnapshotStore, repair?: RepairName): string[] {
   const frontMonth = repair === 'front-month';
   const top = r.changes
@@ -3562,7 +3710,7 @@ function snapshotsText(r: SnapshotStore, repair?: RepairName): string[] {
     `futures_snapshots (${titled.join(', ')}): only the fields a repaired bar feeds are written`,
     `  rows in range: ${r.inScope}, rows to write: ${r.changes.length}`,
   ];
-  out.push(...touchedText(r), ...stepsByRootText(r));
+  out.push(...touchedText(r), ...stepsByRootText(r), ...daySplitText(r));
   for (const s of r.symbols) {
     out.push(
       `  ${s.symbol}: rows in range ${s.inRange}, rows to write ${s.rowsToWrite} (${byFieldText(s.byField)})`,
@@ -4188,6 +4336,12 @@ interface PlanPointer {
     backup: string | null;
     detectorDays: string | null;
   };
+  /**
+   * Front-month only: how the planned snapshot rows split into those on the days Phase 6
+   * changed a bar and those reached only through the 20-day window, so the count the
+   * owner approved the apply against can be read from the plan. Not read back.
+   */
+  frontMonth?: FrontMonthPlanBlock;
 }
 
 const pointerPath = (workDir: string): string => join(workDir, 'plan.json');
@@ -5197,6 +5351,7 @@ function frontMonthHeader(
     `snapshot scope ${isoSecond(scope.snapshots.fromMs)} .. ${isoSecond(scope.snapshots.toMs)} (span end + 20 days, cut at ${isoSecond(FRONT_MONTH.writtenUntilMs)}, the end of the Phase 6 write run: a row from there on read the repaired bars)`,
     'fires in scope: those with a bar Phase 6 changed in the 6 minutes before and at the fire (the ES window its basis reads); every other fire with a value is the control; a NULL basis is never read or set',
     "no D1 lift (the first row's 20-day window starts after every thin root's last month-mixed bar), no stale-at-write rewrite, no frozen-stale delete, no volume-null step, no detector days",
+    `the control cannot vouch for the volume ratio of RTY, CL, GC and ZN: before ${isoSecond(FRONT_MONTH.writtenUntilMs)} it is set aside wherever a changed bar in the 20-day window feeds it, and from then on the late-volume rule excuses any stored ratio at or below the recomputed one, so do not cite the control for those ratios (ES and NQ are fine: no bar of theirs changed after 2026-09-14)`,
     ...(backup == null || opts.backup == null
       ? []
       : [frontMonthBackupLine(opts.backup, backup, opts.roots)]),
@@ -5514,6 +5669,7 @@ async function run(opts: RecomputeOptions): Promise<number> {
     ...(frozenPending ? (['frozen'] as const) : []),
     ...(volumeNullPending ? (['volume-null'] as const) : []),
   ];
+  const frontMonthBlock = frontMonthPlanBlock(plans.snapshots);
   const pointer: PlanPointer = {
     createdAt: new Date().toISOString(),
     backup: basename(written.path),
@@ -5541,6 +5697,7 @@ async function run(opts: RecomputeOptions): Promise<number> {
       backup: opts.backup,
       detectorDays: opts.detectorDays,
     },
+    ...(frontMonthBlock == null ? {} : { frontMonth: frontMonthBlock }),
   };
   writePlanPointer(opts.workDir, pointer);
   // Apply from the file just written, the same way a resumed run does.

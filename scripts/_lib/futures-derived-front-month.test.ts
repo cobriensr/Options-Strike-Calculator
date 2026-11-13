@@ -37,7 +37,9 @@ import {
 import {
   FRONT_MONTH,
   frontMonthBackupLine,
+  onRepairedDay,
   readFrontMonthBackup,
+  repairedDays,
   type FrontMonthProfile,
 } from './futures-derived-front-month.js';
 import { SNAPSHOT_LOOKBACK_MS } from './futures-derived-recompute.js';
@@ -540,6 +542,26 @@ describe('readFrontMonthBackup', () => {
         [{ runId: RUN, action: 'fill', symbol: 'GC' }],
         /backup\.jsonl:1: after/,
       ],
+      [
+        'a fill that also carries a row',
+        [
+          {
+            ...lines.fill(),
+            row: row('2026-07-28T00:00:00.000Z', '4073.0'),
+          },
+        ],
+        /backup\.jsonl:1: Unrecognized key: "row"/,
+      ],
+      [
+        'a delete that also carries an after bar',
+        [
+          {
+            ...lines.delete(),
+            after: row('2026-10-16T14:29:00.000Z', '85.33'),
+          },
+        ],
+        /backup\.jsonl:1: Unrecognized key: "after"/,
+      ],
     ];
     it.each(refusals)('%s', async (_name, content, message) => {
       await expect(
@@ -577,6 +599,100 @@ describe('readFrontMonthBackup', () => {
         readFrontMonthBackup(join(dir, 'missing.jsonl'), profile()),
       ).rejects.toThrow(/ENOENT/);
     });
+  });
+});
+
+// ── Repaired days ───────────────────────────────────────────────────────────
+
+describe('repairedDays', () => {
+  const day = (ts: string, op: BackupBar['op'], symbol = 'ES'): BackupBar => ({
+    ...backupBar(ts, op, 7000),
+    symbol,
+  });
+
+  it('keys a rewrite, a delete and a fill by the UTC date of the minute, for the root asked about', () => {
+    const bars = [
+      day('2026-08-06T13:30:00Z', 'fill'),
+      day('2026-09-14T14:30:00Z', 'update'),
+      day('2026-09-15T09:00:00Z', 'delete'),
+      day('2026-10-16T14:29:00Z', 'delete', 'CL'),
+    ];
+    expect([...repairedDays(bars, 'ES')].sort()).toEqual([
+      '2026-08-06',
+      '2026-09-14',
+      '2026-09-15',
+    ]);
+    expect([...repairedDays(bars, 'CL')]).toEqual(['2026-10-16']);
+    expect(repairedDays(bars, 'NQ').size).toBe(0);
+  });
+
+  it('puts a minute at UTC midnight on the new day and the minute before it on the old', () => {
+    const days = repairedDays(
+      [
+        day('2026-09-14T23:59:00Z', 'delete'),
+        day('2026-09-16T00:00:00Z', 'fill'),
+      ],
+      'ES',
+    );
+    expect([...days].sort()).toEqual(['2026-09-14', '2026-09-16']);
+    expect(onRepairedDay(days, ms('2026-09-14T23:59:59.999Z'))).toBe(true);
+    expect(onRepairedDay(days, ms('2026-09-15T00:00:00Z'))).toBe(false);
+    expect(onRepairedDay(days, ms('2026-09-15T23:59:59.999Z'))).toBe(false);
+    expect(onRepairedDay(days, ms('2026-09-16T00:00:00Z'))).toBe(true);
+  });
+
+  it('does not count a tag: a day whose only line in the Phase 6 backup is a tag is not repaired', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'front-month-days-'));
+    try {
+      const row = (ts: string) => ({
+        ts,
+        open: '7000.0000',
+        high: '7000.0000',
+        low: '7000.0000',
+        close: '7000.0000',
+        volume: 5,
+      });
+      const path = join(dir, 'b.jsonl');
+      const head = { runId: 'run-1', symbol: 'ES' };
+      writeFileSync(
+        path,
+        [
+          {
+            ...head,
+            action: 'tag',
+            row: row('2026-08-10T14:30:00.000Z'),
+            after: { contract: 'ESU6' },
+          },
+          { ...head, action: 'delete', row: row('2026-08-11T14:30:00.000Z') },
+          { ...head, action: 'fill', after: row('2026-08-12T14:30:00.000Z') },
+          {
+            ...head,
+            action: 'rewrite',
+            row: row('2026-08-13T14:30:00.000Z'),
+            after: row('2026-08-13T14:30:00.000Z'),
+          },
+        ]
+          .map((l) => JSON.stringify(l))
+          .join('\n'),
+      );
+      const read = await readFrontMonthBackup(path, {
+        span: {
+          startMs: ms('2026-07-28T00:00:00Z'),
+          endMs: ms('2026-11-12T00:00:00Z'),
+        },
+        backup: {
+          runId: 'run-1',
+          totals: { rewrite: 1, delete: 1, fill: 1, tag: 1 },
+        },
+      });
+      expect([...repairedDays(read.bars, 'ES')].sort()).toEqual([
+        '2026-08-11',
+        '2026-08-12',
+        '2026-08-13',
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
