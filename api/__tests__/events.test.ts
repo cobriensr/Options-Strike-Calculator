@@ -3,8 +3,15 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
+// `redis` holds the window caches; `limiterRedis` is the fail-fast client the
+// per-release FRED date lists use (market-events.ts), kept apart so a test on
+// the window cache counts only its own reads and writes.
 vi.mock('../_lib/redis.js', () => ({
   redis: {
+    get: vi.fn().mockResolvedValue(null),
+    set: vi.fn().mockResolvedValue('OK'),
+  },
+  limiterRedis: {
     get: vi.fn().mockResolvedValue(null),
     set: vi.fn().mockResolvedValue('OK'),
   },
@@ -54,7 +61,7 @@ vi.mock('../_lib/sentry.js', () => ({
 }));
 
 import handler from '../events.js';
-import { redis } from '../_lib/redis.js';
+import { limiterRedis, redis } from '../_lib/redis.js';
 import { checkBot, rejectIfRateLimited } from '../_lib/api-helpers.js';
 import { fetchMarketEvents } from '../_lib/market-events.js';
 import { Sentry, metrics } from '../_lib/sentry.js';
@@ -71,6 +78,8 @@ describe('GET /api/events', () => {
     vi.clearAllMocks();
     vi.mocked(redis.get).mockResolvedValue(null);
     vi.mocked(redis.set).mockResolvedValue('OK');
+    vi.mocked(limiterRedis.get).mockResolvedValue(null);
+    vi.mocked(limiterRedis.set).mockResolvedValue('OK');
     vi.mocked(rejectIfRateLimited).mockResolvedValue(false);
   });
 
@@ -377,11 +386,8 @@ describe('GET /api/events', () => {
 
     expect(res._status).toBe(200);
     // Full success → write-through to the date-scoped cache. The per-release
-    // FRED date lists (`fred:` keys) are cached separately and not counted.
-    const windowWrites = vi
-      .mocked(redis.set)
-      .mock.calls.filter(([key]) => key.startsWith('events:'));
-    expect(windowWrites).toHaveLength(1);
+    // FRED date lists go through `limiterRedis`, so `redis` sees one write.
+    expect(redis.set).toHaveBeenCalledTimes(1);
 
     vi.unstubAllGlobals();
   });
@@ -416,15 +422,12 @@ describe('GET /api/events', () => {
 
     expect(res._status).toBe(200);
     expect((res._json as { cached: boolean }).cached).toBe(false);
-    // The only events cache read is the v3 key: the v2 key is never asked
-    // for. (The per-release `fred:` keys are read too, and not counted.)
-    const eventsKeysRead = vi
-      .mocked(redis.get)
-      .mock.calls.map(([key]) => key)
-      .filter((key) => key.startsWith('events:'));
-    expect(eventsKeysRead).toEqual([
+    // The only read is the v3 key: the v2 key is never asked for. (The
+    // per-release FRED date lists are read through `limiterRedis`.)
+    expect(redis.get).toHaveBeenCalledTimes(1);
+    expect(redis.get).toHaveBeenCalledWith(
       expect.stringMatching(/^events:v3:\d{4}-\d{2}-\d{2}:30$/),
-    ]);
+    );
     expect(redis.set).toHaveBeenCalledWith(
       expect.stringMatching(/^events:v3:\d{4}-\d{2}-\d{2}:30$/),
       expect.anything(),
@@ -961,6 +964,63 @@ describe('GET /api/events', () => {
       // A degraded list under events:v3:2026-04-29:* would pin the missing
       // release flags to that date for the 7-day TTL.
       expect(redis.set).not.toHaveBeenCalled();
+    });
+
+    // Finnhub's free key serves about a month of past earnings (a live probe on
+    // 2026-11-13 found rows 26 days back and none 40 or more days back), so a
+    // window ending more than 45 days before today asks it nothing. The
+    // missing earnings are not a failure: the window is complete and cached.
+    describe('a window older than Finnhub history', () => {
+      async function getWithFinnhub(query: Record<string, string>) {
+        process.env.FRED_API_KEY = 'fred-key';
+        process.env.FINNHUB_API_KEY = 'finnhub-key';
+        const fetchMock = vi.fn((url: string) =>
+          Promise.resolve({
+            ok: true,
+            json: () =>
+              Promise.resolve(
+                url.startsWith('https://finnhub.io/')
+                  ? { earningsCalendar: [] }
+                  : { release_dates: [] },
+              ),
+          }),
+        );
+        vi.stubGlobal('fetch', fetchMock);
+        vi.useFakeTimers({ now: new Date(NOW) });
+        const res = mockResponse();
+        await handler(mockRequest({ method: 'GET', query }), res);
+        const finnhubCalls = fetchMock.mock.calls.filter(([url]) =>
+          url.startsWith('https://finnhub.io/'),
+        );
+        return { res, json: res._json as EventsJson, finnhubCalls };
+      }
+
+      // Today (ET) is 2026-11-12, so 2026-09-28 is 45 days back and
+      // 2026-09-27 is 46. A one-day window from F ends on F + 1.
+      it.each([
+        ['2026-09-27', 1],
+        ['2026-09-26', 0],
+        ['2026-04-29', 0],
+      ])(
+        'from %s makes %i Finnhub fetches and caches the window as complete',
+        async (from, finnhubFetches) => {
+          const { res, json, finnhubCalls } = await getWithFinnhub({
+            from,
+            days: '1',
+          });
+
+          expect(res._status).toBe(200);
+          expect(json.cached).toBe(false);
+          expect(res._headers['X-Cache']).toBe('MISS');
+          expect(finnhubCalls).toHaveLength(finnhubFetches);
+          expect(redis.set).toHaveBeenCalledTimes(1);
+          expect(redis.set).toHaveBeenCalledWith(
+            `events:v3:${from}:1`,
+            { data: json.events, cachedAt: expect.any(Number) },
+            expect.anything(),
+          );
+        },
+      );
     });
   });
 });

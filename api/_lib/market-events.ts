@@ -16,10 +16,11 @@
  */
 
 import { Sentry } from './sentry.js';
-import { redis } from './redis.js';
+import { limiterRedis, redis } from './redis.js';
 import logger from './logger.js';
 import { FOMC_DECISION_DATES, isSepMeeting } from './fomc-schedule.js';
 import { EARLY_CLOSE_DATES } from '../../src/data/marketHours.js';
+import { getETToday } from '../../src/utils/timezone.js';
 
 // ============================================================
 // TYPES
@@ -203,6 +204,31 @@ const MEGA_CAP_SYMBOLS = new Set([
 
 const FINNHUB_BASE = 'https://finnhub.io/api/v1';
 
+// How far back Finnhub's free key still serves earnings. A live probe on
+// 2026-11-13 got 1,500 rows for 11-02..11-08 and 93 for 10-12..10-18, then 0
+// rows for every window ending 40 or more days back (09-28..10-04,
+// 08-24..08-30, 07-27..08-02, 04-27..05-03). Where in 26..40 days the edge
+// lies was not pinned, so 45 keeps a margin past the last empty window seen:
+// a window is skipped only where Finnhub was seen to return nothing.
+const FINNHUB_EARNINGS_HISTORY_DAYS = 45;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * True when a window ending on `endDate` (YYYY-MM-DD) ends more than
+ * FINNHUB_EARNINGS_HISTORY_DAYS before today (ET), so Finnhub has nothing for
+ * it. A window that starts back there and ends inside the range is not beyond
+ * it. Calendar arithmetic on 12:00 UTC, so a DST change cannot shift the date.
+ */
+function endsBeyondFinnhubHistory(endDate: string): boolean {
+  const oldestServedEnd = new Date(
+    Date.parse(`${getETToday()}T12:00:00Z`) -
+      FINNHUB_EARNINGS_HISTORY_DAYS * DAY_MS,
+  )
+    .toISOString()
+    .slice(0, 10);
+  return endDate < oldestServedEnd;
+}
+
 interface FinnhubEarningsEntry {
   date: string;
   epsActual: number | null;
@@ -326,20 +352,34 @@ interface FredReleaseResult {
   ok: boolean;
 }
 
+// The release lists are a best-effort cache read and written on every snapshot
+// save and every `/api/events` miss, so they use the fail-fast `limiterRedis`
+// (one attempt, 1.5 s), not the retrying `redis`. That client took about 64 s to
+// give up in the 2026-09-29 outage, on each read and again on each write: up to
+// 128 s added to a call. The Redis failures below log at `warn`, by choice, and
+// nothing goes to Sentry: an outage writes up to 7 lines per call, and 7 error
+// lines per call would be noise.
+
 /**
- * A release's cached date list, or null on a miss. A value that is not a list
- * of strings is a miss too, so the fetch repairs it. A Redis failure is a miss;
- * it is logged here, not sent to Sentry, so an outage cannot flood it with one
- * report per release per call.
+ * A release's cached date list, or null on a miss. A value that is not a
+ * non-empty list of strings is a miss too, so the fetch repairs it: an empty
+ * list is never written (see `writeCachedReleaseDates`), so one found here
+ * did not come from this code. A Redis failure is a miss; it is logged here,
+ * not sent to Sentry, so an outage cannot flood it with one report per release
+ * per call.
  */
 async function readCachedReleaseDates(
   releaseId: number,
 ): Promise<string[] | null> {
   try {
-    const cached = await redis.get<unknown>(
+    const cached = await limiterRedis.get<unknown>(
       `${RELEASE_DATES_KEY}:${releaseId}`,
     );
-    if (Array.isArray(cached) && cached.every((d) => typeof d === 'string')) {
+    if (
+      Array.isArray(cached) &&
+      cached.length > 0 &&
+      cached.every((d) => typeof d === 'string')
+    ) {
       return cached as string[];
     }
   } catch (err) {
@@ -351,7 +391,12 @@ async function readCachedReleaseDates(
   return null;
 }
 
-/** Keeps a release's full sorted date list as strings; a failure only logs. */
+/**
+ * Keeps a release's full sorted date list as strings; a failure only logs.
+ * Writes nothing when there is no date to keep, whether FRED sent an empty list
+ * or only entries with no date: a cached `[]` would answer "no event" for the
+ * whole 12 hours from a reply that may have been a gap.
+ */
 async function writeCachedReleaseDates(
   releaseId: number,
   releaseDates: readonly FredReleaseDateEntry[],
@@ -360,8 +405,9 @@ async function writeCachedReleaseDates(
     .map((r) => r.date)
     .filter((d) => typeof d === 'string')
     .sort((a, b) => a.localeCompare(b));
+  if (dates.length === 0) return;
   try {
-    await redis.set(`${RELEASE_DATES_KEY}:${releaseId}`, dates, {
+    await limiterRedis.set(`${RELEASE_DATES_KEY}:${releaseId}`, dates, {
       ex: RELEASE_DATES_TTL_SEC,
     });
   } catch (err) {
@@ -459,8 +505,9 @@ function sortEvents(events: EventItem[]): EventItem[] {
  * FRED's `release/dates` returns all history and the range is filtered here,
  * so a past range works as well as a forward one. Each release's date list is
  * kept in Redis for 12 hours (`fred:release-dates:v1:{releaseId}`), so a new
- * window costs no FRED call while the lists are warm. Redis failing leaves the
- * lookup going to FRED as before.
+ * window costs no FRED call while the lists are warm. An empty list is never
+ * kept. Redis failing leaves the lookup going to FRED as before, after at most
+ * one 1.5 s attempt (the fail-fast client).
  *
  * `complete` is true only when `FRED_API_KEY` is set and every FRED release
  * answered with a well-formed payload. Without the key it returns the static
@@ -565,12 +612,15 @@ export async function fetchMacroEvents(
  * `/api/events` and the app's banner: the macro events from
  * `fetchMacroEvents`, plus the mega-cap earnings from Finnhub when
  * `FINNHUB_API_KEY` is set, sorted as there. Finnhub earnings rows are kept to
- * the same range. The two sources are fetched in parallel.
+ * the same range. The two sources are fetched in parallel. A window that ends
+ * more than 45 days before today (ET) gets no Finnhub call, because the free
+ * key has no earnings that far back (`FINNHUB_EARNINGS_HISTORY_DAYS`).
  *
  * `complete` is true only when the macro fetch is complete and, when a
- * Finnhub key is set, Finnhub answered with a well-formed payload. A Finnhub
+ * Finnhub call is made, Finnhub answered with a well-formed payload. A Finnhub
  * failure of any kind is logged and returns `complete: false`; the macro
- * failures and rejections are as in `fetchMacroEvents`.
+ * failures and rejections are as in `fetchMacroEvents`. No Finnhub key, or a
+ * window past its history, is nothing to fetch, not a failure.
  */
 export async function fetchMarketEvents(
   startDate: string,
@@ -580,14 +630,15 @@ export async function fetchMarketEvents(
 
   // Macro first: its FRED requests go out before Finnhub's, as they always did.
   const macroPromise = fetchMacroEvents(startDate, endDate);
-  const earningsPromise: Promise<EarningsResult> = finnhubKey
-    ? fetchMegaCapEarnings(finnhubKey, startDate, endDate)
-    : Promise.resolve({ events: [], ok: true });
+  const earningsPromise: Promise<EarningsResult> =
+    finnhubKey && !endsBeyondFinnhubHistory(endDate)
+      ? fetchMegaCapEarnings(finnhubKey, startDate, endDate)
+      : Promise.resolve({ events: [], ok: true });
 
   const [macro, earnings] = await Promise.all([macroPromise, earningsPromise]);
 
-  // No Finnhub key means earnings are not part of the list, so that leg
-  // counts as OK.
+  // No Finnhub key, or a window past Finnhub's history, means earnings are not
+  // part of the list, so that leg counts as OK.
   return {
     events: sortEvents([...macro.events, ...earnings.events]),
     complete: macro.complete && earnings.ok,

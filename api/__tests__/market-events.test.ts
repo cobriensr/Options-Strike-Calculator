@@ -2,8 +2,12 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
+// `redis` backs the per-day caches; `limiterRedis` is the fail-fast client the
+// per-release date lists use, so each is mocked apart and a test can tell which
+// one a key went through.
 vi.mock('../_lib/redis.js', () => ({
   redis: { get: vi.fn(), set: vi.fn() },
+  limiterRedis: { get: vi.fn(), set: vi.fn() },
 }));
 
 vi.mock('../_lib/logger.js', () => ({
@@ -23,7 +27,7 @@ import {
   isEarningsEventName,
   type EventItem,
 } from '../_lib/market-events.js';
-import { redis } from '../_lib/redis.js';
+import { limiterRedis, redis } from '../_lib/redis.js';
 import logger from '../_lib/logger.js';
 import { Sentry } from '../_lib/sentry.js';
 
@@ -33,14 +37,34 @@ const DAY_KEY = `events:day:v3:${CPI_DAY}`;
 const RELEASE_KEY = 'fred:release-dates:v1';
 const RELEASE_TTL_SEC = 12 * 60 * 60;
 
-/** Redis `set` calls whose key starts with `prefix`, as [key, value, options]. */
+// The clock every test runs on. It is 21:30 on 2026-06-17 in New York but
+// already 2026-06-18 in UTC, so a "days back from today" rule that read the
+// UTC date would be a day off, and the boundary tests below would catch it.
+// CPI_DAY and FOMC_SEP_DAY sit 36 days and 0 days back, inside Finnhub's range.
+const NOW = new Date('2026-06-18T01:30:00Z');
+const TODAY_ET = '2026-06-17';
+const FINNHUB_HISTORY_DAYS = 45;
+
+/** The calendar date `days` before `from` (negative for after), YYYY-MM-DD. */
+function daysBefore(from: string, days: number): string {
+  return new Date(Date.parse(`${from}T12:00:00Z`) - days * 86_400_000)
+    .toISOString()
+    .slice(0, 10);
+}
+
+/** Day-cache `set` calls whose key starts with `prefix`, as [key, value, options]. */
 function writesTo(prefix: string) {
   return vi
     .mocked(redis.set)
     .mock.calls.filter(([key]) => key.startsWith(prefix));
 }
 
-/** The keys passed to Redis `get` that start with `prefix`. */
+/** The release-date list writes, as [key, value, options]. */
+function releaseWrites() {
+  return vi.mocked(limiterRedis.set).mock.calls;
+}
+
+/** The keys passed to the day-cache client's `get` that start with `prefix`. */
 function keysRead(prefix: string): string[] {
   return vi
     .mocked(redis.get)
@@ -63,13 +87,13 @@ function releasesRequested(fetchMock: {
 }
 
 /**
- * Redis answers each release-date key from `cachedByRelease` (a release it
- * does not list is a miss) and every other key with a miss.
+ * The release-date client answers each release-date key from `cachedByRelease`
+ * (a release it does not list is a miss) and every other key with a miss.
  */
 function stubCachedReleaseDates(
   cachedByRelease: Partial<Record<number, unknown>>,
 ) {
-  vi.mocked(redis.get).mockImplementation((key: string) => {
+  vi.mocked(limiterRedis.get).mockImplementation((key: string) => {
     if (!key.startsWith(`${RELEASE_KEY}:`)) return Promise.resolve(null);
     const releaseId = Number(key.slice(RELEASE_KEY.length + 1));
     return Promise.resolve(cachedByRelease[releaseId] ?? null);
@@ -192,10 +216,16 @@ describe('market-events', () => {
     vi.resetAllMocks();
     vi.mocked(redis.get).mockResolvedValue(null);
     vi.mocked(redis.set).mockResolvedValue('OK');
+    vi.mocked(limiterRedis.get).mockResolvedValue(null);
+    vi.mocked(limiterRedis.set).mockResolvedValue('OK');
+    // Only Date is faked: the fetch stubs and promises run on real timers.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(NOW);
   });
 
   afterEach(() => {
     process.env = originalEnv;
+    vi.useRealTimers();
     vi.unstubAllGlobals();
   });
 
@@ -638,6 +668,88 @@ describe('market-events', () => {
       expect(complete).toBe(true);
       expect(Sentry.captureMessage).not.toHaveBeenCalled();
     });
+
+    // Finnhub's free key serves about a month of past earnings: a live probe on
+    // 2026-11-13 got rows for windows ending 26 days back and none for any
+    // ending 40 or more days back. A window that ends more than 45 days before
+    // today (ET) therefore gets no Finnhub call, and that is not a failure.
+    describe('a window older than Finnhub history', () => {
+      const finnhubCalls = (fetchMock: {
+        mock: { calls: ReadonlyArray<readonly [string]> };
+      }) =>
+        urlsCalled(fetchMock).filter((url) =>
+          url.startsWith('https://finnhub.io/'),
+        );
+
+      it.each([
+        [-30, true],
+        [0, true],
+        [1, true],
+        [FINNHUB_HISTORY_DAYS - 1, true],
+        [FINNHUB_HISTORY_DAYS, true],
+        [FINNHUB_HISTORY_DAYS + 1, false],
+        [FINNHUB_HISTORY_DAYS + 100, false],
+      ])(
+        'for a window ending %i days before today (ET), Finnhub is fetched: %s',
+        async (daysBack, fetched) => {
+          process.env.FINNHUB_API_KEY = 'finnhub-key';
+          const end = daysBefore(TODAY_ET, daysBack);
+          const fetchMock = stubFredFetch();
+
+          const { complete } = await fetchMarketEvents(daysBefore(end, 6), end);
+
+          expect(finnhubCalls(fetchMock)).toHaveLength(fetched ? 1 : 0);
+          expect(complete).toBe(true);
+        },
+      );
+
+      it('fetches Finnhub for a window that starts out of range but ends inside it', async () => {
+        process.env.FINNHUB_API_KEY = 'finnhub-key';
+        const fetchMock = stubFredFetch();
+
+        await fetchMarketEvents(
+          daysBefore(TODAY_ET, 90),
+          daysBefore(TODAY_ET, 10),
+        );
+
+        expect(finnhubCalls(fetchMock)).toHaveLength(1);
+      });
+
+      // 2026-03-18 is an FOMC + SEP day, 91 days before the pinned today.
+      it('stays complete, and keeps the FRED and static events, without asking Finnhub', async () => {
+        process.env.FINNHUB_API_KEY = 'finnhub-key';
+        const fetchMock = stubFredFetch({ 10: ['2026-03-18'] });
+
+        const { events, complete } = await fetchMarketEvents(
+          '2026-03-18',
+          '2026-03-18',
+        );
+
+        expect(complete).toBe(true);
+        expect(events.map((e) => [e.event, e.source])).toEqual([
+          ['CPI', 'fred'],
+          ['FOMC + SEP', 'static'],
+        ]);
+        expect(finnhubCalls(fetchMock)).toEqual([]);
+        expect(releasesRequested(fetchMock)).toEqual([
+          9, 10, 46, 50, 53, 54, 192,
+        ]);
+        expect(logger.error).not.toHaveBeenCalled();
+      });
+
+      it('is still incomplete when FRED is, even though Finnhub is skipped', async () => {
+        process.env.FINNHUB_API_KEY = 'finnhub-key';
+        const fetchMock = stubSources({ fred: nonOk });
+
+        const { complete } = await fetchMarketEvents(
+          '2026-03-18',
+          '2026-03-18',
+        );
+
+        expect(complete).toBe(false);
+        expect(finnhubCalls(fetchMock)).toEqual([]);
+      });
+    });
   });
 
   // The stored snapshot flag counts macro events only (owner decision
@@ -770,13 +882,28 @@ describe('market-events', () => {
     const START = '2026-05-12';
     const END = '2026-05-14';
     const ALL_RELEASES = [9, 10, 46, 50, 53, 54, 192];
+    // A date outside [START, END]: it makes a release's list non-empty, which
+    // is what lets the list be cached, without adding an event to the window.
+    const FILLER = '2026-01-15';
+
+    /** Every tracked release has `dates`, except those listed in `overrides`. */
+    function everyRelease(
+      dates: readonly string[],
+      overrides: Record<number, readonly string[]> = {},
+    ): Record<number, readonly string[]> {
+      return {
+        ...Object.fromEntries(ALL_RELEASES.map((id) => [id, dates])),
+        ...overrides,
+      };
+    }
 
     it('serves a hit with no FRED fetch, keeping only the dates inside the window', async () => {
-      stubCachedReleaseDates({
-        ...Object.fromEntries(ALL_RELEASES.map((id) => [id, []])),
-        10: ['2026-05-11', START, END, '2026-05-15'],
-        50: ['2026-05-13'],
-      });
+      stubCachedReleaseDates(
+        everyRelease([FILLER], {
+          10: ['2026-05-11', START, END, '2026-05-15'],
+          50: ['2026-05-13'],
+        }),
+      );
       const fetchMock = stubFredFetch({ 10: ['2026-09-09'] });
 
       const { events, complete } = await fetchMacroEvents(START, END);
@@ -788,42 +915,54 @@ describe('market-events', () => {
         ['2026-05-13', 'NFP', 'fred'],
         [END, 'CPI', 'fred'],
       ]);
-      expect(redis.get).toHaveBeenCalledWith(`${RELEASE_KEY}:10`);
+      expect(limiterRedis.get).toHaveBeenCalledWith(`${RELEASE_KEY}:10`);
+      expect(limiterRedis.set).not.toHaveBeenCalled();
+      // The lists use the fail-fast client alone: the retrying `redis` client
+      // would take about 64 s to give up in an outage, on each read and write.
+      expect(redis.get).not.toHaveBeenCalled();
       expect(redis.set).not.toHaveBeenCalled();
     });
 
     it('on a miss fetches each release once and writes its full sorted date list for 12 hours', async () => {
-      const fetchMock = stubFredFetch({
-        10: ['2026-06-10', START, '2026-04-10'],
-        50: ['2026-05-08'],
-      });
+      const fetchMock = stubFredFetch(
+        everyRelease([FILLER], {
+          10: ['2026-06-10', START, '2026-04-10'],
+          50: ['2026-05-08'],
+        }),
+      );
 
       const { events, complete } = await fetchMacroEvents(START, END);
 
       expect(complete).toBe(true);
       expect(events.map((e) => [e.date, e.event])).toEqual([[START, 'CPI']]);
       expect(releasesRequested(fetchMock)).toEqual(ALL_RELEASES);
-      expect(writesTo(RELEASE_KEY)).toHaveLength(7);
+      expect(releaseWrites()).toHaveLength(7);
       // The whole history, sorted, as date strings only: not the window, and
       // not FRED's entries.
-      expect(redis.set).toHaveBeenCalledWith(
+      expect(limiterRedis.set).toHaveBeenCalledWith(
         `${RELEASE_KEY}:10`,
         ['2026-04-10', START, '2026-06-10'],
         { ex: RELEASE_TTL_SEC },
       );
-      expect(redis.set).toHaveBeenCalledWith(
+      expect(limiterRedis.set).toHaveBeenCalledWith(
         `${RELEASE_KEY}:50`,
         ['2026-05-08'],
         { ex: RELEASE_TTL_SEC },
       );
-      expect(redis.set).toHaveBeenCalledWith(`${RELEASE_KEY}:9`, [], {
-        ex: RELEASE_TTL_SEC,
-      });
+      expect(limiterRedis.set).toHaveBeenCalledWith(
+        `${RELEASE_KEY}:9`,
+        [FILLER],
+        { ex: RELEASE_TTL_SEC },
+      );
+      expect(redis.get).not.toHaveBeenCalled();
+      expect(redis.set).not.toHaveBeenCalled();
     });
 
     it('fetches only the release that is not cached', async () => {
       stubCachedReleaseDates({ 10: [START] });
-      const fetchMock = stubFredFetch({ 50: ['2026-05-13'] });
+      const fetchMock = stubFredFetch(
+        everyRelease([FILLER], { 50: ['2026-05-13'] }),
+      );
 
       const { events } = await fetchMacroEvents(START, END);
 
@@ -833,10 +972,63 @@ describe('market-events', () => {
         ['2026-05-13', 'NFP'],
       ]);
       // A hit is not rewritten, so it does not stretch its own 12 hours.
-      expect(writesTo(RELEASE_KEY).map(([key]) => key)).not.toContain(
+      expect(releaseWrites().map(([key]) => key)).not.toContain(
         `${RELEASE_KEY}:10`,
       );
-      expect(writesTo(RELEASE_KEY)).toHaveLength(6);
+      expect(releaseWrites()).toHaveLength(6);
+    });
+
+    // An empty list is not worth keeping: a cached [] would answer "no event"
+    // for the whole 12 hours, from a FRED reply that may have been a gap.
+    it('writes nothing for a release FRED answers with an empty list, and caches the others', async () => {
+      const fetchMock = stubFredFetch(everyRelease([FILLER], { 9: [] }));
+
+      const { events, complete } = await fetchMacroEvents(START, END);
+
+      expect(complete).toBe(true);
+      expect(events).toEqual([]);
+      expect(releasesRequested(fetchMock)).toEqual(ALL_RELEASES);
+      expect(releaseWrites().map(([key]) => key)).not.toContain(
+        `${RELEASE_KEY}:9`,
+      );
+      expect(releaseWrites()).toHaveLength(6);
+    });
+
+    it('writes nothing when FRED answers every release with an empty list', async () => {
+      stubSources({ fred: okJson({ release_dates: [] }) });
+
+      const { complete } = await fetchMacroEvents(START, END);
+
+      expect(complete).toBe(true);
+      expect(limiterRedis.set).not.toHaveBeenCalled();
+    });
+
+    it('writes nothing when every entry FRED sends has no date', async () => {
+      stubSources({
+        fred: okJson({
+          release_dates: [{ release_id: 10 }, { release_id: 10 }],
+        }),
+      });
+
+      const { complete } = await fetchMacroEvents(START, END);
+
+      expect(complete).toBe(true);
+      expect(limiterRedis.set).not.toHaveBeenCalled();
+    });
+
+    it('treats a cached empty list as a miss, and repairs it', async () => {
+      stubCachedReleaseDates(everyRelease([FILLER], { 10: [] }));
+      const fetchMock = stubFredFetch({ 10: [START] });
+
+      const { events, complete } = await fetchMacroEvents(START, END);
+
+      expect(complete).toBe(true);
+      // Only release 10 is asked for: the six non-empty lists are hits.
+      expect(releasesRequested(fetchMock)).toEqual([10]);
+      expect(events.map((e) => [e.date, e.event])).toEqual([[START, 'CPI']]);
+      expect(releaseWrites()).toEqual([
+        [`${RELEASE_KEY}:10`, [START], { ex: RELEASE_TTL_SEC }],
+      ]);
     });
 
     it.each([
@@ -854,7 +1046,7 @@ describe('market-events', () => {
       const { complete } = await fetchMacroEvents(START, END);
 
       expect(complete).toBe(false);
-      expect(redis.set).not.toHaveBeenCalled();
+      expect(limiterRedis.set).not.toHaveBeenCalled();
     });
 
     it('writes nothing, and rejects, when a FRED body is not JSON', async () => {
@@ -863,7 +1055,7 @@ describe('market-events', () => {
       await expect(fetchMacroEvents(START, END)).rejects.toThrow(
         'Unexpected token <',
       );
-      expect(redis.set).not.toHaveBeenCalled();
+      expect(limiterRedis.set).not.toHaveBeenCalled();
     });
 
     it('caches the releases that answered well when another answers non-OK', async () => {
@@ -883,7 +1075,7 @@ describe('market-events', () => {
 
       expect(complete).toBe(false);
       expect(
-        writesTo(RELEASE_KEY)
+        releaseWrites()
           .map(([key]) => key)
           .sort(),
       ).toEqual(
@@ -904,9 +1096,11 @@ describe('market-events', () => {
 
       await fetchMacroEvents(START, END);
 
-      expect(redis.set).toHaveBeenCalledWith(`${RELEASE_KEY}:10`, [START], {
-        ex: RELEASE_TTL_SEC,
-      });
+      expect(limiterRedis.set).toHaveBeenCalledWith(
+        `${RELEASE_KEY}:10`,
+        [START],
+        { ex: RELEASE_TTL_SEC },
+      );
     });
 
     it.each([
@@ -924,14 +1118,18 @@ describe('market-events', () => {
 
         expect(releasesRequested(fetchMock)).toContain(10);
         expect(events.map((e) => [e.date, e.event])).toEqual([[START, 'CPI']]);
-        expect(redis.set).toHaveBeenCalledWith(`${RELEASE_KEY}:10`, [START], {
-          ex: RELEASE_TTL_SEC,
-        });
+        expect(limiterRedis.set).toHaveBeenCalledWith(
+          `${RELEASE_KEY}:10`,
+          [START],
+          { ex: RELEASE_TTL_SEC },
+        );
       },
     );
 
     it('falls through to FRED, and logs a warning, when the Redis read throws', async () => {
-      vi.mocked(redis.get).mockRejectedValue(new Error('redis read failed'));
+      vi.mocked(limiterRedis.get).mockRejectedValue(
+        new Error('redis read failed'),
+      );
       const fetchMock = stubFredFetch({ 10: [START] });
 
       const { events, complete } = await fetchMacroEvents(START, END);
@@ -948,8 +1146,10 @@ describe('market-events', () => {
     });
 
     it('still returns the dates, and logs one warning per release, when the Redis write throws', async () => {
-      vi.mocked(redis.set).mockRejectedValue(new Error('redis write failed'));
-      stubFredFetch({ 10: [START] });
+      vi.mocked(limiterRedis.set).mockRejectedValue(
+        new Error('redis write failed'),
+      );
+      stubFredFetch(everyRelease([FILLER], { 10: [START] }));
 
       const { events, complete } = await fetchMacroEvents(START, END);
 
@@ -966,14 +1166,16 @@ describe('market-events', () => {
 
     it('lets a second date reuse the release lists the first date fetched', async () => {
       const store = new Map<string, unknown>();
-      vi.mocked(redis.get).mockImplementation((key) =>
+      vi.mocked(limiterRedis.get).mockImplementation((key) =>
         Promise.resolve(store.get(key) ?? null),
       );
-      vi.mocked(redis.set).mockImplementation((key, value) => {
+      vi.mocked(limiterRedis.set).mockImplementation((key, value) => {
         store.set(key, value);
         return Promise.resolve('OK');
       });
-      const fetchMock = stubFredFetch({ 10: [CPI_DAY, '2026-06-10'] });
+      const fetchMock = stubFredFetch(
+        everyRelease([FILLER], { 10: [CPI_DAY, '2026-06-10'] }),
+      );
 
       const first = await getEventsForDate(CPI_DAY);
       expect(fetchMock).toHaveBeenCalledTimes(7);
