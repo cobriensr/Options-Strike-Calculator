@@ -1,7 +1,8 @@
 // @vitest-environment node
 
 /**
- * Guard: no plain `SET` statement in api/ SQL.
+ * Guard: no plain `SET` statement in api/ SQL, and no `SET LOCAL` outside a
+ * transaction batch.
  *
  * getDb() is the @neondatabase/serverless HTTP driver. Every tagged-template
  * query is its own POST, so it is its own session: a `SET statement_timeout`
@@ -10,19 +11,25 @@
  * and read 0 both times. The SET lines in build-features and curate-lessons
  * never took effect for that reason, and were deleted.
  *
- * `SET LOCAL` is the one form that works, because it lives for one
- * transaction and `sql.transaction([...])` sends the whole batch in one
- * request (the migrations' `SET LOCAL lock_timeout` lines rely on it). This
- * guard allows `SET LOCAL` anywhere rather than only inside a
- * `sql.transaction(...)` call: the migrations declare their statements in a
- * `statements: (sql) => [...]` array that db.ts hands to `sql.transaction`
- * later, so a syntactic check cannot see the transaction around them.
+ * `SET LOCAL` is the right form, because it lives for one transaction and
+ * `sql.transaction([...])` sends the whole batch in one request (the
+ * migrations' `SET LOCAL lock_timeout` lines rely on it). Alone it is the same
+ * silent no-op: Postgres answers a `SET LOCAL` outside a transaction with a
+ * WARNING and does nothing. So the guard allows `SET LOCAL` only as an element
+ * of an array literal, which covers `sql.transaction([...])` and the
+ * migrations' `statements: (sql) => [...]` arrays that db.ts hands to
+ * `sql.transaction` later. It takes the array literal as the batch and does
+ * not follow it to the call. A plain `SET` inside a batch would also apply for
+ * the rest of that batch, since the batch is one connection, but the guard
+ * flags it anyway because its scope is unclear.
  *
  * What it scans: every non-test .ts file under api/, parsed with the
  * TypeScript compiler so comments and prose never match. It flags a tagged
  * template (any tag) or the first argument of a `.query(` / `.unsafe(` call
- * when that literal begins with SET. A statement built in a variable first
- * and passed in later is not seen.
+ * when that literal begins with SET, or with SET LOCAL when the statement is
+ * not an array element. It does not see a statement built in a variable and
+ * passed in later, a statement that opens with an SQL comment, or
+ * `set_config(..., false)`.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -38,18 +45,38 @@ interface SessionSet {
 // `SET` as a whole word, not followed by LOCAL. Case-insensitive because
 // Postgres is. `\b` stops `SETTLE` and `SETUP` matching.
 const SESSION_SET = /^\s*SET\b(?!\s+LOCAL\b)/i;
+const SET_LOCAL = /^\s*SET\s+LOCAL\b/i;
+
+/**
+ * Whether `statement` (a tagged template or a `.query(` call) is an element of
+ * an array literal, looking through parentheses. Needs a tree built with
+ * parent nodes.
+ */
+function isArrayElement(statement: ts.Node): boolean {
+  let parent = statement.parent;
+  while (ts.isParenthesizedExpression(parent)) parent = parent.parent;
+  return ts.isArrayLiteralExpression(parent);
+}
 
 function findSessionSets(source: string): SessionSet[] {
+  // `setParentNodes` is what lets `isArrayElement` walk up from a statement.
   const file = ts.createSourceFile(
     'scanned.ts',
     source,
     ts.ScriptTarget.Latest,
+    true,
   );
   const found: SessionSet[] = [];
 
-  // `literal` is the opening piece of a template or the whole of a string.
-  const check = (literal: ts.StringLiteralLike | ts.TemplateHead) => {
-    if (!SESSION_SET.test(literal.text)) return;
+  // `literal` is the opening piece of a template or the whole of a string, and
+  // `statement` the tagged template or call that holds it.
+  const check = (
+    literal: ts.StringLiteralLike | ts.TemplateHead,
+    statement: ts.Node,
+  ) => {
+    const outsideBatch =
+      SET_LOCAL.test(literal.text) && !isArrayElement(statement);
+    if (!SESSION_SET.test(literal.text) && !outsideBatch) return;
     // Skip the opening quote and any leading whitespace to land on the SET.
     const lead = literal.text.length - literal.text.trimStart().length;
     const at = literal.getStart(file) + 1 + lead;
@@ -65,6 +92,7 @@ function findSessionSets(source: string): SessionSet[] {
         ts.isNoSubstitutionTemplateLiteral(node.template)
           ? node.template
           : node.template.head,
+        node,
       );
     } else if (
       ts.isCallExpression(node) &&
@@ -73,8 +101,8 @@ function findSessionSets(source: string): SessionSet[] {
         node.expression.name.text === 'unsafe')
     ) {
       const arg = node.arguments[0];
-      if (arg && ts.isStringLiteralLike(arg)) check(arg);
-      else if (arg && ts.isTemplateExpression(arg)) check(arg.head);
+      if (arg && ts.isStringLiteralLike(arg)) check(arg, node);
+      else if (arg && ts.isTemplateExpression(arg)) check(arg.head, node);
     }
     ts.forEachChild(node, visit);
   };
@@ -120,15 +148,52 @@ describe('findSessionSets', () => {
       'a plain SET inside a transaction batch',
       "sql.transaction([sql`SET statement_timeout = '5s'`, sql`SELECT 1`])",
     ],
+    // Postgres answers a SET LOCAL outside a transaction with a WARNING and
+    // does nothing: the same silent no-op as a plain SET.
+    ['a bare SET LOCAL', "await sql`SET LOCAL lock_timeout = '5s'`"],
+    [
+      'a bare SET LOCAL in sql.query',
+      "await sql.query('SET LOCAL lock_timeout = 0')",
+    ],
+    [
+      'a SET LOCAL that is a call argument, not an array element',
+      "withDbRetry(() => sql`SET LOCAL lock_timeout = '5s'`, 2)",
+    ],
+    [
+      'a SET LOCAL whose array element is a wrapped call',
+      "sql.transaction([withDbRetry(() => sql`SET LOCAL lock_timeout = '5s'`)])",
+    ],
   ])('flags %s', (_name, source) => {
     expect(findSessionSets(source)).toHaveLength(1);
   });
 
   it.each([
-    ['SET LOCAL', "sql`SET LOCAL lock_timeout = '5s'`"],
-    ['lower case set local', "sql`set local lock_timeout = '5s'`"],
-    ['SET LOCAL after a line break', 'sql`SET\n  LOCAL lock_timeout = 0`'],
-    ['SET LOCAL in sql.query', "sql.query('SET LOCAL lock_timeout = 0')"],
+    // SET LOCAL lives for one transaction, so each is an element of an array
+    // literal: the batch `sql.transaction([...])` sends in one request.
+    [
+      'SET LOCAL',
+      "sql.transaction([sql`SET LOCAL lock_timeout = '5s'`, sql`SELECT 1`])",
+    ],
+    [
+      'lower case set local',
+      "sql.transaction([sql`set local lock_timeout = '5s'`])",
+    ],
+    [
+      'SET LOCAL after a line break',
+      'sql.transaction([sql`SET\n  LOCAL lock_timeout = 0`])',
+    ],
+    [
+      'SET LOCAL in sql.query',
+      "sql.transaction([sql.query('SET LOCAL lock_timeout = 0')])",
+    ],
+    [
+      "SET LOCAL in a migration's statements array",
+      "const m = { statements: (sql) => [sql`SET LOCAL lock_timeout = '5s'`, sql`CREATE INDEX i ON t (a)`] }",
+    ],
+    [
+      'SET LOCAL in a parenthesized array element',
+      "sql.transaction([(sql`SET LOCAL lock_timeout = '5s'`)])",
+    ],
     ['the SET clause of an UPDATE', 'sql`UPDATE t SET a = 1 WHERE b = 2`'],
     ['an UPDATE whose SET opens a line', 'sql`\n  UPDATE t\n  SET a = 1`'],
     [
@@ -167,8 +232,16 @@ describe('findSessionSets', () => {
 
   it('finds every SET in a file, each on its own line', () => {
     const source =
-      "sql`SET a = 1`;\nsql`SET LOCAL b = 2`;\nsql.query('SET c = 3');";
+      "sql`SET a = 1`;\nsql.transaction([sql`SET LOCAL b = 2`]);\nsql.query('SET c = 3');";
     expect(findSessionSets(source).map((s) => s.line)).toEqual([1, 3]);
+  });
+
+  it('reports a bare SET LOCAL with its line and statement text', () => {
+    const source =
+      "sql.transaction([sql`SET LOCAL a = 1`]);\nawait sql`SET LOCAL lock_timeout = '5s'`;";
+    expect(findSessionSets(source)).toEqual([
+      { line: 2, text: "SET LOCAL lock_timeout = '5s'" },
+    ]);
   });
 });
 
@@ -195,7 +268,7 @@ describe('api/ session SET guard', () => {
     expect(findSessionSets(migrations)).toEqual([]);
   });
 
-  it('has no plain SET in any api/ source file', () => {
+  it('has no plain SET, and no SET LOCAL outside a batch, in any api/ source file', () => {
     const offenders = files.flatMap((file) =>
       findSessionSets(readFileSync(resolve(apiDir, file), 'utf8')).map(
         ({ line, text }) => `api/${file}:${line}: ${text}`,
@@ -204,8 +277,9 @@ describe('api/ session SET guard', () => {
     expect(
       offenders,
       'The Neon HTTP driver runs each query in its own session, so a plain ' +
-        'SET never reaches the next query. Delete it, or use SET LOCAL ' +
-        'inside sql.transaction([...]).',
+        'SET never reaches the next query, and a SET LOCAL outside a ' +
+        'transaction does nothing. Delete it, or put a SET LOCAL in the ' +
+        'array of sql.transaction([...]).',
     ).toEqual([]);
   });
 });

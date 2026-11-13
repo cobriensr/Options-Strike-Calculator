@@ -259,11 +259,11 @@ async function buildFeaturesForDate(
 //
 // build-features needs the raw request to read `?backfill=` and
 // `?date=` for date-list selection, so it opts into the wrapper's
-// `passReq: true` escape hatch. CronContext
-// intentionally hides `req` by default; this is the documented way to
-// surface it without a module-scoped ref + dispatcher (which worked
-// today only because JS is single-threaded — any future `await`
-// between assignment and read would silently break it).
+// `passReq: true` escape hatch. CronContext intentionally hides `req`
+// by default; this is the documented way to surface it without a
+// module-scoped ref + dispatcher (which worked today only because JS
+// is single-threaded — any future `await` between assignment and read
+// would silently break it).
 
 const wrappedCron = withCronInstrumentation(
   'build-features',
