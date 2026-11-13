@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, render, screen } from '@testing-library/react';
+import { act, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { LiveSaveSwitch } from '../LiveSaveSwitch';
 import { setLiveSaveOverride } from '../../../lib/live-save-device';
@@ -49,6 +49,19 @@ describe('LiveSaveSwitch', () => {
       render(<LiveSaveSwitch />);
       expect(getSwitch()).not.toBeChecked();
       expect(screen.getByText('Default for this device: off')).toBeVisible();
+    });
+
+    it('groups the checkbox and its button under the switch label', () => {
+      // The button's own name says nothing about what it clears; the group
+      // name tells a screen reader which setting it belongs to.
+      render(<LiveSaveSwitch />);
+      const group = screen.getByRole('group', { name: LABEL });
+      expect(within(group).getByRole('checkbox', { name: LABEL })).toBe(
+        getSwitch(),
+      );
+      expect(
+        within(group).getByRole('button', { name: 'Use device default' }),
+      ).toBe(getDefaultButton());
     });
 
     it('announces the note as the control description', () => {

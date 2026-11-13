@@ -12,6 +12,8 @@
  *   - The note under it is the checkbox's description (aria-describedby), so
  *     a screen reader hears whether the state is the device default or an
  *     override.
+ *   - The checkbox and the button sit in a group named by the label text, so
+ *     a screen reader announces which setting "Use device default" clears.
  *   - "Use device default" stays mounted and disabled when there is nothing
  *     to clear. Unmounting it would drop focus to the page behind the dialog.
  *     After a click, focus moves to the checkbox for the same reason.
@@ -28,13 +30,15 @@ import {
   isTouchFirstDevice,
   setLiveSaveOverride,
   subscribeLiveSaveDevice,
+  type LiveSaveOverride,
 } from '../../lib/live-save-device';
 
-function onOff(on: boolean): 'on' | 'off' {
+function onOff(on: boolean): LiveSaveOverride {
   return on ? 'on' : 'off';
 }
 
 export function LiveSaveSwitch() {
+  const labelId = useId();
   const noteId = useId();
   const switchRef = useRef<HTMLInputElement>(null);
   const saving = useSyncExternalStore(
@@ -59,7 +63,11 @@ export function LiveSaveSwitch() {
   };
 
   return (
-    <div className="border-edge mb-3 flex flex-wrap items-center justify-between gap-x-3 gap-y-2 rounded-md border px-3 py-2">
+    <div
+      role="group"
+      aria-labelledby={labelId}
+      className="border-edge mb-3 flex flex-wrap items-center justify-between gap-x-3 gap-y-2 rounded-md border px-3 py-2"
+    >
       <div className="min-w-0">
         <label className="flex cursor-pointer items-center gap-3">
           <input
@@ -70,7 +78,7 @@ export function LiveSaveSwitch() {
             aria-describedby={noteId}
             className="accent-accent h-4 w-4 cursor-pointer"
           />
-          <span className="text-primary text-sm">
+          <span id={labelId} className="text-primary text-sm">
             Save live snapshots from this browser
           </span>
         </label>

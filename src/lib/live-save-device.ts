@@ -13,8 +13,9 @@
  * main.tsx) can read it as well as hooks and components. Same small
  * subscriber-set pattern as `sw-update.ts`, so a component re-renders when
  * the switch flips in this tab. Nothing is cached: every call reads
- * `localStorage`, so other tabs see a change on their next read without a
- * `storage` listener.
+ * `localStorage`. Other tabs are never notified (there is no `storage`
+ * listener), so a consumer that must follow another tab's change re-reads
+ * `isLiveSaveDevice()` at the moment it acts.
  */
 
 const STORAGE_KEY = 'sc-live-save-device';
@@ -35,12 +36,17 @@ function notifyAll(): void {
 }
 
 /**
- * Whether the primary input is touch (a phone or tablet). A browser without
- * `matchMedia` reads as a computer, which keeps saving as it did before the
- * device rule.
+ * Whether the primary input is touch (a phone or tablet). Where there is no
+ * `window` or no `matchMedia`, it reads as a computer, which keeps saving as
+ * it did before the device rule.
  */
 export function isTouchFirstDevice(): boolean {
-  if (typeof window.matchMedia !== 'function') return false;
+  if (
+    typeof window === 'undefined' ||
+    typeof window.matchMedia !== 'function'
+  ) {
+    return false;
+  }
   return window.matchMedia(TOUCH_FIRST_QUERY).matches;
 }
 
@@ -58,9 +64,11 @@ export function getLiveSaveOverride(): LiveSaveOverride | null {
 }
 
 /**
- * Stores the choice, or clears it with null, then tells subscribers. A
- * storage that throws can't keep the choice, so it reads as no override
- * afterwards; the call itself never throws.
+ * Stores the choice, or clears it with null, then tells subscribers in this
+ * tab. A storage failure never throws: a storage that throws can't keep the
+ * choice, so it reads as no override afterwards. A subscriber that throws
+ * does propagate to the caller, because subscribers run unguarded (as in
+ * `sw-update.ts`); a subscriber must not throw.
  */
 export function setLiveSaveOverride(value: LiveSaveOverride | null): void {
   try {
@@ -79,7 +87,11 @@ export function isLiveSaveDevice(): boolean {
   return !isTouchFirstDevice();
 }
 
-/** Calls `cb` after every `setLiveSaveOverride`. Returns the unsubscribe. */
+/**
+ * Calls `cb` after every `setLiveSaveOverride` in this tab. Other tabs are not
+ * notified; re-read `isLiveSaveDevice()` when it matters. Returns the
+ * unsubscribe.
+ */
 export function subscribeLiveSaveDevice(cb: () => void): () => void {
   subscribers.add(cb);
   return (): void => {
