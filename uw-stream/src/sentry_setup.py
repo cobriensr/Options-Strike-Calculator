@@ -12,6 +12,7 @@ can invoke them unconditionally.
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any
 
@@ -105,6 +106,7 @@ def init_sentry() -> None:
 
     try:
         import sentry_sdk
+        from sentry_sdk.integrations.logging import LoggingIntegration
     except ImportError:
         log.warning("sentry_sdk not installed — Sentry disabled")
         return
@@ -118,6 +120,14 @@ def init_sentry() -> None:
             server_name="uw-stream",
             release=os.environ.get("RAILWAY_DEPLOYMENT_ID"),
             before_send=_before_send,
+            # Every event is an explicit capture. The SDK's default turns each
+            # ERROR log record into an event too, and ``capture_exception``
+            # below logs at error and then sends the exception, so one failure
+            # filed two issues. INFO and up stay as breadcrumbs. A failure that
+            # was only ever logged at error sends its own capture beside the
+            # log line (futures_front_month, futures_trades, main's drain,
+            # ``RateLimitedLogger.error``). As nightly/src/monitoring.py does.
+            integrations=[LoggingIntegration(level=logging.INFO, event_level=None)],
         )
         # Tag every event so the shared sidecar DSN can be filtered.
         sentry_sdk.set_tag("service", "uw-stream")
