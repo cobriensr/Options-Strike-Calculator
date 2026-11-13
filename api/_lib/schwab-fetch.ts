@@ -51,6 +51,20 @@ export type ApiResult<T> =
   | { ok: false; error: string; status: number; code: SchwabErrorCode };
 
 /**
+ * Label for a Schwab path in metrics and retry logs: the query is dropped and
+ * the account hash in `/accounts/<hash>` becomes `:hash`, so an account
+ * identifier never lands in a metric attribute or a log line. The literal
+ * `/accounts/accountNumbers` list call keeps its name.
+ */
+function endpointLabel(path: string): string {
+  const withoutQuery = path.split('?')[0] ?? path;
+  return withoutQuery.replace(
+    /^\/accounts\/(?!accountNumbers(?:\/|$))[^/]+/,
+    '/accounts/:hash',
+  );
+}
+
+/**
  * Make an authenticated GET request to a Schwab API endpoint.
  * Handles token retrieval and error responses.
  */
@@ -75,7 +89,7 @@ async function schwabApiFetch<T>(
     };
   }
 
-  const endpoint = path.split('?')[0] ?? path;
+  const endpoint = endpointLabel(path);
   const done = metrics.schwabCall(endpoint);
 
   const url = `${base}${path}`;

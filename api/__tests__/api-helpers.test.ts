@@ -93,6 +93,8 @@ import {
 } from '../_lib/api-helpers.js';
 import { z } from 'zod';
 import { getAccessToken } from '../_lib/schwab.js';
+import { metrics } from '../_lib/sentry.js';
+import logger from '../_lib/logger.js';
 import { checkBotId } from 'botid/server';
 import { getETDayOfWeek, getETTime } from '../../src/utils/timezone.js';
 import { getMarketCloseHourET } from '../../src/data/marketHours.js';
@@ -1678,6 +1680,101 @@ describe('api-helpers', () => {
         error: '[SCHWAB_API_429] Schwab API error (429): Rate limited',
         status: 429,
         code: 'SCHWAB_API_429',
+      });
+    });
+
+    // The metric attribute and the retry warning name the endpoint. The
+    // account hash in `/accounts/<hash>` is an identifier, so both carry
+    // `:hash` instead, while the request itself still uses the real path.
+    describe('endpoint label', () => {
+      const HASH = 'FAKE-ACCOUNT-HASH';
+
+      beforeEach(() => {
+        vi.mocked(metrics.schwabCall).mockClear();
+        vi.mocked(logger.warn).mockClear();
+      });
+
+      function stubOkFetch() {
+        vi.mocked(getAccessToken).mockResolvedValue({ token: 'tok-trader' });
+        const fetchMock = vi.fn().mockResolvedValue({
+          ok: true,
+          json: () => Promise.resolve({}),
+        });
+        vi.stubGlobal('fetch', fetchMock);
+        return fetchMock;
+      }
+
+      it.each([
+        [`/accounts/${HASH}?fields=positions`, '/accounts/:hash'],
+        [`/accounts/${HASH}`, '/accounts/:hash'],
+        [`/accounts/${HASH}/orders?status=OPEN`, '/accounts/:hash/orders'],
+        // A hash that merely starts like the list segment is still a hash.
+        [`/accounts/accountNumbers${HASH}`, '/accounts/:hash'],
+        // The list call has no identifier and stays distinguishable.
+        ['/accounts/accountNumbers', '/accounts/accountNumbers'],
+        ['/accounts/accountNumbers?x=1', '/accounts/accountNumbers'],
+        // Not an account path: only the query is dropped.
+        ['/accounts', '/accounts'],
+        ['/accounts?x=1', '/accounts'],
+        [`/orders/accounts/${HASH}`, '/orders/accounts/' + HASH],
+        [`/accountsettings/${HASH}`, '/accountsettings/' + HASH],
+        ['/pricehistory?symbol=FAKE', '/pricehistory'],
+      ])('labels %s as %s', async (path, expected) => {
+        const fetchMock = stubOkFetch();
+        await schwabTraderFetch(path);
+        expect(metrics.schwabCall).toHaveBeenCalledWith(expected);
+        // The request still goes to the real path.
+        expect(fetchMock.mock.calls[0]?.[0]).toBe(
+          `https://api.schwabapi.com/trader/v1${path}`,
+        );
+      });
+
+      it('labels a market-data call the same way', async () => {
+        stubOkFetch();
+        await schwabFetch(`/accounts/${HASH}?x=1`);
+        expect(metrics.schwabCall).toHaveBeenCalledWith('/accounts/:hash');
+      });
+
+      it('puts the normalized endpoint, not the hash, in the retry warning', async () => {
+        vi.mocked(getAccessToken).mockResolvedValue({ token: 'tok-trader' });
+        vi.stubGlobal(
+          'fetch',
+          vi
+            .fn()
+            .mockResolvedValueOnce({
+              ok: false,
+              status: 503,
+              text: () => Promise.resolve('Service Unavailable'),
+            })
+            .mockResolvedValueOnce({
+              ok: true,
+              json: () => Promise.resolve({}),
+            }),
+        );
+        vi.useFakeTimers();
+        try {
+          const pending = schwabTraderFetch(
+            `/accounts/${HASH}?fields=positions`,
+          );
+          await vi.advanceTimersByTimeAsync(3000);
+          await pending;
+        } finally {
+          vi.useRealTimers();
+        }
+        expect(logger.warn).toHaveBeenCalledWith(
+          expect.objectContaining({
+            endpoint: '/accounts/:hash',
+            attempt: 0,
+            status: 503,
+          }),
+          'Schwab transient error, retrying',
+        );
+        expect(JSON.stringify(vi.mocked(logger.warn).mock.calls)).not.toContain(
+          HASH,
+        );
+        expect(
+          JSON.stringify(vi.mocked(metrics.schwabCall).mock.calls),
+        ).not.toContain(HASH);
       });
     });
   });
