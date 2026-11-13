@@ -36,6 +36,9 @@ browser keeps it. So the 7-day tie has no server-side meaning and can go.
 - Not now: signing a browser in without Schwab (push approval, passkey).
 - Trade-off accepted: a lost device stays signed in longer. Rotating
   `OWNER_SECRET` in Vercel signs every browser out at once.
+- To sign every browser out: rotate `OWNER_SECRET` in Vercel (a long random
+  value), redeploy (`vercel redeploy`, or a commit the `ignoreCommand` doesn't
+  skip), then sign in again per browser through `/api/auth/init`.
 
 ## Thresholds / constants
 

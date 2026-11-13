@@ -261,7 +261,7 @@ Handlers enforce the level with `guardOwnerEndpoint` ([api/\_lib/auth-helpers.ts
 1. Owner visits `/api/auth/init`. It stores a one-time OAuth `state` nonce in Redis (10-minute TTL) and redirects to the Schwab login.
 2. After login, Schwab redirects to `/api/auth/callback`. The callback consumes the `state` nonce with one atomic `GETDEL` and exchanges the code for tokens. It stores them in Upstash Redis only if the login owns the account whose SHA-256 is `OWNER_SCHWAB_ACCOUNT_SHA256`; any other login gets a 403, nothing is stored and no cookie is set. On success it sets the owner cookie.
 3. Access tokens last 30 minutes and are refreshed automatically with the refresh token.
-4. The refresh token expires 7 days after the original login (refreshing doesn't extend it), so the owner re-authenticates weekly.
+4. The refresh token expires 7 days after the original login (refreshing doesn't extend it), so the owner re-authenticates weekly. The browser sign-in (the owner cookie) lasts independently of that token.
 
 **Token management:** A Redis lock (`SET NX`, 60-second TTL, fenced release) serializes token refreshes across parallel serverless invocations, and the refreshed record is written by compare-and-set so a re-login during a refresh isn't overwritten. An in-memory fallback cache covers Redis blips within one invocation.
 
@@ -285,7 +285,8 @@ Upstash Redis (via Vercel Marketplace). REST-based client, serverless-compatible
 
 ### Authentication
 
-- Owner cookie (`sc-owner`): HttpOnly, Secure, SameSite=Strict, 7-day expiry, compared in constant time (`secretEquals`) against `OWNER_SECRET`
+- Owner cookie (`sc-owner`): HttpOnly, Secure, SameSite=Strict, 400-day expiry, re-issued on use by `/api/auth/whoami`; compared in constant time (`secretEquals`) against `OWNER_SECRET`. Rotating `OWNER_SECRET` signs every browser out.
+- Signing every browser out: rotate `OWNER_SECRET` in Vercel (a long random value), redeploy (`vercel redeploy`, or a commit the `ignoreCommand` doesn't skip), then sign in again per browser through `/api/auth/init`.
 - Guest cookie (`sc-guest`): HttpOnly, Secure, SameSite=Strict, 30-day expiry, checked in constant time against each key in `GUEST_ACCESS_KEYS`
 - Hint cookies: non-HttpOnly `sc-hint=1` and `sc-guest-hint` let the UI decide which controls to render; the server never reads them for authorization
 - Secret comparison: `secretEquals` / `bearerMatches` ([api/\_lib/secret-compare.ts](../api/_lib/secret-compare.ts)) hash both sides with SHA-256 and compare them with `timingSafeEqual`; an empty or missing value never matches
