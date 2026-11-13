@@ -4,16 +4,20 @@
  * that it is still open, so the cron (`api/cron/check-live-snapshots.ts`)
  * can tell "the owner closed the app" from "the app stopped saving".
  * Spec: docs/superpowers/specs/live-snapshot-alert-2026-11-11.md, second,
- * fourth and fifth amendments.
+ * third, fourth and fifth amendments.
  *
- *   - Close: on `pagehide`, a POST to /api/snapshot-close writes today's close
- *     marker. `sendBeacon` first (it survives the page going away), else a
- *     keepalive `fetch`, whose failure is swallowed: nothing can be reported
- *     from a page that is leaving. Not gated on the session; a close outside
- *     it is harmless. `pagehide`, not `beforeunload` or `unload`: it fires
- *     reliably and keeps the page eligible for the back/forward cache. Not
- *     `visibilitychange`: hiding a tab is not closing it. It also fires on a
- *     reload, which the reloaded page's open signals withdraw.
+ *   - Close: on `pagehide`, and when this tab turns the live-save switch from
+ *     on to off, a POST to /api/snapshot-close writes today's close marker.
+ *     `sendBeacon` first (it survives the page going away), else a keepalive
+ *     `fetch`, whose failure is swallowed: nothing can be reported from a page
+ *     that is leaving, and a lost switch-off close only lets the alert fire
+ *     later. Not gated on the session; a close outside it is harmless.
+ *     `pagehide`, not `beforeunload` or `unload`: it fires reliably and keeps
+ *     the page eligible for the back/forward cache. Not `visibilitychange`:
+ *     hiding a tab is not closing it. It also fires on a reload, which the
+ *     reloaded page's open signals withdraw. The switch-off close goes only on
+ *     a real change from saving to not saving, so a phone (default off) set to
+ *     "off" sends none.
  *   - Open: a DELETE to the same path removes today's close marker. Sent when
  *     the module starts, 30 s later (a reload's close beacon can reach the
  *     server after the new page's first open signal), every 5 minutes, when
@@ -32,7 +36,10 @@
  * switch, at the moment each timer fires and inside the `pagehide` and
  * `pageshow` handlers. `subscribeLiveSaveDevice` tells only this tab, so a
  * switch flipped in another tab of the browser, or a sign-out elsewhere, is
- * never pushed here; the subscription only lets this tab react at once.
+ * never pushed here; the subscription only lets this tab react at once, and
+ * each timer re-reads the switch so this tab's idea of "it was saving" catches
+ * up within one tick. Turning the switch on sends an open signal; turning it
+ * off sends the close (owner only), then nothing more until it is on again.
  *
  * Started from main.tsx, outside React and after `initBotId` (in production),
  * so a render failure in a new build does not stop the open signal. A new build
@@ -134,19 +141,54 @@ export function startLiveSessionSignals(): () => void {
   const onPageShow = (event: PageTransitionEvent): void => {
     if (event.persisted) void sendOpenSignal();
   };
-  const onSwitchChange = (): void => {
+
+  // Whether this browser saved at the last look: the baseline for "the switch
+  // went from saving to not saving". Starts false, so a switch that can't be
+  // read at start never lets a later flip send a close.
+  let lastSaving = false;
+
+  /**
+   * A timer fired (at start, 30 s later, every 5 minutes): re-read the switch,
+   * so a flip made in another tab of this browser (never notified here) is
+   * known before this tab flips it, then send the open signal. An unreadable
+   * switch leaves the last value; the open signal's own check reports it.
+   */
+  const tick = (): void => {
+    try {
+      lastSaving = isLiveSaveDevice();
+    } catch {
+      // Reported once by `sendOpenSignal`, which reads the switch again.
+    }
     void sendOpenSignal();
+  };
+
+  /**
+   * Turning the switch off counts as closing the app (owner, 2026-11-13), so
+   * the stall alert doesn't push 30-45 minutes later. Only a real saving to
+   * not-saving change in this tab sends the close, and only for the owner,
+   * like `pagehide` and not gated on the session. A browser that never saved
+   * (a phone set to "off") sends none: its close could hide a stall on the
+   * computer, which has no open signals to withdraw it while it sleeps. A
+   * switch turned on sends the open signal. A lost close is not reported: the
+   * alert only fires later, as before. Never throws: `setLiveSaveOverride`
+   * runs its subscribers unguarded.
+   */
+  const onSwitchChange = (): void => {
+    try {
+      const wasSaving = lastSaving;
+      lastSaving = isLiveSaveDevice();
+      if (lastSaving) void sendOpenSignal();
+      else if (wasSaving && getAccessMode() === 'owner') sendClose();
+    } catch (err: unknown) {
+      reportOnce(err);
+    }
   };
 
   window.addEventListener('pagehide', onPageHide);
   window.addEventListener('pageshow', onPageShow);
   const unsubscribe = subscribeLiveSaveDevice(onSwitchChange);
-  const followUp = setTimeout(() => {
-    void sendOpenSignal();
-  }, FOLLOW_UP_MS);
-  const interval = setInterval(() => {
-    void sendOpenSignal();
-  }, INTERVAL_MS);
+  const followUp = setTimeout(tick, FOLLOW_UP_MS);
+  const interval = setInterval(tick, INTERVAL_MS);
 
   const stop = (): void => {
     clearTimeout(followUp);
@@ -158,6 +200,6 @@ export function startLiveSessionSignals(): () => void {
   };
   stopCurrent = stop;
 
-  void sendOpenSignal();
+  tick();
   return stop;
 }

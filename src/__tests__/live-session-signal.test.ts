@@ -238,17 +238,94 @@ describe('who sends', () => {
 });
 
 describe('the switch in this tab', () => {
-  it('flipping it off stops the signals and the beacon', async () => {
+  it('flipping it off sends one close, then stops the signals and the beacon', async () => {
     start();
     expect(fetchMock).toHaveBeenCalledTimes(1);
 
     flipSwitch(false);
+    expect(beaconMock).toHaveBeenCalledTimes(1);
+    expect(beaconMock.mock.calls[0]).toStrictEqual([URL_PATH]);
+
     await advance(10 * 60 * 1000);
     pageHide();
 
+    // Only the open signal from start: no DELETE since, no POST ever.
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(beaconMock).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledWith(URL_PATH, { method: 'DELETE' });
+    expect(beaconMock).toHaveBeenCalledTimes(1);
   });
+
+  it('sends that close outside the cash session too, like pagehide', () => {
+    at('2026-03-14T15:00:00Z'); // a Saturday
+    start();
+
+    flipSwitch(false);
+
+    expect(beaconMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('carries that close in a keepalive POST when the beacon is refused', () => {
+    start();
+    fetchMock.mockClear();
+    beaconMock.mockReturnValue(false);
+
+    flipSwitch(false);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith(URL_PATH, {
+      method: 'POST',
+      keepalive: true,
+    });
+  });
+
+  it('sends no close from a browser that never saved (a phone set to off)', () => {
+    vi.mocked(isLiveSaveDevice).mockReturnValue(false);
+    start();
+
+    flipSwitch(false);
+
+    expect(beaconMock).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('sends one close for one real off: setting off again sends no second', () => {
+    start();
+
+    flipSwitch(false);
+    flipSwitch(false);
+
+    expect(beaconMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('sends a close for each off after an on in between', () => {
+    start();
+    fetchMock.mockClear();
+
+    flipSwitch(false);
+    expect(beaconMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    flipSwitch(true);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenLastCalledWith(URL_PATH, { method: 'DELETE' });
+
+    flipSwitch(false);
+    expect(beaconMock).toHaveBeenCalledTimes(2);
+  });
+
+  it.each<AccessMode>(['guest', 'public'])(
+    'sends no close for a %s visitor who turns it off',
+    (mode) => {
+      vi.mocked(getAccessMode).mockReturnValue(mode);
+      start();
+
+      flipSwitch(false);
+
+      expect(beaconMock).not.toHaveBeenCalled();
+      expect(fetchMock).not.toHaveBeenCalled();
+    },
+  );
 
   it('flipping it on sends an open signal at once, inside the session', () => {
     vi.mocked(isLiveSaveDevice).mockReturnValue(false);
@@ -310,6 +387,42 @@ describe('the switch or the session changed with no notification here', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
+
+  it.each([
+    // [name, now, ms before the other tab's flip, ms from it to the tick]
+    ['the 30 s follow-up', IN_SESSION, 0, FOLLOW_UP_MS],
+    [
+      'the first 5-minute tick',
+      IN_SESSION,
+      FOLLOW_UP_MS,
+      INTERVAL_MS - FOLLOW_UP_MS,
+    ],
+    [
+      'a 5-minute tick outside the session',
+      '2026-03-14T15:00:00Z', // a Saturday
+      FOLLOW_UP_MS,
+      INTERVAL_MS - FOLLOW_UP_MS,
+    ],
+  ])(
+    'another tab turned it on, %s passes, then this tab turns it off: the close goes',
+    async (_name, iso, beforeMs, ms) => {
+      vi.mocked(isLiveSaveDevice).mockReturnValue(false);
+      at(iso);
+      start();
+      await advance(beforeMs);
+
+      // No `flipSwitch`: the other tab wrote the stored override, so this
+      // tab's subscribers were never called. Only a tick can learn of it.
+      vi.mocked(isLiveSaveDevice).mockReturnValue(true);
+      await advance(ms);
+      expect(beaconMock).not.toHaveBeenCalled();
+
+      flipSwitch(false);
+
+      expect(beaconMock).toHaveBeenCalledTimes(1);
+      expect(beaconMock.mock.calls[0]).toStrictEqual([URL_PATH]);
+    },
+  );
 
   it('the owner session goes away: the next tick and the next pagehide send nothing', async () => {
     start();
@@ -583,6 +696,44 @@ describe('the switch subscriber', () => {
     expect(notifySubscribers).not.toThrow();
     await advance(0);
     expect(captureUnlessAuth).toHaveBeenCalledTimes(1);
+
+    // An unreadable switch is not "off": no close goes out on a guess.
+    expect(beaconMock).not.toHaveBeenCalled();
+  });
+
+  it('does not throw when the owner check throws on a switch-off, and reports it once at warning level', async () => {
+    start();
+    vi.mocked(getAccessMode).mockImplementation(() => {
+      throw new Error('cookie jar exploded');
+    });
+
+    expect(() => flipSwitch(false)).not.toThrow();
+    await advance(0);
+
+    expect(captureUnlessAuth).toHaveBeenCalledTimes(1);
+    expect(captureUnlessAuth).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'cookie jar exploded' }),
+      WARNING,
+    );
+    expect(beaconMock).not.toHaveBeenCalled();
+  });
+
+  it('swallows a failed keepalive fallback for the switch-off close: nothing to report', async () => {
+    start();
+    beaconMock.mockReturnValue(false);
+    // A plain function, as in the pagehide test above: a spy would hide an
+    // unhandled rejection from the run.
+    let fallbackCalls = 0;
+    vi.stubGlobal('fetch', () => {
+      fallbackCalls += 1;
+      return Promise.reject(new TypeError('Failed to fetch'));
+    });
+
+    flipSwitch(false);
+    await advance(0);
+
+    expect(fallbackCalls).toBe(1);
+    expect(captureUnlessAuth).not.toHaveBeenCalled();
   });
 });
 
@@ -596,6 +747,8 @@ describe('stopping and restarting', () => {
 
     expect(subscribers.size).toBe(0);
     expect(vi.getTimerCount()).toBe(0);
+    flipSwitch(false);
+    expect(beaconMock).not.toHaveBeenCalled();
     pageHide();
     pageShow(true);
     await advance(60 * 60 * 1000);

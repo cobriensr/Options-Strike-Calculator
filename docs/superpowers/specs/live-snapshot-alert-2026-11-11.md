@@ -1,9 +1,8 @@
 # Live snapshot alert
 
 **Date:** 2026-11-11 · **Status:** Tasks 1-5 shipped 2026-11-12 (Task 3 as
-91a117f5, Tasks 4-5 as ac9b6c45, Task 6 as fa299917); the plan is complete
-apart from the open owner question: should turning the switch off count as a
-close (see the third amendment)?
+91a117f5, Tasks 4-5 as ac9b6c45, Task 6 as fa299917); the plan is complete.
+The switch-off close (third amendment) was decided yes on 2026-11-13.
 
 ## Goal
 
@@ -61,12 +60,18 @@ trading computer could stay broken with no further push. Touch-first devices
 computers do. A per-browser switch in the app overrides the default either
 way. Past-date and backtest saves are not affected. Trade-off the owner
 accepted: a second computer left open also counts. As built (Task 6):
-turning the switch off stops live saves and both signals but sends no close,
-so on the only saving computer it pushes "Live snapshots stopped saving"
-30-45 minutes later while the app is open. Open owner question (final review
-2026-11-12): should turning it off send the close signal, as closing the app
-does? Controller recommendation: yes, a one-line change in the switch
-subscriber.
+turning the switch off stops live saves and both signals. Without a close,
+on the only saving computer it would push "Live snapshots stopped saving"
+30-45 minutes later while the app is open. Owner decision, 2026-11-13: yes,
+turning the switch off counts as closing the app, so it sends the close
+signal. As built: one close on a real saving to not-saving change in the tab
+(not gated on the cash session, like `pagehide`), owner only. A phone (off by
+default) set to "off", and "off" set again, send nothing, because a close from
+a browser that never saved could hide a real stall on the computer while it
+sleeps (no open signals to withdraw it). Each timer (start, 30 s, 5 minutes)
+re-reads the switch, so a flip made in another tab of the same browser is
+known within one tick. A lost switch-off close is not reported: the alert only
+fires later, as before. `src/lib/live-session-signal.ts`.
 
 **Fourth amendment (owner, 2026-11-12 ~17:40 CT): only the last tab's close
 counts.** With two or more calculator tabs open, closing one of them while
@@ -594,8 +599,9 @@ when the app closes and while it stays open. Files:
   - outside the session (before the open, after the close, a Saturday, a
     holiday): no open signal; the first tick inside the session sends one;
   - not a live-save device, or not the owner: no open signal and no beacon;
-  - the switch flips off → no more signals and no beacon; flips on → an open
-    signal at once (if in the session);
+  - the switch flips off → one close (the beacon; owner only, from a browser
+    that was saving, added 2026-11-13), then no more signals and no `pagehide`
+    beacon; flips on → an open signal at once (if in the session);
   - `pagehide` → one beacon to `/api/snapshot-close`; `sendBeacon` false or
     missing → the keepalive POST;
   - `pageshow` persisted → an open signal; not persisted → none;
