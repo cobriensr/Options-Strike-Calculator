@@ -22,6 +22,7 @@ import { storeInitialTokens, type SchwabLoginError } from '../_lib/schwab.js';
 import { redis } from '../_lib/redis.js';
 import {
   buildOwnerSessionCookies,
+  isLocalDeployment,
   rejectIfRateLimited,
 } from '../_lib/api-helpers.js';
 import logger from '../_lib/logger.js';
@@ -153,8 +154,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // frontend reads) — sc-owner is what gates the data endpoints. Built by
       // the shared builder, which whoami also uses to renew them: 400-day
       // lifetime, independent of the Schwab refresh token.
-      const isLocal = appUrl.includes('localhost');
-      res.setHeader('Set-Cookie', buildOwnerSessionCookies(isLocal));
+      res.setHeader(
+        'Set-Cookie',
+        buildOwnerSessionCookies(isLocalDeployment()),
+      );
 
       // Show success confirmation, then auto-redirect after 3 seconds.
       // The cookie is already set via Set-Cookie header above.

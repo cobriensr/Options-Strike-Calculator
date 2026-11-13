@@ -27,14 +27,15 @@ vi.mock('../_lib/sentry.js', async (importOriginal) => {
   return { ...actual, Sentry: { ...actual.Sentry, ...mockSentryCapture } };
 });
 
-// The rate limiter is stubbed; the cookie builder stays real so these tests
-// pin the callback's actual Set-Cookie output.
+// The rate limiter is stubbed; the cookie builder and the local-deployment
+// rule stay real so these tests pin the callback's actual Set-Cookie output.
 vi.mock('../_lib/api-helpers.js', async () => {
-  const { buildOwnerSessionCookies } = await vi.importActual<
+  const { buildOwnerSessionCookies, isLocalDeployment } = await vi.importActual<
     typeof import('../_lib/auth-helpers.js')
   >('../_lib/auth-helpers.js');
   return {
     buildOwnerSessionCookies,
+    isLocalDeployment,
     rejectIfRateLimited: vi.fn().mockResolvedValue(false),
   };
 });
@@ -48,6 +49,7 @@ describe('GET /api/auth/callback', () => {
   beforeEach(() => {
     process.env = { ...originalEnv };
     process.env.APP_URL = 'https://example.com';
+    delete process.env.VERCEL_ENV;
     vi.restoreAllMocks();
     // Call history only; the default answers above stay.
     vi.clearAllMocks();
@@ -286,7 +288,7 @@ describe('GET /api/auth/callback', () => {
     expect(res._body).toContain('Authenticated');
   });
 
-  it('does not tell the owner the session lasts 7 days', async () => {
+  it('tells the owner this browser is signed in, without a 7-day claim', async () => {
     process.env.OWNER_SECRET = 'my-secret';
     process.env.APP_URL = 'https://myapp.vercel.app';
     vi.mocked(storeInitialTokens).mockResolvedValue({ success: true });
@@ -300,7 +302,29 @@ describe('GET /api/auth/callback', () => {
     );
 
     expect(res._status).toBe(200);
+    expect(res._body).toContain('This browser is signed in');
     expect(res._body).not.toContain('7 days');
+  });
+
+  it('keeps Secure in production even when APP_URL points at localhost', async () => {
+    process.env.OWNER_SECRET = 'my-secret';
+    process.env.APP_URL = 'http://localhost:3000';
+    process.env.VERCEL_ENV = 'production';
+    vi.mocked(storeInitialTokens).mockResolvedValue({ success: true });
+
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        query: { code: 'auth-code-123', state: 'valid-state' },
+      }),
+      res,
+    );
+
+    expect(res._status).toBe(200);
+    expect(res._headers['Set-Cookie']).toEqual([
+      'sc-owner=my-secret; Path=/; Max-Age=34560000; HttpOnly; SameSite=Strict; Secure',
+      'sc-hint=1; Path=/; Max-Age=34560000; SameSite=Strict; Secure',
+    ]);
   });
 
   it('omits Secure flag for localhost APP_URL', async () => {

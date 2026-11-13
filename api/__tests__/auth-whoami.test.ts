@@ -122,6 +122,7 @@ describe('GET /api/auth/whoami owner renewal', () => {
 
   beforeEach(() => {
     process.env.APP_URL = 'https://example.com';
+    delete process.env.VERCEL_ENV;
   });
 
   it('re-issues both owner cookies, 400-day lifetime, for a signed-in owner', async () => {
@@ -186,6 +187,21 @@ describe('GET /api/auth/whoami owner renewal', () => {
       `sc-owner=${OWNER_SECRET}; Path=/; Max-Age=34560000; HttpOnly; SameSite=Strict`,
       'sc-hint=1; Path=/; Max-Age=34560000; SameSite=Strict',
     ]);
+  });
+
+  it('keeps Secure in production even when APP_URL points at localhost', async () => {
+    process.env.OWNER_SECRET = OWNER_SECRET;
+    process.env.APP_URL = 'http://localhost:3000';
+    process.env.VERCEL_ENV = 'production';
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'GET',
+        headers: { cookie: `sc-owner=${OWNER_SECRET}` },
+      }),
+      res,
+    );
+    expect(res._headers['Set-Cookie']).toEqual(PRODUCTION_COOKIES);
   });
 
   it('keeps Secure when APP_URL is unset', async () => {

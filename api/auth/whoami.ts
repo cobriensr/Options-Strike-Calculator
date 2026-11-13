@@ -20,7 +20,11 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { Sentry, metrics } from '../_lib/sentry.js';
-import { buildOwnerSessionCookies, isOwner } from '../_lib/api-helpers.js';
+import {
+  buildOwnerSessionCookies,
+  isLocalDeployment,
+  isOwner,
+} from '../_lib/api-helpers.js';
 import { isGuest } from '../_lib/guest-auth.js';
 
 export type WhoamiMode = 'owner' | 'guest' | 'public';
@@ -39,14 +43,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       if (isOwner(req)) mode = 'owner';
       else if (isGuest(req)) mode = 'guest';
 
+      // Before any Set-Cookie, so no answer that carries a cookie, or fails
+      // while building one, is left cacheable.
+      res.setHeader('Cache-Control', 'no-store');
+
       if (mode === 'owner') {
-        // Same localhost rule as the OAuth callback, so a renewal sets the
-        // cookies with the attributes the sign-in did.
-        const isLocal = (process.env.APP_URL ?? '').includes('localhost');
-        res.setHeader('Set-Cookie', buildOwnerSessionCookies(isLocal));
+        // Same local-deployment rule as the OAuth callback, so a renewal sets
+        // the cookies with the attributes the sign-in did.
+        res.setHeader(
+          'Set-Cookie',
+          buildOwnerSessionCookies(isLocalDeployment()),
+        );
       }
 
-      res.setHeader('Cache-Control', 'no-store');
       done({ status: 200 });
       return res.status(200).json({ mode });
     } catch (err) {
