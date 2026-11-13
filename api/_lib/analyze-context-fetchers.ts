@@ -72,7 +72,7 @@ import { formatFuturesForClaude } from './futures-context.js';
 import { formatIvTermStructureForClaude } from '../iv-term-structure.js';
 import type { IvTermRow } from '../iv-term-structure.js';
 import type { PreMarketData } from '../pre-market.js';
-import { getETDateStr } from '../../src/utils/timezone.js';
+import { getETDateStr, isPastETDate } from '../../src/utils/timezone.js';
 import { analyzeZeroGamma } from '../../src/utils/zero-gamma.js';
 import logger from './logger.js';
 import {
@@ -644,6 +644,46 @@ export async function fetchPriorDayFlowContext(
 
 // ── Economic calendar ─────────────────────────────────────────────────
 
+/**
+ * Whether `economic_events` covers `analysisDate`, for a date that has no
+ * rows. An empty read means "no events" only where the table has data around
+ * the date; a gap (the weeks of 2026-07-27 to 08-31 are empty) or a date
+ * before the first row (2026-03-25) means the events are unknown.
+ *
+ * Covered = a row in the 7 days before the date AND, unless the date is
+ * today or later in ET, a row in the 7 days after it. Both sides because a
+ * gap's first days still have rows in the week before them. The after side
+ * is waived for today and later because the econ cron stores no future rows,
+ * so a live analysis has nothing after it yet.
+ *
+ * A failed query throws to the caller's catch, as the date's own query does.
+ */
+async function economicEventsTableCovers(
+  sql: ReturnType<typeof getDb>,
+  analysisDate: string,
+): Promise<boolean> {
+  const rows = await withDbRetry(
+    () => sql`
+      SELECT
+        EXISTS (
+          SELECT 1 FROM economic_events
+          WHERE date BETWEEN ${analysisDate}::date - 7
+                         AND ${analysisDate}::date - 1
+        ) AS has_before,
+        EXISTS (
+          SELECT 1 FROM economic_events
+          WHERE date BETWEEN ${analysisDate}::date + 1
+                         AND ${analysisDate}::date + 7
+        ) AS has_after
+    `,
+    2,
+    10_000,
+  );
+  const coverage = rows[0];
+  if (coverage?.has_before !== true) return false;
+  return !isPastETDate(analysisDate) || coverage.has_after === true;
+}
+
 export async function fetchEconomicCalendarContext(
   analysisDate: string,
 ): Promise<string | null> {
@@ -660,7 +700,11 @@ export async function fetchEconomicCalendarContext(
       2,
       10_000,
     );
-    if (calRows.length === 0) return 'No scheduled economic events today.';
+    if (calRows.length === 0) {
+      return (await economicEventsTableCovers(sql, analysisDate))
+        ? 'No scheduled economic events today.'
+        : 'Economic events for this date: UNKNOWN (the economic_events table has no rows around this date, so it does not cover it; do not assume there are none)';
+    }
     return formatEconomicCalendarForClaude(calRows as EconomicEventRow[]);
   } catch (error_) {
     logger.error({ err: error_ }, 'Failed to fetch economic calendar from DB');

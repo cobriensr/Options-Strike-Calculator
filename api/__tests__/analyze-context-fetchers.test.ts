@@ -196,7 +196,7 @@ import { fetchDaySummary, fetchDayFeatures } from '../_lib/archive-sidecar.js';
 import { findSimilarDaysForSummary } from '../_lib/day-embeddings.js';
 import { findSimilarDaysByFeatures } from '../_lib/day-features.js';
 import { getRangeForecast } from '../_lib/analog-range-forecast.js';
-import { Sentry } from '../_lib/sentry.js';
+import { Sentry, metrics } from '../_lib/sentry.js';
 
 const ORIGINAL_ENV = { ...process.env };
 
@@ -468,11 +468,138 @@ describe('analyze-context-fetchers — early returns', () => {
     expect(await fetchMlCalibrationContext()).toBeNull();
   });
 
-  it('fetchEconomicCalendarContext returns "no events" message when DB rows empty', async () => {
-    const sql = vi.fn().mockResolvedValueOnce([]);
+  it('fetchEconomicCalendarContext returns "no events" message when DB rows empty and the table covers the date', async () => {
+    const sql = vi
+      .fn()
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ has_before: true, has_after: true }]);
     vi.mocked(getDb).mockReturnValue(sql as never);
     const result = await fetchEconomicCalendarContext('2026-04-29');
     expect(result).toBe('No scheduled economic events today.');
+  });
+});
+
+// ── Economic calendar: an empty read is "none" only where the table covers ──
+
+describe('fetchEconomicCalendarContext — zero rows for the date', () => {
+  const NONE = 'No scheduled economic events today.';
+  const UNKNOWN =
+    'Economic events for this date: UNKNOWN (the economic_events table has no rows around this date, so it does not cover it; do not assume there are none)';
+
+  // 2026-11-13 03:00Z is 22:00 EST on 2026-11-12: the ET date and the UTC
+  // date differ, so "today" below can only be right if it is read in ET.
+  const NOW = new Date('2026-11-13T03:00:00.000Z');
+  const ET_TODAY = '2026-11-12';
+  const UTC_TODAY = '2026-11-13';
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(NOW);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** An sql mock: the date's own query returns no rows, then the coverage row. */
+  function queueCoverage(
+    coverage: Array<{ has_before: boolean; has_after: boolean }>,
+  ) {
+    const sql = vi
+      .fn()
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce(coverage);
+    vi.mocked(getDb).mockReturnValue(sql as never);
+    return sql;
+  }
+
+  it.each([
+    // [label, date, has_before, has_after, expected]
+    ['past date, rows on both sides', '2026-08-12', true, true, NONE],
+    // 2026-07-27: the week before has rows, the weeks after have none.
+    ['past date, rows before only (a gap)', '2026-07-27', true, false, UNKNOWN],
+    // Before the table's first row (2026-03-25): only later rows exist.
+    ['past date, rows after only', '2026-01-15', false, true, UNKNOWN],
+    ['past date, no rows either side', '2025-06-02', false, false, UNKNOWN],
+    // The table ends at today (the econ cron stores no future rows), so the
+    // after side is not required for today.
+    ['today (ET), rows before only', ET_TODAY, true, false, NONE],
+    ['today (ET), no rows before', ET_TODAY, false, false, UNKNOWN],
+    ['a later date, rows before only', '2026-11-16', true, false, NONE],
+    ['a later date, no rows before', '2026-11-16', false, false, UNKNOWN],
+  ] as const)('%s', async (_label, date, hasBefore, hasAfter, expected) => {
+    queueCoverage([{ has_before: hasBefore, has_after: hasAfter }]);
+    expect(await fetchEconomicCalendarContext(date)).toBe(expected);
+  });
+
+  it('reads "today" in ET, not UTC, for the after-side exemption', async () => {
+    // UTC says 2026-11-13, so the ET date 2026-11-12 would be a past date
+    // that needs rows after it. In ET it is today and does not.
+    expect(UTC_TODAY).not.toBe(ET_TODAY);
+    queueCoverage([{ has_before: true, has_after: false }]);
+    expect(await fetchEconomicCalendarContext(ET_TODAY)).toBe(NONE);
+    queueCoverage([{ has_before: true, has_after: false }]);
+    expect(await fetchEconomicCalendarContext('2026-11-11')).toBe(UNKNOWN);
+  });
+
+  it('says UNKNOWN when the coverage query returns no row at all', async () => {
+    queueCoverage([]);
+    expect(await fetchEconomicCalendarContext('2026-08-12')).toBe(UNKNOWN);
+  });
+
+  it('runs the coverage query for the analysis date, after the date query', async () => {
+    const sql = queueCoverage([{ has_before: true, has_after: true }]);
+    await fetchEconomicCalendarContext('2026-08-12');
+    expect(sql).toHaveBeenCalledTimes(2);
+    const [dateQuery, coverageQuery] = sql.mock.calls as Array<
+      [TemplateStringsArray, ...unknown[]]
+    >;
+    expect(dateQuery?.slice(1)).toEqual(['2026-08-12']);
+    expect(coverageQuery?.slice(1)).toEqual([
+      '2026-08-12',
+      '2026-08-12',
+      '2026-08-12',
+      '2026-08-12',
+    ]);
+  });
+
+  it('returns null, reports to Sentry and counts the error when the coverage query rejects', async () => {
+    const failure = new Error('coverage query failed');
+    const sql = vi
+      .fn()
+      .mockResolvedValueOnce([])
+      .mockRejectedValueOnce(failure);
+    vi.mocked(getDb).mockReturnValue(sql as never);
+    expect(await fetchEconomicCalendarContext('2026-08-12')).toBeNull();
+    expect(Sentry.captureException).toHaveBeenCalledOnce();
+    expect(Sentry.captureException).toHaveBeenCalledWith(failure);
+    expect(metrics.increment).toHaveBeenCalledWith(
+      'analyze_context.economic_calendar_error',
+    );
+  });
+
+  it('runs no coverage query when the date has rows', async () => {
+    const sql = vi.fn().mockResolvedValueOnce([
+      {
+        event_name: 'CPI',
+        event_time: '2026-08-12T12:30:00.000Z',
+        event_type: 'CPI',
+        forecast: null,
+        previous: null,
+        reported_period: null,
+      },
+    ]);
+    vi.mocked(getDb).mockReturnValue(sql as never);
+    expect(await fetchEconomicCalendarContext('2026-08-12')).toBe('econ');
+    expect(sql).toHaveBeenCalledTimes(1);
+  });
+
+  it('runs no coverage query when the date query itself rejects', async () => {
+    const sql = vi.fn().mockRejectedValueOnce(new Error('DB'));
+    vi.mocked(getDb).mockReturnValue(sql as never);
+    expect(await fetchEconomicCalendarContext('2026-08-12')).toBeNull();
+    expect(sql).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureException).toHaveBeenCalledOnce();
   });
 });
 
