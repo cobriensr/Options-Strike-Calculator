@@ -26,8 +26,10 @@ export interface SafeMomentContext {
  * `getMarketCloseHourET` knows holidays (null) and half-days (13), but not
  * weekends, so the weekday is checked here. Holidays outside the years listed
  * in marketHours.ts read as trading days, which errs toward not reloading.
+ * Exported for `live-session-signal.ts`, whose open signal gates on the same
+ * window.
  */
-function isCashSessionOpen(now: Date): boolean {
+export function isCashSessionOpen(now: Date): boolean {
   const weekday = getETDayOfWeek(now);
   if (weekday === 0 || weekday === 6) return false;
   const closeHour = getMarketCloseHourET(getETDateStr(now));
