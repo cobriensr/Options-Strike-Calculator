@@ -35,6 +35,30 @@
  * root's `volume_ratio` as stored. ES, NQ and a root that is not lifted keep the old
  * behavior. The report says so on each lifted root's line.
  *
+ * `--repair front-month` (Phase 6b of docs/superpowers/specs/
+ * 2026-11-06-futures-session-front-month.md) runs the same recompute for a second
+ * repair: Phase 6 rewrote, deleted and filled `futures_bars` for 2026-07-28 to 11-11,
+ * and its backup (futures-derived-front-month.ts) is what the attribution reads. A
+ * fill is an input bar that did not exist when a row was saved, so it makes the row's
+ * fields repair-affected like a changed bar. The profile's differences:
+ *
+ * - the span, the snapshot scope (cut at the end of the Phase 6 write run, because a
+ *   row written from then on read the repaired bars) and the backup are Phase 6's;
+ * - no D1 lift (the span starts more than 20 days after every thin root's last
+ *   month-mixed bar), and the steps of the April to June repair are refused:
+ *   `--rewrite-stale-at-write`, `--detector-days`, `--stores frozen`,
+ *   `--delete-frozen-stale`, `--stores volume-null`, `--null-volume-ratio`.
+ *   `--delete-junk-stale` and `--roots` work as before;
+ * - the control rows from 11-02 overlap the scope, so each control row before the
+ *   scope end has the fields a repaired bar feeds set aside (setAsideControl), by the
+ *   rules that decide what is written, and the rest still has to match;
+ * - a fire is in scope when a changed bar lies in the ES window its basis reads;
+ *   every other fire with a value is the control. A NULL basis is never read or set;
+ * - the rows of the information window are in scope; what differs in them outside the
+ *   repaired fields is drift, classified in the report and never written.
+ *
+ * Without the flag nothing in a run changes.
+ *
  * Before trusting any in-span difference, each store recomputes a control set
  * of rows outside the repaired span, where the bars were never bad. It must
  * reproduce what is stored; `--apply` refuses unless every store's does, at
@@ -122,6 +146,12 @@ import {
   WRITE_CHUNK,
 } from './futures-derived-batch.js';
 import {
+  FRONT_MONTH,
+  frontMonthBackupLine,
+  readFrontMonthBackup,
+  type FrontMonthBackup,
+} from './futures-derived-front-month.js';
+import {
   CLEAN_TRADING_DAYS,
   JUNK_WINDOW,
   THIN_LAST_BAD_MS,
@@ -145,6 +175,15 @@ import {
 
 export const STORES = ['snapshots', 'premarket', 'fires'] as const;
 export type Store = (typeof STORES)[number];
+
+/**
+ * The repair a run recomputes for. Without `--repair` it is the April to June
+ * contract-mix repair (Phase 2 and 5a) this tool was written for, and nothing in
+ * a run changes. `front-month` is Phase 6b: the bars Phase 6 rewrote, deleted and
+ * filled for 2026-07-28 to 11-11, read from its backup
+ * (futures-derived-front-month.ts).
+ */
+export type RepairName = 'front-month';
 
 /**
  * Every root futures_snapshots holds. Phase 2 repaired ES and NQ and deleted
@@ -396,8 +435,29 @@ async function mapPool<T, R>(
  * bars back to `at - 20 days`, a fire reads ES at its minute and the 5 before
  * (the 6-minute SPX window), so each range runs from the span start to the
  * span end plus that lookback.
+ *
+ * Under `front-month` the span is Phase 6's, and the snapshot range stops at the
+ * end of the Phase 6 write run if that comes first: a row written from then on
+ * read the repaired bars. (The fire range is only the span's own; planFires picks
+ * the fires by the bars their window holds.)
  */
-export function scopeRanges(): { snapshots: Range; fires: Range } {
+export function scopeRanges(repair?: RepairName): {
+  snapshots: Range;
+  fires: Range;
+} {
+  if (repair === 'front-month') {
+    const { span, writtenUntilMs } = FRONT_MONTH;
+    return {
+      snapshots: {
+        fromMs: span.startMs,
+        toMs: Math.min(span.endMs + SNAPSHOT_LOOKBACK_MS, writtenUntilMs),
+      },
+      fires: {
+        fromMs: span.startMs,
+        toMs: span.endMs + BASIS_LOOKBACK_MS,
+      },
+    };
+  }
   return {
     snapshots: {
       fromMs: SPAN.startMs,
@@ -416,9 +476,13 @@ export function premarketWindow(tradeDate: string): Range {
 }
 
 /** True when the trade date's overnight window overlaps the repaired span. */
-export function premarketInScope(tradeDate: string): boolean {
+export function premarketInScope(
+  tradeDate: string,
+  repair?: RepairName,
+): boolean {
   const w = premarketWindow(tradeDate);
-  return w.fromMs < SPAN.endMs && w.toMs > SPAN.startMs;
+  const span = repair === 'front-month' ? FRONT_MONTH.span : SPAN;
+  return w.fromMs < span.endMs && w.toMs > span.startMs;
 }
 
 // ── Comparison ──────────────────────────────────────────────────────────────
@@ -484,6 +548,33 @@ export function compareSnapshot(
   return fields.length === 0
     ? { kind: 'same' }
     : { kind: 'change', fields, to };
+}
+
+/**
+ * A control row's difference without the fields `affected` names: the fields a
+ * repaired bar feeds, whose stored value was computed from the bar as it was, so
+ * their difference is the repair's, not the method's. A row left with no
+ * differing field matches. `aside` is the fields taken out. An empty `affected`
+ * returns the outcome as it is (the contract-mix control sets nothing aside), and
+ * a row that cannot be recomputed stays that way.
+ */
+export function setAsideControl(
+  outcome: SnapshotOutcome,
+  affected: ReadonlySet<SnapshotField>,
+): { outcome: SnapshotOutcome; aside: SnapshotField[] } {
+  if (outcome.kind !== 'change' || affected.size === 0) {
+    return { outcome, aside: [] };
+  }
+  const aside = outcome.fields.filter((f) => affected.has(f));
+  if (aside.length === 0) return { outcome, aside };
+  const fields = outcome.fields.filter((f) => !affected.has(f));
+  return {
+    outcome:
+      fields.length === 0
+        ? { kind: 'same' }
+        : { kind: 'change', fields, to: outcome.to },
+    aside,
+  };
 }
 
 export interface GlobexValues {
@@ -831,8 +922,9 @@ async function readBars(
 async function loadSymbolData(
   symbols: readonly Sym[],
   backup: BackupBar[],
+  repair?: RepairName,
 ): Promise<Map<Sym, SymbolData>> {
-  const scope = scopeRanges().snapshots;
+  const scope = scopeRanges(repair).snapshots;
   const out = new Map<Sym, SymbolData>();
   for (const symbol of symbols) {
     const bars = await readBars(
@@ -850,8 +942,10 @@ async function loadSymbolData(
         mine.filter((b) => b.op === 'update').map((b) => [b.tsMs, b]),
       ),
     });
+    const filled = mine.filter((b) => b.op === 'fill').length;
+    const filledText = filled === 0 ? '' : `, ${filled} filled`;
     console.log(
-      `bars ${symbol}: ${bars.length} read; bar backup ${mine.length} rows (${mine.filter((b) => b.op === 'delete').length} deleted)`,
+      `bars ${symbol}: ${bars.length} read; bar backup ${mine.length} rows (${mine.filter((b) => b.op === 'delete').length} deleted${filledText})`,
     );
   }
   return out;
@@ -1445,6 +1539,15 @@ export interface SnapshotSymbolReport {
   controlRows: number;
   controlMatched: number;
   controlDays: number;
+  /**
+   * Front-month only, null otherwise: the control rows before the end of the Phase 6
+   * write run whose differing fields a repaired bar feeds. Those fields are left out of
+   * the comparison, counted here by field.
+   */
+  controlSetAside: {
+    rows: number;
+    fields: Record<SnapshotField, number>;
+  } | null;
   /** A thin root's control, split by explanation; null for ES and NQ, which must match exactly. */
   thin: ThinControl | null;
 }
@@ -1588,6 +1691,8 @@ export interface Plans {
   frozen?: FrozenPlan;
   /** Planned alone (`--stores volume-null`), with no other store. */
   volumeNull?: VolumeNullPlan;
+  /** Set for a front-month run; the report leaves out the steps that profile refuses. */
+  repair?: RepairName;
 }
 
 const emptyFields = (): Record<SnapshotField, number> => ({
@@ -1720,20 +1825,61 @@ async function classifyInfoWindow(symbol: Sym): Promise<SnapshotInfo> {
 }
 
 /**
+ * The fields of a stored snapshot row that a repaired bar feeds: the write rules,
+ * by the position of the input bars and by the stored value (the merge-state rule
+ * is not part of the front-month profile).
+ */
+function affectedFieldsOf(
+  sd: SymbolData,
+  row: SnapshotRow,
+): Set<SnapshotField> {
+  const dayOpenMs = dayOpenOf(new Date(row.tsMs));
+  return new Set<SnapshotField>([
+    ...affectedSnapshotFields(sd.repair, sd.bars, row.tsMs, dayOpenMs),
+    ...attributeByValue(sd.series, row.tsMs, dayOpenMs, row.stored).fields,
+  ]);
+}
+
+/**
  * The method control: rows written by today's code, which must recompute equal
  * to what is stored. Rows before SNAPSHOT_CONTROL_FROM_MS are classified as
  * information (classifyInfoWindow).
+ *
+ * Under front-month the control overlaps the repair: a row before the end of the
+ * snapshot scope (the end of the Phase 6 write run) was written from the bars as they
+ * were, and its 20-day window can hold a bar Phase 6 changed (CL's 10-16, 10-29 and
+ * 11-05). `setAside` is that root's data: the fields a repaired bar feeds are left
+ * out of the comparison, by the same rules that decide what is written, and the rest
+ * must still match. A row from the scope end on read the repaired bars and is
+ * checked in all four fields.
  */
 async function snapshotControl(
   symbol: Sym,
   report: SnapshotSymbolReport,
+  setAside: SymbolData | null,
 ): Promise<SnapshotEvaluation[]> {
   const rows = await readSnapshots(
     symbol,
     SNAPSHOT_CONTROL_FROM_MS,
     Date.now() + DAY_MS,
   );
-  const evals = await evaluateSnapshots(rows, `${symbol} snapshots control`);
+  let evals = await evaluateSnapshots(rows, `${symbol} snapshots control`);
+  if (setAside != null) {
+    const scopeEndMs = scopeRanges('front-month').snapshots.toMs;
+    const counts = { rows: 0, fields: emptyFields() };
+    evals = evals.map((ev) => {
+      if (ev.row.tsMs >= scopeEndMs) return ev;
+      const { outcome, aside } = setAsideControl(
+        ev.outcome,
+        affectedFieldsOf(setAside, ev.row),
+      );
+      if (aside.length === 0) return ev;
+      counts.rows += 1;
+      for (const f of aside) counts.fields[f] += 1;
+      return { ...ev, outcome };
+    });
+    report.controlSetAside = counts;
+  }
   report.controlRows = rows.length;
   report.controlMatched = evals.filter((e) => e.outcome.kind === 'same').length;
   report.controlDays = new Set(rows.map((r) => utcDay(r.tsMs))).size;
@@ -2162,8 +2308,10 @@ async function planSnapshots(
   detectorDays: Map<Sym, DetectorDays> | null,
   roots: readonly Sym[],
   spanBars: ReadonlyMap<Sym, number>,
+  repair?: RepairName,
 ): Promise<SnapshotStore> {
-  const scope = scopeRanges().snapshots;
+  const frontMonth = repair === 'front-month';
+  const scope = scopeRanges(repair).snapshots;
   const changes: SnapshotChange[] = [];
   const unrecomputable: string[] = [];
   const reports: SnapshotSymbolReport[] = [];
@@ -2238,8 +2386,9 @@ async function planSnapshots(
         rowsInRuns: 0,
         longest: [],
       },
+      // The merge-state rule is about the Databento-era merged bars of April to June.
       mergeState:
-        sd.updates.size === 0
+        frontMonth || sd.updates.size === 0
           ? null
           : {
               added: 0,
@@ -2258,10 +2407,14 @@ async function planSnapshots(
       controlRows: 0,
       controlMatched: 0,
       controlDays: 0,
+      controlSetAside: null,
       thin: null,
       spanBars: spanBars.get(symbol) ?? null,
       volumeRatioLeft: 0,
     };
+    // Front-month: every in-scope row with the fields a repaired bar feeds left out of
+    // its difference, so what differs is the drift: classified, never written.
+    const driftEvals: SnapshotEvaluation[] = [];
 
     const frozen: { run: FrozenRun | null; last: number } = {
       run: null,
@@ -2359,6 +2512,12 @@ async function planSnapshots(
           }
         }
       }
+      if (frontMonth && outcome.kind !== 'unrecomputable') {
+        driftEvals.push({
+          ...evaluation,
+          outcome: setAsideControl(outcome, affected).outcome,
+        });
+      }
       if (outcome.kind === 'unrecomputable') {
         const junkHit = byValue.hits.find(
           (h) => h.field === 'price' && h.bar.repair === 'deleted',
@@ -2425,7 +2584,10 @@ async function planSnapshots(
         staleBar == null && frozenRun == null
           ? []
           : outcome.fields.filter((f) => !writable.includes(f));
-      let stalePlanned = staleFields.length > 0;
+      // The stale-at-write step is about the April to June writer, which the
+      // front-month profile refuses: no row is planned for it there, so what it
+      // would have taken stays in the drift lists.
+      let stalePlanned = !frontMonth && staleFields.length > 0;
       if (stalePlanned && isNotExactControlRoot(symbol)) {
         const stats = report.stale.detector;
         const days = detectorDays?.get(symbol);
@@ -2561,7 +2723,11 @@ async function planSnapshots(
 
     endRun(report.stale, frozen);
 
-    const controlOfSymbol = await snapshotControl(symbol, report);
+    const controlOfSymbol = await snapshotControl(
+      symbol,
+      report,
+      frontMonth ? sd : null,
+    );
     if (isNotExactControlRoot(symbol)) {
       const { thin, explained } = await explainThinControl(
         symbol,
@@ -2579,7 +2745,13 @@ async function planSnapshots(
       controlEvals.push(...controlOfSymbol);
       controlMisses.push(await classifyEvals(symbol, controlOfSymbol));
     }
-    infos.push(await classifyInfoWindow(symbol));
+    // The information window (10-02 to 11-02) is in the front-month scope: its rows
+    // are classified as the drift they leave.
+    infos.push(
+      frontMonth
+        ? await classifyEvals(symbol, driftEvals)
+        : await classifyInfoWindow(symbol),
+    );
     problems.push(...snapshotProblems(report));
     reports.push(report);
   }
@@ -2621,12 +2793,13 @@ function reproduces(
 
 async function planPremarket(
   data: Map<Sym, SymbolData>,
+  repair?: RepairName,
 ): Promise<PremarketStore> {
   const es = data.get('ES');
   if (es == null) throw new Error('no bars were read for ES');
   const all = await readAutoFilled();
-  const inScope = all.filter((r) => premarketInScope(r.date));
-  const outside = all.filter((r) => !premarketInScope(r.date));
+  const inScope = all.filter((r) => premarketInScope(r.date, repair));
+  const outside = all.filter((r) => !premarketInScope(r.date, repair));
   console.log(
     `premarket: ${all.length} auto-filled rows, ${inScope.length} in scope, ${outside.length} outside the span`,
   );
@@ -2722,15 +2895,27 @@ async function planPremarket(
   };
 }
 
-async function planFires(): Promise<StoreResult<FireChange>> {
+/**
+ * `esRepair` is set for a front-month run: a fire is in scope when a bar Phase 6
+ * changed lies in the ES window its basis reads (its own minute and the 6 before,
+ * which is where computeEsBasisChange5m takes both closes from), and every other
+ * fire with a value is the control. Without it a fire is in scope inside the span.
+ * A NULL basis is read by neither: it is never set.
+ */
+async function planFires(
+  esRepair: Repair | null,
+): Promise<StoreResult<FireChange>> {
   const scope = scopeRanges().fires;
   const all = await readFires();
-  const inScope = all.filter(
-    (f) => f.firedAtMs >= scope.fromMs && f.firedAtMs < scope.toMs,
-  );
-  const control = all.filter(
-    (f) => f.firedAtMs < scope.fromMs || f.firedAtMs >= scope.toMs,
-  );
+  const touched = (f: FireRow): boolean =>
+    esRepair != null &&
+    windowAffected(esRepair, f.firedAtMs - BASIS_LOOKBACK_MS, f.firedAtMs + 1);
+  const inScopeAt = (f: FireRow): boolean =>
+    esRepair == null
+      ? f.firedAtMs >= scope.fromMs && f.firedAtMs < scope.toMs
+      : touched(f);
+  const inScope = all.filter(inScopeAt);
+  const control = all.filter((f) => !inScopeAt(f));
   console.log(
     `fires: ${all.length} fires with a value, ${inScope.length} in scope, ${control.length} control`,
   );
@@ -3353,7 +3538,15 @@ function liftText(s: SnapshotSymbolReport): string[] {
   ];
 }
 
-function snapshotsText(r: SnapshotStore): string[] {
+/** The control rows whose repaired fields were left out of the comparison (front-month). */
+function setAsideText(
+  a: NonNullable<SnapshotSymbolReport['controlSetAside']>,
+): string {
+  return `    control fields set aside (a repaired bar feeds them, so the stored value is the repair's to change; the other fields of the row still had to match): ${a.rows} rows (${byFieldText(a.fields)})`;
+}
+
+function snapshotsText(r: SnapshotStore, repair?: RepairName): string[] {
+  const frontMonth = repair === 'front-month';
   const top = r.changes
     .filter((c) => c.fields.includes('price'))
     .sort(
@@ -3378,6 +3571,7 @@ function snapshotsText(r: SnapshotStore): string[] {
       `    ${volumeRatioWriteText(r.changes, s.symbol)}`,
       `    information, unaffected fields where today's method differs from the stored value (not written, after every planned step with the opt-in steps on): ${byFieldText(s.drift)}`,
       `    method control, rows from ${isoSecond(SNAPSHOT_CONTROL_FROM_MS)}: ${s.controlMatched} of ${s.controlRows} match over ${s.controlDays} days`,
+      ...(s.controlSetAside == null ? [] : [setAsideText(s.controlSetAside)]),
       ...(s.thin == null ? [] : thinControlText(s.symbol, s.thin)),
       `    attribution inputs disagreeing with computeSnapshot: ${s.attributionInconsistent}`,
       `    newly affected by the value rule (the stored input found by value, a bar Phase 2 deleted or changed): ${s.valueRule.rows} rows (${byFieldText(s.valueRule.fields)}), matched bars deleted ${s.valueRule.byKind.deleted}, close-changed ${s.valueRule.byKind['close-changed']}`,
@@ -3390,8 +3584,9 @@ function snapshotsText(r: SnapshotStore): string[] {
       ...driftText(s),
       ...unmatchedLargeText(s.unmatchedLarge),
       ...(s.mergeState == null ? [] : mergeStateText(s.mergeState)),
-      ...liftText(s),
-      ...staleText(s.stale),
+      // The D1 lift and the stale-at-write step are not part of the front-month profile.
+      ...(frontMonth ? [] : liftText(s)),
+      ...(frontMonth ? [] : staleText(s.stale)),
     );
   }
   out.push(
@@ -3414,12 +3609,10 @@ function snapshotsText(r: SnapshotStore): string[] {
     );
   }
   for (const info of r.info) {
-    out.push(
-      ...infoText(
-        info,
-        `information, ${info.symbol}, rows ${isoSecond(SNAPSHOT_INFO_FROM_MS)} to ${isoSecond(SNAPSHOT_CONTROL_FROM_MS)} (every row, not gated)`,
-      ),
-    );
+    const heading = frontMonth
+      ? `drift, ${info.symbol}, every row in the snapshot scope with the fields a repaired bar feeds left out (what differs is not written; not gated)`
+      : `information, ${info.symbol}, rows ${isoSecond(SNAPSHOT_INFO_FROM_MS)} to ${isoSecond(SNAPSHOT_CONTROL_FROM_MS)} (every row, not gated)`;
+    out.push(...infoText(info, heading));
   }
   return out;
 }
@@ -3531,7 +3724,9 @@ export function formatReport(
   applyCommand: string | null = null,
 ): string {
   const out = [...header, ''];
-  if (plans.snapshots) out.push(...snapshotsText(plans.snapshots), '');
+  if (plans.snapshots) {
+    out.push(...snapshotsText(plans.snapshots, plans.repair), '');
+  }
   if (plans.premarket) out.push(...premarketText(plans.premarket), '');
   if (plans.fires) out.push(...firesText(plans.fires), '');
   if (plans.frozen) out.push(...frozenText(plans.frozen), '');
@@ -3988,6 +4183,8 @@ interface PlanPointer {
     stores: Store[];
     /** A plan.json from before `--roots` has none: it covered all six. */
     roots?: Sym[];
+    /** Only a front-month plan has one: the contract-mix repair is the default and is not recorded. */
+    repair?: RepairName;
     backup: string | null;
     detectorDays: string | null;
   };
@@ -4221,9 +4418,9 @@ function deleteSnapshots(sql: Sql, rows: DeleteWrite[]) {
  * STALE_UNTIL_MS (the frozen delete's date limit) for the frozen one. Both lie in the
  * past, so no live writer adds to them.
  */
-function deleteScope(step: DeleteStep): Range {
+function deleteScope(step: DeleteStep, repair?: RepairName): Range {
   return step === 'junk'
-    ? scopeRanges().snapshots
+    ? scopeRanges(repair).snapshots
     : { fromMs: 0, toMs: STALE_UNTIL_MS };
 }
 
@@ -4243,6 +4440,7 @@ async function verifyDeletes(
   planned: DeleteWrite[],
   before: number,
   present: number,
+  repair?: RepairName,
 ): Promise<void> {
   for (const group of chunks(planned, WRITE_CHUNK)) {
     const ids = group.map((d) => d.id);
@@ -4259,7 +4457,7 @@ async function verifyDeletes(
       );
     }
   }
-  const after = await countSnapshotsIn(deleteScope(step));
+  const after = await countSnapshotsIn(deleteScope(step, repair));
   if (after !== before - present) {
     throw new Error(
       `verify failed for ${step}: ${before} rows in scope before, ${after} after, ${before - present} expected`,
@@ -4461,12 +4659,13 @@ async function applyDeletes(
   step: DeleteStep,
   planned: DeleteWrite[],
   begin: () => void,
+  repair?: RepairName,
 ): Promise<number> {
   const present = await preflightDeletes(step, planned);
   begin();
-  const before = await countSnapshotsIn(deleteScope(step));
+  const before = await countSnapshotsIn(deleteScope(step, repair));
   await writeInTransactions(planned, deleteSnapshots);
-  await verifyDeletes(step, planned, before, present);
+  await verifyDeletes(step, planned, before, present, repair);
   return planned.length;
 }
 
@@ -4478,6 +4677,13 @@ export interface RecomputeOptions {
   apply: boolean;
   force: boolean;
   stores: Store[];
+  /**
+   * `--repair front-month`: recompute for the bars Phase 6 changed (see RepairName).
+   * Absent is the contract-mix repair. `backup` is then the Phase 6 backup, which
+   * every plan needs, fires included; the D1 lift is skipped and the steps of the
+   * April to June repair are refused (parseRecomputeArgs).
+   */
+  repair?: RepairName;
   /**
    * `--roots`: every step (snapshots, the stale-at-write rewrite, the junk delete and
    * the frozen-stale delete) covers only these roots, in the order given. Premarket
@@ -4587,6 +4793,7 @@ export function parseRecomputeArgs(argv: string[]): RecomputeArgs {
     envFile: null,
   };
   let rootsGiven = false;
+  let workDirGiven = false;
   for (let i = 0; i < argv.length; i += 1) {
     const flag = argv[i] ?? '';
     const next = (): string => {
@@ -4644,8 +4851,18 @@ export function parseRecomputeArgs(argv: string[]): RecomputeArgs {
     else if (flag === '--expect-fires')
       args.expectFires = parseCount(flag, next());
     else if (flag === '--backup') args.backup = next();
-    else if (flag === '--work-dir') args.workDir = next();
-    else if (flag === '--env-file') args.envFile = next();
+    else if (flag === '--work-dir') {
+      args.workDir = next();
+      workDirGiven = true;
+    } else if (flag === '--repair') {
+      const value = next();
+      if (value !== 'front-month') {
+        throw new Error(
+          `unknown repair "${value}": --repair takes front-month (leave it out for the April to June contract-mix repair)`,
+        );
+      }
+      args.repair = value;
+    } else if (flag === '--env-file') args.envFile = next();
     else if (flag === '--apply') args.apply = true;
     else if (flag === '--force') args.force = true;
     else if (flag === '--rewrite-stale-at-write')
@@ -4663,6 +4880,25 @@ export function parseRecomputeArgs(argv: string[]): RecomputeArgs {
     else if (flag === '--expect-volume-nulls')
       args.expectVolumeNulls = parseCount(flag, next());
     else throw new Error(`unknown argument ${flag}`);
+  }
+  if (args.repair === 'front-month') {
+    // These steps are about the April to June repair: the D1 lift and the thin-root
+    // and stale-until logic behind the first four, the 5b ruling behind the last two.
+    const refused: [boolean, string][] = [
+      [args.rewriteStaleAtWrite, '--rewrite-stale-at-write'],
+      [args.detectorDays != null, '--detector-days'],
+      [args.frozen, '--stores frozen'],
+      [args.deleteFrozenStale, '--delete-frozen-stale'],
+      [args.volumeNull, '--stores volume-null'],
+      [args.nullVolumeRatio, '--null-volume-ratio'],
+    ];
+    const flag = refused.find(([given]) => given)?.[1];
+    if (flag != null) {
+      throw new Error(
+        `${flag} does not apply with --repair front-month: it is a step of the April to June contract-mix repair`,
+      );
+    }
+    if (!workDirGiven) args.workDir = FRONT_MONTH.defaultWorkDir;
   }
   if (args.force && !args.apply)
     throw new Error('--force only applies with --apply');
@@ -4826,11 +5062,15 @@ export function parseRecomputeArgs(argv: string[]): RecomputeArgs {
  * needs the Phase 2 backup too. `--stores frozen` plans no store, so it needs none;
  * nor does `--stores volume-null`, whose `--backup` is the 5b apply backup, the scope
  * of the step, and not a bar backup.
+ *
+ * Under front-month the fires need it too: a fire is in scope when a bar Phase 6
+ * changed lies in its basis window, which only the backup says.
  */
 const needsBackup = (o: RecomputeOptions): boolean =>
   (o.apply && !o.frozen && !o.volumeNull) ||
   storesOf(o).includes('snapshots') ||
-  storesOf(o).includes('premarket');
+  storesOf(o).includes('premarket') ||
+  (o.repair === 'front-month' && storesOf(o).includes('fires'));
 
 function expectations(o: RecomputeOptions): Record<Store, number | null> {
   return {
@@ -4884,6 +5124,7 @@ function applyCommand(opts: RecomputeOptions, plans: Plans): string | null {
   return [
     'npx tsx scripts/recompute-futures-derived.ts --apply',
     `--work-dir ${opts.workDir}`,
+    ...(opts.repair == null ? [] : [`--repair ${opts.repair}`]),
     ...(opts.backup == null ? [] : [`--backup ${opts.backup}`]),
     ...roots,
     ...(planned.length === STORES.length
@@ -4929,6 +5170,41 @@ function optInPending(
   return rows > 0;
 }
 
+/** The repair a plan or a run belongs to, by name: a plan.json from before `--repair` is the contract-mix one. */
+const repairOf = (repair: RepairName | undefined): string =>
+  repair ?? 'contract-mix';
+
+/** What ES's changed bars are, for a front-month fire plan. */
+function esRepairOf(data: ReadonlyMap<Sym, SymbolData>): Repair {
+  const es = data.get('ES');
+  if (es == null) throw new Error('no bars were read for ES');
+  return es.repair;
+}
+
+/** The report header of a front-month run. */
+function frontMonthHeader(
+  opts: RecomputeOptions,
+  rootsLine: string,
+  backup: FrontMonthBackup | null,
+  session: string[],
+  elapsed: string,
+): string[] {
+  const { span } = FRONT_MONTH;
+  const scope = scopeRanges('front-month');
+  return [
+    `front-month repair: the bars Phase 6 changed in ${isoSecond(span.startMs)} .. ${isoSecond(span.endMs)} (end exclusive); "Phase 2" in the lines below stands for that repair (the backup's rewrites, deletes and fills)`,
+    rootsLine,
+    `snapshot scope ${isoSecond(scope.snapshots.fromMs)} .. ${isoSecond(scope.snapshots.toMs)} (span end + 20 days, cut at ${isoSecond(FRONT_MONTH.writtenUntilMs)}, the end of the Phase 6 write run: a row from there on read the repaired bars)`,
+    'fires in scope: those with a bar Phase 6 changed in the 6 minutes before and at the fire (the ES window its basis reads); every other fire with a value is the control; a NULL basis is never read or set',
+    "no D1 lift (the first row's 20-day window starts after every thin root's last month-mixed bar), no stale-at-write rewrite, no frozen-stale delete, no volume-null step, no detector days",
+    ...(backup == null || opts.backup == null
+      ? []
+      : [frontMonthBackupLine(opts.backup, backup, opts.roots)]),
+    ...session,
+    elapsed,
+  ];
+}
+
 /** Exit codes: 0 done, 1 failed or refused, 2 stopped between stores (market hours began). */
 async function run(opts: RecomputeOptions): Promise<number> {
   if (opts.apply && isMarketHours()) {
@@ -4953,11 +5229,26 @@ async function run(opts: RecomputeOptions): Promise<number> {
   if (saved != null && resumable(opts.workDir, saved)) {
     return await resume(opts, saved);
   }
+  // A plan of the other repair is not this run's to replace: its markers would
+  // skip this run's steps. Another work dir, or --force, plans from scratch.
+  if (
+    saved != null &&
+    repairOf(saved.command.repair) !== repairOf(opts.repair)
+  ) {
+    throw new Error(
+      `${pointerPath(opts.workDir)} is the plan of the ${repairOf(saved.command.repair)} repair, this run is ${repairOf(opts.repair)}: use a work dir of its own (or --force)`,
+    );
+  }
   const startedAt = Date.now();
-  const backupBars =
-    needsBackup(opts) && opts.backup != null
-      ? parseBackup(readFileSync(opts.backup, 'utf8'), opts.backup)
-      : [];
+  const frontMonthBackup: FrontMonthBackup | null =
+    opts.repair === 'front-month' && needsBackup(opts) && opts.backup != null
+      ? await readFrontMonthBackup(opts.backup, FRONT_MONTH)
+      : null;
+  let backupBars: BackupBar[] = [];
+  if (frontMonthBackup != null) backupBars = frontMonthBackup.bars;
+  else if (needsBackup(opts) && opts.backup != null) {
+    backupBars = parseBackup(readFileSync(opts.backup, 'utf8'), opts.backup);
+  }
   const detectorDays =
     opts.detectorDays == null
       ? null
@@ -4992,7 +5283,13 @@ async function run(opts: RecomputeOptions): Promise<number> {
     for (const line of session) console.log(line);
     // The D1 lift of ruling 9: what the stale-at-write rewrite and the frozen-stale
     // delete may cover depends on whether Phase 5a has taken the thin-root bars.
-    if (planned.includes('snapshots') || opts.frozen) {
+    // Front-month has neither step, and its first row's 20-day window starts after
+    // every thin root's last month-mixed bar, so there is nothing to lift: no
+    // table read, and no 5a delete asked of the backup (the Phase 6 backup has none).
+    if (
+      (planned.includes('snapshots') || opts.frozen) &&
+      opts.repair !== 'front-month'
+    ) {
       spanBars = await readThinSpanBars(opts.roots);
       const line = liftLine(spanBars);
       if (line !== '') console.log(line);
@@ -5010,18 +5307,25 @@ async function run(opts: RecomputeOptions): Promise<number> {
         ? await loadSymbolData(
             planned.includes('snapshots') ? opts.roots : ['ES'],
             backupBars,
+            opts.repair,
           )
         : new Map<Sym, SymbolData>();
-    if (planned.includes('fires')) plans.fires = await planFires();
+    if (planned.includes('fires')) {
+      plans.fires = await planFires(
+        opts.repair === 'front-month' ? esRepairOf(data) : null,
+      );
+    }
     if (planned.includes('premarket'))
-      plans.premarket = await planPremarket(data);
+      plans.premarket = await planPremarket(data, opts.repair);
     if (planned.includes('snapshots'))
       plans.snapshots = await planSnapshots(
         data,
         detectorDays,
         opts.roots,
         spanBars,
+        opts.repair,
       );
+    plans.repair = opts.repair;
     if (opts.frozen) plans.frozen = await planFrozen(opts.roots, spanBars);
     if (volumeNullScope != null)
       plans.volumeNull = await planVolumeNull(volumeNullScope);
@@ -5053,27 +5357,29 @@ async function run(opts: RecomputeOptions): Promise<number> {
         ...session,
         elapsed,
       ]
-    : opts.frozen
-      ? [
-          `frozen-stale scope: ${frozenScope.length === 0 ? 'no root' : frozenScope.join(', ')} futures_snapshots rows before ${isoSecond(STALE_UNTIL_MS)}`,
-          rootsLine,
-          ...(lift === '' ? [] : [lift]),
-          ...session,
-          elapsed,
-        ]
-      : [
-          `repaired span ${span}`,
-          rootsLine,
-          ...(lift === '' ? [] : [lift]),
-          `snapshot scope ${isoSecond(scope.snapshots.fromMs)} .. ${isoSecond(scope.snapshots.toMs)} (span end + 20 days)`,
-          `fire scope ${isoSecond(scope.fires.fromMs)} .. ${isoSecond(scope.fires.toMs)} (span end + 6 minutes)`,
-          `stale-at-write test reaches ${isoSecond(STALE_UNTIL_MS)} (the freshness gate shipped on 2026-09-30); ES and NQ from the span start, ${thinFrom} from the span end + 20 days (${isoSecond(scope.snapshots.toMs)}), all of them off the contaminated days in ${opts.detectorDays ?? 'no file (their rows after the span end are left)'}`,
-          ...(opts.backup == null
-            ? []
-            : [backupLine(opts.backup, backupBars, opts.roots)]),
-          ...session,
-          elapsed,
-        ];
+    : opts.repair === 'front-month'
+      ? frontMonthHeader(opts, rootsLine, frontMonthBackup, session, elapsed)
+      : opts.frozen
+        ? [
+            `frozen-stale scope: ${frozenScope.length === 0 ? 'no root' : frozenScope.join(', ')} futures_snapshots rows before ${isoSecond(STALE_UNTIL_MS)}`,
+            rootsLine,
+            ...(lift === '' ? [] : [lift]),
+            ...session,
+            elapsed,
+          ]
+        : [
+            `repaired span ${span}`,
+            rootsLine,
+            ...(lift === '' ? [] : [lift]),
+            `snapshot scope ${isoSecond(scope.snapshots.fromMs)} .. ${isoSecond(scope.snapshots.toMs)} (span end + 20 days)`,
+            `fire scope ${isoSecond(scope.fires.fromMs)} .. ${isoSecond(scope.fires.toMs)} (span end + 6 minutes)`,
+            `stale-at-write test reaches ${isoSecond(STALE_UNTIL_MS)} (the freshness gate shipped on 2026-09-30); ES and NQ from the span start, ${thinFrom} from the span end + 20 days (${isoSecond(scope.snapshots.toMs)}), all of them off the contaminated days in ${opts.detectorDays ?? 'no file (their rows after the span end are left)'}`,
+            ...(opts.backup == null
+              ? []
+              : [backupLine(opts.backup, backupBars, opts.roots)]),
+            ...session,
+            elapsed,
+          ];
   const report = formatReport(
     plans,
     header,
@@ -5230,25 +5536,37 @@ async function run(opts: RecomputeOptions): Promise<number> {
       workDir: resolve(opts.workDir),
       stores: opts.stores,
       roots: opts.roots,
+      // Absent for the contract-mix repair, like `roots` before --roots existed.
+      ...(opts.repair == null ? {} : { repair: opts.repair }),
       backup: opts.backup,
       detectorDays: opts.detectorDays,
     },
   };
   writePlanPointer(opts.workDir, pointer);
   // Apply from the file just written, the same way a resumed run does.
-  return await applySteps(opts.workDir, readPlan(written.path, pointer), steps);
+  return await applySteps(
+    opts.workDir,
+    readPlan(written.path, pointer),
+    steps,
+    opts.repair,
+  );
 }
 
 async function applyStep(
   step: ApplyStep,
   plan: LoadedPlan,
   workDir: string,
+  repair?: RepairName,
 ): Promise<number> {
   // Every row of the step is checked first; then the step is recorded as started,
   // so a run that dies after its first batch commits is resumed, not planned again.
   const begin = (): void => writeStarted(workDir, step, stepRows(plan, step));
-  if (step === 'junk') return await applyDeletes(step, plan.junk, begin);
-  if (step === 'frozen') return await applyDeletes(step, plan.frozen, begin);
+  if (step === 'junk') {
+    return await applyDeletes(step, plan.junk, begin, repair);
+  }
+  if (step === 'frozen') {
+    return await applyDeletes(step, plan.frozen, begin, repair);
+  }
   if (step === 'stale') return await applyStale(plan.stale, begin);
   if (step === 'volume-null') {
     const writes = plan['volume-null'];
@@ -5284,6 +5602,7 @@ async function applySteps(
   workDir: string,
   plan: LoadedPlan,
   steps: ApplyStep[],
+  repair?: RepairName,
 ): Promise<number> {
   for (const step of steps) {
     // The apply can outlast the close, so the guard is checked before every step.
@@ -5294,7 +5613,7 @@ async function applySteps(
       return 2;
     }
     try {
-      const done = await applyStep(step, plan, workDir);
+      const done = await applyStep(step, plan, workDir, repair);
       console.log(
         `${step}: ${done} row(s) ${step === 'junk' || step === 'frozen' ? 'deleted' : 'changed'} and verified`,
       );
@@ -5347,6 +5666,11 @@ function checkResume(opts: RecomputeOptions, saved: PlanPointer): string[] {
   if (stores(opts.stores) !== stores(c.stores)) {
     problems.push(
       `--stores ${opts.stores.join(' ')} was given, the saved plan was made with --stores ${c.stores.join(' ')}`,
+    );
+  }
+  if (repairOf(opts.repair) !== repairOf(c.repair)) {
+    problems.push(
+      `--repair ${repairOf(opts.repair)} was given, the saved plan was made for the ${repairOf(c.repair)} repair`,
     );
   }
   const savedRoots = c.roots ?? [...SYMBOLS];
@@ -5440,6 +5764,7 @@ async function resume(
     opts.workDir,
     readPlan(join(opts.workDir, saved.backup), saved),
     left,
+    opts.repair,
   );
 }
 

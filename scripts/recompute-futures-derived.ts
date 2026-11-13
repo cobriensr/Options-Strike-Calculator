@@ -13,6 +13,27 @@
  *   npx tsx scripts/recompute-futures-derived.ts --backup <5a backup.jsonl> --roots RTY CL GC ZN --work-dir <new dir> --detector-days <file>   # Phase 5b dry run
  *   npx tsx scripts/recompute-futures-derived.ts --stores volume-null --backup <5b apply backup.jsonl> --work-dir <new dir>   # a dry run of the volume-null step
  *   npx tsx scripts/recompute-futures-derived.ts --apply --stores volume-null --backup <5b apply backup.jsonl> --work-dir <new dir> --null-volume-ratio --expect-volume-nulls N
+ *   npx tsx scripts/recompute-futures-derived.ts --repair front-month --backup docs/tmp/futures-repair-0728/front-month-repair-2026-11-13T05-10-59Z.jsonl   # Phase 6b dry run
+ *   npx tsx scripts/recompute-futures-derived.ts --repair front-month --backup <the same file> --apply --expect-snapshots N --expect-premarket M --expect-fires K [--delete-junk-stale --expect-junk-deletes J]
+ *
+ * `--repair front-month` (Phase 6b of docs/superpowers/specs/2026-11-06-futures-session-front-month.md)
+ * recomputes the three stores for the bars Phase 6 (scripts/backfill-futures-bars.ts --repair) changed in
+ * prod futures_bars for 2026-07-28 to 11-11: it rewrote bars built from the wrong contract month, deleted
+ * bars no print backs and filled minutes with no bar. --backup is the Phase 6 backup, which the tool reads
+ * line by line and refuses, naming the line, unless it is that one run (run id 2026-11-13T05-10-59Z) with
+ * its pinned totals (9,411 rewrites, 194 deletes, 79,802 fills, 536,310 tags), every changed bar inside the
+ * span; a tag changes no value and is skipped. A snapshot row is in scope from 2026-07-28 to the end of the
+ * Phase 6 write run (2026-11-13 05:16Z: a row written from then on read the repaired bars), and gets only the
+ * fields a rewritten, deleted or filled bar feeds, by the same rules as the contract-mix repair; a fire is in
+ * scope when such a bar lies in the 6 minutes of ES its basis reads, and every other fire with a value is the
+ * control (a NULL basis is never set). The snapshot control rows from 2026-11-02 overlap the scope, so each
+ * control row before its end has the fields a changed bar feeds set aside and must match in the rest (the
+ * report counts them per root and field). What differs outside the repaired fields is drift: classified in
+ * the report, never written. Without --work-dir it uses docs/tmp/futures-derived-recompute-front-month, apart
+ * from the contract-mix work dir, and a plan.json of the other repair is refused. The D1 lift is skipped, and
+ * these steps of the April to June repair are refused: --rewrite-stale-at-write, --detector-days,
+ * --stores frozen, --delete-frozen-stale, --stores volume-null, --null-volume-ratio. --roots and
+ * --delete-junk-stale work as before. Without --repair nothing changes.
  *
  * Phase 5b (owner decision D1, 2026-11-11) runs this tool for RTY, CL, GC and ZN after
  * Phase 5a (scripts/repair-futures-contract-mix.ts --thin-roots) deleted their bars in the
@@ -118,6 +139,8 @@
  * plan again, or remove plan.json. A run that failed before any step started plans again.
  *
  * Options:
+ *   --repair front-month    recompute for the bars Phase 6 changed (see above); the only value. Leave it out for
+ *                           the April to June contract-mix repair. A resume must repeat it
  *   --backup <file>         the bar backup JSONL of the repair tool: for Phase 2 a
  *                           docs/tmp/futures-contract-repair/backup-<stamp>.jsonl, for Phase 5a the single
  *                           docs/tmp/futures-contract-repair/thin-roots/backup-thin-roots.jsonl, never a
@@ -125,7 +148,8 @@
  *                           With `--stores volume-null` it is the 5b apply backup, the scope of that step,
  *                           and is required with or without --apply
  *   --work-dir <dir>        report.txt, backup-*.jsonl and the {store}.applied
- *                           markers (default docs/tmp/futures-derived-recompute). A dry run writes report.txt
+ *                           markers (default docs/tmp/futures-derived-recompute, or with --repair front-month
+ *                           docs/tmp/futures-derived-recompute-front-month). A dry run writes report.txt
  *                           (and merge-state.txt); an --apply leaves those alone and writes
  *                           apply-<time>-report.txt (and apply-<time>-merge-state.txt). So does a dry run
  *                           once an apply has run in the work dir (any {step}.applied or {step}.started
