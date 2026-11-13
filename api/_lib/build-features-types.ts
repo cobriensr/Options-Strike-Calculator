@@ -85,6 +85,7 @@ export interface SnapshotRow {
 
 // ── Checkpoint times (minutes after midnight ET) ───────────
 
+// 600 = 10:00 AM ET here, unlike FEATURE_SAMPLE_MINUTES_CT (api/cron/build-features.ts): 600 = 10:00 AM CT.
 export const CHECKPOINTS = [
   { label: 't1', minutes: 600 }, // 10:00 AM
   { label: 't2', minutes: 630 }, // 10:30 AM

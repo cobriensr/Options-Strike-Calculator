@@ -20,10 +20,13 @@
  *     the date it shows, and the upsert would then protect that row from
  *     the date's own replay;
  *   - a weekend or NYSE holiday, live or backtest, is skipped: 200 { id:
- *     null, saved: false, skipped: 'non-trading-day' }, with a warning log
- *     and a Sentry warning (snapshot.save_for_non_trading_day). The two skips
- *     above are checked first, so a closed date that is also in the future,
- *     or a live save for another closed date, reports the earlier reason.
+ *     null, saved: false, skipped: 'non-trading-day' }, with a warning log.
+ *     A live save (isBacktest not true) also raises a Sentry warning
+ *     (snapshot.save_for_non_trading_day): it is a stale tab or a bad POST.
+ *     A backtest save on a closed date is expected and is logged only. The
+ *     two skips above are checked first, so a closed date that is also in the
+ *     future, or a live save for another closed date, reports the earlier
+ *     reason.
  *
  * The server decides the event flag and names. It looks the date up in
  * `getEventsForDate` (FRED, and the FOMC and early-close calendar) and stores
@@ -161,16 +164,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
     // A weekend or NYSE holiday owns no snapshot rows, live or replayed. The
     // client guards only its live path, so a stale tab, a direct POST or a
-    // backtest save can still get here.
+    // backtest save can still get here. Every skip is logged; only a live
+    // save reaches Sentry, because it means a stale tab or a bad POST. A
+    // backtest save on a closed date is expected.
     if (!isTradingDay(date)) {
       logger.warn(
         { date, entryTime, isBacktest },
         'Skipped a snapshot save for a non-trading day',
       );
-      Sentry.captureMessage('snapshot.save_for_non_trading_day', {
-        level: 'warning',
-        extra: { date, entryTime, isBacktest },
-      });
+      if (isBacktest !== true) {
+        Sentry.captureMessage('snapshot.save_for_non_trading_day', {
+          level: 'warning',
+          extra: { date, entryTime, isBacktest },
+        });
+      }
       done({ status: 200 });
       return res
         .status(200)

@@ -430,7 +430,7 @@ describe('POST /api/snapshot', () => {
         ['a Saturday', SATURDAY],
         ['Good Friday', GOOD_FRIDAY],
       ])(
-        'skips a backtest save for %s and reports it',
+        'skips a backtest save for %s and logs it, with no Sentry warning',
         async (_label, date) => {
           const res = mockResponse();
           await handler(
@@ -455,14 +455,9 @@ describe('POST /api/snapshot', () => {
           expect(saveSnapshot).not.toHaveBeenCalled();
           // The skip comes before the event lookup, which would call FRED.
           expect(getEventsForDate).not.toHaveBeenCalled();
-          expect(Sentry.captureMessage).toHaveBeenCalledTimes(1);
-          expect(Sentry.captureMessage).toHaveBeenCalledWith(
-            'snapshot.save_for_non_trading_day',
-            expect.objectContaining({
-              level: 'warning',
-              extra: expect.objectContaining({ date }),
-            }),
-          );
+          // A backtest replay of a closed date is expected noise: the log
+          // keeps it, Sentry does not.
+          expect(Sentry.captureMessage).not.toHaveBeenCalled();
           expect(logger.warn).toHaveBeenCalledTimes(1);
           expect(logger.warn).toHaveBeenCalledWith(
             expect.objectContaining({ date, entryTime: '10:30 AM CT' }),
@@ -473,9 +468,10 @@ describe('POST /api/snapshot', () => {
         },
       );
 
-      it('skips a live save when today itself is a closed day', async () => {
+      it('skips a live save when today itself is a closed day, logging it and reporting it to Sentry', async () => {
         // 11:00 EDT on Good Friday: the live-for-other-date guard lets it
-        // through (the date is today), the trading-day guard does not.
+        // through (the date is today), the trading-day guard does not. A live
+        // save on a closed day is a stale tab or a bad direct POST.
         vi.setSystemTime(new Date('2026-04-03T15:00:00Z'));
         const res = mockResponse();
         await handler(
@@ -492,14 +488,44 @@ describe('POST /api/snapshot', () => {
           skipped: 'non-trading-day',
         });
         expect(saveSnapshot).not.toHaveBeenCalled();
+        expect(Sentry.captureMessage).toHaveBeenCalledTimes(1);
         expect(Sentry.captureMessage).toHaveBeenCalledWith(
           'snapshot.save_for_non_trading_day',
-          expect.objectContaining({ level: 'warning' }),
+          expect.objectContaining({
+            level: 'warning',
+            extra: expect.objectContaining({ date: GOOD_FRIDAY }),
+          }),
         );
+        expect(logger.warn).toHaveBeenCalledTimes(1);
         expect(logger.warn).toHaveBeenCalledWith(
           expect.objectContaining({ date: GOOD_FRIDAY }),
           expect.stringContaining('non-trading day'),
         );
+      });
+
+      it('also reports a live save with isBacktest false, which is not a backtest', async () => {
+        vi.setSystemTime(new Date('2026-04-03T15:00:00Z'));
+        const res = mockResponse();
+        await handler(
+          mockRequest({
+            method: 'POST',
+            body: {
+              date: GOOD_FRIDAY,
+              entryTime: '10:30 AM CT',
+              isBacktest: false,
+            },
+          }),
+          res,
+        );
+
+        expect((res._json as { skipped?: string }).skipped).toBe(
+          'non-trading-day',
+        );
+        expect(Sentry.captureMessage).toHaveBeenCalledWith(
+          'snapshot.save_for_non_trading_day',
+          expect.objectContaining({ level: 'warning' }),
+        );
+        expect(logger.warn).toHaveBeenCalledTimes(1);
       });
 
       it('leaves the two earlier skips ahead of it', async () => {
