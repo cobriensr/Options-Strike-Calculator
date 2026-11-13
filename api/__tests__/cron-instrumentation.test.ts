@@ -127,7 +127,8 @@ import {
 } from '../_lib/cron-instrumentation.js';
 import { cronGuard } from '../_lib/api-helpers.js';
 import { reportCronRun } from '../_lib/axiom.js';
-import { Sentry } from '../_lib/sentry.js';
+import { Sentry, metrics } from '../_lib/sentry.js';
+import { withDbRetry } from '../_lib/db.js';
 import logger from '../_lib/logger.js';
 import { waitUntil } from '@vercel/functions';
 
@@ -574,6 +575,158 @@ describe('withCronInstrumentation', () => {
 
     expect(res._status).toBe(500);
   });
+
+  // ── Transient Neon error: a warning plus a metric, not an exception ──
+  // Same policy as `sendDbErrorResponse` on endpoints (classifier:
+  // `err instanceof TransientDbError`, which only `withDbRetry` throws, and
+  // only once its retries ran out). The run still failed, so the check-in,
+  // the Axiom report and the HTTP status stay `error` / 500.
+
+  /**
+   * What a handler throws when Neon blips past its own retries: the real
+   * `withDbRetry` (zero retries, so no backoff timer) wrapping a raw error.
+   */
+  function exhaustedDbRetry(rawMessage: string): Promise<never> {
+    return withDbRetry(() => Promise.reject(new Error(rawMessage)), 0);
+  }
+
+  it('transient DB error: warns and counts db_timeout, never calls captureException, still fails the run', async () => {
+    vi.mocked(cronGuard).mockReturnValue(guardOk);
+    const handler = vi.fn(() => exhaustedDbRetry('db attempt timeout'));
+    const wrapped = withCronInstrumentation('monitored-job', handler);
+
+    const res = mockResponse();
+    await wrapped(mockRequest(), res);
+
+    expect(Sentry.captureException).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        err: expect.objectContaining({ name: 'TransientDbError' }) as unknown,
+        durationMs: expect.any(Number) as unknown,
+      }),
+      'monitored-job transient db timeout',
+    );
+    expect(logger.error).not.toHaveBeenCalled();
+    expect(metrics.increment).toHaveBeenCalledTimes(1);
+    expect(metrics.increment).toHaveBeenCalledWith('monitored_job.db_timeout');
+
+    // The run failed, so the Sentry cron monitor goes red.
+    const calls = getCheckInCalls();
+    expect(calls).toHaveLength(2);
+    expect(calls[1]!.body).toMatchObject({
+      monitor_slug: 'monitored-job',
+      status: 'error',
+      check_in_id: calls[0]!.body.check_in_id,
+    });
+    expect(reportCronRun).toHaveBeenCalledWith(
+      'monitored-job',
+      expect.objectContaining({
+        status: 'error',
+        message: 'db attempt timeout',
+        error: 'db attempt timeout',
+      }),
+    );
+    // Response unchanged from the genuine-error path.
+    expect(res._status).toBe(500);
+    expect(res._json).toEqual({
+      job: 'monitored-job',
+      error: 'Internal error',
+    });
+    // The SDK queue still drains: the counted metric rides it.
+    expect(Sentry.flush).toHaveBeenCalledTimes(1);
+    expect(waitUntil).toHaveBeenCalledTimes(1);
+  });
+
+  it('transient DB error: errorStatus and errorPayload overrides still shape the response', async () => {
+    vi.mocked(cronGuard).mockReturnValue(guardOk);
+    const handler = vi.fn(() => exhaustedDbRetry('fetch failed'));
+    const wrapped = withCronInstrumentation('monitored-job', handler, {
+      errorStatus: () => 502,
+      errorPayload: () => ({ job: 'monitored-job', error: 'upstream offline' }),
+    });
+
+    const res = mockResponse();
+    await wrapped(mockRequest(), res);
+
+    expect(Sentry.captureException).not.toHaveBeenCalled();
+    expect(res._status).toBe(502);
+    expect(res._json).toEqual({
+      job: 'monitored-job',
+      error: 'upstream offline',
+    });
+  });
+
+  it.each([
+    ['db attempt timeout', 'monitored-job'],
+    ['fetch failed', 'high-freq-job'],
+    ['server conn crashed', 'not-in-map'],
+  ])(
+    'classifier: a raw "%s" that withDbRetry exhausted is transient (%s)',
+    async (rawMessage, jobName) => {
+      vi.mocked(cronGuard).mockReturnValue(guardOk);
+      const handler = vi.fn(() => exhaustedDbRetry(rawMessage));
+      const wrapped = withCronInstrumentation(jobName, handler);
+
+      const res = mockResponse();
+      await wrapped(mockRequest(), res);
+
+      expect(Sentry.captureException).not.toHaveBeenCalled();
+      expect(metrics.increment).toHaveBeenCalledWith(
+        `${jobName.replaceAll('-', '_')}.db_timeout`,
+      );
+      expect(res._status).toBe(500);
+    },
+  );
+
+  it.each([
+    [
+      'the same message, but never wrapped by withDbRetry',
+      () => Promise.reject(new Error('db attempt timeout')),
+    ],
+    [
+      'a raw upstream fetch failure (UW, Schwab) that is not a DB error',
+      () => Promise.reject(new TypeError('fetch failed')),
+    ],
+    [
+      'an error that only borrows the TransientDbError name',
+      () =>
+        Promise.reject(
+          Object.assign(new Error('db attempt timeout'), {
+            name: 'TransientDbError',
+          }),
+        ),
+    ],
+    [
+      'a genuine DB error that withDbRetry passes through raw',
+      () =>
+        withDbRetry(
+          () => Promise.reject(new Error('column "foo" does not exist')),
+          0,
+        ),
+    ],
+  ])(
+    'classifier: %s keeps today’s single captureException',
+    async (_label, thrown) => {
+      vi.mocked(cronGuard).mockReturnValue(guardOk);
+      const handler = vi.fn(thrown);
+      const wrapped = withCronInstrumentation('monitored-job', handler);
+
+      const res = mockResponse();
+      await wrapped(mockRequest(), res);
+
+      expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+      expect(Sentry.captureException).toHaveBeenCalledWith(
+        expect.any(Error) as unknown,
+      );
+      expect(logger.error).toHaveBeenCalledWith(
+        expect.objectContaining({ err: expect.any(Error) as unknown }),
+        'monitored-job error',
+      );
+      expect(logger.warn).not.toHaveBeenCalled();
+      expect(metrics.increment).not.toHaveBeenCalled();
+      expect(res._status).toBe(500);
+    },
+  );
 
   it('measures duration as monotonic non-negative ms', async () => {
     vi.mocked(cronGuard).mockReturnValue(guardOk);

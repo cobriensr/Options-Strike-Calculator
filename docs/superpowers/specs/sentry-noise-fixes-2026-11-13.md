@@ -50,6 +50,7 @@ One implementer stream at a time, in this order. Each phase ships on its own, wi
   - the check-in still reports `error`, because the run failed.
 - **Files.** `api/_lib/cron-instrumentation.ts`, its test.
 - **Deploy.** Vercel. Push outside market hours.
+  - Precondition: push only after the cron monitors are unmuted and read back as unmuted. Until then, a cron's exception is its only email path, because many monitors are muted. This change removes that exception for a transient Neon error, so a muted monitor would leave the failed run with no email at all.
 
 ### Phase 3: uw-stream reports a reconnect storm once per incident, and files each exception once
 

@@ -27,9 +27,10 @@ import { randomUUID } from 'node:crypto';
 import { waitUntil } from '@vercel/functions';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import logger from './logger.js';
-import { Sentry } from './sentry.js';
+import { Sentry, metrics } from './sentry.js';
 import { cronGuard } from './api-helpers.js';
 import { reportCronRun } from './axiom.js';
+import { TransientDbError } from './transient-db-error.js';
 import { SCHEDULE_MAP, type CronMonitorConfig } from './cron-schedules.js';
 // Direct import (not via api-helpers/auth-helpers): see secret-compare.ts.
 import { bearerMatches } from './secret-compare.js';
@@ -657,7 +658,10 @@ export interface WithCronInstrumentationOptions {
  *          and a 200 JSON response with the same fields.
  *        - exception path: `Sentry.captureException(err)`, an error log
  *          with the duration, `reportCronRun` with `status: 'error'`,
- *          and a 500 JSON response.
+ *          and a 500 JSON response. A `TransientDbError` (a Neon blip
+ *          that outlasted `withDbRetry`) logs a warning and counts
+ *          `<job>.db_timeout` instead of capturing; the check-in, the
+ *          report and the response are the same.
  *   4. Duration tracking (closes the loop on observability for every job).
  */
 export function withCronInstrumentation(
@@ -834,8 +838,23 @@ export function withCronInstrumentation(
         });
       }
 
-      Sentry.captureException(err);
-      logger.error({ err, durationMs }, `${jobName} error`);
+      // Same transient-vs-genuine policy as `sendDbErrorResponse` on
+      // endpoints (transient-db-response.ts; stated in request-scope.ts):
+      // a TransientDbError is a warning plus a `<label>.db_timeout`
+      // counter, with no exception capture. `withDbRetry` is the only
+      // thrower (db.ts) and only after its own retries ran out, so this is
+      // a Neon blip that outlasted them: not an actionable Sentry issue.
+      // A raw error the handler never wrapped in `withDbRetry` is not
+      // classified here, exactly as on endpoints, and stays captured.
+      // Only the capture is skipped: the check-in above, the Axiom report
+      // and the response below still say the run failed, because it did.
+      if (err instanceof TransientDbError) {
+        logger.warn({ err, durationMs }, `${jobName} transient db timeout`);
+        metrics.increment(`${jobName.replaceAll('-', '_')}.db_timeout`);
+      } else {
+        Sentry.captureException(err);
+        logger.error({ err, durationMs }, `${jobName} error`);
+      }
 
       // reportCronRun never throws — it swallows errors internally — but
       // we still wrap defensively so a downstream rewrite can't break the
