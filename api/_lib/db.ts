@@ -189,7 +189,11 @@ export async function withDbRetry<T>(
     try {
       if (perAttemptTimeoutMs == null) return await fn();
       // Race against a per-attempt timeout. Neon's HTTP serverless
-      // driver has no AbortSignal hook, so a hung connection would
+      // driver does accept an AbortSignal, as `fetchOptions.signal` through
+      // `sql.query(text, params, { fetchOptions })` or
+      // `sql.transaction(..., { fetchOptions })`, but not through a tagged
+      // template, and `fn` is almost always one. So the race abandons the
+      // request rather than cancelling it, and a hung connection would
       // otherwise consume the entire function budget (300s) and
       // prevent any retry. Throwing a retryable error here lets the
       // loop fall through to the next attempt — the retry classifier

@@ -134,7 +134,6 @@ export default withCronCheckin('curate-lessons', async (req, res) => {
 
     // Step 1: Query current active lesson count (for unchanged calculation)
     const sql = getDb();
-    await withDbRetry(() => sql`SET statement_timeout = '60000'`, 2, 10_000); // 60s per statement (longer due to complex lesson queries)
     const activeCountRows = await withDbRetry(
       () => sql`
         SELECT COUNT(*)::int AS count FROM lessons WHERE status = 'active'

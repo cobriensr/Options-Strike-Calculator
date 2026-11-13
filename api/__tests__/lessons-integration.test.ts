@@ -381,9 +381,9 @@ describe('Lessons learned integration: cron → DB → analyze', () => {
     let callCount = 0;
     mockSql.mockImplementation(async () => {
       callCount++;
-      if (callCount === 2) return [{ count: 5 }];
-      if (callCount === 3) return [review];
-      if (callCount === 4)
+      if (callCount === 1) return [{ count: 5 }];
+      if (callCount === 2) return [review];
+      if (callCount === 3)
         return [
           {
             id: 10,
@@ -393,7 +393,7 @@ describe('Lessons learned integration: cron → DB → analyze', () => {
             vix_term_signal: 'contango',
           },
         ];
-      if (callCount === 5) return [{ id: LESSON_ID }];
+      if (callCount === 4) return [{ id: LESSON_ID }];
       return [];
     });
 
@@ -500,9 +500,9 @@ describe('Lessons learned integration: cron → DB → analyze', () => {
     let callCount = 0;
     mockSql.mockImplementation(async () => {
       callCount++;
-      if (callCount === 2) return [{ count: 5 }];
-      if (callCount === 3) return [review];
-      if (callCount === 4)
+      if (callCount === 1) return [{ count: 5 }];
+      if (callCount === 2) return [review];
+      if (callCount === 3)
         return [
           {
             id: 10,
@@ -512,7 +512,7 @@ describe('Lessons learned integration: cron → DB → analyze', () => {
             vix_term_signal: 'contango',
           },
         ];
-      if (callCount === 5) return [{ id: LESSON_ID }];
+      if (callCount === 4) return [{ id: LESSON_ID }];
       return [];
     });
 
