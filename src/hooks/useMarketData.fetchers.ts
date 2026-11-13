@@ -6,6 +6,8 @@
  * dependencies.
  */
 
+import { parseEventsResponse } from '../lib/events-schema';
+import { INVALID_SHAPE_ERROR } from '../lib/response-guard';
 import { captureUnlessAuth } from '../lib/sentry-helpers';
 import { getErrorMessage } from '../utils/error';
 
@@ -112,13 +114,35 @@ export interface EndpointResults {
   movers: FetchResult<MoversResponse>;
 }
 
+/**
+ * The forward events list, checked against the events schema (the one
+ * useEventsForDate applies to a single date's response). A body that fails it
+ * is reported to Sentry and comes back as an error, so a malformed list never
+ * reaches state; processEndpointResults then leaves `events` as it was. A valid
+ * body is returned as received: the schema leaves out `cached` and `asOf`, and
+ * would strip them from a stored parse.
+ */
+async function fetchForwardEvents(): Promise<FetchResult<EventsResponse>> {
+  const result = await fetchJson<EventsResponse>(
+    `/api/events?days=${FORWARD_EVENT_DAYS}`,
+  );
+  if ('error' in result) return result;
+  try {
+    parseEventsResponse(result.data, { request: 'forward' });
+  } catch {
+    // Already reported by parseEventsResponse.
+    return { error: INVALID_SHAPE_ERROR, status: 200 };
+  }
+  return result;
+}
+
 /** Fetch all five endpoints in parallel. */
 export async function fetchAllEndpoints(): Promise<EndpointResults> {
   const [quotes, intraday, yesterday, events, movers] = await Promise.all([
     fetchJson<QuotesResponse>('/api/quotes'),
     fetchJson<IntradayResponse>('/api/intraday'),
     fetchJson<YesterdayResponse>('/api/yesterday'),
-    fetchJson<EventsResponse>(`/api/events?days=${FORWARD_EVENT_DAYS}`),
+    fetchForwardEvents(),
     fetchJson<MoversResponse>('/api/movers'),
   ]);
 

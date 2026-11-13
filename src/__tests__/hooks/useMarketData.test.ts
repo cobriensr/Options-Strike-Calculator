@@ -2,6 +2,12 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, waitFor, act } from '@testing-library/react';
 import { StrictMode, createElement, type ReactNode } from 'react';
 import { useMarketData, computeMarketSession } from '../../hooks/useMarketData';
+import { captureUnlessAuth } from '../../lib/sentry-helpers';
+
+vi.mock('../../lib/sentry-helpers', () => ({
+  captureUnlessAuth: vi.fn(),
+}));
+const mockCaptureUnlessAuth = vi.mocked(captureUnlessAuth);
 
 // Wrapper that mounts the hook under React StrictMode so updaters and effects
 // are double-invoked in dev, exactly as they are in the real app's
@@ -168,6 +174,7 @@ const AFTER_HOURS = new Date(Date.UTC(2026, 3, 9, 22, 0, 0));
 const SESSION_CLOSED_WEEKEND = new Date(Date.UTC(2026, 3, 11, 14, 0, 0));
 
 beforeEach(() => {
+  mockCaptureUnlessAuth.mockReset();
   vi.useFakeTimers({ shouldAdvanceTime: true });
   // Default to a closed session so tests that don't advance timers never
   // accidentally trigger the auto-refresh interval. Tests that need
@@ -359,7 +366,13 @@ describe('useMarketData: fetchJson edge cases', () => {
           if (url.includes('/api/yesterday'))
             return Promise.resolve(mockYesterday);
           if (url.includes('/api/events'))
-            return Promise.resolve({ events: [] });
+            return Promise.resolve({
+              events: [],
+              startDate: '',
+              endDate: '',
+              cached: false,
+              asOf: '',
+            });
           if (url.includes('/api/movers'))
             return Promise.resolve({ up: [], down: [] });
           return Promise.resolve({});
@@ -478,19 +491,20 @@ describe('useMarketData: auto-refresh', () => {
 // ============================================================
 
 describe('useMarketData: events and movers', () => {
+  const validEvent = {
+    date: '2026-03-11',
+    event: 'CPI',
+    description: 'CPI',
+    time: '8:30 AM',
+    severity: 'high',
+    source: 'fred',
+  };
+  const eventsRange = { startDate: '2026-03-01', endDate: '2026-03-31' };
+
   it('stores events data when endpoint succeeds', async () => {
     const mockEvents = {
-      events: [
-        {
-          date: '2026-03-11',
-          event: 'CPI',
-          description: 'CPI',
-          time: '8:30 AM',
-          severity: 'high',
-        },
-      ],
-      startDate: '2026-03-01',
-      endDate: '2026-03-31',
+      events: [validEvent],
+      ...eventsRange,
       cached: false,
       asOf: '2026-03-11T08:00:00Z',
     };
@@ -505,8 +519,60 @@ describe('useMarketData: events and movers', () => {
     const { result } = renderHook(() => useMarketData());
     await waitFor(() => expect(result.current.loading).toBe(false));
 
-    expect(result.current.data.events).not.toBeNull();
+    // Stored as received: the schema leaves `cached` and `asOf` out, and
+    // must not strip them from what is stored.
+    expect(result.current.data.events).toEqual(mockEvents);
+    expect(mockCaptureUnlessAuth).not.toHaveBeenCalled();
   });
+
+  it.each([
+    ['events is not an array', { events: 'nope', ...eventsRange }],
+    [
+      'an event has no source',
+      {
+        events: [{ ...validEvent, source: undefined }],
+        ...eventsRange,
+      },
+    ],
+    [
+      'an event has an unknown severity',
+      {
+        events: [{ ...validEvent, severity: 'extreme' }],
+        ...eventsRange,
+      },
+    ],
+    ['startDate is missing', { events: [], endDate: eventsRange.endDate }],
+    ['endDate is missing', { events: [], startDate: eventsRange.startDate }],
+  ])(
+    'leaves events null and reports to Sentry when the forward list has %s',
+    async (_name, malformed) => {
+      const fetchMock = mockFetchResponses({
+        events: {
+          status: 200,
+          body: malformed as unknown as Record<string, unknown>,
+        },
+      });
+      globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+      const { result } = renderHook(() => useMarketData());
+      await waitFor(() => expect(result.current.loading).toBe(false));
+
+      expect(result.current.data.events).toBeNull();
+      // Only the events entry is dropped; the other endpoints are stored.
+      expect(result.current.data.quotes).not.toBeNull();
+      expect(result.current.data.movers).not.toBeNull();
+      expect(mockCaptureUnlessAuth).toHaveBeenCalledTimes(1);
+      const [error, options] = mockCaptureUnlessAuth.mock.calls[0]!;
+      expect((error as Error).message).toBe(
+        'events response failed schema validation',
+      );
+      expect(options).toMatchObject({
+        contexts: {
+          events: { request: 'forward', issueCount: expect.any(Number) },
+        },
+      });
+    },
+  );
 
   it('stores movers data when endpoint succeeds', async () => {
     const mockMovers = {

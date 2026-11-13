@@ -507,20 +507,31 @@ describe('useEventsForDate: failures read as "no events known"', () => {
     expect(result.current).toBeUndefined();
   });
 
+  // Each body is whole but for the one thing named, so a case cannot pass on
+  // some other missing field.
   it.each([
-    ['events is not an array', { events: 'nope', startDate: PAST }],
+    [
+      'events is not an array',
+      { events: 'nope', startDate: PAST, endDate: PAST },
+    ],
     [
       'an event has no severity',
       {
         events: [{ date: PAST, event: 'CPI', description: 'd', time: '8:30' }],
         startDate: PAST,
+        endDate: PAST,
       },
     ],
     [
       'an event has an unknown severity',
-      { events: [{ ...ev(PAST), severity: 'extreme' }], startDate: PAST },
+      {
+        events: [{ ...ev(PAST), severity: 'extreme' }],
+        startDate: PAST,
+        endDate: PAST,
+      },
     ],
-    ['startDate is missing', { events: [ev(PAST)] }],
+    ['startDate is missing', { events: [ev(PAST)], endDate: PAST }],
+    ['endDate is missing', { events: [ev(PAST)], startDate: PAST }],
     ['the body is not an object', ['CPI']],
   ])(
     'returns undefined and reports to Sentry when %s',
@@ -537,7 +548,7 @@ describe('useEventsForDate: failures read as "no events known"', () => {
       );
       expect(options).toMatchObject({
         contexts: {
-          eventsForDate: { date: PAST, issueCount: expect.any(Number) },
+          events: { request: PAST, issueCount: expect.any(Number) },
         },
       });
     },
@@ -561,7 +572,7 @@ describe('useEventsForDate: failures read as "no events known"', () => {
 
     expect(mockCaptureUnlessAuth).toHaveBeenCalledTimes(1);
     expect(mockCaptureUnlessAuth.mock.calls[0]![1]).toMatchObject({
-      contexts: { eventsForDate: { date: PAST } },
+      contexts: { events: { request: PAST } },
     });
   });
 

@@ -34,42 +34,16 @@
  */
 
 import { useEffect, useRef } from 'react';
-import { z } from 'zod';
 
 import {
-  INVALID_SHAPE_ERROR,
-  summarizeZodIssues,
-} from '../lib/response-guard.js';
-import { captureUnlessAuth } from '../lib/sentry-helpers.js';
+  parseEventsResponse,
+  type EventsResponseBody,
+} from '../lib/events-schema.js';
 import type { EventItem } from '../types/api.js';
 import { useDebounced } from './useDebounced.js';
 import { useETToday } from './useETToday.js';
 import { useFetchedData } from './useFetchedData.js';
 import { FORWARD_EVENT_DAYS } from './useMarketData.fetchers.js';
-
-// ── Response schema ──────────────────────────────────────────────────────
-// Every field of an event is read (the banner prints description and time,
-// both consumers filter on date and event, and severity picks the colour), so
-// an event is checked whole. `satisfies` ties the schema to EventItem: a field
-// added to the type without one here fails the type-check. Of the envelope only
-// `events` and `startDate` are read. `startDate` is required, not optional: it
-// is the staleness key, and the gate passes data through when the key is absent.
-
-const eventItemSchema = z.object({
-  date: z.string(),
-  event: z.string(),
-  description: z.string(),
-  time: z.string(),
-  severity: z.enum(['high', 'medium']),
-  source: z.enum(['fred', 'static', 'finnhub']),
-}) satisfies z.ZodType<EventItem>;
-
-const eventsForDateSchema = z.object({
-  events: z.array(eventItemSchema),
-  startDate: z.string(),
-});
-
-type EventsForDateResponse = z.infer<typeof eventsForDateSchema>;
 
 /** What the hook reads of the forward list: its events and the range it covers. */
 interface ForwardEvents {
@@ -137,29 +111,15 @@ export function useEventsForDate(
     if (requestDate != null) requestedDateRef.current = requestDate;
   }, [requestDate]);
 
-  const parse = (raw: unknown): EventsForDateResponse => {
-    const parsed = eventsForDateSchema.safeParse(raw);
-    if (!parsed.success) {
-      captureUnlessAuth(new Error('events response failed schema validation'), {
-        contexts: {
-          eventsForDate: {
-            date: requestedDateRef.current,
-            ...summarizeZodIssues(parsed.error.issues),
-          },
-        },
-      });
-      // Handled like a failed fetch: useFetchedData sets `error`, no data.
-      throw new Error(INVALID_SHAPE_ERROR);
-    }
-    return parsed.data;
-  };
-
-  const { data } = useFetchedData<EventsForDateResponse>({
+  const { data } = useFetchedData<EventsResponseBody>({
     url: requestDate == null ? null : `/api/events?from=${requestDate}&days=1`,
     // Only gates the recurring poll, which `historical` switches off.
     marketOpen: false,
     historical: true,
-    parse,
+    // A body that fails the schema is reported, then thrown as a failed fetch:
+    // useFetchedData sets `error` and stores no data.
+    parse: (raw) =>
+      parseEventsResponse(raw, { request: requestedDateRef.current }),
     requestKey: selectedDate,
     responseKey: (d) => d.startDate,
   });
