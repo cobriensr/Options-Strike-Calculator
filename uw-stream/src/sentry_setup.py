@@ -89,6 +89,41 @@ def _before_send(event: dict[str, Any], hint: dict[str, Any]) -> dict[str, Any]:
     return event
 
 
+# Libraries whose own ERROR records are the only trace of a failure. Turning the
+# logging integration's event level off (below) dropped them with the rest.
+# The ERROR sites on the websockets client path, in websockets 17.4:
+#   asyncio/connection.py "keepalive ping failed" (the socket stays open with no
+#     pings) and "unexpected internal error";
+#   protocol.py "parser failed".
+# asyncio's come from ``call_exception_handler`` (base_events.py):
+#   "Exception in callback" and "Task exception was never retrieved".
+# The websockets server-side sites (server.py, asyncio/server.py) never run here.
+_LIBRARY_ERROR_LOGGERS = ("websockets", "asyncio")
+
+
+def _attach_library_error_handlers() -> None:
+    """File one Sentry event for each ERROR record of the libraries above.
+
+    One ``EventHandler`` per logger, however many times this runs: a second
+    would file every record twice.
+
+    A handler on a logger also ends the stdlib's last-resort stderr line for
+    that logger's records. ``websockets`` already has a ``NullHandler``, so its
+    records never reached stderr. ``asyncio`` has none and nothing configures
+    the root logger, so its warnings and errors were reaching Railway's logs
+    that way; keep them there by attaching the last-resort handler to it.
+    """
+    from sentry_sdk.integrations.logging import EventHandler
+
+    for name in _LIBRARY_ERROR_LOGGERS:
+        library_logger = logging.getLogger(name)
+        if any(isinstance(h, EventHandler) for h in library_logger.handlers):
+            continue
+        if not library_logger.hasHandlers() and logging.lastResort is not None:
+            library_logger.addHandler(logging.lastResort)
+        library_logger.addHandler(EventHandler(level=logging.ERROR))
+
+
 def init_sentry() -> None:
     """Initialize Sentry if SENTRY_DSN is set.
 
@@ -120,18 +155,21 @@ def init_sentry() -> None:
             server_name="uw-stream",
             release=os.environ.get("RAILWAY_DEPLOYMENT_ID"),
             before_send=_before_send,
-            # Every event is an explicit capture. The SDK's default turns each
-            # ERROR log record into an event too, and ``capture_exception``
-            # below logs at error and then sends the exception, so one failure
-            # filed two issues. INFO and up stay as breadcrumbs. A failure that
-            # was only ever logged at error sends its own capture beside the
-            # log line (futures_front_month, futures_trades, main's drain,
-            # ``RateLimitedLogger.error``). As nightly/src/monitoring.py does.
+            # Every service event is an explicit capture. The SDK's default
+            # turns each ERROR log record into an event too, and
+            # ``capture_exception`` below logs at error and then sends the
+            # exception, so one failure filed two issues. INFO and up stay as
+            # breadcrumbs. A failure that was only ever logged at error sends
+            # its own capture beside the log line (futures_front_month,
+            # futures_trades, main's drain, ``RateLimitedLogger.error``). As
+            # nightly/src/monitoring.py does. The libraries' own ERROR records
+            # are the exception: see ``_attach_library_error_handlers``.
             integrations=[LoggingIntegration(level=logging.INFO, event_level=None)],
         )
         # Tag every event so the shared sidecar DSN can be filtered.
         sentry_sdk.set_tag("service", "uw-stream")
         _sentry_enabled = True
+        _attach_library_error_handlers()
         log.info("Sentry initialized for uw-stream")
     except Exception as exc:
         log.error("Failed to initialize Sentry: %s", exc)

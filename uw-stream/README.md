@@ -466,17 +466,30 @@ migration chain, and all schema changes go there.)
   when reconnects in the last hour, across all shards, reach 5 per shard
   (40 with 8 shards, 30 with the mirror sockets off). It fires once per
   incident: at most one an hour for the whole process
-  (`_STORM_ALERT_WINDOW_S` in `src/connector.py`, the same hour the count
-  covers), and a storm still going when the hour ends alerts again. A
+  (`_STORM_ALERT_WINDOW_S` in `src/connector.py`, which is the
+  `RECONNECT_HORIZON` in `src/state.py` the count covers), and a storm still
+  going when the hour ends alerts again. A second incident inside that hour
+  is not announced; its drops still log and show in `reconnects_last_hour`. A
   temporary `ws-canary` Railway service (`scripts/ws-canary/`) is measuring
   which network hop resets these connections.
-- **What reaches Sentry.** Only explicit captures (`capture_exception`,
-  `capture_message` in `src/sentry_setup.py`). The SDK's logging integration
-  is set to `event_level=None`, so an error log line is a breadcrumb on the
-  next event and never an event of its own: a failure that is logged at error
-  level and must reach Sentry sends its own capture beside the log line (the
-  throttled `rate_limited_log.error` does it for itself, once per window).
-  Before 2026-11-13 each logged-and-captured failure filed two issues.
+- **What reaches Sentry.** Four sources:
+  - the service's explicit captures (`capture_exception`, `capture_message`
+    in `src/sentry_setup.py`);
+  - ERROR records of the `websockets` and `asyncio` loggers, through an
+    `EventHandler` that `init_sentry` attaches to each (a failed keepalive
+    ping, `unexpected internal error`, `parser failed`, `Exception in
+    callback`, `Task exception was never retrieved`);
+  - `AioHttpIntegration`, for an exception the health handlers don't catch;
+  - `ExcepthookIntegration`, for an uncaught exception.
+
+  The other default integrations add breadcrumbs, not events (the service
+  starts no threads of its own for `ThreadingIntegration` to report). The
+  service's own error log lines are not events: the SDK's logging integration
+  is set to `event_level=None`, so one is a breadcrumb on the next event. A
+  failure that is logged at error level and must reach Sentry sends its own
+  capture beside the log line (the throttled `rate_limited_log.error` does it
+  for itself, once per window). Before 2026-11-13 each logged-and-captured
+  failure filed two issues.
 - **Shutdown drain.** On SIGTERM the daemon closes its sockets, releases
   the lease, then drains every handler at once. Each drain waits for an
   in-flight flush to finish, then writes what is left in its queue and
