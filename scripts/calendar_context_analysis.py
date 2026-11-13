@@ -103,10 +103,12 @@ def fetch_release_dates(release_id: int, api_key: str) -> set[date]:
     """Every date FRED lists for one release, past and scheduled.
 
     No realtime_start is sent, so FRED defaults to 1776-07-04 and answers the
-    whole history; limit is the largest page it allows, and with asc order a
-    short page would cut off the newest dates. Any failure stops the script
-    with the cause in the message (the exception type, never the URL: it
-    carries the api_key).
+    whole history. FRED's default page is already 10000 dates (probed
+    2026-11-13: release 10 has 953, release 50 has 867), so limit=10000 only
+    pins the page size against a changed default; with asc order a short page
+    would cut off the newest dates. Any failure stops the script with the
+    cause in the message (the exception type, never the URL: it carries the
+    api_key).
     """
     query = urlencode(
         {

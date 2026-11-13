@@ -73,6 +73,11 @@ jobs:
               # The root scripts/ tests run in this job too (see "Scripts
               # tests" below), so a change to them or to their conftest runs it.
               - 'scripts/**'
+              # scripts/test_calendar_context_analysis.py reads TRACKED_RELEASES
+              # out of this file to check the FRED release IDs the script
+              # hardcodes, so an edit to the file must run this job (api/**
+              # alone starts only the app job).
+              - 'api/_lib/market-events.ts'
               - '.github/workflows/ci.yml'
             sidecar:
               - 'sidecar/**'

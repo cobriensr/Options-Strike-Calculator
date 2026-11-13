@@ -104,14 +104,20 @@ class FredStub:
 
 @pytest.fixture(autouse=True)
 def no_real_fred(monkeypatch: pytest.MonkeyPatch) -> None:
-    """No FRED key and no read of the real .env, for every test.
+    """No FRED key, no read of the real .env and no real urlopen, every test.
 
     scripts/conftest.py blocks no sockets and does not clear FRED_API_KEY, so
     a test that forgets the `fred` fixture must stop on the missing key
-    instead of reaching FRED.
+    instead of reaching FRED. A test that sets the key itself gets past that
+    stop, so urlopen also raises; the `fred` fixture replaces it with a stub.
     """
+
+    def refuse(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError('test reached FRED without mocking urlopen')
+
     monkeypatch.setattr(cca, 'load_env_file', lambda _path: None)
     monkeypatch.delenv('FRED_API_KEY', raising=False)
+    monkeypatch.setattr(cca, 'urlopen', refuse)
 
 
 @pytest.fixture
@@ -180,8 +186,9 @@ def test_each_release_is_asked_for_once_with_its_whole_history(
         assert query['file_type'] == ['json']
         assert query['include_release_dates_with_no_data'] == ['true']
         assert query['sort_order'] == ['asc']
-        # The largest page FRED allows, so a long CPI history cannot cut off
-        # the newest dates (asc order drops the tail).
+        # FRED's default page is already 10000 (probed 2026-11-13); sending it
+        # pins the page size, so a changed default cannot cut off the newest
+        # dates (asc order drops the tail).
         assert query['limit'] == ['10000']
         # No realtime_start: FRED then defaults to 1776-07-04, the whole
         # history. A start date here would cut the early months off.
@@ -227,6 +234,18 @@ def test_blank_fred_key_counts_as_missing(
 
     assert 'FRED_API_KEY' in failure_message()
     assert fred.requests == []
+
+
+def test_a_test_that_sets_the_key_but_not_the_stub_cannot_reach_fred(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Only the autouse fixture is active. With a key set, the call gets past
+    # the missing-key stop, so urlopen itself must refuse.
+    monkeypatch.setenv('FRED_API_KEY', FAKE_KEY)
+
+    message = failure_message()
+
+    assert 'test reached FRED without mocking urlopen' in message
 
 
 def test_network_error_stops_the_script_with_the_cause(fred: FredStub) -> None:
@@ -377,6 +396,7 @@ def test_main_lists_only_the_calendar_days_inside_the_sample_window(
         '2026-10-02T14:00:00Z,long_call_e1,1.0,0.5,1.0,0.5,1.0,0.5\n'
         '2026-10-14T14:00:00Z,long_call_e1,2.0,1.0,2.0,1.0,2.0,1.0\n'
         '2026-10-20T14:00:00Z,long_put_e5,-1.0,0.5,-1.0,0.5,-1.0,0.5\n'
+        '2026-10-28T14:00:00Z,long_call_e1,1.5,0.5,1.5,0.5,1.5,0.5\n'
     )
     findings = tmp_path / 'findings.md'
     monkeypatch.setattr(cca, 'TRADES_CSV', trades_csv)
@@ -388,13 +408,23 @@ def test_main_lists_only_the_calendar_days_inside_the_sample_window(
     text = findings.read_text(encoding='utf-8')
     assert '- CPI release days: 2026-10-14\n' in text
     assert '- NFP release days: 2026-10-02\n' in text
-    for outside in ('2026-03-12', '2026-08-12', '2026-03-06', '2026-09-04'):
+    # FOMC comes from the schedule, not FRED, and is windowed the same way:
+    # the 10-28 decision is in the window, the 09-16 one is before it.
+    assert '- FOMC decision days: 2026-10-28\n' in text
+    for outside in (
+        '2026-03-12',
+        '2026-08-12',
+        '2026-03-06',
+        '2026-09-04',
+        '2026-09-16',
+    ):
         assert outside not in text
     tagged = pd.read_csv(tmp_path / 'aggregate_framework_trades_tagged.csv')
-    flags = tagged.set_index('date')[['is_cpi_day', 'is_nfp_day']]
-    assert flags.loc['2026-10-14'].tolist() == [True, False]
-    assert flags.loc['2026-10-02'].tolist() == [False, True]
-    assert flags.loc['2026-10-20'].tolist() == [False, False]
+    flags = tagged.set_index('date')[['is_cpi_day', 'is_nfp_day', 'is_fomc_day']]
+    assert flags.loc['2026-10-14'].tolist() == [True, False, False]
+    assert flags.loc['2026-10-02'].tolist() == [False, True, False]
+    assert flags.loc['2026-10-20'].tolist() == [False, False, False]
+    assert flags.loc['2026-10-28'].tolist() == [False, False, True]
 
 
 def test_main_writes_no_findings_when_fred_fails(
