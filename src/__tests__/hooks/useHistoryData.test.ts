@@ -432,6 +432,28 @@ describe('useHistoryData: getStateAtTime', () => {
     expect(ohlc.low).toBe(5095);
   });
 
+  // The running range is taken over candles 0..index of the array it is
+  // given, so it only stays free of lookahead while each datetime appears
+  // once, in order. /api/history guarantees that (a doubled session once
+  // handed every snapshot of its day the full day's high and low).
+  it('stops the running high and low at the requested time', async () => {
+    mockHistoryFetch(mockHistory);
+
+    const { result } = renderHook(() => useHistoryData('2024-03-04'));
+
+    await waitFor(() => {
+      expect(result.current.hasHistory).toBe(true);
+    });
+
+    // 10:00 AM ET = candle index 6, so the 10:05..10:30 candles (day high
+    // 5162) are still in the future.
+    const at1000 = result.current.getStateAtTime(10, 0)!.runningOHLC;
+    expect(at1000).toEqual({ open: 5100, high: 5140, low: 5095, last: 5138 });
+
+    const atOpen = result.current.getStateAtTime(9, 30)!.runningOHLC;
+    expect(atOpen).toEqual({ open: 5100, high: 5110, low: 5095, last: 5105 });
+  });
+
   it('computes opening range from first 6 candles', async () => {
     mockHistoryFetch(mockHistory);
 

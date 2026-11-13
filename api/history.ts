@@ -77,6 +77,8 @@ interface SymbolDayData {
  */
 interface SymbolFetchResult extends SymbolDayData {
   ok: boolean;
+  /** The target day's candles repeated a datetime (dropped before returning). */
+  hadDuplicates: boolean;
 }
 
 interface HistoryResponse {
@@ -130,10 +132,80 @@ function isCachedHistory(value: unknown): value is CachedHistory {
   );
 }
 
+const SYMBOL_FIELDS = ['spx', 'vix', 'vix1d', 'vix9d', 'vvix'] as const;
+
+/**
+ * Candles in ascending `datetime` order, one per datetime. Of several candles
+ * sharing a datetime the first in the input stays (the sort is stable). Schwab
+ * has returned a whole session twice end to end (2026-11-11), and the client
+ * takes running high/low over candles 0..index of the array, so a doubled
+ * array gives every snapshot of the day the full day's range.
+ */
+function sortUniqueByDatetime<T extends { datetime: number }>(
+  candles: readonly T[],
+): T[] {
+  const sorted = [...candles].sort((a, b) => a.datetime - b.datetime);
+  const unique: T[] = [];
+  for (const c of sorted) {
+    if (unique.at(-1)?.datetime !== c.datetime) unique.push(c);
+  }
+  return unique;
+}
+
+function hasFiniteDatetime(c: unknown): c is { datetime: number } {
+  return (
+    typeof c === 'object' &&
+    c !== null &&
+    Number.isFinite((c as { datetime?: unknown }).datetime)
+  );
+}
+
+/**
+ * A stored response with each symbol's candles sorted and unique. A stored
+ * entry from before the fetch path deduplicated keeps its doubled candles for
+ * the rest of its 90-day TTL, so the repair happens on every read and the
+ * stored value is not rewritten. Only the envelope is validated on read, so a
+ * symbol whose candles are missing or malformed is passed through as stored,
+ * and an entry that needs no repair comes back as the same object. Repairs are
+ * logged and not sent to Sentry: a stored entry would report on every hit.
+ */
+function repairCachedCandles(
+  response: HistoryResponse,
+  cacheKey: string,
+): HistoryResponse {
+  const repaired: HistoryResponse = { ...response };
+  const repairs: { field: string; rawCount: number; uniqueCount: number }[] =
+    [];
+  for (const field of SYMBOL_FIELDS) {
+    const day = response[field] as SymbolDayData | null | undefined;
+    if (!day || !Array.isArray(day.candles)) continue;
+    const raw: readonly unknown[] = day.candles;
+    if (!raw.every(hasFiniteDatetime)) continue;
+    const unique = sortUniqueByDatetime(raw);
+    if (unique.length === raw.length && unique.every((c, i) => c === raw[i])) {
+      continue;
+    }
+    repairs.push({
+      field,
+      rawCount: raw.length,
+      uniqueCount: unique.length,
+    });
+    repaired[field] = { ...day, candles: unique as ProcessedCandle[] };
+    if (field === 'spx') repaired.candleCount = unique.length;
+  }
+  if (repairs.length === 0) return response;
+  logger.warn(
+    { cacheKey, repaired: repairs },
+    'Cached history held duplicate or unordered candles; served normalized',
+  );
+  return repaired;
+}
+
 /**
  * Read a cached entry. A Redis error or a wrong-shaped value is a miss, and
  * the fetch path then overwrites the key, so a bad entry heals on the next
- * request instead of being served until its TTL runs out.
+ * request instead of being served until its TTL runs out. A hit comes back
+ * with its candles sorted and unique (repairCachedCandles).
  */
 async function readCachedHistory(
   cacheKey: string,
@@ -145,7 +217,12 @@ async function readCachedHistory(
     return null; // Redis unavailable
   }
   if (cached == null) return null;
-  if (isCachedHistory(cached)) return cached;
+  if (isCachedHistory(cached)) {
+    return {
+      response: repairCachedCandles(cached.response, cacheKey),
+      complete: cached.complete,
+    };
+  }
   logger.warn({ cacheKey }, 'Malformed history cache entry; refetching');
   return null;
 }
@@ -212,6 +289,7 @@ async function fetchSymbolHistory(
     previousClose: 0,
     previousDay: null,
     ok: false,
+    hadDuplicates: false,
   };
 
   const params = new URLSearchParams({
@@ -255,14 +333,31 @@ async function fetchSymbolHistory(
     byDate.set(d, arr);
   }
 
-  // Get target date candles
-  const targetCandles = byDate.get(targetDate) ?? [];
+  // Get target date candles, sorted and one per datetime (Schwab has sent the
+  // session twice). The previous day feeds computeOHLC, which reads its first
+  // and last candle, so it gets the same treatment.
+  const rawTargetCandles = byDate.get(targetDate) ?? [];
+  const targetCandles = sortUniqueByDatetime(rawTargetCandles);
+  const hadDuplicates = targetCandles.length < rawTargetCandles.length;
+  if (hadDuplicates) {
+    logger.warn(
+      {
+        symbol,
+        date: targetDate,
+        rawCount: rawTargetCandles.length,
+        uniqueCount: targetCandles.length,
+      },
+      'Schwab returned duplicate candles',
+    );
+  }
 
   // Get previous trading day
   const sortedDates = [...byDate.keys()].sort((a, b) => a.localeCompare(b));
   const targetIdx = sortedDates.indexOf(targetDate);
   const prevDate = targetIdx > 0 ? sortedDates[targetIdx - 1]! : null;
-  const prevCandles = prevDate ? (byDate.get(prevDate) ?? []) : [];
+  const prevCandles = prevDate
+    ? sortUniqueByDatetime(byDate.get(prevDate) ?? [])
+    : [];
   const previousDay = prevDate ? computeOHLC(prevCandles, prevDate) : null;
 
   // Process target candles
@@ -275,7 +370,13 @@ async function fetchSymbolHistory(
     close: c.close,
   }));
 
-  return { candles: processed, previousClose, previousDay, ok: true };
+  return {
+    candles: processed,
+    previousClose,
+    previousDay,
+    ok: true,
+    hadDuplicates,
+  };
 }
 
 // ============================================================
@@ -336,15 +437,26 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         fetchSymbolHistory('$VVIX', startMs, endMs, dateParam),
       ]);
 
+      const results = [spx, vix, vix1d, vix9d, vvix];
+
+      // One Sentry message per response, however many symbols repeated
+      // candles; fetchSymbolHistory logged each symbol's counts.
+      if (results.some((s) => s.hadDuplicates)) {
+        Sentry.captureMessage('history: duplicate candles from Schwab', {
+          level: 'warning',
+        });
+      }
+
       // A partially-failed fetch (e.g. $VIX1D times out while $SPX succeeds)
       // must NOT be cached for 90 days — it would serve permanently-empty VIX
       // panels for that date forever. Only the long-TTL write requires every
       // symbol to have succeeded; a partial result falls back to the short TTL
       // so the next request re-fetches and self-heals.
-      const allOk = [spx, vix, vix1d, vix9d, vvix].every((s) => s.ok);
+      const allOk = results.every((s) => s.ok);
 
-      // Strip the internal `ok` flag so it never leaks into the cached payload
-      // or the JSON response (HistoryResponse intentionally omits it).
+      // Strip the internal `ok` and `hadDuplicates` flags so they never leak
+      // into the cached payload or the JSON response (HistoryResponse
+      // intentionally omits them).
       const toDayData = ({
         candles,
         previousClose,
