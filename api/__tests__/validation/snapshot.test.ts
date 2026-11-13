@@ -189,9 +189,15 @@ describe('analyzeBodySchema', () => {
         spx: 5950.5,
         strikes: { put: 5900, call: 6000 },
         eventNames: ['CPI', 'FOMC'],
+        // The client sends this when the day's events did not load. The
+        // prompt's "events unknown" line reads it (`analyze-context.ts`), so a
+        // schema that dropped it would turn "unknown" into "none".
+        eventsUnknown: true,
       },
     });
     expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.context.eventsUnknown).toBe(true);
   });
 });
 

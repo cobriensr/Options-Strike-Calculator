@@ -9,12 +9,21 @@ vi.mock('../lib/sentry-helpers', () => ({
 }));
 const mockCaptureUnlessAuth = vi.mocked(captureUnlessAuth);
 
-const SOURCES: ReadonlyArray<EventItem['source']> = [
-  'fred',
-  'static',
-  'finnhub',
-];
-const SEVERITIES: ReadonlyArray<EventItem['severity']> = ['high', 'medium'];
+// A Record keyed by the union fails the type-check on a member it lacks and on
+// one that is not in the union. A new source or severity added to EventItem
+// therefore breaks this file until it is listed here and, through COMBINATIONS,
+// run against the schema. A hand-typed array would compile without it.
+const SOURCE_KEYS: Record<EventItem['source'], true> = {
+  fred: true,
+  static: true,
+  finnhub: true,
+};
+const SEVERITY_KEYS: Record<EventItem['severity'], true> = {
+  high: true,
+  medium: true,
+};
+const SOURCES = Object.keys(SOURCE_KEYS) as Array<EventItem['source']>;
+const SEVERITIES = Object.keys(SEVERITY_KEYS) as Array<EventItem['severity']>;
 
 const COMBINATIONS = SOURCES.flatMap((source) =>
   SEVERITIES.map((severity) => [source, severity] as const),
