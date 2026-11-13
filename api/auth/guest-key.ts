@@ -16,7 +16,11 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { Sentry, metrics } from '../_lib/sentry.js';
-import { rejectIfRateLimited, respondIfInvalid } from '../_lib/api-helpers.js';
+import {
+  isLocalDeployment,
+  rejectIfRateLimited,
+  respondIfInvalid,
+} from '../_lib/api-helpers.js';
 import { guestKeySchema } from '../_lib/validation.js';
 import { buildGuestSetCookies, isValidGuestKey } from '../_lib/guest-auth.js';
 
@@ -51,9 +55,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return res.status(401).json({ error: 'Invalid access key' });
       }
 
-      const appUrl = process.env.APP_URL ?? '';
-      const isLocal = appUrl.includes('localhost') || !process.env.VERCEL;
-      res.setHeader('Set-Cookie', buildGuestSetCookies(key, isLocal));
+      res.setHeader(
+        'Set-Cookie',
+        buildGuestSetCookies(key, isLocalDeployment()),
+      );
       res.setHeader('Cache-Control', 'no-store');
 
       done({ status: 200 });

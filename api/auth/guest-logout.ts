@@ -8,6 +8,7 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { Sentry, metrics } from '../_lib/sentry.js';
+import { isLocalDeployment } from '../_lib/api-helpers.js';
 import { buildGuestClearCookies } from '../_lib/guest-auth.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -20,9 +21,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return res.status(405).json({ error: 'POST only' });
       }
 
-      const appUrl = process.env.APP_URL ?? '';
-      const isLocal = appUrl.includes('localhost') || !process.env.VERCEL;
-      res.setHeader('Set-Cookie', buildGuestClearCookies(isLocal));
+      res.setHeader('Set-Cookie', buildGuestClearCookies(isLocalDeployment()));
       res.setHeader('Cache-Control', 'no-store');
 
       done({ status: 200 });
