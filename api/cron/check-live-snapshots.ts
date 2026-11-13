@@ -36,7 +36,9 @@
  * 30 s later, every 5 minutes in the session, and on a back/forward cache
  * restore), so a reload or a closed sibling tab never hides a stall: only the
  * last tab's close, which nobody withdraws, stands. The cron needs no change
- * for that: a deleted marker reads as no close.
+ * for that: a deleted marker reads as no close. A close stands until an owner
+ * page withdraws it: a page reopened signed out can't, so that stall sends no
+ * push.
  * Only when the last save is stale, before claiming, the cron reads that key:
  *   - A marker at or after the last save means the owner closed the app after
  *     it last saved: success "app closed at {time} CT", no claim, no push.

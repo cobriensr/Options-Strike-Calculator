@@ -34,7 +34,9 @@
  *     key is a 204 too. It races only with a close: whichever lands last
  *     wins. A reload's close that reaches the server after the new page's
  *     first open signal is settled by the +30 s signal; the closing tab's own
- *     late open signal deleting its close errs toward an extra alert.
+ *     late open signal deleting its close errs toward an extra alert. So does
+ *     a reopened page: its open signal lands seconds before its first save,
+ *     and a cron tick in that gap pushes once for the old stall.
  *   - Fail: a Redis error is a 500 with a Sentry capture. A lost close only
  *     lets the cron push a stall alert for a close; it never hides a stall.
  *     A lost delete leaves a close standing until the next open signal or
