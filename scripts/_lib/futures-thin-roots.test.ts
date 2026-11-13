@@ -9,6 +9,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   CLEAN_TRADING_DAYS,
+  JUNK_WINDOW,
   THIN_LAST_BAD_MS,
   THIN_ROOTS,
   THIN_WINDOW_START_MS,
@@ -64,6 +65,16 @@ describe('the D1 constants', () => {
       GC: ms('2026-06-15T14:10:00Z'),
       ZN: ms('2026-06-15T14:11:00Z'),
     });
+  });
+
+  // Phase 2 deleted the junk bars of all six roots in this window. Both tools
+  // read it from here (the repair tool's Phase 2 plan and the recompute tool's
+  // 5a backup check), so one literal pin stands for both.
+  it("runs from Friday's close to the Sunday open, end exclusive, and ends where the clean days begin", () => {
+    expect(JUNK_WINDOW.startMs).toBe(ms('2026-04-10T21:00:00Z')); // Fri 16:00 CDT
+    expect(JUNK_WINDOW.endMs).toBe(ms('2026-04-12T22:00:00Z')); // Sun 17:00 CDT
+    expect(ctTradingDay(JUNK_WINDOW.endMs - 60_000)).toBe('2026-04-12');
+    expect(ctTradingDay(JUNK_WINDOW.endMs)).toBe(CLEAN_TRADING_DAYS[0]);
   });
 });
 

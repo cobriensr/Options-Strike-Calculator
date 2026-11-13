@@ -946,6 +946,24 @@ describe('--null-volume-ratio on real SQL (pglite)', () => {
     expect(await dump()).toBe(after);
   });
 
+  // The usage text says so: a rerun takes --expect-volume-nulls 0 (above), and one
+  // with the count of the first apply is refused.
+  it('refuses a rerun with the count of the first apply, and writes nothing: every row is NULL now', async () => {
+    expect(await run()).toBe(0);
+    const after = await dump();
+    hooks.writes = 0;
+    vi.mocked(console.error).mockClear();
+
+    expect(await run()).toBe(1);
+
+    expect(errored()).toMatch(
+      /Refusing to --apply\. Nothing was written\.[\s\S]*the fresh plan blanks 0 volume_ratio values, --expect-volume-nulls 9 was given/,
+    );
+    expect(hooks.writes).toBe(0);
+    expect(backups()).toHaveLength(1);
+    expect(await dump()).toBe(after);
+  });
+
   it('skips on the marker even when the fresh plan still lists rows, and says so', async () => {
     expect(await run()).toBe(0);
     // Two rows get their 5b values back, as if something wrote them again.

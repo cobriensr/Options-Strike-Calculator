@@ -128,9 +128,10 @@
  *                           markers (default docs/tmp/futures-derived-recompute). A dry run writes report.txt
  *                           (and merge-state.txt); an --apply leaves those alone and writes
  *                           apply-<time>-report.txt (and apply-<time>-merge-state.txt). So does a dry run
- *                           once any {step}.applied marker is in the work dir, as dryrun-<time>-report.txt
- *                           (and dryrun-<time>-merge-state.txt): after an apply it plans only what is
- *                           left, and must not replace the files the apply was approved from
+ *                           once an apply has run in the work dir (any {step}.applied or {step}.started
+ *                           marker, or plan.json), as dryrun-<time>-report.txt (and
+ *                           dryrun-<time>-merge-state.txt): after an apply it plans only what is left,
+ *                           and must not replace the files the apply was approved from
  *   --stores s1 s2 ...      only these of snapshots, premarket, fires (default all). A dry run
  *                           plans only these; --apply still plans and checks all three and
  *                           writes only these. `--stores frozen` stands alone: it plans the
@@ -167,7 +168,10 @@
  *                           backup names that still hold the value 5b wrote (own done marker
  *                           volume-null.applied; the full rows go to the backup first)
  *   --expect-volume-nulls N the rows that step blanks in the dry run you approved;
- *                           required with --null-volume-ratio, --apply refuses when it differs
+ *                           required with --null-volume-ratio, --apply refuses when it differs.
+ *                           After a full apply a rerun plans 0 rows (all are NULL), so a rerun takes
+ *                           --expect-volume-nulls 0 and then skips on the marker; a rerun with the
+ *                           first count (7146) is refused, and nothing is written
  *   --detector-days <file>  a JSON file {"RTY": {"contaminated": [...], "flagged": [...]}, "CL": {...}, "GC": {...},
  *                           "ZN": {...}} of the CT trading days the Phase 1 detector found in that root's bars
  *                           after the span end (docs/tmp/es-contract-month-2026-11-06/b-after-span/): a

@@ -962,6 +962,9 @@ describe('the frozen-stale section of the report', () => {
       [],
       null,
     ).split('\n');
+  /** The two lines only a lifted root gets: the span split, then the month split. */
+  const SPAN_SPLIT = /in the span \d/;
+  const MONTH_SPLIT = /by UTC month/;
 
   it('gives a lifted root the rows in the span and after it, and a count per UTC month in order', () => {
     const rows = [
@@ -1028,8 +1031,28 @@ describe('the frozen-stale section of the report', () => {
       [symbolReport('ES', 3)],
       [frozenRow('ES', '2026-05-01T15:00:00Z')],
     );
-    expect(lines.some((l) => /in the span d|by UTC month/.test(l))).toBe(false);
+    expect(lines.filter((l) => SPAN_SPLIT.test(l))).toEqual([]);
+    expect(lines.filter((l) => MONTH_SPLIT.test(l))).toEqual([]);
     expect(lines.some((l) => l.startsWith('    ES: 3,'))).toBe(true);
+  });
+
+  it('matches the split lines of a lifted root with the patterns that find none on an ES line', () => {
+    const lines = text(
+      [
+        symbolReport('RTY', 1, {
+          lifted: true,
+          spread: {
+            beforeSpan: 0,
+            inSpan: 1,
+            afterSpan: 0,
+            byMonth: { '2026-04': 1 },
+          },
+        }),
+      ],
+      [],
+    );
+    expect(lines.filter((l) => SPAN_SPLIT.test(l))).toHaveLength(1);
+    expect(lines.filter((l) => MONTH_SPLIT.test(l))).toHaveLength(1);
   });
 });
 
