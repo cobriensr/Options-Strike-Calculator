@@ -30,6 +30,7 @@ import asyncpg.exceptions
 import pytest
 
 import futures_front_month as ffm
+import sentry_setup
 from handlers import futures_trades as ft
 
 _CHICAGO = ZoneInfo("America/Chicago")
@@ -594,6 +595,45 @@ class TestEnsureFrontOrder:
         }
 
     @pytest.mark.asyncio
+    async def test_a_clamp_is_sent_to_sentry_as_an_error_event(self, store, logs):
+        """The SDK does not turn the error log line into an event, so the
+        clamp sends its own."""
+        store.decide("ES", "2026-11-03", "ESZ6")
+        store.decide("ES", "2026-11-09", "ESZ6")
+        store.decide("ES", "2026-11-10", "ESH7")
+        store.trade("ES", "2026-11-04", {"ESZ6": 100, "ESH7": 900})
+
+        with patch("futures_front_month.capture_message") as capture:
+            assert await ffm.ensure_front("ES", _day("2026-11-05")) == "ESZ6"
+
+        capture.assert_called_once_with(
+            "Front-month decision is later than the next stored decision: "
+            "using the next stored decision",
+            level="error",
+            tags={"component": "futures_front_month", "kind": "front_month_clamped"},
+            context={
+                "scope": "futures_front_month",
+                "kind": "front_month_clamped",
+                "product": "ES",
+                "trade_date": "2026-11-05",
+                "wanted": "ESH7",
+                "ceiling": "ESZ6",
+                "incumbent": "ESZ6",
+            },
+        )
+
+    @pytest.mark.asyncio
+    async def test_no_clamp_sends_nothing_to_sentry(self, store, logs):
+        store.decide("ES", "2026-11-03", "ESZ6")
+        store.decide("ES", "2026-11-09", "ESH7")
+        store.trade("ES", "2026-11-04", {"ESZ6": 100, "ESH7": 900})
+
+        with patch("futures_front_month.capture_message") as capture:
+            assert await ffm.ensure_front("ES", _day("2026-11-05")) == "ESH7"
+
+        capture.assert_not_called()
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("ceiling", ["ESH7", "ESM7"])
     async def test_no_clamp_when_the_next_stored_decision_is_not_before_the_wanted(
         self, store, logs, ceiling
@@ -779,6 +819,38 @@ class TestEnsureFrontDatabaseFailures:
         assert rate_limited.error.call_args.kwargs["key"] == "NQ"
         assert rate_limited.error.call_args.kwargs["extra"]["err_type"] == "UndefinedTableError"
         assert ffm.last_failure("NQ") == ("ensure_front_failed", "UndefinedTableError")
+
+    @pytest.mark.asyncio
+    async def test_a_genuine_failure_sends_an_error_event_and_a_transient_one_does_not(
+        self, store, monkeypatch
+    ):
+        """Through the real throttled logger: the error line is also an event,
+        the warning is not."""
+        monkeypatch.setattr(ffm.rate_limited_log, "_state", {})
+        events: list[tuple[str, dict]] = []
+        monkeypatch.setattr(
+            sentry_setup, "capture_message", lambda msg, **kw: events.append((msg, kw))
+        )
+
+        async def timed_out(product, day):
+            raise TimeoutError("command_timeout")
+
+        async def missing_table(product, day):
+            raise asyncpg.exceptions.UndefinedTableError("relation does not exist")
+
+        monkeypatch.setattr(ffm, "_read_stored", timed_out)
+        assert await ffm.ensure_front("ES", _day("2026-11-06")) is None
+        assert events == []
+
+        monkeypatch.setattr(ffm, "_read_stored", missing_table)
+        assert await ffm.ensure_front("NQ", _day("2026-11-06")) is None
+
+        ((message, kwargs),) = events
+        assert message == "front-month lookup failed; the date stays undecided"
+        assert kwargs["level"] == "error"
+        assert kwargs["tags"] == {"component": "futures_front_month", "kind": "ensure_front_failed"}
+        assert kwargs["context"]["err_type"] == "UndefinedTableError"
+        assert kwargs["context"]["product"] == "NQ"
 
     @pytest.mark.asyncio
     async def test_a_failing_insert_is_a_logged_none_and_the_row_is_not_there(

@@ -210,13 +210,31 @@ class RateLimitedLogger:
         extra: dict | None = None,
         key: str = "",
     ) -> None:
-        """``warning`` at error level, so the line reaches Sentry.
+        """``warning`` at error level, plus one Sentry error event per window.
+
+        The event is explicit. ``init_sentry`` sets the SDK's logging integration
+        not to turn error log records into events, so the line that must reach
+        Sentry sends its own, with the head-of-window line only: the throttle
+        bounds events as it bounds lines.
 
         An error and a warning of one kind have separate windows: a transient
         failure just before a genuine one must not hide it. The summary line
-        that closes a window is a warning either way.
+        that closes a window is a warning either way, and sends nothing.
         """
-        self._log("error", log.error, scope, kind, message, extra, key)
+
+        def emit(msg: str, *, extra: dict) -> None:
+            log.error(msg, extra=extra)
+            # Imported here: sentry_setup imports this module for ``log``.
+            from sentry_setup import capture_message
+
+            capture_message(
+                msg,
+                level="error",
+                tags={"component": scope, "kind": kind},
+                context=extra,
+            )
+
+        self._log("error", emit, scope, kind, message, extra, key)
 
     def _log(
         self,

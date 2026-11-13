@@ -27,6 +27,18 @@ from logger_setup import (
 
 
 @pytest.fixture(autouse=True)
+def sentry_events(monkeypatch) -> list[tuple[str, dict]]:
+    """Every ``capture_message`` the throttled logger sends, patched at
+    ``sentry_setup``, the boundary it sends through. With Sentry off the real
+    one would log a warning line of its own into the assertions below."""
+    import sentry_setup
+
+    events: list[tuple[str, dict]] = []
+    monkeypatch.setattr(sentry_setup, "capture_message", lambda msg, **kw: events.append((msg, kw)))
+    return events
+
+
+@pytest.fixture(autouse=True)
 def _reset_singleton_state():
     """Clear the module-level singleton's bucket dict before AND after
     every test.
@@ -430,6 +442,76 @@ def test_a_warning_does_not_hide_an_error_of_the_same_kind(monkeypatch):
 
     assert len(warnings) == 1
     assert len(errors) == 1
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# ``error`` is the line that must reach Sentry. The SDK no longer turns an
+# error log record into an event (init_sentry sets event_level=None), so the
+# head of each window sends its own event, and the throttle bounds events as
+# it bounds lines.
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def test_error_sends_one_sentry_error_event_per_window(monkeypatch, sentry_events):
+    _capture(monkeypatch, "error")
+    _capture_warnings(monkeypatch)
+    clock = _FakeClock()
+    rl = RateLimitedLogger(interval_s=60.0, clock=clock)
+
+    for _ in range(5):
+        rl.error(
+            scope="futures_trades",
+            kind="tally_load_failed",
+            message="load failed",
+            extra={"product": "ES", "err": "boom"},
+            key="ES",
+        )
+
+    assert sentry_events == [
+        (
+            "load failed",
+            {
+                "level": "error",
+                "tags": {"component": "futures_trades", "kind": "tally_load_failed"},
+                "context": {
+                    "scope": "futures_trades",
+                    "kind": "tally_load_failed",
+                    "product": "ES",
+                    "err": "boom",
+                },
+            },
+        )
+    ]
+
+    # The next window sends its own; the summary line that closes the old one
+    # is a warning and is not an event.
+    clock.advance(61.0)
+    rl.error(scope="futures_trades", kind="tally_load_failed", message="load failed", key="ES")
+    assert len(sentry_events) == 2
+
+
+def test_error_sends_an_event_for_each_key(monkeypatch, sentry_events):
+    """Six roots failing at once are six lines, and six events."""
+    _capture(monkeypatch, "error")
+    rl = RateLimitedLogger(interval_s=60.0, clock=_FakeClock())
+
+    for product in ("ES", "NQ", "ES", "NQ"):
+        rl.error(scope="s", kind="k", message="m", extra={"product": product}, key=product)
+
+    assert [kw["context"]["product"] for _, kw in sentry_events] == ["ES", "NQ"]
+
+
+def test_a_warning_never_sends_a_sentry_event(monkeypatch, sentry_events):
+    _capture_warnings(monkeypatch)
+    clock = _FakeClock()
+    rl = RateLimitedLogger(interval_s=60.0, clock=clock)
+
+    for _ in range(3):
+        rl.warning(scope="s", kind="k", message="m", key="ES")
+    clock.advance(61.0)  # the window's summary line is a warning too
+    rl.warning(scope="s", kind="k", message="m", key="ES")
+
+    assert sentry_events == []
 
 
 # ──────────────────────────────────────────────────────────────────────────

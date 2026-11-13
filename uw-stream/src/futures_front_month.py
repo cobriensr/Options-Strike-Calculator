@@ -75,6 +75,7 @@ from zoneinfo import ZoneInfo
 
 import db
 from logger_setup import log, rate_limited_log
+from sentry_setup import capture_message
 
 _SCOPE = "futures_front_month"
 
@@ -560,18 +561,27 @@ async def _decide_and_store(product: str, day: date, inputs: _Inputs) -> str:
     if clamped:
         # Error, not warning: once the seed has run, a clamp means a late volume
         # row or a date decided out of order, and a log line alone goes unseen.
-        log.error(
+        # So the line is also an explicit Sentry event: the SDK does not turn an
+        # error log record into one.
+        message = (
             "Front-month decision is later than the next stored decision: "
-            "using the next stored decision",
-            extra={
-                "scope": _SCOPE,
-                "kind": "front_month_clamped",
-                "product": product,
-                "trade_date": day.isoformat(),
-                "wanted": wanted,
-                "ceiling": decided,
-                "incumbent": inputs.incumbent,
-            },
+            "using the next stored decision"
+        )
+        detail = {
+            "scope": _SCOPE,
+            "kind": "front_month_clamped",
+            "product": product,
+            "trade_date": day.isoformat(),
+            "wanted": wanted,
+            "ceiling": decided,
+            "incumbent": inputs.incumbent,
+        }
+        log.error(message, extra=detail)
+        capture_message(
+            message,
+            level="error",
+            tags={"component": _SCOPE, "kind": "front_month_clamped"},
+            context=detail,
         )
     await _insert_decision(product, day, decided)
     winner = await _read_stored(product, day)
