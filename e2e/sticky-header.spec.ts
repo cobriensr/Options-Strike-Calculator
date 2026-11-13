@@ -15,6 +15,13 @@ import { dateTimeSection, openSection } from './helpers/calculator';
  * title wraps and the header is 90px, so only the published height keeps
  * the nav and the anchors clear of it (the "taller than its CSS default"
  * test).
+ *
+ * The aborted /api also fails that past date's own events lookup. Its
+ * "Events for this date couldn't load." line (about 46px) appears at the top
+ * of <main>, above every section, only after the date settles (350ms) and
+ * the fetch fails. A jump that starts before then has the content pushed
+ * down mid-scroll and ends 46px short of its anchor, so openScrolled waits
+ * for the line before it scrolls.
  */
 
 /** The owner's Schwab login runs out in 3 hours: the amber countdown shows. */
@@ -35,6 +42,11 @@ async function openScrolled(page: Page, width: number) {
   await expect(
     page.getByRole('banner').getByText('NO INTRADAY', { exact: false }),
   ).toBeAttached();
+  // Layout settles only once the events lookup has failed and added its
+  // line above the sections (see the header comment).
+  await expect(
+    page.getByRole('main').getByText("Events for this date couldn't load."),
+  ).toBeVisible();
   await page.evaluate(() => window.scrollTo(0, 1500));
 }
 

@@ -9,6 +9,9 @@ const TODAY = new Date().toLocaleDateString('en-CA', {
   timeZone: 'America/New_York',
 });
 
+/** A past trading day: outside the forward list, so it gets its own lookup. */
+const PAST_DATE = '2025-01-15';
+
 function makeEventsResponse(
   events: Array<{
     event: string;
@@ -17,15 +20,16 @@ function makeEventsResponse(
     severity: 'high' | 'medium';
     source?: 'fred' | 'static' | 'finnhub';
   }>,
+  date: string = TODAY,
 ) {
   return {
     events: events.map((e) => ({
-      date: TODAY,
+      date,
       source: 'fred' as const,
       ...e,
     })),
-    startDate: TODAY,
-    endDate: TODAY,
+    startDate: date,
+    endDate: date,
     cached: false,
     asOf: new Date().toISOString(),
   };
@@ -177,5 +181,64 @@ test.describe('Event Day Warning', () => {
     await expect(main.getByText('High-Impact Event Day')).not.toBeVisible();
     await expect(main.getByText('Economic Event Day')).not.toBeVisible();
     await expect(main.getByText('Market Closed')).not.toBeVisible();
+  });
+
+  // A past date is outside the forward list, so the app looks up that date's
+  // own events (/api/events?from=<date>&days=1) once the date settles. When
+  // that lookup fails, a blank banner would read as a quiet day, so the
+  // banner says so and offers Retry.
+  test("a failed lookup for a past date says so, and Retry loads the date's events", async ({
+    page,
+  }) => {
+    // Registered first, so the more specific lookup route below wins.
+    await page.route('**/api/**', (route) => route.abort());
+    let lookups = 0;
+    await page.route(
+      (url) =>
+        url.pathname === '/api/events' &&
+        url.searchParams.get('from') === PAST_DATE,
+      (route) => {
+        lookups += 1;
+        // The first lookup fails; the retry is answered with an event.
+        if (lookups === 1) {
+          return route.fulfill({
+            status: 500,
+            json: { error: 'Events unavailable' },
+          });
+        }
+        return route.fulfill({
+          json: makeEventsResponse(
+            [
+              {
+                event: 'CPI',
+                description: 'Consumer Price Index (MoM)',
+                time: '8:30',
+                severity: 'high',
+              },
+            ],
+            PAST_DATE,
+          ),
+        });
+      },
+    );
+
+    await page.goto('/');
+    await dateTimeSection(page)
+      .getByLabel('Date', { exact: true })
+      .fill(PAST_DATE);
+
+    const main = page.getByRole('main');
+    const loadFailed = main.getByText("Events for this date couldn't load.");
+    await expect(loadFailed).toBeVisible();
+    await expect(main.getByText('High-Impact Event Day')).not.toBeVisible();
+    expect(lookups).toBe(1);
+
+    await main.getByRole('button', { name: 'Retry' }).click();
+
+    await expect(main.getByText('High-Impact Event Day')).toBeVisible();
+    await expect(main.getByText('CPI', { exact: true })).toBeVisible();
+    await expect(loadFailed).toHaveCount(0);
+    await expect(main.getByRole('button', { name: 'Retry' })).toHaveCount(0);
+    expect(lookups).toBe(2);
   });
 });
