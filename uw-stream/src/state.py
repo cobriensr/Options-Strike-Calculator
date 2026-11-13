@@ -83,6 +83,12 @@ class HandlerMetrics:
     counts trades that only one socket delivered. About half of those are
     trades the primary missed and the mirror saved. It is counted when a
     trade's two-minute window closes, so it lags by up to ~2 minutes.
+
+    ``filtered`` counts payloads a handler discarded before its queue because
+    they can never become rows. Like ``dupes_dropped`` it is not backpressure,
+    so it is never part of ``drop_count``. Today only ``gex_strike_expiry``
+    sets it (frames for an expiry other than today's); it stays 0 for every
+    other handler.
     """
 
     queue_depth: int = 0
@@ -92,6 +98,7 @@ class HandlerMetrics:
     lost_rows: int = 0
     dupes_dropped: int = 0
     single_copy: int = 0
+    filtered: int = 0
 
 
 @dataclass

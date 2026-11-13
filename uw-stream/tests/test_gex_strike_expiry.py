@@ -12,10 +12,12 @@ import json
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from config import settings
+from handlers import gex_strike_expiry as gex_mod
 from handlers.gex_strike_expiry import (
     _COLUMNS,
     GexStrikeExpiryHandler,
@@ -23,6 +25,7 @@ from handlers.gex_strike_expiry import (
     _to_date,
     _to_decimal,
 )
+from state import state
 
 _FIXTURE_PATH = Path(__file__).parent / "fixtures" / "gex_strike_expiry_sample.json"
 # Fixture's expiry is 2026-05-01 — pin "today" to match so the
@@ -481,3 +484,217 @@ class TestExpiryNotTodayFilter:
 
         monkeypatch.setattr(mod, "datetime", FakeDatetime)
         assert mod._today_et() == date(2026, 5, 1)
+
+
+@pytest.fixture
+def clean_handler_state():
+    """Zero every handler's counters so ``filtered`` and ``drop_count`` start at 0."""
+    state.handlers.clear()
+    yield
+    state.handlers.clear()
+
+
+_ABSENT = object()  # a payload with no ``expiry`` key at all
+
+
+def _metrics():
+    return state.handler("gex_strike_expiry")
+
+
+@pytest.mark.usefixtures("clean_handler_state")
+class TestEnqueueFilter:
+    """Other-expiry frames are discarded before the queue.
+
+    UW pushes every active expiry on ``gex_strike_expiry:<TICKER>``, about
+    85% of them not today's. Rejecting them in ``_transform`` meant they sat
+    in the 50,000-slot queue first, and a burst overflowed it. ``enqueue``
+    now drops them up front and counts them in ``filtered``, never in
+    ``drop_count``: they are not backpressure.
+    """
+
+    @pytest.mark.asyncio
+    async def test_non_today_expiry_is_not_queued_and_counted(self, handler, payload):
+        payload["expiry"] = "2026-05-08"
+
+        await handler.enqueue(payload)
+
+        assert handler.queue.qsize() == 0
+        assert _metrics().filtered == 1
+        assert _metrics().drop_count == 0
+        assert _metrics().queue_depth == 0
+
+    @pytest.mark.asyncio
+    async def test_past_expiry_is_filtered_too(self, handler, payload):
+        payload["expiry"] = "2026-04-30"
+
+        await handler.enqueue(payload)
+
+        assert handler.queue.qsize() == 0
+        assert _metrics().filtered == 1
+
+    @pytest.mark.asyncio
+    async def test_today_expiry_is_queued(self, handler, payload):
+        assert payload["expiry"] == _FIXTURE_EXPIRY.isoformat()
+
+        await handler.enqueue(payload)
+
+        assert handler.queue.qsize() == 1
+        assert handler.queue.get_nowait() is payload
+        assert _metrics().filtered == 0
+
+    @pytest.mark.asyncio
+    async def test_other_iso_spelling_of_today_is_queued(self, handler, payload):
+        payload["expiry"] = "20260501"  # basic ISO 8601 form, parses to today
+
+        await handler.enqueue(payload)
+
+        assert handler.queue.qsize() == 1
+        assert _metrics().filtered == 0
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "bad",
+        [_ABSENT, "not-a-date", "", None, 20260501, ["2026-05-01"]],
+        ids=["missing", "garbage", "empty", "null", "number", "list"],
+    )
+    async def test_missing_or_garbage_expiry_is_queued_and_transform_logs_it(
+        self, handler, payload, bad
+    ):
+        """An expiry the filter cannot read is not its call: it goes to the
+        queue and ``_transform`` rejects it with the same warning as before.
+        """
+        if bad is _ABSENT:
+            del payload["expiry"]
+        else:
+            payload["expiry"] = bad
+
+        with patch.object(gex_mod, "rate_limited_log", MagicMock()) as log_mock:
+            await handler.enqueue(payload)
+            assert handler.queue.qsize() == 1
+            assert _metrics().filtered == 0
+            assert handler._transform(handler.queue.get_nowait()) is None
+
+        log_mock.warning.assert_called_once()
+        assert log_mock.warning.call_args.kwargs["kind"] == "missing_expiry"
+
+    @pytest.mark.asyncio
+    async def test_frame_queued_before_midnight_is_still_rejected_by_transform(
+        self, handler, payload, monkeypatch
+    ):
+        """The enqueue check is a cache of ``_today_et``, not the last word:
+        a frame that was today's when it was queued but is not when it comes
+        off the queue (ET midnight in between) is caught by ``_transform``.
+        """
+        await handler.enqueue(payload)
+        assert handler.queue.qsize() == 1
+
+        monkeypatch.setattr(gex_mod, "_today_et", lambda: date(2026, 5, 2))
+        with patch.object(gex_mod, "rate_limited_log", MagicMock()) as log_mock:
+            assert handler._transform(handler.queue.get_nowait()) is None
+
+        assert log_mock.warning.call_args.kwargs["kind"] == "expiry_not_today"
+
+    @pytest.mark.asyncio
+    async def test_burst_of_other_expiry_frames_does_not_overflow_the_queue(
+        self, payload, monkeypatch
+    ):
+        """60,000 non-today frames into a 50,000-slot queue: the old path
+        queued 50,000 and evicted 10,000 (``drop_count`` 10,000). Now none is
+        queued and none is dropped.
+        """
+        monkeypatch.setattr(settings, "ws_queue_size", 50_000)
+        monkeypatch.setattr(settings, "ws_backpressure_policy", "drop_oldest")
+        handler = GexStrikeExpiryHandler()
+        assert handler.queue.maxsize == 50_000
+        payload["expiry"] = "2026-05-08"
+
+        for _ in range(60_000):
+            await handler.enqueue(payload)
+
+        assert handler.queue.qsize() == 0
+        assert _metrics().drop_count == 0
+        assert _metrics().queue_depth == 0
+        assert _metrics().filtered == 60_000
+
+
+@pytest.mark.usefixtures("clean_handler_state")
+class TestTodayDateCache:
+    """``enqueue`` compares against a cached ISO string, refreshed from
+    ``_today_et`` at most once per second on the monotonic clock. The clock
+    is faked at the module boundary (``handlers.gex_strike_expiry.monotonic``,
+    which asyncio's loop does not read).
+    """
+
+    @pytest.fixture
+    def clock(self, monkeypatch) -> list[float]:
+        now = [1000.0]
+        monkeypatch.setattr(gex_mod, "monotonic", lambda: now[0])
+        return now
+
+    @pytest.fixture
+    def today(self, monkeypatch) -> list:
+        """Mutable "today" plus a call log, standing in for ``_today_et``."""
+        current = [date(2026, 5, 1)]
+        calls: list[date] = []
+
+        def fake_today_et() -> date:
+            calls.append(current[0])
+            return current[0]
+
+        monkeypatch.setattr(gex_mod, "_today_et", fake_today_et)
+        return [current, calls]
+
+    @staticmethod
+    def _frame(expiry: str) -> dict:
+        return {"ticker": "SPY", "expiry": expiry}
+
+    @pytest.mark.asyncio
+    async def test_date_is_cached_for_a_second_then_refreshed(self, clock, today):
+        current, calls = today
+        handler = GexStrikeExpiryHandler()
+
+        await handler.enqueue(self._frame("2026-05-01"))
+        assert handler.queue.qsize() == 1
+        assert len(calls) == 1
+
+        # ET midnight passes, but inside the one-second window the cache holds.
+        current[0] = date(2026, 5, 2)
+        clock[0] += 0.9
+        await handler.enqueue(self._frame("2026-05-01"))
+        await handler.enqueue(self._frame("2026-05-02"))
+        assert len(calls) == 1
+        assert handler.queue.qsize() == 2  # old date still admitted, new one filtered
+        assert _metrics().filtered == 1
+
+        # A full second after the first read, the cache refreshes.
+        clock[0] += 0.1
+        await handler.enqueue(self._frame("2026-05-01"))
+        await handler.enqueue(self._frame("2026-05-02"))
+        assert len(calls) == 2
+        assert handler.queue.qsize() == 3  # 05-01 now filtered, 05-02 admitted
+        assert _metrics().filtered == 2
+
+    @pytest.mark.asyncio
+    async def test_hot_path_reads_the_date_once_per_window_not_per_frame(self, clock, today):
+        _, calls = today
+        handler = GexStrikeExpiryHandler()
+
+        for _ in range(1_000):
+            await handler.enqueue(self._frame("2026-05-08"))
+
+        assert len(calls) == 1
+        assert _metrics().filtered == 1_000
+
+    @pytest.mark.asyncio
+    async def test_first_frame_reads_the_date_before_trusting_the_cache(self, clock, today):
+        """A fresh handler must not trust a cache it never filled, whatever the
+        monotonic clock reads (it counts from an arbitrary point, often boot).
+        """
+        _, calls = today
+        clock[0] = 0.2
+        handler = GexStrikeExpiryHandler()
+
+        await handler.enqueue(self._frame("2026-05-08"))
+
+        assert len(calls) == 1
+        assert _metrics().filtered == 1

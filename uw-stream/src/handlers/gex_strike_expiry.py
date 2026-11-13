@@ -30,14 +30,20 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
+from time import monotonic
 from typing import Any
 from zoneinfo import ZoneInfo
 
 import db
 from handlers.base import Handler
 from logger_setup import rate_limited_log
+from state import state
 
 _ET = ZoneInfo("America/New_York")
+
+# ``enqueue`` re-reads today's ET date at most this often (monotonic seconds),
+# so the per-frame check is a string compare, not a timezone conversion.
+_TODAY_REFRESH_S = 1.0
 
 
 def _today_et() -> date:
@@ -99,6 +105,40 @@ class GexStrikeExpiryHandler(Handler):
 
     def __init__(self) -> None:
         super().__init__(name="gex_strike_expiry")
+        # Today's ET date and its ISO string, refreshed by ``enqueue`` once the
+        # monotonic clock passes ``_today_refresh_at`` (-inf: not read yet).
+        self._today: date | None = None
+        self._today_iso = ""
+        self._today_refresh_at = float("-inf")
+
+    async def enqueue(self, payload: dict) -> None:
+        """Queue a payload unless its expiry is a date other than today's.
+
+        UW pushes every active expiry on ``gex_strike_expiry:<TICKER>``, about
+        85% of them not today's, and ``_transform`` rejects those only after
+        they come off the queue. A burst of them filled the 50,000-slot queue
+        and evicted today's frames (``drop_count``), so they are discarded here
+        and counted in ``filtered`` instead, which is not backpressure.
+
+        An expiry that is today's (as ISO text, or another ISO spelling),
+        missing or unparseable is queued, so ``_transform`` rejects and logs
+        the bad ones exactly as before. Today's date is cached for
+        ``_TODAY_REFRESH_S``; ``_transform`` keeps its own check against the
+        live date, which catches a frame queued just before ET midnight and
+        dequeued just after.
+        """
+        raw = payload.get("expiry")
+        now = monotonic()
+        if now >= self._today_refresh_at:
+            self._today = _today_et()
+            self._today_iso = self._today.isoformat()
+            self._today_refresh_at = now + _TODAY_REFRESH_S
+        if raw != self._today_iso:
+            expiry = _to_date(raw)
+            if expiry is not None and expiry != self._today:
+                state.handler(self.name).filtered += 1
+                return
+        await super().enqueue(payload)
 
     def _transform(self, payload: dict) -> tuple | None:
         ticker = payload.get("ticker")

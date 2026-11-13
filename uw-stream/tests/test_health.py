@@ -519,6 +519,7 @@ async def test_metrics_reports_handler_counters_under_handlers(
             "lost_rows": 2,
             "dupes_dropped": 0,
             "single_copy": 0,
+            "filtered": 0,
         },
     }
     assert body["channels"] == {
@@ -552,6 +553,33 @@ async def test_metrics_reports_the_redundant_socket_dedupe_counters(
     row = body["handlers"]["option_trades"]
     assert row["dupes_dropped"] == 2
     assert row["single_copy"] == 7
+    assert row["queue_depth"] == 1
+    assert row["drop_count"] == 0
+
+
+async def test_metrics_reports_filtered_beside_the_drop_counters(
+    _restore_metrics_token, _isolated_channel_handler_state, monkeypatch
+):
+    """``filtered`` counts GEX frames discarded before the queue. It shows in
+    the handler's row and is not a backpressure drop, so ``drop_count`` stays 0.
+    """
+    from datetime import date
+
+    from handlers.gex_strike_expiry import GexStrikeExpiryHandler
+
+    monkeypatch.setattr("handlers.gex_strike_expiry._today_et", lambda: date(2026, 5, 1))
+    settings.internal_metrics_token = _TOKEN
+    h = GexStrikeExpiryHandler()
+    await h.enqueue({"ticker": "SPY", "expiry": "2026-05-08"})
+    await h.enqueue({"ticker": "SPY", "expiry": "2026-05-15"})
+    await h.enqueue({"ticker": "SPY", "expiry": "2026-05-01"})
+
+    body = await _read_json(
+        await metrics(_StubRequest({"X-Metrics-Token": _TOKEN}))  # type: ignore[arg-type]
+    )
+
+    row = body["handlers"]["gex_strike_expiry"]
+    assert row["filtered"] == 2
     assert row["queue_depth"] == 1
     assert row["drop_count"] == 0
 
@@ -616,6 +644,7 @@ async def test_metrics_lists_constructed_handler_with_zeroed_counters(
             "lost_rows": 0,
             "dupes_dropped": 0,
             "single_copy": 0,
+            "filtered": 0,
         },
     }
     assert body["channels"] == {}
