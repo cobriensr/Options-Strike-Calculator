@@ -124,9 +124,9 @@ export default withRequestScope(
 
       // A cache miss costs 7 FRED calls plus a Finnhub call, and FRED allows
       // about 120 a minute per key, a key the app's default request shares.
-      // Limit per IP only the lookups that choose their own window (`from`),
-      // so a walk across past dates cannot starve the default request. A
-      // default request is never limited, and a cache hit never reaches here.
+      // Limit per IP only the lookups that choose their own window (`from`):
+      // this caps one IP at 10 misses (about 70 FRED calls) a minute and
+      // leaves the default request unlimited. A cache hit never reaches here.
       if (
         parsed.data.from &&
         (await rejectIfRateLimited(req, res, 'events', 10))
