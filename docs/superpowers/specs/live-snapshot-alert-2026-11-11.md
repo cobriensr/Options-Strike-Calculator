@@ -150,8 +150,9 @@ only today's rows are read and the old inverted flag does not matter.
    deliberate close** (Task 3, owner amendments 2026-11-12; 4 files + this
    doc). Shippable alone: with no close signal yet, it behaves like the first
    amendment.
-4. **Client: which browser saves live snapshots** (Task 4; 4 files). The
-   device default and the per-browser switch, not yet wired into saving.
+4. **Client: which browser saves live snapshots** (Task 4; shipped as 8
+   files in three commits). The device default and the per-browser switch,
+   not yet wired into saving.
 5. **Server: open tabs withdraw the close** (Task 5; 4 files + 1 doc).
    `DELETE /api/snapshot-close`, and the close key prefix shared by the
    endpoint and the cron. Shippable alone: nothing calls it yet.
@@ -170,10 +171,12 @@ only today's rows are read and the old inverted flag does not matter.
 - Task 3: `api/cron/check-live-snapshots.ts`,
   `api/__tests__/cron-check-live-snapshots.test.ts`, `api/snapshot-close.ts`
   (new), `api/__tests__/snapshot-close.test.ts` (new), this doc.
-- Task 4: `src/lib/live-save-device.ts` (new),
-  `src/__tests__/live-save-device.test.ts` (new), the settings surface that
-  hosts the switch (likely `src/components/PanelPrefsModal/PanelPrefsModal.tsx`)
-  and its test.
+- Task 4 (as built): `src/lib/live-save-device.ts` (new),
+  `src/__tests__/live-save-device.test.ts` (new),
+  `src/components/PanelPrefsModal/LiveSaveSwitch.tsx` (new) and its test,
+  `PanelPrefsModal.tsx` (required `isOwner` prop) and its test, the
+  `LazyPanelPrefsModal` test, and `src/App.tsx` (passes the strict
+  `isOwner`).
 - Task 5: `api/snapshot-close.ts`, `api/__tests__/snapshot-close.test.ts`,
   `api/_lib/constants.ts`, `api/cron/check-live-snapshots.ts`,
   `docs/ARCHITECTURE.md`.
@@ -419,7 +422,7 @@ below:**
 ## Task 4: Client — which browser saves live snapshots
 
 **Goal:** the third amendment's device rule and its per-browser switch. It is
-not wired into saving yet; Task 5 does that. Files:
+not wired into saving yet; Task 6 does that. Files:
 `src/lib/live-save-device.ts` (new), `src/__tests__/live-save-device.test.ts`
 (new), and the settings surface that hosts the switch and its test.
 
@@ -436,7 +439,8 @@ not wired into saving yet; Task 5 does that. Files:
     `!isTouchFirstDevice()`. Any unknown stored value reads as no override.
   - Subscribers: `subscribeLiveSaveDevice(cb): () => void`, notified on set,
     following the small subscriber-set pattern in `src/lib/sw-update.ts`, so
-    the hook in Task 5 re-renders when the switch flips in this tab.
+    the hook and the signal module in Task 6 react when the switch flips in
+    this tab.
     Cross-tab sync isn't needed.
 - The switch: an owner-only control labelled "Save live snapshots from this
   browser". It shows the effective value, with a note when it's the device
@@ -515,9 +519,18 @@ when the app closes and while it stays open. Files:
   so a render failure in the new build doesn't stop the open signal. It is
   active only while the visitor is the owner (check how the client knows this
   at startup, `getAccessMode()` in `src/utils/auth.ts`, and subscribe if it can
-  change) and `isLiveSaveDevice()` is true (re-checked on
-  `subscribeLiveSaveDevice`). The stop function removes every listener and
-  timer (R1).
+  change) and `isLiveSaveDevice()` is true. The stop function removes every
+  listener and timer (R1).
+  - `subscribeLiveSaveDevice` notifies only this tab, so the switch flipped in
+    another tab of the same browser is never pushed here. Read
+    `isLiveSaveDevice()` fresh when each timer fires and inside the `pagehide`
+    and `pageshow` handlers; don't trust an "active" flag set at start or on
+    the notification. The subscription is only for reacting at once in this
+    tab (start the timers, send an open signal). No `storage` listener needed.
+  - The subscriber must not throw: `setLiveSaveOverride` calls subscribers
+    unguarded, inside the switch's `onChange`, so a throw would skip React's
+    subscriber too. Wrap its body in try/catch and capture a failure once at
+    warning level.
   - **Open signal:** `fetch('/api/snapshot-close', { method: 'DELETE' })`
     when it becomes active, 30 s later, every 5 minutes, and on `pageshow`
     with `event.persisted` (back/forward cache). Each one is sent only inside
