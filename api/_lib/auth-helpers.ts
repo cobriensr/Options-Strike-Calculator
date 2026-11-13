@@ -59,7 +59,8 @@ export async function checkBot(
 
 /**
  * Cookie name for the owner session.
- * Set during /api/auth/callback, checked on every data request.
+ * Set by /api/auth/callback and renewed by /api/auth/whoami; checked on every
+ * data request.
  */
 export const OWNER_COOKIE = 'sc-owner';
 
@@ -72,6 +73,28 @@ export const OWNER_COOKIE = 'sc-owner';
  * on use, so a browser that keeps being used never reaches the end.
  */
 export const OWNER_COOKIE_MAX_AGE = 400 * 24 * 60 * 60;
+
+/**
+ * Whether this deployment is a local one, where session cookies drop `Secure`
+ * so a plain-http dev server can set them. The one rule for the owner and
+ * guest cookie handlers; pass the result as `isLocal`.
+ *
+ * True only when the host of `APP_URL` is `localhost` or `127.0.0.1`
+ * (parsed, not a substring match), and never in production
+ * (`VERCEL_ENV === 'production'`). An unset or unparseable `APP_URL` is not
+ * local, so a misconfigured deployment keeps `Secure`.
+ */
+export function isLocalDeployment(): boolean {
+  if (process.env.VERCEL_ENV === 'production') return false;
+  const appUrl = process.env.APP_URL;
+  if (!appUrl) return false;
+  try {
+    const { hostname } = new URL(appUrl);
+    return hostname === 'localhost' || hostname === '127.0.0.1';
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Set-Cookie strings for the owner sign-in: the HttpOnly `sc-owner` session
