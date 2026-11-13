@@ -34,7 +34,7 @@ import {
   setCacheHeaders,
 } from './_lib/api-helpers.js';
 import { withRequestScope } from './_lib/request-scope.js';
-import { redis } from './_lib/redis.js';
+import { limiterRedis } from './_lib/redis.js';
 import logger from './_lib/logger.js';
 import {
   CACHE_TTL_SEC,
@@ -90,10 +90,13 @@ export default withRequestScope(
         .toISOString()
         .slice(0, 10);
 
-      // Try Redis cache first
+      // Try Redis cache first. Both cache calls here use the fail-fast
+      // `limiterRedis` (one attempt, 1.5 s): a miss falls through to the
+      // sources, so the retrying client's ~64 s give-up in an outage would only
+      // add latency, on the read and again on the write.
       const cacheKey = `${REDIS_KEY}:${startDate}:${days}`;
       try {
-        const raw = await redis.get<
+        const raw = await limiterRedis.get<
           { data: EventItem[]; cachedAt: number } | EventItem[]
         >(cacheKey);
         if (raw) {
@@ -122,13 +125,15 @@ export default withRequestScope(
         // Redis unavailable — fetch fresh
       }
 
-      // A cache miss costs one Finnhub call, plus at most 7 FRED calls when a
-      // release's date list is cold in Redis, which happens about once per 12
-      // hours (`market-events.ts`). Finnhub's free key allows 60 calls a
-      // minute, and the default request shares it. Limit per IP only the
-      // lookups that choose their own window (`from`): this caps one IP at 30
-      // misses a minute and leaves the default request unlimited. A cache hit
-      // never reaches here.
+      // A cache miss costs at most one Finnhub call (none for a window that ends
+      // more than 45 days before today, or when no Finnhub key is set), plus at
+      // most 7 FRED calls when a release's date list is cold in Redis, which
+      // happens about once per 12 hours, or on every miss for a release FRED
+      // answers with an empty list, which is never kept (`market-events.ts`).
+      // Finnhub's free key allows 60 calls a minute, and the default request
+      // shares it. Limit per IP only the lookups that choose their own window
+      // (`from`): this caps one IP at 30 misses a minute and leaves the default
+      // request unlimited. A cache hit never reaches here.
       if (
         parsed.data.from &&
         (await rejectIfRateLimited(req, res, 'events', 30))
@@ -140,14 +145,15 @@ export default withRequestScope(
       // Fetch from all sources
       const { events, complete } = await fetchMarketEvents(startDate, endDate);
 
-      // Only cache when every source returned OK. A FRED blip degrades the
-      // list to [] for those releases; caching that under the day-scoped key
-      // would serve a missing CPI/NFP flag all day (AUD-M2). Skipping the
-      // write lets the next request retry FRED.
+      // Only cache when every source returned OK. A FRED blip (a non-OK
+      // answer, a malformed body or an empty release list) degrades the list
+      // for those releases; caching that under the day-scoped key would serve
+      // a missing CPI/NFP flag all day (AUD-M2). Skipping the write lets the
+      // next request retry FRED.
       if (complete) {
         // Cache in Redis for 7 days (key is date-scoped, stale keys auto-expire)
         try {
-          await redis.set(
+          await limiterRedis.set(
             cacheKey,
             { data: events, cachedAt: Date.now() },
             { ex: CACHE_TTL_SEC },

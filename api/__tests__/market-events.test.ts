@@ -2,9 +2,11 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-// `redis` backs the per-day caches; `limiterRedis` is the fail-fast client the
-// per-release date lists use, so each is mocked apart and a test can tell which
-// one a key went through.
+// Every cache call in market-events.ts goes through the fail-fast
+// `limiterRedis`: the per-release date lists and the per-day cache. `redis`, the
+// retrying client, is mocked only so a test can assert nothing reaches it. It
+// takes about 64 s to give up in an outage, on each read and again on each
+// write.
 vi.mock('../_lib/redis.js', () => ({
   redis: { get: vi.fn(), set: vi.fn() },
   limiterRedis: { get: vi.fn(), set: vi.fn() },
@@ -45,6 +47,18 @@ const NOW = new Date('2026-06-18T01:30:00Z');
 const TODAY_ET = '2026-06-17';
 const FINNHUB_HISTORY_DAYS = 45;
 
+// FRED's `release/dates` answers a release's whole history (a probe on
+// 2026-11-13 got 953 dates for release 10 and 867 for release 50), so a tracked
+// release's list is never empty. A stub that means "nothing in this window"
+// gives the list a date this far back, which the window filter drops: the
+// oldest window any test asks for starts on 2026-01-17.
+const FILLER = '2025-01-15';
+
+/** A FRED `release/dates` body holding only the date `FILLER`. */
+function historyOnly(releaseId = 10) {
+  return { release_dates: [{ release_id: releaseId, date: FILLER }] };
+}
+
 /** The calendar date `days` before `from` (negative for after), YYYY-MM-DD. */
 function daysBefore(from: string, days: number): string {
   return new Date(Date.parse(`${from}T12:00:00Z`) - days * 86_400_000)
@@ -52,24 +66,34 @@ function daysBefore(from: string, days: number): string {
     .slice(0, 10);
 }
 
-/** Day-cache `set` calls whose key starts with `prefix`, as [key, value, options]. */
+/** Fail-fast client `set` calls whose key starts with `prefix`, as [key, value, options]. */
 function writesTo(prefix: string) {
   return vi
-    .mocked(redis.set)
+    .mocked(limiterRedis.set)
     .mock.calls.filter(([key]) => key.startsWith(prefix));
 }
 
 /** The release-date list writes, as [key, value, options]. */
 function releaseWrites() {
-  return vi.mocked(limiterRedis.set).mock.calls;
+  return writesTo(`${RELEASE_KEY}:`);
 }
 
-/** The keys passed to the day-cache client's `get` that start with `prefix`. */
+/** The keys passed to the fail-fast client's `get` that start with `prefix`. */
 function keysRead(prefix: string): string[] {
   return vi
-    .mocked(redis.get)
+    .mocked(limiterRedis.get)
     .mock.calls.map(([key]) => key)
     .filter((key) => key.startsWith(prefix));
+}
+
+/**
+ * The fail-fast client answers `entry` for a day-cache key and a miss for every
+ * other key, so the release-date reads of the same lookup still miss.
+ */
+function stubDayCacheRead(entry: unknown) {
+  vi.mocked(limiterRedis.get).mockImplementation((key: string) =>
+    Promise.resolve(key.startsWith('events:day:') ? entry : null),
+  );
 }
 
 /** The release ID in a FRED `release/dates` request URL. */
@@ -101,8 +125,10 @@ function stubCachedReleaseDates(
 }
 
 /**
- * FRED answers every tracked release with its own dates. Finnhub answers
- * with an empty earnings calendar unless a test overrides the stub.
+ * FRED answers every tracked release with its own dates, or with the single
+ * date `FILLER` for a release the table leaves out (an explicit `[]` gives the
+ * empty list, which the code treats as a failure). Finnhub answers with an empty
+ * earnings calendar unless a test overrides the stub.
  */
 function stubFredFetch(datesByRelease: Record<number, readonly string[]> = {}) {
   const fetchMock = vi.fn((url: string) => {
@@ -117,10 +143,12 @@ function stubFredFetch(datesByRelease: Record<number, readonly string[]> = {}) {
       ok: true,
       json: () =>
         Promise.resolve({
-          release_dates: (datesByRelease[releaseId] ?? []).map((date) => ({
-            release_id: releaseId,
-            date,
-          })),
+          release_dates: (datesByRelease[releaseId] ?? [FILLER]).map(
+            (date) => ({
+              release_id: releaseId,
+              date,
+            }),
+          ),
         }),
     });
   });
@@ -152,12 +180,15 @@ const unparseable: Reply = () =>
 
 const networkDown: Reply = () => Promise.reject(new Error('Network timeout'));
 
-/** FRED and Finnhub answer independently; an omitted source answers empty. */
+/**
+ * FRED and Finnhub answer independently. An omitted FRED answers each release
+ * with only `FILLER`, and an omitted Finnhub with an empty earnings calendar.
+ */
 function stubSources({ fred, finnhub }: { fred?: Reply; finnhub?: Reply }) {
   const fetchMock = vi.fn((url: string) =>
     url.startsWith('https://finnhub.io/')
       ? (finnhub ?? okJson({ earningsCalendar: [] }))()
-      : (fred ?? okJson({ release_dates: [] }))(),
+      : (fred ?? okJson(historyOnly()))(),
   );
   vi.stubGlobal('fetch', fetchMock);
   return fetchMock;
@@ -339,7 +370,7 @@ describe('market-events', () => {
           return Promise.resolve({ ok: false, status: 500 });
         return Promise.resolve({
           ok: true,
-          json: () => Promise.resolve({ release_dates: [] }),
+          json: () => Promise.resolve(historyOnly()),
         });
       });
       vi.stubGlobal('fetch', fetchMock);
@@ -414,9 +445,11 @@ describe('market-events', () => {
           return Promise.resolve({
             ok: true,
             json: () =>
-              Promise.resolve({
-                release_dates: isCpi ? [{ release_id: 10, date: CPI_DAY }] : [],
-              }),
+              Promise.resolve(
+                isCpi
+                  ? { release_dates: [{ release_id: 10, date: CPI_DAY }] }
+                  : historyOnly(),
+              ),
           });
         }),
       );
@@ -441,7 +474,7 @@ describe('market-events', () => {
           }
           return Promise.resolve({
             ok: true,
-            json: () => Promise.resolve({ release_dates: [] }),
+            json: () => Promise.resolve(historyOnly()),
           });
         }),
       );
@@ -589,9 +622,11 @@ describe('market-events', () => {
           46: '2026-06-16',
         };
         const date = dates[releaseId];
-        return okJson({
-          release_dates: date == null ? [] : [{ release_id: releaseId, date }],
-        })();
+        return okJson(
+          date == null
+            ? historyOnly(releaseId)
+            : { release_dates: [{ release_id: releaseId, date }] },
+        )();
       });
       vi.stubGlobal('fetch', fetchMock);
 
@@ -660,13 +695,53 @@ describe('market-events', () => {
       );
     });
 
-    it('treats an empty release list as the normal no-events payload', async () => {
+    // FRED's `release/dates` answers a release's whole history, so an empty
+    // list for a tracked release is a gap, never "no events". Taken as complete
+    // it would be pinned by the seven-day day cache and the window cache.
+    it('is incomplete when FRED answers a release with an empty list, and reports it', async () => {
       stubSources({ fred: okJson({ release_dates: [] }) });
+
+      const { events, complete } = await fetchMarketEvents(
+        FOMC_SEP_DAY,
+        FOMC_SEP_DAY,
+      );
+
+      expect(complete).toBe(false);
+      expect(events.map((e) => e.event)).toEqual(['FOMC + SEP']);
+      expect(logger.error).toHaveBeenCalledWith(
+        { releaseId: expect.any(Number) },
+        'FRED API empty release list',
+      );
+      expect(Sentry.captureMessage).toHaveBeenCalledWith(
+        'FRED API empty release list',
+        { level: 'warning', extra: { releaseId: expect.any(Number) } },
+      );
+    });
+
+    it('is incomplete when one FRED release alone answers with an empty list', async () => {
+      stubFredFetch({ 46: [] });
 
       const { complete } = await fetchMarketEvents(CPI_DAY, CPI_DAY);
 
-      expect(complete).toBe(true);
+      expect(complete).toBe(false);
+      expect(logger.error).toHaveBeenCalledTimes(1);
+      expect(logger.error).toHaveBeenCalledWith(
+        { releaseId: 46 },
+        'FRED API empty release list',
+      );
+      expect(Sentry.captureMessage).toHaveBeenCalledTimes(1);
+    });
+
+    // The failure is about FRED's raw list, before the window filter. A list
+    // with history but no date in the window is the normal quiet day.
+    it('stays complete when every release has dates but none in the window', async () => {
+      stubFredFetch();
+
+      const result = await fetchMarketEvents('2026-05-14', '2026-05-14');
+
+      expect(result).toEqual({ events: [], complete: true });
       expect(Sentry.captureMessage).not.toHaveBeenCalled();
+      expect(logger.error).not.toHaveBeenCalled();
     });
 
     // Finnhub's free key serves about a month of past earnings: a live probe on
@@ -748,6 +823,10 @@ describe('market-events', () => {
 
         expect(complete).toBe(false);
         expect(finnhubCalls(fetchMock)).toEqual([]);
+        expect(Sentry.captureMessage).toHaveBeenCalledWith(
+          'FRED API non-OK',
+          expect.objectContaining({ level: 'warning' }),
+        );
       });
     });
   });
@@ -882,9 +961,9 @@ describe('market-events', () => {
     const START = '2026-05-12';
     const END = '2026-05-14';
     const ALL_RELEASES = [9, 10, 46, 50, 53, 54, 192];
-    // A date outside [START, END]: it makes a release's list non-empty, which
-    // is what lets the list be cached, without adding an event to the window.
-    const FILLER = '2026-01-15';
+    // FILLER (top of the file) sits outside [START, END]: it makes a release's
+    // list non-empty, which is what lets the list be cached, without adding an
+    // event to the window.
 
     /** Every tracked release has `dates`, except those listed in `overrides`. */
     function everyRelease(
@@ -978,29 +1057,20 @@ describe('market-events', () => {
       expect(releaseWrites()).toHaveLength(6);
     });
 
-    // An empty list is not worth keeping: a cached [] would answer "no event"
-    // for the whole 12 hours, from a FRED reply that may have been a gap.
-    it('writes nothing for a release FRED answers with an empty list, and caches the others', async () => {
+    // An empty list is a failure and is not worth keeping: a cached [] would
+    // answer "no event" for the whole 12 hours, from a FRED reply that was a gap.
+    it('fails, and writes nothing, for a release FRED answers with an empty list, and caches the others', async () => {
       const fetchMock = stubFredFetch(everyRelease([FILLER], { 9: [] }));
 
       const { events, complete } = await fetchMacroEvents(START, END);
 
-      expect(complete).toBe(true);
+      expect(complete).toBe(false);
       expect(events).toEqual([]);
       expect(releasesRequested(fetchMock)).toEqual(ALL_RELEASES);
       expect(releaseWrites().map(([key]) => key)).not.toContain(
         `${RELEASE_KEY}:9`,
       );
       expect(releaseWrites()).toHaveLength(6);
-    });
-
-    it('writes nothing when FRED answers every release with an empty list', async () => {
-      stubSources({ fred: okJson({ release_dates: [] }) });
-
-      const { complete } = await fetchMacroEvents(START, END);
-
-      expect(complete).toBe(true);
-      expect(limiterRedis.set).not.toHaveBeenCalled();
     });
 
     it('writes nothing when every entry FRED sends has no date', async () => {
@@ -1033,6 +1103,7 @@ describe('market-events', () => {
 
     it.each([
       ['non-OK', nonOk],
+      ['200 with an empty release list', okJson({ release_dates: [] })],
       ['200 with an empty object', okJson({})],
       ['200 with a null release list', okJson({ release_dates: null })],
       [
@@ -1192,12 +1263,13 @@ describe('market-events', () => {
   });
 
   describe('getEventsForDate', () => {
+    // The day cache sits on every snapshot save. The retrying `redis` client
+    // takes about 64 s to give up in an outage, on the read and again on the
+    // write, so both go through the fail-fast `limiterRedis` and a test below
+    // each asserts the retrying client is never touched.
     it('returns the cached events on a hit and makes no fetch', async () => {
       const cached = [event()];
-      vi.mocked(redis.get).mockResolvedValue({
-        data: cached,
-        cachedAt: 1_700_000_000_000,
-      });
+      stubDayCacheRead({ data: cached, cachedAt: 1_700_000_000_000 });
       const fetchMock = stubFredFetch();
 
       const result = await getEventsForDate(CPI_DAY);
@@ -1207,8 +1279,10 @@ describe('market-events', () => {
         complete: true,
         fromCache: true,
       });
-      expect(redis.get).toHaveBeenCalledWith(DAY_KEY);
+      expect(limiterRedis.get).toHaveBeenCalledWith(DAY_KEY);
       expect(fetchMock).not.toHaveBeenCalled();
+      expect(limiterRedis.set).not.toHaveBeenCalled();
+      expect(redis.get).not.toHaveBeenCalled();
       expect(redis.set).not.toHaveBeenCalled();
     });
 
@@ -1222,11 +1296,32 @@ describe('market-events', () => {
       expect(result.events.map((e) => e.event)).toEqual(['CPI']);
       expect(urlsCalled(fetchMock).length).toBeGreaterThan(0);
       expect(writesTo('events:day:')).toHaveLength(1);
-      expect(redis.set).toHaveBeenCalledWith(
+      expect(limiterRedis.set).toHaveBeenCalledWith(
         DAY_KEY,
         { data: result.events, cachedAt: expect.any(Number) },
         { ex: CACHE_TTL_SEC },
       );
+      expect(limiterRedis.get).toHaveBeenCalledWith(DAY_KEY);
+      expect(redis.get).not.toHaveBeenCalled();
+      expect(redis.set).not.toHaveBeenCalled();
+    });
+
+    // The answer an empty FRED list used to give: "no events", kept for seven
+    // days. It is a gap, so the day is retried within minutes.
+    it('keeps a day for five minutes, marked complete: false, when FRED answers a release with an empty list', async () => {
+      stubSources({ fred: okJson({ release_dates: [] }) });
+
+      const result = await getEventsForDate('2026-05-14');
+
+      expect(result).toEqual({ events: [], complete: false, fromCache: false });
+      expect(writesTo('events:day:')).toEqual([
+        [
+          'events:day:v3:2026-05-14',
+          { data: [], cachedAt: expect.any(Number), complete: false },
+          { ex: 300 },
+        ],
+      ]);
+      expect(releaseWrites()).toEqual([]);
     });
 
     it('caches an empty day, so a quiet date is not refetched', async () => {
@@ -1235,7 +1330,7 @@ describe('market-events', () => {
       const result = await getEventsForDate('2026-05-14');
 
       expect(result).toEqual({ events: [], complete: true, fromCache: false });
-      expect(redis.set).toHaveBeenCalledWith(
+      expect(limiterRedis.set).toHaveBeenCalledWith(
         'events:day:v3:2026-05-14',
         { data: [], cachedAt: expect.any(Number) },
         { ex: CACHE_TTL_SEC },
@@ -1253,8 +1348,8 @@ describe('market-events', () => {
       expect(result.complete).toBe(false);
       expect(result.fromCache).toBe(false);
       expect(result.events.map((e) => e.event)).toEqual(['FOMC + SEP']);
-      expect(redis.set).toHaveBeenCalledTimes(1);
-      expect(redis.set).toHaveBeenCalledWith(
+      expect(limiterRedis.set).toHaveBeenCalledTimes(1);
+      expect(limiterRedis.set).toHaveBeenCalledWith(
         `events:day:v3:${FOMC_SEP_DAY}`,
         { data: result.events, cachedAt: expect.any(Number), complete: false },
         { ex: 300 },
@@ -1268,8 +1363,8 @@ describe('market-events', () => {
       const result = await getEventsForDate(FOMC_SEP_DAY);
 
       expect(result.complete).toBe(false);
-      expect(redis.set).toHaveBeenCalledTimes(1);
-      expect(redis.set).toHaveBeenCalledWith(
+      expect(limiterRedis.set).toHaveBeenCalledTimes(1);
+      expect(limiterRedis.set).toHaveBeenCalledWith(
         `events:day:v3:${FOMC_SEP_DAY}`,
         { data: result.events, cachedAt: expect.any(Number), complete: false },
         { ex: 300 },
@@ -1278,7 +1373,7 @@ describe('market-events', () => {
 
     it('returns an incomplete cached entry as incomplete and makes no fetch', async () => {
       const partial = [event({ event: 'FOMC + SEP', source: 'static' })];
-      vi.mocked(redis.get).mockResolvedValue({
+      stubDayCacheRead({
         data: partial,
         cachedAt: 1_700_000_000_000,
         complete: false,
@@ -1293,7 +1388,7 @@ describe('market-events', () => {
         fromCache: true,
       });
       expect(fetchMock).not.toHaveBeenCalled();
-      expect(redis.set).not.toHaveBeenCalled();
+      expect(limiterRedis.set).not.toHaveBeenCalled();
     });
 
     it.each([
@@ -1301,7 +1396,7 @@ describe('market-events', () => {
       ['says complete: true', { complete: true }, true],
       ['says complete: false', { complete: false }, false],
     ])('reads a cached entry that %s', async (_label, flag, expected) => {
-      vi.mocked(redis.get).mockResolvedValue({
+      stubDayCacheRead({
         data: [event()],
         cachedAt: 1_700_000_000_000,
         ...flag,
@@ -1328,7 +1423,7 @@ describe('market-events', () => {
       expect(options).toEqual({ ex: 7 * 24 * 60 * 60 });
       expect((entry as { complete?: boolean }).complete).not.toBe(false);
 
-      vi.mocked(redis.get).mockResolvedValue(entry);
+      stubDayCacheRead(entry);
       const fetchMock = stubFredFetch();
       const again = await getEventsForDate(CPI_DAY);
       expect(again.complete).toBe(true);
@@ -1336,7 +1431,9 @@ describe('market-events', () => {
     });
 
     it('still returns the incomplete result, and logs, when its short cache write throws', async () => {
-      vi.mocked(redis.set).mockRejectedValue(new Error('redis write failed'));
+      vi.mocked(limiterRedis.set).mockRejectedValue(
+        new Error('redis write failed'),
+      );
       vi.stubGlobal(
         'fetch',
         vi.fn().mockResolvedValue({ ok: false, status: 503 }),
@@ -1346,15 +1443,18 @@ describe('market-events', () => {
 
       expect(result.complete).toBe(false);
       expect(result.events.map((e) => e.event)).toEqual(['FOMC + SEP']);
-      expect(redis.set).toHaveBeenCalledTimes(1);
+      expect(limiterRedis.set).toHaveBeenCalledTimes(1);
       expect(logger.error).toHaveBeenCalledWith(
         { err: expect.any(Error) },
         'Failed to cache day events in Redis',
       );
+      expect(redis.set).not.toHaveBeenCalled();
     });
 
     it('still fetches, and logs, when the Redis read throws', async () => {
-      vi.mocked(redis.get).mockRejectedValue(new Error('redis read failed'));
+      vi.mocked(limiterRedis.get).mockRejectedValue(
+        new Error('redis read failed'),
+      );
       const fetchMock = stubFredFetch({ 10: [CPI_DAY] });
 
       const result = await getEventsForDate(CPI_DAY);
@@ -1365,10 +1465,13 @@ describe('market-events', () => {
         { err: expect.any(Error) },
         'Failed to read day events from Redis',
       );
+      expect(redis.get).not.toHaveBeenCalled();
     });
 
     it('still returns the events, and logs, when the Redis write throws', async () => {
-      vi.mocked(redis.set).mockRejectedValue(new Error('redis write failed'));
+      vi.mocked(limiterRedis.set).mockRejectedValue(
+        new Error('redis write failed'),
+      );
       stubFredFetch({ 10: [CPI_DAY] });
 
       const result = await getEventsForDate(CPI_DAY);
@@ -1379,6 +1482,7 @@ describe('market-events', () => {
         { err: expect.any(Error) },
         'Failed to cache day events in Redis',
       );
+      expect(redis.set).not.toHaveBeenCalled();
     });
 
     it.each([
@@ -1386,7 +1490,7 @@ describe('market-events', () => {
       ['a wrapper with no data', { cachedAt: 1 }],
       ['a wrapper whose data is not an array', { data: 'oops', cachedAt: 1 }],
     ])('treats %s in the cache as a miss', async (_label, cached) => {
-      vi.mocked(redis.get).mockResolvedValue(cached);
+      stubDayCacheRead(cached);
       const fetchMock = stubFredFetch({ 10: [CPI_DAY] });
 
       const result = await getEventsForDate(CPI_DAY);
@@ -1402,12 +1506,13 @@ describe('market-events', () => {
       );
 
       await expect(getEventsForDate(CPI_DAY)).rejects.toThrow('network down');
-      expect(redis.set).toHaveBeenCalledTimes(1);
-      expect(redis.set).toHaveBeenCalledWith(
+      expect(limiterRedis.set).toHaveBeenCalledTimes(1);
+      expect(limiterRedis.set).toHaveBeenCalledWith(
         DAY_KEY,
         { data: [], cachedAt: expect.any(Number), complete: false },
         { ex: 300 },
       );
+      expect(redis.set).not.toHaveBeenCalled();
     });
 
     it('caches an empty incomplete entry for five minutes, then rejects, when a FRED body is not JSON', async () => {
@@ -1416,8 +1521,8 @@ describe('market-events', () => {
       await expect(getEventsForDate(CPI_DAY)).rejects.toThrow(
         'Unexpected token <',
       );
-      expect(redis.set).toHaveBeenCalledTimes(1);
-      expect(redis.set).toHaveBeenCalledWith(
+      expect(limiterRedis.set).toHaveBeenCalledTimes(1);
+      expect(limiterRedis.set).toHaveBeenCalledWith(
         DAY_KEY,
         { data: [], cachedAt: expect.any(Number), complete: false },
         { ex: 300 },
@@ -1425,14 +1530,16 @@ describe('market-events', () => {
     });
 
     it('rethrows the original error, and logs, when the write after a rejected fetch throws', async () => {
-      vi.mocked(redis.set).mockRejectedValue(new Error('redis write failed'));
+      vi.mocked(limiterRedis.set).mockRejectedValue(
+        new Error('redis write failed'),
+      );
       vi.stubGlobal(
         'fetch',
         vi.fn().mockRejectedValue(new Error('network down')),
       );
 
       await expect(getEventsForDate(CPI_DAY)).rejects.toThrow('network down');
-      expect(redis.set).toHaveBeenCalledTimes(1);
+      expect(limiterRedis.set).toHaveBeenCalledTimes(1);
       expect(logger.error).toHaveBeenCalledWith(
         { err: expect.any(Error) },
         'Failed to cache day events in Redis',
@@ -1443,10 +1550,10 @@ describe('market-events', () => {
       const fetchMock = vi.fn().mockRejectedValue(new Error('network down'));
       vi.stubGlobal('fetch', fetchMock);
       await expect(getEventsForDate(CPI_DAY)).rejects.toThrow('network down');
-      const [, entry] = vi.mocked(redis.set).mock.calls[0] ?? [];
+      const [, entry] = writesTo('events:day:')[0] ?? [];
       fetchMock.mockClear();
 
-      vi.mocked(redis.get).mockResolvedValue(entry);
+      stubDayCacheRead(entry);
       const again = await getEventsForDate(CPI_DAY);
 
       expect(again).toEqual({ events: [], complete: false, fromCache: true });
@@ -1460,8 +1567,8 @@ describe('market-events', () => {
 
       expect(result.complete).toBe(false);
       expect(result.events.map((e) => e.event)).toEqual(['FOMC + SEP']);
-      expect(redis.set).toHaveBeenCalledTimes(1);
-      expect(redis.set).toHaveBeenCalledWith(
+      expect(limiterRedis.set).toHaveBeenCalledTimes(1);
+      expect(limiterRedis.set).toHaveBeenCalledWith(
         `events:day:v3:${FOMC_SEP_DAY}`,
         { data: result.events, cachedAt: expect.any(Number), complete: false },
         { ex: 300 },
@@ -1500,7 +1607,7 @@ describe('market-events', () => {
           urlsCalled(fetchMock).filter((url) => url.includes('finnhub')),
         ).toEqual([]);
         expect(writesTo('events:day:')).toHaveLength(1);
-        expect(redis.set).toHaveBeenCalledWith(
+        expect(limiterRedis.set).toHaveBeenCalledWith(
           DAY_KEY,
           { data: [], cachedAt: expect.any(Number) },
           { ex: CACHE_TTL_SEC },
@@ -1513,7 +1620,7 @@ describe('market-events', () => {
         data: [event({ event: 'PPI', severity: 'medium' })],
         cachedAt: 1_700_000_000_000,
       };
-      vi.mocked(redis.get).mockImplementation((key: string) =>
+      vi.mocked(limiterRedis.get).mockImplementation((key: string) =>
         Promise.resolve(key === `events:day:v2:${CPI_DAY}` ? v2Entry : null),
       );
       stubFredFetch({ 10: [CPI_DAY] });
@@ -1523,9 +1630,13 @@ describe('market-events', () => {
       expect(keysRead('events:day:')).toEqual([DAY_KEY]);
       expect(result.fromCache).toBe(false);
       expect(result.events.map((e) => e.event)).toEqual(['CPI']);
-      expect(redis.set).toHaveBeenCalledWith(DAY_KEY, expect.anything(), {
-        ex: CACHE_TTL_SEC,
-      });
+      expect(limiterRedis.set).toHaveBeenCalledWith(
+        DAY_KEY,
+        expect.anything(),
+        {
+          ex: CACHE_TTL_SEC,
+        },
+      );
     });
   });
 

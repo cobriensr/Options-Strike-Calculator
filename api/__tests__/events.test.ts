@@ -3,9 +3,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
-// `redis` holds the window caches; `limiterRedis` is the fail-fast client the
-// per-release FRED date lists use (market-events.ts), kept apart so a test on
-// the window cache counts only its own reads and writes.
+// Every events cache call goes through the fail-fast `limiterRedis`: the window
+// cache (events.ts) and the per-release FRED date lists (market-events.ts). The
+// retrying `redis` is mocked only so a test can assert nothing reaches it: it
+// takes about 64 s to give up in an outage, on each read and again on each
+// write. A test on the window cache reads its own keys through `windowReads`
+// and `windowWrites`, because the date lists share the client.
 vi.mock('../_lib/redis.js', () => ({
   redis: {
     get: vi.fn().mockResolvedValue(null),
@@ -66,6 +69,32 @@ import { checkBot, rejectIfRateLimited } from '../_lib/api-helpers.js';
 import { fetchMarketEvents } from '../_lib/market-events.js';
 import { Sentry, metrics } from '../_lib/sentry.js';
 
+// FRED's `release/dates` answers a release's whole history, so a tracked
+// release's list is never empty, and an empty one makes the window incomplete.
+// A stub that means "no FRED event in this window" gives each list one date
+// from 2020, which the window filter drops (the earliest `from` allowed is
+// 2025-01-01).
+const OLD_RELEASE_DATES = {
+  release_dates: [{ release_id: 10, date: '2020-01-03' }],
+};
+
+const WINDOW_KEY_PREFIX = 'events:v3:';
+
+/** The window-cache keys the fail-fast client was asked to read. */
+function windowReads(): string[] {
+  return vi
+    .mocked(limiterRedis.get)
+    .mock.calls.map(([key]) => key)
+    .filter((key) => key.startsWith(WINDOW_KEY_PREFIX));
+}
+
+/** The window-cache writes to the fail-fast client, as [key, value, options]. */
+function windowWrites() {
+  return vi
+    .mocked(limiterRedis.set)
+    .mock.calls.filter(([key]) => key.startsWith(WINDOW_KEY_PREFIX));
+}
+
 describe('GET /api/events', () => {
   const originalEnv = process.env;
 
@@ -102,7 +131,7 @@ describe('GET /api/events', () => {
     const cachedEvents = [
       { date: '2026-03-18', event: 'FOMC', severity: 'high', source: 'static' },
     ];
-    vi.mocked(redis.get).mockResolvedValue(cachedEvents);
+    vi.mocked(limiterRedis.get).mockResolvedValue(cachedEvents);
 
     const res = mockResponse();
     await handler(mockRequest({ method: 'GET', query: { days: '30' } }), res);
@@ -112,18 +141,21 @@ describe('GET /api/events', () => {
     expect(json.cached).toBe(true);
     expect(json.events).toEqual(cachedEvents);
     expect(res._headers['X-Cache']).toBe('HIT');
+    // The read goes through the fail-fast client, never the retrying one.
+    expect(windowReads()).toHaveLength(1);
+    expect(redis.get).not.toHaveBeenCalled();
   });
 
   it('fetches fresh data when cache misses', async () => {
     process.env.FRED_API_KEY = 'test-key';
-    vi.mocked(redis.get).mockResolvedValue(null);
+    vi.mocked(limiterRedis.get).mockResolvedValue(null);
 
     // Mock FRED API responses (one per tracked release)
     vi.stubGlobal(
       'fetch',
       vi.fn().mockResolvedValue({
         ok: true,
-        json: () => Promise.resolve({ release_dates: [] }),
+        json: () => Promise.resolve(OLD_RELEASE_DATES),
       }),
     );
 
@@ -147,7 +179,7 @@ describe('GET /api/events', () => {
       'fetch',
       vi.fn().mockResolvedValue({
         ok: true,
-        json: () => Promise.resolve({ release_dates: [] }),
+        json: () => Promise.resolve(OLD_RELEASE_DATES),
       }),
     );
 
@@ -265,7 +297,7 @@ describe('GET /api/events', () => {
       // FRED API
       return Promise.resolve({
         ok: true,
-        json: () => Promise.resolve({ release_dates: [] }),
+        json: () => Promise.resolve(OLD_RELEASE_DATES),
       });
     });
     vi.stubGlobal('fetch', mockFetch);
@@ -303,7 +335,7 @@ describe('GET /api/events', () => {
       }
       return Promise.resolve({
         ok: true,
-        json: () => Promise.resolve({ release_dates: [] }),
+        json: () => Promise.resolve(OLD_RELEASE_DATES),
       });
     });
     vi.stubGlobal('fetch', mockFetch);
@@ -344,7 +376,7 @@ describe('GET /api/events', () => {
   it('does NOT cache the day-scoped key when FRED errors (AUD-M2)', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
     process.env.FRED_API_KEY = 'fred-key';
-    vi.mocked(redis.get).mockResolvedValue(null);
+    vi.mocked(limiterRedis.get).mockResolvedValue(null);
 
     // Every FRED release returns non-OK → degraded list. The degraded
     // result must NOT be written to the date-scoped cache, so a later
@@ -358,7 +390,10 @@ describe('GET /api/events', () => {
     await handler(mockRequest({ method: 'GET', query: { days: '30' } }), res);
 
     expect(res._status).toBe(200);
-    // The cache write is the bug: a FRED error must skip redis.set entirely.
+    // The cache write is the bug: a FRED error must skip the window write
+    // entirely. Nothing else writes either: no release list came back.
+    expect(windowWrites()).toEqual([]);
+    expect(limiterRedis.set).not.toHaveBeenCalled();
     expect(redis.set).not.toHaveBeenCalled();
     // And a Sentry warning is emitted on the non-OK FRED response.
     expect(Sentry.captureMessage).toHaveBeenCalledWith(
@@ -369,10 +404,11 @@ describe('GET /api/events', () => {
     vi.unstubAllGlobals();
   });
 
-  it('caches the day-scoped key when all FRED sources return OK', async () => {
+  // An empty list from FRED for a tracked release is a gap (FRED sends each
+  // release's whole history), not "no events". It used to count as complete, so
+  // the window was cached for seven days with no CPI or NFP in it.
+  it('does NOT cache the window when FRED answers a release with an empty list', async () => {
     process.env.FRED_API_KEY = 'fred-key';
-    vi.mocked(redis.get).mockResolvedValue(null);
-
     vi.stubGlobal(
       'fetch',
       vi.fn().mockResolvedValue({
@@ -385,9 +421,39 @@ describe('GET /api/events', () => {
     await handler(mockRequest({ method: 'GET', query: { days: '30' } }), res);
 
     expect(res._status).toBe(200);
-    // Full success → write-through to the date-scoped cache. The per-release
-    // FRED date lists go through `limiterRedis`, so `redis` sees one write.
-    expect(redis.set).toHaveBeenCalledTimes(1);
+    expect(res._headers['X-Cache']).toBe('MISS');
+    expect(windowWrites()).toEqual([]);
+    expect(limiterRedis.set).not.toHaveBeenCalled();
+    expect(Sentry.captureMessage).toHaveBeenCalledWith(
+      'FRED API empty release list',
+      expect.objectContaining({ level: 'warning' }),
+    );
+
+    vi.unstubAllGlobals();
+  });
+
+  it('caches the day-scoped key when all FRED sources return OK', async () => {
+    process.env.FRED_API_KEY = 'fred-key';
+    vi.mocked(limiterRedis.get).mockResolvedValue(null);
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve(OLD_RELEASE_DATES),
+      }),
+    );
+
+    const res = mockResponse();
+    await handler(mockRequest({ method: 'GET', query: { days: '30' } }), res);
+
+    expect(res._status).toBe(200);
+    // Full success → write-through to the date-scoped cache, on the fail-fast
+    // client (the per-release FRED date lists share it, so count only the
+    // window key). The retrying `redis` is never touched.
+    expect(windowWrites()).toHaveLength(1);
+    expect(redis.get).not.toHaveBeenCalled();
+    expect(redis.set).not.toHaveBeenCalled();
 
     vi.unstubAllGlobals();
   });
@@ -405,7 +471,7 @@ describe('GET /api/events', () => {
       ],
       cachedAt: 1_700_000_000_000,
     };
-    vi.mocked(redis.get).mockImplementation((key: string) =>
+    vi.mocked(limiterRedis.get).mockImplementation((key: string) =>
       Promise.resolve(key.startsWith('events:v2:') ? v2Entry : null),
     );
 
@@ -413,7 +479,7 @@ describe('GET /api/events', () => {
       'fetch',
       vi.fn().mockResolvedValue({
         ok: true,
-        json: () => Promise.resolve({ release_dates: [] }),
+        json: () => Promise.resolve(OLD_RELEASE_DATES),
       }),
     );
 
@@ -422,24 +488,30 @@ describe('GET /api/events', () => {
 
     expect(res._status).toBe(200);
     expect((res._json as { cached: boolean }).cached).toBe(false);
-    // The only read is the v3 key: the v2 key is never asked for. (The
-    // per-release FRED date lists are read through `limiterRedis`.)
-    expect(redis.get).toHaveBeenCalledTimes(1);
-    expect(redis.get).toHaveBeenCalledWith(
+    // The only window read is the v3 key: the v2 key is never asked for. (The
+    // per-release FRED date lists are read through the same client.)
+    expect(windowReads()).toEqual([
       expect.stringMatching(/^events:v3:\d{4}-\d{2}-\d{2}:30$/),
-    );
-    expect(redis.set).toHaveBeenCalledWith(
+    ]);
+    expect(
+      vi
+        .mocked(limiterRedis.get)
+        .mock.calls.filter(([key]) => key.startsWith('events:v2:')),
+    ).toEqual([]);
+    expect(limiterRedis.set).toHaveBeenCalledWith(
       expect.stringMatching(/^events:v3:\d{4}-\d{2}-\d{2}:30$/),
       expect.anything(),
       expect.anything(),
     );
+    expect(redis.get).not.toHaveBeenCalled();
+    expect(redis.set).not.toHaveBeenCalled();
 
     vi.unstubAllGlobals();
   });
 
   it('returns 500 when fetch times out (AbortError)', async () => {
     process.env.FRED_API_KEY = 'fred-key';
-    vi.mocked(redis.get).mockResolvedValue(null);
+    vi.mocked(limiterRedis.get).mockResolvedValue(null);
 
     vi.stubGlobal(
       'fetch',
@@ -464,13 +536,15 @@ describe('GET /api/events', () => {
   it('handles Redis cache write failure gracefully', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
     process.env.FRED_API_KEY = 'fred-key';
-    vi.mocked(redis.set).mockRejectedValue(new Error('redis write failed'));
+    vi.mocked(limiterRedis.set).mockRejectedValue(
+      new Error('redis write failed'),
+    );
 
     vi.stubGlobal(
       'fetch',
       vi.fn().mockResolvedValue({
         ok: true,
-        json: () => Promise.resolve({ release_dates: [] }),
+        json: () => Promise.resolve(OLD_RELEASE_DATES),
       }),
     );
 
@@ -479,6 +553,33 @@ describe('GET /api/events', () => {
 
     // Should still succeed despite cache write failure
     expect(res._status).toBe(200);
+    expect(res._headers['X-Cache']).toBe('MISS');
+    // The window write was attempted, on the fail-fast client.
+    expect(windowWrites()).toHaveLength(1);
+    expect(redis.set).not.toHaveBeenCalled();
+
+    vi.unstubAllGlobals();
+  });
+
+  it('fetches fresh data when the Redis read throws', async () => {
+    process.env.FRED_API_KEY = 'fred-key';
+    vi.mocked(limiterRedis.get).mockRejectedValue(
+      new Error('redis read failed'),
+    );
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve(OLD_RELEASE_DATES),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const res = mockResponse();
+    await handler(mockRequest({ method: 'GET', query: { days: '5' } }), res);
+
+    expect(res._status).toBe(200);
+    expect(res._headers['X-Cache']).toBe('MISS');
+    expect(windowReads()).toHaveLength(1);
+    expect(fetchMock).toHaveBeenCalled();
+    expect(redis.get).not.toHaveBeenCalled();
 
     vi.unstubAllGlobals();
   });
@@ -494,7 +595,7 @@ describe('GET /api/events', () => {
       }
       return Promise.resolve({
         ok: true,
-        json: () => Promise.resolve({ release_dates: [] }),
+        json: () => Promise.resolve(OLD_RELEASE_DATES),
       });
     });
     vi.stubGlobal('fetch', mockFetch);
@@ -516,7 +617,7 @@ describe('GET /api/events', () => {
       'fetch',
       vi.fn().mockResolvedValue({
         ok: true,
-        json: () => Promise.resolve({ release_dates: [] }),
+        json: () => Promise.resolve(OLD_RELEASE_DATES),
       }),
     );
     vi.useFakeTimers({ now: new Date(now) });
@@ -703,7 +804,7 @@ describe('GET /api/events', () => {
 
     const FRED_OK = {
       ok: true,
-      json: () => Promise.resolve({ release_dates: [] }),
+      json: () => Promise.resolve(OLD_RELEASE_DATES),
     };
 
     async function get(
@@ -729,8 +830,8 @@ describe('GET /api/events', () => {
         '2026-04-29',
         '2026-04-30',
       );
-      expect(redis.get).toHaveBeenCalledWith('events:v3:2026-04-29:1');
-      expect(redis.set).toHaveBeenCalledWith(
+      expect(limiterRedis.get).toHaveBeenCalledWith('events:v3:2026-04-29:1');
+      expect(limiterRedis.set).toHaveBeenCalledWith(
         'events:v3:2026-04-29:1',
         expect.anything(),
         expect.anything(),
@@ -744,7 +845,7 @@ describe('GET /api/events', () => {
     });
 
     it("does not serve today's cache entry for a past date", async () => {
-      vi.mocked(redis.get).mockImplementation((key: string) =>
+      vi.mocked(limiterRedis.get).mockImplementation((key: string) =>
         Promise.resolve(
           key === 'events:v3:2026-11-12:30'
             ? { data: [{ date: '2026-11-12', event: 'CPI' }], cachedAt: 1 }
@@ -756,11 +857,11 @@ describe('GET /api/events', () => {
 
       expect(json.cached).toBe(false);
       expect(json.events.some((e) => e.event === 'CPI')).toBe(false);
-      expect(redis.get).toHaveBeenCalledWith('events:v3:2026-04-29:30');
+      expect(limiterRedis.get).toHaveBeenCalledWith('events:v3:2026-04-29:30');
     });
 
     it('serves a cached past window without fetching, startDate echoing from', async () => {
-      vi.mocked(redis.get).mockImplementation((key: string) =>
+      vi.mocked(limiterRedis.get).mockImplementation((key: string) =>
         Promise.resolve(
           key === 'events:v3:2026-04-29:1'
             ? {
@@ -787,7 +888,7 @@ describe('GET /api/events', () => {
         '2026-11-12',
         '2026-11-15',
       );
-      expect(redis.get).toHaveBeenCalledWith('events:v3:2026-11-12:3');
+      expect(limiterRedis.get).toHaveBeenCalledWith('events:v3:2026-11-12:3');
       expect(json.startDate).toBe('2026-11-12');
       expect(json.endDate).toBe('2026-11-15');
     });
@@ -806,7 +907,7 @@ describe('GET /api/events', () => {
       const { json } = await get({ from: '2026-04-29', days: '200' });
 
       expect(json.endDate).toBe('2026-07-28');
-      expect(redis.get).toHaveBeenCalledWith('events:v3:2026-04-29:90');
+      expect(limiterRedis.get).toHaveBeenCalledWith('events:v3:2026-04-29:90');
     });
 
     it.each(['2026-02-30', 'abc'])(
@@ -818,8 +919,8 @@ describe('GET /api/events', () => {
         expect((res._json as { error: string }).error).toBe(BAD_DATE);
         expect(fetchMarketEvents).not.toHaveBeenCalled();
         expect(fredFetch).not.toHaveBeenCalled();
-        expect(redis.get).not.toHaveBeenCalled();
-        expect(redis.set).not.toHaveBeenCalled();
+        expect(limiterRedis.get).not.toHaveBeenCalled();
+        expect(limiterRedis.set).not.toHaveBeenCalled();
       },
     );
 
@@ -871,8 +972,10 @@ describe('GET /api/events', () => {
 
         expect(json.endDate).toBe(endDate);
         expect(fetchMarketEvents).toHaveBeenCalledWith('2026-11-12', endDate);
-        expect(redis.get).toHaveBeenCalledWith(`events:v3:2026-11-12:${whole}`);
-        expect(redis.set).toHaveBeenCalledWith(
+        expect(limiterRedis.get).toHaveBeenCalledWith(
+          `events:v3:2026-11-12:${whole}`,
+        );
+        expect(limiterRedis.set).toHaveBeenCalledWith(
           `events:v3:2026-11-12:${whole}`,
           expect.anything(),
           expect.anything(),
@@ -905,7 +1008,7 @@ describe('GET /api/events', () => {
         );
         expect(fetchMarketEvents).not.toHaveBeenCalled();
         expect(fredFetch).not.toHaveBeenCalled();
-        expect(redis.set).not.toHaveBeenCalled();
+        expect(limiterRedis.set).not.toHaveBeenCalled();
         // The request is recorded as a 429 on the metrics `done` callback.
         const done = vi.mocked(metrics.request).mock.results[0]?.value;
         expect(done).toHaveBeenCalledWith({ status: 429 });
@@ -928,7 +1031,7 @@ describe('GET /api/events', () => {
       });
 
       it('never calls the limiter for a from cache hit', async () => {
-        vi.mocked(redis.get).mockImplementation((key: string) =>
+        vi.mocked(limiterRedis.get).mockImplementation((key: string) =>
           Promise.resolve(
             key === 'events:v3:2026-04-29:1'
               ? {
@@ -963,7 +1066,7 @@ describe('GET /api/events', () => {
       );
       // A degraded list under events:v3:2026-04-29:* would pin the missing
       // release flags to that date for the 7-day TTL.
-      expect(redis.set).not.toHaveBeenCalled();
+      expect(limiterRedis.set).not.toHaveBeenCalled();
     });
 
     // Finnhub's free key serves about a month of past earnings (a live probe on
@@ -981,7 +1084,7 @@ describe('GET /api/events', () => {
               Promise.resolve(
                 url.startsWith('https://finnhub.io/')
                   ? { earningsCalendar: [] }
-                  : { release_dates: [] },
+                  : OLD_RELEASE_DATES,
               ),
           }),
         );
@@ -1013,8 +1116,8 @@ describe('GET /api/events', () => {
           expect(json.cached).toBe(false);
           expect(res._headers['X-Cache']).toBe('MISS');
           expect(finnhubCalls).toHaveLength(finnhubFetches);
-          expect(redis.set).toHaveBeenCalledTimes(1);
-          expect(redis.set).toHaveBeenCalledWith(
+          expect(windowWrites()).toHaveLength(1);
+          expect(limiterRedis.set).toHaveBeenCalledWith(
             `events:v3:${from}:1`,
             { data: json.events, cachedAt: expect.any(Number) },
             expect.anything(),

@@ -16,7 +16,7 @@
  */
 
 import { Sentry } from './sentry.js';
-import { limiterRedis, redis } from './redis.js';
+import { limiterRedis } from './redis.js';
 import logger from './logger.js';
 import { FOMC_DECISION_DATES, isSepMeeting } from './fomc-schedule.js';
 import { EARLY_CLOSE_DATES } from '../../src/data/marketHours.js';
@@ -352,13 +352,15 @@ interface FredReleaseResult {
   ok: boolean;
 }
 
-// The release lists are a best-effort cache read and written on every snapshot
-// save and every `/api/events` miss, so they use the fail-fast `limiterRedis`
-// (one attempt, 1.5 s), not the retrying `redis`. That client took about 64 s to
-// give up in the 2026-09-29 outage, on each read and again on each write: up to
-// 128 s added to a call. The Redis failures below log at `warn`, by choice, and
-// nothing goes to Sentry: an outage writes up to 7 lines per call, and 7 error
-// lines per call would be noise.
+// Every Redis call in this file is a best-effort cache read or write, and a
+// failure falls through to the source. The release lists are read and written on
+// every snapshot save and every `/api/events` miss, and the per-day cache
+// (`getEventsForDate`, below) on every snapshot save, so all of them use the
+// fail-fast `limiterRedis` (one attempt, 1.5 s), not the retrying `redis`. That
+// client took about 64 s to give up in the 2026-09-29 outage, on each read and
+// again on each write: up to 128 s added to a call. The release-list failures
+// below log at `warn`, by choice, and nothing goes to Sentry: an outage writes up
+// to 7 lines per call, and 7 error lines per call would be noise.
 
 /**
  * A release's cached date list, or null on a miss. A value that is not a
@@ -393,9 +395,9 @@ async function readCachedReleaseDates(
 
 /**
  * Keeps a release's full sorted date list as strings; a failure only logs.
- * Writes nothing when there is no date to keep, whether FRED sent an empty list
- * or only entries with no date: a cached `[]` would answer "no event" for the
- * whole 12 hours from a reply that may have been a gap.
+ * Writes nothing when no entry has a date: a cached `[]` would answer "no
+ * event" for the whole 12 hours from a reply that may have been a gap. (An
+ * empty list from FRED never gets here: `fetchReleaseDates` fails it first.)
  */
 async function writeCachedReleaseDates(
   releaseId: number,
@@ -459,11 +461,25 @@ async function fetchReleaseDates(
 
   const data = (await res.json()) as Partial<FredReleaseDatesResponse> | null;
 
-  // A 200 without a release list is a bad payload, not "no events": an empty
-  // array is FRED's normal answer, so only a missing or non-array list fails.
+  // A 200 without a release list is a bad payload, not "no events".
   if (!Array.isArray(data?.release_dates)) {
     logger.error({ releaseId }, 'FRED API malformed payload');
     Sentry.captureMessage('FRED API malformed payload', {
+      level: 'warning',
+      extra: { releaseId },
+    });
+    return { entries: [], ok: false };
+  }
+
+  // `release/dates` answers a release's whole history (a probe on 2026-11-13
+  // got 953 dates for release 10 and 867 for release 50), so an empty list for
+  // a tracked release is never a real answer. Taken as complete, it would be
+  // pinned as "no events" by the seven-day day cache and the window cache. This
+  // checks FRED's raw list: a list with history but nothing inside the window
+  // is a normal quiet day and stays ok.
+  if (data.release_dates.length === 0) {
+    logger.error({ releaseId }, 'FRED API empty release list');
+    Sentry.captureMessage('FRED API empty release list', {
       level: 'warning',
       extra: { releaseId },
     });
@@ -510,10 +526,11 @@ function sortEvents(events: EventItem[]): EventItem[] {
  * one 1.5 s attempt (the fail-fast client).
  *
  * `complete` is true only when `FRED_API_KEY` is set and every FRED release
- * answered with a well-formed payload. Without the key it returns the static
- * events with `complete: false`; it does not throw. A FRED non-OK status or
- * malformed payload is logged and returns `complete: false`. A FRED network
- * error or unparseable body rejects.
+ * answered with a well-formed, non-empty list of dates (FRED sends a release's
+ * whole history, so an empty list is a gap). Without the key it returns the
+ * static events with `complete: false`; it does not throw. A FRED non-OK
+ * status, malformed payload or empty list is logged and returns
+ * `complete: false`. A FRED network error or unparseable body rejects.
  */
 export async function fetchMacroEvents(
   startDate: string,
@@ -662,7 +679,7 @@ async function writeDayCache(
   ttlSec: number,
 ): Promise<void> {
   try {
-    await redis.set(cacheKey, entry, { ex: ttlSec });
+    await limiterRedis.set(cacheKey, entry, { ex: ttlSec });
   } catch (err) {
     logger.error({ err }, 'Failed to cache day events in Redis');
   }
@@ -683,7 +700,8 @@ async function writeDayCache(
  * `fromCache` is true on a hit and false after a fetch, so a caller can tell
  * the call that found a failure from the calls the failure entry then serves.
  * A Redis read or write failure is logged and the lookup goes on without the
- * cache; a failed write never hides the result or the original rejection.
+ * cache, after at most one 1.5 s attempt (the fail-fast client); a failed write
+ * never hides the result or the original rejection.
  *
  * `date` is YYYY-MM-DD, today or earlier in ET. A future date would cache a
  * schedule that can still change for up to 7 days, so callers skip future
@@ -693,7 +711,7 @@ export async function getEventsForDate(date: string): Promise<DayEventsResult> {
   const cacheKey = `${DAY_CACHE_KEY}:${date}`;
 
   try {
-    const cached = await redis.get<DayCacheEntry>(cacheKey);
+    const cached = await limiterRedis.get<DayCacheEntry>(cacheKey);
     if (cached && Array.isArray(cached.data)) {
       return {
         events: cached.data,

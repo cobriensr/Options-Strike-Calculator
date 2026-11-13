@@ -70,7 +70,11 @@ export const redis = createRedis();
  *
  * Also used by the VIX term-structure cache (`vix-term-structure.ts`),
  * which sits on the 30 s futures-snapshot poll: a best-effort cache read
- * must fall through to the source just as fast.
+ * must fall through to the source just as fast. The events caches use it for
+ * the same reason: the per-release FRED date lists and the per-day cache in
+ * `market-events.ts`, and the window cache in `api/events.ts`. Each is read
+ * and written on a snapshot save or an `/api/events` miss, and a failure
+ * falls through to the source.
  */
 export const limiterRedis = createRedis({
   retry: { retries: 0 },
