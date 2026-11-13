@@ -48,9 +48,18 @@ One implementer stream at a time, in this order. Each phase ships on its own, wi
 - **Fix.** Use the same policy in the cron wrapper:
   - log at warning level, count the metric, and skip `captureException` for `TransientDbError`;
   - the check-in still reports `error`, because the run failed.
-- **Files.** `api/_lib/cron-instrumentation.ts`, its test.
+- **Files.**
+  - `api/_lib/cron-instrumentation.ts` and its test.
+  - `api/_lib/transient-db-error.ts`: the class, moved out of `db.ts` so the wrapper can classify without importing it. A first try that imported it from `db.js` failed 36 cron test files, because they mock `db.js` with a factory that lacks the class.
+  - `api/_lib/db.ts`: re-exports the class, so existing imports keep working.
+  - `api/__tests__/transient-db-error.test.ts`.
 - **Deploy.** Vercel. Push outside market hours.
-  - Precondition: push only after the cron monitors are unmuted and read back as unmuted. Until then, a cron's exception is its only email path, because many monitors are muted. This change removes that exception for a transient Neon error, so a muted monitor would leave the failed run with no email at all.
+  - Precondition: push only after the cron monitors are unmuted and read back as unmuted. Every job wrapped in `withCronInstrumentation` (64 files in `api/cron/`) can take this path. "Unmuted" means each of those monitors reads back `isMuted: false` through the Sentry monitors API. Until then, a cron's exception is its only email path, because many monitors are muted. This change removes that exception for a transient Neon error, so a muted monitor would leave the failed run with no email at all.
+- **Open question for the owner (no default applied).** The new `<job>.db_timeout` counter has no consumer.
+  - A persistent slow-query regression is now a warning. One example is the takeit-fill-shap "db attempt timeout" storm from a missing index (SENTRY-EMERALD-DESERT-7J; see migration #184's description in `api/_lib/db-migrations.ts`, ~5161).
+  - Once the monitors are unmuted, a cron that fails 3 runs in a row still emails.
+  - A cron that times out on only some runs never reaches that threshold and stays silent.
+  - Option: a Sentry metric alert on the `*.db_timeout` rate. That is an alert-rule change, so it needs the owner's OK.
 
 ### Phase 3: uw-stream reports a reconnect storm once per incident, and files each exception once
 
@@ -89,6 +98,7 @@ One implementer stream at a time, in this order. Each phase ships on its own, wi
 ## Owner decision, asked when Phase 6 is done
 
 **`audit-gexbot-eod` runs at 22:30 and 23:30 UTC and raises the same missing-report error both times** (`audit-gexbot-eod.ts:45-47`, `:74-79`). `archive-gexbot-eod` retries at 23:00, so the 22:30 verdict can be early.
+
 - Default if the owner agrees: the 22:30 run warns and the 23:30 run is the verdict.
 - This changes when an alert fires. Per the no-silent-methodology-changes rule it is the owner's call, not a default the implementer applies.
 
@@ -96,3 +106,4 @@ One implementer stream at a time, in this order. Each phase ships on its own, wi
 
 - `enrich-lottery-outcomes` turning red when one ticker has a tape gap (`option-outcome-aggregate.ts:829-836`) is a real data gap and is reported as designed.
 - `check-live-snapshots` timed out once, on its first run (11-12 14:01 UTC), then ran 27 times clean. Watch only.
+- The Phase 2 rule covers only the `withCronInstrumentation` wrapper. `withCronCheckin` never captures, so the 17 crons that use it (about 32 `captureException` sites in those files) capture inside their own handlers. Across `api/cron/` there are about 91 such sites in 51 files, in both kinds of cron. They keep the old policy for now, so the transient rule is split across the two wrappers. Possible later sweep: move each site to the shared transient check.
