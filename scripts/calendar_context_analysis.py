@@ -9,8 +9,9 @@ Inputs:
   - docs/tmp/forensic-multi-day/gamma_node_rejection_2026-05-20_v4-vol-crush.csv
   - docs/tmp/forensic-multi-day/aggregate_framework_trades.csv
   - FOMC days: the Fed schedule in ml/src/options_features/calendar.py
-  - CPI and NFP days: economic_events table (Neon); a database error stops
-    the script
+  - CPI and NFP days: FRED's release dates (release 10 and release 50), read
+    with FRED_API_KEY from the repo root's .env; a FRED failure stops the
+    script
 
 Outputs:
   - docs/tmp/forensic-multi-day/calendar_context_findings.md
@@ -18,18 +19,29 @@ Outputs:
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from collections import defaultdict
 from datetime import date, datetime, timedelta
+from http.client import HTTPException
 from pathlib import Path
+from urllib.parse import urlencode
+from urllib.request import urlopen
 
 import pandas as pd
-import psycopg2
 
 from _cli_paths import load_env_file
 
 ROOT = Path(__file__).resolve().parents[1]
+
+# FRED release IDs for CPI and the Employment Situation (NFP). They must match
+# TRACKED_RELEASES in api/_lib/market-events.ts; the test
+# test_release_ids_match_tracked_releases_in_the_app fails when they drift.
+FRED_CPI_RELEASE_ID = 10
+FRED_NFP_RELEASE_ID = 50
+FRED_RELEASE_DATES_URL = 'https://api.stlouisfed.org/fred/release/dates'
+FRED_TIMEOUT_SEC = 30
 
 # Appended, not inserted first: ml/src has its own enrich_lottery_outcomes.py,
 # which would shadow scripts/enrich_lottery_outcomes.py for later imports.
@@ -87,50 +99,81 @@ def is_last_business_day_of_month(d: date, n: int = 2) -> bool:
     return d in biz
 
 
+def fetch_release_dates(release_id: int, api_key: str) -> set[date]:
+    """Every date FRED lists for one release, past and scheduled.
+
+    No realtime_start is sent, so FRED defaults to 1776-07-04 and answers the
+    whole history; limit is the largest page it allows, and with asc order a
+    short page would cut off the newest dates. Any failure stops the script
+    with the cause in the message (the exception type, never the URL: it
+    carries the api_key).
+    """
+    query = urlencode(
+        {
+            'release_id': release_id,
+            'api_key': api_key,
+            'file_type': 'json',
+            'include_release_dates_with_no_data': 'true',
+            'sort_order': 'asc',
+            'limit': 10000,
+        }
+    )
+    url = f'{FRED_RELEASE_DATES_URL}?{query}'
+    try:
+        with urlopen(url, timeout=FRED_TIMEOUT_SEC) as resp:
+            if resp.status != 200:
+                raise HTTPException(f'HTTP {resp.status}')
+            payload = json.loads(resp.read())
+        entries = payload.get('release_dates') if isinstance(payload, dict) else None
+        if not isinstance(entries, list):
+            raise ValueError('payload has no release_dates list')
+        days = {date.fromisoformat(entry['date']) for entry in entries}
+    except Exception as exc:  # noqa: BLE001
+        raise SystemExit(
+            f'FRED release dates failed: release {release_id}: '
+            f'{type(exc).__name__}: {exc}'
+        ) from exc
+
+    count = payload.get('count')
+    if isinstance(count, int) and count > len(entries):
+        raise SystemExit(
+            f'FRED release dates failed: release {release_id} truncated: '
+            f'{len(entries)} of {count} dates'
+        )
+    if not days:
+        raise SystemExit(
+            f'FRED release dates failed: release {release_id} has no dates'
+        )
+    return days
+
+
 def load_calendar_events() -> dict[str, set[date]]:
-    """FOMC days from the Fed schedule, CPI and NFP days from economic_events.
+    """FOMC days from the Fed schedule, CPI and NFP days from FRED.
 
     FOMC comes from the schedule (owner decision 2026-11-06: is_fomc is the
-    schedule, not the table rows). CPI and NFP match on event_type, because
-    Unusual Whales renamed both events in 2026 and the table holds both eras:
-    CPI was "Consumer price index" until 2026-07-14, then "CPI" and
-    "CPI, Y/Y%"; NFP was "U.S. employment report" until 2026-07-02, then
-    "Employment Report". event_type JOBS also holds the ADP rows, which come
-    out on other days, so the NFP query keeps the name match and drops ADP.
+    schedule). CPI and NFP come from FRED's release dates for releases 10 and
+    50, the app's own source for them. The economic_events table is not used:
+    it starts 2026-03-25 and holds no August 2026 rows, so CPI on 03-12 and in
+    August, and NFP on 03-06, 08-07 and 09-04, were missing from it.
 
-    A missing URL or a database error stops the script: findings built from a
-    calendar with missing days are silently wrong.
+    A missing key, a FRED failure, a payload without dates or an empty list
+    stops the script: findings built from a calendar with missing days are
+    silently wrong.
     """
-    load_env_file(ROOT / '.env.local')
-    url = os.environ.get('DATABASE_URL_UNPOOLED') or os.environ.get('DATABASE_URL')
-    if not url:
+    # FRED_API_KEY is in the repo root's .env, not .env.local.
+    load_env_file(ROOT / '.env')
+    api_key = os.environ.get('FRED_API_KEY', '').strip()
+    if not api_key:
         raise SystemExit(
-            'economic_events query failed: DATABASE_URL is not set '
-            '(pull it into .env.local with `vercel env pull .env.local`)'
+            'FRED release dates failed: FRED_API_KEY is not set '
+            '(add it to .env at the repo root)'
         )
 
-    conn = None
-    try:
-        conn = psycopg2.connect(url)
-        cur = conn.cursor()
-        cur.execute("SELECT DISTINCT date FROM economic_events WHERE event_type = 'CPI'")
-        cpi = {d for (d,) in cur.fetchall()}
-        cur.execute(
-            """
-            SELECT DISTINCT date FROM economic_events
-            WHERE event_type = 'JOBS'
-              AND event_name ILIKE '%employment report%'
-              AND event_name NOT ILIKE '%ADP%'
-            """
-        )
-        nfp = {d for (d,) in cur.fetchall()}
-    except Exception as exc:  # noqa: BLE001
-        raise SystemExit(f'economic_events query failed: {exc}') from exc
-    finally:
-        if conn is not None:
-            conn.close()
-
-    return {'fomc': set(FOMC_DATES), 'cpi': cpi, 'nfp': nfp}
+    return {
+        'fomc': set(FOMC_DATES),
+        'cpi': fetch_release_dates(FRED_CPI_RELEASE_ID, api_key),
+        'nfp': fetch_release_dates(FRED_NFP_RELEASE_ID, api_key),
+    }
 
 
 def tag_calendar(d: date, opex_set: set[date], cal: dict[str, set[date]]) -> dict[str, object]:
@@ -230,10 +273,16 @@ def main() -> None:
     opex_list = opex_dates_in_range(sample_start - timedelta(days=10), sample_end + timedelta(days=40))
     opex_set = set(opex_list)
     cal = load_calendar_events()
+    # FRED lists a release's whole history; the printout and the findings show
+    # only the days inside the sample window. The tags use the full sets.
+    in_window = {
+        name: sorted(d for d in days if sample_start <= d <= sample_end)
+        for name, days in cal.items()
+    }
     print(f'OPEX in window: {opex_list}')
-    print(f'FOMC: {sorted(cal["fomc"])}')
-    print(f'CPI: {sorted(cal["cpi"])}')
-    print(f'NFP: {sorted(cal["nfp"])}')
+    print(f'FOMC: {in_window["fomc"]}')
+    print(f'CPI: {in_window["cpi"]}')
+    print(f'NFP: {in_window["nfp"]}')
 
     # Tag every trade
     flags_df = trades['date'].apply(lambda d: pd.Series(tag_calendar(d, opex_set, cal)))
@@ -274,9 +323,9 @@ def main() -> None:
     lines.append('')
     lines.append('Calendar inputs:')
     lines.append(f'- OPEX (3rd Friday): {", ".join(d.isoformat() for d in opex_list)}')
-    lines.append(f'- FOMC decision days: {", ".join(d.isoformat() for d in sorted(cal["fomc"]))}')
-    lines.append(f'- CPI release days: {", ".join(d.isoformat() for d in sorted(cal["cpi"]))}')
-    lines.append(f'- NFP release days: {", ".join(d.isoformat() for d in sorted(cal["nfp"]))}')
+    lines.append(f'- FOMC decision days: {", ".join(d.isoformat() for d in in_window["fomc"])}')
+    lines.append(f'- CPI release days: {", ".join(d.isoformat() for d in in_window["cpi"])}')
+    lines.append(f'- NFP release days: {", ".join(d.isoformat() for d in in_window["nfp"])}')
     lines.append('')
 
     flags = [

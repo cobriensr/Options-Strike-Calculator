@@ -18,7 +18,7 @@ Each was verified against production or the live FRED API, read-only.
 3. **The feature row is sampled at a different time each day.** `build-features` picks the day's snapshot with a text `ORDER BY entry_time`, so "10:00 AM CT" sorts before "8:30 AM CT". In production it picks 10:00 AM on 83 dates, pre-market on 40, 11:05 AM on 31, and others on the rest.
    - It also copies `is_event_day` from that one row.
 4. **Past dates show no events.** The banner, the client signals and the analyze context filter today's forward `/api/events` list, so a backtest or replay date always looks event-free.
-5. **`scripts/calendar_context_analysis.py` matches stale UW names.** It misses the renamed rate decision, CPI and NFP, and it swallows DB errors into a stale fallback.
+5. **`scripts/calendar_context_analysis.py` read stale UW names from a table with holes.** It missed the renamed rate decision, CPI and NFP, and it swallowed DB errors into a stale fallback. Even with the names matched, `economic_events` starts 2026-03-25 and holds no rows for August 2026, so the findings lost CPI on 03-12 and in August, and NFP on 03-06, 08-07 and 09-04. CPI and NFP now come from FRED (see Decisions).
 
 ## Decisions
 
@@ -35,7 +35,10 @@ Each was verified against production or the live FRED API, read-only.
   - The analyze context keeps `events: []` and adds `eventsUnknown: true`, only then. The prompt line reads `Scheduled events: UNKNOWN (this date's event list did not load; do not assume there are none)`. A known list, and a cached PWA client that never sends the flag, still print `NONE`.
   - The line is in the per-request context, outside the cached system prompt.
 - **The client still sends its event names.** Once past dates fetch their own events, the server's incomplete-lookup fallback works on replays too.
-- **The analysis script** takes its FOMC days from the Fed schedule (owner, 2026-11-06), CPI from `event_type = 'CPI'`, and NFP from `JOBS` employment-report rows without ADP. A DB error stops the script.
+- **The analysis script** takes its FOMC days from the Fed schedule (owner, 2026-11-06). CPI and NFP now come from FRED's release dates, release 10 and release 50 (the app's own source, `TRACKED_RELEASES` in `api/_lib/market-events.ts`), because `economic_events` starts 2026-03-25 and lacks August 2026. The script has no database read. It reads `FRED_API_KEY` from the repo root's `.env`.
+  - A missing key, a FRED network error, timeout or non-200 status, an unparseable body, a payload without a `release_dates` list, a truncated page, or an empty date set for either release stops the script with `FRED release dates failed: <cause>` and writes nothing.
+  - A test reads `TRACKED_RELEASES` and fails if release 10 is no longer `CPI` or release 50 no longer `NFP`.
+  - The findings list only the FOMC, CPI and NFP days inside the sample window; FRED answers the whole history since 1949.
 - **Out of scope:** `analyze-prompts.ts:725` mentions `isEventDay`. The analyze prompt is the owner's to rework; this is flagged only.
 
 ## Phases

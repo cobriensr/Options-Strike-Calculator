@@ -1,19 +1,15 @@
 """Tests for scripts/calendar_context_analysis.py.
 
 The script tags each trade with the macro days around it, so its calendar must
-hold every FOMC, CPI and NFP day. Unusual Whales renamed all three events in
-2026, so the table holds two name eras:
+hold every FOMC, CPI and NFP day. FOMC days come from the Fed schedule. CPI and
+NFP days come from FRED's release dates, the app's own source for them
+(release 10 and release 50 in TRACKED_RELEASES, api/_lib/market-events.ts).
+The economic_events table is not used: it starts 2026-03-25 and holds no
+August 2026 rows, so findings built from it lost CPI on 03-12 and in August and
+NFP on 03-06, 08-07 and 09-04.
 
-- rate decision: "U.S. interest rate decision" from 2026-09-16 (FOMC days now
-  come from the Fed schedule, not from these rows);
-- CPI: "Consumer price index" until 2026-07-14, then "CPI", "CPI, Y/Y%" from
-  2026-09-11;
-- NFP: "U.S. employment report" until 2026-07-02, then "Employment Report"
-  from 2026-10-02, next to ADP rows (event_type JOBS) that come out on other
-  days.
-
-The fake database is a DuckDB table behind a patched psycopg2.connect, so the
-script's real SQL runs against rows from both eras.
+FRED is mocked at the module boundary: the tests patch the script's `urlopen`
+with canned JSON per release_id. No test reaches FRED.
 
 Run from the repo root so scripts/conftest.py (the no-database guard) loads:
 
@@ -22,16 +18,22 @@ Run from the repo root so scripts/conftest.py (the no-database guard) loads:
 
 from __future__ import annotations
 
+import io
+import json
+import re
 import sys
 from datetime import date
+from email.message import Message
 from pathlib import Path
+from urllib.error import HTTPError, URLError
+from urllib.parse import parse_qs, urlparse
 
-import duckdb
-import psycopg2
+import pandas as pd
 import pytest
 
 SCRIPTS_DIR = Path(__file__).resolve().parent
-ML_SRC = SCRIPTS_DIR.parent / 'ml' / 'src'
+REPO = SCRIPTS_DIR.parent
+ML_SRC = REPO / 'ml' / 'src'
 sys.path.insert(0, str(SCRIPTS_DIR))
 if str(ML_SRC) not in sys.path:
     sys.path.append(str(ML_SRC))
@@ -39,196 +41,364 @@ if str(ML_SRC) not in sys.path:
 import calendar_context_analysis as cca  # noqa: E402
 from options_features.calendar import FOMC_DATES  # noqa: E402
 
-# (date, event_type, event_name): both name eras plus the rows that must not match.
-EVENT_ROWS = [
-    # FOMC rows. The schedule decides the FOMC days, not these rows, so the
-    # Powell row on a day with no meeting must stay out of cal['fomc'].
-    ('2026-09-16', 'OTHER', 'U.S. interest rate decision'),
-    ('2026-10-28', 'FOMC', 'U.S. interest rate decision'),
-    ('2026-08-05', 'FOMC', 'Powell press conference'),
-    # CPI: old name, then the renamed rows (headline and core on one day).
-    ('2026-06-10', 'CPI', 'Consumer price index'),
-    ('2026-07-14', 'CPI', 'Consumer price index'),
-    ('2026-09-11', 'CPI', 'CPI'),
-    ('2026-10-14', 'CPI', 'CPI, Y/Y%'),
-    ('2026-10-14', 'CPI', 'Core CPI, Y/Y%'),
-    ('2026-10-15', 'PPI', 'PPI, Y/Y%'),
-    # NFP: old name, new name, ADP on its own days (one of them is named
-    # "employment report" too), a JOBS row that is not the report, and the
-    # report's name under another event_type.
-    ('2026-07-02', 'JOBS', 'U.S. employment report'),
-    ('2026-10-02', 'JOBS', 'Employment Report'),
-    ('2026-09-30', 'JOBS', 'ADP National Employment Report'),
-    ('2026-10-01', 'JOBS', 'ADP employment change'),
-    ('2026-10-08', 'JOBS', 'Initial jobless claims'),
-    ('2026-10-22', 'OTHER', 'Employment Report'),
-]
+FAKE_KEY = 'fake-fred-key-0123456789abcdef'
 
-FAKE_URL = 'postgresql://fake-user:fake-pass@localhost:1/fake'
+# What FRED answers per release. CPI has March and August days the events
+# table lacked; NFP has the three days it lacked (03-06, 08-07, 09-04) and a
+# fourth that it held.
+CPI_DATES = ['2026-03-12', '2026-08-12', '2026-10-14']
+NFP_DATES = ['2026-03-06', '2026-08-07', '2026-09-04', '2026-10-02']
 
 
-class _DuckCursor:
-    def __init__(self, con: duckdb.DuckDBPyConnection) -> None:
-        self._con = con
-        self._rows: list[tuple] = []
-
-    def execute(self, sql: str) -> None:
-        # The script passes no parameters, so the SQL runs as written.
-        self._rows = self._con.execute(sql).fetchall()
-
-    def fetchall(self) -> list[tuple]:
-        return self._rows
+def release_body(release_id: int, dates: list[str], **extra: object) -> bytes:
+    """A FRED release/dates JSON body, entries shaped as the live API sends them."""
+    payload = {
+        'release_dates': [{'release_id': release_id, 'date': d} for d in dates],
+        **extra,
+    }
+    return json.dumps(payload).encode()
 
 
-class _DuckConnection:
-    """What psycopg2.connect returns, over an in-memory DuckDB table."""
+class _Response:
+    """What urlopen returns: a context manager with .status and .read()."""
 
-    def __init__(self, rows: list[tuple], *, create_table: bool = True) -> None:
-        self._con = duckdb.connect(':memory:')
-        if create_table:
-            self._con.execute(
-                'CREATE TABLE economic_events '
-                '(date DATE, event_type VARCHAR, event_name VARCHAR)'
-            )
-            if rows:
-                self._con.executemany(
-                    'INSERT INTO economic_events VALUES (?, ?, ?)', rows
-                )
-        self.closed = False
+    def __init__(self, body: bytes, status: int = 200) -> None:
+        self.status = status
+        self._body = body
 
-    def cursor(self) -> _DuckCursor:
-        return _DuckCursor(self._con)
+    def read(self) -> bytes:
+        return self._body
 
-    def close(self) -> None:
-        self.closed = True
-        self._con.close()
+    def __enter__(self) -> _Response:
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        return None
 
 
-@pytest.fixture
-def db_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A fake DATABASE_URL, and no read of the real .env.local."""
+class FredStub:
+    """The script's `urlopen`, answering from `responses` by release_id.
+
+    A value is a body (bytes), a _Response, or an exception to raise.
+    """
+
+    def __init__(self) -> None:
+        self.responses: dict[int, bytes | _Response | Exception] = {
+            cca.FRED_CPI_RELEASE_ID: release_body(cca.FRED_CPI_RELEASE_ID, CPI_DATES),
+            cca.FRED_NFP_RELEASE_ID: release_body(cca.FRED_NFP_RELEASE_ID, NFP_DATES),
+        }
+        self.requests: list[str] = []
+        self.timeouts: list[object] = []
+
+    def __call__(self, url: str, timeout: object = None) -> _Response:
+        self.requests.append(url)
+        self.timeouts.append(timeout)
+        release_id = int(parse_qs(urlparse(url).query)['release_id'][0])
+        answer = self.responses[release_id]
+        if isinstance(answer, Exception):
+            raise answer
+        if isinstance(answer, bytes):
+            return _Response(answer)
+        return answer
+
+
+@pytest.fixture(autouse=True)
+def no_real_fred(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No FRED key and no read of the real .env, for every test.
+
+    scripts/conftest.py blocks no sockets and does not clear FRED_API_KEY, so
+    a test that forgets the `fred` fixture must stop on the missing key
+    instead of reaching FRED.
+    """
     monkeypatch.setattr(cca, 'load_env_file', lambda _path: None)
-    monkeypatch.setenv('DATABASE_URL', FAKE_URL)
+    monkeypatch.delenv('FRED_API_KEY', raising=False)
 
 
 @pytest.fixture
-def connections(
-    db_env: None, monkeypatch: pytest.MonkeyPatch
-) -> list[_DuckConnection]:
-    """psycopg2.connect returns the fake over EVENT_ROWS; the list holds each one."""
-    handed_out: list[_DuckConnection] = []
+def fred(monkeypatch: pytest.MonkeyPatch) -> FredStub:
+    """A fake FRED key, and `urlopen` answering from the returned stub."""
+    stub = FredStub()
+    monkeypatch.setenv('FRED_API_KEY', FAKE_KEY)
+    monkeypatch.setattr(cca, 'urlopen', stub)
+    return stub
 
-    def connect(url: str) -> _DuckConnection:
-        assert url == FAKE_URL
-        conn = _DuckConnection(EVENT_ROWS)
-        handed_out.append(conn)
-        return conn
 
-    monkeypatch.setattr(psycopg2, 'connect', connect)
-    return handed_out
+def failure_message() -> str:
+    """The exit message when load_calendar_events stops, asserted to be FRED's."""
+    with pytest.raises(SystemExit) as stopped:
+        cca.load_calendar_events()
+    message = str(stopped.value.code)
+    assert message.startswith('FRED release dates failed: ')
+    return message
 
 
 # ----- load_calendar_events -----
 
 
-def test_fomc_days_come_from_the_fed_schedule(connections) -> None:
+def test_cpi_days_come_from_fred_release_10(fred: FredStub) -> None:
+    cal = cca.load_calendar_events()
+
+    assert cal['cpi'] == {
+        date(2026, 3, 12),
+        date(2026, 8, 12),
+        date(2026, 10, 14),
+    }
+
+
+def test_nfp_days_come_from_fred_release_50(fred: FredStub) -> None:
+    cal = cca.load_calendar_events()
+
+    assert cal['nfp'] == {
+        date(2026, 3, 6),
+        date(2026, 8, 7),
+        date(2026, 9, 4),
+        date(2026, 10, 2),
+    }
+
+
+def test_fomc_days_come_from_the_fed_schedule_not_from_fred(fred: FredStub) -> None:
     cal = cca.load_calendar_events()
 
     assert date(2026, 9, 16) in cal['fomc']
     assert date(2026, 10, 28) in cal['fomc']
     assert cal['fomc'] == set(FOMC_DATES)
-    # A table row is not a meeting: Powell on a day the Fed did not meet.
-    assert date(2026, 8, 5) not in cal['fomc']
+    # Only the two releases are asked for; FOMC adds no third request.
+    assert len(fred.requests) == 2
 
 
-def test_cpi_days_cover_both_name_eras(connections) -> None:
-    cal = cca.load_calendar_events()
-
-    assert cal['cpi'] == {
-        date(2026, 6, 10),
-        date(2026, 7, 14),
-        date(2026, 9, 11),
-        date(2026, 10, 14),
-    }
-
-
-def test_nfp_days_cover_both_name_eras_and_leave_out_adp(connections) -> None:
-    cal = cca.load_calendar_events()
-
-    assert cal['nfp'] == {date(2026, 7, 2), date(2026, 10, 2)}
-    assert date(2026, 9, 30) not in cal['nfp']  # ADP National Employment Report
-    assert date(2026, 10, 1) not in cal['nfp']  # ADP employment change
-    assert date(2026, 10, 8) not in cal['nfp']  # jobless claims
-    assert date(2026, 10, 22) not in cal['nfp']  # not a JOBS row
-
-
-def test_no_hardcoded_fallback_dates_are_added(
-    db_env: None, monkeypatch: pytest.MonkeyPatch
+def test_each_release_is_asked_for_once_with_its_whole_history(
+    fred: FredStub,
 ) -> None:
-    # An empty table gives empty CPI and NFP sets. The old fallback list put
-    # March to May 2026 dates in them whatever the table held.
+    cca.load_calendar_events()
+
+    urls = [url.split('?')[0] for url in fred.requests]
+    assert urls == ['https://api.stlouisfed.org/fred/release/dates'] * 2
+    queries = [parse_qs(urlparse(url).query) for url in fred.requests]
+    assert sorted(q['release_id'] for q in queries) == [['10'], ['50']]
+    for query in queries:
+        assert query['api_key'] == [FAKE_KEY]
+        assert query['file_type'] == ['json']
+        assert query['include_release_dates_with_no_data'] == ['true']
+        assert query['sort_order'] == ['asc']
+        # The largest page FRED allows, so a long CPI history cannot cut off
+        # the newest dates (asc order drops the tail).
+        assert query['limit'] == ['10000']
+        # No realtime_start: FRED then defaults to 1776-07-04, the whole
+        # history. A start date here would cut the early months off.
+        assert 'realtime_start' not in query
+
+
+def test_the_calls_have_a_timeout(fred: FredStub) -> None:
+    cca.load_calendar_events()
+
+    assert fred.timeouts == [30, 30]
+
+
+def test_the_fred_key_comes_from_the_repo_root_env_file(
+    fred: FredStub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # FRED_API_KEY lives in .env at the repo root, not in .env.local.
+    loaded: list[Path] = []
+    monkeypatch.setattr(cca, 'load_env_file', loaded.append)
+
+    cca.load_calendar_events()
+
+    assert loaded == [REPO / '.env']
+
+
+def test_missing_fred_key_stops_the_script_before_any_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[str] = []
     monkeypatch.setattr(
-        psycopg2, 'connect', lambda _url: _DuckConnection([])
+        cca, 'urlopen', lambda url, timeout=None: requests.append(url)
+    )
+
+    message = failure_message()
+
+    assert 'FRED_API_KEY' in message
+    assert requests == []
+
+
+def test_blank_fred_key_counts_as_missing(
+    fred: FredStub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv('FRED_API_KEY', '  ')
+
+    assert 'FRED_API_KEY' in failure_message()
+    assert fred.requests == []
+
+
+def test_network_error_stops_the_script_with_the_cause(fred: FredStub) -> None:
+    fred.responses[cca.FRED_NFP_RELEASE_ID] = URLError('Name or service not known')
+
+    message = failure_message()
+
+    assert 'URLError' in message
+    assert 'Name or service not known' in message
+    assert 'release 50' in message
+
+
+def test_timeout_stops_the_script_with_the_cause(fred: FredStub) -> None:
+    fred.responses[cca.FRED_CPI_RELEASE_ID] = TimeoutError('timed out')
+
+    message = failure_message()
+
+    assert 'TimeoutError' in message
+    assert 'timed out' in message
+    assert 'release 10' in message
+
+
+def test_http_500_stops_the_script_with_the_status_and_not_the_key(
+    fred: FredStub,
+) -> None:
+    # urllib raises HTTPError for a 4xx or 5xx; the real one carries the URL,
+    # which holds the api_key, so the message must not echo it.
+    fred.responses[cca.FRED_CPI_RELEASE_ID] = HTTPError(
+        f'https://api.stlouisfed.org/fred/release/dates?api_key={FAKE_KEY}',
+        500,
+        'Internal Server Error',
+        Message(),
+        io.BytesIO(b''),
+    )
+
+    message = failure_message()
+
+    assert 'HTTPError' in message
+    assert '500' in message
+    assert FAKE_KEY not in message
+
+
+def test_a_non_200_status_stops_the_script(fred: FredStub) -> None:
+    # urlopen returns a 2xx other than 200 without raising.
+    fred.responses[cca.FRED_NFP_RELEASE_ID] = _Response(
+        release_body(cca.FRED_NFP_RELEASE_ID, NFP_DATES), status=203
+    )
+
+    message = failure_message()
+
+    assert 'HTTP 203' in message
+    assert 'release 50' in message
+
+
+def test_a_malformed_body_stops_the_script_with_the_cause(fred: FredStub) -> None:
+    fred.responses[cca.FRED_NFP_RELEASE_ID] = b'<html>502 Bad Gateway</html>'
+
+    message = failure_message()
+
+    assert 'JSONDecodeError' in message
+    assert 'release 50' in message
+
+
+@pytest.mark.parametrize(
+    'body',
+    [
+        b'{"error_code": 400, "error_message": "Bad Request."}',
+        b'{"release_dates": "none"}',
+        b'{"release_dates": null}',
+        b'[]',
+    ],
+    ids=['no key', 'not a list', 'null', 'not an object'],
+)
+def test_a_payload_without_a_release_dates_list_stops_the_script(
+    fred: FredStub, body: bytes
+) -> None:
+    fred.responses[cca.FRED_CPI_RELEASE_ID] = body
+
+    message = failure_message()
+
+    assert 'release_dates' in message
+    assert 'release 10' in message
+
+
+@pytest.mark.parametrize(
+    'body',
+    [
+        b'{"release_dates": [{"release_id": 10, "date": "soon"}]}',
+        b'{"release_dates": [{"release_id": 10}]}',
+    ],
+    ids=['bad date', 'no date'],
+)
+def test_an_unreadable_entry_stops_the_script(fred: FredStub, body: bytes) -> None:
+    fred.responses[cca.FRED_CPI_RELEASE_ID] = body
+
+    message = failure_message()
+
+    assert 'release 10' in message
+    assert 'Error' in message  # the exception type, e.g. ValueError
+
+
+@pytest.mark.parametrize(
+    'release_id', [cca.FRED_CPI_RELEASE_ID, cca.FRED_NFP_RELEASE_ID]
+)
+def test_an_empty_date_list_stops_the_script(
+    fred: FredStub, release_id: int
+) -> None:
+    # An empty source must not give empty findings. The other release still
+    # has dates, so only that one release trips the check.
+    fred.responses[release_id] = release_body(release_id, [])
+
+    message = failure_message()
+
+    assert f'release {release_id}' in message
+    assert 'no dates' in message
+
+
+def test_a_truncated_list_stops_the_script(fred: FredStub) -> None:
+    # FRED reports the full count; a page shorter than it lost its newest dates.
+    fred.responses[cca.FRED_CPI_RELEASE_ID] = release_body(
+        cca.FRED_CPI_RELEASE_ID, CPI_DATES, count=1200
+    )
+
+    message = failure_message()
+
+    assert 'truncated' in message
+    assert 'release 10' in message
+
+
+def test_a_complete_count_is_not_a_truncation(fred: FredStub) -> None:
+    fred.responses[cca.FRED_CPI_RELEASE_ID] = release_body(
+        cca.FRED_CPI_RELEASE_ID, CPI_DATES, count=len(CPI_DATES)
     )
 
     cal = cca.load_calendar_events()
 
-    assert cal['cpi'] == set()
-    assert cal['nfp'] == set()
+    assert cal['cpi'] == {date.fromisoformat(d) for d in CPI_DATES}
 
 
-def test_connection_is_closed_after_the_queries(connections) -> None:
-    cca.load_calendar_events()
-
-    assert [c.closed for c in connections] == [True]
-
-
-def test_connect_error_stops_the_script_with_the_cause(
-    db_env: None, monkeypatch: pytest.MonkeyPatch
+def test_main_lists_only_the_calendar_days_inside_the_sample_window(
+    fred: FredStub, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    def refuse(_url: str):
-        raise psycopg2.OperationalError('connection refused')
+    # FRED answers the whole history, so the findings must not list all of it.
+    trades_csv = tmp_path / 'trades.csv'
+    trades_csv.write_text(
+        'anchor_ts,trade_type,ret_15m,control_ret_15m,ret_30m,control_ret_30m,'
+        'ret_60m,control_ret_60m\n'
+        '2026-10-02T14:00:00Z,long_call_e1,1.0,0.5,1.0,0.5,1.0,0.5\n'
+        '2026-10-14T14:00:00Z,long_call_e1,2.0,1.0,2.0,1.0,2.0,1.0\n'
+        '2026-10-20T14:00:00Z,long_put_e5,-1.0,0.5,-1.0,0.5,-1.0,0.5\n'
+    )
+    findings = tmp_path / 'findings.md'
+    monkeypatch.setattr(cca, 'TRADES_CSV', trades_csv)
+    monkeypatch.setattr(cca, 'FINDINGS_MD', findings)
+    monkeypatch.setattr(cca, 'TMP_DIR', tmp_path)
 
-    monkeypatch.setattr(psycopg2, 'connect', refuse)
+    cca.main()
 
-    with pytest.raises(SystemExit) as stopped:
-        cca.load_calendar_events()
-
-    message = str(stopped.value.code)
-    assert 'economic_events' in message
-    assert 'connection refused' in message
-
-
-def test_query_error_stops_the_script_and_closes_the_connection(
-    db_env: None, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    broken = _DuckConnection([], create_table=False)  # no economic_events table
-    monkeypatch.setattr(psycopg2, 'connect', lambda _url: broken)
-
-    with pytest.raises(SystemExit) as stopped:
-        cca.load_calendar_events()
-
-    assert 'economic_events' in str(stopped.value.code)
-    assert broken.closed is True
-
-
-def test_missing_database_url_stops_the_script_before_connecting(
-    db_env: None, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.delenv('DATABASE_URL')
-    monkeypatch.delenv('DATABASE_URL_UNPOOLED', raising=False)
-    attempts: list[str] = []
-    monkeypatch.setattr(psycopg2, 'connect', attempts.append)
-
-    with pytest.raises(SystemExit) as stopped:
-        cca.load_calendar_events()
-
-    assert 'DATABASE_URL' in str(stopped.value.code)
-    assert attempts == []
+    text = findings.read_text(encoding='utf-8')
+    assert '- CPI release days: 2026-10-14\n' in text
+    assert '- NFP release days: 2026-10-02\n' in text
+    for outside in ('2026-03-12', '2026-08-12', '2026-03-06', '2026-09-04'):
+        assert outside not in text
+    tagged = pd.read_csv(tmp_path / 'aggregate_framework_trades_tagged.csv')
+    flags = tagged.set_index('date')[['is_cpi_day', 'is_nfp_day']]
+    assert flags.loc['2026-10-14'].tolist() == [True, False]
+    assert flags.loc['2026-10-02'].tolist() == [False, True]
+    assert flags.loc['2026-10-20'].tolist() == [False, False]
 
 
-def test_main_writes_no_findings_when_the_database_is_down(
-    db_env: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+def test_main_writes_no_findings_when_fred_fails(
+    fred: FredStub, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     trades_csv = tmp_path / 'trades.csv'
     trades_csv.write_text('anchor_ts,trade_type\n2026-10-14T14:00:00Z,long_call_e1\n')
@@ -236,17 +406,41 @@ def test_main_writes_no_findings_when_the_database_is_down(
     monkeypatch.setattr(cca, 'TRADES_CSV', trades_csv)
     monkeypatch.setattr(cca, 'FINDINGS_MD', findings)
     monkeypatch.setattr(cca, 'TMP_DIR', tmp_path)
+    fred.responses[cca.FRED_CPI_RELEASE_ID] = URLError('connection refused')
 
-    def refuse(_url: str):
-        raise psycopg2.OperationalError('connection refused')
-
-    monkeypatch.setattr(psycopg2, 'connect', refuse)
-
-    with pytest.raises(SystemExit):
+    with pytest.raises(SystemExit) as stopped:
         cca.main()
 
+    assert 'FRED release dates' in str(stopped.value.code)
     assert not findings.exists()
     assert list(tmp_path.glob('*_tagged.csv')) == []
+
+
+# ----- the release IDs match the app -----
+
+
+def test_release_ids_match_tracked_releases_in_the_app() -> None:
+    """The script's CPI and NFP IDs are the ones the app tracks.
+
+    Twin of api/__tests__/fomc-schedule.test.ts, which guards calendar.py
+    against the TypeScript FOMC schedule: a renumbered release in
+    TRACKED_RELEASES would otherwise leave this script reading another
+    release's days.
+    """
+    source = (REPO / 'api' / '_lib' / 'market-events.ts').read_text(encoding='utf-8')
+    block = re.search(
+        r'const TRACKED_RELEASES\b[^=]*=\s*\[(.*?)\n\];', source, re.DOTALL
+    )
+    assert block is not None, 'market-events.ts: TRACKED_RELEASES not found'
+    events_by_id = {
+        int(release_id): event
+        for release_id, event in re.findall(
+            r"id:\s*(\d+),\s*event:\s*'([^']+)'", block.group(1)
+        )
+    }
+
+    assert events_by_id.get(cca.FRED_CPI_RELEASE_ID) == 'CPI'
+    assert events_by_id.get(cca.FRED_NFP_RELEASE_ID) == 'NFP'
 
 
 # ----- calendar primitives -----
