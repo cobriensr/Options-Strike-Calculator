@@ -295,6 +295,7 @@ function options(over: Partial<RecomputeOptions> = {}): RecomputeOptions {
     stores: [],
     roots: ['ES', 'NQ', 'ZN', 'RTY', 'CL', 'GC'],
     frozen: true,
+    volumeNull: false,
     backup: null,
     expectSnapshots: null,
     expectPremarket: null,
@@ -306,6 +307,8 @@ function options(over: Partial<RecomputeOptions> = {}): RecomputeOptions {
     detectorDays: null,
     deleteFrozenStale: true,
     expectFrozenDeletes: 4,
+    nullVolumeRatio: false,
+    expectVolumeNulls: null,
     ...over,
   };
 }

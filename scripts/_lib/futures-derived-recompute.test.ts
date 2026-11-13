@@ -105,8 +105,11 @@ describe('parseRecomputeArgs', () => {
       rewriteStaleAtWrite: false,
       expectStaleRewrites: null,
       frozen: false,
+      volumeNull: false,
       deleteFrozenStale: false,
       expectFrozenDeletes: null,
+      nullVolumeRatio: false,
+      expectVolumeNulls: null,
       detectorDays: null,
       envFile: null,
     });
@@ -145,8 +148,11 @@ describe('parseRecomputeArgs', () => {
       rewriteStaleAtWrite: false,
       expectStaleRewrites: null,
       frozen: false,
+      volumeNull: false,
       deleteFrozenStale: false,
       expectFrozenDeletes: null,
+      nullVolumeRatio: false,
+      expectVolumeNulls: null,
       detectorDays: null,
       envFile: '.env.test',
     });
@@ -230,6 +236,159 @@ describe('parseRecomputeArgs', () => {
       deleteFrozenStale: true,
       expectFrozenDeletes: 1008,
     });
+  });
+
+  it('takes --stores volume-null on its own, with the 5b backup as its scope file, in a dry run and under --apply', () => {
+    expect(
+      parseRecomputeArgs(['--stores', 'volume-null', '--backup', 'b5.jsonl']),
+    ).toMatchObject({
+      apply: false,
+      volumeNull: true,
+      frozen: false,
+      stores: [],
+      backup: 'b5.jsonl',
+      nullVolumeRatio: false,
+      expectVolumeNulls: null,
+    });
+    expect(
+      parseRecomputeArgs([
+        '--apply',
+        '--stores',
+        'volume-null',
+        '--backup',
+        'b5.jsonl',
+        '--null-volume-ratio',
+        '--expect-volume-nulls',
+        '7146',
+      ]),
+    ).toMatchObject({
+      apply: true,
+      volumeNull: true,
+      stores: [],
+      backup: 'b5.jsonl',
+      nullVolumeRatio: true,
+      expectVolumeNulls: 7146,
+    });
+  });
+
+  it.each([
+    [
+      ['--stores', 'volume-null', 'snapshots', '--backup', 'b'],
+      /--stores volume-null runs alone: it plans no other store/,
+    ],
+    [
+      ['--stores', 'frozen', 'volume-null'],
+      /--stores frozen runs alone: it plans no other store/,
+    ],
+    [
+      ['--stores', 'volume-null'],
+      /--backup <file> is required with --stores volume-null: the Phase 5b apply backup JSONL/,
+    ],
+    [
+      ['--stores', 'volume-null', '--backup', 'b', '--roots', 'RTY'],
+      /--roots does not apply with --stores volume-null/,
+    ],
+    [
+      ['--null-volume-ratio', '--stores', 'volume-null', '--backup', 'b'],
+      /--null-volume-ratio only applies with --apply/,
+    ],
+    [
+      [
+        '--expect-volume-nulls',
+        '3',
+        '--stores',
+        'volume-null',
+        '--backup',
+        'b',
+      ],
+      /--expect-volume-nulls only applies with --apply/,
+    ],
+    [
+      [
+        '--apply',
+        '--null-volume-ratio',
+        '--expect-volume-nulls',
+        '3',
+        '--backup',
+        'b',
+      ],
+      /--null-volume-ratio blanks volume_ratio values, so --stores must be volume-null/,
+    ],
+    [
+      [
+        '--apply',
+        '--stores',
+        'volume-null',
+        '--backup',
+        'b',
+        '--null-volume-ratio',
+      ],
+      /--null-volume-ratio needs --expect-volume-nulls N: the count of the dry run you approved/,
+    ],
+    [
+      [
+        '--apply',
+        '--stores',
+        'volume-null',
+        '--backup',
+        'b',
+        '--expect-volume-nulls',
+        '3',
+      ],
+      /--expect-volume-nulls needs --null-volume-ratio/,
+    ],
+    [
+      ['--apply', '--stores', 'volume-null', '--backup', 'b'],
+      /--apply with --stores volume-null needs --null-volume-ratio and --expect-volume-nulls N/,
+    ],
+    [
+      [
+        '--apply',
+        '--stores',
+        'volume-null',
+        '--backup',
+        'b',
+        '--null-volume-ratio',
+        '--expect-volume-nulls',
+        '3',
+        '--expect-snapshots',
+        '2',
+      ],
+      /--expect-snapshots does not apply with --stores volume-null/,
+    ],
+    [
+      ['--expect-volume-nulls', 'many'],
+      /--expect-volume-nulls needs a whole number, got "many"/,
+    ],
+  ])('rejects %j', (argv, message) => {
+    expect(() => parseRecomputeArgs(argv)).toThrow(message);
+  });
+
+  it('lets the last --stores win, so volume-null never stays set beside other stores', () => {
+    expect(
+      parseRecomputeArgs([
+        '--stores',
+        'volume-null',
+        '--stores',
+        'snapshots',
+        '--backup',
+        'b.jsonl',
+      ]),
+    ).toMatchObject({
+      volumeNull: false,
+      frozen: false,
+      stores: ['snapshots'],
+    });
+    expect(
+      parseRecomputeArgs([
+        '--stores',
+        'frozen',
+        '--stores',
+        'volume-null',
+        '--backup',
+        'b.jsonl',
+      ]),
+    ).toMatchObject({ volumeNull: true, frozen: false, stores: [] });
   });
 
   it('takes --roots in the order given, once each, and defaults to all six', () => {
@@ -1559,8 +1718,11 @@ describe('runRecompute guards', () => {
     rewriteStaleAtWrite: false,
     expectStaleRewrites: null,
     frozen: false,
+    volumeNull: false,
     deleteFrozenStale: false,
     expectFrozenDeletes: null,
+    nullVolumeRatio: false,
+    expectVolumeNulls: null,
     detectorDays: null,
     ...over,
   });

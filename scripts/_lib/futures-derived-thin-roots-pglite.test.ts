@@ -240,6 +240,10 @@ interface Ids {
   stale: Record<string, number>;
   /** 05-12, inside the deleted window: frozen on an older bar. */
   frozen: Record<string, number>;
+  /** ES 04-20: priced from the 14:00 bar, the 14:40 bar has landed since. */
+  esStale: number;
+  /** ES 05-12: frozen on an older bar. */
+  esFrozen: number;
 }
 let ids: Ids;
 
@@ -387,8 +391,7 @@ async function reset(world: World = { leftBar: false }): Promise<void> {
     await bar('RTY', '2026-05-04T14:00:00Z', 2005); // a month-mixed bar 5a did not take
   }
 
-  ids = { clean, win, after, stale, frozen };
-  Object.assign(ids, { esStale, esFrozen });
+  ids = { clean, win, after, stale, frozen, esStale, esFrozen };
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -401,6 +404,7 @@ function options(over: Partial<RecomputeOptions> = {}): RecomputeOptions {
     stores: ['snapshots', 'premarket', 'fires'],
     roots: [...THIN],
     frozen: false,
+    volumeNull: false,
     backup: backupPath,
     expectSnapshots: null,
     expectPremarket: null,
@@ -411,6 +415,8 @@ function options(over: Partial<RecomputeOptions> = {}): RecomputeOptions {
     expectStaleRewrites: null,
     deleteFrozenStale: false,
     expectFrozenDeletes: null,
+    nullVolumeRatio: false,
+    expectVolumeNulls: null,
     detectorDays: null,
     ...over,
   };
@@ -488,27 +494,123 @@ afterEach(() => {
 // ── Tests ───────────────────────────────────────────────────────────────────
 
 describe('5b: the snapshots after 5a deleted whole days of thin-root bars', () => {
-  it('recomputes the volume ratio of a clean-day row whose 20-day window held deleted bars, and nothing else of it', async () => {
+  it('plans no volume ratio for a lifted root: the normal step has nothing to write, and the stale row keeps its other fields', async () => {
     expect(await run()).toBe(0);
     const text = report();
 
     // Per root, three rows have a volume ratio the deleted days fed: the clean-day
     // row (04-14), the stale-at-write row (04-15, also a clean day) and the row 20
-    // days after the span end (06-22). Only that field is written; the stale row's
-    // other fields are the stale step's, and the junk row is deleted.
+    // days after the span end (06-22). Both roots are lifted, and a lifted root's
+    // volume ratio is not planned (owner ruling 2026-11-12): the normal step writes
+    // nothing, the stale row's other fields are the stale step's, the junk row is
+    // deleted.
     expect(text).toContain(
-      'rows planned, RTY: normal step 3 rows, stale-at-write 1 rows (1 added by the D1 lift), junk delete 1 rows',
+      'rows planned, RTY: normal step 0 rows, stale-at-write 1 rows (1 added by the D1 lift), junk delete 1 rows',
     );
     expect(text).toContain(
-      'rows planned, CL: normal step 3 rows, stale-at-write 1 rows (1 added by the D1 lift), junk delete 1 rows',
+      'rows planned, CL: normal step 0 rows, stale-at-write 1 rows (1 added by the D1 lift), junk delete 1 rows',
     );
     expect(text).toMatch(
-      /RTY: rows in range \d+, rows to write 3 \(price=0 change1hPct=0 changeDayPct=0 volumeRatio=3\)/,
+      /RTY: rows in range \d+, rows to write 0 \(price=0 change1hPct=0 changeDayPct=0 volumeRatio=0\)/,
+    );
+    // Each lifted root's line says so, with the rows that stay as stored.
+    expect(text).toMatch(
+      /RTY: rows in range[\s\S]*volume_ratio is not planned for a lifted thin root \(owner ruling 2026-11-12[^\n]*a rerun does not bring them back; 3 row\(s\) whose recompute differs are left as stored/,
+    );
+    expect(text).toMatch(
+      /CL: rows in range[\s\S]*volume_ratio is not planned for a lifted thin root[^\n]*; 3 row\(s\) whose recompute differs are left as stored/,
     );
     // The command to apply it carries the roots, and --stores narrowed to what plans.
     expect(text).toMatch(
-      /--apply --work-dir \S+ --backup \S+ --roots RTY CL --stores snapshots --expect-snapshots 6 --delete-junk-stale --expect-junk-deletes 2 --rewrite-stale-at-write --expect-stale-rewrites 2/,
+      /--apply --work-dir \S+ --backup \S+ --roots RTY CL --stores snapshots --expect-snapshots 0 --delete-junk-stale --expect-junk-deletes 2 --rewrite-stale-at-write --expect-stale-rewrites 2/,
     );
+  });
+
+  it('still plans the volume ratio of a root that is not lifted, next to a lifted root that plans none', async () => {
+    await reset({ leftBar: true }); // RTY has a bar left in the span, CL has none
+    expect(
+      await run({ roots: ['ES', 'RTY', 'CL'], stores: ['snapshots'] }),
+    ).toBe(0);
+    const text = report();
+
+    expect(text).toMatch(
+      /RTY: rows in range \d+, rows to write 3 \(price=0 change1hPct=0 changeDayPct=0 volumeRatio=3\)/,
+    );
+    expect(text).toMatch(
+      /CL: rows in range \d+, rows to write 0 \(price=0 change1hPct=0 changeDayPct=0 volumeRatio=0\)/,
+    );
+    // Only the lifted root's line speaks of the ruling.
+    expect(
+      text.match(/volume_ratio is not planned for a lifted thin root/g),
+    ).toHaveLength(1);
+    expect(text).toMatch(
+      /CL: rows in range[\s\S]*volume_ratio is not planned for a lifted thin root/,
+    );
+  });
+
+  it('lists the volume ratio among the fields an ES stale row rewrites, and not among those of a lifted root', async () => {
+    expect(
+      await run({ roots: ['ES', 'RTY', 'CL'], stores: ['snapshots'] }),
+    ).toBe(0);
+
+    // The stale section names, per row, the fields its rewrite writes.
+    const fieldsOf = (symbol: string): string[] => {
+      const line = report()
+        .split('\n')
+        .find((l) =>
+          new RegExp(`^ +${symbol} \\S+ id \\d+: price .* writes `).test(l),
+        );
+      return (/ writes ([A-Za-z0-9, ]+)/.exec(line ?? '')?.[1] ?? '')
+        .split(', ')
+        .map((f) => f.trim());
+    };
+    expect(fieldsOf('ES')).toContain('volumeRatio');
+    expect(fieldsOf('ES')).toContain('price');
+    for (const symbol of THIN) {
+      expect(fieldsOf(symbol)).toContain('price');
+      expect(fieldsOf(symbol)).not.toContain('volumeRatio');
+    }
+  });
+
+  it('does not bring a blanked volume ratio back: a rerun plans none and the stale rewrite leaves NULL as it is', async () => {
+    // The volume-null step has run: the three rows of each root hold NULL.
+    for (const symbol of THIN) {
+      await pg.query(
+        `UPDATE futures_snapshots SET volume_ratio = NULL WHERE id = ANY($1::int[])`,
+        [[ids.clean[symbol], ids.stale[symbol], ids.after[symbol]]],
+      );
+    }
+    const before = await snapshots();
+
+    expect(await run()).toBe(0);
+    expect(report()).toContain(
+      'rows planned, RTY: normal step 0 rows, stale-at-write 1 rows',
+    );
+    expect(report()).toContain(
+      'rows planned, CL: normal step 0 rows, stale-at-write 1 rows',
+    );
+
+    const code = await run({
+      apply: true,
+      expectSnapshots: 0,
+      rewriteStaleAtWrite: true,
+      expectStaleRewrites: 2,
+    });
+    expect([code, errored()]).toEqual([0, '']);
+    const after = await snapshots();
+    for (const symbol of THIN) {
+      for (const id of [
+        ids.clean[symbol],
+        ids.stale[symbol],
+        ids.after[symbol],
+      ] as number[]) {
+        expect(after.get(id)?.volume_ratio).toBeNull();
+      }
+      // The rest of the stale row was rewritten all the same.
+      expect(after.get(ids.stale[symbol] as number)?.price).not.toBe(
+        before.get(ids.stale[symbol] as number)?.price,
+      );
+    }
   });
 
   it('says what the backup holds, with the deleted rows per root, so the 5a total can be checked against it', async () => {
@@ -579,10 +681,11 @@ describe('5b: the snapshots after 5a deleted whole days of thin-root bars', () =
   });
 
   it('applies the normal step and the junk delete, and leaves ES, NQ and the unaffected rows as they were', async () => {
+    await reset({ leftBar: true }); // RTY is not lifted, so its volume ratio is planned
     const before = await snapshots();
     const code = await run({
       apply: true,
-      expectSnapshots: 6,
+      expectSnapshots: 3,
       deleteJunkStale: true,
       expectJunkDeletes: 2,
     });
@@ -591,11 +694,15 @@ describe('5b: the snapshots after 5a deleted whole days of thin-root bars', () =
 
     const after = await snapshots();
     for (const symbol of THIN) {
-      // The volume ratio changed; price and the two changes did not.
+      // RTY's volume ratio changed; price and the two changes did not. CL is lifted: nothing changed.
       for (const id of [ids.clean[symbol], ids.after[symbol]] as number[]) {
         const was = before.get(id);
         const now = after.get(id);
-        expect(now?.volume_ratio).not.toBe(was?.volume_ratio);
+        if (symbol === 'RTY') {
+          expect(now?.volume_ratio).not.toBe(was?.volume_ratio);
+        } else {
+          expect(now).toEqual(was);
+        }
         expect(now?.price).toBe(was?.price);
         expect(now?.change_1h_pct).toBe(was?.change_1h_pct);
         expect(now?.change_day_pct).toBe(was?.change_day_pct);
@@ -617,10 +724,11 @@ describe('5b: the snapshots after 5a deleted whole days of thin-root bars', () =
   });
 
   it('refuses a resume that names other roots, and finishes it with the same roots', async () => {
+    await reset({ leftBar: true }); // the normal step has RTY's three rows to write
     hooks.failWriteAt = { nth: 2, error: new Error('connection lost') };
     const apply = {
       apply: true,
-      expectSnapshots: 6,
+      expectSnapshots: 3,
       deleteJunkStale: true,
       expectJunkDeletes: 2,
     };
@@ -657,7 +765,7 @@ describe('5b: ruling 9 is lifted per root once no thin-root bar is left in the s
     );
     // CL has no bar left in the span: its stale-at-write rows from the span start are in.
     expect(text).toContain(
-      'rows planned, CL: normal step 3 rows, stale-at-write 1 rows (1 added by the D1 lift), junk delete 1 rows',
+      'rows planned, CL: normal step 0 rows, stale-at-write 1 rows (1 added by the D1 lift), junk delete 1 rows',
     );
   });
 
@@ -725,7 +833,7 @@ describe('5b: ruling 9 is lifted per root once no thin-root bar is left in the s
     expect(await run()).toBe(0);
     const without = report();
     expect(without).toContain(
-      'rows planned, RTY: normal step 4 rows, stale-at-write 1 rows (1 added by the D1 lift), junk delete 1 rows',
+      'rows planned, RTY: normal step 0 rows, stale-at-write 1 rows (1 added by the D1 lift), junk delete 1 rows',
     );
     expect(without).toContain(
       '1 more after it are left (no --detector-days file: the source is unchecked)',
@@ -739,7 +847,7 @@ describe('5b: ruling 9 is lifted per root once no thin-root bar is left in the s
     );
     expect(await run({ detectorDays: detectorPath })).toBe(0);
     expect(report()).toContain(
-      'rows planned, RTY: normal step 4 rows, stale-at-write 2 rows (2 added by the D1 lift), junk delete 1 rows',
+      'rows planned, RTY: normal step 0 rows, stale-at-write 2 rows (2 added by the D1 lift), junk delete 1 rows',
     );
   });
 
@@ -747,7 +855,7 @@ describe('5b: ruling 9 is lifted per root once no thin-root bar is left in the s
     const before = await snapshots();
     const code = await run({
       apply: true,
-      expectSnapshots: 6,
+      expectSnapshots: 0,
       rewriteStaleAtWrite: true,
       expectStaleRewrites: 2,
     });
@@ -760,7 +868,8 @@ describe('5b: ruling 9 is lifted per root once no thin-root bar is left in the s
       expect(row?.price).toBe(`${BASE[symbol] + 10}.0000`);
       expect(row?.change_1h_pct).toBeNull();
       expect(row?.change_day_pct).toBeNull();
-      expect(row?.volume_ratio).not.toBe('1.0000');
+      // A lifted root's volume ratio is not planned (owner ruling 2026-11-12).
+      expect(row?.volume_ratio).toBe('1.0000');
       // A row the stale step does not name keeps its price.
       expect(after.get(ids.clean[symbol] as number)?.price).toBe(
         before.get(ids.clean[symbol] as number)?.price,
@@ -1031,11 +1140,15 @@ describe('5b: a dry run after an apply leaves the approved files alone', () => {
     readdirSync(workDir).filter((f) => /^dryrun-.*-report\.txt$/.test(f));
 
   it('writes report.txt from a dry run in a clean work dir, and dryrun-<time>- files once a step is marked done', async () => {
+    await reset({ leftBar: true }); // RTY is not lifted: its three rows are written
     expect(await run()).toBe(0);
     const approved = readFileSync(join(workDir, 'report.txt'));
+    expect(approved.toString('utf8')).toContain(
+      'rows planned, RTY: normal step 3 rows',
+    );
     expect(dryRuns()).toEqual([]);
 
-    expect([await run({ apply: true, expectSnapshots: 6 }), errored()]).toEqual(
+    expect([await run({ apply: true, expectSnapshots: 3 }), errored()]).toEqual(
       [0, ''],
     );
     expect(existsSync(markerPath(workDir, 'snapshots'))).toBe(true);
@@ -1053,13 +1166,14 @@ describe('5b: a dry run after an apply leaves the approved files alone', () => {
   });
 
   it('does so after a failed apply that marked only some steps', async () => {
+    await reset({ leftBar: true });
     expect(await run()).toBe(0);
     const approved = readFileSync(join(workDir, 'report.txt'));
     hooks.failWriteAt = { nth: 2, error: new Error('connection lost') };
     expect(
       await run({
         apply: true,
-        expectSnapshots: 6,
+        expectSnapshots: 3,
         deleteJunkStale: true,
         expectJunkDeletes: 2,
       }),

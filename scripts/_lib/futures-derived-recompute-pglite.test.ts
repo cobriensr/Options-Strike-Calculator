@@ -824,8 +824,11 @@ function options(over: Partial<RecomputeOptions> = {}): RecomputeOptions {
     rewriteStaleAtWrite: false,
     expectStaleRewrites: null,
     frozen: false,
+    volumeNull: false,
     deleteFrozenStale: false,
     expectFrozenDeletes: null,
+    nullVolumeRatio: false,
+    expectVolumeNulls: null,
     detectorDays: null,
     ...over,
   };
