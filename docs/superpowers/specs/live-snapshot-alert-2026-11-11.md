@@ -1,7 +1,9 @@
 # Live snapshot alert
 
 **Date:** 2026-11-11 · **Status:** Tasks 1-5 shipped 2026-11-12 (Task 3 as
-91a117f5, Tasks 4-5 as ac9b6c45); Task 6 in progress
+91a117f5, Tasks 4-5 as ac9b6c45); Task 6 built and reviewed, shipping with
+its cleanup round. Open owner question: should turning the switch off count
+as a close (see the third amendment)?
 
 ## Goal
 
@@ -39,12 +41,17 @@ stall.
 
 **Second amendment (owner, 2026-11-12): a deliberate close is not a stall.**
 When the owner's page is closed (tab or browser closed, or navigated away), it
-tells the server, and the next checks send no push until the app saves again.
-A signed-out page, failing saves, a tab Chrome froze or discarded, and a crash
-still push, because none of them sends the close signal. Trade-off the owner
-accepted: shutting the laptop lid with the app open sends no close signal, so
-it pushes like a stall. A close signal that doesn't arrive (it is
-best-effort) also pushes.
+tells the server, and the next checks send no push until the app saves again
+or an open tab withdraws the close (fifth amendment). A signed-out page,
+failing saves, a tab Chrome froze or discarded, and a crash still push,
+because none of them sends the close signal. Trade-off the owner accepted:
+shutting the laptop lid with the app open sends no close signal, so it pushes
+like a stall. A close signal that doesn't arrive (it is best-effort) also
+pushes. A close stands until an owner page withdraws it: a page reopened
+signed out (the owner cookie expired after the close) can't, so that stall
+sends no push; that page shows the sign-in screen instead (final review
+2026-11-12; an unauthenticated withdraw would break the owner-only write
+rule).
 
 **Third amendment (owner, 2026-11-12): phones don't save.** Without this,
 tapping the alert on the phone opens the app, the phone saves one live row
@@ -53,7 +60,13 @@ trading computer could stay broken with no further push. Touch-first devices
 (phones, tablets) don't save live snapshots or send the close signal;
 computers do. A per-browser switch in the app overrides the default either
 way. Past-date and backtest saves are not affected. Trade-off the owner
-accepted: a second computer left open also counts.
+accepted: a second computer left open also counts. As built (Task 6):
+turning the switch off stops live saves and both signals but sends no close,
+so on the only saving computer it pushes "Live snapshots stopped saving"
+30-45 minutes later while the app is open. Open owner question (final review
+2026-11-12): should turning it off send the close signal, as closing the app
+does? Controller recommendation: yes, a one-line change in the switch
+subscriber.
 
 **Fourth amendment (owner, 2026-11-12 ~17:40 CT): only the last tab's close
 counts.** With two or more calculator tabs open, closing one of them while
@@ -79,13 +92,19 @@ back/forward cache. Each one deletes today's close marker. So:
   5 minutes later) deletes the close;
 - closing the last tab: no tab is left to delete it, so the close stands;
 - a tab that crashed or that Chrome froze sends nothing, so it can neither
-  close nor keep the app "open".
+  close nor keep the app "open". So a sibling tab Chrome froze or discarded
+  doesn't keep the app open: closing the last working tab then counts as
+  closing the app, and no push comes (the one case where the fourth
+  amendment's example doesn't hold).
 
-The cron is unchanged: it already treats a missing marker as no close. A page
-so broken that no script runs sends no open signal, so a reload into it can
-still hide a stall; Sentry's frontend errors and the deploy check cover that
-case. An open signal from the closing tab itself that lands after its own
-close deletes the close, which errs toward an extra alert.
+The cron is unchanged: it already treats a missing marker as no close. A new
+build whose entry module fails to evaluate (any eagerly imported module
+throwing at import time) sends no open signal, so a reload into it can still
+hide a stall; Sentry's frontend errors and the deploy check cover that case.
+An open signal from the closing tab itself that lands after its own close
+deletes the close, which errs toward an extra alert. So does a reopened page
+whose open signal lands a few seconds before its first save: a cron tick in
+that gap pushes once for the old stall.
 
 ## Thresholds / constants
 
@@ -185,8 +204,11 @@ only today's rows are read and the old inverted flag does not matter.
   `src/__tests__/live-session-signal.test.ts` (new),
   `src/hooks/useSnapshotSave.ts`,
   `src/__tests__/hooks/useSnapshotSave.test.ts`, `src/main.tsx`; plus a
-  comment-only commit in `api/snapshot-close.ts` and
-  `api/cron/check-live-snapshots.ts` (Task 5 review).
+  refactor commit exporting `isCashSessionOpen` from
+  `src/lib/sw-update-policy.ts`, a comment-only commit in
+  `api/snapshot-close.ts` and `api/cron/check-live-snapshots.ts` (Task 5
+  review), and the final-review cleanup round (`final-fix-round.md` in the
+  SDD workspace).
 
 ## Global Constraints
 
