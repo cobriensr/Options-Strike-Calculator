@@ -13,10 +13,13 @@
  * later request can retry (AUD-M2).
  *
  * Query params:
- *   ?days=30         — how many days to return (default 30, max 90)
+ *   ?days=30         — how many days to return (default 30, max 90; a whole
+ *                      number, so 30.5 is read as 30)
  *   ?from=YYYY-MM-DD — first day of the window (default today ET). A past date
  *                      returns that date's events; the window is from..from+days.
- *                      Bounds: 2025-01-01 to today + 90 days, else 400.
+ *                      Bounds: 2025-01-01 to today + 90 days, else 400. A `from`
+ *                      lookup that misses the cache is limited to 10 a minute
+ *                      per IP (429); requests without `from` are never limited.
  *
  * Environment variables:
  *   FRED_API_KEY    — Free key from https://fred.stlouisfed.org/docs/api/api_key.html
@@ -26,6 +29,7 @@
 import { Sentry, metrics } from './_lib/sentry.js';
 import {
   checkBot,
+  rejectIfRateLimited,
   respondIfInvalid,
   setCacheHeaders,
 } from './_lib/api-helpers.js';
@@ -71,9 +75,10 @@ export default withRequestScope(
           .json({ error: 'Service temporarily unavailable' });
       }
 
-      // Parse days parameter (default 30, max 90)
+      // Parse days parameter (default 30, max 90). A whole number, so
+      // ?days=30.5 shares the days=30 cache key instead of minting its own.
       const daysParam = Number(req.query?.days) || 30;
-      const days = Math.min(Math.max(daysParam, 1), 90);
+      const days = Math.min(Math.max(Math.trunc(daysParam), 1), 90);
 
       // Date range: from (default today ET) → from + days. Calendar
       // arithmetic on 12:00 UTC, so a DST change inside the window cannot
@@ -115,6 +120,19 @@ export default withRequestScope(
         }
       } catch {
         // Redis unavailable — fetch fresh
+      }
+
+      // A cache miss costs 7 FRED calls plus a Finnhub call, and FRED allows
+      // about 120 a minute per key, a key the app's default request shares.
+      // Limit per IP only the lookups that choose their own window (`from`),
+      // so a walk across past dates cannot starve the default request. A
+      // default request is never limited, and a cache hit never reaches here.
+      if (
+        parsed.data.from &&
+        (await rejectIfRateLimited(req, res, 'events', 10))
+      ) {
+        done({ status: 429 });
+        return;
       }
 
       // Fetch from all sources

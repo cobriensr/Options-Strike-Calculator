@@ -12,6 +12,7 @@ vi.mock('../_lib/redis.js', () => ({
 
 vi.mock('../_lib/api-helpers.js', () => ({
   checkBot: vi.fn().mockResolvedValue({ isBot: false }),
+  rejectIfRateLimited: vi.fn().mockResolvedValue(false),
   setCacheHeaders: vi.fn(),
   respondIfInvalid: vi.fn(
     (
@@ -54,9 +55,9 @@ vi.mock('../_lib/sentry.js', () => ({
 
 import handler from '../events.js';
 import { redis } from '../_lib/redis.js';
-import { checkBot } from '../_lib/api-helpers.js';
+import { checkBot, rejectIfRateLimited } from '../_lib/api-helpers.js';
 import { fetchMarketEvents } from '../_lib/market-events.js';
-import { Sentry } from '../_lib/sentry.js';
+import { Sentry, metrics } from '../_lib/sentry.js';
 
 describe('GET /api/events', () => {
   const originalEnv = process.env;
@@ -70,6 +71,7 @@ describe('GET /api/events', () => {
     vi.clearAllMocks();
     vi.mocked(redis.get).mockResolvedValue(null);
     vi.mocked(redis.set).mockResolvedValue('OK');
+    vi.mocked(rejectIfRateLimited).mockResolvedValue(false);
   });
 
   afterEach(() => {
@@ -687,12 +689,18 @@ describe('GET /api/events', () => {
       vi.unstubAllGlobals();
     });
 
-    async function get(query: Record<string, string | string[]>, now = NOW) {
+    const FRED_OK = {
+      ok: true,
+      json: () => Promise.resolve({ release_dates: [] }),
+    };
+
+    async function get(
+      query: Record<string, string | string[]>,
+      now = NOW,
+      fredReply: unknown = FRED_OK,
+    ) {
       process.env.FRED_API_KEY = 'fred-key';
-      const fredFetch = vi.fn().mockResolvedValue({
-        ok: true,
-        json: () => Promise.resolve({ release_dates: [] }),
-      });
+      const fredFetch = vi.fn().mockResolvedValue(fredReply);
       vi.stubGlobal('fetch', fredFetch);
       vi.useFakeTimers({ now: new Date(now) });
       const res = mockResponse();
@@ -837,6 +845,113 @@ describe('GET /api/events', () => {
         '2027-02-10',
         '2027-02-11',
       );
+    });
+
+    it.each([
+      ['30.5', 30, '2026-12-12'],
+      ['0.5', 1, '2026-11-13'],
+      ['89.9', 89, '2027-02-09'],
+      ['-3.7', 1, '2026-11-13'],
+    ])(
+      'truncates days=%s to the whole number %i, in the window and the cache key',
+      async (days, whole, endDate) => {
+        const { json } = await get({ days });
+
+        expect(json.endDate).toBe(endDate);
+        expect(fetchMarketEvents).toHaveBeenCalledWith('2026-11-12', endDate);
+        expect(redis.get).toHaveBeenCalledWith(`events:v3:2026-11-12:${whole}`);
+        expect(redis.set).toHaveBeenCalledWith(
+          `events:v3:2026-11-12:${whole}`,
+          expect.anything(),
+          expect.anything(),
+        );
+      },
+    );
+
+    describe('rate limit on from', () => {
+      it('answers 429 and fetches nothing when the limiter rejects a from lookup after a cache miss', async () => {
+        vi.mocked(rejectIfRateLimited).mockImplementation((_req, res) => {
+          res.status(429).json({ error: 'Too many requests.' });
+          return Promise.resolve(true);
+        });
+
+        const { res, fredFetch } = await get({
+          from: '2026-04-29',
+          days: '1',
+        });
+
+        expect(res._status).toBe(429);
+        expect((res._json as { error: string }).error).toBe(
+          'Too many requests.',
+        );
+        expect(rejectIfRateLimited).toHaveBeenCalledTimes(1);
+        expect(rejectIfRateLimited).toHaveBeenCalledWith(
+          expect.anything(),
+          res,
+          'events',
+          10,
+        );
+        expect(fetchMarketEvents).not.toHaveBeenCalled();
+        expect(fredFetch).not.toHaveBeenCalled();
+        expect(redis.set).not.toHaveBeenCalled();
+        // The request is recorded as a 429 on the metrics `done` callback.
+        const done = vi.mocked(metrics.request).mock.results[0]?.value;
+        expect(done).toHaveBeenCalledWith({ status: 429 });
+      });
+
+      it('lets a from lookup through when the limiter allows it', async () => {
+        const { res } = await get({ from: '2026-04-29', days: '1' });
+
+        expect(res._status).toBe(200);
+        expect(rejectIfRateLimited).toHaveBeenCalledTimes(1);
+        expect(fetchMarketEvents).toHaveBeenCalledTimes(1);
+      });
+
+      it('never calls the limiter for a default request, so it cannot get a 429', async () => {
+        const { res } = await get({ days: '30' });
+
+        expect(res._status).toBe(200);
+        expect(rejectIfRateLimited).not.toHaveBeenCalled();
+        expect(fetchMarketEvents).toHaveBeenCalledTimes(1);
+      });
+
+      it('never calls the limiter for a from cache hit', async () => {
+        vi.mocked(redis.get).mockImplementation((key: string) =>
+          Promise.resolve(
+            key === 'events:v3:2026-04-29:1'
+              ? {
+                  data: [{ date: '2026-04-29', event: 'FOMC' }],
+                  cachedAt: Date.now(),
+                }
+              : null,
+          ),
+        );
+
+        const { res, json } = await get({ from: '2026-04-29', days: '1' });
+
+        expect(res._status).toBe(200);
+        expect(json.cached).toBe(true);
+        expect(rejectIfRateLimited).not.toHaveBeenCalled();
+        expect(fetchMarketEvents).not.toHaveBeenCalled();
+      });
+    });
+
+    it('answers 200 uncached for a past date when FRED answers 503, and writes nothing under that date', async () => {
+      const { res, json } = await get({ from: '2026-04-29' }, NOW, {
+        ok: false,
+        status: 503,
+      });
+
+      expect(res._status).toBe(200);
+      expect(json.cached).toBe(false);
+      expect(res._headers['X-Cache']).toBe('MISS');
+      expect(Sentry.captureMessage).toHaveBeenCalledWith(
+        'FRED API non-OK',
+        expect.objectContaining({ level: 'warning' }),
+      );
+      // A degraded list under events:v3:2026-04-29:* would pin the missing
+      // release flags to that date for the 7-day TTL.
+      expect(redis.set).not.toHaveBeenCalled();
     });
   });
 });

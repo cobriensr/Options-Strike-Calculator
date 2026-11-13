@@ -105,7 +105,8 @@ Exports:
   to drop a client's earnings names, and the backfill report uses it to explain the
   removals.
 
-`api/events.ts` keeps its URL, query parameter and response shape. Its cache key is
+`api/events.ts` keeps its URL, query parameter and response shape, plus an optional
+`from=YYYY-MM-DD` (phase C, 2026-11-12). Its cache key is
 `events:v3:{startDate}:{days}` since the 2026-11-12 correction (it was `events:v2`). It only
 calls `fetchMarketEvents`. The `EventItem` interface moves to the lib module, and
 `api/events.ts` imports it from there.

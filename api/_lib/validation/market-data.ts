@@ -299,9 +299,12 @@ const DAY_MS = 24 * 60 * 60 * 1000;
  * `from` is optional and starts the window (`from .. from + days`); absent
  * means today (ET). It must be a real calendar date on or after 2025-01-01
  * (the static FOMC calendar in `fomc-schedule.ts` starts with 2025) and at
- * most 90 days after today's ET date, so the public endpoint cannot be walked
- * across an unbounded set of cache keys. The upper bound reads the clock when
- * the query is parsed.
+ * most 90 days after today's ET date. These bounds alone do not stop the
+ * public endpoint being walked across cache keys: they cap `from` to a finite
+ * range, the handler truncates `days` to a whole number (1-90), and a per-IP
+ * limit on `from` lookups that miss the cache caps how fast a caller can mint
+ * new keys. Together those bound the key set and the upstream cost. The upper
+ * bound reads the clock when the query is parsed.
  */
 export const eventsQuerySchema = z.object({
   from: z
