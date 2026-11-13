@@ -197,8 +197,8 @@ describe('api-helpers', () => {
       expect(OWNER_COOKIE).toBe('sc-owner');
     });
 
-    it('OWNER_COOKIE_MAX_AGE is 7 days', () => {
-      expect(OWNER_COOKIE_MAX_AGE).toBe(7 * 24 * 60 * 60);
+    it('OWNER_COOKIE_MAX_AGE is 400 days', () => {
+      expect(OWNER_COOKIE_MAX_AGE).toBe(400 * 24 * 60 * 60);
     });
   });
 

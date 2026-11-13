@@ -64,9 +64,55 @@ export async function checkBot(
 export const OWNER_COOKIE = 'sc-owner';
 
 /**
- * Max age for the owner cookie (7 days — matches Schwab refresh token).
+ * Max age for the owner sign-in cookies: 400 days, the longest lifetime Chrome
+ * keeps (it clamps a larger Max-Age to this). It is independent of the Schwab
+ * refresh token: the server checks the cookie value against OWNER_SECRET, so
+ * the lifetime only sets how long a browser holds the sign-in. Rotating
+ * OWNER_SECRET signs every browser out at once. `whoami` re-issues the cookies
+ * on use, so a browser that keeps being used never reaches the end.
  */
-export const OWNER_COOKIE_MAX_AGE = 7 * 24 * 60 * 60;
+export const OWNER_COOKIE_MAX_AGE = 400 * 24 * 60 * 60;
+
+/**
+ * Set-Cookie strings for the owner sign-in: the HttpOnly `sc-owner` session
+ * cookie, and the script-readable `sc-hint` cookie the frontend uses to
+ * detect an owner session (the real cookie is invisible to JS).
+ *
+ * The only place these cookies are built: the OAuth callback (a new sign-in)
+ * and `whoami` (renewal) both call it, so their attributes cannot drift.
+ * Attributes: Path=/ (every endpoint), SameSite=Strict (not sent on
+ * cross-site requests), Secure except on localhost (`isLocal`).
+ *
+ * Callers must only call this for a request that is allowed to hold the
+ * session: a verified OAuth login, or one that already passes `isOwner`.
+ * Throws when OWNER_SECRET is unset or empty rather than issue a cookie
+ * with no secret in it.
+ */
+export function buildOwnerSessionCookies(isLocal: boolean): string[] {
+  const secret = process.env.OWNER_SECRET;
+  if (!secret) {
+    throw new Error('OWNER_SECRET is not set');
+  }
+
+  const ownerParts = [
+    `${OWNER_COOKIE}=${secret}`,
+    'Path=/',
+    `Max-Age=${OWNER_COOKIE_MAX_AGE}`,
+    'HttpOnly',
+    'SameSite=Strict',
+  ];
+  if (!isLocal) ownerParts.push('Secure');
+
+  const hintParts = [
+    'sc-hint=1',
+    'Path=/',
+    `Max-Age=${OWNER_COOKIE_MAX_AGE}`,
+    'SameSite=Strict',
+  ];
+  if (!isLocal) hintParts.push('Secure');
+
+  return [ownerParts.join('; '), hintParts.join('; ')];
+}
 
 /**
  * Parse cookies from the request header.
