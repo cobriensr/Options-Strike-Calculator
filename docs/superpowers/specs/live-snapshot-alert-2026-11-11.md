@@ -1,9 +1,9 @@
 # Live snapshot alert
 
 **Date:** 2026-11-11 · **Status:** Tasks 1-5 shipped 2026-11-12 (Task 3 as
-91a117f5, Tasks 4-5 as ac9b6c45); Task 6 built and reviewed, shipping with
-its cleanup round. Open owner question: should turning the switch off count
-as a close (see the third amendment)?
+91a117f5, Tasks 4-5 as ac9b6c45, Task 6 as fa299917); the plan is complete
+apart from the open owner question: should turning the switch off count as a
+close (see the third amendment)?
 
 ## Goal
 
@@ -100,7 +100,9 @@ back/forward cache. Each one deletes today's close marker. So:
 The cron is unchanged: it already treats a missing marker as no close. A new
 build whose entry module fails to evaluate (any eagerly imported module
 throwing at import time) sends no open signal, so a reload into it can still
-hide a stall; Sentry's frontend errors and the deploy check cover that case.
+hide a stall. The deploy check (and the owner seeing a blank page) covers that
+case; Sentry catches only a throw after `Sentry.init`, which runs in the body
+of `src/main.tsx` after every static import has evaluated.
 An open signal from the closing tab itself that lands after its own close
 deletes the close, which errs toward an extra alert. So does a reopened page
 whose open signal lands a few seconds before its first save: a cron tick in
