@@ -22,9 +22,10 @@
  *     other poll here. A 401 (the owner cookie is gone) and a 429 (the shared
  *     30 a minute limit; the next timer retries) are silent, and so is any
  *     failure while the browser is offline; any other failure is reported once
- *     per page, because a lost open signal can let a close stand. Keep it a plain same-origin `fetch` with no body, no custom
- *     headers and no `mode`: the endpoint's cross-site safety rests on DELETE
- *     needing a preflight it never answers (security review, 2026-11-12).
+ *     per page, because a lost open signal can let a close stand. Keep it a
+ *     plain same-origin `fetch` with no body, no custom headers and no `mode`:
+ *     the endpoint's cross-site safety rests on DELETE needing a preflight it
+ *     never answers (security review, 2026-11-12).
  *
  * Runs only for the owner on a live-save device. Neither is cached: the
  * owner check reads the hint cookie, and the device check reads the stored
@@ -33,8 +34,8 @@
  * switch flipped in another tab of the browser, or a sign-out elsewhere, is
  * never pushed here; the subscription only lets this tab react at once.
  *
- * Started from main.tsx, outside React and after botid has wrapped `fetch`, so
- * a render failure in a new build does not stop the open signal. A new build
+ * Started from main.tsx, outside React and after `initBotId` (in production),
+ * so a render failure in a new build does not stop the open signal. A new build
  * whose entry module fails to evaluate (any eagerly imported module throwing
  * at import time) does stop it: it sends no open signal, so a reload into it
  * can still hide a stall. The timers run for the life of the page and send
