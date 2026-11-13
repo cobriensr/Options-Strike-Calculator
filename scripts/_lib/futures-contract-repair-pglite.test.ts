@@ -172,6 +172,7 @@ interface TableRow {
   sell_volume: string | null;
   buy_prints: string | null;
   sell_prints: string | null;
+  contract: string | null;
 }
 
 async function table(pg: PGliteType): Promise<Map<string, TableRow>> {
@@ -179,7 +180,8 @@ async function table(pg: PGliteType): Promise<Map<string, TableRow>> {
     `SELECT id::text AS id, symbol,
             to_char(ts AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS ts,
             open::text, high::text, low::text, close::text, volume::text,
-            buy_volume::text, sell_volume::text, buy_prints::text, sell_prints::text
+            buy_volume::text, sell_volume::text, buy_prints::text, sell_prints::text,
+            contract
        FROM futures_bars ORDER BY symbol, ts`,
   );
   return new Map(rows.map((r) => [`${r.symbol} ${r.ts}`, r]));
@@ -502,6 +504,7 @@ beforeAll(async () => {
   hooks.pg = pg;
   await applyStatements(pg, 42, (text) => !/FROM\s+es_bars/.test(text));
   await applyStatements(pg, 193, () => true);
+  await applyStatements(pg, 204, () => true); // the dated contract of a bar
   await pg.query(`SET TIME ZONE 'America/Chicago'`);
 });
 
@@ -650,6 +653,28 @@ describe('--apply on real SQL (pglite)', () => {
         .trim()
         .split('\n'),
     ).toHaveLength(1 + 18);
+  });
+
+  it('writes a dry run after an --apply under dryrun-<time>- names and leaves the approved report.txt and delete-list.csv', async () => {
+    await run({ apply: false });
+    const report = readFileSync(join(workDir, 'report.txt'));
+    const list = readFileSync(join(workDir, 'delete-list.csv'));
+    expect(await run()).toBe(0);
+
+    vi.setSystemTime(new Date('2026-11-08T12:05:00Z'));
+    expect(await run({ apply: false })).toBe(0);
+
+    expect(readFileSync(join(workDir, 'report.txt'))).toEqual(report);
+    expect(readFileSync(join(workDir, 'delete-list.csv'))).toEqual(list);
+    const files = readdirSync(workDir);
+    const dryReport = files.find((f) => /^dryrun-.*-report\.txt$/.test(f));
+    expect(dryReport).toBeDefined();
+    expect(files.some((f) => /^dryrun-.*-delete-list\.csv$/.test(f))).toBe(
+      true,
+    );
+    expect(readFileSync(join(workDir, dryReport ?? ''), 'utf8')).toContain(
+      'total updates 0, total deletes 0',
+    );
   });
 
   it('deletes the junk window for all six roots and nothing just outside it', async () => {
@@ -943,6 +968,25 @@ describe('--apply on real SQL (pglite)', () => {
     expect(row?.volume).toBe('777'); // the concurrent change was not undone
     expect(existsSync(markerPath(workDir, '2026-04-21'))).toBe(false);
     expect(existsSync(markerPath(workDir, '2026-04-20'))).toBe(true);
+  });
+
+  it('does not update a bar that a writer tied to a contract after the plan was read; the day fails', async () => {
+    hooks.beforeWrite = async () => {
+      await pg.query(
+        `UPDATE futures_bars SET contract = 'ESM6'
+          WHERE symbol = 'ES' AND ts = '2026-04-21T13:05:00Z'`,
+      );
+    };
+
+    expect(await run()).toBe(1);
+
+    expect(errored()).toMatch(
+      /apply failed: day 2026-04-21: verify failed for ES 2026-04-21/,
+    );
+    const row = (await table(pg)).get('ES 2026-04-21T13:05:00Z');
+    expect(row?.contract).toBe('ESM6');
+    expect(row?.high).toBe('7062.0000'); // the picked high was not written over it
+    expect(existsSync(markerPath(workDir, '2026-04-21'))).toBe(false);
   });
 
   it('writes the rebuilt volume with a replaced low, whatever the roll week or partial say', async () => {
@@ -1661,6 +1705,60 @@ describe('--thin-roots on real SQL (pglite)', () => {
     }
   });
 
+  it('writes a dry run after an apply under dryrun-<time>- names and leaves the approved report.txt and delete-list.csv', async () => {
+    await runThin({ apply: false });
+    const report = readFileSync(join(workDir, 'report.txt'));
+    const list = readFileSync(join(workDir, 'delete-list.csv'));
+    expect(await runThin()).toBe(0);
+
+    // The check that nothing is left, run in the same work dir: it plans no
+    // delete and used to replace both approved files with that empty plan.
+    vi.setSystemTime(new Date('2026-11-08T12:05:00Z'));
+    expect(await runThin({ apply: false })).toBe(0);
+
+    expect(readFileSync(join(workDir, 'report.txt'))).toEqual(report);
+    expect(readFileSync(join(workDir, 'delete-list.csv'))).toEqual(list);
+    const files = readdirSync(workDir);
+    const reports = files.filter((f) => /^dryrun-.*-report\.txt$/.test(f));
+    const lists = files.filter((f) => /^dryrun-.*-delete-list\.csv$/.test(f));
+    expect(reports).toHaveLength(1);
+    expect(lists).toHaveLength(1);
+    expect(readFileSync(join(workDir, reports[0] ?? ''), 'utf8')).toContain(
+      'total deletes 0',
+    );
+    expect(
+      readFileSync(join(workDir, lists[0] ?? ''), 'utf8')
+        .trim()
+        .split('\n'),
+    ).toHaveLength(1);
+    expect(logged()).toContain(`report: ${join(workDir, reports[0] ?? '')}`);
+  });
+
+  it('writes a dry run after a partial apply under dryrun-<time>- names too', async () => {
+    await runThin({ apply: false });
+    const report = readFileSync(join(workDir, 'report.txt'));
+    hooks.failWriteAt = { nth: 3, error: new Error('connection lost') };
+    expect(await runThin()).toBe(1);
+    hooks.failWriteAt = null;
+    vi.setSystemTime(new Date('2026-11-08T12:05:00Z'));
+
+    expect(await runThin({ apply: false })).toBe(0);
+
+    expect(readFileSync(join(workDir, 'report.txt'))).toEqual(report);
+    expect(
+      readdirSync(workDir).filter((f) => /^dryrun-.*-report\.txt$/.test(f)),
+    ).toHaveLength(1);
+  });
+
+  it('still writes report.txt and delete-list.csv from a dry run when no day is marked done', async () => {
+    await runThin({ apply: false });
+    expect(existsSync(join(workDir, 'report.txt'))).toBe(true);
+    expect(existsSync(join(workDir, 'delete-list.csv'))).toBe(true);
+    expect(readdirSync(workDir).filter((f) => f.startsWith('dryrun-'))).toEqual(
+      [],
+    );
+  });
+
   it('appends nothing to the backup when the open refuses the run before its first day', async () => {
     const file = join(workDir, 'backup-thin-roots.jsonl');
     // The clock passes the start guard, then reaches the open while the plan is read.
@@ -1733,6 +1831,111 @@ describe('--thin-roots on real SQL (pglite)', () => {
     expect(mid.get('RTY 2026-04-05T22:00:00Z')?.close).toBe('2001.0000'); // kept, as changed
     expect(mid.has('CL 2026-04-05T22:00:00Z')).toBe(false); // the others went
     expect(existsSync(markerPath(workDir, '2026-04-05'))).toBe(false);
+  });
+
+  describe('the bar contract (#204)', () => {
+    const backupFile = (): string => join(workDir, 'backup-thin-roots.jsonl');
+    /** A backup row as 5a wrote it before the contract was read: no such key. */
+    const beforeContract = (row: TableRow): Partial<TableRow> => {
+      const old: Partial<TableRow> = { ...row };
+      delete old.contract;
+      return old;
+    };
+    const backupRows = (): Record<string, string | null>[] =>
+      readFileSync(backupFile(), 'utf8')
+        .split('\n')
+        .filter((l) => l !== '')
+        .map(
+          (l) => (JSON.parse(l) as { row: Record<string, string | null> }).row,
+        );
+
+    it('backs up the contract of a bar it deletes, and NULL for a bar without one', async () => {
+      await pg.query(
+        `UPDATE futures_bars SET contract = 'RTYM6'
+          WHERE symbol = 'RTY' AND ts = '2026-04-06T15:00:00Z'`,
+      );
+
+      expect(await runThin()).toBe(0);
+
+      const rows = backupRows();
+      expect(rows).toHaveLength(THIN_DELETES);
+      const withContract = rows.filter((r) => r.contract != null);
+      expect(withContract).toHaveLength(1);
+      expect(withContract[0]).toMatchObject({
+        symbol: 'RTY',
+        ts: '2026-04-06T15:00:00Z',
+        contract: 'RTYM6',
+      });
+      // Every other line carries the key, NULL.
+      expect(rows.every((r) => 'contract' in r)).toBe(true);
+      expect((await table(pg)).has('RTY 2026-04-06T15:00:00Z')).toBe(false);
+    });
+
+    it('does not delete a bar that a writer tied to a contract after the plan was read; the day fails', async () => {
+      let fired = false;
+      hooks.beforeWrite = async () => {
+        if (fired) return;
+        fired = true;
+        await pg.query(
+          `UPDATE futures_bars SET contract = 'RTYM6'
+            WHERE symbol = 'RTY' AND ts = '2026-04-05T22:00:00Z'`,
+        );
+      };
+
+      expect(await runThin()).toBe(1);
+
+      expect(errored()).toMatch(
+        /apply failed: day 2026-04-05: verify failed for RTY 2026-04-05.*value check/s,
+      );
+      const mid = await table(pg);
+      expect(mid.get('RTY 2026-04-05T22:00:00Z')?.contract).toBe('RTYM6'); // kept
+      expect(mid.has('CL 2026-04-05T22:00:00Z')).toBe(false); // the others went
+      expect(existsSync(markerPath(workDir, '2026-04-05'))).toBe(false);
+    });
+
+    it('takes a backup line written before the contract was read: no key reads as NULL, and the row is not added twice', async () => {
+      const row = (await table(pg)).get('CL 2026-04-06T15:00:00Z');
+      expect(row).toBeDefined();
+      const old = beforeContract(row as TableRow);
+      mkdirSync(workDir, { recursive: true });
+      const seeded = `${JSON.stringify({ op: 'delete', reason: 'thin_root', row: old })}\n`;
+      writeFileSync(backupFile(), seeded);
+
+      expect(await runThin()).toBe(0);
+
+      const text = readFileSync(backupFile(), 'utf8');
+      expect(text.startsWith(seeded)).toBe(true); // the old line is kept as it was
+      expect(text.split('\n').filter((l) => l !== '')).toHaveLength(
+        THIN_DELETES,
+      );
+      expect(parseBackup(text, 'thin-backup')).toHaveLength(THIN_DELETES);
+      expect((await table(pg)).has('CL 2026-04-06T15:00:00Z')).toBe(false);
+    });
+
+    it('refuses, before any write, a backup line without a contract for a bar that has one now', async () => {
+      await pg.query(
+        `UPDATE futures_bars SET contract = 'CLN6'
+          WHERE symbol = 'CL' AND ts = '2026-04-06T15:00:00Z'`,
+      );
+      const before = await table(pg);
+      const row = before.get('CL 2026-04-06T15:00:00Z');
+      const old = beforeContract(row as TableRow);
+      mkdirSync(workDir, { recursive: true });
+      writeFileSync(
+        backupFile(),
+        `${JSON.stringify({ op: 'delete', reason: 'thin_root', row: old })}\n`,
+      );
+
+      expect(await runThin()).toBe(1);
+
+      expect(errored()).toMatch(
+        new RegExp(
+          `already holds id ${row?.id} \\(CL 2026-04-06T15:00:00Z\\) with a different contract: file "null", database "CLN6"`,
+        ),
+      );
+      expect(hooks.writes).toBe(0);
+      expect(await table(pg)).toEqual(before);
+    });
   });
 
   it('fails the day when a delete did not land, instead of marking it done', async () => {

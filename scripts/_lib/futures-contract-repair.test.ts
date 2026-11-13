@@ -7,6 +7,7 @@
  * futures-contract-repair-pglite.test.ts.
  */
 
+import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -38,6 +39,7 @@ import {
   type Manifest,
   type PgBar,
   type PgRow,
+  type PlannedDelete,
   type RebuiltBar,
   type Root,
 } from './futures-contract-repair.js';
@@ -96,6 +98,7 @@ function row(
     sell_volume: null,
     buy_prints: null,
     sell_prints: null,
+    contract: null,
   };
 }
 
@@ -1777,6 +1780,25 @@ describe('thinDayDigest', () => {
     expect(thinDayDigest(a)).not.toBe(
       thinDayDigest(dels('2026-05-05T15:00:00Z', '1', 100.25)),
     );
+  });
+
+  it('keeps the digest a done marker was written with for a bar that has no contract, and changes it for one that has', () => {
+    const [bar] = dels('2026-05-05T15:00:00Z', '1');
+    if (bar == null) throw new Error('no delete planned');
+    // The text of the row before #204 was read: id, ts, four prices in 1e-4 ticks,
+    // the volume and four empty order-flow columns. A 5a marker holds this digest.
+    const before = createHash('sha256')
+      .update(
+        'CL|1|2026-05-05T15:00:00Z|1000000|1010000|990000|1000000|100||||\n',
+      )
+      .digest('hex');
+    expect(thinDayDigest([bar])).toBe(before);
+
+    const withContract: PlannedDelete = {
+      ...bar,
+      row: { ...bar.row, contract: 'CLN6' },
+    };
+    expect(thinDayDigest([withContract])).not.toBe(before);
   });
 });
 

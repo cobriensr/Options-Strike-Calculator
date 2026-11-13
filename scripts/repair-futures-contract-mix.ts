@@ -32,7 +32,14 @@
  *
  * An --apply leaves the dry run's report.txt and delete-list.csv alone (they are
  * what the owner approved) and writes apply-<time>-report.txt and
- * apply-<time>-delete-list.csv.
+ * apply-<time>-delete-list.csv. So does a dry run in a work dir that holds any
+ * {day}.applied marker, under dryrun-<time>-report.txt and
+ * dryrun-<time>-delete-list.csv: after an apply it plans only what is left, and
+ * must not replace the files the apply was approved from.
+ *
+ * A backup line holds the whole futures_bars row, the dated contract (#204)
+ * included, and the delete is guarded by it. A line written before the contract
+ * was read has no such key and reads as NULL.
  *
  * Options:
  *   --dir <dir>        Phase 1 output (default ml/data/futures-contract-repair);

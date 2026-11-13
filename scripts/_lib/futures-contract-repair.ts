@@ -538,6 +538,11 @@ export interface PgRow {
   sell_volume: string | null;
   buy_prints: string | null;
   sell_prints: string | null;
+  /**
+   * The dated contract the bar was built from (migration #204), NULL when unknown.
+   * A backup line written before this column was read has no such key; it reads as NULL.
+   */
+  contract: string | null;
 }
 
 export interface PgBar {
@@ -1316,7 +1321,8 @@ async function readRows(
                  open::text AS open, high::text AS high, low::text AS low,
                  close::text AS close, volume::text AS volume,
                  buy_volume::text AS buy_volume, sell_volume::text AS sell_volume,
-                 buy_prints::text AS buy_prints, sell_prints::text AS sell_prints
+                 buy_prints::text AS buy_prints, sell_prints::text AS sell_prints,
+                 contract::text AS contract
             FROM futures_bars
            WHERE symbol = ${symbol}
              AND ts >= ${isoMinute(fromMs)}::timestamptz
@@ -1397,7 +1403,8 @@ type Sql = ReturnType<typeof getDb>;
  * and COALESCE keeps the database's own value, so a change made to a kept
  * field after the plan was read survives (and fails the verify, instead of
  * being put back). The guard compares the same picked values, so a row that
- * already holds them is not rewritten.
+ * already holds them is not rewritten. A bar whose contract (#204) is no longer
+ * the one the plan read is left alone too, and the verify fails the day.
  */
 function updateStatement(sql: Sql, rows: PlannedUpdate[]) {
   return sql`
@@ -1411,9 +1418,11 @@ function updateStatement(sql: Sql, rows: PlannedUpdate[]) {
                   ${rows.map((u) => pickedValue(u, 'high'))}::numeric[],
                   ${rows.map((u) => pickedValue(u, 'low'))}::numeric[],
                   ${rows.map((u) => pickedValue(u, 'close'))}::numeric[],
-                  ${rows.map((u) => pickedValue(u, 'volume'))}::bigint[])
-           AS r(symbol, ts, open, high, low, close, volume)
+                  ${rows.map((u) => pickedValue(u, 'volume'))}::bigint[],
+                  ${rows.map((u) => u.row.contract)}::text[])
+           AS r(symbol, ts, open, high, low, close, volume, contract)
      WHERE f.symbol = r.symbol AND f.ts = r.ts
+       AND f.contract IS NOT DISTINCT FROM r.contract
        AND (f.open, f.high, f.low, f.close, f.volume)
            IS DISTINCT FROM (COALESCE(r.open, f.open), COALESCE(r.high, f.high),
                              COALESCE(r.low, f.low), COALESCE(r.close, f.close),
@@ -1421,7 +1430,11 @@ function updateStatement(sql: Sql, rows: PlannedUpdate[]) {
     RETURNING f.id`;
 }
 
-/** Deletes a row only while its current values still equal the backed-up ones. */
+/**
+ * Deletes a row only while its current values still equal the backed-up ones,
+ * the contract (#204) included: a bar a writer has since tied to a dated contract
+ * is not the row that was backed up.
+ */
 function deleteStatement(sql: Sql, rows: PlannedDelete[]) {
   return sql`
     DELETE FROM futures_bars f
@@ -1432,11 +1445,13 @@ function deleteStatement(sql: Sql, rows: PlannedDelete[]) {
                   ${rows.map((d) => d.row.high)}::numeric[],
                   ${rows.map((d) => d.row.low)}::numeric[],
                   ${rows.map((d) => d.row.close)}::numeric[],
-                  ${rows.map((d) => d.row.volume)}::bigint[])
-           AS r(id, symbol, ts, open, high, low, close, volume)
+                  ${rows.map((d) => d.row.volume)}::bigint[],
+                  ${rows.map((d) => d.row.contract)}::text[])
+           AS r(id, symbol, ts, open, high, low, close, volume, contract)
      WHERE f.id = r.id AND f.symbol = r.symbol AND f.ts = r.ts
        AND f.open = r.open AND f.high = r.high AND f.low = r.low
        AND f.close = r.close AND f.volume = r.volume
+       AND f.contract IS NOT DISTINCT FROM r.contract
     RETURNING f.id`;
 }
 
@@ -1684,6 +1699,12 @@ export function markerState(
   return { state: 'done' };
 }
 
+/**
+ * The row as one text: the day digest and the verify compare it. The contract is
+ * part of it only when the bar has one, so a row with none (every bar of the
+ * span) keeps the text it had before #204 was read, and a done marker written
+ * then still names the same rows.
+ */
 const canon = (r: PgRow): string =>
   [
     r.id,
@@ -1694,6 +1715,7 @@ const canon = (r: PgRow): string =>
     r.sell_volume,
     r.buy_prints,
     r.sell_prints,
+    ...(r.contract == null ? [] : [r.contract]),
   ].join('|');
 
 /**
@@ -1910,20 +1932,27 @@ export function parseRepairArgs(argv: string[]): RepairArgs {
 
 // ── Run ─────────────────────────────────────────────────────────────────────
 
+/** A done marker of any day is in the work dir: an apply has run here. */
+const hasAppliedMarker = (workDir: string): boolean =>
+  readdirSync(workDir).some((f) => f.endsWith('.applied'));
+
 /**
  * Writes the report and the delete list. The dry run's two files are what the
  * owner approves, so an `--apply` leaves them alone and writes its own copies
  * under names that carry its time: a refused or partial apply plans only the
- * days left and would otherwise overwrite the approved list.
+ * days left and would otherwise overwrite the approved list. So does a dry run
+ * once any day is marked done: it plans only what is left (an empty list after a
+ * full apply), and would otherwise replace the files the apply was approved from.
  */
 function writeReportFiles(
   opts: RepairOptions,
   report: string,
   deletes: PlannedDelete[],
 ): void {
-  const prefix = opts.apply
-    ? `apply-${new Date().toISOString().replace(/[:.]/g, '-')}-`
-    : '';
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  let prefix = '';
+  if (opts.apply) prefix = `apply-${stamp}-`;
+  else if (hasAppliedMarker(opts.workDir)) prefix = `dryrun-${stamp}-`;
   const reportPath = join(opts.workDir, `${prefix}report.txt`);
   const listPath = join(opts.workDir, `${prefix}delete-list.csv`);
   writeFileSync(reportPath, `${report}\n`);
