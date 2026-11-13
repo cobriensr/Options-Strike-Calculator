@@ -8,7 +8,9 @@ control).
 Inputs:
   - docs/tmp/forensic-multi-day/gamma_node_rejection_2026-05-20_v4-vol-crush.csv
   - docs/tmp/forensic-multi-day/aggregate_framework_trades.csv
-  - economic_events table (Neon)
+  - FOMC days: the Fed schedule in ml/src/options_features/calendar.py
+  - CPI and NFP days: economic_events table (Neon); a database error stops
+    the script
 
 Outputs:
   - docs/tmp/forensic-multi-day/calendar_context_findings.md
@@ -17,14 +19,26 @@ Outputs:
 from __future__ import annotations
 
 import os
+import sys
 from collections import defaultdict
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
-from dotenv import load_dotenv
+import psycopg2
+
+from _cli_paths import load_env_file
 
 ROOT = Path(__file__).resolve().parents[1]
+
+# Appended, not inserted first: ml/src has its own enrich_lottery_outcomes.py,
+# which would shadow scripts/enrich_lottery_outcomes.py for later imports.
+ML_SRC = ROOT / 'ml' / 'src'
+if str(ML_SRC) not in sys.path:
+    sys.path.append(str(ML_SRC))
+
+from options_features.calendar import FOMC_DATES  # noqa: E402
+
 TMP_DIR = ROOT / 'docs' / 'tmp' / 'forensic-multi-day'
 MASTER_CSV = TMP_DIR / 'gamma_node_rejection_2026-05-20_v4-vol-crush.csv'
 TRADES_CSV = TMP_DIR / 'aggregate_framework_trades.csv'
@@ -74,49 +88,49 @@ def is_last_business_day_of_month(d: date, n: int = 2) -> bool:
 
 
 def load_calendar_events() -> dict[str, set[date]]:
-    """Pull FOMC / CPI / NFP from economic_events; hardcode pre-DB-cutoff."""
-    load_dotenv(ROOT / '.env.local')
-    fomc: set[date] = set()
-    cpi: set[date] = set()
-    nfp: set[date] = set()
+    """FOMC days from the Fed schedule, CPI and NFP days from economic_events.
 
-    # Known/canonical 2026 dates (pre-DB-cutoff fallbacks).
-    # March FOMC: 2026-03-17/18 (typical 2-day meeting; the decision drops Wed).
-    fomc.update({date(2026, 3, 18), date(2026, 4, 29)})
-    cpi.update({date(2026, 3, 12), date(2026, 4, 10), date(2026, 5, 12)})
-    nfp.update({date(2026, 3, 6), date(2026, 4, 3), date(2026, 5, 8)})
+    FOMC comes from the schedule (owner decision 2026-11-06: is_fomc is the
+    schedule, not the table rows). CPI and NFP match on event_type, because
+    Unusual Whales renamed both events in 2026 and the table holds both eras:
+    CPI was "Consumer price index" until 2026-07-14, then "CPI" and
+    "CPI, Y/Y%"; NFP was "U.S. employment report" until 2026-07-02, then
+    "Employment Report". event_type JOBS also holds the ADP rows, which come
+    out on other days, so the NFP query keeps the name match and drops ADP.
 
+    A missing URL or a database error stops the script: findings built from a
+    calendar with missing days are silently wrong.
+    """
+    load_env_file(ROOT / '.env.local')
+    url = os.environ.get('DATABASE_URL_UNPOOLED') or os.environ.get('DATABASE_URL')
+    if not url:
+        raise SystemExit(
+            'economic_events query failed: DATABASE_URL is not set '
+            '(pull it into .env.local with `vercel env pull .env.local`)'
+        )
+
+    conn = None
     try:
-        import psycopg2  # type: ignore
-        url = os.environ.get('DATABASE_URL_UNPOOLED') or os.environ.get('DATABASE_URL')
-        if url:
-            conn = psycopg2.connect(url)
-            cur = conn.cursor()
-            cur.execute(
-                """
-                SELECT date, event_name FROM economic_events
-                WHERE event_name ILIKE '%FOMC interest-rate decision%'
-                   OR event_name ILIKE '%Powell press conference%'
-                   OR event_name ILIKE '%FOMC meeting statement%'
-                """
-            )
-            for d, _ in cur.fetchall():
-                fomc.add(d)
-            cur.execute(
-                "SELECT date FROM economic_events WHERE event_name ILIKE '%Consumer price index%' AND event_name NOT ILIKE '%Core%'"
-            )
-            for (d,) in cur.fetchall():
-                cpi.add(d)
-            cur.execute(
-                "SELECT date FROM economic_events WHERE event_name ILIKE '%U.S. employment report%'"
-            )
-            for (d,) in cur.fetchall():
-                nfp.add(d)
-            conn.close()
+        conn = psycopg2.connect(url)
+        cur = conn.cursor()
+        cur.execute("SELECT DISTINCT date FROM economic_events WHERE event_type = 'CPI'")
+        cpi = {d for (d,) in cur.fetchall()}
+        cur.execute(
+            """
+            SELECT DISTINCT date FROM economic_events
+            WHERE event_type = 'JOBS'
+              AND event_name ILIKE '%employment report%'
+              AND event_name NOT ILIKE '%ADP%'
+            """
+        )
+        nfp = {d for (d,) in cur.fetchall()}
     except Exception as exc:  # noqa: BLE001
-        print(f'[warn] economic_events query failed: {exc}; using hardcoded only')
+        raise SystemExit(f'economic_events query failed: {exc}') from exc
+    finally:
+        if conn is not None:
+            conn.close()
 
-    return {'fomc': fomc, 'cpi': cpi, 'nfp': nfp}
+    return {'fomc': set(FOMC_DATES), 'cpi': cpi, 'nfp': nfp}
 
 
 def tag_calendar(d: date, opex_set: set[date], cal: dict[str, set[date]]) -> dict[str, object]:
