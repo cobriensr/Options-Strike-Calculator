@@ -6,7 +6,50 @@
  */
 
 import * as Sentry from '@sentry/node';
+import type { Event } from '@sentry/node';
 import { optionalEnv } from './env.js';
+
+const FILTERED = '[Filtered]';
+
+// Request header names that carry credentials.
+const CREDENTIAL_HEADER = /^(authorization|cookie|x-api-key|x-cron-secret)$/i;
+
+// Cookie names (keys of the parsed `request.cookies` object) to filter.
+const SENSITIVE_COOKIE_NAME = /(owner|guest|session|auth|secret|token)/i;
+
+// Secret-named keys in `extra` / `tags`.
+const SECRET_NAMED_KEY = /(secret|token|api[_-]?key|password|auth)/i;
+
+// Span attributes the SDK derives from those headers:
+// `http.request.header.<name>` and `http.response.header.<name>`, with `-`
+// or `_` in the name, plus one `...cookie.<cookie-name>` attribute per
+// cookie. Every response `set-cookie` attribute is covered too.
+const CREDENTIAL_SPAN_ATTRIBUTE =
+  /^http\.(?:request|response)\.header\.(?:authorization|(?:set[-_])?cookie|x[-_]api[-_]key|x[-_]cron[-_]secret)(?:\.|$)/i;
+
+/** Replace the value of every key in `bag` that matches `sensitiveKey`. */
+function filterKeys(bag: unknown, sensitiveKey: RegExp): void {
+  if (typeof bag !== 'object' || bag === null || Array.isArray(bag)) return;
+  const record = bag as Record<string, unknown>;
+  for (const key of Object.keys(record)) {
+    if (sensitiveKey.test(key)) record[key] = FILTERED;
+  }
+}
+
+/** Filter credential attributes on one span (or a transaction's trace context). */
+function scrubSpanData(span: { data?: unknown } | null | undefined): void {
+  if (span) filterKeys(span.data, CREDENTIAL_SPAN_ATTRIBUTE);
+}
+
+/** Scrub credentials from the request, extra and tags of any event type. */
+function scrubEvent(event: Event): void {
+  filterKeys(event.request?.headers, CREDENTIAL_HEADER);
+  // The parsed `request.cookies` object is separate from the raw Cookie
+  // header, so it is scrubbed by key as well.
+  filterKeys(event.request?.cookies, SENSITIVE_COOKIE_NAME);
+  filterKeys(event.extra, SECRET_NAMED_KEY);
+  filterKeys(event.tags, SECRET_NAMED_KEY);
+}
 
 Sentry.init({
   dsn: optionalEnv('SENTRY_DSN'),
@@ -14,38 +57,21 @@ Sentry.init({
   serverName: 'api',
   tracesSampleRate: process.env.NODE_ENV === 'production' ? 0.25 : 1,
   enabled: process.env.VERCEL_ENV === 'production',
+  // The SDK runs beforeSendSpan on the root span and on every child span,
+  // then beforeSendTransaction on the whole transaction. Scrub in all three
+  // so no event type bypasses the filter.
+  beforeSendSpan(span) {
+    scrubSpanData(span);
+    return span;
+  },
+  beforeSendTransaction(event) {
+    scrubEvent(event);
+    scrubSpanData(event.contexts?.trace);
+    for (const span of event.spans ?? []) scrubSpanData(span);
+    return event;
+  },
   beforeSend(event) {
-    // Strip Authorization / Cookie / api-key / cron-secret headers
-    if (event.request?.headers) {
-      for (const key of Object.keys(event.request.headers)) {
-        if (/^(authorization|cookie|x-api-key|x-cron-secret)$/i.test(key)) {
-          event.request.headers[key] = '[Filtered]';
-        }
-      }
-    }
-    // The Node SDK separately captures `request.cookies` as a parsed
-    // object — the `sc-owner` (= OWNER_SECRET) and `sc-guest` values land
-    // there even after the raw Cookie header is filtered above. Scrub by
-    // key so the owner secret / guest keys never reach Sentry.
-    const cookies = event.request?.cookies;
-    if (cookies && typeof cookies === 'object' && !Array.isArray(cookies)) {
-      for (const key of Object.keys(cookies)) {
-        if (/(owner|guest|session|auth|secret|token)/i.test(key)) {
-          (cookies as Record<string, unknown>)[key] = '[Filtered]';
-        }
-      }
-    }
-    // Strip secret-named keys from extra / tags context
-    const scrubObject = (obj: Record<string, unknown> | undefined) => {
-      if (!obj) return;
-      for (const key of Object.keys(obj)) {
-        if (/(secret|token|api[_-]?key|password|auth)/i.test(key)) {
-          obj[key] = '[Filtered]';
-        }
-      }
-    };
-    scrubObject(event.extra);
-    scrubObject(event.tags as Record<string, unknown> | undefined);
+    scrubEvent(event);
 
     // Collapse upstream UW 5xx errors into one Sentry issue per status
     // code. uwFetch() throws `Error("UW API <status>: <body>")` and the
