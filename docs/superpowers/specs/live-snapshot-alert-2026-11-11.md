@@ -1,7 +1,7 @@
 # Live snapshot alert
 
-**Date:** 2026-11-11 · **Status:** Tasks 1-2 shipped 2026-11-12; Task 3 (owner
-amendment, 2026-11-12) in progress
+**Date:** 2026-11-11 · **Status:** Tasks 1-3 shipped 2026-11-12 (Task 3 as
+91a117f5); Tasks 4-6 in progress
 
 ## Goal
 
@@ -55,6 +55,38 @@ computers do. A per-browser switch in the app overrides the default either
 way. Past-date and backtest saves are not affected. Trade-off the owner
 accepted: a second computer left open also counts.
 
+**Fourth amendment (owner, 2026-11-12 ~17:40 CT): only the last tab's close
+counts.** With two or more calculator tabs open, closing one of them while
+another stays open is not closing the app. Example: two tabs stop saving at
+1:00 PM, one is closed at 1:10 PM; the alert still comes at about 1:30-1:45,
+because the other tab is open.
+
+**Fifth amendment (owner, 2026-11-12 ~17:55 CT): a reload never silences the
+alert.** `pagehide` also fires on a reload, including the automatic update's
+reload (`pwa-auto-update-2026-11-11.md`). If the reloaded page never saves
+again (a bad build, a sign-out), the reload's close marker must not hide that.
+
+How both are met (controller ruling, 2026-11-12): **open tabs withdraw the
+close.** Every live-save tab tells the server it is open, with
+`DELETE /api/snapshot-close` (owner-only): at load, again 30 s later, every 5
+minutes during the cash session, and when the page comes back from the
+back/forward cache. Each one deletes today's close marker. So:
+
+- a reload sends the close, and the new page's open signal deletes it within
+  seconds (the +30 s signal covers a close that reaches the server after the
+  first open signal); if the new page then fails to save, the stall alerts;
+- closing one of several tabs: another tab's next open signal (at most
+  5 minutes later) deletes the close;
+- closing the last tab: no tab is left to delete it, so the close stands;
+- a tab that crashed or that Chrome froze sends nothing, so it can neither
+  close nor keep the app "open".
+
+The cron is unchanged: it already treats a missing marker as no close. A page
+so broken that no script runs sends no open signal, so a reload into it can
+still hide a stall; Sentry's frontend errors and the deploy check cover that
+case. An open signal from the closing tab itself that lands after its own
+close deletes the close, which errs toward an extra alert.
+
 ## Thresholds / constants
 
 | Name | Value | Why |
@@ -66,6 +98,8 @@ accepted: a second computer left open also counts.
 | `CLAIM_TTL_SEC` | 24 h | The claim only has to outlive one day's window (under 6 h). |
 | `PUSH_TTL_SEC` | 1 h | A late delivery is still useful within the session; the claim blocks a retry once the push service accepted it. |
 | Sentry monitor `failureIssueThreshold` | 2 | One lost completion check-in should not page; two in a row page within 30 min, and a run that reaches no device errors on consecutive ticks. |
+| Open signal cadence | every 5 min in the cash session | A closed sibling tab's close is withdrawn within 5 min, well inside the 30-min stale threshold; about 80 requests a day per open tab. |
+| Second open signal | 30 s after load | Covers a reload's close beacon that reaches the server after the new page's first open signal. |
 
 Example: saves stop at 11:10 AM CT. The 11:30 check sees a 20-minute gap (no
 push). The 11:45 check sees 35 minutes and pushes "Last live snapshot 11:10 AM
@@ -93,7 +127,8 @@ only today's rows are read and the old inverted flag does not matter.
   Tasks 1-2 keyed per day).
 - New Vercel cron: `/api/cron/check-live-snapshots`.
 - Task 3: a new owner-only endpoint, `POST /api/snapshot-close`, and one Redis
-  key per day, `snapshot-app-closed:{date}` (24 h expiry).
+  key per day, `snapshot-app-closed:{date}` (24 h expiry). Task 5 adds
+  `DELETE` on the same endpoint, which deletes that key.
 
 ## Open questions (defaults picked)
 
@@ -117,8 +152,11 @@ only today's rows are read and the old inverted flag does not matter.
    amendment.
 4. **Client: which browser saves live snapshots** (Task 4; 4 files). The
    device default and the per-browser switch, not yet wired into saving.
-5. **Client: gate live saves on the device, send the close signal** (Task 5;
-   3 files). Needs Task 3's endpoint and Task 4's helper.
+5. **Server: open tabs withdraw the close** (Task 5; 4 files + 1 doc).
+   `DELETE /api/snapshot-close`, and the close key prefix shared by the
+   endpoint and the cron. Shippable alone: nothing calls it yet.
+6. **Client: gate live saves on the device, send the open and close
+   signals** (Task 6; 5 files). Needs Tasks 4 and 5.
 
 ## Files
 
@@ -136,7 +174,12 @@ only today's rows are read and the old inverted flag does not matter.
   `src/__tests__/live-save-device.test.ts` (new), the settings surface that
   hosts the switch (likely `src/components/PanelPrefsModal/PanelPrefsModal.tsx`)
   and its test.
-- Task 5: `src/hooks/useSnapshotSave.ts`,
+- Task 5: `api/snapshot-close.ts`, `api/__tests__/snapshot-close.test.ts`,
+  `api/_lib/constants.ts`, `api/cron/check-live-snapshots.ts`,
+  `docs/ARCHITECTURE.md`.
+- Task 6: `src/lib/live-session-signal.ts` (new),
+  `src/__tests__/live-session-signal.test.ts` (new),
+  `src/hooks/useSnapshotSave.ts`,
   `src/__tests__/hooks/useSnapshotSave.test.ts`, `src/main.tsx`.
 
 ## Global Constraints
@@ -211,6 +254,10 @@ returned); `undeliveredReason` for each of the three cases. Mock
 the reminder file no longer contains its own Lua script or release function.
 
 ## Task 2: The `check-live-snapshots` cron
+
+> Shipped as written; Task 3 superseded the per-day claim key and tag, the
+> "alert already sent today" message and the "since the open" body (no live
+> row now sends nothing). Read Task 3 for the current behavior.
 
 **Goal:** the alert described at the top of this doc.
 
@@ -409,39 +456,112 @@ not wired into saving yet; Task 5 does that. Files:
 
 **Acceptance:** `npm run review` green.
 
-## Task 5: Client — gate live saves on the device, send the close signal
+## Task 5: Server — open tabs withdraw the close
 
-**Goal:** only a live-save device saves live rows and sends the close signal.
-Files: `src/hooks/useSnapshotSave.ts`,
-`src/__tests__/hooks/useSnapshotSave.test.ts`, `src/main.tsx`.
+**Goal:** the server half of the fourth and fifth amendments, plus the code
+review's shared-key finding on Task 3. Files: `api/snapshot-close.ts`,
+`api/__tests__/snapshot-close.test.ts`, `api/_lib/constants.ts`,
+`api/cron/check-live-snapshots.ts`, `docs/ARCHITECTURE.md`. Skills:
+`backend-development`, `test-master`, `cc-skill-security-review`.
+
+- **`DELETE /api/snapshot-close`: "a tab of the app is open".** Same order as
+  POST: method gate (POST or DELETE, else 405), `guardOwnerEndpoint`, then
+  `rejectIfRateLimited(req, res, 'snapshot-close', 30)` (one bucket for both
+  methods; a tab sends about one open signal every 5 minutes). Then
+  `redis.del` today's key and answer 204 with `Cache-Control: no-store`. No
+  body, no query: the server picks the key. Deleting a missing key is a 204
+  too (idempotent). A Redis error is a 500 with a Sentry capture, like POST.
+- Header comment (R6): add the delete. It is idempotent, needs no fence and
+  races only with a close; whichever lands last wins, and the client's +30 s
+  open signal settles the reload race (Decisions). A lost delete leaves a
+  close standing until the next open signal or save.
+- **One key prefix** (Task 3 code review, F1): add
+  `export const SNAPSHOT_CLOSED_KEY_PREFIX = 'snapshot-app-closed';` to
+  `api/_lib/constants.ts`, with a comment naming the writer
+  (`api/snapshot-close.ts`) and the reader (`api/cron/check-live-snapshots.ts`).
+  Both import it and drop their local constants. Both test files keep their
+  literal `snapshot-app-closed:{date}` pins.
+- `docs/ARCHITECTURE.md`: add the endpoint (POST and DELETE, owner, Redis,
+  30/min) to the endpoint table and the rate-limit table, next to
+  `POST /api/snapshot`.
+- Tests (`api/__tests__/snapshot-close.test.ts`, written first): owner DELETE →
+  204, `del` with today's ET key and no `set`; DELETE with no marker → 204;
+  guest, no cookie, wrong cookie → 401 and no `del`; bot → 403; POST and
+  DELETE share the limiter (30 mixed requests allowed, the 31st → 429 with no
+  write); `del` rejects → 500, Sentry capture, error log; GET and PUT → 405.
+  The cron test needs no change.
+- Commits: `refactor` for the shared prefix, then `feat` for DELETE (with
+  its tests and the ARCHITECTURE.md rows).
+
+**Acceptance:** `npm run review` green.
+
+## Task 6: Client — gate live saves on the device, send the open and close signals
+
+**Goal:** only a live-save device saves live rows, and it tells the server
+when the app closes and while it stays open. Files:
+`src/lib/live-session-signal.ts` (new),
+`src/__tests__/live-session-signal.test.ts` (new),
+`src/hooks/useSnapshotSave.ts`,
+`src/__tests__/hooks/useSnapshotSave.test.ts`, `src/main.tsx`. Skills:
+`react-expert`, `test-master`, `progressive-web-app`.
 
 - **Gate live saves.** In `useSnapshotSave`, a live save (today, with live
   quotes) posts only when `isLiveSaveDevice()` (Task 4) is true. Past-date and
-  backtest saves are unchanged. Subscribe to the switch so flipping it takes
-  effect without a reload.
-- **Close signal.** While the hook is `enabled` and `isLiveSaveDevice()` is
-  true, register a `pagehide` listener in an effect with cleanup (R1). On
-  `pagehide`, call `navigator.sendBeacon('/api/snapshot-close')`. If
-  `sendBeacon` is missing or returns false, fall back to
-  `fetch('/api/snapshot-close', { method: 'POST', keepalive: true })` with the
-  rejection swallowed. The page is going away, so nothing can be reported.
-- `pagehide` fires on a tab or window close, a reload and navigating away. A
-  reload's marker is overtaken by the next save, so it never hides a stall.
-  Use `pagehide`, not `beforeunload` or `unload`: `pagehide` is the one that
-  fires reliably and doesn't block the back/forward cache. Don't use
-  `visibilitychange`, because hiding a tab is not closing it.
-- `src/main.tsx`: add `{ path: '/api/snapshot-close', method: 'POST' }` to
-  the `initBotId` `protect` list, next to `/api/snapshot` (CLAUDE.md rule for
-  any endpoint that calls `checkBot`).
-- Tests:
-  - owner, enabled and a live-save device → a `pagehide` event sends one
-    beacon to `/api/snapshot-close`;
-  - not a live-save device (mock `isLiveSaveDevice` false) → no live save
-    and no beacon, while a past-date save still posts;
-  - disabled (a guest, or nothing to save) → no beacon;
-  - `sendBeacon` returning false → the keepalive fetch;
-  - flipping the switch on re-enables live saves without a remount;
-  - unmount removes the listener (a later `pagehide` sends nothing).
+  backtest saves are unchanged. Subscribe to the switch
+  (`subscribeLiveSaveDevice`, e.g. through `useSyncExternalStore`) so flipping
+  it takes effect without a reload.
+- **`src/lib/live-session-signal.ts`:** `startLiveSessionSignals(): () => void`,
+  called once from `src/main.tsx` next to `startTabAgreement`, outside React,
+  so a render failure in the new build doesn't stop the open signal. It is
+  active only while the visitor is the owner (check how the client knows this
+  at startup, `getAccessMode()` in `src/utils/auth.ts`, and subscribe if it can
+  change) and `isLiveSaveDevice()` is true (re-checked on
+  `subscribeLiveSaveDevice`). The stop function removes every listener and
+  timer (R1).
+  - **Open signal:** `fetch('/api/snapshot-close', { method: 'DELETE' })`
+    when it becomes active, 30 s later, every 5 minutes, and on `pageshow`
+    with `event.persisted` (back/forward cache). Each one is sent only inside
+    the cash session (ET trading day, open ≤ now < the day's close, with the
+    `src/data/marketHours.ts` helpers the PWA policy uses), per the CLAUDE.md
+    rule that polling gates on market hours. A 401 is silent (the owner
+    cookie is gone). Any other failure is captured once per page at warning
+    level with tag `{ context: 'live_session_open_signal' }`: a lost open
+    signal can let a close stand.
+  - **Close signal:** on `pagehide`, `navigator.sendBeacon('/api/snapshot-close')`
+    (POST, no body). If `sendBeacon` is missing or returns false, fall back to
+    `fetch('/api/snapshot-close', { method: 'POST', keepalive: true })` with the
+    rejection swallowed: the page is going away, so nothing can be reported.
+    Not gated on the session: a close outside it is harmless.
+  - Use `pagehide`, not `beforeunload` or `unload`: `pagehide` fires reliably
+    and doesn't block the back/forward cache. Don't use `visibilitychange`:
+    hiding a tab is not closing it. `pagehide` also fires on a reload; the
+    reloaded page's open signals withdraw that close (fifth amendment).
+- `src/main.tsx`: call `startLiveSessionSignals()`, and add
+  `{ path: '/api/snapshot-close', method: 'POST' }` and
+  `{ path: '/api/snapshot-close', method: 'DELETE' }` to the `initBotId`
+  `protect` list next to `/api/snapshot` (CLAUDE.md rule for any endpoint
+  that calls `checkBot`). The botid client patches fetch and XHR, not
+  `sendBeacon`; the beacon passes because `checkBot` skips a valid owner
+  cookie. Keep the endpoint owner-only.
+- Tests, with fake timers and `isLiveSaveDevice` / the auth check mocked at
+  the module boundary (R3):
+  - owner, live-save device, in the session: an open signal at start, at
+    +30 s, then every 5 minutes; none after stop;
+  - outside the session (before the open, after the close, a Saturday, a
+    holiday): no open signal; the first tick inside the session sends one;
+  - not a live-save device, or not the owner: no open signal and no beacon;
+  - the switch flips off → no more signals and no beacon; flips on → an open
+    signal at once (if in the session);
+  - `pagehide` → one beacon to `/api/snapshot-close`; `sendBeacon` false or
+    missing → the keepalive POST;
+  - `pageshow` persisted → an open signal; not persisted → none;
+  - an open signal answered 401 → nothing reported; 500 or a network error →
+    one warning per page with the tag;
+  - a reload (a `pagehide`, then a fresh start) → the beacon, then the
+    DELETE;
+  - the hook: not a live-save device → no live save while a past-date save
+    still posts; flipping the switch on re-enables live saves without a
+    remount.
 
   Existing save tests stay unchanged, apart from mocking `isLiveSaveDevice`
   to true at the module boundary (R3).
