@@ -15,6 +15,12 @@
  * - the pre-market Globex numbers: the high, low, close or volume of any bar in
  *   the overnight window.
  *
+ * A front-month repair (Phase 6, futures-derived-front-month.ts) also fills
+ * minutes that had no bar. A filled bar is an input that did not exist when a
+ * value was saved, so it counts like a changed one: its close, volume and window
+ * are touched, and the series before the repair does not have it. Nothing in the
+ * affected-field rules below needed to change for it.
+ *
  * The input bars are found with the rule `computeSnapshot` uses today
  * (api/_lib/futures-derive.ts), whose three constants are imported, not
  * copied. The rule itself is repeated here because computeSnapshot returns only
@@ -62,7 +68,12 @@ const backupLineSchema = z.object({
 
 export interface BackupBar extends Bar {
   symbol: string;
-  op: 'update' | 'delete';
+  /**
+   * `fill` is only in a front-month repair backup (futures-derived-front-month.ts):
+   * a bar the repair added where none was stored. Its values are the bar's own,
+   * as written; there is no earlier row.
+   */
+  op: 'update' | 'delete' | 'fill';
 }
 
 /** Every line of a Phase 2 backup JSONL; a bad line throws with `label:line`. */
@@ -180,6 +191,14 @@ export function buildRepair(
       windowTouched.push(old.tsMs);
       continue;
     }
+    if (old.op === 'fill') {
+      // A bar that did not exist when a saved value was computed: as an input
+      // it is new, whatever it holds. It is not a deleted bar, nothing was lost.
+      closeChanged.add(old.tsMs);
+      volumeTouched.push(old.tsMs);
+      windowTouched.push(old.tsMs);
+      continue;
+    }
     const now = current.get(old.tsMs);
     if (now == null) {
       // Updated by Phase 2 but gone now: as good as deleted.
@@ -246,6 +265,11 @@ export function buildPreSeries(
     ]),
   );
   for (const old of backup) {
+    if (old.op === 'fill') {
+      // It did not exist before the repair.
+      byTs.delete(old.tsMs);
+      continue;
+    }
     const now = byTs.get(old.tsMs);
     const closeNow = now?.closeNow ?? null;
     let repair: PreBar['repair'] = null;
@@ -582,6 +606,10 @@ export function preRepairWindow(
   const byTs = new Map<number, Bar>(now.map((b) => [b.tsMs, b]));
   for (const old of backup) {
     if (old.tsMs < fromMs || old.tsMs >= toMs) continue;
+    if (old.op === 'fill') {
+      byTs.delete(old.tsMs);
+      continue;
+    }
     byTs.set(old.tsMs, {
       tsMs: old.tsMs,
       high: old.high,

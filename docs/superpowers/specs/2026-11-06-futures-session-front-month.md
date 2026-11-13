@@ -441,6 +441,34 @@ Steps:
   - one step per roll, at a session open;
   - none of the known flips (CL 09-07, RTY 09-14, CL 09-30, 10-29, 11-05).
 
+### Phase 6b: recompute the stores derived from the repaired bars (medium; added 2026-11-13, owner OK)
+
+**Why.** Phase 6 changed bars that three stores had already read, and their writers only compute "now":
+- **`futures_snapshots`:** on the symbol-days Phase 6 changed, 12,943 of 15,255 rows no longer match the bars. Roll-day rows were priced from the other contract (ES/NQ/RTY 09-14, CL 08-19/20, 09-18, 10-16, ZN 08-28 → 09-03). Rows on days whose bars were missing then (08-06 → 08-16, GC 07-28 → 09-03) were frozen on the last price before the gap; the fills make them recomputable now.
+- **`market_snapshots.pre_market_data`:** the auto-filled 08-06 and 08-11 rows were computed from about 2 hours of overnight ES bars.
+- **`ws_gamma_setup_fires`:** no change. The 17 fires on 09-14 have a NULL ES basis because ES bars were absent at the time; NULL fires are never read or written.
+
+On days Phase 6 didn't touch, another 2,324 rows differ (late bars, the September outage). They are older drift, not this repair, and stay as they are.
+
+**Approach.** Extend `scripts/recompute-futures-derived.ts`, which recomputed these stores for the April–June repair, with a second repair profile, `--repair front-month`, rather than writing a parallel tool. Design: `.superpowers/sdd/2026-11-06-futures-session-front-month/phase-6b-design.md` (local).
+- **Profile:**
+  - span 2026-07-28 → 11-12 (UTC days);
+  - rows written from 2026-11-13 05:16Z on read repaired bars;
+  - the Phase 6 backup, its run id and its action totals are pinned.
+- **Backup reader:** a fill is a new input bar, a delete removes one, a rewrite changes one, and a tag changes no value.
+- **Scope:** the snapshot scope reaches 20 days past the last changed bar (the volume window), clamped to the write run's end.
+- **Control:** the method control sets aside, in each control row, only the fields whose inputs Phase 6 changed (the write rules decide).
+- **Refused under this profile:** the April–June steps (stale-at-write, detector days, frozen-stale).
+- **Defaults:** with no flag the tool behaves exactly as it does now.
+
+Files: `scripts/_lib/futures-derived-recompute.ts`, `scripts/_lib/futures-derived-attribution.ts`, new `scripts/_lib/futures-derived-front-month.ts`, `scripts/recompute-futures-derived.ts`, new `scripts/_lib/futures-derived-front-month.test.ts` (attribution, profile, backup reader), `scripts/_lib/futures-derived-front-month-run.test.ts` (arguments, scope, control set-aside, refusals before a read) and `scripts/_lib/futures-derived-front-month-pglite.test.ts`; the three new files are listed in `tsconfig.scripts.json`.
+
+Steps:
+- [x] Wait for the `futures-repair-land` session's unpushed recompute commits to reach main, then re-check the design against the current tool (landed 2026-11-13 08:29Z; design re-checked at 140af58f).
+- [ ] Failing tests, implement, gate, review, commit. The existing recompute tests stay green, unedited.
+- [ ] Dry run: the counts per store and root, the control, and the rows left as drift. Show the owner.
+- [ ] Apply on the owner's OK, outside market hours. Then a second dry run plans 0.
+
 ### Phase 7: docs and memory (small)
 
 - [ ] Results section here; mark the Sept plan's finding resolved.
