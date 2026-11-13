@@ -65,6 +65,8 @@ const OAUTH_CODE = fake('oauth-code');
 const OAUTH_STATE = fake('oauth-state');
 const ACCOUNT_HASH = fake('account-hash');
 const REFERER_TOKEN = fake('referer-token');
+const FORWARDED_AUTH = fake('forwarded-authorization');
+const QUERY_BYPASS = fake('query-bypass');
 const FAKE_SECRETS = [
   OWNER,
   GUEST,
@@ -86,6 +88,8 @@ const FAKE_SECRETS = [
   OAUTH_STATE,
   ACCOUNT_HASH,
   REFERER_TOKEN,
+  FORWARDED_AUTH,
+  QUERY_BYPASS,
 ];
 
 // A page URL the client sends as its referer, with a secret query parameter.
@@ -102,6 +106,7 @@ const CREDENTIAL_ATTRIBUTES = {
   'http.request.header.x-cron-secret': CRON,
   'http.request.header.x-internal-notify-secret': NOTIFY,
   'http.request.header.x-takeit-auth': TAKEIT_AUTH,
+  'http.request.header.x-forwarded-authorization': FORWARDED_AUTH,
   'http.request.header.x_vercel_protection_bypass': BYPASS,
   'http.request.header.referer': REFERER,
   'http.response.header.set_cookie': [SET_COOKIE],
@@ -110,10 +115,10 @@ const CREDENTIAL_ATTRIBUTES = {
   'http.request.body.data': JSON.stringify({ key: BODY_KEY }),
 };
 
-// An outgoing call whose URL carries two secret parameters and one harmless
+// An outgoing call whose URL carries three secret parameters and one harmless
 // one. The attribute names are the ones the SDK records for a fetch span and
 // for an http breadcrumb.
-const UPSTREAM_QUERY = `api_key=${QUERY_API_KEY}&from=2026-01-01&token=${QUERY_TOKEN}`;
+const UPSTREAM_QUERY = `api_key=${QUERY_API_KEY}&from=2026-01-01&token=${QUERY_TOKEN}&x-vercel-protection-bypass=${QUERY_BYPASS}`;
 const UPSTREAM_URL = `https://upstream.example.test/v1/data?${UPSTREAM_QUERY}`;
 const FETCH_SPAN_ATTRIBUTES = {
   'url.full': UPSTREAM_URL,
@@ -173,6 +178,7 @@ async function withFakeRequest(work: () => void | Promise<void>) {
           'x-cron-secret': CRON,
           'x-internal-notify-secret': NOTIFY,
           'x-takeit-auth': TAKEIT_AUTH,
+          'x-forwarded-authorization': FORWARDED_AUTH,
           'x-vercel-protection-bypass': BYPASS,
           referer: REFERER,
           accept: HARMLESS_MARKER,

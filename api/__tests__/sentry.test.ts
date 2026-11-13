@@ -455,6 +455,11 @@ describe('Sentry.init beforeSendTransaction and beforeSendSpan', () => {
     'http.request.header.proxy-authorization': 'FAKE-PROXY-HYPHEN',
     'http.request.header.proxy_authorization': 'FAKE-PROXY-UNDERSCORE',
     'http.request.header.Proxy-Authorization': 'FAKE-PROXY-MIXED-CASE',
+    // Any `*-authorization` header, not only the two standard ones.
+    'http.request.header.x-forwarded-authorization': 'FAKE-FORWARDED-HYPHEN',
+    'http.request.header.x_original_authorization': 'FAKE-ORIGINAL-UNDERSCORE',
+    'http.request.header.X_Original_Authorization': 'FAKE-ORIGINAL-MIXED-CASE',
+    'http.request.header.authorization_scheme': 'FAKE-SCHEME-UNDERSCORE',
     'http.request.header.x-api-key': 'FAKE-API-KEY-HYPHEN',
     'http.request.header.x_api_key': 'FAKE-API-KEY-UNDERSCORE',
     'http.request.header.x-apikey': 'FAKE-APIKEY-JOINED',
@@ -507,8 +512,9 @@ describe('Sentry.init beforeSendTransaction and beforeSendSpan', () => {
     'http.response.header.cache_control': 'no-store',
     'http.request.header.cookie_policy': 'strict',
     'http.request.header.cookie-policy': 'strict',
-    'http.request.header.authorization_scheme': 'bearer',
     'http.response.header.www_authenticate': 'Bearer realm="api"',
+    'http.response.header.proxy_authenticate': 'Basic realm="proxy"',
+    'http.response.header.authentication_info': 'nextnonce="fake"',
     'http.request.header.x_author': 'fake-author',
     'http.request.header.x_monkey': 'fake-monkey',
     'http.request.header.x_keyword': 'fake-keyword',
@@ -700,15 +706,21 @@ describe.each([
   const scrub = (request: Obj): Obj =>
     (hook!({ request }) as Obj).request as Obj;
 
-  // Only the four standard credential headers match by exact name. Any other
-  // name is filtered when it contains a credential word anywhere (api key,
-  // secret, token, bypass, session, password, jwt, bearer, credential,
+  // Only `cookie` and `set-cookie` match by exact name. Any other name is
+  // filtered when it contains a credential word anywhere (authorization, api
+  // key, secret, token, bypass, session, password, jwt, bearer, credential,
   // signature) or `auth` / `key` as a whole word.
   it.each([
     'authorization',
     'Proxy-Authorization',
     'cookie',
     'Set-Cookie',
+    // Any `*-authorization` header carries an Authorization value.
+    'x-forwarded-authorization',
+    'X-Original-Authorization',
+    'x_original_authorization',
+    'authorization-scheme',
+    'authorization_scheme',
     'x-api-key',
     'X-API-KEY',
     'x_api_key',
@@ -757,11 +769,13 @@ describe.each([
     'x-forwarded-for',
     'x-request-id',
     'sec-fetch-site',
-    // Start like a credential header but are not one: `authorization` is
-    // matched by exact name only, and `auth` / `key` only as whole words.
+    // Start like a credential header but are not one: `cookie` is matched by
+    // exact name only, `auth` / `key` only as whole words, and the
+    // authentication challenge headers carry no secret.
     'cookie-policy',
-    'authorization-scheme',
     'www-authenticate',
+    'proxy-authenticate',
+    'authentication-info',
     'x-author',
     'x-monkey',
     'x-keyword',
@@ -1018,6 +1032,16 @@ describe('query-string secret redaction', () => {
       'accessKey',
       'x-key',
       'api%5Fkey',
+      // Credential words that match anywhere in the name, like the header
+      // words: a bypass token and a pre-signed URL's signature and credential.
+      'x-vercel-protection-bypass',
+      'bypass',
+      'X-Amz-Signature',
+      'signature',
+      'X-Amz-Credential',
+      'credential',
+      'jwt',
+      'bearer',
       // The OAuth callback parameters, by exact name in any case.
       'code',
       'state',
@@ -1048,6 +1072,11 @@ describe('query-string secret redaction', () => {
       'postcode',
       'codec',
       'sessions',
+      // The rest of a pre-signed URL stays readable.
+      'X-Amz-Algorithm',
+      'X-Amz-Date',
+      'X-Amz-Expires',
+      'X-Amz-SignedHeaders',
       'to%ZZken',
     ])('keeps the value of the %s parameter', (name) => {
       const result = beforeSendSpan!({

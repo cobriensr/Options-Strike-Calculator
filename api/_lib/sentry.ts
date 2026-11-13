@@ -11,18 +11,20 @@ import { optionalEnv } from './env.js';
 
 const FILTERED = '[Filtered]';
 
-// The four standard credential headers, matched by exact name.
-const STANDARD_CREDENTIAL_HEADER =
-  /^(?:authorization|proxy[-_]authorization|cookie|set[-_]cookie)$/i;
+// The two cookie headers, matched by exact name: `cookie-policy` is a
+// different header.
+const COOKIE_HEADER = /^(?:cookie|set[-_]cookie)$/i;
 
 // Credential words that mark a header name wherever they sit in it
-// (`x-internal-notify-secret`, `x-vercel-protection-bypass`, `x-session-id`).
+// (`x-forwarded-authorization`, `x-internal-notify-secret`,
+// `x-vercel-protection-bypass`, `x-session-id`).
 const CREDENTIAL_HEADER_WORD =
-  /api[-_]?key|secret|token|bypass|session|passw(?:or)?d|jwt|bearer|credential|signature/i;
+  /authorization|api[-_]?key|secret|token|bypass|session|passw(?:or)?d|jwt|bearer|credential|signature/i;
 
 // `auth` and `key` mark a header name only as a whole word between `-`, `_`
-// or `.` (`x-takeit-auth`, `x-auth-key`, `x-key`), so `authorization-scheme`,
-// `www-authenticate`, `x-author` and `x-monkey` are kept.
+// or `.` (`x-takeit-auth`, `x-auth-key`, `x-key`), so `www-authenticate`,
+// `proxy-authenticate`, `authentication-info`, `x-author` and `x-monkey` are
+// kept.
 const CREDENTIAL_HEADER_WHOLE_WORD = /(?:^|[-_.])(?:auth|key)(?:$|[-_.])/i;
 
 // The referer is a URL the client chose, so its query and path are redacted
@@ -43,12 +45,13 @@ const HEADER_SPAN_ATTRIBUTE = /^http\.(?:request|response)\.header\.([^.]*)/i;
 // The request body the SDK copies onto the root span.
 const BODY_SPAN_ATTRIBUTE = /^http\.request\.body\.data$/i;
 
-// Query parameter names that carry credentials. `token`, `secret`, `password`
-// and the api-key spellings match anywhere in the name; `key` alone matches
-// only as a whole word (`key`, `access_key`, `x-key`), so `monkey` and
-// `keyword` are kept.
+// Query parameter names that carry credentials. `token`, `secret`, `password`,
+// the api-key spellings and the bypass, signature, jwt, bearer and credential
+// words match anywhere in the name (`x-vercel-protection-bypass`,
+// `X-Amz-Signature`); `key` alone matches only as a whole word (`key`,
+// `access_key`, `x-key`), so `monkey` and `keyword` are kept.
 const SECRET_QUERY_PARAM =
-  /token|secret|password|api[-_]?key|(?:^|[-_.])key(?:$|[-_.])/i;
+  /token|secret|password|api[-_]?key|bypass|signature|jwt|bearer|credential|(?:^|[-_.])key(?:$|[-_.])/i;
 
 // The OAuth callback parameters, matched by their exact name only.
 const OAUTH_QUERY_PARAM = /^(?:code|state|session)$/i;
@@ -83,7 +86,7 @@ function filterKeys(
 /** True for a header name that carries a credential. */
 function isCredentialHeader(name: string): boolean {
   return (
-    STANDARD_CREDENTIAL_HEADER.test(name) ||
+    COOKIE_HEADER.test(name) ||
     CREDENTIAL_HEADER_WORD.test(name) ||
     CREDENTIAL_HEADER_WHOLE_WORD.test(name)
   );
