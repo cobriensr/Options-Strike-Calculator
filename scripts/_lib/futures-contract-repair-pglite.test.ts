@@ -677,6 +677,89 @@ describe('--apply on real SQL (pglite)', () => {
     );
   });
 
+  // A later dry run over one day plans (and reports) something other than the
+  // approved all-days one, so a replaced report.txt would differ byte for byte.
+  const laterDryRun = (): Promise<number> => {
+    vi.setSystemTime(new Date('2026-11-08T12:05:00Z'));
+    return run({ apply: false, dates: ['2026-04-07'] });
+  };
+  const dryRunFiles = (): string[] =>
+    readdirSync(workDir).filter((f) => f.startsWith('dryrun-'));
+
+  // An apply that fails on its first day marks no day done: what it leaves is
+  // the backup it took before that write (and its apply-<time>- report).
+  it('writes a dry run under dryrun-<time>- names after an --apply that failed on its first day', async () => {
+    await run({ apply: false });
+    const report = readFileSync(join(workDir, 'report.txt'));
+    const list = readFileSync(join(workDir, 'delete-list.csv'));
+    hooks.failWriteAt = {
+      nth: 1,
+      error: new Error('connection broken by peer'),
+    };
+    expect(await run()).toBe(1);
+    hooks.failWriteAt = null;
+    expect(errored()).toMatch(/apply failed: day 2026-04-07/);
+    const files = readdirSync(workDir);
+    expect(files.filter((f) => f.endsWith('.applied'))).toEqual([]);
+    expect(files.filter((f) => f.startsWith('backup-'))).toHaveLength(1);
+
+    expect(await laterDryRun()).toBe(0);
+
+    expect(readFileSync(join(workDir, 'report.txt'))).toEqual(report);
+    expect(readFileSync(join(workDir, 'delete-list.csv'))).toEqual(list);
+    const reports = readdirSync(workDir).filter((f) =>
+      /^dryrun-.*-report\.txt$/.test(f),
+    );
+    expect(reports).toHaveLength(1);
+    expect(
+      readdirSync(workDir).filter((f) =>
+        /^dryrun-.*-delete-list\.csv$/.test(f),
+      ),
+    ).toHaveLength(1);
+    expect(readFileSync(join(workDir, reports[0] ?? ''))).not.toEqual(report);
+    expect(logged()).toContain(`report: ${join(workDir, reports[0] ?? '')}`);
+  });
+
+  // Each sign on its own, in a work dir that holds nothing else of an apply.
+  it.each([
+    ['a backup', 'backup-2026-11-08T12-00-00-000Z.jsonl'],
+    ['a done day', '2026-04-07.applied'],
+  ])(
+    'writes a dry run under dryrun-<time>- names when the only sign of an --apply is %s (%s)',
+    async (_name, file) => {
+      await run({ apply: false });
+      const report = readFileSync(join(workDir, 'report.txt'));
+      const list = readFileSync(join(workDir, 'delete-list.csv'));
+      writeFileSync(join(workDir, file), '');
+
+      expect(await laterDryRun()).toBe(0);
+
+      expect(readFileSync(join(workDir, 'report.txt'))).toEqual(report);
+      expect(readFileSync(join(workDir, 'delete-list.csv'))).toEqual(list);
+      expect(dryRunFiles()).toHaveLength(2);
+    },
+  );
+
+  it('still replaces report.txt after a refused --apply, which writes no backup or marker', async () => {
+    await run({ apply: false });
+    const report = readFileSync(join(workDir, 'report.txt'));
+
+    expect(await run({ expectUpdates: 4 })).toBe(1);
+    expect(errored()).toMatch(
+      /Refusing to --apply: the fresh plan has 5 updates/,
+    );
+    expect(
+      readdirSync(workDir).filter(
+        (f) => f.startsWith('backup-') || f.endsWith('.applied'),
+      ),
+    ).toEqual([]);
+
+    expect(await laterDryRun()).toBe(0);
+
+    expect(dryRunFiles()).toEqual([]);
+    expect(readFileSync(join(workDir, 'report.txt'))).not.toEqual(report);
+  });
+
   it('deletes the junk window for all six roots and nothing just outside it', async () => {
     await run();
     const after = await table(pg);
@@ -1757,6 +1840,85 @@ describe('--thin-roots on real SQL (pglite)', () => {
     expect(readdirSync(workDir).filter((f) => f.startsWith('dryrun-'))).toEqual(
       [],
     );
+  });
+
+  // A later dry run over one day plans (and reports) something other than the
+  // approved all-days one, so a replaced report.txt would differ byte for byte.
+  const laterDryRun = (): Promise<number> => {
+    vi.setSystemTime(new Date('2026-11-08T12:05:00Z'));
+    return runThin({ apply: false, dates: ['2026-04-05'] });
+  };
+  const dryRunFiles = (): string[] =>
+    readdirSync(workDir).filter((f) => f.startsWith('dryrun-'));
+
+  // An apply that fails on its first day marks no day done: what it leaves is
+  // the one backup file it took before that write (and its apply-<time>- report).
+  it('writes a dry run under dryrun-<time>- names after an apply that failed on its first day', async () => {
+    await runThin({ apply: false });
+    const report = readFileSync(join(workDir, 'report.txt'));
+    const list = readFileSync(join(workDir, 'delete-list.csv'));
+    hooks.failWriteAt = { nth: 1, error: new Error('connection lost') };
+    expect(await runThin()).toBe(1);
+    hooks.failWriteAt = null;
+    expect(errored()).toMatch(/apply failed: day 2026-04-05: connection lost/);
+    expect(readdirSync(workDir).filter((f) => f.endsWith('.applied'))).toEqual(
+      [],
+    );
+    expect(existsSync(join(workDir, 'backup-thin-roots.jsonl'))).toBe(true);
+
+    expect(await laterDryRun()).toBe(0);
+
+    expect(readFileSync(join(workDir, 'report.txt'))).toEqual(report);
+    expect(readFileSync(join(workDir, 'delete-list.csv'))).toEqual(list);
+    const reports = readdirSync(workDir).filter((f) =>
+      /^dryrun-.*-report\.txt$/.test(f),
+    );
+    expect(reports).toHaveLength(1);
+    expect(
+      readdirSync(workDir).filter((f) =>
+        /^dryrun-.*-delete-list\.csv$/.test(f),
+      ),
+    ).toHaveLength(1);
+    expect(readFileSync(join(workDir, reports[0] ?? ''))).not.toEqual(report);
+    expect(logged()).toContain(`report: ${join(workDir, reports[0] ?? '')}`);
+  });
+
+  // Each sign on its own, in a work dir that holds nothing else of an apply.
+  it.each([
+    ['the kept backup', 'backup-thin-roots.jsonl'],
+    ['a done day', '2026-04-05.applied'],
+  ])(
+    'writes a dry run under dryrun-<time>- names when the only sign of an apply is %s (%s)',
+    async (_name, file) => {
+      await runThin({ apply: false });
+      const report = readFileSync(join(workDir, 'report.txt'));
+      const list = readFileSync(join(workDir, 'delete-list.csv'));
+      writeFileSync(join(workDir, file), '');
+
+      expect(await laterDryRun()).toBe(0);
+
+      expect(readFileSync(join(workDir, 'report.txt'))).toEqual(report);
+      expect(readFileSync(join(workDir, 'delete-list.csv'))).toEqual(list);
+      expect(dryRunFiles()).toHaveLength(2);
+    },
+  );
+
+  it('still replaces report.txt after a refused apply, which writes no backup or marker', async () => {
+    await runThin({ apply: false });
+    const report = readFileSync(join(workDir, 'report.txt'));
+
+    expect(await runThin({ expectDeletes: THIN_DELETES - 1 })).toBe(1);
+    expect(errored()).toMatch(/Refusing to --apply: the fresh plan has/);
+    expect(
+      readdirSync(workDir).filter(
+        (f) => f.startsWith('backup-') || f.endsWith('.applied'),
+      ),
+    ).toEqual([]);
+
+    expect(await laterDryRun()).toBe(0);
+
+    expect(dryRunFiles()).toEqual([]);
+    expect(readFileSync(join(workDir, 'report.txt'))).not.toEqual(report);
   });
 
   it('appends nothing to the backup when the open refuses the run before its first day', async () => {

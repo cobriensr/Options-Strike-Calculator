@@ -123,6 +123,7 @@ import {
 } from './futures-derived-batch.js';
 import {
   CLEAN_TRADING_DAYS,
+  JUNK_WINDOW,
   THIN_LAST_BAD_MS,
   THIN_ROOTS,
   THIN_WINDOW_START_MS,
@@ -188,17 +189,6 @@ const liftedRoots = (spanBars: ReadonlyMap<Sym, number>): Sym[] =>
   [...spanBars].filter(([, bars]) => bars === 0).map(([symbol]) => symbol);
 
 /**
- * Phase 2's off-session junk window, [start, end) (`JUNK_WINDOW` in
- * futures-contract-repair.ts). Phase 2 deleted the junk bars of all six roots, so
- * its backup holds thin-root deletes inside the 5a window too, but only here: a
- * thin-root delete outside it can only be Phase 5a's.
- */
-const PHASE2_JUNK = {
-  startMs: Date.UTC(2026, 3, 10, 21, 0),
-  endMs: Date.UTC(2026, 3, 12, 22, 0),
-} as const;
-
-/**
  * The lift follows the table, not the `--backup`: once 5a has applied, every thin
  * root in `--roots` reads as lifted, whatever backup the run was given. The
  * attribution knows only the days the backup names, so a lifted root needs the 5a
@@ -218,7 +208,7 @@ function liftBackupProblems(
         b.op === 'delete' &&
         b.symbol === root &&
         isThinDeleteBar(root, b.tsMs) &&
-        !(b.tsMs >= PHASE2_JUNK.startMs && b.tsMs < PHASE2_JUNK.endMs),
+        !(b.tsMs >= JUNK_WINDOW.startMs && b.tsMs < JUNK_WINDOW.endMs),
     );
     return has5aDelete
       ? []
@@ -4060,9 +4050,16 @@ function writeStarted(workDir: string, step: ApplyStep, rows: number): void {
 export const markerPath = (workDir: string, store: ApplyStep): string =>
   join(workDir, `${store}.applied`);
 
-/** A step of any run is marked done in the work dir: an apply has run here. */
-const hasAppliedMarker = (workDir: string): boolean =>
-  readdirSync(workDir).some((f) => f.endsWith('.applied'));
+/**
+ * An apply has run in the work dir: a step is marked done or started, or the apply
+ * saved its plan.json. An apply that fails in its first step marks nothing done,
+ * and leaves only `<step>.started` and plan.json (a dry run writes neither).
+ */
+const hasApplyFiles = (workDir: string): boolean =>
+  existsSync(pointerPath(workDir)) ||
+  readdirSync(workDir).some(
+    (f) => f.endsWith('.applied') || f.endsWith('.started'),
+  );
 
 function writeMarker(workDir: string, store: ApplyStep, rows: number): void {
   writeFileSync(
@@ -5086,12 +5083,13 @@ async function run(opts: RecomputeOptions): Promise<number> {
   console.log(`\n${report}`);
   // report.txt and merge-state.txt are what the owner approves from a dry run, so an
   // --apply leaves them alone and writes its own copies under names with its time. So
-  // does a dry run once a step is marked done here: it plans only what is left, and
-  // would replace the files the apply was approved from.
+  // does a dry run once an apply has run here (a step marked done or started, or its
+  // plan.json): it plans only what is left, and would replace the files the apply was
+  // approved from. An apply refused before its backup leaves none of those.
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   let prefix = '';
   if (opts.apply) prefix = `apply-${stamp}-`;
-  else if (hasAppliedMarker(opts.workDir)) prefix = `dryrun-${stamp}-`;
+  else if (hasApplyFiles(opts.workDir)) prefix = `dryrun-${stamp}-`;
   const reportPath = join(opts.workDir, `${prefix}report.txt`);
   writeFileSync(reportPath, `${report}\n`);
   console.log(`\nreport: ${reportPath}`);

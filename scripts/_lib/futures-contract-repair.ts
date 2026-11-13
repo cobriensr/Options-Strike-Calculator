@@ -49,6 +49,7 @@ import { getDb, withDbRetry } from '../../api/_lib/db.js';
 import { getCTTime } from '../../src/utils/timezone.js';
 import {
   CLEAN_TRADING_DAYS,
+  JUNK_WINDOW,
   THIN_LAST_BAD_MS,
   THIN_ROOTS,
   THIN_WINDOW_START_MS,
@@ -65,12 +66,6 @@ export type Root = (typeof ROOTS)[number];
 
 /** Roots that lose their off-session junk rows (ES/NQ are in `ROOTS`). */
 export const JUNK_ONLY_ROOTS = THIN_ROOTS;
-
-/** [start, end): Friday 16:00 CDT to Sunday 17:00 CDT (b-forensics.md 1.4). */
-export const JUNK_WINDOW = {
-  startMs: Date.UTC(2026, 3, 10, 21, 0),
-  endMs: Date.UTC(2026, 3, 12, 22, 0),
-} as const;
 
 /** UTC days, inclusive. Volume follows the rebuild only here. */
 export const ROLL_WEEK = { first: '2026-06-09', last: '2026-06-15' } as const;
@@ -1932,17 +1927,28 @@ export function parseRepairArgs(argv: string[]): RepairArgs {
 
 // ── Run ─────────────────────────────────────────────────────────────────────
 
-/** A done marker of any day is in the work dir: an apply has run here. */
-const hasAppliedMarker = (workDir: string): boolean =>
-  readdirSync(workDir).some((f) => f.endsWith('.applied'));
+/**
+ * An apply has written, or was about to write, in the work dir: a day is marked
+ * done, or the backup it takes before its first write is there (`backup-<time>.jsonl`,
+ * or `backup-thin-roots.jsonl`). An apply that fails on its first day marks no day
+ * done and leaves only the backup. One that is refused first (the totals, the open)
+ * leaves neither, and a dry run after it may replace the report.
+ */
+const hasApplyFiles = (workDir: string): boolean =>
+  readdirSync(workDir).some(
+    (f) =>
+      f.endsWith('.applied') ||
+      (f.startsWith('backup-') && f.endsWith('.jsonl')),
+  );
 
 /**
  * Writes the report and the delete list. The dry run's two files are what the
  * owner approves, so an `--apply` leaves them alone and writes its own copies
  * under names that carry its time: a refused or partial apply plans only the
  * days left and would otherwise overwrite the approved list. So does a dry run
- * once any day is marked done: it plans only what is left (an empty list after a
- * full apply), and would otherwise replace the files the apply was approved from.
+ * once an apply has written here (see `hasApplyFiles`): it plans only what is
+ * left (an empty list after a full apply), and would otherwise replace the files
+ * the apply was approved from.
  */
 function writeReportFiles(
   opts: RepairOptions,
@@ -1952,7 +1958,7 @@ function writeReportFiles(
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   let prefix = '';
   if (opts.apply) prefix = `apply-${stamp}-`;
-  else if (hasAppliedMarker(opts.workDir)) prefix = `dryrun-${stamp}-`;
+  else if (hasApplyFiles(opts.workDir)) prefix = `dryrun-${stamp}-`;
   const reportPath = join(opts.workDir, `${prefix}report.txt`);
   const listPath = join(opts.workDir, `${prefix}delete-list.csv`);
   writeFileSync(reportPath, `${report}\n`);

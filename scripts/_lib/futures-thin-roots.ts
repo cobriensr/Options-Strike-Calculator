@@ -42,6 +42,18 @@ export const CLEAN_TRADING_DAYS: readonly string[] = [
   '2026-06-08',
 ];
 
+/**
+ * Phase 2's off-session junk window, [start, end): Friday 16:00 CDT to Sunday
+ * 17:00 CDT (b-forensics.md 1.4). Phase 2 deleted the junk bars of all six roots
+ * in it, so its backup holds thin-root deletes here too, but only here: a
+ * thin-root delete outside it can only be Phase 5a's. The repair tool plans the
+ * Phase 2 delete from it and the recompute tool tells the two backups apart by it.
+ */
+export const JUNK_WINDOW = {
+  startMs: Date.UTC(2026, 3, 10, 21, 0),
+  endMs: Date.UTC(2026, 3, 12, 22, 0),
+} as const;
+
 const TRADING_DAY_SHIFT_MS = 7 * 60 * 60_000;
 
 /**

@@ -118,13 +118,13 @@ vi.mock('../../api/_lib/logger.js', () => ({
 import { applyMigration } from '../../api/__tests__/pglite-migrations';
 import { computeSnapshot } from '../../api/_lib/futures-derive.js';
 import { getETDateStr } from '../../src/utils/timezone.js';
-import { JUNK_WINDOW } from './futures-contract-repair.js';
 import {
   markerPath,
   roundNumeric,
   runRecompute,
   type RecomputeOptions,
 } from './futures-derived-recompute.js';
+import { JUNK_WINDOW } from './futures-thin-roots.js';
 
 vi.setConfig({ testTimeout: 120_000 });
 
@@ -1097,8 +1097,7 @@ describe('5b: a lifted root needs the 5a backup', () => {
   });
 
   // The backup is judged by what 5a deletes: a bar of the root, inside its window, on
-  // a trading day that is not clean, and outside Phase 2's junk window (which the
-  // fixture reads from the repair tool, so the two cannot drift apart).
+  // a trading day that is not clean, and outside Phase 2's junk window.
   it.each([
     ['the minute before the junk window', JUNK_WINDOW.startMs - 60_000, true],
     ['the first minute of the junk window', JUNK_WINDOW.startMs, false],
@@ -1186,5 +1185,82 @@ describe('5b: a dry run after an apply leaves the approved files alone', () => {
 
     expect(readFileSync(join(workDir, 'report.txt'))).toEqual(approved);
     expect(dryRuns()).toHaveLength(1);
+  });
+
+  // A later dry run over one root plans (and reports) something other than the
+  // approved all-roots one, so a replaced report.txt would differ byte for byte.
+  const laterDryRun = (): Promise<number> => {
+    vi.setSystemTime(new Date('2026-11-08T12:05:00Z'));
+    return run({ roots: ['CL'] });
+  };
+
+  // An apply that fails before its first step is marked done leaves no `.applied`:
+  // only `<step>.started`, plan.json and the plan file (and its apply-<time>- report).
+  it('does so after an apply that failed on its first write: the work dir holds <step>.started and plan.json and no .applied', async () => {
+    await reset({ leftBar: true });
+    expect(await run()).toBe(0);
+    const approved = readFileSync(join(workDir, 'report.txt'));
+    hooks.failWriteAt = { nth: 1, error: new Error('connection lost') };
+    expect(await run({ apply: true, expectSnapshots: 3 })).toBe(1);
+    hooks.failWriteAt = null;
+    expect(errored()).toMatch(/apply failed: snapshots: connection lost/);
+    expect(readdirSync(workDir).filter((f) => f.endsWith('.applied'))).toEqual(
+      [],
+    );
+    expect(existsSync(join(workDir, 'snapshots.started'))).toBe(true);
+    expect(existsSync(join(workDir, 'plan.json'))).toBe(true);
+
+    expect(await laterDryRun()).toBe(0);
+
+    expect(readFileSync(join(workDir, 'report.txt'))).toEqual(approved);
+    expect(dryRuns()).toHaveLength(1);
+    const later = readFileSync(join(workDir, dryRuns()[0] ?? ''));
+    expect(later).not.toEqual(approved);
+    expect(logged()).toContain(`report: ${join(workDir, dryRuns()[0] ?? '')}`);
+  });
+
+  // Each sign on its own, in a work dir that holds nothing else of an apply.
+  it.each([
+    ['a started step', 'snapshots.started'],
+    ['a saved plan', 'plan.json'],
+    ['a finished step', 'snapshots.applied'],
+  ])(
+    'does so when the only sign of an apply is %s (%s)',
+    async (_name, file) => {
+      await reset({ leftBar: true });
+      expect(await run()).toBe(0);
+      const approved = new Map(
+        readdirSync(workDir).map((f) => [f, readFileSync(join(workDir, f))]),
+      );
+      expect([...approved.keys()]).toContain('report.txt');
+      writeFileSync(join(workDir, file), '{}\n');
+
+      expect(await laterDryRun()).toBe(0);
+
+      for (const [name, bytes] of approved) {
+        expect(readFileSync(join(workDir, name))).toEqual(bytes);
+      }
+      expect(dryRuns()).toHaveLength(1);
+      expect(readFileSync(join(workDir, dryRuns()[0] ?? ''))).not.toEqual(
+        approved.get('report.txt'),
+      );
+    },
+  );
+
+  it('still replaces report.txt when the work dir holds no sign of an apply, even after a refused one', async () => {
+    await reset({ leftBar: true });
+    expect(await run()).toBe(0);
+    const first = readFileSync(join(workDir, 'report.txt'));
+
+    // The count gate refuses before any backup, plan.json or marker: nothing was written.
+    expect(await run({ apply: true, expectSnapshots: 2 })).toBe(1);
+    expect(errored()).toMatch(/Refusing to --apply\. Nothing was written\./);
+    expect(readdirSync(workDir)).not.toContain('plan.json');
+
+    expect(await laterDryRun()).toBe(0);
+
+    expect(dryRuns()).toEqual([]);
+    expect(readFileSync(join(workDir, 'report.txt'))).not.toEqual(first);
+    expect(report()).toContain('rows planned, CL: normal step');
   });
 });
