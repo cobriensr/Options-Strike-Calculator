@@ -39,18 +39,14 @@ import {
   parseEventsResponse,
   type EventsResponseBody,
 } from '../lib/events-schema.js';
-import type { EventItem } from '../types/api.js';
+import type { EventItem, EventsResponse } from '../types/api.js';
 import { useDebounced } from './useDebounced.js';
 import { useETToday } from './useETToday.js';
 import { useFetchedData } from './useFetchedData.js';
 import { FORWARD_EVENT_DAYS } from './useMarketData.fetchers.js';
 
 /** What the hook reads of the forward list: its events and the range it covers. */
-interface ForwardEvents {
-  readonly events: readonly EventItem[];
-  readonly startDate: string;
-  readonly endDate: string;
-}
+type ForwardEvents = Pick<EventsResponse, 'events' | 'startDate' | 'endDate'>;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;

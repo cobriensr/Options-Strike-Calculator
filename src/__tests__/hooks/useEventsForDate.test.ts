@@ -492,6 +492,20 @@ describe('useEventsForDate: failures read as "no events known"', () => {
     expect(result.current).toBeUndefined();
   });
 
+  it('returns undefined when a 2xx body is not JSON, and does not retry', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: () => Promise.reject(new SyntaxError('Unexpected token <')),
+    } as Response);
+    const { result } = render(PAST, FORWARD);
+    await advance(0);
+    await advance(SETTLE_MS);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(result.current).toBeUndefined();
+  });
+
   it('does not show the previous date as the new date failed', async () => {
     fetchMock
       .mockResolvedValueOnce(jsonResponse(eventsBody(PAST, [ev(PAST, 'CPI')])))

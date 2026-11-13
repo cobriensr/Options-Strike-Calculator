@@ -43,9 +43,10 @@ export interface MarketData {
 const FETCH_TIMEOUT_MS = 10_000;
 
 /**
- * How many days ahead of today the forward events list reaches. Shared with
- * useEventsForDate, which fetches a date's own events only when the date falls
- * outside this window.
+ * The `days` the forward events request asks for. Shared with useEventsForDate
+ * as the fallback range (today .. today + this) for a list whose response
+ * reports no usable range. The range the response does report, `startDate ..
+ * endDate`, decides which dates the list covers, not this constant.
  */
 export const FORWARD_EVENT_DAYS = 30;
 
