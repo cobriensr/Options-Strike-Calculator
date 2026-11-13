@@ -21,8 +21,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { storeInitialTokens, type SchwabLoginError } from '../_lib/schwab.js';
 import { redis } from '../_lib/redis.js';
 import {
-  OWNER_COOKIE,
-  OWNER_COOKIE_MAX_AGE,
+  buildOwnerSessionCookies,
   rejectIfRateLimited,
 } from '../_lib/api-helpers.js';
 import logger from '../_lib/logger.js';
@@ -150,36 +149,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return res.status(500).json({ error: 'Token exchange failed' });
       }
 
-      // Set the owner session cookie — this is what gates the data endpoints.
-      // HttpOnly:    can't be read by JavaScript (XSS safe)
-      // Secure:      only sent over HTTPS
-      // SameSite=Strict: not sent on cross-site requests (CSRF safe)
-      // Path=/:      available to all endpoints
-      // Max-Age=7d:  matches Schwab refresh token lifetime
+      // Set the owner session cookies (sc-owner, plus the sc-hint cookie the
+      // frontend reads) — sc-owner is what gates the data endpoints. Built by
+      // the shared builder, which whoami also uses to renew them: 400-day
+      // lifetime, independent of the Schwab refresh token.
       const isLocal = appUrl.includes('localhost');
-      const cookieParts = [
-        `${OWNER_COOKIE}=${ownerSecret}`,
-        `Path=/`,
-        `Max-Age=${OWNER_COOKIE_MAX_AGE}`,
-        'HttpOnly',
-        'SameSite=Strict',
-      ];
-      if (!isLocal) cookieParts.push('Secure');
-
-      // Non-HttpOnly hint cookie so the frontend can detect the owner session
-      // on page load (the real sc-owner cookie is HttpOnly and invisible to JS).
-      const hintParts = [
-        `sc-hint=1`,
-        `Path=/`,
-        `Max-Age=${OWNER_COOKIE_MAX_AGE}`,
-        'SameSite=Strict',
-      ];
-      if (!isLocal) hintParts.push('Secure');
-
-      res.setHeader('Set-Cookie', [
-        cookieParts.join('; '),
-        hintParts.join('; '),
-      ]);
+      res.setHeader('Set-Cookie', buildOwnerSessionCookies(isLocal));
 
       // Show success confirmation, then auto-redirect after 3 seconds.
       // The cookie is already set via Set-Cookie header above.
@@ -196,7 +171,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     <body style="font-family: system-ui; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; background: #0a0a0a; color: #e5e5e5;">
       <div style="text-align: center;">
         <h1 style="color: #22c55e;">&#x2713; Authenticated</h1>
-        <p>Schwab tokens stored. Session valid for 7 days.</p>
+        <p>Schwab tokens stored. This browser is signed in.</p>
         <p>Redirecting to calculator in 3 seconds&hellip;</p>
         <p style="color: #888; font-size: 14px;"><a href="${safeUrl}" style="color: #60a5fa;">Click here</a> if not redirected.</p>
       </div>

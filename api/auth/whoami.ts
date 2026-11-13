@@ -10,11 +10,17 @@
  * the response itself doesn't re-trigger the interceptor's 401 path.
  *
  * Owner wins over guest — matches `getAccessMode()` precedence.
+ *
+ * Also renews the owner sign-in: an answer of 'owner' (the request already
+ * passed `isOwner`) re-issues the sc-owner and sc-hint cookies with a fresh
+ * 400-day lifetime, so a browser that keeps being used stays signed in. It
+ * never creates a session: a guest, public or wrong-cookie request gets no
+ * Set-Cookie header.
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { Sentry, metrics } from '../_lib/sentry.js';
-import { isOwner } from '../_lib/api-helpers.js';
+import { buildOwnerSessionCookies, isOwner } from '../_lib/api-helpers.js';
 import { isGuest } from '../_lib/guest-auth.js';
 
 export type WhoamiMode = 'owner' | 'guest' | 'public';
@@ -32,6 +38,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       let mode: WhoamiMode = 'public';
       if (isOwner(req)) mode = 'owner';
       else if (isGuest(req)) mode = 'guest';
+
+      if (mode === 'owner') {
+        // Same localhost rule as the OAuth callback, so a renewal sets the
+        // cookies with the attributes the sign-in did.
+        const isLocal = (process.env.APP_URL ?? '').includes('localhost');
+        res.setHeader('Set-Cookie', buildOwnerSessionCookies(isLocal));
+      }
 
       res.setHeader('Cache-Control', 'no-store');
       done({ status: 200 });

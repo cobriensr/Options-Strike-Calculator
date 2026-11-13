@@ -27,11 +27,17 @@ vi.mock('../_lib/sentry.js', async (importOriginal) => {
   return { ...actual, Sentry: { ...actual.Sentry, ...mockSentryCapture } };
 });
 
-vi.mock('../_lib/api-helpers.js', () => ({
-  OWNER_COOKIE: 'sc-owner',
-  OWNER_COOKIE_MAX_AGE: 604800,
-  rejectIfRateLimited: vi.fn().mockResolvedValue(false),
-}));
+// The rate limiter is stubbed; the cookie builder stays real so these tests
+// pin the callback's actual Set-Cookie output.
+vi.mock('../_lib/api-helpers.js', async () => {
+  const { buildOwnerSessionCookies } = await vi.importActual<
+    typeof import('../_lib/auth-helpers.js')
+  >('../_lib/auth-helpers.js');
+  return {
+    buildOwnerSessionCookies,
+    rejectIfRateLimited: vi.fn().mockResolvedValue(false),
+  };
+});
 
 import handler from '../auth/callback.js';
 import { storeInitialTokens } from '../_lib/schwab.js';
@@ -270,18 +276,31 @@ describe('GET /api/auth/callback', () => {
     );
 
     expect(res._status).toBe(200);
-    // Check cookie was set — Set-Cookie is an array (owner + hint cookies)
-    const cookies = res._headers['Set-Cookie'] as unknown as string[];
-    const ownerCookie = cookies.find((c: string) => c.startsWith('sc-owner='));
-    expect(ownerCookie).toBeDefined();
-    expect(ownerCookie).toContain('sc-owner=my-secret');
-    expect(ownerCookie).toContain('HttpOnly');
-    expect(ownerCookie).toContain('SameSite=Strict');
-    expect(ownerCookie).toContain('Secure');
-    expect(ownerCookie).toContain('Max-Age=604800');
+    // Both cookies, 400-day lifetime, attributes as before the lifetime change.
+    expect(res._headers['Set-Cookie']).toEqual([
+      'sc-owner=my-secret; Path=/; Max-Age=34560000; HttpOnly; SameSite=Strict; Secure',
+      'sc-hint=1; Path=/; Max-Age=34560000; SameSite=Strict; Secure',
+    ]);
     // Should return HTML
     expect(res._headers['Content-Type']).toBe('text/html');
     expect(res._body).toContain('Authenticated');
+  });
+
+  it('does not tell the owner the session lasts 7 days', async () => {
+    process.env.OWNER_SECRET = 'my-secret';
+    process.env.APP_URL = 'https://myapp.vercel.app';
+    vi.mocked(storeInitialTokens).mockResolvedValue({ success: true });
+
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        query: { code: 'auth-code-123', state: 'valid-state' },
+      }),
+      res,
+    );
+
+    expect(res._status).toBe(200);
+    expect(res._body).not.toContain('7 days');
   });
 
   it('omits Secure flag for localhost APP_URL', async () => {
@@ -298,9 +317,10 @@ describe('GET /api/auth/callback', () => {
     );
 
     expect(res._status).toBe(200);
-    const cookies = res._headers['Set-Cookie'] as unknown as string[];
-    const ownerCookie = cookies.find((c: string) => c.startsWith('sc-owner='));
-    expect(ownerCookie).not.toContain('Secure');
+    expect(res._headers['Set-Cookie']).toEqual([
+      'sc-owner=my-secret; Path=/; Max-Age=34560000; HttpOnly; SameSite=Strict',
+      'sc-hint=1; Path=/; Max-Age=34560000; SameSite=Strict',
+    ]);
   });
 
   it('passes correct redirect URI to storeInitialTokens', async () => {
