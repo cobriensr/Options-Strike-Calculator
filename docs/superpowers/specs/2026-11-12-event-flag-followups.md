@@ -25,7 +25,7 @@ Each was verified against production or the live FRED API, read-only.
 - **Feature sample (owner, 2026-11-12):** every date uses the snapshot nearest 10:00 AM CT (600 CT minutes) that has an SPX open. A tie goes to the earlier row.
 - **`is_event_day` in features:** `bool_or` over all of the date's snapshot rows.
 - **Closed days:**
-  - `/api/snapshot` answers `200 { saved: false, skipped: 'non-trading-day' }` with a warning, for live and backtest saves alike.
+  - `/api/snapshot` answers `200 { saved: false, skipped: 'non-trading-day' }`. It logs a warning for both live and backtest saves, and reports to Sentry only for live saves (b84a1d70).
   - `build-features` filters every date list with `isTradingDay`.
 - **`/api/events`** takes an optional `from` date, bounded to 2025-01-01 .. today + 90, so past dates fetch their own events. Earnings stay in the banner (parent spec).
 - **The client still sends its event names.** Once past dates fetch their own events, the server's incomplete-lookup fallback works on replays too.

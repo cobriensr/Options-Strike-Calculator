@@ -531,11 +531,12 @@ export default function StrikeCalculator() {
   // The selected date's market events, resolved once for everything that
   // reads them: the snapshot save's event-day flag and names, the analyze
   // context and the event-day banner. The forward list from useMarketData
-  // reaches today and 30 days ahead only, so a past date (or one further out)
-  // gets its own fetch; undefined until that lands, as before.
+  // covers the range its response reports (today and 30 days ahead when it was
+  // fetched), so a date outside it gets its own fetch once the picked date has
+  // settled; undefined until that lands, as before.
   const selectedDateEvents = useEventsForDate(
     vix.selectedDate,
-    market.data.events?.events,
+    market.data.events,
   );
 
   // Yesterday's SPX OHLC, resolved once for everything that reads it: the
