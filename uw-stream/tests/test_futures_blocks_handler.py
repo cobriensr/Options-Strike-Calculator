@@ -651,6 +651,7 @@ class TestChannelWiring:
             database_url="postgresql://test",
             uw_api_key="test",
             ws_channels="futures_blocks,option_trades:SPY,option_trades:QQQ",
+            ws_redundant_option_trades=False,  # mirror shards would add a second shard
         )
         shards = settings.channel_shards
         assert len(shards) == 1
