@@ -533,11 +533,13 @@ export default function StrikeCalculator() {
   // context and the event-day banner. The forward list from useMarketData
   // covers the range its response reports (today and 30 days ahead when it was
   // fetched), so a date outside it gets its own fetch once the picked date has
-  // settled; undefined until that lands, as before.
-  const selectedDateEvents = useEventsForDate(
-    vix.selectedDate,
-    market.data.events,
-  );
+  // settled; undefined until that lands, as before. `failed` is true when that
+  // fetch did not work, and the banner says so with a Retry.
+  const {
+    events: selectedDateEvents,
+    failed: selectedDateEventsFailed,
+    retry: retrySelectedDateEvents,
+  } = useEventsForDate(vix.selectedDate, market.data.events);
 
   // Yesterday's SPX OHLC, resolved once for everything that reads it: the
   // cluster multiplier below, its put/call tilt (useRegimeClassification), the
@@ -1648,6 +1650,8 @@ export default function StrikeCalculator() {
                   <EventDayWarning
                     selectedDate={vix.selectedDate}
                     liveEvents={selectedDateEvents}
+                    failed={selectedDateEventsFailed}
+                    onRetry={retrySelectedDateEvents}
                   />
 
                   {/*

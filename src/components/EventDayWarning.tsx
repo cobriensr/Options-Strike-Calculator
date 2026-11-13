@@ -5,6 +5,10 @@ import type { EventItem } from '../types/api';
 interface Props {
   readonly selectedDate: string; // YYYY-MM-DD
   readonly liveEvents?: readonly EventItem[];
+  /** This date's own events could not be loaded (see useEventsForDate). */
+  readonly failed?: boolean;
+  /** Fetch this date's events again; the Retry button is shown only with it. */
+  readonly onRetry?: () => void;
 }
 
 /**
@@ -13,14 +17,24 @@ interface Props {
  * high-impact economic events (FOMC, CPI, NFP, GDP, PCE, PPI, etc).
  *
  * Powered entirely by the /api/events endpoint.
- * Renders nothing when no events are scheduled.
+ * Renders nothing when no events are scheduled, or while they are loading.
+ * When the date's events could not be loaded and none are held for it, a
+ * muted line says so, with a Retry button: a blank banner would read as a
+ * quiet day.
  */
-export default function EventDayWarning({ selectedDate, liveEvents }: Props) {
+export default function EventDayWarning({
+  selectedDate,
+  liveEvents,
+  failed = false,
+  onRetry,
+}: Props) {
   if (!selectedDate) return null;
 
   const events = liveEvents?.filter((e) => e.date === selectedDate) ?? [];
 
-  if (events.length === 0) return null;
+  if (events.length === 0) {
+    return failed ? <LoadFailedLine onRetry={onRetry} /> : null;
+  }
 
   const isHigh = events.some((e) => e.severity === 'high');
 
@@ -100,6 +114,23 @@ export default function EventDayWarning({ selectedDate, liveEvents }: Props) {
           return 'GDP, PPI, Retail Sales, and JOLTS releases can cause moderate volatility. Follow the delta guide but consider slightly tighter sizing.';
         })()}
       </div>
+    </div>
+  );
+}
+
+function LoadFailedLine({ onRetry }: Readonly<{ onRetry?: () => void }>) {
+  return (
+    <div className="text-muted mt-4 flex flex-wrap items-center gap-3 font-sans text-[11px]">
+      <span>Events for this date couldn&apos;t load.</span>
+      {onRetry && (
+        <button
+          type="button"
+          onClick={onRetry}
+          className="text-secondary border-edge cursor-pointer rounded border px-2 py-0.5 font-mono text-[11px]"
+        >
+          Retry
+        </button>
+      )}
     </div>
   );
 }

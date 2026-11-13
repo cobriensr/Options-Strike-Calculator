@@ -1,5 +1,6 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import EventDayWarning from '../../components/EventDayWarning';
 import type { EventItem } from '../../types/api';
 
@@ -303,5 +304,104 @@ describe('EventDayWarning: rendering', () => {
       <EventDayWarning selectedDate="2026-04-29" liveEvents={liveEvents} />,
     );
     expect(screen.getByText(/economic event day/i)).toBeInTheDocument();
+  });
+});
+
+// ============================================================
+// EventDayWarning: a date whose events could not load
+// ============================================================
+describe('EventDayWarning: events that could not load', () => {
+  const LOAD_FAILED = "Events for this date couldn't load.";
+
+  it('says the events could not load, with a Retry button', () => {
+    render(
+      <EventDayWarning
+        selectedDate="2026-11-10"
+        failed
+        onRetry={() => undefined}
+      />,
+    );
+
+    expect(screen.getByText(LOAD_FAILED)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /retry/i })).toBeInTheDocument();
+  });
+
+  it('shows no Retry button when it has nothing to call', () => {
+    render(<EventDayWarning selectedDate="2026-11-10" failed />);
+
+    expect(screen.getByText(LOAD_FAILED)).toBeInTheDocument();
+    expect(screen.queryByRole('button')).not.toBeInTheDocument();
+  });
+
+  it('calls onRetry once when Retry is clicked', async () => {
+    const onRetry = vi.fn();
+    render(
+      <EventDayWarning selectedDate="2026-11-10" failed onRetry={onRetry} />,
+    );
+
+    await userEvent.click(screen.getByRole('button', { name: /retry/i }));
+
+    expect(onRetry).toHaveBeenCalledTimes(1);
+  });
+
+  it('renders nothing while the events are loading: not known, not failed', () => {
+    const { container } = render(
+      <EventDayWarning
+        selectedDate="2026-11-10"
+        failed={false}
+        onRetry={() => undefined}
+      />,
+    );
+
+    expect(container.innerHTML).toBe('');
+    expect(screen.queryByRole('button')).not.toBeInTheDocument();
+  });
+
+  it('renders nothing for an empty date, even when failed', () => {
+    const { container } = render(
+      <EventDayWarning selectedDate="" failed onRetry={() => undefined} />,
+    );
+
+    expect(container.innerHTML).toBe('');
+  });
+
+  it('shows the line when the events held are for other dates', () => {
+    render(
+      <EventDayWarning
+        selectedDate="2026-11-10"
+        liveEvents={[evt({ date: '2026-11-12', event: 'CPI' })]}
+        failed
+        onRetry={() => undefined}
+      />,
+    );
+
+    expect(screen.getByText(LOAD_FAILED)).toBeInTheDocument();
+  });
+
+  it('shows the events, and no failure line, when the date has events', () => {
+    render(
+      <EventDayWarning
+        selectedDate="2026-11-10"
+        liveEvents={[evt({ date: '2026-11-10', event: 'CPI' })]}
+        failed
+        onRetry={() => undefined}
+      />,
+    );
+
+    expect(screen.getByText(/high-impact event day/i)).toBeInTheDocument();
+    expect(screen.queryByText(LOAD_FAILED)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button')).not.toBeInTheDocument();
+  });
+
+  it('still renders nothing for a known empty list that did not fail', () => {
+    const { container } = render(
+      <EventDayWarning
+        selectedDate="2026-11-10"
+        liveEvents={[]}
+        failed={false}
+      />,
+    );
+
+    expect(container.innerHTML).toBe('');
   });
 });

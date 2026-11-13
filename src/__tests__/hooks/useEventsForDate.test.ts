@@ -7,6 +7,8 @@
  * date (a past one, or one beyond the list) is fetched from
  * /api/events?from=<date>&days=1 once the picked date has settled for 350 ms,
  * and reads undefined ("no events known") while that is loading or if it fails.
+ * `failed` is true only when that date's own fetch has failed, and `retry`
+ * fetches it again.
  *
  * The clock is pinned to 12:00 ET on 2026-11-12 and every timer is fake: the
  * settle wait and the ET-midnight timer are driven by `advance`.
@@ -104,12 +106,34 @@ async function advance(ms: number) {
   });
 }
 
-function render(date: string, forward: Forward | null | undefined) {
+type Seen = ReturnType<typeof useEventsForDate>;
+
+/**
+ * Render the hook. `seen` collects what every render returned, so a test can
+ * check a value that held for one render only (a stale error shown for a frame).
+ */
+function render(
+  date: string,
+  forward: Forward | null | undefined,
+  seen?: Seen[],
+) {
   return renderHook(
-    (props: { date: string; forward: Forward | null | undefined }) =>
-      useEventsForDate(props.date, props.forward),
+    (props: { date: string; forward: Forward | null | undefined }) => {
+      const value = useEventsForDate(props.date, props.forward);
+      seen?.push(value);
+      return value;
+    },
     { initialProps: { date, forward } },
   );
+}
+
+/** A 2xx whose body is not JSON. */
+function notJsonResponse(): Response {
+  return {
+    ok: true,
+    status: 200,
+    json: () => Promise.reject(new SyntaxError('Unexpected token <')),
+  } as Response;
 }
 
 /** The abort signal the nth fetch was given. */
@@ -132,7 +156,7 @@ describe("useEventsForDate: inside the forward list's range", () => {
   it('returns the forward events themselves for today, with no request', async () => {
     const { result } = render(TODAY, FORWARD);
     await advance(SETTLE_MS);
-    expect(result.current).toBe(FORWARD.events);
+    expect(result.current.events).toBe(FORWARD.events);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -141,7 +165,7 @@ describe("useEventsForDate: inside the forward list's range", () => {
     async (notLoaded) => {
       const { result } = render(TODAY, notLoaded);
       await advance(SETTLE_MS);
-      expect(result.current).toBeUndefined();
+      expect(result.current.events).toBeUndefined();
       expect(fetchMock).not.toHaveBeenCalled();
     },
   );
@@ -149,14 +173,14 @@ describe("useEventsForDate: inside the forward list's range", () => {
   it('keeps the forward events for the last day the list covers', async () => {
     const { result } = render(WINDOW_END, FORWARD);
     await advance(SETTLE_MS);
-    expect(result.current).toBe(FORWARD.events);
+    expect(result.current.events).toBe(FORWARD.events);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('returns the forward events and makes no request for an empty date', async () => {
     const { result } = render('', FORWARD);
     await advance(SETTLE_MS);
-    expect(result.current).toBe(FORWARD.events);
+    expect(result.current.events).toBe(FORWARD.events);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -164,12 +188,12 @@ describe("useEventsForDate: inside the forward list's range", () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(eventsBody(PAST, [ev(PAST)])));
     const { result, rerender } = render(PAST, FORWARD);
     await advance(0);
-    expect(result.current).toEqual([ev(PAST)]);
+    expect(result.current.events).toEqual([ev(PAST)]);
 
     rerender({ date: TODAY, forward: FORWARD });
 
     // No timer has run since the rerender.
-    expect(result.current).toBe(FORWARD.events);
+    expect(result.current.events).toBe(FORWARD.events);
     await advance(SETTLE_MS);
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
@@ -191,12 +215,12 @@ describe('useEventsForDate: a list that carries no usable range', () => {
       expect(FORWARD_EVENT_DAYS).toBe(30);
       const { result, rerender } = render(TODAY, forward);
       await advance(SETTLE_MS);
-      expect(result.current).toBe(forward.events);
+      expect(result.current.events).toBe(forward.events);
 
       rerender({ date: WINDOW_END, forward });
       await advance(SETTLE_MS);
 
-      expect(result.current).toBe(forward.events);
+      expect(result.current.events).toBe(forward.events);
       expect(fetchMock).not.toHaveBeenCalled();
     },
   );
@@ -231,7 +255,7 @@ describe("useEventsForDate: the forward list's own range, not the clock", () => 
     expect(fetchMock.mock.calls[0]![0]).toBe(
       `/api/events?from=${WINDOW_END}&days=1`,
     );
-    expect(result.current).toEqual([ev(WINDOW_END, 'PCE')]);
+    expect(result.current.events).toEqual([ev(WINDOW_END, 'PCE')]);
   });
 
   it('answers a day before today from the list when the list starts then', async () => {
@@ -239,7 +263,7 @@ describe("useEventsForDate: the forward list's own range, not the clock", () => 
     const { result } = render(YESTERDAY, early);
     await advance(SETTLE_MS);
 
-    expect(result.current).toBe(early.events);
+    expect(result.current.events).toBe(early.events);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -247,11 +271,11 @@ describe("useEventsForDate: the forward list's own range, not the clock", () => 
     // 23:59 ET on 2026-11-12 (EST, UTC-5). The list was fetched that day.
     vi.setSystemTime(new Date('2026-11-13T04:59:00Z'));
     const { result, rerender } = render(TODAY, FORWARD);
-    expect(result.current).toBe(FORWARD.events);
+    expect(result.current.events).toBe(FORWARD.events);
 
     // useETToday re-reads at midnight: etToday is now 2026-11-13.
     await advance(2 * 60 * 1000);
-    expect(result.current).toBe(FORWARD.events);
+    expect(result.current.events).toBe(FORWARD.events);
     expect(fetchMock).not.toHaveBeenCalled();
 
     // The new today + 30 is past the list's end, so it is fetched.
@@ -276,14 +300,14 @@ describe('useEventsForDate: a date the forward list does not cover', () => {
     await advance(0);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock.mock.calls[0]![0]).toBe(`/api/events?from=${PAST}&days=1`);
-    expect(result.current).toBeUndefined();
+    expect(result.current.events).toBeUndefined();
 
     await act(async () => {
       pending.resolve(jsonResponse(eventsBody(PAST, [ev(PAST, 'CPI')])));
       await pending.promise;
     });
     await advance(0);
-    expect(result.current).toEqual([ev(PAST, 'CPI')]);
+    expect(result.current.events).toEqual([ev(PAST, 'CPI')]);
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
@@ -294,7 +318,7 @@ describe('useEventsForDate: a date the forward list does not cover', () => {
     const { result } = render(FAR_AHEAD, FORWARD);
     await advance(0);
 
-    expect(result.current).toEqual([ev(FAR_AHEAD, 'PCE')]);
+    expect(result.current.events).toEqual([ev(FAR_AHEAD, 'PCE')]);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock.mock.calls[0]![0]).toBe(
       `/api/events?from=${FAR_AHEAD}&days=1`,
@@ -321,7 +345,7 @@ describe('useEventsForDate: a date the forward list does not cover', () => {
     const { result } = render(YESTERDAY, FORWARD);
     await advance(0);
 
-    expect(result.current).toEqual([ev(YESTERDAY, 'PPI')]);
+    expect(result.current.events).toEqual([ev(YESTERDAY, 'PPI')]);
     expect(fetchMock.mock.calls[0]![0]).toBe(
       `/api/events?from=${YESTERDAY}&days=1`,
     );
@@ -331,7 +355,7 @@ describe('useEventsForDate: a date the forward list does not cover', () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(eventsBody(PAST, [ev(PAST)])));
     const { result, rerender } = render(PAST, FORWARD);
     await advance(0);
-    expect(result.current).toEqual([ev(PAST)]);
+    expect(result.current.events).toEqual([ev(PAST)]);
 
     rerender({
       date: PAST,
@@ -340,7 +364,7 @@ describe('useEventsForDate: a date the forward list does not cover', () => {
     await advance(SETTLE_MS);
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(result.current).toEqual([ev(PAST)]);
+    expect(result.current.events).toEqual([ev(PAST)]);
   });
 });
 
@@ -359,12 +383,12 @@ describe('useEventsForDate: settling the picked date', () => {
     // One millisecond short of the wait: still nothing sent.
     await advance(SETTLE_MS - 1);
     expect(fetchMock).not.toHaveBeenCalled();
-    expect(result.current).toBeUndefined();
+    expect(result.current.events).toBeUndefined();
 
     await advance(1);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock.mock.calls[0]![0]).toBe(`/api/events?from=${PAST}&days=1`);
-    expect(result.current).toEqual([ev(PAST)]);
+    expect(result.current.events).toEqual([ev(PAST)]);
   });
 
   it('sends nothing for a date the user passed through on the way to a covered one', async () => {
@@ -375,7 +399,7 @@ describe('useEventsForDate: settling the picked date', () => {
     await advance(SETTLE_MS);
 
     expect(fetchMock).not.toHaveBeenCalled();
-    expect(result.current).toBe(FORWARD.events);
+    expect(result.current.events).toBe(FORWARD.events);
   });
 });
 
@@ -387,14 +411,14 @@ describe('useEventsForDate: switching dates', () => {
       .mockReturnValueOnce(second.promise);
     const { result, rerender } = render(PAST, FORWARD);
     await advance(0);
-    expect(result.current).toEqual([ev(PAST, 'CPI')]);
+    expect(result.current.events).toEqual([ev(PAST, 'CPI')]);
 
     rerender({ date: OTHER_PAST, forward: FORWARD });
     // The first date's response is still the one the fetch hook holds; it
     // must not be handed out under the new date.
-    expect(result.current).toBeUndefined();
+    expect(result.current.events).toBeUndefined();
     await advance(SETTLE_MS);
-    expect(result.current).toBeUndefined();
+    expect(result.current.events).toBeUndefined();
 
     await act(async () => {
       second.resolve(
@@ -403,7 +427,7 @@ describe('useEventsForDate: switching dates', () => {
       await second.promise;
     });
     await advance(0);
-    expect(result.current).toEqual([ev(OTHER_PAST, 'NFP')]);
+    expect(result.current.events).toEqual([ev(OTHER_PAST, 'NFP')]);
   });
 
   it('keeps only the latest date when an earlier date answers late', async () => {
@@ -421,7 +445,7 @@ describe('useEventsForDate: switching dates', () => {
 
     rerender({ date: OTHER_PAST, forward: FORWARD });
     await advance(SETTLE_MS);
-    expect(result.current).toEqual([ev(OTHER_PAST, 'NFP')]);
+    expect(result.current.events).toEqual([ev(OTHER_PAST, 'NFP')]);
     // Superseded, so cancelled, not merely ignored when it lands.
     expect(firstSignal.aborted).toBe(true);
 
@@ -432,7 +456,7 @@ describe('useEventsForDate: switching dates', () => {
     });
     await advance(0);
 
-    expect(result.current).toEqual([ev(OTHER_PAST, 'NFP')]);
+    expect(result.current.events).toEqual([ev(OTHER_PAST, 'NFP')]);
   });
 
   it('drops a response whose echoed startDate is not the requested date', async () => {
@@ -443,21 +467,22 @@ describe('useEventsForDate: switching dates', () => {
     await advance(0);
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(result.current).toBeUndefined();
+    expect(result.current.events).toBeUndefined();
   });
 });
 
-describe('useEventsForDate: failures read as "no events known"', () => {
-  it('returns undefined when the request rejects', async () => {
+describe('useEventsForDate: failures read as "no events known", and as failed', () => {
+  it('returns undefined and failed when the request rejects', async () => {
     fetchMock.mockRejectedValueOnce(new TypeError('Failed to fetch'));
     const { result } = render(PAST, FORWARD);
     await advance(0);
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(result.current).toBeUndefined();
+    expect(result.current.events).toBeUndefined();
+    expect(result.current.failed).toBe(true);
   });
 
-  it('returns undefined on a 400 (a date outside the endpoint bounds)', async () => {
+  it('returns undefined and failed on a 400 (a date outside the endpoint bounds)', async () => {
     fetchMock.mockResolvedValueOnce(
       jsonResponse({ error: 'from must be 2025-01-01 or later' }, 400),
     );
@@ -465,10 +490,11 @@ describe('useEventsForDate: failures read as "no events known"', () => {
     await advance(0);
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(result.current).toBeUndefined();
+    expect(result.current.events).toBeUndefined();
+    expect(result.current.failed).toBe(true);
   });
 
-  it('returns undefined on a 429 without reporting it, and does not retry', async () => {
+  it('returns undefined and failed on a 429 without reporting it, and does not retry on its own', async () => {
     fetchMock.mockResolvedValueOnce(
       jsonResponse({ error: 'Too many requests' }, 429),
     );
@@ -476,12 +502,13 @@ describe('useEventsForDate: failures read as "no events known"', () => {
     await advance(0);
     await advance(SETTLE_MS);
 
-    expect(result.current).toBeUndefined();
+    expect(result.current.events).toBeUndefined();
+    expect(result.current.failed).toBe(true);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(mockCaptureUnlessAuth).not.toHaveBeenCalled();
   });
 
-  it('returns undefined on a 500', async () => {
+  it('returns undefined and failed on a 500', async () => {
     fetchMock.mockResolvedValueOnce(
       jsonResponse({ error: 'Internal server error' }, 500),
     );
@@ -489,21 +516,19 @@ describe('useEventsForDate: failures read as "no events known"', () => {
     await advance(0);
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(result.current).toBeUndefined();
+    expect(result.current.events).toBeUndefined();
+    expect(result.current.failed).toBe(true);
   });
 
-  it('returns undefined when a 2xx body is not JSON, and does not retry', async () => {
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: () => Promise.reject(new SyntaxError('Unexpected token <')),
-    } as Response);
+  it('returns undefined and failed when a 2xx body is not JSON, and does not retry on its own', async () => {
+    fetchMock.mockResolvedValueOnce(notJsonResponse());
     const { result } = render(PAST, FORWARD);
     await advance(0);
     await advance(SETTLE_MS);
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(result.current).toBeUndefined();
+    expect(result.current.events).toBeUndefined();
+    expect(result.current.failed).toBe(true);
   });
 
   it('does not show the previous date as the new date failed', async () => {
@@ -512,13 +537,14 @@ describe('useEventsForDate: failures read as "no events known"', () => {
       .mockRejectedValueOnce(new TypeError('Failed to fetch'));
     const { result, rerender } = render(PAST, FORWARD);
     await advance(0);
-    expect(result.current).toEqual([ev(PAST, 'CPI')]);
+    expect(result.current.events).toEqual([ev(PAST, 'CPI')]);
 
     rerender({ date: OTHER_PAST, forward: FORWARD });
     await advance(SETTLE_MS);
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(result.current).toBeUndefined();
+    expect(result.current.events).toBeUndefined();
+    expect(result.current.failed).toBe(true);
   });
 
   // Each body is whole but for the one thing named, so a case cannot pass on
@@ -548,13 +574,14 @@ describe('useEventsForDate: failures read as "no events known"', () => {
     ['endDate is missing', { events: [ev(PAST)], startDate: PAST }],
     ['the body is not an object', ['CPI']],
   ])(
-    'returns undefined and reports to Sentry when %s',
+    'returns undefined and failed, and reports to Sentry, when %s',
     async (_name, malformed) => {
       fetchMock.mockResolvedValueOnce(jsonResponse(malformed));
       const { result } = render(PAST, FORWARD);
       await advance(0);
 
-      expect(result.current).toBeUndefined();
+      expect(result.current.events).toBeUndefined();
+      expect(result.current.failed).toBe(true);
       expect(mockCaptureUnlessAuth).toHaveBeenCalledTimes(1);
       const [error, options] = mockCaptureUnlessAuth.mock.calls[0]!;
       expect((error as Error).message).toBe(
@@ -595,7 +622,255 @@ describe('useEventsForDate: failures read as "no events known"', () => {
     const { result } = render(PAST, FORWARD);
     await advance(0);
 
-    expect(result.current).toEqual([]);
+    expect(result.current.events).toEqual([]);
+    expect(result.current.failed).toBe(false);
     expect(mockCaptureUnlessAuth).not.toHaveBeenCalled();
+  });
+});
+
+describe('useEventsForDate: failed', () => {
+  it('is false while the date loads, and after it loads', async () => {
+    const pending = deferred();
+    fetchMock.mockReturnValueOnce(pending.promise);
+    const { result } = render(PAST, FORWARD);
+    await advance(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(result.current.failed).toBe(false);
+
+    await act(async () => {
+      pending.resolve(jsonResponse(eventsBody(PAST, [ev(PAST)])));
+      await pending.promise;
+    });
+    await advance(0);
+    expect(result.current.events).toEqual([ev(PAST)]);
+    expect(result.current.failed).toBe(false);
+  });
+
+  it('is false while the settle wait runs, before any request', async () => {
+    const { result, rerender } = render(TODAY, FORWARD);
+    rerender({ date: PAST, forward: FORWARD });
+    expect(result.current.failed).toBe(false);
+    await advance(SETTLE_MS - 1);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(result.current.failed).toBe(false);
+  });
+
+  it.each([undefined, null])(
+    'is false for a covered date while the forward list is %s',
+    async (notLoaded) => {
+      const { result } = render(TODAY, notLoaded);
+      await advance(SETTLE_MS);
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(result.current.failed).toBe(false);
+    },
+  );
+
+  it('is false for a covered date, whatever failed before', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ error: 'boom' }, 500));
+    const { result, rerender } = render(PAST, FORWARD);
+    await advance(0);
+    expect(result.current.failed).toBe(true);
+
+    rerender({ date: TODAY, forward: FORWARD });
+    // Not a frame of it, even before the settle wait has run.
+    expect(result.current.failed).toBe(false);
+    await advance(SETTLE_MS);
+
+    expect(result.current.events).toBe(FORWARD.events);
+    expect(result.current.failed).toBe(false);
+  });
+
+  // useFetchedData keeps `error` across a url change until the next fetch
+  // starts, and the url goes null while a new date settles. The error of the
+  // date the user left must not show as the new date's, for any render.
+  it("never marks the new date failed from the previous date's error", async () => {
+    const second = deferred();
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ error: 'boom' }, 500))
+      .mockReturnValueOnce(second.promise);
+    const seen: Seen[] = [];
+    const { result, rerender } = render(PAST, FORWARD, seen);
+    await advance(0);
+    expect(result.current.failed).toBe(true);
+
+    seen.length = 0;
+    rerender({ date: OTHER_PAST, forward: FORWARD });
+    await advance(SETTLE_MS);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(result.current.failed).toBe(false);
+
+    await act(async () => {
+      second.resolve(jsonResponse(eventsBody(OTHER_PAST, [ev(OTHER_PAST)])));
+      await second.promise;
+    });
+    await advance(0);
+
+    expect(result.current.events).toEqual([ev(OTHER_PAST)]);
+    // The rerender, the settle, the request and the answer: every one of them.
+    expect(seen.length).toBeGreaterThanOrEqual(4);
+    expect(seen.filter((value) => value.failed)).toEqual([]);
+  });
+
+  it('marks the new date failed when its own fetch fails', async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ error: 'boom' }, 500))
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    const seen: Seen[] = [];
+    const { result, rerender } = render(PAST, FORWARD, seen);
+    await advance(0);
+
+    seen.length = 0;
+    rerender({ date: OTHER_PAST, forward: FORWARD });
+    await advance(SETTLE_MS);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(result.current.failed).toBe(true);
+    // False up to the answer, true after it.
+    const flags = seen.map((value) => value.failed);
+    expect(flags.at(-1)).toBe(true);
+    expect(flags.slice(0, -1).every((flag) => !flag)).toBe(true);
+  });
+
+  it('does not show a failure for a date the user left and came back to, until it fails again', async () => {
+    const again = deferred();
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ error: 'boom' }, 500))
+      .mockReturnValueOnce(again.promise);
+    const seen: Seen[] = [];
+    const { result, rerender } = render(PAST, FORWARD, seen);
+    await advance(0);
+    expect(result.current.failed).toBe(true);
+
+    // Away to a covered date and straight back, inside the settle wait: the
+    // settled date is PAST throughout, so the url is PAST again at once.
+    seen.length = 0;
+    rerender({ date: TODAY, forward: FORWARD });
+    rerender({ date: PAST, forward: FORWARD });
+    await advance(0);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(seen.length).toBeGreaterThanOrEqual(3);
+    expect(seen.filter((value) => value.failed)).toEqual([]);
+    expect(result.current.failed).toBe(false);
+
+    await act(async () => {
+      again.resolve(jsonResponse({ error: 'boom' }, 503));
+      await again.promise;
+    });
+    await advance(0);
+    expect(result.current.failed).toBe(true);
+  });
+
+  it('clears when the date loads on a second try', async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ error: 'boom' }, 500))
+      .mockResolvedValueOnce(jsonResponse(eventsBody(PAST, [ev(PAST)])));
+    const { result } = render(PAST, FORWARD);
+    await advance(0);
+    expect(result.current.failed).toBe(true);
+
+    act(() => {
+      result.current.retry();
+    });
+    await advance(0);
+
+    expect(result.current.events).toEqual([ev(PAST)]);
+    expect(result.current.failed).toBe(false);
+  });
+});
+
+describe('useEventsForDate: retry', () => {
+  it('fetches the same date again, and is not failed while it loads', async () => {
+    const second = deferred();
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ error: 'Too many requests' }, 429))
+      .mockReturnValueOnce(second.promise);
+    const { result } = render(PAST, FORWARD);
+    await advance(0);
+    expect(result.current.failed).toBe(true);
+
+    act(() => {
+      result.current.retry();
+    });
+    await advance(0);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls.map((c) => c[0])).toEqual([
+      `/api/events?from=${PAST}&days=1`,
+      `/api/events?from=${PAST}&days=1`,
+    ]);
+    expect(result.current.failed).toBe(false);
+    expect(result.current.events).toBeUndefined();
+
+    await act(async () => {
+      second.resolve(jsonResponse(eventsBody(PAST, [ev(PAST, 'CPI')])));
+      await second.promise;
+    });
+    await advance(0);
+    expect(result.current.events).toEqual([ev(PAST, 'CPI')]);
+    expect(result.current.failed).toBe(false);
+  });
+
+  it('is failed again when the retry fails too, and a further retry fetches again', async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ error: 'boom' }, 500))
+      .mockResolvedValueOnce(jsonResponse({ error: 'boom' }, 500))
+      .mockResolvedValueOnce(jsonResponse(eventsBody(PAST, [ev(PAST)])));
+    const { result } = render(PAST, FORWARD);
+    await advance(0);
+
+    act(() => {
+      result.current.retry();
+    });
+    await advance(0);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(result.current.failed).toBe(true);
+
+    act(() => {
+      result.current.retry();
+    });
+    await advance(0);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(result.current.failed).toBe(false);
+    expect(result.current.events).toEqual([ev(PAST)]);
+  });
+
+  it('refetches the date now showing, not the one that failed earlier', async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ error: 'boom' }, 500))
+      .mockResolvedValueOnce(jsonResponse({ error: 'boom' }, 500));
+    const { result, rerender } = render(PAST, FORWARD);
+    await advance(0);
+
+    rerender({ date: OTHER_PAST, forward: FORWARD });
+    await advance(SETTLE_MS);
+    expect(result.current.failed).toBe(true);
+
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(eventsBody(OTHER_PAST, [ev(OTHER_PAST)])),
+    );
+    act(() => {
+      result.current.retry();
+    });
+    await advance(0);
+
+    expect(fetchMock.mock.calls.at(-1)![0]).toBe(
+      `/api/events?from=${OTHER_PAST}&days=1`,
+    );
+    expect(result.current.events).toEqual([ev(OTHER_PAST)]);
+  });
+
+  it('does nothing on a covered date, which has no request to repeat', async () => {
+    const { result } = render(TODAY, FORWARD);
+    await advance(SETTLE_MS);
+
+    act(() => {
+      result.current.retry();
+    });
+    await advance(0);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(result.current.events).toBe(FORWARD.events);
+    expect(result.current.failed).toBe(false);
   });
 });

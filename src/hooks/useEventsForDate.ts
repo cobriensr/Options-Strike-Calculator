@@ -25,9 +25,15 @@
  *     once.
  *
  * While the fetch is waiting, loading, if it fails, or if the body fails its
- * schema, it returns `undefined`: "no events known", what a past date had before
+ * schema, `events` is `undefined`: "no events known", what a past date had before
  * this hook. The fetch's response is keyed on the `startDate` the endpoint
  * echoes, so the events of a previous date are never returned under a new one.
+ *
+ * `failed` says the fetch was tried and did not work (as against "still
+ * waiting"), so the banner can say so and App can tell the analysis the events
+ * are unknown, not none. `retry` repeats the fetch. There is no automatic retry:
+ * useFetchedData reports a 429 only as "HTTP 429" and drops Retry-After, so the
+ * wait is unknown; the Retry button leaves the timing to the user.
  *
  * The list can hold more than the date's own events (days=1 reaches the next
  * day too, and the forward list holds a month); callers filter by date.
@@ -79,10 +85,26 @@ function coveredRange(
   return { from: etToday, to: addDays(etToday, FORWARD_EVENT_DAYS) };
 }
 
+interface EventsForDate {
+  /**
+   * The selected date's events. `undefined` when none are known: the date's own
+   * fetch is waiting, loading or failed, or the forward list has not loaded.
+   */
+  readonly events: readonly EventItem[] | undefined;
+  /**
+   * True only when this date's own fetch has failed for the current request
+   * (HTTP error, network error, a body that is not JSON or fails the schema).
+   * False while it loads or waits, and for a date the forward list covers.
+   */
+  readonly failed: boolean;
+  /** Fetch this date again. Does nothing for a date the forward list covers. */
+  readonly retry: () => void;
+}
+
 export function useEventsForDate(
   selectedDate: string,
   forward: ForwardEvents | null | undefined,
-): readonly EventItem[] | undefined {
+): EventsForDate {
   // The ET date, re-read at ET midnight, so a tab left open moves the fallback.
   const etToday = useETToday();
   // Lags `selectedDate` by 350 ms; equal to it once the date has stopped moving.
@@ -107,7 +129,16 @@ export function useEventsForDate(
     if (requestDate != null) requestedDateRef.current = requestDate;
   }, [requestDate]);
 
-  const { data } = useFetchedData<EventsResponseBody>({
+  // The request date of the last COMMITTED render, null when it had none. The
+  // fetch effect of a request date has run, and reset the error, by the render
+  // after the one that first carries it, so this is how `failed` tells a fetch's
+  // own error from one left over (below).
+  const committedDateRef = useRef<string | null>(null);
+  useEffect(() => {
+    committedDateRef.current = requestDate;
+  }, [requestDate]);
+
+  const { data, error, refresh } = useFetchedData<EventsResponseBody>({
     url: requestDate == null ? null : `/api/events?from=${requestDate}&days=1`,
     // Only gates the recurring poll, which `historical` switches off.
     marketOpen: false,
@@ -120,5 +151,20 @@ export function useEventsForDate(
     responseKey: (d) => d.startDate,
   });
 
-  return fetchOwnDate ? data?.events : forward?.events;
+  // useFetchedData clears `error` only when a fetch starts. A url change does
+  // not clear it, and neither does the url going null while a date settles, so
+  // the error of the date the user left is still held in the render that first
+  // carries the new request date. It is this date's only once a render with this
+  // request date has already committed. A date left and returned to is the same
+  // case: the url went null in between.
+  const failed =
+    requestDate != null &&
+    error != null &&
+    committedDateRef.current === requestDate;
+
+  return {
+    events: fetchOwnDate ? data?.events : forward?.events,
+    failed,
+    retry: refresh,
+  };
 }
