@@ -29,6 +29,7 @@ describe('PanelPrefsModal', () => {
         onClose={() => undefined}
         panelPrefs={makePrefs()}
         isAuthenticated
+        isOwner={false}
         hasMarketOrSnapshot
       />,
     );
@@ -42,6 +43,7 @@ describe('PanelPrefsModal', () => {
         onClose={() => undefined}
         panelPrefs={makePrefs()}
         isAuthenticated
+        isOwner={false}
         hasMarketOrSnapshot
       />,
     );
@@ -64,6 +66,7 @@ describe('PanelPrefsModal', () => {
         onClose={() => undefined}
         panelPrefs={makePrefs()}
         isAuthenticated
+        isOwner={false}
         hasMarketOrSnapshot
       />,
     );
@@ -78,6 +81,7 @@ describe('PanelPrefsModal', () => {
         onClose={() => undefined}
         panelPrefs={makePrefs()}
         isAuthenticated={false}
+        isOwner={false}
         hasMarketOrSnapshot={false}
       />,
     );
@@ -95,6 +99,7 @@ describe('PanelPrefsModal', () => {
         onClose={() => undefined}
         panelPrefs={makePrefs(['sec-darkpool'])}
         isAuthenticated
+        isOwner={false}
         hasMarketOrSnapshot
       />,
     );
@@ -116,6 +121,7 @@ describe('PanelPrefsModal', () => {
         onClose={() => undefined}
         panelPrefs={prefs}
         isAuthenticated
+        isOwner={false}
         hasMarketOrSnapshot
       />,
     );
@@ -130,6 +136,7 @@ describe('PanelPrefsModal', () => {
         onClose={() => undefined}
         panelPrefs={makePrefs()}
         isAuthenticated
+        isOwner={false}
         hasMarketOrSnapshot
       />,
     );
@@ -146,6 +153,7 @@ describe('PanelPrefsModal', () => {
         onClose={() => undefined}
         panelPrefs={prefs}
         isAuthenticated
+        isOwner={false}
         hasMarketOrSnapshot
       />,
     );
@@ -162,6 +170,7 @@ describe('PanelPrefsModal', () => {
         onClose={() => undefined}
         panelPrefs={prefs}
         isAuthenticated
+        isOwner={false}
         hasMarketOrSnapshot
       />,
     );
@@ -178,6 +187,7 @@ describe('PanelPrefsModal', () => {
         onClose={() => undefined}
         panelPrefs={makePrefs()}
         isAuthenticated
+        isOwner={false}
         hasMarketOrSnapshot
       />,
     );
@@ -195,6 +205,7 @@ describe('PanelPrefsModal', () => {
         onClose={() => undefined}
         panelPrefs={prefs}
         isAuthenticated
+        isOwner={false}
         hasMarketOrSnapshot
       />,
     );
@@ -211,6 +222,7 @@ describe('PanelPrefsModal', () => {
         onClose={() => undefined}
         panelPrefs={makePrefs()}
         isAuthenticated
+        isOwner={false}
         hasMarketOrSnapshot
       />,
     );
@@ -226,6 +238,7 @@ describe('PanelPrefsModal', () => {
         onClose={() => undefined}
         panelPrefs={makePrefs()}
         isAuthenticated
+        isOwner={false}
         hasMarketOrSnapshot
       />,
     );
@@ -242,6 +255,7 @@ describe('PanelPrefsModal', () => {
         onClose={() => undefined}
         panelPrefs={makePrefs()}
         isAuthenticated
+        isOwner={false}
         hasMarketOrSnapshot
       />,
     );
@@ -258,6 +272,7 @@ describe('PanelPrefsModal', () => {
         onClose={onClose}
         panelPrefs={makePrefs()}
         isAuthenticated
+        isOwner={false}
         hasMarketOrSnapshot
       />,
     );
@@ -273,6 +288,7 @@ describe('PanelPrefsModal', () => {
         onClose={() => undefined}
         panelPrefs={makePrefs()}
         isAuthenticated
+        isOwner={false}
         hasMarketOrSnapshot
       />,
     );
@@ -295,6 +311,7 @@ describe('PanelPrefsModal', () => {
         onClose={() => undefined}
         panelPrefs={makePrefs()}
         isAuthenticated
+        isOwner={false}
         hasMarketOrSnapshot
       />,
     );
@@ -317,6 +334,7 @@ describe('PanelPrefsModal', () => {
         onClose={onClose}
         panelPrefs={makePrefs()}
         isAuthenticated
+        isOwner={false}
         hasMarketOrSnapshot
       />,
     );
@@ -331,11 +349,90 @@ describe('PanelPrefsModal', () => {
         onClose={() => undefined}
         panelPrefs={makePrefs(['sec-darkpool', 'sec-greek-flow'])}
         isAuthenticated
+        isOwner={false}
         hasMarketOrSnapshot
       />,
     );
     expect(screen.getByText(/visible$/)).toHaveTextContent(
       /^\d{1,3}\/\d{1,3} visible$/,
     );
+  });
+
+  describe('live snapshot switch', () => {
+    const SWITCH_NAME = 'Save live snapshots from this browser';
+
+    it('shows the switch to the owner', () => {
+      render(
+        <PanelPrefsModal
+          isOpen
+          onClose={() => undefined}
+          panelPrefs={makePrefs()}
+          isAuthenticated
+          isOwner
+          hasMarketOrSnapshot
+        />,
+      );
+      expect(
+        within(screen.getByRole('dialog')).getByRole('checkbox', {
+          name: SWITCH_NAME,
+        }),
+      ).toBeInTheDocument();
+    });
+
+    it('does not show the switch to a guest', () => {
+      render(
+        <PanelPrefsModal
+          isOpen
+          onClose={() => undefined}
+          panelPrefs={makePrefs()}
+          isAuthenticated
+          isOwner={false}
+          hasMarketOrSnapshot
+        />,
+      );
+      expect(screen.queryByRole('checkbox', { name: SWITCH_NAME })).toBeNull();
+      expect(
+        screen.queryByRole('button', { name: 'Use device default' }),
+      ).toBeNull();
+    });
+
+    it('does not show the switch to a public visitor', () => {
+      render(
+        <PanelPrefsModal
+          isOpen
+          onClose={() => undefined}
+          panelPrefs={makePrefs()}
+          isAuthenticated={false}
+          isOwner={false}
+          hasMarketOrSnapshot={false}
+        />,
+      );
+      expect(screen.queryByRole('checkbox', { name: SWITCH_NAME })).toBeNull();
+    });
+
+    it('keeps the switch inside the focus trap (first stop of the Tab cycle)', async () => {
+      const user = userEvent.setup();
+      render(
+        <PanelPrefsModal
+          isOpen
+          onClose={() => undefined}
+          panelPrefs={makePrefs()}
+          isAuthenticated
+          isOwner
+          hasMarketOrSnapshot
+        />,
+      );
+      const dialog = screen.getByRole('dialog');
+      const switchBox = within(dialog).getByRole('checkbox', {
+        name: SWITCH_NAME,
+      });
+      const done = within(dialog).getByRole('button', { name: 'Done' });
+
+      switchBox.focus();
+      await user.tab({ shift: true });
+      expect(done).toHaveFocus();
+      await user.tab();
+      expect(switchBox).toHaveFocus();
+    });
   });
 });

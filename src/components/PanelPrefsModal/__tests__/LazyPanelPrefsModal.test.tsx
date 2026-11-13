@@ -109,6 +109,7 @@ describe('LazyPanelPrefsModal', () => {
         onClose={vi.fn()}
         panelPrefs={makePrefs()}
         isAuthenticated
+        isOwner={false}
         hasMarketOrSnapshot
       />,
     );
@@ -126,6 +127,7 @@ describe('LazyPanelPrefsModal', () => {
         onClose={vi.fn()}
         panelPrefs={makePrefs()}
         isAuthenticated
+        isOwner={false}
         hasMarketOrSnapshot
       />,
     );
@@ -148,6 +150,7 @@ describe('LazyPanelPrefsModal', () => {
         onClose={vi.fn()}
         panelPrefs={makePrefs()}
         isAuthenticated
+        isOwner={false}
         hasMarketOrSnapshot
       />,
     );
@@ -166,6 +169,7 @@ describe('LazyPanelPrefsModal', () => {
         onClose={onClose}
         panelPrefs={prefs}
         isAuthenticated
+        isOwner={false}
         hasMarketOrSnapshot
       />,
     );
@@ -182,6 +186,7 @@ describe('LazyPanelPrefsModal', () => {
       onClose: vi.fn(),
       panelPrefs: makePrefs(),
       isAuthenticated: true,
+      isOwner: false,
       hasMarketOrSnapshot: true,
     };
     const page = (isOpen: boolean) => (
@@ -217,6 +222,7 @@ describe('LazyPanelPrefsModal', () => {
           onClose={vi.fn()}
           panelPrefs={makePrefs()}
           isAuthenticated
+          isOwner={false}
           hasMarketOrSnapshot
         />
       </>,

@@ -59,6 +59,7 @@ import {
 import { resolveGroupOrder, resolvePanelOrder } from '../../utils/panel-order';
 import type { PanelPrefs } from '../../hooks/usePanelPrefs';
 import { useFocusTrap } from '../../hooks/useFocusTrap';
+import { LiveSaveSwitch } from './LiveSaveSwitch';
 import { resolveDragEnd } from './drag-resolver';
 
 const GRIP_LABEL_PREFIX_GROUP = 'Drag to reorder group';
@@ -69,6 +70,12 @@ interface Props {
   onClose: () => void;
   panelPrefs: PanelPrefs;
   isAuthenticated: boolean;
+  /**
+   * The strict owner gate (not `isAuthenticated`, which includes guests).
+   * Shows the per-browser live-snapshot switch, which a guest or public
+   * visitor never gets. Required, so a caller can't forget it.
+   */
+  isOwner: boolean;
   hasMarketOrSnapshot: boolean;
 }
 
@@ -200,6 +207,7 @@ export function PanelPrefsModal({
   onClose,
   panelPrefs,
   isAuthenticated,
+  isOwner,
   hasMarketOrSnapshot,
 }: Props) {
   const doneButtonRef = useRef<HTMLButtonElement>(null);
@@ -348,6 +356,8 @@ export function PanelPrefsModal({
             {totalVisible}/{registry.length} visible
           </span>
         </div>
+
+        {isOwner && <LiveSaveSwitch />}
 
         <div className="-mr-2 flex-1 overflow-y-auto pr-2">
           <DndContext

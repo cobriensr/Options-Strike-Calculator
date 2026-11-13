@@ -1534,6 +1534,7 @@ export default function StrikeCalculator() {
       onClose={() => setPanelPrefsOpen(false)}
       panelPrefs={panelPrefs}
       isAuthenticated={isAuthenticated}
+      isOwner={isOwner}
       hasMarketOrSnapshot={hasMarketOrSnapshot}
     />
   );
