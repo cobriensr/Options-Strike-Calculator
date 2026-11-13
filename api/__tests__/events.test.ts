@@ -376,8 +376,12 @@ describe('GET /api/events', () => {
     await handler(mockRequest({ method: 'GET', query: { days: '30' } }), res);
 
     expect(res._status).toBe(200);
-    // Full success → write-through to the date-scoped cache.
-    expect(redis.set).toHaveBeenCalledTimes(1);
+    // Full success → write-through to the date-scoped cache. The per-release
+    // FRED date lists (`fred:` keys) are cached separately and not counted.
+    const windowWrites = vi
+      .mocked(redis.set)
+      .mock.calls.filter(([key]) => key.startsWith('events:'));
+    expect(windowWrites).toHaveLength(1);
 
     vi.unstubAllGlobals();
   });
@@ -412,10 +416,15 @@ describe('GET /api/events', () => {
 
     expect(res._status).toBe(200);
     expect((res._json as { cached: boolean }).cached).toBe(false);
-    expect(redis.get).toHaveBeenCalledTimes(1);
-    expect(redis.get).toHaveBeenCalledWith(
+    // The only events cache read is the v3 key: the v2 key is never asked
+    // for. (The per-release `fred:` keys are read too, and not counted.)
+    const eventsKeysRead = vi
+      .mocked(redis.get)
+      .mock.calls.map(([key]) => key)
+      .filter((key) => key.startsWith('events:'));
+    expect(eventsKeysRead).toEqual([
       expect.stringMatching(/^events:v3:\d{4}-\d{2}-\d{2}:30$/),
-    );
+    ]);
     expect(redis.set).toHaveBeenCalledWith(
       expect.stringMatching(/^events:v3:\d{4}-\d{2}-\d{2}:30$/),
       expect.anything(),

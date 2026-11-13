@@ -11,7 +11,7 @@ vi.mock('../_lib/logger.js', () => ({
 }));
 
 vi.mock('../_lib/sentry.js', () => ({
-  Sentry: { captureMessage: vi.fn() },
+  Sentry: { captureMessage: vi.fn(), captureException: vi.fn() },
 }));
 
 import {
@@ -30,6 +30,51 @@ import { Sentry } from '../_lib/sentry.js';
 const CPI_DAY = '2026-05-12';
 const FOMC_SEP_DAY = '2026-06-17';
 const DAY_KEY = `events:day:v3:${CPI_DAY}`;
+const RELEASE_KEY = 'fred:release-dates:v1';
+const RELEASE_TTL_SEC = 12 * 60 * 60;
+
+/** Redis `set` calls whose key starts with `prefix`, as [key, value, options]. */
+function writesTo(prefix: string) {
+  return vi
+    .mocked(redis.set)
+    .mock.calls.filter(([key]) => key.startsWith(prefix));
+}
+
+/** The keys passed to Redis `get` that start with `prefix`. */
+function keysRead(prefix: string): string[] {
+  return vi
+    .mocked(redis.get)
+    .mock.calls.map(([key]) => key)
+    .filter((key) => key.startsWith(prefix));
+}
+
+/** The release ID in a FRED `release/dates` request URL. */
+function releaseIdOf(url: string): number {
+  return Number(new URL(url).searchParams.get('release_id'));
+}
+
+/** The release IDs a FRED fetch mock was asked for, ascending. */
+function releasesRequested(fetchMock: {
+  mock: { calls: ReadonlyArray<readonly [string]> };
+}): number[] {
+  return fetchMock.mock.calls
+    .map(([url]) => releaseIdOf(url))
+    .sort((a, b) => a - b);
+}
+
+/**
+ * Redis answers each release-date key from `cachedByRelease` (a release it
+ * does not list is a miss) and every other key with a miss.
+ */
+function stubCachedReleaseDates(
+  cachedByRelease: Partial<Record<number, unknown>>,
+) {
+  vi.mocked(redis.get).mockImplementation((key: string) => {
+    if (!key.startsWith(`${RELEASE_KEY}:`)) return Promise.resolve(null);
+    const releaseId = Number(key.slice(RELEASE_KEY.length + 1));
+    return Promise.resolve(cachedByRelease[releaseId] ?? null);
+  });
+}
 
 /**
  * FRED answers every tracked release with its own dates. Finnhub answers
@@ -718,6 +763,232 @@ describe('market-events', () => {
     });
   });
 
+  // FRED's `release/dates` answers a release's whole history, so each release's
+  // date list is kept in Redis for 12 hours and a new window costs no FRED
+  // calls while the lists are warm.
+  describe('FRED release-date cache', () => {
+    const START = '2026-05-12';
+    const END = '2026-05-14';
+    const ALL_RELEASES = [9, 10, 46, 50, 53, 54, 192];
+
+    it('serves a hit with no FRED fetch, keeping only the dates inside the window', async () => {
+      stubCachedReleaseDates({
+        ...Object.fromEntries(ALL_RELEASES.map((id) => [id, []])),
+        10: ['2026-05-11', START, END, '2026-05-15'],
+        50: ['2026-05-13'],
+      });
+      const fetchMock = stubFredFetch({ 10: ['2026-09-09'] });
+
+      const { events, complete } = await fetchMacroEvents(START, END);
+
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(complete).toBe(true);
+      expect(events.map((e) => [e.date, e.event, e.source])).toEqual([
+        [START, 'CPI', 'fred'],
+        ['2026-05-13', 'NFP', 'fred'],
+        [END, 'CPI', 'fred'],
+      ]);
+      expect(redis.get).toHaveBeenCalledWith(`${RELEASE_KEY}:10`);
+      expect(redis.set).not.toHaveBeenCalled();
+    });
+
+    it('on a miss fetches each release once and writes its full sorted date list for 12 hours', async () => {
+      const fetchMock = stubFredFetch({
+        10: ['2026-06-10', START, '2026-04-10'],
+        50: ['2026-05-08'],
+      });
+
+      const { events, complete } = await fetchMacroEvents(START, END);
+
+      expect(complete).toBe(true);
+      expect(events.map((e) => [e.date, e.event])).toEqual([[START, 'CPI']]);
+      expect(releasesRequested(fetchMock)).toEqual(ALL_RELEASES);
+      expect(writesTo(RELEASE_KEY)).toHaveLength(7);
+      // The whole history, sorted, as date strings only: not the window, and
+      // not FRED's entries.
+      expect(redis.set).toHaveBeenCalledWith(
+        `${RELEASE_KEY}:10`,
+        ['2026-04-10', START, '2026-06-10'],
+        { ex: RELEASE_TTL_SEC },
+      );
+      expect(redis.set).toHaveBeenCalledWith(
+        `${RELEASE_KEY}:50`,
+        ['2026-05-08'],
+        { ex: RELEASE_TTL_SEC },
+      );
+      expect(redis.set).toHaveBeenCalledWith(`${RELEASE_KEY}:9`, [], {
+        ex: RELEASE_TTL_SEC,
+      });
+    });
+
+    it('fetches only the release that is not cached', async () => {
+      stubCachedReleaseDates({ 10: [START] });
+      const fetchMock = stubFredFetch({ 50: ['2026-05-13'] });
+
+      const { events } = await fetchMacroEvents(START, END);
+
+      expect(releasesRequested(fetchMock)).toEqual([9, 46, 50, 53, 54, 192]);
+      expect(events.map((e) => [e.date, e.event])).toEqual([
+        [START, 'CPI'],
+        ['2026-05-13', 'NFP'],
+      ]);
+      // A hit is not rewritten, so it does not stretch its own 12 hours.
+      expect(writesTo(RELEASE_KEY).map(([key]) => key)).not.toContain(
+        `${RELEASE_KEY}:10`,
+      );
+      expect(writesTo(RELEASE_KEY)).toHaveLength(6);
+    });
+
+    it.each([
+      ['non-OK', nonOk],
+      ['200 with an empty object', okJson({})],
+      ['200 with a null release list', okJson({ release_dates: null })],
+      [
+        '200 with a release list that is not an array',
+        okJson({ release_dates: 'oops' }),
+      ],
+      ['200 with a null body', okJson(null)],
+    ])('writes nothing when FRED answers %s', async (_label, fred) => {
+      stubSources({ fred });
+
+      const { complete } = await fetchMacroEvents(START, END);
+
+      expect(complete).toBe(false);
+      expect(redis.set).not.toHaveBeenCalled();
+    });
+
+    it('writes nothing, and rejects, when a FRED body is not JSON', async () => {
+      stubSources({ fred: unparseable });
+
+      await expect(fetchMacroEvents(START, END)).rejects.toThrow(
+        'Unexpected token <',
+      );
+      expect(redis.set).not.toHaveBeenCalled();
+    });
+
+    it('caches the releases that answered well when another answers non-OK', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn((url: string) => {
+          const releaseId = releaseIdOf(url);
+          return releaseId === 10
+            ? nonOk()
+            : okJson({
+                release_dates: [{ release_id: releaseId, date: START }],
+              })();
+        }),
+      );
+
+      const { complete } = await fetchMacroEvents(START, END);
+
+      expect(complete).toBe(false);
+      expect(
+        writesTo(RELEASE_KEY)
+          .map(([key]) => key)
+          .sort(),
+      ).toEqual(
+        ALL_RELEASES.filter((id) => id !== 10)
+          .map((id) => `${RELEASE_KEY}:${id}`)
+          .sort(),
+      );
+    });
+
+    // A cached null would fail the string check on every read, so the release
+    // would miss for its whole 12 hours.
+    it('writes only the string dates when FRED sends an entry with no date', async () => {
+      stubSources({
+        fred: okJson({
+          release_dates: [{ release_id: 10, date: START }, { release_id: 10 }],
+        }),
+      });
+
+      await fetchMacroEvents(START, END);
+
+      expect(redis.set).toHaveBeenCalledWith(`${RELEASE_KEY}:10`, [START], {
+        ex: RELEASE_TTL_SEC,
+      });
+    });
+
+    it.each([
+      ['a string', START],
+      ['an object', { 0: START }],
+      ['an array of objects', [{ release_id: 10, date: START }]],
+      ['an array holding a non-string', [START, 20260513]],
+    ])(
+      'treats %s in the cache as a miss and repairs it',
+      async (_label, cached) => {
+        stubCachedReleaseDates({ 10: cached });
+        const fetchMock = stubFredFetch({ 10: [START] });
+
+        const { events } = await fetchMacroEvents(START, END);
+
+        expect(releasesRequested(fetchMock)).toContain(10);
+        expect(events.map((e) => [e.date, e.event])).toEqual([[START, 'CPI']]);
+        expect(redis.set).toHaveBeenCalledWith(`${RELEASE_KEY}:10`, [START], {
+          ex: RELEASE_TTL_SEC,
+        });
+      },
+    );
+
+    it('falls through to FRED, and logs a warning, when the Redis read throws', async () => {
+      vi.mocked(redis.get).mockRejectedValue(new Error('redis read failed'));
+      const fetchMock = stubFredFetch({ 10: [START] });
+
+      const { events, complete } = await fetchMacroEvents(START, END);
+
+      expect(complete).toBe(true);
+      expect(events.map((e) => e.event)).toEqual(['CPI']);
+      expect(fetchMock).toHaveBeenCalledTimes(7);
+      expect(logger.warn).toHaveBeenCalledWith(
+        { err: expect.any(Error), releaseId: 10 },
+        'Failed to read FRED release dates from Redis',
+      );
+      expect(Sentry.captureMessage).not.toHaveBeenCalled();
+      expect(Sentry.captureException).not.toHaveBeenCalled();
+    });
+
+    it('still returns the dates, and logs one warning per release, when the Redis write throws', async () => {
+      vi.mocked(redis.set).mockRejectedValue(new Error('redis write failed'));
+      stubFredFetch({ 10: [START] });
+
+      const { events, complete } = await fetchMacroEvents(START, END);
+
+      expect(complete).toBe(true);
+      expect(events.map((e) => e.event)).toEqual(['CPI']);
+      expect(logger.warn).toHaveBeenCalledTimes(7);
+      expect(logger.warn).toHaveBeenCalledWith(
+        { err: expect.any(Error), releaseId: 10 },
+        'Failed to cache FRED release dates in Redis',
+      );
+      expect(Sentry.captureMessage).not.toHaveBeenCalled();
+      expect(Sentry.captureException).not.toHaveBeenCalled();
+    });
+
+    it('lets a second date reuse the release lists the first date fetched', async () => {
+      const store = new Map<string, unknown>();
+      vi.mocked(redis.get).mockImplementation((key) =>
+        Promise.resolve(store.get(key) ?? null),
+      );
+      vi.mocked(redis.set).mockImplementation((key, value) => {
+        store.set(key, value);
+        return Promise.resolve('OK');
+      });
+      const fetchMock = stubFredFetch({ 10: [CPI_DAY, '2026-06-10'] });
+
+      const first = await getEventsForDate(CPI_DAY);
+      expect(fetchMock).toHaveBeenCalledTimes(7);
+      fetchMock.mockClear();
+      const second = await getEventsForDate('2026-06-10');
+
+      expect(first.events.map((e) => e.event)).toEqual(['CPI']);
+      expect(second.events.map((e) => [e.date, e.event])).toEqual([
+        ['2026-06-10', 'CPI'],
+      ]);
+      expect(second.fromCache).toBe(false);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+  });
+
   describe('getEventsForDate', () => {
     it('returns the cached events on a hit and makes no fetch', async () => {
       const cached = [event()];
@@ -748,7 +1019,7 @@ describe('market-events', () => {
       expect(result.fromCache).toBe(false);
       expect(result.events.map((e) => e.event)).toEqual(['CPI']);
       expect(urlsCalled(fetchMock).length).toBeGreaterThan(0);
-      expect(redis.set).toHaveBeenCalledTimes(1);
+      expect(writesTo('events:day:')).toHaveLength(1);
       expect(redis.set).toHaveBeenCalledWith(
         DAY_KEY,
         { data: result.events, cachedAt: expect.any(Number) },
@@ -848,8 +1119,9 @@ describe('market-events', () => {
 
       await getEventsForDate(CPI_DAY);
 
-      expect(redis.set).toHaveBeenCalledTimes(1);
-      const [key, entry, options] = vi.mocked(redis.set).mock.calls[0] ?? [];
+      const dayWrites = writesTo('events:day:');
+      expect(dayWrites).toHaveLength(1);
+      const [key, entry, options] = dayWrites[0] ?? [];
       expect(key).toBe(DAY_KEY);
       expect(options).toEqual({ ex: 7 * 24 * 60 * 60 });
       expect((entry as { complete?: boolean }).complete).not.toBe(false);
@@ -1025,7 +1297,7 @@ describe('market-events', () => {
         expect(
           urlsCalled(fetchMock).filter((url) => url.includes('finnhub')),
         ).toEqual([]);
-        expect(redis.set).toHaveBeenCalledTimes(1);
+        expect(writesTo('events:day:')).toHaveLength(1);
         expect(redis.set).toHaveBeenCalledWith(
           DAY_KEY,
           { data: [], cachedAt: expect.any(Number) },
@@ -1046,8 +1318,7 @@ describe('market-events', () => {
 
       const result = await getEventsForDate(CPI_DAY);
 
-      expect(redis.get).toHaveBeenCalledTimes(1);
-      expect(redis.get).toHaveBeenCalledWith(DAY_KEY);
+      expect(keysRead('events:day:')).toEqual([DAY_KEY]);
       expect(result.fromCache).toBe(false);
       expect(result.events.map((e) => e.event)).toEqual(['CPI']);
       expect(redis.set).toHaveBeenCalledWith(DAY_KEY, expect.anything(), {

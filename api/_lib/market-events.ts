@@ -314,9 +314,62 @@ export const CACHE_TTL_SEC = 7 * 24 * 60 * 60; // 7 days (key is date-scoped)
 // than FRED allows per key. Five minutes caps that to one retry per window.
 const INCOMPLETE_CACHE_TTL_SEC = 5 * 60;
 
+// Each release's whole date history, one key per release ID, so a corrected ID
+// in TRACKED_RELEASES reads a new key and needs no version bump.
+const RELEASE_DATES_KEY = 'fred:release-dates:v1';
+// FRED's schedule changes rarely, and 12 hours picks up a newly published
+// schedule within half a day.
+const RELEASE_DATES_TTL_SEC = 12 * 60 * 60;
+
 interface FredReleaseResult {
   entries: FredReleaseDateEntry[];
   ok: boolean;
+}
+
+/**
+ * A release's cached date list, or null on a miss. A value that is not a list
+ * of strings is a miss too, so the fetch repairs it. A Redis failure is a miss;
+ * it is logged here, not sent to Sentry, so an outage cannot flood it with one
+ * report per release per call.
+ */
+async function readCachedReleaseDates(
+  releaseId: number,
+): Promise<string[] | null> {
+  try {
+    const cached = await redis.get<unknown>(
+      `${RELEASE_DATES_KEY}:${releaseId}`,
+    );
+    if (Array.isArray(cached) && cached.every((d) => typeof d === 'string')) {
+      return cached as string[];
+    }
+  } catch (err) {
+    logger.warn(
+      { err, releaseId },
+      'Failed to read FRED release dates from Redis',
+    );
+  }
+  return null;
+}
+
+/** Keeps a release's full sorted date list as strings; a failure only logs. */
+async function writeCachedReleaseDates(
+  releaseId: number,
+  releaseDates: readonly FredReleaseDateEntry[],
+): Promise<void> {
+  const dates = releaseDates
+    .map((r) => r.date)
+    .filter((d) => typeof d === 'string')
+    .sort((a, b) => a.localeCompare(b));
+  try {
+    await redis.set(`${RELEASE_DATES_KEY}:${releaseId}`, dates, {
+      ex: RELEASE_DATES_TTL_SEC,
+    });
+  } catch (err) {
+    logger.warn(
+      { err, releaseId },
+      'Failed to cache FRED release dates in Redis',
+    );
+  }
 }
 
 async function fetchReleaseDates(
@@ -325,6 +378,16 @@ async function fetchReleaseDates(
   startDate: string,
   endDate: string,
 ): Promise<FredReleaseResult> {
+  const cachedDates = await readCachedReleaseDates(releaseId);
+  if (cachedDates) {
+    return {
+      entries: cachedDates
+        .filter((date) => date >= startDate && date <= endDate)
+        .map((date) => ({ release_id: releaseId, date })),
+      ok: true,
+    };
+  }
+
   const params = new URLSearchParams({
     release_id: String(releaseId),
     api_key: apiKey,
@@ -361,6 +424,8 @@ async function fetchReleaseDates(
     return { entries: [], ok: false };
   }
 
+  await writeCachedReleaseDates(releaseId, data.release_dates);
+
   return {
     entries: data.release_dates.filter(
       (r) => r.date >= startDate && r.date <= endDate,
@@ -392,7 +457,10 @@ function sortEvents(events: EventItem[]): EventItem[] {
  * older dates. It never calls Finnhub and never reads `FINNHUB_API_KEY`.
  *
  * FRED's `release/dates` returns all history and the range is filtered here,
- * so a past range works as well as a forward one.
+ * so a past range works as well as a forward one. Each release's date list is
+ * kept in Redis for 12 hours (`fred:release-dates:v1:{releaseId}`), so a new
+ * window costs no FRED call while the lists are warm. Redis failing leaves the
+ * lookup going to FRED as before.
  *
  * `complete` is true only when `FRED_API_KEY` is set and every FRED release
  * answered with a well-formed payload. Without the key it returns the static
