@@ -8,6 +8,7 @@ import StrikeCalculator from './App';
 import ErrorBoundary from './components/ErrorBoundary';
 import { ToastProvider } from './components/Toast';
 import { startLiveSessionSignals } from './lib/live-session-signal';
+import { startOwnerSessionRenewal } from './lib/owner-session-renewal';
 import {
   markNeedsRefresh,
   setUpdateFn,
@@ -235,6 +236,14 @@ if (import.meta.env.PROD)
 // imported module throwing at import time) never gets here, so a reload into
 // it sends no open signal and can still hide a stall.
 startLiveSessionSignals();
+
+// Renews the owner sign-in: asks /api/auth/whoami at start and then at most
+// once a day while the window stays open, so the 400-day owner cookie of a
+// window that is never closed does not run out
+// (owner-session-long-lived-2026-11-11.md). Started outside React, like the
+// signals above, so a render failure in a new build doesn't stop the renewal.
+// whoami has no bot check, so unlike those signals it needs no botid entry.
+startOwnerSessionRenewal();
 
 const rootEl = document.getElementById('root');
 if (!rootEl) throw new Error('Root element not found');
