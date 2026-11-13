@@ -76,6 +76,7 @@ import {
   withCronInstrumentation,
   type CronResult,
 } from '../_lib/cron-instrumentation.js';
+import { SNAPSHOT_CLOSED_KEY_PREFIX } from '../_lib/constants.js';
 import { getDb, withDbRetry } from '../_lib/db.js';
 import { neonIso } from '../_lib/db-date.js';
 import logger from '../_lib/logger.js';
@@ -92,8 +93,6 @@ import {
 
 const JOB_NAME = 'check-live-snapshots';
 const KEY_PREFIX = 'snapshot-stale-alert';
-/** Written by `api/snapshot-close.ts`: `{prefix}:{ET date}` = ISO close time. */
-const CLOSED_KEY_PREFIX = 'snapshot-app-closed';
 const MINUTE_MS = 60_000;
 /** Live rows save every 5 min while the page is open: 30 min is six misses. */
 const STALE_AFTER_MIN = 30;
@@ -147,7 +146,9 @@ function formatCtClock(ms: number): string {
  * number, hence the string check.
  */
 async function readCloseMarkerMs(today: string): Promise<number | null> {
-  const marker = await redis.get<unknown>(`${CLOSED_KEY_PREFIX}:${today}`);
+  const marker = await redis.get<unknown>(
+    `${SNAPSHOT_CLOSED_KEY_PREFIX}:${today}`,
+  );
   if (marker == null) return null;
   const closedAtMs =
     typeof marker === 'string' ? Date.parse(marker) : Number.NaN;

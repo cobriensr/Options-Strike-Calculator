@@ -438,3 +438,17 @@ export const KEPT_RETENTION_DAYS = 7;
  * realized R = -1 — bound their candidates to this window.
  */
 export const WS_OPTION_TRADES_RETENTION_DAYS = 2;
+
+// ============================================================
+// LIVE SNAPSHOT CLOSE MARKER
+// ============================================================
+
+/**
+ * Redis key prefix of the "the owner closed the app" marker, one key per ET
+ * date: `{prefix}:{ET date}` = the ISO time of the latest close. Written
+ * (POST) and withdrawn (DELETE) by `api/snapshot-close.ts`, read by
+ * `api/cron/check-live-snapshots.ts`. One constant, so the writer and the
+ * reader cannot drift apart: a renamed prefix on one side would leave every
+ * close unseen and every stall alerted.
+ */
+export const SNAPSHOT_CLOSED_KEY_PREFIX = 'snapshot-app-closed';
