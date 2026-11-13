@@ -29,8 +29,10 @@ import { neon, type NeonQueryFunction } from '@neondatabase/serverless';
 import { MIGRATIONS } from './db-migrations.js';
 import { DB_RETRY_ATTEMPTS } from './constants.js';
 import { metrics } from './sentry.js';
+import { TransientDbError } from './transient-db-error.js';
 
 export type { Migration } from './db-migrations.js';
+export { TransientDbError };
 
 let _db: NeonQueryFunction<false, false> | null = null;
 
@@ -118,18 +120,11 @@ export async function safeDbVoid(op: () => Promise<void>): Promise<void> {
 const DB_RETRYABLE_RX =
   /timeout|ECONNREFUSED|ECONNRESET|ENETUNREACH|ENOTFOUND|fetch failed|socket hang up|TLS connection|EAI_AGAIN|recovery_mode|server_login_retry|Too many connections|connection closed|server conn crashed/i;
 
-/**
- * Thrown by withDbRetry when it exhausts retries on a transient (retryable)
- * DB error. A typed marker so HTTP handlers can distinguish a real Neon blip
- * from a genuine bug whose message happens to contain a transient token.
- */
-export class TransientDbError extends Error {
-  constructor(cause: unknown) {
-    super(cause instanceof Error ? cause.message : String(cause));
-    this.name = 'TransientDbError';
-    this.cause = cause;
-  }
-}
+// `TransientDbError` (transient-db-error.ts, re-exported above) is thrown by
+// withDbRetry when it exhausts retries on a transient (retryable) DB error.
+// A typed marker so HTTP handlers and the cron wrapper can distinguish a real
+// Neon blip from a genuine bug whose message happens to contain a transient
+// token.
 
 export function isRetryableDbError(err: unknown): boolean {
   // A TransientDbError is, by construction, a retry-exhausted transient
