@@ -958,6 +958,128 @@ describe('fetch-spx-candles-1m handler', () => {
     expect(mockQuery).not.toHaveBeenCalled();
   });
 
+  describe('Schwab login lapsed (SCHWAB_TOKEN_EXPIRED)', () => {
+    // schwab.ts handleLapsedLogin already files `schwab.auth.login_lapsed`
+    // once per lapse; this cron must not add two exceptions per minute.
+    beforeEach(() => {
+      mockSchwabFetch.mockResolvedValue({
+        ok: false as const,
+        status: 401,
+        error: '[SCHWAB_TOKEN_EXPIRED] Schwab login expired',
+        code: 'SCHWAB_TOKEN_EXPIRED',
+      });
+    });
+
+    it('files no Sentry exception or message, for either symbol', async () => {
+      await handler(AUTHORIZED_REQ(), mockResponse());
+
+      expect(Sentry.captureException).not.toHaveBeenCalled();
+      expect(Sentry.captureMessage).not.toHaveBeenCalled();
+    });
+
+    it('still fails the run: 500, status error, nothing fetched or written, reason schwab_logged_out', async () => {
+      const res = mockResponse();
+      await handler(AUTHORIZED_REQ(), res);
+
+      // 500 turns the Sentry cron monitor red (one incident after the
+      // monitor's failure threshold), without an exception event.
+      expect(res._status).toBe(500);
+      expect(res._json).toMatchObject({
+        job: JOB,
+        status: 'error',
+        success: false,
+        failureCount: 2,
+        stored: false,
+        totalStored: 0,
+        reason: 'schwab_logged_out',
+        spx: { stored: 0 },
+        ndx: { stored: 0 },
+      });
+      expect(axiomEvent()).toMatchObject({
+        status: 'error',
+        totalStored: 0,
+        reason: 'schwab_logged_out',
+      });
+      expect(mockUwFetch).not.toHaveBeenCalled();
+      expect(mockQuery).not.toHaveBeenCalled();
+      expect(mockTransaction).not.toHaveBeenCalled();
+      expect(writeCalls()).toEqual([]);
+    });
+
+    it('names the cause on each symbol and logs it at warn', async () => {
+      const res = mockResponse();
+      await handler(AUTHORIZED_REQ(), res);
+
+      const { spx, ndx } = res._json as {
+        spx: { reason: string };
+        ndx: { reason: string };
+      };
+      expect(spx.reason).toMatch(/SPX\/SPY.*Schwab is logged out/);
+      expect(ndx.reason).toMatch(/NDX\/QQQ.*Schwab is logged out/);
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          err: expect.objectContaining({ name: 'SchwabLoggedOutError' }),
+          symbol: 'SPX',
+        }),
+        'fetch-spx-candles-1m: symbol failed',
+      );
+      expect(logger.error).not.toHaveBeenCalled();
+    });
+
+    it('keeps counting the unavailable ratio per symbol', async () => {
+      await handler(AUTHORIZED_REQ(), mockResponse());
+
+      expect(metrics.increment).toHaveBeenCalledWith(
+        'fetch_spx_candles_1m.ratio_unavailable_spx',
+      );
+      expect(metrics.increment).toHaveBeenCalledWith(
+        'fetch_spx_candles_1m.ratio_unavailable_ndx',
+      );
+    });
+  });
+
+  // Only the logged-out code is expected. Every other Schwab failure keeps
+  // its per-symbol exception, including the token-path failure that is not a
+  // lapse (token store down, refresh endpoint 5xx).
+  it.each([
+    ['SCHWAB_TOKEN_ERROR', 500],
+    ['SCHWAB_API_REJECTED', 401],
+    ['SCHWAB_API_NETWORK', 504],
+  ] as const)(
+    'a %s quote failure is still captured once per symbol, with no logged-out reason',
+    async (code, status) => {
+      mockSchwabFetch.mockResolvedValue({
+        ok: false as const,
+        status,
+        error: `[${code}] Schwab quote failure`,
+        code,
+      });
+
+      const res = mockResponse();
+      await handler(AUTHORIZED_REQ(), res);
+
+      expect(res._status).toBe(500);
+      expect(res._json).toMatchObject({ status: 'error', failureCount: 2 });
+      expect(res._json).not.toMatchObject({ reason: 'schwab_logged_out' });
+      expect(Sentry.captureException).toHaveBeenCalledTimes(2);
+      expect(Sentry.captureException).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message:
+            'fetch-spx-candles-1m: SPX/SPY ratio unavailable from Schwab',
+        }),
+        { tags: { symbol: 'SPX' } },
+      );
+      expect(Sentry.captureException).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message:
+            'fetch-spx-candles-1m: NDX/QQQ ratio unavailable from Schwab',
+        }),
+        { tags: { symbol: 'NDX' } },
+      );
+      expect(axiomEvent()).not.toHaveProperty('reason');
+    },
+  );
+
   it('Schwab omits the NDX price → status partial, SPX still stored', async () => {
     mockSchwabFetch.mockResolvedValue(schwabQuotes({ $NDX: { quote: {} } }));
 
@@ -1261,6 +1383,23 @@ describe('fetch-spx-candles-1m handler', () => {
 
       const calls = await checkIns(2);
       expect(calls.map((c) => c.body.status)).toEqual(['in_progress', 'error']);
+    });
+
+    it('sends an error check-in on a Schwab lapse, with no exception filed', async () => {
+      mockSchwabFetch.mockResolvedValue({
+        ok: false as const,
+        status: 401,
+        error: '[SCHWAB_TOKEN_EXPIRED] Schwab login expired',
+        code: 'SCHWAB_TOKEN_EXPIRED',
+      });
+
+      await handler(AUTHORIZED_REQ(), mockResponse());
+
+      // The monitor goes red (it opens one incident after its failure
+      // threshold) while Sentry gets no per-minute exception events.
+      const calls = await checkIns(2);
+      expect(calls.map((c) => c.body.status)).toEqual(['in_progress', 'error']);
+      expect(Sentry.captureException).not.toHaveBeenCalled();
     });
   });
 });

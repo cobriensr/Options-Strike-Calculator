@@ -73,6 +73,17 @@
  * when both do; 'ok' means both landed. 'error' responds 500, which turns
  * the Sentry cron monitor red (withCronCheckin keys its check-in on the
  * HTTP status). A failed HWM read is a crash: 500, Sentry, Axiom 'error'.
+ *
+ * One failure is not an exception: the Schwab quote failing with
+ * SCHWAB_TOKEN_EXPIRED (the login lapsed). `handleLapsedLogin` files one
+ * `schwab.auth.login_lapsed` per lapse, so both legs fail with a
+ * SchwabLoggedOutError that is logged at warn and not captured (a lapse used
+ * to file two exceptions a minute until the owner re-authenticated). The run
+ * still ends 'error' and responds 500, with `reason: 'schwab_logged_out'`:
+ * no candles were stored, and a session of 1-minute bars missed is lost
+ * data, so the cron monitor stays red and opens one incident at its failure
+ * threshold. Any other Schwab failure keeps its per-symbol exception.
+ *
  * Malformed candles (unparseable start_time, price, volume or
  * market_time) are dropped, counted and raised as one Sentry warning per
  * symbol, so one bad row can't fail the whole batch every minute.
@@ -133,6 +144,35 @@ interface RatioResult {
   symbol: IndexSymbol;
   ratio: number;
   indexPrice: number;
+}
+
+/** The run-level `reason` when the Schwab login lapsed (Axiom and response). */
+const LOGGED_OUT_REASON = 'schwab_logged_out';
+
+/**
+ * A symbol's ratio when the quote failed with SCHWAB_TOKEN_EXPIRED: the
+ * login lapsed. Distinct from `null` (any other reason there is no ratio).
+ */
+const LOGGED_OUT = 'logged_out';
+
+/** One symbol's Schwab ratio: usable, lapsed login, or otherwise missing. */
+type RatioOutcome = RatioResult | typeof LOGGED_OUT | null;
+
+/**
+ * Thrown for a symbol whose ratio is unavailable because Schwab is logged
+ * out. That is expected until the owner re-authenticates, and
+ * `handleLapsedLogin` (api/_lib/schwab.ts) already files one
+ * `schwab.auth.login_lapsed` per lapse. The per-symbol catch therefore logs
+ * it and still fails the symbol, but files no Sentry exception, which used to
+ * mean two a minute for the whole lapse.
+ */
+class SchwabLoggedOutError extends Error {
+  constructor(symbol: IndexSymbol, etfTicker: EtfTicker) {
+    super(
+      `fetch-spx-candles-1m: ${symbol}/${etfTicker} ratio unavailable, Schwab is logged out`,
+    );
+    this.name = 'SchwabLoggedOutError';
+  }
 }
 
 /** UW 1-minute candle row from /stock/<TICKER>/ohlc/1m. */
@@ -243,25 +283,26 @@ function validateRatio(
  * minute's ETF candle to the real index level at that moment.
  *
  * Returns a Map keyed by index symbol; null entries indicate that
- * symbol's data was unavailable. Per-symbol failures are independent
+ * symbol's data was unavailable, and LOGGED_OUT that the whole quote failed
+ * because the Schwab login lapsed. Per-symbol failures are independent
  * (e.g. NDX missing while SPX is fine still lets SPX proceed).
  */
-async function fetchSchwabRatios(): Promise<
-  Map<IndexSymbol, RatioResult | null>
-> {
+async function fetchSchwabRatios(): Promise<Map<IndexSymbol, RatioOutcome>> {
   const result = await schwabFetch<Record<string, SchwabQuoteEntry>>(
     '/quotes?symbols=SPY%2C%24SPX%2CQQQ%2C%24NDX&fields=quote',
   );
 
-  const ratios = new Map<IndexSymbol, RatioResult | null>();
+  const ratios = new Map<IndexSymbol, RatioOutcome>();
 
   if (!result.ok) {
     logger.warn(
       { status: result.status },
       'fetch-spx-candles-1m: Schwab quote fetch failed',
     );
-    ratios.set('SPX', null);
-    ratios.set('NDX', null);
+    const unavailable =
+      result.code === 'SCHWAB_TOKEN_EXPIRED' ? LOGGED_OUT : null;
+    ratios.set('SPX', unavailable);
+    ratios.set('NDX', unavailable);
     return ratios;
   }
 
@@ -458,17 +499,20 @@ async function ingestIndex(
   apiKey: string,
   today: string,
   config: IndexConfig,
-  ratioResult: RatioResult | null,
+  ratioResult: RatioOutcome,
   hwmMs: number | undefined,
   clockMinuteMs: number,
   result: SymbolResult,
 ): Promise<void> {
   const { symbol, etfTicker } = config;
 
-  if (ratioResult === null) {
+  if (ratioResult === null || ratioResult === LOGGED_OUT) {
     metrics.increment(
       `fetch_spx_candles_1m.ratio_unavailable_${symbol.toLowerCase()}`,
     );
+    if (ratioResult === LOGGED_OUT) {
+      throw new SchwabLoggedOutError(symbol, etfTicker);
+    }
     throw new Error(
       `fetch-spx-candles-1m: ${symbol}/${etfTicker} ratio unavailable from Schwab`,
     );
@@ -571,6 +615,8 @@ export default withCronCheckin(JOB, async (req, res) => {
 
     const results = {} as Record<IndexSymbol, SymbolResult>;
     let failureCount = 0;
+    // Failures that are a Schwab lapse: expected, so not sent to Sentry.
+    let loggedOutCount = 0;
 
     // Sequential (not Promise.all) so this handler only ever holds one
     // UW concurrency slot at a time. Running both legs in parallel
@@ -605,7 +651,12 @@ export default withCronCheckin(JOB, async (req, res) => {
         failureCount++;
         result.reason = err instanceof Error ? err.message : String(err);
         logger.warn({ err, ...result }, 'fetch-spx-candles-1m: symbol failed');
-        Sentry.captureException(err, { tags: { symbol } });
+        // Decided per failure, so a lapse never hides an unrelated one.
+        if (err instanceof SchwabLoggedOutError) {
+          loggedOutCount++;
+        } else {
+          Sentry.captureException(err, { tags: { symbol } });
+        }
       }
       if (result.malformed > 0) {
         logger.warn(
@@ -623,6 +674,12 @@ export default withCronCheckin(JOB, async (req, res) => {
     const { SPX: spx, NDX: ndx } = results;
     const status = runStatus(failureCount);
     const totalStored = spx.stored + ndx.stored;
+    // Set only when the lapse is the whole story, so the run's cause is
+    // visible without opening the per-symbol blocks.
+    const runReason =
+      failureCount > 0 && loggedOutCount === failureCount
+        ? LOGGED_OUT_REASON
+        : undefined;
 
     logger.info(
       { spx, ndx, totalStored, failureCount, status, date: today },
@@ -630,19 +687,23 @@ export default withCronCheckin(JOB, async (req, res) => {
     );
 
     // Same top-level keys as before (status, totalStored, durationMs); the
-    // spx / ndx objects land in Axiom's `meta`.
+    // spx / ndx objects land in Axiom's `meta`. A lapse adds `reason`, an
+    // existing Axiom column.
     await reportCronRun(JOB, {
       status,
       spx,
       ndx,
       totalStored,
       durationMs: Date.now() - startTime,
+      ...(runReason === undefined ? {} : { reason: runReason }),
     });
 
     // Top-level fields mirror SPX for backward compatibility with
     // existing monitors / dashboards that key on { stored, ratio,
-    // spxPrice, reason }. Per-symbol detail is in the spx / ndx blocks.
-    // 'error' answers 500 so withCronCheckin sends an error check-in.
+    // spxPrice, reason }; `reason` is the lapse slug when Schwab is logged
+    // out, else SPX's message. Per-symbol detail is in the spx / ndx blocks.
+    // 'error' answers 500 so withCronCheckin sends an error check-in, which
+    // is how a lapse stays visible without a per-symbol Sentry exception.
     return res.status(status === 'error' ? 500 : 200).json({
       job: JOB,
       status,
@@ -653,7 +714,7 @@ export default withCronCheckin(JOB, async (req, res) => {
       ratio:
         spx.ratio != null ? Math.round(spx.ratio * 10000) / 10000 : undefined,
       spxPrice: spx.indexPrice,
-      reason: spx.reason,
+      reason: runReason ?? spx.reason,
       spx,
       ndx,
       totalStored,
