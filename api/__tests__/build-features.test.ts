@@ -39,13 +39,11 @@ const OUTSIDE_WINDOW_TIME = new Date('2026-03-24T14:00:00.000Z');
 const WEEKEND_TIME = new Date('2026-03-28T21:30:00.000Z');
 
 /**
- * The handler now calls SET statement_timeout + a flow_data coverage
- * diagnostic query before any business logic. This helper pre-fills
- * those two SQL calls so per-test mockResolvedValueOnce sequences
- * start at the first real query.
+ * The handler runs a flow_data coverage diagnostic query before any
+ * business logic. This helper pre-fills that SQL call so per-test
+ * mockResolvedValueOnce sequences start at the first real query.
  */
 function prefillHandlerPreamble() {
-  mockSql.mockResolvedValueOnce([]); // SET statement_timeout
   mockSql.mockResolvedValueOnce([]); // flow_data coverage diagnostic
 }
 
@@ -498,9 +496,9 @@ describe('build-features handler', () => {
       errors: 0,
     });
     expect(featureUpserts()).toHaveLength(0);
-    // Only the preamble (SET statement_timeout, coverage diagnostic) ran: no
-    // per-date query, so no snapshot read and no label extraction either.
-    expect(mockSql).toHaveBeenCalledTimes(2);
+    // Only the preamble (coverage diagnostic) ran: no per-date query, so no
+    // snapshot read and no label extraction either.
+    expect(mockSql).toHaveBeenCalledTimes(1);
     expect(mockCaptureException).not.toHaveBeenCalled();
   });
 
@@ -1293,9 +1291,9 @@ describe('build-features handler', () => {
       errors: 0,
     });
 
-    // 2 preamble + 1 distinct dates + 7 buildFeatures + 10 phase2 (with vvix,
-    // incl. oicRows/tsRows/ivMonRow/rvRow) + 2 monitor + 1 nope + 1 upsert + 1 labels = 24
-    expect(mockSql).toHaveBeenCalledTimes(24);
+    // 1 preamble + 1 distinct dates + 6 buildFeatures + 10 phase2 (with vvix,
+    // incl. oicRows/tsRows/ivMonRow/rvRow) + 2 monitor + 1 nope + 1 upsert + 1 labels = 23
+    expect(mockSql).toHaveBeenCalledTimes(23);
   });
 
   it('extracts labels from review analyses with outcomes', async () => {

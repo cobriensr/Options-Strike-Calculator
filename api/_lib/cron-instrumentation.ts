@@ -621,8 +621,7 @@ export interface WithCronInstrumentationOptions {
    * before the read silently breaks it).
    *
    * Prefer `dynamicTimeCheck` for time-gate decisions — `passReq` is
-   * for crons whose date-list selection or statement_timeout tuning
-   * also depends on the request.
+   * for crons whose date-list selection also depends on the request.
    */
   passReq?: boolean;
 

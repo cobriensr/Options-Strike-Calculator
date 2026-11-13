@@ -258,8 +258,8 @@ async function buildFeaturesForDate(
 // Wrapped main cron.
 //
 // build-features needs the raw request to read `?backfill=` and
-// `?date=` for date-list selection AND statement_timeout tuning, so it
-// opts into the wrapper's `passReq: true` escape hatch. CronContext
+// `?date=` for date-list selection, so it opts into the wrapper's
+// `passReq: true` escape hatch. CronContext
 // intentionally hides `req` by default; this is the documented way to
 // surface it without a module-scoped ref + dispatcher (which worked
 // today only because JS is single-threaded — any future `await`
@@ -275,13 +275,6 @@ const wrappedCron = withCronInstrumentation(
       typeof dateParamRaw === 'string' ? dateParamRaw : undefined;
 
     const sql = getDb();
-    // Single-date and current-day runs use the tighter timeout; only blanket
-    // backfill needs the long one.
-    if (backfill && dateParam == null) {
-      await withDbRetry(() => sql`SET statement_timeout = '120000'`, 2, 10_000); // 120s per statement for backfill
-    } else {
-      await withDbRetry(() => sql`SET statement_timeout = '30000'`, 2, 10_000); // 30s per statement
-    }
 
     // Diagnostic: log flow_data coverage for today before doing any work
     const today = ctx.today;
