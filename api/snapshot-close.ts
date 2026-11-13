@@ -5,7 +5,8 @@
  * does not push "Live snapshots stopped saving" for the silence that follows a
  * close, and a reload or a second tab never hides a real stall:
  *   - POST: "the page was closed" (tab or window closed, navigated away or
- *     reloaded). The client sends it best-effort on `pagehide` and never reads
+ *     reloaded, or the live-save switch turned off). The client sends it
+ *     best-effort on `pagehide` and when the switch goes off, and never reads
  *     the answer.
  *   - DELETE: "a tab of the app is open". Every live-save tab sends it at load,
  *     30 s later, every 5 minutes in the cash session, and when the page comes

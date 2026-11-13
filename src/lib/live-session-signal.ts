@@ -35,11 +35,13 @@
  * owner check reads the hint cookie, and the device check reads the stored
  * switch, at the moment each timer fires and inside the `pagehide` and
  * `pageshow` handlers. `subscribeLiveSaveDevice` tells only this tab, so a
- * switch flipped in another tab of the browser, or a sign-out elsewhere, is
- * never pushed here; the subscription only lets this tab react at once, and
- * each timer re-reads the switch so this tab's idea of "it was saving" catches
- * up within one tick. Turning the switch on sends an open signal; turning it
- * off sends the close (owner only), then nothing more until it is on again.
+ * sign-out elsewhere is never pushed here, and neither is a switch flipped in
+ * another tab of the browser, except through the `storage` event the browser
+ * fires here for it: the switch is re-read on that event, at each timer and on
+ * a back/forward cache restore, so this tab's idea of "it was saving" is
+ * current when it flips the switch itself. Turning the switch on sends an open
+ * signal; turning it off sends the close (owner only), then nothing more until
+ * it is on again.
  *
  * Started from main.tsx, outside React and after `initBotId` (in production),
  * so a render failure in a new build does not stop the open signal. A new build
@@ -135,31 +137,41 @@ export function startLiveSessionSignals(): () => void {
     }
   };
 
-  const onPageHide = (): void => {
-    if (isActive()) sendClose();
-  };
-  const onPageShow = (event: PageTransitionEvent): void => {
-    if (event.persisted) void sendOpenSignal();
-  };
-
   // Whether this browser saved at the last look: the baseline for "the switch
   // went from saving to not saving". Starts false, so a switch that can't be
   // read at start never lets a later flip send a close.
   let lastSaving = false;
 
   /**
-   * A timer fired (at start, 30 s later, every 5 minutes): re-read the switch,
-   * so a flip made in another tab of this browser (never notified here) is
-   * known before this tab flips it, then send the open signal. An unreadable
-   * switch leaves the last value; the open signal's own check reports it.
+   * Re-read the switch into the baseline, so a flip made in another tab of
+   * this browser (which `subscribeLiveSaveDevice` never reports here) is known
+   * before this tab flips it. Sends nothing. An unreadable switch keeps the
+   * last value and is not reported here: the open signal's own device check
+   * reports it, once per page, on the next tick.
    */
-  const tick = (): void => {
+  const refreshLastSaving = (): void => {
     try {
       lastSaving = isLiveSaveDevice();
     } catch {
-      // Reported once by `sendOpenSignal`, which reads the switch again.
+      // Keep the last value.
     }
+  };
+
+  /**
+   * A timer fired (at start, 30 s later, every 5 minutes) or the page was
+   * restored from the back/forward cache: refresh the baseline, then send the
+   * open signal.
+   */
+  const tick = (): void => {
+    refreshLastSaving();
     void sendOpenSignal();
+  };
+
+  const onPageHide = (): void => {
+    if (isActive()) sendClose();
+  };
+  const onPageShow = (event: PageTransitionEvent): void => {
+    if (event.persisted) tick();
   };
 
   /**
@@ -186,6 +198,11 @@ export function startLiveSessionSignals(): () => void {
 
   window.addEventListener('pagehide', onPageHide);
   window.addEventListener('pageshow', onPageShow);
+  // The browser fires `storage` in every other tab of the origin when one tab
+  // writes localStorage, never in the writing tab: exactly the flips the
+  // subscriber misses. Any write counts, not only the switch's key, which
+  // `live-save-device.ts` keeps private; the read is cheap.
+  window.addEventListener('storage', refreshLastSaving);
   const unsubscribe = subscribeLiveSaveDevice(onSwitchChange);
   const followUp = setTimeout(tick, FOLLOW_UP_MS);
   const interval = setInterval(tick, INTERVAL_MS);
@@ -195,6 +212,7 @@ export function startLiveSessionSignals(): () => void {
     clearInterval(interval);
     window.removeEventListener('pagehide', onPageHide);
     window.removeEventListener('pageshow', onPageShow);
+    window.removeEventListener('storage', refreshLastSaving);
     unsubscribe();
     if (stopCurrent === stop) stopCurrent = null;
   };

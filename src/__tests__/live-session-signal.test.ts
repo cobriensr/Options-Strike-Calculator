@@ -74,6 +74,16 @@ function pageShow(persisted: boolean): void {
   window.dispatchEvent(new PageTransitionEvent('pageshow', { persisted }));
 }
 
+/** Another tab of the origin wrote localStorage: the browser fires this here. */
+function storageEvent(): void {
+  window.dispatchEvent(
+    new StorageEvent('storage', {
+      key: 'sc-live-save-device',
+      newValue: 'on',
+    }),
+  );
+}
+
 beforeEach(() => {
   vi.resetAllMocks();
   vi.useFakeTimers();
@@ -424,6 +434,57 @@ describe('the switch or the session changed with no notification here', () => {
     },
   );
 
+  it('another tab turned it on (a storage event, no tick yet), then this tab turns it off: the close goes, and the event itself sends nothing', () => {
+    vi.mocked(isLiveSaveDevice).mockReturnValue(false);
+    start();
+
+    // The browser fires `storage` here when another tab of the origin writes
+    // localStorage; `subscribeLiveSaveDevice` is never called for it.
+    vi.mocked(isLiveSaveDevice).mockReturnValue(true);
+    storageEvent();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(beaconMock).not.toHaveBeenCalled();
+
+    flipSwitch(false);
+
+    expect(beaconMock).toHaveBeenCalledTimes(1);
+    expect(beaconMock.mock.calls[0]).toStrictEqual([URL_PATH]);
+  });
+
+  it('another tab turned it off (a storage event): this tab then turning it off sends no second close', () => {
+    start();
+
+    vi.mocked(isLiveSaveDevice).mockReturnValue(false);
+    storageEvent();
+    flipSwitch(false);
+
+    expect(beaconMock).not.toHaveBeenCalled();
+  });
+
+  it('a throwing switch read inside the storage listener does not throw, reports nothing and keeps the last value', () => {
+    start();
+    fetchMock.mockClear();
+    // jsdom reports a listener's throw as an `error` event on the window
+    // rather than rethrowing it from `dispatchEvent`, so listen for that.
+    const onError = vi.fn();
+    window.addEventListener('error', onError);
+    try {
+      vi.mocked(isLiveSaveDevice).mockImplementation(() => {
+        throw new Error('storage exploded');
+      });
+      expect(() => storageEvent()).not.toThrow();
+      expect(onError).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener('error', onError);
+    }
+    expect(captureUnlessAuth).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    vi.mocked(isLiveSaveDevice).mockReturnValue(false);
+    flipSwitch(false);
+    expect(beaconMock).toHaveBeenCalledTimes(1);
+  });
+
   it('the owner session goes away: the next tick and the next pagehide send nothing', async () => {
     start();
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -519,6 +580,24 @@ describe('the back/forward cache', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock).toHaveBeenCalledWith(URL_PATH, { method: 'DELETE' });
+  });
+
+  it('re-reads the switch on a restore, so a flip made while it was frozen counts', () => {
+    vi.mocked(isLiveSaveDevice).mockReturnValue(false);
+    start();
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    // Turned on in another tab while this page sat in the cache: no `storage`
+    // event reached it, and no timer ran.
+    vi.mocked(isLiveSaveDevice).mockReturnValue(true);
+    pageShow(true);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith(URL_PATH, { method: 'DELETE' });
+
+    flipSwitch(false);
+
+    expect(beaconMock).toHaveBeenCalledTimes(1);
+    expect(beaconMock.mock.calls[0]).toStrictEqual([URL_PATH]);
   });
 
   it('sends nothing on an ordinary pageshow', () => {
@@ -737,6 +816,44 @@ describe('the switch subscriber', () => {
   });
 });
 
+describe('a switch that cannot be read at a timer', () => {
+  function unreadable(): void {
+    vi.mocked(isLiveSaveDevice).mockImplementation(() => {
+      throw new Error('storage exploded');
+    });
+  }
+
+  it('start does not throw, reports once at warning level, and a later flip off sends no close', async () => {
+    unreadable();
+
+    expect(() => start()).not.toThrow();
+    await advance(0);
+
+    expect(captureUnlessAuth).toHaveBeenCalledTimes(1);
+    expect(captureUnlessAuth).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'storage exploded' }),
+      WARNING,
+    );
+
+    // Unknown at start counts as "was not saving": no close on a guess.
+    flipSwitch(false);
+    expect(beaconMock).not.toHaveBeenCalled();
+  });
+
+  it('a read that throws at a tick keeps the last value: the later flip off still sends the close', async () => {
+    start();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    unreadable();
+    await advance(INTERVAL_MS);
+    expect(captureUnlessAuth).toHaveBeenCalledTimes(1);
+
+    flipSwitch(false);
+
+    expect(beaconMock).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('stopping and restarting', () => {
   it('stop removes every listener, timer and subscription', async () => {
     const stopSignals = start();
@@ -747,8 +864,10 @@ describe('stopping and restarting', () => {
 
     expect(subscribers.size).toBe(0);
     expect(vi.getTimerCount()).toBe(0);
-    flipSwitch(false);
-    expect(beaconMock).not.toHaveBeenCalled();
+    // The storage listener's only trace is a read of the switch.
+    vi.mocked(isLiveSaveDevice).mockClear();
+    storageEvent();
+    expect(isLiveSaveDevice).not.toHaveBeenCalled();
     pageHide();
     pageShow(true);
     await advance(60 * 60 * 1000);

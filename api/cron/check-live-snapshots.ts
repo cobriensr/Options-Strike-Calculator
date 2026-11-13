@@ -30,7 +30,8 @@
  * the 13:45 check pushes again for the new stall.
  *
  * Deliberate close (owner amendment, 2026-11-12): the app tells the server
- * when the owner closes its page (`POST /api/snapshot-close`), which writes
+ * when the owner closes its page or turns the live-save switch off
+ * (`POST /api/snapshot-close`), which writes
  * `snapshot-app-closed:{ET date}` = the ISO time of the latest close signal.
  * Open tabs withdraw that close with `DELETE /api/snapshot-close` (at load,
  * 30 s later, every 5 minutes in the session, and on a back/forward cache

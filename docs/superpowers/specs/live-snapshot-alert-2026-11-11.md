@@ -60,7 +60,7 @@ trading computer could stay broken with no further push. Touch-first devices
 computers do. A per-browser switch in the app overrides the default either
 way. Past-date and backtest saves are not affected. Trade-off the owner
 accepted: a second computer left open also counts. As built (Task 6):
-turning the switch off stops live saves and both signals. Without a close,
+turning the switch off stops live saves and the open signal. Without a close,
 on the only saving computer it would push "Live snapshots stopped saving"
 30-45 minutes later while the app is open. Owner decision, 2026-11-13: yes,
 turning the switch off counts as closing the app, so it sends the close
@@ -68,10 +68,15 @@ signal. As built: one close on a real saving to not-saving change in the tab
 (not gated on the cash session, like `pagehide`), owner only. A phone (off by
 default) set to "off", and "off" set again, send nothing, because a close from
 a browser that never saved could hide a real stall on the computer while it
-sleeps (no open signals to withdraw it). Each timer (start, 30 s, 5 minutes)
-re-reads the switch, so a flip made in another tab of the same browser is
-known within one tick. A lost switch-off close is not reported: the alert only
-fires later, as before. `src/lib/live-session-signal.ts`.
+sleeps (no open signals to withdraw it). A flip made in another tab of the
+same browser reaches this tab through the browser's `storage` event, and the
+switch is also re-read at each timer (start, 30 s, 5 minutes) and on a
+back/forward cache restore, so the tab knows whether it was saving when it
+flips the switch itself. A lost switch-off close is not reported: the alert
+only fires later, as before. Known residual: a live save, or a sibling tab's
+open-signal DELETE, in flight at the flip can land after the close, so the
+close is ignored and the alert fires 30-45 minutes later as before; it never
+hides a stall. `src/lib/live-session-signal.ts`.
 
 **Fourth amendment (owner, 2026-11-12 ~17:40 CT): only the last tab's close
 counts.** With two or more calculator tabs open, closing one of them while
