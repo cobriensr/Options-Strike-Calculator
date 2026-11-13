@@ -32,6 +32,11 @@
  * Deliberate close (owner amendment, 2026-11-12): the app tells the server
  * when the owner closes its page (`POST /api/snapshot-close`), which writes
  * `snapshot-app-closed:{ET date}` = the ISO time of the latest close signal.
+ * Open tabs withdraw that close with `DELETE /api/snapshot-close` (at load,
+ * 30 s later, every 5 minutes in the session, and on a back/forward cache
+ * restore), so a reload or a closed sibling tab never hides a stall: only the
+ * last tab's close, which nobody withdraws, stands. The cron needs no change
+ * for that: a deleted marker reads as no close.
  * Only when the last save is stale, before claiming, the cron reads that key:
  *   - A marker at or after the last save means the owner closed the app after
  *     it last saved: success "app closed at {time} CT", no claim, no push.

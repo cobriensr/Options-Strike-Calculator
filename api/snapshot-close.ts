@@ -26,7 +26,7 @@
  *     is `SNAPSHOT_CLOSED_KEY_PREFIX`, shared with the cron that reads it.
  *   - POST value: the time of the latest close. The write overwrites (no NX):
  *     the last write wins, which is the intent. The cron compares it with the
- *     last save, so only a close after the last save hides a stall.
+ *     last save, so a close at or after the last save hides a stall.
  *   - POST expire: 24 h from the latest write, re-armed by each close. It
  *     outlives the session window in which the cron reads it, and the next
  *     day's date derives a new key.
@@ -38,7 +38,7 @@
  *   - Fail: a Redis error is a 500 with a Sentry capture. A lost close only
  *     lets the cron push a stall alert for a close; it never hides a stall.
  *     A lost delete leaves a close standing until the next open signal or
- *     save, and a close at or before the last save is ignored by the cron.
+ *     save, and a close before the last save is ignored by the cron.
  *
  * Spec: docs/superpowers/specs/live-snapshot-alert-2026-11-11.md.
  */
