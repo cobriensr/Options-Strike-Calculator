@@ -5351,7 +5351,7 @@ function frontMonthHeader(
     `snapshot scope ${isoSecond(scope.snapshots.fromMs)} .. ${isoSecond(scope.snapshots.toMs)} (span end + 20 days, cut at ${isoSecond(FRONT_MONTH.writtenUntilMs)}, the end of the Phase 6 write run: a row from there on read the repaired bars)`,
     'fires in scope: those with a bar Phase 6 changed in the 6 minutes before and at the fire (the ES window its basis reads); every other fire with a value is the control; a NULL basis is never read or set',
     "no D1 lift (the first row's 20-day window starts after every thin root's last month-mixed bar), no stale-at-write rewrite, no frozen-stale delete, no volume-null step, no detector days",
-    `the control cannot vouch for the volume ratio of RTY, CL, GC and ZN: before ${isoSecond(FRONT_MONTH.writtenUntilMs)} it is set aside wherever a changed bar in the 20-day window feeds it, and from then on the late-volume rule excuses any stored ratio at or below the recomputed one, so do not cite the control for those ratios (ES and NQ are fine: no bar of theirs changed after 2026-09-14)`,
+    `the control checks the volume ratio of RTY, CL, GC and ZN one way only: the late-volume rule passes a stored ratio anywhere below the recomputed one, or one unit above it, so do not cite the control for those ratios; CL's is also set aside before ${isoSecond(FRONT_MONTH.writtenUntilMs)} wherever a changed bar in its 20-day window feeds it (ES and NQ are fine: no bar of theirs changed after 2026-09-14)`,
     ...(backup == null || opts.backup == null
       ? []
       : [frontMonthBackupLine(opts.backup, backup, opts.roots)]),

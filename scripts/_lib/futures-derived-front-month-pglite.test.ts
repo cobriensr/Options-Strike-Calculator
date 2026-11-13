@@ -998,9 +998,11 @@ describe('the front-month dry run on real SQL (pglite)', () => {
       '    all roots  repaired days: 3 to write of 4 (price 3, 1h 3, day 3, ratio 3) | window-only: 218 to write of 436 (price 0, 1h 0, day 0, ratio 218)',
     );
     expect(text).toContain('rows in scope on repaired days, all roots: 4');
-    // The control cannot vouch for the thin roots' volume ratio, and the report says so.
+    // The control checks the thin roots' volume ratio one way only, and the report says so: the
+    // late-volume rule passes a stored ratio below the recomputed one or one unit above it, and
+    // only CL's is also set aside before the end of the write run.
     expect(text).toContain(
-      'the control cannot vouch for the volume ratio of RTY, CL, GC and ZN',
+      "the control checks the volume ratio of RTY, CL, GC and ZN one way only: the late-volume rule passes a stored ratio anywhere below the recomputed one, or one unit above it, so do not cite the control for those ratios; CL's is also set aside before 2026-11-13T05:16:00Z wherever a changed bar in its 20-day window feeds it",
     );
     expect(text).toContain(
       'ES: rows in range 221, rows to write 3 (price=2 change1hPct=2 changeDayPct=2 volumeRatio=3)',
