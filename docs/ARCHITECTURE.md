@@ -228,6 +228,8 @@ Core endpoints only. As of 2026-10-29, `api/` holds 92 endpoint files outside `_
 | `POST /api/analyze`          | Anthropic Messages API                                              | Claude chart analysis (NDJSON stream)       | —                     | —                                         |
 | `GET /api/analyses`          | Neon Postgres                                                       | Browse past analyses                        | —                     | —                                         |
 | `POST /api/snapshot`         | Neon Postgres                                                       | Save market snapshot                        | —                     | —                                         |
+| `POST /api/snapshot-close`   | Upstash Redis (owner only)                                          | Owner closed the app: mark today closed     | —                     | —                                         |
+| `DELETE /api/snapshot-close` | Upstash Redis (owner only)                                          | A tab is open: withdraw the close mark      | —                     | —                                         |
 | `GET /api/journal`           | Neon Postgres                                                       | Query saved analyses                        | —                     | —                                         |
 | `GET /api/journal/status`    | Neon Postgres                                                       | DB connection + table counts                | —                     | —                                         |
 | `POST /api/journal/init`     | Neon Postgres                                                       | Create tables + run migrations              | —                     | —                                         |
@@ -301,6 +303,7 @@ These endpoints are rate-limited per client IP via Upstash Redis:
 | `/api/analyses`       | 30/min | Browse endpoint                   |
 | `/api/positions`      | 20/min | Auto-fetched before each analysis |
 | `/api/snapshot`       | 30/min | Generous for normal use           |
+| `/api/snapshot-close` | 30/min | POST and DELETE share one bucket  |
 | `/api/journal`        | 20/min | Query endpoint                    |
 | `/api/auth/init`      | 5/min  | OAuth flow protection             |
 | `/api/auth/callback`  | 5/min  | OAuth flow protection             |
