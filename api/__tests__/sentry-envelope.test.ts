@@ -59,6 +59,12 @@ const QUERY_TOKEN = fake('query-token');
 const SOURCE_BODY_KEY = fake('source-body-key');
 // A cookie whose name no list of secret-looking names would have.
 const UNLISTED_COOKIE = fake('unlisted-cookie');
+const TAKEIT_AUTH = fake('takeit-auth');
+const BYPASS = fake('protection-bypass');
+const OAUTH_CODE = fake('oauth-code');
+const OAUTH_STATE = fake('oauth-state');
+const ACCOUNT_HASH = fake('account-hash');
+const REFERER_TOKEN = fake('referer-token');
 const FAKE_SECRETS = [
   OWNER,
   GUEST,
@@ -74,7 +80,16 @@ const FAKE_SECRETS = [
   QUERY_TOKEN,
   SOURCE_BODY_KEY,
   UNLISTED_COOKIE,
+  TAKEIT_AUTH,
+  BYPASS,
+  OAUTH_CODE,
+  OAUTH_STATE,
+  ACCOUNT_HASH,
+  REFERER_TOKEN,
 ];
+
+// A page URL the client sends as its referer, with a secret query parameter.
+const REFERER = `https://example.test/page?token=${REFERER_TOKEN}&view=compact`;
 
 // Attribute shapes the SDK emits for request and response headers, plus the
 // request body it copies onto the root span.
@@ -86,6 +101,9 @@ const CREDENTIAL_ATTRIBUTES = {
   'http.request.header.x_api_key': API_KEY,
   'http.request.header.x-cron-secret': CRON,
   'http.request.header.x-internal-notify-secret': NOTIFY,
+  'http.request.header.x-takeit-auth': TAKEIT_AUTH,
+  'http.request.header.x_vercel_protection_bypass': BYPASS,
+  'http.request.header.referer': REFERER,
   'http.response.header.set_cookie': [SET_COOKIE],
   'http.response.header.set_cookie.sc_owner': SET_COOKIE,
   'http.response.header.authorization': RESPONSE_AUTH,
@@ -104,6 +122,19 @@ const FETCH_SPAN_ATTRIBUTES = {
   'http.query': `?${UPSTREAM_QUERY}`,
   'http.target': `/v1/data?${UPSTREAM_QUERY}`,
 };
+
+// An outgoing call whose path carries an account identifier. The SDK records
+// the path in these attributes, and `GET <url>` as the span description.
+const ACCOUNT_PATH = `/trader/v1/accounts/${ACCOUNT_HASH}/orders`;
+const ACCOUNT_URL = `https://upstream.example.test${ACCOUNT_PATH}`;
+const ACCOUNT_SPAN_ATTRIBUTES = {
+  'url.full': ACCOUNT_URL,
+  'http.url': ACCOUNT_URL,
+  'url.path': ACCOUNT_PATH,
+  url: ACCOUNT_URL,
+};
+// What must stay readable once the identifier is redacted.
+const READABLE_ACCOUNT_PATH = '/trader/v1/accounts/[Filtered]/orders';
 
 const HARMLESS_MARKER = 'harmless-marker-value';
 // The harmless parameter that must stay readable in a redacted URL.
@@ -131,15 +162,19 @@ async function withFakeRequest(work: () => void | Promise<void>) {
   await Sentry.withIsolationScope(async (scope) => {
     scope.setSDKProcessingMetadata({
       normalizedRequest: {
-        url: `https://example.test/api/thing?token=${REQUEST_QUERY_TOKEN}&date=2026-01-01`,
+        // An OAuth callback request: single-use code and state parameters.
+        url: `https://example.test/api/auth/callback?code=${OAUTH_CODE}&state=${OAUTH_STATE}&token=${REQUEST_QUERY_TOKEN}&date=2026-01-01`,
         method: 'POST',
-        query_string: `token=${REQUEST_QUERY_TOKEN}&date=2026-01-01`,
+        query_string: `code=${OAUTH_CODE}&state=${OAUTH_STATE}&token=${REQUEST_QUERY_TOKEN}&date=2026-01-01`,
         headers: {
           cookie: `sc-owner=${OWNER}; sc-guest=${GUEST}; theme=dark`,
           authorization: `Bearer ${BEARER}`,
           'x-api-key': API_KEY,
           'x-cron-secret': CRON,
           'x-internal-notify-secret': NOTIFY,
+          'x-takeit-auth': TAKEIT_AUTH,
+          'x-vercel-protection-bypass': BYPASS,
+          referer: REFERER,
           accept: HARMLESS_MARKER,
         },
         cookies: {
@@ -189,6 +224,14 @@ describe('Sentry scrub through the real SDK', () => {
             },
             async () => {},
           );
+          await Sentry.startSpan(
+            {
+              name: `GET ${ACCOUNT_URL}`,
+              op: 'http.client',
+              attributes: { ...ACCOUNT_SPAN_ATTRIBUTES },
+            },
+            async () => {},
+          );
         },
       );
     });
@@ -209,6 +252,8 @@ describe('Sentry scrub through the real SDK', () => {
     expect(transactions[0]).toContain('upstream.example.test/v1/data');
     expect(transactions[0]).toContain(READABLE_PARAM);
     expect(transactions[0]).toContain('date=2026-01-01');
+    expect(transactions[0]).toContain(READABLE_ACCOUNT_PATH);
+    expect(transactions[0]).toContain('view=compact');
   });
 
   it('sends an error event with no credential values', async () => {
@@ -226,6 +271,12 @@ describe('Sentry scrub through the real SDK', () => {
           status_code: 200,
         },
       });
+      Sentry.addBreadcrumb({
+        category: 'http',
+        type: 'http',
+        level: 'info',
+        data: { url: ACCOUNT_URL, 'http.method': 'GET', status_code: 200 },
+      });
       Sentry.captureException(new Error('probe failure'));
     });
     await Sentry.flush(2000);
@@ -239,6 +290,8 @@ describe('Sentry scrub through the real SDK', () => {
     expect(errors[0]).toContain('"breadcrumbs"');
     expect(errors[0]).toContain('upstream.example.test/v1/data');
     expect(errors[0]).toContain(READABLE_PARAM);
+    expect(errors[0]).toContain(READABLE_ACCOUNT_PATH);
+    expect(errors[0]).toContain('view=compact');
   });
 
   // A real loopback server, so the SDK's own http integration sees a real

@@ -465,10 +465,25 @@ describe('Sentry.init beforeSendTransaction and beforeSendSpan', () => {
     'http.request.header.X_Internal_Notify_Secret': 'FAKE-NOTIFY-MIXED-CASE',
     'http.request.header.x-csrf-token': 'FAKE-TOKEN-HYPHEN',
     'http.request.header.x_csrf_token': 'FAKE-TOKEN-UNDERSCORE',
+    'http.request.header.x-vercel-protection-bypass': 'FAKE-BYPASS-HYPHEN',
+    'http.request.header.x_vercel_protection_bypass': 'FAKE-BYPASS-UNDERSCORE',
+    'http.request.header.X_Vercel_Protection_Bypass': 'FAKE-BYPASS-MIXED-CASE',
+    'http.request.header.x-session-id': 'FAKE-SESSION-HYPHEN',
+    'http.request.header.x_password': 'FAKE-PASSWORD-UNDERSCORE',
+    'http.request.header.x_jwt_assertion': 'FAKE-JWT-UNDERSCORE',
+    'http.request.header.x-hub-signature-256': 'FAKE-SIGNATURE-HYPHEN',
+    // `auth` and `key` as a whole word, at the start, middle or end.
+    'http.request.header.x-takeit-auth': 'FAKE-AUTH-HYPHEN',
+    'http.request.header.x_takeit_auth': 'FAKE-AUTH-UNDERSCORE',
+    'http.request.header.X_TakeIt_Auth': 'FAKE-AUTH-MIXED-CASE',
+    'http.request.header.x_auth_key': 'FAKE-AUTH-KEY-UNDERSCORE',
+    'http.request.header.x-key': 'FAKE-KEY-HYPHEN',
+    'http.request.header.x_key': 'FAKE-KEY-UNDERSCORE',
     // The credential word matches anywhere in the header name, so a longer
     // name that merely contains one is filtered too (over-matching is the
     // safe side).
     'http.request.header.x-api-key-version': 'FAKE-API-KEY-VERSION',
+    'http.response.header.access-control-allow-credentials': 'true',
     'http.response.header.set-cookie': 'FAKE-SET-COOKIE-HYPHEN',
     'http.response.header.set_cookie': [
       'FAKE-SET-COOKIE-A',
@@ -493,6 +508,10 @@ describe('Sentry.init beforeSendTransaction and beforeSendSpan', () => {
     'http.request.header.cookie_policy': 'strict',
     'http.request.header.cookie-policy': 'strict',
     'http.request.header.authorization_scheme': 'bearer',
+    'http.response.header.www_authenticate': 'Bearer realm="api"',
+    'http.request.header.x_author': 'fake-author',
+    'http.request.header.x_monkey': 'fake-monkey',
+    'http.request.header.x_keyword': 'fake-keyword',
     'http.request.token_count': 3,
     'app.secret_santa_group': 'blue',
     'http.request.body.size': 26,
@@ -681,8 +700,10 @@ describe.each([
   const scrub = (request: Obj): Obj =>
     (hook!({ request }) as Obj).request as Obj;
 
-  // Only the four standard credential headers match by exact name; any other
-  // name is filtered when it contains an api key, secret or token word.
+  // Only the four standard credential headers match by exact name. Any other
+  // name is filtered when it contains a credential word anywhere (api key,
+  // secret, token, bypass, session, password, jwt, bearer, credential,
+  // signature) or `auth` / `key` as a whole word.
   it.each([
     'authorization',
     'Proxy-Authorization',
@@ -696,10 +717,31 @@ describe.each([
     'x-cron-secret',
     'x-internal-notify-secret',
     'x-csrf-token',
-    // The credential word matches anywhere in the name: a longer name that
-    // contains one is filtered too (over-matching is the safe side).
+    // Words that match anywhere in the name.
+    'x-vercel-protection-bypass',
+    'X-Vercel-Protection-Bypass',
+    'x-session-id',
+    'x-password',
+    'x-passwd',
+    'x-jwt-assertion',
+    'x-forwarded-bearer',
+    'x-user-credentials',
+    'x-hub-signature-256',
+    // `auth` and `key` as a whole word, at the start, middle or end.
+    'auth',
+    'x-takeit-auth',
+    'X-TakeIt-Auth',
+    'x_takeit_auth',
+    'x-auth-key',
+    'x-auth',
+    'key',
+    'x-key',
+    'x-cache-key',
+    // A longer name that contains a credential word is filtered too, even
+    // when its value is harmless: over-matching is the safe side.
     'x-api-key-version',
     'x-token-scope',
+    'access-control-allow-credentials',
   ])('filters the %s request header', (name) => {
     const headers = scrub({
       headers: { [name]: 'FAKE-HEADER-VALUE', accept: '*/*' },
@@ -714,9 +756,16 @@ describe.each([
     'user-agent',
     'x-forwarded-for',
     'x-request-id',
-    // Start like a credential header but are not one.
+    'sec-fetch-site',
+    // Start like a credential header but are not one: `authorization` is
+    // matched by exact name only, and `auth` / `key` only as whole words.
     'cookie-policy',
     'authorization-scheme',
+    'www-authenticate',
+    'x-author',
+    'x-monkey',
+    'x-keyword',
+    'x-keys',
   ])('keeps the %s request header', (name) => {
     const headers = scrub({ headers: { [name]: 'harmless-value' } })
       .headers as Obj;
@@ -766,6 +815,53 @@ describe.each([
     );
   });
 
+  it('redacts the OAuth callback parameters in request.url', () => {
+    expect(
+      scrub({
+        url: 'https://example.test/api/auth/callback?code=FAKE-CODE&session=FAKE-SESSION&state=FAKE-STATE&date=2026-01-01',
+      }).url,
+    ).toBe(
+      'https://example.test/api/auth/callback?code=[Filtered]&session=[Filtered]&state=[Filtered]&date=2026-01-01',
+    );
+  });
+
+  it('redacts the account identifier path segment in request.url', () => {
+    expect(
+      scrub({
+        url: 'https://example.test/trader/v1/accounts/FAKE-ACCOUNT-HASH/orders?status=OPEN',
+      }).url,
+    ).toBe(
+      'https://example.test/trader/v1/accounts/[Filtered]/orders?status=OPEN',
+    );
+  });
+
+  // The referer is a URL the client sent, so it gets the same query and path
+  // redaction as the request URL. Header names compare case-insensitively.
+  it.each(['referer', 'Referer'])(
+    'redacts the query and account path in the %s request header',
+    (name) => {
+      const headers = scrub({
+        headers: {
+          [name]:
+            'https://example.test/accounts/FAKE-ACCOUNT-HASH?token=FAKE-REFERER-TOKEN&view=compact',
+        },
+      }).headers as Obj;
+      expect(headers[name]).toBe(
+        'https://example.test/accounts/[Filtered]?token=[Filtered]&view=compact',
+      );
+    },
+  );
+
+  it('keeps a referer without a secret as it is, and survives a non-string one', () => {
+    const plain = 'https://example.test/page?view=compact';
+    expect(scrub({ headers: { referer: plain } }).headers).toEqual({
+      referer: plain,
+    });
+    expect(() =>
+      scrub({ headers: { referer: ['a', 'b'], other: 1 } }),
+    ).not.toThrow();
+  });
+
   it.each([
     [
       'a string',
@@ -800,6 +896,12 @@ describe.each([
     expect(() =>
       scrub({ query_string: [null, 'x', ['only-a-name']] }),
     ).not.toThrow();
+    // A pair whose name is not a string, including one with no prototype
+    // (String() on it throws).
+    expect(() =>
+      scrub({ query_string: [[Object.create(null), 'x']] }),
+    ).not.toThrow();
+    expect(() => scrub({ query_string: [[1, 'x']] })).not.toThrow();
   });
 });
 
@@ -916,6 +1018,12 @@ describe('query-string secret redaction', () => {
       'accessKey',
       'x-key',
       'api%5Fkey',
+      // The OAuth callback parameters, by exact name in any case.
+      'code',
+      'state',
+      'session',
+      'Code',
+      'STATE',
       // A malformed escape cannot be decoded; the raw name is tested instead.
       'bad%ZZ_token',
     ])('redacts the value of the %s parameter', (name) => {
@@ -935,6 +1043,11 @@ describe('query-string secret redaction', () => {
       'monkey',
       'keyword',
       'keys',
+      // `code`, `state` and `session` match only as the whole name.
+      'statement',
+      'postcode',
+      'codec',
+      'sessions',
       'to%ZZken',
     ])('keeps the value of the %s parameter', (name) => {
       const result = beforeSendSpan!({
@@ -983,6 +1096,156 @@ describe('query-string secret redaction', () => {
     ])('returns a breadcrumb with %s untouched', (_label, breadcrumb) => {
       const before = structuredClone(breadcrumb);
       expect(beforeBreadcrumb!(breadcrumb)).toEqual(before);
+    });
+  });
+
+  // The path segment after `/accounts/` is an account identifier. The SDK
+  // records the path in url.full / http.url / http.target / url.path, in the
+  // sanitized `url`, in the span description (`GET <url>`) and, for a
+  // breadcrumb, in data.url.
+  describe('account identifier path segment', () => {
+    const HASH = 'FAKE-ACCOUNT-HASH';
+    const ACCOUNT_URL = `https://upstream.example.test/trader/v1/accounts/${HASH}/orders?status=OPEN#top`;
+    const ACCOUNT_URL_REDACTED =
+      'https://upstream.example.test/trader/v1/accounts/[Filtered]/orders?status=OPEN#top';
+    const ACCOUNT_PATH = `/trader/v1/accounts/${HASH}/orders`;
+    const ACCOUNT_PATH_REDACTED = '/trader/v1/accounts/[Filtered]/orders';
+
+    const ACCOUNT_FIELDS: [string, string, string][] = [
+      ['url.full', ACCOUNT_URL, ACCOUNT_URL_REDACTED],
+      ['http.url', ACCOUNT_URL, ACCOUNT_URL_REDACTED],
+      ['url', ACCOUNT_URL, ACCOUNT_URL_REDACTED],
+      [
+        'http.target',
+        `${ACCOUNT_PATH}?status=OPEN`,
+        `${ACCOUNT_PATH_REDACTED}?status=OPEN`,
+      ],
+      ['url.path', ACCOUNT_PATH, ACCOUNT_PATH_REDACTED],
+    ];
+
+    it.each(ACCOUNT_FIELDS)(
+      'redacts the segment in %s on a span',
+      (field, input, expected) => {
+        const result = beforeSendSpan!({ data: { [field]: input } }) as {
+          data: Obj;
+        };
+        expect(result.data[field]).toBe(expected);
+      },
+    );
+
+    it.each(ACCOUNT_FIELDS)(
+      'redacts the segment in %s on the root span and child spans of a transaction',
+      (field, input, expected) => {
+        const result = beforeSendTransaction!({
+          contexts: { trace: { data: { [field]: input } } },
+          spans: [{ data: { [field]: input } }],
+        }) as {
+          contexts: { trace: { data: Obj } };
+          spans: { data: Obj }[];
+        };
+        expect(result.contexts.trace.data[field]).toBe(expected);
+        expect(result.spans[0]?.data[field]).toBe(expected);
+      },
+    );
+
+    it('redacts the segment in the span description, keeping the rest', () => {
+      const span = beforeSendSpan!({
+        description: `GET https://upstream.example.test${ACCOUNT_PATH}`,
+        data: {},
+      });
+      expect(span.description).toBe(
+        'GET https://upstream.example.test/trader/v1/accounts/[Filtered]/orders',
+      );
+      const result = beforeSendTransaction!({
+        contexts: {
+          trace: { description: `GET /trader/v1/accounts/${HASH}`, data: {} },
+        },
+        spans: [{ description: `GET /trader/v1/accounts/${HASH}/orders` }],
+      }) as {
+        contexts: { trace: { description: string } };
+        spans: { description: string }[];
+      };
+      expect(result.contexts.trace.description).toBe(
+        'GET /trader/v1/accounts/[Filtered]',
+      );
+      expect(result.spans[0]?.description).toBe(
+        'GET /trader/v1/accounts/[Filtered]/orders',
+      );
+    });
+
+    it('redacts the segment in a breadcrumb data.url', () => {
+      const breadcrumb = {
+        category: 'http',
+        data: { url: ACCOUNT_URL, 'http.method': 'GET' },
+      };
+      expect(beforeBreadcrumb!(breadcrumb)).toMatchObject({
+        data: { url: ACCOUNT_URL_REDACTED, 'http.method': 'GET' },
+      });
+    });
+
+    it('redacts every segment that follows /accounts/, the literal list segment included', () => {
+      const span = beforeSendSpan!({
+        data: {
+          'url.path': '/trader/v1/accounts/accountNumbers',
+          'url.full': `https://x.test/accounts/${HASH}/a/accounts/${HASH}-2/b`,
+        },
+      }) as { data: Obj };
+      expect(span.data['url.path']).toBe('/trader/v1/accounts/[Filtered]');
+      expect(span.data['url.full']).toBe(
+        'https://x.test/accounts/[Filtered]/a/accounts/[Filtered]/b',
+      );
+    });
+
+    it.each([
+      'https://x.test/trader/v1/accounts',
+      'https://x.test/trader/v1/accounts/',
+      'https://x.test/trader/v1/my-accounts/abc',
+      'https://x.test/trader/v1/accountsettings/abc',
+      'https://x.test/trader/v1/orders/accounts',
+    ])('leaves %s alone', (url) => {
+      const span = beforeSendSpan!({ data: { 'url.full': url } }) as {
+        data: Obj;
+      };
+      expect(span.data['url.full']).toBe(url);
+    });
+
+    it('does not throw on a span description that is not a string', () => {
+      expect(() => beforeSendSpan!({ description: 5, data: {} })).not.toThrow();
+      expect(() => beforeSendSpan!({ description: null })).not.toThrow();
+    });
+  });
+
+  describe('referer span attribute', () => {
+    const REFERER =
+      'https://example.test/accounts/FAKE-ACCOUNT-HASH?token=FAKE-REFERER-TOKEN&view=compact';
+
+    it('redacts the query and account path in http.request.header.referer', () => {
+      const result = beforeSendSpan!({
+        data: { 'http.request.header.referer': REFERER },
+      }) as { data: Obj };
+      expect(result.data['http.request.header.referer']).toBe(
+        'https://example.test/accounts/[Filtered]?token=[Filtered]&view=compact',
+      );
+    });
+
+    it('does the same on the root span and child spans of a transaction', () => {
+      const result = beforeSendTransaction!({
+        contexts: {
+          trace: { data: { 'http.request.header.referer': REFERER } },
+        },
+        spans: [{ data: { 'http.request.header.referer': REFERER } }],
+      }) as {
+        contexts: { trace: { data: Obj } };
+        spans: { data: Obj }[];
+      };
+      const expected =
+        'https://example.test/accounts/[Filtered]?token=[Filtered]&view=compact';
+      expect(result.contexts.trace.data['http.request.header.referer']).toBe(
+        expected,
+      );
+      expect(result.spans[0]?.data['http.request.header.referer']).toBe(
+        expected,
+      );
     });
   });
 });

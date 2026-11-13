@@ -11,14 +11,23 @@ import { optionalEnv } from './env.js';
 
 const FILTERED = '[Filtered]';
 
-// Matches every key: used to filter all values of a bag.
-const EVERY_KEY = /^/;
+// The four standard credential headers, matched by exact name.
+const STANDARD_CREDENTIAL_HEADER =
+  /^(?:authorization|proxy[-_]authorization|cookie|set[-_]cookie)$/i;
 
-// Request header names that carry credentials: the four standard credential
-// headers by exact name, and any other header whose name contains an api key,
-// secret or token word (`x-internal-notify-secret`, `x-csrf-token`, ...).
-const CREDENTIAL_HEADER =
-  /^(?:authorization|proxy[-_]authorization|cookie|set[-_]cookie)$|api[-_]?key|secret|token/i;
+// Credential words that mark a header name wherever they sit in it
+// (`x-internal-notify-secret`, `x-vercel-protection-bypass`, `x-session-id`).
+const CREDENTIAL_HEADER_WORD =
+  /api[-_]?key|secret|token|bypass|session|passw(?:or)?d|jwt|bearer|credential|signature/i;
+
+// `auth` and `key` mark a header name only as a whole word between `-`, `_`
+// or `.` (`x-takeit-auth`, `x-auth-key`, `x-key`), so `authorization-scheme`,
+// `www-authenticate`, `x-author` and `x-monkey` are kept.
+const CREDENTIAL_HEADER_WHOLE_WORD = /(?:^|[-_.])(?:auth|key)(?:$|[-_.])/i;
+
+// The referer is a URL the client chose, so its query and path are redacted
+// like any other URL instead of the whole value being filtered.
+const REFERER_HEADER = /^referer$/i;
 
 // Secret-named keys in `extra` / `tags`.
 const SECRET_NAMED_KEY = /(secret|token|api[_-]?key|password|auth)/i;
@@ -26,7 +35,7 @@ const SECRET_NAMED_KEY = /(secret|token|api[_-]?key|password|auth)/i;
 // Span attributes the SDK derives from request and response headers:
 // `http.request.header.<name>` and `http.response.header.<name>`, with `-` or
 // `_` in the name, plus one `...cookie.<cookie-name>` attribute per cookie.
-// Capture group 1 is the header name, tested with CREDENTIAL_HEADER; keys
+// Capture group 1 is the header name, tested with isCredentialHeader; keys
 // outside the header namespace are never matched, so an attribute elsewhere
 // that merely contains `token` or `secret` is untouched.
 const HEADER_SPAN_ATTRIBUTE = /^http\.(?:request|response)\.header\.([^.]*)/i;
@@ -41,29 +50,49 @@ const BODY_SPAN_ATTRIBUTE = /^http\.request\.body\.data$/i;
 const SECRET_QUERY_PARAM =
   /token|secret|password|api[-_]?key|(?:^|[-_.])key(?:$|[-_.])/i;
 
-/**
- * Replace the value of every key in `bag` that `sensitiveKey` matches: a
- * pattern tested against the key, or a predicate on it.
- */
+// The OAuth callback parameters, matched by their exact name only.
+const OAUTH_QUERY_PARAM = /^(?:code|state|session)$/i;
+
+// The path segment after `/accounts/` is an account identifier. Descriptions
+// read `GET <url>`, so this is matched anywhere in a string.
+const ACCOUNT_PATH_SEGMENT = /(\/accounts\/)[^/?#\s]+/gi;
+
+const isSecretNamedKey = (key: string): boolean => SECRET_NAMED_KEY.test(key);
+const anyKey = (): boolean => true;
+
+/** `bag` as a plain key-value record, or undefined when it is anything else. */
+function asRecord(bag: unknown): Record<string, unknown> | undefined {
+  if (typeof bag !== 'object' || bag === null || Array.isArray(bag)) {
+    return undefined;
+  }
+  return bag as Record<string, unknown>;
+}
+
+/** Replace the value of every key in `bag` for which `sensitiveKey` is true. */
 function filterKeys(
   bag: unknown,
-  sensitiveKey: RegExp | ((key: string) => boolean),
+  sensitiveKey: (key: string) => boolean,
 ): void {
-  if (typeof bag !== 'object' || bag === null || Array.isArray(bag)) return;
-  const record = bag as Record<string, unknown>;
+  const record = asRecord(bag);
+  if (!record) return;
   for (const key of Object.keys(record)) {
-    const sensitive =
-      typeof sensitiveKey === 'function'
-        ? sensitiveKey(key)
-        : sensitiveKey.test(key);
-    if (sensitive) record[key] = FILTERED;
+    if (sensitiveKey(key)) record[key] = FILTERED;
   }
+}
+
+/** True for a header name that carries a credential. */
+function isCredentialHeader(name: string): boolean {
+  return (
+    STANDARD_CREDENTIAL_HEADER.test(name) ||
+    CREDENTIAL_HEADER_WORD.test(name) ||
+    CREDENTIAL_HEADER_WHOLE_WORD.test(name)
+  );
 }
 
 /** True for a span attribute that holds a credential header or the request body. */
 function isCredentialSpanAttribute(key: string): boolean {
   const headerName = HEADER_SPAN_ATTRIBUTE.exec(key)?.[1];
-  if (headerName !== undefined) return CREDENTIAL_HEADER.test(headerName);
+  if (headerName !== undefined) return isCredentialHeader(headerName);
   return BODY_SPAN_ATTRIBUTE.test(key);
 }
 
@@ -77,9 +106,12 @@ function decodeParamName(name: string): string {
 
 /** True when a query parameter name (any case, or percent-encoded) is a credential. */
 function isSecretQueryParam(rawName: string): boolean {
+  const decoded = decodeParamName(rawName);
+  if (OAUTH_QUERY_PARAM.test(decoded)) return true;
   // Split camelCase (`accessKey` -> `access_Key`) so `key` is a whole word.
-  const name = decodeParamName(rawName).replaceAll(/([a-z])([A-Z])/g, '$1_$2');
-  return SECRET_QUERY_PARAM.test(name);
+  return SECRET_QUERY_PARAM.test(
+    decoded.replaceAll(/([a-z])([A-Z])/g, '$1_$2'),
+  );
 }
 
 /** Redact the value of every credential parameter in a query string. */
@@ -108,17 +140,31 @@ function redactUrlQuery(url: string): string {
   );
 }
 
+/** Redact the account identifier path segment anywhere in `text`. */
+function redactAccountPath(text: string): string {
+  return text.replaceAll(ACCOUNT_PATH_SEGMENT, `$1${FILTERED}`);
+}
+
+/** Redact the account path segment and the credential query parameters of a URL. */
+function redactUrl(url: string): string {
+  return redactUrlQuery(redactAccountPath(url));
+}
+
 // URL-shaped fields, by span attribute or breadcrumb data key, and how to
 // redact each. `url.query` is a bare query; `http.query` may keep its `?`.
+// `url` is the sanitized URL the SDK derives, `url.path` the path alone.
 const SPAN_URL_FIELDS: Record<string, (value: string) => string> = {
-  'url.full': redactUrlQuery,
-  'http.url': redactUrlQuery,
-  'http.target': redactUrlQuery,
+  'url.full': redactUrl,
+  'http.url': redactUrl,
+  'http.target': redactUrl,
+  url: redactUrl,
+  'url.path': redactUrl,
+  'http.request.header.referer': redactUrl,
   'url.query': redactQueryString,
   'http.query': redactQueryString,
 };
 const BREADCRUMB_URL_FIELDS: Record<string, (value: string) => string> = {
-  url: redactUrlQuery,
+  url: redactUrl,
   'http.query': redactQueryString,
 };
 
@@ -127,19 +173,38 @@ function redactUrlFields(
   bag: unknown,
   fields: Record<string, (value: string) => string>,
 ): void {
-  if (typeof bag !== 'object' || bag === null || Array.isArray(bag)) return;
-  const record = bag as Record<string, unknown>;
+  const record = asRecord(bag);
+  if (!record) return;
   for (const [key, redact] of Object.entries(fields)) {
     const value = record[key];
     if (typeof value === 'string') record[key] = redact(value);
   }
 }
 
-/** Scrub credential attributes on one span (or a transaction's trace context). */
-function scrubSpanData(span: { data?: unknown } | null | undefined): void {
+/** Redact the URL in every `referer` request header. */
+function redactReferer(headers: unknown): void {
+  const record = asRecord(headers);
+  if (!record) return;
+  for (const [name, value] of Object.entries(record)) {
+    if (REFERER_HEADER.test(name) && typeof value === 'string') {
+      record[name] = redactUrl(value);
+    }
+  }
+}
+
+/**
+ * Scrub credential attributes on one span (or a transaction's trace context).
+ * The description of an http span reads `GET <url>`.
+ */
+function scrubSpanData(
+  span: { data?: unknown; description?: unknown } | null | undefined,
+): void {
   if (!span) return;
   filterKeys(span.data, isCredentialSpanAttribute);
   redactUrlFields(span.data, SPAN_URL_FIELDS);
+  if (typeof span.description === 'string') {
+    span.description = redactAccountPath(span.description);
+  }
 }
 
 /** Redact credential parameters in `request.query_string`, in any shape. */
@@ -149,7 +214,9 @@ function scrubQueryString(request: NonNullable<Event['request']>): void {
     request.query_string = redactQueryString(queryString);
   } else if (Array.isArray(queryString)) {
     request.query_string = queryString.map((pair): [string, string] =>
-      Array.isArray(pair) && isSecretQueryParam(String(pair[0]))
+      Array.isArray(pair) &&
+      typeof pair[0] === 'string' &&
+      isSecretQueryParam(pair[0])
         ? [pair[0], FILTERED]
         : pair,
     );
@@ -162,18 +229,19 @@ function scrubQueryString(request: NonNullable<Event['request']>): void {
 function scrubEvent(event: Event): void {
   const { request } = event;
   if (request) {
-    filterKeys(request.headers, CREDENTIAL_HEADER);
+    filterKeys(request.headers, isCredentialHeader);
+    redactReferer(request.headers);
     // The parsed `request.cookies` object is separate from the raw Cookie
     // header. Every value in it is filtered, whatever the cookie is called.
-    filterKeys(request.cookies, EVERY_KEY);
+    filterKeys(request.cookies, anyKey);
     if (request.data != null) request.data = FILTERED;
     if (typeof request.url === 'string') {
-      request.url = redactUrlQuery(request.url);
+      request.url = redactUrl(request.url);
     }
     scrubQueryString(request);
   }
-  filterKeys(event.extra, SECRET_NAMED_KEY);
-  filterKeys(event.tags, SECRET_NAMED_KEY);
+  filterKeys(event.extra, isSecretNamedKey);
+  filterKeys(event.tags, isSecretNamedKey);
 }
 
 Sentry.init({
