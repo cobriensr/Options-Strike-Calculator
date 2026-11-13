@@ -28,6 +28,12 @@
  * delete (--stores frozen) covers it too. A root with any left keeps today's behavior, so a run
  * before 5a changes nothing. The --detector-days rule for rows after the span end applies as before.
  *
+ * The lift follows the table, not the --backup, so a lifted root needs the 5a backup: a run that
+ * plans the snapshots store is refused, naming the root, when --backup holds no 5a delete for it
+ * (a bar 5a deletes, outside Phase 2's off-session junk window, which Phase 2's own backup also
+ * holds for the thin roots). Pass thin-roots/backup-thin-roots.jsonl, or limit the run with
+ * --roots ES NQ. `--stores frozen` takes no 5a backup, so the lift follows the table there.
+ *
  * The default is a DRY RUN: it reads the database DATABASE_URL points at
  * (production, in .env.local) through read-only transactions, prints the
  * summary and writes only report.txt (and merge-state.txt) into --work-dir. --apply WRITES to that
@@ -97,7 +103,10 @@
  *   --work-dir <dir>        report.txt, backup-*.jsonl and the {store}.applied
  *                           markers (default docs/tmp/futures-derived-recompute). A dry run writes report.txt
  *                           (and merge-state.txt); an --apply leaves those alone and writes
- *                           apply-<time>-report.txt (and apply-<time>-merge-state.txt)
+ *                           apply-<time>-report.txt (and apply-<time>-merge-state.txt). So does a dry run
+ *                           once any {step}.applied marker is in the work dir, as dryrun-<time>-report.txt
+ *                           (and dryrun-<time>-merge-state.txt): after an apply it plans only what is
+ *                           left, and must not replace the files the apply was approved from
  *   --stores s1 s2 ...      only these of snapshots, premarket, fires (default all). A dry run
  *                           plans only these; --apply still plans and checks all three and
  *                           writes only these. `--stores frozen` stands alone: it plans the
