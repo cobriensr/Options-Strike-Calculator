@@ -11,6 +11,8 @@
  *   npx tsx scripts/recompute-futures-derived.ts --stores frozen --work-dir <dir>   # a dry run of the frozen-stale delete, no backup needed
  *   npx tsx scripts/recompute-futures-derived.ts --apply --stores frozen --work-dir <dir> --delete-frozen-stale --expect-frozen-deletes N
  *   npx tsx scripts/recompute-futures-derived.ts --backup <5a backup.jsonl> --roots RTY CL GC ZN --work-dir <new dir> --detector-days <file>   # Phase 5b dry run
+ *   npx tsx scripts/recompute-futures-derived.ts --stores volume-null --backup <5b apply backup.jsonl> --work-dir <new dir>   # a dry run of the volume-null step
+ *   npx tsx scripts/recompute-futures-derived.ts --apply --stores volume-null --backup <5b apply backup.jsonl> --work-dir <new dir> --null-volume-ratio --expect-volume-nulls N
  *
  * Phase 5b (owner decision D1, 2026-11-11) runs this tool for RTY, CL, GC and ZN after
  * Phase 5a (scripts/repair-futures-contract-mix.ts --thin-roots) deleted their bars in the
@@ -81,6 +83,26 @@
  * "frozen"), guarded by id, symbol and the planned price, and verifies that the rows are
  * gone and that nothing else before 2026-10-01 left the table.
  *
+ * The volume-null step (`--stores volume-null --null-volume-ratio`, owner ruling 2026-11-12, off by
+ * default) sets to NULL the thin-root volume_ratio values that Phase 5b wrote from 20-day windows
+ * 5a had mostly emptied ("Blank all 7,146"). It runs alone like the frozen step, in a work dir of
+ * its own, and reads only futures_snapshots. --backup is the 5b apply backup (the backup-<time>.jsonl
+ * of the 5b work dir), not a bar backup, and it is the scope: the distinct ids of its snapshots and
+ * stale lines whose `to` holds a volumeRatio, minus the RTY, CL and ZN rows of the April clean days
+ * (04-13 to 04-17), which moved about 3% and stay. The guard of an id is the value the apply last wrote
+ * to it (the apply ran snapshots, then stale, so an id with a value in both takes the stale line's),
+ * and the UPDATE sets volume_ratio = NULL only while the row holds it, guarded by id and symbol too.
+ * The dry run lists every target that is gone or changed since (with a count), the rows to blank by
+ * region and by root, and the apply command. The step uses the same plan.json, backup file and
+ * resume as the other steps (step "volume-null", markers volume-null.started / volume-null.applied),
+ * and verifies that every planned id is NULL and nothing else in its row changed.
+ *
+ * That ruling holds for a rerun: for a lifted thin root (the D1 lift) the snapshot step and the
+ * stale-at-write rewrite plan no volume_ratio, they neither compute a new one nor write it, or a fresh
+ * 5b dry run would plan the blanked values, and the kept ones, back. Cost if wrong: a rerun leaves a
+ * thin root's volume_ratio as stored. ES, NQ and a root that is not lifted keep the old behavior, and
+ * the report says so on each lifted root's line.
+ *
  * Before any write, the apply saves its whole plan: plan.json names a backup-*.jsonl in
  * --work-dir that holds every row to change (the step that writes it, the row as it is
  * now and the new values), with each step's row count and the file's line count and
@@ -99,7 +121,9 @@
  *   --backup <file>         the bar backup JSONL of the repair tool: for Phase 2 a
  *                           docs/tmp/futures-contract-repair/backup-<stamp>.jsonl, for Phase 5a the single
  *                           docs/tmp/futures-contract-repair/thin-roots/backup-thin-roots.jsonl, never a
- *                           part of it or a copy; required with --apply or with the snapshots or premarket store
+ *                           part of it or a copy; required with --apply or with the snapshots or premarket store.
+ *                           With `--stores volume-null` it is the 5b apply backup, the scope of that step,
+ *                           and is required with or without --apply
  *   --work-dir <dir>        report.txt, backup-*.jsonl and the {store}.applied
  *                           markers (default docs/tmp/futures-derived-recompute). A dry run writes report.txt
  *                           (and merge-state.txt); an --apply leaves those alone and writes
@@ -110,11 +134,13 @@
  *   --stores s1 s2 ...      only these of snapshots, premarket, fires (default all). A dry run
  *                           plans only these; --apply still plans and checks all three and
  *                           writes only these. `--stores frozen` stands alone: it plans the
- *                           frozen-stale rows and no store, with or without --apply
+ *                           frozen-stale rows and no store, with or without --apply. So does
+ *                           `--stores volume-null`: the rows the 5b backup names, and no store
  *   --roots r1 r2 ...       only these of ES, NQ, ZN, RTY, CL, GC (default all six), in every step:
  *                           snapshots, the stale-at-write rewrite, the junk delete and the frozen-stale
  *                           delete. Premarket and fires are ES-only: without ES here they plan nothing,
- *                           and their --expect-* totals are refused. A resume must repeat the same roots
+ *                           and their --expect-* totals are refused. A resume must repeat the same roots.
+ *                           Refused with `--stores volume-null`: the 5b backup names its roots
  *   --apply                 write (backup first); needs an --expect-* per store in the run
  *   --expect-snapshots N    the futures_snapshots rows to write in the approved dry run
  *   --expect-premarket M    the pre_market_data rows to write in that dry run
@@ -137,6 +163,11 @@
  *                           the full rows go to the backup first)
  *   --expect-frozen-deletes N  the rows that delete removes in the dry run you approved;
  *                           required with --delete-frozen-stale, --apply refuses when it differs
+ *   --null-volume-ratio     with --apply --stores volume-null, set volume_ratio to NULL on the rows the 5b
+ *                           backup names that still hold the value 5b wrote (own done marker
+ *                           volume-null.applied; the full rows go to the backup first)
+ *   --expect-volume-nulls N the rows that step blanks in the dry run you approved;
+ *                           required with --null-volume-ratio, --apply refuses when it differs
  *   --detector-days <file>  a JSON file {"RTY": {"contaminated": [...], "flagged": [...]}, "CL": {...}, "GC": {...},
  *                           "ZN": {...}} of the CT trading days the Phase 1 detector found in that root's bars
  *                           after the span end (docs/tmp/es-contract-month-2026-11-06/b-after-span/): a

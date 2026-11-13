@@ -22,7 +22,18 @@
  * second one runs alone (`--stores frozen --delete-frozen-stale`, off by default,
  * owner OK 2026-11-11): the ES and NQ snapshot rows before 2026-10-01 that
  * computeSnapshot cannot price and whose price is not the close of the latest
- * closed bar, so they are frozen on an older bar (planFrozen).
+ * closed bar, so they are frozen on an older bar (planFrozen). A third one runs alone
+ * too (`--stores volume-null --null-volume-ratio`, off by default, owner ruling
+ * 2026-11-12): it sets to NULL the thin-root `volume_ratio` values that Phase 5b wrote
+ * from 20-day windows 5a had mostly emptied (planVolumeNull; the scope, read from the 5b
+ * apply backup, is in futures-volume-null.ts).
+ *
+ * That ruling holds for a rerun: for a lifted thin root (the D1 lift) the snapshot step
+ * and the stale-at-write rewrite plan no `volume_ratio` at all, they neither compute a new
+ * one nor write it (withoutVolumeRatio), or a fresh 5b dry run would plan the 7,146
+ * blanked values, and the 2,443 kept ones, back. Cost if wrong: a rerun leaves a thin
+ * root's `volume_ratio` as stored. ES, NQ and a root that is not lifted keep the old
+ * behavior. The report says so on each lifted root's line.
  *
  * Before trusting any in-span difference, each store recomputes a control set
  * of rows outside the repaired span, where the bars were never bad. It must
@@ -119,6 +130,15 @@ import {
   isThinDeleteBar,
   isThinRoot,
 } from './futures-thin-roots.js';
+import {
+  checkVolumeNullGate,
+  parseVolumeNullScope,
+  volumeNullText,
+  type VolumeNullPlan,
+  type VolumeNullRow,
+  type VolumeNullScope,
+  type VolumeNullTarget,
+} from './futures-volume-null.js';
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -1425,6 +1445,11 @@ export interface SnapshotSymbolReport {
    * them): 0 lifts ruling 9 for the root. Null for ES and NQ.
    */
   spanBars: number | null;
+  /**
+   * A lifted thin root's rows whose recompute differs in `volume_ratio` and that stay as
+   * stored: the root's volume ratio is not planned (withoutVolumeRatio).
+   */
+  volumeRatioLeft: number;
   /** Rows where the mirrored input rule disagrees with computeSnapshot. */
   attributionInconsistent: number;
   controlRows: number;
@@ -1571,6 +1596,8 @@ export interface Plans {
   fires?: StoreResult<FireChange>;
   /** Planned alone (`--stores frozen`), with no other store. */
   frozen?: FrozenPlan;
+  /** Planned alone (`--stores volume-null`), with no other store. */
+  volumeNull?: VolumeNullPlan;
 }
 
 const emptyFields = (): Record<SnapshotField, number> => ({
@@ -2111,6 +2138,35 @@ function noteMergeState(
   m.detail.push(`${head}: ${verdict}`, ...views.map(mergeBarText));
 }
 
+/**
+ * Owner ruling 2026-11-12 (M1 of the Task 5 final review): the volume ratio of a
+ * lifted thin root is not planned. 5b recomputed it from 20-day windows that 5a had
+ * mostly emptied, so each value rests on a few leftover UTC-day groups; the ruling
+ * set 7,146 of them back to NULL (`--stores volume-null`) and kept the RTY, CL and ZN
+ * rows of the April clean days (2,443). A rerun that planned the field again would
+ * plan all of them back. So for such a root the recompute neither computes a new
+ * volume ratio nor writes one: the field leaves the outcome, and a row that differed
+ * in nothing else is the same row. Cost if wrong: a rerun leaves the root's
+ * `volume_ratio` as stored. ES, NQ and a root that is not lifted are not passed in.
+ */
+function withoutVolumeRatio(
+  outcome: SnapshotOutcome,
+  stored: SnapshotValues,
+  report: SnapshotSymbolReport,
+): SnapshotOutcome {
+  if (outcome.kind !== 'change' || !outcome.fields.includes('volumeRatio')) {
+    return outcome;
+  }
+  report.volumeRatioLeft += 1;
+  const fields = outcome.fields.filter((f) => f !== 'volumeRatio');
+  if (fields.length === 0) return { kind: 'same' };
+  return {
+    kind: 'change',
+    fields,
+    to: { ...outcome.to, volumeRatio: stored.volumeRatio },
+  };
+}
+
 async function planSnapshots(
   data: Map<Sym, SymbolData>,
   detectorDays: Map<Sym, DetectorDays> | null,
@@ -2214,6 +2270,7 @@ async function planSnapshots(
       controlDays: 0,
       thin: null,
       spanBars: spanBars.get(symbol) ?? null,
+      volumeRatioLeft: 0,
     };
 
     const frozen: { run: FrozenRun | null; last: number } = {
@@ -2225,7 +2282,12 @@ async function planSnapshots(
       rows,
       `${symbol} snapshots in range`,
     );
-    for (const [idx, { row, result, outcome }] of evaluated.entries()) {
+    for (const [idx, evaluation] of evaluated.entries()) {
+      const { row, result } = evaluation;
+      // A lifted thin root plans no volume ratio (owner ruling 2026-11-12).
+      const outcome = lifted
+        ? withoutVolumeRatio(evaluation.outcome, row.stored, report)
+        : evaluation.outcome;
       const dayOpenMs = dayOpenOf(new Date(row.tsMs));
       const byRule = affectedSnapshotFields(
         sd.repair,
@@ -2902,6 +2964,52 @@ async function planFrozen(
   };
 }
 
+// ── Volume ratios to blank (owner ruling 2026-11-12) ────────────────────────
+
+interface RawVolumeNull {
+  id: string;
+  symbol: string;
+  volume_ratio: string | null;
+  row: Row;
+}
+
+/**
+ * Reads the rows the scope names by id, in read-only transactions, and sorts each target:
+ * planned when the row is still there under its symbol and holds the value 5b wrote (the
+ * guard, at the column's four decimals), already NULL when an earlier run blanked it, gone
+ * when no row has that id and symbol, changed when it holds another value. Only the planned
+ * rows are blanked; the dry run names every other target.
+ */
+async function planVolumeNull(scope: VolumeNullScope): Promise<VolumeNullPlan> {
+  const rows: VolumeNullRow[] = [];
+  const gone: VolumeNullTarget[] = [];
+  const changed: VolumeNullPlan['changed'] = [];
+  let alreadyNull = 0;
+  for (const group of chunks(scope.targets, WRITE_CHUNK)) {
+    const ids = group.map((t) => t.id);
+    const found = new Map(
+      (
+        await readRows<RawVolumeNull>(
+          (sql) => sql`
+            SELECT id::text AS id, symbol, volume_ratio::text AS volume_ratio,
+                   to_jsonb(f) AS row
+              FROM futures_snapshots f WHERE id = ANY(${ids}::int[])`,
+        )
+      ).map((r) => [Number(r.id), r]),
+    );
+    for (const target of group) {
+      const have = found.get(target.id);
+      const guard = roundNumeric(target.guard, SNAPSHOT_SCALE);
+      if (have == null || have.symbol !== target.symbol) gone.push(target);
+      else if (have.volume_ratio == null) alreadyNull += 1;
+      else if (Number(have.volume_ratio) !== guard) {
+        changed.push({ target, current: have.volume_ratio });
+      } else rows.push({ target: { ...target, guard }, row: have.row });
+    }
+  }
+  return { scope, rows, gone, changed, alreadyNull };
+}
+
 // ── Report ──────────────────────────────────────────────────────────────────
 
 function controlText(c: Control): string[] {
@@ -3244,10 +3352,14 @@ function stepsByRootText(r: SnapshotStore): string[] {
 /** One thin root's D1 lift of ruling 9: the bars it has left in the span, and what that changes. */
 function liftText(s: SnapshotSymbolReport): string[] {
   if (s.spanBars == null) return [];
+  if (s.spanBars !== 0) {
+    return [
+      `    ruling 9 still holds: ${s.spanBars} bar(s) are left in the span outside the clean days, so the stale-at-write rewrite leaves this root's rows before the span end + 20 days`,
+    ];
+  }
   return [
-    s.spanBars === 0
-      ? `    D1 lift of ruling 9: no bar is left in the span outside the clean days, so the stale-at-write rewrite covers this root from the span start (${s.stale.liftedAdded} planned rows only the lift lets in)`
-      : `    ruling 9 still holds: ${s.spanBars} bar(s) are left in the span outside the clean days, so the stale-at-write rewrite leaves this root's rows before the span end + 20 days`,
+    `    D1 lift of ruling 9: no bar is left in the span outside the clean days, so the stale-at-write rewrite covers this root from the span start (${s.stale.liftedAdded} planned rows only the lift lets in)`,
+    `    volume_ratio is not planned for a lifted thin root (owner ruling 2026-11-12: 5b wrote it from 20-day windows 5a had mostly emptied, and --stores volume-null blanked those values): neither the snapshot step nor the stale-at-write rewrite computes or writes one, so a rerun does not bring them back; ${s.volumeRatioLeft} row(s) whose recompute differs are left as stored`,
   ];
 }
 
@@ -3433,8 +3545,9 @@ export function formatReport(
   if (plans.premarket) out.push(...premarketText(plans.premarket), '');
   if (plans.fires) out.push(...firesText(plans.fires), '');
   if (plans.frozen) out.push(...frozenText(plans.frozen), '');
-  // The frozen delete has no control set: its one check is the count at --apply.
-  if (plans.frozen == null) {
+  if (plans.volumeNull) out.push(...volumeNullText(plans.volumeNull), '');
+  // The frozen delete and the volume-null step have no control set: their one check is the count at --apply.
+  if (plans.frozen == null && plans.volumeNull == null) {
     out.push(
       gateProblems.length === 0
         ? 'Apply gate: every check passes.'
@@ -3540,8 +3653,8 @@ async function writeInTransactions<C>(
 
 // ── Backup, marker, verify ──────────────────────────────────────────────────
 
-/** A store, or one of the opt-in steps: the stale rewrite and the two deletes. */
-type ApplyStep = Store | 'stale' | 'junk' | 'frozen';
+/** A store, or one of the opt-in steps: the stale rewrite, the two deletes and the volume-null step. */
+type ApplyStep = Store | 'stale' | 'junk' | 'frozen' | 'volume-null';
 
 /** The opt-in steps that delete futures_snapshots rows. */
 type DeleteStep = 'junk' | 'frozen';
@@ -3555,9 +3668,9 @@ interface BackupEntry {
   step: ApplyStep;
   store: Store;
   id: number;
-  /** Snapshot rows, in all three of their steps. */
+  /** Snapshot rows, in all four of their steps. */
   symbol?: string;
-  /** Snapshot and stale lines: the fields this step writes. */
+  /** Snapshot, stale and volume-null lines: the fields this step writes. */
   fields?: SnapshotField[];
   row: Row;
   to: unknown;
@@ -3580,6 +3693,17 @@ type DeleteWrite = Pick<JunkRow, 'id' | 'symbol' | 'storedPrice' | 'row'>;
 interface StaleWrite extends SnapshotWrite {
   also: SnapshotField[];
 }
+/**
+ * What the volume-null step needs to blank one row: only while the row still holds
+ * `guard`, the volume ratio 5b wrote to it. In the plan file the guard is the
+ * `volume_ratio` of the line's row, the value the row held when it was planned.
+ */
+interface VolumeNullWrite {
+  id: number;
+  symbol: Sym;
+  guard: number;
+  row: Row;
+}
 
 /** The plan as read back from the file, by step. */
 interface LoadedPlan {
@@ -3589,6 +3713,7 @@ interface LoadedPlan {
   stale: StaleWrite[];
   junk: DeleteWrite[];
   frozen: DeleteWrite[];
+  'volume-null': VolumeNullWrite[];
 }
 
 /** The values a change would write: for a snapshot only its affected fields, not the whole recompute. */
@@ -3610,7 +3735,12 @@ function backedUpValues(
 function writeBackup(
   workDir: string,
   plans: Plans,
-  optIn: { junk: JunkRow[]; stale: StaleRewrite[]; frozen: FrozenRow[] },
+  optIn: {
+    junk: JunkRow[];
+    stale: StaleRewrite[];
+    frozen: FrozenRow[];
+    volumeNull: VolumeNullRow[];
+  },
   normalPending: boolean,
 ): WrittenPlan {
   const entries: BackupEntry[] = [];
@@ -3639,6 +3769,17 @@ function writeBackup(
       also: normalPending
         ? Object.fromEntries(r.alsoWritten.map((f) => [f, r.change.to[f]]))
         : {},
+    });
+  }
+  for (const v of optIn.volumeNull) {
+    entries.push({
+      step: 'volume-null',
+      store: 'snapshots',
+      id: v.target.id,
+      symbol: v.target.symbol,
+      fields: ['volumeRatio'],
+      row: v.row,
+      to: { volumeRatio: null },
     });
   }
   const deletes: [DeleteStep, { id: number; symbol: Sym; row: Row }[]][] = [
@@ -3689,6 +3830,7 @@ const APPLY_STEPS: readonly ApplyStep[] = [
   'stale',
   'junk',
   'frozen',
+  'volume-null',
 ];
 
 /** The snapshot values of a plan line: the step's fields and, on a stale line, the snapshot step's. */
@@ -3717,6 +3859,7 @@ function readPlan(path: string, pointer: PlanPointer): LoadedPlan {
     stale: [],
     junk: [],
     frozen: [],
+    'volume-null': [],
   };
   const text = readFileSync(path, 'utf8');
   const lines = text.split('\n').filter((l) => l !== '');
@@ -3774,6 +3917,19 @@ function readPlan(path: string, pointer: PlanPointer): LoadedPlan {
       plan.premarket.push({ id: e.id, to: e.to as GlobexValues, row: e.row });
     } else if (e.step === 'fires') {
       plan.fires.push({ id: e.id, to: e.to as number, row: e.row });
+    } else if (e.step === 'volume-null') {
+      if (typeof e.symbol !== 'string')
+        throw new Error(`${where} has no symbol`);
+      const guard = Number(e.row.volume_ratio);
+      if (e.row.volume_ratio == null || !Number.isFinite(guard)) {
+        throw new Error(`${where} has no volume_ratio to blank`);
+      }
+      plan['volume-null'].push({
+        id: e.id,
+        symbol: e.symbol as Sym,
+        guard,
+        row: e.row,
+      });
     } else {
       if (typeof e.symbol !== 'string')
         throw new Error(`${where} has no symbol`);
@@ -3805,7 +3961,7 @@ function readPlan(path: string, pointer: PlanPointer): LoadedPlan {
 
 /** The rows a step was approved for in the dry run's totals. */
 const approvedRows = (pointer: PlanPointer, step: ApplyStep): number | null =>
-  pointer.expect[step];
+  pointer.expect[step] ?? null;
 
 /** The rows a step has in a plan. */
 const stepRows = (plan: LoadedPlan, step: ApplyStep): number =>
@@ -3833,6 +3989,8 @@ interface PlanPointer {
     junk: number | null;
     stale: number | null;
     frozen: number | null;
+    /** A plan.json from before the volume-null step has no key for it: none was asked for. */
+    'volume-null'?: number | null;
   };
   /** What the command was: a resume repeats it. */
   command: {
@@ -3915,7 +4073,7 @@ function writeMarker(workDir: string, store: ApplyStep, rows: number): void {
 
 /** Re-read `ids` and require each row to equal its backed-up row with the plan applied. */
 function compareRows(
-  store: Store,
+  store: ApplyStep,
   expected: Map<number, Row>,
   actual: { id: string; row: Row }[],
 ): void {
@@ -4006,6 +4164,40 @@ async function verifyFires(changes: FireWrite[]): Promise<void> {
     compareRows(
       'fires',
       new Map(group.map((c) => [c.id, { ...c.row, es_basis_change_5m: c.to }])),
+      actual,
+    );
+  }
+}
+
+/**
+ * Blanks the volume ratio by id and symbol, and only while the row still holds the
+ * value 5b wrote (the guard), so a row that changed since the plan is left alone and
+ * a row an earlier run blanked is not matched again.
+ */
+function nullVolumeRatios(sql: Sql, rows: VolumeNullWrite[]) {
+  return sql`
+    UPDATE futures_snapshots f
+       SET volume_ratio = NULL
+      FROM unnest(${rows.map((v) => v.id)}::int[],
+                  ${rows.map((v) => v.symbol)}::text[],
+                  ${rows.map((v) => v.guard)}::numeric[])
+           AS r(id, symbol, volume_ratio)
+     WHERE f.id = r.id AND f.symbol = r.symbol AND f.volume_ratio = r.volume_ratio
+    RETURNING f.id`;
+}
+
+/** Every planned row is NULL in its volume ratio and equals its backed-up row in every other column. */
+async function verifyVolumeNull(writes: VolumeNullWrite[]): Promise<void> {
+  for (const group of chunks(writes, WRITE_CHUNK)) {
+    const ids = group.map((w) => w.id);
+    const actual = await readRows<{ id: string; row: Row }>(
+      (sql) => sql`
+        SELECT id::text AS id, to_jsonb(f) AS row
+          FROM futures_snapshots f WHERE id = ANY(${ids}::int[])`,
+    );
+    compareRows(
+      'volume-null',
+      new Map(group.map((w) => [w.id, { ...w.row, volume_ratio: null }])),
       actual,
     );
   }
@@ -4183,6 +4375,37 @@ async function preflightFires(writes: FireWrite[]): Promise<void> {
   refuseChanged('fires', bad, writes.length);
 }
 
+/**
+ * Before the volume-null step writes: each row is there, under its symbol, and holds
+ * the value 5b wrote (the guard) or NULL (an earlier run of this step got to it).
+ */
+async function preflightVolumeNull(writes: VolumeNullWrite[]): Promise<void> {
+  const bad: string[] = [];
+  for (const group of chunks(writes, WRITE_CHUNK)) {
+    const ids = group.map((w) => w.id);
+    const actual = await readRows<{ id: string; row: Row }>(
+      (sql) => sql`
+        SELECT id::text AS id, to_jsonb(f) AS row
+          FROM futures_snapshots f WHERE id = ANY(${ids}::int[])`,
+    );
+    const found = new Map(actual.map((r) => [Number(r.id), r.row]));
+    for (const w of group) {
+      const have = found.get(w.id);
+      if (have == null || have.symbol !== w.symbol) {
+        bad.push(`id ${w.id}: row is gone`);
+        continue;
+      }
+      const now = have.volume_ratio;
+      if (now != null && Number(now) !== w.guard) {
+        bad.push(
+          `id ${w.id}: volume_ratio holds ${stable(now)}, planned ${w.guard} to null`,
+        );
+      }
+    }
+  }
+  refuseChanged('volume-null', bad, writes.length);
+}
+
 /** How many of the rows are still there; one that is there must still hold its planned price. */
 async function preflightDeletes(
   step: DeleteStep,
@@ -4269,7 +4492,16 @@ export interface RecomputeOptions {
    * NQ snapshot rows, and no store (`stores` is empty). It needs no Phase 2 backup.
    */
   frozen: boolean;
-  /** The Phase 2 backup JSONL: required for the snapshots and premarket stores. */
+  /**
+   * `--stores volume-null`: plan, and with `nullVolumeRatio` write, only the thin-root
+   * volume ratios that Phase 5b wrote and the owner ruled out (2026-11-12), and no store
+   * (`stores` is empty). `backup` is then the 5b apply backup, the scope, not a bar backup.
+   */
+  volumeNull: boolean;
+  /**
+   * The Phase 2 backup JSONL: required for the snapshots and premarket stores. For
+   * `--stores volume-null`, the 5b apply backup that names the rows to blank.
+   */
   backup: string | null;
   /** The rows to write in the dry run the owner approved. Null on a dry run. */
   expectSnapshots: number | null;
@@ -4299,6 +4531,13 @@ export interface RecomputeOptions {
   deleteFrozenStale: boolean;
   /** The rows that delete removes in the dry run the owner approved. */
   expectFrozenDeletes: number | null;
+  /**
+   * With `volumeNull` and `--apply`, set to NULL the volume ratio of the rows the 5b backup
+   * names (the planned ones: still there and holding the value 5b wrote). Off by default.
+   */
+  nullVolumeRatio: boolean;
+  /** The rows that step blanks in the dry run the owner approved. */
+  expectVolumeNulls: number | null;
   /**
    * The Phase 1 detector's days for RTY, CL, GC and ZN after the span end (a JSON
    * file, see parseDetectorDays). Their rows on the contaminated days are left out
@@ -4334,6 +4573,7 @@ export function parseRecomputeArgs(argv: string[]): RecomputeArgs {
     stores: [...STORES],
     roots: [...SYMBOLS],
     frozen: false,
+    volumeNull: false,
     backup: null,
     expectSnapshots: null,
     expectPremarket: null,
@@ -4344,9 +4584,12 @@ export function parseRecomputeArgs(argv: string[]): RecomputeArgs {
     expectStaleRewrites: null,
     deleteFrozenStale: false,
     expectFrozenDeletes: null,
+    nullVolumeRatio: false,
+    expectVolumeNulls: null,
     detectorDays: null,
     envFile: null,
   };
+  let rootsGiven = false;
   for (let i = 0; i < argv.length; i += 1) {
     const flag = argv[i] ?? '';
     const next = (): string => {
@@ -4363,13 +4606,15 @@ export function parseRecomputeArgs(argv: string[]): RecomputeArgs {
         values.push(argv[i] ?? '');
       }
       if (values.length === 0) throw new Error('--stores needs a value');
-      if (values.includes('frozen')) {
+      const alone = values.find((v) => v === 'frozen' || v === 'volume-null');
+      if (alone != null) {
         if (values.length > 1) {
           throw new Error(
-            '--stores frozen runs alone: it plans no other store',
+            `--stores ${alone} runs alone: it plans no other store`,
           );
         }
-        args.frozen = true;
+        args.frozen = alone === 'frozen';
+        args.volumeNull = alone === 'volume-null';
         args.stores = [];
       } else {
         const bad = values.find(
@@ -4378,6 +4623,7 @@ export function parseRecomputeArgs(argv: string[]): RecomputeArgs {
         if (bad != null) throw new Error(`unknown store "${bad}"`);
         // The last --stores wins, so an earlier `--stores frozen` is dropped.
         args.frozen = false;
+        args.volumeNull = false;
         args.stores = values as Store[];
       }
     } else if (flag === '--roots') {
@@ -4393,6 +4639,7 @@ export function parseRecomputeArgs(argv: string[]): RecomputeArgs {
       if (bad != null) throw new Error(`unknown root "${bad}"`);
       // The last --roots wins; a root named twice counts once.
       args.roots = [...new Set(values)] as Sym[];
+      rootsGiven = true;
     } else if (flag === '--expect-snapshots')
       args.expectSnapshots = parseCount(flag, next());
     else if (flag === '--expect-premarket')
@@ -4415,6 +4662,9 @@ export function parseRecomputeArgs(argv: string[]): RecomputeArgs {
     else if (flag === '--delete-frozen-stale') args.deleteFrozenStale = true;
     else if (flag === '--expect-frozen-deletes')
       args.expectFrozenDeletes = parseCount(flag, next());
+    else if (flag === '--null-volume-ratio') args.nullVolumeRatio = true;
+    else if (flag === '--expect-volume-nulls')
+      args.expectVolumeNulls = parseCount(flag, next());
     else throw new Error(`unknown argument ${flag}`);
   }
   if (args.force && !args.apply)
@@ -4490,6 +4740,43 @@ export function parseRecomputeArgs(argv: string[]): RecomputeArgs {
       '--apply with --stores frozen needs --delete-frozen-stale and --expect-frozen-deletes N: the count of the dry run you approved',
     );
   }
+  if (!args.apply && (args.nullVolumeRatio || args.expectVolumeNulls != null)) {
+    throw new Error(
+      `${args.nullVolumeRatio ? '--null-volume-ratio' : '--expect-volume-nulls'} only applies with --apply`,
+    );
+  }
+  if (args.expectVolumeNulls != null && !args.nullVolumeRatio) {
+    throw new Error('--expect-volume-nulls needs --null-volume-ratio');
+  }
+  if (args.nullVolumeRatio) {
+    if (!args.volumeNull) {
+      throw new Error(
+        '--null-volume-ratio blanks volume_ratio values, so --stores must be volume-null',
+      );
+    }
+    if (args.expectVolumeNulls == null) {
+      throw new Error(
+        '--null-volume-ratio needs --expect-volume-nulls N: the count of the dry run you approved',
+      );
+    }
+  }
+  if (args.apply && args.volumeNull && !args.nullVolumeRatio) {
+    throw new Error(
+      '--apply with --stores volume-null needs --null-volume-ratio and --expect-volume-nulls N: the count of the dry run you approved',
+    );
+  }
+  if (args.volumeNull) {
+    if (args.backup == null) {
+      throw new Error(
+        '--backup <file> is required with --stores volume-null: the Phase 5b apply backup JSONL',
+      );
+    }
+    if (rootsGiven) {
+      throw new Error(
+        '--roots does not apply with --stores volume-null: the 5b backup names the roots',
+      );
+    }
+  }
   const given = expectations(args);
   if (!args.apply) {
     for (const store of STORES) {
@@ -4519,11 +4806,11 @@ export function parseRecomputeArgs(argv: string[]): RecomputeArgs {
       );
     }
   }
-  if (args.frozen) {
+  if (args.frozen || args.volumeNull) {
     for (const store of STORES) {
       if (given[store] != null) {
         throw new Error(
-          `${EXPECT_FLAGS[store].flag} does not apply with --stores frozen`,
+          `${EXPECT_FLAGS[store].flag} does not apply with --stores ${args.frozen ? 'frozen' : 'volume-null'}`,
         );
       }
     }
@@ -4539,10 +4826,12 @@ export function parseRecomputeArgs(argv: string[]): RecomputeArgs {
 /**
  * `--apply` plans all three stores whatever `--stores` says, because its gate
  * needs every check to hold; `--stores` then limits only what is written. So it
- * needs the Phase 2 backup too. `--stores frozen` plans no store, so it needs none.
+ * needs the Phase 2 backup too. `--stores frozen` plans no store, so it needs none;
+ * nor does `--stores volume-null`, whose `--backup` is the 5b apply backup, the scope
+ * of the step, and not a bar backup.
  */
 const needsBackup = (o: RecomputeOptions): boolean =>
-  (o.apply && !o.frozen) ||
+  (o.apply && !o.frozen && !o.volumeNull) ||
   storesOf(o).includes('snapshots') ||
   storesOf(o).includes('premarket');
 
@@ -4579,6 +4868,18 @@ function applyCommand(opts: RecomputeOptions, plans: Plans): string | null {
           `--expect-frozen-deletes ${plans.frozen.rows.length}`,
         ].join(' ');
   }
+  if (plans.volumeNull != null) {
+    return plans.volumeNull.rows.length === 0 || opts.backup == null
+      ? null
+      : [
+          'npx tsx scripts/recompute-futures-derived.ts --apply',
+          `--work-dir ${opts.workDir}`,
+          '--stores volume-null',
+          `--backup ${opts.backup}`,
+          '--null-volume-ratio',
+          `--expect-volume-nulls ${plans.volumeNull.rows.length}`,
+        ].join(' ');
+  }
   const planned = STORES.filter((store) => plans[store] != null);
   if (planned.length === 0) return null;
   const junk = plans.snapshots?.junk.length ?? 0;
@@ -4613,7 +4914,7 @@ function applyCommand(opts: RecomputeOptions, plans: Plans): string | null {
  */
 function optInPending(
   opts: RecomputeOptions,
-  step: 'junk' | 'stale' | 'frozen',
+  step: 'junk' | 'stale' | 'frozen' | 'volume-null',
   asked: boolean,
   rows: number,
   what: string,
@@ -4643,6 +4944,11 @@ async function run(opts: RecomputeOptions): Promise<number> {
       '--backup <file> is required with --apply or with the snapshots or premarket store',
     );
   }
+  if (opts.volumeNull && opts.backup == null) {
+    throw new Error(
+      '--backup <file> is required with --stores volume-null: the Phase 5b apply backup JSONL',
+    );
+  }
   mkdirSync(opts.workDir, { recursive: true });
   // A run that failed between steps left a plan with some steps marked: finish it.
   const saved =
@@ -4662,20 +4968,25 @@ async function run(opts: RecomputeOptions): Promise<number> {
           readFileSync(opts.detectorDays, 'utf8'),
           opts.detectorDays,
         );
+  const volumeNullScope =
+    opts.volumeNull && opts.backup != null
+      ? parseVolumeNullScope(readFileSync(opts.backup, 'utf8'), opts.backup)
+      : null;
   console.log(
     `Futures derived-store recompute${opts.apply ? '' : ' (DRY RUN: read-only, no writes)'}`,
   );
 
   const plans: Plans = {};
   // A dry run plans what it was asked for; --apply plans every store, to check it.
-  // --stores frozen plans no store at all. Premarket and fires are ES-only, so
-  // without ES in --roots they plan nothing (storesOf).
-  const planned: Store[] = opts.frozen
-    ? []
-    : storesOf({
-        stores: opts.apply ? [...STORES] : opts.stores,
-        roots: opts.roots,
-      });
+  // --stores frozen and --stores volume-null plan no store at all. Premarket and fires
+  // are ES-only, so without ES in --roots they plan nothing (storesOf).
+  const planned: Store[] =
+    opts.frozen || opts.volumeNull
+      ? []
+      : storesOf({
+          stores: opts.apply ? [...STORES] : opts.stores,
+          roots: opts.roots,
+        });
   let session: string[];
   let spanBars = new Map<Sym, number>();
   neonConfig.fetchFunction = readOnlyFetch;
@@ -4715,6 +5026,8 @@ async function run(opts: RecomputeOptions): Promise<number> {
         spanBars,
       );
     if (opts.frozen) plans.frozen = await planFrozen(opts.roots, spanBars);
+    if (volumeNullScope != null)
+      plans.volumeNull = await planVolumeNull(volumeNullScope);
   } finally {
     neonConfig.fetchFunction = undefined;
   }
@@ -4737,27 +5050,33 @@ async function run(opts: RecomputeOptions): Promise<number> {
     lifted.length === 0
       ? 'the thin roots'
       : `${lifted.join(', ')} (D1 lift) from the span start too, the other thin roots`;
-  const header = opts.frozen
+  const header = opts.volumeNull
     ? [
-        `frozen-stale scope: ${frozenScope.length === 0 ? 'no root' : frozenScope.join(', ')} futures_snapshots rows before ${isoSecond(STALE_UNTIL_MS)}`,
-        rootsLine,
-        ...(lift === '' ? [] : [lift]),
+        `volume-null scope: the thin-root futures_snapshots rows that ${opts.backup ?? ''} names, ${volumeNullScope?.targets.length ?? 0} target(s)`,
         ...session,
         elapsed,
       ]
-    : [
-        `repaired span ${span}`,
-        rootsLine,
-        ...(lift === '' ? [] : [lift]),
-        `snapshot scope ${isoSecond(scope.snapshots.fromMs)} .. ${isoSecond(scope.snapshots.toMs)} (span end + 20 days)`,
-        `fire scope ${isoSecond(scope.fires.fromMs)} .. ${isoSecond(scope.fires.toMs)} (span end + 6 minutes)`,
-        `stale-at-write test reaches ${isoSecond(STALE_UNTIL_MS)} (the freshness gate shipped on 2026-09-30); ES and NQ from the span start, ${thinFrom} from the span end + 20 days (${isoSecond(scope.snapshots.toMs)}), all of them off the contaminated days in ${opts.detectorDays ?? 'no file (their rows after the span end are left)'}`,
-        ...(opts.backup == null
-          ? []
-          : [backupLine(opts.backup, backupBars, opts.roots)]),
-        ...session,
-        elapsed,
-      ];
+    : opts.frozen
+      ? [
+          `frozen-stale scope: ${frozenScope.length === 0 ? 'no root' : frozenScope.join(', ')} futures_snapshots rows before ${isoSecond(STALE_UNTIL_MS)}`,
+          rootsLine,
+          ...(lift === '' ? [] : [lift]),
+          ...session,
+          elapsed,
+        ]
+      : [
+          `repaired span ${span}`,
+          rootsLine,
+          ...(lift === '' ? [] : [lift]),
+          `snapshot scope ${isoSecond(scope.snapshots.fromMs)} .. ${isoSecond(scope.snapshots.toMs)} (span end + 20 days)`,
+          `fire scope ${isoSecond(scope.fires.fromMs)} .. ${isoSecond(scope.fires.toMs)} (span end + 6 minutes)`,
+          `stale-at-write test reaches ${isoSecond(STALE_UNTIL_MS)} (the freshness gate shipped on 2026-09-30); ES and NQ from the span start, ${thinFrom} from the span end + 20 days (${isoSecond(scope.snapshots.toMs)}), all of them off the contaminated days in ${opts.detectorDays ?? 'no file (their rows after the span end are left)'}`,
+          ...(opts.backup == null
+            ? []
+            : [backupLine(opts.backup, backupBars, opts.roots)]),
+          ...session,
+          elapsed,
+        ];
   const report = formatReport(
     plans,
     header,
@@ -4798,6 +5117,7 @@ async function run(opts: RecomputeOptions): Promise<number> {
     ...checkJunkGate(opts, plans.snapshots?.junk.length ?? 0),
     ...checkStaleGate(opts, plans.snapshots?.staleRewrites.length ?? 0),
     ...checkFrozenGate(opts, plans.frozen?.rows.length ?? 0),
+    ...checkVolumeNullGate(opts, plans.volumeNull?.rows.length ?? 0),
     ...(opts.rewriteStaleAtWrite
       ? checkStaleShare(plans.snapshots?.symbols ?? [])
       : []),
@@ -4847,7 +5167,22 @@ async function run(opts: RecomputeOptions): Promise<number> {
     'the frozen-stale delete',
     'delete',
   );
-  if (pending.length === 0 && !stalePending && !junkPending && !frozenPending) {
+  const volumeNull = plans.volumeNull?.rows ?? [];
+  const volumeNullPending = optInPending(
+    opts,
+    'volume-null',
+    opts.nullVolumeRatio,
+    volumeNull.length,
+    'the volume-null step',
+    'blank',
+  );
+  if (
+    pending.length === 0 &&
+    !stalePending &&
+    !junkPending &&
+    !frozenPending &&
+    !volumeNullPending
+  ) {
     return 0;
   }
 
@@ -4862,6 +5197,7 @@ async function run(opts: RecomputeOptions): Promise<number> {
       junk: junkPending ? junk : [],
       stale: stalePending ? stale : [],
       frozen: frozenPending ? frozen : [],
+      volumeNull: volumeNullPending ? volumeNull : [],
     },
     pending.includes('snapshots'),
   );
@@ -4872,6 +5208,7 @@ async function run(opts: RecomputeOptions): Promise<number> {
     ...(stalePending ? (['stale'] as const) : []),
     ...(junkPending ? (['junk'] as const) : []),
     ...(frozenPending ? (['frozen'] as const) : []),
+    ...(volumeNullPending ? (['volume-null'] as const) : []),
   ];
   const pointer: PlanPointer = {
     createdAt: new Date().toISOString(),
@@ -4889,6 +5226,7 @@ async function run(opts: RecomputeOptions): Promise<number> {
       junk: opts.deleteJunkStale ? junk.length : null,
       stale: opts.rewriteStaleAtWrite ? stale.length : null,
       frozen: opts.deleteFrozenStale ? frozen.length : null,
+      'volume-null': opts.nullVolumeRatio ? volumeNull.length : null,
     },
     command: {
       workDir: resolve(opts.workDir),
@@ -4914,6 +5252,14 @@ async function applyStep(
   if (step === 'junk') return await applyDeletes(step, plan.junk, begin);
   if (step === 'frozen') return await applyDeletes(step, plan.frozen, begin);
   if (step === 'stale') return await applyStale(plan.stale, begin);
+  if (step === 'volume-null') {
+    const writes = plan['volume-null'];
+    await preflightVolumeNull(writes);
+    begin();
+    await writeInTransactions(writes, nullVolumeRatios);
+    await verifyVolumeNull(writes);
+    return writes.length;
+  }
   if (step === 'snapshots') {
     await preflightSnapshots(step, plan.snapshots);
     begin();
@@ -5056,6 +5402,17 @@ function checkResume(opts: RecomputeOptions, saved: PlanPointer): string[] {
   } else if (opts.expectFrozenDeletes !== savedFrozen) {
     problems.push(
       `--expect-frozen-deletes ${opts.expectFrozenDeletes} was given, the saved plan has ${savedFrozen}`,
+    );
+  }
+  // Likewise a plan.json from before the volume-null step.
+  const savedVolumeNull = saved.expect['volume-null'] ?? null;
+  if (opts.nullVolumeRatio !== (savedVolumeNull != null)) {
+    problems.push(
+      `the saved plan ${savedVolumeNull == null ? 'has no' : 'has a'} volume-null step, --null-volume-ratio was ${opts.nullVolumeRatio ? 'given' : 'not given'}`,
+    );
+  } else if (opts.expectVolumeNulls !== savedVolumeNull) {
+    problems.push(
+      `--expect-volume-nulls ${opts.expectVolumeNulls} was given, the saved plan has ${savedVolumeNull}`,
     );
   }
   return problems;
