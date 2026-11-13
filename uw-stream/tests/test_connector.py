@@ -35,10 +35,14 @@ def _reset_state():
     state.receive_queue_depth = 0
     state.receive_queue_drops = 0
     state.ws_connected = False
+    # The storm alert's window lives on the process-wide state; a test that
+    # tripped it must not silence the next one.
+    state.storm_alerted_at = None
     yield
     state.receive_queue_depth = 0
     state.receive_queue_drops = 0
     state.ws_connected = False
+    state.storm_alerted_at = None
 
 
 @pytest.mark.asyncio
@@ -478,6 +482,200 @@ async def test_storm_threshold_scales_with_shard_count(monkeypatch) -> None:
         while state.reconnects_last_hour() < base * 3:
             state.record_reconnect()
         connector._maybe_alert_storm()
+        assert captured == ["uw-stream reconnect storm"]
+    finally:
+        state.reconnect_times.clear()
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Storm alert window: one alert per incident, not one per reconnect.
+#
+# On 2026-11-12 `reconnects_last_hour` sat above the threshold from 17:32 to
+# 18:05 UTC, about one reconnect a minute, and each of them sent an event: 30
+# events for one incident.
+# ──────────────────────────────────────────────────────────────────────────
+
+
+class _StormClock:
+    """Stands in for ``connector.time``; ``_maybe_alert_storm`` reads only ``monotonic``.
+
+    Starts at 5 s, not at a round hour: ``time.monotonic()`` counts from an
+    arbitrary point (boot, on Linux), so a window that treated "never alerted"
+    as 0.0 would swallow the first alert of a young process.
+    """
+
+    def __init__(self) -> None:
+        self.now = 5.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+@pytest.fixture
+def storm(monkeypatch):
+    """A one-shard connector on a fake clock, with every capture_message recorded."""
+    import connector as connector_mod
+
+    class _FakeSettings:
+        channel_shards: ClassVar[list[list[str]]] = [["a"]]
+
+    monkeypatch.setattr(connector_mod, "settings", _FakeSettings())
+    clock = _StormClock()
+    monkeypatch.setattr(connector_mod, "time", clock)
+    captured: list[tuple[str, dict[str, Any]]] = []
+    monkeypatch.setattr(
+        connector_mod,
+        "capture_message",
+        lambda msg, **kw: captured.append((msg, kw)),
+    )
+    state.reconnect_times.clear()
+
+    def reconnects(n: int) -> None:
+        for _ in range(n):
+            state.record_reconnect()
+
+    yield SimpleNamespace(
+        connector=Connector(channels=["a"], receive_queue=asyncio.Queue(maxsize=1)),
+        clock=clock,
+        captured=captured,
+        threshold=connector_mod._RECONNECT_STORM_THRESHOLD,
+        window=connector_mod._STORM_ALERT_WINDOW_S,
+        reconnects=reconnects,
+    )
+    state.reconnect_times.clear()
+
+
+def test_a_reconnect_storm_alerts_once_not_once_per_reconnect(storm) -> None:
+    """The 11-12 incident: 30 reconnects, a minute and six seconds apart."""
+    storm.reconnects(storm.threshold)
+    for _ in range(30):
+        state.record_reconnect()
+        storm.connector._maybe_alert_storm()
+        storm.clock.advance(66.0)
+
+    assert [msg for msg, _ in storm.captured] == ["uw-stream reconnect storm"]
+
+
+def test_the_storm_alert_is_a_warning_with_the_count_and_threshold(storm) -> None:
+    storm.reconnects(storm.threshold + 2)
+
+    storm.connector._maybe_alert_storm()
+
+    ((msg, kwargs),) = storm.captured
+    assert msg == "uw-stream reconnect storm"
+    assert kwargs["level"] == "warning"
+    assert kwargs["tags"] == {"component": "connector"}
+    assert kwargs["context"] == {
+        "reconnects_last_hour": storm.threshold + 2,
+        "threshold": storm.threshold,
+    }
+
+
+def test_the_storm_window_is_the_hour_reconnects_last_hour_counts_over() -> None:
+    """A shorter window would alert twice on reconnects the first alert counted."""
+    import connector as connector_mod
+
+    assert connector_mod._STORM_ALERT_WINDOW_S == 3600.0
+
+
+def test_a_new_incident_after_the_window_alerts_again(storm) -> None:
+    storm.reconnects(storm.threshold)
+    storm.connector._maybe_alert_storm()
+    assert len(storm.captured) == 1
+
+    # The first incident's reconnects age out of the hour; a second one builds
+    # after the window has run out.
+    storm.clock.advance(storm.window + 1.0)
+    state.reconnect_times.clear()
+    storm.reconnects(storm.threshold)
+    storm.connector._maybe_alert_storm()
+
+    assert [msg for msg, _ in storm.captured] == ["uw-stream reconnect storm"] * 2
+
+
+def test_a_storm_still_going_when_the_window_ends_alerts_again(storm) -> None:
+    storm.reconnects(storm.threshold)
+    storm.connector._maybe_alert_storm()
+    assert len(storm.captured) == 1
+
+    storm.clock.advance(storm.window - 1.0)
+    state.record_reconnect()
+    storm.connector._maybe_alert_storm()
+    assert len(storm.captured) == 1, "one second inside the window is still the same incident"
+
+    storm.clock.advance(1.0)
+    state.record_reconnect()
+    storm.connector._maybe_alert_storm()
+    assert len(storm.captured) == 2, "the window is over at exactly its length"
+
+
+def test_reconnects_below_the_threshold_neither_alert_nor_start_the_window(storm) -> None:
+    storm.reconnects(storm.threshold - 1)
+    storm.connector._maybe_alert_storm()
+    storm.clock.advance(10.0)
+    storm.connector._maybe_alert_storm()
+    assert storm.captured == []
+
+    state.record_reconnect()
+    storm.connector._maybe_alert_storm()
+
+    assert len(storm.captured) == 1
+
+
+def test_the_storm_window_is_shared_by_every_shard(storm) -> None:
+    """The count and the threshold are process-wide, so is the window: an
+    all-shard cluster must not send one alert per shard."""
+    other = Connector(channels=["b"], receive_queue=asyncio.Queue(maxsize=1), name="conn1")
+    storm.reconnects(storm.threshold)
+
+    storm.connector._maybe_alert_storm()
+    other._maybe_alert_storm()
+
+    assert len(storm.captured) == 1
+
+
+@pytest.mark.asyncio
+async def test_rapid_clean_closes_alert_once_however_many_reconnects(monkeypatch) -> None:
+    """``run`` end to end: four times the threshold of clean closes, one alert."""
+    import connector as connector_mod
+
+    class _FakeSettings:
+        channel_shards: ClassVar[list[list[str]]] = [["a"]]
+        ws_url = "wss://example/socket"
+
+    monkeypatch.setattr(connector_mod, "settings", _FakeSettings())
+    captured: list[str] = []
+    monkeypatch.setattr(
+        connector_mod,
+        "capture_message",
+        lambda msg, **_kw: captured.append(msg),
+    )
+
+    async def _no_sleep(_d: float) -> None:
+        return None
+
+    monkeypatch.setattr(connector_mod.asyncio, "sleep", _no_sleep)
+    monkeypatch.setattr(connector_mod, "_INITIAL_BACKOFF_S", 0.0)
+
+    closes = connector_mod._RECONNECT_STORM_THRESHOLD * 4
+    calls = 0
+
+    async def _clean_close(self) -> None:
+        nonlocal calls
+        calls += 1
+        if calls > closes:
+            raise asyncio.CancelledError()
+
+    monkeypatch.setattr(Connector, "_connect_once", _clean_close)
+    connector = Connector(channels=["a"], receive_queue=asyncio.Queue(maxsize=1))
+
+    state.reconnect_times.clear()
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await connector.run()
         assert captured == ["uw-stream reconnect storm"]
     finally:
         state.reconnect_times.clear()

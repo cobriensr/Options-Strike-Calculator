@@ -464,9 +464,19 @@ migration chain, and all schema changes go there.)
   session length, frames received, time since the last frame, and both
   socket addresses. The token is scrubbed from it. A Sentry warning fires
   when reconnects in the last hour, across all shards, reach 5 per shard
-  (40 with 8 shards, 30 with the mirror sockets off). A temporary
-  `ws-canary` Railway service (`scripts/ws-canary/`) is measuring which
-  network hop resets these connections.
+  (40 with 8 shards, 30 with the mirror sockets off). It fires once per
+  incident: at most one an hour for the whole process
+  (`_STORM_ALERT_WINDOW_S` in `src/connector.py`, the same hour the count
+  covers), and a storm still going when the hour ends alerts again. A
+  temporary `ws-canary` Railway service (`scripts/ws-canary/`) is measuring
+  which network hop resets these connections.
+- **What reaches Sentry.** Only explicit captures (`capture_exception`,
+  `capture_message` in `src/sentry_setup.py`). The SDK's logging integration
+  is set to `event_level=None`, so an error log line is a breadcrumb on the
+  next event and never an event of its own: a failure that is logged at error
+  level and must reach Sentry sends its own capture beside the log line (the
+  throttled `rate_limited_log.error` does it for itself, once per window).
+  Before 2026-11-13 each logged-and-captured failure filed two issues.
 - **Shutdown drain.** On SIGTERM the daemon closes its sockets, releases
   the lease, then drains every handler at once. Each drain waits for an
   in-flight flush to finish, then writes what is left in its queue and

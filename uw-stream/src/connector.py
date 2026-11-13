@@ -68,6 +68,33 @@ _PING_TIMEOUT_S = 20.0
 # Threshold for raising a Sentry warning if reconnects pile up.
 _RECONNECT_STORM_THRESHOLD = 5
 
+# One storm alert per incident: once one is sent, the next waits this long.
+#
+# Why an hour. The test is ``state.reconnects_last_hour() >= threshold``, a
+# trailing 60-minute count. Once a burst crosses the threshold it stays crossed
+# until the burst ages out of that hour, and every reconnect in between tests
+# true again. On 2026-11-12 (6 shards, threshold 30) the count held from 17:32
+# to 18:05 UTC at about one reconnect a minute, peaking at 55, and with no
+# window that sent 30 events for one incident. A window as long as the count's
+# horizon makes the alert follow the evidence: every reconnect behind an alert
+# is older than the window when it ends, so a second alert needs a threshold's
+# worth of NEW reconnects in the hour after the first. A storm still going when
+# the window ends alerts again on its next reconnect; one that has stopped does
+# not. A shorter window would alert again on reconnects the first alert had
+# already counted.
+#
+# What it costs: a separate incident that starts inside the hour of an earlier
+# alert is not announced on its own. Its drops still log one line each and
+# show in /metrics' reconnects_last_hour.
+#
+# Process-wide, not per shard. The count and the threshold (this base times the
+# shard count) are both process-wide, and drops arrive as all-shard clusters
+# about 41% of the time (the 2026-10-28 disconnect investigation), so a
+# timestamp on each connector would let every shard send its own alert for the
+# one incident. The timestamp is ``state.storm_alerted_at``: one float, no
+# growth.
+_STORM_ALERT_WINDOW_S = 3600.0
+
 # A session must stay up at least this long to count as "healthy" and reset
 # the reconnect backoff. Mirrors the MIN_HEALTHY_SESSION_S used by the
 # sidecar's (since removed) Databento reconnect loop. Subscribe succeeding
@@ -549,13 +576,22 @@ class Connector:
         by the shard count (``_RECONNECT_STORM_THRESHOLD`` per shard) so routine
         independent per-shard reconnect churn doesn't trip a storm alert tuned
         for a single socket — a real storm still crosses N*base quickly.
+
+        At most one alert per ``_STORM_ALERT_WINDOW_S``, process-wide (see that
+        constant). A check below the threshold does not start the window.
         """
         count = state.reconnects_last_hour()
         threshold = _RECONNECT_STORM_THRESHOLD * max(1, len(settings.channel_shards))
-        if count >= threshold:
-            capture_message(
-                "uw-stream reconnect storm",
-                level="warning",
-                tags={"component": "connector"},
-                context={"reconnects_last_hour": count, "threshold": threshold},
-            )
+        if count < threshold:
+            return
+        now = time.monotonic()
+        last = state.storm_alerted_at
+        if last is not None and now - last < _STORM_ALERT_WINDOW_S:
+            return
+        state.storm_alerted_at = now
+        capture_message(
+            "uw-stream reconnect storm",
+            level="warning",
+            tags={"component": "connector"},
+            context={"reconnects_last_hour": count, "threshold": threshold},
+        )

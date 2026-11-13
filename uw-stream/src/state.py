@@ -103,6 +103,10 @@ class State:
     # churn through an hour's window in seconds and undercount
     # reconnects_last_hour. 512 comfortably covers an hour across ~6+ shards.
     reconnect_times: deque[datetime] = field(default_factory=lambda: deque(maxlen=512))
+    # ``time.monotonic()`` when the last reconnect-storm alert went out, None
+    # before the first. One float for the whole process: the connector spaces
+    # alerts by ``_STORM_ALERT_WINDOW_S`` against it, across every shard.
+    storm_alerted_at: float | None = None
     channels: dict[str, ChannelMetrics] = field(default_factory=dict)
     handlers: dict[str, HandlerMetrics] = field(default_factory=dict)
     # Bounded queue between connector (producer) and router (consumer).
