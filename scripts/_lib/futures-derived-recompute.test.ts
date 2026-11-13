@@ -39,7 +39,7 @@ import {
   checkStaleShare,
   compareGlobex,
   compareSnapshot,
-  ctTradingDay,
+  formatReport,
   frozenRunsOf,
   gateFlips,
   parseDetectorDays,
@@ -57,6 +57,8 @@ import {
   type StaleStats,
   type Control,
   type FireChange,
+  type FrozenRow,
+  type FrozenSymbolReport,
   type SnapshotValues,
 } from './futures-derived-recompute.js';
 import {
@@ -766,21 +768,109 @@ describe('checkStaleGate', () => {
   });
 });
 
-describe('ctTradingDay', () => {
-  // The Phase 1 detector's day (feat.py): the CT date of the time plus 7 hours,
-  // so the Globex session that opens at 17:00 CT belongs to the next date.
-  it.each([
-    ['Sunday 17:00 CDT opens Monday', '2026-06-14T22:00:00Z', '2026-06-15'],
-    ['Monday 15:59 CDT is still Monday', '2026-06-15T20:59:00Z', '2026-06-15'],
-    [
-      'Monday 16:30 CDT, in the break, is Monday',
-      '2026-06-15T21:30:00Z',
-      '2026-06-15',
-    ],
-    ['Monday 17:00 CDT opens Tuesday', '2026-06-15T22:00:00Z', '2026-06-16'],
-    ['Sunday 17:00 CST opens Monday', '2026-11-08T23:00:00Z', '2026-11-09'],
-  ])('%s', (_name, iso, day) => {
-    expect(ctTradingDay(ms(iso))).toBe(day);
+describe('the frozen-stale section of the report', () => {
+  const frozenRow = (symbol: 'ES' | 'RTY', iso: string): FrozenRow => ({
+    id: 1,
+    symbol,
+    tsMs: ms(iso),
+    storedPrice: 100,
+    barTsMs: ms(iso) - 3_600_000,
+    barClose: 99,
+    row: { id: 1 },
+  });
+  const symbolReport = (
+    symbol: 'ES' | 'RTY',
+    rows: number,
+    over: Partial<FrozenSymbolReport> = {},
+  ): FrozenSymbolReport => ({
+    symbol,
+    candidates: rows,
+    fresh: 0,
+    rows,
+    byClosure: { break: 0, weekendOrHoliday: 0, elsewhere: rows },
+    firstMs: ms('2026-04-06T15:00:00Z'),
+    lastMs: ms('2026-09-30T20:00:00Z'),
+    repeatsLastClose: 0,
+    noBar: 0,
+    lifted: false,
+    spread: null,
+    ...over,
+  });
+  const text = (symbols: FrozenSymbolReport[], rows: FrozenRow[]): string[] =>
+    formatReport(
+      { frozen: { rows, symbols, kept: [] } },
+      ['header'],
+      [],
+      null,
+    ).split('\n');
+
+  it('gives a lifted root the rows in the span and after it, and a count per UTC month in order', () => {
+    const rows = [
+      '2026-06-15T14:10:59Z', // the last second before the span end: in the span
+      '2026-04-06T15:00:00Z', // in the span
+      '2026-06-15T14:11:00Z', // the span end: after it
+      '2026-09-30T20:00:00Z',
+      '2026-06-30T20:00:00Z',
+      '2026-09-01T20:00:00Z',
+    ].map((iso) => frozenRow('RTY', iso));
+    const lines = text(
+      [
+        symbolReport('RTY', 6, {
+          lifted: true,
+          spread: {
+            beforeSpan: 0,
+            inSpan: 2,
+            afterSpan: 4,
+            byMonth: { '2026-09': 2, '2026-04': 1, '2026-06': 3 },
+          },
+        }),
+      ],
+      rows,
+    );
+
+    expect(lines).toContain(
+      '      in the span 2, after it 4 (the span is 2026-04-05T22:00:00Z .. 2026-06-15T14:11:00Z)',
+    );
+    expect(lines).toContain(
+      '      by UTC month: 2026-04 1, 2026-06 3, 2026-09 2',
+    );
+    // The split follows the root's own line, before the candidate counts.
+    const root = lines.findIndex((l) => l.startsWith('    RTY: 6,'));
+    expect(lines[root]).toContain('(added by the D1 lift)');
+    expect(lines[root + 1]).toContain('in the span 2, after it 4');
+    expect(lines[root + 3]).toContain('candidates 6');
+  });
+
+  it('says how many rows lie before the span only when there are some', () => {
+    const lines = text(
+      [
+        symbolReport('RTY', 3, {
+          lifted: true,
+          spread: {
+            beforeSpan: 1,
+            inSpan: 1,
+            afterSpan: 1,
+            byMonth: { '2026-03': 1, '2026-05': 1, '2026-07': 1 },
+          },
+        }),
+      ],
+      [],
+    );
+    expect(lines).toContain(
+      '      in the span 1, after it 1, before it 1 (the span is 2026-04-05T22:00:00Z .. 2026-06-15T14:11:00Z)',
+    );
+    expect(lines.filter((l) => /in the span 1, after it 1 \(/.test(l))).toEqual(
+      [],
+    );
+  });
+
+  it('leaves ES and NQ lines as they were: no split', () => {
+    const lines = text(
+      [symbolReport('ES', 3)],
+      [frozenRow('ES', '2026-05-01T15:00:00Z')],
+    );
+    expect(lines.some((l) => /in the span d|by UTC month/.test(l))).toBe(false);
+    expect(lines.some((l) => l.startsWith('    ES: 3,'))).toBe(true);
   });
 });
 

@@ -29,6 +29,8 @@ describe('ctTradingDay', () => {
     ['2026-04-13T21:59:00Z', '2026-04-13'], // Mon 16:59 CDT
     ['2026-04-13T22:00:00Z', '2026-04-14'], // Mon 17:00 CDT
     ['2026-06-15T14:10:00Z', '2026-06-15'], // Mon 09:10 CDT
+    ['2026-06-15T21:30:00Z', '2026-06-15'], // Mon 16:30 CDT, in the daily break: still Monday
+    ['2026-11-08T23:00:00Z', '2026-11-09'], // Sun 17:00 CST (the +7 h shift holds after the fall back)
   ])('%s is trading day %s', (iso, day) => {
     expect(ctTradingDay(ms(iso))).toBe(day);
   });

@@ -286,14 +286,15 @@ async function bar(
 }
 
 /**
- * The world before Phase 5a: each of `symbols` (RTY by default) still has a
- * month-mixed bar in the span on a day that is not clean, so the D1 lift leaves
- * ruling 9 in force for it. Every test of ruling 9 calls this, so none of them
- * depends on a bar another seed happens to place in the span. The day is 05-04,
- * outside the 20-day volume windows of the rows these tests use.
+ * The world before Phase 5a: every thin root still has a month-mixed bar in the
+ * span on a day that is not clean, so the D1 lift leaves ruling 9 in force for it.
+ * Every reset seeds it, so no test depends on a bar another seed happens to place
+ * in the span, and a Phase 2 backup, which holds none of 5a's deletes, is valid for
+ * every root (a lifted root needs the 5a backup). The day is 05-04, outside the
+ * 20-day volume windows of the rows these tests use.
  */
-async function leaveThinBarsInSpan(symbols: string[] = ['RTY']): Promise<void> {
-  for (const symbol of symbols) {
+async function leaveThinBarsInSpan(): Promise<void> {
+  for (const symbol of ['RTY', 'CL', 'GC', 'ZN']) {
     await bar(symbol, '2026-05-04T14:00:00Z', 7000, 100);
   }
 }
@@ -572,6 +573,7 @@ async function reset(): Promise<void> {
      RESTART IDENTITY`,
   );
   const right: SnapshotValuesTuple = [7007, 0.1, 0.1, 0.4615];
+  await leaveThinBarsInSpan();
 
   // In-range snapshots (EDT: the cash open is 13:30Z).
   await snapshotDay('ES', '2026-04-14', '2026-04-13', 7000, 7007);
@@ -2480,7 +2482,6 @@ describe('--rewrite-stale-at-write on real SQL (pglite)', () => {
    * the freshness gate shipped: left.
    */
   async function seedStale() {
-    await leaveThinBarsInSpan();
     for (const [symbol, date, prior] of [
       ['ES', '2026-06-10', '2026-06-09'],
       ['RTY', '2026-06-10', '2026-06-09'],
@@ -2729,7 +2730,6 @@ describe('--rewrite-stale-at-write on real SQL (pglite)', () => {
 
   it('states a contaminated share of exactly 10% as within, and a listed day with no stale row as nothing left', async () => {
     // RTY on 07-06: 9 stale rows a minute apart; on 07-07 one more, on a contaminated day. 1 of 10 is 10%.
-    await leaveThinBarsInSpan();
     await frozenDay('RTY', '2026-07-06', '2026-07-03');
     await frozenDay('RTY', '2026-07-07', '2026-07-06');
     for (let m = 48; m < 57; m += 1) {
@@ -2835,7 +2835,6 @@ describe('--rewrite-stale-at-write on real SQL (pglite)', () => {
 
   it("leaves a thin root's stale row 10 days after the span end next to a price step at the span end, and rewrites one 21 days after", async () => {
     // A step at the span end, as CL had (71.87 to 80.15): 7000 before it, 7200 from the first bar after.
-    await leaveThinBarsInSpan();
     await bar('RTY', '2026-06-15T14:10:00Z', 7000, 100);
     await bar('RTY', '2026-06-15T14:11:00Z', 7200, 100);
     await frozenDay('RTY', '2026-06-25', '2026-06-24');
@@ -2858,7 +2857,6 @@ describe('--rewrite-stale-at-write on real SQL (pglite)', () => {
     // 2026-07-05T14:11:00.000Z is the span end + 20 days: the row at that instant is
     // rewritten, the one a millisecond before it is not. Phase 5a has not applied
     // for RTY here: a month-mixed bar is left in the span, so ruling 9 holds.
-    await leaveThinBarsInSpan();
     await bar('RTY', '2026-07-05T13:30:00Z', 7007, 100);
     await bar('RTY', '2026-07-05T14:00:00Z', 7005, 100);
     const before = await snapshotRow(
@@ -3409,7 +3407,6 @@ describe('--rewrite-stale-at-write on real SQL (pglite)', () => {
     });
 
     it("leaves a thin root's run in the span, and rewrites the same run after the span end", async () => {
-      await leaveThinBarsInSpan();
       await frozenDay('RTY', '2026-06-11', '2026-06-10');
       await frozenDay('RTY', '2026-07-08', '2026-07-07');
       const inSpan = await run20('RTY', '2026-06-11', 7123);
@@ -3658,6 +3655,7 @@ describe("the snapshot recompute is the cron's own method in daylight time", () 
     await pg.query(`DELETE FROM futures_snapshots WHERE ts < '2026-07-05'`);
     // ... and only this day's bars in the 20-day average.
     await pg.query(`DELETE FROM futures_bars WHERE ts < '2026-07-05'`);
+    await leaveThinBarsInSpan(); // the deleted bars were the thin roots' too
     for (const [ts, close, volume] of day.bars) {
       await bar('ES', ts, close, volume);
       await bar('NQ', ts, close + 17_000, volume);

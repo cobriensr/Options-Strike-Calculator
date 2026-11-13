@@ -39,7 +39,13 @@
  */
 
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { neonConfig } from '@neondatabase/serverless';
 import { isMarketHours } from '../../api/_lib/cron-helpers.js';
@@ -110,10 +116,9 @@ import {
   THIN_ROOTS,
   THIN_WINDOW_START_MS,
   ctTradingDay,
+  isThinDeleteBar,
   isThinRoot,
 } from './futures-thin-roots.js';
-
-export { ctTradingDay };
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
@@ -161,6 +166,47 @@ const storesOf = (o: Pick<RecomputeOptions, 'stores' | 'roots'>): Store[] =>
  */
 const liftedRoots = (spanBars: ReadonlyMap<Sym, number>): Sym[] =>
   [...spanBars].filter(([, bars]) => bars === 0).map(([symbol]) => symbol);
+
+/**
+ * Phase 2's off-session junk window, [start, end) (`JUNK_WINDOW` in
+ * futures-contract-repair.ts). Phase 2 deleted the junk bars of all six roots, so
+ * its backup holds thin-root deletes inside the 5a window too, but only here: a
+ * thin-root delete outside it can only be Phase 5a's.
+ */
+const PHASE2_JUNK = {
+  startMs: Date.UTC(2026, 3, 10, 21, 0),
+  endMs: Date.UTC(2026, 3, 12, 22, 0),
+} as const;
+
+/**
+ * The lift follows the table, not the `--backup`: once 5a has applied, every thin
+ * root in `--roots` reads as lifted, whatever backup the run was given. The
+ * attribution knows only the days the backup names, so a lifted root needs the 5a
+ * backup; with a Phase 2 backup it would plan the root's stale-at-write rewrite
+ * and junk delete with no deleted day to attribute. One line per lifted root for
+ * which the backup holds no 5a delete (a bar 5a deletes, outside Phase 2's junk
+ * window); empty when each has some.
+ */
+function liftBackupProblems(
+  lifted: readonly Sym[],
+  backup: readonly BackupBar[],
+): string[] {
+  return lifted.flatMap((root) => {
+    if (!isThinRoot(root)) return [];
+    const has5aDelete = backup.some(
+      (b) =>
+        b.op === 'delete' &&
+        b.symbol === root &&
+        isThinDeleteBar(root, b.tsMs) &&
+        !(b.tsMs >= PHASE2_JUNK.startMs && b.tsMs < PHASE2_JUNK.endMs),
+    );
+    return has5aDelete
+      ? []
+      : [
+          `${root} is lifted but the backup holds no 5a delete for it: pass thin-roots/backup-thin-roots.jsonl or --roots ES NQ`,
+        ];
+  });
+}
 
 /** What the gate counts as a match in the snapshot control. */
 const SNAPSHOT_CONTROL_LABEL =
@@ -1452,6 +1498,21 @@ export interface FrozenSymbolReport {
   noBar: number;
   /** A thin root in the plan because the D1 lift opened it (no bar left in the span outside the clean days). */
   lifted: boolean;
+  /**
+   * Where a lifted root's rows to delete fall: most are outside the repaired span
+   * D1 is about, the lift only opens the root. Null for ES and NQ.
+   */
+  spread: FrozenSpread | null;
+}
+
+/** A lifted root's frozen rows to delete, split at the repaired span and by UTC month (YYYY-MM). */
+export interface FrozenSpread {
+  beforeSpan: number;
+  /** SPAN.startMs <= ts < SPAN.endMs. */
+  inSpan: number;
+  /** SPAN.endMs <= ts. */
+  afterSpan: number;
+  byMonth: Record<string, number>;
 }
 
 export interface FrozenPlan {
@@ -2762,6 +2823,24 @@ function closureOf(tsMs: number): Closure {
   return inDailyBreak(tsMs) ? 'break' : 'elsewhere';
 }
 
+/** A lifted root's rows by the repaired span and by UTC month: the span is a small part of what the delete takes. */
+function spreadOf(rows: readonly FrozenRow[]): FrozenSpread {
+  const spread: FrozenSpread = {
+    beforeSpan: 0,
+    inSpan: 0,
+    afterSpan: 0,
+    byMonth: {},
+  };
+  for (const r of rows) {
+    if (r.tsMs < SPAN.startMs) spread.beforeSpan += 1;
+    else if (r.tsMs < SPAN.endMs) spread.inSpan += 1;
+    else spread.afterSpan += 1;
+    const month = iso(r.tsMs).slice(0, 7);
+    spread.byMonth[month] = (spread.byMonth[month] ?? 0) + 1;
+  }
+  return spread;
+}
+
 /**
  * The ES and NQ snapshot rows to delete (owner OK 2026-11-11): before STALE_UNTIL_MS,
  * computeSnapshot returns stale or missing (no closed bar within the freshness gate, so
@@ -2812,6 +2891,7 @@ async function planFrozen(
       lastMs: mine.at(-1)?.tsMs ?? null,
       ...kept,
       lifted: lifted.has(symbol),
+      spread: lifted.has(symbol) ? spreadOf(mine) : null,
     });
     rows.push(...mine);
   }
@@ -3285,6 +3365,19 @@ function firesText(r: StoreResult<FireChange>): string[] {
 const frozenGap = (r: FrozenRow): number =>
   Math.abs(r.storedPrice - r.barClose);
 
+/** A lifted root's rows split at the repaired span (D1 is about the span) and by UTC month. */
+function spreadText(s: FrozenSpread): string[] {
+  const months = Object.entries(s.byMonth)
+    .sort(([a], [b]) => (a < b ? -1 : 1))
+    .map(([month, n]) => `${month} ${n}`)
+    .join(', ');
+  const before = s.beforeSpan === 0 ? '' : `, before it ${s.beforeSpan}`;
+  return [
+    `      in the span ${s.inSpan}, after it ${s.afterSpan}${before} (the span is ${isoSecond(SPAN.startMs)} .. ${isoSecond(SPAN.endMs)})`,
+    `      by UTC month: ${months === '' ? 'none' : months}`,
+  ];
+}
+
 function frozenText(plan: FrozenPlan): string[] {
   const roots = plan.symbols.map((s) => s.symbol);
   const out = [
@@ -3299,6 +3392,7 @@ function frozenText(plan: FrozenPlan): string[] {
         : `, first ${isoSecond(s.firstMs)}, last ${isoSecond(s.lastMs)}; 16:15-17:00 CT break ${s.byClosure.break}, weekend or holiday ${s.byClosure.weekendOrHoliday}, elsewhere ${s.byClosure.elsewhere}`;
     out.push(
       `    ${s.symbol}: ${s.rows}${where}${s.lifted ? ' (added by the D1 lift)' : ''}`,
+      ...(s.spread == null ? [] : spreadText(s.spread)),
       `      candidates ${s.candidates}, computeSnapshot calls fresh (kept) ${s.fresh}`,
       `      kept, stale and equal to the last bar's close: ${s.repeatsLastClose}; kept, no bar at all: ${s.noBar}`,
     );
@@ -3807,6 +3901,10 @@ function writeStarted(workDir: string, step: ApplyStep, rows: number): void {
 
 export const markerPath = (workDir: string, store: ApplyStep): string =>
   join(workDir, `${store}.applied`);
+
+/** A step of any run is marked done in the work dir: an apply has run here. */
+const hasAppliedMarker = (workDir: string): boolean =>
+  readdirSync(workDir).some((f) => f.endsWith('.applied'));
 
 function writeMarker(workDir: string, store: ApplyStep, rows: number): void {
   writeFileSync(
@@ -4590,6 +4688,14 @@ async function run(opts: RecomputeOptions): Promise<number> {
       spanBars = await readThinSpanBars(opts.roots);
       const line = liftLine(spanBars);
       if (line !== '') console.log(line);
+      // --stores frozen takes no 5a backup: the lift follows the table there.
+      if (!opts.frozen) {
+        const refused = liftBackupProblems(liftedRoots(spanBars), backupBars);
+        if (refused.length > 0) {
+          const listed = refused.map((p) => `  ${p}`).join('\n');
+          throw new Error(`Refusing to plan with this --backup.\n${listed}`);
+        }
+      }
     }
     const data =
       needsBackup(opts) && planned.length > 0
@@ -4660,10 +4766,13 @@ async function run(opts: RecomputeOptions): Promise<number> {
   );
   console.log(`\n${report}`);
   // report.txt and merge-state.txt are what the owner approves from a dry run, so an
-  // --apply leaves them alone and writes its own copies under names with its time.
-  const prefix = opts.apply
-    ? `apply-${new Date().toISOString().replace(/[:.]/g, '-')}-`
-    : '';
+  // --apply leaves them alone and writes its own copies under names with its time. So
+  // does a dry run once a step is marked done here: it plans only what is left, and
+  // would replace the files the apply was approved from.
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  let prefix = '';
+  if (opts.apply) prefix = `apply-${stamp}-`;
+  else if (hasAppliedMarker(opts.workDir)) prefix = `dryrun-${stamp}-`;
   const reportPath = join(opts.workDir, `${prefix}report.txt`);
   writeFileSync(reportPath, `${report}\n`);
   console.log(`\nreport: ${reportPath}`);

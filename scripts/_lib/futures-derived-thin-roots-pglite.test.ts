@@ -17,8 +17,10 @@
  */
 
 import {
+  appendFileSync,
   existsSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -116,6 +118,7 @@ vi.mock('../../api/_lib/logger.js', () => ({
 import { applyMigration } from '../../api/__tests__/pglite-migrations';
 import { computeSnapshot } from '../../api/_lib/futures-derive.js';
 import { getETDateStr } from '../../src/utils/timezone.js';
+import { JUNK_WINDOW } from './futures-contract-repair.js';
 import {
   markerPath,
   roundNumeric,
@@ -420,6 +423,11 @@ const errored = (): string =>
     .mocked(console.error)
     .mock.calls.map((c) => String(c[0]))
     .join('\n');
+const logged = (): string =>
+  vi
+    .mocked(console.log)
+    .mock.calls.map((c) => String(c[0]))
+    .join('\n');
 /**
  * The report the last run wrote: its path is the last "report:" line a run
  * printed. A dry run writes report.txt; an --apply leaves that file alone and
@@ -676,6 +684,26 @@ describe('5b: ruling 9 is lifted per root once no thin-root bar is left in the s
     'counts a lone %s bar at %s as left in the span: %s',
     async (root, ts, left) => {
       await bar(root, ts, 100);
+      // A lifted root needs a 5a delete in the backup; the fixture's has RTY's and CL's only.
+      if (root === 'ZN' && !left) {
+        appendFileSync(
+          backupPath,
+          `${JSON.stringify({
+            op: 'delete',
+            reason: 'thin_root',
+            row: {
+              id: '1',
+              symbol: 'ZN',
+              ts: '2026-06-10T14:00:00Z',
+              high: '110.0000',
+              low: '110.0000',
+              close: '110.0000',
+              volume: '1',
+            },
+          })}
+`,
+        );
+      }
       expect(
         await run({
           roots: [root],
@@ -828,5 +856,221 @@ describe('5b: ruling 9 is lifted per root once no thin-root bar is left in the s
       }),
     ).toBe(0);
     expect(report()).toMatch(/\n {4}ES: 1,/);
+  });
+
+  it('splits the frozen rows of a lifted root at the span and by month, and gives ES none of it', async () => {
+    // More frozen rows of RTY: the last second of the span, its end (06-15 14:11:00), a
+    // row after it in June (06-22) and one in July.
+    await snap('RTY', '2026-06-15T14:10:59Z', [1900, 0.1, 0.1, 1]);
+    await snap('RTY', '2026-06-15T14:11:00Z', [1900, 0.1, 0.1, 1]);
+    await snap('RTY', '2026-06-22T16:00:30Z', [1900, 0.1, 0.1, 1]);
+    await snap('RTY', '2026-07-02T15:00:30Z', [1900, 0.1, 0.1, 1]);
+
+    expect(
+      await run({
+        frozen: true,
+        stores: [],
+        roots: ['ES', 'RTY', 'CL'],
+      }),
+    ).toBe(0);
+
+    const text = report();
+    expect(text).toMatch(/\n {4}RTY: 5,/);
+    // RTY: the 05-12 row and the last second of the span are in it; the span end
+    // itself, 06-22 and 07-02 are after it.
+    expect(text).toMatch(
+      /\n {4}RTY: 5,[^\n]*\n {6}in the span 2, after it 3 \(the span is 2026-04-05T22:00:00Z \.\. 2026-06-15T14:11:00Z\)\n {6}by UTC month: 2026-05 1, 2026-06 3, 2026-07 1\n/,
+    );
+    expect(text).toMatch(/\n {4}CL: 1,[^\n]*\n {6}in the span 1, after it 0 /);
+    // ES is not a lifted root: its line has no such split.
+    const es = /\n {4}ES: \d+,[^\n]*\n([^\n]*)\n/.exec(text);
+    expect(es?.[1]).not.toMatch(/in the span/);
+  });
+});
+
+// ── L2: the lift needs the 5a backup ─────────────────────────────────────────
+
+describe('5b: a lifted root needs the 5a backup', () => {
+  type Line = [symbol: string, ts: string];
+
+  /** A bar backup of deletes only, in 5a's format. */
+  function backupOf(lines: Line[]): void {
+    writeFileSync(
+      backupPath,
+      `${lines
+        .map(([symbol, ts]) =>
+          JSON.stringify({
+            op: 'delete',
+            reason: 'thin_root',
+            row: {
+              id: '1',
+              symbol,
+              ts,
+              open: '100.0000',
+              high: '100.0000',
+              low: '100.0000',
+              close: '100.0000',
+              volume: '1',
+            },
+          }),
+        )
+        .join('\n')}\n`,
+    );
+  }
+  // Phase 2 deleted the junk window of every root; a trading day 5a deletes, outside it, is 5a's.
+  const PHASE2: Line[] = [
+    ['RTY', '2026-04-11T15:00:00Z'],
+    ['CL', '2026-04-11T15:00:00Z'],
+  ];
+  const FIVE_A: Line = ['CL', '2026-06-10T14:00:00Z'];
+  const FIX =
+    'is lifted but the backup holds no 5a delete for it: pass thin-roots/backup-thin-roots.jsonl or --roots ES NQ';
+
+  it('refuses a Phase 2 backup, naming each lifted root and the fix, before it writes anything', async () => {
+    backupOf(PHASE2);
+
+    expect(await run()).toBe(1);
+
+    expect(errored()).toContain(`RTY ${FIX}`);
+    expect(errored()).toContain(`CL ${FIX}`);
+    expect(existsSync(join(workDir, 'report.txt'))).toBe(false);
+    expect(hooks.writes).toBe(0);
+  });
+
+  it('refuses under --apply too, before any marker, backup or plan.json', async () => {
+    backupOf(PHASE2);
+
+    expect(await run({ apply: true, expectSnapshots: 6 })).toBe(1);
+
+    expect(errored()).toContain(`RTY ${FIX}`);
+    expect(hooks.writes).toBe(0);
+    expect(existsSync(join(workDir, 'plan.json'))).toBe(false);
+    expect(existsSync(markerPath(workDir, 'snapshots'))).toBe(false);
+  });
+
+  it('names only the root whose 5a deletes are missing', async () => {
+    backupOf([...PHASE2, FIVE_A]);
+
+    expect(await run()).toBe(1);
+
+    expect(errored()).toContain(`RTY ${FIX}`);
+    expect(errored()).not.toContain(`CL ${FIX}`);
+  });
+
+  it('takes a Phase 2 backup for --roots ES NQ: no thin root is in the run, so none is lifted', async () => {
+    backupOf(PHASE2);
+
+    expect(await run({ roots: ['ES', 'NQ'], stores: ['snapshots'] })).toBe(0);
+
+    expect(errored()).toBe('');
+    expect(report()).toMatch(/\bES: rows in range/);
+  });
+
+  it('does not ask for it from a thin root that still has a bar in the span: that root is not lifted', async () => {
+    await reset({ leftBar: true });
+    backupOf([FIVE_A]); // RTY has none, and RTY is kept
+
+    expect(await run()).toBe(0);
+
+    expect(report()).toContain('RTY 1 (kept), CL 0 (lifted)');
+  });
+
+  it('does not ask for it from --stores frozen, which takes no 5a backup', async () => {
+    expect(
+      await run({
+        frozen: true,
+        stores: [],
+        backup: null,
+        roots: ['RTY', 'CL'],
+      }),
+    ).toBe(0);
+    expect(report()).toContain('rows to delete: 2');
+  });
+
+  // The backup is judged by what 5a deletes: a bar of the root, inside its window, on
+  // a trading day that is not clean, and outside Phase 2's junk window (which the
+  // fixture reads from the repair tool, so the two cannot drift apart).
+  it.each([
+    ['the minute before the junk window', JUNK_WINDOW.startMs - 60_000, true],
+    ['the first minute of the junk window', JUNK_WINDOW.startMs, false],
+    ['the last minute of the junk window', JUNK_WINDOW.endMs - 60_000, false],
+    ['the first minute of a clean day', JUNK_WINDOW.endMs, false],
+    [
+      'the first bar after the clean days',
+      Date.parse('2026-04-17T22:00:00Z'),
+      true,
+    ],
+    ['the last bad bar', Date.parse('2026-06-15T14:10:00Z'), true],
+    [
+      'the minute after the last bad bar',
+      Date.parse('2026-06-15T14:11:00Z'),
+      false,
+    ],
+    ['a bar before the window', Date.parse('2026-04-05T21:59:00Z'), false],
+  ])('RTY with only a bar at %s: %s', async (_name, tsMs, accepted) => {
+    backupOf([FIVE_A, ['RTY', new Date(tsMs).toISOString()]]);
+
+    expect(await run()).toBe(accepted ? 0 : 1);
+
+    if (!accepted) expect(errored()).toContain(`RTY ${FIX}`);
+  });
+
+  it('does not count a 5a delete of another root as the root’s own', async () => {
+    backupOf([FIVE_A, ['ZN', '2026-06-10T14:00:00Z']]);
+
+    expect(await run()).toBe(1);
+
+    expect(errored()).toContain(`RTY ${FIX}`);
+  });
+});
+
+// ── L3: a dry run after an apply ─────────────────────────────────────────────
+
+describe('5b: a dry run after an apply leaves the approved files alone', () => {
+  const dryRuns = (): string[] =>
+    readdirSync(workDir).filter((f) => /^dryrun-.*-report\.txt$/.test(f));
+
+  it('writes report.txt from a dry run in a clean work dir, and dryrun-<time>- files once a step is marked done', async () => {
+    expect(await run()).toBe(0);
+    const approved = readFileSync(join(workDir, 'report.txt'));
+    expect(dryRuns()).toEqual([]);
+
+    expect([await run({ apply: true, expectSnapshots: 6 }), errored()]).toEqual(
+      [0, ''],
+    );
+    expect(existsSync(markerPath(workDir, 'snapshots'))).toBe(true);
+
+    vi.setSystemTime(new Date('2026-11-08T12:05:00Z'));
+    expect(await run()).toBe(0);
+
+    expect(readFileSync(join(workDir, 'report.txt'))).toEqual(approved);
+    expect(dryRuns()).toHaveLength(1);
+    expect(report()).toContain('rows planned, RTY: normal step 0 rows');
+    expect(readFileSync(join(workDir, dryRuns()[0] ?? ''), 'utf8')).toContain(
+      'rows planned, RTY: normal step 0 rows',
+    );
+    expect(logged()).toContain(`report: ${join(workDir, dryRuns()[0] ?? '')}`);
+  });
+
+  it('does so after a failed apply that marked only some steps', async () => {
+    expect(await run()).toBe(0);
+    const approved = readFileSync(join(workDir, 'report.txt'));
+    hooks.failWriteAt = { nth: 2, error: new Error('connection lost') };
+    expect(
+      await run({
+        apply: true,
+        expectSnapshots: 6,
+        deleteJunkStale: true,
+        expectJunkDeletes: 2,
+      }),
+    ).toBe(1);
+    expect(existsSync(markerPath(workDir, 'snapshots'))).toBe(true);
+    hooks.failWriteAt = null;
+
+    vi.setSystemTime(new Date('2026-11-08T12:05:00Z'));
+    expect(await run()).toBe(0);
+
+    expect(readFileSync(join(workDir, 'report.txt'))).toEqual(approved);
+    expect(dryRuns()).toHaveLength(1);
   });
 });
