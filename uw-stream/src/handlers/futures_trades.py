@@ -707,10 +707,11 @@ class FuturesTradesHandler(Handler):
 
         A transient database error (a timeout among them) is a warning, which
         the minutes it costs escalate as ``front_month_unknown``. Anything else
-        (a bad row, a rejected statement) is an error, so it reaches Sentry
-        before the next open. One window per root and level. ``wait`` is the
-        seconds ``_cool`` held the call back, which the line says. A timeout
-        also pauses every root's front-month calls for the retry-after
+        (a bad row, a rejected statement) is an error, and
+        ``RateLimitedLogger.error`` sends its head-of-window line to Sentry as
+        an event, before the next open. One window per root and level. ``wait``
+        is the seconds ``_cool`` held the call back, which the line says. A
+        timeout also pauses every root's front-month calls for the retry-after
         (``_boxed_out``); any other failure cools its own call only.
         """
         err_type = type(exc).__name__

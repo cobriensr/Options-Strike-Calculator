@@ -42,7 +42,8 @@ The series stays forward-only whatever order dates are asked for in, and
   the next call carries on from the dates now stored.
 - Ceiling: a date decided after a later one (an old gap, volume rows that
   landed late) is never later than the earliest decision after it. A clamp is
-  logged at error level, so it reaches Sentry.
+  logged at error level and sent to Sentry by its own ``capture_message``
+  (kind ``front_month_clamped``).
 
 Renew, fail, expire: there is no lease and nothing to expire. A writer that
 dies before its insert leaves nothing; one that dies mid-fill leaves the
@@ -386,9 +387,10 @@ def _fail(
     A transient database error (a timeout, a dropped connection) is a warning,
     and so is a failure the caller passes ``warn=True`` for: the caller asks
     again, and the handler escalates the minutes it costs. Any other failure (a
-    bad row, a rejected statement, the fill cap) is an error, so it reaches
-    Sentry before the next open turns it into a day of gaps. Throttled per
-    root, so six roots failing at once are six lines.
+    bad row, a rejected statement, the fill cap) is an error, and
+    ``RateLimitedLogger.error`` sends its head-of-window line to Sentry as an
+    event, before the next open turns it into a day of gaps. Throttled per
+    root, so six roots failing at once are six lines and six events.
     """
     err_type = type(exc).__name__ if exc is not None else ""
     _last_failure[product] = (kind, err_type)
