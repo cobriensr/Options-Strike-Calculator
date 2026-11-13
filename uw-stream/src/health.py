@@ -170,6 +170,8 @@ async def metrics(request: web.Request) -> web.Response:
                 "write_attempted": h.write_attempted,
                 "write_count": h.write_count,
                 "lost_rows": h.lost_rows,
+                "dupes_dropped": h.dupes_dropped,
+                "single_copy": h.single_copy,
             }
             for name, h in state.handlers.items()
         },

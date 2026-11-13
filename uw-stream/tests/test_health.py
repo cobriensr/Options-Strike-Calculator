@@ -517,12 +517,43 @@ async def test_metrics_reports_handler_counters_under_handlers(
             "write_attempted": 5,
             "write_count": 2,
             "lost_rows": 2,
+            "dupes_dropped": 0,
+            "single_copy": 0,
         },
     }
     assert body["channels"] == {
         "net_flow:TSLA": {"subscribed": True, "last_message_ts": None},
     }
     assert "net_flow" not in body["channels"]
+
+
+async def test_metrics_reports_the_redundant_socket_dedupe_counters(
+    _restore_metrics_token, _isolated_channel_handler_state
+):
+    """``dupes_dropped`` and ``single_copy`` sit beside the drop counters, per
+    handler, and a dropped duplicate does not count as a backpressure drop.
+    """
+    import copy
+
+    from handlers.option_trades import OptionTradesHandler
+
+    settings.internal_metrics_token = _TOKEN
+    h = OptionTradesHandler()
+    trade = {"id": "8f8a2c3b-1234-4567-89ab-cdef01234567"}
+    await h.enqueue(trade)
+    await h.enqueue(copy.deepcopy(trade))
+    await h.enqueue(copy.deepcopy(trade))
+    state.handler("option_trades").single_copy = 7  # as a retired generation would add
+
+    body = await _read_json(
+        await metrics(_StubRequest({"X-Metrics-Token": _TOKEN}))  # type: ignore[arg-type]
+    )
+
+    row = body["handlers"]["option_trades"]
+    assert row["dupes_dropped"] == 2
+    assert row["single_copy"] == 7
+    assert row["queue_depth"] == 1
+    assert row["drop_count"] == 0
 
 
 @pytest.mark.parametrize(
@@ -583,6 +614,8 @@ async def test_metrics_lists_constructed_handler_with_zeroed_counters(
             "write_attempted": 0,
             "write_count": 0,
             "lost_rows": 0,
+            "dupes_dropped": 0,
+            "single_copy": 0,
         },
     }
     assert body["channels"] == {}
