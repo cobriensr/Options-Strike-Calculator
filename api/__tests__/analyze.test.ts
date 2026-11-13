@@ -99,6 +99,7 @@ vi.mock('../_lib/analyze-precheck.js', () => ({
 const { mockSentry } = vi.hoisted(() => ({
   mockSentry: {
     init: vi.fn(),
+    httpIntegration: vi.fn(),
     metrics: { count: vi.fn(), distribution: vi.fn() },
     captureMessage: vi.fn(),
     captureException: vi.fn(),

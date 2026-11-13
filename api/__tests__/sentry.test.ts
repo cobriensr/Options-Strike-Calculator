@@ -11,20 +11,38 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // vi.hoisted runs before vi.mock hoisting — safe to reference in factory
-const { mockInit, mockMetrics } = vi.hoisted(() => ({
+const { mockInit, mockMetrics, mockHttpIntegration } = vi.hoisted(() => ({
   mockInit: vi.fn(),
   mockMetrics: {
     count: vi.fn(),
     distribution: vi.fn(),
   },
+  mockHttpIntegration: vi.fn((options: unknown) => ({
+    name: 'Http',
+    options,
+  })),
 }));
 
 vi.mock('@sentry/node', () => ({
   init: mockInit,
   metrics: mockMetrics,
+  httpIntegration: mockHttpIntegration,
 }));
 
 import { metrics } from '../_lib/sentry.js';
+
+type Obj = Record<string, unknown>;
+
+// The hooks, extracted from the mocked Sentry.init call.
+const initOptions = mockInit.mock.calls[0]?.[0] as
+  | {
+      integrations?: unknown[];
+      beforeSend?: (event: Obj) => Obj | null;
+      beforeSendTransaction?: (event: Obj) => Obj | null;
+      beforeSendSpan?: (span: Obj) => Obj;
+      beforeBreadcrumb?: (breadcrumb: Obj) => Obj | null;
+    }
+  | undefined;
 
 // =============================================================
 // Sentry.init
@@ -38,6 +56,17 @@ describe('Sentry.init', () => {
         tracesSampleRate: expect.any(Number),
       }),
     );
+  });
+
+  it('stops the http integration from capturing incoming request bodies', () => {
+    expect(mockHttpIntegration).toHaveBeenCalledTimes(1);
+    expect(mockHttpIntegration).toHaveBeenCalledWith({
+      maxIncomingRequestBodySize: 'none',
+    });
+    // The configured integration is the one handed to init.
+    expect(initOptions?.integrations).toEqual([
+      mockHttpIntegration.mock.results[0]?.value,
+    ]);
   });
 });
 
@@ -298,11 +327,7 @@ describe('metrics.increment', () => {
 // =============================================================
 
 describe('Sentry.init beforeSend', () => {
-  // Extract the beforeSend hook from the mocked Sentry.init call.
-  const initArgs = mockInit.mock.calls[0]?.[0] as
-    | { beforeSend: (event: Record<string, unknown>) => unknown }
-    | undefined;
-  const beforeSend = initArgs?.beforeSend;
+  const beforeSend = initOptions?.beforeSend;
 
   it('was configured on init', () => {
     expect(beforeSend).toBeDefined();
@@ -380,29 +405,6 @@ describe('Sentry.init beforeSend', () => {
     expect(result.fingerprint).toBeUndefined();
   });
 
-  it('scrubs secret-named keys from request.cookies, leaving others intact', () => {
-    const event = {
-      request: {
-        cookies: {
-          'sc-owner': 'OWNER_SECRET_VALUE',
-          'sc-guest': 'guest-key-value',
-          'session-id': 'abc',
-          theme: 'dark',
-          other: 'x',
-        },
-      },
-    };
-    const result = beforeSend!(event) as {
-      request: { cookies: Record<string, string> };
-    };
-    expect(result.request.cookies['sc-owner']).toBe('[Filtered]');
-    expect(result.request.cookies['sc-guest']).toBe('[Filtered]');
-    expect(result.request.cookies['session-id']).toBe('[Filtered]');
-    // Non-secret cookies are untouched.
-    expect(result.request.cookies.theme).toBe('dark');
-    expect(result.request.cookies.other).toBe('x');
-  });
-
   it('does not throw when request.cookies is absent', () => {
     const event = { request: { headers: {} } };
     expect(() => beforeSend!(event)).not.toThrow();
@@ -438,27 +440,35 @@ describe('Sentry.init beforeSend', () => {
 // =============================================================
 
 describe('Sentry.init beforeSendTransaction and beforeSendSpan', () => {
-  type Obj = Record<string, unknown>;
-  const initArgs = mockInit.mock.calls[0]?.[0] as
-    | {
-        beforeSendTransaction?: (event: Obj) => Obj | null;
-        beforeSendSpan?: (span: Obj) => Obj;
-      }
-    | undefined;
-  const beforeSendTransaction = initArgs?.beforeSendTransaction;
-  const beforeSendSpan = initArgs?.beforeSendSpan;
+  const beforeSendTransaction = initOptions?.beforeSendTransaction;
+  const beforeSendSpan = initOptions?.beforeSendSpan;
 
   // Obviously fake values. Keys follow the shapes the SDK emits: header
-  // names with `-` or `_`, plus one attribute per cookie name.
+  // names with `-` or `_`, plus one attribute per cookie name. The
+  // `Proxy-Authorization` / `X_Internal_Notify_Secret` keys are mixed case to
+  // pin the `i` flag.
   const CREDENTIAL_ATTRIBUTES: Obj = {
     'http.request.header.cookie': 'FAKE-COOKIE-HEADER',
     'http.request.header.cookie.some_cookie': 'FAKE-COOKIE-VALUE-ONE',
     'http.request.header.cookie.other_cookie': 'FAKE-COOKIE-VALUE-TWO',
     'http.request.header.authorization': 'Bearer FAKE-BEARER-VALUE',
+    'http.request.header.proxy-authorization': 'FAKE-PROXY-HYPHEN',
+    'http.request.header.proxy_authorization': 'FAKE-PROXY-UNDERSCORE',
+    'http.request.header.Proxy-Authorization': 'FAKE-PROXY-MIXED-CASE',
     'http.request.header.x-api-key': 'FAKE-API-KEY-HYPHEN',
     'http.request.header.x_api_key': 'FAKE-API-KEY-UNDERSCORE',
+    'http.request.header.x-apikey': 'FAKE-APIKEY-JOINED',
     'http.request.header.x-cron-secret': 'FAKE-CRON-HYPHEN',
     'http.request.header.x_cron_secret': 'FAKE-CRON-UNDERSCORE',
+    'http.request.header.x-internal-notify-secret': 'FAKE-NOTIFY-HYPHEN',
+    'http.request.header.x_internal_notify_secret': 'FAKE-NOTIFY-UNDERSCORE',
+    'http.request.header.X_Internal_Notify_Secret': 'FAKE-NOTIFY-MIXED-CASE',
+    'http.request.header.x-csrf-token': 'FAKE-TOKEN-HYPHEN',
+    'http.request.header.x_csrf_token': 'FAKE-TOKEN-UNDERSCORE',
+    // The credential word matches anywhere in the header name, so a longer
+    // name that merely contains one is filtered too (over-matching is the
+    // safe side).
+    'http.request.header.x-api-key-version': 'FAKE-API-KEY-VERSION',
     'http.response.header.set-cookie': 'FAKE-SET-COOKIE-HYPHEN',
     'http.response.header.set_cookie': [
       'FAKE-SET-COOKIE-A',
@@ -466,7 +476,12 @@ describe('Sentry.init beforeSendTransaction and beforeSendSpan', () => {
     ],
     'http.response.header.set_cookie.some_cookie': 'FAKE-SET-COOKIE-VALUE',
     'http.response.header.authorization': 'FAKE-RESPONSE-AUTHORIZATION',
+    'http.response.header.x-refresh-token': 'FAKE-RESPONSE-TOKEN',
+    // The request body the SDK copies onto the root span.
+    'http.request.body.data': '{"key":"FAKE-BODY-VALUE"}',
   };
+  // Look-alikes the pattern must leave alone: a name that only starts like a
+  // credential header, and credential words outside the header namespace.
   const HARMLESS_ATTRIBUTES: Obj = {
     'sentry.op': 'http.server',
     'http.request.method': 'GET',
@@ -475,6 +490,12 @@ describe('Sentry.init beforeSendTransaction and beforeSendSpan', () => {
     'http.request.header.content_type': 'application/json',
     'http.request.header.user_agent': 'fake-agent/1.0',
     'http.response.header.cache_control': 'no-store',
+    'http.request.header.cookie_policy': 'strict',
+    'http.request.header.cookie-policy': 'strict',
+    'http.request.header.authorization_scheme': 'bearer',
+    'http.request.token_count': 3,
+    'app.secret_santa_group': 'blue',
+    'http.request.body.size': 26,
     'url.full': 'https://example.test/api/thing',
   };
 
@@ -538,13 +559,12 @@ describe('Sentry.init beforeSendTransaction and beforeSendSpan', () => {
       expect(result.request.cookies['sc-guest']).toBe('[Filtered]');
     });
 
-    it('leaves non-credential request headers and cookies untouched', () => {
+    it('leaves non-credential request headers untouched', () => {
       const result = beforeSendTransaction!(
         buildTransaction(),
       ) as never as Built;
       expect(result.request.headers.accept).toBe('*/*');
       expect(result.request.headers['content-type']).toBe('application/json');
-      expect(result.request.cookies.theme).toBe('dark');
     });
 
     it.each(Object.keys(CREDENTIAL_ATTRIBUTES))(
@@ -607,6 +627,9 @@ describe('Sentry.init beforeSendTransaction and beforeSendSpan', () => {
       ['a trace context without data', { contexts: { trace: {} } }],
       ['spans without data', { spans: [{}, { data: undefined }] }],
       ['a null span entry', { spans: [null] }],
+      ['spans as an object', { spans: {} }],
+      ['spans as null', { spans: null }],
+      ['spans as a string', { spans: 'not-a-list' }],
       ['string cookies', { request: { cookies: 'a=b' } }],
       ['array cookies', { request: { cookies: ['a=b'] } }],
       ['null headers', { request: { headers: null } }],
@@ -642,6 +665,324 @@ describe('Sentry.init beforeSendTransaction and beforeSendSpan', () => {
       expect(() =>
         beforeSendSpan!({ span_id: 'abc', data: null }),
       ).not.toThrow();
+    });
+  });
+});
+
+// =============================================================
+// request.headers / cookies / data / url on every event type
+// =============================================================
+
+describe.each([
+  ['beforeSend', initOptions?.beforeSend],
+  ['beforeSendTransaction', initOptions?.beforeSendTransaction],
+])('%s request scrub', (_hookName, hook) => {
+  /** Run an event that carries only `request`; return the scrubbed request. */
+  const scrub = (request: Obj): Obj =>
+    (hook!({ request }) as Obj).request as Obj;
+
+  // Only the four standard credential headers match by exact name; any other
+  // name is filtered when it contains an api key, secret or token word.
+  it.each([
+    'authorization',
+    'Proxy-Authorization',
+    'cookie',
+    'Set-Cookie',
+    'x-api-key',
+    'X-API-KEY',
+    'x_api_key',
+    'x-apikey',
+    'x-goog-api-key',
+    'x-cron-secret',
+    'x-internal-notify-secret',
+    'x-csrf-token',
+    // The credential word matches anywhere in the name: a longer name that
+    // contains one is filtered too (over-matching is the safe side).
+    'x-api-key-version',
+    'x-token-scope',
+  ])('filters the %s request header', (name) => {
+    const headers = scrub({
+      headers: { [name]: 'FAKE-HEADER-VALUE', accept: '*/*' },
+    }).headers as Obj;
+    expect(headers[name]).toBe('[Filtered]');
+    expect(headers.accept).toBe('*/*');
+  });
+
+  it.each([
+    'accept',
+    'content-type',
+    'user-agent',
+    'x-forwarded-for',
+    'x-request-id',
+    // Start like a credential header but are not one.
+    'cookie-policy',
+    'authorization-scheme',
+  ])('keeps the %s request header', (name) => {
+    const headers = scrub({ headers: { [name]: 'harmless-value' } })
+      .headers as Obj;
+    expect(headers[name]).toBe('harmless-value');
+  });
+
+  it('filters the value of every cookie, whatever its name', () => {
+    const cookies = scrub({
+      cookies: {
+        'sc-owner': 'FAKE-OWNER-COOKIE',
+        'sc-guest': 'FAKE-GUEST-COOKIE',
+        theme: 'dark',
+        'a-cookie-added-next-year': 'FAKE-NEW-COOKIE',
+      },
+    }).cookies;
+    expect(cookies).toEqual({
+      'sc-owner': '[Filtered]',
+      'sc-guest': '[Filtered]',
+      theme: '[Filtered]',
+      'a-cookie-added-next-year': '[Filtered]',
+    });
+  });
+
+  it.each([
+    ['a string', '{"key":"FAKE-BODY-VALUE"}'],
+    ['an object', { key: 'FAKE-BODY-VALUE' }],
+    ['a list', ['FAKE-BODY-VALUE']],
+  ])('filters a request body given as %s', (_label, data) => {
+    expect(scrub({ data }).data).toBe('[Filtered]');
+  });
+
+  it('does not add a body to a request that has none', () => {
+    expect(scrub({ headers: {} }).data).toBeUndefined();
+  });
+
+  it('redacts secret query values in request.url, keeping the rest', () => {
+    expect(
+      scrub({
+        url: 'https://example.test/api/thing?token=FAKE-URL-TOKEN&date=2026-01-01',
+      }).url,
+    ).toBe('https://example.test/api/thing?token=[Filtered]&date=2026-01-01');
+  });
+
+  it('leaves a request.url without a query alone', () => {
+    expect(scrub({ url: 'https://example.test/api/thing' }).url).toBe(
+      'https://example.test/api/thing',
+    );
+  });
+
+  it.each([
+    [
+      'a string',
+      'token=FAKE-QS-TOKEN&date=2026-01-01',
+      'token=[Filtered]&date=2026-01-01',
+    ],
+    [
+      'an object',
+      { token: 'FAKE-QS-TOKEN', date: '2026-01-01' },
+      { token: '[Filtered]', date: '2026-01-01' },
+    ],
+    [
+      'a list of pairs',
+      [
+        ['token', 'FAKE-QS-TOKEN'],
+        ['date', '2026-01-01'],
+      ],
+      [
+        ['token', '[Filtered]'],
+        ['date', '2026-01-01'],
+      ],
+    ],
+  ])(
+    'redacts secret query values in request.query_string given as %s',
+    (_label, query_string, expected) => {
+      expect(scrub({ query_string }).query_string).toEqual(expected);
+    },
+  );
+
+  it('does not throw on a malformed query_string', () => {
+    expect(() => scrub({ query_string: 42 })).not.toThrow();
+    expect(() =>
+      scrub({ query_string: [null, 'x', ['only-a-name']] }),
+    ).not.toThrow();
+  });
+});
+
+// =============================================================
+// Query-string secrets in URL-shaped span attributes and breadcrumbs
+// =============================================================
+
+describe('query-string secret redaction', () => {
+  const beforeSendTransaction = initOptions?.beforeSendTransaction;
+  const beforeSendSpan = initOptions?.beforeSendSpan;
+  const beforeBreadcrumb = initOptions?.beforeBreadcrumb;
+
+  const FAKE = 'FAKE-QUERY-SECRET';
+  const FULL_URL = `https://upstream.example.test/v1/data?api_key=${FAKE}&from=2026-01-01&token=${FAKE}#top`;
+  const FULL_URL_REDACTED =
+    'https://upstream.example.test/v1/data?api_key=[Filtered]&from=2026-01-01&token=[Filtered]#top';
+
+  // [attribute, value the SDK would record, value after the scrub]. `url.query`
+  // is a bare query; `http.query` keeps its leading `?`.
+  const FIELDS: [string, string, string][] = [
+    ['url.full', FULL_URL, FULL_URL_REDACTED],
+    ['http.url', FULL_URL, FULL_URL_REDACTED],
+    [
+      'http.target',
+      `/v1/data?token=${FAKE}&limit=5`,
+      '/v1/data?token=[Filtered]&limit=5',
+    ],
+    [
+      'url.query',
+      `api_key=${FAKE}&from=2026-01-01`,
+      'api_key=[Filtered]&from=2026-01-01',
+    ],
+    [
+      'http.query',
+      `?api_key=${FAKE}&from=2026-01-01`,
+      '?api_key=[Filtered]&from=2026-01-01',
+    ],
+  ];
+
+  describe('on spans', () => {
+    it.each(FIELDS)(
+      'redacts %s in beforeSendSpan',
+      (field, input, expected) => {
+        const result = beforeSendSpan!({ data: { [field]: input } }) as {
+          data: Obj;
+        };
+        expect(result.data[field]).toBe(expected);
+      },
+    );
+
+    it.each(FIELDS)(
+      'redacts %s on the root span and child spans of a transaction',
+      (field, input, expected) => {
+        const result = beforeSendTransaction!({
+          contexts: { trace: { data: { [field]: input } } },
+          spans: [{ data: { [field]: input } }],
+        }) as {
+          contexts: { trace: { data: Obj } };
+          spans: { data: Obj }[];
+        };
+        expect(result.contexts.trace.data[field]).toBe(expected);
+        expect(result.spans[0]?.data[field]).toBe(expected);
+      },
+    );
+
+    it('redacts every occurrence of a repeated parameter', () => {
+      const result = beforeSendSpan!({
+        data: { 'url.query': `token=${FAKE}-A&from=1&token=${FAKE}-B` },
+      }) as { data: Obj };
+      expect(result.data['url.query']).toBe(
+        'token=[Filtered]&from=1&token=[Filtered]',
+      );
+    });
+
+    it('leaves a value that is already filtered as it is', () => {
+      const result = beforeSendSpan!({
+        data: { 'url.query': 'token=[Filtered]&from=1' },
+      }) as { data: Obj };
+      expect(result.data['url.query']).toBe('token=[Filtered]&from=1');
+    });
+
+    it.each([
+      ['url.full', 'https://example.test/api/thing'],
+      ['url.full', 'https://example.test/api/thing?date=2026-01-01&limit=5'],
+      ['url.full', 'https://example.test/path/token=abc'],
+      ['http.target', '/api/thing'],
+      ['url.query', 'date=2026-01-01'],
+      ['url.query', 'token'],
+      ['http.query', ''],
+      ['url.full', 42],
+      ['url.query', null],
+    ])('leaves %s = %j alone', (field, value) => {
+      const result = beforeSendSpan!({ data: { [field]: value } }) as {
+        data: Obj;
+      };
+      expect(result.data[field]).toBe(value);
+    });
+
+    // `key` alone is a credential name only as a whole word (`key`,
+    // `access_key`, `accessKey`), so look-alikes such as `monkey` stay.
+    it.each([
+      'token',
+      'Token',
+      'api_key',
+      'api-key',
+      'apikey',
+      'apiKey',
+      'API_KEY',
+      'secret',
+      'client_secret',
+      'password',
+      'key',
+      'access_key',
+      'accessKey',
+      'x-key',
+      'api%5Fkey',
+      // A malformed escape cannot be decoded; the raw name is tested instead.
+      'bad%ZZ_token',
+    ])('redacts the value of the %s parameter', (name) => {
+      const result = beforeSendSpan!({
+        data: { 'url.query': `${name}=${FAKE}&from=2026-01-01` },
+      }) as { data: Obj };
+      expect(result.data['url.query']).toBe(
+        `${name}=[Filtered]&from=2026-01-01`,
+      );
+    });
+
+    it.each([
+      'from',
+      'limit',
+      'date',
+      'ticker',
+      'monkey',
+      'keyword',
+      'keys',
+      'to%ZZken',
+    ])('keeps the value of the %s parameter', (name) => {
+      const result = beforeSendSpan!({
+        data: { 'url.query': `${name}=harmless&limit=5` },
+      }) as { data: Obj };
+      expect(result.data['url.query']).toBe(`${name}=harmless&limit=5`);
+    });
+  });
+
+  describe('beforeBreadcrumb', () => {
+    it('is configured on init', () => {
+      expect(beforeBreadcrumb).toBeTypeOf('function');
+    });
+
+    it('redacts the query in data.url and data["http.query"], keeping the rest', () => {
+      const breadcrumb = {
+        category: 'http',
+        type: 'http',
+        level: 'info',
+        data: {
+          url: FULL_URL,
+          'http.method': 'GET',
+          'http.query': `?api_key=${FAKE}&from=2026-01-01&token=${FAKE}`,
+          status_code: 200,
+        },
+      };
+      const result = beforeBreadcrumb!(breadcrumb);
+      // Returned, not dropped.
+      expect(result).toBe(breadcrumb);
+      expect(result).toMatchObject({
+        category: 'http',
+        data: {
+          url: FULL_URL_REDACTED,
+          'http.method': 'GET',
+          'http.query': '?api_key=[Filtered]&from=2026-01-01&token=[Filtered]',
+          status_code: 200,
+        },
+      });
+    });
+
+    it.each([
+      ['no data', { category: 'console', message: 'hello' }],
+      ['null data', { category: 'http', data: null }],
+      ['non-string url and query', { data: { url: 5, 'http.query': {} } }],
+      ['array data', { data: ['a=b'] }],
+    ])('returns a breadcrumb with %s untouched', (_label, breadcrumb) => {
+      const before = structuredClone(breadcrumb);
+      expect(beforeBreadcrumb!(breadcrumb)).toEqual(before);
     });
   });
 });

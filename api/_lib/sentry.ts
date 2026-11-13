@@ -11,42 +11,167 @@ import { optionalEnv } from './env.js';
 
 const FILTERED = '[Filtered]';
 
-// Request header names that carry credentials.
-const CREDENTIAL_HEADER = /^(authorization|cookie|x-api-key|x-cron-secret)$/i;
+// Matches every key: used to filter all values of a bag.
+const EVERY_KEY = /^/;
 
-// Cookie names (keys of the parsed `request.cookies` object) to filter.
-const SENSITIVE_COOKIE_NAME = /(owner|guest|session|auth|secret|token)/i;
+// Request header names that carry credentials: the four standard credential
+// headers by exact name, and any other header whose name contains an api key,
+// secret or token word (`x-internal-notify-secret`, `x-csrf-token`, ...).
+const CREDENTIAL_HEADER =
+  /^(?:authorization|proxy[-_]authorization|cookie|set[-_]cookie)$|api[-_]?key|secret|token/i;
 
 // Secret-named keys in `extra` / `tags`.
 const SECRET_NAMED_KEY = /(secret|token|api[_-]?key|password|auth)/i;
 
-// Span attributes the SDK derives from those headers:
-// `http.request.header.<name>` and `http.response.header.<name>`, with `-`
-// or `_` in the name, plus one `...cookie.<cookie-name>` attribute per
-// cookie. Every response `set-cookie` attribute is covered too.
-const CREDENTIAL_SPAN_ATTRIBUTE =
-  /^http\.(?:request|response)\.header\.(?:authorization|(?:set[-_])?cookie|x[-_]api[-_]key|x[-_]cron[-_]secret)(?:\.|$)/i;
+// Span attributes the SDK derives from request and response headers:
+// `http.request.header.<name>` and `http.response.header.<name>`, with `-` or
+// `_` in the name, plus one `...cookie.<cookie-name>` attribute per cookie.
+// Capture group 1 is the header name, tested with CREDENTIAL_HEADER; keys
+// outside the header namespace are never matched, so an attribute elsewhere
+// that merely contains `token` or `secret` is untouched.
+const HEADER_SPAN_ATTRIBUTE = /^http\.(?:request|response)\.header\.([^.]*)/i;
 
-/** Replace the value of every key in `bag` that matches `sensitiveKey`. */
-function filterKeys(bag: unknown, sensitiveKey: RegExp): void {
+// The request body the SDK copies onto the root span.
+const BODY_SPAN_ATTRIBUTE = /^http\.request\.body\.data$/i;
+
+// Query parameter names that carry credentials. `token`, `secret`, `password`
+// and the api-key spellings match anywhere in the name; `key` alone matches
+// only as a whole word (`key`, `access_key`, `x-key`), so `monkey` and
+// `keyword` are kept.
+const SECRET_QUERY_PARAM =
+  /token|secret|password|api[-_]?key|(?:^|[-_.])key(?:$|[-_.])/i;
+
+/**
+ * Replace the value of every key in `bag` that `sensitiveKey` matches: a
+ * pattern tested against the key, or a predicate on it.
+ */
+function filterKeys(
+  bag: unknown,
+  sensitiveKey: RegExp | ((key: string) => boolean),
+): void {
   if (typeof bag !== 'object' || bag === null || Array.isArray(bag)) return;
   const record = bag as Record<string, unknown>;
   for (const key of Object.keys(record)) {
-    if (sensitiveKey.test(key)) record[key] = FILTERED;
+    const sensitive =
+      typeof sensitiveKey === 'function'
+        ? sensitiveKey(key)
+        : sensitiveKey.test(key);
+    if (sensitive) record[key] = FILTERED;
   }
 }
 
-/** Filter credential attributes on one span (or a transaction's trace context). */
+/** True for a span attribute that holds a credential header or the request body. */
+function isCredentialSpanAttribute(key: string): boolean {
+  const headerName = HEADER_SPAN_ATTRIBUTE.exec(key)?.[1];
+  if (headerName !== undefined) return CREDENTIAL_HEADER.test(headerName);
+  return BODY_SPAN_ATTRIBUTE.test(key);
+}
+
+function decodeParamName(name: string): string {
+  try {
+    return decodeURIComponent(name);
+  } catch {
+    return name;
+  }
+}
+
+/** True when a query parameter name (any case, or percent-encoded) is a credential. */
+function isSecretQueryParam(rawName: string): boolean {
+  // Split camelCase (`accessKey` -> `access_Key`) so `key` is a whole word.
+  const name = decodeParamName(rawName).replaceAll(/([a-z])([A-Z])/g, '$1_$2');
+  return SECRET_QUERY_PARAM.test(name);
+}
+
+/** Redact the value of every credential parameter in a query string. */
+function redactQueryString(query: string): string {
+  const prefix = query.startsWith('?') ? '?' : '';
+  const pairs = query.slice(prefix.length).split('&');
+  const redacted = pairs.map((pair) => {
+    const equals = pair.indexOf('=');
+    if (equals < 0) return pair;
+    const name = pair.slice(0, equals);
+    return isSecretQueryParam(name) ? `${name}=${FILTERED}` : pair;
+  });
+  return prefix + redacted.join('&');
+}
+
+/** Redact credential parameters in a URL or path, keeping the rest readable. */
+function redactUrlQuery(url: string): string {
+  const queryStart = url.indexOf('?');
+  if (queryStart < 0) return url;
+  const hashStart = url.indexOf('#', queryStart);
+  const queryEnd = hashStart < 0 ? url.length : hashStart;
+  return (
+    url.slice(0, queryStart + 1) +
+    redactQueryString(url.slice(queryStart + 1, queryEnd)) +
+    url.slice(queryEnd)
+  );
+}
+
+// URL-shaped fields, by span attribute or breadcrumb data key, and how to
+// redact each. `url.query` is a bare query; `http.query` may keep its `?`.
+const SPAN_URL_FIELDS: Record<string, (value: string) => string> = {
+  'url.full': redactUrlQuery,
+  'http.url': redactUrlQuery,
+  'http.target': redactUrlQuery,
+  'url.query': redactQueryString,
+  'http.query': redactQueryString,
+};
+const BREADCRUMB_URL_FIELDS: Record<string, (value: string) => string> = {
+  url: redactUrlQuery,
+  'http.query': redactQueryString,
+};
+
+/** Redact the string values of the named URL-shaped fields of `bag`. */
+function redactUrlFields(
+  bag: unknown,
+  fields: Record<string, (value: string) => string>,
+): void {
+  if (typeof bag !== 'object' || bag === null || Array.isArray(bag)) return;
+  const record = bag as Record<string, unknown>;
+  for (const [key, redact] of Object.entries(fields)) {
+    const value = record[key];
+    if (typeof value === 'string') record[key] = redact(value);
+  }
+}
+
+/** Scrub credential attributes on one span (or a transaction's trace context). */
 function scrubSpanData(span: { data?: unknown } | null | undefined): void {
-  if (span) filterKeys(span.data, CREDENTIAL_SPAN_ATTRIBUTE);
+  if (!span) return;
+  filterKeys(span.data, isCredentialSpanAttribute);
+  redactUrlFields(span.data, SPAN_URL_FIELDS);
+}
+
+/** Redact credential parameters in `request.query_string`, in any shape. */
+function scrubQueryString(request: NonNullable<Event['request']>): void {
+  const queryString = request.query_string;
+  if (typeof queryString === 'string') {
+    request.query_string = redactQueryString(queryString);
+  } else if (Array.isArray(queryString)) {
+    request.query_string = queryString.map((pair): [string, string] =>
+      Array.isArray(pair) && isSecretQueryParam(String(pair[0]))
+        ? [pair[0], FILTERED]
+        : pair,
+    );
+  } else {
+    filterKeys(queryString, isSecretQueryParam);
+  }
 }
 
 /** Scrub credentials from the request, extra and tags of any event type. */
 function scrubEvent(event: Event): void {
-  filterKeys(event.request?.headers, CREDENTIAL_HEADER);
-  // The parsed `request.cookies` object is separate from the raw Cookie
-  // header, so it is scrubbed by key as well.
-  filterKeys(event.request?.cookies, SENSITIVE_COOKIE_NAME);
+  const { request } = event;
+  if (request) {
+    filterKeys(request.headers, CREDENTIAL_HEADER);
+    // The parsed `request.cookies` object is separate from the raw Cookie
+    // header. Every value in it is filtered, whatever the cookie is called.
+    filterKeys(request.cookies, EVERY_KEY);
+    if (request.data != null) request.data = FILTERED;
+    if (typeof request.url === 'string') {
+      request.url = redactUrlQuery(request.url);
+    }
+    scrubQueryString(request);
+  }
   filterKeys(event.extra, SECRET_NAMED_KEY);
   filterKeys(event.tags, SECRET_NAMED_KEY);
 }
@@ -57,9 +182,15 @@ Sentry.init({
   serverName: 'api',
   tracesSampleRate: process.env.NODE_ENV === 'production' ? 0.25 : 1,
   enabled: process.env.VERCEL_ENV === 'production',
+  // A request body can carry a credential, so the http integration does not
+  // capture incoming bodies at all. scrubEvent still filters `request.data`
+  // and the span body attribute in case another path attaches one.
+  integrations: [
+    Sentry.httpIntegration({ maxIncomingRequestBodySize: 'none' }),
+  ],
   // The SDK runs beforeSendSpan on the root span and on every child span,
   // then beforeSendTransaction on the whole transaction. Scrub in all three
-  // so no event type bypasses the filter.
+  // so every event type goes through the same filter.
   beforeSendSpan(span) {
     scrubSpanData(span);
     return span;
@@ -67,8 +198,15 @@ Sentry.init({
   beforeSendTransaction(event) {
     scrubEvent(event);
     scrubSpanData(event.contexts?.trace);
-    for (const span of event.spans ?? []) scrubSpanData(span);
+    if (Array.isArray(event.spans)) {
+      for (const span of event.spans) scrubSpanData(span);
+    }
     return event;
+  },
+  // Breadcrumbs for outgoing calls record the URL and its query string.
+  beforeBreadcrumb(breadcrumb) {
+    redactUrlFields(breadcrumb.data, BREADCRUMB_URL_FIELDS);
+    return breadcrumb;
   },
   beforeSend(event) {
     scrubEvent(event);
