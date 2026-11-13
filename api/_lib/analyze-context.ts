@@ -420,6 +420,11 @@ export async function buildAnalysisContext(
 - RV/IV ratio: ${String(context.rvIvRatio ?? 'N/A')}
 - Overnight gap: ${String(context.overnightGap ?? 'N/A')}
 - Scheduled events: ${(() => {
+    // The client could not load this date's events: say so, rather than let an
+    // empty list read as a quiet day. Only a boolean true counts.
+    if (context.eventsUnknown === true) {
+      return "UNKNOWN (this date's event list did not load; do not assume there are none)";
+    }
     const events = context.events as
       | Array<{ event: string; time: string; severity: string }>
       | undefined;

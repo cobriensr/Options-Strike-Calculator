@@ -1811,6 +1811,10 @@ describe('buildAnalysisContext: context text fields', () => {
     );
   });
 
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it('includes scheduled events in context text', async () => {
     const result = await buildAnalysisContext([], {
       mode: 'entry',
@@ -1855,6 +1859,60 @@ describe('buildAnalysisContext: context text fields', () => {
     const text = (textBlock as { type: 'text'; text: string }).text;
     expect(text).toContain('Scheduled events: NONE');
     vi.unstubAllGlobals();
+  });
+
+  // Owner decision, 2026-11-13: a date whose events did not load is "unknown",
+  // not "none". The client sends `events: []` with `eventsUnknown: true`.
+  const UNKNOWN_LINE =
+    "Scheduled events: UNKNOWN (this date's event list did not load; do not assume there are none)";
+
+  async function eventsLine(context: Record<string, unknown>): Promise<string> {
+    const result = await buildAnalysisContext([], {
+      mode: 'entry',
+      selectedDate: '2026-04-10',
+      ...context,
+    });
+    const textBlock = result.content.find(
+      (b) => b.type === 'text' && b.text.includes('Scheduled events'),
+    ) as { type: 'text'; text: string };
+    const line = textBlock.text
+      .split('\n')
+      .find((l) => l.includes('Scheduled events'));
+    return line!.replace(/^- /, '');
+  }
+
+  it('says UNKNOWN, not NONE, when the client flags the events as unknown', async () => {
+    expect(await eventsLine({ events: [], eventsUnknown: true })).toBe(
+      UNKNOWN_LINE,
+    );
+  });
+
+  it('says UNKNOWN when the flag is set and the events field is absent', async () => {
+    expect(await eventsLine({ eventsUnknown: true })).toBe(UNKNOWN_LINE);
+  });
+
+  it('keeps NONE for a known empty list', async () => {
+    expect(await eventsLine({ events: [] })).toBe('Scheduled events: NONE');
+    expect(await eventsLine({ events: [], eventsUnknown: false })).toBe(
+      'Scheduled events: NONE',
+    );
+  });
+
+  it.each(['true', 1, 'yes'])(
+    'reads only a boolean true as the flag: %j stays NONE',
+    async (flag) => {
+      expect(await eventsLine({ events: [], eventsUnknown: flag })).toBe(
+        'Scheduled events: NONE',
+      );
+    },
+  );
+
+  it('still lists the events when the client knows them', async () => {
+    expect(
+      await eventsLine({
+        events: [{ event: 'CPI', time: '8:30', severity: 'high' }],
+      }),
+    ).toBe('Scheduled events: CPI at 8:30 [high]');
   });
 
   it('renders topOI strikes section in context text', async () => {

@@ -46,6 +46,11 @@ export interface AnalysisContext {
   isBacktest?: boolean;
   dataNote?: string; // describes any missing data
   events?: Array<{ event: string; time: string; severity: string }>;
+  /**
+   * True when the selected date's events are not known (their fetch is waiting
+   * or failed), so `events: []` means "unknown", not "none". Sent only then.
+   */
+  eventsUnknown?: boolean;
   // Chain-derived data (computed client-side, passed to analyze)
   topOIStrikes?: Array<{
     strike: number;

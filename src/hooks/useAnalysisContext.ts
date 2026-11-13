@@ -179,6 +179,12 @@ export function useAnalysisContext({
             time: e.time,
             severity: e.severity,
           })),
+        // Undefined means the date's events are not known (still loading,
+        // failed, or the forward list never loaded), which is not the same as
+        // none: an explicit flag says so (owner decision, 2026-11-13). Sent
+        // only then, so an older client's payload and a known list are
+        // unchanged and the server keeps printing NONE for them.
+        ...(events === undefined ? { eventsUnknown: true } : {}),
         topOIStrikes:
           chain?.puts && chain?.calls && results?.spot
             ? getTopOIStrikes(chain.puts, chain.calls, results.spot, 5)

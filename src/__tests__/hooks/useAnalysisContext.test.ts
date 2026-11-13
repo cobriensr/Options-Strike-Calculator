@@ -4,7 +4,7 @@ import { useAnalysisContext } from '../../hooks/useAnalysisContext';
 import type { UseAnalysisContextParams } from '../../hooks/useAnalysisContext';
 import type { CalculationResults } from '../../types';
 import type { ComputedSignals } from '../../hooks/useComputedSignals';
-import type { ChainResponse, ChainStrike } from '../../types/api';
+import type { ChainResponse, ChainStrike, EventItem } from '../../types/api';
 
 // ============================================================
 // HELPERS
@@ -381,6 +381,56 @@ describe('useAnalysisContext', () => {
   it('returns empty array when events is undefined', () => {
     const ctx = compute({ events: undefined });
     expect(ctx.events).toEqual([]);
+  });
+
+  // ── 9b. Events unknown, not none ──────────────────────────
+  // Owner decision, 2026-11-13: when a date's events are not known (its fetch
+  // is waiting, failed, or the forward list never loaded) the analysis is told
+  // so, instead of "Scheduled events: NONE".
+  describe('eventsUnknown', () => {
+    const KNOWN: EventItem = {
+      date: '2026-03-24',
+      event: 'FOMC',
+      description: 'Rate decision',
+      time: '14:00',
+      severity: 'high',
+      source: 'fred',
+    };
+
+    it('is true, with an empty list, when events is undefined', () => {
+      const ctx = compute({ events: undefined });
+      expect(ctx.events).toEqual([]);
+      expect(ctx.eventsUnknown).toBe(true);
+    });
+
+    it.each([
+      ['an empty list', []],
+      ['events on the selected date', [KNOWN]],
+      ['events on other dates only', [{ ...KNOWN, date: '2026-03-25' }]],
+    ])('is not sent when the events are known: %s', (_name, events) => {
+      const ctx = compute({ events });
+      expect(ctx.eventsUnknown).toBeUndefined();
+      // The wire form too: a client that knows the events adds no field.
+      expect(
+        JSON.parse(JSON.stringify(ctx)) as Record<string, unknown>,
+      ).not.toHaveProperty('eventsUnknown');
+    });
+
+    it('follows the events as they load', () => {
+      const params = makeParams({ events: undefined });
+      const { result, rerender } = renderHook(
+        (p: UseAnalysisContextParams) => useAnalysisContext(p),
+        { initialProps: params },
+      );
+      expect(result.current.eventsUnknown).toBe(true);
+
+      rerender({ ...params, events: [KNOWN] });
+      expect(result.current.eventsUnknown).toBeUndefined();
+      expect(result.current.events).toHaveLength(1);
+
+      rerender({ ...params, events: undefined });
+      expect(result.current.eventsUnknown).toBe(true);
+    });
   });
 
   // ── 10. topOIStrikes ──────────────────────────────────────
