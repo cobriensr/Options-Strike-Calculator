@@ -37,7 +37,8 @@ net_flow_lottery, gex_strike_expiry_lottery, futures_trades`, with
 `INTERVAL_BA_ENABLED=true` and `INTERVAL_BA_TICKERS_CSV=SPY,SPXW,QQQ`. That
 expands to 263 channels: 86 `option_trades`, 86 `net_flow`, 88
 `gex_strike_expiry` (SPX and NDX are not in the Lottery universe) and the
-three global channels. They run on 6 sockets (see Architecture).
+three global channels. They run on 8 sockets: 6, plus 2 mirror sockets that
+join the 86 `option_trades` channels a second time (see Architecture).
 
 `futures_blocks` is registered but **not** in production `WS_CHANNELS`, so
 it is inactive until added there, after the handler is deployed (never
@@ -68,11 +69,53 @@ Single asyncio process:
    of at most `WS_MAX_CHANNELS_PER_CONN` (45, under UW's 50-per-connection
    cap). A shard holds one per-ticker family, and the global channels fold
    into the first shard with room. With the production list that gives 6
-   sockets: `option_trades` 45 + 41 (the 3 globals join the 41),
-   `gex_strike_expiry` 45 + 43, `net_flow` 45 + 41. Each connector
-   reconnects with 1–60 s backoff (±20% jitter), resets the backoff only
-   after a 60 s healthy session, re-sends every join after a reconnect,
-   and re-joins any still-unacked channel every 60 s.
+   sockets, then 2 mirror sockets (below), 8 in all:
+
+   | Socket  | Channels                                                | Count |
+   | ------- | ------------------------------------------------------- | ----- |
+   | `conn0` | `option_trades:AAOI` … `option_trades:OKLO`             | 45    |
+   | `conn1` | `option_trades:ORCL` … `option_trades:XOM`, 3 globals   | 44    |
+   | `conn2` | the first 45 `gex_strike_expiry` (SPY, QQQ, SPX, NDX …) | 45    |
+   | `conn3` | the other 43 `gex_strike_expiry`                        | 43    |
+   | `conn4` | `net_flow:AAOI` … `net_flow:OKLO`                       | 45    |
+   | `conn5` | `net_flow:ORCL` … `net_flow:XOM`                        | 41    |
+   | `conn6` | mirror of `conn0`'s `option_trades` channels            | 45    |
+   | `conn7` | mirror of `conn1`'s 41 `option_trades` channels         | 41    |
+
+   `conn1`'s 3 globals are `flow-alerts`, `off_lit_trades` and
+   `futures_trades`. With `WS_REDUNDANT_OPTION_TRADES=false` there is no
+   `conn6` or `conn7`: the six above are the whole layout.
+
+   Each connector reconnects with 1–60 s backoff (±20% jitter), resets
+   the backoff only after a 60 s healthy session, re-sends every join
+   after a reconnect, and re-joins any still-unacked channel every 60 s.
+
+   **Mirror sockets.** UW drops 70–120 of our sockets per weekday and
+   replays nothing after a drop, so the trades in each gap were lost. With
+   `WS_REDUNDANT_OPTION_TRADES` on (the default), `channel_shards` appends
+   mirror shards after the six: every per-ticker `option_trades:` channel
+   again, chunked at the same cap, with no globals. The mirrors are the
+   highest `conn` numbers, so `conn0`–`conn5` keep their channel sets and
+   indexes. A trade then arrives twice, as identical frames, one per socket.
+   `OptionTradesHandler.enqueue` drops the second copy by (trade `id`,
+   `canceled` flag) before the queue: two generations of keys rotate every
+   60 s on a monotonic clock, so a key is remembered for 60–120 s (about
+   160k keys at the open). A payload with no usable `id` passes through to
+   `_transform` unchanged. The three Interval B/A handlers inherit
+   `enqueue`, so a duplicate frame cannot double-count their premium.
+   `Settings()` fails at boot when the socket count, mirrors included,
+   exceeds UW's 10 connections per token. `WS_REDUNDANT_OPTION_TRADES=false`
+   is the kill switch: Railway redeploys with the six sockets and no
+   dedupe, with no code change. Turn it off if the doubled `option_trades`
+   frames make the receive or handler queues back up at the open.
+
+   Known limits. The `subscribed` flag and the 60 s re-join are per channel
+   name, not per socket, so one socket's ack hides the other socket's lost
+   join: a mirror (or primary) that silently misses a join only loses its
+   redundancy, and nothing alerts on it. If a handler queue is full and
+   its backpressure policy evicts the first copy after its key was
+   recorded, the second copy is dropped as a duplicate; that needs the
+   overload the drop counters already report to Sentry.
 3. **Router** (`src/router.py`): parses `[channel, payload]` frames from
    the shared receive queue, drops join acks, and dispatches to handler
    queues.
@@ -95,9 +138,20 @@ Single asyncio process:
      channel joined, or echoed by UW, e.g. `net_flow:TSLA`: `subscribed`,
      `last_message_ts`) and `handlers` (per handler queue, keyed by
      handler name: `queue_depth`, `drop_count`, `write_attempted`,
-     `write_count`, `lost_rows`; zeroed from boot). `lost_rows` counts the
-     rows of flushes that failed after the DB retries; ON CONFLICT dedup
-     skips don't count. The shared handlers are named after
+     `write_count`, `lost_rows`, `dupes_dropped`, `single_copy`; zeroed from
+     boot). `lost_rows` counts the rows of flushes that failed after the DB
+     retries; ON CONFLICT dedup skips don't count. `dupes_dropped` counts the
+     second copies of a trade that the mirror sockets deliver and the
+     option-trade handlers drop before their queue. It is not backpressure,
+     so it never reaches `drop_count` or the drop reporter. `single_copy`
+     counts trades that only one socket delivered, once the trade's 2-minute
+     window closes (so it lags by up to ~2 minutes). About half of them
+     were missed by the primary, so the mirror saved them. Both stay 0 on
+     every other handler, and on these while the kill switch is off. Each
+     option-trade handler logs both, plus their change since its previous
+     line, at info level about every 5 minutes (message
+     `option_trades redundant-socket dedupe`), and never per frame. The
+     shared handlers are named after
      their channel family (`option_trades`, `net_flow`,
      `gex_strike_expiry`), so one `handlers` row covers that family's
      per-ticker channels. Exception: `option_trades:SPY` / `SPXW` / `QQQ`
@@ -298,7 +352,8 @@ at boot, not at first use.
 | `PORT`                                         | no             | Default 8080. Railway provides one.                                                                                                                                                                                                                                                                                                                  |
 | `LOG_LEVEL`                                    | ignored        | Parsed by `config.py` but not applied; logs are always INFO                                                                                                                                                                                                                                                                                          |
 | `WS_CHANNELS`                                  | no             | Comma-separated; default `flow-alerts`. Tokens: exact channels (`flow-alerts`, `off_lit_trades`, `futures_trades`), per-ticker channels (`option_trades:<T>`, `net_flow:<T>`, `gex_strike_expiry:<T>`), or the shorthands `option_trades_lottery`, `net_flow_lottery`, `gex_strike_expiry_lottery`. An unknown token or an empty list fails the boot |
-| `WS_MAX_CHANNELS_PER_CONN`                     | no             | Default 45. Channels per socket (UW caps at 50)                                                                                                                                                                                                                                                                                                      |
+| `WS_MAX_CHANNELS_PER_CONN`                     | no             | Default 45. Channels per socket (UW caps at 50). The socket count, mirrors included, must be 10 or fewer (UW's per-token cap) or the boot fails                                                                                                                                                                                                      |
+| `WS_REDUNDANT_OPTION_TRADES`                   | no             | Default `true`. Kill switch for the mirror sockets (below). `false` restores the 6 sockets from before them and idles the dedupe, with no code change; a redeploy applies it                                                                                                                                                                         |
 | `WS_RECEIVE_QUEUE_SIZE`                        | no             | Default 10000. Buffer between connectors and router. Read from the process environment only                                                                                                                                                                                                                                                          |
 | `WS_QUEUE_SIZE`                                | no             | Default 50000 (per handler queue)                                                                                                                                                                                                                                                                                                                    |
 | `WS_BATCH_SIZE`                                | no             | Default 500 rows                                                                                                                                                                                                                                                                                                                                     |
@@ -409,7 +464,7 @@ migration chain, and all schema changes go there.)
   session length, frames received, time since the last frame, and both
   socket addresses. The token is scrubbed from it. A Sentry warning fires
   when reconnects in the last hour, across all shards, reach 5 per shard
-  (30 with 6 shards). A temporary
+  (40 with 8 shards, 30 with the mirror sockets off). A temporary
   `ws-canary` Railway service (`scripts/ws-canary/`) is measuring which
   network hop resets these connections.
 - **Shutdown drain.** On SIGTERM the daemon closes its sockets, releases
@@ -444,15 +499,27 @@ migration chain, and all schema changes go there.)
   checks the sum against `railway.toml`.
 - **Single process.** One process holds every shard's connection. If one
   socket drops, only that shard's channels go quiet while it reconnects.
-  If the process dies during market hours, all data goes dark until
+  An `option_trades` channel is the exception: its mirror socket keeps
+  delivering, so the gap is covered unless both drop together. If the process dies during market hours, all data goes dark until
   Railway restarts it. Acceptable for a personal trading tool, but worth
   knowing.
+- **Checking the mirror sockets.** After a deploy that has them on,
+  `/metrics` should list `conn0` to `conn7` under `connections`, and the
+  `option_trades` `dupes_dropped` should climb at about the rate of that
+  handler's trades (the second copy of each) with `single_copy` a small
+  fraction of it. At the open, `receive_queue_depth`, each handler's
+  `queue_depth` and `drop_count`, and `receive_queue_drops` should look like
+  the day before; if they climb, set `WS_REDUNDANT_OPTION_TRADES=false`.
+  Like any push to `uw-stream/`, a deploy drops every socket for a few
+  seconds, so do not push during market hours (08:30–15:00 CT).
 - **WS connection lease (deploy-overlap guard).** UW caps the token at 10
-  websocket connections (per `src/ws_lease.py`). Production runs 6 sharded
-  sockets (as of 2026-10-29); the lease module was sized for a planned ~8.
-  The exposure is the Railway deploy handoff, where the new container
-  boots while the old is still draining, so both briefly hold their
-  sockets (12 > 10 today) and the new gen's joins get silently rejected.
+  websocket connections (per `src/ws_lease.py`). Production runs 8 sharded
+  sockets with the mirror sockets on (6 with them off); the lease module
+  was sized for a planned ~8, and `Settings()` refuses to boot a layout
+  over 10. The exposure is the Railway deploy handoff, where the new
+  container boots while the old is still draining, so both briefly hold
+  their sockets (16 > 10 today) and the new gen's joins get silently
+  rejected.
   To prevent this, every boot acquires a single Upstash-backed TTL'd lease
   (`WS_LEASE_KEY`) BEFORE opening any socket: a new deploy waits for the
   old gen to release (or for the TTL to lapse) before connecting. On clean
