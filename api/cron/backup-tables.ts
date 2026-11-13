@@ -267,8 +267,44 @@ async function blobCallBefore<T>(
 }
 
 /**
+ * List every blob under `backups/`, following `cursor` while `hasMore`. A
+ * list() call returns 1000 blobs by default (@vercel/blob 2.4.0, `limit`). The
+ * listing is about 300 blobs today and stays under about 400 (the floor's
+ * folders are fixed and the rest are pruned at 4 weeks), so one call would do
+ * now; but a call that stopped at 1000 would pass a truncated listing off as
+ * the whole one, so the prune follows the cursor. Each page is its own Blob
+ * call behind `deadline`: a page that fails or is not started in time rejects
+ * here, so the caller never works from a partial listing.
+ */
+async function listBackupBlobs(deadline: number) {
+  const blobs: Awaited<ReturnType<typeof list>>['blobs'] = [];
+  let cursor: string | undefined;
+  for (let page = 1; ; page += 1) {
+    const after = cursor;
+    const result = await blobCallBefore(
+      deadline,
+      `list backups/ page ${page}`,
+      (signal) =>
+        list({ prefix: 'backups/', cursor: after, abortSignal: signal }),
+    );
+    blobs.push(...result.blobs);
+    if (!result.hasMore) return blobs;
+    // Without a cursor the next page cannot be asked for, and stopping here
+    // would pass a truncated listing off as the whole one.
+    if (!result.cursor) {
+      throw new Error(
+        `list backups/ page ${page} said hasMore without a cursor`,
+      );
+    }
+    cursor = result.cursor;
+  }
+}
+
+/**
  * Delete backup folders older than the retention window, except any dated on
- * or before `PRUNE_PROTECTED_THROUGH`. Its Blob calls stop at `deadline`.
+ * or before `PRUNE_PROTECTED_THROUGH`. Its Blob calls stop at `deadline`. It
+ * reads the whole listing before it deletes anything, and judges each blob by
+ * its own folder date, so an error while listing deletes nothing.
  */
 async function pruneOldBackups(
   currentDate: string,
@@ -279,9 +315,7 @@ async function pruneOldBackups(
   const cutoff = new Date(currentDate);
   cutoff.setUTCDate(cutoff.getUTCDate() - RETENTION_WEEKS * 7);
 
-  const { blobs } = await blobCallBefore(deadline, 'list backups/', (signal) =>
-    list({ prefix: 'backups/', abortSignal: signal }),
-  );
+  const blobs = await listBackupBlobs(deadline);
   const toDelete: string[] = [];
   // Folders past the retention window that the floor keeps. At most one entry
   // per weekly folder, and it lives only for this call.

@@ -1231,30 +1231,40 @@ describe('backup-tables handler', () => {
   // The cutoff is the run's date minus 28 days, counted in UTC days, as it is on
   // Vercel. A local-time count is an hour off when a DST change falls inside
   // the 28 days (2027-03-14 here): on a machine west of UTC the cutoff moved
-  // past the cutoff day's own folder and deleted it a day early. A UTC machine
-  // passes either way; one on Central time fails it.
+  // past the cutoff day's own folder and deleted it a day early. The test runs
+  // the handler on Central time whatever the machine's zone, so a local-time
+  // count fails it on a UTC CI runner too. TZ is set on the real environment
+  // object (`originalEnv`): beforeEach has replaced `process.env` with a plain
+  // copy, and Node reads a zone change only from the real one.
   it('keeps the folder dated on the cutoff day and deletes the day before, across a DST change', async () => {
-    // Current date is 2027-03-28, cutoff = 2027-02-28
-    mockList.mockResolvedValue({
-      blobs: [
-        {
-          pathname: 'backups/2027-02-27/analyses.jsonl',
-          url: 'https://blob.test/day-before',
-        },
-        {
-          pathname: 'backups/2027-02-28/analyses.jsonl',
-          url: 'https://blob.test/cutoff-day',
-        },
-      ],
-    });
+    const prevTz = originalEnv.TZ;
+    originalEnv.TZ = 'America/Chicago';
+    try {
+      // Current date is 2027-03-28, cutoff = 2027-02-28
+      mockList.mockResolvedValue({
+        blobs: [
+          {
+            pathname: 'backups/2027-02-27/analyses.jsonl',
+            url: 'https://blob.test/day-before',
+          },
+          {
+            pathname: 'backups/2027-02-28/analyses.jsonl',
+            url: 'https://blob.test/cutoff-day',
+          },
+        ],
+      });
 
-    const res = await runBackup();
+      const res = await runBackup();
 
-    expect(mockDel).toHaveBeenCalledTimes(1);
-    expect(mockDel).toHaveBeenCalledWith(['https://blob.test/day-before'], {
-      abortSignal: expect.any(AbortSignal),
-    });
-    expect((res._json as Record<string, unknown>).pruned).toBe(1);
+      expect(mockDel).toHaveBeenCalledTimes(1);
+      expect(mockDel).toHaveBeenCalledWith(['https://blob.test/day-before'], {
+        abortSignal: expect.any(AbortSignal),
+      });
+      expect((res._json as Record<string, unknown>).pruned).toBe(1);
+    } finally {
+      if (prevTz === undefined) delete originalEnv.TZ;
+      else originalEnv.TZ = prevTz;
+    }
   });
 
   it('skips blobs with non-matching pathname format', async () => {
@@ -1508,6 +1518,164 @@ describe('backup-tables handler', () => {
       expect.anything(),
       'Backup folders kept by the protection floor',
     );
+  });
+
+  // ── Paged Blob listing ───────────────────────────────────
+
+  // list() returns 1000 blobs a call by default, with `hasMore` and a `cursor`
+  // to resume from. The listing is about 300 blobs today and stays under about
+  // 400, so one call would do now; but a call that stopped at 1000 would pass a
+  // truncated listing off as the whole one, so the prune follows the cursor.
+  // It reads every page before it deletes anything, so a page that fails or
+  // misses the deadline ends the prune with an error and deletes nothing. A
+  // blob is judged only by its own folder date and the floor, never by which
+  // pages were read.
+
+  it('follows the cursor through every page and judges each blob by its own folder date', async () => {
+    // Current date is 2027-03-28, cutoff = 2027-02-28. The floor folder
+    // 2026-11-08 is split across the two pages.
+    mockSql.mockResolvedValue([{ id: 1 }]);
+    mockList
+      .mockResolvedValueOnce({
+        blobs: [
+          backupFile('2026-11-08', 'analyses'),
+          backupFile('2027-02-14', 'analyses'),
+          backupFile('2027-03-21', 'analyses'),
+        ],
+        hasMore: true,
+        cursor: 'page-2-cursor',
+      })
+      .mockResolvedValueOnce({
+        blobs: [
+          backupFile('2026-11-08', 'outcomes'),
+          backupFile('2026-04-19', 'analyses'),
+          backupFile('2027-02-14', 'outcomes'),
+          backupFile('2027-02-21', 'analyses'),
+          backupFile('2027-03-14', 'analyses'),
+        ],
+        hasMore: false,
+      });
+
+    const res = await runBackup();
+
+    expect(res._status).toBe(200);
+    expect(mockList).toHaveBeenCalledTimes(2);
+    const firstCall = mockList.mock.calls[0]![0] as { cursor?: string };
+    expect(firstCall.cursor).toBeUndefined();
+    expect(mockList.mock.calls[1]![0]).toMatchObject({
+      prefix: 'backups/',
+      cursor: 'page-2-cursor',
+      abortSignal: expect.any(AbortSignal),
+    });
+    // Stale folders from both pages go, in listing order, in one del().
+    expect(mockDel).toHaveBeenCalledTimes(1);
+    expect(mockDel).toHaveBeenCalledWith(
+      [
+        'https://blob.test/2027-02-14/analyses',
+        'https://blob.test/2027-02-14/outcomes',
+        'https://blob.test/2027-02-21/analyses',
+      ],
+      { abortSignal: expect.any(AbortSignal) },
+    );
+    expect((res._json as Record<string, unknown>).pruned).toBe(3);
+    // 2026-11-08 (on both pages) and 2026-04-19 are two folders.
+    expect(logger.info).toHaveBeenCalledWith(
+      { foldersKept: 2, protectedThrough: '2026-11-15' },
+      'Backup folders kept by the protection floor',
+    );
+  });
+
+  it('lists once when the first page says there is no more', async () => {
+    // hasMore decides, not the presence of a cursor. Once, so that a loop that
+    // follows the cursor anyway ends on the default empty page and fails the
+    // call count, instead of looping on this page.
+    mockList.mockResolvedValueOnce({
+      blobs: STALE_BACKUP.blobs,
+      hasMore: false,
+      cursor: 'ignored',
+    });
+
+    const res = await runBackup();
+
+    expect(res._status).toBe(200);
+    expect(mockList).toHaveBeenCalledTimes(1);
+    expect(mockDel).toHaveBeenCalledWith(['https://blob.test/old1'], {
+      abortSignal: expect.any(AbortSignal),
+    });
+  });
+
+  it('does not start the next page once the Blob deadline has passed, and deletes nothing', async () => {
+    // The first page finds a stale folder and takes the clock past the
+    // deadline; the second page must not start, and the first page's blobs
+    // are not deleted on their own.
+    mockList.mockImplementationOnce(async () => {
+      advanceClock(BLOB_DEADLINE_MS + 100);
+      return {
+        blobs: STALE_BACKUP.blobs,
+        hasMore: true,
+        cursor: 'page-2-cursor',
+      };
+    });
+
+    const res = await runBackup();
+
+    expect(mockList).toHaveBeenCalledTimes(1);
+    expect(mockDel).not.toHaveBeenCalled();
+    expect(res._status).toBe(500);
+    const json = res._json as Record<string, unknown>;
+    expect(json.pruned).toBe(0);
+    const errors = json.errors as string[];
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain('pruning');
+    expect(errors[0]).toContain('list backups/ page 2');
+    expect(errors[0]).toContain('did not finish before the run deadline');
+  });
+
+  it('reports a rejected second page as a pruning error and deletes nothing', async () => {
+    mockList
+      .mockResolvedValueOnce({
+        blobs: STALE_BACKUP.blobs,
+        hasMore: true,
+        cursor: 'page-2-cursor',
+      })
+      .mockRejectedValueOnce(new Error('Blob list page 2 failed'));
+
+    const res = await runBackup();
+
+    expect(mockList).toHaveBeenCalledTimes(2);
+    expect(mockDel).not.toHaveBeenCalled();
+    expect(res._status).toBe(500);
+    const json = res._json as Record<string, unknown>;
+    expect(json.pruned).toBe(0);
+    expect(json.status).toBe('partial');
+    const errors = json.errors as string[];
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain('pruning');
+    expect(errors[0]).toContain('Blob list page 2 failed');
+    expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'Blob list page 2 failed' }),
+    );
+    expect(Sentry.flush).toHaveBeenCalledTimes(1);
+    expect(checkInStatuses()).toEqual(['in_progress', 'error']);
+  });
+
+  it('treats hasMore without a cursor as an error, not as a complete listing', async () => {
+    mockList.mockResolvedValueOnce({
+      blobs: STALE_BACKUP.blobs,
+      hasMore: true,
+    });
+
+    const res = await runBackup();
+
+    expect(mockList).toHaveBeenCalledTimes(1);
+    expect(mockDel).not.toHaveBeenCalled();
+    expect(res._status).toBe(500);
+    const errors = (res._json as { errors: string[] }).errors;
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain('pruning');
+    expect(errors[0]).toContain('hasMore without a cursor');
+    expect(Sentry.captureException).toHaveBeenCalledTimes(1);
   });
 
   // ── Date in backup path ───────────────────────────────────
