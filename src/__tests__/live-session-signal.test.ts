@@ -35,6 +35,7 @@ const beaconMock =
 const subscribers = new Set<() => void>();
 
 let stop: (() => void) | null = null;
+let onLine: ReturnType<typeof vi.spyOn>;
 
 function start(): () => void {
   stop = startLiveSessionSignals();
@@ -88,6 +89,7 @@ beforeEach(() => {
   });
   respondWith(204);
   vi.stubGlobal('fetch', fetchMock);
+  onLine = vi.spyOn(navigator, 'onLine', 'get').mockReturnValue(true);
   beaconMock.mockReturnValue(true);
   Object.defineProperty(navigator, 'sendBeacon', {
     configurable: true,
@@ -100,6 +102,7 @@ afterEach(() => {
   stop?.();
   stop = null;
   Reflect.deleteProperty(navigator, 'sendBeacon');
+  onLine.mockRestore();
   vi.unstubAllGlobals();
   vi.useRealTimers();
 });
@@ -506,6 +509,57 @@ describe('a failed open signal', () => {
 
     expect(captureUnlessAuth).toHaveBeenCalledTimes(2);
   });
+
+  describe('while the browser is offline', () => {
+    // A laptop waking up has no network yet: routine, as for the update check.
+    it.each([
+      [
+        'a network error',
+        () => fetchMock.mockRejectedValue(new TypeError('Failed to fetch')),
+      ],
+      ['a server error', () => respondWith(500)],
+    ])('reports nothing for %s', async (_name, arrange) => {
+      onLine.mockReturnValue(false);
+      arrange();
+
+      start();
+      await advance(INTERVAL_MS);
+
+      expect(fetchMock.mock.calls.length).toBeGreaterThan(1);
+      expect(captureUnlessAuth).not.toHaveBeenCalled();
+    });
+
+    it('keeps the one report for a later failure while online', async () => {
+      onLine.mockReturnValue(false);
+      fetchMock.mockRejectedValue(new TypeError('Failed to fetch'));
+      start();
+      await advance(0);
+      expect(captureUnlessAuth).not.toHaveBeenCalled();
+
+      onLine.mockReturnValue(true);
+      respondWith(500);
+      await advance(INTERVAL_MS);
+      expect(captureUnlessAuth).toHaveBeenCalledTimes(1);
+      expect(captureUnlessAuth).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 500 }),
+        WARNING,
+      );
+
+      await advance(INTERVAL_MS);
+      expect(captureUnlessAuth).toHaveBeenCalledTimes(1);
+    });
+
+    it('still reports a network error while online', async () => {
+      const failure = new TypeError('Failed to fetch');
+      fetchMock.mockRejectedValue(failure);
+
+      start();
+      await advance(0);
+
+      expect(captureUnlessAuth).toHaveBeenCalledTimes(1);
+      expect(captureUnlessAuth).toHaveBeenCalledWith(failure, WARNING);
+    });
+  });
 });
 
 describe('the switch subscriber', () => {
@@ -610,6 +664,17 @@ describe('main.tsx wiring', () => {
     expect(mainCode).toMatch(
       /import \{ startLiveSessionSignals \} from '\.\/lib\/live-session-signal'/,
     );
+  });
+
+  it('starts the signals after botid patches fetch, and before React mounts', () => {
+    // botid's initBotId wraps fetch; started earlier, the load-time DELETE
+    // would go out unchallenged and draw a 403 from checkBot.
+    const botId = mainCode.indexOf('initBotId({');
+    const signals = mainCode.indexOf('startLiveSessionSignals()');
+    const mount = mainCode.indexOf('createRoot(');
+    expect(botId).toBeGreaterThan(-1);
+    expect(signals).toBeGreaterThan(botId);
+    expect(mount).toBeGreaterThan(signals);
   });
 
   it.each(['POST', 'DELETE'])(

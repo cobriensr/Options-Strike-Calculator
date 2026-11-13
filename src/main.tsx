@@ -105,11 +105,6 @@ Sentry.init({
 // before any other tab asks. An import-time start would put a timer and a
 // listener into every test that imports the module.
 startTabAgreement();
-// Tells the server when the owner closes the app, and that it is still open,
-// for the missed-snapshot alert (live-snapshot-alert-2026-11-11.md). Started
-// here, outside React, so a render failure in a new build doesn't stop the
-// open signal.
-startLiveSessionSignals();
 const updateSW = registerSW({
   onNeedRefresh() {
     markNeedsRefresh();
@@ -230,6 +225,16 @@ if (import.meta.env.PROD)
       { path: '/api/tracker/alerts/[id]/ack', method: 'POST' },
     ],
   });
+
+// Tells the server when the owner closes the app, and that it is still open,
+// for the missed-snapshot alert (live-snapshot-alert-2026-11-11.md). Started
+// after initBotId, which wraps fetch: the load-time open signal then carries
+// botid's challenge headers instead of drawing a 403 from checkBot. Started
+// outside React, so a render failure in a new build doesn't stop the open
+// signal. A new build whose entry module fails to evaluate (any eagerly
+// imported module throwing at import time) never gets here, so a reload into
+// it sends no open signal and can still hide a stall.
+startLiveSessionSignals();
 
 const rootEl = document.getElementById('root');
 if (!rootEl) throw new Error('Root element not found');

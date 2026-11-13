@@ -20,9 +20,9 @@
  *     this tab's switch flips on, and when the page returns from the
  *     back/forward cache. Each one only inside the cash session, like every
  *     other poll here. A 401 (the owner cookie is gone) and a 429 (the shared
- *     30 a minute limit; the next timer retries) are silent; any other failure
- *     is reported once per page, because a lost open signal can let a close
- *     stand. Keep it a plain same-origin `fetch` with no body, no custom
+ *     30 a minute limit; the next timer retries) are silent, and so is any
+ *     failure while the browser is offline; any other failure is reported once
+ *     per page, because a lost open signal can let a close stand. Keep it a plain same-origin `fetch` with no body, no custom
  *     headers and no `mode`: the endpoint's cross-site safety rests on DELETE
  *     needing a preflight it never answers (security review, 2026-11-12).
  *
@@ -33,10 +33,13 @@
  * switch flipped in another tab of the browser, or a sign-out elsewhere, is
  * never pushed here; the subscription only lets this tab react at once.
  *
- * Started from main.tsx, outside React, so a render failure in a new build
- * does not stop the open signal. The timers run for the life of the page and
- * send nothing while the page is not active; stopping removes every listener
- * and timer.
+ * Started from main.tsx, outside React and after botid has wrapped `fetch`, so
+ * a render failure in a new build does not stop the open signal. A new build
+ * whose entry module fails to evaluate (any eagerly imported module throwing
+ * at import time) does stop it: it sends no open signal, so a reload into it
+ * can still hide a stall. The timers run for the life of the page and send
+ * nothing while the page is not active; stopping removes every listener and
+ * timer.
  */
 
 import { getAccessMode } from '../utils/auth';
@@ -67,7 +70,10 @@ function isActive(): boolean {
  * "The page was closed". The beacon is queued by the browser even as the page
  * goes away. If it refuses the request (false), throws, or is missing (calling
  * it is then a TypeError, caught here too), a keepalive `fetch` carries the
- * same POST.
+ * same POST. The beacon is the real path: `sendBeacon` is not wrapped by
+ * botid. The fallback is, because POST /api/snapshot-close is in botid's
+ * `protect` list, and the wrapper awaits a challenge token first, so on a page
+ * that is unloading the request may never leave.
  */
 function sendClose(): void {
   try {
@@ -87,10 +93,13 @@ function sendClose(): void {
 export function startLiveSessionSignals(): () => void {
   stopCurrent?.();
 
-  // The page's one report of a failed open signal.
+  // The page's one report of a failed open signal. A failure while the browser
+  // is offline (a laptop waking up) is routine, as for the update check: it is
+  // not reported and does not spend the one report, so a later failure online
+  // still is.
   let reported = false;
   const reportOnce = (err: unknown): void => {
-    if (reported) return;
+    if (reported || navigator.onLine === false) return;
     reported = true;
     captureUnlessAuth(err, {
       level: 'warning',
