@@ -138,8 +138,8 @@ Single asyncio process:
      channel joined, or echoed by UW, e.g. `net_flow:TSLA`: `subscribed`,
      `last_message_ts`) and `handlers` (per handler queue, keyed by
      handler name: `queue_depth`, `drop_count`, `write_attempted`,
-     `write_count`, `lost_rows`, `dupes_dropped`, `single_copy`; zeroed from
-     boot). `lost_rows` counts the rows of flushes that failed after the DB
+     `write_count`, `lost_rows`, `dupes_dropped`, `single_copy`, `filtered`;
+     zeroed from boot). `lost_rows` counts the rows of flushes that failed after the DB
      retries; ON CONFLICT dedup skips don't count. `dupes_dropped` counts the
      second copies of a trade that the mirror sockets deliver and the
      option-trade handlers drop before their queue. It is not backpressure,
@@ -150,9 +150,15 @@ Single asyncio process:
      every other handler, and on these while the kill switch is off. Each
      option-trade handler logs both, plus their change since its previous
      line, at info level about every 5 minutes (message
-     `option_trades redundant-socket dedupe`), and never per frame. The
-     shared handlers are named after
-     their channel family (`option_trades`, `net_flow`,
+     `option_trades redundant-socket dedupe`), and never per frame.
+     `filtered` counts payloads a handler discarded before its queue
+     because they can never become rows. Only `gex_strike_expiry` sets it,
+     for frames whose expiry is not today's (ET). UW sends every active
+     expiry on that channel, about 85% of them not today's, and queued
+     first a burst of them filled the 50,000-slot queue and evicted
+     today's frames. Like `dupes_dropped` it is not backpressure, so it
+     never reaches `drop_count` or the drop reporter. The shared handlers
+     are named after their channel family (`option_trades`, `net_flow`,
      `gex_strike_expiry`), so one `handlers` row covers that family's
      per-ticker channels. Exception: `option_trades:SPY` / `SPXW` / `QQQ`
      get dedicated Interval B/A handlers with their own `handlers` rows,
