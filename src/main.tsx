@@ -7,6 +7,7 @@ import './index.css';
 import StrikeCalculator from './App';
 import ErrorBoundary from './components/ErrorBoundary';
 import { ToastProvider } from './components/Toast';
+import { startLiveSessionSignals } from './lib/live-session-signal';
 import {
   markNeedsRefresh,
   setUpdateFn,
@@ -104,6 +105,11 @@ Sentry.init({
 // before any other tab asks. An import-time start would put a timer and a
 // listener into every test that imports the module.
 startTabAgreement();
+// Tells the server when the owner closes the app, and that it is still open,
+// for the missed-snapshot alert (live-snapshot-alert-2026-11-11.md). Started
+// here, outside React, so a render failure in a new build doesn't stop the
+// open signal.
+startLiveSessionSignals();
 const updateSW = registerSW({
   onNeedRefresh() {
     markNeedsRefresh();
@@ -144,6 +150,8 @@ if (import.meta.env.PROD)
       { path: '/api/journal/backfill-features', method: 'POST' },
       { path: '/api/analyses', method: 'GET' },
       { path: '/api/snapshot', method: 'POST' },
+      { path: '/api/snapshot-close', method: 'POST' },
+      { path: '/api/snapshot-close', method: 'DELETE' },
       { path: '/api/analyze', method: 'POST' },
       { path: '/api/periscope-playbook', method: 'GET' },
       { path: '/api/periscope-chat-list', method: 'GET' },

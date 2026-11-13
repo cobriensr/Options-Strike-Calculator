@@ -20,6 +20,12 @@
  *     print leaves inputs that still match the quote state, and only the
  *     quote's time shows it. Phase 3 of P0.6 makes the server refuse a stale
  *     row; until then it accepts quotedAt and ignores it. A replay sends none.
+ *     Only a live-save browser posts it (isLiveSaveDevice: computers by
+ *     default, phones and tablets not, and a per-browser switch overrides
+ *     either way): the missed-snapshot alert watches the trading computer, and
+ *     a phone's one row would make a stall look over. Flipping the switch
+ *     takes effect without a reload, and a live row held back by it posts
+ *     when the switch flips on. Backtest rows are not affected.
  *   - A past date with its own intraday history, or today scrubbed back
  *     more than 5 minutes (isBacktestMode): a backtest row (is_backtest
  *     true), once the inputs carry that history's SPX and SPY at the entry
@@ -53,7 +59,11 @@
  * skipped) keeps the key: it was answered, not lost.
  */
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useSyncExternalStore } from 'react';
+import {
+  isLiveSaveDevice,
+  subscribeLiveSaveDevice,
+} from '../lib/live-save-device';
 import { captureUnlessAuth } from '../lib/sentry-helpers';
 import { isTradingDay } from '../data/marketHours';
 import {
@@ -322,6 +332,14 @@ export function useSnapshotSave(
   const liveVix = meta.live?.vix;
   const liveQuotedAt = meta.live?.quotedAt;
   const inputsPending = meta.inputsPending === true;
+  // Whether this browser saves live rows. Through the store, so a flip in this
+  // tab re-runs the effect without a remount. A flip in another tab is never
+  // announced here, but every render re-reads it and the quote polls render
+  // all session, so the next render sees it.
+  const liveSaveDevice = useSyncExternalStore(
+    subscribeLiveSaveDevice,
+    isLiveSaveDevice,
+  );
 
   useEffect(() => {
     if (!results || !enabled) return;
@@ -346,6 +364,9 @@ export function useSnapshotSave(
       vix: meta.vix,
     });
     if (kind == null) return;
+    // Before the key is marked saved, so the live row posts when the switch
+    // flips on.
+    if (kind === 'live' && !liveSaveDevice) return;
 
     const key = `${meta.selectedDate}|${meta.entryTime}`;
     if (savedRef.current.has(key)) return;
@@ -537,5 +558,6 @@ export function useSnapshotSave(
     meta.skewPct,
     meta.clusterMult,
     enabled,
+    liveSaveDevice,
   ]);
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { renderHook } from '@testing-library/react';
+import { act, renderHook } from '@testing-library/react';
 import {
   buildSnapshotMeta,
   useSnapshotSave,
@@ -87,6 +87,22 @@ const defaultSignals: ComputedSignals = {
 
 vi.mock('../../lib/sentry-helpers', () => ({ captureUnlessAuth: vi.fn() }));
 
+// The browser's live-save switch. The subscribers are the ones the hook
+// registered, so a test can flip the switch the way `setLiveSaveOverride` does.
+const liveSave = vi.hoisted(() => ({
+  isLiveSaveDevice: vi.fn<() => boolean>(),
+  subscribers: new Set<() => void>(),
+}));
+vi.mock('../../lib/live-save-device', () => ({
+  isLiveSaveDevice: liveSave.isLiveSaveDevice,
+  subscribeLiveSaveDevice: (cb: () => void) => {
+    liveSave.subscribers.add(cb);
+    return () => {
+      liveSave.subscribers.delete(cb);
+    };
+  },
+}));
+
 // The clock is pinned (Date only, so promises and waitFor keep real timers)
 // to 2026-03-10 11:00 EDT, so TODAY is the ET date the hook compares with.
 const NOW = '2026-03-10T15:00:00Z';
@@ -125,6 +141,8 @@ beforeEach(() => {
   vi.useFakeTimers({ toFake: ['Date'] });
   vi.setSystemTime(new Date(NOW));
   vi.mocked(captureUnlessAuth).mockClear();
+  liveSave.isLiveSaveDevice.mockReset().mockReturnValue(true);
+  liveSave.subscribers.clear();
   fetchSpy = vi
     .spyOn(globalThis, 'fetch')
     .mockResolvedValue(
@@ -1443,5 +1461,117 @@ describe('useSnapshotSave — a failed save', () => {
     rerender({ results: makeResults() });
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     expect(captureUnlessAuth).not.toHaveBeenCalled();
+  });
+});
+
+describe('useSnapshotSave — which browser saves live rows', () => {
+  /** The switch flipped in this tab, as `setLiveSaveOverride` does. */
+  function flipSwitch(on: boolean): void {
+    liveSave.isLiveSaveDevice.mockReturnValue(on);
+    act(() => {
+      for (const notify of liveSave.subscribers) notify();
+    });
+  }
+
+  it('makes no live save from a browser that is not a live-save device', () => {
+    liveSave.isLiveSaveDevice.mockReturnValue(false);
+
+    renderHook(() =>
+      useSnapshotSave(makeResults(), defaultSignals, baseMeta, true),
+    );
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('still saves a past date there', () => {
+    liveSave.isLiveSaveDevice.mockReturnValue(false);
+
+    renderHook(() =>
+      useSnapshotSave(makeResults(), defaultSignals, backtestMeta, true),
+    );
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(body().date).toBe(YESTERDAY);
+    expect(body().isBacktest).toBe(true);
+  });
+
+  it('still saves today scrubbed back more than 5 minutes there', () => {
+    liveSave.isLiveSaveDevice.mockReturnValue(false);
+    const scrubbed = { ...defaultSignals, etHour: 10, etMinute: 30 };
+
+    renderHook(() =>
+      useSnapshotSave(
+        makeResults({ spot: 5490 }),
+        scrubbed,
+        {
+          ...baseMeta,
+          entryTime: '9:30 AM CT',
+          history: { date: TODAY, spot: 5490, spy: 549, vix: 18.2 },
+          spy: 549,
+          vix: 18.2,
+        },
+        true,
+      ),
+    );
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(body().isBacktest).toBe(true);
+  });
+
+  it('saves the held live row once the switch flips on, without a remount', () => {
+    liveSave.isLiveSaveDevice.mockReturnValue(false);
+    // One results object across renders, as the calculation memoizes it:
+    // only the switch changes, so the effect must depend on it.
+    const results = makeResults();
+    renderHook(() => useSnapshotSave(results, defaultSignals, baseMeta, true));
+    expect(fetchSpy).not.toHaveBeenCalled();
+
+    flipSwitch(true);
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(body().date).toBe(TODAY);
+    expect(body().isBacktest).toBe(false);
+  });
+
+  it('stops posting new live slots once the switch flips off, and keeps the posted one', () => {
+    const { rerender } = renderHook(
+      ({ meta }) => useSnapshotSave(makeResults(), defaultSignals, meta, true),
+      { initialProps: { meta: baseMeta } },
+    );
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+    flipSwitch(false);
+    rerender({ meta: { ...baseMeta, entryTime: '09:40' } });
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+    // Back on: the new slot posts; the first slot does not post again.
+    flipSwitch(true);
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(body(1).entryTime).toBe('09:40');
+  });
+
+  it('follows the switch on the next render when another tab flipped it, with no notification', () => {
+    const { rerender } = renderHook(
+      ({ meta }) => useSnapshotSave(makeResults(), defaultSignals, meta, true),
+      { initialProps: { meta: baseMeta } },
+    );
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+    // The stored override changed in another tab: nothing here is told.
+    liveSave.isLiveSaveDevice.mockReturnValue(false);
+    rerender({ meta: { ...baseMeta, entryTime: '09:40' } });
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('unsubscribes from the switch on unmount', () => {
+    const { unmount } = renderHook(() =>
+      useSnapshotSave(makeResults(), defaultSignals, baseMeta, true),
+    );
+    expect(liveSave.subscribers.size).toBe(1);
+
+    unmount();
+
+    expect(liveSave.subscribers.size).toBe(0);
   });
 });
