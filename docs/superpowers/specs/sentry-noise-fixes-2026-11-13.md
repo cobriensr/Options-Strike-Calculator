@@ -67,10 +67,33 @@ One implementer stream at a time, in this order. Each phase ships on its own, wi
   - `uw-stream` `connector.py` `_maybe_alert_storm` (~544-561) calls `capture_message` on every reconnect past the threshold, with no cooldown. That made 30 events on 11-12 17:32 to 18:05 UTC.
   - `sentry_setup.py` logs at ERROR (~155-158) and then calls `capture_exception` (~168). The SDK's default `LoggingIntegration` (event level ERROR, sentry-sdk 2.73.0) turns the log record into a second event.
 - **Fix.**
-  - Add a cooldown to the storm alert: at most one per incident window. The implementer picks the window from the reconnect data and documents it.
-  - Set `LoggingIntegration(event_level=None)`, as `nightly/src/monitoring.py:68` already does.
-- **Files.** `uw-stream/src/.../connector.py`, `uw-stream/src/.../sentry_setup.py`, their tests.
-- **Deploy.** Railway. Push after 15:00 CT only.
+  - **Storm cooldown.** At most one alert per 3600 s, process-wide (`_STORM_ALERT_WINDOW_S` in `connector.py`; the timestamp is `state.storm_alerted_at`, one float).
+    - Why 3600 s: it equals the horizon `reconnects_last_hour` counts over, now one constant, `RECONNECT_HORIZON` in `state.py`, that both read. Once a burst crosses the threshold the count stays above it until the burst ages out of that hour (11-12: 17:32 to 18:05 UTC, about one reconnect a minute, peak 55). A window as long as the horizon means every reconnect behind an alert has aged out when the window ends, so the next alert needs a threshold's worth of new reconnects. A shorter window would alert again on reconnects the first alert had already counted.
+    - Why process-wide: the count and the threshold (base times the shard count) are both process-wide, and drops arrive as all-shard clusters about 41% of the time. A timestamp per connector would send one alert per shard for one incident.
+    - Cost: a second incident that starts inside the hour of an earlier alert is not announced. Each of its drops still logs one line and shows in `/metrics` `reconnects_last_hour`. A storm still going when the hour ends alerts again.
+  - **One event per failure.** `LoggingIntegration(level=INFO, event_level=None)`, as `nightly/src/monitoring.py:68` already does. An error log line is a breadcrumb on the next event, never an event.
+  - **Explicit captures added where the log line was the only Sentry path.** Each sits beside its `log.error` and carries tags that say what it is:
+    - `RateLimitedLogger.error` (`logger_setup.py`) sends a `capture_message` at level `error` for its head-of-window line, so the throttle bounds events as it bounds lines. This covers `futures_front_month._fail` and `futures_trades._note_failure`. A warning sends nothing.
+    - The front-month clamp in `futures_front_month.py` (kind `front_month_clamped`).
+    - `futures_trades._note_unknown` (kind `front_month_unknown`), a completed minute skipped for want of a front-month contract. It sends once per product per window with the running total and the cause.
+    - `main._shutdown`'s "handler drain raised", sent with `capture_exception` and tags `component=main`, `stage=drain` and the handler name.
+  - **Library loggers (review finding, fix round 1).** `event_level=None` also dropped the ERROR records of libraries, which log a failure and send nothing else. `init_sentry` now attaches an `EventHandler(level=ERROR)` to the `websockets` and `asyncio` loggers, once (a second call attaches nothing) and only after `sentry_sdk.init` succeeds, so a service with no DSN attaches nothing. What it catches, in the installed websockets 17.4 and CPython 3.12:
+    - `websockets/asyncio/connection.py` "keepalive ping failed" (the socket stays open with no pings) and "unexpected internal error";
+    - `websockets/protocol.py` "parser failed";
+    - `asyncio/base_events.py` "Exception in callback" and "Task exception was never retrieved".
+    WARNING records of these loggers stay breadcrumbs. The service's own logger is not touched, so its error lines still file nothing. One side effect handled: any handler on a logger ends the stdlib's last-resort stderr line for that logger. `websockets` already has a `NullHandler`, so nothing changes there. `asyncio` had none and nothing configures the root logger, so its warnings and errors were reaching Railway's logs that way; `init_sentry` attaches `logging.lastResort` to it when no handler is in its chain, which keeps those lines.
+  - **What reaches Sentry now:** the explicit captures, the two library handlers, `AioHttpIntegration` (an exception the health handlers don't catch) and `ExcepthookIntegration` (an uncaught exception). Both integrations are active under the current `init` kwargs (a test checks this on a client built with the default integrations on).
+- **Files.**
+  - Source: `uw-stream/src/connector.py`, `state.py`, `sentry_setup.py`, `logger_setup.py`, `futures_front_month.py`, `handlers/futures_trades.py`, `main.py`.
+  - Docs: `uw-stream/README.md`.
+  - Tests: `uw-stream/tests/test_connector.py`, `test_sentry_setup.py`, `test_logger_rate_limit.py`, `test_futures_front_month.py`, `test_futures_trades_handler.py`, `test_main.py`.
+- **Deploy.** Railway. Push after 15:00 CT only (`uw-stream/` is a Railway watch path, and a push redeploys the service).
+  - Issues that came from logging records stop getting events. Plain-message issues replace them, so expect a few new-issue emails on first occurrence.
+- **Open question for the owner (no default applied).** The storm alert is a `warning` `capture_message`, and nothing emails a warning:
+  - the high-priority Issue Stream rule skips warnings;
+  - rule 6262822 covers cron monitors only;
+  - rule 6262727 matches `service=nightly` only.
+  - So a reconnect storm is visible in Sentry and on `/metrics` but emails nobody. Options: raise the level to `error` (at most one email an hour during a storm, because of the window), or add a per-tag alert rule (`component=connector`). Either changes who is told when, so it needs the owner's OK. It stays `warning` until the owner decides.
 
 ### Phase 4: 429 reporting
 
