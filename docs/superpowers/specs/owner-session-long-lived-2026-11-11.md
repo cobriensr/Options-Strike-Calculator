@@ -4,7 +4,8 @@
 the front of the queue by the owner on 2026-11-12 (~23:40 CT): since the live
 snapshot alert's first amendment (`live-snapshot-alert-2026-11-11.md`), a day
 with no live save at all sends no alert, so this plan is what prevents a
-repeat of 11-09 to 11-11. In progress.
+repeat of 11-09 to 11-11. Built and shipped: Task 1 (server) as `7440d4db`,
+Task 2 (client) as `2bf98e53`.
 
 ## Goal
 
@@ -55,8 +56,9 @@ None: no table, migration or env var.
 
 - Task 1 (server): `api/_lib/auth-helpers.ts`, `api/auth/callback.ts`,
   `api/auth/whoami.ts`, `api/auth/guest-key.ts`, `api/auth/guest-logout.ts`,
-  and their tests. The last two take their `Secure` rule from the new
-  `isLocalDeployment()` helper in `auth-helpers.ts`.
+  `docs/ARCHITECTURE.md` (the Authentication Flow list and the Authentication
+  section), and their tests. The two guest handlers take their `Secure` rule
+  from the new `isLocalDeployment()` helper in `auth-helpers.ts`.
 - Task 2 (client): the startup/daily renewal call, in
   `src/lib/owner-session-renewal.ts`, started from `src/main.tsx`, and its
   test.

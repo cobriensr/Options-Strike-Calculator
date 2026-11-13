@@ -285,7 +285,7 @@ Upstash Redis (via Vercel Marketplace). REST-based client, serverless-compatible
 
 ### Authentication
 
-- Owner cookie (`sc-owner`): HttpOnly, Secure, SameSite=Strict, 400-day expiry, re-issued on use by `/api/auth/whoami`; compared in constant time (`secretEquals`) against `OWNER_SECRET`. Rotating `OWNER_SECRET` signs every browser out.
+- Owner cookie (`sc-owner`): HttpOnly, Secure, SameSite=Strict, 400-day expiry, re-issued on use by `/api/auth/whoami`, which the app calls at start and once a day (`src/lib/owner-session-renewal.ts`); compared in constant time (`secretEquals`) against `OWNER_SECRET`. Rotating `OWNER_SECRET` signs every browser out.
 - Signing every browser out: rotate `OWNER_SECRET` in Vercel (a long random value), redeploy (`vercel redeploy`, or a commit the `ignoreCommand` doesn't skip), then sign in again per browser through `/api/auth/init`.
 - Guest cookie (`sc-guest`): HttpOnly, Secure, SameSite=Strict, 30-day expiry, checked in constant time against each key in `GUEST_ACCESS_KEYS`
 - Hint cookies: non-HttpOnly `sc-hint=1` and `sc-guest-hint` let the UI decide which controls to render; the server never reads them for authorization
