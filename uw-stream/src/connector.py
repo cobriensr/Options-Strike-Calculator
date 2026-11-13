@@ -25,7 +25,7 @@ from websockets.frames import Close
 from config import settings
 from logger_setup import log, scrub_log_tokens
 from sentry_setup import capture_exception, capture_message
-from state import state
+from state import RECONNECT_HORIZON, state
 
 # Backoff schedule. We start at 1s and double until 60s; reset to 1s on
 # any clean connect.
@@ -69,6 +69,8 @@ _PING_TIMEOUT_S = 20.0
 _RECONNECT_STORM_THRESHOLD = 5
 
 # One storm alert per incident: once one is sent, the next waits this long.
+# It is ``state.RECONNECT_HORIZON``, the horizon the count below is taken over,
+# so the two cannot drift apart.
 #
 # Why an hour. The test is ``state.reconnects_last_hour() >= threshold``, a
 # trailing 60-minute count. Once a burst crosses the threshold it stays crossed
@@ -93,7 +95,7 @@ _RECONNECT_STORM_THRESHOLD = 5
 # timestamp on each connector would let every shard send its own alert for the
 # one incident. The timestamp is ``state.storm_alerted_at``: one float, no
 # growth.
-_STORM_ALERT_WINDOW_S = 3600.0
+_STORM_ALERT_WINDOW_S = RECONNECT_HORIZON.total_seconds()
 
 # A session must stay up at least this long to count as "healthy" and reset
 # the reconnect backoff. Mirrors the MIN_HEALTHY_SESSION_S used by the

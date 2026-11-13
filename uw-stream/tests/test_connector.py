@@ -7,6 +7,7 @@ import asyncio
 import errno
 import json
 import logging
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any, ClassVar
 
@@ -16,7 +17,7 @@ from websockets.frames import Close
 
 from connector import Connector
 from logger_setup import JsonFormatter
-from state import state
+from state import RECONNECT_HORIZON, state
 
 
 class FakeWebSocket:
@@ -574,11 +575,28 @@ def test_the_storm_alert_is_a_warning_with_the_count_and_threshold(storm) -> Non
     }
 
 
-def test_the_storm_window_is_the_hour_reconnects_last_hour_counts_over() -> None:
+def test_the_storm_window_is_the_horizon_reconnects_last_hour_counts_over() -> None:
     """A shorter window would alert twice on reconnects the first alert counted."""
     import connector as connector_mod
 
-    assert connector_mod._STORM_ALERT_WINDOW_S == 3600.0
+    assert RECONNECT_HORIZON.total_seconds() == connector_mod._STORM_ALERT_WINDOW_S
+
+
+def test_reconnects_last_hour_counts_over_the_shared_horizon(monkeypatch) -> None:
+    """The count and the storm window read one constant, so they cannot drift."""
+    import state as state_mod
+
+    now = datetime.now(UTC)
+    state.reconnect_times.clear()
+    state.reconnect_times.extend([now - timedelta(minutes=5), now - timedelta(minutes=30)])
+    try:
+        assert state.reconnects_last_hour() == 2
+
+        monkeypatch.setattr(state_mod, "RECONNECT_HORIZON", timedelta(minutes=10))
+
+        assert state.reconnects_last_hour() == 1
+    finally:
+        state.reconnect_times.clear()
 
 
 def test_a_new_incident_after_the_window_alerts_again(storm) -> None:

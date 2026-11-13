@@ -14,6 +14,11 @@ from collections import deque
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
+# How far back ``reconnects_last_hour`` counts. The connector spaces its storm
+# alerts by this too (``_STORM_ALERT_WINDOW_S``), so a reconnect behind one alert
+# has aged out of the count by the time the next may go out.
+RECONNECT_HORIZON = timedelta(hours=1)
+
 
 @dataclass
 class ChannelMetrics:
@@ -157,8 +162,8 @@ class State:
         self.connections[name] = connected
 
     def reconnects_last_hour(self) -> int:
-        """Count reconnect events that fell within the last hour."""
-        cutoff = datetime.now(UTC) - timedelta(hours=1)
+        """Count reconnect events that fell within ``RECONNECT_HORIZON`` (an hour)."""
+        cutoff = datetime.now(UTC) - RECONNECT_HORIZON
         return sum(1 for ts in self.reconnect_times if ts >= cutoff)
 
     def record_reconnect(self) -> None:
