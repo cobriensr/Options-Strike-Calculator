@@ -66,6 +66,17 @@ class HandlerMetrics:
     never counts. With ``drop_count`` it is the total the handler lost.
     For ``futures_trades`` it counts the prints in the failed batch,
     which overstates the bars actually lost.
+
+    ``dupes_dropped`` and ``single_copy`` are the redundant-socket counters of
+    the option-trade handlers (``option_trades`` and the Interval B/A
+    handlers); they stay 0 for every other handler, and for these too while
+    ``WS_REDUNDANT_OPTION_TRADES`` is off. With every ``option_trades:<TICKER>``
+    channel joined on two sockets, each trade arrives twice:
+    ``dupes_dropped`` counts the second copies the handler dropped before its
+    queue (not backpressure, so never in ``drop_count``), and ``single_copy``
+    counts trades that only one socket delivered. About half of those are
+    trades the primary missed and the mirror saved. It is counted when a
+    trade's two-minute window closes, so it lags by up to ~2 minutes.
     """
 
     queue_depth: int = 0
@@ -73,6 +84,8 @@ class HandlerMetrics:
     write_attempted: int = 0
     write_count: int = 0
     lost_rows: int = 0
+    dupes_dropped: int = 0
+    single_copy: int = 0
 
 
 @dataclass

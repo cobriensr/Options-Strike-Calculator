@@ -154,6 +154,13 @@ _GEX_STRIKE_EXPIRY_LOTTERY = "gex_strike_expiry_lottery"
 # docs/superpowers/specs/uw-stream-ml-feature-capture-2026-06-03.md.
 PER_CONN_MAX = 45
 
+# UW caps one API token at 10 websocket connections (see ws_lease.py). The
+# shard count, mirrors included, must stay at or under it: a connection past
+# the cap has its joins rejected silently and the daemon runs half-subscribed.
+UW_MAX_CONNECTIONS = 10
+
+_OPTION_TRADES_PREFIX = "option_trades:"
+
 
 class Settings(BaseSettings):
     """All environment variables required by uw-stream."""
@@ -176,6 +183,19 @@ class Settings(BaseSettings):
     # is a temporary perf patch they'll raise/remove — so we can retune the
     # shard size without a redeploy. ``channel_shards`` splits on this.
     ws_max_channels_per_conn: int = PER_CONN_MAX
+
+    # Join every per-ticker option_trades:<TICKER> channel on a second set of
+    # sockets (the mirror shards ``channel_shards`` appends after the normal
+    # ones, conn6 and up in production), so a drop on one socket loses no
+    # trades while the other is up. OptionTradesHandler.enqueue drops the
+    # second copy of each trade by id. UW does not replay after a drop and
+    # drops 70-120 times a weekday, so each drop used to lose its gap for good.
+    #
+    # Deploy-free kill switch (WS_REDUNDANT_OPTION_TRADES=false): if the
+    # doubled trade frames make the daemon fall behind, turning this off
+    # restores the pre-mirror shards and leaves the dedupe idle, with no code
+    # change. Spec: docs/superpowers/specs/uw-stream-redundant-trade-sockets-2026-11-13.md.
+    ws_redundant_option_trades: bool = True
 
     # Backpressure tuning.
     ws_queue_size: int = 50_000
@@ -348,6 +368,27 @@ class Settings(BaseSettings):
         return self
 
     @model_validator(mode="after")
+    def _validate_shard_count(self) -> Settings:
+        """Fail at Settings() construction when the sockets would exceed UW's cap.
+
+        ``channel_shards`` includes the mirror shards, so a too-small
+        ``WS_MAX_CHANNELS_PER_CONN`` that the old layout survived can push the
+        total past ``UW_MAX_CONNECTIONS`` once mirrors are on. Checked with the
+        switch off too: an over-cap layout is as broken without mirrors.
+        """
+        count = len(self.channel_shards)
+        if count > UW_MAX_CONNECTIONS:
+            mirrors = "with" if self.ws_redundant_option_trades else "without"
+            raise ValueError(
+                f"WS_CHANNELS would open {count} websocket connections {mirrors} the "
+                f"redundant option_trades sockets, over UW's cap of {UW_MAX_CONNECTIONS} "
+                "per token. Raise WS_MAX_CHANNELS_PER_CONN (UW allows 50 channels per "
+                "connection), drop channels from WS_CHANNELS, or set "
+                "WS_REDUNDANT_OPTION_TRADES=false to drop the mirror sockets."
+            )
+        return self
+
+    @model_validator(mode="after")
     def _validate_ws_lease(self) -> Settings:
         """Fail fast on a misconfigured WS connection lease.
 
@@ -407,7 +448,7 @@ class Settings(BaseSettings):
         # so the channel order in /metrics + logs is stable across
         # daemon restarts.
         shorthand_prefix: dict[str, str] = {
-            _OPTION_TRADES_LOTTERY: "option_trades:",
+            _OPTION_TRADES_LOTTERY: _OPTION_TRADES_PREFIX,
             _NET_FLOW_LOTTERY: "net_flow:",
             _GEX_STRIKE_EXPIRY_LOTTERY: "gex_strike_expiry:",
         }
@@ -446,6 +487,15 @@ class Settings(BaseSettings):
           the first shard with room; if they don't all fit anywhere they are
           chunked onto their own shard(s) — never an over-cap shard.
 
+        With ``ws_redundant_option_trades`` on (the default), mirror shards are
+        APPENDED after all of the above: the per-ticker ``option_trades:``
+        channels again, chunked at the same cap, with no globals. Appending
+        keeps every existing shard's index and channel set unchanged, so
+        ``conn0``-``conn5`` still mean what the README says and the mirrors are
+        ``conn6`` and up. Each mirrored channel is joined on two sockets, so the
+        router sees every trade twice; ``OptionTradesHandler.enqueue`` drops the
+        second copy.
+
         ``channels`` is validated non-empty at construction, so this always
         returns at least one shard.
         """
@@ -474,6 +524,11 @@ class Settings(BaseSettings):
             else:
                 for i in range(0, len(globals_), cap):
                     shards.append(globals_[i : i + cap])
+
+        if self.ws_redundant_option_trades:
+            mirrored = [c for c in per_ticker if c.startswith(_OPTION_TRADES_PREFIX)]
+            for i in range(0, len(mirrored), cap):
+                shards.append(mirrored[i : i + cap])
 
         return shards
 

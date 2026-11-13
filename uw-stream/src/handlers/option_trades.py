@@ -11,6 +11,12 @@ map for each subscribed ticker so they all flow through one queue and
 one batch flush. This keeps DB write contention down and lets the
 batch-by-size threshold accumulate cross-ticker flow.
 
+With WS_REDUNDANT_OPTION_TRADES on (the default) each of those channels is
+also joined on a second, mirror socket (``Settings.channel_shards``), so every
+trade arrives twice. ``enqueue`` drops the second copy by (trade id, canceled
+flag) before the queue and counts it; see ``OptionTradesHandler.enqueue`` and
+docs/superpowers/specs/uw-stream-redundant-trade-sockets-2026-11-13.md.
+
 Field-name compatibility: UW's option_trades payload is mostly stable
 but field naming has shifted historically between ``option_chain``,
 ``option_chain_id``, and ``option_symbol`` for the OCC string; between
@@ -24,12 +30,15 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
+from time import monotonic
 from typing import Any
 from uuid import UUID
 
 import db
+from config import settings
 from handlers.base import Handler
-from logger_setup import rate_limited_log
+from logger_setup import log, rate_limited_log
+from state import state
 from utils import occ_parser
 
 _TABLE = "ws_option_trades"
@@ -70,6 +79,20 @@ _TAG_TO_SIDE: dict[str, str] = {
     "mid_side": "mid",
 }
 
+# Redundant-socket dedupe (WS_REDUNDANT_OPTION_TRADES). Every per-ticker
+# channel is joined on two sockets, so each trade arrives as two identical
+# frames. ``enqueue`` keeps the (trade id, canceled flag) keys it has seen in
+# two generations of dicts and rotates them lazily, on the first frame after
+# the period is up: no timer task. A key is remembered for at least this many
+# seconds and at most about twice that. At the open (~1,300 trades/s) the two
+# generations hold ~160k keys.
+_DEDUPE_ROTATE_S = 60.0
+# How often the counters go to the log (checked at each rotation, so the real
+# cadence is 5-6 minutes under traffic and nothing is logged in a quiet market).
+_DEDUPE_LOG_INTERVAL_S = 300.0
+
+_TradeKey = tuple[str, bool]
+
 
 class OptionTradesHandler(Handler):
     """option_trades:<TICKER> channels → ws_option_trades table.
@@ -77,6 +100,10 @@ class OptionTradesHandler(Handler):
     A single shared instance handles every per-ticker subscription so
     backpressure and batching apply across the universe rather than
     fragmenting into one queue per ticker.
+
+    The Interval B/A subclasses inherit ``enqueue`` and so the dedupe below:
+    they aggregate premium in memory, and a duplicate frame that got through
+    would be counted twice.
     """
 
     def __init__(self, name: str = "option_trades") -> None:
@@ -87,6 +114,97 @@ class OptionTradesHandler(Handler):
         # SPXW-specific Interval B/A handler) override the name so
         # their dedicated queue shows up separately in /metrics.
         super().__init__(name=name)
+
+        # Read once, like the base class's tuning: with the switch off no
+        # second copy ever arrives, so nothing is keyed, counted or logged.
+        self._dedupe = settings.ws_redundant_option_trades
+        # Keys seen in the current / previous generation, each mapped to the
+        # number of copies seen so far (1 = one socket delivered it so far).
+        self._seen: dict[_TradeKey, int] = {}
+        self._seen_prev: dict[_TradeKey, int] = {}
+        now = monotonic()
+        self._rotate_at = now + _DEDUPE_ROTATE_S
+        self._log_at = now + _DEDUPE_LOG_INTERVAL_S
+        # What the last log line already reported, for its interval figures.
+        self._logged_dupes = 0
+        self._logged_singles = 0
+
+    async def enqueue(self, payload: dict) -> None:
+        """Queue a payload unless it is the second copy of one already queued.
+
+        The key is (``payload["id"]``, canceled flag), seen within the last
+        60-120 s. Two copies of a trade are identical frames; keying on the
+        canceled flag keeps a cancel sent under the same id visible, as it is
+        without mirror sockets (the DB ignores it on ``ON CONFLICT
+        (ws_trade_id)``). A payload without a usable id passes through
+        unchanged, so ``_transform`` rejects and logs it as before.
+
+        Known edge, not fixed: when the queue is full and the backpressure
+        policy evicts the first copy after its key was recorded, the second
+        copy is dropped as a duplicate and the trade is lost. That needs the
+        overload the drop counters already report to Sentry.
+        """
+        if self._dedupe and self._is_duplicate(payload):
+            return
+        await super().enqueue(payload)
+
+    def _is_duplicate(self, payload: dict) -> bool:
+        """Record the payload's key; True if this is the second copy of it."""
+        trade_id = payload.get("id")
+        if not trade_id or not isinstance(trade_id, str):
+            return False
+        now = monotonic()
+        if now >= self._rotate_at:
+            self._rotate(now)
+        key = (trade_id, _canceled_flag(payload.get("canceled")))
+
+        copies = self._seen.get(key)
+        if copies is not None:
+            self._seen[key] = copies + 1
+        else:
+            copies = self._seen_prev.get(key)
+            if copies is None:
+                self._seen[key] = 1
+                return False
+            # The mirror can lag the first copy across a rotation. Count the
+            # copy where the key lives so it is not retired as a single.
+            self._seen_prev[key] = copies + 1
+        state.handler(self.name).dupes_dropped += 1
+        return True
+
+    def _rotate(self, now: float) -> None:
+        """Retire the older generation; the current one becomes the older one.
+
+        Keys seen once in a retired generation add to ``single_copy``: one
+        socket missed that trade. A rotation due for a whole period or more
+        (no frames for a while) retires the current generation too, so a key
+        older than the guaranteed 60 s is never matched against.
+        """
+        stale = now - self._rotate_at >= _DEDUPE_ROTATE_S
+        singles = _count_singles(self._seen_prev)
+        if stale:
+            singles += _count_singles(self._seen)
+            self._seen_prev = {}
+        else:
+            self._seen_prev = self._seen
+        self._seen = {}
+        self._rotate_at = now + _DEDUPE_ROTATE_S
+        metrics = state.handler(self.name)
+        metrics.single_copy += singles
+        if now >= self._log_at:
+            log.info(
+                "option_trades redundant-socket dedupe",
+                extra={
+                    "handler": self.name,
+                    "dupes_dropped": metrics.dupes_dropped,
+                    "dupes_dropped_interval": metrics.dupes_dropped - self._logged_dupes,
+                    "single_copy": metrics.single_copy,
+                    "single_copy_interval": metrics.single_copy - self._logged_singles,
+                },
+            )
+            self._logged_dupes = metrics.dupes_dropped
+            self._logged_singles = metrics.single_copy
+            self._log_at = now + _DEDUPE_LOG_INTERVAL_S
 
     def _transform(self, payload: dict) -> tuple | None:
         symbol = _first(payload, "option_chain", "option_chain_id", "option_symbol")
@@ -198,6 +316,22 @@ def _first(payload: dict, *keys: str) -> Any:
         if v is not None:
             return v
     return None
+
+
+def _canceled_flag(raw: Any) -> bool:
+    """The ``canceled`` value as ``_transform`` stores it (absent / unreadable → False).
+
+    The usual wire values, absent and JSON false, skip the ``_to_bool`` call:
+    this runs on every frame.
+    """
+    if raw is None or raw is False:
+        return False
+    return _to_bool(raw) or False
+
+
+def _count_singles(generation: dict[_TradeKey, int]) -> int:
+    """Keys of a retired generation that only one socket delivered."""
+    return sum(1 for copies in generation.values() if copies == 1)
 
 
 def _derive_side(tags: Any) -> str:
