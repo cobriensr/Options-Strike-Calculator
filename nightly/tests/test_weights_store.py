@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 import lottery_weights
-import psycopg2
+import psycopg2.errors
 import pytest
 from lottery_weights import WeightsInvalid
 from psycopg2.extras import Json
@@ -316,22 +316,53 @@ def test_json_columns_never_carry_a_non_finite_number() -> None:
 # ── record_session_eval ─────────────────────────────────────────────────────
 
 
+# A session's record is written once and never recomputed (a later enrich pass can fill an
+# inversion, so a recomputed entry would differ). The statement refuses a session whose key is
+# already under `sessions`; the COALESCE is what makes the first write possible, because
+# `NULL ? 'x'` is NULL and NOT NULL is NULL, so a WHERE on a report with no `sessions` key
+# would match no row.
+SESSION_NOT_RECORDED = "AND NOT (COALESCE(gate_report->'sessions', '{}'::jsonb) ? %s)"
+
+
 def test_record_session_eval_is_keyed_by_session() -> None:
-    conn = FakeConn([(VERSION,), (VERSION,), (VERSION,)])
+    # The database answers: a row for each new session, no row for the repeated one.
+    conn = FakeConn([(VERSION,), (VERSION,), None])
     entry = {"rho_candidate": 0.41, "eval_rows": 180}
+    recomputed = {"rho_candidate": 0.43, "eval_rows": 185}
 
     first = record_session_eval(conn, VERSION, date(2026, 11, 10), entry)
     other = record_session_eval(conn, VERSION, date(2026, 11, 11), {"rho_candidate": 0.2})
-    again = record_session_eval(conn, VERSION, date(2026, 11, 10), entry)
+    again = record_session_eval(conn, VERSION, date(2026, 11, 10), recomputed)
 
-    assert (first, other, again) == (True, True, True)
-    keys = [params[0] for _, params in conn.executed]
+    # The repeated session is refused, so the first entry stays.
+    assert (first, other, again) == (True, True, False)
+    for sql, params in conn.executed:
+        assert "ARRAY['sessions', %s]" in sql
+        assert SESSION_NOT_RECORDED in sql
+        # The key written and the key the guard looks for are the same session.
+        assert params[0] == params[3]
+        assert params[2] == VERSION
     # One key per session, the ISO date; the same session again addresses the same key.
-    assert keys == ["2026-11-10", "2026-11-11", "2026-11-10"]
-    sql, params = conn.executed[0]
-    assert "ARRAY['sessions', %s]" in sql
-    assert isinstance(params[1], Json) and params[1].adapted == entry
-    assert params[2] == VERSION
+    assert [params[0] for _, params in conn.executed] == ["2026-11-10", "2026-11-11", "2026-11-10"]
+    assert [params[1].adapted for _, params in conn.executed] == [
+        entry,
+        {"rho_candidate": 0.2},
+        recomputed,
+    ]
+    assert all(isinstance(params[1], Json) for _, params in conn.executed)
+
+
+def test_record_session_eval_first_write_tolerates_a_report_with_no_sessions_key() -> None:
+    # A fresh candidate's report holds only `creation`. Its first session must be written:
+    # the guard reads `sessions` through COALESCE, never the bare `gate_report->'sessions'`.
+    conn = FakeConn([(VERSION,)])
+
+    first = record_session_eval(conn, VERSION, date(2026, 11, 3), {"rho_candidate": 0.4})
+
+    assert first is True
+    sql = conn.executed[0][0]
+    assert SESSION_NOT_RECORDED in sql
+    assert "NOT (gate_report->" not in sql  # the bare form is NULL on a missing key
 
 
 def test_record_session_eval_creates_the_sessions_object_first() -> None:
@@ -359,7 +390,8 @@ def test_record_session_eval_is_conditional_on_shadow() -> None:
     assert recorded is False  # not a shadow (or no such version): nothing was written
     sql = conn.executed[0][0]
     assert sql.startswith("UPDATE lottery_score_versions SET ")
-    assert sql.endswith("WHERE version = %s AND status = 'shadow' RETURNING version")
+    assert "WHERE version = %s AND status = 'shadow' " in sql
+    assert sql.endswith("RETURNING version")
 
 
 def test_record_session_eval_refuses_a_datetime_session() -> None:
@@ -460,38 +492,52 @@ def test_module_never_writes_pointers() -> None:
 # ── failures surface ────────────────────────────────────────────────────────
 
 
-def _calls() -> list[tuple[str, Any]]:
+LOST = psycopg2.OperationalError("connection lost")
+# What Postgres raises for a second shadow: the partial unique index refuses it, which is not
+# the `ON CONFLICT (version)` the insert answers with False.
+SECOND_SHADOW = psycopg2.errors.UniqueViolation(
+    'duplicate key value violates unique constraint "lottery_score_versions_one_shadow"'
+)
+
+
+def _insert_shadow(conn: Any) -> bool:
+    return insert_candidate(
+        conn, VERSION, _weights(), status="shadow", trained_through=TRAINED_THROUGH, report={}
+    )
+
+
+def _calls() -> list[tuple[str, Any, Exception]]:
     return [
-        ("load_active", lambda c: load_active(c)),
-        ("load_shadow", lambda c: load_shadow(c)),
-        ("version_exists", lambda c: version_exists(c, VERSION)),
-        (
-            "insert_candidate",
-            lambda c: insert_candidate(
-                c, VERSION, _weights(), status="shadow", trained_through=TRAINED_THROUGH, report={}
-            ),
-        ),
+        ("load_active", lambda c: load_active(c), LOST),
+        ("load_shadow", lambda c: load_shadow(c), LOST),
+        ("version_exists", lambda c: version_exists(c, VERSION), LOST),
+        ("insert_candidate", _insert_shadow, LOST),
+        ("insert_candidate_second_shadow", _insert_shadow, SECOND_SHADOW),
         (
             "record_session_eval",
             lambda c: record_session_eval(c, VERSION, date(2026, 11, 10), {}),
+            LOST,
         ),
-        ("decide", lambda c: decide(c, VERSION, "rejected", {})),
+        ("decide", lambda c: decide(c, VERSION, "rejected", {}), LOST),
     ]
 
 
-@pytest.mark.parametrize(("name", "call"), _calls(), ids=[name for name, _ in _calls()])
-def test_a_database_error_propagates_whole(name: str, call: Any) -> None:
+@pytest.mark.parametrize(("name", "call", "error"), _calls(), ids=[name for name, _, _ in _calls()])
+def test_a_database_error_propagates_whole(name: str, call: Any, error: Exception) -> None:
     # A rejected statement is not "no row": a write that failed must not read as False, and
-    # a read that failed must not read as "no shadow".
+    # a read that failed must not read as "no shadow". A second shadow in particular raises
+    # the unique violation: it never reads as the False of an insert that found its version.
     class Failing(FakeCursor):
         def execute(self, sql: str, params: Any = None) -> None:
-            raise psycopg2.OperationalError("connection lost")
+            raise error
 
     conn = FakeConn()
     conn.cursor_ = Failing([])
 
-    with pytest.raises(psycopg2.OperationalError, match="connection lost"):
+    with pytest.raises(type(error)) as raised:
         call(conn)
+
+    assert raised.value is error  # the driver's own error, not a wrapper or a False
 
 
 # ── the import path ─────────────────────────────────────────────────────────

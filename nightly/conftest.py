@@ -4,8 +4,9 @@ Lives at the project root (not inside tests/) so it runs before any test
 module is collected. Makes `src/` importable as top-level modules, matching
 the production `PYTHONPATH=/app/src`, and puts the repo's `scripts/` after it
 for the shared modules the image copies in (`_pipeline_retry`, `_tape_reader`), then
-`ml/src/` for the ones the image copies from there (`lottery_weights`): the image's order
-is src, scripts, ml/src.
+`ml/src/` for the ones nightly imports from there (`lottery_weights`). The image does not
+copy those yet: phase 4's image-layout task adds the copy and a `PYTHONPATH` of
+src, scripts, ml/src, the order used here.
 Gives every required env var a default so `load_settings()` works unless a test
 removes one.
 
@@ -35,8 +36,9 @@ if str(_SRC) not in sys.path:
 _SCRIPTS = _ROOT.parent / "scripts"
 if str(_SCRIPTS) not in sys.path:
     sys.path.append(str(_SCRIPTS))
-# Last, as in the image: a name in scripts/ wins over one in ml/src/. Without this line a
-# test of a module that imports from ml/src passes only when scripts/ added the path first.
+# Last, the order the image will have (phase 4, Task 20): a name in scripts/ wins over one in
+# ml/src/. Without this line a test of a module that imports from ml/src passes only when
+# scripts/ added the path first.
 _ML_SRC = _ROOT.parent / "ml" / "src"
 if str(_ML_SRC) not in sys.path:
     sys.path.append(str(_ML_SRC))

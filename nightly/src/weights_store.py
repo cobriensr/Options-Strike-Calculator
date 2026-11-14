@@ -17,6 +17,8 @@ Every write is conditional or idempotent, so a re-run the same night changes not
   `UniqueViolation` propagates: the caller built a second shadow.
 - `record_session_eval` and `decide` update only a row whose status is still `shadow`; a
   False return means the row is not (or no longer) a shadow, or does not exist.
+  `record_session_eval` also writes each session once (D6: a session's record is never
+  recomputed), so False is also what a session already recorded returns.
 
 Every weights object that is loaded goes through `validate_weights`, so a caller never
 scores or trains against a malformed version. A shadow is validated when it is inserted,
@@ -76,12 +78,19 @@ _INSERT_SQL = (
 # (a fresh candidate holds only `creation`) a single jsonb_set to ARRAY['sessions', <date>]
 # returns the report unchanged, and RETURNING still reports the row. The inner call makes
 # `sessions` first, keeping what it already holds.
+# A session's record is written once and never recomputed: a later enrich pass can fill a
+# fire's inversion, so a recomputed entry would differ from the one the decision may rest
+# on. The last `%s` is the same ISO date as the key; the COALESCE is required, because
+# `NULL ? 'x'` is NULL, NOT NULL is NULL, and a report with no `sessions` key would match no
+# row, so its first write would never land.
 _RECORD_EVAL_SQL = (
     "UPDATE lottery_score_versions "
     "SET gate_report = jsonb_set("
     "jsonb_set(gate_report, ARRAY['sessions'], COALESCE(gate_report->'sessions', '{}'::jsonb)), "
     "ARRAY['sessions', %s], %s::jsonb) "
-    "WHERE version = %s AND status = 'shadow' RETURNING version"
+    "WHERE version = %s AND status = 'shadow' "
+    "AND NOT (COALESCE(gate_report->'sessions', '{}'::jsonb) ? %s) "
+    "RETURNING version"
 )
 
 _DECIDE_SQL = (
@@ -188,15 +197,17 @@ def insert_candidate(
 def record_session_eval(
     conn: connection, version: str, session: date, entry: Mapping[str, Any]
 ) -> bool:
-    """Set `gate_report.sessions.<session>` of a shadow to `entry`; True if a row was updated.
+    """Set `gate_report.sessions.<session>` of a shadow to `entry`; True if this call wrote it.
 
-    Keyed by the session's ISO date, so recording the same session again replaces its
-    entry and never adds a second one. False when the version is not a shadow.
+    Keyed by the session's ISO date and written once: a session already recorded keeps its
+    first entry. False when the version is not a shadow, does not exist, or already holds
+    this session; the caller cannot tell those apart from the return alone.
     """
     if isinstance(session, datetime) or not isinstance(session, date):
         raise TypeError("record_session_eval takes a datetime.date")
+    day = session.isoformat()
     with conn.cursor() as cursor:
-        cursor.execute(_RECORD_EVAL_SQL, (session.isoformat(), _json(entry), version))
+        cursor.execute(_RECORD_EVAL_SQL, (day, _json(entry), version, day))
         return cursor.fetchone() is not None
 
 
