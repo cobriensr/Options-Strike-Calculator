@@ -1,501 +1,438 @@
 #!/usr/bin/env python
-"""Backfill lottery_finder_fires.score under V2 weights.
+"""Rescore every stored lottery fire with one weights version, in one transaction.
 
-After `ml/.venv/Scripts/python ml/src/lottery_scoring.py` regenerates
-`ml/output/lottery_score_weights.json`, historical rows in
-lottery_finder_fires still carry scores assigned at insert time under
-the old V1 formula. This script recomputes score for every fire using
-the V2 JSON weights and bulk-UPDATEs in batches of 1000.
+This is the one rescore path. The nightly refit's promotion calls
+``rescore_all``, and this file's CLI calls it by hand. Both score with
+``lottery_weights.score_frame``, the Python twin of the live scorer, so the
+quintiles are right-closed: a value on a boundary goes to the lower bucket.
+(This script used to cut them left-closed with ``<``.)
 
-NOTE: `combined_score` is a STORED GENERATED column:
-    GREATEST(0, COALESCE(score,0) + COALESCE(round_trip_score_deduct,0)
-               + COALESCE(fire_count_score_adjustment,0) + gamma_case)
-Updating `score` automatically recomputes `combined_score` — do NOT
-attempt to update combined_score directly.
+``rescore_all`` runs one transaction:
 
-V2 gates (score → NULL):
-  - !is_aligned (call: cum_ncp > cum_npp; put: cum_npp > cum_ncp)
-  - dte not in {0, 1, 2, 3}
+1. For a promotion (``expect_active`` set), it locks the ``active`` pointer row
+   with ``FOR UPDATE`` and checks that it still names ``expect_active``.
+2. It reads the fires in keyset pages of ``PAGE_ROWS`` by id and scores each
+   page. A fire changes when its new score differs from ``score`` or its
+   ``score_version`` is not ``to_version``. Fires scored before the store
+   existed have a NULL ``score_version``, so the first promotion rewrites every
+   fire.
+3. For each page with a change, it writes one ``lottery_fire_value_snapshots``
+   row (the ids, old scores and old tags), then UPDATEs of ``WRITE_ROWS`` rows.
+   An UPDATE writes a fire only while its score still equals the one this run
+   read, and returns the ids it wrote. Fewer ids than the batch means another
+   writer changed a score in between: ``ConcurrentScoreWriter``.
+4. For a promotion, it marks the version ``promoted`` and moves the ``active``
+   pointer to it.
 
-Idempotent: re-running with the same weights file writes identical values.
+Any exception rolls the whole transaction back, so the store holds either every
+new score, tag, status and pointer, or none of them. That covers an UPDATE
+error, a concurrent writer, a pointer moved by hand and the step deadline
+(``RescoreDeadline``). If the process dies, Postgres rolls back its open
+transaction. Nothing here touches the ``takeit`` pointer: only a Take-It
+retrain moves it.
 
-Usage:
-    ml/.venv/Scripts/python scripts/backfill_lottery_scores.py [--dry-run]
+To undo a rescore, run one ``UPDATE … FROM unnest(fire_ids, old_values,
+old_tags)`` over its snapshot rows (plan D5). Writing ``score`` recomputes the
+generated ``combined_score``. Never write that column.
 
-Flags:
-    --dry-run   Print distribution comparison without writing to DB.
+CLI (a dry run unless --write is given; it never moves a pointer):
+
+    ml/.venv/Scripts/python scripts/backfill_lottery_scores.py
+        [--version VERSION] [--reason REASON] [--write]
+
+    --version  a stored version to score with (default: the one `active` names)
+    --reason   the snapshot rows' reason (default: manual)
+    --write    write the scores; without it, read every fire and write nothing
+
+It connects to DATABASE_URL_UNPOOLED, or DATABASE_URL, from the environment or
+.env.local. That is the production database.
+
+Spec: docs/superpowers/plans/2026-11-05-nightly-pipeline-phase4.md (D5, Task 15,
+Review Focus 1). The nightly image (Python 3.12) carries this file. At module
+level it imports only lottery_weights, pandas and psycopg2.
 """
 
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import re
 import sys
 import time
-from datetime import date as date_type, datetime
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Any, NamedTuple
 
+import pandas as pd
 from psycopg2.extras import execute_values
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'ml' / 'src'))
-
-from _pipeline_retry import connect_with_retry  # noqa: E402
-from lottery_refit_guard import announce_skip, refit_blocked  # noqa: E402
-
 ROOT = Path(__file__).resolve().parent.parent
-JSON_PATH = ROOT / 'ml' / 'output' / 'lottery_score_weights.json'
-ENV_FILE = ROOT / '.env.local'
+sys.path.insert(0, str(ROOT / 'ml' / 'src'))
 
-VALID_DTES = {'0', '1', '2', '3'}
+from lottery_weights import (  # noqa: E402
+    SCORE_COLUMNS,
+    WeightsInvalid,
+    load_pointer,
+    score_frame,
+    validate_weights,
+)
+
+# Fires per keyset page. A page's changed fires go into one snapshot row, and
+# the store allows at most 50,000 ids in a snapshot row, so keep this at or
+# below 50,000.
+PAGE_ROWS = 50_000
+# Fires per UPDATE statement (R5).
+WRITE_ROWS = 500
+
+# The snapshot table's reason CHECK. fullmatch, not ^...$: Python's $ also
+# matches before a trailing newline, and Postgres's does not.
+_REASON = re.compile(r'[a-z][a-z0-9-]{1,40}')
+
+_ACTIVE_SQL = "SELECT version FROM lottery_score_pointers WHERE name = 'active'"
+_ACTIVE_LOCK_SQL = _ACTIVE_SQL + ' FOR UPDATE'
+_PAGE_SQL = (
+    f"SELECT id, score, score_version, {', '.join(SCORE_COLUMNS)} "
+    'FROM lottery_finder_fires WHERE id > %s ORDER BY id LIMIT %s'
+)
+_SNAPSHOT_SQL = (
+    'INSERT INTO lottery_fire_value_snapshots '
+    '(reason, column_name, to_version, fire_ids, old_values, old_tags) '
+    "VALUES (%s, 'score', %s, %s::bigint[], %s::float8[], %s::text[])"
+)
+_UPDATE_SQL = (
+    'UPDATE lottery_finder_fires AS f '
+    'SET score = v.score, score_version = v.ver '
+    'FROM (VALUES %s) AS v(id, score, ver, old) '
+    'WHERE f.id = v.id AND f.score IS NOT DISTINCT FROM v.old '
+    'RETURNING f.id'
+)
+_UPDATE_ROW = '(%s::bigint, %s::int, %s::text, %s::int)'
+_PROMOTE_SQL = (
+    "UPDATE lottery_score_versions SET status = 'promoted', decided_at = now() "
+    "WHERE version = %s AND status IN ('shadow', 'passed') RETURNING version"
+)
+_MOVE_ACTIVE_SQL = (
+    'UPDATE lottery_score_pointers SET version = %s, updated_at = now() '
+    "WHERE name = 'active' AND version = %s RETURNING name"
+)
+_VERSION_SQL = 'SELECT weights FROM lottery_score_versions WHERE version = %s'
 
 
-def load_env() -> None:
-    if not ENV_FILE.exists():
-        sys.exit(f'Missing env file: {ENV_FILE}')
-    with ENV_FILE.open() as f:
-        for line in f:
-            m = re.match(r'^([A-Z_][A-Z0-9_]*)=(.*)$', line.strip())
-            if m:
-                os.environ.setdefault(
-                    m.group(1), m.group(2).strip('"').strip("'")
+class PointerMoved(RuntimeError):
+    """The store no longer matches the promotion: the ``active`` pointer names
+    another version, or the version is no longer a shadow or passed candidate."""
+
+
+class ConcurrentScoreWriter(RuntimeError):
+    """Another writer changed a fire's score after this rescore read it."""
+
+
+class RescoreDeadline(RuntimeError):
+    """The deadline passed mid-rescore. By the time a caller sees this, the
+    rollback is complete: a failed rollback raises its own error instead."""
+
+
+@dataclass(frozen=True)
+class RescoreResult:
+    """What a rescore wrote, or in a dry run would write.
+
+    ``changed`` counts the fires written, from the UPDATEs' RETURNING (in a dry
+    run, the fires it would write). ``snapshot_rows`` is one per page with a
+    change. ``pointer_moved`` is True once the ``active`` pointer names the
+    version, never in a dry run. ``score_changed`` counts the changed fires
+    whose score value changed; the rest only took the new ``score_version``.
+    """
+
+    scanned: int
+    changed: int
+    snapshot_rows: int
+    pointer_moved: bool
+    score_changed: int
+
+
+class _Change(NamedTuple):
+    id: int
+    score: int | None
+    old: int | None
+    old_tag: str | None
+
+
+def rescore_all(
+    conn: Any,
+    *,
+    to_version: str,
+    weights: Mapping[str, Any],
+    reason: str,
+    expect_active: str | None,
+    dry_run: bool,
+    deadline: float | None = None,
+) -> RescoreResult:
+    """Rescore every fire with ``weights``, tagged ``to_version``, in one
+    transaction (the module docstring has the steps).
+
+    ``conn`` is a psycopg2 connection outside a transaction (autocommit, or
+    idle). Its autocommit setting is restored on return. ``reason`` goes on the
+    snapshot rows. With ``expect_active`` set, this is a promotion: the
+    ``active`` pointer must name ``expect_active`` and ``to_version`` must be a
+    shadow or passed candidate, else ``PointerMoved``. ``deadline`` is a
+    ``time.monotonic()`` value, checked before each page and each UPDATE.
+
+    ``dry_run`` runs the same reads in a READ ONLY transaction, takes no lock,
+    and returns the counts the write would give, with ``pointer_moved`` False.
+
+    The reason and the weights are checked before any statement: ``ValueError``
+    and ``WeightsInvalid``. Any later exception rolls everything back and
+    propagates.
+    """
+    if not _REASON.fullmatch(reason):
+        raise ValueError(f'reason must match {_REASON.pattern}')
+    validate_weights(weights)
+    previous = conn.autocommit
+    # Outside the try: psycopg2 refuses this inside an open transaction, and a
+    # rollback there would drop the caller's work.
+    conn.autocommit = False
+    try:
+        with conn.cursor() as cur:
+            if dry_run:
+                # Postgres then refuses any write.
+                cur.execute('SET TRANSACTION READ ONLY')
+            if expect_active is not None:
+                _check_active(cur, expect_active, lock=not dry_run)
+            result = _rescore_pages(
+                cur,
+                to_version=to_version,
+                weights=weights,
+                reason=reason,
+                dry_run=dry_run,
+                deadline=deadline,
+            )
+            if expect_active is not None and not dry_run:
+                _promote(cur, to_version, expect_active)
+                result = replace(result, pointer_moved=True)
+        if dry_run:
+            conn.rollback()
+        else:
+            conn.commit()
+    except BaseException:
+        # A connection the server dropped is closed, and its rollback would
+        # raise over the real error. Postgres aborts that transaction itself.
+        if not conn.closed:
+            conn.rollback()
+        raise
+    finally:
+        if not conn.closed:
+            conn.autocommit = previous
+    return result
+
+
+def _check_deadline(deadline: float | None, before: str) -> None:
+    if deadline is not None and time.monotonic() > deadline:
+        raise RescoreDeadline(f'the deadline passed before {before}')
+
+
+def _check_active(cur: Any, expect_active: str, *, lock: bool) -> None:
+    cur.execute(_ACTIVE_LOCK_SQL if lock else _ACTIVE_SQL)
+    row = cur.fetchone()
+    found = None if row is None else row[0]
+    if found != expect_active:
+        raise PointerMoved(f'the active pointer names {found}, not {expect_active}')
+
+
+def _rescore_pages(
+    cur: Any,
+    *,
+    to_version: str,
+    weights: Mapping[str, Any],
+    reason: str,
+    dry_run: bool,
+    deadline: float | None,
+) -> RescoreResult:
+    scanned = changed = score_changed = snapshot_rows = 0
+    after = 0  # ids are BIGSERIAL, from 1
+    while True:
+        _check_deadline(deadline, 'a page')
+        cur.execute(_PAGE_SQL, (after, PAGE_ROWS))
+        rows = cur.fetchall()
+        scanned += len(rows)
+        changes = _changes(rows, to_version, weights)
+        if changes:
+            snapshot_rows += 1
+            score_changed += sum(1 for c in changes if c.score != c.old)
+            if dry_run:
+                changed += len(changes)
+            else:
+                changed += _write_page(
+                    cur,
+                    changes,
+                    to_version=to_version,
+                    reason=reason,
+                    deadline=deadline,
                 )
+        if len(rows) < PAGE_ROWS:
+            break
+        after = rows[-1][0]
+    return RescoreResult(scanned, changed, snapshot_rows, False, score_changed)
 
 
-def assign_quintile(value: float, boundaries: list[float]) -> int:
-    """Map value to quintile 0-4 using 4-element boundary list.
-
-    Mirrors the TypeScript assignQuintile() and Python pd.cut() logic:
-      value < boundaries[0]  → 0
-      value < boundaries[1]  → 1
-      value < boundaries[2]  → 2
-      value < boundaries[3]  → 3
-      value >= boundaries[3] → 4
-    """
-    for i, bound in enumerate(boundaries):
-        if value < bound:
-            return i
-    return 4
-
-
-def resolve_tod_weights(features: dict, fire_date: date_type | None) -> dict:
-    """Return the appropriate TOD weights dict for a given date.
-
-    Uses the per-DOW override from tod_weights_dow_overrides when the fire's
-    day-of-week has an entry; falls back to the global tod_weights otherwise.
-    Monday is currently the only overridden DOW.
-    """
-    overrides = features.get('tod_weights_dow_overrides', {})
-    if fire_date is not None and overrides:
-        day_name = fire_date.strftime('%A')  # e.g. "Monday"
-        if day_name in overrides:
-            return overrides[day_name]
-    return features['tod_weights']
+def _changes(
+    rows: Sequence[tuple], to_version: str, weights: Mapping[str, Any]
+) -> list[_Change]:
+    """The fires of one page whose score or tag the rescore changes. A row is
+    ``(id, score, score_version, *SCORE_COLUMNS)``."""
+    if not rows:
+        return []
+    frame = pd.DataFrame([row[3:] for row in rows], columns=list(SCORE_COLUMNS))
+    new_scores = score_frame(weights, frame)
+    changes = []
+    for (fire_id, old, old_tag, *_), new in zip(rows, new_scores, strict=True):
+        # Python ints and None: psycopg2 cannot send a numpy integer.
+        score = None if pd.isna(new) else int(new)
+        if score != old or old_tag != to_version:
+            changes.append(_Change(fire_id, score, old, old_tag))
+    return changes
 
 
-def _q_label(q: int | None) -> str:
-    """Convert a quintile int (or None) to its string key as stored in match dicts."""
-    return 'null' if q is None else str(q)
-
-
-def compute_score_v2(
-    ticker: str,
-    option_type: str,
-    tod: str,
-    dte: int,
-    trigger_vol_to_oi_window: float | None,
-    gamma_at_trigger: float | None,
-    trigger_ask_pct: float | None,
-    cum_ncp_at_fire: float | None,
-    cum_npp_at_fire: float | None,
-    weights: dict,
-    fire_date: date_type | None = None,
-    spx_spot_charm_oi: float | None = None,
-    spx_spot_vanna_oi: float | None = None,
-    mkt_tide_ncp: float | None = None,
-    mkt_tide_otm_diff: float | None = None,
-    mkt_tide_diff: float | None = None,
-    spx_spot_gamma_oi: float | None = None,
-    mkt_tide_npp: float | None = None,
-) -> int | None:
-    """Compute V2 score for a single fire. Returns None for gated rows."""
-    # --- Alignment gate ---
-    if cum_ncp_at_fire is None or cum_npp_at_fire is None:
-        is_aligned = False
-    elif option_type == 'C':
-        is_aligned = cum_ncp_at_fire > cum_npp_at_fire
-    elif option_type == 'P':
-        is_aligned = cum_npp_at_fire > cum_ncp_at_fire
-    else:
-        is_aligned = False
-
-    if not is_aligned:
-        return None
-
-    # --- DTE universe gate ---
-    dte_key = str(dte)
-    if dte_key not in VALID_DTES:
-        return None
-
-    features = weights['features']
-
-    score = 0
-
-    # Ticker
-    score += features['ticker_weights'].get(ticker, 0)
-
-    # TOD — use per-DOW override when available (Monday is the only current override)
-    tod_weights = resolve_tod_weights(features, fire_date)
-    score += tod_weights.get(tod, 0)
-
-    # DTE
-    score += features['dte_weights'].get(dte_key, 0)
-
-    # Vol/OI quintile
-    vol_oi_q: int | None = None
-    if trigger_vol_to_oi_window is not None:
-        vol_oi_q = assign_quintile(
-            trigger_vol_to_oi_window,
-            features['vol_oi_quintile_boundaries'],
-        )
-        score += features['vol_oi_quintile_weights'][vol_oi_q]
-
-    # Gamma quintile
-    gamma_q: int | None = None
-    if gamma_at_trigger is not None:
-        gamma_q = assign_quintile(
-            gamma_at_trigger,
-            features['gamma_quintile_boundaries'],
-        )
-        score += features['gamma_quintile_weights'][gamma_q]
-
-    # Ask pct quintile
-    ask_pct_q: int | None = None
-    if trigger_ask_pct is not None:
-        ask_pct_q = assign_quintile(
-            trigger_ask_pct,
-            features['ask_pct_quintile_boundaries'],
-        )
-        score += features['ask_pct_quintile_weights'][ask_pct_q]
-
-    # Option type
-    score += features['option_type_weights'].get(option_type, 0)
-
-    # Context features (V2.2 Phase D) — 7 macro-level quintile features.
-    # Each contributes 0 when the value is None (no macro snapshot on the row).
-    _ctx = [
-        (spx_spot_charm_oi, 'spx_spot_charm_oi'),
-        (spx_spot_vanna_oi, 'spx_spot_vanna_oi'),
-        (mkt_tide_ncp,      'mkt_tide_ncp'),
-        (mkt_tide_otm_diff, 'mkt_tide_otm_diff'),
-        (mkt_tide_diff,     'mkt_tide_diff'),
-        (spx_spot_gamma_oi, 'spx_spot_gamma_oi'),
-        (mkt_tide_npp,      'mkt_tide_npp'),
-    ]
-    for val, feat in _ctx:
-        bk = f'{feat}_quintile_boundaries'
-        wk = f'{feat}_quintile_weights'
-        if val is not None and bk in features and wk in features:
-            q = assign_quintile(val, features[bk])
-            score += features[wk][q]
-
-    # Composite bonuses/penalties — sum all matching entries.
-    for entry in features.get('composite_bonuses', []):
-        match = entry['match']
-        if 'ticker' in match and match['ticker'] != ticker:
-            continue
-        if 'tod' in match and match['tod'] != tod:
-            continue
-        if 'gamma_q' in match and match['gamma_q'] != _q_label(gamma_q):
-            continue
-        if 'vol_oi_q' in match and match['vol_oi_q'] != _q_label(vol_oi_q):
-            continue
-        if 'ask_pct_q' in match and match['ask_pct_q'] != _q_label(ask_pct_q):
-            continue
-        score += int(entry['bonus'])
-
-    return score
-
-
-def print_distribution(
-    label: str,
-    scores: list[int | None],
-    t1: int,
-    t2: int,
-) -> None:
-    """Print tier distribution summary for a score list."""
-    non_null = [s for s in scores if s is not None]
-    null_count = len(scores) - len(non_null)
-    tier1 = sum(1 for s in non_null if s >= t1)
-    tier2 = sum(1 for s in non_null if t2 <= s < t1)
-    tier3 = sum(1 for s in non_null if s < t2)
-    mean_score = sum(non_null) / len(non_null) if non_null else 0.0
-    mn = min(non_null) if non_null else None
-    mx = max(non_null) if non_null else None
-    print(
-        f'[{label}] '
-        f'T1(>={t1})={tier1:,}  T2([{t2},{t1}))={tier2:,}  T3(<{t2})={tier3:,}  '
-        f'NULL={null_count:,}  '
-        f'mean={mean_score:.2f}  range={mn}–{mx}'
+def _write_page(
+    cur: Any,
+    changes: Sequence[_Change],
+    *,
+    to_version: str,
+    reason: str,
+    deadline: float | None,
+) -> int:
+    """Snapshot the page's old values, then write it ``WRITE_ROWS`` at a time.
+    Returns the fires the UPDATEs returned."""
+    # Lists, not tuples: psycopg2 sends a list as an ARRAY, a tuple as a record.
+    cur.execute(
+        _SNAPSHOT_SQL,
+        (
+            reason,
+            to_version,
+            [c.id for c in changes],
+            [None if c.old is None else float(c.old) for c in changes],
+            [c.old_tag for c in changes],
+        ),
     )
+    written = 0
+    for start in range(0, len(changes), WRITE_ROWS):
+        batch = changes[start : start + WRITE_ROWS]
+        _check_deadline(deadline, 'a write batch')
+        returned = execute_values(
+            cur,
+            _UPDATE_SQL,
+            [(c.id, c.score, to_version, c.old) for c in batch],
+            template=_UPDATE_ROW,
+            page_size=len(batch),  # one statement, so RETURNING is this batch's
+            fetch=True,
+        )
+        if len(returned) < len(batch):
+            raise ConcurrentScoreWriter(
+                f'{len(batch) - len(returned)} of {len(batch)} fires in a write '
+                'batch changed score after this rescore read them'
+            )
+        written += len(returned)
+    return written
 
 
-def main() -> None:
+def _promote(cur: Any, to_version: str, expect_active: str) -> None:
+    cur.execute(_PROMOTE_SQL, (to_version,))
+    if len(cur.fetchall()) != 1:
+        raise PointerMoved(f'{to_version} is no longer a shadow or passed candidate')
+    cur.execute(_MOVE_ACTIVE_SQL, (to_version, expect_active))
+    if len(cur.fetchall()) != 1:
+        raise PointerMoved(f'the active pointer no longer names {expect_active}')
+
+
+# ── CLI ─────────────────────────────────────────────────────────────────────
+
+
+def _reason(value: str) -> str:
+    """argparse ``type=``: refuse a bad reason before connecting."""
+    if not _REASON.fullmatch(value):
+        raise argparse.ArgumentTypeError(f'must match {_REASON.pattern}')
+    return value
+
+
+def _load_version(conn: Any, version: str | None) -> tuple[str, Mapping[str, Any]]:
+    """The version to score with and its validated weights: ``version`` from
+    lottery_score_versions, or the one the ``active`` pointer names."""
+    if version is None:
+        return load_pointer(conn, 'active')
+    with conn.cursor() as cur:
+        cur.execute(_VERSION_SQL, (version,))
+        row = cur.fetchone()
+    if row is None:
+        raise LookupError(f'lottery_score_versions has no version {version}')
+    validate_weights(row[0])
+    return version, row[0]
+
+
+def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
-        description='Backfill lottery_finder_fires.score under V2 weights.'
+        description=(
+            'Rescore every stored lottery fire with one weights version, in one '
+            'transaction, snapshotting each score it replaces. A dry run unless '
+            '--write is given. It never moves a pointer.'
+        )
     )
     parser.add_argument(
-        '--dry-run',
-        action='store_true',
-        help='Print distribution comparison without writing to DB.',
+        '--version',
+        help="a stored version to score with (default: the one 'active' names)",
     )
-    args = parser.parse_args()
-    dry_run: bool = args.dry_run
+    parser.add_argument(
+        '--reason',
+        type=_reason,
+        default='manual',
+        help='the snapshot rows\' reason (default: manual)',
+    )
+    parser.add_argument(
+        '--write',
+        action='store_true',
+        help='write the scores; without it, read every fire and write nothing',
+    )
+    args = parser.parse_args(argv)
 
-    # Temporary guard (ml/src/lottery_refit_guard.py): a real run would rewrite
-    # boundary-quintile scores (left-closed '<' vs right-closed runtime).
-    # --dry-run writes nothing and stays allowed.
-    if not dry_run and refit_blocked(date_type.today()):
-        announce_skip('backfill_lottery_scores.py')
-        return
+    # The CLI's helpers. The nightly step imports rescore_all only.
+    from _cli_paths import load_env_file
+    from _pipeline_retry import connect_with_retry
 
-    load_env()
-
-    if not JSON_PATH.exists():
-        sys.exit(f'Missing weights JSON: {JSON_PATH}')
-    weights = json.loads(JSON_PATH.read_text())
-    print(f'[backfill] Loaded weights: {weights["model_version"]} (trained {weights["trained_at"][:10]})')
-
-    t1: int = weights['cutoffs']['t1']
-    t2: int = weights['cutoffs']['t2']
-    print(f'[backfill] Tier cutoffs: t1={t1}, t2={t2}')
-
+    load_env_file(ROOT / '.env.local')
     db_url = os.environ.get('DATABASE_URL_UNPOOLED') or os.environ.get(
         'DATABASE_URL'
     )
     if not db_url:
         sys.exit('DATABASE_URL_UNPOOLED / DATABASE_URL not set')
 
+    started = time.monotonic()
     conn = connect_with_retry(db_url)
     try:
-        cur = conn.cursor()
-
-        # Fetch all fires with the columns needed for V2 scoring + current score.
-        print('[backfill] Fetching fires from DB...')
-        cur.execute(
-            """
-            SELECT
-                id,
-                underlying_symbol,
-                option_type,
-                tod,
-                dte,
-                trigger_vol_to_oi_window,
-                gamma_at_trigger,
-                trigger_ask_pct,
-                cum_ncp_at_fire,
-                cum_npp_at_fire,
-                score,
-                date,
-                spx_spot_charm_oi,
-                spx_spot_vanna_oi,
-                mkt_tide_ncp,
-                mkt_tide_otm_diff,
-                mkt_tide_diff,
-                spx_spot_gamma_oi,
-                mkt_tide_npp
-            FROM lottery_finder_fires
-            ORDER BY id
-            """
+        # Each read before the rescore commits on its own, so rescore_all
+        # starts outside a transaction.
+        conn.autocommit = True
+        try:
+            version, weights = _load_version(conn, args.version)
+        except (LookupError, WeightsInvalid) as exc:
+            sys.exit(f'[rescore] {exc}')
+        result = rescore_all(
+            conn,
+            to_version=version,
+            weights=weights,
+            reason=args.reason,
+            expect_active=None,
+            dry_run=not args.write,
         )
-        rows = cur.fetchall()
-        print(f'[backfill] Fetched {len(rows):,} fires')
-
-        # --- Compute V2 scores and compare with current ---
-        t0 = time.time()
-        current_scores: list[int | None] = []
-        new_scores: list[int | None] = []
-        updates: list[tuple[int, int | None]] = []
-        unchanged = 0
-
-        # Sample: first 100 rows for sanity check
-        sample_printed = 0
-
-        for (
-            fid,
-            ticker,
-            option_type,
-            tod,
-            dte,
-            vol_oi,
-            gamma,
-            ask_pct,
-            cum_ncp,
-            cum_npp,
-            cur_score,
-            fire_date,
-            charm_oi,
-            vanna_oi,
-            tide_ncp,
-            tide_otm_diff,
-            tide_diff,
-            gamma_oi,
-            tide_npp,
-        ) in rows:
-            # psycopg2 returns Postgres DATE columns as Python date objects.
-            # Normalise: keep as date if already one, convert from string otherwise.
-            if isinstance(fire_date, date_type):
-                fire_date_obj: date_type | None = fire_date
-            elif isinstance(fire_date, str):
-                fire_date_obj = datetime.strptime(fire_date, '%Y-%m-%d').date()
-            else:
-                fire_date_obj = None
-
-            new_score = compute_score_v2(
-                ticker=ticker,
-                option_type=option_type,
-                tod=tod,
-                dte=int(dte),
-                trigger_vol_to_oi_window=float(vol_oi) if vol_oi is not None else None,
-                gamma_at_trigger=float(gamma) if gamma is not None else None,
-                trigger_ask_pct=float(ask_pct) if ask_pct is not None else None,
-                cum_ncp_at_fire=float(cum_ncp) if cum_ncp is not None else None,
-                cum_npp_at_fire=float(cum_npp) if cum_npp is not None else None,
-                weights=weights,
-                fire_date=fire_date_obj,
-                spx_spot_charm_oi=float(charm_oi) if charm_oi is not None else None,
-                spx_spot_vanna_oi=float(vanna_oi) if vanna_oi is not None else None,
-                mkt_tide_ncp=float(tide_ncp) if tide_ncp is not None else None,
-                mkt_tide_otm_diff=float(tide_otm_diff) if tide_otm_diff is not None else None,
-                mkt_tide_diff=float(tide_diff) if tide_diff is not None else None,
-                spx_spot_gamma_oi=float(gamma_oi) if gamma_oi is not None else None,
-                mkt_tide_npp=float(tide_npp) if tide_npp is not None else None,
-            )
-
-            current_scores.append(cur_score)
-            new_scores.append(new_score)
-
-            if sample_printed < 100:
-                if sample_printed == 0:
-                    print('\n[backfill] Sample of first 100 fires (id, ticker, opt, tod, dte, old_score → new_score):')
-                print(
-                    f'  id={fid:>10}  {ticker:6s}  {option_type}  {tod:8s}  dte={dte}  '
-                    f'{str(cur_score):>6} → {str(new_score):>6}'
-                )
-                sample_printed += 1
-
-            if cur_score == new_score:
-                unchanged += 1
-            else:
-                updates.append((fid, new_score))
-
-        elapsed = time.time() - t0
-        print(
-            f'\n[backfill] Score computation: {elapsed:.1f}s  '
-            f'({len(updates):,} would change, {unchanged:,} unchanged)'
-        )
-
-        # --- Distribution comparison ---
-        print()
-        print_distribution('BEFORE (current)', current_scores, t1, t2)
-        print_distribution('AFTER  (v2)     ', new_scores, t1, t2)
-
-        # Alignment rate sanity check
-        null_count = sum(1 for s in new_scores if s is None)
-        null_pct = 100.0 * null_count / len(new_scores) if new_scores else 0.0
-        print(f'\n[backfill] NULL/gated rate: {null_pct:.1f}%  ({null_count:,} / {len(new_scores):,})')
-        # Expected NULL rate: ~26% missing cum_ncp/npp (pre-enrichment rows) +
-        # ~38% misaligned-of-has-cum = ~64% total. A rate >75% would suggest
-        # the alignment gate is over-broad; <50% would mean cum enrichment
-        # coverage is far better than expected.
-        if null_pct > 75:
-            print(
-                '[backfill] WARNING: >75% NULL rate — alignment gate may be too aggressive. '
-                'Investigate cum_ncp/npp population and misalignment ratio.'
-            )
-        elif null_pct < 50:
-            print(
-                '[backfill] NOTE: <50% NULL rate — cum enrichment coverage better than '
-                'spec baseline (~64%). This is fine.'
-            )
-
-        if dry_run:
-            print('\n[backfill] DRY RUN — no DB writes performed.')
-            return
-
-        # --- Apply updates ---
-        if not updates:
-            print('[backfill] No rows need updating — already up to date.')
-            conn.commit()
-            return
-
-        print(f'\n[backfill] Writing {len(updates):,} updates to DB...')
-        t0 = time.time()
-        execute_values(
-            cur,
-            """
-            UPDATE lottery_finder_fires AS f
-            SET score = v.score
-            FROM (VALUES %s) AS v(id, score)
-            WHERE f.id = v.id
-            """,
-            updates,
-            template='(%s::bigint, %s::int)',
-            page_size=1000,
-        )
-        conn.commit()
-        print(f'[backfill] DB updated: {len(updates):,} rows in {time.time() - t0:.1f}s')
-
-        # --- Post-backfill sanity: query live DB distribution ---
-        print('\n[backfill] Post-backfill DB distribution:')
-        cur.execute(
-            f"""
-            SELECT
-              COUNT(*) FILTER (WHERE score >= {t1}) AS tier1,
-              COUNT(*) FILTER (WHERE score >= {t2} AND score < {t1}) AS tier2,
-              COUNT(*) FILTER (WHERE score < {t2} AND score IS NOT NULL) AS tier3,
-              COUNT(*) FILTER (WHERE score IS NULL) AS nulls,
-              MIN(score), MAX(score),
-              ROUND(AVG(score)::numeric, 2) AS avg_score,
-              COUNT(*) AS total
-            FROM lottery_finder_fires
-            """
-        )
-        row = cur.fetchone()
-        if row:
-            t1c, t2c, t3c, nullc, mn, mx, avg, total = row
-            print(
-                f'  Tier1 (>={t1}): {t1c:>8,}\n'
-                f'  Tier2 ([{t2},{t1})): {t2c:>8,}\n'
-                f'  Tier3 (<{t2}):  {t3c:>8,}\n'
-                f'  NULL (gated):  {nullc:>8,}\n'
-                f'  Total:         {total:>8,}\n'
-                f'  Score range:   {mn} – {mx}  (avg {avg})'
-            )
-
-        # Spot-check 2026-05-21: should have at least one tier2+ fire
-        print('\n[backfill] Spot-check 2026-05-21 tier2+ fires:')
-        cur.execute(
-            f"""
-            SELECT id, underlying_symbol, option_type, tod, dte, score, combined_score
-            FROM lottery_finder_fires
-            WHERE date = '2026-05-21'
-              AND score >= {t2}
-            ORDER BY score DESC
-            LIMIT 10
-            """
-        )
-        spot = cur.fetchall()
-        if spot:
-            print(f'  Found {len(spot)} tier2+ fires (first 10):')
-            for r in spot:
-                print(f'    id={r[0]}  {r[1]:6s}  {r[2]}  {r[3]:8s}  dte={r[4]}  score={r[5]}  combined_score={r[6]}')
-        else:
-            print('  WARNING: ZERO tier2+ fires on 2026-05-21 — original failure case still not resolved!')
-
     finally:
         conn.close()
+
+    verb = 'wrote' if args.write else 'would write'
+    mode = 'written' if args.write else 'dry run, nothing written (pass --write)'
+    print(
+        f'[rescore] {version}: scanned {result.scanned:,}, {verb} '
+        f'{result.changed:,} ({result.score_changed:,} with a new score, the '
+        f'rest a new score_version) in {result.snapshot_rows:,} snapshot rows, '
+        f'{time.monotonic() - started:.1f} s; {mode}'
+    )
 
 
 if __name__ == '__main__':
