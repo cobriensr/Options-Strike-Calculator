@@ -398,7 +398,8 @@ is touched; it should not be).
 
 1. The boot log shows the shard map with one new shard holding only
    `periscope:SPX`.
-2. `channel ack received periscope:SPX`.
+2. `shard joined` for the shard that holds `periscope:SPX`. A
+   `shard join incomplete` warning would name it in `unacked`.
 3. `/metrics` shows the channel `subscribed`, and the `periscope` handler
    counters rise.
 4. No error frames.

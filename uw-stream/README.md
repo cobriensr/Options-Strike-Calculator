@@ -678,7 +678,16 @@ whether anything was lost.
   one and one UW refuses with an error frame. The watchdog still alerts on a
   channel that stays unsubscribed. `acked` reads the same per-channel-name
   flag as the re-join pass, so the mirror sockets' limit above applies to it
-  too.
+  too, in both directions. A twin that resets the shared flag after this
+  socket's ack can make this shard name a channel in `unacked` that its own
+  socket acked. That is harmless: the re-join pass sends it again on this
+  socket. Two gaps in what the line reports:
+  - Recovery is not logged. After a `shard join incomplete`, the ack of a
+    re-sent join is a debug line. To see that the channels came back, read
+    `subscribed` on `/metrics`, or note that the next minute's
+    `re-sending joins for stuck channels` warning does not come.
+  - A session that drops before the 30 s wait ends logs no join line, neither
+    one. Its only line is the disconnect line, with `session_s` and `frames`.
 - **String-encoded numerics.** Every UW WS field that _could_ be a number
   arrives as a JSON string. Handlers cast at the boundary.
 - **`flow-alerts` uses a hyphen** even though the docs URL is
@@ -699,7 +708,7 @@ whether anything was lost.
 - **Disconnects.** Each dropped socket logs one line with the shard, the
   exception, both close frames, the underlying cause (with errno), the
   session length, frames received, time since the last frame, and both
-  socket addresses. The token is scrubbed from it. A Sentry warning fires
+  socket addresses. The token is scrubbed from it. A Sentry error fires
   when reconnects in the last hour, across all shards, reach 5 per shard
   (40 with 8 shards, 30 with the mirror sockets off). It fires once per
   incident: at most one an hour for the whole process
