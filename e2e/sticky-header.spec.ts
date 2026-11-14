@@ -16,12 +16,14 @@ import { dateTimeSection, openSection } from './helpers/calculator';
  * the nav and the anchors clear of it (the "taller than its CSS default"
  * test).
  *
- * The aborted /api also fails that past date's own events lookup. Its
- * "Events for this date couldn't load." line (about 46px) appears at the top
- * of <main>, above every section, only after the date settles (350ms) and
- * the fetch fails. A jump that starts before then has the content pushed
- * down mid-scroll and ends 46px short of its anchor, so openScrolled waits
- * for the line before it scrolls.
+ * The dated events lookup (/api/events?from=<date>) is answered empty, so no
+ * events banner and no "Events for this date couldn't load." line (about
+ * 46px) mounts at the top of <main>, above every section. Left to the
+ * aborted /api, that lookup fails after the date settles (350ms) and the line
+ * would push the content down mid-jump: a jump that started before then ends
+ * 46px short of its anchor. With the date known to have no events, nothing
+ * mounts late and the page above the anchors never moves. The forward list's
+ * own request (no `from`) stays aborted.
  */
 
 /** The owner's Schwab login runs out in 3 hours: the amber countdown shows. */
@@ -33,8 +35,27 @@ async function showSchwabCountdown(page: Page) {
   );
 }
 
+/**
+ * Answer every dated events lookup (any /api/events request with a `from`)
+ * with no events for that date, so nothing mounts above the sections after the
+ * date settles (see the header comment). Register it after the abort-all
+ * route, so it matches first, and before `page.goto`.
+ */
+async function answerDatedEventsEmpty(page: Page) {
+  await page.route(
+    (url) => url.pathname === '/api/events' && url.searchParams.has('from'),
+    (route) => {
+      const from = new URL(route.request().url()).searchParams.get('from');
+      return route.fulfill({
+        json: { events: [], startDate: from, endDate: from },
+      });
+    },
+  );
+}
+
 async function openScrolled(page: Page, width: number) {
   await page.setViewportSize({ width, height: 900 });
+  await answerDatedEventsEmpty(page);
   await page.goto('/');
   await dateTimeSection(page)
     .getByLabel('Date', { exact: true })
@@ -42,11 +63,6 @@ async function openScrolled(page: Page, width: number) {
   await expect(
     page.getByRole('banner').getByText('NO INTRADAY', { exact: false }),
   ).toBeAttached();
-  // Layout settles only once the events lookup has failed and added its
-  // line above the sections (see the header comment).
-  await expect(
-    page.getByRole('main').getByText("Events for this date couldn't load."),
-  ).toBeVisible();
   await page.evaluate(() => window.scrollTo(0, 1500));
 }
 
@@ -175,6 +191,7 @@ test.describe('Desktop header with the owner row', () => {
     view: 'calculator' | 'alerts',
   ) {
     await page.setViewportSize({ width, height: 900 });
+    await answerDatedEventsEmpty(page);
     await page.goto('/');
     await dateTimeSection(page)
       .getByLabel('Date', { exact: true })

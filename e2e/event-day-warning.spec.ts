@@ -233,12 +233,14 @@ test.describe('Event Day Warning', () => {
     await expect(main.getByText('High-Impact Event Day')).not.toBeVisible();
     expect(lookups).toBe(1);
 
-    await main.getByRole('button', { name: 'Retry' }).click();
+    await main.getByRole('button', { name: 'Retry', exact: true }).click();
 
     await expect(main.getByText('High-Impact Event Day')).toBeVisible();
     await expect(main.getByText('CPI', { exact: true })).toBeVisible();
     await expect(loadFailed).toHaveCount(0);
-    await expect(main.getByRole('button', { name: 'Retry' })).toHaveCount(0);
+    await expect(
+      main.getByRole('button', { name: 'Retry', exact: true }),
+    ).toHaveCount(0);
     expect(lookups).toBe(2);
   });
 });
