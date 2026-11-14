@@ -1,8 +1,9 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import AdvancedSection from '../../components/AdvancedSection';
 import type { VIXDayData, OHLCField } from '../../types';
+import { getETToday } from '../../utils/timezone';
 
 function defaultProps(
   overrides: Partial<Parameters<typeof AdvancedSection>[0]> = {},
@@ -27,6 +28,7 @@ function defaultProps(
     onOHLCFieldChange: vi.fn(),
     vixDataLoaded: false,
     selectedDate: '',
+    etToday: getETToday(),
     ...overrides,
   };
 }
@@ -870,5 +872,74 @@ describe('AdvancedSection', () => {
     expect(
       screen.queryByText('No VIX data found for this date'),
     ).not.toBeInTheDocument();
+  });
+
+  describe('the no-VIX-data hint and today', () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("does not show the hint on today, whose VIX OHLC isn't in yet", () => {
+      render(
+        <AdvancedSection
+          {...defaultProps({
+            showIC: true,
+            vixDataLoaded: true,
+            selectedDate: getETToday(),
+            vixOHLC: null,
+          })}
+        />,
+      );
+      expect(
+        screen.queryByText('No VIX data found for this date'),
+      ).not.toBeInTheDocument();
+    });
+
+    it('does not flash the hint in the moment after ET midnight, before the date follows its clock', () => {
+      // 00:00:00.5 EDT on the 18th by the wall clock; the date and the clock
+      // it follows (etToday) are still the 17th, today's.
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(new Date('2026-03-18T04:00:00.500Z'));
+      const props = defaultProps({
+        showIC: true,
+        vixDataLoaded: true,
+        selectedDate: '2026-03-17',
+        etToday: '2026-03-17',
+        vixOHLC: null,
+      });
+      const { rerender } = render(<AdvancedSection {...props} />);
+      expect(
+        screen.queryByText('No VIX data found for this date'),
+      ).not.toBeInTheDocument();
+
+      // The tick: the date and its clock move to the 18th together.
+      rerender(
+        <AdvancedSection
+          {...props}
+          selectedDate="2026-03-18"
+          etToday="2026-03-18"
+        />,
+      );
+      expect(
+        screen.queryByText('No VIX data found for this date'),
+      ).not.toBeInTheDocument();
+    });
+
+    it('shows the hint for a date before etToday that has no VIX data', () => {
+      render(
+        <AdvancedSection
+          {...defaultProps({
+            showIC: true,
+            vixDataLoaded: true,
+            selectedDate: '2026-03-17',
+            etToday: '2026-03-18',
+            vixOHLC: null,
+          })}
+        />,
+      );
+      expect(
+        screen.getByText('No VIX data found for this date'),
+      ).toBeInTheDocument();
+    });
   });
 });

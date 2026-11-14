@@ -42,6 +42,11 @@ interface Props {
   onOHLCFieldChange: (field: OHLCField) => void;
   vixDataLoaded: boolean;
   selectedDate: string;
+  /**
+   * Today's ET date from the clock `selectedDate` follows (useVixData's), so
+   * "is the selected date today" turns in the render the date moves.
+   */
+  etToday: string;
   defaultCollapsed?: boolean;
 }
 
@@ -67,11 +72,12 @@ export default function AdvancedSection({
   onOHLCFieldChange,
   vixDataLoaded,
   selectedDate,
+  etToday,
 }: Readonly<Props>) {
-  const todayDate = new Date().toLocaleDateString('en-CA', {
-    timeZone: 'America/New_York',
-  });
-  const isToday = selectedDate === todayDate;
+  // Today's VIX OHLC isn't in yet, so no "no data" hint on it. Judged against
+  // etToday, not the wall clock: a render in the moment after ET midnight,
+  // before the date follows its clock, must not flash the hint.
+  const isToday = selectedDate === etToday;
 
   return (
     <SectionBox

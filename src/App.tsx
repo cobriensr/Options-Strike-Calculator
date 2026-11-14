@@ -962,6 +962,7 @@ export default function StrikeCalculator() {
                 onOHLCFieldChange={vix.setVixOHLCField}
                 vixDataLoaded={vix.vixDataLoaded}
                 selectedDate={vix.selectedDate}
+                etToday={vix.etToday}
                 defaultCollapsed
               />
             </>

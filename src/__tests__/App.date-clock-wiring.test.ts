@@ -92,6 +92,12 @@ describe('App date-clock wiring', () => {
     expect(props).toMatch(/^\s+etToday=\{vix\.etToday\}$/m);
   });
 
+  it('hands AdvancedSection the date clock, which decides its no-VIX-data hint', () => {
+    const props = /<AdvancedSection([\s\S]*?)\/>/.exec(appCode)?.[1];
+    expect(props).toMatch(/^\s+selectedDate=\{vix\.selectedDate\}$/m);
+    expect(props).toMatch(/^\s+etToday=\{vix\.etToday\}$/m);
+  });
+
   it('hands useAutoFill the vix object, which carries the date clock', () => {
     const inputs = /useAutoFill\(\{([\s\S]*?)\}\);/.exec(appCode)?.[1];
     expect(inputs).toMatch(/^\s+vix,$/m);
