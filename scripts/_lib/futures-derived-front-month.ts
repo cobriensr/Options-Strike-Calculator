@@ -13,10 +13,28 @@
 
 import { createReadStream } from 'node:fs';
 import { z } from 'zod';
-import { FUTURES_SYMBOLS } from '../../api/_lib/futures-derive.js';
+import {
+  BAR_CLOSE_LAG_MS,
+  FUTURES_SYMBOLS,
+  VOLUME_WINDOW_MS,
+} from '../../api/_lib/futures-derive.js';
 import type { BackupBar } from './futures-derived-attribution.js';
 
 export type BackupAction = 'rewrite' | 'delete' | 'fill' | 'tag';
+
+/**
+ * Bars of one root that no repair can rebuild, and that a volume ratio's 20-day
+ * base reads. The ratio is today's volume over the average of the UTC-day volume
+ * sums of the 20 days before the row, so a thin day in that base pulls it up.
+ */
+export interface ContaminatedRange {
+  /** Bar timestamps from here (inclusive; minus infinity for "every earlier bar") ... */
+  fromMs: number;
+  /** ... to here, exclusive. */
+  toMs: number;
+  /** Why the bars cannot be rebuilt, in one line. */
+  reason: string;
+}
 
 export interface FrontMonthProfile {
   /** The UTC days Phase 6 changed bars in, half-open. */
@@ -30,6 +48,12 @@ export interface FrontMonthProfile {
   backup: { runId: string; totals: Readonly<Record<BackupAction, number>> };
   /** Apart from the contract-mix work dir, whose done markers would skip steps. */
   defaultWorkDir: string;
+  /**
+   * Per root, the bars its volume ratio cannot be recomputed from (owner decision
+   * 2026-11-13): a snapshot row whose 20-day window holds them gets a NULL volume
+   * ratio, whether or not Phase 6 moved it. A root with no entry is clean.
+   */
+  contaminatedBase: Readonly<Record<string, ContaminatedRange>>;
 }
 
 export const FRONT_MONTH: FrontMonthProfile = {
@@ -43,7 +67,49 @@ export const FRONT_MONTH: FrontMonthProfile = {
     totals: { rewrite: 9411, delete: 194, fill: 79802, tag: 536310 },
   },
   defaultWorkDir: 'docs/tmp/futures-derived-recompute-front-month',
+  contaminatedBase: {
+    GC: {
+      fromMs: Number.NEGATIVE_INFINITY,
+      toMs: Date.UTC(2026, 6, 28),
+      reason:
+        "every bar before the span is from the old gap cron's GC.c.0 series, the wrong and nearly untraded contract (about 0k volume a day against 120k once repaired), and UW has no prints to rebuild them",
+    },
+    CL: {
+      fromMs: Date.UTC(2026, 6, 17),
+      toMs: Date.UTC(2026, 6, 22),
+      reason:
+        'the days 07-17, 07-20 and 07-21 are the expiring CLQ6 (34k, 12k and 8k against about 200k a day), and UW has no prints to rebuild them',
+    },
+  },
 };
+
+/** The timestamp from which no row's 20-day window reaches the bars of `range`. */
+const cutoffOf = (range: ContaminatedRange): number =>
+  range.toMs + VOLUME_WINDOW_MS;
+
+/**
+ * When the volume ratio of a row stops being blanked: 20 days after the end of the
+ * root's contaminated range. Null for a root with none.
+ */
+export function volumeBaseCutoffMs(symbol: string): number | null {
+  const range = FRONT_MONTH.contaminatedBase[symbol];
+  return range == null ? null : cutoffOf(range);
+}
+
+/**
+ * True when the 20-day window of a snapshot at `atMs` (the bars from `atMs - 20 d`
+ * to `atMs - 60 s`, what computeSnapshot averages over) reaches the root's
+ * contaminated bars. Its volume ratio then rests on days that cannot be rebuilt.
+ * For a row after the range starts this is `atMs < cutoff`.
+ */
+export function volumeBaseContaminated(symbol: string, atMs: number): boolean {
+  const range = FRONT_MONTH.contaminatedBase[symbol];
+  if (range == null) return false;
+  return (
+    atMs - VOLUME_WINDOW_MS < range.toMs &&
+    atMs - BAR_CLOSE_LAG_MS >= range.fromMs
+  );
+}
 
 // ── The Phase 6 backup ──────────────────────────────────────────────────────
 

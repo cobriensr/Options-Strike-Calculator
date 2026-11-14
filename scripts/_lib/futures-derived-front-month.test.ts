@@ -40,9 +40,14 @@ import {
   onRepairedDay,
   readFrontMonthBackup,
   repairedDays,
+  volumeBaseContaminated,
+  volumeBaseCutoffMs,
   type FrontMonthProfile,
 } from './futures-derived-front-month.js';
-import { SNAPSHOT_LOOKBACK_MS } from './futures-derived-recompute.js';
+import {
+  SNAPSHOT_CONTROL_FROM_MS,
+  SNAPSHOT_LOOKBACK_MS,
+} from './futures-derived-recompute.js';
 import { THIN_LAST_BAD_MS } from './futures-thin-roots.js';
 
 const ms = (iso: string): number => Date.parse(iso);
@@ -298,6 +303,82 @@ describe('the front-month profile', () => {
     expect(FRONT_MONTH.writtenUntilMs).toBeLessThan(
       FRONT_MONTH.span.endMs + SNAPSHOT_LOOKBACK_MS,
     );
+  });
+});
+
+// ── The volume ratio whose 20-day base cannot be rebuilt ─────────────────────
+
+describe('the volume ratio base that cannot be rebuilt', () => {
+  const iso = (tsMs: number): string => new Date(tsMs).toISOString();
+
+  it('names GC before the span and CL 07-17 to 07-21, one reason each, and no other root', () => {
+    const base = FRONT_MONTH.contaminatedBase;
+    expect(Object.keys(base).sort()).toEqual(['CL', 'GC']);
+    expect(base.GC?.fromMs).toBe(Number.NEGATIVE_INFINITY);
+    expect(iso(base.GC?.toMs ?? 0)).toBe('2026-07-28T00:00:00.000Z');
+    expect(iso(base.CL?.fromMs ?? 0)).toBe('2026-07-17T00:00:00.000Z');
+    expect(iso(base.CL?.toMs ?? 0)).toBe('2026-07-22T00:00:00.000Z');
+    for (const range of Object.values(base)) {
+      expect(range.reason).not.toBe('');
+      expect(range.reason).not.toContain('\n');
+    }
+  });
+
+  it('puts the cutoff 20 days after the end of each range', () => {
+    expect(iso(volumeBaseCutoffMs('GC') ?? 0)).toBe('2026-08-17T00:00:00.000Z');
+    expect(iso(volumeBaseCutoffMs('CL') ?? 0)).toBe('2026-08-11T00:00:00.000Z');
+    for (const root of ['ES', 'NQ', 'RTY', 'ZN']) {
+      expect(volumeBaseCutoffMs(root)).toBeNull();
+    }
+  });
+
+  it.each([
+    ['GC one minute before the cutoff', 'GC', '2026-08-16T23:59:00Z', true],
+    ['GC at the cutoff', 'GC', '2026-08-17T00:00:00Z', false],
+    [
+      'GC one millisecond before the cutoff',
+      'GC',
+      '2026-08-16T23:59:59.999Z',
+      true,
+    ],
+    ['GC the first row of the span', 'GC', '2026-07-28T00:00:00Z', true],
+    ['GC long before the range ends', 'GC', '2026-06-01T12:00:00Z', true],
+    ['CL one minute before the cutoff', 'CL', '2026-08-10T23:59:00Z', true],
+    ['CL at the cutoff', 'CL', '2026-08-11T00:00:00Z', false],
+    ['CL a row of the span', 'CL', '2026-07-28T00:00:00Z', true],
+    // The window [at - 20 d, at - 60 s] must reach the range: a row whose window ends
+    // before 07-17 00:00 does not apply (no row of the span is that early).
+    [
+      'CL window ends before the range starts',
+      'CL',
+      '2026-07-17T00:00:30Z',
+      false,
+    ],
+    ['CL window ends on the range start', 'CL', '2026-07-17T00:01:00Z', true],
+  ])('%s', (_name, root, at, blanked) => {
+    expect(volumeBaseContaminated(root, ms(at))).toBe(blanked);
+  });
+
+  it.each(['ES', 'NQ', 'RTY', 'ZN'])('never blanks %s', (root) => {
+    for (const at of [
+      '2026-07-28T00:00:00Z',
+      '2026-08-05T15:00:00Z',
+      '2026-08-12T15:00:00Z',
+      '2026-08-18T15:00:00Z',
+    ]) {
+      expect(volumeBaseContaminated(root, ms(at))).toBe(false);
+    }
+  });
+
+  it('is over before the method control starts, so the control is not touched', () => {
+    for (const root of ['ES', 'NQ', 'RTY', 'CL', 'GC', 'ZN']) {
+      expect(volumeBaseContaminated(root, SNAPSHOT_CONTROL_FROM_MS)).toBe(
+        false,
+      );
+    }
+    for (const cutoff of ['GC', 'CL'].map((r) => volumeBaseCutoffMs(r) ?? 0)) {
+      expect(cutoff).toBeLessThan(SNAPSHOT_CONTROL_FROM_MS);
+    }
   });
 });
 

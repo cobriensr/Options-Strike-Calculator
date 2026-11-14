@@ -459,6 +459,11 @@ On days Phase 6 didn't touch, another 2,324 rows differ (late bars, the Septembe
 - **Scope:** the snapshot scope reaches 20 days past the last changed bar (the volume window), clamped to the write run's end.
 - **Control:** the method control sets aside, in each control row, only the fields whose inputs Phase 6 changed (the write rules decide).
 - **Refused under this profile:** the April–June steps (stale-at-write, detector days, frozen-stale).
+- **Volume ratio set to NULL where the base can't be rebuilt (owner decision 2026-11-13):**
+  - Why: bars before 2026-07-28 are the old gap cron's Databento series. GC got a wrong, nearly untraded contract (every July day near-empty), and CL's 07-17, 07-20 and 07-21 are the expiring CLQ6; UW has no prints to rebuild any of them. A ratio whose 20-day base reaches them is too high even recomputed from the clean days (GC median 1.5x, max 7.9x).
+  - Rule: `FRONT_MONTH.contaminatedBase` holds per root a range of bar timestamps, GC `[-inf, 2026-07-28)` and CL `[2026-07-17, 2026-07-22)`. A snapshot row whose 20-day window reaches the range gets `volume_ratio` NULL, whether or not Phase 6 moved it: GC rows before 2026-08-17, CL rows before 2026-08-11. No other root.
+  - Write: only where the stored ratio is not NULL, through the same guarded UPDATE as the other fields. Price, 1h and day follow the plan as before. These rows count in "rows to write" and `--expect-snapshots`.
+  - The control starts 11-02, after both cutoffs, and is unchanged. The report names the rule, counts the rows per root, and shows them inside the repaired-day split.
 - **Defaults:** with no flag the tool behaves exactly as it does now.
 
 Files: `scripts/_lib/futures-derived-recompute.ts`, `scripts/_lib/futures-derived-attribution.ts`, new `scripts/_lib/futures-derived-front-month.ts`, `scripts/recompute-futures-derived.ts`, new `scripts/_lib/futures-derived-front-month.test.ts` (attribution, profile, backup reader), `scripts/_lib/futures-derived-front-month-run.test.ts` (arguments, scope, control set-aside, refusals before a read) and `scripts/_lib/futures-derived-front-month-pglite.test.ts`; the three new files are listed in `tsconfig.scripts.json`.
