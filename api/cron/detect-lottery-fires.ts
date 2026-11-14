@@ -35,10 +35,13 @@ import {
 } from '../_lib/lottery-finder.js';
 import { scanLotteryTicks } from '../_lib/lottery-tick-scan.js';
 import {
-  computeLotteryScoreV2,
-  LOTTERY_TIER_THRESHOLDS_V2,
+  isAlignedFire,
+  scoreLotteryV2,
+  weekdayOf,
+  type LotteryScoreInput,
 } from '../_lib/lottery-score-weights-v2.js';
-import { tierFromQualityScore } from '../_lib/lottery-tier.js';
+import { tierFromQas } from '../_lib/lottery-tier.js';
+import { loadLotteryWeights } from '../_lib/lottery-weights-loader.js';
 import { INVERSION_BONUS_CASE_SQL } from '../_lib/lottery-inversion-bonus.js';
 import {
   computeRangePos,
@@ -700,12 +703,27 @@ export default withCronInstrumentation(
     // already uses this pre-pass shape (cofireKeyset).
     interface PreparedFire {
       rec: LotteryFireRecord;
+      /** The feed's score: the `active` weights version's. */
       score: number | null;
+      /** Take-It's input score: the `takeit` pointer's version's. */
+      takeitScore: number | null;
       isAligned: boolean;
       cumNcpAtFire: number | null;
       cumNppAtFire: number | null;
     }
     const preparedFires: PreparedFire[] = [];
+
+    // The two weights versions this run scores with, read once (the loader
+    // never throws: on a store failure both come back as the frozen seed, with
+    // `fallback` saying why). `active` scores the feed, its `cutoffs.t1` gates
+    // the cluster bonus and its `feed_cutoffs` tier the monitor below; `takeit`
+    // is the version Take-It was trained on, and stays pinned to it however
+    // far `active` moves. Never mutate either: the loader's cache shares them.
+    const {
+      active,
+      takeit,
+      fallback: weightsFallback,
+    } = await loadLotteryWeights();
 
     // ── Pass 1: detect + score every in-universe fire ──────────────────
     const pass1StartedAt = performance.now();
@@ -823,12 +841,12 @@ export default withCronInstrumentation(
         // vol/OI already encode the same population signal; calling
         // applyEmpiricalBonuses on top would double-count the vol/OI
         // bonus and inflate scores systematically.
-        const isAligned =
-          cumNcpAtFire != null &&
-          cumNppAtFire != null &&
-          ((rec.optionType === 'C' && cumNcpAtFire > cumNppAtFire) ||
-            (rec.optionType === 'P' && cumNppAtFire > cumNcpAtFire));
-        const score = computeLotteryScoreV2({
+        const isAligned = isAlignedFire(
+          rec.optionType,
+          cumNcpAtFire,
+          cumNppAtFire,
+        );
+        const scoreInput: LotteryScoreInput = {
           ticker: rec.underlyingSymbol,
           tod: rec.tod,
           dte: rec.dte,
@@ -837,19 +855,24 @@ export default withCronInstrumentation(
           triggerAskPct: rec.triggerAskPct ?? null,
           optionType: rec.optionType,
           isAligned,
-          dayOfWeek: new Date(`${rec.date}T12:00:00Z`).toLocaleDateString(
-            'en-US',
-            { weekday: 'long' },
-          ),
+          dayOfWeek: weekdayOf(rec.date),
           // NOTE: Phase D context features (spxSpotCharmOi, spxSpotVannaOi,
           // mktTideNcp, mktTideNpp, mktTideDiff, mktTideOtmDiff,
           // spxSpotGammaOi) removed 2026-05-23 — walk-forward found them
           // systematically overfit (+0.099 OOS Sharpe gain from removal).
-        });
+        };
+        const score = scoreLotteryV2(active.weights, scoreInput);
+        // Take-It's input stays on its own pinned version: the same score
+        // when the pointers agree, else one more scoring of the same fire.
+        const takeitScore =
+          takeit.version === active.version
+            ? score
+            : scoreLotteryV2(takeit.weights, scoreInput);
 
         preparedFires.push({
           rec,
           score,
+          takeitScore,
           isAligned,
           cumNcpAtFire,
           cumNppAtFire,
@@ -953,7 +976,7 @@ export default withCronInstrumentation(
     // ── Pass 2: macro / gexbot / takeit + INSERT ───────────────────────
     const pass2StartedAt = performance.now();
     for (const prepared of preparedFires) {
-      const { rec, score, cumNcpAtFire, cumNppAtFire } = prepared;
+      const { rec, score, takeitScore, cumNcpAtFire, cumNppAtFire } = prepared;
       {
         // A transient flow_data / spot_exposures issue must not drop
         // the fire. Macro sets direction_gated and feeds the Take-It row,
@@ -1082,6 +1105,7 @@ export default withCronInstrumentation(
           allCofireEntries,
           rec.underlyingSymbol,
           rec.triggerTimeCt.getTime(),
+          active.weights.cutoffs.t1,
         );
         const clusterBonus = applyClusterBonus(clusterSize);
 
@@ -1160,7 +1184,9 @@ export default withCronInstrumentation(
           gex_strike_call_minus_put: macro.gex_strike_call_minus_put,
           gex_strike_call_ask_minus_bid: macro.gex_strike_call_ask_minus_bid,
           gex_strike_put_ask_minus_bid: macro.gex_strike_put_ask_minus_bid,
-          score,
+          // The pinned Take-It version's score, not the feed's: the model
+          // was trained on it, so it must not drift when `active` moves.
+          score: takeitScore,
           direction_gated: directionGated,
         };
         const {
@@ -1235,7 +1261,7 @@ export default withCronInstrumentation(
             gex_one_cvroflow, gex_net_put_dex, gex_one_dexoflow, gex_one_gexoflow,
             gex_zcvr, gex_zero_gamma, gex_spot, gex_captured_at,
             anchor_ws_trade_id, anchor_trade_code, anchor_leg_kind,
-            spread_shape, spread_legs
+            spread_shape, spread_legs, score_version
           ) VALUES (
             ${rec.date}::date, ${rec.triggerTimeCt.toISOString()}, ${rec.entryTimeCt.toISOString()},
             ${rec.optionChainId}, ${rec.underlyingSymbol}, ${rec.optionType},
@@ -1267,7 +1293,7 @@ export default withCronInstrumentation(
             ${gexSnapshot?.capturedAt.toISOString() ?? null},
             ${anchor?.anchorWsTradeId ?? null}, ${anchor?.anchorTradeCode ?? null},
             ${anchor?.legKind ?? null}, ${anchor?.spreadShape ?? null},
-            ${spreadLegsJson}::jsonb
+            ${spreadLegsJson}::jsonb, ${active.version}
           )
           ON CONFLICT (option_chain_id, trigger_time_ct) DO NOTHING
           RETURNING id
@@ -1292,9 +1318,10 @@ export default withCronInstrumentation(
     //   qas = GREATEST(0, score + round_trip_score_deduct
     //                       + fire_count_score_adjustment)
     //         + INVERSION_BONUS_CASE(s.inversion_quintile)
-    // and classify it with tierFromQualityScore (api/_lib/lottery-tier.ts) —
-    // the same cutoffs the feed uses — so the monitor cannot silently diverge
-    // from the feed again (the 24/22-vs-V2-scale bug that hid for weeks).
+    // and classify it with tierFromQas (api/_lib/lottery-tier.ts) on the
+    // active version's feed_cutoffs — the same cutoffs the feed uses — so the
+    // monitor cannot silently diverge from the feed again (the 24/22-vs-V2-scale
+    // bug that hid for weeks).
     //
     // We DELIBERATELY do NOT read the `combined_score` GENERATED column here:
     // it still folds in a +1 gamma CASE term (migration #168) that the feed
@@ -1347,7 +1374,10 @@ export default withCronInstrumentation(
         const tier =
           f.score == null || f.direction_gated === true || suppressed
             ? 'tier3'
-            : tierFromQualityScore(f.qas == null ? null : Number(f.qas));
+            : tierFromQas(
+                f.qas == null ? null : Number(f.qas),
+                active.weights.feed_cutoffs,
+              );
         if (tier === 'tier1') feedTier1 += 1;
         else if (tier === 'tier2') feedTier2 += 1;
         else feedTier3 += 1;
@@ -1500,6 +1530,7 @@ export default withCronInstrumentation(
         candleFetchSkippedBreaker,
         takeitPrefetchFailures: takeitPrefetchError == null ? 0 : 1,
         takeitScoreFailures,
+        weightsFallback: weightsFallback?.kind ?? null,
         flowSeriesFailures,
         flowSeriesSkippedBreaker,
         flowSeriesGenuineFailures,
@@ -1525,11 +1556,13 @@ export default withCronInstrumentation(
     //     fire), a stock candle lookup that failed, was skipped by the
     //     breaker or came back empty (range_pos NULL on that ticker's
     //     fires), a macro snapshot lookup that threw (that fire written with
-    //     EMPTY_MACRO, so no direction gate), or a GexBot snapshot lookup
-    //     that threw (gex_* NULL on that fire) makes the run 'partial' when
-    //     it wrote fires. With nothing written, no row was degraded and the
-    //     run stays 'success'; the counters and the Sentry event still show
-    //     the failure.
+    //     EMPTY_MACRO, so no direction gate), a GexBot snapshot lookup
+    //     that threw (gex_* NULL on that fire), or a weights store that
+    //     couldn't be read (the fires are scored with the seed, and their
+    //     score_version says so) makes the run 'partial' when it wrote
+    //     fires. With nothing written, no row was degraded and the run stays
+    //     'success'; the counters and the Sentry event still show the
+    //     failure.
     //
     // An empty candle answer counts: fires come from a live session's
     // trades, so UW having no 1-min bars for that ticker-day is a data gap,
@@ -1548,7 +1581,8 @@ export default withCronInstrumentation(
       candleFetchSkippedBreaker > 0 ||
       candleFetchEmpty > 0 ||
       macroSnapshotFailures > 0 ||
-      gexLookupFailures > 0;
+      gexLookupFailures > 0 ||
+      weightsFallback != null;
     const status: CronStatus =
       flowSeriesGenuineFailures > 0 || takeitPrefetchFailureKind === 'error'
         ? 'error'
@@ -1582,6 +1616,9 @@ export default withCronInstrumentation(
         takeitPrefetchError,
         takeitPrefetchFailureKind,
         takeitScoreFailures,
+        // 'transient' or 'error' when the weights store couldn't be read and
+        // the run scored with the seed; null when both versions were loaded.
+        weightsFallback: weightsFallback?.kind ?? null,
         flowSeriesFailures,
         flowSeriesSkippedBreaker,
         flowSeriesGenuineFailures,
@@ -1611,8 +1648,9 @@ interface CommittedFireEntry {
 
 /**
  * Count distinct other tickers (not `thisTicker`) that scored tier1
- * (score >= LOTTERY_TIER_THRESHOLDS_V2.t1) within CLUSTER_WINDOW_MS of
- * `triggerTimeMs` in the current cron run's committed-fires list.
+ * (score >= `tier1MinScore`, the active weights version's `cutoffs.t1`)
+ * within CLUSTER_WINDOW_MS of `triggerTimeMs` in the current cron run's
+ * committed-fires list.
  *
  * Uses the in-memory `committedFires` list — no DB round-trip. The list
  * only contains fires already processed in this cron invocation so the
@@ -1622,12 +1660,13 @@ function computeClusterSize(
   committedFires: CommittedFireEntry[],
   thisTicker: string,
   triggerTimeMs: number,
+  tier1MinScore: number,
 ): number {
   const otherTickers = new Set<string>();
   for (const fire of committedFires) {
     if (fire.ticker === thisTicker) continue;
     if (fire.score == null) continue;
-    if (fire.score < LOTTERY_TIER_THRESHOLDS_V2.t1) continue;
+    if (fire.score < tier1MinScore) continue;
     if (Math.abs(fire.triggerTimeMs - triggerTimeMs) <= CLUSTER_WINDOW_MS) {
       otherTickers.add(fire.ticker);
     }

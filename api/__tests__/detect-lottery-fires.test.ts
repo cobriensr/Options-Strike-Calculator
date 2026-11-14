@@ -261,36 +261,54 @@ vi.mock('../_lib/gexbot-queries.js', () => ({
   mapToGexbotTicker: mockMapToGexbotTicker,
 }));
 
-// V2 score override hook. `mockComputeLotteryScoreV2` defaults to null,
-// in which case the wrapper delegates to the REAL computeLotteryScoreV2
-// (preserving live-weight behavior for every existing test). The
-// cluster-bonus symmetry test sets a fixed numeric return so the bonus
-// path is exercised without pinning the test to a specific weights
-// retrain. LOTTERY_TIER_THRESHOLDS_V2 is passed through unchanged so the
-// cluster t1 gate + feed-tier monitor keep their real cutoffs. The real
-// fn is captured inside the factory (not re-imported) to avoid recursing
-// back into this same mocked binding.
-const mockComputeLotteryScoreV2 = vi.hoisted(() => ({
+// V2 score override hook. `mockScoreLotteryV2.override` defaults to null, in
+// which case the wrapper delegates to the REAL scoreLotteryV2 (preserving
+// live-weight behavior for every existing test). The cluster-bonus symmetry
+// test sets a fixed numeric return so the bonus path is exercised without
+// pinning the test to a specific weights retrain. `calls` records every
+// (weights, input) the cron scored with, so a test can count the scorer's
+// calls and see which version's weights each one used. The cutoffs the
+// cluster gate and the feed-tier monitor read come from the loaded weights,
+// not from this module. The real fn is captured inside the factory (not
+// re-imported) to avoid recursing back into this same mocked binding.
+const mockScoreLotteryV2 = vi.hoisted(() => ({
   override: null as number | null,
+  calls: [] as { weights: unknown; input: Record<string, unknown> }[],
 }));
 vi.mock('../_lib/lottery-score-weights-v2.js', async (importOriginal) => {
   const actual =
     await importOriginal<
       typeof import('../_lib/lottery-score-weights-v2.js')
     >();
-  const real = actual.computeLotteryScoreV2;
   return {
     ...actual,
-    computeLotteryScoreV2: (
-      args: Parameters<typeof actual.computeLotteryScoreV2>[0],
-    ) =>
-      mockComputeLotteryScoreV2.override !== null
-        ? mockComputeLotteryScoreV2.override
-        : real(args),
+    scoreLotteryV2: (
+      weights: Parameters<typeof actual.scoreLotteryV2>[0],
+      input: Parameters<typeof actual.scoreLotteryV2>[1],
+    ) => {
+      mockScoreLotteryV2.calls.push({ weights, input: { ...input } });
+      return mockScoreLotteryV2.override !== null
+        ? mockScoreLotteryV2.override
+        : actual.scoreLotteryV2(weights, input);
+    },
   };
 });
 
+// The weights store, mocked at its module boundary (it has its own tests):
+// the cron reads two versions from it once per run. The default, set in
+// beforeEach, is the frozen seed in both slots with no fallback.
+const mockLoadLotteryWeights = vi.hoisted(() => vi.fn());
+vi.mock('../_lib/lottery-weights-loader.js', () => ({
+  loadLotteryWeights: mockLoadLotteryWeights,
+}));
+
 import handler from '../cron/detect-lottery-fires.js';
+import type { LoadedLotteryWeights } from '../_lib/lottery-weights-loader.js';
+import type { LotteryWeights } from '../_lib/lottery-weights-schema.js';
+import {
+  SEED_LOTTERY_WEIGHTS,
+  SEED_LOTTERY_WEIGHTS_VERSION,
+} from '../_lib/lottery-weights-seed.js';
 import { reportCronRun } from '../_lib/axiom.js';
 import { AXIOM_TOP_LEVEL_KEYS } from '../_lib/axiom-fields.js';
 import { cronGuard as realCronGuard } from '../_lib/cron-helpers.js';
@@ -444,6 +462,33 @@ function streamFor(ticker: string, optionChain: string) {
   }));
 }
 
+// What the loader mock answers: both pointers on the seed, no fallback,
+// unless a test overrides a part.
+const SEED_VERSIONED = {
+  version: SEED_LOTTERY_WEIGHTS_VERSION,
+  weights: SEED_LOTTERY_WEIGHTS,
+};
+function loadedWeights(
+  parts: Partial<LoadedLotteryWeights> = {},
+): LoadedLotteryWeights {
+  return {
+    active: SEED_VERSIONED,
+    takeit: SEED_VERSIONED,
+    fallback: null,
+    ...parts,
+  };
+}
+
+// A copy of the seed's weights with `edit` applied. The seed is deep-frozen,
+// so a test changes a clone, never the seed itself.
+function seedWeightsWith(
+  edit: (weights: LotteryWeights) => void,
+): LotteryWeights {
+  const copy = structuredClone(SEED_LOTTERY_WEIGHTS);
+  edit(copy);
+  return copy;
+}
+
 describe('detect-lottery-fires handler', () => {
   beforeEach(() => {
     vi.resetAllMocks();
@@ -463,7 +508,11 @@ describe('detect-lottery-fires handler', () => {
     // Default: no override → delegate to the real V2 score so every
     // existing test keeps its live-weight behavior. The cluster-bonus
     // test sets a numeric override.
-    mockComputeLotteryScoreV2.override = null;
+    mockScoreLotteryV2.override = null;
+    mockScoreLotteryV2.calls.length = 0;
+    // Default: the active and the Take-It pointers both sit on the seed,
+    // as they do in production today.
+    mockLoadLotteryWeights.mockResolvedValue(loadedWeights());
     // Default: no Take-It context, no prefetch or warm-up queries, and so
     // no score.
     mockLoadTakeitDetectContext.mockResolvedValue(null);
@@ -611,7 +660,7 @@ describe('detect-lottery-fires handler', () => {
     // fire_count_score_adjustment) + inversion bonus — IDENTICAL to the feed's
     // qasExprText('f.'). It DELIBERATELY no longer reads combined_score (which
     // still folds in a +1 gamma CASE term the feed dropped), so the mock row
-    // returns `qas` directly. tierFromQualityScore cutoffs are 13/10.
+    // returns `qas` directly. tierFromQas on the seed feed cutoffs is 13/10.
     //
     // Rows chosen to exercise every branch:
     //   qas 13 -> tier1
@@ -656,7 +705,7 @@ describe('detect-lottery-fires handler', () => {
     });
   });
 
-  it('persists computeLotteryScoreV2() output on the inserted row', async () => {
+  it('persists scoreLotteryV2() output on the inserted row', async () => {
     // Same fixture as the basic insert test. V2 score is null here
     // because the ticker_flow_snapshot returns [] → cumNcpAtFire and
     // cumNppAtFire are both null → isAligned=false → V2 returns null.
@@ -697,7 +746,7 @@ describe('detect-lottery-fires handler', () => {
   });
 
   it('persists a non-null integer V2 score when ticker_flow_snapshot makes a CALL fire aligned (Phase 3 wiring guard)', async () => {
-    // Happy-path guard for the computeLotteryScoreV2 wiring in
+    // Happy-path guard for the scoreLotteryV2 wiring in
     // detect-lottery-fires.ts (Phase 3 cutover, commit ae0ab12c). The
     // surrounding default mocks return [] for ticker_flow_snapshot,
     // which forces isAligned=false and short-circuits V2 to null BEFORE
@@ -2501,7 +2550,7 @@ describe('detect-lottery-fires handler', () => {
     //
     // SOUN score (Friday 2026-05-01, non-Monday, all-ask, gamma=0.01 → Q0):
     //   ticker=+5, AM_open=+4, dte0=-2, C=+2, vol_oi_Q2=+2, gamma_Q0=+3, ask_pct_Q4=-4 → 10
-    //   + composite SOUN+AM_open+gamma_q='0' → +3 → total 13 (tier1, t1=9)
+    //   + composite SOUN+AM_open+gamma_q='0' → +3 → total 13 (tier1, t1=10)
     //
     // RKLB's own score doesn't matter — its cluster_bonus is driven by SOUN's tier1 entry.
 
@@ -3021,13 +3070,13 @@ describe('detect-lottery-fires handler', () => {
   it('gives both co-firing tier1 tickers the SAME (symmetric) cluster bonus (Fix 3)', async () => {
     // Two chains on DIFFERENT V3 tickers (SNDK + RKLB) fire in the same
     // cron tick at the same trigger time. The V2 score is forced to a
-    // fixed tier1 value (>= t1=9) so the bonus path is exercised without
+    // fixed tier1 value (>= t1=10) so the bonus path is exercised without
     // pinning the test to a live weights retrain. The pre-pass cofire
     // membership must give BOTH fires the pair bonus (clusterSize=2 → 1),
     // not 0 for the first-iterated chain and 1 for the second (the
     // order-dependence bug, where the first chain sees an empty
     // committedFires list).
-    mockComputeLotteryScoreV2.override = 12; // tier1 (>= t1=9)
+    mockScoreLotteryV2.override = 12; // tier1 (>= t1=10)
     const sndk = fireableSndkStream();
     const rklb = fireableSndkStream().map((t) => ({
       ...t,
@@ -3058,6 +3107,263 @@ describe('detect-lottery-fires handler', () => {
     // independent of Map iteration order.
     expect(allBinds[0]!.get('cluster_bonus')).toBe(1);
     expect(allBinds[1]!.get('cluster_bonus')).toBe(1);
+  });
+
+  // Phase 4 (plan 2026-11-05-nightly-pipeline-phase4, D5/D8/D9): the cron
+  // loads the weights store once per run, scores the feed with the `active`
+  // version, hands Take-It its pinned version's score, and stamps the version
+  // that scored the fire into score_version.
+  describe('lottery weights versions', () => {
+    const REFIT = 'refit-2026-11-12';
+    // One cumulative-flow row just before the fixture's first tick, with net
+    // call premium above net put premium: every call fire on the day is aligned.
+    const ALIGNED_CALL_FLOW = [
+      { ts: '2026-05-01T13:29:30Z', cum_ncp: '5000000', cum_npp: '1000000' },
+    ];
+
+    // The score scoreLottery received for each fire, in call order.
+    const takeitScoresSeen = (): unknown[] =>
+      mockScoreLottery.mock.calls.map(
+        (call) => (call[1] as { score: number | null }).score,
+      );
+
+    it('scores the feed with the active version and Take-It with the pinned one', async () => {
+      const active = {
+        version: REFIT,
+        weights: seedWeightsWith((w) => {
+          w.features.ticker_weights.SNDK =
+            (w.features.ticker_weights.SNDK ?? 0) + 3;
+        }),
+      };
+      mockLoadLotteryWeights.mockResolvedValue(loadedWeights({ active }));
+      stageTicks(fireableSndkStream());
+      router.on('flowSeries', ALIGNED_CALL_FLOW);
+      router.on('insert', [{ id: 42 }]);
+
+      const res = mockResponse();
+      await handler(authorizedReq(), res);
+
+      expect(res._json).toMatchObject({
+        status: 'success',
+        inserted: 1,
+        weightsFallback: null,
+      });
+      // The loader is read once per run, not once per fire.
+      expect(mockLoadLotteryWeights).toHaveBeenCalledTimes(1);
+      // Two versions, so two scorings: the active weights first, then the
+      // pinned Take-It ones.
+      expect(mockScoreLotteryV2.calls).toHaveLength(2);
+      expect(mockScoreLotteryV2.calls[0]!.weights).toBe(active.weights);
+      expect(mockScoreLotteryV2.calls[1]!.weights).toBe(SEED_LOTTERY_WEIGHTS);
+      const binds = extractInsertBinds(mockSql, 'lottery_finder_fires');
+      const [takeitScore] = takeitScoresSeen();
+      expect(takeitScore).toEqual(expect.any(Number));
+      // SNDK's ticker weight is 3 higher in the active version: the feed's
+      // score is 3 above what Take-It was handed.
+      expect(binds.get('score')).toBe((takeitScore as number) + 3);
+      expect(binds.get('score_version')).toBe(REFIT);
+    });
+
+    it('scores once per fire when the active and pinned versions are the same', async () => {
+      stageTicks([
+        ...fireableSndkStream(),
+        ...streamFor('RKLB', 'RKLB260501C01175000'),
+      ]);
+      router.on('flowSeries', ALIGNED_CALL_FLOW);
+      router.on('insert', (_call, nth) => [{ id: nth + 1 }]);
+
+      const res = mockResponse();
+      await handler(authorizedReq(), res);
+
+      expect(res._json).toMatchObject({ status: 'success', inserted: 2 });
+      // Two fires, one read of the store.
+      expect(mockLoadLotteryWeights).toHaveBeenCalledTimes(1);
+      // One scoring per fire, with the seed's weights, not two.
+      expect(mockScoreLotteryV2.calls).toHaveLength(2);
+      for (const call of mockScoreLotteryV2.calls) {
+        expect(call.weights).toBe(SEED_LOTTERY_WEIGHTS);
+      }
+      // Take-It gets the very score the feed row carries.
+      const inserted = extractAllInsertBinds(mockSql, 'lottery_finder_fires');
+      const scores = inserted.map((binds) => binds.get('score'));
+      expect(scores.every((s) => Number.isInteger(s))).toBe(true);
+      expect(takeitScoresSeen()).toEqual(scores);
+      for (const binds of inserted) {
+        expect(binds.get('score_version')).toBe(SEED_LOTTERY_WEIGHTS_VERSION);
+      }
+    });
+
+    it('hands the scorer the fire’s alignment and its session weekday', async () => {
+      // 2026-05-01, the fixtures' session day, is a Friday. The active
+      // version scores a Friday fire's tod 2 above the global table; the
+      // pinned seed has no Friday override.
+      const active = {
+        version: REFIT,
+        weights: seedWeightsWith((w) => {
+          const tod = w.features.tod_weights;
+          w.features.tod_weights_dow_overrides.Friday = {
+            AM_open: tod.AM_open + 2,
+            MID: tod.MID + 2,
+            LUNCH: tod.LUNCH + 2,
+            PM: tod.PM + 2,
+          };
+        }),
+      };
+      mockLoadLotteryWeights.mockResolvedValue(loadedWeights({ active }));
+      stageTicks(fireableSndkStream());
+      router.on('flowSeries', ALIGNED_CALL_FLOW);
+      router.on('insert', [{ id: 42 }]);
+
+      await handler(authorizedReq(), mockResponse());
+
+      expect(mockScoreLotteryV2.calls[0]!.input).toMatchObject({
+        ticker: 'SNDK',
+        dte: 0,
+        optionType: 'C',
+        isAligned: true,
+        dayOfWeek: 'Friday',
+      });
+      const binds = extractInsertBinds(mockSql, 'lottery_finder_fires');
+      const [takeitScore] = takeitScoresSeen();
+      expect(binds.get('score')).toBe((takeitScore as number) + 2);
+    });
+
+    it.each([
+      { kind: 'transient' as const, reason: 'db attempt timeout' },
+      {
+        kind: 'error' as const,
+        reason: 'lottery_score_pointers has no active row',
+      },
+    ])(
+      'a $kind weights fallback marks the run partial and records the seed version',
+      async (fallback) => {
+        mockLoadLotteryWeights.mockResolvedValue(loadedWeights({ fallback }));
+        stageTicks(fireableSndkStream());
+        router.on('flowSeries', ALIGNED_CALL_FLOW);
+        router.on('insert', [{ id: 42 }]);
+
+        const res = mockResponse();
+        await handler(authorizedReq(), res);
+
+        expect(res._status).toBe(200);
+        expect(res._json).toMatchObject({
+          status: 'partial',
+          inserted: 1,
+          weightsFallback: fallback.kind,
+        });
+        // The fire was scored with the seed and says so.
+        const binds = extractInsertBinds(mockSql, 'lottery_finder_fires');
+        expect(binds.get('score_version')).toBe(SEED_LOTTERY_WEIGHTS_VERSION);
+        expect(Number.isInteger(binds.get('score'))).toBe(true);
+        // The Axiom event carries the status and the kind; the kind lands in
+        // `meta`, not in a new top-level column.
+        expect(vi.mocked(reportCronRun).mock.calls[0]![1]).toMatchObject({
+          status: 'partial',
+          weightsFallback: fallback.kind,
+        });
+        expect(AXIOM_TOP_LEVEL_KEYS.has('weightsFallback')).toBe(false);
+      },
+    );
+
+    it('stays success when a weights fallback wrote no fire, and still names the kind', async () => {
+      mockLoadLotteryWeights.mockResolvedValue(
+        loadedWeights({ fallback: { kind: 'transient', reason: 'blip' } }),
+      );
+      stageTicks(fireableSndkStream());
+      router.on('insert', []); // ON CONFLICT: the fire was already written
+
+      const res = mockResponse();
+      await handler(authorizedReq(), res);
+
+      expect(res._json).toMatchObject({
+        status: 'success',
+        inserted: 0,
+        weightsFallback: 'transient',
+      });
+    });
+
+    it('does not load the weights when the scan window is empty', async () => {
+      stageTicks([]);
+
+      const res = mockResponse();
+      await handler(authorizedReq(), res);
+
+      expect(res._json).toMatchObject({ status: 'skipped' });
+      expect(mockLoadLotteryWeights).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      // The two co-firing fires score a forced 12; the cluster gate counts a
+      // peer at the active version's t1 or above.
+      { score: 12, t1: 12, bonus: 1, why: 'a peer exactly at t1 counts' },
+      { score: 12, t1: 13, bonus: 0, why: 'a peer one below t1 does not' },
+      // The seed's t1 is 10: an active t1 of 8 pulls a score of 9 in.
+      { score: 9, t1: 8, bonus: 1, why: 'a t1 below the seed’s is honored' },
+    ])(
+      'the cluster bonus counts tier1 by the active version’s t1: $why',
+      async ({ score, t1, bonus }) => {
+        mockScoreLotteryV2.override = score;
+        const active = {
+          version: REFIT,
+          weights: seedWeightsWith((w) => {
+            w.cutoffs = { t1, t2: 5 };
+          }),
+        };
+        mockLoadLotteryWeights.mockResolvedValue(loadedWeights({ active }));
+        stageTicks([
+          ...fireableSndkStream(),
+          ...streamFor('RKLB', 'RKLB260501C01175000'),
+        ]);
+
+        await handler(authorizedReq(), mockResponse());
+
+        const allBinds = extractAllInsertBinds(mockSql, 'lottery_finder_fires');
+        expect(allBinds).toHaveLength(2);
+        expect(allBinds.map((b) => b.get('cluster_bonus'))).toEqual([
+          bonus,
+          bonus,
+        ]);
+      },
+    );
+
+    it('the tier monitor tiers on the active version’s feed cutoffs', async () => {
+      // 20/15 where the seed has 13/10: qas 13 is tier1 under the seed and
+      // tier3 here, qas 10 is tier2 under the seed and tier3 here.
+      const active = {
+        version: REFIT,
+        weights: seedWeightsWith((w) => {
+          w.feed_cutoffs = { tier1_min_score: 20, tier2_min_score: 15 };
+        }),
+      };
+      mockLoadLotteryWeights.mockResolvedValue(loadedWeights({ active }));
+      stageTicks(fireableSndkStream());
+      router.on('insert', [{ id: 42 }]);
+      const row = (qas: number | null, gated = false) => ({
+        score: 5,
+        qas,
+        direction_gated: gated,
+        inversion_quintile: 3,
+      });
+      router.on('tierMonitor', [
+        row(20), // tier1: at the active tier1 cutoff
+        row(19), // tier2
+        row(15), // tier2: at the active tier2 cutoff
+        row(14), // tier3
+        row(13), // tier3 (tier1 on the seed's cutoffs)
+        row(10), // tier3 (tier2 on the seed's cutoffs)
+        row(null), // tier3: no qas
+        row(25, true), // tier3: direction gated, whatever its qas
+      ]);
+
+      const res = mockResponse();
+      await handler(authorizedReq(), res);
+
+      expect(res._json).toMatchObject({
+        feedTier1: 1,
+        feedTier2: 2,
+        feedTier3: 5,
+      });
+    });
   });
 
   // Spec lottery-cron-timeouts-2026-10-28.md, Phase A: the setup phase
