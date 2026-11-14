@@ -1,13 +1,20 @@
-"""Tests for stuck_sockets: alert on and reconnect a trade socket that is up but silent (Task 6).
+"""Tests for stuck_sockets: alert on and reconnect a trade socket that is up but silent (Task 6),
+and alert when every copy of a trade feed is silent in market hours (Task 7).
 
 Each option_trades:<TICKER> channel is joined on two sockets, a twin pair. A
 socket that stays connected and never receives another trade frame raised
-nothing before this task: the twin-silence warning needs a trade frame to end a
+nothing before Task 6: the twin-silence warning needs a trade frame to end a
 gap. ``socket_stats.find_stuck`` is the pure test; these tests cover what
 ``stuck_sockets`` does with it: one Sentry event per incident, at most one per
 shard per cooldown (the alert floor), a forced reconnect bounded by a cooldown,
 one escalation, recovery, and a loop that a failing shard, a failing pass or a
 loop stall cannot kill.
+
+Task 7 covers what the twin comparison cannot see: every copy of a trade feed
+silent at once (or no twins at all). That rule needs the wall clock, for the
+trade window. The ``wall_clock`` fixture replaces the module's ``datetime``; it
+is a Saturday unless a test moves it into the window, so a Task 6 test never
+meets the group rule.
 
 Most tests call ``_check`` with a synthetic monotonic ``now``. ``_NOW`` and the
 offsets are exact in binary, so a gap of 60.0 is exactly ``STUCK_S``. The loop
@@ -33,6 +40,7 @@ from pipeline_stats import LOOP_LAG_FLAG_S
 from state import state
 from stuck_sockets import (
     FORCED_RECONNECT_COOLDOWN_S,
+    GROUP_SILENT_S,
     STUCK_CHECK_INTERVAL_S,
     _check,
     _Watch,
@@ -40,6 +48,12 @@ from stuck_sockets import (
 )
 
 _NOW = 1_100.5
+
+# Wall-clock instants for the trade window (2026-11-13 is a Friday; EST, UTC-5).
+_IN_WINDOW = datetime(2026, 11, 13, 15, 0, tzinfo=UTC)  # 10:00 ET
+_AFTER_CLOSE = datetime(2026, 11, 13, 21, 0, tzinfo=UTC)  # 16:00 ET
+_NEXT_SESSION = datetime(2026, 11, 16, 15, 0, tzinfo=UTC)  # Monday 10:00 ET
+_WEEKEND = datetime(2026, 11, 14, 15, 0, tzinfo=UTC)  # Saturday 10:00 ET
 
 # A real option_trades frame (socket_stats ignores short, ack-sized frames).
 TRADE = (
@@ -56,6 +70,30 @@ _RECOVERED = "stuck trade socket recovered"
 _HELD = "stuck trade socket alert held back"
 _CHECK_FAILED = "stuck-socket check failed"
 _REASON = "stuck_trade_socket"
+_SILENT = "uw-stream option trades silent on every copy"
+_SILENT_LOG = "option trades silent on every copy"
+_SILENT_HELD = "option trades silent alert held back"
+_RESUMED = "option trades resumed"
+_STUCK_ENDED = "stuck trade socket incident ended by the trade window"
+_SILENT_ENDED = "option trades silent incident ended by the trade window"
+
+
+class _Clock:
+    """The module's ``datetime``: ``now`` returns ``utc``, which a test moves."""
+
+    def __init__(self) -> None:
+        self.utc = _WEEKEND
+
+    def now(self, _tz=None) -> datetime:
+        return self.utc
+
+
+@pytest.fixture(autouse=True)
+def wall_clock(monkeypatch) -> _Clock:
+    """The wall clock the trade window reads, outside the window until a test moves it."""
+    clock = _Clock()
+    monkeypatch.setattr(stuck_sockets, "datetime", clock)
+    return clock
 
 
 @pytest.fixture(autouse=True)
@@ -118,8 +156,16 @@ def _feed(stats: socket_stats.SocketStats, times: list[float]) -> None:
         stats.on_frame(TRADE, t)
 
 
-def _connectors(*names: str) -> dict[str, MagicMock]:
-    return {name: MagicMock(spec=Connector) for name in names or ("conn0", "conn1")}
+def _connectors(*names: str, non_trade: tuple[str, ...] = ()) -> dict[str, MagicMock]:
+    """Mock connectors by name. Each joins trade channels unless it is named in ``non_trade``."""
+    connectors = {}
+    for name in names or ("conn0", "conn1"):
+        connector = MagicMock(spec=Connector)
+        connector.channels = (
+            ["net_flow:SPY"] if name in non_trade else ["option_trades:SPY", "option_trades:QQQ"]
+        )
+        connectors[name] = connector
+    return connectors
 
 
 def _stuck_at_now(quiet_gap: float = 60.0):
@@ -140,6 +186,7 @@ def _calls(events: MagicMock) -> list[str]:
 def test_the_check_constants_are_the_spec_values():
     assert STUCK_CHECK_INTERVAL_S == 5.0
     assert FORCED_RECONNECT_COOLDOWN_S == 300.0
+    assert GROUP_SILENT_S == 60.0
 
 
 # --- an incident: the event, the forced reconnect -----------------------------
@@ -663,6 +710,432 @@ class TestEscalationNeedsAStuckSocket:
         assert _calls(events) == [_STUCK]
 
 
+# --- Task 7: every copy of a trade feed silent ------------------------------------
+
+_T0 = 5_000.5  # the first pass: it seeds each group's high-water mark
+_GROUP_CONTEXT = {
+    "shards": ["conn0", "conn6"],
+    "connected": {"conn0": True, "conn6": True},
+    "since_last_trade_s": 60.0,
+    "twins_enabled": True,
+}
+
+
+def _silent_setup(wall_clock: _Clock, *pairs: tuple[str, str]):
+    """Connected twin pairs (conn0 and conn6 by default), the clock in the window, one pass at ``_T0``.
+
+    Returns the watch and the connectors. Nothing has traded, so each group's
+    silence runs from that first pass.
+    """
+    pairs = pairs or (("conn0", "conn6"),)
+    for first, second in pairs:
+        _pair(first, second)
+    wall_clock.utc = _IN_WINDOW
+    connectors = _connectors(*(name for pair in pairs for name in pair))
+    watch = _Watch()
+    _check(watch, connectors, _T0)
+    return watch, connectors
+
+
+class TestGroupSilence:
+    """No trade frame on any copy of a trade feed for GROUP_SILENT_S, inside the window."""
+
+    def test_the_first_pass_only_starts_the_clock(self, wall_clock, events, logs):
+        _silent_setup(wall_clock)
+
+        events.assert_not_called()
+        assert logs == {"info": [], "warning": []}
+
+    def test_a_silent_group_sends_one_error_event_at_exactly_the_threshold(
+        self, wall_clock, events, logs
+    ):
+        watch, connectors = _silent_setup(wall_clock)
+        _check(watch, connectors, _T0 + GROUP_SILENT_S - 0.5)
+        events.assert_not_called()
+
+        _check(watch, connectors, _T0 + GROUP_SILENT_S)
+
+        events.assert_called_once()
+        assert events.call_args.args == (_SILENT,)
+        assert events.call_args.kwargs == {
+            "level": "error",
+            "tags": {"component": "stuck_sockets"},
+            "context": _GROUP_CONTEXT,
+        }
+        assert logs["warning"] == [(_SILENT_LOG, {"group": "conn0", **_GROUP_CONTEXT})]
+
+    def test_it_is_alert_only_and_forces_no_reconnect(self, wall_clock, events):
+        watch, connectors = _silent_setup(wall_clock)
+
+        _check(watch, connectors, _T0 + 120.0)
+
+        events.assert_called_once()
+        for connector in connectors.values():
+            assert connector.force_reconnect.call_count == 0
+
+    def test_one_incident_sends_one_event_however_long_it_lasts(self, wall_clock, events, logs):
+        watch, connectors = _silent_setup(wall_clock)
+
+        for offset in (60.0, 65.0, 125.0, 305.0, 3_600.0):
+            _check(watch, connectors, _T0 + offset)
+
+        assert _calls(events) == [_SILENT]
+        assert [m for m, _extra in logs["warning"]] == [_SILENT_LOG]
+        assert list(watch.group_incidents) == ["conn0"]
+
+    @pytest.mark.parametrize("copy", ["conn0", "conn6"])
+    def test_a_trade_on_either_copy_keeps_the_group_healthy(self, copy, wall_clock, events):
+        watch, connectors = _silent_setup(wall_clock)
+        socket_stats.get(copy).on_frame(TRADE, _T0 + 40.0)
+        _check(watch, connectors, _T0 + 50.0)
+
+        _check(watch, connectors, _T0 + 99.5)  # 59.5 s after the trade
+        events.assert_not_called()
+        _check(watch, connectors, _T0 + 100.0)
+
+        events.assert_called_once()
+        assert events.call_args.kwargs["context"]["since_last_trade_s"] == 60.0
+
+    def test_the_high_water_is_carried_across_a_reconnect(self, wall_clock, events):
+        watch, connectors = _silent_setup(wall_clock)
+        quiet, twin = socket_stats.get("conn0"), socket_stats.get("conn6")
+        quiet.on_frame(TRADE, _T0 + 8.0)
+        _check(watch, connectors, _T0 + 10.0)  # the pass sees that trade
+        # Both sockets reconnect: session_start clears last_trade_at.
+        quiet.session_start(_T0 + 12.0)
+        twin.session_start(_T0 + 12.0)
+
+        # The silence is counted from the last trade, not from the first pass
+        # (which would be 65 s) nor from the reconnect (which would be 53 s).
+        _check(watch, connectors, _T0 + 65.0)
+        events.assert_not_called()
+        _check(watch, connectors, _T0 + 68.0)
+
+        events.assert_called_once()
+        assert events.call_args.kwargs["context"]["since_last_trade_s"] == 60.0
+
+    def test_the_event_says_which_copies_were_connected(self, wall_clock, events):
+        watch, connectors = _silent_setup(wall_clock)
+        state.set_connection("conn6", False)
+
+        _check(watch, connectors, _T0 + 60.0)
+
+        assert events.call_args.kwargs["context"]["connected"] == {"conn0": True, "conn6": False}
+
+    def test_a_trade_after_the_incident_began_ends_it_and_logs_the_duration(
+        self, wall_clock, events, logs
+    ):
+        watch, connectors = _silent_setup(wall_clock)
+        _check(watch, connectors, _T0 + 60.0)  # the incident opens
+        socket_stats.get("conn6").on_frame(TRADE, _T0 + 64.0)
+
+        _check(watch, connectors, _T0 + 65.0)
+
+        assert logs["info"] == [
+            (_RESUMED, {"group": "conn0", "shards": ["conn0", "conn6"], "duration_s": 5.0})
+        ]
+        assert watch.group_incidents == {}
+        assert _calls(events) == [_SILENT]
+
+
+class TestGroupsFollowTheTwinMap:
+    def test_with_no_twins_each_trade_shard_is_a_group_of_its_own(self, wall_clock, events):
+        wall_clock.utc = _IN_WINDOW
+        state.set_connection("conn0", True)
+        state.set_connection("conn1", True)
+        connectors = _connectors("conn0", "conn1")  # no twins: the mirror sockets are off
+        watch = _Watch()
+        _check(watch, connectors, _T0)
+        socket_stats.get("conn0").on_frame(TRADE, _T0 + 30.0)
+        _check(watch, connectors, _T0 + 35.0)
+
+        _check(watch, connectors, _T0 + 60.0)
+
+        # conn0 traded 30 s ago; conn1 never did, so only its group is silent.
+        events.assert_called_once()
+        assert events.call_args.kwargs["context"] == {
+            "shards": ["conn1"],
+            "connected": {"conn1": True},
+            "since_last_trade_s": 60.0,
+            "twins_enabled": False,
+        }
+
+    def test_two_pairs_are_two_groups(self, wall_clock, events):
+        watch, connectors = _silent_setup(wall_clock, ("conn0", "conn6"), ("conn1", "conn7"))
+        socket_stats.get("conn7").on_frame(TRADE, _T0 + 30.0)
+        _check(watch, connectors, _T0 + 35.0)
+
+        _check(watch, connectors, _T0 + 60.0)
+
+        # Only the first pair has been silent for 60 s; its sibling pair traded.
+        assert [c.kwargs["context"]["shards"] for c in events.call_args_list] == [
+            ["conn0", "conn6"]
+        ]
+
+    def test_a_non_trade_shard_is_not_a_group(self, wall_clock, events):
+        wall_clock.utc = _IN_WINDOW
+        connectors = _connectors("conn2", "conn3", non_trade=("conn2", "conn3"))
+        watch = _Watch()
+        _check(watch, connectors, _T0)
+
+        _check(watch, connectors, _T0 + 600.0)
+
+        events.assert_not_called()
+
+    def test_a_non_trade_shard_next_to_a_trade_pair_is_left_out(self, wall_clock, events):
+        wall_clock.utc = _IN_WINDOW
+        _pair("conn0", "conn6")
+        connectors = _connectors("conn0", "conn6", "conn2", non_trade=("conn2",))
+        watch = _Watch()
+        _check(watch, connectors, _T0)
+
+        _check(watch, connectors, _T0 + 60.0)
+
+        assert [c.kwargs["context"]["shards"] for c in events.call_args_list] == [
+            ["conn0", "conn6"]
+        ]
+
+
+class TestOnlyInsideTheWindow:
+    @pytest.mark.parametrize(
+        "instant",
+        [
+            datetime(2026, 11, 14, 15, 0, tzinfo=UTC),  # Saturday
+            datetime(2026, 11, 26, 15, 0, tzinfo=UTC),  # Thanksgiving
+            datetime(2026, 11, 13, 14, 30, 59, tzinfo=UTC),  # 09:30:59 ET
+            datetime(2026, 11, 13, 20, 59, tzinfo=UTC),  # 15:59 ET
+            datetime(2026, 11, 27, 18, 0, tzinfo=UTC),  # 13:00 ET on the early-close day
+        ],
+    )
+    def test_a_silent_group_outside_the_window_sends_nothing(self, instant, wall_clock, events):
+        watch, connectors = _silent_setup(wall_clock)
+        wall_clock.utc = instant
+
+        _check(watch, connectors, _T0 + 600.0)
+
+        events.assert_not_called()
+
+    def test_a_group_silent_since_before_the_open_alerts_on_the_first_pass_in_the_window(
+        self, wall_clock, events
+    ):
+        watch, connectors = _silent_setup(wall_clock)
+        wall_clock.utc = _AFTER_CLOSE
+        _check(watch, connectors, _T0 + 600.0)
+        events.assert_not_called()
+
+        wall_clock.utc = _NEXT_SESSION
+        _check(watch, connectors, _T0 + 605.0)
+
+        assert _calls(events) == [_SILENT]
+
+
+class TestGroupAlertFloor:
+    """At most one Sentry event per group per FORCED_RECONNECT_COOLDOWN_S (ruling R30)."""
+
+    def test_a_feed_that_leaks_one_trade_between_silences_alerts_at_most_once_per_cooldown(
+        self, wall_clock, events, logs
+    ):
+        # Both copies deliver one trade every 65 s, so the group is silent for 60 s
+        # at a time and each silence is a new incident. Without the floor that is an
+        # error event every 65 s: 55 in the hour.
+        wall_clock.utc = _IN_WINDOW
+        quiet, _twin = _pair("conn0", "conn6")
+        connectors = _connectors("conn0", "conn6")
+        watch = _Watch()
+        base = 2_000.5
+        for t in range(0, 3_601, 5):
+            now = base + t
+            if t % 65 == 0:
+                quiet.on_frame(TRADE, now - 0.25)
+            _check(watch, connectors, now)
+
+        sent = len(_calls(events))
+        held = [m for m, _extra in logs["warning"]].count(_SILENT_HELD)
+        assert sent == 11  # at 60 s, then the first incident opening 300 s or more later, ...
+        assert sent <= 3_600 / FORCED_RECONNECT_COOLDOWN_S
+        assert sent + held == 55  # every incident that opened was either sent or held back
+
+    def test_a_held_back_event_is_logged_with_what_would_have_been_sent(
+        self, wall_clock, events, logs
+    ):
+        watch, connectors = _silent_setup(wall_clock)
+        _check(watch, connectors, _T0 + 60.0)  # sent
+        socket_stats.get("conn0").on_frame(TRADE, _T0 + 64.0)
+        _check(watch, connectors, _T0 + 65.0)  # resumed
+
+        _check(watch, connectors, _T0 + 124.0)  # silent again, 64 s after the last event
+
+        assert _calls(events) == [_SILENT]
+        assert logs["warning"][-1] == (
+            _SILENT_HELD,
+            {
+                "group": "conn0",
+                "shards": ["conn0", "conn6"],
+                "event": _SILENT,
+                "since_last_trade_s": 60.0,
+                "since_last_alert_s": 64.0,
+            },
+        )
+        assert list(watch.group_incidents) == ["conn0"]  # the incident is open all the same
+
+    @pytest.mark.parametrize(
+        ("opens_at", "events_sent"),
+        [
+            (FORCED_RECONNECT_COOLDOWN_S + 59.5, 1),  # 299.5 s after the last event: held back
+            (FORCED_RECONNECT_COOLDOWN_S + 60.0, 2),  # exactly the cooldown: sent
+        ],
+    )
+    def test_the_floor_lifts_at_exactly_the_cooldown(
+        self, opens_at, events_sent, wall_clock, events
+    ):
+        watch, connectors = _silent_setup(wall_clock)
+        _check(watch, connectors, _T0 + 60.0)  # sent
+        socket_stats.get("conn0").on_frame(TRADE, _T0 + 64.0)
+        _check(watch, connectors, _T0 + 65.0)  # resumed
+
+        _check(watch, connectors, _T0 + opens_at)  # silent again, a new incident
+
+        assert len(_calls(events)) == events_sent
+
+    def test_the_floor_is_per_group(self, wall_clock, events):
+        watch, connectors = _silent_setup(wall_clock, ("conn0", "conn6"), ("conn1", "conn7"))
+        socket_stats.get("conn1").on_frame(TRADE, _T0 + 30.0)  # the second pair is silent later
+        _check(watch, connectors, _T0 + 35.0)
+        _check(watch, connectors, _T0 + 60.0)  # the first pair alerts
+
+        _check(watch, connectors, _T0 + 90.0)  # the second pair, 30 s after that event
+
+        assert [c.kwargs["context"]["shards"] for c in events.call_args_list] == [
+            ["conn0", "conn6"],
+            ["conn1", "conn7"],
+        ]
+
+    def test_it_is_separate_from_the_stuck_shards_floor(self, wall_clock, events):
+        # conn0 is stuck at _T0 (its twin streamed, then stopped), which sends the
+        # Task 6 event under the key "conn0". The group "conn0" goes silent 60 s later,
+        # 60 s inside that shard's floor, and still sends its own event.
+        wall_clock.utc = _IN_WINDOW
+        quiet, twin = _pair("conn0", "conn6")
+        quiet.on_frame(TRADE, _T0 - 60.0)
+        _feed(twin, [_T0 - 30.25] * 150)
+        connectors = _connectors("conn0", "conn6")
+        watch = _Watch()
+        _check(watch, connectors, _T0)
+        assert _calls(events) == [_STUCK]
+
+        _check(watch, connectors, _T0 + 60.0)
+
+        assert _calls(events) == [_STUCK, _SILENT]
+
+
+class TestTheWindowClosing:
+    """A trade-window change ends every open incident, so none carries across a session."""
+
+    def test_the_close_ends_an_open_silent_incident(self, wall_clock, events, logs):
+        watch, connectors = _silent_setup(wall_clock)
+        _check(watch, connectors, _T0 + 60.0)  # the incident opens
+
+        wall_clock.utc = _AFTER_CLOSE
+        _check(watch, connectors, _T0 + 65.0)
+
+        assert logs["info"] == [
+            (_SILENT_ENDED, {"group": "conn0", "duration_s": 5.0, "window": "closed"})
+        ]
+        assert watch.group_incidents == {}
+        assert _calls(events) == [_SILENT]
+
+    def test_a_feed_still_silent_next_session_alerts_afresh(self, wall_clock, events):
+        watch, connectors = _silent_setup(wall_clock)
+        _check(watch, connectors, _T0 + 60.0)
+        wall_clock.utc = _AFTER_CLOSE
+        _check(watch, connectors, _T0 + 65.0)
+
+        wall_clock.utc = _NEXT_SESSION
+        _check(watch, connectors, _T0 + 72_000.0)
+
+        assert _calls(events) == [_SILENT, _SILENT]
+
+    def test_the_close_ends_an_open_stuck_socket_incident(self, wall_clock, events, logs):
+        wall_clock.utc = _IN_WINDOW
+        _stuck_at_now()
+        connectors = _connectors()
+        watch = _Watch()
+        _check(watch, connectors, _NOW)
+        assert list(watch.incidents) == ["conn0"]
+
+        # 40 s on the twin has gone quiet, as the equity options do at the close.
+        wall_clock.utc = _AFTER_CLOSE
+        _check(watch, connectors, _NOW + 40.0)
+
+        assert logs["info"] == [
+            (
+                _STUCK_ENDED,
+                {"shard": "conn0", "duration_s": 40.0, "forced_reconnects": 1, "window": "closed"},
+            )
+        ]
+        assert watch.incidents == {}
+
+    def test_a_socket_stuck_through_the_close_alerts_again_next_session(
+        self, wall_clock, events, logs
+    ):
+        wall_clock.utc = _IN_WINDOW
+        _quiet, twin = _stuck_at_now()
+        connectors = _connectors()
+        watch = _Watch()
+        _check(watch, connectors, _NOW)
+        assert _calls(events) == [_STUCK]
+
+        # The close ends the incident, but the twin is still streaming (index
+        # options trade to 16:15 ET), so the shard is found stuck again in the
+        # same pass: a new incident whose event the floor holds back.
+        wall_clock.utc = _AFTER_CLOSE
+        _check(watch, connectors, _NOW + 5.0)
+        assert _calls(events) == [_STUCK]
+        assert list(watch.incidents) == ["conn0"]
+
+        # That incident would carry overnight, and the next session start would
+        # find it open and send nothing. The open ends it, and the stick alerts afresh.
+        wall_clock.utc = _NEXT_SESSION
+        later = _NOW + 72_000.0
+        _feed(twin, [later - 30.25] * 150)
+        _check(watch, connectors, later)
+
+        assert _calls(events) == [_STUCK, _STUCK]
+        assert events.call_args.kwargs["context"]["forced_reconnects"] == 0  # a new incident
+        windows = [extra["window"] for msg, extra in logs["info"] if msg == _STUCK_ENDED]
+        assert windows == ["closed", "opened"]
+
+    def test_a_pass_that_changes_nothing_ends_nothing(self, wall_clock, events, logs):
+        watch, connectors = _silent_setup(wall_clock)
+        _check(watch, connectors, _T0 + 60.0)
+
+        _check(watch, connectors, _T0 + 65.0)
+        _check(watch, connectors, _T0 + 70.0)
+
+        assert logs["info"] == []
+        assert list(watch.group_incidents) == ["conn0"]
+
+
+class TestOneGroupsFailure:
+    def test_a_failing_group_is_logged_and_the_next_group_is_still_checked(
+        self, wall_clock, events, errors
+    ):
+        watch, connectors = _silent_setup(wall_clock, ("conn0", "conn6"), ("conn1", "conn7"))
+        events.side_effect = [RuntimeError("sentry down"), None]
+
+        _check(watch, connectors, _T0 + 60.0)
+
+        assert events.call_count == 2
+        ((message, extra),) = errors
+        assert message == _CHECK_FAILED
+        assert (extra["scope"], extra["kind"], extra["group"]) == (
+            "stuck_sockets",
+            "check",
+            "conn0",
+        )
+        assert (extra["err_type"], extra["err"]) == ("RuntimeError", "sentry down")
+
+
 # --- the loop --------------------------------------------------------------------
 
 
@@ -784,3 +1257,55 @@ async def test_cancelling_the_task_ends_it():
     await asyncio.wait({task}, timeout=1.0)
 
     assert task.cancelled()
+
+
+def _on_time_passes(count: int) -> list[float]:
+    """Monotonic reads for ``count`` passes that each sleep exactly STUCK_CHECK_INTERVAL_S.
+
+    Pass i reads its start at 1000.5 + 5 i and its check time 5 s later, then the
+    next iteration reads its start; the last start is read before the sleep that ends the loop.
+    """
+    ticks: list[float] = []
+    for i in range(count + 1):
+        start = 1_000.5 + STUCK_CHECK_INTERVAL_S * i
+        ticks += [start, start + STUCK_CHECK_INTERVAL_S]
+    return ticks[:-1]
+
+
+@pytest.mark.asyncio
+async def test_the_loop_alerts_a_silent_group_on_the_first_pass_that_reaches_the_threshold(
+    monkeypatch, wall_clock, events
+):
+    wall_clock.utc = _IN_WINDOW
+    _pair("conn0", "conn6")
+    connectors = _connectors("conn0", "conn6")
+    _script_sleep(monkeypatch, [lambda: None] * 13)
+    _script_monotonic(monkeypatch, *_on_time_passes(13))
+
+    with pytest.raises(asyncio.CancelledError):
+        await run_stuck_socket_watchdog(connectors)
+
+    # The first pass checked at 1005.5 and started the group's clock; the 13th, at
+    # 1065.5, is the first 60 s on. Nothing was sent by the 12 before it.
+    assert _calls(events) == [_SILENT]
+    assert events.call_args.kwargs["context"]["since_last_trade_s"] == 60.0
+
+
+@pytest.mark.asyncio
+async def test_a_pass_whose_sleep_overran_is_skipped_by_the_group_rule_too(
+    monkeypatch, wall_clock, events
+):
+    wall_clock.utc = _IN_WINDOW
+    _pair("conn0", "conn6")
+    connectors = _connectors("conn0", "conn6")
+    _script_sleep(monkeypatch, [lambda: None] * 14)
+    # The 13th pass would be the first 60 s on, but it slept 6.0 s for a 5.0 s
+    # sleep: exactly LOOP_LAG_FLAG_S, so it is skipped. The 14th pass ran on time.
+    _script_monotonic(monkeypatch, *_on_time_passes(12), 1_066.5, 1_066.5, 1_071.5, 1_071.5)
+
+    with pytest.raises(asyncio.CancelledError):
+        await run_stuck_socket_watchdog(connectors)
+
+    # The skipped pass would have found the group 61.0 s silent; the next, 66.0 s.
+    assert _calls(events) == [_SILENT]
+    assert events.call_args.kwargs["context"]["since_last_trade_s"] == 66.0

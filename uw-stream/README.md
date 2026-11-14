@@ -187,7 +187,9 @@ Single asyncio process:
 9. **Stuck-socket watchdog** (`src/stuck_sockets.py`): every 5 s, finds a
    connected `option_trades` socket that has received no trade frame for
    60 s while its twin kept receiving, sends a Sentry alert and forces a
-   reconnect of it. See Stuck trade sockets.
+   reconnect of it. It also sends a Sentry alert when no trade frame has
+   reached any copy of a trade feed for 60 s inside the trade window (it forces
+   nothing then). See Stuck trade sockets.
 
 ## Schema
 
@@ -465,7 +467,8 @@ On 2026-11-13 trades landed in Neon 24 to 44 s late at every :x0 and :x5
 minute. A slow Neon write, an exhausted connection pool and a blocked event
 loop all look the same from outside. These numbers tell them apart. They are
 logs and `/metrics` fields only: nothing here sends a Sentry event, except the
-stuck-trade-socket alert (see Stuck trade sockets, below).
+stuck-trade-socket alert and the silent-trade-feed alert (see Stuck trade
+sockets, below).
 
 ### `/metrics` flush and high-water fields
 
@@ -725,13 +728,15 @@ first finds the shard stuck until a trade frame arrives:
    the incident has forced a reconnect, the watchdog sends one more event for
    the incident, an error: `uw-stream trade socket still stuck after a forced
    reconnect`, with the same extras (`forced_reconnects` is then 1 or more). It
-   means the reconnect did not help: the new connection also went 60 s with no
-   trade frame while its twin received at least 100 (or the abort did not end
-   the old connection). A fresh connection that has not been quiet for 60 s
-   yet is not escalated. The service keeps forcing a reconnect every 300 s but
-   sends no further event for the incident. A redeploy is the next move if
-   nothing else explains it. An incident that has not yet forced a reconnect
-   (the cooldown from an earlier incident is still running) does not escalate.
+   arrives about 5 minutes after the first alert, not about 1: the alert floor,
+   below, explains why. It means the reconnect did not help: the new connection
+   also went 60 s with no trade frame while its twin received at least 100 (or
+   the abort did not end the old connection). A fresh connection that has not
+   been quiet for 60 s yet is not escalated. The service keeps forcing a
+   reconnect every 300 s but sends no further event for the incident. A redeploy
+   is the next move if nothing else explains it. An incident that has not yet
+   forced a reconnect (the cooldown from an earlier incident is still running)
+   does not escalate.
 4. **The end.** When the shard's last trade frame is later than the incident's
    start, the incident ends and the watchdog logs `stuck trade socket
    recovered` with `shard`, `duration_s` (to the check that saw the trade frame,
@@ -767,24 +772,95 @@ before it cancels the connectors. A cancelled connector leaves its shard marked
 connected with its last trade frame frozen, so a watchdog still running would
 find a quiet socket stuck while the service is closing it.
 
-Each stuck shard's handling is guarded on its own, and so is each pass: a
-failure logs `stuck-socket check failed` at error level, one Sentry event a
-minute per shard, and the shards after it and the loop carry on. A forced
-reconnect only acts while the connector's receive loop is running, so a drop the
-server started is never labelled `forced`. Read the lines with:
+Each stuck shard's handling, each trade group's check (below) and each pass is
+guarded on its own: a failure logs `stuck-socket check failed` at error level,
+one Sentry event a minute per shard or group, and the ones after it and the loop
+carry on. A forced reconnect only acts while the connector's receive loop is
+running, so a drop the server started is never labelled `forced`. Read the lines
+with:
 
 ```bash
 railway logs -s uw-stream --filter "stuck trade socket" --json
+railway logs -s uw-stream --filter "option trades" --json
 ```
+
+#### Every copy of a trade feed silent
+
+The comparison above cannot see both copies of a feed stop at once (each one's
+twin then shows no trade frames), nor a deployment with no twins
+(`WS_REDUNDANT_OPTION_TRADES=false`). `/healthz` cannot either: it uses the
+global last-message time, which the GEX and net-flow sockets keep fresh. So the
+same pass also watches each **trade group**: a primary trade shard with its twin
+(`conn0` with `conn6`, `conn1` with `conn7`), or, with no twins, each trade
+shard alone. A trade shard is a connector with any `option_trades:` channel.
+
+For each group the watchdog keeps the time of the latest trade frame seen on any
+of its sockets, starting at the group's first pass. It keeps it itself, not on
+the sockets, because a reconnect clears a socket's last trade frame. A group is
+**silent** when the trade window is open and that time is `GROUP_SILENT_S` (60 s)
+or more ago. The lunch lull on 2026-11-13 never came near it: its quietest
+minute carried 3,938 trades for conn0's half of the tickers. At the first silent
+pass the watchdog opens an incident:
+
+- One warning log line, `option trades silent on every copy`, and one Sentry
+  error with the same text, `uw-stream option trades silent on every copy`,
+  tagged `component=stuck_sockets`. Its extras are `shards` (the group's
+  sockets), `connected` (each one's connected flag, so `false` means a socket
+  that is down and reconnecting, `true` on both means UW is sending nothing or
+  both lost their joins), `since_last_trade_s` (counted from the watchdog's
+  first pass if no trade has arrived since it started) and `twins_enabled`.
+- Nothing is forced. The alert is all this does: the owner asked to know, and a
+  reconnect can be added later.
+- The incident ends when any socket of the group receives a trade frame. The
+  watchdog logs `option trades resumed` with `group`, `shards` and `duration_s`
+  (to the check that saw the trade, so up to 5 s late).
+- The alert floor applies, with its own clock per group: at most one Sentry event
+  per group per 300 s. A feed that leaks one trade frame between 60 s silences
+  would otherwise send one about every 65 s. A held-back event is logged as
+  `option trades silent alert held back`, with the group's numbers and
+  `since_last_alert_s`, and the incident is open all the same. Unlike a held
+  escalation, a held opening alert is not sent later.
+
+**The trade window** is `market_calendar.in_trade_window` (`src/market_calendar.py`,
+pure): a trading day (Monday to Friday, not a NYSE closure) from 09:31 ET up to,
+not including, one minute before the close, which is 16:00 ET or 13:00 ET on an
+early-close day. The minute after the open lets trading start. The minute before
+the close stays clear of the equity options' 16:00 close, after which conn0's
+half has no trades. Outside it nothing alerts and the groups' times keep being
+tracked, so a feed silent since the evening before alerts on the first pass
+after the open.
+
+When the window changes, at the open or at the close, every open incident of
+both kinds ends with one log line, `option trades silent incident ended by the
+trade window` or `stuck trade socket incident ended by the trade window`, with
+`window` set to `opened` or `closed` and the usual `duration_s`. A stuck-socket
+incident otherwise ends only when a trade frame arrives, so one for a socket that
+stays stuck through the close would carry overnight, and the next session would
+start with no new alert. Ending at the close is not enough on its own: the twin
+keeps streaming for 15 minutes after it (the index options trade to 16:15 ET),
+so the shard is found stuck again in the next pass and that new incident is the
+one that would carry. The open ends it too, and the stick alerts afresh. The
+stuck-socket checks themselves do not depend on the window, so a wrong calendar
+cannot switch them off.
+
+**The calendar** is a copy. The daemon cannot import TypeScript, so
+`src/market_calendar.py` holds `MARKET_CLOSED_DATES` and `EARLY_CLOSE_DATES` as
+copied from `src/data/marketHours.ts`, and `tests/test_market_calendar.py` reads
+that file and fails when the two differ. It fails, it does not skip, when the file
+is missing. The uw-stream CI job checks out the whole repository, so the test can
+read it there. Edit both files together when a year's holidays are added. A
+comment in `marketHours.ts` says so.
 
 **Not covered:**
 
-- Both twins stuck at once: each one's twin shows no trade frames, so there is
-  nothing to compare against. The minute line's `trade_frames: 0` on both is the
-  only sign.
-- `WS_REDUNDANT_OPTION_TRADES=false`: with no mirror sockets no shard has a twin,
-  so the watchdog does nothing.
-- The non-trade sockets (`conn2` to `conn5`): they have no twin.
+- The non-trade sockets (`conn2` to `conn5`): nothing alerts when they go quiet.
+  The minute line's per-socket frame counts and the subscription watchdog are
+  what there is.
+- A feed that stops outside the trade window.
+- A holiday that is in neither calendar. The window reads it as a trading day,
+  so the alert fires once, with `connected` true on both sockets. The TypeScript
+  file's own test fails once its last listed holiday is under 60 days out, and
+  the parity test then carries the update across.
 
 ## Operational notes
 

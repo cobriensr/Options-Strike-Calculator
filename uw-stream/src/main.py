@@ -276,17 +276,18 @@ async def _run() -> None:
         producer_tasks.append(
             asyncio.create_task(router.run(receive_queue), name="router"),
         )
-        # Background services that aren't part of the data pipeline. They sit
-        # in the same wait set as the pipeline, so an unexpected death of any
-        # of them exits non-zero, and _shutdown cancels them via other_tasks.
-        # Reconnects a trade socket that is up but silent while its twin
-        # receives; it needs the connectors to call ``force_reconnect``. Kept
-        # apart from the list below too: ``_shutdown`` stops it before the
-        # connectors, like the lease renewal.
+        # Watches the trade sockets: reconnects one that is up but silent while
+        # its twin receives, and alerts when every copy of a trade feed is silent
+        # in market hours. It needs the connectors, to call ``force_reconnect`` and
+        # to find the trade shards. Created apart from the other background tasks:
+        # ``_shutdown`` stops it before the connectors, like the lease renewal.
         stuck_watchdog = asyncio.create_task(
             run_stuck_socket_watchdog({c.name: c for c in connectors}),
             name="stuck_sockets",
         )
+        # Background services that aren't part of the data pipeline. They sit
+        # in the same wait set as the pipeline, so an unexpected death of any
+        # of them exits non-zero, and _shutdown cancels them via other_tasks.
         background_tasks: list[asyncio.Task] = [
             asyncio.create_task(run_server(), name="health"),
             asyncio.create_task(run_subscription_watchdog(), name="subscription_watchdog"),

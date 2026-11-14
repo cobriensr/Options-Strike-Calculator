@@ -20,6 +20,11 @@ import notify
 import socket_stats
 import ws_lease
 
+# The longest a test lets ``main._run`` take. A run ends when the test sends SIGTERM and
+# ``_shutdown`` finishes in well under a second; a regression there (a changed signature,
+# a step that never returns) would otherwise hang the whole run, so it fails here instead.
+_RUN_TIMEOUT_S = 30.0
+
 
 @pytest.fixture(autouse=True)
 def _reset_notify_state(monkeypatch):
@@ -307,7 +312,7 @@ async def test_run_exits_nonzero_when_lease_acquire_times_out(monkeypatch):
     monkeypatch.setattr(main, "capture_message", lambda msg, **kw: messages.append((msg, kw)))
 
     with pytest.raises(SystemExit) as exc_info:
-        await main._run()
+        await asyncio.wait_for(main._run(), timeout=_RUN_TIMEOUT_S)
 
     assert exc_info.value.code == 1
     # Pool was opened then closed on the fail path.
@@ -366,7 +371,7 @@ async def test_run_wires_renewal_task_with_lease_lost_callback(monkeypatch):
     # A confirmed lease loss (run_renewal fires on_lost) must drain gracefully
     # AND exit non-zero so Railway's ON_FAILURE policy restarts the container.
     with pytest.raises(SystemExit) as exc_info:
-        await main._run()
+        await asyncio.wait_for(main._run(), timeout=_RUN_TIMEOUT_S)
     assert exc_info.value.code == 1
 
     on_lost = captured.get("on_lost")
@@ -400,7 +405,7 @@ async def test_run_exits_nonzero_and_reports_on_task_crash(_reset_notify_state, 
     monkeypatch.setattr(main, "capture_exception", lambda exc, **kw: captured.append((exc, kw)))
 
     with pytest.raises(SystemExit) as exc_info:
-        await main._run()
+        await asyncio.wait_for(main._run(), timeout=_RUN_TIMEOUT_S)
 
     assert exc_info.value.code == 1
     # The crash was reported to Sentry, tagged with the dead task's name.
@@ -449,7 +454,7 @@ async def test_run_exits_zero_on_normal_sigterm(monkeypatch):
     monkeypatch.setattr(main.asyncio, "wait", _wait_then_sigterm)
 
     # No SystemExit — clean return → exit 0 (lease_lost was never set).
-    await main._run()
+    await asyncio.wait_for(main._run(), timeout=_RUN_TIMEOUT_S)
     # The stop event was the last created; lease_lost (first) stayed unset.
     assert created_events[0].is_set() is False
 
@@ -640,7 +645,7 @@ async def test_run_stops_the_stuck_socket_watchdog_before_the_first_connector_ab
     monkeypatch.setattr(main, "run_stuck_socket_watchdog", _recording_watchdog)
     _sigterm_once_run_is_waiting(monkeypatch)
 
-    await main._run()
+    await asyncio.wait_for(main._run(), timeout=_RUN_TIMEOUT_S)
 
     assert events[0] == "watchdog cancelled"
     assert events.index("watchdog cancelled") < events.index("connector cancelled:conn0")
@@ -1031,7 +1036,7 @@ async def test_run_starts_drop_reporter_and_shutdown_cancels_it(_reset_notify_st
     monkeypatch.setattr(main, "run_drop_reporter", _recording_reporter)
     _sigterm_once_run_is_waiting(monkeypatch)
 
-    await main._run()
+    await asyncio.wait_for(main._run(), timeout=_RUN_TIMEOUT_S)
 
     assert events == ["started", "cancelled"]
 
@@ -1052,7 +1057,7 @@ async def test_run_starts_pipeline_stats_and_shutdown_cancels_it(_reset_notify_s
     monkeypatch.setattr(main, "run_pipeline_stats", _recording_stats)
     _sigterm_once_run_is_waiting(monkeypatch)
 
-    await main._run()
+    await asyncio.wait_for(main._run(), timeout=_RUN_TIMEOUT_S)
 
     assert events == ["started", "cancelled"]
 
@@ -1093,7 +1098,7 @@ async def test_run_starts_the_stuck_socket_watchdog_with_the_connectors_by_name(
     monkeypatch.setattr(main, "run_stuck_socket_watchdog", _recording_watchdog)
     _sigterm_once_run_is_waiting(monkeypatch)
 
-    await main._run()
+    await asyncio.wait_for(main._run(), timeout=_RUN_TIMEOUT_S)
 
     # The same connector objects the connector tasks run, keyed by shard name.
     (connectors,) = received
@@ -1118,7 +1123,7 @@ async def test_run_exits_nonzero_when_the_stuck_socket_watchdog_dies(
     monkeypatch.setattr(main, "capture_exception", lambda exc, **kw: captured.append((exc, kw)))
 
     with pytest.raises(SystemExit) as exc_info:
-        await main._run()
+        await asyncio.wait_for(main._run(), timeout=_RUN_TIMEOUT_S)
 
     assert exc_info.value.code == 1
     assert [(str(e), kw["tags"]["task"]) for e, kw in captured] == [
@@ -1140,7 +1145,7 @@ async def test_a_stubbed_run_neither_runs_the_real_stats_task_nor_fills_the_real
     _stub_pipeline(monkeypatch)
     _sigterm_once_run_is_waiting(monkeypatch)
 
-    await main._run()
+    await asyncio.wait_for(main._run(), timeout=_RUN_TIMEOUT_S)
 
     assert main.run_pipeline_stats is not real_stats_task
     assert main.run_stuck_socket_watchdog is not real_watchdog
@@ -1177,7 +1182,7 @@ async def test_run_registers_every_shard_and_its_twin_before_the_connectors_are_
     monkeypatch.setattr(main, "Connector", _RecordingConnector)
     _sigterm_once_run_is_waiting(monkeypatch)
 
-    await main._run()
+    await asyncio.wait_for(main._run(), timeout=_RUN_TIMEOUT_S)
 
     assert built == [
         ("conn0", ["conn0", "conn1"], "conn1"),
@@ -1223,7 +1228,7 @@ async def test_run_exits_nonzero_when_drop_reporter_dies(_reset_notify_state, mo
     monkeypatch.setattr(main, "capture_exception", lambda exc, **kw: captured.append((exc, kw)))
 
     with pytest.raises(SystemExit) as exc_info:
-        await main._run()
+        await asyncio.wait_for(main._run(), timeout=_RUN_TIMEOUT_S)
 
     assert exc_info.value.code == 1
     assert [(str(e), kw["tags"]["task"]) for e, kw in captured] == [
@@ -1264,7 +1269,7 @@ async def test_the_drop_reporter_is_cancelled_after_the_handlers_drain(
     monkeypatch.setattr(main, "_build_handlers", lambda _ch: {"lossy": _LossyHandler()})
     _sigterm_once_run_is_waiting(monkeypatch)
 
-    await main._run()
+    await asyncio.wait_for(main._run(), timeout=_RUN_TIMEOUT_S)
 
     assert [(r["tags"]["handler"], r["context"]["lost_rows"]) for r in reports] == [("lossy", 7)]
 
@@ -1336,7 +1341,8 @@ async def test_a_drain_longer_than_a_renew_interval_does_not_read_as_a_lost_leas
     monkeypatch.setattr(main, "_build_handlers", lambda _ch: {"slow": _SlowDrainHandler()})
     _sigterm_once_run_is_waiting(monkeypatch)
 
-    await main._run()  # a SystemExit(1) here is the false lease loss
+    # A SystemExit(1) here is the false lease loss.
+    await asyncio.wait_for(main._run(), timeout=_RUN_TIMEOUT_S)
 
     assert lease_events == []
     assert session.closed is True
