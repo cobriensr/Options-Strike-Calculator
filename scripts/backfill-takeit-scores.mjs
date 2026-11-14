@@ -22,6 +22,13 @@
 //      reconstruction is left as takeit_prob = NULL; the cron will score
 //      future rows live.
 //
+//   4. Take-It's `score` input is the lottery score under the `takeit`
+//      pointer's weights version, the same version the live cron scores it
+//      with (phase 4 D8), computed by the mapper from the stored columns. The
+//      stored `score` column is the `active` version's and is never read. The
+//      weights load once at start; if the store can't be read the script
+//      stops rather than score with a guess (the loader's seed fallback).
+//
 // Silent-boom is intentionally NOT supported here — the row shapes diverge
 // and silent-boom needs its own mapper. Pass FEED=silent_boom or FEED=both
 // and the script hard-errors.
@@ -36,6 +43,7 @@ import { config as dotenvConfig } from 'dotenv';
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { loadLotteryWeights } from '../api/_lib/lottery-weights-loader.ts';
 import {
   STRICT_CLEAN_WHERE,
   dbRowToLotteryAlertRow,
@@ -310,6 +318,26 @@ async function loadBundleOrAbort() {
 }
 
 /**
+ * Load the `takeit` pointer's weights, the version Take-It's input score is
+ * pinned to. `loadLotteryWeights` never throws: when the store can't be read
+ * it hands back the seed in both slots and sets `fallback`. A fallback is not
+ * evidence of which version Take-It is pinned to, so the script stops rather
+ * than score a mass backfill with a guess.
+ */
+async function loadTakeitWeightsOrAbort() {
+  const { takeit, fallback } = await loadLotteryWeights();
+  if (fallback !== null) {
+    const reason = fallback.reason.replaceAll(/\s+/g, ' ');
+    log(
+      `lottery: weights store unreadable (${fallback.kind}): ${reason}. Refusing to score with a guess.`,
+    );
+    process.exit(1);
+  }
+  log(`lottery: scoring Take-It's input with takeit weights ${takeit.version}`);
+  return takeit.weights;
+}
+
+/**
  * Build the SQL WHERE clause (strict-clean + optional SINCE) as a
  * parameterized fragment. `STRICT_CLEAN_WHERE` is a static array of literal
  * predicates (no user data); the only dynamic value is SINCE, which is bound
@@ -367,7 +395,7 @@ async function loadEnvelope(where) {
  * sanity-check that early-date rows see a SMALLER map than late-date rows
  * (the buggy global map made them all the same size).
  */
-async function runPreflight(where, bundle, history) {
+async function runPreflight(where, bundle, history, takeitWeights) {
   const probeBatch = await sql.query(
     `SELECT * FROM lottery_finder_fires WHERE ${where.text} ORDER BY id LIMIT 1`,
     where.params,
@@ -377,7 +405,7 @@ async function runPreflight(where, bundle, history) {
     process.exit(1);
   }
   const probeRow = probeBatch[0];
-  const probeAlert = dbRowToLotteryAlertRow(probeRow);
+  const probeAlert = dbRowToLotteryAlertRow(probeRow, takeitWeights);
   const probeDateKey = isoDateKey(probeAlert.date);
   const probeWinRateMap = selectPriorWinRateForDate(
     history.perDateWinRateMap,
@@ -394,7 +422,7 @@ async function runPreflight(where, bundle, history) {
   );
   const probeResult = scoreLottery(probeDetectCtx, probeAlert);
   log(
-    `lottery: pre-flight probe id=${probeRow.id} prob=${probeResult.prob} version=${probeResult.version}`,
+    `lottery: pre-flight probe id=${probeRow.id} score=${probeAlert.score} prob=${probeResult.prob} version=${probeResult.version}`,
   );
   if (probeResult.prob === null) {
     log(
@@ -409,10 +437,10 @@ async function runPreflight(where, bundle, history) {
  * 'scored' | 'null' | 'skipped' for counter bookkeeping. Mapper errors
  * are logged + skipped — we never write a wrong score.
  */
-function scoreOneRow(row, bundle, history, updates) {
+function scoreOneRow(row, bundle, history, takeitWeights, updates) {
   let alert;
   try {
-    alert = dbRowToLotteryAlertRow(row);
+    alert = dbRowToLotteryAlertRow(row, takeitWeights);
   } catch (err) {
     log(
       `lottery: row id=${row.id} mapper threw, skipping: ${err instanceof Error ? err.message : String(err)}`,
@@ -453,12 +481,18 @@ async function persistUpdates(updates, taggedVersion) {
  * Process one SELECT batch: score every row, persist the updates, return
  * the per-batch counters + the new lastId checkpoint.
  */
-async function processBatch(batch, bundle, history, taggedVersion) {
+async function processBatch(
+  batch,
+  bundle,
+  history,
+  takeitWeights,
+  taggedVersion,
+) {
   const updates = [];
   let scored = 0;
   let nulls = 0;
   for (const row of batch) {
-    const result = scoreOneRow(row, bundle, history, updates);
+    const result = scoreOneRow(row, bundle, history, takeitWeights, updates);
     if (result === 'scored') scored += 1;
     else if (result === 'null') nulls += 1;
   }
@@ -469,6 +503,7 @@ async function processBatch(batch, bundle, history, taggedVersion) {
 
 async function main() {
   const { bundle, taggedVersion } = await loadBundleOrAbort();
+  const takeitWeights = await loadTakeitWeightsOrAbort();
   const where = buildWhereClause();
   const { candidateCount, minT, maxT, candidateDates } =
     await loadEnvelope(where);
@@ -484,7 +519,7 @@ async function main() {
   const windowEnd = new Date(maxT.getTime() + 60_000);
   const history = await preloadHistory(windowStart, windowEnd, candidateDates);
 
-  await runPreflight(where, bundle, history);
+  await runPreflight(where, bundle, history, takeitWeights);
 
   // Mass loop.
   let totalScored = 0;
@@ -522,7 +557,13 @@ async function main() {
       scored,
       nulls,
       lastId: newLastId,
-    } = await processBatch(batch, bundle, history, taggedVersion);
+    } = await processBatch(
+      batch,
+      bundle,
+      history,
+      takeitWeights,
+      taggedVersion,
+    );
     totalScored += scored;
     totalNull += nulls;
     lastId = newLastId;

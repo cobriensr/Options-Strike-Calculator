@@ -7,6 +7,17 @@
  * `scoreLottery()`. See `api/cron/detect-lottery-fires.ts` lines ~691-736
  * for the reference shape.
  *
+ * The score
+ * ─────────
+ * Take-It was trained on the `takeit` pointer's version of the lottery score
+ * (phase 4 D8), so the mapped `score` is that version's, computed here from
+ * the weights the caller passes. The stored `score` column belongs to the
+ * `active` version, which a promotion rescores, so the mapper never reads it.
+ * The scorer input is built the way the cron builds it
+ * (`api/cron/detect-lottery-fires.ts`, `scoreInput`): `isAlignedFire` and
+ * `weekdayOf` are the shared helpers, and the rest is a column rename. The
+ * parity fixture test replays the cron's cases through this mapper.
+ *
  * Strict-clean policy
  * ───────────────────
  * This mapper does NOT reconstruct any missing macro field. Callers must
@@ -28,9 +39,17 @@
  * - `date`: returned as a JS Date by neon for DATE (memory: feedback_neon_
  *   date_columns.md). We pass it through as-is — featuresForLottery only
  *   reads `row.date` indirectly via the sequential context, never as a
- *   string-compared value.
+ *   string-compared value. The scorer reads its UTC calendar day (`isoDateKey`)
+ *   for the weekday.
  */
 
+import {
+  isAlignedFire,
+  scoreLotteryV2,
+  weekdayOf,
+} from './lottery-score-weights-v2.js';
+import { TimeOfDaySchema } from './lottery-weights-schema.js';
+import type { LotteryWeights } from './lottery-weights-schema.js';
 import type { LotteryAlertRow } from './takeit-features.js';
 
 /**
@@ -73,6 +92,7 @@ export interface LotteryFireDbRow {
   trigger_ask_pct: DbNumeric;
   trigger_window_size: number; // INTEGER NOT NULL
   trigger_window_prints: number; // INTEGER NOT NULL
+  gamma_at_trigger: DbNullableNumeric;
 
   // entry context
   entry_price: DbNumeric;
@@ -109,8 +129,12 @@ export interface LotteryFireDbRow {
   gex_strike_call_ask_minus_bid: DbNullableNumeric;
   gex_strike_put_ask_minus_bid: DbNullableNumeric;
 
-  // scoring outputs already persisted by the detect cron
-  score: number | null; // INTEGER, nullable
+  // net flow at fire time, as the detect cron stored it; they decide whether
+  // the fire is aligned, which gates the score
+  cum_ncp_at_fire: DbNullableNumeric;
+  cum_npp_at_fire: DbNullableNumeric;
+
+  // persisted by the detect cron
   direction_gated: boolean; // NOT NULL DEFAULT FALSE
 }
 
@@ -206,11 +230,53 @@ function toNumber(v: DbNullableNumeric | undefined, field: string): number {
 }
 
 /**
+ * The Take-It input score of one stored fire under `takeitWeights`: null for a
+ * misaligned fire or one outside DTE 0-3, else the integer the scorer sums.
+ * Throws on a tod the weights have no table for, which would otherwise add
+ * `undefined` to the sum and hand Take-It a NaN.
+ */
+function takeitInputScore(
+  row: LotteryFireDbRow,
+  takeitWeights: LotteryWeights,
+): number | null {
+  const tod = TimeOfDaySchema.safeParse(row.tod);
+  if (!tod.success) {
+    throw new TypeError(
+      `takeit-backfill-mapper: tod must be one of ${TimeOfDaySchema.options.join(', ')}, got ${JSON.stringify(row.tod)}`,
+    );
+  }
+  return scoreLotteryV2(takeitWeights, {
+    ticker: row.underlying_symbol,
+    tod: tod.data,
+    dte: row.dte,
+    volOiWindow: toNumber(
+      row.trigger_vol_to_oi_window,
+      'trigger_vol_to_oi_window',
+    ),
+    gammaAtTrigger: toNullableNumber(row.gamma_at_trigger, 'gamma_at_trigger'),
+    triggerAskPct: toNumber(row.trigger_ask_pct, 'trigger_ask_pct'),
+    optionType: row.option_type,
+    isAligned: isAlignedFire(
+      row.option_type,
+      toNullableNumber(row.cum_ncp_at_fire, 'cum_ncp_at_fire'),
+      toNullableNumber(row.cum_npp_at_fire, 'cum_npp_at_fire'),
+    ),
+    dayOfWeek: weekdayOf(isoDateKey(row.date)),
+  });
+}
+
+/**
  * Convert a raw DB row to the `LotteryAlertRow` shape the live cron passes
  * to `scoreLottery`. Strict — throws if a strict-clean required field is
  * missing, since the caller is responsible for upstream filtering.
+ *
+ * `takeitWeights` are the `takeit` pointer's weights. They are required, so a
+ * caller cannot fall back to the stored score by leaving them out.
  */
-export function dbRowToLotteryAlertRow(row: LotteryFireDbRow): LotteryAlertRow {
+export function dbRowToLotteryAlertRow(
+  row: LotteryFireDbRow,
+  takeitWeights: LotteryWeights,
+): LotteryAlertRow {
   if (!(row.trigger_time_ct instanceof Date)) {
     throw new TypeError(
       'takeit-backfill-mapper: row.trigger_time_ct must be a Date (TIMESTAMPTZ)',
@@ -316,7 +382,7 @@ export function dbRowToLotteryAlertRow(row: LotteryFireDbRow): LotteryAlertRow {
       'gex_strike_put_ask_minus_bid',
     ),
 
-    score: row.score,
+    score: takeitInputScore(row, takeitWeights),
     direction_gated: row.direction_gated,
   };
 }

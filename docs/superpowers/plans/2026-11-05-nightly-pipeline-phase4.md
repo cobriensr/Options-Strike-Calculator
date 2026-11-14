@@ -1172,7 +1172,7 @@ The description cites the spec and D5, says NULL `score_version` means "scored b
    - The Railway watch-path list is added to, never set: phase 2's 10, plus this plan's 4 (Task 22), plus phase 3's own.
 5. **The refit guard is deleted here** (Task 17) and is not copied into the image or registered as a step. The nightly job's one refit step is `lottery-refit`.
 6. **Phase 3's drift monitor** is unaffected. Take-It's input stays pinned.
-7. **A future Take-It retrain** must read the pinned score from `takeit_features->>'score'`, not the rescored `score`.
+7. **A future Take-It retrain** must read the pinned score from `takeit_features->>'score'`, not the rescored `score`. The Take-It backfill, `scripts/backfill-takeit-scores.mjs`, scores its input with the `takeit` pointer's weights too (Task 5b), not the stored `score`: every writer of Take-It's input uses the pinned version.
 
 ## Owner answers (2026-11-06)
 
