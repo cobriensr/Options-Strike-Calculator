@@ -54,7 +54,6 @@ import {
 } from '../lib/events-schema.js';
 import type { EventItem, EventsResponse } from '../types/api.js';
 import { useDebounced } from './useDebounced.js';
-import { useETToday } from './useETToday.js';
 import { useFetchedData } from './useFetchedData.js';
 import { FORWARD_EVENT_DAYS } from './useMarketData.fetchers.js';
 
@@ -113,6 +112,9 @@ interface EventsForDate {
 }
 
 /**
+ * `etToday` is today's ET date from the clock `selectedDate` follows
+ * (useVixData's), which turns over at ET midnight in the same render as the
+ * date. It sets the range a list with no reported one covers.
  * `forward` is the forward list (null or undefined until one arrives).
  * `forwardLoaded` says its first load has finished, whether or not it brought a
  * list: it is how "still loading" is told from "failed", which both leave
@@ -120,11 +122,10 @@ interface EventsForDate {
  */
 export function useEventsForDate(
   selectedDate: string,
+  etToday: string,
   forward: ForwardEvents | null | undefined,
   forwardLoaded: boolean,
 ): EventsForDate {
-  // The ET date, re-read at ET midnight, so a tab left open moves the fallback.
-  const etToday = useETToday();
   // Lags `selectedDate` by 350 ms; equal to it once the date has stopped moving.
   const settled = useDebounced(selectedDate, 350);
 

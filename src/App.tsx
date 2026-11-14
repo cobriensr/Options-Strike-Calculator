@@ -550,7 +550,12 @@ export default function StrikeCalculator() {
     events: selectedDateEvents,
     failed: selectedDateEventsFailed,
     retry: retrySelectedDateEvents,
-  } = useEventsForDate(vix.selectedDate, market.data.events, !market.loading);
+  } = useEventsForDate(
+    vix.selectedDate,
+    vix.etToday,
+    market.data.events,
+    !market.loading,
+  );
 
   // Yesterday's SPX OHLC, resolved once for everything that reads it: the
   // cluster multiplier below, its put/call tilt (useRegimeClassification), the

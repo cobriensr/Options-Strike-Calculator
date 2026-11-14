@@ -30,7 +30,7 @@ const mockCaptureUnlessAuth = vi.mocked(captureUnlessAuth);
 
 const fetchMock = vi.fn();
 
-type Forward = NonNullable<Parameters<typeof useEventsForDate>[1]>;
+type Forward = NonNullable<Parameters<typeof useEventsForDate>[2]>;
 
 /** The hook's settle wait. The "rapid changes" test pins the exact value. */
 const SETTLE_MS = 350;
@@ -117,6 +117,8 @@ interface HookProps {
   forward: Forward | null | undefined;
   /** Has the forward list's first load finished? Defaults to true. */
   forwardLoaded?: boolean;
+  /** Today's ET date from the selected date's clock. Defaults to TODAY. */
+  etToday?: string;
 }
 
 /**
@@ -135,6 +137,7 @@ function render(
     (props: HookProps) => {
       const value = useEventsForDate(
         props.date,
+        props.etToday ?? TODAY,
         props.forward,
         props.forwardLoaded ?? true,
       );
@@ -258,6 +261,19 @@ describe('useEventsForDate: a list that carries no usable range', () => {
       ]);
     },
   );
+
+  it('moves the window with the etToday it is given, not the wall clock', async () => {
+    // The wall clock still says the 12th (TODAY): only etToday has turned.
+    const forward = forwardList('', '');
+    const { result, rerender } = render(TODAY, forward);
+    await advance(SETTLE_MS);
+
+    rerender({ date: JUST_PAST_WINDOW, forward, etToday: '2026-11-13' });
+    await advance(SETTLE_MS);
+
+    expect(result.current.events).toBe(forward.events);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 });
 
 describe("useEventsForDate: the forward list's own range, not the clock", () => {
@@ -286,13 +302,15 @@ describe("useEventsForDate: the forward list's own range, not the clock", () => 
   });
 
   it('keeps serving the days the list covers after ET midnight', async () => {
-    // 23:59 ET on 2026-11-12 (EST, UTC-5). The list was fetched that day.
-    vi.setSystemTime(new Date('2026-11-13T04:59:00Z'));
+    // The list was fetched on the 12th.
     const { result, rerender } = render(TODAY, FORWARD);
     expect(result.current.events).toBe(FORWARD.events);
 
-    // useETToday re-reads at midnight: etToday is now 2026-11-13.
-    await advance(2 * 60 * 1000);
+    // The selected date's clock turns over at midnight: etToday is now the
+    // 13th, and the date, which followed it, moves with it.
+    const NEXT_DAY = '2026-11-13';
+    rerender({ date: NEXT_DAY, forward: FORWARD, etToday: NEXT_DAY });
+    await advance(SETTLE_MS);
     expect(result.current.events).toBe(FORWARD.events);
     expect(fetchMock).not.toHaveBeenCalled();
 
@@ -300,7 +318,11 @@ describe("useEventsForDate: the forward list's own range, not the clock", () => 
     fetchMock.mockResolvedValueOnce(
       jsonResponse(eventsBody(JUST_PAST_WINDOW, [])),
     );
-    rerender({ date: JUST_PAST_WINDOW, forward: FORWARD });
+    rerender({
+      date: JUST_PAST_WINDOW,
+      forward: FORWARD,
+      etToday: NEXT_DAY,
+    });
     await advance(SETTLE_MS);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock.mock.calls[0]![0]).toBe(
