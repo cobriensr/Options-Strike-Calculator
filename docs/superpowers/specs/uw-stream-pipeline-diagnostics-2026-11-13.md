@@ -1,5 +1,5 @@
 ---
-status: Approved by owner 2026-11-13 ("yeah lets go"); deploy after 15:00 CT. Tasks 1-5 live 2026-11-14 (commit 0ef13bd0). Task 6 approved 2026-11-14 ("yeah let's fix this gap"; chose alert + reconnect). Task 7 approved 2026-11-14 ("if both copies stop together, I want to know")
+status: Approved by owner 2026-11-13 ("yeah lets go"); deploy after 15:00 CT. Tasks 1-5 live 2026-11-14 (commit 0ef13bd0). Task 6 approved 2026-11-14 ("yeah let's fix this gap"; chose alert + reconnect). Task 7 approved 2026-11-14 ("if both copies stop together, I want to know"). Task 8 approved 2026-11-14 ("implement the forced reconnect")
 ---
 
 # uw-stream: GEX pre-queue filter and pipeline diagnostics
@@ -31,7 +31,7 @@ The evidence is in the memory note `project_uw_stream_disconnects_2026_10_28`, u
   - no new `await`, and no log call per frame;
   - per-frame work is integer bumps, one compare, and at most one clock read the code already makes.
 - **No new env vars** (R7). Thresholds are module constants, with the values below.
-- **The new diagnostics are logs and `/metrics` only.** No new Sentry events. The exceptions are Task 6's stuck-socket alert and Task 7's silent-feed alert, by owner decisions on 2026-11-14.
+- **The new diagnostics are logs and `/metrics` only.** No new Sentry events. The exceptions are Task 6's stuck-socket alert, Task 7's silent-feed alert and Task 8's escalation event (`uw-stream option trades still silent after a forced reconnect`), by owner decisions on 2026-11-14.
 - **Every new dict is keyed by a closed set:** handler names or shard names (R1-style bound).
 - **Tests never open a network socket or a database.** The uw-stream conftest blocks both. Mock at the module boundary (R3), and cover failure paths (R4).
 - **Gate before every commit:**
@@ -55,8 +55,8 @@ The evidence is in the memory note `project_uw_stream_disconnects_2026_10_28`, u
 | `STUCK_S` | 60.0 | `socket_stats.py` | Task 6: a connected trade socket with no trade frame for this long (counted from its last trade frame, or from its session start if it has none) is a candidate |
 | `STUCK_TWIN_MIN_FRAMES` | 100 | `socket_stats.py` | Task 6: the twin must have received at least this many trade frames in the last `STUCK_S`. The quietest minute at lunch on 11-13 carried 3,938 trades for conn0's half and 6,407 for conn1's, about 40× this |
 | `STUCK_CHECK_INTERVAL_S` | 5.0 | `stuck_sockets.py` | Task 6: check period |
-| `FORCED_RECONNECT_COOLDOWN_S` | 300.0 | `stuck_sockets.py` | Task 6: at most one forced reconnect, and at most one Sentry event, per shard per 5 min. That is 12 reconnects per hour per stuck shard, 24 with one stuck shard per pair, and up to 48 if all four trade shards alternate. 48 alone exceeds the storm alert's 40 per hour, so in that worst case the storm alert fires too |
-| `GROUP_SILENT_S` | 60.0 | `stuck_sockets.py` | Task 7: no trade frame on any copy of a trade feed for this long, inside the trade window, opens an incident |
+| `FORCED_RECONNECT_COOLDOWN_S` | 300.0 | `stuck_sockets.py` | Task 6: at most one forced reconnect, and at most one Sentry event, per shard per 5 min. That is 12 reconnects per hour per stuck shard, 24 with one stuck shard per pair, and up to 48 if all four trade shards alternate. 48 alone exceeds the storm alert's 40 per hour, so in that worst case the storm alert fires too. Task 8 shares the per-shard cooldown (ruling R36): at most one forced reconnect per shard per 5 min across both rules. One silent group is 2 shards × 12 = 24 an hour. Both groups (a UW-wide trade outage) are 48 an hour, over the storm alert's 40, so the storm alert also fires after about 50 min of a full outage. The Sentry events stay at one per shard or group per 5 min |
+| `GROUP_SILENT_S` | 60.0 | `stuck_sockets.py` | Task 7: no trade frame on any copy of a trade feed for this long, inside the trade window, opens an incident. Task 8: an incident escalates once this long after its first forced reconnect |
 | trade window | 09:31 ET to one minute before the close (16:00, or 13:00 on an early-close day), trading days only | `market_calendar.py` | Task 7: when option trades must be flowing |
 
 ## Not in scope
@@ -280,13 +280,16 @@ The evidence is in the memory note `project_uw_stream_disconnects_2026_10_28`, u
   - the receive loop raises, and `run()`'s existing branch reconnects and re-joins every channel;
   - the disconnect log line carries `forced: <reason>`, otherwise `null`, so drop statistics can leave forced drops out;
   - the mark clears for the next session;
-  - a no-op when not connected, as `abort()` is.
+  - a no-op when not connected, as `abort()` is;
+  - **it returns a bool:** True only when it acted (the receive loop was running and the abort was issued), False for a no-op. The caller counts a forced reconnect only on True (ruling R40).
 - **`run_stuck_socket_watchdog(connectors)`** is a background task started in `main._run` beside `run_pipeline_stats`, with the connectors keyed by name. Every `STUCK_CHECK_INTERVAL_S` it does the following:
   - **Skip a pass whose own sleep overran** by `LOOP_LAG_FLAG_S` or more. After a loop stall, the first socket to resume drains its backlog before its twin's task runs, so the twin can look stuck for one pass.
   - **For each stuck shard,** open an incident if none is open:
     - one `capture_message("uw-stream trade socket stuck", level="warning", tags={"component": "stuck_sockets"}, context={...})`;
     - context: shard, twin, `gap_s`, twin trade frames, last trade (UTC ISO, or null), `forced_reconnects`.
   - **Force a reconnect** if the shard's last forced reconnect was at least `FORCED_RECONNECT_COOLDOWN_S` ago, or it has none. Log one warning, "forcing reconnect of a stuck trade socket", per forced reconnect.
+    - **The bookkeeping follows the bool `force_reconnect` returns (ruling R40).** True: stamp the shard's cooldown, count the forced reconnect (`forced_reconnects`) and write the line. False (the receive loop was not running): no trace, so the next pass that finds the shard stuck tries again, and no escalation can follow a reconnect that was never forced. A raise: stamp the cooldown only, with no count and no line, and the pass's guard logs the error.
+    - **The cooldown is per shard, not per rule:** Task 8's silent-feed rule stamps and reads the same one (ruling R36).
   - **Escalate once:** if an incident is still open at a check after at least one forced reconnect, send one more event per incident, "uw-stream trade socket still stuck after a forced reconnect", at level error.
   - **End the incident** when the shard's `last_trade_at` is later than the incident's start (a trade frame arrived). Log "stuck trade socket recovered" with the duration and the reconnect count.
   - **Alert floor** (added at the Task 6 review): at most one Sentry event per shard per `FORCED_RECONNECT_COOLDOWN_S`, opening or escalation alike. A socket that delivers one trade frame between 60 s silences would otherwise open a new incident, and send a new warning, about every 65 s. An incident whose event is held back by the floor logs instead. This bounds Sentry at 12 per hour per shard. A held escalation stays due and goes out at the first stuck check after the floor lifts, so it arrives about 5 min after the opening alert, with the second forced reconnect (ruling R29).
@@ -296,8 +299,8 @@ The evidence is in the memory note `project_uw_stream_disconnects_2026_10_28`, u
   - Per-shard state lives in dicts keyed by shard name (a closed set).
   - **Never kill the daemon.** Each pass is guarded like `pipeline_stats`: `except Exception` → `rate_limited_log.error(scope="stuck_sockets", kind="check")`. A cancel still ends the loop.
 - **Not covered, stated in the README:**
-  - both twins stuck at once, since there's no twin to compare against. Task 7 covers it during market hours;
-  - `WS_REDUNDANT_OPTION_TRADES=false` (no twins, so the watchdog does nothing);
+  - both twins stuck at once, since there's no twin to compare against. Tasks 7 and 8 cover it during market hours;
+  - `WS_REDUNDANT_OPTION_TRADES=false` (no twins, so this rule does nothing; Tasks 7 and 8 treat each trade socket as its own group);
   - non-trade sockets (conn2-conn5).
 
 **Tests:**
@@ -312,7 +315,7 @@ The evidence is in the memory note `project_uw_stream_disconnects_2026_10_28`, u
 
 ## Task 7: alert when every copy of a trade feed goes silent in market hours
 
-**Why.** Task 6 finds a stuck socket by comparing it with its twin. When both copies stop at once (a UW-side fault, a lost subscription on both), or when `WS_REDUNDANT_OPTION_TRADES=false` leaves no twin, nothing fires: `/healthz` uses the global `last_message_ts`, which the GEX and net-flow sockets keep fresh. The owner, 2026-11-14: "if both copies stop together, I want to know". Alert only, no forced reconnect. The owner asked to know, and a reconnect can be added later.
+**Why.** Task 6 finds a stuck socket by comparing it with its twin. When both copies stop at once (a UW-side fault, a lost subscription on both), or when `WS_REDUNDANT_OPTION_TRADES=false` leaves no twin, nothing fires: `/healthz` uses the global `last_message_ts`, which the GEX and net-flow sockets keep fresh. The owner, 2026-11-14: "if both copies stop together, I want to know". Task 7 alerts only: the owner asked to know. Task 8 adds the forced reconnect.
 
 **Commits** (≤5 files each):
 - **7a, the calendar:**
@@ -352,15 +355,65 @@ The evidence is in the memory note `project_uw_stream_disconnects_2026_10_28`, u
     - Why only older than `STUCK_S`: an incident opened in the minute before 09:31 is part of this session and must keep its escalation.
   - **Held opening events stay due** (ruling R32, Task 6 and Task 7 alike): an opening event that the floor holds back goes out at the first check after the floor lifts, if its incident is still open, the same way a held escalation does. A silence that starts within 5 min of an earlier alert still reaches Sentry.
   - **CI:** the `uw_stream` path filter in `.github/workflows/ci.yml` includes `src/data/marketHours.ts`. Otherwise a TS-only calendar edit never runs the parity test.
-  - No forced reconnect.
+  - Task 8 adds a forced reconnect.
 - **Constant:** `GROUP_SILENT_S` 60.0. The quietest lunch minute on 11-13 carried 3,938 trades for conn0's half, so 60 s of nothing inside the window can't happen on a healthy feed.
 
 **Tests:**
 - calendar parity;
 - window edges: 09:30:59 false, 09:31 true, 15:58:59 true, 15:59 false; half-day 12:58:59 true, 12:59 false; a holiday, a weekend, both DST sides; a date in both lists counts as closed;
-- the rule: silent only inside the window, one event per incident, the alert floor, recovery ends it, the rule's incident ends at either window change, a Task 6 incident ends only at the open and only when older than `STUCK_S` (ruling R31), so a shard stuck through the close alerts afresh next session, a high-water carried across a reconnect, no twins = single-socket groups, a trade on either copy keeps the group healthy, and nothing for non-trade shards.
+- the rule: silent only inside the window, one opening event per incident, the alert floor, recovery ends it, the rule's incident ends at either window change, a Task 6 incident ends only at the open and only when older than `STUCK_S` (ruling R31), so a shard stuck through the close alerts afresh next session, a high-water carried across a reconnect, no twins = single-socket groups, a trade on either copy keeps the group healthy, and nothing for non-trade shards.
 
 **README:** in the "Stuck trade sockets" section, add the both-copies rule, the window, the calendar mirror and its parity test, and what is still not covered: the non-trade sockets, and a holiday missing from both calendars.
+
+## Task 8: reconnect every copy of a silent trade feed
+
+**Why.** Task 7 alerts when every copy of a trade feed is silent in the trade window, and does nothing else. If the cause is on our sockets (both copies lost their subscription, or the only copy did with `WS_REDUNDANT_OPTION_TRADES=false`), the feed stays lost until someone redeploys. Task 6 can't help: it needs a twin that is still receiving. The owner, 2026-11-14: "implement the forced reconnect".
+
+**Files** (4, one commit):
+- `uw-stream/src/stuck_sockets.py`
+- `uw-stream/tests/test_stuck_sockets.py`
+- `uw-stream/README.md`
+- this spec (this section, and the edits to Tasks 6 and 7, the constants table, the open questions, the status line and Deploy)
+
+**Behavior, in Task 7's group check (same pass, same stall skip, same per-group guard):**
+- **Force while silent.** At every check where a group incident is open, the opening pass included, force a reconnect of each of the group's shards that is connected (`state.connections[shard]`), unless that shard was forced within `FORCED_RECONNECT_COOLDOWN_S`. The event goes out before the reconnects of the same pass, as Task 6's does.
+  - **The cooldown is per shard and shared with Task 6** (`_Watch.last_forced_at`), so at most one forced reconnect per shard per 5 min across both rules (ruling R36).
+  - Bookkeeping follows `Connector.force_reconnect`'s bool return, as Task 6's does (ruling R40; one `_force_shard` serves both rules). True: stamp the cooldown, count the forced reconnect, write the line. False (the shard wasn't receiving): no trace, so the next pass tries again. A raise: stamp the cooldown only, no count and no line; the per-group guard logs the error, and the group's other shard is tried on the next pass.
+  - A shard that isn't connected is skipped. Its `run()` loop is already reconnecting it.
+  - Both copies are forced in the same pass. The feed is silent on both, so there is nothing to lose during the ~2 s reconnect.
+  - One `log.warning`, "forcing reconnect of a silent trade feed", per shard per forced reconnect: `group`, `shard`, `since_last_trade_s`, `forced_reconnect_number` (in the incident).
+- **The reason on the disconnect line** is `forced: "silent_trade_feed"`, a new module constant (`FORCED_REASON_SILENT_FEED`) beside Task 6's `FORCED_REASON` ("stuck_trade_socket"). Drop statistics leave out every non-null `forced`. (No code reads `forced`; `connector.py` only writes it on the disconnect line, so this is a rule for whoever reads the lines.)
+- **The incident counts its forced reconnects**, and the event context carries `forced_reconnects`: the count when the event is built, so an event sent in the opening pass says 0.
+- **Escalate once** (ruling R37): if the incident is still open at a check `GROUP_SILENT_S` or more after its first forced reconnect, send one more event per incident: `capture_message("uw-stream option trades still silent after a forced reconnect", level="error", tags={"component": "stuck_sockets"}, context={...})`, with the same context as the opening.
+  - It means the fresh sessions joined and still delivered no trade for 60 s, so the cause is not on our sockets (a UW-side fault, a market-wide halt, or a holiday missing from both calendars).
+  - With no forced reconnect yet (no shard was connected), it waits.
+- **Alert floor unchanged** (R30, R32): at most one Sentry event per group per `FORCED_RECONNECT_COOLDOWN_S`. The opening goes first and the escalation waits behind it; a held event stays due (R29) and logs its held line once. With a first force at the opening, the escalation is due 60 s later and goes out when the floor lifts, about 5 min after the opening, with the second forced reconnect.
+- **The incident ends** as in Task 7: when the high-water advances ("option trades resumed", now with `forced_reconnects`), or at either window change (R31). Forcing stops with it, so nothing is forced outside the trade window.
+- **No twins:** each lone trade shard is its own group, so with `WS_REDUNDANT_OPTION_TRADES=false` a silent socket is now reconnected too. Task 6 does nothing there.
+- **Cadence** (ruling R35): the same as Task 6, once per shard per 5 min while silent, with no cap. Recovery comes within 5 min of the cause clearing.
+  - One silent group: 2 shards × 12 per hour = 24 per hour.
+  - Both groups (a UW-wide trade outage): 48 per hour, over the storm alert's 40 per hour, so the storm alert also fires after about 50 min of a full outage.
+- No new env var and no kill switch (R7). `WS_REDUNDANT_OPTION_TRADES=false` does not turn this off; a redeploy of the previous commit does.
+
+**Tests:**
+- the opening pass forces each connected shard of the group once, with reason `silent_trade_feed`, and logs one line per shard; the event goes out first; nothing is forced before the group is silent;
+- a shard that isn't connected is skipped, the other is still forced, and the skipped one is forced on the first pass that finds it connected;
+- again at the cooldown while silent (299.5 s not, 300.0 s yes), and not after the incident ends (trades resume, or a window change); nothing forced outside the window, or while the window can't be read;
+- the cooldown is shared with Task 6: a shard Task 6 forced within 300 s is not forced by the group rule, and the reverse;
+- the escalation: once per incident, not before `GROUP_SILENT_S` after the first force (59.5 s no, 60.0 s due), counted from the first force and not the latest, held by the floor and sent when it lifts, not sent if the incident ended first, waits while no shard has been forced, and waits behind a held opening event;
+- `forced_reconnects` in the opening, escalation and resumed contexts;
+- cadence over an hour: 24 forced reconnects and two events for one silent group, 48 and four for both;
+- no twins: a lone silent shard is forced;
+- a `force_reconnect` that raises: logged by the per-group guard, counted against the cooldown but not in `forced_reconnects`, the next group still checked;
+- a `force_reconnect` that returns False: no line, no count, no cooldown, no escalation, and the next pass forces the shard once it is receiving.
+
+**README** ("Stuck trade sockets", the both-copies part):
+- replaces "alert only" with the reconnect, its cadence, the escalation and what it means;
+- the two `forced` values on the disconnect line;
+- the storm arithmetic above;
+- not covered: the non-trade sockets; a holiday missing from both calendars now also reconnects the trade sockets every 5 min all day (the calendar runs through 2028);
+- one sentence on Alert 6345235: every event tagged `component=stuck_sockets` (Tasks 6-8's alerts and the watchdog's own errors) emails the owner, at most once per issue per 5 min, because the project's high-priority rule 3176627 emails nobody for a repeat on an open issue;
+- the Railway log filters keep their double quotes inside the shell's single quotes (ruling R41: Railway reads the phrase only with its quotes), including `--filter '"pipeline minute"'`; run them from Git Bash or PowerShell 7.3+, because Windows PowerShell 5.1 strips the inner quotes it passes to a native exe.
 
 ## Data dependencies
 
@@ -371,6 +424,7 @@ None. There are no migrations, tables, env vars or new external APIs. Logs go to
 - **Twin silence to Sentry?** Default no: log only. The mirror already covers the loss, and this is diagnosis.
 - **Emit the minute line when idle?** Default yes. It is a heartbeat and shows overnight loop lag, at 1,440 lines a day.
 - **A separate kill switch for Task 6's forced reconnects?** Default no (R7). Reconnects are bounded by the cooldown, and the twin carries trades during each one. `WS_REDUNDANT_OPTION_TRADES=false` turns it off along with the mirrors, and a redeploy of the previous commit removes it.
+- **A kill switch for Task 8's forced reconnects?** Default no (R7), likewise. They are bounded by the same per-shard cooldown, and both copies are silent, so nothing is lost during a reconnect. `WS_REDUNDANT_OPTION_TRADES=false` does not turn them off (each lone trade shard is then its own group), and a redeploy of the previous commit removes them.
 
 ## Deploy
 
@@ -382,7 +436,8 @@ None. There are no migrations, tables, env vars or new external APIs. Logs go to
 - **At the next open:**
   - GEX `filtered` climbs, and the GEX `drop_count` stays flat;
   - read the minute lines at :x0/:x5 for `flush_max_s`, `loop_lag_max_s` and `pool_in_use_max` on `option_trades` against the Neon landing lag.
-- **Tasks 6-7, after deploy and at the next open:**
-  - no "trade socket stuck" or "silent on every copy" event over the weekend (both twins are quiet, and the window is closed);
-  - none at a normal open;
-  - any disconnect line with `forced` non-null is a Task 6 reconnect, so leave it out of the RST/FIN drop counts.
+- **Tasks 6-8, after deploy and at the next open:**
+  - Sentry Alert 6345235 is present and enabled (every event tagged `component=stuck_sockets` emails the owner, at most once per issue per 5 min);
+  - no "trade socket stuck", "silent on every copy" or "still silent after a forced reconnect" event over the weekend (both twins are quiet, and the window is closed);
+  - none at a normal open, and so no "forcing reconnect of a silent trade feed" line either;
+  - any disconnect line with `forced` non-null (`stuck_trade_socket` or `silent_trade_feed`) is a forced reconnect, so leave it out of the RST/FIN drop counts.

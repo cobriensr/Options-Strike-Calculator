@@ -1,4 +1,4 @@
-"""Alert on, and reconnect, a trade socket that is up but delivers no trades; alert when every copy is silent.
+"""Alert on, and reconnect, a trade socket that is up but delivers no trades, and every copy of a silent trade feed.
 
 Every ``option_trades:<TICKER>`` channel is joined on two sockets, a twin pair
 (``conn0``/``conn6``, ``conn1``/``conn7``), and the dedupe keeps one copy of each
@@ -25,8 +25,9 @@ shard stuck until a trade frame arrives:
   and re-joins every channel. It returns whether it acted; only a call that did
   counts (a no-op, with the receive loop not running, leaves no line, no count and
   no cooldown, and the next pass tries again). At most one per shard per
-  ``FORCED_RECONNECT_COOLDOWN_S`` (300 s), counted across incidents. That is at
-  most 12 an hour per stuck shard. The reconnect storm alert fires at 5 per shard
+  ``FORCED_RECONNECT_COOLDOWN_S`` (300 s), counted across incidents and shared with
+  the silent-feed rule below (``_Watch.last_forced_at``). That is at most 12 an hour
+  per stuck shard. The reconnect storm alert fires at 5 per shard
   an hour (40 with 8 shards), and forced reconnects count towards it like any
   other. Two stuck shards make 24 an hour at most, one from each pair. The four
   trade shards (two pairs) can alternate, a different one of each pair stuck from
@@ -63,8 +64,8 @@ cancels the connectors: cancelled connectors leave ``state.connections`` true an
 their last trade frame frozen, which a watchdog still running would read as a
 stuck socket.
 
-**Every copy silent (pipeline diagnostics, Task 7).** The twin comparison cannot
-see both copies of a feed stop at once (each one's twin then shows no trade
+**Every copy silent (pipeline diagnostics, Tasks 7 and 8).** The twin comparison
+cannot see both copies of a feed stop at once (each one's twin then shows no trade
 frames), nor a deployment with no twins (``WS_REDUNDANT_OPTION_TRADES=false``). The
 same pass also watches each *trade group*: a primary trade shard with its twin, or,
 with no twins, a trade shard alone (a trade shard is a connector with an
@@ -73,21 +74,45 @@ with no twins, a trade shard alone (a trade shard is a connector with an
 ``last_trade_at`` at every reconnect, so the mark lives here, and starts at the
 group's first pass. It is read once per check, so it is exact to within one check
 (5 s). A group is silent when ``market_calendar.in_trade_window`` holds and the
-mark is ``GROUP_SILENT_S`` or more old. Then, once per incident:
+mark is ``GROUP_SILENT_S`` or more old. Then, per incident:
 
 * **Open.** One warning log line and one Sentry error, ``uw-stream option trades
   silent on every copy``, with the group's shards, each one's connected flag, the
-  seconds since the last trade and whether the group has a twin. No forced
-  reconnect: the owner asked to know, and one can be added later.
+  seconds since the last trade, whether the group has a twin and
+  ``forced_reconnects``.
+* **Force (Task 8).** At every check while the incident is open, the opening pass
+  included, each of the group's shards that is connected (``state.connections``) is
+  forced to reconnect with reason ``FORCED_REASON_SILENT_FEED``, unless it was forced
+  within ``FORCED_RECONNECT_COOLDOWN_S``. That cooldown is per shard and is the
+  stuck rule's own (``_Watch.last_forced_at``, ruling R36): one forced reconnect per
+  shard per 5 min across both rules. The bookkeeping is ``_force_shard``'s, and the
+  same as for a stuck shard: a call that acted stamps the cooldown and is counted
+  and logged (``forcing reconnect of a silent trade feed``); one that did nothing
+  leaves no trace and is tried again at the next check; one that raised stamps the
+  cooldown only, and the group's guard logs the error. A shard that is not connected
+  is skipped, since its ``run`` loop is already reconnecting it. Both copies are
+  forced in the same pass: the feed is silent on both, so nothing is lost during
+  the reconnect, about 2 s. Nothing is forced once the incident has ended or outside
+  the window. The cadence is the stuck rule's, with no cap (ruling R35): 24 an hour
+  for one silent group, 48 for both, over the storm alert's 40. The event goes out
+  before the reconnects of the same pass. There is no kill switch (ruling R7).
+* **Escalate, once (Task 8, ruling R37).** If the incident is still open at a check
+  ``GROUP_SILENT_S`` or more after its first forced reconnect, one more Sentry
+  error, ``uw-stream option trades still silent after a forced reconnect``, with
+  the opening's context. The fresh sessions joined and delivered no trade for 60 s,
+  so the cause is not on our sockets (a UW-side fault, a market-wide halt, or a
+  holiday missing from both calendars). With no forced reconnect yet it waits.
 * **Alert floor.** The same floor as the shard events, with its own clock per
   group (``_claim_floor``): at most one Sentry event per group per
-  ``FORCED_RECONNECT_COOLDOWN_S``. A feed that leaks one trade between 60 s silences
-  would otherwise send one about every 65 s. A held-back event logs ``option trades
-  silent alert held back`` once, the incident is open all the same, and the event
-  stays due: it goes out at the first check after the floor lifts if the feed is
-  still silent.
+  ``FORCED_RECONNECT_COOLDOWN_S``, opening or escalation alike. A feed that leaks one
+  trade between 60 s silences would otherwise send one about every 65 s. A
+  held-back event logs ``option trades silent alert held back`` once, the incident is
+  open all the same, and the event stays due: it goes out at the first check after
+  the floor lifts if the feed is still silent. The opening goes first and the
+  escalation waits behind it, so with a first force at the opening the escalation
+  goes out about 5 min after it, with the second forced reconnects.
 * **End.** When the mark moves past the incident's start: ``option trades resumed``,
-  with the duration.
+  with the duration and ``forced_reconnects``.
 
 A change of the trade window ends incidents (``_end_for_window``), each with a log
 line. A silent-group incident ends on either change. A stuck-shard incident ends
@@ -105,7 +130,8 @@ them off.
 
 Not covered: the non-trade sockets (``conn2`` to ``conn5``), a feed that stops
 outside the window, and a holiday listed in neither calendar (the window treats it
-as a trading day, so the alert fires once per trade group).
+as a trading day, so the alert fires once per trade group, and the trade sockets
+are reconnected every 5 min all day).
 
 Per-shard and per-group state lives in dicts keyed by shard or group name, a
 closed set the shard layout fixes at boot. The loop never dies of a failed pass:
@@ -139,12 +165,15 @@ STUCK_CHECK_INTERVAL_S = 5.0
 FORCED_RECONNECT_COOLDOWN_S = 300.0
 # The ``forced`` value on the disconnect line of a drop this module asked for.
 FORCED_REASON = "stuck_trade_socket"
+# The same, for a drop the silent-feed rule asked for (Task 8).
+FORCED_REASON_SILENT_FEED = "silent_trade_feed"
 # No trade frame on any copy of a trade feed for this long, inside the trade
 # window, opens an incident (see ``_check_group``).
 GROUP_SILENT_S = 60.0
 
 _TAGS = {"component": "stuck_sockets"}
 _GROUP_EVENT = "uw-stream option trades silent on every copy"
+_GROUP_STILL_EVENT = "uw-stream option trades still silent after a forced reconnect"
 
 
 @dataclass
@@ -169,10 +198,19 @@ class _SilentIncident:
     """One group's current silence, from the check that found it."""
 
     started_at: float
-    # The Sentry event went out.
+    # Forced reconnects made during this incident: ``force_reconnect`` calls that acted.
+    forced: int = 0
+    # Monotonic time of the incident's first forced reconnect; the escalation counts
+    # ``GROUP_SILENT_S`` from it. ``None`` until a shard has been forced.
+    first_forced_at: float | None = None
+    # The opening event went out.
     alerted: bool = False
-    # The alert floor held the event back and the line saying so is logged.
+    # The alert floor held the opening event back and the line saying so is logged.
     held_logged: bool = False
+    # The escalation event went out.
+    escalated: bool = False
+    # The alert floor held the escalation back and the line saying so is logged.
+    escalation_held: bool = False
 
 
 @dataclass
@@ -181,8 +219,10 @@ class _Watch:
 
     incidents: dict[str, _Incident] = field(default_factory=dict)
     # Monotonic time of each shard's last forced reconnect, or last failed attempt
-    # at one (a ``force_reconnect`` that raised); kept across incidents. A call that
-    # did nothing leaves it alone (``_force_if_due``).
+    # at one (a ``force_reconnect`` that raised); kept across incidents. The stuck
+    # rule and the silent-feed rule share it, so a shard is forced at most once per
+    # ``FORCED_RECONNECT_COOLDOWN_S`` whichever asked (ruling R36). A call that did
+    # nothing leaves it alone (``_force_shard``).
     last_forced_at: dict[str, float] = field(default_factory=dict)
     # Monotonic time of each shard's last Sentry event, of either kind; kept
     # across incidents. The alert floor reads it.
@@ -292,6 +332,41 @@ def _alert_unless_held(
     return True
 
 
+def _force_shard(
+    watch: _Watch,
+    connectors: Mapping[str, Connector],
+    shard: str,
+    reason: str,
+    now: float,
+) -> bool:
+    """Force a reconnect of ``shard`` unless one was forced within the cooldown.
+
+    ``Connector.force_reconnect`` returns whether it acted. Only an acted call
+    counts as a forced reconnect: this returns True for it alone, and the cooldown
+    stamp follows it, and so do the caller's count and line. One that did nothing
+    (the receive loop is not running, as in the seconds after a server-started
+    close, before ``run`` marks the shard down) leaves no trace, so the next pass
+    tries again, and no escalation can follow a reconnect this module never forced.
+    A call that raises still counts against the cooldown, so it is not retried every
+    pass, but it is no forced reconnect: the error propagates for the pass's guard to
+    log, and the caller counts and logs nothing. The cooldown is per shard and
+    shared by both rules, which pass their own ``reason`` for the disconnect line.
+    """
+    last_forced = watch.last_forced_at.get(shard)
+    if last_forced is not None and now - last_forced < FORCED_RECONNECT_COOLDOWN_S:
+        return False
+    connector = connectors[shard]
+    try:
+        acted = connector.force_reconnect(reason)
+    except Exception:
+        watch.last_forced_at[shard] = now
+        raise
+    if not acted:
+        return False
+    watch.last_forced_at[shard] = now
+    return True
+
+
 def _force_if_due(
     watch: _Watch,
     connectors: Mapping[str, Connector],
@@ -299,30 +374,9 @@ def _force_if_due(
     incident: _Incident,
     now: float,
 ) -> None:
-    """Force a reconnect of ``found`` unless one was forced within the cooldown.
-
-    ``Connector.force_reconnect`` returns whether it acted. Only an acted call
-    counts as a forced reconnect: the cooldown stamp, ``incident.forced`` and the
-    ``forcing reconnect`` line all follow it. One that did nothing (the receive loop
-    is not running, as in the seconds after a server-started close, before ``run``
-    marks the shard down) leaves no trace, so the next pass that finds the shard
-    stuck and receiving forces it, and no escalation can follow a reconnect this
-    module never forced. A call that raises still counts against the cooldown, so it
-    is not retried every pass, but it is no forced reconnect: nothing is counted or
-    logged here, and the pass's guard logs the error.
-    """
-    last_forced = watch.last_forced_at.get(found.shard)
-    if last_forced is not None and now - last_forced < FORCED_RECONNECT_COOLDOWN_S:
+    """Force a reconnect of the stuck shard ``found`` unless it is cooling down (``_force_shard``)."""
+    if not _force_shard(watch, connectors, found.shard, FORCED_REASON, now):
         return
-    connector = connectors[found.shard]
-    try:
-        acted = connector.force_reconnect(FORCED_REASON)
-    except Exception:
-        watch.last_forced_at[found.shard] = now
-        raise
-    if not acted:
-        return
-    watch.last_forced_at[found.shard] = now
     incident.forced += 1
     log.warning(
         "forcing reconnect of a stuck trade socket",
@@ -468,6 +522,38 @@ def _trade_groups(connectors: Mapping[str, Connector]) -> list[_Group]:
     return groups
 
 
+def _alert_group_unless_held(
+    watch: _Watch,
+    group: _Group,
+    message: str,
+    context: dict[str, object],
+    now: float,
+    *,
+    log_hold: bool,
+) -> bool:
+    """Send the group's Sentry error unless the floor holds it, in which case log that when asked.
+
+    The group's alert floor (``_claim_floor``), opening or escalation alike. Returns
+    whether the event went out.
+    """
+    since_last = _claim_floor(watch.last_group_alerted_at, group.key, now)
+    if since_last is not None:
+        if log_hold:
+            log.warning(
+                "option trades silent alert held back",
+                extra={
+                    "group": group.key,
+                    "shards": context["shards"],
+                    "event": message,
+                    "since_last_trade_s": context["since_last_trade_s"],
+                    "since_last_alert_s": round(since_last, 3),
+                },
+            )
+        return False
+    capture_message(message, level="error", tags=_TAGS, context=context)
+    return True
+
+
 def _alert_silent_group(
     watch: _Watch,
     group: _Group,
@@ -475,32 +561,80 @@ def _alert_silent_group(
     context: dict[str, object],
     now: float,
 ) -> None:
-    """Send the group's Sentry error unless the floor holds it, in which case log that once.
+    """Send the opening event, or else the escalation if it is due, unless the floor holds it.
 
-    The event stays due while the incident is open: ``_check_group`` calls this at
-    every check until it has gone out (ruling R32).
+    Either event stays due while the incident is open: ``_check_group`` calls this at
+    every check until it has gone out (ruling R32 for the opening, R29 for the
+    escalation, whose held line is logged once). The opening goes first, and the
+    escalation waits behind it. The escalation (ruling R37) is due at the first check
+    ``GROUP_SILENT_S`` or more after the incident's first forced reconnect: the fresh
+    sessions joined and the feed is still silent, so the cause is not on our sockets.
+    With no forced reconnect yet (no shard was connected, or each call did nothing)
+    it waits.
     """
-    since_last = _claim_floor(watch.last_group_alerted_at, group.key, now)
-    if since_last is not None:
-        if not incident.held_logged:
+    if not incident.alerted:
+        if _alert_group_unless_held(
+            watch, group, _GROUP_EVENT, context, now, log_hold=not incident.held_logged
+        ):
+            incident.alerted = True
+        else:
             incident.held_logged = True
-            log.warning(
-                "option trades silent alert held back",
-                extra={
-                    "group": group.key,
-                    "shards": context["shards"],
-                    "event": _GROUP_EVENT,
-                    "since_last_trade_s": context["since_last_trade_s"],
-                    "since_last_alert_s": round(since_last, 3),
-                },
-            )
-        return
-    capture_message(_GROUP_EVENT, level="error", tags=_TAGS, context=context)
-    incident.alerted = True
+    elif (
+        not incident.escalated
+        and incident.first_forced_at is not None
+        and now - incident.first_forced_at >= GROUP_SILENT_S
+    ):
+        if _alert_group_unless_held(
+            watch, group, _GROUP_STILL_EVENT, context, now, log_hold=not incident.escalation_held
+        ):
+            incident.escalated = True
+        else:
+            incident.escalation_held = True
 
 
-def _check_group(watch: _Watch, group: _Group, now: float, in_window: bool) -> None:
-    """Move the group's high-water mark, end a resumed incident, open or alert for a silent feed.
+def _force_group(
+    watch: _Watch,
+    connectors: Mapping[str, Connector],
+    group: _Group,
+    incident: _SilentIncident,
+    since_last_trade_s: float,
+    now: float,
+) -> None:
+    """Force a reconnect of each of the group's connected shards that is not cooling down.
+
+    Both copies of a feed are silent, so nothing is lost during the reconnect of
+    either. A shard that is not connected is skipped: its ``run`` loop is already
+    reconnecting it. The cooldown, the bookkeeping on a call that did nothing and on
+    one that raised are ``_force_shard``'s; a raise propagates to ``_check_groups``'s
+    guard, which logs it, and the group's shards after it are tried on the next pass.
+    """
+    for shard in group.shards:
+        if not state.connections.get(shard):
+            continue
+        if not _force_shard(watch, connectors, shard, FORCED_REASON_SILENT_FEED, now):
+            continue
+        incident.forced += 1
+        if incident.first_forced_at is None:
+            incident.first_forced_at = now
+        log.warning(
+            "forcing reconnect of a silent trade feed",
+            extra={
+                "group": group.key,
+                "shard": shard,
+                "since_last_trade_s": since_last_trade_s,
+                "forced_reconnect_number": incident.forced,
+            },
+        )
+
+
+def _check_group(
+    watch: _Watch,
+    connectors: Mapping[str, Connector],
+    group: _Group,
+    now: float,
+    in_window: bool,
+) -> None:
+    """Move the group's high-water mark, end a resumed incident, then handle a silent feed.
 
     The mark is the latest trade frame seen on any of the group's sockets, and starts
     at ``now`` the first time the group is seen. It lives in ``watch`` because
@@ -508,6 +642,13 @@ def _check_group(watch: _Watch, group: _Group, now: float, in_window: bool) -> N
     check, so it is exact to within one check interval: a trade that arrives and is
     then cleared by a reconnect of every socket of the group before the next check is
     missed, and the alert can come up to that long early.
+
+    While the group is silent inside the window, at every check: open the incident on
+    the first, send the event or the escalation if one is due, then force a reconnect
+    of each connected shard that is not cooling down. The event goes out before the
+    reconnects of the same pass, so its ``forced_reconnects`` counts the earlier ones.
+    Nothing is forced once the incident has ended (trades resumed or the window
+    changed) or while the window is unknown.
     """
     high_water = watch.high_water.setdefault(group.key, now)
     for shard in group.shards:
@@ -525,23 +666,25 @@ def _check_group(watch: _Watch, group: _Group, now: float, in_window: bool) -> N
                 "group": group.key,
                 "shards": list(group.shards),
                 "duration_s": round(now - incident.started_at, 3),
+                "forced_reconnects": incident.forced,
             },
         )
         incident = None
     if not in_window or now - high_water < GROUP_SILENT_S:
         return
-    if incident is not None and incident.alerted:
-        return
+    since_last_trade_s = round(now - high_water, 3)
     context: dict[str, object] = {
         "shards": list(group.shards),
         "connected": {shard: bool(state.connections.get(shard)) for shard in group.shards},
-        "since_last_trade_s": round(now - high_water, 3),
+        "since_last_trade_s": since_last_trade_s,
         "twins_enabled": len(group.shards) > 1,
+        "forced_reconnects": incident.forced if incident is not None else 0,
     }
     if incident is None:
         incident = watch.group_incidents[group.key] = _SilentIncident(started_at=now)
         log.warning("option trades silent on every copy", extra={"group": group.key, **context})
     _alert_silent_group(watch, group, incident, context, now)
+    _force_group(watch, connectors, group, incident, since_last_trade_s, now)
 
 
 def _check_groups(
@@ -550,7 +693,7 @@ def _check_groups(
     """Check every trade group, each on its own: one group's failure leaves the rest checked."""
     for group in _trade_groups(connectors):
         try:
-            _check_group(watch, group, now, in_window)
+            _check_group(watch, connectors, group, now, in_window)
         except Exception as exc:
             rate_limited_log.error(
                 scope="stuck_sockets",
