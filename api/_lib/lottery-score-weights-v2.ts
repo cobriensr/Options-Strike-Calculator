@@ -1,302 +1,52 @@
 /**
- * GENERATED FILE — do not edit by hand.
- * Regenerate via: ml/.venv/Scripts/python scripts/sync_lottery_score_weights_v2.py
+ * The v2 lottery scorer: a pure function of a validated weights object.
  *
- * Phase 2 output of the lottery rescore project.
- * Spec: docs/superpowers/specs/lottery-rescore-2026-05-22.md
- * Source JSON: ml/output/lottery_score_weights.json
+ * Spec: docs/superpowers/specs/lottery-rescore-2026-05-22.md (the model)
+ *       docs/superpowers/plans/2026-11-05-nightly-pipeline-phase4.md (D5, the store)
  *
- * Model version : rescore-v1-2026-05-22
- * Trained at    : 2026-06-17T03:30:10.675348+00:00
- *
- * computeLotteryScoreV2() is wired into detect-lottery-fires.ts (feeds the
- * quality-adjusted score / qas; see lottery-tier.ts).
+ * The weights are data, not code. A version of them is one row of
+ * `lottery_score_versions` in Neon (D5), parsed with `LotteryWeightsSchema`
+ * before it gets here, and `scoreLotteryV2(weights, fire)` sums what the
+ * object says. The first version, `seed-2026-06-17`, is the frozen constants
+ * this file used to generate (`lottery-weights-seed.ts`). The deprecated
+ * wrappers at the bottom score with it until the cron loads a version from the
+ * store.
  */
 
-// ---------------------------------------------------------------------------
-// Ticker weights
-// ---------------------------------------------------------------------------
-
-export const LOTTERY_TICKER_WEIGHTS_V2: Readonly<Record<string, number>> = {
-  AAOI: 1,
-  AAPL: -1,
-  AMD: 0,
-  AMZN: 1,
-  APLD: 5,
-  APP: -1,
-  ARM: 4,
-  ASTS: 2,
-  AVGO: 0,
-  BA: 0,
-  BABA: 0,
-  BE: 0,
-  CAR: 0,
-  COIN: -1,
-  CRCL: -1,
-  CRWD: -1,
-  CRWV: 0,
-  CSCO: 0,
-  CVNA: 0,
-  DELL: -1,
-  GME: -1,
-  GOOG: 0,
-  GOOGL: 0,
-  HIMS: 0,
-  HOOD: 0,
-  IBIT: -1,
-  IBM: 0,
-  INTC: 0,
-  IONQ: -1,
-  IREN: -1,
-  IWM: -1,
-  LITE: -1,
-  LLY: 0,
-  META: 0,
-  MRVL: -1,
-  MSFT: 0,
-  MSTR: -1,
-  MU: 0,
-  NBIS: 0,
-  NFLX: 0,
-  NOW: 0,
-  NVDA: 0,
-  NVTS: 0,
-  OKLO: 0,
-  ORCL: -1,
-  PLTR: 0,
-  POET: 0,
-  QCOM: 0,
-  QQQ: 4,
-  RBLX: -1,
-  RDDT: 0,
-  RGTI: -1,
-  RIOT: -1,
-  RIVN: 0,
-  RKLB: 1,
-  RUTW: -1,
-  SHOP: 0,
-  SLV: -1,
-  SMCI: 0,
-  SMH: 0,
-  SNDK: 0,
-  SNOW: 0,
-  SOFI: -1,
-  SOUN: 2,
-  SOXL: -1,
-  SOXS: -1,
-  SPXW: -1,
-  SPY: -1,
-  SQQQ: -1,
-  STX: 0,
-  TEAM: -1,
-  TLT: -1,
-  TNA: -1,
-  TQQQ: 0,
-  TSLA: 0,
-  TSLL: 0,
-  TSM: 0,
-  UBER: 0,
-  UNH: 0,
-  USAR: -1,
-  USO: -1,
-  WDC: -1,
-  WMT: -1,
-  WULF: -1,
-  XOM: -1,
-};
+import type { LotteryWeights, TimeOfDay } from './lottery-weights-schema.js';
+import { SEED_LOTTERY_WEIGHTS } from './lottery-weights-seed.js';
 
 // ---------------------------------------------------------------------------
-// Time-of-day weights
+// Input
 // ---------------------------------------------------------------------------
 
-export const TOD_WEIGHTS_V2: Readonly<
-  Record<'AM_open' | 'MID' | 'LUNCH' | 'PM', number>
-> = {
-  AM_open: 4,
-  MID: -1,
-  LUNCH: -3,
-  PM: -4,
-};
-
-// ---------------------------------------------------------------------------
-// TOD DOW overrides  (per-day-of-week override tables; only Monday for now)
-//
-// 90-day lineage finding (2026-05-22): Monday TOD outcome pattern is fully
-// inverted vs Tue-Fri — LUNCH is the only positive Monday slot, AM_open is
-// the worst. The global weights (AM_open=+4, LUNCH=-4) work backwards on
-// Mondays. This map corrects that without touching the global table.
-//
-// Schema: { [dayName: string]: Record<TimeOfDay, number> }
-// dayName matches `new Date(...).toLocaleDateString('en-US', {weekday:'long'})`
-// ---------------------------------------------------------------------------
-
-type TimeOfDay = 'AM_open' | 'MID' | 'LUNCH' | 'PM';
-
-export const TOD_WEIGHTS_DOW_OVERRIDES_V2: Readonly<
-  Record<string, Readonly<Record<TimeOfDay, number>>>
-> = {
-  Monday: {
-    AM_open: 2,
-    MID: -3,
-    LUNCH: 5,
-    PM: -1,
-  },
-};
-
-// ---------------------------------------------------------------------------
-// DTE weights  (keys are string-encoded integers to survive JSON round-trips)
-// ---------------------------------------------------------------------------
-
-export const DTE_WEIGHTS_V2: Readonly<Record<string, number>> = {
-  '0': 2,
-  '1': 1,
-  '2': -4,
-  '3': -3,
-};
-
-// ---------------------------------------------------------------------------
-// Vol/OI quintile weights + boundaries
-// ---------------------------------------------------------------------------
-
-/** Per-quintile score uplift for vol_to_oi_window (length 5, index = quintile 0-4). */
-export const VOL_OI_QUINTILE_WEIGHTS: ReadonlyArray<number> = [
-  -2, -2, 3, -1, 2,
-];
-
-/**
- * Boundaries that define the vol/OI quintiles (length 4).
- * Right-closed to match pandas `pd.cut(..., right=True)` in training:
- * Quintile 0 : value <= boundaries[0]
- * Quintile k : boundaries[k-1] < value <= boundaries[k]
- * Quintile 4 : value > boundaries[3]
- */
-export const VOL_OI_QUINTILE_BOUNDARIES: ReadonlyArray<number> = [
-  0.059556888503979236, 0.09506410648464654, 0.15217391304347827,
-  0.3671595674244098,
-];
-
-// ---------------------------------------------------------------------------
-// Gamma-at-trigger quintile weights + boundaries
-// ---------------------------------------------------------------------------
-
-export const GAMMA_QUINTILE_WEIGHTS: ReadonlyArray<number> = [-1, 1, 4, 3, 1];
-export const GAMMA_QUINTILE_BOUNDARIES: ReadonlyArray<number> = [
-  0.01193201873015873, 0.024764634982693098, 0.04067617937929281,
-  0.06795747010463163,
-];
-
-// ---------------------------------------------------------------------------
-// Ask-pct quintile weights + boundaries
-// ---------------------------------------------------------------------------
-
-export const ASK_PCT_QUINTILE_WEIGHTS: ReadonlyArray<number> = [
-  4, -1, 0, -1, -2,
-];
-export const ASK_PCT_QUINTILE_BOUNDARIES: ReadonlyArray<number> = [
-  0.5333333333333333, 0.5714285714285714, 0.625, 0.75,
-];
-
-// ---------------------------------------------------------------------------
-// Option type weights
-// ---------------------------------------------------------------------------
-
-export const OPT_TYPE_WEIGHTS_V2: Readonly<Record<'C' | 'P', number>> = {
-  C: -2,
-  P: 2,
-};
-
-// ---------------------------------------------------------------------------
-// Composite bonuses / penalties  (Phase B — 2026-05-22 mining report)
-//
-// Each entry fires when ALL keys in `match` agree with a fire's feature
-// values. Missing keys are wildcards. Quintile fields use string keys
-// ("0".."4"). Multiple entries can match the same fire; their bonuses sum.
-//
-// Positive bonus  → winning composite (add to score).
-// Negative bonus  → losing composite / penalty (subtract from score).
-//
-// Schema mirrors ml/output/lottery_score_weights.json composite_bonuses[].
-// ---------------------------------------------------------------------------
-
-export interface CompositeBonus {
-  match: Readonly<
-    Partial<{
-      ticker: string;
-      tod: TimeOfDay;
-      gamma_q: string;
-      vol_oi_q: string;
-      ask_pct_q: string;
-    }>
-  >;
-  bonus: number;
-  support: number;
-  winRate: number;
-  note: string;
+export interface LotteryScoreInput {
+  ticker: string;
+  tod: TimeOfDay;
+  /** Days-to-expiry; only 0, 1, 2, 3 are in the scoring universe. */
+  dte: number;
+  /** vol_to_oi_window at trigger time; null when not populated. */
+  volOiWindow: number | null;
+  /** gamma_at_trigger; null when not populated. */
+  gammaAtTrigger: number | null;
+  /** trigger_ask_pct; null when not populated. */
+  triggerAskPct: number | null;
+  optionType: 'C' | 'P';
+  /**
+   * True when the alert direction aligns with net flow:
+   * call + cum_ncp > cum_npp, OR put + cum_npp > cum_ncp. See `isAlignedFire`.
+   */
+  isAligned: boolean;
+  /**
+   * Full day name (e.g. "Monday"; see `weekdayOf`). When provided and the
+   * weights hold an override for that day, that table replaces the global tod
+   * weights for this fire's tod component.
+   */
+  dayOfWeek?: string;
 }
 
-export const COMPOSITE_BONUSES_V2: ReadonlyArray<CompositeBonus> = [
-  {
-    match: { ticker: 'SNDK', tod: 'AM_open', gamma_q: '0' },
-    bonus: 3,
-    support: 278,
-    winRate: 0.953,
-    note: '265/278 winners (2026-05-22 mining report); strongest-support winning composite',
-  },
-  {
-    match: { ticker: 'RKLB', tod: 'AM_open', gamma_q: '1' },
-    bonus: 3,
-    support: 21,
-    winRate: 0.952,
-    note: '20/21 winners (2026-05-22 mining report)',
-  },
-  {
-    match: { ticker: 'TQQQ', tod: 'AM_open', gamma_q: '4' },
-    bonus: 3,
-    support: 43,
-    winRate: 0.953,
-    note: '41/43 winners (2026-05-22 mining report)',
-  },
-  {
-    match: { ticker: 'WDC', ask_pct_q: '0' },
-    bonus: -5,
-    support: 12,
-    winRate: 0.0,
-    note: '12/12 losers (2026-05-22 mining report); -5 penalty',
-  },
-  {
-    match: { ticker: 'SHOP', gamma_q: '4' },
-    bonus: -4,
-    support: 17,
-    winRate: 0.0,
-    note: '16/17 losers (2026-05-22 mining report); -4 penalty',
-  },
-  {
-    match: { ticker: 'RGTI', tod: 'LUNCH', vol_oi_q: '4' },
-    bonus: -3,
-    support: 31,
-    winRate: 0.0,
-    note: '27/31 losers (2026-05-22 mining report); -3 penalty; largest-n losing composite',
-  },
-  {
-    match: { ticker: 'POET', vol_oi_q: '4' },
-    bonus: -3,
-    support: 13,
-    winRate: 0.0,
-    note: '12/13 losers (2026-05-22 mining report); -3 penalty',
-  },
-];
-
 // ---------------------------------------------------------------------------
-// Tier cutoffs
-// ---------------------------------------------------------------------------
-
-export const LOTTERY_TIER_THRESHOLDS_V2 = {
-  t1: 10,
-  t2: 6,
-} as const;
-
-// ---------------------------------------------------------------------------
-// Helper: assign a value to quintile 0-4 using a 4-element boundary array
+// Helpers shared with the detect-lottery-fires cron
 // ---------------------------------------------------------------------------
 
 /**
@@ -333,12 +83,44 @@ export function assignQuintile(
   return 4;
 }
 
+/**
+ * Whether a fire's direction agrees with the ticker's net flow at fire time:
+ * a call needs cumulative net call premium above net put premium, a put the
+ * reverse. A missing cumulative value, or a tie, is not aligned.
+ */
+export function isAlignedFire(
+  optionType: 'C' | 'P',
+  cumNcp: number | null,
+  cumNpp: number | null,
+): boolean {
+  return (
+    cumNcp != null &&
+    cumNpp != null &&
+    ((optionType === 'C' && cumNcp > cumNpp) ||
+      (optionType === 'P' && cumNpp > cumNcp))
+  );
+}
+
+/**
+ * Full weekday name ("Monday") of an ISO calendar date, the way the cron has
+ * always derived it: noon UTC of that date, formatted in en-US. The formatter
+ * is pinned to UTC so the answer is the calendar day itself on any host; a
+ * host zone ahead of UTC by 12 hours or more would otherwise read noon UTC as
+ * the next day.
+ */
+export function weekdayOf(dateIso: string): string {
+  return new Date(`${dateIso}T12:00:00Z`).toLocaleDateString('en-US', {
+    weekday: 'long',
+    timeZone: 'UTC',
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Main score function
 // ---------------------------------------------------------------------------
 
 /**
- * Compute the v2 lottery score for a single fire alert.
+ * Compute the v2 lottery score for a single fire alert from `weights`.
  *
  * Returns `null` when:
  *   - `args.isAligned` is false (hard gate per spec decision 6)
@@ -348,104 +130,86 @@ export function assignQuintile(
  *   ticker + tod + dte + vol_oi_quintile + gamma_quintile +
  *   ask_pct_quintile + option_type + composite
  *
- * Null-safe features (volOiWindow, gammaAtTrigger, triggerAskPct) contribute
- * 0 when the value is unavailable rather than invalidating the whole score.
+ * A ticker the weights do not list contributes 0. Null-safe features
+ * (volOiWindow, gammaAtTrigger, triggerAskPct) contribute 0 when the value is
+ * unavailable rather than invalidating the whole score.
  *
- * `dayOfWeek` (optional): full day name matching
- * `toLocaleDateString('en-US', {weekday:'long'})` (e.g. "Monday"). When
- * provided and a matching entry exists in TOD_WEIGHTS_DOW_OVERRIDES_V2, the
- * override table is used for the tod component; otherwise falls back to the
- * global TOD_WEIGHTS_V2. Currently only "Monday" has an override.
+ * `dayOfWeek` (optional): full day name (see `weekdayOf`). When provided and
+ * `tod_weights_dow_overrides` holds that day, the override table is used for
+ * the tod component; otherwise the global `tod_weights`.
  *
- * Composite bonuses from COMPOSITE_BONUSES_V2 are applied last: every entry
- * whose `match` keys all agree with the fire's features contributes its
- * `bonus` (positive = winning pattern, negative = losing pattern). Multiple
- * matches sum.
+ * Composite bonuses are applied last: every entry whose `match` keys all agree
+ * with the fire's features contributes its `bonus` (positive = winning
+ * pattern, negative = losing pattern). Multiple matches sum.
  */
-export function computeLotteryScoreV2(args: {
-  ticker: string;
-  tod: 'AM_open' | 'MID' | 'LUNCH' | 'PM';
-  /** Days-to-expiry; only 0, 1, 2, 3 are in the scoring universe. */
-  dte: number;
-  /** vol_to_oi_window at trigger time; null when not populated. */
-  volOiWindow: number | null;
-  /** gamma_at_trigger; null when not populated. */
-  gammaAtTrigger: number | null;
-  /** trigger_ask_pct; null when not populated. */
-  triggerAskPct: number | null;
-  optionType: 'C' | 'P';
-  /**
-   * True when the alert direction aligns with net flow:
-   * call + cum_ncp > cum_npp, OR put + cum_npp > cum_ncp.
-   */
-  isAligned: boolean;
-  /**
-   * Full day name (e.g. "Monday"). When provided and an override exists in
-   * TOD_WEIGHTS_DOW_OVERRIDES_V2, that table replaces the global TOD weights
-   * for this fire's tod component.
-   */
-  dayOfWeek?: string;
-}): number | null {
+export function scoreLotteryV2(
+  weights: LotteryWeights,
+  args: LotteryScoreInput,
+): number | null {
   if (!args.isAligned) return null;
 
-  const dteKey = String(args.dte);
-  if (!(dteKey in DTE_WEIGHTS_V2)) return null;
+  const f = weights.features;
 
-  // Resolve TOD weights: use DOW override when present, else global.
-  const todWeights: Readonly<Record<TimeOfDay, number>> =
-    args.dayOfWeek !== undefined &&
-    args.dayOfWeek in TOD_WEIGHTS_DOW_OVERRIDES_V2
-      ? TOD_WEIGHTS_DOW_OVERRIDES_V2[args.dayOfWeek]!
-      : TOD_WEIGHTS_V2;
+  const dteWeights: Readonly<Record<string, number | undefined>> =
+    f.dte_weights;
+  const dteWeight = dteWeights[String(args.dte)];
+  if (dteWeight === undefined) return null;
+
+  // Resolve TOD weights: use the day's override when present, else global.
+  // `Object.hasOwn` keeps a day name like "constructor" off the prototype.
+  const overrides: Readonly<
+    Record<string, Record<TimeOfDay, number> | undefined>
+  > = f.tod_weights_dow_overrides;
+  const override =
+    args.dayOfWeek !== undefined && Object.hasOwn(overrides, args.dayOfWeek)
+      ? overrides[args.dayOfWeek]
+      : undefined;
+  const todWeights = override ?? f.tod_weights;
 
   let score = 0;
 
-  score += LOTTERY_TICKER_WEIGHTS_V2[args.ticker] ?? 0;
+  score += f.ticker_weights[args.ticker] ?? 0;
   score += todWeights[args.tod];
-  score += DTE_WEIGHTS_V2[dteKey] ?? 0;
+  score += dteWeight;
 
   let volOiQ: number | null = null;
   if (args.volOiWindow !== null) {
-    volOiQ = assignQuintile(args.volOiWindow, VOL_OI_QUINTILE_BOUNDARIES);
-    score += VOL_OI_QUINTILE_WEIGHTS[volOiQ] ?? 0;
+    volOiQ = assignQuintile(args.volOiWindow, f.vol_oi_quintile_boundaries);
+    score += f.vol_oi_quintile_weights[volOiQ] ?? 0;
   }
 
   let gammaQ: number | null = null;
   if (args.gammaAtTrigger !== null) {
-    gammaQ = assignQuintile(args.gammaAtTrigger, GAMMA_QUINTILE_BOUNDARIES);
-    score += GAMMA_QUINTILE_WEIGHTS[gammaQ] ?? 0;
+    gammaQ = assignQuintile(args.gammaAtTrigger, f.gamma_quintile_boundaries);
+    score += f.gamma_quintile_weights[gammaQ] ?? 0;
   }
 
   let askPctQ: number | null = null;
   if (args.triggerAskPct !== null) {
-    askPctQ = assignQuintile(args.triggerAskPct, ASK_PCT_QUINTILE_BOUNDARIES);
-    score += ASK_PCT_QUINTILE_WEIGHTS[askPctQ] ?? 0;
+    askPctQ = assignQuintile(args.triggerAskPct, f.ask_pct_quintile_boundaries);
+    score += f.ask_pct_quintile_weights[askPctQ] ?? 0;
   }
 
-  score += OPT_TYPE_WEIGHTS_V2[args.optionType];
+  score += f.option_type_weights[args.optionType];
 
   // Composite bonuses/penalties — iterate every entry and sum matching ones.
-  // Guard on length so SonarJS doesn't flag an always-empty-collection loop
-  // when the model has no composite entries (as is the case pre-Phase-B).
-  if (COMPOSITE_BONUSES_V2.length > 0) {
-    for (const entry of COMPOSITE_BONUSES_V2) {
-      const m = entry.match;
-      if (m.ticker !== undefined && m.ticker !== args.ticker) continue;
-      if (m.tod !== undefined && m.tod !== args.tod) continue;
-      if (m.gamma_q !== undefined) {
-        const label = gammaQ === null ? 'null' : String(gammaQ);
-        if (m.gamma_q !== label) continue;
-      }
-      if (m.vol_oi_q !== undefined) {
-        const label = volOiQ === null ? 'null' : String(volOiQ);
-        if (m.vol_oi_q !== label) continue;
-      }
-      if (m.ask_pct_q !== undefined) {
-        const label = askPctQ === null ? 'null' : String(askPctQ);
-        if (m.ask_pct_q !== label) continue;
-      }
-      score += entry.bonus;
+  for (const entry of f.composite_bonuses) {
+    const m = entry.match;
+    if (m.ticker !== undefined && m.ticker !== args.ticker) continue;
+    if (m.tod !== undefined && m.tod !== args.tod) continue;
+    if (m.gamma_q !== undefined) {
+      const label = gammaQ === null ? 'null' : String(gammaQ);
+      if (m.gamma_q !== label) continue;
     }
+    if (m.vol_oi_q !== undefined) {
+      const label = volOiQ === null ? 'null' : String(volOiQ);
+      if (m.vol_oi_q !== label) continue;
+    }
+    if (m.ask_pct_q !== undefined) {
+      const label = askPctQ === null ? 'null' : String(askPctQ);
+      if (m.ask_pct_q !== label) continue;
+    }
+    score += entry.bonus;
   }
 
   return score;
@@ -455,12 +219,36 @@ export function computeLotteryScoreV2(args: {
 // Tier label
 // ---------------------------------------------------------------------------
 
-/** Map a v2 score to its display tier. null score → 'tier3'. */
+/**
+ * Map a v2 score to its display tier under `cutoffs` (the weights'
+ * `cutoffs`, on the bare score). null score → 'tier3'.
+ */
 export function lotteryScoreTierV2(
   score: number | null,
+  cutoffs: LotteryWeights['cutoffs'],
 ): 'tier1' | 'tier2' | 'tier3' {
   if (score === null) return 'tier3';
-  if (score >= LOTTERY_TIER_THRESHOLDS_V2.t1) return 'tier1';
-  if (score >= LOTTERY_TIER_THRESHOLDS_V2.t2) return 'tier2';
+  if (score >= cutoffs.t1) return 'tier1';
+  if (score >= cutoffs.t2) return 'tier2';
   return 'tier3';
 }
+
+// ---------------------------------------------------------------------------
+// Deprecated: score with the frozen seed
+// ---------------------------------------------------------------------------
+
+/**
+ * @deprecated Scores with the frozen seed, not the active version. Kept only
+ * so `detect-lottery-fires.ts` compiles; Task 5 moves the cron onto
+ * `scoreLotteryV2` with the weights loaded from the store, then deletes this.
+ */
+export function computeLotteryScoreV2(args: LotteryScoreInput): number | null {
+  return scoreLotteryV2(SEED_LOTTERY_WEIGHTS, args);
+}
+
+/**
+ * @deprecated The seed's cutoffs, not the active version's. Task 5 deletes
+ * it; the cluster bonus then reads `active.weights.cutoffs.t1`.
+ */
+export const LOTTERY_TIER_THRESHOLDS_V2: LotteryWeights['cutoffs'] =
+  SEED_LOTTERY_WEIGHTS.cutoffs;
