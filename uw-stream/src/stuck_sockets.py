@@ -42,9 +42,11 @@ shard stuck until a trade frame arrives:
   delivers one trade frame between 60 s silences opens a new incident about every
   65 s, and without the floor each would send a warning: 55 an hour. With it, 12 an
   hour at most. An event the floor holds back logs ``stuck trade socket alert held
-  back`` instead, once per incident and event. An opening event is lost to the
-  incident; an escalation stays due, and goes out at the first check after the
-  floor lifts at which the shard is stuck. So in the usual run the escalation
+  back`` instead, once per incident and event. Either kind stays due: it goes out
+  at the first check after the floor lifts at which the shard is stuck, if the
+  incident is still open (a silence that opens within 300 s of an earlier alert
+  still reaches Sentry; one that ended first sends nothing). The opening event goes
+  first, and the escalation waits behind it. So in the usual run the escalation
   follows the opening event by about 5 min, not by about 1 min: the 60 s after a
   reconnect is always inside the floor.
 * **End.** When the shard's ``last_trade_at`` is later than the incident's start,
@@ -59,16 +61,17 @@ cancels the connectors: cancelled connectors leave ``state.connections`` true an
 their last trade frame frozen, which a watchdog still running would read as a
 stuck socket.
 
-**Every copy silent (pipeline diagnostics, Task 7).** The twin comparison cannot see both copies of a
-feed stop at once (each one's twin then shows no trade frames), nor a deployment
-with no twins (``WS_REDUNDANT_OPTION_TRADES=false``). The same pass also watches
-each *trade group*: a primary trade shard with its twin, or, with no twins, a trade
-shard alone (a trade shard is a connector with an ``option_trades:`` channel). Per
-group it keeps a high-water mark, the latest ``last_trade_at`` seen on any of its
-sockets. ``session_start`` clears ``last_trade_at`` at every reconnect, so the mark
-lives here, and starts at the group's first pass. A group is silent when
-``market_calendar.in_trade_window`` holds and the mark is ``GROUP_SILENT_S`` or
-more old. Then, once per incident:
+**Every copy silent (pipeline diagnostics, Task 7).** The twin comparison cannot
+see both copies of a feed stop at once (each one's twin then shows no trade
+frames), nor a deployment with no twins (``WS_REDUNDANT_OPTION_TRADES=false``). The
+same pass also watches each *trade group*: a primary trade shard with its twin, or,
+with no twins, a trade shard alone (a trade shard is a connector with an
+``option_trades:`` channel). Per group it keeps a high-water mark, the latest
+``last_trade_at`` seen on any of its sockets. ``session_start`` clears
+``last_trade_at`` at every reconnect, so the mark lives here, and starts at the
+group's first pass. It is read once per check, so it is exact to within one check
+(5 s). A group is silent when ``market_calendar.in_trade_window`` holds and the
+mark is ``GROUP_SILENT_S`` or more old. Then, once per incident:
 
 * **Open.** One warning log line and one Sentry error, ``uw-stream option trades
   silent on every copy``, with the group's shards, each one's connected flag, the
@@ -78,23 +81,29 @@ more old. Then, once per incident:
   group (``_claim_floor``): at most one Sentry event per group per
   ``FORCED_RECONNECT_COOLDOWN_S``. A feed that leaks one trade between 60 s silences
   would otherwise send one about every 65 s. A held-back event logs ``option trades
-  silent alert held back`` instead, and the incident is open all the same.
+  silent alert held back`` once, the incident is open all the same, and the event
+  stays due: it goes out at the first check after the floor lifts if the feed is
+  still silent.
 * **End.** When the mark moves past the incident's start: ``option trades resumed``,
   with the duration.
 
-A change of the trade window, a close or an open, ends every open incident of both
-kinds with a log line (``_end_for_window``). A stuck-shard incident ends only when
-a trade frame arrives, so one for a socket that stays stuck through the close would
-carry overnight and the next session would start with no new alert. The close alone
-does not do it: the twin still streams for 15 minutes after it (the index options
-trade to 16:15 ET), the shard is found stuck again in the next pass, and that new
-incident is the one that carries. So the open ends whatever carried over, and the
-stick alerts afresh. The stuck-shard checks do not depend on the window, so a wrong
-calendar cannot switch them off.
+A change of the trade window ends incidents (``_end_for_window``), each with a log
+line. A silent-group incident ends on either change. A stuck-shard incident ends
+only when the window opens, and only if it is older than ``STUCK_S``. It ends only
+when a trade frame arrives otherwise, so one for a socket that stays stuck through
+the close would carry overnight and the next session would start with no new alert:
+the open ends it, and the stick alerts afresh. The close must leave it alone. The
+twin still streams for 15 minutes after it (the index options trade to 16:15 ET),
+so ending it there would find the shard stuck again in the same pass and send a
+duplicate pair of events. An incident opened in the minute before 09:31 is younger
+than ``STUCK_S`` at the open, belongs to the session and keeps its escalation. The
+stuck-shard checks do not depend on the window, and a failure reading it (logged,
+``kind="window"``) skips only the group check, so a wrong calendar cannot switch
+them off.
 
 Not covered: the non-trade sockets (``conn2`` to ``conn5``), a feed that stops
 outside the window, and a holiday listed in neither calendar (the window treats it
-as a trading day, so the alert fires once).
+as a trading day, so the alert fires once per trade group).
 
 Per-shard and per-group state lives in dicts keyed by shard or group name, a
 closed set the shard layout fixes at boot. The loop never dies of a failed pass:
@@ -133,9 +142,6 @@ FORCED_REASON = "stuck_trade_socket"
 GROUP_SILENT_S = 60.0
 
 _TAGS = {"component": "stuck_sockets"}
-# A connector with any channel starting with this is a trade shard. The same prefix
-# ``socket_stats.twin_map`` pairs shards by.
-_TRADE_CHANNEL_PREFIX = "option_trades:"
 _GROUP_EVENT = "uw-stream option trades silent on every copy"
 
 
@@ -146,10 +152,25 @@ class _Incident:
     started_at: float
     # Forced reconnects made during this incident.
     forced: int = 0
+    # The opening event went out.
+    opening_sent: bool = False
+    # The alert floor held the opening event back and the line saying so is logged.
+    opening_held: bool = False
     # The escalation event went out.
     escalated: bool = False
     # The alert floor held the escalation back and the line saying so is logged.
     escalation_held: bool = False
+
+
+@dataclass
+class _SilentIncident:
+    """One group's current silence, from the check that found it."""
+
+    started_at: float
+    # The Sentry event went out.
+    alerted: bool = False
+    # The alert floor held the event back and the line saying so is logged.
+    held_logged: bool = False
 
 
 @dataclass
@@ -169,8 +190,8 @@ class _Watch:
     # of the latest trade frame seen on any of its sockets, seeded at the group's
     # first pass and kept across reconnects, which clear ``last_trade_at``.
     high_water: dict[str, float] = field(default_factory=dict)
-    # Monotonic start of each group's open silent incident.
-    group_incidents: dict[str, float] = field(default_factory=dict)
+    # Each group's open silent incident.
+    group_incidents: dict[str, _SilentIncident] = field(default_factory=dict)
     # Monotonic time of each group's last Sentry event; the group's alert floor.
     last_group_alerted_at: dict[str, float] = field(default_factory=dict)
 
@@ -318,19 +339,31 @@ def _handle_stuck(
     found: socket_stats.StuckSocket,
     now: float,
 ) -> None:
-    """Open the shard's incident or escalate it, then force a reconnect if one is due.
+    """Open the shard's incident, send its opening event or escalate it, then force a reconnect if due.
 
-    The escalation is due only when ``find_stuck`` found the shard stuck at this
-    check, so a fresh session that has not been quiet for ``STUCK_S`` yet is not
-    escalated. If the alert floor holds it back it stays due, and goes out at the
-    first later check that finds the shard stuck once the floor has lifted.
+    Both events are due only when ``find_stuck`` found the shard stuck at this check,
+    so a fresh session that has not been quiet for ``STUCK_S`` yet is not escalated.
+    If the alert floor holds one back it stays due, and goes out at the first later
+    check that finds the shard stuck once the floor has lifted (ruling R32 for the
+    opening event, R29 for the escalation). The opening event goes first: while it
+    is held, the escalation waits behind it.
     """
     incident = watch.incidents.get(found.shard)
     if incident is None:
         incident = watch.incidents[found.shard] = _Incident(started_at=now)
-        _alert_unless_held(
-            watch, "uw-stream trade socket stuck", "warning", found, incident, now, log_hold=True
-        )
+    if not incident.opening_sent:
+        if _alert_unless_held(
+            watch,
+            "uw-stream trade socket stuck",
+            "warning",
+            found,
+            incident,
+            now,
+            log_hold=not incident.opening_held,
+        ):
+            incident.opening_sent = True
+        else:
+            incident.opening_held = True
     elif incident.forced > 0 and not incident.escalated:
         if _alert_unless_held(
             watch,
@@ -348,30 +381,46 @@ def _handle_stuck(
 
 
 def _end_for_window(watch: _Watch, now: float, in_window: bool) -> None:
-    """End every open incident, of both kinds, because the trade window just changed.
+    """End the incidents that belong to a trade window that just changed (ruling R31).
 
-    Nothing is alerted or forced here: each incident ends with one log line saying
-    which way the window went (``in_window`` is the new state). The next pass starts
-    afresh, and its alerts are still limited by the floors.
+    ``in_window`` is the new state. Nothing is alerted or forced here: each incident
+    ends with one log line saying which way the window went, and the next pass starts
+    afresh, its alerts still limited by the floors.
+
+    * A silent-group incident ends on either change. Group incidents open only inside
+      the window, so one open at the close belongs to the session that just ended.
+    * A stuck-shard incident ends only when the window opens, and only if it is
+      older than ``STUCK_S``. At the close the twin is still streaming (the index
+      options trade to 16:15 ET), so the shard would be found stuck again in the
+      same pass and a duplicate pair of events sent. At the open, an incident older
+      than ``STUCK_S`` is left over from the last session, and would carry on with
+      no new alert; a younger one began in the minute before 09:31 and keeps its
+      escalation.
+
+    Each incident is dropped after its line is logged, so a failure part way is
+    retried by the next pass for the ones left.
     """
     window = "opened" if in_window else "closed"
-    for shard, incident in watch.incidents.items():
-        log.info(
-            "stuck trade socket incident ended by the trade window",
-            extra={
-                "shard": shard,
-                "duration_s": round(now - incident.started_at, 3),
-                "forced_reconnects": incident.forced,
-                "window": window,
-            },
-        )
-    for key, started in watch.group_incidents.items():
+    if in_window:
+        for shard, incident in list(watch.incidents.items()):
+            if now - incident.started_at <= socket_stats.STUCK_S:
+                continue
+            log.info(
+                "stuck trade socket incident ended by the trade window",
+                extra={
+                    "shard": shard,
+                    "duration_s": round(now - incident.started_at, 3),
+                    "forced_reconnects": incident.forced,
+                    "window": window,
+                },
+            )
+            del watch.incidents[shard]
+    for key, silent in list(watch.group_incidents.items()):
         log.info(
             "option trades silent incident ended by the trade window",
-            extra={"group": key, "duration_s": round(now - started, 3), "window": window},
+            extra={"group": key, "duration_s": round(now - silent.started_at, 3), "window": window},
         )
-    watch.incidents.clear()
-    watch.group_incidents.clear()
+        del watch.group_incidents[key]
 
 
 def _trade_groups(connectors: Mapping[str, Connector]) -> list[_Group]:
@@ -384,7 +433,9 @@ def _trade_groups(connectors: Mapping[str, Connector]) -> list[_Group]:
     trade = [
         name
         for name, connector in connectors.items()
-        if any(channel.startswith(_TRADE_CHANNEL_PREFIX) for channel in connector.channels)
+        if any(
+            channel.startswith(socket_stats.TRADE_CHANNEL_PREFIX) for channel in connector.channels
+        )
     ]
     grouped: set[str] = set()
     groups: list[_Group] = []
@@ -398,38 +449,46 @@ def _trade_groups(connectors: Mapping[str, Connector]) -> list[_Group]:
     return groups
 
 
-def _open_silent_incident(watch: _Watch, group: _Group, high_water: float, now: float) -> None:
-    """Open the group's silent incident: one warning line, and one Sentry error unless the floor holds it."""
-    watch.group_incidents[group.key] = now
-    context: dict[str, object] = {
-        "shards": list(group.shards),
-        "connected": {shard: bool(state.connections.get(shard)) for shard in group.shards},
-        "since_last_trade_s": round(now - high_water, 3),
-        "twins_enabled": len(group.shards) > 1,
-    }
-    log.warning("option trades silent on every copy", extra={"group": group.key, **context})
+def _alert_silent_group(
+    watch: _Watch,
+    group: _Group,
+    incident: _SilentIncident,
+    context: dict[str, object],
+    now: float,
+) -> None:
+    """Send the group's Sentry error unless the floor holds it, in which case log that once.
+
+    The event stays due while the incident is open: ``_check_group`` calls this at
+    every check until it has gone out (ruling R32).
+    """
     since_last = _claim_floor(watch.last_group_alerted_at, group.key, now)
     if since_last is not None:
-        log.warning(
-            "option trades silent alert held back",
-            extra={
-                "group": group.key,
-                "shards": context["shards"],
-                "event": _GROUP_EVENT,
-                "since_last_trade_s": context["since_last_trade_s"],
-                "since_last_alert_s": round(since_last, 3),
-            },
-        )
+        if not incident.held_logged:
+            incident.held_logged = True
+            log.warning(
+                "option trades silent alert held back",
+                extra={
+                    "group": group.key,
+                    "shards": context["shards"],
+                    "event": _GROUP_EVENT,
+                    "since_last_trade_s": context["since_last_trade_s"],
+                    "since_last_alert_s": round(since_last, 3),
+                },
+            )
         return
+    incident.alerted = True
     capture_message(_GROUP_EVENT, level="error", tags=_TAGS, context=context)
 
 
 def _check_group(watch: _Watch, group: _Group, now: float, in_window: bool) -> None:
-    """Move the group's high-water mark, end a resumed incident, open one if the feed is silent.
+    """Move the group's high-water mark, end a resumed incident, open or alert for a silent feed.
 
     The mark is the latest trade frame seen on any of the group's sockets, and starts
     at ``now`` the first time the group is seen. It lives in ``watch`` because
-    ``session_start`` clears ``last_trade_at`` at every reconnect.
+    ``session_start`` clears ``last_trade_at`` at every reconnect. It is read once per
+    check, so it is exact to within one check interval: a trade that arrives and is
+    then cleared by a reconnect of every socket of the group before the next check is
+    missed, and the alert can come up to that long early.
     """
     high_water = watch.high_water.setdefault(group.key, now)
     for shard in group.shards:
@@ -438,21 +497,32 @@ def _check_group(watch: _Watch, group: _Group, now: float, in_window: bool) -> N
             high_water = last
     watch.high_water[group.key] = high_water
 
-    started = watch.group_incidents.get(group.key)
-    if started is not None and high_water > started:
+    incident = watch.group_incidents.get(group.key)
+    if incident is not None and high_water > incident.started_at:
         del watch.group_incidents[group.key]
         log.info(
             "option trades resumed",
             extra={
                 "group": group.key,
                 "shards": list(group.shards),
-                "duration_s": round(now - started, 3),
+                "duration_s": round(now - incident.started_at, 3),
             },
         )
-        started = None
-    if started is not None or not in_window or now - high_water < GROUP_SILENT_S:
+        incident = None
+    if not in_window or now - high_water < GROUP_SILENT_S:
         return
-    _open_silent_incident(watch, group, high_water, now)
+    if incident is not None and incident.alerted:
+        return
+    context: dict[str, object] = {
+        "shards": list(group.shards),
+        "connected": {shard: bool(state.connections.get(shard)) for shard in group.shards},
+        "since_last_trade_s": round(now - high_water, 3),
+        "twins_enabled": len(group.shards) > 1,
+    }
+    if incident is None:
+        incident = watch.group_incidents[group.key] = _SilentIncident(started_at=now)
+        log.warning("option trades silent on every copy", extra={"group": group.key, **context})
+    _alert_silent_group(watch, group, incident, context, now)
 
 
 def _check_groups(
@@ -472,19 +542,41 @@ def _check_groups(
             )
 
 
+def _update_window(watch: _Watch, now: float) -> bool | None:
+    """Read the trade window from the wall clock and end the incidents a change ends.
+
+    Returns whether the window is open, or ``None`` if reading it or ending the
+    incidents failed. A failure is logged at error level and leaves ``watch.in_window``
+    where it was, so the next pass sees the change again. It is guarded on its own so
+    that a fault in the window code costs the group rule and nothing else.
+    """
+    try:
+        in_window = market_calendar.in_trade_window(datetime.now(UTC))
+        if in_window != watch.in_window:
+            _end_for_window(watch, now, in_window)
+            watch.in_window = in_window
+    except Exception as exc:
+        rate_limited_log.error(
+            scope="stuck_sockets",
+            kind="window",
+            message="trade-window check failed",
+            extra={"err_type": type(exc).__name__, "err": str(exc)},
+        )
+        return None
+    return in_window
+
+
 def _check(watch: _Watch, connectors: Mapping[str, Connector], now: float) -> None:
     """One pass at monotonic time ``now``: the trade window, the stuck shards, the silent groups.
 
-    A change of the trade window (read from the wall clock) ends every open incident
-    first. Then recovered shard incidents end and each stuck shard is handled, each on
-    its own: a failure for one (a connector missing from ``connectors``, a
-    ``force_reconnect`` that raises) is logged under its own rate-limit key, and the
-    shards after it are still handled. Last, each trade group is checked the same way.
+    The trade window is read first, and a change ends the incidents it ends. If that
+    fails the group check is skipped and the rest goes on. Then recovered shard
+    incidents end and each stuck shard is handled, each on its own: a failure for one
+    (a connector missing from ``connectors``, a ``force_reconnect`` that raises) is
+    logged under its own rate-limit key, and the shards after it are still handled.
+    Last, each trade group is checked the same way.
     """
-    in_window = market_calendar.in_trade_window(datetime.now(UTC))
-    if in_window != watch.in_window:
-        watch.in_window = in_window
-        _end_for_window(watch, now, in_window)
+    in_window = _update_window(watch, now)
     _end_recovered(watch, now)
     for found in socket_stats.find_stuck(now):
         try:
@@ -497,7 +589,8 @@ def _check(watch: _Watch, connectors: Mapping[str, Connector], now: float) -> No
                 message="stuck-socket check failed",
                 extra={"shard": found.shard, "err_type": type(exc).__name__, "err": str(exc)},
             )
-    _check_groups(watch, connectors, now, in_window)
+    if in_window is not None:
+        _check_groups(watch, connectors, now, in_window)
 
 
 async def run_stuck_socket_watchdog(connectors: Mapping[str, Connector]) -> None:

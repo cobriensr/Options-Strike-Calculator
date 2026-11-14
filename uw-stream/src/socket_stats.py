@@ -79,10 +79,12 @@ BUCKETS_PER_S = 10
 RING_BUCKETS = 1_200
 RING_SPAN_S = RING_BUCKETS / BUCKETS_PER_S
 
-_CHANNEL_PREFIX = "option_trades:"
+# The channel prefix that makes a connector a trade shard. ``stuck_sockets`` groups
+# its shards by it too.
+TRADE_CHANNEL_PREFIX = "option_trades:"
 # UW sends text frames, so ``raw`` is normally a str. A trade frame is the
 # 2-element envelope ``["option_trades:SPY", {...}]``.
-_TRADE_PREFIX = '["' + _CHANNEL_PREFIX
+_TRADE_PREFIX = '["' + TRADE_CHANNEL_PREFIX
 _TRADE_PREFIX_BYTES = _TRADE_PREFIX.encode()
 # The server's join ack for an option_trades channel,
 # ``["option_trades:SPXW",{"response":{},"status":"ok"}]``, has the same prefix
@@ -302,7 +304,7 @@ def twin_map(shards: list[list[str]]) -> dict[str, str]:
     """
     groups: dict[frozenset[str], list[str]] = {}
     for index, shard in enumerate(shards):
-        channels = frozenset(c for c in shard if c.startswith(_CHANNEL_PREFIX))
+        channels = frozenset(c for c in shard if c.startswith(TRADE_CHANNEL_PREFIX))
         if channels:
             groups.setdefault(channels, []).append(shard_name(index))
     twins: dict[str, str] = {}

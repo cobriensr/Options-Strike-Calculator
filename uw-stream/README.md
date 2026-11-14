@@ -742,7 +742,8 @@ first finds the shard stuck until a trade frame arrives:
    recovered` with `shard`, `duration_s` (to the check that saw the trade frame,
    so up to 5 s late) and `forced_reconnects` (in this incident). A later stick
    opens a new incident, which sends a new alert unless the alert floor holds it
-   back.
+   back. The incident also ends when the trade window opens, if it is older than
+   60 s (see The trade window, below), and not at the close.
 
 **The alert floor.** A shard gets at most one Sentry event, the alert or the
 escalation, per 300 s. That bounds Sentry at 12 an hour per shard. Without it,
@@ -750,12 +751,15 @@ a socket that delivers one trade frame between 60 s silences would open a new
 incident, and send a new warning, about every 65 s: 55 an hour. An event the
 floor holds back is logged instead, as `stuck trade socket alert held back`,
 with the event it would have been (`event`), the shard's numbers and
-`since_last_alert_s`, once per incident and event. A held-back alert is not
-sent later. A held-back escalation stays due: it goes out at the first check
-after the floor lifts at which the shard is found stuck. In the usual run the
-escalation therefore follows the alert by about 5 minutes, not about 1: the
-first 60 s after a forced reconnect are always inside the floor. The floor does
-not limit the forced reconnects, which have their own 300 s cooldown.
+`since_last_alert_s`, once per incident and event. A held-back event stays due,
+the alert and the escalation alike: it goes out at the first check after the
+floor lifts at which the shard is found stuck, if the incident is still open. So
+a stick that begins within 300 s of an earlier alert still reaches Sentry, and
+one that ended first sends nothing. The alert goes first and the escalation
+waits behind it. In the usual run the escalation therefore follows the alert by
+about 5 minutes, not about 1: the first 60 s after a forced reconnect are always
+inside the floor. The floor does not limit the forced reconnects, which have
+their own 300 s cooldown.
 
 The `forced` field on the disconnect line (`WS connection unavailable`, `WS
 transport error` and the clean-close line) is the reason the watchdog gave,
@@ -796,7 +800,10 @@ shard alone. A trade shard is a connector with any `option_trades:` channel.
 
 For each group the watchdog keeps the time of the latest trade frame seen on any
 of its sockets, starting at the group's first pass. It keeps it itself, not on
-the sockets, because a reconnect clears a socket's last trade frame. A group is
+the sockets, because a reconnect clears a socket's last trade frame. It reads the
+sockets once per check, so the time is exact to within one check (5 s): a trade
+that arrives and is then cleared by a reconnect of every socket of the group
+before the next check is missed, and the alert can come up to 5 s early. A group is
 **silent** when the trade window is open and that time is `GROUP_SILENT_S` (60 s)
 or more ago. The lunch lull on 2026-11-13 never came near it: its quietest
 minute carried 3,938 trades for conn0's half of the tickers. At the first silent
@@ -808,7 +815,9 @@ pass the watchdog opens an incident:
   sockets), `connected` (each one's connected flag, so `false` means a socket
   that is down and reconnecting, `true` on both means UW is sending nothing or
   both lost their joins), `since_last_trade_s` (counted from the watchdog's
-  first pass if no trade has arrived since it started) and `twins_enabled`.
+  first pass if no trade has arrived since it started) and `twins_enabled`. Not
+  every silence is a fault: a market-wide circuit-breaker halt stops the trades
+  on every copy for real, so check for one before looking at the sockets.
 - Nothing is forced. The alert is all this does: the owner asked to know, and a
   reconnect can be added later.
 - The incident ends when any socket of the group receives a trade frame. The
@@ -816,10 +825,11 @@ pass the watchdog opens an incident:
   (to the check that saw the trade, so up to 5 s late).
 - The alert floor applies, with its own clock per group: at most one Sentry event
   per group per 300 s. A feed that leaks one trade frame between 60 s silences
-  would otherwise send one about every 65 s. A held-back event is logged as
+  would otherwise send one about every 65 s. A held-back event is logged once as
   `option trades silent alert held back`, with the group's numbers and
-  `since_last_alert_s`, and the incident is open all the same. Unlike a held
-  escalation, a held opening alert is not sent later.
+  `since_last_alert_s`, and the incident is open all the same. It stays due: it
+  goes out at the first check after the floor lifts, if the feed is still silent.
+  A silence that ended first sends nothing.
 
 **The trade window** is `market_calendar.in_trade_window` (`src/market_calendar.py`,
 pure): a trading day (Monday to Friday, not a NYSE closure) from 09:31 ET up to,
@@ -830,18 +840,28 @@ half has no trades. Outside it nothing alerts and the groups' times keep being
 tracked, so a feed silent since the evening before alerts on the first pass
 after the open.
 
-When the window changes, at the open or at the close, every open incident of
-both kinds ends with one log line, `option trades silent incident ended by the
-trade window` or `stuck trade socket incident ended by the trade window`, with
-`window` set to `opened` or `closed` and the usual `duration_s`. A stuck-socket
-incident otherwise ends only when a trade frame arrives, so one for a socket that
-stays stuck through the close would carry overnight, and the next session would
-start with no new alert. Ending at the close is not enough on its own: the twin
-keeps streaming for 15 minutes after it (the index options trade to 16:15 ET),
-so the shard is found stuck again in the next pass and that new incident is the
-one that would carry. The open ends it too, and the stick alerts afresh. The
-stuck-socket checks themselves do not depend on the window, so a wrong calendar
-cannot switch them off.
+When the window changes, open incidents end with one log line each, with
+`window` set to `opened` or `closed` and the usual `duration_s`:
+
+- A silent-feed incident ends on either change: `option trades silent incident
+  ended by the trade window`.
+- A stuck-socket incident ends only when the window opens, and only if it is
+  older than 60 s: `stuck trade socket incident ended by the trade window`. It
+  otherwise ends only when a trade frame arrives, so one for a socket that stays
+  stuck through the close would carry overnight, and the next session would start
+  with no new alert. The open ends it, and the stick alerts afresh. One that began
+  in the minute before 09:31 is part of this session and is left alone, so it
+  keeps its escalation.
+- A stuck-socket incident is left alone at the close because the twin keeps
+  streaming for 15 minutes after it (the index options trade to 16:15 ET). Ending
+  it there would find the shard stuck again in the same pass and send a second
+  pair of events, "stuck" and, 5 minutes later, "still stuck".
+
+The stuck-socket checks themselves do not depend on the window, so a wrong
+calendar cannot switch them off. If reading the window fails, the pass logs
+`trade-window check failed` at error level (one Sentry event a minute), skips the
+silent-feed check and runs the stuck-socket checks as usual; the change is
+retried on the next pass.
 
 **The calendar** is a copy. The daemon cannot import TypeScript, so
 `src/market_calendar.py` holds `MARKET_CLOSED_DATES` and `EARLY_CLOSE_DATES` as
@@ -858,7 +878,8 @@ comment in `marketHours.ts` says so.
   what there is.
 - A feed that stops outside the trade window.
 - A holiday that is in neither calendar. The window reads it as a trading day,
-  so the alert fires once, with `connected` true on both sockets. The TypeScript
+  so the alert fires once per trade group (two events with twins), with
+  `connected` true on both sockets. The TypeScript
   file's own test fails once its last listed holiday is under 60 days out, and
   the parity test then carries the update across.
 

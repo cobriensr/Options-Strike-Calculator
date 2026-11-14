@@ -54,6 +54,8 @@ _IN_WINDOW = datetime(2026, 11, 13, 15, 0, tzinfo=UTC)  # 10:00 ET
 _AFTER_CLOSE = datetime(2026, 11, 13, 21, 0, tzinfo=UTC)  # 16:00 ET
 _NEXT_SESSION = datetime(2026, 11, 16, 15, 0, tzinfo=UTC)  # Monday 10:00 ET
 _WEEKEND = datetime(2026, 11, 14, 15, 0, tzinfo=UTC)  # Saturday 10:00 ET
+_JUST_BEFORE_THE_OPEN = datetime(2026, 11, 13, 14, 30, 30, tzinfo=UTC)  # 09:30:30 ET
+_AT_THE_OPEN = datetime(2026, 11, 13, 14, 31, 0, tzinfo=UTC)  # 09:31:00 ET
 
 # A real option_trades frame (socket_stats ignores short, ack-sized frames).
 TRADE = (
@@ -528,6 +530,75 @@ class TestAlertFloor:
         assert [c.kwargs["context"]["shard"] for c in events.call_args_list] == ["conn0", "conn2"]
 
 
+class TestAHeldOpeningEventStaysDue:
+    """An opening event the floor holds back goes out once the floor lifts, if the shard is
+    still stuck then (ruling R32), as a held escalation does.
+    """
+
+    @staticmethod
+    def _held_opening(events):
+        """A first incident at ``_NOW``, recovered, and a second one at ``_NOW + 70`` held back."""
+        quiet, twin = _stuck_at_now()
+        connectors = _connectors()
+        watch = _Watch()
+        _check(watch, connectors, _NOW)
+        quiet.session_start(_NOW + 2.0)
+        quiet.on_frame(TRADE, _NOW + 10.0)
+        _check(watch, connectors, _NOW + 15.0)  # recovered
+        _feed(twin, [_NOW + 40.25] * 150)
+        _check(watch, connectors, _NOW + 70.0)  # stuck again, 70 s after the last event
+        assert _calls(events) == [_STUCK]
+        return quiet, twin, connectors, watch
+
+    def test_it_goes_out_at_the_first_check_after_the_floor_lifts(self, events, logs):
+        _quiet, twin, connectors, watch = self._held_opening(events)
+        _feed(twin, [_NOW + 270.25] * 150)
+
+        _check(watch, connectors, _NOW + FORCED_RECONNECT_COOLDOWN_S - 0.5)  # still held
+        assert _calls(events) == [_STUCK]
+        _check(watch, connectors, _NOW + FORCED_RECONNECT_COOLDOWN_S)  # the floor lifts
+
+        assert _calls(events) == [_STUCK, _STUCK]
+        assert events.call_args.args == (_STUCK,)
+        assert events.call_args.kwargs["context"]["forced_reconnects"] == 0
+        # Held back and logged once, not once per check.
+        assert [m for m, _extra in logs["warning"]].count(_HELD) == 1
+
+    def test_it_is_sent_once(self, events):
+        _quiet, twin, connectors, watch = self._held_opening(events)
+        _feed(twin, [_NOW + 270.25] * 150)
+        _check(watch, connectors, _NOW + FORCED_RECONNECT_COOLDOWN_S)
+
+        _check(watch, connectors, _NOW + FORCED_RECONNECT_COOLDOWN_S + 5.0)
+        _check(watch, connectors, _NOW + FORCED_RECONNECT_COOLDOWN_S + 10.0)
+
+        # The escalation is next, and the floor holds it back for another 300 s.
+        assert _calls(events) == [_STUCK, _STUCK]
+
+    def test_it_is_not_sent_if_the_incident_ended_first(self, events):
+        quiet, _twin, connectors, watch = self._held_opening(events)
+        quiet.on_frame(TRADE, _NOW + 100.0)
+        _check(watch, connectors, _NOW + 105.0)  # recovered: the incident ends
+        assert watch.incidents == {}
+        quiet.on_frame(TRADE, _NOW + 290.0)
+
+        # The floor has lifted, the shard is not stuck, and the incident is gone.
+        _check(watch, connectors, _NOW + FORCED_RECONNECT_COOLDOWN_S)
+
+        assert _calls(events) == [_STUCK]
+
+    def test_it_waits_while_the_shard_is_not_found_stuck(self, events):
+        quiet, twin, connectors, watch = self._held_opening(events)
+        # A forced reconnect's fresh session is not stuck yet at the next check.
+        quiet.session_start(_NOW + 290.0)
+        _feed(twin, [_NOW + 290.25] * 150)
+
+        _check(watch, connectors, _NOW + FORCED_RECONNECT_COOLDOWN_S)
+
+        assert _calls(events) == [_STUCK]
+        assert list(watch.incidents) == ["conn0"]
+
+
 class TestRecovery:
     def test_a_trade_frame_after_the_incident_began_ends_it(self, events, logs):
         quiet, _twin = _stuck_at_now()
@@ -997,6 +1068,47 @@ class TestGroupAlertFloor:
 
         assert len(_calls(events)) == events_sent
 
+    @staticmethod
+    def _held_incident(wall_clock):
+        """An event at +60, the feed back at +64, and silent again at +124: held back."""
+        watch, connectors = _silent_setup(wall_clock)
+        _check(watch, connectors, _T0 + 60.0)  # sent
+        socket_stats.get("conn0").on_frame(TRADE, _T0 + 64.0)
+        _check(watch, connectors, _T0 + 65.0)  # resumed
+        _check(watch, connectors, _T0 + 124.0)  # silent again, 64 s after the last event: held
+        return watch, connectors
+
+    def test_a_held_back_event_stays_due_and_goes_out_once_the_floor_lifts(
+        self, wall_clock, events, logs
+    ):
+        watch, connectors = self._held_incident(wall_clock)
+        assert _calls(events) == [_SILENT]
+
+        _check(watch, connectors, _T0 + 200.0)  # still held
+        _check(watch, connectors, _T0 + 60.0 + FORCED_RECONNECT_COOLDOWN_S - 0.5)
+        assert _calls(events) == [_SILENT]
+        _check(watch, connectors, _T0 + 60.0 + FORCED_RECONNECT_COOLDOWN_S)  # the floor lifts
+
+        assert _calls(events) == [_SILENT, _SILENT]
+        assert events.call_args.kwargs["context"]["since_last_trade_s"] == 296.0
+        # Held back and logged once, not once per check, and sent once.
+        _check(watch, connectors, _T0 + 60.0 + FORCED_RECONNECT_COOLDOWN_S + 5.0)
+        assert _calls(events) == [_SILENT, _SILENT]
+        assert [m for m, _extra in logs["warning"]].count(_SILENT_HELD) == 1
+        assert [m for m, _extra in logs["warning"]].count(_SILENT_LOG) == 2  # one per incident
+
+    def test_a_held_back_event_is_not_sent_if_the_incident_ended_first(self, wall_clock, events):
+        watch, connectors = self._held_incident(wall_clock)
+        socket_stats.get("conn6").on_frame(TRADE, _T0 + 200.0)
+        _check(watch, connectors, _T0 + 205.0)  # resumed: the incident is gone
+        assert watch.group_incidents == {}
+        socket_stats.get("conn0").on_frame(TRADE, _T0 + 340.0)
+
+        # The floor has lifted and the feed is not silent: nothing is owed.
+        _check(watch, connectors, _T0 + 60.0 + FORCED_RECONNECT_COOLDOWN_S)
+
+        assert _calls(events) == [_SILENT]
+
     def test_the_floor_is_per_group(self, wall_clock, events):
         watch, connectors = _silent_setup(wall_clock, ("conn0", "conn6"), ("conn1", "conn7"))
         socket_stats.get("conn1").on_frame(TRADE, _T0 + 30.0)  # the second pair is silent later
@@ -1055,7 +1167,7 @@ class TestTheWindowClosing:
 
         assert _calls(events) == [_SILENT, _SILENT]
 
-    def test_the_close_ends_an_open_stuck_socket_incident(self, wall_clock, events, logs):
+    def test_the_close_leaves_a_stuck_socket_incident_alone(self, wall_clock, events, logs):
         wall_clock.utc = _IN_WINDOW
         _stuck_at_now()
         connectors = _connectors()
@@ -1067,13 +1179,31 @@ class TestTheWindowClosing:
         wall_clock.utc = _AFTER_CLOSE
         _check(watch, connectors, _NOW + 40.0)
 
-        assert logs["info"] == [
-            (
-                _STUCK_ENDED,
-                {"shard": "conn0", "duration_s": 40.0, "forced_reconnects": 1, "window": "closed"},
-            )
-        ]
-        assert watch.incidents == {}
+        assert logs["info"] == []
+        assert list(watch.incidents) == ["conn0"]
+
+    def test_a_socket_stuck_all_afternoon_sends_nothing_at_the_close(self, wall_clock, events):
+        # conn0 is stuck from the first check; its twin keeps streaming through the
+        # close and past it (the index options trade to 16:15 ET).
+        wall_clock.utc = _IN_WINDOW
+        _quiet, twin = _stuck_at_now()
+        connectors = _connectors()
+        watch = _Watch()
+        _check(watch, connectors, _NOW)
+        _feed(twin, [_NOW + 270.25] * 150)
+        _check(watch, connectors, _NOW + FORCED_RECONNECT_COOLDOWN_S)
+        assert _calls(events) == [_STUCK, _STILL_STUCK]
+
+        # An hour on, the floor has long lifted. Ending the incident at the close
+        # would find the shard stuck again in the same pass and send a second pair.
+        close = _NOW + 3_600.0
+        wall_clock.utc = _AFTER_CLOSE
+        _feed(twin, [close - 30.25] * 150)
+        _check(watch, connectors, close)
+        _feed(twin, [close + 270.25] * 150)
+        _check(watch, connectors, close + FORCED_RECONNECT_COOLDOWN_S)
+
+        assert _calls(events) == [_STUCK, _STILL_STUCK]
 
     def test_a_socket_stuck_through_the_close_alerts_again_next_session(
         self, wall_clock, events, logs
@@ -1084,17 +1214,13 @@ class TestTheWindowClosing:
         watch = _Watch()
         _check(watch, connectors, _NOW)
         assert _calls(events) == [_STUCK]
-
-        # The close ends the incident, but the twin is still streaming (index
-        # options trade to 16:15 ET), so the shard is found stuck again in the
-        # same pass: a new incident whose event the floor holds back.
         wall_clock.utc = _AFTER_CLOSE
-        _check(watch, connectors, _NOW + 5.0)
+        _check(watch, connectors, _NOW + 5.0)  # the close changes nothing
         assert _calls(events) == [_STUCK]
         assert list(watch.incidents) == ["conn0"]
 
-        # That incident would carry overnight, and the next session start would
-        # find it open and send nothing. The open ends it, and the stick alerts afresh.
+        # That incident would carry overnight, and the next session would start
+        # with it open and send nothing. The open ends it, and the stick alerts afresh.
         wall_clock.utc = _NEXT_SESSION
         later = _NOW + 72_000.0
         _feed(twin, [later - 30.25] * 150)
@@ -1102,8 +1228,59 @@ class TestTheWindowClosing:
 
         assert _calls(events) == [_STUCK, _STUCK]
         assert events.call_args.kwargs["context"]["forced_reconnects"] == 0  # a new incident
-        windows = [extra["window"] for msg, extra in logs["info"] if msg == _STUCK_ENDED]
-        assert windows == ["closed", "opened"]
+        assert [(msg, extra["window"], extra["duration_s"]) for msg, extra in logs["info"]] == [
+            (_STUCK_ENDED, "opened", 72_000.0)
+        ]
+
+    @pytest.mark.parametrize(
+        ("age", "ended"),
+        [(30.0, False), (59.5, False), (60.0, False), (60.5, True)],  # older than STUCK_S ends
+    )
+    def test_the_open_ends_only_a_stuck_incident_older_than_stuck_s(
+        self, age, ended, wall_clock, events, logs
+    ):
+        # An incident opened at 09:30:30 ET is part of this session. One that began
+        # before the previous close is left over from it.
+        wall_clock.utc = _JUST_BEFORE_THE_OPEN
+        _stuck_at_now()
+        connectors = _connectors()
+        watch = _Watch()
+        _check(watch, connectors, _NOW)
+        assert list(watch.incidents) == ["conn0"]
+
+        wall_clock.utc = _AT_THE_OPEN
+        _check(watch, connectors, _NOW + age)
+
+        assert (_STUCK_ENDED in [msg for msg, _extra in logs["info"]]) is ended
+
+    def test_an_incident_opened_in_the_minute_before_the_open_keeps_its_escalation(
+        self, wall_clock, events
+    ):
+        wall_clock.utc = _JUST_BEFORE_THE_OPEN
+        _quiet, twin = _stuck_at_now()
+        connectors = _connectors()
+        watch = _Watch()
+        _check(watch, connectors, _NOW)  # opens at 09:30:30 ET
+        wall_clock.utc = _AT_THE_OPEN
+        _check(watch, connectors, _NOW + 30.0)  # 09:31:00 ET: the window opens
+
+        _feed(twin, [_NOW + 270.25] * 150)
+        _check(watch, connectors, _NOW + FORCED_RECONNECT_COOLDOWN_S)
+
+        assert _calls(events) == [_STUCK, _STILL_STUCK]
+
+    def test_a_silent_incident_found_open_at_the_open_ends_too(self, wall_clock, events, logs):
+        # Group incidents open only inside the window, so one is normally gone at the
+        # close. If the close pass failed (the window read raised), the open ends it.
+        watch, connectors = _silent_setup(wall_clock)
+        _check(watch, connectors, _T0 + 60.0)  # the incident opens
+
+        stuck_sockets._end_for_window(watch, _T0 + 65.0, True)
+
+        assert logs["info"] == [
+            (_SILENT_ENDED, {"group": "conn0", "duration_s": 5.0, "window": "opened"})
+        ]
+        assert watch.group_incidents == {}
 
     def test_a_pass_that_changes_nothing_ends_nothing(self, wall_clock, events, logs):
         watch, connectors = _silent_setup(wall_clock)
@@ -1134,6 +1311,101 @@ class TestOneGroupsFailure:
             "conn0",
         )
         assert (extra["err_type"], extra["err"]) == ("RuntimeError", "sentry down")
+
+
+class TestTheWindowReadFailing:
+    """A fault in the trade-window code costs only the group rule, never the stuck-shard checks."""
+
+    @staticmethod
+    def _raising(*_args, **_kwargs):
+        raise RuntimeError("calendar broke")
+
+    def test_a_failing_window_read_is_logged_and_the_stuck_shard_checks_still_run(
+        self, wall_clock, events, errors, monkeypatch
+    ):
+        _stuck_at_now()
+        connectors = _connectors()
+        monkeypatch.setattr(stuck_sockets.market_calendar, "in_trade_window", self._raising)
+
+        _check(_Watch(), connectors, _NOW)
+
+        assert _calls(events) == [_STUCK]
+        connectors["conn0"].force_reconnect.assert_called_once_with(_REASON)
+        ((message, extra),) = errors
+        assert message == "trade-window check failed"
+        assert (extra["scope"], extra["kind"]) == ("stuck_sockets", "window")
+        assert (extra["err_type"], extra["err"]) == ("RuntimeError", "calendar broke")
+
+    def test_the_group_check_is_skipped_and_the_window_state_kept_then_it_recovers(
+        self, wall_clock, events, errors, monkeypatch
+    ):
+        watch, connectors = _silent_setup(wall_clock)  # in the window, the groups seeded
+        assert watch.in_window is True
+        real = stuck_sockets.market_calendar.in_trade_window
+        monkeypatch.setattr(stuck_sockets.market_calendar, "in_trade_window", self._raising)
+
+        _check(watch, connectors, _T0 + 60.0)  # a silent group, but the window is unknown
+
+        events.assert_not_called()
+        assert watch.in_window is True
+        assert len(errors) == 1
+        monkeypatch.setattr(stuck_sockets.market_calendar, "in_trade_window", real)
+
+        _check(watch, connectors, _T0 + 65.0)
+
+        assert _calls(events) == [_SILENT]
+
+    def test_no_group_is_checked_while_the_window_is_unknown(
+        self, wall_clock, events, logs, errors, monkeypatch
+    ):
+        # The error reaches Sentry through ``capture_message``, which would log
+        # through the captured ``log.warning``; stub it out.
+        monkeypatch.setattr("sentry_setup.capture_message", MagicMock())
+        watch, connectors = _silent_setup(wall_clock)
+        _check(watch, connectors, _T0 + 60.0)  # an incident opens
+        socket_stats.get("conn6").on_frame(TRADE, _T0 + 62.0)
+        real = stuck_sockets.market_calendar.in_trade_window
+        monkeypatch.setattr(stuck_sockets.market_calendar, "in_trade_window", self._raising)
+
+        _check(watch, connectors, _T0 + 65.0)  # the feed is back, but the groups are not looked at
+
+        assert logs["info"] == []
+        assert list(watch.group_incidents) == ["conn0"]
+        monkeypatch.setattr(stuck_sockets.market_calendar, "in_trade_window", real)
+
+        _check(watch, connectors, _T0 + 70.0)
+
+        assert [m for m, _extra in logs["info"]] == [_RESUMED]
+
+    def test_a_failing_window_change_leaves_the_state_alone_and_is_retried(
+        self, wall_clock, events, errors, monkeypatch
+    ):
+        watch, connectors = _silent_setup(wall_clock)
+        _check(watch, connectors, _T0 + 60.0)  # an incident opens
+        wall_clock.utc = _AFTER_CLOSE
+        ended: list[tuple[str, dict]] = []
+        failing = {"on": True}
+
+        def _info(message, *_args, **kwargs):
+            if failing["on"]:
+                raise RuntimeError("log down")
+            ended.append((message, kwargs["extra"]))
+
+        monkeypatch.setattr(stuck_sockets.log, "info", _info)
+
+        _check(watch, connectors, _T0 + 65.0)  # the close: ending the incident raises
+
+        assert len(errors) == 1
+        assert errors[0][1]["kind"] == "window"
+        assert watch.in_window is True  # not moved, so the next pass sees the change again
+        assert list(watch.group_incidents) == ["conn0"]
+        failing["on"] = False
+
+        _check(watch, connectors, _T0 + 70.0)
+
+        assert watch.in_window is False
+        assert watch.group_incidents == {}
+        assert [(m, e["window"]) for m, e in ended] == [(_SILENT_ENDED, "closed")]
 
 
 # --- the loop --------------------------------------------------------------------

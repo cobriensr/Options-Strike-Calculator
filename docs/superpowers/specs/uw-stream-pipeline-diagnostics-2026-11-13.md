@@ -31,7 +31,7 @@ The evidence is in the memory note `project_uw_stream_disconnects_2026_10_28`, u
   - no new `await`, and no log call per frame;
   - per-frame work is integer bumps, one compare, and at most one clock read the code already makes.
 - **No new env vars** (R7). Thresholds are module constants, with the values below.
-- **The new diagnostics are logs and `/metrics` only.** No new Sentry events. The one exception is Task 6's stuck-socket alert, by owner decision 2026-11-14.
+- **The new diagnostics are logs and `/metrics` only.** No new Sentry events. The exceptions are Task 6's stuck-socket alert and Task 7's silent-feed alert, by owner decisions on 2026-11-14.
 - **Every new dict is keyed by a closed set:** handler names or shard names (R1-style bound).
 - **Tests never open a network socket or a database.** The uw-stream conftest blocks both. Mock at the module boundary (R3), and cover failure paths (R4).
 - **Gate before every commit:**
@@ -296,7 +296,7 @@ The evidence is in the memory note `project_uw_stream_disconnects_2026_10_28`, u
   - Per-shard state lives in dicts keyed by shard name (a closed set).
   - **Never kill the daemon.** Each pass is guarded like `pipeline_stats`: `except Exception` → `rate_limited_log.error(scope="stuck_sockets", kind="check")`. A cancel still ends the loop.
 - **Not covered, stated in the README:**
-  - both twins stuck at once (no twin to compare against);
+  - both twins stuck at once, since there's no twin to compare against. Task 7 covers it during market hours;
   - `WS_REDUNDANT_OPTION_TRADES=false` (no twins, so the watchdog does nothing);
   - non-trade sockets (conn2-conn5).
 
@@ -336,7 +336,7 @@ The evidence is in the memory note `project_uw_stream_disconnects_2026_10_28`, u
   - The uw-stream CI job checks out the whole repo (`.github/workflows/ci.yml`, `working-directory: uw-stream`).
 - **The rule, in the Task 6 watchdog loop, same pass, same stall skip and same guard:**
   - **Trade groups:** each primary trade shard with its twin, from the twin map. With no twins, each trade shard alone. A trade shard is a connector with any `option_trades:` channel.
-  - **Group high-water:** the watchdog keeps a per-group high-water of the latest `last_trade_at` seen on any of its sockets, starting at the watchdog's own start time. `session_start()` resets `last_trade_at`, so the watchdog's own high-water carries it across reconnects. No hot-path change.
+  - **Group high-water:** the watchdog keeps a per-group high-water of the latest `last_trade_at` seen on any of its sockets, seeded at the group's first pass, which is at most `STUCK_CHECK_INTERVAL_S` after the watchdog starts. `session_start()` resets `last_trade_at`, so the watchdog's own high-water carries it across reconnects. No hot-path change.
   - **A group is silent** when `in_trade_window(now)` holds and `now - high_water >= GROUP_SILENT_S` (60.0).
   - **On the first silent pass, open an incident:**
     - one `log.warning`;
@@ -344,7 +344,14 @@ The evidence is in the memory note `project_uw_stream_disconnects_2026_10_28`, u
     - context: the group's shards, each one's connected flag, the seconds since the last trade, and `twins_enabled`.
   - **Alert floor,** the same rule as Task 6 (ruling R26): at most one Sentry event per group per `FORCED_RECONNECT_COOLDOWN_S`. A feed that leaks one trade frame between 60 s silences would otherwise open a new incident, and send a new event, about every 65 s. A held-back event logs instead.
   - **End the incident** when the high-water advances. Log "option trades resumed" with the duration.
-  - **When the window closes,** end any open incident with a log line: this task's, and also any open Task 6 stuck-socket incident. Task 6 ends an incident only when a trade frame arrives, so without this a socket stuck through the close carries one incident overnight and starts the next session with no new alert. The next session then alerts afresh.
+  - **Ending incidents at a window change** (ruling R31, amended at the Task 7 review):
+    - **This task's group incidents** end on either change, open or close, with a log line.
+    - **Task 6 stuck-socket incidents** end only when the window opens, and only those older than `STUCK_S`.
+    - Why at the open: Task 6 ends an incident only when a trade frame arrives, so a socket stuck through the close would otherwise carry one incident overnight and start the next session with no new alert.
+    - Why not at the close: at 15:59 ET the twin is still streaming (SPXW to 16:15 ET), so ending there reopens the incident in the same pass. That sends a duplicate "stuck" and then "still stuck" pair, every time with R32.
+    - Why only older than `STUCK_S`: an incident opened in the minute before 09:31 is part of this session and must keep its escalation.
+  - **Held opening events stay due** (ruling R32, Task 6 and Task 7 alike): an opening event that the floor holds back goes out at the first check after the floor lifts, if its incident is still open, the same way a held escalation does. A silence that starts within 5 min of an earlier alert still reaches Sentry.
+  - **CI:** the `uw_stream` path filter in `.github/workflows/ci.yml` includes `src/data/marketHours.ts`. Otherwise a TS-only calendar edit never runs the parity test.
   - No forced reconnect.
 - **Constant:** `GROUP_SILENT_S` 60.0. The quietest lunch minute on 11-13 carried 3,938 trades for conn0's half, so 60 s of nothing inside the window can't happen on a healthy feed.
 
