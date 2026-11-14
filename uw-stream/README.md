@@ -329,8 +329,9 @@ only live source of `futures_bars`. Holes it leaves (deploys, lease
 handoffs, socket drops) are repaired daily by the Vercel cron
 `api/cron/backfill-futures-gaps.ts` from UW REST 1-minute candles. That
 cron also inserts `ON CONFLICT DO NOTHING`, so it never overwrites a
-bar this handler wrote, and it replays the same front-month rule.
-`futures_trades` must therefore stay in production `WS_CHANNELS`.
+bar this handler wrote, and it builds each minute from the same stored
+`futures_front_month` decision (deciding a date that has none by the same
+rule). `futures_trades` must therefore stay in production `WS_CHANNELS`.
 
 ### Futures blocks
 
