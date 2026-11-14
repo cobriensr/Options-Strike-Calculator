@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: use superpowers:subagent-driven-development, one implementer stream at a time (CLAUDE.md). Steps use checkbox (`- [ ]`) syntax.
 
-**Goal:** Stop the one-minute carry-basis spikes in the `futures_bars` root series. Each root's contract is chosen once per CME session, from the previous session's volume, and only ever moves forward. Every bar records the contract it came from. The same rule is used live and in every repair. History is then repaired from 2026-09-04.
+**Goal:** Stop the one-minute carry-basis spikes in the `futures_bars` root series. Each root's contract is chosen once per CME session, from the previous session's volume, and only ever moves forward. Every bar records the contract it came from. The same rule is used live and in every repair. History is then repaired from 2026-07-28 (the plan said 09-04; the owner moved it on 2026-11-12, see Results).
 
 **Architecture:**
 - uw-stream stores its per-contract volume tally per CME trade date in Neon.
@@ -399,7 +399,7 @@ Steps:
   - **Two spellings** (`ESZ26`, `ESZ6`) fold into one tally key and one bar.
   - **Fixture:** the parity test against the shared fixture passes.
 - [x] Implement. Run pytest + ruff in uw-stream, then gate, review and commit. Done 2026-11-11, local: 9639b13b, d5230dde, 24b1ab54, 640b7624, then four review rounds, d2d3c7a6 to 5d232c99 (time box, retry-after, a 30 s pause after a timeout, a backed-off cooling for a call that keeps timing out). pytest 1286.
-- [ ] **Deploy after the 17:00 CT open,** not just after 15:00 CT, and only with #204 in prod.
+- [x] **Deploy after the 17:00 CT open,** not just after 15:00 CT, and only with #204 in prod. Done 2026-11-11 (seed re-run, then the uw-stream push at about 17:51 CT); the check below passed 2026-11-12 23:05Z (see Results).
   - **Why the timing matters:** uw-stream's first tally starts at its first boot. If it deployed at 15:30 CT, the next session's decision would rest on 30 minutes of volume. After the open, the session that just closed has a final daily candle.
   - **Steps:**
     1. Re-run the Phase 3b seed. It writes that session's volumes and the new session's decision.
@@ -410,7 +410,7 @@ Steps:
     - Bars keep arriving, with `contract` filled.
     - No `front_month_unknown`, and no Sentry errors.
 
-### Phase 6: repair history, 2026-09-04 → the Phase 5 deploy (medium-large; outside market hours)
+### Phase 6: repair history, 2026-07-28 → the Phase 5 deploy (medium-large; outside market hours; planned from 09-04, moved by the owner 2026-11-12, see Results)
 
 Files: `scripts/_lib/futures-bar-backfill.ts`, `scripts/_lib/futures-bar-repair.ts` and `scripts/_lib/futures-bar-rules.ts` with their tests (`futures-bar-backfill.test.ts`, `futures-bar-repair.test.ts`, and the shared `futures-bar-test-helpers.ts`), `scripts/backfill-futures-bars.ts`, `api/_lib/futures-bars.ts`, `api/__tests__/futures-bars-pglite.test.ts`.
 
@@ -429,17 +429,18 @@ The new `--repair` mode works per root and UTC day:
   - **`--max-pages`:** raise it to about 150,000 for this run, from the default 20,000 (see the estimate below).
 
 Steps:
-- [ ] **Failing tests:**
+- [x] **Failing tests:**
   - Classification across all four classes, using ES prices about 67 points apart for the wrong contract and a websocket-short bar that must be kept.
   - A kept bar gets its `contract`; one already tagged is left alone.
   - The backup is written before any write.
   - PGlite: the conditional UPDATE skips a row changed since the read, DELETE returns the deleted ts, and fill never overwrites.
-- [ ] Implement, gate, review, commit, push.
-- [ ] Dry run: counts per root per class. Expect rewrites around each roll and at the known flips, and few deletes.
-- [ ] Write run, then a second dry run. It must show 0 rewrite, 0 delete and 0 untagged.
-- [ ] The jump screen (`roll-flips.mjs`) from 09-04 on must show:
+- [x] Implement, gate, review, commit, push. Done 2026-11-12: a review and a re-review, then the move-only split of the module (6s) and its guards; pushed to main (up to b99235a4).
+- [x] Dry run: counts per root per class. Expect rewrites around each roll and at the known flips, and few deletes. Done 2026-11-13 02:39Z: would rewrite 9,411, delete 194, tag 536,310, fill 79,802 (see Results).
+- [x] Write run, then a second dry run. It must show 0 rewrite, 0 delete and 0 untagged. Done 2026-11-13: write run 05:10:55Z to 05:16:00Z, second dry run 05:20Z showing 0 rewrite, 0 delete, 0 tag and 0 fill. The only untagged bars left are the 6 held 11-02 bars (UW prints with a null trade_id), accepted.
+- [x] The jump screen (`roll-flips.mjs`) from 09-04 on must show:
   - one step per roll, at a session open;
   - none of the known flips (CL 09-07, RTY 09-14, CL 09-30, 10-29, 11-05).
+  - Done 2026-11-13: no big jump on any root, and the five known flips are gone. The screen skips gaps over 5 minutes, so the roll steps were checked by a separate contract-step script instead: 8 contract changes since 07-28, one per roll, each at 17:00 CT after the halt or weekend.
 
 ### Phase 6b: recompute the stores derived from the repaired bars (medium; added 2026-11-13, owner OK)
 
@@ -470,15 +471,85 @@ Files: `scripts/_lib/futures-derived-recompute.ts`, `scripts/_lib/futures-derive
 
 Steps:
 - [x] Wait for the `futures-repair-land` session's unpushed recompute commits to reach main, then re-check the design against the current tool (landed 2026-11-13 08:29Z; design re-checked at 140af58f).
-- [ ] Failing tests, implement, gate, review, commit. The existing recompute tests stay green, unedited.
-- [ ] Dry run: the counts per store and root, the control, and the rows left as drift. Show the owner.
-- [ ] Apply on the owner's OK, outside market hours. Then a second dry run plans 0.
+- [x] Failing tests, implement, gate, review, commit. The existing recompute tests stay green, unedited. Done 2026-11-13 and 2026-11-14: the implementation, then four fix rounds (the repaired-day and window-only split, the report header wording, the GC and CL NULL ratio, review Minors); pushed to main (up to ff7c35e7).
+- [x] Dry run: the counts per store and root, the control, and the rows left as drift. Show the owner. Done twice: 2026-11-13 21:06Z (27,255 window-only rows, outside the pre-approval, so no apply) and 2026-11-14, done 18:38Z, after the owner's NULL-ratio decision (see Results).
+- [x] Apply on the owner's OK, outside market hours. Then a second dry run plans 0. Done 2026-11-14 19:07:55Z (42,436 snapshot rows, 2 pre-market rows, 0 fires); the second dry run at 19:34Z planned 0.
 
 ### Phase 7: docs and memory (small)
 
-- [ ] Results section here; mark the Sept plan's finding resolved.
-- [ ] Update the futures line in the CLAUDE.md uw-stream blurb and `uw-stream/README.md` if it describes the old rule.
-- [ ] Update memory `project_futures_integration` and `project_futures_contract_mix_repair`.
+- [x] Results section here; mark the Sept plan's finding resolved. Done 2026-11-14.
+- [x] Update the futures line in the CLAUDE.md uw-stream blurb and `uw-stream/README.md` if it describes the old rule. Done 2026-11-14: the CLAUDE.md line has the session rule. The README already described it (Phase 5b); one sentence said the gap cron "replays" the rule, which the cron has not done since Phase 4a, and was corrected in its own commit.
+- [x] Update memory `project_futures_integration` and `project_futures_contract_mix_repair`. Done 2026-11-14 by the controller.
+
+## Results
+
+Counts come from the run logs and reports kept locally under `docs/tmp/` (`futures-repair-0728/`, `futures-derived-recompute-front-month-2/` and `-3/`; gitignored) and from the run ledger. Times are UTC unless marked CT.
+
+**Start date (owner, 2026-11-12 10:20 CT).** History was repaired from 2026-07-28, not from 09-04.
+
+- The bars from 06-15 14:11Z to 09-03 came from the old gap cron's Databento calendar series (`<ROOT>.c.0`, replaced by UW candles on 10-01). So 07-28 to 09-03 held calendar rolls, not the live leader.
+- Nothing before 07-26 can be rebuilt: UW has no prints or full candles there, the Databento archive ends 04-17, the tick data ends 06-15 14:11Z (ES and NQ only), and Databento is cancelled. The earliest bar is 2025-04-06.
+
+**Phase 5b deploy.**
+
+- 2026-11-11, after the 17:00 CT open: the Phase 3b seed was re-run (dry run, then real). It holds 79 decisions per root, 07-28 to 11-12, with no new switches. Inserted: ES 4, NQ 4, RTY 1, CL 1, GC 2, ZN 1; the gap cron had already decided the rest of 11-09 to 11-11. The forward-only check passed.
+- uw-stream was pushed at about 17:51 CT. Railway deployment 2a507446 succeeded (lease acquired 23:54:02Z). From 17:54 CT every root's bars carried `contract` (all `Z6` for 11-12), and live volume rows for 11-12 were saved each minute. The deploy logs had no error and no `front_month_unknown`, and Sentry had no uw-stream issue in the first hour.
+- Live check, 2026-11-12 23:05Z, PASS: all six roots had a `live` decision row for trade date 11-13, decided at 17:00 CT (ESZ6, NQZ6, RTYZ6, CLZ6, GCZ6, ZNZ6). Every bar in the last 5 minutes carried `contract`, and live volume rows for 11-13 were accruing.
+
+**Phase 6, bars.** On main 2026-11-12 (b99235a4). A rebuild cache (full root-days, keyed on version, root, UTC day and per-piece contracts) let the write run reuse the dry run's paging; the plan had three paging passes.
+
+- Sample dry run, 11-12 21:20Z: 07-28, 08-05, 08-20, 08-28; exit 0.
+- Full dry run, done 2026-11-13 02:39Z, exit 0: 107 UTC days (07-28 to 11-11), 176,966 pages, 0 failed root-days. The plan estimated 115,000 to 140,000 pages for 09-04 onward.
+- Write run, 11-13 05:10:55Z to 05:16:00Z, exit 0 (owner OK about 05:10Z, 23:10 CT 11-12): rewrote 9,411, deleted 194, tagged 536,310, filled 79,802. Planned 625,717, applied 625,717, changed since read 0. Held 6, unjudged 0, unbuildable 0, keep-other-tag 0. 546 root-days came from the cache and 96 were paged (3,349 pages), 0 failed.
+- Second dry run, 05:20Z, exit 0: rewrite 0, delete 0, tag 0, fill 0; held 6.
+
+| Root | Bars before | Rewritten | Deleted | Filled | Bars after |
+| ---- | ----------- | --------- | ------- | ------ | ---------- |
+| ES   | 97,795      | 435       | 0       | 8,159  | 105,954    |
+| NQ   | 99,180      | 437       | 0       | 6,780  | 105,960    |
+| RTY  | 97,642      | 1,106     | 67      | 6,521  | 104,096    |
+| CL   | 94,505      | 3,711     | 75      | 11,049 | 105,479    |
+| GC   | 68,522      | 1,142     | 0       | 37,395 | 105,917    |
+| ZN   | 88,315      | 2,580     | 52      | 9,898  | 98,161     |
+
+- Every rewrite and delete day is a roll day. On all 11 days with 300 or more rewrites, a separate volume check agreed with the contract the rule picked from the previous session.
+- The fills are minutes the old series left empty: July and August (GC's thin month, and whole days missing from 08-06 to 08-16), and GC and ZN on 09-01 to 09-03. October and November: 0.
+- **Held 6:** one print per root on 11-02 (the first session after the DST switch) has a null `trade_id`, side `none` and size 1 (ZN 46). The repair can't count a print it can't identify, and the stored bars around them are continuous. Accepted: the 6 bars stay untagged. They are the only untagged bars from 07-28 to 11-11.
+- **Jump screen** (`roll-flips.mjs`, from 09-04): no big jump on any root; the known flips (CL 09-07, RTY 09-14, CL 09-30, 10-29, 11-05) are gone. The screen skips gaps over 5 minutes, so it can't see a step at a session open. A separate check found 8 contract changes since 07-28, one per roll, each at 17:00 CT after the halt or a weekend: GC Q to Z 07-29, CL U to V 08-18, ZN U to Z 08-27, ES, NQ and RTY U to Z 09-14, CL V to X 09-20, CL X to Z 10-18.
+- **Crossover days, a cost the owner accepted** (option A): on the day a contract overtakes the other, the rule still uses the outgoing one for that session.
+  - RTY 09-14: on 09-11 the candles had U6 at 177,947 and Z6 at 19,079, so U6 for 09-14, although Z6 out-traded it that day (120,937 against 63,390). The day got 1,106 rewrites and 67 deletes (minutes U6 printed nothing in). The stored bars had been Z6, chosen by the September backfill's UTC-day leader tally. Z6 from 09-15.
+  - CL 09-18: on 09-17, V6 179,027 against X6 120,438, so V6 for 09-18, although X6 had 189,087 against 38,708 that day. The day got 1,228 rewrites and 32 deletes; the stored bars had been X6. X6 from 09-21 (V6 expires about 09-22).
+- **Flow backfill** (`backfill-futures-flow.ts`), run after the write run and without a dry run, since it only writes bars with `buy_volume IS NULL` whose volume is within 2% of REST: done 2026-11-13 07:07:51Z, exit 0. Repaired 2,308 minutes; skipped 1,387 (outside 2%, mostly kept old-era bars), which keep NULL flow by design. 61,337 pages, 0 failed. About 3,700 bars had NULL flow before (2,308 + 1,387).
+- **Backup** (local, in gitignored `docs/tmp/`; not uploaded): `docs/tmp/futures-repair-0728/front-month-repair-2026-11-13T05-10-59Z.jsonl`, 625,717 lines (equal to the applied count), 185,232,355 bytes, one line per action with the full old row and the new values.
+  - sha256 `416ec81581da1cd92c830d4dcbddc53a08cd005f7717d7a40be77f64d644f794`
+  - Beside it, `.jsonl.gz`: 13,790,425 bytes, sha256 `6c2ebb50867e7c440e8911211f04f78028ab6d57c40c6671cccc9a002dec8962`, `gzip -t` ok.
+
+**Phase 6b, derived stores.**
+
+- **Why:** see Phase 6b above. 12,943 of 15,255 `futures_snapshots` rows on repaired symbol-days no longer matched the bars.
+- **Owner decisions:**
+  - 2026-11-13 about 05:55Z: extend the existing recompute tool and dry-run it.
+  - About 15:15Z (10:15 CT): apply if the gates pass (the control at 100%, attribution consistent, counts inside the measured scope: at most about 15,300 snapshot rows on repaired days, a few pre-market rows, 0 fires changed).
+  - 18:51 CT 11-13 (00:51Z 11-14): "blank them, apply the rest". `volume_ratio` goes to NULL on GC rows before 2026-08-17 and CL rows before 2026-08-11, whose 20-day base holds days that cannot be rebuilt.
+- **Dry run 1** (2026-11-13 21:06Z to 21:33Z): every gate held, but it would also write 27,255 window-only volume-ratio rows, outside the measured scope. No apply; the owner decided as above.
+- **Dry run 2** (2026-11-14, code ff7c35e7, 1,491 s, done 18:38Z), gates:
+  - Method control 16,422 of 16,422. ES and NQ match exactly. The other roots' misses are all explained by a late bar or late volume (ZN 133 and 58, RTY 100 and 54, CL 33 and 0, GC 16 and 59).
+  - Attribution inputs that disagree with `computeSnapshot`: 0 on every root.
+  - Snapshot rows to write: 42,436 = repaired days 14,059 (of 15,255 in scope) + window-only 28,377. The ceiling set beforehand was 42,935.
+  - Volume ratio set to NULL: GC 313 of 2,328 rows before 08-17, CL 1,308 of 2,683 rows before 08-11; no other root.
+  - Pre-market: 2 rows (08-06 and 08-11, where the pre-repair bars reproduce the stored values); subset check 89 of 89. Fires: 0 in scope, 0 to change; control 414 of 414.
+- **Apply**, 2026-11-14 19:07:55Z to 19:08:04Z, with `--expect-snapshots 42436 --expect-premarket 2 --expect-fires 0`: 42,436 snapshot rows changed and verified, 2 pre-market rows, 0 fires. Backup `docs/tmp/futures-derived-recompute-front-month-2/backup-2026-11-14T19-07-55-624Z.jsonl`: 42,438 lines (42,436 snapshots + 2 pre-market), 1,621 of them with the ratio set to NULL (GC 313 + CL 1,308), sha256 `1a8fa44e2d0e0eb2025851612bcca2b08970ba8e4815d806004c601cf6517f38`.
+- **Dry run 3** (after the apply, 1,544 s, done 19:34Z): 0 snapshot rows to write of 123,626 (CL 0 of 2,683 and GC 0 of 2,328 left to NULL), 0 pre-market (34 of 58 in scope equal the recompute), 0 fires; control and attribution as in dry run 2. A read-only check found no ratio on any in-scope CL row before 08-11 (2,683) or GC row before 08-17 (2,328), and ratios on the first day after each cutoff.
+
+**Left as is (not written, by design).**
+
+- Older drift on rows Phase 6 didn't touch: the 2,324 rows named under Phase 6b (late bars, the September outage). Dry run 2 counts a wider set as information, every row in scope with the repaired-bar fields left out: ES 2,316, NQ 1,886, ZN 2,708, RTY 2,289, CL 149, GC 2,202.
+- 24 pre-market rows differ from the recompute with no repaired bar in their window.
+- The 6 untagged 11-02 bars.
+- The 1,387 minutes with NULL flow.
+- Bars before 2026-07-28: not re-derived, `contract` stays NULL (Open question 6).
+
+**Formula note.** `computeSnapshot`'s 20-day volume base averages the sums of UTC days (`api/_lib/futures-derive.ts:273-303`), so a Sunday-evening session and the current partial day each count as a day, and the oldest day of the window is partial too. Not changed here.
 
 ## Rollout order
 
@@ -487,9 +558,9 @@ Steps:
 3. Phases 3a and 3b.
 4. Apply #204 and #205 (#201–#203 went in on 2026-11-07), push Phases 1–3b, run the seed. **Done 2026-11-08.**
 5. Phases 4a, 4b, 4c. **Done 2026-11-08.**
-6. Phase 5a (push any time), then Phase 5b: re-run the seed after a 17:00 CT open, then push uw-stream. Before 2026-12-09.
-7. Phase 6, outside market hours.
-8. Phase 7.
+6. Phase 5a (push any time), then Phase 5b: re-run the seed after a 17:00 CT open, then push uw-stream. Before 2026-12-09. **Done: 5a 2026-11-08; 5b seed re-run and uw-stream push 2026-11-11, live check passed 2026-11-12.**
+7. Phase 6, outside market hours, then Phase 6b. **Done: Phase 6 write run 2026-11-13; Phase 6b applied 2026-11-14.**
+8. Phase 7. **Done 2026-11-14.**
 
 Between steps 5 and 6, the cron fills gaps by the new rule while live bars still follow the old one. Phase 6 covers that window.
 
@@ -507,7 +578,7 @@ Between steps 5 and 6, the cron fills gaps by the new rule while live bars still
   - The first dry run (2026-11-08, start 07-21) rolled RTY to December on 07-24, from 218 vs 73. Rolls only move forward, so that would have held RTY on December through September.
 - **Daily candles:** `interval=1d`, volume from `v`; `range=6m` for the seed and `range=1m` for the cron. `range` counts calendar days back from now (probe 2026-11-07: `1w` gave 5 sessions, `1m` 21).
 - **Live fill cap:** 10 dates per `ensure_front` call (Phase 5). The TypeScript fill is uncapped: its callers are a cron and scripts.
-- **Repair window:** 2026-09-04 00:00 UTC → the Phase 5 deploy.
+- **Repair window:** 2026-09-04 00:00 UTC → the Phase 5 deploy. Run from 2026-07-28 instead (owner, 2026-11-12; see Results).
 
 ## Open questions (defaults taken)
 
@@ -516,6 +587,6 @@ Between steps 5 and 6, the cron fills gaps by the new rule while live bars still
 3. **No incumbent and no volume** (the seed never ran for a root). Default: the cycle seed with a warning, not an error. It can only make that root roll one session late, and the gap cron refills within its 3-day window.
 4. **Bars that are short but from the right contract.** Phase 6 leaves live bars that are short because of websocket drops but come from the right contract. Replacing them with the fuller REST bars is a separate decision.
 5. **A tie in V keeps the incumbent.**
-6. **History before 2026-09-04 is not re-derived.** Its `contract` stays NULL.
+6. **History before 2026-09-04 is not re-derived.** Its `contract` stays NULL. **Superseded 2026-11-12:** the owner started Phase 6 at 07-28, so 07-28..09-03 was repaired and only bars before 07-28 keep a NULL `contract` (see Results). The notes below are the original default.
    - Between 07-28 (the first stored decision) and 09-03, the bars keep their own switch points, and three rolls fall inside: GC on 07-30, CL on 08-19 and ZN on 08-28 (Phase 4b review, 2026-11-08).
    - The history scripts refuse dates before 07-28. Repairing 07-28..09-03 would mean starting Phase 6 there instead of 09-04. The other spec's repaired April–June ES/NQ bars keep that repair's switch points (one June roll per root), not a session-open pick: UW has no trades or daily candles before July, and that spec's own sources would be needed to move them. Default: leave them.
