@@ -17,10 +17,13 @@ Two loops share one ``_Sampled`` accumulator:
   deltas since the last line, and the high-waters the handlers and the router
   keep (``interval_*``, ``State.receive_queue_hwm``) since the last line.
 
-This task is the only thing that resets an interval field: it reads one, then
-sets it back to 0. Every writer runs on the same event loop and ``_report``
-does not await, so nothing can raise a high-water mark between the read and the
-reset. The cumulative counters are never reset: /metrics shows them.
+This task is the only thing that resets an interval field. ``_report`` reads
+them all and builds the line, logs it, and only then moves the baselines and
+sets the interval fields back to 0, in one block. It does not await, and every
+writer runs on the same event loop, so nothing can raise a high-water mark
+between the read and the reset. A report that fails before the reset consumes
+nothing, and its minute folds into the next line. The cumulative counters are
+never reset: /metrics shows them.
 
 A minute with no activity still logs, with an empty ``handlers``: the line is
 also the heartbeat, and it shows loop lag through the quiet hours. There is no
@@ -147,25 +150,31 @@ def _had_activity(entry: dict[str, int | float]) -> bool:
 
 
 def _report(sampled: _Sampled, reported: _Reported, minute_start: datetime) -> None:
-    """Log the line for the minute that began at ``minute_start``, then reset what it read.
+    """Log the line for the minute that began at ``minute_start``, then consume what it read.
 
-    Synchronous on purpose: see the module docstring. Every handler's baseline
-    moves each time, so ``reported.handlers`` holds one entry per handler.
+    Synchronous on purpose: see the module docstring. It runs in three steps:
+
+    1. Build the whole line and the new baselines, changing nothing.
+    2. Log the line.
+    3. Apply every baseline update and reset, in one block.
+
+    So a failure in step 1 or 2 consumes nothing, and everything folds into the
+    next line. Every handler's baseline moves each time, so ``reported.handlers``
+    holds one entry per handler.
     """
     handlers: dict[str, dict[str, int | float]] = {}
+    baselines: dict[str, _Baseline] = {}
     for name, metrics in state.handlers.items():
-        base = reported.handlers.setdefault(name, _Baseline())
-        entry = _handler_entry(metrics, base)
+        entry = _handler_entry(metrics, reported.handlers.get(name, _Baseline()))
         if _had_activity(entry):
             handlers[name] = entry
-        base.flushes = metrics.flushes
-        base.flush_rows = metrics.flush_rows
-        base.flush_seconds = metrics.flush_seconds
-        base.dropped = metrics.drop_count
-        base.filtered = metrics.filtered
-        metrics.interval_flush_max_s = 0.0
-        metrics.interval_batch_max = 0
-        metrics.interval_queue_hwm = 0
+        baselines[name] = _Baseline(
+            flushes=metrics.flushes,
+            flush_rows=metrics.flush_rows,
+            flush_seconds=metrics.flush_seconds,
+            dropped=metrics.drop_count,
+            filtered=metrics.filtered,
+        )
 
     log.info(
         "uw-stream pipeline minute",
@@ -181,6 +190,12 @@ def _report(sampled: _Sampled, reported: _Reported, minute_start: datetime) -> N
         },
     )
 
+    # Nothing below can raise or await: attribute stores and a dict update.
+    reported.handlers.update(baselines)
+    for metrics in state.handlers.values():
+        metrics.interval_flush_max_s = 0.0
+        metrics.interval_batch_max = 0
+        metrics.interval_queue_hwm = 0
     reported.receive_drops = state.receive_queue_drops
     state.receive_queue_hwm = 0
     sampled.reset()
@@ -228,10 +243,18 @@ async def _run_reporter(sampled: _Sampled, reported: _Reported) -> None:
     loop is blocked past a boundary the line comes late and a minute label is
     missing; the lag numbers on that line say why.
 
+    One zero-second sleep comes between the wait and the report. If the loop
+    was blocked across the boundary, this timer and the sampler's have both
+    expired and this task may wake first; the sampler's wake-up, which carries
+    the stall's lag, is already queued behind it. Yielding once lets it run, so
+    the lag lands on the line for the minute that just ended, not on the next
+    one's. The yield stays out of ``_report``, which must not await.
+
     A report that raises is logged and the loop moves on to the next boundary.
-    The pass may have failed partway, so that minute's interval fields can stay
-    un-reset and fold into the next line. Nothing here retries or waits on the
-    failed pass, so one failure cannot hold up the minutes after it.
+    ``_report`` consumes nothing until its line is logged, so a failed pass
+    leaves every baseline and interval field as it was, and the next line
+    carries both minutes. Nothing here retries or waits on the failed pass, so
+    one failure cannot hold up the minutes after it.
     """
     now = datetime.now(UTC)
     while True:
@@ -239,6 +262,7 @@ async def _run_reporter(sampled: _Sampled, reported: _Reported) -> None:
         while now < boundary:
             await asyncio.sleep((boundary - now).total_seconds())
             now = datetime.now(UTC)
+        await asyncio.sleep(0)
         try:
             _report(sampled, reported, boundary - timedelta(minutes=1))
         except Exception as exc:

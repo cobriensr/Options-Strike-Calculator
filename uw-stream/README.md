@@ -133,17 +133,17 @@ Single asyncio process:
      no holiday calendar.
    - `/metrics` has top-level fields `uptime_seconds`, `ws_connected`
      (all shards up), `connections` (per shard), `last_message_ts`,
-     `reconnects_last_hour`, `receive_queue_depth`,
-     `receive_queue_drops` and `receive_queue_hwm`, plus two keyed sections:
-     `channels` (per WS
+     `reconnects_last_hour`, `receive_queue_depth`, `receive_queue_drops`
+     and `receive_queue_hwm`, plus two keyed sections: `channels` (per WS
      channel joined, or echoed by UW, e.g. `net_flow:TSLA`: `subscribed`,
      `last_message_ts`) and `handlers` (per handler queue, keyed by
      handler name: `queue_depth`, `drop_count`, `write_attempted`,
      `write_count`, `lost_rows`, `dupes_dropped`, `single_copy`, `filtered`,
      `flushes`, `flush_rows`, `flush_seconds`, `interval_flush_max_s`,
-     `interval_batch_max`, `interval_queue_hwm`; zeroed from boot). The last
-     six handler fields and `receive_queue_hwm` are the flush and high-water
-     numbers explained under Pipeline diagnostics below. `lost_rows` counts the rows of flushes that failed after the DB
+     `interval_batch_max`, `interval_queue_hwm`; zeroed from boot). The
+     last six handler fields and `receive_queue_hwm` are the flush and
+     high-water numbers explained under Pipeline diagnostics below.
+     `lost_rows` counts the rows of flushes that failed after the DB
      retries; ON CONFLICT dedup skips don't count. `dupes_dropped` counts the
      second copies of a trade that the mirror sockets deliver and the
      option-trade handlers drop before their queue. It is not backpressure,
@@ -495,7 +495,14 @@ the heartbeat, and it shows loop lag through the quiet hours. The first line
 after a deploy covers only the part of the minute since boot. If the event
 loop is blocked past a boundary the line comes late, and the minute label
 that would have come is missing from the sequence. A stall that straddles a
-boundary can also put its lag on the next minute's line instead of this one's.
+boundary puts its lag on the line for the minute that just ended: the
+reporter yields to the sampler once before it logs.
+
+If the log call or the line's own arithmetic raises, the pass changes
+nothing: no baseline moves and no interval field resets. The next line then
+carries both minutes (`flushes`, `rows` and `dropped` summed over the two,
+the high-waters and maxima the larger of the two), and the first minute's
+label is missing from the sequence.
 
 | Field                            | Meaning                                                                                                                                                                                                      |
 | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
