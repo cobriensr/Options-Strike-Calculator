@@ -141,6 +141,20 @@ export default defineConfig({
     globals: true,
     environment: 'jsdom',
     testTimeout: 15_000,
+    // Vitest's hook default is 10 s. The PGlite suites build a database in
+    // beforeAll or per test in beforeEach (the futures suites also rebuild a
+    // fixture world), and a loaded machine stretches that. Measured
+    // 2026-11-13, one full `vitest run --coverage` with other sessions holding
+    // the CPU at 65-100%: 2373 hooks in the 62 PGlite files, p99 2.2 s,
+    // slowest 8.4 s (futures-derived-recompute beforeEach), then 5.4 s
+    // (wave2-backfill beforeAll). The same day a review failed with "Hook
+    // timed out in 10000ms" in futures-derived-thin-roots, whose beforeAll
+    // already passes 120 s, so a hook with no timeout of its own was the one
+    // that ran over. 60 s is about 7x the slowest measured hook and equals
+    // the shortest explicit PGlite beforeAll timeout. An explicit timeout
+    // argument or vi.setConfig still wins over it (scratch-git.fixtures.mjs
+    // sets 600 s).
+    hookTimeout: 60_000,
     setupFiles: ['./src/__tests__/setup.ts'],
     include: [
       'src/**/*.{test,spec}.{ts,tsx}',
