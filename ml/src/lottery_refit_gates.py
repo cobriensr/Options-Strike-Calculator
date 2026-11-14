@@ -73,9 +73,12 @@ SHADOW_SESSIONS = 10
 # 2 x SHADOW_SESSIONS: a starved shadow is rejected instead of awaited forever.
 SHADOW_MAX_SESSIONS = 20
 
-# Parquet-era daily eval rows: p10 797, min 83. Windows of 10 sessions held
-# 10,995-38,129.
-MIN_EVAL_ROWS_PER_SESSION = 300
+# Re-measured 2026-11-14 on the tape-built era 06-17 -> 11-13 (73 sessions): daily
+# eval rows p10 1,344, min 535 (parquet era: p10 797, min 83). The floor is the
+# p10 over 2.5, rounded down to 50. Windows of 10 sessions held 10,995-38,129
+# (parquet era). Ten sessions of at least 500 rows hold at least 5,000, so
+# MIN_EVAL_ROWS can no longer fail on its own: it stays as a backstop.
+MIN_EVAL_ROWS_PER_SESSION = 500
 MIN_EVAL_ROWS = 5_000
 
 # Candidate share over active share, for tier1 and tier1+2 alike (matched cutoffs

@@ -211,7 +211,7 @@ def test_gate_constants_match_the_plans_table():
     assert g.MIN_TRAIN_SESSIONS == 30
     assert g.SHADOW_SESSIONS == 10
     assert g.SHADOW_MAX_SESSIONS == 20
-    assert g.MIN_EVAL_ROWS_PER_SESSION == 300
+    assert g.MIN_EVAL_ROWS_PER_SESSION == 500  # re-measured 2026-11-14 (was 300)
     assert g.MIN_EVAL_ROWS == 5_000
     assert g.TIER_SHARE_RATIO_BAND == (0.67, 1.5)
     assert g.TIER1_SHARE_BAND == (0.01, 0.15)
@@ -828,9 +828,9 @@ def test_decide_uses_exactly_the_first_ten_sessions():
 
 
 def test_a_thin_session_is_skipped_and_the_next_one_takes_its_place():
-    # 299 scored rows is one short of a session. The first ten sessions that do
+    # 499 scored rows is one short of a session. The first ten sessions that do
     # count are days 0-2 and 4-10.
-    rows = (500, 500, 500, 299) + (500,) * 8
+    rows = (500, 500, 500, 499) + (500,) * 8
     v = run(rows=rows)
     days = trading_days(12)
     assert v.sessions == tuple(days[:3] + days[4:11])
@@ -839,19 +839,29 @@ def test_a_thin_session_is_skipped_and_the_next_one_takes_its_place():
 
 
 def test_a_session_of_exactly_the_minimum_counts():
-    v = run(rows=(300,) + (500,) * 8 + (700,))  # 300 + 4000 + 700 = 5000
+    # The first session sits on the floor; the nine after it are above it, so the
+    # total is 500 + 9 * 600 = 5,900.
+    v = run(rows=(500,) + (600,) * 9)
     assert v.sessions == tuple(trading_days(10))
-    assert (v.decision, v.eval_rows) == ("pass", 5000)
+    assert (v.decision, v.eval_rows) == ("pass", 5900)
+
+
+def test_sessions_under_the_floor_never_make_a_shadow():
+    # Ten sessions of 499 rows hold 4,990, but none of them is a session.
+    v = run(rows=(499,) * 10)
+    assert (v.decision, v.reasons) == ("wait", ())
+    assert (v.sessions, v.eval_rows) == ((), 0)
 
 
 def test_only_scored_rows_count_toward_a_session():
-    # Day 0 has 450 fires, 200 of them unaligned (cum_ncp below cum_npp for a
-    # call), which the scorer gates out. 250 scored rows is not a session.
-    eval_frame = make_eval_frame((450,) + (500,) * 10)
+    # Day 0 has 600 fires, 200 of them unaligned (cum_ncp below cum_npp for a
+    # call), which the scorer gates out. 400 scored rows is not a session, though
+    # 600 fires would be.
+    eval_frame = make_eval_frame((600,) + (500,) * 10)
     first_day = eval_frame["date"] == trading_days(1)[0]
     gated = eval_frame.index[first_day][:200]
     eval_frame.loc[gated, "cum_ncp_at_fire"] = 0.5
-    v = run(rows=(450,) + (500,) * 10, eval_frame=eval_frame)
+    v = run(rows=(600,) + (500,) * 10, eval_frame=eval_frame)
     assert v.sessions == tuple(trading_days(11)[1:])
     assert v.eval_rows == 5000
 
@@ -907,12 +917,13 @@ def test_rho_undefined_rejects(candidate_eval, active_eval, which):
 
 def test_rho_is_pooled_over_the_judged_sessions_not_averaged_per_session():
     # Ten sessions of unequal size. The third, by far the biggest, runs against
-    # the ranking: pooled over all 5,000 rows its 1,800 outweigh the rest, while
-    # a mean of ten per-session rhos would count it once in ten.
-    rows = (400, 400, 1800, 300, 300, 400, 300, 400, 300, 400)
+    # the ranking: pooled over all 6,900 rows its 2,400 outweigh any other single
+    # session (the other 4,500 rows together still outweigh it), while a mean of
+    # ten per-session rhos would count it once in ten.
+    rows = (500, 500, 2400, 500, 500, 500, 500, 500, 500, 500)
     eval_frame = make_eval_frame(rows, bad_sessions=(2,))
     v = run(rows=rows, eval_frame=eval_frame, active_eval=BAD_EVAL)
-    assert v.eval_rows == 5000
+    assert v.eval_rows == 6900
     outcomes = eval_frame["outcome_pct"]
     by_session = [eval_frame["date"] == day for day in trading_days(10)]
     for ranking, got in ((GOOD_EVAL, v.rho_candidate), (BAD_EVAL, v.rho_active)):
@@ -929,20 +940,27 @@ def test_rho_is_pooled_over_the_judged_sessions_not_averaged_per_session():
 # ── decide_shadow: eval rows ────────────────────────────────────────────────
 
 
-def test_too_few_eval_rows():
-    v = run(rows=(450,) * 10)
+def test_too_few_eval_rows(monkeypatch):
+    # Ten sessions hold at least 10 * MIN_EVAL_ROWS_PER_SESSION = 5,000 rows, so
+    # with the shipped constants this check cannot fire on its own: it is a
+    # backstop. Raising the total floor one row above that shows the check itself.
+    monkeypatch.setattr(g, "MIN_EVAL_ROWS", 5_001)
+    v = run(rows=(500,) * 10)
     assert (v.decision, v.reasons, v.eval_rows) == (
         "reject",
         ("too_few_eval_rows",),
-        4500,
+        5000,
     )
-    one_short = run(rows=(500,) * 9 + (499,))
-    assert (one_short.decision, one_short.reasons, one_short.eval_rows) == (
-        "reject",
-        ("too_few_eval_rows",),
-        4999,
-    )
+    monkeypatch.setattr(g, "MIN_EVAL_ROWS", 5_000)
     assert run(rows=(500,) * 10).decision == "pass"  # exactly 5,000
+
+
+def test_the_shipped_floors_leave_the_total_check_a_backstop():
+    # Pins the relationship the test above works around: a shadow of the minimum
+    # sessions never falls under the total floor. If this fails, the total check
+    # has become live (or the per-session floor was lowered), and
+    # test_too_few_eval_rows no longer needs its patch.
+    assert g.SHADOW_SESSIONS * g.MIN_EVAL_ROWS_PER_SESSION >= g.MIN_EVAL_ROWS
 
 
 # ── decide_shadow: the tier shares ──────────────────────────────────────────
@@ -1061,11 +1079,14 @@ def test_tier1_share_band():
     assert "tier1_share_out_of_band" in low.reasons
 
 
-def test_every_failed_check_is_listed_in_vocabulary_order():
-    # Thin rows; a reversed ranking; nothing reaches tier1 under (9, 3), so its
-    # share is 0 (under the band, ratio 0); and tier1+2 grows to 7/32 over 4/32.
+def test_every_failed_check_is_listed_in_vocabulary_order(monkeypatch):
+    # Thin rows (the total floor raised one above ten minimum sessions, as in
+    # test_too_few_eval_rows); a reversed ranking; nothing reaches tier1 under
+    # (9, 3), so its share is 0 (under the band, ratio 0); and tier1+2 grows to
+    # 7/32 over 4/32.
+    monkeypatch.setattr(g, "MIN_EVAL_ROWS", 5_001)
     v = run(
-        rows=(450,) * 10,
+        rows=(500,) * 10,
         candidate_eval=BAD_EVAL,
         active_eval=GOOD_EVAL,
         candidate_feed={"DDD": 4, "EEE": 4},

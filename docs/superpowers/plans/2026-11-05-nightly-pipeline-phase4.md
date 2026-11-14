@@ -218,7 +218,7 @@ night k+1 …, a shadow exists:
 | `MIN_TRAIN_SESSIONS` | `30` | parquet-era windows had 41–58 |
 | `SHADOW_SESSIONS` | `10` | SD(Δρ) is 0.105 / 0.072 / 0.044 at 3 / 5 / 10 sessions (owner answer 3) |
 | `SHADOW_MAX_SESSIONS` | `20` | 2 × `SHADOW_SESSIONS`: a starved shadow is rejected instead of waiting forever |
-| `MIN_EVAL_ROWS_PER_SESSION` | `300` | parquet-era daily rows: p10 797, min 83 |
+| `MIN_EVAL_ROWS_PER_SESSION` | `500` | tape-built era 06-17 → 11-13: daily eval rows p10 1,344, min 535 (Task 1, 2026-11-14); parquet era p10 797, min 83 |
 | `MIN_EVAL_ROWS` | `5_000` | 10-session held-out windows held 10,995–38,129 |
 | ρ rule | pooled Spearman, candidate ≥ active, over the first 10 evaluated sessions | spec; passed 6/10 cycles |
 | `TIER_SHARE_RATIO_BAND` | `(0.67, 1.5)` for both tier1 and tier1+2 | matched cutoffs: 0.73–1.43 in 9/10 |
@@ -226,6 +226,8 @@ night k+1 …, a shadow exists:
 | `FEED_CUTOFF_MATCH_SESSIONS` | `20` | |
 | `FEED_CUTOFF_SEARCH_MAX` | `40` | qas p99 since 10-20 is 28 |
 | no NaN | `validate_weights` (D5) | |
+
+Task 1 re-measured every basis on 2026-11-14 (docs/tmp/nightly-phase4-tuning.md, local); only this constant moved by more than 25 %.
 
 Nightly constants (`nightly/src/constants.py`):
 - `REFIT_BUDGET_SECONDS = 1800`. This is this plan's row of phase 2's D2 budget table, which holds every phase's reserve. Nothing else in that table changes here;
