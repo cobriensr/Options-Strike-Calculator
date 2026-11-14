@@ -26,8 +26,13 @@ Two details keep the count honest:
 * The twin's frames are counted in the buckets strictly inside the gap, not the
   two edge buckets. After an event-loop stall both sockets resume together and
   the twin's buffered frames land in the resume bucket; counting that bucket
-  would report a loop stall as one socket going quiet. The per-minute loop-lag
-  line covers stalls.
+  would report a loop stall as one socket going quiet. That narrows the false
+  reports, it does not end them: the first socket's task drains its buffered
+  frames before the other's runs, and a bucket edge inside that drain puts the
+  first socket's frames strictly inside the other's gap. So the warning also
+  says whether the twin was silent too (``twin_also_silent``, see
+  ``SocketStats.silent_during``): if it was, both sockets stalled together. The
+  per-minute loop-lag line covers the stall.
 * A ring slot is ``bucket number % 1200``, so a twin that was quiet for a while
   still holds old counts in slots that alias into the current window. Each slot
   stores the absolute bucket number it was last written for, and only slots
@@ -82,6 +87,8 @@ class SocketStats:
         "interval_max_trade_gap_s",
         "interval_silences",
         "interval_trade_frames",
+        "last_silence_end",
+        "last_silence_start",
         "last_trade_at",
         "name",
         "silences",
@@ -102,6 +109,12 @@ class SocketStats:
         # Monotonic time of the last trade frame on this connection; None until
         # one arrives, and again after ``session_start``.
         self.last_trade_at: float | None = None
+        # Monotonic start and end of the latest silence, or None before the first.
+        # Written when a gap of ``SILENCE_S`` or more ends, and read by the twin's
+        # check (see ``silent_during``). Kept across ``session_start``: the span
+        # is still when the socket was quiet.
+        self.last_silence_start: float | None = None
+        self.last_silence_end: float | None = None
         # Trade-frame count per bucket, and the absolute bucket number each slot
         # was last written for (-1: never). See the module docstring.
         self._counts = [0] * RING_BUCKETS
@@ -158,6 +171,20 @@ class SocketStats:
                 total += counts[slot]
         return total
 
+    def silent_during(self, start: float, end: float) -> bool:
+        """Whether this socket was itself silent during a gap on its twin ending at ``end``.
+
+        True when its own gap is still open: its last trade frame is ``SILENCE_S``
+        or more before ``end`` and no later one has arrived to close it. Or when
+        its latest recorded silence ended after ``start``. That span cannot end
+        after ``end``: both sockets read one monotonic clock, in loop order.
+        """
+        last = self.last_trade_at
+        if last is not None and end - last >= SILENCE_S:
+            return True
+        silence_end = self.last_silence_end
+        return silence_end is not None and silence_end > start
+
     def _on_silence(self, start: float, end: float, gap: float) -> None:
         """Count a silence and, if the twin kept receiving through it, warn.
 
@@ -166,6 +193,8 @@ class SocketStats:
         """
         self.silences += 1
         self.interval_silences += 1
+        self.last_silence_start = start
+        self.last_silence_end = end
         twin_name = _twins.get(self.name)
         twin = _registry.get(twin_name) if twin_name is not None else None
         if twin is None:
@@ -189,10 +218,11 @@ class SocketStats:
                     "silence_start_utc": (silence_end - timedelta(seconds=gap_s)).isoformat(),
                     "silence_end_utc": silence_end.isoformat(),
                     "twin_window_clipped": gap > RING_SPAN_S,
+                    "twin_also_silent": twin.silent_during(start, end),
                 },
             )
         except Exception as exc:
-            rate_limited_log.warning(
+            rate_limited_log.error(
                 scope="socket_stats",
                 kind="silence_check_failed",
                 key=self.name,

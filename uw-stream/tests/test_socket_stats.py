@@ -382,6 +382,7 @@ class TestTwinWarning:
             "silence_start_utc": "2026-11-13T14:59:59.400000+00:00",
             "silence_end_utc": "2026-11-13T15:00:00+00:00",
             "twin_window_clipped": False,
+            "twin_also_silent": False,
         }
         dt.now.assert_called_once_with(UTC)
 
@@ -535,15 +536,156 @@ class TestTwinWarning:
         _feed(b, _spread(_B + 0.15, 15))
 
         with patch.object(socket_stats, "rate_limited_log") as rl:
-            rl.warning.side_effect = [RuntimeError("log sink down"), None]
+            rl.warning.side_effect = RuntimeError("log sink down")
             _feed(a, [_B + 0.05, _B + 0.65])
 
-        kinds = [c.kwargs["kind"] for c in rl.warning.call_args_list]
-        assert kinds == ["twin_silence", "silence_check_failed"]
-        failed = rl.warning.call_args_list[1].kwargs
+        # The failed check is logged at error level, not warning: a diagnostics bug
+        # is a Sentry signal (ruling R8, as in pipeline_stats), where a warning
+        # only reaches the log.
+        assert [c.kwargs["kind"] for c in rl.warning.call_args_list] == ["twin_silence"]
+        rl.error.assert_called_once()
+        failed = rl.error.call_args.kwargs
+        assert failed["scope"] == "socket_stats"
+        assert failed["kind"] == "silence_check_failed"
         assert failed["key"] == "conn0"
+        assert failed["extra"]["shard"] == "conn0"
         assert "log sink down" in failed["extra"]["err"]
         # The socket's own state is intact: the silence is counted, the next gap
         # is measured from this frame.
         assert a.silences == 1
         assert a.last_trade_at == _B + 0.65
+
+
+# --- twin_also_silent --------------------------------------------------------
+
+
+class TestTwinAlsoSilent:
+    """A warning says whether the twin was silent too, which makes it a loop stall.
+
+    Leaving the two edge buckets out protects against a stall only when both
+    sockets resume in the same 0.1 s bucket. They do not: the first socket's task
+    drains its buffered frames before the other's runs, and a bucket edge inside
+    that drain puts the first socket's frames strictly inside the second's gap.
+    The warning still fires; ``twin_also_silent`` tells the reader why.
+    """
+
+    def test_both_sockets_stalled_and_the_drain_crosses_a_bucket_edge_is_flagged(self, pair):
+        a, b = pair
+        # Both stream every 5 ms until a 4 s loop stall that starts at 96.0.
+        for i in range(200):
+            a.on_frame(TRADE, 95.0 + i * 0.005)
+            b.on_frame(TRADE, 95.0001 + i * 0.005)
+
+        with patch.object(socket_stats, "rate_limited_log") as rl:
+            # The stall ends at 100.099. conn0's task runs first and drains its
+            # buffer across the 100.1 bucket edge; conn1's task runs right after.
+            _feed(a, [100.099 + i * 0.0001 for i in range(10)])  # bucket 1000
+            _feed(a, [100.1005 + i * 0.0001 for i in range(10)])  # bucket 1001
+            # conn1 holds no frames inside conn0's gap, so conn0 raises nothing.
+            assert _warnings(rl) == []
+            b.on_frame(TRADE, 100.102)
+
+        (kwargs,) = _warnings(rl)
+        assert kwargs["key"] == "conn1"
+        assert kwargs["extra"]["twin"] == "conn0"
+        # The 10 drained frames in bucket 1000 are strictly inside conn1's gap.
+        assert kwargs["extra"]["twin_trade_frames"] == 10
+        assert kwargs["extra"]["gap_s"] == pytest.approx(4.107, abs=0.001)
+        assert kwargs["extra"]["twin_also_silent"] is True
+
+    def test_a_one_sided_silence_with_the_twin_streaming_throughout_is_not_flagged(self, pair):
+        a, b = pair
+        _feed(b, _spread(_B + 0.15, 15))
+        b.on_frame(TRADE, _B + 0.62)
+
+        with patch.object(socket_stats, "rate_limited_log") as rl:
+            _feed(a, [_B + 0.05, _B + 0.65])
+
+        (kwargs,) = _warnings(rl)
+        assert kwargs["extra"]["twin_trade_frames"] == 15
+        assert kwargs["extra"]["twin_also_silent"] is False
+
+    def test_a_twin_whose_own_gap_is_still_open_is_flagged(self, pair):
+        a, b = pair
+        # The twin's last trade frame is at _B + 0.55, 1.1 s before this gap ends,
+        # and it has not received one since: it is silent now, with no span of its
+        # own recorded yet.
+        _feed(b, _spread(_B + 0.15, 15))
+
+        with patch.object(socket_stats, "rate_limited_log") as rl:
+            _feed(a, [_B + 0.05, _B + 1.65])
+
+        (kwargs,) = _warnings(rl)
+        assert b.last_silence_start is None
+        assert kwargs["extra"]["twin_also_silent"] is True
+
+    @pytest.mark.parametrize(
+        ("twin_last", "flagged"),
+        [
+            (_B + 0.75, True),  # 1.25 - 0.75 = SILENCE_S exactly: open
+            (_B + 0.875, False),  # 0.375 s: a normal pause
+        ],
+    )
+    def test_the_twins_open_gap_counts_from_silence_s_before_this_gaps_end(
+        self, pair, twin_last, flagged
+    ):
+        a, b = pair
+        # 0.5 and 0.75 are exact in binary, so the comparison sits on SILENCE_S.
+        _feed(b, [_B + 0.55] * 10)
+        b.on_frame(TRADE, twin_last)
+
+        with patch.object(socket_stats, "rate_limited_log") as rl:
+            _feed(a, [_B, _B + 1.25])
+
+        (kwargs,) = _warnings(rl)
+        assert kwargs["extra"]["twin_also_silent"] is flagged
+
+    def test_a_twin_silence_that_ended_before_this_gap_began_is_not_flagged(self, pair):
+        a, b = pair
+        # The twin was silent from _B + 0.05 to _B + 1.05, then streamed on without
+        # a pause until just before this gap ends. Its silence is long over.
+        _feed(b, [_B + 0.05, _B + 1.05])
+        _feed(b, [_B + 1.02 + 0.05 * i for i in range(1, 93)])  # to _B + 5.62
+
+        with patch.object(socket_stats, "rate_limited_log") as rl:
+            _feed(a, [_B + 5.05, _B + 5.65])
+
+        (kwargs,) = _warnings(rl)
+        assert (b.last_silence_start, b.last_silence_end) == (_B + 0.05, _B + 1.05)
+        assert kwargs["extra"]["twin_trade_frames"] == 10
+        assert kwargs["extra"]["twin_also_silent"] is False
+
+    def test_a_twin_silence_that_ends_after_this_gap_began_is_flagged(self, pair):
+        a, b = pair
+        # The twin was silent from _B + 0.05 until _B + 0.95, then resumed with
+        # frames inside this gap (_B + 0.45 to _B + 1.55). The spans overlap.
+        _feed(b, [_B + 0.05, _B + 0.95])
+        _feed(b, [_B + 1.02 + 0.05 * i for i in range(11)])  # _B + 1.02 .. _B + 1.52
+
+        with patch.object(socket_stats, "rate_limited_log") as rl:
+            _feed(a, [_B + 0.45, _B + 1.55])
+
+        (kwargs,) = _warnings(rl)
+        assert (b.last_silence_start, b.last_silence_end) == (_B + 0.05, _B + 0.95)
+        assert kwargs["extra"]["twin_also_silent"] is True
+
+    def test_a_silence_records_its_span_and_a_shorter_pause_does_not(self):
+        s = SocketStats("conn0")
+        assert (s.last_silence_start, s.last_silence_end) == (None, None)
+
+        _feed(s, [_B + 0.05, _B + 0.25])  # 0.2 s: not a silence
+        assert (s.last_silence_start, s.last_silence_end) == (None, None)
+
+        _feed(s, [_B + 5.25])
+        assert (s.last_silence_start, s.last_silence_end) == (_B + 0.25, _B + 5.25)
+
+        _feed(s, [_B + 5.45, _B + 9.45])  # a later silence replaces the span
+        assert (s.last_silence_start, s.last_silence_end) == (_B + 5.45, _B + 9.45)
+
+    def test_session_start_keeps_the_recorded_span(self):
+        s = SocketStats("conn0")
+        _feed(s, [_B + 0.25, _B + 5.25])
+
+        s.session_start()
+
+        assert (s.last_silence_start, s.last_silence_end) == (_B + 0.25, _B + 5.25)

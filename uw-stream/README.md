@@ -581,27 +581,52 @@ the counts and silences still run.
   `twin`, the shard that joins the same `option_trades` channels (`conn0`
   and `conn6` are twins), or `null` when it has none.
 
-`silences` and `max_trade_gap_s` count every trade-frame gap of 0.5 s or more
-on that socket, whether or not its twin was streaming. A thin stretch of the
-market, or a stall of the whole event loop, raises them on both sockets.
-Read them next to the twin-silence warnings below, not alone.
+`max_trade_gap_s` is the widest gap between two trade frames on that socket
+in the minute, of any length. Only `silences` counts the gaps of 0.5 s or
+more, whether or not the twin was streaming. A thin stretch of the market, or
+a stall of the whole event loop, raises both on both sockets. Read them next
+to the twin-silence warnings below, not alone.
+
+Two cases the gap numbers handle in a fixed way:
+
+- A gap that spans a minute boundary is credited to the minute whose trade
+  frame ends it, because the gap is measured when that frame arrives.
+- A gap that never ends is never counted: no silence and no warning, since
+  both wait for the next trade frame. The only sign is `trade_frames: 0` on
+  one shard while its twin's is non-zero. Nothing else catches it:
+  `src/subscription_watchdog.py` checks only the `subscribed` flag, and
+  `/healthz` uses the global `last_message_ts`, which the twin keeps fresh.
 
 **The warning.** When a gap of 0.5 s or more ends on a socket and its twin
 received at least 10 trade frames inside that gap, the connector logs one
 warning, `trade socket went quiet while its twin kept receiving`, on the
 first trade frame after the gap. It is a log line only: nothing goes to
 Sentry. Its fields are `shard`, `twin`, `gap_s`, `twin_trade_frames`,
-`silence_start_utc`, `silence_end_utc` and `twin_window_clipped`. The twin's
-frames are counted in the 0.1 s buckets strictly inside the gap, leaving out
-the two buckets at its edges: after an event-loop stall both sockets resume
-together and the twin's buffered frames land in the resume bucket, so
-counting it would report a stall as one socket going quiet (the minute
-line's `loop_lag_max_s` covers stalls). The twin's counts are kept for 120 s;
-a longer gap sets `twin_window_clipped` to `true`, and `twin_trade_frames`
-then covers only the last 120 s. The warning is rate limited to one a minute
-per shard, so take the number of silences from `silences` and the detail from
-the warning. If the check itself fails it logs `twin-silence check failed`
-and the receive loop carries on.
+`silence_start_utc`, `silence_end_utc`, `twin_window_clipped` and
+`twin_also_silent`. The twin's frames are counted in the 0.1 s buckets
+strictly inside the gap, leaving out the two buckets at its edges: after an
+event-loop stall both sockets resume together and the twin's buffered frames
+land in the resume bucket, so counting it would report a stall as one socket
+going quiet. That narrows the false reports but does not end them. The two
+sockets do not resume in the same bucket: the first socket's task drains its
+buffered frames before the other's runs, and a bucket edge inside that drain
+puts the first socket's frames strictly inside the second socket's gap. So
+the warning also carries `twin_also_silent`. It is `true` when the twin was
+itself silent during this gap: its latest silence ended after this gap
+began, or its own gap is still open (its last trade frame is 0.5 s or more
+before this frame). A warning with `twin_also_silent: true` is a loop stall
+seen by both sockets, not a quiet socket: check the minute line's
+`loop_lag_max_s`. `false` is the one-sided case the warning exists for. The
+flag is a hint, not proof: a twin silence that overlaps only the start of the
+gap also sets it, so compare `gap_s` with the twin's `max_trade_gap_s`. The
+twin's counts are kept for 120 s; a longer gap sets `twin_window_clipped` to
+`true`, and `twin_trade_frames` then covers only the last 120 s. The warning
+is rate limited to one a minute per shard. Twin silences have no counter of
+their own: `silences` counts every gap of 0.5 s or more, twin or not. The
+rate limiter's `N occurrences suppressed` summary carries the extra
+warnings, and only when a later warning lands after the window closes. If the
+check itself fails it logs `twin-silence check failed` at error level, which
+sends one Sentry event a minute per shard, and the receive loop carries on.
 
 **Lost or only delayed?** The dedupe's own line, `option_trades
 redundant-socket dedupe` (every 5 to 6 minutes under traffic), carries
