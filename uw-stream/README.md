@@ -929,8 +929,10 @@ half has no trades. Outside it nothing alerts and nothing is forced, and the
 groups' times keep being tracked, so a feed silent since the evening before
 alerts, and its sockets are reconnected, on the first pass after the open.
 
-When the window changes, open incidents end with one log line each, with
-`window` set to `opened` or `closed` and the usual `duration_s`:
+When the window changes, open incidents end with one log line each. Both kinds
+of line carry `shard` (stuck socket) or `group` (silent feed), `window` set to
+`opened` or `closed`, `duration_s` (the incident's age at the pass that ended it)
+and `forced_reconnects` (the forced reconnects the incident made):
 
 - A silent-feed incident ends on either change: `option trades silent incident
   ended by the trade window`.
