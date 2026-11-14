@@ -50,16 +50,27 @@ import {
   SEED_LOTTERY_WEIGHTS_VERSION,
 } from '../_lib/lottery-weights-seed.js';
 
-/** What the loader answers: the seed's weights with `feed_cutoffs` replaced. */
+/**
+ * What the loader answers: the seed's weights with `feed_cutoffs` replaced,
+ * under `version`, in the ACTIVE slot only. The `takeit` slot keeps the seed,
+ * so a handler that read the wrong slot would bind the seed's 13 / 10 and fail
+ * the cutoff tests, rather than pass because both slots agreed.
+ */
 function loadedWeights(
   version: string,
   cutoffs: { tier1_min_score: number; tier2_min_score: number },
 ): LoadedLotteryWeights {
-  const versioned = {
-    version,
-    weights: { ...SEED_LOTTERY_WEIGHTS, feed_cutoffs: cutoffs },
+  return {
+    active: {
+      version,
+      weights: { ...SEED_LOTTERY_WEIGHTS, feed_cutoffs: cutoffs },
+    },
+    takeit: {
+      version: SEED_LOTTERY_WEIGHTS_VERSION,
+      weights: SEED_LOTTERY_WEIGHTS,
+    },
+    fallback: null,
   };
-  return { active: versioned, takeit: versioned, fallback: null };
 }
 
 // The seed in the active slot: the loader's answer until a test overrides it.

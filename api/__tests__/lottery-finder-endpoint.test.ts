@@ -187,18 +187,27 @@ import {
 
 /**
  * What the loader answers: the seed's weights with `feed_cutoffs` replaced,
- * under `version`, in both slots. `fallback` marks a seed fallback.
+ * under `version`, in the ACTIVE slot only. The `takeit` slot keeps the seed,
+ * so a handler that read the wrong slot would bind the seed's 13 / 10 and fail
+ * the cutoff tests, rather than pass because both slots agreed. `fallback`
+ * marks a seed fallback.
  */
 function loadedWeights(
   version: string,
   cutoffs: { tier1_min_score: number; tier2_min_score: number },
   fallback: LoadedLotteryWeights['fallback'] = null,
 ): LoadedLotteryWeights {
-  const versioned = {
-    version,
-    weights: { ...SEED_LOTTERY_WEIGHTS, feed_cutoffs: cutoffs },
+  return {
+    active: {
+      version,
+      weights: { ...SEED_LOTTERY_WEIGHTS, feed_cutoffs: cutoffs },
+    },
+    takeit: {
+      version: SEED_LOTTERY_WEIGHTS_VERSION,
+      weights: SEED_LOTTERY_WEIGHTS,
+    },
+    fallback,
   };
-  return { active: versioned, takeit: versioned, fallback };
 }
 
 // The seed in the active slot: the loader's answer until a test overrides it.
