@@ -43,8 +43,8 @@ FRED_NFP_RELEASE_ID = 50
 FRED_RELEASE_DATES_URL = 'https://api.stlouisfed.org/fred/release/dates'
 FRED_TIMEOUT_SEC = 30
 
-# Appended, not inserted first: ml/src has its own enrich_lottery_outcomes.py,
-# which would shadow scripts/enrich_lottery_outcomes.py for later imports.
+# Appended, not inserted first, so an ml/src module cannot shadow a scripts/
+# module of the same name (scripts/enrich_lottery_outcomes.py is one).
 ML_SRC = ROOT / 'ml' / 'src'
 if str(ML_SRC) not in sys.path:
     sys.path.append(str(ML_SRC))
