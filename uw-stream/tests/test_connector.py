@@ -592,9 +592,9 @@ def test_the_storm_window_follows_the_horizon_reconnects_last_hour_counts_over(
     """A window shorter than the count's horizon would alert twice on reconnects
     the first alert counted. The horizon is patched to ten minutes, so a window
     that is a constant of its own (an hour, half an hour) does not follow it."""
-    import state as state_mod
+    import state as state_module
 
-    monkeypatch.setattr(state_mod, "RECONNECT_HORIZON", timedelta(minutes=10))
+    monkeypatch.setattr(state_module, "RECONNECT_HORIZON", timedelta(minutes=10))
     storm.reconnects(storm.threshold)
     storm.connector._maybe_alert_storm()
     assert len(storm.captured) == 1
@@ -610,7 +610,7 @@ def test_the_storm_window_follows_the_horizon_reconnects_last_hour_counts_over(
 
 def test_reconnects_last_hour_counts_over_the_shared_horizon(monkeypatch) -> None:
     """The count and the storm window read one constant, so they cannot drift."""
-    import state as state_mod
+    import state as state_module
 
     now = datetime.now(UTC)
     state.reconnect_times.clear()
@@ -618,7 +618,7 @@ def test_reconnects_last_hour_counts_over_the_shared_horizon(monkeypatch) -> Non
     try:
         assert state.reconnects_last_hour() == 2
 
-        monkeypatch.setattr(state_mod, "RECONNECT_HORIZON", timedelta(minutes=10))
+        monkeypatch.setattr(state_module, "RECONNECT_HORIZON", timedelta(minutes=10))
 
         assert state.reconnects_last_hour() == 1
     finally:

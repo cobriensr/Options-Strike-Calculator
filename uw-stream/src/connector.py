@@ -592,8 +592,8 @@ class Connector:
         for a single socket — a real storm still crosses N*base quickly.
 
         At most one alert per ``RECONNECT_HORIZON``, process-wide (see the
-        "Storm alert window" comment at the top of this module). A check below
-        the threshold does not start the window.
+        "Storm alert window" comment right under ``_RECONNECT_STORM_THRESHOLD``,
+        near the top). A check below the threshold does not start the window.
         """
         count = state.reconnects_last_hour()
         threshold = _RECONNECT_STORM_THRESHOLD * max(1, len(settings.channel_shards))

@@ -9,6 +9,7 @@ shows one issue per exception type, regardless of which handler raised.
 
 from __future__ import annotations
 
+import io
 import json
 import logging
 from collections.abc import Iterator
@@ -338,8 +339,10 @@ class TestLibraryErrorHandlers:
     - websockets/protocol.py "parser failed";
     - asyncio's "Exception in callback" (built in events.py ``Handle._run``) and
       "Task exception was never retrieved" (futures.py ``Future.__del__``, and
-      the C accelerator's twin). Both go through ``call_exception_handler``,
-      whose default handler (base_events.py) logs them at ERROR.
+      the C accelerator's twin; the class name supplies "Task", the source has
+      only ``f'{self.__class__.__name__} exception was never retrieved'``).
+      Both go through ``call_exception_handler``, whose default handler
+      (base_events.py) logs them at ERROR.
 
     ``init_sentry`` puts an ``EventHandler`` at ERROR on the ``websockets`` and
     ``asyncio`` loggers so those still file one event each.
@@ -451,6 +454,42 @@ class TestLibraryErrorHandlers:
         for name in LIBRARY_LOGGERS:
             handlers = logging.getLogger(name).handlers
             assert [isinstance(h, EventHandler) for h in handlers] == [True]
+
+    def test_a_root_handler_set_before_init_means_no_last_resort(self, monkeypatch, capsys):
+        """Root logging configured BEFORE ``init_sentry`` (``basicConfig``, a root
+        handler) leaves ``hasHandlers()`` true, so the ``lastResort`` branch is
+        skipped. Attached anyway, it would print every WARNING and ERROR record of
+        these loggers a second time on stderr, beside the root handler's copy.
+
+        ``hasHandlers`` is not patched: pytest's own root capture handlers already
+        make it true, and the root handler added here says so explicitly.
+        """
+        monkeypatch.setenv("SENTRY_DSN", FAKE_DSN)
+        monkeypatch.setattr(sentry_setup, "_sentry_enabled", False)
+        root_output = io.StringIO()
+        root_handler = logging.StreamHandler(root_output)
+        root = logging.getLogger()
+        root.addHandler(root_handler)
+        try:
+            with (
+                patch.object(sentry_sdk, "init", autospec=True),
+                patch.object(sentry_sdk, "set_tag", autospec=True),
+            ):
+                sentry_setup.init_sentry()
+
+            for name in LIBRARY_LOGGERS:
+                assert logging.lastResort not in logging.getLogger(name).handlers
+
+            logging.getLogger("asyncio").warning("socket.send() raised exception.")
+            logging.getLogger("websockets.client").warning("connection closed")
+        finally:
+            root.removeHandler(root_handler)
+
+        assert root_output.getvalue().splitlines() == [
+            "socket.send() raised exception.",
+            "connection closed",
+        ]
+        assert capsys.readouterr().err == ""
 
 
 @pytest.fixture

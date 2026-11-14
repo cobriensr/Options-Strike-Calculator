@@ -99,8 +99,11 @@ def _before_send(event: dict[str, Any], hint: dict[str, Any]) -> dict[str, Any]:
 # (base_events.py) logs them at ERROR. The messages are built elsewhere, in
 # CPython 3.12:
 #   "Exception in callback" in events.py (``Handle._run``);
-#   "Task exception was never retrieved" in futures.py (``Future.__del__``; the
-#     C accelerator ``_asyncio`` builds the same text).
+#   "Task exception was never retrieved" in futures.py (``Future.__del__``). The
+#     literal is not in the source: it is
+#     ``f'{self.__class__.__name__} exception was never retrieved'``, and the
+#     class name supplies "Task". The C accelerator ``_asyncio`` builds the same
+#     text.
 # The websockets server-side sites (server.py, asyncio/server.py) never run here.
 _LIBRARY_ERROR_LOGGERS = ("websockets", "asyncio")
 
@@ -118,10 +121,13 @@ def _attach_library_error_handlers() -> None:
     and so Railway's logs, through ``logging.lastResort``. Keep them there by
     attaching the last-resort handler to each.
 
-    That choice is a snapshot taken once, at init. If root logging is ever
-    configured (``basicConfig``, a root handler), drop the ``lastResort``
-    branch: these loggers would otherwise print every WARNING and ERROR line
-    twice, once through it and once through the root handler.
+    That choice is a snapshot taken once, at init. Root logging configured
+    BEFORE ``init_sentry`` (``basicConfig``, a root handler) is already handled:
+    ``hasHandlers()`` is then true, the ``lastResort`` branch is skipped, and
+    the root handler prints each line once. Root logging configured AFTER
+    ``init_sentry`` is not: ``lastResort`` is already attached, so these
+    loggers would print every WARNING and ERROR line twice, once through it and
+    once through the root handler. Then drop the ``lastResort`` branch.
     """
     from sentry_sdk.integrations.logging import EventHandler
 
