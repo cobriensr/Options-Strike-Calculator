@@ -29,7 +29,6 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, create_autospec
-from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
@@ -348,6 +347,9 @@ class World:
     rescore: MagicMock
     fires: Fires = field(default_factory=lambda: Fires(make_fires([], 1)))
     connects: int = 0
+    # What `datetime.now` answers inside refit_step: the wall clock when a promotion starts.
+    # It is not the run's start (`ctx.now_utc`), which a test sets apart from it.
+    wall: datetime = NOW
 
     def titles(self) -> list[str]:
         return [c.args[0] for c in self.notices.call_args_list]
@@ -395,6 +397,16 @@ def world(monkeypatch: pytest.MonkeyPatch) -> World:
     monkeypatch.setattr(refit_step, "fetch_feed_frame", lambda c, s: w.fires.fetch_feed_frame(c, s))
     monkeypatch.setattr(refit_step, "rescore_all", rescore)
     monkeypatch.setattr(sentry_sdk, "capture_message", notices)
+
+    class Wall(datetime):
+        """`datetime` as refit_step sees it: `now` is the test's clock, the rest is real."""
+
+        @classmethod
+        def now(cls, tz: Any = None) -> datetime:
+            return w.wall if tz is None else w.wall.astimezone(tz)
+
+    monkeypatch.setattr(refit_step, "datetime", Wall)
+    monkeypatch.setattr(refit_step, "monotonic", lambda: CLOCK)
     return w
 
 
@@ -1109,23 +1121,32 @@ def test_pass_promotes_in_one_call_and_warns(world: World, monkeypatch: pytest.M
     assert_plain(kwargs["extras"])
 
 
+def at(hour: int, minute: int = 0, second: int = 0) -> datetime:
+    """A wall-clock time on the test day, UTC."""
+    return datetime(2026, 11, 12, hour, minute, second, tzinfo=UTC)
+
+
+CUTOFF = at(12, 30)
+MIN_BEFORE_CUTOFF = CUTOFF - timedelta(seconds=constants.PROMOTION_MIN_SECONDS)
+
+
 @pytest.mark.parametrize(
-    "now_utc",
+    "wall",
     [
-        pytest.param(datetime(2026, 11, 12, 12, 30, tzinfo=UTC), id="at-the-cutoff"),
-        pytest.param(datetime(2026, 11, 12, 15, 0, tzinfo=UTC), id="afternoon"),
-        pytest.param(
-            datetime(2026, 11, 12, 8, 0, tzinfo=ZoneInfo("America/New_York")),
-            id="08:00-ET-is-13:00-UTC",
-        ),
+        pytest.param(at(12, 30), id="at-the-cutoff"),
+        pytest.param(at(15, 0), id="afternoon"),
+        # Not yet 12:30, but fewer than PROMOTION_MIN_SECONDS to go, with 5,000 s of step
+        # budget left: the rescore would run into the cutoff.
+        pytest.param(at(12, 15), id="fifteen-minutes-to-go"),
     ],
 )
 def test_promotion_after_cutoff_is_deferred_partial(
-    world: World, monkeypatch: pytest.MonkeyPatch, now_utc: datetime
+    world: World, monkeypatch: pytest.MonkeyPatch, wall: datetime
 ) -> None:
     s = promote_ready(world, monkeypatch)
+    world.wall = wall
 
-    result = run_night(world, s.last_session, now_utc=now_utc)
+    result = run_night(world, s.last_session)
 
     world.rescore.assert_not_called()
     assert world.store.rows[s.version]["status"] == "shadow"
@@ -1136,17 +1157,82 @@ def test_promotion_after_cutoff_is_deferred_partial(
     world.notices.assert_not_called()
 
 
-def test_promotion_a_minute_before_the_cutoff_goes_ahead(
-    world: World, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("wall", "promotes"),
+    [
+        pytest.param(MIN_BEFORE_CUTOFF - timedelta(seconds=1), True, id="just-over-the-minimum"),
+        pytest.param(MIN_BEFORE_CUTOFF, True, id="exactly-the-minimum"),
+        pytest.param(MIN_BEFORE_CUTOFF + timedelta(seconds=1), False, id="just-under-it"),
+    ],
+)
+def test_promotion_needs_the_minimum_time_before_the_cutoff(
+    world: World, monkeypatch: pytest.MonkeyPatch, wall: datetime, promotes: bool
+) -> None:
+    # The step has hours of budget; only the distance to 12:30 UTC is short.
+    assert time(12, 30) == constants.PROMOTION_CUTOFF_UTC
+    s = promote_ready(world, monkeypatch)
+    world.wall = wall
+
+    result = run_night(world, s.last_session, seconds_left=3 * 3600)
+
+    assert (world.rescore.call_count == 1) is promotes
+    assert result.counts["promoted"] == int(promotes)
+    assert result.counts["promotion_deferred"] == int(not promotes)
+    assert result.status == ("ok" if promotes else "partial")
+
+
+@pytest.mark.parametrize(
+    ("ctx_start", "wall", "promotes"),
+    [
+        # The run began at 07:15 UTC, but the step is reached at 12:20: the wall clock rules.
+        pytest.param(at(7, 15), at(12, 20), False, id="run-started-early-step-reached-late"),
+        # The reverse can only happen in a test, and shows which clock is read.
+        pytest.param(at(13, 0), at(7, 15), True, id="the-start-is-not-consulted"),
+    ],
+)
+def test_the_wall_clock_is_read_at_promotion_time_not_from_the_run_start(
+    world: World,
+    monkeypatch: pytest.MonkeyPatch,
+    ctx_start: datetime,
+    wall: datetime,
+    promotes: bool,
 ) -> None:
     s = promote_ready(world, monkeypatch)
+    world.wall = wall
 
-    result = run_night(
-        world, s.last_session, now_utc=datetime(2026, 11, 12, 12, 29, 59, tzinfo=UTC)
-    )
+    result = run_night(world, s.last_session, now_utc=ctx_start)
+
+    assert (world.rescore.call_count == 1) is promotes
+    assert result.counts["promoted"] == int(promotes)
+
+
+@pytest.mark.parametrize(
+    ("wall", "seconds_left", "budget"),
+    [
+        pytest.param(at(7, 15), 5_000, 5_000, id="cutoff-far-away-step-deadline-unchanged"),
+        pytest.param(at(11, 30), 5_000, 3_600, id="cutoff-first-it-caps-the-rescore"),
+        pytest.param(at(12, 0), 5_000, 1_800, id="thirty-minutes-to-go"),
+        pytest.param(at(11, 30), 3_000, 3_000, id="step-deadline-first"),
+    ],
+)
+def test_the_rescore_deadline_is_the_earlier_of_the_step_and_the_cutoff(
+    world: World,
+    monkeypatch: pytest.MonkeyPatch,
+    wall: datetime,
+    seconds_left: float,
+    budget: float,
+) -> None:
+    # A rescore locks every fire it rewrites, and from 13:00 UTC the live crons write them:
+    # it must stop at 12:30 UTC whatever the step's own deadline allows (D6, Task 15).
+    s = promote_ready(world, monkeypatch)
+    world.wall = wall
+    ctx = make_ctx(s.last_session, seconds_left=seconds_left)
+
+    result = refit_step.run(ctx)
 
     assert result.counts["promoted"] == 1
-    assert time(12, 30) == constants.PROMOTION_CUTOFF_UTC
+    assert world.rescore.call_args.kwargs["deadline"] == CLOCK + budget
+    assert (world.rescore.call_args.kwargs["deadline"] == ctx.deadline) is (budget == seconds_left)
 
 
 @pytest.mark.parametrize(
@@ -1183,6 +1269,7 @@ def test_rescore_deadline_defers_the_promotion(
 ) -> None:
     s = promote_ready(world, monkeypatch)
     world.rescore.side_effect = error
+    world.wall = at(11, 30)  # an hour before the cutoff, with 5,000 s of step budget
     ctx = make_ctx(s.last_session)
 
     result = refit_step.run(ctx)
@@ -1199,7 +1286,9 @@ def test_rescore_deadline_defers_the_promotion(
     # One attempt, never retried: `is_retryable_db_error` would treat a lock timeout as
     # transient and run the rescore again (carry f).
     assert world.rescore.call_count == 1
-    assert world.rescore.call_args.kwargs["deadline"] == ctx.deadline
+    # The deadline it was given is the cutoff's, not the step's later one.
+    assert world.rescore.call_args.kwargs["deadline"] == CLOCK + 3_600
+    assert world.rescore.call_args.kwargs["deadline"] < ctx.deadline
     assert "decide" not in world.store.calls
 
 

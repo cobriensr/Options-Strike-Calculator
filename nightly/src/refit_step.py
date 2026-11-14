@@ -22,10 +22,13 @@ Failure rules (the step runner reports a raised exception to Sentry and fails th
   error propagate. None is turned into a rejection or a wait: a bad input must be seen.
   The one exception is the matched feed cutoffs the validator refuses, which the creation
   check reports as `invalid_weights`: that candidate is stored and announced.
-- A promotion that hits the step deadline or the lock timeout (the rescore rolled back
-  whole) is deferred: the version stays a shadow, the step is `partial`, no notice goes
-  out. `PointerMoved` and `ConcurrentScoreWriter` mean the active pointer or the scores
-  moved under it, and fail the step. The rescore is called once and never retried.
+- A promotion that is started too late, or hits its deadline or the lock timeout (the
+  rescore rolled back whole), is deferred: the version stays a shadow, the step is
+  `partial`, no notice goes out. The deadline is the step's or `PROMOTION_CUTOFF_UTC`,
+  whichever comes first (see `_promotion_window`), so a rescore never runs into the
+  market session. `PointerMoved` and `ConcurrentScoreWriter` mean the active pointer or
+  the scores moved under it, and fail the step. The rescore is called once and never
+  retried.
 - A write that finds nothing to do (`insert_candidate`, `record_session_eval`, `decide`
   answering False) means another run of the same night got there first: it counts and
   alerts nothing.
@@ -45,7 +48,8 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping, Sequence
-from datetime import UTC, date, timedelta
+from datetime import UTC, date, datetime, timedelta
+from time import monotonic
 from typing import TYPE_CHECKING, Any
 
 import pandas as pd
@@ -348,18 +352,18 @@ def _promote(
 ) -> tuple[str, str]:
     """Promote in the one transaction `rescore_all` runs, or defer to the next night.
 
-    Not called while promotion is disabled. It is not started late in the night or with
-    little step time left; a rescore that then hits the step deadline, or waits out the
-    lock timeout, has rolled back whole, so the version is still a shadow and the same
-    verdict (the first ten sessions) comes round again. Nothing here retries it.
+    Not called while promotion is disabled. It starts only with PROMOTION_MIN_SECONDS left
+    before both the step's deadline and the cutoff, and its rescore gets whichever of the
+    two comes first as its deadline (`_promotion_window`). A rescore that then hits that
+    deadline, or waits out the lock timeout, has rolled back whole, so the version is
+    still a shadow and the same verdict (the first ten sessions) comes round again.
+    Nothing here retries it.
 
     `rescore_all` needs a connection with no open transaction: `connect_db` gives an
     autocommit one, and everything this step ran on it before is a SELECT, so none is open.
     """
-    if (
-        ctx.now_utc.astimezone(UTC).time() >= PROMOTION_CUTOFF_UTC
-        or ctx.seconds_left() < PROMOTION_MIN_SECONDS
-    ):
+    seconds_left, deadline = _promotion_window(ctx)
+    if seconds_left < PROMOTION_MIN_SECONDS:
         counts["promotion_deferred"] += 1
         return shadow.version, "promotion deferred"
     try:
@@ -370,7 +374,7 @@ def _promote(
             reason="promotion",
             expect_active=active.version,
             dry_run=False,
-            deadline=ctx.deadline,
+            deadline=deadline,
         )
     except (RescoreDeadline, LockNotAvailable):
         counts["promotion_deferred"] += 1
@@ -388,6 +392,23 @@ def _promote(
         },
     )
     return shadow.version, "promoted"
+
+
+def _promotion_window(ctx: StepContext) -> tuple[float, float]:
+    """The seconds left and the `monotonic()` deadline for a promotion that starts now:
+    the step's own, or today's `PROMOTION_CUTOFF_UTC`, whichever comes first.
+
+    A rescore locks every fire it rewrites, and from 13:00 UTC the live detect cron and the
+    other writers touch those fires, so it must be over before then. The cutoff is read
+    against the wall clock at this moment, not `ctx.now_utc`, which is when the run
+    STARTED: a run that began at 07:15 and reaches this step at 12:20, or one started by
+    hand at 12:00, differs from its start by hours. A cutoff already past gives a negative
+    time left, so the promotion is deferred.
+    """
+    now = datetime.now(UTC)
+    cutoff = datetime.combine(now.date(), PROMOTION_CUTOFF_UTC, tzinfo=UTC)
+    to_cutoff = (cutoff - now).total_seconds()
+    return min(ctx.seconds_left(), to_cutoff), min(ctx.deadline, monotonic() + to_cutoff)
 
 
 # --- what goes into a report or a notice ------------------------------------------------

@@ -72,13 +72,17 @@ ENRICH_UNPRICED_FLOOR = 20
 REFIT_STEP_NAME = "lottery-refit"
 # The refit step's row of the plan's D2 budget table: what a night reserves for it.
 REFIT_BUDGET_SECONDS = 1800
-# A promotion starts only with this much step time left. The rescore reads every stored fire
-# and writes the changed ones in one transaction; it is timed on prod before the push (plan
-# Task 22). A rescore that overruns its deadline rolls back whole and the shadow stays a
-# shadow for the next night, so this is a floor on the work started, not a hard bound.
+# A promotion starts only with this much time left, counting the step's own deadline and the
+# cutoff below, whichever is nearer. The rescore reads every stored fire and writes the
+# changed ones in one transaction; it is timed on prod before the push (plan Task 22). A
+# rescore that overruns its deadline rolls back whole and the shadow stays a shadow for the
+# next night, so this is a floor on the work started; the deadline is the bound.
 PROMOTION_MIN_SECONDS = 1200
-# A promotion starts only before this UTC time of day: an hour before the earliest US open
-# (13:30 UTC in EDT), since the rescore locks fires the live detect cron writes.
+# A promotion's rescore must be over by this UTC time of day, which is an hour before the
+# earliest US open (13:30 UTC in EDT): it locks every fire it rewrites, and from 13:00 UTC the
+# live detect cron and the other fire writers would block on it or deadlock with it. The
+# step reads the wall clock when it starts one, defers it with less than PROMOTION_MIN_SECONDS
+# to go, and caps the rescore's deadline here.
 PROMOTION_CUTOFF_UTC = time(12, 30)
 # A reviewed one-time switch, the precedent being PROMOTE_TO_LIVE in
 # api/cron/refit-lottery-ticker-stats.ts. False: a shadow that passes its gates is marked
