@@ -491,14 +491,16 @@ async function processBatch(
   const updates = [];
   let scored = 0;
   let nulls = 0;
+  let skipped = 0;
   for (const row of batch) {
     const result = scoreOneRow(row, bundle, history, takeitWeights, updates);
     if (result === 'scored') scored += 1;
     else if (result === 'null') nulls += 1;
+    else if (result === 'skipped') skipped += 1;
   }
   await persistUpdates(updates, taggedVersion);
   const lastRow = batch.at(-1);
-  return { scored, nulls, lastId: lastRow.id };
+  return { scored, nulls, skipped, lastId: lastRow.id };
 }
 
 async function main() {
@@ -524,6 +526,8 @@ async function main() {
   // Mass loop.
   let totalScored = 0;
   let totalNull = 0;
+  // Rows the mapper threw on: never written, so they stay takeit_prob IS NULL.
+  let totalSkipped = 0;
   let lastId = 0;
 
   while (true) {
@@ -556,6 +560,7 @@ async function main() {
     const {
       scored,
       nulls,
+      skipped,
       lastId: newLastId,
     } = await processBatch(
       batch,
@@ -566,14 +571,17 @@ async function main() {
     );
     totalScored += scored;
     totalNull += nulls;
+    totalSkipped += skipped;
     lastId = newLastId;
     log(
-      `lottery: progress scored=${totalScored} null=${totalNull} lastId=${lastId}`,
+      `lottery: progress scored=${totalScored} null=${totalNull} skipped=${totalSkipped} lastId=${lastId}`,
     );
     // No post-batch LIMIT check — the pre-batch clamp above
     // (`batchSize <= 0`) handles the stop condition cleanly.
   }
-  log(`lottery: COMPLETE scored=${totalScored} null=${totalNull}`);
+  log(
+    `lottery: COMPLETE scored=${totalScored} null=${totalNull} skipped=${totalSkipped}`,
+  );
   log(`backfill done. log: ${logPath}`);
 }
 
