@@ -5,7 +5,7 @@ These are constants, not env vars (R7): none is a deploy-free operational knob.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, time
 from pathlib import Path
 
 # First session the tape covers; the calendar never plans earlier days.
@@ -68,6 +68,24 @@ ENRICH_MAX_DAY_FAILURES = 3
 # re-listed for a few leftover fires stays under it; one re-listed for hundreds of them (the
 # inversion pass after another writer priced the rest) is not judged by it.
 ENRICH_UNPRICED_FLOOR = 20
+# The refit step's name, in the step table, its logs and its Sentry notices (tag `step`).
+REFIT_STEP_NAME = "lottery-refit"
+# The refit step's row of the plan's D2 budget table: what a night reserves for it.
+REFIT_BUDGET_SECONDS = 1800
+# A promotion starts only with this much step time left. The rescore reads every stored fire
+# and writes the changed ones in one transaction; it is timed on prod before the push (plan
+# Task 22). A rescore that overruns its deadline rolls back whole and the shadow stays a
+# shadow for the next night, so this is a floor on the work started, not a hard bound.
+PROMOTION_MIN_SECONDS = 1200
+# A promotion starts only before this UTC time of day: an hour before the earliest US open
+# (13:30 UTC in EDT), since the rescore locks fires the live detect cron writes.
+PROMOTION_CUTOFF_UTC = time(12, 30)
+# A reviewed one-time switch, the precedent being PROMOTE_TO_LIVE in
+# api/cron/refit-lottery-ticker-stats.ts. False: a shadow that passes its gates is marked
+# `passed` and the owner is told, and no live score changes. A promotion rewrites the live
+# feed's scores and tiers, which needs the owner's go-ahead (plan Task 23), so it is turned
+# on by a commit that flips this constant, never by an env var (R7).
+PROMOTION_ENABLED = False
 # UW's 403 names this token's boundary, and a full plan reaches back about 2 years: a
 # boundary newer than this many days before the last session means the entitlement
 # shrank, not that UW lacks the day, so it never marks one.

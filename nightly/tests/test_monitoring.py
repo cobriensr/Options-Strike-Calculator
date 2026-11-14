@@ -1,5 +1,5 @@
-"""Tests for the Sentry layer: init options, event scrubbing and the per-day and per-step
-reports.
+"""Tests for the Sentry layer: init options, event scrubbing and the per-day, per-step and
+refit-decision reports.
 
 Exception events come from the installed SDK's own `event_from_exception`, so they
 have the shape `before_send` receives. Some tests run events through a real
@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import warnings
 from collections.abc import Iterator
 from datetime import UTC, date, datetime
@@ -33,7 +34,15 @@ from sentry_sdk.transport import Transport
 from sentry_sdk.utils import event_from_exception, has_data_collection_enabled
 
 from config import load_settings
-from monitoring import init_sentry, report_outcome, report_step, scrub_event
+from constants import REFIT_STEP_NAME
+from monitoring import (
+    RefitNotice,
+    init_sentry,
+    report_outcome,
+    report_refit,
+    report_step,
+    scrub_event,
+)
 from steps import Step, StepContext, StepOutcome, StepResult, run_steps
 from tape_job import RELAND_IDENTICAL, DayOutcome, DayStatus
 
@@ -992,3 +1001,174 @@ def test_a_step_that_raises_sends_a_tagged_event_without_the_database_host(
     assert event["tags"]["step"] == "enrich-outcomes"
     by_type = {v["type"]: v["value"] for v in _values(event)}
     assert by_type == {"OperationalError": REDACTED, "RuntimeError": "could not reach the database"}
+
+
+# --- report_refit ----------------------------------------------------------------
+
+REFIT_VERSION = "refit-2026-11-12"
+OTHER_REFIT_VERSION = "refit-2026-11-13"
+REFIT_EXTRAS: dict[str, int | float | str | list[str]] = {
+    "eval_rows": 9_000,
+    "rho_candidate": 0.07,
+    "flipped_signs": ["C/P"],
+}
+
+
+def _refit_title(kind: str) -> str:
+    return {
+        "promoted": "nightly refit promoted",
+        "passed": "nightly refit passed; promotion disabled",
+        "rejected": "nightly refit rejected",
+        "candidate_rejected": "nightly refit candidate rejected",
+    }[kind]
+
+
+@pytest.mark.parametrize(
+    ("kind", "level", "reasons", "fingerprint"),
+    [
+        pytest.param(
+            "promoted",
+            "warning",
+            (),
+            ["nightly-refit", "promoted", REFIT_VERSION],
+            id="promoted",
+        ),
+        pytest.param(
+            "passed",
+            "warning",
+            (),
+            ["nightly-refit", "passed", REFIT_VERSION],
+            id="passed-while-promotion-is-disabled",
+        ),
+        pytest.param(
+            "rejected",
+            "error",
+            # Not alphabetical ("tier12" sorts before "tier1_"): the order is the gate's.
+            ("rho_below_active", "tier1_ratio_out_of_band", "tier12_ratio_out_of_band"),
+            ["nightly-refit", "rejected", REFIT_VERSION],
+            id="rejected-after-shadow",
+        ),
+        pytest.param(
+            "candidate_rejected",
+            "error",
+            ("too_few_train_rows", "too_few_train_sessions"),
+            ["nightly-refit", "candidate_rejected", "too_few_train_rows"],
+            id="rejected-at-creation",
+        ),
+    ],
+)
+def test_report_refit_levels_titles_fingerprints(
+    capture_message,
+    kind: RefitNotice,
+    level: str,
+    reasons: tuple[str, ...],
+    fingerprint: list[str],
+) -> None:
+    # Plan D9's table, one row per kind.
+    report_refit(kind, version=REFIT_VERSION, reasons=reasons, extras=REFIT_EXTRAS)
+
+    capture_message.assert_called_once()
+    (message,) = capture_message.call_args.args
+    kwargs = capture_message.call_args.kwargs
+    assert message == _refit_title(kind)
+    assert kwargs["level"] == level
+    assert kwargs["fingerprint"] == fingerprint
+    assert kwargs["tags"] == {
+        "service": "nightly",
+        "step": REFIT_STEP_NAME,
+        "refit": kind,
+        "version": REFIT_VERSION,
+    }
+    # The reasons ride along in the verdict's own order; the caller's extras are kept.
+    assert kwargs["extras"] == {**REFIT_EXTRAS, "reasons": list(reasons)}
+
+
+def test_report_refit_tags_service_nightly(sdk_transport: _MemoryTransport) -> None:
+    # The fixture stubs the global `set_tag("service", ...)`, so a notice that reaches the
+    # wire with the tag carries it itself (rule 6262727 and the owner's filters read it).
+    for kind in get_args(RefitNotice):
+        report_refit(
+            kind, version=REFIT_VERSION, reasons=("too_few_train_rows",), extras=REFIT_EXTRAS
+        )
+    sentry_sdk.get_client().flush(timeout=5)
+
+    events = [e for e in map(json.loads, sdk_transport.payloads) if "level" in e]
+    assert [e["message"] for e in events] == [_refit_title(k) for k in get_args(RefitNotice)]
+    for event in events:
+        assert event["tags"]["service"] == "nightly"
+        assert event["tags"]["step"] == REFIT_STEP_NAME
+        assert event["server_name"] == "nightly"
+        assert event["extra"]["eval_rows"] == 9_000
+        assert event["extra"]["flipped_signs"] == ["C/P"]
+        assert event["extra"]["reasons"] == ["too_few_train_rows"]
+
+
+def test_report_refit_sends_a_nan_extra_as_text_not_a_dropped_event(
+    sdk_transport: _MemoryTransport,
+) -> None:
+    # A starved shadow is rejected with no rho (NaN) and a ratio can be infinite. The SDK
+    # turns both into text; if it ever stopped, the owner's rejection notice would vanish.
+    report_refit(
+        "rejected",
+        version=REFIT_VERSION,
+        reasons=("shadow_starved",),
+        extras={"rho_candidate": math.nan, "tier1_ratio": math.inf},
+    )
+    sentry_sdk.get_client().flush(timeout=5)
+
+    (event,) = [e for e in map(json.loads, sdk_transport.payloads) if "level" in e]
+    assert event["extra"]["rho_candidate"] == "nan"
+    assert event["extra"]["tier1_ratio"] == "inf"
+
+
+def test_report_refit_fingerprints_group_by_what_should_email(capture_message) -> None:
+    # Sentry mails on new issues only. A creation rejection groups by its first reason (a
+    # thin-data streak mails once); every other kind names its version (each one mails).
+    for version in (REFIT_VERSION, OTHER_REFIT_VERSION):
+        report_refit("candidate_rejected", version=version, reasons=("a", "b"), extras={})
+        report_refit("candidate_rejected", version=version, reasons=("b", "a"), extras={})
+        for kind in ("promoted", "passed", "rejected"):
+            report_refit(kind, version=version, reasons=("a",), extras={})
+
+    # Five calls per version: two creation rejections, then promoted, passed, rejected.
+    prints = [tuple(c.kwargs["fingerprint"]) for c in capture_message.call_args_list]
+    assert len(prints) == 10
+    # Calls 0 and 1 (same version, reasons in the other order) open different issues: the
+    # first reason is taken as given, never sorted.
+    assert prints[0] == ("nightly-refit", "candidate_rejected", "a")
+    assert prints[1] == ("nightly-refit", "candidate_rejected", "b")
+    # The same first reason on another night is the same issue.
+    assert prints[5] == prints[0]
+    assert prints[6] == prints[1]
+    for first, second in ((2, 7), (3, 8), (4, 9)):
+        assert prints[first] != prints[second]
+        assert prints[first][:2] == prints[second][:2]
+
+
+def test_report_refit_titles_are_a_closed_set(capture_message) -> None:
+    # A title never carries the version or a reason: those are the fingerprint and extras.
+    for version in (REFIT_VERSION, OTHER_REFIT_VERSION):
+        for kind in get_args(RefitNotice):
+            report_refit(kind, version=version, reasons=(f"why-{version}",), extras={})
+
+    titles = {c.args[0] for c in capture_message.call_args_list}
+    assert titles == {_refit_title(k) for k in get_args(RefitNotice)}
+
+
+def test_report_refit_without_a_reason_for_a_candidate_is_an_error(capture_message) -> None:
+    # check_creation never rejects without a reason; a fingerprint with none would merge
+    # every such rejection into one issue, so it is refused rather than guessed.
+    with pytest.raises(ValueError, match="needs a reason"):
+        report_refit("candidate_rejected", version=REFIT_VERSION, reasons=(), extras={})
+    capture_message.assert_not_called()
+
+
+def test_report_refit_extras_do_not_override_or_mutate(capture_message) -> None:
+    extras: dict[str, int | float | str | list[str]] = {"reasons": "caller text", "n": 1}
+    report_refit("rejected", version=REFIT_VERSION, reasons=("rho_below_active",), extras=extras)
+
+    assert capture_message.call_args.kwargs["extras"] == {
+        "reasons": ["rho_below_active"],
+        "n": 1,
+    }
+    assert extras == {"reasons": "caller text", "n": 1}

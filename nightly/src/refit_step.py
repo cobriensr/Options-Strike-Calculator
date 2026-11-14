@@ -1,0 +1,489 @@
+"""The lottery-refit step: one move of the weights candidate lifecycle each night (plan D6).
+
+A night does exactly one of two things, decided by whether a shadow exists:
+
+- No shadow: build `refit-<last_session>`. Train on the trailing 90 days, match the feed
+  cutoffs to the active version over the last 20 sessions, check the result, and store it as
+  a shadow, or as `rejected` with a notice naming the first reason. A version that already
+  exists (a re-run the same night) is counted and left alone.
+- A shadow: record each session that has become evaluable and not yet been recorded, then
+  ask `decide_shadow` for a verdict on all of them. It waits until 10 sessions are
+  evaluated, rejects a starved shadow at 20 elapsed sessions, and otherwise passes or
+  rejects on exactly the first 10. A pass promotes only when `PROMOTION_ENABLED`; with it
+  off (it ships off) the shadow is marked `passed`. The owner gets a notice for every
+  promotion, pass and rejection (`monitoring.report_refit`, plan D9).
+
+Evaluation lags one session (D6): session s is judged on the run after session s+1 lands,
+so a fire whose net flow arrived late has had its tape inversion filled by then. The
+newest session of the night is therefore left for the next night.
+
+Failure rules (the step runner reports a raised exception to Sentry and fails the step):
+- `WeightsInvalid`, the unknown-`tod` `ValueError`, a missing feed day and every database
+  error propagate. None is turned into a rejection or a wait: a bad input must be seen.
+  The one exception is the matched feed cutoffs the validator refuses, which the creation
+  check reports as `invalid_weights`: that candidate is stored and announced.
+- A promotion that hits the step deadline or the lock timeout (the rescore rolled back
+  whole) is deferred: the version stays a shadow, the step is `partial`, no notice goes
+  out. `PointerMoved` and `ConcurrentScoreWriter` mean the active pointer or the scores
+  moved under it, and fail the step. The rescore is called once and never retried.
+- A write that finds nothing to do (`insert_candidate`, `record_session_eval`, `decide`
+  answering False) means another run of the same night got there first: it counts and
+  alerts nothing.
+
+Every value handed to the store or to Sentry is a Python int, float, str or list: no numpy
+scalar, which `json.dumps` refuses. Logs carry the version, the decision and the counts,
+never a weight or a ticker, and the notices carry aggregates only. Nothing here writes a
+pointer: only the promotion transaction in `rescore_all` moves `active`, and nothing moves
+the Take-It pointer.
+
+This module imports `ml/src` and `scripts/` modules at the top (`lottery_scoring`,
+`lottery_refit_gates`, `lottery_weights`, `backfill_lottery_scores`), so an `ImportError`
+there fails this step alone: `pipeline` imports the step lazily.
+"""
+
+from __future__ import annotations
+
+import logging
+from collections.abc import Mapping, Sequence
+from datetime import UTC, date, timedelta
+from typing import TYPE_CHECKING, Any
+
+import pandas as pd
+from backfill_lottery_scores import RescoreDeadline, rescore_all
+from lottery_refit_gates import (
+    FEED_COLUMNS,
+    FEED_CUTOFF_MATCH_SESSIONS,
+    MIN_EVAL_ROWS_PER_SESSION,
+    OUTCOME_COLUMN,
+    TRAIN_WINDOW_DAYS,
+    FeedCutoffs,
+    ShadowVerdict,
+    check_creation,
+    daily_tier_shares,
+    decide_shadow,
+    feed_qas,
+    match_feed_cutoffs,
+    spearman,
+)
+from lottery_scoring import fetch_frame, train_weights
+from lottery_weights import refit_version_id, score_frame
+from psycopg2.errors import LockNotAvailable
+
+from calendar_nyse import previous_trading_day, trading_days
+from constants import PROMOTION_CUTOFF_UTC, PROMOTION_ENABLED, PROMOTION_MIN_SECONDS
+from monitoring import report_refit
+from outcome_check import recent_sessions
+from resources import connect_db
+from steps import StepContext, StepResult
+from weights_store import (
+    StoredVersion,
+    decide,
+    insert_candidate,
+    load_active,
+    load_shadow,
+    record_session_eval,
+    version_exists,
+)
+
+if TYPE_CHECKING:
+    from psycopg2.extensions import connection
+
+log = logging.getLogger(__name__)
+
+# The counts a result always carries, zero or not, in this order.
+COUNT_NAMES = (
+    "candidates_built",
+    "candidates_rejected",
+    "already_built",
+    "sessions_recorded",
+    "waiting",
+    "passed",
+    "promoted",
+    "rejected",
+    "promotion_deferred",
+    "rows_rescored",
+    "train_rows",
+    "eval_rows",
+)
+
+# `StepResult.detail` is part of the `nightly step partial` fingerprint: a fixed phrase.
+DEFERRED_DETAIL = "promotion deferred to the next night"
+
+# The feed's own frame: the columns `feed_qas` and `daily_tier_shares` read, for every fire
+# of the given sessions (the tier monitor counts them all), with the ticker's inversion
+# quintile from the LEFT JOIN the feed endpoint uses. Everything here is a SELECT.
+_FEED_SELECT = ", ".join(
+    "s.inversion_quintile" if column == "inversion_quintile" else f"f.{column}"
+    for column in FEED_COLUMNS
+)
+_FEED_SQL = (
+    f"SELECT {_FEED_SELECT} FROM lottery_finder_fires f "
+    "LEFT JOIN lottery_ticker_stats s ON s.ticker = f.underlying_symbol "
+    "WHERE f.date = ANY(%s::date[])"
+)
+_NOT_NUMERIC = ("underlying_symbol", "option_type", "tod", "date", "direction_gated")
+_NUMERIC_FEED_COLUMNS = tuple(c for c in FEED_COLUMNS if c not in _NOT_NUMERIC)
+
+
+def fetch_feed_frame(conn: connection, sessions: Sequence[date]) -> pd.DataFrame:
+    """Every fire of `sessions` with the `FEED_COLUMNS`, numbers as floats.
+
+    One SELECT. NUMERIC arrives from psycopg2 as `Decimal` in an object column, so each
+    numeric column is converted (a NULL becomes NaN). A session with no fires has no rows;
+    the caller decides whether that is an error (`decide_shadow` raises for a judged one).
+    """
+    with conn.cursor() as cursor:
+        cursor.execute(_FEED_SQL, (list(sessions),))
+        rows = cursor.fetchall()
+    frame = pd.DataFrame(rows, columns=list(FEED_COLUMNS))
+    for column in _NUMERIC_FEED_COLUMNS:
+        frame[column] = pd.to_numeric(frame[column]).astype("float64")
+    return frame
+
+
+def run(ctx: StepContext) -> StepResult:
+    counts = dict.fromkeys(COUNT_NAMES, 0)
+    with connect_db(ctx.settings) as conn:
+        active = load_active(conn)
+        # Read before anything is built: a second shadow is refused by the store, and that
+        # is a failure to surface, never an "already built" to hide.
+        shadow = load_shadow(conn)
+        if shadow is None:
+            version, decision = _build_candidate(conn, ctx, active, counts)
+        else:
+            version, decision = _judge_shadow(conn, ctx, active, shadow, counts)
+    log.info(
+        "lottery-refit %s: %s%s",
+        version,
+        decision,
+        "".join(f" {name}={n}" for name, n in counts.items()),
+    )
+    if counts["promotion_deferred"]:
+        return StepResult("partial", counts, DEFERRED_DETAIL)
+    return StepResult("ok", counts)
+
+
+# --- no shadow: build a candidate --------------------------------------------------
+
+
+def _build_candidate(
+    conn: connection, ctx: StepContext, active: StoredVersion, counts: dict[str, int]
+) -> tuple[str, str]:
+    trained_through = ctx.last_session
+    version = refit_version_id(trained_through)
+    if version_exists(conn, version):
+        counts["already_built"] += 1
+        return version, "already built"
+
+    window_start = trained_through - timedelta(days=TRAIN_WINDOW_DAYS)
+    train = fetch_frame(conn, window_start, trained_through)
+    counts["train_rows"] = len(train)
+    candidate = train_weights(train, base=active.weights, trained_through=trained_through)
+    # Scored before the matched cutoffs go in: they do not enter a score, and cutoffs the
+    # validator refuses would make `score_frame` raise instead of reaching the rejection.
+    insample_rho = float(spearman(score_frame(candidate, train), train[OUTCOME_COLUMN]))
+
+    feed = fetch_feed_frame(conn, recent_sessions(trained_through, FEED_CUTOFF_MATCH_SESSIONS))
+    qas_active = feed_qas(score_frame(active.weights, feed), feed)
+    qas_candidate = feed_qas(score_frame(candidate, feed), feed)
+    before = FeedCutoffs.from_weights(active.weights)
+    after = match_feed_cutoffs(qas_candidate, qas_active, before)
+    candidate["feed_cutoffs"] = {
+        "tier1_min_score": after.tier1_min_score,
+        "tier2_min_score": after.tier2_min_score,
+    }
+    tier1_share = float(daily_tier_shares(qas_candidate, feed, after)["tier1_share"].mean())
+
+    verdict = check_creation(
+        candidate,
+        train_rows=len(train),
+        train_sessions=int(train["date"].nunique()),
+        tier1_share=tier1_share,
+    )
+    report = {
+        "creation": {
+            "verdict": {
+                "ok": verdict.ok,
+                "reasons": list(verdict.reasons),
+                "train_rows": int(verdict.train_rows),
+                "train_sessions": int(verdict.train_sessions),
+                "tier1_share": float(verdict.tier1_share),
+            },
+            "train_window": {
+                "after": window_start.isoformat(),
+                "through": trained_through.isoformat(),
+            },
+            "insample_rho": insample_rho,
+        }
+    }
+    inserted = insert_candidate(
+        conn,
+        version,
+        candidate,
+        status="shadow" if verdict.ok else "rejected",
+        trained_through=trained_through,
+        report=report,
+    )
+    if not inserted:
+        # Another run of the same night inserted it between the check above and here.
+        counts["already_built"] += 1
+        return version, "already built"
+    if verdict.ok:
+        counts["candidates_built"] += 1
+        return version, "built shadow"
+    counts["candidates_rejected"] += 1
+    report_refit(
+        "candidate_rejected",
+        version=version,
+        reasons=verdict.reasons,
+        extras={
+            "train_rows": int(verdict.train_rows),
+            "train_sessions": int(verdict.train_sessions),
+            "tier1_share": float(verdict.tier1_share),
+            "insample_rho": insample_rho,
+            **_cutoff_extras(before, after),
+            **_change_extras(candidate, active.weights),
+        },
+    )
+    return version, "candidate rejected"
+
+
+# --- a shadow exists: record its new sessions and judge it ---------------------------
+
+
+def _judge_shadow(
+    conn: connection,
+    ctx: StepContext,
+    active: StoredVersion,
+    shadow: StoredVersion,
+    counts: dict[str, int],
+) -> tuple[str, str]:
+    if shadow.trained_through is None:
+        raise ValueError("a shadow has no trained_through: its evaluation window is unknown")
+    # The session before the night's own (`previous_trading_day` is "on or before", so the
+    # day before the last session is what makes it strictly earlier): the lag of D6.
+    last_judged = previous_trading_day(ctx.last_session - timedelta(days=1))
+    elapsed = trading_days(shadow.trained_through + timedelta(days=1), last_judged)
+    if not elapsed:
+        counts["waiting"] += 1
+        return shadow.version, "waiting"
+
+    # The whole elapsed range, recorded or not: `decide_shadow` judges the first ten
+    # evaluated sessions from scratch and raises for a judged one with no feed rows.
+    eval_frame = fetch_frame(conn, shadow.trained_through, last_judged)
+    feed_frame = fetch_feed_frame(conn, elapsed)
+    verdict = decide_shadow(
+        eval_frame=eval_frame,
+        feed_frame=feed_frame,
+        candidate=shadow.weights,
+        active=active.weights,
+        sessions_elapsed=len(elapsed),
+    )
+    counts["eval_rows"] = int(verdict.eval_rows)
+
+    # Everything that can raise on the data is behind us: no session is written for a
+    # night that then fails.
+    recorded = shadow.gate_report.get("sessions") or {}
+    fresh = [day for day in elapsed if day.isoformat() not in recorded]
+    if fresh:
+        entries = _session_entries(shadow.weights, active.weights, eval_frame, feed_frame, fresh)
+        for day in fresh:
+            if record_session_eval(conn, shadow.version, day, entries[day]):
+                counts["sessions_recorded"] += 1
+
+    if verdict.decision == "wait":
+        counts["waiting"] += 1
+        return shadow.version, "waiting"
+    summary = _verdict_summary(verdict)
+    extras = {
+        **_verdict_extras(verdict),
+        **_cutoff_extras(
+            FeedCutoffs.from_weights(active.weights), FeedCutoffs.from_weights(shadow.weights)
+        ),
+        **_change_extras(shadow.weights, active.weights),
+    }
+    if verdict.decision == "reject":
+        return _reject(conn, shadow, verdict, summary, extras, counts)
+    if not PROMOTION_ENABLED:
+        return _mark_passed(conn, shadow, summary, extras, counts)
+    return _promote(conn, ctx, active, shadow, extras, counts)
+
+
+def _reject(
+    conn: connection,
+    shadow: StoredVersion,
+    verdict: ShadowVerdict,
+    summary: dict[str, Any],
+    extras: dict[str, Any],
+    counts: dict[str, int],
+) -> tuple[str, str]:
+    if not decide(conn, shadow.version, "rejected", summary):
+        return shadow.version, "already decided"
+    counts["rejected"] += 1
+    report_refit("rejected", version=shadow.version, reasons=verdict.reasons, extras=extras)
+    return shadow.version, "rejected"
+
+
+def _mark_passed(
+    conn: connection,
+    shadow: StoredVersion,
+    summary: dict[str, Any],
+    extras: dict[str, Any],
+    counts: dict[str, int],
+) -> tuple[str, str]:
+    if not decide(conn, shadow.version, "passed", summary):
+        return shadow.version, "already decided"
+    counts["passed"] += 1
+    report_refit("passed", version=shadow.version, reasons=(), extras=extras)
+    return shadow.version, "passed"
+
+
+def _promote(
+    conn: connection,
+    ctx: StepContext,
+    active: StoredVersion,
+    shadow: StoredVersion,
+    extras: dict[str, Any],
+    counts: dict[str, int],
+) -> tuple[str, str]:
+    """Promote in the one transaction `rescore_all` runs, or defer to the next night.
+
+    Not called while promotion is disabled. It is not started late in the night or with
+    little step time left; a rescore that then hits the step deadline, or waits out the
+    lock timeout, has rolled back whole, so the version is still a shadow and the same
+    verdict (the first ten sessions) comes round again. Nothing here retries it.
+
+    `rescore_all` needs a connection with no open transaction: `connect_db` gives an
+    autocommit one, and everything this step ran on it before is a SELECT, so none is open.
+    """
+    if (
+        ctx.now_utc.astimezone(UTC).time() >= PROMOTION_CUTOFF_UTC
+        or ctx.seconds_left() < PROMOTION_MIN_SECONDS
+    ):
+        counts["promotion_deferred"] += 1
+        return shadow.version, "promotion deferred"
+    try:
+        result = rescore_all(
+            conn,
+            to_version=shadow.version,
+            weights=shadow.weights,
+            reason="promotion",
+            expect_active=active.version,
+            dry_run=False,
+            deadline=ctx.deadline,
+        )
+    except (RescoreDeadline, LockNotAvailable):
+        counts["promotion_deferred"] += 1
+        return shadow.version, "promotion deferred"
+    counts["promoted"] += 1
+    counts["rows_rescored"] = int(result.changed)
+    report_refit(
+        "promoted",
+        version=shadow.version,
+        reasons=(),
+        extras={
+            **extras,
+            "rows_rescored": int(result.changed),
+            "scores_changed": int(result.score_changed),
+        },
+    )
+    return shadow.version, "promoted"
+
+
+# --- what goes into a report or a notice ------------------------------------------------
+
+
+def _session_dates(frame: pd.DataFrame) -> pd.Series:
+    return pd.to_datetime(frame["date"]).dt.date
+
+
+def _session_entries(
+    candidate: Mapping[str, Any],
+    active: Mapping[str, Any],
+    eval_frame: pd.DataFrame,
+    feed_frame: pd.DataFrame,
+    sessions: Sequence[date],
+) -> dict[date, dict[str, Any]]:
+    """What is recorded for each session once it is evaluable: the rows both versions
+    score with an outcome, whether that is enough to count as evaluated, each version's rho
+    on them and the session's fires. It is written once and never recomputed, so a late
+    enrich pass cannot change a session the decision may rest on."""
+    candidate_scores = score_frame(candidate, eval_frame)
+    active_scores = score_frame(active, eval_frame)
+    outcome = eval_frame[OUTCOME_COLUMN]
+    usable = (candidate_scores.notna() & active_scores.notna() & outcome.notna()).to_numpy()
+    eval_dates = _session_dates(eval_frame)
+    feed_dates = _session_dates(feed_frame)
+    entries: dict[date, dict[str, Any]] = {}
+    for day in sessions:
+        rows = usable & (eval_dates == day).to_numpy()
+        n_rows = int(rows.sum())
+        entries[day] = {
+            "eval_rows": n_rows,
+            "evaluated": n_rows >= MIN_EVAL_ROWS_PER_SESSION,
+            "rho_candidate": float(spearman(candidate_scores[rows], outcome[rows])),
+            "rho_active": float(spearman(active_scores[rows], outcome[rows])),
+            "feed_fires": int((feed_dates == day).sum()),
+        }
+    return entries
+
+
+def _verdict_summary(verdict: ShadowVerdict) -> dict[str, Any]:
+    """The decision as it is stored under `gate_report.verdict`."""
+    return {
+        "decision": verdict.decision,
+        "reasons": list(verdict.reasons),
+        "sessions": [day.isoformat() for day in verdict.sessions],
+        "eval_rows": int(verdict.eval_rows),
+        "rho_candidate": float(verdict.rho_candidate),
+        "rho_active": float(verdict.rho_active),
+        "tier1_ratio": float(verdict.tier1_ratio),
+        "tier12_ratio": float(verdict.tier12_ratio),
+        "tier1_share": float(verdict.tier1_share),
+    }
+
+
+def _verdict_extras(verdict: ShadowVerdict) -> dict[str, Any]:
+    """The verdict's numbers for a notice. The reasons travel separately."""
+    return {
+        "sessions": len(verdict.sessions),
+        "eval_rows": int(verdict.eval_rows),
+        "rho_candidate": float(verdict.rho_candidate),
+        "rho_active": float(verdict.rho_active),
+        "tier1_ratio": float(verdict.tier1_ratio),
+        "tier12_ratio": float(verdict.tier12_ratio),
+        "tier1_share": float(verdict.tier1_share),
+    }
+
+
+def _cutoff_extras(before: FeedCutoffs, after: FeedCutoffs) -> dict[str, int]:
+    """The feed cutoffs of the active version and of the candidate, as plain ints."""
+    return {
+        "feed_tier1_before": int(before.tier1_min_score),
+        "feed_tier2_before": int(before.tier2_min_score),
+        "feed_tier1_after": int(after.tier1_min_score),
+        "feed_tier2_after": int(after.tier2_min_score),
+    }
+
+
+def _sign(value: float) -> int:
+    return (value > 0) - (value < 0)
+
+
+def _change_extras(candidate: Mapping[str, Any], active: Mapping[str, Any]) -> dict[str, Any]:
+    """How far the candidate moved from the active version, without naming a ticker: the
+    number of ticker weights that differ and the labels of the signs that flipped."""
+    new, old = candidate["features"], active["features"]
+    tickers = set(new["ticker_weights"]) | set(old["ticker_weights"])
+    changed = sum(
+        new["ticker_weights"].get(ticker, 0) != old["ticker_weights"].get(ticker, 0)
+        for ticker in tickers
+    )
+    flipped: list[str] = []
+    if _sign(new["option_type_weights"]["C"] - new["option_type_weights"]["P"]) != _sign(
+        old["option_type_weights"]["C"] - old["option_type_weights"]["P"]
+    ):
+        flipped.append("C/P")
+    if _sign(new["dte_weights"]["0"]) != _sign(old["dte_weights"]["0"]):
+        flipped.append("DTE0")
+    return {"ticker_weights_changed": int(changed), "flipped_signs": flipped}

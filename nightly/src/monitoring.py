@@ -1,5 +1,5 @@
-"""Sentry for the nightly job: init, the event scrubber and the per-day and per-step
-reports.
+"""Sentry for the nightly job: init, the event scrubber and the per-day, per-step and
+refit-decision reports.
 
 Nothing that leaves through Sentry may carry market data or a credential (review
 finding b11). The leak paths, and what closes each:
@@ -25,15 +25,19 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any
+from collections.abc import Mapping, Sequence
+from typing import Any, Literal
 
 import sentry_sdk
 from sentry_sdk.integrations.logging import LoggingIntegration
 
+from constants import REFIT_STEP_NAME
 from steps import StepOutcome
 from tape_job import RELAND_IDENTICAL, DayOutcome
 
 log = logging.getLogger(__name__)
+
+RefitNotice = Literal["promoted", "passed", "rejected", "candidate_rejected"]
 
 DATA_LIBRARY_REDACTED = "<redacted data-library message>"
 MAX_EXCEPTION_VALUE = 300
@@ -47,6 +51,13 @@ _URL_QUERY = re.compile(r"(https?://[^\s?#'\"<>]{0,2048}+)[?#][^\s'\"<>]*+", re.
 # Breadcrumb data keys where the SDK's HTTP integrations keep the raw query.
 _QUERY_KEYS = frozenset({"http.query", "http.fragment"})
 _FRAME_DROP_KEYS = _QUERY_KEYS | {"vars"}
+# The refit notices (plan D9): a closed set of titles and the level each one sends at.
+_REFIT_NOTICES: dict[RefitNotice, tuple[str, Literal["warning", "error"]]] = {
+    "promoted": ("nightly refit promoted", "warning"),
+    "passed": ("nightly refit passed; promotion disabled", "warning"),
+    "rejected": ("nightly refit rejected", "error"),
+    "candidate_rejected": ("nightly refit candidate rejected", "error"),
+}
 
 
 def init_sentry(dsn: str | None) -> None:
@@ -166,6 +177,45 @@ def report_step(outcome: StepOutcome) -> None:
         tags={"step": outcome.name, "status": outcome.status},
         extras={"counts": dict(outcome.counts), "detail": outcome.detail},
         fingerprint=["nightly-step", outcome.name, outcome.status, outcome.detail],
+    )
+
+
+def report_refit(
+    kind: RefitNotice,
+    *,
+    version: str,
+    reasons: Sequence[str],
+    extras: Mapping[str, int | float | str | list[str]],
+) -> None:
+    """One Sentry message for a refit decision the owner must see: a promotion, a pass
+    while promotion is disabled, or a rejection (after its shadow, or at creation).
+
+    The title is one of four fixed phrases and names neither the version nor a reason.
+    Sentry's new-issue rule mails each new issue at any level, so the fingerprint decides
+    what mails. A creation rejection groups by its FIRST reason, in the order the caller
+    gives them, so a thin-data streak mails once per new reason (accepted by the owner,
+    2026-11-06). Every other kind names its version, so each one mails.
+
+    `extras` are aggregates only: counts, rho values, share ratios, feed cutoffs and the
+    labels of flipped signs. Never a ticker-level row, a weight or a fire. `reasons` is
+    added to them under its own key and wins over a caller's key of that name. A NaN or
+    infinite number goes out as text (the SDK's serializer does that).
+    """
+    title, level = _REFIT_NOTICES[kind]
+    if kind == "candidate_rejected":
+        if not reasons:
+            raise ValueError("a rejected candidate needs a reason: it is the fingerprint")
+        fingerprint = ["nightly-refit", kind, reasons[0]]
+    else:
+        fingerprint = ["nightly-refit", kind, version]
+    sentry_sdk.capture_message(
+        title,
+        level=level,
+        # `service` is also set globally by init_sentry; naming it here keeps the notice
+        # routable (rule 6262727) whatever scope it is captured under.
+        tags={"service": "nightly", "step": REFIT_STEP_NAME, "refit": kind, "version": version},
+        extras={**extras, "reasons": list(reasons)},
+        fingerprint=fingerprint,
     )
 
 
