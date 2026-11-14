@@ -16,19 +16,24 @@
  * migrations' `SET LOCAL lock_timeout` lines rely on it). Alone it is the same
  * silent no-op: Postgres answers a `SET LOCAL` outside a transaction with a
  * WARNING and does nothing. So the guard allows `SET LOCAL` only as an element
- * of an array literal, which covers `sql.transaction([...])` and the
- * migrations' `statements: (sql) => [...]` arrays that db.ts hands to
- * `sql.transaction` later. It takes the array literal as the batch and does
- * not follow it to the call. A plain `SET` inside a batch would also apply for
- * the rest of that batch, since the batch is one connection, but the guard
- * flags it anyway because its scope is unclear.
+ * of an array literal that reaches `sql.transaction`, in one of three forms:
+ * the array passed to `sql.transaction([...])`, the body of an arrow passed to
+ * it (`sql.transaction((txn) => [...])`), or the body of a migration's
+ * `statements: (sql) => [...]`, which db.ts spreads into `sql.transaction`.
+ * Any other array is not a batch: in a `Promise.all([...])` each element is its
+ * own HTTP request, so the `SET LOCAL` runs on one connection and the rest on
+ * others. The guard follows the array to those three parents and no further,
+ * so a batch built in a variable and passed in later is flagged: write it
+ * inline. A plain `SET` inside a batch would also apply for the rest of that
+ * batch, since the batch is one connection, but the guard flags it anyway
+ * because its scope is unclear.
  *
  * What it scans: every non-test .ts file under api/, parsed with the
  * TypeScript compiler so comments and prose never match. It flags a tagged
  * template (any tag) or the first argument of a `.query(` / `.unsafe(` call
  * when that literal begins with SET, or with SET LOCAL when the statement is
- * not an array element. It does not see a statement built in a variable and
- * passed in later, a statement that opens with an SQL comment, or
+ * not in a transaction batch. It does not see a statement built in a variable
+ * and passed in later, a statement that opens with an SQL comment, or
  * `set_config(..., false)`.
  */
 
@@ -48,18 +53,63 @@ const SESSION_SET = /^\s*SET\b(?!\s+LOCAL\b)/i;
 const SET_LOCAL = /^\s*SET\s+LOCAL\b/i;
 
 /**
- * Whether `statement` (a tagged template or a `.query(` call) is an element of
- * an array literal, looking through parentheses. Needs a tree built with
- * parent nodes.
+ * `node`, or the outermost parenthesized expression around it, so that its
+ * `.parent` is the first node that is not a parenthesis. Needs a tree built
+ * with parent nodes.
  */
-function isArrayElement(statement: ts.Node): boolean {
-  let parent = statement.parent;
-  while (ts.isParenthesizedExpression(parent)) parent = parent.parent;
-  return ts.isArrayLiteralExpression(parent);
+function outsideParens(node: ts.Node): ts.Node {
+  let outer = node;
+  while (ts.isParenthesizedExpression(outer.parent)) outer = outer.parent;
+  return outer;
+}
+
+/**
+ * Whether `node` is a `<anything>.transaction(...)` call. Its callee is the
+ * property access, so a node that is the call's child but not the callee is one
+ * of its arguments.
+ */
+function isTransactionCall(node: ts.Node): boolean {
+  return (
+    ts.isCallExpression(node) &&
+    ts.isPropertyAccessExpression(node.expression) &&
+    node.expression.name.text === 'transaction'
+  );
+}
+
+/**
+ * Whether `statement` (a tagged template or a `.query(` call) is an element of
+ * an array literal that reaches `sql.transaction`, looking through parentheses:
+ *
+ *   - `sql.transaction([...])`;
+ *   - `sql.transaction((txn) => [...])`;
+ *   - a migration's `statements: (sql) => [...]`, which db.ts spreads into
+ *     `sql.transaction`.
+ *
+ * Any other array, such as a `Promise.all([...])`, is not a batch: each of its
+ * elements is its own HTTP request. Needs a tree built with parent nodes.
+ */
+function isInTransactionBatch(statement: ts.Node): boolean {
+  const array = outsideParens(statement).parent;
+  if (!ts.isArrayLiteralExpression(array)) return false;
+
+  // The array is the call's argument, or the body of an arrow: an array whose
+  // parent is an arrow can only be that arrow's body.
+  const holder = outsideParens(array).parent;
+  if (isTransactionCall(holder)) return true;
+  if (!ts.isArrowFunction(holder)) return false;
+
+  const caller = outsideParens(holder).parent;
+  return (
+    isTransactionCall(caller) ||
+    (ts.isPropertyAssignment(caller) &&
+      ts.isIdentifier(caller.name) &&
+      caller.name.text === 'statements')
+  );
 }
 
 function findSessionSets(source: string): SessionSet[] {
-  // `setParentNodes` is what lets `isArrayElement` walk up from a statement.
+  // `setParentNodes` is what lets `isInTransactionBatch` walk up from a
+  // statement.
   const file = ts.createSourceFile(
     'scanned.ts',
     source,
@@ -75,7 +125,7 @@ function findSessionSets(source: string): SessionSet[] {
     statement: ts.Node,
   ) => {
     const outsideBatch =
-      SET_LOCAL.test(literal.text) && !isArrayElement(statement);
+      SET_LOCAL.test(literal.text) && !isInTransactionBatch(statement);
     if (!SESSION_SET.test(literal.text) && !outsideBatch) return;
     // Skip the opening quote and any leading whitespace to land on the SET.
     const lead = literal.text.length - literal.text.trimStart().length;
@@ -163,6 +213,32 @@ describe('findSessionSets', () => {
       'a SET LOCAL whose array element is a wrapped call',
       "sql.transaction([withDbRetry(() => sql`SET LOCAL lock_timeout = '5s'`)])",
     ],
+    // Each element of a Promise.all is its own HTTP request, so the SET LOCAL
+    // runs on one connection and the rest of the batch on others: a no-op.
+    [
+      'a SET LOCAL in a Promise.all array',
+      "await Promise.all([sql`SET LOCAL lock_timeout = '5s'`, sql`SELECT 1`])",
+    ],
+    [
+      'a SET LOCAL in an array that is not passed to sql.transaction',
+      "const batch = [sql`SET LOCAL lock_timeout = '5s'`, sql`SELECT 1`]",
+    ],
+    [
+      'a SET LOCAL in an array passed to a method other than transaction',
+      "sql.batch([sql`SET LOCAL lock_timeout = '5s'`])",
+    ],
+    [
+      'a SET LOCAL in an arrow that is not a statements property',
+      "const m = { run: (sql) => [sql`SET LOCAL lock_timeout = '5s'`] }",
+    ],
+    [
+      'a SET LOCAL in an arrow passed to a call other than transaction',
+      "Promise.all((sql) => [sql`SET LOCAL lock_timeout = '5s'`])",
+    ],
+    [
+      'a SET LOCAL in an arrow body that is a call returning an array',
+      "const m = { statements: (sql) => wrap([sql`SET LOCAL lock_timeout = '5s'`]) }",
+    ],
   ])('flags %s', (_name, source) => {
     expect(findSessionSets(source)).toHaveLength(1);
   });
@@ -193,6 +269,26 @@ describe('findSessionSets', () => {
     [
       'SET LOCAL in a parenthesized array element',
       "sql.transaction([(sql`SET LOCAL lock_timeout = '5s'`)])",
+    ],
+    [
+      'SET LOCAL in a parenthesized array argument',
+      "sql.transaction(([sql`SET LOCAL lock_timeout = '5s'`]))",
+    ],
+    [
+      'SET LOCAL in an arrow passed to sql.transaction',
+      'await sql.transaction((txn) => [txn`SET LOCAL lock_timeout = 0`, txn`SELECT 1`])',
+    ],
+    [
+      'SET LOCAL in a statements arrow with a parenthesized body',
+      "const m = { statements: (sql) => ([sql`SET LOCAL lock_timeout = '5s'`]) }",
+    ],
+    [
+      'SET LOCAL in a parenthesized statements arrow',
+      "const m = { statements: ((sql) => [sql`SET LOCAL lock_timeout = '5s'`]) }",
+    ],
+    [
+      'SET LOCAL through a longer path to transaction',
+      "db.sql.transaction([sql`SET LOCAL lock_timeout = '5s'`])",
     ],
     ['the SET clause of an UPDATE', 'sql`UPDATE t SET a = 1 WHERE b = 2`'],
     ['an UPDATE whose SET opens a line', 'sql`\n  UPDATE t\n  SET a = 1`'],

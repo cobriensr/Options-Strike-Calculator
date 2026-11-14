@@ -182,22 +182,23 @@ describe('analyzeBodySchema', () => {
     expect(result.success).toBe(false);
   });
 
-  it('passes non-string context values through unchanged (numbers, nested objects)', () => {
+  it('passes non-string context values through unchanged (numbers, nested objects, booleans)', () => {
+    const context = {
+      spx: 5950.5,
+      strikes: { put: 5900, call: 6000 },
+      eventNames: ['CPI', 'FOMC'],
+      // The client sends this when the day's events did not load. The
+      // prompt's "events unknown" line reads it (`analyze-context.ts`), so a
+      // schema that dropped it would turn "unknown" into "none".
+      eventsUnknown: true,
+    };
     const result = analyzeBodySchema.safeParse({
       images: [baseImage],
-      context: {
-        spx: 5950.5,
-        strikes: { put: 5900, call: 6000 },
-        eventNames: ['CPI', 'FOMC'],
-        // The client sends this when the day's events did not load. The
-        // prompt's "events unknown" line reads it (`analyze-context.ts`), so a
-        // schema that dropped it would turn "unknown" into "none".
-        eventsUnknown: true,
-      },
+      context,
     });
     expect(result.success).toBe(true);
     if (!result.success) return;
-    expect(result.data.context.eventsUnknown).toBe(true);
+    expect(result.data.context).toEqual(context);
   });
 });
 
