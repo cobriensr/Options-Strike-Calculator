@@ -158,6 +158,8 @@ Landed as `fe9eee7c` (5 commits). Two review rounds: continue (5 fixes), then pa
 
 ### Finding: front-month flips, a weakness of the live rule (open, owner decision)
 
+**Resolved 2026-11-14** by `2026-11-06-futures-session-front-month.md` (Phases 5-6b): one contract per CME session, and the bars repaired from 07-28.
+
 - **In the backfill:**
   - RTY on 09-14 flips between RTYU6 and RTYZ6 about 5 times between 00:00 and 02:00Z, ±21 points each.
   - CL on 09-07 (Labor Day) leads with CLX6 for one minute at 00:00Z.

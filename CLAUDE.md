@@ -45,6 +45,8 @@ uw-stream/        UnusualWhales websocket consumer (Python, Railway, NOT Vercel)
                   and pushes alerts to /api/push/notify with INTERNAL_NOTIFY_SECRET.
                   futures_trades → 1-min bars in futures_bars (ES, NQ, RTY, CL, GC, ZN): the only live futures
                   source since 2026-09-29; backfill-futures-gaps cron repairs holes from UW REST candles.
+                  Each root's contract is chosen once per CME session (the 17:00 CT open) from the previous session's
+                  volume, only moves forward, and is stored in futures_front_month; every bar records its `contract`.
                   No DX, VX, ES options or TBBO/OFI (VIX term structure: VIX/VIX3M).
                   Sentry tagged server_name=uw-stream; UW_API_KEY required (Advanced tier for WS access).
                   Own Dockerfile, README.md, requirements.txt (runtime) + requirements-dev.txt (test/lint), conftest.py — own pytest suite under tests/.
