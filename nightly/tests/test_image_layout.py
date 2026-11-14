@@ -1,16 +1,17 @@
-"""The nightly image is built from the repo root and carries the shared enrich scripts.
+"""The nightly image is built from the repo root and carries shared scripts and ml modules.
 
-Six places name the same six files and must change together (plan D1): the Dockerfile
+Six places name the same ten files and must change together (plan D1): the Dockerfile
 COPY lines, the Railway watch paths of the `nightly` service, the .dockerignore
 re-admits, IMAGE_FILES below, the `nightly` paths filter in .github/workflows/ci.yml
 and the watch-path list in nightly/README.md. A file missing from one builds an image
 that fails at import time on Railway, or a CI job that skips the change.
 
-These tests keep the Dockerfile and .dockerignore in step with IMAGE_FILES and import
-the scripts as the image lays them out. They read text, so a later .dockerignore
-pattern that re-excludes a file passes them. The last step of the nightly job in
-ci.yml, `docker build -f nightly/Dockerfile .`, catches that: a COPY of an ignored path
-fails the build.
+These tests keep the Dockerfile and .dockerignore in step with IMAGE_FILES, import
+the modules as the image lays them out, and check that no module name exists twice
+across the directories on its path. They read text, so a later .dockerignore pattern
+that re-excludes a file passes them. The last step of the nightly job in ci.yml,
+`docker build -f nightly/Dockerfile .`, catches that: a COPY of an ignored path fails
+the build.
 """
 
 from __future__ import annotations
@@ -27,13 +28,19 @@ DOCKERFILE = REPO_ROOT / "nightly" / "Dockerfile"
 DOCKERIGNORE = REPO_ROOT / ".dockerignore"
 README = REPO_ROOT / "nightly" / "README.md"
 
+NIGHTLY_SRC = REPO_ROOT / "nightly" / "src"
+
 IMAGE_FILES: tuple[str, ...] = (
     "scripts/_tape_reader.py",
     "scripts/_cli_paths.py",
     "scripts/_pipeline_retry.py",
+    "scripts/backfill_lottery_scores.py",
     "scripts/enrich_lottery_outcomes.py",
     "scripts/enrich_silent_boom_outcomes.py",
     "ml/src/lottery_exit_policies.py",
+    "ml/src/lottery_refit_gates.py",
+    "ml/src/lottery_scoring.py",
+    "ml/src/lottery_weights.py",
 )
 # The watch paths of the Railway `nightly` service besides IMAGE_FILES and .dockerignore.
 NIGHTLY_WATCH_PATHS: tuple[str, ...] = (
@@ -136,9 +143,28 @@ def _image_pythonpath(root: Path) -> str:
     return os.pathsep.join(str(root / part.removeprefix("/app/")) for part in parts)
 
 
+# The first two come before any script is imported: enrich_silent_boom_outcomes and
+# backfill_lottery_scores each put <ROOT>/ml/src on sys.path when they load, so a module
+# from there that is imported later resolves without the Dockerfile's PYTHONPATH entry.
+# weights_store and lottery_scoring import from ml/src at load and must work first.
+# The steps follow: lazy_step defers refit_step, so a missing file would go unseen until
+# 07:15. The venv has no scipy; lottery_scoring imports it only inside main, so the
+# last line holds where scipy is installed too.
+IMAGE_IMPORT_CHECK = "\n".join(
+    [
+        "import sys",
+        "import weights_store, lottery_scoring",
+        "import pipeline, outcome_check, enrich_step, refit_step",
+        "import enrich_lottery_outcomes, enrich_silent_boom_outcomes, _tape_reader",
+        "import backfill_lottery_scores",
+        "assert 'scipy' not in sys.modules, 'importing the image modules loaded scipy'",
+    ]
+)
+
+
 def test_scripts_import_in_the_image_layout(tmp_path: Path):
     shutil.copytree(
-        REPO_ROOT / "nightly" / "src",
+        NIGHTLY_SRC,
         tmp_path / "src",
         ignore=shutil.ignore_patterns("__pycache__"),
     )
@@ -150,14 +176,7 @@ def test_scripts_import_in_the_image_layout(tmp_path: Path):
     # -P keeps the working directory and script directory off sys.path, so only the
     # Dockerfile's PYTHONPATH and the installed packages can satisfy an import.
     result = subprocess.run(
-        [
-            sys.executable,
-            "-P",
-            "-c",
-            # The steps too: lazy_step defers them, so a missing file would go unseen until 07:15.
-            "import pipeline, outcome_check, enrich_step, "
-            "enrich_lottery_outcomes, enrich_silent_boom_outcomes, _tape_reader",
-        ],
+        [sys.executable, "-P", "-c", IMAGE_IMPORT_CHECK],
         cwd=tmp_path,
         env={**os.environ, "PYTHONPATH": _image_pythonpath(tmp_path)},
         capture_output=True,
@@ -167,3 +186,52 @@ def test_scripts_import_in_the_image_layout(tmp_path: Path):
     )
 
     assert result.returncode == 0, result.stderr
+
+
+def _top_level_names(directory: Path) -> set[str]:
+    """What `import` finds directly in directory: *.py stems and package directories."""
+    names = {path.stem for path in directory.glob("*.py")}
+    names.update(path.name for path in directory.iterdir() if path.is_dir())
+    return {name for name in names if name.isidentifier()} - {"__init__", "__pycache__"}
+
+
+def test_top_level_names_are_modules_and_packages(tmp_path: Path):
+    (tmp_path / "steps.py").write_text("", encoding="utf-8")
+    (tmp_path / "__init__.py").write_text("", encoding="utf-8")
+    (tmp_path / "not-a-module.py").write_text("", encoding="utf-8")
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "__pycache__").mkdir()
+    (tmp_path / ".pytest_cache").mkdir()
+    (tmp_path / "pkg" / "inner.py").write_text("", encoding="utf-8")
+
+    assert _top_level_names(tmp_path) == {"steps", "pkg"}
+
+
+def test_no_image_module_name_collides():
+    # The image puts nightly/src, scripts/ and ml/src on one path. A name in two of them
+    # resolves to whichever comes first, and the enrich script and backfill_lottery_scores
+    # move ml/src to the front when they load, so the Dockerfile's order does not decide it.
+    places: dict[str, list[str]] = {}
+    for name in _top_level_names(NIGHTLY_SRC):
+        places.setdefault(name, []).append(f"nightly/src/{name}")
+    for relative in IMAGE_FILES:
+        places.setdefault(PurePosixPath(relative).stem, []).append(relative)
+
+    collisions = {name: found for name, found in places.items() if len(found) > 1}
+
+    assert not collisions, f"a module name appears twice in the image: {collisions}"
+
+
+def test_no_nightly_module_is_shadowed_in_the_test_layout():
+    # nightly/conftest.py puts the whole of scripts/ and ml/src on sys.path, not only the
+    # files the image copies, and backfill_lottery_scores then moves ml/src to the front. A
+    # new ml/src/steps.py would make the tests import it in place of nightly/src/steps.py
+    # while the image, which copies ten files, stays fine.
+    nightly = _top_level_names(NIGHTLY_SRC)
+    shadowed = {
+        f"{directory.relative_to(REPO_ROOT).as_posix()}/{name}"
+        for directory in (REPO_ROOT / "scripts", REPO_ROOT / "ml" / "src")
+        for name in nightly & _top_level_names(directory)
+    }
+
+    assert not shadowed, f"a nightly/src module name also exists in the test layout: {shadowed}"

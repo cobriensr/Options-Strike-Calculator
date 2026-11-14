@@ -4,9 +4,8 @@ Lives at the project root (not inside tests/) so it runs before any test
 module is collected. Makes `src/` importable as top-level modules, matching
 the production `PYTHONPATH=/app/src`, and puts the repo's `scripts/` after it
 for the shared modules the image copies in (`_pipeline_retry`, `_tape_reader`), then
-`ml/src/` for the ones nightly imports from there (`lottery_weights`). The image does not
-copy those yet: phase 4's image-layout task adds the copy and a `PYTHONPATH` of
-src, scripts, ml/src, the order used here.
+`ml/src/` for the ones nightly imports from there (`lottery_weights`). The image copies
+those too, and its `PYTHONPATH` is src, scripts, ml/src, the order used here.
 Gives every required env var a default so `load_settings()` works unless a test
 removes one.
 

@@ -94,10 +94,11 @@ config-file path (config-as-code is deprecated).
 - Restart policy `NEVER`: a failed run alerts and waits for the next night
   instead of looping and re-downloading the tape.
 - Root directory `/` (the repo root) and Dockerfile path `/nightly/Dockerfile`.
-  The build context is the repo root because the image copies six files from
-  outside `nightly/`, the enrich scripts and what they import (`IMAGE_FILES` in
-  `tests/test_image_layout.py`; build it with `docker build -f nightly/Dockerfile .`).
-- Watch paths, exactly these ten: only the image inputs redeploy, so doc and test
+  The build context is the repo root because the image copies ten files from
+  outside `nightly/`: the enrich scripts, the refit modules and what they import
+  (`IMAGE_FILES` in `tests/test_image_layout.py`; build it with
+  `docker build -f nightly/Dockerfile .`).
+- Watch paths, exactly these fourteen: only the image inputs redeploy, so doc and test
   edits don't.
   - `/nightly/Dockerfile`
   - `/nightly/requirements.txt`
@@ -106,9 +107,13 @@ config-file path (config-as-code is deprecated).
   - `/scripts/_tape_reader.py`
   - `/scripts/_cli_paths.py`
   - `/scripts/_pipeline_retry.py`
+  - `/scripts/backfill_lottery_scores.py`
   - `/scripts/enrich_lottery_outcomes.py`
   - `/scripts/enrich_silent_boom_outcomes.py`
   - `/ml/src/lottery_exit_policies.py`
+  - `/ml/src/lottery_refit_gates.py`
+  - `/ml/src/lottery_scoring.py`
+  - `/ml/src/lottery_weights.py`
 
 A file added to or removed from the image changes six places together, listed at
 the top of the `Dockerfile`: its `COPY` lines, these watch paths, the root
@@ -118,7 +123,7 @@ of `IMAGE_FILES`.
 
 **Push hazard.** A redeploy during a run (about 07:15 to 12:30 UTC) can stop the
 run. A push that touches any watch path redeploys the service, and the list above
-includes files that other work edits: the shared scripts under `scripts/`, the one
+includes files that other work edits: the shared scripts under `scripts/`, the ones
 under `ml/src/` and the root `.dockerignore`. Push any change to a watch path
 after 15:00 CT and outside 07:15 to 12:30 UTC. A killed run isn't retried until
 the next night unless someone runs `railway cron run --service nightly`.
@@ -595,15 +600,15 @@ Set the env vars above in your shell (not a file in the repo), then:
 ```bash
 cd nightly
 pip install -r requirements-dev.txt
-PYTHONPATH=src:../scripts python -m main
+PYTHONPATH=src:../scripts:../ml/src python -m main
 ```
 
-The modules import each other flat, so `src/` and the repo's `scripts/` must be on
-the path: the Dockerfile sets `PYTHONPATH=/app/src:/app/scripts`, and a local shell
-run from `nightly/` needs `PYTHONPATH=src:../scripts`. A local run uses the real R2
-bucket, the real UW key and the database `DATABASE_URL` names, which
-`enrich-outcomes` updates. It uses `/tmp/nightly` as its work dir, which is a Unix
-path.
+The modules import each other flat, so `src/`, the repo's `scripts/` and its `ml/src/`
+must be on the path: the Dockerfile sets `PYTHONPATH=/app/src:/app/scripts:/app/ml/src`,
+and a local shell run from `nightly/` needs `PYTHONPATH=src:../scripts:../ml/src`.
+A local run uses the real R2 bucket, the real UW key and the database `DATABASE_URL`
+names, which `enrich-outcomes` updates. It uses `/tmp/nightly` as its work dir, which
+is a Unix path.
 
 ## Tests
 
