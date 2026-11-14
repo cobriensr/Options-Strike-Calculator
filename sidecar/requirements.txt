@@ -33,6 +33,6 @@ pandas>=2.1.0
 # bundles pickle sklearn estimators (IsotonicRegression calibrators), and
 # unpickling across sklearn versions raises InconsistentVersionWarning and
 # is not guaranteed to load. Bump both files together, then re-export.
-scikit-learn==1.8.0
+scikit-learn==1.9.1
 shap>=0.45.0
 xgboost>=2.1.0
