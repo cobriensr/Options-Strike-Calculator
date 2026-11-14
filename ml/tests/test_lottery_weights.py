@@ -7,7 +7,10 @@ api/__tests__/fixtures/lottery-score-parity.json (synthetic fires with the
 scores the TS scorer gave them, generated from the pre-edit code): the TS test
 replays it through ``scoreLotteryV2`` and ``test_score_frame_matches_the_parity
 _fixture`` replays it through ``score_frame``, so the two languages cannot
-drift apart without one of the two tests failing.
+drift apart without one of the two tests failing. A second fixture,
+lottery-score-parity-alt.json, holds a hand-built non-seed version (weekday
+overrides past Monday, a composite on a "null" quintile label) that both
+languages replay the same way, since a promoted version is never the seed.
 
 Every input here is synthetic. Nothing reaches a database: ``load_pointer`` is
 exercised with a fake connection object.
@@ -37,6 +40,12 @@ FIXTURE = json.loads(
     )
 )
 CASES = FIXTURE["cases"]
+ALT_FIXTURE = json.loads(
+    (
+        ROOT / "api" / "__tests__" / "fixtures" / "lottery-score-parity-alt.json"
+    ).read_text(encoding="utf-8")
+)
+ALT_CASES = ALT_FIXTURE["cases"]
 
 # (fire column, weights stem) for the three continuous features.
 QUINTILE_FEATURES = [
@@ -126,6 +135,25 @@ def test_score_frame_gives_the_fixture_cases_in_both_outcomes():
     expected = [c["expected"] for c in CASES]
     assert any(e is None for e in expected)
     assert any(e is not None for e in expected)
+
+
+def test_score_frame_matches_the_non_seed_parity_fixture():
+    # The same replay on a version that is not the seed: other tables, three
+    # weekday overrides, a "null" quintile label, a negative bound. The TS test
+    # of the same name replays the same file through scoreLotteryV2.
+    df = _frame([c["fire"] for c in ALT_CASES])
+    got = lw.score_frame(ALT_FIXTURE["weights"], df)
+    assert str(got.dtype) == "Int64"
+    assert len(got) == len(ALT_CASES) == 109
+    expected = [c["expected"] for c in ALT_CASES]
+    assert any(e is None for e in expected)
+    assert any(e is not None for e in expected)
+    mismatches = [
+        (c["name"], c["expected"], g)
+        for c, g in zip(ALT_CASES, got.tolist(), strict=True)
+        if not _same(g, c["expected"])
+    ]
+    assert mismatches == []
 
 
 def test_scores_do_not_depend_on_row_order():
@@ -1218,6 +1246,16 @@ def test_validate_accepts(mutate):
 def test_validate_accepts_the_fixture_weights():
     lw.validate_weights(FIXTURE["weights"])
     assert FIXTURE["version"] == lw.SEED_VERSION
+
+
+def test_validate_accepts_the_non_seed_fixture_weights():
+    lw.validate_weights(ALT_FIXTURE["weights"])
+    # A refit's id is its training date, so the fixture's two must agree, and
+    # neither may be the seed's.
+    trained = date.fromisoformat(ALT_FIXTURE["weights"]["trained_through"])
+    assert ALT_FIXTURE["version"] == lw.refit_version_id(trained)
+    assert ALT_FIXTURE["version"] != lw.SEED_VERSION
+    assert ALT_FIXTURE["weights"] != FIXTURE["weights"]
 
 
 def test_validate_leaves_its_input_alone():

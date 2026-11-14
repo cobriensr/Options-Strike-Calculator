@@ -1,0 +1,1870 @@
+{
+  "version": "refit-2026-01-15",
+  "weights": {
+    "schema_version": 1,
+    "model_version": "refit-synthetic-parity-v1",
+    "trained_through": "2026-01-15",
+    "features": {
+      "ticker_weights": {
+        "AAPL": 3,
+        "AMD": -4,
+        "BRK.B": 1,
+        "IWM": 2,
+        "META": 5,
+        "NVDA": 10,
+        "QQQ": 7,
+        "SPXW": 0,
+        "SPY": -2,
+        "TSLA": -5
+      },
+      "tod_weights": {
+        "AM_open": -6,
+        "MID": 7,
+        "LUNCH": 2,
+        "PM": -9
+      },
+      "tod_weights_dow_overrides": {
+        "Tuesday": {
+          "AM_open": 8,
+          "MID": -5,
+          "LUNCH": 0,
+          "PM": 3
+        },
+        "Wednesday": {
+          "AM_open": -12,
+          "MID": 4,
+          "LUNCH": 11,
+          "PM": -7
+        },
+        "Friday": {
+          "AM_open": 1,
+          "MID": -2,
+          "LUNCH": -20,
+          "PM": 20
+        }
+      },
+      "dte_weights": {
+        "0": 6,
+        "1": -3,
+        "2": 9,
+        "3": -8
+      },
+      "vol_oi_quintile_weights": [-5, 3, 8, -2, 6],
+      "vol_oi_quintile_boundaries": [0.0425, 0.1175, 0.2625, 0.8125],
+      "gamma_quintile_weights": [4, -7, 2, 9, -3],
+      "gamma_quintile_boundaries": [-0.015, 0.0075, 0.0425, 0.125],
+      "ask_pct_quintile_weights": [-1, 5, -6, 7, 0],
+      "ask_pct_quintile_boundaries": [0.375, 0.5, 0.6, 0.8125],
+      "option_type_weights": {
+        "C": 5,
+        "P": -4
+      },
+      "composite_bonuses": [
+        {
+          "match": {
+            "ask_pct_q": "null",
+            "tod": "PM"
+          },
+          "bonus": 4,
+          "support": 33,
+          "win_rate": 0.64,
+          "note": "synthetic: a PM fire with no ask_pct reading"
+        },
+        {
+          "match": {
+            "ticker": "NVDA",
+            "tod": "MID"
+          },
+          "bonus": 6,
+          "support": 58,
+          "win_rate": 0.71,
+          "note": "synthetic: a ticker plus a time of day"
+        },
+        {
+          "match": {
+            "gamma_q": "0",
+            "vol_oi_q": "4"
+          },
+          "bonus": -10,
+          "support": 41,
+          "win_rate": 0.07,
+          "note": "synthetic penalty: bottom gamma with top volume-to-OI"
+        },
+        {
+          "match": {
+            "ticker": "NOPE",
+            "tod": "LUNCH"
+          },
+          "bonus": 8,
+          "support": 0,
+          "win_rate": 0,
+          "note": "synthetic: names a ticker no case uses, so it never matches"
+        },
+        {
+          "match": {
+            "tod": "MID",
+            "gamma_q": "3"
+          },
+          "bonus": 3,
+          "support": 120,
+          "win_rate": 0.58,
+          "note": "synthetic: stacks with the NVDA MID entry"
+        }
+      ]
+    },
+    "cutoffs": {
+      "t1": 12,
+      "t2": 7
+    },
+    "feed_cutoffs": {
+      "tier1_min_score": 16,
+      "tier2_min_score": 11
+    }
+  },
+  "cases": [
+    {
+      "name": "base aligned call, Thursday",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "MID",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.2,
+        "gamma_at_trigger": 0.02,
+        "trigger_ask_pct": 0.55,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": 28
+    },
+    {
+      "name": "aligned put",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "P",
+        "tod": "MID",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.2,
+        "gamma_at_trigger": 0.02,
+        "trigger_ask_pct": 0.55,
+        "cum_ncp_at_fire": 700000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": 19
+    },
+    {
+      "name": "put on call-aligned flow is gated",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "P",
+        "tod": "MID",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.2,
+        "gamma_at_trigger": 0.02,
+        "trigger_ask_pct": 0.55,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": null
+    },
+    {
+      "name": "call on put-aligned flow is gated",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "MID",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.2,
+        "gamma_at_trigger": 0.02,
+        "trigger_ask_pct": 0.55,
+        "cum_ncp_at_fire": 700000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": null
+    },
+    {
+      "name": "call tie is gated",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "MID",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.2,
+        "gamma_at_trigger": 0.02,
+        "trigger_ask_pct": 0.55,
+        "cum_ncp_at_fire": 1000000,
+        "cum_npp_at_fire": 1000000,
+        "date": "2026-03-12"
+      },
+      "expected": null
+    },
+    {
+      "name": "put tie is gated",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "P",
+        "tod": "MID",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.2,
+        "gamma_at_trigger": 0.02,
+        "trigger_ask_pct": 0.55,
+        "cum_ncp_at_fire": 1000000,
+        "cum_npp_at_fire": 1000000,
+        "date": "2026-03-12"
+      },
+      "expected": null
+    },
+    {
+      "name": "call with NULL cum_ncp is gated",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "MID",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.2,
+        "gamma_at_trigger": 0.02,
+        "trigger_ask_pct": 0.55,
+        "cum_ncp_at_fire": null,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": null
+    },
+    {
+      "name": "call with NULL cum_npp is gated",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "MID",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.2,
+        "gamma_at_trigger": 0.02,
+        "trigger_ask_pct": 0.55,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": null,
+        "date": "2026-03-12"
+      },
+      "expected": null
+    },
+    {
+      "name": "put with NULL cum_ncp is gated",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "P",
+        "tod": "MID",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.2,
+        "gamma_at_trigger": 0.02,
+        "trigger_ask_pct": 0.55,
+        "cum_ncp_at_fire": null,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": null
+    },
+    {
+      "name": "put with NULL cum_npp is gated",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "P",
+        "tod": "MID",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.2,
+        "gamma_at_trigger": 0.02,
+        "trigger_ask_pct": 0.55,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": null,
+        "date": "2026-03-12"
+      },
+      "expected": null
+    },
+    {
+      "name": "both cumulative values NULL is gated",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "MID",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.2,
+        "gamma_at_trigger": 0.02,
+        "trigger_ask_pct": 0.55,
+        "cum_ncp_at_fire": null,
+        "cum_npp_at_fire": null,
+        "date": "2026-03-12"
+      },
+      "expected": null
+    },
+    {
+      "name": "call aligned by one dollar",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "MID",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.2,
+        "gamma_at_trigger": 0.02,
+        "trigger_ask_pct": 0.55,
+        "cum_ncp_at_fire": 1000001,
+        "cum_npp_at_fire": 1000000,
+        "date": "2026-03-12"
+      },
+      "expected": 28
+    },
+    {
+      "name": "put aligned by one dollar",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "P",
+        "tod": "MID",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.2,
+        "gamma_at_trigger": 0.02,
+        "trigger_ask_pct": 0.55,
+        "cum_ncp_at_fire": 1000000,
+        "cum_npp_at_fire": 1000001,
+        "date": "2026-03-12"
+      },
+      "expected": 19
+    },
+    {
+      "name": "call one dollar short of aligned is gated",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "MID",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.2,
+        "gamma_at_trigger": 0.02,
+        "trigger_ask_pct": 0.55,
+        "cum_ncp_at_fire": 999999,
+        "cum_npp_at_fire": 1000000,
+        "date": "2026-03-12"
+      },
+      "expected": null
+    },
+    {
+      "name": "call aligned on negative flow",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "MID",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.2,
+        "gamma_at_trigger": 0.02,
+        "trigger_ask_pct": 0.55,
+        "cum_ncp_at_fire": -100,
+        "cum_npp_at_fire": -500,
+        "date": "2026-03-12"
+      },
+      "expected": 28
+    },
+    {
+      "name": "put aligned on negative flow",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "P",
+        "tod": "MID",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.2,
+        "gamma_at_trigger": 0.02,
+        "trigger_ask_pct": 0.55,
+        "cum_ncp_at_fire": -500,
+        "cum_npp_at_fire": -100,
+        "date": "2026-03-12"
+      },
+      "expected": 19
+    },
+    {
+      "name": "call misaligned on negative flow is gated",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "MID",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.2,
+        "gamma_at_trigger": 0.02,
+        "trigger_ask_pct": 0.55,
+        "cum_ncp_at_fire": -500,
+        "cum_npp_at_fire": -100,
+        "date": "2026-03-12"
+      },
+      "expected": null
+    },
+    {
+      "name": "dte 0",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "MID",
+        "dte": 0,
+        "trigger_vol_to_oi_window": 0.2,
+        "gamma_at_trigger": 0.02,
+        "trigger_ask_pct": 0.55,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": 25
+    },
+    {
+      "name": "dte 1",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "MID",
+        "dte": 1,
+        "trigger_vol_to_oi_window": 0.2,
+        "gamma_at_trigger": 0.02,
+        "trigger_ask_pct": 0.55,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": 16
+    },
+    {
+      "name": "dte 2",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "MID",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.2,
+        "gamma_at_trigger": 0.02,
+        "trigger_ask_pct": 0.55,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": 28
+    },
+    {
+      "name": "dte 3",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "MID",
+        "dte": 3,
+        "trigger_vol_to_oi_window": 0.2,
+        "gamma_at_trigger": 0.02,
+        "trigger_ask_pct": 0.55,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": 11
+    },
+    {
+      "name": "dte 4",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "MID",
+        "dte": 4,
+        "trigger_vol_to_oi_window": 0.2,
+        "gamma_at_trigger": 0.02,
+        "trigger_ask_pct": 0.55,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": null
+    },
+    {
+      "name": "vol_oi bound 0 exactly",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "AM_open",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.0425,
+        "gamma_at_trigger": null,
+        "trigger_ask_pct": null,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": 6
+    },
+    {
+      "name": "vol_oi bound 0 plus 1e-9",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "AM_open",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.042500001,
+        "gamma_at_trigger": null,
+        "trigger_ask_pct": null,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": 14
+    },
+    {
+      "name": "vol_oi bound 1 exactly",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "AM_open",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.1175,
+        "gamma_at_trigger": null,
+        "trigger_ask_pct": null,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": 14
+    },
+    {
+      "name": "vol_oi bound 1 plus 1e-9",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "AM_open",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.11750000099999999,
+        "gamma_at_trigger": null,
+        "trigger_ask_pct": null,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": 19
+    },
+    {
+      "name": "vol_oi bound 2 exactly",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "AM_open",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.2625,
+        "gamma_at_trigger": null,
+        "trigger_ask_pct": null,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": 19
+    },
+    {
+      "name": "vol_oi bound 2 plus 1e-9",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "AM_open",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.26250000100000004,
+        "gamma_at_trigger": null,
+        "trigger_ask_pct": null,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": 9
+    },
+    {
+      "name": "vol_oi bound 3 exactly",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "AM_open",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.8125,
+        "gamma_at_trigger": null,
+        "trigger_ask_pct": null,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": 9
+    },
+    {
+      "name": "vol_oi bound 3 plus 1e-9",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "AM_open",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.812500001,
+        "gamma_at_trigger": null,
+        "trigger_ask_pct": null,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": 17
+    },
+    {
+      "name": "gamma bound 0 exactly",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "AM_open",
+        "dte": 2,
+        "trigger_vol_to_oi_window": null,
+        "gamma_at_trigger": -0.015,
+        "trigger_ask_pct": null,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": 15
+    },
+    {
+      "name": "gamma bound 0 plus 1e-9",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "AM_open",
+        "dte": 2,
+        "trigger_vol_to_oi_window": null,
+        "gamma_at_trigger": -0.014999999,
+        "trigger_ask_pct": null,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": 4
+    },
+    {
+      "name": "gamma bound 1 exactly",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "AM_open",
+        "dte": 2,
+        "trigger_vol_to_oi_window": null,
+        "gamma_at_trigger": 0.0075,
+        "trigger_ask_pct": null,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": 4
+    },
+    {
+      "name": "gamma bound 1 plus 1e-9",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "AM_open",
+        "dte": 2,
+        "trigger_vol_to_oi_window": null,
+        "gamma_at_trigger": 0.007500001,
+        "trigger_ask_pct": null,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": 13
+    },
+    {
+      "name": "gamma bound 2 exactly",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "AM_open",
+        "dte": 2,
+        "trigger_vol_to_oi_window": null,
+        "gamma_at_trigger": 0.0425,
+        "trigger_ask_pct": null,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": 13
+    },
+    {
+      "name": "gamma bound 2 plus 1e-9",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "AM_open",
+        "dte": 2,
+        "trigger_vol_to_oi_window": null,
+        "gamma_at_trigger": 0.042500001,
+        "trigger_ask_pct": null,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": 20
+    },
+    {
+      "name": "gamma bound 3 exactly",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "AM_open",
+        "dte": 2,
+        "trigger_vol_to_oi_window": null,
+        "gamma_at_trigger": 0.125,
+        "trigger_ask_pct": null,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": 20
+    },
+    {
+      "name": "gamma bound 3 plus 1e-9",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "AM_open",
+        "dte": 2,
+        "trigger_vol_to_oi_window": null,
+        "gamma_at_trigger": 0.125000001,
+        "trigger_ask_pct": null,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": 8
+    },
+    {
+      "name": "ask_pct bound 0 exactly",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "AM_open",
+        "dte": 2,
+        "trigger_vol_to_oi_window": null,
+        "gamma_at_trigger": null,
+        "trigger_ask_pct": 0.375,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": 10
+    },
+    {
+      "name": "ask_pct bound 0 plus 1e-9",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "AM_open",
+        "dte": 2,
+        "trigger_vol_to_oi_window": null,
+        "gamma_at_trigger": null,
+        "trigger_ask_pct": 0.375000001,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": 16
+    },
+    {
+      "name": "ask_pct bound 1 exactly",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "AM_open",
+        "dte": 2,
+        "trigger_vol_to_oi_window": null,
+        "gamma_at_trigger": null,
+        "trigger_ask_pct": 0.5,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": 16
+    },
+    {
+      "name": "ask_pct bound 1 plus 1e-9",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "AM_open",
+        "dte": 2,
+        "trigger_vol_to_oi_window": null,
+        "gamma_at_trigger": null,
+        "trigger_ask_pct": 0.500000001,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": 5
+    },
+    {
+      "name": "ask_pct bound 2 exactly",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "AM_open",
+        "dte": 2,
+        "trigger_vol_to_oi_window": null,
+        "gamma_at_trigger": null,
+        "trigger_ask_pct": 0.6,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": 5
+    },
+    {
+      "name": "ask_pct bound 2 plus 1e-9",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "AM_open",
+        "dte": 2,
+        "trigger_vol_to_oi_window": null,
+        "gamma_at_trigger": null,
+        "trigger_ask_pct": 0.600000001,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": 18
+    },
+    {
+      "name": "ask_pct bound 3 exactly",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "AM_open",
+        "dte": 2,
+        "trigger_vol_to_oi_window": null,
+        "gamma_at_trigger": null,
+        "trigger_ask_pct": 0.8125,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": 18
+    },
+    {
+      "name": "ask_pct bound 3 plus 1e-9",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "AM_open",
+        "dte": 2,
+        "trigger_vol_to_oi_window": null,
+        "gamma_at_trigger": null,
+        "trigger_ask_pct": 0.812500001,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": 11
+    },
+    {
+      "name": "vol_oi far below the first bound",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "AM_open",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.001,
+        "gamma_at_trigger": null,
+        "trigger_ask_pct": null,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": 6
+    },
+    {
+      "name": "vol_oi far above the last bound",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "AM_open",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 5,
+        "gamma_at_trigger": null,
+        "trigger_ask_pct": null,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": 17
+    },
+    {
+      "name": "gamma far below the first bound (negative)",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "AM_open",
+        "dte": 2,
+        "trigger_vol_to_oi_window": null,
+        "gamma_at_trigger": -0.5,
+        "trigger_ask_pct": null,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": 15
+    },
+    {
+      "name": "gamma far above the last bound",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "AM_open",
+        "dte": 2,
+        "trigger_vol_to_oi_window": null,
+        "gamma_at_trigger": 0.9,
+        "trigger_ask_pct": null,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": 8
+    },
+    {
+      "name": "ask_pct zero",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "AM_open",
+        "dte": 2,
+        "trigger_vol_to_oi_window": null,
+        "gamma_at_trigger": null,
+        "trigger_ask_pct": 0,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": 10
+    },
+    {
+      "name": "ask_pct one",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "AM_open",
+        "dte": 2,
+        "trigger_vol_to_oi_window": null,
+        "gamma_at_trigger": null,
+        "trigger_ask_pct": 1,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": 11
+    },
+    {
+      "name": "vol_oi NULL",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "MID",
+        "dte": 2,
+        "trigger_vol_to_oi_window": null,
+        "gamma_at_trigger": 0.02,
+        "trigger_ask_pct": 0.55,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": 20
+    },
+    {
+      "name": "gamma NULL",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "MID",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.2,
+        "gamma_at_trigger": null,
+        "trigger_ask_pct": 0.55,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": 26
+    },
+    {
+      "name": "ask_pct NULL",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "MID",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.2,
+        "gamma_at_trigger": 0.02,
+        "trigger_ask_pct": null,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": 34
+    },
+    {
+      "name": "all three continuous features NULL",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "MID",
+        "dte": 2,
+        "trigger_vol_to_oi_window": null,
+        "gamma_at_trigger": null,
+        "trigger_ask_pct": null,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": 24
+    },
+    {
+      "name": "Tuesday AM_open",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "AM_open",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.2,
+        "gamma_at_trigger": 0.02,
+        "trigger_ask_pct": 0.55,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-10"
+      },
+      "expected": 29
+    },
+    {
+      "name": "Tuesday MID",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "MID",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.2,
+        "gamma_at_trigger": 0.02,
+        "trigger_ask_pct": 0.55,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-10"
+      },
+      "expected": 16
+    },
+    {
+      "name": "Tuesday LUNCH",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "LUNCH",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.2,
+        "gamma_at_trigger": 0.02,
+        "trigger_ask_pct": 0.55,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-10"
+      },
+      "expected": 21
+    },
+    {
+      "name": "Tuesday PM",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "PM",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.2,
+        "gamma_at_trigger": 0.02,
+        "trigger_ask_pct": 0.55,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-10"
+      },
+      "expected": 24
+    },
+    {
+      "name": "Wednesday AM_open",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "AM_open",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.2,
+        "gamma_at_trigger": 0.02,
+        "trigger_ask_pct": 0.55,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-11"
+      },
+      "expected": 9
+    },
+    {
+      "name": "Wednesday MID",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "MID",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.2,
+        "gamma_at_trigger": 0.02,
+        "trigger_ask_pct": 0.55,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-11"
+      },
+      "expected": 25
+    },
+    {
+      "name": "Wednesday LUNCH",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "LUNCH",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.2,
+        "gamma_at_trigger": 0.02,
+        "trigger_ask_pct": 0.55,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-11"
+      },
+      "expected": 32
+    },
+    {
+      "name": "Wednesday PM",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "PM",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.2,
+        "gamma_at_trigger": 0.02,
+        "trigger_ask_pct": 0.55,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-11"
+      },
+      "expected": 14
+    },
+    {
+      "name": "Friday AM_open",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "AM_open",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.2,
+        "gamma_at_trigger": 0.02,
+        "trigger_ask_pct": 0.55,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-13"
+      },
+      "expected": 22
+    },
+    {
+      "name": "Friday MID",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "MID",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.2,
+        "gamma_at_trigger": 0.02,
+        "trigger_ask_pct": 0.55,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-13"
+      },
+      "expected": 19
+    },
+    {
+      "name": "Friday LUNCH",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "LUNCH",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.2,
+        "gamma_at_trigger": 0.02,
+        "trigger_ask_pct": 0.55,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-13"
+      },
+      "expected": 1
+    },
+    {
+      "name": "Friday PM",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "PM",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.2,
+        "gamma_at_trigger": 0.02,
+        "trigger_ask_pct": 0.55,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-13"
+      },
+      "expected": 41
+    },
+    {
+      "name": "Thursday AM_open",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "AM_open",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.2,
+        "gamma_at_trigger": 0.02,
+        "trigger_ask_pct": 0.55,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": 15
+    },
+    {
+      "name": "Thursday MID",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "MID",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.2,
+        "gamma_at_trigger": 0.02,
+        "trigger_ask_pct": 0.55,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": 28
+    },
+    {
+      "name": "Thursday LUNCH",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "LUNCH",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.2,
+        "gamma_at_trigger": 0.02,
+        "trigger_ask_pct": 0.55,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": 23
+    },
+    {
+      "name": "Thursday PM",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "PM",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.2,
+        "gamma_at_trigger": 0.02,
+        "trigger_ask_pct": 0.55,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": 12
+    },
+    {
+      "name": "Monday PM",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "PM",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.2,
+        "gamma_at_trigger": 0.02,
+        "trigger_ask_pct": 0.55,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-09"
+      },
+      "expected": 12
+    },
+    {
+      "name": "Saturday PM",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "PM",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.2,
+        "gamma_at_trigger": 0.02,
+        "trigger_ask_pct": 0.55,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-14"
+      },
+      "expected": 12
+    },
+    {
+      "name": "Sunday PM",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "PM",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.2,
+        "gamma_at_trigger": 0.02,
+        "trigger_ask_pct": 0.55,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-15"
+      },
+      "expected": 12
+    },
+    {
+      "name": "Friday PM in December 2025",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "PM",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.2,
+        "gamma_at_trigger": 0.02,
+        "trigger_ask_pct": 0.55,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2025-12-26"
+      },
+      "expected": 41
+    },
+    {
+      "name": "Tuesday AM_open on a leap day",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "AM_open",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.2,
+        "gamma_at_trigger": 0.02,
+        "trigger_ask_pct": 0.55,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2028-02-29"
+      },
+      "expected": 29
+    },
+    {
+      "name": "ticker NVDA (weight 10)",
+      "fire": {
+        "underlying_symbol": "NVDA",
+        "option_type": "C",
+        "tod": "AM_open",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.2,
+        "gamma_at_trigger": 0.02,
+        "trigger_ask_pct": 0.55,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": 22
+    },
+    {
+      "name": "ticker TSLA (weight -5)",
+      "fire": {
+        "underlying_symbol": "TSLA",
+        "option_type": "C",
+        "tod": "AM_open",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.2,
+        "gamma_at_trigger": 0.02,
+        "trigger_ask_pct": 0.55,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": 7
+    },
+    {
+      "name": "ticker TSLA put",
+      "fire": {
+        "underlying_symbol": "TSLA",
+        "option_type": "P",
+        "tod": "AM_open",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.2,
+        "gamma_at_trigger": 0.02,
+        "trigger_ask_pct": 0.55,
+        "cum_ncp_at_fire": 700000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": -2
+    },
+    {
+      "name": "ticker BRK.B (dotted symbol)",
+      "fire": {
+        "underlying_symbol": "BRK.B",
+        "option_type": "C",
+        "tod": "AM_open",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.2,
+        "gamma_at_trigger": 0.02,
+        "trigger_ask_pct": 0.55,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": 13
+    },
+    {
+      "name": "ticker SPXW (listed at 0)",
+      "fire": {
+        "underlying_symbol": "SPXW",
+        "option_type": "C",
+        "tod": "AM_open",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.2,
+        "gamma_at_trigger": 0.02,
+        "trigger_ask_pct": 0.55,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": 12
+    },
+    {
+      "name": "unknown ticker scores 0 for the ticker",
+      "fire": {
+        "underlying_symbol": "ZZZZ",
+        "option_type": "C",
+        "tod": "AM_open",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.2,
+        "gamma_at_trigger": 0.02,
+        "trigger_ask_pct": 0.55,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": 12
+    },
+    {
+      "name": "NVDA MID matches the ticker and tod composite",
+      "fire": {
+        "underlying_symbol": "NVDA",
+        "option_type": "C",
+        "tod": "MID",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.2,
+        "gamma_at_trigger": 0.02,
+        "trigger_ask_pct": 0.55,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": 41
+    },
+    {
+      "name": "NVDA MID with gamma in quintile 3 stacks two composites",
+      "fire": {
+        "underlying_symbol": "NVDA",
+        "option_type": "C",
+        "tod": "MID",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.2,
+        "gamma_at_trigger": 0.1,
+        "trigger_ask_pct": 0.55,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": 51
+    },
+    {
+      "name": "NVDA PM misses the NVDA MID composite by tod",
+      "fire": {
+        "underlying_symbol": "NVDA",
+        "option_type": "C",
+        "tod": "PM",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.2,
+        "gamma_at_trigger": 0.02,
+        "trigger_ask_pct": 0.55,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": 19
+    },
+    {
+      "name": "TSLA MID misses the NVDA MID composite by ticker",
+      "fire": {
+        "underlying_symbol": "TSLA",
+        "option_type": "C",
+        "tod": "MID",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.2,
+        "gamma_at_trigger": 0.02,
+        "trigger_ask_pct": 0.55,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": 20
+    },
+    {
+      "name": "NVDA MID on a Tuesday takes the override and the composite",
+      "fire": {
+        "underlying_symbol": "NVDA",
+        "option_type": "C",
+        "tod": "MID",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.2,
+        "gamma_at_trigger": 0.02,
+        "trigger_ask_pct": 0.55,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-10"
+      },
+      "expected": 29
+    },
+    {
+      "name": "MID with gamma in quintile 3 matches the MID gamma composite",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "MID",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.2,
+        "gamma_at_trigger": 0.1,
+        "trigger_ask_pct": 0.55,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": 38
+    },
+    {
+      "name": "MID with gamma exactly on bound 3 matches the MID gamma composite",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "MID",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.2,
+        "gamma_at_trigger": 0.125,
+        "trigger_ask_pct": 0.55,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": 38
+    },
+    {
+      "name": "MID with gamma 1e-9 over bound 3 misses by gamma_q",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "MID",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.2,
+        "gamma_at_trigger": 0.125000001,
+        "trigger_ask_pct": 0.55,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": 23
+    },
+    {
+      "name": "MID with NULL gamma misses a numbered gamma_q",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "MID",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.2,
+        "gamma_at_trigger": null,
+        "trigger_ask_pct": 0.55,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": 26
+    },
+    {
+      "name": "LUNCH with gamma in quintile 3 misses the MID gamma composite by tod",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "LUNCH",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.2,
+        "gamma_at_trigger": 0.1,
+        "trigger_ask_pct": 0.55,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": 30
+    },
+    {
+      "name": "PM with NULL ask_pct matches the null-label composite",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "PM",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.2,
+        "gamma_at_trigger": 0.02,
+        "trigger_ask_pct": null,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": 22
+    },
+    {
+      "name": "PM with ask_pct in quintile 0 does not match the null label",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "PM",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.2,
+        "gamma_at_trigger": 0.02,
+        "trigger_ask_pct": 0.375,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": 17
+    },
+    {
+      "name": "PM with ask_pct in quintile 4 does not match the null label",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "PM",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.2,
+        "gamma_at_trigger": 0.02,
+        "trigger_ask_pct": 0.9,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": 18
+    },
+    {
+      "name": "MID with NULL ask_pct misses the null-label composite by tod",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "MID",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.2,
+        "gamma_at_trigger": 0.02,
+        "trigger_ask_pct": null,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": 34
+    },
+    {
+      "name": "PM with every feature NULL matches the null-label composite",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "PM",
+        "dte": 2,
+        "trigger_vol_to_oi_window": null,
+        "gamma_at_trigger": null,
+        "trigger_ask_pct": null,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": 12
+    },
+    {
+      "name": "penalty composite matches bottom gamma and top vol_oi",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "MID",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 5,
+        "gamma_at_trigger": -0.5,
+        "trigger_ask_pct": 0.55,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": 18
+    },
+    {
+      "name": "penalty composite matches on both bounds",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "MID",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.812500001,
+        "gamma_at_trigger": -0.015,
+        "trigger_ask_pct": 0.55,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": 18
+    },
+    {
+      "name": "penalty composite misses by gamma_q",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "MID",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 5,
+        "gamma_at_trigger": -0.014999999,
+        "trigger_ask_pct": 0.55,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": 17
+    },
+    {
+      "name": "penalty composite misses by vol_oi_q",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "MID",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.8125,
+        "gamma_at_trigger": -0.5,
+        "trigger_ask_pct": 0.55,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": 20
+    },
+    {
+      "name": "penalty composite misses on NULL gamma",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "MID",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 5,
+        "gamma_at_trigger": null,
+        "trigger_ask_pct": 0.55,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": 24
+    },
+    {
+      "name": "penalty composite misses on NULL vol_oi",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "MID",
+        "dte": 2,
+        "trigger_vol_to_oi_window": null,
+        "gamma_at_trigger": -0.5,
+        "trigger_ask_pct": 0.55,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": 22
+    },
+    {
+      "name": "penalty and null-label composites stack on a PM fire",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "PM",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 5,
+        "gamma_at_trigger": -0.5,
+        "trigger_ask_pct": null,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": 12
+    },
+    {
+      "name": "LUNCH fire of a listed ticker misses the never-matching composite",
+      "fire": {
+        "underlying_symbol": "AAPL",
+        "option_type": "C",
+        "tod": "LUNCH",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.2,
+        "gamma_at_trigger": 0.02,
+        "trigger_ask_pct": 0.55,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": 23
+    },
+    {
+      "name": "LUNCH fire of an unknown ticker misses the never-matching composite",
+      "fire": {
+        "underlying_symbol": "ZZZZ",
+        "option_type": "C",
+        "tod": "LUNCH",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 0.2,
+        "gamma_at_trigger": 0.02,
+        "trigger_ask_pct": 0.55,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-12"
+      },
+      "expected": 20
+    },
+    {
+      "name": "high total: top weights on a Friday PM NVDA call",
+      "fire": {
+        "underlying_symbol": "NVDA",
+        "option_type": "C",
+        "tod": "PM",
+        "dte": 2,
+        "trigger_vol_to_oi_window": 5,
+        "gamma_at_trigger": 0.1,
+        "trigger_ask_pct": 0.9,
+        "cum_ncp_at_fire": 1500000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-13"
+      },
+      "expected": 59
+    },
+    {
+      "name": "low total: bottom weights on a Friday LUNCH TSLA put",
+      "fire": {
+        "underlying_symbol": "TSLA",
+        "option_type": "P",
+        "tod": "LUNCH",
+        "dte": 3,
+        "trigger_vol_to_oi_window": 0.001,
+        "gamma_at_trigger": 0.005,
+        "trigger_ask_pct": 0.55,
+        "cum_ncp_at_fire": 700000,
+        "cum_npp_at_fire": 900000,
+        "date": "2026-03-13"
+      },
+      "expected": -55
+    }
+  ]
+}

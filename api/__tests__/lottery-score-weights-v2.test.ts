@@ -939,50 +939,60 @@ describe('weekdayOf', () => {
   });
 });
 
-describe('the parity fixture', () => {
-  interface ParityFire {
-    underlying_symbol: string;
-    option_type: 'C' | 'P';
-    tod: TimeOfDay;
-    dte: number;
-    trigger_vol_to_oi_window: number | null;
-    gamma_at_trigger: number | null;
-    trigger_ask_pct: number | null;
-    cum_ncp_at_fire: number | null;
-    cum_npp_at_fire: number | null;
-    date: string;
-  }
-  const fixture = JSON.parse(
-    readFileSync(
-      new URL('./fixtures/lottery-score-parity.json', import.meta.url),
-      'utf8',
+interface ParityFire {
+  underlying_symbol: string;
+  option_type: 'C' | 'P';
+  tod: TimeOfDay;
+  dte: number;
+  trigger_vol_to_oi_window: number | null;
+  gamma_at_trigger: number | null;
+  trigger_ask_pct: number | null;
+  cum_ncp_at_fire: number | null;
+  cum_npp_at_fire: number | null;
+  date: string;
+}
+
+interface ParityFixture {
+  version: string;
+  weights: unknown;
+  cases: Array<{ name: string; fire: ParityFire; expected: number | null }>;
+}
+
+/** A shared parity fixture: the Python test reads the same file. */
+const loadParityFixture = (file: string): ParityFixture =>
+  JSON.parse(
+    readFileSync(new URL(`./fixtures/${file}`, import.meta.url), 'utf8'),
+  ) as ParityFixture;
+
+/** Score one fixture fire from its DB columns, as the cron derives the inputs. */
+const scoreParityFire = (
+  weights: LotteryWeights,
+  fire: ParityFire,
+): number | null =>
+  scoreLotteryV2(weights, {
+    ticker: fire.underlying_symbol,
+    tod: fire.tod,
+    dte: fire.dte,
+    volOiWindow: fire.trigger_vol_to_oi_window,
+    gammaAtTrigger: fire.gamma_at_trigger,
+    triggerAskPct: fire.trigger_ask_pct,
+    optionType: fire.option_type,
+    isAligned: isAlignedFire(
+      fire.option_type,
+      fire.cum_ncp_at_fire,
+      fire.cum_npp_at_fire,
     ),
-  ) as {
-    version: string;
-    weights: unknown;
-    cases: Array<{ name: string; fire: ParityFire; expected: number | null }>;
-  };
+    dayOfWeek: weekdayOf(fire.date),
+  });
+
+describe('the parity fixture', () => {
+  const fixture = loadParityFixture('lottery-score-parity.json');
 
   it('replays the parity fixture', () => {
     const weights = LotteryWeightsSchema.parse(fixture.weights);
     expect(fixture.cases.length).toBeGreaterThanOrEqual(40);
     for (const { name, fire, expected } of fixture.cases) {
-      const got = scoreLotteryV2(weights, {
-        ticker: fire.underlying_symbol,
-        tod: fire.tod,
-        dte: fire.dte,
-        volOiWindow: fire.trigger_vol_to_oi_window,
-        gammaAtTrigger: fire.gamma_at_trigger,
-        triggerAskPct: fire.trigger_ask_pct,
-        optionType: fire.option_type,
-        isAligned: isAlignedFire(
-          fire.option_type,
-          fire.cum_ncp_at_fire,
-          fire.cum_npp_at_fire,
-        ),
-        dayOfWeek: weekdayOf(fire.date),
-      });
-      expect(got, name).toBe(expected);
+      expect(scoreParityFire(weights, fire), name).toBe(expected);
     }
   });
 
@@ -1006,6 +1016,144 @@ describe('the parity fixture', () => {
 
   it('fixture weights equal the seed', () => {
     expect(fixture.weights).toEqual(SEED_LOTTERY_WEIGHTS);
+  });
+});
+
+// A promoted version is by definition not the seed, and the seed has one
+// Monday override and no composite on a "null" label. This fixture holds a
+// hand-built synthetic version that has both; the Python scorer replays the
+// same file (ml/tests/test_lottery_weights.py), so a non-seed version scores
+// alike in the cron and in the refit's rescore.
+describe('the non-seed parity fixture', () => {
+  const fixture = loadParityFixture('lottery-score-parity-alt.json');
+  const weights = LotteryWeightsSchema.parse(fixture.weights);
+  type ParityCase = ParityFixture['cases'][number];
+
+  /** Whether `variant` scores any case differently from the fixture weights. */
+  const movesACase = (
+    variant: LotteryWeights,
+    only: (c: ParityCase) => boolean = () => true,
+  ): boolean =>
+    fixture.cases
+      .filter(only)
+      .some(
+        ({ fire }) =>
+          scoreParityFire(variant, fire) !== scoreParityFire(weights, fire),
+      );
+
+  it('replays the non-seed parity fixture', () => {
+    expect(fixture.cases.length).toBeGreaterThanOrEqual(40);
+    for (const { name, fire, expected } of fixture.cases) {
+      expect(scoreParityFire(weights, fire), name).toBe(expected);
+    }
+  });
+
+  it('the non-seed fixture weights parse and differ from the seed', () => {
+    // A strict schema neither strips nor rewrites anything it accepts.
+    expect(LotteryWeightsSchema.parse(fixture.weights)).toEqual(
+      fixture.weights,
+    );
+    expect(weights).not.toEqual(SEED_LOTTERY_WEIGHTS);
+    expect(fixture.version).toMatch(/^refit-\d{4}-\d{2}-\d{2}$/);
+    expect(fixture.version).not.toBe(SEED_LOTTERY_WEIGHTS_VERSION);
+  });
+
+  it('has unique case names and both gated and scored cases', () => {
+    const { cases } = fixture;
+    const names = cases.map((c) => c.name);
+    expect(new Set(names).size).toBe(names.length);
+    expect(cases.some((c) => c.expected === null)).toBe(true);
+    expect(cases.some((c) => c.expected !== null)).toBe(true);
+    for (const dte of [0, 1, 2, 3, 4]) {
+      expect(cases.some((c) => c.fire.dte === dte)).toBe(true);
+    }
+  });
+
+  it('has a case on every new bound, exactly and 1e-9 above it', () => {
+    const features = [
+      ['trigger_vol_to_oi_window', weights.features.vol_oi_quintile_boundaries],
+      ['gamma_at_trigger', weights.features.gamma_quintile_boundaries],
+      ['trigger_ask_pct', weights.features.ask_pct_quintile_boundaries],
+    ] as const;
+    for (const [column, bounds] of features) {
+      for (const bound of bounds) {
+        for (const value of [bound, bound + 1e-9]) {
+          const label = `${column} ${String(value)}`;
+          expect(
+            fixture.cases.some((c) => c.fire[column] === value),
+            label,
+          ).toBe(true);
+        }
+      }
+    }
+    // The three bound sets differ from the seed's and one reaches below zero.
+    expect(weights.features.gamma_quintile_boundaries[0]).toBeLessThan(0);
+  });
+
+  it('scores a case with each continuous feature NULL', () => {
+    for (const column of [
+      'trigger_vol_to_oi_window',
+      'gamma_at_trigger',
+      'trigger_ask_pct',
+    ] as const) {
+      expect(
+        fixture.cases.some(
+          (c) => c.fire[column] === null && c.expected !== null,
+        ),
+        column,
+      ).toBe(true);
+    }
+  });
+
+  it('has a case for a tie, a NULL cumulative and a Saturday', () => {
+    const { cases } = fixture;
+    expect(
+      cases.some(
+        (c) =>
+          c.fire.cum_ncp_at_fire !== null &&
+          c.fire.cum_ncp_at_fire === c.fire.cum_npp_at_fire,
+      ),
+    ).toBe(true);
+    expect(cases.some((c) => c.fire.cum_ncp_at_fire === null)).toBe(true);
+    expect(cases.some((c) => c.fire.cum_npp_at_fire === null)).toBe(true);
+    expect(cases.some((c) => weekdayOf(c.fire.date) === 'Saturday')).toBe(true);
+  });
+
+  it('needs every weekday override: dropping one moves a case on that day', () => {
+    const overrides = weights.features.tod_weights_dow_overrides;
+    const days = (
+      ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'] as const
+    ).filter((day) => overrides[day] !== undefined);
+    expect(
+      days.filter((day) => day !== 'Monday').length,
+    ).toBeGreaterThanOrEqual(2);
+    for (const day of days) {
+      const without = structuredClone(weights);
+      delete without.features.tod_weights_dow_overrides[day];
+      expect(
+        movesACase(without, (c) => weekdayOf(c.fire.date) === day),
+        day,
+      ).toBe(true);
+    }
+    // A weekday with no override, and Saturday, score on the global table.
+    expect(overrides.Thursday).toBeUndefined();
+  });
+
+  it('needs every composite but the one that never matches', () => {
+    const { composite_bonuses: composites } = weights.features;
+    expect(composites.length).toBeGreaterThanOrEqual(4);
+    const dead: Array<CompositeBonus['match']> = [];
+    composites.forEach((entry, i) => {
+      const without = structuredClone(weights);
+      without.features.composite_bonuses.splice(i, 1);
+      if (!movesACase(without)) dead.push(entry.match);
+    });
+    expect(dead).toEqual([{ ticker: 'NOPE', tod: 'LUNCH' }]);
+    // One composite hinges on a missing feature, one is a penalty.
+    expect(
+      composites.some((e) => Object.values(e.match).includes('null')),
+    ).toBe(true);
+    expect(composites.some((e) => e.bonus < 0)).toBe(true);
   });
 });
 
