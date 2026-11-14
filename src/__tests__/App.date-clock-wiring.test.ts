@@ -98,6 +98,14 @@ describe('App date-clock wiring', () => {
     expect(props).toMatch(/^\s+etToday=\{vix\.etToday\}$/m);
   });
 
+  it('hands the snapshot save the date clock through its meta', () => {
+    const source = /buildSnapshotMeta\(\{([\s\S]*?)\n {4}\}\)/.exec(
+      appCode,
+    )?.[1];
+    expect(source).toMatch(/^\s+selectedDate: vix\.selectedDate,$/m);
+    expect(source).toMatch(/^\s+etToday: vix\.etToday,$/m);
+  });
+
   it('hands useAutoFill the vix object, which carries the date clock', () => {
     const inputs = /useAutoFill\(\{([\s\S]*?)\}\);/.exec(appCode)?.[1];
     expect(inputs).toMatch(/^\s+vix,$/m);

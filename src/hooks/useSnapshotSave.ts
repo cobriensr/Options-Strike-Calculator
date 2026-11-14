@@ -6,7 +6,11 @@
  * visitor would draw a 401 per entry time), and the /api/snapshot
  * endpoint rejects non-owners.
  *
- * A row's date must own its data, so the selected date decides the save:
+ * A row's date must own its data, so the selected date decides the save.
+ * "Today" and "past" are meta.etToday's, the clock the selected date follows,
+ * so a date that follows today is still today in the moment after ET
+ * midnight, before that clock ticks (the wall clock is read only for the
+ * time of day):
  *   - Today (ET) at the current time, on a session day: a live row
  *     (is_backtest false), once the SPX and VIX inputs each match today's
  *     live quote. Today's intraday history is never a source: it stops at
@@ -66,11 +70,7 @@ import {
 } from '../lib/live-save-device';
 import { captureUnlessAuth } from '../lib/sentry-helpers';
 import { isTradingDay } from '../data/marketHours';
-import {
-  getETDateStr,
-  getETTotalMinutes,
-  isBacktestMode,
-} from '../utils/timezone';
+import { getETTotalMinutes, isBacktestMode } from '../utils/timezone';
 import type { CalculationResults } from '../types';
 import type { QuotesResponse } from '../types/api';
 import type { ComputedSignals } from './useComputedSignals';
@@ -103,6 +103,13 @@ export interface SnapshotLive {
 
 export interface SnapshotMeta {
   selectedDate?: string;
+  /**
+   * Today's ET date from the clock `selectedDate` follows (useVixData's):
+   * what is "today" and what is "past" for the save. The wall clock is read
+   * only for the time of day, so in the moment after ET midnight, before that
+   * clock ticks, the followed date is still today's.
+   */
+  etToday: string;
   entryTime?: string;
   /** Null or absent when no intraday history filled the inputs. */
   history?: SnapshotHistory | null;
@@ -119,6 +126,8 @@ export interface SnapshotMeta {
 /** What App knows that the snapshot meta is built from. */
 export interface SnapshotMetaSource {
   selectedDate: string;
+  /** Today's ET date from the selected date's clock (vix.etToday). */
+  etToday: string;
   entryTime: string;
   /** The date of the loaded history (historyData.history?.date). */
   historyDate: string | undefined;
@@ -156,6 +165,7 @@ export function buildSnapshotMeta(src: SnapshotMetaSource): SnapshotMeta {
   const vix = src.quotes?.vix;
   return {
     selectedDate: src.selectedDate,
+    etToday: src.etToday,
     entryTime: src.entryTime,
     history:
       snap && src.historyDate
@@ -258,8 +268,11 @@ function rowKind(
   // new one loads) means the inputs may still be that date's.
   if (history != null && history.date !== date) return null;
 
+  // "Past" and "today" are the date clock's (meta.etToday), so a followed date
+  // is still today in the moment after ET midnight. Only the time of day is
+  // the wall clock's.
   const now = new Date();
-  if (isBacktestMode(date, etMinutes, now)) {
+  if (isBacktestMode(date, etMinutes, now, meta.etToday)) {
     // A replay: useAutoFill fills the inputs from the date's history at the
     // entry time. On today the upsert keeps a live row at that time.
     if (history == null) return null;
@@ -269,7 +282,7 @@ function rowKind(
       : null;
   }
 
-  if (date !== getETDateStr(now)) return null;
+  if (date !== meta.etToday) return null;
   // An entry time ahead of the clock (today scrubbed forward): the inputs
   // are now's, not that time's. One minute of slack for the clock.
   if (etMinutes > getETTotalMinutes(now) + FUTURE_ENTRY_SLACK_MINUTES) {
@@ -347,6 +360,7 @@ export function useSnapshotSave(
     if (inputsPending) return;
     const etMinutes = signals.etHour * 60 + signals.etMinute;
     const kind = rowKind(meta.selectedDate, etMinutes, results.spot, {
+      etToday: meta.etToday,
       history:
         historyDate == null || historySpot == null || historySpy == null
           ? null
@@ -546,6 +560,7 @@ export function useSnapshotSave(
     results,
     signals,
     meta.selectedDate,
+    meta.etToday,
     meta.entryTime,
     inputsPending,
     historyDate,

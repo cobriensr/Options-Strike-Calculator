@@ -113,6 +113,7 @@ const TOMORROW = '2026-03-11';
 /** Meta for today, its inputs filled from the live quotes (SPX 5500, VIX 18). */
 const baseMeta: SnapshotMeta = {
   selectedDate: TODAY,
+  etToday: TODAY,
   entryTime: '09:35',
   live: { spot: 5500, vix: 18 },
   spy: 550,
@@ -503,16 +504,20 @@ describe('useSnapshotSave — which dates save', () => {
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     expect(body().isBacktest).toBe(false);
 
-    // 00:00 EDT on 03-11: 03-10 is now a past date, and without its own
-    // history it no longer saves.
+    // 00:00 EDT on 03-11, the date's clock ticked (etToday is the 11th):
+    // 03-10 is now a past date, and without its own history it no longer
+    // saves.
     vi.setSystemTime(new Date('2026-03-11T04:00:00Z'));
-    rerender({ meta: { ...baseMeta, entryTime: '11:00 PM CT' } });
+    rerender({
+      meta: { ...baseMeta, etToday: TOMORROW, entryTime: '11:00 PM CT' },
+    });
     expect(fetchSpy).toHaveBeenCalledTimes(1);
 
     // With its own history it saves, as a backtest row.
     rerender({
       meta: {
         ...baseMeta,
+        etToday: TOMORROW,
         entryTime: '11:00 PM CT',
         history: hist(TODAY),
       },
@@ -573,7 +578,7 @@ describe('useSnapshotSave — a today without a session', () => {
       useSnapshotSave(
         makeResults(),
         defaultSignals,
-        { ...baseMeta, selectedDate: date },
+        { ...baseMeta, selectedDate: date, etToday: date },
         true,
       ),
     );
@@ -588,7 +593,7 @@ describe('useSnapshotSave — a today without a session', () => {
       useSnapshotSave(
         makeResults(),
         defaultSignals,
-        { ...baseMeta, selectedDate: '2026-11-27' },
+        { ...baseMeta, selectedDate: '2026-11-27', etToday: '2026-11-27' },
         true,
       ),
     );
@@ -688,6 +693,7 @@ describe('useSnapshotSave — a save carries its own date’s inputs', () => {
   const LIVE = { spot: 6800, vix: 20 };
   const liveMeta: SnapshotMeta = {
     selectedDate: TODAY,
+    etToday: TODAY,
     entryTime: '10:00 AM CT',
     live: LIVE,
     spy: 678.15,
@@ -961,6 +967,7 @@ describe('buildSnapshotMeta', () => {
   const snapshot = { spot: 6790.2, spy: 679.02, vix: 19.4 };
   const source: SnapshotMetaSource = {
     selectedDate: TODAY,
+    etToday: TODAY,
     entryTime: '10:00 AM CT',
     historyDate: TODAY,
     historySnapshot: snapshot,
@@ -978,6 +985,7 @@ describe('buildSnapshotMeta', () => {
   it('carries the date, entry time, parsed SPY and VIX, and the other inputs', () => {
     expect(buildSnapshotMeta(source)).toEqual({
       selectedDate: TODAY,
+      etToday: TODAY,
       entryTime: '10:00 AM CT',
       history: { date: TODAY, spot: 6790.2, spy: 679.02, vix: 19.4 },
       // The fixture quotes carry no quote time.
@@ -1602,5 +1610,100 @@ describe('useSnapshotSave — which browser saves live rows', () => {
     unmount();
 
     expect(liveSave.subscribers.size).toBe(0);
+  });
+});
+
+// ============================================================
+// AFTER ET MIDNIGHT, BEFORE THE DATE'S CLOCK TICKS
+// ============================================================
+
+describe('useSnapshotSave: the date’s clock, not the wall clock, says what is today', () => {
+  // The selected date follows useVixData's clock (etToday), which ticks 1 s
+  // after ET midnight (far later in a throttled or sleeping tab). In between,
+  // a render something else caused sees the wall clock on the 11th while the
+  // followed date and etToday are still the 10th: still today's. 2026-03-11
+  // 00:00:00.5 EDT.
+  const WALL_CLOCK = '2026-03-11T04:00:00.500Z';
+  const entryAt = (etHour: number, etMinute: number) => ({
+    ...defaultSignals,
+    etHour,
+    etMinute,
+  });
+
+  beforeEach(() => {
+    vi.setSystemTime(new Date(WALL_CLOCK));
+  });
+
+  it('posts no backtest row for the followed date, though the live spot equals the history’s', () => {
+    // Inputs identical to the date's history (SPX 5500, SPY 550), as they
+    // would be when the live quotes equal its last candle. Read against the
+    // wall clock the date is past, and that match would post a backtest row.
+    // Today at 11:00 ET is hours ahead of the new day's clock: no row at all.
+    renderHook(() =>
+      useSnapshotSave(
+        makeResults(),
+        defaultSignals,
+        { ...baseMeta, history: hist(TODAY) },
+        true,
+      ),
+    );
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('posts a live row for the followed date when its entry time is not ahead of the clock', () => {
+    // 12:00 AM ET on the followed date, the live quotes in the inputs.
+    renderHook(() =>
+      useSnapshotSave(makeResults(), entryAt(0, 0), baseMeta, true),
+    );
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(body().date).toBe(TODAY);
+    expect(body().isBacktest).toBe(false);
+  });
+
+  it('posts nothing for the wall clock’s date while the date clock still calls it tomorrow', () => {
+    // A date picked ahead: the 11th is the wall clock's today, the date
+    // clock's tomorrow, and a future date saves nothing.
+    renderHook(() =>
+      useSnapshotSave(
+        makeResults(),
+        entryAt(0, 0),
+        { ...baseMeta, selectedDate: TOMORROW },
+        true,
+      ),
+    );
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('still posts a backtest row for a picked past date', () => {
+    renderHook(() =>
+      useSnapshotSave(makeResults(), defaultSignals, backtestMeta, true),
+    );
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(body().date).toBe(YESTERDAY);
+    expect(body().isBacktest).toBe(true);
+  });
+
+  it('turns the followed date into a backtest row once the clock ticks past it', () => {
+    // The tick: etToday moves to the 11th. A date left on the 10th (picked as
+    // the old today in that second) is now past, and its history saves.
+    const { rerender } = renderHook(
+      ({ meta }) => useSnapshotSave(makeResults(), defaultSignals, meta, true),
+      {
+        initialProps: { meta: { ...baseMeta, history: hist(TODAY) } },
+      },
+    );
+    expect(fetchSpy).not.toHaveBeenCalled();
+
+    rerender({
+      meta: { ...baseMeta, etToday: TOMORROW, history: hist(TODAY) },
+    });
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(body().date).toBe(TODAY);
+    expect(body().isBacktest).toBe(true);
   });
 });

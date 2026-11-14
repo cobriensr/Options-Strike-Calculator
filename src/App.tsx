@@ -630,6 +630,7 @@ export default function StrikeCalculator() {
     signals,
     buildSnapshotMeta({
       selectedDate: vix.selectedDate,
+      etToday: vix.etToday,
       entryTime: `${timeHour}:${timeMinute} ${timeAmPm} ${timezone}`,
       historyDate: historyData.history?.date,
       historySnapshot,

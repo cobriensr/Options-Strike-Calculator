@@ -324,6 +324,7 @@ function useLiveSession() {
     signals,
     buildSnapshotMeta({
       selectedDate: vix.selectedDate,
+      etToday: vix.etToday,
       entryTime: `${time.timeHour}:${time.timeMinute} ${time.timeAmPm} ${time.timezone}`,
       historyDate: historyData.history?.date,
       historySnapshot,
