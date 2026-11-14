@@ -20,6 +20,7 @@ from uuid import uuid4
 
 import pytest
 
+import memory_stats
 from config import settings
 from handlers import option_trades as option_trades_mod
 from handlers import recent_fires
@@ -46,6 +47,17 @@ def _reset_state():
     yield
     state.handlers.clear()
     recent_fires._reset_for_tests()
+
+
+@pytest.fixture(autouse=True)
+def _isolated_gauges(monkeypatch):
+    """An empty gauge registry per test.
+
+    Every handler constructor registers its gauges in ``memory_stats``'s
+    module-level registry; replacing it keeps one test's handlers out of
+    another's reading (monkeypatch puts the original back).
+    """
+    monkeypatch.setattr(memory_stats, "_gauges", {})
 
 
 class _Clock:
@@ -417,6 +429,105 @@ class TestCounters:
         assert info_logs == []
 
 
+class TestDedupeKeysGauge:
+    """The memory gauge ``<name>.dedupe_keys``: the keys both generations hold now.
+
+    ``memory_stats`` calls it once a minute from the pipeline reporter and on a
+    ``/metrics`` request. The numbers are exact here: no clock but the faked one.
+    """
+
+    @staticmethod
+    def _keys(h: OptionTradesHandler) -> int:
+        return memory_stats.read_gauges()[f"{h.name}.dedupe_keys"]
+
+    def test_it_is_registered_at_construction_and_empty_before_the_first_frame(self, handler):
+        assert memory_stats.read_gauges() == {"option_trades.dedupe_keys": 0}
+
+    async def test_it_counts_each_trade_once_not_each_copy(self, handler, payload):
+        await handler.enqueue(payload)
+        await handler.enqueue(copy.deepcopy(payload))  # the mirror socket's copy
+        await handler.enqueue(_fresh(payload))
+
+        assert self._keys(handler) == 2
+
+    async def test_a_cancel_under_the_same_id_is_a_second_key(self, handler, payload):
+        cancel = copy.deepcopy(payload)
+        cancel["canceled"] = True
+
+        await handler.enqueue(payload)
+        await handler.enqueue(cancel)
+
+        assert self._keys(handler) == 2
+
+    async def test_it_reads_the_live_dicts_each_time_it_is_called(self, handler, payload):
+        await handler.enqueue(payload)
+        assert self._keys(handler) == 1
+
+        for _ in range(4):
+            await handler.enqueue(_fresh(payload))
+
+        assert self._keys(handler) == 5
+
+    async def test_after_one_rotation_both_generations_are_counted(self, handler, clock, payload):
+        for _ in range(3):
+            await handler.enqueue(_fresh(payload))
+        clock.now += 61
+        await handler.enqueue(_fresh(payload))  # rotation: the three become the older generation
+
+        assert (len(handler._seen), len(handler._seen_prev)) == (1, 3)
+        assert self._keys(handler) == 4
+
+    async def test_after_the_second_rotation_the_oldest_generation_is_gone(
+        self, handler, clock, payload
+    ):
+        for _ in range(3):
+            await handler.enqueue(_fresh(payload))
+        clock.now += 61
+        await handler.enqueue(_fresh(payload))
+        assert self._keys(handler) == 4
+
+        clock.now += 61
+        await handler.enqueue(_fresh(payload))  # rotation: the first three are retired
+
+        assert self._keys(handler) == 2
+
+    async def test_an_idle_gap_drops_both_generations_so_one_key_is_left(
+        self, handler, clock, payload
+    ):
+        for _ in range(3):
+            await handler.enqueue(_fresh(payload))
+        clock.now += 61
+        await handler.enqueue(_fresh(payload))
+        assert self._keys(handler) == 4
+
+        clock.now += 3_600  # an hour of silence, then one frame
+        await handler.enqueue(_fresh(payload))
+
+        assert self._keys(handler) == 1
+
+    async def test_with_the_kill_switch_off_it_reads_zero_and_stays_registered(
+        self, monkeypatch, clock, payload
+    ):
+        monkeypatch.setattr(settings, "ws_redundant_option_trades", False)
+        off = OptionTradesHandler()
+
+        await off.enqueue(payload)
+        await off.enqueue(copy.deepcopy(payload))
+
+        assert memory_stats.read_gauges() == {"option_trades.dedupe_keys": 0}
+
+    async def test_a_handler_built_again_takes_over_the_name_without_adding_a_gauge(
+        self, clock, payload
+    ):
+        first = OptionTradesHandler()
+        await first.enqueue(payload)
+        second = OptionTradesHandler()
+
+        assert memory_stats.read_gauges() == {"option_trades.dedupe_keys": 0}  # the second's
+        await second.enqueue(copy.deepcopy(payload))
+        assert memory_stats.read_gauges() == {"option_trades.dedupe_keys": 1}
+
+
 # ----------------------------------------------------------------------
 # Interval B/A: the aggregate must not double-count a duplicate frame.
 # ----------------------------------------------------------------------
@@ -506,3 +617,25 @@ class TestIntervalBA:
         assert h.queue.qsize() == 1
         assert state.handler(h.name).dupes_dropped == 1
         assert h.name.startswith("option_trades:")
+
+    @pytest.mark.parametrize(
+        "cls", [SPYIntervalBAHandler, SPXWIntervalBAHandler, QQQIntervalBAHandler]
+    )
+    async def test_each_interval_ba_handler_gauges_its_own_dedupe_keys(self, cls, payload):
+        # All three live in one process. The inherited constructor registers the
+        # gauge under each handler's own name, so feeding one moves only its gauge.
+        built = {
+            c: c() for c in (SPYIntervalBAHandler, SPXWIntervalBAHandler, QQQIntervalBAHandler)
+        }
+        await built[cls].enqueue(payload)
+        await built[cls].enqueue(copy.deepcopy(payload))
+
+        keys = {
+            name: size
+            for name, size in memory_stats.read_gauges().items()
+            if name.endswith(".dedupe_keys")
+        }
+
+        assert keys == {
+            f"option_trades:{c._TICKER}.dedupe_keys": 1 if c is cls else 0 for c in built
+        }

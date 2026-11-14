@@ -142,9 +142,11 @@ Single asyncio process:
      `flushes`, `flush_rows`, `flush_seconds`, `interval_flush_max_s`,
      `interval_batch_max`, `interval_queue_hwm`; zeroed from boot) and
      `sockets` (per shard, `conn0` to `conn7`: `frames`, `trade_frames`,
-     `silences` and `twin`). The last six handler fields and
-     `receive_queue_hwm` are the flush and high-water numbers, and `sockets`
-     the per-socket counters, explained under Pipeline diagnostics below.
+     `silences` and `twin`), and a `memory` object (`rss_bytes`,
+     `cgroup_bytes` and `gauges`, read per request). The last six handler
+     fields and `receive_queue_hwm` are the flush and high-water numbers,
+     `sockets` the per-socket counters and `memory` the memory numbers,
+     explained under Pipeline diagnostics below.
      `lost_rows` counts the rows of flushes that failed after the DB
      retries; ON CONFLICT dedup skips don't count. `dupes_dropped` counts the
      second copies of a trade that the mirror sockets deliver and the
@@ -549,8 +551,11 @@ label is missing from the sequence.
 | `sockets`                        | One entry per registered shard (`conn0` to `conn7`), idle ones too, keyed by shard name. The next two rows are its fields; the section below explains how to read them.                                          |
 | `frames`, `trade_frames`         | In a socket entry: frames received on that socket in the minute, and how many of them were option-trade frames (join acks and other channels are not).                                                           |
 | `max_trade_gap_s`, `silences`    | In a socket entry: the longest gap between two trade frames on that socket, and how many gaps of 0.5 s or more there were.                                                                                       |
+| `memory`                         | One object on every line, traffic or not: `rss_mb`, `cgroup_mb` and `gauges`. See Memory numbers, below.                                                                                                     |
+| `rss_mb`, `cgroup_mb`            | In `memory`: the process's resident set and the container's memory, in MB to one decimal. `null` when the file cannot be read, never 0.                                                                      |
+| `gauges`                         | In `memory`: the size of each in-memory store that registers a gauge, by name, as a whole number. A gauge that raised that minute is missing.                                                                |
 
-All seconds are rounded to 3 decimals.
+All seconds are rounded to 3 decimals. Memory is in MB of 1,048,576 bytes.
 
 How to read a late-data minute:
 
@@ -592,6 +597,60 @@ filter then reaches Railway as two keywords.
 
 Use the app's `time` field in each entry, not Railway's `timestamp`, and
 `minute_utc` to join a line to Neon's per-minute data.
+
+### Memory numbers
+
+The process's memory climbs through the trading day: 0.46 GB on 2026-11-09,
+0.58 on 11-12 and 0.69 on 11-13, and the process before it reached 1.0 GB. A
+`memory` object says where it goes. It is on every minute line (in MB) and at
+the top level of `/metrics` (in bytes, read when the request arrives).
+`src/memory_stats.py` reads it.
+
+| Minute line | `/metrics`     | What it is                                                                                                                                                                                                                                       |
+| ----------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `rss_mb`    | `rss_bytes`    | The process's resident set, from `/proc/self/statm`. The process alone.                                                                                                                                                                          |
+| `cgroup_mb` | `cgroup_bytes` | The container's memory, from the cgroup (`memory.current`, or `memory/memory.usage_in_bytes` on cgroup v1). This is the number Railway's memory graph tracks. It counts page cache, which the process does not own.                              |
+| `gauges`    | `gauges`       | The size of each in-memory store that can grow, by name. Each is a callback its owner registered; the minute reporter and a `/metrics` request call it, and nothing calls it per frame. Today there are three kinds, listed below.              |
+
+`rss_mb`, `cgroup_mb`, `rss_bytes` and `cgroup_bytes` are `null` when the file
+cannot be read (a Windows or macOS dev machine, a container with no cgroup
+mount) or does not hold a number. They are never 0.
+
+The gauges, where `<name>` is the handler's name (`option_trades`, or
+`option_trades:SPY`, `option_trades:SPXW` and `option_trades:QQQ` for the
+Interval B/A handlers):
+
+- `<name>.dedupe_keys`: trade keys the redundant-socket dedupe holds across
+  its two generations, about 160,000 at the open. All four option-trade
+  handlers have one: the Interval B/A handlers inherit the dedupe.
+- `<name>.chains`: contracts held in an Interval B/A handler's tick store. It
+  is swept only past 5,000 contracts, so it is the suspected slow grower: it
+  holds yesterday's contracts until then.
+- `<name>.ticks`: the prints held across those contracts' buckets. It walks
+  the contract and bucket pairs once per call (a few thousand in a normal
+  session), not the prints.
+
+A gauge that raises is left out of that minute's `gauges` and logged as one
+warning a minute, `memory gauge failed`, with `gauge`, `err_type` and `err`.
+It sends nothing to Sentry, and the rest of the line is unaffected. The
+registry holds at most 32 names, and registering a name again replaces the
+callback.
+
+How to read a climb:
+
+- `cgroup_mb` rises and `rss_mb` stays flat: page cache, the kernel caching
+  files. It is not uw-stream.
+- `rss_mb` rises and a gauge rises with it: that structure is the cause. The
+  gauge's name says which.
+- `rss_mb` rises and every gauge stays flat: something no gauge measures.
+  Register a gauge on the next suspect.
+
+Read the numbers from the same logs as above (`memory` on each line), or from
+`/metrics` on a running instance (a local one here, on port 8080):
+
+```bash
+curl -s -H "X-Metrics-Token: $INTERNAL_METRICS_TOKEN" http://localhost:8080/metrics | jq .memory
+```
 
 ### Socket numbers and the twin-silence warning
 

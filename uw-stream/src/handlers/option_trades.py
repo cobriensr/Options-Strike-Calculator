@@ -35,6 +35,7 @@ from typing import Any
 from uuid import UUID
 
 import db
+import memory_stats
 from config import settings
 from handlers.base import Handler
 from logger_setup import log, rate_limited_log
@@ -128,6 +129,15 @@ class OptionTradesHandler(Handler):
         # What the last log line already reported, for its interval figures.
         self._logged_dupes = 0
         self._logged_singles = 0
+        # Size of the two generations, for the memory line and /metrics. Under the
+        # handler's own name, so each Interval B/A subclass reports its own copy;
+        # registering a name again replaces the callback. Not called here or per
+        # frame: memory_stats reads it once a minute.
+        memory_stats.register_gauge(f"{self.name}.dedupe_keys", self._dedupe_key_count)
+
+    def _dedupe_key_count(self) -> int:
+        """Keys held across both generations: what the dedupe costs in memory right now."""
+        return len(self._seen) + len(self._seen_prev)
 
     async def enqueue(self, payload: dict) -> None:
         """Queue a payload unless it is the second copy of one already queued.

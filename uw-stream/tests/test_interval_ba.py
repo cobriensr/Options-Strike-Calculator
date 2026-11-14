@@ -20,6 +20,7 @@ from uuid import uuid4
 
 import pytest
 
+import memory_stats
 from handlers.interval_ba import (
     _ALERT_COLUMNS,
     _MULTI_LEG_CODES,
@@ -45,6 +46,14 @@ def _reset_recent_fires():
     recent_fires._reset_for_tests()
     yield
     recent_fires._reset_for_tests()
+
+
+# Every handler constructor registers its gauges in memory_stats's module-level
+# registry. Replacing it per test keeps one test's handlers out of another's
+# reading; monkeypatch puts the original back.
+@pytest.fixture(autouse=True)
+def _isolated_gauges(monkeypatch):
+    monkeypatch.setattr(memory_stats, "_gauges", {})
 
 
 # Bucket containing 17:06 UTC (2026-05-12 12:05-12:10 CT). All "same
@@ -604,6 +613,131 @@ class TestTicksEviction:
         handler._prune_ticks_if_needed(latest)
 
         assert "STALE" in handler._ticks
+
+
+# ----------------------------------------------------------------------
+# Memory gauges: how big _ticks is, read by memory_stats once a minute
+# ----------------------------------------------------------------------
+
+_CHAIN_A = "SPXW260512C07360000"
+_CHAIN_B = "SPXW260512C07370000"
+_CHAIN_C = "SPXW260512C07380000"
+
+
+def _tiny_tick(base: dict, chain: str, bucket_index: int = 0) -> dict:
+    """A $10 print in the bucket ``bucket_index`` windows after the anchor.
+
+    Far under the alert floor, so it is stored and never fires: the tests below
+    count what ``_observe`` kept.
+    """
+    return _payload(
+        base,
+        chain=chain,
+        executed_at_ms=_BUCKET_ANCHOR_MS + bucket_index * _BUCKET_SECONDS * 1000 + 10_000,
+        price="0.10",
+        size=1,
+    )
+
+
+def _spxw_gauges() -> dict[str, int]:
+    """The SPXW handler's gauges by suffix: ``dedupe_keys``, ``chains`` and ``ticks``."""
+    prefix = "option_trades:SPXW."
+    return {
+        name.removeprefix(prefix): size
+        for name, size in memory_stats.read_gauges().items()
+        if name.startswith(prefix)
+    }
+
+
+class TestMemoryGauges:
+    def test_each_handler_registers_its_gauges_under_its_own_name_and_they_start_empty(self):
+        SPXWIntervalBAHandler()
+
+        assert memory_stats.read_gauges() == {
+            "option_trades:SPXW.dedupe_keys": 0,
+            "option_trades:SPXW.chains": 0,
+            "option_trades:SPXW.ticks": 0,
+        }
+
+    def test_all_three_subclasses_register_three_gauges_each_and_none_collide(self):
+        for cls in (SPYIntervalBAHandler, SPXWIntervalBAHandler, QQQIntervalBAHandler):
+            cls()
+
+        assert set(memory_stats.read_gauges()) == {
+            f"option_trades:{ticker}.{suffix}"
+            for ticker in ("SPY", "SPXW", "QQQ")
+            for suffix in ("dedupe_keys", "chains", "ticks")
+        }
+
+    def test_one_handlers_ticks_do_not_move_another_handlers_gauges(self, base_payload):
+        spxw = SPXWIntervalBAHandler()
+        SPYIntervalBAHandler()
+
+        spxw._transform(_tiny_tick(base_payload, _CHAIN_A))
+
+        gauges = memory_stats.read_gauges()
+        assert (gauges["option_trades:SPXW.chains"], gauges["option_trades:SPXW.ticks"]) == (1, 1)
+        assert (gauges["option_trades:SPY.chains"], gauges["option_trades:SPY.ticks"]) == (0, 0)
+
+    def test_chains_counts_contracts_and_ticks_counts_every_stored_print(
+        self, handler, base_payload
+    ):
+        # chain A: three prints in one bucket and one in the next; chain B: two prints.
+        for chain, bucket_index in (
+            (_CHAIN_A, 0),
+            (_CHAIN_A, 0),
+            (_CHAIN_A, 0),
+            (_CHAIN_A, 1),
+            (_CHAIN_B, 0),
+            (_CHAIN_B, 0),
+        ):
+            handler._transform(_tiny_tick(base_payload, chain, bucket_index))
+
+        assert _spxw_gauges()["chains"] == 2
+        assert _spxw_gauges()["ticks"] == 6
+
+    def test_the_gauges_read_the_live_state_each_time_they_are_called(self, handler, base_payload):
+        handler._transform(_tiny_tick(base_payload, _CHAIN_A))
+        assert (_spxw_gauges()["chains"], _spxw_gauges()["ticks"]) == (1, 1)
+
+        handler._transform(_tiny_tick(base_payload, _CHAIN_B))
+        handler._transform(_tiny_tick(base_payload, _CHAIN_B))
+
+        assert (_spxw_gauges()["chains"], _spxw_gauges()["ticks"]) == (2, 3)
+
+    def test_the_per_chain_bucket_prune_lowers_ticks_and_leaves_chains(self, handler, base_payload):
+        # One print in each of four windows: only the newest _BUCKETS_TO_KEEP survive.
+        for bucket_index in range(handler._BUCKETS_TO_KEEP + 1):
+            handler._transform(_tiny_tick(base_payload, _CHAIN_A, bucket_index))
+
+        assert _spxw_gauges()["chains"] == 1
+        assert _spxw_gauges()["ticks"] == handler._BUCKETS_TO_KEEP
+
+    def test_the_chain_sweep_lowers_both_gauges_and_keeps_the_live_chain(
+        self, handler, base_payload
+    ):
+        # Two contracts quiet since the first window, one active ten windows later.
+        for chain in (_CHAIN_A, _CHAIN_A, _CHAIN_B):
+            handler._transform(_tiny_tick(base_payload, chain, 0))
+        handler._transform(_tiny_tick(base_payload, _CHAIN_C, 10))
+        assert (_spxw_gauges()["chains"], _spxw_gauges()["ticks"]) == (3, 4)
+
+        handler._CHAINS_PRUNE_THRESHOLD = 2  # force the sweep with few chains
+        handler._prune_ticks_if_needed((_BUCKET_ANCHOR_MS // 1000) + 10 * _BUCKET_SECONDS)
+
+        assert set(handler._ticks) == {_CHAIN_C}
+        assert (_spxw_gauges()["chains"], _spxw_gauges()["ticks"]) == (1, 1)
+
+    def test_a_chain_left_with_no_buckets_counts_as_a_chain_and_adds_no_ticks(self, handler):
+        handler._ticks["EMPTY"] = {}
+
+        assert (_spxw_gauges()["chains"], _spxw_gauges()["ticks"]) == (1, 0)
+
+    def test_ticks_counts_entries_not_buckets(self, handler):
+        # Many prints in one bucket: the walk visits one bucket but the gauge is the prints.
+        handler._ticks["X"] = {1: deque(range(250)), 2: deque(range(50))}
+
+        assert _spxw_gauges()["ticks"] == 300
 
 
 # ----------------------------------------------------------------------

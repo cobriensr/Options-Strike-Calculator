@@ -44,6 +44,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 import db
+import memory_stats
 from config import settings
 from handlers.option_trades import _COLUMNS as _RAW_COLUMNS
 from handlers.option_trades import OptionTradesHandler
@@ -207,6 +208,11 @@ class IntervalBAHandler(OptionTradesHandler):
         # ~1 window late) idempotent — each tick lands in its correct
         # bucket regardless of arrival order.
         self._ticks: dict[str, dict[int, deque[_Tick]]] = {}
+        # Sizes of ``_ticks`` for the memory line and /metrics, next to the
+        # ``dedupe_keys`` gauge the parent registered. ``memory_stats`` calls them
+        # once a minute; nothing here calls them on a tick.
+        memory_stats.register_gauge(f"{self.name}.chains", self._chain_count)
+        memory_stats.register_gauge(f"{self.name}.ticks", self._tick_count)
 
         # Dedupe: (option_chain, bucket_start_epoch_sec). Once we fire
         # for a bucket, suppress further alerts in that bucket even if
@@ -445,6 +451,23 @@ class IntervalBAHandler(OptionTradesHandler):
             return
         cutoff = latest_bucket_epoch - 24 * 3600
         self._fired = {(c, b) for (c, b) in self._fired if b >= cutoff}
+
+    def _chain_count(self) -> int:
+        """Contracts held in ``_ticks``: what ``_prune_ticks_if_needed`` bounds."""
+        return len(self._ticks)
+
+    def _tick_count(self) -> int:
+        """Ticks held in ``_ticks`` across every chain and bucket.
+
+        Called once a minute, never per tick. The walk visits the (chain, bucket)
+        pairs, not the ticks: ``len(deque)`` is O(1). Those pairs are bounded: the
+        chain count stays near a day's distinct 0DTE contracts (a sweep drops quiet
+        ones past ``_CHAINS_PRUNE_THRESHOLD``) and each chain keeps at most
+        ``_BUCKETS_TO_KEEP`` buckets, so a call reads on the order of 15,000
+        lengths at the soft cap and a few thousand in a normal session. The tick
+        total itself has no bound, which is what this number is for.
+        """
+        return sum(len(bucket) for buckets in self._ticks.values() for bucket in buckets.values())
 
     def _prune_ticks_if_needed(self, latest_bucket_epoch: int) -> None:
         """Drop per-chain tick state for contracts that have gone quiet.
