@@ -219,15 +219,7 @@ refit:
 	@echo "  REFIT — recompute V2 ticker weights + backfill scores"
 	@echo "════════════════════════════════════════════════════════════════"
 	@# TEMPORARY GUARD (2026-10-29): ml/src/lottery_refit_guard.py blocks lottery_scoring.py, online_ticker_update.py and backfill_lottery_scores.py (exit 0) until the outcome backfill and the two phase-4 fixes land, REMOVAL (b) and (c) in the guard's docstring (the anchor_leg_kind history, (a), is done).
-	@# Guard removed 2026-05-23 — V2 rescore + V2.2 improvements fully landed
-	@# (composites, cluster, direction-gate fix, context features, online ticker
-	@# EMA). lottery_scoring.py now preserves composite_bonuses across retrains
-	@# (commit 808e7927) so the nightly refit doesn't lose human-curated
-	@# overrides. Sync script swapped from the legacy sync_lottery_score_weights.py
-	@# (which still reads ml/data/) to sync_lottery_score_weights_v2.py (reads
-	@# the live ml/output/ JSON and renders lottery-score-weights-v2.ts).
 	$(PYTHON) ml/src/lottery_scoring.py
-	$(PYTHON) scripts/sync_lottery_score_weights_v2.py
 	$(PYTHON) scripts/backfill_lottery_scores.py
 
 update: enrich refit
@@ -260,11 +252,11 @@ update: enrich refit
 	@# Online ticker weight EMA update (V2.2 Phase E.8, spec: lottery-v2-2-
 	@# profitability-improvements-2026-05-22). Blends today's per-ticker
 	@# outcomes into ticker_weights via exponential smoothing (alpha=0.05,
-	@# ±1 cap/night). Writes updated JSON back to ml/output/ then re-syncs
-	@# the TS mirror so detect-lottery-fires picks up the new weights on the
-	@# next cron tick. Skip guard: < 100 enriched fires → no-op.
+	@# ±1 cap/night). Writes updated JSON back to ml/output/. Nothing re-renders
+	@# the TS mirror any more (the weights live in the Neon store, phase 4 D5),
+	@# so detect-lottery-fires no longer sees this output. Skip guard: < 100
+	@# enriched fires → no-op.
 	$(PYTHON) scripts/online_ticker_update.py
-	$(PYTHON) scripts/sync_lottery_score_weights_v2.py
 	@# TAKE-IT drift monitor — scores freshly-promoted bundle against the
 	@# rolling enriched window. Runs AFTER the refit prereq so the AUC is
 	@# measured against the current weights. Writes docs/tmp/takeit-drift-

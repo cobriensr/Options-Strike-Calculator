@@ -10,6 +10,10 @@
 
 import { getDb } from './db.js';
 import { LOTTERY_TICKER_STATS_SEED } from './lottery-ticker-stats-seed.js';
+import {
+  SEED_LOTTERY_WEIGHTS,
+  SEED_LOTTERY_WEIGHTS_VERSION,
+} from './lottery-weights-seed.js';
 
 export interface Migration {
   id: number;
@@ -5893,6 +5897,94 @@ export const MIGRATIONS: Migration[] = [
           WHERE r.ticker = f.ticker
             AND r.timestamp = f.timestamp
         )
+      `,
+    ],
+  },
+  {
+    id: 208,
+    description:
+      "Create the versioned lottery weights store (spec: docs/superpowers/plans/2026-11-05-nightly-pipeline-phase4.md, D5): lottery_score_versions, lottery_score_pointers and lottery_fire_value_snapshots, plus lottery_finder_fires.score_version. lottery_score_versions holds one row per set of weights: version is seed-<date> or refit-<trained_through> (one candidate per training session), weights is the validated weights object (schema_version 1), status is seed, shadow, passed, promoted or rejected, and a partial unique index allows at most one shadow. lottery_score_pointers holds two named pointers, active (the weights the scorer uses) and takeit (the weights Take-It's input score stays pinned to); each references a stored version, so neither can name a version that is not there, and a version a pointer names cannot be deleted. The takeit pointer is moved only by a Take-It retrain, never by the nightly refit. lottery_fire_value_snapshots keeps the values a bulk rescore overwrites, as parallel arrays of 1 to 50,000 fire ids with their old values and old version tags, so a promotion can be undone with one UPDATE ... FROM unnest(...); column_name is score or realized_flow_inversion_pct, and to_version is set exactly when it is score. lottery_finder_fires.score_version is nullable with no default: NULL means the fire was scored before the store existed, which is with the seed weights. Seeded here with the seed-2026-06-17 row (the frozen 06-17 weights, status seed, trained_through 2026-06-16) and both pointers on it. The two seed inserts are ON CONFLICT DO NOTHING, so a re-run keeps a pointer that has moved since. No backfill of score_version and no index beyond the keys and the shadow index: the tables hold a handful of rows. Nothing reads or writes the store yet, so apply this before any of the code that does is deployed.",
+    statements: (sql) => [
+      sql`SET LOCAL lock_timeout = '5s'`,
+      // One row per set of weights. The version id pattern uses [0-9], not \d,
+      // so the escape cannot be lost between this template and the driver.
+      sql`
+        CREATE TABLE IF NOT EXISTS lottery_score_versions (
+          version         TEXT        PRIMARY KEY,
+          weights         JSONB       NOT NULL,
+          status          TEXT        NOT NULL,
+          trained_through DATE,
+          created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+          decided_at      TIMESTAMPTZ,
+          gate_report     JSONB       NOT NULL DEFAULT '{}',
+          CONSTRAINT lottery_score_versions_version_chk
+            CHECK (version ~ '^(seed|refit)-[0-9]{4}-[0-9]{2}-[0-9]{2}$'),
+          CONSTRAINT lottery_score_versions_status_chk
+            CHECK (status IN ('seed', 'shadow', 'passed', 'promoted', 'rejected'))
+        )
+      `,
+      // At most one candidate is under evaluation at a time.
+      sql`
+        CREATE UNIQUE INDEX IF NOT EXISTS lottery_score_versions_one_shadow
+          ON lottery_score_versions (status)
+          WHERE status = 'shadow'
+      `,
+      sql`
+        CREATE TABLE IF NOT EXISTS lottery_score_pointers (
+          name       TEXT        PRIMARY KEY,
+          version    TEXT        NOT NULL REFERENCES lottery_score_versions (version),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+          CONSTRAINT lottery_score_pointers_name_chk
+            CHECK (name IN ('active', 'takeit'))
+        )
+      `,
+      // NOT NULL on the three arrays: a CHECK passes on NULL, so without it a
+      // NULL array would skip the length rule.
+      sql`
+        CREATE TABLE IF NOT EXISTS lottery_fire_value_snapshots (
+          id          BIGSERIAL            PRIMARY KEY,
+          taken_at    TIMESTAMPTZ          NOT NULL DEFAULT now(),
+          reason      TEXT                 NOT NULL,
+          column_name TEXT                 NOT NULL,
+          to_version  TEXT                 REFERENCES lottery_score_versions (version),
+          fire_ids    BIGINT[]             NOT NULL,
+          old_values  DOUBLE PRECISION[]   NOT NULL,
+          old_tags    TEXT[]               NOT NULL,
+          CONSTRAINT lottery_fire_value_snapshots_reason_chk
+            CHECK (reason ~ '^[a-z][a-z0-9-]{1,40}$'),
+          CONSTRAINT lottery_fire_value_snapshots_column_chk
+            CHECK (column_name IN ('score', 'realized_flow_inversion_pct')),
+          CONSTRAINT lottery_fire_value_snapshots_lengths_chk
+            CHECK (
+              cardinality(fire_ids) BETWEEN 1 AND 50000
+              AND cardinality(old_values) = cardinality(fire_ids)
+              AND cardinality(old_tags) = cardinality(fire_ids)
+            ),
+          CONSTRAINT lottery_fire_value_snapshots_to_version_chk
+            CHECK ((column_name = 'score') = (to_version IS NOT NULL))
+        )
+      `,
+      sql`
+        ALTER TABLE lottery_finder_fires
+          ADD COLUMN IF NOT EXISTS score_version TEXT
+      `,
+      sql`
+        INSERT INTO lottery_score_versions
+          (version, weights, status, trained_through)
+        VALUES (
+          ${SEED_LOTTERY_WEIGHTS_VERSION},
+          ${JSON.stringify(SEED_LOTTERY_WEIGHTS)}::jsonb,
+          'seed',
+          '2026-06-16'
+        )
+        ON CONFLICT (version) DO NOTHING
+      `,
+      sql`
+        INSERT INTO lottery_score_pointers (name, version)
+        VALUES
+          ('active', ${SEED_LOTTERY_WEIGHTS_VERSION}),
+          ('takeit', ${SEED_LOTTERY_WEIGHTS_VERSION})
+        ON CONFLICT (name) DO NOTHING
       `,
     ],
   },
