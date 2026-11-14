@@ -66,7 +66,7 @@ describe('useLotteryFinderTickerCounts', () => {
         mode: 'A_intraday_0DTE',
         optionType: 'C',
         tod: 'PM',
-        minScore: 12,
+        minTier: 'tier2',
         showAll: true,
       }),
     );
@@ -77,7 +77,8 @@ describe('useLotteryFinderTickerCounts', () => {
     expect(url).toContain('mode=A_intraday_0DTE');
     expect(url).toContain('optionType=C');
     expect(url).toContain('tod=PM');
-    expect(url).toContain('minScore=12');
+    expect(url).toContain('minTier=tier2');
+    expect(url).not.toContain('minScore=');
     expect(url).toContain('showAll=true');
   });
 
@@ -115,40 +116,6 @@ describe('useLotteryFinderTickerCounts', () => {
     );
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
     const url = fetchMock.mock.calls[0]![0] as string;
-    expect(url).not.toContain('minTier=');
-  });
-
-  it('sends only minTier when a caller passes both minTier and minScore', async () => {
-    // The server answers 400 to a request carrying both, so the hook sends
-    // the tier (the replacement for the numeric floor) and drops minScore.
-    fetchMock.mockResolvedValueOnce(jsonResponse(EMPTY));
-    renderHook(() =>
-      useLotteryFinderTickerCounts({
-        date: '2026-05-14',
-        marketOpen: false,
-        minTier: 'tier1',
-        minScore: 12,
-      }),
-    );
-    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-    const url = fetchMock.mock.calls[0]![0] as string;
-    expect(url).toContain('minTier=tier1');
-    expect(url).not.toContain('minScore=');
-  });
-
-  it('still sends minScore when minTier is null', async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse(EMPTY));
-    renderHook(() =>
-      useLotteryFinderTickerCounts({
-        date: '2026-05-14',
-        marketOpen: false,
-        minTier: null,
-        minScore: 12,
-      }),
-    );
-    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-    const url = fetchMock.mock.calls[0]![0] as string;
-    expect(url).toContain('minScore=12');
     expect(url).not.toContain('minTier=');
   });
 

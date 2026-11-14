@@ -121,40 +121,6 @@ describe('useLotteryFinder', () => {
     expect(url).not.toContain('minTier=');
   });
 
-  it('sends only minTier when a caller passes both minTier and minScore', async () => {
-    // The server answers 400 to a request carrying both, so the hook sends
-    // the tier (the replacement for the numeric floor) and drops minScore.
-    fetchMock.mockResolvedValueOnce(jsonResponse(emptyFinder()));
-    renderHook(() =>
-      useLotteryFinder({
-        date: '2026-05-07',
-        marketOpen: false,
-        minTier: 'tier2',
-        minScore: 18,
-      }),
-    );
-    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-    const url = fetchMock.mock.calls[0]![0] as string;
-    expect(url).toContain('minTier=tier2');
-    expect(url).not.toContain('minScore=');
-  });
-
-  it('still sends minScore when minTier is null', async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse(emptyFinder()));
-    renderHook(() =>
-      useLotteryFinder({
-        date: '2026-05-07',
-        marketOpen: false,
-        minTier: null,
-        minScore: 18,
-      }),
-    );
-    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-    const url = fetchMock.mock.calls[0]![0] as string;
-    expect(url).toContain('minScore=18');
-    expect(url).not.toContain('minTier=');
-  });
-
   it('omits minPremium when 0 (matches null floor)', async () => {
     // The chip resets to 0 (no floor); the hook must NOT serialize a
     // 0 floor — it would pin the server to `minPremium=0` and trip
@@ -287,7 +253,7 @@ describe('useLotteryFinder', () => {
         optionType: 'C',
         tod: 'AM_open',
         sort: 'score',
-        minScore: 18,
+        minTier: 'tier1',
         page: 2,
         pageSize: 25,
       }),
@@ -304,7 +270,8 @@ describe('useLotteryFinder', () => {
     expect(url).toContain('optionType=C');
     expect(url).toContain('tod=AM_open');
     expect(url).toContain('sort=score');
-    expect(url).toContain('minScore=18');
+    expect(url).toContain('minTier=tier1');
+    expect(url).not.toContain('minScore=');
   });
 
   it('populates fires + pagination metadata on success', async () => {

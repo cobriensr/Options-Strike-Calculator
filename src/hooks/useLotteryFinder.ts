@@ -106,14 +106,10 @@ interface UseLotteryFinderArgs {
   tod?: TimeOfDay | null;
   /** Sort mode for the result set. Default 'chronological'. */
   sort?: LotterySortMode;
-  /** Minimum score floor (Tier 1 = 18 enables High Conviction filter). */
-  minScore?: number | null;
   /**
    * Score floor by tier name: the server resolves it to the active weights
    * version's cutoff for that tier, so the UI never hard-codes a number.
-   * The server rejects a request carrying both `minTier` and `minScore`
-   * (400), so when a caller passes both the URL carries `minTier` only and
-   * `minScore` is not sent. null (default) = no tier floor.
+   * null (default) = no tier floor.
    */
   minTier?: LotteryMinTier | null;
   /**
@@ -174,7 +170,6 @@ export function useLotteryFinder({
   optionType = null,
   tod = null,
   sort = 'chronological',
-  minScore = null,
   minTier = null,
   minPremium = null,
   minFireCount = null,
@@ -197,11 +192,7 @@ export function useLotteryFinder({
   if (optionType != null) params.set('optionType', optionType);
   if (tod != null) params.set('tod', tod);
   if (sort !== 'chronological') params.set('sort', sort);
-  // The server 400s on `minTier` + `minScore` together. A tier wins: it is
-  // the replacement for the numeric floor, so a caller still passing both
-  // loses `minScore`, not the request.
   if (minTier != null) params.set('minTier', minTier);
-  else if (minScore != null) params.set('minScore', String(minScore));
   if (minPremium != null && minPremium > 0)
     params.set('minPremium', String(minPremium));
   if (minFireCount != null && minFireCount > 1)
