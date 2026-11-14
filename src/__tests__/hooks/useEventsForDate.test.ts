@@ -1055,3 +1055,97 @@ describe('useEventsForDate: retry', () => {
     expect(result.current.failed).toBe(false);
   });
 });
+
+describe('useEventsForDate: a selected date before ET today (23:00 to midnight CT)', () => {
+  // The app's date defaults to the CT date, and from 23:00 to midnight CT the
+  // ET date is already the next day. The forward list starts at ET today
+  // (api/events.ts), and so does the range assumed while it loads, so the CT
+  // date is outside both: its own lookup starts at once, and the list can
+  // never take it over. A change in what the list covers (it fails, or it
+  // arrives) must not start a second lookup for the same date.
+  const CT_DATE = '2026-11-13';
+  const ET_TODAY = '2026-11-14';
+
+  beforeEach(() => {
+    // 23:30 CST on the 13th, 00:30 on the 14th in New York.
+    vi.setSystemTime(new Date('2026-11-14T05:30:00Z'));
+  });
+
+  it('looks the date up once, while the forward list is still loading', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(eventsBody(CT_DATE, [ev(CT_DATE)])),
+    );
+    const { result } = render(CT_DATE, null, undefined, false);
+    await advance(SETTLE_MS);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0]![0]).toBe(
+      `/api/events?from=${CT_DATE}&days=1`,
+    );
+    expect(result.current.events).toEqual([ev(CT_DATE)]);
+  });
+
+  it('keeps that lookup, neither aborted nor repeated, when the forward list then fails', async () => {
+    const pending = deferred();
+    fetchMock.mockReturnValueOnce(pending.promise);
+    const { result, rerender } = render(CT_DATE, null, undefined, false);
+    await advance(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    rerender({ date: CT_DATE, forward: null, forwardLoaded: true });
+    await advance(SETTLE_MS);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(signalOf(0).aborted).toBe(false);
+
+    pending.resolve(jsonResponse(eventsBody(CT_DATE, [ev(CT_DATE)])));
+    await advance(0);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(result.current.events).toEqual([ev(CT_DATE)]);
+    expect(result.current.failed).toBe(false);
+  });
+
+  it("keeps that lookup, and its events, when the forward list arrives with ET today's range", async () => {
+    const pending = deferred();
+    fetchMock.mockReturnValueOnce(pending.promise);
+    const { result, rerender } = render(CT_DATE, null, undefined, false);
+    await advance(0);
+
+    const forward = forwardList(ET_TODAY, '2026-12-14', [ev(ET_TODAY, 'NFP')]);
+    rerender({ date: CT_DATE, forward, forwardLoaded: true });
+    await advance(SETTLE_MS);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(signalOf(0).aborted).toBe(false);
+
+    pending.resolve(jsonResponse(eventsBody(CT_DATE, [ev(CT_DATE)])));
+    await advance(0);
+
+    // The date's own events, not the forward list's (which start the next day).
+    expect(result.current.events).toEqual([ev(CT_DATE)]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('still fails once, with Retry, when that one lookup fails', async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ error: 'boom' }, 500))
+      .mockResolvedValueOnce(jsonResponse(eventsBody(CT_DATE, [ev(CT_DATE)])));
+    const { result, rerender } = render(CT_DATE, null, undefined, false);
+    await advance(0);
+    rerender({ date: CT_DATE, forward: null, forwardLoaded: true });
+    await advance(SETTLE_MS);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(result.current.failed).toBe(true);
+
+    act(() => {
+      result.current.retry();
+    });
+    await advance(0);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(result.current.events).toEqual([ev(CT_DATE)]);
+    expect(result.current.failed).toBe(false);
+  });
+});

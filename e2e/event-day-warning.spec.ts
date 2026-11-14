@@ -287,9 +287,11 @@ test.describe('Event Day Warning', () => {
   // (useEventsForDate), so the date is outside both and the page looks up its
   // own events at mount, rightly: the list never covers it. Only a lookup for
   // the 13th is answered, so this fails whenever `centralDate` returns the
-  // Eastern date. The lookup count is not asserted: the dev server's
-  // StrictMode runs a mount-time fetch twice (the forward list too, 12 ms
-  // apart), so two lookups here are one in production.
+  // Eastern date. The lookup count is compared with the forward list's, not
+  // pinned to 1: the dev server's StrictMode runs a mount-time fetch twice, the
+  // forward list's too (12 ms apart), so the page makes as many lookups as
+  // forward requests. A lookup repeated after the list fails would exceed them
+  // (the hook tests in useEventsForDate.test.ts pin exactly one).
   test('the date and its lookup are the Central date when the Eastern date has rolled over', async ({
     page,
   }) => {
@@ -298,11 +300,21 @@ test.describe('Event Day Warning', () => {
     expect(date).toBe('2026-11-13');
     await page.clock.setFixedTime(lateEvening);
     await page.route('**/api/**', (route) => route.abort());
+    let forwardRequests = 0;
+    await page.route(
+      (url) => url.pathname === '/api/events' && !url.searchParams.has('from'),
+      (route) => {
+        forwardRequests += 1;
+        return route.abort();
+      },
+    );
+    let lookups = 0;
     await page.route(
       (url) =>
         url.pathname === '/api/events' && url.searchParams.get('from') === date,
-      (route) =>
-        route.fulfill({
+      (route) => {
+        lookups += 1;
+        return route.fulfill({
           json: makeEventsResponse(
             [
               {
@@ -314,7 +326,8 @@ test.describe('Event Day Warning', () => {
             ],
             date,
           ),
-        }),
+        });
+      },
     );
 
     await page.goto('/');
@@ -325,5 +338,8 @@ test.describe('Event Day Warning', () => {
     ).toHaveValue(date);
     await expect(main.getByText('High-Impact Event Day')).toBeVisible();
     await expect(main.getByText('CPI', { exact: true })).toBeVisible();
+    // The failed forward list changed nothing the date's lookup depends on.
+    expect(forwardRequests).toBeGreaterThan(0);
+    expect(lookups).toBe(forwardRequests);
   });
 });
