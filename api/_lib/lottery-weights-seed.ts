@@ -18,7 +18,13 @@
  * a copy of these weights and the score each of 70 synthetic fires gets from
  * them. The Python scorer is meant to replay the same file (phase 4, Task 12).
  *
- * Spec: docs/superpowers/plans/2026-11-05-nightly-pipeline-phase4.md (D5)
+ * The object is also the loader's runtime fallback (`lottery-weights-loader.ts`
+ * hands it to the crons when the store can't be read), so it is deep-frozen at
+ * load: no consumer can change it in memory. A test that needs a modified copy
+ * takes a `structuredClone` of it first.
+ *
+ * Plan: docs/superpowers/plans/2026-11-05-nightly-pipeline-phase4.md (D5)
+ * Spec: docs/superpowers/specs/2026-10-28-nightly-pipeline-automation-design.md
  * Origin: docs/superpowers/specs/lottery-rescore-2026-05-22.md
  */
 
@@ -26,7 +32,16 @@ import type { LotteryWeights } from './lottery-weights-schema.js';
 
 export const SEED_LOTTERY_WEIGHTS_VERSION = 'seed-2026-06-17';
 
-export const SEED_LOTTERY_WEIGHTS: LotteryWeights = {
+/** Freeze `value` and every object and array reachable from it. */
+function deepFreeze<T>(value: T): T {
+  if (typeof value === 'object' && value !== null && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const child of Object.values(value)) deepFreeze(child);
+  }
+  return value;
+}
+
+export const SEED_LOTTERY_WEIGHTS: LotteryWeights = deepFreeze({
   schema_version: 1,
   model_version: 'rescore-v1-2026-05-22',
   trained_through: '2026-06-16',
@@ -271,4 +286,4 @@ export const SEED_LOTTERY_WEIGHTS: LotteryWeights = {
     tier1_min_score: 13,
     tier2_min_score: 10,
   },
-};
+});
