@@ -14,7 +14,8 @@
  * missing list counts as covering today .. today + 30, so no request is made.
  *
  * The clock is pinned to 12:00 ET on 2026-11-12 and every timer is fake: the
- * settle wait and the ET-midnight timer are driven by `advance`.
+ * settle wait is driven by `advance`. Today's ET date comes in as a prop
+ * (`etToday`, TODAY unless a test moves it), as App passes it from useVixData.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, renderHook } from '@testing-library/react';
@@ -1080,8 +1081,8 @@ describe('useEventsForDate: retry', () => {
 
 describe('useEventsForDate: a date before ET today, picked while the forward list loads', () => {
   // The forward list starts at ET today (api/events.ts), and so does the range
-  // assumed while it loads, so a date before ET today (one the user picked, or
-  // left selected across ET midnight: nothing rolls `selectedDate` over) is
+  // assumed while it loads, so a date before ET today (one the user picked: a
+  // date that follows today rolls over at ET midnight, a picked one stays) is
   // outside both. Its own lookup starts at once, and the list can never take it
   // over. A change in what the list covers (it fails, or it arrives) must not
   // start a second lookup for the same date. YESTERDAY is that date here; the

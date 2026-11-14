@@ -518,7 +518,9 @@ export default function StrikeCalculator() {
   // badge independently of whether candle data is available. This decouples
   // "are we viewing a historical moment?" (UI state) from "do we have price
   // data for it?" (data state). Today counts once its time is more than 5
-  // minutes behind the clock: the rule the snapshot save uses too.
+  // minutes behind the clock: the rule the snapshot save uses too. "Past" is
+  // judged against vix.etToday, the clock the selected date follows, so the
+  // badge cannot turn on in the moment after ET midnight before it ticks.
   const backtestMode = useMemo(() => {
     const { etHour, etMinute } = toETTime(
       timeHour,
@@ -526,8 +528,13 @@ export default function StrikeCalculator() {
       timeAmPm,
       timezone,
     );
-    return isBacktestMode(vix.selectedDate, etHour * 60 + etMinute);
-  }, [vix.selectedDate, timeHour, timeMinute, timeAmPm, timezone]);
+    return isBacktestMode(
+      vix.selectedDate,
+      etHour * 60 + etMinute,
+      new Date(),
+      vix.etToday,
+    );
+  }, [vix.selectedDate, vix.etToday, timeHour, timeMinute, timeAmPm, timezone]);
 
   // The analysis's one backtest flag: the selected date is past (ET). The
   // data note (useComputedSignals) and the context's isBacktest
