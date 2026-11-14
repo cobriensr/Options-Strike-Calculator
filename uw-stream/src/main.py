@@ -36,6 +36,7 @@ from pipeline_stats import run_pipeline_stats
 from router import Router
 from sentry_setup import capture_exception, capture_message, init_sentry
 from state import state
+from stuck_sockets import run_stuck_socket_watchdog
 from subscription_watchdog import run_subscription_watchdog
 from ws_lease import WsLease
 
@@ -283,6 +284,12 @@ async def _run() -> None:
             asyncio.create_task(run_subscription_watchdog(), name="subscription_watchdog"),
             asyncio.create_task(run_drop_reporter(), name="drop_reporter"),
             asyncio.create_task(run_pipeline_stats(), name="pipeline_stats"),
+            # Reconnects a trade socket that is up but silent while its twin
+            # receives. It needs the connectors to call ``force_reconnect``.
+            asyncio.create_task(
+                run_stuck_socket_watchdog({c.name: c for c in connectors}),
+                name="stuck_sockets",
+            ),
         ]
         # Spawn one drain task per UNIQUE handler instance — many channels
         # can share one handler (e.g. every option_trades:<TICKER> entry

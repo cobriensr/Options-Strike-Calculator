@@ -161,10 +161,11 @@ def _stub_pipeline(monkeypatch) -> None:
     Every test that drives ``main._run`` past the lease step starts from this,
     and overrides only what it needs. The lease is off, so the only things that
     can wake _run are the stop Event and a background task finishing. The
-    pipeline stats task is stubbed like the other background tasks, and the
-    socket registry and twin map are swapped for empty ones so ``_run``'s
-    ``configure`` call leaves no ``conn{i}`` entries behind in the module for a
-    later test. ``_pipeline_leak_guard`` fails a test that skips it.
+    pipeline stats task and the stuck-socket watchdog are stubbed like the other
+    background tasks, and the socket registry and twin map are swapped for empty
+    ones so ``_run``'s ``configure`` call leaves no ``conn{i}`` entries behind in
+    the module for a later test. ``_pipeline_leak_guard`` fails a test that skips
+    it.
     """
     monkeypatch.setattr(main, "init_sentry", lambda: None)
     monkeypatch.setattr(socket_stats, "_registry", {})
@@ -197,42 +198,56 @@ def _stub_pipeline(monkeypatch) -> None:
     async def _forever_bg() -> None:
         await asyncio.sleep(3600)
 
+    async def _forever_watchdog(_connectors) -> None:
+        await asyncio.sleep(3600)
+
     monkeypatch.setattr(main, "Connector", _ForeverConnector)
     monkeypatch.setattr(main, "Router", _ForeverRouter)
     monkeypatch.setattr(main, "run_server", _forever_bg)
     monkeypatch.setattr(main, "run_subscription_watchdog", _forever_bg)
     monkeypatch.setattr(main, "run_pipeline_stats", _forever_bg)
+    monkeypatch.setattr(main, "run_stuck_socket_watchdog", _forever_watchdog)
 
 
 @pytest.fixture(autouse=True)
 def _pipeline_leak_guard(monkeypatch):
     """Fail any test in this module that runs the real pipeline-stats task or
-    fills the socket registry or twin map.
+    stuck-socket watchdog, or fills the socket registry or twin map.
 
     A test that drives ``main._run`` past the lease step reaches
-    ``socket_stats.configure`` and starts ``run_pipeline_stats``; without
-    ``_stub_pipeline`` it leaves ``conn{i}`` entries in the module for every
-    later test. Each test starts with a fresh, empty registry and twin map and a
-    watched stats task, so nothing it does reaches the real ones, and a test
-    that skips ``_stub_pipeline`` leaves them filled or started. One that
-    isolates replaces them first, through the same ``monkeypatch``, so these
-    stay untouched. It checks its own objects, not the module's names, which
-    the test may have swapped by then.
+    ``socket_stats.configure`` and starts ``run_pipeline_stats`` and
+    ``run_stuck_socket_watchdog``; without ``_stub_pipeline`` it leaves
+    ``conn{i}`` entries in the module for every later test. Each test starts
+    with a fresh, empty registry and twin map and watched tasks, so nothing it
+    does reaches the real ones, and a test that skips ``_stub_pipeline`` leaves
+    them filled or started. One that isolates replaces them first, through the
+    same ``monkeypatch``, so these stay untouched. It checks its own objects, not
+    the module's names, which the test may have swapped by then.
     """
     registry: dict = {}
     twins: dict = {}
     real_stats = main.run_pipeline_stats
+    real_watchdog = main.run_stuck_socket_watchdog
     stats_started: list[str] = []
+    watchdog_started: list[str] = []
 
     async def _tracking_stats() -> None:
         stats_started.append("run_pipeline_stats")
         await real_stats()
 
+    async def _tracking_watchdog(connectors) -> None:
+        watchdog_started.append("run_stuck_socket_watchdog")
+        await real_watchdog(connectors)
+
     monkeypatch.setattr(socket_stats, "_registry", registry)
     monkeypatch.setattr(socket_stats, "_twins", twins)
     monkeypatch.setattr(main, "run_pipeline_stats", _tracking_stats)
+    monkeypatch.setattr(main, "run_stuck_socket_watchdog", _tracking_watchdog)
     yield
     assert stats_started == [], "the test started the real run_pipeline_stats: use _stub_pipeline"
+    assert watchdog_started == [], (
+        "the test started the real run_stuck_socket_watchdog: use _stub_pipeline"
+    )
     assert not registry, (
         f"the test registered {sorted(registry)} in socket_stats: use _stub_pipeline"
     )
@@ -911,10 +926,80 @@ async def test_run_starts_pipeline_stats_and_shutdown_cancels_it(_reset_notify_s
 
 
 @pytest.mark.asyncio
+async def test_run_starts_the_stuck_socket_watchdog_with_the_connectors_by_name(
+    _reset_notify_state, monkeypatch
+):
+    _stub_pipeline(monkeypatch)
+    # One option_trades channel, joined on conn0 and (the mirror) conn1.
+    monkeypatch.setattr(main.settings, "ws_channels", "option_trades:SPY")
+    monkeypatch.setattr(main.settings, "ws_redundant_option_trades", True)
+    built: list = []
+
+    class _RecordingConnector:
+        def __init__(self, *_a, **kwargs) -> None:
+            self.name = kwargs["name"]
+            built.append(self)
+
+        def abort(self) -> None: ...
+
+        async def run(self) -> None:
+            await asyncio.sleep(3600)
+
+    received: list[dict] = []
+    events: list[str] = []
+
+    async def _recording_watchdog(connectors) -> None:
+        received.append(connectors)
+        events.append("started")
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            events.append("cancelled")
+            raise
+
+    monkeypatch.setattr(main, "Connector", _RecordingConnector)
+    monkeypatch.setattr(main, "run_stuck_socket_watchdog", _recording_watchdog)
+    _sigterm_once_run_is_waiting(monkeypatch)
+
+    await main._run()
+
+    # The same connector objects the connector tasks run, keyed by shard name.
+    (connectors,) = received
+    assert list(connectors) == ["conn0", "conn1"]
+    assert list(connectors.values()) == built
+    assert events == ["started", "cancelled"]
+
+
+@pytest.mark.asyncio
+async def test_run_exits_nonzero_when_the_stuck_socket_watchdog_dies(
+    _reset_notify_state, monkeypatch
+):
+    # Like the other background tasks, the watchdog's death is not silent: its
+    # own pass guard keeps it alive, so a death here is a bug that must restart.
+    _stub_pipeline(monkeypatch)
+
+    async def _crashing_watchdog(_connectors) -> None:
+        raise RuntimeError("watchdog boom")
+
+    monkeypatch.setattr(main, "run_stuck_socket_watchdog", _crashing_watchdog)
+    captured: list[tuple[BaseException, dict]] = []
+    monkeypatch.setattr(main, "capture_exception", lambda exc, **kw: captured.append((exc, kw)))
+
+    with pytest.raises(SystemExit) as exc_info:
+        await main._run()
+
+    assert exc_info.value.code == 1
+    assert [(str(e), kw["tags"]["task"]) for e, kw in captured] == [
+        ("watchdog boom", "stuck_sockets")
+    ]
+
+
+@pytest.mark.asyncio
 async def test_a_stubbed_run_neither_runs_the_real_stats_task_nor_fills_the_real_registry(
     _reset_notify_state, monkeypatch
 ):
     real_stats_task = main.run_pipeline_stats
+    real_watchdog = main.run_stuck_socket_watchdog
     # Start from empty module dicts, so anything ``_run`` leaves in them shows.
     real_registry: dict = {}
     real_twins: dict = {}
@@ -926,6 +1011,7 @@ async def test_a_stubbed_run_neither_runs_the_real_stats_task_nor_fills_the_real
     await main._run()
 
     assert main.run_pipeline_stats is not real_stats_task
+    assert main.run_stuck_socket_watchdog is not real_watchdog
     # ``_run`` did register its shards, in the stand-in the stub put in place.
     assert list(socket_stats._registry)
     assert (real_registry, real_twins) == ({}, {})

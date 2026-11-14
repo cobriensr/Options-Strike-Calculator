@@ -184,6 +184,10 @@ Single asyncio process:
    handlers' flush timing and queue high-waters, and each socket's frame
    counts and silences, which the connectors count (`src/socket_stats.py`).
    See Pipeline diagnostics.
+9. **Stuck-socket watchdog** (`src/stuck_sockets.py`): every 5 s, finds a
+   connected `option_trades` socket that has received no trade frame for
+   60 s while its twin kept receiving, sends a Sentry alert and forces a
+   reconnect of it. See Stuck trade sockets.
 
 ## Schema
 
@@ -460,7 +464,8 @@ migration chain, and all schema changes go there.)
 On 2026-11-13 trades landed in Neon 24 to 44 s late at every :x0 and :x5
 minute. A slow Neon write, an exhausted connection pool and a blocked event
 loop all look the same from outside. These numbers tell them apart. They are
-logs and `/metrics` fields only: nothing here sends a Sentry event.
+logs and `/metrics` fields only: nothing here sends a Sentry event, except the
+stuck-trade-socket alert (see Stuck trade sockets, below).
 
 ### `/metrics` flush and high-water fields
 
@@ -608,10 +613,11 @@ Two cases the gap numbers handle in a fixed way:
 - A gap that spans a minute boundary is credited to the minute whose trade
   frame ends it, because the gap is measured when that frame arrives.
 - A gap that never ends is never counted: no silence and no warning, since
-  both wait for the next trade frame. The only sign is `trade_frames: 0` on
-  one shard while its twin's is non-zero. Nothing else catches it:
-  `src/subscription_watchdog.py` checks only the `subscribed` flag, and
-  `/healthz` uses the global `last_message_ts`, which the twin keeps fresh.
+  both wait for the next trade frame. The sign is `trade_frames: 0` on one
+  shard while its twin's is non-zero. `src/subscription_watchdog.py` checks
+  only the `subscribed` flag, and `/healthz` uses the global
+  `last_message_ts`, which the twin keeps fresh, so neither sees it. The
+  stuck-socket watchdog does, after 60 s (see Stuck trade sockets, below).
 
 **The warning.** When a gap of 0.5 s or more ends on a socket and its twin
 received at least 10 trade frames inside that gap, the connector logs one
@@ -634,8 +640,9 @@ before this frame). `true` points to a loop stall seen by both sockets rather
 than a quiet socket: check the minute line's `loop_lag_max_s`. `false` is the
 one-sided case the warning exists for. The flag is also set when the twin's
 silence overlapped only part of this gap: only its start (the twin's latest
-silence ended just after this gap began) or only its tail (the twin's last
-trade frame came a little over 0.5 s before this frame). If `loop_lag_max_s`
+silence ended just after this gap began), only its middle, or only its tail
+(the twin's last trade frame came 0.5 s or more before this frame, after this
+gap began). If `loop_lag_max_s`
 is near 0 in that minute's line while `twin_also_silent` is `true`, it was not
 a stall: compare `gap_s` with the twin's `max_trade_gap_s` in the same minute.
 The twin's counts are kept for 120 s; a longer gap sets `twin_window_clipped` to
@@ -661,6 +668,95 @@ whether anything was lost.
 - A silence with no rise means the socket was only delayed: its frames came
   late, the dedupe saw both copies of every trade, and nothing was lost.
 
+### Stuck trade sockets
+
+The silence warning above waits for the next trade frame to end a gap, so a
+trade socket that stays connected but never delivers another trade frame
+raises nothing. The stuck-socket watchdog (`run_stuck_socket_watchdog`,
+`src/stuck_sockets.py`) covers that. Every 5 s it asks
+`socket_stats.find_stuck` which shards are stuck. A shard is stuck when all
+four hold:
+
+- it has a twin;
+- it is connected (`state.connections` says so);
+- it has had no trade frame for 60 s, counted from its last trade frame or,
+  if the connection has had none yet, from the connection's start;
+- its twin received at least 100 trade frames in those 60 s.
+
+| Constant                      | Value | Meaning                                                                   |
+| ----------------------------- | ----- | ------------------------------------------------------------------------- |
+| `STUCK_S`                     | 60 s  | The open gap that makes a shard a candidate.                              |
+| `STUCK_TWIN_MIN_FRAMES`       | 100   | Trade frames the twin must have in the last `STUCK_S`.                    |
+| `STUCK_CHECK_INTERVAL_S`      | 5 s   | The check period.                                                         |
+| `FORCED_RECONNECT_COOLDOWN_S` | 300 s | At most one forced reconnect per shard in this time, across incidents.    |
+
+The first two are in `src/socket_stats.py`, next to the test; the other two
+are in `src/stuck_sockets.py`. The quietest minute at lunch on 2026-11-13
+carried 3,938 trades for conn0's half of the tickers and 6,407 for conn1's, about
+40 times the twin minimum, so a normal lunch lull does not reach it.
+
+For each stuck shard the watchdog keeps one **incident**, from the check that
+first finds the shard stuck until a trade frame arrives:
+
+1. **The alert.** One Sentry warning, `uw-stream trade socket stuck`, tagged
+   `component=stuck_sockets`. Its extras are `shard`, `twin`, `gap_s` (the
+   shard's open gap), `twin_trade_frames` (the twin's frames in the last 60 s),
+   `last_trade_utc` (the shard's last trade frame, or `null` if its connection
+   has had none) and `forced_reconnects` (forced reconnects so far in this
+   incident, so `0` here). It means the shard has been up and silent for a
+   minute while its twin kept receiving: the backup for that half of the
+   tickers is gone, and the dedupe is passing the twin's copy alone.
+2. **The forced reconnect.** Straight after the alert the watchdog calls
+   `Connector.force_reconnect`, which aborts the socket. The connector then
+   reconnects and re-joins every channel, as for any drop (about 2 s), and the
+   twin carries every trade meanwhile, so a false alarm costs nothing. Each one
+   logs `forcing reconnect of a stuck trade socket` at warning level. A shard
+   gets at most one per 300 s, whatever incident it is in: at most 12 an hour
+   per stuck shard. They count in `reconnects_last_hour` and towards the
+   reconnect storm alert like any other drop; two shards stuck for a whole hour
+   make 24, under the 40 an hour the storm alert needs with 8 shards.
+3. **The escalation.** If the shard is stuck again at a later check and the
+   incident has forced a reconnect, the watchdog sends one more event for the
+   incident, an error: `uw-stream trade socket still stuck after a forced
+   reconnect`, with the same extras (`forced_reconnects` is then 1 or more). It
+   means the reconnect did not help: the new connection also went 60 s with no
+   trade frame while its twin received at least 100 (or the abort did not end
+   the old connection). The service keeps forcing a reconnect every 300 s but
+   sends no further event for the incident. A redeploy is the next move if
+   nothing else explains it. An incident that has not yet forced a reconnect
+   (the cooldown from an earlier incident is still running) does not escalate.
+4. **The end.** When the shard's last trade frame is later than the incident's
+   start, the incident ends and the watchdog logs `stuck trade socket
+   recovered` with `shard`, `duration_s` (to the check that saw the trade frame,
+   so up to 5 s late) and `forced_reconnects` (in this incident). A later stick
+   opens a new incident and sends a new alert.
+
+The `forced` field on the disconnect line (`WS connection unavailable`, `WS
+transport error` and the clean-close line) is the reason the watchdog gave,
+`stuck_trade_socket`, for a drop it asked for, and `null` for every other drop.
+Leave the lines with `forced` set out of any statistic on genuine drops.
+
+A pass is skipped when its own sleep overran by 1 s or more
+(`LOOP_LAG_FLAG_S`). After a loop stall the first socket to resume drains its
+backlog before its twin's task runs, so the twin can look stuck for one pass.
+The minute line's `loop_lag_max_s` shows the stall.
+
+Each pass is guarded: one that raises logs `stuck-socket check failed` at error
+level (one Sentry event a minute) and the loop carries on. Read the lines with:
+
+```bash
+railway logs -s uw-stream --filter "stuck trade socket" --json
+```
+
+**Not covered:**
+
+- Both twins stuck at once: each one's twin shows no trade frames, so there is
+  nothing to compare against. The minute line's `trade_frames: 0` on both is the
+  only sign.
+- `WS_REDUNDANT_OPTION_TRADES=false`: with no mirror sockets no shard has a twin,
+  so the watchdog does nothing.
+- The non-trade sockets (`conn2` to `conn5`): they have no twin.
+
 ## Operational notes
 
 - **Resubscribe on reconnect.** UW's server forgets joins on disconnect.
@@ -684,8 +780,10 @@ whether anything was lost.
   cumulative counters stay on `/metrics`.
 - **Disconnects.** Each dropped socket logs one line with the shard, the
   exception, both close frames, the underlying cause (with errno), the
-  session length, frames received, time since the last frame, and both
-  socket addresses. The token is scrubbed from it. A Sentry warning fires
+  session length, frames received, time since the last frame, both
+  socket addresses, and `forced` (the reason when the stuck-socket watchdog
+  dropped the socket on purpose, `null` otherwise). The token is scrubbed from
+  it. A Sentry warning fires
   when reconnects in the last hour, across all shards, reach 5 per shard
   (40 with 8 shards, 30 with the mirror sockets off). It fires once per
   incident: at most one an hour for the whole process
