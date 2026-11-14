@@ -68,7 +68,6 @@ describe('isLoopback', () => {
     'localhost',
     'LOCALHOST',
     'localhost.',
-    'api.localhost',
     '127.0.0.1',
     '127.1.2.3',
     '127.255.255.255',
@@ -83,6 +82,9 @@ describe('isLoopback', () => {
     '',
     'example.com',
     'api.unusualwhales.com',
+    // Node looks a *.localhost name up through the OS resolver, so a query can
+    // leave the machine: only `localhost` itself is allowed.
+    'api.localhost',
     'localhost.example.com',
     'notlocalhost',
     '127.0.0.1.example.com',
@@ -94,6 +96,9 @@ describe('isLoopback', () => {
     '::',
     '::2',
     '::ffff:10.0.0.1',
+    // Loopback in another spelling: blocked, which fails loudly (the spec).
+    '0:0:0:0:0:0:0:1',
+    '::ffff:7f00:1',
   ])('blocks %s', (host) => {
     expect(isLoopback(host)).toBe(false);
   });
@@ -162,11 +167,46 @@ describe('a connection to a host outside this machine', () => {
           () => {},
         ),
     ],
+    // Node takes the pipe route only for a truthy `path` (`!!path`,
+    // lib/net.js), so an empty or zero one with a host and port is a TCP
+    // connect. The block must not read it as an IPC path.
+    [
+      'net.connect(options) with an empty path',
+      () => net.connect({ path: '', host: 'socket.invalid', port: 81 }),
+    ],
+    [
+      'net.connect(options) with a zero path',
+      () =>
+        net.connect({
+          path: 0,
+          host: 'socket.invalid',
+          port: 81,
+        } as unknown as net.NetConnectOpts),
+    ],
+    [
+      'Socket#connect(options) with a false path',
+      () =>
+        new net.Socket().connect({
+          path: false,
+          host: 'socket.invalid',
+          port: 81,
+        } as unknown as net.SocketConnectOpts),
+    ],
   ])('fails %s, whatever its overload', async (_name, open) => {
     const attempts = trackDbAttempts();
     const socket = open();
     expect((await errorOf(socket)).message).toContain(NETWORK_BLOCK_MESSAGE);
     expect(attempts.made).toEqual(['net.connect socket.invalid:81']);
+    attempts.discard();
+  });
+
+  it('records a connection that names no port as host:?, never host:undefined', async () => {
+    const attempts = trackDbAttempts();
+    const socket = net.connect({
+      host: 'noport.invalid',
+    } as unknown as net.NetConnectOpts);
+    expect((await errorOf(socket)).message).toContain(NETWORK_BLOCK_MESSAGE);
+    expect(attempts.made).toEqual(['net.connect noport.invalid:?']);
     attempts.discard();
   });
 
@@ -186,13 +226,15 @@ describe('a connection to a host outside this machine', () => {
     expect(result).toBe('fell back');
     expect(attempts.made).toEqual(['net.connect swallowed.invalid:443']);
 
-    expect(() => guard.assertNoDbAttempts()).toThrow(
+    // The message `assertNoDbAttempts` throws for it (it throws this for the
+    // whole log, which this test leaves to the setup.ts afterEach: it discards
+    // only its own entries).
+    expect(guard.describeAttempts(attempts.made)).toMatch(
       new RegExp(
         `^${NETWORK_BLOCK_MESSAGE}; this test tried: net\\.connect swallowed\\.invalid:443\\.`,
       ),
     );
-    // The check clears the log, so one attempt fails one test only.
-    expect(guard.dbAttempts).toEqual([]);
+    attempts.discard();
   });
 
   it('is named once with a count when a test repeats it', async () => {
@@ -203,22 +245,41 @@ describe('a connection to a host outside this machine', () => {
     await fetch('https://other.invalid/').catch(() => undefined);
     expect(attempts.made).toHaveLength(4);
 
-    expect(() => guard.assertNoDbAttempts()).toThrow(
+    expect(guard.describeAttempts(attempts.made)).toMatch(
       /this test tried: net\.connect repeat\.invalid:443 \(x3\), net\.connect other\.invalid:443\./,
     );
-    expect(guard.dbAttempts).toEqual([]);
+    attempts.discard();
   });
 
   it('names the network rule next to the database rule when a test made both', async () => {
+    const attempts = trackDbAttempts();
     guard.dbAttempts.push('neon');
     await fetch('https://both.invalid/').catch(() => undefined);
 
-    expect(() => guard.assertNoDbAttempts()).toThrow(
+    expect(guard.describeAttempts(attempts.made)).toMatch(
       new RegExp(
         `^${BLOCK_MESSAGE}; ${NETWORK_BLOCK_MESSAGE}; this test tried: neon, net\\.connect both\\.invalid:443\\.`,
       ),
     );
-    expect(guard.dbAttempts).toEqual([]);
+    attempts.discard();
+  });
+
+  it('is what assertNoDbAttempts throws, and it clears the log', async () => {
+    // The one case that runs the real check, so it stashes whatever the log
+    // held before it and puts that back: it must not swallow another test's
+    // entry.
+    const before = guard.dbAttempts.splice(0);
+    try {
+      await fetch('https://checked.invalid/').catch(() => undefined);
+      expect(() => guard.assertNoDbAttempts()).toThrow(
+        new RegExp(
+          `^${NETWORK_BLOCK_MESSAGE}; this test tried: net\\.connect checked\\.invalid:443\\.`,
+        ),
+      );
+      expect(guard.dbAttempts).toEqual([]);
+    } finally {
+      guard.dbAttempts.push(...before);
+    }
   });
 });
 
@@ -236,6 +297,28 @@ describe('a connection that stays on this machine', () => {
         socket.once('error', reject);
       });
       socket.destroy();
+    } finally {
+      await close(server);
+    }
+    expect(attempts.made).toEqual([]);
+  });
+
+  it('passes for a connect that names no host, which Node sends to localhost', async () => {
+    const attempts = trackDbAttempts();
+    const { port, server } = await listenOnLoopback();
+    try {
+      for (const open of [
+        () => net.connect(port),
+        () => net.connect({ port }),
+        () => new net.Socket().connect(port),
+      ]) {
+        const socket = open();
+        await new Promise<void>((resolve, reject) => {
+          socket.once('connect', resolve);
+          socket.once('error', reject);
+        });
+        socket.destroy();
+      }
     } finally {
       await close(server);
     }

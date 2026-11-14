@@ -172,19 +172,27 @@ function summarize(kinds: readonly string[]): string {
 }
 
 /**
+ * The failure message for these attempts: the rule each broke, then what the
+ * test tried. Pure, so a self-test can check it on the attempts it provoked
+ * without emptying the shared log (`assertNoDbAttempts` does that).
+ */
+export function describeAttempts(kinds: readonly string[]): string {
+  const rules = new Set(kinds.map(ruleFor));
+  return (
+    `${[...rules].join('; ')}; this test tried: ${summarize(kinds)}. Mock it ` +
+    `at the module boundary (vi.mock the db, Redis, Blob, R2 or API client ` +
+    `module, stub fetch for an HTTP call, or use pglite).`
+  );
+}
+
+/**
  * Fail if any client was built, any store was called or any connection was
  * opened since the last check, even when the caller swallowed the failure.
  * Clears the log first so one attempt fails one test, not every later one.
  */
 export function assertNoDbAttempts(): void {
   if (dbAttempts.length === 0) return;
-  const kinds = dbAttempts.splice(0);
-  const rules = new Set(kinds.map(ruleFor));
-  throw new Error(
-    `${[...rules].join('; ')}; this test tried: ${summarize(kinds)}. Mock it ` +
-      `at the module boundary (vi.mock the db, Redis, Blob, R2 or API client ` +
-      `module, stub fetch for an HTTP call, or use pglite).`,
-  );
+  throw new Error(describeAttempts(dbAttempts.splice(0)));
 }
 
 /**

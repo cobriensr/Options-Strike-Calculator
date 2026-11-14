@@ -10,8 +10,10 @@
  * built, before a test replaces it. `setup.ts` installs this block once per
  * test file.
  *
- * Allowed: `localhost` and `*.localhost`, `127.0.0.0/8`, `::1`,
- * `::ffff:127.*`, and IPC paths (unix sockets, Windows pipes). Everything else
+ * Allowed: `localhost`, `127.0.0.0/8`, `::1`, `::ffff:127.*`, and IPC paths
+ * (unix sockets, Windows pipes). `*.localhost` is not: Node looks it up through
+ * the OS resolver, which on some systems sends a DNS query off the machine and
+ * answers ENOTFOUND, and nothing here uses such a name. Everything else
  * is recorded in the no-database guard's attempts log as
  * `net.connect <host>:<port>` (host and port only, never a URL, query or
  * header, so a token cannot reach a CI log through it) and the socket is
@@ -24,7 +26,10 @@
  * the code swallowed the error.
  *
  * Not covered: DNS and UDP (they never open a TCP socket through this
- * method), child processes (they do not load `setup.ts`) and native addons.
+ * method), child processes and `worker_threads` (they do not load `setup.ts`),
+ * native addons, a custom `lookup` (the check is on the name, before lookup),
+ * and what loopback reaches: a local Postgres, a dev server, or a proxy on
+ * 127.0.0.1 that forwards off the machine. See the spec's "Network" section.
  * No env var, flag or per-file opt-out: a test that needs a server starts one
  * on 127.0.0.1, and a test of a client mocks it.
  */
@@ -51,8 +56,7 @@ export function isLoopback(host: string): boolean {
     .toLowerCase()
     .replace(/^\[(.*)\]$/, '$1')
     .replace(/\.$/, '');
-  if (name === 'localhost' || name.endsWith('.localhost')) return true;
-  if (name === '::1') return true;
+  if (name === 'localhost' || name === '::1') return true;
   if (name.startsWith('::ffff:')) return IPV4_LOOPBACK.test(name.slice(7));
   return IPV4_LOOPBACK.test(name);
 }
@@ -62,6 +66,11 @@ type Target = { ipc: true } | { ipc: false; host: string; port: string };
 /** An empty or missing host is `localhost`, as in Node. */
 function hostOf(value: unknown): string {
   return typeof value === 'string' && value !== '' ? value : 'localhost';
+}
+
+/** The port as recorded; `?` when the call named none. */
+function portOf(value: unknown): string {
+  return value == null ? '?' : String(value);
 }
 
 /**
@@ -86,11 +95,13 @@ function targetOf(args: readonly unknown[]): Target {
       host?: unknown;
       port?: unknown;
     };
-    if (path != null) return { ipc: true };
-    return { ipc: false, host: hostOf(host), port: String(port) };
+    // Truthy, as in Node (`const pipe = !!path`, lib/net.js): an empty or zero
+    // path with a host and port is a TCP connect.
+    if (path) return { ipc: true };
+    return { ipc: false, host: hostOf(host), port: portOf(port) };
   }
   if (typeof first === 'string' && isPath(first)) return { ipc: true };
-  return { ipc: false, host: hostOf(args[1]), port: String(first) };
+  return { ipc: false, host: hostOf(args[1]), port: portOf(first) };
 }
 
 type Connect = (this: net.Socket, ...args: unknown[]) => net.Socket;
