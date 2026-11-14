@@ -3,11 +3,16 @@ import { chip, dateTimeSection, setEntryTime } from './helpers/calculator';
 import { buildApiFetchMock, MOCK_QUOTES } from './helpers/mock-fetch';
 
 /**
- * Today's date in YYYY-MM-DD format, matching the app's selectedDate default.
+ * The calendar date, YYYY-MM-DD, in Central time at `at`. The app's
+ * selectedDate defaults to the CT date (src/hooks/useVixData.ts), which
+ * differs from the ET date from 23:00 to 24:00 CT.
  */
-const TODAY = new Date().toLocaleDateString('en-CA', {
-  timeZone: 'America/New_York',
-});
+function centralDate(at: Date = new Date()): string {
+  return at.toLocaleDateString('en-CA', { timeZone: 'America/Chicago' });
+}
+
+/** Today's date, matching the app's selectedDate default. */
+const TODAY = centralDate();
 
 /** A past trading day: outside the forward list, so it gets its own lookup. */
 const PAST_DATE = '2025-01-15';
@@ -273,5 +278,48 @@ test.describe('Event Day Warning', () => {
     await page.goto('/');
 
     await expectFailureThenRetryLoadsCpi(page, lookups);
+  });
+
+  // 23:30 CST on Friday 2026-11-13 is already 00:30 on the 14th in New York.
+  // The app's date defaults to the Central date, and from then until midnight
+  // CT that date is a past one by the ET clock, so it looks up its own events
+  // as soon as the page loads. Only a lookup for the 13th is answered, so this
+  // fails whenever `centralDate` returns the Eastern date. How many lookups the
+  // page makes in this hour is not what is under test.
+  test('the date and its lookup are the Central date when the Eastern date has rolled over', async ({
+    page,
+  }) => {
+    const lateEvening = new Date('2026-11-14T05:30:00Z');
+    const date = centralDate(lateEvening);
+    expect(date).toBe('2026-11-13');
+    await page.clock.setFixedTime(lateEvening);
+    await page.route('**/api/**', (route) => route.abort());
+    await page.route(
+      (url) =>
+        url.pathname === '/api/events' && url.searchParams.get('from') === date,
+      (route) =>
+        route.fulfill({
+          json: makeEventsResponse(
+            [
+              {
+                event: 'CPI',
+                description: 'Consumer Price Index (MoM)',
+                time: '8:30',
+                severity: 'high',
+              },
+            ],
+            date,
+          ),
+        }),
+    );
+
+    await page.goto('/');
+
+    const main = page.getByRole('main');
+    await expect(
+      dateTimeSection(page).getByLabel('Date', { exact: true }),
+    ).toHaveValue(date);
+    await expect(main.getByText('High-Impact Event Day')).toBeVisible();
+    await expect(main.getByText('CPI', { exact: true })).toBeVisible();
   });
 });
