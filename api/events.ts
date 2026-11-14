@@ -95,35 +95,43 @@ export default withRequestScope(
       // sources, so the retrying client's ~64 s give-up in an outage would only
       // add latency, on the read and again on the write.
       const cacheKey = `${REDIS_KEY}:${startDate}:${days}`;
+      let hit: { events: EventItem[]; cachedAt: number | null } | null = null;
       try {
         const raw = await limiterRedis.get<
           { data: EventItem[]; cachedAt: number } | EventItem[]
         >(cacheKey);
         if (raw) {
-          metrics.cacheResult('/api/events', true);
-          setCacheHeaders(res, 300, 120);
-          res.setHeader('X-Cache', 'HIT');
           // Support both new wrapper format and legacy plain array
-          const cachedEvents = Array.isArray(raw) ? raw : raw.data;
-          const cachedAt = Array.isArray(raw) ? null : raw.cachedAt;
-          if (cachedAt) {
-            res.setHeader(
-              'X-Cache-Age',
-              Math.round((Date.now() - cachedAt) / 1000),
-            );
-          }
-          done({ status: 200 });
-          return res.status(200).json({
-            events: cachedEvents,
-            startDate,
-            endDate,
-            cached: true,
-            asOf: new Date().toISOString(),
-          });
+          hit = Array.isArray(raw)
+            ? { events: raw, cachedAt: null }
+            : { events: raw.data, cachedAt: raw.cachedAt };
         }
       } catch (err) {
         // Redis unavailable — fetch fresh
         logger.warn({ err }, 'Failed to read events from Redis');
+      }
+
+      // Answered outside the read's try: a throw here is a handler error (the
+      // catch below sends Sentry and a 500), not a cache miss. Inside the try it
+      // would log as a failed Redis read and fall through to a second response.
+      if (hit) {
+        metrics.cacheResult('/api/events', true);
+        setCacheHeaders(res, 300, 120);
+        res.setHeader('X-Cache', 'HIT');
+        if (hit.cachedAt) {
+          res.setHeader(
+            'X-Cache-Age',
+            Math.round((Date.now() - hit.cachedAt) / 1000),
+          );
+        }
+        done({ status: 200 });
+        return res.status(200).json({
+          events: hit.events,
+          startDate,
+          endDate,
+          cached: true,
+          asOf: new Date().toISOString(),
+        });
       }
 
       // A cache miss costs at most one Finnhub call (none for a window that ends

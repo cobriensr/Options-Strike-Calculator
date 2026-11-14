@@ -684,7 +684,7 @@ describe('market-events', () => {
         { release_dates: [{ release_id: 10, date: 20260513 }] },
       ],
       [
-        'a release list of nulls',
+        'a null entry and no dated entry',
         { release_dates: [null, { release_id: 10 }] },
       ],
     ])('is incomplete when FRED answers 200 with %s', async (_label, body) => {

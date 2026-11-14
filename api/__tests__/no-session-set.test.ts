@@ -24,17 +24,20 @@
  * own HTTP request, so the `SET LOCAL` runs on one connection and the rest on
  * others. The guard follows the array to those three parents and no further,
  * so a batch built in a variable and passed in later is flagged: write it
- * inline. A plain `SET` inside a batch would also apply for the rest of that
- * batch, since the batch is one connection, but the guard flags it anyway
+ * inline. The `statements:` form is matched by property name alone, so any
+ * `statements: (x) => [...]` arrow anywhere in api/ is trusted, not only a
+ * migration's. A plain `SET` inside a batch would also apply for the rest of
+ * that batch, since the batch is one connection, but the guard flags it anyway
  * because its scope is unclear.
  *
  * What it scans: every non-test .ts file under api/, parsed with the
  * TypeScript compiler so comments and prose never match. It flags a tagged
- * template (any tag) or the first argument of a `.query(` / `.unsafe(` call
- * when that literal begins with SET, or with SET LOCAL when the statement is
- * not in a transaction batch. It does not see a statement built in a variable
- * and passed in later, a statement that opens with an SQL comment, or
- * `set_config(..., false)`.
+ * template (any tag, wherever it sits, so one held in a variable is flagged
+ * too) or the first argument of a `.query(` / `.unsafe(` call when that
+ * literal begins with SET, or with SET LOCAL when the statement is not in a
+ * transaction batch. It does not see a `.query(` / `.unsafe(` argument held in
+ * a variable (only a string or template literal is read), a statement that
+ * opens with an SQL comment, or `set_config(..., false)`.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -187,6 +190,10 @@ describe('findSessionSets', () => {
     ],
     ['a differently named tag', 'tx`SET statement_timeout = 0`'],
     [
+      'a tagged template held in a variable',
+      "const query = sql`SET statement_timeout = '30000'`; await query;",
+    ],
+    [
       'SET SESSION',
       'sql`SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY`',
     ],
@@ -299,6 +306,12 @@ describe('findSessionSets', () => {
     ['SET as part of a longer word', 'sql`SETTLE x`'],
     ['prose in a plain string', 'const hint = "set threshold at X"'],
     ['a plain string that is not a query call', "log('SET statement_timeout')"],
+    // A known blind spot, pinned so the header's claim stays true: only a
+    // string or template literal argument is read.
+    [
+      'a .query( argument held in a variable (a known blind spot)',
+      "const text = 'SET statement_timeout = 0'; await sql.query(text);",
+    ],
     [
       'a comment that quotes the statement',
       '// was sql`SET statement_timeout = 0`\n/* sql.query("SET x") */',

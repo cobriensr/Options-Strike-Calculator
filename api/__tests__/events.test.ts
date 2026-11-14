@@ -598,6 +598,41 @@ describe('GET /api/events', () => {
     vi.unstubAllGlobals();
   });
 
+  it('answers one 500, not a second response, when answering a cache hit throws', async () => {
+    process.env.FRED_API_KEY = 'fred-key';
+    vi.mocked(limiterRedis.get).mockResolvedValue([
+      { date: '2026-03-18', event: 'FOMC', severity: 'high', source: 'static' },
+    ]);
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const failure = new Error('socket closed');
+
+    const res = mockResponse();
+    // The hit's own `res.json` throws once; any later call goes through.
+    const json = vi.spyOn(res, 'json').mockImplementationOnce(() => {
+      throw failure;
+    });
+    await handler(mockRequest({ method: 'GET', query: { days: '5' } }), res);
+
+    // The hit is not retried as a miss: no fresh fetch, no MISS response, no
+    // read-failure log. The throw reaches the handler's catch: Sentry, a 500.
+    expect(json).toHaveBeenCalledTimes(2);
+    expect(json.mock.calls[0]?.[0]).toMatchObject({ cached: true });
+    expect(res._status).toBe(500);
+    expect(res._json).toEqual({ error: 'Internal server error' });
+    expect(res._headers['X-Cache']).not.toBe('MISS');
+    expect(Sentry.captureException).toHaveBeenCalledOnce();
+    expect(Sentry.captureException).toHaveBeenCalledWith(failure);
+    expect(logger.warn).not.toHaveBeenCalledWith(
+      expect.anything(),
+      'Failed to read events from Redis',
+    );
+    expect(fetchMarketEvents).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    vi.unstubAllGlobals();
+  });
+
   it('handles Finnhub fetch throwing an exception', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
     process.env.FRED_API_KEY = 'fred-key';
