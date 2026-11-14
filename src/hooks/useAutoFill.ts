@@ -69,7 +69,10 @@ interface UseAutoFillInputs {
 
   // External hook data
   market: MarketDataState;
-  vix: Pick<UseVixDataReturn, 'selectedDate' | 'setSelectedDate' | 'vixOHLC'>;
+  vix: Pick<
+    UseVixDataReturn,
+    'selectedDate' | 'setSelectedDate' | 'vixOHLC' | 'etToday'
+  >;
   historyData: UseHistoryDataReturn;
   vix1dStatic: UseVix1dDataReturn;
 
@@ -123,7 +126,12 @@ export function useAutoFill(inputs: UseAutoFillInputs): HistorySnapshot | null {
 
   // Destructure stable references so they can be listed in dependency arrays
   // without including the entire vix object (which is new on every render).
-  const { selectedDate, setSelectedDate, vixOHLC } = vix;
+  // Every "is the date past" judgment below reads `etToday`, the clock the
+  // selected date follows, not the wall clock: in the moment after ET
+  // midnight and before that clock ticks (a throttled or sleeping tab can
+  // take far longer than a second), a date that follows today is still
+  // today's.
+  const { selectedDate, setSelectedDate, vixOHLC, etToday } = vix;
 
   // useHistoryData keeps the last date's history while the new date's fetch
   // is in flight. History for another date counts as none for the selected
@@ -151,13 +159,14 @@ export function useAutoFill(inputs: UseAutoFillInputs): HistorySnapshot | null {
   const etMinutes = etHour * 60 + etMinute;
   const lastCandle = historyData.history?.spx.candles.at(-1);
   const coversTime =
-    isPastETDate(selectedDate) ||
+    isPastETDate(selectedDate, etToday) ||
     (lastCandle != null &&
       etMinutes <
         getETTotalMinutes(new Date(lastCandle.datetime)) + CANDLE_MINUTES);
   const fromHistory =
     ownHistory &&
-    ((isBacktestMode(selectedDate, etMinutes) && coversTime) ||
+    ((isBacktestMode(selectedDate, etMinutes, new Date(), etToday) &&
+      coversTime) ||
       !market.data.quotes);
 
   // Track which date we last auto-set IV mode for so we don't override the
@@ -188,7 +197,7 @@ export function useAutoFill(inputs: UseAutoFillInputs): HistorySnapshot | null {
     // VIX or VIX1D, which price strikes in VIX and DIRECT mode, nor the
     // switch to DIRECT from VIX1D. The history effect picks that date's mode
     // and σ from the date's own data, with or without intraday history.
-    const pastDate = isPastETDate(selectedDate);
+    const pastDate = isPastETDate(selectedDate, etToday);
 
     if (q.spy && (live || !spotEdited.current))
       setSpotPrice(q.spy.price.toFixed(2));
@@ -236,6 +245,7 @@ export function useAutoFill(inputs: UseAutoFillInputs): HistorySnapshot | null {
     market.data.quotes,
     market.session,
     selectedDate,
+    etToday,
     setSelectedDate,
     setSpotPrice,
     setSpxDirect,
@@ -324,7 +334,7 @@ export function useAutoFill(inputs: UseAutoFillInputs): HistorySnapshot | null {
       if (q.spy) setSpotPrice(q.spy.price.toFixed(2));
       if (q.spx) setSpxDirect(q.spx.price.toFixed(0));
     }
-    if (isPastETDate(selectedDate)) {
+    if (isPastETDate(selectedDate, etToday)) {
       // Same rule as a date with history, from the static table alone: its
       // VIX1D for the date, else VIX mode, so the date's daily VIX OHLC
       // (useVixData) drives σ. The table loads as above.
@@ -354,6 +364,7 @@ export function useAutoFill(inputs: UseAutoFillInputs): HistorySnapshot | null {
     historyData.history,
     historyData.getStateAtTime,
     selectedDate,
+    etToday,
     vixOHLC,
     timeHour,
     timeMinute,

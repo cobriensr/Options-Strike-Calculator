@@ -109,14 +109,18 @@ const REPLAY_LAG_MINUTES = 5;
  * time, or today at a time more than REPLAY_LAG_MINUTES behind the ET
  * clock (today scrubbed back, replayed from its 5-minute history). False
  * for today at the current time, a future date and an empty date.
- * `etMinutes` is the selected time in minutes past ET midnight.
+ * `etMinutes` is the selected time in minutes past ET midnight. `today`
+ * defaults to the ET date of `now`; pass the one a date was judged against
+ * elsewhere (a clock that ticks at ET midnight) so both agree in the second
+ * before it ticks: a date that is `today` there is not past, whatever `now`
+ * says.
  */
 export function isBacktestMode(
   date: string,
   etMinutes: number,
   now: Date = new Date(),
+  today: string = getETDateStr(now),
 ): boolean {
-  const today = getETDateStr(now);
   if (isPastETDate(date, today)) return true;
   if (date !== today) return false;
   return etMinutes < getETTotalMinutes(now) - REPLAY_LAG_MINUTES;

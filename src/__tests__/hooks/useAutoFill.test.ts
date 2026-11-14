@@ -159,7 +159,9 @@ function createVix(
     setVixOHLCField: vi.fn(),
     selectedDate: '',
     setSelectedDate: vi.fn(),
-    etToday: '',
+    // The clock's ET date when the fixture is built: what useVixData hands
+    // on, unless a test says the two clocks differ.
+    etToday: getETToday(),
     fileInputRef: { current: null },
     handleFileUpload: vi.fn(),
     ...overrides,
@@ -1585,7 +1587,8 @@ describe('useAutoFill: today at the current time vs its loaded history', () => {
     timezone: 'CT' as const,
     ...setters,
     // Built once: fresh objects would re-run the effects on every render.
-    vix: createVix({ selectedDate: TODAY_DATE }),
+    // That is before the fake clock is set, so its today is named here.
+    vix: createVix({ selectedDate: TODAY_DATE, etToday: TODAY_DATE }),
     vix1dStatic: createVix1dStatic(),
   };
 
@@ -1774,5 +1777,181 @@ describe('useAutoFill: today at the current time vs its loaded history', () => {
     expect(lastCall(setters.setSpxDirect)).toBe('5820');
     expect(lastCall(setters.setVixInput)).toBe('18.50');
     expect(result.current).toBeNull();
+  });
+});
+
+// ============================================================
+// AFTER ET MIDNIGHT, BEFORE THE DATE'S CLOCK TICKS
+// ============================================================
+
+describe('useAutoFill: the followed date in the moment after ET midnight, before its clock ticks', () => {
+  // The selected date follows useVixData's clock, which ticks 1 s after ET
+  // midnight (far later in a throttled or sleeping tab). In between, a render
+  // that something else caused sees the wall clock on the 18th while the date
+  // and its etToday are still the 17th: today's, so not a past date.
+  // 2026-03-18 00:00:00.5 EDT.
+  const WALL_CLOCK = new Date('2026-03-18T04:00:00.500Z');
+  const FOLLOWED_DATE = '2026-03-17';
+  const lastCall = (fn: ReturnType<typeof vi.fn>) => fn.mock.calls.at(-1)?.[0];
+
+  const baseInputs = () => ({
+    spotEdited: { current: false },
+    spxEdited: { current: false },
+    vixEdited: { current: false },
+    timeEdited: { current: false },
+    ivModeEdited: { current: false },
+    // 10:15 AM CT = 11:15 AM ET on the date.
+    timeHour: '10',
+    timeMinute: '15',
+    timeAmPm: 'AM' as const,
+    timezone: 'CT' as const,
+    vix: createVix({ selectedDate: FOLLOWED_DATE, etToday: FOLLOWED_DATE }),
+    vix1dStatic: createVix1dStatic(),
+  });
+
+  const liveMarket = (): MarketDataState => ({
+    ...createMarket(mockQuotes),
+    session: 'regular',
+    marketOpen: true,
+  });
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(WALL_CLOCK);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("applies today's live VIX and VIX1D, as it does on today", () => {
+    const setters = createSetters();
+
+    renderHook(() =>
+      useAutoFill({
+        ...baseInputs(),
+        ...setters,
+        market: liveMarket(),
+        historyData: createHistoryData(),
+      }),
+    );
+
+    expect(setters.setVixInput).toHaveBeenCalledWith('18.50');
+    expect(setters.setIvMode).toHaveBeenCalledWith(IV_MODES.DIRECT);
+    expect(setters.setDirectIVInput).toHaveBeenCalledWith('0.1420');
+    // A past date with no VIX1D of its own falls back to VIX mode.
+    expect(setters.setIvMode).not.toHaveBeenCalledWith(IV_MODES.VIX);
+  });
+
+  it("keeps the live quotes over the date's own history, which a past date would fill from", () => {
+    const setters = createSetters();
+    const history = mockHistory(FOLLOWED_DATE);
+    const historyData = createHistoryData({
+      hasHistory: true,
+      history: {
+        ...history,
+        spx: {
+          ...history.spx,
+          // The last candle starts at 15:55 ET, so the selected 11:15 ET is
+          // inside the candles' cover.
+          candles: [
+            {
+              datetime: Date.parse('2026-03-17T19:55:00Z'),
+              time: '',
+              open: 5750,
+              high: 5750,
+              low: 5750,
+              close: 5750,
+            },
+          ],
+        },
+      },
+      getStateAtTime: vi.fn().mockReturnValue(makeHistorySnapshot()),
+    });
+
+    const { result } = renderHook(() =>
+      useAutoFill({
+        ...baseInputs(),
+        ...setters,
+        market: liveMarket(),
+        historyData,
+      }),
+    );
+
+    expect(lastCall(setters.setSpxDirect)).toBe('5820');
+    expect(lastCall(setters.setSpotPrice)).toBe('580.00');
+    expect(result.current).toBeNull();
+  });
+
+  it('keeps the live quotes in a tab that slept past midnight, though the selected time is behind the wall clock', () => {
+    // 03:00 EDT on the 18th by the wall clock; the date's clock has not ticked
+    // yet. 12:30 AM ET on the date is hours behind it, but after the history's
+    // last candle (00:10 ET): nothing of the history covers it.
+    vi.setSystemTime(new Date('2026-03-18T07:00:00Z'));
+    const setters = createSetters();
+    const history = mockHistory(FOLLOWED_DATE);
+    const historyData = createHistoryData({
+      hasHistory: true,
+      history: {
+        ...history,
+        spx: {
+          ...history.spx,
+          candles: [
+            {
+              datetime: Date.parse('2026-03-17T04:10:00Z'),
+              time: '',
+              open: 5750,
+              high: 5750,
+              low: 5750,
+              close: 5750,
+            },
+          ],
+        },
+      },
+      getStateAtTime: vi.fn().mockReturnValue(makeHistorySnapshot()),
+    });
+
+    const { result } = renderHook(() =>
+      useAutoFill({
+        ...baseInputs(),
+        timeHour: '12',
+        timeMinute: '30',
+        timeAmPm: 'AM',
+        timezone: 'ET',
+        ...setters,
+        market: liveMarket(),
+        historyData,
+      }),
+    );
+
+    expect(lastCall(setters.setSpxDirect)).toBe('5820');
+    expect(result.current).toBeNull();
+  });
+
+  it('still fills a date before etToday from its history', () => {
+    // The same render with the date a day before etToday: past, so the
+    // history stands. Without it the cases above would pass with every
+    // judgment turned off.
+    const setters = createSetters();
+    const history = mockHistory(FOLLOWED_DATE);
+    const historyData = createHistoryData({
+      hasHistory: true,
+      history,
+      getStateAtTime: vi.fn().mockReturnValue(makeHistorySnapshot()),
+    });
+
+    const { result } = renderHook(() =>
+      useAutoFill({
+        ...baseInputs(),
+        ...setters,
+        vix: createVix({ selectedDate: FOLLOWED_DATE, etToday: '2026-03-18' }),
+        market: liveMarket(),
+        historyData,
+      }),
+    );
+
+    expect(lastCall(setters.setSpxDirect)).toBe('5750');
+    expect(result.current?.spot).toBe(5750);
+    expect(setters.setVixInput).not.toHaveBeenCalledWith('18.50');
   });
 });

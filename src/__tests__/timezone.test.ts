@@ -200,6 +200,22 @@ describe('isBacktestMode', () => {
     expect(isBacktestMode('2026-03-11', m(9, 30), evening)).toBe(false);
   });
 
+  it('judges against a given today instead of the ET date of `now`', () => {
+    // 00:00:00.5 EDT on 03-11: `now` is already the 11th, but the caller's
+    // clock (which ticks a second later) still says the 10th.
+    const justAfterMidnight = new Date('2026-03-11T04:00:00.500Z');
+    expect(isBacktestMode('2026-03-10', m(10, 0), justAfterMidnight)).toBe(
+      true,
+    );
+    expect(
+      isBacktestMode('2026-03-10', m(10, 0), justAfterMidnight, '2026-03-10'),
+    ).toBe(false);
+    // A date before the given today is past.
+    expect(
+      isBacktestMode('2026-03-09', m(10, 0), justAfterMidnight, '2026-03-10'),
+    ).toBe(true);
+  });
+
   it('reads the clock when no `now` is given', () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(NOW);

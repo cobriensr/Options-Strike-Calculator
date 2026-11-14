@@ -2,8 +2,11 @@
  * useETToday — today's ET calendar date (YYYY-MM-DD), re-rendering its
  * component when it changes. A tab left open across ET midnight gets the
  * new date without a user action, so a value derived from it in render
- * (App's "the selected date is past" flag for the analysis) turns over at
- * midnight, not at the next unrelated render.
+ * turns over at midnight, not at the next unrelated render.
+ *
+ * The selected date follows it: useVixData runs it and hands it on as
+ * `etToday`, so App's "the selected date is past" flag and useAutoFill's
+ * past-date checks turn in the same render as the date.
  *
  * One timer, armed for just past the next ET midnight and capped at an
  * hour, so a DST day (the wall clock skips or repeats an hour) or a
