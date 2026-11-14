@@ -572,20 +572,20 @@ ends. A check that fails is listed in the verdict's `reasons`, in the order belo
 a tier share is the share of a session's fires in the feed's tier 1 (or tier 1 and 2)
 under that version's own feed cutoffs.
 
-| Stage    | Gate                                                                           | Value                                   | Fails as                            |
-| -------- | ------------------------------------------------------------------------------ | --------------------------------------- | ----------------------------------- |
-| Creation | Training rows (`MIN_TRAIN_ROWS`)                                               | at least 30,000                         | `too_few_train_rows`                |
-| Creation | Training sessions (`MIN_TRAIN_SESSIONS`)                                       | at least 30                             | `too_few_train_sessions`            |
-| Creation | The weights, with the matched feed cutoffs (`validate_weights`)                | no rule broken                          | `invalid_weights`                   |
-| Creation | Candidate's mean daily tier 1 share (`TIER1_SHARE_BAND`)                       | 1% to 15%                               | `tier1_share_out_of_band`           |
-| Shadow   | Rows for a session to count as evaluated (`MIN_EVAL_ROWS_PER_SESSION`)         | at least 500 scored with an outcome     | the session is not counted          |
-| Shadow   | Evaluated sessions judged (`SHADOW_SESSIONS`)                                  | exactly the first 10                    | waits for 10                        |
-| Shadow   | Elapsed sessions allowed with fewer than 10 evaluated (`SHADOW_MAX_SESSIONS`)  | 20                                      | `shadow_starved`                    |
-| Shadow   | Rows over the 10 judged sessions (`MIN_EVAL_ROWS`)                             | at least 5,000                          | `too_few_eval_rows`                 |
-| Shadow   | Pooled Spearman ρ with the outcome, candidate against active                   | candidate at least active, both defined | `rho_below_active`, `rho_undefined` |
-| Shadow   | Candidate's mean daily tier 1 share (`TIER1_SHARE_BAND`)                       | 1% to 15%                               | `tier1_share_out_of_band`           |
-| Shadow   | Candidate over active, mean daily tier 1 share (`TIER_SHARE_RATIO_BAND`)       | 0.67 to 1.5                             | `tier1_ratio_out_of_band`           |
-| Shadow   | Candidate over active, mean daily tier 1 and 2 share (`TIER_SHARE_RATIO_BAND`) | 0.67 to 1.5                             | `tier12_ratio_out_of_band`          |
+| Stage    | Gate                                                                                                | Value                                   | Fails as                            |
+| -------- | --------------------------------------------------------------------------------------------------- | --------------------------------------- | ----------------------------------- |
+| Creation | Training rows (`MIN_TRAIN_ROWS`)                                                                    | at least 30,000                         | `too_few_train_rows`                |
+| Creation | Training sessions (`MIN_TRAIN_SESSIONS`)                                                            | at least 30                             | `too_few_train_sessions`            |
+| Creation | The weights, with the matched feed cutoffs (`validate_weights`)                                     | no rule broken                          | `invalid_weights`                   |
+| Creation | Candidate's mean daily tier 1 share (`TIER1_SHARE_BAND`)                                            | 1% to 15%                               | `tier1_share_out_of_band`           |
+| Shadow   | Rows for a session to count as evaluated (`MIN_EVAL_ROWS_PER_SESSION`)                              | at least 500 scored with an outcome     | the session is not counted          |
+| Shadow   | Evaluated sessions judged (`SHADOW_SESSIONS`)                                                       | exactly the first 10                    | waits for 10                        |
+| Shadow   | Elapsed sessions at which a shadow with fewer than 10 evaluated is rejected (`SHADOW_MAX_SESSIONS`) | 20, rejected on reaching it             | `shadow_starved`                    |
+| Shadow   | Rows over the 10 judged sessions (`MIN_EVAL_ROWS`)                                                  | at least 5,000                          | `too_few_eval_rows`                 |
+| Shadow   | Pooled Spearman ρ with the outcome, candidate against active                                        | candidate at least active, both defined | `rho_below_active`, `rho_undefined` |
+| Shadow   | Candidate's mean daily tier 1 share (`TIER1_SHARE_BAND`)                                            | 1% to 15%                               | `tier1_share_out_of_band`           |
+| Shadow   | Candidate over active, mean daily tier 1 share (`TIER_SHARE_RATIO_BAND`)                            | 0.67 to 1.5                             | `tier1_ratio_out_of_band`           |
+| Shadow   | Candidate over active, mean daily tier 1 and 2 share (`TIER_SHARE_RATIO_BAND`)                      | 0.67 to 1.5                             | `tier12_ratio_out_of_band`          |
 
 The training window is 90 days (`TRAIN_WINDOW_DAYS`), the feed cutoffs are matched over
 the last 20 sessions (`FEED_CUTOFF_MATCH_SESSIONS`), and the match searches cutoffs up
@@ -612,62 +612,107 @@ issue's event count and the step's logs. A deferred promotion sends no refit not
 step ends `partial` and `nightly step partial` warns, with the detail
 `promotion deferred to the next night`.
 
-**Reading `gate_report`.** Each version's `gate_report` (JSON) holds up to three keys:
+**Reading `gate_report`.** Each version's `gate_report` (JSON) holds up to three
+top-level keys. The paths below are the keys the code stores:
 
-- `creation`: the creation verdict (`ok`, `reasons`, `train_rows`, `train_sessions`,
-  `tier1_share`), the training window (`after`, `through`) and `insample_rho`, the
-  correlation on the training rows themselves, which says nothing about held-out
-  quality.
-- `sessions`: one entry per recorded session, keyed by its ISO date: `eval_rows`,
-  `evaluated`, `rho_candidate`, `rho_active` and `feed_fires`.
-- `verdict`: the decision as stored with it (`decision`, `reasons`, the `sessions`
-  judged, `eval_rows`, `rho_candidate`, `rho_active`, `tier1_ratio`, `tier12_ratio`,
-  `tier1_share`). A number that was not defined is null.
+- `creation`, written when the candidate is built: `creation.verdict.ok`,
+  `creation.verdict.reasons`, `creation.verdict.train_rows`,
+  `creation.verdict.train_sessions` and `creation.verdict.tier1_share`;
+  `creation.train_window.after` and `creation.train_window.through`; and
+  `creation.insample_rho`, the correlation on the training rows themselves, which says
+  nothing about held-out quality.
+- `sessions`, one entry per recorded session, keyed by its ISO date:
+  `sessions.<date>.eval_rows`, `.evaluated`, `.rho_candidate`, `.rho_active` and
+  `.feed_fires`.
+- `verdict`, written with the decision: `verdict.decision`, `verdict.reasons`,
+  `verdict.sessions` (the ISO dates judged), `verdict.eval_rows`,
+  `verdict.rho_candidate`, `verdict.rho_active`, `verdict.tier1_ratio`,
+  `verdict.tier12_ratio` and `verdict.tier1_share`. A number that was not defined is
+  null.
 
 The stored `verdict` is the authoritative record of a decision. The `sessions` entries
 are a snapshot, written once when a session became evaluable and never recomputed;
 `decide_shadow` re-reads fresh frames every night, so a late enrich pass can make an
 entry differ from what the decision then saw. When they disagree, read `verdict`. A
 shadow that is still waiting has no `verdict`, and a candidate rejected at creation
-has `creation` only. To list the latest versions:
+has `creation` only. To list the latest versions with their decision:
 
 ```sql
-SELECT version, status, trained_through, decided_at, gate_report -> 'verdict' AS verdict
+SELECT version, status, decided_at,
+       gate_report -> 'verdict' ->> 'decision' AS decision,
+       gate_report -> 'verdict' -> 'reasons' AS reasons,
+       gate_report -> 'verdict' ->> 'rho_candidate' AS rho_candidate,
+       gate_report -> 'creation' -> 'verdict' ->> 'ok' AS creation_ok
   FROM lottery_score_versions ORDER BY created_at DESC LIMIT 5;
 ```
 
-**Undoing a promotion (by hand, owner-approved only).** The step never does this. A
-promotion's rescore keeps the score and tag of every fire it changed in
-`lottery_fire_value_snapshots`, one row per page of fires (`column_name = 'score'`,
-`to_version` the promoted version). Find the promoted version's rows and check their
-fire count against `rows_rescored`:
+**Undoing a promotion (by hand, owner-approved only).** The step never does this. The
+procedure undoes only the latest promotion, the version `active` names now; to go back
+further, undo one promotion at a time, newest first. A promotion's rescore keeps the old
+score and tag of every fire it changed in `lottery_fire_value_snapshots`, one row per
+page of fires, with `reason = 'promotion'`, `column_name = 'score'` and `to_version` the
+promoted version. A hand-run `scripts/backfill_lottery_scores.py --version` rescore
+writes another reason (`manual` unless given one), so the lookup below leaves its rows
+out. Run the procedure outside 13:00 to 24:00 UTC on weekdays and not while a nightly
+run is going (07:15 to 12:30 UTC, Tuesday to Saturday), because the restore locks every
+fire it rewrites until it commits, and the live crons, `enrich-outcomes` and a promotion
+inside the refit step write the same fires. In the statements, `<promoted>` is the
+version being undone, `<previous>` the one it replaced and `<ids>` the snapshot ids,
+such as `1, 2`.
 
-```sql
-SELECT id, cardinality(fire_ids) AS fires FROM lottery_fire_value_snapshots
- WHERE to_version = '<promoted version>' AND column_name = 'score' ORDER BY id;
-```
+1. Check what is live. Stop unless it returns `<promoted>`:
 
-Then restore the scores and move `active` back in one transaction, outside the
-trading session (the live scorer loads `active`, and the UPDATE locks the fires):
+   ```sql
+   SELECT version FROM lottery_score_pointers WHERE name = 'active';
+   ```
 
-```sql
-BEGIN;
-UPDATE lottery_finder_fires f SET score = s.v::int, score_version = s.t
-  FROM (SELECT unnest(fire_ids) AS id, unnest(old_values) AS v, unnest(old_tags) AS t
-          FROM lottery_fire_value_snapshots
-         WHERE id = ANY(<snapshot ids>) AND column_name = 'score') s
- WHERE f.id = s.id;
-UPDATE lottery_score_pointers SET version = '<previous version>', updated_at = now()
- WHERE name = 'active' AND version = '<promoted version>';
-COMMIT;
-```
+2. Find the promotion's snapshot rows. `total` must equal `rows_rescored` in that
+   night's `step lottery-refit` line (or its `nightly refit promoted` notice):
 
-`<previous version>` is the one the promotion replaced: `seed-2026-06-17` for the first
-promotion, else the `promoted` row with the next-latest `decided_at`. The `takeit`
+   ```sql
+   SELECT id, cardinality(fire_ids) AS fires, sum(cardinality(fire_ids)) OVER () AS total
+     FROM lottery_fire_value_snapshots
+    WHERE to_version = '<promoted>' AND reason = 'promotion' AND column_name = 'score'
+    ORDER BY id;
+   ```
+
+3. Find the version the promotion replaced from those rows' own old tags:
+
+   ```sql
+   SELECT DISTINCT t FROM lottery_fire_value_snapshots, unnest(old_tags) AS t
+    WHERE id = ANY(ARRAY[<ids>]);
+   ```
+
+   A promotion re-tags every fire it touches, so the old tags are one version, plus NULL
+   for fires scored before the store existed. One non-NULL version is `<previous>`. NULL
+   alone, or NULL with `seed-2026-06-17`, is the first promotion off the seed, so
+   `<previous>` is `seed-2026-06-17`. Two or more non-NULL tags mean this is not a plain
+   promotion undo: stop and ask.
+
+4. Restore the scores and move `active` back, in one transaction. Do not commit yet:
+
+   ```sql
+   BEGIN;
+   UPDATE lottery_finder_fires f SET score = s.v::int, score_version = s.t
+     FROM (SELECT unnest(fire_ids) AS id, unnest(old_values) AS v, unnest(old_tags) AS t
+             FROM lottery_fire_value_snapshots
+            WHERE id = ANY(ARRAY[<ids>]) AND column_name = 'score') s
+    WHERE f.id = s.id AND f.score_version = '<promoted>';
+   UPDATE lottery_score_pointers SET version = '<previous>', updated_at = now()
+    WHERE name = 'active' AND version = '<promoted>';
+   ```
+
+5. Read each statement's row count. The fires UPDATE must match `total` from step 2: the
+   `f.score_version = '<promoted>'` guard leaves a fire that a later write re-tagged
+   alone, so a smaller count means one was. The pointer UPDATE must say `UPDATE 1`. If
+   both match, run `COMMIT;`. Otherwise run `ROLLBACK;` and find out why.
+
+This writes nothing to `lottery_score_versions`: the undone version keeps its status
+`promoted`, and its `gate_report.verdict` still records the decision. `active` is the
+authority on what is live; the status of an undone version does not change, and the refit
+ignores it, since it reads only the `shadow` row and the `active` pointer. The `takeit`
 pointer is untouched by a promotion, so it needs nothing. A fire created after the
-promotion is in no snapshot row and keeps the promoted version's score and tag. The
-promoted version's row stays `promoted`; the refit reads only the `shadow` row and the
-`active` pointer, so it ignores it, and its `gate_report.verdict` still records why.
+promotion is in no snapshot row and keeps the promoted version's score and tag.
 
 **Turning promotion on.** `PROMOTION_ENABLED` in `src/constants.py` is a reviewed
 constant, not an env var: it is read in one place, and flipping it rewrites the live

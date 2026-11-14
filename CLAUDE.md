@@ -224,7 +224,7 @@ Key modules beyond the basics:
 - `analyze-context.ts` — dynamic context assembly, mostly through `analyze-context-fetchers.ts`. The `format*ForClaude` formatters are spread across `api/` (mostly `_lib/`); find one with `grep -rn "function format.*ForClaude" api/`.
 - `lessons.ts` — lesson curation logic.
 - `overnight-gap.ts`, `spx-candles.ts`, `max-pain.ts`, `darkpool.ts`, `embeddings.ts`, `csv-parser.ts` — domain-specific modules.
-- `lottery-weights-loader.ts` — loads the `active` and `takeit` lottery weights pointers from the store (migration #208); the seed fallback is in `lottery-weights-seed.ts`.
+- `lottery-weights-loader.ts` — loads the `active` and `takeit` lottery weights pointers from the store (migration #208) and falls back to the frozen seed when the store gives no valid pair (`seedFallback`); `lottery-weights-seed.ts` holds the seed weights and their version constant.
 - `schwab.ts`, `api-helpers.ts`, `sentry.ts`, `validation.ts`, `logger.ts`, `constants.ts` — infrastructure.
 
 #### Chain Data Boundary

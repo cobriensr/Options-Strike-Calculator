@@ -34,9 +34,10 @@ Failure rules (the step runner reports a raised exception to Sentry and fails th
   market session. `PointerMoved` and `ConcurrentScoreWriter` mean the active pointer or
   the scores moved under it, and fail the step. The rescore is called once and never
   retried.
-- A write that finds nothing to do (`insert_candidate`, `record_session_eval`, `decide`
-  answering False) means another run of the same night got there first: it counts and
-  alerts nothing.
+- A write that finds nothing to do means another run of the same night got there first,
+  and none of them alerts. `insert_candidate` answering False counts as `already_built`.
+  `record_session_eval` answering False is neither counted nor logged. `decide` answering
+  False shows only as the logged decision "already decided".
 
 Every value handed to the store or to Sentry is a Python int, float, str or list: no numpy
 scalar, which `json.dumps` refuses. Logs carry the version, the decision and the counts,
