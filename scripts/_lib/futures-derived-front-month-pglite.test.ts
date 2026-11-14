@@ -1181,7 +1181,15 @@ describe('applying the front-month recompute on real SQL (pglite)', () => {
       change1h: number,
       changeDay: number,
       volumeRatio: number,
-    ) => ({ inScope, toWrite, price, change1h, changeDay, volumeRatio });
+    ) => ({
+      inScope,
+      toWrite,
+      price,
+      change1h,
+      changeDay,
+      volumeRatio,
+      volumeRatioToNull: 0,
+    });
     expect(pointer().frontMonth).toEqual({
       snapshotRows: {
         byRoot: {
@@ -1198,6 +1206,13 @@ describe('applying the front-month recompute on real SQL (pglite)', () => {
           repairedDays: group(4, 3, 3, 3, 3, 3),
           windowOnly: group(436, 218, 0, 0, 0, 218),
         },
+      },
+      // CL has a contaminated base (before 08-11); none of this world's rows is that early.
+      volumeRatioNull: {
+        byRoot: {
+          CL: { inScope: 0, toNull: 0, before: '2026-08-11T00:00:00.000Z' },
+        },
+        all: { inScope: 0, toNull: 0 },
       },
     });
 

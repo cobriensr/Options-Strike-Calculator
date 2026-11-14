@@ -151,6 +151,8 @@ import {
   onRepairedDay,
   readFrontMonthBackup,
   repairedDays,
+  volumeBaseContaminated,
+  volumeBaseCutoffMs,
   type FrontMonthBackup,
 } from './futures-derived-front-month.js';
 import {
@@ -1502,6 +1504,19 @@ export interface DayGroup {
   inScope: number;
   toWrite: number;
   byField: Record<SnapshotField, number>;
+  /** Of the volume ratios written (`byField.volumeRatio`), the ones the NULL rule sets (a contaminated base). */
+  blanked: number;
+}
+
+/**
+ * Front-month only: a root whose volume ratio is set to NULL where its 20-day base
+ * holds bars that cannot be rebuilt (FRONT_MONTH.contaminatedBase): the rows in scope
+ * before the cutoff, and the ones among them with a stored ratio, which are written.
+ */
+export interface VolumeBlank {
+  inScope: number;
+  toNull: number;
+  cutoffMs: number;
 }
 
 export interface DaySplit {
@@ -1570,6 +1585,8 @@ export interface SnapshotSymbolReport {
    * volume window, or across a UTC midnight), with what is planned for each.
    */
   daySplit: DaySplit | null;
+  /** Front-month only, null for a root with no contaminated base (and otherwise): see VolumeBlank. */
+  volumeBlank: VolumeBlank | null;
   /** A thin root's control, split by explanation; null for ES and NQ, which must match exactly. */
   thin: ThinControl | null;
 }
@@ -1728,6 +1745,7 @@ const emptyDayGroup = (): DayGroup => ({
   inScope: 0,
   toWrite: 0,
   byField: emptyFields(),
+  blanked: 0,
 });
 
 const utcDay = (tsMs: number): string => iso(tsMs).slice(0, 10);
@@ -2331,6 +2349,82 @@ function withoutVolumeRatio(
   };
 }
 
+/** The outcome without the volume ratio's difference: the field is not the recompute's to plan. */
+function withoutRatioField(outcome: SnapshotOutcome): SnapshotOutcome {
+  if (outcome.kind !== 'change' || !outcome.fields.includes('volumeRatio')) {
+    return outcome;
+  }
+  const fields = outcome.fields.filter((f) => f !== 'volumeRatio');
+  return fields.length === 0
+    ? { kind: 'same' }
+    : { kind: 'change', fields, to: outcome.to };
+}
+
+/**
+ * The front-month NULL rule (owner decision 2026-11-13). A snapshot's volume ratio is
+ * today's volume over the average of the UTC-day sums of the 20 days before it. GC's
+ * bars before the span and CL's of 07-17, 07-20 and 07-21 are the wrong or an expiring
+ * contract that UW has no prints to rebuild, so every ratio whose base reaches them is
+ * wrong, and recomputing it from the clean days that remain gives a value that is too
+ * high (GC up to 7.9x). So for such a row (FRONT_MONTH.contaminatedBase) the planned ratio
+ * is NULL, whether or not the repair moved it, and the planSnapshots loop left the
+ * recompute's ratio out of the row's plan (withoutRatioField). A row with a stored ratio gets it set to
+ * NULL, in the row's own change when it has one (its price, 1h and day follow the plan as
+ * before) or in one of its own, through the same guarded UPDATE; a row whose ratio is
+ * already NULL gets no write for it.
+ */
+function blankVolumeRatios(
+  symbol: Sym,
+  rows: readonly SnapshotRow[],
+  changes: SnapshotChange[],
+  report: SnapshotSymbolReport,
+  repairedDaySet: ReadonlySet<string> | null,
+): void {
+  const cutoffMs = volumeBaseCutoffMs(symbol);
+  if (cutoffMs == null) return;
+  const mine = new Map(
+    changes.filter((c) => c.symbol === symbol).map((c) => [c.id, c]),
+  );
+  const stats: VolumeBlank = { inScope: 0, toNull: 0, cutoffMs };
+  for (const row of rows) {
+    if (!volumeBaseContaminated(symbol, row.tsMs)) continue;
+    stats.inScope += 1;
+    if (row.stored.volumeRatio == null) continue;
+    stats.toNull += 1;
+    const group =
+      report.daySplit == null || repairedDaySet == null
+        ? null
+        : report.daySplit[
+            onRepairedDay(repairedDaySet, row.tsMs)
+              ? 'repairedDays'
+              : 'windowOnly'
+          ];
+    const own = mine.get(row.id);
+    if (own != null) {
+      own.fields = [...own.fields, 'volumeRatio'];
+      own.to = { ...own.to, volumeRatio: null };
+    } else {
+      changes.push({
+        id: row.id,
+        symbol,
+        tsMs: row.tsMs,
+        fields: ['volumeRatio'],
+        from: row.stored,
+        to: { ...row.stored, volumeRatio: null },
+        row: row.row,
+      });
+      report.rowsToWrite += 1;
+      if (group != null) group.toWrite += 1;
+    }
+    report.byField.volumeRatio += 1;
+    if (group != null) {
+      group.byField.volumeRatio += 1;
+      group.blanked += 1;
+    }
+  }
+  report.volumeBlank = stats;
+}
+
 async function planSnapshots(
   data: Map<Sym, SymbolData>,
   detectorDays: Map<Sym, DetectorDays> | null,
@@ -2439,6 +2533,7 @@ async function planSnapshots(
       daySplit: frontMonth
         ? { repairedDays: emptyDayGroup(), windowOnly: emptyDayGroup() }
         : null,
+      volumeBlank: null,
       thin: null,
       spanBars: spanBars.get(symbol) ?? null,
       volumeRatioLeft: 0,
@@ -2469,10 +2564,17 @@ async function planSnapshots(
                 : 'windowOnly'
             ];
       if (dayGroup != null) dayGroup.inScope += 1;
-      // A lifted thin root plans no volume ratio (owner ruling 2026-11-12).
-      const outcome = lifted
+      // A lifted thin root plans no volume ratio (owner ruling 2026-11-12). Under
+      // front-month a row whose 20-day base holds bars that cannot be rebuilt has its
+      // ratio decided by the NULL rule (blankVolumeRatios), not by the recompute: its
+      // difference is no repair's and no drift, so it leaves the outcome here.
+      const planned = lifted
         ? withoutVolumeRatio(evaluation.outcome, row.stored, report)
         : evaluation.outcome;
+      const outcome =
+        frontMonth && volumeBaseContaminated(symbol, row.tsMs)
+          ? withoutRatioField(planned)
+          : planned;
       const dayOpenMs = dayOpenOf(new Date(row.tsMs));
       const byRule = affectedSnapshotFields(
         sd.repair,
@@ -2768,6 +2870,10 @@ async function planSnapshots(
     }
 
     endRun(report.stale, frozen);
+
+    if (frontMonth) {
+      blankVolumeRatios(symbol, rows, changes, report, repairedDaySet);
+    }
 
     const controlOfSymbol = await snapshotControl(
       symbol,
@@ -3606,6 +3712,7 @@ function daySplitsOf(
     for (const { split } of byRoot) {
       total.inScope += split[kind].inScope;
       total.toWrite += split[kind].toWrite;
+      total.blanked += split[kind].blanked;
       for (const f of SNAPSHOT_KEYS) total.byField[f] += split[kind].byField[f];
     }
     return total;
@@ -3618,8 +3725,14 @@ function daySplitsOf(
 
 const count = (n: number): string => n.toLocaleString('en-US');
 
+/** The ratio count, with how many of those writes set NULL under the contaminated-base rule (nothing added when none). */
+function ratioText(g: DayGroup): string {
+  const nulls = g.blanked === 0 ? '' : ` (to NULL ${count(g.blanked)})`;
+  return `${count(g.byField.volumeRatio)}${nulls}`;
+}
+
 const dayGroupText = (g: DayGroup): string =>
-  `${count(g.toWrite)} to write of ${count(g.inScope)} (price ${count(g.byField.price)}, 1h ${count(g.byField.change1hPct)}, day ${count(g.byField.changeDayPct)}, ratio ${count(g.byField.volumeRatio)})`;
+  `${count(g.toWrite)} to write of ${count(g.inScope)} (price ${count(g.byField.price)}, 1h ${count(g.byField.change1hPct)}, day ${count(g.byField.changeDayPct)}, ratio ${ratioText(g)})`;
 
 /**
  * The planned snapshot rows on the days Phase 6 changed a bar and on the rest. The owner
@@ -3640,6 +3753,34 @@ function daySplitText(r: SnapshotStore): string[] {
   ];
 }
 
+const BLANK_PREFIX =
+  'volume ratio set to NULL (20-day base holds unrebuildable July bars):';
+
+/**
+ * Per root with a contaminated base, how many of its rows in scope before the cutoff have
+ * a stored ratio, which the plan sets to NULL, and the total. Empty when no root has one.
+ */
+function volumeBlankText(r: SnapshotStore): string[] {
+  const roots = r.symbols.flatMap((s) =>
+    s.volumeBlank == null ? [] : [{ symbol: s.symbol, blank: s.volumeBlank }],
+  );
+  if (roots.length === 0) return [];
+  const total = roots.reduce(
+    (t, { blank }) => ({
+      inScope: t.inScope + blank.inScope,
+      toNull: t.toNull + blank.toNull,
+    }),
+    { inScope: 0, toNull: 0 },
+  );
+  return [
+    ...roots.map(
+      ({ symbol, blank }) =>
+        `  ${BLANK_PREFIX} ${symbol} ${count(blank.toNull)} of ${count(blank.inScope)} rows before ${isoSecond(blank.cutoffMs)}`,
+    ),
+    `  ${BLANK_PREFIX} all roots ${count(total.toNull)} of ${count(total.inScope)} rows`,
+  ];
+}
+
 /** The same counts as plan.json carries them: front-month only, a flat object per kind of day. */
 export interface DayGroupCounts {
   inScope: number;
@@ -3647,7 +3788,10 @@ export interface DayGroupCounts {
   price: number;
   change1h: number;
   changeDay: number;
+  /** Rows writing the volume ratio, the NULL ones included. */
   volumeRatio: number;
+  /** Of those, the rows the NULL rule sets to NULL. */
+  volumeRatioToNull: number;
 }
 
 export interface FrontMonthPlanBlock {
@@ -3658,6 +3802,14 @@ export interface FrontMonthPlanBlock {
     >;
     all: { repairedDays: DayGroupCounts; windowOnly: DayGroupCounts };
   };
+  /**
+   * The volume ratios set to NULL (owner decision 2026-11-13): per root with a contaminated
+   * base the rows in scope before `before` and the ones with a stored ratio, which are written.
+   */
+  volumeRatioNull: {
+    byRoot: Record<string, { inScope: number; toNull: number; before: string }>;
+    all: { inScope: number; toNull: number };
+  };
 }
 
 const dayGroupCounts = (g: DayGroup): DayGroupCounts => ({
@@ -3667,6 +3819,7 @@ const dayGroupCounts = (g: DayGroup): DayGroupCounts => ({
   change1h: g.byField.change1hPct,
   changeDay: g.byField.changeDayPct,
   volumeRatio: g.byField.volumeRatio,
+  volumeRatioToNull: g.blanked,
 });
 
 const daySplitCounts = (s: DaySplit) => ({
@@ -3679,7 +3832,10 @@ function frontMonthPlanBlock(
   store: SnapshotStore | undefined,
 ): FrontMonthPlanBlock | null {
   const splits = store == null ? null : daySplitsOf(store);
-  if (splits == null) return null;
+  if (store == null || splits == null) return null;
+  const blanks = store.symbols.flatMap((s) =>
+    s.volumeBlank == null ? [] : [{ symbol: s.symbol, blank: s.volumeBlank }],
+  );
   return {
     snapshotRows: {
       byRoot: Object.fromEntries(
@@ -3689,6 +3845,22 @@ function frontMonthPlanBlock(
         ]),
       ),
       all: daySplitCounts(splits.all),
+    },
+    volumeRatioNull: {
+      byRoot: Object.fromEntries(
+        blanks.map(({ symbol, blank }) => [
+          symbol,
+          {
+            inScope: blank.inScope,
+            toNull: blank.toNull,
+            before: new Date(blank.cutoffMs).toISOString(),
+          },
+        ]),
+      ),
+      all: {
+        inScope: blanks.reduce((n, b) => n + b.blank.inScope, 0),
+        toNull: blanks.reduce((n, b) => n + b.blank.toNull, 0),
+      },
     },
   };
 }
@@ -3710,7 +3882,12 @@ function snapshotsText(r: SnapshotStore, repair?: RepairName): string[] {
     `futures_snapshots (${titled.join(', ')}): only the fields a repaired bar feeds are written`,
     `  rows in range: ${r.inScope}, rows to write: ${r.changes.length}`,
   ];
-  out.push(...touchedText(r), ...stepsByRootText(r), ...daySplitText(r));
+  out.push(
+    ...touchedText(r),
+    ...stepsByRootText(r),
+    ...daySplitText(r),
+    ...volumeBlankText(r),
+  );
   for (const s of r.symbols) {
     out.push(
       `  ${s.symbol}: rows in range ${s.inRange}, rows to write ${s.rowsToWrite} (${byFieldText(s.byField)})`,
@@ -5336,6 +5513,21 @@ function esRepairOf(data: ReadonlyMap<Sym, SymbolData>): Repair {
 }
 
 /** The report header of a front-month run. */
+/** The NULL rule of the front-month header: each root's unrebuildable bars and the cutoff of the rows it blanks. */
+function volumeNullRuleText(): string {
+  const rules = Object.entries(FRONT_MONTH.contaminatedBase).map(
+    ([root, range]) => {
+      const bars =
+        range.fromMs === Number.NEGATIVE_INFINITY
+          ? `before ${isoSecond(range.toMs)}`
+          : `${isoSecond(range.fromMs)} to ${isoSecond(range.toMs)} (end exclusive)`;
+      const cutoff = isoSecond(range.toMs + SNAPSHOT_LOOKBACK_MS);
+      return `${root} bars ${bars}, so rows before ${cutoff}`;
+    },
+  );
+  return `volume ratio is set to NULL where its 20-day base holds bars that cannot be rebuilt (owner decision 2026-11-13): ${rules.join('; ')}`;
+}
+
 function frontMonthHeader(
   opts: RecomputeOptions,
   rootsLine: string,
@@ -5352,6 +5544,7 @@ function frontMonthHeader(
     'fires in scope: those with a bar Phase 6 changed in the 6 minutes before and at the fire (the ES window its basis reads); every other fire with a value is the control; a NULL basis is never read or set',
     "no D1 lift (the first row's 20-day window starts after every thin root's last month-mixed bar), no stale-at-write rewrite, no frozen-stale delete, no volume-null step, no detector days",
     `the control checks the volume ratio of RTY, CL, GC and ZN one way only: the late-volume rule passes a stored ratio anywhere below the recomputed one, or one unit above it, so do not cite the control for those ratios; CL's is also set aside before ${isoSecond(FRONT_MONTH.writtenUntilMs)} wherever a changed bar in its 20-day window feeds it (ES and NQ are fine: no bar of theirs changed after 2026-09-14)`,
+    volumeNullRuleText(),
     ...(backup == null || opts.backup == null
       ? []
       : [frontMonthBackupLine(opts.backup, backup, opts.roots)]),
