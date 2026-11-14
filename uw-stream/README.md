@@ -678,7 +678,8 @@ raises nothing. The stuck-socket watchdog (`run_stuck_socket_watchdog`,
 four hold:
 
 - it has a twin;
-- it is connected (`state.connections` says so);
+- it and its twin are both connected (`state.connections` says so). A twin
+  that is down is not carrying the trades while this socket reconnects;
 - it has had no trade frame for 60 s, counted from its last trade frame or,
   if the connection has had none yet, from the connection's start;
 - its twin received at least 100 trade frames in those 60 s.
@@ -688,7 +689,7 @@ four hold:
 | `STUCK_S`                     | 60 s  | The open gap that makes a shard a candidate.                              |
 | `STUCK_TWIN_MIN_FRAMES`       | 100   | Trade frames the twin must have in the last `STUCK_S`.                    |
 | `STUCK_CHECK_INTERVAL_S`      | 5 s   | The check period.                                                         |
-| `FORCED_RECONNECT_COOLDOWN_S` | 300 s | At most one forced reconnect per shard in this time, across incidents.    |
+| `FORCED_RECONNECT_COOLDOWN_S` | 300 s | At most one forced reconnect, and at most one Sentry event, per shard in this time, across incidents. |
 
 The first two are in `src/socket_stats.py`, next to the test; the other two
 are in `src/stuck_sockets.py`. The quietest minute at lunch on 2026-11-13
@@ -709,19 +710,25 @@ first finds the shard stuck until a trade frame arrives:
 2. **The forced reconnect.** Straight after the alert the watchdog calls
    `Connector.force_reconnect`, which aborts the socket. The connector then
    reconnects and re-joins every channel, as for any drop (about 2 s), and the
-   twin carries every trade meanwhile, so a false alarm costs nothing. Each one
-   logs `forcing reconnect of a stuck trade socket` at warning level. A shard
-   gets at most one per 300 s, whatever incident it is in: at most 12 an hour
-   per stuck shard. They count in `reconnects_last_hour` and towards the
-   reconnect storm alert like any other drop; two shards stuck for a whole hour
-   make 24, under the 40 an hour the storm alert needs with 8 shards.
-3. **The escalation.** If the shard is stuck again at a later check and the
-   incident has forced a reconnect, the watchdog sends one more event for the
-   incident, an error: `uw-stream trade socket still stuck after a forced
+   twin, which `find_stuck` checked is connected, carries every trade
+   meanwhile, so a false alarm costs nothing. Each one logs `forcing reconnect
+   of a stuck trade socket` at warning level. A shard gets at most one per
+   300 s, whatever incident it is in: at most 12 an hour per stuck shard. They
+   count in `reconnects_last_hour` and towards the reconnect storm alert like
+   any other drop. The storm alert fires at 40 an hour with 8 shards, and the
+   forced reconnects alone can reach that: 12 an hour for one stuck shard, 24
+   with one stuck shard in each pair, and up to 48 if all four trade shards
+   (`conn0`, `conn1`, `conn6`, `conn7`) are each stuck for part of the hour, a
+   pair's two sockets in turn. The 48 is over the 40, so in that case the storm
+   alert is expected, and it is telling the truth.
+3. **The escalation.** If the shard is found stuck again at a later check and
+   the incident has forced a reconnect, the watchdog sends one more event for
+   the incident, an error: `uw-stream trade socket still stuck after a forced
    reconnect`, with the same extras (`forced_reconnects` is then 1 or more). It
    means the reconnect did not help: the new connection also went 60 s with no
    trade frame while its twin received at least 100 (or the abort did not end
-   the old connection). The service keeps forcing a reconnect every 300 s but
+   the old connection). A fresh connection that has not been quiet for 60 s
+   yet is not escalated. The service keeps forcing a reconnect every 300 s but
    sends no further event for the incident. A redeploy is the next move if
    nothing else explains it. An incident that has not yet forced a reconnect
    (the cooldown from an earlier incident is still running) does not escalate.
@@ -729,7 +736,21 @@ first finds the shard stuck until a trade frame arrives:
    start, the incident ends and the watchdog logs `stuck trade socket
    recovered` with `shard`, `duration_s` (to the check that saw the trade frame,
    so up to 5 s late) and `forced_reconnects` (in this incident). A later stick
-   opens a new incident and sends a new alert.
+   opens a new incident, which sends a new alert unless the alert floor holds it
+   back.
+
+**The alert floor.** A shard gets at most one Sentry event, the alert or the
+escalation, per 300 s. That bounds Sentry at 12 an hour per shard. Without it,
+a socket that delivers one trade frame between 60 s silences would open a new
+incident, and send a new warning, about every 65 s: 55 an hour. An event the
+floor holds back is logged instead, as `stuck trade socket alert held back`,
+with the event it would have been (`event`), the shard's numbers and
+`since_last_alert_s`, once per incident and event. A held-back alert is not
+sent later. A held-back escalation stays due: it goes out at the first check
+after the floor lifts at which the shard is found stuck. In the usual run the
+escalation therefore follows the alert by about 5 minutes, not about 1: the
+first 60 s after a forced reconnect are always inside the floor. The floor does
+not limit the forced reconnects, which have their own 300 s cooldown.
 
 The `forced` field on the disconnect line (`WS connection unavailable`, `WS
 transport error` and the clean-close line) is the reason the watchdog gave,
@@ -741,8 +762,16 @@ A pass is skipped when its own sleep overran by 1 s or more
 backlog before its twin's task runs, so the twin can look stuck for one pass.
 The minute line's `loop_lag_max_s` shows the stall.
 
-Each pass is guarded: one that raises logs `stuck-socket check failed` at error
-level (one Sentry event a minute) and the loop carries on. Read the lines with:
+On shutdown `main._shutdown` cancels the watchdog, and waits for it to stop,
+before it cancels the connectors. A cancelled connector leaves its shard marked
+connected with its last trade frame frozen, so a watchdog still running would
+find a quiet socket stuck while the service is closing it.
+
+Each stuck shard's handling is guarded on its own, and so is each pass: a
+failure logs `stuck-socket check failed` at error level, one Sentry event a
+minute per shard, and the shards after it and the loop carry on. A forced
+reconnect only acts while the connector's receive loop is running, so a drop the
+server started is never labelled `forced`. Read the lines with:
 
 ```bash
 railway logs -s uw-stream --filter "stuck trade socket" --json

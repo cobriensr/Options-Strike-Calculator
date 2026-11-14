@@ -89,6 +89,7 @@ async def test_shutdown_cancels_producers_before_draining(_reset_notify_state):
         connectors=[],
         receive_queue=asyncio.Queue(),
         lease_renewal=None,
+        stuck_watchdog=None,
     )
 
     # Producers cancelled strictly before the handler drain ran.
@@ -131,6 +132,7 @@ async def test_shutdown_logs_but_survives_a_drain_failure(_reset_notify_state, m
         connectors=[],
         receive_queue=asyncio.Queue(),
         lease_renewal=None,
+        stuck_watchdog=None,
     )
 
     # The good handler still drained despite the boom handler raising.
@@ -489,6 +491,7 @@ async def test_shutdown_releases_lease_after_producers_then_closes_session(
         connectors=[],
         receive_queue=asyncio.Queue(),
         lease_renewal=None,
+        stuck_watchdog=None,
         lease=lease,
         lease_session=session,
     )
@@ -516,9 +519,133 @@ async def test_shutdown_without_lease_is_unchanged(_reset_notify_state):
         connectors=[],
         receive_queue=asyncio.Queue(),
         lease_renewal=None,
+        stuck_watchdog=None,
     )
 
     assert producer.cancelled()
+
+
+class _AbortRecorder:
+    """The slice of a Connector ``_shutdown`` uses: a name and ``abort``."""
+
+    def __init__(self, name: str, events: list[str]) -> None:
+        self.name = name
+        self._events = events
+
+    def abort(self) -> None:
+        self._events.append(f"abort:{self.name}")
+
+
+@pytest.mark.asyncio
+async def test_shutdown_stops_the_stuck_socket_watchdog_before_it_cancels_the_connectors(
+    _reset_notify_state,
+):
+    """A cancelled connector leaves ``state.connections`` true and its last trade
+    frame frozen, so a watchdog still running would find a quiet socket "stuck"
+    mid-shutdown and report a forced reconnect of a socket that is already closed.
+    The watchdog is cancelled and awaited first: it is fully stopped before the
+    producers are even cancelled, not merely cancelled first.
+    """
+    events: list[str] = []
+
+    async def _watchdog_slow_to_stop() -> None:
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            events.append("watchdog:cancelling")
+            await asyncio.sleep(0.05)  # still unwinding when the producers' turn comes
+            events.append("watchdog:stopped")
+            raise
+
+    watchdog = asyncio.create_task(_watchdog_slow_to_stop())
+    connector = asyncio.create_task(_forever(events, "connector"))
+    await asyncio.sleep(0.02)  # let both reach their await point
+
+    await main._shutdown(
+        producer_tasks=[connector],
+        handlers=[],
+        other_tasks=[watchdog],  # _run also lists it here, so step 4 cancels it again
+        connectors=[_AbortRecorder("conn0", events)],
+        receive_queue=asyncio.Queue(),
+        lease_renewal=None,
+        stuck_watchdog=watchdog,
+    )
+
+    assert events == [
+        "watchdog:cancelling",
+        "watchdog:stopped",
+        "cancelled:connector",
+        "abort:conn0",
+    ]
+    assert watchdog.cancelled()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_survives_a_watchdog_that_already_died(_reset_notify_state, monkeypatch):
+    """The watchdog's own death is what ``_run`` reports; ``_shutdown`` must still run."""
+    events: list[str] = []
+
+    async def _dies() -> None:
+        raise RuntimeError("watchdog boom")
+
+    watchdog = asyncio.create_task(_dies())
+    connector = asyncio.create_task(_forever(events, "connector"))
+    await asyncio.sleep(0.02)
+    assert watchdog.done()
+
+    await main._shutdown(
+        producer_tasks=[connector],
+        handlers=[],
+        other_tasks=[],
+        connectors=[_AbortRecorder("conn0", events)],
+        receive_queue=asyncio.Queue(),
+        lease_renewal=None,
+        stuck_watchdog=watchdog,
+    )
+
+    assert events == ["cancelled:connector", "abort:conn0"]
+
+
+@pytest.mark.asyncio
+async def test_run_stops_the_stuck_socket_watchdog_before_the_first_connector_abort(
+    _reset_notify_state, monkeypatch
+):
+    _stub_pipeline(monkeypatch)
+    monkeypatch.setattr(main.settings, "ws_channels", "option_trades:SPY")
+    monkeypatch.setattr(main.settings, "ws_redundant_option_trades", True)
+    events: list[str] = []
+
+    class _RecordingConnector:
+        def __init__(self, *_a, **kwargs) -> None:
+            self.name = kwargs["name"]
+
+        def abort(self) -> None:
+            events.append(f"abort:{self.name}")
+
+        async def run(self) -> None:
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                events.append(f"connector cancelled:{self.name}")
+                raise
+
+    async def _recording_watchdog(_connectors) -> None:
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            events.append("watchdog cancelled")
+            raise
+
+    monkeypatch.setattr(main, "Connector", _RecordingConnector)
+    monkeypatch.setattr(main, "run_stuck_socket_watchdog", _recording_watchdog)
+    _sigterm_once_run_is_waiting(monkeypatch)
+
+    await main._run()
+
+    assert events[0] == "watchdog cancelled"
+    assert events.index("watchdog cancelled") < events.index("connector cancelled:conn0")
+    assert events.index("watchdog cancelled") < events.index("abort:conn0")
+    assert events.index("watchdog cancelled") < events.index("abort:conn1")
 
 
 # --- Per-step bounds ----------------------------------------------------------
@@ -596,6 +723,7 @@ async def test_a_hung_shutdown_step_is_abandoned_and_the_later_steps_still_run(
             connectors=[],
             receive_queue=asyncio.Queue(),
             lease_renewal=None,
+            stuck_watchdog=None,
             lease=_Lease(),
             lease_session=_FakeLeaseSession(),
         )
@@ -653,6 +781,7 @@ async def test_shutdown_step_timeout_is_reported_with_its_bound(monkeypatch):
             connectors=[],
             receive_queue=asyncio.Queue(),
             lease_renewal=None,
+            stuck_watchdog=None,
         ),
         timeout=5.0,
     )
@@ -707,6 +836,7 @@ async def test_shutdown_aborts_connector_sockets_before_the_lease_is_released(
             other_tasks=[],
             receive_queue=asyncio.Queue(),
             lease_renewal=None,
+            stuck_watchdog=None,
             lease=_Lease(),
             lease_session=_FakeLeaseSession(),
         )
@@ -757,6 +887,7 @@ async def test_a_connector_abort_failure_is_reported_and_the_shutdown_goes_on(mo
         other_tasks=[],
         receive_queue=asyncio.Queue(),
         lease_renewal=None,
+        stuck_watchdog=None,
     )
 
     assert events == ["abort:c1", "drain"]
@@ -794,6 +925,7 @@ async def test_shutdown_counts_frames_left_in_the_receive_queue_as_dropped(monke
         connectors=[],
         receive_queue=queue,
         lease_renewal=None,
+        stuck_watchdog=None,
     )
 
     assert main.state.receive_queue_drops == 5 + 2

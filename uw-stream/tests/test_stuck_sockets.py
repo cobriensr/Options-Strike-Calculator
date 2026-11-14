@@ -4,9 +4,10 @@ Each option_trades:<TICKER> channel is joined on two sockets, a twin pair. A
 socket that stays connected and never receives another trade frame raised
 nothing before this task: the twin-silence warning needs a trade frame to end a
 gap. ``socket_stats.find_stuck`` is the pure test; these tests cover what
-``stuck_sockets`` does with it: one Sentry event per incident, a forced
-reconnect bounded by a cooldown, one escalation, recovery, and a loop that a
-failing pass or a loop stall cannot kill.
+``stuck_sockets`` does with it: one Sentry event per incident, at most one per
+shard per cooldown (the alert floor), a forced reconnect bounded by a cooldown,
+one escalation, recovery, and a loop that a failing shard, a failing pass or a
+loop stall cannot kill.
 
 Most tests call ``_check`` with a synthetic monotonic ``now``. ``_NOW`` and the
 offsets are exact in binary, so a gap of 60.0 is exactly ``STUCK_S``. The loop
@@ -52,6 +53,7 @@ _STUCK = "uw-stream trade socket stuck"
 _STILL_STUCK = "uw-stream trade socket still stuck after a forced reconnect"
 _FORCING = "forcing reconnect of a stuck trade socket"
 _RECOVERED = "stuck trade socket recovered"
+_HELD = "stuck trade socket alert held back"
 _CHECK_FAILED = "stuck-socket check failed"
 _REASON = "stuck_trade_socket"
 
@@ -259,7 +261,7 @@ class TestOpeningAnIncident:
 
 
 class TestForcingAndEscalating:
-    def test_a_shard_still_stuck_at_the_next_check_escalates_once_and_is_not_forced_again(
+    def test_a_shard_still_stuck_at_the_next_check_has_its_escalation_held_back_and_logged_once(
         self, events, logs
     ):
         _stuck_at_now()
@@ -271,16 +273,46 @@ class TestForcingAndEscalating:
         _check(watch, connectors, _NOW + 10.0)
         _check(watch, connectors, _NOW + 15.0)
 
+        # The alert floor: the opening event was 5 s ago, so the escalation waits.
+        assert _calls(events) == [_STUCK]
+        assert [m for m, _extra in logs["warning"]] == [_FORCING, _HELD]  # one held line, not 3
+        assert logs["warning"][1][1] == {
+            "shard": "conn0",
+            "twin": "conn1",
+            "event": _STILL_STUCK,
+            "gap_s": 65.0,  # at the second check, 5 s after the first
+            "twin_trade_frames": 150,
+            "forced_reconnects": 1,
+            "since_last_alert_s": 5.0,
+        }
+        # Inside the cooldown: the one forced reconnect is the only one.
+        assert connectors["conn0"].force_reconnect.call_count == 1
+
+    def test_the_held_back_escalation_goes_out_once_the_floor_lifts(self, events, logs):
+        _stuck_at_now()
+        connectors = _connectors()
+        watch = _Watch()
+        _check(watch, connectors, _NOW)
+        _check(watch, connectors, _NOW + 5.0)  # held back
+        # The twin keeps receiving, in the window of the later checks.
+        _feed(socket_stats.get("conn1"), [_NOW + 280.25] * 150)
+
+        _check(watch, connectors, _NOW + FORCED_RECONNECT_COOLDOWN_S - 1.0)
+        assert _calls(events) == [_STUCK]
+        _check(watch, connectors, _NOW + FORCED_RECONNECT_COOLDOWN_S)
+        _check(watch, connectors, _NOW + FORCED_RECONNECT_COOLDOWN_S + 5.0)
+
         assert _calls(events) == [_STUCK, _STILL_STUCK]
         assert events.call_args.kwargs["level"] == "error"
         assert events.call_args.kwargs["tags"] == {"component": "stuck_sockets"}
         context = events.call_args.kwargs["context"]
         assert (context["shard"], context["twin"]) == ("conn0", "conn1")
-        assert context["forced_reconnects"] == 1
-        assert context["gap_s"] == 65.0  # at the second check, 5 s after the first
-        # Inside the cooldown: the one forced reconnect is the only one.
-        assert connectors["conn0"].force_reconnect.call_count == 1
-        assert len(logs["warning"]) == 1
+        assert context["forced_reconnects"] == 1  # the second one is made after the event
+        assert context["gap_s"] == 360.0
+        # The same pass forced the shard again: the cooldown ended with the floor.
+        assert connectors["conn0"].force_reconnect.call_count == 2
+        # Held back once, not once per check.
+        assert [m for m, _extra in logs["warning"]].count(_HELD) == 1
 
     def test_the_cooldown_ends_at_exactly_forced_reconnect_cooldown_s(self, events):
         _stuck_at_now()
@@ -308,29 +340,145 @@ class TestForcingAndEscalating:
         _check(watch, connectors, _NOW + 305.0)
 
         assert connectors["conn0"].force_reconnect.call_count == 2
-        assert [m for m, _extra in logs["warning"]] == [_FORCING, _FORCING]
+        assert [m for m, _extra in logs["warning"]] == [_FORCING, _HELD, _FORCING]
         assert _calls(events) == [_STUCK, _STILL_STUCK]
 
-    def test_a_force_that_raises_still_counts_against_the_cooldown(self, events):
+    def test_a_force_that_raises_is_logged_and_still_counts_against_the_cooldown(
+        self, events, errors
+    ):
         _stuck_at_now()
         connectors = _connectors()
         connectors["conn0"].force_reconnect.side_effect = RuntimeError("abort failed")
         watch = _Watch()
 
-        with pytest.raises(RuntimeError, match="abort failed"):
-            _check(watch, connectors, _NOW)
-        # The next pass: the failed call is not retried, and the shard escalates
-        # because the incident has a forced reconnect on record.
+        _check(watch, connectors, _NOW)
+        # The next pass: the failed call is not retried.
         _check(watch, connectors, _NOW + 5.0)
 
         assert connectors["conn0"].force_reconnect.call_count == 1
-        assert _calls(events) == [_STUCK, _STILL_STUCK]
+        # The event was sent before the call raised; the escalation is held by the floor.
+        assert _calls(events) == [_STUCK]
+        ((message, extra),) = errors
+        assert message == _CHECK_FAILED
+        assert (extra["scope"], extra["kind"], extra["shard"]) == (
+            "stuck_sockets",
+            "check",
+            "conn0",
+        )
+        assert (extra["err_type"], extra["err"]) == ("RuntimeError", "abort failed")
 
-    def test_a_shard_missing_from_the_connectors_raises(self, events):
+    def test_a_shard_missing_from_the_connectors_is_logged(self, events, errors):
         _stuck_at_now()
 
-        with pytest.raises(KeyError, match="conn0"):
-            _check(_Watch(), _connectors("conn1"), _NOW)
+        _check(_Watch(), _connectors("conn1"), _NOW)
+
+        ((message, extra),) = errors
+        assert message == _CHECK_FAILED
+        assert (extra["shard"], extra["err_type"]) == ("conn0", "KeyError")
+
+
+class TestOneShardsFailure:
+    """Each stuck shard is handled on its own: a raise for one leaves the rest of the pass."""
+
+    @staticmethod
+    def _two_stuck_pairs():
+        for first, second in (("conn0", "conn1"), ("conn2", "conn3")):
+            quiet, twin = _pair(first, second)
+            quiet.on_frame(TRADE, _NOW - 90.0)
+            _feed(twin, [_NOW - 30.25] * 150)
+        return _connectors("conn0", "conn1", "conn2", "conn3")
+
+    def test_the_shards_after_a_failing_one_are_still_handled(self, events, errors):
+        connectors = self._two_stuck_pairs()
+        connectors["conn0"].force_reconnect.side_effect = RuntimeError("abort failed")
+
+        _check(_Watch(), connectors, _NOW)
+
+        assert [c.kwargs["context"]["shard"] for c in events.call_args_list] == ["conn0", "conn2"]
+        assert connectors["conn2"].force_reconnect.call_count == 1
+        assert [extra["shard"] for _message, extra in errors] == ["conn0"]
+
+    def test_every_failing_shard_is_logged_under_its_own_key(self, events, errors):
+        connectors = self._two_stuck_pairs()
+        connectors["conn0"].force_reconnect.side_effect = RuntimeError("first")
+        connectors["conn2"].force_reconnect.side_effect = RuntimeError("second")
+
+        _check(_Watch(), connectors, _NOW)
+
+        # One shared window would log the first and suppress the second.
+        assert [(extra["shard"], extra["err"]) for _message, extra in errors] == [
+            ("conn0", "first"),
+            ("conn2", "second"),
+        ]
+
+
+class TestAlertFloor:
+    """At most one Sentry event per shard per FORCED_RECONNECT_COOLDOWN_S, opening or escalation."""
+
+    def test_a_socket_that_flaps_alerts_at_most_once_per_cooldown(self, events, logs):
+        # conn0 delivers one trade frame every 65 s, so it is quiet for 60 s at a
+        # time and each quiet spell is a new incident. Without the floor that is a
+        # warning every 65 s: 55 in the hour. The twin never stops.
+        quiet, twin = _pair()
+        connectors = _connectors()
+        watch = _Watch()
+        base = 2_000.5
+        for t in range(0, 3_601, 5):
+            now = base + t
+            _feed(twin, [now - 2.25] * 150)
+            if t % 65 == 0:
+                quiet.on_frame(TRADE, now - 0.25)
+            _check(watch, connectors, now)
+
+        sent = len(_calls(events))
+        held = [m for m, _extra in logs["warning"]].count(_HELD)
+        assert sent == 11  # at 60 s, then the first spell that opens 300 s or more later, ...
+        assert sent <= 3_600 / FORCED_RECONNECT_COOLDOWN_S
+        assert sent + held == 55  # every spell that opened was either sent or logged held back
+
+    def test_a_held_back_opening_event_is_logged_with_what_would_have_been_sent(self, events, logs):
+        quiet, twin = _stuck_at_now()
+        connectors = _connectors()
+        watch = _Watch()
+        _check(watch, connectors, _NOW)
+        quiet.session_start(_NOW + 2.0)
+        quiet.on_frame(TRADE, _NOW + 10.0)
+        _check(watch, connectors, _NOW + 15.0)  # recovered
+        _feed(twin, [_NOW + 40.25] * 150)
+
+        _check(watch, connectors, _NOW + 70.0)  # stuck again, 70 s after the last event
+
+        assert _calls(events) == [_STUCK]
+        assert logs["warning"][-1] == (
+            _HELD,
+            {
+                "shard": "conn0",
+                "twin": "conn1",
+                "event": _STUCK,
+                "gap_s": 60.0,
+                "twin_trade_frames": 150,
+                "forced_reconnects": 0,
+                "since_last_alert_s": 70.0,
+            },
+        )
+        assert list(watch.incidents) == ["conn0"]  # the incident is open all the same
+
+    def test_the_floor_is_per_shard(self, events):
+        # conn0 is stuck at _NOW; conn2 only reaches 60 s of quiet 10 s later.
+        for first, second, last_trade in (
+            ("conn0", "conn1", _NOW - 60.0),
+            ("conn2", "conn3", _NOW - 50.0),
+        ):
+            quiet, twin = _pair(first, second)
+            quiet.on_frame(TRADE, last_trade)
+            _feed(twin, [_NOW - 30.25] * 150)
+        connectors = _connectors("conn0", "conn1", "conn2", "conn3")
+        watch = _Watch()
+        _check(watch, connectors, _NOW)
+
+        _check(watch, connectors, _NOW + 10.0)
+
+        assert [c.kwargs["context"]["shard"] for c in events.call_args_list] == ["conn0", "conn2"]
 
 
 class TestRecovery:
@@ -373,8 +521,10 @@ class TestRecovery:
 
         assert logs["info"] == []
         assert list(watch.incidents) == ["conn0"]
+        # It is not stuck again yet, so it is not escalated either.
+        assert _calls(events) == [_STUCK]
 
-    def test_a_later_stick_opens_a_new_incident_with_its_own_event(self, events, logs):
+    def test_a_later_stick_opens_a_new_incident_whose_event_waits_for_the_alert_floor(self, events):
         quiet, twin = _stuck_at_now()
         connectors = _connectors()
         watch = _Watch()
@@ -387,11 +537,28 @@ class TestRecovery:
 
         _check(watch, connectors, _NOW + 70.0)
 
-        assert _calls(events) == [_STUCK, _STUCK]
-        assert events.call_args.kwargs["context"]["forced_reconnects"] == 0  # a new incident
+        # 70 s after the last event: inside the floor, so no second event yet.
+        assert _calls(events) == [_STUCK]
         # The cooldown runs across incidents: 70 s after the last forced reconnect.
         assert connectors["conn0"].force_reconnect.call_count == 1
         assert list(watch.incidents) == ["conn0"]
+
+    def test_a_later_stick_after_the_floor_has_lifted_sends_its_own_event(self, events):
+        quiet, twin = _stuck_at_now()
+        connectors = _connectors()
+        watch = _Watch()
+        _check(watch, connectors, _NOW)
+        quiet.session_start(_NOW + 2.0)
+        quiet.on_frame(TRADE, _NOW + 10.0)
+        _check(watch, connectors, _NOW + 15.0)  # recovered
+        # Quiet from _NOW + 10.0 on, and still quiet when the floor lifts.
+        _feed(twin, [_NOW + 290.25] * 150)
+
+        _check(watch, connectors, _NOW + 310.0)
+
+        assert _calls(events) == [_STUCK, _STUCK]
+        assert events.call_args.kwargs["context"]["forced_reconnects"] == 0  # a new incident
+        assert connectors["conn0"].force_reconnect.call_count == 2
 
     def test_a_new_incident_does_not_escalate_before_it_has_forced_a_reconnect(self, events):
         quiet, twin = _stuck_at_now()
@@ -423,6 +590,77 @@ class TestRecovery:
         _check(watch, connectors, _NOW + 350.0)
 
         assert connectors["conn0"].force_reconnect.call_count == 2
+
+
+class TestEscalationNeedsAStuckSocket:
+    """The escalation means "stuck again after a forced reconnect": the shard must be
+    found stuck at the check. An open incident with a forced reconnect is not enough.
+    """
+
+    def test_a_fresh_session_is_not_escalated_until_it_is_stuck_itself(self, events, logs):
+        quiet, twin = _stuck_at_now()
+        connectors = _connectors()
+        watch = _Watch()
+        _check(watch, connectors, _NOW)  # the opening event and a forced reconnect
+        quiet.session_start(_NOW + 2.0)  # reconnected; the twin keeps streaming
+        _feed(twin, [_NOW + 30.25] * 150)
+
+        _check(watch, connectors, _NOW + 5.0)
+        _check(watch, connectors, _NOW + 60.0)  # the new session is 58 s old
+
+        assert _calls(events) == [_STUCK]
+        assert _HELD not in [m for m, _extra in logs["warning"]]  # not even attempted
+
+        # At 62 s the new session has had no trade frame for exactly STUCK_S: it is
+        # stuck again, and only now is the escalation due. The floor holds it back.
+        _check(watch, connectors, _NOW + 62.0)
+
+        assert _calls(events) == [_STUCK]
+        assert logs["warning"][-1] == (
+            _HELD,
+            {
+                "shard": "conn0",
+                "twin": "conn1",
+                "event": _STILL_STUCK,
+                "gap_s": 60.0,
+                "twin_trade_frames": 150,
+                "forced_reconnects": 1,
+                "since_last_alert_s": 62.0,
+            },
+        )
+
+    def test_the_escalation_of_a_fresh_session_has_no_last_trade_and_goes_out_when_the_floor_lifts(
+        self, events
+    ):
+        quiet, twin = _stuck_at_now()
+        connectors = _connectors()
+        watch = _Watch()
+        _check(watch, connectors, _NOW)
+        quiet.session_start(_NOW + 2.0)
+        _feed(twin, [_NOW + 270.25] * 150)
+
+        _check(watch, connectors, _NOW + FORCED_RECONNECT_COOLDOWN_S)
+
+        assert _calls(events) == [_STUCK, _STILL_STUCK]
+        context = events.call_args.kwargs["context"]
+        assert context["last_trade_utc"] is None
+        assert context["gap_s"] == 298.0  # from the new session's start, 2 s after the first event
+        assert context["forced_reconnects"] == 1
+
+    def test_a_reconnect_after_the_floor_lifted_is_not_escalated_before_it_is_stuck(self, events):
+        quiet, twin = _stuck_at_now()
+        connectors = _connectors()
+        watch = _Watch()
+        _check(watch, connectors, _NOW)  # the opening event and a forced reconnect
+        # 299 s on, a second reconnect starts a session that is only 1 s old at the
+        # next check, with the incident open, a forced reconnect on record and the
+        # floor lifted. It is not stuck, so it is not escalated.
+        quiet.session_start(_NOW + 299.0)
+        _feed(twin, [_NOW + 270.25] * 150)
+
+        _check(watch, connectors, _NOW + FORCED_RECONNECT_COOLDOWN_S)
+
+        assert _calls(events) == [_STUCK]
 
 
 # --- the loop --------------------------------------------------------------------
@@ -481,8 +719,10 @@ async def test_a_pass_whose_sleep_overran_by_the_loop_lag_threshold_is_skipped(m
     with pytest.raises(asyncio.CancelledError):
         await run_stuck_socket_watchdog(connectors)
 
-    # Only pass 2 looked: one event and one reconnect, at its clock read.
+    # Only pass 2 looked: one event and one reconnect, at its clock read. Had
+    # pass 1 run, it would have sent the event with its 60.0 s gap.
     assert _calls(events) == [_STUCK]
+    assert events.call_args.kwargs["context"]["gap_s"] == 65.938  # 65.9375, rounded
     assert connectors["conn0"].force_reconnect.call_count == 1
 
 
