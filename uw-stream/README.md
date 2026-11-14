@@ -686,8 +686,9 @@ whether anything was lost.
     re-sent join is a debug line. To see that the channels came back, read
     `subscribed` on `/metrics`, or note that the next minute's
     `re-sending joins for stuck channels` warning does not come.
-  - A session that drops before the 30 s wait ends logs no join line, neither
-    one. Its only line is the disconnect line, with `session_s` and `frames`.
+  - A session that drops before its last join is acked, and before the 30 s
+    run out, logs no join line, neither one. The only record of how far it got
+    is the disconnect line, with `session_s` and `frames`.
 - **String-encoded numerics.** Every UW WS field that _could_ be a number
   arrives as a JSON string. Handlers cast at the boundary.
 - **`flow-alerts` uses a hyphen** even though the docs URL is
