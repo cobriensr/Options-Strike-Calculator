@@ -110,7 +110,7 @@ help:
 	@echo "  make enrich                   Backfill lottery_finder_fires + silent_boom_alerts realized_*_pct from EOD parquet"
 	@echo "  make refit                    Dry runs of the lottery refit + score backfill (the refit"
 	@echo "                                runs in the nightly service; nothing is written here)"
-	@echo "  make update                   Run after \`make nightly\`: refit + exit-policy search +"
+	@echo "  make update                   Run after \`make nightly\`: refit (dry run) + exit-policy search +"
 	@echo "                                feature audit + flow-inversion timing + tracker CSV. ~3-4m,"
 	@echo "                                designed to run nightly so day-over-day drift is captured."
 	@echo "  make tune                     Heavy parameter grid for flow-inversion (~25m). Run weekly,"
@@ -219,11 +219,13 @@ refit:
 	@echo "════════════════════════════════════════════════════════════════"
 	@echo "  REFIT (dry runs) — the refit itself runs in the nightly service"
 	@echo "════════════════════════════════════════════════════════════════"
-	@# The refit runs in the nightly service (nightly/README.md, "Refit"), so
-	@# both commands here are dry runs: lottery_scoring.py needs --through and
-	@# prints the fit without storing it, and backfill_lottery_scores.py writes
-	@# nothing without --write. DATE is empty when no CSV is pending (a bare
-	@# `make update`), so --through falls back to today, as the fetch targets do.
+	@# The refit runs in the nightly service's lottery-refit step (spec: docs/
+	@# superpowers/specs/2026-10-28-nightly-pipeline-automation-design.md,
+	@# "Refit" decisions), so both commands here are dry runs: lottery_scoring.py
+	@# needs --through and prints the fit without storing it, and
+	@# backfill_lottery_scores.py writes nothing without --write. DATE is empty
+	@# when no CSV is pending (a bare `make update`), so --through falls back to
+	@# today, as the fetch targets do.
 	$(PYTHON) ml/src/lottery_scoring.py --through $(or $(DATE),$(shell date +%Y-%m-%d))
 	$(PYTHON) scripts/backfill_lottery_scores.py
 
