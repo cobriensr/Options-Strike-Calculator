@@ -8,7 +8,10 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
-import type { LotteryFire } from '../components/LotteryFinder/types';
+import type {
+  LotteryFinderResponse,
+  LotteryFire,
+} from '../components/LotteryFinder/types';
 
 // ── Mocks ─────────────────────────────────────────────────────────────
 
@@ -189,6 +192,8 @@ interface DefaultHookResult {
     hasMore: boolean;
     /** Q1/Q2 inversion-quality chains hidden by default (server-supplied). */
     suppressedCount?: number;
+    /** Active weights version's tier cutoffs; absent on an older server build. */
+    tierCutoffs?: LotteryFinderResponse['tierCutoffs'];
   };
   loading: boolean;
   error: string | null;
@@ -230,6 +235,7 @@ function feedResult(
     offset,
     hasMore,
     suppressedCount,
+    tierCutoffs,
     ...rest
   } = overrides;
   return {
@@ -244,6 +250,7 @@ function feedResult(
       ...(offset !== undefined && { offset }),
       ...(hasMore !== undefined && { hasMore }),
       ...(suppressedCount !== undefined && { suppressedCount }),
+      ...(tierCutoffs !== undefined && { tierCutoffs }),
     },
   };
 }
@@ -1214,32 +1221,162 @@ describe('LotteryFinderSection: filter interactions', () => {
     );
   });
 
-  it('Tier 1 conviction chip forwards minScore=13 (matches TIER_CUTOFFS_V2.tier1MinScore)', () => {
-    // Now that the server filters `qas >= minScore`, the chip must send the
-    // SAME cutoff the tier badge derives via tierFromQualityScore. TIER1 →
-    // 13 (api/_lib/lottery-tier.ts TIER_CUTOFFS_V2). The stale 18 would have
-    // hidden every fire whose qas fell in [13, 18).
-    render(<LotteryFinderSection marketOpen={false} />);
-    fireEvent.click(screen.getByRole('button', { name: /Tier 1/ }));
-    const feedCall = mockUseLotteryFinder.mock.calls.at(-1);
-    expect(feedCall?.[0]).toMatchObject({ minScore: 13 });
-  });
+  // The conviction chips name a tier and the server resolves it to the
+  // active weights version's cutoff. The panel carries no score number of
+  // its own, so none of these tests may need one to pass.
+  describe('conviction chips ask the server for a tier', () => {
+    /** The arguments object of every call either feed hook has received. */
+    function allHookArgs(): Array<Record<string, unknown>> {
+      return [
+        ...mockUseLotteryFinder.mock.calls,
+        ...mockUseLotteryFinderTickerCounts.mock.calls,
+      ].map((call) => call[0] as Record<string, unknown>);
+    }
+    /** Hook calls whose arguments would put `minScore=` on a request. */
+    const callsCarryingMinScore = () =>
+      allHookArgs().filter((args) => args.minScore != null);
+    const exportHref = () =>
+      screen.getByText(/⤓ filtered/).getAttribute('href') ?? '';
 
-  it('Tier 2+ conviction chip forwards minScore=10 (matches TIER_CUTOFFS_V2.tier2MinScore)', () => {
-    // TIER2 → 10 (the stale 12 would have hidden qas ∈ [10, 12) fires the
-    // tier2 badge now shows).
-    render(<LotteryFinderSection marketOpen={false} />);
-    fireEvent.click(screen.getByRole('button', { name: /Tier 2/ }));
-    const feedCall = mockUseLotteryFinder.mock.calls.at(-1);
-    expect(feedCall?.[0]).toMatchObject({ minScore: 10 });
-  });
+    it('Tier 1 chip sends minTier=tier1', () => {
+      render(<LotteryFinderSection marketOpen={false} />);
+      fireEvent.click(screen.getByRole('button', { name: /Tier 1/ }));
+      expect(mockUseLotteryFinder.mock.calls.at(-1)?.[0]).toMatchObject({
+        minTier: 'tier1',
+      });
+      expect(
+        mockUseLotteryFinderTickerCounts.mock.calls.at(-1)?.[0],
+      ).toMatchObject({ minTier: 'tier1' });
+      expect(callsCarryingMinScore()).toEqual([]);
+    });
 
-  it('"all" conviction floor (default) forwards no minScore (null)', () => {
-    // Default boot state is the "all" floor → CONVICTION_TO_MIN_SCORE.all is
-    // null so the server applies no qas floor.
-    render(<LotteryFinderSection marketOpen={false} />);
-    const feedCall = mockUseLotteryFinder.mock.calls.at(-1);
-    expect(feedCall?.[0]).toMatchObject({ minScore: null });
+    it('Tier 2+ chip sends minTier=tier2', () => {
+      render(<LotteryFinderSection marketOpen={false} />);
+      fireEvent.click(screen.getByRole('button', { name: /Tier 2/ }));
+      expect(mockUseLotteryFinder.mock.calls.at(-1)?.[0]).toMatchObject({
+        minTier: 'tier2',
+      });
+      expect(
+        mockUseLotteryFinderTickerCounts.mock.calls.at(-1)?.[0],
+      ).toMatchObject({ minTier: 'tier2' });
+      expect(callsCarryingMinScore()).toEqual([]);
+    });
+
+    it('"all" conviction floor (default) sends no tier and no score', () => {
+      render(<LotteryFinderSection marketOpen={false} />);
+      expect(mockUseLotteryFinder.mock.calls.at(-1)?.[0]).toMatchObject({
+        minTier: null,
+      });
+      expect(
+        mockUseLotteryFinderTickerCounts.mock.calls.at(-1)?.[0],
+      ).toMatchObject({ minTier: null });
+      expect(callsCarryingMinScore()).toEqual([]);
+      expect(exportHref()).not.toContain('minTier');
+      expect(exportHref()).not.toContain('minScore');
+    });
+
+    it.each([
+      ['Tier 1', 'tier1'],
+      ['Tier 2', 'tier2'],
+    ])('export link carries minTier (%s chip)', (chipName, tier) => {
+      render(<LotteryFinderSection marketOpen={false} />);
+      fireEvent.click(
+        screen.getByRole('button', { name: new RegExp(chipName) }),
+      );
+      const href = exportHref();
+      expect(
+        new URL(href, 'http://localhost').searchParams.get('minTier'),
+      ).toBe(tier);
+      expect(href).not.toContain('minScore=');
+    });
+
+    // Cutoffs chosen away from every number this panel used to hard-code
+    // (18/12 before, 13/10 after) so a surviving constant fails the test.
+    const CUTOFFS = {
+      version: 'v-test',
+      tier1MinScore: 16,
+      tier2MinScore: 12.5,
+    };
+
+    it('chip tooltip shows the cutoff from tierCutoffs', () => {
+      mockUseLotteryFinder.mockReturnValue(
+        feedResult({ tierCutoffs: CUTOFFS }),
+      );
+      const { rerender } = render(<LotteryFinderSection marketOpen={false} />);
+      const tier1 = screen.getByRole('button', { name: /Tier 1/ });
+      const tier2 = screen.getByRole('button', { name: /Tier 2/ });
+      expect(tier1).toHaveAttribute(
+        'title',
+        expect.stringMatching(/^Tier 1 only \(qas ≥ 16\)\. /),
+      );
+      expect(tier2).toHaveAttribute(
+        'title',
+        expect.stringMatching(/^Tier 2 or better \(qas ≥ 12\.5\)\. /),
+      );
+
+      // A new weights version arrives on the next poll: the tooltips follow.
+      mockUseLotteryFinder.mockReturnValue(
+        feedResult({
+          tierCutoffs: {
+            version: 'v-next',
+            tier1MinScore: 21,
+            tier2MinScore: 14,
+          },
+        }),
+      );
+      rerender(<LotteryFinderSection marketOpen={false} />);
+      expect(screen.getByRole('button', { name: /Tier 1/ })).toHaveAttribute(
+        'title',
+        expect.stringContaining('qas ≥ 21'),
+      );
+      expect(screen.getByRole('button', { name: /Tier 2/ })).toHaveAttribute(
+        'title',
+        expect.stringContaining('qas ≥ 14'),
+      );
+    });
+
+    it.each([
+      ['before the first response', { ...defaultHookResult, data: null }],
+      ['from a server build that sends no tierCutoffs', feedResult()],
+    ])('tooltip omits the number %s', (_label, hookResult) => {
+      mockUseLotteryFinder.mockReturnValue(hookResult);
+      render(<LotteryFinderSection marketOpen={false} />);
+      expect(screen.getByRole('button', { name: /Tier 1/ })).toHaveAttribute(
+        'title',
+        'Tier 1 only. Historical high-peak rate ~80%, ~4 fires/day.',
+      );
+      expect(screen.getByRole('button', { name: /Tier 2/ })).toHaveAttribute(
+        'title',
+        'Tier 2 or better. Historical high-peak rate ~63% (vs ~32% for Tier 3).',
+      );
+    });
+
+    it('switching the floor (a server filter) drops a previously-pinned now-excluded row', () => {
+      // minTier is part of the filter signature that scopes the never-vanish
+      // union. Without it the row pinned under "all" would stay on screen
+      // after Tier 1 excluded it server-side.
+      const pinned = makeFire({
+        id: 1,
+        optionChainId: 'AAPL260508C00200000',
+        underlyingSymbol: 'AAPL',
+        strike: 200,
+        triggerTimeCt: '2026-05-08T14:30:00Z',
+      });
+      mockUseLotteryFinder.mockReturnValue(
+        feedResult({ fires: [pinned], total: 1 }),
+      );
+      render(<LotteryFinderSection marketOpen={true} />);
+      expect(
+        screen.getByTestId('lottery-row-AAPL260508C00200000'),
+      ).toBeInTheDocument();
+
+      mockUseLotteryFinder.mockReturnValue(feedResult({ fires: [], total: 0 }));
+      fireEvent.click(screen.getByRole('button', { name: /Tier 1/ }));
+
+      expect(
+        screen.queryByTestId('lottery-row-AAPL260508C00200000'),
+      ).not.toBeInTheDocument();
+    });
   });
 
   it('persists the sort mode to localStorage when changed', () => {

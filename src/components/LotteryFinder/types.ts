@@ -127,8 +127,9 @@ export interface LotteryFireOutcomes {
   enrichedAt: string | null;
 }
 
-/** Tier label derived from `score`. Tier 1 ≥18, Tier 2 12-17, Tier 3 <12.
- *  Alias of the canonical `ScoreTier` — kept here so LF call sites keep
+/** Tier label derived from `score`. The cutoffs belong to the active weights
+ *  version (see `LotteryFinderResponse.tierCutoffs`), so no number is fixed
+ *  here. Alias of the canonical `ScoreTier` — kept here so LF call sites keep
  *  the descriptive name without forcing a project-wide rename. */
 export type LotteryScoreTier = ScoreTier;
 

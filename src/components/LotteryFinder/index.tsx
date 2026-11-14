@@ -30,7 +30,9 @@ import {
   EXIT_POLICY_LABELS,
   EXIT_POLICY_TOOLTIPS,
   type ExitPolicy,
+  type LotteryFinderResponse,
   type LotteryFire,
+  type LotteryMinTier,
   type LotteryMode,
   type LotterySortMode,
   type OptionType,
@@ -82,16 +84,6 @@ const LATE_PM_CUTOFF_MIN_OF_DAY = 14 * 60 + 30;
  * then ignored — the new key supersedes it.
  */
 const LEGACY_HIGH_CONVICTION_LS_KEY = 'lottery.highConvictionOnly';
-/**
- * Tier floors — MUST match TIER_CUTOFFS_V2 in api/_lib/lottery-tier.ts
- * (tier1MinScore: 13, tier2MinScore: 10). Hardcoded (not imported) to keep
- * the api/_lib server module out of the browser bundle. Now that the server
- * filters `qas >= minScore` (lottery-finder.ts qasExprText), the chip must
- * send the SAME cutoff the tier badge derives via tierFromQualityScore, so
- * these track TIER_CUTOFFS_V2 exactly — update both together.
- */
-const TIER1_MIN_SCORE = 13;
-const TIER2_MIN_SCORE = 10;
 
 /**
  * Aggressive Premium chip — lottery-native port of the SB chip. Surfaces
@@ -140,33 +132,50 @@ function isFireAggressivePremium(fire: LotteryFire): boolean {
   );
 }
 
-const CONVICTION_OPTIONS: Array<{
+/**
+ * Conviction chip → the tier the server floors the feed on. The panel holds
+ * no score number: the server resolves the tier to the active weights
+ * version's cutoff and echoes the cutoffs it used as `tierCutoffs`.
+ */
+const CONVICTION_TO_MIN_TIER: Record<ConvictionFloor, LotteryMinTier | null> = {
+  all: null,
+  tier2: 'tier2',
+  tier1: 'tier1',
+};
+
+type TierCutoffs = NonNullable<LotteryFinderResponse['tierCutoffs']>;
+
+/**
+ * Conviction chips with their tooltips. A tooltip quotes its tier's cutoff
+ * (`qas ≥ N`) from the latest feed response's `tierCutoffs`, and says no
+ * number while there is none: before the first response, or from a server
+ * build that predates the field.
+ */
+function buildConvictionOptions(cutoffs: TierCutoffs | undefined): Array<{
   value: ConvictionFloor;
   label: string;
   tooltip: string;
-}> = [
-  {
-    value: 'all',
-    label: 'all',
-    tooltip: 'No score floor — show every fire including Tier 3.',
-  },
-  {
-    value: 'tier2',
-    label: '🔥🔥 Tier 2+',
-    tooltip: `Tier 2 or better (score ≥ ${TIER2_MIN_SCORE}). Historical high-peak rate ~63% (vs ~32% for Tier 3).`,
-  },
-  {
-    value: 'tier1',
-    label: '🔥🔥🔥 Tier 1',
-    tooltip: `Tier 1 only (score ≥ ${TIER1_MIN_SCORE}). Historical high-peak rate ~80%, ~4 fires/day.`,
-  },
-];
-
-const CONVICTION_TO_MIN_SCORE: Record<ConvictionFloor, number | null> = {
-  all: null,
-  tier2: TIER2_MIN_SCORE,
-  tier1: TIER1_MIN_SCORE,
-};
+}> {
+  const floorNote = (cutoff: number | undefined): string =>
+    cutoff == null ? '' : ` (qas ≥ ${cutoff})`;
+  return [
+    {
+      value: 'all',
+      label: 'all',
+      tooltip: 'No score floor — show every fire including Tier 3.',
+    },
+    {
+      value: 'tier2',
+      label: '🔥🔥 Tier 2+',
+      tooltip: `Tier 2 or better${floorNote(cutoffs?.tier2MinScore)}. Historical high-peak rate ~63% (vs ~32% for Tier 3).`,
+    },
+    {
+      value: 'tier1',
+      label: '🔥🔥🔥 Tier 1',
+      tooltip: `Tier 1 only${floorNote(cutoffs?.tier1MinScore)}. Historical high-peak rate ~80%, ~4 fires/day.`,
+    },
+  ];
+}
 
 // ============================================================
 // MIN FIRE COUNT — burst-quality filter
@@ -379,7 +388,7 @@ function hashToken(input: string): string {
  */
 interface LotteryFilterSigParams {
   minTakeitProb: number;
-  minScore: number | null;
+  minTier: LotteryMinTier | null;
   minFireCount: number;
   maxFireCount: number;
   mode: LotteryMode | null;
@@ -400,7 +409,7 @@ interface LotteryFilterSigParams {
 function buildLotteryFilterSig(p: LotteryFilterSigParams): string {
   const raw = [
     `t${p.minTakeitProb}`,
-    `s${p.minScore ?? 'x'}`,
+    `s${p.minTier ?? 'x'}`,
     `f${p.minFireCount}`,
     `F${p.maxFireCount}`,
     `m${p.mode ?? 'x'}`,
@@ -433,7 +442,7 @@ interface ExportUrlParams {
   mode?: LotteryMode | null;
   optionType?: OptionType | null;
   tod?: TimeOfDay | null;
-  minScore?: number | null;
+  minTier?: LotteryMinTier | null;
 }
 
 /**
@@ -449,7 +458,7 @@ const buildExportUrl = (params: ExportUrlParams): string => {
   if (params.mode) sp.set('mode', params.mode);
   if (params.optionType) sp.set('optionType', params.optionType);
   if (params.tod) sp.set('tod', params.tod);
-  if (params.minScore != null) sp.set('minScore', String(params.minScore));
+  if (params.minTier != null) sp.set('minTier', params.minTier);
   return `/api/lottery-export?${sp.toString()}`;
 };
 
@@ -605,7 +614,7 @@ export function LotteryFinderSection({
     optionType: optionTypeFilter,
     tod: todFilter,
     sort: sortMode,
-    minScore: CONVICTION_TO_MIN_SCORE[convictionFloor],
+    minTier: CONVICTION_TO_MIN_TIER[convictionFloor],
     minPremium: minPremiumK * 1000,
     minFireCount: minFireCountFloor,
     maxFireCount,
@@ -628,6 +637,11 @@ export function LotteryFinderSection({
     () => lotteryFinder.data?.reignitedFires ?? [],
     [lotteryFinder.data],
   );
+  // Chip tooltips quote the cutoffs the latest response tiered on. Computed
+  // from that response each render, not mirrored into state.
+  const convictionOptions = buildConvictionOptions(
+    lotteryFinder.data?.tierCutoffs,
+  );
 
   // All-day ticker counts for the chip strip — chain-day deduped on the
   // server so counts match what the user sees in the list. Independent of
@@ -643,7 +657,7 @@ export function LotteryFinderSection({
     mode: modeFilter,
     optionType: optionTypeFilter,
     tod: todFilter,
-    minScore: CONVICTION_TO_MIN_SCORE[convictionFloor],
+    minTier: CONVICTION_TO_MIN_TIER[convictionFloor],
     minPremium: minPremiumK * 1000,
     minFireCount: minFireCountFloor,
     maxFireCount,
@@ -690,7 +704,7 @@ export function LotteryFinderSection({
   const unionEngaged = minute == null && page === 0 && date === todayCt();
   const filterSig = buildLotteryFilterSig({
     minTakeitProb: takeitFloor,
-    minScore: CONVICTION_TO_MIN_SCORE[convictionFloor],
+    minTier: CONVICTION_TO_MIN_TIER[convictionFloor],
     minFireCount: minFireCountFloor,
     maxFireCount,
     mode: modeFilter,
@@ -1149,7 +1163,7 @@ export function LotteryFinderSection({
         ))}
         <span className={TOOLBAR_DIVIDER} aria-hidden="true" />
         <span className={SECTION_LABEL}>conviction</span>
-        {CONVICTION_OPTIONS.map((c) => {
+        {convictionOptions.map((c) => {
           const active = convictionFloor === c.value;
           // Tier 1 = rose (most exclusive), Tier 2+ = amber, all =
           // emerald. The active style tracks the floor so the user
@@ -1754,7 +1768,7 @@ export function LotteryFinderSection({
                   mode: modeFilter,
                   optionType: optionTypeFilter,
                   tod: todFilter,
-                  minScore: CONVICTION_TO_MIN_SCORE[convictionFloor],
+                  minTier: CONVICTION_TO_MIN_TIER[convictionFloor],
                 })}
                 download
                 className={`${CHIP_BASE_COMPACT} ${CHIP_INACTIVE}`}
