@@ -6,8 +6,10 @@
  *
  * Plan: docs/superpowers/plans/2026-11-05-nightly-pipeline-phase4.md (Task 4, D9)
  *
- * `loadLotteryWeights` never throws. When the store can't give a valid pair it
- * hands back the frozen seed in both slots and says why in `fallback`:
+ * `loadLotteryWeights` never throws: the query, the parsing of its result and
+ * the logging and alerting each have their own guard. When the store can't
+ * give a valid pair it hands back the frozen seed in both slots and says why
+ * in `fallback`:
  *
  *   - a transient database error (a Neon blip, the 5 s attempt timeout) with
  *     a loaded pair cached: the cached pair, `fallback: null`, one log warning.
@@ -26,7 +28,9 @@
  * Cache (R1): one module-level entry, so the state is bounded by construction.
  * Fluid Compute reuses the instance across requests, so a promotion reaches a
  * warm instance within `WEIGHTS_CACHE_TTL_MS`. One in-flight promise lets
- * concurrent callers share a query; it is dropped when the load settles.
+ * concurrent callers share a query; it is dropped when the load settles. The
+ * entry is shared by every caller, so a result is deep-frozen: a caller that
+ * mutates it throws instead of corrupting the next caller's weights.
  */
 
 import { getDb, isRetryableDbError, withDbRetry } from './db.js';
@@ -34,6 +38,7 @@ import logger from './logger.js';
 import { LotteryWeightsSchema } from './lottery-weights-schema.js';
 import type { LotteryWeights } from './lottery-weights-schema.js';
 import {
+  deepFreeze,
   SEED_LOTTERY_WEIGHTS,
   SEED_LOTTERY_WEIGHTS_VERSION,
 } from './lottery-weights-seed.js';
@@ -98,13 +103,26 @@ function readPointer(
   return { version: row.version, weights: parsed.data };
 }
 
+/**
+ * Logging and alerting are best effort: a logger or Sentry that throws must
+ * not take the loader down with it, because the caller is a scoring cron.
+ */
+function bestEffort(report: () => void): void {
+  try {
+    report();
+  } catch {
+    // Nothing else to report to; the caller still gets its result.
+  }
+}
+
+/** Read the store. Never throws: every failure comes back as a `WeightsFallback`. */
 async function attempt(): Promise<Attempt> {
-  let rows: PointerRow[];
+  let result: unknown;
   try {
     const sql = getDb();
     // One retry and a 5 s attempt timeout: a cron waits at most ~11 s for the
     // store before it falls back.
-    rows = (await withDbRetry(
+    result = await withDbRetry(
       () => sql`
         SELECT p.name, v.version, v.weights
         FROM lottery_score_pointers p
@@ -113,7 +131,7 @@ async function attempt(): Promise<Attempt> {
       `,
       1,
       5_000,
-    )) as PointerRow[];
+    );
   } catch (err) {
     return {
       kind: isRetryableDbError(err) ? 'transient' : 'error',
@@ -121,22 +139,38 @@ async function attempt(): Promise<Attempt> {
     };
   }
 
-  const active = readPointer(rows, 'active');
-  if (typeof active === 'string') return { kind: 'error', reason: active };
-  const takeit = readPointer(rows, 'takeit');
-  if (typeof takeit === 'string') return { kind: 'error', reason: takeit };
-  return { value: { active, takeit, fallback: null } };
+  // The reason is fixed text on purpose: the result is not ours to echo.
+  if (!Array.isArray(result)) {
+    return { kind: 'error', reason: 'the pointer query did not return rows' };
+  }
+  try {
+    const rows = result as PointerRow[];
+    const active = readPointer(rows, 'active');
+    if (typeof active === 'string') return { kind: 'error', reason: active };
+    const takeit = readPointer(rows, 'takeit');
+    if (typeof takeit === 'string') return { kind: 'error', reason: takeit };
+    // The pair is cached and shared by every caller for up to a minute.
+    return { value: deepFreeze({ active, takeit, fallback: null }) };
+  } catch (err) {
+    // A row that is not an object, say: not a database failure, so never transient.
+    return { kind: 'error', reason: describeError(err) };
+  }
 }
 
 function seedFallback(fallback: WeightsFallback): LoadedLotteryWeights {
-  logger.error(fallback, 'lottery weights fallback to seed');
-  Sentry.captureMessage('lottery weights fallback to seed', {
-    level: 'error',
-    fingerprint: ['lottery-weights-fallback', fallback.kind],
-    tags: { kind: fallback.kind },
-    extra: { reason: fallback.reason },
+  bestEffort(() => {
+    logger.error(fallback, 'lottery weights fallback to seed');
   });
-  return {
+  bestEffort(() => {
+    Sentry.captureMessage('lottery weights fallback to seed', {
+      level: 'error',
+      fingerprint: ['lottery-weights-fallback', fallback.kind],
+      tags: { kind: fallback.kind },
+      extra: { reason: fallback.reason },
+    });
+  });
+  // The seed is already frozen; this freezes the wrappers around it.
+  return deepFreeze({
     active: {
       version: SEED_LOTTERY_WEIGHTS_VERSION,
       weights: SEED_LOTTERY_WEIGHTS,
@@ -146,7 +180,7 @@ function seedFallback(fallback: WeightsFallback): LoadedLotteryWeights {
       weights: SEED_LOTTERY_WEIGHTS,
     },
     fallback,
-  };
+  });
 }
 
 async function refresh(
@@ -158,10 +192,12 @@ async function refresh(
     return outcome.value;
   }
   if (outcome.kind === 'transient' && previous?.value.fallback === null) {
-    logger.warn(
-      { reason: outcome.reason },
-      'lottery weights reload failed; serving the cached version',
-    );
+    bestEffort(() => {
+      logger.warn(
+        { reason: outcome.reason },
+        'lottery weights reload failed; serving the cached version',
+      );
+    });
     return previous.value;
   }
   const value = seedFallback(outcome);

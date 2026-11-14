@@ -272,9 +272,10 @@ Nightly constants (`nightly/src/constants.py`):
    - `test_promotion_aborts_when_the_active_pointer_moved`;
    - `test_concurrent_score_writer_aborts_the_rescore`;
    - `test_rescore_rolls_back_past_the_deadline`.
-2. **The Vercel loader failing while a promoted version is active** (a Neon blip at cold start, an invalid row, a missing pointer). Expected: a stale cached version beats the seed. A fire is always written with the version that scored it in `score_version`. A seed fallback is a Sentry error and makes the run `partial`. Pinned by:
+2. **The Vercel loader failing while a promoted version is active** (a Neon blip, an invalid row, a missing pointer). Expected: on a transient error a stale cached version beats the seed. An invalid row or a missing pointer falls back to the seed with the error, even when a version is cached, so bad data is never hidden behind a stale copy. A fire is always written with the version that scored it in `score_version`. A seed fallback is a Sentry error and makes the run `partial`. Pinned by:
    - `serves the cached version on a transient error` (Task 4);
    - `falls back to the seed with an error when nothing is cached` (Task 4);
+   - `a bad row is not masked by the cached version` (Task 4);
    - `a weights fallback marks the run partial and records the seed version` (Task 5).
 3. **Python and TS disagreeing on a score** (boundary values, null features, the Monday override, composites with `"null"` labels, DTE 4, ties in alignment). Expected: identical scores. Pinned by the shared fixture `api/__tests__/fixtures/lottery-score-parity.json`, run by `replays the parity fixture` (Task 2) and `test_score_frame_matches_the_parity_fixture` (Task 12).
 4. **A shadow that can never finish** (a thin session, holidays, a NULL-outcome day). Expected: one rejection with reason `shadow_starved` after 20 elapsed sessions and one notice, then a fresh candidate. Pinned by `test_shadow_starved_after_max_sessions` (Task 13) and `test_starved_shadow_is_rejected_once` (Task 19).

@@ -20,6 +20,8 @@ const h = vi.hoisted(() => ({
   mockSql: vi.fn(),
   getDb: vi.fn(),
   withDbRetry: vi.fn(),
+  // Set by the db mock below; a test swaps it in to run the real retry wrapper.
+  realWithDbRetry: null as null | typeof import('../_lib/db.js').withDbRetry,
   captureMessage: vi.fn(),
   warn: vi.fn(),
   error: vi.fn(),
@@ -27,10 +29,12 @@ const h = vi.hoisted(() => ({
 
 vi.mock('../_lib/db.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../_lib/db.js')>();
+  h.realWithDbRetry = actual.withDbRetry;
   return {
     getDb: h.getDb,
     withDbRetry: h.withDbRetry,
     isRetryableDbError: actual.isRetryableDbError,
+    TransientDbError: actual.TransientDbError,
   };
 });
 
@@ -79,14 +83,31 @@ const promotedRows = (version = REFIT_VERSION): Row[] => [
   takeitRow(SEED_VERSION, structuredClone(SEED_LOTTERY_WEIGHTS)),
 ];
 
-/** A fresh loader (empty cache) and the seed object that fresh copy holds. */
+/**
+ * A fresh loader (empty cache), the seed object that fresh copy holds, and the
+ * `TransientDbError` class of the same module graph, so an error built from it
+ * is the one the loader's classifier recognises by `instanceof`.
+ */
 async function freshLoader() {
   vi.resetModules();
   const { loadLotteryWeights } =
     await import('../_lib/lottery-weights-loader.js');
   const { SEED_LOTTERY_WEIGHTS: seed } =
     await import('../_lib/lottery-weights-seed.js');
-  return { load: loadLotteryWeights, seed };
+  const { TransientDbError } = await import('../_lib/db.js');
+  return { load: loadLotteryWeights, seed, TransientDbError };
+}
+
+/** The one D9 alert: its title, level `error` and the fingerprint for `kind`. */
+function expectFallbackReported(kind: 'transient' | 'error'): void {
+  expect(h.captureMessage).toHaveBeenCalledTimes(1);
+  expect(h.captureMessage).toHaveBeenCalledWith(
+    'lottery weights fallback to seed',
+    expect.objectContaining({
+      level: 'error',
+      fingerprint: ['lottery-weights-fallback', kind],
+    }),
+  );
 }
 
 beforeEach(() => {
@@ -196,14 +217,7 @@ describe('loadLotteryWeights', () => {
     expect(result.takeit).toEqual({ version: SEED_VERSION, weights: seed });
     expect(result.active.weights).toBe(seed);
     expect(result.takeit.weights).toBe(seed);
-    expect(h.captureMessage).toHaveBeenCalledTimes(1);
-    expect(h.captureMessage).toHaveBeenCalledWith(
-      'lottery weights fallback to seed',
-      expect.objectContaining({
-        level: 'error',
-        fingerprint: ['lottery-weights-fallback', 'transient'],
-      }),
-    );
+    expectFallbackReported('transient');
     expect(h.error).toHaveBeenCalledTimes(1);
   });
 
@@ -222,14 +236,7 @@ describe('loadLotteryWeights', () => {
     );
     expect(result.active).toEqual({ version: SEED_VERSION, weights: seed });
     expect(result.takeit).toEqual({ version: SEED_VERSION, weights: seed });
-    expect(h.captureMessage).toHaveBeenCalledTimes(1);
-    expect(h.captureMessage).toHaveBeenCalledWith(
-      'lottery weights fallback to seed',
-      expect.objectContaining({
-        level: 'error',
-        fingerprint: ['lottery-weights-fallback', 'error'],
-      }),
-    );
+    expectFallbackReported('error');
   });
 
   it('an invalid takeit row replaces both slots, not only its own', async () => {
@@ -245,6 +252,7 @@ describe('loadLotteryWeights', () => {
     expect(result.fallback?.reason).toMatch(/^takeit version seed-2026-06-17/);
     expect(result.active).toEqual({ version: SEED_VERSION, weights: seed });
     expect(result.takeit).toEqual({ version: SEED_VERSION, weights: seed });
+    expectFallbackReported('error');
   });
 
   it('a missing takeit pointer falls back to the seed, kind error', async () => {
@@ -259,12 +267,7 @@ describe('loadLotteryWeights', () => {
     });
     expect(result.active).toEqual({ version: SEED_VERSION, weights: seed });
     expect(result.takeit).toEqual({ version: SEED_VERSION, weights: seed });
-    expect(h.captureMessage).toHaveBeenCalledWith(
-      'lottery weights fallback to seed',
-      expect.objectContaining({
-        fingerprint: ['lottery-weights-fallback', 'error'],
-      }),
-    );
+    expectFallbackReported('error');
   });
 
   it.each([
@@ -284,6 +287,7 @@ describe('loadLotteryWeights', () => {
       reason: 'no active pointer',
     });
     expect(result.active.version).toBe(SEED_VERSION);
+    expectFallbackReported('error');
   });
 
   it('a non-transient database error falls back to the seed, kind error', async () => {
@@ -300,7 +304,7 @@ describe('loadLotteryWeights', () => {
       reason: 'relation "lottery_score_pointers" does not exist',
     });
     expect(result.active.version).toBe(SEED_VERSION);
-    expect(h.captureMessage).toHaveBeenCalledTimes(1);
+    expectFallbackReported('error');
   });
 
   it('never throws: a client that cannot be built also falls back', async () => {
@@ -316,6 +320,137 @@ describe('loadLotteryWeights', () => {
       reason: 'DATABASE_URL not configured',
     });
     expect(h.mockSql).not.toHaveBeenCalled();
+    expectFallbackReported('error');
+  });
+
+  it.each([
+    ['null', null],
+    ['an object', { rows: [] }],
+    ['a string', 'oops'],
+  ])(
+    'never throws: a query result that is %s, not rows, falls back',
+    async (_label, result) => {
+      h.mockSql.mockResolvedValueOnce(result);
+      const { load, seed } = await freshLoader();
+
+      const loaded = await load();
+
+      // The reason is fixed text: it carries nothing from the result.
+      expect(loaded.fallback).toEqual({
+        kind: 'error',
+        reason: 'the pointer query did not return rows',
+      });
+      expect(loaded.active).toEqual({ version: SEED_VERSION, weights: seed });
+      expectFallbackReported('error');
+    },
+  );
+
+  it('never throws: a row that is not an object also falls back', async () => {
+    h.mockSql.mockResolvedValueOnce([null]);
+    const { load } = await freshLoader();
+
+    const result = await load();
+
+    expect(result.fallback?.kind).toBe('error');
+    expect(result.active.version).toBe(SEED_VERSION);
+    expectFallbackReported('error');
+  });
+
+  it('a weights value that is not an object is rejected at the root', async () => {
+    h.mockSql.mockResolvedValueOnce([
+      activeRow(REFIT_VERSION, null),
+      takeitRow(SEED_VERSION, structuredClone(SEED_LOTTERY_WEIGHTS)),
+    ]);
+    const { load } = await freshLoader();
+
+    const result = await load();
+
+    expect(result.fallback?.kind).toBe('error');
+    expect(result.fallback?.reason).toMatch(
+      /^active version refit-2026-11-12 fails validation at the root: /,
+    );
+    expectFallbackReported('error');
+  });
+
+  it('a rejection that is not an Error is reported by its text, kind error', async () => {
+    h.mockSql.mockRejectedValueOnce('boom');
+    const { load } = await freshLoader();
+
+    const result = await load();
+
+    expect(result.fallback).toEqual({ kind: 'error', reason: 'boom' });
+    expectFallbackReported('error');
+  });
+
+  it.each(['fetch failed', 'a cause the classifier would not match'])(
+    'a TransientDbError from the retry wrapper (cause: %s) is a transient fallback',
+    async (cause) => {
+      const { load, TransientDbError } = await freshLoader();
+      h.mockSql.mockRejectedValueOnce(new TransientDbError(new Error(cause)));
+
+      const result = await load();
+
+      expect(result.fallback).toEqual({ kind: 'transient', reason: cause });
+      expectFallbackReported('transient');
+    },
+  );
+
+  it('a store that stays down, through the real retry wrapper, is a transient fallback', async () => {
+    h.mockSql.mockRejectedValue(new Error('fetch failed'));
+    const { load } = await freshLoader();
+    h.withDbRetry.mockImplementation(h.realWithDbRetry!);
+
+    const pending = load();
+    await vi.advanceTimersByTimeAsync(1_000); // the wrapper's one backoff
+    const result = await pending;
+
+    expect(h.mockSql).toHaveBeenCalledTimes(2);
+    expect(result.fallback).toEqual({
+      kind: 'transient',
+      reason: 'fetch failed',
+    });
+    expectFallbackReported('transient');
+  });
+
+  it('never throws: a Sentry that throws does not stop the fallback', async () => {
+    h.mockSql.mockRejectedValueOnce(new Error('fetch failed'));
+    h.captureMessage.mockImplementationOnce(() => {
+      throw new Error('sentry down');
+    });
+    const { load } = await freshLoader();
+
+    const result = await load();
+
+    expect(result.fallback?.kind).toBe('transient');
+    expect(result.active.version).toBe(SEED_VERSION);
+  });
+
+  it('never throws: a logger that throws does not stop the alert or the fallback', async () => {
+    h.mockSql.mockRejectedValueOnce(new Error('fetch failed'));
+    h.error.mockImplementationOnce(() => {
+      throw new Error('logger down');
+    });
+    const { load } = await freshLoader();
+
+    const result = await load();
+
+    expect(result.fallback?.kind).toBe('transient');
+    expectFallbackReported('transient');
+  });
+
+  it('never throws: a logger that throws does not stop the cached version', async () => {
+    h.mockSql
+      .mockResolvedValueOnce(promotedRows())
+      .mockRejectedValueOnce(new Error('fetch failed'));
+    h.warn.mockImplementationOnce(() => {
+      throw new Error('logger down');
+    });
+    const { load } = await freshLoader();
+
+    const first = await load();
+    vi.advanceTimersByTime(TTL_MS);
+
+    expect(await load()).toBe(first);
   });
 
   it('a bad row is not masked by the cached version', async () => {
@@ -333,7 +468,7 @@ describe('loadLotteryWeights', () => {
 
     expect(result.fallback?.kind).toBe('error');
     expect(result.active.version).toBe(SEED_VERSION);
-    expect(h.captureMessage).toHaveBeenCalledTimes(1);
+    expectFallbackReported('error');
   });
 
   it('a rejected load is not cached', async () => {
@@ -386,6 +521,25 @@ describe('loadLotteryWeights', () => {
     expect(h.captureMessage).toHaveBeenCalledTimes(2);
   });
 
+  it('the seed is deep-frozen on its own, before anything loads it', async () => {
+    // The scorer's default tier cutoffs alias the seed, and nothing there goes
+    // through the loader, so the freeze cannot depend on the loader doing it.
+    const { seed } = await freshLoader();
+
+    expect(() => {
+      seed.features.ticker_weights.AAPL = 99;
+    }).toThrow(TypeError);
+    expect(() => {
+      seed.cutoffs.t1 = 0;
+    }).toThrow(TypeError);
+    expect(() => {
+      seed.features.composite_bonuses[0]!.match.ticker = 'ZZZ';
+    }).toThrow(TypeError);
+    expect(() => {
+      seed.features.composite_bonuses.push(seed.features.composite_bonuses[0]!);
+    }).toThrow(TypeError);
+  });
+
   it('the fallback result cannot be mutated into the seed', async () => {
     h.mockSql.mockRejectedValueOnce(new Error('fetch failed'));
     const { load, seed } = await freshLoader();
@@ -406,8 +560,39 @@ describe('loadLotteryWeights', () => {
     expect(() => {
       composite.match.ticker = 'ZZZ';
     }).toThrow(TypeError);
+    expect(() => {
+      result.active.version = 'x';
+    }).toThrow(TypeError);
     expect(seed.features.ticker_weights.AAPL).toBe(-1);
     expect(seed.cutoffs.t1).toBe(10);
     expect(seed.features.composite_bonuses[0]).toBe(composite);
+  });
+
+  it('a loaded pair is shared for up to a minute, so it cannot be mutated', async () => {
+    h.mockSql.mockResolvedValueOnce(promotedRows());
+    const { load } = await freshLoader();
+
+    const result = await load();
+    const composite = result.active.weights.features.composite_bonuses[0]!;
+
+    expect(() => {
+      result.active.weights.features.ticker_weights.AAPL = 99;
+    }).toThrow(TypeError);
+    expect(() => {
+      result.takeit.weights.cutoffs.t1 = 0;
+    }).toThrow(TypeError);
+    expect(() => {
+      composite.match.ticker = 'ZZZ';
+    }).toThrow(TypeError);
+    expect(() => {
+      result.active.version = 'x';
+    }).toThrow(TypeError);
+    expect(() => {
+      result.fallback = { kind: 'error', reason: 'x' };
+    }).toThrow(TypeError);
+    // The next caller still gets the pair as it was loaded.
+    const again = await load();
+    expect(again).toBe(result);
+    expect(again.active.weights.features.ticker_weights.AAPL).toBe(0);
   });
 });

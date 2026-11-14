@@ -21,7 +21,9 @@
  * The object is also the loader's runtime fallback (`lottery-weights-loader.ts`
  * hands it to the crons when the store can't be read), so it is deep-frozen at
  * load: no consumer can change it in memory. A test that needs a modified copy
- * takes a `structuredClone` of it first.
+ * takes a `structuredClone` of it first. `deepFreeze` is exported so the loader
+ * can freeze the pairs it reads from the store the same way: a cached pair is
+ * shared by every caller for up to a minute.
  *
  * Plan: docs/superpowers/plans/2026-11-05-nightly-pipeline-phase4.md (D5)
  * Spec: docs/superpowers/specs/2026-10-28-nightly-pipeline-automation-design.md
@@ -33,7 +35,7 @@ import type { LotteryWeights } from './lottery-weights-schema.js';
 export const SEED_LOTTERY_WEIGHTS_VERSION = 'seed-2026-06-17';
 
 /** Freeze `value` and every object and array reachable from it. */
-function deepFreeze<T>(value: T): T {
+export function deepFreeze<T>(value: T): T {
   if (typeof value === 'object' && value !== null && !Object.isFrozen(value)) {
     Object.freeze(value);
     for (const child of Object.values(value)) deepFreeze(child);
