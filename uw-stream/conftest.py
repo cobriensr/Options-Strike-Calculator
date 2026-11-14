@@ -31,14 +31,19 @@ It also keeps every test off a real database and the network (owner rule,
 
 Twin of the guard in sidecar/conftest.py, ml/conftest.py and
 scripts/conftest.py. tests/test_no_database_guard.py proves each block.
+
+Also holds `service_log_records`, the fixture that captures what the service
+logger emits, shared by the connector and Sentry-setup tests.
 """
 
 from __future__ import annotations
 
 import ipaddress
+import logging
 import os
 import socket
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 
 import asyncpg
@@ -234,3 +239,40 @@ def _tests_never_reach_a_database():
             "db_block_attempts.discard() itself.",
             pytrace=False,
         )
+
+
+# ---------------------------------------------------------------------------
+# Log capture
+# ---------------------------------------------------------------------------
+
+
+class _LogRecordCollector(logging.Handler):
+    """Keeps every LogRecord handed to it, with each ``extra`` field as an attribute."""
+
+    def __init__(self) -> None:
+        super().__init__(level=logging.DEBUG)
+        self.records: list[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(record)
+
+
+@pytest.fixture
+def service_log_records() -> Iterator[list[logging.LogRecord]]:
+    """The records the service logger emits, at every level.
+
+    The project logger (``logger_setup.log``, the one ``connector`` and
+    ``sentry_setup`` import) sets ``propagate=False``, so ``caplog`` never sees its
+    records. A handler attached to the logger itself does.
+    """
+    from logger_setup import log
+
+    collector = _LogRecordCollector()
+    previous_level = log.level
+    log.addHandler(collector)
+    log.setLevel(logging.DEBUG)
+    try:
+        yield collector.records
+    finally:
+        log.removeHandler(collector)
+        log.setLevel(previous_level)

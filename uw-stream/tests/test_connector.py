@@ -1090,37 +1090,6 @@ _DIAG_FIELDS = frozenset(
 )
 
 
-class _RecordCollector(logging.Handler):
-    """Collects every LogRecord the connector's logger emits.
-
-    The project logger sets ``propagate=False``, so ``caplog`` never sees its
-    records. A handler attached to the logger itself does, with each ``extra``
-    field as a record attribute.
-    """
-
-    def __init__(self) -> None:
-        super().__init__(level=logging.DEBUG)
-        self.records: list[logging.LogRecord] = []
-
-    def emit(self, record: logging.LogRecord) -> None:
-        self.records.append(record)
-
-
-@pytest.fixture
-def connector_records():
-    import connector as connector_mod
-
-    collector = _RecordCollector()
-    prev_level = connector_mod.log.level
-    connector_mod.log.addHandler(collector)
-    connector_mod.log.setLevel(logging.DEBUG)
-    try:
-        yield collector.records
-    finally:
-        connector_mod.log.removeHandler(collector)
-        connector_mod.log.setLevel(prev_level)
-
-
 def _closed_from(cause: BaseException | None, **kwargs: Any) -> websockets.ConnectionClosedError:
     """A ConnectionClosedError chained the way websockets 17 raises it:
     ``raise self.protocol.close_exc from self.recv_exc`` (cause may be None)."""
@@ -1244,7 +1213,7 @@ def _only(records: list[logging.LogRecord], msg: str) -> logging.LogRecord:
 
 @pytest.mark.asyncio
 async def test_disconnect_log_reports_transport_cause_and_session(
-    monkeypatch, connector_records
+    monkeypatch, service_log_records
 ) -> None:
     """The production failure: ConnectionClosedError chained from an
     ECONNRESET. The log line must name the shard, the exception class, both
@@ -1263,7 +1232,7 @@ async def test_disconnect_log_reports_transport_cause_and_session(
 
     await _run_attempts(monkeypatch, connector, [_ConnectCtx(ws)])
 
-    rec = _only(connector_records, "WS connection unavailable")
+    rec = _only(service_log_records, "WS connection unavailable")
     assert rec.__dict__.keys() >= _DIAG_FIELDS
     assert rec.shard == "shard-3"
     assert rec.exc_type == "ConnectionClosedError"
@@ -1286,7 +1255,7 @@ async def test_disconnect_log_reports_transport_cause_and_session(
 
 @pytest.mark.asyncio
 async def test_disconnect_log_without_cause_reports_close_frames(
-    monkeypatch, connector_records
+    monkeypatch, service_log_records
 ) -> None:
     """A ConnectionClosedError with no chained cause (websockets raises it
     ``from None`` on a bare TCP EOF) logs None cause fields without crashing,
@@ -1298,7 +1267,7 @@ async def test_disconnect_log_without_cause_reports_close_frames(
 
     await _run_attempts(monkeypatch, connector, [_ConnectCtx(ws)])
 
-    rec = _only(connector_records, "WS connection unavailable")
+    rec = _only(service_log_records, "WS connection unavailable")
     assert rec.__dict__.keys() >= _DIAG_FIELDS
     assert rec.exc_type == "ConnectionClosedError"
     assert rec.cause_type is None
@@ -1313,7 +1282,7 @@ async def test_disconnect_log_without_cause_reports_close_frames(
 
 
 @pytest.mark.asyncio
-async def test_clean_close_log_carries_diag_fields(monkeypatch, connector_records) -> None:
+async def test_clean_close_log_carries_diag_fields(monkeypatch, service_log_records) -> None:
     """A graceful close raises nothing, so the close frames come from the
     socket's protocol state. Same field set as the exception branches."""
     going_away = Close(1001, "going away")
@@ -1327,7 +1296,7 @@ async def test_clean_close_log_carries_diag_fields(monkeypatch, connector_record
 
     await _run_attempts(monkeypatch, connector, [_ConnectCtx(ws)])
 
-    rec = _only(connector_records, "WS closed cleanly, reconnecting after grace")
+    rec = _only(service_log_records, "WS closed cleanly, reconnecting after grace")
     assert rec.__dict__.keys() >= _DIAG_FIELDS
     assert rec.shard == "shard-0"
     assert rec.exc_type is None
@@ -1355,7 +1324,7 @@ async def test_clean_close_log_carries_diag_fields(monkeypatch, connector_record
 )
 @pytest.mark.asyncio
 async def test_pre_connect_failure_logs_no_session(
-    monkeypatch, connector_records, enter_exc: BaseException, msg: str, exc_type: str
+    monkeypatch, service_log_records, enter_exc: BaseException, msg: str, exc_type: str
 ) -> None:
     """A handshake reject or TCP failure never opened a socket: every session
     field is None, and building the line doesn't crash on the missing socket."""
@@ -1363,7 +1332,7 @@ async def test_pre_connect_failure_logs_no_session(
 
     await _run_attempts(monkeypatch, connector, [_ConnectCtx(enter_exc=enter_exc)])
 
-    rec = _only(connector_records, msg)
+    rec = _only(service_log_records, msg)
     assert rec.__dict__.keys() >= _DIAG_FIELDS
     assert rec.shard == "shard-1"
     assert rec.exc_type == exc_type
@@ -1379,7 +1348,7 @@ async def test_pre_connect_failure_logs_no_session(
 
 @pytest.mark.asyncio
 async def test_disconnect_cause_falls_back_to_implicit_context(
-    monkeypatch, connector_records
+    monkeypatch, service_log_records
 ) -> None:
     """An exception raised inside ``except`` WITHOUT ``from`` has no
     ``__cause__``. The transport error it was handling, linked as
@@ -1391,14 +1360,14 @@ async def test_disconnect_cause_falls_back_to_implicit_context(
 
     await _run_attempts(monkeypatch, connector, [_ConnectCtx(ws)])
 
-    rec = _only(connector_records, "WS connection unavailable")
+    rec = _only(service_log_records, "WS connection unavailable")
     assert rec.cause_type == "ConnectionResetError"
     assert rec.cause == repr(reset)
     assert rec.cause_errno == errno.ECONNRESET
 
 
 @pytest.mark.asyncio
-async def test_disconnect_cause_honours_from_none(monkeypatch, connector_records) -> None:
+async def test_disconnect_cause_honours_from_none(monkeypatch, service_log_records) -> None:
     """``raise ... from None`` suppresses the implicit context, so it must not
     be reported as the cause. Mirrors websockets' client handshake check:
     ``raise InvalidHeader("Sec-WebSocket-Accept") from None`` inside
@@ -1412,7 +1381,7 @@ async def test_disconnect_cause_honours_from_none(monkeypatch, connector_records
 
     await _run_attempts(monkeypatch, connector, [_ConnectCtx(enter_exc=rejected)])
 
-    rec = _only(connector_records, "WS connection unavailable")
+    rec = _only(service_log_records, "WS connection unavailable")
     assert rec.exc_type == "InvalidHeader"
     assert rec.cause_type is None
     assert rec.cause is None
@@ -1420,7 +1389,7 @@ async def test_disconnect_cause_honours_from_none(monkeypatch, connector_records
 
 
 @pytest.mark.asyncio
-async def test_session_fields_reset_between_attempts(monkeypatch, connector_records) -> None:
+async def test_session_fields_reset_between_attempts(monkeypatch, service_log_records) -> None:
     """A failed connect after a real session must not report the previous
     socket's age, frames or addresses: each attempt starts from nothing."""
     first = _SessionWS([b"f1"], end=_closed_from(ConnectionResetError(errno.ECONNRESET, "reset")))
@@ -1431,11 +1400,11 @@ async def test_session_fields_reset_between_attempts(monkeypatch, connector_reco
         monkeypatch, connector, [_ConnectCtx(first), _ConnectCtx(enter_exc=refused)]
     )
 
-    dropped = _only(connector_records, "WS connection unavailable")
+    dropped = _only(service_log_records, "WS connection unavailable")
     assert dropped.frames == 1
     assert dropped.local_addr == "10.250.1.7:54321"
 
-    rec = _only(connector_records, "WS transport error")
+    rec = _only(service_log_records, "WS transport error")
     assert rec.session_s is None
     assert rec.frames is None
     assert rec.since_last_frame_s is None
@@ -1444,7 +1413,7 @@ async def test_session_fields_reset_between_attempts(monkeypatch, connector_reco
 
 
 @pytest.mark.asyncio
-async def test_disconnect_logs_never_contain_ws_token(monkeypatch, connector_records) -> None:
+async def test_disconnect_logs_never_contain_ws_token(monkeypatch, service_log_records) -> None:
     """The WS URL carries the UW key as ``?token=``. Even when the exception
     text and its chained cause both embed that URL, no emitted record, raw
     or JSON-formatted, may contain the key."""
@@ -1468,11 +1437,11 @@ async def test_disconnect_logs_never_contain_ws_token(monkeypatch, connector_rec
     )
 
     # Both disconnect lines were emitted (so the check below isn't vacuous).
-    assert _only(connector_records, "WS transport error").cause_type == "RuntimeError"
-    assert _only(connector_records, "WS connection unavailable").cause_type == "OSError"
+    assert _only(service_log_records, "WS transport error").cause_type == "RuntimeError"
+    assert _only(service_log_records, "WS connection unavailable").cause_type == "OSError"
 
     formatter = JsonFormatter()
-    for record in connector_records:
+    for record in service_log_records:
         line = formatter.format(record)
         assert _SECRET not in line, f"token leaked into formatted record: {line}"
         raw_values = " ".join(repr(v) for v in record.__dict__.values())
@@ -1482,7 +1451,7 @@ async def test_disconnect_logs_never_contain_ws_token(monkeypatch, connector_rec
 
 
 @pytest.mark.asyncio
-async def test_unexpected_disconnect_sends_diag_to_sentry(monkeypatch, connector_records) -> None:
+async def test_unexpected_disconnect_sends_diag_to_sentry(monkeypatch, service_log_records) -> None:
     """The catch-all branch logs nothing of its own; it reports to Sentry. The
     capture must carry the same disconnect diagnostics as context, with the
     existing tag, and the token scrubbed out of the exception text and cause."""
@@ -1522,7 +1491,7 @@ async def test_unexpected_disconnect_sends_diag_to_sentry(monkeypatch, connector
     assert ctx["remote_addr"] == "104.18.24.1:443"
     assert _SECRET not in json.dumps(kwargs["context"], default=str)
     # No disconnect log line of its own: the catch-all reports via Sentry only.
-    assert not [r for r in connector_records if r.levelno >= logging.WARNING]
+    assert not [r for r in service_log_records if r.levelno >= logging.WARNING]
 
 
 @pytest.mark.parametrize(
@@ -1921,52 +1890,52 @@ async def _connect_shard(
 
 @pytest.mark.asyncio
 async def test_a_normal_connect_logs_one_summary_per_shard_and_no_per_channel_info_line(
-    monkeypatch, connector_records, short_join_wait
+    monkeypatch, service_log_records, short_join_wait
 ) -> None:
     shards = {
         "conn0": ["flow-alerts", "net_flow:SPY", "net_flow:QQQ"],
         "conn1": ["gex_strike_expiry:SPY", "gex_strike_expiry:QQQ"],
     }
     for name, channels in shards.items():
-        await _connect_shard(monkeypatch, connector_records, channels, name=name)
+        await _connect_shard(monkeypatch, service_log_records, channels, name=name)
 
-    joined = [r for r in connector_records if r.getMessage() == "shard joined"]
+    joined = [r for r in service_log_records if r.getMessage() == "shard joined"]
     assert [(r.shard, r.channels, r.acked) for r in joined] == [("conn0", 3, 3), ("conn1", 2, 2)]
     assert all(r.levelno == logging.INFO for r in joined)
     assert all(0.0 <= r.elapsed_s < 1.0 for r in joined)
-    assert [r for r in connector_records if r.levelno >= logging.WARNING] == []
+    assert [r for r in service_log_records if r.levelno >= logging.WARNING] == []
     # The per-channel lines exist (the filter below is not vacuous), all at debug.
-    assert [r for r in connector_records if hasattr(r, "channel")] != []
+    assert [r for r in service_log_records if hasattr(r, "channel")] != []
     assert [
         r.getMessage()
-        for r in connector_records
+        for r in service_log_records
         if r.levelno >= logging.INFO and hasattr(r, "channel")
     ] == []
 
 
 @pytest.mark.asyncio
 async def test_each_join_and_each_ack_is_still_a_debug_line_naming_the_channel(
-    monkeypatch, connector_records, short_join_wait
+    monkeypatch, service_log_records, short_join_wait
 ) -> None:
     channels = ["flow-alerts", "net_flow:SPY"]
 
-    await _connect_shard(monkeypatch, connector_records, channels)
+    await _connect_shard(monkeypatch, service_log_records, channels)
 
     for message in ("sent join frame", "channel ack received"):
-        lines = [r for r in connector_records if r.getMessage() == message]
+        lines = [r for r in service_log_records if r.getMessage() == message]
         assert sorted(r.channel for r in lines) == sorted(channels)
         assert {r.levelno for r in lines} == {logging.DEBUG}
 
 
 @pytest.mark.asyncio
-async def test_subscribe_all_logs_each_join_at_debug(connector_records) -> None:
+async def test_subscribe_all_logs_each_join_at_debug(service_log_records) -> None:
     connector = Connector(
         channels=["flow-alerts", "option_trades:SPY"], receive_queue=asyncio.Queue(maxsize=10)
     )
 
     await connector._subscribe_all(FakeWebSocket())
 
-    lines = [r for r in connector_records if r.getMessage() == "sent join frame"]
+    lines = [r for r in service_log_records if r.getMessage() == "sent join frame"]
     assert [(r.channel, r.levelno) for r in lines] == [
         ("flow-alerts", logging.DEBUG),
         ("option_trades:SPY", logging.DEBUG),
@@ -1979,34 +1948,36 @@ async def test_subscribe_all_logs_each_join_at_debug(connector_records) -> None:
 )
 @pytest.mark.asyncio
 async def test_a_join_that_is_not_acked_is_named_in_a_warning(
-    monkeypatch, connector_records, short_join_wait, reply, how
+    monkeypatch, service_log_records, short_join_wait, reply, how
 ) -> None:
     """A refused join never flips ``subscribed``, so it reads as unacked like a silent one."""
     channels = ["flow-alerts", "net_flow:SPY", "net_flow:QQQ"]
 
-    await _connect_shard(monkeypatch, connector_records, channels, replies={"net_flow:SPY": reply})
+    await _connect_shard(
+        monkeypatch, service_log_records, channels, replies={"net_flow:SPY": reply}
+    )
 
-    (line,) = _join_lines(connector_records, "conn0")
+    (line,) = _join_lines(service_log_records, "conn0")
     assert line.getMessage() == "shard join incomplete", f"join {how}"
     assert line.levelno == logging.WARNING
     assert line.unacked == ["net_flow:SPY"]
-    assert [r for r in connector_records if r.getMessage() == "shard joined"] == []
+    assert [r for r in service_log_records if r.getMessage() == "shard joined"] == []
 
 
 @pytest.mark.asyncio
 async def test_the_summary_counts_are_right_when_some_channels_fail(
-    monkeypatch, connector_records, short_join_wait
+    monkeypatch, service_log_records, short_join_wait
 ) -> None:
     channels = ["a", "b", "c", "d", "e"]
 
     await _connect_shard(
         monkeypatch,
-        connector_records,
+        service_log_records,
         channels,
         replies={"b": None, "d": _NO_ACCESS},
     )
 
-    (line,) = _join_lines(connector_records, "conn0")
+    (line,) = _join_lines(service_log_records, "conn0")
     assert (line.channels, line.acked, line.unacked) == (5, 3, ["b", "d"])
     # The line comes when the existing wait ends, not before: the missing acks
     # could still have arrived.
@@ -2015,7 +1986,7 @@ async def test_the_summary_counts_are_right_when_some_channels_fail(
 
 @pytest.mark.asyncio
 async def test_a_drop_before_the_wait_ends_logs_no_summary_and_leaves_no_task(
-    monkeypatch, connector_records, short_join_wait
+    monkeypatch, service_log_records, short_join_wait
 ) -> None:
     """The socket dies with every join unanswered: no line claims a join result, and
     the task that would have logged one does not outlive the connection."""
@@ -2029,7 +2000,7 @@ async def test_a_drop_before_the_wait_ends_logs_no_summary_and_leaves_no_task(
 
     await connector._connect_once()
 
-    assert _join_lines(connector_records, "conn0") == []
+    assert _join_lines(service_log_records, "conn0") == []
     assert _join_summary_tasks() == []
 
 
@@ -2052,39 +2023,43 @@ def _true_after(seconds: float) -> Callable[[], bool]:
 
 @pytest.mark.asyncio
 async def test_a_drop_while_the_summary_task_waits_logs_no_summary_and_leaves_no_task(
-    monkeypatch, connector_records, short_join_wait
+    monkeypatch, service_log_records
 ) -> None:
-    """The session ends with ``_report_join`` asleep in its poll, 0.05 s into a 0.2 s wait.
+    """The session ends with ``_report_join`` asleep in its poll, well inside its wait.
 
     The test above ends the session before the task runs its first step, so the cancel
     never reaches a sleep inside ``_report_join``. Here it does: that cancel must end the
-    task, not turn into a join line for a wait that never finished. The pause afterwards
-    is longer than the wait, so a task that outlived the session would have logged by now.
+    task, not turn into a join line for a wait that never finished.
+
+    The wait is the real 30 s, so a stalled loop cannot run it out, and the test does not
+    pause afterwards. A summary logged from a cancel handler is emitted before
+    ``_connect_once`` returns, because its ``finally`` gathers the task; a task that
+    outlived the session shows in ``_join_summary_tasks()``.
     """
     channels = ["flow-alerts", "net_flow:SPY"]
 
     await _connect_shard(
         monkeypatch,
-        connector_records,
+        service_log_records,
         channels,
         replies={"net_flow:SPY": None},
         until=_true_after(0.05),
     )
-    await asyncio.sleep(short_join_wait + 0.1)
 
-    assert _join_lines(connector_records, "conn0") == []
+    assert _join_lines(service_log_records, "conn0") == []
     assert _join_summary_tasks() == []
 
 
 @pytest.mark.asyncio
 async def test_an_outer_cancel_while_the_summary_task_waits_logs_no_summary_and_leaves_no_task(
-    monkeypatch, connector_records, short_join_wait
+    monkeypatch, service_log_records
 ) -> None:
     """A shutdown cancel of the connection while its summary task waits.
 
     The cancel must still propagate, since ``_connect_once`` swallowing it would keep the
     connector reconnecting instead of stopping, and the summary task must end cancelled,
-    having logged nothing.
+    having logged nothing. The wait is the real 30 s and the test does not pause
+    afterwards, for the reasons the test above gives.
     """
     import connector as connector_mod
 
@@ -2105,7 +2080,7 @@ async def test_an_outer_cancel_while_the_summary_task_waits_logs_no_summary_and_
         await asyncio.sleep(0.05)
         # The precondition: the task is mid-wait, with its line not yet due.
         assert not join_task.done()
-        assert _join_lines(connector_records, "conn0") == []
+        assert _join_lines(service_log_records, "conn0") == []
 
         session.cancel()
         with pytest.raises(asyncio.CancelledError):
@@ -2113,8 +2088,7 @@ async def test_an_outer_cancel_while_the_summary_task_waits_logs_no_summary_and_
     finally:
         session.cancel()
         await asyncio.gather(session, return_exceptions=True)
-    await asyncio.sleep(short_join_wait + 0.1)
 
-    assert _join_lines(connector_records, "conn0") == []
+    assert _join_lines(service_log_records, "conn0") == []
     assert _join_summary_tasks() == []
     assert join_task.cancelled()

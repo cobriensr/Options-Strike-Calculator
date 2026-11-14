@@ -341,40 +341,20 @@ class TestLoggingIntegration:
         ]
 
 
-class _ServiceLogRecords(logging.Handler):
-    def __init__(self) -> None:
-        super().__init__(level=logging.DEBUG)
-        self.records: list[logging.LogRecord] = []
-
-    def emit(self, record: logging.LogRecord) -> None:
-        self.records.append(record)
-
-
-@pytest.fixture
-def service_log_records(monkeypatch) -> Iterator[list[logging.LogRecord]]:
-    """The records the service logger emits (it does not propagate, so caplog misses them).
-
-    The SDK is off: these tests are about the helper's own log line.
-    """
-    monkeypatch.setattr(sentry_setup, "_sentry_enabled", False)
-    collector = _ServiceLogRecords()
-    previous_level = log.level
-    log.addHandler(collector)
-    log.setLevel(logging.DEBUG)
-    try:
-        yield collector.records
-    finally:
-        log.removeHandler(collector)
-        log.setLevel(previous_level)
-
-
 class TestCaptureMessageLogLine:
     """``capture_message`` logs one line, at the level the capture is filed at.
 
     It always logged at WARNING, so an ``error`` event showed in Railway as a warning.
     A level it does not know logs at WARNING, the level it always had, and never raises:
     a monitoring helper must not take down the caller that is reporting a problem.
+
+    The records come from the shared ``service_log_records`` fixture (conftest.py).
     """
+
+    @pytest.fixture(autouse=True)
+    def _sdk_off(self, monkeypatch) -> None:
+        """These tests are about the helper's own log line, not what it sends."""
+        monkeypatch.setattr(sentry_setup, "_sentry_enabled", False)
 
     @pytest.mark.parametrize(
         ("level", "expected"),

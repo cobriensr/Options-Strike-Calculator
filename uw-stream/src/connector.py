@@ -67,7 +67,8 @@ def _jittered_backoff(backoff: float) -> float:
 _PING_INTERVAL_S = 20.0
 _PING_TIMEOUT_S = 20.0
 
-# Threshold for raising a Sentry warning if reconnects pile up.
+# Threshold for raising the Sentry error (the reconnect storm alert) when reconnects
+# pile up.
 _RECONNECT_STORM_THRESHOLD = 5
 
 # Storm alert window (no constant; ``_maybe_alert_storm`` applies it).
