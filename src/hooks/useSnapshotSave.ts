@@ -18,8 +18,8 @@
  *     The row carries quotedAt, when those quotes last printed (the older of
  *     the SPX and VIX Schwab tradeTime): a stalled poll or an old Schwab
  *     print leaves inputs that still match the quote state, and only the
- *     quote's time shows it. Phase 3 of P0.6 makes the server refuse a stale
- *     row; until then it accepts quotedAt and ignores it. A replay sends none.
+ *     quote's time shows it. The server refuses a stale row (422, P0.6;
+ *     api/_lib/quote-freshness.ts). A replay sends none.
  *     Only a live-save browser posts it (isLiveSaveDevice: computers by
  *     default, phones and tablets not, and a per-browser switch overrides
  *     either way): the missed-snapshot alert watches the trading computer, and
@@ -42,9 +42,9 @@
  * retry would post (and report) on every render, and a POST aborted by a
  * re-render, say on a late answer from another hook, would be lost for
  * good: its key is already marked. Only unmount aborts a POST. A failure:
- *   - a network error, a 5xx, a 429 (rate limited), a 422 (P0.6 Phase 3: the
- *     server found the live quote stale) or a 401 (a lapsed owner session,
- *     which the auth interceptor clears) releases the key, so the next
+ *   - a network error, a 5xx, a 429 (rate limited), a 422 (the server found
+ *     the live quote stale) or a 401 (a lapsed owner session, which the
+ *     auth interceptor clears) releases the key, so the next
  *     change posts it again, up to the cap. A 422 posts the key again only
  *     for a different quote time than the one it refused: while the quote
  *     stays stale every poll re-runs this effect, and re-sending it would
@@ -377,6 +377,9 @@ export function useSnapshotSave(
     // again would be refused again, and during a stall every poll re-runs this
     // effect with new signals, so the post budget would drain on one stale
     // quote before a fresher one arrived. Wait for a different quote time.
+    // That includes a quote-from-future refusal, which also reads the
+    // server's clock and so could pass later for the same time: a quote still
+    // carrying that time once the clock has caught up has not printed since.
     const refused = attemptsRef.current.get(key)?.refused;
     if (refused != null && refused.quotedAt === quotedAt) return;
     savedRef.current.add(key);
@@ -415,9 +418,8 @@ export function useSnapshotSave(
       skewPct: meta.skewPct,
       clusterMult: meta.clusterMult,
       isBacktest: kind === 'backtest',
-      // A live row's quotes' age (P0.6 Phase 3 has the server refuse a stale
-      // one). A replay has no quote to date, so it sends none (undefined
-      // drops from JSON).
+      // A live row's quotes' age; the server refuses a stale one. A replay
+      // has no quote to date, so it sends none (undefined drops from JSON).
       quotedAt,
 
       // From signals (all computed trading signals)

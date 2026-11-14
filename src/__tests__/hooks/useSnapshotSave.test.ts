@@ -1278,6 +1278,34 @@ describe('useSnapshotSave — a failed save', () => {
       expect(captureUnlessAuth).not.toHaveBeenCalled();
     });
 
+    it('holds a quote time refused as from-future too, though that refusal reads the server’s clock', async () => {
+      // The same time could pass minutes later, once the server's clock
+      // reaches it. It stays held: a quote that still carries that time then
+      // has not printed since, which is the frozen quote the guard is for. A
+      // real next print has a different time and posts.
+      fetchSpy.mockImplementation(
+        async () =>
+          new Response(
+            JSON.stringify({
+              error: 'quote-not-fresh',
+              reason: 'quote-from-future',
+              saved: false,
+            }),
+            { status: 422 },
+          ),
+      );
+      const aheadAt = Date.parse(NOW) + 5 * MINUTE;
+      const poll = await renderLive(aheadAt);
+      await poll(aheadAt);
+      await poll(aheadAt);
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+      await poll(aheadAt + MINUTE);
+      expect(fetchSpy).toHaveBeenCalledTimes(2);
+      expect(body(1).quotedAt).toBe(aheadAt + MINUTE);
+      expect(captureUnlessAuth).not.toHaveBeenCalled();
+    });
+
     it('still saves the slot when a fresher quote lands after several polls of the refused one', async () => {
       fetchSpy.mockResolvedValueOnce(new Response(REFUSED, { status: 422 }));
       const poll = await renderLive(STALE_AT);
@@ -1351,13 +1379,14 @@ describe('useSnapshotSave — a failed save', () => {
       for (let i = 1; i <= 5; i++) await poll(STALE_AT + i * MINUTE);
       expect(fetchSpy).toHaveBeenCalledTimes(3);
 
-      // The next slot posts at once, even for a quote time the first slot was
-      // just refused for, and then has its own three.
-      await poll(STALE_AT + 5 * MINUTE, '09:40');
+      // The next slot posts at once, even for the very quote time the first
+      // slot's last post was refused for (STALE_AT + 2 minutes): what a slot
+      // holds is its own. Then it has its own three.
+      await poll(STALE_AT + 2 * MINUTE, '09:40');
       for (let i = 6; i <= 10; i++) await poll(STALE_AT + i * MINUTE, '09:40');
       expect(fetchSpy).toHaveBeenCalledTimes(6);
       expect(body(3).entryTime).toBe('09:40');
-      expect(body(3).quotedAt).toBe(STALE_AT + 5 * MINUTE);
+      expect(body(3).quotedAt).toBe(STALE_AT + 2 * MINUTE);
       expect(captureUnlessAuth).not.toHaveBeenCalled();
     });
   });

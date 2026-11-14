@@ -602,8 +602,8 @@ describe('a live session after the page loaded', () => {
 // F11: a poll that stalls leaves the inputs on the last quotes, and a manual
 // time step or Resume live then moves the slot to now over them. The row
 // still matches the quote state, so only its quote time shows it is old. The
-// server will refuse such a row (422, P0.6 Phase 3; refuseStaleQuote stands in
-// for it here); a poll that recovers must save the slot.
+// server refuses such a row (422, P0.6; refuseStaleQuote stands in for it
+// here); a poll that recovers must save the slot.
 describe('a stalled quote poll', () => {
   const STALL_MINUTES = 16;
   const SLOT = '10:00 AM CT';

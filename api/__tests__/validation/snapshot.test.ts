@@ -379,6 +379,7 @@ describe('snapshotBodySchema', () => {
       ['a numeric string', '1794001029801'],
       ['an ISO string', '2026-11-06T21:37:09.801Z'],
       ['a float', 1794001029801.5],
+      ['an unsafe integer', 2 ** 53],
       ['zero', 0],
       ['a negative number', -1],
       ['NaN', Number.NaN],
