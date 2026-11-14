@@ -106,7 +106,10 @@ class Router:
         # after a join frame.
         if _is_join_ack(payload):
             state.channel(channel).subscribed = True
-            log.info("channel ack received", extra={"channel": channel})
+            # Debug, not info: a connect brings one per channel inside a second,
+            # and Railway drops log lines past 500 a second. The connector logs
+            # one line per shard (``Connector._report_join``).
+            log.debug("channel ack received", extra={"channel": channel})
             return
 
         if not isinstance(payload, dict):

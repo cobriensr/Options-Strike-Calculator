@@ -135,6 +135,16 @@ _JOIN_PACING_S = 0.01
 _RESUBSCRIBE_INITIAL_DELAY_S = 30.0
 _RESUBSCRIBE_INTERVAL_S = 60.0
 
+# Join summary. A connect logs one line per shard, not two per channel: Railway
+# drops a replica's log lines past 500 a second (it reported drops on 2026-11-11,
+# 11-13 and 11-14), and about 250 channels' join and ack lines landed inside one
+# second, taking whatever else was logged then with them. ``_report_join`` waits
+# for this shard's acks by reading the flags the router sets, every
+# _JOIN_SUMMARY_POLL_S. It sends nothing and decides nothing, so the poll is only
+# how soon after the last ack the line appears and how fine ``elapsed_s`` is; a
+# constant, not an env knob, for that reason.
+_JOIN_SUMMARY_POLL_S = 0.1
+
 
 @dataclass
 class _SessionDiag:
@@ -359,6 +369,9 @@ class Connector:
             diag.connected_at = time.monotonic()
             diag.local_addr = _format_addr(ws.local_address)
             diag.remote_addr = _format_addr(ws.remote_address)
+            # The loop's own clock, the one the ``asyncio.sleep`` polls in
+            # ``_report_join`` are scheduled on.
+            join_started_at = asyncio.get_running_loop().time()
             try:
                 await self._subscribe_all(ws)
             except Exception as exc:
@@ -388,6 +401,13 @@ class Connector:
             reconcile_task = asyncio.create_task(
                 self._reconcile_subscriptions(ws),
                 name=f"reconcile:{self.name}",
+            )
+            # Logs this shard's join once its acks are in (or the wait for them is
+            # over). Tied to the socket like the reconcile task, and cancelled with
+            # it: a drop before then logs no join line, and none outlives it.
+            join_task = asyncio.create_task(
+                self._report_join(join_started_at),
+                name=f"join-summary:{self.name}",
             )
             # Frame stats for the disconnect log, kept in locals on the hot path
             # (an int bump and a clock read per frame, no await, no log) and
@@ -449,11 +469,12 @@ class Connector:
                 session_dur = time.monotonic() - session_start
                 self._established = session_dur >= _MIN_HEALTHY_SESSION_S
                 reconcile_task.cancel()
-                # gather() hands back the reconcile task's own CancelledError as
-                # a result. Suppressing CancelledError around a plain await
-                # would also swallow a shutdown cancel that lands here, and the
-                # connector would reconnect instead of stopping.
-                await asyncio.gather(reconcile_task, return_exceptions=True)
+                join_task.cancel()
+                # gather() hands back each task's own CancelledError as a result.
+                # Suppressing CancelledError around a plain await would also
+                # swallow a shutdown cancel that lands here, and the connector
+                # would reconnect instead of stopping.
+                await asyncio.gather(reconcile_task, join_task, return_exceptions=True)
 
     async def _subscribe_all(self, ws) -> None:
         """Send a join frame for every configured channel.
@@ -472,7 +493,49 @@ class Connector:
             # Subscription is pending until the server's ok ack arrives;
             # router flips this flag when it sees the ack.
             state.channel(ch).subscribed = False
-            log.info("sent join frame", extra={"channel": ch})
+            # Debug, not info: one per channel, all in about a second (see
+            # _JOIN_SUMMARY_POLL_S). ``_report_join`` logs the shard's result.
+            log.debug("sent join frame", extra={"channel": ch})
+
+    async def _report_join(self, started_at: float) -> None:
+        """Log this shard's join once: every channel acked, or the wait for acks over.
+
+        ``started_at`` is the loop time the joins began going out. The wait is the
+        one ``_reconcile_subscriptions`` already gives the acks
+        (``_RESUBSCRIBE_INITIAL_DELAY_S``), so this adds no timeout of its own: the
+        reconcile pass re-sends what is still unacked right after, and this line
+        names it.
+
+        Reads ``state.channel(ch).subscribed``, the flag the router sets on an ack
+        and ``_reconcile_once`` reads, and keeps nothing of its own. A join that is
+        never answered, one lost on the wire and one UW refuses with an error frame
+        look the same here: the flag stays False. The unacked channels are named in
+        ONE warning for the shard (a shard holds at most ``PER_CONN_MAX`` channels),
+        not one line each, so a shard that fails whole cannot repeat the burst this
+        line replaces.
+
+        The flag is per channel name, not per socket (see the README's mirror
+        sockets): an ``option_trades`` channel acked on the twin socket counts as
+        acked here.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = started_at + _RESUBSCRIBE_INITIAL_DELAY_S
+        while True:
+            unacked = [ch for ch in self.channels if not state.channel(ch).subscribed]
+            now = loop.time()
+            if not unacked or now >= deadline:
+                break
+            await asyncio.sleep(min(_JOIN_SUMMARY_POLL_S, deadline - now))
+        fields = {
+            "shard": self.name,
+            "channels": len(self.channels),
+            "acked": len(self.channels) - len(unacked),
+            "elapsed_s": round(now - started_at, 1),
+        }
+        if unacked:
+            log.warning("shard join incomplete", extra={**fields, "unacked": unacked})
+        else:
+            log.info("shard joined", extra=fields)
 
     async def _send_join(self, ws, channel: str) -> None:
         """Send one join frame for ``channel`` as a WS TEXT frame.

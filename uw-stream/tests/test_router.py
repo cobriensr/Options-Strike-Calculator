@@ -134,6 +134,28 @@ async def test_touch_not_called_for_join_ack(router: Router, fake: FakeHandler):
 
 
 @pytest.mark.asyncio
+async def test_a_join_ack_is_a_debug_line_not_an_info_line(
+    router: Router, fake: FakeHandler, monkeypatch
+):
+    """A full connect brings about 250 acks inside one second, and Railway drops log
+    lines past 500 a second. Each ack is a debug line, which production does not emit;
+    the connector logs one line per shard instead."""
+    import router as router_module
+
+    seen: list[tuple[str, str, dict]] = []
+    for level in ("debug", "info"):
+        monkeypatch.setattr(
+            router_module.log,
+            level,
+            lambda msg, *_a, _level=level, **kw: seen.append((_level, msg, kw["extra"])),
+        )
+
+    await router.dispatch(_wire("flow-alerts", {"response": {}, "status": "ok"}))
+
+    assert seen == [("debug", "channel ack received", {"channel": "flow-alerts"})]
+
+
+@pytest.mark.asyncio
 async def test_run_consumes_from_receive_queue(router: Router, fake: FakeHandler):
     """Phase 1 / C2: ``Router.run`` pulls raw frames off the connector
     → router queue and dispatches them. Verifies the new architecture

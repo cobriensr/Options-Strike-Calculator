@@ -8,11 +8,13 @@ import errno
 import itertools
 import json
 import logging
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any, ClassVar
 from unittest.mock import patch
 
+import orjson
 import pytest
 import websockets
 from websockets.frames import Close
@@ -20,6 +22,7 @@ from websockets.frames import Close
 import socket_stats
 from connector import Connector
 from logger_setup import JsonFormatter
+from router import Router
 from socket_stats import SocketStats
 from state import RECONNECT_HORIZON, state
 
@@ -1818,3 +1821,211 @@ def test_a_connector_uses_the_registered_stats_for_its_shard_name() -> None:
     assert first._stats is socket_stats.get("conn4")
     assert second._stats is first._stats
     assert first._stats.name == "conn4"
+
+
+# --- connect-time logging ------------------------------------------------------
+#
+# Railway drops the log lines of a replica past 500 a second (it reported drops
+# on 2026-11-11, 11-13 and 11-14). A full connect used to log two info lines per
+# channel, about 250 channels, inside one second, and anything else logged in
+# that second could be dropped with them, a real error included. Now each shard
+# logs one line when its joins are acked; a join that is not acked is named.
+
+_NO_ACCESS = {"error": "no access"}  # what UW answers a join it refuses (README)
+
+
+class _SinkHandler:
+    """A router handler that takes whatever the router forwards, like data."""
+
+    name = "sink"
+
+    async def enqueue(self, payload: dict) -> None:
+        return None
+
+
+class _JoinReplyWS(_SessionWS):
+    """UW, as far as a join goes: each join frame is answered with a frame the
+    session then delivers to the connector's receive loop, as the real socket does.
+
+    ``replies`` maps a channel to the payload UW sends back. A channel left out
+    gets the ok ack, and ``None`` is a join UW never answers. The session stays
+    open until ``until()`` holds, then ends the way a graceful close does.
+    """
+
+    def __init__(self, replies: dict[str, Any], until: Callable[[], bool]) -> None:
+        super().__init__([])
+        self._replies = replies
+        self._until = until
+        self._pending: list[bytes] = []
+
+    async def send(self, frame: str) -> None:
+        channel = json.loads(frame)["channel"]
+        payload = self._replies.get(channel, {"response": {}, "status": "ok"})
+        if payload is not None:
+            self._pending.append(orjson.dumps([channel, payload]))
+
+    async def _iter(self):
+        while True:
+            while self._pending:
+                yield self._pending.pop(0)
+            if self._until():
+                return
+            await asyncio.sleep(0.005)
+
+
+_JOIN_LINES = ("shard joined", "shard join incomplete")
+
+
+def _join_lines(records: list[logging.LogRecord], shard: str) -> list[logging.LogRecord]:
+    return [r for r in records if r.getMessage() in _JOIN_LINES and r.shard == shard]
+
+
+@pytest.fixture
+def short_join_wait(monkeypatch) -> float:
+    """The wait a join gets before it counts as unacked, cut from 30 s, and its poll."""
+    import connector as connector_mod
+
+    monkeypatch.setattr(connector_mod, "_RESUBSCRIBE_INITIAL_DELAY_S", 0.2)
+    monkeypatch.setattr(connector_mod, "_JOIN_SUMMARY_POLL_S", 0.005)
+    return 0.2
+
+
+async def _connect_shard(
+    monkeypatch,
+    records: list[logging.LogRecord],
+    channels: list[str],
+    replies: dict[str, Any] | None = None,
+    name: str = "conn0",
+) -> None:
+    """Run the real ``_connect_once`` of one shard until it has logged its join line.
+
+    Acks and refusals travel the real path: the session's receive loop, the shard's
+    receive queue, and a running ``Router``, which sets the ``subscribed`` flags the
+    connector reads.
+    """
+    import connector as connector_mod
+
+    queue: asyncio.Queue = asyncio.Queue(maxsize=100)
+    connector = Connector(channels=channels, receive_queue=queue, name=name)
+    ws = _JoinReplyWS(replies or {}, until=lambda: bool(_join_lines(records, name)))
+    monkeypatch.setattr(connector_mod.websockets, "connect", lambda *_a, **_k: _ConnectCtx(ws))
+    router_task = asyncio.create_task(Router({ch: _SinkHandler() for ch in channels}).run(queue))
+    try:
+        await asyncio.wait_for(connector._connect_once(), timeout=5.0)
+    finally:
+        router_task.cancel()
+        await asyncio.gather(router_task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_a_normal_connect_logs_one_summary_per_shard_and_no_per_channel_info_line(
+    monkeypatch, connector_records, short_join_wait
+) -> None:
+    shards = {
+        "conn0": ["flow-alerts", "net_flow:SPY", "net_flow:QQQ"],
+        "conn1": ["gex_strike_expiry:SPY", "gex_strike_expiry:QQQ"],
+    }
+    for name, channels in shards.items():
+        await _connect_shard(monkeypatch, connector_records, channels, name=name)
+
+    joined = [r for r in connector_records if r.getMessage() == "shard joined"]
+    assert [(r.shard, r.channels, r.acked) for r in joined] == [("conn0", 3, 3), ("conn1", 2, 2)]
+    assert all(r.levelno == logging.INFO for r in joined)
+    assert all(0.0 <= r.elapsed_s < 1.0 for r in joined)
+    assert [r for r in connector_records if r.levelno >= logging.WARNING] == []
+    # The per-channel lines exist (the filter below is not vacuous), all at debug.
+    assert [r for r in connector_records if hasattr(r, "channel")] != []
+    assert [
+        r.getMessage()
+        for r in connector_records
+        if r.levelno >= logging.INFO and hasattr(r, "channel")
+    ] == []
+
+
+@pytest.mark.asyncio
+async def test_each_join_and_each_ack_is_still_a_debug_line_naming_the_channel(
+    monkeypatch, connector_records, short_join_wait
+) -> None:
+    channels = ["flow-alerts", "net_flow:SPY"]
+
+    await _connect_shard(monkeypatch, connector_records, channels)
+
+    for message in ("sent join frame", "channel ack received"):
+        lines = [r for r in connector_records if r.getMessage() == message]
+        assert sorted(r.channel for r in lines) == sorted(channels)
+        assert {r.levelno for r in lines} == {logging.DEBUG}
+
+
+@pytest.mark.asyncio
+async def test_subscribe_all_logs_each_join_at_debug(connector_records) -> None:
+    connector = Connector(
+        channels=["flow-alerts", "option_trades:SPY"], receive_queue=asyncio.Queue(maxsize=10)
+    )
+
+    await connector._subscribe_all(FakeWebSocket())
+
+    lines = [r for r in connector_records if r.getMessage() == "sent join frame"]
+    assert [(r.channel, r.levelno) for r in lines] == [
+        ("flow-alerts", logging.DEBUG),
+        ("option_trades:SPY", logging.DEBUG),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("reply", "how"),
+    [(None, "never answered"), (_NO_ACCESS, "refused with an error frame")],
+)
+@pytest.mark.asyncio
+async def test_a_join_that_is_not_acked_is_named_in_a_warning(
+    monkeypatch, connector_records, short_join_wait, reply, how
+) -> None:
+    """A refused join never flips ``subscribed``, so it reads as unacked like a silent one."""
+    channels = ["flow-alerts", "net_flow:SPY", "net_flow:QQQ"]
+
+    await _connect_shard(monkeypatch, connector_records, channels, replies={"net_flow:SPY": reply})
+
+    (line,) = _join_lines(connector_records, "conn0")
+    assert line.getMessage() == "shard join incomplete", f"join {how}"
+    assert line.levelno == logging.WARNING
+    assert line.unacked == ["net_flow:SPY"]
+    assert [r for r in connector_records if r.getMessage() == "shard joined"] == []
+
+
+@pytest.mark.asyncio
+async def test_the_summary_counts_are_right_when_some_channels_fail(
+    monkeypatch, connector_records, short_join_wait
+) -> None:
+    channels = ["a", "b", "c", "d", "e"]
+
+    await _connect_shard(
+        monkeypatch,
+        connector_records,
+        channels,
+        replies={"b": None, "d": _NO_ACCESS},
+    )
+
+    (line,) = _join_lines(connector_records, "conn0")
+    assert (line.channels, line.acked, line.unacked) == (5, 3, ["b", "d"])
+    # The line comes when the existing wait ends, not before: the missing acks
+    # could still have arrived.
+    assert short_join_wait <= line.elapsed_s < 1.0
+
+
+@pytest.mark.asyncio
+async def test_a_drop_before_the_wait_ends_logs_no_summary_and_leaves_no_task(
+    monkeypatch, connector_records, short_join_wait
+) -> None:
+    """The socket dies with every join unanswered: no line claims a join result, and
+    the task that would have logged one does not outlive the connection."""
+    import connector as connector_mod
+
+    channels = ["flow-alerts", "net_flow:SPY"]
+    connector = Connector(channels=channels, receive_queue=asyncio.Queue(maxsize=10), name="conn0")
+    # UW answers none of the joins, and the session ends at once.
+    ws = _JoinReplyWS(dict.fromkeys(channels), until=lambda: True)
+    monkeypatch.setattr(connector_mod.websockets, "connect", lambda *_a, **_k: _ConnectCtx(ws))
+
+    await connector._connect_once()
+
+    assert _join_lines(connector_records, "conn0") == []
+    assert [t.get_name() for t in asyncio.all_tasks() if t.get_name().startswith("join")] == []
