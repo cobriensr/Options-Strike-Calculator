@@ -43,11 +43,13 @@
  * failed. `--dry-run` does steps 1-4, prints what it would write, and does
  * neither the inserts nor the read-back.
  *
- * The current trade date always gets a decision row. Run on a weekday, or
- * after the Sunday 17:00 CT open, to avoid a row for a date with no
- * session: the next session is then decided with that row as its
- * incumbent, whose date has no volume rows, so uw-stream reports it as
- * `front_month_stale_volume`.
+ * The current trade date gets a decision row, unless it is a Saturday or a
+ * Sunday: no CME session has one (the Sunday 17:00 CT open is Monday's date),
+ * so a run on a weekend before that open writes none for it. A row already
+ * stored on such a date is kept as an incumbent and a ceiling, and never
+ * written again. The first run, on Sunday 2026-11-08, wrote six (one per
+ * root); they stay, harmless: only the latest decision before a date is read,
+ * and 2026-11-09 onward is decided.
  *
  * No market-hours guard: about 30 light calls. Never prints a secret.
  */
@@ -289,6 +291,12 @@ export function volumeRowsToWalk(
 
 // ── The walk ────────────────────────────────────────────────
 
+/** True for a Saturday or a Sunday `YYYY-MM-DD`. */
+function isWeekend(tradeDate: string): boolean {
+  const day = new Date(`${tradeDate}T00:00:00Z`).getUTCDay();
+  return day === 0 || day === 6;
+}
+
 type Origin = 'stored' | 'candles';
 
 export interface SeriesEntry {
@@ -338,7 +346,8 @@ export interface Walk {
  * The rule `ensureFrontMonth` applies, run in memory over the sessions
  * from the day after `SEED_START` to `today`, oldest first. The dates are
  * every trade date with candle volume after the seed start, the current
- * trade date, and any date with a stored row. For a date D:
+ * trade date, and any date with a stored row, except a Saturday or Sunday
+ * with no stored row (no CME session has one). For a date D:
  *
  *   - V is the volume of the latest candle date before D (so the current
  *     date reads the last full session, and the first date reads
@@ -380,8 +389,11 @@ export function walkFrontMonths(
   const volumeDates = [...bySession.keys()].sort();
   const candleDates = new Set(volumeDates);
   candleDates.add(today);
+  // No CME session has a Saturday or Sunday trade date (the Sunday 17:00 CT
+  // open is Monday's), so no such date is decided. A stored row on one stays a
+  // date of the walk: it is an incumbent and a ceiling, only never rewritten.
   const dates = [...new Set([...candleDates, ...stored.keys()])]
-    .filter((d) => d > SEED_START)
+    .filter((d) => d > SEED_START && (stored.has(d) || !isWeekend(d)))
     .sort();
 
   // The contract of the earliest stored row after each date.

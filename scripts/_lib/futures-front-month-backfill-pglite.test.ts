@@ -323,11 +323,15 @@ describe('the seed against ensureFrontMonth, on real SQL', () => {
         (r) => r.source === 'candles',
       );
       expect(written.length).toBeGreaterThan(0);
-      // The running session is decided too.
+      // The running session is decided too, unless the date is a weekend
+      // (no CME session has one; a row already stored there stays).
       expect(
         h.stored.some((s) => s.tradeDate === h.today) ||
           written.some((r) => r.trade_date === h.today),
-      ).toBe(true);
+      ).toBe(
+        !isWeekend(h.today) || h.stored.some((s) => s.tradeDate === h.today),
+      );
+      expect(written.filter((r) => isWeekend(r.trade_date))).toEqual([]);
 
       // 2. Decide every one of those dates again, one at a time, oldest
       //    first, from the volumes and the stored rows that remain.
@@ -469,6 +473,38 @@ describe('the seed against ensureFrontMonth, on real SQL', () => {
         row.trade_date,
       ).toBe(row.contract);
     }
+  });
+
+  it('run on a Sunday before the 17:00 CT open writes no decision row for that date, and the Monday after is decided from Friday', async () => {
+    // Sunday 08-02, 10:00 CT: the trade date is still Sunday's. The sessions
+    // before it are 07-27 to 07-31.
+    const sessions = weekdaysFrom(SEED_START, 5);
+    vi.setSystemTime(new Date('2026-08-02T15:00:00.000Z'));
+    mockFetchVolumes.mockImplementation(
+      async (_key: string, _root: string, listed: readonly string[]) =>
+        sessions
+          .flatMap((tradeDate) => [
+            { contract: 'ESU6', tradeDate, volume: 100 },
+            { contract: 'ESZ6', tradeDate, volume: 10 },
+          ])
+          .filter((c) => listed.includes(c.contract)),
+    );
+    const seed = () =>
+      runFrontMonthSeed({ apiKey: 'uw-key', roots: ['ES'], dryRun: false });
+
+    expect(await seed()).toBe(0);
+    expect((await frontRows('ES')).map((r) => r.trade_date)).toEqual([
+      '2026-07-28',
+      '2026-07-29',
+      '2026-07-30',
+      '2026-07-31',
+    ]);
+
+    // Monday 08-03 is then decided from Friday's decision and volume, with no
+    // weekend row between them, so nothing reads as stale volume.
+    vi.setSystemTime(new Date('2026-08-03T15:00:00.000Z'));
+    expect(await ensureFrontMonth('ES', '2026-08-03', 'script')).toBe('ESU6');
+    expect(mockWarn).not.toHaveBeenCalled();
   });
 
   it('the histories between them rolled, kept stored rows, clamped, and crossed weekends', () => {

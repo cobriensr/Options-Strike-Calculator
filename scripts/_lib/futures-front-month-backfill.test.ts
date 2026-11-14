@@ -382,6 +382,58 @@ describe('walkFrontMonths', () => {
     ]);
   });
 
+  it.each([
+    ['a Saturday', '2026-08-01'],
+    ['a Sunday', '2026-08-02'],
+  ])(
+    'writes no row for the current trade date when it is %s: no CME session has one',
+    (_label, today) => {
+      const walk = walkFrontMonths(
+        'ES',
+        [
+          ...vol(SEED_START, ['ESU6', 100]),
+          ...vol('2026-07-28', ['ESU6', 100]),
+          ...vol('2026-07-31', ['ESU6', 100]),
+        ],
+        NO_STORED,
+        today,
+      );
+
+      expect(walk.rows).toEqual([
+        row('2026-07-28', 'ESU6'),
+        row('2026-07-31', 'ESU6'),
+      ]);
+      expect(walk.series.map((s) => s.tradeDate)).toEqual([
+        '2026-07-28',
+        '2026-07-31',
+      ]);
+    },
+  );
+
+  it('writes no row for a weekend date that has candle volume, which still counts as the volume of the session after it', () => {
+    const walk = walkFrontMonths(
+      'ES',
+      [
+        ...vol(SEED_START, ['ESU6', 100], ['ESZ6', 10]),
+        ...vol('2026-07-31', ['ESU6', 100], ['ESZ6', 10]),
+        ...vol('2026-08-02', ['ESU6', 10], ['ESZ6', 100]),
+      ],
+      NO_STORED,
+      '2026-08-03',
+    );
+
+    expect(walk.rows.map((r) => r.tradeDate)).not.toContain('2026-08-02');
+    // Monday reads the Sunday volume, and rolls on it.
+    expect(walk.switches).toEqual([
+      expect.objectContaining({
+        tradeDate: '2026-08-03',
+        from: 'ESU6',
+        to: 'ESZ6',
+        volumeDate: '2026-08-02',
+      }),
+    ]);
+  });
+
   it('keeps a stored row, carries on from it and never rolls back', () => {
     const walk = walkFrontMonths(
       'ES',
@@ -978,6 +1030,56 @@ describe('runFrontMonthSeed', () => {
     expect(output).toMatch(/DRY RUN/);
     expect(output).toMatch(/2026-07-29\s+ESU6 → ESZ6/);
     expect(output).toMatch(/would insert 12 volume rows and 4 decision rows/);
+  });
+
+  describe('run on a weekend', () => {
+    // 2026-11-07 is a Saturday, 11-08 a Sunday. The Sunday 17:00 CT open
+    // (23:00Z) is Monday's trade date.
+    it.each([
+      ['a Saturday', '2026-11-07T20:00:00Z'],
+      ['a Sunday before the 17:00 CT open', '2026-11-08T15:00:00Z'],
+      ['the last minute of Sunday before the open', '2026-11-08T22:59:00Z'],
+    ])('writes no decision row for the date, on %s', async (_label, now) => {
+      vi.setSystemTime(new Date(now));
+
+      expect(await run()).toBe(0);
+
+      // The sessions before it are decided as on any other day.
+      expect(writtenDecisions()).toEqual([
+        row('2026-07-28', 'ESU6'),
+        row('2026-07-29', 'ESZ6'),
+        row('2026-11-05', 'ESZ6'),
+        row('2026-11-06', 'ESZ6'),
+      ]);
+      expect(errors).toEqual([]);
+    });
+
+    it('writes the Monday row once the Sunday 17:00 CT open has passed', async () => {
+      vi.setSystemTime(new Date('2026-11-08T23:00:00Z'));
+
+      expect(await run()).toBe(0);
+
+      expect(writtenDecisions().map((r) => r.tradeDate)).toEqual([
+        '2026-07-28',
+        '2026-07-29',
+        '2026-11-05',
+        '2026-11-06',
+        '2026-11-09',
+      ]);
+    });
+
+    it('leaves a stored weekend row where it is: not written again, still the incumbent of the next session', async () => {
+      // The first seed run, on Sunday 2026-11-08, wrote one such row per root.
+      vi.setSystemTime(new Date('2026-11-09T15:00:00Z'));
+      mockFetchStored.mockResolvedValueOnce(new Map([['2026-11-08', 'ESH7']]));
+
+      expect(await run()).toBe(0);
+
+      const dates = writtenDecisions().map((r) => r.tradeDate);
+      expect(dates).not.toContain('2026-11-08');
+      // Monday follows the Sunday row (ESH7), not the Friday one (ESZ6).
+      expect(writtenDecisions().at(-1)).toEqual(row('2026-11-09', 'ESH7'));
+    });
   });
 
   describe('a session that holds live volume rows', () => {
