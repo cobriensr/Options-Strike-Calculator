@@ -2,6 +2,7 @@ import '@testing-library/jest-dom/vitest';
 import { afterAll, afterEach, vi } from 'vitest';
 import { cleanup } from '@testing-library/react';
 import { assertNoDbAttempts, scrubDbEnv } from './db-guard';
+import { installNetworkBlock } from './net-guard';
 
 // No test may connect to or write to a real database (owner rule,
 // 2026-11-04; see ./db-guard.ts and
@@ -9,6 +10,13 @@ import { assertNoDbAttempts, scrubDbEnv } from './db-guard';
 // exports DATABASE_URL, a Redis token or a bucket key must not reach any
 // test: tests that need a value stub their own fake after this runs.
 scrubDbEnv();
+
+// Beneath every client below, no connection to a host outside this machine:
+// the block sits at `net.Socket#connect`, where fetch, http, https, net, tls,
+// WebSocket and jsdom's XMLHttpRequest all end, so a raw fetch to a store URL
+// or an API no mock covers fails too, with `fetch` left real or spied. See
+// ./net-guard.ts.
+installNetworkBlock();
 
 // Second, the one place the app builds a Neon client is neon() in
 // api/_lib/db.ts. Every test file gets a package whose neon(), Pool and

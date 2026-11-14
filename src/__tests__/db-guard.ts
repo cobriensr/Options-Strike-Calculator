@@ -22,6 +22,12 @@
  * `dbAttempts` log, so the same checks catch a swallowed attempt. A read
  * reaches production as surely as a write, so reads are blocked too.
  *
+ * The network block (`net-guard.ts`, 2026-11-13) is the layer under all of
+ * them: any connection to a host outside this machine, from any client, is
+ * recorded here as `net.connect <host>:<port>` and fails. It also catches what
+ * the package mocks cannot: a raw `fetch` to a Blob, Upstash or R2 URL, or an
+ * API call no mock covers.
+ *
  * Twin of the Python guards in ml/conftest.py and scripts/conftest.py.
  */
 
@@ -30,6 +36,16 @@ export const BLOCK_MESSAGE = 'tests must not connect to a database';
 
 /** The message every store (Redis, Blob, R2) block carries. */
 export const STORE_BLOCK_MESSAGE = 'tests must not reach a production store';
+
+/** The message every network block carries (see `net-guard.ts`). */
+export const NETWORK_BLOCK_MESSAGE = 'tests must not open a network connection';
+
+/**
+ * What a network attempt's kind starts with: `net.connect <host>:<port>`. The
+ * hosts are open-ended, so `assertNoDbAttempts` recognizes the kind by this
+ * prefix instead of listing each one in `state.storeKinds`.
+ */
+export const NETWORK_ATTEMPT_PREFIX = 'net.connect ';
 
 /**
  * Every name a database client or a writable remote store reads. Tests that
@@ -109,9 +125,19 @@ export function scrubDbEnv(): void {
   }
 }
 
+/**
+ * Record an attempt without throwing, for a block that fails the call some
+ * other way (the network block destroys the socket on the next tick). The
+ * `afterEach` check still fails the test, whatever the caller does with the
+ * failure. Nothing but the kind is kept.
+ */
+export function recordBlockedAttempt(kind: string): void {
+  dbAttempts.push(kind);
+}
+
 /** Record an attempt and throw. The connection string is never echoed. */
 export function blockDbAccess(kind: string): never {
-  dbAttempts.push(kind);
+  recordBlockedAttempt(kind);
   throw new Error(`${kind}: ${BLOCK_MESSAGE}`);
 }
 
@@ -122,27 +148,42 @@ export function blockDbAccess(kind: string): never {
  */
 export function blockStoreAccess(kind: string): never {
   state.storeKinds.add(kind);
-  dbAttempts.push(kind);
+  recordBlockedAttempt(kind);
   throw new Error(`${kind}: ${STORE_BLOCK_MESSAGE}`);
 }
 
+/** The rule an attempt of this kind broke. */
+function ruleFor(kind: string): string {
+  if (kind.startsWith(NETWORK_ATTEMPT_PREFIX)) return NETWORK_BLOCK_MESSAGE;
+  if (state.storeKinds.has(kind)) return STORE_BLOCK_MESSAGE;
+  return BLOCK_MESSAGE;
+}
+
 /**
- * Fail if any client was built or any store was called since the last check,
- * even when the caller swallowed the thrown block. Clears the log first so one
- * attempt fails one test, not every later one.
+ * The kinds in first-seen order, each once. One that repeated carries its
+ * count, so a test that made the same request five times reads as one line.
+ */
+function summarize(kinds: readonly string[]): string {
+  const counts = new Map<string, number>();
+  for (const kind of kinds) counts.set(kind, (counts.get(kind) ?? 0) + 1);
+  return [...counts]
+    .map(([kind, n]) => (n > 1 ? `${kind} (x${n})` : kind))
+    .join(', ');
+}
+
+/**
+ * Fail if any client was built, any store was called or any connection was
+ * opened since the last check, even when the caller swallowed the failure.
+ * Clears the log first so one attempt fails one test, not every later one.
  */
 export function assertNoDbAttempts(): void {
   if (dbAttempts.length === 0) return;
   const kinds = dbAttempts.splice(0);
-  const rules = new Set(
-    kinds.map((kind) =>
-      state.storeKinds.has(kind) ? STORE_BLOCK_MESSAGE : BLOCK_MESSAGE,
-    ),
-  );
+  const rules = new Set(kinds.map(ruleFor));
   throw new Error(
-    `${[...rules].join('; ')}; this test tried: ${kinds.join(', ')}. Mock ` +
-      `it at the module boundary (vi.mock the db, Redis, Blob or R2 module, ` +
-      `or use pglite).`,
+    `${[...rules].join('; ')}; this test tried: ${summarize(kinds)}. Mock it ` +
+      `at the module boundary (vi.mock the db, Redis, Blob, R2 or API client ` +
+      `module, stub fetch for an HTTP call, or use pglite).`,
   );
 }
 
