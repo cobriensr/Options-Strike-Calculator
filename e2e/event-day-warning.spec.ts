@@ -14,6 +14,9 @@ function centralDate(at: Date = new Date()): string {
 /** Today's date, matching the app's selectedDate default. */
 const TODAY = centralDate();
 
+/** 16:00 CST on Friday 2026-11-13: after the close, clear of 23:00 to midnight CT. */
+const AFTERNOON = new Date('2026-11-13T22:00:00Z');
+
 /** A past trading day: outside the forward list, so it gets its own lookup. */
 const PAST_DATE = '2025-01-15';
 
@@ -192,9 +195,12 @@ test.describe('Event Day Warning', () => {
    * Abort every /api request (the forward list, `/api/events?days=30`, among
    * them), then answer one date's own lookup (`/api/events?from=<date>`): a 500
    * the first time, a CPI event the second. The count is how many lookups the
-   * page made.
+   * page made. The clock is pinned to an afternoon: from 23:00 to midnight CT
+   * the app's date is before ET today, so a lookup for it fires at mount and the
+   * dev server's StrictMode doubles it, which would move the counts.
    */
   async function failOnceThenAnswerLookup(page: Page, date: string) {
+    await page.clock.setFixedTime(AFTERNOON);
     // Registered first, so the more specific lookup route below wins.
     await page.route('**/api/**', (route) => route.abort());
     const lookups = { count: 0 };
@@ -273,7 +279,11 @@ test.describe('Event Day Warning', () => {
   test('a failed forward list makes today look up its own events, says so on a failure, and Retry loads them', async ({
     page,
   }) => {
-    const lookups = await failOnceThenAnswerLookup(page, TODAY);
+    // The helper pins the clock to AFTERNOON, so today is that Central date.
+    const lookups = await failOnceThenAnswerLookup(
+      page,
+      centralDate(AFTERNOON),
+    );
 
     await page.goto('/');
 
