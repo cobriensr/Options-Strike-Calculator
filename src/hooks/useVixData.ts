@@ -9,7 +9,7 @@ import {
   loadStaticVixData,
 } from '../utils/vixStorage';
 import { to24Hour } from '../utils/calculator';
-import { convertCTToET, isPastETDate } from '../utils/timezone';
+import { convertCTToET, getETToday, isPastETDate } from '../utils/timezone';
 
 type AmPm = 'AM' | 'PM';
 type Timezone = 'ET' | 'CT';
@@ -56,9 +56,9 @@ export function useVixData(
   const [vixDataSource, setVixDataSource] = useState('');
   const [vixOHLC, setVixOHLC] = useState<VIXDayData | null>(null);
   const [vixOHLCField, setVixOHLCField] = useState<OHLCField>('smart');
-  const [selectedDate, setSelectedDate] = useState(() =>
-    new Date().toLocaleDateString('en-CA', { timeZone: 'America/Chicago' }),
-  );
+  // Today's ET date, the date isPastETDate and isBacktestMode judge "past"
+  // by. Seeded from the CT date, the 23:00-24:00 CT hour read as yesterday.
+  const [selectedDate, setSelectedDate] = useState(getETToday);
   const fileInputRef = useRef<HTMLInputElement>(null);
   // The effects below key on this, not on ivMode: on a past date a mode
   // toggle leaves it true, so it re-runs neither effect.

@@ -1,7 +1,7 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, waitFor, act } from '@testing-library/react';
 import { useVixData } from '../../hooks/useVixData';
-import { getETToday } from '../../utils/timezone';
+import { getETToday, isPastETDate } from '../../utils/timezone';
 import type { VIXDataMap } from '../../types';
 
 // ============================================================
@@ -73,6 +73,50 @@ describe('useVixData', () => {
       ),
     );
   }
+
+  // --------------------------------------------------------
+  // Default date: the ET date, the rule isPastETDate and the rest of the app
+  // judge "today" by. A CT seed read 23:00-24:00 CT as yesterday, so the
+  // calculator treated the night's own date as a past one.
+  // --------------------------------------------------------
+  describe('default selected date', () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it.each([
+      [
+        '00:01 ET, 23:01 CT the night before (the CI failure)',
+        '2026-11-14T05:01:00Z',
+        '2026-11-14',
+      ],
+      ['ET midnight exactly (EST)', '2026-11-14T05:00:00Z', '2026-11-14'],
+      [
+        'one minute before ET midnight (EST)',
+        '2026-11-14T04:59:00Z',
+        '2026-11-13',
+      ],
+      [
+        '00:30 ET, 23:30 CT the night before (EDT)',
+        '2026-07-15T04:30:00Z',
+        '2026-07-15',
+      ],
+      [
+        'mid-session, where ET and CT agree',
+        '2026-11-18T15:00:00Z',
+        '2026-11-18',
+      ],
+    ])('is the ET date at %s', (_label, now, etDate) => {
+      // Fake only Date: waitFor-style timers elsewhere keep running.
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(new Date(now));
+
+      const { result } = renderWith();
+
+      expect(result.current.selectedDate).toBe(etDate);
+      expect(isPastETDate(result.current.selectedDate)).toBe(false);
+    });
+  });
 
   // --------------------------------------------------------
   // Mount: cached data path

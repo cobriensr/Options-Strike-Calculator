@@ -1,5 +1,66 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
 import { buildApiFetchMock, MOCK_QUOTES } from './helpers/mock-fetch';
+
+/**
+ * The browser clock is pinned, as entry-time.spec.ts does. The app opens on
+ * today's ET date, and the gap preview's prior close comes from the live
+ * /api/yesterday only while that date is today (a past date gets none). This
+ * suite used to run on the real clock and went red in the hour after ET
+ * midnight (05:00Z to 06:00Z in winter), when the default date was still the
+ * CT one, a day behind.
+ */
+/** Wednesday 10:00 AM CT (CDT is UTC-5): a session the market is open in. */
+const MID_SESSION = '2026-06-17T15:00:00Z';
+/** Saturday 00:01 ET = Friday 23:01 CT (EST/CST): when CI went red. */
+const ET_MIDNIGHT_HOUR = '2026-11-14T05:01:00Z';
+
+async function openPreMarket(page: Page, now: string) {
+  await page.clock.setFixedTime(new Date(now));
+  await page.addInitScript(
+    buildApiFetchMock({
+      '/api/quotes': { body: MOCK_QUOTES },
+      '/api/pre-market': {
+        body: { data: null },
+        method: 'GET',
+      },
+      // Provide yesterday data so prevClose is available for gap preview.
+      // Without this, gapPreview depends on results?.spot which requires
+      // the calculator to run during market hours.
+      '/api/yesterday': {
+        body: {
+          yesterday: {
+            date: '2026-03-27',
+            open: 6780,
+            high: 6830,
+            low: 6750,
+            close: 6790,
+            rangePct: 1.18,
+            rangePts: 80,
+          },
+          twoDaysAgo: null,
+          asOf: new Date(now).toISOString(),
+        },
+      },
+    }),
+  );
+  await page.goto('/');
+}
+
+/** Globex close vs prevClose from mocked /api/yesterday (6790). */
+async function expectGapPreview(page: Page) {
+  const section = page.locator('section[aria-label="Pre-Market Futures"]');
+  await expect(section).toBeVisible({ timeout: 15000 });
+
+  await section.getByLabel('Globex High').fill('6800');
+  await section.getByLabel('Globex Low').fill('6770');
+  await section.getByLabel('Globex Close').fill('6780');
+
+  // Gap = 6780 - 6790 = -10.0 (DOWN)
+  await expect(section.getByText('ES vs SPX')).toBeVisible({
+    timeout: 5000,
+  });
+  await expect(section.getByText('DOWN')).toBeVisible();
+}
 
 /**
  * Tests for the Pre-Market input section.
@@ -10,34 +71,7 @@ import { buildApiFetchMock, MOCK_QUOTES } from './helpers/mock-fetch';
  */
 test.describe('Pre-Market Input', () => {
   test.beforeEach(async ({ page }) => {
-    await page.addInitScript(
-      buildApiFetchMock({
-        '/api/quotes': { body: MOCK_QUOTES },
-        '/api/pre-market': {
-          body: { data: null },
-          method: 'GET',
-        },
-        // Provide yesterday data so prevClose is available for gap preview.
-        // Without this, gapPreview depends on results?.spot which requires
-        // the calculator to run during market hours.
-        '/api/yesterday': {
-          body: {
-            yesterday: {
-              date: '2026-03-27',
-              open: 6780,
-              high: 6830,
-              low: 6750,
-              close: 6790,
-              rangePct: 1.18,
-              rangePts: 80,
-            },
-            twoDaysAgo: null,
-            asOf: new Date().toISOString(),
-          },
-        },
-      }),
-    );
-    await page.goto('/');
+    await openPreMarket(page, MID_SESSION);
   });
 
   test('pre-market section renders with mocked quotes', async ({ page }) => {
@@ -72,19 +106,7 @@ test.describe('Pre-Market Input', () => {
   test('entering globex close shows ES vs SPX gap preview', async ({
     page,
   }) => {
-    const section = page.locator('section[aria-label="Pre-Market Futures"]');
-    await expect(section).toBeVisible({ timeout: 15000 });
-
-    // Globex close vs prevClose from mocked /api/yesterday (6790)
-    await section.getByLabel('Globex High').fill('6800');
-    await section.getByLabel('Globex Low').fill('6770');
-    await section.getByLabel('Globex Close').fill('6780');
-
-    // Gap = 6780 - 6790 = -10.0 (DOWN)
-    await expect(section.getByText('ES vs SPX')).toBeVisible({
-      timeout: 5000,
-    });
-    await expect(section.getByText('DOWN')).toBeVisible();
+    await expectGapPreview(page);
   });
 
   test('validation requires high, low, and close', async ({ page }) => {
@@ -128,5 +150,19 @@ test.describe('Pre-Market Input', () => {
     await expect(
       section.getByText(/Globex High must be .* Globex Low/),
     ).toBeVisible({ timeout: 3000 });
+  });
+});
+
+/**
+ * The owner enters Globex data at night, so this is the hour that matters:
+ * after ET midnight the default date is the new ET day while the CT date is
+ * still the old one. The gap preview must still get its prior close.
+ */
+test.describe('Pre-Market Input in the ET-midnight hour', () => {
+  test('entering globex close still shows the ES vs SPX gap preview', async ({
+    page,
+  }) => {
+    await openPreMarket(page, ET_MIDNIGHT_HOUR);
+    await expectGapPreview(page);
   });
 });
