@@ -31,6 +31,7 @@ from drop_reporter import run_drop_reporter
 from handlers.base import DRAIN_DEADLINE_S, Handler
 from health import run_server
 from logger_setup import log
+from pipeline_stats import run_pipeline_stats
 from router import Router
 from sentry_setup import capture_exception, capture_message, init_sentry
 from state import state
@@ -276,6 +277,7 @@ async def _run() -> None:
             asyncio.create_task(run_server(), name="health"),
             asyncio.create_task(run_subscription_watchdog(), name="subscription_watchdog"),
             asyncio.create_task(run_drop_reporter(), name="drop_reporter"),
+            asyncio.create_task(run_pipeline_stats(), name="pipeline_stats"),
         ]
         # Spawn one drain task per UNIQUE handler instance — many channels
         # can share one handler (e.g. every option_trades:<TICKER> entry
@@ -494,8 +496,8 @@ async def _shutdown(
        drained batch's ``schedule_notify`` tasks) before the loop tears
        down, then close the shared HTTP session.
     4. Cancel the remaining background tasks (handler drain loops, health
-       server, subscription watchdog, drop reporter, signal waiter, lease
-       renewal).
+       server, subscription watchdog, drop reporter, pipeline stats, signal
+       waiter, lease renewal).
 
     Railway SIGKILLs us ``drainingSeconds`` after SIGTERM, so every step runs
     inside its bound from ``_SHUTDOWN_STEP_TIMEOUTS_S`` (the handler drains

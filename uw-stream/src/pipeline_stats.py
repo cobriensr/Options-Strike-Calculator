@@ -1,0 +1,222 @@
+"""Per-minute pipeline line: flush timing, queue high-waters, loop lag, pool use.
+
+When trades land in Neon late (24 to 44 s at every :x0 and :x5 minute on
+2026-11-13) there are three suspects that look alike from outside: a slow Neon
+write, an exhausted connection pool and a blocked event loop. This task writes
+one ``uw-stream pipeline minute`` log line a minute that tells them apart.
+
+Two loops share one ``_Sampled`` accumulator:
+
+* The sampler wakes every ``SAMPLE_INTERVAL_S``. The time it actually slept,
+  beyond what it asked for, is how long the event loop was unable to run it
+  (loop lag). It also reads the DB pool's size and how much of it is checked
+  out. Both are kept as per-minute maxima.
+* The reporter sleeps to each UTC minute boundary, wall clock, so a line joins
+  Neon's per-minute data, and logs. Per handler it gives the flush counts and
+  times (``HandlerMetrics.flushes``, ``flush_rows``, ``flush_seconds``) as
+  deltas since the last line, and the high-waters the handlers and the router
+  keep (``interval_*``, ``State.receive_queue_hwm``) since the last line.
+
+This task is the only thing that resets an interval field: it reads one, then
+sets it back to 0. Every writer runs on the same event loop and ``_report``
+does not await, so nothing can raise a high-water mark between the read and the
+reset. The cumulative counters are never reset: /metrics shows them.
+
+A minute with no activity still logs, with an empty ``handlers``: the line is
+also the heartbeat, and it shows loop lag through the quiet hours. There is no
+final pass on cancel; the next deploy's first line starts a fresh interval.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import time
+from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
+
+import db
+from logger_setup import log
+from state import HandlerMetrics, state
+
+# Loop-lag and pool sampler period.
+SAMPLE_INTERVAL_S = 0.25
+# A lag sample at or over this counts in ``loop_lag_over_1s``.
+LOOP_LAG_FLAG_S = 1.0
+
+
+@dataclass
+class _Sampled:
+    """The sampler's maxima since the last line; ``_report`` resets them.
+
+    The pool fields stay None until the pool has been read, so a line can tell
+    "never sampled" from "sampled, and nothing was in use".
+    """
+
+    loop_lag_max_s: float = 0.0
+    loop_lag_over_1s: int = 0
+    pool_size_max: int | None = None
+    pool_in_use_max: int | None = None
+
+    def record_lag(self, elapsed_s: float) -> None:
+        """Record one wake-up that took ``elapsed_s`` for a sleep of SAMPLE_INTERVAL_S.
+
+        A wake a hair before its time (timer granularity) gives a negative lag.
+        That counts as 0: the maximum starts at 0 and the flag is positive.
+        """
+        lag = elapsed_s - SAMPLE_INTERVAL_S
+        self.loop_lag_max_s = max(self.loop_lag_max_s, lag)
+        if lag >= LOOP_LAG_FLAG_S:
+            self.loop_lag_over_1s += 1
+
+    def record_pool(self) -> None:
+        """Record the pool's size and checked-out connections; nothing if it has no pool.
+
+        ``db.get_pool`` raises RuntimeError before ``init_pool`` and again after
+        ``close_pool``. Both are expected, so the sampler skips the sample.
+        """
+        try:
+            pool = db.get_pool()
+        except RuntimeError:
+            return
+        size = pool.get_size()
+        in_use = size - pool.get_idle_size()
+        self.pool_size_max = size if self.pool_size_max is None else max(self.pool_size_max, size)
+        self.pool_in_use_max = (
+            in_use if self.pool_in_use_max is None else max(self.pool_in_use_max, in_use)
+        )
+
+    def reset(self) -> None:
+        self.loop_lag_max_s = 0.0
+        self.loop_lag_over_1s = 0
+        self.pool_size_max = None
+        self.pool_in_use_max = None
+
+
+@dataclass
+class _Baseline:
+    """One handler's cumulative counters as of the last line, so each line gives the delta."""
+
+    flushes: int = 0
+    flush_rows: int = 0
+    flush_seconds: float = 0.0
+    dropped: int = 0
+    filtered: int = 0
+
+
+@dataclass
+class _Reported:
+    """What earlier lines already counted."""
+
+    # Keyed by handler name: bounded by the closed set of handlers built at boot.
+    handlers: dict[str, _Baseline] = field(default_factory=dict)
+    receive_drops: int = 0
+
+
+def _next_minute(now: datetime) -> datetime:
+    """The first UTC minute boundary after ``now``; a whole minute on a boundary."""
+    return now.replace(second=0, microsecond=0) + timedelta(minutes=1)
+
+
+def _handler_entry(metrics: HandlerMetrics, base: _Baseline) -> dict[str, int | float]:
+    """One handler's numbers for the minute: deltas of the totals, plus its interval fields."""
+    return {
+        "flushes": metrics.flushes - base.flushes,
+        "rows": metrics.flush_rows - base.flush_rows,
+        "flush_s": round(metrics.flush_seconds - base.flush_seconds, 3),
+        "flush_max_s": round(metrics.interval_flush_max_s, 3),
+        "batch_max": metrics.interval_batch_max,
+        "queue_hwm": metrics.interval_queue_hwm,
+        "dropped": metrics.drop_count - base.dropped,
+        "filtered": metrics.filtered - base.filtered,
+    }
+
+
+def _had_activity(entry: dict[str, int | float]) -> bool:
+    """Any flush, any queue depth, or a new drop or filtered payload."""
+    return (
+        entry["flushes"] > 0
+        or entry["queue_hwm"] > 0
+        or entry["dropped"] > 0
+        or entry["filtered"] > 0
+    )
+
+
+def _report(sampled: _Sampled, reported: _Reported, minute_start: datetime) -> None:
+    """Log the line for the minute that began at ``minute_start``, then reset what it read.
+
+    Synchronous on purpose: see the module docstring. Every handler's baseline
+    moves each time, so ``reported.handlers`` holds one entry per handler.
+    """
+    handlers: dict[str, dict[str, int | float]] = {}
+    for name, metrics in state.handlers.items():
+        base = reported.handlers.setdefault(name, _Baseline())
+        entry = _handler_entry(metrics, base)
+        if _had_activity(entry):
+            handlers[name] = entry
+        base.flushes = metrics.flushes
+        base.flush_rows = metrics.flush_rows
+        base.flush_seconds = metrics.flush_seconds
+        base.dropped = metrics.drop_count
+        base.filtered = metrics.filtered
+        metrics.interval_flush_max_s = 0.0
+        metrics.interval_batch_max = 0
+        metrics.interval_queue_hwm = 0
+
+    log.info(
+        "uw-stream pipeline minute",
+        extra={
+            "minute_utc": minute_start.isoformat(),
+            "loop_lag_max_s": round(sampled.loop_lag_max_s, 3),
+            "loop_lag_over_1s": sampled.loop_lag_over_1s,
+            "pool_size_max": sampled.pool_size_max,
+            "pool_in_use_max": sampled.pool_in_use_max,
+            "receive_queue_hwm": state.receive_queue_hwm,
+            "receive_queue_dropped": state.receive_queue_drops - reported.receive_drops,
+            "handlers": handlers,
+        },
+    )
+
+    reported.receive_drops = state.receive_queue_drops
+    state.receive_queue_hwm = 0
+    sampled.reset()
+
+
+async def _run_sampler(sampled: _Sampled) -> None:
+    """Sample loop lag and pool use every SAMPLE_INTERVAL_S, forever."""
+    while True:
+        started = time.monotonic()
+        await asyncio.sleep(SAMPLE_INTERVAL_S)
+        sampled.record_lag(time.monotonic() - started)
+        sampled.record_pool()
+
+
+async def _run_reporter(sampled: _Sampled, reported: _Reported) -> None:
+    """Log one line at every UTC minute boundary, forever.
+
+    The minute a line names comes from the boundary it waited for, not from the
+    clock when it woke. asyncio's timers run on the monotonic clock and the
+    boundary is wall clock, so a sleep can end a little early: the inner loop
+    sleeps the remainder rather than reporting the same minute twice. If the
+    loop is blocked past a boundary the line comes late and a minute label is
+    missing; the lag numbers on that line say why.
+    """
+    now = datetime.now(UTC)
+    while True:
+        boundary = _next_minute(now)
+        while now < boundary:
+            await asyncio.sleep((boundary - now).total_seconds())
+            now = datetime.now(UTC)
+        _report(sampled, reported, boundary - timedelta(minutes=1))
+
+
+async def run_pipeline_stats() -> None:
+    """Run the sampler and the reporter until cancelled.
+
+    A TaskGroup, so a cancel stops both and a crash in one stops the other
+    instead of leaving it running unobserved.
+    """
+    sampled = _Sampled()
+    reported = _Reported()
+    async with asyncio.TaskGroup() as group:
+        group.create_task(_run_sampler(sampled), name="pipeline_stats:sampler")
+        group.create_task(_run_reporter(sampled, reported), name="pipeline_stats:reporter")

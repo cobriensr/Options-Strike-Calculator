@@ -932,6 +932,27 @@ async def test_run_starts_drop_reporter_and_shutdown_cancels_it(_reset_notify_st
 
 
 @pytest.mark.asyncio
+async def test_run_starts_pipeline_stats_and_shutdown_cancels_it(_reset_notify_state, monkeypatch):
+    _stub_pipeline(monkeypatch)
+    events: list[str] = []
+
+    async def _recording_stats() -> None:
+        events.append("started")
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            events.append("cancelled")
+            raise
+
+    monkeypatch.setattr(main, "run_pipeline_stats", _recording_stats)
+    _sigterm_once_run_is_waiting(monkeypatch)
+
+    await main._run()
+
+    assert events == ["started", "cancelled"]
+
+
+@pytest.mark.asyncio
 async def test_run_does_not_wait_on_a_pool_close_that_never_returns(
     _reset_notify_state, monkeypatch
 ):

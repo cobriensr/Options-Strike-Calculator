@@ -133,13 +133,17 @@ Single asyncio process:
      no holiday calendar.
    - `/metrics` has top-level fields `uptime_seconds`, `ws_connected`
      (all shards up), `connections` (per shard), `last_message_ts`,
-     `reconnects_last_hour`, `receive_queue_depth` and
-     `receive_queue_drops`, plus two keyed sections: `channels` (per WS
+     `reconnects_last_hour`, `receive_queue_depth`,
+     `receive_queue_drops` and `receive_queue_hwm`, plus two keyed sections:
+     `channels` (per WS
      channel joined, or echoed by UW, e.g. `net_flow:TSLA`: `subscribed`,
      `last_message_ts`) and `handlers` (per handler queue, keyed by
      handler name: `queue_depth`, `drop_count`, `write_attempted`,
-     `write_count`, `lost_rows`, `dupes_dropped`, `single_copy`, `filtered`;
-     zeroed from boot). `lost_rows` counts the rows of flushes that failed after the DB
+     `write_count`, `lost_rows`, `dupes_dropped`, `single_copy`, `filtered`,
+     `flushes`, `flush_rows`, `flush_seconds`, `interval_flush_max_s`,
+     `interval_batch_max`, `interval_queue_hwm`; zeroed from boot). The last
+     six handler fields and `receive_queue_hwm` are the flush and high-water
+     numbers explained under Pipeline diagnostics below. `lost_rows` counts the rows of flushes that failed after the DB
      retries; ON CONFLICT dedup skips don't count. `dupes_dropped` counts the
      second copies of a trade that the mirror sockets deliver and the
      option-trade handlers drop before their queue. It is not backpressure,
@@ -173,6 +177,9 @@ Single asyncio process:
 7. **Notify** (`src/notify.py`): posts Interval B/A alerts to Vercel's
    `/api/push/notify` for Web Push. It does nothing unless both
    `VERCEL_NOTIFY_URL` and `INTERNAL_NOTIFY_SECRET` are set.
+8. **Pipeline stats** (`src/pipeline_stats.py`): samples event-loop lag and
+   DB pool use four times a second and logs one line a minute with the
+   handlers' flush timing and queue high-waters (see Pipeline diagnostics).
 
 ## Schema
 
@@ -443,6 +450,91 @@ crash-loops the build that is running.
 (The legacy `sql/001_ws_flow_alerts.sql` file is kept for historical
 reference only. The same DDL also lives as migration #108 in the api/
 migration chain, and all schema changes go there.)
+
+## Pipeline diagnostics
+
+On 2026-11-13 trades landed in Neon 24 to 44 s late at every :x0 and :x5
+minute. A slow Neon write, an exhausted connection pool and a blocked event
+loop all look the same from outside. These numbers tell them apart. They are
+logs and `/metrics` fields only: nothing here sends a Sentry event.
+
+### `/metrics` flush and high-water fields
+
+Per `handlers` row:
+
+- `flushes`, `flush_rows`, `flush_seconds`: cumulative. One flush is one
+  `_flush` call, retries and backoff included; it counts whether it returned
+  or raised, and a flush cut short by a cancel is not counted. `flush_rows`
+  is the rows passed to `_flush`. For `futures_trades` that is trade prints
+  (the batch passed to the write), not the bars written, like
+  `write_attempted`. `flush_seconds` is the time spent inside those calls.
+- `interval_flush_max_s`: the longest single flush since the last minute line.
+- `interval_batch_max`: the most rows passed to one flush since the last
+  minute line. A backlog take can exceed the normal batch size, up to
+  `BACKLOG_BATCH_MAX` (5,000).
+- `interval_queue_hwm`: the deepest the handler's queue got since the last
+  minute line. `queue_depth` cannot show that peak: by the time anyone reads
+  it the consumer has usually drained the queue.
+
+At the top level, `receive_queue_hwm` is the deepest receive-queue depth the
+router saw since the last minute line. It is not an exact instantaneous peak:
+the router reads the depth after each frame it dispatches, and the connector
+hot path is not instrumented, so a burst the router worked off between two
+reads can have been deeper.
+
+The `interval_*` fields and `receive_queue_hwm` are reset by the minute
+line, so `/metrics` shows the values since the last line (at most a minute
+and a bit), not since boot. Every other field is cumulative and never resets.
+
+### The minute line
+
+`run_pipeline_stats` (`src/pipeline_stats.py`) logs one line at every UTC
+minute boundary, at info level, with the message `uw-stream pipeline minute`.
+The line for a quiet minute is still sent, with an empty `handlers`: it is
+the heartbeat, and it shows loop lag through the quiet hours. The first line
+after a deploy covers only the part of the minute since boot. If the event
+loop is blocked past a boundary the line comes late, and the minute label
+that would have come is missing from the sequence.
+
+| Field                            | Meaning                                                                                                                                                                                                      |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `minute_utc`                     | ISO start of the minute the line reports.                                                                                                                                                                    |
+| `loop_lag_max_s`                 | The longest the event loop kept the sampler waiting past its 0.25 s sleep (elapsed minus 0.25 s, never below 0). Near 0 is healthy; seconds mean something blocked the loop.                               |
+| `loop_lag_over_1s`               | How many of those samples were 1 s or more.                                                                                                                                                                  |
+| `pool_size_max`                  | Most connections open in the DB pool (its max is 10), sampled four times a second. `null` when the pool was never sampled.                                                                                   |
+| `pool_in_use_max`                | Most connections checked out (size minus idle) at any sample. A hold shorter than 0.25 s can fall between two samples. `null` when never sampled.                                                          |
+| `receive_queue_hwm`              | As under `/metrics` above, for the minute.                                                                                                                                                                   |
+| `receive_queue_dropped`          | Frames the receive queue dropped in the minute.                                                                                                                                                              |
+| `handlers`                       | One entry per handler that had activity in the minute: a flush, a queue depth above 0, a new drop or a new filtered payload. Keyed by handler name.                                                          |
+| `flushes`, `rows`, `flush_s`     | In a handler entry: flushes, rows passed to `_flush` and seconds spent in `_flush` during the minute (changes in the cumulative `/metrics` counters). Rows are prints for `futures_trades`.                |
+| `flush_max_s`, `batch_max`       | In a handler entry: the longest single flush, and the most rows in one flush.                                                                                                                                |
+| `queue_hwm`                      | In a handler entry: the deepest the handler's queue got.                                                                                                                                                     |
+| `dropped`, `filtered`            | In a handler entry: payloads its queue dropped (backpressure), and payloads it discarded before the queue because they can never become rows.                                                                |
+
+All seconds are rounded to 3 decimals.
+
+How to read a late-data minute:
+
+- A handler's `flush_max_s` is high, `loop_lag_max_s` is near 0 and
+  `pool_in_use_max` is below the pool size: the write itself was slow, so
+  Neon or the network.
+- `pool_in_use_max` equals the pool's maximum (10) in the same minute as a
+  high `flush_max_s`: flushes waited for a free connection. The pool was
+  exhausted.
+- `loop_lag_max_s` of a second or more, with every busy handler showing slow
+  flushes and deep queues in that one minute: the event loop was blocked, and
+  the flush timing is a symptom of it.
+- `queue_hwm` climbing toward the queue size with `batch_max` near 5,000: the
+  handler was falling behind and taking a backlog each flush.
+
+Read the lines from Railway with:
+
+```bash
+railway logs -s uw-stream --filter "pipeline minute" --json
+```
+
+Use the app's `time` field in each entry, not Railway's `timestamp`, and
+`minute_utc` to join a line to Neon's per-minute data.
 
 ## Operational notes
 
