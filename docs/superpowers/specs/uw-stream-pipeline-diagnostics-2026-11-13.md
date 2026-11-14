@@ -145,12 +145,12 @@ The evidence is in the memory note `project_uw_stream_disconnects_2026_10_28`, u
 - **`run_pipeline_stats()`** is a background task. It is started in `main._run` next to `run_drop_reporter` and cancelled with the other background tasks in `_shutdown`. It needs no final pass.
 - **Sampler, every `SAMPLE_INTERVAL_S`:**
   - Measure event-loop lag as the elapsed monotonic time minus `SAMPLE_INTERVAL_S`, floored at 0. Keep the interval max and the count of samples at or over `LOOP_LAG_FLAG_S`.
-  - When the DB pool is initialized, read `get_size()` and `get_idle_size()`. Keep the interval max of size and the interval max of in-use (size − idle).
+  - When the DB pool is initialized, read `get_size()` and `get_idle_size()`. Keep the interval max and min of size and the interval max of in-use (size − idle). The min was added at the final review: asyncpg closes a connection idle for 300 s and hands connections out last-in-first-out, so a min below the max inside a minute shows connections expiring and reopening.
   - If the pool isn't initialized, record nothing for it. Never raise.
 - **Report, at each UTC minute boundary:** sleep to the next boundary, wall clock. Emit one `log.info("uw-stream pipeline minute", extra={...})` with:
   - `minute_utc`: ISO start of the minute being reported.
   - `loop_lag_max_s`, `loop_lag_over_1s`.
-  - `pool_size_max`, `pool_in_use_max`: `None` when never sampled.
+  - `pool_size_max`, `pool_size_min`, `pool_in_use_max`: `None` when never sampled.
   - `receive_queue_hwm`, and `receive_queue_dropped` (the delta of `state.receive_queue_drops` since the last report).
   - `handlers`: one entry per handler that had activity in the minute (any flush, `interval_queue_hwm > 0`, a new drop or a new `filtered`), with:
     - `flushes`, `rows`, `flush_s`: deltas of the cumulative counters;
@@ -201,11 +201,13 @@ The evidence is in the memory note `project_uw_stream_disconnects_2026_10_28`, u
     - If the gap is at least `SILENCE_S`, count a silence. When this socket has a twin, count the twin's trade frames in the buckets **strictly inside** (`last_trade_at`, `now`), leaving out the two edge buckets. If that count is at least `TWIN_MIN_FRAMES`, emit the warning below.
     - Set `last_trade_at = now`.
   - Why the edge buckets are left out: after an event-loop stall both sockets resume together, and the twin's buffered frames land in the resume bucket. Excluding it keeps a loop stall from looking like one socket going quiet. Task 3's loop-lag line covers stalls.
+  - The exclusion is not enough on its own (final review): the first socket to resume drains its buffered frames before its twin's task runs, so if a bucket edge falls inside that drain, its frames land strictly inside the twin's gap. Each socket therefore also records its latest silence span when a gap of at least `SILENCE_S` ends, and the warning carries `twin_also_silent` (below). The warning still fires as before; the flag tells a shared stall from one quiet socket.
 - **The warning:** `rate_limited_log.warning(scope="socket_stats", kind="twin_silence", key=<shard>, message="trade socket went quiet while its twin kept receiving", extra={...})`. The fields are:
   - `shard`, `twin`;
   - `gap_s` (3 dp) and `twin_trade_frames`;
   - `silence_start_utc` and `silence_end_utc`: ISO, with the end being wall-clock now at detection and the start being end minus the gap;
-  - `twin_window_clipped`: true when the gap is longer than the ring span.
+  - `twin_window_clipped`: true when the gap is longer than the ring span;
+  - `twin_also_silent`: true when the twin's latest recorded silence overlaps this gap, or the twin's own gap is still open. A hint that both sockets were stalled together, not proof.
 - **`connector.py`:**
   - get this shard's `SocketStats` once in `__init__`;
   - call `session_start()` when a connection's receive loop starts;
