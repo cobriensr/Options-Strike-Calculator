@@ -46,20 +46,37 @@ One implementer stream at a time, in this order. Each phase ships on its own, wi
 
 - **Cause.** `api/_lib/cron-instrumentation.ts` ~838 calls `Sentry.captureException(err)` on any thrown error, with no test for `TransientDbError`. Endpoints already treat transients as a warning plus a metric, with no exception capture (`transient-db-response.ts:71-82`; policy stated in `request-scope.ts:133-143`).
 - **Fix.** Use the same policy in the cron wrapper:
-  - log at warning level, count the metric, and skip `captureException` for `TransientDbError`;
+  - log at warning level, count `cron.db_timeout` (one metric for every cron, attribute `job`; see "Decided" below), and skip `captureException` for `TransientDbError`;
   - the check-in still reports `error`, because the run failed.
 - **Files.**
   - `api/_lib/cron-instrumentation.ts` and its test.
+  - `api/_lib/sentry.ts`: the `metrics.cronDbTimeout(job)` helper, and its test in `api/__tests__/sentry.test.ts`.
   - `api/_lib/transient-db-error.ts`: the class, moved out of `db.ts` so the wrapper can classify without importing it. A first try that imported it from `db.js` failed 36 cron test files, because they mock `db.js` with a factory that lacks the class.
   - `api/_lib/db.ts`: re-exports the class, so existing imports keep working.
   - `api/__tests__/transient-db-error.test.ts`.
 - **Deploy.** Vercel. Push outside market hours.
   - Precondition: push only after the cron monitors are unmuted and read back as unmuted. Every job wrapped in `withCronInstrumentation` (64 files in `api/cron/`) can take this path. "Unmuted" means each of those monitors reads back `isMuted: false` through the Sentry monitors API. Until then, a cron's exception is its only email path, because many monitors are muted. This change removes that exception for a transient Neon error, so a muted monitor would leave the failed run with no email at all.
-- **Open question for the owner (no default applied).** The new `<job>.db_timeout` counter has no consumer.
-  - A persistent slow-query regression is now a warning. One example is the takeit-fill-shap "db attempt timeout" storm from a missing index (SENTRY-EMERALD-DESERT-7J; see migration #184's description in `api/_lib/db-migrations.ts`, ~5161).
-  - Once the monitors are unmuted, a cron that fails 3 runs in a row still emails.
-  - A cron that times out on only some runs never reaches that threshold and stays silent.
-  - Option: a Sentry metric alert on the `*.db_timeout` rate. That is an alert-rule change, so it needs the owner's OK.
+- **Decided (owner OK 2026-11-13).** A Sentry metric alert on cron database timeouts.
+  - **Why an alert.** A persistent slow-query regression is now a warning. One example is the takeit-fill-shap "db attempt timeout" storm from a missing index (SENTRY-EMERALD-DESERT-7J; see migration #184's description in `api/_lib/db-migrations.ts`, ~5161). Once the monitors are unmuted, a cron that fails 3 runs in a row still emails, but a cron that times out on only some runs never reaches that threshold and would stay silent.
+  - **The metric.** Sentry metric monitors evaluate one total series, with no per-attribute group-by, and the safe form names exactly one metric. So every cron counts under `cron.db_timeout`, with the attribute `job` (the job name as the wrapper has it, hyphens included).
+    - It is emitted by `metrics.cronDbTimeout(job)` in `api/_lib/sentry.ts`, which follows `rateLimited` and `uwRateLimit`: one named helper that calls `Sentry.metrics.count` with the attribute. The name and the attribute key then live in one file, next to the other metric names, and the `job` argument cannot be left off at the call site.
+    - Only `withCronInstrumentation` emits it, and only for `TransientDbError`. `withCronCheckin` jobs are out of scope, as above.
+    - The endpoint counters (`<label>.db_timeout` in `request-scope.ts` and `transient-db-response.ts`) are unchanged. 90 days of history show they would add about 7 noisy incidents to a cron alert.
+  - **The monitor.**
+    - Name: "Cron DB timeouts: 3+ in 1 hour".
+    - Query: dataset `events_analytics_platform`, eventTypes `["trace_item_metric"]`, aggregate `sum(value,cron.db_timeout,counter,-)`, 1-hour window.
+    - Detection: static. `gte 3` is critical (high priority); `lte 1` is resolved.
+    - Notifications: connected to workflow 6262822, which emails issue owners, falling back to active members.
+    - Order: it is created before Phase 2 is pushed, and checked in Explore after the first deploy.
+  - **Why 3 in an hour.** From 90 days of `TransientDbError` history:
+    - At least 3 gives 13 incidents: 12 single-cron storms (10 `detect-lottery-fires` storm days, plus `evaluate-round-trip` on 11-05 and 11-13) and 1 marginal two-cron tail on 10-23.
+    - No isolated single failure ever put more than 1 event in its hour.
+    - At least 5 would miss the `evaluate-round-trip` incidents and `capture-flow-regime`-style leaks, which peak at 4 an hour.
+    - The research notes are scratch, in gitignored `docs/tmp/db-timeout-alert-2026-11-13.md`. They may not be on another checkout, so this section does not rely on them.
+  - **Accepted limits.**
+    - There is no per-job alert. It is a total, and triage groups by `job` in Explore.
+    - A cron that fails once a day, like `capture-flow-regime-daily`, stays below the threshold.
+    - A Neon blip that fails 3 or more crons in the same hour also fires it, about once a quarter by history.
 
 ### Phase 3: uw-stream reports a reconnect storm once per incident, and files each exception once
 
