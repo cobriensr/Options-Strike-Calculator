@@ -1,33 +1,43 @@
 """
-Lottery fire scoring model — rescore-v1 (2026-05-22).
+Lottery fire score training: the training half of the nightly refit.
 
-Trains a linear per-feature uplift model on the last 90 days of aligned
-lottery fires and emits ml/output/lottery_score_weights.json.
+Trains a linear per-feature uplift model on a 90-day window of aligned,
+single-leg lottery fires and returns it as a validated weights object, the shape
+``lottery_weights.validate_weights`` checks and the TypeScript scorer reads.
+Nothing here writes: no JSON file, no database row. The nightly refit step calls
+``fetch_frame`` and ``train_weights`` and stores the result itself; run by hand,
+``main`` prints a dry run.
 
-Outcome metric: COALESCE(realized_flow_inversion_pct, realized_eod_pct)
-  → "flow-inversion exit or held-to-EOD proxy" per spec decision 2.
+The training population is defined once (plan D7, docs/superpowers/plans/
+2026-11-05-nightly-pipeline-phase4.md), in ``TRAINING_FILTER_SQL``:
+  - aligned: a call needs cum_ncp > cum_npp at the fire, a put the reverse, both
+    non-null (spec decision 6);
+  - ``SINGLE_LEG_FILTER``: the exchange's own trade code marks the anchor print
+    as a single-leg trade; multi-leg, stock-tied and unknown rows stay out;
+  - an outcome present.
+The window is explicit: ``date > start AND date <= end``, with the end the
+session the refit trains through. No query asks the database for the date.
+``drop_bug_rows`` then drops, in pandas, rows with
+realized_flow_inversion_pct > peak_ceiling_pct * 1.05, a value impossible for
+clean data.
 
-Alignment gate (spec decision 6): only fires where option direction agrees
-  with the cum_ncp/npp flow at trigger time are included in training.
-  Call = ncp > npp, Put = npp > ncp.
-
-Drops (spec decisions 3, 7):
-  - anchor_leg_kind is not 'single' (multi-leg, stock-tied and unknown rows;
-    classifier-era structure rows carried a 35% enrichment bug)
-  - rows where realized_flow_inversion_pct > peak_ceiling_pct * 1.05 (the
-    enrichment-bug signature; impossible for clean data)
-  - reload_tagged (UI badge only, negative EV found in EDA)
-  - range_pos_at_trigger (no signal)
-  - trigger_iv (outlier data quality issue, defer)
+Outcome metric: COALESCE(realized_flow_inversion_pct, realized_eod_pct), a
+flow-inversion exit with a held-to-EOD fallback (spec decision 2). It is the
+``outcome_pct`` column ``fetch_frame`` builds.
 
 Features modeled (in order of EDA lift concentration):
-  1. tod (categorical: AM_open, MID, LUNCH, PM)
+  1. tod (categorical: AM_open, MID, LUNCH, PM), with a Monday table
   2. dte (categorical: 0, 1, 2, 3)
   3. trigger_vol_to_oi_window (quintile, inverted-U, Q3 sweet spot)
   4. gamma_at_trigger (quintile, Q4 highest mean)
   5. trigger_ask_pct (quintile, monotonic-decreasing)
   6. option_type (C vs P)
   7. underlying_symbol (per-ticker, clamped [-5, +10])
+Not trained: reload_tagged (UI badge only, negative EV found in EDA),
+range_pos_at_trigger (no signal), trigger_iv (outlier data quality issue).
+
+The composite bonuses and the feed cutoffs are not trained. ``train_weights``
+copies them from the version it is given as ``base``.
 
 V2.2 Phase D context features (spx_spot_charm_oi, spx_spot_vanna_oi,
 mkt_tide_ncp, mkt_tide_npp, mkt_tide_diff, mkt_tide_otm_diff,
@@ -41,40 +51,45 @@ The code-path in score_components.py and the TS function signature keep the
 context parameters as optional/dormant so they can be re-enabled in the
 future without a flag day.
 
-Run: ml/.venv/Scripts/python ml/src/lottery_scoring.py
-     (DATABASE_URL sourced from repo-root .env)
+Run by hand: ml/.venv/Scripts/python ml/src/lottery_scoring.py --through YYYY-MM-DD
+(DATABASE_URL from the repo-root .env). It reads and prints and writes nothing.
 
-WARNING — Phase 2 of the rescore project (`scripts/sync_lottery_score_weights.py`)
-is not yet updated to read this new schema or output path. Until Phase 2 ships:
-  - Output writes to `ml/output/` (new path) — NOT `ml/data/` where the current
-    sync script reads.
-  - Nightly `make refit` will keep regenerating the OLD `ml/data/` weights via
-    the unchanged sync script — which currently re-reads its own stale input.
-  - There is no regression: production scoring keeps using the existing TS
-    weights file until Phase 2-5 wires this new model in.
+This file is copied into the nightly image (Python 3.12) with lottery_weights.py
+and lottery_refit_gates.py. At import it needs numpy, pandas and those two
+files: scipy and ``utils`` (psycopg2) load inside ``main``, which the image
+never calls, and nothing here is newer than 3.12.
 """
 
 from __future__ import annotations
 
-import json
-import sys
-from datetime import UTC, date, datetime
-from pathlib import Path
+import argparse
+import copy
+import logging
+from collections.abc import Mapping
+from datetime import date, timedelta
+from typing import Any
 
 import numpy as np
 import pandas as pd
-from scipy import stats
 
-# conftest.py at repo root adds ml/src/ to sys.path for pytest; running
-# directly, we need it in place for `from utils import ...`
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+from lottery_refit_gates import OUTCOME_COLUMN, TRAIN_WINDOW_DAYS
+from lottery_weights import (
+    SCHEMA_VERSION,
+    SCORE_COLUMNS,
+    WeightsInvalid,
+    load_pointer,
+    score_frame,
+    validate_weights,
+)
 
-from lottery_refit_guard import announce_skip, refit_blocked
-from utils import get_connection
+_log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
+
+# The training method, stored as the weights object's model_version.
+MODEL_VERSION = "rescore-v1-2026-05-22"
 
 # Weight normalization: max contribution per feature is ~6-8 pts to stay
 # within the existing magnitude conventions (MODE_WEIGHTS / TOD_WEIGHTS were
@@ -95,81 +110,103 @@ TICKER_CLAMP_MAX = 10
 MIN_OBS_BUCKET = 30
 MIN_OBS_TICKER = 100
 
+TOD_BUCKETS = ("AM_open", "MID", "LUNCH", "PM")
+
+# A flow-inversion value above peak_ceiling_pct times this is the enrichment
+# bug's signature: the exit cannot beat the session's peak.
+BUG_PEAK_MULTIPLE = 1.05
+
+# (the stem of the weights object's keys, the fire column, the scale)
+_QUINTILE_FEATURES = (
+    ("vol_oi", "trigger_vol_to_oi_window", VOL_OI_SCALE),
+    ("gamma", "gamma_at_trigger", GAMMA_SCALE),
+    ("ask_pct", "trigger_ask_pct", ASK_PCT_SCALE),
+)
+
 
 # ---------------------------------------------------------------------------
-# Data fetch
+# The training population (plan D7)
 # ---------------------------------------------------------------------------
 
 # The one definition of "not part of a multi-leg structure" for the lottery
-# refits (nightly spec, "Refit" section; shared with
-# scripts/online_ticker_update.py). Keeps only fires whose anchor print the
-# exchange's OPRA trade code marks as a single-leg trade (migration #197).
-# Multi-leg, stock-tied and NULL (unknown) rows are excluded on purpose.
+# refit. Keeps only fires whose anchor print the exchange's OPRA trade code
+# marks as a single-leg trade (migration #197). Multi-leg, stock-tied and NULL
+# (unknown) rows are excluded on purpose.
 SINGLE_LEG_FILTER = "anchor_leg_kind = 'single'"
 
-FETCH_QUERY = f"""
-SELECT
-    underlying_symbol,
-    option_type,
-    tod,
-    dte,
-    trigger_vol_to_oi_window,
-    gamma_at_trigger,
-    trigger_ask_pct,
-    realized_flow_inversion_pct,
-    realized_eod_pct,
-    peak_ceiling_pct,
-    cum_ncp_at_fire,
-    cum_npp_at_fire,
-    date
-FROM lottery_finder_fires
-WHERE
-    date >= CURRENT_DATE - INTERVAL '90 days'
-    -- alignment gate (cum_ncp/npp must both be non-null)
-    AND cum_ncp_at_fire IS NOT NULL
+# The population as a WHERE-clause body, without a date window. There is no
+# filter on how the inversion was sourced: a row still waiting for its tape
+# inversion falls back to realized_eod_pct through the outcome's COALESCE.
+TRAINING_FILTER_SQL = f"""
+    cum_ncp_at_fire IS NOT NULL
     AND cum_npp_at_fire IS NOT NULL
-    -- hard alignment filter (spec decision 6)
     AND (
         (option_type = 'C' AND cum_ncp_at_fire > cum_npp_at_fire)
         OR (option_type = 'P' AND cum_npp_at_fire > cum_ncp_at_fire)
     )
-    -- keep single-leg fires only (spec decision 7; SINGLE_LEG_FILTER)
     AND {SINGLE_LEG_FILTER}
-    -- require at least one outcome column to be non-null
     AND COALESCE(realized_flow_inversion_pct, realized_eod_pct) IS NOT NULL
+"""
+
+# What ``score_frame`` reads (it includes ``date``), plus the columns the
+# outcome is built from.
+TRAINING_COLUMNS = (
+    *SCORE_COLUMNS,
+    "realized_flow_inversion_pct",
+    "realized_eod_pct",
+    "peak_ceiling_pct",
+)
+
+_TEXT_COLUMNS = ("underlying_symbol", "option_type", "tod")
+_NUMERIC_COLUMNS = tuple(
+    c for c in TRAINING_COLUMNS if c not in (*_TEXT_COLUMNS, "date")
+)
+_SELECT_LIST = ", ".join(TRAINING_COLUMNS)
+
+_FETCH_SQL = f"""
+SELECT {_SELECT_LIST}
+FROM lottery_finder_fires
+WHERE date > %s AND date <= %s
+    AND {TRAINING_FILTER_SQL}
 ORDER BY date
 """
 
 
-def fetch_training_data() -> pd.DataFrame:
-    """Fetch aligned, filtered fires and return as DataFrame with outcome_pct."""
-    print("Connecting to database...")
-    conn = get_connection()
-    print("Fetching training data...")
-    df = pd.read_sql_query(FETCH_QUERY, conn)
-    conn.close()
-    print(f"Fetched {len(df):,} rows before final filters")
+def drop_bug_rows(df: pd.DataFrame) -> pd.DataFrame:
+    """The rows of ``df`` without the enrichment-bug signature.
 
-    # Compute outcome column (spec decision 2)
-    df["outcome_pct"] = df["realized_flow_inversion_pct"].combine_first(
+    A row whose realized_flow_inversion_pct is above peak_ceiling_pct times
+    ``BUG_PEAK_MULTIPLE`` is dropped: that is impossible for clean data. A row
+    with no inversion yet (it scores on the EOD fallback) or no peak is kept:
+    a comparison with NaN is False. Returns a copy; ``df`` is left alone.
+    """
+    bug = df["realized_flow_inversion_pct"] > df["peak_ceiling_pct"] * BUG_PEAK_MULTIPLE
+    return df[~bug].copy()
+
+
+def fetch_frame(conn: Any, start: date, end: date) -> pd.DataFrame:
+    """The training population with ``date > start AND date <= end``.
+
+    ``conn`` is a psycopg2 connection; this runs one SELECT. The frame has the
+    ``TRAINING_COLUMNS`` as floats (text columns and ``date`` as they come) and
+    ``outcome_pct``, the flow-inversion value or, where there is none yet, the
+    EOD one. Rows with the enrichment-bug signature are dropped.
+    """
+    with conn.cursor() as cur:
+        cur.execute(_FETCH_SQL, (start, end))
+        rows = cur.fetchall()
+    df = pd.DataFrame(rows, columns=list(TRAINING_COLUMNS))
+    # NUMERIC arrives as Decimal in an object column.
+    for column in _NUMERIC_COLUMNS:
+        df[column] = pd.to_numeric(df[column]).astype("float64")
+    df[OUTCOME_COLUMN] = df["realized_flow_inversion_pct"].combine_first(
         df["realized_eod_pct"]
     )
-
-    # Drop rows with the enrichment-bug signature
-    # (flow_inv > peak_ceiling * 1.05 is mathematically impossible for clean data)
-    pre_len = len(df)
-    mask_bug = (
-        df["realized_flow_inversion_pct"].notna()
-        & df["peak_ceiling_pct"].notna()
-        & (df["realized_flow_inversion_pct"] > df["peak_ceiling_pct"] * 1.05)
-    )
-    df = df[~mask_bug].copy()
-    dropped = pre_len - len(df)
-    if dropped > 0:
-        print(f"Dropped {dropped:,} rows with flow_inv > peak*1.05 (enrichment bug)")
-
-    print(f"Final training sample: {len(df):,} rows")
-    return df
+    kept = drop_bug_rows(df)
+    dropped = len(df) - len(kept)
+    if dropped:
+        _log.info("Dropped %s rows with flow_inv > peak*1.05 (enrichment bug)", dropped)
+    return kept
 
 
 # ---------------------------------------------------------------------------
@@ -303,461 +340,215 @@ def compute_ticker_weights(
 
 
 # ---------------------------------------------------------------------------
-# Score application
+# Training
 # ---------------------------------------------------------------------------
 
 
-def apply_weights(
+def train_weights(
+    df: pd.DataFrame, *, base: Mapping[str, Any], trained_through: date
+) -> dict[str, Any]:
+    """Train a weights object on ``df``, a frame ``fetch_frame`` returns.
+
+    Returns a new object that passed ``validate_weights``. Reads and writes
+    nothing else: ``df`` and ``base`` are left as they were.
+
+    * The feature tables (tod with its Monday override, DTE, three quintile
+      features, option type, tickers) are trained on ``df``.
+    * ``composite_bonuses`` and ``feed_cutoffs`` are copied from ``base``. The
+      composites are curated by hand, and the feed cutoffs are matched to the
+      active version by the refit step after training.
+    * ``cutoffs`` t1 and t2 are the 95th and 85th percentile of the score the
+      full scorer (``score_frame``: composites, weekday tables, gates) gives
+      the rows of ``df``, rounded. Rows the scorer gates out (a DTE outside
+      0-3) have no score and take no part.
+
+    Raises ``WeightsInvalid`` when ``base`` or the result breaks a rule: a
+    feature with no spread (equal quintile boundaries) or cutoffs that round to
+    the same number. Raises a plain ``ValueError`` for a frame with no rows or
+    none the scorer scores.
+    """
+    validate_weights(base)
+    if df.empty:
+        raise ValueError("train_weights: no training rows")
+
+    work = df.copy()
+    global_mean = float(work[OUTCOME_COLUMN].mean())
+    features: dict[str, Any] = {}
+
+    features["tod_weights"] = compute_categorical_weights(
+        work, "tod", list(TOD_BUCKETS), TOD_SCALE, global_mean
+    )
+
+    # Monday-specific TOD weights (lineage finding 2026-05-22). The 90-day data
+    # showed Monday's TOD pattern inverted from Tue-Fri: AM_open was the worst
+    # Monday slot and LUNCH the only positive one, the reverse of the global
+    # table. Only Monday has an override; other weekdays may follow once more
+    # data has accumulated.
+    weekday = pd.to_datetime(work["date"]).dt.day_name()
+    monday = work[weekday == "Monday"]
+    overrides: dict[str, dict[str, int]] = {}
+    if len(monday) >= MIN_OBS_BUCKET * 2:
+        overrides["Monday"] = compute_categorical_weights(
+            monday,
+            "tod",
+            list(TOD_BUCKETS),
+            TOD_SCALE,
+            float(monday[OUTCOME_COLUMN].mean()),
+        )
+    else:
+        _log.warning(
+            "Monday subset too small (%s rows < %s): no Monday TOD override",
+            len(monday),
+            MIN_OBS_BUCKET * 2,
+        )
+    features["tod_weights_dow_overrides"] = overrides
+
+    work["dte_str"] = work["dte"].clip(upper=3).astype(int).astype(str)
+    features["dte_weights"] = compute_categorical_weights(
+        work, "dte_str", ["0", "1", "2", "3"], DTE_SCALE, global_mean
+    )
+
+    # A NULL feature value (gamma has many) gets no quintile and adds 0 to a
+    # score; the boundaries come from the non-null rows.
+    for stem, column, scale in _QUINTILE_FEATURES:
+        bounds = quintile_boundaries(work[column])
+        if any(b <= a for a, b in zip(bounds, bounds[1:])):
+            # pd.cut would raise a bare ValueError on equal edges; this is the
+            # error the validator gives for the same object.
+            raise WeightsInvalid(f"features.{stem}_quintile_boundaries", "increasing")
+        work["quintile"] = assign_quintile(work[column], bounds)
+        features[f"{stem}_quintile_weights"] = compute_quintile_weights(
+            work, "quintile", scale, global_mean
+        )
+        features[f"{stem}_quintile_boundaries"] = bounds
+
+    features["option_type_weights"] = compute_categorical_weights(
+        work, "option_type", ["C", "P"], OPT_TYPE_SCALE, global_mean
+    )
+    features["ticker_weights"] = compute_ticker_weights(work, global_mean)
+    features["composite_bonuses"] = copy.deepcopy(base["features"]["composite_bonuses"])
+
+    weights: dict[str, Any] = {
+        "schema_version": SCHEMA_VERSION,
+        "model_version": MODEL_VERSION,
+        "trained_through": trained_through.isoformat(),
+        "features": features,
+        # score_frame validates its input, so the object needs a valid pair
+        # before it can score; the real pair is derived from those scores.
+        "cutoffs": {"t1": 1, "t2": 0},
+        "feed_cutoffs": copy.deepcopy(base["feed_cutoffs"]),
+    }
+    scores = score_frame(weights, work).dropna()
+    if scores.empty:
+        raise ValueError("train_weights: no scorable rows (DTE outside 0-3?)")
+    values = scores.to_numpy(dtype="float64")
+    weights["cutoffs"] = {
+        "t1": int(round(float(np.percentile(values, 95)))),
+        "t2": int(round(float(np.percentile(values, 85)))),
+    }
+    validate_weights(weights)
+    return weights
+
+
+# ---------------------------------------------------------------------------
+# Main: a dry run
+# ---------------------------------------------------------------------------
+
+
+def _print_summary(
     df: pd.DataFrame,
-    weights: dict,
-    vol_oi_boundaries: list[float],
-    gamma_boundaries: list[float],
-    ask_pct_boundaries: list[float],
-) -> pd.Series:
-    """Apply the full additive weight model to df, return score Series."""
-    score = pd.Series(0.0, index=df.index)
+    weights: Mapping[str, Any],
+    scores: pd.Series,
+    rho: float,
+    p_value: float,
+) -> None:
     f = weights["features"]
+    t1, t2 = weights["cutoffs"]["t1"], weights["cutoffs"]["t2"]
+    print(
+        f"Training sample: {len(df):,} rows, {df['date'].nunique()} sessions, "
+        f"{df['date'].min()} to {df['date'].max()}"
+    )
+    print(f"Global mean {OUTCOME_COLUMN}: {df[OUTCOME_COLUMN].mean():.2f}")
+    print(f"\nTOD weights: {f['tod_weights']}")
+    print(
+        f"Monday TOD override: {f['tod_weights_dow_overrides'].get('Monday', 'none')}"
+    )
+    print(f"DTE weights: {f['dte_weights']}")
+    for stem, label in (
+        ("vol_oi", "Vol/OI"),
+        ("gamma", "Gamma"),
+        ("ask_pct", "Ask_pct"),
+    ):
+        bounds = [round(b, 4) for b in f[f"{stem}_quintile_boundaries"]]
+        print(f"{label} quintile boundaries: {bounds}")
+        print(f"{label} quintile weights (Q1-Q5): {f[f'{stem}_quintile_weights']}")
+    print(f"Option type weights: {f['option_type_weights']}")
+    ticker_weights = f["ticker_weights"]
+    nonzero = {
+        k: v for k, v in sorted(ticker_weights.items(), key=lambda kv: -kv[1]) if v
+    }
+    print(f"Ticker weights ({len(ticker_weights)} tickers): {nonzero}")
+    print(f"\nComposites kept from the active version: {len(f['composite_bonuses'])}")
+    print(f"Feed cutoffs kept from the active version: {weights['feed_cutoffs']}")
+    print(f"Cutoffs: t1={t1} (p95), t2={t2} (p85)")
 
-    # TOD
-    tod_w = f["tod_weights"]
-    score += df["tod"].map(tod_w).fillna(0)
-
-    # DTE (capped at 3)
-    dte_w = f["dte_weights"]
-    score += df["dte"].clip(upper=3).astype(str).map(dte_w).fillna(0)
-
-    # Vol/OI quintile
-    vol_q = assign_quintile(df["trigger_vol_to_oi_window"], vol_oi_boundaries)
-    vol_w = f["vol_oi_quintile_weights"]
-    score += vol_q.map(lambda q: vol_w[int(q)] if not pd.isna(q) else 0)
-
-    # Gamma quintile (drops NULLs → 0 contribution)
-    gamma_q = assign_quintile(df["gamma_at_trigger"], gamma_boundaries)
-    gamma_w = f["gamma_quintile_weights"]
-    score += gamma_q.map(lambda q: gamma_w[int(q)] if not pd.isna(q) else 0)
-
-    # Ask pct quintile
-    ask_q = assign_quintile(df["trigger_ask_pct"], ask_pct_boundaries)
-    ask_w = f["ask_pct_quintile_weights"]
-    score += ask_q.map(lambda q: ask_w[int(q)] if not pd.isna(q) else 0)
-
-    # Option type
-    opt_w = f["option_type_weights"]
-    score += df["option_type"].map(opt_w).fillna(0)
-
-    # Ticker
-    ticker_w = f["ticker_weights"]
-    score += df["underlying_symbol"].map(ticker_w).fillna(0)
-
-    # NOTE: V2.2 Phase D context features (spx_spot_charm_oi, spx_spot_vanna_oi,
-    # spx_spot_gamma_oi, mkt_tide_ncp, mkt_tide_npp, mkt_tide_diff,
-    # mkt_tide_otm_diff) are intentionally excluded.
-    # Walk-forward validation (2026-05-23) found them systematically overfit:
-    # removing them improves OOS tier1 Sharpe by +0.099. They are dormant in
-    # score_components.py and the TS function signature for future re-evaluation.
-
-    return score
-
-
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
+    scored = scores.notna()
+    score = scores[scored].astype("float64")
+    outcome = df.loc[scored, OUTCOME_COLUMN]
+    print("\nTier distribution (training set):")
+    for name, mask in (
+        (f"Tier 1 (score >= {t1})", score >= t1),
+        (f"Tier 2 (score >= {t2})", (score >= t2) & (score < t1)),
+        (f"Tier 3 (score <  {t2})", score < t2),
+    ):
+        print(
+            f"  {name}: {int(mask.sum()):6,} | mean outcome {outcome[mask].mean():.1f}%"
+        )
+    print(
+        f"\nIn-sample Spearman(score, {OUTCOME_COLUMN}): r={rho:.4f}, p={p_value:.2e}"
+    )
+    print("\nDry run: nothing was written.")
 
 
 def main() -> None:
-    if refit_blocked(date.today()):
-        announce_skip("lottery_scoring.py")
-        return
-
-    df = fetch_training_data()
-
-    global_mean = float(df["outcome_pct"].mean())
-    print(f"\nGlobal mean outcome_pct: {global_mean:.2f}")
-    print(
-        f"Sample: {len(df):,} rows | date range: {df['date'].min()} → {df['date'].max()}"
-    )
-
-    # ---- Quintile boundaries (computed from training set) ----
-    vol_oi_boundaries = quintile_boundaries(df["trigger_vol_to_oi_window"])
-    gamma_boundaries = quintile_boundaries(df["gamma_at_trigger"])
-    ask_pct_boundaries = quintile_boundaries(df["trigger_ask_pct"])
-
-    print(f"\nVol/OI quintile boundaries: {[round(b, 4) for b in vol_oi_boundaries]}")
-    print(f"Gamma quintile boundaries:  {[round(b, 4) for b in gamma_boundaries]}")
-    print(f"Ask_pct quintile boundaries:{[round(b, 4) for b in ask_pct_boundaries]}")
-
-    # ---- Add quintile columns to df ----
-    df["vol_q"] = assign_quintile(df["trigger_vol_to_oi_window"], vol_oi_boundaries)
-    df["gamma_q"] = assign_quintile(df["gamma_at_trigger"], gamma_boundaries)
-    df["ask_q"] = assign_quintile(df["trigger_ask_pct"], ask_pct_boundaries)
-
-    # ---- TOD weights ----
-    tod_weights = compute_categorical_weights(
-        df, "tod", ["AM_open", "MID", "LUNCH", "PM"], TOD_SCALE, global_mean
-    )
-    print(f"\nTOD weights: {tod_weights}")
-
-    # ---- Monday-specific TOD weights (per lineage finding 2026-05-22) ----
-    # 90-day data shows Monday's TOD outcome pattern is fully inverted from
-    # Tue-Fri: AM_open is the WORST Monday slot (-22.4 mean) while LUNCH is
-    # the only positive Monday slot (+5.2). The global weights assign +4 to
-    # AM_open and -4 to LUNCH, which is backwards on Mondays.
-    # Only Monday is added here — other DOWs may follow once more data
-    # accumulates (the lineage spec calls for a 10-day re-validation window).
-    df["date"] = pd.to_datetime(df["date"])
-    df["day_of_week"] = df["date"].dt.day_name()
-    monday_df = df[df["day_of_week"] == "Monday"].copy()
-    monday_global_mean = (
-        float(monday_df["outcome_pct"].mean()) if len(monday_df) > 0 else global_mean
-    )
-    print(
-        f"\nMonday subset: {len(monday_df):,} rows | mean outcome_pct: {monday_global_mean:.2f}"
-    )
-    if len(monday_df) >= MIN_OBS_BUCKET * 2:
-        monday_tod_weights = compute_categorical_weights(
-            monday_df,
-            "tod",
-            ["AM_open", "MID", "LUNCH", "PM"],
-            TOD_SCALE,
-            monday_global_mean,
+    parser = argparse.ArgumentParser(
+        description=(
+            "Dry run of the lottery refit's training: read the training window "
+            "that ends at --through, train weights and print them. Writes "
+            "nothing."
         )
-        print(f"Monday TOD weights: {monday_tod_weights}")
-        print(f"  (vs global TOD weights: {tod_weights})")
-        tod_weights_dow_overrides: dict[str, dict[str, int]] = {
-            "Monday": monday_tod_weights
-        }
-    else:
-        print(
-            f"WARNING: Monday subset too small ({len(monday_df)} rows < {MIN_OBS_BUCKET * 2} "
-            f"minimum) — skipping Monday TOD override. Falling back to global weights."
-        )
-        tod_weights_dow_overrides = {}
-
-    # ---- DTE weights ----
-    df["dte_str"] = df["dte"].clip(upper=3).astype(int).astype(str)
-    dte_weights_raw = compute_categorical_weights(
-        df, "dte_str", ["0", "1", "2", "3"], DTE_SCALE, global_mean
     )
-    dte_weights = {k: dte_weights_raw[k] for k in ["0", "1", "2", "3"]}
-    print(f"DTE weights: {dte_weights}")
-
-    # ---- Vol/OI quintile weights ----
-    vol_oi_weights = compute_quintile_weights(df, "vol_q", VOL_OI_SCALE, global_mean)
-    print(f"Vol/OI quintile weights (Q1→Q5): {vol_oi_weights}")
-
-    # ---- Gamma quintile weights ----
-    # Gamma has ~40k NULLs — quintiles computed on non-null subset only;
-    # NULL gamma rows contribute 0 to score (no gamma signal).
-    gamma_weights = compute_quintile_weights(df, "gamma_q", GAMMA_SCALE, global_mean)
-    print(f"Gamma quintile weights (Q1→Q5): {gamma_weights}")
-
-    # ---- Ask pct quintile weights ----
-    ask_pct_weights = compute_quintile_weights(df, "ask_q", ASK_PCT_SCALE, global_mean)
-    print(f"Ask_pct quintile weights (Q1→Q5): {ask_pct_weights}")
-
-    # ---- Option type weights ----
-    opt_type_weights = compute_categorical_weights(
-        df, "option_type", ["C", "P"], OPT_TYPE_SCALE, global_mean
+    parser.add_argument(
+        "--through",
+        type=date.fromisoformat,
+        required=True,
+        metavar="YYYY-MM-DD",
+        help="the last session of the window; it starts 90 days before",
     )
-    print(f"Option type weights: {opt_type_weights}")
+    args = parser.parse_args()
 
-    # ---- Ticker weights ----
-    ticker_weights = compute_ticker_weights(df, global_mean, min_obs=100)
-    print(
-        f"Ticker weights ({len(ticker_weights)} tickers): "
-        f"min={min(ticker_weights.values())}, max={max(ticker_weights.values())}"
+    # A hand run needs these; the nightly image has neither.
+    from scipy import stats
+
+    from utils import get_connection
+
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    start = args.through - timedelta(days=TRAIN_WINDOW_DAYS)
+    conn = get_connection()
+    try:
+        conn.set_session(readonly=True)
+        df = fetch_frame(conn, start, args.through)
+        _, base = load_pointer(conn, "active")
+    finally:
+        conn.close()
+
+    weights = train_weights(df, base=base, trained_through=args.through)
+    scores = score_frame(weights, df)
+    scored = scores.notna()
+    rho, p_value = stats.spearmanr(
+        scores[scored].astype("float64"), df.loc[scored, OUTCOME_COLUMN]
     )
-
-    # ---- Build weights dict ----
-    weights = {
-        "model_version": "rescore-v1-2026-05-22",
-        "trained_at": datetime.now(UTC).isoformat(),
-        "training_sample": {
-            "n": int(len(df)),
-            "date_range": [
-                str(df["date"].min()),
-                str(df["date"].max()),
-            ],
-            "filters_applied": [
-                "last 90 days",
-                "aligned only (cum_ncp > cum_npp for calls, vice versa for puts)",
-                "anchor_leg_kind = 'single' (drops multi-leg, stock-tied and unknown rows)",
-                "realized_flow_inversion_pct <= peak_ceiling_pct * 1.05",
-                "outcome_pct = COALESCE(realized_flow_inversion_pct, realized_eod_pct)",
-            ],
-        },
-        "features": {
-            "tod_weights": {k: int(v) for k, v in tod_weights.items()},
-            "tod_weights_dow_overrides": {
-                dow: {k: int(v) for k, v in w.items()}
-                for dow, w in tod_weights_dow_overrides.items()
-            },
-            "dte_weights": {k: int(v) for k, v in dte_weights.items()},
-            "vol_oi_quintile_weights": [int(w) for w in vol_oi_weights],
-            "vol_oi_quintile_boundaries": [float(b) for b in vol_oi_boundaries],
-            "gamma_quintile_weights": [int(w) for w in gamma_weights],
-            "gamma_quintile_boundaries": [float(b) for b in gamma_boundaries],
-            "ask_pct_quintile_weights": [int(w) for w in ask_pct_weights],
-            "ask_pct_quintile_boundaries": [float(b) for b in ask_pct_boundaries],
-            "option_type_weights": {k: int(v) for k, v in opt_type_weights.items()},
-            "ticker_weights": {k: int(v) for k, v in ticker_weights.items()},
-            # NOTE: V2.2 Phase D context feature blocks (spx_spot_charm_oi etc.)
-            # intentionally absent — overfit as of walk-forward 2026-05-23.
-            # score_components.py and the TS function handle their absence
-            # gracefully (each context component defaults to 0).
-        },
-    }
-
-    # ---- Compute scores on training set ----
-    print("\nApplying weights to training set to derive cutoffs and validation...")
-    scores = apply_weights(
-        df, weights, vol_oi_boundaries, gamma_boundaries, ask_pct_boundaries
-    )
-    df["score"] = scores
-
-    # ---- Cutoffs: t1 = 95th percentile, t2 = 85th percentile ----
-    t1 = int(round(np.percentile(scores, 95)))
-    t2 = int(round(np.percentile(scores, 85)))
-    weights["cutoffs"] = {
-        "t1": t1,
-        "t2": t2,
-        "derivation": "Phase 1 placeholder: 95th/85th percentile of training-set score distribution. To be re-derived in Phase 5 against the full post-backfill distribution; values may shift.",
-    }
-    print(
-        f"\nCutoffs: t1={t1} (95th pct), t2={t2} (85th pct) — PLACEHOLDER, Phase 5 will re-derive"
-    )
-
-    # ---- Validation metrics ----
-    tier1 = df[df["score"] >= t1]
-    tier2 = df[(df["score"] >= t2) & (df["score"] < t1)]
-    tier3 = df[df["score"] < t2]
-
-    spearman_r, spearman_p = stats.spearmanr(df["score"], df["outcome_pct"])
-
-    weights["validation"] = {
-        "tier1_count": int(len(tier1)),
-        "tier2_count": int(len(tier2)),
-        "tier3_count": int(len(tier3)),
-        "tier1_mean_outcome_pct": float(tier1["outcome_pct"].mean())
-        if len(tier1) > 0
-        else 0.0,
-        "tier2_mean_outcome_pct": float(tier2["outcome_pct"].mean())
-        if len(tier2) > 0
-        else 0.0,
-        "tier3_mean_outcome_pct": float(tier3["outcome_pct"].mean())
-        if len(tier3) > 0
-        else 0.0,
-        "spearman_score_outcome": float(spearman_r),
-        "spearman_p_value": float(spearman_p),
-    }
-
-    # ---- Write output ----
-    # Preserve manually-curated fields from any prior weights JSON so
-    # retraining doesn't nuke them. This is the recovery path for the
-    # Phase D step 1 regression where retraining wiped the Phase B
-    # composite_bonuses block (caught by failing tests in commit
-    # b9315b73 follow-up). Fields preserved:
-    #   - features.composite_bonuses (human-curated mining-derived overrides)
-    # If you add more human-curated fields, list them here too.
-    output_dir = Path(__file__).resolve().parent.parent / "output"
-    output_dir.mkdir(exist_ok=True)
-    output_path = output_dir / "lottery_score_weights.json"
-
-    PRESERVED_FEATURE_KEYS = ["composite_bonuses"]
-    if output_path.exists():
-        try:
-            prior = json.loads(output_path.read_text())
-            prior_features = prior.get("features", {})
-            for k in PRESERVED_FEATURE_KEYS:
-                if k in prior_features:
-                    weights["features"][k] = prior_features[k]
-                    print(f"[preserve] carried over features.{k} from prior JSON")
-        except (json.JSONDecodeError, OSError) as e:
-            print(f"[preserve] couldn't read prior JSON ({e}); skipping preservation")
-
-    with open(output_path, "w") as f:
-        json.dump(weights, f, indent=2)
-
-    print(f"\nWrote weights to: {output_path}")
-
-    # ---- Summary table (printed to stdout) ----
-    print("\n" + "=" * 70)
-    print("RESCORE-V1 MODEL SUMMARY")
-    print("=" * 70)
-    print(
-        f"\nTraining sample: {len(df):,} rows  |  global mean outcome_pct: {global_mean:.1f}%"
-    )
-    print("\nTOD weights (target: AM_open > PM):")
-    for k, v in tod_weights.items():
-        bar = "#" * (v + 5)
-        print(f"  {k:10s}: {v:+4d}  {bar}")
-
-    print("\nDTE weights (target: '1' > '0'):")
-    for k in ["0", "1", "2", "3"]:
-        v = dte_weights[k]
-        bar = "#" * (v + 5)
-        print(f"  DTE {k}: {v:+4d}  {bar}")
-
-    print("\nVol/OI quintile weights (target: Q3 highest):")
-    for i, w in enumerate(vol_oi_weights):
-        lo = vol_oi_boundaries[i - 1] if i > 0 else 0
-        hi = vol_oi_boundaries[i] if i < 4 else float("inf")
-        bar = "#" * (w + 5)
-        print(f"  Q{i + 1} [{lo:.3f},{hi:.3f}): {w:+4d}  {bar}")
-
-    print("\nGamma quintile weights (target: Q4 highest or near-top):")
-    for i, w in enumerate(gamma_weights):
-        lo = gamma_boundaries[i - 1] if i > 0 else 0
-        hi = gamma_boundaries[i] if i < 4 else float("inf")
-        bar = "#" * (w + 5)
-        print(f"  Q{i + 1} [{lo:.4f},{hi:.4f}): {w:+4d}  {bar}")
-
-    print("\nAsk_pct quintile weights (target: Q1 highest, monotonic-decreasing):")
-    for i, w in enumerate(ask_pct_weights):
-        lo = ask_pct_boundaries[i - 1] if i > 0 else 0.0
-        hi = ask_pct_boundaries[i] if i < 4 else 1.0
-        bar = "#" * (w + 5)
-        print(f"  Q{i + 1} [{lo:.3f},{hi:.3f}): {w:+4d}  {bar}")
-
-    print(
-        f"\nOption type weights: C={opt_type_weights.get('C', 0):+d}, P={opt_type_weights.get('P', 0):+d}"
-    )
-    print("\nTicker weights (non-zero only):")
-    nonzero = {
-        k: v for k, v in sorted(ticker_weights.items(), key=lambda x: -x[1]) if v != 0
-    }
-    for ticker, w in nonzero.items():
-        bar = "#" * (w + 6)
-        print(f"  {ticker:8s}: {w:+4d}  {bar}")
-
-    print(f"\nCutoffs: t1={t1}, t2={t2}")
-    print("\nTier distribution (training set):")
-    print(
-        f"  Tier 1 (score >= {t1}): {len(tier1):6,}  | mean outcome: {weights['validation']['tier1_mean_outcome_pct']:.1f}%"
-    )
-    print(
-        f"  Tier 2 (score >= {t2}): {len(tier2):6,}  | mean outcome: {weights['validation']['tier2_mean_outcome_pct']:.1f}%"
-    )
-    print(
-        f"  Tier 3 (score <  {t2}): {len(tier3):6,}  | mean outcome: {weights['validation']['tier3_mean_outcome_pct']:.1f}%"
-    )
-
-    print(f"\nSpearman(score, outcome_pct): r={spearman_r:.4f}, p={spearman_p:.2e}")
-
-    # ---- Verification assertions ----
-    print("\n" + "=" * 70)
-    print("VERIFICATION CHECKS")
-    print("=" * 70)
-
-    # Each check is (label, passed, detail, hard).
-    #
-    # HARD checks gate the build — a failure means a genuine bug (e.g. a NaN
-    # weight, which would corrupt scoring) and must abort the nightly pipeline.
-    #
-    # ADVISORY checks (hard=False) are regime-sensitive heuristics about the
-    # EXPECTED SHAPE of the weights, not correctness. They legitimately flip on
-    # normal market activity — e.g. a put-dominant down market makes puts
-    # outperform calls (flips "C > P"), and this model's signal is inherently
-    # weak so the Spearman bounces around zero. We still print them (they're a
-    # useful "review before leaning on these weights" signal), but they do NOT
-    # fail `make refit` / the nightly pipeline.
-    checks: list[tuple[str, bool, str, bool]] = [
-        (
-            "TOD: AM_open > PM",
-            tod_weights.get("AM_open", 0) > tod_weights.get("PM", 0),
-            f"AM_open={tod_weights.get('AM_open')}, PM={tod_weights.get('PM')}",
-            False,
-        ),
-        (
-            "DTE: '1' > '0'",
-            dte_weights.get("1", 0) > dte_weights.get("0", 0),
-            f"DTE1={dte_weights.get('1')}, DTE0={dte_weights.get('0')}",
-            False,
-        ),
-        (
-            "Vol/OI: Q3 is highest weight",
-            vol_oi_weights[2] == max(vol_oi_weights),
-            f"weights={vol_oi_weights}",
-            False,
-        ),
-        (
-            "Ask_pct: Q1 >= Q5 (monotonic start)",
-            ask_pct_weights[0] >= ask_pct_weights[4],
-            f"Q1={ask_pct_weights[0]}, Q5={ask_pct_weights[4]}",
-            False,
-        ),
-        (
-            "Option type: C > P",
-            opt_type_weights.get("C", 0) > opt_type_weights.get("P", 0),
-            f"C={opt_type_weights.get('C')}, P={opt_type_weights.get('P')}",
-            False,
-        ),
-        (
-            "All ticker weights numeric (no NaN)",
-            all(isinstance(v, int) and not pd.isna(v) for v in ticker_weights.values()),
-            f"{len(ticker_weights)} tickers checked",
-            True,  # HARD: a NaN weight is a real bug.
-        ),
-        (
-            "Spearman r > 0.05 (some signal)",
-            spearman_r > 0.05,
-            f"r={spearman_r:.4f}",
-            False,
-        ),
-    ]
-
-    hard_failed = False
-    soft_failed = False
-    for label, passed, detail, hard in checks:
-        status = "PASS" if passed else "FAIL"
-        tag = "" if passed else ("  [HARD]" if hard else "  [advisory]")
-        print(f"  [{status}] {label}  ({detail}){tag}")
-        if not passed:
-            if hard:
-                hard_failed = True
-            else:
-                soft_failed = True
-
-    if hard_failed:
-        print(
-            "\nHARD verification check FAILED (genuine bug, e.g. NaN weights) — "
-            "aborting; weights not safe to use."
-        )
-        sys.exit(1)
-    elif soft_failed:
-        print(
-            "\nAdvisory checks failed — these are regime-sensitive heuristics "
-            "(e.g. a put-dominant regime flips 'C > P', or a noisy near-zero "
-            "Spearman). Weights were written; review before leaning on them. "
-            "This does NOT block the nightly pipeline."
-        )
-    else:
-        print("\nAll verification checks passed.")
-
-    # ---- EDA-vs-clean inversion warnings ----
-    # The EDA memo (docs/tmp/lottery-rescore-eda-2026-05-22.md) was run against
-    # data that included structure-tagged rows with a 35% enrichment bug. Some
-    # feature lifts shift when we train on the clean (non-structure) subset.
-    # Flag any inversions here so a human reviewer can decide whether the
-    # clean-data signal is real or an artifact of the enrichment fix.
-    print("\nEDA vs clean-data sign check:")
-    if gamma_weights[3] != max(gamma_weights):
-        # EDA said Q4 (0.041-0.066) had highest mean (267). Clean data may differ.
-        best_q = gamma_weights.index(max(gamma_weights)) + 1
-        print(
-            f"  WARNING: Gamma highest weight is at Q{best_q}, not Q4 as the EDA "
-            f"memo predicted. Clean data shows weights={gamma_weights}. The EDA "
-            f"was on contaminated data; the clean signal is what gets trained. "
-            f"Worth verifying in Phase 7."
-        )
-    if ask_pct_weights[0] != max(ask_pct_weights):
-        # EDA said Q1 (0.52-0.53) had highest mean (108). Clean data may differ.
-        best_q = ask_pct_weights.index(max(ask_pct_weights)) + 1
-        print(
-            f"  WARNING: Ask_pct highest weight is at Q{best_q}, not Q1 as the EDA "
-            f"memo predicted. Clean data shows weights={ask_pct_weights}. Same "
-            f"caveat as gamma above."
-        )
+    _print_summary(df, weights, scores, float(rho), float(p_value))
 
 
 if __name__ == "__main__":

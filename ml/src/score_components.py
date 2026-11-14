@@ -102,8 +102,7 @@ def compute_components(
       vol_oi_window (float|None), gamma (float|None),
       ask_pct (float|None)
 
-    weights is the loaded JSON from ml/output/lottery_score_weights.json
-    (or its sync_lottery_score_weights_v2.py-rendered TS mirror).
+    weights is the loaded JSON from ml/output/lottery_score_weights.json.
 
     dow (optional): day-of-week name (e.g. "Monday"). When provided AND
     the weights JSON contains a matching tod_weights_dow_overrides[dow]

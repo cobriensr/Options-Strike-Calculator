@@ -1,40 +1,61 @@
 """
-Tests for the PURE compute functions in ml/src/lottery_scoring.py.
+Tests for ml/src/lottery_scoring.py, the training half of the nightly refit.
 
-This is the nightly `make refit` script that trains the rescore-v1 lottery
-score model. The weight math here feeds the live TypeScript scoring path, so
-these functions are worth locking down with hand-computed expectations.
+The module trains the lottery score weights. Its weight math feeds the live
+TypeScript scorer, so the pure functions (quintile_boundaries, assign_quintile,
+compute_categorical_weights, compute_quintile_weights, compute_ticker_weights)
+are locked down with hand-computed expectations, and the refit's entry points
+are tested on synthetic frames:
 
-I/O functions (`fetch_training_data`, `main`) require a live Postgres + the
-filesystem and are intentionally NOT covered here — they are smoke-tested
-elsewhere / in production. We target the six pure functions:
+  TRAINING_FILTER_SQL / TRAINING_COLUMNS   the one definition of the training
+                                           population (plan D7)
+  fetch_frame / drop_bug_rows              the explicit-window read, through a
+                                           fake cursor
+  train_weights                            a validated weights object, no side
+                                           effects
+  main                                     a dry run that writes nothing
 
-  quintile_boundaries, assign_quintile, compute_categorical_weights,
-  compute_quintile_weights, compute_ticker_weights, apply_weights
-
-All frames are synthetic and built inline so every assertion is computable
-by hand.
+Every frame is synthetic. Nothing reaches a database: the connection is a fake.
+The import test and the main tests need scipy and ``utils``, which the nightly
+image does not have; the rest of this file needs only numpy and pandas.
 """
 
 from __future__ import annotations
+
+import copy
+import json
+import subprocess
+import sys
+from datetime import date
+from decimal import Decimal
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
 
+import lottery_scoring as ls
 from lottery_scoring import (
-    FETCH_QUERY,
     MIN_OBS_BUCKET,
     SINGLE_LEG_FILTER,
     TICKER_CLAMP_MAX,
     TICKER_CLAMP_MIN,
-    apply_weights,
+    TRAINING_COLUMNS,
+    TRAINING_FILTER_SQL,
     assign_quintile,
     compute_categorical_weights,
     compute_quintile_weights,
     compute_ticker_weights,
+    drop_bug_rows,
+    fetch_frame,
     quintile_boundaries,
+    train_weights,
 )
+from lottery_weights import WeightsInvalid, score_frame, validate_weights
+
+ROOT = Path(__file__).resolve().parents[2]
+SRC_DIR = ROOT / "ml" / "src"
+OUTPUT_DIR = ROOT / "ml" / "output"
 
 # ---------------------------------------------------------------------------
 # quintile_boundaries
@@ -395,157 +416,159 @@ def test_compute_ticker_weights_fewer_than_two_reliable_uses_fallback_spread():
 
 
 # ---------------------------------------------------------------------------
-# apply_weights
+# Synthetic training data and a fake connection
 # ---------------------------------------------------------------------------
 
+TODS = ("AM_open", "MID", "LUNCH", "PM")
+THROUGH = date(2026, 6, 1)
+OUTCOME_COLUMNS = (
+    "realized_flow_inversion_pct",
+    "realized_eod_pct",
+    "peak_ceiling_pct",
+)
+TEXT_COLUMNS = ("underlying_symbol", "option_type", "tod")
+NUMERIC_COLUMNS = tuple(c for c in TRAINING_COLUMNS if c not in (*TEXT_COLUMNS, "date"))
+SEED_FIXTURE = json.loads(
+    (ROOT / "api" / "__tests__" / "fixtures" / "lottery-score-parity.json").read_text(
+        encoding="utf-8"
+    )
+)
 
-def _full_weights() -> dict:
-    """Minimal weights dict with the feature blocks apply_weights reads."""
-    return {
-        "features": {
-            "tod_weights": {"AM_open": 4, "MID": 0, "LUNCH": -4, "PM": -4},
-            "dte_weights": {"0": -2, "1": 4, "2": 0, "3": 1},
-            "vol_oi_quintile_weights": [1, 0, 2, 0, -3],
-            "gamma_quintile_weights": [3, -2, -2, -2, 0],
-            "ask_pct_quintile_weights": [-1, 1, 1, 2, -4],
-            "option_type_weights": {"C": 2, "P": -2},
-            "ticker_weights": {"AMD": 5, "QQQ": -3},
+
+def _base() -> dict:
+    """The seed weights, with one composite the synthetic fires match and feed
+    cutoffs that differ from the seed's, so a copy shows."""
+    w = copy.deepcopy(SEED_FIXTURE["weights"])
+    w["features"]["composite_bonuses"] = [
+        {
+            "match": {"ticker": "AAA", "tod": "AM_open"},
+            "bonus": 10,
+            "support": 50,
+            "win_rate": 0.9,
+            "note": "synthetic composite",
         }
+    ]
+    w["feed_cutoffs"] = {"tier1_min_score": 17, "tier2_min_score": 11}
+    return w
+
+
+def _training_frame(sessions: int = 60, per_session: int = 20) -> pd.DataFrame:
+    """Aligned single-leg fires as ``fetch_frame`` returns them, outcome included.
+
+    Sixty sessions from Monday 2026-03-02, so 12 Mondays of 20 fires: enough for
+    the Monday override. Three tickers of 400 fires each. The outcome carries a
+    signal on tod, option type, DTE 3 and vol/OI, and Mondays invert the LUNCH
+    effect, so the Monday override differs from the global table. The EOD
+    outcome is not a monotone function of the inversion one: a rank correlation
+    against the wrong column would differ.
+    """
+    rng = np.random.default_rng(7)
+    days = [d.date() for d in pd.bdate_range("2026-03-02", periods=sessions)]
+    n = sessions * per_session
+    i = np.arange(n)
+    option_type = np.where(i % 2 == 0, "C", "P")
+    tod = np.array(TODS)[(i // 2) % 4]
+    ticker = np.array(["AAA", "BBB", "CCC"])[i % 3]
+    dte = (i // 5) % 4
+    session_dates = np.repeat(np.array(days, dtype=object), per_session)
+    is_monday = np.array([d.weekday() == 0 for d in session_dates])
+    vol_oi = rng.uniform(0.01, 1.0, n)
+    flow_inversion = (
+        20.0 * (tod == "AM_open")
+        - 10.0 * (option_type == "P")
+        + 10.0 * (dte == 3)
+        + 30.0 * vol_oi
+        + 40.0 * (is_monday & (tod == "LUNCH"))
+        + rng.normal(0.0, 15.0, n)
+    )
+    df = pd.DataFrame(
+        {
+            "underlying_symbol": ticker,
+            "option_type": option_type,
+            "tod": tod,
+            "dte": dte,
+            "trigger_vol_to_oi_window": vol_oi,
+            "gamma_at_trigger": rng.uniform(0.001, 0.1, n),
+            "trigger_ask_pct": rng.uniform(0.3, 1.0, n),
+            "cum_ncp_at_fire": np.where(option_type == "C", 2e6, 1e6),
+            "cum_npp_at_fire": np.where(option_type == "C", 1e6, 2e6),
+            "date": session_dates,
+            "realized_flow_inversion_pct": flow_inversion,
+            "realized_eod_pct": 0.5 * flow_inversion + rng.normal(0.0, 20.0, n),
+            "peak_ceiling_pct": np.maximum(flow_inversion, 0.0) + 50.0,
+        }
+    )
+    df["outcome_pct"] = flow_inversion
+    return df[[*TRAINING_COLUMNS, "outcome_pct"]]
+
+
+def _db_value(column: str, value: object) -> object:
+    """A cell as psycopg2 returns it: NUMERIC as Decimal, NULL as None."""
+    if column not in NUMERIC_COLUMNS:
+        return value
+    if pd.isna(value):
+        return None
+    return int(value) if column == "dte" else Decimal(repr(float(value)))
+
+
+def _db_rows(df: pd.DataFrame) -> list[tuple]:
+    return [
+        tuple(_db_value(c, rec[c]) for c in TRAINING_COLUMNS)
+        for rec in df[list(TRAINING_COLUMNS)].to_dict("records")
+    ]
+
+
+class _FakeCursor:
+    def __init__(self, conn: _FakeConnection) -> None:
+        self._conn = conn
+
+    def __enter__(self) -> _FakeCursor:
+        return self
+
+    def __exit__(self, *exc: object) -> bool:
+        return False
+
+    def execute(self, sql: str, params: object = None) -> None:
+        self._conn.executed.append((sql, params))
+
+    def fetchall(self) -> list[tuple]:
+        return list(self._conn.rows)
+
+    def fetchone(self) -> tuple | None:
+        return self._conn.pointer_row
+
+
+class _FakeConnection:
+    """What the refit's reads touch: ``cursor``, ``set_session`` and ``close``."""
+
+    def __init__(self, rows: list[tuple], pointer_row: tuple | None = None) -> None:
+        self.rows = rows
+        self.pointer_row = pointer_row
+        self.executed: list[tuple[str, object]] = []
+        self.session: dict = {}
+        self.closed = False
+
+    def cursor(self) -> _FakeCursor:
+        return _FakeCursor(self)
+
+    def set_session(self, **kwargs: object) -> None:
+        self.session = kwargs
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def _percentile_cutoffs(scores: pd.Series) -> dict[str, int]:
+    """round(p95), round(p85) of the scored (non-NA) rows, as the plan words it."""
+    values = scores.dropna().to_numpy(dtype="float64")
+    return {
+        "t1": int(round(np.percentile(values, 95))),
+        "t2": int(round(np.percentile(values, 85))),
     }
 
 
-# Quintile boundaries used for the apply_weights tests (chosen so the test
-# rows fall in known quintiles).
-_VOL_OI_B = [0.06, 0.10, 0.15, 0.38]
-_GAMMA_B = [0.012, 0.025, 0.042, 0.068]
-_ASK_B = [0.53, 0.57, 0.625, 0.75]
-
-
-def test_apply_weights_sums_all_feature_contributions():
-    """
-    One row, hand-computed total. With the boundaries above:
-      trigger_vol_to_oi_window = 0.20 -> 0.15 < 0.20 <= 0.38 -> Q4 (idx 3) -> 0
-      gamma_at_trigger        = 0.05 -> 0.042 < 0.05 <= 0.068 -> Q4 (idx 3) -> -2
-      trigger_ask_pct         = 0.55 -> 0.53 < 0.55 <= 0.57 -> Q2 (idx 1) -> 1
-      tod = AM_open -> 4
-      dte = 1       -> 4
-      option_type = C -> 2
-      underlying_symbol = AMD -> 5
-    total = 4 + 4 + 0 + (-2) + 1 + 2 + 5 = 14
-    """
-    df = pd.DataFrame(
-        [
-            {
-                "tod": "AM_open",
-                "dte": 1,
-                "trigger_vol_to_oi_window": 0.20,
-                "gamma_at_trigger": 0.05,
-                "trigger_ask_pct": 0.55,
-                "option_type": "C",
-                "underlying_symbol": "AMD",
-            }
-        ]
-    )
-    score = apply_weights(df, _full_weights(), _VOL_OI_B, _GAMMA_B, _ASK_B)
-    assert score.iloc[0] == pytest.approx(14.0)
-
-
-def test_apply_weights_dte_clipped_at_three():
-    """dte values above 3 are clipped to '3' before the dte_weights lookup."""
-    df = pd.DataFrame(
-        [
-            {
-                "tod": "MID",
-                "dte": 7,  # clipped to 3 -> weight 1
-                "trigger_vol_to_oi_window": 0.01,  # <= 0.06 -> Q1 -> 1
-                "gamma_at_trigger": 0.005,  # <= 0.012 -> Q1 -> 3
-                "trigger_ask_pct": 0.50,  # <= 0.53 -> Q1 -> -1
-                "option_type": "P",  # -2
-                "underlying_symbol": "QQQ",  # -3
-            }
-        ]
-    )
-    # MID(0) + dte3(1) + volQ1(1) + gammaQ1(3) + askQ1(-1) + P(-2) + QQQ(-3) = -1
-    score = apply_weights(df, _full_weights(), _VOL_OI_B, _GAMMA_B, _ASK_B)
-    assert score.iloc[0] == pytest.approx(-1.0)
-
-
-def test_apply_weights_null_gamma_contributes_zero():
-    """A NULL gamma_at_trigger yields a NaN quintile -> 0 contribution."""
-    df = pd.DataFrame(
-        [
-            {
-                "tod": "MID",  # 0
-                "dte": 0,  # -2
-                "trigger_vol_to_oi_window": 0.01,  # Q1 -> 1
-                "gamma_at_trigger": np.nan,  # NaN -> 0
-                "trigger_ask_pct": 0.50,  # Q1 -> -1
-                "option_type": "C",  # 2
-                "underlying_symbol": "AMD",  # 5
-            }
-        ]
-    )
-    # 0 + (-2) + 1 + 0(gamma) + (-1) + 2 + 5 = 5
-    score = apply_weights(df, _full_weights(), _VOL_OI_B, _GAMMA_B, _ASK_B)
-    assert score.iloc[0] == pytest.approx(5.0)
-
-
-def test_apply_weights_unseen_ticker_and_tod_default_to_zero():
-    """
-    Features whose value is absent from the weights dict contribute 0
-    (the .map(...).fillna(0) path). Here ticker 'NEVERSEEN' and tod 'WEIRD'
-    are unknown, so only the quintile/dte/option contributions remain.
-    """
-    df = pd.DataFrame(
-        [
-            {
-                "tod": "WEIRD",  # unseen -> 0
-                "dte": 1,  # 4
-                "trigger_vol_to_oi_window": 0.01,  # Q1 -> 1
-                "gamma_at_trigger": 0.005,  # Q1 -> 3
-                "trigger_ask_pct": 0.50,  # Q1 -> -1
-                "option_type": "C",  # 2
-                "underlying_symbol": "NEVERSEEN",  # unseen -> 0
-            }
-        ]
-    )
-    # 0(tod) + 4(dte) + 1(vol) + 3(gamma) + (-1)(ask) + 2(opt) + 0(ticker) = 9
-    score = apply_weights(df, _full_weights(), _VOL_OI_B, _GAMMA_B, _ASK_B)
-    assert score.iloc[0] == pytest.approx(9.0)
-
-
-def test_apply_weights_returns_series_indexed_like_input():
-    """The returned Series shares the input frame's (non-default) index."""
-    df = pd.DataFrame(
-        [
-            {
-                "tod": "AM_open",
-                "dte": 1,
-                "trigger_vol_to_oi_window": 0.20,
-                "gamma_at_trigger": 0.05,
-                "trigger_ask_pct": 0.55,
-                "option_type": "C",
-                "underlying_symbol": "AMD",
-            },
-            {
-                "tod": "PM",
-                "dte": 0,
-                "trigger_vol_to_oi_window": 0.50,
-                "gamma_at_trigger": 0.10,
-                "trigger_ask_pct": 0.90,
-                "option_type": "P",
-                "underlying_symbol": "QQQ",
-            },
-        ],
-        index=[10, 20],
-    )
-    score = apply_weights(df, _full_weights(), _VOL_OI_B, _GAMMA_B, _ASK_B)
-    assert list(score.index) == [10, 20]
-    assert len(score) == 2
-
-
 # ---------------------------------------------------------------------------
-# training filter
+# The training population (plan D7)
 # ---------------------------------------------------------------------------
 
 
@@ -553,6 +576,429 @@ def test_single_leg_filter_is_the_exchange_derived_kind() -> None:
     assert SINGLE_LEG_FILTER == "anchor_leg_kind = 'single'"
 
 
-def test_fetch_query_uses_the_shared_filter_not_the_classifier_label() -> None:
-    assert SINGLE_LEG_FILTER in FETCH_QUERY
-    assert "inferred_structure" not in FETCH_QUERY
+def test_training_filter_sql_is_aligned_single_leg_with_an_outcome() -> None:
+    sql = " ".join(TRAINING_FILTER_SQL.split())
+    assert "cum_ncp_at_fire IS NOT NULL" in sql
+    assert "cum_npp_at_fire IS NOT NULL" in sql
+    assert "option_type = 'C' AND cum_ncp_at_fire > cum_npp_at_fire" in sql
+    assert "option_type = 'P' AND cum_npp_at_fire > cum_ncp_at_fire" in sql
+    assert SINGLE_LEG_FILTER in sql
+    assert "COALESCE(realized_flow_inversion_pct, realized_eod_pct) IS NOT NULL" in sql
+    # No filter on how the inversion was sourced (D7): a row still waiting for
+    # its tape inversion falls back to realized_eod_pct.
+    assert "inversion_source" not in sql
+    assert "inferred_structure" not in sql
+
+
+def test_training_columns_are_the_score_columns_and_the_outcome_columns() -> None:
+    from lottery_weights import SCORE_COLUMNS
+
+    assert set(SCORE_COLUMNS) <= set(TRAINING_COLUMNS)
+    assert set(OUTCOME_COLUMNS) <= set(TRAINING_COLUMNS)
+    assert "date" in TRAINING_COLUMNS
+    # A name listed twice would be selected twice and give a duplicate column.
+    assert len(set(TRAINING_COLUMNS)) == len(TRAINING_COLUMNS)
+
+
+def test_fetch_frame_binds_an_explicit_window() -> None:
+    conn = _FakeConnection(rows=[])
+    fetch_frame(conn, date(2026, 3, 3), date(2026, 6, 1))
+
+    [(sql, params)] = conn.executed
+    assert params == (date(2026, 3, 3), date(2026, 6, 1))
+    assert all(type(p) is date for p in params)
+    flat = " ".join(sql.split())
+    assert flat.startswith("SELECT ")
+    assert "FROM lottery_finder_fires" in flat
+    assert ", ".join(TRAINING_COLUMNS) in flat
+    # The window is open at the start and closed at the end (D7).
+    assert "date > %s AND date <= %s" in flat
+    assert " ".join(TRAINING_FILTER_SQL.split()) in flat
+    assert flat.endswith("ORDER BY date")
+
+
+def test_module_never_reads_a_clock_for_its_window() -> None:
+    text = Path(ls.__file__).read_text(encoding="utf-8")
+    for token in ("CURRENT_DATE", "NOW()", "today()"):
+        assert token not in text
+
+
+def test_fetch_frame_with_no_rows_returns_an_empty_frame_with_the_columns() -> None:
+    df = fetch_frame(_FakeConnection(rows=[]), date(2026, 3, 3), date(2026, 6, 1))
+    assert len(df) == 0
+    assert list(df.columns) == [*TRAINING_COLUMNS, "outcome_pct"]
+
+
+def test_fetch_frame_builds_float_columns_and_the_outcome() -> None:
+    src = _training_frame(sessions=3, per_session=4)
+    # Row 0 has no inversion yet: its outcome is the held-to-EOD fallback.
+    src.loc[0, "realized_flow_inversion_pct"] = np.nan
+    conn = _FakeConnection(_db_rows(src))
+
+    df = fetch_frame(conn, date(2026, 1, 1), date(2026, 12, 31))
+
+    assert list(df.columns) == [*TRAINING_COLUMNS, "outcome_pct"]
+    for column in (*NUMERIC_COLUMNS, "outcome_pct"):
+        assert df[column].dtype == "float64", column
+    assert df.loc[0, "outcome_pct"] == pytest.approx(src.loc[0, "realized_eod_pct"])
+    assert df.loc[1, "outcome_pct"] == pytest.approx(
+        src.loc[1, "realized_flow_inversion_pct"]
+    )
+    assert df["date"].tolist() == src["date"].tolist()
+    assert df["underlying_symbol"].tolist() == src["underlying_symbol"].tolist()
+
+
+def test_fetch_frame_drops_the_enrichment_bug_signature() -> None:
+    src = _training_frame(sessions=3, per_session=4)
+    src.loc[2, "realized_flow_inversion_pct"] = src.loc[2, "peak_ceiling_pct"] * 1.5
+    conn = _FakeConnection(_db_rows(src))
+
+    df = fetch_frame(conn, date(2026, 1, 1), date(2026, 12, 31))
+
+    assert len(df) == len(src) - 1
+    assert (df["realized_flow_inversion_pct"] <= df["peak_ceiling_pct"] * 1.05).all()
+
+
+@pytest.mark.parametrize(
+    ("flow_inversion", "peak", "dropped"),
+    [
+        (106.0, 100.0, True),  # above peak * 1.05: impossible for clean data
+        (105.0, 100.0, False),  # exactly peak * 1.05 stays
+        (104.0, 100.0, False),
+        (-30.0, 100.0, False),
+        (500.0, np.nan, False),  # no peak to compare with
+        (np.nan, 100.0, False),  # no inversion yet: the EOD fallback row
+    ],
+)
+def test_drop_bug_rows(flow_inversion: float, peak: float, dropped: bool) -> None:
+    df = pd.DataFrame(
+        {
+            "realized_flow_inversion_pct": [flow_inversion],
+            "peak_ceiling_pct": [peak],
+            "marker": [1],
+        }
+    )
+    assert len(drop_bug_rows(df)) == (0 if dropped else 1)
+
+
+def test_drop_bug_rows_keeps_the_other_rows_and_leaves_the_input_alone() -> None:
+    df = pd.DataFrame(
+        {
+            "realized_flow_inversion_pct": [10.0, 200.0, np.nan, 50.0],
+            "peak_ceiling_pct": [100.0, 100.0, 100.0, 100.0],
+            "marker": ["a", "b", "c", "d"],
+        },
+        index=[10, 11, 12, 13],
+    )
+    before = df.copy(deep=True)
+
+    kept = drop_bug_rows(df)
+
+    assert list(kept["marker"]) == ["a", "c", "d"]
+    assert list(kept.index) == [10, 12, 13]
+    pd.testing.assert_frame_equal(df, before)
+    kept.loc[10, "marker"] = "changed"  # a copy, not a view of the input
+    assert df.loc[10, "marker"] == "a"
+
+
+# ---------------------------------------------------------------------------
+# train_weights
+# ---------------------------------------------------------------------------
+
+
+def test_train_weights_output_validates() -> None:
+    w = train_weights(_training_frame(), base=_base(), trained_through=THROUGH)
+
+    validate_weights(w)
+    assert set(w) == {
+        "schema_version",
+        "model_version",
+        "trained_through",
+        "features",
+        "cutoffs",
+        "feed_cutoffs",
+    }
+    assert w["model_version"] == "rescore-v1-2026-05-22"
+    assert w["trained_through"] == "2026-06-01"
+    assert w["cutoffs"]["t1"] > w["cutoffs"]["t2"]
+    # Trained from the frame, not carried over from the base.
+    assert set(w["features"]["ticker_weights"]) == {"AAA", "BBB", "CCC"}
+    # The object goes into a JSONB column: plain ints and floats only.
+    assert json.loads(json.dumps(w)) == w
+
+
+def test_train_weights_preserves_base_composites_and_feed_cutoffs() -> None:
+    base = _base()
+    w = train_weights(_training_frame(), base=base, trained_through=THROUGH)
+
+    assert w["features"]["composite_bonuses"] == base["features"]["composite_bonuses"]
+    assert w["feed_cutoffs"] == {"tier1_min_score": 17, "tier2_min_score": 11}
+    # Copies: editing the candidate must not edit the live version it came from.
+    w["features"]["composite_bonuses"][0]["bonus"] = -10
+    w["feed_cutoffs"]["tier1_min_score"] = 99
+    assert base["features"]["composite_bonuses"][0]["bonus"] == 10
+    assert base["feed_cutoffs"]["tier1_min_score"] == 17
+
+
+def test_cutoffs_use_the_full_scorer() -> None:
+    df = _training_frame()
+    w = train_weights(df, base=_base(), trained_through=THROUGH)
+
+    assert "Monday" in w["features"]["tod_weights_dow_overrides"]
+    cutoffs = _percentile_cutoffs(score_frame(w, df))
+    assert w["cutoffs"] == cutoffs
+
+    # The composite and the Monday table both move the percentiles: a scorer
+    # without them would give other cutoffs.
+    no_composites = copy.deepcopy(w)
+    no_composites["features"]["composite_bonuses"] = []
+    assert _percentile_cutoffs(score_frame(no_composites, df)) != cutoffs
+    no_override = copy.deepcopy(w)
+    no_override["features"]["tod_weights_dow_overrides"] = {}
+    assert _percentile_cutoffs(score_frame(no_override, df)) != cutoffs
+
+
+def test_train_weights_wires_each_feature_to_its_own_column_and_scale() -> None:
+    df = _training_frame()
+    f = train_weights(df, base=_base(), trained_through=THROUGH)["features"]
+    mean = float(df["outcome_pct"].mean())
+
+    # The scales are written out, not imported: a swapped scale must fail here.
+    assert f["tod_weights"] == compute_categorical_weights(
+        df, "tod", list(TODS), 8.0, mean
+    )
+    dte = df.assign(dte_str=df["dte"].clip(upper=3).astype(int).astype(str))
+    assert f["dte_weights"] == compute_categorical_weights(
+        dte, "dte_str", ["0", "1", "2", "3"], 6.0, mean
+    )
+    assert f["option_type_weights"] == compute_categorical_weights(
+        df, "option_type", ["C", "P"], 4.0, mean
+    )
+    assert f["ticker_weights"] == compute_ticker_weights(df, mean, min_obs=100)
+    for column, stem, scale in (
+        ("trigger_vol_to_oi_window", "vol_oi", 5.0),
+        ("gamma_at_trigger", "gamma", 5.0),
+        ("trigger_ask_pct", "ask_pct", 6.0),
+    ):
+        bounds = quintile_boundaries(df[column])
+        assert f[f"{stem}_quintile_boundaries"] == bounds
+        quintiles = df.assign(q=assign_quintile(df[column], bounds))
+        assert f[f"{stem}_quintile_weights"] == compute_quintile_weights(
+            quintiles, "q", scale, mean
+        )
+    monday = df[pd.to_datetime(df["date"]).dt.day_name() == "Monday"]
+    assert f["tod_weights_dow_overrides"] == {
+        "Monday": compute_categorical_weights(
+            monday, "tod", list(TODS), 8.0, float(monday["outcome_pct"].mean())
+        )
+    }
+    # The synthetic signal comes out the right way round.
+    assert f["tod_weights"]["AM_open"] == max(f["tod_weights"].values())
+    assert f["option_type_weights"]["C"] > f["option_type_weights"]["P"]
+    assert f["tod_weights_dow_overrides"]["Monday"]["LUNCH"] > f["tod_weights"]["LUNCH"]
+
+
+def test_train_weights_pools_dte_above_three_into_the_last_bucket() -> None:
+    df = _training_frame()
+    base_weights = train_weights(df, base=_base(), trained_through=THROUGH)
+    relabelled = df.assign(dte=df["dte"].replace(3, 5))  # the scorer gates these out
+
+    w = train_weights(relabelled, base=_base(), trained_through=THROUGH)
+
+    # The DTE 3 effect is large, so the "3" weight is not 0 and is not the
+    # empty-bucket fallback; DTE 5 rows land in that same bucket.
+    assert base_weights["features"]["dte_weights"]["3"] != 0
+    assert w["features"]["dte_weights"] == base_weights["features"]["dte_weights"]
+
+
+@pytest.mark.parametrize(
+    ("monday_rows", "has_override"),
+    [(0, False), (MIN_OBS_BUCKET * 2 - 1, False), (MIN_OBS_BUCKET * 2, True)],
+)
+def test_monday_override_needs_two_buckets_of_rows(
+    monday_rows: int, has_override: bool
+) -> None:
+    df = _training_frame()
+    is_monday = pd.to_datetime(df["date"]).dt.dayofweek == 0
+    kept = df[~is_monday | (is_monday.cumsum() <= monday_rows)].reset_index(drop=True)
+
+    w = train_weights(kept, base=_base(), trained_through=THROUGH)
+
+    assert ("Monday" in w["features"]["tod_weights_dow_overrides"]) is has_override
+
+
+def test_train_weights_leaves_its_inputs_alone() -> None:
+    df = _training_frame()
+    base = _base()
+    df_before, base_before = df.copy(deep=True), copy.deepcopy(base)
+
+    train_weights(df, base=base, trained_through=THROUGH)
+
+    pd.testing.assert_frame_equal(df, df_before)
+    assert base == base_before
+
+
+def test_train_weights_refuses_an_empty_frame() -> None:
+    with pytest.raises(ValueError, match="no training rows"):
+        train_weights(
+            _training_frame().iloc[0:0], base=_base(), trained_through=THROUGH
+        )
+
+
+def test_train_weights_refuses_a_frame_the_scorer_gates_out() -> None:
+    df = _training_frame()
+    df["dte"] = 7  # the scorer takes DTE 0-3 only, so no fire scores
+    with pytest.raises(ValueError, match="no scorable rows"):
+        train_weights(df, base=_base(), trained_through=THROUGH)
+
+
+def test_train_weights_validates_the_cutoffs_before_returning() -> None:
+    base = _base()
+    base["features"]["composite_bonuses"] = []
+    df = _training_frame()
+    df["outcome_pct"] = 5.0  # no spread: every weight is 0, so every score is 0
+
+    with pytest.raises(WeightsInvalid, match=r"^cutoffs: order$"):
+        train_weights(df, base=base, trained_through=THROUGH)
+
+
+def test_train_weights_rejects_a_feature_with_no_spread() -> None:
+    df = _training_frame()
+    df["trigger_ask_pct"] = 0.5  # four equal boundaries
+
+    with pytest.raises(
+        WeightsInvalid, match=r"^features\.ask_pct_quintile_boundaries: increasing$"
+    ):
+        train_weights(df, base=_base(), trained_through=THROUGH)
+
+
+def test_train_weights_rejects_a_malformed_base() -> None:
+    base = _base()
+    del base["feed_cutoffs"]
+
+    with pytest.raises(WeightsInvalid, match=r"^feed_cutoffs: missing$"):
+        train_weights(_training_frame(), base=base, trained_through=THROUGH)
+
+
+# ---------------------------------------------------------------------------
+# main: a dry run
+# ---------------------------------------------------------------------------
+
+
+def _read_all(directory: Path) -> dict[str, bytes]:
+    return {p.name: p.read_bytes() for p in sorted(directory.iterdir()) if p.is_file()}
+
+
+@pytest.fixture
+def dry_run(monkeypatch: pytest.MonkeyPatch) -> _FakeConnection:
+    """A fake connection that serves the synthetic frame and the base weights,
+    patched in as ``utils.get_connection``; ``sys.argv`` carries ``--through``."""
+    utils = pytest.importorskip("utils")
+    pytest.importorskip("scipy")
+    conn = _FakeConnection(
+        _db_rows(_training_frame()), pointer_row=("seed-2026-06-17", _base())
+    )
+    monkeypatch.setattr(utils, "get_connection", lambda: conn)
+    monkeypatch.setattr(
+        sys, "argv", ["lottery_scoring.py", "--through", THROUGH.isoformat()]
+    )
+    return conn
+
+
+def test_main_writes_nothing(
+    dry_run: _FakeConnection,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.chdir(tmp_path)  # a stray relative write would land here
+    before = _read_all(OUTPUT_DIR)
+
+    ls.main()
+
+    assert _read_all(OUTPUT_DIR) == before
+    assert list(tmp_path.iterdir()) == []
+    # Two reads (the training frame, the active weights), both SELECTs, on a
+    # session the database itself holds read-only.
+    assert len(dry_run.executed) == 2
+    assert all(sql.lstrip().upper().startswith("SELECT") for sql, _ in dry_run.executed)
+    assert dry_run.session == {"readonly": True}
+    assert dry_run.closed
+
+
+def test_main_reads_the_ninety_day_window_ending_at_through(
+    dry_run: _FakeConnection,
+) -> None:
+    ls.main()
+
+    [(_, params)] = [e for e in dry_run.executed if "lottery_finder_fires" in e[0]]
+    assert params == (date(2026, 3, 3), THROUGH)
+
+
+def test_main_prints_the_dry_run_summary(
+    dry_run: _FakeConnection, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from scipy import stats
+
+    df = _training_frame()
+    w = train_weights(df, base=_base(), trained_through=THROUGH)
+    r, _ = stats.spearmanr(score_frame(w, df).astype("float64"), df["outcome_pct"])
+
+    ls.main()
+
+    out = capsys.readouterr().out
+    assert "1,200 rows" in out
+    assert "60 sessions" in out
+    assert f"t1={w['cutoffs']['t1']}" in out
+    assert f"r={r:.4f}" in out
+    assert "nothing was written" in out.lower()
+
+
+def test_main_requires_through(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sys, "argv", ["lottery_scoring.py"])
+    with pytest.raises(SystemExit) as exc:
+        ls.main()
+    assert exc.value.code == 2
+
+
+# ---------------------------------------------------------------------------
+# Imports: the nightly image has no scipy and no utils
+# ---------------------------------------------------------------------------
+
+
+def test_import_does_not_load_scipy_or_utils() -> None:
+    # The nightly image gets this file and its two siblings, plus numpy and
+    # pandas. A subprocess in isolated mode (-I: no PYTHONPATH, no cwd on
+    # sys.path) shows what the import itself pulls in and whether it edits
+    # sys.path.
+    probe = (
+        "import json, os, sys\n"
+        "src = sys.argv[1]\n"
+        "sys.path.insert(0, src)\n"
+        "before = list(sys.path)\n"
+        "import lottery_scoring\n"
+        "own = sorted(\n"
+        "    name for name, mod in sys.modules.items()\n"
+        "    if name != 'lottery_scoring'\n"
+        "    and getattr(mod, '__file__', None)\n"
+        "    and os.path.abspath(mod.__file__).startswith(os.path.abspath(src))\n"
+        ")\n"
+        "print(json.dumps({\n"
+        "    'scipy': 'scipy' in sys.modules,\n"
+        "    'utils': 'utils' in sys.modules,\n"
+        "    'siblings': own,\n"
+        "    'path_changed': sys.path != before,\n"
+        "}))\n"
+    )
+    out = subprocess.run(
+        [sys.executable, "-I", "-c", probe, str(SRC_DIR)],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=120,
+    )
+    assert json.loads(out.stdout.strip().splitlines()[-1]) == {
+        "scipy": False,
+        "utils": False,
+        "siblings": ["lottery_refit_gates", "lottery_weights"],
+        "path_changed": False,
+    }
