@@ -6,6 +6,13 @@
  * (2027 entries checked against that page on 2026-10-28; 2028 entries
  * checked on 2026-11-06, when NYSE had not published 2029 yet). A test in
  * marketHours.test.ts fails once the last listed holiday is under 60 days out.
+ *
+ * MARKET_CLOSED_DATES and EARLY_CLOSE_DATES are copied into
+ * uw-stream/src/market_calendar.py (the uw-stream daemon cannot import this
+ * file). uw-stream/tests/test_market_calendar.py reads this file and fails
+ * when the two differ, so edit both together. It finds each collection by its
+ * `export const NAME ... = new Map([` / `new Set([` line and the `]);` that
+ * closes it at the start of a line, so keep that shape.
  */
 
 /**

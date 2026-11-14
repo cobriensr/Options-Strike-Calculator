@@ -55,7 +55,7 @@ The evidence is in the memory note `project_uw_stream_disconnects_2026_10_28`, u
 | `STUCK_S` | 60.0 | `socket_stats.py` | Task 6: a connected trade socket with no trade frame for this long (counted from its last trade frame, or from its session start if it has none) is a candidate |
 | `STUCK_TWIN_MIN_FRAMES` | 100 | `socket_stats.py` | Task 6: the twin must have received at least this many trade frames in the last `STUCK_S`. The quietest minute at lunch on 11-13 carried 3,938 trades for conn0's half and 6,407 for conn1's, about 40× this |
 | `STUCK_CHECK_INTERVAL_S` | 5.0 | `stuck_sockets.py` | Task 6: check period |
-| `FORCED_RECONNECT_COOLDOWN_S` | 300.0 | `stuck_sockets.py` | Task 6: at most one forced reconnect per shard per 5 min. At 12 per hour per stuck shard, two stuck shards plus normal drops stay under the storm alert's 40 per hour |
+| `FORCED_RECONNECT_COOLDOWN_S` | 300.0 | `stuck_sockets.py` | Task 6: at most one forced reconnect, and at most one Sentry event, per shard per 5 min. That is 12 reconnects per hour per stuck shard, 24 with one stuck shard per pair, and up to 48 if all four trade shards alternate. 48 alone exceeds the storm alert's 40 per hour, so in that worst case the storm alert fires too |
 | `GROUP_SILENT_S` | 60.0 | `stuck_sockets.py` | Task 7: no trade frame on any copy of a trade feed for this long, inside the trade window, opens an incident |
 | trade window | 09:31 ET to one minute before the close (16:00, or 13:00 on an early-close day), trading days only | `market_calendar.py` | Task 7: when option trades must be flowing |
 
@@ -289,7 +289,7 @@ The evidence is in the memory note `project_uw_stream_disconnects_2026_10_28`, u
   - **Force a reconnect** if the shard's last forced reconnect was at least `FORCED_RECONNECT_COOLDOWN_S` ago, or it has none. Log one warning, "forcing reconnect of a stuck trade socket", per forced reconnect.
   - **Escalate once:** if an incident is still open at a check after at least one forced reconnect, send one more event per incident, "uw-stream trade socket still stuck after a forced reconnect", at level error.
   - **End the incident** when the shard's `last_trade_at` is later than the incident's start (a trade frame arrived). Log "stuck trade socket recovered" with the duration and the reconnect count.
-  - **Alert floor** (added at the Task 6 review): at most one Sentry event per shard per `FORCED_RECONNECT_COOLDOWN_S`, opening or escalation alike. A socket that delivers one trade frame between 60 s silences would otherwise open a new incident, and send a new warning, about every 65 s. An incident whose event is held back by the floor logs instead. This bounds Sentry at 12 per hour per shard.
+  - **Alert floor** (added at the Task 6 review): at most one Sentry event per shard per `FORCED_RECONNECT_COOLDOWN_S`, opening or escalation alike. A socket that delivers one trade frame between 60 s silences would otherwise open a new incident, and send a new warning, about every 65 s. An incident whose event is held back by the floor logs instead. This bounds Sentry at 12 per hour per shard. A held escalation stays due and goes out at the first stuck check after the floor lifts, so it arrives about 5 min after the opening alert, with the second forced reconnect (ruling R29).
   - **Shutdown:** `_shutdown` cancels and awaits the watchdog before it cancels the connectors. Cancelled connectors leave `state.connections` true and `last_trade_at` frozen, so a watchdog still running would find stuck sockets mid-shutdown.
   - **One shard's failure doesn't skip the others:** each stuck shard's handling in a pass is guarded on its own (`rate_limited_log.error`, `key=<shard>`).
   - **`force_reconnect` acts only while the receive loop is running** (a cold-path flag set before `async for` and cleared in its `finally`). A drop the server started can't then be labelled forced in the window before `run()` marks the shard down.
@@ -342,6 +342,7 @@ The evidence is in the memory note `project_uw_stream_disconnects_2026_10_28`, u
     - one `log.warning`;
     - one `capture_message("uw-stream option trades silent on every copy", level="error", tags={"component": "stuck_sockets"}, context={...})`;
     - context: the group's shards, each one's connected flag, the seconds since the last trade, and `twins_enabled`.
+  - **Alert floor,** the same rule as Task 6 (ruling R26): at most one Sentry event per group per `FORCED_RECONNECT_COOLDOWN_S`. A feed that leaks one trade frame between 60 s silences would otherwise open a new incident, and send a new event, about every 65 s. A held-back event logs instead.
   - **End the incident** when the high-water advances. Log "option trades resumed" with the duration.
   - **When the window closes,** end any open incident with a log line: this task's, and also any open Task 6 stuck-socket incident. Task 6 ends an incident only when a trade frame arrives, so without this a socket stuck through the close carries one incident overnight and starts the next session with no new alert. The next session then alerts afresh.
   - No forced reconnect.
@@ -350,7 +351,7 @@ The evidence is in the memory note `project_uw_stream_disconnects_2026_10_28`, u
 **Tests:**
 - calendar parity;
 - window edges: 09:30:59 false, 09:31 true, 15:58:59 true, 15:59 false; half-day 12:58:59 true, 12:59 false; a holiday, a weekend, both DST sides; a date in both lists counts as closed;
-- the rule: silent only inside the window, one event per incident, recovery ends it, the window close ends it (and ends an open Task 6 incident, so the next session's stick alerts again), a high-water carried across a reconnect, no twins = single-socket groups, a trade on either copy keeps the group healthy, and nothing for non-trade shards.
+- the rule: silent only inside the window, one event per incident, the alert floor, recovery ends it, the window close ends it (and ends an open Task 6 incident, so the next session's stick alerts again), a high-water carried across a reconnect, no twins = single-socket groups, a trade on either copy keeps the group healthy, and nothing for non-trade shards.
 
 **README:** in the "Stuck trade sockets" section, add the both-copies rule, the window, the calendar mirror and its parity test, and what is still not covered: the non-trade sockets, and a holiday missing from both calendars.
 
