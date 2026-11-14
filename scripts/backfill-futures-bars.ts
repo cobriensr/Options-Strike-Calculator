@@ -14,7 +14,7 @@
  * 2026-07-28, where the table starts, fails by name. Logic and rules:
  * scripts/_lib/futures-bar-backfill.ts (--repair: futures-bar-repair.ts).
  *
- * --repair rewrites the bars already stored (2026-09-04 → the Phase 5
+ * --repair rewrites the bars already stored (2026-07-28 → the Phase 5
  * deploy, 2026-11-11) to the same rule: a stored bar whose prices lie
  * within a tick of the scheduled contract's prints is kept, and gets its
  * contract where that is NULL; one outside them is rewritten from the
@@ -23,7 +23,7 @@
  * appends every row it rewrites, deletes or tags (in full, with the new
  * values), and every fill, to <work dir>/front-month-repair-<run id>.jsonl,
  * and refuses to start without that file. Run it before
- * backfill-futures-flow.ts over 2026-09-04 onward: it rewrites the flow of
+ * backfill-futures-flow.ts over 2026-07-28 onward: it rewrites the flow of
  * a bar built from another contract. It reads the stored front months and
  * never decides a trade date; a root-day on one without a row fails (exit 1)
  * with nothing paged or written for it. Deletes are held, and counted, on a
@@ -40,12 +40,14 @@
  *   npx tsx scripts/backfill-futures-bars.ts --dry-run --from 2026-09-04 --to 2026-09-28 --max-pages 60000
  *   npx tsx scripts/backfill-futures-bars.ts --from 2026-09-04 --to 2026-09-28 --max-pages 60000
  *   npx tsx scripts/backfill-futures-bars.ts 2026-09-04 2026-09-05 --roots ES,NQ
- *   npx tsx scripts/backfill-futures-bars.ts --repair --dry-run --from 2026-09-04 --to 2026-11-11 --max-pages 150000
- *   npx tsx scripts/backfill-futures-bars.ts --repair --from 2026-09-04 --to 2026-11-11 --max-pages 150000
+ *   npx tsx scripts/backfill-futures-bars.ts --repair --dry-run --from 2026-07-28 --to 2026-11-11 --max-pages 400000
+ *   npx tsx scripts/backfill-futures-bars.ts --repair --from 2026-07-28 --to 2026-11-11 --max-pages 400000
  * Flags: --from/--to YYYY-MM-DD (UTC, inclusive) or explicit dates ·
  *        --roots ES,NQ,... (default all six) · --max-pages N (default
- *        20000, checked between dates: a real run over September needs
- *        more, and the full --repair range about 150000) · --dry-run
+ *        20000: one total of pages for the whole run, over every root and
+ *        date, checked between dates. A real run over September needs more,
+ *        and the --repair range 2026-07-28 → 11-11 paged 176,966 in its dry
+ *        run, so give it 400000) · --dry-run
  *        (read, page and build; write nothing) · --compare (write nothing;
  *        count how many REST-built bars equal the bars already stored, and
  *        print the first few differences) · --repair (not with --compare;

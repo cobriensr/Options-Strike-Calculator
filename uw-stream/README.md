@@ -289,6 +289,18 @@ Design notes worth knowing before touching the handler:
   restart reloads it, so it never changes a decided session's contract.
   Every bar carries `futures_bars.contract`, the canonical name (`ESZ6`,
   also for `ESZ26`).
+- **Reports at decision time** (`src/futures_front_month.py`), each logged
+  at its level and also sent to Sentry by its own `capture_message`, tagged
+  `component=futures_front_month` and its `kind`:
+  `front_month_cycle_seed` (warning: no earlier decision and no earlier
+  volume, so the listing-cycle seed decided); `front_month_clamped` (error:
+  the date would have been later than the next stored decision, so that one
+  was used); `front_month_stale_volume` (error: the incumbent's own session
+  has no volume rows, because uw-stream was down for it, so the date was
+  decided from older volume). The decision is still made in each case
+  (refusing would leave the session's bars with no contract); a wrong pick
+  from a stale volume is one session on the outgoing contract, and the owner
+  may re-decide it by hand.
 - **When the decision can't be had** (Neon unreachable at the 17:00 CT
   open), the session's minutes are gaps, logged as
   `kind="front_month_unknown"` at error level with the cause

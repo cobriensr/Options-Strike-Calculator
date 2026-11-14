@@ -14,8 +14,8 @@
  * `contract` is the dated outright the bar was built from, such as
  * `ESZ6` (column added by migration #204). Left out, or null, it is
  * written as NULL (unknown), which is also what every bar from before the
- * migration holds. The gap cron passes it (its scheduled contract); the
- * history backfill doesn't yet (Phase 4b changes it to, in
+ * migration holds. The gap cron passes it (its scheduled contract), and so
+ * does the history backfill, since Phase 4b (in
  * `docs/superpowers/specs/2026-11-06-futures-session-front-month.md`).
  * The column's CHECK rejects anything but the row's own root, a CME month
  * code and a one- or two-digit year.
