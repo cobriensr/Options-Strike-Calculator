@@ -7,13 +7,18 @@ This is the one rescore path. The nightly refit's promotion calls
 quintiles are right-closed: a value on a boundary goes to the lower bucket.
 (This script used to cut them left-closed with ``<``.)
 
-``rescore_all`` runs one transaction:
+``rescore_all`` runs one transaction. It first sets a 60 s ``lock_timeout``, so
+a wait for any lock ends in ``LockNotAvailable`` instead of lasting until the
+watchdog. Then:
 
-1. It checks the ``active`` pointer first. A promotion (``expect_active`` set)
-   locks the row ``FOR UPDATE`` and needs it to name ``expect_active``. A
-   pinned rescore (``pin_active``: the CLI rescoring with the active version)
-   locks it ``FOR SHARE`` and needs it to name ``to_version``. The two locks
-   conflict, so a promotion and a pinned rescore run one after the other.
+1. It takes the ``active`` pointer row. A promotion (``expect_active`` set)
+   locks it ``FOR UPDATE`` and needs it to name ``expect_active``. Every other
+   write locks it ``FOR SHARE``, and a pinned one (``pin_active``: the CLI
+   rescoring with the active version) also needs it to name ``to_version``.
+   The two locks conflict, so a promotion runs wholly before or wholly after
+   any other writing rescore, and one that waited reads every fire afresh. The
+   guards in step 3 cover only the fires a run writes, so without this lock a
+   promotion committing mid-scan could leave the fires split between versions.
 2. It reads the fires in keyset pages of ``PAGE_ROWS`` by id and scores each
    page. A fire changes when its new score differs from ``score`` or its
    ``score_version`` is not ``to_version``. Fires scored before the store
@@ -30,10 +35,13 @@ quintiles are right-closed: a value on a boundary goes to the lower bucket.
 
 Any exception rolls the whole transaction back, so the store holds either every
 new score, tag, status and pointer, or none of them. That covers an UPDATE
-error, a concurrent writer, a pointer moved by hand and the step deadline
-(``RescoreDeadline``). If the process dies, Postgres rolls back its open
-transaction. Nothing here touches the ``takeit`` pointer: only a Take-It
-retrain moves it.
+error, a concurrent writer, a pointer moved by hand, a lock timeout, the step
+deadline (``RescoreDeadline``) and the nightly's SIGTERM (a ``SystemExit``).
+If the process dies, Postgres rolls back its open transaction. Nothing here
+touches the ``takeit`` pointer: only a Take-It retrain moves it.
+
+A dry run reads in a READ ONLY transaction and takes no lock. For a promotion
+it also checks that the version is still a shadow or passed candidate.
 
 To undo a rescore, run one ``UPDATE … FROM unnest(fire_ids, old_values,
 old_tags)`` over its snapshot rows (plan D5). Writing ``score`` recomputes the
@@ -52,9 +60,16 @@ Without --version it scores with the version ``active`` names and pins it. If
 a promotion moves the pointer between the CLI's read and its rescore, the
 rescore stops with ``PointerMoved`` and writes nothing. An explicit --version
 is not pinned. It names the scores wanted whatever the pointer says (a restore
-or a reshape), so it need not be the active one. If it overlaps a promotion,
-the UPDATE guard stops one of the two and rolls it back, so the fires never end
-up half one version and half the other.
+or a reshape), so it need not be the active one. Like any write, it still
+holds the pointer ``FOR SHARE``, so a promotion runs wholly before or after it.
+
+Run --write outside 13:00-24:00 UTC on weekdays. It locks every fire it
+rewrites until it commits. In those hours the detect-lottery-fires cron inserts
+fires, and the insert trigger updates the older fires of the same chain and
+day: that cron would block on the rescore or deadlock with it, since the two
+lock fires in different orders. The takeit-fill-shap, wave2-confirmation and
+evaluate-round-trip UPDATEs would block as well. The nightly window (07:15-12:30
+UTC) overlaps none of them.
 
 It connects to DATABASE_URL_UNPOOLED, or DATABASE_URL, from the environment or
 .env.local. That is the production database.
@@ -77,6 +92,7 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 import pandas as pd
+from psycopg2.errors import LockNotAvailable
 from psycopg2.extras import execute_values
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -101,9 +117,14 @@ WRITE_ROWS = 500
 # matches before a trailing newline, and Postgres's does not.
 _REASON = re.compile(r'[a-z][a-z0-9-]{1,40}')
 
+# Nothing else writes these rows in the windows the rescore runs in, so a lock
+# held longer than this is a stuck session. Failing fast beats waiting for the
+# watchdog.
+_LOCK_TIMEOUT_SQL = "SET LOCAL lock_timeout = '60s'"
 _ACTIVE_SQL = "SELECT version FROM lottery_score_pointers WHERE name = 'active'"
 _ACTIVE_FOR_UPDATE_SQL = _ACTIVE_SQL + ' FOR UPDATE'
 _ACTIVE_FOR_SHARE_SQL = _ACTIVE_SQL + ' FOR SHARE'
+_STATUS_SQL = 'SELECT status FROM lottery_score_versions WHERE version = %s'
 _PAGE_SQL = (
     f"SELECT id, score, score_version, {', '.join(SCORE_COLUMNS)} "
     'FROM lottery_finder_fires WHERE id > %s ORDER BY id LIMIT %s'
@@ -192,13 +213,15 @@ def rescore_all(
     idle). Its autocommit setting is restored on return. ``reason`` goes on the
     snapshot rows. With ``expect_active`` set, this is a promotion: the
     ``active`` pointer must name ``expect_active`` and ``to_version`` must be a
-    shadow or passed candidate, else ``PointerMoved``. With ``pin_active``, the
-    ``active`` pointer must name ``to_version`` and cannot move until this
-    commits, else ``PointerMoved``; the two are exclusive. ``deadline`` is a
-    ``time.monotonic()`` value, checked before each page and each UPDATE.
+    shadow or passed candidate, else ``PointerMoved``. Any other write holds
+    the pointer ``FOR SHARE`` until it commits, and with ``pin_active`` the
+    pointer must also name ``to_version``, else ``PointerMoved``. The two are
+    exclusive. ``deadline`` is a ``time.monotonic()`` value, checked before
+    each page and each UPDATE.
 
-    ``dry_run`` runs the same reads in a READ ONLY transaction, takes no lock,
-    and returns the counts the write would give, with ``pointer_moved`` False.
+    ``dry_run`` runs the same reads and checks in a READ ONLY transaction,
+    takes no lock, and returns the counts the write would give, with
+    ``pointer_moved`` False.
 
     The arguments are checked before any statement: ``ValueError`` and
     ``WeightsInvalid``. Any later exception rolls everything back and
@@ -218,23 +241,28 @@ def rescore_all(
             if dry_run:
                 # Postgres then refuses any write.
                 cur.execute('SET TRANSACTION READ ONLY')
-            # A READ ONLY transaction refuses FOR UPDATE and FOR SHARE, so the
-            # dry run checks the pointer without a lock.
+            cur.execute(_LOCK_TIMEOUT_SQL)
+            # A READ ONLY transaction refuses FOR UPDATE and FOR SHARE, so a
+            # dry run reads the pointer without a lock.
             if expect_active is not None:
-                # Nothing else may move or pin the pointer until this commits.
+                # A promotion: no other writing rescore can start until this
+                # commits.
                 _check_active(
                     cur,
-                    expect_active,
                     _ACTIVE_SQL if dry_run else _ACTIVE_FOR_UPDATE_SQL,
+                    expect_active,
+                )
+                if dry_run:
+                    _check_candidate(cur, to_version)
+            elif not dry_run:
+                # Any other write: no promotion may run until this commits. A
+                # promotion's FOR UPDATE waits for this lock, and this waits
+                # for that one.
+                _check_active(
+                    cur, _ACTIVE_FOR_SHARE_SQL, to_version if pin_active else None
                 )
             elif pin_active:
-                # Nothing may move the pointer until this commits. A promotion's
-                # FOR UPDATE waits for this lock, and this waits for that one.
-                _check_active(
-                    cur,
-                    to_version,
-                    _ACTIVE_SQL if dry_run else _ACTIVE_FOR_SHARE_SQL,
-                )
+                _check_active(cur, _ACTIVE_SQL, to_version)
             result = _rescore_pages(
                 cur,
                 to_version=to_version,
@@ -250,7 +278,7 @@ def rescore_all(
             conn.rollback()
         else:
             conn.commit()
-    except BaseException:
+    except BaseException:  # not Exception: the nightly's SIGTERM is SystemExit
         # A connection the server dropped is closed, and its rollback would
         # raise over the real error. Postgres aborts that transaction itself.
         if not conn.closed:
@@ -267,12 +295,23 @@ def _check_deadline(deadline: float | None, before: str) -> None:
         raise RescoreDeadline(f'the deadline passed before {before}')
 
 
-def _check_active(cur: Any, expected: str, sql: str) -> None:
+def _check_active(cur: Any, sql: str, expected: str | None) -> None:
+    """Read (and, by ``sql``, lock) the active pointer. Unless ``expected`` is
+    None, it must name ``expected``."""
     cur.execute(sql)
     row = cur.fetchone()
     found = None if row is None else row[0]
-    if found != expected:
+    if expected is not None and found != expected:
         raise PointerMoved(f'the active pointer names {found}, not {expected}')
+
+
+def _check_candidate(cur: Any, version: str) -> None:
+    """The dry run's stand-in for the promotion's conditional status UPDATE."""
+    cur.execute(_STATUS_SQL, (version,))
+    row = cur.fetchone()
+    status = None if row is None else row[0]
+    if status not in ('shadow', 'passed'):
+        raise PointerMoved(f'{version} is {status}, not a shadow or passed candidate')
 
 
 def _rescore_pages(
@@ -429,7 +468,12 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument(
         '--write',
         action='store_true',
-        help='write the scores; without it, read every fire and write nothing',
+        help=(
+            'write the scores; without it, read every fire and write nothing. '
+            'Write outside 13:00-24:00 UTC on weekdays: it locks every fire it '
+            'rewrites, and the live crons that write fires would block or '
+            'deadlock on them'
+        ),
     )
     args = parser.parse_args(argv)
 
@@ -466,10 +510,12 @@ def main(argv: Sequence[str] | None = None) -> None:
                 # pinned.
                 pin_active=args.version is None,
             )
-        except (PointerMoved, ConcurrentScoreWriter) as exc:
+        except (PointerMoved, ConcurrentScoreWriter, LockNotAvailable) as exc:
+            # A Postgres message can span lines (its CONTEXT); keep one.
+            message = ' '.join(str(exc).split())
             sys.exit(
-                f'[rescore] {type(exc).__name__}: {exc}. Rolled back, nothing '
-                'written.'
+                f'[rescore] {type(exc).__name__}: {message}. Rolled back, '
+                'nothing written.'
             )
     finally:
         conn.close()
