@@ -1539,6 +1539,12 @@ export interface SnapshotSymbolReport {
   affectedLeftAlone: number;
   /** Stale or missing recompute with nothing affected. */
   unaffectedLeftAlone: number;
+  /**
+   * Front-month: stale or missing recompute whose only write is the NULL rule's (the
+   * ratio of a row in a contaminated base, the one affected field): counted with the
+   * rows to write, not left alone.
+   */
+  leftAloneNullOnly: number;
   /** The rows counted in `affectedLeftAlone`, broken down. */
   leftAlone: LeftAloneStats;
   valueRule: ValueRuleStats;
@@ -2460,6 +2466,7 @@ async function planSnapshots(
       drift: emptyFields(),
       affectedLeftAlone: 0,
       unaffectedLeftAlone: 0,
+      leftAloneNullOnly: 0,
       leftAlone: {
         stale: 0,
         missing: 0,
@@ -2571,10 +2578,8 @@ async function planSnapshots(
       const planned = lifted
         ? withoutVolumeRatio(evaluation.outcome, row.stored, report)
         : evaluation.outcome;
-      const outcome =
-        frontMonth && volumeBaseContaminated(symbol, row.tsMs)
-          ? withoutRatioField(planned)
-          : planned;
+      const blankRange = frontMonth && volumeBaseContaminated(symbol, row.tsMs);
+      const outcome = blankRange ? withoutRatioField(planned) : planned;
       const dayOpenMs = dayOpenOf(new Date(row.tsMs));
       const byRule = affectedSnapshotFields(
         sd.repair,
@@ -2678,14 +2683,27 @@ async function planSnapshots(
             row: row.row,
           });
         }
+        // Under the NULL rule the ratio of a row in a contaminated base is decided by
+        // the rule, not left alone: it is written (blankVolumeRatios counts the write
+        // with the rows to write) or it is already NULL. Only the other fields can be
+        // left alone for the repair.
+        const affectedLeft = blankRange
+          ? new Set([...affected].filter((f) => f !== 'volumeRatio'))
+          : affected;
         // A row in the junk plan is deleted by the opt-in step: it is listed in the
         // junk section, not as left alone.
-        if (junkHit == null && affected.size > 0) {
+        if (junkHit == null && affectedLeft.size > 0) {
           report.affectedLeftAlone += 1;
-          noteLeftAlone(report.leftAlone, result.kind, affected, row.tsMs);
+          noteLeftAlone(report.leftAlone, result.kind, affectedLeft, row.tsMs);
           unrecomputable.push(
-            `${snapshotLine(row, null, outcome.why)} [affected: ${[...affected].sort().join(', ')}]`,
+            `${snapshotLine(row, null, outcome.why)} [affected: ${[...affectedLeft].sort().join(', ')}]`,
           );
+        } else if (
+          junkHit == null &&
+          blankRange &&
+          row.stored.volumeRatio != null
+        ) {
+          report.leftAloneNullOnly += 1;
         } else if (junkHit == null) {
           report.unaffectedLeftAlone += 1;
         }
@@ -2696,7 +2714,7 @@ async function planSnapshots(
             report.unwritten,
             row,
             latest.close,
-            `left alone, ${result.kind} (${affected.size > 0 ? 'a field is affected' : 'nothing affected'}), against the latest closed bar`,
+            `left alone, ${result.kind} (${affectedLeft.size > 0 ? 'a field is affected' : 'nothing affected'}), against the latest closed bar`,
           );
         }
         continue;
@@ -3636,29 +3654,53 @@ function junkText(junk: JunkRow[]): string[] {
 /**
  * Rows touched, per root and in total, so the owner can reconcile the three
  * totals against the distinct rows: the normal step's rows, the stale step's and
- * the junk deletes overlap only where a row is in both of the first two.
+ * the junk deletes overlap where a row is in both of the first two, and where a junk
+ * row is also in the normal step. The second only happens under front-month, where
+ * the NULL rule writes a stale row's ratio whether or not the row is a junk-delete
+ * candidate: the apply runs that UPDATE (it is in `--expect-snapshots`) and the junk
+ * delete, if asked for, then removes the row. A distinct row is counted once, so
+ * the line subtracts that overlap and shows it; with none the line is unchanged.
  */
 function touchedText(r: SnapshotStore): string[] {
+  const written = new Set(r.changes.map((c) => c.id));
+  const overlapOf = (symbol?: Sym): number =>
+    r.junk.filter(
+      (j) => (symbol == null || j.symbol === symbol) && written.has(j.id),
+    ).length;
   const line = (
     label: string,
     normal: number,
     stale: number,
     both: number,
     junk: number,
-  ): string =>
-    `  rows touched, ${label}: normal step only ${normal - both}, stale step only ${stale - both}, both ${both}, junk delete ${junk}; distinct rows ${normal + stale - both + junk} (${normal} + ${stale} + ${junk} - ${both})`;
+    overlap: number,
+  ): string => {
+    const also =
+      overlap === 0 ? '' : ` (${overlap} also written by the normal step)`;
+    const minus = overlap === 0 ? '' : ` - ${overlap} junk overlap`;
+    return `  rows touched, ${label}: normal step only ${normal - both}, stale step only ${stale - both}, both ${both}, junk delete ${junk}${also}; distinct rows ${normal + stale - both + junk - overlap} (${normal} + ${stale} + ${junk} - ${both}${minus})`;
+  };
   const out: string[] = [];
   let normal = 0;
   let stale = 0;
   let both = 0;
   for (const s of r.symbols) {
     const junk = r.junk.filter((j) => j.symbol === s.symbol).length;
-    out.push(line(s.symbol, s.rowsToWrite, s.stale.count, s.alsoStale, junk));
+    out.push(
+      line(
+        s.symbol,
+        s.rowsToWrite,
+        s.stale.count,
+        s.alsoStale,
+        junk,
+        overlapOf(s.symbol),
+      ),
+    );
     normal += s.rowsToWrite;
     stale += s.stale.count;
     both += s.alsoStale;
   }
-  out.push(line('all roots', normal, stale, both, r.junk.length));
+  out.push(line('all roots', normal, stale, both, r.junk.length, overlapOf()));
   return out;
 }
 
@@ -3893,6 +3935,11 @@ function snapshotsText(r: SnapshotStore, repair?: RepairName): string[] {
       `  ${s.symbol}: rows in range ${s.inRange}, rows to write ${s.rowsToWrite} (${byFieldText(s.byField)})`,
       `    left alone, stale or missing recompute (the rows in the junk plan are not counted here): ${s.affectedLeftAlone} with an affected field, ${s.unaffectedLeftAlone} with none`,
       `      the ${s.affectedLeftAlone} with an affected field (kept as stored): ${leftAloneText(s.leftAlone)}`,
+      ...(frontMonth && s.volumeBlank != null
+        ? [
+            `      stale or missing recompute whose only write is the NULL ratio (counted in rows to write, not left alone): ${s.leftAloneNullOnly}`,
+          ]
+        : []),
       `    ${volumeRatioWriteText(r.changes, s.symbol)}`,
       `    information, unaffected fields where today's method differs from the stored value (not written, after every planned step with the opt-in steps on): ${byFieldText(s.drift)}`,
       `    method control, rows from ${isoSecond(SNAPSHOT_CONTROL_FROM_MS)}: ${s.controlMatched} of ${s.controlRows} match over ${s.controlDays} days`,
@@ -5512,7 +5559,6 @@ function esRepairOf(data: ReadonlyMap<Sym, SymbolData>): Repair {
   return es.repair;
 }
 
-/** The report header of a front-month run. */
 /** The NULL rule of the front-month header: each root's unrebuildable bars and the cutoff of the rows it blanks. */
 function volumeNullRuleText(): string {
   const rules = Object.entries(FRONT_MONTH.contaminatedBase).map(
@@ -5528,6 +5574,7 @@ function volumeNullRuleText(): string {
   return `volume ratio is set to NULL where its 20-day base holds bars that cannot be rebuilt (owner decision 2026-11-13): ${rules.join('; ')}`;
 }
 
+/** The report header of a front-month run. */
 function frontMonthHeader(
   opts: RecomputeOptions,
   rootsLine: string,

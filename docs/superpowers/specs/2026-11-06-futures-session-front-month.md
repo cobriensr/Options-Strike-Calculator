@@ -466,7 +466,7 @@ On days Phase 6 didn't touch, another 2,324 rows differ (late bars, the Septembe
   - The control starts 11-02, after both cutoffs, and is unchanged. The report names the rule, counts the rows per root, and shows them inside the repaired-day split.
 - **Defaults:** with no flag the tool behaves exactly as it does now.
 
-Files: `scripts/_lib/futures-derived-recompute.ts`, `scripts/_lib/futures-derived-attribution.ts`, new `scripts/_lib/futures-derived-front-month.ts`, `scripts/recompute-futures-derived.ts`, new `scripts/_lib/futures-derived-front-month.test.ts` (attribution, profile, backup reader), `scripts/_lib/futures-derived-front-month-run.test.ts` (arguments, scope, control set-aside, refusals before a read) and `scripts/_lib/futures-derived-front-month-pglite.test.ts`; the three new files are listed in `tsconfig.scripts.json`.
+Files: `scripts/_lib/futures-derived-recompute.ts`, `scripts/_lib/futures-derived-attribution.ts`, new `scripts/_lib/futures-derived-front-month.ts`, `scripts/recompute-futures-derived.ts`, new `scripts/_lib/futures-derived-front-month.test.ts` (attribution, profile, backup reader), `scripts/_lib/futures-derived-front-month-run.test.ts` (arguments, scope, control set-aside, refusals before a read), `scripts/_lib/futures-derived-front-month-pglite.test.ts` and `scripts/_lib/futures-derived-front-month-blank-pglite.test.ts` (the GC and CL volume ratios set to NULL); the new test files are listed in `tsconfig.scripts.json`.
 
 Steps:
 - [x] Wait for the `futures-repair-land` session's unpushed recompute commits to reach main, then re-check the design against the current tool (landed 2026-11-13 08:29Z; design re-checked at 140af58f).
