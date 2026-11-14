@@ -95,8 +95,12 @@ def _before_send(event: dict[str, Any], hint: dict[str, Any]) -> dict[str, Any]:
 #   asyncio/connection.py "keepalive ping failed" (the socket stays open with no
 #     pings) and "unexpected internal error";
 #   protocol.py "parser failed".
-# asyncio's come from ``call_exception_handler`` (base_events.py):
-#   "Exception in callback" and "Task exception was never retrieved".
+# asyncio's go through ``call_exception_handler``, whose default handler
+# (base_events.py) logs them at ERROR. The messages are built elsewhere, in
+# CPython 3.12:
+#   "Exception in callback" in events.py (``Handle._run``);
+#   "Task exception was never retrieved" in futures.py (``Future.__del__``; the
+#     C accelerator ``_asyncio`` builds the same text).
 # The websockets server-side sites (server.py, asyncio/server.py) never run here.
 _LIBRARY_ERROR_LOGGERS = ("websockets", "asyncio")
 
@@ -108,10 +112,16 @@ def _attach_library_error_handlers() -> None:
     would file every record twice.
 
     A handler on a logger also ends the stdlib's last-resort stderr line for
-    that logger's records. ``websockets`` already has a ``NullHandler``, so its
-    records never reached stderr. ``asyncio`` has none and nothing configures
-    the root logger, so its warnings and errors were reaching Railway's logs
-    that way; keep them there by attaching the last-resort handler to it.
+    that logger's records. Neither logger has a handler of its own (websockets
+    17.4 adds no ``NullHandler``) and nothing configures the root logger, so
+    before this change both loggers' WARNING and ERROR records reached stderr,
+    and so Railway's logs, through ``logging.lastResort``. Keep them there by
+    attaching the last-resort handler to each.
+
+    That choice is a snapshot taken once, at init. If root logging is ever
+    configured (``basicConfig``, a root handler), drop the ``lastResort``
+    branch: these loggers would otherwise print every WARNING and ERROR line
+    twice, once through it and once through the root handler.
     """
     from sentry_sdk.integrations.logging import EventHandler
 

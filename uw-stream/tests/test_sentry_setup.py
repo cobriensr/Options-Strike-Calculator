@@ -336,8 +336,10 @@ class TestLibraryErrorHandlers:
     - websockets/asyncio/connection.py "keepalive ping failed" (the socket stays
       open with no pings) and "unexpected internal error";
     - websockets/protocol.py "parser failed";
-    - asyncio/base_events.py "Exception in callback" and "Task exception was
-      never retrieved", both through ``call_exception_handler``.
+    - asyncio's "Exception in callback" (built in events.py ``Handle._run``) and
+      "Task exception was never retrieved" (futures.py ``Future.__del__``, and
+      the C accelerator's twin). Both go through ``call_exception_handler``,
+      whose default handler (base_events.py) logs them at ERROR.
 
     ``init_sentry`` puts an ``EventHandler`` at ERROR on the ``websockets`` and
     ``asyncio`` loggers so those still file one event each.
@@ -402,13 +404,23 @@ class TestLibraryErrorHandlers:
         assert sentry_setup.is_enabled() is False
         assert [_event_handlers(name) for name in LIBRARY_LOGGERS] == [[], []]
 
-    def test_asyncio_records_still_reach_stderr(self, monkeypatch, capsys):
+    @pytest.mark.parametrize(
+        ("logger_name", "message"),
+        [
+            ("asyncio", "socket.send() raised exception."),
+            ("websockets.client", "connection closed"),
+        ],
+    )
+    def test_library_records_still_reach_stderr(self, monkeypatch, capsys, logger_name, message):
         """Any handler on a logger stops the stdlib's last-resort stderr line.
 
-        asyncio has none and the root has none in production, so the new
-        EventHandler would have hidden "Task exception was never retrieved"
-        from the Railway logs. The root logger has no handler there; pytest's
-        capture handlers stand in for one, so the lookup says there is none.
+        Neither library logger has a handler of its own (websockets 17.4 adds
+        no ``NullHandler``) and the root has none in production, so before the
+        EventHandler their WARNING and ERROR records reached Railway's logs
+        through the last-resort handler. The new handler would have hidden them
+        from both. The root logger has no handler there; pytest's capture
+        handlers stand in for one, so the lookup is patched to say there is
+        none. The websockets case logs through a child, as the library does.
         """
         monkeypatch.setenv("SENTRY_DSN", FAKE_DSN)
         monkeypatch.setattr(sentry_setup, "_sentry_enabled", False)
@@ -419,9 +431,26 @@ class TestLibraryErrorHandlers:
         ):
             sentry_setup.init_sentry()
 
-        logging.getLogger("asyncio").warning("socket.send() raised exception.")
+        logging.getLogger(logger_name).warning(message)
 
-        assert "socket.send() raised exception." in capsys.readouterr().err
+        assert message in capsys.readouterr().err
+
+    def test_a_missing_last_resort_handler_is_not_attached(self, monkeypatch):
+        """``logging.lastResort`` is None when an app turns it off; attaching it
+        would put None in the handler list and every later record would raise."""
+        monkeypatch.setenv("SENTRY_DSN", FAKE_DSN)
+        monkeypatch.setattr(sentry_setup, "_sentry_enabled", False)
+        monkeypatch.setattr(logging, "lastResort", None)
+        with (
+            patch.object(sentry_sdk, "init", autospec=True),
+            patch.object(sentry_sdk, "set_tag", autospec=True),
+            patch.object(logging.Logger, "hasHandlers", return_value=False),
+        ):
+            sentry_setup.init_sentry()
+
+        for name in LIBRARY_LOGGERS:
+            handlers = logging.getLogger(name).handlers
+            assert [isinstance(h, EventHandler) for h in handlers] == [True]
 
 
 @pytest.fixture
