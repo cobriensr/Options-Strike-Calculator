@@ -25,6 +25,11 @@ reset. The cumulative counters are never reset: /metrics shows them.
 A minute with no activity still logs, with an empty ``handlers``: the line is
 also the heartbeat, and it shows loop lag through the quiet hours. There is no
 final pass on cancel; the next deploy's first line starts a fresh interval.
+
+Diagnostics must never take the ingest daemon down. ``main`` treats the death of
+any background task as fatal (it restarts the container and drops every socket),
+so each loop guards one pass: a sample or a report that raises is logged, at
+error level and rate limited, and the loop carries on. Only a cancel ends it.
 """
 
 from __future__ import annotations
@@ -35,7 +40,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
 import db
-from logger_setup import log
+from logger_setup import log, rate_limited_log
 from state import HandlerMetrics, state
 
 # Loop-lag and pool sampler period.
@@ -181,13 +186,36 @@ def _report(sampled: _Sampled, reported: _Reported, minute_start: datetime) -> N
     sampled.reset()
 
 
+def _log_failed_pass(kind: str, exc: Exception) -> None:
+    """Log a sample or report pass that raised.
+
+    Error level, so a diagnostics bug is not silent. Rate limited per kind: the
+    sampler runs four times a second and would otherwise log four errors a
+    second for as long as it kept failing.
+    """
+    rate_limited_log.error(
+        scope="pipeline_stats",
+        kind=kind,
+        message=f"pipeline stats {kind} failed",
+        extra={"err_type": type(exc).__name__, "err": str(exc)},
+    )
+
+
 async def _run_sampler(sampled: _Sampled) -> None:
-    """Sample loop lag and pool use every SAMPLE_INTERVAL_S, forever."""
+    """Sample loop lag and pool use every SAMPLE_INTERVAL_S, forever.
+
+    A sample that raises is logged and skipped. The guard is ``except
+    Exception``, so a cancel (a BaseException) still ends the loop. It does not
+    cover the sleep, where a cancel arrives.
+    """
     while True:
         started = time.monotonic()
         await asyncio.sleep(SAMPLE_INTERVAL_S)
-        sampled.record_lag(time.monotonic() - started)
-        sampled.record_pool()
+        try:
+            sampled.record_lag(time.monotonic() - started)
+            sampled.record_pool()
+        except Exception as exc:
+            _log_failed_pass("sample", exc)
 
 
 async def _run_reporter(sampled: _Sampled, reported: _Reported) -> None:
@@ -199,6 +227,11 @@ async def _run_reporter(sampled: _Sampled, reported: _Reported) -> None:
     sleeps the remainder rather than reporting the same minute twice. If the
     loop is blocked past a boundary the line comes late and a minute label is
     missing; the lag numbers on that line say why.
+
+    A report that raises is logged and the loop moves on to the next boundary.
+    The pass may have failed partway, so that minute's interval fields can stay
+    un-reset and fold into the next line. Nothing here retries or waits on the
+    failed pass, so one failure cannot hold up the minutes after it.
     """
     now = datetime.now(UTC)
     while True:
@@ -206,14 +239,20 @@ async def _run_reporter(sampled: _Sampled, reported: _Reported) -> None:
         while now < boundary:
             await asyncio.sleep((boundary - now).total_seconds())
             now = datetime.now(UTC)
-        _report(sampled, reported, boundary - timedelta(minutes=1))
+        try:
+            _report(sampled, reported, boundary - timedelta(minutes=1))
+        except Exception as exc:
+            _log_failed_pass("report", exc)
 
 
 async def run_pipeline_stats() -> None:
     """Run the sampler and the reporter until cancelled.
 
-    A TaskGroup, so a cancel stops both and a crash in one stops the other
-    instead of leaving it running unobserved.
+    A TaskGroup, so a cancel stops both. A TaskGroup also cancels one child when
+    the other raises, but neither loop raises: each guards its own pass (see
+    ``_run_sampler`` and ``_run_reporter``), so the group never sees an exception
+    and one loop's failure cannot stop the other. What is left unguarded is
+    stdlib clock arithmetic and the sleeps, which raise only a cancel.
     """
     sampled = _Sampled()
     reported = _Reported()

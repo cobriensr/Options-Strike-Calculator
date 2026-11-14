@@ -494,7 +494,8 @@ The line for a quiet minute is still sent, with an empty `handlers`: it is
 the heartbeat, and it shows loop lag through the quiet hours. The first line
 after a deploy covers only the part of the minute since boot. If the event
 loop is blocked past a boundary the line comes late, and the minute label
-that would have come is missing from the sequence.
+that would have come is missing from the sequence. A stall that straddles a
+boundary can also put its lag on the next minute's line instead of this one's.
 
 | Field                            | Meaning                                                                                                                                                                                                      |
 | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |

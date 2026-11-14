@@ -25,6 +25,7 @@ from unittest.mock import patch
 import pytest
 
 import pipeline_stats
+from logger_setup import RateLimitedLogger
 from pipeline_stats import (
     LOOP_LAG_FLAG_S,
     SAMPLE_INTERVAL_S,
@@ -38,6 +39,8 @@ from pipeline_stats import (
 from state import State
 
 _MESSAGE = "uw-stream pipeline minute"
+_SAMPLE_FAILED = "pipeline stats sample failed"
+_REPORT_FAILED = "pipeline stats report failed"
 
 
 @pytest.fixture
@@ -57,6 +60,22 @@ def lines(monkeypatch) -> list[tuple[str, dict]]:
     out: list[tuple[str, dict]] = []
     monkeypatch.setattr(
         pipeline_stats.log, "info", lambda msg, *_a, **kw: out.append((msg, kw["extra"]))
+    )
+    return out
+
+
+@pytest.fixture
+def errors(monkeypatch) -> list[tuple[str, dict]]:
+    """Every error the module logs through ``rate_limited_log``, as (message, extra).
+
+    A fresh limiter per test: the module-level one keeps its windows for the
+    whole process, so an error logged by an earlier test would silence the first
+    error of this one.
+    """
+    out: list[tuple[str, dict]] = []
+    monkeypatch.setattr(pipeline_stats, "rate_limited_log", RateLimitedLogger())
+    monkeypatch.setattr(
+        pipeline_stats.log, "error", lambda msg, *_a, **kw: out.append((msg, kw["extra"]))
     )
     return out
 
@@ -204,10 +223,13 @@ async def test_pool_size_and_in_use_keep_independent_maxima(monkeypatch):
     assert sampled.pool_in_use_max == 4  # from the second: size - idle
 
 
-async def test_an_uninitialized_pool_records_nothing_and_never_stops_the_sampler(monkeypatch):
+async def test_an_uninitialized_pool_records_nothing_and_never_stops_the_sampler(
+    monkeypatch, errors
+):
     # db.get_pool raises RuntimeError until init_pool has run. The lag samples
     # must still be taken, and the pool fields must stay None (not 0, which would
-    # read as "pool seen, nothing in use").
+    # read as "pool seen, nothing in use"). It is an expected state, not a failed
+    # pass, so nothing is logged as an error.
     _script_monotonic(monkeypatch, 0.0, 1.25, 1.25, 1.5, 1.5, 1.75, 1.75)
     sleeps = _script_sleep(monkeypatch, [_noop] * 3)
     sampled = _Sampled()
@@ -226,9 +248,10 @@ async def test_an_uninitialized_pool_records_nothing_and_never_stops_the_sampler
     assert sampled.pool_in_use_max is None
     assert sampled.loop_lag_max_s == 1.0
     assert sampled.loop_lag_over_1s == 1
+    assert errors == []
 
 
-async def test_a_pool_closed_mid_run_keeps_the_earlier_maxima(monkeypatch):
+async def test_a_pool_closed_mid_run_keeps_the_earlier_maxima(monkeypatch, errors):
     # Shutdown's close_pool sets the pool back to None: get_pool raises again.
     _script_sleep(monkeypatch, [_noop, _noop])
     sampled = _Sampled()
@@ -241,6 +264,7 @@ async def test_a_pool_closed_mid_run_keeps_the_earlier_maxima(monkeypatch):
         await _run_sampler(sampled)
 
     assert (sampled.pool_size_max, sampled.pool_in_use_max) == (7, 4)
+    assert errors == []
 
 
 # ----------------------------------------------------------------------
@@ -589,3 +613,161 @@ async def test_run_pipeline_stats_reports_what_the_sampler_saw_and_cancels_clean
     assert extra["pool_in_use_max"] == 4
     assert task.cancelled()
     assert asyncio.all_tasks() == before  # the sampler and the reporter went with it
+
+
+# ----------------------------------------------------------------------
+# Failures: a bad pass is logged and the loop carries on; only a cancel ends it
+# ----------------------------------------------------------------------
+#
+# main treats the death of any background task as fatal and restarts the
+# container, so a bug in a diagnostics pass must not end its loop.
+
+
+async def test_a_sample_that_raises_is_logged_and_sampling_continues(monkeypatch, errors):
+    pool = _FakePool(size=5, idle=1)
+    sleeps = _script_sleep(monkeypatch, [_noop] * 3)
+    sampled = _Sampled()
+
+    # An error that is not the expected "pool not initialized" RuntimeError.
+    with (
+        patch("db.get_pool", side_effect=[ValueError("pool state corrupt"), pool, pool]),
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await _run_sampler(sampled)
+
+    assert errors == [
+        (
+            _SAMPLE_FAILED,
+            {
+                "scope": "pipeline_stats",
+                "kind": "sample",
+                "err_type": "ValueError",
+                "err": "pool state corrupt",
+            },
+        )
+    ]
+    assert len(sleeps) == 4  # it went on to take the next three samples
+    assert (sampled.pool_size_max, sampled.pool_in_use_max) == (5, 4)
+
+
+async def test_a_sampler_that_keeps_failing_logs_once_per_window_not_four_times_a_second(
+    monkeypatch, errors
+):
+    sleeps = _script_sleep(monkeypatch, [_noop] * 6)
+
+    with (
+        patch("db.get_pool", side_effect=ValueError("still broken")),
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await _run_sampler(_Sampled())
+
+    assert len(sleeps) == 7  # six failed samples, and the loop never stopped
+    assert [msg for msg, _extra in errors] == [_SAMPLE_FAILED]
+
+
+async def test_a_report_that_raises_is_logged_and_the_next_minute_still_reports(
+    monkeypatch, fresh, errors
+):
+    delivered: list[dict] = []
+    attempts: list[None] = []
+
+    def _info_that_fails_once(_msg, *_a, **kw) -> None:
+        attempts.append(None)
+        if len(attempts) == 1:
+            raise OSError("stdout closed")
+        delivered.append(kw["extra"])
+
+    monkeypatch.setattr(pipeline_stats.log, "info", _info_that_fails_once)
+
+    sleeps, _, _ = await _drive_reporter(
+        monkeypatch,
+        fresh,
+        [_BUSY_MINUTE, _set("option_trades", flushes=5, interval_queue_hwm=7)],
+    )
+
+    assert errors == [
+        (
+            _REPORT_FAILED,
+            {
+                "scope": "pipeline_stats",
+                "kind": "report",
+                "err_type": "OSError",
+                "err": "stdout closed",
+            },
+        )
+    ]
+    assert [extra["minute_utc"] for extra in delivered] == ["2026-11-13T12:35:00+00:00"]
+    assert delivered[0]["handlers"]["option_trades"]["queue_hwm"] == 7
+    assert len(sleeps) == 3  # it waited for the third boundary too
+
+
+async def test_a_reporter_that_keeps_failing_still_reaches_every_boundary(
+    monkeypatch, fresh, errors
+):
+    def _info_always_fails(*_a, **_kw) -> None:
+        raise OSError("stdout closed")
+
+    monkeypatch.setattr(pipeline_stats.log, "info", _info_always_fails)
+
+    sleeps, _, _ = await _drive_reporter(monkeypatch, fresh, [_noop_step] * 3)
+
+    assert len(sleeps) == 4  # three failed reports, and a sleep to a fourth boundary
+    assert [msg for msg, _extra in errors] == [_REPORT_FAILED]  # once per window
+
+
+async def test_a_cancel_inside_a_sample_ends_the_sampler_instead_of_being_logged(
+    monkeypatch, errors
+):
+    # A cancel is a BaseException, not an Exception: the guard must let it through.
+    sleeps = _script_sleep(monkeypatch, [_noop] * 3)
+
+    with (
+        patch("db.get_pool", side_effect=asyncio.CancelledError()),
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await _run_sampler(_Sampled())
+
+    assert len(sleeps) == 1  # it ended at the first sample
+    assert errors == []
+
+
+async def test_a_cancel_inside_a_report_ends_the_reporter_instead_of_being_logged(
+    monkeypatch, fresh, errors
+):
+    def _info_is_cancelled(*_a, **_kw) -> None:
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(pipeline_stats.log, "info", _info_is_cancelled)
+
+    sleeps, _, _ = await _drive_reporter(monkeypatch, fresh, [_noop_step] * 3)
+
+    assert len(sleeps) == 1  # it ended at the first report
+    assert errors == []
+
+
+async def test_a_failing_sampler_does_not_stop_the_reporter_or_the_task(
+    monkeypatch, fresh, lines, errors
+):
+    # Real tasks, as in the test above. The sampler fails on every pass; the
+    # TaskGroup must not read that as a crash and cancel the reporter.
+    monkeypatch.setattr(pipeline_stats, "SAMPLE_INTERVAL_S", 0.01)
+    _script_wall_clock(
+        monkeypatch,
+        datetime(2026, 11, 13, 12, 34, 59, 950_000, tzinfo=UTC),
+        datetime(2026, 11, 13, 12, 35, 0, 1_000, tzinfo=UTC),
+    )
+    before = asyncio.all_tasks()
+
+    with patch("db.get_pool", side_effect=ValueError("pool state corrupt")):
+        task = asyncio.create_task(run_pipeline_stats())
+        async with asyncio.timeout(5):
+            while not lines:
+                await asyncio.sleep(0.005)
+        assert not task.done()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    assert lines[0][1]["minute_utc"] == "2026-11-13T12:34:00+00:00"
+    assert [msg for msg, _extra in errors] == [_SAMPLE_FAILED]
+    assert asyncio.all_tasks() == before
