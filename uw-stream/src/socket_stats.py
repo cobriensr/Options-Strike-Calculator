@@ -45,9 +45,9 @@ The warning above is only checked when a trade frame ends a gap, so a socket tha
 stays connected and never receives another trade frame raises nothing. ``find_stuck``
 is the test for that case. It is pure (it reads the stats, the twin map and
 ``state.connections`` and nothing else) and ``stuck_sockets`` polls it. A shard
-is stuck when it is connected, has a twin, has had no trade frame for ``STUCK_S``
-(counted from its session start if the session has none yet), and its twin
-received ``STUCK_TWIN_MIN_FRAMES`` or more trade frames in that time.
+is stuck when it and its twin are both connected, it has had no trade frame for
+``STUCK_S`` (counted from its session start if the session has none yet), and its
+twin received ``STUCK_TWIN_MIN_FRAMES`` or more trade frames in that time.
 
 State is module-level and keyed by shard name (``conn0`` .. ``connN``), a closed
 set the shard layout fixes at boot.
@@ -337,12 +337,14 @@ def find_stuck(now: float) -> list[StuckSocket]:
     """The connected trade sockets that have gone quiet while their twin kept receiving.
 
     ``now`` is a ``time.monotonic()`` read, the clock ``on_frame`` is fed. A shard
-    is stuck when all four hold: it has a twin with stats; ``state.connections``
-    says it is connected; its open gap, ``now`` minus its last trade frame (its
-    session start if the session has had none), is at least ``STUCK_S``; and the
-    twin's trade frames in the last ``STUCK_S`` number at least
-    ``STUCK_TWIN_MIN_FRAMES``, counted with the ring as ``on_frame`` does (the
-    two edge buckets left out). A shard with no session yet is not stuck.
+    is stuck when all four hold: it has a twin with stats, and ``state.connections``
+    says both are connected (a twin that is down is not carrying the trades while
+    this socket reconnects, and its ring only holds what it received before it
+    dropped); its open gap, ``now`` minus its last trade frame (its session start
+    if the session has had none), is at least ``STUCK_S``; and the twin's trade
+    frames in the last ``STUCK_S`` number at least ``STUCK_TWIN_MIN_FRAMES``,
+    counted with the ring as ``on_frame`` does (the two edge buckets left out). A
+    shard with no session yet is not stuck.
 
     Two sockets both quiet are neither reported: each one's twin shows no frames.
     That case has nothing to compare against, and the minute line shows it.
@@ -351,7 +353,7 @@ def find_stuck(now: float) -> list[StuckSocket]:
     for name, stats in _registry.items():
         twin_name = _twins.get(name)
         twin = _registry.get(twin_name) if twin_name is not None else None
-        if twin is None or not state.connections.get(name):
+        if twin is None or not state.connections.get(name) or not state.connections.get(twin.name):
             continue
         since = stats.last_trade_at if stats.last_trade_at is not None else stats.session_started_at
         if since is None or now - since < STUCK_S:

@@ -722,12 +722,13 @@ def _stuck_pair(
     twin_frames: int = 100,
     twin_at: float = 30.25,
     connected: bool | None = True,
+    twin_connected: bool | None = True,
 ) -> tuple[SocketStats, SocketStats]:
     """conn0 whose last trade frame came ``gap`` s before ``_NOW``, and its twin conn1.
 
     The twin got ``twin_frames`` trade frames ``twin_at`` s before ``_NOW``.
-    ``connected`` is conn0's flag in ``state.connections`` (None: not recorded at
-    all); the twin is always connected.
+    ``connected`` and ``twin_connected`` are the two flags in ``state.connections``
+    (None: not recorded at all).
     """
     socket_stats.set_twins({"conn0": "conn1", "conn1": "conn0"})
     quiet, twin = socket_stats.get("conn0"), socket_stats.get("conn1")
@@ -735,7 +736,8 @@ def _stuck_pair(
     _feed(twin, [_NOW - twin_at] * twin_frames)
     if connected is not None:
         state.set_connection("conn0", connected)
-    state.set_connection("conn1", True)
+    if twin_connected is not None:
+        state.set_connection("conn1", twin_connected)
     return quiet, twin
 
 
@@ -798,6 +800,18 @@ class TestFindStuck:
 
         assert socket_stats.find_stuck(_NOW) == []
 
+    def test_a_twin_that_is_not_connected_is_never_stuck(self):
+        # The twin's ring still holds its last frames, but it is down: it is not
+        # carrying the trades while this socket reconnects.
+        _stuck_pair(twin_connected=False)
+
+        assert socket_stats.find_stuck(_NOW) == []
+
+    def test_a_twin_with_no_connection_record_is_never_stuck(self):
+        _stuck_pair(twin_connected=None)
+
+        assert socket_stats.find_stuck(_NOW) == []
+
     def test_the_gap_counts_from_the_session_start_when_no_trade_has_arrived(self):
         quiet, _twin = _stuck_pair()
         quiet.session_start(_NOW - 60.0)  # a new session: no trade frame yet
@@ -824,6 +838,7 @@ class TestFindStuck:
         socket_stats.get("conn0")
         _feed(socket_stats.get("conn1"), [_NOW - 30.25] * 100)
         state.set_connection("conn0", True)
+        state.set_connection("conn1", True)
 
         assert socket_stats.find_stuck(_NOW) == []
 

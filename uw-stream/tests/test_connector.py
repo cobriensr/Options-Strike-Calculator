@@ -57,6 +57,16 @@ def _fresh_socket_stats(monkeypatch):
     monkeypatch.setattr(socket_stats, "_twins", {})
 
 
+@pytest.fixture(autouse=True)
+def _fresh_connections(monkeypatch):
+    """``state.connections`` is process-wide and a session leaves its shard marked up.
+
+    Start every test with an empty one, so a test that ran a real connect cannot
+    decide what a later test sees.
+    """
+    monkeypatch.setattr(state, "connections", {})
+
+
 @pytest.mark.asyncio
 async def test_subscribe_all_sends_text_frames_not_binary() -> None:
     """Regression: every join frame MUST be a str (WS TEXT opcode 0x1).
@@ -1954,6 +1964,68 @@ async def test_force_reconnect_while_not_connected_neither_aborts_nor_marks_the_
 
     assert ws.aborted == 0
     assert connector._session_diag.forced is None
+
+
+class _EndedWS:
+    """A connected socket whose receive loop ends at once with no error, as after a
+    close the server started."""
+
+    local_address = _LOCAL_ADDR
+    remote_address = _REMOTE_ADDR
+
+    def __init__(self) -> None:
+        self.aborted = 0
+        self.transport = SimpleNamespace(abort=self._abort)
+        self.protocol = SimpleNamespace(close_rcvd=None, close_sent=None)
+
+    def _abort(self) -> None:
+        self.aborted += 1
+
+    def __aiter__(self):
+        return self._iter()
+
+    async def _iter(self):
+        return
+        yield b""  # makes this an async generator
+
+
+@pytest.mark.asyncio
+async def test_force_reconnect_in_the_window_after_the_receive_loop_ended_does_not_label_the_drop(
+    monkeypatch, connector_records
+) -> None:
+    """The receive loop ends when the server closes, but ``run`` marks the shard down
+    only after the ``async with`` has finished closing the socket. A forced reconnect
+    arriving in between would mark a drop the server started as forced.
+    """
+    ws = _EndedWS()
+    in_exit, release = asyncio.Event(), asyncio.Event()
+
+    class _SlowCloseCtx:
+        async def __aenter__(self):
+            return ws
+
+        async def __aexit__(self, exc_type, exc, tb):
+            in_exit.set()
+            await release.wait()  # the closing handshake, still in progress
+            return False
+
+    connector = Connector(
+        channels=["flow-alerts"], receive_queue=asyncio.Queue(maxsize=1), name="conn0"
+    )
+    _script_connects(monkeypatch, connector, [_SlowCloseCtx()])
+    task = asyncio.create_task(connector.run())
+    await asyncio.wait_for(in_exit.wait(), timeout=1.0)
+    # The window: the receive loop is over, and the shard is still marked up.
+    assert state.connections.get("conn0") is True
+
+    connector.force_reconnect("stuck trade socket")
+
+    assert ws.aborted == 0
+    assert connector._session_diag.forced is None
+    release.set()
+    await _end(task)
+    line = _only(connector_records, "WS closed cleanly, reconnecting after grace")
+    assert line.forced is None
 
 
 @pytest.mark.asyncio

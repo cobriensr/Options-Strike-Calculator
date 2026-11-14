@@ -219,6 +219,12 @@ class Connector:
         # while closing leaves through that exit with its socket still open
         # (see ``abort``), and this is then the only handle on it.
         self._ws: Any = None
+        # True only while the receive loop runs: set right before ``async for``,
+        # cleared first thing in its ``finally``. ``force_reconnect`` acts only
+        # then. ``state.connections`` is not enough: it stays true until ``run``
+        # marks the shard down, which is after the ``async with`` has finished
+        # closing the socket. Cold path: two stores per connection.
+        self._receiving = False
 
     async def run(self) -> None:
         """Run forever, reconnecting as needed."""
@@ -340,11 +346,15 @@ class Connector:
         statistics on drops can leave these out. The mark belongs to the session:
         the next attempt starts with a fresh ``_SessionDiag``.
 
-        A no-op when this shard is not connected, so a call between sessions
-        neither aborts the last, dead socket nor marks the next session's drop as
-        forced. ``state.connections`` is the test, as for ``stuck_sockets``.
+        A no-op unless the receive loop is running (``_receiving``). A call between
+        sessions neither aborts the last, dead socket nor marks the next session's
+        drop as forced. It also leaves alone a drop that has already started: when
+        the server closes the socket, or the receive loop raises, ``state.connections``
+        stays true until ``run`` marks the shard down, after the ``async with`` has
+        finished closing, and a mark set in that window would label a genuine drop
+        as forced.
         """
-        if not state.connections.get(self.name):
+        if not self._receiving:
             return
         self._session_diag.forced = reason
         self.abort()
@@ -423,6 +433,7 @@ class Connector:
             on_frame = self._stats.on_frame
             self._stats.session_start(session_start)
             try:
+                self._receiving = True
                 async for raw in ws:
                     frames += 1
                     last_frame_at = now = time.monotonic()
@@ -458,6 +469,7 @@ class Connector:
                     # After the handoff, so the diagnostics can never delay a frame.
                     on_frame(raw, now)
             finally:
+                self._receiving = False
                 # Hand the session's frame stats and close frames to the
                 # disconnect log line ``run`` emits next.
                 diag.frames = frames
