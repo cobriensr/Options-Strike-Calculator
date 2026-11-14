@@ -665,6 +665,20 @@ whether anything was lost.
 
 - **Resubscribe on reconnect.** UW's server forgets joins on disconnect.
   The connector re-sends every join frame after each reconnect.
+- **Connect logs.** A connect logs one line per shard, not two per channel.
+  Railway drops a replica's log lines past 500 a second, and the
+  `sent join frame` and `channel ack received` lines of about 250 channels
+  landed inside one second (drops reported 2026-11-11, 11-13 and 11-14). Both
+  are debug lines now, which production does not emit (the logger is at
+  INFO). Each connector logs `shard joined` (info) with `shard`, `channels`,
+  `acked` and `elapsed_s` once all its channels are acked. If some are still
+  unacked 30 s after the joins began (the wait before the re-join pass), it
+  logs `shard join incomplete` (warning) with the same fields and `unacked`,
+  the name of each such channel. That covers a join UW never answers, a lost
+  one and one UW refuses with an error frame. The watchdog still alerts on a
+  channel that stays unsubscribed. `acked` reads the same per-channel-name
+  flag as the re-join pass, so the mirror sockets' limit above applies to it
+  too.
 - **String-encoded numerics.** Every UW WS field that _could_ be a number
   arrives as a JSON string. Handlers cast at the boundary.
 - **`flow-alerts` uses a hyphen** even though the docs URL is
