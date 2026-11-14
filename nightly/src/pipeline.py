@@ -17,7 +17,12 @@ from __future__ import annotations
 
 import importlib
 
-from constants import ENRICH_DAY_BUDGET_SECONDS, OUTCOME_CHECK_BUDGET_SECONDS
+from constants import (
+    ENRICH_DAY_BUDGET_SECONDS,
+    OUTCOME_CHECK_BUDGET_SECONDS,
+    REFIT_BUDGET_SECONDS,
+    REFIT_STEP_NAME,
+)
 from steps import Step, StepContext, StepResult
 
 
@@ -33,4 +38,6 @@ def lazy_step(name: str, module: str, min_seconds: int) -> Step:
 STEPS: tuple[Step, ...] = (
     lazy_step("enrich-outcomes", "enrich_step", ENRICH_DAY_BUDGET_SECONDS),
     lazy_step("outcome-check", "outcome_check", OUTCOME_CHECK_BUDGET_SECONDS),
+    # After the enrichment, which fills the outcomes the refit trains on tonight.
+    lazy_step(REFIT_STEP_NAME, "refit_step", REFIT_BUDGET_SECONDS),
 )

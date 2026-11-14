@@ -2,8 +2,9 @@
 
 Railway cron service (`nightly`) that lands the Unusual Whales options Full Tape
 in Cloudflare R2: one Parquet object per trading day. After the tape it fills the
-Lottery Finder and Silent Boom outcomes in Neon from that tape, and checks that
-recent sessions have them. It runs once and exits.
+Lottery Finder and Silent Boom outcomes in Neon from that tape, checks that
+recent sessions have them, and refits the Lottery Finder score weights from them.
+It runs once and exits.
 
 ## What it does
 
@@ -33,6 +34,8 @@ Each run:
      `silent_boom_alerts` from the tape in R2 (see "Enrichment").
    - `outcome-check` alerts when the fires of a recent session have no outcomes
      (see "Alert meanings").
+   - `lottery-refit` moves one candidate version of the Lottery Finder score weights
+     one step through its lifecycle, on tonight's outcomes (see "Refit").
 
    Each step has its own deadline, which leaves every later step its reserve. A
    step never starts work its budget cannot cover, but a unit of work that
@@ -54,28 +57,31 @@ the steps' reserve (`reserve_seconds(STEPS)`, the sum of their `min_seconds`), a
 starts a day only with `DAY_BUDGET_SECONDS` of that left. So a day starts only in
 the first `RUN_DEADLINE_SECONDS − reserve − DAY_BUDGET_SECONDS` seconds of the run:
 
-| Quantity                                                                             | Seconds             |
-| ------------------------------------------------------------------------------------ | ------------------- |
-| Run deadline (`RUN_DEADLINE_SECONDS`)                                                | 18,000 (5 h)        |
-| Steps' reserve: `ENRICH_DAY_BUDGET_SECONDS` 900 + `OUTCOME_CHECK_BUDGET_SECONDS` 300 | 1,200               |
-| Tape deadline: 18,000 − 1,200                                                        | 16,800 (4 h 40 min) |
-| Minimum left to start a day (`DAY_BUDGET_SECONDS`)                                   | 3,600               |
-| Window in which a day may start: 16,800 − 3,600                                      | 13,200 (3 h 40 min) |
+| Quantity                                                                                                            | Seconds             |
+| ------------------------------------------------------------------------------------------------------------------- | ------------------- |
+| Run deadline (`RUN_DEADLINE_SECONDS`)                                                                               | 18,000 (5 h)        |
+| Steps' reserve: `ENRICH_DAY_BUDGET_SECONDS` 900 + `OUTCOME_CHECK_BUDGET_SECONDS` 300 + `REFIT_BUDGET_SECONDS` 1,800 | 3,000               |
+| Tape deadline: 18,000 − 3,000                                                                                       | 15,000 (4 h 10 min) |
+| Minimum left to start a day (`DAY_BUDGET_SECONDS`)                                                                  | 3,600               |
+| Window in which a day may start: 15,000 − 3,600                                                                     | 11,400 (3 h 10 min) |
 
-A night starts about 13,200 divided by the seconds one day takes. On Railway a day
+A night starts about 11,400 divided by the seconds one day takes. On Railway a day
 takes 204 s to land at the median (86 days, 2026-10-29 to 11-12; 245 s at the 90th
 percentile, 324 s the slowest), and the two 30-day catch-up nights took 5,956 s and
-6,110 s. So the window could start about 64 days at the median pace and 40 at the
+6,110 s. So the window could start about 55 days at the median pace and 35 at the
 slowest, and the 30-day cap (`CATCHUP_MAX_DAYS`), not the window, sets how many
-land. Every step added to `STEPS` takes its `min_seconds` out of the window. The
-plan puts it at 11,400 s once phase 4's refit step is in (still above 30 days at
-the slowest pace), and at 6,900 s once phase 3's research and report steps are too
-(enrich budget at 900 s; the stage table in D2 of
-`docs/superpowers/plans/2026-10-29-nightly-pipeline-phase2.md`). At 6,900 s the
+land. Every step added to `STEPS` takes its `min_seconds` out of the window. It is
+11,400 s with phase 4's refit step in (still above 30 days at the slowest pace). It
+would fall to 10,500 s if `ENRICH_DAY_BUDGET_SECONDS` were raised to its 1,800 cap
+(the plan's 10,500 to 11,400 s range). The plan puts it at 6,900 s once phase 3's
+research and report steps are in too (enrich budget at 900 s; the stage table in D2
+of `docs/superpowers/plans/2026-10-29-nightly-pipeline-phase2.md`). At 6,900 s the
 slowest pace starts about 21 days, so a full 30-day backlog may then take two
 nights.
-`test_deadline_constants_bound_the_run` (`tests/test_main.py`) fails if the reserve
-leaves less than two `DAY_BUDGET_SECONDS` of the run for the tape.
+`test_pipeline_order_and_reserve` (`tests/test_pipeline.py`) pins the step order and
+each step's reserve, and `test_deadline_constants_bound_the_run`
+(`tests/test_main.py`) fails if the reserve leaves less than two
+`DAY_BUDGET_SECONDS` of the run for the tape.
 
 Constants (deadlines, retries, thresholds) live in `src/constants.py`, not in
 env vars. Design and decisions:
@@ -149,8 +155,13 @@ holds `gexbot-eod/`, written by another job; this service never touches it.
 `DATABASE_URL` is a Railway reference to uw-stream's variable
 (`${{uw-stream.DATABASE_URL}}`), so a rotation reaches both services. The steps
 use it: `enrich-outcomes` updates rows in `lottery_finder_fires` and
-`silent_boom_alerts`, and `outcome-check` reads them. It may be Neon's pooled
-URL. The job connects to the direct host instead (`-pooler` removed from the
+`silent_boom_alerts`, `outcome-check` reads them, and `lottery-refit` reads
+`lottery_finder_fires`, `lottery_ticker_stats` and the weights store
+(`lottery_score_versions`, `lottery_score_pointers`) and writes a candidate's row
+in `lottery_score_versions`. A promotion, which ships off, also rewrites `score`
+and `score_version` in `lottery_finder_fires`, writes `lottery_fire_value_snapshots`
+and moves the `active` pointer. The refit reads no other variable. It may be
+Neon's pooled URL. The job connects to the direct host instead (`-pooler` removed from the
 first host label, same credentials), because the pooler rejects the statement
 timeout the job sets at connect (`DB_STATEMENT_TIMEOUT_MS`, 300 s).
 
@@ -479,6 +490,215 @@ ml/.venv/Scripts/python scripts/enrich_silent_boom_outcomes.py --r2 --select all
 Without `--dry-run` the same command writes to the database. Without `--date` the
 newest landed day is used.
 
+## Refit
+
+The `lottery-refit` step keeps the Lottery Finder score weights current. The weights
+live in Neon (migration #208): `lottery_score_versions` holds one row per version
+(`seed-<date>` from the migration, `refit-<trained_through>` from this step), and
+`lottery_score_pointers` names the version the live scorer uses (`active`) and the one
+Take-It's input score stays on (`takeit`). The step trains a candidate on the outcomes
+`enrich-outcomes` just wrote, holds it in shadow while sessions go by, and judges it
+against the active version. The step itself writes no pointer: only a promotion's
+transaction moves `active`, and nothing moves `takeit`. Promotion ships off
+(`PROMOTION_ENABLED`), so a candidate that passes is marked `passed`, the owner is
+told, and no live score changes.
+
+**Lifecycle.** One move per run, by whether a shadow exists:
+
+- No shadow: build `refit-<last session>`. Train on the trailing 90 days, match the
+  candidate's feed cutoffs to the active version's tier shares over the last 20
+  sessions, then run the creation checks (the gate table below). A candidate that
+  passes is stored as `shadow`. One that fails is stored as `rejected` and announced;
+  it never becomes a shadow.
+- A shadow: record each session that has become evaluable and is not yet recorded,
+  then ask for a verdict on all of them. It waits until 10 sessions are evaluated,
+  rejects as `shadow_starved` once 20 sessions have elapsed with fewer than 10
+  evaluated, and otherwise passes or rejects on exactly the first 10 evaluated
+  sessions, so a later session changes nothing. A pass promotes only when
+  `PROMOTION_ENABLED`; with it off the shadow is marked `passed`.
+- Evaluation lags one session: session s is judged on the run after session s+1
+  lands, so a fire whose net flow arrived late has its tape inversion by then. The
+  newest session of the night is left for the next night.
+- One candidate at a time. The store allows one `shadow` row (a partial unique index),
+  so a second one fails the step instead of queueing. A decided version (`passed`,
+  `rejected`, `promoted`) is never re-opened. While promotion is off the cycle still
+  runs and `active` never moves.
+
+**The same-night guard.** With no shadow, the step builds nothing when either:
+
+- the version already exists (`already_built`): `refit-<last session>` is in the store
+  in any status, which also covers a candidate rejected at creation, since that one
+  carries no `decided_at`; or
+- any version was decided since 00:00 UTC of the run's date (`already_decided`). So a
+  decision stamped earlier that UTC date skips that night's build: the night's own
+  earlier run having rejected, passed or promoted the shadow, or the owner having
+  promoted one by hand. No shadow is left to find then, and a build would be a second
+  move in one night.
+
+The checks run in that order, and the next scheduled run falls on the next UTC date
+and builds as usual.
+
+**What goes wrong.** These raise, so the step is `failed` through an exception event
+and nothing is turned into a rejection or a wait: stored weights that break a rule, a
+judged session with no feed rows, a fire with an unknown time of day, a second shadow,
+a database error, and a pointer or score that moved under a promotion (`PointerMoved`,
+`ConcurrentScoreWriter`). The one exception is matched feed cutoffs the validator
+refuses: the creation check reports them as `invalid_weights`, and that candidate is
+stored `rejected` and announced. A promotion that starts too late, hits its deadline or
+waits out its 60 s lock timeout rolls back whole and is deferred instead (below).
+
+**Counts.** Every result carries all of these, zero or not, in the `step lottery-refit`
+line and in the `counts` extra of the step alerts. The step also logs one line
+naming the version and what it did, with no weight or ticker in it.
+
+| Count                 | Meaning                                                                                        |
+| --------------------- | ---------------------------------------------------------------------------------------------- |
+| `candidates_built`    | A shadow was stored tonight.                                                                   |
+| `candidates_rejected` | A candidate was stored as `rejected` at creation (a notice went out).                          |
+| `already_built`       | No shadow, and tonight's version already existed (or another run stored it first). Built none. |
+| `already_decided`     | No shadow, and a version was decided since 00:00 UTC. Built none.                              |
+| `sessions_recorded`   | Sessions written to `gate_report.sessions` tonight.                                            |
+| `waiting`             | The shadow was left as it is: no session evaluable yet, or fewer than 10 evaluated.            |
+| `passed`              | The shadow passed and was marked `passed` (promotion off).                                     |
+| `promoted`            | The shadow was promoted.                                                                       |
+| `rejected`            | The shadow was rejected.                                                                       |
+| `promotion_deferred`  | A promotion was due and did not run or rolled back. The shadow stays; the step is `partial`.   |
+| `rows_rescored`       | Fires the promotion's rescore changed; 0 unless `promoted`.                                    |
+| `train_rows`          | Rows in tonight's training window; 0 unless a candidate was trained.                           |
+| `eval_rows`           | Rows the verdict counted; 0 unless a shadow with an elapsed session was judged.                |
+
+**The gates.** The values are in `ml/src/lottery_refit_gates.py`. Bands include both
+ends. A check that fails is listed in the verdict's `reasons`, in the order below, and
+a tier share is the share of a session's fires in the feed's tier 1 (or tier 1 and 2)
+under that version's own feed cutoffs.
+
+| Stage    | Gate                                                                           | Value                                   | Fails as                            |
+| -------- | ------------------------------------------------------------------------------ | --------------------------------------- | ----------------------------------- |
+| Creation | Training rows (`MIN_TRAIN_ROWS`)                                               | at least 30,000                         | `too_few_train_rows`                |
+| Creation | Training sessions (`MIN_TRAIN_SESSIONS`)                                       | at least 30                             | `too_few_train_sessions`            |
+| Creation | The weights, with the matched feed cutoffs (`validate_weights`)                | no rule broken                          | `invalid_weights`                   |
+| Creation | Candidate's mean daily tier 1 share (`TIER1_SHARE_BAND`)                       | 1% to 15%                               | `tier1_share_out_of_band`           |
+| Shadow   | Rows for a session to count as evaluated (`MIN_EVAL_ROWS_PER_SESSION`)         | at least 500 scored with an outcome     | the session is not counted          |
+| Shadow   | Evaluated sessions judged (`SHADOW_SESSIONS`)                                  | exactly the first 10                    | waits for 10                        |
+| Shadow   | Elapsed sessions allowed with fewer than 10 evaluated (`SHADOW_MAX_SESSIONS`)  | 20                                      | `shadow_starved`                    |
+| Shadow   | Rows over the 10 judged sessions (`MIN_EVAL_ROWS`)                             | at least 5,000                          | `too_few_eval_rows`                 |
+| Shadow   | Pooled Spearman ρ with the outcome, candidate against active                   | candidate at least active, both defined | `rho_below_active`, `rho_undefined` |
+| Shadow   | Candidate's mean daily tier 1 share (`TIER1_SHARE_BAND`)                       | 1% to 15%                               | `tier1_share_out_of_band`           |
+| Shadow   | Candidate over active, mean daily tier 1 share (`TIER_SHARE_RATIO_BAND`)       | 0.67 to 1.5                             | `tier1_ratio_out_of_band`           |
+| Shadow   | Candidate over active, mean daily tier 1 and 2 share (`TIER_SHARE_RATIO_BAND`) | 0.67 to 1.5                             | `tier12_ratio_out_of_band`          |
+
+The training window is 90 days (`TRAIN_WINDOW_DAYS`), the feed cutoffs are matched over
+the last 20 sessions (`FEED_CUTOFF_MATCH_SESSIONS`), and the match searches cutoffs up
+to 40 (`FEED_CUTOFF_SEARCH_MAX`).
+
+**Notices.** Four fixed titles, all with the tags `service=nightly`,
+`step=lottery-refit`, `refit` (the kind) and `version`. The extras are aggregates only:
+counts, ρ values, tier shares and ratios, the feed cutoffs before and after, the number
+of ticker weights that changed, the labels of flipped signs (`C/P`, `DTE0`), and
+`reasons`. Never a ticker, a weight or a fire. Sentry's new-issue rule mails each new
+issue at any level, so the fingerprint decides what mails:
+
+| Sentry title                               | Level   | When                                     | Mails                              |
+| ------------------------------------------ | ------- | ---------------------------------------- | ---------------------------------- |
+| `nightly refit promoted`                   | warning | A shadow passed and was promoted.        | Once per version.                  |
+| `nightly refit passed; promotion disabled` | warning | A shadow passed and promotion is off.    | Once per version.                  |
+| `nightly refit rejected`                   | error   | A shadow failed its gates or starved.    | Once per version.                  |
+| `nightly refit candidate rejected`         | error   | A new candidate failed a creation check. | Once per new first reason (below). |
+
+A candidate rejected at creation groups by its first reason, not its version (owner,
+2026-11-06). A thin-data streak, the same reason night after night, is one issue and
+mails once; a new first reason opens and mails as a new issue. The streak shows in the
+issue's event count and the step's logs. A deferred promotion sends no refit notice: the
+step ends `partial` and `nightly step partial` warns, with the detail
+`promotion deferred to the next night`.
+
+**Reading `gate_report`.** Each version's `gate_report` (JSON) holds up to three keys:
+
+- `creation`: the creation verdict (`ok`, `reasons`, `train_rows`, `train_sessions`,
+  `tier1_share`), the training window (`after`, `through`) and `insample_rho`, the
+  correlation on the training rows themselves, which says nothing about held-out
+  quality.
+- `sessions`: one entry per recorded session, keyed by its ISO date: `eval_rows`,
+  `evaluated`, `rho_candidate`, `rho_active` and `feed_fires`.
+- `verdict`: the decision as stored with it (`decision`, `reasons`, the `sessions`
+  judged, `eval_rows`, `rho_candidate`, `rho_active`, `tier1_ratio`, `tier12_ratio`,
+  `tier1_share`). A number that was not defined is null.
+
+The stored `verdict` is the authoritative record of a decision. The `sessions` entries
+are a snapshot, written once when a session became evaluable and never recomputed;
+`decide_shadow` re-reads fresh frames every night, so a late enrich pass can make an
+entry differ from what the decision then saw. When they disagree, read `verdict`. A
+shadow that is still waiting has no `verdict`, and a candidate rejected at creation
+has `creation` only. To list the latest versions:
+
+```sql
+SELECT version, status, trained_through, decided_at, gate_report -> 'verdict' AS verdict
+  FROM lottery_score_versions ORDER BY created_at DESC LIMIT 5;
+```
+
+**Undoing a promotion (by hand, owner-approved only).** The step never does this. A
+promotion's rescore keeps the score and tag of every fire it changed in
+`lottery_fire_value_snapshots`, one row per page of fires (`column_name = 'score'`,
+`to_version` the promoted version). Find the promoted version's rows and check their
+fire count against `rows_rescored`:
+
+```sql
+SELECT id, cardinality(fire_ids) AS fires FROM lottery_fire_value_snapshots
+ WHERE to_version = '<promoted version>' AND column_name = 'score' ORDER BY id;
+```
+
+Then restore the scores and move `active` back in one transaction, outside the
+trading session (the live scorer loads `active`, and the UPDATE locks the fires):
+
+```sql
+BEGIN;
+UPDATE lottery_finder_fires f SET score = s.v::int, score_version = s.t
+  FROM (SELECT unnest(fire_ids) AS id, unnest(old_values) AS v, unnest(old_tags) AS t
+          FROM lottery_fire_value_snapshots
+         WHERE id = ANY(<snapshot ids>) AND column_name = 'score') s
+ WHERE f.id = s.id;
+UPDATE lottery_score_pointers SET version = '<previous version>', updated_at = now()
+ WHERE name = 'active' AND version = '<promoted version>';
+COMMIT;
+```
+
+`<previous version>` is the one the promotion replaced: `seed-2026-06-17` for the first
+promotion, else the `promoted` row with the next-latest `decided_at`. The `takeit`
+pointer is untouched by a promotion, so it needs nothing. A fire created after the
+promotion is in no snapshot row and keeps the promoted version's score and tag. The
+promoted version's row stays `promoted`; the refit reads only the `shadow` row and the
+`active` pointer, so it ignores it, and its `gate_report.verdict` still records why.
+
+**Turning promotion on.** `PROMOTION_ENABLED` in `src/constants.py` is a reviewed
+constant, not an env var: it is read in one place, and flipping it rewrites the live
+feed's scores and tiers.
+
+1. It needs the owner's go-ahead: the owner approves the numbers in a
+   `nightly refit passed; promotion disabled` notice, and phase 3 of the pipeline is
+   complete (Task 23 of `docs/superpowers/plans/2026-11-05-nightly-pipeline-phase4.md`).
+2. A one-line commit sets it to `True`. The tests in `tests/test_refit_step.py` that
+   assert the shipped `False` change in the same commit, to patch it where they need it
+   off.
+3. The flip is a push to a nightly watch path (`/nightly/src/**`), so the push window
+   under "Push hazard" applies: after 15:00 CT and outside 07:15 to 12:30 UTC.
+4. The next shadow that passes is promoted; a `passed` version already stored is not
+   re-opened. A promotion is bounded by `PROMOTION_CUTOFF_UTC` (12:30 UTC, an hour
+   before the earliest US open) and `PROMOTION_MIN_SECONDS` (1,200 s): it starts only
+   with that long left before both the step's own deadline and the cutoff, and its
+   rescore stops at whichever comes first. One that starts too late, hits that deadline
+   or waits out the lock timeout rolls back whole. The version stays a shadow, no
+   refit notice goes out, the step is `partial` (`promotion_deferred`) and the next
+   night judges it again.
+5. On the promotion night check that the snapshot rows' fire count equals
+   `rows_rescored`, `active` names the new version and `takeit` the seed, the next
+   session's fires carry the new `score_version`, and the `nightly refit promoted`
+   email arrived. To turn it off again, flip the constant back the same way.
+
+**Vercel side.** The crons that score fires load the `active` and `takeit` versions
+through `api/_lib/lottery-weights-loader.ts`. When the store cannot give a valid pair
+they score with the frozen seed and send the Sentry error
+`lottery weights fallback to seed` from the Vercel project, not this service.
+
 ## Alert meanings
 
 All Sentry events carry the tag `service=nightly` (`server_name=nightly`). A day
@@ -492,26 +712,30 @@ text is log-safe by contract: a `TapeValidationError`'s or `R2VerifyError`'s
 message (names, counts and keys only), or a botocore `ClientError`'s error code.
 Otherwise it is empty. It never changes the grouping.
 
-| Sentry title                             | Level   | Meaning                                                                                                                                                                                                          |
-| ---------------------------------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `nightly tape day failed`                | error   | A day did not land. `detail` names the kind; `reason` may say more. Retried next night.                                                                                                                          |
-| `nightly tape day skipped_disk`          | error   | Free disk too low; the rest of the run was skipped.                                                                                                                                                              |
-| `nightly tape day skipped_deadline`      | error   | The run ran out of time; the rest was skipped.                                                                                                                                                                   |
-| `nightly tape day not_posted`            | warning | UW had not posted a recent day. Usually clears itself.                                                                                                                                                           |
-| `nightly tape day unavailable`           | warning | A marker was written; one issue per day. Check it was expected.                                                                                                                                                  |
-| `nightly tape day landed with warnings`  | warning | Landed, but a plausibility check flagged it (row ratio or time window) or cleanup failed.                                                                                                                        |
-| `nightly tape day relanded`              | warning | A day was re-landed after its UW ETag changed. Sent for every re-land, one issue per day; `warnings` lists any flags.                                                                                            |
-| `nightly re-land identical content`      | warning | A re-land whose `rows` and `source-bytes` equal the old object's: likely ETag churn, not a rewrite. One issue per day.                                                                                           |
-| `nightly rewrite check unavailable`      | warning | No probed day could be compared, so a rewrite would go unseen. `days` is how many were left unchecked.                                                                                                           |
-| `nightly step failed`                    | error   | A step finished `failed` without raising. `enrich-outcomes`: a day failed, came back with no outcomes or priced none. `outcome-check`: a recent session has no outcomes. Read the alerts below and the run log.  |
-| `nightly step partial`                   | warning | A step ran out of time with work left for the next night (`days_left` in `counts`). Expected while the history drains; look only if it persists.                                                                 |
-| `nightly step skipped_deadline`          | error   | A step started with less than its own reserve left, so it did not run (the later steps still did). The tape or an earlier step overran its share; the next night runs it again.                                  |
-| `nightly outcomes all null`              | error   | `outcome-check`: a table has fires on one of the last 3 sessions (`OUTCOME_CHECK_SESSIONS`) and none has an outcome. Tags `table`, `day`; extras `rows`, `with_outcome`. One issue per table and day. See below. |
-| `nightly outcomes mostly null`           | warning | `outcome-check`: fewer than 95% (`LOW_OUTCOME_SHARE`) of a table-day's fires have an outcome. One warning per run; `days` lists `table:day`. Fires the tape cannot price stay without one (see "Enrichment").    |
-| exception tagged `step`                  | error   | A step raised (a database error, an import error). The step is `failed` and the log names the exception class; no `nightly step failed` event follows.                                                           |
-| exception tagged `step` and `day`        | error   | One day of `enrich-outcomes` raised (its download, its connection, either script's pass). Counted in `days_failed`; the step goes on with the next day and retries this one next night.                          |
-| `nightly config invalid`                 | error   | Bad config. `fields` names the invalid settings. Sent only if `SENTRY_DSN` is valid.                                                                                                                             |
-| `NYSE holiday table ends in {year}; ...` | warning | From Oct 1 of the table's last year. Add the next year to `calendar_nyse.py`, or the job refuses to run.                                                                                                         |
+| Sentry title                               | Level   | Meaning                                                                                                                                                                                                                                                                                                                |
+| ------------------------------------------ | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `nightly tape day failed`                  | error   | A day did not land. `detail` names the kind; `reason` may say more. Retried next night.                                                                                                                                                                                                                                |
+| `nightly tape day skipped_disk`            | error   | Free disk too low; the rest of the run was skipped.                                                                                                                                                                                                                                                                    |
+| `nightly tape day skipped_deadline`        | error   | The run ran out of time; the rest was skipped.                                                                                                                                                                                                                                                                         |
+| `nightly tape day not_posted`              | warning | UW had not posted a recent day. Usually clears itself.                                                                                                                                                                                                                                                                 |
+| `nightly tape day unavailable`             | warning | A marker was written; one issue per day. Check it was expected.                                                                                                                                                                                                                                                        |
+| `nightly tape day landed with warnings`    | warning | Landed, but a plausibility check flagged it (row ratio or time window) or cleanup failed.                                                                                                                                                                                                                              |
+| `nightly tape day relanded`                | warning | A day was re-landed after its UW ETag changed. Sent for every re-land, one issue per day; `warnings` lists any flags.                                                                                                                                                                                                  |
+| `nightly re-land identical content`        | warning | A re-land whose `rows` and `source-bytes` equal the old object's: likely ETag churn, not a rewrite. One issue per day.                                                                                                                                                                                                 |
+| `nightly rewrite check unavailable`        | warning | No probed day could be compared, so a rewrite would go unseen. `days` is how many were left unchecked.                                                                                                                                                                                                                 |
+| `nightly step failed`                      | error   | A step finished `failed` without raising. `enrich-outcomes`: a day failed, came back with no outcomes or priced none. `outcome-check`: a recent session has no outcomes. `lottery-refit` never ends `failed`: it raises (exception row below). Read the alerts below and the run log.                                  |
+| `nightly step partial`                     | warning | A step ran out of time with work left for the next night (`days_left` in `counts`). Expected while the history drains; look only if it persists. `lottery-refit`: a promotion was deferred (`promotion_deferred`); the shadow stays and the next night judges it again.                                                |
+| `nightly step skipped_deadline`            | error   | A step started with less than its own reserve left, so it did not run (the later steps still did). The tape or an earlier step overran its share; the next night runs it again.                                                                                                                                        |
+| `nightly outcomes all null`                | error   | `outcome-check`: a table has fires on one of the last 3 sessions (`OUTCOME_CHECK_SESSIONS`) and none has an outcome. Tags `table`, `day`; extras `rows`, `with_outcome`. One issue per table and day. See below.                                                                                                       |
+| `nightly outcomes mostly null`             | warning | `outcome-check`: fewer than 95% (`LOW_OUTCOME_SHARE`) of a table-day's fires have an outcome. One warning per run; `days` lists `table:day`. Fires the tape cannot price stay without one (see "Enrichment").                                                                                                          |
+| `nightly refit promoted`                   | warning | `lottery-refit`: a shadow passed its gates and was promoted: the live scores were rewritten and `active` moved. One issue per version. See "Refit".                                                                                                                                                                    |
+| `nightly refit passed; promotion disabled` | warning | `lottery-refit`: a shadow passed its gates; promotion is off, so it is marked `passed` and no live score changed. One issue per version. See "Refit".                                                                                                                                                                  |
+| `nightly refit rejected`                   | error   | `lottery-refit`: a shadow failed its gates or starved; `reasons` lists them. One issue per version. See "Refit".                                                                                                                                                                                                       |
+| `nightly refit candidate rejected`         | error   | `lottery-refit`: a new candidate failed a creation check and was stored `rejected`. One issue per first reason, so a thin-data streak mails once. See "Refit".                                                                                                                                                         |
+| exception tagged `step`                    | error   | A step raised (a database error, an import error). The step is `failed` and the log names the exception class; no `nightly step failed` event follows. `lottery-refit` also raises on invalid stored weights, a judged session with no feed rows, a second shadow, or a pointer or score that moved under a promotion. |
+| exception tagged `step` and `day`          | error   | One day of `enrich-outcomes` raised (its download, its connection, either script's pass). Counted in `days_failed`; the step goes on with the next day and retries this one next night.                                                                                                                                |
+| `nightly config invalid`                   | error   | Bad config. `fields` names the invalid settings. Sent only if `SENTRY_DSN` is valid.                                                                                                                                                                                                                                   |
+| `NYSE holiday table ends in {year}; ...`   | warning | From Oct 1 of the table's last year. Add the next year to `calendar_nyse.py`, or the job refuses to run.                                                                                                                                                                                                               |
 
 A run that fails before its first day (R2 listing, work dir setup) sends the
 exception itself as an error event, and the steps still run. If the last session
@@ -607,7 +831,7 @@ The modules import each other flat, so `src/`, the repo's `scripts/` and its `ml
 must be on the path: the Dockerfile sets `PYTHONPATH=/app/src:/app/scripts:/app/ml/src`,
 and a local shell run from `nightly/` needs `PYTHONPATH=src:../scripts:../ml/src`.
 A local run uses the real R2 bucket, the real UW key and the database `DATABASE_URL`
-names, which `enrich-outcomes` updates. It uses `/tmp/nightly` as its work dir, which
+names, which `enrich-outcomes` updates and `lottery-refit` writes to. It uses `/tmp/nightly` as its work dir, which
 is a Unix path.
 
 ## Tests
@@ -618,7 +842,8 @@ python -m pytest
 ```
 
 `conftest.py` and `pyproject.toml` put `src/` on the path, and `conftest.py` appends
-the repo's `scripts/` for the shared modules. No test may connect to a database or a
+the repo's `scripts/` and then its `ml/src/` for the shared modules, the order the
+image has. No test may connect to a database or a
 non-loopback address: `conftest.py` stubs `psycopg2._connect` and fails the session
 if anything tried, and refuses non-loopback sockets (tests use moto for R2). Lint
 with `ruff check . && ruff format --check .` (ruff `>=0.17,<0.18`, line length 100).

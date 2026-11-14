@@ -1,6 +1,6 @@
 # 0DTE SPX Strike Calculator
 
-Single-owner 0DTE SPX options trading tool. Vite + React 19 frontend, Vercel Serverless Functions backend (TypeScript), Python ML scripts, Railway Python services: uw-stream (Unusual Whales websocket ingestion, including futures bars), the sidecar (Take-It SHAP scoring, frozen historical archive) and nightly (cron job that lands the UW Full Tape in R2, then fills fire outcomes in Neon from it). Multi-leg trades are flagged from the exchange's own trade code on the anchor print (`api/_lib/anchor-legs.ts`); the Railway multileg classifier is retired.
+Single-owner 0DTE SPX options trading tool. Vite + React 19 frontend, Vercel Serverless Functions backend (TypeScript), Python ML scripts, Railway Python services: uw-stream (Unusual Whales websocket ingestion, including futures bars), the sidecar (Take-It SHAP scoring, frozen historical archive) and nightly (cron job that lands the UW Full Tape in R2, then fills fire outcomes in Neon from it and refits the lottery score weights). Multi-leg trades are flagged from the exchange's own trade code on the anchor print (`api/_lib/anchor-legs.ts`); the Railway multileg classifier is retired.
 
 ## Architecture
 
@@ -55,9 +55,11 @@ nightly/          Full Tape lander and post-tape steps (Python, Railway cron ser
                   (a cron set on the Railway service, the morning after each session) it downloads each missing session's UW options Full Tape, converts it
                   to Parquet with polars and uploads one object per day to Cloudflare R2
                   (fulltape/{date}-fulltape.parquet), newest missing day first. Plans up to 30 days, starts a day only inside the window the
-                  steps' reserve leaves (nightly/README.md). Re-lands a recent day whose UW ETag changed, and marks a day unavailable only
+                  steps' reserve leaves (11,400 s of the 5 h run; nightly/README.md). Re-lands a recent day whose UW ETag changed, and marks a day unavailable only
                   on UW's own evidence. Then `enrich-outcomes` fills the outcome, provenance and marker columns of lottery_finder_fires and
-                  silent_boom_alerts from the tape (its only Neon writes) and `outcome-check` alerts on sessions with no outcomes.
+                  silent_boom_alerts from the tape (that step's only Neon writes), `outcome-check` alerts on sessions with no outcomes, and
+                  `lottery-refit` builds and judges a shadow candidate of the lottery weights in `lottery_score_versions` (promotion, which
+                  rewrites live scores, stays off until the owner's go-ahead).
                   Runs once and exits: 0 ok, 1 a day did not land or a step failed or was skipped, 2 bad config, 3 watchdog, 143 SIGTERM.
                   Sentry server_name=nightly plus the `nightly-tape` cron monitor. Env: UW_API_KEY, R2_*, DATABASE_URL, SENTRY_DSN.
                   Own Dockerfile, README.md (runbook and alert meanings), requirements.txt + requirements-dev.txt,
@@ -222,6 +224,7 @@ Key modules beyond the basics:
 - `analyze-context.ts` — dynamic context assembly, mostly through `analyze-context-fetchers.ts`. The `format*ForClaude` formatters are spread across `api/` (mostly `_lib/`); find one with `grep -rn "function format.*ForClaude" api/`.
 - `lessons.ts` — lesson curation logic.
 - `overnight-gap.ts`, `spx-candles.ts`, `max-pain.ts`, `darkpool.ts`, `embeddings.ts`, `csv-parser.ts` — domain-specific modules.
+- `lottery-weights-loader.ts` — loads the `active` and `takeit` lottery weights pointers from the store (migration #208); the seed fallback is in `lottery-weights-seed.ts`.
 - `schwab.ts`, `api-helpers.ts`, `sentry.ts`, `validation.ts`, `logger.ts`, `constants.ts` — infrastructure.
 
 #### Chain Data Boundary
