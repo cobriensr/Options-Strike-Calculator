@@ -1,7 +1,7 @@
 psycopg2>=2.9.9
 sentry-sdk>=2.0.0
 pydantic>=2.7.0
-pydantic-settings>=2.3.0
+pydantic-settings>=2.16.1
 python-dotenv>=1.0.0
 # Pinned to the last 1.x release. DuckDB 2.0.0 (2026-10-21) binds the
 # archive's timestamp[ns, UTC] Parquet column as TIMESTAMPTZ_NS instead of
