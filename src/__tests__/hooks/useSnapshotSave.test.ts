@@ -1651,14 +1651,32 @@ describe('useSnapshotSave: the date’s clock, not the wall clock, says what is 
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it('posts a live row for the followed date when its entry time is not ahead of the clock', () => {
-    // 12:00 AM ET on the followed date, the live quotes in the inputs.
+  it('posts no live row for the followed date, though its entry time is not ahead of the clock', () => {
+    // 12:00 AM ET on the followed date, the live quotes in the inputs: the
+    // date clock calls the date today, but the live quotes belong to the wall
+    // clock's day, the 11th. No row for the 10th until the clock ticks.
     renderHook(() =>
       useSnapshotSave(makeResults(), entryAt(0, 0), baseMeta, true),
     );
 
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('posts the live row once the clock ticks and both call the date today', () => {
+    // The tick: the date follows to the 11th, and etToday with it.
+    const results = makeResults();
+    const { rerender } = renderHook(
+      ({ meta }) => useSnapshotSave(results, entryAt(0, 0), meta, true),
+      { initialProps: { meta: baseMeta } },
+    );
+    expect(fetchSpy).not.toHaveBeenCalled();
+
+    rerender({
+      meta: { ...baseMeta, selectedDate: TOMORROW, etToday: TOMORROW },
+    });
+
     expect(fetchSpy).toHaveBeenCalledTimes(1);
-    expect(body().date).toBe(TODAY);
+    expect(body().date).toBe(TOMORROW);
     expect(body().isBacktest).toBe(false);
   });
 
@@ -1689,9 +1707,12 @@ describe('useSnapshotSave: the date’s clock, not the wall clock, says what is 
 
   it('turns the followed date into a backtest row once the clock ticks past it', () => {
     // The tick: etToday moves to the 11th. A date left on the 10th (picked as
-    // the old today in that second) is now past, and its history saves.
+    // the old today in that second) is now past, and its history saves. The
+    // results are built once: a new object per render would re-run the effect
+    // by itself and hide whether etToday does.
+    const results = makeResults();
     const { rerender } = renderHook(
-      ({ meta }) => useSnapshotSave(makeResults(), defaultSignals, meta, true),
+      ({ meta }) => useSnapshotSave(results, defaultSignals, meta, true),
       {
         initialProps: { meta: { ...baseMeta, history: hist(TODAY) } },
       },

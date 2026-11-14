@@ -9,8 +9,9 @@
  * A row's date must own its data, so the selected date decides the save.
  * "Today" and "past" are meta.etToday's, the clock the selected date follows,
  * so a date that follows today is still today in the moment after ET
- * midnight, before that clock ticks (the wall clock is read only for the
- * time of day):
+ * midnight, before that clock ticks. The wall clock is read for the time of
+ * day, and a live row also needs it to call the date today (its quotes are
+ * the wall clock's), so in that moment a live row waits for the tick:
  *   - Today (ET) at the current time, on a session day: a live row
  *     (is_backtest false), once the SPX and VIX inputs each match today's
  *     live quote. Today's intraday history is never a source: it stops at
@@ -70,7 +71,11 @@ import {
 } from '../lib/live-save-device';
 import { captureUnlessAuth } from '../lib/sentry-helpers';
 import { isTradingDay } from '../data/marketHours';
-import { getETTotalMinutes, isBacktestMode } from '../utils/timezone';
+import {
+  getETDateStr,
+  getETTotalMinutes,
+  isBacktestMode,
+} from '../utils/timezone';
 import type { CalculationResults } from '../types';
 import type { QuotesResponse } from '../types/api';
 import type { ComputedSignals } from './useComputedSignals';
@@ -282,7 +287,11 @@ function rowKind(
       : null;
   }
 
-  if (date !== meta.etToday) return null;
+  // A live row needs both clocks to call the date today: the date's (what the
+  // calculator is on) and the wall's, because live quotes belong to the wall
+  // clock's day. In the moment after ET midnight, before the date's clock
+  // ticks, they differ and nothing posts.
+  if (date !== meta.etToday || date !== getETDateStr(now)) return null;
   // An entry time ahead of the clock (today scrubbed forward): the inputs
   // are now's, not that time's. One minute of slack for the clock.
   if (etMinutes > getETTotalMinutes(now) + FUTURE_ENTRY_SLACK_MINUTES) {

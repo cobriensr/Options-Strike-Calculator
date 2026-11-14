@@ -36,6 +36,25 @@ function callArgs(name: string): string[] {
     .filter((arg) => arg !== '');
 }
 
+/** The text inside the parentheses of every `<name>(...)` call, balanced. */
+function callBodies(name: string): string[] {
+  const bodies: string[] = [];
+  for (const match of appCode.matchAll(
+    new RegExp(String.raw`\b${name}\(`, 'g'),
+  )) {
+    const start = match.index + match[0].length;
+    let depth = 1;
+    let end = start;
+    while (end < appCode.length && depth > 0) {
+      if (appCode[end] === '(') depth += 1;
+      else if (appCode[end] === ')') depth -= 1;
+      end += 1;
+    }
+    bodies.push(appCode.slice(start, end - 1));
+  }
+  return bodies;
+}
+
 /** The body and dependency list of `const backtestMode = useMemo(...)`. */
 function backtestMemo(): { body: string; deps: string[] } {
   const match =
@@ -81,9 +100,14 @@ describe('App date-clock wiring', () => {
   });
 
   it('makes no other past-date judgment, which would read the wall clock', () => {
-    // Fails closed: a new call changes the count and has to pass etToday.
-    expect(appCode.match(/\bisPastETDate\(/g)).toHaveLength(1);
-    expect(appCode.match(/\bisBacktestMode\(/g)).toHaveLength(1);
+    // Fails closed: a new call changes the count. And every call, whatever
+    // the count, has to carry the date clock, so raising the count here is
+    // not enough to let a wall-clock call in.
+    for (const name of ['isPastETDate', 'isBacktestMode']) {
+      const bodies = callBodies(name);
+      expect(bodies, name).toHaveLength(1);
+      for (const body of bodies) expect(body, name).toMatch(/\bvix\.etToday\b/);
+    }
   });
 
   it('hands IVInputSection the date clock, which keys its term-structure card', () => {
