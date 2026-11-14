@@ -31,10 +31,12 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable
 
+import numpy as np
 import psycopg2
 import psycopg2.errors
 import pytest
 from psycopg2.extensions import adapt
+from psycopg2.extras import Json
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -73,6 +75,19 @@ SEED_SCORE = 9
 CANDIDATE_SCORE = 11
 
 DEADLINE = 50.0
+
+# The decision a promotion rests on, as the nightly refit's verdict summary: plain JSON.
+VERDICT = {
+    "decision": "pass",
+    "reasons": [],
+    "sessions": ["2026-11-02", "2026-11-03"],
+    "eval_rows": 6000,
+    "rho_candidate": 0.06,
+    "rho_active": 0.05,
+    "tier1_ratio": 1.1,
+    "tier12_ratio": 0.9,
+    "tier1_share": 0.05,
+}
 
 
 def fire(fire_id: int, *, score: int | None, version: str | None = None, **columns):
@@ -149,6 +164,16 @@ class FakeDb:
     statuses: dict[str, str] = field(
         default_factory=lambda: {SEED: "seed", CANDIDATE: "shadow", OTHER: "promoted"}
     )
+    # lottery_score_versions.gate_report per version: what a shadow holds when it is
+    # promoted (its creation report and the sessions recorded on it).
+    gate_reports: dict[str, dict[str, Any]] = field(
+        default_factory=lambda: {
+            CANDIDATE: {
+                "creation": {"verdict": {"ok": True}},
+                "sessions": {"2026-11-12": {"eval_rows": 700}},
+            }
+        }
+    )
 
     encoding = "UTF8"
 
@@ -157,6 +182,7 @@ class FakeDb:
             "fires": {f["id"]: dict(f) for f in self.fires},
             "pointers": {"active": self.active, "takeit": SEED},
             "statuses": dict(self.statuses),
+            "gate_reports": copy.deepcopy(self.gate_reports),
             "snapshots": [],
         }
         self.weights = {SEED: SEED_WEIGHTS, CANDIDATE: CANDIDATE_WEIGHTS, OTHER: SEED_WEIGHTS}
@@ -344,9 +370,18 @@ class FakeDb:
 
     def _status(self, state, text, params, rows):
         assert "status IN ('shadow', 'passed')" in text
-        (version,) = params
+        # The patch psycopg2 sends as `%s::jsonb`: only a Json adapter can be sent (a bare
+        # dict is refused by `_check_adaptable` before it gets here). Applied only if the
+        # statement's text merges it, as for the guards in `_update`.
+        patch, version = params
+        assert isinstance(patch, Json), "the gate_report patch must be a Json"
+        merges = "gate_report = gate_report || %s::jsonb" in text
         if state["statuses"].get(version) in ("shadow", "passed"):
             state["statuses"][version] = "promoted"
+            if merges:
+                # jsonb `||` on two objects: the right one's keys win, the rest stay.
+                report = state["gate_reports"].setdefault(version, {})
+                report.update(copy.deepcopy(patch.adapted))
             return [(version,)]
         return []
 
@@ -634,6 +669,105 @@ def test_promotion_moves_status_and_pointer_in_the_same_transaction():
     assert db.committed["statuses"][CANDIDATE] == "promoted"
     assert scores(db) == {1: (11, CANDIDATE), 2: (None, CANDIDATE)}
     assert result.pointer_moved is True
+
+
+def test_promotion_merges_the_verdict_into_the_gate_report_in_the_same_transaction():
+    db = autocommit_db([fire(1, score=SEED_SCORE, version=SEED)])
+    verdict = copy.deepcopy(VERDICT)
+
+    promote(db, verdict=verdict)
+
+    # One status statement, as without a verdict: the merge rides in it, so it commits
+    # with the status and the pointer.
+    assert db.events == [
+        "lock_timeout",
+        "active", "page", "snapshot", "update", "status", "pointer", "commit",
+    ]
+    assert db.committed["statuses"][CANDIDATE] == "promoted"
+    # `||` adds the verdict and keeps what the shadow already held.
+    assert db.committed["gate_reports"][CANDIDATE] == {
+        "creation": {"verdict": {"ok": True}},
+        "sessions": {"2026-11-12": {"eval_rows": 700}},
+        "verdict": VERDICT,
+    }
+    assert verdict == VERDICT  # the caller's mapping is not touched
+    (status,) = db.of_kind("status")
+    assert status.params[1] == CANDIDATE
+
+
+def test_promotion_without_a_verdict_leaves_the_gate_report_alone():
+    db = autocommit_db([fire(1, score=SEED_SCORE, version=SEED)])
+    before = copy.deepcopy(db.committed["gate_reports"])
+
+    promote(db)
+
+    assert db.committed["statuses"][CANDIDATE] == "promoted"
+    assert db.committed["gate_reports"] == before
+
+
+def test_a_rolled_back_promotion_leaves_the_verdict_out():
+    # The status UPDATE (verdict merged) runs, then the pointer UPDATE matches nothing:
+    # the transaction rolls back and the verdict goes with it.
+    db = autocommit_db([fire(1, score=SEED_SCORE)])
+    before = copy.deepcopy(db.committed)
+    db.hooks["pointer"] = lambda d: d.commit_elsewhere(
+        lambda state: state["pointers"].update(active=OTHER)
+    )
+
+    with pytest.raises(bls.PointerMoved):
+        promote(db, verdict=VERDICT)
+
+    assert db.events[-3:] == ["status", "pointer", "rollback"]
+    assert db.of_kind("status")[0].params[0].adapted == {"verdict": VERDICT}  # it was sent
+    assert "verdict" not in db.committed["gate_reports"][CANDIDATE]
+    assert db.committed["statuses"][CANDIDATE] == "shadow"
+    before["pointers"]["active"] = OTHER  # the other session's change stands
+    assert db.committed == before
+
+
+def test_a_promotion_dry_run_with_a_verdict_writes_nothing():
+    db = autocommit_db([fire(1, score=SEED_SCORE, version=SEED)])
+    before = copy.deepcopy(db.committed)
+
+    promote(db, dry_run=True, verdict=VERDICT)
+
+    assert db.of_kind("status") == []
+    assert db.committed == before
+
+
+@pytest.mark.parametrize("kwargs", [{}, {"pin_active": True, "to_version": SEED}])
+def test_a_verdict_without_a_promotion_is_refused_before_any_statement(kwargs):
+    # A verdict is the record of a promotion's decision; a manual or pinned rescore has none.
+    db = autocommit_db([fire(1, score=SEED_SCORE)])
+
+    with pytest.raises(ValueError, match="verdict"):
+        rescore(db, verdict=VERDICT, **kwargs)
+
+    assert db.statements == []
+    assert db.events == []
+    assert db.autocommit is True
+
+
+@pytest.mark.parametrize(
+    ("bad", "error", "message"),
+    [
+        pytest.param(float("nan"), ValueError, "not JSON compliant", id="nan"),
+        pytest.param(float("inf"), ValueError, "not JSON compliant", id="infinity"),
+        pytest.param(float("-inf"), ValueError, "not JSON compliant", id="negative-infinity"),
+        pytest.param(np.int64(6000), TypeError, "not JSON serializable", id="numpy-integer"),
+    ],
+)
+def test_a_verdict_jsonb_cannot_hold_is_refused_before_any_statement(bad, error, message):
+    # jsonb has no NaN or Infinity (Postgres refuses `NaN`), and json.dumps raises on a numpy
+    # value: the check is json.dumps(allow_nan=False), so nothing is half-written.
+    db = autocommit_db([fire(1, score=SEED_SCORE, version=SEED)])
+
+    with pytest.raises(error, match=message):
+        promote(db, verdict={**VERDICT, "rho_candidate": bad})
+
+    assert db.statements == []
+    assert db.events == []
+    assert db.committed["statuses"][CANDIDATE] == "shadow"
 
 
 def test_promotion_rolls_back_when_an_update_fails(monkeypatch):

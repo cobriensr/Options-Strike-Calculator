@@ -34,8 +34,9 @@ back, having written nothing. Then:
    the ones this run read, and returns the ids it wrote. Fewer ids than the
    batch means another writer changed one of them in between:
    ``ConcurrentScoreWriter``. So the snapshot holds exactly what was replaced.
-4. For a promotion, it marks the version ``promoted`` and moves the ``active``
-   pointer to it.
+4. For a promotion, it marks the version ``promoted``, merges the decision it
+   was given (``verdict``) into the version's ``gate_report``, and moves the
+   ``active`` pointer to it.
 
 Any exception rolls the whole transaction back, so the store holds either every
 new score, tag, status and pointer, or none of them. That covers an UPDATE
@@ -87,6 +88,7 @@ level it imports only lottery_weights, pandas and psycopg2.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import sys
@@ -98,7 +100,7 @@ from typing import Any, NamedTuple
 
 import pandas as pd
 from psycopg2.errors import LockNotAvailable
-from psycopg2.extras import execute_values
+from psycopg2.extras import Json, execute_values
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / 'ml' / 'src'))
@@ -149,8 +151,12 @@ _UPDATE_SQL = (
     'RETURNING f.id'
 )
 _UPDATE_ROW = '(%s::bigint, %s::int, %s::text, %s::int, %s::text)'
+# `gate_report || '{}'` changes nothing, so a promotion with no verdict takes the same
+# statement. The patch is `{"verdict": <the decision>}`: jsonb `||` keeps the shadow's
+# creation report and session records and adds the verdict beside them.
 _PROMOTE_SQL = (
-    "UPDATE lottery_score_versions SET status = 'promoted', decided_at = now() "
+    "UPDATE lottery_score_versions SET status = 'promoted', decided_at = now(), "
+    "gate_report = gate_report || %s::jsonb "
     "WHERE version = %s AND status IN ('shadow', 'passed') RETURNING version"
 )
 _MOVE_ACTIVE_SQL = (
@@ -211,6 +217,7 @@ def rescore_all(
     dry_run: bool,
     deadline: float | None = None,
     pin_active: bool = False,
+    verdict: Mapping[str, Any] | None = None,
 ) -> RescoreResult:
     """Rescore every fire with ``weights``, tagged ``to_version``, in one
     transaction (the module docstring has the steps).
@@ -225,18 +232,32 @@ def rescore_all(
     exclusive. ``deadline`` is a ``time.monotonic()`` value, checked before
     each page and each UPDATE.
 
+    ``verdict`` is the decision a promotion rests on, plain JSON values (the
+    nightly refit's verdict summary). It is merged into the version's
+    ``gate_report`` under ``verdict`` by the promotion's status UPDATE, so it
+    commits, or rolls back, with the scores, the status and the pointer. Only a
+    promotion takes one (``expect_active`` set).
+
     ``dry_run`` runs the same reads and checks in a READ ONLY transaction,
     takes no lock, and returns the counts the write would give, with
     ``pointer_moved`` False.
 
     The arguments are checked before any statement: ``ValueError`` and
-    ``WeightsInvalid``. Any later exception rolls everything back and
-    propagates.
+    ``WeightsInvalid``, and for a verdict ``json.dumps(allow_nan=False)``'s
+    own ``ValueError`` (NaN or infinity, which jsonb cannot hold) or
+    ``TypeError`` (a value JSON cannot hold, a numpy scalar for one). Any later
+    exception rolls everything back and propagates.
     """
     if not _REASON.fullmatch(reason):
         raise ValueError(f'reason must match {_REASON.pattern}')
     if pin_active and expect_active is not None:
         raise ValueError('pin_active and expect_active are mutually exclusive')
+    if verdict is not None:
+        if expect_active is None:
+            raise ValueError('a verdict is only for a promotion (expect_active set)')
+        # Before any statement: a value jsonb cannot hold would otherwise fail in the
+        # status UPDATE, after every fire was rewritten, and lose the whole promotion.
+        json.dumps(verdict, allow_nan=False)
     validate_weights(weights)
     previous = conn.autocommit
     # Outside the try: psycopg2 refuses this inside an open transaction, and a
@@ -275,7 +296,7 @@ def rescore_all(
                 deadline=deadline,
             )
             if expect_active is not None and not dry_run:
-                _promote(cur, to_version, expect_active)
+                _promote(cur, to_version, expect_active, verdict)
                 result = replace(result, pointer_moved=True)
         if dry_run:
             conn.rollback()
@@ -414,8 +435,11 @@ def _write_page(
     return written
 
 
-def _promote(cur: Any, to_version: str, expect_active: str) -> None:
-    cur.execute(_PROMOTE_SQL, (to_version,))
+def _promote(
+    cur: Any, to_version: str, expect_active: str, verdict: Mapping[str, Any] | None
+) -> None:
+    patch = Json({} if verdict is None else {'verdict': verdict})
+    cur.execute(_PROMOTE_SQL, (patch, to_version))
     if len(cur.fetchall()) != 1:
         raise PointerMoved(f'{to_version} is no longer a shadow or passed candidate')
     cur.execute(_MOVE_ACTIVE_SQL, (to_version, expect_active))
