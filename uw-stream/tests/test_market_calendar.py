@@ -9,8 +9,10 @@ test below reads that file, so an edit to one calendar without the other fails h
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable, Mapping
 from datetime import UTC, date, datetime
 from pathlib import Path
+from types import MappingProxyType
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -134,13 +136,17 @@ class TestTheData:
 # --- parity with src/data/marketHours.ts ---------------------------------------------
 
 _DATE = r"(\d{4}-\d{2}-\d{2})"
+# A line comment or a block comment, whichever starts first.
+_COMMENT = re.compile(r"//[^\n]*|/\*.*?\*/", re.DOTALL)
 
 
 def _block(source: str, name: str, constructor: str) -> str:
     """The text between ``new Map([`` / ``new Set([`` and its closing ``]);`` for ``export const name``.
 
     The closing bracket is the first one at the start of a line, so the ``],`` that
-    ends each Map entry does not stop it.
+    ends each Map entry does not stop it. Comments are removed: they name dates too
+    ("2027-12-31"), and contain apostrophes ("New Year's"). A spread (``...OTHER``)
+    pulls entries in from somewhere the extraction cannot see, so it fails.
     """
     match = re.search(
         rf"export const {name}\b[^=]*=\s*new {constructor}\(\[(.*?)^\]\);",
@@ -148,21 +154,58 @@ def _block(source: str, name: str, constructor: str) -> str:
         re.DOTALL | re.MULTILINE,
     )
     assert match, f"{name} not found in marketHours.ts: the parity extraction needs updating"
-    # Comments name dates too ("2027-12-31") and contain apostrophes ("New Year's").
-    return re.sub(r"//[^\n]*", "", match.group(1))
+    block = _COMMENT.sub("", match.group(1))
+    assert "..." not in block, (
+        f"{name} has a spread entry: the parity extraction cannot see what it adds"
+    )
+    return block
+
+
+def _assert_every_date_was_read(name: str, block: str, read: Iterable[str]) -> None:
+    """Fail if the block holds a date the entry patterns did not read.
+
+    An entry in a shape the patterns do not know (a backtick string, a named
+    constant for the hour, a fractional hour, a closing bracket that is not at the
+    start of a line and runs the block into the next one) would otherwise be
+    skipped, and the two calendars could differ with the test still green.
+    """
+    unread = set(re.findall(_DATE, block)) - set(read)
+    assert not unread, (
+        f"{name}: dates written in a shape the parity extraction does not read: "
+        f"{sorted(unread)}. Update the extraction in test_market_calendar.py"
+    )
 
 
 def ts_closed_dates(source: str) -> frozenset[str]:
-    return frozenset(
-        re.findall(rf"['\"]{_DATE}['\"]", _block(source, "MARKET_CLOSED_DATES", "Set"))
-    )
+    block = _block(source, "MARKET_CLOSED_DATES", "Set")
+    read = frozenset(re.findall(rf"['\"]{_DATE}['\"]", block))
+    _assert_every_date_was_read("MARKET_CLOSED_DATES", block, read)
+    return read
 
 
 def ts_early_close_dates(source: str) -> dict[str, int]:
-    pairs = re.findall(
-        rf"\[\s*['\"]{_DATE}['\"]\s*,\s*(\d+)\s*\]", _block(source, "EARLY_CLOSE_DATES", "Map")
+    block = _block(source, "EARLY_CLOSE_DATES", "Map")
+    pairs = re.findall(rf"\[\s*['\"]{_DATE}['\"]\s*,\s*(\d+)\s*,?\s*\]", block)
+    read = {day: int(hour) for day, hour in pairs}
+    _assert_every_date_was_read("EARLY_CLOSE_DATES", block, read)
+    return read
+
+
+def check_closed_dates(source: str, python: frozenset[str]) -> None:
+    """Fail unless the TypeScript closure set equals ``python``."""
+    extracted = ts_closed_dates(source)
+    assert extracted == python, (
+        f"only in TS: {sorted(extracted - python)}; only in Python: {sorted(python - extracted)}"
     )
-    return {day: int(hour) for day, hour in pairs}
+
+
+def check_early_close_dates(source: str, python: Mapping[str, int]) -> None:
+    """Fail unless the TypeScript early-close map equals ``python``."""
+    extracted = ts_early_close_dates(source)
+    assert extracted == dict(python), (
+        f"only in TS: {sorted(extracted.items() - python.items())}; "
+        f"only in Python: {sorted(python.items() - extracted.items())}"
+    )
 
 
 def read_typescript_calendar(path: Path) -> str:
@@ -178,19 +221,16 @@ class TestParityWithTheTypeScriptCalendar:
     """Fails, rather than skips, when the TypeScript file is missing or the two differ."""
 
     def test_the_closed_dates_equal_the_typescript_set(self):
-        extracted = ts_closed_dates(read_typescript_calendar(_MARKET_HOURS_TS))
+        source = read_typescript_calendar(_MARKET_HOURS_TS)
 
-        assert len(extracted) > 20, "the extraction found too few dates; update the regex"
-        assert extracted == MARKET_CLOSED_DATES, (
-            f"only in TS: {sorted(extracted - MARKET_CLOSED_DATES)}; "
-            f"only in Python: {sorted(MARKET_CLOSED_DATES - extracted)}"
-        )
+        assert len(ts_closed_dates(source)) > 20, "the extraction found too few dates"
+        check_closed_dates(source, MARKET_CLOSED_DATES)
 
     def test_the_early_close_dates_equal_the_typescript_map(self):
-        extracted = ts_early_close_dates(read_typescript_calendar(_MARKET_HOURS_TS))
+        source = read_typescript_calendar(_MARKET_HOURS_TS)
 
-        assert len(extracted) > 3, "the extraction found too few dates; update the regex"
-        assert extracted == dict(EARLY_CLOSE_DATES)
+        assert len(ts_early_close_dates(source)) > 3, "the extraction found too few dates"
+        check_early_close_dates(source, EARLY_CLOSE_DATES)
 
     def test_a_missing_file_fails_the_test_instead_of_skipping_it(self):
         with pytest.raises(AssertionError, match="is missing"):
@@ -226,3 +266,83 @@ export const MARKET_CLOSED_DATES: ReadonlySet<string> = new Set([
     def test_a_collection_that_is_not_there_fails_loudly(self):
         with pytest.raises(AssertionError, match="EARLY_CLOSE_DATES not found"):
             ts_early_close_dates("export const SOMETHING_ELSE = new Set([]);")
+
+
+class TestAnEntryInAnotherShapeFailsTheParity:
+    """An entry the extraction cannot read must fail the test, never be dropped.
+
+    Each shape is added to a TypeScript source whose Python copy lacks it. The old
+    extraction skipped entries it did not recognise, so the two still "matched".
+    """
+
+    _BASE = TestTheExtraction._SOURCE
+    _PYTHON_CLOSED = frozenset({"2026-01-01", "2027-01-01"})
+    _PYTHON_EARLY = MappingProxyType({"2025-07-03": 13, "2026-11-27": 12})
+    _MAP_ANCHOR = '  ["2026-11-27", 12], // Black Friday\n'
+    _SET_ANCHOR = "  '2027-01-01',\n"
+
+    @pytest.mark.parametrize(
+        "entry",
+        [
+            pytest.param("  ['2029-11-23', EARLY_CLOSE_HOUR_ET],\n", id="a-named-constant"),
+            pytest.param("  [`2029-11-23`, 13],\n", id="backticks"),
+            pytest.param("  ['2029-11-23', 13 /* 1 PM */],\n", id="a-block-comment"),
+            pytest.param("  [\n    '2029-11-23',\n    13,\n  ],\n", id="multi-line-trailing-comma"),
+            pytest.param("  ['2029-11-23', 13.5],\n", id="a-fractional-hour"),
+            pytest.param("  ...EXTRA_EARLY_CLOSES,\n", id="a-spread"),
+        ],
+    )
+    def test_a_map_entry(self, entry):
+        source = self._BASE.replace(self._MAP_ANCHOR, self._MAP_ANCHOR + entry)
+        assert source != self._BASE
+
+        with pytest.raises(AssertionError):
+            check_early_close_dates(source, self._PYTHON_EARLY)
+
+    @pytest.mark.parametrize(
+        "entry",
+        [
+            pytest.param("  `2029-01-01`,\n", id="backticks"),
+            pytest.param("  '2029-01-01' /* x */,\n", id="a-block-comment"),
+            pytest.param("  ...CLOSED_2029,\n", id="a-spread"),
+            pytest.param("  EARLY_2029 ?? '2029-01-01',\n", id="an-expression"),
+        ],
+    )
+    def test_a_set_entry(self, entry):
+        source = self._BASE.replace(self._SET_ANCHOR, self._SET_ANCHOR + entry)
+        assert source != self._BASE
+
+        with pytest.raises(AssertionError):
+            check_closed_dates(source, self._PYTHON_CLOSED)
+
+    def test_a_closing_bracket_that_is_indented_runs_the_block_into_the_next(self):
+        source = self._BASE.replace(
+            '  ["2026-11-27", 12], // Black Friday\n]);',
+            '  ["2026-11-27", 12], // Black Friday\n  ]);',
+        )
+        assert source != self._BASE
+
+        with pytest.raises(AssertionError):
+            check_early_close_dates(source, self._PYTHON_EARLY)
+
+    @pytest.mark.parametrize(
+        ("entry", "python_hour"),
+        [
+            pytest.param("  ['2029-11-23', 13 /* 1 PM */],\n", 13, id="a-block-comment"),
+            pytest.param("  [\n    '2029-11-23',\n    13,\n  ],\n", 13, id="trailing-comma"),
+            pytest.param('  ["2029-11-23", 13],\n', 13, id="double-quotes"),
+        ],
+    )
+    def test_shapes_it_reads_are_still_accepted_when_the_python_copy_matches(
+        self, entry, python_hour
+    ):
+        source = self._BASE.replace(self._MAP_ANCHOR, self._MAP_ANCHOR + entry)
+
+        check_early_close_dates(source, {**self._PYTHON_EARLY, "2029-11-23": python_hour})
+
+    def test_a_block_comment_around_a_whole_entry_is_not_an_entry(self):
+        source = self._BASE.replace(
+            self._SET_ANCHOR, self._SET_ANCHOR + "  /* '2029-01-01',\n     '2029-01-02', */\n"
+        )
+
+        check_closed_dates(source, self._PYTHON_CLOSED)
