@@ -905,6 +905,27 @@ def test_rho_undefined_rejects(candidate_eval, active_eval, which):
     assert math.isnan(v.rho_active) is (which in ("active", "both"))
 
 
+def test_rho_is_pooled_over_the_judged_sessions_not_averaged_per_session():
+    # Ten sessions of unequal size. The third, by far the biggest, runs against
+    # the ranking: pooled over all 5,000 rows its 1,800 outweigh the rest, while
+    # a mean of ten per-session rhos would count it once in ten.
+    rows = (400, 400, 1800, 300, 300, 400, 300, 400, 300, 400)
+    eval_frame = make_eval_frame(rows, bad_sessions=(2,))
+    v = run(rows=rows, eval_frame=eval_frame, active_eval=BAD_EVAL)
+    assert v.eval_rows == 5000
+    outcomes = eval_frame["outcome_pct"]
+    by_session = [eval_frame["date"] == day for day in trading_days(10)]
+    for ranking, got in ((GOOD_EVAL, v.rho_candidate), (BAD_EVAL, v.rho_active)):
+        scores = lw.score_frame(make_weights(ranking, FEED_BASE), eval_frame)
+        pooled = g.spearman(scores, outcomes)
+        per_session = [g.spearman(scores[m], outcomes[m]) for m in by_session]
+        assert got == pytest.approx(pooled, abs=1e-12)
+        # The two aggregates are far apart here, so the equality above tells
+        # them apart.
+        assert abs(pooled - float(np.mean(per_session))) > 0.2
+    assert (v.decision, v.reasons) == ("pass", ())
+
+
 # ── decide_shadow: eval rows ────────────────────────────────────────────────
 
 
@@ -975,6 +996,37 @@ def test_each_version_is_read_against_its_own_feed_cutoffs():
     assert v.tier1_ratio == 0.5
     assert v.tier12_ratio == 1.0
     assert v.reasons == ("tier1_ratio_out_of_band",)
+
+
+def test_shares_are_the_mean_of_daily_shares_not_pooled():
+    # Nine ordinary feed days of 32 fires and one of 320, half of it AAA fires
+    # (tier1 for both versions). The candidate also gives EEE weight 8, so its
+    # tier1 is AAA+EEE and its tier1+2 AAA+BBB+EEE; the active's are AAA and
+    # AAA+BBB. Daily shares, candidate / active:
+    #
+    #                    tier1                     tier1+2
+    #   9 small days     3/32 = 0.09375 / 0.0625   5/32 = 0.15625 / 0.125
+    #   the big day      0.5 / 0.5                 0.5 / 0.5
+    #   mean of 10 days  0.134375 / 0.10625        0.190625 / 0.1625
+    #
+    # Pooled over fires (the mutant) they would be 187/608 and 178/608, then
+    # 205/608 and 196/608: a candidate tier1 share of 0.3076 and ratios of 1.05
+    # and 1.046, none of them equal to the means below.
+    days = trading_days(10)
+    feed = pd.concat(
+        [
+            make_feed_frame(days[:9]),
+            make_feed_frame(days[9:], {"AAA": 160, "CCC": 160}),
+        ],
+        ignore_index=True,
+    )
+    v = run(candidate_feed={"EEE": 8}, feed_frame=feed)
+    assert v.tier1_share == pytest.approx(0.134375)
+    assert v.tier1_ratio == pytest.approx(0.134375 / 0.10625)  # 43/34
+    assert v.tier12_ratio == pytest.approx(0.190625 / 0.1625)  # 61/52
+    assert v.tier1_ratio != pytest.approx(187 / 178, abs=1e-3)
+    assert v.tier12_ratio != pytest.approx(205 / 196, abs=1e-3)
+    assert (v.decision, v.reasons) == ("pass", ())
 
 
 def test_zero_over_zero_ratio_is_one():
