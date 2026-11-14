@@ -55,7 +55,7 @@ import { resolveYesterday } from '../../utils/yesterday';
 const LOAD = '2026-11-04T15:42:10Z';
 /** The Tuesday before: the replay's date. */
 const PAST_DATE = '2026-11-03';
-/** The date the page opens on: the CT date of LOAD. */
+/** The date the page opens on: the ET date of LOAD (the CT date is the same). */
 const TODAY = '2026-11-04';
 /** 9:30 ET, the first candle. */
 const OPEN_MS = Date.parse('2026-11-04T14:30:00Z');

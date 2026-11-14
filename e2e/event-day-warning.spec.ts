@@ -16,7 +16,10 @@ const TODAY = etDate();
 
 /**
  * 16:00 CST on Friday 2026-11-13, after the close. The count-asserting cases
- * pin the clock here so their counts do not depend on the wall clock.
+ * pin the clock here. The hour does not move their counts (the app opens on ET
+ * today, which the forward list covers while it loads); what the pin guards is
+ * a run that straddles ET midnight between spec load (`TODAY`) and page load,
+ * which would leave the date they answer a lookup for a day behind the page's.
  */
 const AFTERNOON = new Date('2026-11-13T22:00:00Z');
 
@@ -198,8 +201,9 @@ test.describe('Event Day Warning', () => {
    * Abort every /api request (the forward list, `/api/events?days=30`, among
    * them), then answer one date's own lookup (`/api/events?from=<date>`): a 500
    * the first time, a CPI event the second. The count is how many lookups the
-   * page made. The clock is pinned to AFTERNOON, so the counts do not depend on
-   * the wall clock the run happens at.
+   * page made. The clock is pinned to AFTERNOON, so a run that straddles ET
+   * midnight between spec load and page load cannot leave the date answered a
+   * day behind the page's (see AFTERNOON).
    */
   async function failOnceThenAnswerLookup(page: Page, date: string) {
     await page.clock.setFixedTime(AFTERNOON);
