@@ -31,7 +31,48 @@ vi.mock('../_lib/api-helpers.js', () => ({
   guardOwnerEndpoint: mockGuard,
 }));
 
+// The loader reads the weights store through `getDb`, which the db mock above
+// routes into `mockSql`: unmocked, it would eat the responses each test queues
+// for the export's own query. The default, set in beforeEach, is the frozen
+// seed as the active version.
+const { mockLoadLotteryWeights } = vi.hoisted(() => ({
+  mockLoadLotteryWeights: vi.fn(),
+}));
+
+vi.mock('../_lib/lottery-weights-loader.js', () => ({
+  loadLotteryWeights: mockLoadLotteryWeights,
+}));
+
 import handler from '../lottery-export.js';
+import type { LoadedLotteryWeights } from '../_lib/lottery-weights-loader.js';
+import {
+  SEED_LOTTERY_WEIGHTS,
+  SEED_LOTTERY_WEIGHTS_VERSION,
+} from '../_lib/lottery-weights-seed.js';
+
+/** What the loader answers: the seed's weights with `feed_cutoffs` replaced. */
+function loadedWeights(
+  version: string,
+  cutoffs: { tier1_min_score: number; tier2_min_score: number },
+): LoadedLotteryWeights {
+  const versioned = {
+    version,
+    weights: { ...SEED_LOTTERY_WEIGHTS, feed_cutoffs: cutoffs },
+  };
+  return { active: versioned, takeit: versioned, fallback: null };
+}
+
+// The seed in the active slot: the loader's answer until a test overrides it.
+const SEED_LOADED = loadedWeights(
+  SEED_LOTTERY_WEIGHTS_VERSION,
+  SEED_LOTTERY_WEIGHTS.feed_cutoffs,
+);
+
+// A promoted version whose cutoffs differ from the seed's 13 / 10.
+const VERSION_16_12 = loadedWeights('v-16-12', {
+  tier1_min_score: 16,
+  tier2_min_score: 12,
+});
 
 const ROW = {
   id: 42,
@@ -55,6 +96,7 @@ describe('GET /api/lottery-export', () => {
     vi.resetAllMocks();
     mockGuard.mockResolvedValue(false);
     mockSql.mockResolvedValue([]);
+    mockLoadLotteryWeights.mockResolvedValue(SEED_LOADED);
   });
 
   it('returns 405 for non-GET methods', async () => {
@@ -306,5 +348,133 @@ describe('GET /api/lottery-export', () => {
       error: 'temporarily unavailable',
       transient: true,
     });
+  });
+});
+
+// ============================================================
+// minTier: the export's floor follows the ACTIVE weights version
+// ============================================================
+//
+// The cutoffs belong to a weights version (`feed_cutoffs`), so `minTier` names
+// a tier and the export binds that tier's cutoff from the active version, the
+// way the feed does. The loader is mocked at its module boundary (see the top
+// of the file). Only the number's source changes: the export still compares
+// the bare `f.score` column.
+describe('GET /api/lottery-export minTier', () => {
+  // The values bound into the export's one query (the tagged template's
+  // `...values`).
+  const bound = (): unknown[] => (mockSql.mock.calls[0] as unknown[]).slice(1);
+  const timesBound = (value: number): number =>
+    bound().filter((v) => v === value).length;
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+    mockGuard.mockResolvedValue(false);
+    mockSql.mockResolvedValue([]);
+    mockLoadLotteryWeights.mockResolvedValue(SEED_LOADED);
+  });
+
+  it.each([
+    ['tier1', 16, 13],
+    ['tier2', 12, 10],
+  ] as const)(
+    "minTier=%s binds the active version's cutoff (%i), not the seed's (%i)",
+    async (minTier, cutoff, seedCutoff) => {
+      mockLoadLotteryWeights.mockResolvedValue(VERSION_16_12);
+      mockSql.mockResolvedValueOnce([ROW]);
+
+      const res = mockResponse();
+      await handler(
+        mockRequest({
+          method: 'GET',
+          query: { date: '2026-05-04', minTier, format: 'json' },
+        }),
+        res,
+      );
+
+      expect(res._status).toBe(200);
+      // The cutoff binds twice: the IS NULL probe and the comparison.
+      expect(timesBound(cutoff)).toBe(2);
+      expect(bound()).not.toContain(seedCutoff);
+      // It compares the bare score column, as minScore always has.
+      const sql = (mockSql.mock.calls[0]![0] as string[])
+        .join('?')
+        .replace(/\s+/g, ' ');
+      expect(sql).toContain('f.score >=');
+      // The request is echoed, as minScore is.
+      const body = res._json as { filters: Record<string, unknown> };
+      expect(body.filters.minTier).toBe(minTier);
+      expect(body.filters.minScore).toBeUndefined();
+    },
+  );
+
+  it('minScore still binds the number it was given, whatever the active cutoffs are', async () => {
+    mockLoadLotteryWeights.mockResolvedValue(VERSION_16_12);
+    mockSql.mockResolvedValueOnce([ROW]);
+
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'GET',
+        query: { date: '2026-05-04', minScore: '14', format: 'json' },
+      }),
+      res,
+    );
+
+    expect(res._status).toBe(200);
+    expect(timesBound(14)).toBe(2);
+    expect(bound()).not.toContain(16);
+    expect(bound()).not.toContain(12);
+    const body = res._json as { filters: Record<string, unknown> };
+    expect(body.filters.minScore).toBe(14);
+    expect(body.filters.minTier).toBeUndefined();
+  });
+
+  it('sets no floor when neither minTier nor minScore is sent', async () => {
+    mockLoadLotteryWeights.mockResolvedValue(VERSION_16_12);
+    mockSql.mockResolvedValueOnce([ROW]);
+
+    const res = mockResponse();
+    await handler(
+      mockRequest({ method: 'GET', query: { date: '2026-05-04' } }),
+      res,
+    );
+
+    expect(res._status).toBe(200);
+    expect(bound()).not.toContain(16);
+    expect(bound()).not.toContain(12);
+  });
+
+  it('rejects minTier together with minScore as a 400 before the weights load or any query runs', async () => {
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'GET',
+        query: { date: '2026-05-04', minTier: 'tier1', minScore: '13' },
+      }),
+      res,
+    );
+
+    expect(res._status).toBe(400);
+    expect(res._json).toEqual({
+      error: 'invalid query',
+      issues: [
+        { path: 'minTier', message: 'minTier and minScore are exclusive' },
+      ],
+    });
+    expect(mockLoadLotteryWeights).not.toHaveBeenCalled();
+    expect(mockSql).not.toHaveBeenCalled();
+  });
+
+  it('rejects an unknown minTier as a 400', async () => {
+    const res = mockResponse();
+    await handler(
+      mockRequest({ method: 'GET', query: { minTier: 'tier3' } }),
+      res,
+    );
+
+    expect(res._status).toBe(400);
+    expect(mockLoadLotteryWeights).not.toHaveBeenCalled();
+    expect(mockSql).not.toHaveBeenCalled();
   });
 });

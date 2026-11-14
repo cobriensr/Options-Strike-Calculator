@@ -8,8 +8,10 @@
  * snapshot, ticker stats, all in one row.
  *
  * Query params: ?date= ?ticker= ?reload= ?cheapCallPm= ?mode=
- *               ?optionType= ?tod= ?minScore= ?format=csv|json
- * Validated by `lotteryExportQuerySchema`.
+ *               ?optionType= ?tod= ?minScore= ?minTier= ?format=csv|json
+ * Validated by `lotteryExportQuerySchema`. `minTier` (tier1 | tier2) is the
+ * score floor by tier name, resolved to the active weights version's cutoff;
+ * it excludes `minScore`.
  *
  * Defaults to CSV with `Content-Disposition: attachment` so a browser
  * navigation triggers a download. JSON is for ad-hoc piping.
@@ -21,6 +23,8 @@ import { DB_RETRY_ATTEMPTS, DB_RETRY_TIMEOUT_MS } from './_lib/constants.js';
 import { guardOwnerEndpoint } from './_lib/api-helpers.js';
 import { sendDbErrorResponse } from './_lib/transient-db-response.js';
 import { lotteryExportQuerySchema } from './_lib/validation.js';
+import { resolveMinQas } from './_lib/lottery-tier.js';
+import { loadLotteryWeights } from './_lib/lottery-weights-loader.js';
 import { getETDateStr } from '../src/utils/timezone.js';
 
 /** Normalize Neon Date / Timestamp values to ISO strings (or YYYY-MM-DD for DATE). */
@@ -80,11 +84,26 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       optionType,
       tod,
       minScore,
+      minTier,
       format,
     } = parsed.data;
 
     const targetDate = date ?? getETDateStr(new Date());
     const db = getDb();
+
+    // The score floor the query binds: the active weights version's cutoff for
+    // `minTier`, else `minScore` as given, else none (the schema rejects both
+    // together). The loader never throws and caches for a minute; when the
+    // store can't answer it hands back the seed, so the export still serves.
+    // Only the number's source changes here: the query below still compares
+    // the bare `f.score`, not the qas the feed and chips gate on (a known
+    // difference, noted in the phase 4 plan's Spec deltas).
+    const { active } = await loadLotteryWeights();
+    const scoreFloor = resolveMinQas(
+      minTier,
+      minScore,
+      active.weights.feed_cutoffs,
+    );
 
     // No chain-day dedup, no LIMIT — export the full firehose. Order
     // chronologically forward so the spreadsheet reads top-to-bottom
@@ -109,7 +128,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         AND (${mode ?? null}::text IS NULL OR f.mode = ${mode ?? ''})
         AND (${optionType ?? null}::text IS NULL OR f.option_type = ${optionType ?? ''})
         AND (${tod ?? null}::text IS NULL OR f.tod = ${tod ?? ''})
-        AND (${minScore ?? null}::int IS NULL OR f.score >= ${minScore ?? 0})
+        AND (${scoreFloor ?? null}::int IS NULL OR f.score >= ${scoreFloor ?? 0})
       ORDER BY f.trigger_time_ct ASC, f.id ASC
     `,
       DB_RETRY_ATTEMPTS,
@@ -131,6 +150,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           optionType,
           tod,
           minScore,
+          minTier,
         },
         rows: normalized,
       });

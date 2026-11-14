@@ -26,6 +26,8 @@ import { lotteryFinderTickerCountsQuerySchema } from './_lib/validation.js';
 import { readKeptTickers } from './_lib/kept-tickers.js';
 import { keptSuppressionSql } from './_lib/lottery-suppression.js';
 import { INVERSION_BONUS_CASE_SQL } from './_lib/lottery-inversion-bonus.js';
+import { resolveMinQas } from './_lib/lottery-tier.js';
+import { loadLotteryWeights } from './_lib/lottery-weights-loader.js';
 import { MIN_ALERT_ENTRY_PRICE } from './_lib/constants.js';
 import { getETDateStr } from '../src/utils/timezone.js';
 
@@ -49,6 +51,7 @@ interface LotteryFinderTickerCountsResponse {
     mode: 'A_intraday_0DTE' | 'B_multi_day_DTE1_3' | null;
     tod: 'AM_open' | 'MID' | 'LUNCH' | 'PM' | null;
     minScore: number | null;
+    minTier: 'tier1' | 'tier2' | null;
     minPremium: number | null;
     minFireCount: number | null;
     maxFireCount: number | null;
@@ -111,7 +114,24 @@ export default async function handler(
     // Q1/Q2 — keeps the chip strip aligned with the feed. Read-only here:
     // the feed endpoint owns accumulation. `showAll` skips suppression, so
     // the set is irrelevant in that path. KV-down → [] → no behavior change.
-    const keptTickers = showAll ? [] : await readKeptTickers(date);
+    //
+    // The active weights version loads alongside it: its feed cutoffs set the
+    // `minTier` floor, the same number the feed gates on. The loader never
+    // throws and caches for a minute; when the store can't answer it hands
+    // back the seed (and raises its own Sentry error), so the strip still
+    // serves.
+    const [{ active }, keptTickers] = await Promise.all([
+      loadLotteryWeights(),
+      showAll ? [] : readKeptTickers(date),
+    ]);
+    // The one score floor the qas gate below compares to: the tier's cutoff
+    // for `minTier`, else `minScore` as given, else none. The schema rejects
+    // both together.
+    const minQas = resolveMinQas(
+      q.minTier,
+      q.minScore,
+      active.weights.feed_cutoffs,
+    );
 
     // Two-step dedup + aggregate: the CTE collapses raw fires to one
     // row per (underlying, strike, option_type, expiry) — matching the
@@ -203,11 +223,12 @@ export default async function handler(
       FROM chain_day cd
       LEFT JOIN lottery_ticker_stats s ON s.ticker = cd.underlying_symbol
       WHERE ${keptSuppressionSql(db, 'cd', showAll, keptTickers)}
-        -- Fix C/D: minScore gates on the DISPLAYED qas (= GREATEST(0, score +
+        -- Fix C/D: the score floor (minQas: minScore, or the active version's
+        -- cutoff for minTier) gates on the DISPLAYED qas (= GREATEST(0, score +
         -- rt + fc) + inversion bonus; NO gamma, post-Fix-B), not raw score, so
         -- the chip count matches the qas-filtered feed.
         AND (
-          ${q.minScore ?? null}::int IS NULL
+          ${minQas ?? null}::int IS NULL
           OR (
             GREATEST(
               0,
@@ -215,7 +236,7 @@ export default async function handler(
               + COALESCE(cd.round_trip_score_deduct, 0)
               + COALESCE(cd.fire_count_score_adjustment, 0)
             ) + ${db.unsafe(INVERSION_BONUS_CASE_SQL)}
-          ) >= ${q.minScore ?? 0}
+          ) >= ${minQas ?? 0}
         )
       GROUP BY cd.underlying_symbol
       ORDER BY count DESC, latest_trigger_time_ct DESC, underlying_symbol ASC
@@ -233,6 +254,7 @@ export default async function handler(
         mode: q.mode ?? null,
         tod: q.tod ?? null,
         minScore: q.minScore ?? null,
+        minTier: q.minTier ?? null,
         minPremium,
         minFireCount,
         maxFireCount,
