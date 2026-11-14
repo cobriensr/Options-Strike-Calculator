@@ -164,11 +164,14 @@ class GexStrikeExpiryHandler(Handler):
         # 0DTE-only ingest: the two readers of ws_gex_strike_expiry
         # (Greek Heatmap, Strike Battle Map) both consume today's
         # expiry only. UW pushes every active expiry on the
-        # `gex_strike_expiry:<TICKER>` channel, so without this filter
+        # `gex_strike_expiry:<TICKER>` channel, so without a filter
         # we accumulate weekly/monthly expiries from days before they
         # become 0DTE — that's the bloat that drove the May 2026
         # retention spec
         # (docs/superpowers/specs/greek-heatmap-ws-retention-2026-05-15.md).
+        # `enqueue` filters first, before the queue. This check is the
+        # backstop for a frame queued just before ET midnight whose expiry
+        # was today's then and is not now. A later edit keeps both.
         if expiry != _today_et():
             rate_limited_log.warning(
                 scope="gex_strike_expiry",

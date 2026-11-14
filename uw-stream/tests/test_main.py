@@ -17,6 +17,7 @@ import pytest
 import bounded
 import main
 import notify
+import socket_stats
 import ws_lease
 
 
@@ -851,9 +852,14 @@ def _stub_pipeline(monkeypatch) -> None:
     """Stub Sentry, the pool and the data pipeline so _run reaches its wait.
 
     The lease is off, so the only things that can wake _run are the stop
-    Event and a background task finishing.
+    Event and a background task finishing. The pipeline stats task is stubbed
+    like the other background tasks, and the socket registry and twin map are
+    swapped for empty ones so ``_run``'s ``configure`` call leaves no ``conn{i}``
+    entries behind in the module for a later test.
     """
     monkeypatch.setattr(main, "init_sentry", lambda: None)
+    monkeypatch.setattr(socket_stats, "_registry", {})
+    monkeypatch.setattr(socket_stats, "_twins", {})
 
     async def _noop_pool() -> None:
         return None
@@ -885,6 +891,7 @@ def _stub_pipeline(monkeypatch) -> None:
     monkeypatch.setattr(main, "Router", _ForeverRouter)
     monkeypatch.setattr(main, "run_server", _forever_bg)
     monkeypatch.setattr(main, "run_subscription_watchdog", _forever_bg)
+    monkeypatch.setattr(main, "run_pipeline_stats", _forever_bg)
 
 
 def _sigterm_once_run_is_waiting(monkeypatch) -> None:
@@ -953,17 +960,34 @@ async def test_run_starts_pipeline_stats_and_shutdown_cancels_it(_reset_notify_s
 
 
 @pytest.mark.asyncio
+async def test_a_stubbed_run_neither_runs_the_real_stats_task_nor_fills_the_real_registry(
+    _reset_notify_state, monkeypatch
+):
+    real_stats_task = main.run_pipeline_stats
+    # Start from empty module dicts, so anything ``_run`` leaves in them shows.
+    real_registry: dict = {}
+    real_twins: dict = {}
+    monkeypatch.setattr(socket_stats, "_registry", real_registry)
+    monkeypatch.setattr(socket_stats, "_twins", real_twins)
+    _stub_pipeline(monkeypatch)
+    _sigterm_once_run_is_waiting(monkeypatch)
+
+    await main._run()
+
+    assert main.run_pipeline_stats is not real_stats_task
+    # ``_run`` did register its shards, in the stand-in the stub put in place.
+    assert list(socket_stats._registry)
+    assert (real_registry, real_twins) == ({}, {})
+
+
+@pytest.mark.asyncio
 async def test_run_registers_every_shard_and_its_twin_before_the_connectors_are_built(
     _reset_notify_state, monkeypatch
 ):
     """The twin-silence check reads the twin's ring through the registry, so both
     shards must be registered, and linked, before either connector exists.
     """
-    import socket_stats
-
     _stub_pipeline(monkeypatch)
-    monkeypatch.setattr(socket_stats, "_registry", {})
-    monkeypatch.setattr(socket_stats, "_twins", {})
     # One option_trades channel, joined on conn0 and (the mirror) conn1.
     monkeypatch.setattr(main.settings, "ws_channels", "option_trades:SPY")
     monkeypatch.setattr(main.settings, "ws_redundant_option_trades", True)
