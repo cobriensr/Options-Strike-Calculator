@@ -25,6 +25,11 @@ interface Props {
   errors: Record<string, string>;
   market: MarketDataState;
   selectedDate: string;
+  /**
+   * Today's ET date from the clock `selectedDate` follows (useVixData's), so
+   * "past" turns in the render the date moves, not before it.
+   */
+  etToday: string;
   historySnapshot?: HistorySnapshot | null;
   onUseVix1dAsSigma: (sigma: number) => void;
   termShape?: string | null;
@@ -46,6 +51,7 @@ export default function IVInputSection({
   errors,
   market,
   selectedDate,
+  etToday,
   historySnapshot,
   onUseVix1dAsSigma,
   termShape,
@@ -80,8 +86,12 @@ export default function IVInputSection({
   // days, a failed fetch, a weekend or holiday) gets no live values either.
   // historySnapshot is always the selected date's (useAutoFill drops another
   // date's history while the selected date's loads). Today keeps the
-  // fallback, with or without its own snapshot.
-  const pastDate = isPastETDate(selectedDate);
+  // fallback, with or without its own snapshot. Past is judged against
+  // etToday, the clock the date follows, not the wall clock: a render in the
+  // moment after ET midnight, before that clock ticks, must not flip the
+  // key below and remount the card, which would then remount again at the
+  // tick.
+  const pastDate = isPastETDate(selectedDate, etToday);
   const liveQuotes = pastDate ? null : market.data.quotes;
   // Remount the card when its source changes, so a value it took from an
   // earlier source (today's live VIX1D, say) can't stay on a past date.

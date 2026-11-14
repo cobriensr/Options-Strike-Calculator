@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import IVInputSection from '../../components/IVInputSection';
@@ -53,6 +53,7 @@ function renderSection(overrides: Record<string, unknown> = {}) {
     errors: {} as Record<string, string>,
     market: mockMarket,
     selectedDate: getETToday(),
+    etToday: getETToday(),
     onUseVix1dAsSigma: vi.fn(),
   };
   const props = { ...defaults, ...overrides };
@@ -463,6 +464,50 @@ describe('IVInputSection', () => {
       expect(screen.getByLabelText(/VIX1D/)).toHaveValue('14.20');
       expect(screen.getByLabelText(/VIX9D/)).toHaveValue('16.30');
       expect(screen.getByText('VVIX')).toBeInTheDocument();
+    });
+
+    describe('in the moment after ET midnight, before the date clock ticks', () => {
+      afterEach(() => {
+        vi.useRealTimers();
+      });
+
+      it("keeps today's card, and what was typed in it, through the tick", async () => {
+        // The date follows the clock whose ET date is etToday. A render
+        // between ET midnight and its tick (here caused by a poll) must not
+        // read the followed date as past: that would drop the live values and
+        // remount the card, and the tick would remount it again.
+        vi.useFakeTimers({ toFake: ['Date'] });
+        vi.setSystemTime(new Date('2026-03-17T16:30:00Z'));
+        const user = userEvent.setup();
+        const { props, rerender } = renderSection({
+          dVix: '18.5',
+          market: { ...liveMarket, marketOpen: true },
+          selectedDate: '2026-03-17',
+          etToday: '2026-03-17',
+        });
+        const vix1d = () => screen.getByLabelText(/VIX1D/);
+        await user.clear(vix1d());
+        await user.type(vix1d(), '15.5');
+        expect(vix1d()).toHaveValue('15.5');
+
+        // 00:00:00.5 EDT on the 18th: the wall clock has crossed midnight, the
+        // date and its clock are still the 17th.
+        vi.setSystemTime(new Date('2026-03-18T04:00:00.500Z'));
+        rerender(<IVInputSection {...props} dVix="18.6" />);
+        expect(vix1d()).toHaveValue('15.5');
+        expect(vi.mocked(useVixTrajectory)).toHaveBeenLastCalledWith(true);
+
+        // The tick: the date and its clock move to the 18th together.
+        rerender(
+          <IVInputSection
+            {...props}
+            dVix="18.6"
+            selectedDate="2026-03-18"
+            etToday="2026-03-18"
+          />,
+        );
+        expect(vix1d()).toHaveValue('15.5');
+      });
     });
   });
 });

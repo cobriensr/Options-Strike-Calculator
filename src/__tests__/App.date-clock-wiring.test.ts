@@ -86,6 +86,12 @@ describe('App date-clock wiring', () => {
     expect(appCode.match(/\bisBacktestMode\(/g)).toHaveLength(1);
   });
 
+  it('hands IVInputSection the date clock, which keys its term-structure card', () => {
+    const props = /<IVInputSection([\s\S]*?)\/>/.exec(appCode)?.[1];
+    expect(props).toMatch(/^\s+selectedDate=\{vix\.selectedDate\}$/m);
+    expect(props).toMatch(/^\s+etToday=\{vix\.etToday\}$/m);
+  });
+
   it('hands useAutoFill the vix object, which carries the date clock', () => {
     const inputs = /useAutoFill\(\{([\s\S]*?)\}\);/.exec(appCode)?.[1];
     expect(inputs).toMatch(/^\s+vix,$/m);

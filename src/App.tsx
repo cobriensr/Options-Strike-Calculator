@@ -986,6 +986,7 @@ export default function StrikeCalculator() {
                 errors={errors}
                 market={market}
                 selectedDate={vix.selectedDate}
+                etToday={vix.etToday}
                 historySnapshot={historySnapshot}
                 onUseVix1dAsSigma={handleUseVix1dAsSigma}
                 termShape={signals.vixTermShape}
@@ -1514,6 +1515,7 @@ export default function StrikeCalculator() {
       timeHour,
       timeMinute,
       timezone,
+      vix.etToday,
       vix.selectedDate,
       vix.setVixOHLCField,
       vix.vixDataLoaded,

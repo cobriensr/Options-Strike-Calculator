@@ -327,8 +327,10 @@ describe('useAnalysisContext', () => {
     });
 
     it('recomputes when only the flag changes (ET midnight)', () => {
-      // A tab open across ET midnight: same date, same inputs, and App's
-      // flag turns true. The memo must not hand back the stale context.
+      // Same date, same inputs, and App's flag turns true: a picked date
+      // that is the old today turns past when the date's clock ticks past ET
+      // midnight. (A date that follows today moves with that clock, so it
+      // never does.) The memo must not hand back the stale context.
       const params = makeParams({ selectedDate: '2026-03-24' });
       const { result, rerender } = renderHook(
         (p: UseAnalysisContextParams) => useAnalysisContext(p),
