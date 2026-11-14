@@ -311,11 +311,14 @@ class FakeStore:
         row["gate_report"]["verdict"] = plain_copy(verdict)
         return True
 
-    def promote(self, version: str, expect_active: str) -> None:
-        """What `rescore_all`'s promotion transaction does when it commits."""
+    def promote(self, version: str, expect_active: str, verdict: dict[str, Any] | None) -> None:
+        """What `rescore_all`'s promotion transaction does when it commits: the status, the
+        verdict merged into the report (jsonb `||`), and the pointer."""
         if self.active != expect_active or self.rows[version]["status"] not in ("shadow", "passed"):
             raise PointerMoved("the active pointer moved")
         self.rows[version]["status"] = "promoted"
+        if verdict is not None:
+            self.rows[version]["gate_report"]["verdict"] = plain_copy(verdict)
         self.active = version
 
 
@@ -372,8 +375,10 @@ def world(monkeypatch: pytest.MonkeyPatch) -> World:
     rescore = create_autospec(rescore_all)
     w = World(store, notices, rescore)
 
-    def promote(conn: Any, *, to_version: str, expect_active: str, **_: Any) -> RescoreResult:
-        store.promote(to_version, expect_active)
+    def promote(
+        conn: Any, *, to_version: str, expect_active: str, verdict: Any = None, **_: Any
+    ) -> RescoreResult:
+        store.promote(to_version, expect_active, verdict)
         return RESCORED
 
     rescore.side_effect = promote
@@ -488,6 +493,22 @@ def verdict(
         tier12_ratio=0.9,
         tier1_share=0.05,
     )
+
+
+def pass_summary(sessions: Sequence[date]) -> dict[str, Any]:
+    """What a passing `verdict(...)` is stored as under `gate_report.verdict`, and what a
+    promotion is handed: plain JSON, the dates as ISO text."""
+    return {
+        "decision": "pass",
+        "reasons": [],
+        "sessions": [day.isoformat() for day in sessions],
+        "eval_rows": 6_000,
+        "rho_candidate": 0.06,
+        "rho_active": 0.05,
+        "tier1_ratio": 1.1,
+        "tier12_ratio": 0.9,
+        "tier1_share": 0.05,
+    }
 
 
 def patch_verdict(monkeypatch: pytest.MonkeyPatch, result: ShadowVerdict) -> MagicMock:
@@ -991,12 +1012,16 @@ def test_starved_shadow_is_rejected_once(world: World) -> None:
         s.version,
     ]
 
-    # The next night there is no shadow: a fresh candidate is built, and the rejected one
-    # is neither decided nor announced again.
-    second = run_night(world, sessions_after(s.last_session, 1)[0])
+    # The next night there is no shadow: one fresh candidate is built (here the thin
+    # synthetic window rejects it at creation), and the rejected one is neither decided nor
+    # announced again.
+    night_two = sessions_after(s.last_session, 1)[0]
+    second = run_night(world, night_two)
     assert world.store.calls.count("decide") == 1
     assert world.store.rows[s.version]["status"] == "rejected"
     assert second.counts["rejected"] == 0
+    assert second.counts["candidates_built"] + second.counts["candidates_rejected"] == 1
+    assert refit_version_id(night_two) in world.store.rows
     assert world.titles().count("nightly refit rejected") == 1
 
 
@@ -1043,17 +1068,7 @@ def test_pass_with_promotion_disabled_marks_passed_and_warns(
 
     assert world.store.rows[s.version]["status"] == "passed"
     # The stored verdict is the whole decision, as plain JSON: dates as ISO text.
-    assert world.store.rows[s.version]["gate_report"]["verdict"] == {
-        "decision": "pass",
-        "reasons": [],
-        "sessions": [day.isoformat() for day in s.elapsed[:10]],
-        "eval_rows": 6_000,
-        "rho_candidate": 0.06,
-        "rho_active": 0.05,
-        "tier1_ratio": 1.1,
-        "tier12_ratio": 0.9,
-        "tier1_share": 0.05,
-    }
+    assert world.store.rows[s.version]["gate_report"]["verdict"] == pass_summary(s.elapsed[:10])
     assert world.store.active == SEED_VERSION
     assert result.counts["passed"] == 1 and result.counts["promoted"] == 0
     world.rescore.assert_not_called()
@@ -1095,6 +1110,7 @@ def test_pass_promotes_in_one_call_and_warns(world: World, monkeypatch: pytest.M
 
     world.rescore.assert_called_once()
     assert world.rescore.call_args.args == (CONN,)
+    summary = pass_summary(s.elapsed[:10])
     assert world.rescore.call_args.kwargs == {
         "to_version": s.version,
         "weights": s.candidate,
@@ -1102,11 +1118,17 @@ def test_pass_promotes_in_one_call_and_warns(world: World, monkeypatch: pytest.M
         "expect_active": SEED_VERSION,
         "dry_run": False,
         "deadline": ctx.deadline,
+        # The decision the promotion rests on, the one a `decide` would have stored.
+        "verdict": summary,
     }
-    # The promotion transaction marks the version and moves the pointer; the step does
-    # neither itself (a `decide` would also have to find a shadow).
+    # JSON a jsonb column can hold: plain values, no NaN or infinity (rescore_all refuses both).
+    assert_plain(world.rescore.call_args.kwargs["verdict"])
+    json.dumps(world.rescore.call_args.kwargs["verdict"], allow_nan=False)
+    # The promotion transaction marks the version, stores the verdict and moves the pointer;
+    # the step does none of it itself (a `decide` would also have to find a shadow).
     assert "decide" not in world.store.calls
     assert world.store.rows[s.version]["status"] == "promoted"
+    assert world.store.rows[s.version]["gate_report"]["verdict"] == summary
     assert world.store.active == s.version
     assert result.status == "ok"
     assert result.counts["promoted"] == 1
@@ -1451,7 +1473,8 @@ def test_logs_carry_no_ticker_or_weight(
     own = [r for r in caplog.records if r.name == "refit_step"]
     assert len(own) == 2  # one line per run
     first = own[0].getMessage()
-    assert s.version in first and "promoted" in first
+    # The step's name (the constant the notices tag with), the version, then the decision.
+    assert first.startswith(f"{constants.REFIT_STEP_NAME} {s.version}: promoted ")
     assert "rows_rescored=640" in first
     assert f"refit-{LAST_SESSION.isoformat()}" in own[1].getMessage()
     text = "\n".join(r.getMessage() for r in caplog.records)

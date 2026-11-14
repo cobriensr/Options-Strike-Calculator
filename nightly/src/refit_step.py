@@ -74,7 +74,12 @@ from lottery_weights import refit_version_id, score_frame
 from psycopg2.errors import LockNotAvailable
 
 from calendar_nyse import previous_trading_day, trading_days
-from constants import PROMOTION_CUTOFF_UTC, PROMOTION_ENABLED, PROMOTION_MIN_SECONDS
+from constants import (
+    PROMOTION_CUTOFF_UTC,
+    PROMOTION_ENABLED,
+    PROMOTION_MIN_SECONDS,
+    REFIT_STEP_NAME,
+)
 from monitoring import report_refit
 from outcome_check import recent_sessions
 from resources import connect_db
@@ -157,7 +162,8 @@ def run(ctx: StepContext) -> StepResult:
         else:
             version, decision = _judge_shadow(conn, ctx, active, shadow, counts)
     log.info(
-        "lottery-refit %s: %s%s",
+        "%s %s: %s%s",
+        REFIT_STEP_NAME,
         version,
         decision,
         "".join(f" {name}={n}" for name, n in counts.items()),
@@ -310,7 +316,7 @@ def _judge_shadow(
         return _reject(conn, shadow, verdict, summary, extras, counts)
     if not PROMOTION_ENABLED:
         return _mark_passed(conn, shadow, summary, extras, counts)
-    return _promote(conn, ctx, active, shadow, extras, counts)
+    return _promote(conn, ctx, active, shadow, summary, extras, counts)
 
 
 def _reject(
@@ -347,6 +353,7 @@ def _promote(
     ctx: StepContext,
     active: StoredVersion,
     shadow: StoredVersion,
+    summary: dict[str, Any],
     extras: dict[str, Any],
     counts: dict[str, int],
 ) -> tuple[str, str]:
@@ -356,8 +363,11 @@ def _promote(
     before both the step's deadline and the cutoff, and its rescore gets whichever of the
     two comes first as its deadline (`_promotion_window`). A rescore that then hits that
     deadline, or waits out the lock timeout, has rolled back whole, so the version is
-    still a shadow and the same verdict (the first ten sessions) comes round again.
-    Nothing here retries it.
+    still a shadow and the next night judges it again. Nothing here retries it.
+
+    `summary` is the decision the promotion rests on, the same one a pass stores through
+    `decide`. `rescore_all` merges it into `gate_report.verdict` in the promotion
+    transaction, so the decision that rewrites the live scores is on record with them.
 
     `rescore_all` needs a connection with no open transaction: `connect_db` gives an
     autocommit one, and everything this step ran on it before is a SELECT, so none is open.
@@ -375,6 +385,7 @@ def _promote(
             expect_active=active.version,
             dry_run=False,
             deadline=deadline,
+            verdict=summary,
         )
     except (RescoreDeadline, LockNotAvailable):
         counts["promotion_deferred"] += 1
@@ -427,8 +438,12 @@ def _session_entries(
 ) -> dict[date, dict[str, Any]]:
     """What is recorded for each session once it is evaluable: the rows both versions
     score with an outcome, whether that is enough to count as evaluated, each version's rho
-    on them and the session's fires. It is written once and never recomputed, so a late
-    enrich pass cannot change a session the decision may rest on."""
+    on them and the session's fires.
+
+    The record is a write-once snapshot for the owner reading `gate_report`: it is not what
+    the decision rested on. `decide_shadow` reads fresh frames every night, so a late
+    enrich pass can make a recorded session differ from what the decision then saw.
+    `gate_report.verdict`, stored with the decision, is the record of that."""
     candidate_scores = score_frame(candidate, eval_frame)
     active_scores = score_frame(active, eval_frame)
     outcome = eval_frame[OUTCOME_COLUMN]
