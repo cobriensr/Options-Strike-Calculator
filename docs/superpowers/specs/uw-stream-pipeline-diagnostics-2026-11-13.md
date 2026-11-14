@@ -358,7 +358,7 @@ The evidence is in the memory note `project_uw_stream_disconnects_2026_10_28`, u
 **Tests:**
 - calendar parity;
 - window edges: 09:30:59 false, 09:31 true, 15:58:59 true, 15:59 false; half-day 12:58:59 true, 12:59 false; a holiday, a weekend, both DST sides; a date in both lists counts as closed;
-- the rule: silent only inside the window, one event per incident, the alert floor, recovery ends it, the window close ends it (and ends an open Task 6 incident, so the next session's stick alerts again), a high-water carried across a reconnect, no twins = single-socket groups, a trade on either copy keeps the group healthy, and nothing for non-trade shards.
+- the rule: silent only inside the window, one event per incident, the alert floor, recovery ends it, the rule's incident ends at either window change, a Task 6 incident ends only at the open and only when older than `STUCK_S` (ruling R31), so a shard stuck through the close alerts afresh next session, a high-water carried across a reconnect, no twins = single-socket groups, a trade on either copy keeps the group healthy, and nothing for non-trade shards.
 
 **README:** in the "Stuck trade sockets" section, add the both-copies rule, the window, the calendar mirror and its parity test, and what is still not covered: the non-trade sockets, and a holiday missing from both calendars.
 

@@ -707,9 +707,11 @@ first finds the shard stuck until a trade frame arrives:
    shard's open gap), `twin_trade_frames` (the twin's frames in the last 60 s),
    `last_trade_utc` (the shard's last trade frame, or `null` if its connection
    has had none) and `forced_reconnects` (forced reconnects so far in this
-   incident, so `0` here). It means the shard has been up and silent for a
-   minute while its twin kept receiving: the backup for that half of the
-   tickers is gone, and the dedupe is passing the twin's copy alone.
+   incident: `0`, unless the alert floor held this alert back, in which case it
+   goes out after the first forced reconnect and reports 1 or more). It means
+   the shard has been up and silent for a minute while its twin kept receiving:
+   the backup for that half of the tickers is gone, and the dedupe is passing
+   the twin's copy alone.
 2. **The forced reconnect.** Straight after the alert the watchdog calls
    `Connector.force_reconnect`, which aborts the socket. The connector then
    reconnects and re-joins every channel, as for any drop (about 2 s), and the
@@ -780,13 +782,35 @@ Each stuck shard's handling, each trade group's check (below) and each pass is
 guarded on its own: a failure logs `stuck-socket check failed` at error level,
 one Sentry event a minute per shard or group, and the ones after it and the loop
 carry on. A forced reconnect only acts while the connector's receive loop is
-running, so a drop the server started is never labelled `forced`. Read the lines
-with:
+running, so a drop the server started is never labelled `forced`. A call that
+does nothing for that reason is not counted as a forced reconnect: no log line,
+no count and no cooldown, and the next pass that finds the shard stuck tries
+again. Read the lines with:
 
 ```bash
-railway logs -s uw-stream --filter "stuck trade socket" --json
-railway logs -s uw-stream --filter "option trades" --json
+railway logs -s uw-stream --filter '"trade socket"' --json
+railway logs -s uw-stream --filter '"option trades"' --json
+railway logs -s uw-stream --filter '"check failed"' --json
 ```
+
+Railway reads a quoted phrase as a substring and a bare word as a keyword, so the
+double quotes must reach it: the single quotes are the shell's. Each filter is a
+substring of the lines it is for. Every Sentry event is also written to the log as
+`<event> (context=...)`, so the event lines are among the matches.
+
+- `"trade socket"` catches every Task 6 line: `uw-stream trade socket stuck`,
+  `uw-stream trade socket still stuck after a forced reconnect`, `forcing
+  reconnect of a stuck trade socket`, `stuck trade socket recovered`, `stuck
+  trade socket alert held back` and `stuck trade socket incident ended by the
+  trade window`. It also catches the older twin-silence warning, `trade socket
+  went quiet while its twin kept receiving`.
+- `"option trades"` catches every Task 7 line: `option trades silent on every
+  copy` (and its `uw-stream` Sentry event), `option trades silent alert held
+  back`, `option trades resumed` and `option trades silent incident ended by the
+  trade window`.
+- `"check failed"` catches the guard lines neither of the others does:
+  `stuck-socket check failed` and `trade-window check failed`, and the older
+  `twin-silence check failed`.
 
 #### Every copy of a trade feed silent
 
@@ -818,6 +842,11 @@ pass the watchdog opens an incident:
   first pass if no trade has arrived since it started) and `twins_enabled`. Not
   every silence is a fault: a market-wide circuit-breaker halt stops the trades
   on every copy for real, so check for one before looking at the sockets.
+- The next step. If there is no market-wide halt and `connected` is `true` on
+  every socket of the group, redeploy (`railway redeploy -y`): the sockets are up
+  and nothing is arriving. If a socket shows `false`, it is down and
+  reconnecting: check its disconnect lines (`WS connection unavailable`, `WS
+  transport error`) and the reconnect storm alert first.
 - Nothing is forced. The alert is all this does: the owner asked to know, and a
   reconnect can be added later.
 - The incident ends when any socket of the group receives a trade frame. The
