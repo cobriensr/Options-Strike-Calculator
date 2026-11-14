@@ -88,7 +88,10 @@ pair, else `ok`), the day's non-zero counts and the seconds. A leftover flow pas
 (it can carry the Neon host) or row data.
 
 Import order: the lottery script before the silent boom one. The silent boom script puts
-<repo>/ml/src first on sys.path, which holds an older enrich_lottery_outcomes.py.
+<repo>/ml/src first on sys.path, so a module there with the same name as one in scripts/ would
+win over it. Importing the lottery script first keeps the scripts/ copy. ml/src holds no
+enrich_lottery_outcomes.py today (the legacy copy is gone): the order guards against a
+same-named module appearing there, and the image layout's collision test is the standing check.
 """
 
 from __future__ import annotations

@@ -1969,9 +1969,10 @@ def test_a_clean_night_reports_nothing(
 
 
 def test_the_shared_lottery_script_wins_over_the_older_ml_copy() -> None:
-    # The silent boom script puts ml/src at the front of sys.path, and ml/src holds an
-    # older enrich_lottery_outcomes.py: enrich_step must import the lottery script first.
-    # A fresh interpreter, because this process imported both long ago.
+    # The silent boom script puts ml/src at the front of sys.path: enrich_step must import the
+    # lottery script first, so the scripts/ copy stays first should a module of the same name
+    # ever appear in ml/src (the legacy copy is gone; the image layout's collision test is the
+    # standing guard). A fresh interpreter, because this process imported both long ago.
     env = {
         **os.environ,
         "PYTHONPATH": os.pathsep.join([str(NIGHTLY_DIR / "src"), str(SCRIPTS_DIR)]),
