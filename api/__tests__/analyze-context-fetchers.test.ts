@@ -467,16 +467,6 @@ describe('analyze-context-fetchers — early returns', () => {
     vi.mocked(getDb).mockReturnValue(sql as never);
     expect(await fetchMlCalibrationContext()).toBeNull();
   });
-
-  it('fetchEconomicCalendarContext returns "no events" message when DB rows empty and the table covers the date', async () => {
-    const sql = vi
-      .fn()
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([{ has_before: true, has_after: true }]);
-    vi.mocked(getDb).mockReturnValue(sql as never);
-    const result = await fetchEconomicCalendarContext('2026-04-29');
-    expect(result).toBe('No scheduled economic events today.');
-  });
 });
 
 // ── Economic calendar: an empty read is "none" only where the table covers ──
@@ -484,17 +474,22 @@ describe('analyze-context-fetchers — early returns', () => {
 describe('fetchEconomicCalendarContext — zero rows for the date', () => {
   const NONE = 'No scheduled economic events today.';
   const UNKNOWN =
-    'Economic events for this date: UNKNOWN (the economic_events table has no rows around this date, so it does not cover it; do not assume there are none)';
+    'Economic events for this date: UNKNOWN (the economic_events table does not cover this date; do not assume there are none; the Scheduled events line may still list events)';
+  const NOT_STORED_YET =
+    "Economic events for this date: UNKNOWN (today's calendar is fetched at about 9:30 ET and has not been stored yet; do not assume there are none; the Scheduled events line may still list events)";
+  // Short it.each labels, mapped to the sentences above.
+  const VERDICT = { none: NONE, UNKNOWN } as const;
 
   // 2026-11-13 03:00Z is 22:00 EST on 2026-11-12: the ET date and the UTC
-  // date differ, so "today" below can only be right if it is read in ET.
-  const NOW = new Date('2026-11-13T03:00:00.000Z');
+  // date differ, so "today" below can only be right if it is read in ET. It
+  // is also long after the 9:30 ET fetch window.
+  const NIGHT = new Date('2026-11-13T03:00:00.000Z');
   const ET_TODAY = '2026-11-12';
   const UTC_TODAY = '2026-11-13';
 
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ['Date'] });
-    vi.setSystemTime(NOW);
+    vi.setSystemTime(NIGHT);
   });
 
   afterEach(() => {
@@ -503,7 +498,7 @@ describe('fetchEconomicCalendarContext — zero rows for the date', () => {
 
   /** An sql mock: the date's own query returns no rows, then the coverage row. */
   function queueCoverage(
-    coverage: Array<{ has_before: boolean; has_after: boolean }>,
+    coverage: Array<{ prev: string | null; next: string | null }>,
   ) {
     const sql = vi
       .fn()
@@ -514,32 +509,130 @@ describe('fetchEconomicCalendarContext — zero rows for the date', () => {
   }
 
   it.each([
-    // [label, date, has_before, has_after, expected]
-    ['past date, rows on both sides', '2026-08-12', true, true, NONE],
-    // 2026-07-27: the week before has rows, the weeks after have none.
-    ['past date, rows before only (a gap)', '2026-07-27', true, false, UNKNOWN],
-    // Before the table's first row (2026-03-25): only later rows exist.
-    ['past date, rows after only', '2026-01-15', false, true, UNKNOWN],
-    ['past date, no rows either side', '2025-06-02', false, false, UNKNOWN],
-    // The table ends at today (the econ cron stores no future rows), so the
-    // after side is not required for today.
-    ['today (ET), rows before only', ET_TODAY, true, false, NONE],
-    ['today (ET), no rows before', ET_TODAY, false, false, UNKNOWN],
-    ['a later date, rows before only', '2026-11-16', true, false, NONE],
-    ['a later date, no rows before', '2026-11-16', false, false, UNKNOWN],
-  ] as const)('%s', async (_label, date, hasBefore, hasAfter, expected) => {
-    queueCoverage([{ has_before: hasBefore, has_after: hasAfter }]);
-    expect(await fetchEconomicCalendarContext(date)).toBe(expected);
+    // [label, verdict, date, prev, next]
+    ['rows 10 days apart', 'none', '2026-08-12', '2026-08-07', '2026-08-17'],
+    ['rows 11 days apart', 'UNKNOWN', '2026-08-12', '2026-08-07', '2026-08-18'],
+    [
+      '10 days across a month end',
+      'none',
+      '2026-07-31',
+      '2026-07-28',
+      '2026-08-07',
+    ],
+    // Daylight time ended 2026-11-01: the gap is calendar days, not 24 h.
+    [
+      '10 days across the DST change',
+      'none',
+      '2026-11-03',
+      '2026-10-30',
+      '2026-11-09',
+    ],
+    [
+      '11 days across the DST change',
+      'UNKNOWN',
+      '2026-11-03',
+      '2026-10-30',
+      '2026-11-10',
+    ],
+    // The 2026-07-22..09-07 hole: weeks between the neighbouring rows.
+    [
+      'the weeks-long hole',
+      'UNKNOWN',
+      '2026-08-12',
+      '2026-07-21',
+      '2026-09-08',
+    ],
+    ['no later row', 'UNKNOWN', '2026-11-05', '2026-11-03', null],
+    [
+      'no earlier row (before the table)',
+      'UNKNOWN',
+      '2026-01-15',
+      null,
+      '2026-01-16',
+    ],
+    ['no row either side (empty table)', 'UNKNOWN', '2026-08-12', null, null],
+  ] as const)(
+    'a past date with %s is %s',
+    async (_label, verdict, date, prev, next) => {
+      queueCoverage([{ prev, next }]);
+      expect(await fetchEconomicCalendarContext(date)).toBe(VERDICT[verdict]);
+    },
+  );
+
+  it.each([
+    // [days back to the latest earlier row, verdict]
+    [3, 'none'],
+    [10, 'none'],
+    [11, 'UNKNOWN'],
+  ] as const)(
+    'today after the fetch window, with its latest earlier row %i days back, is %s',
+    async (daysBack, verdict) => {
+      const prev = new Date(Date.UTC(2026, 10, 12 - daysBack))
+        .toISOString()
+        .slice(0, 10);
+      queueCoverage([{ prev, next: null }]);
+      expect(await fetchEconomicCalendarContext(ET_TODAY)).toBe(
+        VERDICT[verdict],
+      );
+    },
+  );
+
+  it('says UNKNOWN for today after the window when the table has no earlier row', async () => {
+    queueCoverage([{ prev: null, next: null }]);
+    expect(await fetchEconomicCalendarContext(ET_TODAY)).toBe(UNKNOWN);
   });
 
-  it('reads "today" in ET, not UTC, for the after-side exemption', async () => {
-    // UTC says 2026-11-13, so the ET date 2026-11-12 would be a past date
-    // that needs rows after it. In ET it is today and does not.
-    expect(UTC_TODAY).not.toBe(ET_TODAY);
-    queueCoverage([{ has_before: true, has_after: false }]);
+  it('judges today by its gap back alone, not by a row after it', async () => {
+    queueCoverage([{ prev: '2026-11-01', next: '2026-11-20' }]);
+    expect(await fetchEconomicCalendarContext(ET_TODAY)).toBe(UNKNOWN);
+    queueCoverage([{ prev: '2026-11-10', next: null }]);
     expect(await fetchEconomicCalendarContext(ET_TODAY)).toBe(NONE);
-    queueCoverage([{ has_before: true, has_after: false }]);
+  });
+
+  it.each([
+    ['08:00 ET', '2026-11-12T13:00:00.000Z'],
+    ['9:30 ET, the last minute of the cron window', '2026-11-12T14:30:00.000Z'],
+  ])(
+    'today at %s says the calendar is not stored yet, without a coverage query',
+    async (_label, at) => {
+      vi.setSystemTime(new Date(at));
+      const sql = vi.fn().mockResolvedValueOnce([]);
+      vi.mocked(getDb).mockReturnValue(sql as never);
+      expect(await fetchEconomicCalendarContext(ET_TODAY)).toBe(NOT_STORED_YET);
+      expect(sql).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('answers from the table again at 9:31 ET, once the fetch window is over', async () => {
+    vi.setSystemTime(new Date('2026-11-12T14:31:00.000Z'));
+    queueCoverage([{ prev: '2026-11-09', next: null }]);
+    expect(await fetchEconomicCalendarContext(ET_TODAY)).toBe(NONE);
+  });
+
+  it('says UNKNOWN for a later date without querying the coverage', async () => {
+    // 2026-11-13 is today in UTC but tomorrow in ET: reading "today" in UTC
+    // would let it through as today.
+    expect(UTC_TODAY).not.toBe(ET_TODAY);
+    for (const date of [UTC_TODAY, '2026-11-16']) {
+      const sql = vi.fn().mockResolvedValueOnce([]);
+      vi.mocked(getDb).mockReturnValue(sql as never);
+      expect(await fetchEconomicCalendarContext(date)).toBe(UNKNOWN);
+      expect(sql).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it('treats the ET date as today, not the UTC date', async () => {
+    // UTC says 2026-11-13, so a UTC reading would make 2026-11-12 a past date
+    // that needs a row after it. In ET it is today and does not.
+    queueCoverage([{ prev: '2026-11-10', next: null }]);
+    expect(await fetchEconomicCalendarContext(ET_TODAY)).toBe(NONE);
+    queueCoverage([{ prev: '2026-11-10', next: null }]);
     expect(await fetchEconomicCalendarContext('2026-11-11')).toBe(UNKNOWN);
+  });
+
+  it('says UNKNOWN when the coverage row is all nulls', async () => {
+    queueCoverage([{ prev: null, next: null }]);
+    expect(await fetchEconomicCalendarContext('2026-08-12')).toBe(UNKNOWN);
   });
 
   it('says UNKNOWN when the coverage query returns no row at all', async () => {
@@ -548,19 +641,14 @@ describe('fetchEconomicCalendarContext — zero rows for the date', () => {
   });
 
   it('runs the coverage query for the analysis date, after the date query', async () => {
-    const sql = queueCoverage([{ has_before: true, has_after: true }]);
+    const sql = queueCoverage([{ prev: '2026-08-10', next: '2026-08-14' }]);
     await fetchEconomicCalendarContext('2026-08-12');
     expect(sql).toHaveBeenCalledTimes(2);
     const [dateQuery, coverageQuery] = sql.mock.calls as Array<
       [TemplateStringsArray, ...unknown[]]
     >;
     expect(dateQuery?.slice(1)).toEqual(['2026-08-12']);
-    expect(coverageQuery?.slice(1)).toEqual([
-      '2026-08-12',
-      '2026-08-12',
-      '2026-08-12',
-      '2026-08-12',
-    ]);
+    expect(coverageQuery?.slice(1)).toEqual(['2026-08-12', '2026-08-12']);
   });
 
   it('returns null, reports to Sentry and counts the error when the coverage query rejects', async () => {

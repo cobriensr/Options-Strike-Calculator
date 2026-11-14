@@ -17,6 +17,7 @@ import { getDb, withDbRetry } from '../_lib/db.js';
 import { Sentry, metrics } from '../_lib/sentry.js';
 import { bulkUpsert } from '../_lib/bulk-upsert.js';
 import { classifyEconomicEvent } from '../_lib/economic-event-type.js';
+import { ECON_CALENDAR_FETCH_DONE_ET_MINUTES } from '../_lib/economic-event-features.js';
 import { uwFetch, withRetry, checkDataQuality } from '../_lib/api-helpers.js';
 import {
   withCronInstrumentation,
@@ -54,8 +55,9 @@ function isPreMarket(): boolean {
 
   const { hour, minute } = getETTime(now);
   const totalMin = hour * 60 + minute;
-  // 9:00 AM = 540, 9:30 AM = 570
-  return totalMin >= 540 && totalMin <= 570;
+  // 9:00 AM = 540. The window's end (9:30 AM) is shared with the analysis
+  // context, which reads an empty today as "not stored yet" until it passes.
+  return totalMin >= 540 && totalMin <= ECON_CALENDAR_FETCH_DONE_ET_MINUTES;
 }
 
 // ── Handler ─────────────────────────────────────────────────

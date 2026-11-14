@@ -69,6 +69,14 @@ export function summarizeDayEvents(
 export const MAX_PLAUSIBLE_EVENT_GAP_DAYS = 10;
 
 /**
+ * The ET minute of the day (9:30 AM = 570) by which the economic-calendar cron
+ * has stored today's rows: the end of its 9:00 to 9:30 ET window, in which its
+ * 9:25 ET fire lands. The cron gates on it (`fetch-economic-calendar.ts`), and
+ * the analysis reads an empty today as "not stored yet" until it has passed.
+ */
+export const ECON_CALENDAR_FETCH_DONE_ET_MINUTES = 570;
+
+/**
  * `days` when it is a plausible gap to the next event row (see
  * MAX_PLAUSIBLE_EVENT_GAP_DAYS), else null: no later row, or a gap long enough
  * to mean missing data.
