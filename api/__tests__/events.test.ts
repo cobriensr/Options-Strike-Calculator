@@ -633,6 +633,55 @@ describe('GET /api/events', () => {
     vi.unstubAllGlobals();
   });
 
+  // A hit never rewrites its key, and the TTL is 7 days: an entry whose `data`
+  // is not a list, answered as a hit, would serve `events: undefined` for the
+  // week. It is a miss, so the fetch below rewrites the key.
+  it.each([
+    ['no data field', { cachedAt: 1_700_000_000_000 }],
+    ['a null data field', { data: null, cachedAt: 1_700_000_000_000 }],
+    ['a data field that is not a list', { data: 'oops', cachedAt: 1 }],
+    ['a bare string', 'oops'],
+  ])(
+    'refetches and rewrites a cache entry with %s, and warns by message',
+    async (_name, entry) => {
+      process.env.FRED_API_KEY = 'fred-key';
+      vi.mocked(limiterRedis.get).mockImplementation((key: string) =>
+        Promise.resolve(key.startsWith(WINDOW_KEY_PREFIX) ? entry : null),
+      );
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve(OLD_RELEASE_DATES),
+      });
+      vi.stubGlobal('fetch', fetchMock);
+
+      const res = mockResponse();
+      await handler(mockRequest({ method: 'GET', query: { days: '5' } }), res);
+
+      const [key] = windowReads();
+      expect(key).toMatch(/^events:v3:\d{4}-\d{2}-\d{2}:5$/);
+      expect(res._status).toBe(200);
+      expect(res._headers['X-Cache']).toBe('MISS');
+      const json = res._json as { events: unknown; cached: boolean };
+      expect(json.cached).toBe(false);
+      expect(Array.isArray(json.events)).toBe(true);
+      expect(logger.warn).toHaveBeenCalledWith(
+        { key },
+        'Malformed events cache entry',
+      );
+      expect(fetchMarketEvents).toHaveBeenCalledOnce();
+      // The fetch rewrote the same key with a real list.
+      expect(windowWrites()).toEqual([
+        [
+          key,
+          { data: expect.any(Array), cachedAt: expect.any(Number) },
+          expect.anything(),
+        ],
+      ]);
+
+      vi.unstubAllGlobals();
+    },
+  );
+
   it('handles Finnhub fetch throwing an exception', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
     process.env.FRED_API_KEY = 'fred-key';

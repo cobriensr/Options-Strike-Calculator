@@ -671,11 +671,13 @@ function calendarDaysBetween(from: string, to: string): number {
  * has holes (2026-07-22 to 09-07 is empty) and begins on 2026-03-25, so an
  * empty read proves nothing without them.
  *
- * One rule decides it, the feature builder's: a gap of more than
- * MAX_PLAUSIBLE_EVENT_GAP_DAYS between consecutive rows means rows are
- * missing, not a quiet calendar (economic-event-features.ts). `prev` is the
- * latest row before the date, `next` the earliest after it. The table covers
- * the date when:
+ * One limit decides it, the same one the feature builder uses
+ * (MAX_PLAUSIBLE_EVENT_GAP_DAYS, economic-event-features.ts): a gap of more
+ * than that many days between consecutive rows means rows are missing, not a
+ * quiet calendar. The builder measures the gap from the date to the next row;
+ * this measures the stretch around the date, from `prev` (the latest row
+ * before it) to `next` (the earliest after it). The table covers the date
+ * when:
  * - the date is not after today in ET: the cron stores only today's events
  *   (`fetch-economic-calendar.ts`), so the table never holds a later date;
  * - there is a `prev`: with none, the date is before the table, or it is empty;

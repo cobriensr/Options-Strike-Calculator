@@ -97,14 +97,22 @@ export default withRequestScope(
       const cacheKey = `${REDIS_KEY}:${startDate}:${days}`;
       let hit: { events: EventItem[]; cachedAt: number | null } | null = null;
       try {
+        // `data` is untrusted: the entry comes from Redis, not from this code.
         const raw = await limiterRedis.get<
-          { data: EventItem[]; cachedAt: number } | EventItem[]
+          { data?: unknown; cachedAt: number } | EventItem[]
         >(cacheKey);
         if (raw) {
           // Support both new wrapper format and legacy plain array
-          hit = Array.isArray(raw)
-            ? { events: raw, cachedAt: null }
-            : { events: raw.data, cachedAt: raw.cachedAt };
+          if (Array.isArray(raw)) {
+            hit = { events: raw, cachedAt: null };
+          } else if (Array.isArray(raw.data)) {
+            hit = { events: raw.data, cachedAt: raw.cachedAt };
+          } else {
+            // A hit never rewrites its key and the TTL is 7 days, so serving
+            // this one would answer `events: undefined` all week. A miss
+            // refetches, and the write below replaces it.
+            logger.warn({ key: cacheKey }, 'Malformed events cache entry');
+          }
         }
       } catch (err) {
         // Redis unavailable — fetch fresh
