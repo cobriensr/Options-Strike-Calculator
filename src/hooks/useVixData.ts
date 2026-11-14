@@ -10,6 +10,7 @@ import {
 } from '../utils/vixStorage';
 import { to24Hour } from '../utils/calculator';
 import { convertCTToET, getETToday, isPastETDate } from '../utils/timezone';
+import { useETToday } from './useETToday';
 
 type AmPm = 'AM' | 'PM';
 type Timezone = 'ET' | 'CT';
@@ -26,8 +27,12 @@ export type OHLCField = 'smart' | 'open' | 'high' | 'low' | 'close';
  * date's VIX OHLC. A pick of the OHLC field re-runs only this hook's
  * effects, so the picked field shows.
  */
-function fillsDailyVix(ivMode: IVMode, selectedDate: string): boolean {
-  return ivMode === IV_MODES.VIX || isPastETDate(selectedDate);
+function fillsDailyVix(
+  ivMode: IVMode,
+  selectedDate: string,
+  etToday: string,
+): boolean {
+  return ivMode === IV_MODES.VIX || isPastETDate(selectedDate, etToday);
 }
 
 export interface UseVixDataReturn {
@@ -38,8 +43,18 @@ export interface UseVixDataReturn {
   setVixOHLC: (v: VIXDayData | null) => void;
   vixOHLCField: OHLCField;
   setVixOHLCField: (field: OHLCField) => void;
+  /**
+   * The date the calculator is on: the owner's pick, else today's ET date,
+   * which it follows across ET midnight.
+   */
   selectedDate: string;
+  /** Pick a date. Picking today's ET date means following today again. */
   setSelectedDate: (date: string) => void;
+  /**
+   * Today's ET date, from the one clock `selectedDate` follows, so App's
+   * "the selected date is past" check turns in the render the date moves.
+   */
+  etToday: string;
   fileInputRef: React.RefObject<HTMLInputElement | null>;
   handleFileUpload: (e: React.ChangeEvent<HTMLInputElement>) => Promise<void>;
 }
@@ -57,12 +72,26 @@ export function useVixData(
   const [vixOHLC, setVixOHLC] = useState<VIXDayData | null>(null);
   const [vixOHLCField, setVixOHLCField] = useState<OHLCField>('smart');
   // Today's ET date, the date isPastETDate and isBacktestMode judge "past"
-  // by. Seeded from the CT date, the 23:00-24:00 CT hour read as yesterday.
-  const [selectedDate, setSelectedDate] = useState(getETToday);
+  // by (the CT date read the 23:00-24:00 CT hour as yesterday). It turns over
+  // at ET midnight. App reads it from here, so the selected date and its
+  // "past" check share one clock and flip in the same render.
+  const etToday = useETToday();
+  // Only the owner's pick is state. null follows today, so the date moves at
+  // ET midnight with nothing to sync. A pick of today's date is null too (the
+  // owner is on today, so it keeps following); any other date stays put
+  // across midnight. '' is a pick: the date field is mid-edit.
+  const [pickedDate, setPickedDate] = useState<string | null>(null);
+  const selectedDate = pickedDate ?? etToday;
+  // Compare with the clock at the pick, not the render's etToday: in the
+  // second after midnight, before the clock ticks, a pick of the new today
+  // must still follow. Stable, as the state setter it replaces was.
+  const setSelectedDate = useCallback((date: string) => {
+    setPickedDate(date === getETToday() ? null : date);
+  }, []);
   const fileInputRef = useRef<HTMLInputElement>(null);
   // The effects below key on this, not on ivMode: on a past date a mode
   // toggle leaves it true, so it re-runs neither effect.
-  const fillsDaily = fillsDailyVix(ivMode, selectedDate);
+  const fillsDaily = fillsDailyVix(ivMode, selectedDate, etToday);
   // The date the re-apply effect last ran for (see that effect).
   const reapplyDate = useRef(selectedDate);
 
@@ -248,6 +277,7 @@ export function useVixData(
     setVixOHLCField,
     selectedDate,
     setSelectedDate,
+    etToday,
     fileInputRef,
     handleFileUpload,
   };

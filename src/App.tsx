@@ -28,7 +28,6 @@ import {
 } from './hooks/useHistoryData';
 import { useVix1dData } from './hooks/useVix1dData';
 import { buildSnapshotMeta, useSnapshotSave } from './hooks/useSnapshotSave';
-import { useETToday } from './hooks/useETToday';
 import { useEventsForDate } from './hooks/useEventsForDate';
 import { useComputedSignals } from './hooks/useComputedSignals';
 import { useChainData } from './hooks/useChainData';
@@ -457,6 +456,16 @@ export default function StrikeCalculator() {
     },
     [clearTimeEdited, setVixSelectedDate],
   );
+  // The date can also move under the owner: a date that follows today rolls
+  // at ET midnight. That is a new date like any other, so the time lock ends
+  // the same way (it froze the live sync for the date the owner set it on).
+  // A manual pick has cleared it already, so this is a no-op then. Declared
+  // before useAutoFill so its live-sync effect sees the cleared lock in the
+  // same commit.
+  const { selectedDate: vixSelectedDate } = vix;
+  useEffect(() => {
+    clearTimeEdited();
+  }, [vixSelectedDate, clearTimeEdited]);
   const handleResumeLive = useCallback(() => {
     clearTimeEdited();
     const now = new Date();
@@ -523,10 +532,10 @@ export default function StrikeCalculator() {
   // The analysis's one backtest flag: the selected date is past (ET). The
   // data note (useComputedSignals) and the context's isBacktest
   // (useAnalysisContext) both take it, so they can't disagree. It is read
-  // outside their memos from useETToday, which re-renders App at ET
-  // midnight, so a tab open across midnight turns it without a user action.
-  const etToday = useETToday();
-  const analysisIsBacktest = isPastETDate(vix.selectedDate, etToday);
+  // outside their memos, against the ET clock useVixData's selected date
+  // follows: at ET midnight a date that follows today moves with it in the
+  // same render, so a tab open across midnight stays on today, never "past".
+  const analysisIsBacktest = isPastETDate(vix.selectedDate, vix.etToday);
 
   // The selected date's market events, resolved once for everything that
   // reads them: the snapshot save's event-day flag and names, the analyze

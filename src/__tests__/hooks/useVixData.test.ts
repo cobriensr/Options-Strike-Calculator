@@ -119,6 +119,176 @@ describe('useVixData', () => {
   });
 
   // --------------------------------------------------------
+  // ET midnight while the app is open. The date follows today unless the
+  // owner picked another one, and the selected date and `etToday` (the one
+  // clock App judges "past" by) flip in the same render. Owner decision
+  // 2026-11-14.
+  // --------------------------------------------------------
+  describe('selected date across ET midnight', () => {
+    // The hook's clock ticks on setTimeout, so fake that as well as Date.
+    // Every case starts 30 s before an ET midnight; its timer is armed for
+    // 1 s past it, so 31 s lands just after.
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    const midnights = [
+      {
+        zone: 'EST (winter)',
+        start: '2026-11-10T04:59:30Z',
+        night: '2026-11-09',
+        morning: '2026-11-10',
+      },
+      {
+        zone: 'EDT (summer)',
+        start: '2026-07-15T03:59:30Z',
+        night: '2026-07-14',
+        morning: '2026-07-15',
+      },
+    ];
+
+    function crossMidnight() {
+      act(() => {
+        vi.advanceTimersByTime(31_000);
+      });
+    }
+
+    describe.each(midnights)('at the $zone midnight', (m) => {
+      beforeEach(() => {
+        vi.setSystemTime(new Date(m.start));
+      });
+
+      it('the default date follows to the new ET date', () => {
+        const { result } = renderWith();
+        expect(result.current.selectedDate).toBe(m.night);
+
+        crossMidnight();
+
+        expect(result.current.selectedDate).toBe(m.morning);
+        expect(isPastETDate(result.current.selectedDate)).toBe(false);
+      });
+
+      it('a picked past date stays put', () => {
+        const { result } = renderWith();
+        act(() => {
+          result.current.setSelectedDate('2026-03-11');
+        });
+
+        crossMidnight();
+
+        expect(result.current.selectedDate).toBe('2026-03-11');
+      });
+
+      it('a picked future date stays put', () => {
+        const { result } = renderWith();
+        act(() => {
+          result.current.setSelectedDate('2026-12-25');
+        });
+
+        crossMidnight();
+
+        expect(result.current.selectedDate).toBe('2026-12-25');
+      });
+
+      it("picking today's date follows the next midnight", () => {
+        const { result } = renderWith();
+        act(() => {
+          result.current.setSelectedDate(m.night);
+        });
+        expect(result.current.selectedDate).toBe(m.night);
+
+        crossMidnight();
+
+        expect(result.current.selectedDate).toBe(m.morning);
+      });
+
+      it("picking today's date after a past one follows again", () => {
+        const { result } = renderWith();
+        act(() => {
+          result.current.setSelectedDate('2026-03-11');
+        });
+        act(() => {
+          result.current.setSelectedDate(m.night);
+        });
+
+        crossMidnight();
+
+        expect(result.current.selectedDate).toBe(m.morning);
+      });
+
+      it('flips the selected date and etToday in the same render', () => {
+        const seen: Array<{ selectedDate: string; etToday: string }> = [];
+        renderHook(() => {
+          const vix = useVixData('vix', '10', 'AM', 'ET', vi.fn());
+          seen.push({ selectedDate: vix.selectedDate, etToday: vix.etToday });
+          return vix;
+        });
+        expect(seen.at(-1)).toEqual({
+          selectedDate: m.night,
+          etToday: m.night,
+        });
+
+        crossMidnight();
+
+        expect(seen.at(-1)).toEqual({
+          selectedDate: m.morning,
+          etToday: m.morning,
+        });
+        // No render in between showed the two apart.
+        expect(seen.filter((s) => s.selectedDate !== s.etToday)).toEqual([]);
+      });
+
+      it('keeps setSelectedDate the same function across the rollover', () => {
+        const { result } = renderWith();
+        const before = result.current.setSelectedDate;
+
+        crossMidnight();
+
+        expect(result.current.setSelectedDate).toBe(before);
+      });
+
+      it("fills the new date's daily VIX as a manual pick would, never the last date's", () => {
+        const setVixInput = vi.fn();
+        mockedLoadCached.mockReturnValue({
+          data: {
+            [m.night]: { open: 15.0, high: 16.0, low: 14.5, close: 15.5 },
+            [m.morning]: { open: 22.0, high: 23.0, low: 21.5, close: 22.5 },
+          },
+          source: 'test',
+        });
+        const { result } = renderWith({ setVixInput });
+        expect(result.current.selectedDate).toBe(m.night);
+        expect(result.current.vixOHLC?.open).toBe(15.0);
+        expect(setVixInput).toHaveBeenLastCalledWith('15.00');
+        setVixInput.mockClear();
+
+        crossMidnight();
+
+        expect(result.current.vixOHLC?.open).toBe(22.0);
+        expect(setVixInput).toHaveBeenCalledWith('22.00');
+        // The commit that moved the date still held the last date's OHLC.
+        // The re-apply effect must not write it onto the new date.
+        expect(setVixInput).not.toHaveBeenCalledWith('15.00');
+      });
+    });
+
+    it('keeps an emptied date field empty instead of snapping it to today', () => {
+      vi.setSystemTime(new Date('2026-11-10T15:00:00Z'));
+      const { result } = renderWith();
+
+      act(() => {
+        result.current.setSelectedDate('');
+      });
+
+      expect(result.current.selectedDate).toBe('');
+    });
+  });
+
+  // --------------------------------------------------------
   // Mount: cached data path
   // --------------------------------------------------------
   it('loads from localStorage cache when available', async () => {

@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
+import { dateTimeSection } from './helpers/calculator';
 import { buildApiFetchMock, MOCK_QUOTES } from './helpers/mock-fetch';
 
 // The browser clock is pinned, as entry-time.spec.ts does. The app opens on
@@ -18,9 +19,16 @@ const ET_MIDNIGHT_HOUR = '2026-11-14T05:01:00Z';
  * day (2026-11-11 is not an NYSE holiday).
  */
 const ET_MIDNIGHT_WEEKNIGHT = '2026-11-11T05:30:00Z';
+/**
+ * Monday 23:58 ET = 22:58 CT (EST/CST), two minutes before Tuesday begins in
+ * New York. Tuesday 2026-11-10 is a trading day.
+ */
+const TWO_MINUTES_BEFORE_ET_MIDNIGHT = '2026-11-10T04:58:00Z';
+const NIGHT_DATE = '2026-11-09';
+const NEXT_DATE = '2026-11-10';
 
-async function openPreMarket(page: Page, now: string) {
-  await page.clock.setFixedTime(new Date(now));
+/** Stub the API the pre-market section needs; `now` stamps /api/yesterday. */
+async function mockPreMarketApi(page: Page, now: string) {
   await page.addInitScript(
     buildApiFetchMock({
       '/api/quotes': { body: MOCK_QUOTES },
@@ -48,6 +56,12 @@ async function openPreMarket(page: Page, now: string) {
       },
     }),
   );
+}
+
+/** Open the app with the browser clock frozen at `now`. */
+async function openPreMarket(page: Page, now: string) {
+  await page.clock.setFixedTime(new Date(now));
+  await mockPreMarketApi(page, now);
   await page.goto('/');
 }
 
@@ -169,4 +183,55 @@ test.describe('Pre-Market Input in the ET-midnight hour', () => {
       await expectGapPreview(page);
     });
   }
+});
+
+/**
+ * A tab left open across ET midnight (23:00 CT). The clock is installed, not
+ * frozen, so the app's own midnight timer is armed; fastForward then jumps
+ * past the turn, as a laptop lid closed and reopened would. The date was
+ * today's, so it moves to the new ET date with no action, and the gap preview
+ * keeps its prior close. Left on the old date, it would turn "past" at
+ * 23:00 CT and lose the preview. Picking another date to stay on is covered
+ * in src/__tests__/hooks/useVixData.test.ts.
+ */
+test.describe('Pre-Market Input across ET midnight with the app open', () => {
+  const OVER_MIDNIGHT_MS = 3 * 60 * 1000;
+
+  test.beforeEach(async ({ page }) => {
+    await page.clock.install({
+      time: new Date(TWO_MINUTES_BEFORE_ET_MIDNIGHT),
+    });
+    await mockPreMarketApi(page, TWO_MINUTES_BEFORE_ET_MIDNIGHT);
+    await page.goto('/');
+    // The installed clock put the app on Monday, before the turn.
+    await expect(
+      dateTimeSection(page).getByLabel('Date', { exact: true }),
+    ).toHaveValue(NIGHT_DATE);
+  });
+
+  test('the date moves to the new ET date and the gap preview stays', async ({
+    page,
+  }) => {
+    await page.clock.fastForward(OVER_MIDNIGHT_MS);
+
+    await expectGapPreview(page);
+    await expect(
+      dateTimeSection(page).getByLabel('Date', { exact: true }),
+    ).toHaveValue(NEXT_DATE);
+  });
+
+  test('a manual time edit ends with the date it was made on', async ({
+    page,
+  }) => {
+    await dateTimeSection(page).getByLabel('Hour').selectOption('11');
+    const paused = page.getByText('Manual time — live sync paused');
+    await expect(paused).toBeVisible();
+
+    await page.clock.fastForward(OVER_MIDNIGHT_MS);
+
+    await expect(
+      dateTimeSection(page).getByLabel('Date', { exact: true }),
+    ).toHaveValue(NEXT_DATE);
+    await expect(paused).toBeHidden();
+  });
 });

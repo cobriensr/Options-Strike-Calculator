@@ -159,6 +159,7 @@ function createVix(
     setVixOHLCField: vi.fn(),
     selectedDate: '',
     setSelectedDate: vi.fn(),
+    etToday: '',
     fileInputRef: { current: null },
     handleFileUpload: vi.fn(),
     ...overrides,
