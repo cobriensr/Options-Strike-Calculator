@@ -110,9 +110,10 @@ class SocketStats:
         # one arrives, and again after ``session_start``.
         self.last_trade_at: float | None = None
         # Monotonic start and end of the latest silence, or None before the first.
-        # Written when a gap of ``SILENCE_S`` or more ends, and read by the twin's
-        # check (see ``silent_during``). Kept across ``session_start``: the span
-        # is still when the socket was quiet.
+        # Written when a gap of ``SILENCE_S`` or more ends. ``last_silence_end`` is
+        # read by the twin's check (``silent_during``); ``last_silence_start`` is
+        # kept so the span is whole for debugging and tests. Both are kept across
+        # ``session_start``: the span is still when the socket was quiet.
         self.last_silence_start: float | None = None
         self.last_silence_end: float | None = None
         # Trade-frame count per bucket, and the absolute bucket number each slot

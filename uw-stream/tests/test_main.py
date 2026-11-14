@@ -155,6 +155,90 @@ class _FakeLeaseSession:
         self.closed = True
 
 
+def _stub_pipeline(monkeypatch) -> None:
+    """Stub Sentry, the pool and the data pipeline so _run reaches its wait.
+
+    Every test that drives ``main._run`` past the lease step starts from this,
+    and overrides only what it needs. The lease is off, so the only things that
+    can wake _run are the stop Event and a background task finishing. The
+    pipeline stats task is stubbed like the other background tasks, and the
+    socket registry and twin map are swapped for empty ones so ``_run``'s
+    ``configure`` call leaves no ``conn{i}`` entries behind in the module for a
+    later test. ``_pipeline_leak_guard`` fails a test that skips it.
+    """
+    monkeypatch.setattr(main, "init_sentry", lambda: None)
+    monkeypatch.setattr(socket_stats, "_registry", {})
+    monkeypatch.setattr(socket_stats, "_twins", {})
+
+    async def _noop_pool() -> None:
+        return None
+
+    monkeypatch.setattr(main, "init_pool", _noop_pool)
+    monkeypatch.setattr(main, "close_pool", _noop_pool)
+    monkeypatch.setattr(main.settings, "ws_lease_enabled", False, raising=False)
+    monkeypatch.setattr(main, "_build_handlers", lambda _ch: {})
+
+    class _ForeverConnector:
+        def __init__(self, *_a, **kwargs) -> None:
+            # main pre-registers each shard via c.name before tasks start.
+            self.name = kwargs.get("name", "conn")
+
+        def abort(self) -> None: ...
+
+        async def run(self) -> None:
+            await asyncio.sleep(3600)
+
+    class _ForeverRouter:
+        def __init__(self, *_a, **_k) -> None: ...
+
+        async def run(self, _q) -> None:
+            await asyncio.sleep(3600)
+
+    async def _forever_bg() -> None:
+        await asyncio.sleep(3600)
+
+    monkeypatch.setattr(main, "Connector", _ForeverConnector)
+    monkeypatch.setattr(main, "Router", _ForeverRouter)
+    monkeypatch.setattr(main, "run_server", _forever_bg)
+    monkeypatch.setattr(main, "run_subscription_watchdog", _forever_bg)
+    monkeypatch.setattr(main, "run_pipeline_stats", _forever_bg)
+
+
+@pytest.fixture(autouse=True)
+def _pipeline_leak_guard(monkeypatch):
+    """Fail any test in this module that runs the real pipeline-stats task or
+    fills the socket registry or twin map.
+
+    A test that drives ``main._run`` past the lease step reaches
+    ``socket_stats.configure`` and starts ``run_pipeline_stats``; without
+    ``_stub_pipeline`` it leaves ``conn{i}`` entries in the module for every
+    later test. Each test starts with a fresh, empty registry and twin map and a
+    watched stats task, so nothing it does reaches the real ones, and a test
+    that skips ``_stub_pipeline`` leaves them filled or started. One that
+    isolates replaces them first, through the same ``monkeypatch``, so these
+    stay untouched. It checks its own objects, not the module's names, which
+    the test may have swapped by then.
+    """
+    registry: dict = {}
+    twins: dict = {}
+    real_stats = main.run_pipeline_stats
+    stats_started: list[str] = []
+
+    async def _tracking_stats() -> None:
+        stats_started.append("run_pipeline_stats")
+        await real_stats()
+
+    monkeypatch.setattr(socket_stats, "_registry", registry)
+    monkeypatch.setattr(socket_stats, "_twins", twins)
+    monkeypatch.setattr(main, "run_pipeline_stats", _tracking_stats)
+    yield
+    assert stats_started == [], "the test started the real run_pipeline_stats: use _stub_pipeline"
+    assert not registry, (
+        f"the test registered {sorted(registry)} in socket_stats: use _stub_pipeline"
+    )
+    assert not twins, f"the test linked twins {twins} in socket_stats: use _stub_pipeline"
+
+
 @pytest.mark.asyncio
 async def test_run_exits_nonzero_when_lease_acquire_times_out(monkeypatch):
     """The lease invariant: a booting daemon must NOT open any UW socket
@@ -232,46 +316,13 @@ async def test_run_wires_renewal_task_with_lease_lost_callback(monkeypatch):
     shutdown, and that a confirmed loss surfaces as SystemExit(1) so Railway
     restarts the container.
     """
-    monkeypatch.setattr(main, "init_sentry", lambda: None)
-
-    async def _noop_pool() -> None:
-        return None
-
-    monkeypatch.setattr(main, "init_pool", _noop_pool)
-    monkeypatch.setattr(main, "close_pool", _noop_pool)
-
+    # The data pipeline is stubbed so _run reaches the renewal wiring and
+    # asyncio.wait cleanly; the lease is switched back on below.
+    _stub_pipeline(monkeypatch)
     monkeypatch.setattr(main.settings, "ws_lease_enabled", True, raising=False)
     monkeypatch.setattr(main.settings, "kv_rest_api_url", "https://t.upstash.io", raising=False)
     monkeypatch.setattr(main.settings, "kv_rest_api_token", "tok", raising=False)
     monkeypatch.setattr(main.aiohttp, "ClientSession", lambda *a, **k: _FakeLeaseSession())
-
-    # Stub the data pipeline so _run reaches the renewal wiring + asyncio.wait
-    # cleanly without real connectors/router/health/watchdog.
-    monkeypatch.setattr(main, "_build_handlers", lambda _ch: {})
-
-    class _ForeverConnector:
-        def __init__(self, *_a, **kwargs) -> None:
-            # main pre-registers each shard via c.name before tasks start.
-            self.name = kwargs.get("name", "conn")
-
-        def abort(self) -> None: ...
-
-        async def run(self) -> None:
-            await asyncio.sleep(3600)
-
-    class _ForeverRouter:
-        def __init__(self, *_a, **_k) -> None: ...
-
-        async def run(self, _q) -> None:
-            await asyncio.sleep(3600)
-
-    async def _forever_bg() -> None:
-        await asyncio.sleep(3600)
-
-    monkeypatch.setattr(main, "Connector", _ForeverConnector)
-    monkeypatch.setattr(main, "Router", _ForeverRouter)
-    monkeypatch.setattr(main, "run_server", _forever_bg)
-    monkeypatch.setattr(main, "run_subscription_watchdog", _forever_bg)
 
     captured: dict[str, object] = {}
 
@@ -316,26 +367,9 @@ async def test_run_exits_nonzero_and_reports_on_task_crash(_reset_notify_state, 
     _run must capture it to Sentry AND exit non-zero. An exit 0 here would NOT
     trip Railway's ON_FAILURE restart policy, silently stopping ingestion.
     """
-    monkeypatch.setattr(main, "init_sentry", lambda: None)
-
-    async def _noop_pool() -> None:
-        return None
-
-    monkeypatch.setattr(main, "init_pool", _noop_pool)
-    monkeypatch.setattr(main, "close_pool", _noop_pool)
-
-    # Lease disabled so the ONLY thing that wakes _run is the crashing task.
-    monkeypatch.setattr(main.settings, "ws_lease_enabled", False, raising=False)
-    monkeypatch.setattr(main, "_build_handlers", lambda _ch: {})
-
-    class _ForeverConnector:
-        def __init__(self, *_a, **kwargs) -> None:
-            self.name = kwargs.get("name", "conn")
-
-        def abort(self) -> None: ...
-
-        async def run(self) -> None:
-            await asyncio.sleep(3600)
+    # _stub_pipeline leaves the lease off, so the ONLY thing that wakes _run is
+    # the crashing task.
+    _stub_pipeline(monkeypatch)
 
     class _CrashingRouter:
         def __init__(self, *_a, **_k) -> None: ...
@@ -343,13 +377,7 @@ async def test_run_exits_nonzero_and_reports_on_task_crash(_reset_notify_state, 
         async def run(self, _q) -> None:
             raise RuntimeError("router boom")
 
-    async def _forever_bg() -> None:
-        await asyncio.sleep(3600)
-
-    monkeypatch.setattr(main, "Connector", _ForeverConnector)
     monkeypatch.setattr(main, "Router", _CrashingRouter)
-    monkeypatch.setattr(main, "run_server", _forever_bg)
-    monkeypatch.setattr(main, "run_subscription_watchdog", _forever_bg)
 
     captured: list[tuple[BaseException, dict]] = []
     monkeypatch.setattr(main, "capture_exception", lambda exc, **kw: captured.append((exc, kw)))
@@ -372,41 +400,10 @@ async def test_run_exits_zero_on_normal_sigterm(monkeypatch):
     so _run returns cleanly (exit 0) — NOT SystemExit(1). Otherwise Railway's
     ON_FAILURE policy would restart-loop on every deploy.
     """
-    monkeypatch.setattr(main, "init_sentry", lambda: None)
-
-    async def _noop_pool() -> None:
-        return None
-
-    monkeypatch.setattr(main, "init_pool", _noop_pool)
-    monkeypatch.setattr(main, "close_pool", _noop_pool)
-
-    # Lease disabled (kill switch off) so there's no renewal task — the only
-    # way _run wakes is the stop Event we set below (simulating SIGTERM).
-    monkeypatch.setattr(main.settings, "ws_lease_enabled", False, raising=False)
-    monkeypatch.setattr(main, "_build_handlers", lambda _ch: {})
-
-    class _ForeverConnector:
-        def __init__(self, *_a, **kwargs) -> None:
-            self.name = kwargs.get("name", "conn")
-
-        def abort(self) -> None: ...
-
-        async def run(self) -> None:
-            await asyncio.sleep(3600)
-
-    class _ForeverRouter:
-        def __init__(self, *_a, **_k) -> None: ...
-
-        async def run(self, _q) -> None:
-            await asyncio.sleep(3600)
-
-    async def _forever_bg() -> None:
-        await asyncio.sleep(3600)
-
-    monkeypatch.setattr(main, "Connector", _ForeverConnector)
-    monkeypatch.setattr(main, "Router", _ForeverRouter)
-    monkeypatch.setattr(main, "run_server", _forever_bg)
-    monkeypatch.setattr(main, "run_subscription_watchdog", _forever_bg)
+    # _stub_pipeline leaves the lease off (kill switch off) so there's no
+    # renewal task — the only way _run wakes is the stop Event we set below
+    # (simulating SIGTERM).
+    _stub_pipeline(monkeypatch)
 
     # Capture every asyncio.Event _run constructs so we can fire the ``stop``
     # Event directly (a deterministic SIGTERM stand-in — real signal delivery
@@ -846,52 +843,6 @@ def test_build_handlers_keeps_shared_handler_names_out_of_channel_state(
 
 
 # --- drop reporter wiring (P2) -----------------------------------------------
-
-
-def _stub_pipeline(monkeypatch) -> None:
-    """Stub Sentry, the pool and the data pipeline so _run reaches its wait.
-
-    The lease is off, so the only things that can wake _run are the stop
-    Event and a background task finishing. The pipeline stats task is stubbed
-    like the other background tasks, and the socket registry and twin map are
-    swapped for empty ones so ``_run``'s ``configure`` call leaves no ``conn{i}``
-    entries behind in the module for a later test.
-    """
-    monkeypatch.setattr(main, "init_sentry", lambda: None)
-    monkeypatch.setattr(socket_stats, "_registry", {})
-    monkeypatch.setattr(socket_stats, "_twins", {})
-
-    async def _noop_pool() -> None:
-        return None
-
-    monkeypatch.setattr(main, "init_pool", _noop_pool)
-    monkeypatch.setattr(main, "close_pool", _noop_pool)
-    monkeypatch.setattr(main.settings, "ws_lease_enabled", False, raising=False)
-    monkeypatch.setattr(main, "_build_handlers", lambda _ch: {})
-
-    class _ForeverConnector:
-        def __init__(self, *_a, **kwargs) -> None:
-            self.name = kwargs.get("name", "conn")
-
-        def abort(self) -> None: ...
-
-        async def run(self) -> None:
-            await asyncio.sleep(3600)
-
-    class _ForeverRouter:
-        def __init__(self, *_a, **_k) -> None: ...
-
-        async def run(self, _q) -> None:
-            await asyncio.sleep(3600)
-
-    async def _forever_bg() -> None:
-        await asyncio.sleep(3600)
-
-    monkeypatch.setattr(main, "Connector", _ForeverConnector)
-    monkeypatch.setattr(main, "Router", _ForeverRouter)
-    monkeypatch.setattr(main, "run_server", _forever_bg)
-    monkeypatch.setattr(main, "run_subscription_watchdog", _forever_bg)
-    monkeypatch.setattr(main, "run_pipeline_stats", _forever_bg)
 
 
 def _sigterm_once_run_is_waiting(monkeypatch) -> None:

@@ -630,12 +630,15 @@ puts the first socket's frames strictly inside the second socket's gap. So
 the warning also carries `twin_also_silent`. It is `true` when the twin was
 itself silent during this gap: its latest silence ended after this gap
 began, or its own gap is still open (its last trade frame is 0.5 s or more
-before this frame). A warning with `twin_also_silent: true` is a loop stall
-seen by both sockets, not a quiet socket: check the minute line's
-`loop_lag_max_s`. `false` is the one-sided case the warning exists for. The
-flag is a hint, not proof: a twin silence that overlaps only the start of the
-gap also sets it, so compare `gap_s` with the twin's `max_trade_gap_s`. The
-twin's counts are kept for 120 s; a longer gap sets `twin_window_clipped` to
+before this frame). `true` points to a loop stall seen by both sockets rather
+than a quiet socket: check the minute line's `loop_lag_max_s`. `false` is the
+one-sided case the warning exists for. The flag is also set when the twin's
+silence overlapped only part of this gap: only its start (the twin's latest
+silence ended just after this gap began) or only its tail (the twin's last
+trade frame came a little over 0.5 s before this frame). If `loop_lag_max_s`
+is near 0 in that minute's line while `twin_also_silent` is `true`, it was not
+a stall: compare `gap_s` with the twin's `max_trade_gap_s` in the same minute.
+The twin's counts are kept for 120 s; a longer gap sets `twin_window_clipped` to
 `true`, and `twin_trade_frames` then covers only the last 120 s. The warning
 is rate limited to one a minute per shard. Twin silences have no counter of
 their own: `silences` counts every gap of 0.5 s or more, twin or not. The
