@@ -953,6 +953,46 @@ async def test_run_starts_pipeline_stats_and_shutdown_cancels_it(_reset_notify_s
 
 
 @pytest.mark.asyncio
+async def test_run_registers_every_shard_and_its_twin_before_the_connectors_are_built(
+    _reset_notify_state, monkeypatch
+):
+    """The twin-silence check reads the twin's ring through the registry, so both
+    shards must be registered, and linked, before either connector exists.
+    """
+    import socket_stats
+
+    _stub_pipeline(monkeypatch)
+    monkeypatch.setattr(socket_stats, "_registry", {})
+    monkeypatch.setattr(socket_stats, "_twins", {})
+    # One option_trades channel, joined on conn0 and (the mirror) conn1.
+    monkeypatch.setattr(main.settings, "ws_channels", "option_trades:SPY")
+    monkeypatch.setattr(main.settings, "ws_redundant_option_trades", True)
+    built: list[tuple[str, list[str], str | None]] = []
+
+    class _RecordingConnector:
+        def __init__(self, *_a, **kwargs) -> None:
+            self.name = kwargs["name"]
+            built.append(
+                (self.name, list(socket_stats.all_stats()), socket_stats.twin_of(self.name))
+            )
+
+        def abort(self) -> None: ...
+
+        async def run(self) -> None:
+            await asyncio.sleep(3600)
+
+    monkeypatch.setattr(main, "Connector", _RecordingConnector)
+    _sigterm_once_run_is_waiting(monkeypatch)
+
+    await main._run()
+
+    assert built == [
+        ("conn0", ["conn0", "conn1"], "conn1"),
+        ("conn1", ["conn0", "conn1"], "conn0"),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_run_does_not_wait_on_a_pool_close_that_never_returns(
     _reset_notify_state, monkeypatch
 ):

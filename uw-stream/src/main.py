@@ -22,6 +22,7 @@ from uuid import uuid4
 import aiohttp
 
 import notify
+import socket_stats
 from bounded import run_bounded
 from channel_registry import handler_class_for_channel
 from config import settings
@@ -238,11 +239,15 @@ async def _run() -> None:
         # are unchanged. One socket dropping reconnects only its shard; the
         # others keep streaming.
         shards = settings.channel_shards
+        # Register every shard's frame counters and link the twin sockets (the
+        # two that join the same option_trades channels) before any connector
+        # runs, so each can read its twin's ring when it sees a silence.
+        socket_stats.configure(shards)
         connectors = [
             Connector(
                 channels=shard,
                 receive_queue=receive_queue,
-                name=f"conn{i}",
+                name=socket_stats.shard_name(i),
             )
             for i, shard in enumerate(shards)
         ]
