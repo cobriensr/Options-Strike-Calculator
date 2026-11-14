@@ -18,8 +18,9 @@ BaseClient._make_api_call, where every boto3 call to R2 or S3 ends, is replaced
 by a stub with its own message ("tests must not reach a production store"),
 reads included, when botocore imports. The guard section also wraps ml's
 utils.load_env if such a module is importable when this file loads. In this
-suite it is not (ml/src joins sys.path only later, from online_ticker_update),
-so the wrapper does nothing here and ml/conftest.py has the effect.
+suite it is not (ml/src joins sys.path only later, from
+backfill_lottery_scores), so the wrapper does nothing here and ml/conftest.py
+has the effect.
 
 Run the suite the way the test docstrings say, from the repo root:
 
@@ -144,10 +145,9 @@ _install_db_block()
 # their block, and a loader that returned no URL would end get_connection in
 # sys.exit before the attempt is recorded. The wrap happens here, at conftest
 # import, so it reaches only a module that is importable by then. ml's is. The
-# scripts suite puts ml/src on sys.path later (online_ticker_update does, and
-# lottery_scoring then imports the real utils), so there it stays unwrapped.
-# That leaves no R2 hole: utils/r2.py reads os.environ, which the fixture
-# below clears.
+# scripts suite puts ml/src on sys.path later (backfill_lottery_scores does),
+# so there it stays unwrapped. That leaves no R2 hole: utils/r2.py reads
+# os.environ, which the fixture below clears.
 _ENV_FILE_LOADERS = (("utils", "load_env"),)
 
 
