@@ -28,8 +28,13 @@
  * Not covered: DNS and UDP (they never open a TCP socket through this
  * method), child processes and `worker_threads` (they do not load `setup.ts`),
  * native addons, a custom `lookup` (the check is on the name, before lookup),
- * and what loopback reaches: a local Postgres, a dev server, or a proxy on
- * 127.0.0.1 that forwards off the machine. See the spec's "Network" section.
+ * what loopback reaches (a local Postgres, a dev server, or a proxy on
+ * 127.0.0.1 that forwards off the machine), and a socket adopted from a
+ * `net.BoundSocket`: Node takes its transport from the handle (`pipe =
+ * this[kBoundSource] && this._handle ? this._handle instanceof Pipe : !!path`,
+ * lib/net.js), so a truthy `path` on a TCP-bound one reads as IPC here and its
+ * host goes unchecked. Nothing in the repo uses `BoundSocket`. See the spec's
+ * "Network" section.
  * No env var, flag or per-file opt-out: a test that needs a server starts one
  * on 127.0.0.1, and a test of a client mocks it.
  */
