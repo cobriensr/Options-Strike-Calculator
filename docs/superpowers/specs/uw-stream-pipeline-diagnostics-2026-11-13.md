@@ -1,5 +1,5 @@
 ---
-status: Approved by owner 2026-11-13 ("yeah lets go"); deploy after 15:00 CT
+status: Approved by owner 2026-11-13 ("yeah lets go"); deploy after 15:00 CT. Tasks 1-5 live 2026-11-14 (commit 0ef13bd0). Task 6 approved 2026-11-14 ("yeah let's fix this gap"; chose alert + reconnect)
 ---
 
 # uw-stream: GEX pre-queue filter and pipeline diagnostics
@@ -31,7 +31,7 @@ The evidence is in the memory note `project_uw_stream_disconnects_2026_10_28`, u
   - no new `await`, and no log call per frame;
   - per-frame work is integer bumps, one compare, and at most one clock read the code already makes.
 - **No new env vars** (R7). Thresholds are module constants, with the values below.
-- **The new diagnostics are logs and `/metrics` only.** No new Sentry events.
+- **The new diagnostics are logs and `/metrics` only.** No new Sentry events. The one exception is Task 6's stuck-socket alert, by owner decision 2026-11-14.
 - **Every new dict is keyed by a closed set:** handler names or shard names (R1-style bound).
 - **Tests never open a network socket or a database.** The uw-stream conftest blocks both. Mock at the module boundary (R3), and cover failure paths (R4).
 - **Gate before every commit:**
@@ -52,6 +52,10 @@ The evidence is in the memory note `project_uw_stream_disconnects_2026_10_28`, u
 | `TWIN_MIN_FRAMES` | 10 | `socket_stats.py` | the twin must have received at least this many trade frames inside the gap for a warning |
 | bucket width | 0.1 s | `socket_stats.py` | trade-frame count ring resolution |
 | ring span | 1,200 buckets (120 s) | `socket_stats.py` | longest gap the twin count covers; longer gaps report `twin_window_clipped: true` |
+| `STUCK_S` | 60.0 | `stuck_sockets.py` | Task 6: a connected trade socket with no trade frame for this long (counted from its last trade frame, or from its session start if it has none) is a candidate |
+| `STUCK_TWIN_MIN_FRAMES` | 100 | `stuck_sockets.py` | Task 6: the twin must have received at least this many trade frames in the last `STUCK_S`. The quietest minute at lunch on 11-13 carried 3,938 trades for conn0's half and 6,407 for conn1's, about 40× this |
+| `STUCK_CHECK_INTERVAL_S` | 5.0 | `stuck_sockets.py` | Task 6: check period |
+| `FORCED_RECONNECT_COOLDOWN_S` | 300.0 | `stuck_sockets.py` | Task 6: at most one forced reconnect per shard per 5 min. At 12 per hour per stuck shard, two stuck shards plus normal drops stay under the storm alert's 40 per hour |
 
 ## Not in scope
 
@@ -59,7 +63,7 @@ The evidence is in the memory note `project_uw_stream_disconnects_2026_10_28`, u
 - Logging the Cloudflare ray/colo or the public egress IP at connect.
 - Memory gauges, or the `interval_ba` `_ticks` sweep.
 - Changing batch sizes, the DB pool size or queue sizes, or fixing the five-minute stall itself. This change measures it first.
-- A Sentry alert for socket silence.
+- A Sentry alert for a transient socket silence. Those stay log-only. A socket stuck for good alerts and reconnects (Task 6).
 - The TypeScript port (on hold).
 
 ## Task 1: GEX filter before the queue
@@ -244,6 +248,62 @@ The evidence is in the memory note `project_uw_stream_disconnects_2026_10_28`, u
 - the twin-silence warning;
 - how to read a silence against the dedupe's `single_copy_interval`. A silence with a matching rise in single copies means trades were lost on that socket. A silence with none means the socket was only delayed.
 
+## Task 6: alert on and reconnect a stuck trade socket
+
+**Why.** The twin-silence warning is checked only when the next trade frame ends a gap. A trade socket that stays connected but never delivers another trade frame raises nothing. The subscription watchdog checks only the `subscribed` flags, and `/healthz` uses the global `last_message_ts`, which other sockets keep fresh. The only sign today is one shard's `trade_frames: 0` in the minute line while its twin's is non-zero, and the backup stays lost until someone notices. The owner chose alert + reconnect (2026-11-14). During the reconnect, about 2 s, the twin carries every trade, so a false alarm costs nothing.
+
+**Commits** (≤5 files each):
+- **6a, detection and the reconnect primitive:**
+  - `uw-stream/src/socket_stats.py`
+  - `uw-stream/src/connector.py`
+  - `uw-stream/tests/test_socket_stats.py`
+  - `uw-stream/tests/test_connector.py`
+- **6b, the watchdog loop, wiring and docs:**
+  - `uw-stream/src/stuck_sockets.py` (new)
+  - `uw-stream/tests/test_stuck_sockets.py` (new)
+  - `uw-stream/src/main.py`
+  - `uw-stream/tests/test_main.py`
+  - `uw-stream/README.md`
+
+**Behavior:**
+- **`SocketStats` records its session start.** `session_start()` stamps `session_started_at` (monotonic) alongside clearing `last_trade_at`. This is cold path, once per connection.
+- **The stuck test, pure, in `socket_stats`** (no I/O). A shard is stuck at `now` when all of these hold:
+  - it has a twin;
+  - `state.connections[shard]` is true;
+  - its open gap, `now - (last_trade_at or session_started_at)`, is at least `STUCK_S`;
+  - the twin's trade frames in the last `STUCK_S`, counted with the existing ring (`trade_frames_between(now - STUCK_S, now)`), number at least `STUCK_TWIN_MIN_FRAMES`.
+  - It returns the shard, twin, gap and twin count, or nothing.
+- **`Connector.force_reconnect(reason)`:**
+  - marks the session as forced, then calls the existing `abort()`;
+  - the receive loop raises, and `run()`'s existing branch reconnects and re-joins every channel;
+  - the disconnect log line carries `forced: <reason>`, otherwise `null`, so drop statistics can leave forced drops out;
+  - the mark clears for the next session;
+  - a no-op when not connected, as `abort()` is.
+- **`run_stuck_socket_watchdog(connectors)`** is a background task started in `main._run` beside `run_pipeline_stats`, with the connectors keyed by name. Every `STUCK_CHECK_INTERVAL_S` it does the following:
+  - **Skip a pass whose own sleep overran** by `LOOP_LAG_FLAG_S` or more. After a loop stall, the first socket to resume drains its backlog before its twin's task runs, so the twin can look stuck for one pass.
+  - **For each stuck shard,** open an incident if none is open:
+    - one `capture_message("uw-stream trade socket stuck", level="warning", tags={"component": "stuck_sockets"}, context={...})`;
+    - context: shard, twin, `gap_s`, twin trade frames, last trade (UTC ISO, or null), `forced_reconnects`.
+  - **Force a reconnect** if the shard's last forced reconnect was at least `FORCED_RECONNECT_COOLDOWN_S` ago, or it has none. Log one warning, "forcing reconnect of a stuck trade socket", per forced reconnect.
+  - **Escalate once:** if an incident is still open at a check after at least one forced reconnect, send one more event per incident, "uw-stream trade socket still stuck after a forced reconnect", at level error.
+  - **End the incident** when the shard's `last_trade_at` is later than the incident's start (a trade frame arrived). Log "stuck trade socket recovered" with the duration and the reconnect count.
+  - Per-shard state lives in dicts keyed by shard name (a closed set).
+  - **Never kill the daemon.** Each pass is guarded like `pipeline_stats`: `except Exception` → `rate_limited_log.error(scope="stuck_sockets", kind="check")`. A cancel still ends the loop.
+- **Not covered, stated in the README:**
+  - both twins stuck at once (no twin to compare against);
+  - `WS_REDUNDANT_OPTION_TRADES=false` (no twins, so the watchdog does nothing);
+  - non-trade sockets (conn2-conn5).
+
+**Tests:**
+- the stuck test's edges: each threshold at and just under its value, no twin, not connected, gap from session start, twin under the minimum;
+- `force_reconnect` sets `forced` on the disconnect line and clears it for the next session, and is a no-op when not connected;
+- the loop: one event per incident, the cooldown, the one escalation, recovery ends the incident and a later stick opens a new one, the stall skip, a failing pass is logged and the next pass still runs, cancel ends it;
+- main wires it with the connectors by name, and the `_stub_pipeline` / leak guard in `test_main.py` covers the new task.
+
+**README:**
+- a "Stuck trade sockets" section: the rule, the thresholds, what the alert and the escalation mean, the `forced` field on the disconnect line, and what is not covered.
+- Fold in two wording fixes in the twin-silence section's `twin_also_silent` text: the tail case is "the twin's last trade frame came 0.5 s or more before this frame, after this gap began", not "a little over 0.5 s"; and the partial-overlap list adds "or only its middle".
+
 ## Data dependencies
 
 None. There are no migrations, tables, env vars or new external APIs. Logs go to Railway; `/metrics` is read with the existing `INTERNAL_METRICS_TOKEN`.
@@ -252,6 +312,7 @@ None. There are no migrations, tables, env vars or new external APIs. Logs go to
 
 - **Twin silence to Sentry?** Default no: log only. The mirror already covers the loss, and this is diagnosis.
 - **Emit the minute line when idle?** Default yes. It is a heartbeat and shows overnight loop lag, at 1,440 lines a day.
+- **A separate kill switch for Task 6's forced reconnects?** Default no (R7). Reconnects are bounded by the cooldown, and the twin carries trades during each one. `WS_REDUNDANT_OPTION_TRADES=false` turns it off along with the mirrors, and a redeploy of the previous commit removes it.
 
 ## Deploy
 

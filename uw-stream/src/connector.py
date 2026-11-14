@@ -156,6 +156,10 @@ class _SessionDiag:
     # ConnectionClosed carries its own copies in ``rcvd`` / ``sent``.
     close_rcvd: Close | None = None
     close_sent: Close | None = None
+    # Why ``force_reconnect`` dropped this socket, or None when it was a genuine
+    # drop. Lives here so the mark ends with the session: the next attempt starts
+    # with a fresh instance.
+    forced: str | None = None
 
 
 def _format_addr(addr: object) -> str | None:
@@ -325,6 +329,26 @@ class Connector:
         if ws is not None:
             ws.transport.abort()
 
+    def force_reconnect(self, reason: str) -> None:
+        """Drop the live socket on purpose, so ``run`` reconnects and re-joins every channel.
+
+        For ``stuck_sockets``: a trade socket that is up but delivers no trades.
+        The mark goes on the session first, then ``abort`` kills the transport.
+        The receive loop raises, and ``run``'s ordinary branch for that logs the
+        disconnect, backs off from 1 s and reconnects, as for any drop. The
+        disconnect line carries ``forced: <reason>`` (null for a genuine drop), so
+        statistics on drops can leave these out. The mark belongs to the session:
+        the next attempt starts with a fresh ``_SessionDiag``.
+
+        A no-op when this shard is not connected, so a call between sessions
+        neither aborts the last, dead socket nor marks the next session's drop as
+        forced. ``state.connections`` is the test, as for ``stuck_sockets``.
+        """
+        if not state.connections.get(self.name):
+            return
+        self._session_diag.forced = reason
+        self.abort()
+
     async def _connect_once(self) -> None:
         """Open one WS, join channels, drain messages until the socket dies.
 
@@ -397,7 +421,7 @@ class Connector:
             # The per-socket counters see every frame with that same clock read.
             # A new connection starts no gap: none is measured across a reconnect.
             on_frame = self._stats.on_frame
-            self._stats.session_start()
+            self._stats.session_start(session_start)
             try:
                 async for raw in ws:
                     frames += 1
@@ -580,6 +604,7 @@ class Connector:
             ),
             "local_addr": diag.local_addr,
             "remote_addr": diag.remote_addr,
+            "forced": diag.forced,
         }
 
     def _maybe_alert_storm(self) -> None:
