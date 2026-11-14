@@ -22,6 +22,13 @@
  *     With no earlier decision there is nothing to fill from.
  *   - Ceiling: a date decided after a later one (an old gap, volume rows
  *     that landed late) is never later than the earliest decision after it.
+ *   - Stale volume: a date is decided from the volume of the latest earlier
+ *     date that has any. When that date is earlier than the incumbent's own,
+ *     the incumbent's session has no volume rows (uw-stream was down for it)
+ *     and the decision starts from older volume. It is made anyway, as
+ *     the uw-stream copy does, and warned about (kind
+ *     `front_month_stale_volume`). The fill applies the rule to each date it
+ *     decides.
  *
  * Renew, fail, expire: there is no lease and nothing to expire. A writer
  * that dies before its insert leaves nothing; one that dies mid-fill leaves
@@ -39,7 +46,9 @@
  * window. Closing it would take a conditional insert; it is left open.
  *
  * `insertContractVolumes` and `insertFrontMonthRows` are the bulk inserts
- * the history seed (Phase 3) uses. They write `source = 'candles'`.
+ * the history seed (Phase 3) uses; the volume refresh
+ * (`futures-volume-refresh.ts`) writes through `insertContractVolumes` too.
+ * They write `source = 'candles'`.
  * Candle volume rows are DO NOTHING per contract, but never into a session
  * that has a `live` row: one source per (product, trade date), the first
  * writer wins. `fetchStoredFrontMonths` is its read of the decisions already
@@ -133,12 +142,16 @@ async function readStored(
 
 interface Inputs {
   incumbent: string | null;
+  /** The trade date of the incumbent's row. Null with no incumbent. */
+  incumbentDate: string | null;
   /**
    * The contract of the earliest decision after the date, the most the date
    * may take. Null: nothing is decided after it.
    */
   ceiling: string | null;
   volumes: Map<string, number>;
+  /** The trade date of the rows in `volumes`. Null with no volume. */
+  volumeDate: string | null;
   /**
    * The sessions between the incumbent and the date that have volume rows
    * and so no decision, oldest first. Empty with no incumbent.
@@ -150,10 +163,11 @@ interface Inputs {
  * What the decision for `tradeDate` starts from, in one round trip, as
  * four arms of one UNION ALL:
  *
- *   - `incumbent`: the contract of the latest decision before it;
+ *   - `incumbent`: the contract of the latest decision before it, and that
+ *     decision's trade date (`day`);
  *   - `ceiling`: the contract of the earliest decision after it;
  *   - `volume`: every volume row of the latest earlier trade date that has
- *     any (a weekend or holiday has none);
+ *     any (a weekend or holiday has none), each with that date (`day`);
  *   - `undecided`: the trade dates with volume rows after the incumbent's
  *     date and before this one. The incumbent is the latest decision before
  *     the date, so none of them has a decision row. With no incumbent the
@@ -168,7 +182,7 @@ async function readInputs(
   const rows = (await withDbRetry(
     () => sql`
       (SELECT 'incumbent' AS kind, contract, NULL::float8 AS volume,
-              NULL::text AS day
+              trade_date::text AS day
          FROM futures_front_month
         WHERE product = ${product} AND trade_date < ${tradeDate}::date
         ORDER BY trade_date DESC
@@ -180,7 +194,7 @@ async function readInputs(
         ORDER BY trade_date
         LIMIT 1)
       UNION ALL
-      SELECT 'volume', v.contract, v.volume::float8, NULL::text
+      SELECT 'volume', v.contract, v.volume::float8, v.trade_date::text
         FROM futures_contract_volume v
        WHERE v.product = ${product}
          AND v.trade_date = (SELECT max(trade_date)
@@ -209,15 +223,20 @@ async function readInputs(
 
   const inputs: Inputs = {
     incumbent: null,
+    incumbentDate: null,
     ceiling: null,
     volumes: new Map(),
+    volumeDate: null,
     undecided: [],
   };
   for (const r of rows) {
-    if (r.kind === 'incumbent') inputs.incumbent = r.contract;
-    else if (r.kind === 'ceiling') inputs.ceiling = r.contract;
+    if (r.kind === 'incumbent') {
+      inputs.incumbent = r.contract;
+      inputs.incumbentDate = r.day;
+    } else if (r.kind === 'ceiling') inputs.ceiling = r.contract;
     else if (r.kind === 'volume' && r.contract != null) {
       inputs.volumes.set(r.contract, Number(r.volume));
+      inputs.volumeDate = r.day;
     } else if (r.kind === 'undecided' && r.day != null) {
       inputs.undecided.push(r.day);
     }
@@ -295,10 +314,61 @@ function capAtCeiling(
 }
 
 /**
+ * Warns when the decision for `tradeDate` starts from volume older than the
+ * incumbent's own trade date: the incumbent's session has no volume rows
+ * (uw-stream was down for it), so the latest earlier date with volume is an
+ * older one. The decision is still made, as the uw-stream copy does it: there
+ * is no way to fetch the missing session here either, and refusing would
+ * leave the session's bars with no contract. A wrong pick is one session on
+ * the outgoing contract; the owner may re-decide it by hand. With no
+ * incumbent, or no volume at all, there is nothing to compare and nothing is
+ * reported (the cycle seed has its own warning).
+ */
+function warnIfVolumeStale(
+  product: FuturesRoot,
+  tradeDate: string,
+  inputs: Inputs,
+  decided: string,
+): void {
+  const { incumbent, incumbentDate, volumeDate } = inputs;
+  // ISO dates: the text order is the date order.
+  if (
+    incumbentDate == null ||
+    volumeDate == null ||
+    volumeDate >= incumbentDate
+  ) {
+    return;
+  }
+  const message =
+    "Front-month decided from volume older than the incumbent's trade date: the incumbent's own session has no volume rows";
+  logger.warn(
+    {
+      kind: 'front_month_stale_volume',
+      product,
+      tradeDate,
+      volumeDate,
+      incumbentDate,
+      incumbent,
+      decided,
+    },
+    message,
+  );
+  Sentry.captureMessage(message, {
+    level: 'warning',
+    tags: {
+      product,
+      trade_date: tradeDate,
+      kind: 'front_month_stale_volume',
+    },
+    extra: { volumeDate, incumbentDate, incumbent, decided },
+  });
+}
+
+/**
  * Decides one date from `inputs` and stores it: the cycle-seed warning,
- * `decideFrontMonth`, the ceiling, then the insert with ON CONFLICT DO
- * NOTHING and a read back, which returns the winner's contract if another
- * writer got there first.
+ * `decideFrontMonth`, the ceiling, the stale-volume warning, then the insert
+ * with ON CONFLICT DO NOTHING and a read back, which returns the winner's
+ * contract if another writer got there first.
  */
 async function decideAndStore(
   sql: Sql,
@@ -325,6 +395,7 @@ async function decideAndStore(
     ceiling,
     incumbent,
   );
+  warnIfVolumeStale(product, tradeDate, inputs, decided);
   await withDbRetry(
     () => sql`
       INSERT INTO futures_front_month (product, trade_date, contract, source)

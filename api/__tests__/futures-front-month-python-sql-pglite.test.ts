@@ -97,8 +97,12 @@ async function putVolumes(
 
 interface Inputs {
   incumbent: string | null;
+  /** The trade date of the incumbent's row. */
+  incumbentDate: string | null;
   ceiling: string | null;
   volumes: Record<string, number>;
+  /** The trade date of the rows in `volumes`. */
+  volumeDate: string | null;
   undecided: string[];
 }
 
@@ -112,17 +116,23 @@ async function readInputs(product: string, day: string): Promise<Inputs> {
   }>(SQL.inputs, [product, day]);
   const inputs: Inputs = {
     incumbent: null,
+    incumbentDate: null,
     ceiling: null,
     volumes: {},
+    volumeDate: null,
     undecided: [],
   };
+  const iso = (d: Date | null) => d?.toISOString().slice(0, 10) ?? null;
   for (const r of rows) {
-    if (r.kind === 'incumbent') inputs.incumbent = r.contract;
-    else if (r.kind === 'ceiling') inputs.ceiling = r.contract;
+    if (r.kind === 'incumbent') {
+      inputs.incumbent = r.contract;
+      inputs.incumbentDate = iso(r.day);
+    } else if (r.kind === 'ceiling') inputs.ceiling = r.contract;
     else if (r.kind === 'volume' && r.contract != null) {
       inputs.volumes[r.contract] = Number(r.volume);
+      inputs.volumeDate = iso(r.day);
     } else if (r.kind === 'undecided' && r.day != null) {
-      inputs.undecided.push(r.day.toISOString().slice(0, 10));
+      inputs.undecided.push(iso(r.day)!);
     }
   }
   inputs.undecided.sort();
@@ -184,8 +194,10 @@ describe('_INPUTS_SQL', () => {
   it('answers nothing on an empty database', async () => {
     expect(await readInputs('ES', '2026-11-06')).toEqual({
       incumbent: null,
+      incumbentDate: null,
       ceiling: null,
       volumes: {},
+      volumeDate: null,
       undecided: [],
     });
   });
@@ -263,9 +275,50 @@ describe('_INPUTS_SQL', () => {
 
     expect(await readInputs('ES', '2026-11-06')).toEqual({
       incumbent: 'ESZ6',
+      incumbentDate: '2026-11-04',
       ceiling: null,
       volumes: { ESZ6: 9 },
+      volumeDate: '2026-11-05',
       undecided: ['2026-11-05'],
+    });
+  });
+
+  it('names the incumbent’s date and the volume date: equal on a normal day and across a weekend', async () => {
+    await putFront('ES', '2026-11-06', 'ESZ6');
+    await putVolumes('ES', '2026-11-06', { ESZ6: 500, ESH7: 900 });
+
+    for (const asked of ['2026-11-07', '2026-11-09']) {
+      const inputs = await readInputs('ES', asked);
+      expect([inputs.incumbentDate, inputs.volumeDate], asked).toEqual([
+        '2026-11-06',
+        '2026-11-06',
+      ]);
+    }
+  });
+
+  it('names a volume date earlier than the incumbent’s when the incumbent’s own session has no volume rows: the stale shape', async () => {
+    await putFront('ES', '2026-11-05', 'ESZ6');
+    await putVolumes('ES', '2026-11-04', { ESZ6: 100, ESH7: 900 });
+
+    const inputs = await readInputs('ES', '2026-11-06');
+
+    expect(inputs.incumbentDate).toBe('2026-11-05');
+    expect(inputs.volumeDate).toBe('2026-11-04');
+    expect(inputs.volumes).toEqual({ ESZ6: 100, ESH7: 900 });
+  });
+
+  it('has no incumbent date without an incumbent and no volume date without volume', async () => {
+    await putFront('ES', '2026-11-05', 'ESZ6');
+    expect(await readInputs('ES', '2026-11-06')).toMatchObject({
+      incumbentDate: '2026-11-05',
+      volumeDate: null,
+    });
+
+    await pg.exec('TRUNCATE futures_contract_volume, futures_front_month');
+    await putVolumes('ES', '2026-11-05', { ESZ6: 1 });
+    expect(await readInputs('ES', '2026-11-06')).toMatchObject({
+      incumbentDate: null,
+      volumeDate: '2026-11-05',
     });
   });
 
@@ -346,12 +399,14 @@ describe('_INPUTS_SQL', () => {
       const latestVolDay = volDays.at(-1);
       const expected: Inputs = {
         incumbent: before.at(-1)?.[2] ?? null,
+        incumbentDate: before.at(-1)?.[1] ?? null,
         ceiling: after[0]?.[2] ?? null,
         volumes: Object.fromEntries(
           volumes
             .filter(([p, d]) => p === 'ES' && d === latestVolDay)
             .map(([, , c, v]) => [c, v]),
         ),
+        volumeDate: latestVolDay ?? null,
         undecided: before.length
           ? volDays.filter((d) => d > before.at(-1)![1])
           : [],

@@ -673,6 +673,133 @@ describe('ensureFrontMonth: the series only moves forward, whatever order dates 
   });
 });
 
+describe('ensureFrontMonth: a decision from stale volume is reported', () => {
+  // uw-stream down for all of D-1 leaves no volume rows for D-1, so D is
+  // decided from D-2's. It is still decided (fail-open: the uw-stream copy
+  // cannot fetch candles, and refusing would leave the session's bars with no
+  // contract) and reported by name. Twins of `TestEnsureFrontStaleVolume` in
+  // uw-stream/tests/test_futures_front_month.py.
+  const MESSAGE = expect.stringContaining('volume older than the incumbent');
+
+  it('reports nothing on a normal day, where the volume date is the incumbent’s date', async () => {
+    await putFront('ES', '2026-11-05', 'ESZ6');
+    await putVolumes('ES', '2026-11-05', { ESZ6: 500, ESH7: 900 });
+
+    await expect(ensureFrontMonth('ES', '2026-11-06', 'cron')).resolves.toBe(
+      'ESH7',
+    );
+
+    expect(mockWarn).not.toHaveBeenCalled();
+    expect(mockCaptureMessage).not.toHaveBeenCalled();
+  });
+
+  it('reports nothing on the Monday after a weekend: Friday’s decision and Friday’s volume are equal', async () => {
+    await putFront('ES', '2026-11-06', 'ESZ6');
+    await putVolumes('ES', '2026-11-06', { ESZ6: 500, ESH7: 900 });
+
+    await expect(ensureFrontMonth('ES', '2026-11-09', 'cron')).resolves.toBe(
+      'ESH7',
+    );
+
+    expect(mockWarn).not.toHaveBeenCalled();
+    expect(mockCaptureMessage).not.toHaveBeenCalled();
+  });
+
+  it('decides a missed session anyway, as before, and reports it by name with the product, the trade date, the volume date and the incumbent’s date', async () => {
+    await putFront('ES', '2026-11-05', 'ESZ6');
+    await putVolumes('ES', '2026-11-04', { ESZ6: 100, ESH7: 900 });
+    // uw-stream was down for all of 11-05: it has no volume rows.
+
+    await expect(ensureFrontMonth('ES', '2026-11-06', 'cron')).resolves.toBe(
+      'ESH7',
+    );
+
+    expect(
+      (await frontRows()).map((r) => [r.trade_date, r.contract, r.source]),
+    ).toEqual([
+      ['2026-11-05', 'ESZ6', 'live'],
+      ['2026-11-06', 'ESH7', 'cron'],
+    ]);
+    const fields = {
+      kind: 'front_month_stale_volume',
+      product: 'ES',
+      tradeDate: '2026-11-06',
+      volumeDate: '2026-11-04',
+      incumbentDate: '2026-11-05',
+      incumbent: 'ESZ6',
+      decided: 'ESH7',
+    };
+    expect(mockWarn).toHaveBeenCalledTimes(1);
+    expect(mockWarn).toHaveBeenCalledWith(fields, MESSAGE);
+    expect(mockCaptureMessage).toHaveBeenCalledTimes(1);
+    expect(mockCaptureMessage).toHaveBeenCalledWith(MESSAGE, {
+      level: 'warning',
+      tags: {
+        product: 'ES',
+        trade_date: '2026-11-06',
+        kind: 'front_month_stale_volume',
+      },
+      extra: {
+        volumeDate: '2026-11-04',
+        incumbentDate: '2026-11-05',
+        incumbent: 'ESZ6',
+        decided: 'ESH7',
+      },
+    });
+  });
+
+  it('reports once, with the decision: a later read of the stored row does not report again', async () => {
+    await putFront('ES', '2026-11-05', 'ESZ6');
+    await putVolumes('ES', '2026-11-04', { ESZ6: 100, ESH7: 900 });
+
+    await ensureFrontMonth('ES', '2026-11-06', 'cron');
+    await ensureFrontMonth('ES', '2026-11-06', 'script');
+
+    expect(mockCaptureMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('has nothing to be older than with no incumbent, so it reports no stale volume (the cycle seed has its own report)', async () => {
+    await putVolumes('ES', '2026-11-04', { ESZ6: 900, ESH7: 100 });
+
+    await expect(ensureFrontMonth('ES', '2026-11-06', 'cron')).resolves.toBe(
+      'ESZ6',
+    );
+
+    expect(mockWarn).not.toHaveBeenCalled();
+    expect(mockCaptureMessage).not.toHaveBeenCalled();
+  });
+
+  it('applies the rule to each date the fill decides, not only the date asked for', async () => {
+    await putFront('ES', '2026-11-03', 'ESZ6');
+    await putVolumes('ES', '2026-11-02', { ESZ6: 900, ESH7: 100 });
+    // 11-03 and 11-04 have no volume rows; uw-stream is back by 11-05.
+    await putVolumes('ES', '2026-11-05', { ESZ6: 900, ESH7: 100 });
+
+    await expect(ensureFrontMonth('ES', '2026-11-06', 'cron')).resolves.toBe(
+      'ESZ6',
+    );
+
+    // 11-05 (the fill) starts from 11-02's volume, older than 11-03's own
+    // decision. 11-06 starts from 11-05's own: nothing to report.
+    expect((await frontRows()).map((r) => r.trade_date)).toEqual([
+      '2026-11-03',
+      '2026-11-05',
+      '2026-11-06',
+    ]);
+    expect(mockWarn).toHaveBeenCalledTimes(1);
+    expect(mockWarn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'front_month_stale_volume',
+        tradeDate: '2026-11-05',
+        volumeDate: '2026-11-02',
+        incumbentDate: '2026-11-03',
+      }),
+      MESSAGE,
+    );
+    expect(mockCaptureMessage).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('ensureFrontMonth: when the database fails', () => {
   const boom = new Error('connection lost');
 

@@ -44,6 +44,18 @@ The series stays forward-only whatever order dates are asked for in, and
   landed late) is never later than the earliest decision after it. A clamp is
   logged at error level and sent to Sentry by its own ``capture_message``
   (kind ``front_month_clamped``).
+- Stale volume: a date is decided from the volume of the latest earlier date
+  that has any. When that date is earlier than the incumbent's own, the
+  incumbent's session has no volume rows (uw-stream was down for it) and the
+  decision starts from older volume. It is made anyway (fail-open: this
+  service cannot fetch candles, and refusing would leave the session's bars
+  with no contract), logged at error level and sent to Sentry by its own
+  ``capture_message`` (kind ``front_month_stale_volume``). A wrong pick is one
+  session on the outgoing contract; the owner may re-decide it by hand. With
+  no incumbent, or no volume at all, there is nothing to compare and nothing
+  is reported (the cycle seed has its own report, kind
+  ``front_month_cycle_seed``). The fill applies the rule to each date it
+  decides.
 
 Renew, fail, expire: there is no lease and nothing to expire. A writer that
 dies before its insert leaves nothing; one that dies mid-fill leaves the
@@ -71,7 +83,7 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
-from typing import NamedTuple
+from typing import Literal, NamedTuple
 from zoneinfo import ZoneInfo
 
 import db
@@ -421,6 +433,12 @@ class _Inputs:
     # The sessions between the incumbent and the date that have volume rows and
     # so no decision, oldest first. Empty with no incumbent.
     undecided: list[date] = field(default_factory=list)
+    # The trade date of the incumbent's row, and of the volume rows in
+    # ``volumes``. None with no incumbent, and with no volume. A volume date
+    # earlier than the incumbent's date means the decision starts from volume
+    # that is older than the decision it follows.
+    incumbent_date: date | None = None
+    volume_date: date | None = None
 
 
 _STORED_SQL = """
@@ -430,17 +448,18 @@ WHERE product = $1 AND trade_date = $2::date
 """
 
 # Four arms of one UNION ALL, in one round trip, as in readInputs:
-#   incumbent: the contract of the latest decision before the date;
+#   incumbent: the contract of the latest decision before the date, and that
+#              decision's trade date (``day``);
 #   ceiling:   the contract of the earliest decision after it;
 #   volume:    every volume row of the latest earlier trade date that has any
-#              (a weekend or holiday has none);
+#              (a weekend or holiday has none), each with that date (``day``);
 #   undecided: the trade dates with volume rows after the incumbent's date and
 #              before this one. The incumbent is the latest decision before the
 #              date, so none of them has a decision row. With no incumbent the
 #              comparison is against NULL and the arm is empty: a cold start
 #              must not walk the whole volume history.
 _INPUTS_SQL = """
-(SELECT 'incumbent' AS kind, contract, NULL::bigint AS volume, NULL::date AS day
+(SELECT 'incumbent' AS kind, contract, NULL::bigint AS volume, trade_date AS day
    FROM futures_front_month
   WHERE product = $1 AND trade_date < $2::date
   ORDER BY trade_date DESC
@@ -452,7 +471,7 @@ UNION ALL
   ORDER BY trade_date
   LIMIT 1)
 UNION ALL
-SELECT 'volume', v.contract, v.volume, NULL::date
+SELECT 'volume', v.contract, v.volume, v.trade_date
   FROM futures_contract_volume v
  WHERE v.product = $1
    AND v.trade_date = (SELECT max(trade_date)
@@ -517,10 +536,12 @@ async def _read_inputs(product: str, day: date) -> _Inputs:
         kind = r["kind"]
         if kind == "incumbent":
             inputs.incumbent = r["contract"]
+            inputs.incumbent_date = r["day"]
         elif kind == "ceiling":
             inputs.ceiling = r["contract"]
         elif kind == "volume" and r["contract"] is not None:
             inputs.volumes[r["contract"]] = int(r["volume"])
+            inputs.volume_date = r["day"]
         elif kind == "undecided" and r["day"] is not None:
             inputs.undecided.append(r["day"])
     # SELECT DISTINCT promises no order, and the fill must run oldest first.
@@ -543,47 +564,62 @@ def _stored_canonical(product: str, day: date, stored: str) -> str:
     return name
 
 
+def _report(level: Literal["warning", "error"], kind: str, message: str, **fields: object) -> None:
+    """Log one decision-time report and send it to Sentry as its own event: the
+    SDK does not turn a log record into one. ``fields`` name what the report is
+    about (product, trade date, the contracts and dates involved)."""
+    detail = {"scope": _SCOPE, "kind": kind, **fields}
+    (log.error if level == "error" else log.warning)(message, extra=detail)
+    capture_message(message, level=level, tags={"component": _SCOPE, "kind": kind}, context=detail)
+
+
 async def _decide_and_store(product: str, day: date, inputs: _Inputs) -> str:
     """Decide one date from ``inputs`` and store it: the cycle-seed warning,
-    ``decide_front``, the ceiling, then the insert with ON CONFLICT DO NOTHING
-    and a read back, which returns the winner's contract if another writer got
-    there first."""
+    ``decide_front``, the ceiling, the stale-volume report, then the insert
+    with ON CONFLICT DO NOTHING and a read back, which returns the winner's
+    contract if another writer got there first."""
     if inputs.incumbent is None and not inputs.volumes:
-        log.warning(
+        _report(
+            "warning",
+            "front_month_cycle_seed",
             "No earlier front-month decision and no earlier volume: using the listing-cycle seed",
-            extra={
-                "scope": _SCOPE,
-                "kind": "front_month_cycle_seed",
-                "product": product,
-                "trade_date": day.isoformat(),
-            },
+            product=product,
+            trade_date=day.isoformat(),
         )
     wanted = decide_front(inputs.incumbent, inputs.volumes, product, day)
     decided, clamped = ceiling_contract(product, day, wanted, inputs.ceiling)
     if clamped:
         # Error, not warning: once the seed has run, a clamp means a late volume
         # row or a date decided out of order, and a log line alone goes unseen.
-        # So the line is also an explicit Sentry event: the SDK does not turn an
-        # error log record into one.
-        message = (
+        _report(
+            "error",
+            "front_month_clamped",
             "Front-month decision is later than the next stored decision: "
-            "using the next stored decision"
+            "using the next stored decision",
+            product=product,
+            trade_date=day.isoformat(),
+            wanted=wanted,
+            ceiling=decided,
+            incumbent=inputs.incumbent,
         )
-        detail = {
-            "scope": _SCOPE,
-            "kind": "front_month_clamped",
-            "product": product,
-            "trade_date": day.isoformat(),
-            "wanted": wanted,
-            "ceiling": decided,
-            "incumbent": inputs.incumbent,
-        }
-        log.error(message, extra=detail)
-        capture_message(
-            message,
-            level="error",
-            tags={"component": _SCOPE, "kind": "front_month_clamped"},
-            context=detail,
+    incumbent_date, volume_date = inputs.incumbent_date, inputs.volume_date
+    if incumbent_date is not None and volume_date is not None and volume_date < incumbent_date:
+        # The incumbent's own session has no volume rows (uw-stream was down
+        # for it), so the decision starts from volume older than the decision
+        # before it. It is made anyway: this service cannot fetch candles to
+        # fill the session, and refusing would leave its bars with no contract.
+        # A wrong pick is one session on the outgoing contract.
+        _report(
+            "error",
+            "front_month_stale_volume",
+            "Front-month decided from volume older than the incumbent's trade date: "
+            "the incumbent's own session has no volume rows",
+            product=product,
+            trade_date=day.isoformat(),
+            volume_date=volume_date.isoformat(),
+            incumbent_date=incumbent_date.isoformat(),
+            incumbent=inputs.incumbent,
+            decided=decided,
         )
     await _insert_decision(product, day, decided)
     winner = await _read_stored(product, day)

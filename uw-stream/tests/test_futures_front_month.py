@@ -272,6 +272,7 @@ class _Store:
     decision before the date, the ceiling the earliest after it, the volumes
     those of the latest earlier date that has any, and ``undecided`` the dates
     with volume rows after the incumbent's date (none without an incumbent).
+    ``incumbent_date`` and ``volume_date`` are the trade dates of those two.
     """
 
     def __init__(self) -> None:
@@ -308,6 +309,8 @@ class _Store:
             ceiling=self.front[(product, after[0])] if after else None,
             volumes=dict(self.volumes[(product, with_volume[-1])]) if with_volume else {},
             undecided=[d for d in with_volume if before and d > before[-1]],
+            incumbent_date=before[-1] if before else None,
+            volume_date=with_volume[-1] if with_volume else None,
         )
 
     async def insert_decision(self, product: str, day: date, contract: str) -> None:
@@ -397,14 +400,35 @@ class TestEnsureFront:
         assert extra["trade_date"] == "2026-11-10"
 
     @pytest.mark.asyncio
+    async def test_the_cycle_seed_is_sent_to_sentry_as_a_warning(self, store, logs):
+        """The SDK does not turn the log line into an event, so the seed sends
+        its own, as the TypeScript copy does."""
+        with patch("futures_front_month.capture_message") as capture:
+            assert await ffm.ensure_front("ES", _day("2026-11-10")) == "ESZ6"
+
+        capture.assert_called_once_with(
+            "No earlier front-month decision and no earlier volume: using the listing-cycle seed",
+            level="warning",
+            tags={"component": "futures_front_month", "kind": "front_month_cycle_seed"},
+            context={
+                "scope": "futures_front_month",
+                "kind": "front_month_cycle_seed",
+                "product": "ES",
+                "trade_date": "2026-11-10",
+            },
+        )
+
+    @pytest.mark.asyncio
     async def test_no_seed_warning_when_an_incumbent_or_volume_decides(self, store, logs):
         log, _ = logs
         store.decide("ES", "2026-11-05", "ESZ6")
-        await ffm.ensure_front("ES", _day("2026-11-06"))  # incumbent, no volume
         store.trade("NQ", "2026-11-05", {"NQZ6": 5})
-        await ffm.ensure_front("NQ", _day("2026-11-06"))  # volume, no incumbent
+        with patch("futures_front_month.capture_message") as capture:
+            await ffm.ensure_front("ES", _day("2026-11-06"))  # incumbent, no volume
+            await ffm.ensure_front("NQ", _day("2026-11-06"))  # volume, no incumbent
 
         assert log.warning.call_args_list == []
+        capture.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_refuses_a_date_after_the_current_trade_date_and_writes_nothing(
@@ -724,6 +748,135 @@ class TestEnsureFrontOrder:
         assert log.error.call_args.kwargs["extra"]["ceiling"] == "ESZ6"
 
 
+class TestEnsureFrontStaleVolume:
+    """A date decided from volume older than the incumbent's own trade date.
+
+    uw-stream down for all of D-1 leaves no volume rows for D-1, so D is
+    decided from D-2's. The decision is still made (fail-open: this service
+    cannot fetch candles, and refusing would leave the session's bars with no
+    contract) and reported by name. Twins of the PGlite block "ensureFrontMonth:
+    a decision from stale volume is reported" in
+    ``api/__tests__/futures-front-month-pglite.test.ts``.
+    """
+
+    _MESSAGE = (
+        "Front-month decided from volume older than the incumbent's trade date: "
+        "the incumbent's own session has no volume rows"
+    )
+
+    @staticmethod
+    def _detail(**overrides) -> dict:
+        return {
+            "scope": "futures_front_month",
+            "kind": "front_month_stale_volume",
+            "product": "ES",
+            "trade_date": "2026-11-06",
+            "volume_date": "2026-11-04",
+            "incumbent_date": "2026-11-05",
+            "incumbent": "ESZ6",
+            "decided": "ESH7",
+            **overrides,
+        }
+
+    @pytest.mark.asyncio
+    async def test_a_normal_day_reports_nothing(self, store, logs):
+        log, _ = logs
+        store.decide("ES", "2026-11-05", "ESZ6")
+        store.trade("ES", "2026-11-05", {"ESZ6": 500, "ESH7": 900})
+
+        with patch("futures_front_month.capture_message") as capture:
+            assert await ffm.ensure_front("ES", _day("2026-11-06")) == "ESH7"
+
+        capture.assert_not_called()
+        assert log.error.call_args_list == []
+
+    @pytest.mark.asyncio
+    async def test_monday_after_a_weekend_reports_nothing(self, store, logs):
+        log, _ = logs
+        # Friday's decision and Friday's volume: the weekend has neither.
+        store.decide("ES", "2026-11-06", "ESZ6")
+        store.trade("ES", "2026-11-06", {"ESZ6": 500, "ESH7": 900})
+
+        with patch("futures_front_month.capture_message") as capture:
+            assert await ffm.ensure_front("ES", _day("2026-11-09")) == "ESH7"
+
+        capture.assert_not_called()
+        assert log.error.call_args_list == []
+
+    @pytest.mark.asyncio
+    async def test_a_missed_session_is_decided_anyway_and_reported_by_name(self, store, logs):
+        log, _ = logs
+        store.decide("ES", "2026-11-05", "ESZ6")
+        store.trade("ES", "2026-11-04", {"ESZ6": 100, "ESH7": 900})
+        # uw-stream was down for all of 11-05: it has no volume rows.
+
+        with patch("futures_front_month.capture_message") as capture:
+            # Fail-open: the decision is what 11-04's volume gives, as before.
+            assert await ffm.ensure_front("ES", _day("2026-11-06")) == "ESH7"
+
+        assert store.dates() == {"2026-11-05": "ESZ6", "2026-11-06": "ESH7"}
+        detail = self._detail()
+        log.error.assert_called_once_with(self._MESSAGE, extra=detail)
+        capture.assert_called_once_with(
+            self._MESSAGE,
+            level="error",
+            tags={"component": "futures_front_month", "kind": "front_month_stale_volume"},
+            context=detail,
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_report_comes_once_with_the_decision_not_with_each_later_read(
+        self, store, logs
+    ):
+        store.decide("ES", "2026-11-05", "ESZ6")
+        store.trade("ES", "2026-11-04", {"ESZ6": 100, "ESH7": 900})
+
+        with patch("futures_front_month.capture_message") as capture:
+            await ffm.ensure_front("ES", _day("2026-11-06"))
+            await ffm.ensure_front("ES", _day("2026-11-06"))  # now stored
+
+        assert capture.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_with_no_incumbent_there_is_nothing_to_be_older_than(self, store, logs):
+        log, _ = logs
+        store.trade("ES", "2026-11-04", {"ESZ6": 900, "ESH7": 100})
+
+        with patch("futures_front_month.capture_message") as capture:
+            assert await ffm.ensure_front("ES", _day("2026-11-06")) == "ESZ6"
+
+        capture.assert_not_called()
+        assert log.error.call_args_list == []
+
+    @pytest.mark.asyncio
+    async def test_the_fill_applies_the_rule_to_each_date_it_decides(self, store, logs):
+        log, _ = logs
+        store.decide("ES", "2026-11-03", "ESZ6")
+        store.trade("ES", "2026-11-02", {"ESZ6": 900, "ESH7": 100})
+        # 11-03 and 11-04 have no volume rows; uw-stream is back by 11-05.
+        store.trade("ES", "2026-11-05", {"ESZ6": 900, "ESH7": 100})
+
+        with patch("futures_front_month.capture_message") as capture:
+            assert await ffm.ensure_front("ES", _day("2026-11-06")) == "ESZ6"
+
+        # 11-05 (the fill) starts from 11-02's volume, older than 11-03's own
+        # decision. 11-06 starts from 11-05's own: nothing to report.
+        assert store.dates() == {
+            "2026-11-03": "ESZ6",
+            "2026-11-05": "ESZ6",
+            "2026-11-06": "ESZ6",
+        }
+        assert capture.call_count == 1
+        context = capture.call_args.kwargs["context"]
+        assert context == self._detail(
+            trade_date="2026-11-05",
+            volume_date="2026-11-02",
+            incumbent_date="2026-11-03",
+            decided="ESZ6",
+        )
+        assert log.error.call_count == 1
+
+
 class TestEnsureFrontFillCap:
     @staticmethod
     def _backlog(store: _Store, sessions: int) -> None:
@@ -1005,10 +1158,10 @@ class TestReadInputs:
     @pytest.mark.asyncio
     async def test_reads_the_four_arms_in_one_statement_and_parses_them(self):
         rows = [
-            {"kind": "incumbent", "contract": "ESZ6", "volume": None, "day": None},
+            {"kind": "incumbent", "contract": "ESZ6", "volume": None, "day": date(2026, 11, 3)},
             {"kind": "ceiling", "contract": "ESH7", "volume": None, "day": None},
-            {"kind": "volume", "contract": "ESZ6", "volume": 500, "day": None},
-            {"kind": "volume", "contract": "ESH7", "volume": 900, "day": None},
+            {"kind": "volume", "contract": "ESZ6", "volume": 500, "day": date(2026, 11, 6)},
+            {"kind": "volume", "contract": "ESH7", "volume": 900, "day": date(2026, 11, 6)},
             {"kind": "undecided", "contract": None, "volume": None, "day": date(2026, 11, 5)},
             {"kind": "undecided", "contract": None, "volume": None, "day": date(2026, 11, 4)},
         ]
@@ -1024,17 +1177,23 @@ class TestReadInputs:
         assert inputs.volumes == {"ESZ6": 500, "ESH7": 900}
         # The SQL promises no order (SELECT DISTINCT); the fill needs oldest first.
         assert inputs.undecided == [date(2026, 11, 4), date(2026, 11, 5)]
+        # The trade dates of the incumbent's row and of the volume rows, which
+        # the stale-volume report compares.
+        assert inputs.incumbent_date == date(2026, 11, 3)
+        assert inputs.volume_date == date(2026, 11, 6)
 
     @pytest.mark.asyncio
     async def test_no_rows_is_no_incumbent_no_ceiling_no_volume_no_gap(self):
         with patch("futures_front_month.db.fetch", AsyncMock(return_value=[])):
             inputs = await ffm._read_inputs("ES", date(2026, 11, 9))
-        assert (inputs.incumbent, inputs.ceiling, inputs.volumes, inputs.undecided) == (
-            None,
-            None,
-            {},
-            [],
-        )
+        assert (
+            inputs.incumbent,
+            inputs.ceiling,
+            inputs.volumes,
+            inputs.undecided,
+            inputs.incumbent_date,
+            inputs.volume_date,
+        ) == (None, None, {}, [], None, None)
 
     @pytest.mark.asyncio
     async def test_the_sql_takes_the_incumbent_before_the_date_and_the_ceiling_after_it(self):
