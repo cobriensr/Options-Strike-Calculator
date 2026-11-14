@@ -919,25 +919,28 @@ def test_pinned_rescore_locks_the_active_pointer_first():
     # After the lock timeout, the pointer lock is the first statement.
     timeout, pin = db.statements[:2]
     assert (timeout.kind, pin.kind, pin.autocommit) == ("lock_timeout", "active", False)
-    assert pin.text.endswith("FOR SHARE")  # a promotion's FOR UPDATE waits
+    # FOR UPDATE, not FOR SHARE: two FOR SHARE writes would not exclude each
+    # other.
+    assert pin.text.endswith("FOR UPDATE")
     assert db.events == [
         "lock_timeout", "active", "page", "snapshot", "update", "commit",
     ]
     assert db.committed["pointers"] == {"active": SEED, "takeit": SEED}
 
 
-def test_an_unpinned_write_still_holds_the_pointer_for_share():
-    # A rescore with a version that is not the active one: it may write, but a
-    # promotion must not commit while it scans. Without the lock, pages read
-    # before a promotion's commit would keep its tags and later pages would be
-    # rewritten back, splitting the fires between versions.
+def test_an_unpinned_write_still_locks_the_pointer_for_update():
+    # A rescore with a version that is not the active one: it may write, but no
+    # other write (a promotion, another hand run) may commit while it scans.
+    # Without the lock, pages read before the other write's commit would keep
+    # its tags and later pages would be rewritten back, splitting the fires
+    # between versions.
     db = autocommit_db([fire(1, score=5)], active=CANDIDATE)
 
     result = rescore(db)
 
     pin = db.statements[1]
     assert (pin.kind, pin.autocommit) == ("active", False)
-    assert pin.text.endswith("FOR SHARE")
+    assert pin.text.endswith("FOR UPDATE")
     assert db.events == [
         "lock_timeout", "active", "page", "snapshot", "update", "commit",
     ]
@@ -1037,7 +1040,7 @@ def test_cli_write_never_moves_a_pointer(cli, monkeypatch, capsys):
     # statement.
     pin = db.statements[2]
     assert (pin.kind, pin.autocommit) == ("active", False)
-    assert pin.text.endswith("FOR SHARE")
+    assert pin.text.endswith("FOR UPDATE")
     assert db.committed["pointers"] == {"active": SEED, "takeit": SEED}
     assert scores(db) == {1: (9, SEED), 2: (None, SEED)}
     assert db.committed["snapshots"][0]["reason"] == "manual"
@@ -1110,8 +1113,8 @@ def test_cli_version_flag_scores_with_that_version(cli):
     ]
     assert db.of_kind("load_version")[0].params == (CANDIDATE,)
     # An explicit version is not pinned (it is not the active one here), but
-    # the write still holds the pointer, so no promotion commits mid-scan.
-    assert db.of_kind("active")[0].text.endswith("FOR SHARE")
+    # the write still locks the pointer, so no other write commits mid-scan.
+    assert db.of_kind("active")[0].text.endswith("FOR UPDATE")
     assert scores(db) == {1: (11, CANDIDATE), 2: (None, CANDIDATE)}
     assert db.committed["snapshots"][0]["reason"] == "boundary-fix"
     assert db.committed["pointers"]["active"] == SEED

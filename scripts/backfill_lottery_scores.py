@@ -7,18 +7,22 @@ This is the one rescore path. The nightly refit's promotion calls
 quintiles are right-closed: a value on a boundary goes to the lower bucket.
 (This script used to cut them left-closed with ``<``.)
 
-``rescore_all`` runs one transaction. It first sets a 60 s ``lock_timeout``, so
-a wait for any lock ends in ``LockNotAvailable`` instead of lasting until the
-watchdog. Then:
+``rescore_all`` runs one transaction. It first sets a 60 s ``lock_timeout``: a
+run that would wait longer for a lock fails with ``LockNotAvailable`` and rolls
+back, having written nothing. Then:
 
-1. It takes the ``active`` pointer row. A promotion (``expect_active`` set)
-   locks it ``FOR UPDATE`` and needs it to name ``expect_active``. Every other
-   write locks it ``FOR SHARE``, and a pinned one (``pin_active``: the CLI
-   rescoring with the active version) also needs it to name ``to_version``.
-   The two locks conflict, so a promotion runs wholly before or wholly after
-   any other writing rescore, and one that waited reads every fire afresh. The
-   guards in step 3 cover only the fires a run writes, so without this lock a
-   promotion committing mid-scan could leave the fires split between versions.
+1. Every writing run locks the ``active`` pointer row ``FOR UPDATE``: a
+   promotion, a pinned rescore and an explicit-version one alike. So two
+   writes never overlap. The guards in step 3 cover only the fires a run
+   writes, so without this lock a write committing mid-scan (a promotion, or
+   another hand run) could leave the fires split between versions. A
+   promotion (``expect_active`` set) needs the pointer to name
+   ``expect_active``. A pinned run (``pin_active``: the CLI rescoring with the
+   active version) needs it to name ``to_version``. Any other write only holds
+   it. A full rewrite can hold the lock for minutes, so a second write started
+   meanwhile waits 60 s and then fails as above: that is safe, and it can be
+   run again. Plain reads of the pointer, the Vercel loader's included, are
+   never blocked by the lock.
 2. It reads the fires in keyset pages of ``PAGE_ROWS`` by id and scores each
    page. A fire changes when its new score differs from ``score`` or its
    ``score_version`` is not ``to_version``. Fires scored before the store
@@ -61,7 +65,8 @@ a promotion moves the pointer between the CLI's read and its rescore, the
 rescore stops with ``PointerMoved`` and writes nothing. An explicit --version
 is not pinned. It names the scores wanted whatever the pointer says (a restore
 or a reshape), so it need not be the active one. Like any write, it still
-holds the pointer ``FOR SHARE``, so a promotion runs wholly before or after it.
+locks the pointer ``FOR UPDATE``, so it never overlaps a promotion or another
+write.
 
 Run --write outside 13:00-24:00 UTC on weekdays. It locks every fire it
 rewrites until it commits. In those hours the detect-lottery-fires cron inserts
@@ -117,13 +122,14 @@ WRITE_ROWS = 500
 # matches before a trailing newline, and Postgres's does not.
 _REASON = re.compile(r'[a-z][a-z0-9-]{1,40}')
 
-# Nothing else writes these rows in the windows the rescore runs in, so a lock
-# held longer than this is a stuck session. Failing fast beats waiting for the
-# watchdog.
+# A run that finds the pointer or a fire locked waits this long, then fails
+# with LockNotAvailable and rolls back with nothing written. A legitimate full
+# rewrite can hold the pointer for minutes, so a run started meanwhile times
+# out: that is safe, and it can be run again. Without a limit the wait would
+# last until the watchdog.
 _LOCK_TIMEOUT_SQL = "SET LOCAL lock_timeout = '60s'"
 _ACTIVE_SQL = "SELECT version FROM lottery_score_pointers WHERE name = 'active'"
 _ACTIVE_FOR_UPDATE_SQL = _ACTIVE_SQL + ' FOR UPDATE'
-_ACTIVE_FOR_SHARE_SQL = _ACTIVE_SQL + ' FOR SHARE'
 _STATUS_SQL = 'SELECT status FROM lottery_score_versions WHERE version = %s'
 _PAGE_SQL = (
     f"SELECT id, score, score_version, {', '.join(SCORE_COLUMNS)} "
@@ -213,9 +219,9 @@ def rescore_all(
     idle). Its autocommit setting is restored on return. ``reason`` goes on the
     snapshot rows. With ``expect_active`` set, this is a promotion: the
     ``active`` pointer must name ``expect_active`` and ``to_version`` must be a
-    shadow or passed candidate, else ``PointerMoved``. Any other write holds
-    the pointer ``FOR SHARE`` until it commits, and with ``pin_active`` the
-    pointer must also name ``to_version``, else ``PointerMoved``. The two are
+    shadow or passed candidate, else ``PointerMoved``. Every write locks the
+    pointer ``FOR UPDATE`` until it commits, and with ``pin_active`` the pointer
+    must also name ``to_version``, else ``PointerMoved``. The two are
     exclusive. ``deadline`` is a ``time.monotonic()`` value, checked before
     each page and each UPDATE.
 
@@ -242,11 +248,11 @@ def rescore_all(
                 # Postgres then refuses any write.
                 cur.execute('SET TRANSACTION READ ONLY')
             cur.execute(_LOCK_TIMEOUT_SQL)
-            # A READ ONLY transaction refuses FOR UPDATE and FOR SHARE, so a
-            # dry run reads the pointer without a lock.
+            # Every write locks the pointer until it commits, so no other write
+            # overlaps it: one that tries waits up to the lock timeout, then
+            # fails with nothing written. A READ ONLY transaction refuses the
+            # lock, so a dry run reads the pointer without one.
             if expect_active is not None:
-                # A promotion: no other writing rescore can start until this
-                # commits.
                 _check_active(
                     cur,
                     _ACTIVE_SQL if dry_run else _ACTIVE_FOR_UPDATE_SQL,
@@ -255,11 +261,8 @@ def rescore_all(
                 if dry_run:
                     _check_candidate(cur, to_version)
             elif not dry_run:
-                # Any other write: no promotion may run until this commits. A
-                # promotion's FOR UPDATE waits for this lock, and this waits
-                # for that one.
                 _check_active(
-                    cur, _ACTIVE_FOR_SHARE_SQL, to_version if pin_active else None
+                    cur, _ACTIVE_FOR_UPDATE_SQL, to_version if pin_active else None
                 )
             elif pin_active:
                 _check_active(cur, _ACTIVE_SQL, to_version)
