@@ -250,7 +250,7 @@ When adding a migration to `MIGRATIONS` in `api/_lib/db-migrations.ts`, you must
 ### Testing
 
 - **Tests ship with the feature** — see "Tests Are Mandatory (TDD Preferred)" above. Code without tests is not done.
-- **No test touches a real database or production store** — blocks in `src/__tests__/setup.ts` and the `ml/` and `scripts/` conftests fail the run that reaches a database or production store; `sidecar/` blocks databases only, `uw-stream/` and `nightly/` also block non-loopback sockets (R2 for nightly). Use pglite or `vi.mock`; a new suite or client extends its block. Known gaps: `docs/superpowers/specs/tests-no-db-2026-11-04.md`.
+- **No test touches a real database, production store or outside host** — blocks in `src/__tests__/setup.ts` (which also fails any non-loopback network connection) and the `ml/` and `scripts/` conftests fail the run that reaches a database or production store; `sidecar/` blocks databases only, `uw-stream/` and `nightly/` also block non-loopback sockets (R2 for nightly). Use pglite or `vi.mock`; a new suite or client extends its block. Known gaps: `docs/superpowers/specs/tests-no-db-2026-11-04.md`.
 - **Unit tests** — Vitest with `@testing-library/react`. Frontend tests mostly in `src/__tests__/` (some colocated: `src/hooks/__tests__/`, component `__tests__/` folders), backend tests in `api/__tests__/`.
 - **E2E tests** — Playwright with `@axe-core/playwright` for accessibility. Specs in `e2e/`. Use semantic selectors (`getByRole`, `getByLabel`, `data-testid`).
 - **Coverage** — `npm run test:coverage` for V8 coverage.
