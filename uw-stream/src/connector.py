@@ -335,7 +335,7 @@ class Connector:
         if ws is not None:
             ws.transport.abort()
 
-    def force_reconnect(self, reason: str) -> None:
+    def force_reconnect(self, reason: str) -> bool:
         """Drop the live socket on purpose, so ``run`` reconnects and re-joins every channel.
 
         For ``stuck_sockets``: a trade socket that is up but delivers no trades.
@@ -346,18 +346,22 @@ class Connector:
         statistics on drops can leave these out. The mark belongs to the session:
         the next attempt starts with a fresh ``_SessionDiag``.
 
+        Returns True when it acted: the receive loop was running and the abort was
+        issued. Returns False for a no-op, so the caller can tell a reconnect it
+        forced from one it only asked for (``stuck_sockets`` counts only the first).
         A no-op unless the receive loop is running (``_receiving``). A call between
         sessions neither aborts the last, dead socket nor marks the next session's
         drop as forced. It also leaves alone a drop that has already started: when
         the server closes the socket, or the receive loop raises, ``state.connections``
         stays true until ``run`` marks the shard down, after the ``async with`` has
         finished closing, and a mark set in that window would label a genuine drop
-        as forced.
+        as forced. A call whose abort raises propagates the error and returns nothing.
         """
         if not self._receiving:
-            return
+            return False
         self._session_diag.forced = reason
         self.abort()
+        return True
 
     async def _connect_once(self) -> None:
         """Open one WS, join channels, drain messages until the socket dies.

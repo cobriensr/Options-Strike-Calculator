@@ -159,13 +159,18 @@ def _feed(stats: socket_stats.SocketStats, times: list[float]) -> None:
 
 
 def _connectors(*names: str, non_trade: tuple[str, ...] = ()) -> dict[str, MagicMock]:
-    """Mock connectors by name. Each joins trade channels unless it is named in ``non_trade``."""
+    """Mock connectors by name. Each joins trade channels unless it is named in ``non_trade``.
+
+    ``force_reconnect`` returns True, "acted": the receive loop was running and the
+    abort was issued. A test of the no-op sets ``return_value = False``.
+    """
     connectors = {}
     for name in names or ("conn0", "conn1"):
         connector = MagicMock(spec=Connector)
         connector.channels = (
             ["net_flow:SPY"] if name in non_trade else ["option_trades:SPY", "option_trades:QQQ"]
         )
+        connector.force_reconnect.return_value = True
         connectors[name] = connector
     return connectors
 
@@ -263,7 +268,7 @@ class TestOpeningAnIncident:
         order: list[str] = []
         events.side_effect = lambda *_a, **_k: order.append("event")
         connectors = _connectors()
-        connectors["conn0"].force_reconnect.side_effect = lambda _r: order.append("force")
+        connectors["conn0"].force_reconnect.side_effect = lambda _r: order.append("force") or True
 
         _check(_Watch(), connectors, _NOW)
 
@@ -393,8 +398,11 @@ class TestForcingAndEscalating:
         assert _calls(events) == [_STUCK, _STILL_STUCK]
 
     def test_a_force_that_raises_is_logged_and_still_counts_against_the_cooldown(
-        self, events, errors
+        self, events, errors, logs, monkeypatch
     ):
+        # The error reaches Sentry through ``capture_message``, which would log
+        # through the captured ``log.warning``; stub it out.
+        monkeypatch.setattr("sentry_setup.capture_message", MagicMock())
         _stuck_at_now()
         connectors = _connectors()
         connectors["conn0"].force_reconnect.side_effect = RuntimeError("abort failed")
@@ -405,6 +413,10 @@ class TestForcingAndEscalating:
         _check(watch, connectors, _NOW + 5.0)
 
         assert connectors["conn0"].force_reconnect.call_count == 1
+        # The cooldown is stamped; a raise is no forced reconnect, so none is counted or logged.
+        assert watch.last_forced_at == {"conn0": _NOW}
+        assert watch.incidents["conn0"].forced == 0
+        assert _FORCING not in [m for m, _extra in logs["warning"]]
         # The event was sent before the call raised; the escalation is held by the floor.
         assert _calls(events) == [_STUCK]
         ((message, extra),) = errors
@@ -424,6 +436,79 @@ class TestForcingAndEscalating:
         ((message, extra),) = errors
         assert message == _CHECK_FAILED
         assert (extra["shard"], extra["err_type"]) == ("conn0", "KeyError")
+
+
+class TestAForceThatDidNothing:
+    """``force_reconnect`` returns False when it did nothing: the socket's receive loop
+    is not running, as in the seconds after a server-started close, before ``run`` marks
+    the shard down. The watchdog must leave no trace of a forced reconnect: no log
+    line, no count, no cooldown, so the next pass that finds the shard stuck and
+    receiving forces it.
+    """
+
+    def test_it_logs_no_forcing_line_counts_no_forced_reconnect_and_starts_no_cooldown(
+        self, events, logs
+    ):
+        _stuck_at_now()
+        connectors = _connectors()
+        connectors["conn0"].force_reconnect.return_value = False
+        watch = _Watch()
+
+        _check(watch, connectors, _NOW)
+
+        connectors["conn0"].force_reconnect.assert_called_once_with(_REASON)
+        assert _FORCING not in [m for m, _extra in logs["warning"]]
+        assert watch.incidents["conn0"].forced == 0
+        assert "conn0" not in watch.last_forced_at
+        # The opening event does not depend on the force.
+        assert _calls(events) == [_STUCK]
+        assert events.call_args.kwargs["context"]["forced_reconnects"] == 0
+
+    def test_the_next_pass_forces_once_the_socket_is_receiving(self, events, logs):
+        _stuck_at_now()
+        connectors = _connectors()
+        force = connectors["conn0"].force_reconnect
+        force.return_value = False
+        watch = _Watch()
+        _check(watch, connectors, _NOW)  # the call does nothing
+
+        force.return_value = True  # run has reconnected; the receive loop is running again
+        _check(watch, connectors, _NOW + 5.0)
+
+        assert force.call_count == 2
+        forcing = [extra for m, extra in logs["warning"] if m == _FORCING]
+        assert [e["forced_reconnect_number"] for e in forcing] == [1]
+        assert watch.incidents["conn0"].forced == 1
+        assert watch.last_forced_at == {"conn0": _NOW + 5.0}
+
+    def test_every_pass_that_does_nothing_is_retried_with_no_cooldown_between(self, events):
+        _stuck_at_now()
+        connectors = _connectors()
+        connectors["conn0"].force_reconnect.return_value = False
+        watch = _Watch()
+
+        for offset in (0.0, 5.0, 10.0):
+            _check(watch, connectors, _NOW + offset)
+
+        assert connectors["conn0"].force_reconnect.call_count == 3
+
+    def test_no_still_stuck_escalation_follows_a_reconnect_that_was_never_forced(
+        self, events, logs
+    ):
+        _stuck_at_now()
+        connectors = _connectors()
+        connectors["conn0"].force_reconnect.return_value = False
+        watch = _Watch()
+        _check(watch, connectors, _NOW)
+        # The twin keeps receiving; the floor has lifted by the later check.
+        _feed(socket_stats.get("conn1"), [_NOW + 280.25] * 150)
+
+        _check(watch, connectors, _NOW + FORCED_RECONNECT_COOLDOWN_S)
+
+        # Nothing was forced, so there is no "still stuck after a forced reconnect".
+        assert _calls(events) == [_STUCK]
+        assert watch.incidents["conn0"].forced == 0
+        assert _HELD not in [m for m, _extra in logs["warning"]]
 
 
 class TestOneShardsFailure:
@@ -1141,7 +1226,7 @@ class TestGroupAlertFloor:
 
 
 class TestTheWindowClosing:
-    """A trade-window change ends every open incident, so none carries across a session."""
+    """A trade-window change ends silent-feed incidents either way, and stuck-socket incidents only at the open."""
 
     def test_the_close_ends_an_open_silent_incident(self, wall_clock, events, logs):
         watch, connectors = _silent_setup(wall_clock)

@@ -22,7 +22,9 @@ shard stuck until a trade frame arrives:
 * **Open.** One Sentry warning, ``uw-stream trade socket stuck``, with the
   numbers measured.
 * **Force.** ``Connector.force_reconnect`` drops the socket, and ``run`` reconnects
-  and re-joins every channel. At most one per shard per
+  and re-joins every channel. It returns whether it acted; only a call that did
+  counts (a no-op, with the receive loop not running, leaves no line, no count and
+  no cooldown, and the next pass tries again). At most one per shard per
   ``FORCED_RECONNECT_COOLDOWN_S`` (300 s), counted across incidents. That is at
   most 12 an hour per stuck shard. The reconnect storm alert fires at 5 per shard
   an hour (40 with 8 shards), and forced reconnects count towards it like any
@@ -150,7 +152,7 @@ class _Incident:
     """One shard's current stuck spell, from the check that found it."""
 
     started_at: float
-    # Forced reconnects made during this incident.
+    # Forced reconnects made during this incident: ``force_reconnect`` calls that acted.
     forced: int = 0
     # The opening event went out.
     opening_sent: bool = False
@@ -178,13 +180,17 @@ class _Watch:
     """What the loop remembers between passes, keyed by shard name (or group name, where said)."""
 
     incidents: dict[str, _Incident] = field(default_factory=dict)
-    # Monotonic time of each shard's last forced reconnect; kept across incidents.
+    # Monotonic time of each shard's last forced reconnect, or last failed attempt
+    # at one (a ``force_reconnect`` that raised); kept across incidents. A call that
+    # did nothing leaves it alone (``_force_if_due``).
     last_forced_at: dict[str, float] = field(default_factory=dict)
     # Monotonic time of each shard's last Sentry event, of either kind; kept
     # across incidents. The alert floor reads it.
     last_alerted_at: dict[str, float] = field(default_factory=dict)
-    # Whether the trade window was open at the last pass. A change ends every open
-    # incident (``_end_for_window``). False before the first pass.
+    # Whether the trade window was open at the last pass. A change ends silent-feed
+    # (group) incidents either way, and stuck-socket incidents only at the open, and
+    # only those older than ``STUCK_S`` (``_end_for_window``, ruling R31). False
+    # before the first pass.
     in_window: bool = False
     # The group rule, keyed by group name (the primary shard's): the monotonic time
     # of the latest trade frame seen on any of its sockets, seeded at the group's
@@ -295,13 +301,27 @@ def _force_if_due(
 ) -> None:
     """Force a reconnect of ``found`` unless one was forced within the cooldown.
 
-    The bookkeeping comes before the call, so a call that raises still counts
-    against the cooldown rather than being retried every pass.
+    ``Connector.force_reconnect`` returns whether it acted. Only an acted call
+    counts as a forced reconnect: the cooldown stamp, ``incident.forced`` and the
+    ``forcing reconnect`` line all follow it. One that did nothing (the receive loop
+    is not running, as in the seconds after a server-started close, before ``run``
+    marks the shard down) leaves no trace, so the next pass that finds the shard
+    stuck and receiving forces it, and no escalation can follow a reconnect this
+    module never forced. A call that raises still counts against the cooldown, so it
+    is not retried every pass, but it is no forced reconnect: nothing is counted or
+    logged here, and the pass's guard logs the error.
     """
     last_forced = watch.last_forced_at.get(found.shard)
     if last_forced is not None and now - last_forced < FORCED_RECONNECT_COOLDOWN_S:
         return
     connector = connectors[found.shard]
+    try:
+        acted = connector.force_reconnect(FORCED_REASON)
+    except Exception:
+        watch.last_forced_at[found.shard] = now
+        raise
+    if not acted:
+        return
     watch.last_forced_at[found.shard] = now
     incident.forced += 1
     log.warning(
@@ -314,7 +334,6 @@ def _force_if_due(
             "forced_reconnect_number": incident.forced,
         },
     )
-    connector.force_reconnect(FORCED_REASON)
 
 
 def _end_recovered(watch: _Watch, now: float) -> None:
@@ -476,8 +495,8 @@ def _alert_silent_group(
                 },
             )
         return
-    incident.alerted = True
     capture_message(_GROUP_EVENT, level="error", tags=_TAGS, context=context)
+    incident.alerted = True
 
 
 def _check_group(watch: _Watch, group: _Group, now: float, in_window: bool) -> None:

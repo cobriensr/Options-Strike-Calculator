@@ -349,7 +349,8 @@ def find_stuck(now: float) -> list[StuckSocket]:
     shard with no session yet is not stuck.
 
     Two sockets both quiet are neither reported: each one's twin shows no frames.
-    That case has nothing to compare against, and the minute line shows it.
+    That case has nothing to compare against, and Task 7's group rule in
+    ``stuck_sockets`` alerts on it inside the trade window.
     """
     stuck: list[StuckSocket] = []
     for name, stats in _registry.items():

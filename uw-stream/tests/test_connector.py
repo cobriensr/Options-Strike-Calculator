@@ -1926,8 +1926,9 @@ async def test_force_reconnect_drops_the_socket_and_the_connector_reconnects(
     task = asyncio.create_task(connector.run())
     await _until(lambda: state.connections.get("conn0") is True)
 
-    connector.force_reconnect("stuck trade socket")
+    acted = connector.force_reconnect("stuck trade socket")
 
+    assert acted is True  # the receive loop was running and the abort was issued
     assert first.aborted == 1
     await _until(lambda: connector._ws is second and state.connections.get("conn0") is True)
     assert second.aborted == 0
@@ -1946,8 +1947,9 @@ async def test_force_reconnect_drops_the_socket_and_the_connector_reconnects(
 async def test_force_reconnect_before_any_connection_is_a_no_op() -> None:
     connector = Connector(channels=["flow-alerts"], receive_queue=asyncio.Queue(maxsize=1))
 
-    connector.force_reconnect("stuck trade socket")
+    acted = connector.force_reconnect("stuck trade socket")
 
+    assert acted is False
     assert connector._session_diag.forced is None
 
 
@@ -1960,8 +1962,9 @@ async def test_force_reconnect_while_not_connected_neither_aborts_nor_marks_the_
     connector._ws = ws  # the last connection, still held between sessions
     state.set_connection("conn0", False)
 
-    connector.force_reconnect("stuck trade socket")
+    acted = connector.force_reconnect("stuck trade socket")
 
+    assert acted is False
     assert ws.aborted == 0
     assert connector._session_diag.forced is None
 
@@ -2018,8 +2021,9 @@ async def test_force_reconnect_in_the_window_after_the_receive_loop_ended_does_n
     # The window: the receive loop is over, and the shard is still marked up.
     assert state.connections.get("conn0") is True
 
-    connector.force_reconnect("stuck trade socket")
+    acted = connector.force_reconnect("stuck trade socket")
 
+    assert acted is False  # not acted, so a watchdog must not count it as a forced reconnect
     assert ws.aborted == 0
     assert connector._session_diag.forced is None
     release.set()
@@ -2066,8 +2070,9 @@ async def test_force_reconnect_reconnects_a_real_websockets_connection(
         try:
             await _until(lambda: _connects() == 1, timeout_s=3.0)
 
-            connector.force_reconnect("stuck trade socket")
+            acted = connector.force_reconnect("stuck trade socket")
 
+            assert acted is True
             await _until(lambda: _connects() == 2, timeout_s=3.0)
         finally:
             task.cancel()
