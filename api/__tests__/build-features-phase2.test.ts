@@ -886,6 +886,23 @@ describe('engineerPhase2Features', () => {
   // ── Max pain ──────────────────────────────────────────────
 
   describe('max pain', () => {
+    // fetchMaxPain is mocked, but engineerPhase2Features goes on to
+    // addOptionsVolumeFeatures, which calls the real uwFetch with the global
+    // fetch. Left real, every test below that sets UW_API_KEY sent a request
+    // to api.unusualwhales.com (answered 401, swallowed by the try/catch).
+    // That call is the only fetch this block reaches, so one stub, answering an
+    // empty options-volume list, covers it.
+    beforeEach(() => {
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+        ok: true,
+        json: async () => ({ data: [] }),
+      } as Response);
+    });
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
     it('sets max_pain_0dte and max_pain_dist from API response', async () => {
       process.env.UW_API_KEY = 'test-key';
       const features = makeFeatures({ spx_open: 5800 });
@@ -908,6 +925,12 @@ describe('engineerPhase2Features', () => {
 
       expect(features.max_pain_0dte).toBe(5785);
       expect(features.max_pain_dist).toBe(-15); // 5785 - 5800
+      // The one request this run makes outside the mocks: options volume.
+      expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        expect.stringContaining('/stock/SPX/options-volume'),
+        expect.anything(),
+      );
     });
 
     it('uses nearest monthly expiry (not exact date match)', async () => {
@@ -975,6 +998,8 @@ describe('engineerPhase2Features', () => {
 
       expect(features.max_pain_0dte).toBeUndefined();
       expect(mockedFetchMaxPain).not.toHaveBeenCalled();
+      // No key, so options volume makes no request either.
+      expect(globalThis.fetch).not.toHaveBeenCalled();
     });
 
     it('handles empty max pain response', async () => {
