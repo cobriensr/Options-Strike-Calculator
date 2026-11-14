@@ -543,7 +543,7 @@ def storm(monkeypatch):
         clock=clock,
         captured=captured,
         threshold=connector_mod._RECONNECT_STORM_THRESHOLD,
-        window=connector_mod._STORM_ALERT_WINDOW_S,
+        window=RECONNECT_HORIZON.total_seconds(),
         reconnects=reconnects,
     )
     state.reconnect_times.clear()
@@ -575,11 +575,26 @@ def test_the_storm_alert_is_a_warning_with_the_count_and_threshold(storm) -> Non
     }
 
 
-def test_the_storm_window_is_the_horizon_reconnects_last_hour_counts_over() -> None:
-    """A shorter window would alert twice on reconnects the first alert counted."""
-    import connector as connector_mod
+def test_the_storm_window_follows_the_horizon_reconnects_last_hour_counts_over(
+    storm, monkeypatch
+) -> None:
+    """A window shorter than the count's horizon would alert twice on reconnects
+    the first alert counted. The horizon is patched to ten minutes, so a window
+    that is a constant of its own (an hour, half an hour) does not follow it."""
+    import state as state_mod
 
-    assert RECONNECT_HORIZON.total_seconds() == connector_mod._STORM_ALERT_WINDOW_S
+    monkeypatch.setattr(state_mod, "RECONNECT_HORIZON", timedelta(minutes=10))
+    storm.reconnects(storm.threshold)
+    storm.connector._maybe_alert_storm()
+    assert len(storm.captured) == 1
+
+    storm.clock.advance(599.0)
+    storm.connector._maybe_alert_storm()
+    assert len(storm.captured) == 1, "one second inside the horizon is the same incident"
+
+    storm.clock.advance(1.0)
+    storm.connector._maybe_alert_storm()
+    assert len(storm.captured) == 2, "the window is over at exactly the horizon"
 
 
 def test_reconnects_last_hour_counts_over_the_shared_horizon(monkeypatch) -> None:

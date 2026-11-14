@@ -15,8 +15,9 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
 # How far back ``reconnects_last_hour`` counts. The connector spaces its storm
-# alerts by this too (``_STORM_ALERT_WINDOW_S``), so a reconnect behind one alert
-# has aged out of the count by the time the next may go out.
+# alerts by this too (it reads ``RECONNECT_HORIZON`` in ``_maybe_alert_storm``),
+# so a reconnect behind one alert has aged out of the count by the time the next
+# may go out.
 RECONNECT_HORIZON = timedelta(hours=1)
 
 
@@ -110,7 +111,7 @@ class State:
     reconnect_times: deque[datetime] = field(default_factory=lambda: deque(maxlen=512))
     # ``time.monotonic()`` when the last reconnect-storm alert went out, None
     # before the first. One float for the whole process: the connector spaces
-    # alerts by ``_STORM_ALERT_WINDOW_S`` against it, across every shard.
+    # alerts by ``RECONNECT_HORIZON`` against it, across every shard.
     storm_alerted_at: float | None = None
     channels: dict[str, ChannelMetrics] = field(default_factory=dict)
     handlers: dict[str, HandlerMetrics] = field(default_factory=dict)

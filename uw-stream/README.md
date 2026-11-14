@@ -466,9 +466,9 @@ migration chain, and all schema changes go there.)
   when reconnects in the last hour, across all shards, reach 5 per shard
   (40 with 8 shards, 30 with the mirror sockets off). It fires once per
   incident: at most one an hour for the whole process
-  (`_STORM_ALERT_WINDOW_S` in `src/connector.py`, which is the
-  `RECONNECT_HORIZON` in `src/state.py` the count covers), and a storm still
-  going when the hour ends alerts again. A second incident inside that hour
+  (the connector reads `RECONNECT_HORIZON` in `src/state.py`, the horizon the
+  count covers, so the two cannot differ), and a storm still going when the
+  hour ends alerts again. A second incident inside that hour
   is not announced; its drops still log and show in `reconnects_last_hour`. A
   temporary `ws-canary` Railway service (`scripts/ws-canary/`) is measuring
   which network hop resets these connections.

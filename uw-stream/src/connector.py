@@ -22,10 +22,11 @@ import orjson
 import websockets
 from websockets.frames import Close
 
+import state as state_module
 from config import settings
 from logger_setup import log, scrub_log_tokens
 from sentry_setup import capture_exception, capture_message
-from state import RECONNECT_HORIZON, state
+from state import state
 
 # Backoff schedule. We start at 1s and double until 60s; reset to 1s on
 # any clean connect.
@@ -68,9 +69,11 @@ _PING_TIMEOUT_S = 20.0
 # Threshold for raising a Sentry warning if reconnects pile up.
 _RECONNECT_STORM_THRESHOLD = 5
 
+# Storm alert window (no constant; ``_maybe_alert_storm`` applies it).
 # One storm alert per incident: once one is sent, the next waits this long.
-# It is ``state.RECONNECT_HORIZON``, the horizon the count below is taken over,
-# so the two cannot drift apart.
+# The wait is ``state_module.RECONNECT_HORIZON``, the horizon the count is taken
+# over, read each time ``_maybe_alert_storm`` runs. It is not copied into a
+# constant here, so the two cannot drift apart.
 #
 # Why an hour. The test is ``state.reconnects_last_hour() >= threshold``, a
 # trailing 60-minute count. Once a burst crosses the threshold it stays crossed
@@ -95,7 +98,6 @@ _RECONNECT_STORM_THRESHOLD = 5
 # timestamp on each connector would let every shard send its own alert for the
 # one incident. The timestamp is ``state.storm_alerted_at``: one float, no
 # growth.
-_STORM_ALERT_WINDOW_S = RECONNECT_HORIZON.total_seconds()
 
 # A session must stay up at least this long to count as "healthy" and reset
 # the reconnect backoff. Mirrors the MIN_HEALTHY_SESSION_S used by the
@@ -579,8 +581,9 @@ class Connector:
         independent per-shard reconnect churn doesn't trip a storm alert tuned
         for a single socket — a real storm still crosses N*base quickly.
 
-        At most one alert per ``_STORM_ALERT_WINDOW_S``, process-wide (see that
-        constant). A check below the threshold does not start the window.
+        At most one alert per ``RECONNECT_HORIZON``, process-wide (see the
+        "Storm alert window" comment at the top of this module). A check below
+        the threshold does not start the window.
         """
         count = state.reconnects_last_hour()
         threshold = _RECONNECT_STORM_THRESHOLD * max(1, len(settings.channel_shards))
@@ -588,7 +591,7 @@ class Connector:
             return
         now = time.monotonic()
         last = state.storm_alerted_at
-        if last is not None and now - last < _STORM_ALERT_WINDOW_S:
+        if last is not None and now - last < state_module.RECONNECT_HORIZON.total_seconds():
             return
         state.storm_alerted_at = now
         capture_message(
