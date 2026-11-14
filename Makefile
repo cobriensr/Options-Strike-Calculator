@@ -108,7 +108,8 @@ help:
 	@echo "  make ingest                   CSV → parquet → Blob upload + delete CSV"
 	@echo "  make plots                    Regenerate visualizations only (no CSV needed)"
 	@echo "  make enrich                   Backfill lottery_finder_fires + silent_boom_alerts realized_*_pct from EOD parquet"
-	@echo "  make refit                    Refit lottery score weights from enriched fires + backfill score column"
+	@echo "  make refit                    Dry runs of the lottery refit + score backfill (the refit"
+	@echo "                                runs in the nightly service; nothing is written here)"
 	@echo "  make update                   Run after \`make nightly\`: refit + exit-policy search +"
 	@echo "                                feature audit + flow-inversion timing + tracker CSV. ~3-4m,"
 	@echo "                                designed to run nightly so day-over-day drift is captured."
@@ -216,10 +217,14 @@ enrich:
 refit:
 	@echo ""
 	@echo "════════════════════════════════════════════════════════════════"
-	@echo "  REFIT — recompute V2 ticker weights + backfill scores"
+	@echo "  REFIT (dry runs) — the refit itself runs in the nightly service"
 	@echo "════════════════════════════════════════════════════════════════"
-	@# TEMPORARY GUARD (2026-10-29): ml/src/lottery_refit_guard.py blocks lottery_scoring.py, online_ticker_update.py and backfill_lottery_scores.py (exit 0) until the outcome backfill and the two phase-4 fixes land, REMOVAL (b) and (c) in the guard's docstring (the anchor_leg_kind history, (a), is done).
-	$(PYTHON) ml/src/lottery_scoring.py
+	@# The refit runs in the nightly service (nightly/README.md, "Refit"), so
+	@# both commands here are dry runs: lottery_scoring.py needs --through and
+	@# prints the fit without storing it, and backfill_lottery_scores.py writes
+	@# nothing without --write. DATE is empty when no CSV is pending (a bare
+	@# `make update`), so --through falls back to today, as the fetch targets do.
+	$(PYTHON) ml/src/lottery_scoring.py --through $(or $(DATE),$(shell date +%Y-%m-%d))
 	$(PYTHON) scripts/backfill_lottery_scores.py
 
 update: enrich refit
@@ -249,18 +254,9 @@ update: enrich refit
 	@# only to docs/tmp/, never touches the score column. Adds ~2 min.
 	$(PYTHON) scripts/mine_outcome_patterns.py
 	$(PYTHON) scripts/score_lineage_audit.py
-	@# Online ticker weight EMA update (V2.2 Phase E.8, spec: lottery-v2-2-
-	@# profitability-improvements-2026-05-22). Blends today's per-ticker
-	@# outcomes into ticker_weights via exponential smoothing (alpha=0.05,
-	@# ±1 cap/night). Writes updated JSON back to ml/output/. Nothing re-renders
-	@# the TS mirror any more (the weights move to the Neon store, phase 4 D5),
-	@# so detect-lottery-fires no longer sees this output. Skip guard: < 100
-	@# enriched fires → no-op.
-	$(PYTHON) scripts/online_ticker_update.py
 	@# TAKE-IT drift monitor — scores freshly-promoted bundle against the
-	@# rolling enriched window. Runs AFTER the refit prereq so the AUC is
-	@# measured against the current weights. Writes docs/tmp/takeit-drift-
-	@# YYYY-MM-DD.md + ml/plots/takeit-drift/reliability_<feed>_<date>.png.
+	@# rolling enriched window. Writes docs/tmp/takeit-drift-YYYY-MM-DD.md
+	@# + ml/plots/takeit-drift/reliability_<feed>_<date>.png.
 	$(MAKE) --no-print-directory takeit-drift
 	@echo ""
 	@echo "  ✅ daily research artifacts:"
@@ -270,8 +266,6 @@ update: enrich refit
 	@echo "     docs/tmp/lottery-tracking.csv  (cumulative one-row-per-day)"
 	@echo "     docs/tmp/lottery-composite-candidates-YYYY-MM-DD.md  (mining)"
 	@echo "     docs/tmp/lottery-score-lineage-YYYY-MM-DD.md  (attribution)"
-	@echo "     docs/tmp/lottery-ticker-weight-history.csv  (EMA update log)"
-	@echo "     ml/output/lottery_score_weights.json  (UNCHANGED while ml/src/lottery_refit_guard.py blocks the refit)"
 	@echo "     docs/tmp/takeit-drift-YYYY-MM-DD.md  (drift monitor report)"
 	@echo "     ml/plots/takeit-drift/reliability_<feed>_YYYY-MM-DD.png"
 
