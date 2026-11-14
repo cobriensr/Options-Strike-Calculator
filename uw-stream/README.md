@@ -134,15 +134,17 @@ Single asyncio process:
    - `/metrics` has top-level fields `uptime_seconds`, `ws_connected`
      (all shards up), `connections` (per shard), `last_message_ts`,
      `reconnects_last_hour`, `receive_queue_depth`, `receive_queue_drops`
-     and `receive_queue_hwm`, plus two keyed sections: `channels` (per WS
+     and `receive_queue_hwm`, plus three keyed sections: `channels` (per WS
      channel joined, or echoed by UW, e.g. `net_flow:TSLA`: `subscribed`,
-     `last_message_ts`) and `handlers` (per handler queue, keyed by
+     `last_message_ts`), `handlers` (per handler queue, keyed by
      handler name: `queue_depth`, `drop_count`, `write_attempted`,
      `write_count`, `lost_rows`, `dupes_dropped`, `single_copy`, `filtered`,
      `flushes`, `flush_rows`, `flush_seconds`, `interval_flush_max_s`,
-     `interval_batch_max`, `interval_queue_hwm`; zeroed from boot). The
-     last six handler fields and `receive_queue_hwm` are the flush and
-     high-water numbers explained under Pipeline diagnostics below.
+     `interval_batch_max`, `interval_queue_hwm`; zeroed from boot) and
+     `sockets` (per shard, `conn0` to `conn7`: `frames`, `trade_frames`,
+     `silences` and `twin`). The last six handler fields and
+     `receive_queue_hwm` are the flush and high-water numbers, and `sockets`
+     the per-socket counters, explained under Pipeline diagnostics below.
      `lost_rows` counts the rows of flushes that failed after the DB
      retries; ON CONFLICT dedup skips don't count. `dupes_dropped` counts the
      second copies of a trade that the mirror sockets deliver and the
@@ -179,7 +181,9 @@ Single asyncio process:
    `VERCEL_NOTIFY_URL` and `INTERNAL_NOTIFY_SECRET` are set.
 8. **Pipeline stats** (`src/pipeline_stats.py`): samples event-loop lag and
    DB pool use four times a second and logs one line a minute with the
-   handlers' flush timing and queue high-waters (see Pipeline diagnostics).
+   handlers' flush timing and queue high-waters, and each socket's frame
+   counts and silences, which the connectors count (`src/socket_stats.py`).
+   See Pipeline diagnostics.
 
 ## Schema
 
@@ -518,6 +522,9 @@ label is missing from the sequence.
 | `flush_max_s`, `batch_max`       | In a handler entry: the longest single flush, and the most rows in one flush.                                                                                                                                |
 | `queue_hwm`                      | In a handler entry: the deepest the handler's queue got.                                                                                                                                                     |
 | `dropped`, `filtered`            | In a handler entry: payloads its queue dropped (backpressure), and payloads it discarded before the queue because they can never become rows.                                                                |
+| `sockets`                        | One entry per registered shard (`conn0` to `conn7`), idle ones too, keyed by shard name. The next two rows are its fields; the section below explains how to read them.                                          |
+| `frames`, `trade_frames`         | In a socket entry: frames received on that socket in the minute, and how many of them were option-trade frames (join acks and other channels are not).                                                           |
+| `max_trade_gap_s`, `silences`    | In a socket entry: the longest gap between two trade frames on that socket, and how many gaps of 0.5 s or more there were.                                                                                       |
 
 All seconds are rounded to 3 decimals.
 
@@ -543,6 +550,72 @@ railway logs -s uw-stream --filter "pipeline minute" --json
 
 Use the app's `time` field in each entry, not Railway's `timestamp`, and
 `minute_utc` to join a line to Neon's per-minute data.
+
+### Socket numbers and the twin-silence warning
+
+Each `option_trades:<TICKER>` channel is joined on two sockets (`conn0` and
+its mirror `conn6`, `conn1` and `conn7`), and the dedupe drops the second
+copy of every trade. That hides a socket that missed trades the other one
+delivered. On 2026-11-13, 345 trades reached Neon from only one of the two
+sockets with no disconnect on either. These numbers name the socket that
+went quiet. The connector counts them for every frame it receives
+(`src/socket_stats.py`), with integer additions and one ring-slot update per
+trade frame: no await, no log call and no extra clock read.
+
+With `WS_REDUNDANT_OPTION_TRADES=false` there are no mirror sockets, so no
+shard has a twin (`twin` is `null` everywhere) and no twin warning is logged;
+the counts and silences still run.
+
+- A **trade frame** is a frame for an `option_trades:` channel that is at
+  least 100 characters long. Join acks share the prefix but are about 50
+  characters, and up to 45 arrive in a burst after each connect, so they
+  count in `frames` only.
+- A **silence** is a gap of 0.5 s or more between two trade frames on one
+  socket. A gap is never measured across a reconnect.
+- The minute line's `sockets` entry for a shard has `frames`,
+  `trade_frames`, `max_trade_gap_s` and `silences` for that minute. The
+  counts reset after each line. A shard with no `option_trades` channels
+  (`conn2` to `conn5`) shows zero trade frames and no gaps.
+- `/metrics` has a top-level `sockets` block with one row per shard:
+  `frames`, `trade_frames` and `silences`, cumulative since boot, and
+  `twin`, the shard that joins the same `option_trades` channels (`conn0`
+  and `conn6` are twins), or `null` when it has none.
+
+`silences` and `max_trade_gap_s` count every trade-frame gap of 0.5 s or more
+on that socket, whether or not its twin was streaming. A thin stretch of the
+market, or a stall of the whole event loop, raises them on both sockets.
+Read them next to the twin-silence warnings below, not alone.
+
+**The warning.** When a gap of 0.5 s or more ends on a socket and its twin
+received at least 10 trade frames inside that gap, the connector logs one
+warning, `trade socket went quiet while its twin kept receiving`, on the
+first trade frame after the gap. It is a log line only: nothing goes to
+Sentry. Its fields are `shard`, `twin`, `gap_s`, `twin_trade_frames`,
+`silence_start_utc`, `silence_end_utc` and `twin_window_clipped`. The twin's
+frames are counted in the 0.1 s buckets strictly inside the gap, leaving out
+the two buckets at its edges: after an event-loop stall both sockets resume
+together and the twin's buffered frames land in the resume bucket, so
+counting it would report a stall as one socket going quiet (the minute
+line's `loop_lag_max_s` covers stalls). The twin's counts are kept for 120 s;
+a longer gap sets `twin_window_clipped` to `true`, and `twin_trade_frames`
+then covers only the last 120 s. The warning is rate limited to one a minute
+per shard, so take the number of silences from `silences` and the detail from
+the warning. If the check itself fails it logs `twin-silence check failed`
+and the receive loop carries on.
+
+**Lost or only delayed?** The dedupe's own line, `option_trades
+redundant-socket dedupe` (every 5 to 6 minutes under traffic), carries
+`single_copy_interval`: the trades only one socket delivered since the
+previous line. The running total is `single_copy` on `/metrics`. A trade
+counts as a single copy once its 2-minute window closes, so a miss shows up
+there up to about 2 minutes after the silence. The figure is per handler, not
+per socket: the silence names the socket, and `single_copy_interval` says
+whether anything was lost.
+
+- A silence with a matching rise in `single_copy_interval` means trades were
+  lost on that socket: its twin delivered them and it did not.
+- A silence with no rise means the socket was only delayed: its frames came
+  late, the dedupe saw both copies of every trade, and nothing was lost.
 
 ## Operational notes
 

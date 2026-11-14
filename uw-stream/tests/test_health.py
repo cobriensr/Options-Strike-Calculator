@@ -21,6 +21,7 @@ import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
 import handlers.base
+import socket_stats
 from config import Settings, settings
 from health import HEALTH_STARTUP_GRACE_S, _is_trading_hours, build_app, healthz, metrics
 from state import state
@@ -388,7 +389,7 @@ async def test_metrics_accepts_matching_token(_restore_metrics_token, metrics_wa
     body = await _read_json(resp)
 
     assert resp.status == 200
-    assert {"uptime_seconds", "ws_connected", "channels", "handlers"} <= body.keys()
+    assert {"uptime_seconds", "ws_connected", "channels", "handlers", "sockets"} <= body.keys()
     assert metrics_warnings == []
 
 
@@ -711,3 +712,57 @@ async def test_metrics_lists_constructed_handler_with_zeroed_counters(
         },
     }
     assert body["channels"] == {}
+
+
+# ── /metrics shape: per-socket counters ──────────────────────
+
+
+@pytest.fixture
+def _isolated_sockets(monkeypatch):
+    """Run against an empty socket registry and twin map; monkeypatch restores them."""
+    monkeypatch.setattr(socket_stats, "_registry", {})
+    monkeypatch.setattr(socket_stats, "_twins", {})
+
+
+async def test_metrics_reports_each_shards_cumulative_socket_counters_and_twin(
+    _restore_metrics_token, _isolated_sockets
+):
+    """``sockets`` lists every registered shard with its running ``frames``,
+    ``trade_frames`` and ``silences`` and the name of its twin, or null for a
+    shard with none. The per-minute interval fields stay out of /metrics.
+    """
+    settings.internal_metrics_token = _TOKEN
+    socket_stats.configure([["option_trades:SPY"], ["option_trades:SPY"], ["net_flow:SPY"]])
+    for name, frames, trade_frames, silences in (
+        ("conn0", 120_000, 100_000, 3),
+        ("conn1", 119_000, 99_900, 1),
+        ("conn2", 4, 0, 0),
+    ):
+        stats = socket_stats.get(name)
+        stats.frames, stats.trade_frames, stats.silences = frames, trade_frames, silences
+        stats.interval_frames = 77  # the minute line's to read and reset
+
+    body = await _read_json(
+        await metrics(_StubRequest({"X-Metrics-Token": _TOKEN}))  # type: ignore[arg-type]
+    )
+
+    assert body["sockets"] == {
+        "conn0": {"frames": 120_000, "trade_frames": 100_000, "silences": 3, "twin": "conn1"},
+        "conn1": {"frames": 119_000, "trade_frames": 99_900, "silences": 1, "twin": "conn0"},
+        "conn2": {"frames": 4, "trade_frames": 0, "silences": 0, "twin": None},
+    }
+
+
+async def test_metrics_sockets_is_empty_until_a_shard_registers(
+    _restore_metrics_token, _isolated_sockets
+):
+    """With no shard registered (before the connectors are built), the block is
+    an empty object, not missing and not an error.
+    """
+    settings.internal_metrics_token = _TOKEN
+
+    body = await _read_json(
+        await metrics(_StubRequest({"X-Metrics-Token": _TOKEN}))  # type: ignore[arg-type]
+    )
+
+    assert body["sockets"] == {}

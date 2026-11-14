@@ -26,6 +26,7 @@ from unittest.mock import patch
 import pytest
 
 import pipeline_stats
+import socket_stats
 from logger_setup import RateLimitedLogger
 from pipeline_stats import (
     LOOP_LAG_FLAG_S,
@@ -50,6 +51,18 @@ def fresh(monkeypatch) -> State:
     s = State()
     monkeypatch.setattr(pipeline_stats, "state", s)
     return s
+
+
+@pytest.fixture(autouse=True)
+def _isolated_sockets(monkeypatch):
+    """An empty socket registry and no twins, so no test sees another suite's shards.
+
+    ``socket_stats`` keeps both as module-level dicts that the connector tests
+    and ``main`` fill. Replacing them here keeps the line's ``sockets`` section
+    to what each test registers.
+    """
+    monkeypatch.setattr(socket_stats, "_registry", {})
+    monkeypatch.setattr(socket_stats, "_twins", {})
 
 
 @pytest.fixture
@@ -475,12 +488,42 @@ _BUSY_MINUTE = _together(
 )
 
 
+def _set_socket(name: str, **fields) -> Callable[[State], None]:
+    """Set interval or cumulative fields on one shard's ``SocketStats``, registering it."""
+
+    def _apply(_s: State) -> None:
+        stats = socket_stats.get(name)
+        for key, value in fields.items():
+            setattr(stats, key, value)
+
+    return _apply
+
+
 async def test_the_line_carries_every_documented_field(monkeypatch, fresh, lines):
     sampled = _Sampled(
         loop_lag_max_s=0.31234, loop_lag_over_1s=1, pool_size_max=10, pool_in_use_max=7
     )
+    # Three shards, the third idle: every registered shard has an entry.
+    socket_stats.configure([["option_trades:SPY"], ["option_trades:SPY"], ["net_flow:SPY"]])
+    busy_sockets = _together(
+        _BUSY_MINUTE,
+        _set_socket(
+            "conn0",
+            interval_frames=5_400,
+            interval_trade_frames=4_900,
+            interval_max_trade_gap_s=0.12361,
+            interval_silences=2,
+        ),
+        _set_socket(
+            "conn1",
+            interval_frames=5_390,
+            interval_trade_frames=4_890,
+            interval_max_trade_gap_s=0.5,
+            interval_silences=1,
+        ),
+    )
 
-    await _drive_reporter(monkeypatch, fresh, [_BUSY_MINUTE], sampled=sampled)
+    await _drive_reporter(monkeypatch, fresh, [busy_sockets], sampled=sampled)
 
     assert lines == [
         (
@@ -504,6 +547,26 @@ async def test_the_line_carries_every_documented_field(monkeypatch, fresh, lines
                         "dropped": 2,
                         "filtered": 0,
                     }
+                },
+                "sockets": {
+                    "conn0": {
+                        "frames": 5_400,
+                        "trade_frames": 4_900,
+                        "max_trade_gap_s": 0.124,
+                        "silences": 2,
+                    },
+                    "conn1": {
+                        "frames": 5_390,
+                        "trade_frames": 4_890,
+                        "max_trade_gap_s": 0.5,
+                        "silences": 1,
+                    },
+                    "conn2": {
+                        "frames": 0,
+                        "trade_frames": 0,
+                        "max_trade_gap_s": 0.0,
+                        "silences": 0,
+                    },
                 },
             },
         )
@@ -650,6 +713,130 @@ async def test_the_baselines_hold_one_entry_per_handler_however_many_minutes_pas
 
 
 # ----------------------------------------------------------------------
+# The line: sockets
+# ----------------------------------------------------------------------
+
+# A trade frame is long enough to count as one; a join ack has the same prefix and is not.
+_TRADE = '["option_trades:SPY",{"id":"' + "a" * socket_stats.TRADE_FRAME_MIN_LEN + '"}]'
+_ACK = '["option_trades:SPXW",{"response":{},"status":"ok"}]'
+
+
+async def test_a_line_with_no_registered_shard_has_an_empty_sockets_section(
+    monkeypatch, fresh, lines
+):
+    await _drive_reporter(monkeypatch, fresh, [_noop_step])
+
+    assert lines[0][1]["sockets"] == {}
+
+
+async def test_a_report_resets_the_socket_interval_fields_and_keeps_the_cumulative_ones(
+    monkeypatch, fresh, lines
+):
+    busy = _set_socket(
+        "conn0",
+        frames=90_000,
+        trade_frames=80_000,
+        silences=7,
+        interval_frames=1_500,
+        interval_trade_frames=1_400,
+        interval_max_trade_gap_s=0.75,
+        interval_silences=2,
+    )
+
+    await _drive_reporter(monkeypatch, fresh, [busy, _noop_step])
+
+    stats = socket_stats.get("conn0")
+    assert lines[0][1]["sockets"]["conn0"] == {
+        "frames": 1_500,
+        "trade_frames": 1_400,
+        "max_trade_gap_s": 0.75,
+        "silences": 2,
+    }
+    assert (
+        stats.interval_frames,
+        stats.interval_trade_frames,
+        stats.interval_max_trade_gap_s,
+        stats.interval_silences,
+    ) == (0, 0, 0.0, 0)
+    # The cumulative counters are not reset: /metrics keeps the running totals.
+    assert (stats.frames, stats.trade_frames, stats.silences) == (90_000, 80_000, 7)
+    # And the line after it starts from zero, with the shard still listed.
+    assert lines[1][1]["sockets"] == {
+        "conn0": {"frames": 0, "trade_frames": 0, "max_trade_gap_s": 0.0, "silences": 0}
+    }
+
+
+async def test_each_minutes_socket_numbers_come_from_the_frames_counted_in_it(
+    monkeypatch, fresh, lines
+):
+    # Real on_frame calls on the shard, not poked fields: the line must read the
+    # interval fields the connector's counting writes.
+    def _first_minute(_s: State) -> None:
+        stats = socket_stats.get("conn0")
+        stats.on_frame(_ACK, 1.0)  # a frame, but not a trade frame
+        for now in (10.0, 10.1, 10.8):  # three trade frames, 0.7 s apart at the widest
+            stats.on_frame(_TRADE, now)
+
+    def _second_minute(_s: State) -> None:
+        socket_stats.get("conn0").on_frame(_TRADE, 10.9)
+
+    await _drive_reporter(monkeypatch, fresh, [_first_minute, _second_minute])
+
+    assert lines[0][1]["sockets"] == {
+        "conn0": {"frames": 4, "trade_frames": 3, "max_trade_gap_s": 0.7, "silences": 1}
+    }
+    # The gap is measured from the last trade frame of the first minute (0.1 s);
+    # the 0.7 s widest gap does not carry into this minute.
+    assert lines[1][1]["sockets"] == {
+        "conn0": {"frames": 1, "trade_frames": 1, "max_trade_gap_s": 0.1, "silences": 0}
+    }
+
+
+async def test_a_failure_while_building_the_line_consumes_nothing(
+    monkeypatch, fresh, lines, errors
+):
+    # The pass fails after it has read the handlers, while it reads the sockets:
+    # still before it has changed anything. The second pass carries both minutes.
+    real_all_stats = socket_stats.all_stats
+    calls: list[None] = []
+
+    def _all_stats_that_fails_once() -> dict[str, socket_stats.SocketStats]:
+        calls.append(None)
+        if len(calls) == 1:
+            raise RuntimeError("registry unavailable")
+        return real_all_stats()
+
+    monkeypatch.setattr(socket_stats, "all_stats", _all_stats_that_fails_once)
+    first_minute = _together(
+        _BUSY_MINUTE,
+        _set_socket(
+            "conn0",
+            interval_frames=100,
+            interval_trade_frames=60,
+            interval_max_trade_gap_s=0.75,
+            interval_silences=2,
+        ),
+    )
+    second_minute = _together(
+        _set("option_trades", flushes=5),
+        _set_socket("conn0", interval_frames=150, interval_silences=3),
+    )
+
+    await _drive_reporter(monkeypatch, fresh, [first_minute, second_minute])
+
+    assert [(msg, extra["err_type"]) for msg, extra in errors] == [(_REPORT_FAILED, "RuntimeError")]
+    assert len(lines) == 1
+    extra = lines[0][1]
+    assert extra["minute_utc"] == "2026-11-13T12:35:00+00:00"
+    assert extra["handlers"]["option_trades"]["flushes"] == 5  # 3 + 2, not 2
+    assert extra["handlers"]["option_trades"]["queue_hwm"] == 900
+    assert extra["receive_queue_hwm"] == 1_234
+    assert extra["sockets"] == {
+        "conn0": {"frames": 150, "trade_frames": 60, "max_trade_gap_s": 0.75, "silences": 3}
+    }
+
+
+# ----------------------------------------------------------------------
 # run_pipeline_stats: both loops, one accumulator, clean cancel
 # ----------------------------------------------------------------------
 
@@ -753,13 +940,25 @@ async def test_a_report_that_raises_is_logged_and_the_next_minute_still_reports(
     # The second minute adds to the cumulative totals only, so every interval
     # value in the delivered line can only have come from the minute whose line
     # failed.
+    first_minute = _together(
+        _BUSY_MINUTE,
+        _set_socket(
+            "conn0",
+            interval_frames=100,
+            interval_trade_frames=60,
+            interval_max_trade_gap_s=0.75,
+            interval_silences=2,
+        ),
+    )
     second_minute = _together(
         _set("option_trades", flushes=5, flush_rows=2_200, flush_seconds=1.73456, drop_count=3),
         lambda s: setattr(s, "receive_queue_drops", 8),
+        # The socket counters keep adding: 50 more frames, 30 more trade frames, one more silence.
+        _set_socket("conn0", interval_frames=150, interval_trade_frames=90, interval_silences=3),
     )
 
     sleeps, sampled, _ = await _drive_reporter(
-        monkeypatch, fresh, [_BUSY_MINUTE, second_minute], sampled=sampled
+        monkeypatch, fresh, [first_minute, second_minute], sampled=sampled
     )
 
     assert errors == [
@@ -797,12 +996,26 @@ async def test_a_report_that_raises_is_logged_and_the_next_minute_still_reports(
                     "filtered": 0,
                 }
             },
+            "sockets": {
+                "conn0": {
+                    "frames": 150,
+                    "trade_frames": 90,
+                    "max_trade_gap_s": 0.75,
+                    "silences": 3,
+                }
+            },
         }
     ]
     # That line is the one that consumes: the pass after it starts from zero.
     assert sampled == _Sampled()
     assert fresh.handler("option_trades").interval_queue_hwm == 0
     assert fresh.receive_queue_hwm == 0
+    stats = socket_stats.get("conn0")
+    assert (stats.interval_frames, stats.interval_max_trade_gap_s, stats.interval_silences) == (
+        0,
+        0.0,
+        0,
+    )
     assert len(sleeps) == 5  # two boundaries, a yield after each, and the third sleep
 
 

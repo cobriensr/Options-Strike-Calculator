@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 
 from aiohttp import web
 
+import socket_stats
 from config import settings
 from logger_setup import log
 from state import state
@@ -184,6 +185,19 @@ async def metrics(request: web.Request) -> web.Response:
                 "interval_queue_hwm": h.interval_queue_hwm,
             }
             for name, h in state.handlers.items()
+        },
+        # Per shard (``conn0`` .. ``connN``): cumulative frame counts and silences
+        # since boot, and the shard that joins the same option_trades channels
+        # (null for a shard with no twin). The minute line carries the interval
+        # figures, so they are not shown here.
+        "sockets": {
+            name: {
+                "frames": s.frames,
+                "trade_frames": s.trade_frames,
+                "silences": s.silences,
+                "twin": socket_stats.twin_of(name),
+            }
+            for name, s in socket_stats.all_stats().items()
         },
     }
     return web.json_response(body)

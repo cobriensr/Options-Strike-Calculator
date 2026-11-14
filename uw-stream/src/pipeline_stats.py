@@ -15,7 +15,10 @@ Two loops share one ``_Sampled`` accumulator:
   Neon's per-minute data, and logs. Per handler it gives the flush counts and
   times (``HandlerMetrics.flushes``, ``flush_rows``, ``flush_seconds``) as
   deltas since the last line, and the high-waters the handlers and the router
-  keep (``interval_*``, ``State.receive_queue_hwm``) since the last line.
+  keep (``interval_*``, ``State.receive_queue_hwm``) since the last line. Per
+  shard it gives the frame counts, the widest gap between trade frames and the
+  silences the connector's ``SocketStats`` counted in the minute
+  (``interval_*``, see ``socket_stats``), under ``sockets``.
 
 This task is the only thing that resets an interval field. ``_report`` reads
 them all and builds the line, logs it, and only then moves the baselines and
@@ -43,6 +46,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
 import db
+import socket_stats
 from logger_setup import log, rate_limited_log
 from state import HandlerMetrics, state
 
@@ -149,6 +153,16 @@ def _had_activity(entry: dict[str, int | float]) -> bool:
     )
 
 
+def _socket_entry(stats: socket_stats.SocketStats) -> dict[str, int | float]:
+    """One shard's numbers for the minute: its interval fields, the gap rounded."""
+    return {
+        "frames": stats.interval_frames,
+        "trade_frames": stats.interval_trade_frames,
+        "max_trade_gap_s": round(stats.interval_max_trade_gap_s, 3),
+        "silences": stats.interval_silences,
+    }
+
+
 def _report(sampled: _Sampled, reported: _Reported, minute_start: datetime) -> None:
     """Log the line for the minute that began at ``minute_start``, then consume what it read.
 
@@ -175,6 +189,10 @@ def _report(sampled: _Sampled, reported: _Reported, minute_start: datetime) -> N
             dropped=metrics.drop_count,
             filtered=metrics.filtered,
         )
+    # Every registered shard is listed, idle or not: a shard missing from the line
+    # would read as "no data" where its zeros say "nothing arrived".
+    shard_stats = socket_stats.all_stats()
+    sockets = {name: _socket_entry(stats) for name, stats in shard_stats.items()}
 
     log.info(
         "uw-stream pipeline minute",
@@ -187,6 +205,7 @@ def _report(sampled: _Sampled, reported: _Reported, minute_start: datetime) -> N
             "receive_queue_hwm": state.receive_queue_hwm,
             "receive_queue_dropped": state.receive_queue_drops - reported.receive_drops,
             "handlers": handlers,
+            "sockets": sockets,
         },
     )
 
@@ -196,6 +215,11 @@ def _report(sampled: _Sampled, reported: _Reported, minute_start: datetime) -> N
         metrics.interval_flush_max_s = 0.0
         metrics.interval_batch_max = 0
         metrics.interval_queue_hwm = 0
+    for stats in shard_stats.values():
+        stats.interval_frames = 0
+        stats.interval_trade_frames = 0
+        stats.interval_max_trade_gap_s = 0.0
+        stats.interval_silences = 0
     reported.receive_drops = state.receive_queue_drops
     state.receive_queue_hwm = 0
     sampled.reset()
