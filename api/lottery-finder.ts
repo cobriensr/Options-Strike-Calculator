@@ -31,7 +31,8 @@ import {
   qualityAdjustedScore,
   INVERSION_BONUS_CASE_SQL,
 } from './_lib/lottery-inversion-bonus.js';
-import { tierFromQualityScore } from './_lib/lottery-tier.js';
+import { resolveMinQas, tierFromQas } from './_lib/lottery-tier.js';
+import { loadLotteryWeights } from './_lib/lottery-weights-loader.js';
 import { avgHoldMinutesFor } from './_lib/lottery-hold.js';
 import {
   DB_RETRY_ATTEMPTS,
@@ -329,7 +330,7 @@ const num = (v: DbNullableNumeric): number | null =>
 
 /**
  * Build the DISPLAYED quality-adjusted score (qas) SQL EXPRESSION TEXT that
- * the row badge derives via {@link qualityAdjustedScore} + tierFromQualityScore.
+ * the row badge derives via {@link qualityAdjustedScore} + tierFromQas.
  *
  *   qas = GREATEST(0, <p>score + <p>round_trip_score_deduct + <p>fire_count_score_adjustment)
  *         + INVERSION_BONUS_CASE(s.inversion_quintile)
@@ -532,6 +533,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       offset,
       sort,
       minScore,
+      minTier,
       minFireCount,
       maxFireCount,
       showAll,
@@ -621,7 +623,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // await it just before the Promise.all. It is a single PK point-lookup on
     // (trade_date) — not a serial heavy round-trip — and `showAll`
     // short-circuits it away entirely.
-    const keptTickers = showAll ? [] : await readKeptTickers(targetDate);
+    //
+    // The active weights version loads alongside it: its feed cutoffs set the
+    // `minTier` floor and every row's tier. The loader never throws and caches
+    // for a minute; when the store can't answer it hands back the seed (and
+    // raises its own Sentry error), so the feed still serves.
+    const [{ active }, keptTickers] = await Promise.all([
+      loadLotteryWeights(),
+      showAll ? [] : readKeptTickers(targetDate),
+    ]);
+    const cutoffs = active.weights.feed_cutoffs;
+    // The one score floor every `qasExprText(...) >= …` gate below compares
+    // to: the tier's cutoff for `minTier`, else `minScore` as given, else
+    // none. The schema rejects both together.
+    const minQas = resolveMinQas(minTier, minScore, cutoffs);
 
     // Two queries in parallel: (1) the row payload bounded by LIMIT,
     // and (2) the total matching count BEFORE limit so the UI can
@@ -762,13 +777,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           AND (${minFireCount ?? null}::int IS NULL OR f.fire_count >= ${minFireCount ?? 0})
           AND (${maxFireCount ?? null}::int IS NULL OR f.fire_count <= ${maxFireCount ?? 0})
           AND (${minTakeitProb}::numeric IS NULL OR f.chain_max_takeit >= ${minTakeitProb}::numeric)
-          -- Fix C: minScore gates on the DISPLAYED qas (the value the tier
+          -- Fix C: the score floor (minQas: minScore, or the active version's
+          -- cutoff for minTier) gates on the DISPLAYED qas (the value the tier
           -- badge uses), not the raw score. qas = GREATEST(0, score + rt +
           -- fc) + inversion bonus (NO gamma, post-Fix-B). Applied at the rep
           -- row (rn=1, post-LEFT JOIN s) alongside the other rep-level gates
           -- so it reads s.inversion_quintile; identical expression in the
           -- count query so pagination/total stay coherent.
-          AND (${minScore ?? null}::int IS NULL OR ${db.unsafe(qasExprText('f.'))} >= ${minScore ?? 0})
+          AND (${minQas ?? null}::int IS NULL OR ${db.unsafe(qasExprText('f.'))} >= ${minQas ?? 0})
           AND ${keptSuppressionSql(db, 'f', showAll, keptTickers)}
         ORDER BY ${db.unsafe(LOTTERY_FEED_ORDER_BY[sort])}
         LIMIT ${limit}
@@ -812,9 +828,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         ),
         -- rep rows (rn=1) for the STRUCTURAL day set: date + ticker/type/
         -- mode/tod/reload+cheapCallPm tags + entry-price floor + minPremium
-        -- ONLY (no burst/takeit/minScore). LEFT JOIN s so qas + the quintile
+        -- ONLY (no burst/takeit/score floor). LEFT JOIN s so qas + the quintile
         -- predicate are available here. passes_user_filters carries the
-        -- minFireCount/maxFireCount/minTakeitProb/qas-minScore gate per rep
+        -- minFireCount/maxFireCount/minTakeitProb/qas score-floor gate per rep
         -- so total/suppressed FILTER on it while ever_qualifying does NOT —
         -- decoupling the accumulation from those user filters (Fix A).
         eligible AS (
@@ -826,9 +842,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               (${minFireCount ?? null}::int IS NULL OR ranked.fc >= ${minFireCount ?? 0})
               AND (${maxFireCount ?? null}::int IS NULL OR ranked.fc <= ${maxFireCount ?? 0})
               AND (${minTakeitProb}::numeric IS NULL OR ranked.chain_max_takeit >= ${minTakeitProb}::numeric)
-              -- Fix C: qas-based minScore (identical expression to the row
-              -- queries). qas = GREATEST(0, score + rt + fc) + inversion bonus.
-              AND (${minScore ?? null}::int IS NULL OR ${db.unsafe(qasExprText('ranked.'))} >= ${minScore ?? 0})
+              -- Fix C: qas-based score floor, minQas (identical expression to
+              -- the row queries). qas = GREATEST(0, score + rt + fc) + inversion
+              -- bonus.
+              AND (${minQas ?? null}::int IS NULL OR ${db.unsafe(qasExprText('ranked.'))} >= ${minQas ?? 0})
             ) AS passes_user_filters
           FROM ranked
           LEFT JOIN lottery_ticker_stats s ON s.ticker = ranked.underlying_symbol
@@ -840,7 +857,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         -- the UI hint. ever_qualifying = PAGE- AND USER-FILTER-INDEPENDENT
         -- accumulation source (Fix A): every currently-qualifying ticker
         -- (inversion_quintile > 2) over the full structural day set, WITHOUT
-        -- inheriting minFireCount/maxFireCount/minTakeitProb/minScore — so a
+        -- inheriting minFireCount/maxFireCount/minTakeitProb/score floor — so a
         -- ticker that qualifies (quintile > 2) but whose chains fall under the
         -- active burst/takeit/score filters is still recorded into the kept-set
         -- and can never later flip Q1/Q2 and vanish. NULL quintile excluded by
@@ -1104,10 +1121,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           -- FLOOR-BLIND (spec hot-right-now-floorblind-2026-05-29.md):
           -- Hot Right Now respects only STRUCTURAL scoping (date / ticker /
           -- type / mode / tod / reload+cheapCallPm tags), NOT the quality
-          -- floors. minScore + minPremium are intentionally absent here (and
-          -- the TAKE-IT + Q1/Q2 quintile gates are absent from the outer
-          -- WHERE) so the section surfaces the day's most re-ignited chains
-          -- by cadence even when the model scored them below the floor —
+          -- floors. The score floor (minScore / minTier) + minPremium are
+          -- intentionally absent here (and the TAKE-IT + Q1/Q2 quintile
+          -- gates are absent from the outer WHERE) so the section surfaces
+          -- the day's most re-ignited chains by cadence even when the model
+          -- scored them below the floor —
           -- the case that hid SNDK 1670C (+1974%, chain_max_takeit 0.685).
           WHERE f.date = ${targetDate}::date
             AND f.trigger_time_ct < ${reignitionWindowEnd}::timestamptz
@@ -1402,14 +1420,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // Fix B (read-time gamma double-count removed, owner decision):
       // under V2 scoring gamma is already credited via the V2
       // gamma-quintile weight baked into the stored `score`
-      // (computeLotteryScoreV2 → GAMMA_QUINTILE_WEIGHTS). The old code
+      // (scoreLotteryV2 → the version's gamma_quintile_weights). The old code
       // ALSO added this V1-era flat +1 here at read time, double-counting
       // gamma. We now count gamma ONCE (in `score`) and drop gammaAdj from
       // the effective-score composition. The effective pre-inversion score
       // is therefore GREATEST(0, score + round_trip_score_deduct +
       // fire_count_score_adjustment) — the SAME expression the qas SQL
-      // filter (qasSql) gates minScore on, so the feed's displayed score,
-      // its qas filter, and the SQL all agree.
+      // filter (qasSql) gates the score floor (minScore / minTier) on, so the
+      // feed's displayed score, its qas filter, and the SQL all agree.
       //
       // ⚠️ This is NOT equal to the stored `combined_score` GENERATED column
       // (migration #168), which STILL carries a +1 gamma CASE term. The
@@ -1439,8 +1457,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const directionGated = r.direction_gated === true;
       // Phase 3 inversion-quality filter: tier is derived from
       // qualityAdjustedScore (combined_score + per-ticker inversion
-      // bonus) using V2 cutoffs (Tier 1 >= 13 / Tier 2 >= 10,
-      // recalibrated 2026-06-03 — spec
+      // bonus) using the ACTIVE weights version's feed cutoffs (the seed's
+      // are Tier 1 >= 13 / Tier 2 >= 10, recalibrated 2026-06-03 — spec
       // lottery-feed-tier-recalibration-2026-06-03.md). Raw `score` stays
       // as the combined_score value; `qualityAdjustedScore` is exposed as
       // an additional field on the row.
@@ -1449,7 +1467,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           ? Number(r.ticker_inversion_quintile)
           : null;
       const qas = qualityAdjustedScore(score ?? 0, inversionQuintile);
-      const rawTier: LotteryScoreTier = tierFromQualityScore(qas);
+      const rawTier: LotteryScoreTier = tierFromQas(qas, cutoffs);
       const tier: LotteryScoreTier = directionGated ? 'tier3' : rawTier;
       const tickerStats =
         r.ticker_n_fires == null
@@ -1732,6 +1750,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       date: targetDate,
       asOf: at ?? null,
       minute: minute ?? null,
+      // The cutoffs this response tiered and floored on: the active weights
+      // version's, so the client can show the number a `minTier` chip means.
+      tierCutoffs: {
+        version: active.version,
+        tier1MinScore: cutoffs.tier1_min_score,
+        tier2MinScore: cutoffs.tier2_min_score,
+      },
       filters: {
         ticker,
         reload,
@@ -1741,6 +1766,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         tod,
         sort,
         minScore,
+        minTier,
         minPremium: parsed.data.minPremium ?? null,
         minFireCount: minFireCount ?? null,
         maxFireCount: maxFireCount ?? null,

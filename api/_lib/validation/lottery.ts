@@ -30,6 +30,29 @@ const optionalBoolEnum = () =>
       v === 'true' ? true : v === 'false' ? false : undefined,
     );
 
+/**
+ * `minTier` names a tier as the score floor: the endpoint binds the cutoff the
+ * ACTIVE weights version gives that tier, so a promotion moves the floor with
+ * the tier badge and the client hard-codes no number. Shared by the feed, the
+ * export and the ticker counts.
+ */
+const minTierField = z.enum(['tier1', 'tier2']).optional();
+
+/**
+ * `minTier` and `minScore` both set the score floor (a tier's cutoff against
+ * a number the caller picked), so a request carries one. A set `minScore` of 0
+ * counts: the check tests for presence, not for a non-zero value.
+ */
+const minTierExcludesMinScore = (q: {
+  minTier?: string | undefined;
+  minScore?: number | undefined;
+}): boolean => q.minTier == null || q.minScore == null;
+
+const MIN_TIER_EXCLUSIVE_ISSUE = {
+  error: 'minTier and minScore are exclusive',
+  path: ['minTier'],
+};
+
 // ============================================================
 // /api/lottery-finder
 // ============================================================
@@ -62,90 +85,96 @@ const optionalBoolEnum = () =>
  *   - `mode` — Mode A (0DTE) or Mode B (DTE 1-3)
  *   - `optionType` — 'C' or 'P'
  *   - `tod` — time-of-day bucket (AM_open / MID / LUNCH / PM)
+ *   - `minTier` — score floor by tier name; exclusive with `minScore`
  */
-export const lotteryFinderQuerySchema = z.object({
-  ticker: z
-    .string()
-    .regex(/^[A-Z]{1,8}$/, 'ticker must be 1-8 uppercase letters')
-    .optional(),
-  reload: z
-    .enum(['true', 'false'])
-    .optional()
-    .transform((v) =>
-      v === 'true' ? true : v === 'false' ? false : undefined,
-    ),
-  cheapCallPm: z
-    .enum(['true', 'false'])
-    .optional()
-    .transform((v) =>
-      v === 'true' ? true : v === 'false' ? false : undefined,
-    ),
-  mode: z.enum(['A_intraday_0DTE', 'B_multi_day_DTE1_3']).optional(),
-  optionType: z.enum(['C', 'P']).optional(),
-  tod: z.enum(['AM_open', 'MID', 'LUNCH', 'PM']).optional(),
-  date: z
-    .string()
-    .regex(/^\d{4}-\d{2}-\d{2}$/, 'date must be YYYY-MM-DD')
-    .optional(),
-  // Cumulative cutoff (back-compat). When both `at` and `minute` are
-  // present, the endpoint prefers `minute`.
-  at: z.string().datetime({ offset: true }).optional(),
-  // Point-in-time minute bucket — the UI slider drives this.
-  minute: z.string().datetime({ offset: true }).optional(),
-  // Pagination — 50 per page is the UI's default size.
-  limit: z.coerce.number().int().min(1).max(200).default(50),
-  offset: z.coerce.number().int().min(0).default(0),
-  // Sort mode for the result set:
-  //   - `chronological` (default, preserves prior behavior): ORDER BY
-  //     trigger_time_ct DESC, id DESC
-  //   - `score`: ORDER BY score DESC NULLS LAST, trigger_time_ct DESC
-  //   - `peak`: ORDER BY peak_ceiling_pct DESC NULLS LAST, trigger_time_ct DESC
-  sort: z.enum(['chronological', 'score', 'peak']).default('chronological'),
-  // Minimum score floor (Tier 1 = 18). When set, the WHERE clause adds
-  // `score >= minScore` so the High-Conviction filter can collapse the
-  // visible feed.
-  minScore: z.coerce.number().int().min(0).max(50).optional(),
-  // Numeric premium floor in DOLLARS (entry_price * trigger_window_size * 100).
-  // 0 = no floor. Server-side filter so pagination reflects the
-  // post-filter count. Mirrors `minPremium` on /api/silent-boom-feed —
-  // SilentBoom uses `spike_volume` for the window volume; the lottery
-  // detector stamps the equivalent rolling window volume in
-  // `trigger_window_size`. Multiplied by entry_price * 100 (contract
-  // multiplier) yields the dollar premium deployed in the trigger
-  // window.
-  minPremium: z.coerce.number().min(0).max(1_000_000_000).optional(),
-  // Burst floor — chain-day fire_count >= N. Server-side so pagination
-  // and ticker-counts reflect the post-filter total instead of the UI
-  // having to filter client-side over an inflated page slice. Mirrors
-  // the MIN_FIRE_COUNT chip group in the LotteryFinder toolbar
-  // (all / >=3 / >=8 / >=16).
-  minFireCount: z.coerce.number().int().min(1).max(1000).optional(),
-  // Burst CAP — chain-day fire_count <= N. Inverse of `minFireCount`:
-  // hides high-fire-count "spam" chains. Server-side so pagination and
-  // ticker-counts reflect the post-filter total. Free-text input in the
-  // toolbar (1-2 digit number); absent / 0 = no cap (default OFF). When
-  // both min and max are set, both guards apply (a range).
-  maxFireCount: z.coerce.number().int().min(1).max(1000).optional(),
-  // TAKE-IT floor — calibrated XGBoost P(peak >= +20%). Default UI
-  // value is 0.70, which strips a large share of each page (often 40+
-  // of 50) when applied client-side and made pagination meaningless
-  // ("759 fires, page 1 of N showing 2"). Server-side so `total` and
-  // pagination reflect what the user will actually see. NULL takeit
-  // values (rows that haven't been enriched yet) are EXCLUDED when
-  // a floor is active, matching the prior client-side behavior at
-  // src/components/LotteryFinder/index.tsx:651-653.
-  minTakeitProb: z.coerce.number().min(0).max(1).optional(),
-  /**
-   * Phase 3 escape hatch: when 'true', server bypasses the bottom-quintile
-   * inversion-quality filter and returns all surviving fires regardless of
-   * ticker quintile. Off by default — the lottery feed is intentionally
-   * narrowed by default.
-   */
-  showAll: z
-    .enum(['true', 'false'])
-    .optional()
-    .transform((v) => v === 'true'),
-});
+export const lotteryFinderQuerySchema = z
+  .object({
+    ticker: z
+      .string()
+      .regex(/^[A-Z]{1,8}$/, 'ticker must be 1-8 uppercase letters')
+      .optional(),
+    reload: z
+      .enum(['true', 'false'])
+      .optional()
+      .transform((v) =>
+        v === 'true' ? true : v === 'false' ? false : undefined,
+      ),
+    cheapCallPm: z
+      .enum(['true', 'false'])
+      .optional()
+      .transform((v) =>
+        v === 'true' ? true : v === 'false' ? false : undefined,
+      ),
+    mode: z.enum(['A_intraday_0DTE', 'B_multi_day_DTE1_3']).optional(),
+    optionType: z.enum(['C', 'P']).optional(),
+    tod: z.enum(['AM_open', 'MID', 'LUNCH', 'PM']).optional(),
+    date: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/, 'date must be YYYY-MM-DD')
+      .optional(),
+    // Cumulative cutoff (back-compat). When both `at` and `minute` are
+    // present, the endpoint prefers `minute`.
+    at: z.string().datetime({ offset: true }).optional(),
+    // Point-in-time minute bucket — the UI slider drives this.
+    minute: z.string().datetime({ offset: true }).optional(),
+    // Pagination — 50 per page is the UI's default size.
+    limit: z.coerce.number().int().min(1).max(200).default(50),
+    offset: z.coerce.number().int().min(0).default(0),
+    // Sort mode for the result set:
+    //   - `chronological` (default, preserves prior behavior): ORDER BY
+    //     trigger_time_ct DESC, id DESC
+    //   - `score`: ORDER BY score DESC NULLS LAST, trigger_time_ct DESC
+    //   - `peak`: ORDER BY peak_ceiling_pct DESC NULLS LAST, trigger_time_ct DESC
+    sort: z.enum(['chronological', 'score', 'peak']).default('chronological'),
+    // Minimum score floor (Tier 1 = 18). When set, the WHERE clause adds
+    // `score >= minScore` so the High-Conviction filter can collapse the
+    // visible feed.
+    minScore: z.coerce.number().int().min(0).max(50).optional(),
+    // The same floor by tier name: the active weights version's cutoff for that
+    // tier. Exclusive with `minScore`.
+    minTier: minTierField,
+    // Numeric premium floor in DOLLARS (entry_price * trigger_window_size * 100).
+    // 0 = no floor. Server-side filter so pagination reflects the
+    // post-filter count. Mirrors `minPremium` on /api/silent-boom-feed —
+    // SilentBoom uses `spike_volume` for the window volume; the lottery
+    // detector stamps the equivalent rolling window volume in
+    // `trigger_window_size`. Multiplied by entry_price * 100 (contract
+    // multiplier) yields the dollar premium deployed in the trigger
+    // window.
+    minPremium: z.coerce.number().min(0).max(1_000_000_000).optional(),
+    // Burst floor — chain-day fire_count >= N. Server-side so pagination
+    // and ticker-counts reflect the post-filter total instead of the UI
+    // having to filter client-side over an inflated page slice. Mirrors
+    // the MIN_FIRE_COUNT chip group in the LotteryFinder toolbar
+    // (all / >=3 / >=8 / >=16).
+    minFireCount: z.coerce.number().int().min(1).max(1000).optional(),
+    // Burst CAP — chain-day fire_count <= N. Inverse of `minFireCount`:
+    // hides high-fire-count "spam" chains. Server-side so pagination and
+    // ticker-counts reflect the post-filter total. Free-text input in the
+    // toolbar (1-2 digit number); absent / 0 = no cap (default OFF). When
+    // both min and max are set, both guards apply (a range).
+    maxFireCount: z.coerce.number().int().min(1).max(1000).optional(),
+    // TAKE-IT floor — calibrated XGBoost P(peak >= +20%). Default UI
+    // value is 0.70, which strips a large share of each page (often 40+
+    // of 50) when applied client-side and made pagination meaningless
+    // ("759 fires, page 1 of N showing 2"). Server-side so `total` and
+    // pagination reflect what the user will actually see. NULL takeit
+    // values (rows that haven't been enriched yet) are EXCLUDED when
+    // a floor is active, matching the prior client-side behavior at
+    // src/components/LotteryFinder/index.tsx:651-653.
+    minTakeitProb: z.coerce.number().min(0).max(1).optional(),
+    /**
+     * Phase 3 escape hatch: when 'true', server bypasses the bottom-quintile
+     * inversion-quality filter and returns all surviving fires regardless of
+     * ticker quintile. Off by default — the lottery feed is intentionally
+     * narrowed by default.
+     */
+    showAll: z
+      .enum(['true', 'false'])
+      .optional()
+      .transform((v) => v === 'true'),
+  })
+  .refine(minTierExcludesMinScore, MIN_TIER_EXCLUSIVE_ISSUE);
 
 export type LotteryFinderQuery = z.infer<typeof lotteryFinderQuerySchema>;
 
@@ -283,33 +312,36 @@ export type SilentBoomExportQuery = z.infer<typeof silentBoomExportQuerySchema>;
  * pagination / sort / scrubber knobs — exports always return every
  * matching row in chronological order.
  */
-export const lotteryExportQuerySchema = z.object({
-  date: z
-    .string()
-    .regex(/^\d{4}-\d{2}-\d{2}$/, 'date must be YYYY-MM-DD')
-    .optional(),
-  ticker: z
-    .string()
-    .regex(/^[A-Z]{1,8}$/, 'ticker must be 1-8 uppercase letters')
-    .optional(),
-  reload: z
-    .enum(['true', 'false'])
-    .optional()
-    .transform((v) =>
-      v === 'true' ? true : v === 'false' ? false : undefined,
-    ),
-  cheapCallPm: z
-    .enum(['true', 'false'])
-    .optional()
-    .transform((v) =>
-      v === 'true' ? true : v === 'false' ? false : undefined,
-    ),
-  mode: z.enum(['A_intraday_0DTE', 'B_multi_day_DTE1_3']).optional(),
-  optionType: z.enum(['C', 'P']).optional(),
-  tod: z.enum(['AM_open', 'MID', 'LUNCH', 'PM']).optional(),
-  minScore: z.coerce.number().int().min(0).max(50).optional(),
-  format: z.enum(['csv', 'json']).default('csv'),
-});
+export const lotteryExportQuerySchema = z
+  .object({
+    date: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/, 'date must be YYYY-MM-DD')
+      .optional(),
+    ticker: z
+      .string()
+      .regex(/^[A-Z]{1,8}$/, 'ticker must be 1-8 uppercase letters')
+      .optional(),
+    reload: z
+      .enum(['true', 'false'])
+      .optional()
+      .transform((v) =>
+        v === 'true' ? true : v === 'false' ? false : undefined,
+      ),
+    cheapCallPm: z
+      .enum(['true', 'false'])
+      .optional()
+      .transform((v) =>
+        v === 'true' ? true : v === 'false' ? false : undefined,
+      ),
+    mode: z.enum(['A_intraday_0DTE', 'B_multi_day_DTE1_3']).optional(),
+    optionType: z.enum(['C', 'P']).optional(),
+    tod: z.enum(['AM_open', 'MID', 'LUNCH', 'PM']).optional(),
+    minScore: z.coerce.number().int().min(0).max(50).optional(),
+    minTier: minTierField,
+    format: z.enum(['csv', 'json']).default('csv'),
+  })
+  .refine(minTierExcludesMinScore, MIN_TIER_EXCLUSIVE_ISSUE);
 
 export type LotteryExportQuery = z.infer<typeof lotteryExportQuerySchema>;
 
@@ -415,54 +447,58 @@ export type SilentBoomTickerCountsQuery = z.infer<
  * day counts as 1 toward TSLA's total, matching the row-level dedup
  * in /api/lottery-finder so the chip count equals what the user sees.
  */
-export const lotteryFinderTickerCountsQuerySchema = z.object({
-  date: z
-    .string()
-    .regex(/^\d{4}-\d{2}-\d{2}$/, 'date must be YYYY-MM-DD')
-    .optional(),
-  reload: z
-    .enum(['true', 'false'])
-    .optional()
-    .transform((v) =>
-      v === 'true' ? true : v === 'false' ? false : undefined,
-    ),
-  cheapCallPm: z
-    .enum(['true', 'false'])
-    .optional()
-    .transform((v) =>
-      v === 'true' ? true : v === 'false' ? false : undefined,
-    ),
-  mode: z.enum(['A_intraday_0DTE', 'B_multi_day_DTE1_3']).optional(),
-  optionType: z.enum(['C', 'P']).optional(),
-  tod: z.enum(['AM_open', 'MID', 'LUNCH', 'PM']).optional(),
-  minScore: z.coerce.number().int().min(0).max(50).optional(),
-  /** Dollar floor on premium = entry_price * trigger_window_size * 100.
-   *  Mirrors the same filter on `lotteryFinderQuerySchema` so the chip
-   *  ticker counts stay consistent with the filtered feed. */
-  minPremium: z.coerce.number().min(0).max(1_000_000_000).optional(),
-  /** Chain-day fire_count floor. Mirrors `minFireCount` on
-   *  `lotteryFinderQuerySchema` so chip counts and the filtered feed
-   *  stay aligned when the Burst chip is active. */
-  minFireCount: z.coerce.number().int().min(1).max(1000).optional(),
-  /** Chain-day fire_count CAP. Mirrors `maxFireCount` on
-   *  `lotteryFinderQuerySchema` so chip counts and the filtered feed
-   *  stay aligned when the burst cap is active. Absent = no cap. */
-  maxFireCount: z.coerce.number().int().min(1).max(1000).optional(),
-  /** TAKE-IT calibrated P(peak >= +20%) floor. Mirrors `minTakeitProb`
-   *  on `lotteryFinderQuerySchema` so chip counts and the filtered
-   *  feed stay aligned. NULL takeit rows are excluded when active. */
-  minTakeitProb: z.coerce.number().min(0).max(1).optional(),
-  /** Mirror of `showAll` on `lotteryFinderQuerySchema`. When 'true',
-   *  bypass the bottom-quintile inversion-quality suppression so the
-   *  chip strip matches the feed under the "Show filtered tickers"
-   *  toggle. Off by default — chip totals reflect the same Q1/Q2
-   *  suppression the feed applies, preventing the confusion of a
-   *  non-zero ticker count with an empty feed. */
-  showAll: z
-    .enum(['true', 'false'])
-    .optional()
-    .transform((v) => v === 'true'),
-});
+export const lotteryFinderTickerCountsQuerySchema = z
+  .object({
+    date: z
+      .string()
+      .regex(/^\d{4}-\d{2}-\d{2}$/, 'date must be YYYY-MM-DD')
+      .optional(),
+    reload: z
+      .enum(['true', 'false'])
+      .optional()
+      .transform((v) =>
+        v === 'true' ? true : v === 'false' ? false : undefined,
+      ),
+    cheapCallPm: z
+      .enum(['true', 'false'])
+      .optional()
+      .transform((v) =>
+        v === 'true' ? true : v === 'false' ? false : undefined,
+      ),
+    mode: z.enum(['A_intraday_0DTE', 'B_multi_day_DTE1_3']).optional(),
+    optionType: z.enum(['C', 'P']).optional(),
+    tod: z.enum(['AM_open', 'MID', 'LUNCH', 'PM']).optional(),
+    minScore: z.coerce.number().int().min(0).max(50).optional(),
+    /** Mirror of `minTier` on `lotteryFinderQuerySchema`. */
+    minTier: minTierField,
+    /** Dollar floor on premium = entry_price * trigger_window_size * 100.
+     *  Mirrors the same filter on `lotteryFinderQuerySchema` so the chip
+     *  ticker counts stay consistent with the filtered feed. */
+    minPremium: z.coerce.number().min(0).max(1_000_000_000).optional(),
+    /** Chain-day fire_count floor. Mirrors `minFireCount` on
+     *  `lotteryFinderQuerySchema` so chip counts and the filtered feed
+     *  stay aligned when the Burst chip is active. */
+    minFireCount: z.coerce.number().int().min(1).max(1000).optional(),
+    /** Chain-day fire_count CAP. Mirrors `maxFireCount` on
+     *  `lotteryFinderQuerySchema` so chip counts and the filtered feed
+     *  stay aligned when the burst cap is active. Absent = no cap. */
+    maxFireCount: z.coerce.number().int().min(1).max(1000).optional(),
+    /** TAKE-IT calibrated P(peak >= +20%) floor. Mirrors `minTakeitProb`
+     *  on `lotteryFinderQuerySchema` so chip counts and the filtered
+     *  feed stay aligned. NULL takeit rows are excluded when active. */
+    minTakeitProb: z.coerce.number().min(0).max(1).optional(),
+    /** Mirror of `showAll` on `lotteryFinderQuerySchema`. When 'true',
+     *  bypass the bottom-quintile inversion-quality suppression so the
+     *  chip strip matches the feed under the "Show filtered tickers"
+     *  toggle. Off by default — chip totals reflect the same Q1/Q2
+     *  suppression the feed applies, preventing the confusion of a
+     *  non-zero ticker count with an empty feed. */
+    showAll: z
+      .enum(['true', 'false'])
+      .optional()
+      .transform((v) => v === 'true'),
+  })
+  .refine(minTierExcludesMinScore, MIN_TIER_EXCLUSIVE_ISSUE);
 
 export type LotteryFinderTickerCountsQuery = z.infer<
   typeof lotteryFinderTickerCountsQuerySchema

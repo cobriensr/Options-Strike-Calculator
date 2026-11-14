@@ -146,6 +146,76 @@ describe('showAll one-sided transform (missing → false)', () => {
   });
 });
 
+// ── minTier (feed, export, ticker counts) ────────────────────
+//
+// One shared field on three schemas. `minTier` names a tier and the endpoint
+// turns it into the active weights version's cutoff, while `minScore` is a
+// number the caller picked: both are a score floor, so a request carries one.
+
+const MIN_TIER_SCHEMAS: ReadonlyArray<{
+  schemaName: string;
+  schema: {
+    safeParse: (v: unknown) => {
+      success: boolean;
+      data?: unknown;
+      error?: { issues: Array<{ message: string; path: PropertyKey[] }> };
+    };
+  };
+}> = [
+  { schemaName: 'lotteryFinderQuerySchema', schema: lotteryFinderQuerySchema },
+  { schemaName: 'lotteryExportQuerySchema', schema: lotteryExportQuerySchema },
+  {
+    schemaName: 'lotteryFinderTickerCountsQuerySchema',
+    schema: lotteryFinderTickerCountsQuerySchema,
+  },
+];
+
+describe.each(MIN_TIER_SCHEMAS)('$schemaName minTier', ({ schema }) => {
+  it.each(['tier1', 'tier2'])('accepts minTier=%s', (minTier) => {
+    const result = schema.safeParse({ minTier });
+    expect(result.success).toBe(true);
+    expect((result.data as { minTier?: string }).minTier).toBe(minTier);
+  });
+
+  it('leaves minTier undefined when absent', () => {
+    const result = schema.safeParse({});
+    expect(result.success).toBe(true);
+    expect((result.data as { minTier?: string }).minTier).toBeUndefined();
+  });
+
+  it.each(['tier3', 'TIER1', 'tier', '', '1'])(
+    'rejects minTier=%j (not a floor tier)',
+    (minTier) => {
+      expect(schema.safeParse({ minTier }).success).toBe(false);
+    },
+  );
+
+  it('still accepts minScore on its own', () => {
+    const result = schema.safeParse({ minScore: '13' });
+    expect(result.success).toBe(true);
+    expect((result.data as { minScore?: number }).minScore).toBe(13);
+  });
+
+  it('rejects minTier together with minScore, naming minTier', () => {
+    const result = schema.safeParse({ minTier: 'tier1', minScore: '13' });
+    expect(result.success).toBe(false);
+    expect(result.error?.issues).toEqual([
+      expect.objectContaining({
+        message: 'minTier and minScore are exclusive',
+        path: ['minTier'],
+      }),
+    ]);
+  });
+
+  it('counts minScore=0 as set: minTier with minScore=0 is rejected', () => {
+    const result = schema.safeParse({ minTier: 'tier2', minScore: '0' });
+    expect(result.success).toBe(false);
+    expect(result.error?.issues[0]?.message).toBe(
+      'minTier and minScore are exclusive',
+    );
+  });
+});
+
 // ── lotteryFinderQuerySchema ─────────────────────────────────
 
 describe('lotteryFinderQuerySchema', () => {
