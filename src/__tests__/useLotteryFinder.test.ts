@@ -55,6 +55,16 @@ function emptyFinder(
   };
 }
 
+/** Mount the hook on a closed-market day and wait for `body` to settle. */
+async function load(body: unknown) {
+  fetchMock.mockResolvedValueOnce(jsonResponse(body));
+  const hook = renderHook(() =>
+    useLotteryFinder({ date: '2026-05-07', marketOpen: false }),
+  );
+  await waitFor(() => expect(hook.result.current.loading).toBe(false));
+  return hook;
+}
+
 describe('useLotteryFinder', () => {
   it('builds default URL with date, limit=50, offset=0 and omits all optional params', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(emptyFinder()));
@@ -80,6 +90,69 @@ describe('useLotteryFinder', () => {
     // minPremium default (null) is also omitted from the wire so the
     // server's `.optional()` default holds.
     expect(url).not.toContain('minPremium=');
+  });
+
+  it.each(['tier1', 'tier2'] as const)(
+    'sends minTier=%s when given',
+    async (minTier) => {
+      fetchMock.mockResolvedValueOnce(jsonResponse(emptyFinder()));
+      renderHook(() =>
+        useLotteryFinder({ date: '2026-05-07', marketOpen: false, minTier }),
+      );
+      await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+      const url = fetchMock.mock.calls[0]![0] as string;
+      expect(new URL(url, 'http://x').searchParams.get('minTier')).toBe(
+        minTier,
+      );
+      expect(url).not.toContain('minScore=');
+    },
+  );
+
+  it.each([
+    ['null', { minTier: null }],
+    ['left out', {}],
+  ])('omits minTier when %s', async (_label, args) => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(emptyFinder()));
+    renderHook(() =>
+      useLotteryFinder({ date: '2026-05-07', marketOpen: false, ...args }),
+    );
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const url = fetchMock.mock.calls[0]![0] as string;
+    expect(url).not.toContain('minTier=');
+  });
+
+  it('sends only minTier when a caller passes both minTier and minScore', async () => {
+    // The server answers 400 to a request carrying both, so the hook sends
+    // the tier (the replacement for the numeric floor) and drops minScore.
+    fetchMock.mockResolvedValueOnce(jsonResponse(emptyFinder()));
+    renderHook(() =>
+      useLotteryFinder({
+        date: '2026-05-07',
+        marketOpen: false,
+        minTier: 'tier2',
+        minScore: 18,
+      }),
+    );
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const url = fetchMock.mock.calls[0]![0] as string;
+    expect(url).toContain('minTier=tier2');
+    expect(url).not.toContain('minScore=');
+  });
+
+  it('still sends minScore when minTier is null', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(emptyFinder()));
+    renderHook(() =>
+      useLotteryFinder({
+        date: '2026-05-07',
+        marketOpen: false,
+        minTier: null,
+        minScore: 18,
+      }),
+    );
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const url = fetchMock.mock.calls[0]![0] as string;
+    expect(url).toContain('minScore=18');
+    expect(url).not.toContain('minTier=');
   });
 
   it('omits minPremium when 0 (matches null floor)', async () => {
@@ -642,15 +715,6 @@ describe('useLotteryFinder: spread-leg response schema', () => {
   ];
   const SPREAD_LEG = { fires: 2, totalFires: 5, shape: 'vertical', legs: LEGS };
 
-  async function load(body: unknown) {
-    fetchMock.mockResolvedValueOnce(jsonResponse(body));
-    const hook = renderHook(() =>
-      useLotteryFinder({ date: '2026-05-07', marketOpen: false }),
-    );
-    await waitFor(() => expect(hook.result.current.loading).toBe(false));
-    return hook;
-  }
-
   it('accepts and passes through the spread-leg fields', async () => {
     const body = emptyFinder({
       fires: [
@@ -810,4 +874,64 @@ describe('useLotteryFinder: spread-leg response schema', () => {
     await refreshAndSettle(5);
     expect(mockCaptureUnlessAuth).toHaveBeenCalledTimes(2);
   });
+});
+
+// ============================================================
+// tierCutoffs (nightly pipeline phase 4, Task 8a). The feed echoes the
+// active weights version's tier cutoffs; the chips read them in Task 8b, so
+// a malformed value must not reach state.
+// ============================================================
+
+describe('useLotteryFinder: tierCutoffs response schema', () => {
+  const CUTOFFS = { version: 'v7', tier1MinScore: 13, tier2MinScore: 9 };
+
+  it('passes tierCutoffs and filters.minTier through to the caller', async () => {
+    const { result } = await load(
+      emptyFinder({
+        tierCutoffs: CUTOFFS,
+        filters: { minTier: 'tier1' },
+      }),
+    );
+    expect(result.current.error).toBeNull();
+    expect(result.current.data?.tierCutoffs).toEqual(CUTOFFS);
+    expect(result.current.data?.filters.minTier).toBe('tier1');
+    expect(mockCaptureUnlessAuth).not.toHaveBeenCalled();
+  });
+
+  it('accepts a body with no tierCutoffs (an older server build)', async () => {
+    const { result } = await load(emptyFinder());
+    expect(result.current.error).toBeNull();
+    expect(result.current.data?.tierCutoffs).toBeUndefined();
+    expect(mockCaptureUnlessAuth).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['null', null],
+    ['a cutoff sent as a string', { ...CUTOFFS, tier1MinScore: '13' }],
+    ['a missing tier2 cutoff', { version: 'v7', tier1MinScore: 13 }],
+    ['a null cutoff', { ...CUTOFFS, tier2MinScore: null }],
+    ['a missing version', { tier1MinScore: 13, tier2MinScore: 9 }],
+    ['a numeric version', { ...CUTOFFS, version: 7 }],
+  ])(
+    'rejects tierCutoffs that is %s: handled as a failed fetch and reported once',
+    async (_label, tierCutoffs) => {
+      const { result } = await load({ ...emptyFinder(), tierCutoffs });
+      expect(result.current.error).toBe(INVALID_SHAPE_ERROR);
+      expect(result.current.data).toBeNull();
+      expect(mockCaptureUnlessAuth).toHaveBeenCalledTimes(1);
+      const [err, ctx] = mockCaptureUnlessAuth.mock.calls[0]!;
+      expect((err as Error).message).toBe(
+        'lottery-finder response failed schema validation',
+      );
+      expect(ctx).toMatchObject({
+        contexts: {
+          lotteryFinder: {
+            date: '2026-05-07',
+            issues: [expect.stringMatching(/^tierCutoffs/)],
+            issueCount: 1,
+          },
+        },
+      });
+    },
+  );
 });

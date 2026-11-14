@@ -14,6 +14,7 @@
 
 import { POLL_INTERVALS } from '../constants/index.js';
 import type {
+  LotteryMinTier,
   LotteryMode,
   OptionType,
   TimeOfDay,
@@ -37,6 +38,12 @@ interface UseLotteryFinderTickerCountsArgs {
   optionType?: OptionType | null;
   tod?: TimeOfDay | null;
   minScore?: number | null;
+  /** Score floor by tier name, resolved server-side to the active weights
+   *  version's cutoff, so the chip counts match the feed's `minTier`. The
+   *  server rejects `minTier` together with `minScore` (400), so when a
+   *  caller passes both the URL carries `minTier` only. null = no tier
+   *  floor. */
+  minTier?: LotteryMinTier | null;
   /** Numeric premium floor in dollars. Mirrors the section's
    *  `minPremiumK * 1000` value so the chip-strip counts match the
    *  filtered feed. */
@@ -78,6 +85,7 @@ export function useLotteryFinderTickerCounts({
   optionType = null,
   tod = null,
   minScore = null,
+  minTier = null,
   minPremium = 0,
   minFireCount = 0,
   maxFireCount = 0,
@@ -90,7 +98,11 @@ export function useLotteryFinderTickerCounts({
   if (mode) params.set('mode', mode);
   if (optionType) params.set('optionType', optionType);
   if (tod) params.set('tod', tod);
-  if (minScore != null) params.set('minScore', String(minScore));
+  // The server 400s on `minTier` + `minScore` together. A tier wins: it is
+  // the replacement for the numeric floor, so a caller still passing both
+  // loses `minScore`, not the request.
+  if (minTier != null) params.set('minTier', minTier);
+  else if (minScore != null) params.set('minScore', String(minScore));
   if (minPremium > 0) params.set('minPremium', String(minPremium));
   if (minFireCount > 1) params.set('minFireCount', String(minFireCount));
   if (maxFireCount >= 1) params.set('maxFireCount', String(maxFireCount));

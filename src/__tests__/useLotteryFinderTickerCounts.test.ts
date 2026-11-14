@@ -81,6 +81,77 @@ describe('useLotteryFinderTickerCounts', () => {
     expect(url).toContain('showAll=true');
   });
 
+  it.each(['tier1', 'tier2'] as const)(
+    'sends minTier=%s when given',
+    async (minTier) => {
+      fetchMock.mockResolvedValueOnce(jsonResponse(EMPTY));
+      renderHook(() =>
+        useLotteryFinderTickerCounts({
+          date: '2026-05-14',
+          marketOpen: false,
+          minTier,
+        }),
+      );
+      await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+      const url = fetchMock.mock.calls[0]![0] as string;
+      expect(new URL(url, 'http://x').searchParams.get('minTier')).toBe(
+        minTier,
+      );
+      expect(url).not.toContain('minScore=');
+    },
+  );
+
+  it.each([
+    ['null', { minTier: null }],
+    ['left out', {}],
+  ])('omits minTier when %s', async (_label, args) => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(EMPTY));
+    renderHook(() =>
+      useLotteryFinderTickerCounts({
+        date: '2026-05-14',
+        marketOpen: false,
+        ...args,
+      }),
+    );
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const url = fetchMock.mock.calls[0]![0] as string;
+    expect(url).not.toContain('minTier=');
+  });
+
+  it('sends only minTier when a caller passes both minTier and minScore', async () => {
+    // The server answers 400 to a request carrying both, so the hook sends
+    // the tier (the replacement for the numeric floor) and drops minScore.
+    fetchMock.mockResolvedValueOnce(jsonResponse(EMPTY));
+    renderHook(() =>
+      useLotteryFinderTickerCounts({
+        date: '2026-05-14',
+        marketOpen: false,
+        minTier: 'tier1',
+        minScore: 12,
+      }),
+    );
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const url = fetchMock.mock.calls[0]![0] as string;
+    expect(url).toContain('minTier=tier1');
+    expect(url).not.toContain('minScore=');
+  });
+
+  it('still sends minScore when minTier is null', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(EMPTY));
+    renderHook(() =>
+      useLotteryFinderTickerCounts({
+        date: '2026-05-14',
+        marketOpen: false,
+        minTier: null,
+        minScore: 12,
+      }),
+    );
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const url = fetchMock.mock.calls[0]![0] as string;
+    expect(url).toContain('minScore=12');
+    expect(url).not.toContain('minTier=');
+  });
+
   it('omits maxFireCount from the URL when unset (default OFF — no cap)', async () => {
     // Mirrors the minFireCount floor, inverted. The free-text cap is
     // default-OFF; an unset cap (0/undefined) must NOT serialize, so

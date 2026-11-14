@@ -31,6 +31,7 @@ import {
 import { captureUnlessAuth } from '../lib/sentry-helpers.js';
 import type {
   LotteryFinderResponse,
+  LotteryMinTier,
   LotteryMode,
   LotterySortMode,
   OptionType,
@@ -46,11 +47,13 @@ import {
 // ── Response schema ──────────────────────────────────────────────────────
 // Guards the spread-leg fields (spec 2026-10-28-classifier-replacement-
 // design.md, "Badge"): the row badge feeds `spreadLeg` to describeSpread,
-// and the reignites list reads each fire's `anchorLegKind`. Every other
-// field passes through unchecked (looseObject), as it did before; checking
-// the rest is Phase 2 of panel-payload-guards-2026-10-28.md. All three are
+// and the reignites list reads each fire's `anchorLegKind`. All three are
 // optional and nullable, because fires from before migration #197 have
-// none of them.
+// none of them. Also guards `tierCutoffs`, the numbers a tier chip shows;
+// it is optional only for server builds that predate the field, so a
+// present-but-malformed value is rejected. Every other field passes
+// through unchecked (looseObject), as it did before; checking the rest is
+// Phase 2 of panel-payload-guards-2026-10-28.md.
 
 const spreadLegSummarySchema = z.object({
   fires: z.int().positive(),
@@ -67,9 +70,16 @@ const fireSchema = z.looseObject({
     .optional(),
 });
 
+const tierCutoffsSchema = z.object({
+  version: z.string(),
+  tier1MinScore: z.number(),
+  tier2MinScore: z.number(),
+}) satisfies z.ZodType<NonNullable<LotteryFinderResponse['tierCutoffs']>>;
+
 const lotteryFinderResponseSchema = z.looseObject({
   fires: z.array(fireSchema),
   reignitedFires: z.array(fireSchema).optional(),
+  tierCutoffs: tierCutoffsSchema.optional(),
 });
 
 interface UseLotteryFinderArgs {
@@ -98,6 +108,14 @@ interface UseLotteryFinderArgs {
   sort?: LotterySortMode;
   /** Minimum score floor (Tier 1 = 18 enables High Conviction filter). */
   minScore?: number | null;
+  /**
+   * Score floor by tier name: the server resolves it to the active weights
+   * version's cutoff for that tier, so the UI never hard-codes a number.
+   * The server rejects a request carrying both `minTier` and `minScore`
+   * (400), so when a caller passes both the URL carries `minTier` only and
+   * `minScore` is not sent. null (default) = no tier floor.
+   */
+  minTier?: LotteryMinTier | null;
   /**
    * Numeric premium floor in dollars
    * (entry_price * trigger_window_size * 100). 0 / null = no floor.
@@ -157,6 +175,7 @@ export function useLotteryFinder({
   tod = null,
   sort = 'chronological',
   minScore = null,
+  minTier = null,
   minPremium = null,
   minFireCount = null,
   maxFireCount = null,
@@ -178,7 +197,11 @@ export function useLotteryFinder({
   if (optionType != null) params.set('optionType', optionType);
   if (tod != null) params.set('tod', tod);
   if (sort !== 'chronological') params.set('sort', sort);
-  if (minScore != null) params.set('minScore', String(minScore));
+  // The server 400s on `minTier` + `minScore` together. A tier wins: it is
+  // the replacement for the numeric floor, so a caller still passing both
+  // loses `minScore`, not the request.
+  if (minTier != null) params.set('minTier', minTier);
+  else if (minScore != null) params.set('minScore', String(minScore));
   if (minPremium != null && minPremium > 0)
     params.set('minPremium', String(minPremium));
   if (minFireCount != null && minFireCount > 1)

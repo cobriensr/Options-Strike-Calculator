@@ -135,6 +135,11 @@ export type LotteryScoreTier = ScoreTier;
 /** Sort modes accepted by /api/lottery-finder?sort=. */
 export type LotterySortMode = 'chronological' | 'score' | 'peak';
 
+/** Tiers a feed filter can floor on (`?minTier=`). Tier 3 is "no floor",
+ *  so it is not a value. The server resolves the name to the active
+ *  weights version's cutoff for that tier. */
+export type LotteryMinTier = 'tier1' | 'tier2';
+
 /**
  * Per-ticker reliability stats joined from `lottery_ticker_stats`.
  * `null` when no stats row exists for the ticker (rare — universe is
@@ -432,9 +437,21 @@ export interface LotteryFinderResponse {
     tod?: TimeOfDay;
     sort?: LotterySortMode;
     minScore?: number;
+    minTier?: LotteryMinTier;
     minPremium?: number | null;
     minFireCount?: number | null;
     minTakeitProb?: number | null;
+  };
+  /**
+   * The tier cutoffs this response tiered and floored on: the active
+   * weights version's quality-adjusted-score thresholds. Lets the UI show
+   * the number a `minTier` chip means. Optional for back-compat with older
+   * server builds that haven't shipped the field yet.
+   */
+  tierCutoffs?: {
+    version: string;
+    tier1MinScore: number;
+    tier2MinScore: number;
   };
   /** Number of fires actually returned in this response (≤ limit). */
   count: number;
