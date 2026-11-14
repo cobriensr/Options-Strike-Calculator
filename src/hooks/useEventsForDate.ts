@@ -4,16 +4,23 @@
  * App's forward list (useMarketData: `/api/events?days=30`) is fetched once and
  * answers with the range it covers, `startDate .. endDate`: today and the month
  * ahead as of when it was fetched, and nothing before. A date outside that
- * range (a past date, or one beyond the list's end) finds no events in it. This
- * hook returns:
+ * range (a past date, or one beyond the list's end) finds no events in it. A
+ * list that never arrived (its request failed) covers nothing. This hook
+ * returns:
  *
  *   - the forward list's own events (same reference, no request, no wait) when
  *     the date falls inside the range the response reports. The range comes
  *     from the response, not from the clock: after ET midnight the list does
  *     not move, so a clock-built window would drift away from what it holds.
- *     A response without a usable range (a fixture's '', or one not loaded yet)
- *     counts as today .. today + 30, ET, which also keeps a still-loading list
- *     from making a request for today;
+ *     Two cases have no reported range and count as today .. today + 30, ET: a
+ *     response without a usable one (a fixture's ''), and no response yet while
+ *     the list's first load is still running (`forwardLoaded` is false), so a
+ *     list that is merely slow does not make a request for today. Once the
+ *     first load has finished with no list (`forwardLoaded` true, `forward`
+ *     null), no date is covered: today and every forward date take the
+ *     own-date path below, so a failed list does not read as a quiet day. If a
+ *     list arrives later, coverage applies again from that render: the date's
+ *     own request is dropped and its events come from the list;
  *   - otherwise that date's own events, from `/api/events?from=<date>&days=1`,
  *     fetched once per date (`historical`: no polling; a past calendar does not
  *     change, and a far-ahead one is cached server-side), and only after the
@@ -69,12 +76,15 @@ function addDays(isoDate: string, days: number): string {
 
 /**
  * The dates the forward list answers for: the range its response reports, or
- * today .. today + FORWARD_EVENT_DAYS (ET) when it has none to report.
+ * today .. today + FORWARD_EVENT_DAYS (ET) when a list is present with none to
+ * report, or none has arrived yet and its first load is still running. `null`
+ * when no list arrived and its load has finished: nothing is covered.
  */
 function coveredRange(
   forward: ForwardEvents | null | undefined,
+  forwardLoaded: boolean,
   etToday: string,
-): { from: string; to: string } {
+): { from: string; to: string } | null {
   if (
     forward != null &&
     ISO_DATE.test(forward.startDate) &&
@@ -82,13 +92,14 @@ function coveredRange(
   ) {
     return { from: forward.startDate, to: forward.endDate };
   }
+  if (forward == null && forwardLoaded) return null;
   return { from: etToday, to: addDays(etToday, FORWARD_EVENT_DAYS) };
 }
 
 interface EventsForDate {
   /**
    * The selected date's events. `undefined` when none are known: the date's own
-   * fetch is waiting, loading or failed, or the forward list has not loaded.
+   * fetch is waiting, loading or failed, or the forward list is still loading.
    */
   readonly events: readonly EventItem[] | undefined;
   /**
@@ -101,18 +112,27 @@ interface EventsForDate {
   readonly retry: () => void;
 }
 
+/**
+ * `forward` is the forward list (null or undefined until one arrives).
+ * `forwardLoaded` says its first load has finished, whether or not it brought a
+ * list: it is how "still loading" is told from "failed", which both leave
+ * `forward` empty.
+ */
 export function useEventsForDate(
   selectedDate: string,
   forward: ForwardEvents | null | undefined,
+  forwardLoaded: boolean,
 ): EventsForDate {
   // The ET date, re-read at ET midnight, so a tab left open moves the fallback.
   const etToday = useETToday();
   // Lags `selectedDate` by 350 ms; equal to it once the date has stopped moving.
   const settled = useDebounced(selectedDate, 350);
 
-  const covered = coveredRange(forward, etToday);
+  const covered = coveredRange(forward, forwardLoaded, etToday);
   const inForwardList =
-    selectedDate >= covered.from && selectedDate <= covered.to;
+    covered != null &&
+    selectedDate >= covered.from &&
+    selectedDate <= covered.to;
   // An empty or malformed date (the field is being edited) is not worth a
   // request the endpoint would answer with a 400.
   const fetchOwnDate = ISO_DATE.test(selectedDate) && !inForwardList;

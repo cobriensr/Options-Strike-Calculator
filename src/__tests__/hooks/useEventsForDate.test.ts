@@ -8,7 +8,10 @@
  * /api/events?from=<date>&days=1 once the picked date has settled for 350 ms,
  * and reads undefined ("no events known") while that is loading or if it fails.
  * `failed` is true only when that date's own fetch has failed, and `retry`
- * fetches it again.
+ * fetches it again. When the forward list's first load has finished without a
+ * list (its request failed), no date is covered: today and every forward date
+ * take that same own-date path. While the first load is still running, a
+ * missing list counts as covering today .. today + 30, so no request is made.
  *
  * The clock is pinned to 12:00 ET on 2026-11-12 and every timer is fake: the
  * settle wait and the ET-midnight timer are driven by `advance`.
@@ -36,6 +39,7 @@ const TODAY = '2026-11-12';
 const YESTERDAY = '2026-11-11';
 const PAST = '2026-11-10';
 const OTHER_PAST = '2026-11-09';
+const TEN_DAYS_AHEAD = '2026-11-22'; // today + 10
 const WINDOW_END = '2026-12-12'; // today + 30
 const JUST_PAST_WINDOW = '2026-12-13'; // today + 31
 const FAR_AHEAD = '2026-12-27'; // today + 45
@@ -108,22 +112,36 @@ async function advance(ms: number) {
 
 type Seen = ReturnType<typeof useEventsForDate>;
 
+interface HookProps {
+  date: string;
+  forward: Forward | null | undefined;
+  /** Has the forward list's first load finished? Defaults to true. */
+  forwardLoaded?: boolean;
+}
+
 /**
  * Render the hook. `seen` collects what every render returned, so a test can
  * check a value that held for one render only (a stale error shown for a frame).
+ * The forward list's load has finished unless a test says otherwise
+ * (`forwardLoaded: false`), which is what App has once any list is present.
  */
 function render(
   date: string,
   forward: Forward | null | undefined,
   seen?: Seen[],
+  forwardLoaded = true,
 ) {
   return renderHook(
-    (props: { date: string; forward: Forward | null | undefined }) => {
-      const value = useEventsForDate(props.date, props.forward);
+    (props: HookProps) => {
+      const value = useEventsForDate(
+        props.date,
+        props.forward,
+        props.forwardLoaded ?? true,
+      );
       seen?.push(value);
       return value;
     },
-    { initialProps: { date, forward } },
+    { initialProps: { date, forward, forwardLoaded } as HookProps },
   );
 }
 
@@ -161,9 +179,9 @@ describe("useEventsForDate: inside the forward list's range", () => {
   });
 
   it.each([undefined, null])(
-    'returns undefined for today while the forward list is %s, with no request',
+    'returns undefined for today while the forward list is %s and still loading, with no request',
     async (notLoaded) => {
-      const { result } = render(TODAY, notLoaded);
+      const { result } = render(TODAY, notLoaded, undefined, false);
       await advance(SETTLE_MS);
       expect(result.current.events).toBeUndefined();
       expect(fetchMock).not.toHaveBeenCalled();
@@ -656,9 +674,9 @@ describe('useEventsForDate: failed', () => {
   });
 
   it.each([undefined, null])(
-    'is false for a covered date while the forward list is %s',
+    'is false for a covered date while the forward list is %s and still loading',
     async (notLoaded) => {
-      const { result } = render(TODAY, notLoaded);
+      const { result } = render(TODAY, notLoaded, undefined, false);
       await advance(SETTLE_MS);
       expect(fetchMock).not.toHaveBeenCalled();
       expect(result.current.failed).toBe(false);
@@ -776,6 +794,169 @@ describe('useEventsForDate: failed', () => {
 
     expect(result.current.events).toEqual([ev(PAST)]);
     expect(result.current.failed).toBe(false);
+  });
+});
+
+describe("useEventsForDate: the forward list's first load finished without a list", () => {
+  // useMarketData leaves its events at null when the forward request fails (an
+  // HTTP or network error, or a body that fails the schema) and then reports
+  // its first load finished. Nothing is covered then, today included, so the
+  // selected date fetches its own events and says when they could not load.
+  const OWN_DATES: ReadonlyArray<readonly [string, string]> = [
+    ['today', TODAY],
+    ['a date 10 days ahead', TEN_DAYS_AHEAD],
+  ];
+
+  it.each([null, undefined])(
+    "fetches today's own events at once when the list is %s, and returns them",
+    async (noList) => {
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse(eventsBody(TODAY, [ev(TODAY, 'CPI')])),
+      );
+      const { result } = render(TODAY, noList);
+      await advance(0);
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock.mock.calls[0]![0]).toBe(
+        `/api/events?from=${TODAY}&days=1`,
+      );
+      expect(result.current.events).toEqual([ev(TODAY, 'CPI')]);
+      expect(result.current.failed).toBe(false);
+    },
+  );
+
+  it('fetches a date 10 days ahead on its own, and returns its events', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(eventsBody(TEN_DAYS_AHEAD, [ev(TEN_DAYS_AHEAD, 'PCE')])),
+    );
+    const { result } = render(TEN_DAYS_AHEAD, null);
+    await advance(0);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0]![0]).toBe(
+      `/api/events?from=${TEN_DAYS_AHEAD}&days=1`,
+    );
+    expect(result.current.events).toEqual([ev(TEN_DAYS_AHEAD, 'PCE')]);
+    expect(result.current.failed).toBe(false);
+  });
+
+  it('fetches today as soon as the first load ends with no list, not before', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(eventsBody(TODAY, [ev(TODAY, 'CPI')])),
+    );
+    const { result, rerender } = render(TODAY, null, undefined, false);
+    await advance(SETTLE_MS);
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    // The date has not moved, so there is no settle wait to sit through.
+    rerender({ date: TODAY, forward: null, forwardLoaded: true });
+    await advance(0);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0]![0]).toBe(
+      `/api/events?from=${TODAY}&days=1`,
+    );
+    expect(result.current.events).toEqual([ev(TODAY, 'CPI')]);
+  });
+
+  it.each(OWN_DATES)(
+    'says %s could not load on a 500, and Retry fetches it again',
+    async (_name, date) => {
+      fetchMock
+        .mockResolvedValueOnce(jsonResponse({ error: 'boom' }, 500))
+        .mockResolvedValueOnce(jsonResponse(eventsBody(date, [ev(date)])));
+      const { result } = render(date, null);
+      await advance(0);
+
+      expect(result.current.events).toBeUndefined();
+      expect(result.current.failed).toBe(true);
+
+      act(() => {
+        result.current.retry();
+      });
+      await advance(0);
+
+      const url = `/api/events?from=${date}&days=1`;
+      expect(fetchMock.mock.calls.map((c) => c[0])).toEqual([url, url]);
+      expect(result.current.events).toEqual([ev(date)]);
+      expect(result.current.failed).toBe(false);
+    },
+  );
+
+  it("reports today's malformed body to Sentry under today's date, and says it could not load", async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ events: 'nope', startDate: TODAY, endDate: TODAY }),
+    );
+    const { result } = render(TODAY, null);
+    await advance(0);
+
+    expect(result.current.events).toBeUndefined();
+    expect(result.current.failed).toBe(true);
+    expect(mockCaptureUnlessAuth).toHaveBeenCalledTimes(1);
+    expect(mockCaptureUnlessAuth.mock.calls[0]![1]).toMatchObject({
+      contexts: { events: { request: TODAY } },
+    });
+  });
+
+  it('waits for a newly picked date to settle, as for any date', async () => {
+    fetchMock.mockResolvedValue(jsonResponse(eventsBody(TODAY, [])));
+    const { rerender } = render(TODAY, null);
+    await advance(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    rerender({ date: TEN_DAYS_AHEAD, forward: null });
+    await advance(SETTLE_MS - 1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    await advance(1);
+    expect(fetchMock.mock.calls.map((c) => c[0])).toEqual([
+      `/api/events?from=${TODAY}&days=1`,
+      `/api/events?from=${TEN_DAYS_AHEAD}&days=1`,
+    ]);
+  });
+
+  it('reads the forward list once it arrives, with no further request and no failed render', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ error: 'boom' }, 500));
+    const seen: Seen[] = [];
+    const { result, rerender } = render(TODAY, null, seen);
+    await advance(0);
+    expect(result.current.failed).toBe(true);
+
+    seen.length = 0;
+    rerender({ date: TODAY, forward: FORWARD });
+    // From the very render that carries the list, not after a timer.
+    expect(result.current.events).toBe(FORWARD.events);
+    expect(result.current.failed).toBe(false);
+    await advance(SETTLE_MS);
+    // App renders again and again; the failure the list replaced must stay
+    // gone in every later render too, not only the one that carried the list.
+    rerender({ date: TODAY, forward: FORWARD });
+    rerender({ date: TODAY, forward: FORWARD });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(result.current.events).toBe(FORWARD.events);
+    expect(seen.length).toBeGreaterThanOrEqual(3);
+    expect(seen.filter((value) => value.failed)).toEqual([]);
+  });
+
+  it('ignores the late answer to its own fetch once the list covers the date', async () => {
+    const pending = deferred();
+    fetchMock.mockReturnValueOnce(pending.promise);
+    const seen: Seen[] = [];
+    const { result, rerender } = render(TODAY, null, seen);
+    await advance(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    rerender({ date: TODAY, forward: FORWARD });
+    await act(async () => {
+      pending.resolve(jsonResponse({ error: 'boom' }, 500));
+      await pending.promise;
+    });
+    await advance(0);
+
+    expect(result.current.events).toBe(FORWARD.events);
+    expect(result.current.failed).toBe(false);
+    expect(seen.filter((value) => value.failed)).toEqual([]);
   });
 });
 

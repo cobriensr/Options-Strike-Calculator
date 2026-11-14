@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
 import { chip, dateTimeSection, setEntryTime } from './helpers/calculator';
 import { buildApiFetchMock, MOCK_QUOTES } from './helpers/mock-fetch';
 
@@ -183,24 +183,22 @@ test.describe('Event Day Warning', () => {
     await expect(main.getByText('Market Closed')).not.toBeVisible();
   });
 
-  // A past date is outside the forward list, so the app looks up that date's
-  // own events (/api/events?from=<date>&days=1) once the date settles. When
-  // that lookup fails, a blank banner would read as a quiet day, so the
-  // banner says so and offers Retry.
-  test("a failed lookup for a past date says so, and Retry loads the date's events", async ({
-    page,
-  }) => {
+  /**
+   * Abort every /api request (the forward list, `/api/events?days=30`, among
+   * them), then answer one date's own lookup (`/api/events?from=<date>`): a 500
+   * the first time, a CPI event the second. The count is how many lookups the
+   * page made.
+   */
+  async function failOnceThenAnswerLookup(page: Page, date: string) {
     // Registered first, so the more specific lookup route below wins.
     await page.route('**/api/**', (route) => route.abort());
-    let lookups = 0;
+    const lookups = { count: 0 };
     await page.route(
       (url) =>
-        url.pathname === '/api/events' &&
-        url.searchParams.get('from') === PAST_DATE,
+        url.pathname === '/api/events' && url.searchParams.get('from') === date,
       (route) => {
-        lookups += 1;
-        // The first lookup fails; the retry is answered with an event.
-        if (lookups === 1) {
+        lookups.count += 1;
+        if (lookups.count === 1) {
           return route.fulfill({
             status: 500,
             json: { error: 'Events unavailable' },
@@ -216,22 +214,24 @@ test.describe('Event Day Warning', () => {
                 severity: 'high',
               },
             ],
-            PAST_DATE,
+            date,
           ),
         });
       },
     );
+    return lookups;
+  }
 
-    await page.goto('/');
-    await dateTimeSection(page)
-      .getByLabel('Date', { exact: true })
-      .fill(PAST_DATE);
-
+  /** The failure line, Retry, then the banner with the CPI tag. */
+  async function expectFailureThenRetryLoadsCpi(
+    page: Page,
+    lookups: { count: number },
+  ) {
     const main = page.getByRole('main');
     const loadFailed = main.getByText("Events for this date couldn't load.");
     await expect(loadFailed).toBeVisible();
     await expect(main.getByText('High-Impact Event Day')).not.toBeVisible();
-    expect(lookups).toBe(1);
+    expect(lookups.count).toBe(1);
 
     await main.getByRole('button', { name: 'Retry', exact: true }).click();
 
@@ -241,6 +241,37 @@ test.describe('Event Day Warning', () => {
     await expect(
       main.getByRole('button', { name: 'Retry', exact: true }),
     ).toHaveCount(0);
-    expect(lookups).toBe(2);
+    expect(lookups.count).toBe(2);
+  }
+
+  // A past date is outside the forward list, so the app looks up that date's
+  // own events (/api/events?from=<date>&days=1) once the date settles. When
+  // that lookup fails, a blank banner would read as a quiet day, so the
+  // banner says so and offers Retry.
+  test("a failed lookup for a past date says so, and Retry loads the date's events", async ({
+    page,
+  }) => {
+    const lookups = await failOnceThenAnswerLookup(page, PAST_DATE);
+
+    await page.goto('/');
+    await dateTimeSection(page)
+      .getByLabel('Date', { exact: true })
+      .fill(PAST_DATE);
+
+    await expectFailureThenRetryLoadsCpi(page, lookups);
+  });
+
+  // Today's events come from the forward list. When that list fails to load,
+  // a blank banner would read as a quiet day, which matters most on a CPI or
+  // jobs-report morning. Today then looks up its own events, as a past date
+  // does, and says so when that fails too.
+  test('a failed forward list makes today look up its own events, says so on a failure, and Retry loads them', async ({
+    page,
+  }) => {
+    const lookups = await failOnceThenAnswerLookup(page, TODAY);
+
+    await page.goto('/');
+
+    await expectFailureThenRetryLoadsCpi(page, lookups);
   });
 });
