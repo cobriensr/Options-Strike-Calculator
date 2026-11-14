@@ -167,6 +167,10 @@ class _SessionDiag:
     # ConnectionClosed carries its own copies in ``rcvd`` / ``sent``.
     close_rcvd: Close | None = None
     close_sent: Close | None = None
+    # Why ``force_reconnect`` dropped this socket, or None when it was a genuine
+    # drop. Lives here so the mark ends with the session: the next attempt starts
+    # with a fresh instance.
+    forced: str | None = None
 
 
 def _format_addr(addr: object) -> str | None:
@@ -226,6 +230,12 @@ class Connector:
         # while closing leaves through that exit with its socket still open
         # (see ``abort``), and this is then the only handle on it.
         self._ws: Any = None
+        # True only while the receive loop runs: set right before ``async for``,
+        # cleared first thing in its ``finally``. ``force_reconnect`` acts only
+        # then. ``state.connections`` is not enough: it stays true until ``run``
+        # marks the shard down, which is after the ``async with`` has finished
+        # closing the socket. Cold path: two stores per connection.
+        self._receiving = False
 
     async def run(self) -> None:
         """Run forever, reconnecting as needed."""
@@ -336,6 +346,34 @@ class Connector:
         if ws is not None:
             ws.transport.abort()
 
+    def force_reconnect(self, reason: str) -> bool:
+        """Drop the live socket on purpose, so ``run`` reconnects and re-joins every channel.
+
+        For ``stuck_sockets``: a trade socket that is up but delivers no trades.
+        The mark goes on the session first, then ``abort`` kills the transport.
+        The receive loop raises, and ``run``'s ordinary branch for that logs the
+        disconnect, backs off from 1 s and reconnects, as for any drop. The
+        disconnect line carries ``forced: <reason>`` (null for a genuine drop), so
+        statistics on drops can leave these out. The mark belongs to the session:
+        the next attempt starts with a fresh ``_SessionDiag``.
+
+        Returns True when it acted: the receive loop was running and the abort was
+        issued. Returns False for a no-op, so the caller can tell a reconnect it
+        forced from one it only asked for (``stuck_sockets`` counts only the first).
+        A no-op unless the receive loop is running (``_receiving``). A call between
+        sessions neither aborts the last, dead socket nor marks the next session's
+        drop as forced. It also leaves alone a drop that has already started: when
+        the server closes the socket, or the receive loop raises, ``state.connections``
+        stays true until ``run`` marks the shard down, after the ``async with`` has
+        finished closing, and a mark set in that window would label a genuine drop
+        as forced. A call whose abort raises propagates the error and returns nothing.
+        """
+        if not self._receiving:
+            return False
+        self._session_diag.forced = reason
+        self.abort()
+        return True
+
     async def _connect_once(self) -> None:
         """Open one WS, join channels, drain messages until the socket dies.
 
@@ -418,8 +456,9 @@ class Connector:
             # The per-socket counters see every frame with that same clock read.
             # A new connection starts no gap: none is measured across a reconnect.
             on_frame = self._stats.on_frame
-            self._stats.session_start()
+            self._stats.session_start(session_start)
             try:
+                self._receiving = True
                 async for raw in ws:
                     frames += 1
                     last_frame_at = now = time.monotonic()
@@ -455,6 +494,7 @@ class Connector:
                     # After the handoff, so the diagnostics can never delay a frame.
                     on_frame(raw, now)
             finally:
+                self._receiving = False
                 # Hand the session's frame stats and close frames to the
                 # disconnect log line ``run`` emits next.
                 diag.frames = frames
@@ -644,6 +684,7 @@ class Connector:
             ),
             "local_addr": diag.local_addr,
             "remote_addr": diag.remote_addr,
+            "forced": diag.forced,
         }
 
     def _maybe_alert_storm(self) -> None:

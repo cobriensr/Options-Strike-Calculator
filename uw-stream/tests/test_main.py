@@ -20,6 +20,11 @@ import notify
 import socket_stats
 import ws_lease
 
+# The longest a test lets ``main._run`` take. A run ends when the test sends SIGTERM and
+# ``_shutdown`` finishes in well under a second; a regression there (a changed signature,
+# a step that never returns) would otherwise hang the whole run, so it fails here instead.
+_RUN_TIMEOUT_S = 30.0
+
 
 @pytest.fixture(autouse=True)
 def _reset_notify_state(monkeypatch):
@@ -89,6 +94,7 @@ async def test_shutdown_cancels_producers_before_draining(_reset_notify_state):
         connectors=[],
         receive_queue=asyncio.Queue(),
         lease_renewal=None,
+        stuck_watchdog=None,
     )
 
     # Producers cancelled strictly before the handler drain ran.
@@ -131,6 +137,7 @@ async def test_shutdown_logs_but_survives_a_drain_failure(_reset_notify_state, m
         connectors=[],
         receive_queue=asyncio.Queue(),
         lease_renewal=None,
+        stuck_watchdog=None,
     )
 
     # The good handler still drained despite the boom handler raising.
@@ -161,10 +168,11 @@ def _stub_pipeline(monkeypatch) -> None:
     Every test that drives ``main._run`` past the lease step starts from this,
     and overrides only what it needs. The lease is off, so the only things that
     can wake _run are the stop Event and a background task finishing. The
-    pipeline stats task is stubbed like the other background tasks, and the
-    socket registry and twin map are swapped for empty ones so ``_run``'s
-    ``configure`` call leaves no ``conn{i}`` entries behind in the module for a
-    later test. ``_pipeline_leak_guard`` fails a test that skips it.
+    pipeline stats task and the stuck-socket watchdog are stubbed like the other
+    background tasks, and the socket registry and twin map are swapped for empty
+    ones so ``_run``'s ``configure`` call leaves no ``conn{i}`` entries behind in
+    the module for a later test. ``_pipeline_leak_guard`` fails a test that skips
+    it.
     """
     monkeypatch.setattr(main, "init_sentry", lambda: None)
     monkeypatch.setattr(socket_stats, "_registry", {})
@@ -197,42 +205,56 @@ def _stub_pipeline(monkeypatch) -> None:
     async def _forever_bg() -> None:
         await asyncio.sleep(3600)
 
+    async def _forever_watchdog(_connectors) -> None:
+        await asyncio.sleep(3600)
+
     monkeypatch.setattr(main, "Connector", _ForeverConnector)
     monkeypatch.setattr(main, "Router", _ForeverRouter)
     monkeypatch.setattr(main, "run_server", _forever_bg)
     monkeypatch.setattr(main, "run_subscription_watchdog", _forever_bg)
     monkeypatch.setattr(main, "run_pipeline_stats", _forever_bg)
+    monkeypatch.setattr(main, "run_stuck_socket_watchdog", _forever_watchdog)
 
 
 @pytest.fixture(autouse=True)
 def _pipeline_leak_guard(monkeypatch):
     """Fail any test in this module that runs the real pipeline-stats task or
-    fills the socket registry or twin map.
+    stuck-socket watchdog, or fills the socket registry or twin map.
 
     A test that drives ``main._run`` past the lease step reaches
-    ``socket_stats.configure`` and starts ``run_pipeline_stats``; without
-    ``_stub_pipeline`` it leaves ``conn{i}`` entries in the module for every
-    later test. Each test starts with a fresh, empty registry and twin map and a
-    watched stats task, so nothing it does reaches the real ones, and a test
-    that skips ``_stub_pipeline`` leaves them filled or started. One that
-    isolates replaces them first, through the same ``monkeypatch``, so these
-    stay untouched. It checks its own objects, not the module's names, which
-    the test may have swapped by then.
+    ``socket_stats.configure`` and starts ``run_pipeline_stats`` and
+    ``run_stuck_socket_watchdog``; without ``_stub_pipeline`` it leaves
+    ``conn{i}`` entries in the module for every later test. Each test starts
+    with a fresh, empty registry and twin map and watched tasks, so nothing it
+    does reaches the real ones, and a test that skips ``_stub_pipeline`` leaves
+    them filled or started. One that isolates replaces them first, through the
+    same ``monkeypatch``, so these stay untouched. It checks its own objects, not
+    the module's names, which the test may have swapped by then.
     """
     registry: dict = {}
     twins: dict = {}
     real_stats = main.run_pipeline_stats
+    real_watchdog = main.run_stuck_socket_watchdog
     stats_started: list[str] = []
+    watchdog_started: list[str] = []
 
     async def _tracking_stats() -> None:
         stats_started.append("run_pipeline_stats")
         await real_stats()
 
+    async def _tracking_watchdog(connectors) -> None:
+        watchdog_started.append("run_stuck_socket_watchdog")
+        await real_watchdog(connectors)
+
     monkeypatch.setattr(socket_stats, "_registry", registry)
     monkeypatch.setattr(socket_stats, "_twins", twins)
     monkeypatch.setattr(main, "run_pipeline_stats", _tracking_stats)
+    monkeypatch.setattr(main, "run_stuck_socket_watchdog", _tracking_watchdog)
     yield
     assert stats_started == [], "the test started the real run_pipeline_stats: use _stub_pipeline"
+    assert watchdog_started == [], (
+        "the test started the real run_stuck_socket_watchdog: use _stub_pipeline"
+    )
     assert not registry, (
         f"the test registered {sorted(registry)} in socket_stats: use _stub_pipeline"
     )
@@ -290,7 +312,7 @@ async def test_run_exits_nonzero_when_lease_acquire_times_out(monkeypatch):
     monkeypatch.setattr(main, "capture_message", lambda msg, **kw: messages.append((msg, kw)))
 
     with pytest.raises(SystemExit) as exc_info:
-        await main._run()
+        await asyncio.wait_for(main._run(), timeout=_RUN_TIMEOUT_S)
 
     assert exc_info.value.code == 1
     # Pool was opened then closed on the fail path.
@@ -349,7 +371,7 @@ async def test_run_wires_renewal_task_with_lease_lost_callback(monkeypatch):
     # A confirmed lease loss (run_renewal fires on_lost) must drain gracefully
     # AND exit non-zero so Railway's ON_FAILURE policy restarts the container.
     with pytest.raises(SystemExit) as exc_info:
-        await main._run()
+        await asyncio.wait_for(main._run(), timeout=_RUN_TIMEOUT_S)
     assert exc_info.value.code == 1
 
     on_lost = captured.get("on_lost")
@@ -383,7 +405,7 @@ async def test_run_exits_nonzero_and_reports_on_task_crash(_reset_notify_state, 
     monkeypatch.setattr(main, "capture_exception", lambda exc, **kw: captured.append((exc, kw)))
 
     with pytest.raises(SystemExit) as exc_info:
-        await main._run()
+        await asyncio.wait_for(main._run(), timeout=_RUN_TIMEOUT_S)
 
     assert exc_info.value.code == 1
     # The crash was reported to Sentry, tagged with the dead task's name.
@@ -432,7 +454,7 @@ async def test_run_exits_zero_on_normal_sigterm(monkeypatch):
     monkeypatch.setattr(main.asyncio, "wait", _wait_then_sigterm)
 
     # No SystemExit — clean return → exit 0 (lease_lost was never set).
-    await main._run()
+    await asyncio.wait_for(main._run(), timeout=_RUN_TIMEOUT_S)
     # The stop event was the last created; lease_lost (first) stayed unset.
     assert created_events[0].is_set() is False
 
@@ -474,6 +496,7 @@ async def test_shutdown_releases_lease_after_producers_then_closes_session(
         connectors=[],
         receive_queue=asyncio.Queue(),
         lease_renewal=None,
+        stuck_watchdog=None,
         lease=lease,
         lease_session=session,
     )
@@ -501,9 +524,133 @@ async def test_shutdown_without_lease_is_unchanged(_reset_notify_state):
         connectors=[],
         receive_queue=asyncio.Queue(),
         lease_renewal=None,
+        stuck_watchdog=None,
     )
 
     assert producer.cancelled()
+
+
+class _AbortRecorder:
+    """The slice of a Connector ``_shutdown`` uses: a name and ``abort``."""
+
+    def __init__(self, name: str, events: list[str]) -> None:
+        self.name = name
+        self._events = events
+
+    def abort(self) -> None:
+        self._events.append(f"abort:{self.name}")
+
+
+@pytest.mark.asyncio
+async def test_shutdown_stops_the_stuck_socket_watchdog_before_it_cancels_the_connectors(
+    _reset_notify_state,
+):
+    """A cancelled connector leaves ``state.connections`` true and its last trade
+    frame frozen, so a watchdog still running would find a quiet socket "stuck"
+    mid-shutdown and report a forced reconnect of a socket that is already closed.
+    The watchdog is cancelled and awaited first: it is fully stopped before the
+    producers are even cancelled, not merely cancelled first.
+    """
+    events: list[str] = []
+
+    async def _watchdog_slow_to_stop() -> None:
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            events.append("watchdog:cancelling")
+            await asyncio.sleep(0.05)  # still unwinding when the producers' turn comes
+            events.append("watchdog:stopped")
+            raise
+
+    watchdog = asyncio.create_task(_watchdog_slow_to_stop())
+    connector = asyncio.create_task(_forever(events, "connector"))
+    await asyncio.sleep(0.02)  # let both reach their await point
+
+    await main._shutdown(
+        producer_tasks=[connector],
+        handlers=[],
+        other_tasks=[watchdog],  # _run also lists it here, so step 4 cancels it again
+        connectors=[_AbortRecorder("conn0", events)],
+        receive_queue=asyncio.Queue(),
+        lease_renewal=None,
+        stuck_watchdog=watchdog,
+    )
+
+    assert events == [
+        "watchdog:cancelling",
+        "watchdog:stopped",
+        "cancelled:connector",
+        "abort:conn0",
+    ]
+    assert watchdog.cancelled()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_survives_a_watchdog_that_already_died(_reset_notify_state, monkeypatch):
+    """The watchdog's own death is what ``_run`` reports; ``_shutdown`` must still run."""
+    events: list[str] = []
+
+    async def _dies() -> None:
+        raise RuntimeError("watchdog boom")
+
+    watchdog = asyncio.create_task(_dies())
+    connector = asyncio.create_task(_forever(events, "connector"))
+    await asyncio.sleep(0.02)
+    assert watchdog.done()
+
+    await main._shutdown(
+        producer_tasks=[connector],
+        handlers=[],
+        other_tasks=[],
+        connectors=[_AbortRecorder("conn0", events)],
+        receive_queue=asyncio.Queue(),
+        lease_renewal=None,
+        stuck_watchdog=watchdog,
+    )
+
+    assert events == ["cancelled:connector", "abort:conn0"]
+
+
+@pytest.mark.asyncio
+async def test_run_stops_the_stuck_socket_watchdog_before_the_first_connector_abort(
+    _reset_notify_state, monkeypatch
+):
+    _stub_pipeline(monkeypatch)
+    monkeypatch.setattr(main.settings, "ws_channels", "option_trades:SPY")
+    monkeypatch.setattr(main.settings, "ws_redundant_option_trades", True)
+    events: list[str] = []
+
+    class _RecordingConnector:
+        def __init__(self, *_a, **kwargs) -> None:
+            self.name = kwargs["name"]
+
+        def abort(self) -> None:
+            events.append(f"abort:{self.name}")
+
+        async def run(self) -> None:
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                events.append(f"connector cancelled:{self.name}")
+                raise
+
+    async def _recording_watchdog(_connectors) -> None:
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            events.append("watchdog cancelled")
+            raise
+
+    monkeypatch.setattr(main, "Connector", _RecordingConnector)
+    monkeypatch.setattr(main, "run_stuck_socket_watchdog", _recording_watchdog)
+    _sigterm_once_run_is_waiting(monkeypatch)
+
+    await asyncio.wait_for(main._run(), timeout=_RUN_TIMEOUT_S)
+
+    assert events[0] == "watchdog cancelled"
+    assert events.index("watchdog cancelled") < events.index("connector cancelled:conn0")
+    assert events.index("watchdog cancelled") < events.index("abort:conn0")
+    assert events.index("watchdog cancelled") < events.index("abort:conn1")
 
 
 # --- Per-step bounds ----------------------------------------------------------
@@ -581,6 +728,7 @@ async def test_a_hung_shutdown_step_is_abandoned_and_the_later_steps_still_run(
             connectors=[],
             receive_queue=asyncio.Queue(),
             lease_renewal=None,
+            stuck_watchdog=None,
             lease=_Lease(),
             lease_session=_FakeLeaseSession(),
         )
@@ -638,6 +786,7 @@ async def test_shutdown_step_timeout_is_reported_with_its_bound(monkeypatch):
             connectors=[],
             receive_queue=asyncio.Queue(),
             lease_renewal=None,
+            stuck_watchdog=None,
         ),
         timeout=5.0,
     )
@@ -692,6 +841,7 @@ async def test_shutdown_aborts_connector_sockets_before_the_lease_is_released(
             other_tasks=[],
             receive_queue=asyncio.Queue(),
             lease_renewal=None,
+            stuck_watchdog=None,
             lease=_Lease(),
             lease_session=_FakeLeaseSession(),
         )
@@ -742,6 +892,7 @@ async def test_a_connector_abort_failure_is_reported_and_the_shutdown_goes_on(mo
         other_tasks=[],
         receive_queue=asyncio.Queue(),
         lease_renewal=None,
+        stuck_watchdog=None,
     )
 
     assert events == ["abort:c1", "drain"]
@@ -779,6 +930,7 @@ async def test_shutdown_counts_frames_left_in_the_receive_queue_as_dropped(monke
         connectors=[],
         receive_queue=queue,
         lease_renewal=None,
+        stuck_watchdog=None,
     )
 
     assert main.state.receive_queue_drops == 5 + 2
@@ -884,7 +1036,7 @@ async def test_run_starts_drop_reporter_and_shutdown_cancels_it(_reset_notify_st
     monkeypatch.setattr(main, "run_drop_reporter", _recording_reporter)
     _sigterm_once_run_is_waiting(monkeypatch)
 
-    await main._run()
+    await asyncio.wait_for(main._run(), timeout=_RUN_TIMEOUT_S)
 
     assert events == ["started", "cancelled"]
 
@@ -905,9 +1057,78 @@ async def test_run_starts_pipeline_stats_and_shutdown_cancels_it(_reset_notify_s
     monkeypatch.setattr(main, "run_pipeline_stats", _recording_stats)
     _sigterm_once_run_is_waiting(monkeypatch)
 
-    await main._run()
+    await asyncio.wait_for(main._run(), timeout=_RUN_TIMEOUT_S)
 
     assert events == ["started", "cancelled"]
+
+
+@pytest.mark.asyncio
+async def test_run_starts_the_stuck_socket_watchdog_with_the_connectors_by_name(
+    _reset_notify_state, monkeypatch
+):
+    _stub_pipeline(monkeypatch)
+    # One option_trades channel, joined on conn0 and (the mirror) conn1.
+    monkeypatch.setattr(main.settings, "ws_channels", "option_trades:SPY")
+    monkeypatch.setattr(main.settings, "ws_redundant_option_trades", True)
+    built: list = []
+
+    class _RecordingConnector:
+        def __init__(self, *_a, **kwargs) -> None:
+            self.name = kwargs["name"]
+            built.append(self)
+
+        def abort(self) -> None: ...
+
+        async def run(self) -> None:
+            await asyncio.sleep(3600)
+
+    received: list[dict] = []
+    events: list[str] = []
+
+    async def _recording_watchdog(connectors) -> None:
+        received.append(connectors)
+        events.append("started")
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            events.append("cancelled")
+            raise
+
+    monkeypatch.setattr(main, "Connector", _RecordingConnector)
+    monkeypatch.setattr(main, "run_stuck_socket_watchdog", _recording_watchdog)
+    _sigterm_once_run_is_waiting(monkeypatch)
+
+    await asyncio.wait_for(main._run(), timeout=_RUN_TIMEOUT_S)
+
+    # The same connector objects the connector tasks run, keyed by shard name.
+    (connectors,) = received
+    assert list(connectors) == ["conn0", "conn1"]
+    assert list(connectors.values()) == built
+    assert events == ["started", "cancelled"]
+
+
+@pytest.mark.asyncio
+async def test_run_exits_nonzero_when_the_stuck_socket_watchdog_dies(
+    _reset_notify_state, monkeypatch
+):
+    # Like the other background tasks, the watchdog's death is not silent: its
+    # own pass guard keeps it alive, so a death here is a bug that must restart.
+    _stub_pipeline(monkeypatch)
+
+    async def _crashing_watchdog(_connectors) -> None:
+        raise RuntimeError("watchdog boom")
+
+    monkeypatch.setattr(main, "run_stuck_socket_watchdog", _crashing_watchdog)
+    captured: list[tuple[BaseException, dict]] = []
+    monkeypatch.setattr(main, "capture_exception", lambda exc, **kw: captured.append((exc, kw)))
+
+    with pytest.raises(SystemExit) as exc_info:
+        await asyncio.wait_for(main._run(), timeout=_RUN_TIMEOUT_S)
+
+    assert exc_info.value.code == 1
+    assert [(str(e), kw["tags"]["task"]) for e, kw in captured] == [
+        ("watchdog boom", "stuck_sockets")
+    ]
 
 
 @pytest.mark.asyncio
@@ -915,6 +1136,7 @@ async def test_a_stubbed_run_neither_runs_the_real_stats_task_nor_fills_the_real
     _reset_notify_state, monkeypatch
 ):
     real_stats_task = main.run_pipeline_stats
+    real_watchdog = main.run_stuck_socket_watchdog
     # Start from empty module dicts, so anything ``_run`` leaves in them shows.
     real_registry: dict = {}
     real_twins: dict = {}
@@ -923,9 +1145,10 @@ async def test_a_stubbed_run_neither_runs_the_real_stats_task_nor_fills_the_real
     _stub_pipeline(monkeypatch)
     _sigterm_once_run_is_waiting(monkeypatch)
 
-    await main._run()
+    await asyncio.wait_for(main._run(), timeout=_RUN_TIMEOUT_S)
 
     assert main.run_pipeline_stats is not real_stats_task
+    assert main.run_stuck_socket_watchdog is not real_watchdog
     # ``_run`` did register its shards, in the stand-in the stub put in place.
     assert list(socket_stats._registry)
     assert (real_registry, real_twins) == ({}, {})
@@ -959,7 +1182,7 @@ async def test_run_registers_every_shard_and_its_twin_before_the_connectors_are_
     monkeypatch.setattr(main, "Connector", _RecordingConnector)
     _sigterm_once_run_is_waiting(monkeypatch)
 
-    await main._run()
+    await asyncio.wait_for(main._run(), timeout=_RUN_TIMEOUT_S)
 
     assert built == [
         ("conn0", ["conn0", "conn1"], "conn1"),
@@ -1005,7 +1228,7 @@ async def test_run_exits_nonzero_when_drop_reporter_dies(_reset_notify_state, mo
     monkeypatch.setattr(main, "capture_exception", lambda exc, **kw: captured.append((exc, kw)))
 
     with pytest.raises(SystemExit) as exc_info:
-        await main._run()
+        await asyncio.wait_for(main._run(), timeout=_RUN_TIMEOUT_S)
 
     assert exc_info.value.code == 1
     assert [(str(e), kw["tags"]["task"]) for e, kw in captured] == [
@@ -1046,7 +1269,7 @@ async def test_the_drop_reporter_is_cancelled_after_the_handlers_drain(
     monkeypatch.setattr(main, "_build_handlers", lambda _ch: {"lossy": _LossyHandler()})
     _sigterm_once_run_is_waiting(monkeypatch)
 
-    await main._run()
+    await asyncio.wait_for(main._run(), timeout=_RUN_TIMEOUT_S)
 
     assert [(r["tags"]["handler"], r["context"]["lost_rows"]) for r in reports] == [("lossy", 7)]
 
@@ -1118,7 +1341,8 @@ async def test_a_drain_longer_than_a_renew_interval_does_not_read_as_a_lost_leas
     monkeypatch.setattr(main, "_build_handlers", lambda _ch: {"slow": _SlowDrainHandler()})
     _sigterm_once_run_is_waiting(monkeypatch)
 
-    await main._run()  # a SystemExit(1) here is the false lease loss
+    # A SystemExit(1) here is the false lease loss.
+    await asyncio.wait_for(main._run(), timeout=_RUN_TIMEOUT_S)
 
     assert lease_events == []
     assert session.closed is True

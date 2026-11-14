@@ -29,6 +29,7 @@ from socket_stats import (
     SocketStats,
     twin_map,
 )
+from state import state
 
 _B = 1000.0
 
@@ -58,6 +59,12 @@ def _fresh_registry(monkeypatch):
     """Every test starts with an empty registry and no twins."""
     monkeypatch.setattr(socket_stats, "_registry", {})
     monkeypatch.setattr(socket_stats, "_twins", {})
+
+
+@pytest.fixture(autouse=True)
+def _fresh_connections(monkeypatch):
+    """The stuck test reads ``state.connections``; every test starts with it empty."""
+    monkeypatch.setattr(state, "connections", {})
 
 
 @pytest.fixture
@@ -285,7 +292,7 @@ class TestGaps:
         s = SocketStats("conn0")
         s.on_frame(TRADE, _B + 0.05)
 
-        s.session_start()
+        s.session_start(_B + 30.0)
         s.on_frame(TRADE, _B + 60.05)
 
         assert s.interval_max_trade_gap_s == 0.0
@@ -296,15 +303,25 @@ class TestGaps:
         s = SocketStats("conn0")
         s.on_frame(TRADE, _B)
 
-        s.session_start()
+        s.session_start(_B + 1.0)
 
         assert s.last_trade_at is None
+
+    def test_session_start_stamps_the_session_start_time(self):
+        s = SocketStats("conn0")
+        assert s.session_started_at is None
+
+        s.session_start(_B + 1.0)
+        assert s.session_started_at == _B + 1.0
+
+        s.session_start(_B + 7.5)
+        assert s.session_started_at == _B + 7.5
 
     def test_session_start_keeps_the_counters_and_the_ring(self, pair):
         a, b = pair
         _feed(b, _spread(_B + 0.15, 15))
 
-        b.session_start()
+        b.session_start(_B + 0.2)
         a.on_frame(TRADE, _B + 0.05)
         with patch.object(socket_stats, "rate_limited_log") as rl:
             a.on_frame(TRADE, _B + 0.65)
@@ -317,7 +334,7 @@ class TestGaps:
         # The twin streams through the 0.6 s between the acks and the first trade.
         _feed(b, _spread(_B + 0.15, 15))
 
-        a.session_start()
+        a.session_start(_B)
         with patch.object(socket_stats, "rate_limited_log") as rl:
             _feed(a, [_B + 0.05, _B + 0.06, _B + 0.07], raw=ACK)
             a.on_frame(TRADE, _B + 0.65)
@@ -686,6 +703,167 @@ class TestTwinAlsoSilent:
         s = SocketStats("conn0")
         _feed(s, [_B + 0.25, _B + 5.25])
 
-        s.session_start()
+        s.session_start(_B + 6.0)
 
         assert (s.last_silence_start, s.last_silence_end) == (_B + 0.25, _B + 5.25)
+
+
+# --- the stuck-socket test ----------------------------------------------------
+
+# 1100.5, 1040.5 and the offsets below are exact in binary, so a gap of 60.0 is
+# exactly STUCK_S and no comparison sits on a rounding edge. 1100.5 is also the
+# middle of a 0.1 s bucket.
+_NOW = 1_100.5
+
+
+def _stuck_pair(
+    *,
+    gap: float = 60.0,
+    twin_frames: int = 100,
+    twin_at: float = 30.25,
+    connected: bool | None = True,
+    twin_connected: bool | None = True,
+) -> tuple[SocketStats, SocketStats]:
+    """conn0 whose last trade frame came ``gap`` s before ``_NOW``, and its twin conn1.
+
+    The twin got ``twin_frames`` trade frames ``twin_at`` s before ``_NOW``.
+    ``connected`` and ``twin_connected`` are the two flags in ``state.connections``
+    (None: not recorded at all).
+    """
+    socket_stats.set_twins({"conn0": "conn1", "conn1": "conn0"})
+    quiet, twin = socket_stats.get("conn0"), socket_stats.get("conn1")
+    quiet.on_frame(TRADE, _NOW - gap)
+    _feed(twin, [_NOW - twin_at] * twin_frames)
+    if connected is not None:
+        state.set_connection("conn0", connected)
+    if twin_connected is not None:
+        state.set_connection("conn1", twin_connected)
+    return quiet, twin
+
+
+class TestFindStuck:
+    """``find_stuck(now)``: a connected trade socket quiet for STUCK_S while its twin kept receiving."""
+
+    def test_the_thresholds_are_the_spec_values(self):
+        assert socket_stats.STUCK_S == 60.0
+        assert socket_stats.STUCK_TWIN_MIN_FRAMES == 100
+
+    def test_a_connected_socket_with_a_quiet_gap_and_a_busy_twin_is_stuck(self):
+        _stuck_pair(gap=60.0, twin_frames=100)
+
+        assert socket_stats.find_stuck(_NOW) == [
+            socket_stats.StuckSocket(shard="conn0", twin="conn1", gap_s=60.0, twin_trade_frames=100)
+        ]
+
+    def test_it_reports_the_gap_and_the_twin_count_it_measured(self):
+        _stuck_pair(gap=75.5, twin_frames=240)
+
+        (found,) = socket_stats.find_stuck(_NOW)
+
+        assert (found.gap_s, found.twin_trade_frames) == (75.5, 240)
+
+    def test_a_gap_just_under_stuck_s_is_not_stuck(self):
+        _stuck_pair(gap=59.5)
+
+        assert socket_stats.find_stuck(_NOW) == []
+
+    def test_a_twin_count_just_under_the_minimum_is_not_stuck(self):
+        _stuck_pair(twin_frames=99)
+
+        assert socket_stats.find_stuck(_NOW) == []
+
+    def test_twin_frames_older_than_stuck_s_do_not_count(self):
+        # 500 frames, but all 61.25 s ago: outside the last STUCK_S.
+        _stuck_pair(gap=70.0, twin_frames=500, twin_at=61.25)
+
+        assert socket_stats.find_stuck(_NOW) == []
+
+    def test_a_socket_with_no_twin_is_never_stuck(self):
+        _stuck_pair()
+        socket_stats.set_twins({})
+
+        assert socket_stats.find_stuck(_NOW) == []
+
+    def test_a_twin_with_no_stats_object_is_never_stuck(self):
+        _stuck_pair()
+        socket_stats.set_twins({"conn0": "conn9"})
+
+        assert socket_stats.find_stuck(_NOW) == []
+
+    def test_a_socket_that_is_not_connected_is_never_stuck(self):
+        _stuck_pair(connected=False)
+
+        assert socket_stats.find_stuck(_NOW) == []
+
+    def test_a_socket_with_no_connection_record_is_never_stuck(self):
+        _stuck_pair(connected=None)
+
+        assert socket_stats.find_stuck(_NOW) == []
+
+    def test_a_twin_that_is_not_connected_is_never_stuck(self):
+        # The twin's ring still holds its last frames, but it is down: it is not
+        # carrying the trades while this socket reconnects.
+        _stuck_pair(twin_connected=False)
+
+        assert socket_stats.find_stuck(_NOW) == []
+
+    def test_a_twin_with_no_connection_record_is_never_stuck(self):
+        _stuck_pair(twin_connected=None)
+
+        assert socket_stats.find_stuck(_NOW) == []
+
+    def test_the_gap_counts_from_the_session_start_when_no_trade_has_arrived(self):
+        quiet, _twin = _stuck_pair()
+        quiet.session_start(_NOW - 60.0)  # a new session: no trade frame yet
+
+        (found,) = socket_stats.find_stuck(_NOW)
+
+        assert found.gap_s == 60.0
+
+    def test_a_session_start_just_under_stuck_s_ago_is_not_stuck(self):
+        quiet, _twin = _stuck_pair()
+        quiet.session_start(_NOW - 59.5)
+
+        assert socket_stats.find_stuck(_NOW) == []
+
+    def test_the_gap_counts_from_the_last_trade_once_one_has_arrived(self):
+        quiet, _twin = _stuck_pair()
+        quiet.session_start(_NOW - 3_600.0)
+        quiet.on_frame(TRADE, _NOW - 1.5)
+
+        assert socket_stats.find_stuck(_NOW) == []
+
+    def test_a_shard_that_has_neither_a_trade_nor_a_session_is_not_stuck(self):
+        socket_stats.set_twins({"conn0": "conn1", "conn1": "conn0"})
+        socket_stats.get("conn0")
+        _feed(socket_stats.get("conn1"), [_NOW - 30.25] * 100)
+        state.set_connection("conn0", True)
+        state.set_connection("conn1", True)
+
+        assert socket_stats.find_stuck(_NOW) == []
+
+    def test_two_quiet_twins_are_not_reported(self):
+        # The case this test cannot see: both sockets quiet, so neither has a twin
+        # that kept receiving. Each one's twin count is 0 in the last STUCK_S.
+        quiet, twin = _stuck_pair(gap=70.0, twin_frames=500, twin_at=70.25)
+        assert twin.last_trade_at == _NOW - 70.25
+        assert quiet.last_trade_at == _NOW - 70.0
+
+        assert socket_stats.find_stuck(_NOW) == []
+
+    def test_only_the_stuck_shard_of_two_pairs_is_reported(self):
+        socket_stats.set_twins(
+            {"conn0": "conn1", "conn1": "conn0", "conn2": "conn3", "conn3": "conn2"}
+        )
+        stats = {name: socket_stats.get(name) for name in ("conn0", "conn1", "conn2", "conn3")}
+        for name in stats:
+            state.set_connection(name, True)
+        # Pair 0/1: both streaming. Pair 2/3: conn3 went quiet, conn2 kept receiving.
+        _feed(stats["conn0"], [_NOW - 1.25] * 150)
+        _feed(stats["conn1"], [_NOW - 1.25] * 150)
+        _feed(stats["conn2"], [_NOW - 1.25] * 150)
+        stats["conn3"].on_frame(TRADE, _NOW - 90.0)
+
+        found = socket_stats.find_stuck(_NOW)
+
+        assert [(s.shard, s.twin) for s in found] == [("conn3", "conn2")]

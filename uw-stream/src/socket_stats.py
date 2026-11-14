@@ -41,30 +41,50 @@ Two details keep the count honest:
 The interval fields (``interval_*``) are read and reset by the per-minute
 pipeline line. The cumulative fields are never reset.
 
+The warning above is only checked when a trade frame ends a gap, so a socket that
+stays connected and never receives another trade frame raises nothing. ``find_stuck``
+is the test for that case. It is pure (it reads the stats, the twin map and
+``state.connections`` and nothing else) and ``stuck_sockets`` polls it. A shard
+is stuck when it and its twin are both connected, it has had no trade frame for
+``STUCK_S`` (counted from its session start if the session has none yet), and its
+twin received ``STUCK_TWIN_MIN_FRAMES`` or more trade frames in that time.
+
 State is module-level and keyed by shard name (``conn0`` .. ``connN``), a closed
 set the shard layout fixes at boot.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from logger_setup import rate_limited_log
+from state import state
 
 # A gap between trade frames on one socket at or over this is a silence.
 SILENCE_S = 0.5
 # The twin must have received at least this many trade frames inside the gap.
 TWIN_MIN_FRAMES = 10
+# A connected trade socket with no trade frame for this long, counted from its
+# last trade frame or, if the session has none, from its session start, is stuck
+# when its twin kept receiving. A normal pause at lunch is a few seconds.
+STUCK_S = 60.0
+# The twin must have received at least this many trade frames in the last
+# ``STUCK_S``. The quietest minute at lunch on 2026-11-13 carried 3,938 trades
+# for conn0's half of the tickers and 6,407 for conn1's, about 40 times this.
+STUCK_TWIN_MIN_FRAMES = 100
 # Ring resolution: 0.1 s buckets, 1,200 of them (120 s). A longer gap is
 # reported with ``twin_window_clipped``.
 BUCKETS_PER_S = 10
 RING_BUCKETS = 1_200
 RING_SPAN_S = RING_BUCKETS / BUCKETS_PER_S
 
-_CHANNEL_PREFIX = "option_trades:"
+# The channel prefix that makes a connector a trade shard. ``stuck_sockets`` groups
+# its shards by it too.
+TRADE_CHANNEL_PREFIX = "option_trades:"
 # UW sends text frames, so ``raw`` is normally a str. A trade frame is the
 # 2-element envelope ``["option_trades:SPY", {...}]``.
-_TRADE_PREFIX = '["' + _CHANNEL_PREFIX
+_TRADE_PREFIX = '["' + TRADE_CHANNEL_PREFIX
 _TRADE_PREFIX_BYTES = _TRADE_PREFIX.encode()
 # The server's join ack for an option_trades channel,
 # ``["option_trades:SPXW",{"response":{},"status":"ok"}]``, has the same prefix
@@ -91,6 +111,7 @@ class SocketStats:
         "last_silence_start",
         "last_trade_at",
         "name",
+        "session_started_at",
         "silences",
         "trade_frames",
     )
@@ -109,6 +130,10 @@ class SocketStats:
         # Monotonic time of the last trade frame on this connection; None until
         # one arrives, and again after ``session_start``.
         self.last_trade_at: float | None = None
+        # Monotonic time the current connection began, or None before the first.
+        # With no trade frame yet in the session, this is where the open gap
+        # starts (see ``find_stuck``).
+        self.session_started_at: float | None = None
         # Monotonic start and end of the latest silence, or None before the first.
         # Written when a gap of ``SILENCE_S`` or more ends. ``last_silence_end`` is
         # read by the twin's check (``silent_during``); ``last_silence_start`` is
@@ -121,9 +146,10 @@ class SocketStats:
         self._counts = [0] * RING_BUCKETS
         self._stamps = [-1] * RING_BUCKETS
 
-    def session_start(self) -> None:
-        """A new connection began: measure no gap across the reconnect."""
+    def session_start(self, now: float) -> None:
+        """A new connection began at monotonic time ``now``: measure no gap across the reconnect."""
         self.last_trade_at = None
+        self.session_started_at = now
 
     def on_frame(self, raw: str | bytes, now: float) -> None:
         """Count one frame received at monotonic time ``now``. Hot path: no await, no log."""
@@ -278,7 +304,7 @@ def twin_map(shards: list[list[str]]) -> dict[str, str]:
     """
     groups: dict[frozenset[str], list[str]] = {}
     for index, shard in enumerate(shards):
-        channels = frozenset(c for c in shard if c.startswith(_CHANNEL_PREFIX))
+        channels = frozenset(c for c in shard if c.startswith(TRADE_CHANNEL_PREFIX))
         if channels:
             groups.setdefault(channels, []).append(shard_name(index))
     twins: dict[str, str] = {}
@@ -295,3 +321,47 @@ def configure(shards: list[list[str]]) -> None:
     set_twins(twin_map(shards))
     for index in range(len(shards)):
         get(shard_name(index))
+
+
+@dataclass(frozen=True, slots=True)
+class StuckSocket:
+    """A trade socket ``find_stuck`` flagged: what it measured, for the alert."""
+
+    shard: str
+    twin: str
+    # Seconds since the shard's last trade frame, or since its session start.
+    gap_s: float
+    # The twin's trade frames in the last ``STUCK_S``.
+    twin_trade_frames: int
+
+
+def find_stuck(now: float) -> list[StuckSocket]:
+    """The connected trade sockets that have gone quiet while their twin kept receiving.
+
+    ``now`` is a ``time.monotonic()`` read, the clock ``on_frame`` is fed. A shard
+    is stuck when all four hold: it has a twin with stats, and ``state.connections``
+    says both are connected (a twin that is down is not carrying the trades while
+    this socket reconnects, and its ring only holds what it received before it
+    dropped); its open gap, ``now`` minus its last trade frame (its session start
+    if the session has had none), is at least ``STUCK_S``; and the twin's trade
+    frames in the last ``STUCK_S`` number at least ``STUCK_TWIN_MIN_FRAMES``,
+    counted with the ring as ``on_frame`` does (the two edge buckets left out). A
+    shard with no session yet is not stuck.
+
+    Two sockets both quiet are neither reported: each one's twin shows no frames.
+    That case has nothing to compare against, and Task 7's group rule in
+    ``stuck_sockets`` alerts on it inside the trade window.
+    """
+    stuck: list[StuckSocket] = []
+    for name, stats in _registry.items():
+        twin_name = _twins.get(name)
+        twin = _registry.get(twin_name) if twin_name is not None else None
+        if twin is None or not state.connections.get(name) or not state.connections.get(twin.name):
+            continue
+        since = stats.last_trade_at if stats.last_trade_at is not None else stats.session_started_at
+        if since is None or now - since < STUCK_S:
+            continue
+        twin_frames = twin.trade_frames_between(now - STUCK_S, now)
+        if twin_frames >= STUCK_TWIN_MIN_FRAMES:
+            stuck.append(StuckSocket(name, twin.name, now - since, twin_frames))
+    return stuck

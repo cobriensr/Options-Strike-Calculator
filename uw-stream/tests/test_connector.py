@@ -60,6 +60,16 @@ def _fresh_socket_stats(monkeypatch):
     monkeypatch.setattr(socket_stats, "_twins", {})
 
 
+@pytest.fixture(autouse=True)
+def _fresh_connections(monkeypatch):
+    """``state.connections`` is process-wide and a session leaves its shard marked up.
+
+    Start every test with an empty one, so a test that ran a real connect cannot
+    decide what a later test sees.
+    """
+    monkeypatch.setattr(state, "connections", {})
+
+
 @pytest.mark.asyncio
 async def test_subscribe_all_sends_text_frames_not_binary() -> None:
     """Regression: every join frame MUST be a str (WS TEXT opcode 0x1).
@@ -1085,6 +1095,7 @@ _DIAG_FIELDS = frozenset(
         "since_last_frame_s",
         "local_addr",
         "remote_addr",
+        "forced",
         "backoff",
     }
 )
@@ -1175,8 +1186,8 @@ class _ConnectCtx:
         return False
 
 
-async def _run_attempts(monkeypatch, connector: Connector, attempts: list[_ConnectCtx]) -> None:
-    """Drive the REAL ``run()`` → ``_connect_once`` through ``attempts``.
+def _script_connects(monkeypatch, connector: Connector, attempts: list[_ConnectCtx]) -> None:
+    """Make ``connector.run()`` connect through ``attempts``, then end with CancelledError.
 
     Each ``websockets.connect`` call returns the next context; once they run
     out, connect raises CancelledError to end the loop. Backoff is zeroed and
@@ -1198,6 +1209,11 @@ async def _run_attempts(monkeypatch, connector: Connector, attempts: list[_Conne
     monkeypatch.setattr(connector, "_subscribe_all", _noop_subscribe)
     monkeypatch.setattr(connector_mod, "_INITIAL_BACKOFF_S", 0.0)
     monkeypatch.setattr(connector_mod, "capture_message", lambda *_a, **_k: None)
+
+
+async def _run_attempts(monkeypatch, connector: Connector, attempts: list[_ConnectCtx]) -> None:
+    """Drive the REAL ``run()`` → ``_connect_once`` through ``attempts``."""
+    _script_connects(monkeypatch, connector, attempts)
 
     with pytest.raises(asyncio.CancelledError):
         await connector.run()
@@ -1250,6 +1266,8 @@ async def test_disconnect_log_reports_transport_cause_and_session(
     assert 0.0 <= rec.since_last_frame_s < rec.session_s
     assert rec.local_addr == "10.250.1.7:54321"
     assert rec.remote_addr == "104.18.24.1:443"
+    # Nothing asked for this drop: it is one of the genuine ones.
+    assert rec.forced is None
     assert rec.backoff == 0.0
 
 
@@ -1694,7 +1712,7 @@ async def test_every_frame_goes_to_the_socket_stats_and_each_connection_starts_a
     def _frame(_self, raw, _now) -> None:
         events.append(("frame", raw))
 
-    def _start(_self) -> None:
+    def _start(_self, _now) -> None:
         events.append(("start", None))
 
     with (
@@ -2092,3 +2110,287 @@ async def test_an_outer_cancel_while_the_summary_task_waits_logs_no_summary_and_
     assert _join_lines(service_log_records, "conn0") == []
     assert _join_summary_tasks() == []
     assert join_task.cancelled()
+
+
+@pytest.mark.asyncio
+async def test_session_start_gets_the_clock_read_the_session_timer_already_makes(
+    monkeypatch,
+) -> None:
+    import connector as connector_mod
+
+    # A counting clock: ``_connect_once`` reads it for ``connected_at``, then for
+    # its session timer, then (no frames here) once more at the end. A fourth read
+    # for the stats would push ``session_started_at`` off the timer's.
+    reads = itertools.count(1)
+    monkeypatch.setattr(
+        connector_mod, "time", SimpleNamespace(monotonic=lambda: float(next(reads)))
+    )
+    connector = Connector(
+        channels=["flow-alerts"], receive_queue=asyncio.Queue(maxsize=10), name="conn0"
+    )
+
+    async def _noop_subscribe(_ws) -> None:
+        return None
+
+    monkeypatch.setattr(connector, "_subscribe_all", _noop_subscribe)
+    monkeypatch.setattr(
+        connector_mod.websockets, "connect", lambda *_a, **_k: _ConnectCtx(_SessionWS([]))
+    )
+
+    await connector._connect_once()
+
+    assert connector._session_diag.connected_at == 1.0
+    assert socket_stats.get("conn0").session_started_at == 2.0
+    assert next(reads) == 4  # three reads in all: the timer, the stats and the diag share them
+
+
+# --- force_reconnect ----------------------------------------------------------
+
+
+class _KillableWS:
+    """A connected socket that idles until ``transport.abort()``, then ends its
+    receive loop the way websockets does after an abort: ConnectionClosedError,
+    no close frame."""
+
+    local_address = _LOCAL_ADDR
+    remote_address = _REMOTE_ADDR
+
+    def __init__(self) -> None:
+        self.aborted = 0
+        self._dead = asyncio.Event()
+        self.transport = SimpleNamespace(abort=self._abort)
+        self.protocol = SimpleNamespace(close_rcvd=None, close_sent=None)
+
+    def _abort(self) -> None:
+        self.aborted += 1
+        self._dead.set()
+
+    def __aiter__(self):
+        return self._iter()
+
+    async def _iter(self):
+        await self._dead.wait()
+        raise _closed_from(None)
+        yield b""  # makes this an async generator
+
+
+async def _until(predicate, timeout_s: float = 1.0) -> None:
+    """Yield to the loop until ``predicate()`` holds; fail the test after ``timeout_s``."""
+    async with asyncio.timeout(timeout_s):
+        while not predicate():
+            await asyncio.sleep(0)
+
+
+async def _end(task: asyncio.Task) -> None:
+    """Wait for the ``run()`` task to end with the CancelledError the scripted connects raise."""
+    async with asyncio.timeout(1.0):
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+
+@pytest.mark.asyncio
+async def test_force_reconnect_drops_the_socket_and_the_connector_reconnects(
+    monkeypatch, service_log_records
+) -> None:
+    first, second = _KillableWS(), _KillableWS()
+    connector = Connector(
+        channels=["flow-alerts"], receive_queue=asyncio.Queue(maxsize=10), name="conn0"
+    )
+    _script_connects(monkeypatch, connector, [_ConnectCtx(first), _ConnectCtx(second)])
+    task = asyncio.create_task(connector.run())
+    await _until(lambda: state.connections.get("conn0") is True)
+
+    acted = connector.force_reconnect("stuck trade socket")
+
+    assert acted is True  # the receive loop was running and the abort was issued
+    assert first.aborted == 1
+    await _until(lambda: connector._ws is second and state.connections.get("conn0") is True)
+    assert second.aborted == 0
+    second.transport.abort()  # a genuine drop of the second session
+    await _end(task)
+
+    forced_line, genuine_line = (
+        r for r in service_log_records if r.getMessage() == "WS connection unavailable"
+    )
+    # The line for the forced drop says so and why; the mark did not carry over.
+    assert forced_line.forced == "stuck trade socket"
+    assert genuine_line.forced is None
+
+
+@pytest.mark.asyncio
+async def test_a_forced_reconnect_during_the_join_wait_ends_that_sessions_summary_task(
+    monkeypatch, service_log_records
+) -> None:
+    """The watchdog can drop a socket while its shard's join wait is still running.
+
+    The abort ends the session through the receive loop's ``finally``, which cancels
+    and gathers the summary task: the dropped session logs no join line, none outlives
+    it, and the reconnect starts a task of its own. The wait is the real 30 s, so a
+    stalled loop cannot run it out.
+    """
+    first, second = _KillableWS(), _KillableWS()
+    connector = Connector(
+        channels=["flow-alerts"], receive_queue=asyncio.Queue(maxsize=10), name="conn0"
+    )
+    _script_connects(monkeypatch, connector, [_ConnectCtx(first), _ConnectCtx(second)])
+    task = asyncio.create_task(connector.run())
+    await _until(lambda: state.connections.get("conn0") is True)
+    (first_join,) = _join_summary_tasks()
+    await asyncio.sleep(0.05)
+    # The precondition: the first session's task is mid-wait, its line not yet due.
+    assert not first_join.done()
+    assert _join_lines(service_log_records, "conn0") == []
+
+    acted = connector.force_reconnect("stuck trade socket")
+
+    assert acted is True
+    await _until(lambda: connector._ws is second and state.connections.get("conn0") is True)
+    assert first_join.cancelled()
+    (second_join,) = _join_summary_tasks()
+    assert second_join is not first_join
+    second.transport.abort()
+    await _end(task)
+
+    assert _join_summary_tasks() == []
+    assert second_join.cancelled()
+    assert _join_lines(service_log_records, "conn0") == []
+
+
+@pytest.mark.asyncio
+async def test_force_reconnect_before_any_connection_is_a_no_op() -> None:
+    connector = Connector(channels=["flow-alerts"], receive_queue=asyncio.Queue(maxsize=1))
+
+    acted = connector.force_reconnect("stuck trade socket")
+
+    assert acted is False
+    assert connector._session_diag.forced is None
+
+
+@pytest.mark.asyncio
+async def test_force_reconnect_while_not_connected_neither_aborts_nor_marks_the_next_drop() -> None:
+    ws = _KillableWS()
+    connector = Connector(
+        channels=["flow-alerts"], receive_queue=asyncio.Queue(maxsize=1), name="conn0"
+    )
+    connector._ws = ws  # the last connection, still held between sessions
+    state.set_connection("conn0", False)
+
+    acted = connector.force_reconnect("stuck trade socket")
+
+    assert acted is False
+    assert ws.aborted == 0
+    assert connector._session_diag.forced is None
+
+
+class _EndedWS:
+    """A connected socket whose receive loop ends at once with no error, as after a
+    close the server started."""
+
+    local_address = _LOCAL_ADDR
+    remote_address = _REMOTE_ADDR
+
+    def __init__(self) -> None:
+        self.aborted = 0
+        self.transport = SimpleNamespace(abort=self._abort)
+        self.protocol = SimpleNamespace(close_rcvd=None, close_sent=None)
+
+    def _abort(self) -> None:
+        self.aborted += 1
+
+    def __aiter__(self):
+        return self._iter()
+
+    async def _iter(self):
+        return
+        yield b""  # makes this an async generator
+
+
+@pytest.mark.asyncio
+async def test_force_reconnect_in_the_window_after_the_receive_loop_ended_does_not_label_the_drop(
+    monkeypatch, service_log_records
+) -> None:
+    """The receive loop ends when the server closes, but ``run`` marks the shard down
+    only after the ``async with`` has finished closing the socket. A forced reconnect
+    arriving in between would mark a drop the server started as forced.
+    """
+    ws = _EndedWS()
+    in_exit, release = asyncio.Event(), asyncio.Event()
+
+    class _SlowCloseCtx:
+        async def __aenter__(self):
+            return ws
+
+        async def __aexit__(self, exc_type, exc, tb):
+            in_exit.set()
+            await release.wait()  # the closing handshake, still in progress
+            return False
+
+    connector = Connector(
+        channels=["flow-alerts"], receive_queue=asyncio.Queue(maxsize=1), name="conn0"
+    )
+    _script_connects(monkeypatch, connector, [_SlowCloseCtx()])
+    task = asyncio.create_task(connector.run())
+    await asyncio.wait_for(in_exit.wait(), timeout=1.0)
+    # The window: the receive loop is over, and the shard is still marked up.
+    assert state.connections.get("conn0") is True
+
+    acted = connector.force_reconnect("stuck trade socket")
+
+    assert acted is False  # not acted, so a watchdog must not count it as a forced reconnect
+    assert ws.aborted == 0
+    assert connector._session_diag.forced is None
+    release.set()
+    await _end(task)
+    line = _only(service_log_records, "WS closed cleanly, reconnecting after grace")
+    assert line.forced is None
+
+
+@pytest.mark.asyncio
+async def test_force_reconnect_reconnects_a_real_websockets_connection(
+    monkeypatch, service_log_records
+) -> None:
+    """Against the installed websockets, not a stub: aborting the transport ends
+    the receive loop with an exception, ``run`` reconnects, and the line says forced."""
+    import connector as connector_mod
+
+    async def _server_handler(connection) -> None:
+        await connection.wait_closed()
+
+    async with websockets.serve(_server_handler, "127.0.0.1", 0) as server:
+        port = server.sockets[0].getsockname()[1]
+        monkeypatch.setattr(
+            connector_mod,
+            "settings",
+            SimpleNamespace(ws_url=f"ws://127.0.0.1:{port}", channel_shards=[["flow-alerts"]]),
+        )
+        connector = Connector(
+            channels=["flow-alerts"], receive_queue=asyncio.Queue(maxsize=1), name="conn0"
+        )
+
+        async def _noop_subscribe(_ws) -> None:
+            return None
+
+        monkeypatch.setattr(connector, "_subscribe_all", _noop_subscribe)
+        monkeypatch.setattr(connector_mod, "_INITIAL_BACKOFF_S", 0.0)
+        monkeypatch.setattr(connector_mod, "capture_message", lambda *_a, **_k: None)
+
+        def _connects() -> int:
+            return sum(
+                r.getMessage() == "WS connected, awaiting messages" for r in service_log_records
+            )
+
+        task = asyncio.create_task(connector.run())
+        try:
+            await _until(lambda: _connects() == 1, timeout_s=3.0)
+
+            acted = connector.force_reconnect("stuck trade socket")
+
+            assert acted is True
+            await _until(lambda: _connects() == 2, timeout_s=3.0)
+        finally:
+            task.cancel()
+            await asyncio.wait({task}, timeout=3.0)
+
+    (line,) = (r for r in service_log_records if r.getMessage() == "WS connection unavailable")
+    assert line.forced == "stuck trade socket"
+    assert line.exc_type == "ConnectionClosedError"

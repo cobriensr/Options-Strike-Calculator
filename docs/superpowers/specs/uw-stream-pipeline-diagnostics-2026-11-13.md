@@ -1,5 +1,5 @@
 ---
-status: Approved by owner 2026-11-13 ("yeah lets go"); deploy after 15:00 CT
+status: Approved by owner 2026-11-13 ("yeah lets go"); deploy after 15:00 CT. Tasks 1-5 live 2026-11-14 (commit 0ef13bd0). Task 6 approved 2026-11-14 ("yeah let's fix this gap"; chose alert + reconnect). Task 7 approved 2026-11-14 ("if both copies stop together, I want to know")
 ---
 
 # uw-stream: GEX pre-queue filter and pipeline diagnostics
@@ -31,7 +31,7 @@ The evidence is in the memory note `project_uw_stream_disconnects_2026_10_28`, u
   - no new `await`, and no log call per frame;
   - per-frame work is integer bumps, one compare, and at most one clock read the code already makes.
 - **No new env vars** (R7). Thresholds are module constants, with the values below.
-- **The new diagnostics are logs and `/metrics` only.** No new Sentry events.
+- **The new diagnostics are logs and `/metrics` only.** No new Sentry events. The exceptions are Task 6's stuck-socket alert and Task 7's silent-feed alert, by owner decisions on 2026-11-14.
 - **Every new dict is keyed by a closed set:** handler names or shard names (R1-style bound).
 - **Tests never open a network socket or a database.** The uw-stream conftest blocks both. Mock at the module boundary (R3), and cover failure paths (R4).
 - **Gate before every commit:**
@@ -52,6 +52,12 @@ The evidence is in the memory note `project_uw_stream_disconnects_2026_10_28`, u
 | `TWIN_MIN_FRAMES` | 10 | `socket_stats.py` | the twin must have received at least this many trade frames inside the gap for a warning |
 | bucket width | 0.1 s | `socket_stats.py` | trade-frame count ring resolution |
 | ring span | 1,200 buckets (120 s) | `socket_stats.py` | longest gap the twin count covers; longer gaps report `twin_window_clipped: true` |
+| `STUCK_S` | 60.0 | `socket_stats.py` | Task 6: a connected trade socket with no trade frame for this long (counted from its last trade frame, or from its session start if it has none) is a candidate |
+| `STUCK_TWIN_MIN_FRAMES` | 100 | `socket_stats.py` | Task 6: the twin must have received at least this many trade frames in the last `STUCK_S`. The quietest minute at lunch on 11-13 carried 3,938 trades for conn0's half and 6,407 for conn1's, about 40× this |
+| `STUCK_CHECK_INTERVAL_S` | 5.0 | `stuck_sockets.py` | Task 6: check period |
+| `FORCED_RECONNECT_COOLDOWN_S` | 300.0 | `stuck_sockets.py` | Task 6: at most one forced reconnect, and at most one Sentry event, per shard per 5 min. That is 12 reconnects per hour per stuck shard, 24 with one stuck shard per pair, and up to 48 if all four trade shards alternate. 48 alone exceeds the storm alert's 40 per hour, so in that worst case the storm alert fires too |
+| `GROUP_SILENT_S` | 60.0 | `stuck_sockets.py` | Task 7: no trade frame on any copy of a trade feed for this long, inside the trade window, opens an incident |
+| trade window | 09:31 ET to one minute before the close (16:00, or 13:00 on an early-close day), trading days only | `market_calendar.py` | Task 7: when option trades must be flowing |
 
 ## Not in scope
 
@@ -59,7 +65,7 @@ The evidence is in the memory note `project_uw_stream_disconnects_2026_10_28`, u
 - Logging the Cloudflare ray/colo or the public egress IP at connect.
 - Memory gauges, or the `interval_ba` `_ticks` sweep.
 - Changing batch sizes, the DB pool size or queue sizes, or fixing the five-minute stall itself. This change measures it first.
-- A Sentry alert for socket silence.
+- A Sentry alert for a transient socket silence. Those stay log-only. A socket stuck for good alerts and reconnects (Task 6).
 - The TypeScript port (on hold).
 
 ## Task 1: GEX filter before the queue
@@ -244,6 +250,118 @@ The evidence is in the memory note `project_uw_stream_disconnects_2026_10_28`, u
 - the twin-silence warning;
 - how to read a silence against the dedupe's `single_copy_interval`. A silence with a matching rise in single copies means trades were lost on that socket. A silence with none means the socket was only delayed.
 
+## Task 6: alert on and reconnect a stuck trade socket
+
+**Why.** The twin-silence warning is checked only when the next trade frame ends a gap. A trade socket that stays connected but never delivers another trade frame raises nothing. The subscription watchdog checks only the `subscribed` flags, and `/healthz` uses the global `last_message_ts`, which other sockets keep fresh. The only sign today is one shard's `trade_frames: 0` in the minute line while its twin's is non-zero, and the backup stays lost until someone notices. The owner chose alert + reconnect (2026-11-14). During the reconnect, about 2 s, the twin carries every trade, so a false alarm costs nothing.
+
+**Commits** (≤5 files each):
+- **6a, detection and the reconnect primitive:**
+  - `uw-stream/src/socket_stats.py`
+  - `uw-stream/src/connector.py`
+  - `uw-stream/tests/test_socket_stats.py`
+  - `uw-stream/tests/test_connector.py`
+- **6b, the watchdog loop, wiring and docs:**
+  - `uw-stream/src/stuck_sockets.py` (new)
+  - `uw-stream/tests/test_stuck_sockets.py` (new)
+  - `uw-stream/src/main.py`
+  - `uw-stream/tests/test_main.py`
+  - `uw-stream/README.md`
+
+**Behavior:**
+- **`SocketStats` records its session start.** `session_start()` stamps `session_started_at` (monotonic) alongside clearing `last_trade_at`. This is cold path, once per connection.
+- **The stuck test, pure, in `socket_stats`** (no I/O). A shard is stuck at `now` when all of these hold:
+  - it has a twin;
+  - `state.connections[shard]` is true, and so is the twin's. Added at the Task 6 review: the twin then really is carrying the trades while this socket reconnects;
+  - its open gap, `now - (last_trade_at or session_started_at)`, is at least `STUCK_S`;
+  - the twin's trade frames in the last `STUCK_S`, counted with the existing ring (`trade_frames_between(now - STUCK_S, now)`), number at least `STUCK_TWIN_MIN_FRAMES`.
+  - It returns the shard, twin, gap and twin count, or nothing.
+- **`Connector.force_reconnect(reason)`:**
+  - marks the session as forced, then calls the existing `abort()`;
+  - the receive loop raises, and `run()`'s existing branch reconnects and re-joins every channel;
+  - the disconnect log line carries `forced: <reason>`, otherwise `null`, so drop statistics can leave forced drops out;
+  - the mark clears for the next session;
+  - a no-op when not connected, as `abort()` is.
+- **`run_stuck_socket_watchdog(connectors)`** is a background task started in `main._run` beside `run_pipeline_stats`, with the connectors keyed by name. Every `STUCK_CHECK_INTERVAL_S` it does the following:
+  - **Skip a pass whose own sleep overran** by `LOOP_LAG_FLAG_S` or more. After a loop stall, the first socket to resume drains its backlog before its twin's task runs, so the twin can look stuck for one pass.
+  - **For each stuck shard,** open an incident if none is open:
+    - one `capture_message("uw-stream trade socket stuck", level="warning", tags={"component": "stuck_sockets"}, context={...})`;
+    - context: shard, twin, `gap_s`, twin trade frames, last trade (UTC ISO, or null), `forced_reconnects`.
+  - **Force a reconnect** if the shard's last forced reconnect was at least `FORCED_RECONNECT_COOLDOWN_S` ago, or it has none. Log one warning, "forcing reconnect of a stuck trade socket", per forced reconnect.
+  - **Escalate once:** if an incident is still open at a check after at least one forced reconnect, send one more event per incident, "uw-stream trade socket still stuck after a forced reconnect", at level error.
+  - **End the incident** when the shard's `last_trade_at` is later than the incident's start (a trade frame arrived). Log "stuck trade socket recovered" with the duration and the reconnect count.
+  - **Alert floor** (added at the Task 6 review): at most one Sentry event per shard per `FORCED_RECONNECT_COOLDOWN_S`, opening or escalation alike. A socket that delivers one trade frame between 60 s silences would otherwise open a new incident, and send a new warning, about every 65 s. An incident whose event is held back by the floor logs instead. This bounds Sentry at 12 per hour per shard. A held escalation stays due and goes out at the first stuck check after the floor lifts, so it arrives about 5 min after the opening alert, with the second forced reconnect (ruling R29).
+  - **Shutdown:** `_shutdown` cancels and awaits the watchdog before it cancels the connectors. Cancelled connectors leave `state.connections` true and `last_trade_at` frozen, so a watchdog still running would find stuck sockets mid-shutdown.
+  - **One shard's failure doesn't skip the others:** each stuck shard's handling in a pass is guarded on its own (`rate_limited_log.error`, `key=<shard>`).
+  - **`force_reconnect` acts only while the receive loop is running** (a cold-path flag set before `async for` and cleared in its `finally`). A drop the server started can't then be labelled forced in the window before `run()` marks the shard down.
+  - Per-shard state lives in dicts keyed by shard name (a closed set).
+  - **Never kill the daemon.** Each pass is guarded like `pipeline_stats`: `except Exception` → `rate_limited_log.error(scope="stuck_sockets", kind="check")`. A cancel still ends the loop.
+- **Not covered, stated in the README:**
+  - both twins stuck at once, since there's no twin to compare against. Task 7 covers it during market hours;
+  - `WS_REDUNDANT_OPTION_TRADES=false` (no twins, so the watchdog does nothing);
+  - non-trade sockets (conn2-conn5).
+
+**Tests:**
+- the stuck test's edges: each threshold at and just under its value, no twin, not connected, gap from session start, twin under the minimum;
+- `force_reconnect` sets `forced` on the disconnect line and clears it for the next session, and is a no-op when not connected;
+- the loop: one event per incident, the cooldown, the one escalation (only when the new session is stuck again), recovery ends the incident and a later stick opens a new one, held back by the alert floor when within `FORCED_RECONNECT_COOLDOWN_S` of the shard's last event; shutdown cancels the watchdog before the first connector abort; one shard's failure leaves the others' handling; the stall skip, a failing pass is logged and the next pass still runs, cancel ends it;
+- main wires it with the connectors by name, and the `_stub_pipeline` / leak guard in `test_main.py` covers the new task.
+
+**README:**
+- a "Stuck trade sockets" section: the rule, the thresholds, what the alert and the escalation mean, the `forced` field on the disconnect line, and what is not covered.
+- Fold in two wording fixes in the twin-silence section's `twin_also_silent` text: the tail case is "the twin's last trade frame came 0.5 s or more before this frame, after this gap began", not "a little over 0.5 s"; and the partial-overlap list adds "or only its middle".
+
+## Task 7: alert when every copy of a trade feed goes silent in market hours
+
+**Why.** Task 6 finds a stuck socket by comparing it with its twin. When both copies stop at once (a UW-side fault, a lost subscription on both), or when `WS_REDUNDANT_OPTION_TRADES=false` leaves no twin, nothing fires: `/healthz` uses the global `last_message_ts`, which the GEX and net-flow sockets keep fresh. The owner, 2026-11-14: "if both copies stop together, I want to know". Alert only, no forced reconnect. The owner asked to know, and a reconnect can be added later.
+
+**Commits** (≤5 files each):
+- **7a, the calendar:**
+  - `uw-stream/src/market_calendar.py` (new)
+  - `uw-stream/tests/test_market_calendar.py` (new)
+  - `src/data/marketHours.ts`: a comment only, saying the Python mirror exists and its parity test fails when the two differ.
+- **7b, the rule:**
+  - `uw-stream/src/stuck_sockets.py`
+  - `uw-stream/tests/test_stuck_sockets.py`
+  - `uw-stream/README.md`
+
+**Behavior:**
+- **`market_calendar.py`**, no I/O:
+  - **The data:** `MARKET_CLOSED_DATES` (a frozenset of ISO dates) and `EARLY_CLOSE_DATES` (ISO date → close hour ET), copied from `src/data/marketHours.ts`.
+  - **The window:** `in_trade_window(now_utc) -> bool` is true on a trading day (Mon–Fri, not closed), from 09:31 ET up to, not including, one minute before the close. The close is 16:00 ET, or 13:00 on an early-close day.
+  - **Why the margins:** the minute after the open lets trading start, and the minute before the close avoids the equity-options close at 16:00, after which conn0's half has no trades.
+  - **If a date is in both lists,** it counts as closed, as `isHalfDay` treats it in TS.
+  - DST through `ZoneInfo("America/New_York")`.
+- **Parity test:** it reads `src/data/marketHours.ts` from the repo root, through a path relative to the test file, and extracts both collections with a regex. It asserts they equal the Python copies.
+  - It fails, not skips, when the file is missing, so drift can't hide.
+  - The uw-stream CI job checks out the whole repo (`.github/workflows/ci.yml`, `working-directory: uw-stream`).
+- **The rule, in the Task 6 watchdog loop, same pass, same stall skip and same guard:**
+  - **Trade groups:** each primary trade shard with its twin, from the twin map. With no twins, each trade shard alone. A trade shard is a connector with any `option_trades:` channel.
+  - **Group high-water:** the watchdog keeps a per-group high-water of the latest `last_trade_at` seen on any of its sockets, seeded at the group's first pass, which is at most `STUCK_CHECK_INTERVAL_S` after the watchdog starts. `session_start()` resets `last_trade_at`, so the watchdog's own high-water carries it across reconnects. No hot-path change.
+  - **A group is silent** when `in_trade_window(now)` holds and `now - high_water >= GROUP_SILENT_S` (60.0).
+  - **On the first silent pass, open an incident:**
+    - one `log.warning`;
+    - one `capture_message("uw-stream option trades silent on every copy", level="error", tags={"component": "stuck_sockets"}, context={...})`;
+    - context: the group's shards, each one's connected flag, the seconds since the last trade, and `twins_enabled`.
+  - **Alert floor,** the same rule as Task 6 (ruling R26): at most one Sentry event per group per `FORCED_RECONNECT_COOLDOWN_S`. A feed that leaks one trade frame between 60 s silences would otherwise open a new incident, and send a new event, about every 65 s. A held-back event logs instead.
+  - **End the incident** when the high-water advances. Log "option trades resumed" with the duration.
+  - **Ending incidents at a window change** (ruling R31, amended at the Task 7 review):
+    - **This task's group incidents** end on either change, open or close, with a log line.
+    - **Task 6 stuck-socket incidents** end only when the window opens, and only those older than `STUCK_S`.
+    - Why at the open: Task 6 ends an incident only when a trade frame arrives, so a socket stuck through the close would otherwise carry one incident overnight and start the next session with no new alert.
+    - Why not at the close: at 15:59 ET the twin is still streaming (SPXW to 16:15 ET), so ending there reopens the incident in the same pass. That sends a duplicate "stuck" and then "still stuck" pair, every time with R32.
+    - Why only older than `STUCK_S`: an incident opened in the minute before 09:31 is part of this session and must keep its escalation.
+  - **Held opening events stay due** (ruling R32, Task 6 and Task 7 alike): an opening event that the floor holds back goes out at the first check after the floor lifts, if its incident is still open, the same way a held escalation does. A silence that starts within 5 min of an earlier alert still reaches Sentry.
+  - **CI:** the `uw_stream` path filter in `.github/workflows/ci.yml` includes `src/data/marketHours.ts`. Otherwise a TS-only calendar edit never runs the parity test.
+  - No forced reconnect.
+- **Constant:** `GROUP_SILENT_S` 60.0. The quietest lunch minute on 11-13 carried 3,938 trades for conn0's half, so 60 s of nothing inside the window can't happen on a healthy feed.
+
+**Tests:**
+- calendar parity;
+- window edges: 09:30:59 false, 09:31 true, 15:58:59 true, 15:59 false; half-day 12:58:59 true, 12:59 false; a holiday, a weekend, both DST sides; a date in both lists counts as closed;
+- the rule: silent only inside the window, one event per incident, the alert floor, recovery ends it, the rule's incident ends at either window change, a Task 6 incident ends only at the open and only when older than `STUCK_S` (ruling R31), so a shard stuck through the close alerts afresh next session, a high-water carried across a reconnect, no twins = single-socket groups, a trade on either copy keeps the group healthy, and nothing for non-trade shards.
+
+**README:** in the "Stuck trade sockets" section, add the both-copies rule, the window, the calendar mirror and its parity test, and what is still not covered: the non-trade sockets, and a holiday missing from both calendars.
+
 ## Data dependencies
 
 None. There are no migrations, tables, env vars or new external APIs. Logs go to Railway; `/metrics` is read with the existing `INTERNAL_METRICS_TOKEN`.
@@ -252,6 +370,7 @@ None. There are no migrations, tables, env vars or new external APIs. Logs go to
 
 - **Twin silence to Sentry?** Default no: log only. The mirror already covers the loss, and this is diagnosis.
 - **Emit the minute line when idle?** Default yes. It is a heartbeat and shows overnight loop lag, at 1,440 lines a day.
+- **A separate kill switch for Task 6's forced reconnects?** Default no (R7). Reconnects are bounded by the cooldown, and the twin carries trades during each one. `WS_REDUNDANT_OPTION_TRADES=false` turns it off along with the mirrors, and a redeploy of the previous commit removes it.
 
 ## Deploy
 
@@ -263,3 +382,7 @@ None. There are no migrations, tables, env vars or new external APIs. Logs go to
 - **At the next open:**
   - GEX `filtered` climbs, and the GEX `drop_count` stays flat;
   - read the minute lines at :x0/:x5 for `flush_max_s`, `loop_lag_max_s` and `pool_in_use_max` on `option_trades` against the Neon landing lag.
+- **Tasks 6-7, after deploy and at the next open:**
+  - no "trade socket stuck" or "silent on every copy" event over the weekend (both twins are quiet, and the window is closed);
+  - none at a normal open;
+  - any disconnect line with `forced` non-null is a Task 6 reconnect, so leave it out of the RST/FIN drop counts.

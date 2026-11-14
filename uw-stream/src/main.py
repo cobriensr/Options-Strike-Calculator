@@ -36,6 +36,7 @@ from pipeline_stats import run_pipeline_stats
 from router import Router
 from sentry_setup import capture_exception, capture_message, init_sentry
 from state import state
+from stuck_sockets import run_stuck_socket_watchdog
 from subscription_watchdog import run_subscription_watchdog
 from ws_lease import WsLease
 
@@ -275,6 +276,15 @@ async def _run() -> None:
         producer_tasks.append(
             asyncio.create_task(router.run(receive_queue), name="router"),
         )
+        # Watches the trade sockets: reconnects one that is up but silent while
+        # its twin receives, and alerts when every copy of a trade feed is silent
+        # in market hours. It needs the connectors, to call ``force_reconnect`` and
+        # to find the trade shards. Created apart from the other background tasks:
+        # ``_shutdown`` stops it before the connectors, like the lease renewal.
+        stuck_watchdog = asyncio.create_task(
+            run_stuck_socket_watchdog({c.name: c for c in connectors}),
+            name="stuck_sockets",
+        )
         # Background services that aren't part of the data pipeline. They sit
         # in the same wait set as the pipeline, so an unexpected death of any
         # of them exits non-zero, and _shutdown cancels them via other_tasks.
@@ -283,6 +293,7 @@ async def _run() -> None:
             asyncio.create_task(run_subscription_watchdog(), name="subscription_watchdog"),
             asyncio.create_task(run_drop_reporter(), name="drop_reporter"),
             asyncio.create_task(run_pipeline_stats(), name="pipeline_stats"),
+            stuck_watchdog,
         ]
         # Spawn one drain task per UNIQUE handler instance — many channels
         # can share one handler (e.g. every option_trades:<TICKER> entry
@@ -374,6 +385,7 @@ async def _run() -> None:
             lease=lease,
             lease_session=lease_session,
             lease_renewal=lease_renewal,
+            stuck_watchdog=stuck_watchdog,
         )
         log.info("uw-stream stopped")
         # A confirmed lease loss drained gracefully above; now exit non-zero so
@@ -464,17 +476,30 @@ async def _shutdown(
     connectors: Sequence[Connector],
     receive_queue: asyncio.Queue,
     lease_renewal: asyncio.Task | None,
+    stuck_watchdog: asyncio.Task | None,
     lease: WsLease | None = None,
     lease_session: aiohttp.ClientSession | None = None,
 ) -> None:
     """Graceful shutdown sequence — ORDER MATTERS.
 
-    ``connectors``, ``receive_queue`` and ``lease_renewal`` have no defaults on
-    purpose. A caller that left out ``connectors`` would release the lease with
-    sockets still open, and one that left out ``lease_renewal`` would read its
-    own lease release as a lost lease. ``lease_renewal`` is None when there is
-    no lease.
+    ``connectors``, ``receive_queue``, ``lease_renewal`` and ``stuck_watchdog``
+    have no defaults on purpose. A caller that left out ``connectors`` would
+    release the lease with sockets still open, one that left out
+    ``lease_renewal`` would read its own lease release as a lost lease, and one
+    that left out ``stuck_watchdog`` would leave it running through the shutdown
+    (see step 0). ``lease_renewal`` is None when there is no lease; a caller with
+    no watchdog passes None.
 
+    0. Stop the stuck-socket watchdog, and wait until it has stopped, before
+       anything else. A cancelled connector leaves ``state.connections`` true
+       and its last trade frame frozen, so a watchdog still running through the
+       next steps (up to about 35 s) would find a quiet socket "stuck" while its
+       twin's ring still looked busy: a Sentry warning, and a forced reconnect
+       logged for a socket that is already closed. The wait is not bounded
+       like the steps below: the watchdog's only await is its sleep, so a
+       cancel ends it within one turn of the loop, and a bound would take its
+       seconds from the budget ``test_drain_deadline_fits_railway_draining_seconds``
+       pins.
     1. Cancel the producers (connector + router) first so no new payloads
        can reach a handler queue. Draining the consumers while the router
        is still alive races it: the router could ``enqueue`` a payload
@@ -510,6 +535,11 @@ async def _shutdown(
     and reported, and the next one runs: a connector stuck in its close
     handshake still lets the handlers drain.
     """
+    # 0. Stop the stuck-socket watchdog, and wait for it, before the connectors go.
+    if stuck_watchdog is not None:
+        stuck_watchdog.cancel()
+        await asyncio.gather(stuck_watchdog, return_exceptions=True)
+
     # 1. Stop inflow.
     for t in producer_tasks:
         t.cancel()
