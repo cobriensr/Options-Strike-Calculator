@@ -253,7 +253,7 @@ update: enrich refit
 	@# profitability-improvements-2026-05-22). Blends today's per-ticker
 	@# outcomes into ticker_weights via exponential smoothing (alpha=0.05,
 	@# ±1 cap/night). Writes updated JSON back to ml/output/. Nothing re-renders
-	@# the TS mirror any more (the weights live in the Neon store, phase 4 D5),
+	@# the TS mirror any more (the weights move to the Neon store, phase 4 D5),
 	@# so detect-lottery-fires no longer sees this output. Skip guard: < 100
 	@# enriched fires → no-op.
 	$(PYTHON) scripts/online_ticker_update.py

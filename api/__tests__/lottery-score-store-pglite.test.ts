@@ -539,9 +539,12 @@ describe('lottery_fire_value_snapshots', () => {
   it.each(['price', 'SCORE', 'score_version', ''])(
     'rejects the column name %j',
     async (columnName) => {
-      await expect(insertSnapshot({ columnName })).rejects.toThrow(
-        /lottery_fire_value_snapshots_column_chk/,
-      );
+      // None of these is 'score', so the to_version rule wants NULL here:
+      // with that, only the column-name CHECK can reject the row, whatever
+      // order Postgres evaluates the CHECKs in.
+      await expect(
+        insertSnapshot({ columnName, toVersion: null }),
+      ).rejects.toThrow(/lottery_fire_value_snapshots_column_chk/);
     },
   );
 

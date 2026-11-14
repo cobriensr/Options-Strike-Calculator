@@ -9,9 +9,11 @@
  * The store's first migration inserts this object as the `seed-2026-06-17` row
  * of `lottery_score_versions` and points both the `active` and `takeit`
  * pointers at it. A fire scored before the store existed has a NULL
- * `score_version` and was scored with these weights. Editing the values here
- * would change what that version id means for every stored score, so a new set
- * of weights is a new version in the store, never an edit of this file.
+ * `score_version`. NULL says only that, not which weights scored it: fires
+ * from 2026-06-17 on used these, earlier ones used older weights. Editing the
+ * values here would change what that version id means for every stored score,
+ * so a new set of weights is a new version in the store, never an edit of this
+ * file.
  * `api/__tests__/fixtures/lottery-score-parity.json` pins the seed: it holds
  * a copy of these weights and the score each of 70 synthetic fires gets from
  * them. The Python scorer is meant to replay the same file (phase 4, Task 12).
