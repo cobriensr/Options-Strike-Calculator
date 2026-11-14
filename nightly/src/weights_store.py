@@ -3,12 +3,12 @@
 `lottery_score_versions` holds one row per set of weights (`seed-…` from the migration,
 `refit-<trained_through>` from the nightly refit); `lottery_score_pointers` names which row
 scores the feed (`active`) and which feeds Take-It (`takeit`). This module reads the active
-and the shadow version and writes only the candidate's own row: it inserts a candidate,
-records one evaluated session on it, and decides it. It never writes a pointer, and never
-sets `promoted`: only `backfill_lottery_scores.rescore_all` does, in its promotion
-transaction, which moves the pointer in the same commit. Every statement here is a single
-atomic statement, so a connection in autocommit mode (what `resources.connect_db` gives) is
-enough.
+and the shadow version (and whether any version was decided since a given instant) and
+writes only the candidate's own row: it inserts a candidate, records one evaluated session
+on it, and decides it. It never writes a pointer, and never sets `promoted`: only
+`backfill_lottery_scores.rescore_all` does, in its promotion transaction, which moves the
+pointer in the same commit. Every statement here is a single atomic statement, so a
+connection in autocommit mode (what `resources.connect_db` gives) is enough.
 
 Every write is conditional or idempotent, so a re-run the same night changes nothing (R6):
 - `insert_candidate` is `ON CONFLICT (version) DO NOTHING RETURNING`: the second insert of a
@@ -67,6 +67,11 @@ _ACTIVE_SQL = (
 _SHADOW_SQL = f"SELECT {_COLUMNS} FROM lottery_score_versions WHERE status = 'shadow'"
 
 _EXISTS_SQL = "SELECT EXISTS (SELECT 1 FROM lottery_score_versions WHERE version = %s)"
+
+# `decided_at` is set by `decide` (passed, rejected) and by the promotion transaction
+# (promoted), never by an insert: a candidate rejected at creation has none. A seed row's is
+# NULL, which `>=` never matches.
+_DECIDED_SINCE_SQL = "SELECT EXISTS (SELECT 1 FROM lottery_score_versions WHERE decided_at >= %s)"
 
 _INSERT_SQL = (
     f"INSERT INTO lottery_score_versions ({_COLUMNS}) "
@@ -163,6 +168,22 @@ def version_exists(conn: connection, version: str) -> bool:
         cursor.execute(_EXISTS_SQL, (version,))
         (exists,) = cursor.fetchone()
     return bool(exists)
+
+
+def decided_since(conn: connection, since: datetime) -> bool:
+    """Whether any version was decided (passed, rejected or promoted) at or after `since`.
+
+    `since` must be a timezone-aware datetime (a TypeError otherwise): the column is a
+    `timestamptz`, and a naive value would be read in the session's time zone. A candidate
+    rejected at creation carries no `decided_at`, so it does not count here; it is found by
+    its version id (`version_exists`). Read-only.
+    """
+    if not isinstance(since, datetime) or since.utcoffset() is None:
+        raise TypeError("decided_since takes a timezone-aware datetime")
+    with conn.cursor() as cursor:
+        cursor.execute(_DECIDED_SINCE_SQL, (since,))
+        (decided,) = cursor.fetchone()
+    return bool(decided)
 
 
 def insert_candidate(

@@ -1,6 +1,6 @@
 """Tests for the lottery-refit step: the nightly candidate lifecycle of plan D6.
 
-What is patched, at the `refit_step` module boundary (R3): `connect_db`, the six
+What is patched, at the `refit_step` module boundary (R3): `connect_db`, the seven
 `weights_store` functions (an in-memory `FakeStore` with their semantics), `fetch_frame`
 (the fires table, filtered by the same date window the SQL uses), `rescore_all` and
 Sentry's `capture_message`. Nothing reaches a database or the network.
@@ -24,7 +24,7 @@ import re
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -95,6 +95,7 @@ COUNT_NAMES = {
     "candidates_built",
     "candidates_rejected",
     "already_built",
+    "already_decided",
     "sessions_recorded",
     "waiting",
     "passed",
@@ -211,12 +212,14 @@ def plain_copy(value: object) -> Any:
 
 
 class FakeStore:
-    """`lottery_score_versions` and its pointers, behind weights_store's six functions.
+    """`lottery_score_versions` and its pointers, behind weights_store's seven functions.
 
     The same rules the real store enforces (and weights_store's own tests pin): a second
     shadow is a UniqueViolation, `insert_candidate` is idempotent per version, a session is
-    recorded once, and `decide` touches only a shadow. Every write goes through JSON, so a
-    numpy value in it fails here as it would in `psycopg2.extras.Json`.
+    recorded once, and `decide` touches only a shadow. A decision (`decide`, and a
+    promotion) stamps `decided_at` with `clock`, the instant the database's `now()` answers;
+    an insert does not, so a candidate rejected at creation has none. Every write goes
+    through JSON, so a numpy value in it fails here as it would in `psycopg2.extras.Json`.
     """
 
     def __init__(self) -> None:
@@ -225,6 +228,8 @@ class FakeStore:
         self.takeit = SEED_VERSION
         self.calls: list[str] = []
         self.records: list[tuple[str, date, bool]] = []
+        self.clock = NOW
+        self.since: list[datetime] = []
         self._put(SEED_VERSION, SEED, "seed", None, {})
 
     def _put(
@@ -239,6 +244,7 @@ class FakeStore:
             "weights": plain_copy(weights),
             "status": status,
             "trained_through": trained_through,
+            "decided_at": None,
             "gate_report": plain_copy(report),
         }
 
@@ -270,6 +276,14 @@ class FakeStore:
     def version_exists(self, conn: Any, version: str) -> bool:
         self.calls.append("version_exists")
         return version in self.rows
+
+    def decided_since(self, conn: Any, since: datetime) -> bool:
+        self.calls.append("decided_since")
+        self.since.append(since)
+        return any(
+            row["decided_at"] is not None and row["decided_at"] >= since
+            for row in self.rows.values()
+        )
 
     def insert_candidate(
         self,
@@ -308,6 +322,7 @@ class FakeStore:
         if row is None or row["status"] != "shadow":
             return False
         row["status"] = status
+        row["decided_at"] = self.clock
         row["gate_report"]["verdict"] = plain_copy(verdict)
         return True
 
@@ -317,6 +332,7 @@ class FakeStore:
         if self.active != expect_active or self.rows[version]["status"] not in ("shadow", "passed"):
             raise PointerMoved("the active pointer moved")
         self.rows[version]["status"] = "promoted"
+        self.rows[version]["decided_at"] = self.clock
         if verdict is not None:
             self.rows[version]["gate_report"]["verdict"] = plain_copy(verdict)
         self.active = version
@@ -393,6 +409,7 @@ def world(monkeypatch: pytest.MonkeyPatch) -> World:
         "load_active",
         "load_shadow",
         "version_exists",
+        "decided_since",
         "insert_candidate",
         "record_session_eval",
         "decide",
@@ -556,6 +573,7 @@ def test_builds_a_shadow_when_none_exists(world: World, monkeypatch: pytest.Monk
         "load_active",
         "load_shadow",
         "version_exists",
+        "decided_since",
         "insert_candidate",
     ]
     assert world.fires.fetch_calls == [(LAST_SESSION - timedelta(days=90), LAST_SESSION)]
@@ -628,7 +646,120 @@ def test_rerun_same_night_is_a_no_op(
     assert second.counts["sessions_recorded"] == 0
     # A shadow built tonight waits; a version rejected tonight is already built.
     assert second.counts["waiting" if approved else "already_built"] == 1
+    assert second.counts["already_decided"] == 0  # nothing was decided tonight
     assert second.status == "ok"
+
+
+def decide_tonight(world: World, monkeypatch: pytest.MonkeyPatch, outcome: str) -> Scenario:
+    """Run the first night, on which the shadow is `outcome` (rejected, passed or promoted).
+
+    The run starts at 07:15 UTC and the database stamps the decision at 07:20, so a re-run
+    later the same morning sits after the run's start and after the decision.
+    """
+    if outcome == "rejected":
+        # Real gates: twenty elapsed sessions of 30 fires, none evaluated.
+        s = shadow_scenario(world, n_elapsed=SHADOW_MAX_SESSIONS, per_session=30)
+    elif outcome == "promoted":
+        s = promote_ready(world, monkeypatch)
+    else:
+        # Promotion ships off, so a pass is marked `passed`.
+        assert constants.PROMOTION_ENABLED is False
+        s = shadow_scenario(world, n_elapsed=11, per_session=40, differing=True)
+        patch_verdict(monkeypatch, verdict("pass", sessions=s.elapsed[:10]))
+    world.store.clock = at(7, 20)
+
+    result = run_night(world, s.last_session, now_utc=at(7, 15))
+
+    assert world.store.rows[s.version]["status"] == outcome
+    assert result.counts[outcome] == 1
+    assert world.store.rows[s.version]["decided_at"] == at(7, 20)
+    world.notices.assert_called_once()  # the owner was told once, on the night
+    return s
+
+
+@pytest.mark.parametrize("outcome", ["rejected", "passed", "promoted"])
+def test_rerun_after_a_decision_builds_no_second_candidate(
+    world: World, monkeypatch: pytest.MonkeyPatch, outcome: str
+) -> None:
+    # Plan Review Focus 5: a Railway retry or `railway cron run` after the night decided its
+    # shadow finds no shadow, and without a guard would build `refit-<last_session>`: a
+    # second move in one night.
+    s = decide_tonight(world, monkeypatch, outcome)
+    rows = copy.deepcopy(world.store.rows)
+    active = world.store.active
+    notices = world.notices.call_count
+    rescores = world.rescore.call_count
+    world.fires.fetch_calls.clear()
+    world.fires.feed_calls.clear()
+    world.store.calls.clear()
+
+    second = run_night(world, s.last_session, now_utc=at(9))
+
+    assert world.store.rows == rows  # nothing inserted, nothing decided again
+    assert world.store.active == active
+    assert world.store.calls == ["load_active", "load_shadow", "version_exists", "decided_since"]
+    assert second.counts["already_decided"] == 1
+    assert second.counts["candidates_built"] + second.counts["candidates_rejected"] == 0
+    assert sum(second.counts.values()) == 1  # no training, no evaluation, no other count
+    assert second.status == "ok"
+    assert second.detail == ""
+    assert world.notices.call_count == notices  # no second notice
+    assert world.rescore.call_count == rescores  # no second promotion
+    assert world.fires.fetch_calls == [] and world.fires.feed_calls == []
+    # Looked for from 00:00 UTC of the run's own date: not from the run's start (a decision
+    # at 07:20 comes before a re-run at 09:00), and not from the day before.
+    assert world.store.since == [at(0)]
+
+
+def test_a_run_a_day_later_builds_after_a_decision(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The decision was yesterday's: tonight's refit work is not done. Builds as usual.
+    s = decide_tonight(world, monkeypatch, "rejected")
+    night_two = sessions_after(s.last_session, 1)[0]
+    world.store.since.clear()
+
+    second = run_night(world, night_two, now_utc=at(7, 15) + timedelta(days=1))
+
+    assert world.store.since == [at(0) + timedelta(days=1)]
+    assert second.counts["already_decided"] == 0
+    assert second.counts["candidates_built"] + second.counts["candidates_rejected"] == 1
+    assert refit_version_id(night_two) in world.store.rows
+    assert world.store.rows[s.version]["status"] == "rejected"
+
+
+def test_the_decision_window_opens_at_midnight_utc_not_at_the_local_date(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A run started at 20:00 on the 11th in New York is 01:00 UTC on the 12th: its date is
+    # the UTC date, and a decision stamped at 00:30 UTC the same day is tonight's.
+    eastern = timezone(timedelta(hours=-5))
+    started = datetime(2026, 11, 11, 20, 0, tzinfo=eastern)
+    s = decide_tonight(world, monkeypatch, "rejected")
+    world.store.rows[s.version]["decided_at"] = at(0, 30)
+    world.store.since.clear()
+
+    second = run_night(world, s.last_session, now_utc=started)
+
+    assert world.store.since == [at(0)]
+    assert second.counts["already_decided"] == 1
+
+
+def test_an_existing_version_is_counted_before_a_decision_is_looked_for(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Both guards would stop the build; the older one answers, and the store is not asked.
+    creation_world(world, monkeypatch, approve=False)
+    run_night(world)
+    version = f"refit-{LAST_SESSION.isoformat()}"
+    world.store.rows[version]["decided_at"] = at(7, 20)
+    world.store.calls.clear()
+
+    second = run_night(world, now_utc=at(9))
+
+    assert second.counts["already_built"] == 1
+    assert second.counts["already_decided"] == 0
+    assert "decided_since" not in world.store.calls
 
 
 def test_creation_report_holds_verdict_window_and_insample_rho(
@@ -794,7 +925,9 @@ def test_losing_the_insert_to_a_concurrent_run_of_the_same_night_counts_already_
     world.notices.assert_not_called()  # the run that inserted it sent its own
 
 
-@pytest.mark.parametrize("failing", ["load_active", "load_shadow", "insert_candidate", "fetch"])
+@pytest.mark.parametrize(
+    "failing", ["load_active", "load_shadow", "decided_since", "insert_candidate", "fetch"]
+)
 def test_a_database_error_fails_the_step_and_sends_no_notice(
     world: World, monkeypatch: pytest.MonkeyPatch, failing: str
 ) -> None:
@@ -1012,11 +1145,11 @@ def test_starved_shadow_is_rejected_once(world: World) -> None:
         s.version,
     ]
 
-    # The next night there is no shadow: one fresh candidate is built (here the thin
-    # synthetic window rejects it at creation), and the rejected one is neither decided nor
-    # announced again.
+    # The next night (the next UTC date) there is no shadow: one fresh candidate is built
+    # (here the thin synthetic window rejects it at creation), and the rejected one is
+    # neither decided nor announced again.
     night_two = sessions_after(s.last_session, 1)[0]
-    second = run_night(world, night_two)
+    second = run_night(world, night_two, now_utc=NOW + timedelta(days=1))
     assert world.store.calls.count("decide") == 1
     assert world.store.rows[s.version]["status"] == "rejected"
     assert second.counts["rejected"] == 0
@@ -1468,7 +1601,7 @@ def test_logs_carry_no_ticker_or_weight(
     run_night(world, s.last_session)
     # The promoted version is now the active one; the next night builds against it.
     creation_world(world, monkeypatch, approve=True)
-    run_night(world, LAST_SESSION)
+    run_night(world, LAST_SESSION, now_utc=NOW + timedelta(days=1))
 
     own = [r for r in caplog.records if r.name == "refit_step"]
     assert len(own) == 2  # one line per run

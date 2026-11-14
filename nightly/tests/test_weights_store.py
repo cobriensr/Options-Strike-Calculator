@@ -13,7 +13,7 @@ import copy
 import json
 import math
 import re
-from datetime import date, datetime
+from datetime import UTC, date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +27,7 @@ import weights_store
 from weights_store import (
     StoredVersion,
     decide,
+    decided_since,
     insert_candidate,
     load_active,
     load_shadow,
@@ -183,6 +184,57 @@ def test_version_exists() -> None:
     assert version_exists(conn, "refit-2026-01-01") is False
     assert [params for _, params in conn.executed] == [(VERSION,), ("refit-2026-01-01",)]
     assert "FROM lottery_score_versions WHERE version = %s" in conn.executed[0][0]
+
+
+# ── decided_since ───────────────────────────────────────────────────────────
+
+DECIDED_SINCE_SQL = "SELECT EXISTS (SELECT 1 FROM lottery_score_versions WHERE decided_at >= %s)"
+MIDNIGHT = datetime(2026, 11, 12, tzinfo=UTC)
+
+
+def test_decided_since_reads_decided_at() -> None:
+    conn = FakeConn([(True,), (False,)])
+
+    assert decided_since(conn, MIDNIGHT) is True
+    assert decided_since(conn, MIDNIGHT + timedelta(hours=9)) is False
+
+    # `>=`: a version decided at the very instant of `since` counts as decided since then.
+    # Whole-text match, so a `>` or a second condition fails here; a missing status filter
+    # is the point: a promotion and a rejection both set `decided_at`.
+    assert [sql for sql, _ in conn.executed] == [DECIDED_SINCE_SQL] * 2
+    assert [params for _, params in conn.executed] == [
+        (MIDNIGHT,),
+        (MIDNIGHT + timedelta(hours=9),),
+    ]
+    assert not _is_write(DECIDED_SINCE_SQL)
+
+
+def test_decided_since_hands_an_aware_datetime_to_the_driver_as_it_is() -> None:
+    # An offset other than UTC is still an instant: psycopg2 sends it with its offset, so the
+    # comparison needs no conversion here.
+    central = datetime(2026, 11, 11, 18, tzinfo=timezone(timedelta(hours=-6)))
+    conn = FakeConn([(False,)])
+
+    decided_since(conn, central)
+
+    assert conn.executed[0][1] == (central,)
+    assert conn.executed[0][1][0].utcoffset() == timedelta(hours=-6)
+
+
+@pytest.mark.parametrize(
+    "since",
+    [datetime(2026, 11, 12), date(2026, 11, 12), "2026-11-12T00:00:00+00:00", None],
+    ids=["naive-datetime", "date", "text", "none"],
+)
+def test_decided_since_refuses_a_naive_datetime(since: Any) -> None:
+    # A naive datetime would be read in the session's time zone, which is not the UTC
+    # midnight the caller means; a date or text would be read as one more way.
+    conn = FakeConn([(True,)])
+
+    with pytest.raises(TypeError, match="timezone-aware datetime"):
+        decided_since(conn, since)
+
+    assert conn.executed == []
 
 
 # ── insert_candidate ────────────────────────────────────────────────────────
@@ -475,16 +527,17 @@ def test_module_never_writes_pointers() -> None:
         assert not _is_write(sql), sql
 
     # Dynamically: run every public function and look at what reached the cursor.
-    conn = FakeConn([_stored_row(), None, (True,), (VERSION,), (VERSION,), (VERSION,)])
+    conn = FakeConn([_stored_row(), None, (True,), (False,), (VERSION,), (VERSION,), (VERSION,)])
     load_active(conn)
     load_shadow(conn)
     version_exists(conn, VERSION)
+    decided_since(conn, MIDNIGHT)
     insert_candidate(
         conn, VERSION, _weights(), status="shadow", trained_through=TRAINED_THROUGH, report={}
     )
     record_session_eval(conn, VERSION, date(2026, 11, 10), {})
     decide(conn, VERSION, "passed", {})
-    assert len(conn.executed) == 6
+    assert len(conn.executed) == 7
     for sql, _ in conn.executed:
         assert not ("lottery_score_pointers" in sql and _is_write(sql)), sql
 
@@ -511,6 +564,7 @@ def _calls() -> list[tuple[str, Any, Exception]]:
         ("load_active", lambda c: load_active(c), LOST),
         ("load_shadow", lambda c: load_shadow(c), LOST),
         ("version_exists", lambda c: version_exists(c, VERSION), LOST),
+        ("decided_since", lambda c: decided_since(c, MIDNIGHT), LOST),
         ("insert_candidate", _insert_shadow, LOST),
         ("insert_candidate_second_shadow", _insert_shadow, SECOND_SHADOW),
         (
@@ -525,7 +579,8 @@ def _calls() -> list[tuple[str, Any, Exception]]:
 @pytest.mark.parametrize(("name", "call", "error"), _calls(), ids=[name for name, _, _ in _calls()])
 def test_a_database_error_propagates_whole(name: str, call: Any, error: Exception) -> None:
     # A rejected statement is not "no row": a write that failed must not read as False, and
-    # a read that failed must not read as "no shadow". A second shadow in particular raises
+    # a read that failed must not read as "no shadow" or "nothing decided tonight". A second
+    # shadow in particular raises
     # the unique violation: it never reads as the False of an insert that found its version.
     class Failing(FakeCursor):
         def execute(self, sql: str, params: Any = None) -> None:

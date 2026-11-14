@@ -4,8 +4,13 @@ A night does exactly one of two things, decided by whether a shadow exists:
 
 - No shadow: build `refit-<last_session>`. Train on the trailing 90 days, match the feed
   cutoffs to the active version over the last 20 sessions, check the result, and store it as
-  a shadow, or as `rejected` with a notice naming the first reason. A version that already
-  exists (a re-run the same night) is counted and left alone.
+  a shadow, or as `rejected` with a notice naming the first reason. Two checks come first,
+  in this order, and each makes the step a no-op that is counted and builds nothing: the
+  version already exists (`already_built`: a re-run after the night built it), or some
+  version was decided since 00:00 UTC of the run's date (`already_decided`: a re-run after
+  the night's own run rejected, passed or promoted the shadow, so no shadow is left to
+  find and a build would be a second move in one night). The next scheduled run falls on
+  the next UTC date and builds as usual.
 - A shadow: record each session that has become evaluable and not yet been recorded, then
   ask `decide_shadow` for a verdict on all of them. It waits until 10 sessions are
   evaluated, rejects a starved shadow at 20 elapsed sessions, and otherwise passes or
@@ -48,7 +53,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping, Sequence
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from time import monotonic
 from typing import TYPE_CHECKING, Any
 
@@ -87,6 +92,7 @@ from steps import StepContext, StepResult
 from weights_store import (
     StoredVersion,
     decide,
+    decided_since,
     insert_candidate,
     load_active,
     load_shadow,
@@ -104,6 +110,7 @@ COUNT_NAMES = (
     "candidates_built",
     "candidates_rejected",
     "already_built",
+    "already_decided",
     "sessions_recorded",
     "waiting",
     "passed",
@@ -181,9 +188,15 @@ def _build_candidate(
 ) -> tuple[str, str]:
     trained_through = ctx.last_session
     version = refit_version_id(trained_through)
+    # Two no-ops, in this order: the version this night would build exists (a re-run after a
+    # candidate was built or rejected at creation), or the night already decided a shadow
+    # (a re-run after its rejection, pass or promotion, when no shadow is left to find).
     if version_exists(conn, version):
         counts["already_built"] += 1
         return version, "already built"
+    if decided_since(conn, _start_of_run_date(ctx)):
+        counts["already_decided"] += 1
+        return version, "decided earlier tonight"
 
     window_start = trained_through - timedelta(days=TRAIN_WINDOW_DAYS)
     train = fetch_frame(conn, window_start, trained_through)
@@ -256,6 +269,17 @@ def _build_candidate(
         },
     )
     return version, "candidate rejected"
+
+
+def _start_of_run_date(ctx: StepContext) -> datetime:
+    """00:00 UTC of the run's own date: a decision stamped at or after it was made tonight.
+
+    From the date's start, not from `ctx.now_utc`: a re-run at 09:00 must still see a
+    decision the first run stamped at 07:20. The run's start is read in UTC whatever offset
+    the context carries, because the nightly cron fires at 07:15 UTC and the next scheduled
+    run falls on the next UTC date.
+    """
+    return datetime.combine(ctx.now_utc.astimezone(UTC).date(), time.min, tzinfo=UTC)
 
 
 # --- a shadow exists: record its new sessions and judge it ---------------------------
