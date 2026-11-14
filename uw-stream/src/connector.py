@@ -349,8 +349,9 @@ class Connector:
     def force_reconnect(self, reason: str) -> bool:
         """Drop the live socket on purpose, so ``run`` reconnects and re-joins every channel.
 
-        For ``stuck_sockets``: a trade socket that is up but delivers no trades.
-        The mark goes on the session first, then ``abort`` kills the transport.
+        For ``stuck_sockets``: a trade socket that is up but delivers no trades
+        while its twin receives, and each connected copy of a trade feed that is
+        silent on every copy. The mark goes on the session first, then ``abort`` kills the transport.
         The receive loop raises, and ``run``'s ordinary branch for that logs the
         disconnect, backs off from 1 s and reconnects, as for any drop. The
         disconnect line carries ``forced: <reason>`` (null for a genuine drop), so

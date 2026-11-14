@@ -932,9 +932,13 @@ class TestGroupSilence:
             "tags": {"component": "stuck_sockets"},
             "context": _GROUP_CONTEXT,
         }
-        assert [(m, e) for m, e in logs["warning"] if m == _SILENT_LOG] == [
-            (_SILENT_LOG, {"group": "conn0", **_GROUP_CONTEXT})
+        # The opening line, then one forcing line per copy: nothing else is logged.
+        assert [m for m, _extra in logs["warning"]] == [
+            _SILENT_LOG,
+            _FORCING_SILENT,
+            _FORCING_SILENT,
         ]
+        assert logs["warning"][0] == (_SILENT_LOG, {"group": "conn0", **_GROUP_CONTEXT})
 
     def test_one_incident_sends_one_opening_event_however_long_it_lasts(
         self, wall_clock, events, logs
@@ -944,9 +948,19 @@ class TestGroupSilence:
         for offset in (60.0, 65.0, 125.0, 305.0, 3_600.0):
             _check(watch, connectors, _T0 + offset)
 
-        # The one escalation (Task 8) is the only other event, and the opening line is logged once.
+        # The one escalation (Task 8) is the only other event.
         assert _calls(events) == [_SILENT, _STILL_SILENT]
-        assert [m for m, _extra in logs["warning"]].count(_SILENT_LOG) == 1
+        # +60: the opening line and a forcing line per copy. +125: the escalation is due and the
+        # floor holds it, logged once (+305 is held too, silently). +3600: it goes out, and the
+        # cooldown has lapsed, so each copy is forced again.
+        assert [m for m, _extra in logs["warning"]] == [
+            _SILENT_LOG,
+            _FORCING_SILENT,
+            _FORCING_SILENT,
+            _SILENT_HELD,
+            _FORCING_SILENT,
+            _FORCING_SILENT,
+        ]
         assert list(watch.group_incidents) == ["conn0"]
 
     @pytest.mark.parametrize("copy", ["conn0", "conn6"])
@@ -1261,7 +1275,15 @@ class TestTheWindowClosing:
         _check(watch, connectors, _T0 + 65.0)
 
         assert logs["info"] == [
-            (_SILENT_ENDED, {"group": "conn0", "duration_s": 5.0, "window": "closed"})
+            (
+                _SILENT_ENDED,
+                {
+                    "group": "conn0",
+                    "duration_s": 5.0,
+                    "forced_reconnects": 2,  # both copies were forced at the opening pass
+                    "window": "closed",
+                },
+            )
         ]
         assert watch.group_incidents == {}
         assert _calls(events) == [_SILENT]
@@ -1388,7 +1410,15 @@ class TestTheWindowClosing:
         stuck_sockets._end_for_window(watch, _T0 + 65.0, True)
 
         assert logs["info"] == [
-            (_SILENT_ENDED, {"group": "conn0", "duration_s": 5.0, "window": "opened"})
+            (
+                _SILENT_ENDED,
+                {
+                    "group": "conn0",
+                    "duration_s": 5.0,
+                    "forced_reconnects": 2,
+                    "window": "opened",
+                },
+            )
         ]
         assert watch.group_incidents == {}
 
@@ -1630,12 +1660,15 @@ class TestForcingASilentFeed:
 
         assert _forced(connectors) == {"conn0": 1, "conn6": 1}
 
-    def test_nothing_is_forced_after_the_window_closes(self, wall_clock, events):
+    def test_nothing_is_forced_after_the_window_closes(self, wall_clock, events, logs):
         watch, connectors = _silent_setup(wall_clock)
         _check(watch, connectors, _T0 + 60.0)
         wall_clock.utc = _AFTER_CLOSE
         _check(watch, connectors, _T0 + 65.0)  # the close ends the incident
         assert watch.group_incidents == {}
+        # The line that ends it carries the forced reconnects it made.
+        ended = [extra for m, extra in logs["info"] if m == _SILENT_ENDED]
+        assert [e["forced_reconnects"] for e in ended] == [2]
 
         _check(watch, connectors, _T0 + 400.0)  # the cooldown has lapsed, the feed is still silent
 

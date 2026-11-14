@@ -277,9 +277,9 @@ async def _run() -> None:
             asyncio.create_task(router.run(receive_queue), name="router"),
         )
         # Watches the trade sockets: reconnects one that is up but silent while
-        # its twin receives, and alerts when every copy of a trade feed is silent
-        # in market hours. It needs the connectors, to call ``force_reconnect`` and
-        # to find the trade shards. Created apart from the other background tasks:
+        # its twin receives, and, when every copy of a trade feed is silent in
+        # market hours, alerts and reconnects every connected copy. It needs the
+        # connectors, to call ``force_reconnect`` and to find the trade shards. Created apart from the other background tasks:
         # ``_shutdown`` stops it before the connectors, like the lease renewal.
         stuck_watchdog = asyncio.create_task(
             run_stuck_socket_watchdog({c.name: c for c in connectors}),

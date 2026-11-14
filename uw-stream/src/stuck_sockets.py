@@ -491,7 +491,12 @@ def _end_for_window(watch: _Watch, now: float, in_window: bool) -> None:
     for key, silent in list(watch.group_incidents.items()):
         log.info(
             "option trades silent incident ended by the trade window",
-            extra={"group": key, "duration_s": round(now - silent.started_at, 3), "window": window},
+            extra={
+                "group": key,
+                "duration_s": round(now - silent.started_at, 3),
+                "forced_reconnects": silent.forced,
+                "window": window,
+            },
         )
         del watch.group_incidents[key]
 
