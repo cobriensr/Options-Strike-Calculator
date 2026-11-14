@@ -286,6 +286,35 @@ describe('useVixData', () => {
 
       expect(result.current.selectedDate).toBe('');
     });
+
+    it('follows a pick of the new today made before the clock ticks', () => {
+      vi.setSystemTime(new Date('2026-11-10T04:59:30Z'));
+      const { result } = renderWith();
+      expect(result.current.selectedDate).toBe('2026-11-09');
+
+      // Past ET midnight on the wall clock, but the hook's timer (armed for
+      // 1 s past it) has not fired, so its etToday still says the 9th.
+      act(() => {
+        vi.setSystemTime(new Date('2026-11-10T05:00:00.500Z'));
+      });
+      act(() => {
+        result.current.setSelectedDate('2026-11-10');
+      });
+      act(() => {
+        vi.advanceTimersByTime(31_000);
+      });
+      expect(result.current.selectedDate).toBe('2026-11-10');
+
+      // The pick was "today", not the 10th: the next midnight carries it on.
+      // An hour is the longest wait between the clock's checks.
+      act(() => {
+        vi.setSystemTime(new Date('2026-11-11T04:59:30Z'));
+      });
+      act(() => {
+        vi.advanceTimersByTime(60 * 60 * 1000);
+      });
+      expect(result.current.selectedDate).toBe('2026-11-11');
+    });
   });
 
   // --------------------------------------------------------
