@@ -58,11 +58,14 @@ import { Sentry, metrics } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 import { getEventsForDate, type EventItem } from '../_lib/market-events.js';
 
-// The clock is pinned (Date only) to 2026-03-10 11:00 EDT.
+// The clock is pinned (Date only) to 2026-03-10 11:00 EDT = 10:00 AM CDT.
 const NOW = '2026-03-10T15:00:00Z';
 const TODAY = '2026-03-10';
 const YESTERDAY = '2026-03-09';
 const TOMORROW = '2026-03-11';
+/** The slot now sits in (CT), and a quote that printed 30 s ago for it. */
+const SLOT = '10:00 AM CT';
+const FRESH_QUOTE = Date.parse(NOW) - 30_000;
 
 describe('POST /api/snapshot', () => {
   afterEach(() => {
@@ -81,12 +84,24 @@ describe('POST /api/snapshot', () => {
     vi.mocked(respondIfInvalid).mockReturnValue(false);
     vi.mocked(Sentry.captureException).mockClear();
     vi.mocked(metrics.dbSave).mockClear();
+    vi.mocked(metrics.request).mockClear();
     vi.mocked(metrics.increment).mockClear();
     vi.mocked(logger.error).mockClear();
     vi.mocked(getEventsForDate)
       .mockReset()
       .mockResolvedValue({ events: [], complete: true, fromCache: false });
   });
+
+  /** Let the real 400 path run: respondIfInvalid answers a failed parse. */
+  function validating() {
+    vi.mocked(respondIfInvalid).mockImplementation((parsed, res) => {
+      if (!parsed.success) {
+        res.status(400).json({ error: parsed.error.issues[0]?.message });
+        return true;
+      }
+      return false;
+    });
+  }
 
   it('returns 405 for non-POST methods', async () => {
     const res = mockResponse();
@@ -156,16 +171,18 @@ describe('POST /api/snapshot', () => {
     await handler(
       mockRequest({
         method: 'POST',
-        body: { date: '2026-03-10', entryTime: '09:35' },
+        body: { date: '2026-03-10', entryTime: SLOT, quotedAt: FRESH_QUOTE },
       }),
       res,
     );
 
     expect(res._status).toBe(200);
     expect(res._json).toEqual({ id: 123, saved: true });
+    // quotedAt survives the schema (z.object strips unknown keys).
     expect(saveSnapshot).toHaveBeenCalledWith({
       date: '2026-03-10',
-      entryTime: '09:35',
+      entryTime: SLOT,
+      quotedAt: FRESH_QUOTE,
       isEventDay: false,
       eventNames: [],
     });
@@ -185,22 +202,21 @@ describe('POST /api/snapshot', () => {
       ivAccelMult: 1.21,
     };
 
+    // Live bodies, so each carries a fresh quote time (and the slot now).
+    const LIVE = { date: TODAY, entryTime: SLOT, quotedAt: FRESH_QUOTE };
+
     it('passes all seven through to saveSnapshot', async () => {
       vi.mocked(saveSnapshot).mockResolvedValue(5);
 
       const res = mockResponse();
       await handler(
-        mockRequest({
-          method: 'POST',
-          body: { date: TODAY, entryTime: '10:30 AM CT', ...SEVEN },
-        }),
+        mockRequest({ method: 'POST', body: { ...LIVE, ...SEVEN } }),
         res,
       );
 
       expect(res._json).toEqual({ id: 5, saved: true });
       expect(saveSnapshot).toHaveBeenCalledWith({
-        date: TODAY,
-        entryTime: '10:30 AM CT',
+        ...LIVE,
         ...SEVEN,
         isEventDay: false,
         eventNames: [],
@@ -221,17 +237,13 @@ describe('POST /api/snapshot', () => {
 
       const res = mockResponse();
       await handler(
-        mockRequest({
-          method: 'POST',
-          body: { date: TODAY, entryTime: '10:30 AM CT', ...nulls },
-        }),
+        mockRequest({ method: 'POST', body: { ...LIVE, ...nulls } }),
         res,
       );
 
       expect(res._json).toEqual({ id: 6, saved: true });
       expect(saveSnapshot).toHaveBeenCalledWith({
-        date: TODAY,
-        entryTime: '10:30 AM CT',
+        ...LIVE,
         ...nulls,
         isEventDay: false,
         eventNames: [],
@@ -243,17 +255,13 @@ describe('POST /api/snapshot', () => {
 
       const res = mockResponse();
       await handler(
-        mockRequest({
-          method: 'POST',
-          body: { date: TODAY, entryTime: '10:30 AM CT', spx: 6800 },
-        }),
+        mockRequest({ method: 'POST', body: { ...LIVE, spx: 6800 } }),
         res,
       );
 
       expect(res._json).toEqual({ id: 7, saved: true });
       expect(saveSnapshot).toHaveBeenCalledWith({
-        date: TODAY,
-        entryTime: '10:30 AM CT',
+        ...LIVE,
         spx: 6800,
         isEventDay: false,
         eventNames: [],
@@ -268,7 +276,7 @@ describe('POST /api/snapshot', () => {
     await handler(
       mockRequest({
         method: 'POST',
-        body: { date: '2026-03-10', entryTime: '09:35' },
+        body: { date: '2026-03-10', entryTime: SLOT, quotedAt: FRESH_QUOTE },
       }),
       res,
     );
@@ -311,7 +319,7 @@ describe('POST /api/snapshot', () => {
     await handler(
       mockRequest({
         method: 'POST',
-        body: { date: '2026-03-10', entryTime: '09:35' },
+        body: { date: '2026-03-10', entryTime: SLOT, quotedAt: FRESH_QUOTE },
       }),
       res,
     );
@@ -334,16 +342,6 @@ describe('POST /api/snapshot', () => {
   // protect from the replay that should own them.
 
   describe('the row’s date', () => {
-    function validating() {
-      vi.mocked(respondIfInvalid).mockImplementation((parsed, res) => {
-        if (!parsed.success) {
-          res.status(400).json({ error: parsed.error.issues[0]?.message });
-          return true;
-        }
-        return false;
-      });
-    }
-
     it('skips a live save for a past date and reports the stale client', async () => {
       const res = mockResponse();
       await handler(
@@ -574,7 +572,13 @@ describe('POST /api/snapshot', () => {
       await handler(
         mockRequest({
           method: 'POST',
-          body: { date, entryTime: '10:30 AM CT', isBacktest },
+          body: {
+            date,
+            entryTime: SLOT,
+            isBacktest,
+            // Only a live save carries a quote time.
+            ...(isBacktest ? {} : { quotedAt: FRESH_QUOTE }),
+          },
         }),
         res,
       );
@@ -592,7 +596,11 @@ describe('POST /api/snapshot', () => {
       await handler(
         mockRequest({
           method: 'POST',
-          body: { date: TODAY, entryTime: '8:00 PM CT' },
+          body: {
+            date: TODAY,
+            entryTime: '8:00 PM CT',
+            quotedAt: Date.parse('2026-03-11T01:00:00Z') - 30_000,
+          },
         }),
         res,
       );
@@ -659,7 +667,12 @@ describe('POST /api/snapshot', () => {
       await handler(
         mockRequest({
           method: 'POST',
-          body: { date: TODAY, entryTime: '10:30 AM CT', ...body },
+          body: {
+            date: TODAY,
+            entryTime: SLOT,
+            quotedAt: FRESH_QUOTE,
+            ...body,
+          },
         }),
         res,
       );
@@ -709,7 +722,8 @@ describe('POST /api/snapshot', () => {
       expect(res._json).toEqual({ id: 11, saved: true });
       expect(saveSnapshot).toHaveBeenCalledWith({
         date: TODAY,
-        entryTime: '10:30 AM CT',
+        entryTime: SLOT,
+        quotedAt: FRESH_QUOTE,
         isEventDay: true,
         eventNames: ['CPI'],
       });
@@ -737,7 +751,8 @@ describe('POST /api/snapshot', () => {
       expect(res._json).toEqual({ id: 11, saved: true });
       expect(saveSnapshot).toHaveBeenCalledWith({
         date: TODAY,
-        entryTime: '10:30 AM CT',
+        entryTime: SLOT,
+        quotedAt: FRESH_QUOTE,
         isEventDay: false,
         eventNames: [],
       });
@@ -761,7 +776,8 @@ describe('POST /api/snapshot', () => {
 
       expect(saveSnapshot).toHaveBeenCalledWith({
         date: TODAY,
-        entryTime: '10:30 AM CT',
+        entryTime: SLOT,
+        quotedAt: FRESH_QUOTE,
         isEventDay: true,
         eventNames: ['CPI'],
       });
@@ -778,7 +794,8 @@ describe('POST /api/snapshot', () => {
 
       expect(saveSnapshot).toHaveBeenCalledWith({
         date: TODAY,
-        entryTime: '10:30 AM CT',
+        entryTime: SLOT,
+        quotedAt: FRESH_QUOTE,
         isEventDay: false,
         eventNames: [],
       });
@@ -795,7 +812,8 @@ describe('POST /api/snapshot', () => {
       expect(res._json).toEqual({ id: 11, saved: true });
       expect(saveSnapshot).toHaveBeenCalledWith({
         date: TODAY,
-        entryTime: '10:30 AM CT',
+        entryTime: SLOT,
+        quotedAt: FRESH_QUOTE,
         isEventDay: true,
         eventNames: ['CPI'],
       });
@@ -809,7 +827,8 @@ describe('POST /api/snapshot', () => {
 
       expect(saveSnapshot).toHaveBeenCalledWith({
         date: TODAY,
-        entryTime: '10:30 AM CT',
+        entryTime: SLOT,
+        quotedAt: FRESH_QUOTE,
         isEventDay: false,
         eventNames: [],
       });
@@ -834,7 +853,8 @@ describe('POST /api/snapshot', () => {
       expect(res._json).toEqual({ id: 11, saved: true });
       expect(saveSnapshot).toHaveBeenCalledWith({
         date: TODAY,
-        entryTime: '10:30 AM CT',
+        entryTime: SLOT,
+        quotedAt: FRESH_QUOTE,
         isEventDay: true,
         eventNames: ['CPI', 'FOMC'],
       });
@@ -867,7 +887,8 @@ describe('POST /api/snapshot', () => {
         expect(res._json).toEqual({ id: 11, saved: true });
         expect(saveSnapshot).toHaveBeenCalledWith({
           date: TODAY,
-          entryTime: '10:30 AM CT',
+          entryTime: SLOT,
+          quotedAt: FRESH_QUOTE,
           isEventDay: false,
           eventNames: [],
         });
@@ -885,7 +906,8 @@ describe('POST /api/snapshot', () => {
       expect(res._json).toEqual({ id: 11, saved: true });
       expect(saveSnapshot).toHaveBeenCalledWith({
         date: TODAY,
-        entryTime: '10:30 AM CT',
+        entryTime: SLOT,
+        quotedAt: FRESH_QUOTE,
         isEventDay: true,
         eventNames: ['FOMC', 'CPI'],
       });
@@ -939,7 +961,8 @@ describe('POST /api/snapshot', () => {
       // The union is still stored: only the reporting is once per fetch.
       expect(saveSnapshot).toHaveBeenCalledWith({
         date: TODAY,
-        entryTime: '10:30 AM CT',
+        entryTime: SLOT,
+        quotedAt: FRESH_QUOTE,
         isEventDay: true,
         eventNames: ['CPI', 'FOMC'],
       });
@@ -1002,7 +1025,7 @@ describe('POST /api/snapshot', () => {
       await handler(
         mockRequest({
           method: 'POST',
-          body: { date: TODAY, entryTime: '10:30 AM CT' },
+          body: { date: TODAY, entryTime: SLOT, quotedAt: FRESH_QUOTE },
         }),
         res,
       );
@@ -1013,6 +1036,367 @@ describe('POST /api/snapshot', () => {
       expect(Sentry.captureException).toHaveBeenCalledTimes(1);
       expect(logger.error).toHaveBeenCalledTimes(1);
       expectNothingReported();
+    });
+  });
+
+  // ── The quote's age (P0.6, F11) ─────────────────────────────
+  // A live save whose quote printed more than 10 minutes before its slot is
+  // refused with a 422: a stalled quote poll, or an old Schwab print, leaves
+  // inputs that still match the quote state. The clock is pinned to 10:00 AM
+  // CDT, so SLOT is also now.
+
+  describe('the quote’s age', () => {
+    const NOW_MS = Date.parse(NOW);
+    const MIN = 60_000;
+
+    async function post(body: Record<string, unknown>) {
+      const res = mockResponse();
+      await handler(mockRequest({ method: 'POST', body }), res);
+      return res;
+    }
+
+    const live = (quotedAt?: unknown, extra: Record<string, unknown> = {}) => ({
+      date: TODAY,
+      entryTime: SLOT,
+      ...(quotedAt === undefined ? {} : { quotedAt }),
+      ...extra,
+    });
+
+    /** The `done` the handler took from metrics.request. */
+    const done = () =>
+      vi.mocked(metrics.request).mock.results.at(-1)!.value as ReturnType<
+        typeof vi.fn
+      >;
+
+    const notRefused = () => {
+      expect(Sentry.captureMessage).not.toHaveBeenCalled();
+      expect(metrics.increment).not.toHaveBeenCalled();
+    };
+
+    /** Every refusal is logged and counted, whether or not it alerts. */
+    const expectLogged = (reason: string) => {
+      expect(metrics.increment).toHaveBeenCalledWith('snapshot.quote_refused');
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ reason, date: TODAY }),
+        expect.stringContaining('quote'),
+      );
+    };
+
+    /** The alert's title names the reason, so an email says why. */
+    const alertTitle = (reason: string) => `snapshot.stale_quote: ${reason}`;
+
+    it('saves a live row whose quote printed 30 s ago', async () => {
+      vi.mocked(saveSnapshot).mockResolvedValue(11);
+
+      const res = await post(live(FRESH_QUOTE));
+
+      expect(res._status).toBe(200);
+      expect(res._json).toEqual({ id: 11, saved: true });
+      expect(done()).toHaveBeenCalledWith({ status: 200 });
+      notRefused();
+    });
+
+    it('saves a live row whose quote is exactly 10:00 behind its slot', async () => {
+      vi.mocked(saveSnapshot).mockResolvedValue(12);
+
+      const res = await post(live(NOW_MS - 10 * MIN));
+
+      expect(res._json).toEqual({ id: 12, saved: true });
+      notRefused();
+    });
+
+    it('refuses a live row whose quote is 11 min behind: 422, nothing saved, an in-session error', async () => {
+      const quotedAt = NOW_MS - 11 * MIN;
+
+      const res = await post(live(quotedAt));
+
+      expect(res._status).toBe(422);
+      expect(res._json).toEqual({
+        error: 'quote-not-fresh',
+        reason: 'stale-quote',
+        saved: false,
+      });
+      expect(res._headers['Cache-Control']).toBe('no-store');
+      expect(saveSnapshot).not.toHaveBeenCalled();
+      expect(done()).toHaveBeenCalledWith({
+        status: 422,
+        error: 'stale-quote',
+      });
+      expectLogged('stale-quote');
+      expect(Sentry.captureMessage).toHaveBeenCalledTimes(1);
+      expect(Sentry.captureMessage).toHaveBeenCalledWith(
+        alertTitle('stale-quote'),
+        {
+          level: 'error',
+          tags: { reason: 'stale-quote' },
+          // One issue per reason, whatever the title.
+          fingerprint: ['snapshot.stale_quote', 'stale-quote'],
+          extra: {
+            date: TODAY,
+            entryTime: SLOT,
+            quotedAtIso: new Date(quotedAt).toISOString(),
+            slotIso: '2026-03-10T15:00:00.000Z',
+            behindMs: 11 * MIN,
+          },
+        },
+      );
+    });
+
+    it.each([
+      ['absent', undefined],
+      ['null', null],
+    ])(
+      'refuses a live row whose quotedAt is %s as no-quote-time',
+      async (_label, quotedAt) => {
+        const res = await post(live(quotedAt));
+
+        expect(res._status).toBe(422);
+        expect(res._json).toEqual({
+          error: 'quote-not-fresh',
+          reason: 'no-quote-time',
+          saved: false,
+        });
+        expect(saveSnapshot).not.toHaveBeenCalled();
+        expectLogged('no-quote-time');
+        expect(Sentry.captureMessage).toHaveBeenCalledWith(
+          alertTitle('no-quote-time'),
+          expect.objectContaining({
+            level: 'error',
+            tags: { reason: 'no-quote-time' },
+            fingerprint: ['snapshot.stale_quote', 'no-quote-time'],
+          }),
+        );
+      },
+    );
+
+    it('refuses a quote 5 min ahead of the server clock as quote-from-future', async () => {
+      const res = await post(live(NOW_MS + 5 * MIN));
+
+      expect(res._status).toBe(422);
+      expect((res._json as { reason: string }).reason).toBe(
+        'quote-from-future',
+      );
+      expect(saveSnapshot).not.toHaveBeenCalled();
+      expectLogged('quote-from-future');
+      expect(Sentry.captureMessage).toHaveBeenCalledWith(
+        alertTitle('quote-from-future'),
+        expect.objectContaining({ tags: { reason: 'quote-from-future' } }),
+      );
+    });
+
+    it('refuses a quote time past the Date range without throwing', async () => {
+      // 9e15 is a safe integer, so the schema passes it, and no Date holds it.
+      const res = await post(live(9_000_000_000_000_000));
+
+      expect(res._status).toBe(422);
+      expect((res._json as { reason: string }).reason).toBe(
+        'quote-from-future',
+      );
+      expectLogged('quote-from-future');
+      expect(Sentry.captureMessage).toHaveBeenCalledWith(
+        alertTitle('quote-from-future'),
+        expect.objectContaining({
+          extra: expect.objectContaining({ quotedAtIso: null }),
+        }),
+      );
+      expect(Sentry.captureException).not.toHaveBeenCalled();
+    });
+
+    it('refuses a label that is not a clock time as bad-entry-time, and alerts', async () => {
+      const res = await post(live(FRESH_QUOTE, { entryTime: '09:35' }));
+
+      expect(res._status).toBe(422);
+      expect(res._json).toEqual({
+        error: 'quote-not-fresh',
+        reason: 'bad-entry-time',
+        saved: false,
+      });
+      expect(saveSnapshot).not.toHaveBeenCalled();
+      expectLogged('bad-entry-time');
+      expect(Sentry.captureMessage).toHaveBeenCalledWith(
+        alertTitle('bad-entry-time'),
+        expect.objectContaining({ tags: { reason: 'bad-entry-time' } }),
+      );
+    });
+
+    // A missing quote time or an unreadable label is a wiring bug at any
+    // hour, so it alerts even where a stale quote is only logged.
+    it.each([
+      ['no-quote-time', live(undefined, { entryTime: '6:00 PM CT' })],
+      [
+        'bad-entry-time',
+        live(Date.parse('2026-03-10T22:59:00Z'), { entryTime: '18:00' }),
+      ],
+    ])(
+      'alerts on %s after the close, where a stale quote only logs',
+      async (reason, body) => {
+        vi.setSystemTime(new Date('2026-03-10T23:00:00Z'));
+
+        const res = await post(body);
+
+        expect(res._status).toBe(422);
+        expect((res._json as { reason: string }).reason).toBe(reason);
+        expectLogged(reason);
+        expect(Sentry.captureMessage).toHaveBeenCalledTimes(1);
+        expect(Sentry.captureMessage).toHaveBeenCalledWith(
+          alertTitle(reason),
+          expect.objectContaining({ level: 'error', tags: { reason } }),
+        );
+      },
+    );
+
+    it.each([
+      [
+        'after the close',
+        '2026-03-10T23:00:00Z',
+        '6:00 PM CT',
+        // SPX's last index print, 16:37 ET (probed 2026-11-08).
+        '2026-03-10T20:37:00Z',
+      ],
+      [
+        'in the 10 min after the open',
+        '2026-03-10T13:35:00Z',
+        '8:35 AM CT',
+        // The prior session's close.
+        '2026-03-09T20:00:00Z',
+      ],
+    ])(
+      'refuses a stale quote %s with a log and a metric, not a Sentry error',
+      async (_label, clock, entryTime, quotedIso) => {
+        vi.setSystemTime(new Date(clock));
+
+        const res = await post(live(Date.parse(quotedIso), { entryTime }));
+
+        expect(res._status).toBe(422);
+        expect((res._json as { reason: string }).reason).toBe('stale-quote');
+        expect(saveSnapshot).not.toHaveBeenCalled();
+        expect(logger.warn).toHaveBeenCalledWith(
+          expect.objectContaining({ reason: 'stale-quote' }),
+          expect.any(String),
+        );
+        expect(metrics.increment).toHaveBeenCalledWith(
+          'snapshot.quote_refused',
+        );
+        expect(Sentry.captureMessage).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([
+      ['isBacktest absent', {}],
+      ['isBacktest false', { isBacktest: false }],
+      ['isBacktest null', { isBacktest: null }],
+    ])('checks a live row with %s', async (_label, flag) => {
+      const res = await post(live(NOW_MS - 11 * MIN, flag));
+
+      expect(res._status).toBe(422);
+      expect(saveSnapshot).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['a past date, no quote time', { date: YESTERDAY }],
+      [
+        'a past date with a stale quote time',
+        { date: YESTERDAY, quotedAt: NOW_MS - 3_600_000 },
+      ],
+      ['today scrubbed back, no quote time', { entryTime: '9:00 AM CT' }],
+      ['today with a stale quote time', { quotedAt: NOW_MS - 60 * MIN }],
+    ])('does not check a backtest row: %s', async (_label, patch) => {
+      vi.mocked(saveSnapshot).mockResolvedValue(13);
+
+      const res = await post(live(undefined, { isBacktest: true, ...patch }));
+
+      expect(res._status).toBe(200);
+      expect(res._json).toEqual({ id: 13, saved: true });
+      expect(saveSnapshot).toHaveBeenCalledTimes(1);
+      notRefused();
+    });
+
+    it('answers a live row for another date with its own skip, ahead of the quote check', async () => {
+      const res = await post(live(undefined, { date: YESTERDAY }));
+
+      expect(res._status).toBe(200);
+      expect(res._json).toEqual({
+        id: null,
+        saved: false,
+        skipped: 'live-for-other-date',
+      });
+      expect(Sentry.captureMessage).toHaveBeenCalledTimes(1);
+      expect(Sentry.captureMessage).toHaveBeenCalledWith(
+        'snapshot.live_save_for_other_date',
+        expect.anything(),
+      );
+      expect(metrics.increment).not.toHaveBeenCalled();
+    });
+
+    it('answers a future date with its own skip, ahead of the quote check', async () => {
+      const res = await post(live(undefined, { date: TOMORROW }));
+
+      expect(res._status).toBe(200);
+      expect(res._json).toEqual({
+        id: null,
+        saved: false,
+        skipped: 'future-date',
+      });
+      notRefused();
+    });
+
+    it('answers a live row for a closed day with its own skip, ahead of the quote check', async () => {
+      // 11:00 EDT on Good Friday: today, so the other-date skip lets it by.
+      vi.setSystemTime(new Date('2026-04-03T15:00:00Z'));
+
+      const res = await post(live(undefined, { date: '2026-04-03' }));
+
+      expect(res._status).toBe(200);
+      expect(res._json).toEqual({
+        id: null,
+        saved: false,
+        skipped: 'non-trading-day',
+      });
+      expect(saveSnapshot).not.toHaveBeenCalled();
+      expect(Sentry.captureMessage).toHaveBeenCalledTimes(1);
+      expect(Sentry.captureMessage).toHaveBeenCalledWith(
+        'snapshot.save_for_non_trading_day',
+        expect.anything(),
+      );
+      expect(metrics.increment).not.toHaveBeenCalled();
+    });
+
+    it('makes no event lookup for a refused row', async () => {
+      await post(live(NOW_MS - 11 * MIN));
+
+      expect(getEventsForDate).not.toHaveBeenCalled();
+    });
+
+    it('rejects a quotedAt that is not a positive integer with a 400', async () => {
+      validating();
+
+      const res = await post(live('1794001029801'));
+
+      expect(res._status).toBe(400);
+      expect(saveSnapshot).not.toHaveBeenCalled();
+      notRefused();
+    });
+
+    it('refuses a stale quote before the database is touched, so a failing database does not hide it', async () => {
+      vi.mocked(saveSnapshot).mockRejectedValue(new Error('DB error'));
+
+      const res = await post(live(NOW_MS - 11 * MIN));
+
+      expect(res._status).toBe(422);
+      expect(saveSnapshot).not.toHaveBeenCalled();
+      expect(Sentry.captureException).not.toHaveBeenCalled();
+      expect(metrics.dbSave).not.toHaveBeenCalled();
+    });
+
+    it('still answers 200 saved:false when the database rejects a fresh row', async () => {
+      vi.mocked(saveSnapshot).mockRejectedValue(new Error('DB error'));
+
+      const res = await post(live(FRESH_QUOTE));
+
+      expect(res._status).toBe(200);
+      expect(res._json).toEqual({ id: null, saved: false });
+      expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+      expect(metrics.increment).not.toHaveBeenCalled();
     });
   });
 });

@@ -41,6 +41,24 @@
  * log and the Sentry warning fire once per fetch (or failure), not for each
  * save the cached incomplete entry then serves.
  *
+ * A live row's quotes must be fresh (P0.6, F11). When the quote poll stalls
+ * or Schwab serves an old print, the inputs still match the quote state, so
+ * only the quote's time shows the row is frozen. The client sends it as
+ * quotedAt (the older of the SPX and VIX Schwab tradeTime, epoch ms); a live
+ * save (isBacktest not true) that none of the three skips above caught is
+ * refused with 422 { error: 'quote-not-fresh', reason, saved: false } when:
+ *   - no-quote-time: quotedAt is missing;
+ *   - bad-entry-time: the entryTime label or the date does not give a slot;
+ *   - quote-from-future: quotedAt is over 2 min ahead of this server's clock;
+ *   - stale-quote: quotedAt is over 10 min behind the slot (exactly 10:00
+ *     passes). The slot is the label's instant, not the clock.
+ * The client retries a 422 quietly, so it alerts here: a Sentry error
+ * (snapshot.stale_quote: <reason>, one issue per reason) for a slot inside the
+ * session, and for a missing time or an unreadable label at any hour. Before
+ * the open and after the close the last quote is old by nature, so it is a
+ * log and a metric there. A backtest save is not checked. Rule:
+ * api/_lib/quote-freshness.ts.
+ *
  * Called automatically by the frontend whenever results are computed.
  */
 
@@ -59,6 +77,11 @@ import {
   getEventsForDate,
   isEarningsEventName,
 } from './_lib/market-events.js';
+import {
+  alertsOnRefusal,
+  checkQuoteFreshness,
+  isoOrNull,
+} from './_lib/quote-freshness.js';
 import { isTradingDay } from '../src/data/marketHours.js';
 import { getETToday } from '../src/utils/timezone.js';
 
@@ -140,7 +163,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // Both dates are YYYY-MM-DD (the schema enforces the body's), so they
     // compare as text.
-    const { date, entryTime, isBacktest } = parsed.data;
+    const { date, entryTime, isBacktest, quotedAt } = parsed.data;
     const today = getETToday();
     if (date > today) {
       done({ status: 200 });
@@ -182,6 +205,44 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res
         .status(200)
         .json({ id: null, saved: false, skipped: 'non-trading-day' });
+    }
+    if (isBacktest !== true) {
+      const verdict = checkQuoteFreshness({
+        date,
+        entryTime,
+        quotedAt,
+        nowMs: Date.now(),
+      });
+      if (!verdict.ok) {
+        const { reason, slotMs, behindMs } = verdict;
+        const context = {
+          date,
+          entryTime,
+          quotedAtIso: isoOrNull(quotedAt),
+          slotIso: isoOrNull(slotMs),
+          behindMs,
+        };
+        logger.warn(
+          { ...context, reason },
+          'Refused a live snapshot save: the quote is not fresh',
+        );
+        metrics.increment('snapshot.quote_refused');
+        if (alertsOnRefusal(date, verdict)) {
+          // The title names the reason, so an alert email says why; the
+          // fingerprint keeps one issue per reason.
+          Sentry.captureMessage(`snapshot.stale_quote: ${reason}`, {
+            level: 'error',
+            tags: { reason },
+            fingerprint: ['snapshot.stale_quote', reason],
+            extra: context,
+          });
+        }
+        res.setHeader('Cache-Control', 'no-store');
+        done({ status: 422, error: reason });
+        return res
+          .status(422)
+          .json({ error: 'quote-not-fresh', reason, saved: false });
+      }
     }
 
     const { isEventDay, eventNames } = await resolveEventFlags(
