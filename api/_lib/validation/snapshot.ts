@@ -202,9 +202,11 @@ export const snapshotBodySchema = z.object({
 
   // When the live quotes behind a live save last printed: the older of the
   // SPX and VIX Schwab tradeTime, epoch milliseconds. A backtest save sends
-  // none. /api/snapshot refuses a live save whose quote is stale
+  // none. /api/snapshot judges a live save's quote against its slot
   // (api/_lib/quote-freshness.ts, P0.6 of live-data-integrity-2026-11-06).
-  // Listed here because z.object strips unknown keys.
+  // In shadow through 2026-11-16 it records the verdict and saves the row;
+  // after that it refuses a stale quote. Listed here because z.object strips
+  // unknown keys.
   quotedAt: z.number().int().positive().nullable().optional(),
 });
 

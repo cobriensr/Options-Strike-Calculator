@@ -226,6 +226,81 @@ describe('metrics.cronDbTimeout', () => {
 });
 
 // =============================================================
+// metrics.quoteFreshness
+// =============================================================
+
+describe('metrics.quoteFreshness', () => {
+  beforeEach(() => {
+    mockMetrics.count.mockClear();
+    mockMetrics.distribution.mockClear();
+  });
+
+  // Monday's read counts saves by verdict and splits the would-be refusals
+  // that would have raised a Sentry error from the expected pre-open and
+  // after-close ones, so both ride as attributes on one named series.
+  it('counts one snapshot.quote_freshness with the verdict and would_alert as attributes', () => {
+    metrics.quoteFreshness({
+      verdict: 'stale-quote',
+      wouldAlert: true,
+      behindMs: 660_000,
+    });
+
+    expect(mockMetrics.count).toHaveBeenCalledTimes(1);
+    expect(mockMetrics.count).toHaveBeenCalledWith(
+      'snapshot.quote_freshness',
+      1,
+      { attributes: { verdict: 'stale-quote', would_alert: 'true' } },
+    );
+  });
+
+  it('records the slot-minus-quote gap as snapshot.quote_behind_ms under the same attributes', () => {
+    metrics.quoteFreshness({
+      verdict: 'ok',
+      wouldAlert: false,
+      behindMs: 30_000,
+    });
+
+    expect(mockMetrics.distribution).toHaveBeenCalledTimes(1);
+    expect(mockMetrics.distribution).toHaveBeenCalledWith(
+      'snapshot.quote_behind_ms',
+      30_000,
+      { attributes: { verdict: 'ok', would_alert: 'false' } },
+    );
+  });
+
+  // A quote newer than its slot is a negative gap (the slot is floored to 5
+  // minutes), and a gap of exactly 0 is a real reading: neither is "no gap".
+  it.each([
+    ['zero', 0],
+    ['negative', -90_000],
+  ])('records a %s gap', (_label, behindMs) => {
+    metrics.quoteFreshness({ verdict: 'ok', wouldAlert: false, behindMs });
+
+    expect(mockMetrics.distribution).toHaveBeenCalledTimes(1);
+    expect(mockMetrics.distribution).toHaveBeenCalledWith(
+      'snapshot.quote_behind_ms',
+      behindMs,
+      expect.anything(),
+    );
+  });
+
+  it.each(['no-quote-time', 'bad-entry-time'])(
+    'counts %s but records no gap, since it has none',
+    (verdict) => {
+      metrics.quoteFreshness({ verdict, wouldAlert: true, behindMs: null });
+
+      expect(mockMetrics.count).toHaveBeenCalledTimes(1);
+      expect(mockMetrics.count).toHaveBeenCalledWith(
+        'snapshot.quote_freshness',
+        1,
+        { attributes: { verdict, would_alert: 'true' } },
+      );
+      expect(mockMetrics.distribution).not.toHaveBeenCalled();
+    },
+  );
+});
+
+// =============================================================
 // metrics.tokenRefresh
 // =============================================================
 

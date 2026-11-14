@@ -373,6 +373,40 @@ function cronDbTimeout(job: string) {
 }
 
 /**
+ * Record what the quote-freshness rule found for one live snapshot save while
+ * it runs in shadow (P0.6 Phase 3, owner decision 2026-11-14): a count per
+ * verdict, `ok` or the refusal reason, and the gap between the slot and the
+ * quote's time as a distribution, so a read of the session can count saves by
+ * verdict and see how far behind the quotes run. `wouldAlert` is whether the
+ * enforcing rule would have raised its Sentry error (a stale or future quote
+ * inside the session, or a wiring reason at any hour), which tells the
+ * would-be refusals that matter from the expected pre-open and after-close
+ * ones. `behindMs` is null when the verdict has no gap (no quote time, no
+ * slot), and 0 or negative when the quote is as new as, or newer than, its
+ * slot: those are readings and are recorded.
+ *
+ * Queries: `sum(value,snapshot.quote_freshness,counter,-)` grouped by
+ * `verdict`, and `p50/p95/max(value,snapshot.quote_behind_ms,distribution,-)`.
+ * Spec: docs/superpowers/specs/live-data-integrity-2026-11-06.md, P0.6.
+ */
+function quoteFreshness(opts: {
+  verdict: string;
+  wouldAlert: boolean;
+  behindMs: number | null;
+}) {
+  const attributes = {
+    verdict: opts.verdict,
+    would_alert: String(opts.wouldAlert),
+  };
+  Sentry.metrics.count('snapshot.quote_freshness', 1, { attributes });
+  if (opts.behindMs !== null) {
+    Sentry.metrics.distribution('snapshot.quote_behind_ms', opts.behindMs, {
+      attributes,
+    });
+  }
+}
+
+/**
  * Track an upstream Unusual Whales rate-limit (429) response. Emits
  * both a metric (time-series counter, grouped by endpoint) AND a
  * scoped warning message so the first one pages immediately instead
@@ -493,6 +527,7 @@ export const metrics = {
   schwabCall,
   rateLimited,
   cronDbTimeout,
+  quoteFreshness,
   uwRateLimit,
   uwBudget,
   uwMinuteCount,
