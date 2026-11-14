@@ -353,14 +353,15 @@ interface FredReleaseResult {
 }
 
 // Every Redis call in this file is a best-effort cache read or write, and a
-// failure falls through to the source. The release lists are read and written on
-// every snapshot save and every `/api/events` miss, and the per-day cache
-// (`getEventsForDate`, below) on every snapshot save, so all of them use the
-// fail-fast `limiterRedis` (one attempt, 1.5 s), not the retrying `redis`. That
-// client took about 64 s to give up in the 2026-09-29 outage, on each read and
-// again on each write: up to 128 s added to a call. The release-list failures
-// below log at `warn`, by choice, and nothing goes to Sentry: an outage writes up
-// to 7 lines per call, and 7 error lines per call would be noise.
+// failure falls through to the source. The release lists are read on every
+// day-cache miss and every `/api/events` miss, and written when a list is cold,
+// and the per-day cache (`getEventsForDate`, below) is read on every snapshot
+// save and written on a miss, so all of them use the fail-fast `limiterRedis`
+// (one attempt, 1.5 s), not the retrying `redis`. That client took about 64 s to
+// give up in the 2026-09-29 outage, on each read and again on each write: up to
+// 128 s added to a call. The release-list failures below log at `warn`, by
+// choice, and nothing goes to Sentry: an outage writes up to 7 lines per call,
+// and 7 error lines per call would be noise.
 
 /**
  * A release's cached date list, or null on a miss. A value that is not a
@@ -396,8 +397,8 @@ async function readCachedReleaseDates(
 /**
  * Keeps a release's full sorted date list as strings; a failure only logs.
  * Writes nothing when no entry has a date: a cached `[]` would answer "no
- * event" for the whole 12 hours from a reply that may have been a gap. (An
- * empty list from FRED never gets here: `fetchReleaseDates` fails it first.)
+ * event" for the whole 12 hours from a reply that may have been a gap. (A list
+ * with no dated entry never gets here: `fetchReleaseDates` fails it first.)
  */
 async function writeCachedReleaseDates(
   releaseId: number,
@@ -407,6 +408,7 @@ async function writeCachedReleaseDates(
     .map((r) => r.date)
     .filter((d) => typeof d === 'string')
     .sort((a, b) => a.localeCompare(b));
+  // Defensive: no caller reaches this with an undated list.
   if (dates.length === 0) return;
   try {
     await limiterRedis.set(`${RELEASE_DATES_KEY}:${releaseId}`, dates, {
@@ -472,14 +474,23 @@ async function fetchReleaseDates(
   }
 
   // `release/dates` answers a release's whole history (a probe on 2026-11-13
-  // got 953 dates for release 10 and 867 for release 50), so an empty list for
-  // a tracked release is never a real answer. Taken as complete, it would be
-  // pinned as "no events" by the seven-day day cache and the window cache. This
-  // checks FRED's raw list: a list with history but nothing inside the window
-  // is a normal quiet day and stays ok.
+  // got 953 dates for release 10 and 867 for release 50, every entry dated), so
+  // an empty list for a tracked release is never a real answer, and neither is
+  // a list where no entry has a string `date` (a renamed field, say). Taken as
+  // complete, either would be pinned as "no events" by the seven-day day cache
+  // and the window cache. This checks FRED's raw list: a list with history but
+  // nothing inside the window is a normal quiet day and stays ok.
   if (data.release_dates.length === 0) {
     logger.error({ releaseId }, 'FRED API empty release list');
     Sentry.captureMessage('FRED API empty release list', {
+      level: 'warning',
+      extra: { releaseId },
+    });
+    return { entries: [], ok: false };
+  }
+  if (!data.release_dates.some((r) => typeof r?.date === 'string')) {
+    logger.error({ releaseId }, 'FRED API malformed payload');
+    Sentry.captureMessage('FRED API malformed payload', {
       level: 'warning',
       extra: { releaseId },
     });
@@ -521,16 +532,16 @@ function sortEvents(events: EventItem[]): EventItem[] {
  * FRED's `release/dates` returns all history and the range is filtered here,
  * so a past range works as well as a forward one. Each release's date list is
  * kept in Redis for 12 hours (`fred:release-dates:v1:{releaseId}`), so a new
- * window costs no FRED call while the lists are warm. An empty list is never
- * kept. Redis failing leaves the lookup going to FRED as before, after at most
- * one 1.5 s attempt (the fail-fast client).
+ * window costs no FRED call while the lists are warm. An empty list, or one
+ * with no dated entry, is never kept. Redis failing leaves the lookup going to
+ * FRED as before, after at most one 1.5 s attempt (the fail-fast client).
  *
  * `complete` is true only when `FRED_API_KEY` is set and every FRED release
- * answered with a well-formed, non-empty list of dates (FRED sends a release's
- * whole history, so an empty list is a gap). Without the key it returns the
- * static events with `complete: false`; it does not throw. A FRED non-OK
- * status, malformed payload or empty list is logged and returns
- * `complete: false`. A FRED network error or unparseable body rejects.
+ * answered with a well-formed list holding at least one dated entry (FRED sends
+ * a release's whole history, so an empty or dateless list is a gap). Without
+ * the key it returns the static events with `complete: false`; it does not
+ * throw. A FRED non-OK status, malformed payload or empty list is logged and
+ * returns `complete: false`. A FRED network error or unparseable body rejects.
  */
 export async function fetchMacroEvents(
   startDate: string,

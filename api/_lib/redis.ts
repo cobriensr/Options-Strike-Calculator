@@ -72,9 +72,10 @@ export const redis = createRedis();
  * which sits on the 30 s futures-snapshot poll: a best-effort cache read
  * must fall through to the source just as fast. The events caches use it for
  * the same reason: the per-release FRED date lists and the per-day cache in
- * `market-events.ts`, and the window cache in `api/events.ts`. Each is read
- * and written on a snapshot save or an `/api/events` miss, and a failure
- * falls through to the source.
+ * `market-events.ts`, and the window cache in `api/events.ts`. The day and
+ * window caches are read on every snapshot save or `/api/events` request and
+ * written on a miss, the release lists are read on a miss of either, and a
+ * failure falls through to the source.
  */
 export const limiterRedis = createRedis({
   retry: { retries: 0 },

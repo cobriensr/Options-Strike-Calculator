@@ -672,6 +672,21 @@ describe('market-events', () => {
       ['a null release list', { release_dates: null }],
       ['a release list that is not an array', { release_dates: 'oops' }],
       ['a null body', null],
+      // A renamed date field is likelier than an empty list: a list with no
+      // string `date` anywhere is a bad payload, and the window filter would
+      // drop all of it and pin "no events".
+      [
+        'a release list whose entries have no date',
+        { release_dates: [{ release_id: 10 }, { release_id: 10 }] },
+      ],
+      [
+        'a release list whose entries have a non-string date',
+        { release_dates: [{ release_id: 10, date: 20260513 }] },
+      ],
+      [
+        'a release list of nulls',
+        { release_dates: [null, { release_id: 10 }] },
+      ],
     ])('is incomplete when FRED answers 200 with %s', async (_label, body) => {
       stubSources({ fred: okJson(body) });
 
@@ -1073,7 +1088,7 @@ describe('market-events', () => {
       expect(releaseWrites()).toHaveLength(6);
     });
 
-    it('writes nothing when every entry FRED sends has no date', async () => {
+    it('fails, and writes nothing, when every entry FRED sends has no date', async () => {
       stubSources({
         fred: okJson({
           release_dates: [{ release_id: 10 }, { release_id: 10 }],
@@ -1082,7 +1097,7 @@ describe('market-events', () => {
 
       const { complete } = await fetchMacroEvents(START, END);
 
-      expect(complete).toBe(true);
+      expect(complete).toBe(false);
       expect(limiterRedis.set).not.toHaveBeenCalled();
     });
 
@@ -1104,6 +1119,10 @@ describe('market-events', () => {
     it.each([
       ['non-OK', nonOk],
       ['200 with an empty release list', okJson({ release_dates: [] })],
+      [
+        '200 with entries that have no date',
+        okJson({ release_dates: [{ release_id: 10 }] }),
+      ],
       ['200 with an empty object', okJson({})],
       ['200 with a null release list', okJson({ release_dates: null })],
       [
@@ -1165,8 +1184,10 @@ describe('market-events', () => {
         }),
       });
 
-      await fetchMacroEvents(START, END);
+      const { complete } = await fetchMacroEvents(START, END);
 
+      // One dated entry is enough: only a list with none is a failure.
+      expect(complete).toBe(true);
       expect(limiterRedis.set).toHaveBeenCalledWith(
         `${RELEASE_KEY}:10`,
         [START],

@@ -121,8 +121,9 @@ export default withRequestScope(
             asOf: new Date().toISOString(),
           });
         }
-      } catch {
+      } catch (err) {
         // Redis unavailable — fetch fresh
+        logger.warn({ err }, 'Failed to read events from Redis');
       }
 
       // A cache miss costs at most one Finnhub call (none for a window that ends

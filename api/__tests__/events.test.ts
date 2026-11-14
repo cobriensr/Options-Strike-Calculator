@@ -47,6 +47,10 @@ vi.mock('../_lib/market-events.js', async (importOriginal) => {
   return { ...actual, fetchMarketEvents: vi.fn(actual.fetchMarketEvents) };
 });
 
+vi.mock('../_lib/logger.js', () => ({
+  default: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+}));
+
 vi.mock('../_lib/sentry.js', () => ({
   Sentry: {
     captureMessage: vi.fn(),
@@ -67,6 +71,7 @@ import handler from '../events.js';
 import { limiterRedis, redis } from '../_lib/redis.js';
 import { checkBot, rejectIfRateLimited } from '../_lib/api-helpers.js';
 import { fetchMarketEvents } from '../_lib/market-events.js';
+import logger from '../_lib/logger.js';
 import { Sentry, metrics } from '../_lib/sentry.js';
 
 // FRED's `release/dates` answers a release's whole history, so a tracked
@@ -554,8 +559,13 @@ describe('GET /api/events', () => {
     // Should still succeed despite cache write failure
     expect(res._status).toBe(200);
     expect(res._headers['X-Cache']).toBe('MISS');
-    // The window write was attempted, on the fail-fast client.
+    // The window write was attempted, on the fail-fast client, and its failure
+    // is logged by name.
     expect(windowWrites()).toHaveLength(1);
+    expect(logger.error).toHaveBeenCalledWith(
+      { err: expect.objectContaining({ message: 'redis write failed' }) },
+      'Failed to cache events in Redis',
+    );
     expect(redis.set).not.toHaveBeenCalled();
 
     vi.unstubAllGlobals();
@@ -578,6 +588,10 @@ describe('GET /api/events', () => {
     expect(res._status).toBe(200);
     expect(res._headers['X-Cache']).toBe('MISS');
     expect(windowReads()).toHaveLength(1);
+    expect(logger.warn).toHaveBeenCalledWith(
+      { err: expect.objectContaining({ message: 'redis read failed' }) },
+      'Failed to read events from Redis',
+    );
     expect(fetchMock).toHaveBeenCalled();
     expect(redis.get).not.toHaveBeenCalled();
 
