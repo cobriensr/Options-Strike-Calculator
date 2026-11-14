@@ -3,18 +3,21 @@ import { chip, dateTimeSection, setEntryTime } from './helpers/calculator';
 import { buildApiFetchMock, MOCK_QUOTES } from './helpers/mock-fetch';
 
 /**
- * The calendar date, YYYY-MM-DD, in Central time at `at`. The app's
- * selectedDate defaults to the CT date (src/hooks/useVixData.ts), which
- * differs from the ET date from 23:00 to 24:00 CT.
+ * The calendar date, YYYY-MM-DD, in New York at `at`, the date the app opens on
+ * (`getETToday`, which `useVixData` seeds `selectedDate` from). It differs from
+ * the Central date from 23:00 to 24:00 CT.
  */
-function centralDate(at: Date = new Date()): string {
-  return at.toLocaleDateString('en-CA', { timeZone: 'America/Chicago' });
+function etDate(at: Date = new Date()): string {
+  return at.toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
 }
 
 /** Today's date, matching the app's selectedDate default. */
-const TODAY = centralDate();
+const TODAY = etDate();
 
-/** 16:00 CST on Friday 2026-11-13: after the close, clear of 23:00 to midnight CT. */
+/**
+ * 16:00 CST on Friday 2026-11-13, after the close. The count-asserting cases
+ * pin the clock here so their counts do not depend on the wall clock.
+ */
 const AFTERNOON = new Date('2026-11-13T22:00:00Z');
 
 /** A past trading day: outside the forward list, so it gets its own lookup. */
@@ -195,9 +198,8 @@ test.describe('Event Day Warning', () => {
    * Abort every /api request (the forward list, `/api/events?days=30`, among
    * them), then answer one date's own lookup (`/api/events?from=<date>`): a 500
    * the first time, a CPI event the second. The count is how many lookups the
-   * page made. The clock is pinned to an afternoon: from 23:00 to midnight CT
-   * the app's date is before ET today, so a lookup for it fires at mount and the
-   * dev server's StrictMode doubles it, which would move the counts.
+   * page made. The clock is pinned to AFTERNOON, so the counts do not depend on
+   * the wall clock the run happens at.
    */
   async function failOnceThenAnswerLookup(page: Page, date: string) {
     await page.clock.setFixedTime(AFTERNOON);
@@ -279,11 +281,8 @@ test.describe('Event Day Warning', () => {
   test('a failed forward list makes today look up its own events, says so on a failure, and Retry loads them', async ({
     page,
   }) => {
-    // The helper pins the clock to AFTERNOON, so today is that Central date.
-    const lookups = await failOnceThenAnswerLookup(
-      page,
-      centralDate(AFTERNOON),
-    );
+    // The helper pins the clock to AFTERNOON, so today is that ET date.
+    const lookups = await failOnceThenAnswerLookup(page, etDate(AFTERNOON));
 
     await page.goto('/');
 
@@ -291,40 +290,26 @@ test.describe('Event Day Warning', () => {
   });
 
   // 23:30 CST on Friday 2026-11-13 is already 00:30 on the 14th in New York.
-  // The app's date defaults to the Central date, and from 23:00 to midnight CT
-  // that date is before ET today. The forward list starts at ET today
-  // (api/events.ts), and so does the hook's range while that list loads
-  // (useEventsForDate), so the date is outside both and the page looks up its
-  // own events at mount, rightly: the list never covers it. Only a lookup for
-  // the 13th is answered, so this fails whenever `centralDate` returns the
-  // Eastern date. The lookup count is compared with the forward list's, not
-  // pinned to 1: the dev server's StrictMode runs a mount-time fetch twice, the
-  // forward list's too (12 ms apart), so the page makes as many lookups as
-  // forward requests. A lookup repeated after the list fails would exceed them
-  // (the hook tests in useEventsForDate.test.ts pin exactly one).
-  test('the date and its lookup are the Central date when the Eastern date has rolled over', async ({
+  // The app opens on the ET date (`useVixData` seeds `selectedDate` from
+  // `getETToday`), so the date is the 14th: today in ET, which the forward list
+  // covers while it loads (the hook assumes ET today .. +30) and once it
+  // arrives (`api/events.ts` starts it at `getETToday`). So the page makes no
+  // own-date lookup at all, and the 14th's CPI banner comes from the list.
+  // Seeded from the CT date, as the app was before 84fea1f3, the date was the
+  // 13th, outside the list, and this fails on the date input and the lookup.
+  test('at 23:30 CT the date is the ET date, which the forward list covers, so no own-date lookup is made', async ({
     page,
   }) => {
     const lateEvening = new Date('2026-11-14T05:30:00Z');
-    const date = centralDate(lateEvening);
-    expect(date).toBe('2026-11-13');
+    const date = etDate(lateEvening);
+    expect(date).toBe('2026-11-14');
     await page.clock.setFixedTime(lateEvening);
     await page.route('**/api/**', (route) => route.abort());
-    let forwardRequests = 0;
+    // The forward list: the 14th's CPI, answered under its own date.
     await page.route(
       (url) => url.pathname === '/api/events' && !url.searchParams.has('from'),
-      (route) => {
-        forwardRequests += 1;
-        return route.abort();
-      },
-    );
-    let lookups = 0;
-    await page.route(
-      (url) =>
-        url.pathname === '/api/events' && url.searchParams.get('from') === date,
-      (route) => {
-        lookups += 1;
-        return route.fulfill({
+      (route) =>
+        route.fulfill({
           json: makeEventsResponse(
             [
               {
@@ -336,7 +321,14 @@ test.describe('Event Day Warning', () => {
             ],
             date,
           ),
-        });
+        }),
+    );
+    let lookups = 0;
+    await page.route(
+      (url) => url.pathname === '/api/events' && url.searchParams.has('from'),
+      (route) => {
+        lookups += 1;
+        return route.abort();
       },
     );
 
@@ -348,8 +340,8 @@ test.describe('Event Day Warning', () => {
     ).toHaveValue(date);
     await expect(main.getByText('High-Impact Event Day')).toBeVisible();
     await expect(main.getByText('CPI', { exact: true })).toBeVisible();
-    // The failed forward list changed nothing the date's lookup depends on.
-    expect(forwardRequests).toBeGreaterThan(0);
-    expect(lookups).toBe(forwardRequests);
+    // Any lookup for a covered date would have fired at mount, before the
+    // banner came from the list.
+    expect(lookups).toBe(0);
   });
 });
