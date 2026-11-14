@@ -25,6 +25,7 @@ from unittest.mock import patch
 
 import pytest
 
+import memory_stats
 import pipeline_stats
 import socket_stats
 from logger_setup import RateLimitedLogger
@@ -43,6 +44,12 @@ from state import State
 _MESSAGE = "uw-stream pipeline minute"
 _SAMPLE_FAILED = "pipeline stats sample failed"
 _REPORT_FAILED = "pipeline stats report failed"
+
+# What the memory readers return in every test (see ``_isolated_memory``), and
+# the ``memory`` object a line then carries: bytes over 1,048,576, one decimal.
+_RSS_BYTES = 123_456_789
+_CGROUP_BYTES = 300_000_000
+_MEMORY: dict = {"rss_mb": 117.7, "cgroup_mb": 286.1, "gauges": {}}
 
 
 @pytest.fixture
@@ -63,6 +70,21 @@ def _isolated_sockets(monkeypatch):
     """
     monkeypatch.setattr(socket_stats, "_registry", {})
     monkeypatch.setattr(socket_stats, "_twins", {})
+
+
+@pytest.fixture(autouse=True)
+def _isolated_memory(monkeypatch):
+    """No gauges and fixed memory readings, so no test depends on the host or on another test.
+
+    ``memory_stats`` keeps its gauge registry in a module-level dict that every
+    handler constructor fills, and its readers open ``/proc`` and the cgroup, which
+    answer differently on Linux and on Windows. Replacing the registry and the two
+    readers (at the module ``pipeline_stats`` reads them from) pins the line's
+    ``memory`` object. The readers' own behaviour is in test_memory_stats.py.
+    """
+    monkeypatch.setattr(memory_stats, "_gauges", {})
+    monkeypatch.setattr(memory_stats, "read_rss_bytes", lambda: _RSS_BYTES)
+    monkeypatch.setattr(memory_stats, "read_cgroup_bytes", lambda: _CGROUP_BYTES)
 
 
 @pytest.fixture
@@ -664,6 +686,7 @@ async def test_the_line_carries_every_documented_field(monkeypatch, fresh, lines
                         "silences": 0,
                     },
                 },
+                "memory": _MEMORY,
             },
         )
     ]
@@ -944,6 +967,144 @@ async def test_a_failure_while_building_the_line_consumes_nothing(
 
 
 # ----------------------------------------------------------------------
+# The line: memory
+# ----------------------------------------------------------------------
+
+
+async def test_the_memory_object_gives_both_readings_in_megabytes_and_every_gauge(
+    monkeypatch, fresh, lines
+):
+    memory_stats.register_gauge("option_trades.dedupe_keys", lambda: 160_000)
+    memory_stats.register_gauge("option_trades:SPXW.chains", lambda: 412)
+
+    await _drive_reporter(monkeypatch, fresh, [_noop_step])
+
+    # Megabytes of 1,048,576 bytes, to one decimal; the gauges are whole numbers.
+    assert lines[0][1]["memory"] == {
+        "rss_mb": 117.7,
+        "cgroup_mb": 286.1,
+        "gauges": {"option_trades.dedupe_keys": 160_000, "option_trades:SPXW.chains": 412},
+    }
+
+
+async def test_a_reading_that_cannot_be_taken_is_none_in_the_line_not_zero(
+    monkeypatch, fresh, lines
+):
+    # Windows, macOS, a container with no cgroup mount: the readers say None, and
+    # the line must not turn that into "0 MB".
+    monkeypatch.setattr(memory_stats, "read_rss_bytes", lambda: None)
+    monkeypatch.setattr(memory_stats, "read_cgroup_bytes", lambda: None)
+
+    await _drive_reporter(monkeypatch, fresh, [_noop_step])
+
+    assert lines[0][1]["memory"] == {"rss_mb": None, "cgroup_mb": None, "gauges": {}}
+
+
+async def test_one_reading_missing_leaves_the_other_in_place(monkeypatch, fresh, lines):
+    monkeypatch.setattr(memory_stats, "read_cgroup_bytes", lambda: None)
+
+    await _drive_reporter(monkeypatch, fresh, [_noop_step])
+
+    assert lines[0][1]["memory"] == {"rss_mb": 117.7, "cgroup_mb": None, "gauges": {}}
+
+
+async def test_every_minute_has_a_memory_object_with_fresh_gauge_values_traffic_or_not(
+    monkeypatch, fresh, lines
+):
+    # Handlers idle, nothing registered, quiet market: the memory numbers are the
+    # reason to read an overnight line. Each line reads the gauges again.
+    sizes = iter([100, 250, 400])
+    memory_stats.register_gauge("option_trades.dedupe_keys", lambda: next(sizes))
+
+    await _drive_reporter(monkeypatch, fresh, [_noop_step] * 3)
+
+    assert [extra["handlers"] for _msg, extra in lines] == [{}, {}, {}]
+    assert [extra["memory"]["gauges"] for _msg, extra in lines] == [
+        {"option_trades.dedupe_keys": 100},
+        {"option_trades.dedupe_keys": 250},
+        {"option_trades.dedupe_keys": 400},
+    ]
+    assert {(extra["memory"]["rss_mb"], extra["memory"]["cgroup_mb"]) for _m, extra in lines} == {
+        (117.7, 286.1)
+    }
+
+
+async def test_a_gauge_that_raises_does_not_cost_the_minute_its_line(
+    monkeypatch, fresh, lines, errors, service_log_records
+):
+    # The line is the heartbeat and carries everything else; one structure whose
+    # size cannot be read this minute must not take it down. The failure is a
+    # rate-limited warning that names the gauge, not a failed pass.
+    monkeypatch.setattr(memory_stats, "rate_limited_log", RateLimitedLogger())
+
+    def _broken() -> int:
+        raise RuntimeError("dict changed size during iteration")
+
+    memory_stats.register_gauge("option_trades:SPY.ticks", _broken)
+    memory_stats.register_gauge("option_trades:SPY.chains", lambda: 412)
+
+    await _drive_reporter(monkeypatch, fresh, [_BUSY_MINUTE, _noop_step])
+
+    assert len(lines) == 2
+    assert lines[0][1]["memory"]["gauges"] == {"option_trades:SPY.chains": 412}
+    assert lines[0][1]["handlers"]["option_trades"]["flushes"] == 3  # the rest of the line is whole
+    assert errors == []  # not a failed report pass
+    named = [
+        r for r in service_log_records if getattr(r, "gauge", None) == "option_trades:SPY.ticks"
+    ]
+    assert [r.levelname for r in named] == ["WARNING"]  # one for the two minutes
+    # The report consumed what it read: the interval fields are zero again.
+    assert fresh.receive_queue_hwm == 0
+    assert lines[1][1]["receive_queue_hwm"] == 0
+
+
+async def test_a_gauge_is_called_once_per_line_and_never_by_the_sampler(monkeypatch, fresh, lines):
+    calls: list[None] = []
+    memory_stats.register_gauge("net_flow.depth", lambda: calls.append(None) or len(calls))
+
+    # The sampler takes a sample every 0.25 s, four a second: it must not touch the gauges.
+    _script_sleep(monkeypatch, [_noop] * 5)
+    with (
+        patch("db.get_pool", side_effect=RuntimeError("Pool not initialized")),
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await _run_sampler(_Sampled())
+    assert calls == []
+
+    await _drive_reporter(monkeypatch, fresh, [_noop_step, _noop_step])
+
+    assert len(calls) == 2
+    assert [extra["memory"]["gauges"] for _msg, extra in lines] == [
+        {"net_flow.depth": 1},
+        {"net_flow.depth": 2},
+    ]
+
+
+async def test_a_failed_line_reads_the_gauges_again_for_the_line_that_follows(
+    monkeypatch, fresh, errors
+):
+    # The failed pass consumed nothing, so the next line is built from scratch,
+    # memory included: its numbers are the current ones, not the failed pass's.
+    delivered: list[dict] = []
+    attempts: list[None] = []
+
+    def _info_that_fails_once(_msg, *_a, **kw) -> None:
+        attempts.append(None)
+        if len(attempts) == 1:
+            raise OSError("stdout closed")
+        delivered.append(kw["extra"])
+
+    monkeypatch.setattr(pipeline_stats.log, "info", _info_that_fails_once)
+    sizes = iter([10, 20])
+    memory_stats.register_gauge("option_trades.dedupe_keys", lambda: next(sizes))
+
+    await _drive_reporter(monkeypatch, fresh, [_noop_step, _noop_step])
+
+    assert [msg for msg, _extra in errors] == [_REPORT_FAILED]
+    assert [extra["memory"]["gauges"] for extra in delivered] == [{"option_trades.dedupe_keys": 20}]
+
+
+# ----------------------------------------------------------------------
 # run_pipeline_stats: both loops, one accumulator, clean cancel
 # ----------------------------------------------------------------------
 
@@ -1118,6 +1279,7 @@ async def test_a_report_that_raises_is_logged_and_the_next_minute_still_reports(
                     "silences": 3,
                 }
             },
+            "memory": _MEMORY,
         }
     ]
     # That line is the one that consumes: the pass after it starts from zero.

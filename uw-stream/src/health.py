@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 
 from aiohttp import web
 
+import memory_stats
 import socket_stats
 from config import settings
 from logger_setup import log
@@ -120,7 +121,7 @@ def _unauthorized() -> web.Response:
 
 async def metrics(request: web.Request) -> web.Response:
     """JSON snapshot of per-channel subscription state, per-handler counters,
-    and global state.
+    memory, and global state.
 
     Requires ``INTERNAL_METRICS_TOKEN``: the request must carry a matching
     ``X-Metrics-Token`` header, compared in constant time, or it gets 401.
@@ -143,6 +144,8 @@ async def metrics(request: web.Request) -> web.Response:
     ):
         return _unauthorized()
     now = datetime.now(UTC)
+    # Read here, after the auth gate, so a caller without the token gets nothing.
+    reading = memory_stats.snapshot()
     body = {
         "uptime_seconds": int((now - state.started_at).total_seconds()),
         "ws_connected": state.ws_connected,
@@ -198,6 +201,14 @@ async def metrics(request: web.Request) -> web.Response:
                 "twin": socket_stats.twin_of(name),
             }
             for name, s in socket_stats.all_stats().items()
+        },
+        # Read now, not cached from the minute line: the process's resident set and the
+        # container's memory in bytes (null where unreadable; the minute line gives MB),
+        # and the size of each registered in-memory store. See ``memory_stats``.
+        "memory": {
+            "rss_bytes": reading.rss_bytes,
+            "cgroup_bytes": reading.cgroup_bytes,
+            "gauges": reading.gauges,
         },
     }
     return web.json_response(body)

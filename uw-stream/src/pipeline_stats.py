@@ -21,7 +21,11 @@ Two loops share one ``_Sampled`` accumulator:
   keep (``interval_*``, ``State.receive_queue_hwm``) since the last line. Per
   shard it gives the frame counts, the widest gap between trade frames and the
   silences the connector's ``SocketStats`` counted in the minute
-  (``interval_*``, see ``socket_stats``), under ``sockets``.
+  (``interval_*``, see ``socket_stats``), under ``sockets``. Last comes the
+  ``memory`` object: the process's resident set and the container's memory in
+  MB (null when unreadable) and the size gauges the handlers registered, each
+  read once for the line (see ``memory_stats``). It is a reading, not an
+  interval, so nothing resets and the line carries it every minute.
 
 This task is the only thing that resets an interval field. ``_report`` reads
 them all and builds the line, logs it, and only then moves the baselines and
@@ -49,6 +53,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
 import db
+import memory_stats
 import socket_stats
 from logger_setup import log, rate_limited_log
 from state import HandlerMetrics, state
@@ -57,6 +62,8 @@ from state import HandlerMetrics, state
 SAMPLE_INTERVAL_S = 0.25
 # A lag sample at or over this counts in ``loop_lag_over_1s``.
 LOOP_LAG_FLAG_S = 1.0
+# The line gives memory in MB of 2**20 bytes, as Railway's graph does; /metrics gives bytes.
+_BYTES_PER_MB = 1024 * 1024
 
 
 @dataclass
@@ -169,6 +176,21 @@ def _socket_entry(stats: socket_stats.SocketStats) -> dict[str, int | float]:
     }
 
 
+def _megabytes(size: int | None) -> float | None:
+    """``size`` bytes as MB to one decimal; None stays None, never 0."""
+    return None if size is None else round(size / _BYTES_PER_MB, 1)
+
+
+def _memory_entry() -> dict[str, float | dict[str, int] | None]:
+    """The minute's memory numbers: both readings in MB, and every gauge that read."""
+    reading = memory_stats.snapshot()
+    return {
+        "rss_mb": _megabytes(reading.rss_bytes),
+        "cgroup_mb": _megabytes(reading.cgroup_bytes),
+        "gauges": reading.gauges,
+    }
+
+
 def _report(sampled: _Sampled, reported: _Reported, minute_start: datetime) -> None:
     """Log the line for the minute that began at ``minute_start``, then consume what it read.
 
@@ -199,6 +221,8 @@ def _report(sampled: _Sampled, reported: _Reported, minute_start: datetime) -> N
     # would read as "no data" where its zeros say "nothing arrived".
     shard_stats = socket_stats.all_stats()
     sockets = {name: _socket_entry(stats) for name, stats in shard_stats.items()}
+    # A reading only: it changes nothing, so it belongs to step 1 with the rest.
+    memory = _memory_entry()
 
     log.info(
         "uw-stream pipeline minute",
@@ -213,6 +237,7 @@ def _report(sampled: _Sampled, reported: _Reported, minute_start: datetime) -> N
             "receive_queue_dropped": state.receive_queue_drops - reported.receive_drops,
             "handlers": handlers,
             "sockets": sockets,
+            "memory": memory,
         },
     )
 

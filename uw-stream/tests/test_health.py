@@ -21,10 +21,32 @@ import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
 import handlers.base
+import memory_stats
 import socket_stats
 from config import Settings, settings
 from health import HEALTH_STARTUP_GRACE_S, _is_trading_hours, build_app, healthz, metrics
+from logger_setup import RateLimitedLogger
 from state import state
+
+# What the memory readers return in every test (see ``_isolated_memory``).
+_RSS_BYTES = 123_456_789
+_CGROUP_BYTES = 300_000_000
+
+
+@pytest.fixture(autouse=True)
+def _isolated_memory(monkeypatch):
+    """No gauges and fixed memory readings, so no test depends on the host or on another test.
+
+    ``memory_stats`` keeps its gauge registry in a module-level dict that every
+    handler constructor fills (the tests below build several), and its readers
+    open ``/proc`` and the cgroup, which answer differently on Linux and on
+    Windows. Replacing the registry and the two readers, at the module
+    ``/metrics`` reads them from, pins the ``memory`` object. The readers' own
+    behaviour is in test_memory_stats.py.
+    """
+    monkeypatch.setattr(memory_stats, "_gauges", {})
+    monkeypatch.setattr(memory_stats, "read_rss_bytes", lambda: _RSS_BYTES)
+    monkeypatch.setattr(memory_stats, "read_cgroup_bytes", lambda: _CGROUP_BYTES)
 
 
 @pytest.fixture(autouse=True)
@@ -766,3 +788,113 @@ async def test_metrics_sockets_is_empty_until_a_shard_registers(
     )
 
     assert body["sockets"] == {}
+
+
+# ── /metrics shape: memory ───────────────────────────────────
+
+
+async def _metrics_body() -> dict:
+    return await _read_json(
+        await metrics(_StubRequest({"X-Metrics-Token": _TOKEN}))  # type: ignore[arg-type]
+    )
+
+
+async def test_metrics_reports_memory_in_bytes_with_every_gauge(_restore_metrics_token):
+    """``memory`` carries the process and container readings as raw bytes (the
+    minute line rounds them to MB) and the gauges that read.
+    """
+    settings.internal_metrics_token = _TOKEN
+    memory_stats.register_gauge("option_trades.dedupe_keys", lambda: 160_000)
+    memory_stats.register_gauge("option_trades:SPXW.ticks", lambda: 9_800)
+
+    body = await _metrics_body()
+
+    assert body["memory"] == {
+        "rss_bytes": 123_456_789,
+        "cgroup_bytes": 300_000_000,
+        "gauges": {"option_trades.dedupe_keys": 160_000, "option_trades:SPXW.ticks": 9_800},
+    }
+
+
+async def test_metrics_memory_is_null_not_zero_when_a_reading_is_unavailable(
+    monkeypatch, _restore_metrics_token
+):
+    """Windows, macOS or a container with no cgroup mount: the readers say None,
+    and /metrics must not report that as "0 bytes".
+    """
+    settings.internal_metrics_token = _TOKEN
+    monkeypatch.setattr(memory_stats, "read_rss_bytes", lambda: None)
+    monkeypatch.setattr(memory_stats, "read_cgroup_bytes", lambda: None)
+
+    body = await _metrics_body()
+
+    assert body["memory"] == {"rss_bytes": None, "cgroup_bytes": None, "gauges": {}}
+
+
+async def test_metrics_reads_the_memory_gauges_at_request_time(_restore_metrics_token):
+    """Each request calls the gauges, so two requests see two sizes (not a value
+    cached by the minute reporter).
+    """
+    settings.internal_metrics_token = _TOKEN
+    size = {"keys": 100}
+    memory_stats.register_gauge("option_trades.dedupe_keys", lambda: size["keys"])
+
+    first = await _metrics_body()
+    size["keys"] = 250
+    second = await _metrics_body()
+
+    assert first["memory"]["gauges"] == {"option_trades.dedupe_keys": 100}
+    assert second["memory"]["gauges"] == {"option_trades.dedupe_keys": 250}
+
+
+async def test_a_gauge_that_raises_does_not_fail_the_metrics_request(
+    monkeypatch, _restore_metrics_token, service_log_records
+):
+    """One structure that cannot be sized must not turn /metrics into a 500: the
+    gauge is left out and named in one rate-limited warning.
+    """
+    settings.internal_metrics_token = _TOKEN
+    monkeypatch.setattr(memory_stats, "rate_limited_log", RateLimitedLogger())
+
+    def _broken() -> int:
+        raise RuntimeError("dict changed size during iteration")
+
+    memory_stats.register_gauge("option_trades:SPY.ticks", _broken)
+    memory_stats.register_gauge("option_trades:SPY.chains", lambda: 412)
+
+    resp = await metrics(_StubRequest({"X-Metrics-Token": _TOKEN}))  # type: ignore[arg-type]
+    body = await _read_json(resp)
+
+    assert resp.status == 200
+    assert body["memory"]["gauges"] == {"option_trades:SPY.chains": 412}
+    assert "handlers" in body  # the rest of the body is whole
+    named = [
+        r for r in service_log_records if getattr(r, "gauge", None) == "option_trades:SPY.ticks"
+    ]
+    assert [r.levelname for r in named] == ["WARNING"]
+
+
+async def test_metrics_route_serves_the_memory_object(
+    app_client, _restore_metrics_token, metrics_warnings
+):
+    """Through the app's router, with the header: the body has ``memory``."""
+    settings.internal_metrics_token = _TOKEN
+    memory_stats.register_gauge("option_trades.dedupe_keys", lambda: 7)
+
+    resp = await app_client.get("/metrics", headers={"X-Metrics-Token": _TOKEN})
+
+    assert resp.status == 200
+    assert (await resp.json())["memory"]["gauges"] == {"option_trades.dedupe_keys": 7}
+
+
+async def test_the_unauthorized_metrics_response_carries_no_memory(
+    _restore_metrics_token, metrics_warnings
+):
+    """The 401 body is the bare refusal: a caller without the token learns nothing."""
+    settings.internal_metrics_token = _TOKEN
+    memory_stats.register_gauge("option_trades.dedupe_keys", lambda: 7)
+
+    resp = await metrics(_StubRequest())  # type: ignore[arg-type]
+
+    assert resp.status == 401
+    assert await _read_json(resp) == _UNAUTHORIZED
