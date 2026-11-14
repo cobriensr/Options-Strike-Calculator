@@ -24,6 +24,7 @@ from socket_stats import (
     BUCKETS_PER_S,
     RING_BUCKETS,
     SILENCE_S,
+    TRADE_FRAME_MIN_LEN,
     TWIN_MIN_FRAMES,
     SocketStats,
     twin_map,
@@ -31,8 +32,16 @@ from socket_stats import (
 
 _B = 1000.0
 
-TRADE = '["option_trades:SPY",{"id":"a","price":"1.05"}]'
+# A real option_trades frame, compact JSON as UW sends it: about 340 characters.
+TRADE = (
+    '["option_trades:SPY",{"id":"8f8a2c3b-1234-4567-89ab-cdef01234567","underlying_symbol":"SPY",'
+    '"option_chain":"SPY261113C00600000","executed_at":1777663500000,"price":"0.55","size":25,'
+    '"underlying_price":"600.85","implied_volatility":"0.412","delta":"0.182","open_interest":1450,'
+    '"canceled":false,"exchange":"BATS","tags":["ask_side","bullish"]}]'
+)
 TRADE_BYTES = TRADE.encode()
+# The server's join ack for the same channel family: 52 characters, same prefix.
+ACK = '["option_trades:SPXW",{"response":{},"status":"ok"}]'
 OTHER = '["flow-alerts",{"id":"b"}]'
 
 # The production WS_CHANNELS (README "Channels"), so the layout test sees the
@@ -198,6 +207,44 @@ class TestFrameCounting:
         assert (s.interval_frames, s.interval_trade_frames) == (1, 0)
         assert s.last_trade_at is None
 
+    def test_the_length_floor_sits_between_a_join_ack_and_a_trade_frame(self):
+        assert len(ACK) < TRADE_FRAME_MIN_LEN <= len(TRADE)
+        assert TRADE_FRAME_MIN_LEN == 100
+
+    @pytest.mark.parametrize("raw", [ACK, ACK.encode()], ids=["str", "bytes"])
+    def test_a_join_ack_counts_as_a_frame_but_not_a_trade_frame(self, raw):
+        s = SocketStats("conn0")
+
+        s.on_frame(raw, _B)
+
+        assert (s.frames, s.trade_frames) == (1, 0)
+        assert (s.interval_frames, s.interval_trade_frames) == (1, 0)
+        assert s.last_trade_at is None
+
+    @pytest.mark.parametrize("ack", [ACK, ACK.encode()], ids=["str", "bytes"])
+    def test_a_join_ack_does_not_move_last_trade_at_or_end_a_gap(self, ack):
+        s = SocketStats("conn0")
+        s.on_frame(TRADE, _B + 0.25)
+
+        s.on_frame(ack, _B + 0.95)
+
+        assert s.last_trade_at == _B + 0.25
+        assert s.interval_max_trade_gap_s == 0.0
+        assert s.silences == 0
+
+    @pytest.mark.parametrize("as_bytes", [False, True])
+    def test_a_frame_at_the_length_floor_is_a_trade_frame_and_one_below_is_not(self, as_bytes):
+        head, tail = '["option_trades:SPY",{"x":"', '"}]'
+        at_floor = head + "a" * (TRADE_FRAME_MIN_LEN - len(head) - len(tail)) + tail
+        below_floor = at_floor[:-4] + tail
+        assert (len(at_floor), len(below_floor)) == (TRADE_FRAME_MIN_LEN, TRADE_FRAME_MIN_LEN - 1)
+        s = SocketStats("conn0")
+
+        for raw in (below_floor, at_floor):
+            s.on_frame(raw.encode() if as_bytes else raw, _B)
+
+        assert (s.frames, s.trade_frames) == (2, 1)
+
     def test_a_non_trade_frame_does_not_start_or_end_a_gap(self):
         s = SocketStats("conn0")
         s.on_frame(TRADE, _B + 0.05)
@@ -264,6 +311,21 @@ class TestGaps:
 
         assert b.trade_frames == 15
         assert len(_warnings(rl)) == 1
+
+    def test_join_acks_before_the_first_trade_of_a_reconnect_do_not_read_as_a_silence(self, pair):
+        a, b = pair
+        # The twin streams through the 0.6 s between the acks and the first trade.
+        _feed(b, _spread(_B + 0.15, 15))
+
+        a.session_start()
+        with patch.object(socket_stats, "rate_limited_log") as rl:
+            _feed(a, [_B + 0.05, _B + 0.06, _B + 0.07], raw=ACK)
+            a.on_frame(TRADE, _B + 0.65)
+
+        rl.warning.assert_not_called()
+        assert a.silences == 0
+        assert a.interval_max_trade_gap_s == 0.0
+        assert a.last_trade_at == _B + 0.65
 
     def test_a_gap_just_under_the_threshold_is_not_a_silence(self):
         s = SocketStats("conn0")

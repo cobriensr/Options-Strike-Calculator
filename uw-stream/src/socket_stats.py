@@ -10,8 +10,10 @@ went quiet.
 The connector calls ``SocketStats.on_frame(raw, now)`` for every frame, with the
 monotonic ``now`` its receive loop already reads, and ``session_start()`` once
 per connection. Per frame that is integer bumps, one prefix test and, for a
-trade frame, one slot update in a ring of 0.1 s buckets. Nothing awaits, nothing
-logs and nothing reads the clock.
+trade frame, a length check and one slot update in a ring of 0.1 s buckets.
+Nothing awaits, nothing logs and nothing reads the clock. A trade frame is a
+frame for an ``option_trades:`` channel that is long enough to carry a print: the
+join acks have the same prefix and do not count (see ``TRADE_FRAME_MIN_LEN``).
 
 A *silence* is a gap of at least ``SILENCE_S`` between two trade frames on one
 socket. When the socket has a twin that received ``TWIN_MIN_FRAMES`` or more
@@ -59,6 +61,14 @@ _CHANNEL_PREFIX = "option_trades:"
 # 2-element envelope ``["option_trades:SPY", {...}]``.
 _TRADE_PREFIX = '["' + _CHANNEL_PREFIX
 _TRADE_PREFIX_BYTES = _TRADE_PREFIX.encode()
+# The server's join ack for an option_trades channel,
+# ``["option_trades:SPXW",{"response":{},"status":"ok"}]``, has the same prefix
+# but is about 50 to 60 characters. A real trade frame carries the whole print
+# (id, chain, price, size, greeks, tags) and is about 300 or more. Acks arrive in
+# a burst of up to 45 right after every connect, so counting them as trades would
+# start a gap there and read the quiet before the first real trade as a silence.
+# Checking the length is O(1); a frame must reach this many characters to count.
+TRADE_FRAME_MIN_LEN = 100
 
 
 class SocketStats:
@@ -106,9 +116,9 @@ class SocketStats:
         self.frames += 1
         self.interval_frames += 1
         if isinstance(raw, str):
-            if not raw.startswith(_TRADE_PREFIX):
+            if not raw.startswith(_TRADE_PREFIX) or len(raw) < TRADE_FRAME_MIN_LEN:
                 return
-        elif not raw.startswith(_TRADE_PREFIX_BYTES):
+        elif not raw.startswith(_TRADE_PREFIX_BYTES) or len(raw) < TRADE_FRAME_MIN_LEN:
             return
         self.trade_frames += 1
         self.interval_trade_frames += 1

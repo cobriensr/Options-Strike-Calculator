@@ -1702,7 +1702,11 @@ async def test_a_shutdown_cancel_during_the_receive_loop_finally_is_not_swallowe
 
 # --- per-socket stats (socket_stats) -----------------------------------------
 
-_TRADE_FRAME = '["option_trades:SPY",{"id":"a"}]'
+# A trade frame as long as UW's real ones (socket_stats ignores short, ack-sized frames).
+_TRADE_FRAME = (
+    '["option_trades:SPY",{"id":"8f8a2c3b-1234-4567-89ab-cdef01234567","underlying_symbol":"SPY",'
+    '"option_chain":"SPY261113C00600000","executed_at":1777663500000,"price":"0.55","size":25}]'
+)
 _OTHER_FRAME = '["flow-alerts",{"id":"b"}]'
 
 
