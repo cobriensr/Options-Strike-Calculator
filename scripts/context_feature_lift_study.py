@@ -387,7 +387,7 @@ def build_report(results: list[FeatureResult], n_total: int) -> str:
             "2. Add weight array `[w0, w1, w2, w3, w4]` for each quintile bucket"
         )
         lines.append(
-            "3. Update `computeLotteryScoreV2` in `api/_lib/lottery-score-weights.ts`"
+            "3. Update `scoreLotteryV2` in `api/_lib/lottery-score-weights-v2.ts`"
         )
         lines.append("4. Re-backfill scores")
         lines.append("5. Compare tier1 hit rate on held-out window (≥3pp improvement gate)")

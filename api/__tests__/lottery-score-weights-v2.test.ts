@@ -12,9 +12,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
   assignQuintile,
-  computeLotteryScoreV2,
   isAlignedFire,
-  LOTTERY_TIER_THRESHOLDS_V2,
   lotteryScoreTierV2,
   scoreLotteryV2,
   weekdayOf,
@@ -1037,30 +1035,6 @@ describe('the seed', () => {
   it('holds 85 tickers and 7 composites', () => {
     expect(Object.keys(FEATURES.ticker_weights)).toHaveLength(85);
     expect(FEATURES.composite_bonuses).toHaveLength(7);
-  });
-});
-
-describe('the deprecated seed wrappers (Task 5 deletes them)', () => {
-  it('computeLotteryScoreV2 scores with the seed', () => {
-    const args: LotteryScoreInput = {
-      ticker: 'RKLB',
-      tod: 'AM_open',
-      dte: 0,
-      volOiWindow: 0.2,
-      gammaAtTrigger: 0.018,
-      triggerAskPct: 0.7,
-      optionType: 'P',
-      isAligned: true,
-      dayOfWeek: 'Monday',
-    };
-    expect(computeLotteryScoreV2(args)).toBe(
-      scoreLotteryV2(SEED_LOTTERY_WEIGHTS, args),
-    );
-    expect(computeLotteryScoreV2({ ...args, isAligned: false })).toBeNull();
-  });
-
-  it('LOTTERY_TIER_THRESHOLDS_V2 is the seed cutoffs', () => {
-    expect(LOTTERY_TIER_THRESHOLDS_V2).toBe(SEED_LOTTERY_WEIGHTS.cutoffs);
   });
 });
 

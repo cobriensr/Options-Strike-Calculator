@@ -3164,6 +3164,51 @@ describe('detect-lottery-fires handler', () => {
       expect(binds.get('score_version')).toBe(REFIT);
     });
 
+    it('hands Take-It a null score when only its pinned version gates the fire, and the feed keeps the active score', async () => {
+      // The pinned version has no weight for DTE 0, the fixture fire's DTE, so
+      // it scores the fire null (out of its scoring universe). The active
+      // version is the seed and still scores it.
+      const pinned = {
+        version: 'pinned-no-dte0',
+        weights: seedWeightsWith((w) => {
+          delete (
+            w.features.dte_weights as Partial<
+              LotteryWeights['features']['dte_weights']
+            >
+          )['0'];
+        }),
+      };
+      mockLoadLotteryWeights.mockResolvedValue(
+        loadedWeights({ takeit: pinned }),
+      );
+      stageTicks(fireableSndkStream());
+      router.on('flowSeries', ALIGNED_CALL_FLOW);
+      router.on('insert', [{ id: 42 }]);
+
+      const res = mockResponse();
+      await handler(authorizedReq(), res);
+
+      // Two versions, two scorings: active first, then the pinned one.
+      expect(mockScoreLotteryV2.calls).toHaveLength(2);
+      expect(mockScoreLotteryV2.calls[0]!.weights).toBe(SEED_LOTTERY_WEIGHTS);
+      expect(mockScoreLotteryV2.calls[1]!.weights).toBe(pinned.weights);
+      // Take-It got the pinned version's null, not the feed's integer.
+      expect(takeitScoresSeen()).toEqual([null]);
+      // The feed row carries the active version's integer and its version.
+      const binds = extractInsertBinds(mockSql, 'lottery_finder_fires');
+      expect(Number.isInteger(binds.get('score'))).toBe(true);
+      expect(binds.get('score_version')).toBe(SEED_LOTTERY_WEIGHTS_VERSION);
+      // A null Take-It input is not a failure: the run is as clean as one
+      // where both versions score the fire.
+      expect(res._status).toBe(200);
+      expect(res._json).toMatchObject({
+        status: 'success',
+        inserted: 1,
+        weightsFallback: null,
+        takeitScoreFailures: 0,
+      });
+    });
+
     it('scores once per fire when the active and pinned versions are the same', async () => {
       stageTicks([
         ...fireableSndkStream(),

@@ -8,13 +8,12 @@
  * `lottery_score_versions` in Neon (D5), parsed with `LotteryWeightsSchema`
  * before it gets here, and `scoreLotteryV2(weights, fire)` sums what the
  * object says. The first version, `seed-2026-06-17`, is the frozen constants
- * this file used to generate (`lottery-weights-seed.ts`). The deprecated
- * wrappers at the bottom score with it until the cron loads a version from the
- * store.
+ * this file used to generate (`lottery-weights-seed.ts`). The cron loads the
+ * active and Take-It versions from the store (`lottery-weights-loader.ts`) and
+ * falls back to the seed when the store has no row.
  */
 
 import type { LotteryWeights, TimeOfDay } from './lottery-weights-schema.js';
-import { SEED_LOTTERY_WEIGHTS } from './lottery-weights-seed.js';
 
 // ---------------------------------------------------------------------------
 // Input
@@ -232,23 +231,3 @@ export function lotteryScoreTierV2(
   if (score >= cutoffs.t2) return 'tier2';
   return 'tier3';
 }
-
-// ---------------------------------------------------------------------------
-// Deprecated: score with the frozen seed
-// ---------------------------------------------------------------------------
-
-/**
- * @deprecated Scores with the frozen seed, not the active version. Kept only
- * so `detect-lottery-fires.ts` compiles; Task 5 moves the cron onto
- * `scoreLotteryV2` with the weights loaded from the store, then deletes this.
- */
-export function computeLotteryScoreV2(args: LotteryScoreInput): number | null {
-  return scoreLotteryV2(SEED_LOTTERY_WEIGHTS, args);
-}
-
-/**
- * @deprecated The seed's cutoffs, not the active version's. Task 5 deletes
- * it; the cluster bonus then reads `active.weights.cutoffs.t1`.
- */
-export const LOTTERY_TIER_THRESHOLDS_V2: LotteryWeights['cutoffs'] =
-  SEED_LOTTERY_WEIGHTS.cutoffs;
