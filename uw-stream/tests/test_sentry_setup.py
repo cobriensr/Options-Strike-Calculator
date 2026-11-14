@@ -319,6 +319,92 @@ class TestLoggingIntegration:
         assert event["message"] == "uw-stream reconnect storm"
         assert event["level"] == "warning"
 
+    def test_an_error_capture_message_files_one_event_not_two(self, sdk_transport):
+        """The storm alert is level ``error``. Its own log line is then an ERROR record,
+        and the SDK's default would turn that record into a second event beside the capture.
+        ``event_level=None`` keeps it a breadcrumb, so a storm files one issue event."""
+        sentry_setup.capture_message(
+            "uw-stream reconnect storm",
+            level="error",
+            tags={"component": "connector"},
+            context={"reconnects_last_hour": 41, "threshold": 40},
+        )
+
+        (event,) = sdk_transport.events()
+        assert event["message"] == "uw-stream reconnect storm"
+        assert event["level"] == "error"
+        assert [(c["level"], c["message"]) for c in event["breadcrumbs"]["values"]] == [
+            (
+                "error",
+                "uw-stream reconnect storm (context={'reconnects_last_hour': 41, 'threshold': 40})",
+            )
+        ]
+
+
+class _ServiceLogRecords(logging.Handler):
+    def __init__(self) -> None:
+        super().__init__(level=logging.DEBUG)
+        self.records: list[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(record)
+
+
+@pytest.fixture
+def service_log_records(monkeypatch) -> Iterator[list[logging.LogRecord]]:
+    """The records the service logger emits (it does not propagate, so caplog misses them).
+
+    The SDK is off: these tests are about the helper's own log line.
+    """
+    monkeypatch.setattr(sentry_setup, "_sentry_enabled", False)
+    collector = _ServiceLogRecords()
+    previous_level = log.level
+    log.addHandler(collector)
+    log.setLevel(logging.DEBUG)
+    try:
+        yield collector.records
+    finally:
+        log.removeHandler(collector)
+        log.setLevel(previous_level)
+
+
+class TestCaptureMessageLogLine:
+    """``capture_message`` logs one line, at the level the capture is filed at.
+
+    It always logged at WARNING, so an ``error`` event showed in Railway as a warning.
+    A level it does not know logs at WARNING, the level it always had, and never raises:
+    a monitoring helper must not take down the caller that is reporting a problem.
+    """
+
+    @pytest.mark.parametrize(
+        ("level", "expected"),
+        [
+            ("debug", logging.DEBUG),
+            ("info", logging.INFO),
+            ("warning", logging.WARNING),
+            ("error", logging.ERROR),
+            ("critical", logging.CRITICAL),
+            ("fatal", logging.CRITICAL),
+            ("shouting", logging.WARNING),
+        ],
+    )
+    @pytest.mark.parametrize("context", [None, {"threshold": 40}])
+    def test_the_line_is_logged_at_the_level_asked_for(
+        self, service_log_records, level, expected, context
+    ):
+        sentry_setup.capture_message("uw-stream reconnect storm", level=level, context=context)
+
+        (record,) = service_log_records
+        assert record.levelno == expected
+        shown = "uw-stream reconnect storm"
+        assert record.getMessage() == (f"{shown} (context={context})" if context else shown)
+
+    def test_the_default_level_still_logs_at_warning(self, service_log_records):
+        sentry_setup.capture_message("uw-stream channels stuck unsubscribed")
+
+        (record,) = service_log_records
+        assert record.levelno == logging.WARNING
+
 
 def _log_error_from(logger_name: str, message: str) -> None:
     """Log at ERROR with the active exception, as the library call sites do."""

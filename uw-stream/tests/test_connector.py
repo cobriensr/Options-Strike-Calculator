@@ -574,14 +574,14 @@ def test_a_reconnect_storm_alerts_once_not_once_per_reconnect(storm) -> None:
     assert [msg for msg, _ in storm.captured] == ["uw-stream reconnect storm"]
 
 
-def test_the_storm_alert_is_a_warning_with_the_count_and_threshold(storm) -> None:
+def test_the_storm_alert_is_an_error_with_the_count_and_threshold(storm) -> None:
     storm.reconnects(storm.threshold + 2)
 
     storm.connector._maybe_alert_storm()
 
     ((msg, kwargs),) = storm.captured
     assert msg == "uw-stream reconnect storm"
-    assert kwargs["level"] == "warning"
+    assert kwargs["level"] == "error"
     assert kwargs["tags"] == {"component": "connector"}
     assert kwargs["context"] == {
         "reconnects_last_hour": storm.threshold + 2,
@@ -1896,18 +1896,20 @@ async def _connect_shard(
     channels: list[str],
     replies: dict[str, Any] | None = None,
     name: str = "conn0",
+    until: Callable[[], bool] | None = None,
 ) -> None:
     """Run the real ``_connect_once`` of one shard until it has logged its join line.
 
     Acks and refusals travel the real path: the session's receive loop, the shard's
     receive queue, and a running ``Router``, which sets the ``subscribed`` flags the
-    connector reads.
+    connector reads. ``until`` ends the session on a condition of the test's own
+    instead, for a session that ends before the join line is due.
     """
     import connector as connector_mod
 
     queue: asyncio.Queue = asyncio.Queue(maxsize=100)
     connector = Connector(channels=channels, receive_queue=queue, name=name)
-    ws = _JoinReplyWS(replies or {}, until=lambda: bool(_join_lines(records, name)))
+    ws = _JoinReplyWS(replies or {}, until=until or (lambda: bool(_join_lines(records, name))))
     monkeypatch.setattr(connector_mod.websockets, "connect", lambda *_a, **_k: _ConnectCtx(ws))
     router_task = asyncio.create_task(Router({ch: _SinkHandler() for ch in channels}).run(queue))
     try:
@@ -2028,4 +2030,91 @@ async def test_a_drop_before_the_wait_ends_logs_no_summary_and_leaves_no_task(
     await connector._connect_once()
 
     assert _join_lines(connector_records, "conn0") == []
-    assert [t.get_name() for t in asyncio.all_tasks() if t.get_name().startswith("join")] == []
+    assert _join_summary_tasks() == []
+
+
+def _join_summary_tasks() -> list[asyncio.Task]:
+    return [t for t in asyncio.all_tasks() if t.get_name().startswith("join-summary:")]
+
+
+def _true_after(seconds: float) -> Callable[[], bool]:
+    """A condition that turns true ``seconds`` after it is first asked."""
+    first_asked: list[float] = []
+
+    def holds() -> bool:
+        now = asyncio.get_running_loop().time()
+        if not first_asked:
+            first_asked.append(now)
+        return now - first_asked[0] >= seconds
+
+    return holds
+
+
+@pytest.mark.asyncio
+async def test_a_drop_while_the_summary_task_waits_logs_no_summary_and_leaves_no_task(
+    monkeypatch, connector_records, short_join_wait
+) -> None:
+    """The session ends with ``_report_join`` asleep in its poll, 0.05 s into a 0.2 s wait.
+
+    The test above ends the session before the task runs its first step, so the cancel
+    never reaches a sleep inside ``_report_join``. Here it does: that cancel must end the
+    task, not turn into a join line for a wait that never finished. The pause afterwards
+    is longer than the wait, so a task that outlived the session would have logged by now.
+    """
+    channels = ["flow-alerts", "net_flow:SPY"]
+
+    await _connect_shard(
+        monkeypatch,
+        connector_records,
+        channels,
+        replies={"net_flow:SPY": None},
+        until=_true_after(0.05),
+    )
+    await asyncio.sleep(short_join_wait + 0.1)
+
+    assert _join_lines(connector_records, "conn0") == []
+    assert _join_summary_tasks() == []
+
+
+@pytest.mark.asyncio
+async def test_an_outer_cancel_while_the_summary_task_waits_logs_no_summary_and_leaves_no_task(
+    monkeypatch, connector_records, short_join_wait
+) -> None:
+    """A shutdown cancel of the connection while its summary task waits.
+
+    The cancel must still propagate, since ``_connect_once`` swallowing it would keep the
+    connector reconnecting instead of stopping, and the summary task must end cancelled,
+    having logged nothing.
+    """
+    import connector as connector_mod
+
+    connector = Connector(
+        channels=["flow-alerts", "net_flow:SPY"],
+        receive_queue=asyncio.Queue(maxsize=100),
+        name="conn0",
+    )
+    # The session never ends by itself, and one join is never answered.
+    ws = _JoinReplyWS({"net_flow:SPY": None}, until=lambda: False)
+    monkeypatch.setattr(connector_mod.websockets, "connect", lambda *_a, **_k: _ConnectCtx(ws))
+    session = asyncio.create_task(connector._connect_once())
+    try:
+        async with asyncio.timeout(2.0):
+            while not (tasks := _join_summary_tasks()):
+                await asyncio.sleep(0.005)
+        (join_task,) = tasks
+        await asyncio.sleep(0.05)
+        # The precondition: the task is mid-wait, with its line not yet due.
+        assert not join_task.done()
+        assert _join_lines(connector_records, "conn0") == []
+
+        session.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await session
+    finally:
+        session.cancel()
+        await asyncio.gather(session, return_exceptions=True)
+    await asyncio.sleep(short_join_wait + 0.1)
+
+    assert _join_lines(connector_records, "conn0") == []
+    assert _join_summary_tasks() == []
+    assert join_task.cancelled()

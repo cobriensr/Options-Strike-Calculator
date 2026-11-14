@@ -234,6 +234,18 @@ def capture_exception(
         log.error("Failed to forward exception to Sentry: %s", inner)
 
 
+# The stdlib level of ``capture_message``'s own log line, by the Sentry level the
+# event is filed at.
+_MESSAGE_LOG_LEVELS = {
+    "debug": logging.DEBUG,
+    "info": logging.INFO,
+    "warning": logging.WARNING,
+    "error": logging.ERROR,
+    "critical": logging.CRITICAL,
+    "fatal": logging.CRITICAL,
+}
+
+
 def capture_message(
     message: str,
     *,
@@ -241,11 +253,20 @@ def capture_message(
     context: dict[str, Any] | None = None,
     tags: dict[str, str] | None = None,
 ) -> None:
-    """Report a non-exception event to Sentry and the structured log."""
+    """Report a non-exception event to Sentry and the structured log.
+
+    The log line is at the level the event is filed at, so an ``error`` capture
+    is an ERROR line in Railway's logs. Before 2026-11-14 it was always a WARNING.
+    An ERROR line files no second event: ``init_sentry`` sets
+    ``event_level=None``, so the line is a breadcrumb on the capture. A ``level``
+    outside ``_MESSAGE_LOG_LEVELS`` logs at WARNING, as the line always did, and
+    does not raise: a reporting helper must not fail the caller that is reporting.
+    """
+    log_level = _MESSAGE_LOG_LEVELS.get(level, logging.WARNING)
     if context:
-        log.warning("%s (context=%s)", message, context)
+        log.log(log_level, "%s (context=%s)", message, context)
     else:
-        log.warning("%s", message)
+        log.log(log_level, "%s", message)
 
     if not _sentry_enabled:
         return

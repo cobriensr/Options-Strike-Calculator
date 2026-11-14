@@ -646,7 +646,7 @@ class Connector:
         }
 
     def _maybe_alert_storm(self) -> None:
-        """Raise a Sentry warning if reconnects pile up in the last hour.
+        """Raise a Sentry error if reconnects pile up in the last hour.
 
         ``reconnects_last_hour`` is process-global, so with N sharded
         connections it counts reconnects across ALL shards. Scale the threshold
@@ -669,7 +669,7 @@ class Connector:
         state.storm_alerted_at = now
         capture_message(
             "uw-stream reconnect storm",
-            level="warning",
+            level="error",
             tags={"component": "connector"},
             context={"reconnects_last_hour": count, "threshold": threshold},
         )
