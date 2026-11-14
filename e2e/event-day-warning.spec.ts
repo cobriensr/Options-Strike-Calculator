@@ -281,11 +281,15 @@ test.describe('Event Day Warning', () => {
   });
 
   // 23:30 CST on Friday 2026-11-13 is already 00:30 on the 14th in New York.
-  // The app's date defaults to the Central date, and from then until midnight
-  // CT that date is a past one by the ET clock, so it looks up its own events
-  // as soon as the page loads. Only a lookup for the 13th is answered, so this
-  // fails whenever `centralDate` returns the Eastern date. How many lookups the
-  // page makes in this hour is not what is under test.
+  // The app's date defaults to the Central date, and from 23:00 to midnight CT
+  // that date is before ET today. The forward list starts at ET today
+  // (api/events.ts), and so does the hook's range while that list loads
+  // (useEventsForDate), so the date is outside both and the page looks up its
+  // own events at mount, rightly: the list never covers it. Only a lookup for
+  // the 13th is answered, so this fails whenever `centralDate` returns the
+  // Eastern date. The lookup count is not asserted: the dev server's
+  // StrictMode runs a mount-time fetch twice (the forward list too, 12 ms
+  // apart), so two lookups here are one in production.
   test('the date and its lookup are the Central date when the Eastern date has rolled over', async ({
     page,
   }) => {
