@@ -9,8 +9,11 @@ quintiles are right-closed: a value on a boundary goes to the lower bucket.
 
 ``rescore_all`` runs one transaction:
 
-1. For a promotion (``expect_active`` set), it locks the ``active`` pointer row
-   with ``FOR UPDATE`` and checks that it still names ``expect_active``.
+1. It checks the ``active`` pointer first. A promotion (``expect_active`` set)
+   locks the row ``FOR UPDATE`` and needs it to name ``expect_active``. A
+   pinned rescore (``pin_active``: the CLI rescoring with the active version)
+   locks it ``FOR SHARE`` and needs it to name ``to_version``. The two locks
+   conflict, so a promotion and a pinned rescore run one after the other.
 2. It reads the fires in keyset pages of ``PAGE_ROWS`` by id and scores each
    page. A fire changes when its new score differs from ``score`` or its
    ``score_version`` is not ``to_version``. Fires scored before the store
@@ -18,9 +21,10 @@ quintiles are right-closed: a value on a boundary goes to the lower bucket.
    fire.
 3. For each page with a change, it writes one ``lottery_fire_value_snapshots``
    row (the ids, old scores and old tags), then UPDATEs of ``WRITE_ROWS`` rows.
-   An UPDATE writes a fire only while its score still equals the one this run
-   read, and returns the ids it wrote. Fewer ids than the batch means another
-   writer changed a score in between: ``ConcurrentScoreWriter``.
+   An UPDATE writes a fire only while its score and score_version still equal
+   the ones this run read, and returns the ids it wrote. Fewer ids than the
+   batch means another writer changed one of them in between:
+   ``ConcurrentScoreWriter``. So the snapshot holds exactly what was replaced.
 4. For a promotion, it marks the version ``promoted`` and moves the ``active``
    pointer to it.
 
@@ -43,6 +47,14 @@ CLI (a dry run unless --write is given; it never moves a pointer):
     --version  a stored version to score with (default: the one `active` names)
     --reason   the snapshot rows' reason (default: manual)
     --write    write the scores; without it, read every fire and write nothing
+
+Without --version it scores with the version ``active`` names and pins it. If
+a promotion moves the pointer between the CLI's read and its rescore, the
+rescore stops with ``PointerMoved`` and writes nothing. An explicit --version
+is not pinned. It names the scores wanted whatever the pointer says (a restore
+or a reshape), so it need not be the active one. If it overlaps a promotion,
+the UPDATE guard stops one of the two and rolls it back, so the fires never end
+up half one version and half the other.
 
 It connects to DATABASE_URL_UNPOOLED, or DATABASE_URL, from the environment or
 .env.local. That is the production database.
@@ -90,7 +102,8 @@ WRITE_ROWS = 500
 _REASON = re.compile(r'[a-z][a-z0-9-]{1,40}')
 
 _ACTIVE_SQL = "SELECT version FROM lottery_score_pointers WHERE name = 'active'"
-_ACTIVE_LOCK_SQL = _ACTIVE_SQL + ' FOR UPDATE'
+_ACTIVE_FOR_UPDATE_SQL = _ACTIVE_SQL + ' FOR UPDATE'
+_ACTIVE_FOR_SHARE_SQL = _ACTIVE_SQL + ' FOR SHARE'
 _PAGE_SQL = (
     f"SELECT id, score, score_version, {', '.join(SCORE_COLUMNS)} "
     'FROM lottery_finder_fires WHERE id > %s ORDER BY id LIMIT %s'
@@ -103,11 +116,12 @@ _SNAPSHOT_SQL = (
 _UPDATE_SQL = (
     'UPDATE lottery_finder_fires AS f '
     'SET score = v.score, score_version = v.ver '
-    'FROM (VALUES %s) AS v(id, score, ver, old) '
+    'FROM (VALUES %s) AS v(id, score, ver, old, old_ver) '
     'WHERE f.id = v.id AND f.score IS NOT DISTINCT FROM v.old '
+    'AND f.score_version IS NOT DISTINCT FROM v.old_ver '
     'RETURNING f.id'
 )
-_UPDATE_ROW = '(%s::bigint, %s::int, %s::text, %s::int)'
+_UPDATE_ROW = '(%s::bigint, %s::int, %s::text, %s::int, %s::text)'
 _PROMOTE_SQL = (
     "UPDATE lottery_score_versions SET status = 'promoted', decided_at = now() "
     "WHERE version = %s AND status IN ('shadow', 'passed') RETURNING version"
@@ -120,12 +134,14 @@ _VERSION_SQL = 'SELECT weights FROM lottery_score_versions WHERE version = %s'
 
 
 class PointerMoved(RuntimeError):
-    """The store no longer matches the promotion: the ``active`` pointer names
-    another version, or the version is no longer a shadow or passed candidate."""
+    """The ``active`` pointer does not name the version this run needs (a
+    promotion's ``expect_active``, a pinned rescore's ``to_version``), or the
+    version to promote is no longer a shadow or passed candidate."""
 
 
 class ConcurrentScoreWriter(RuntimeError):
-    """Another writer changed a fire's score after this rescore read it."""
+    """Another writer changed a fire's score or score_version after this
+    rescore read it."""
 
 
 class RescoreDeadline(RuntimeError):
@@ -167,6 +183,7 @@ def rescore_all(
     expect_active: str | None,
     dry_run: bool,
     deadline: float | None = None,
+    pin_active: bool = False,
 ) -> RescoreResult:
     """Rescore every fire with ``weights``, tagged ``to_version``, in one
     transaction (the module docstring has the steps).
@@ -175,18 +192,22 @@ def rescore_all(
     idle). Its autocommit setting is restored on return. ``reason`` goes on the
     snapshot rows. With ``expect_active`` set, this is a promotion: the
     ``active`` pointer must name ``expect_active`` and ``to_version`` must be a
-    shadow or passed candidate, else ``PointerMoved``. ``deadline`` is a
+    shadow or passed candidate, else ``PointerMoved``. With ``pin_active``, the
+    ``active`` pointer must name ``to_version`` and cannot move until this
+    commits, else ``PointerMoved``; the two are exclusive. ``deadline`` is a
     ``time.monotonic()`` value, checked before each page and each UPDATE.
 
     ``dry_run`` runs the same reads in a READ ONLY transaction, takes no lock,
     and returns the counts the write would give, with ``pointer_moved`` False.
 
-    The reason and the weights are checked before any statement: ``ValueError``
-    and ``WeightsInvalid``. Any later exception rolls everything back and
+    The arguments are checked before any statement: ``ValueError`` and
+    ``WeightsInvalid``. Any later exception rolls everything back and
     propagates.
     """
     if not _REASON.fullmatch(reason):
         raise ValueError(f'reason must match {_REASON.pattern}')
+    if pin_active and expect_active is not None:
+        raise ValueError('pin_active and expect_active are mutually exclusive')
     validate_weights(weights)
     previous = conn.autocommit
     # Outside the try: psycopg2 refuses this inside an open transaction, and a
@@ -197,8 +218,23 @@ def rescore_all(
             if dry_run:
                 # Postgres then refuses any write.
                 cur.execute('SET TRANSACTION READ ONLY')
+            # A READ ONLY transaction refuses FOR UPDATE and FOR SHARE, so the
+            # dry run checks the pointer without a lock.
             if expect_active is not None:
-                _check_active(cur, expect_active, lock=not dry_run)
+                # Nothing else may move or pin the pointer until this commits.
+                _check_active(
+                    cur,
+                    expect_active,
+                    _ACTIVE_SQL if dry_run else _ACTIVE_FOR_UPDATE_SQL,
+                )
+            elif pin_active:
+                # Nothing may move the pointer until this commits. A promotion's
+                # FOR UPDATE waits for this lock, and this waits for that one.
+                _check_active(
+                    cur,
+                    to_version,
+                    _ACTIVE_SQL if dry_run else _ACTIVE_FOR_SHARE_SQL,
+                )
             result = _rescore_pages(
                 cur,
                 to_version=to_version,
@@ -231,12 +267,12 @@ def _check_deadline(deadline: float | None, before: str) -> None:
         raise RescoreDeadline(f'the deadline passed before {before}')
 
 
-def _check_active(cur: Any, expect_active: str, *, lock: bool) -> None:
-    cur.execute(_ACTIVE_LOCK_SQL if lock else _ACTIVE_SQL)
+def _check_active(cur: Any, expected: str, sql: str) -> None:
+    cur.execute(sql)
     row = cur.fetchone()
     found = None if row is None else row[0]
-    if found != expect_active:
-        raise PointerMoved(f'the active pointer names {found}, not {expect_active}')
+    if found != expected:
+        raise PointerMoved(f'the active pointer names {found}, not {expected}')
 
 
 def _rescore_pages(
@@ -321,7 +357,7 @@ def _write_page(
         returned = execute_values(
             cur,
             _UPDATE_SQL,
-            [(c.id, c.score, to_version, c.old) for c in batch],
+            [(c.id, c.score, to_version, c.old, c.old_tag) for c in batch],
             template=_UPDATE_ROW,
             page_size=len(batch),  # one statement, so RETURNING is this batch's
             fetch=True,
@@ -329,7 +365,8 @@ def _write_page(
         if len(returned) < len(batch):
             raise ConcurrentScoreWriter(
                 f'{len(batch) - len(returned)} of {len(batch)} fires in a write '
-                'batch changed score after this rescore read them'
+                'batch changed score or score_version after this rescore read '
+                'them'
             )
         written += len(returned)
     return written
@@ -378,7 +415,10 @@ def main(argv: Sequence[str] | None = None) -> None:
     )
     parser.add_argument(
         '--version',
-        help="a stored version to score with (default: the one 'active' names)",
+        help=(
+            "a stored version to score with, not pinned (default: the one "
+            "'active' names, pinned for the run)"
+        ),
     )
     parser.add_argument(
         '--reason',
@@ -414,14 +454,23 @@ def main(argv: Sequence[str] | None = None) -> None:
             version, weights = _load_version(conn, args.version)
         except (LookupError, WeightsInvalid) as exc:
             sys.exit(f'[rescore] {exc}')
-        result = rescore_all(
-            conn,
-            to_version=version,
-            weights=weights,
-            reason=args.reason,
-            expect_active=None,
-            dry_run=not args.write,
-        )
+        try:
+            result = rescore_all(
+                conn,
+                to_version=version,
+                weights=weights,
+                reason=args.reason,
+                expect_active=None,
+                dry_run=not args.write,
+                # The module docstring says why an explicit --version is not
+                # pinned.
+                pin_active=args.version is None,
+            )
+        except (PointerMoved, ConcurrentScoreWriter) as exc:
+            sys.exit(
+                f'[rescore] {type(exc).__name__}: {exc}. Rolled back, nothing '
+                'written.'
+            )
     finally:
         conn.close()
 

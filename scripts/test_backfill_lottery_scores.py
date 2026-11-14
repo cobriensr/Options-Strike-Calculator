@@ -270,6 +270,10 @@ class FakeDb:
 
     def _active(self, state, text, params, rows):
         assert "name = 'active'" in text
+        if self.read_only and " FOR " in text:
+            raise psycopg2.errors.ReadOnlySqlTransaction(
+                "cannot lock rows in a read-only transaction"
+            )
         return [(state["pointers"]["active"],)]
 
     def _page(self, state, text, params, rows):
@@ -309,13 +313,21 @@ class FakeDb:
 
     def _update(self, state, text, params, rows):
         assert text.endswith("RETURNING f.id")
-        guarded = "AND f.score IS NOT DISTINCT FROM v.old" in text
+        # The VALUES columns the statement names, and the guards its WHERE
+        # holds: a guard that is not in the text is not applied.
+        names = re.search(r"AS v\((.*?)\)", text).group(1).split(", ")
+        guards = [
+            (column, alias)
+            for column, alias in (("score", "old"), ("score_version", "old_ver"))
+            if re.search(rf"\bf\.{column} IS NOT DISTINCT FROM v\.{alias}\b", text)
+        ]
         returned = []
-        for fire_id, score, version, old in rows:
-            row = state["fires"].get(fire_id)
-            if row is not None and (not guarded or row["score"] == old):
-                row["score"], row["score_version"] = score, version
-                returned.append((fire_id,))
+        for values in rows:
+            v = dict(zip(names, values, strict=True))
+            row = state["fires"].get(v["id"])
+            if row is not None and all(row[c] == v[a] for c, a in guards):
+                row["score"], row["score_version"] = v["score"], v["ver"]
+                returned.append((v["id"],))
         self.returned.append(len(returned))
         return returned
 
@@ -701,6 +713,24 @@ def test_concurrent_score_writer_aborts_the_rescore(monkeypatch):
     assert db.committed == before
 
 
+def test_concurrent_tag_writer_aborts_the_rescore(monkeypatch):
+    # Another session re-tags fire 2 after this one read it and leaves the
+    # score alone. Written anyway, the snapshot's old tag would be stale.
+    monkeypatch.setattr(bls, "WRITE_ROWS", 2)
+    db = autocommit_db([fire(i, score=SEED_SCORE, version=SEED) for i in (1, 2, 3, 4)])
+    before = copy.deepcopy(db.committed)
+    db.hooks["update"] = lambda d: d.commit_elsewhere(
+        lambda state: state["fires"][2].update(score_version=OTHER)
+    )
+
+    with pytest.raises(bls.ConcurrentScoreWriter, match="1 of 2"):
+        promote(db)
+
+    assert db.events == ["active", "page", "snapshot", "update", "rollback"]
+    before["fires"][2]["score_version"] = OTHER  # the other session's change stands
+    assert db.committed == before
+
+
 def test_rescore_rolls_back_past_the_deadline(monkeypatch):
     monkeypatch.setattr(bls, "PAGE_ROWS", 2)
     db = autocommit_db(
@@ -809,6 +839,51 @@ def test_refuses_a_connection_inside_an_open_transaction():
     assert db.events == ["active"]  # the caller's transaction is left alone
 
 
+# ── A pinned rescore ────────────────────────────────────────────────────────
+
+
+def test_pinned_rescore_locks_the_active_pointer_first():
+    db = autocommit_db([fire(1, score=5)])
+
+    rescore(db, pin_active=True)
+
+    first = db.statements[0]
+    assert (first.kind, first.autocommit) == ("active", False)
+    assert first.text.endswith("FOR SHARE")  # a promotion's FOR UPDATE waits
+    assert db.events == ["active", "page", "snapshot", "update", "commit"]
+    assert db.committed["pointers"] == {"active": SEED, "takeit": SEED}
+
+
+def test_pinned_rescore_aborts_when_the_active_pointer_names_another_version():
+    db = autocommit_db([fire(1, score=5)], active=CANDIDATE)
+    before = copy.deepcopy(db.committed)
+
+    with pytest.raises(bls.PointerMoved, match=f"names {CANDIDATE}, not {SEED}"):
+        rescore(db, pin_active=True)
+
+    assert db.events == ["active", "rollback"]
+    assert db.committed == before
+
+
+def test_pinned_dry_run_takes_no_lock():
+    db = autocommit_db([fire(1, score=5)])
+
+    result = rescore(db, pin_active=True, dry_run=True)
+
+    assert db.events == ["read_only", "active", "page", "rollback"]
+    assert db.of_kind("active")[0].text.endswith("WHERE name = 'active'")
+    assert result.changed == 1
+
+
+def test_pin_active_and_expect_active_are_exclusive():
+    db = autocommit_db([fire(1, score=5)])
+
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        promote(db, pin_active=True)
+
+    assert db.events == []
+
+
 # ── The CLI ─────────────────────────────────────────────────────────────────
 
 
@@ -835,7 +910,9 @@ def test_cli_without_write_is_a_dry_run(cli, capsys):
     db = cli["db"]
     assert cli["env_files"] == [ROOT / ".env.local"]
     assert cli["dsn"] == "postgresql://fake-pooled"
-    assert db.events == ["load_pointer", "read_only", "page", "rollback"]
+    # Pinned, but a READ ONLY transaction takes no lock.
+    assert db.events == ["load_pointer", "read_only", "active", "page", "rollback"]
+    assert db.of_kind("active")[0].text.endswith("WHERE name = 'active'")
     assert not [s for s in db.statements if s.kind in WRITES]
     assert db.closed
     out = capsys.readouterr().out
@@ -850,11 +927,49 @@ def test_cli_write_never_moves_a_pointer(cli, monkeypatch, capsys):
 
     db = cli["db"]
     assert cli["dsn"] == "postgresql://fake-direct"
-    assert db.events == ["load_pointer", "page", "snapshot", "update", "commit"]
+    assert db.events == [
+        "load_pointer", "active", "page", "snapshot", "update", "commit",
+    ]
+    # The pin is the rescore transaction's first statement.
+    pin = db.statements[1]
+    assert (pin.kind, pin.autocommit) == ("active", False)
+    assert pin.text.endswith("FOR SHARE")
     assert db.committed["pointers"] == {"active": SEED, "takeit": SEED}
     assert scores(db) == {1: (9, SEED), 2: (None, SEED)}
     assert db.committed["snapshots"][0]["reason"] == "manual"
     assert "wrote 2" in capsys.readouterr().out
+
+
+def test_cli_stops_when_a_promotion_moves_the_pointer_after_its_read(cli):
+    # load_pointer read the seed; a promotion commits before the rescore pins.
+    db = cli["db"]
+    before = copy.deepcopy(db.committed)
+    db.hooks["active"] = lambda d: d.commit_elsewhere(
+        lambda state: state["pointers"].update(active=CANDIDATE)
+    )
+
+    with pytest.raises(SystemExit, match=f"PointerMoved: .* names {CANDIDATE}"):
+        bls.main(["--write"])
+
+    assert db.events == ["load_pointer", "active", "rollback"]
+    before["pointers"]["active"] = CANDIDATE  # the promotion's change stands
+    assert db.committed == before
+    assert db.closed
+
+
+def test_cli_stops_on_a_concurrent_score_writer(cli):
+    db = cli["db"]
+    before = copy.deepcopy(db.committed)
+    db.hooks["update"] = lambda d: d.commit_elsewhere(
+        lambda state: state["fires"][1].update(score=7)
+    )
+
+    with pytest.raises(SystemExit, match="ConcurrentScoreWriter: 1 of 2"):
+        bls.main(["--write"])
+
+    assert db.events[-2:] == ["update", "rollback"]
+    before["fires"][1]["score"] = 7  # the other session's change stands
+    assert db.committed == before
 
 
 def test_cli_version_flag_scores_with_that_version(cli):
@@ -863,6 +978,8 @@ def test_cli_version_flag_scores_with_that_version(cli):
     db = cli["db"]
     assert db.events[0] == "load_version"
     assert db.of_kind("load_version")[0].params == (CANDIDATE,)
+    # An explicit version is not pinned: it is not the active one here.
+    assert not db.of_kind("active")
     assert scores(db) == {1: (11, CANDIDATE), 2: (None, CANDIDATE)}
     assert db.committed["snapshots"][0]["reason"] == "boundary-fix"
     assert db.committed["pointers"]["active"] == SEED
