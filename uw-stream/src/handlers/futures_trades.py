@@ -112,8 +112,8 @@ Filtering rationale (in handler order):
    every root's front-month calls for the same 30 s, so a hung Neon costs one
    box and not one per call. The call that timed out itself waits 60 s, and
    120 s after each further timeout in a row, so the first call after a pause
-   is another root's and a hang confined to a few roots can't hold back the
-   rest. Failures that aren't a Neon blip log at error level, per root. A
+   is another root's and a hang confined to a few roots no longer blacks out
+   the rest. Failures that aren't a Neon blip log at error level, per root. A
    print for a trade date more than 3 days old is dropped before any of this
    (``kind="stale_session_dropped"``).
 
@@ -223,6 +223,14 @@ _TIMED_OUT_COOLING_S = 2 * _RETRY_AFTER_S
 # free windows, and the healthy roots are served in them. 120 s leaves room
 # for up to 3 hung calls and keeps a root's wait after a Neon-wide outage to
 # 2 min at most.
+#
+# That holds only while three hung calls, tried one after another, have all
+# had their turn before the first is due again: each takes its box
+# (``_LOOKUP_TIMEOUT_S``), then its pause (``_RETRY_AFTER_S``), then the next
+# flush (``ws_batch_interval_ms``), so
+#     2 x (box + pause + batch interval) + pause + batch interval < cap
+# which is 2 x (8 + 30 + 2) + 30 + 2 = 112 < 120 today, and 120 < 120 with a
+# 12 s box. ``test_the_constants`` checks it.
 _TIMED_OUT_COOLING_MAX_S = 4 * _RETRY_AFTER_S
 
 # A print for a trade date older than the current one by more than this many

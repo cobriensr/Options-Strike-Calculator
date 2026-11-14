@@ -1650,6 +1650,19 @@ class TestTimedOutCallsCoolLonger:
         assert ft._TIMED_OUT_COOLING_S == 2 * ft._RETRY_AFTER_S == 60.0
         assert ft._TIMED_OUT_COOLING_MAX_S == 4 * ft._RETRY_AFTER_S == 120.0
 
+        # The comment on _TIMED_OUT_COOLING_MAX_S: 120 s leaves room for up to 3
+        # hung calls, which holds only while 2 x (box + pause + batch interval)
+        # + pause + batch interval < cap: 112 < 120 today. With a 12 s box it is
+        # 120 < 120, and the pauses of three hung calls leave the healthy roots
+        # no window.
+        from config import settings
+
+        interval = settings.ws_batch_interval_ms / 1000
+        assert (
+            2 * (ft._LOOKUP_TIMEOUT_S + ft._RETRY_AFTER_S + interval) + ft._RETRY_AFTER_S + interval
+            < ft._TIMED_OUT_COOLING_MAX_S
+        )
+
     @pytest.mark.asyncio
     @pytest.mark.parametrize("call", ["load", "decide"])
     async def test_a_timed_out_call_cools_for_twice_the_retry_after(
@@ -1840,6 +1853,10 @@ class TestTimedOutCoolingBacksOff:
             await _flush_es(handler, n)
             # Each try is a fresh stamp: with no try the deadline would be in the past.
             self._assert_cooling(handler, _es_key(call), cooling)
+            # And each timeout re-arms the same 30 s pause for the other roots,
+            # whatever its own cooling has grown to.
+            pause = handler._box_until - time.monotonic()
+            assert ft._RETRY_AFTER_S - 5 < pause <= ft._RETRY_AFTER_S
             _age_by(handler, cooling)
 
     @pytest.mark.asyncio
