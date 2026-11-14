@@ -682,6 +682,42 @@ describe('GET /api/events', () => {
     },
   );
 
+  // The refetch rewrites the key only for a complete window (AUD-M2), so a
+  // malformed entry survives an incomplete fetch: it is warned about again on
+  // the next request, until a complete fetch replaces it.
+  it('leaves a malformed cache entry in place when the refetch is incomplete, and still warns', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    process.env.FRED_API_KEY = 'fred-key';
+    vi.mocked(limiterRedis.get).mockImplementation((key: string) =>
+      Promise.resolve(
+        key.startsWith(WINDOW_KEY_PREFIX)
+          ? { cachedAt: 1_700_000_000_000 }
+          : null,
+      ),
+    );
+    // Every FRED release answers non-OK: an incomplete window.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({ ok: false, status: 503 }),
+    );
+
+    const res = mockResponse();
+    await handler(mockRequest({ method: 'GET', query: { days: '5' } }), res);
+
+    const [key] = windowReads();
+    expect(res._status).toBe(200);
+    expect(res._headers['X-Cache']).toBe('MISS');
+    expect(logger.warn).toHaveBeenCalledWith(
+      { key },
+      'Malformed events cache entry',
+    );
+    expect(fetchMarketEvents).toHaveBeenCalledOnce();
+    // Nothing replaced the entry.
+    expect(windowWrites()).toEqual([]);
+
+    vi.unstubAllGlobals();
+  });
+
   it('handles Finnhub fetch throwing an exception', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
     process.env.FRED_API_KEY = 'fred-key';
