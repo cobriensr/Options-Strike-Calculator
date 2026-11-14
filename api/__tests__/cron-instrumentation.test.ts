@@ -74,7 +74,7 @@ vi.mock('../_lib/sentry.js', () => ({
     captureCheckIn: vi.fn(() => 'mock-checkin-id'),
     flush: vi.fn().mockResolvedValue(true),
   },
-  metrics: { increment: vi.fn() },
+  metrics: { increment: vi.fn(), cronDbTimeout: vi.fn() },
 }));
 
 vi.mock('../_lib/cron-schedules.js', () => ({
@@ -590,7 +590,7 @@ describe('withCronInstrumentation', () => {
     return withDbRetry(() => Promise.reject(new Error(rawMessage)), 0);
   }
 
-  it('transient DB error: warns and counts db_timeout, never calls captureException, still fails the run', async () => {
+  it('transient DB error: warns and counts cron.db_timeout for the job, never calls captureException, still fails the run', async () => {
     vi.mocked(cronGuard).mockReturnValue(guardOk);
     const handler = vi.fn(() => exhaustedDbRetry('db attempt timeout'));
     const wrapped = withCronInstrumentation('monitored-job', handler);
@@ -607,8 +607,13 @@ describe('withCronInstrumentation', () => {
       'monitored-job transient db timeout',
     );
     expect(logger.error).not.toHaveBeenCalled();
-    expect(metrics.increment).toHaveBeenCalledTimes(1);
-    expect(metrics.increment).toHaveBeenCalledWith('monitored_job.db_timeout');
+    // One metric for every cron, the job as an attribute: the helper takes
+    // the job name exactly as the wrapper has it, hyphens and all. (Its own
+    // test in sentry.test.ts pins the metric name and the `job` attribute.)
+    expect(metrics.cronDbTimeout).toHaveBeenCalledTimes(1);
+    expect(metrics.cronDbTimeout).toHaveBeenCalledWith('monitored-job');
+    // No per-job counter name: that is a different series for every cron.
+    expect(metrics.increment).not.toHaveBeenCalled();
 
     // The run failed, so the Sentry cron monitor goes red.
     const calls = getCheckInCalls();
@@ -671,9 +676,9 @@ describe('withCronInstrumentation', () => {
       await wrapped(mockRequest(), res);
 
       expect(Sentry.captureException).not.toHaveBeenCalled();
-      expect(metrics.increment).toHaveBeenCalledWith(
-        `${jobName.replaceAll('-', '_')}.db_timeout`,
-      );
+      expect(metrics.cronDbTimeout).toHaveBeenCalledTimes(1);
+      expect(metrics.cronDbTimeout).toHaveBeenCalledWith(jobName);
+      expect(metrics.increment).not.toHaveBeenCalled();
       expect(res._status).toBe(500);
     },
   );
@@ -723,6 +728,7 @@ describe('withCronInstrumentation', () => {
         'monitored-job error',
       );
       expect(logger.warn).not.toHaveBeenCalled();
+      expect(metrics.cronDbTimeout).not.toHaveBeenCalled();
       expect(metrics.increment).not.toHaveBeenCalled();
       expect(res._status).toBe(500);
     },

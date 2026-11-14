@@ -356,6 +356,23 @@ function rateLimited(route: string) {
 }
 
 /**
+ * Count a cron run that failed on a Neon blip which outlasted `withDbRetry`
+ * (a `TransientDbError`; see `withCronInstrumentation`).
+ *
+ * One metric name for every cron, the job as an attribute. A Sentry metric
+ * monitor evaluates one total series, so a name per job (`<job>.db_timeout`)
+ * cannot be alerted on as a whole. The monitor's query is
+ * `sum(value,cron.db_timeout,counter,-)`: renaming this metric or moving the
+ * job out of the attribute changes what that alert reads. The job name is
+ * kept as the wrapper has it (hyphens included), so Explore's group-by `job`
+ * matches the cron's own name and its Sentry monitor slug.
+ * Spec: docs/superpowers/specs/sentry-noise-fixes-2026-11-13.md, Phase 2.
+ */
+function cronDbTimeout(job: string) {
+  Sentry.metrics.count('cron.db_timeout', 1, { attributes: { job } });
+}
+
+/**
  * Track an upstream Unusual Whales rate-limit (429) response. Emits
  * both a metric (time-series counter, grouped by endpoint) AND a
  * scoped warning message so the first one pages immediately instead
@@ -475,6 +492,7 @@ export const metrics = {
   request,
   schwabCall,
   rateLimited,
+  cronDbTimeout,
   uwRateLimit,
   uwBudget,
   uwMinuteCount,

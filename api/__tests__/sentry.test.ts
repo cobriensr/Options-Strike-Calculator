@@ -195,6 +195,37 @@ describe('metrics.rateLimited', () => {
 });
 
 // =============================================================
+// metrics.cronDbTimeout
+// =============================================================
+
+describe('metrics.cronDbTimeout', () => {
+  beforeEach(() => {
+    mockMetrics.count.mockClear();
+  });
+
+  it('counts one cron.db_timeout with the job as its only attribute', () => {
+    metrics.cronDbTimeout('detect-lottery-fires');
+
+    expect(mockMetrics.count).toHaveBeenCalledTimes(1);
+    expect(mockMetrics.count).toHaveBeenCalledWith('cron.db_timeout', 1, {
+      attributes: { job: 'detect-lottery-fires' },
+    });
+  });
+
+  // A Sentry metric monitor reads one named series. The job rides as an
+  // attribute, so every cron lands in that one series and no name embeds it.
+  it('uses the same metric name for every job and keeps the job name as given', () => {
+    metrics.cronDbTimeout('evaluate-round-trip');
+    metrics.cronDbTimeout('capture-flow-regime');
+
+    expect(mockMetrics.count.mock.calls).toEqual([
+      ['cron.db_timeout', 1, { attributes: { job: 'evaluate-round-trip' } }],
+      ['cron.db_timeout', 1, { attributes: { job: 'capture-flow-regime' } }],
+    ]);
+  });
+});
+
+// =============================================================
 // metrics.tokenRefresh
 // =============================================================
 

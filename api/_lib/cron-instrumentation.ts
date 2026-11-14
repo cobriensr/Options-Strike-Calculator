@@ -660,8 +660,8 @@ export interface WithCronInstrumentationOptions {
  *          with the duration, `reportCronRun` with `status: 'error'`,
  *          and a 500 JSON response. A `TransientDbError` (a Neon blip
  *          that outlasted `withDbRetry`) logs a warning and counts
- *          `<job>.db_timeout` instead of capturing; the check-in, the
- *          report and the response are the same.
+ *          `cron.db_timeout` (attribute `job`) instead of capturing; the
+ *          check-in, the report and the response are the same.
  *   4. Duration tracking (closes the loop on observability for every job).
  */
 export function withCronInstrumentation(
@@ -840,17 +840,23 @@ export function withCronInstrumentation(
 
       // Same transient-vs-genuine policy as `sendDbErrorResponse` on
       // endpoints (transient-db-response.ts; stated in request-scope.ts):
-      // a TransientDbError is a warning plus a `<label>.db_timeout`
-      // counter, with no exception capture. `withDbRetry` is the only
-      // thrower (db.ts) and only after its own retries ran out, so this is
-      // a Neon blip that outlasted them: not an actionable Sentry issue.
-      // A raw error the handler never wrapped in `withDbRetry` is not
-      // classified here, exactly as on endpoints, and stays captured.
-      // Only the capture is skipped: the check-in above, the Axiom report
-      // and the response below still say the run failed, because it did.
+      // a TransientDbError is a warning plus a db_timeout counter, with no
+      // exception capture. `withDbRetry` is the only thrower (db.ts) and
+      // only after its own retries ran out, so this is a Neon blip that
+      // outlasted them: not an actionable Sentry issue. A raw error the
+      // handler never wrapped in `withDbRetry` is not classified here,
+      // exactly as on endpoints, and stays captured. Only the capture is
+      // skipped: the check-in above, the Axiom report and the response
+      // below still say the run failed, because it did.
+      //
+      // The counter differs from the endpoints' `<label>.db_timeout`: it is
+      // ONE metric, `cron.db_timeout`, with the job as an attribute, because
+      // the Sentry metric alert on it ("Cron DB timeouts: 3+ in 1 hour")
+      // reads a single total series and cannot sum a name per job. The
+      // endpoint counters stay as they are and are not part of that alert.
       if (err instanceof TransientDbError) {
         logger.warn({ err, durationMs }, `${jobName} transient db timeout`);
-        metrics.increment(`${jobName.replaceAll('-', '_')}.db_timeout`);
+        metrics.cronDbTimeout(jobName);
       } else {
         Sentry.captureException(err);
         logger.error({ err, durationMs }, `${jobName} error`);
