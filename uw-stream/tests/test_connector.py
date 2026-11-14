@@ -5,18 +5,22 @@ from __future__ import annotations
 
 import asyncio
 import errno
+import itertools
 import json
 import logging
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any, ClassVar
+from unittest.mock import patch
 
 import pytest
 import websockets
 from websockets.frames import Close
 
+import socket_stats
 from connector import Connector
 from logger_setup import JsonFormatter
+from socket_stats import SocketStats
 from state import RECONNECT_HORIZON, state
 
 
@@ -44,6 +48,13 @@ def _reset_state():
     state.receive_queue_drops = 0
     state.ws_connected = False
     state.storm_alerted_at = None
+
+
+@pytest.fixture(autouse=True)
+def _fresh_socket_stats(monkeypatch):
+    """Every Connector registers its shard's stats; keep them out of other tests."""
+    monkeypatch.setattr(socket_stats, "_registry", {})
+    monkeypatch.setattr(socket_stats, "_twins", {})
 
 
 @pytest.mark.asyncio
@@ -1687,3 +1698,119 @@ async def test_a_shutdown_cancel_during_the_receive_loop_finally_is_not_swallowe
         if not task.done():
             task.cancel()
             await asyncio.wait({task}, timeout=1.0)
+
+
+# --- per-socket stats (socket_stats) -----------------------------------------
+
+_TRADE_FRAME = '["option_trades:SPY",{"id":"a"}]'
+_OTHER_FRAME = '["flow-alerts",{"id":"b"}]'
+
+
+@pytest.mark.asyncio
+async def test_every_frame_goes_to_the_socket_stats_and_each_connection_starts_a_session(
+    monkeypatch,
+) -> None:
+    events: list[tuple[str, Any]] = []
+    connector = Connector(
+        channels=["flow-alerts"], receive_queue=asyncio.Queue(maxsize=10), name="conn0"
+    )
+
+    def _frame(_self, raw, _now) -> None:
+        events.append(("frame", raw))
+
+    def _start(_self) -> None:
+        events.append(("start", None))
+
+    with (
+        patch.object(SocketStats, "on_frame", autospec=True, side_effect=_frame),
+        patch.object(SocketStats, "session_start", autospec=True, side_effect=_start),
+    ):
+        await _run_attempts(
+            monkeypatch,
+            connector,
+            [
+                _ConnectCtx(_SessionWS([_TRADE_FRAME, _OTHER_FRAME])),
+                _ConnectCtx(enter_exc=OSError("refused")),  # never connected: no session
+                _ConnectCtx(_SessionWS([_TRADE_FRAME])),
+            ],
+        )
+
+    assert events == [
+        ("start", None),
+        ("frame", _TRADE_FRAME),
+        ("frame", _OTHER_FRAME),
+        ("start", None),
+        ("frame", _TRADE_FRAME),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_on_frame_gets_the_clock_read_the_receive_loop_already_makes(monkeypatch) -> None:
+    import connector as connector_mod
+
+    # A clock that counts its own reads. If the loop read it a second time per
+    # frame, the times on_frame sees would skip numbers.
+    reads = itertools.count(1)
+    monkeypatch.setattr(
+        connector_mod, "time", SimpleNamespace(monotonic=lambda: float(next(reads)))
+    )
+    connector = Connector(
+        channels=["flow-alerts"], receive_queue=asyncio.Queue(maxsize=10), name="conn0"
+    )
+    nows: list[float] = []
+
+    def _frame(_self, _raw, now) -> None:
+        nows.append(now)
+
+    async def _noop_subscribe(_ws) -> None:
+        return None
+
+    ws = _SessionWS([_TRADE_FRAME, _TRADE_FRAME, _TRADE_FRAME])
+    monkeypatch.setattr(connector, "_subscribe_all", _noop_subscribe)
+    monkeypatch.setattr(connector_mod.websockets, "connect", lambda *_a, **_k: _ConnectCtx(ws))
+
+    with patch.object(SocketStats, "on_frame", autospec=True, side_effect=_frame):
+        await connector._connect_once()
+
+    assert len(nows) == 3
+    assert nows[1] - nows[0] == 1.0
+    assert nows[2] - nows[1] == 1.0
+    assert connector._session_diag.last_frame_at == nows[-1]
+
+
+@pytest.mark.asyncio
+async def test_a_reconnect_measures_no_trade_gap_across_the_two_sessions(monkeypatch) -> None:
+    import connector as connector_mod
+
+    # Every clock read advances 10 s, so the two sessions' trade frames are far
+    # apart: only session_start keeps that from counting as a silence.
+    reads = itertools.count(0, 10)
+    monkeypatch.setattr(
+        connector_mod, "time", SimpleNamespace(monotonic=lambda: float(next(reads)))
+    )
+    connector = Connector(
+        channels=["flow-alerts"], receive_queue=asyncio.Queue(maxsize=10), name="conn0"
+    )
+
+    await _run_attempts(
+        monkeypatch,
+        connector,
+        [
+            _ConnectCtx(_SessionWS([_TRADE_FRAME, _OTHER_FRAME])),
+            _ConnectCtx(_SessionWS([_TRADE_FRAME])),
+        ],
+    )
+
+    stats = socket_stats.get("conn0")
+    assert (stats.frames, stats.trade_frames) == (3, 2)
+    assert stats.silences == 0
+    assert stats.interval_max_trade_gap_s == 0.0
+
+
+def test_a_connector_uses_the_registered_stats_for_its_shard_name() -> None:
+    first = Connector(channels=["flow-alerts"], receive_queue=asyncio.Queue(), name="conn4")
+    second = Connector(channels=["flow-alerts"], receive_queue=asyncio.Queue(), name="conn4")
+
+    assert first._stats is socket_stats.get("conn4")
+    assert second._stats is first._stats
+    assert first._stats.name == "conn4"

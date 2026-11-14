@@ -22,6 +22,7 @@ import orjson
 import websockets
 from websockets.frames import Close
 
+import socket_stats
 import state as state_module
 from config import settings
 from logger_setup import log, scrub_log_tokens
@@ -191,6 +192,9 @@ class Connector:
         # the channel set is sharded across multiple connections. Connection
         # health is tracked per-name in ``state.connections``.
         self.name = name
+        # This shard's frame counters, shared with its twin's connector through
+        # the socket_stats registry (the twin-silence check reads the twin's ring).
+        self._stats = socket_stats.get(name)
         # Bounded queue between the connector (producer) and the router
         # (consumer). Connector only does ``put_nowait`` so the WS
         # receive task can never block on JSON parsing or handler
@@ -390,10 +394,14 @@ class Connector:
             # copied to ``diag`` in the finally.
             frames = 0
             last_frame_at: float | None = None
+            # The per-socket counters see every frame with that same clock read.
+            # A new connection starts no gap: none is measured across a reconnect.
+            on_frame = self._stats.on_frame
+            self._stats.session_start()
             try:
                 async for raw in ws:
                     frames += 1
-                    last_frame_at = time.monotonic()
+                    last_frame_at = now = time.monotonic()
                     # Hand off to the router via a bounded queue. We never
                     # ``await`` here — the WS receive task must never block
                     # on parsing or dispatch (those run on the router task).
@@ -423,6 +431,8 @@ class Connector:
                                 "receive_queue overflow even after eviction — dropping new frame",
                             )
                         state.receive_queue_drops += 1
+                    # After the handoff, so the diagnostics can never delay a frame.
+                    on_frame(raw, now)
             finally:
                 # Hand the session's frame stats and close frames to the
                 # disconnect log line ``run`` emits next.
