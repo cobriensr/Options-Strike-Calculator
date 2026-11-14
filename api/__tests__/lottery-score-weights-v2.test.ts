@@ -1026,22 +1026,29 @@ describe('the parity fixture', () => {
 // alike in the cron and in the refit's rescore.
 describe('the non-seed parity fixture', () => {
   const fixture = loadParityFixture('lottery-score-parity-alt.json');
-  const weights = LotteryWeightsSchema.parse(fixture.weights);
   type ParityCase = ParityFixture['cases'][number];
+
+  // Parsed inside each test, not here: a schema rejection then fails the one
+  // named test instead of the collection of the whole file.
+  const parseWeights = (): LotteryWeights =>
+    LotteryWeightsSchema.parse(fixture.weights);
 
   /** Whether `variant` scores any case differently from the fixture weights. */
   const movesACase = (
     variant: LotteryWeights,
     only: (c: ParityCase) => boolean = () => true,
-  ): boolean =>
-    fixture.cases
+  ): boolean => {
+    const weights = parseWeights();
+    return fixture.cases
       .filter(only)
       .some(
         ({ fire }) =>
           scoreParityFire(variant, fire) !== scoreParityFire(weights, fire),
       );
+  };
 
   it('replays the non-seed parity fixture', () => {
+    const weights = parseWeights();
     expect(fixture.cases.length).toBeGreaterThanOrEqual(40);
     for (const { name, fire, expected } of fixture.cases) {
       expect(scoreParityFire(weights, fire), name).toBe(expected);
@@ -1049,12 +1056,12 @@ describe('the non-seed parity fixture', () => {
   });
 
   it('the non-seed fixture weights parse and differ from the seed', () => {
+    const weights = parseWeights();
     // A strict schema neither strips nor rewrites anything it accepts.
-    expect(LotteryWeightsSchema.parse(fixture.weights)).toEqual(
-      fixture.weights,
-    );
+    expect(weights).toEqual(fixture.weights);
     expect(weights).not.toEqual(SEED_LOTTERY_WEIGHTS);
-    expect(fixture.version).toMatch(/^refit-\d{4}-\d{2}-\d{2}$/);
+    // A refit is stored under its training date, so the two must agree.
+    expect(fixture.version).toBe(`refit-${weights.trained_through}`);
     expect(fixture.version).not.toBe(SEED_LOTTERY_WEIGHTS_VERSION);
   });
 
@@ -1070,6 +1077,7 @@ describe('the non-seed parity fixture', () => {
   });
 
   it('has a case on every new bound, exactly and 1e-9 above it', () => {
+    const weights = parseWeights();
     const features = [
       ['trigger_vol_to_oi_window', weights.features.vol_oi_quintile_boundaries],
       ['gamma_at_trigger', weights.features.gamma_quintile_boundaries],
@@ -1120,6 +1128,7 @@ describe('the non-seed parity fixture', () => {
   });
 
   it('needs every weekday override: dropping one moves a case on that day', () => {
+    const weights = parseWeights();
     const overrides = weights.features.tod_weights_dow_overrides;
     const days = (
       ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'] as const
@@ -1140,6 +1149,7 @@ describe('the non-seed parity fixture', () => {
   });
 
   it('needs every composite but the one that never matches', () => {
+    const weights = parseWeights();
     const { composite_bonuses: composites } = weights.features;
     expect(composites.length).toBeGreaterThanOrEqual(4);
     const dead: Array<CompositeBonus['match']> = [];
