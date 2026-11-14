@@ -234,7 +234,48 @@ async def test_pool_size_and_in_use_keep_independent_maxima(monkeypatch):
         await _run_sampler(sampled)
 
     assert sampled.pool_size_max == 10  # from the first sample
+    assert sampled.pool_size_min == 4  # from the second
     assert sampled.pool_in_use_max == 4  # from the second: size - idle
+
+
+async def test_a_dip_in_the_pool_size_shows_as_a_min_below_the_max(monkeypatch):
+    # asyncpg closes a pool connection idle for 300 s and the next burst opens a
+    # new one, so the size dips inside the minute and comes back. The maximum
+    # alone hides it; the minimum is what shows the churn.
+    pool = _FakePool()
+
+    def _size(size: int) -> Callable[[], None]:
+        def _apply() -> None:
+            pool.size = size
+
+        return _apply
+
+    _script_sleep(monkeypatch, [_size(10), _size(7), _size(10)])
+    sampled = _Sampled()
+
+    with patch("db.get_pool", return_value=pool), pytest.raises(asyncio.CancelledError):
+        await _run_sampler(sampled)
+
+    assert (sampled.pool_size_min, sampled.pool_size_max) == (7, 10)
+
+
+def test_the_pool_size_min_starts_over_after_a_report(fresh, lines):
+    pool = _FakePool(size=7)
+    sampled = _Sampled()
+    with patch("db.get_pool", return_value=pool):
+        sampled.record_pool()
+        pool.size = 10
+        sampled.record_pool()
+    assert (sampled.pool_size_min, sampled.pool_size_max) == (7, 10)
+
+    pipeline_stats._report(sampled, _Reported(), datetime(2026, 11, 13, 12, 34, tzinfo=UTC))
+
+    assert (lines[0][1]["pool_size_min"], lines[0][1]["pool_size_max"]) == (7, 10)
+    assert (sampled.pool_size_min, sampled.pool_size_max) == (None, None)
+    # The next minute's minimum is its own, not the last minute's 7.
+    with patch("db.get_pool", return_value=_FakePool(size=9)):
+        sampled.record_pool()
+    assert (sampled.pool_size_min, sampled.pool_size_max) == (9, 9)
 
 
 async def test_an_uninitialized_pool_records_nothing_and_never_stops_the_sampler(
@@ -380,6 +421,41 @@ async def test_waking_before_the_boundary_sleeps_the_remainder_instead_of_report
     assert [extra["minute_utc"] for _msg, extra in lines] == ["2026-11-13T12:34:00+00:00"]
 
 
+@pytest.mark.parametrize(
+    ("wakes", "labels"),
+    [
+        # Blocked past one boundary (12:35): the line is late, no label is missing.
+        (
+            [
+                datetime(2026, 11, 13, 12, 35, 5, tzinfo=UTC),
+                datetime(2026, 11, 13, 12, 36, 0, 1_000, tzinfo=UTC),
+            ],
+            ["12:34", "12:35"],
+        ),
+        # Blocked past two (12:35 and 12:36): the late line covers more than a
+        # minute and the 12:35 label never appears.
+        (
+            [
+                datetime(2026, 11, 13, 12, 36, 5, tzinfo=UTC),
+                datetime(2026, 11, 13, 12, 37, 0, 1_000, tzinfo=UTC),
+            ],
+            ["12:34", "12:36"],
+        ),
+    ],
+    ids=["one-boundary", "two-boundaries"],
+)
+async def test_a_stall_past_one_boundary_only_delays_a_line_and_past_two_loses_a_label(
+    monkeypatch, lines, wakes, labels
+):
+    _script_wall_clock(monkeypatch, datetime(2026, 11, 13, 12, 34, 30, tzinfo=UTC), *wakes)
+    _script_sleep(monkeypatch, [_noop] * 4)
+
+    with pytest.raises(asyncio.CancelledError):
+        await _run_reporter(_Sampled(), _Reported())
+
+    assert [extra["minute_utc"][11:16] for _msg, extra in lines] == labels
+
+
 async def test_the_reporter_yields_once_after_the_boundary_so_the_sampler_runs_first(
     monkeypatch, lines
 ):
@@ -499,9 +575,28 @@ def _set_socket(name: str, **fields) -> Callable[[State], None]:
     return _apply
 
 
+def _add_socket(name: str, **deltas) -> Callable[[State], None]:
+    """Add to interval fields on one shard's ``SocketStats``: read each, then add.
+
+    The way the connector's counters grow, so a later minute builds on what an
+    earlier line failed to consume instead of overwriting it.
+    """
+
+    def _apply(_s: State) -> None:
+        stats = socket_stats.get(name)
+        for key, delta in deltas.items():
+            setattr(stats, key, getattr(stats, key) + delta)
+
+    return _apply
+
+
 async def test_the_line_carries_every_documented_field(monkeypatch, fresh, lines):
     sampled = _Sampled(
-        loop_lag_max_s=0.31234, loop_lag_over_1s=1, pool_size_max=10, pool_in_use_max=7
+        loop_lag_max_s=0.31234,
+        loop_lag_over_1s=1,
+        pool_size_max=10,
+        pool_size_min=8,
+        pool_in_use_max=7,
     )
     # Three shards, the third idle: every registered shard has an entry.
     socket_stats.configure([["option_trades:SPY"], ["option_trades:SPY"], ["net_flow:SPY"]])
@@ -533,6 +628,7 @@ async def test_the_line_carries_every_documented_field(monkeypatch, fresh, lines
                 "loop_lag_max_s": 0.312,
                 "loop_lag_over_1s": 1,
                 "pool_size_max": 10,
+                "pool_size_min": 8,
                 "pool_in_use_max": 7,
                 "receive_queue_hwm": 1_234,
                 "receive_queue_dropped": 5,
@@ -578,6 +674,7 @@ async def test_an_unsampled_pool_is_none_in_the_line_not_zero(monkeypatch, fresh
 
     extra = lines[0][1]
     assert extra["pool_size_max"] is None
+    assert extra["pool_size_min"] is None
     assert extra["pool_in_use_max"] is None
 
 
@@ -615,7 +712,13 @@ async def test_the_second_line_reports_deltas_not_running_totals(monkeypatch, fr
 
 
 async def test_a_report_resets_every_interval_field_it_read(monkeypatch, fresh, lines):
-    sampled = _Sampled(loop_lag_max_s=2.5, loop_lag_over_1s=3, pool_size_max=10, pool_in_use_max=10)
+    sampled = _Sampled(
+        loop_lag_max_s=2.5,
+        loop_lag_over_1s=3,
+        pool_size_max=10,
+        pool_size_min=6,
+        pool_in_use_max=10,
+    )
 
     _, sampled, _ = await _drive_reporter(
         monkeypatch, fresh, [_BUSY_MINUTE, _noop_step], sampled=sampled
@@ -633,6 +736,7 @@ async def test_a_report_resets_every_interval_field_it_read(monkeypatch, fresh, 
     assert lines[1][1]["loop_lag_max_s"] == 0.0
     assert lines[1][1]["loop_lag_over_1s"] == 0
     assert lines[1][1]["pool_size_max"] is None
+    assert lines[1][1]["pool_size_min"] is None
     assert lines[1][1]["receive_queue_hwm"] == 0
 
 
@@ -651,7 +755,9 @@ async def test_a_minute_with_nothing_registered_still_reports_the_loop_lag(
     monkeypatch, fresh, lines
 ):
     # Overnight, with every handler idle, the lag numbers are the whole point of the line.
-    sampled = _Sampled(loop_lag_max_s=0.4, loop_lag_over_1s=0, pool_size_max=2, pool_in_use_max=0)
+    sampled = _Sampled(
+        loop_lag_max_s=0.4, loop_lag_over_1s=0, pool_size_max=2, pool_size_min=1, pool_in_use_max=0
+    )
 
     await _drive_reporter(monkeypatch, fresh, [_noop_step], sampled=sampled)
 
@@ -659,7 +765,7 @@ async def test_a_minute_with_nothing_registered_still_reports_the_loop_lag(
     extra = lines[0][1]
     assert extra["handlers"] == {}
     assert extra["loop_lag_max_s"] == 0.4
-    assert (extra["pool_size_max"], extra["pool_in_use_max"]) == (2, 0)
+    assert (extra["pool_size_max"], extra["pool_size_min"], extra["pool_in_use_max"]) == (2, 1, 0)
 
 
 async def test_only_handlers_with_activity_are_listed(monkeypatch, fresh, lines):
@@ -819,7 +925,8 @@ async def test_a_failure_while_building_the_line_consumes_nothing(
     )
     second_minute = _together(
         _set("option_trades", flushes=5),
-        _set_socket("conn0", interval_frames=150, interval_silences=3),
+        # The counters keep adding: 50 more frames and one more silence.
+        _add_socket("conn0", interval_frames=50, interval_silences=1),
     )
 
     await _drive_reporter(monkeypatch, fresh, [first_minute, second_minute])
@@ -936,10 +1043,16 @@ async def test_a_report_that_raises_is_logged_and_the_next_minute_still_reports(
         delivered.append(kw["extra"])
 
     monkeypatch.setattr(pipeline_stats.log, "info", _info_that_fails_once)
-    sampled = _Sampled(loop_lag_max_s=0.5, loop_lag_over_1s=1, pool_size_max=10, pool_in_use_max=6)
-    # The second minute adds to the cumulative totals only, so every interval
-    # value in the delivered line can only have come from the minute whose line
-    # failed.
+    sampled = _Sampled(
+        loop_lag_max_s=0.5,
+        loop_lag_over_1s=1,
+        pool_size_max=10,
+        pool_size_min=9,
+        pool_in_use_max=6,
+    )
+    # The second minute adds to the cumulative totals and to the socket interval
+    # counts (read, then add) and leaves every maximum alone, so each maximum in
+    # the delivered line can only have come from the minute whose line failed.
     first_minute = _together(
         _BUSY_MINUTE,
         _set_socket(
@@ -954,7 +1067,7 @@ async def test_a_report_that_raises_is_logged_and_the_next_minute_still_reports(
         _set("option_trades", flushes=5, flush_rows=2_200, flush_seconds=1.73456, drop_count=3),
         lambda s: setattr(s, "receive_queue_drops", 8),
         # The socket counters keep adding: 50 more frames, 30 more trade frames, one more silence.
-        _set_socket("conn0", interval_frames=150, interval_trade_frames=90, interval_silences=3),
+        _add_socket("conn0", interval_frames=50, interval_trade_frames=30, interval_silences=1),
     )
 
     sleeps, sampled, _ = await _drive_reporter(
@@ -981,6 +1094,7 @@ async def test_a_report_that_raises_is_logged_and_the_next_minute_still_reports(
             "loop_lag_max_s": 0.5,
             "loop_lag_over_1s": 1,
             "pool_size_max": 10,
+            "pool_size_min": 9,
             "pool_in_use_max": 6,
             "receive_queue_hwm": 1_234,
             "receive_queue_dropped": 8,

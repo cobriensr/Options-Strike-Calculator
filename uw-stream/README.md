@@ -159,16 +159,16 @@ Single asyncio process:
      `option_trades redundant-socket dedupe`), and never per frame.
      `filtered` counts payloads a handler discarded before its queue
      because they can never become rows. Only `gex_strike_expiry` sets it,
-     for frames whose expiry is not today's (ET). UW sends every active
-     expiry on that channel, about 85% of them not today's, and queued
-     first a burst of them filled the 50,000-slot queue and evicted
-     today's frames. Like `dupes_dropped` it is not backpressure, so it
-     never reaches `drop_count` or the drop reporter. The shared handlers
-     are named after their channel family (`option_trades`, `net_flow`,
-     `gex_strike_expiry`), so one `handlers` row covers that family's
-     per-ticker channels. Exception: `option_trades:SPY` / `SPXW` / `QQQ`
-     get dedicated Interval B/A handlers with their own `handlers` rows,
-     which the `option_trades` row does not include. Requests need an
+     for frames whose expiry is not today's (ET): they are about 85% of what
+     UW sends on that channel, and queued they filled the 50,000-slot queue
+     and evicted today's frames. Like `dupes_dropped` it is not
+     backpressure, so it never reaches `drop_count` or the drop reporter.
+     The shared handlers are named after their channel family
+     (`option_trades`, `net_flow`, `gex_strike_expiry`), so one `handlers`
+     row covers that family's per-ticker channels. Exception:
+     `option_trades:SPY` / `SPXW` / `QQQ` get dedicated Interval B/A
+     handlers with their own `handlers` rows, which the `option_trades` row
+     does not include. Requests need an
      `X-Metrics-Token` header matching `INTERNAL_METRICS_TOKEN`; a missing
      or wrong header gets 401. While `INTERNAL_METRICS_TOKEN` is unset,
      every request gets 401 and the first one logs a warning. `/healthz`
@@ -497,10 +497,12 @@ minute boundary, at info level, with the message `uw-stream pipeline minute`.
 The line for a quiet minute is still sent, with an empty `handlers`: it is
 the heartbeat, and it shows loop lag through the quiet hours. The first line
 after a deploy covers only the part of the minute since boot. If the event
-loop is blocked past a boundary the line comes late, and the minute label
-that would have come is missing from the sequence. A stall that straddles a
-boundary puts its lag on the line for the minute that just ended: the
-reporter yields to the sampler once before it logs.
+loop is blocked past one boundary the line only comes late: the labels still
+run 12:34 then 12:35, with none missing. A label goes missing only when the
+loop is blocked past two boundaries, and the late line then covers more than
+a minute. A stall that straddles a boundary puts its lag on the line for the
+minute that just ended: the reporter yields to the sampler once before it
+logs.
 
 If the log call or the line's own arithmetic raises, the pass changes
 nothing: no baseline moves and no interval field resets. The next line then
@@ -514,6 +516,7 @@ label is missing from the sequence.
 | `loop_lag_max_s`                 | The longest the event loop kept the sampler waiting past its 0.25 s sleep (elapsed minus 0.25 s, never below 0). Near 0 is healthy; seconds mean something blocked the loop.                               |
 | `loop_lag_over_1s`               | How many of those samples were 1 s or more.                                                                                                                                                                  |
 | `pool_size_max`                  | Most connections open in the DB pool (its max is 10), sampled four times a second. `null` when the pool was never sampled.                                                                                   |
+| `pool_size_min`                  | Fewest connections open at any sample in the minute. Below `pool_size_max` in the same minute means the pool changed size inside it: connections closed and reopened (or, just after a deploy, the pool grew). `null` when never sampled. |
 | `pool_in_use_max`                | Most connections checked out (size minus idle) at any sample. A hold shorter than 0.25 s can fall between two samples. `null` when never sampled.                                                          |
 | `receive_queue_hwm`              | As under `/metrics` above, for the minute.                                                                                                                                                                   |
 | `receive_queue_dropped`          | Frames the receive queue dropped in the minute.                                                                                                                                                              |
@@ -532,7 +535,20 @@ How to read a late-data minute:
 
 - A handler's `flush_max_s` is high, `loop_lag_max_s` is near 0 and
   `pool_in_use_max` is below the pool size: the write itself was slow, so
-  Neon or the network.
+  Neon or the network. Check `pool_size_min` first (next bullet).
+- A `pool_size_min` below `pool_size_max` in the same minute, once the pool
+  is warm (not in the first minutes after a deploy, while it grows from its
+  2 starting connections), is pool churn. asyncpg closes a pool connection
+  idle for 300 s (its default `max_inactive_connection_lifetime`, which
+  `src/db.py` leaves alone) and hands connections out last in, first out, so
+  the ones only a burst uses expire and reconnect on the next burst. That
+  fits lag at the `:x0` and `:x5` minutes. asyncpg counts only connected
+  holders in both `get_size()` and `get_idle_size()`, so a flush waiting
+  while asyncpg opens a new connection shows in neither pool number, and
+  `pool_in_use_max` can stay low. The line then reads as "the write itself
+  was slow" when the wait was the reconnect. `pool_size_max` alone hides the
+  dip; `pool_size_min` shows it. It is a measurement, not a fix: nothing here
+  changes a pool setting.
 - `pool_in_use_max` equals the pool's maximum (10) in the same minute as a
   high `flush_max_s`: flushes waited for a free connection. The pool was
   exhausted.

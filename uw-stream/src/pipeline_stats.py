@@ -10,7 +10,10 @@ Two loops share one ``_Sampled`` accumulator:
 * The sampler wakes every ``SAMPLE_INTERVAL_S``. The time it actually slept,
   beyond what it asked for, is how long the event loop was unable to run it
   (loop lag). It also reads the DB pool's size and how much of it is checked
-  out. Both are kept as per-minute maxima.
+  out. Both are kept as per-minute maxima, and the size also as a minimum: a
+  pool that shrinks and regrows inside a minute shows as a minimum below the
+  maximum. The checked-out count is size minus idle, and asyncpg counts only
+  connected holders in both, so a connection still being opened shows in neither.
 * The reporter sleeps to each UTC minute boundary, wall clock, so a line joins
   Neon's per-minute data, and logs. Per handler it gives the flush counts and
   times (``HandlerMetrics.flushes``, ``flush_rows``, ``flush_seconds``) as
@@ -58,7 +61,7 @@ LOOP_LAG_FLAG_S = 1.0
 
 @dataclass
 class _Sampled:
-    """The sampler's maxima since the last line; ``_report`` resets them.
+    """The sampler's maxima and smallest pool size since the last line; ``_report`` resets them.
 
     The pool fields stay None until the pool has been read, so a line can tell
     "never sampled" from "sampled, and nothing was in use".
@@ -67,6 +70,7 @@ class _Sampled:
     loop_lag_max_s: float = 0.0
     loop_lag_over_1s: int = 0
     pool_size_max: int | None = None
+    pool_size_min: int | None = None
     pool_in_use_max: int | None = None
 
     def record_lag(self, elapsed_s: float) -> None:
@@ -93,6 +97,7 @@ class _Sampled:
         size = pool.get_size()
         in_use = size - pool.get_idle_size()
         self.pool_size_max = size if self.pool_size_max is None else max(self.pool_size_max, size)
+        self.pool_size_min = size if self.pool_size_min is None else min(self.pool_size_min, size)
         self.pool_in_use_max = (
             in_use if self.pool_in_use_max is None else max(self.pool_in_use_max, in_use)
         )
@@ -101,6 +106,7 @@ class _Sampled:
         self.loop_lag_max_s = 0.0
         self.loop_lag_over_1s = 0
         self.pool_size_max = None
+        self.pool_size_min = None
         self.pool_in_use_max = None
 
 
@@ -201,6 +207,7 @@ def _report(sampled: _Sampled, reported: _Reported, minute_start: datetime) -> N
             "loop_lag_max_s": round(sampled.loop_lag_max_s, 3),
             "loop_lag_over_1s": sampled.loop_lag_over_1s,
             "pool_size_max": sampled.pool_size_max,
+            "pool_size_min": sampled.pool_size_min,
             "pool_in_use_max": sampled.pool_in_use_max,
             "receive_queue_hwm": state.receive_queue_hwm,
             "receive_queue_dropped": state.receive_queue_drops - reported.receive_drops,
@@ -264,8 +271,10 @@ async def _run_reporter(sampled: _Sampled, reported: _Reported) -> None:
     clock when it woke. asyncio's timers run on the monotonic clock and the
     boundary is wall clock, so a sleep can end a little early: the inner loop
     sleeps the remainder rather than reporting the same minute twice. If the
-    loop is blocked past a boundary the line comes late and a minute label is
-    missing; the lag numbers on that line say why.
+    loop is blocked past one boundary the line only comes late: the labels run
+    12:34 then 12:35 with none missing. A label goes missing only when the loop
+    is blocked past two boundaries, and the late line then covers more than a
+    minute. The lag numbers on that line say why.
 
     One zero-second sleep comes between the wait and the report. If the loop
     was blocked across the boundary, this timer and the sampler's have both
