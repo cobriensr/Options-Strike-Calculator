@@ -78,6 +78,15 @@ jobs:
               # hardcodes, so an edit to the file must run this job (api/**
               # alone starts only the app job).
               - 'api/_lib/market-events.ts'
+              # ml/tests/test_lottery_weights.py, test_lottery_refit_gates.py and
+              # test_lottery_scoring.py read these four api files (the score-parity
+              # fixtures, the inversion-bonus map and the feed's qasExprText), so
+              # an edit to one must run this job (api/** alone starts only the
+              # app job).
+              - 'api/__tests__/fixtures/lottery-score-parity.json'
+              - 'api/__tests__/fixtures/lottery-score-parity-alt.json'
+              - 'api/_lib/lottery-inversion-bonus.ts'
+              - 'api/lottery-finder.ts'
               - '.github/workflows/ci.yml'
             sidecar:
               - 'sidecar/**'
@@ -93,27 +102,48 @@ jobs:
               # an edit to it must run this job.
               - 'src/data/marketHours.ts'
               - '.github/workflows/ci.yml'
-            # The nightly image builds from the repo root and runs six shared files
+            # The nightly image builds from the repo root and runs ten shared files
             # (IMAGE_FILES in nightly/tests/test_image_layout.py). The tests that
             # pin them and .dockerignore, which decides what the build sees, count
             # too. scripts/test_enrich_provenance.py imports the fulltape script,
-            # which is not an image file, and pytest run from the root loads
-            # scripts/conftest.py. Keep this list, that tuple, the Dockerfile COPY
-            # lines and the three root-level steps in the nightly job below in step.
+            # which is not an image file. Pytest run from the root loads
+            # scripts/conftest.py for the scripts tests, and ml/conftest.py and
+            # ml/pyproject.toml for the ml tests. Those tests also read four api
+            # files, so the list names them. Keep this list, that tuple, the
+            # Dockerfile COPY lines and the five root-level steps in the nightly
+            # job below in step.
             nightly:
               - 'nightly/**'
               - 'scripts/_tape_reader.py'
               - 'scripts/_cli_paths.py'
               - 'scripts/_pipeline_retry.py'
+              - 'scripts/backfill_lottery_scores.py'
               - 'scripts/enrich_lottery_outcomes.py'
               - 'scripts/enrich_silent_boom_outcomes.py'
               - 'ml/src/lottery_exit_policies.py'
+              - 'ml/src/lottery_refit_gates.py'
+              - 'ml/src/lottery_scoring.py'
+              - 'ml/src/lottery_weights.py'
               - 'scripts/test_tape_reader.py'
               - 'scripts/test_cli_paths.py'
               - 'scripts/test_pipeline_retry.py'
               - 'scripts/test_enrich_*.py'
+              - 'scripts/test_backfill_lottery_scores.py'
               - 'scripts/enrich_silent_boom_outcomes_fulltape.py'
               - 'scripts/conftest.py'
+              - 'ml/tests/test_lottery_weights.py'
+              - 'ml/tests/test_lottery_refit_gates.py'
+              - 'ml/tests/test_lottery_scoring.py'
+              - 'ml/conftest.py'
+              - 'ml/pyproject.toml'
+              # The api files those tests read: the score-parity fixtures
+              # (test_lottery_weights.py, test_lottery_refit_gates.py,
+              # test_lottery_scoring.py, test_backfill_lottery_scores.py), the
+              # inversion-bonus map and the feed's qasExprText (test_lottery_refit_gates.py).
+              - 'api/__tests__/fixtures/lottery-score-parity.json'
+              - 'api/__tests__/fixtures/lottery-score-parity-alt.json'
+              - 'api/_lib/lottery-inversion-bonus.ts'
+              - 'api/lottery-finder.ts'
               - '.dockerignore'
               - '.github/workflows/ci.yml'
             # What the browser loads under test. api/** is left out: the specs
@@ -367,7 +397,7 @@ jobs:
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: python -m pytest --cov=src --cov-report=term-missing
 
-      # The two steps below run from the repo root, in the nightly environment:
+      # The three steps below run from the repo root, in the nightly environment:
       # the files the image copies from outside nightly/, against nightly's pins.
       # The ml job's "Scripts tests" runs the same tests against ml's pins.
       - name: Lint shared image files
@@ -378,9 +408,13 @@ jobs:
           scripts/_tape_reader.py
           scripts/_cli_paths.py
           scripts/_pipeline_retry.py
+          scripts/backfill_lottery_scores.py
           scripts/enrich_lottery_outcomes.py
           scripts/enrich_silent_boom_outcomes.py
           ml/src/lottery_exit_policies.py
+          ml/src/lottery_refit_gates.py
+          ml/src/lottery_scoring.py
+          ml/src/lottery_weights.py
 
       - name: Shared image file tests
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
@@ -390,10 +424,24 @@ jobs:
           scripts/test_tape_reader.py
           scripts/test_cli_paths.py
           scripts/test_pipeline_retry.py
+          scripts/test_backfill_lottery_scores.py
           scripts/test_enrich_lottery_outcomes.py
           scripts/test_enrich_missing_archive.py
           scripts/test_enrich_provenance.py
           scripts/test_enrich_r2_cli.py
+
+      # Separate from the step above because ml/ has its own pytest rootdir and
+      # conftest ([tool.pytest.ini_options] in ml/pyproject.toml). The scipy test,
+      # ml/tests/test_lottery_refit_gates_scipy.py, runs in the ml job only: this
+      # environment has no scipy.
+      - name: Refit module tests
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        working-directory: .
+        run: >-
+          python -m pytest -q -p no:cacheprovider
+          ml/tests/test_lottery_weights.py
+          ml/tests/test_lottery_refit_gates.py
+          ml/tests/test_lottery_scoring.py
 
       # The only check of the .dockerignore semantics: nightly/tests/test_image_layout.py
       # reads text and cannot see a later pattern re-exclude a file, but a COPY of an
@@ -407,11 +455,18 @@ jobs:
       # The tests above run in the dev environment, a superset of the runtime
       # requirements (moto alone pulls in requests, werkzeug and cryptography), so a
       # shared script that gains an import the image lacks still passes them. This
-      # imports the steps inside the built image, which has only requirements.txt.
-      # Importing loads no settings and opens no connection; no network keeps it so.
+      # imports the steps, including the refit step, inside the built image, which
+      # has only requirements.txt. weights_store and lottery_scoring come first:
+      # the enrich scripts put ml/src on sys.path when they load, so after them
+      # a PYTHONPATH without /app/ml/src would still pass. As in
+      # nightly/tests/test_image_layout.py, only PYTHONPATH may resolve them. The
+      # image has no scipy, and none of these imports may load it. Importing loads
+      # no settings and opens no connection; no network keeps it so.
       - name: Import the steps in the image
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         working-directory: .
         run: >-
           docker run --rm --network none --entrypoint python nightly-ci
-          -c "import pipeline, outcome_check, enrich_step"
+          -c "import weights_store, lottery_scoring, pipeline, outcome_check,
+          enrich_step, refit_step, backfill_lottery_scores, sys;
+          assert 'scipy' not in sys.modules"
