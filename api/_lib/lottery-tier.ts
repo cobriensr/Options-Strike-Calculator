@@ -24,7 +24,6 @@
 
 import type { LotteryScoreTier } from './lottery-score-weights.js';
 import type { FeedTierCutoffs } from './lottery-weights-schema.js';
-import { SEED_LOTTERY_WEIGHTS } from './lottery-weights-seed.js';
 
 /** The tier a quality-adjusted score falls in under `cutoffs`; null is tier3. */
 export function tierFromQas(
@@ -50,22 +49,4 @@ export function resolveMinQas(
   if (minTier === 'tier1') return cutoffs.tier1_min_score;
   if (minTier === 'tier2') return cutoffs.tier2_min_score;
   return minScore;
-}
-
-/**
- * @deprecated The seed's cutoffs, not the active version's. The feed endpoint
- * still reads them until it moves to `tierFromQas` with the loaded weights;
- * that task deletes this.
- */
-export const TIER_CUTOFFS_V2 = {
-  tier1MinScore: SEED_LOTTERY_WEIGHTS.feed_cutoffs.tier1_min_score,
-  tier2MinScore: SEED_LOTTERY_WEIGHTS.feed_cutoffs.tier2_min_score,
-} as const;
-
-/**
- * @deprecated Tiers on the seed's cutoffs, not the active version's. Deleted
- * with `TIER_CUTOFFS_V2`.
- */
-export function tierFromQualityScore(score: number | null): LotteryScoreTier {
-  return tierFromQas(score, SEED_LOTTERY_WEIGHTS.feed_cutoffs);
 }

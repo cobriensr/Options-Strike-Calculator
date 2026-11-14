@@ -1,10 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  resolveMinQas,
-  tierFromQas,
-  tierFromQualityScore,
-  TIER_CUTOFFS_V2,
-} from '../_lib/lottery-tier.js';
+import { resolveMinQas, tierFromQas } from '../_lib/lottery-tier.js';
 import type { FeedTierCutoffs } from '../_lib/lottery-weights-schema.js';
 import { SEED_LOTTERY_WEIGHTS } from '../_lib/lottery-weights-seed.js';
 
@@ -76,21 +71,5 @@ describe('resolveMinQas', () => {
   it('returns undefined when neither is given', () => {
     expect(resolveMinQas(undefined, undefined, WIDE)).toBeUndefined();
     expect(resolveMinQas(undefined, undefined, SEED_CUTOFFS)).toBeUndefined();
-  });
-});
-
-// Both stay, delegating to the seed's feed cutoffs, until the feed endpoint
-// moves to tierFromQas (a later task deletes them).
-describe('tierFromQualityScore', () => {
-  const { tier1MinScore, tier2MinScore } = TIER_CUTOFFS_V2;
-
-  it('reads the seed feed cutoffs', () => {
-    expect(tier1MinScore).toBe(SEED_CUTOFFS.tier1_min_score);
-    expect(tier2MinScore).toBe(SEED_CUTOFFS.tier2_min_score);
-  });
-  it('tiers like tierFromQas under the seed cutoffs', () => {
-    for (const qas of [null, -5, 0, 9, 10, 12, 13, 14, 99]) {
-      expect(tierFromQualityScore(qas)).toBe(tierFromQas(qas, SEED_CUTOFFS));
-    }
   });
 });
