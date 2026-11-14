@@ -16,11 +16,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const {
   mockFetchVolumes,
   mockFetchStored,
+  mockFetchLive,
   mockInsertVolumes,
   mockInsertFront,
 } = vi.hoisted(() => ({
   mockFetchVolumes: vi.fn(),
   mockFetchStored: vi.fn(),
+  mockFetchLive: vi.fn(),
   mockInsertVolumes: vi.fn(),
   mockInsertFront: vi.fn(),
 }));
@@ -38,6 +40,7 @@ vi.mock('../../api/_lib/futures-front-month.js', async () => {
   return {
     ...actual,
     fetchStoredFrontMonths: mockFetchStored,
+    fetchLiveContractVolumes: mockFetchLive,
     insertContractVolumes: mockInsertVolumes,
     insertFrontMonthRows: mockInsertFront,
   };
@@ -63,6 +66,7 @@ import {
   requiredContracts,
   runFrontMonthSeed,
   volumeRowsToStore,
+  volumeRowsToWalk,
   walkFrontMonths,
 } from './futures-front-month-backfill.js';
 
@@ -258,6 +262,48 @@ describe('volumeRowsToStore', () => {
     const stored = volumeRowsToStore('ES', candles, TODAY);
     expect(stored.map((r) => r.tradeDate)).not.toContain('2026-07-24');
     expect(stored.every((r) => r.tradeDate >= SEED_START)).toBe(true);
+  });
+});
+
+// ── volumeRowsToWalk ──────────────────────────────────────
+
+describe('volumeRowsToWalk', () => {
+  const candleRows = [
+    ...vol(SEED_START, ['ESU6', 100], ['ESZ6', 10]),
+    ...vol('2026-07-28', ['ESU6', 100], ['ESZ6', 120], ['ESH7', 1]),
+    ...vol('2026-11-05', ['ESZ6', 500]),
+  ];
+
+  it('is the candle rows when no session holds live rows', () => {
+    expect(volumeRowsToWalk(candleRows, [], TODAY)).toEqual(candleRows);
+  });
+
+  it('reads a session that holds live rows from them whole: the candles of that session, a contract the live rows never listed included, are dropped', () => {
+    const live = vol('2026-07-28', ['ESU6', 100], ['ESZ6', 90]);
+
+    const rows = volumeRowsToWalk(candleRows, live, TODAY);
+
+    expect(rows.filter((r) => r.tradeDate === '2026-07-28')).toEqual(live);
+    // The other sessions keep their candle rows.
+    expect(rows.filter((r) => r.tradeDate !== '2026-07-28')).toEqual(
+      candleRows.filter((r) => r.tradeDate !== '2026-07-28'),
+    );
+  });
+
+  it('adds a session that has live rows and no candle rows', () => {
+    const live = vol('2026-11-04', ['ESZ6', 7]);
+
+    expect(volumeRowsToWalk(candleRows, live, TODAY)).toContainEqual(live[0]);
+  });
+
+  it('leaves out live rows of the running session and of the sessions before the seed start, as the candles are', () => {
+    const live = [
+      ...vol('2026-07-24', ['ESU6', 9]),
+      ...vol(TODAY, ['ESU6', 9]),
+      ...vol('2026-11-07', ['ESU6', 9]),
+    ];
+
+    expect(volumeRowsToWalk(candleRows, live, TODAY)).toEqual(candleRows);
   });
 });
 
@@ -603,6 +649,7 @@ describe('runFrontMonthSeed', () => {
     });
     mockFetchVolumes.mockReset();
     mockFetchStored.mockReset();
+    mockFetchLive.mockReset();
     mockInsertVolumes.mockReset();
     mockInsertFront.mockReset();
     mockFetchVolumes.mockImplementation(
@@ -610,6 +657,7 @@ describe('runFrontMonthSeed', () => {
         rollCandles(contracts),
     );
     mockFetchStored.mockResolvedValue(new Map());
+    mockFetchLive.mockResolvedValue([]);
     mockInsertVolumes.mockImplementation(
       async (rows: unknown[]) => rows.length,
     );
@@ -930,6 +978,91 @@ describe('runFrontMonthSeed', () => {
     expect(output).toMatch(/DRY RUN/);
     expect(output).toMatch(/2026-07-29\s+ESU6 → ESZ6/);
     expect(output).toMatch(/would insert 12 volume rows and 4 decision rows/);
+  });
+
+  describe('a session that holds live volume rows', () => {
+    // The candles say December out-trades September on 07-28 (120 against
+    // 100), so the series would roll on 07-29. uw-stream's tally for that
+    // session says it did not (90 against 100).
+    const LIVE_0728 = vol('2026-07-28', ['ESU6', 100], ['ESZ6', 90]);
+
+    it('is decided from the live rows, not from the candles: no roll the candles alone would have made', async () => {
+      mockFetchLive.mockResolvedValue(LIVE_0728);
+
+      expect(await run()).toBe(0);
+
+      expect(writtenDecisions()).toEqual([
+        row('2026-07-28', 'ESU6'),
+        row('2026-07-29', 'ESU6'),
+        row('2026-11-05', 'ESZ6'),
+        row('2026-11-06', 'ESZ6'),
+      ]);
+      // The roll that does happen (11-05) is read from a session without live
+      // rows, and is still decided from its candles.
+      expect(logs.join('\n')).toMatch(
+        /2026-11-05\s+ESU6 → ESZ6.*2026-07-29.*ESZ6 200.*ESU6 50/,
+      );
+      expect(errors).toEqual([]);
+    });
+
+    it('is decided from the candles alone when no session holds live rows', async () => {
+      expect(await run()).toBe(0);
+
+      expect(writtenDecisions().map((r) => [r.tradeDate, r.contract])).toEqual([
+        ['2026-07-28', 'ESU6'],
+        ['2026-07-29', 'ESZ6'],
+        ['2026-11-05', 'ESZ6'],
+        ['2026-11-06', 'ESZ6'],
+      ]);
+    });
+
+    it('reads the live rows once per root, from the seed start to the running session, before anything is written', async () => {
+      expect(await run(['ES', 'NQ'])).toBe(0);
+
+      expect(mockFetchLive).toHaveBeenCalledTimes(2);
+      expect(mockFetchLive).toHaveBeenCalledWith('ES', SEED_START, TODAY);
+      expect(mockFetchLive).toHaveBeenCalledWith('NQ', SEED_START, TODAY);
+      // ES runs first: its live read comes before its first write.
+      expect(mockFetchLive.mock.invocationCallOrder[0]).toBeLessThan(
+        mockInsertVolumes.mock.invocationCallOrder[0]!,
+      );
+    });
+
+    it('still hands every candle row to the volume insert, which skips a live session itself', async () => {
+      mockFetchLive.mockResolvedValue(LIVE_0728);
+
+      await run();
+
+      expect(
+        writtenVolumes().filter((r) => r.tradeDate === '2026-07-28'),
+      ).toHaveLength(3);
+      expect(writtenVolumes()).toHaveLength(12);
+    });
+
+    it('is read in a dry run too, so the dry run prints the rolls the real run would write', async () => {
+      mockFetchLive.mockResolvedValue(LIVE_0728);
+
+      expect(await run(['ES'], { dryRun: true })).toBe(0);
+
+      expect(mockFetchLive).toHaveBeenCalledTimes(1);
+      expect(logs.join('\n')).not.toMatch(/2026-07-29\s+ESU6 → ESZ6/);
+      expect(mockInsertFront).not.toHaveBeenCalled();
+    });
+
+    it('fails a root whose live rows cannot be read, by name, writes nothing for it, and runs the others', async () => {
+      mockFetchLive.mockImplementation(async (root: string) => {
+        if (root === 'ES') throw new Error('connection lost');
+        return [];
+      });
+
+      expect(await run(['ES', 'NQ'])).toBe(1);
+
+      expect(errors.join('\n')).toMatch(/ES FAILED: connection lost/);
+      expect(errors.join('\n')).toMatch(/Failed roots: ES/);
+      expect(writtenVolumes().every((r) => r.product === 'NQ')).toBe(true);
+      expect(writtenDecisions().every((r) => r.product === 'NQ')).toBe(true);
+      expect(writtenDecisions()).toHaveLength(4);
+    });
   });
 
   it('still fails a root in a dry run when its candles are missing', async () => {

@@ -1,10 +1,13 @@
 /**
- * One-time seed of the per-session front-month tables from UW's daily
- * candles (docs/superpowers/specs/2026-11-06-futures-session-front-month.md,
+ * Seed of the per-session front-month tables from UW's daily candles
+ * (docs/superpowers/specs/2026-11-06-futures-session-front-month.md,
  * Phase 3b): `futures_contract_volume` (each contract's volume per trade
  * date) and `futures_front_month` (the contract chosen per root and trade
  * date), from 2026-07-27 (`SEED_START`, the first full session in UW's
  * daily candles; 07-21 to 07-24 are only slivers), to the running session.
+ * It was run first on 2026-11-08 and again on 2026-11-11, and is safe to run
+ * again: it writes only what is missing, and decides each missing date from
+ * the same rows `ensureFrontMonth` and uw-stream's `ensure_front` read.
  *
  * Per root, in this order:
  *   1. `fetchDailyContractVolumes` over the root's listed contracts from
@@ -14,7 +17,12 @@
  *   2. The empty-result rule (`requiredContracts`): an empty answer for a
  *      contract near the front fails the root, because an empty answer is
  *      read as no volume and would let a challenger roll early.
- *   3. The decisions already stored (`fetchStoredFrontMonths`), read once.
+ *   3. The decisions already stored (`fetchStoredFrontMonths`), read once,
+ *      and the `live` volume rows already stored (`fetchLiveContractVolumes`),
+ *      read once. A session that holds live rows is decided from them, whole,
+ *      in place of its candle rows (`volumeRowsToWalk`): one source per
+ *      session, as `ensureFrontMonth` and `ensure_front` read it. The volume
+ *      insert skips such a session too.
  *   4. `walkFrontMonths`: the rule `ensureFrontMonth` applies, run in memory
  *      over the sessions, oldest first. A stored row is that date's answer
  *      and the walk carries on from it; a computed answer is never later
@@ -37,7 +45,9 @@
  *
  * The current trade date always gets a decision row. Run on a weekday, or
  * after the Sunday 17:00 CT open, to avoid a row for a date with no
- * session; the row is harmless if you do not.
+ * session: the next session is then decided with that row as its
+ * incumbent, whose date has no volume rows, so uw-stream reports it as
+ * `front_month_stale_volume`.
  *
  * No market-hours guard: about 30 light calls. Never prints a secret.
  */
@@ -59,6 +69,7 @@ import {
 } from '../../api/_lib/futures-daily-candles.js';
 import {
   ceilingContract,
+  fetchLiveContractVolumes,
   fetchStoredFrontMonths,
   insertContractVolumes,
   insertFrontMonthRows,
@@ -253,6 +264,29 @@ export function volumeRowsToStore(
     }));
 }
 
+/**
+ * The rows the walk reads for volume: `candleRows` (what
+ * `volumeRowsToStore` keeps), except that a session holding rows in
+ * `liveRows` is read from them whole, and the candle rows of that session are
+ * dropped, a contract the live rows never listed included. One source per
+ * session, which is what `ensureFrontMonth` and uw-stream's `ensure_front`
+ * read: `insertContractVolumes` writes no candle row into a session that has a
+ * live one. A session with live rows and no candle rows is added. Live rows of
+ * the running session and before `SEED_START` are left out, as the candles'
+ * are.
+ */
+export function volumeRowsToWalk(
+  candleRows: readonly ContractVolumeRow[],
+  liveRows: readonly ContractVolumeRow[],
+  today: string,
+): ContractVolumeRow[] {
+  const live = liveRows.filter(
+    (r) => r.tradeDate >= SEED_START && r.tradeDate < today,
+  );
+  const liveDates = new Set(live.map((r) => r.tradeDate));
+  return [...candleRows.filter((r) => !liveDates.has(r.tradeDate)), ...live];
+}
+
 // ── The walk ────────────────────────────────────────────────
 
 type Origin = 'stored' | 'candles';
@@ -319,8 +353,10 @@ export interface Walk {
  *     it (listed in `clamped`): rows are never updated, so the series must
  *     not step back into a row already there.
  *
- * `volumes` holds only the rows `volumeRowsToStore` keeps; `stored` the
- * decisions already in the table from the first decision date to `today`.
+ * `volumes` holds only the rows `volumeRowsToWalk` returns (the candle rows
+ * `volumeRowsToStore` keeps, with a session's live rows in place of its
+ * candle rows); `stored` the decisions already in the table from the first
+ * decision date to `today`.
  * Throws when there is no volume on `SEED_START`, the session the first
  * decision starts from.
  */
@@ -495,7 +531,13 @@ async function seedRoot(
 
   const volumes = volumeRowsToStore(root, candles, today);
   const stored = await fetchStoredFrontMonths(root, FIRST_DECISION_DATE, today);
-  const walk = walkFrontMonths(root, volumes, stored, today);
+  const live = await fetchLiveContractVolumes(root, SEED_START, today);
+  const walk = walkFrontMonths(
+    root,
+    volumeRowsToWalk(volumes, live, today),
+    stored,
+    today,
+  );
   // Rows are write-once. Stored rows that were already out of order are
   // kept by the walk, so the series it would leave behind can step back:
   // refuse that before anything is written, in a dry run too.

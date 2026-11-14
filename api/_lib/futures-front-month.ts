@@ -52,7 +52,8 @@
  * Candle volume rows are DO NOTHING per contract, but never into a session
  * that has a `live` row: one source per (product, trade date), the first
  * writer wins. `fetchStoredFrontMonths` is its read of the decisions already
- * stored.
+ * stored, and `fetchLiveContractVolumes` of the live volume rows already
+ * stored, which the seed decides a session from in place of the candles.
  *
  * The HTTP driver returns BIGINT as a string and DATE as a JS `Date`.
  * Volumes are read as `float8` (exact below 2^53) and dates are only ever
@@ -568,6 +569,60 @@ export async function fetchStoredFrontMonths(
     stored.set(r.trade_date, contract);
   }
   return stored;
+}
+
+/**
+ * The `live` volume rows stored for `product` from `fromDate` to `toDate`,
+ * both included, oldest first and by contract, in one query. These are the
+ * rows uw-stream's tally saved, and the ones `ensureFrontMonth` and uw-stream's
+ * `ensure_front` read for a session they cover: one source per session, so a
+ * session with live rows is never decided from the candles. The history seed
+ * reads them once per root, to decide a date from the same source on a re-run.
+ * Bounded by the product and the date range (about 20 contracts a session),
+ * not paged. Names come back as stored: `decideFrontMonth` makes them
+ * canonical and drops the ones that are no outright of the product.
+ *
+ * Throws, before any query, on a date that is not a real calendar date and
+ * on `fromDate` after `toDate`. Database errors propagate (transient ones
+ * after `withDbRetry`'s retries).
+ */
+export async function fetchLiveContractVolumes(
+  product: FuturesRoot,
+  fromDate: string,
+  toDate: string,
+): Promise<ContractVolumeRow[]> {
+  assertTradeDate(fromDate, 'fetchLiveContractVolumes fromDate');
+  assertTradeDate(toDate, 'fetchLiveContractVolumes toDate');
+  if (fromDate > toDate) {
+    throw new Error(
+      `fetchLiveContractVolumes: ${product} fromDate ${fromDate} is after toDate ${toDate}`,
+    );
+  }
+
+  const sql = getDb();
+  const rows = (await withDbRetry(
+    () => sql`
+      SELECT trade_date::text AS trade_date, contract, volume::float8 AS volume
+      FROM futures_contract_volume
+      WHERE product = ${product}
+        AND source = 'live'
+        AND trade_date BETWEEN ${fromDate}::date AND ${toDate}::date
+      ORDER BY futures_contract_volume.trade_date, contract
+    `,
+    RETRIES,
+    ATTEMPT_TIMEOUT_MS,
+  )) as Array<{
+    trade_date: string;
+    contract: string;
+    volume: number | string;
+  }>;
+
+  return rows.map((r) => ({
+    product,
+    tradeDate: r.trade_date,
+    contract: r.contract,
+    volume: Number(r.volume),
+  }));
 }
 
 /** Throws unless `contract` is `product`'s canonical name on `tradeDate`. */

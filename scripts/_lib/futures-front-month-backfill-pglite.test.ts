@@ -394,6 +394,83 @@ describe('the seed against ensureFrontMonth, on real SQL', () => {
     },
   );
 
+  it('decides a session that holds live volume rows from them, not from the candles: the seed writes what ensureFrontMonth decides over the same stored rows', async () => {
+    // Monday 08-03, 10:00 CT: the running session. 07-27 to 07-31 are the
+    // sessions before it. The candles say December out-trades September on
+    // 07-31 (100 against 10), so a seed that read them would roll on 08-03.
+    // uw-stream's tally for that session says it did not (10 against 100).
+    const today = '2026-08-03';
+    const sessions = weekdaysFrom(SEED_START, 5);
+    vi.setSystemTime(new Date(`${today}T15:00:00.000Z`));
+    mockFetchVolumes.mockImplementation(
+      async (_key: string, _root: string, listed: readonly string[]) =>
+        [...sessions, today]
+          .flatMap((tradeDate) => [
+            {
+              contract: 'ESU6',
+              tradeDate,
+              volume: tradeDate === '2026-07-31' ? 10 : 100,
+            },
+            {
+              contract: 'ESZ6',
+              tradeDate,
+              volume: tradeDate === '2026-07-31' ? 100 : 10,
+            },
+          ])
+          .filter((c) => listed.includes(c.contract)),
+    );
+    for (const [contract, volume] of [
+      ['ESU6', 100],
+      ['ESZ6', 10],
+    ] as const) {
+      await db.query(
+        `INSERT INTO futures_contract_volume
+           (product, trade_date, contract, volume, source)
+         VALUES ('ES', '2026-07-31', $1, $2, 'live')`,
+        [contract, volume],
+      );
+    }
+
+    expect(
+      await runFrontMonthSeed({
+        apiKey: 'uw-key',
+        roots: ['ES'],
+        dryRun: false,
+      }),
+    ).toBe(0);
+    expect(logs.filter((l) => l.startsWith('ERROR'))).toEqual([]);
+
+    const written = (await frontRows('ES')).filter(
+      (r) => r.source === 'candles',
+    );
+    expect(written.map((r) => [r.trade_date, r.contract])).toEqual([
+      ['2026-07-28', 'ESU6'],
+      ['2026-07-29', 'ESU6'],
+      ['2026-07-30', 'ESU6'],
+      ['2026-07-31', 'ESU6'],
+      ['2026-08-03', 'ESU6'],
+    ]);
+    // The session with live rows took no candle row beside them.
+    const { rows: volumeSources } = await db.query<{ source: string }>(
+      `SELECT DISTINCT source FROM futures_contract_volume
+        WHERE product = 'ES' AND trade_date = '2026-07-31'`,
+    );
+    expect(volumeSources).toEqual([{ source: 'live' }]);
+
+    // Decide those dates again, one at a time, over the stored rows that
+    // remain: the same answers.
+    await db.query(
+      `DELETE FROM futures_front_month
+        WHERE product = 'ES' AND source = 'candles'`,
+    );
+    for (const row of written) {
+      expect(
+        await ensureFrontMonth('ES', row.trade_date, 'script'),
+        row.trade_date,
+      ).toBe(row.contract);
+    }
+  });
+
   it('the histories between them rolled, kept stored rows, clamped, and crossed weekends', () => {
     // 26 rolls decided by the candles over these histories (more switches
     // land on stored rows); histories that never rolled would read 0.

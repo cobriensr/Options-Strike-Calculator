@@ -107,6 +107,7 @@ import { TransientDbError } from '../_lib/db.js';
 import {
   ensureFrontMonth,
   fetchFrontMonthSchedule,
+  fetchLiveContractVolumes,
   fetchStoredFrontMonths,
   insertContractVolumes,
   insertFrontMonthRows,
@@ -122,6 +123,7 @@ const STORED_READ =
   /FROM futures_front_month\s+WHERE product = \$1 AND trade_date = \$2::date/;
 const INPUTS_READ = /UNION ALL/;
 const RANGE_READ = /trade_date BETWEEN \$2::date AND \$3::date/;
+const LIVE_VOLUME_READ = /FROM futures_contract_volume\s+WHERE product = \$1/;
 const FRONT_INSERT = /INSERT INTO futures_front_month/;
 const VOLUME_INSERT = /INSERT INTO futures_contract_volume/;
 
@@ -1308,6 +1310,132 @@ describe('fetchStoredFrontMonths', () => {
     expect(err).toBeInstanceOf(TransientDbError);
     expect(err).toMatchObject({ message: 'fetch failed' });
     expect(count(RANGE_READ)).toBe(3);
+  });
+});
+
+// ── fetchLiveContractVolumes ──────────────────────────────
+
+describe('fetchLiveContractVolumes', () => {
+  it('returns the live rows from the first date to the last, both included, oldest first and by contract, with the date as text and the volume as a number', async () => {
+    await putVolumes('ES', '2026-11-03', { ESZ6: 70 }, 'live');
+    await putVolumes('ES', '2026-11-05', { ESZ6: 500, ESH7: 90 }, 'live');
+    await putVolumes('ES', '2026-11-04', { ESZ6: 600 }, 'live');
+    await putVolumes('ES', '2026-11-06', { ESZ6: 1 }, 'live');
+
+    const rows = await fetchLiveContractVolumes(
+      'ES',
+      '2026-11-04',
+      '2026-11-05',
+    );
+
+    // 11-03 and 11-06 sit one day outside, 11-04 and 11-05 on the bounds.
+    expect(rows).toEqual([
+      { product: 'ES', tradeDate: '2026-11-04', contract: 'ESZ6', volume: 600 },
+      { product: 'ES', tradeDate: '2026-11-05', contract: 'ESH7', volume: 90 },
+      { product: 'ES', tradeDate: '2026-11-05', contract: 'ESZ6', volume: 500 },
+    ]);
+  });
+
+  it('leaves out the candle rows, even of a contract the live rows never listed, and the rows of every other product', async () => {
+    await putVolumes('ES', '2026-11-04', { ESZ6: 600 }, 'live');
+    await putVolumes('ES', '2026-11-05', { ESZ6: 500, ESH7: 90 }, 'candles');
+    await putVolumes('NQ', '2026-11-04', { NQZ6: 9 }, 'live');
+
+    const rows = await fetchLiveContractVolumes(
+      'ES',
+      '2026-11-01',
+      '2026-11-09',
+    );
+
+    expect(rows).toEqual([
+      { product: 'ES', tradeDate: '2026-11-04', contract: 'ESZ6', volume: 600 },
+    ]);
+  });
+
+  it('reads a volume above 2^31 as the exact number', async () => {
+    await putVolumes('ES', '2026-11-04', { ESZ6: 5_000_000_000 }, 'live');
+
+    const rows = await fetchLiveContractVolumes(
+      'ES',
+      '2026-11-04',
+      '2026-11-04',
+    );
+
+    expect(rows.map((r) => r.volume)).toEqual([5_000_000_000]);
+  });
+
+  it('answers an empty list when nothing live is stored in the range', async () => {
+    await putVolumes('ES', '2026-11-02', { ESZ6: 1 }, 'live');
+
+    expect(
+      await fetchLiveContractVolumes('ES', '2026-11-03', '2026-11-09'),
+    ).toEqual([]);
+  });
+
+  it('is one query, with the product and the dates bound and not spliced into the text', async () => {
+    await fetchLiveContractVolumes('ES', '2026-11-03', '2026-11-05');
+
+    expect(pg.queries).toHaveLength(1);
+    expect(pg.calls[0]!.values).toEqual(['ES', '2026-11-03', '2026-11-05']);
+    // A bare `ORDER BY trade_date` binds to the output alias
+    // (`trade_date::text`); the column is what is sorted.
+    expect(pg.queries[0]).toMatch(
+      /ORDER BY futures_contract_volume\.trade_date/,
+    );
+  });
+
+  it.each(['2026-11-5', '', '2026-13-01', '2026-02-30', 'tomorrow'])(
+    'rejects the malformed date %j in either position, naming the function and the position, before any query',
+    async (bad) => {
+      await expect(
+        fetchLiveContractVolumes('ES', bad, '2026-11-05'),
+      ).rejects.toThrow(/fetchLiveContractVolumes fromDate.*trade date/);
+      await expect(
+        fetchLiveContractVolumes('ES', '2026-11-03', bad),
+      ).rejects.toThrow(/fetchLiveContractVolumes toDate.*trade date/);
+
+      expect(pg.queries).toEqual([]);
+    },
+  );
+
+  it('rejects a first date after the last one, naming the product and both, before any query', async () => {
+    await expect(
+      fetchLiveContractVolumes('ES', '2026-11-06', '2026-11-05'),
+    ).rejects.toThrow(/fetchLiveContractVolumes.*ES.*2026-11-06.*2026-11-05/);
+
+    expect(pg.queries).toEqual([]);
+  });
+
+  it('rejects with the database error, after one statement: a genuine error is not retried', async () => {
+    pg.fail = {
+      match: LIVE_VOLUME_READ,
+      error: new Error('connection lost'),
+      times: 1,
+    };
+
+    await expect(
+      fetchLiveContractVolumes('ES', '2026-11-03', '2026-11-05'),
+    ).rejects.toThrow('connection lost');
+
+    expect(pg.queries).toHaveLength(1);
+  });
+
+  it('retries a transient failure once and still answers', async () => {
+    await putVolumes('ES', '2026-11-04', { ESZ6: 600 }, 'live');
+    pg.fail = {
+      match: LIVE_VOLUME_READ,
+      error: new Error('fetch failed'),
+      times: 1,
+    };
+
+    const rows = await fetchLiveContractVolumes(
+      'ES',
+      '2026-11-03',
+      '2026-11-05',
+    );
+
+    expect(rows).toHaveLength(1);
+    expect(count(LIVE_VOLUME_READ)).toBe(2);
   });
 });
 
