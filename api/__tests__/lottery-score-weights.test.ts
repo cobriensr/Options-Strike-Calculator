@@ -117,13 +117,11 @@ describe('lotteryScoreTier', () => {
 });
 
 // ============================================================
-// fireCountScoreAdjustment was retired in commit 16fd1655. The
-// adjustment is now a stored DB column (`fire_count_score_adjustment`,
-// migration #167) read directly by api/lottery-finder.ts:1005, so
-// the read-time TS helper is no longer needed and the test was
-// deleted with it. Bucket boundaries (−3/−1/0/+1/+2) are now owned
-// by the migration SQL — see api/_lib/db-migrations.ts:#167 if you
-// need to verify them.
+// The fire-count score adjustment (−3/−1/0/+1/+2 by chain fire count) is
+// gone. Its read-time TS helper was retired in commit 16fd1655, the stored
+// column and trigger from migration #167 were dropped by migration #209, and
+// the qas no longer depends on fire count (spec
+// 2026-11-15-retire-lottery-fire-count-adjustment.md).
 // ============================================================
 
 // ============================================================

@@ -398,10 +398,8 @@ export const GAMMA_HIGH_BONUS_THRESHOLD = 0.025;
  *  rebalancing flow proxy. USO: commodity-driven gamma dynamics. */
 export const GAMMA_BONUS_EXCLUDED_TICKERS: readonly string[] = ['SPY', 'USO'];
 
-/** Score points added when a fire qualifies for the gamma bonus.
- *  Matches the magnitude of the existing fire_count_score_adjustment
- *  top bracket (+2 for ≥16 fires, +1 for 8-15 fires); +1 keeps the
- *  bonus from dominating the displayed tier. */
+/** Score points added when a fire qualifies for the gamma bonus. +1 keeps
+ *  the bonus from dominating the displayed tier. */
 export const GAMMA_HIGH_BONUS_POINTS = 1;
 
 // ============================================================

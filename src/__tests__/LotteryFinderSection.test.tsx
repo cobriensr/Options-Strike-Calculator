@@ -1678,6 +1678,27 @@ describe('LotteryFinderSection: filter interactions', () => {
     expect(countsCall?.[0]).toMatchObject({ minFireCount: 8 });
   });
 
+  it.each([
+    ['burst-filter-gte3', 3],
+    ['burst-filter-gte8', 8],
+    ['burst-filter-gte16', 16],
+  ])(
+    'chip %s describes the filter and makes no edge claim (re-fire study, 2026-11-15)',
+    (testId, floor) => {
+      // The fire-count floor still filters, but the old tooltips sold it
+      // ("recommended filter", "94% win", "median best peak 127%") on
+      // hindsight numbers: the count was the chain-day's FINAL count. The
+      // tooltip now says what the chip does and that a later fire showed no
+      // edge over the first.
+      render(<LotteryFinderSection marketOpen={false} />);
+      const title = screen.getByTestId(testId).getAttribute('title') ?? '';
+      expect(title).toContain(`${floor} fires`);
+      expect(title).toContain('no edge over the first');
+      expect(title).toContain('2026-11-15');
+      expect(title).not.toMatch(/recommended|win|median|mean|highest-edge/i);
+    },
+  );
+
   it('min-fire-count chip "all" (default) forwards minFireCount=1', () => {
     render(<LotteryFinderSection marketOpen={false} />);
     const feedCall = mockUseLotteryFinder.mock.calls.at(-1);

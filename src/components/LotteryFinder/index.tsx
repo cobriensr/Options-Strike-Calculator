@@ -222,6 +222,14 @@ const minFireCountPersistOpts: UsePersistedStateOptions<MinFireCountFloor> = {
   serialize: (v) => v,
 };
 
+// The fire count is descriptive, not a quality signal: the old tooltips sold
+// these floors on numbers taken from each chain-day's FINAL count (hindsight),
+// and the fire-count score adjustment they supported was retired. Entering on
+// a later fire showed no edge over the first (re-fire study, 2026-11-15), so
+// the tooltips say what the chip filters and nothing about edge.
+const RE_FIRE_NOTE =
+  'Entering on a later fire showed no edge over the first (re-fire study, 2026-11-15).';
+
 const MIN_FIRE_COUNT_OPTIONS: Array<{
   value: MinFireCountFloor;
   label: string;
@@ -235,20 +243,17 @@ const MIN_FIRE_COUNT_OPTIONS: Array<{
   {
     value: 'gte3',
     label: '×≥3',
-    tooltip:
-      'Hide single + 2-fire chains. Drops the worst-EV cohort (mean -5.8% / 45% win on singletons).',
+    tooltip: `Show only chains with at least 3 fires so far today (hides single-fire and 2-fire chains). ${RE_FIRE_NOTE}`,
   },
   {
     value: 'gte8',
     label: '×≥8',
-    tooltip:
-      'Knee of the burst curve. Chains in this bucket have median trail +9% and 94% win on the best fire. Recommended day-to-day filter.',
+    tooltip: `Show only chains with at least 8 fires so far today. ${RE_FIRE_NOTE}`,
   },
   {
     value: 'gte16',
     label: '×≥16',
-    tooltip:
-      'Highest-edge cohort — median best peak 127%, median chain trail +16%. Few alerts but every one is a real burst.',
+    tooltip: `Show only chains with at least 16 fires so far today. ${RE_FIRE_NOTE}`,
   },
 ];
 
