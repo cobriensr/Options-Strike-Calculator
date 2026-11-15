@@ -243,17 +243,17 @@ const MIN_FIRE_COUNT_OPTIONS: Array<{
   {
     value: 'gte3',
     label: '×≥3',
-    tooltip: `Show only chains with at least 3 fires so far today (hides single-fire and 2-fire chains). ${RE_FIRE_NOTE}`,
+    tooltip: `Show only chains with at least 3 fires among the fires shown for the viewed day (hides single-fire and 2-fire chains). ${RE_FIRE_NOTE}`,
   },
   {
     value: 'gte8',
     label: '×≥8',
-    tooltip: `Show only chains with at least 8 fires so far today. ${RE_FIRE_NOTE}`,
+    tooltip: `Show only chains with at least 8 fires among the fires shown for the viewed day. ${RE_FIRE_NOTE}`,
   },
   {
     value: 'gte16',
     label: '×≥16',
-    tooltip: `Show only chains with at least 16 fires so far today. ${RE_FIRE_NOTE}`,
+    tooltip: `Show only chains with at least 16 fires among the fires shown for the viewed day. ${RE_FIRE_NOTE}`,
   },
 ];
 

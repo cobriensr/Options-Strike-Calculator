@@ -1693,6 +1693,11 @@ describe('LotteryFinderSection: filter interactions', () => {
       render(<LotteryFinderSection marketOpen={false} />);
       const title = screen.getByTestId(testId).getAttribute('title') ?? '';
       expect(title).toContain(`${floor} fires`);
+      // The count is taken over the fires the viewed day shows (after the
+      // time-of-day, mode, ticker and premium filters), and a past day shows
+      // its final count, so the tooltip must not say "so far today".
+      expect(title).toContain('among the fires shown for the viewed day');
+      expect(title).not.toContain('so far today');
       expect(title).toContain('no edge over the first');
       expect(title).toContain('2026-11-15');
       expect(title).not.toMatch(/recommended|win|median|mean|highest-edge/i);
