@@ -35,16 +35,14 @@ _CGROUP_BYTES = 300_000_000
 
 @pytest.fixture(autouse=True)
 def _isolated_memory(monkeypatch):
-    """No gauges and fixed memory readings, so no test depends on the host or on another test.
+    """Fixed memory readings, so no test depends on the host.
 
-    ``memory_stats`` keeps its gauge registry in a module-level dict that every
-    handler constructor fills (the tests below build several), and its readers
-    open ``/proc`` and the cgroup, which answer differently on Linux and on
-    Windows. Replacing the registry and the two readers, at the module
+    ``memory_stats``'s readers open ``/proc`` and the cgroup, which answer
+    differently on Linux and on Windows. Replacing them, at the module
     ``/metrics`` reads them from, pins the ``memory`` object. The readers' own
-    behaviour is in test_memory_stats.py.
+    behaviour is in test_memory_stats.py. The gauge registry starts empty in
+    every test by conftest's autouse fixture.
     """
-    monkeypatch.setattr(memory_stats, "_gauges", {})
     monkeypatch.setattr(memory_stats, "read_rss_bytes", lambda: _RSS_BYTES)
     monkeypatch.setattr(memory_stats, "read_cgroup_bytes", lambda: _CGROUP_BYTES)
 
@@ -887,14 +885,45 @@ async def test_metrics_route_serves_the_memory_object(
     assert (await resp.json())["memory"]["gauges"] == {"option_trades.dedupe_keys": 7}
 
 
-async def test_the_unauthorized_metrics_response_carries_no_memory(
-    _restore_metrics_token, metrics_warnings
+@pytest.mark.parametrize(
+    ("configured", "headers"),
+    [(_TOKEN, {}), (_TOKEN, {"X-Metrics-Token": "wrong"}), ("", {"X-Metrics-Token": ""})],
+    ids=["no-header", "wrong-token", "token-unset"],
+)
+async def test_a_refused_metrics_request_reads_no_gauge_and_no_memory_file(
+    monkeypatch, _restore_metrics_token, metrics_warnings, configured, headers
 ):
-    """The 401 body is the bare refusal: a caller without the token learns nothing."""
-    settings.internal_metrics_token = _TOKEN
-    memory_stats.register_gauge("option_trades.dedupe_keys", lambda: 7)
+    """A 401 comes before any memory read: the gauges and both readers are not
+    called. The body alone cannot show it (the bare refusal is the same either
+    way), so this counts the calls; a snapshot taken above the auth gate would
+    still run them for a caller without the token.
+    """
+    settings.internal_metrics_token = configured
+    reads: list[str] = []
+    memory_stats.register_gauge("option_trades.dedupe_keys", lambda: reads.append("gauge") or 7)
+    monkeypatch.setattr(memory_stats, "read_rss_bytes", lambda: reads.append("rss"))
+    monkeypatch.setattr(memory_stats, "read_cgroup_bytes", lambda: reads.append("cgroup"))
 
-    resp = await metrics(_StubRequest())  # type: ignore[arg-type]
+    resp = await metrics(_StubRequest(headers))  # type: ignore[arg-type]
 
     assert resp.status == 401
     assert await _read_json(resp) == _UNAUTHORIZED
+    assert reads == []
+
+
+async def test_an_accepted_metrics_request_reads_the_gauge_and_both_files_once(
+    monkeypatch, _restore_metrics_token
+):
+    """The positive control for the test above: the same counters do move on a 200,
+    once each, so the refused case's empty list is not a counter that never counts.
+    """
+    settings.internal_metrics_token = _TOKEN
+    reads: list[str] = []
+    memory_stats.register_gauge("option_trades.dedupe_keys", lambda: reads.append("gauge") or 7)
+    monkeypatch.setattr(memory_stats, "read_rss_bytes", lambda: reads.append("rss"))
+    monkeypatch.setattr(memory_stats, "read_cgroup_bytes", lambda: reads.append("cgroup"))
+
+    resp = await metrics(_StubRequest({"X-Metrics-Token": _TOKEN}))  # type: ignore[arg-type]
+
+    assert resp.status == 200
+    assert sorted(reads) == ["cgroup", "gauge", "rss"]

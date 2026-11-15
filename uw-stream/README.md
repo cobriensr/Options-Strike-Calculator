@@ -630,9 +630,11 @@ Interval B/A handlers):
   the contract and bucket pairs once per call (a few thousand in a normal
   session), not the prints.
 
-A gauge that raises is left out of that minute's `gauges` and logged as one
-warning a minute, `memory gauge failed`, with `gauge`, `err_type` and `err`.
-It sends nothing to Sentry, and the rest of the line is unaffected. The
+A gauge that raises is left out of that minute's `gauges` and logged as at
+most one warning a minute, `memory gauge failed`, with `gauge`, `err_type` and
+`err`. The 60 s window of the shared rate limiter can still be open when the
+next minute line comes, so a broken gauge logs every minute or two. It sends
+nothing to Sentry, and the rest of the line is unaffected. The
 registry holds at most 32 names, and registering a name again replaces the
 callback.
 

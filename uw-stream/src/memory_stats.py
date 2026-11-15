@@ -26,8 +26,10 @@ at files under ``tmp_path``.
 ``fn``; nothing calls it there. ``read_gauges`` calls each one, and only the
 once-a-minute reporter (``pipeline_stats``) and a ``/metrics`` request do, so no
 gauge runs on a hot path and the reporter never reaches into a handler's
-internals. A gauge that raises is left out of that read and logged as one
-rate-limited WARNING per gauge per minute; the rest still report. A log line is
+internals. A gauge that raises is left out of that read and logged as at most
+one rate-limited WARNING per gauge per 60 s window (a broken gauge logs every
+minute or two, since the reporter's minutes can fall just inside the window);
+the rest still report. A log line is
 not a Sentry event (``init_sentry`` sets ``event_level=None``), and nothing here
 raises an error-level line or captures a message: a memory number that fails to
 read must never page.
@@ -69,13 +71,14 @@ def read_rss_bytes() -> int | None:
 
     The second field of statm is the resident set in pages; the page size comes
     from ``os.sysconf``. A missing file, a short or non-numeric one, a negative
-    count and a page size the OS refuses all give None.
+    count, a page size the OS refuses and an OS with no ``os.sysconf`` (Windows,
+    where the statm read fails first) all give None.
     """
     try:
         fields = STATM_PATH.read_bytes().split()
         pages = int(fields[1])
         page_size = os.sysconf("SC_PAGE_SIZE")
-    except (OSError, ValueError, IndexError):
+    except (OSError, ValueError, IndexError, AttributeError):
         return None
     if pages < 0:
         return None
@@ -131,8 +134,8 @@ def register_gauge(name: str, fn: Callable[[], int]) -> None:
 def read_gauges() -> dict[str, int]:
     """Call every registered gauge once; a gauge that raises is left out and logged.
 
-    The failure is a rate-limited WARNING per gauge (one a minute), never an
-    error-level line. ``except Exception`` leaves a cancel (a BaseException)
+    The failure is a rate-limited WARNING per gauge (at most one a minute), never
+    an error-level line. ``except Exception`` leaves a cancel (a BaseException)
     alone. Iterates a copy, so a gauge that registers another cannot break the
     pass.
     """

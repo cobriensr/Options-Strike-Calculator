@@ -10,6 +10,9 @@ The readers open ``/proc/self/statm`` and the cgroup files, which exist on Linux
 only, and the suite also runs on Windows. Each test points the module's path
 constants at files under ``tmp_path`` (or at a name that does not exist) and
 swaps the module's ``os`` name for a fake ``sysconf``, so nothing reads the host.
+The gauge registry starts empty in every test: conftest.py's autouse fixture
+replaces it, and ``test_no_gauges_registered_reads_as_an_empty_object`` (which
+follows a test that registers) fails if that fixture goes.
 """
 
 from __future__ import annotations
@@ -24,17 +27,6 @@ import sentry_setup
 from logger_setup import RateLimitedLogger
 
 _PAGE_SIZE = 16_384  # not the usual 4,096, so a hard-coded page size fails
-
-
-@pytest.fixture(autouse=True)
-def _isolated_gauges(monkeypatch):
-    """An empty gauge registry per test, so no test sees another's registrations.
-
-    ``memory_stats`` keeps the registry in a module-level dict that every handler
-    constructor fills; replacing it here is the same isolation the socket-stats
-    tests use for their registry. monkeypatch puts the original back.
-    """
-    monkeypatch.setattr(memory_stats, "_gauges", {})
 
 
 @pytest.fixture(autouse=True)
@@ -129,6 +121,15 @@ def test_rss_is_none_when_the_page_size_cannot_be_read(monkeypatch, tmp_path):
         raise OSError("sysconf failed")
 
     monkeypatch.setattr(memory_stats, "os", SimpleNamespace(sysconf=_no_page_size))
+    _point_at(monkeypatch, tmp_path, statm=b"90000 250 100 5 0 300 0\n")
+
+    assert memory_stats.read_rss_bytes() is None
+
+
+def test_rss_is_none_when_the_os_has_no_sysconf_at_all(monkeypatch, tmp_path):
+    # Windows has no os.sysconf: the attribute is missing, not a call that fails.
+    # With a statm file that reads, the guard must still hold.
+    monkeypatch.setattr(memory_stats, "os", SimpleNamespace())
     _point_at(monkeypatch, tmp_path, statm=b"90000 250 100 5 0 300 0\n")
 
     assert memory_stats.read_rss_bytes() is None
@@ -284,7 +285,7 @@ def test_a_gauge_that_raises_is_skipped_and_the_others_still_report(logged, sent
     assert sentry_events == []
 
 
-def test_a_gauge_that_keeps_raising_is_logged_once_a_minute_not_on_every_read(logged):
+def test_a_gauge_that_keeps_raising_is_logged_at_most_once_a_minute_not_on_every_read(logged):
     def _broken() -> int:
         raise ValueError("still broken")
 
