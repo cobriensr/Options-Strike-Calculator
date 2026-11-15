@@ -169,12 +169,12 @@ function buildConvictionOptions(cutoffs: TierCutoffs | undefined): Array<{
     {
       value: 'tier2',
       label: '🔥🔥 Tier 2+',
-      tooltip: `Tier 2 or better${floorNote(cutoffs?.tier2MinScore)}. Historical high-peak rate ~63% (vs ~32% for Tier 3).`,
+      tooltip: `Tier 2 or better${floorNote(cutoffs?.tier2MinScore)}. Historical high-peak rate ~63% (vs ~32% for Tier 3), measured on the 06-17 seed weights.`,
     },
     {
       value: 'tier1',
       label: '🔥🔥🔥 Tier 1',
-      tooltip: `Tier 1 only${floorNote(cutoffs?.tier1MinScore)}. Historical high-peak rate ~80%, ~4 fires/day.`,
+      tooltip: `Tier 1 only${floorNote(cutoffs?.tier1MinScore)}. Historical high-peak rate ~80%, ~4 fires/day, measured on the 06-17 seed weights.`,
     },
   ];
 }

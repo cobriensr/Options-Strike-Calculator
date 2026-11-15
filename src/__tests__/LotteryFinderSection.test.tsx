@@ -1340,11 +1340,11 @@ describe('LotteryFinderSection: filter interactions', () => {
       render(<LotteryFinderSection marketOpen={false} />);
       expect(screen.getByRole('button', { name: /Tier 1/ })).toHaveAttribute(
         'title',
-        'Tier 1 only. Historical high-peak rate ~80%, ~4 fires/day.',
+        'Tier 1 only. Historical high-peak rate ~80%, ~4 fires/day, measured on the 06-17 seed weights.',
       );
       expect(screen.getByRole('button', { name: /Tier 2/ })).toHaveAttribute(
         'title',
-        'Tier 2 or better. Historical high-peak rate ~63% (vs ~32% for Tier 3).',
+        'Tier 2 or better. Historical high-peak rate ~63% (vs ~32% for Tier 3), measured on the 06-17 seed weights.',
       );
     });
 
