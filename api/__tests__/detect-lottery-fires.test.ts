@@ -281,7 +281,13 @@ vi.mock('../_lib/gexbot-queries.js', () => ({
 // re-imported) to avoid recursing back into this same mocked binding.
 const mockScoreLotteryV2 = vi.hoisted(() => ({
   override: null as number | null,
-  calls: [] as { weights: unknown; input: Record<string, unknown> }[],
+  // `score` is what the call returned, so a test can compare it with the value
+  // the cron bound into the INSERT.
+  calls: [] as {
+    weights: unknown;
+    input: Record<string, unknown>;
+    score: number | null;
+  }[],
 }));
 vi.mock('../_lib/lottery-score-weights-v2.js', async (importOriginal) => {
   const actual =
@@ -294,10 +300,12 @@ vi.mock('../_lib/lottery-score-weights-v2.js', async (importOriginal) => {
       weights: Parameters<typeof actual.scoreLotteryV2>[0],
       input: Parameters<typeof actual.scoreLotteryV2>[1],
     ) => {
-      mockScoreLotteryV2.calls.push({ weights, input: { ...input } });
-      return mockScoreLotteryV2.override !== null
-        ? mockScoreLotteryV2.override
-        : actual.scoreLotteryV2(weights, input);
+      const score =
+        mockScoreLotteryV2.override !== null
+          ? mockScoreLotteryV2.override
+          : actual.scoreLotteryV2(weights, input);
+      mockScoreLotteryV2.calls.push({ weights, input: { ...input }, score });
+      return score;
     },
   };
 });
@@ -311,12 +319,12 @@ vi.mock('../_lib/lottery-weights-loader.js', () => ({
 }));
 
 import handler from '../cron/detect-lottery-fires.js';
-import type { LoadedLotteryWeights } from '../_lib/lottery-weights-loader.js';
 import type { LotteryWeights } from '../_lib/lottery-weights-schema.js';
 import {
   SEED_LOTTERY_WEIGHTS,
   SEED_LOTTERY_WEIGHTS_VERSION,
 } from '../_lib/lottery-weights-seed.js';
+import { loadedWeights } from './loaded-lottery-weights.js';
 import { reportCronRun } from '../_lib/axiom.js';
 import { AXIOM_TOP_LEVEL_KEYS } from '../_lib/axiom-fields.js';
 import { cronGuard as realCronGuard } from '../_lib/cron-helpers.js';
@@ -469,23 +477,6 @@ function streamFor(ticker: string, optionChain: string) {
     ticker,
     option_chain: optionChain,
   }));
-}
-
-// What the loader mock answers: both pointers on the seed, no fallback,
-// unless a test overrides a part.
-const SEED_VERSIONED = {
-  version: SEED_LOTTERY_WEIGHTS_VERSION,
-  weights: SEED_LOTTERY_WEIGHTS,
-};
-function loadedWeights(
-  parts: Partial<LoadedLotteryWeights> = {},
-): LoadedLotteryWeights {
-  return {
-    active: SEED_VERSIONED,
-    takeit: SEED_VERSIONED,
-    fallback: null,
-    ...parts,
-  };
 }
 
 // A copy of the seed's weights with `edit` applied. The seed is deep-frozen,
@@ -3346,9 +3337,12 @@ describe('detect-lottery-fires handler', () => {
       expect(mockScoreLotteryV2.calls[1]!.weights).toBe(pinned.weights);
       // Take-It got the pinned version's null, not the feed's integer.
       expect(takeitScoresSeen()).toEqual([null]);
-      // The feed row carries the active version's integer and its version.
+      // The feed row carries the active version's own score, exactly (the first
+      // scoring, on the seed) and not the pinned version's null, and its version.
       const binds = extractInsertBinds(mockSql, 'lottery_finder_fires');
-      expect(Number.isInteger(binds.get('score'))).toBe(true);
+      const activeScore = mockScoreLotteryV2.calls[0]!.score;
+      expect(activeScore).toEqual(expect.any(Number));
+      expect(binds.get('score')).toBe(activeScore);
       expect(binds.get('score_version')).toBe(SEED_LOTTERY_WEIGHTS_VERSION);
       // A null Take-It input is not a failure: the run is as clean as one
       // where both versions score the fire.
@@ -3451,7 +3445,11 @@ describe('detect-lottery-fires handler', () => {
         // The fire was scored with the seed and says so.
         const binds = extractInsertBinds(mockSql, 'lottery_finder_fires');
         expect(binds.get('score_version')).toBe(SEED_LOTTERY_WEIGHTS_VERSION);
-        expect(Number.isInteger(binds.get('score'))).toBe(true);
+        // One scoring (both slots are the seed), and the row carries its score.
+        expect(mockScoreLotteryV2.calls).toHaveLength(1);
+        expect(mockScoreLotteryV2.calls[0]!.weights).toBe(SEED_LOTTERY_WEIGHTS);
+        expect(mockScoreLotteryV2.calls[0]!.score).toEqual(expect.any(Number));
+        expect(binds.get('score')).toBe(mockScoreLotteryV2.calls[0]!.score);
         // The Axiom event carries the status and the kind; the kind lands in
         // `meta`, not in a new top-level column.
         expect(vi.mocked(reportCronRun).mock.calls[0]![1]).toMatchObject({

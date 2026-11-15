@@ -180,45 +180,17 @@ vi.mock('../_lib/lottery-weights-loader.js', () => ({
 }));
 
 import handler, { degradeOnTimeout } from '../lottery-finder.js';
-import type { LoadedLotteryWeights } from '../_lib/lottery-weights-loader.js';
+import { SEED_LOTTERY_WEIGHTS_VERSION } from '../_lib/lottery-weights-seed.js';
 import {
-  SEED_LOTTERY_WEIGHTS,
-  SEED_LOTTERY_WEIGHTS_VERSION,
-} from '../_lib/lottery-weights-seed.js';
-
-/**
- * What the loader answers: the seed's weights with `feed_cutoffs` replaced,
- * under `version`, in the ACTIVE slot only. The `takeit` slot keeps the seed,
- * so a handler that read the wrong slot would bind the seed's 13 / 10 and fail
- * the cutoff tests, rather than pass because both slots agreed. `fallback`
- * marks a seed fallback.
- */
-function loadedWeights(
-  version: string,
-  cutoffs: { tier1_min_score: number; tier2_min_score: number },
-  fallback: LoadedLotteryWeights['fallback'] = null,
-): LoadedLotteryWeights {
-  return {
-    active: {
-      version,
-      weights: { ...SEED_LOTTERY_WEIGHTS, feed_cutoffs: cutoffs },
-    },
-    takeit: {
-      version: SEED_LOTTERY_WEIGHTS_VERSION,
-      weights: SEED_LOTTERY_WEIGHTS,
-    },
-    fallback,
-  };
-}
+  loadedWeights,
+  loadedWithFeedCutoffs,
+} from './loaded-lottery-weights.js';
 
 // The seed in the active slot: the loader's answer until a test overrides it.
-const SEED_LOADED = loadedWeights(
-  SEED_LOTTERY_WEIGHTS_VERSION,
-  SEED_LOTTERY_WEIGHTS.feed_cutoffs,
-);
+const SEED_LOADED = loadedWeights();
 
 // A promoted version whose cutoffs differ from the seed's 13 / 10.
-const VERSION_16_12 = loadedWeights('v-16-12', {
+const VERSION_16_12 = loadedWithFeedCutoffs('v-16-12', {
   tier1_min_score: 16,
   tier2_min_score: 12,
 });
@@ -985,11 +957,12 @@ describe('lottery-finder endpoint', () => {
       // The loader sends its own Sentry error when it falls back (D9), so the
       // endpoint answers from what it was handed and stays quiet.
       mockLoadLotteryWeights.mockResolvedValue(
-        loadedWeights(
-          SEED_LOTTERY_WEIGHTS_VERSION,
-          SEED_LOTTERY_WEIGHTS.feed_cutoffs,
-          { reason: 'active version v-bad fails validation', kind: 'error' },
-        ),
+        loadedWeights({
+          fallback: {
+            reason: 'active version v-bad fails validation',
+            kind: 'error',
+          },
+        }),
       );
       mockSql
         .mockResolvedValueOnce([rowAt(1, 13)])
