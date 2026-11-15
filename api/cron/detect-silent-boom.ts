@@ -65,6 +65,7 @@ import type { SilentBoomAlertRow } from '../_lib/takeit-features.js';
 import {
   fetchTickerFlowSeries,
   flowAtFireTime,
+  nextFlowSeriesDeadlineMs,
   type TickerFlowSeries,
 } from '../_lib/ticker-flow-snapshot.js';
 import {
@@ -88,16 +89,6 @@ const SCAN_WINDOW_MIN = 35;
 // cooldown is 60 min (12 buckets × 5min); we look back 70 min to
 // absorb clock skew between cron invocations.
 const PRIOR_FIRE_LOOKBACK_MIN = 70;
-
-// Deadline for one ticker-day's flow series, with a run-level breaker: a
-// stall or a transient failure costs a run at most 5 s, once, and the
-// remaining uncached ticker-days are skipped with cum_ncp/cum_npp NULL.
-// Unbounded, fetchTickerFlowSeries' own retries (3 × 10 s plus backoff)
-// let two slow tickers time the run out. The query normally answers well
-// under a second. The losing fetch keeps running on Neon, retries
-// included; the breaker stops a second one. Same rule as
-// detect-lottery-fires.
-const FLOW_SERIES_DEADLINE_MS = 5_000;
 
 type DbNumeric = string | number;
 type DbNullableNumeric = DbNumeric | null;
@@ -779,13 +770,19 @@ export default withCronInstrumentation(
     // alerts are still written, with cum_ncp/cum_npp NULL (the score
     // doesn't use them). The empty series is cached, so the ticker's other
     // alerts don't retry. Reported once per run, after the insert loop:
-    //   - a deadline or transient (Neon) failure: warning, 'partial', and
-    //     the breaker opens so the remaining ticker-days are skipped;
+    //   - a deadline or transient (Neon) failure: warning, 'partial'. The
+    //     second one opens the breaker, and so does a phase budget that
+    //     slow answers have spent: the remaining ticker-days are skipped
+    //     (nextFlowSeriesDeadlineMs, ticker-flow-snapshot.ts, has the
+    //     numbers and why). A skip is reported like a failure;
     //   - any other error (a broken query): error, the run reports 'error'.
+    // The fetch is one attempt under a 15 s deadline, so the run's flow
+    // waits total at most 25 s of the function's 60 s.
     let flowSeriesFailures = 0;
     let flowSeriesSkippedBreaker = 0;
     let flowSeriesGenuineFailures = 0;
-    let flowBreakerOpen = false;
+    // Time spent waiting on flow series, against the phase budget.
+    let flowSeriesSpentMs = 0;
     let firstFlowSeriesError: {
       ticker: string;
       date: string;
@@ -1058,20 +1055,24 @@ export default withCronInstrumentation(
       let flowSeries = tickerFlowCache.get(flowCacheKey);
       if (flowSeries == null) {
         flowSeries = { ts: [], cumNcp: [], cumNpp: [] };
-        if (flowBreakerOpen) {
+        const flowDeadlineMs = nextFlowSeriesDeadlineMs(
+          flowSeriesFailures,
+          flowSeriesSpentMs,
+        );
+        if (flowDeadlineMs == null) {
           flowSeriesSkippedBreaker += 1;
         } else {
+          const flowStartedAt = performance.now();
           try {
             flowSeries = await withDeadline(
               fetchTickerFlowSeries(db, g.ticker, date),
-              FLOW_SERIES_DEADLINE_MS,
+              flowDeadlineMs,
               'ticker flow series',
             );
           } catch (err) {
             if (err instanceof DeadlineError || isRetryableDbError(err)) {
-              // Neon slow or blipping: stop asking for this run.
+              // Neon slow or blipping: counts toward the breaker.
               flowSeriesFailures += 1;
-              flowBreakerOpen = true;
               firstFlowSeriesError ??= {
                 ticker: g.ticker,
                 date,
@@ -1083,6 +1084,8 @@ export default withCronInstrumentation(
               flowSeriesGenuineFailures += 1;
               firstFlowSeriesGenuineError ??= { ticker: g.ticker, date, err };
             }
+          } finally {
+            flowSeriesSpentMs += performance.now() - flowStartedAt;
           }
         }
         tickerFlowCache.set(flowCacheKey, flowSeries);
@@ -1308,7 +1311,7 @@ export default withCronInstrumentation(
     // Flow-series failures leave cum_ncp/cum_npp null on the row; the alert
     // itself is written. Each kind is reported once per run, with its first
     // case: Neon slow or blipping as a warning, a broken query as an error.
-    if (flowSeriesFailures > 0) {
+    if (flowSeriesFailures > 0 || flowSeriesSkippedBreaker > 0) {
       const message =
         'detect-silent-boom: ticker flow series failed; alerts written without flow features';
       const detail = {
@@ -1455,6 +1458,8 @@ export default withCronInstrumentation(
         flowSeriesFailures,
         flowSeriesSkippedBreaker,
         flowSeriesGenuineFailures,
+        // Time spent waiting on flow series, against the 25 s phase budget.
+        flowSeriesMs: Math.round(flowSeriesSpentMs),
         firstFlowSeriesError,
         firstFlowSeriesGenuineError: firstFlowSeriesGenuineErrorMeta,
         anchorsFound,
