@@ -508,11 +508,19 @@ describe.each([
     expect(liveButton()).not.toBeInTheDocument();
   });
 
-  it('follows today when the date field is emptied', () => {
+  it('keeps the picked date while the field is empty, and follows today once it is left', () => {
     render(<GreekFlowPanel marketOpen={true} />);
     pick('2026-04-20');
 
+    // Emptying the field (the first "0" of a zero-padded month does it) is
+    // mid-edit: the data path keeps the picked date.
     pick('');
+
+    expect(dateInput().value).toBe('');
+    expect(lastCall()).toEqual([false, '2026-04-20', '0dte']);
+
+    // Leaving it empty follows today.
+    fireEvent.blur(dateInput());
 
     expect(dateInput().value).toBe(m.night);
     expect(lastCall()).toEqual([true, null, '0dte']);
@@ -521,5 +529,15 @@ describe.each([
 
     expect(dateInput().value).toBe(m.morning);
     expect(lastCall()).toEqual([true, null, '0dte']);
+  });
+
+  it('takes a date typed over an emptied field, not today', () => {
+    render(<GreekFlowPanel marketOpen={true} />);
+
+    pick('');
+    pick('2026-04-09');
+
+    expect(dateInput().value).toBe('2026-04-09');
+    expect(lastCall()).toEqual([false, '2026-04-09', '0dte']);
   });
 });

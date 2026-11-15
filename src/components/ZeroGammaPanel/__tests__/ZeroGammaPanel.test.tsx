@@ -147,9 +147,11 @@ describe('ZeroGammaPanel orchestration', () => {
 
     // Scrub to a past date — LIVE button appears, hooks re-call with date.
     useZeroGammaMock.mockClear();
-    // A date input commits a whole date in one change event. (Typing it key
-    // by key would first empty the field, and an emptied field follows today.)
-    fireEvent.change(dateInput, { target: { value: '2026-04-21' } });
+    // Typed key by key over the field, as the owner does. Emptying it first
+    // must not snap it back to today and lose the typing: regression for the
+    // shared DateInput, which keeps an emptied field as a local draft.
+    await user.clear(dateInput);
+    await user.type(dateInput, '2026-04-21');
 
     const liveBtn = await screen.findByRole('button', { name: /^live$/i });
     expect(liveBtn).toBeInTheDocument();
@@ -331,11 +333,19 @@ describe.each([
     expect(liveButton()).not.toBeInTheDocument();
   });
 
-  it('follows today when the date field is emptied', () => {
+  it('keeps the picked date while the field is empty, and follows today once it is left', () => {
     render(<ZeroGammaPanel marketOpen={true} />);
     pick('2026-04-20');
 
+    // Emptying the field (the first "0" of a zero-padded month does it) is
+    // mid-edit: the three cards keep the picked date.
     pick('');
+
+    expect(dateInput().value).toBe('');
+    expect(lastRender()).toEqual(pastRender('2026-04-20'));
+
+    // Leaving it empty follows today.
+    fireEvent.blur(dateInput());
 
     expect(dateInput().value).toBe(m.night);
     expect(lastRender()).toEqual(liveRender(true));
@@ -344,5 +354,15 @@ describe.each([
 
     expect(dateInput().value).toBe(m.morning);
     expect(lastRender()).toEqual(liveRender(true));
+  });
+
+  it('takes a date typed over an emptied field, not today', () => {
+    render(<ZeroGammaPanel marketOpen={true} />);
+
+    pick('');
+    pick('2026-04-09');
+
+    expect(dateInput().value).toBe('2026-04-09');
+    expect(lastRender()).toEqual(pastRender('2026-04-09'));
   });
 });

@@ -15,7 +15,7 @@
  * intraday time-of-day for replay/scrubbing.
  */
 
-import { useId } from 'react';
+import { useId, useState } from 'react';
 
 export interface DateInputProps {
   /** YYYY-MM-DD string or empty. */
@@ -54,6 +54,19 @@ export function DateInput({
   const generatedId = useId();
   const inputId = id ?? generatedId;
 
+  // A native date input fires `input` with '' whenever its value goes invalid:
+  // the first "0" of a zero-padded month or day does it, as does a cleared
+  // segment. A parent that turns '' into a date (a panel that follows today)
+  // would rewrite the controlled field and lose the segments typed so far, so
+  // an emptied field is kept as a local draft. It tells the parent nothing
+  // until a date is complete, or until the field is left still empty.
+  //
+  // The draft is the `value` the field was emptied against, not a copy of it:
+  // it shows only while `value` still equals it, so a new value from outside
+  // (the LIVE button, the midnight roll) drops it with no effect to sync.
+  const [emptiedFrom, setEmptiedFrom] = useState<string | null>(null);
+  const emptied = emptiedFrom === value;
+
   return (
     <span className="inline-flex items-center gap-1.5">
       {labelVisible ? (
@@ -68,8 +81,21 @@ export function DateInput({
       <input
         id={inputId}
         type="date"
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
+        value={emptied ? '' : value}
+        onChange={(e) => {
+          const next = e.target.value;
+          if (next === '') {
+            setEmptiedFrom(value);
+            return;
+          }
+          setEmptiedFrom(null);
+          onChange(next);
+        }}
+        onBlur={() => {
+          if (!emptied) return;
+          setEmptiedFrom(null);
+          onChange('');
+        }}
         min={min}
         max={max}
         list={list}

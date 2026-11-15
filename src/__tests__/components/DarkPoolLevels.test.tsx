@@ -978,7 +978,7 @@ describe('DarkPoolLevels: date field', () => {
     expect(screen.getByLabelText('Select date')).toHaveValue('2026-03-11');
   });
 
-  it('hands a picked date and an emptied field to onDateChange as typed', () => {
+  it('hands a picked date on, and an emptied field only once it is left', () => {
     const onDateChange = vi.fn();
     render(
       <DarkPoolLevels
@@ -994,9 +994,16 @@ describe('DarkPoolLevels: date field', () => {
     const input = screen.getByLabelText('Select date');
 
     fireEvent.change(input, { target: { value: '2026-03-12' } });
-    fireEvent.change(input, { target: { value: '' } });
+    expect(onDateChange.mock.calls).toEqual([['2026-03-12']]);
 
-    // The hook maps '' to following today; the component passes it on.
+    // Emptying is mid-edit (the first "0" of a zero-padded month does it):
+    // nothing is passed on and the field shows empty.
+    fireEvent.change(input, { target: { value: '' } });
+    expect(onDateChange.mock.calls).toEqual([['2026-03-12']]);
+    expect(input).toHaveValue('');
+
+    // Leaving it empty passes '' on once; the hook maps it to today.
+    fireEvent.blur(input);
     expect(onDateChange.mock.calls).toEqual([['2026-03-12'], ['']]);
   });
 });
