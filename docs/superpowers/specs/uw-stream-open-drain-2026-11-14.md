@@ -30,17 +30,18 @@ Data: `docs/tmp/open-drain-2026-11-12/` (main checkout), `docs/tmp/fulltape-chec
 
 ## Thresholds / constants
 
-| Name | Value | Where | Meaning |
-|---|---|---|---|
-| shared option-trade queue size | 200,000 | `handlers/option_trades.py` | Room for a slow-Neon open. Thursday needed ~75,000 (50,000 queued plus 24,585 evicted). At the 11-12 drain rate (~700/s) 200,000 is ~5 min of backlog. Every other handler, Interval B/A included, keeps `ws_queue_size` (50,000) |
-| shared option-trade flush concurrency | 2 | `handlers/option_trades.py` | At most two flushes in flight. Neon used about half its 4 CU on 11-12, so a second connection can use idle capacity. The pool's max is 10, so this adds at most one connection |
-| every other handler | 1 | `handlers/base.py` default | Unchanged. Interval B/A's `_flush` aggregates in memory, so it must stay sequential |
+| Name                                  | Value   | Where                       | Meaning                                                                                                                                                                                                                           |
+| ------------------------------------- | ------- | --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| shared option-trade queue size        | 200,000 | `handlers/option_trades.py` | Room for a slow-Neon open. Thursday needed ~75,000 (50,000 queued plus 24,585 evicted). At the 11-12 drain rate (~700/s) 200,000 is ~5 min of backlog. Every other handler, Interval B/A included, keeps `ws_queue_size` (50,000) |
+| shared option-trade flush concurrency | 2       | `handlers/option_trades.py` | At most two flushes in flight. Neon used about half its 4 CU on 11-12, so a second connection can use idle capacity. The pool's max is 10, so this adds at most one connection                                                    |
+| every other handler                   | 1       | `handlers/base.py` default  | Unchanged. Interval B/A's `_flush` aggregates in memory, so it must stay sequential                                                                                                                                               |
 
 ## Task 1: a bigger queue and two writers for the shared option-trade handler
 
 **Commit (≤5 source and doc files plus their tests):** `uw-stream/src/handlers/base.py`, `uw-stream/src/handlers/option_trades.py`, `uw-stream/src/handlers/interval_ba.py` (only if needed to keep its queue size and concurrency at the defaults), `uw-stream/README.md`, this spec, and the test files that hold the drain-loop, option-trade and Interval B/A tests.
 
 **Behaviour:**
+
 - **Per-handler settings (call).** `Handler` gains a class-level queue size (default `settings.ws_queue_size`) and a class-level flush concurrency (default 1). The shared `OptionTradesHandler` sets 200,000 and 2. The Interval B/A subclasses inherit from `OptionTradesHandler`, so they set both back to the defaults explicitly. A test pins all four handlers' values.
 - **Concurrent flushes.** With concurrency N > 1, the consumer builds batches exactly as today (500 rows or the 2 s timeout, topped up from the backlog to `BACKLOG_BATCH_MAX`).
   - Instead of awaiting each flush, it starts the flush as a task and goes back to building the next batch.
@@ -60,6 +61,7 @@ Data: `docs/tmp/open-drain-2026-11-12/` (main checkout), `docs/tmp/fulltape-chec
 - **README** ("Pipeline diagnostics", or the handler section that describes queues and flushes): the shared handler's queue size and two writers, with the 11-12 reason in two lines; that every other handler keeps 50,000 and one writer; the payload memory at 200,000 queued, measured (deep size of a typical transformed or queued payload times 200,000), not guessed; and how to read the minute line at the open (`queue_hwm`, `batch_max` at 5,000, `flush_s`, `dropped`).
 
 **Tests:**
+
 - Two flushes overlap: fake `_flush` coroutines block on events, and the test shows both are entered before either returns.
 - A third batch waits until one of the two finishes.
 - Start order follows build order.
@@ -70,6 +72,13 @@ Data: `docs/tmp/open-drain-2026-11-12/` (main checkout), `docs/tmp/fulltape-chec
 - The queue sizes and concurrencies of the shared handler and the three Interval B/A handlers.
 - A full 200,000 queue still drops the oldest and counts it.
 - The insert receives rows in `ws_trade_id` order, a same-id pair stays in arrival order, and the caller's list is unchanged (shared handler and Interval B/A).
+
+**As built** (additions to the behaviour above; none changes a requirement):
+
+- **D4, no retry on a cancel.** The retry loop in `db.py` re-raises instead of retrying while `asyncio.current_task().cancelling()` is true. asyncpg turns a cancelled query into `InterfaceError`, which is transient, and a retry would write the rows on a fresh connection after the drain deadline cancelled the flush and reported them lost. It is the same rule as `Handler._safe_flush`.
+- **Boot lines.** Each handler logs one `handler built` line with `handler`, `first_channel`, `queue_size` and `flush_concurrency`, its real capacity (the shared handler says 200,000 and 2). `queue_size` on the `uw-stream starting` line is now `default_queue_size`, the `WS_QUEUE_SIZE` default only, since a handler may set its own.
+- **Drain-deadline context.** The "drain deadline exceeded" warning and its Sentry message carry `in_flight_flushes`, the number of flush tasks not yet finished, beside `in_memory_batch`, `queue_remaining` and `lost_rows`. `in_memory_batch` and `lost_rows` include the rows of those tasks' batches.
+- **Sorted batches.** `OptionTradesHandler._flush` sorts each batch with `sorted(rows, key=itemgetter(0))`: row 0 is `ws_trade_id`, so a tie never compares the payload dicts, the sort is stable, and the caller's list is never sorted in place.
 
 ## Deploy
 

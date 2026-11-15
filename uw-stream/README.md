@@ -183,8 +183,10 @@ Single asyncio process:
    `VERCEL_NOTIFY_URL` and `INTERNAL_NOTIFY_SECRET` are set.
 8. **Pipeline stats** (`src/pipeline_stats.py`): samples event-loop lag and
    DB pool use four times a second and logs one line a minute with the
-   handlers' flush timing and queue high-waters, and each socket's frame
-   counts and silences, which the connectors count (`src/socket_stats.py`).
+   handlers' flush timing and queue high-waters, each socket's frame
+   counts and silences, which the connectors count (`src/socket_stats.py`),
+   and a `memory` object (resident set, container memory and the size of each
+   in-memory store that can grow; `src/memory_stats.py`).
    See Pipeline diagnostics.
 9. **Stuck-socket watchdog** (`src/stuck_sockets.py`): every 5 s, finds a
    connected `option_trades` socket that has received no trade frame for
@@ -620,6 +622,10 @@ time. Batches are built exactly as before (500 rows or 2 s, topped up from
 the backlog to 5,000); with two flushes already in flight the consumer holds
 the next batch until one finishes.
 
+The deploy check is the `handler built` boot line, one per handler, with
+`handler`, `first_channel`, `queue_size` and `flush_concurrency`: the shared
+`option_trades` handler's should say 200,000 and 2.
+
 Why: on 2026-11-12 at 8:32 to 8:35 CT the full 50,000-row queue evicted
 24,585 trades, because the one writer drained about 700 to 1,100 rows/s
 against about 1,050/s arriving while Neon was slow. That morning needed room
@@ -667,8 +673,12 @@ the top level of `/metrics` (in bytes, read when the request arrives).
 | Minute line | `/metrics`     | What it is                                                                                                                                                                                                                                       |
 | ----------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `rss_mb`    | `rss_bytes`    | The process's resident set, from `/proc/self/statm`. The process alone.                                                                                                                                                                          |
-| `cgroup_mb` | `cgroup_bytes` | The container's memory, from the cgroup (`memory.current`, or `memory/memory.usage_in_bytes` on cgroup v1). This is the number Railway's memory graph tracks. It counts page cache, which the process does not own.                              |
+| `cgroup_mb` | `cgroup_bytes` | The container's own cgroup figure (`memory.current`, or `memory/memory.usage_in_bytes` on cgroup v1); check it against Railway's graph. It counts page cache, which the process does not own.                                                      |
 | `gauges`    | `gauges`       | The size of each in-memory store that can grow, by name. Each is a callback its owner registered; the minute reporter and a `/metrics` request call it, and nothing calls it per frame. Today there are three kinds, listed below.              |
+
+`cgroup_mb` can be below `rss_mb`: RSS counts shared file pages (the interpreter
+and its libraries) that are not charged to this container. Compare climbs, not
+levels.
 
 `rss_mb`, `cgroup_mb`, `rss_bytes` and `cgroup_bytes` are `null` when the file
 cannot be read (a Windows or macOS dev machine, a container with no cgroup
@@ -691,8 +701,11 @@ Interval B/A handlers):
 A gauge that raises is left out of that minute's `gauges` and logged as at
 most one warning a minute, `memory gauge failed`, with `gauge`, `err_type` and
 `err`. The 60 s window of the shared rate limiter can still be open when the
-next minute line comes, so a broken gauge logs every minute or two. It sends
-nothing to Sentry, and the rest of the line is unaffected. The
+next minute line comes, so a broken gauge logs every minute or two. The
+limiter's own summary line can add a second warning in the same minute:
+`memory gauge failed: N occurrences suppressed in last 60s`, which comes with
+the first failure after a window that suppressed any. It sends nothing to
+Sentry, and the rest of the line is unaffected. The
 registry holds at most 32 names, and registering a name again replaces the
 callback.
 
@@ -704,6 +717,11 @@ How to read a climb:
   gauge's name says which.
 - `rss_mb` rises and every gauge stays flat: something no gauge measures.
   Register a gauge on the next suspect.
+- `rss_mb` steps up at the open while a handler's `queue_hwm` is high: that is
+  queued payloads (see [Queue size and writers](#queue-size-and-writers)). It
+  may not come back down after the queue drains, because CPython and glibc keep
+  freed memory. A step that holds is allocator retention, not a leak. A climb
+  with a low `queue_hwm` and every gauge flat is the unmeasured case.
 
 Read the numbers from the same logs as above (`memory` on each line), or from
 `/metrics` on a running instance (a local one here, on port 8080):
@@ -1145,9 +1163,13 @@ fields, to the next event as breadcrumbs, so an event can carry a line that has
 are sent, so the receive loop never waits on it. One short-lived HTTP session
 each, a 5 s limit for the whole request (`_TIMEOUT_S` in `src/egress.py`), no
 retry: the next session looks again. It is cancelled when the session ends and at
-shutdown. A timeout, a refused or reset connection, a non-200 and a body with no
-valid `ip=` store nothing and log one `egress trace lookup failed` warning, at most
-one a minute per shard, with `shard`, `exc_type` and, for the last two, `err`.
+shutdown. A timeout, a refused or reset connection, a non-200, a body over the
+4 KiB cap (`_MAX_BODY_BYTES`) and a body with no valid `ip=` (missing, not an
+address, or an IPv6 address with a scope id) store nothing and log one
+`egress trace lookup failed` warning, at most one a minute per shard, with `shard`,
+`exc_type` and, for the last three, `err`: `HTTP <status>`, `body too large` or
+`no valid ip line`. The first two, and any other exception, are named by `exc_type`
+alone (`err` is `null`).
 
 **Reading it.**
 
@@ -1158,7 +1180,9 @@ one a minute per shard, with `shard`, `exc_type` and, for the last two, `err`.
    compare, and it can match `ConnectionResetError` too, so it would blur the
    reading. Resets that cluster on one colo point at that edge location. Resets
    spread across every colo the sockets use point at the path before Cloudflare,
-   which is Railway's network.
+   which is Railway's network. Compare each colo's share of resets with its share
+   of socket time (sum `session_s` by `cf_colo`). With a single colo, step 1 cannot
+   separate the two; use step 2.
 2. For each reset, look for a `ws-canary` drop within 2 s either side, by each
    line's own timestamp (uw-stream's `time`, the canary's `ts`), not Railway's log
    timestamp, and compare the two `cf_colo` values. The canary logs the same two

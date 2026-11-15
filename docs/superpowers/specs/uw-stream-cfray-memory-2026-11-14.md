@@ -13,7 +13,7 @@ Status: approved by the owner 2026-11-14 ("lets also look at cf-ray/egress loggi
 - **`cf-ray`.** Every response from `api.unusualwhales.com` carries `CF-RAY: <16 hex>-<COLO>` (for example `a5a99a668950d873-MCI`) and `via: 1.1 google`. The suffix is the Cloudflare data centre's IATA code. The ray ID is what Cloudflare and UW look connections up by.
 - **websockets 17.4 / 17.3** (`asyncio/connection.py:85`, `asyncio/client.py:123`): `ClientConnection.response` is the handshake `Response` once connected; `response.headers` is case-insensitive.
 - **`/cdn-cgi/trace`** on the same host returns `key=value` lines including `ip=` (the address Cloudflare saw), `colo=` and `loc=` (probed 2026-11-14). It is served by Cloudflare, not UW's API.
-- **Sentry.** `sentry_setup.py:183` sets `LoggingIntegration(event_level=None)`: a `log.warning` is never a Sentry event. Events come only from `capture_message` and `rate_limited_log.error`.
+- **Sentry.** `sentry_setup.py:183` sets `LoggingIntegration(event_level=None)`: a `log.warning` is never a Sentry event. Events come from `capture_message`, `capture_exception` and `rate_limited_log.error`, and from the `EventHandler` at ERROR that `sentry_setup.py:132-140` attaches to the `asyncio` and `websockets` loggers. That handler is how an aiohttp "Unclosed client session" (which asyncio logs at ERROR) would become an event.
 - **Memory suspects.** The option_trades dedupe holds two generations of keys (~160k at the open, peaks ~15-35 MB). Interval B/A's `_ticks` (`handlers/interval_ba.py:209`, `dict[str, dict[int, deque]]`) is swept only past `_CHAINS_PRUNE_THRESHOLD = 5_000` chains: the suspected slow grower, inferred from code, not measured.
 
 ## Global constraints
@@ -33,6 +33,7 @@ Status: approved by the owner 2026-11-14 ("lets also look at cf-ray/egress loggi
 | trace timeout | 5 s total                             | `egress.py`       | one `/cdn-cgi/trace` GET per connected session; past this it gives up  |
 | trace URL     | `https://<ws_url host>/cdn-cgi/trace` | `egress.py`       | derived from `settings.ws_url`, so it is the same zone the sockets use |
 | User-Agent    | `uw-stream/1.0 (egress-trace)`        | `egress.py`       | UW 403s Python's default UA                                            |
+| body cap      | `_MAX_BODY_BYTES` = 4096              | `egress.py`       | a real trace is about 350 bytes; a body past this is `TraceError`      |
 | colo shape    | `^[A-Z]{3}$`                          | connector, canary | anything else is logged as `null` with the full ray kept               |
 | memory units  | MB, 1 decimal                         | minute line       | `/metrics` carries bytes                                               |
 
@@ -50,7 +51,7 @@ Status: approved by the owner 2026-11-14 ("lets also look at cf-ray/egress loggi
 **Commit 1b, structure gauges (≤5 files):** `src/handlers/option_trades.py`, `src/handlers/interval_ba.py`, `tests/test_option_trades.py` (or wherever the dedupe tests live), `tests/test_interval_ba.py`, `uw-stream/README.md`.
 
 - `OptionTradesHandler` registers `<name>.dedupe_keys` = `len(self._seen) + len(self._seen_prev)`. The Interval B/A subclasses inherit the dedupe, so each registers under its own name.
-- The Interval B/A handlers register `<name>.chains` = `len(self._ticks)` and `<name>.ticks` = the total tick entries across chains. The total is O(entries) once a minute; say in a comment what bounds it.
+- The Interval B/A handlers register `<name>.chains` = `len(self._ticks)` and `<name>.ticks` = the total tick entries across chains. The total is O(chain × bucket pairs) once a minute (it sums each bucket's length, so it does not walk the prints); say in a comment what bounds it.
 - README, "Pipeline diagnostics": the `memory` object on the minute line and `/metrics`, what each number is, and how to read a climb: `cgroup_mb` rising with `rss_mb` flat is page cache, not us; `rss_mb` rising with a gauge rising names the structure; `rss_mb` rising with every gauge flat is something unmeasured.
 - Tests: each gauge's value after known inserts and after a rotation or prune.
 
@@ -61,7 +62,7 @@ Status: approved by the owner 2026-11-14 ("lets also look at cf-ray/egress loggi
 - **Ray.** Right after the handshake, read the `cf-ray` header of `ws.response.headers` (with `get_all`, since `Headers.get` raises on a repeated header, which then counts as no header) into the session record (`_SessionDiag`) as `cf_ray` (the full value) and `cf_colo` (the suffix after the last `-`, when it matches the colo shape). Both go on the "WS connected, awaiting messages" line and on the disconnect line. A missing or odd header is `null`, never an exception.
 - **Egress.** Once each connect's joins are sent, start one background lookup (`egress.lookup`) of the trace URL, as a task beside the reconcile and join-summary tasks, so one cancel-and-gather ends all three. It must not delay the subscribe or the receive loop, and it is cancelled when the session ends or the daemon shuts down. A connect whose subscribe fails starts no lookup. On success it stores `egress_ip`, `trace_colo` and `trace_loc` in the session record and logs one "egress trace" line: `shard`, `egress_ip`, `trace_colo`, `trace_loc`, and the socket's own `cf_colo` (the trace is a separate TCP connection, so its colo can differ from the socket's; the line shows both). The disconnect line carries `egress_ip` when the lookup finished first, else `null`.
 - **(call)** One short-lived `aiohttp.ClientSession` per lookup inside `async with`: at 8 lookups per boot and one per reconnect (~50-260 a day) a shared session buys nothing and needs shutdown wiring.
-- A lookup that times out, gets a non-200, or can't parse `ip=` stores nothing and logs one rate-limited WARNING with the shard and the error type. No retry: the next session looks again.
+- A lookup that times out, gets a non-200, or can't parse `ip=` stores nothing and logs one rate-limited WARNING with the shard and the error type. No retry: the next session looks again. As built, two more cases end the same way: a body over the 4 KiB cap (`_MAX_BODY_BYTES`; the body is read through the cap, so a response that keeps coming is dropped instead of held until the timeout) and an `ip=` that is an IPv6 address with a scope id (`fe80::1%eth0`, which `ipaddress` accepts and a trace never carries).
 - **Sentry (call).** The egress IP is kept out of the context sent with an unexpected disconnect. It reaches Sentry only as a breadcrumb: the logging integration (`level=INFO`) attaches INFO and WARNING lines, with their fields, to the next event, as `local_addr` and `remote_addr` already are. Accepted, with no `before_breadcrumb` hook: it is Railway's shared egress address, not a secret, in an owner-only project.
 - README, the disconnect-line field list and a short "Splitting the RST half" note: group RST drops by `cf_colo`; for each RST, look for a canary RST within ±2 s (by the app's `time`, not Railway's timestamp) and compare their colos; note any `egress_ip` change near an RST burst.
 - Tests: header parse (present, missing, no suffix, lowercase or odd suffix); both log lines carry the fields; the lookup's success, timeout, non-200 and garbled body (aiohttp mocked at the module boundary, or a loopback test server); the lookup runs off the connect path (the connect line and subscribe don't wait for it); cancellation at session end and at shutdown leaves no pending task or warning.
@@ -79,7 +80,7 @@ Status: approved by the owner 2026-11-14 ("lets also look at cf-ray/egress loggi
 
 - Market closed: no push 8:30-15:00 CT on a trading day. Task 3 is outside every nightly watch path.
 - Checks after the push:
-  - uw-stream: 8 "WS connected" lines with `cf_ray` and a 3-letter `cf_colo`; 8 "egress trace" lines within ~5 s of boot; the minute line carries `memory` with non-null `rss_mb` and `cgroup_mb` and the gauges listed; `/metrics` has `memory`.
+  - uw-stream: 8 "WS connected" lines with `cf_ray` and a 3-letter `cf_colo`; 8 "egress trace" lines, each within ~5 s of its shard's "WS connected" line; the minute line carries `memory` with non-null `rss_mb` and `cgroup_mb` and the gauges listed; `/metrics` has `memory`.
   - canary: `connect` events for the Cloudflare arms carry `cf_colo`; the direct arms carry `null`.
 
 ## Not in scope
