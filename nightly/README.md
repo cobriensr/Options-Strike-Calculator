@@ -790,6 +790,66 @@ promotion the column mixes versions. Nothing live reads it (only
 `scripts/analyze-tag-scorecard-2026-05-29.ts` does), and the undo does not restore it
 either.
 
+**Rolling back during trading (by hand, owner-approved only).** The full undo locks
+every fire it rewrites, so it cannot run from 13:00 to 24:00 UTC on weekdays. A
+promotion that turns out wrong while the market is open is rolled back in two parts:
+the pointer at once, at any hour, and the scores after the window closes.
+
+_When to prefer the full undo._ A promotion ends by 12:30 UTC (`PROMOTION_CUTOFF_UTC`)
+and sends the `nightly refit promoted` email. From the end of the nightly run until
+13:00 UTC the full undo above is allowed and complete: no fire is detected before the
+open, so nothing was created between the promotion and the undo, and step 6 finds
+nothing to repair. If the email is read in that window, use the full undo and not this.
+
+_The pointer-only move._ Check that `active` names `<promoted>` and take `<previous>`
+from `gate_report->>'replaced'`, as in steps 1 and 3 of the undo. Then, in `psql`:
+
+```sql
+SET lock_timeout = '5s';
+UPDATE lottery_score_pointers SET version = '<previous>', updated_at = now()
+ WHERE name = 'active' AND version = '<promoted>';
+```
+
+It must say `UPDATE 1`. This is one statement, so autocommit is fine here and no `BEGIN`
+is needed (steps 4 and 5 of the undo need one only because they read counts between two
+statements). `UPDATE 0` means `active` no longer names `<promoted>`: stop and look at
+step 1 again. A lock timeout error means a rescore holds the pointer; nothing was
+written, and the rescore has to be found before anything else is done.
+
+It is safe at any hour because it writes one row. The crons and the feed read the pointer
+through the loader (`api/_lib/lottery-weights-loader.ts`) with a plain SELECT, which a
+row lock never blocks, and only a rescore locks the pointer. None runs during trading:
+the promotion ends by 12:30 UTC and the by-hand rescore has the window above. It takes
+effect within the loader's cache period, `WEIGHTS_CACHE_TTL_MS` (60 s), on each warm
+instance.
+
+_What it fixes, and what it does not._ From then on new fires are scored with
+`<previous>`, and every row is tiered with `<previous>`'s cutoffs, because the feed
+tiers at read time (`api/lottery-finder.ts`, the `qualityAdjustedScore` call, and the
+`feed_cutoffs` that bind the `minTier` floor). It does not touch the fires the promoted
+weights scored: all history, which the promotion rescored, and today's fires up to the
+move, which carry `<promoted>`'s tag and scores until the evening. Their tiers, read
+against `<previous>`'s cutoffs, can be off in either direction until then. `takeit` is
+unaffected, as in any promotion.
+
+_The evening completion._ After 24:00 UTC, and not during a nightly run, finish it with
+the undo's steps, changed in two places:
+
+- Step 1 checks the other way: stop unless `active` returns `<previous>`, which the
+  pointer-only move already made so. Step 2 (the snapshot rows and their `total`) is
+  as written.
+- Step 4 skips the pointer UPDATE. Run only the fires UPDATE, in one interactive `psql`
+  session with `BEGIN`, with its `f.score_version = '<promoted>'` guard, and in step 5
+  compare its count with `total` before `COMMIT`, or `ROLLBACK` if they differ.
+
+Then step 6 as written, `--version <previous> --only-tag <promoted> --write`: it repairs
+the fires inserted under `<promoted>` since the promotion, which are in no snapshot row.
+The fires inserted after the pointer moved already carry `<previous>`, and `--only-tag`
+leaves them alone. If the completion is put off, the next night's `fires_off_version`
+count is above 0 (fires tagged `<promoted>` while `active` names `<previous>`), and the
+notice says so. When it is done every fire is tagged `<previous>` or carries no tag, as
+before the promotion.
+
 **Turning promotion on.** `PROMOTION_ENABLED` in `src/constants.py` is a reviewed
 constant, not an env var: it is read in one place, and flipping it rewrites the live
 feed's scores and tiers.
