@@ -564,12 +564,64 @@ describe('Sentry.init beforeSend', () => {
     expect(r504.fingerprint).toEqual(['uw-api-5xx', '504']);
   });
 
-  it('does not collapse UW 4xx errors (semantic body differences)', () => {
+  it.each([
+    ['401', 'UW API 401: invalid api key'],
+    ['404', 'UW API 404: no such ticker'],
+  ])(
+    'does not collapse a UW %s (semantic body differences)',
+    (_status, message) => {
+      const event = { exception: { values: [{ value: message }] } };
+      const result = beforeSend!(event) as { fingerprint?: string[] };
+      expect(result.fingerprint).toBeUndefined();
+    },
+  );
+
+  it('pins every thrown UW 429 to one fingerprint, whatever its body', () => {
+    // uwFetch's message carries the upstream body, which differs per limit
+    // sub-type and per call; the default fingerprint opened one issue per
+    // cron (SENTRY-EMERALD-DESERT-7Y had 117,559 events, and 7Y's siblings).
+    const concurrent = {
+      exception: {
+        values: [{ value: 'UW API 429: {"message":"Too many concurrent"}' }],
+      },
+    };
+    const perMinute = {
+      exception: {
+        values: [{ value: 'UW API 429: rate limit of 120 in 60 seconds' }],
+      },
+    };
+    const emptyBody = { exception: { values: [{ value: 'UW API 429: ' }] } };
+    for (const event of [concurrent, perMinute, emptyBody]) {
+      const result = beforeSend!(event) as { fingerprint?: string[] };
+      expect(result.fingerprint).toEqual(['uw-api-429']);
+    }
+  });
+
+  it('leaves the exhausted-retries message event on its own fingerprint', () => {
+    // metrics.uwRateLimitExhausted sets this fingerprint on a message event
+    // (no exception), so the 429 rule above must not rewrite it.
     const event = {
-      exception: { values: [{ value: 'UW API 429: rate limit exceeded' }] },
+      message: 'UW 429: retries exhausted',
+      fingerprint: ['uw-rate-limit-exhausted'],
     };
     const result = beforeSend!(event) as { fingerprint?: string[] };
-    expect(result.fingerprint).toBeUndefined();
+    expect(result.fingerprint).toEqual(['uw-rate-limit-exhausted']);
+  });
+
+  it('does not touch a 429 that is not a thrown UW API error', () => {
+    // GEXBot's crons fingerprint their own 429s; only `UW API 429:` leads.
+    const event = {
+      exception: {
+        values: [{ value: 'GEXBot 429 /SPX/orderflow/orderflow: {}' }],
+      },
+      fingerprint: ['gexbot-fetch-failure', 'fetch-gexbot-fast', 'http-429'],
+    };
+    const result = beforeSend!(event) as { fingerprint?: string[] };
+    expect(result.fingerprint).toEqual([
+      'gexbot-fetch-failure',
+      'fetch-gexbot-fast',
+      'http-429',
+    ]);
   });
 
   it('does not collapse non-UW errors', () => {
