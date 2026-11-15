@@ -134,8 +134,10 @@ export const LotteryWeightsSchema = z.strictObject({
     .strictObject({ t1: z.number().int(), t2: z.number().int() })
     .refine((c) => c.t1 > c.t2, { error: 't1 must exceed t2' }),
   /**
-   * Cutoffs on the quality-adjusted score (the bare score plus the cluster
-   * bonus); these set the feed's tier 1 and tier 2.
+   * Cutoffs on the feed's quality-adjusted score (qas), which set its tier 1 and
+   * tier 2. `qasExprText` in `api/lottery-finder.ts` defines it:
+   * `GREATEST(0, score + round_trip_score_deduct + fire_count_score_adjustment)`
+   * plus the inversion bonus, each term NULL as 0. The cluster bonus is not in it.
    */
   feed_cutoffs: z
     .strictObject({
@@ -148,6 +150,18 @@ export const LotteryWeightsSchema = z.strictObject({
 });
 
 export type LotteryWeights = z.infer<typeof LotteryWeightsSchema>;
+
+/**
+ * `T` with every property and array element read-only, all the way down. The
+ * loader hands out one object to every caller (deep-frozen at run time), so its
+ * type says so: a write is a tsc error, not a TypeError in a cron.
+ */
+export type DeepReadonly<T> = T extends (infer U)[]
+  ? ReadonlyArray<DeepReadonly<U>>
+  : T extends object
+    ? { readonly [K in keyof T]: DeepReadonly<T[K]> }
+    : T;
+
 export type FeedTierCutoffs = LotteryWeights['feed_cutoffs'];
 export type CompositeBonus =
   LotteryWeights['features']['composite_bonuses'][number];

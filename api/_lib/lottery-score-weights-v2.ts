@@ -13,7 +13,11 @@
  * falls back to the seed when the store has no row.
  */
 
-import type { LotteryWeights, TimeOfDay } from './lottery-weights-schema.js';
+import type {
+  DeepReadonly,
+  LotteryWeights,
+  TimeOfDay,
+} from './lottery-weights-schema.js';
 
 // ---------------------------------------------------------------------------
 // Input
@@ -142,7 +146,7 @@ export function weekdayOf(dateIso: string): string {
  * pattern, negative = losing pattern). Multiple matches sum.
  */
 export function scoreLotteryV2(
-  weights: LotteryWeights,
+  weights: DeepReadonly<LotteryWeights>,
   args: LotteryScoreInput,
 ): number | null {
   if (!args.isAligned) return null;
@@ -212,22 +216,4 @@ export function scoreLotteryV2(
   }
 
   return score;
-}
-
-// ---------------------------------------------------------------------------
-// Tier label
-// ---------------------------------------------------------------------------
-
-/**
- * Map a v2 score to its display tier under `cutoffs` (the weights'
- * `cutoffs`, on the bare score). null score → 'tier3'.
- */
-export function lotteryScoreTierV2(
-  score: number | null,
-  cutoffs: LotteryWeights['cutoffs'],
-): 'tier1' | 'tier2' | 'tier3' {
-  if (score === null) return 'tier3';
-  if (score >= cutoffs.t1) return 'tier1';
-  if (score >= cutoffs.t2) return 'tier2';
-  return 'tier3';
 }

@@ -4,7 +4,7 @@
 // Zod-validated weights object, so these suites score with the frozen seed
 // (seed-2026-06-17, api/_lib/lottery-weights-seed.ts), which never changes.
 // They pin the SHAPE of the API (alignment gate, dte universe gate, null-safe
-// quintiles, tier classification) and, through the parity fixture, the exact
+// quintiles) and, through the parity fixture, the exact
 // integer the seed gives for 70 hand-written fires. Later versions live in
 // Neon (phase 4, D5) and are validated by the same schema.
 
@@ -13,7 +13,6 @@ import { describe, expect, it } from 'vitest';
 import {
   assignQuintile,
   isAlignedFire,
-  lotteryScoreTierV2,
   scoreLotteryV2,
   weekdayOf,
 } from '../_lib/lottery-score-weights-v2.js';
@@ -179,41 +178,6 @@ describe('assignQuintile', () => {
       expect(q).toBeLessThanOrEqual(4);
       expect(Number.isInteger(q)).toBe(true);
     }
-  });
-});
-
-describe('lotteryScoreTierV2', () => {
-  it('treats null as tier3', () => {
-    expect(lotteryScoreTierV2(null, CUTOFFS)).toBe('tier3');
-  });
-
-  it('classifies scores at or above t1 as tier1', () => {
-    expect(lotteryScoreTierV2(CUTOFFS.t1, CUTOFFS)).toBe('tier1');
-    expect(lotteryScoreTierV2(CUTOFFS.t1 + 100, CUTOFFS)).toBe('tier1');
-  });
-
-  it('classifies scores in [t2, t1) as tier2', () => {
-    if (CUTOFFS.t1 > CUTOFFS.t2) {
-      expect(lotteryScoreTierV2(CUTOFFS.t2, CUTOFFS)).toBe('tier2');
-      expect(lotteryScoreTierV2(CUTOFFS.t1 - 1, CUTOFFS)).toBe('tier2');
-    }
-  });
-
-  it('classifies scores below t2 as tier3', () => {
-    expect(lotteryScoreTierV2(CUTOFFS.t2 - 1, CUTOFFS)).toBe('tier3');
-    expect(lotteryScoreTierV2(-1000, CUTOFFS)).toBe('tier3');
-  });
-
-  it('reads the cutoffs it is given, not the seed’s', () => {
-    // 10 and 6 are the seed's t1 and t2; these cutoffs sit well above them.
-    const raised = { t1: 20, t2: 15 };
-    expect(lotteryScoreTierV2(20, raised)).toBe('tier1');
-    expect(lotteryScoreTierV2(19, raised)).toBe('tier2');
-    expect(lotteryScoreTierV2(15, raised)).toBe('tier2');
-    expect(lotteryScoreTierV2(14, raised)).toBe('tier3');
-    // The same scores land one tier higher under the seed's own cutoffs.
-    expect(lotteryScoreTierV2(14, CUTOFFS)).toBe('tier1');
-    expect(lotteryScoreTierV2(null, raised)).toBe('tier3');
   });
 });
 
