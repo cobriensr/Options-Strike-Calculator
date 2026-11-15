@@ -34,8 +34,9 @@ import {
  * `uwEndpointTemplate`) and `retryAfter` (the raw `retry-after` header) carry
  * what `withRetry` needs to report a 429 it gave up on.
  *
- * `name` stays `Error` and the constructor frame is left off the stack, so
- * Sentry groups these exactly as it grouped the plain `Error` thrown before.
+ * `name` stays `Error` (V8 leaves a subclass constructor's frame off the
+ * stack by itself), so Sentry groups these exactly as it grouped the plain
+ * `Error` thrown before.
  */
 export class UwHttpError extends Error {
   readonly status: number;
@@ -52,7 +53,6 @@ export class UwHttpError extends Error {
     this.status = status;
     this.endpoint = endpoint;
     this.retryAfter = retryAfter;
-    Error.captureStackTrace(this, UwHttpError);
   }
 }
 
@@ -117,10 +117,13 @@ const GEXBOT_429_MAX_WAIT_MS = 3000;
 
 /**
  * Backoff before retrying a GEXBot 429, or `null` when `Retry-After` asks for
- * longer than `GEXBOT_429_MAX_WAIT_MS`. The vendor's limit is one request per
- * second per ticker per metric, so the wait is `1000 × (attempt + 1)` (1 s,
- * then 2 s), raised to `Retry-After` when sent, plus up to 250 ms of jitter so
- * a wave of retries does not land in the same second.
+ * longer than `GEXBOT_429_MAX_WAIT_MS`. The vendor documents a per-account
+ * short-window limit (a 429 with `Retry-After`) and daily/monthly pool quotas
+ * (a 429 with none, lasting until midnight ET); the one burst seen was
+ * transient. So the wait is `1000 × (attempt + 1)` (1 s, then 2 s), raised to
+ * `Retry-After` when sent, plus up to 250 ms of jitter so a wave of retries
+ * does not land in the same second. A quota 429 gets the same two retries and
+ * then fails, and the next tick re-fetches.
  */
 function gexbot429Delay(err: unknown, attempt: number): number | null {
   const retryAfterMs = retryAfterMsOf(err);
@@ -150,18 +153,20 @@ function gexbot429Delay(err: unknown, attempt: number): number | null {
  * Network errors and 5xx upstream failures (500/502/503/504) keep the
  * existing exponential `1000 × (attempt + 1)`.
  *
- * GEXBot: a `GEXBot 429` is the per-ticker, per-metric rate limit (one request
- * a second), so it retries with backoff (`gexbot429Delay`). `GEXBot 500 … null
- * or zero length` (no snapshot exists yet) is never retried (`null`). Other
- * GEXBot 5xx still retry. UW and every other caller are unaffected: both checks
- * are anchored to the `GEXBot` message prefix. The EOD report route is not
- * here: it does not go through `withRetry`, and its 429 is a quota.
+ * GEXBot: a `GEXBot 429` retries with backoff (`gexbot429Delay`), at most
+ * twice. It may be the vendor's short-window limit, which a short wait clears,
+ * or a pool quota, which it does not; the crons' `gexbot.retry_after_ms` tag
+ * tells the two apart afterwards. `GEXBot 500 … null or zero length` (no
+ * snapshot exists yet) is never retried (`null`). Other GEXBot 5xx still
+ * retry. UW and every other caller are unaffected: both checks are anchored to
+ * the `GEXBot` message prefix. The EOD report route is not here: it does not go
+ * through `withRetry`, and it treats a 429 as a quota and stops.
  */
 function classifyRetryDelay(err: unknown, attempt: number): number | null {
   const msg = err instanceof Error ? err.message : '';
   // GEXBot failures, checked before the generic branches below (withRetry is
   // shared across UW, GEXBot and others):
-  //  - `GEXBot 429`: a short rate limit; see gexbot429Delay.
+  //  - `GEXBot 429`: retried with backoff; see gexbot429Delay.
   //  - `GEXBot 500 ... null or zero length`: the orderflow route's answer
   //    when no snapshot exists yet. Deterministic, not a blip.
   if (/^GEXBot 429\b/.test(msg)) return gexbot429Delay(err, attempt);

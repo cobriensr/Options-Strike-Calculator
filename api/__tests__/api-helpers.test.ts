@@ -641,10 +641,10 @@ describe('api-helpers', () => {
       expect(fn).toHaveBeenCalledTimes(2);
     });
 
-    // GEXBot 429 is the short per-ticker, per-metric rate limit (one request a
-    // second), not a quota: retried on a 1 s then 2 s backoff, with up to 250 ms
-    // of jitter. The vendor-facing numbers are in gexbot-rate-limit.test.ts.
-    describe('"GEXBot 429" (short rate limit)', () => {
+    // A GEXBot 429 may be the vendor's short-window limit or a pool quota; it
+    // is retried either way, on a 1 s then 2 s backoff with up to 250 ms of
+    // jitter. The vendor-facing numbers are in gexbot-rate-limit.test.ts.
+    describe('"GEXBot 429" (retried)', () => {
       const msg =
         'GEXBot 429 /SPX/orderflow/orderflow: {"error":"Rate limit exceeded."}';
 

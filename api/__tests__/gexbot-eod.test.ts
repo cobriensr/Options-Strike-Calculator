@@ -286,10 +286,10 @@ describe('requestEodReport', () => {
     ).toMatch(/^Bearer /);
   });
 
-  // The EOD route is the one GEXBot route with a quota (daily and monthly,
-  // reset at midnight ET), unlike the live routes, whose 429 is a short rate
-  // limit that `withRetry` retries (gexbot-rate-limit.test.ts). A quota 429 is
-  // answered once and reported as `quota`: the caller stops the run.
+  // The EOD route treats a 429 as a quota (daily and monthly, reset at
+  // midnight ET): it is asked once and reported as `quota`, and the caller
+  // stops the run. The live routes differ: their 429 is retried by `withRetry`
+  // (gexbot-rate-limit.test.ts), since it may be the short-window limit.
   it('maps 429 to quota, asks once, and cancels the body', async () => {
     const res = zipResponse({ status: 429 });
     const cancel = vi.spyOn(res.body as ReadableStream, 'cancel');
