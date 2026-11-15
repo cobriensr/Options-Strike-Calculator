@@ -203,6 +203,9 @@ async def test_a_redirect_is_not_followed_and_is_an_error() -> None:
         "ip=203.0.113.9.7\n",
         "ip=999.1.1.1\n",
         "ip=203.0.113.9; DROP TABLE x\n",
+        # An IPv6 scope id is valid to ipaddress, and is text a trace never carries.
+        "ip=2001:db8::1%eth0\n",
+        "ip=2001:db8::1%not an interface\ncolo=MCI\nloc=US\n",
         b"\xff\xfe\x00\x01 not text at all",
     ],
 )
@@ -210,6 +213,52 @@ async def test_a_body_with_no_valid_ip_is_an_error(body: str | bytes) -> None:
     async with _serve(_reply(body)) as url:
         with pytest.raises(egress.TraceError, match="ip"):
             await egress.lookup(url)
+
+
+@pytest.mark.asyncio
+async def test_a_body_past_the_size_cap_is_an_error_and_the_client_stops_reading() -> None:
+    """A real trace is a few hundred bytes. A body that keeps coming must not be read
+    into memory until the timeout: the lookup gives up at the cap and drops the
+    connection, which the server sees as its next write failing."""
+    chunk = b"x" * 65536
+    total_chunks = 4096  # 256 MiB, far more than the client should ever take
+    sent = 0
+    client_gone = asyncio.Event()
+
+    async def endless(request: web.Request) -> web.StreamResponse:
+        nonlocal sent
+        response = web.StreamResponse(status=200)
+        response.content_type = "text/plain"
+        await response.prepare(request)
+        try:
+            for _ in range(total_chunks):
+                await response.write(chunk)
+                sent += len(chunk)
+        except (ConnectionError, asyncio.CancelledError):
+            client_gone.set()  # the write failed, or aiohttp cancelled the handler
+            raise
+        return response
+
+    async with _serve(endless) as url:
+        with pytest.raises(egress.TraceError, match="too large"):
+            await egress.lookup(url)
+        await asyncio.wait_for(client_gone.wait(), timeout=2.0)
+
+    # The server was stopped by the client's close, not by running out of body: what
+    # it sent is a few socket buffers (128 KiB when this was written), a small fraction
+    # of the 256 MiB on offer.
+    assert sent < total_chunks * len(chunk) // 16
+
+
+@pytest.mark.asyncio
+async def test_a_body_just_under_the_cap_is_still_read() -> None:
+    """The cap is on the body, not on a trace: padding up to it parses as before."""
+    body = _TRACE + "pad=" + "x" * 1000 + "\n"
+    assert len(body) < egress._MAX_BODY_BYTES
+    async with _serve(_reply(body)) as url:
+        trace = await egress.lookup(url)
+
+    assert trace == egress.Trace(ip="203.0.113.9", colo="MCI", loc="US")
 
 
 @pytest.mark.asyncio

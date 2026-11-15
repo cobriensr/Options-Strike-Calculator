@@ -1152,15 +1152,19 @@ one a minute per shard, with `shard`, `exc_type` and, for the last two, `err`.
 **Reading it.**
 
 1. Take the disconnects with `cause_type` `ConnectionResetError` and `forced`
-   `null`, and group them by `cf_colo`. Resets that cluster on one colo point at
-   that edge location. Resets spread across every colo the sockets use point at the
-   path before Cloudflare, which is Railway's network.
-2. For each reset, look for a `ws-canary` drop within 2 s either side, by the
-   app's own `time` field, not Railway's log timestamp, and compare the two
-   `cf_colo` values. The canary logs the same two fields on its `connect` events
-   and `drop` records. If both dropped in the same moment on different colos, what
-   they share is Railway's side. If only the sockets on one colo dropped, it is
-   that colo.
+   `null`, keep only the lines with a non-null `session_s`, and group them by
+   `cf_colo`. A null `cf_colo` with a null `session_s` is a drop before the
+   handshake finished (a reset during it, or a rejected 503): it has no colo to
+   compare, and it can match `ConnectionResetError` too, so it would blur the
+   reading. Resets that cluster on one colo point at that edge location. Resets
+   spread across every colo the sockets use point at the path before Cloudflare,
+   which is Railway's network.
+2. For each reset, look for a `ws-canary` drop within 2 s either side, by each
+   line's own timestamp (uw-stream's `time`, the canary's `ts`), not Railway's log
+   timestamp, and compare the two `cf_colo` values. The canary logs the same two
+   fields on its `connect` events and `drop` records. If both dropped in the same
+   moment on different colos, what they share is Railway's side. If only the
+   sockets on one colo dropped, it is that colo.
 3. Look at `egress_ip` across the `egress trace` lines. A change in it, between
    sessions of one shard or between shards, near a burst of resets, points at
    Railway's network too.

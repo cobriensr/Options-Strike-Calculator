@@ -38,6 +38,11 @@ _USER_AGENT = "uw-stream/1.0 (egress-trace)"
 
 _TRACE_PATH = "/cdn-cgi/trace"
 
+# A real trace is about 350 bytes. The body is read through this cap, so a response
+# that keeps coming is dropped after a few KiB instead of being held in memory until
+# the timeout (a loopback server streamed 500 MiB into ``lookup`` in about a second).
+_MAX_BODY_BYTES = 4096
+
 # A colo is an airport code, three capital letters. ``loc`` is a country code, two
 # capitals or digits (Cloudflare uses ``T1`` for Tor). Anything else is reported as
 # None, so what a log line carries is always one of these shapes.
@@ -84,13 +89,14 @@ def trace_url(ws_url: str) -> str:
 async def lookup(url: str) -> Trace:
     """GET the trace at ``url`` and return what it reports.
 
-    Raises ``TraceError`` for a non-200 or a body with no valid ``ip=``, and lets the
-    network's own errors through: ``TimeoutError`` past ``_TIMEOUT_S``, and an
-    ``aiohttp.ClientError`` for a refused or reset connection. A redirect is not
-    followed, so it is a non-200. The status is checked before the body is read: a
-    block page can echo an ``ip=`` of its own.
+    Raises ``TraceError`` for a non-200, a body over ``_MAX_BODY_BYTES`` or a body with
+    no valid ``ip=``, and lets the network's own errors through: ``TimeoutError`` past
+    ``_TIMEOUT_S``, and an ``aiohttp.ClientError`` for a refused or reset connection.
+    A redirect is not followed, so it is a non-200. The status is checked before the
+    body is read: a block page can echo an ``ip=`` of its own.
 
-    A cancel closes the session, and with it the connection, on the way out.
+    A cancel, or a body over the cap, closes the session, and with it the connection,
+    on the way out.
     """
     timeout = aiohttp.ClientTimeout(total=_TIMEOUT_S)
     async with (
@@ -99,8 +105,12 @@ async def lookup(url: str) -> Trace:
     ):
         if response.status != 200:
             raise TraceError(f"HTTP {response.status}")
-        body = await response.text(errors="replace")
-    return _parse(body)
+        body = bytearray()
+        async for chunk in response.content.iter_chunked(_MAX_BODY_BYTES):
+            body += chunk
+            if len(body) > _MAX_BODY_BYTES:
+                raise TraceError("body too large")
+    return _parse(body.decode(errors="replace"))
 
 
 def _parse(body: str) -> Trace:
@@ -110,12 +120,16 @@ def _parse(body: str) -> Trace:
         if sep:
             fields.setdefault(key.strip(), value.strip())
     try:
-        ip = str(ipaddress.ip_address(fields.get("ip", "")))
+        address = ipaddress.ip_address(fields.get("ip", ""))
     except ValueError:
         raise TraceError("no valid ip line") from None
+    # ``ipaddress`` accepts an IPv6 scope id (``fe80::1%eth0``) and keeps any text
+    # after the ``%``. A trace's ``ip=`` never has one, so it is not an address here.
+    if isinstance(address, ipaddress.IPv6Address) and address.scope_id:
+        raise TraceError("no valid ip line")
     loc = fields.get("loc", "")
     return Trace(
-        ip=ip,
+        ip=str(address),
         colo=valid_colo(fields.get("colo")),
         loc=loc if _LOC.fullmatch(loc) else None,
     )
