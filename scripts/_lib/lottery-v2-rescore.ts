@@ -361,9 +361,22 @@ export async function applyUpdates(
 }
 
 /**
- * The ids a run is about to score, in a file written first, so the run can be
- * undone: `UPDATE lottery_finder_fires SET score = NULL WHERE id = ANY(...)`
- * (every one of them was NULL before).
+ * The undo for a run, as written into its undo file. `$1` is the file's row
+ * ids and `$2` their scores, in order (`lottery_finder_fires.score` is an
+ * INTEGER, `id` a BIGINT). It clears a row only while it still holds the
+ * score this run planned for it, so a row some other writer has scored since
+ * (the nightly refit, say) keeps its score. Every row in the file was NULL
+ * before the run, so NULL is what it restores; a row another writer gave the
+ * same score is cleared too, and a re-run scores it again.
+ */
+export const UNDO_STATEMENT =
+  'UPDATE lottery_finder_fires f SET score = NULL FROM unnest($1::bigint[], $2::int[]) u(id, score) WHERE f.id = u.id AND f.score = u.score';
+
+/**
+ * The rows a run is about to score, each with the score it will get, in a file
+ * written first, so the run can be undone (UNDO_STATEMENT). The score is
+ * there because an undo by id alone would also clear a row another writer
+ * scored between the plan and the undo.
  */
 function writeUndoFile(
   dir: string,
@@ -376,9 +389,9 @@ function writeUndoFile(
   writeFileSync(
     file,
     JSON.stringify({
-      note: 'Every id below had score NULL before this run. Undo: UPDATE lottery_finder_fires SET score = NULL WHERE id = ANY(<ids>::bigint[])',
+      note: `Every row below had score NULL before this run, and was planned to get the score shown. Undo: ${UNDO_STATEMENT} with $1 = the id of each row and $2 = its score, in order.`,
       since,
-      ids: updates.map((u) => u.id),
+      rows: updates.map((u) => ({ id: u.id, score: u.score })),
     }),
   );
   return file;

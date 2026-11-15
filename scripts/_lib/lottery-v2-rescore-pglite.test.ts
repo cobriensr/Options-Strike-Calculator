@@ -52,6 +52,7 @@ vi.mock('../../api/_lib/db.js', async (importOriginal) => {
 import { applyMigration } from '../../api/__tests__/pglite-migrations';
 import { computeLotteryScoreV2 } from '../../api/_lib/lottery-score-weights-v2.js';
 import {
+  UNDO_STATEMENT,
   applyUpdates,
   formatReport,
   runRescore,
@@ -298,11 +299,63 @@ describe('runRescore against lottery_finder_fires', () => {
     });
     expect(result.undoFile).not.toBeNull();
     expect(existsSync(result.undoFile!)).toBe(true);
-    expect(JSON.parse(readFileSync(result.undoFile!, 'utf8'))).toMatchObject({
+    // The file holds each planned row with the score this run gives it, not
+    // the ids alone: an undo by id would also clear a row some other writer
+    // scored since (see the undo test below).
+    const undo = JSON.parse(readFileSync(result.undoFile!, 'utf8'));
+    expect(undo).toMatchObject({
       since: SINCE,
-      ids: ['1', '2', '8'],
+      rows: [
+        { id: '1', score: liveScore(FIXTURE.find((f) => f.id === 1)!) },
+        { id: '2', score: liveScore(FIXTURE.find((f) => f.id === 2)!) },
+        { id: '8', score: liveScore(FIXTURE.find((f) => f.id === 8)!) },
+      ],
     });
+    expect(undo).not.toHaveProperty('ids');
+    expect(undo.note).toContain(UNDO_STATEMENT);
     expect(formatReport(result)).toContain('Rows written: 3');
+  });
+
+  it('the undo statement clears the rows this run scored, and only while they still hold that score', async () => {
+    await seedFixture();
+    const result = await run(true);
+    const { rows } = JSON.parse(readFileSync(result.undoFile!, 'utf8')) as {
+      rows: Array<{ id: string; score: number }>;
+    };
+    const scoreOfRow2 = await scoreOf(2);
+    // The nightly refit (or anyone) re-scores row 2 after this run. Row 5 was
+    // scored 99 before it, and is not in the file.
+    await pg.query('UPDATE lottery_finder_fires SET score = 77 WHERE id = 2');
+
+    await pg.query(UNDO_STATEMENT, [
+      rows.map((r) => r.id),
+      rows.map((r) => r.score),
+    ]);
+
+    // Rows 1 and 8 are back to what they were before the run: NULL. Row 2
+    // keeps the other writer's score (an undo by id alone would have cleared
+    // it), and row 5 was never ours.
+    expect(await scoreOf(1)).toBeNull();
+    expect(await scoreOf(8)).toBeNull();
+    expect(await scoreOf(2)).toBe(77);
+    expect(scoreOfRow2).not.toBe(77);
+    expect(await scoreOf(5)).toBe(99);
+  });
+
+  it('the undo statement restores the table exactly when nothing else wrote in between', async () => {
+    await seedFixture();
+    const before = await snapshot();
+    const result = await run(true);
+    const { rows } = JSON.parse(readFileSync(result.undoFile!, 'utf8')) as {
+      rows: Array<{ id: string; score: number }>;
+    };
+
+    await pg.query(UNDO_STATEMENT, [
+      rows.map((r) => r.id),
+      rows.map((r) => r.score),
+    ]);
+
+    expect(await snapshot()).toEqual(before);
   });
 
   it('a second apply selects the same rows, scores them the same way, and writes nothing', async () => {
@@ -392,9 +445,9 @@ describe('runRescore against lottery_finder_fires', () => {
     expect(await scoreOf(5_100)).toBe(
       liveScore({ id: 5_100, date: '2026-11-13', dte: 5_100 % 4 }),
     );
-    expect(JSON.parse(readFileSync(result.undoFile!, 'utf8')).ids).toHaveLength(
-      5_100,
-    );
+    expect(
+      JSON.parse(readFileSync(result.undoFile!, 'utf8')).rows,
+    ).toHaveLength(5_100);
   }, 60_000);
 
   it('rejects with the undo file named when the write fails, and leaves the table as it was (the statement is atomic)', async () => {
