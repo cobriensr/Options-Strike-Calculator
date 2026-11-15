@@ -17,6 +17,7 @@ from uuid import UUID
 import pytest
 
 from config import settings
+from handlers.interval_ba import SPXWIntervalBAHandler
 from handlers.option_trades import (
     _COLUMNS,
     OptionTradesHandler,
@@ -386,3 +387,67 @@ class TestQueueAndWriters:
         assert h.queue.qsize() == 200_000
         assert h.queue.get_nowait() == {"n": 2}  # n=0 and n=1 were evicted
         assert metrics.interval_queue_hwm == 200_000
+
+
+class TestFlushOrder:
+    """``_flush`` inserts in ``ws_trade_id`` order.
+
+    Two flushes now run at once, each one transaction of multi-row INSERTs that
+    hold their unique-index entries until commit. Rows in arrival order let two
+    transactions that share two ids (a trade and its cancel, which has the same
+    id) take them in opposite order: an AB-BA deadlock. Postgres reports it as
+    40P01, which db.py does not retry, so it would lose the whole batch.
+    Sorting before the insert gives every transaction one lock order, as
+    handlers/gex_strike_expiry.py does for its upserts.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clean_state(self):
+        state.handlers.clear()
+        yield
+        state.handlers.clear()
+
+    @staticmethod
+    def _row(handler, payload, trade_id: str, *, canceled: bool) -> tuple:
+        row = handler._transform({**payload, "id": trade_id, "canceled": canceled})
+        assert row is not None
+        return row
+
+    @pytest.mark.parametrize("handler_cls", [OptionTradesHandler, SPXWIntervalBAHandler])
+    async def test_rows_reach_the_insert_in_trade_id_order_and_the_batch_is_left_alone(
+        self, monkeypatch, payload, handler_cls
+    ):
+        inserts: list[list[tuple]] = []
+
+        async def _record(*, table, columns, rows, conflict_cols) -> int:
+            inserts.append(rows)
+            return len(rows)
+
+        monkeypatch.setattr("handlers.option_trades.db.bulk_insert_ignore_conflict", _record)
+        h = handler_cls()
+        low = "00000000-0000-4000-8000-000000000001"
+        mid = "7fffffff-0000-4000-8000-000000000002"
+        high = "ffffffff-0000-4000-8000-000000000003"
+        # Arrival order: high, low (the trade), mid, low again (its cancel).
+        batch = [
+            self._row(h, payload, high, canceled=False),
+            self._row(h, payload, low, canceled=False),
+            self._row(h, payload, mid, canceled=False),
+            self._row(h, payload, low, canceled=True),
+        ]
+        arrival_order = list(batch)
+
+        inserted = await h._flush(batch)
+
+        assert inserted == 4
+        assert len(inserts) == 1
+        sent = inserts[0]
+        assert [str(row[0]) for row in sent] == [low, low, mid, high]
+        canceled_at = _COLUMNS.index("canceled")
+        # Stable: a trade stays ahead of its same-id cancel.
+        assert [row[canceled_at] for row in sent[:2]] == [False, True]
+        # The caller's list is a different object and unchanged: Interval B/A
+        # and drain() keep referring to theirs.
+        assert sent is not batch
+        assert batch == arrival_order
+        assert all(a is b for a, b in zip(batch, arrival_order, strict=True))

@@ -611,7 +611,10 @@ writers (`queue_size` and `flush_concurrency` in
 `src/handlers/option_trades.py`; `WS_QUEUE_SIZE` does not reach it). Its
 two batches are written at the same time, each on its own pool connection,
 and may commit in either order, which `ON CONFLICT (ws_trade_id) DO NOTHING`
-allows. The three Interval B/A handlers inherit from it and set both back to
+allows. Each batch is sorted by `ws_trade_id` before the insert, so the two
+transactions always take their row locks in one order and cannot deadlock on
+a trade and its same-id cancel (Postgres 40P01 is not retried and would lose
+the batch). The three Interval B/A handlers inherit from it and set both back to
 the defaults: their `_flush` aggregates in memory, so it must stay one at a
 time. Batches are built exactly as before (500 rows or 2 s, topped up from
 the backlog to 5,000); with two flushes already in flight the consumer holds
@@ -622,14 +625,16 @@ Why: on 2026-11-12 at 8:32 to 8:35 CT the full 50,000-row queue evicted
 against about 1,050/s arriving while Neon was slow. That morning needed room
 for about 75,000 rows; 200,000 is about five minutes of backlog at that rate.
 
-Memory: a queued payload is the parsed frame, a dict. Measured on the test
-fixture `tests/fixtures/option_trades_sample.json` (13 fields), 20,000 frames
-parsed by `orjson` and held took 1,282 bytes each by `tracemalloc` (1,985
-bytes counting every shared key and small int in full). So 200,000 queued
-payloads hold about 250 MiB (at most 380 MiB), plus 8 bytes a slot. A real
-frame may carry more fields than the fixture; read the real figure from
-`rss_mb` beside `queue_hwm` on the minute line. For scale, the process has
-so far peaked at 1.0 GB (see Memory numbers).
+Memory: a queued payload is the parsed frame, a dict. The shape comes from
+live rows: recent `ws_option_trades.raw_payload` values have 39 keys and about
+990 bytes of JSON (the test fixture has 13 keys and 322 bytes, under half, and
+understates it). A frame rebuilt with the live keys, JSON types and value
+lengths, parsed by `orjson`, 20,000 held, took 2,808 bytes each by
+`tracemalloc` (5,005 bytes counting every shared key in full). So 200,000
+queued payloads hold about 540 MiB, up to about 960 MiB, plus 8 bytes a slot.
+Read the real figure from `rss_mb` beside `queue_hwm` on the minute line. For
+scale, the process has so far peaked at 1.0 GB (see Memory numbers); a full
+queue adds the figure above to that.
 
 How to read the shared handler's entry on the minute line at the open:
 
@@ -638,11 +643,13 @@ How to read the shared handler's entry on the minute line at the open:
   to drop.
 - `batch_max` at 5,000 means a backlog: at least one flush in the minute took
   the most it can (`BACKLOG_BATCH_MAX`). A minute at about 500 had none.
-- `flush_s` is the seconds spent inside `_flush`, summed over the minute's
-  flushes. With two writers it can exceed the minute's 60, up to about 120,
-  and above 60 shows the two flushes overlapped. It is not a stall by
-  itself: `flush_max_s`, the longest single flush, is the number to watch for
-  a slow Neon.
+- `flush_s` is the seconds spent inside `_flush`, summed over the flushes
+  that ended in the minute. One writer can pass 60 on its own: a flush that
+  started in the previous minute counts in the minute it ends, and one with
+  retries can run about 92 s. So `flush_s` above 60 plus `flush_max_s` can
+  only come from two writers; a value under that line shows nothing either
+  way. It is not a stall by itself: `flush_max_s`, the longest single flush,
+  is the number to watch for a slow Neon.
 - `dropped` is 0 when nothing was evicted. Anything above 0 on `option_trades`
   is trades lost to the queue cap, and a `component=backpressure` Sentry
   warning follows within a minute.

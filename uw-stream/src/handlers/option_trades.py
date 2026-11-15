@@ -30,6 +30,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
+from operator import itemgetter
 from time import monotonic
 from typing import Any
 from uuid import UUID
@@ -316,10 +317,23 @@ class OptionTradesHandler(Handler):
         )
 
     async def _flush(self, rows: list[tuple]) -> int:
+        # Insert in ws_trade_id order. Two flushes run at once (flush_concurrency),
+        # each one transaction whose INSERTs hold their unique-index entries until
+        # it commits, and a trade and its cancel share an id. In arrival order two
+        # transactions that both hold two such ids could take them in opposite
+        # order: an AB-BA deadlock, which Postgres reports as 40P01 and db.py does
+        # not retry, so it would lose the whole batch. One order for every
+        # transaction rules that out (the same fix as in gex_strike_expiry.py).
+        #
+        # sorted(), never rows.sort(): the caller's list stays as it was (drain()
+        # and Interval B/A, which passes its own list through super()._flush, still
+        # refer to it). Stable, so a trade stays ahead of its same-id cancel. The
+        # key is the UUID (row[0]), which orders like Postgres's uuid type; with
+        # no key a tie would compare the rest of the tuple, raw_payload dicts included.
         return await db.bulk_insert_ignore_conflict(
             table=_TABLE,
             columns=_COLUMNS,
-            rows=rows,
+            rows=sorted(rows, key=itemgetter(0)),
             conflict_cols=_CONFLICT_COLS,
         )
 

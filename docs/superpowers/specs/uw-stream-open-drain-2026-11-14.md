@@ -23,6 +23,7 @@ Data: `docs/tmp/open-drain-2026-11-12/` (main checkout), `docs/tmp/fulltape-chec
 - Python 3.12 and uw-stream's existing patterns: `log` and `rate_limited_log` from `logger_setup`, fields in `extra=`; counters in `state`; `/metrics` in `health.py`.
 - **Hot paths stay cheap:** no new work per frame in `enqueue`, the router or the connector.
 - **No new env vars** (R7): the two values are module or class constants, each with its reason. **No new Sentry events.**
+  - One allowed exception (ruling D3): the `flush_task` capture in `Handler._on_flush_task_done` (`handlers/base.py`). A flush task is awaited by nobody, so its exception must be retrieved and reported there. It fires only when `_safe_flush`'s own error handling raises (a failed flush is already caught and counted inside it); at N = 1 that same failure would kill the consumer.
 - **Writes stay idempotent** (`INSERT ... ON CONFLICT (ws_trade_id) DO NOTHING`), so two batches may commit in either order.
 - **Tests never open a network socket or a database.** Mock at the module boundary (R3) and cover the failure paths (R4).
 - **Gate before every commit:** `ruff check` and `ruff format --check` on `uw-stream/`; the uw-stream pytest (venv `F:/dev/strike-calculator/uw-stream/.venv/Scripts/python`, run from `uw-stream/`); `npm run review` from the worktree root.
@@ -45,6 +46,7 @@ Data: `docs/tmp/open-drain-2026-11-12/` (main checkout), `docs/tmp/fulltape-chec
   - Instead of awaiting each flush, it starts the flush as a task and goes back to building the next batch.
   - With N flushes already in flight, it waits for one to finish before starting another, so there are never more than N at once and never an unbounded pile of tasks.
   - Batches start in the order they were built. They may commit in either order.
+  - **Insert order.** `OptionTradesHandler._flush` sorts each batch by `ws_trade_id` (`sorted()`, a stable copy; never an in-place sort of the caller's list) before the insert. Two flushes now hold their unique-index entries in separate transactions, and a trade and its same-id cancel can sit in both: in arrival order the two could take two ids in opposite order and deadlock (40P01, which `db.py` does not retry, so the whole batch would be lost). `gex_strike_expiry.py` fixes the same deadlock the same way.
   - With N = 1 the behaviour is today's exactly: same awaits, same order. Every existing drain-loop test passes unchanged.
 - **Bookkeeping per flush is unchanged:**
   - write counts, `lost_rows`, the flush stats (`flushes`, `flush_rows`, `flush_seconds`, `interval_flush_max_s`, `interval_batch_max`);
@@ -67,6 +69,7 @@ Data: `docs/tmp/open-drain-2026-11-12/` (main checkout), `docs/tmp/fulltape-chec
 - N = 1 keeps today's behaviour (the existing tests).
 - The queue sizes and concurrencies of the shared handler and the three Interval B/A handlers.
 - A full 200,000 queue still drops the oldest and counts it.
+- The insert receives rows in `ws_trade_id` order, a same-id pair stays in arrival order, and the caller's list is unchanged (shared handler and Interval B/A).
 
 ## Deploy
 
@@ -74,7 +77,7 @@ Data: `docs/tmp/open-drain-2026-11-12/` (main checkout), `docs/tmp/fulltape-chec
 - Check after the push: uw-stream boots, all 8 shards join, and the minute line runs. The real check is Monday's open:
   - the shared handler's `dropped` stays 0;
   - its `queue_hwm` is well below 200,000;
-  - `flush_s` above the minute's length shows both writers in use.
+  - `flush_s` above 60 plus `flush_max_s` can only come from two writers. One writer can pass 60 on its own, because a flush counts in the minute it ends and one with retries can run about 92 s.
 
 ## (c) Neon minimum compute: the owner's change
 
