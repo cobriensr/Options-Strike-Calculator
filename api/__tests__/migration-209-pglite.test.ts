@@ -251,6 +251,19 @@ describe('migration #209 (retire the fire-count score adjustment)', () => {
     expect(row?.combined_score).toBe(13);
   });
 
+  it("starts with SET LOCAL lock_timeout so a busy table fails fast, as #194-#208's ALTERs do", () => {
+    // DROP COLUMN / ADD COLUMN take ACCESS EXCLUSIVE on a table the detect
+    // cron inserts into every minute. Without a lock timeout the transaction
+    // would queue behind a running insert, and every reader behind it.
+    const migration = MIGRATIONS.find((m) => m.id === 209);
+    const statements = migration?.statements?.(
+      neonOverPglite(pg) as unknown as Parameters<
+        NonNullable<typeof migration.statements>
+      >[0],
+    ) as unknown as { text: string }[];
+    expect(statements[0]?.text).toBe("SET LOCAL lock_timeout = '5s'");
+  });
+
   it("copies #168's gamma CASE verbatim", () => {
     // The generated expression is the one #168 defined, minus the fire-count
     // term. Compare the CASE text itself so a retuned threshold or a changed
