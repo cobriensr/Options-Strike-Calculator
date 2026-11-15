@@ -683,19 +683,50 @@ def test_the_floor_is_derived_from_the_largest_qas_a_null_score_fire_can_reach()
     assert g.FEED_CUTOFF_FLOOR == g.NULL_SCORE_QAS_MAX + 1 == 8
 
 
+TRIGGER_DEFINITION = "CREATE OR REPLACE FUNCTION update_lottery_fire_count_score_adj()"
+
+
+def _trigger_ladder(migrations: str) -> list[int]:
+    """The values of the `fire_count_score_adjustment` ladder in the trigger's one
+    definition in the migrations text (`-3` .. `ELSE 2`)."""
+    # Postgres runs the last definition, so a redefinition may change the ladder while the
+    # first match here still reads the old one and leaves the floor stale.
+    count = migrations.count(TRIGGER_DEFINITION)
+    assert count == 1, (
+        f"update_lottery_fire_count_score_adj is defined {count} times in "
+        "api/_lib/db-migrations.ts, not once. The ladder that writes "
+        "fire_count_score_adjustment may have changed: update FIRE_COUNT_ADJUSTMENT_MAX "
+        "in ml/src/lottery_refit_gates.py (and so NULL_SCORE_QAS_MAX and "
+        "FEED_CUTOFF_FLOOR) from its source, then point this test at it."
+    )
+    start = migrations.index(TRIGGER_DEFINITION)
+    ladder = re.search(r"new_adj := CASE(.*?)END;", migrations[start:], re.S)
+    assert ladder is not None, "the trigger's ladder moved or changed shape"
+    return [int(v) for v in re.findall(r"(?:THEN|ELSE)\s+(-?\d+)", ladder[1])]
+
+
 def test_the_fire_count_adjustment_max_is_the_triggers_largest_value():
     # The only writer of `fire_count_score_adjustment` is the trigger of migration #167,
     # and its ladder is the source of the +2. If a migration changes the ladder, this fails
     # first and the floor must follow. (The backfill UPDATE beside it uses the same ladder.)
     text = (ROOT / "api" / "_lib" / "db-migrations.ts").read_text(encoding="utf-8")
-    start = text.index(
-        "CREATE OR REPLACE FUNCTION update_lottery_fire_count_score_adj()"
-    )
-    ladder = re.search(r"new_adj := CASE(.*?)END;", text[start:], re.S)
-    assert ladder is not None, "the trigger's ladder moved or changed shape"
-    values = [int(v) for v in re.findall(r"(?:THEN|ELSE)\s+(-?\d+)", ladder[1])]
+    values = _trigger_ladder(text)
     assert values == [-3, -1, 0, 1, 2]
     assert max(values) == g.FIRE_COUNT_ADJUSTMENT_MAX
+
+
+def test_a_redefined_trigger_fails_the_floor_test_instead_of_leaving_it_stale():
+    # A later migration redefines the trigger with a higher top bracket. Reading the
+    # first definition would stay green on the old ladder; the count of definitions fails.
+    text = (ROOT / "api" / "_lib" / "db-migrations.ts").read_text(encoding="utf-8")
+    redefined = (
+        text
+        + f"\n{TRIGGER_DEFINITION}\n"
+        + "new_adj := CASE WHEN new_count = 1 THEN -3 ELSE 4 END;\n"
+    )
+    with pytest.raises(AssertionError, match="defined 2 times") as raised:
+        _trigger_ladder(redefined)
+    assert "update FIRE_COUNT_ADJUSTMENT_MAX" in str(raised.value)
 
 
 @pytest.mark.parametrize("reach", [5, 7])

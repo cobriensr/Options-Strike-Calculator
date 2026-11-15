@@ -99,9 +99,7 @@ type WeightsIssue = z.core.$ZodIssue;
  * text goes to Sentry, and a ticker symbol in it would be market data in an
  * alert (the Python validator does the same):
  *
- * - an entry of `features.ticker_weights` is named `<ticker>` whatever its symbol;
- * - the last segment of an `invalid_key` issue is the key that was refused, so it
- *   is named `<key>`.
+ * - an entry of `features.ticker_weights` is named `<ticker>` whatever its symbol.
  *
  * Every other segment is a name the schema defines, or an index.
  */
@@ -111,7 +109,8 @@ function describePath(issue: WeightsIssue | undefined): string {
     if (i === 2 && path[0] === 'features' && path[1] === 'ticker_weights') {
       return '<ticker>';
     }
-    if (issue?.code === 'invalid_key' && i === path.length - 1) return '<key>';
+    // A new z.record field would carry its own data keys in the path: it needs
+    // its own redaction here, and an N2-style test that puts a symbol in it.
     return String(segment);
   });
   return segments.join('.') || 'the root';
