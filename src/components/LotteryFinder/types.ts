@@ -380,12 +380,6 @@ export interface LotteryFire {
   outcomes: LotteryFireOutcomes;
 
   /**
-   * Retired: nothing reads it since the MACRO badge was removed
-   * (2026-11-14). Optional only while the server stops sending it.
-   */
-  hoursToNextMacroEvent?: number | null;
-
-  /**
    * Range Kill (#153). Position of `entry.spotAtFirst` within the
    * underlying's session range at trigger time ∈ [0, 1]. Drives the
    * "hide range-bottom" filter chip + a "TOP-RANGE" badge for fires
