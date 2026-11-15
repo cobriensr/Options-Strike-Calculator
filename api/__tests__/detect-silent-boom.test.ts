@@ -3406,6 +3406,62 @@ describe('detect-silent-boom handler', () => {
       );
     });
 
+    it('does not say no query failed when a broken query and a time skip share a run', async () => {
+      const flowError = new Error('column "net_call_prem" does not exist');
+      const slowFlow = () =>
+        new Promise((resolve) => {
+          setTimeout(() => resolve(ALIGNED_FLOW), 6_000);
+        });
+      // 20 s setup. SNDK's series is a broken query: it fails at once and
+      // counts only as genuine (not toward the breaker). NVDA's answers 6 s
+      // later, and TSLA is then skipped: 4 s are left of the 30 s run cutoff,
+      // under the 5 s minimum. So a query failed, though flowSeriesFailures
+      // (deadline or transient failures) is 0.
+      stageUpToFlowSeries(threeTickerBuckets(), 3, 20_000)
+        .mockRejectedValueOnce(flowError) // SNDK flow series: broken query
+        .mockResolvedValueOnce([{ id: 1 }]) // SNDK insert
+        .mockImplementationOnce(slowFlow) // NVDA flow series
+        .mockResolvedValueOnce([{ id: 2 }]) // NVDA insert
+        .mockResolvedValueOnce([{ id: 3 }]); // TSLA insert
+
+      vi.useFakeTimers({
+        toFake: ['setTimeout', 'clearTimeout', 'performance', 'Date'],
+      });
+      const res = mockResponse();
+      const run = handler(authorizedReq(), res);
+      await vi.advanceTimersByTimeAsync(26_000);
+      await run;
+
+      expect(res._json).toMatchObject({
+        status: 'error',
+        inserted: 3,
+        flowSeriesFailures: 0,
+        flowSeriesSkippedBreaker: 1,
+        flowSeriesGenuineFailures: 1,
+        flowSeriesMs: 6_000,
+      });
+      expect(flowSeriesQueries()).toHaveLength(2);
+      // The skip warning keeps the failure's fingerprint, says a query failed,
+      // and carries the genuine count so the text can be checked against it.
+      expect(mockSentryCaptureMessage).not.toHaveBeenCalledWith(
+        FLOW_SKIPPED_MSG,
+        expect.anything(),
+      );
+      const flowCaptures = mockSentryCaptureMessage.mock.calls.filter(
+        (call) => call[0] === FLOW_FAILED_MSG,
+      );
+      expect(flowCaptures).toHaveLength(1);
+      expect(flowCaptures[0]![1]).toMatchObject({
+        level: 'warning',
+        fingerprint: ['detect-silent-boom', 'flow-series-failed'],
+        extra: {
+          flowSeriesFailures: 0,
+          flowSeriesSkippedBreaker: 1,
+          flowSeriesGenuineFailures: 1,
+        },
+      });
+    });
+
     it('reports no setup degradation on a clean run', async () => {
       mockLoadTakeitDetectContext.mockResolvedValue(TAKEIT_CTX);
       mockScoreSilentBoom.mockReturnValue(SCORED);

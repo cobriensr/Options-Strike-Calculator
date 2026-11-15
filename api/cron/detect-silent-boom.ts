@@ -1318,15 +1318,18 @@ export default withCronInstrumentation(
     // case: Neon slow or blipping as a warning, a broken query as an error.
     if (flowSeriesFailures > 0 || flowSeriesSkippedBreaker > 0) {
       // One fingerprint for both, so one issue; the text tells a failure from
-      // a skip on time alone (nothing failed: slow answers spent the budget,
-      // or setup used the run's time). The detail carries both counts.
+      // a skip on time alone (no query failed at all: slow answers spent the
+      // budget, or setup used the run's time). A broken query counts as a
+      // failure here though it never opens the breaker, so the text goes by
+      // both counts, and the detail carries them with the skip count.
       const message =
-        flowSeriesFailures > 0
+        flowSeriesFailures > 0 || flowSeriesGenuineFailures > 0
           ? 'detect-silent-boom: ticker flow series failed; alerts written without flow features'
           : 'detect-silent-boom: ticker flow series skipped, run time spent and no query failed; alerts written without flow features';
       const detail = {
         flowSeriesFailures,
         flowSeriesSkippedBreaker,
+        flowSeriesGenuineFailures,
         firstFlowSeriesError,
       };
       ctx.logger.warn(detail, message);
