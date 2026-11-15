@@ -28,7 +28,7 @@ export type BackupAction = 'rewrite' | 'delete' | 'fill' | 'tag';
  * sums of the 20 days before the row, so a thin day in that base pulls it up.
  */
 export interface ContaminatedRange {
-  /** Bar timestamps from here (inclusive; minus infinity for "every earlier bar") ... */
+  /** Bar timestamps from here (inclusive, finite: the band before the scope starts from it) ... */
   fromMs: number;
   /** ... to here, exclusive. */
   toMs: number;
@@ -69,10 +69,12 @@ export const FRONT_MONTH: FrontMonthProfile = {
   defaultWorkDir: 'docs/tmp/futures-derived-recompute-front-month',
   contaminatedBase: {
     GC: {
-      fromMs: Number.NEGATIVE_INFINITY,
+      // The old gap cron's calendar series began at 06-15 14:11Z; bars before it belong to the
+      // contract-mix plan (its deletes, its volume-null step, the April clean days it kept).
+      fromMs: Date.UTC(2026, 5, 15, 14, 11),
       toMs: Date.UTC(2026, 6, 28),
       reason:
-        "every bar before the span is from the old gap cron's GC.c.0 series, the wrong and nearly untraded contract (about 0k volume a day against 120k once repaired), and UW has no prints to rebuild them",
+        "every bar from 06-15 14:11Z to the span is from the old gap cron's GC.c.0 series, the wrong and nearly untraded contract (about 0k volume a day against 120k once repaired), and UW has no prints to rebuild them",
     },
     CL: {
       fromMs: Date.UTC(2026, 6, 17),
@@ -100,7 +102,8 @@ export function volumeBaseCutoffMs(symbol: string): number | null {
  * True when the 20-day window of a snapshot at `atMs` (the bars from `atMs - 20 d`
  * to `atMs - 60 s`, what computeSnapshot averages over) reaches the root's
  * contaminated bars. Its volume ratio then rests on days that cannot be rebuilt.
- * For a row after the range starts this is `atMs < cutoff`.
+ * For a row whose window ends after the range starts this is `atMs < cutoff`, which is
+ * every row of the span.
  */
 export function volumeBaseContaminated(symbol: string, atMs: number): boolean {
   const range = FRONT_MONTH.contaminatedBase[symbol];
@@ -109,6 +112,23 @@ export function volumeBaseContaminated(symbol: string, atMs: number): boolean {
     atMs - VOLUME_WINDOW_MS < range.toMs &&
     atMs - BAR_CLOSE_LAG_MS >= range.fromMs
   );
+}
+
+/**
+ * The snapshot rows before the scope whose volume ratio the NULL rule blanks and nothing
+ * else: from the first row whose window reaches the range (a minute after it starts) to
+ * the scope start. Null for a root with no range, or when the range starts at or after
+ * the scope. A row of the band has no recompute: it is not in the control, the drift or
+ * the information lists.
+ */
+export function blankOnlyBand(
+  symbol: string,
+  scopeStartMs: number,
+): { fromMs: number; toMs: number } | null {
+  const range = FRONT_MONTH.contaminatedBase[symbol];
+  if (range == null) return null;
+  const fromMs = range.fromMs + BAR_CLOSE_LAG_MS;
+  return fromMs < scopeStartMs ? { fromMs, toMs: scopeStartMs } : null;
 }
 
 // ── The Phase 6 backup ──────────────────────────────────────────────────────

@@ -36,6 +36,7 @@ import {
 } from './futures-derived-attribution.js';
 import {
   FRONT_MONTH,
+  blankOnlyBand,
   frontMonthBackupLine,
   onRepairedDay,
   readFrontMonthBackup,
@@ -47,6 +48,7 @@ import {
 import {
   SNAPSHOT_CONTROL_FROM_MS,
   SNAPSHOT_LOOKBACK_MS,
+  scopeRanges,
 } from './futures-derived-recompute.js';
 import { THIN_LAST_BAD_MS } from './futures-thin-roots.js';
 
@@ -311,10 +313,12 @@ describe('the front-month profile', () => {
 describe('the volume ratio base that cannot be rebuilt', () => {
   const iso = (tsMs: number): string => new Date(tsMs).toISOString();
 
-  it('names GC before the span and CL 07-17 to 07-21, one reason each, and no other root', () => {
+  it('names GC from the old series start to the span and CL 07-17 to 07-21, one reason each, and no other root', () => {
     const base = FRONT_MONTH.contaminatedBase;
     expect(Object.keys(base).sort()).toEqual(['CL', 'GC']);
-    expect(base.GC?.fromMs).toBe(Number.NEGATIVE_INFINITY);
+    // The old gap cron's calendar series began at 2026-06-15 14:11Z: earlier bars belong to
+    // the contract-mix plan (its deletes and its volume-null step).
+    expect(iso(base.GC?.fromMs ?? 0)).toBe('2026-06-15T14:11:00.000Z');
     expect(iso(base.GC?.toMs ?? 0)).toBe('2026-07-28T00:00:00.000Z');
     expect(iso(base.CL?.fromMs ?? 0)).toBe('2026-07-17T00:00:00.000Z');
     expect(iso(base.CL?.toMs ?? 0)).toBe('2026-07-22T00:00:00.000Z');
@@ -342,7 +346,16 @@ describe('the volume ratio base that cannot be rebuilt', () => {
       true,
     ],
     ['GC the first row of the span', 'GC', '2026-07-28T00:00:00Z', true],
-    ['GC long before the range ends', 'GC', '2026-06-01T12:00:00Z', true],
+    // The window [at - 20 d, at - 60 s] must reach the range, which starts at 06-15 14:11:00.
+    ['GC window ends on the range start', 'GC', '2026-06-15T14:12:00Z', true],
+    [
+      'GC window ends a millisecond before the range start',
+      'GC',
+      '2026-06-15T14:11:59.999Z',
+      false,
+    ],
+    ['GC the row at the range start', 'GC', '2026-06-15T14:11:00Z', false],
+    ['GC before the old series', 'GC', '2026-06-01T12:00:00Z', false],
     ['CL one minute before the cutoff', 'CL', '2026-08-10T23:59:00Z', true],
     ['CL at the cutoff', 'CL', '2026-08-11T00:00:00Z', false],
     ['CL a row of the span', 'CL', '2026-07-28T00:00:00Z', true],
@@ -357,6 +370,83 @@ describe('the volume ratio base that cannot be rebuilt', () => {
     ['CL window ends on the range start', 'CL', '2026-07-17T00:01:00Z', true],
   ])('%s', (_name, root, at, blanked) => {
     expect(volumeBaseContaminated(root, ms(at))).toBe(blanked);
+  });
+
+  it('leaves every verdict for a row of the span as it was before GC had a lower bound', () => {
+    // From the span start on the window always ends after the range starts, so a row is blanked
+    // exactly when it is before the cutoff, as for a range that began at minus infinity.
+    const scopeStart = scopeRanges('front-month').snapshots.fromMs;
+    expect(scopeStart - 60_000).toBeGreaterThan(
+      FRONT_MONTH.contaminatedBase.GC?.fromMs ?? 0,
+    );
+    const cutoff = volumeBaseCutoffMs('GC') ?? 0;
+    for (const at of [
+      scopeStart,
+      scopeStart + 3_600_000,
+      ms('2026-08-10T15:00:00Z'),
+      cutoff - 60_000,
+      cutoff - 1,
+      cutoff,
+      cutoff + 60_000,
+      cutoff + 86_400_000,
+    ]) {
+      expect(volumeBaseContaminated('GC', at)).toBe(at < cutoff);
+    }
+  });
+
+  describe('the blank-only band before the snapshot scope', () => {
+    const scopeStart = ms('2026-07-28T00:00:00Z');
+
+    it('runs from a minute after the range starts to the scope start, for GC and CL only', () => {
+      expect(blankOnlyBand('GC', scopeStart)).toEqual({
+        fromMs: ms('2026-06-15T14:12:00Z'),
+        toMs: scopeStart,
+      });
+      expect(blankOnlyBand('CL', scopeStart)).toEqual({
+        fromMs: ms('2026-07-17T00:01:00Z'),
+        toMs: scopeStart,
+      });
+      for (const root of ['ES', 'NQ', 'RTY', 'ZN']) {
+        expect(blankOnlyBand(root, scopeStart)).toBeNull();
+      }
+    });
+
+    it.each([
+      ['GC', '2026-06-15T14:11:00Z', false],
+      ['GC', '2026-06-15T14:11:59.999Z', false],
+      ['GC', '2026-06-15T14:12:00Z', true],
+      ['GC', '2026-07-27T23:59:00Z', true],
+      ['GC', '2026-07-27T23:59:59.999Z', true],
+      ['CL', '2026-07-16T12:00:00Z', false],
+      ['CL', '2026-07-17T00:00:00Z', false],
+      ['CL', '2026-07-17T00:00:59.999Z', false],
+      ['CL', '2026-07-17T00:01:00Z', true],
+      ['CL', '2026-07-27T23:59:59.999Z', true],
+    ])(
+      '%s at %s is in the band: %s, and the window rule agrees',
+      (root, at, inBand) => {
+        const band = blankOnlyBand(root, scopeStart);
+        const t = ms(at);
+        expect(band != null && t >= band.fromMs && t < band.toMs).toBe(inBand);
+        expect(volumeBaseContaminated(root, t)).toBe(inBand);
+      },
+    );
+
+    it('ends where the scope starts: a row at the scope start is in scope, not in the band', () => {
+      for (const root of ['GC', 'CL']) {
+        const band = blankOnlyBand(root, scopeStart);
+        expect(band?.toMs).toBe(scopeStart);
+        // The scope's own rule still blanks it, by the recompute's plan.
+        expect(volumeBaseContaminated(root, scopeStart)).toBe(true);
+      }
+    });
+
+    it('is empty when the range starts at or after the scope', () => {
+      expect(blankOnlyBand('CL', ms('2026-07-17T00:01:00Z'))).toBeNull();
+      expect(
+        blankOnlyBand('CL', ms('2026-07-17T00:01:00.001Z')),
+      ).not.toBeNull();
+    });
   });
 
   it.each(['ES', 'NQ', 'RTY', 'ZN'])('never blanks %s', (root) => {
