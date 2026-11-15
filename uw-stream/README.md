@@ -617,11 +617,10 @@ time. Batches are built exactly as before (500 rows or 2 s, topped up from
 the backlog to 5,000); with two flushes already in flight the consumer holds
 the next batch until one finishes.
 
-Why: on 2026-11-12, 8:32 to 8:35 CT, 24,585 option trades were evicted from
-the full 50,000-row queue, because the one writer drained about 700 to 1,100
-rows/s against about 1,050/s arriving while Neon was slow. The sockets had
-delivered every trade. That morning needed room for about 75,000 rows, and
-200,000 is about five minutes of backlog at the slow drain rate.
+Why: on 2026-11-12 at 8:32 to 8:35 CT the full 50,000-row queue evicted
+24,585 trades, because the one writer drained about 700 to 1,100 rows/s
+against about 1,050/s arriving while Neon was slow. That morning needed room
+for about 75,000 rows; 200,000 is about five minutes of backlog at that rate.
 
 Memory: a queued payload is the parsed frame, a dict. Measured on the test
 fixture `tests/fixtures/option_trades_sample.json` (13 fields), 20,000 frames
@@ -634,17 +633,16 @@ so far peaked at 1.0 GB (see Memory numbers).
 
 How to read the shared handler's entry on the minute line at the open:
 
-- `queue_hwm` against 200,000. A peak of a few thousand to tens of
-  thousands is the open's backlog being worked off. A peak near 200,000 is a
-  queue about to drop.
-- `batch_max` at 5,000 means a backlog: each flush took the most it can
-  (`BACKLOG_BATCH_MAX`). It falling back to about 500 means the queue has
-  caught up.
+- `queue_hwm` against 200,000. The open's backlog peaked at about 15,700 on
+  2026-11-13 and passed 50,000 on 11-12. A peak near 200,000 is a queue about
+  to drop.
+- `batch_max` at 5,000 means a backlog: at least one flush in the minute took
+  the most it can (`BACKLOG_BATCH_MAX`). A minute at about 500 had none.
 - `flush_s` is the seconds spent inside `_flush`, summed over the minute's
-  flushes. With two writers it can exceed 60, up to about 120. Above 60 shows
-  both writers were busy for most of that minute; it is not a stall by
-  itself. `flush_max_s` is still the longest single flush and the number to
-  watch for a slow Neon.
+  flushes. With two writers it can exceed the minute's 60, up to about 120,
+  and above 60 shows the two flushes overlapped. It is not a stall by
+  itself: `flush_max_s`, the longest single flush, is the number to watch for
+  a slow Neon.
 - `dropped` is 0 when nothing was evicted. Anything above 0 on `option_trades`
   is trades lost to the queue cap, and a `component=backpressure` Sentry
   warning follows within a minute.
