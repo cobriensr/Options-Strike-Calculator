@@ -9,7 +9,13 @@ quintiles are right-closed: a value on a boundary goes to the lower bucket.
 
 ``rescore_all`` runs one transaction. It first sets a 60 s ``lock_timeout``: a
 run that would wait longer for a lock fails with ``LockNotAvailable`` and rolls
-back, having written nothing. Then:
+back, having written nothing. It also sets a 120 s
+``idle_in_transaction_session_timeout``. A process that is lost without its
+socket closing (a failed host) leaves the transaction idle, holding the pointer
+and the fires it locked, and Neon may not notice for a long time; past 13:00 UTC
+that would block the detect cron's inserts. With the timeout the server rolls the
+transaction back and drops the session two minutes after the client stops
+talking. The longest legitimate gap is the scoring of one page (seconds). Then:
 
 1. Every writing run locks the ``active`` pointer row ``FOR UPDATE``: a
    promotion, a pinned rescore and an explicit-version one alike. So two
@@ -27,7 +33,9 @@ back, having written nothing. Then:
    page. A fire changes when its new score differs from ``score`` or its
    ``score_version`` is not ``to_version``. Fires scored before the store
    existed have a NULL ``score_version``, so the first promotion rewrites every
-   fire.
+   fire. With ``only_tag`` set, only the fires whose ``score_version`` equals it
+   are read at all, so a repair touches exactly the residue it names and leaves
+   every other tag, and every NULL one, alone.
 3. For each page with a change, it writes one ``lottery_fire_value_snapshots``
    row (the ids, old scores and old tags), then UPDATEs of ``WRITE_ROWS`` rows.
    An UPDATE writes a fire only while its score and score_version still equal
@@ -47,7 +55,16 @@ If the process dies, Postgres rolls back its open transaction. Nothing here
 touches the ``takeit`` pointer: only a Take-It retrain moves it.
 
 A dry run reads in a READ ONLY transaction and takes no lock. For a promotion
-it also checks that the version is still a shadow or passed candidate.
+it also checks that the version is still a shadow. Only a shadow is promoted: a
+``passed`` version was judged against the ``active`` version of its day and is
+kept as a record, so promoting one by hand would rest on a stale verdict.
+
+``cluster_bonus`` is not rescored. The detect cron computes it at insert from
+the inserting version's ``t1`` cutoff and its own scores, and a rescore changes
+``score`` and ``score_version`` only, so the column stays on the version that
+inserted the fire. Nothing live reads it (only
+``scripts/analyze-tag-scorecard-2026-05-29.ts``), but it is not one version
+across the table after a promotion.
 
 To undo a rescore, run one ``UPDATE … FROM unnest(fire_ids, old_values,
 old_tags)`` over its snapshot rows (plan D5). Writing ``score`` recomputes the
@@ -56,11 +73,12 @@ generated ``combined_score``. Never write that column.
 CLI (a dry run unless --write is given; it never moves a pointer):
 
     ml/.venv/Scripts/python scripts/backfill_lottery_scores.py
-        [--version VERSION] [--reason REASON] [--write]
+        [--version VERSION] [--only-tag TAG] [--reason REASON] [--write]
 
-    --version  a stored version to score with (default: the one `active` names)
-    --reason   the snapshot rows' reason (default: manual)
-    --write    write the scores; without it, read every fire and write nothing
+    --version   a stored version to score with (default: the one `active` names)
+    --only-tag  rescore only the fires whose score_version is TAG (default: all)
+    --reason    the snapshot rows' reason (default: manual)
+    --write     write the scores; without it, read every fire and write nothing
 
 Without --version it scores with the version ``active`` names and pins it. If
 a promotion moves the pointer between the CLI's read and its rescore, the
@@ -69,6 +87,12 @@ is not pinned. It names the scores wanted whatever the pointer says (a restore
 or a reshape), so it need not be the active one. Like any write, it still
 locks the pointer ``FOR UPDATE``, so it never overlaps a promotion or another
 write.
+
+--only-tag is for repairing the fires a live writer left on another version
+(nightly/README.md, "Refit"). Without it, a run after the first promotion was
+undone would rescore every fire scored before the store existed (NULL tag) with
+the seed. With it the run reads, snapshots and rewrites only the fires carrying
+TAG, and its dry run shows how many that is.
 
 Run --write outside 13:00-24:00 UTC on weekdays. It locks every fire it
 rewrites until it commits. In those hours the detect-lottery-fires cron inserts
@@ -131,13 +155,23 @@ _REASON = re.compile(r'[a-z][a-z0-9-]{1,40}')
 # out: that is safe, and it can be run again. Without a limit the wait would
 # last until the watchdog.
 _LOCK_TIMEOUT_SQL = "SET LOCAL lock_timeout = '60s'"
+# A transaction left idle (the process lost with its socket still open) holds the
+# pointer row and up to a million fire locks. Past 13:00 UTC that blocks the detect
+# cron's insert trigger, and the database may not notice the dead peer for a long
+# time. Two minutes is far above the longest legitimate gap, the scoring of one
+# page of PAGE_ROWS fires (seconds), and the server rolls the transaction back.
+_IDLE_TIMEOUT_SQL = "SET LOCAL idle_in_transaction_session_timeout = '120s'"
 _ACTIVE_SQL = "SELECT version FROM lottery_score_pointers WHERE name = 'active'"
 _ACTIVE_FOR_UPDATE_SQL = _ACTIVE_SQL + ' FOR UPDATE'
 _STATUS_SQL = 'SELECT status FROM lottery_score_versions WHERE version = %s'
-_PAGE_SQL = (
+_PAGE_FROM = (
     f"SELECT id, score, score_version, {', '.join(SCORE_COLUMNS)} "
-    'FROM lottery_finder_fires WHERE id > %s ORDER BY id LIMIT %s'
+    'FROM lottery_finder_fires WHERE id > %s'
 )
+_PAGE_SQL = _PAGE_FROM + ' ORDER BY id LIMIT %s'
+# `only_tag`: the fires of one tag only. A NULL tag never equals a text, so the
+# fires scored before the store existed are left out whatever the tag is.
+_PAGE_TAGGED_SQL = _PAGE_FROM + ' AND score_version = %s ORDER BY id LIMIT %s'
 _SNAPSHOT_SQL = (
     'INSERT INTO lottery_fire_value_snapshots '
     '(reason, column_name, to_version, fire_ids, old_values, old_tags) '
@@ -160,7 +194,7 @@ _UPDATE_ROW = '(%s::bigint, %s::int, %s::text, %s::int, %s::text)'
 _PROMOTE_SQL = (
     "UPDATE lottery_score_versions SET status = 'promoted', decided_at = now(), "
     "gate_report = gate_report || %s::jsonb "
-    "WHERE version = %s AND status IN ('shadow', 'passed') RETURNING version"
+    "WHERE version = %s AND status = 'shadow' RETURNING version"
 )
 _MOVE_ACTIVE_SQL = (
     'UPDATE lottery_score_pointers SET version = %s, updated_at = now() '
@@ -172,7 +206,7 @@ _VERSION_SQL = 'SELECT weights FROM lottery_score_versions WHERE version = %s'
 class PointerMoved(RuntimeError):
     """The ``active`` pointer does not name the version this run needs (a
     promotion's ``expect_active``, a pinned rescore's ``to_version``), or the
-    version to promote is no longer a shadow or passed candidate."""
+    version to promote is no longer a shadow."""
 
 
 class ConcurrentScoreWriter(RuntimeError):
@@ -221,6 +255,7 @@ def rescore_all(
     deadline: float | None = None,
     pin_active: bool = False,
     verdict: Mapping[str, Any] | None = None,
+    only_tag: str | None = None,
 ) -> RescoreResult:
     """Rescore every fire with ``weights``, tagged ``to_version``, in one
     transaction (the module docstring has the steps).
@@ -229,11 +264,18 @@ def rescore_all(
     idle). Its autocommit setting is restored on return. ``reason`` goes on the
     snapshot rows. With ``expect_active`` set, this is a promotion: the
     ``active`` pointer must name ``expect_active`` and ``to_version`` must be a
-    shadow or passed candidate, else ``PointerMoved``. Every write locks the
+    shadow, else ``PointerMoved``. Every write locks the
     pointer ``FOR UPDATE`` until it commits, and with ``pin_active`` the pointer
     must also name ``to_version``, else ``PointerMoved``. The two are
     exclusive. ``deadline`` is a ``time.monotonic()`` value, checked before
     each page and each UPDATE.
+
+    ``only_tag`` restricts the rescore to the fires whose ``score_version``
+    equals it, a non-empty text: the repair of what a live writer left on
+    another version. Fires with any other tag, and the NULL ones (scored before
+    the store existed), are not read, snapshotted or written. It is for a
+    repair, not a promotion: a promotion rewrites the whole table, so it is
+    refused with ``expect_active`` (``ValueError``).
 
     ``verdict`` is the decision a promotion rests on, plain JSON values (the
     nightly refit's verdict summary). It is merged into the version's
@@ -258,6 +300,11 @@ def rescore_all(
         raise ValueError(f'reason must match {_REASON.pattern}')
     if pin_active and expect_active is not None:
         raise ValueError('pin_active and expect_active are mutually exclusive')
+    if only_tag is not None:
+        if not only_tag:
+            raise ValueError('only_tag must be a non-empty version')
+        if expect_active is not None:
+            raise ValueError('only_tag is for a repair, not a promotion')
     if verdict is not None:
         if expect_active is None:
             raise ValueError('a verdict is only for a promotion (expect_active set)')
@@ -275,6 +322,7 @@ def rescore_all(
                 # Postgres then refuses any write.
                 cur.execute('SET TRANSACTION READ ONLY')
             cur.execute(_LOCK_TIMEOUT_SQL)
+            cur.execute(_IDLE_TIMEOUT_SQL)
             # Every write locks the pointer until it commits, so no other write
             # overlaps it: one that tries waits up to the lock timeout, then
             # fails with nothing written. A READ ONLY transaction refuses the
@@ -300,6 +348,7 @@ def rescore_all(
                 reason=reason,
                 dry_run=dry_run,
                 deadline=deadline,
+                only_tag=only_tag,
             )
             if expect_active is not None and not dry_run:
                 _promote(cur, to_version, expect_active, verdict)
@@ -340,8 +389,8 @@ def _check_candidate(cur: Any, version: str) -> None:
     cur.execute(_STATUS_SQL, (version,))
     row = cur.fetchone()
     status = None if row is None else row[0]
-    if status not in ('shadow', 'passed'):
-        raise PointerMoved(f'{version} is {status}, not a shadow or passed candidate')
+    if status != 'shadow':
+        raise PointerMoved(f'{version} is {status}, not a shadow')
 
 
 def _rescore_pages(
@@ -352,12 +401,16 @@ def _rescore_pages(
     reason: str,
     dry_run: bool,
     deadline: float | None,
+    only_tag: str | None,
 ) -> RescoreResult:
     scanned = changed = score_changed = snapshot_rows = 0
     after = 0  # ids are BIGSERIAL, from 1
     while True:
         _check_deadline(deadline, 'a page')
-        cur.execute(_PAGE_SQL, (after, PAGE_ROWS))
+        if only_tag is None:
+            cur.execute(_PAGE_SQL, (after, PAGE_ROWS))
+        else:
+            cur.execute(_PAGE_TAGGED_SQL, (after, only_tag, PAGE_ROWS))
         rows = cur.fetchall()
         scanned += len(rows)
         changes = _changes(rows, to_version, weights)
@@ -449,7 +502,7 @@ def _promote(
         patch['verdict'] = verdict
     cur.execute(_PROMOTE_SQL, (Json(patch), to_version))
     if len(cur.fetchall()) != 1:
-        raise PointerMoved(f'{to_version} is no longer a shadow or passed candidate')
+        raise PointerMoved(f'{to_version} is no longer a shadow')
     cur.execute(_MOVE_ACTIVE_SQL, (to_version, expect_active))
     if len(cur.fetchall()) != 1:
         raise PointerMoved(f'the active pointer no longer names {expect_active}')
@@ -462,6 +515,13 @@ def _reason(value: str) -> str:
     """argparse ``type=``: refuse a bad reason before connecting."""
     if not _REASON.fullmatch(value):
         raise argparse.ArgumentTypeError(f'must match {_REASON.pattern}')
+    return value
+
+
+def _tag(value: str) -> str:
+    """argparse ``type=``: refuse an empty tag before connecting."""
+    if not value:
+        raise argparse.ArgumentTypeError('must not be empty')
     return value
 
 
@@ -492,6 +552,14 @@ def main(argv: Sequence[str] | None = None) -> None:
         help=(
             "a stored version to score with, not pinned (default: the one "
             "'active' names, pinned for the run)"
+        ),
+    )
+    parser.add_argument(
+        '--only-tag',
+        type=_tag,
+        help=(
+            'rescore only the fires whose score_version is this one, leaving '
+            'every other tag and every NULL one alone (default: every fire)'
         ),
     )
     parser.add_argument(
@@ -544,6 +612,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                 # The module docstring says why an explicit --version is not
                 # pinned.
                 pin_active=args.version is None,
+                only_tag=args.only_tag,
             )
         except (PointerMoved, ConcurrentScoreWriter, LockNotAvailable) as exc:
             # A Postgres message can span lines (its CONTEXT); keep one.

@@ -126,6 +126,7 @@ def gated(fire_id: int, *, score: int | None = None, version: str | None = None)
 _KINDS = (
     ("read_only", "SET TRANSACTION READ ONLY"),
     ("lock_timeout", "SET LOCAL lock_timeout"),
+    ("idle_timeout", "SET LOCAL idle_in_transaction_session_timeout"),
     ("load_pointer", "JOIN lottery_score_versions"),
     ("load_version", "SELECT weights FROM lottery_score_versions"),
     ("status_read", "SELECT status FROM lottery_score_versions"),
@@ -293,6 +294,11 @@ class FakeDb:
         assert not self._autocommit, "SET LOCAL outside a transaction does nothing"
         assert text == "SET LOCAL lock_timeout = '60s'"
 
+    def _idle_timeout(self, state, text, params, rows):
+        # Like lock_timeout, SET LOCAL does nothing outside a transaction.
+        assert not self._autocommit, "SET LOCAL outside a transaction does nothing"
+        assert text == "SET LOCAL idle_in_transaction_session_timeout = '120s'"
+
     def _load_pointer(self, state, text, params, rows):
         version = state["pointers"][params[0]]
         return [(version, self.weights[version])]
@@ -318,8 +324,15 @@ class FakeDb:
         # KeyError, as Postgres would refuse it.
         columns = re.search(r"SELECT (.*?) FROM", text).group(1).split(", ")
         assert "ORDER BY id LIMIT %s" in text
-        after, limit = params
-        ids = sorted(i for i in state["fires"] if i > after)[:limit]
+        # The tag filter applies only if the statement's text holds it, as for the
+        # guards in `_update`: a filter that is not in the text is not applied.
+        if "AND score_version = %s" in text:
+            after, tag, limit = params
+            tagged = {i for i, f in state["fires"].items() if f["score_version"] == tag}
+        else:
+            after, limit = params
+            tagged = set(state["fires"])
+        ids = sorted(i for i in tagged if i > after)[:limit]
         return [tuple(state["fires"][i][c] for c in columns) for i in ids]
 
     def _snapshot(self, state, text, params, rows):
@@ -369,14 +382,14 @@ class FakeDb:
         return returned
 
     def _status(self, state, text, params, rows):
-        assert "status IN ('shadow', 'passed')" in text
+        assert "status = 'shadow'" in text
         # The patch psycopg2 sends as `%s::jsonb`: only a Json adapter can be sent (a bare
         # dict is refused by `_check_adaptable` before it gets here). Applied only if the
         # statement's text merges it, as for the guards in `_update`.
         patch, version = params
         assert isinstance(patch, Json), "the gate_report patch must be a Json"
         merges = "gate_report = gate_report || %s::jsonb" in text
-        if state["statuses"].get(version) in ("shadow", "passed"):
+        if state["statuses"].get(version) == "shadow":
             state["statuses"][version] = "promoted"
             if merges:
                 # jsonb `||` on two objects: the right one's keys win, the rest stay.
@@ -534,7 +547,7 @@ def test_snapshot_precedes_each_update_and_holds_old_values(monkeypatch):
     rescore(db)
 
     assert db.events == [
-        "lock_timeout", "active",
+        "lock_timeout", "idle_timeout", "active",
         "page", "snapshot", "update", "update",
         "page", "snapshot", "update",
         "commit",
@@ -660,6 +673,7 @@ def test_promotion_moves_status_and_pointer_in_the_same_transaction():
 
     assert db.events == [
         "lock_timeout",
+        "idle_timeout",
         "active", "page", "snapshot", "update", "status", "pointer", "commit",
     ]
     assert db.of_kind("active")[0].text.endswith("FOR UPDATE")
@@ -681,6 +695,7 @@ def test_promotion_merges_the_verdict_into_the_gate_report_in_the_same_transacti
     # with the status and the pointer.
     assert db.events == [
         "lock_timeout",
+        "idle_timeout",
         "active", "page", "snapshot", "update", "status", "pointer", "commit",
     ]
     assert db.committed["statuses"][CANDIDATE] == "promoted"
@@ -815,7 +830,7 @@ def test_promotion_rolls_back_when_an_update_fails(monkeypatch):
         promote(db)
 
     assert db.events == [
-        "lock_timeout", "active", "page", "snapshot", "update", "update", "rollback",
+        "lock_timeout", "idle_timeout", "active", "page", "snapshot", "update", "update", "rollback",
     ]
     assert db.committed == before
     assert db.autocommit is True
@@ -839,6 +854,33 @@ def test_a_sigterm_mid_rescore_rolls_back(monkeypatch):
     assert db.autocommit is True
 
 
+@pytest.mark.parametrize("mode", ["rescore", "promotion", "dry_run"])
+def test_the_idle_in_transaction_timeout_is_set_inside_the_transaction_before_any_lock(mode):
+    # A process lost with its socket still open leaves the transaction idle, holding
+    # the pointer and the fire locks, and Postgres may not notice for a long time. With
+    # the timeout the server rolls it back itself. SET LOCAL lasts the transaction, so it
+    # must come after the transaction starts (the fake refuses it under autocommit) and
+    # before the first statement that can take a lock.
+    db = autocommit_db([fire(1, score=5)])
+
+    if mode == "promotion":
+        promote(db)
+    else:
+        rescore(db, dry_run=mode == "dry_run")
+
+    kinds = [s.kind for s in db.statements]
+    # An unpinned dry run reads no pointer, so the first read is the first page then.
+    first_read = next(k for k in kinds if k in ("active", "page"))
+    assert kinds.index("idle_timeout") < kinds.index(first_read)
+    (idle,) = db.of_kind("idle_timeout")
+    assert idle.text == "SET LOCAL idle_in_transaction_session_timeout = '120s'"
+    assert idle.autocommit is False
+    # Next to the lock timeout: the two session guards are the first two statements
+    # (a dry run's READ ONLY marker has to precede them, as Postgres requires).
+    guards = [k for k in kinds if k != "read_only"][:2]
+    assert guards == ["lock_timeout", "idle_timeout"]
+
+
 def test_a_lock_timeout_rolls_back_the_rescore():
     # The pointer lock waited past lock_timeout: Postgres cancels the statement.
     db = autocommit_db([fire(1, score=SEED_SCORE)])
@@ -852,7 +894,7 @@ def test_a_lock_timeout_rolls_back_the_rescore():
         promote(db)
 
     # The timeout is set before the first statement that can wait for a lock.
-    assert db.events == ["lock_timeout", "active", "rollback"]
+    assert db.events == ["lock_timeout", "idle_timeout", "active", "rollback"]
     assert db.committed == before
 
 
@@ -880,19 +922,22 @@ def test_promotion_aborts_when_the_active_pointer_moved():
     with pytest.raises(bls.PointerMoved, match=OTHER):
         promote(db)
 
-    assert db.events == ["lock_timeout", "active", "rollback"]
+    assert db.events == ["lock_timeout", "idle_timeout", "active", "rollback"]
     assert db.committed == before
 
 
-def test_promotion_rolls_back_when_the_version_is_no_longer_a_candidate():
-    statuses = {SEED: "seed", CANDIDATE: "rejected", OTHER: "promoted"}
+@pytest.mark.parametrize("status", ["rejected", "passed"])
+def test_promotion_rolls_back_when_the_version_is_no_longer_a_candidate(status):
+    # `passed` is not promotable either: that verdict was reached against the active
+    # version of its day and is kept as a record, so a by-hand promotion of one is refused.
+    statuses = {SEED: "seed", CANDIDATE: status, OTHER: "promoted"}
     db = autocommit_db([fire(1, score=SEED_SCORE)], statuses=statuses)
     before = copy.deepcopy(db.committed)
 
-    with pytest.raises(bls.PointerMoved, match=CANDIDATE):
+    with pytest.raises(bls.PointerMoved, match=f"{CANDIDATE} is no longer a shadow"):
         promote(db)
 
-    assert db.events == ["lock_timeout", "active", "page", "snapshot", "update", "status", "rollback"]
+    assert db.events == ["lock_timeout", "idle_timeout", "active", "page", "snapshot", "update", "status", "rollback"]
     assert db.committed == before
 
 
@@ -924,7 +969,7 @@ def test_concurrent_score_writer_aborts_the_rescore(monkeypatch):
     with pytest.raises(bls.ConcurrentScoreWriter, match="1 of 2"):
         promote(db)
 
-    assert db.events == ["lock_timeout", "active", "page", "snapshot", "update", "rollback"]
+    assert db.events == ["lock_timeout", "idle_timeout", "active", "page", "snapshot", "update", "rollback"]
     before["fires"][2]["score"] = 3  # the other session's change stands
     assert db.committed == before
 
@@ -942,7 +987,7 @@ def test_concurrent_tag_writer_aborts_the_rescore(monkeypatch):
     with pytest.raises(bls.ConcurrentScoreWriter, match="1 of 2"):
         promote(db)
 
-    assert db.events == ["lock_timeout", "active", "page", "snapshot", "update", "rollback"]
+    assert db.events == ["lock_timeout", "idle_timeout", "active", "page", "snapshot", "update", "rollback"]
     before["fires"][2]["score_version"] = OTHER  # the other session's change stands
     assert db.committed == before
 
@@ -964,7 +1009,7 @@ def test_rescore_rolls_back_past_the_deadline(monkeypatch):
         promote(db, deadline=DEADLINE)
 
     # Checked before the second page: it is never read.
-    assert db.events == ["lock_timeout", "active", "page", "rollback"]
+    assert db.events == ["lock_timeout", "idle_timeout", "active", "page", "rollback"]
     assert db.committed == before
 
 
@@ -979,7 +1024,7 @@ def test_rescore_rolls_back_when_the_deadline_passes_between_write_batches(
     with pytest.raises(bls.RescoreDeadline):
         promote(db, deadline=DEADLINE)
 
-    assert db.events == ["lock_timeout", "active", "page", "snapshot", "update", "rollback"]
+    assert db.events == ["lock_timeout", "idle_timeout", "active", "page", "snapshot", "update", "rollback"]
     assert db.committed == before
 
 
@@ -1007,7 +1052,7 @@ def test_dry_run_writes_nothing():
 
     # A read-only transaction, so Postgres itself refuses a write, and no lock.
     assert dry_db.events == [
-        "read_only", "lock_timeout", "active", "status_read", "page", "rollback",
+        "read_only", "lock_timeout", "idle_timeout", "active", "status_read", "page", "rollback",
     ]
     assert dry_db.of_kind("active")[0].text.endswith("WHERE name = 'active'")
     assert dry_db.committed == before
@@ -1022,7 +1067,7 @@ def test_dry_run_writes_nothing():
     assert (dry.pointer_moved, wet.pointer_moved) == (False, True)
 
 
-@pytest.mark.parametrize("status", ["rejected", "promoted", "seed", None])
+@pytest.mark.parametrize("status", ["rejected", "passed", "promoted", "seed", None])
 def test_dry_run_promotion_refuses_a_version_that_is_not_a_candidate(status):
     # The write would fail at its status UPDATE; the dry run must not report
     # success. None: the version has no row.
@@ -1031,11 +1076,11 @@ def test_dry_run_promotion_refuses_a_version_that_is_not_a_candidate(status):
         statuses[CANDIDATE] = status
     db = autocommit_db([fire(1, score=SEED_SCORE)], statuses=statuses)
 
-    with pytest.raises(bls.PointerMoved, match=f"{CANDIDATE} is {status}"):
+    with pytest.raises(bls.PointerMoved, match=f"{CANDIDATE} is {status}, not a shadow"):
         promote(db, dry_run=True)
 
     assert db.events == [
-        "read_only", "lock_timeout", "active", "status_read", "rollback",
+        "read_only", "lock_timeout", "idle_timeout", "active", "status_read", "rollback",
     ]
 
 
@@ -1082,14 +1127,19 @@ def test_pinned_rescore_locks_the_active_pointer_first():
 
     rescore(db, pin_active=True)
 
-    # After the lock timeout, the pointer lock is the first statement.
-    timeout, pin = db.statements[:2]
-    assert (timeout.kind, pin.kind, pin.autocommit) == ("lock_timeout", "active", False)
+    # After the two timeouts, the pointer lock is the first statement.
+    lock_timeout, idle_timeout, pin = db.statements[:3]
+    assert (lock_timeout.kind, idle_timeout.kind, pin.kind, pin.autocommit) == (
+        "lock_timeout",
+        "idle_timeout",
+        "active",
+        False,
+    )
     # FOR UPDATE, not FOR SHARE: two FOR SHARE writes would not exclude each
     # other.
     assert pin.text.endswith("FOR UPDATE")
     assert db.events == [
-        "lock_timeout", "active", "page", "snapshot", "update", "commit",
+        "lock_timeout", "idle_timeout", "active", "page", "snapshot", "update", "commit",
     ]
     assert db.committed["pointers"] == {"active": SEED, "takeit": SEED}
 
@@ -1104,11 +1154,11 @@ def test_an_unpinned_write_still_locks_the_pointer_for_update():
 
     result = rescore(db)
 
-    pin = db.statements[1]
+    pin = db.statements[2]
     assert (pin.kind, pin.autocommit) == ("active", False)
     assert pin.text.endswith("FOR UPDATE")
     assert db.events == [
-        "lock_timeout", "active", "page", "snapshot", "update", "commit",
+        "lock_timeout", "idle_timeout", "active", "page", "snapshot", "update", "commit",
     ]
     assert scores(db) == {1: (9, SEED)}  # the pointer did not have to match
     assert db.committed["pointers"]["active"] == CANDIDATE
@@ -1122,7 +1172,7 @@ def test_pinned_rescore_aborts_when_the_active_pointer_names_another_version():
     with pytest.raises(bls.PointerMoved, match=f"names {CANDIDATE}, not {SEED}"):
         rescore(db, pin_active=True)
 
-    assert db.events == ["lock_timeout", "active", "rollback"]
+    assert db.events == ["lock_timeout", "idle_timeout", "active", "rollback"]
     assert db.committed == before
 
 
@@ -1131,7 +1181,7 @@ def test_pinned_dry_run_takes_no_lock():
 
     result = rescore(db, pin_active=True, dry_run=True)
 
-    assert db.events == ["read_only", "lock_timeout", "active", "page", "rollback"]
+    assert db.events == ["read_only", "lock_timeout", "idle_timeout", "active", "page", "rollback"]
     assert db.of_kind("active")[0].text.endswith("WHERE name = 'active'")
     assert result.changed == 1
 
@@ -1141,7 +1191,7 @@ def test_an_unpinned_dry_run_reads_no_pointer():
 
     rescore(db, dry_run=True)
 
-    assert db.events == ["read_only", "lock_timeout", "page", "rollback"]
+    assert db.events == ["read_only", "lock_timeout", "idle_timeout", "page", "rollback"]
 
 
 def test_pin_active_and_expect_active_are_exclusive():
@@ -1149,6 +1199,129 @@ def test_pin_active_and_expect_active_are_exclusive():
 
     with pytest.raises(ValueError, match="mutually exclusive"):
         promote(db, pin_active=True)
+
+    assert db.events == []
+
+
+# ── Only one tag ────────────────────────────────────────────────────────────
+
+
+def tagged_fires() -> list[dict[str, Any]]:
+    """What a repair meets: the residue (OTHER), and fires it must not touch."""
+    return [
+        fire(1, score=5, version=OTHER),  # the residue, a stale score
+        fire(2, score=SEED_SCORE, version=OTHER),  # the residue, only its tag differs
+        fire(3, score=5, version=CANDIDATE),  # another tag, stale: left alone
+        fire(4, score=5),  # scored before the store existed (NULL tag): left alone
+        gated(5, score=4, version=OTHER),  # the residue, the scorer gates it out
+    ]
+
+
+def test_only_tag_rescores_the_fires_of_that_tag_and_snapshots_only_those():
+    db = autocommit_db(tagged_fires())
+
+    result = rescore(db, only_tag=OTHER)
+
+    assert scores(db) == {
+        1: (SEED_SCORE, SEED),
+        2: (SEED_SCORE, SEED),
+        3: (5, CANDIDATE),  # untouched, stale score and all
+        4: (5, None),  # untouched: a NULL tag is never the tag asked for
+        5: (None, SEED),
+    }
+    (snapshot,) = db.committed["snapshots"]
+    assert snapshot["fire_ids"] == [1, 2, 5]
+    assert snapshot["old_values"] == [5.0, float(SEED_SCORE), 4.0]
+    assert snapshot["old_tags"] == [OTHER, OTHER, OTHER]
+    # Only the tagged fires were read at all, and only they were written.
+    assert (result.scanned, result.changed, result.snapshot_rows) == (3, 3, 1)
+    written = {row[0] for s in db.of_kind("update") for row in s.rows}
+    assert written == {1, 2, 5}
+
+
+def test_only_tag_filters_in_the_page_query_and_pages_by_id_within_the_tag(monkeypatch):
+    monkeypatch.setattr(bls, "PAGE_ROWS", 2)
+    db = autocommit_db(tagged_fires())
+
+    result = rescore(db, only_tag=OTHER)
+
+    first, second = db.of_kind("page")
+    # The tag is a parameter, never text, and the filter is in the statement.
+    assert "AND score_version = %s ORDER BY id LIMIT %s" in first.text
+    assert first.params == (0, OTHER, 2)
+    assert second.params == (2, OTHER, 2)  # keyset on the last id read
+    assert [s["fire_ids"] for s in db.committed["snapshots"]] == [[1, 2], [5]]
+    assert result.scanned == 3
+
+
+def test_without_only_tag_the_page_query_reads_every_fire():
+    db = autocommit_db(tagged_fires())
+
+    result = rescore(db)
+
+    (page,) = db.of_kind("page")
+    assert "score_version = %s" not in page.text
+    assert page.params == (0, bls.PAGE_ROWS)
+    assert result.scanned == 5
+    assert scores(db)[4] == (SEED_SCORE, SEED)  # the NULL-tag fire is rewritten too
+
+
+def test_only_tag_dry_run_counts_the_tagged_fires_and_writes_nothing():
+    db = autocommit_db(tagged_fires())
+    before = copy.deepcopy(db.committed)
+
+    result = rescore(db, only_tag=OTHER, dry_run=True)
+
+    assert (result.scanned, result.changed, result.snapshot_rows) == (3, 3, 1)
+    assert db.committed == before
+    assert not [s for s in db.statements if s.kind in WRITES]
+
+
+def test_only_tag_leaves_the_pre_store_fires_of_an_undone_first_promotion_alone():
+    # The undo of the first promotion restores NULL tags on every pre-store fire. The fires
+    # inserted between the promotion and the undo carry its tag. A rescore to repair them
+    # must not turn the NULL ones into seed-tagged fires, which a bare run would.
+    db = autocommit_db(
+        [
+            fire(1, score=5),  # scored before the store: restored to NULL by the undo
+            fire(2, score=5),
+            fire(3, score=11, version=CANDIDATE),  # inserted under the promotion
+        ]
+    )
+
+    result = rescore(db, only_tag=CANDIDATE)
+
+    assert scores(db) == {1: (5, None), 2: (5, None), 3: (SEED_SCORE, SEED)}
+    assert result.changed == 1
+
+
+def test_a_tag_nothing_carries_writes_nothing():
+    db = autocommit_db(tagged_fires())
+    before = copy.deepcopy(db.committed)
+
+    result = rescore(db, only_tag="refit-1999-01-01")
+
+    assert (result.scanned, result.changed, result.snapshot_rows) == (0, 0, 0)
+    assert db.committed["fires"] == before["fires"]
+    assert db.committed["snapshots"] == []  # a snapshot row needs at least one id
+
+
+def test_only_tag_is_refused_empty_before_any_statement():
+    db = autocommit_db(tagged_fires())
+
+    with pytest.raises(ValueError, match="only_tag"):
+        rescore(db, only_tag="")
+
+    assert db.events == []
+
+
+def test_only_tag_is_refused_with_a_promotion_before_any_statement():
+    # A promotion rewrites the whole table and then moves the pointer: half a table under
+    # a new `active` is the split this module exists to prevent.
+    db = autocommit_db(tagged_fires())
+
+    with pytest.raises(ValueError, match="not a promotion"):
+        promote(db, only_tag=OTHER)
 
     assert db.events == []
 
@@ -1181,7 +1354,7 @@ def test_cli_without_write_is_a_dry_run(cli, capsys):
     assert cli["dsn"] == "postgresql://fake-pooled"
     # Pinned, but a READ ONLY transaction takes no lock.
     assert db.events == [
-        "load_pointer", "read_only", "lock_timeout", "active", "page", "rollback",
+        "load_pointer", "read_only", "lock_timeout", "idle_timeout", "active", "page", "rollback",
     ]
     assert db.of_kind("active")[0].text.endswith("WHERE name = 'active'")
     assert not [s for s in db.statements if s.kind in WRITES]
@@ -1200,11 +1373,11 @@ def test_cli_write_never_moves_a_pointer(cli, monkeypatch, capsys):
     assert cli["dsn"] == "postgresql://fake-direct"
     assert db.events == [
         "load_pointer",
-        "lock_timeout", "active", "page", "snapshot", "update", "commit",
+        "lock_timeout", "idle_timeout", "active", "page", "snapshot", "update", "commit",
     ]
-    # After the lock timeout, the pin is the rescore transaction's first
+    # After the two timeouts, the pin is the rescore transaction's first
     # statement.
-    pin = db.statements[2]
+    pin = db.statements[3]
     assert (pin.kind, pin.autocommit) == ("active", False)
     assert pin.text.endswith("FOR UPDATE")
     assert db.committed["pointers"] == {"active": SEED, "takeit": SEED}
@@ -1224,7 +1397,7 @@ def test_cli_stops_when_a_promotion_moves_the_pointer_after_its_read(cli):
     with pytest.raises(SystemExit, match=f"PointerMoved: .* names {CANDIDATE}"):
         bls.main(["--write"])
 
-    assert db.events == ["load_pointer", "lock_timeout", "active", "rollback"]
+    assert db.events == ["load_pointer", "lock_timeout", "idle_timeout", "active", "rollback"]
     before["pointers"]["active"] = CANDIDATE  # the promotion's change stands
     assert db.committed == before
     assert db.closed
@@ -1275,7 +1448,7 @@ def test_cli_version_flag_scores_with_that_version(cli):
     db = cli["db"]
     assert db.events == [
         "load_version",
-        "lock_timeout", "active", "page", "snapshot", "update", "commit",
+        "lock_timeout", "idle_timeout", "active", "page", "snapshot", "update", "commit",
     ]
     assert db.of_kind("load_version")[0].params == (CANDIDATE,)
     # An explicit version is not pinned (it is not the active one here), but
@@ -1284,6 +1457,57 @@ def test_cli_version_flag_scores_with_that_version(cli):
     assert scores(db) == {1: (11, CANDIDATE), 2: (None, CANDIDATE)}
     assert db.committed["snapshots"][0]["reason"] == "boundary-fix"
     assert db.committed["pointers"]["active"] == SEED
+
+
+def test_cli_only_tag_repairs_that_tag_and_nothing_else(cli, capsys):
+    # The Vercel-side repair: pinned to the active version, the residue's tag only.
+    cli["db"] = FakeDb(tagged_fires())
+
+    bls.main(["--only-tag", OTHER, "--reason", "repair-seed", "--write"])
+
+    db = cli["db"]
+    assert scores(db) == {
+        1: (SEED_SCORE, SEED),
+        2: (SEED_SCORE, SEED),
+        3: (5, CANDIDATE),
+        4: (5, None),
+        5: (None, SEED),
+    }
+    assert db.of_kind("page")[0].params == (0, OTHER, bls.PAGE_ROWS)
+    assert db.committed["snapshots"][0]["reason"] == "repair-seed"
+    # Still pinned to the active version: only `--version` gives that up.
+    assert db.of_kind("active")[0].text.endswith("FOR UPDATE")
+    assert "scanned 3, wrote 3" in capsys.readouterr().out
+
+
+def test_cli_undo_repair_scores_with_the_previous_version_over_the_promoted_tag(cli):
+    # Step 6 of the undo: `--version <previous> --only-tag <promoted> --write`.
+    cli["db"] = FakeDb(
+        [fire(1, score=5), fire(2, score=11, version=CANDIDATE)], active=SEED
+    )
+
+    bls.main(["--version", SEED, "--only-tag", CANDIDATE, "--write"])
+
+    assert scores(cli["db"]) == {1: (5, None), 2: (SEED_SCORE, SEED)}
+
+
+def test_cli_only_tag_dry_run_writes_nothing(cli, capsys):
+    cli["db"] = FakeDb(tagged_fires())
+    before = copy.deepcopy(cli["db"].committed)
+
+    bls.main(["--only-tag", OTHER])
+
+    assert cli["db"].committed == before
+    assert "scanned 3, would write 3" in capsys.readouterr().out
+
+
+def test_cli_empty_only_tag_is_a_usage_error(cli, capsys):
+    with pytest.raises(SystemExit) as exit_info:
+        bls.main(["--only-tag", "", "--write"])
+
+    assert exit_info.value.code == 2
+    assert "--only-tag" in capsys.readouterr().err
+    assert "dsn" not in cli
 
 
 def test_cli_unknown_version_exits_before_any_rescore(cli):
