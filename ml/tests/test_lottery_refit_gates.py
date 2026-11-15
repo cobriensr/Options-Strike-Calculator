@@ -216,7 +216,7 @@ def test_gate_constants_match_the_plans_table():
     assert g.TIER1_SHARE_BAND == (0.01, 0.15)
     assert g.FEED_CUTOFF_MATCH_SESSIONS == 20
     assert g.FEED_CUTOFF_SEARCH_MAX == 40
-    assert g.FEED_CUTOFF_FLOOR == 6  # one above the largest inversion bonus, 5
+    assert g.FEED_CUTOFF_FLOOR == 8  # one above the largest NULL-score qas: bonus 5 + 2
 
 
 def test_feed_columns_extend_the_score_columns():
@@ -673,32 +673,59 @@ def test_match_feed_cutoffs_stays_inside_the_search_range():
     assert got == g.FeedCutoffs(tier1_min_score=40, tier2_min_score=39)
 
 
-def test_match_feed_cutoffs_never_lands_where_a_null_score_can_tier():
-    # The feed tiers a NULL-score fire by its bonus alone (`score ?? 0`), up to +5, while
-    # `feed_qas` counts it tier3. So a feed cutoff of 5 or less would make the gate judge a
-    # tiering the feed does not show. Cutoffs above the bonus are the ones both agree on.
-    assert g.FEED_CUTOFF_FLOOR == max(g.INVERSION_BONUS.values()) + 1 == 6
+def test_the_floor_is_derived_from_the_largest_qas_a_null_score_fire_can_reach():
+    # The feed's SQL floor gives a NULL-score fire `0 + fire_count_score_adjustment +
+    # inversion bonus`: up to +2 and +5. The gate counts such a fire tier3, so the two
+    # agree only for cutoffs above their sum. Each part is a named constant.
+    assert g.FIRE_COUNT_ADJUSTMENT_MAX == 2
+    assert max(g.INVERSION_BONUS.values()) == 5
+    assert g.NULL_SCORE_QAS_MAX == g.FIRE_COUNT_ADJUSTMENT_MAX + 5 == 7
+    assert g.FEED_CUTOFF_FLOOR == g.NULL_SCORE_QAS_MAX + 1 == 8
+
+
+def test_the_fire_count_adjustment_max_is_the_triggers_largest_value():
+    # The only writer of `fire_count_score_adjustment` is the trigger of migration #167,
+    # and its ladder is the source of the +2. If a migration changes the ladder, this fails
+    # first and the floor must follow. (The backfill UPDATE beside it uses the same ladder.)
+    text = (ROOT / "api" / "_lib" / "db-migrations.ts").read_text(encoding="utf-8")
+    start = text.index(
+        "CREATE OR REPLACE FUNCTION update_lottery_fire_count_score_adj()"
+    )
+    ladder = re.search(r"new_adj := CASE(.*?)END;", text[start:], re.S)
+    assert ladder is not None, "the trigger's ladder moved or changed shape"
+    values = [int(v) for v in re.findall(r"(?:THEN|ELSE)\s+(-?\d+)", ladder[1])]
+    assert values == [-3, -1, 0, 1, 2]
+    assert max(values) == g.FIRE_COUNT_ADJUSTMENT_MAX
+
+
+@pytest.mark.parametrize("reach", [5, 7])
+def test_match_feed_cutoffs_never_lands_where_a_null_score_can_tier(reach):
+    # A cutoff of 7 or less can tier a NULL-score fire on the feed (qas up to 7), while
+    # `feed_qas` counts it tier3, so the gate would judge a tiering the feed does not show.
+    # 5 is the bonus alone (the displayed tier); 7 adds the fire-count adjustment (the SQL
+    # floor, which serves `minTier` and the chip counts).
     active = _qas(v20=5, v11=15, v2=80)  # targets 5% (>= 13) and 20% (>= 10)
-    # The candidate reaches 20% only at c <= 5. Searching from 0, tier2 would be 5.
-    candidate = _qas(v5=20, v1=80)
+    # The candidate reaches 20% only at c <= `reach`. Searching from 0, tier2 would be
+    # `reach` (the larger c wins a tie): 5, and 7, which the first floor of 6 let through.
+    candidate = _qas(**{f"v{reach}": 20, "v1": 80})
     got = g.match_feed_cutoffs(candidate, active, g.FeedCutoffs(13, 10))
-    assert got.tier2_min_score > max(g.INVERSION_BONUS.values())
-    # Nothing is at or above 6, so every cutoff from there on is equally far from the
+    assert got.tier2_min_score > g.NULL_SCORE_QAS_MAX
+    # Nothing is at or above 8, so every cutoff from there on is equally far from the
     # target and the tie goes to the largest: the candidate cannot match the active's tiers
-    # above the bonus, and check_creation rejects it on its tier1 share (0 is under 1 %).
+    # above the floor, and check_creation rejects it on its tier1 share (0 is under 1 %).
     assert got == g.FeedCutoffs(tier1_min_score=40, tier2_min_score=39)
 
 
 def test_match_feed_cutoffs_may_land_exactly_on_the_floor_with_tier1_above_it():
     # Both targets are 10% (nothing sits between the active's cutoffs). The candidate holds
-    # 10% on c = 2..6 and nothing from 7. Searching from 0 gives (6, 5): tier2 inside the
-    # disagreeing zone. Tier2 may use 6, the floor, but tier1 must stay above it.
+    # 10% on c = 2..8 and nothing from 9. Searching from 0 gives (8, 7): tier2 inside the
+    # disagreeing zone. Tier2 may use 8, the floor, but tier1 must stay above it.
     active = _qas(v20=10, v2=90)
-    candidate = _qas(v6=10, v1=90)
+    candidate = _qas(v8=10, v1=90)
     got = g.match_feed_cutoffs(candidate, active, g.FeedCutoffs(13, 10))
     assert got.tier2_min_score == g.FEED_CUTOFF_FLOOR
     assert got.tier1_min_score > got.tier2_min_score
-    assert got == g.FeedCutoffs(tier1_min_score=40, tier2_min_score=6)
+    assert got == g.FeedCutoffs(tier1_min_score=40, tier2_min_score=8)
 
 
 def test_match_feed_cutoffs_counts_nan_below_and_in_the_denominator():
@@ -977,20 +1004,20 @@ def test_rho_is_pooled_over_the_judged_sessions_not_averaged_per_session():
 def test_too_few_eval_rows(monkeypatch):
     # Ten sessions hold at least 10 * MIN_EVAL_ROWS_PER_SESSION = 5,000 rows, so
     # with the shipped constants this check cannot fire on its own: it is a
-    # backstop. Raising the total floor one row above that shows the check itself.
-    # The shipped value is read before it is patched, so the test follows a retuned
-    # constant instead of a literal that was true on the day it was written.
-    shipped = g.MIN_EVAL_ROWS
+    # backstop. Raising the total floor one row above what the minimum sessions hold
+    # shows the check itself. The rows come from the shipped per-session floor, and the
+    # total floor is set from what they sum to, so a retune of MIN_EVAL_ROWS that keeps
+    # the check a backstop does not fail this test.
     rows = (g.MIN_EVAL_ROWS_PER_SESSION,) * g.SHADOW_SESSIONS
-    assert sum(rows) == shipped  # exactly the floor: the backstop relationship below
-    monkeypatch.setattr(g, "MIN_EVAL_ROWS", shipped + 1)
+    total = sum(rows)
+    monkeypatch.setattr(g, "MIN_EVAL_ROWS", total + 1)
     v = run(rows=rows)
     assert (v.decision, v.reasons, v.eval_rows) == (
         "reject",
         ("too_few_eval_rows",),
-        shipped,
+        total,
     )
-    monkeypatch.setattr(g, "MIN_EVAL_ROWS", shipped)
+    monkeypatch.setattr(g, "MIN_EVAL_ROWS", total)
     assert run(rows=rows).decision == "pass"  # exactly the floor
 
 
@@ -1124,7 +1151,7 @@ def test_every_failed_check_is_listed_in_vocabulary_order(monkeypatch):
     # (9, 3), so its share is 0 (under the band, ratio 0); and tier1+2 grows to
     # 7/32 over 4/32.
     rows = (g.MIN_EVAL_ROWS_PER_SESSION,) * g.SHADOW_SESSIONS
-    monkeypatch.setattr(g, "MIN_EVAL_ROWS", g.MIN_EVAL_ROWS + 1)
+    monkeypatch.setattr(g, "MIN_EVAL_ROWS", sum(rows) + 1)
     v = run(
         rows=rows,
         candidate_eval=BAD_EVAL,

@@ -98,11 +98,24 @@ FEED_CUTOFF_SEARCH_MAX = 40
 # or other quintile adds 0.
 INVERSION_BONUS = {1: -5, 2: -2, 3: 0, 4: 3, 5: 5}
 
-# The feed shows a fire with a NULL score as qas = bonus (`score ?? 0`, floored at 0, plus
-# the bonus), so a feed cutoff of 5 or less can tier it, while `feed_qas` counts it tier3.
-# Cutoffs above the largest bonus cannot: the two agree there. `match_feed_cutoffs` therefore
-# searches from here (tier2) and one above (tier1, which stays above tier2).
-FEED_CUTOFF_FLOOR = max(INVERSION_BONUS.values()) + 1
+# The largest `fire_count_score_adjustment` any fire can carry. The only writer is the
+# `update_lottery_fire_count_score_adj` trigger (migration #167 in api/_lib/db-migrations.ts),
+# whose ladder is -3 for one fire on a chain-day, -1 for 2-3, 0 for 4-7, +1 for 8-15 and +2
+# from 16; the test parses it. The round-trip deduct beside it is never positive.
+FIRE_COUNT_ADJUSTMENT_MAX = 2
+
+# A fire with a NULL score still gets a qas on the feed: `GREATEST(0, COALESCE(score, 0) +
+# round_trip_score_deduct + fire_count_score_adjustment) + inversion bonus` (`qasExprText`
+# in api/lottery-finder.ts, which serves the `minTier` floor and the chip counts). With the
+# score and the deduct at 0 that is the largest adjustment plus the largest bonus. The feed's
+# displayed tier leaves the adjustment out of such a row, so it tops out lower, at the bonus.
+NULL_SCORE_QAS_MAX = FIRE_COUNT_ADJUSTMENT_MAX + max(INVERSION_BONUS.values())
+
+# `feed_qas` counts a NULL-score fire tier3, so a feed cutoff at or below NULL_SCORE_QAS_MAX
+# would let the feed tier a fire the gate did not count. Cutoffs above it cannot: the two
+# agree there. `match_feed_cutoffs` therefore searches from here (tier2) and one above
+# (tier1, which stays above tier2).
+FEED_CUTOFF_FLOOR = NULL_SCORE_QAS_MAX + 1
 
 # The frame ``feed_qas`` and ``daily_tier_shares`` read: the score columns, which
 # ``score_frame`` needs to rescore a fire, and the three the feed adds. The
@@ -130,11 +143,13 @@ __all__ = [
     "FEED_CUTOFF_FLOOR",
     "FEED_CUTOFF_MATCH_SESSIONS",
     "FEED_CUTOFF_SEARCH_MAX",
+    "FIRE_COUNT_ADJUSTMENT_MAX",
     "INVERSION_BONUS",
     "MIN_EVAL_ROWS",
     "MIN_EVAL_ROWS_PER_SESSION",
     "MIN_TRAIN_ROWS",
     "MIN_TRAIN_SESSIONS",
+    "NULL_SCORE_QAS_MAX",
     "OUTCOME_COLUMN",
     "SHADOW_MAX_SESSIONS",
     "SHADOW_SESSIONS",
