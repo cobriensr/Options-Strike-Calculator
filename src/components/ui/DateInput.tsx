@@ -5,6 +5,12 @@
  * styling. The input itself is timezone-naive — it just edits a
  * YYYY-MM-DD string.
  *
+ * An incomplete or pre-1000 date is a draft until it is complete or you
+ * leave the field. A draft shows as typed and is not passed to `onChange`;
+ * leaving the field while it is still a draft passes '' once (a panel that
+ * follows today reads that as "today"). A complete date is passed on as soon
+ * as it is whole. See the comment at the draft state below for why.
+ *
  * Trading-day convention: callers compare the value against "today"
  * using `getETToday()` from `src/utils/timezone.ts` (the trading
  * calendar is anchored to Eastern Time). The component does not
@@ -37,6 +43,14 @@ export interface DateInputProps {
   className?: string;
 }
 
+/**
+ * Text that is not yet a date to act on: the empty string, or a year before
+ * 1000 (it starts with "0", e.g. 0002-04-09 while 2026 is being typed).
+ */
+function isDraftText(text: string): boolean {
+  return text === '' || text.startsWith('0');
+}
+
 const DEFAULT_INPUT_CLASS =
   'border-edge bg-surface-alt text-text rounded border px-1.5 py-0.5 font-mono text-xs';
 
@@ -54,18 +68,27 @@ export function DateInput({
   const generatedId = useId();
   const inputId = id ?? generatedId;
 
-  // A native date input fires `input` with '' whenever its value goes invalid:
-  // the first "0" of a zero-padded month or day does it, as does a cleared
-  // segment. A parent that turns '' into a date (a panel that follows today)
-  // would rewrite the controlled field and lose the segments typed so far, so
-  // an emptied field is kept as a local draft. It tells the parent nothing
-  // until a date is complete, or until the field is left still empty.
+  // An incomplete or pre-1000 date is a draft until it is complete or you
+  // leave the field. A native date input fires `input` with '' whenever its
+  // value goes invalid: the first "0" of a zero-padded month or day does it,
+  // as does a cleared segment. Typing the year digit by digit fires valid but
+  // meaningless dates on the way (0002-04-09, 0020-04-09, 0202-04-09). A
+  // parent that turns '' into a date (a panel that follows today) would
+  // rewrite the controlled field and lose the segments typed so far, and each
+  // of those dates would reach the parent and start a fetch. So both are kept
+  // as a local draft: the raw text, shown as typed, and told to the parent
+  // only if the field is left as a draft ('' = follow today, the same as an
+  // incomplete field).
   //
-  // The draft is the `value` the field was emptied against, not a copy of it:
-  // it shows only while `value` still equals it, so a new value from outside
-  // (the LIVE button, the midnight roll) drops it with no effect to sync.
-  const [emptiedFrom, setEmptiedFrom] = useState<string | null>(null);
-  const emptied = emptiedFrom === value;
+  // `from` is the `value` the draft was taken against, not a copy of it: the
+  // draft shows only while `value` still equals it, so a new value from
+  // outside (the LIVE button, the midnight roll) drops it with no effect to
+  // sync. Every blur and every complete date clears the state, so a lapsed
+  // draft cannot come back if `value` returns to what it was.
+  const [pending, setPending] = useState<{ from: string; text: string } | null>(
+    null,
+  );
+  const draft = pending !== null && pending.from === value ? pending : null;
 
   return (
     <span className="inline-flex items-center gap-1.5">
@@ -81,20 +104,19 @@ export function DateInput({
       <input
         id={inputId}
         type="date"
-        value={emptied ? '' : value}
+        value={draft ? draft.text : value}
         onChange={(e) => {
           const next = e.target.value;
-          if (next === '') {
-            setEmptiedFrom(value);
+          if (isDraftText(next)) {
+            setPending({ from: value, text: next });
             return;
           }
-          setEmptiedFrom(null);
+          setPending(null);
           onChange(next);
         }}
         onBlur={() => {
-          if (!emptied) return;
-          setEmptiedFrom(null);
-          onChange('');
+          setPending(null);
+          if (draft) onChange('');
         }}
         min={min}
         max={max}

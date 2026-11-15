@@ -71,19 +71,21 @@ describe('DateInput', () => {
 });
 
 // ============================================================
-// AN EMPTIED FIELD
+// AN INCOMPLETE FIELD
 //
 // A native date input fires `input` with '' whenever its value goes invalid:
 // the first "0" of a zero-padded month or day does it, as does a cleared
-// segment. If that '' is forwarded and the parent turns it into a date (a
-// panel that follows today does), the controlled field is rewritten to that
-// date and the segments typed so far are lost: typing 04092026 over
-// 2026-11-15 ended at 2026-11-09, not 2026-04-09. So the field keeps an
-// emptied draft locally, tells the parent nothing until a date is complete,
-// and forwards '' only when the field is left empty.
+// segment. Typing the year digit by digit fires valid but meaningless dates
+// on the way (0002-04-09, 0020-04-09, 0202-04-09). If those are forwarded
+// and the parent turns '' into a date (a panel that follows today does), the
+// controlled field is rewritten and the segments typed so far are lost:
+// typing 04092026 over 2026-11-15 ended at 2026-11-09, not 2026-04-09, and
+// every one of those dates started a fetch. So the field keeps an empty or
+// pre-1000 date as a draft locally, tells the parent nothing until a date is
+// complete, and forwards '' only when the field is left as a draft.
 // ============================================================
 
-describe('DateInput: an emptied field', () => {
+describe('DateInput: an incomplete field', () => {
   function setup(value = '2026-11-15') {
     const onChange = vi.fn();
     const utils = render(
@@ -95,17 +97,22 @@ describe('DateInput: an emptied field', () => {
   const empty = (input: HTMLElement) =>
     fireEvent.change(input, { target: { value: '' } });
 
-  /** A panel that follows today: '' means today. */
-  function Following() {
+  /** A panel that follows today: '' means today. Records what it is sent. */
+  function Following({ forwarded = [] }: { forwarded?: string[] }) {
     const [date, setDate] = useState('2026-11-15');
     return (
       <DateInput
         label="d"
         value={date}
-        onChange={(next) => setDate(next === '' ? '2026-11-15' : next)}
+        onChange={(next) => {
+          forwarded.push(next);
+          setDate(next === '' ? '2026-11-15' : next);
+        }}
       />
     );
   }
+  const typeInto = (input: HTMLElement, value: string) =>
+    fireEvent.change(input, { target: { value } });
 
   it('shows the field empty and forwards nothing when it is emptied', () => {
     const { onChange, input } = setup();
@@ -183,5 +190,86 @@ describe('DateInput: an emptied field', () => {
     fireEvent.blur(input);
 
     expect(input.value).toBe('2026-11-15');
+  });
+
+  it('does not bring a lapsed draft back when the value returns', () => {
+    const { onChange, input, rerender } = setup('2026-04-20');
+    empty(input);
+
+    // The draft lapses when the value changes from outside, and any blur
+    // clears it: a later return to the same value must show that value.
+    rerender(<DateInput label="d" value="2026-05-05" onChange={onChange} />);
+    expect(input.value).toBe('2026-05-05');
+    fireEvent.blur(input);
+    expect(onChange).not.toHaveBeenCalled();
+
+    rerender(<DateInput label="d" value="2026-04-20" onChange={onChange} />);
+
+    expect(input.value).toBe('2026-04-20');
+    fireEvent.blur(input);
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it('shows the date and drops the draft when the same date is typed back', () => {
+    const { onChange, input } = setup();
+    empty(input);
+
+    typeInto(input, '2026-11-15');
+
+    expect(input.value).toBe('2026-11-15');
+    fireEvent.blur(input);
+    expect(onChange.mock.calls).toEqual([['2026-11-15']]);
+  });
+
+  it('holds a date before the year 1000 as a draft while the year is typed', () => {
+    // Typing the year digit by digit: 0002, 0020, 0202, then 2026. Only the
+    // complete dates reach the parent, and the field shows what was typed.
+    const forwarded: string[] = [];
+    render(<Following forwarded={forwarded} />);
+    const input = screen.getByLabelText('d') as HTMLInputElement;
+
+    const steps: Array<[typed: string, shown: string]> = [
+      ['', ''],
+      ['2026-04-15', '2026-04-15'],
+      ['', ''],
+      ['2026-04-09', '2026-04-09'],
+      ['0002-04-09', '0002-04-09'],
+      ['0020-04-09', '0020-04-09'],
+      ['0202-04-09', '0202-04-09'],
+      ['2026-04-09', '2026-04-09'],
+    ];
+    for (const [typed, shown] of steps) {
+      typeInto(input, typed);
+      expect(input.value).toBe(shown);
+    }
+
+    expect(forwarded).toEqual(['2026-04-15', '2026-04-09', '2026-04-09']);
+  });
+
+  it('forwards the empty value when the field is left on a date before the year 1000', () => {
+    const forwarded: string[] = [];
+    render(<Following forwarded={forwarded} />);
+    const input = screen.getByLabelText('d') as HTMLInputElement;
+
+    typeInto(input, '0202-04-09');
+    expect(forwarded).toEqual([]);
+
+    fireEvent.blur(input);
+
+    // '' is "follow today": the parent put today back.
+    expect(forwarded).toEqual(['']);
+    expect(input.value).toBe('2026-11-15');
+  });
+
+  it('drops a date before the year 1000 when the value changes from outside', () => {
+    const { onChange, input, rerender } = setup();
+    typeInto(input, '0202-04-09');
+    expect(input.value).toBe('0202-04-09');
+
+    rerender(<DateInput label="d" value="2026-11-16" onChange={onChange} />);
+
+    expect(input.value).toBe('2026-11-16');
+    fireEvent.blur(input);
+    expect(onChange).not.toHaveBeenCalled();
   });
 });
