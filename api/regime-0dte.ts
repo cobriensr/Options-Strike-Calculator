@@ -11,27 +11,29 @@
  * triggers (mostly-red, IV-surface-break, midday deep-neg). The per-strike viz
  * series is the CURRENT (latest-minute) profile.
  *
- * The handler is a thin orchestrator: guard → Zod-parse `?date?` (default CT
- * today) → read the three anchored profiles + IV/candle series via
+ * The handler is a thin orchestrator: Zod-parse `?date?` (default CT today)
+ * → read the three anchored profiles + IV/candle series via
  * `regime-0dte-queries` → derive `nowCtMin` (live CT clock for today; cash
  * close for a replayed past date) → evaluate → JSON. All I/O lives in
  * `regime-0dte-queries`; all logic in the pure evaluator. Mirrors
  * `api/opening-flow-signal.ts`.
  *
+ * Wrapped in `withDbReader`: the wrapper owns the Sentry scope, the request
+ * metric, the 405 gate, the owner-or-guest + botid guard, and the error
+ * mapping. The queries retry through `withDbRetry`, so a brief Neon outage
+ * ends as a quiet 503 + `Retry-After` (no Sentry event) and only a genuine
+ * error is a 500 that pages.
+ *
  * Auth: owner-or-guest (no Anthropic spend), same gating as opening-flow-signal.
  *
  * Spec: docs/superpowers/specs/2026-06-07-regime-0dte-panel-design.md
  * Plan: docs/superpowers/plans/2026-06-07-regime-0dte-panel.md (Task 6)
+ * Fix:  docs/superpowers/specs/2026-11-15-regime-0dte-polling-and-db-errors.md
  */
 
-import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { z } from 'zod';
-import { Sentry } from './_lib/sentry.js';
-import logger from './_lib/logger.js';
-import {
-  guardOwnerOrGuestEndpoint,
-  setCacheHeaders,
-} from './_lib/api-helpers.js';
+import { setCacheHeaders } from './_lib/auth-helpers.js';
+import { withDbReader } from './_lib/request-scope.js';
 import { getCTDateStr, getCTTime } from '../src/utils/timezone.js';
 import { evaluateRegime0dte, REGIME_0DTE } from './_lib/regime-0dte.js';
 import {
@@ -47,13 +49,14 @@ const querySchema = z.object({
     .optional(),
 });
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  const guarded = await guardOwnerOrGuestEndpoint(req, res, () => undefined);
-  if (guarded) return;
-
-  try {
+export default withDbReader(
+  '/api/regime-0dte',
+  'regime_0dte',
+  'owner-or-guest',
+  async (req, res, done) => {
     const parsed = querySchema.safeParse(req.query);
     if (!parsed.success) {
+      done({ status: 400 });
       res.status(400).json({
         error: 'invalid query',
         issues: parsed.error.issues.map((i) => ({
@@ -106,6 +109,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // 30s edge cache — the GEX/IV feeds refresh per-minute and the panel polls
     // every 45s, so brief reuse keeps the endpoint cheap without going stale.
     setCacheHeaders(res, 30, 30);
+    done({ status: 200 });
     // Spread the graded scalars plus the raw series the rich panel renders:
     // the per-strike gamma profile, the put-IV sparkline, and the 30-min
     // candle strip. `bandPct` / `persistEndCtMin` are the gate-band and
@@ -122,11 +126,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       bandPct: REGIME_0DTE.GATE_BAND_PCT,
       persistEndCtMin: REGIME_0DTE.PERSIST_END_MIN,
     });
-  } catch (err) {
-    // Never leak raw exception text (can carry DB connection strings / query
-    // internals); Sentry + pino retain full detail server-side.
-    Sentry.captureException(err);
-    logger.error({ err }, 'regime-0dte error');
-    res.status(500).json({ error: 'Internal server error' });
-  }
-}
+  },
+  // Never leak raw exception text (can carry DB connection strings / query
+  // internals); Sentry + pino retain full detail server-side.
+  { serverErrorBody: { error: 'Internal server error' } },
+);

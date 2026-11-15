@@ -22,9 +22,8 @@
  * in SQL via `AT TIME ZONE 'America/Chicago'`, the repo's standard idiom.
  */
 
-import { getDb } from './db.js';
-import { withRetry } from './api-helpers.js';
-import { gexCtDayFilter } from './gex-strike-day.js';
+import { getDb, withDbRetry } from './db.js';
+import { ctDayTsBounds, gexCtDayFilter } from './gex-strike-day.js';
 import { REGIME_0DTE } from './regime-0dte.js';
 import type { GexStrike, IvPoint, Candle30 } from './regime-0dte.js';
 
@@ -113,7 +112,7 @@ export async function getGexStrikes(
       ? sql`COALESCE((SELECT ts FROM anchor), (SELECT ts FROM latest_fallback))`
       : sql`(SELECT ts FROM anchor)`;
 
-  const rows = (await withRetry(
+  const rows = (await withDbRetry(
     () => sql`
       WITH anchor AS (${anchorCte})${fallbackTs}
       SELECT g.strike, g.call_gamma_oi, g.put_gamma_oi, g.price
@@ -141,10 +140,16 @@ export async function getGexStrikes(
  * Nearest-to-spot SPXW 0DTE put IV per CT minute for `dateIso`.
  * One point per minute (the strike closest to that minute's spot), with
  * obviously-broken IVs (≤0 or ≥3) filtered out.
+ *
+ * The CT day is bounded as a range on the bare `ts` column
+ * ({@link ctDayTsBounds}), which `idx_strike_iv_snapshots_ticker_ts
+ * (ticker, ts DESC)` serves. The former `date(ts AT TIME ZONE …) = X` form
+ * seq-scanned the ~92M-row table (35.3 s for 2026-11-13; 0.32 s as a range,
+ * same rows) on every panel poll and every nightly capture.
  */
 export async function getPutIvSeries(dateIso: string): Promise<IvPoint[]> {
   const sql = getDb();
-  const rows = (await withRetry(
+  const rows = (await withDbRetry(
     () => sql`
       WITH pts AS (
         SELECT ${sql.unsafe(ctMinExpr('ts'))} AS ct_min,
@@ -154,7 +159,7 @@ export async function getPutIvSeries(dateIso: string): Promise<IvPoint[]> {
         WHERE ticker = 'SPXW'
           AND side = 'put'
           AND expiry = ${dateIso}::date
-          AND date(ts AT TIME ZONE 'America/Chicago') = ${dateIso}::date
+          AND ${ctDayTsBounds(sql, dateIso, 'ts')}
       )
       SELECT DISTINCT ON (ct_min) ct_min, iv_mid
       FROM pts
@@ -174,7 +179,7 @@ export async function getPutIvSeries(dateIso: string): Promise<IvPoint[]> {
  */
 export async function getCandles30(dateIso: string): Promise<Candle30[]> {
   const sql = getDb();
-  const rows = (await withRetry(
+  const rows = (await withDbRetry(
     () => sql`
       WITH b AS (
         SELECT (${sql.unsafe(ctMinExpr('timestamp'))} / 30) * 30 AS ct_min,

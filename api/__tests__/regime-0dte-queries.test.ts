@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // A RECORDING `sql` mock (not the repo's plain `vi.fn()` result-mock used in
 // lessons.test.ts / backup-tables.test.ts). Those tests assert on returned ROWS
@@ -19,6 +19,14 @@ const GEX_ROWS = [
 // tests swap this for their own fixtures (or [] for the empty-rows path).
 let nextRows: unknown[] = GEX_ROWS;
 
+// Per-execution overrides, consumed one per awaited query: an Error rejects the
+// await (a Neon blip or a bad column), an array resolves to those rows. Once
+// empty, every execution falls back to `nextRows`. `executed` counts how many
+// times a query was actually awaited (nested fragments are never awaited), so
+// the retry tests can pin how many attempts a helper made.
+let outcomes: (Error | unknown[])[] = [];
+let executed = 0;
+
 function expand(v: unknown): string {
   if (v && typeof v === 'object' && '__text' in v)
     return (v as { __text: string }).__text;
@@ -30,22 +38,44 @@ function makeSql() {
     for (let i = 0; i < values.length; i++)
       text += expand(values[i]) + (strings[i + 1] ?? '');
     captured.push(text);
-    return { __text: text, then: (res: (r: unknown) => void) => res(nextRows) };
+    return {
+      __text: text,
+      then: (res: (r: unknown) => void, rej: (e: unknown) => void) => {
+        executed += 1;
+        const next = outcomes.length > 0 ? outcomes.shift() : nextRows;
+        return next instanceof Error ? rej(next) : res(next);
+      },
+    };
   };
   sql.unsafe = (s: string) => ({ __text: s });
   return sql;
 }
 
-vi.mock('../_lib/db.js', () => ({ getDb: () => makeSql() }));
-vi.mock('../_lib/api-helpers.js', () => ({
-  withRetry: (fn: () => unknown) => fn(),
-}));
+// Only `getDb` is replaced. `withDbRetry` and `TransientDbError` stay the real
+// ones, so the retry tests below exercise the production classifier, and the
+// `vi.fn` wrapper lets the wiring test count how each helper calls it.
+vi.mock('../_lib/db.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../_lib/db.js')>();
+  return {
+    ...actual,
+    getDb: () => makeSql(),
+    withDbRetry: vi.fn(actual.withDbRetry),
+  };
+});
 
+import { withDbRetry, TransientDbError } from '../_lib/db.js';
 import {
   getGexStrikes,
   getPutIvSeries,
   getCandles30,
 } from '../_lib/regime-0dte-queries';
+
+beforeEach(() => {
+  outcomes = [];
+  executed = 0;
+  // mockClear keeps the wrapped real implementation (mockReset would drop it).
+  vi.mocked(withDbRetry).mockClear();
+});
 
 // The sargable CT-day bound that must wrap every anchor selection. We check the
 // SHAPE of the range, not the old `date(timestamp AT TIME ZONE …)` guard text:
@@ -155,6 +185,47 @@ describe('getPutIvSeries — minute mapping + broken-IV filter', () => {
   });
 });
 
+describe('getPutIvSeries — sargable CT-day bound on ts (index scan, not a table scan)', () => {
+  // strike_iv_snapshots holds ~92M rows. `date(ts AT TIME ZONE …) = X` can't use
+  // idx_strike_iv_snapshots_ticker_ts (ticker, ts DESC), so it seq-scanned the
+  // table: 35.3 s on 2026-11-13. The same CT day written as a bare-`ts` range
+  // returns the same rows in 0.32 s. The bound must stay on the bare column.
+  const IV_LOWER =
+    /\bts\s*>=\s*\(\(\$p::date\)::timestamp AT TIME ZONE 'America\/Chicago'\)/;
+  const IV_UPPER =
+    /\bts\s*<\s*\(\(\(\$p::date\) \+ 1\)::timestamp AT TIME ZONE 'America\/Chicago'\)/;
+
+  async function putIvQueryText(): Promise<string> {
+    captured.length = 0;
+    nextRows = [];
+    await getPutIvSeries('2026-06-05');
+    const text = captured.find((t) => t.includes('strike_iv_snapshots'));
+    expect(text).toBeDefined();
+    return text ?? '';
+  }
+
+  it('no longer filters on date(ts AT TIME ZONE …), which no index can serve', async () => {
+    const text = await putIvQueryText();
+    expect(text).not.toMatch(/date\(\s*ts\s+AT TIME ZONE/i);
+  });
+
+  it('bounds the bare ts column to [00:00 CT, next 00:00 CT) with the date as a parameter', async () => {
+    const text = await putIvQueryText();
+    expect(text).toMatch(IV_LOWER);
+    expect(text).toMatch(IV_UPPER);
+  });
+
+  it('leaves the rest of the query as it was measured', async () => {
+    const text = await putIvQueryText();
+    expect(text).toContain("ticker = 'SPXW'");
+    expect(text).toContain("side = 'put'");
+    expect(text).toMatch(/expiry = \$p::date/);
+    expect(text).toContain('abs(strike - spot) AS dist');
+    expect(text).toContain('SELECT DISTINCT ON (ct_min) ct_min, iv_mid');
+    expect(text).toContain('ORDER BY ct_min, dist');
+  });
+});
+
 describe('getCandles30 — bucket mapping + null coalescing', () => {
   beforeEach(() => {
     captured.length = 0;
@@ -190,5 +261,100 @@ describe('getCandles30 — bucket mapping + null coalescing', () => {
     nextRows = [];
     const out = await getCandles30('2026-06-05');
     expect(out).toEqual([]);
+  });
+});
+
+// All three helpers read Neon, so a blip must take the DB classifier
+// (`withDbRetry`: retries `fetch failed` and friends, then throws the typed
+// `TransientDbError` that the endpoint turns into a quiet 503). The UW/HTTP
+// classifier they used before neither retried a Neon blip nor typed it.
+const NEON_READS = [
+  {
+    name: 'getGexStrikes',
+    run: () => getGexStrikes('2026-06-05'),
+    rows: GEX_ROWS,
+    expected: {
+      strikes: [
+        { strike: 7400, netGex: -2 },
+        { strike: 7410, netGex: 1 },
+      ],
+      spot: 7400,
+    },
+  },
+  {
+    name: 'getPutIvSeries',
+    run: () => getPutIvSeries('2026-06-05'),
+    rows: [{ ct_min: '510', iv_mid: '0.2' }],
+    expected: [{ ctMin: 510, iv: 0.2 }],
+  },
+  {
+    name: 'getCandles30',
+    run: () => getCandles30('2026-06-05'),
+    rows: [{ ct_min: '510', bopen: '7400', bclose: '7405' }],
+    expected: [{ ctMin: 510, open: 7400, close: 7405 }],
+  },
+];
+
+describe('Neon reads go through withDbRetry', () => {
+  it.each(NEON_READS)(
+    '$name wraps its single query in withDbRetry with the default retries and no per-attempt timeout',
+    async ({ run, rows }) => {
+      nextRows = rows;
+      await run();
+      expect(withDbRetry).toHaveBeenCalledTimes(1);
+      // Only `fn`: no retries override, no per-attempt timeout.
+      expect(vi.mocked(withDbRetry).mock.calls[0]).toHaveLength(1);
+    },
+  );
+
+  describe('retry classification (real withDbRetry; backoff on fake timers)', () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it.each(NEON_READS)(
+      '$name retries a transient Neon error (fetch failed) and then returns the rows',
+      async ({ run, rows, expected }) => {
+        nextRows = rows;
+        outcomes = [new Error('fetch failed')];
+        const pending = run();
+        await vi.advanceTimersByTimeAsync(1000); // first backoff
+        await expect(pending).resolves.toEqual(expected);
+        expect(executed).toBe(2);
+      },
+    );
+
+    it.each(NEON_READS)(
+      '$name throws TransientDbError once the retries are exhausted',
+      async ({ run, rows }) => {
+        nextRows = rows;
+        // DB_RETRY_ATTEMPTS = 2 → three attempts in all.
+        outcomes = [
+          new Error('fetch failed'),
+          new Error('fetch failed'),
+          new Error('fetch failed'),
+        ];
+        const settled = expect(run()).rejects.toBeInstanceOf(TransientDbError);
+        await vi.runAllTimersAsync();
+        await settled;
+        expect(executed).toBe(3);
+      },
+    );
+
+    it.each(NEON_READS)(
+      '$name rethrows a genuine error unchanged without retrying',
+      async ({ run, rows }) => {
+        nextRows = rows;
+        const boom = new Error('column "x" does not exist');
+        outcomes = [boom];
+        const err: unknown = await run().catch((e: unknown) => e);
+        expect(err).toBe(boom);
+        expect(err).not.toBeInstanceOf(TransientDbError);
+        expect(executed).toBe(1);
+      },
+    );
   });
 });
