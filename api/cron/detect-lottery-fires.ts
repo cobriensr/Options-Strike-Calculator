@@ -75,6 +75,7 @@ import type { LotteryAlertRow } from '../_lib/takeit-features.js';
 import {
   fetchTickerFlowSeries,
   flowAtFireTime,
+  nextFlowSeriesDeadlineMs,
   type TickerFlowSeries,
 } from '../_lib/ticker-flow-snapshot.js';
 import {
@@ -100,15 +101,6 @@ import { parseUwHttpStatus, withRetry } from '../_lib/uw-fetch.js';
 // (the slot's lease expires after 30 s regardless). A timeout knob:
 // change it with care.
 const CANDLE_FETCH_DEADLINE_MS = 5_000;
-
-// Deadline for one ticker-day's flow series (Pass 1), with the same
-// breaker as the candles: a stall or a transient failure costs a run at
-// most 5 s, once, and the remaining uncached ticker-days are skipped with
-// cum_ncp/cum_npp and the V2 score NULL. Unbounded, fetchTickerFlowSeries'
-// own retries (3 × 10 s plus backoff) let two slow tickers time the run
-// out. The query normally answers well under a second. The losing fetch
-// keeps running on Neon, retries included; the breaker stops a second one.
-const FLOW_SERIES_DEADLINE_MS = 5_000;
 
 // Per-chain print floor — matches the Python p14.py MIN_PRINTS / 14
 // scaling for a 7-min slice. The detector also gates on cntWindowMin
@@ -303,16 +295,18 @@ export default withCronInstrumentation(
 
     // Mean of daily win-rates (PIT-correct: only strictly-earlier dates)
     // per ticker, a Take-It input. A parallel seq scan of the whole table
-    // (~5 s idle), and its answer only changes with the ET date, so it is
-    // loaded once per ET day and shared across runs. A cold load took 4.9 s
-    // on an idle Neon and passed 10 s under load (WIN_RATE_LOAD_TIMEOUT_MS),
-    // and the Take-It prefetch's 5 s deadline covers waiting for it, so the
-    // prefetch is gated on it (see 3 below) rather than started with the
-    // scan. Started here, first, ahead of the scan. The pre-open runs
-    // (08:25–08:30 CT) wait for it (see the empty-scan branch), which warms
-    // the cache before the open. Not awaited here: the cache handles a
-    // rejection, and the prefetch joins the load or retries it if this one
-    // failed.
+    // (4.9 s idle on 2026-10-28, 44-60 s by 2026-11-13 at 1.75 GB), and its
+    // answer only changes with the ET date, so it is loaded once per ET day
+    // and shared across runs, and across instances through Upstash
+    // (priorSessionWinRatesForDay, takeit-winrate-cache.ts: a key found
+    // there costs milliseconds, not the scan). A cold load outlasts the
+    // Take-It prefetch's 5 s deadline (WIN_RATE_LOAD_TIMEOUT_MS bounds it at
+    // 120 s), and that deadline covers waiting for it, so the prefetch is
+    // gated on it (see 3 below) rather than started with the scan. Started
+    // here, first, ahead of the scan. The pre-open runs (08:25–08:30 CT) wait for it (see the
+    // empty-scan branch), which warms the cache before the open. Not awaited
+    // here: the cache handles a rejection, and the prefetch joins the load or
+    // retries it if this one failed.
     const loadPriorWinRates = async (
       beforeDate: string,
     ): Promise<PriorWinRateRow[]> =>
@@ -650,13 +644,19 @@ export default withCronInstrumentation(
     // score (a fire with no flow isn't aligned). The empty series is
     // cached, so the ticker's other fires don't retry. Reported once per
     // run, after the insert loop:
-    //   - a deadline or transient (Neon) failure: warning, 'partial', and
-    //     the breaker opens so the remaining ticker-days are skipped;
+    //   - a deadline or transient (Neon) failure: warning, 'partial'. The
+    //     second one opens the breaker, and so does a phase budget that
+    //     slow answers have spent: the remaining ticker-days are skipped
+    //     (nextFlowSeriesDeadlineMs, ticker-flow-snapshot.ts, has the
+    //     numbers and why). A skip is reported like a failure;
     //   - any other error (a broken query): error, the run reports 'error'.
+    // The fetch is one attempt under a 15 s deadline, so the run's flow
+    // phase is at most 25 s of the function's 60 s.
     let flowSeriesFailures = 0;
     let flowSeriesSkippedBreaker = 0;
     let flowSeriesGenuineFailures = 0;
-    let flowBreakerOpen = false;
+    // Time spent waiting on flow series, against the phase budget.
+    let flowSeriesSpentMs = 0;
     let firstFlowSeriesError: {
       ticker: string;
       date: string;
@@ -798,20 +798,24 @@ export default withCronInstrumentation(
         let flowSeries = tickerFlowCache.get(flowCacheKey);
         if (flowSeries == null) {
           flowSeries = { ts: [], cumNcp: [], cumNpp: [] };
-          if (flowBreakerOpen) {
+          const flowDeadlineMs = nextFlowSeriesDeadlineMs(
+            flowSeriesFailures,
+            flowSeriesSpentMs,
+          );
+          if (flowDeadlineMs == null) {
             flowSeriesSkippedBreaker += 1;
           } else {
+            const flowStartedAt = performance.now();
             try {
               flowSeries = await withDeadline(
                 fetchTickerFlowSeries(db, rec.underlyingSymbol, rec.date),
-                FLOW_SERIES_DEADLINE_MS,
+                flowDeadlineMs,
                 'ticker flow series',
               );
             } catch (err) {
               if (err instanceof DeadlineError || isRetryableDbError(err)) {
-                // Neon slow or blipping: stop asking for this run.
+                // Neon slow or blipping: counts toward the breaker.
                 flowSeriesFailures += 1;
-                flowBreakerOpen = true;
                 firstFlowSeriesError ??= {
                   ticker: rec.underlyingSymbol,
                   date: rec.date,
@@ -827,6 +831,8 @@ export default withCronInstrumentation(
                   err,
                 };
               }
+            } finally {
+              flowSeriesSpentMs += msSince(flowStartedAt);
             }
           }
           tickerFlowCache.set(flowCacheKey, flowSeries);
@@ -1407,7 +1413,7 @@ export default withCronInstrumentation(
         extra: detail,
       });
     };
-    if (flowSeriesFailures > 0) {
+    if (flowSeriesFailures > 0 || flowSeriesSkippedBreaker > 0) {
       reportRunProblem(
         'flow-series-failed',
         'detect-lottery-fires: ticker flow series failed; fires written without flow features',
@@ -1622,6 +1628,8 @@ export default withCronInstrumentation(
         flowSeriesFailures,
         flowSeriesSkippedBreaker,
         flowSeriesGenuineFailures,
+        // Time spent waiting on flow series, against the 25 s phase budget.
+        flowSeriesMs: Math.round(flowSeriesSpentMs),
         firstFlowSeriesError,
         firstFlowSeriesGenuineError: firstFlowSeriesGenuineErrorMeta,
         anchorsFound,

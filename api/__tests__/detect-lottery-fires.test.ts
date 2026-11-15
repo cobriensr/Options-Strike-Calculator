@@ -240,6 +240,13 @@ vi.mock('../_lib/takeit-detect.js', () => ({
   awaitWinRateWarmup: mockAwaitWinRateWarmup,
   scoreLottery: mockScoreLottery,
 }));
+// The real takeit-detect (used where a test calls importActual) reads and
+// writes its win-rate day cache through here: always a miss, so the tests
+// never reach Upstash (the suite blocks it).
+vi.mock('../_lib/takeit-winrate-cache.js', () => ({
+  readWinRateCache: vi.fn(async () => null),
+  writeWinRateCache: vi.fn(async () => undefined),
+}));
 // The real takeit-detect (used by the prefetch-deadline test) loads its
 // bundle through here.
 const mockGetBundle = vi.hoisted(() => vi.fn());
@@ -3424,7 +3431,7 @@ describe('detect-lottery-fires handler', () => {
       'detect-lottery-fires: ticker flow series failed; fires written without flow features';
     const FLOW_ERROR_MSG =
       'detect-lottery-fires: ticker flow series query error; fires written without flow features';
-    const FLOW_DEADLINE = 'ticker flow series passed its 5000 ms deadline';
+    const FLOW_DEADLINE = 'ticker flow series passed its 15000 ms deadline';
 
     // The real win-rate day cache. It is module state, so each test that
     // uses it runs on its own ET date.
@@ -3516,8 +3523,11 @@ describe('detect-lottery-fires handler', () => {
       const winRate = sqlCall('AVG(daily_rate)', 'FROM lottery_finder_fires');
       expect(winRate.text).toContain('AND date < ${}::date');
       expect(winRate.params).toEqual([today]);
-      // ...and it went out before the tick scan, not after it.
-      expect(router.ran()[0]).toBe('winRates');
+      // ...and it went out ahead of the prefetch's own recent-fire queries,
+      // behind only the Upstash day-cache read.
+      const ran = router.ran();
+      expect(ran.indexOf('winRates')).toBeGreaterThanOrEqual(0);
+      expect(ran.indexOf('winRates')).toBeLessThan(ran.indexOf('recentFires'));
 
       // Both recent-fire queries get one retry and no per-attempt cap: the
       // 5 s prefetch deadline bounds the total, and a cap would turn a slow
@@ -3888,7 +3898,12 @@ describe('detect-lottery-fires handler', () => {
       });
     });
 
-    it('writes a ticker’s fires without flow features on a transient flow-series failure, then skips the rest by breaker, and reports it once', async () => {
+    // An aligned call: cumulative net call premium above net put premium.
+    const ALIGNED_FLOW = [
+      { ts: '2026-05-01T13:29:30Z', cum_ncp: '5000000', cum_npp: '1000000' },
+    ];
+
+    it('keeps asking after one transient flow-series failure: the breaker is still closed, the failed day is not retried, and the next ticker keeps its flow features', async () => {
       const flowError = 'db attempt timeout';
       stageTicks([
         ...fireableSndkStream(),
@@ -3897,16 +3912,10 @@ describe('detect-lottery-fires handler', () => {
         ...streamFor('RKLB', 'RKLB260501C01175000'),
       ]);
       // Pass 1, one flow series per ticker-day.
-      router.when('flowSeries', flowSeriesOf('SNDK'), [
-        {
-          ts: '2026-05-01T13:29:30Z',
-          cum_ncp: '5000000',
-          cum_npp: '1000000',
-        },
-      ]); // SNDK: aligned call
+      router.when('flowSeries', flowSeriesOf('SNDK'), ALIGNED_FLOW);
       router.when('flowSeries', flowSeriesOf('TSLA'), new Error(flowError)); // TSLA: transient failure
-      // TSLA's second chain reuses the failed day; RKLB is skipped, so it
-      // has no flowSeries answer. All four fires' INSERTs write (ids 1-4).
+      router.when('flowSeries', flowSeriesOf('RKLB'), ALIGNED_FLOW);
+      // All four fires' INSERTs write (ids 1-4).
       router.on('insert', (_call, nth) => [{ id: nth + 1 }]);
 
       const res = mockResponse();
@@ -3917,7 +3926,7 @@ describe('detect-lottery-fires handler', () => {
         status: 'partial',
         inserted: 4,
         flowSeriesFailures: 1,
-        flowSeriesSkippedBreaker: 1,
+        flowSeriesSkippedBreaker: 0,
         flowSeriesGenuineFailures: 0,
         firstFlowSeriesError: {
           ticker: 'TSLA',
@@ -3925,25 +3934,31 @@ describe('detect-lottery-fires handler', () => {
           error: flowError,
         },
       });
-      // The failed ticker-day is not retried for its second chain, and the
-      // breaker keeps RKLB from asking a struggling Neon at all.
+      // TSLA's second chain reuses its failed day (no second query), and one
+      // failure does not stop RKLB from being asked.
       expect(router.calls('flowSeries').map((c) => c.params[0])).toEqual([
         'SNDK',
         'TSLA',
+        'RKLB',
       ]);
 
       const [sndk, tsla1, tsla2, rklb] = extractAllInsertBinds(
         mockSql,
         'lottery_finder_fires',
       );
-      // SNDK keeps its flow features and its score.
-      expect(sndk!.get('underlying_symbol')).toBe('SNDK');
-      expect(sndk!.get('cum_ncp_at_fire')).toBe(5_000_000);
-      expect(Number.isInteger(sndk!.get('score'))).toBe(true);
-      // The other fires are written with the flow features NULL, not 0.
-      // With no flow, the fire isn't aligned, so its V2 score is NULL too.
-      expect(rklb!.get('underlying_symbol')).toBe('RKLB');
-      for (const binds of [tsla1!, tsla2!, rklb!]) {
+      // SNDK and RKLB keep their flow features and their scores.
+      for (const [binds, symbol] of [
+        [sndk!, 'SNDK'],
+        [rklb!, 'RKLB'],
+      ] as const) {
+        expect(binds.get('underlying_symbol')).toBe(symbol);
+        expect(binds.get('cum_ncp_at_fire')).toBe(5_000_000);
+        expect(Number.isInteger(binds.get('score'))).toBe(true);
+      }
+      // TSLA's fires are written with the flow features NULL, not 0. With no
+      // flow, the fire isn't aligned, so its V2 score is NULL too.
+      for (const binds of [tsla1!, tsla2!]) {
+        expect(binds.get('underlying_symbol')).toBe('TSLA');
         expect(binds.get('cum_ncp_at_fire')).toBeNull();
         expect(binds.get('cum_npp_at_fire')).toBeNull();
         expect(binds.get('score')).toBeNull();
@@ -3958,7 +3973,7 @@ describe('detect-lottery-fires handler', () => {
         fingerprint: ['detect-lottery-fires', 'flow-series-failed'],
         extra: {
           flowSeriesFailures: 1,
-          flowSeriesSkippedBreaker: 1,
+          flowSeriesSkippedBreaker: 0,
           firstFlowSeriesError: {
             ticker: 'TSLA',
             date: '2026-05-01',
@@ -3977,6 +3992,7 @@ describe('detect-lottery-fires handler', () => {
         'flowSeriesFailures',
         'flowSeriesSkippedBreaker',
         'flowSeriesGenuineFailures',
+        'flowSeriesMs',
         'firstFlowSeriesError',
         'firstFlowSeriesGenuineError',
       ]) {
@@ -3985,32 +4001,98 @@ describe('detect-lottery-fires handler', () => {
       }
     });
 
-    it('gives a stalled flow series 5 s, then opens the breaker so the next ticker is not fetched', async () => {
+    it('opens the breaker on the second transient flow-series failure: the third ticker is not asked, and the run reports it once', async () => {
+      const flowError = 'db attempt timeout';
       stageTicks([
         ...fireableSndkStream(),
         ...streamFor('TSLA', 'TSLA260501C01175000'),
+        ...streamFor('RKLB', 'RKLB260501C01175000'),
+        ...streamFor('SPXW', 'SPXW260501C05800000'),
       ]);
-      // SNDK flow series: stalls. TSLA's is skipped by the breaker, so it
-      // is never asked for. Both fires' INSERTs write (ids 1 and 2).
-      router.when(
-        'flowSeries',
-        flowSeriesOf('SNDK'),
-        () => new Promise<never>(() => {}),
-      );
+      router.when('flowSeries', flowSeriesOf('SNDK'), ALIGNED_FLOW);
+      router.when('flowSeries', flowSeriesOf('TSLA'), new Error(flowError));
+      router.when('flowSeries', flowSeriesOf('RKLB'), new Error(flowError));
+      // SPXW is skipped by the breaker, so it has no answer. All four fires'
+      // INSERTs write (ids 1-4).
       router.on('insert', (_call, nth) => [{ id: nth + 1 }]);
 
-      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      const res = mockResponse();
+      await handler(authorizedReq(), res);
+
+      expect(res._json).toMatchObject({
+        status: 'partial',
+        inserted: 4,
+        flowSeriesFailures: 2,
+        flowSeriesSkippedBreaker: 1,
+        flowSeriesGenuineFailures: 0,
+        // The first failure is the one reported.
+        firstFlowSeriesError: { ticker: 'TSLA', error: flowError },
+      });
+      expect(router.calls('flowSeries').map((c) => c.params[0])).toEqual([
+        'SNDK',
+        'TSLA',
+        'RKLB',
+      ]);
+      const binds = extractAllInsertBinds(mockSql, 'lottery_finder_fires');
+      expect(binds.map((b) => b.get('cum_ncp_at_fire'))).toEqual([
+        5_000_000,
+        null,
+        null,
+        null,
+      ]);
+      expect(binds.map((b) => b.get('score') == null)).toEqual([
+        false,
+        true,
+        true,
+        true,
+      ]);
+      const flowCaptures = mockSentryCaptureMessage.mock.calls.filter(
+        (call) => call[0] === FLOW_FAILED_MSG,
+      );
+      expect(flowCaptures).toHaveLength(1);
+      expect(flowCaptures[0]![1]).toMatchObject({
+        extra: { flowSeriesFailures: 2, flowSeriesSkippedBreaker: 1 },
+      });
+    });
+
+    it('gives a stalled flow series 15 s and the next one what the 25 s phase budget has left, then stops asking', async () => {
+      stageTicks([
+        ...fireableSndkStream(),
+        ...streamFor('TSLA', 'TSLA260501C01175000'),
+        ...streamFor('RKLB', 'RKLB260501C01175000'),
+      ]);
+      // SNDK and TSLA flow series: stall. RKLB's is skipped by the breaker,
+      // so it is never asked for. All three INSERTs write (ids 1-3).
+      for (const ticker of ['SNDK', 'TSLA']) {
+        router.when(
+          'flowSeries',
+          flowSeriesOf(ticker),
+          () => new Promise<never>(() => {}),
+        );
+      }
+      router.on('insert', (_call, nth) => [{ id: nth + 1 }]);
+
+      vi.useFakeTimers({
+        toFake: ['setTimeout', 'clearTimeout', 'performance'],
+      });
       const res = mockResponse();
       const run = handler(authorizedReq(), res);
-      await vi.advanceTimersByTimeAsync(5_000);
+      await vi.advanceTimersByTimeAsync(15_000); // SNDK passes its 15 s
+      expect(router.calls('flowSeries').map((c) => c.params[0])).toEqual([
+        'SNDK',
+        'TSLA',
+      ]);
+      await vi.advanceTimersByTimeAsync(10_000); // TSLA: 25 s less 15 s spent
       await run;
 
       expect(res._status).toBe(200);
       expect(res._json).toMatchObject({
         status: 'partial',
-        inserted: 2,
-        flowSeriesFailures: 1,
+        inserted: 3,
+        flowSeriesFailures: 2,
         flowSeriesSkippedBreaker: 1,
+        // 15 s, then the 10 s the budget had left: the whole phase budget.
+        flowSeriesMs: 25_000,
         firstFlowSeriesError: {
           ticker: 'SNDK',
           date: '2026-05-01',
@@ -4019,6 +4101,7 @@ describe('detect-lottery-fires handler', () => {
       });
       expect(router.calls('flowSeries').map((c) => c.params[0])).toEqual([
         'SNDK',
+        'TSLA',
       ]);
       for (const binds of extractAllInsertBinds(
         mockSql,
@@ -4031,11 +4114,69 @@ describe('detect-lottery-fires handler', () => {
         FLOW_FAILED_MSG,
         expect.objectContaining({
           extra: expect.objectContaining({
-            flowSeriesFailures: 1,
+            flowSeriesFailures: 2,
             flowSeriesSkippedBreaker: 1,
           }),
         }),
       );
+    });
+
+    it('stops asking once slow answers have spent the 25 s phase budget, and reports the skipped ticker-days even though nothing failed', async () => {
+      stageTicks([
+        ...fireableSndkStream(),
+        ...streamFor('TSLA', 'TSLA260501C01175000'),
+        ...streamFor('RKLB', 'RKLB260501C01175000'),
+      ]);
+      // SNDK and TSLA answer after 12 s each (inside their deadlines), which
+      // leaves 1 s of the budget: RKLB is not started, with no failure.
+      for (const ticker of ['SNDK', 'TSLA']) {
+        router.when(
+          'flowSeries',
+          flowSeriesOf(ticker),
+          () =>
+            new Promise((resolve) => {
+              setTimeout(() => resolve(ALIGNED_FLOW), 12_000);
+            }),
+        );
+      }
+      router.on('insert', (_call, nth) => [{ id: nth + 1 }]);
+
+      vi.useFakeTimers({
+        toFake: ['setTimeout', 'clearTimeout', 'performance'],
+      });
+      const res = mockResponse();
+      const run = handler(authorizedReq(), res);
+      await vi.advanceTimersByTimeAsync(24_000);
+      await run;
+
+      expect(res._json).toMatchObject({
+        status: 'partial',
+        inserted: 3,
+        flowSeriesFailures: 0,
+        flowSeriesSkippedBreaker: 1,
+        flowSeriesGenuineFailures: 0,
+        // Two answers of 12 s each.
+        flowSeriesMs: 24_000,
+        firstFlowSeriesError: null,
+      });
+      expect(router.calls('flowSeries').map((c) => c.params[0])).toEqual([
+        'SNDK',
+        'TSLA',
+      ]);
+      expect(
+        extractAllInsertBinds(mockSql, 'lottery_finder_fires').map((b) =>
+          b.get('cum_ncp_at_fire'),
+        ),
+      ).toEqual([5_000_000, 5_000_000, null]);
+      // The skip is reported once, as a warning, like a failure is.
+      const flowCaptures = mockSentryCaptureMessage.mock.calls.filter(
+        (call) => call[0] === FLOW_FAILED_MSG,
+      );
+      expect(flowCaptures).toHaveLength(1);
+      expect(flowCaptures[0]![1]).toMatchObject({
+        level: 'warning',
+        extra: { flowSeriesFailures: 0, flowSeriesSkippedBreaker: 1 },
+      });
     });
 
     it('reports a genuine flow-series error at error level and fails the run, but still writes every fire and does not open the breaker', async () => {
