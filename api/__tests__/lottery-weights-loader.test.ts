@@ -279,6 +279,69 @@ describe('loadLotteryWeights', () => {
     },
   );
 
+  it.each([
+    ['at the root', (w: LotteryWeights) => ({ ...w, MSFTX: 1 }), '', 1],
+    [
+      'in features',
+      (w: LotteryWeights) => ({ ...w, features: { ...w.features, MSFTX: 2 } }),
+      'features',
+      1,
+    ],
+    [
+      'in a tod table',
+      (w: LotteryWeights) => ({
+        ...w,
+        features: {
+          ...w.features,
+          tod_weights: { ...w.features.tod_weights, MSFTX: 3 },
+        },
+      }),
+      'features.tod_weights',
+      1,
+    ],
+    [
+      'two at once, in the override table',
+      (w: LotteryWeights) => ({
+        ...w,
+        features: {
+          ...w.features,
+          tod_weights_dow_overrides: {
+            Saturday: w.features.tod_weights,
+            Sunday: w.features.tod_weights,
+          },
+        },
+      }),
+      'features.tod_weights_dow_overrides',
+      2,
+    ],
+  ])(
+    'an unknown key %s is counted, never named',
+    async (_where, corrupt, at, count) => {
+      h.mockSql.mockResolvedValueOnce([
+        activeRow(REFIT_VERSION, corrupt(refitWeights())),
+        takeitRow(SEED_VERSION, structuredClone(SEED_LOTTERY_WEIGHTS)),
+      ]);
+      const { load } = await freshLoader();
+
+      const result = await load();
+
+      const plural = count === 1 ? '' : 's';
+      expect(result.fallback).toEqual({
+        kind: 'error',
+        reason: `active version ${REFIT_VERSION} fails validation at ${at || 'the root'}: ${count} unrecognized key${plural}`,
+      });
+      // What the alert and the log carry: none of the keys, though Zod's own message
+      // for this issue quotes them.
+      const sent = JSON.stringify([
+        h.captureMessage.mock.calls,
+        h.error.mock.calls,
+      ]).toLowerCase();
+      for (const key of ['msftx', 'saturday', 'sunday']) {
+        expect(sent).not.toContain(key);
+      }
+    },
+  );
+
   it('an invalid takeit row replaces both slots, not only its own', async () => {
     h.mockSql.mockResolvedValueOnce([
       activeRow(REFIT_VERSION, refitWeights()),

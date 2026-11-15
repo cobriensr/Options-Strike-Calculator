@@ -33,6 +33,7 @@
  * mutates it throws instead of corrupting the next caller's weights.
  */
 
+import type { z } from 'zod';
 import { getDb, isRetryableDbError, withDbRetry } from './db.js';
 import logger from './logger.js';
 import { LotteryWeightsSchema } from './lottery-weights-schema.js';
@@ -91,18 +92,44 @@ function describeError(err: unknown): string {
   return (err instanceof Error ? err.message : String(err)).slice(0, 300);
 }
 
+type WeightsIssue = z.core.$ZodIssue;
+
 /**
- * A validation issue's path as dotted text. An entry of `features.ticker_weights`
- * is named `<ticker>` whatever its symbol: the text goes to Sentry, and a ticker
- * in it would be market data in an alert (the Python validator does the same).
+ * A validation issue's path as dotted text, with no key that is data in it. The
+ * text goes to Sentry, and a ticker symbol in it would be market data in an
+ * alert (the Python validator does the same):
+ *
+ * - an entry of `features.ticker_weights` is named `<ticker>` whatever its symbol;
+ * - the last segment of an `invalid_key` issue is the key that was refused, so it
+ *   is named `<key>`.
+ *
+ * Every other segment is a name the schema defines, or an index.
  */
-function describePath(path: ReadonlyArray<PropertyKey>): string {
-  const segments = path.map((segment, i) =>
-    i === 2 && path[0] === 'features' && path[1] === 'ticker_weights'
-      ? '<ticker>'
-      : String(segment),
-  );
+function describePath(issue: WeightsIssue | undefined): string {
+  const path = issue?.path ?? [];
+  const segments = path.map((segment, i) => {
+    if (i === 2 && path[0] === 'features' && path[1] === 'ticker_weights') {
+      return '<ticker>';
+    }
+    if (issue?.code === 'invalid_key' && i === path.length - 1) return '<key>';
+    return String(segment);
+  });
   return segments.join('.') || 'the root';
+}
+
+/**
+ * What the issue says, with no key in it. Zod words an `unrecognized_keys` issue
+ * as `Unrecognized key: "MSFT"`, which would carry the key into the alert, so it
+ * is reported as a count of the keys instead. Every other message names a type, a
+ * bound, a format or a value the schema allows, never a value from the row.
+ */
+function describeIssue(issue: WeightsIssue | undefined): string {
+  if (issue === undefined) return 'unknown issue';
+  if (issue.code === 'unrecognized_keys') {
+    const n = issue.keys.length;
+    return `${n} unrecognized key${n === 1 ? '' : 's'}`;
+  }
+  return issue.message;
 }
 
 /** The named pointer's version, validated, or the reason it can't be used. */
@@ -115,8 +142,7 @@ function readPointer(
   const parsed = LotteryWeightsSchema.safeParse(row.weights);
   if (!parsed.success) {
     const issue = parsed.error.issues[0];
-    const path = describePath(issue?.path ?? []);
-    return `${name} version ${row.version} fails validation at ${path}: ${issue?.message ?? 'unknown issue'}`;
+    return `${name} version ${row.version} fails validation at ${describePath(issue)}: ${describeIssue(issue)}`;
   }
   return { version: row.version, weights: parsed.data };
 }
