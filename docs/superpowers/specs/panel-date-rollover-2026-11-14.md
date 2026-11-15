@@ -59,10 +59,18 @@ panels follow the new date too".
    - Any other date stays put across midnight.
    - Panels judge "live" as `date === today`, not `pickedDate === null`, so a
      picked tomorrow turns live at midnight, as in `useVixData`.
-   - **Visible cost of `''` meaning follow** (_my call_). Clearing a panel's
-     date field snaps it back to today, as PinSetup already does. The
-     calculator differs on purpose: it keeps `''` while a date is being
-     typed.
+   - **Visible cost of `''` meaning follow** (_my call_). Leaving a panel's
+     date field empty snaps it back to today, as PinSetup already does. It
+     snaps on blur, not the moment the field empties: the shared
+     `DateInput` (`src/components/ui/DateInput.tsx`) keeps an emptied field
+     as a local draft, and forwards `''` only when the field is left empty.
+     A native date input fires `input` with `''` on the first `0` of a
+     zero-padded month or day, so forwarding it at once rewrote the field
+     to today and lost the segments typed so far (typing `04092026` over
+     `2026-11-15` ended at `2026-11-09`). Found in review of Phase 3, in
+     real Chrome. Typing a date key by key is safe. The calculator differs
+     on purpose: it has its own date input and keeps `''` while a date is
+     being typed.
    - **Rule for every migrated panel.** Replace each wall-clock
      `getETToday()` read in it with the helper's `today`, e.g.
      `useDarkPoolLevels.ts:126` and `useGexTarget.ts:313,617`. Otherwise
