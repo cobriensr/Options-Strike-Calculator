@@ -695,13 +695,13 @@ REJECTED = [
     (
         "a ticker weight of 11",
         set_("features.ticker_weights.AAPL", 11),
-        "features.ticker_weights.AAPL",
+        "features.ticker_weights.<ticker>",
         "range",
     ),
     (
         "a ticker weight of -6",
         set_("features.ticker_weights.AAPL", -6),
-        "features.ticker_weights.AAPL",
+        "features.ticker_weights.<ticker>",
         "range",
     ),
     (
@@ -713,7 +713,7 @@ REJECTED = [
     (
         "a fractional ticker weight",
         set_("features.ticker_weights.AAPL", 0.5),
-        "features.ticker_weights.AAPL",
+        "features.ticker_weights.<ticker>",
         "integer",
     ),
     (
@@ -737,7 +737,7 @@ REJECTED = [
     (
         "True as a weight",
         set_("features.ticker_weights.AAPL", True),
-        "features.ticker_weights.AAPL",
+        "features.ticker_weights.<ticker>",
         "type",
     ),
     (
@@ -761,7 +761,7 @@ REJECTED = [
     (
         "None as a weight",
         set_("features.ticker_weights.AAPL", None),
-        "features.ticker_weights.AAPL",
+        "features.ticker_weights.<ticker>",
         "type",
     ),
     (
@@ -810,25 +810,25 @@ REJECTED = [
     (
         "a ticker key in lower case",
         set_("features.ticker_weights.aapl", 0),
-        "features.ticker_weights.aapl",
+        "features.ticker_weights.<ticker>",
         "pattern",
     ),
     (
         "a ticker key of 11 characters",
         set_("features.ticker_weights.ABCDEFGHIJK", 0),
-        "features.ticker_weights.ABCDEFGHIJK",
+        "features.ticker_weights.<ticker>",
         "pattern",
     ),
     (
         "a ticker key with a trailing newline",
         set_("features.ticker_weights.AAPL\n", 0),
-        "features.ticker_weights.AAPL\n",
+        "features.ticker_weights.<ticker>",
         "pattern",
     ),
     (
         "a ticker key with a full-width letter",
         set_("features.ticker_weights.Ａ", 0),
-        "features.ticker_weights.Ａ",
+        "features.ticker_weights.<ticker>",
         "pattern",
     ),
     (
@@ -1142,6 +1142,71 @@ def test_validate_rejects_a_root_that_is_not_an_object(bad):
     assert str(caught.value) == "$: type"
 
 
+@pytest.mark.parametrize(
+    ("symbol", "weight", "rule"),
+    [
+        ("AAPL", 11, "range"),
+        ("MSFT", None, "type"),
+        ("NVDA", 0.5, "integer"),
+        ("aapl", 0, "pattern"),
+        ("ABCDEFGHIJK", 0, "pattern"),
+        ("AAPL\n", 0, "pattern"),
+        ("Ａ", 0, "pattern"),
+    ],
+)
+def test_a_malformed_ticker_entry_is_named_by_its_slot_never_its_symbol(
+    symbol, weight, rule
+):
+    # The message of a stored row that fails validation reaches logs and Sentry as the
+    # step's exception text, and a symbol is market data that must not travel with it.
+    w = _weights()
+    w["features"]["ticker_weights"] = {symbol: weight}
+
+    with pytest.raises(lw.WeightsInvalid) as caught:
+        lw.validate_weights(w)
+
+    assert str(caught.value) == f"features.ticker_weights.<ticker>: {rule}"
+    assert caught.value.path == "features.ticker_weights.<ticker>"
+    assert symbol.strip() not in str(caught.value)
+    assert symbol.strip() not in repr(caught.value)
+
+
+@pytest.mark.parametrize(
+    "key",
+    ["two\nlines", "a b", "x" * 100, "ünï", "AAPL" + "!" * 30],
+    ids=["newline", "space", "long", "non-ascii", "symbol-and-punctuation"],
+)
+def test_an_unusual_unknown_key_is_written_as_a_short_repr_on_one_line(key):
+    # Only the ticker table is data by design; any other unknown key is a stored row's own
+    # text, which can hold anything: it is quoted and cut, so a path stays one short line.
+    w = _weights()
+    w["features"]["tod_weights"][key] = 0
+
+    with pytest.raises(lw.WeightsInvalid) as caught:
+        lw.validate_weights(w)
+
+    message = str(caught.value)
+    assert caught.value.rule == "unknown_key"
+    assert "\n" not in message
+    segment = caught.value.path.removeprefix("features.tod_weights.")
+    shown = repr(key)
+    # The repr, cut to 40 characters with `...` where it was cut.
+    assert segment == (shown if len(shown) <= 40 else f"{shown[:37]}...")
+    assert len(segment) <= 40
+    assert key not in message or len(key) <= 37  # a long key is never shown whole
+
+
+def test_a_plain_unknown_key_keeps_its_name_in_the_path():
+    # A name, a digit string or an index reads as before: the REJECTED table pins the rest.
+    w = _weights()
+    w["features"]["tod_weights"]["EVENING"] = 0
+
+    with pytest.raises(lw.WeightsInvalid) as caught:
+        lw.validate_weights(w)
+
+    assert caught.value.path == "features.tod_weights.EVENING"
+
+
 def _all_weekday_overrides(w):
     monday = w["features"]["tod_weights_dow_overrides"]["Monday"]
     w["features"]["tod_weights_dow_overrides"] = {
@@ -1285,7 +1350,7 @@ def test_error_message_names_the_path_not_the_value(mutate, secret):
         lw.validate_weights(w)
     shown = [str(caught.value), repr(caught.value), *map(str, caught.value.args)]
     assert not any(secret in text for text in shown)
-    assert re.fullmatch(r"[A-Za-z0-9_.$]+: [a-z_]+", str(caught.value))
+    assert re.fullmatch(r"[A-Za-z0-9_.$<>]+: [a-z_]+", str(caught.value))
     assert isinstance(caught.value, ValueError)
 
 

@@ -82,6 +82,12 @@ _POINTER_NAMES = ("active", "takeit")
 # `re.fullmatch`, not `^...$`: Python's `$` also matches before a trailing
 # newline, JS's does not, so "AAPL\n" would pass here and fail in Zod.
 _TICKER_KEY = re.compile(r"[A-Z][A-Z0-9.]{0,9}")
+# A path segment `_join` writes as it is: a plain name (every key the schema defines), at
+# most `_MAX_SEGMENT` characters. Anything else is written as a cut-off repr.
+_PLAIN_SEGMENT = re.compile(r"[A-Za-z0-9_]{1,40}")
+_MAX_SEGMENT = 40
+# What the path says for an entry of `ticker_weights`: the symbol is data.
+_TICKER_SEGMENT = "<ticker>"
 # [0-9], not \d: Python's \d takes any Unicode digit, JS's takes only ASCII.
 _ISO_DATE = re.compile(r"([0-9]{4})-([0-9]{2})-([0-9]{2})")
 _DAYS_IN_MONTH = (31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)
@@ -119,9 +125,12 @@ class WeightsInvalid(ValueError):
     """A weights object broke a rule.
 
     The message is the dotted path of the offending field and the name of the
-    rule it broke, ``features.ticker_weights.AAPL: range``, and never the value:
-    a weights object can arrive from a database row, and its text ends up in
-    logs. ``$`` names the root. Rule names: ``type``, ``unknown_key``,
+    rule it broke, ``features.ticker_weights.<ticker>: range``, and never the
+    value: a weights object can arrive from a database row, and its text ends up
+    in logs and Sentry. The same goes for the ticker: an entry of
+    ``ticker_weights`` is named ``<ticker>`` whatever its symbol, and any other
+    key that is not a plain name is written as its cut-off repr (``_join``).
+    ``$`` names the root. Rule names: ``type``, ``unknown_key``,
     ``missing``, ``finite``, ``integer``, ``range``, ``length``, ``size``,
     ``pattern``, ``enum``, ``increasing``, ``empty``, ``literal``, ``date``,
     ``order``.
@@ -138,7 +147,24 @@ def _fail(path: str, rule: str) -> NoReturn:
 
 
 def _join(path: str, key: object) -> str:
-    return f"{path}.{key}" if path else str(key)
+    """``path`` with one more segment: an index or a plain name as it is, anything else as
+    its repr cut to ``_MAX_SEGMENT`` characters.
+
+    A key can come from a stored row (an unknown key is reported by its name), so it can
+    hold a newline, a long text or a symbol. Every key the schema defines is a plain name or
+    an index, so a legitimate path reads the same as before. The ticker keys, which are data
+    by design, never come through here: `_check_ticker_weights` names them `<ticker>`.
+    """
+    if isinstance(key, int):
+        segment = str(key)
+    elif isinstance(key, str) and _PLAIN_SEGMENT.fullmatch(key):
+        segment = key
+    else:
+        shown = repr(key)
+        segment = (
+            shown if len(shown) <= _MAX_SEGMENT else f"{shown[: _MAX_SEGMENT - 3]}..."
+        )
+    return f"{path}.{segment}" if path else segment
 
 
 def _is_real(v: object) -> bool:
@@ -238,7 +264,8 @@ def _check_ticker_weights(path: str, v: object) -> None:
     if not 1 <= len(v) <= 500:
         _fail(path, "size")
     for key, weight in v.items():
-        key_path = _join(path, key)
+        # Never the symbol: it would reach logs and Sentry through the exception message.
+        key_path = f"{path}.{_TICKER_SEGMENT}"
         if not isinstance(key, str) or not _TICKER_KEY.fullmatch(key):
             _fail(key_path, "pattern")
         _check_int(key_path, weight, -5, 10)
