@@ -1190,29 +1190,46 @@ describe('applying the front-month recompute on real SQL (pglite)', () => {
       volumeRatio,
       volumeRatioToNull: 0,
     });
+    // No row of this world is before the snapshot scope: the third kind is empty.
+    const none = group(0, 0, 0, 0, 0, 0);
     expect(pointer().frontMonth).toEqual({
       snapshotRows: {
         byRoot: {
           ES: {
             repairedDays: group(2, 2, 2, 2, 2, 2),
             windowOnly: group(219, 1, 0, 0, 0, 1),
+            beforeScope: none,
           },
           CL: {
             repairedDays: group(2, 1, 1, 1, 1, 1),
             windowOnly: group(217, 217, 0, 0, 0, 217),
+            beforeScope: none,
           },
         },
         all: {
           repairedDays: group(4, 3, 3, 3, 3, 3),
           windowOnly: group(436, 218, 0, 0, 0, 218),
+          beforeScope: none,
         },
       },
-      // CL has a contaminated base (before 08-11); none of this world's rows is that early.
+      // CL has a contaminated base (before 08-11); none of this world's rows is that early, and
+      // no CL row is before the scope either.
       volumeRatioNull: {
         byRoot: {
           CL: { inScope: 0, toNull: 0, before: '2026-08-11T00:00:00.000Z' },
         },
         all: { inScope: 0, toNull: 0 },
+        beforeScope: {
+          byRoot: {
+            CL: {
+              rows: 0,
+              toNull: 0,
+              from: '2026-07-17T00:01:00.000Z',
+              to: '2026-07-28T00:00:00.000Z',
+            },
+          },
+          all: { rows: 0, toNull: 0 },
+        },
       },
     });
 

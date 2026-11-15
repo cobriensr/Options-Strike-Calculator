@@ -399,6 +399,19 @@ interface Ids {
   j1: number;
   /** CL 08-07 15:00: stale, a deleted bar after its latest bar (price, 1h and day affected, not junk), with a stored ratio. */
   s5: number;
+  /**
+   * Rows before the snapshot scope (07-28). g* are GC, c* are CL; the band is where the ratio
+   * is the only write: GC from 06-15 14:12 and CL from 07-17 00:01.
+   * g1 06-15 14:11:00 (a minute early: keeps its ratio), g2 06-15 14:12:00 (first of the band),
+   * g3 06-20, g4 07-10 (no stored ratio), g5 07-27 23:59 (last minute before the scope);
+   * c1 07-16 12:00 (keeps), c2 07-17 00:00:00 (keeps: no thin bar in its window), c3 07-17 00:01:00
+   * (first of the band), c4 07-20 (a stored price, 1h and day that a recompute would change),
+   * c5 07-22 (no stored ratio).
+   */
+  band: Record<
+    'g1' | 'g2' | 'g3' | 'g4' | 'g5' | 'c1' | 'c2' | 'c3' | 'c4' | 'c5',
+    number
+  >;
 }
 let ids: Ids;
 
@@ -438,6 +451,8 @@ async function reset(): Promise<void> {
   // No bar of the root is within 15 minutes of the rows below, so their recompute is stale.
   await deleted('CL', '2026-08-06T14:55:00Z', { close: 85.33, volume: 1 });
   await deleted('CL', '2026-08-07T14:57:00Z', { close: 90, volume: 1 });
+  // CL 07-20: bars a recompute of the band row below would read (it must not be recomputed).
+  await snapshotDay('CL', '2026-07-20', '2026-07-17', 70, 70.1);
   await controlBars();
 
   // ── What the writers saved from them ──
@@ -500,6 +515,21 @@ async function reset(): Promise<void> {
     '2026-08-07T15:00:00Z',
     [70.5, 0.1, 0.1, 4.44],
   );
+  // Rows before the snapshot scope: no recompute, only the ratio.
+  const bandRow = (symbol: Root, ts: string, ratio: number | null) =>
+    snapshotRow(symbol, ts, [symbol === 'GC' ? 3000 : 70, 0.1, 0.1, ratio]);
+  const band = {
+    g1: await bandRow('GC', '2026-06-15T14:11:00Z', 9.1),
+    g2: await bandRow('GC', '2026-06-15T14:12:00Z', 9.2),
+    g3: await bandRow('GC', '2026-06-20T15:00:00Z', 9.3),
+    g4: await bandRow('GC', '2026-07-10T15:00:00Z', null),
+    g5: await bandRow('GC', '2026-07-27T23:59:00Z', 9.5),
+    c1: await bandRow('CL', '2026-07-16T12:00:00Z', 8.1),
+    c2: await bandRow('CL', '2026-07-17T00:00:00Z', 8.2),
+    c3: await bandRow('CL', '2026-07-17T00:01:00Z', 8.3),
+    c4: await snapshotRow('CL', '2026-07-20T14:31:30Z', [99, 5, 5, 3.33]),
+    c5: await bandRow('CL', '2026-07-22T15:00:00Z', null),
+  };
 
   // The clean era: the rows the cron wrote on 11-03 to 11-05, long after the cutoffs.
   if (controlRows.length === 0) {
@@ -536,7 +566,7 @@ async function reset(): Promise<void> {
   await applyRepair();
   writeBackupFile();
 
-  ids = { g1, g1b, g2, g4, g5, g3, c1, c2, c3, j1, s5 };
+  ids = { g1, g1b, g2, g4, g5, g3, c1, c2, c3, j1, s5, band };
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -552,7 +582,7 @@ function options(over: Partial<RecomputeOptions> = {}): RecomputeOptions {
     frozen: false,
     volumeNull: false,
     backup: backupPath,
-    expectSnapshots: 9,
+    expectSnapshots: 14,
     expectPremarket: null,
     expectFires: null,
     deleteJunkStale: false,
@@ -668,8 +698,18 @@ describe('the GC and CL volume ratios set to NULL, in the dry run', () => {
 
     // The rule, named once in the header.
     expect(text).toContain(
-      'volume ratio is set to NULL where its 20-day base holds bars that cannot be rebuilt (owner decision 2026-11-13): GC bars before 2026-07-28T00:00:00Z, so rows before 2026-08-17T00:00:00Z; CL bars 2026-07-17T00:00:00Z to 2026-07-22T00:00:00Z (end exclusive), so rows before 2026-08-11T00:00:00Z',
+      'volume ratio is set to NULL where its 20-day base holds bars that cannot be rebuilt (owner decision 2026-11-13, extended 2026-11-14 to the rows before the snapshot scope): GC bars 2026-06-15T14:11:00Z to 2026-07-28T00:00:00Z (end exclusive), so rows before 2026-08-17T00:00:00Z, and from 2026-06-15T14:12:00Z the rows before the scope, blank only; CL bars 2026-07-17T00:00:00Z to 2026-07-22T00:00:00Z (end exclusive), so rows before 2026-08-11T00:00:00Z, and from 2026-07-17T00:01:00Z the rows before the scope, blank only',
     );
+    // The rows before the scope, where the ratio is the only write: GC 06-15 14:12 on, CL 07-17 00:01 on.
+    const BAND =
+      'volume ratio set to NULL before the snapshot scope (blank only, 20-day base holds unrebuildable bars):';
+    expect(text).toContain(
+      `${BAND} GC 3 of 4 rows from 2026-06-15T14:12:00Z to 2026-07-28T00:00:00Z`,
+    );
+    expect(text).toContain(
+      `${BAND} CL 2 of 3 rows from 2026-07-17T00:01:00Z to 2026-07-28T00:00:00Z`,
+    );
+    expect(text).toContain(`${BAND} all roots 5 of 7 rows`);
     // Per root: rows with a stored ratio of the rows in scope before the cutoff, and the total.
     expect(text).toContain(`${PREFIX} GC 3 of 5 rows before 2026-08-17`);
     expect(text).toContain(`${PREFIX} CL 3 of 4 rows before 2026-08-11`);
@@ -677,34 +717,37 @@ describe('the GC and CL volume ratios set to NULL, in the dry run', () => {
     // They are rows to write, one UPDATE each. GC 5: the fill day, the fill day with no stored ratio
     // (its price, 1h and day only), the two that only lose their ratio and the row after the cutoff
     // that takes its new one. CL 4: three that only lose their ratio and the row after the cutoff.
-    expect(text).toContain('rows in range: 443, rows to write: 9');
+    // The rows before the scope are not rows in range: they are read for the rule alone, and
+    // count in the rows to write: 9 in scope and 5 before it.
+    expect(text).toContain('rows in range: 443, rows to write: 14');
     expect(text).toContain(
-      'GC: rows in range 222, rows to write 5 (price=2 change1hPct=2 changeDayPct=2 volumeRatio=4)',
+      'GC: rows in range 222, rows to write 8 (price=2 change1hPct=2 changeDayPct=2 volumeRatio=7)',
     );
     expect(text).toContain(
-      'CL: rows in range 221, rows to write 4 (price=0 change1hPct=0 changeDayPct=0 volumeRatio=4)',
+      'CL: rows in range 221, rows to write 6 (price=0 change1hPct=0 changeDayPct=0 volumeRatio=6)',
     );
-    // The day split stays a partition, with the ratios that go to NULL shown inside it.
+    // The day split stays a partition: a third kind, the rows before the scope, with the ratios that
+    // go to NULL shown inside it.
     expect(text).toContain(
-      '    GC  repaired days: 2 to write of 2 (price 2, 1h 2, day 2, ratio 1 (to NULL 1)) | window-only: 3 to write of 220 (price 0, 1h 0, day 0, ratio 3 (to NULL 2))',
-    );
-    expect(text).toContain(
-      '    CL  repaired days: 3 to write of 3 (price 0, 1h 0, day 0, ratio 3 (to NULL 2)) | window-only: 1 to write of 218 (price 0, 1h 0, day 0, ratio 1 (to NULL 1))',
+      '    GC  repaired days: 2 to write of 2 (price 2, 1h 2, day 2, ratio 1 (to NULL 1)) | window-only: 3 to write of 220 (price 0, 1h 0, day 0, ratio 3 (to NULL 2)) | before scope, blank only: 3 to write of 4 (price 0, 1h 0, day 0, ratio 3 (to NULL 3))',
     );
     expect(text).toContain(
-      '    all roots  repaired days: 5 to write of 5 (price 2, 1h 2, day 2, ratio 4 (to NULL 3)) | window-only: 4 to write of 438 (price 0, 1h 0, day 0, ratio 4 (to NULL 3))',
+      '    CL  repaired days: 3 to write of 3 (price 0, 1h 0, day 0, ratio 3 (to NULL 2)) | window-only: 1 to write of 218 (price 0, 1h 0, day 0, ratio 1 (to NULL 1)) | before scope, blank only: 2 to write of 3 (price 0, 1h 0, day 0, ratio 2 (to NULL 2))',
+    );
+    expect(text).toContain(
+      '    all roots  repaired days: 5 to write of 5 (price 2, 1h 2, day 2, ratio 4 (to NULL 3)) | window-only: 4 to write of 438 (price 0, 1h 0, day 0, ratio 4 (to NULL 3)) | before scope, blank only: 5 to write of 7 (price 0, 1h 0, day 0, ratio 5 (to NULL 5))',
     );
     // A row that is both written (its ratio goes to NULL) and in the junk-delete plan is one row,
-    // not two: the line subtracts the overlap and says so. The apply runs 9 UPDATEs, and
-    // --expect-snapshots 9 counts every one, the junk row's included.
+    // not two: the line subtracts the overlap and says so. The apply runs 14 UPDATEs, and
+    // --expect-snapshots 14 counts every one, the junk row's included.
     expect(text).toContain(
-      '  rows touched, GC: normal step only 5, stale step only 0, both 0, junk delete 0; distinct rows 5 (5 + 0 + 0 - 0)',
+      '  rows touched, GC: normal step only 8, stale step only 0, both 0, junk delete 0; distinct rows 8 (8 + 0 + 0 - 0)',
     );
     expect(text).toContain(
-      '  rows touched, CL: normal step only 4, stale step only 0, both 0, junk delete 1 (1 also written by the normal step); distinct rows 4 (4 + 0 + 1 - 0 - 1 junk overlap)',
+      '  rows touched, CL: normal step only 6, stale step only 0, both 0, junk delete 1 (1 also written by the normal step); distinct rows 6 (6 + 0 + 1 - 0 - 1 junk overlap)',
     );
     expect(text).toContain(
-      '  rows touched, all roots: normal step only 9, stale step only 0, both 0, junk delete 1 (1 also written by the normal step); distinct rows 9 (9 + 0 + 1 - 0 - 1 junk overlap)',
+      '  rows touched, all roots: normal step only 14, stale step only 0, both 0, junk delete 1 (1 also written by the normal step); distinct rows 14 (14 + 0 + 1 - 0 - 1 junk overlap)',
     );
     // A stale row whose ratio is written is not left alone for the ratio. GC 07-31 20:00 has nothing else
     // affected, so it is counted where its write is. CL 08-07 keeps the fields it does not write.
@@ -739,7 +782,7 @@ describe('the GC and CL volume ratios set to NULL, in the dry run', () => {
     expect(text).toMatch(/control set matches[^\n]*: 432 of 432 \(100\.0%\)/);
     expect(text).toContain('Apply gate: every check passes.');
     expect(text).toContain(
-      '--expect-snapshots 9 --delete-junk-stale --expect-junk-deletes 1',
+      '--expect-snapshots 14 --delete-junk-stale --expect-junk-deletes 1',
     );
   });
 });
@@ -825,7 +868,36 @@ describe('the GC and CL volume ratios set to NULL, on real SQL (pglite)', () => 
     expect(j1Left).toHaveLength(0);
     expect(existsSync(markerPath(workDir, 'junk'))).toBe(true);
 
-    // Exactly the nine planned rows were written, and no control row.
+    // The rows before the snapshot scope: only the ratio, only where one is stored.
+    const kept = {
+      bg1: ['3000.0000', '0.1000', '0.1000', '9.1000'],
+      bc1: ['70.0000', '0.1000', '0.1000', '8.1000'],
+      bc2: ['70.0000', '0.1000', '0.1000', '8.2000'],
+    };
+    for (const id of [ids.band.g2, ids.band.g3, ids.band.g5, ids.band.c3]) {
+      expect((await snapshotValues(id))[3]).toBeNull();
+    }
+    // The row a minute before the band (GC 06-15 14:11:00), the CL rows before 07-17 00:01 and the one
+    // at exactly 07-17 00:00:00 keep their ratio.
+    expect(await snapshotValues(ids.band.g1)).toEqual(kept.bg1);
+    expect(await snapshotValues(ids.band.c1)).toEqual(kept.bc1);
+    expect(await snapshotValues(ids.band.c2)).toEqual(kept.bc2);
+    // A band row is never recomputed: CL 07-20 has bars that would give another price, 1h and day,
+    // and keeps the stored ones with only its ratio gone.
+    expect(await snapshotValues(ids.band.c4)).toEqual([
+      '99.0000',
+      '5.0000',
+      '5.0000',
+      null,
+    ]);
+    expect((await recomputed('CL', '2026-07-20T14:31:30Z'))[0]).not.toBe(
+      '99.0000',
+    );
+    // A band row with no stored ratio is not written.
+    expect((await snapshotValues(ids.band.g4))[3]).toBeNull();
+    expect((await snapshotValues(ids.band.c5))[3]).toBeNull();
+
+    // Exactly the fourteen planned rows were written (nine in scope, five before it), and no control row.
     expect(await touches()).toEqual(
       [
         ids.g1,
@@ -837,6 +909,11 @@ describe('the GC and CL volume ratios set to NULL, on real SQL (pglite)', () => 
         ids.j1,
         ids.s5,
         ids.c3,
+        ids.band.g2,
+        ids.band.g3,
+        ids.band.g5,
+        ids.band.c3,
+        ids.band.c4,
       ].sort((a, b) => a - b),
     );
 
@@ -872,6 +949,26 @@ describe('the GC and CL volume ratios set to NULL, on real SQL (pglite)', () => 
     expect(line(ids.g2)).toBeUndefined();
     expect(line(ids.c2)).toBeUndefined();
     expect(line(ids.g3)?.to.volumeRatio).not.toBeNull();
+    // A band row's line writes the ratio alone, and its backup holds the row as it was read.
+    for (const id of [ids.band.g2, ids.band.c3, ids.band.c4]) {
+      expect(line(id)?.fields).toEqual(['volumeRatio']);
+      expect(line(id)?.to).toEqual({ volumeRatio: null });
+    }
+    expect(
+      Number(
+        (line(ids.band.g2) as unknown as { row: { volume_ratio: unknown } }).row
+          .volume_ratio,
+      ),
+    ).toBe(9.2);
+    for (const id of [
+      ids.band.g1,
+      ids.band.g4,
+      ids.band.c1,
+      ids.band.c2,
+      ids.band.c5,
+    ]) {
+      expect(line(id)).toBeUndefined();
+    }
     expect(existsSync(markerPath(workDir, 'snapshots'))).toBe(true);
 
     // plan.json: the counts per root and kind of day, and the rows set to NULL.
@@ -898,15 +995,18 @@ describe('the GC and CL volume ratios set to NULL, on real SQL (pglite)', () => 
           GC: {
             repairedDays: group(2, 2, 2, 2, 2, 1, 1),
             windowOnly: group(220, 3, 0, 0, 0, 3, 2),
+            beforeScope: group(4, 3, 0, 0, 0, 3, 3),
           },
           CL: {
             repairedDays: group(3, 3, 0, 0, 0, 3, 2),
             windowOnly: group(218, 1, 0, 0, 0, 1, 1),
+            beforeScope: group(3, 2, 0, 0, 0, 2, 2),
           },
         },
         all: {
           repairedDays: group(5, 5, 2, 2, 2, 4, 3),
           windowOnly: group(438, 4, 0, 0, 0, 4, 3),
+          beforeScope: group(7, 5, 0, 0, 0, 5, 5),
         },
       },
       volumeRatioNull: {
@@ -915,6 +1015,23 @@ describe('the GC and CL volume ratios set to NULL, on real SQL (pglite)', () => 
           CL: { inScope: 4, toNull: 3, before: '2026-08-11T00:00:00.000Z' },
         },
         all: { inScope: 9, toNull: 6 },
+        beforeScope: {
+          byRoot: {
+            GC: {
+              rows: 4,
+              toNull: 3,
+              from: '2026-06-15T14:12:00.000Z',
+              to: '2026-07-28T00:00:00.000Z',
+            },
+            CL: {
+              rows: 3,
+              toNull: 2,
+              from: '2026-07-17T00:01:00.000Z',
+              to: '2026-07-28T00:00:00.000Z',
+            },
+          },
+          all: { rows: 7, toNull: 5 },
+        },
       },
     });
 
@@ -925,6 +1042,15 @@ describe('the GC and CL volume ratios set to NULL, on real SQL (pglite)', () => 
     expect(again).toContain('rows in range: 442, rows to write: 0');
     expect(again).toContain(`${PREFIX} GC 0 of 5 rows before 2026-08-17`);
     expect(again).toContain(`${PREFIX} CL 0 of 3 rows before 2026-08-11`);
+    // The rows before the scope: read again, none left with a ratio to blank.
+    const band =
+      'volume ratio set to NULL before the snapshot scope (blank only, 20-day base holds unrebuildable bars):';
+    expect(again).toContain(
+      `${band} GC 0 of 4 rows from 2026-06-15T14:12:00Z to 2026-07-28T00:00:00Z`,
+    );
+    expect(again).toContain(
+      `${band} CL 0 of 3 rows from 2026-07-17T00:01:00Z to 2026-07-28T00:00:00Z`,
+    );
     expect(again).toContain('--expect-snapshots 0');
   });
 
@@ -943,7 +1069,7 @@ describe('the GC and CL volume ratios set to NULL, on real SQL (pglite)', () => 
     );
     expect(await run()).toBe(1);
     expect(errored()).toMatch(
-      /1 of 9 row\(s\) hold neither the planned old value nor the new one, so snapshots is not written/,
+      /1 of 14 row\(s\) hold neither the planned old value nor the new one, so snapshots is not written/,
     );
     expect(errored()).toMatch(
       /volume_ratio holds 7\.77, planned 9\.99 to null/,

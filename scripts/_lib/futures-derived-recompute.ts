@@ -153,6 +153,7 @@ import {
   repairedDays,
   volumeBaseContaminated,
   volumeBaseCutoffMs,
+  blankOnlyBand,
   type FrontMonthBackup,
 } from './futures-derived-front-month.js';
 import {
@@ -1517,6 +1518,12 @@ export interface VolumeBlank {
   inScope: number;
   toNull: number;
   cutoffMs: number;
+  /**
+   * The rows before the snapshot scope whose window reaches the contaminated bars (blankOnlyBand):
+   * read for the NULL rule alone, with the ones among them that have a stored ratio, which are
+   * written. Null until they are read.
+   */
+  band: { rows: number; toNull: number; fromMs: number; toMs: number } | null;
 }
 
 export interface DaySplit {
@@ -1524,6 +1531,8 @@ export interface DaySplit {
   repairedDays: DayGroup;
   /** Every other row: reached only through the 20-day volume window, or across a UTC midnight. */
   windowOnly: DayGroup;
+  /** The rows before the snapshot scope that the NULL rule alone writes: no recompute, no other field. */
+  beforeScope: DayGroup;
 }
 
 export interface SnapshotSymbolReport {
@@ -2391,7 +2400,7 @@ function blankVolumeRatios(
   const mine = new Map(
     changes.filter((c) => c.symbol === symbol).map((c) => [c.id, c]),
   );
-  const stats: VolumeBlank = { inScope: 0, toNull: 0, cutoffMs };
+  const stats: VolumeBlank = { inScope: 0, toNull: 0, cutoffMs, band: null };
   for (const row of rows) {
     if (!volumeBaseContaminated(symbol, row.tsMs)) continue;
     stats.inScope += 1;
@@ -2429,6 +2438,55 @@ function blankVolumeRatios(
     }
   }
   report.volumeBlank = stats;
+}
+
+/**
+ * The same NULL rule for the rows before the snapshot scope (owner decision 2026-11-14). The
+ * old series began at the range start, so a row from a minute after it, up to the scope start,
+ * has a window that reaches the contaminated bars too (blankOnlyBand). Those rows are outside
+ * the repair: they are read here, not recomputed, and their only write is the volume ratio set
+ * to NULL where one is stored. They are in no control, drift or information list. They go through
+ * the same guarded UPDATE, backup, preflight and verify as every snapshot write, and count in
+ * the rows to write and `--expect-snapshots`, and in the day split as their own kind.
+ */
+async function blankBeforeScope(
+  symbol: Sym,
+  scopeStartMs: number,
+  changes: SnapshotChange[],
+  report: SnapshotSymbolReport,
+): Promise<void> {
+  const band = blankOnlyBand(symbol, scopeStartMs);
+  const stats = report.volumeBlank;
+  if (band == null || stats == null) return;
+  const rows = await readSnapshots(symbol, band.fromMs, band.toMs);
+  const group = report.daySplit?.beforeScope;
+  stats.band = {
+    rows: rows.length,
+    toNull: 0,
+    fromMs: band.fromMs,
+    toMs: band.toMs,
+  };
+  if (group != null) group.inScope += rows.length;
+  for (const row of rows) {
+    if (row.stored.volumeRatio == null) continue;
+    stats.band.toNull += 1;
+    changes.push({
+      id: row.id,
+      symbol,
+      tsMs: row.tsMs,
+      fields: ['volumeRatio'],
+      from: row.stored,
+      to: { ...row.stored, volumeRatio: null },
+      row: row.row,
+    });
+    report.rowsToWrite += 1;
+    report.byField.volumeRatio += 1;
+    if (group != null) {
+      group.toWrite += 1;
+      group.byField.volumeRatio += 1;
+      group.blanked += 1;
+    }
+  }
 }
 
 async function planSnapshots(
@@ -2538,7 +2596,11 @@ async function planSnapshots(
       controlDays: 0,
       controlSetAside: null,
       daySplit: frontMonth
-        ? { repairedDays: emptyDayGroup(), windowOnly: emptyDayGroup() }
+        ? {
+            repairedDays: emptyDayGroup(),
+            windowOnly: emptyDayGroup(),
+            beforeScope: emptyDayGroup(),
+          }
         : null,
       volumeBlank: null,
       thin: null,
@@ -2891,6 +2953,7 @@ async function planSnapshots(
 
     if (frontMonth) {
       blankVolumeRatios(symbol, rows, changes, report, repairedDaySet);
+      await blankBeforeScope(symbol, scope.fromMs, changes, report);
     }
 
     const controlOfSymbol = await snapshotControl(
@@ -3761,7 +3824,11 @@ function daySplitsOf(
   };
   return {
     byRoot,
-    all: { repairedDays: sum('repairedDays'), windowOnly: sum('windowOnly') },
+    all: {
+      repairedDays: sum('repairedDays'),
+      windowOnly: sum('windowOnly'),
+      beforeScope: sum('beforeScope'),
+    },
   };
 }
 
@@ -3786,9 +3853,9 @@ function daySplitText(r: SnapshotStore): string[] {
   const splits = daySplitsOf(r);
   if (splits == null) return [];
   const line = (label: string, s: DaySplit): string =>
-    `    ${label}  repaired days: ${dayGroupText(s.repairedDays)} | window-only: ${dayGroupText(s.windowOnly)}`;
+    `    ${label}  repaired days: ${dayGroupText(s.repairedDays)} | window-only: ${dayGroupText(s.windowOnly)} | before scope, blank only: ${dayGroupText(s.beforeScope)}`;
   return [
-    "  rows by kind of day (repaired day: the row's UTC date has a rewrite, delete or fill of that root's bar in the Phase 6 backup, a tag does not count; window-only: every other row, reached only through the 20-day volume window or across a UTC midnight):",
+    "  rows by kind of day (repaired day: the row's UTC date has a rewrite, delete or fill of that root's bar in the Phase 6 backup, a tag does not count; window-only: every other row of the scope, reached only through the 20-day volume window or across a UTC midnight; before scope, blank only: a row before the snapshot scope, read for the NULL ratio alone):",
     ...splits.byRoot.map(({ symbol, split }) => line(symbol, split)),
     line('all roots', splits.all),
     `    rows in scope on repaired days, all roots: ${count(splits.all.repairedDays.inScope)}`,
@@ -3820,6 +3887,31 @@ function volumeBlankText(r: SnapshotStore): string[] {
         `  ${BLANK_PREFIX} ${symbol} ${count(blank.toNull)} of ${count(blank.inScope)} rows before ${isoSecond(blank.cutoffMs)}`,
     ),
     `  ${BLANK_PREFIX} all roots ${count(total.toNull)} of ${count(total.inScope)} rows`,
+    ...volumeBandText(
+      roots.map(({ symbol, blank }) => ({ symbol, band: blank.band })),
+    ),
+  ];
+}
+
+const BAND_PREFIX =
+  'volume ratio set to NULL before the snapshot scope (blank only, 20-day base holds unrebuildable bars):';
+
+/** The rows before the snapshot scope the NULL rule alone writes, per root and in total. */
+function volumeBandText(
+  roots: readonly { symbol: Sym; band: VolumeBlank['band'] }[],
+): string[] {
+  const bands = roots.flatMap(({ symbol, band }) =>
+    band == null ? [] : [{ symbol, band }],
+  );
+  if (bands.length === 0) return [];
+  const rows = bands.reduce((n, b) => n + b.band.rows, 0);
+  const toNull = bands.reduce((n, b) => n + b.band.toNull, 0);
+  return [
+    ...bands.map(
+      ({ symbol, band }) =>
+        `  ${BAND_PREFIX} ${symbol} ${count(band.toNull)} of ${count(band.rows)} rows from ${isoSecond(band.fromMs)} to ${isoSecond(band.toMs)}`,
+    ),
+    `  ${BAND_PREFIX} all roots ${count(toNull)} of ${count(rows)} rows`,
   ];
 }
 
@@ -3838,11 +3930,8 @@ export interface DayGroupCounts {
 
 export interface FrontMonthPlanBlock {
   snapshotRows: {
-    byRoot: Record<
-      string,
-      { repairedDays: DayGroupCounts; windowOnly: DayGroupCounts }
-    >;
-    all: { repairedDays: DayGroupCounts; windowOnly: DayGroupCounts };
+    byRoot: Record<string, DaySplitCounts>;
+    all: DaySplitCounts;
   };
   /**
    * The volume ratios set to NULL (owner decision 2026-11-13): per root with a contaminated
@@ -3851,7 +3940,24 @@ export interface FrontMonthPlanBlock {
   volumeRatioNull: {
     byRoot: Record<string, { inScope: number; toNull: number; before: string }>;
     all: { inScope: number; toNull: number };
+    /**
+     * The same rule for the rows before the snapshot scope (owner decision 2026-11-14): per root the
+     * rows read between `from` and `to` and the ones with a stored ratio, which are written alone.
+     */
+    beforeScope: {
+      byRoot: Record<
+        string,
+        { rows: number; toNull: number; from: string; to: string }
+      >;
+      all: { rows: number; toNull: number };
+    };
   };
+}
+
+export interface DaySplitCounts {
+  repairedDays: DayGroupCounts;
+  windowOnly: DayGroupCounts;
+  beforeScope: DayGroupCounts;
 }
 
 const dayGroupCounts = (g: DayGroup): DayGroupCounts => ({
@@ -3864,9 +3970,10 @@ const dayGroupCounts = (g: DayGroup): DayGroupCounts => ({
   volumeRatioToNull: g.blanked,
 });
 
-const daySplitCounts = (s: DaySplit) => ({
+const daySplitCounts = (s: DaySplit): DaySplitCounts => ({
   repairedDays: dayGroupCounts(s.repairedDays),
   windowOnly: dayGroupCounts(s.windowOnly),
+  beforeScope: dayGroupCounts(s.beforeScope),
 });
 
 /** The front-month block of plan.json; null when the plan has no snapshot store to split. */
@@ -3877,6 +3984,9 @@ function frontMonthPlanBlock(
   if (store == null || splits == null) return null;
   const blanks = store.symbols.flatMap((s) =>
     s.volumeBlank == null ? [] : [{ symbol: s.symbol, blank: s.volumeBlank }],
+  );
+  const bands = blanks.flatMap(({ symbol, blank }) =>
+    blank.band == null ? [] : [{ symbol, band: blank.band }],
   );
   return {
     snapshotRows: {
@@ -3902,6 +4012,23 @@ function frontMonthPlanBlock(
       all: {
         inScope: blanks.reduce((n, b) => n + b.blank.inScope, 0),
         toNull: blanks.reduce((n, b) => n + b.blank.toNull, 0),
+      },
+      beforeScope: {
+        byRoot: Object.fromEntries(
+          bands.map(({ symbol, band }) => [
+            symbol,
+            {
+              rows: band.rows,
+              toNull: band.toNull,
+              from: new Date(band.fromMs).toISOString(),
+              to: new Date(band.toMs).toISOString(),
+            },
+          ]),
+        ),
+        all: {
+          rows: bands.reduce((n, b) => n + b.band.rows, 0),
+          toNull: bands.reduce((n, b) => n + b.band.toNull, 0),
+        },
       },
     },
   };
@@ -5559,19 +5686,25 @@ function esRepairOf(data: ReadonlyMap<Sym, SymbolData>): Repair {
   return es.repair;
 }
 
-/** The NULL rule of the front-month header: each root's unrebuildable bars and the cutoff of the rows it blanks. */
+/**
+ * The NULL rule of the front-month header: each root's unrebuildable bars, the cutoff of the
+ * rows it blanks in the scope, and where the blank-only rows before the scope begin.
+ */
 function volumeNullRuleText(): string {
+  const scopeStart = scopeRanges('front-month').snapshots.fromMs;
   const rules = Object.entries(FRONT_MONTH.contaminatedBase).map(
     ([root, range]) => {
-      const bars =
-        range.fromMs === Number.NEGATIVE_INFINITY
-          ? `before ${isoSecond(range.toMs)}`
-          : `${isoSecond(range.fromMs)} to ${isoSecond(range.toMs)} (end exclusive)`;
+      const bars = `${isoSecond(range.fromMs)} to ${isoSecond(range.toMs)} (end exclusive)`;
       const cutoff = isoSecond(range.toMs + SNAPSHOT_LOOKBACK_MS);
-      return `${root} bars ${bars}, so rows before ${cutoff}`;
+      const band = blankOnlyBand(root, scopeStart);
+      const before =
+        band == null
+          ? ''
+          : `, and from ${isoSecond(band.fromMs)} the rows before the scope, blank only`;
+      return `${root} bars ${bars}, so rows before ${cutoff}${before}`;
     },
   );
-  return `volume ratio is set to NULL where its 20-day base holds bars that cannot be rebuilt (owner decision 2026-11-13): ${rules.join('; ')}`;
+  return `volume ratio is set to NULL where its 20-day base holds bars that cannot be rebuilt (owner decision 2026-11-13, extended 2026-11-14 to the rows before the snapshot scope): ${rules.join('; ')}`;
 }
 
 /** The report header of a front-month run. */
