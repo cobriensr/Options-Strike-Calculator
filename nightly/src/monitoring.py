@@ -37,7 +37,9 @@ from tape_job import RELAND_IDENTICAL, DayOutcome
 
 log = logging.getLogger(__name__)
 
-RefitNotice = Literal["promoted", "passed", "rejected", "candidate_rejected"]
+RefitNotice = Literal[
+    "promoted", "passed", "rejected", "candidate_rejected", "off_version", "deferred"
+]
 
 DATA_LIBRARY_REDACTED = "<redacted data-library message>"
 MAX_EXCEPTION_VALUE = 300
@@ -57,6 +59,11 @@ _REFIT_NOTICES: dict[RefitNotice, tuple[str, Literal["warning", "error"]]] = {
     "passed": ("nightly refit passed; promotion disabled", "warning"),
     "rejected": ("nightly refit rejected", "error"),
     "candidate_rejected": ("nightly refit candidate rejected", "error"),
+    # Fires whose score_version is not the active one (a seed fallback after a promotion, or
+    # a by-hand undo): a repair for the owner, not a refit failure.
+    "off_version": ("nightly refit fires scored by another version", "warning"),
+    # A passing shadow whose promotion was deferred on three nights running.
+    "deferred": ("nightly refit promotion deferred repeatedly", "error"),
 }
 
 
@@ -187,10 +194,12 @@ def report_refit(
     reasons: Sequence[str],
     extras: Mapping[str, int | float | str | list[str]],
 ) -> None:
-    """One Sentry message for a refit decision the owner must see: a promotion, a pass
-    while promotion is disabled, or a rejection (after its shadow, or at creation).
+    """One Sentry message for a refit event the owner must see: a promotion, a pass while
+    promotion is disabled, a rejection (after its shadow, or at creation), fires left on a
+    version other than the active one (`off_version`, which names the ACTIVE version), or a
+    promotion deferred three nights running (`deferred`, which names the shadow).
 
-    The title is one of four fixed phrases and names neither the version nor a reason.
+    The title is one of six fixed phrases and names neither the version nor a reason.
     Sentry's new-issue rule mails each new issue at any level, so the fingerprint decides
     what mails. A creation rejection groups by its FIRST reason, in the order the caller
     gives them, so a thin-data streak mails once per new reason (accepted by the owner,

@@ -1020,6 +1020,8 @@ def _refit_title(kind: str) -> str:
         "passed": "nightly refit passed; promotion disabled",
         "rejected": "nightly refit rejected",
         "candidate_rejected": "nightly refit candidate rejected",
+        "off_version": "nightly refit fires scored by another version",
+        "deferred": "nightly refit promotion deferred repeatedly",
     }[kind]
 
 
@@ -1055,6 +1057,20 @@ def _refit_title(kind: str) -> str:
             ["nightly-refit", "candidate_rejected", "too_few_train_rows"],
             id="rejected-at-creation",
         ),
+        pytest.param(
+            "off_version",
+            "warning",
+            (),
+            ["nightly-refit", "off_version", REFIT_VERSION],
+            id="fires-off-the-active-version",
+        ),
+        pytest.param(
+            "deferred",
+            "error",
+            (),
+            ["nightly-refit", "deferred", REFIT_VERSION],
+            id="promotion-deferred-repeatedly",
+        ),
     ],
 )
 def test_report_refit_levels_titles_fingerprints(
@@ -1064,7 +1080,7 @@ def test_report_refit_levels_titles_fingerprints(
     reasons: tuple[str, ...],
     fingerprint: list[str],
 ) -> None:
-    # Plan D9's table, one row per kind.
+    # Plan D9's table, one row per kind, plus the two the final fix wave added.
     report_refit(kind, version=REFIT_VERSION, reasons=reasons, extras=REFIT_EXTRAS)
 
     capture_message.assert_called_once()
@@ -1127,20 +1143,20 @@ def test_report_refit_fingerprints_group_by_what_should_email(capture_message) -
     for version in (REFIT_VERSION, OTHER_REFIT_VERSION):
         report_refit("candidate_rejected", version=version, reasons=("a", "b"), extras={})
         report_refit("candidate_rejected", version=version, reasons=("b", "a"), extras={})
-        for kind in ("promoted", "passed", "rejected"):
+        for kind in ("promoted", "passed", "rejected", "off_version", "deferred"):
             report_refit(kind, version=version, reasons=("a",), extras={})
 
-    # Five calls per version: two creation rejections, then promoted, passed, rejected.
+    # Seven calls per version: two creation rejections, then the five versioned kinds.
     prints = [tuple(c.kwargs["fingerprint"]) for c in capture_message.call_args_list]
-    assert len(prints) == 10
+    assert len(prints) == 14
     # Calls 0 and 1 (same version, reasons in the other order) open different issues: the
     # first reason is taken as given, never sorted.
     assert prints[0] == ("nightly-refit", "candidate_rejected", "a")
     assert prints[1] == ("nightly-refit", "candidate_rejected", "b")
     # The same first reason on another night is the same issue.
-    assert prints[5] == prints[0]
-    assert prints[6] == prints[1]
-    for first, second in ((2, 7), (3, 8), (4, 9)):
+    assert prints[7] == prints[0]
+    assert prints[8] == prints[1]
+    for first, second in ((2, 9), (3, 10), (4, 11), (5, 12), (6, 13)):
         assert prints[first] != prints[second]
         assert prints[first][:2] == prints[second][:2]
 
