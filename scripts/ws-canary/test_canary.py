@@ -11,8 +11,10 @@ from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
+from websockets.datastructures import Headers
 from websockets.exceptions import ConnectionClosedError, ConnectionClosedOK, InvalidHandshake
 from websockets.frames import Close
+from websockets.http11 import Response
 
 import canary
 from canary import (
@@ -28,7 +30,43 @@ from canary import (
     format_addr,
     heartbeat_record,
     is_echo,
+    read_cf_ray,
 )
+
+# A ray as Cloudflare sends it: 16 hex, a dash, the data centre's airport code.
+_RAY = "a5a99a668950d873-MCI"
+
+
+def _handshake(headers: list[tuple[str, str]]) -> Response:
+    """The handshake response websockets keeps on a connection, with these headers."""
+    return Response(101, "Switching Protocols", Headers(headers))
+
+
+def _cloudflare_handshake() -> Response:
+    """The headers ws.ifelse.io answers a websocket upgrade with (probed 2026-11-15)."""
+    return _handshake(
+        [
+            ("server", "cloudflare"),
+            ("via", "1.1 fly.io, 1.1 fly.io"),
+            ("fly-request-id", "01M7EY3NHRZ0STQKFRYFKA44QP-ord"),
+            ("CF-RAY", _RAY),
+        ]
+    )
+
+
+def _direct_handshake() -> Response:
+    """The headers echo.websocket.org answers with (probed 2026-11-15): Fly's own, no CF-RAY.
+
+    Its ``fly-request-id`` also ends in ``-<code>``, so a reader that took any
+    request-ID header would hand the direct arm a ray.
+    """
+    return _handshake(
+        [
+            ("server", "Fly/781f3a6652 (2026-11-10)"),
+            ("via", "1.1 fly.io, 1.1 fly.io"),
+            ("fly-request-id", "01M7EY3XDZTB5F15SAA4CN0QZ7-ord"),
+        ]
+    )
 
 
 def _connected(**overrides: object) -> Session:
@@ -62,6 +100,49 @@ def test_format_addr_unavailable() -> None:
     assert format_addr(None) is None
     assert format_addr("/run/sock") is None
     assert format_addr(("10.0.0.5",)) is None
+
+
+# --- read_cf_ray ---------------------------------------------------------
+#
+# Same parsing as uw-stream's connector: the ray whole, the colo only when the text
+# after the last dash is three capital letters. The two are separate files and
+# images, so these cases mirror uw-stream's rather than import them.
+
+
+@pytest.mark.parametrize(
+    ("headers", "expected"),
+    [
+        ([("CF-RAY", _RAY)], (_RAY, "MCI")),
+        ([("cf-ray", _RAY)], (_RAY, "MCI")),  # the header name's case does not matter
+        ([("Cf-Ray", "0123456789abcdef-DFW")], ("0123456789abcdef-DFW", "DFW")),
+        ([("CF-RAY", "a-b-MCI")], ("a-b-MCI", "MCI")),  # the suffix is what follows the last dash
+        ([], (None, None)),  # no header
+        ([("CF-RAY", "")], (None, None)),
+        ([("CF-RAY", "a5a99a668950d873")], ("a5a99a668950d873", None)),  # no suffix
+        ([("CF-RAY", "MCI")], ("MCI", None)),  # no dash, so nothing is a suffix
+        ([("CF-RAY", "a5a99a668950d873-")], ("a5a99a668950d873-", None)),  # empty suffix
+        ([("CF-RAY", "a5a99a668950d873-mci")], ("a5a99a668950d873-mci", None)),  # lowercase
+        ([("CF-RAY", "a5a99a668950d873-MC")], ("a5a99a668950d873-MC", None)),  # too short
+        ([("CF-RAY", "a5a99a668950d873-MCIA")], ("a5a99a668950d873-MCIA", None)),  # too long
+        ([("CF-RAY", "a5a99a668950d873-M1I")], ("a5a99a668950d873-M1I", None)),  # not letters
+        # Headers.get raises on a repeated header; an odd header is None, not an error.
+        ([("CF-RAY", _RAY), ("CF-RAY", "0123456789abcdef-DFW")], (None, None)),
+    ],
+)
+def test_read_cf_ray_keeps_the_full_value_and_the_colo_only_when_it_is_one(
+    headers: list[tuple[str, str]], expected: tuple[str | None, str | None]
+) -> None:
+    assert read_cf_ray(SimpleNamespace(response=_handshake(headers))) == expected
+
+
+def test_read_cf_ray_without_a_handshake_response_is_none() -> None:
+    assert read_cf_ray(SimpleNamespace(response=None)) == (None, None)
+
+
+def test_read_cf_ray_reads_only_cf_ray_not_other_request_ids() -> None:
+    # Both arms' servers send a fly-request-id ending in a lowercase code; neither is a colo.
+    assert read_cf_ray(SimpleNamespace(response=_direct_handshake())) == (None, None)
+    assert read_cf_ray(SimpleNamespace(response=_cloudflare_handshake())) == (_RAY, "MCI")
 
 
 # --- drop_record: exception and cause ------------------------------------
@@ -177,6 +258,25 @@ def test_connected_session_reports_age_frames_and_addresses() -> None:
     assert rec["remote_addr"] == "104.21.3.4:443"
 
 
+def test_drop_record_carries_the_sessions_cloudflare_ray_and_colo() -> None:
+    rec = _record(ConnectionClosedError(None, None), _connected(cf_ray=_RAY, cf_colo="MCI"))
+    assert rec["cf_ray"] == _RAY
+    assert rec["cf_colo"] == "MCI"
+
+
+def test_drop_record_keeps_the_ray_when_there_is_no_colo() -> None:
+    rec = _record(None, _connected(cf_ray="a5a99a668950d873-mci", cf_colo=None))
+    assert rec["cf_ray"] == "a5a99a668950d873-mci"
+    assert rec["cf_colo"] is None
+
+
+def test_drop_record_for_a_session_with_no_ray_says_null() -> None:
+    # The direct arms: connected, but the server is not behind Cloudflare.
+    rec = _record(ConnectionClosedError(None, None), _connected())
+    assert rec["cf_ray"] is None
+    assert rec["cf_colo"] is None
+
+
 def test_session_times_round_to_milliseconds() -> None:
     rec = _record(None, _connected(connected_at=0.0, last_frame_at=0.0), now=1.23456)
     assert rec["session_s"] == 1.235
@@ -198,6 +298,8 @@ def test_never_connected_reports_no_session_fields() -> None:
     assert rec["since_last_frame_s"] is None
     assert rec["local_addr"] is None
     assert rec["remote_addr"] is None
+    assert rec["cf_ray"] is None
+    assert rec["cf_colo"] is None
     assert rec["close_rcvd"] is None
     assert rec["close_sent"] is None
 
@@ -218,6 +320,8 @@ def test_drop_record_has_exactly_the_spec_fields() -> None:
         "since_last_frame_s",
         "local_addr",
         "remote_addr",
+        "cf_ray",
+        "cf_colo",
     ]
 
 
@@ -305,9 +409,13 @@ class _FakeWS:
     """Stands in for a websockets ClientConnection. ``receive(ws)`` is an async
     generator scripting the frames ``async for`` sees and how the stream ends."""
 
-    def __init__(self, receive, send_exc: BaseException | None = None) -> None:
+    def __init__(
+        self, receive, send_exc: BaseException | None = None, response: Response | None = None
+    ) -> None:
         self.local_address = ("10.0.0.5", 51234)
         self.remote_address = ("2606:4700::6812:1", 443, 0, 0)
+        # The Cloudflare arm's handshake unless a test gives another.
+        self.response = _cloudflare_handshake() if response is None else response
         self.protocol = SimpleNamespace(close_rcvd=Close(1000, "bye"), close_sent=Close(1001, ""))
         self.sent: list[str] = []
         self.send_failed = asyncio.Event()
@@ -391,6 +499,7 @@ def test_hold_records_the_session_and_propagates_the_drop(monkeypatch, caplog) -
     assert s.last_frame_at is not None
     assert s.local_addr == "10.0.0.5:51234"
     assert s.remote_addr == "[2606:4700::6812:1]:443"
+    assert (s.cf_ray, s.cf_colo) == (_RAY, "MCI")
     assert s.close_rcvd == Close(1000, "bye")
     assert s.close_sent == Close(1001, "")
     # A cancelled sender reports nothing: the only line is the connect.
@@ -402,9 +511,71 @@ def test_hold_records_the_session_and_propagates_the_drop(monkeypatch, caplog) -
                 "url": CF_URL,
                 "local_addr": "10.0.0.5:51234",
                 "remote_addr": "[2606:4700::6812:1]:443",
+                "cf_ray": _RAY,
+                "cf_colo": "MCI",
             },
         )
     ]
+
+
+def test_the_drop_record_of_a_held_session_carries_its_ray_and_colo(monkeypatch, caplog) -> None:
+    async def receive(ws):
+        yield GREETING
+        raise ConnectionClosedError(None, None)
+
+    _patch_connect(monkeypatch, _FakeWS(receive))
+    _record_events(monkeypatch)
+    conn = Conn("cf-quiet", CF_URL, chatty=False)
+    _run_hold(conn, caplog, raises=ConnectionClosedError)
+    # What _run does when _hold raises: the record comes from the stamped session.
+    rec = conn.end_session(ConnectionClosedError(None, None), now=time.monotonic())
+    assert rec["cf_ray"] == _RAY
+    assert rec["cf_colo"] == "MCI"
+    assert conn.session.cf_ray is None  # the next attempt starts with a fresh session
+
+
+def test_a_direct_arm_connects_with_no_ray_and_no_colo(monkeypatch, caplog) -> None:
+    async def receive(ws):
+        yield GREETING
+        raise ConnectionClosedError(None, None)
+
+    _patch_connect(monkeypatch, _FakeWS(receive, response=_direct_handshake()))
+    events = _record_events(monkeypatch)
+    conn = Conn("direct-quiet", DIRECT_URL, chatty=False)
+    _run_hold(conn, caplog, raises=ConnectionClosedError)
+    assert (conn.session.cf_ray, conn.session.cf_colo) == (None, None)
+    [(event, fields)] = events
+    assert event == "connect"
+    assert fields["url"] == DIRECT_URL
+    assert fields["cf_ray"] is None
+    assert fields["cf_colo"] is None
+    rec = conn.end_session(ConnectionClosedError(None, None), now=time.monotonic())
+    assert rec["cf_ray"] is None
+    assert rec["cf_colo"] is None
+
+
+@pytest.mark.parametrize(
+    ("headers", "cf_ray", "cf_colo"),
+    [
+        ([("server", "cloudflare")], None, None),  # no CF-RAY
+        ([("CF-RAY", _RAY), ("CF-RAY", "0123456789abcdef-DFW")], None, None),  # repeated
+        ([("CF-RAY", "a5a99a668950d873-mci")], "a5a99a668950d873-mci", None),  # odd suffix
+    ],
+)
+def test_a_missing_or_odd_ray_is_null_and_the_session_goes_on(
+    monkeypatch, caplog, headers: list[tuple[str, str]], cf_ray: str | None, cf_colo: str | None
+) -> None:
+    async def receive(ws):
+        yield GREETING
+
+    _patch_connect(monkeypatch, _FakeWS(receive, response=_handshake(headers)))
+    events = _record_events(monkeypatch)
+    conn = Conn("cf-quiet", CF_URL, chatty=False)
+    assert _run_hold(conn, caplog) == []
+    assert conn.session.frames == 1  # the receive loop ran
+    assert (conn.session.cf_ray, conn.session.cf_colo) == (cf_ray, cf_colo)
+    [(_, fields)] = events
+    assert (fields["cf_ray"], fields["cf_colo"]) == (cf_ray, cf_colo)
 
 
 def test_hold_returns_on_a_clean_close(monkeypatch, caplog) -> None:

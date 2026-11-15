@@ -18,14 +18,26 @@ Spec, and later the verdict: `docs/superpowers/specs/ws-canary-2026-10-28.md`.
 Each event prints one JSON line to stdout, with `ts` (ISO, UTC) and `event`:
 
 - `start`: websockets and Python versions, and the connection URLs.
-- `connect`: `conn`, `url`, `local_addr`, `remote_addr`.
-- `drop`: one per ended connection attempt, with the same fields as uw-stream's disconnect log: `conn`, `url`, `exc_type`, `err`, `close_rcvd`, `close_sent`, `cause_type`, `cause`, `cause_errno`, `session_s`, `frames`, `since_last_frame_s`, `local_addr`, `remote_addr`. A failed connect is also a drop line, with `session_s`, `frames` and both addresses null.
+- `connect`: `conn`, `url`, `local_addr`, `remote_addr`, `cf_ray`, `cf_colo`.
+- `drop`: one per ended connection attempt, with the same fields as uw-stream's disconnect log (bar its `egress_ip`; the canary makes no lookup): `conn`, `url`, `exc_type`, `err`, `close_rcvd`, `close_sent`, `cause_type`, `cause`, `cause_errno`, `session_s`, `frames`, `since_last_frame_s`, `local_addr`, `remote_addr`, `cf_ray`, `cf_colo`. A failed connect is also a drop line, with `session_s`, `frames`, both addresses and both Cloudflare fields null.
 - `heartbeat`: every 10 min, per connection: `up`, `drops`, `failed_connects` and `frames` since boot, `backoff_s`, plus `sent` and `echoes` on the chatty pair. `backoff_s` is the reconnect delay in force, null while connected. It is 1 at boot and after a connected session drops, and doubles with each consecutive failed connect up to 60. Between attempts it is the wait in progress. During a handshake it is the wait that came before it.
 - `sender_error`: `conn`, `exc_type`, `err`. Printed once, when the chatty sender stops on anything other than a closed socket. The connection keeps receiving, but that arm sends nothing more until its next reconnect.
 
 Reconnects: 1 s after a session that connected and then dropped (that drop is the measurement). After a failed connect (refused, DNS, TLS, HTTP 429), the wait doubles from 1 s up to a 60 s cap, so a stuck connection prints at most one drop line a minute. The next successful connect resets it.
 
 The reset under investigation looks like this in uw-stream: `exc_type` `ConnectionClosedError`, `err` `no close frame received or sent`, both close frames null. `cause_type` tells a TCP reset (`ConnectionResetError`, with `cause_errno`) from a bare EOF (null).
+
+### Which Cloudflare data centre
+
+`cf_ray` and `cf_colo` come from the `CF-RAY` header of the handshake response, the same way uw-stream reads it, so a reset here can be compared with one there colo by colo.
+
+- `cf_ray` is the whole header, `<16 hex>-<COLO>` (for example `a5a99a668950d873-MCI`). `cf_colo` is the part after the last dash, the data centre's airport code, kept only when it is three capital letters.
+- The `cf-*` connections go through Cloudflare, so they carry both. The `direct-*` connections reach Fly without Cloudflare, so the header is absent and both are `null`. (Fly's own `fly-request-id` also ends in a code, in lowercase. It is not read.)
+- A missing, empty or repeated header gives `null` for both. An odd suffix gives the ray and a `null` colo. None of these stops the connection.
+- A connection attempt that never completes the handshake has no response to read, so its drop line carries `null` for both, even when the server refused it through Cloudflare.
+- The value is read once per connection, at the handshake. A reconnect can land on another colo, so the fields describe one socket, not the arm.
+
+To split uw-stream's resets, pair each uw-stream reset with a canary `cf-*` drop within 2 s by the line's own `ts`, and compare the two `cf_colo` values. Steps in `uw-stream/README.md`, "Splitting the RST half".
 
 ## Reading the result
 

@@ -5,7 +5,9 @@ Temporary diagnostic. Spec: docs/superpowers/specs/ws-canary-2026-10-28.md.
 Holds four websockets from one process to the same Fly-hosted echo server, two
 through Cloudflare (ws.ifelse.io) and two direct (echo.websocket.org), one quiet
 and one chatty each. Every drop prints one JSON line with the same fields as
-uw-stream's disconnect log, so the two logs compare line for line. Reconnects
+uw-stream's disconnect log (bar its egress_ip), so the two logs compare line for line.
+Each socket's Cloudflare ray and colo, from the handshake's CF-RAY, ride on its connect
+and drop lines, as on uw-stream's; the direct arms have none. Reconnects
 forever: 1 s after a connected session drops, and with a 1 s to 60 s exponential
 backoff after failed connects. Delete with the Railway service once the verdict is in.
 """
@@ -13,6 +15,7 @@ backoff after failed connects. Delete with the Railway service once the verdict 
 import asyncio
 import json
 import platform
+import re
 import time
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -42,6 +45,9 @@ PAYLOAD_BYTES = 200
 # Marks our own frames, so the echo count skips the server's greeting.
 PAYLOAD_PREFIX = "ws-canary "
 HEARTBEAT_INTERVAL_S = 600
+# A Cloudflare colo is an airport code: three capital letters. Anything else after the
+# CF-RAY's last dash is reported as None, so a log line's cf_colo is always this shape.
+COLO_SHAPE = re.compile(r"[A-Z]{3}")
 
 
 @dataclass
@@ -55,6 +61,11 @@ class Session:
     last_frame_at: float | None = None
     local_addr: str | None = None
     remote_addr: str | None = None
+    # The handshake's Cloudflare ray ID, whole, and the data centre its suffix names
+    # (see ``read_cf_ray``). None without a usable header, which is always the case on
+    # the direct arms: their server is not behind Cloudflare.
+    cf_ray: str | None = None
+    cf_colo: str | None = None
     # Read from the protocol when the receive loop ends. Used when the drop's
     # exception isn't a ConnectionClosed, which carries its own copies.
     close_rcvd: Close | None = None
@@ -113,6 +124,33 @@ def format_addr(addr: object) -> str | None:
     return f"[{host}]:{port}" if ":" in str(host) else f"{host}:{port}"
 
 
+def read_cf_ray(ws: websockets.ClientConnection) -> tuple[str | None, str | None]:
+    """The handshake's ``CF-RAY`` as ``(ray, colo)``, each None when there is no usable one.
+
+    Cloudflare puts ``CF-RAY: <16 hex>-<COLO>`` on every response it serves, the
+    websocket upgrade included, and the suffix is the data centre's airport code.
+    The ray is kept whole and unchecked; the colo is the text after the last dash,
+    kept only when it is three capital letters, so an odd suffix leaves the ray and
+    a None colo. The same parsing as uw-stream's connector, copied rather than
+    imported: this is a separate image with no uw-stream code.
+
+    Never raises on a header it does not expect. A repeated header would raise
+    ``MultipleValuesError`` from ``Headers.get``, so the values are read with
+    ``get_all`` and anything but exactly one non-empty value counts as no header.
+    The direct arms' server is not behind Cloudflare, so they send none. ``response``
+    is None only before the handshake completes.
+    """
+    response = ws.response
+    if response is None:
+        return None, None
+    values = response.headers.get_all("cf-ray")
+    if len(values) != 1 or not values[0]:
+        return None, None
+    ray = values[0]
+    _, dash, suffix = ray.rpartition("-")
+    return ray, suffix if dash and COLO_SHAPE.fullmatch(suffix) else None
+
+
 def _close_info(close: Close | None) -> dict[str, object] | None:
     return None if close is None else {"code": int(close.code), "reason": close.reason}
 
@@ -156,6 +194,8 @@ def drop_record(
         ),
         "local_addr": session.local_addr,
         "remote_addr": session.remote_addr,
+        "cf_ray": session.cf_ray,
+        "cf_colo": session.cf_colo,
     }
 
 
@@ -221,6 +261,8 @@ async def _hold(conn: Conn) -> None:
         s.connected_at = time.monotonic()
         s.local_addr = format_addr(ws.local_address)
         s.remote_addr = format_addr(ws.remote_address)
+        # Which Cloudflare data centre took this socket, from the handshake.
+        s.cf_ray, s.cf_colo = read_cf_ray(ws)
         conn.up = True
         emit(
             "connect",
@@ -228,6 +270,8 @@ async def _hold(conn: Conn) -> None:
             url=conn.url,
             local_addr=s.local_addr,
             remote_addr=s.remote_addr,
+            cf_ray=s.cf_ray,
+            cf_colo=s.cf_colo,
         )
         sender = None
         if conn.chatty:
