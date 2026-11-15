@@ -20,18 +20,18 @@ panels follow the new date too".
   PinSetupTile.
 - **What goes wrong across midnight, per panel:**
 
-| Panel | Date seed | What happens |
-|---|---|---|
-| Dark pool (`useDarkPoolLevels`, in App) | `useState(getETToday)` | Turns into a BACKTEST of yesterday. LIVE clears the scrub but never returns the date to today. |
-| GEX target (`useGexTarget`, in App) | `useState(initialDate ?? getETToday())` | Turns into yesterday's history. |
-| GEX landscape | `useState(getETToday)` | The date never reaches the server; only the local resets (scrub, top strikes) miss the roll. |
-| Greek heatmap | `useState(getETDateStr(now))`; `today` refreshed only on `visibilitychange`; `max` set at mount | Today's data appears under the old date's heading until the tab is refocused. |
-| Greek flow, zero gamma, strike battle map, dealer regime | `useState(today)`, with `today` read on each render | Shows yesterday as "live" until the next render of its own. |
-| Periscope lottery | `today = useMemo(…, [])` | Keeps polling yesterday as "live" through the next session; `max` blocks picking the new day. |
-| Pin setup | `null` means live; display and `max` latched at mount | The data follows, but the label shows the old date and `max` blocks the new day. |
-| Opening flow | `''` means live; `today` read on each render | The data follows. Only the display and `max` need the clock. |
-| Lottery Finder, Silent Boom | `useState(todayCt())` plus `manualDatePick` and a 60 s `setInterval` roll | Rolls already, but up to 60 s late, and each panel runs its own interval. It flags itself historical in that gap. Lottery Finder keeps a scrubbed minute across the roll. |
-| Interval B/A | `useState(todayCt())` | Never rolls. |
+| Panel                                                    | Date seed                                                                                       | What happens                                                                                                                                                              |
+| -------------------------------------------------------- | ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Dark pool (`useDarkPoolLevels`, in App)                  | `useState(getETToday)`                                                                          | Turns into a BACKTEST of yesterday. LIVE clears the scrub but never returns the date to today.                                                                            |
+| GEX target (`useGexTarget`, in App)                      | `useState(initialDate ?? getETToday())`                                                         | Turns into yesterday's history.                                                                                                                                           |
+| GEX landscape                                            | `useState(getETToday)`                                                                          | The date never reaches the server; only the local resets (scrub, top strikes) miss the roll.                                                                              |
+| Greek heatmap                                            | `useState(getETDateStr(now))`; `today` refreshed only on `visibilitychange`; `max` set at mount | Today's data appears under the old date's heading until the tab is refocused.                                                                                             |
+| Greek flow, zero gamma, strike battle map, dealer regime | `useState(today)`, with `today` read on each render                                             | Shows yesterday as "live" until the next render of its own.                                                                                                               |
+| Periscope lottery                                        | `today = useMemo(…, [])`                                                                        | Keeps polling yesterday as "live" through the next session; `max` blocks picking the new day.                                                                             |
+| Pin setup                                                | `null` means live; display and `max` latched at mount                                           | The data follows, but the label shows the old date and `max` blocks the new day.                                                                                          |
+| Opening flow                                             | `''` means live; `today` read on each render                                                    | The data follows. Only the display and `max` need the clock.                                                                                                              |
+| Lottery Finder, Silent Boom                              | `useState(todayCt())` plus `manualDatePick` and a 60 s `setInterval` roll                       | Rolls already, but up to 60 s late, and each panel runs its own interval. It flags itself historical in that gap. Lottery Finder keeps a scrubbed minute across the roll. |
+| Interval B/A                                             | `useState(todayCt())`                                                                           | Never rolls.                                                                                                                                                              |
 
 ## Design
 
@@ -50,6 +50,7 @@ panels follow the new date too".
    `useETToday` and `useVixData` tests must stay green unchanged (the
    1-then-0 timer count, and the window where the wall clock is past
    midnight before the tick).
+
 2. **One "follow today" helper**, `useFollowedDate()`, returning
    `{ date, setDate, today }`:
    - It stores only `pickedDate: string | null`; `date = pickedDate ?? today`.
@@ -58,13 +59,36 @@ panels follow the new date too".
    - Any other date stays put across midnight.
    - Panels judge "live" as `date === today`, not `pickedDate === null`, so a
      picked tomorrow turns live at midnight, as in `useVixData`.
-3. **Every panel uses the ET clock**, including the CT-keyed ones (*my call*):
+   - **Visible cost of `''` meaning follow** (_my call_). Clearing a panel's
+     date field snaps it back to today, as PinSetup already does. The
+     calculator differs on purpose: it keeps `''` while a date is being
+     typed.
+   - **Rule for every migrated panel.** Replace each wall-clock
+     `getETToday()` read in it with the helper's `today`, e.g.
+     `useDarkPoolLevels.ts:126` and `useGexTarget.ts:313,617`. Otherwise
+     `date === today` and `date === getETToday()` can disagree for up to
+     1 s.
+3. **Every panel uses the ET clock**, including the CT-keyed ones (_my call_):
    - Lottery Finder and Silent Boom stamp their stored `date` with the ET
      date (`detect-lottery-fires.ts`, `detect-silent-boom.ts`), and their
      servers default to ET. CT is used there only for times of day.
    - Interval B/A is keyed to the CT date (SPXW expiry). Rolling at ET
-     midnight differs only from 23:00 to 24:00 CT, when nothing trades,
-     fires or polls: it shows an empty new day an hour sooner.
+     midnight differs only from 23:00 to 24:00 CT, when nothing fires or
+     polls: it shows an empty new day an hour sooner.
+     - Checked against prod, read-only, on 2026-11-14, over 60 days of
+       `interval_ba_alerts`: no alert in any ticker at or after 23:00 CT,
+       none after 15:15 CT and no SPXW alert before 08:30 CT. SPY and QQQ
+       have 3 and 10 before 08:30 CT.
+     - SPXW's overnight session doesn't reach this table.
+   - **The CT comparators move too.** Each hook that compares a date with
+     a CT today moves onto the shared clock in the same phase as its
+     panel. On the ET date, it would otherwise call the new day historical
+     from 23:00 to 24:00 CT. The hooks:
+     - `useLotteryFinder.ts:209,244`;
+     - `useNetFlowHistory.ts:58`, `useContractTape.ts:58` and
+       `useTickerCandles.ts:54`, the row hooks fed by fire dates, which
+       are ET-stamped;
+     - `useIntervalBAFeed.ts:230`.
    - Result: one moment, 11 PM CT, for every panel, and no second clock.
 4. **Panels that already have a live sentinel** (PinSetup `null`,
    OpeningFlow `''`) keep it. They take only their display date and `max`
@@ -115,19 +139,32 @@ mutation.
      commit; a visibility re-check after a sleep past midnight; StrictMode
      double subscribe; the helper's pick rules (`''`, today, past, future).
 2. **App-level hooks.** `useDarkPoolLevels` (also LIVE returns to today),
-   `useGexTarget` (`initialDate` becomes the initial pick), their tests, and
-   `DarkPoolLevels` if the LIVE wiring needs it.
+   `useGexTarget`, their tests, and `DarkPoolLevels` if the LIVE wiring
+   needs it.
+   - `useGexTarget`'s `initialDate` is test-only: production passes none,
+     per the header at `useGexTarget.ts:26-28`. Delete it.
+   - Its four test call sites pick through the returned setter or a fake
+     clock. The helper gets no initial-pick parameter (R3).
 3. **Greek flow and zero gamma**, plus their tests.
 4. **Strike battle map and dealer regime**, plus their tests.
 5. **Greek heatmap and Periscope lottery**, plus their tests. The heatmap
    drops its own `visibilitychange` today, since the clock covers it.
 6. **GEX landscape, pin setup and opening flow** (display date and `max`),
    plus tests. Split this phase if it passes 5 files.
-7. **Lottery Finder and Silent Boom.** Replace `manualDatePick` and the 60 s
-   interval with the helper; reset Lottery Finder's minute on a date change;
-   fix the stale comment; add tests. Neither panel has a rollover test today.
-8. **Interval B/A.** `IntervalBAFeed` and `useIntervalBAFeed` (`max` and the
-   poll gate on the clock), plus tests.
+7. **Lottery Finder and Silent Boom.** Neither panel has a rollover test
+   today. The CT comparators move with them (design item 3).
+   - **7a. Lottery Finder and `useLotteryFinder`**, plus tests.
+     - Replace `manualDatePick` and the 60 s interval with the helper.
+     - Reset the minute on a date change.
+     - Move `useLotteryFinder`'s CT today onto the shared clock.
+     - Fix the stale comment.
+   - **7b. Silent Boom**, plus tests. Same changes as 7a, without the minute
+     fix: Silent Boom already resets on a date change.
+   - **7c. The row hooks** `useNetFlowHistory`, `useContractTape` and
+     `useTickerCandles`: their today comparisons move onto the shared
+     clock, plus tests.
+8. **Interval B/A.** `IntervalBAFeed` and `useIntervalBAFeed`: `max` and
+   the poll gate go on the shared clock, plus tests.
 9. **`useStickyUnion`.** Sweep other-date keys on a date change, plus its
    test.
 10. **0DTE regime.** Date-check the live payload and fetch when the window
@@ -145,7 +182,7 @@ None. There are no migrations, env vars, endpoints or server changes.
 
 ## Open questions
 
-- Every panel rolls at ET midnight (*my call*, item 3 of the design). The
+- Every panel rolls at ET midnight (_my call_, item 3 of the design). The
   owner can ask for the CT-keyed panels to roll at CT midnight instead. That
   would add a CT clock built the same way.
 - An e2e test for one panel's roll is the builder's call. Unit tests with
