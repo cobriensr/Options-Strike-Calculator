@@ -14,7 +14,6 @@
 import { memo, useMemo, useState, useCallback } from 'react';
 import { theme } from '../../themes';
 import { formatTimeCT } from '../../utils/component-formatters';
-import { getETToday } from '../../utils/timezone';
 import { DateInput } from '../ui/DateInput';
 import { SectionBox } from '../ui';
 import { StatusBadge } from '../ui';
@@ -53,8 +52,11 @@ interface Props {
   // defaults to 'SPX' so legacy single-symbol callers still render).
   selectedSymbol?: DarkPoolSymbol;
   onSymbolChange?: (s: DarkPoolSymbol) => void;
+  /** The date being viewed (YYYY-MM-DD, ET). Required: it comes from
+   *  `useDarkPoolLevels`, which follows today across ET midnight, and the
+   *  panel has no clock of its own to default it from. */
+  selectedDate: string;
   // Date & time scrubbing (optional — omit for tests or when hook is not wired)
-  selectedDate?: string;
   onDateChange?: (d: string) => void;
   scrubTime?: string | null;
   isLive?: boolean;
@@ -85,7 +87,7 @@ export default memo(function DarkPoolLevels({
   onRefresh,
   selectedSymbol = 'SPX',
   onSymbolChange,
-  selectedDate = getETToday(),
+  selectedDate,
   onDateChange,
   scrubTime = null,
   isLive = true,
@@ -233,7 +235,7 @@ export default memo(function DarkPoolLevels({
 
       {/* Date picker */}
       <DateInput
-        value={selectedDate ?? ''}
+        value={selectedDate}
         onChange={onDateChange ?? (() => {})}
         label="Select date"
         labelVisible={false}

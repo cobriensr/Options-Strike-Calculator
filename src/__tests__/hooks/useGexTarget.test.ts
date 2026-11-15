@@ -788,6 +788,10 @@ describe('useGexTarget: scrubLive', () => {
   });
 
   it('scrubLive resets selectedDate back to today when viewing a past date', async () => {
+    // Mounting fetches today and gets the default empty response, so the one
+    // timestamp can only come from the picked date's own fetch.
+    const { result } = renderHook(() => useGexTarget(true));
+    await act(async () => {});
     mockFetch.mockResolvedValue(
       mockBulkSnapshot({
         timestamp: '2020-01-02T15:00:00Z',
@@ -795,9 +799,6 @@ describe('useGexTarget: scrubLive', () => {
         date: '2020-01-02',
       }),
     );
-
-    const { result } = renderHook(() => useGexTarget(true));
-    await act(async () => {});
     act(() => {
       result.current.setSelectedDate('2020-01-02');
     });
@@ -1453,5 +1454,128 @@ describe.each([
     await crossMidnight();
 
     expect(result.current.scrubLive).toBe(before);
+  });
+
+  // -- A scrub pin from another date.
+  // When the date changes while a snapshot is pinned, the commit that carries
+  // the new date still holds the old pin and an emptied cache. The scrub
+  // effect must not fetch that pin for the new date: the request aborts the
+  // new date's bulk load, which nothing restarts, leaving the cache empty and
+  // the opening walls on the old day.
+
+  /** Each day has a distinct call wall, so a stale day shows in the walls. */
+  const WALLS: Record<string, number> = {
+    [m.night]: 5800,
+    [m.morning]: 5900,
+    '2026-03-11': 5700,
+  };
+
+  function mockDays() {
+    mockFetch.mockImplementation(async (url: string) => {
+      const date = new URL(url, 'http://localhost').searchParams.get('date');
+      const callWall = WALLS[date ?? ''] ?? 5000;
+      const first = `${date}T15:00:00Z`;
+      const last = `${date}T15:01:00Z`;
+      const walls = makeTargetScore({
+        leaderboard: [
+          makeStrike({
+            strike: callWall,
+            features: makeFeatures({
+              callGexDollars: 900_000_000,
+              putGexDollars: 10_000_000,
+            }),
+          }),
+          makeStrike({
+            strike: callWall - 100,
+            features: makeFeatures({
+              callGexDollars: 10_000_000,
+              putGexDollars: 900_000_000,
+            }),
+          }),
+        ],
+      });
+      return mockBulkSnapshot({
+        timestamp: last,
+        timestamps: [first, last],
+        date: date ?? '',
+        extraSnapshots: [{ timestamp: first, oi: walls }],
+      });
+    });
+  }
+
+  /** Mount on the night, load it, and pin the earlier of its two snapshots. */
+  async function mountScrubbed() {
+    mockDays();
+    const hook = renderHook(() => useGexTarget(true));
+    await act(async () => {});
+    expect(hook.result.current.openingCallStrike).toBe(5800);
+    act(() => {
+      hook.result.current.scrubPrev();
+    });
+    await act(async () => {});
+    expect(hook.result.current.isScrubbed).toBe(true);
+    mockFetch.mockClear();
+    return hook;
+  }
+
+  const tsFetches = () => fetchedUrls().filter((u) => u.includes('ts='));
+
+  it('rolling while scrubbed bulk-loads the new day and asks for no time from the old one', async () => {
+    const { result } = await mountScrubbed();
+
+    await crossMidnight();
+
+    expect(tsFetches()).toEqual([]);
+    expect(fetchedUrls().at(-1)).toContain(`date=${m.morning}&all=true`);
+    expect(result.current.openingCallStrike).toBe(5900);
+    expect(result.current.timestamps).toEqual([
+      `${m.morning}T15:00:00Z`,
+      `${m.morning}T15:01:00Z`,
+    ]);
+
+    // The cache filled, so scrubbing the new day is served from it.
+    mockFetch.mockClear();
+    act(() => {
+      result.current.scrubPrev();
+    });
+    await act(async () => {});
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(result.current.timestamp).toBe(`${m.morning}T15:00:00Z`);
+  });
+
+  it('picking a date while scrubbed bulk-loads it and asks for no time from the old one', async () => {
+    const { result } = await mountScrubbed();
+
+    act(() => {
+      result.current.setSelectedDate('2026-03-11');
+    });
+    await act(async () => {});
+
+    expect(tsFetches()).toEqual([]);
+    expect(fetchedUrls().at(-1)).toContain('date=2026-03-11&all=true');
+    expect(result.current.openingCallStrike).toBe(5700);
+    expect(result.current.timestamps).toEqual([
+      '2026-03-11T15:00:00Z',
+      '2026-03-11T15:01:00Z',
+    ]);
+  });
+
+  it('clears a scrub in progress when the date rolls, and polls the new day', async () => {
+    const { result } = await mountScrubbed();
+
+    await crossMidnight();
+
+    expect(result.current.isScrubbed).toBe(false);
+    expect(result.current.selectedDate).toBe(m.morning);
+    expect(result.current.canScrubNext).toBe(false);
+
+    // Polling is gated on not being scrubbed, so a poll proves the pin went.
+    mockFetch.mockClear();
+    await act(async () => {
+      vi.advanceTimersByTime(POLL_INTERVALS.GEX_TARGET);
+    });
+    expect(fetchedUrls()).toHaveLength(1);
+    expect(fetchedUrls()[0]).toContain(`date=${m.morning}`);
+    expect(fetchedUrls()[0]).not.toContain('all=true');
   });
 });

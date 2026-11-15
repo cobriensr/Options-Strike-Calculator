@@ -45,6 +45,7 @@ import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { POLL_INTERVALS } from '../constants';
 import { getErrorMessage } from '../utils/error';
 import { checkIsOwner } from '../utils/auth';
+import { getETDateStr } from '../utils/timezone';
 import { useFollowedDate } from './useFollowedDate';
 import { useScrubController } from './useScrubController';
 import { useWallClockFreshness } from './useWallClockFreshness';
@@ -568,6 +569,14 @@ export function useGexTarget(marketOpen: boolean): UseGexTargetReturn {
       return;
     }
     if (scrubTimestamp == null) return;
+    // A pin from another date: the date just rolled or was picked while
+    // scrubbed. The commit carrying the new date still holds the old pin, and
+    // Effect 1 has just emptied the cache, so this would fetch the old time
+    // for the new date. That request aborts the new date's bulk load, which
+    // nothing restarts: the cache stays empty and the opening walls stay on
+    // the old day. The clear-scrub effect above drops the pin on the next
+    // render, so skip it. A snapshot's ET date is its trading date.
+    if (getETDateStr(new Date(scrubTimestamp)) !== selectedDate) return;
     const cached = allSnapshotsRef.current.get(scrubTimestamp);
     if (cached) {
       setOi(cached.oi);
@@ -579,7 +588,7 @@ export function useGexTarget(marketOpen: boolean): UseGexTargetReturn {
     } else {
       void fetchData(scrubTimestamp);
     }
-  }, [isScrubbed, scrubTimestamp, fetchData, timestamps]);
+  }, [isScrubbed, scrubTimestamp, selectedDate, fetchData, timestamps]);
 
   // Wall-clock freshness -- extracted to `useWallClockFreshness`. The ticker
   // only runs while every gate is truthy: BACKTEST or scrubbed states have a

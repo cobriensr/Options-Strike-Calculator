@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import DarkPoolLevels from '../../components/DarkPoolLevels';
 import type { DarkPoolLevel } from '../../hooks/useDarkPoolLevels';
@@ -28,6 +28,7 @@ describe('DarkPoolLevels: loading state', () => {
   it('shows loading message when loading', () => {
     render(
       <DarkPoolLevels
+        selectedDate="2026-04-02"
         levels={[]}
         loading={true}
         error={null}
@@ -44,6 +45,7 @@ describe('DarkPoolLevels: loading state', () => {
   it('renders inside a SectionBox with label', () => {
     render(
       <DarkPoolLevels
+        selectedDate="2026-04-02"
         levels={[]}
         loading={true}
         error={null}
@@ -65,6 +67,7 @@ describe('DarkPoolLevels: error state', () => {
   it('shows error message', () => {
     render(
       <DarkPoolLevels
+        selectedDate="2026-04-02"
         levels={[]}
         loading={false}
         error="Failed to load dark pool data"
@@ -86,6 +89,7 @@ describe('DarkPoolLevels: empty state', () => {
   it('shows no levels message when levels empty', () => {
     render(
       <DarkPoolLevels
+        selectedDate="2026-04-02"
         levels={[]}
         loading={false}
         error={null}
@@ -105,6 +109,7 @@ describe('DarkPoolLevels: empty state', () => {
     ];
     render(
       <DarkPoolLevels
+        selectedDate="2026-04-02"
         levels={levels}
         loading={false}
         error={null}
@@ -135,6 +140,7 @@ describe('DarkPoolLevels: rendering levels', () => {
     ];
     render(
       <DarkPoolLevels
+        selectedDate="2026-04-02"
         levels={levels}
         loading={false}
         error={null}
@@ -157,6 +163,7 @@ describe('DarkPoolLevels: rendering levels', () => {
     ];
     render(
       <DarkPoolLevels
+        selectedDate="2026-04-02"
         levels={levels}
         loading={false}
         error={null}
@@ -179,6 +186,7 @@ describe('DarkPoolLevels: premium formatting', () => {
   it('formats billions with B suffix', () => {
     render(
       <DarkPoolLevels
+        selectedDate="2026-04-02"
         levels={[makeLevel({ totalPremium: 1_700_000_000 })]}
         loading={false}
         error={null}
@@ -192,6 +200,7 @@ describe('DarkPoolLevels: premium formatting', () => {
   it('formats millions with M suffix', () => {
     render(
       <DarkPoolLevels
+        selectedDate="2026-04-02"
         levels={[makeLevel({ totalPremium: 373_000_000 })]}
         loading={false}
         error={null}
@@ -205,6 +214,7 @@ describe('DarkPoolLevels: premium formatting', () => {
   it('formats thousands with K suffix', () => {
     render(
       <DarkPoolLevels
+        selectedDate="2026-04-02"
         levels={[makeLevel({ totalPremium: 750_000 })]}
         loading={false}
         error={null}
@@ -224,6 +234,7 @@ describe('DarkPoolLevels: block count', () => {
   it('shows plural blocks for count > 1', () => {
     render(
       <DarkPoolLevels
+        selectedDate="2026-04-02"
         levels={[makeLevel({ tradeCount: 13 })]}
         loading={false}
         error={null}
@@ -237,6 +248,7 @@ describe('DarkPoolLevels: block count', () => {
   it('shows singular block for count = 1', () => {
     render(
       <DarkPoolLevels
+        selectedDate="2026-04-02"
         levels={[makeLevel({ tradeCount: 1 })]}
         loading={false}
         error={null}
@@ -260,6 +272,7 @@ describe('DarkPoolLevels: premium bar sizing', () => {
     ];
     render(
       <DarkPoolLevels
+        selectedDate="2026-04-02"
         levels={levels}
         loading={false}
         error={null}
@@ -284,6 +297,7 @@ describe('DarkPoolLevels: premium bar sizing', () => {
     ];
     render(
       <DarkPoolLevels
+        selectedDate="2026-04-02"
         levels={levels}
         loading={false}
         error={null}
@@ -306,6 +320,7 @@ describe('DarkPoolLevels: accessibility', () => {
   it('has SectionBox with aria-label', () => {
     render(
       <DarkPoolLevels
+        selectedDate="2026-04-02"
         levels={[makeLevel()]}
         loading={false}
         error={null}
@@ -321,6 +336,7 @@ describe('DarkPoolLevels: accessibility', () => {
   it('has table role for screen readers', () => {
     render(
       <DarkPoolLevels
+        selectedDate="2026-04-02"
         levels={[makeLevel()]}
         loading={false}
         error={null}
@@ -336,6 +352,7 @@ describe('DarkPoolLevels: accessibility', () => {
   it('has column headers for screen readers', () => {
     render(
       <DarkPoolLevels
+        selectedDate="2026-04-02"
         levels={[makeLevel()]}
         loading={false}
         error={null}
@@ -352,6 +369,7 @@ describe('DarkPoolLevels: accessibility', () => {
   it('renders rows with role="row"', () => {
     render(
       <DarkPoolLevels
+        selectedDate="2026-04-02"
         levels={[makeLevel(), makeLevel({ level: 6550 })]}
         loading={false}
         error={null}
@@ -367,6 +385,7 @@ describe('DarkPoolLevels: accessibility', () => {
   it('premium bars have aria-label with formatted value', () => {
     render(
       <DarkPoolLevels
+        selectedDate="2026-04-02"
         levels={[makeLevel({ totalPremium: 500_000_000 })]}
         loading={false}
         error={null}
@@ -386,6 +405,7 @@ describe('DarkPoolLevels: header', () => {
   it('shows section title via SectionBox', () => {
     render(
       <DarkPoolLevels
+        selectedDate="2026-04-02"
         levels={[makeLevel()]}
         loading={false}
         error={null}
@@ -401,6 +421,7 @@ describe('DarkPoolLevels: header', () => {
   it('does not show badge when no levels at all', () => {
     render(
       <DarkPoolLevels
+        selectedDate="2026-04-02"
         levels={[]}
         loading={false}
         error={null}
@@ -414,6 +435,7 @@ describe('DarkPoolLevels: header', () => {
   it('shows badge with count', () => {
     render(
       <DarkPoolLevels
+        selectedDate="2026-04-02"
         levels={[makeLevel()]}
         loading={false}
         error={null}
@@ -433,6 +455,7 @@ describe('DarkPoolLevels: time display', () => {
   it('shows latest trade time for each level', () => {
     render(
       <DarkPoolLevels
+        selectedDate="2026-04-02"
         levels={[makeLevel({ latestTime: '2026-04-02T19:30:00Z' })]}
         loading={false}
         error={null}
@@ -448,6 +471,7 @@ describe('DarkPoolLevels: time display', () => {
     // 2026-04-02T19:35:00Z = 2:35 PM CT
     render(
       <DarkPoolLevels
+        selectedDate="2026-04-02"
         levels={[makeLevel()]}
         loading={false}
         error={null}
@@ -467,6 +491,7 @@ describe('DarkPoolLevels: visible count control', () => {
   it('renders +/- buttons', () => {
     render(
       <DarkPoolLevels
+        selectedDate="2026-04-02"
         levels={[makeLevel()]}
         loading={false}
         error={null}
@@ -485,6 +510,7 @@ describe('DarkPoolLevels: visible count control', () => {
   it('shows current visible count', () => {
     render(
       <DarkPoolLevels
+        selectedDate="2026-04-02"
         levels={[makeLevel()]}
         loading={false}
         error={null}
@@ -500,6 +526,7 @@ describe('DarkPoolLevels: visible count control', () => {
     const user = userEvent.setup();
     render(
       <DarkPoolLevels
+        selectedDate="2026-04-02"
         levels={[makeLevel()]}
         loading={false}
         error={null}
@@ -523,6 +550,7 @@ describe('DarkPoolLevels: refresh button', () => {
   it('renders refresh button', () => {
     render(
       <DarkPoolLevels
+        selectedDate="2026-04-02"
         levels={[makeLevel()]}
         loading={false}
         error={null}
@@ -540,6 +568,7 @@ describe('DarkPoolLevels: refresh button', () => {
     const user = userEvent.setup();
     render(
       <DarkPoolLevels
+        selectedDate="2026-04-02"
         levels={[makeLevel()]}
         loading={false}
         error={null}
@@ -556,6 +585,7 @@ describe('DarkPoolLevels: refresh button', () => {
   it('is disabled while loading', () => {
     render(
       <DarkPoolLevels
+        selectedDate="2026-04-02"
         levels={[]}
         loading={true}
         error={null}
@@ -577,6 +607,7 @@ describe('DarkPoolLevels: distance from spot', () => {
   it('does not show distance column when spxPrice is not provided', () => {
     render(
       <DarkPoolLevels
+        selectedDate="2026-04-02"
         levels={[makeLevel({ level: 6610 })]}
         loading={false}
         error={null}
@@ -592,6 +623,7 @@ describe('DarkPoolLevels: distance from spot', () => {
   it('shows distance labels when spxPrice is provided', () => {
     render(
       <DarkPoolLevels
+        selectedDate="2026-04-02"
         levels={[
           makeLevel({ level: 6610 }),
           makeLevel({ level: 6620 }),
@@ -612,6 +644,7 @@ describe('DarkPoolLevels: distance from spot', () => {
   it('marks levels within 2.5pts of spot as ATM', () => {
     render(
       <DarkPoolLevels
+        selectedDate="2026-04-02"
         levels={[
           makeLevel({ level: 6611 }), // 1pt above — rounds to ATM display
           makeLevel({ level: 6615 }),
@@ -638,6 +671,7 @@ describe('DarkPoolLevels: sort modes', () => {
     const user = userEvent.setup();
     render(
       <DarkPoolLevels
+        selectedDate="2026-04-02"
         levels={[makeLevel()]}
         loading={false}
         error={null}
@@ -668,6 +702,7 @@ describe('DarkPoolLevels: sort modes', () => {
     const user = userEvent.setup();
     render(
       <DarkPoolLevels
+        selectedDate="2026-04-02"
         levels={[
           makeLevel({
             level: 6600,
@@ -707,6 +742,7 @@ describe('DarkPoolLevels: sort modes', () => {
     const user = userEvent.setup();
     render(
       <DarkPoolLevels
+        selectedDate="2026-04-02"
         levels={[makeLevel()]}
         loading={false}
         error={null}
@@ -730,6 +766,7 @@ describe('DarkPoolLevels: sort modes', () => {
     const user = userEvent.setup();
     render(
       <DarkPoolLevels
+        selectedDate="2026-04-02"
         levels={[
           makeLevel({ level: 6600, totalPremium: 100_000_000 }),
           makeLevel({ level: 6620, totalPremium: 200_000_000 }),
@@ -758,6 +795,7 @@ describe('DarkPoolLevels: sort modes', () => {
     const user = userEvent.setup();
     render(
       <DarkPoolLevels
+        selectedDate="2026-04-02"
         levels={[
           makeLevel({ level: 6580, totalPremium: 100_000_000 }),
           makeLevel({ level: 6612, totalPremium: 50_000_000 }),
@@ -794,6 +832,7 @@ describe('DarkPoolLevels — symbol selector', () => {
   it('hides the selector when onSymbolChange is omitted', () => {
     render(
       <DarkPoolLevels
+        selectedDate="2026-04-02"
         levels={[makeLevel()]}
         loading={false}
         error={null}
@@ -810,6 +849,7 @@ describe('DarkPoolLevels — symbol selector', () => {
     const onSymbolChange = vi.fn();
     render(
       <DarkPoolLevels
+        selectedDate="2026-04-02"
         levels={[makeLevel()]}
         loading={false}
         error={null}
@@ -846,6 +886,7 @@ describe('DarkPoolLevels — symbol selector', () => {
     const onSymbolChange = vi.fn();
     render(
       <DarkPoolLevels
+        selectedDate="2026-04-02"
         levels={[makeLevel()]}
         loading={false}
         error={null}
@@ -865,6 +906,7 @@ describe('DarkPoolLevels — symbol selector', () => {
   it('table aria-label and column header reflect selectedSymbol', () => {
     render(
       <DarkPoolLevels
+        selectedDate="2026-04-02"
         levels={[makeLevel()]}
         loading={false}
         error={null}
@@ -883,6 +925,7 @@ describe('DarkPoolLevels — symbol selector', () => {
   it('empty state for non-SPX selector shows the rolling-out hint', () => {
     render(
       <DarkPoolLevels
+        selectedDate="2026-04-02"
         levels={[]}
         loading={false}
         error={null}
@@ -900,6 +943,7 @@ describe('DarkPoolLevels — symbol selector', () => {
   it('empty state for SPX still shows the original block-detection hint', () => {
     render(
       <DarkPoolLevels
+        selectedDate="2026-04-02"
         levels={[]}
         loading={false}
         error={null}
@@ -912,5 +956,47 @@ describe('DarkPoolLevels — symbol selector', () => {
     expect(
       screen.getByText(/Levels appear when large institutional blocks/),
     ).toBeInTheDocument();
+  });
+});
+
+// ============================================================
+// DATE FIELD
+// ============================================================
+
+describe('DarkPoolLevels: date field', () => {
+  it('shows the date it is handed and has no clock of its own', () => {
+    render(
+      <DarkPoolLevels
+        selectedDate="2026-03-11"
+        levels={[]}
+        loading={false}
+        error={null}
+        fetchedAt={null}
+        onRefresh={noop}
+      />,
+    );
+    expect(screen.getByLabelText('Select date')).toHaveValue('2026-03-11');
+  });
+
+  it('hands a picked date and an emptied field to onDateChange as typed', () => {
+    const onDateChange = vi.fn();
+    render(
+      <DarkPoolLevels
+        selectedDate="2026-03-11"
+        levels={[]}
+        loading={false}
+        error={null}
+        fetchedAt={null}
+        onRefresh={noop}
+        onDateChange={onDateChange}
+      />,
+    );
+    const input = screen.getByLabelText('Select date');
+
+    fireEvent.change(input, { target: { value: '2026-03-12' } });
+    fireEvent.change(input, { target: { value: '' } });
+
+    // The hook maps '' to following today; the component passes it on.
+    expect(onDateChange.mock.calls).toEqual([['2026-03-12'], ['']]);
   });
 });
