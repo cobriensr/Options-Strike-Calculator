@@ -11,6 +11,7 @@ row.
 
 from __future__ import annotations
 
+import asyncio
 import socket
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -678,6 +679,85 @@ class TestBulkInsertRetry:
         # Exactly one attempt, no backoff sleep.
         assert conn.execute.await_count == 1
         sleep_mock.assert_not_awaited()
+
+
+class TestRetryDoesNotOutliveACancel:
+    """A cancel that asyncpg turns into a transient error is not retried.
+
+    Cancelling a query that is stalled in a DB call makes asyncpg raise
+    InterfaceError ("connection is closed") while it unwinds, and InterfaceError
+    is in the transient set. Retried, the helper slept 0.5 s and wrote the rows
+    on a fresh connection after the drain deadline had cancelled the flush and
+    reported them lost. A task with a cancel pending re-raises whatever it holds
+    (the rule ``Handler._safe_flush`` applies); a transient error on a task
+    that is not being cancelled is still retried (TestBulkInsertRetry).
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_retry_helper_re_raises_a_transient_error_raised_by_a_cancel(self):
+        started = asyncio.Event()
+        attempts = 0
+
+        async def _attempt() -> int:
+            nonlocal attempts
+            attempts += 1
+            if attempts > 1:
+                return 7  # the unwanted retry's write
+            started.set()
+            try:
+                await asyncio.Event().wait()  # a query stalled on Neon
+            except asyncio.CancelledError:
+                raise asyncpg.exceptions.InterfaceError("connection is closed") from None
+            return 1
+
+        with patch("asyncio.sleep", new=AsyncMock()) as sleep_mock:
+            task = asyncio.create_task(db._with_db_retry("label", _attempt))
+            await started.wait()
+            task.cancel()
+            with pytest.raises(asyncpg.exceptions.InterfaceError):
+                await task
+
+        assert attempts == 1
+        sleep_mock.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_cancelled_bulk_insert_writes_its_rows_once_at_most(self):
+        """Through the real helper chain: bulk_insert_ignore_conflict ->
+        _insert_chunks_with_retry -> _with_db_retry, with the cancel turned into
+        InterfaceError at ``conn.execute``.
+        """
+        started = asyncio.Event()
+        executes = 0
+
+        async def _execute(*_args) -> str:
+            nonlocal executes
+            executes += 1
+            if executes > 1:
+                return "INSERT 0 1"  # the unwanted retry's write
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                raise asyncpg.exceptions.InterfaceError("connection is closed") from None
+            return "INSERT 0 1"
+
+        conn = MagicMock()
+        conn.execute = _execute
+        pool = _mock_pool_with_conn(conn)
+
+        with patch("db.get_pool", return_value=pool), patch("asyncio.sleep", new=AsyncMock()):
+            task = asyncio.create_task(
+                bulk_insert_ignore_conflict(
+                    table="t", columns=["a", "b"], rows=[(1, 2)], conflict_cols=["a"]
+                )
+            )
+            await started.wait()
+            task.cancel()
+            with pytest.raises(asyncpg.exceptions.InterfaceError):
+                await task
+
+        assert executes == 1
+        assert pool.acquire.call_count == 1  # no second connection was taken
 
 
 class TestBulkUpsertRetry:

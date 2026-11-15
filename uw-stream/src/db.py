@@ -151,7 +151,8 @@ async def _with_db_retry[T](
     thinks is alive but the wire underneath has been torn down by a Neon
     restart. Non-transient errors propagate immediately; the final
     transient error is re-raised after ``_DB_RETRY_MAX_ATTEMPTS``, or after
-    the first attempt inside ``single_attempt()``.
+    the first attempt inside ``single_attempt()``. Whatever ``func`` raises in
+    a task that is being cancelled propagates at once, transient or not.
     """
     max_attempts = 1 if _single_attempt.get() else _DB_RETRY_MAX_ATTEMPTS
     last_exc: BaseException | None = None
@@ -159,6 +160,14 @@ async def _with_db_retry[T](
         try:
             return await func()
         except BaseException as exc:
+            # A task with a cancel pending is being stopped: what ``func`` raised
+            # is the cancel unwinding. asyncpg turns a cancelled query into
+            # InterfaceError ("connection is closed"), which is transient below,
+            # and a retry would write the rows on a fresh connection after the
+            # drain deadline cancelled the flush and reported them lost. Same
+            # rule as Handler._safe_flush.
+            if (task := asyncio.current_task()) is not None and task.cancelling():
+                raise
             if not is_transient_db_error(exc):
                 raise
             last_exc = exc
