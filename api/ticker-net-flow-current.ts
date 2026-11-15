@@ -11,11 +11,14 @@
  * Query params: ?tickers=A,B,C&date=YYYY-MM-DD
  * Validated by `tickerNetFlowCurrentQuerySchema`.
  *
- * Sources: UNIONs `ws_net_flow_per_ticker` (live WS daemon) +
- * `net_flow_per_ticker_history` (REST backfill). DISTINCT ON (ticker, ts)
- * with priority=1 for WS keeps the live row whenever both tables hold
- * the same minute. The window function then partitions by ticker and
- * we take the last (max ts) row per ticker.
+ * Sources: per ticker, `ws_net_flow_per_ticker` (live WS daemon) when the
+ * ticker has any WS row in the session, else `net_flow_per_ticker_history`
+ * (REST backfill). Never both: after the close the two hold the same flow at
+ * different resolutions and a union counts it twice. See
+ * api/_lib/ticker-flow-snapshot.ts and
+ * docs/superpowers/specs/lottery-flow-repair-and-indexes-2026-11-15.md. The
+ * window function then partitions by ticker and we take the last (max ts) row
+ * per ticker.
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
@@ -65,11 +68,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const session = ctSessionBounds(targetDate);
 
     const db = getDb();
-    // Two-stage: (1) unify WS + REST per ticker with WS-wins priority,
-    // (2) compute running cumulative per ticker, (3) take the latest
-    // row per ticker. The DISTINCT ON inside `unified` is keyed by
-    // (ticker, ts) so each ticker independently dedupes minute
-    // collisions across the two sources.
+    const readAt = new Date().toISOString();
+    // Three stages: (1) one source per ticker-day, (2) compute running
+    // cumulative per ticker, (3) take the latest row per ticker.
+    //
+    // (1) The WS table holds one row per tick (ts with milliseconds) and the
+    // history table one row per minute; after the close they hold the same
+    // flow, and DISTINCT ON (ticker, ts) never merges a millisecond stamp with
+    // a minute stamp, so the old UNION ALL gave any past day about twice its
+    // flow (2026-11-15). So each ticker reads WS rows when its session has
+    // any (`has_ws`), else history. A history row is a whole minute and is
+    // read only once the minute is complete (`ts + 60 s <= now`). History
+    // keeps one row per minute across `source`.
     //
     // withDbRetry covers transient Neon HTTP failures (fetch failed,
     // ECONNRESET, socket hang up) — at 60s client polling cadence one
@@ -77,25 +87,36 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // events. 10s per-attempt timeout shields against hung connections.
     const rows = (await withDbRetry(
       () => db`
-      WITH unified AS (
-        SELECT DISTINCT ON (ticker, ts)
-          ticker, ts, net_call_prem, net_put_prem
+      WITH has_ws AS (
+        SELECT requested.ticker
+        FROM unnest(${tickers}::text[]) AS requested(ticker)
+        WHERE EXISTS (
+          SELECT 1
+          FROM ws_net_flow_per_ticker w
+          WHERE w.ticker = requested.ticker
+            AND w.ts >= ${session.min}::timestamptz
+            AND w.ts <= ${session.max}::timestamptz
+        )
+      ),
+      unified AS (
+        SELECT ticker, ts, net_call_prem, net_put_prem
+        FROM ws_net_flow_per_ticker
+        WHERE ticker = ANY(${tickers}::text[])
+          AND ts >= ${session.min}::timestamptz
+          AND ts <= ${session.max}::timestamptz
+        UNION ALL
+        SELECT ticker, ts, net_call_prem, net_put_prem
         FROM (
-          SELECT ticker, ts, net_call_prem, net_put_prem,
-            1 AS priority
-          FROM ws_net_flow_per_ticker
-          WHERE ticker = ANY(${tickers}::text[])
-            AND ts >= ${session.min}::timestamptz
-            AND ts <= ${session.max}::timestamptz
-          UNION ALL
-          SELECT ticker, ts, net_call_prem, net_put_prem,
-            2 AS priority
-          FROM net_flow_per_ticker_history
-          WHERE ticker = ANY(${tickers}::text[])
-            AND ts >= ${session.min}::timestamptz
-            AND ts <= ${session.max}::timestamptz
-        ) combined
-        ORDER BY ticker, ts, priority
+          SELECT DISTINCT ON (h.ticker, h.ts)
+            h.ticker, h.ts, h.net_call_prem, h.net_put_prem
+          FROM net_flow_per_ticker_history h
+          WHERE h.ticker = ANY(${tickers}::text[])
+            AND h.ts >= ${session.min}::timestamptz
+            AND h.ts <= ${session.max}::timestamptz
+            AND h.ts + INTERVAL '60 seconds' <= ${readAt}::timestamptz
+            AND NOT EXISTS (SELECT 1 FROM has_ws s WHERE s.ticker = h.ticker)
+          ORDER BY h.ticker, h.ts, h.source
+        ) minutes
       ),
       running AS (
         SELECT

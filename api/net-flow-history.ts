@@ -16,10 +16,12 @@
  * payload size — clients receive both delta and cumulative columns
  * in the same response and can render either.
  *
- * Sources: UNIONs `ws_net_flow_per_ticker` (live WS daemon) and
- * `net_flow_per_ticker_history` (REST backfill, ~90-day history).
- * On (ts) collision, WS wins via DISTINCT ON priority — WS is the
- * authoritative live stream; REST fills history pre-daemon.
+ * Sources: `ws_net_flow_per_ticker` (live WS daemon) when the ticker-day
+ * has any WS row in its session, else `net_flow_per_ticker_history` (REST
+ * backfill, ~90-day history). Never both: after the close the two hold the
+ * same flow at different resolutions and a union counts it twice. See
+ * api/_lib/ticker-flow-snapshot.ts and
+ * docs/superpowers/specs/lottery-flow-repair-and-indexes-2026-11-15.md.
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
@@ -100,9 +102,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const toTs = to ? ctHmToUtc(targetDate, to) : session.max;
 
     const db = getDb();
-    // Union both sources; DISTINCT ON (ts) with priority=1 for WS keeps
-    // the live row whenever both tables hold the same minute. REST fills
-    // gaps for historical fires that pre-date the WS daemon.
+    const readAt = new Date().toISOString();
+    // One source per ticker-day, never both. The WS table holds one row per
+    // tick (ts with milliseconds) and the history table one row per minute;
+    // after the close they hold the same flow, and DISTINCT ON (ts) never
+    // merges a millisecond stamp with a minute stamp, so the old UNION ALL
+    // drew every past day at about twice its flow (2026-11-15). So: WS rows
+    // when the ticker-day's session has any, else history. The probe looks at
+    // the whole session, not the requested window, so a narrowed `from`/`to`
+    // cannot flip the source. A history row is a whole minute: it is read
+    // only once the minute is complete (`ts + 60 s <= now`), and drawn at its
+    // minute-start stamp. History keeps one row per minute across `source`.
     //
     // withDbRetry covers transient Neon HTTP failures. The chart polls
     // on a 60s cadence so unretried blips fan out into Sentry rapidly
@@ -111,24 +121,30 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const rows = (await withDbRetry(
       () => db`
       WITH unified AS (
-        SELECT DISTINCT ON (ts)
-          ts, net_call_prem, net_call_vol, net_put_prem, net_put_vol
+        SELECT ts, net_call_prem, net_call_vol, net_put_prem, net_put_vol
+        FROM ws_net_flow_per_ticker
+        WHERE ticker = ${ticker}
+          AND ts >= ${fromTs}::timestamptz
+          AND ts <= ${toTs}::timestamptz
+        UNION ALL
+        SELECT ts, net_call_prem, net_call_vol, net_put_prem, net_put_vol
         FROM (
-          SELECT ts, net_call_prem, net_call_vol, net_put_prem, net_put_vol,
-            1 AS priority
-          FROM ws_net_flow_per_ticker
-          WHERE ticker = ${ticker}
-            AND ts >= ${fromTs}::timestamptz
-            AND ts <= ${toTs}::timestamptz
-          UNION ALL
-          SELECT ts, net_call_prem, net_call_vol, net_put_prem, net_put_vol,
-            2 AS priority
+          SELECT DISTINCT ON (ts)
+            ts, net_call_prem, net_call_vol, net_put_prem, net_put_vol
           FROM net_flow_per_ticker_history
           WHERE ticker = ${ticker}
             AND ts >= ${fromTs}::timestamptz
             AND ts <= ${toTs}::timestamptz
-        ) combined
-        ORDER BY ts, priority
+            AND ts + INTERVAL '60 seconds' <= ${readAt}::timestamptz
+            AND NOT EXISTS (
+              SELECT 1
+              FROM ws_net_flow_per_ticker
+              WHERE ticker = ${ticker}
+                AND ts >= ${session.min}::timestamptz
+                AND ts <= ${session.max}::timestamptz
+            )
+          ORDER BY ts, source
+        ) minutes
       )
       SELECT
         ts, net_call_prem, net_call_vol, net_put_prem, net_put_vol,
