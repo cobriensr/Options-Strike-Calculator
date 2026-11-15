@@ -22,10 +22,11 @@ import orjson
 import websockets
 from websockets.frames import Close
 
+import egress
 import socket_stats
 import state as state_module
 from config import settings
-from logger_setup import log, scrub_log_tokens
+from logger_setup import log, rate_limited_log, scrub_log_tokens
 from sentry_setup import capture_exception, capture_message
 from state import state
 
@@ -161,6 +162,16 @@ class _SessionDiag:
     last_frame_at: float | None = None
     local_addr: str | None = None
     remote_addr: str | None = None
+    # The handshake's Cloudflare ray ID, whole, and the data centre its suffix names
+    # (see ``_read_cf_ray``). None without a usable header.
+    cf_ray: str | None = None
+    cf_colo: str | None = None
+    # From the session's one trace lookup (``_lookup_egress``): the address
+    # Cloudflare saw this host come from, and the data centre and country that
+    # answered the lookup. None until it succeeds, and for good if it never does.
+    egress_ip: str | None = None
+    trace_colo: str | None = None
+    trace_loc: str | None = None
     # Close frames from the socket's protocol state, read when the receive
     # loop ends. Used for every disconnect whose exception isn't a
     # ConnectionClosed (clean close, OSError/TimeoutError, catch-all). A
@@ -184,6 +195,31 @@ def _format_addr(addr: object) -> str | None:
         return None
     host, port = addr[0], addr[1]
     return f"[{host}]:{port}" if ":" in str(host) else f"{host}:{port}"
+
+
+def _read_cf_ray(ws: Any) -> tuple[str | None, str | None]:
+    """The handshake's ``CF-RAY`` as ``(ray, colo)``, each None when there is no usable one.
+
+    Cloudflare puts ``CF-RAY: <16 hex>-<COLO>`` on every response it serves, the
+    websocket upgrade included, and the suffix is the data centre's airport code. The
+    ray is the ID Cloudflare and UW look a connection up by. It is kept whole and
+    unchecked; the colo is the text after the last dash, kept only when it is a colo
+    (``egress.valid_colo``), so an odd suffix leaves the ray and a None colo.
+
+    Never raises on a header it does not expect. A repeated header would raise
+    ``MultipleValuesError`` from ``Headers.get``, so the values are read with
+    ``get_all`` and anything but exactly one non-empty value counts as no header.
+    ``ws.response`` is None only before the handshake completes.
+    """
+    response = ws.response
+    if response is None:
+        return None, None
+    values = response.headers.get_all("cf-ray")
+    if len(values) != 1 or not values[0]:
+        return None, None
+    ray = values[0]
+    _, dash, suffix = ray.rpartition("-")
+    return ray, egress.valid_colo(suffix) if dash else None
 
 
 def _close_info(close: Close | None) -> dict[str, object] | None:
@@ -256,7 +292,7 @@ class Connector:
                 state.record_reconnect()
                 log.info(
                     "WS closed cleanly, reconnecting after grace",
-                    extra={**self._disconnect_diag(None), "backoff": backoff},
+                    extra=self._disconnect_line(None, backoff),
                 )
                 # Storm-check the clean-close path too. A provider shedding an
                 # over-cap connection sends a CLEAN close (no exception), so a
@@ -280,7 +316,7 @@ class Connector:
                 state.record_reconnect()
                 log.warning(
                     "WS connection unavailable",
-                    extra={**self._disconnect_diag(exc), "backoff": backoff},
+                    extra=self._disconnect_line(exc, backoff),
                 )
                 self._maybe_alert_storm()
             except (TimeoutError, OSError) as exc:
@@ -288,7 +324,7 @@ class Connector:
                 state.record_reconnect()
                 log.warning(
                     "WS transport error",
-                    extra={**self._disconnect_diag(exc), "backoff": backoff},
+                    extra=self._disconnect_line(exc, backoff),
                 )
                 self._maybe_alert_storm()
             except Exception as exc:
@@ -409,6 +445,8 @@ class Connector:
             diag.connected_at = time.monotonic()
             diag.local_addr = _format_addr(ws.local_address)
             diag.remote_addr = _format_addr(ws.remote_address)
+            # Which Cloudflare data centre took this socket, from the handshake.
+            diag.cf_ray, diag.cf_colo = _read_cf_ray(ws)
             # The loop's own clock, the one the ``asyncio.sleep`` polls in
             # ``_report_join`` are scheduled on.
             join_started_at = asyncio.get_running_loop().time()
@@ -430,7 +468,10 @@ class Connector:
                 )
                 raise
             state.set_connection(self.name, True)
-            log.info("WS connected, awaiting messages", extra={"shard": self.name})
+            log.info(
+                "WS connected, awaiting messages",
+                extra={"shard": self.name, "cf_ray": diag.cf_ray, "cf_colo": diag.cf_colo},
+            )
             # Monotonic clock so a wall-clock adjustment (NTP step) can't make a
             # short session look healthy or vice-versa.
             session_start = time.monotonic()
@@ -448,6 +489,14 @@ class Connector:
             join_task = asyncio.create_task(
                 self._report_join(join_started_at),
                 name=f"join-summary:{self.name}",
+            )
+            # One trace lookup for this session, in the background: it waits on the
+            # network for up to egress's timeout, and neither the receive loop nor
+            # anything before it may wait with it. Tied to the socket like the two
+            # tasks above, so a drop or a shutdown cancels it and none outlives it.
+            egress_task = asyncio.create_task(
+                self._lookup_egress(diag),
+                name=f"egress-trace:{self.name}",
             )
             # Frame stats for the disconnect log, kept in locals on the hot path
             # (an int bump and a clock read per frame, no await, no log) and
@@ -512,11 +561,12 @@ class Connector:
                 self._established = session_dur >= _MIN_HEALTHY_SESSION_S
                 reconcile_task.cancel()
                 join_task.cancel()
+                egress_task.cancel()
                 # gather() hands back each task's own CancelledError as a result.
                 # Suppressing CancelledError around a plain await would also
                 # swallow a shutdown cancel that lands here, and the connector
                 # would reconnect instead of stopping.
-                await asyncio.gather(reconcile_task, join_task, return_exceptions=True)
+                await asyncio.gather(reconcile_task, join_task, egress_task, return_exceptions=True)
 
     async def _subscribe_all(self, ws) -> None:
         """Send a join frame for every configured channel.
@@ -578,6 +628,58 @@ class Connector:
             log.warning("shard join incomplete", extra={**fields, "unacked": unacked})
         else:
             log.info("shard joined", extra=fields)
+
+    async def _lookup_egress(self, diag: _SessionDiag) -> None:
+        """Look up this session's egress address once and record it on ``diag``.
+
+        Runs as a task beside the receive loop (see ``_connect_once``). On success it
+        stores ``egress_ip``, ``trace_colo`` and ``trace_loc`` on ``diag``, the record
+        of THIS session (not ``self._session_diag``, which the next session replaces),
+        and logs one "egress trace" line. That line names the trace's colo and the
+        socket's own: the trace is a separate TCP connection, so the two can differ.
+
+        A failure (timeout, a refused or reset connection, a non-200, a body with no
+        ``ip=``) stores nothing and logs one rate-limited WARNING naming the shard and
+        the error's type, and the disconnect line says ``egress_ip: null``. No retry:
+        the next session looks again, and the lookup is a diagnostic, so it never
+        becomes a Sentry event (the logging integration sends no warnings, and nothing
+        here captures). Rate-limited per shard (the shard names are a closed set), so
+        one shard failing on every reconnect does not repeat itself every few seconds
+        and another shard's failure still shows.
+
+        A cancel (the session ended, or shutdown) is not a failure: ``CancelledError``
+        is not an ``Exception``, so it passes through untouched.
+        """
+        try:
+            trace = await egress.lookup(egress.trace_url(settings.ws_url))
+        except Exception as exc:
+            rate_limited_log.warning(
+                scope="connector",
+                kind="egress_trace_failed",
+                key=self.name,
+                message="egress trace lookup failed",
+                extra={
+                    "shard": self.name,
+                    "exc_type": type(exc).__name__,
+                    # Our own fixed text for a non-200 or a body with no ip; the
+                    # network's errors are named by type alone.
+                    "err": str(exc) if isinstance(exc, egress.TraceError) else None,
+                },
+            )
+            return
+        diag.egress_ip = trace.ip
+        diag.trace_colo = trace.colo
+        diag.trace_loc = trace.loc
+        log.info(
+            "egress trace",
+            extra={
+                "shard": self.name,
+                "egress_ip": trace.ip,
+                "trace_colo": trace.colo,
+                "trace_loc": trace.loc,
+                "cf_colo": diag.cf_colo,
+            },
+        )
 
     async def _send_join(self, ws, channel: str) -> None:
         """Send one join frame for ``channel`` as a WS TEXT frame.
@@ -685,7 +787,23 @@ class Connector:
             ),
             "local_addr": diag.local_addr,
             "remote_addr": diag.remote_addr,
+            "cf_ray": diag.cf_ray,
+            "cf_colo": diag.cf_colo,
             "forced": diag.forced,
+        }
+
+    def _disconnect_line(self, exc: BaseException | None, backoff: float) -> dict[str, object]:
+        """The ``extra`` of a disconnect log line: the diagnostics plus ``backoff``.
+
+        Adds the egress IP, which only a log line may carry. ``_disconnect_diag``
+        also goes to Sentry as context from the catch-all branch, and the address
+        stays out of Sentry, so it is added here and not there. It is None when the
+        session's lookup had not finished (or failed) before the drop.
+        """
+        return {
+            **self._disconnect_diag(exc),
+            "egress_ip": self._session_diag.egress_ip,
+            "backoff": backoff,
         }
 
     def _maybe_alert_storm(self) -> None:

@@ -1108,6 +1108,63 @@ comment in `marketHours.ts` says so.
   file's own test fails once its last listed holiday is under 60 days out, and
   the parity test then carries the update across.
 
+### Splitting the RST half
+
+About half the drops are TCP resets (535 of 1,072 between 10-29 and 11-13), and a
+reset can come from Railway's network or from Cloudflare's edge, which fronts
+`api.unusualwhales.com`. Every session now records which data centre it landed on
+and which address it left from, so the two can be told apart. These are log
+fields only. None of it is a Sentry event, and the connector keeps `egress_ip` out
+of the context it sends with an unexpected disconnect. One path is open:
+Sentry's logging integration attaches INFO and WARNING log lines, with their
+fields, to the next event as breadcrumbs, so an event can carry a line that has
+`egress_ip` in it.
+
+**What a session records.**
+
+- `cf_ray` and `cf_colo`, from the `CF-RAY` header of the handshake response
+  (`<16 hex>-<COLO>`, for example `a5a99a668950d873-MCI`). `cf_ray` is the whole
+  header, the ID Cloudflare and UW look a connection up by. `cf_colo` is the part
+  after the last dash, the data centre's airport code, kept only when it is three
+  capital letters. Both are on the `WS connected, awaiting messages` line and on
+  every disconnect line: `WS connection unavailable`, `WS transport error` and
+  `WS closed cleanly, reconnecting after grace`. A missing, repeated or empty
+  header gives `null` for both, an odd suffix gives the ray and a `null` colo, and
+  neither stops the session.
+- One `egress trace` line per session, from one GET of
+  `https://api.unusualwhales.com/cdn-cgi/trace` (Cloudflare answers it, on the
+  websocket's own host). Its fields are `shard`, `egress_ip` (the address
+  Cloudflare saw), `trace_colo` and `trace_loc` (the data centre and country that
+  answered), and `cf_colo`, the socket's own. The trace is a separate TCP
+  connection, so `trace_colo` can differ from `cf_colo`: the socket's is the one
+  that matters for its drops.
+- `egress_ip` on the disconnect line too, when the lookup had finished before the
+  drop. `null` when it was still running or had failed.
+
+**How the lookup runs.** It starts as a background task once the connect's joins
+are sent, so the receive loop never waits on it. One short-lived HTTP session
+each, a 5 s limit for the whole request (`_TIMEOUT_S` in `src/egress.py`), no
+retry: the next session looks again. It is cancelled when the session ends and at
+shutdown. A timeout, a refused or reset connection, a non-200 and a body with no
+valid `ip=` store nothing and log one `egress trace lookup failed` warning, at most
+one a minute per shard, with `shard`, `exc_type` and, for the last two, `err`.
+
+**Reading it.**
+
+1. Take the disconnects with `cause_type` `ConnectionResetError` and `forced`
+   `null`, and group them by `cf_colo`. Resets that cluster on one colo point at
+   that edge location. Resets spread across every colo the sockets use point at the
+   path before Cloudflare, which is Railway's network.
+2. For each reset, look for a `ws-canary` drop within 2 s either side, by the
+   app's own `time` field, not Railway's log timestamp, and compare the two
+   `cf_colo` values. The canary logs the same two fields on its `connect` events
+   and `drop` records. If both dropped in the same moment on different colos, what
+   they share is Railway's side. If only the sockets on one colo dropped, it is
+   that colo.
+3. Look at `egress_ip` across the `egress trace` lines. A change in it, between
+   sessions of one shard or between shards, near a burst of resets, points at
+   Railway's network too.
+
 ## Operational notes
 
 - **Resubscribe on reconnect.** UW's server forgets joins on disconnect.
@@ -1160,7 +1217,10 @@ comment in `marketHours.ts` says so.
 - **Disconnects.** Each dropped socket logs one line with the shard, the
   exception, both close frames, the underlying cause (with errno), the
   session length, frames received, time since the last frame, both
-  socket addresses, and `forced` (the reason when the stuck-socket watchdog
+  socket addresses, `cf_ray` and `cf_colo` (the Cloudflare data centre the
+  socket landed on), `egress_ip` (uw-stream's address as Cloudflare saw it, `null`
+  until the session's lookup finishes; see Splitting the RST half, above), and
+  `forced` (the reason when the stuck-socket watchdog
   dropped the socket on purpose, `stuck_trade_socket` or `silent_trade_feed`,
   `null` otherwise). The token is scrubbed from
   it. A Sentry error fires

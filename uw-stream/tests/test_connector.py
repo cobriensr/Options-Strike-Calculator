@@ -5,21 +5,30 @@ from __future__ import annotations
 
 import asyncio
 import errno
+import gc
 import itertools
 import json
 import logging
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any, ClassVar
 from unittest.mock import patch
 
+import aiohttp
 import orjson
 import pytest
 import websockets
+from websockets.datastructures import Headers
 from websockets.frames import Close
+from websockets.http11 import Response
 
+import egress
+import logger_setup
+import sentry_setup
 import socket_stats
+from config import settings
 from connector import Connector
 from logger_setup import JsonFormatter
 from router import Router
@@ -70,6 +79,67 @@ def _fresh_connections(monkeypatch):
     monkeypatch.setattr(state, "connections", {})
 
 
+class _LookupOnTheConnectPath(BaseException):
+    """``egress.lookup`` was awaited by something other than the session's lookup task.
+
+    A BaseException so the connector's own ``except Exception`` cannot turn it into
+    a logged warning, and so a connector that awaits the lookup inline fails every
+    test that connects at once, where a default lookup that never answers would
+    hang each of them.
+    """
+
+
+class _Lookup:
+    """Stand-in for ``egress.lookup``, the module boundary the connector reaches the
+    network through.
+
+    It records the URL of each call and what became of it: ``started`` is set when a
+    call begins, ``cancelled`` counts the calls a cancel ended. By default a call
+    never answers, as a lookup still in flight when its session ends; ``result``
+    makes it answer at once and ``exc`` makes it fail at once. A call from any task
+    but the connector's ``egress-trace:`` task raises ``_LookupOnTheConnectPath``.
+    """
+
+    def __init__(
+        self, result: egress.Trace | None = None, exc: BaseException | None = None
+    ) -> None:
+        self.result = result
+        self.exc = exc
+        self.urls: list[str] = []
+        self.started = asyncio.Event()
+        self.cancelled = 0
+
+    async def __call__(self, url: str) -> egress.Trace:
+        task = asyncio.current_task()
+        if task is None or not task.get_name().startswith("egress-trace:"):
+            raise _LookupOnTheConnectPath(url)
+        self.urls.append(url)
+        self.started.set()
+        if self.exc is not None:
+            raise self.exc
+        if self.result is not None:
+            return self.result
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            self.cancelled += 1
+            raise
+        raise AssertionError("unreachable")
+
+
+@pytest.fixture(autouse=True)
+def lookup(monkeypatch) -> _Lookup:
+    """No test reaches the network: every connect's trace lookup is a call that never answers.
+
+    A test about the lookup replaces it with its own ``_Lookup``. The rate limiter's
+    windows start empty too: a failure logged by one test must not hide the next one's.
+    """
+    probe = _Lookup()
+    monkeypatch.setattr(egress, "lookup", probe)
+    monkeypatch.setattr(logger_setup.rate_limited_log, "_state", {})
+    return probe
+
+
 @pytest.mark.asyncio
 async def test_subscribe_all_sends_text_frames_not_binary() -> None:
     """Regression: every join frame MUST be a str (WS TEXT opcode 0x1).
@@ -112,6 +182,7 @@ class _AsyncIterableWS:
         # disconnect diagnostics.
         self.local_address = None
         self.remote_address = None
+        self.response = None
         self.protocol = SimpleNamespace(close_rcvd=None, close_sent=None)
 
     def __aiter__(self):
@@ -1078,6 +1149,17 @@ _LOCAL_ADDR = ("10.250.1.7", 54321)
 _REMOTE_ADDR = ("104.18.24.1", 443)
 _SECRET = "SUPER_SECRET_UW_TOKEN"
 _SECRET_URL = f"wss://api.unusualwhales.com/socket?token={_SECRET}"
+# What a trace lookup that succeeds reports (203.0.113.0/24 is a documentation range).
+_TRACE_RESULT = egress.Trace(ip="203.0.113.9", colo="DFW", loc="US")
+
+
+def _handshake(cf_ray: str | None, *, header: str = "CF-RAY") -> Response:
+    """The handshake response websockets keeps on a connection; ``cf_ray`` None sends no such header."""
+    headers = Headers([("Server", "cloudflare")])
+    if cf_ray is not None:
+        headers[header] = cf_ray
+    return Response(101, "Switching Protocols", headers)
+
 
 # Every disconnect line carries these, None where they don't apply.
 _DIAG_FIELDS = frozenset(
@@ -1095,6 +1177,9 @@ _DIAG_FIELDS = frozenset(
         "since_last_frame_s",
         "local_addr",
         "remote_addr",
+        "cf_ray",
+        "cf_colo",
+        "egress_ip",
         "forced",
         "backoff",
     }
@@ -1147,9 +1232,12 @@ class _SessionWS:
         pre_frame_delay_s: float = 0.0,
         close_rcvd: Close | None = None,
         close_sent: Close | None = None,
+        response: Response | None = None,
     ) -> None:
         self.local_address = _LOCAL_ADDR
         self.remote_address = _REMOTE_ADDR
+        # The handshake response websockets keeps on the connection.
+        self.response = response
         self.protocol = SimpleNamespace(close_rcvd=close_rcvd, close_sent=close_sent)
         self._frames = frames
         self._end = end
@@ -1359,6 +1447,9 @@ async def test_pre_connect_failure_logs_no_session(
     assert rec.since_last_frame_s is None
     assert rec.local_addr is None
     assert rec.remote_addr is None
+    assert rec.cf_ray is None
+    assert rec.cf_colo is None
+    assert rec.egress_ip is None
     assert rec.close_rcvd is None
     assert rec.close_sent is None
     assert rec.cause_type is None
@@ -1410,9 +1501,16 @@ async def test_disconnect_cause_honours_from_none(monkeypatch, service_log_recor
 async def test_session_fields_reset_between_attempts(monkeypatch, service_log_records) -> None:
     """A failed connect after a real session must not report the previous
     socket's age, frames or addresses: each attempt starts from nothing."""
-    first = _SessionWS([b"f1"], end=_closed_from(ConnectionResetError(errno.ECONNRESET, "reset")))
+    first = _SessionWS(
+        [b"f1"],
+        end=_closed_from(ConnectionResetError(errno.ECONNRESET, "reset")),
+        pre_frame_delay_s=0.05,
+        response=_handshake("a5a99a668950d873-MCI"),
+    )
     refused = ConnectionRefusedError(errno.ECONNREFUSED, "Connection refused")
     connector = Connector(channels=["a"], receive_queue=asyncio.Queue(maxsize=10))
+    # The first session's lookup answers at once, so its IP is on that session's record.
+    monkeypatch.setattr(egress, "lookup", _Lookup(result=_TRACE_RESULT))
 
     await _run_attempts(
         monkeypatch, connector, [_ConnectCtx(first), _ConnectCtx(enter_exc=refused)]
@@ -1421,6 +1519,8 @@ async def test_session_fields_reset_between_attempts(monkeypatch, service_log_re
     dropped = _only(service_log_records, "WS connection unavailable")
     assert dropped.frames == 1
     assert dropped.local_addr == "10.250.1.7:54321"
+    assert dropped.cf_ray == "a5a99a668950d873-MCI"
+    assert dropped.egress_ip == _TRACE_RESULT.ip
 
     rec = _only(service_log_records, "WS transport error")
     assert rec.session_s is None
@@ -1428,6 +1528,9 @@ async def test_session_fields_reset_between_attempts(monkeypatch, service_log_re
     assert rec.since_last_frame_s is None
     assert rec.local_addr is None
     assert rec.remote_addr is None
+    assert rec.cf_ray is None
+    assert rec.cf_colo is None
+    assert rec.egress_ip is None
 
 
 @pytest.mark.asyncio
@@ -1481,16 +1584,27 @@ async def test_unexpected_disconnect_sends_diag_to_sentry(monkeypatch, service_l
         SimpleNamespace(ws_url=_SECRET_URL, channel_shards=[["a"]]),
     )
     captured: list[tuple[BaseException, dict[str, Any]]] = []
-    monkeypatch.setattr(
-        connector_mod,
-        "capture_exception",
-        lambda exc, **kwargs: captured.append((exc, kwargs)),
-    )
+    connector = Connector(channels=["a"], receive_queue=asyncio.Queue(maxsize=10), name="shard-2")
+    # What the session's record held when the capture was made: ``_connect_once``
+    # starts the next attempt's record straight after.
+    egress_ips: list[str | None] = []
+
+    def _capture(exc: BaseException, **kwargs: Any) -> None:
+        captured.append((exc, kwargs))
+        egress_ips.append(connector._session_diag.egress_ip)
+
+    monkeypatch.setattr(connector_mod, "capture_exception", _capture)
 
     boom = RuntimeError(f"unexpected failure on {_SECRET_URL}")
     boom.__cause__ = ValueError(f"bad state for {_SECRET_URL}")
-    ws = _SessionWS([b"f1", b"f2"], end=boom)
-    connector = Connector(channels=["a"], receive_queue=asyncio.Queue(maxsize=10), name="shard-2")
+    # The lookup answers before the session dies, so the egress IP is on its record.
+    monkeypatch.setattr(egress, "lookup", _Lookup(result=_TRACE_RESULT))
+    ws = _SessionWS(
+        [b"f1", b"f2"],
+        end=boom,
+        pre_frame_delay_s=0.05,
+        response=_handshake("a5a99a668950d873-MCI"),
+    )
 
     await _run_attempts(monkeypatch, connector, [_ConnectCtx(ws)])
 
@@ -1507,6 +1621,12 @@ async def test_unexpected_disconnect_sends_diag_to_sentry(monkeypatch, service_l
     assert isinstance(ctx["since_last_frame_s"], float)
     assert ctx["local_addr"] == "10.250.1.7:54321"
     assert ctx["remote_addr"] == "104.18.24.1:443"
+    # The Cloudflare ray goes to Sentry with the rest; the egress IP is not in the context.
+    assert ctx["cf_ray"] == "a5a99a668950d873-MCI"
+    assert ctx["cf_colo"] == "MCI"
+    assert egress_ips == [_TRACE_RESULT.ip]  # the IP was on the record, so the checks below bite
+    assert "egress_ip" not in ctx
+    assert _TRACE_RESULT.ip not in json.dumps(kwargs["context"], default=str)
     assert _SECRET not in json.dumps(kwargs["context"], default=str)
     # No disconnect log line of its own: the catch-all reports via Sentry only.
     assert not [r for r in service_log_records if r.levelno >= logging.WARNING]
@@ -1548,6 +1668,7 @@ class _IdleWS:
 
     local_address = _LOCAL_ADDR
     remote_address = _REMOTE_ADDR
+    response = None
 
     def __init__(self, transport: _TransportStub) -> None:
         self.transport = transport
@@ -2154,6 +2275,7 @@ class _KillableWS:
 
     local_address = _LOCAL_ADDR
     remote_address = _REMOTE_ADDR
+    response = None
 
     def __init__(self) -> None:
         self.aborted = 0
@@ -2288,6 +2410,7 @@ class _EndedWS:
 
     local_address = _LOCAL_ADDR
     remote_address = _REMOTE_ADDR
+    response = None
 
     def __init__(self) -> None:
         self.aborted = 0
@@ -2394,3 +2517,421 @@ async def test_force_reconnect_reconnects_a_real_websockets_connection(
     (line,) = (r for r in service_log_records if r.getMessage() == "WS connection unavailable")
     assert line.forced == "stuck trade socket"
     assert line.exc_type == "ConnectionClosedError"
+
+
+# --- Cloudflare ray and egress trace -----------------------------------------
+#
+# Every session records which Cloudflare data centre it landed on (the handshake's
+# CF-RAY) and, from one /cdn-cgi/trace lookup, the address Cloudflare saw it come
+# from, so a drop's RST can be placed on Railway's side of the path or Cloudflare's.
+
+_RAY = "a5a99a668950d873-MCI"
+
+
+@pytest.mark.parametrize(
+    ("headers", "expected"),
+    [
+        ([("CF-RAY", _RAY)], (_RAY, "MCI")),
+        ([("cf-ray", _RAY)], (_RAY, "MCI")),  # the header name's case does not matter
+        ([("Cf-Ray", "0123456789abcdef-DFW")], ("0123456789abcdef-DFW", "DFW")),
+        ([("CF-RAY", "a-b-MCI")], ("a-b-MCI", "MCI")),  # the suffix is what follows the last dash
+        ([], (None, None)),  # no header
+        ([("CF-RAY", "")], (None, None)),
+        ([("CF-RAY", "a5a99a668950d873")], ("a5a99a668950d873", None)),  # no suffix
+        ([("CF-RAY", "MCI")], ("MCI", None)),  # no dash, so nothing is a suffix
+        ([("CF-RAY", "a5a99a668950d873-")], ("a5a99a668950d873-", None)),  # empty suffix
+        ([("CF-RAY", "a5a99a668950d873-mci")], ("a5a99a668950d873-mci", None)),  # lowercase
+        ([("CF-RAY", "a5a99a668950d873-MC")], ("a5a99a668950d873-MC", None)),  # too short
+        ([("CF-RAY", "a5a99a668950d873-MCIA")], ("a5a99a668950d873-MCIA", None)),  # too long
+        ([("CF-RAY", "a5a99a668950d873-M1I")], ("a5a99a668950d873-M1I", None)),  # not letters
+        # websockets' Headers.get raises on a repeated header; an odd header is None, not an error.
+        ([("CF-RAY", _RAY), ("CF-RAY", "0123456789abcdef-DFW")], (None, None)),
+    ],
+)
+def test_read_cf_ray_keeps_the_full_value_and_the_colo_only_when_it_is_one(
+    headers: list[tuple[str, str]], expected: tuple[str | None, str | None]
+) -> None:
+    import connector as connector_mod
+
+    ws = SimpleNamespace(response=Response(101, "Switching Protocols", Headers(headers)))
+
+    assert connector_mod._read_cf_ray(ws) == expected
+
+
+def test_read_cf_ray_without_a_handshake_response_is_none() -> None:
+    import connector as connector_mod
+
+    assert connector_mod._read_cf_ray(SimpleNamespace(response=None)) == (None, None)
+
+
+@pytest.mark.asyncio
+async def test_the_connected_line_carries_the_cf_ray_and_colo(
+    monkeypatch, service_log_records
+) -> None:
+    ws = _SessionWS([], response=_handshake(_RAY))
+    connector = Connector(channels=["a"], receive_queue=asyncio.Queue(maxsize=10), name="shard-4")
+
+    await _run_attempts(monkeypatch, connector, [_ConnectCtx(ws)])
+
+    rec = _only(service_log_records, "WS connected, awaiting messages")
+    assert rec.levelno == logging.INFO
+    assert rec.shard == "shard-4"
+    assert rec.cf_ray == _RAY
+    assert rec.cf_colo == "MCI"
+
+
+@pytest.mark.parametrize(
+    ("response", "cf_ray", "cf_colo"),
+    [
+        (_handshake(None), None, None),  # a response with no CF-RAY header
+        (None, None, None),  # no response at all
+        (_handshake("a5a99a668950d873-mci"), "a5a99a668950d873-mci", None),  # odd suffix
+    ],
+)
+@pytest.mark.asyncio
+async def test_a_missing_or_odd_ray_is_null_on_the_connected_line_and_the_session_goes_on(
+    monkeypatch,
+    service_log_records,
+    response: Response | None,
+    cf_ray: str | None,
+    cf_colo: str | None,
+) -> None:
+    queue: asyncio.Queue = asyncio.Queue(maxsize=10)
+    ws = _SessionWS([b"f1"], response=response)
+    connector = Connector(channels=["a"], receive_queue=queue, name="shard-4")
+
+    await _run_attempts(monkeypatch, connector, [_ConnectCtx(ws)])
+
+    rec = _only(service_log_records, "WS connected, awaiting messages")
+    assert rec.cf_ray == cf_ray
+    assert rec.cf_colo == cf_colo
+    assert queue.qsize() == 1  # the receive loop ran: nothing about the header stopped it
+
+
+@pytest.mark.parametrize(
+    ("end", "message"),
+    [
+        (None, "WS closed cleanly, reconnecting after grace"),
+        (
+            _closed_from(ConnectionResetError(errno.ECONNRESET, "reset")),
+            "WS connection unavailable",
+        ),
+        (OSError(errno.ETIMEDOUT, "timed out"), "WS transport error"),
+    ],
+    ids=["clean-close", "connection-closed", "transport-error"],
+)
+@pytest.mark.asyncio
+async def test_every_disconnect_line_carries_the_ray_colo_and_egress_ip(
+    monkeypatch, service_log_records, end: BaseException | None, message: str
+) -> None:
+    monkeypatch.setattr(egress, "lookup", _Lookup(result=_TRACE_RESULT))
+    ws = _SessionWS([b"f1"], end=end, pre_frame_delay_s=0.02, response=_handshake(_RAY))
+    connector = Connector(channels=["a"], receive_queue=asyncio.Queue(maxsize=10), name="shard-4")
+
+    await _run_attempts(monkeypatch, connector, [_ConnectCtx(ws)])
+
+    rec = _only(service_log_records, message)
+    assert rec.cf_ray == _RAY
+    assert rec.cf_colo == "MCI"
+    assert rec.egress_ip == "203.0.113.9"
+
+
+@pytest.mark.asyncio
+async def test_a_connect_that_never_opened_a_socket_starts_no_lookup(
+    monkeypatch, service_log_records, lookup: _Lookup
+) -> None:
+    connector = Connector(channels=["a"], receive_queue=asyncio.Queue(maxsize=10), name="shard-1")
+
+    await _run_attempts(
+        monkeypatch, connector, [_ConnectCtx(enter_exc=websockets.InvalidHandshake())]
+    )
+
+    assert lookup.urls == []
+    assert _only(service_log_records, "WS connection unavailable").egress_ip is None
+
+
+# --- the egress trace line ---
+
+
+async def _connect_session(monkeypatch, connector: Connector, ws: _SessionWS) -> None:
+    """Run one real ``_connect_once`` against ``ws`` until the session ends cleanly.
+
+    Unlike ``run``, nothing starts another attempt afterwards, so
+    ``connector._session_diag`` is still this session's record. It times out rather
+    than hangs if anything holds the session up.
+    """
+    import connector as connector_mod
+
+    async def _noop_subscribe(_ws) -> None:
+        return None
+
+    monkeypatch.setattr(connector_mod.websockets, "connect", lambda *_a, **_k: _ConnectCtx(ws))
+    monkeypatch.setattr(connector, "_subscribe_all", _noop_subscribe)
+    await asyncio.wait_for(connector._connect_once(), timeout=2.0)
+
+
+@pytest.mark.asyncio
+async def test_a_successful_lookup_logs_one_egress_trace_line_with_both_colos(
+    monkeypatch, service_log_records
+) -> None:
+    probe = _Lookup(result=_TRACE_RESULT)
+    monkeypatch.setattr(egress, "lookup", probe)
+    ws = _SessionWS([b"f1", b"f2", b"f3"], pre_frame_delay_s=0.02, response=_handshake(_RAY))
+    connector = Connector(channels=["a"], receive_queue=asyncio.Queue(maxsize=10), name="shard-4")
+
+    await _connect_session(monkeypatch, connector, ws)
+
+    rec = _only(service_log_records, "egress trace")
+    assert rec.levelno == logging.INFO
+    assert rec.shard == "shard-4"
+    assert rec.egress_ip == "203.0.113.9"
+    assert rec.trace_colo == "DFW"
+    assert rec.trace_loc == "US"
+    # The socket's own colo, next to the trace's: the trace is another connection.
+    assert rec.cf_colo == "MCI"
+    # Looked up once for the session, on the websocket's host, with no token in the URL.
+    assert probe.urls == ["https://api.unusualwhales.com/cdn-cgi/trace"]
+    assert settings.uw_api_key not in probe.urls[0]
+    # And kept on the session's record.
+    diag = connector._session_diag
+    assert (diag.egress_ip, diag.trace_colo, diag.trace_loc) == ("203.0.113.9", "DFW", "US")
+
+
+@pytest.mark.asyncio
+async def test_the_egress_trace_line_says_null_for_a_colo_or_loc_the_trace_did_not_give(
+    monkeypatch, service_log_records
+) -> None:
+    monkeypatch.setattr(egress, "lookup", _Lookup(result=egress.Trace("203.0.113.9", None, None)))
+    ws = _SessionWS([], pre_frame_delay_s=0.02, response=_handshake(None))
+    connector = Connector(channels=["a"], receive_queue=asyncio.Queue(maxsize=10), name="shard-4")
+
+    await _run_attempts(monkeypatch, connector, [_ConnectCtx(ws)])
+
+    rec = _only(service_log_records, "egress trace")
+    assert (rec.egress_ip, rec.trace_colo, rec.trace_loc, rec.cf_colo) == (
+        "203.0.113.9",
+        None,
+        None,
+        None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_lookup_still_running_at_the_drop_leaves_the_disconnect_ip_null(
+    monkeypatch, service_log_records, lookup: _Lookup
+) -> None:
+    ws = _SessionWS([b"f1"], end=_closed_from(None), pre_frame_delay_s=0.02)
+    connector = Connector(channels=["a"], receive_queue=asyncio.Queue(maxsize=10), name="shard-4")
+
+    await _run_attempts(monkeypatch, connector, [_ConnectCtx(ws)])
+
+    assert lookup.started.is_set()  # it was running, so the null is not for want of a lookup
+    assert _only(service_log_records, "WS connection unavailable").egress_ip is None
+    assert [r for r in service_log_records if r.getMessage() == "egress trace"] == []
+
+
+# --- a lookup that fails ---
+
+
+@pytest.fixture
+def sentry_events(monkeypatch) -> list[tuple[str, Any]]:
+    """Everything the connector or the rate limiter would send to Sentry."""
+    import connector as connector_mod
+
+    events: list[tuple[str, Any]] = []
+    monkeypatch.setattr(
+        sentry_setup, "capture_message", lambda *a, **k: events.append(("capture_message", a))
+    )
+    monkeypatch.setattr(
+        connector_mod, "capture_exception", lambda *a, **k: events.append(("capture_exception", a))
+    )
+    return events
+
+
+@pytest.mark.parametrize(
+    ("exc", "err"),
+    [
+        (TimeoutError(), None),
+        (egress.TraceError("HTTP 403"), "HTTP 403"),
+        (egress.TraceError("no valid ip line"), "no valid ip line"),
+        (aiohttp.ClientConnectionError("reset"), None),
+        (RuntimeError("unexpected"), None),
+    ],
+    ids=["timeout", "non-200", "garbled", "connection-error", "unexpected"],
+)
+@pytest.mark.asyncio
+async def test_a_failed_lookup_stores_nothing_and_logs_one_warning_with_the_error_type(
+    monkeypatch,
+    service_log_records,
+    sentry_events,
+    exc: BaseException,
+    err: str | None,
+) -> None:
+    monkeypatch.setattr(egress, "lookup", _Lookup(exc=exc))
+    queue: asyncio.Queue = asyncio.Queue(maxsize=10)
+    ws = _SessionWS([b"f1"], pre_frame_delay_s=0.02, response=_handshake(_RAY))
+    connector = Connector(channels=["a"], receive_queue=queue, name="shard-4")
+
+    await _connect_session(monkeypatch, connector, ws)
+
+    warning = _only(service_log_records, "egress trace lookup failed")
+    assert warning.levelno == logging.WARNING
+    assert warning.shard == "shard-4"
+    assert warning.exc_type == type(exc).__name__
+    assert warning.err == err
+    # Nothing stored, and no "egress trace" line.
+    diag = connector._session_diag
+    assert (diag.egress_ip, diag.trace_colo, diag.trace_loc) == (None, None, None)
+    assert [r for r in service_log_records if r.getMessage() == "egress trace"] == []
+    # A WARNING, never an error and never a Sentry event, and the session carried on.
+    assert [r for r in service_log_records if r.levelno >= logging.ERROR] == []
+    assert sentry_events == []
+    assert queue.qsize() == 1
+
+
+@pytest.mark.asyncio
+async def test_a_failed_lookup_leaves_the_disconnect_ip_null(
+    monkeypatch, service_log_records
+) -> None:
+    monkeypatch.setattr(egress, "lookup", _Lookup(exc=egress.TraceError("HTTP 403")))
+    ws = _SessionWS([b"f1"], pre_frame_delay_s=0.02, response=_handshake(_RAY))
+    connector = Connector(channels=["a"], receive_queue=asyncio.Queue(maxsize=10), name="shard-4")
+
+    await _run_attempts(monkeypatch, connector, [_ConnectCtx(ws)])
+
+    assert _only(service_log_records, "egress trace lookup failed")  # it failed, then:
+    line = _only(service_log_records, "WS closed cleanly, reconnecting after grace")
+    assert line.egress_ip is None
+    assert line.cf_ray == _RAY
+
+
+@pytest.mark.asyncio
+async def test_a_shard_whose_lookups_keep_failing_logs_one_warning_per_window(
+    monkeypatch, service_log_records
+) -> None:
+    """Two sessions of one shard fail inside the rate limit's window: one line. Another
+    shard failing in the same window still gets its own, since the key is the shard."""
+    monkeypatch.setattr(egress, "lookup", _Lookup(exc=TimeoutError()))
+
+    def sessions() -> list[_ConnectCtx]:
+        return [
+            _ConnectCtx(_SessionWS([], pre_frame_delay_s=0.02, response=_handshake(_RAY)))
+            for _ in range(2)
+        ]
+
+    for name in ("conn0", "conn1"):
+        connector = Connector(channels=["a"], receive_queue=asyncio.Queue(maxsize=10), name=name)
+        await _run_attempts(monkeypatch, connector, sessions())
+
+    warnings = [r for r in service_log_records if r.getMessage() == "egress trace lookup failed"]
+    assert [r.shard for r in warnings] == ["conn0", "conn1"]
+
+
+# --- the lookup stays off the connect path ---
+
+
+def _egress_tasks() -> list[asyncio.Task]:
+    return [t for t in asyncio.all_tasks() if t.get_name().startswith("egress-trace:")]
+
+
+@asynccontextmanager
+async def _loop_reports() -> AsyncIterator[list[dict[str, Any]]]:
+    """What the event loop is told of a problem while the block runs and as it ends.
+
+    A task that ended with an exception nobody retrieved is reported when it is
+    garbage collected ("Task exception was never retrieved"), so the block ends
+    with a collection.
+    """
+    loop = asyncio.get_running_loop()
+    reports: list[dict[str, Any]] = []
+    previous = loop.get_exception_handler()
+    loop.set_exception_handler(lambda _loop, context: reports.append(context))
+    try:
+        yield reports
+        gc.collect()
+        await asyncio.sleep(0)
+    finally:
+        loop.set_exception_handler(previous)
+
+
+@pytest.mark.asyncio
+async def test_a_lookup_that_never_answers_delays_neither_the_connect_line_nor_the_receive_loop(
+    monkeypatch, service_log_records, lookup: _Lookup
+) -> None:
+    """The lookup waits on the network for up to five seconds. If anything awaited it,
+    the session would not reach its receive loop, and this would time out."""
+    queue: asyncio.Queue = asyncio.Queue(maxsize=10)
+    ws = _SessionWS([b"f1", b"f2", b"f3"], response=_handshake(_RAY))
+    connector = Connector(channels=["a"], receive_queue=queue, name="shard-4")
+
+    await _connect_session(monkeypatch, connector, ws)
+
+    assert lookup.started.is_set()  # the lookup was started, and never answered
+    _only(service_log_records, "WS connected, awaiting messages")
+    assert queue.qsize() == 3
+
+
+@pytest.mark.asyncio
+async def test_the_session_ending_cancels_its_lookup_and_leaves_no_task_or_warning(
+    monkeypatch, service_log_records, lookup: _Lookup
+) -> None:
+    ws = _SessionWS([b"f1"], end=_closed_from(None), pre_frame_delay_s=0.02)
+    connector = Connector(channels=["a"], receive_queue=asyncio.Queue(maxsize=10), name="shard-4")
+
+    async with _loop_reports() as reports:
+        await _run_attempts(monkeypatch, connector, [_ConnectCtx(ws)])
+
+    assert lookup.started.is_set()
+    assert lookup.cancelled == 1  # the cancel reached the lookup
+    assert _egress_tasks() == []
+    assert reports == []  # no "Task exception was never retrieved", no unclosed session
+    assert [r for r in service_log_records if r.getMessage().startswith("egress trace")] == []
+
+
+@pytest.mark.asyncio
+async def test_a_shutdown_cancel_cancels_the_lookup_and_still_stops_the_connector(
+    monkeypatch, service_log_records, lookup: _Lookup
+) -> None:
+    ws = _SessionWS([], pre_frame_delay_s=3600)  # the session idles until shutdown
+    connector = Connector(channels=["a"], receive_queue=asyncio.Queue(maxsize=10), name="shard-4")
+    _script_connects(monkeypatch, connector, [_ConnectCtx(ws)])
+
+    async with _loop_reports() as reports:
+        task = asyncio.create_task(connector.run())
+        await _until(lambda: lookup.started.is_set())
+
+        task.cancel()  # main._shutdown cancelling the connector task
+        done, _ = await asyncio.wait({task}, timeout=2.0)
+
+    assert task in done
+    assert task.cancelled()  # the cancel was not swallowed into a reconnect
+    assert lookup.cancelled == 1
+    assert _egress_tasks() == []
+    assert reports == []
+    assert [r for r in service_log_records if r.getMessage().startswith("egress trace")] == []
+
+
+@pytest.mark.asyncio
+async def test_a_reconnect_looks_up_again_and_the_old_lookup_ends_with_its_session(
+    monkeypatch, service_log_records, lookup: _Lookup
+) -> None:
+    first, second = _KillableWS(), _KillableWS()
+    connector = Connector(
+        channels=["flow-alerts"], receive_queue=asyncio.Queue(maxsize=10), name="conn0"
+    )
+    _script_connects(monkeypatch, connector, [_ConnectCtx(first), _ConnectCtx(second)])
+    task = asyncio.create_task(connector.run())
+    await _until(lambda: state.connections.get("conn0") is True)
+    (first_lookup,) = _egress_tasks()
+
+    assert connector.force_reconnect("stuck trade socket") is True
+
+    await _until(lambda: connector._ws is second and state.connections.get("conn0") is True)
+    assert first_lookup.cancelled()  # it ended with the first session
+    (second_lookup,) = _egress_tasks()
+    assert second_lookup is not first_lookup  # the new session has a lookup of its own
+    await _until(lambda: len(lookup.urls) == 2)  # and it runs: one call per session
+    second.transport.abort()
+    await _end(task)
+
+    assert _egress_tasks() == []
