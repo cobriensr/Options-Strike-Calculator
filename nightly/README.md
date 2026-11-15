@@ -555,9 +555,9 @@ waits out its 60 s lock timeout rolls back whole and is deferred instead (below)
 promotion whose connection drops is judged by the `active` pointer, read on a fresh
 connection: if it names the shadow, the commit was applied and only its acknowledgement
 was lost, so the step counts and announces it as promoted (the `promoted` notice then
-carries `commit_ack = lost` and no row counts, and `rows_rescored` is 0: take the total
-from the snapshot rows, step 2 of the undo). If it does not, or it cannot be read, the
-original error fails the step.
+carries `commit_ack = lost` and no row counts, and `rows_rescored` is 0: the snapshot
+rows' own count, `total` in step 2 of the undo, is the one to use). If it does not, or it
+cannot be read, the original error fails the step.
 
 **Counts.** Every result carries all of these, zero or not, in the `step lottery-refit`
 line and in the `counts` extra of the step alerts. The step also logs one line
@@ -602,13 +602,15 @@ under that version's own feed cutoffs.
 
 The training window is 90 days (`TRAIN_WINDOW_DAYS`), the feed cutoffs are matched over
 the last 20 sessions (`FEED_CUTOFF_MATCH_SESSIONS`), and the match searches cutoffs up
-to 40 (`FEED_CUTOFF_SEARCH_MAX`). Tier 2 is searched from 6 and tier 1 from 7
-(`FEED_CUTOFF_FLOOR` is 6, one above the largest inversion bonus, 5). A feed cutoff of 5
-or less could tier a fire with no score (the feed counts it as `score 0` plus its bonus),
-which the gate counts as tier 3, so the gate would judge a tiering the feed does not
-show. A candidate that cannot match the active version's tier shares above that floor
-gets high cutoffs, which typically leave its tier 1 share under the band's 1%, so it is
-rejected at creation for that.
+to 40 (`FEED_CUTOFF_SEARCH_MAX`). Tier 2 is searched from 8 and tier 1 from 9
+(`FEED_CUTOFF_FLOOR` is 8). The feed's SQL floor gives a fire with no score a qas of up
+to 7: the score counts as 0, the fire-count adjustment adds up to 2
+(`FIRE_COUNT_ADJUSTMENT_MAX`, the largest value migration #167's trigger writes) and the
+inversion bonus up to 5. The gate counts such a fire as tier 3. A feed cutoff of 7 or
+less could therefore tier a fire the gate did not count, and the gate would judge a
+tiering the feed does not show. A candidate that cannot match the active version's tier
+shares above that floor gets high cutoffs, which typically leave its tier 1 share under
+the band's 1%, so it is rejected at creation for that.
 
 **Notices.** Six fixed titles, all with the tags `service=nightly`,
 `step=lottery-refit`, `refit` (the kind) and `version`. The extras are aggregates only:
@@ -708,8 +710,9 @@ such as `1, 2`.
    SELECT version FROM lottery_score_pointers WHERE name = 'active';
    ```
 
-2. Find the promotion's snapshot rows. `total` must equal `rows_rescored` in that
-   night's `step lottery-refit` line (or its `nightly refit promoted` notice):
+2. Find the promotion's snapshot rows. `total` is the snapshot's own fire count,
+   `sum(cardinality(fire_ids))`. Step 5 checks the restore against it, never against
+   `rows_rescored`, which is 0 after a lost commit acknowledgement:
 
    ```sql
    SELECT id, cardinality(fire_ids) AS fires, sum(cardinality(fire_ids)) OVER () AS total
@@ -833,14 +836,22 @@ against `<previous>`'s cutoffs, can be off in either direction until then. `take
 unaffected, as in any promotion.
 
 _The evening completion._ After 24:00 UTC, and not during a nightly run, finish it with
-the undo's steps, changed in two places:
+the undo's steps, changed in two places (steps 2, 3 and 6 are as written):
 
 - Step 1 checks the other way: stop unless `active` returns `<previous>`, which the
   pointer-only move already made so. Step 2 (the snapshot rows and their `total`) is
   as written.
-- Step 4 skips the pointer UPDATE. Run only the fires UPDATE, in one interactive `psql`
-  session with `BEGIN`, with its `f.score_version = '<promoted>'` guard, and in step 5
-  compare its count with `total` before `COMMIT`, or `ROLLBACK` if they differ.
+- Step 4 replaces the pointer UPDATE with a lock on the pointer row, so the transaction
+  keeps the order `rescore_all` locks in (the pointer, then the fires) and step 1's
+  check holds until the commit. In the same interactive `psql` session, after `BEGIN`:
+
+  ```sql
+  SELECT version FROM lottery_score_pointers WHERE name = 'active' FOR UPDATE;
+  ```
+
+  It must return `<previous>`; otherwise run `ROLLBACK;`. Then run the fires UPDATE
+  with its `f.score_version = '<promoted>'` guard. In step 5 compare its count with
+  `total` before `COMMIT`, or `ROLLBACK` if they differ.
 
 Then step 6 as written, `--version <previous> --only-tag <promoted> --write`: it repairs
 the fires inserted under `<promoted>` since the promotion, which are in no snapshot row.
@@ -874,10 +885,12 @@ feed's scores and tiers.
    `idle_in_transaction_session_timeout`, so a process lost with its connection still
    open is rolled back by the server two minutes later instead of holding the pointer
    and the fire locks into the market session.
-5. On the promotion night check that the snapshot rows' fire count equals
-   `rows_rescored`, `active` names the new version and `takeit` the seed, the next
-   session's fires carry the new `score_version`, and the `nightly refit promoted`
-   email arrived. To turn it off again, flip the constant back the same way.
+5. On the promotion night check that the promotion's snapshot rows exist, with the fire
+   count `total` of step 2 of the undo (the snapshot's own count, never `rows_rescored`,
+   which is 0 after a lost commit acknowledgement), that `active` names the new version
+   and `takeit` the seed, that the next session's fires carry the new `score_version`,
+   and that the `nightly refit promoted` email arrived. To turn it off again, flip the
+   constant back the same way.
 
 **Vercel side.** The crons that score fires load the `active` and `takeit` versions
 through `api/_lib/lottery-weights-loader.ts`. When the store cannot give a valid pair

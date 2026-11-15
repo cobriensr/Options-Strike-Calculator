@@ -811,13 +811,13 @@ The description cites the spec and D5, says NULL `score_version` means "scored b
      - `execute_values` UPDATEs at `WRITE_ROWS` per statement: `… SET score = v.score, score_version = v.ver FROM (VALUES %s) v(id, score, ver, old) WHERE f.id = v.id AND f.score IS NOT DISTINCT FROM v.old RETURNING f.id`;
      - a returned count below the batch → `ConcurrentScoreWriter`.
   4. If `expect_active` is set:
-     - `UPDATE lottery_score_versions SET status = 'promoted', decided_at = now() WHERE version = %s AND status IN ('shadow','passed') RETURNING version`;
+     - `UPDATE lottery_score_versions SET status = 'promoted', decided_at = now() WHERE version = %s AND status = 'shadow' RETURNING version` (planned as `IN ('shadow','passed')`; narrowed to a shadow in the final fix wave: a `passed` version is a record, not a candidate);
      - `UPDATE lottery_score_pointers SET version = %s, updated_at = now() WHERE name = 'active' AND version = %s RETURNING name`.
 
      Each must return one row, else `PointerMoved`.
   5. `dry_run=True` runs reads only and returns the same counts.
 - **CLI:**
-  - `--version` (default: the active pointer), `--reason` (default `manual`), `--write`;
+  - `--version` (default: the active pointer), `--only-tag VERSION` (added in the final fix wave: rescore only the fires whose `score_version` equals it, for repairs; refused with a promotion), `--reason` (default `manual`), `--write`;
   - it is a dry run unless `--write` is given, so the old `make refit` line, which passes no flag, writes nothing;
   - it never moves a pointer;
   - `.env.local` is optional: the CLI loads it with `_cli_paths.load_env_file` (phase 2's Task 2b);
