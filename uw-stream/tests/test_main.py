@@ -994,6 +994,35 @@ def test_build_handlers_keeps_shared_handler_names_out_of_channel_state(
     assert handlers["option_trades:SPY"] is not handlers["option_trades:TSLA"]
 
 
+def test_build_handlers_logs_each_handlers_own_queue_size_and_writers(
+    _isolated_channel_handler_state, service_log_records
+):
+    """The shared option-trade handler holds 200,000 payloads and writes two
+    batches at once; every other handler keeps ``ws_queue_size`` and one writer.
+    Nothing else at boot shows the capacity a handler really has, so each
+    unique handler logs it as it is built, once however many channels share it.
+    """
+    main._build_handlers(
+        [
+            "flow-alerts",
+            "option_trades:SPY",
+            "option_trades:TSLA",
+            "option_trades:NVDA",
+            "net_flow:TSLA",
+        ]
+    )
+
+    built = [r for r in service_log_records if r.getMessage() == "handler built"]
+    default_size = main.settings.ws_queue_size
+    assert {r.handler: (r.queue_size, r.flush_concurrency) for r in built} == {
+        "flow-alerts": (default_size, 1),
+        "option_trades:SPY": (default_size, 1),
+        "option_trades": (200_000, 2),
+        "net_flow": (default_size, 1),
+    }
+    assert len(built) == 4  # option_trades:TSLA and :NVDA share one handler, one line
+
+
 # --- drop reporter wiring (P2) -----------------------------------------------
 
 
@@ -1039,6 +1068,23 @@ async def test_run_starts_drop_reporter_and_shutdown_cancels_it(_reset_notify_st
     await asyncio.wait_for(main._run(), timeout=_RUN_TIMEOUT_S)
 
     assert events == ["started", "cancelled"]
+
+
+@pytest.mark.asyncio
+async def test_the_boot_line_names_the_setting_as_the_default_queue_size(
+    _reset_notify_state, service_log_records, monkeypatch
+):
+    """A handler can set its own queue size, so WS_QUEUE_SIZE is the default,
+    not "the" queue size; ``_build_handlers`` logs each handler's real one.
+    """
+    _stub_pipeline(monkeypatch)
+    _sigterm_once_run_is_waiting(monkeypatch)
+
+    await asyncio.wait_for(main._run(), timeout=_RUN_TIMEOUT_S)
+
+    (boot,) = [r for r in service_log_records if r.getMessage() == "uw-stream starting"]
+    assert boot.default_queue_size == main.settings.ws_queue_size
+    assert not hasattr(boot, "queue_size")
 
 
 @pytest.mark.asyncio

@@ -133,7 +133,21 @@ def _build_handlers(channels: list[str]) -> dict[str, Handler]:
                 "at Settings() construction — file a bug."
             ) from exc
         if handler_cls not in instances:
-            instances[handler_cls] = handler_cls()
+            instance = handler_cls()
+            instances[handler_cls] = instance
+            # One line per handler, with the capacity it really has: a handler may
+            # set its own queue size and flush concurrency (the shared option-trade
+            # handler holds 200,000 and writes two batches at once), so the boot
+            # line for the WS_QUEUE_SIZE setting does not say.
+            log.info(
+                "handler built",
+                extra={
+                    "handler": instance.name,
+                    "first_channel": ch,
+                    "queue_size": instance.queue.maxsize,
+                    "flush_concurrency": instance.flush_concurrency,
+                },
+            )
         selected[ch] = instances[handler_cls]
         state.channel(ch).subscribed = False
     return selected
@@ -145,7 +159,10 @@ async def _run() -> None:
         "uw-stream starting",
         extra={
             "channels": settings.channels,
-            "queue_size": settings.ws_queue_size,
+            # The WS_QUEUE_SIZE default. A handler may set its own (the shared
+            # option-trade handler holds 200,000): _build_handlers logs each
+            # handler's real capacity.
+            "default_queue_size": settings.ws_queue_size,
             "batch_size": settings.ws_batch_size,
             "batch_interval_ms": settings.ws_batch_interval_ms,
             "policy": settings.ws_backpressure_policy,
