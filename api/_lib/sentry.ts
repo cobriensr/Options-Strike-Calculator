@@ -8,6 +8,7 @@
 import * as Sentry from '@sentry/node';
 import type { Event } from '@sentry/node';
 import { optionalEnv } from './env.js';
+import { uw429Kind } from './uw-429-kind.js';
 
 const FILTERED = '[Filtered]';
 
@@ -292,20 +293,23 @@ Sentry.init({
     // ['uw-api-5xx', '<status>'] keeps the issue count proportional to
     // the failure mode rather than to caller diversity.
     //
-    // A thrown 429 collapses the same way, to one ['uw-api-429'] issue: it
+    // A thrown 429 collapses the same way, to one issue per limit sub-type,
+    // ['uw-api-429', 'concurrency' | 'per-minute' | 'other'] (uw429Kind): it
     // is the same upstream condition whichever cron hit it, and each cron's
     // own stack opened its own issue (SENTRY-EMERALD-DESERT-7Y, 117,559
-    // events, and G6). The `UW 429: retries exhausted` warning is a message
-    // event with no exception and its own fingerprint, so it is untouched.
-    // Other 4xx (auth, not found) keep default fingerprinting: their bodies
-    // carry semantic differences worth distinguishing.
+    // events, and G6). The sub-type keeps a new per-minute or daily 429 out of
+    // the ongoing concurrency issue, where it would raise no new-issue alert.
+    // The `UW 429: retries exhausted` warning is a message event with no
+    // exception and its own fingerprint, so it is untouched. Other 4xx (auth,
+    // not found) keep default fingerprinting: their bodies carry semantic
+    // differences worth distinguishing.
     const uwMessage = event.exception?.values?.[0]?.value;
     if (typeof uwMessage === 'string') {
       const match = uwMessage.match(/^UW API (5\d\d):/);
       if (match?.[1]) {
         event.fingerprint = ['uw-api-5xx', match[1]];
       } else if (/^UW API 429:/.test(uwMessage)) {
-        event.fingerprint = ['uw-api-429'];
+        event.fingerprint = ['uw-api-429', uw429Kind(uwMessage)];
       }
     }
     return event;

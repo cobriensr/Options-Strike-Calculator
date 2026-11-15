@@ -576,26 +576,37 @@ describe('Sentry.init beforeSend', () => {
     },
   );
 
-  it('pins every thrown UW 429 to one fingerprint, whatever its body', () => {
-    // uwFetch's message carries the upstream body, which differs per limit
-    // sub-type and per call; the default fingerprint opened one issue per
-    // cron (SENTRY-EMERALD-DESERT-7Y had 117,559 events, and 7Y's siblings).
-    const concurrent = {
-      exception: {
-        values: [{ value: 'UW API 429: {"message":"Too many concurrent"}' }],
-      },
-    };
-    const perMinute = {
-      exception: {
-        values: [{ value: 'UW API 429: rate limit of 120 in 60 seconds' }],
-      },
-    };
-    const emptyBody = { exception: { values: [{ value: 'UW API 429: ' }] } };
-    for (const event of [concurrent, perMinute, emptyBody]) {
+  it.each([
+    [
+      'concurrency',
+      'the older concurrent body',
+      'UW API 429: {"message":"Too many concurrent"}',
+    ],
+    [
+      'concurrency',
+      'the in-flight body on issues 7Y and G6',
+      'UW API 429: {"error":"Too many requests in flight. Your account can have 3 API requests running at a time across all of its API tokens, and at least 3 were already running when this one arrived. This is a tempora',
+    ],
+    [
+      'per-minute',
+      'the per-minute body',
+      'UW API 429: rate limit of 120 in 60 seconds',
+    ],
+    ['other', 'an empty body', 'UW API 429: '],
+    ['other', 'a bare "Too Many Requests"', 'UW API 429: Too Many Requests'],
+  ])(
+    'pins a thrown UW 429 to ["uw-api-429", "%s"] (%s)',
+    (kind, _label, message) => {
+      // uwFetch's message carries the upstream body, which differs per limit
+      // and per call; the default fingerprint opened one issue per cron
+      // (SENTRY-EMERALD-DESERT-7Y had 117,559 events, and 7Y's siblings). One
+      // fingerprint per sub-type keeps a new per-minute or daily 429 from
+      // joining the ongoing concurrency issue and sending no new-issue alert.
+      const event = { exception: { values: [{ value: message }] } };
       const result = beforeSend!(event) as { fingerprint?: string[] };
-      expect(result.fingerprint).toEqual(['uw-api-429']);
-    }
-  });
+      expect(result.fingerprint).toEqual(['uw-api-429', kind]);
+    },
+  );
 
   it('leaves the exhausted-retries message event on its own fingerprint', () => {
     // metrics.uwRateLimitExhausted sets this fingerprint on a message event
