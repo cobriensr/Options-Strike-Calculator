@@ -431,7 +431,13 @@ describe('runRescore when the weights store cannot be read', () => {
 
 describe('countScope', () => {
   it('maps the one count row to the scope counts', async () => {
-    const sql = vi.fn(async () => [
+    // countScope calls `sql` as a tagged template: (strings, ...values).
+    const sql = vi.fn<
+      (
+        strings: TemplateStringsArray,
+        since: string,
+      ) => Promise<Array<Record<string, number>>>
+    >(async () => [
       { null_score_with_flow: 4, null_score_no_flow: 1, scored: 7 },
     ]);
 
@@ -542,19 +548,53 @@ describe('formatReport', () => {
     );
   });
 
+  const nothingToScore: RescoreResult['plan'] = {
+    ...base.plan,
+    toScore: 0,
+    byDate: new Map(),
+    byPreviousVersion: new Map(),
+  };
+
   it('says so when there is nothing to score', () => {
-    const text = formatReport({
-      ...base,
-      plan: {
-        ...base.plan,
-        toScore: 0,
-        byDate: new Map(),
-        byPreviousVersion: new Map(),
-      },
-    });
+    const text = formatReport({ ...base, plan: nothingToScore });
 
     expect(text).toContain('Nothing to score.');
     expect(text).not.toContain('Rows to score by fire date');
     expect(text).not.toContain('Rows to score by the score_version');
+  });
+
+  it('says so in an apply too, and does not claim scores were written (a second --apply)', () => {
+    const text = formatReport({
+      ...base,
+      apply: true,
+      plan: nothingToScore,
+      written: 0,
+      undoFile: null,
+    });
+
+    expect(text).toContain('APPLY: nothing was written.');
+    expect(text).not.toContain('scores were written');
+    expect(text).toContain('Rows written: 0');
+    expect(text).toContain('Nothing to score.');
+    expect(text).not.toContain('WARNING');
+    expect(text).not.toContain('Undo file');
+  });
+
+  it('does not claim scores were written when another writer took every planned row', () => {
+    const text = formatReport({
+      ...base,
+      apply: true,
+      written: 0,
+      undoFile: 'u.json',
+    });
+
+    expect(text).toContain('APPLY: nothing was written.');
+    expect(text).not.toContain('scores were written');
+    expect(text).toContain('Rows written: 0');
+    expect(text).toContain(
+      'WARNING: 968 planned rows were scored or tagged by another writer',
+    );
+    // Rows were planned, so this is not the "nothing to score" case.
+    expect(text).not.toContain('Nothing to score.');
   });
 });

@@ -555,8 +555,13 @@ describe('runRescore against lottery_finder_fires', () => {
       toScore: 0,
       stayNull: 1,
     });
-    expect(formatReport(second)).toContain('APPLY: scores were written.');
-    expect(formatReport(second)).toContain('Rows written: 0');
+    // The headline follows the rows written, not the flag, so it must not say
+    // that scores were written. Nothing was left to score, and it says that.
+    const report = formatReport(second);
+    expect(report).toContain('APPLY: nothing was written.');
+    expect(report).not.toContain('scores were written');
+    expect(report).toContain('Rows written: 0');
+    expect(report).toContain('Nothing to score.');
   });
 
   it('picks up a row whose flow was filled after a first run, and leaves the rows the first run scored', async () => {

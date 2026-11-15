@@ -580,13 +580,25 @@ export async function runRescore(opts: {
   };
 }
 
+/**
+ * The first line follows the rows written, not the --apply flag: a second
+ * --apply writes nothing, and a run that lost every row to another writer
+ * wrote nothing, and neither may say that scores were written.
+ */
+function headline(result: RescoreResult): string {
+  if (!result.apply) {
+    return 'DRY RUN: nothing was written. Re-run with --apply to write.';
+  }
+  return result.written > 0
+    ? 'APPLY: scores were written.'
+    : 'APPLY: nothing was written.';
+}
+
 export function formatReport(result: RescoreResult): string {
   const { before, after, plan } = result;
   const projected = result.apply ? '' : ' (projected)';
   const lines = [
-    result.apply
-      ? 'APPLY: scores were written.'
-      : 'DRY RUN: nothing was written. Re-run with --apply to write.',
+    headline(result),
     `Scope: lottery_finder_fires, date >= ${result.since}, dte 0 to 3; scored with the weights of the active version, ${result.version}, and tagged with it in score_version.`,
     '',
     'Before:',
@@ -630,8 +642,7 @@ export function formatReport(result: RescoreResult): string {
       );
     }
     if (result.undoFile != null) lines.push(`Undo file: ${result.undoFile}`);
-  } else if (plan.toScore === 0) {
-    lines.push('', 'Nothing to score.');
   }
+  if (plan.toScore === 0) lines.push('', 'Nothing to score.');
   return lines.join('\n');
 }
