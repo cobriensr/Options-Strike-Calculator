@@ -638,9 +638,11 @@ class Connector:
         and logs one "egress trace" line. That line names the trace's colo and the
         socket's own: the trace is a separate TCP connection, so the two can differ.
 
-        A failure (timeout, a refused or reset connection, a non-200, a body with no
-        ``ip=``) stores nothing and logs one rate-limited WARNING naming the shard and
-        the error's type, and the disconnect line says ``egress_ip: null``. No retry:
+        A failure (timeout, a refused or reset connection, a non-200, a body over the
+        4 KiB cap, a body with no valid ``ip=``) stores nothing and logs one
+        rate-limited WARNING naming the shard and the error's type, and the disconnect
+        line says ``egress_ip: null``. A valid ``ip=`` is an address with no IPv6 scope
+        id: ``fe80::1%eth0`` is rejected like any other non-address. No retry:
         the next session looks again, and the lookup is a diagnostic, so it never
         becomes a Sentry event (the logging integration sends no warnings, and nothing
         here captures). Rate-limited per shard (the shard names are a closed set), so
@@ -661,8 +663,9 @@ class Connector:
                 extra={
                     "shard": self.name,
                     "exc_type": type(exc).__name__,
-                    # Our own fixed text for a non-200 or a body with no ip; the
-                    # network's errors are named by type alone.
+                    # Our own fixed text for a non-200, a body over the cap or a body
+                    # with no valid ip (including an IPv6 scope id); the network's
+                    # errors are named by type alone.
                     "err": str(exc) if isinstance(exc, egress.TraceError) else None,
                 },
             )

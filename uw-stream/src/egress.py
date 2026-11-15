@@ -51,9 +51,11 @@ _LOC = re.compile(r"[A-Z0-9]{2}")
 
 
 class TraceError(Exception):
-    """The trace answered, but not with a trace: a non-200, or no usable ``ip=``.
+    """The trace answered, but not with a trace: a non-200, a body over the cap, or no
+    usable ``ip=`` (missing, not an address, or an IPv6 address with a scope id).
 
-    The message is fixed text (a status or a missing field), safe to log.
+    The message is fixed text (a status, "body too large" or "no valid ip line"),
+    safe to log.
     """
 
 
@@ -90,8 +92,9 @@ async def lookup(url: str) -> Trace:
     """GET the trace at ``url`` and return what it reports.
 
     Raises ``TraceError`` for a non-200, a body over ``_MAX_BODY_BYTES`` or a body with
-    no valid ``ip=``, and lets the network's own errors through: ``TimeoutError`` past
-    ``_TIMEOUT_S``, and an ``aiohttp.ClientError`` for a refused or reset connection.
+    no valid ``ip=`` (missing, not an address, or an IPv6 address with a scope id), and
+    lets the network's own errors through: ``TimeoutError`` past ``_TIMEOUT_S``, and an
+    ``aiohttp.ClientError`` for a refused or reset connection.
     A redirect is not followed, so it is a non-200. The status is checked before the
     body is read: a block page can echo an ``ip=`` of its own.
 

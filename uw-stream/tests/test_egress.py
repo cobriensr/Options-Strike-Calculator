@@ -250,15 +250,28 @@ async def test_a_body_past_the_size_cap_is_an_error_and_the_client_stops_reading
     assert sent < total_chunks * len(chunk) // 16
 
 
+def _trace_of_size(size: int) -> bytes:
+    """A trace padded with one ``pad=`` line to exactly ``size`` bytes."""
+    padding = size - len(_TRACE) - len("pad=\n")
+    body = (_TRACE + "pad=" + "x" * padding + "\n").encode()
+    assert len(body) == size
+    return body
+
+
 @pytest.mark.asyncio
-async def test_a_body_just_under_the_cap_is_still_read() -> None:
-    """The cap is on the body, not on a trace: padding up to it parses as before."""
-    body = _TRACE + "pad=" + "x" * 1000 + "\n"
-    assert len(body) < egress._MAX_BODY_BYTES
-    async with _serve(_reply(body)) as url:
+async def test_a_body_of_exactly_the_cap_is_still_read() -> None:
+    """The cap is on the body, not on a trace: a body of ``_MAX_BODY_BYTES`` parses."""
+    async with _serve(_reply(_trace_of_size(egress._MAX_BODY_BYTES))) as url:
         trace = await egress.lookup(url)
 
     assert trace == egress.Trace(ip="203.0.113.9", colo="MCI", loc="US")
+
+
+@pytest.mark.asyncio
+async def test_a_body_one_byte_over_the_cap_is_an_error() -> None:
+    async with _serve(_reply(_trace_of_size(egress._MAX_BODY_BYTES + 1))) as url:
+        with pytest.raises(egress.TraceError, match="too large"):
+            await egress.lookup(url)
 
 
 @pytest.mark.asyncio
