@@ -187,14 +187,6 @@ interface FireRow {
   // round-tripped within an hour gets demoted in the panel.
   round_trip_net_pct: DbNullableNumeric;
   round_trip_score_deduct: number | null;
-  // Fire-count score adjustment (migration #167). Stored column
-  // maintained by trigger on INSERT — the per-chain-day bucket map
-  // (1→-3, 2-3→-1, 4-7→0, 8-15→+1, ≥16→+2) is applied at SQL level
-  // rather than at API read time. Folded into the displayed `score`
-  // field below; NOT used in the feed's ORDER BY (which sorts on the
-  // raw `f.score` column to keep fire positions frozen post-fire).
-  // Still part of the (now-unused) `combined_score` GENERATED column.
-  fire_count_score_adjustment: number;
   // Gamma at trigger time (migration #168). Captured by the detect
   // cron from raw_payload->>'gamma'. NULL on rows inserted before
   // migration #168 lands. Folded into the displayed `score` field
@@ -332,16 +324,21 @@ const num = (v: DbNullableNumeric): number | null =>
  * Build the DISPLAYED quality-adjusted score (qas) SQL EXPRESSION TEXT that
  * the row badge derives via {@link qualityAdjustedScore} + tierFromQas.
  *
- *   qas = GREATEST(0, <p>score + <p>round_trip_score_deduct + <p>fire_count_score_adjustment)
+ *   qas = GREATEST(0, <p>score + <p>round_trip_score_deduct)
  *         + INVERSION_BONUS_CASE(s.inversion_quintile)
  *
  * This is the EFFECTIVE pre-inversion score POST-Fix-B (read-time gamma
  * double-count removed — gamma is already credited via the V2 gamma-quintile
- * weight baked into the stored score) PLUS the inversion bonus. The
- * pre-inversion term equals GREATEST(0, score + round_trip_score_deduct +
- * fire_count_score_adjustment); note this is the combined_score GENERATED
- * column MINUS its gamma CASE term (the read-time gamma was dropped here but
- * the stored column still carries it — see the Fix-B note in toLotteryFire).
+ * weight baked into the stored score) PLUS the inversion bonus. There is no
+ * fire-count term: the fire-count score adjustment was retired on 2026-11-15
+ * (spec 2026-11-15-retire-lottery-fire-count-adjustment.md), so the qas does
+ * not depend on how many times a chain has fired. The pre-inversion term
+ * equals the combined_score GENERATED column MINUS its gamma CASE term.
+ *
+ * The chip strip (api/lottery-finder-ticker-counts.ts) and the detector's
+ * feed-tier monitor (api/cron/detect-lottery-fires.ts) compute this same
+ * expression by hand; api/__tests__/lottery-qas-sql.ts holds all three to one
+ * text.
  *
  * `fireAlias` is the raw column prefix (`f.`, `ranked.`, or `''` for the count
  * CTE), whitelisted + spliced as a raw identifier prefix (never free
@@ -374,8 +371,7 @@ function qasExprText(fireAlias: QasFireAlias): string {
   }
   return (
     `(GREATEST(0, COALESCE(${fireAlias}score, 0) ` +
-    `+ COALESCE(${fireAlias}round_trip_score_deduct, 0) ` +
-    `+ COALESCE(${fireAlias}fire_count_score_adjustment, 0)) ` +
+    `+ COALESCE(${fireAlias}round_trip_score_deduct, 0)) ` +
     `+ ${INVERSION_BONUS_CASE_SQL})`
   );
 }
@@ -753,7 +749,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           f.inserted_at, f.enriched_at,
           f.score, f.direction_gated, f.range_pos_at_trigger,
           f.round_trip_net_pct, f.round_trip_score_deduct,
-          f.fire_count_score_adjustment,
           f.gamma_at_trigger,
           f.takeit_prob, f.takeit_top_features, f.takeit_model_version,
           f.fire_count, f.first_fire_time_ct,
@@ -779,8 +774,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           AND (${minTakeitProb}::numeric IS NULL OR f.chain_max_takeit >= ${minTakeitProb}::numeric)
           -- Fix C: the score floor (minQas: minScore, or the active version's
           -- cutoff for minTier) gates on the DISPLAYED qas (the value the tier
-          -- badge uses), not the raw score. qas = GREATEST(0, score + rt +
-          -- fc) + inversion bonus (NO gamma, post-Fix-B). Applied at the rep
+          -- badge uses), not the raw score. qas = GREATEST(0, score + rt)
+          -- + inversion bonus (no gamma, no fire count). Applied at the rep
           -- row (rn=1, post-LEFT JOIN s) alongside the other rep-level gates
           -- so it reads s.inversion_quintile; identical expression in the
           -- count query so pagination/total stay coherent.
@@ -802,7 +797,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           SELECT
             underlying_symbol, strike, option_type, expiry,
             takeit_prob,
-            score, round_trip_score_deduct, fire_count_score_adjustment,
+            score, round_trip_score_deduct,
             ROW_NUMBER() OVER (
               PARTITION BY underlying_symbol, strike, option_type, expiry
               ORDER BY trigger_time_ct DESC, id DESC
@@ -843,7 +838,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               AND (${maxFireCount ?? null}::int IS NULL OR ranked.fc <= ${maxFireCount ?? 0})
               AND (${minTakeitProb}::numeric IS NULL OR ranked.chain_max_takeit >= ${minTakeitProb}::numeric)
               -- Fix C: qas-based score floor, minQas (identical expression to
-              -- the row queries). qas = GREATEST(0, score + rt + fc) + inversion
+              -- the row queries). qas = GREATEST(0, score + rt) + inversion
               -- bonus.
               AND (${minQas ?? null}::int IS NULL OR ${db.unsafe(qasExprText('ranked.'))} >= ${minQas ?? 0})
             ) AS passes_user_filters
@@ -1163,7 +1158,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           f.inserted_at, f.enriched_at,
           f.score, f.direction_gated, f.range_pos_at_trigger,
           f.round_trip_net_pct, f.round_trip_score_deduct,
-          f.fire_count_score_adjustment,
           f.gamma_at_trigger,
           f.takeit_prob, f.takeit_top_features, f.takeit_model_version,
           f.fire_count, f.first_fire_time_ct,
@@ -1398,21 +1392,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         r.round_trip_score_deduct == null
           ? 0
           : Number(r.round_trip_score_deduct);
-      // Fire-count adjustment — promoted to a stored DB column in
-      // migration #167. The trigger update_lottery_fire_count_score_adj
-      // maintains it on every INSERT. Folded into the displayed `score`
-      // below alongside rtDeduct + gammaAdj.
+      // No fire-count term: the fire-count score adjustment (migration #167)
+      // was retired on 2026-11-15. A re-fire is no better an entry than the
+      // first fire, and the bucket stored on an early fire was the chain-day's
+      // FINAL count, i.e. hindsight (spec
+      // 2026-11-15-retire-lottery-fire-count-adjustment.md).
       //
       // NOTE — displayed score ≠ SQL sort key, BY DESIGN (2026-05-28).
       // We intentionally reopened the divergence that commit 4fc7ec99
       // closed: the feed now sorts on the raw `f.score` column so a
       // fire's position is FROZEN at detect time. The `combined_score`
-      // GENERATED column (migrations #159/#167/#168) still exists and
+      // GENERATED column (migrations #159/#167/#168/#209) still exists and
       // its index still exists, but the ORDER BY no longer consumes
       // them — see api/lottery-finder.ts:417-433 for the rationale.
-      // Deducted/adjusted fires render dimmed in-place via LotteryRow's
+      // Deducted fires render dimmed in-place via LotteryRow's
       // round-tripped pill rather than reshuffling in the feed.
-      const fireCountAdj = Number(r.fire_count_score_adjustment ?? 0);
+      //
       // Gamma at trigger time + the derived V1-era flat +1 bonus.
       // Surfaced ONLY for the HIGH-Γ display chip (gamma-sign indicator)
       // — NOT folded into `score` anymore.
@@ -1424,29 +1419,23 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // ALSO added this V1-era flat +1 here at read time, double-counting
       // gamma. We now count gamma ONCE (in `score`) and drop gammaAdj from
       // the effective-score composition. The effective pre-inversion score
-      // is therefore GREATEST(0, score + round_trip_score_deduct +
-      // fire_count_score_adjustment) — the SAME expression the qas SQL
-      // filter (qasSql) gates the score floor (minScore / minTier) on, so the
-      // feed's displayed score, its qas filter, and the SQL all agree.
+      // is therefore GREATEST(0, score + round_trip_score_deduct) — the SAME
+      // expression the qas SQL filter (qasExprText) gates the score floor
+      // (minScore / minTier) on, so the feed's displayed score, its qas
+      // filter, and the SQL all agree.
       //
       // ⚠️ This is NOT equal to the stored `combined_score` GENERATED column
-      // (migration #168), which STILL carries a +1 gamma CASE term. The
-      // "zero tier-1" monitor in detect-lottery-fires.ts reads
-      // combined_score, so post-Fix-B the feed (no gamma) and the monitor
-      // (combined_score WITH gamma) can differ by up to +1 on a high-gamma
-      // non-SPY/USO row near a tier boundary. See the report for the
-      // recommended monitor/combined_score follow-up. Do NOT re-add gammaAdj
-      // here to "fix" the monitor — that re-introduces the double count.
+      // (migrations #168/#209), which STILL carries a +1 gamma CASE term.
+      // Neither the feed nor the detector's tier monitor reads that column;
+      // both compute the qas in SQL (qasExprText and its mirrors). Do NOT
+      // re-add gammaAdj here: that re-introduces the double count.
       const gammaAtTrigger =
         r.gamma_at_trigger != null ? Number(r.gamma_at_trigger) : null;
       const gammaAdj = gammaScoreAdjustment(
         gammaAtTrigger,
         r.underlying_symbol,
       );
-      const score =
-        rawScore == null
-          ? null
-          : Math.max(0, rawScore + rtDeduct + fireCountAdj);
+      const score = rawScore == null ? null : Math.max(0, rawScore + rtDeduct);
       const roundTripNetPct =
         r.round_trip_net_pct == null ? null : Number(r.round_trip_net_pct);
       // Phase 4 direction-gate override (spec:
@@ -1538,12 +1527,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         rawScore,
         roundTripNetPct,
         roundTripScoreDeduct: rtDeduct,
-        // Read-time score adjustment from the chain's fire_count.
-        // Single-fire chains carry -3, ≥16 fires carry +2. Mirrors the
-        // round-trip deduct's read-time-only nature — not stored in
-        // the DB, recomputed every request. Surfaced so the UI can
-        // render a "+N burst" tooltip on the score badge.
-        fireCountScoreAdjustment: fireCountAdj,
         // Gamma at trigger time (migration #168) + the V1-era per-row +1
         // indicator when gamma >= 0.025 AND ticker ∉ {'SPY','USO'}. Fix B:
         // this is NO LONGER folded into `score` (gamma is counted once via

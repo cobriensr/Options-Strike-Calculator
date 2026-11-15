@@ -11,6 +11,7 @@ import {
 } from 'vitest';
 import { PGlite } from '@electric-sql/pglite';
 import { mockRequest, mockResponse } from './helpers';
+import { expectedQasSql, squashSql } from './lottery-qas-sql';
 
 // A Phase-3 suppression fragment marker. The real keptSuppressionSql returns
 // a composable neon fragment; here we model it as a tagged object so the
@@ -304,17 +305,10 @@ const ROW = {
   // realized_flow_inversion_pct (4th exit policy) — null when not yet
   // enriched, mirroring the other realized_* columns above.
   realized_flow_inversion_pct: null,
-  // fire_count comes from the chain-day dedup CTE's window function.
-  // 5 lands in the neutral fire_count_score_adjustment bucket (4-7
-  // fires → 0 adjustment), so existing tests that pin a specific
-  // score outcome stay correct under the burst-count adjustment.
-  // Tests exercising single-fire (-3) or 8+ (+1/+2) adjustments
-  // override both columns locally.
+  // fire_count comes from the chain-day dedup CTE's window function. It
+  // does not touch the score: the fire-count score adjustment was retired
+  // on 2026-11-15 (see "the score does not depend on fire count" below).
   fire_count: 5,
-  // Post-#167 the adjustment is a stored DB column — explicit 0 here
-  // documents the neutral bucket and matches what the trigger would
-  // populate for a 4-7 fire chain-day.
-  fire_count_score_adjustment: 0,
   first_fire_time_ct: '2026-05-01T18:55:00Z',
   // Chain-level peak TAKE-IT + its timestamp (spec
   // lottery-no-vanish-2026-05-29.md). The chain is gated on
@@ -655,13 +649,13 @@ describe('lottery-finder endpoint', () => {
   // FIX C — minScore gates on the DISPLAYED qas, not raw `score`
   // ============================================================
   //
-  // The badge's tier comes from qualityAdjustedScore = GREATEST(0, score + rt
-  // + fc) + inversion bonus (NO gamma, post-Fix-B). The minScore filter must
+  // The badge's tier comes from qualityAdjustedScore = GREATEST(0, score + rt)
+  // + inversion bonus (no gamma, no fire count). The minScore filter must
   // gate on THAT qas value, not the raw `score` column, so the conviction chip
   // hides exactly the rows whose badge is below the floor. The qas is computed
   // IN SQL (identical expression in rows + count queries) so pagination/total
   // stay coherent.
-  it('FIX C: minScore gates on the qas SQL expression (GREATEST(0, score+rt+fc) + inversion CASE), not raw f.score', async () => {
+  it('FIX C: minScore gates on the qas SQL expression (GREATEST(0, score+rt) + inversion CASE), not raw f.score', async () => {
     mockSql.mockResolvedValueOnce([ROW]).mockResolvedValueOnce([{ total: 1 }]);
 
     const req = mockRequest({
@@ -680,15 +674,17 @@ describe('lottery-finder endpoint', () => {
     );
     // The qas expression text is spliced (via db.unsafe) into BOTH queries.
     // Rows query uses the `f.`-prefixed columns; count query uses `ranked.`.
-    expect(rowsSql).toContain(
-      'GREATEST(0, COALESCE(f.score, 0) + COALESCE(f.round_trip_score_deduct, 0) + COALESCE(f.fire_count_score_adjustment, 0))',
-    );
+    // expectedQasSql is the one expression the chip strip and the detector's
+    // tier monitor are held to as well (lottery-qas-sql.ts).
+    expect(squashSql(rowsSql)).toContain(expectedQasSql('f.'));
+    expect(squashSql(countSql)).toContain(expectedQasSql('ranked.'));
     expect(rowsSql).toContain(
       'CASE s.inversion_quintile WHEN 1 THEN -5 WHEN 2 THEN -2 WHEN 3 THEN 0 WHEN 4 THEN 3 WHEN 5 THEN 5 ELSE 0 END',
     );
-    expect(countSql).toContain(
-      'GREATEST(0, COALESCE(ranked.score, 0) + COALESCE(ranked.round_trip_score_deduct, 0) + COALESCE(ranked.fire_count_score_adjustment, 0))',
-    );
+    // The retired fire-count term is gone from both queries: neither selects
+    // nor adds the column.
+    expect(rowsSql).not.toContain('fire_count_score_adjustment');
+    expect(countSql).not.toContain('fire_count_score_adjustment');
     // The OLD raw-score predicate must be GONE from both queries.
     expect(rowsSql).not.toContain('f.score >= ?');
     expect(countSql).not.toContain('OR score >= ?');
@@ -2448,157 +2444,95 @@ describe('lottery-finder endpoint', () => {
   });
 
   // ============================================================
-  // fireCountScoreAdjustment integration (basis:
-  // docs/tmp/burst-profitability-findings-2026-05-17.md)
+  // The score does not depend on fire count
   // ============================================================
-
-  it('applies -3 score adjustment + surfaces fireCountScoreAdjustment for single-fire chains', async () => {
-    // Single-fire chains carry -3 from fire_count_score_adjustment.
-    // rawScore=20, so the displayed score drops to 17 → tier2.
-    // Post-#167 the adjustment is a stored DB column maintained by
-    // the lottery_finder_fires_fc_adj_trg trigger, so tests mock the
-    // column directly.
-    const ROW_SINGLE = {
+  //
+  // The fire-count score adjustment (-3 / -1 / 0 / +1 / +2 by chain fire count)
+  // was retired on 2026-11-15: entering on a re-fire showed no edge over the
+  // first fire, and the bucket stored on early fires was the chain-day's FINAL
+  // count (spec 2026-11-15-retire-lottery-fire-count-adjustment.md). The
+  // fixture below sits where the old ladder moved the tier: score 12 on a
+  // quintile-3 ticker (bonus 0) is tier2 (cutoffs 13 / 10), and the ladder
+  // took it to tier3 at 1 fire (12 - 3) and to tier1 at 16+ fires (12 + 2 =
+  // 14).
+  describe('the score does not depend on fire count', () => {
+    const rowAtFireCount = (fireCount: number) => ({
       ...ROW,
-      fire_count: 1,
-      fire_count_score_adjustment: -3,
-    };
-    mockSql
-      .mockResolvedValueOnce([ROW_SINGLE])
-      .mockResolvedValueOnce([{ total: 1 }]);
+      score: 12,
+      ticker_inversion_quintile: 3,
+      gamma_at_trigger: null,
+      fire_count: fireCount,
+    });
 
-    const req = mockRequest({ method: 'GET', query: { date: '2026-05-01' } });
-    const res = mockResponse();
-    await handler(req, res);
+    async function feedFire(row: Record<string, unknown>) {
+      mockSql
+        .mockResolvedValueOnce([row])
+        .mockResolvedValueOnce([{ total: 1 }]);
+      const res = mockResponse();
+      await handler(
+        mockRequest({ method: 'GET', query: { date: '2026-05-01' } }),
+        res,
+      );
+      return (res._json as { fires: Record<string, unknown>[] }).fires[0]!;
+    }
 
-    const body = res._json as {
-      fires: Array<{
-        score: number | null;
-        rawScore: number | null;
-        scoreTier: string;
-        fireCountScoreAdjustment: number;
-      }>;
-    };
-    expect(body.fires[0]!.rawScore).toBe(20);
-    expect(body.fires[0]!.fireCountScoreAdjustment).toBe(-3);
-    expect(body.fires[0]!.score).toBe(17);
-    // rawScore 20 + adj -3 = 17 → qas = 17 + 5 (Q5) = 22 → tier1 (>= 13).
-    expect(body.fires[0]!.scoreTier).toBe('tier1');
-  });
-
-  it('applies -1 score adjustment for 2-3 fire chains (still below baseline)', async () => {
-    const ROW_2_FIRES = {
-      ...ROW,
-      fire_count: 3,
-      fire_count_score_adjustment: -1,
-      first_fire_time_ct: '2026-05-01T18:00:00Z',
-    };
-    mockSql
-      .mockResolvedValueOnce([ROW_2_FIRES])
-      .mockResolvedValueOnce([{ total: 1 }]);
-
-    const req = mockRequest({ method: 'GET', query: { date: '2026-05-01' } });
-    const res = mockResponse();
-    await handler(req, res);
-
-    const body = res._json as {
-      fires: Array<{
-        score: number | null;
-        rawScore: number | null;
-        fireCountScoreAdjustment: number;
-      }>;
-    };
-    expect(body.fires[0]!.fireCountScoreAdjustment).toBe(-1);
-    // rawScore 20 + adj -1 = 19 (displayed score). Tier derivation is
-    // covered by lottery-tier.test.ts + the round-trip-deduct tests.
-    expect(body.fires[0]!.score).toBe(19);
-  });
-
-  it('applies +1 score adjustment for 8-15 fire chains', async () => {
-    const ROW_8_FIRES = {
-      ...ROW,
-      fire_count: 10,
-      fire_count_score_adjustment: 1,
-      first_fire_time_ct: '2026-05-01T14:00:00Z',
-    };
-    mockSql
-      .mockResolvedValueOnce([ROW_8_FIRES])
-      .mockResolvedValueOnce([{ total: 1 }]);
-
-    const req = mockRequest({ method: 'GET', query: { date: '2026-05-01' } });
-    const res = mockResponse();
-    await handler(req, res);
-
-    const body = res._json as {
-      fires: Array<{
-        score: number | null;
-        rawScore: number | null;
-        fireCountScoreAdjustment: number;
-      }>;
-    };
-    expect(body.fires[0]!.rawScore).toBe(20);
-    expect(body.fires[0]!.fireCountScoreAdjustment).toBe(1);
-    // rawScore 20 + adj +1 = 21 (displayed score).
-    expect(body.fires[0]!.score).toBe(21);
-  });
-
-  it('applies +2 score adjustment for ≥16 fire chains (highest-edge cohort)', async () => {
-    const ROW_BURST = {
-      ...ROW,
-      fire_count: 21, // matches the QQQ 708P 2026-05-15 anchor
-      fire_count_score_adjustment: 2,
-      first_fire_time_ct: '2026-05-01T13:30:00Z',
-    };
-    mockSql
-      .mockResolvedValueOnce([ROW_BURST])
-      .mockResolvedValueOnce([{ total: 1 }]);
-
-    const req = mockRequest({ method: 'GET', query: { date: '2026-05-01' } });
-    const res = mockResponse();
-    await handler(req, res);
-
-    const body = res._json as {
-      fires: Array<{ fireCountScoreAdjustment: number; score: number | null }>;
-    };
-    expect(body.fires[0]!.fireCountScoreAdjustment).toBe(2);
-    // rawScore 20 + adj +2 = 22 (displayed score).
-    expect(body.fires[0]!.score).toBe(22);
-  });
-
-  it('fire_count_score_adjustment drives the derived tier (boundary crossing)', async () => {
-    // End-to-end guard that the fire_count adjustment flows into the
-    // score→qas→tier path (not just the displayed score). Quintile 3 (+0)
-    // and null gamma isolate fire_count_adj as the sole tier driver:
-    // rawScore 12 + adj -3 = 9 → qas 9 → tier3. Without the -3, qas would be
-    // 12 → tier2, so the adjustment is what demotes it.
-    mockSql
-      .mockResolvedValueOnce([
-        {
-          ...ROW,
+    it.each([1, 2, 3, 4, 7, 8, 15, 16, 20, 21])(
+      'a chain of %i fires scores its raw score: 12, qas 12, tier2',
+      async (fireCount) => {
+        const fire = await feedFire(rowAtFireCount(fireCount));
+        expect(fire).toMatchObject({
+          rawScore: 12,
           score: 12,
-          fire_count: 1,
-          fire_count_score_adjustment: -3,
-          ticker_inversion_quintile: 3,
-          gamma_at_trigger: null,
-        },
-      ])
-      .mockResolvedValueOnce([{ total: 1 }]);
-    const req = mockRequest({ method: 'GET', query: { date: '2026-05-01' } });
-    const res = mockResponse();
-    await handler(req, res);
-    const body = res._json as {
-      fires: Array<{
-        score: number | null;
-        fireCountScoreAdjustment: number;
-        qualityAdjustedScore: number;
-        scoreTier: string;
-      }>;
-    };
-    expect(body.fires[0]).toMatchObject({
-      score: 9,
-      fireCountScoreAdjustment: -3,
-      qualityAdjustedScore: 9,
-      scoreTier: 'tier3',
+          qualityAdjustedScore: 12,
+          scoreTier: 'tier2',
+        });
+        // The response no longer carries the adjustment at all.
+        expect(fire).not.toHaveProperty('fireCountScoreAdjustment');
+      },
+    );
+
+    it('the same row at fire count 1 and at fire count 20 gives the same score, qas and tier', async () => {
+      const once = await feedFire(rowAtFireCount(1));
+      const burst = await feedFire(rowAtFireCount(20));
+      for (const key of [
+        'rawScore',
+        'score',
+        'qualityAdjustedScore',
+        'scoreTier',
+      ]) {
+        expect(burst[key]).toEqual(once[key]);
+      }
+      // fireCount itself is still reported: it is descriptive, not scored.
+      expect(once.fireCount).toBe(1);
+      expect(burst.fireCount).toBe(20);
+    });
+
+    it('ignores a stale fire_count_score_adjustment value on the row', async () => {
+      // The SELECT no longer reads the column, so this cannot arrive from the
+      // DB; the row carries it only to prove the mapper does not look.
+      const fire = await feedFire({
+        ...rowAtFireCount(1),
+        fire_count_score_adjustment: -3,
+      });
+      expect(fire).toMatchObject({
+        score: 12,
+        qualityAdjustedScore: 12,
+        scoreTier: 'tier2',
+      });
+    });
+
+    it('applies round_trip_score_deduct alone: a 10-fire chain that round-tripped scores raw - 2', async () => {
+      const fire = await feedFire({
+        ...ROW,
+        fire_count: 10,
+        round_trip_score_deduct: -2,
+      });
+      // ROW's raw score is 20: 20 - 2 = 18, with no +1 for the 8-15 bucket.
+      expect(fire).toMatchObject({
+        rawScore: 20,
+        roundTripScoreDeduct: -2,
+        score: 18,
+      });
     });
   });
 
@@ -2731,7 +2665,7 @@ describe('lottery-finder endpoint', () => {
         gammaScoreAdjustment?: number;
       }>;
     };
-    // rawScore=20 + fireCountAdj=0 (gamma NOT added) = 20.
+    // rawScore=20 (gamma NOT added) = 20.
     expect(body.fires[0]!.gammaAtTrigger).toBe(0.05);
     // Chip indicator still surfaces +1 (drives the HIGH-Γ badge in LotteryRow).
     expect(body.fires[0]!.gammaScoreAdjustment).toBe(1);
@@ -2763,7 +2697,7 @@ describe('lottery-finder endpoint', () => {
     };
     expect(body.fires[0]!.gammaAtTrigger).toBe(0.1);
     expect(body.fires[0]!.gammaScoreAdjustment).toBe(0);
-    // score stays at rawScore + fireCountAdj = 20 (gamma never applied).
+    // score stays at rawScore = 20 (gamma never applied).
     expect(body.fires[0]!.score).toBe(20);
   });
 
@@ -2788,38 +2722,6 @@ describe('lottery-finder endpoint', () => {
     };
     expect(body.fires[0]!.gammaAtTrigger).toBeNull();
     expect(body.fires[0]!.gammaScoreAdjustment).toBe(0);
-  });
-
-  it('stacks fireCountScoreAdjustment with round_trip_score_deduct (both apply)', async () => {
-    // Multi-fire chain (10 fires → +1 adj) that ALSO round-tripped
-    // (-2 deduct). Both must apply: 20 + 1 + (-2) = 19 → tier1.
-    const ROW_STACKED = {
-      ...ROW,
-      fire_count: 10,
-      fire_count_score_adjustment: 1,
-      first_fire_time_ct: '2026-05-01T14:00:00Z',
-      round_trip_score_deduct: -2,
-    };
-    mockSql
-      .mockResolvedValueOnce([ROW_STACKED])
-      .mockResolvedValueOnce([{ total: 1 }]);
-
-    const req = mockRequest({ method: 'GET', query: { date: '2026-05-01' } });
-    const res = mockResponse();
-    await handler(req, res);
-
-    const body = res._json as {
-      fires: Array<{
-        score: number | null;
-        rawScore: number | null;
-        roundTripScoreDeduct?: number;
-        fireCountScoreAdjustment: number;
-      }>;
-    };
-    expect(body.fires[0]!.rawScore).toBe(20);
-    expect(body.fires[0]!.roundTripScoreDeduct).toBe(-2);
-    expect(body.fires[0]!.fireCountScoreAdjustment).toBe(1);
-    expect(body.fires[0]!.score).toBe(19);
   });
 
   // ============================================================
