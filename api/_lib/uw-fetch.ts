@@ -17,6 +17,7 @@
 import { TIMEOUTS, UW_BASE } from './constants.js';
 import logger from './logger.js';
 import { metrics, Sentry } from './sentry.js';
+import { UW_CONCURRENT_BODY, UW_PER_MINUTE_BODY } from './uw-429-kind.js';
 import { acquireUWSlot } from './uw-rate-limit.js';
 import {
   acquireConcurrencySlot,
@@ -119,11 +120,12 @@ const GEXBOT_429_MAX_WAIT_MS = 3000;
  * Backoff before retrying a GEXBot 429, or `null` when `Retry-After` asks for
  * longer than `GEXBOT_429_MAX_WAIT_MS`. The vendor documents a per-account
  * short-window limit (a 429 with `Retry-After`) and daily/monthly pool quotas
- * (a 429 with none, lasting until midnight ET); the one burst seen was
- * transient. So the wait is `1000 × (attempt + 1)` (1 s, then 2 s), raised to
- * `Retry-After` when sent, plus up to 250 ms of jitter so a wave of retries
- * does not land in the same second. A quota 429 gets the same two retries and
- * then fails, and the next tick re-fetches.
+ * (lasting until midnight ET); it says nothing about whether a quota 429
+ * carries `Retry-After`. The one burst seen was transient. So the wait is
+ * `1000 × (attempt + 1)` (1 s, then 2 s), raised to `Retry-After` when sent,
+ * plus up to 250 ms of jitter so a wave of retries does not land in the same
+ * second. A 429 that is a quota gets the same two retries and then fails, and
+ * the next tick re-fetches.
  */
 function gexbot429Delay(err: unknown, attempt: number): number | null {
   const retryAfterMs = retryAfterMsOf(err);
@@ -150,13 +152,20 @@ function gexbot429Delay(err: unknown, attempt: number): number | null {
  * Treating both with the same 1s/2s exponential is why per-minute
  * 429s exhausted all retries before the spec-compliant fix shipped.
  *
+ * The two body patterns live in `uw-429-kind.ts`, shared with the Sentry
+ * fingerprint. UW's current concurrency body ("Too many requests in flight")
+ * has no "concurrent" in it, so it takes the generic 1s/2s here while the
+ * fingerprint counts it as concurrency; a test pins that.
+ *
  * Network errors and 5xx upstream failures (500/502/503/504) keep the
  * existing exponential `1000 × (attempt + 1)`.
  *
  * GEXBot: a `GEXBot 429` retries with backoff (`gexbot429Delay`), at most
- * twice. It may be the vendor's short-window limit, which a short wait clears,
- * or a pool quota, which it does not; the crons' `gexbot.retry_after_ms` tag
- * tells the two apart afterwards. `GEXBot 500 … null or zero length` (no
+ * twice. It may be the vendor's short-window limit, which may clear within the
+ * backoff (at most about 3.5 s, or 6.5 s with a 3 s `Retry-After`; the
+ * documented window can be a minute), or a pool quota, which it does not. The
+ * crons' `gexbot.retry_after_ms` tag, and whether the 429 persists across
+ * ticks, say which it was afterwards. `GEXBot 500 … null or zero length` (no
  * snapshot exists yet) is never retried (`null`). Other GEXBot 5xx still
  * retry. UW and every other caller are unaffected: both checks are anchored to
  * the `GEXBot` message prefix. The EOD report route is not here: it does not go
@@ -174,10 +183,10 @@ function classifyRetryDelay(err: unknown, attempt: number): number | null {
 
   // 429 — distinguish concurrency vs per-minute window
   if (/UW API 429|\b429\b/.test(msg)) {
-    if (/concurrent/i.test(msg)) {
+    if (UW_CONCURRENT_BODY.test(msg)) {
       return 250 + Math.random() * 250; // 250–500 ms jittered
     }
-    if (/in 60 seconds|per minute|rate limit of/i.test(msg)) {
+    if (UW_PER_MINUTE_BODY.test(msg)) {
       return 5000 + Math.random() * 5000; // 5–10 s
     }
     // Generic 429 — fall through to default exponential

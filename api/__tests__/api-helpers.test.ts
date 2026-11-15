@@ -807,6 +807,37 @@ describe('api-helpers', () => {
       }
     });
 
+    it('keeps the generic 1s/2s backoff for the current "in flight" 429 body', async () => {
+      // UW's current concurrency body ("Too many requests in flight", the one
+      // on Sentry issues 7Y and G6) has no "concurrent" in it, so the retry
+      // delay treats it as a generic 429. sentry.ts groups it as a concurrency
+      // 429 (uw-429-kind.ts), but the retry timing is left as it was. Whether
+      // it should get the 250-500 ms backoff is an open question in the spec.
+      vi.useFakeTimers();
+      try {
+        vi.spyOn(Math, 'random').mockReturnValue(0);
+        const fn = vi
+          .fn()
+          .mockRejectedValueOnce(
+            new Error(
+              'UW API 429: {"error":"Too many requests in flight. Your account can have 3 API requests running at a time across all of its API tokens, and at least 3 were already running when this one arrived. This is a tempora',
+            ),
+          )
+          .mockResolvedValue('ok');
+
+        const promise = withRetry(fn, 1);
+        promise.catch(() => {});
+        // 600 ms covers the concurrency backoff (<=500 ms): not retried yet.
+        await vi.advanceTimersByTimeAsync(600);
+        expect(fn).toHaveBeenCalledTimes(1);
+        await vi.advanceTimersByTimeAsync(400);
+        await expect(promise).resolves.toBe('ok');
+        expect(fn).toHaveBeenCalledTimes(2);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it('uses long backoff (>=5s) for per-minute 429 body', async () => {
       vi.useFakeTimers();
       try {
