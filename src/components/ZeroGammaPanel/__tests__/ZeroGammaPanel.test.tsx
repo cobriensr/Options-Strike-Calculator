@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, within } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { ZeroGammaPanel } from '../index';
 import type {
@@ -17,15 +17,20 @@ vi.mock('../../../hooks/useZeroGamma', () => ({
 }));
 
 // Pin "today" in ET so the LIVE button visibility logic is deterministic
-// regardless of when the test runs. The panel reads getETToday() once on
-// mount and compares the date input value to it to decide isLive.
+// regardless of when the test runs. The panel follows the shared ET clock
+// (useETToday), which reads getETToday(). `getETToday` reads `clock.today`
+// when called, and the clock and the date helper (useFollowedDate) import it
+// from this same module, so moving `clock.today` moves the date they follow.
+// The midnight tests below move it; every other test sees the fixed day.
+const clock = vi.hoisted(() => ({ today: '2026-04-28' }));
+
 vi.mock('../../../utils/timezone', async () => {
   const actual = await vi.importActual<
     typeof import('../../../utils/timezone')
   >('../../../utils/timezone');
   return {
     ...actual,
-    getETToday: () => '2026-04-28',
+    getETToday: () => clock.today,
   };
 });
 
@@ -57,6 +62,7 @@ function makeReturn(
 
 beforeEach(() => {
   useZeroGammaMock.mockReset();
+  clock.today = '2026-04-28';
 });
 
 describe('ZeroGammaPanel orchestration', () => {
@@ -141,8 +147,9 @@ describe('ZeroGammaPanel orchestration', () => {
 
     // Scrub to a past date — LIVE button appears, hooks re-call with date.
     useZeroGammaMock.mockClear();
-    await user.clear(dateInput);
-    await user.type(dateInput, '2026-04-21');
+    // A date input commits a whole date in one change event. (Typing it key
+    // by key would first empty the field, and an emptied field follows today.)
+    fireEvent.change(dateInput, { target: { value: '2026-04-21' } });
 
     const liveBtn = await screen.findByRole('button', { name: /^live$/i });
     expect(liveBtn).toBeInTheDocument();
@@ -158,5 +165,184 @@ describe('ZeroGammaPanel orchestration', () => {
     expect(
       screen.queryByRole('button', { name: /^live$/i }),
     ).not.toBeInTheDocument();
+  });
+});
+
+// ============================================================
+// ET MIDNIGHT WHILE THE APP IS OPEN
+//
+// The panel follows today unless the owner picked another date, and one date
+// feeds all three ticker cards. It is memoized, so it skips App's midnight
+// re-render: only the shared ET clock can move it. Every case starts 30 s
+// before an ET midnight; the clock's timer is armed for 1 s past it, so 31 s
+// lands just after. Owner decision 2026-11-14.
+// ============================================================
+
+describe.each([
+  {
+    zone: 'EST (winter)',
+    start: '2026-11-10T04:59:30Z',
+    night: '2026-11-09',
+    morning: '2026-11-10',
+  },
+  {
+    zone: 'EDT (summer)',
+    start: '2026-07-15T03:59:30Z',
+    night: '2026-07-14',
+    morning: '2026-07-15',
+  },
+])('ZeroGammaPanel: across the $zone midnight', (m) => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    vi.setSystemTime(new Date(m.start));
+    clock.today = m.night;
+    useZeroGammaMock.mockReturnValue(makeReturn({ loading: true }));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** The wall clock passes midnight, then the shared clock's timer fires. */
+  function crossMidnight() {
+    clock.today = m.morning;
+    act(() => {
+      vi.advanceTimersByTime(31_000);
+    });
+  }
+
+  const dateInput = () =>
+    screen.getByLabelText<HTMLInputElement>('Zero gamma date');
+  const liveButton = () => screen.queryByRole('button', { name: /^live$/i });
+  /** The three latest per-ticker hook calls: (ticker, marketOpen, date). */
+  const lastRender = () => useZeroGammaMock.mock.calls.slice(-3);
+  const liveRender = (marketOpen: boolean) => [
+    ['SPX', marketOpen, null],
+    ['SPY', marketOpen, null],
+    ['QQQ', marketOpen, null],
+  ];
+  const pastRender = (date: string) => [
+    ['SPX', false, date],
+    ['SPY', false, date],
+    ['QQQ', false, date],
+  ];
+
+  function pick(date: string) {
+    fireEvent.change(dateInput(), { target: { value: date } });
+  }
+
+  it('follows the new date and keeps all three cards on the live data path', () => {
+    render(<ZeroGammaPanel marketOpen={true} />);
+    expect(dateInput().value).toBe(m.night);
+    expect(lastRender()).toEqual(liveRender(true));
+
+    crossMidnight();
+
+    expect(dateInput().value).toBe(m.morning);
+    expect(lastRender()).toEqual(liveRender(true));
+    expect(liveButton()).not.toBeInTheDocument();
+  });
+
+  it('follows marketOpen on the live path when the market is closed', () => {
+    render(<ZeroGammaPanel marketOpen={false} />);
+    expect(lastRender()).toEqual(liveRender(false));
+
+    crossMidnight();
+
+    expect(dateInput().value).toBe(m.morning);
+    expect(lastRender()).toEqual(liveRender(false));
+  });
+
+  it('rolls with no parent re-render', () => {
+    let parentRenders = 0;
+    function Parent() {
+      parentRenders += 1;
+      return <ZeroGammaPanel marketOpen={true} />;
+    }
+    render(<Parent />);
+    const callsBefore = useZeroGammaMock.mock.calls.length;
+
+    crossMidnight();
+
+    expect(parentRenders).toBe(1);
+    expect(useZeroGammaMock.mock.calls.length).toBeGreaterThan(callsBefore);
+    expect(dateInput().value).toBe(m.morning);
+  });
+
+  it('judges the date live in a render just past midnight, before the clock ticks', () => {
+    const { rerender } = render(<ZeroGammaPanel marketOpen={true} />);
+
+    // The wall clock is past midnight; the shared clock has not ticked, so
+    // the date is still the night's. A render now (the market-open prop
+    // changes) must judge it live by the same clock, not by the wall clock.
+    clock.today = m.morning;
+    rerender(<ZeroGammaPanel marketOpen={false} />);
+
+    expect(dateInput().value).toBe(m.night);
+    expect(lastRender()).toEqual(liveRender(false));
+    expect(liveButton()).not.toBeInTheDocument();
+  });
+
+  it('keeps a picked past date', () => {
+    render(<ZeroGammaPanel marketOpen={true} />);
+    pick('2026-04-20');
+    expect(lastRender()).toEqual(pastRender('2026-04-20'));
+    expect(liveButton()).toBeInTheDocument();
+
+    crossMidnight();
+
+    expect(dateInput().value).toBe('2026-04-20');
+    expect(lastRender()).toEqual(pastRender('2026-04-20'));
+    expect(liveButton()).toBeInTheDocument();
+  });
+
+  it('LIVE goes back to following today', () => {
+    render(<ZeroGammaPanel marketOpen={true} />);
+    pick('2026-04-20');
+
+    fireEvent.click(screen.getByRole('button', { name: /^live$/i }));
+
+    expect(dateInput().value).toBe(m.night);
+    expect(lastRender()).toEqual(liveRender(true));
+    expect(liveButton()).not.toBeInTheDocument();
+
+    // Following, not pinned to the night's string.
+    crossMidnight();
+
+    expect(dateInput().value).toBe(m.morning);
+    expect(lastRender()).toEqual(liveRender(true));
+    expect(liveButton()).not.toBeInTheDocument();
+  });
+
+  it('LIVE clicked just past midnight, before the clock ticks, follows the new day', () => {
+    render(<ZeroGammaPanel marketOpen={true} />);
+    pick('2026-04-20');
+
+    // The wall clock is past midnight; the shared clock has not ticked, so
+    // its `today` is still the night's. LIVE must not pin that string.
+    clock.today = m.morning;
+    fireEvent.click(screen.getByRole('button', { name: /^live$/i }));
+    act(() => {
+      vi.advanceTimersByTime(31_000);
+    });
+
+    expect(dateInput().value).toBe(m.morning);
+    expect(lastRender()).toEqual(liveRender(true));
+    expect(liveButton()).not.toBeInTheDocument();
+  });
+
+  it('follows today when the date field is emptied', () => {
+    render(<ZeroGammaPanel marketOpen={true} />);
+    pick('2026-04-20');
+
+    pick('');
+
+    expect(dateInput().value).toBe(m.night);
+    expect(lastRender()).toEqual(liveRender(true));
+
+    crossMidnight();
+
+    expect(dateInput().value).toBe(m.morning);
+    expect(lastRender()).toEqual(liveRender(true));
   });
 });

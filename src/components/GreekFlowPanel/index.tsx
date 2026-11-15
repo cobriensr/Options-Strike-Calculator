@@ -34,7 +34,7 @@ import { MetricsBar } from './MetricsBar';
 import { VerdictTile, VerdictTimeline } from './Verdict';
 import { SectionBox } from '../ui';
 import { DateInput } from '../ui/DateInput';
-import { getETToday } from '../../utils/timezone';
+import { useFollowedDate } from '../../hooks/useFollowedDate';
 
 interface GreekFlowPanelProps {
   marketOpen: boolean;
@@ -84,8 +84,14 @@ const CHART_GRID: readonly ChartCellSpec[] = [
 ] as const;
 
 function GreekFlowPanelInner({ marketOpen }: GreekFlowPanelProps) {
-  const today = getETToday();
-  const [selectedDate, setSelectedDate] = useState<string>(today);
+  // The date follows today across ET midnight unless the owner picked another
+  // one. This panel is memoized, so only the shared ET clock behind
+  // `useFollowedDate` re-renders it at the roll.
+  const {
+    date: selectedDate,
+    setDate: setSelectedDate,
+    today,
+  } = useFollowedDate();
   const [scope, setScope] = useState<GreekFlowScope>('0dte');
   // Two booleans, one per concern. `isToday` controls the LIVE button +
   // dateArg; `isLiveData` controls the as-of "closed" badge — historical
@@ -132,7 +138,7 @@ function GreekFlowPanelInner({ marketOpen }: GreekFlowPanelProps) {
       {!isToday && (
         <button
           type="button"
-          onClick={() => setSelectedDate(today)}
+          onClick={() => setSelectedDate('')}
           className="text-secondary hover:text-primary border-edge cursor-pointer rounded border bg-transparent px-2 py-0.5 font-mono text-[10px]"
         >
           LIVE

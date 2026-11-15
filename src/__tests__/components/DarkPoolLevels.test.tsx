@@ -964,7 +964,7 @@ describe('DarkPoolLevels — symbol selector', () => {
 // ============================================================
 
 describe('DarkPoolLevels: date field', () => {
-  it('shows the date it is handed and has no clock of its own', () => {
+  it('shows the date it is handed', () => {
     render(
       <DarkPoolLevels
         selectedDate="2026-03-11"

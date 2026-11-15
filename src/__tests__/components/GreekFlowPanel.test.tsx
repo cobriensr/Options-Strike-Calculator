@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { GreekFlowPanel } from '../../components/GreekFlowPanel';
 import type {
@@ -22,13 +22,19 @@ vi.mock('../../hooks/useGreekFlow', async () => {
   };
 });
 
+// The mocked clock. `getETToday` reads this when called, and the shared ET
+// clock (useETToday) and the date helper (useFollowedDate) import it from the
+// same module, so moving `clock.today` moves the date they follow. The
+// midnight tests below move it; every other test sees the fixed day.
+const clock = vi.hoisted(() => ({ today: '2026-04-28' }));
+
 vi.mock('../../utils/timezone', async () => {
   const actual = await vi.importActual<typeof import('../../utils/timezone')>(
     '../../utils/timezone',
   );
   return {
     ...actual,
-    getETToday: () => '2026-04-28',
+    getETToday: () => clock.today,
   };
 });
 
@@ -159,6 +165,7 @@ function happyPathReturn(
 
 beforeEach(() => {
   mockUseGreekFlow.mockReset();
+  clock.today = '2026-04-28';
 });
 
 describe('GreekFlowPanel', () => {
@@ -346,5 +353,173 @@ describe('GreekFlowPanel', () => {
     expect(runs).toHaveLength(1);
     expect(runs[0]).toHaveAttribute('data-verdict-kind', 'directional-bear');
     expect(runs[0]?.getAttribute('style')).toContain('width: 100%');
+  });
+});
+
+// ============================================================
+// ET MIDNIGHT WHILE THE APP IS OPEN
+//
+// The panel follows today unless the owner picked another date. It is memoized,
+// so it skips App's midnight re-render: only the shared ET clock can move it.
+// Every case starts 30 s before an ET midnight; the clock's timer is armed for
+// 1 s past it, so 31 s lands just after. Owner decision 2026-11-14.
+// ============================================================
+
+describe.each([
+  {
+    zone: 'EST (winter)',
+    start: '2026-11-10T04:59:30Z',
+    night: '2026-11-09',
+    morning: '2026-11-10',
+  },
+  {
+    zone: 'EDT (summer)',
+    start: '2026-07-15T03:59:30Z',
+    night: '2026-07-14',
+    morning: '2026-07-15',
+  },
+])('GreekFlowPanel: across the $zone midnight', (m) => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    vi.setSystemTime(new Date(m.start));
+    clock.today = m.night;
+    mockUseGreekFlow.mockReturnValue(happyPathReturn());
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** The wall clock passes midnight, then the shared clock's timer fires. */
+  function crossMidnight() {
+    clock.today = m.morning;
+    act(() => {
+      vi.advanceTimersByTime(31_000);
+    });
+  }
+
+  const dateInput = () =>
+    screen.getByLabelText<HTMLInputElement>('Greek flow date');
+  const liveButton = () => screen.queryByRole('button', { name: /^live$/i });
+  /** The arguments of the panel's latest useGreekFlow call. */
+  const lastCall = () => mockUseGreekFlow.mock.calls.at(-1);
+
+  function pick(date: string) {
+    fireEvent.change(dateInput(), { target: { value: date } });
+  }
+
+  it('follows the new date and stays on the live data path', () => {
+    render(<GreekFlowPanel marketOpen={true} />);
+    expect(dateInput().value).toBe(m.night);
+    expect(lastCall()).toEqual([true, null, '0dte']);
+
+    crossMidnight();
+
+    expect(dateInput().value).toBe(m.morning);
+    expect(lastCall()).toEqual([true, null, '0dte']);
+    expect(liveButton()).not.toBeInTheDocument();
+  });
+
+  it('follows marketOpen on the live path when the market is closed', () => {
+    render(<GreekFlowPanel marketOpen={false} />);
+    expect(lastCall()).toEqual([false, null, '0dte']);
+
+    crossMidnight();
+
+    expect(dateInput().value).toBe(m.morning);
+    expect(lastCall()).toEqual([false, null, '0dte']);
+  });
+
+  it('rolls with no parent re-render', () => {
+    let parentRenders = 0;
+    function Parent() {
+      parentRenders += 1;
+      return <GreekFlowPanel marketOpen={true} />;
+    }
+    render(<Parent />);
+    const callsBefore = mockUseGreekFlow.mock.calls.length;
+
+    crossMidnight();
+
+    expect(parentRenders).toBe(1);
+    expect(mockUseGreekFlow.mock.calls.length).toBeGreaterThan(callsBefore);
+    expect(dateInput().value).toBe(m.morning);
+  });
+
+  it('judges the date live in a render just past midnight, before the clock ticks', () => {
+    render(<GreekFlowPanel marketOpen={true} />);
+
+    // The wall clock is past midnight; the shared clock has not ticked, so
+    // the date is still the night's. A render now (the scope click) must
+    // judge it live by the same clock, not by the wall clock.
+    clock.today = m.morning;
+    fireEvent.click(screen.getByRole('radio', { name: 'All DTE' }));
+
+    expect(dateInput().value).toBe(m.night);
+    expect(lastCall()).toEqual([true, null, 'all']);
+    expect(liveButton()).not.toBeInTheDocument();
+  });
+
+  it('keeps a picked past date', () => {
+    render(<GreekFlowPanel marketOpen={true} />);
+    pick('2026-04-20');
+    expect(lastCall()).toEqual([false, '2026-04-20', '0dte']);
+    expect(liveButton()).toBeInTheDocument();
+
+    crossMidnight();
+
+    expect(dateInput().value).toBe('2026-04-20');
+    expect(lastCall()).toEqual([false, '2026-04-20', '0dte']);
+    expect(liveButton()).toBeInTheDocument();
+  });
+
+  it('LIVE goes back to following today', () => {
+    render(<GreekFlowPanel marketOpen={true} />);
+    pick('2026-04-20');
+
+    fireEvent.click(screen.getByRole('button', { name: /^live$/i }));
+
+    expect(dateInput().value).toBe(m.night);
+    expect(lastCall()).toEqual([true, null, '0dte']);
+    expect(liveButton()).not.toBeInTheDocument();
+
+    // Following, not pinned to the night's string.
+    crossMidnight();
+
+    expect(dateInput().value).toBe(m.morning);
+    expect(lastCall()).toEqual([true, null, '0dte']);
+    expect(liveButton()).not.toBeInTheDocument();
+  });
+
+  it('LIVE clicked just past midnight, before the clock ticks, follows the new day', () => {
+    render(<GreekFlowPanel marketOpen={true} />);
+    pick('2026-04-20');
+
+    // The wall clock is past midnight; the shared clock has not ticked, so
+    // its `today` is still the night's. LIVE must not pin that string.
+    clock.today = m.morning;
+    fireEvent.click(screen.getByRole('button', { name: /^live$/i }));
+    act(() => {
+      vi.advanceTimersByTime(31_000);
+    });
+
+    expect(dateInput().value).toBe(m.morning);
+    expect(lastCall()).toEqual([true, null, '0dte']);
+    expect(liveButton()).not.toBeInTheDocument();
+  });
+
+  it('follows today when the date field is emptied', () => {
+    render(<GreekFlowPanel marketOpen={true} />);
+    pick('2026-04-20');
+
+    pick('');
+
+    expect(dateInput().value).toBe(m.night);
+    expect(lastCall()).toEqual([true, null, '0dte']);
+
+    crossMidnight();
+
+    expect(dateInput().value).toBe(m.morning);
+    expect(lastCall()).toEqual([true, null, '0dte']);
   });
 });

@@ -25,12 +25,12 @@
  * exposed via /api/zero-gamma?ticker=X[&date=Y].
  */
 
-import { memo, useState } from 'react';
+import { memo } from 'react';
+import { useFollowedDate } from '../../hooks/useFollowedDate';
 import { useZeroGamma } from '../../hooks/useZeroGamma';
 import { TickerCard } from './TickerCard';
 import { SectionBox, Tooltip } from '../ui';
 import { DateInput } from '../ui/DateInput';
-import { getETToday } from '../../utils/timezone';
 
 const ZG_DATE_TIP = (
   <>
@@ -54,8 +54,15 @@ interface ZeroGammaPanelProps {
 }
 
 function ZeroGammaPanelInner({ marketOpen }: ZeroGammaPanelProps) {
-  const today = getETToday();
-  const [selectedDate, setSelectedDate] = useState<string>(today);
+  // The date follows today across ET midnight unless the owner picked another
+  // one. This panel is memoized, so only the shared ET clock behind
+  // `useFollowedDate` re-renders it at the roll. One date feeds all three
+  // ticker cards.
+  const {
+    date: selectedDate,
+    setDate: setSelectedDate,
+    today,
+  } = useFollowedDate();
   const isLive = selectedDate === today;
   // When scrubbed to a past date, pass null marketOpen so the per-ticker
   // hooks fetch once and don't try to poll a frozen historical snapshot.
@@ -69,7 +76,7 @@ function ZeroGammaPanelInner({ marketOpen }: ZeroGammaPanelProps) {
         <Tooltip content={ZG_LIVE_TIP}>
           <button
             type="button"
-            onClick={() => setSelectedDate(today)}
+            onClick={() => setSelectedDate('')}
             className="text-secondary hover:text-primary border-edge cursor-pointer rounded border bg-transparent px-2 py-0.5 font-mono text-[10px]"
           >
             LIVE
