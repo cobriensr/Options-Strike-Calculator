@@ -1,4 +1,6 @@
 #!/usr/bin/env python
+# Retired 2026-11-15: the report text below describes combined_score as carrying a
+# fire-count adjustment; migration #209 redefines combined_score without it.
 """Walk-forward backtest — CORRECTED methodology.
 
 Addresses three methodological gaps in walk_forward_backtest_v22.py:

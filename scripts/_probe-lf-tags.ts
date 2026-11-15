@@ -1,3 +1,6 @@
+// Retired 2026-11-15: this probe reads lottery_finder_fires.fire_count_score_adjustment,
+// which migration #209 drops. Kept as a record of the 2026-05 tag survey; it
+// will not run against a database that has applied #209.
 import { neon } from '@neondatabase/serverless';
 import { config } from 'dotenv';
 config({ path: '.env.local' });

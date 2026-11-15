@@ -1,4 +1,7 @@
 #!/usr/bin/env tsx
+// Retired 2026-11-15: this scorecard reads lottery_finder_fires.fire_count_score_adjustment
+// (the "burst+" tag), which migration #209 drops. Kept as a record of the 2026-05-29
+// analysis; it will not run against a database that has applied #209.
 /**
  * TAG VALUE SCORECARD — does each Lottery Finder badge actually separate
  * REALIZED outcomes out-of-sample, or is it decorative?
