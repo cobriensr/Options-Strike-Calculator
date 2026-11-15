@@ -70,7 +70,7 @@ Status: approved by the owner 2026-11-14 ("lets also look at cf-ray/egress loggi
 
 **Commit (≤5 files):** `scripts/ws-canary/canary.py`, `scripts/ws-canary/test_canary.py`, `scripts/ws-canary/README.md`, this spec's Deploy section if it needs a line.
 
-- After the handshake, read the `cf-ray` header of `ws.response.headers` into the session as `cf_ray` / `cf_colo`, same parsing as Task 2 (duplicated, not imported: the canary is a separate image with no uw-stream code). Both go on the `connect` event and the `drop` record. On the direct (Fly) arms they are `null`. A connect that fails before the handshake completes has no response, so its drop record says `null` too.
+- After the handshake, read the `cf-ray` header of `ws.response.headers` into the session as `cf_ray` / `cf_colo`, same parsing as Task 2 (duplicated, not imported: the canary is a separate image with no uw-stream code). Both go on the `connect` event and the `drop` record. On the direct (Fly) arms they are `null`. A connect that fails before the handshake completes has no connection to read a response from, so its drop record says `null` too. A refused handshake does come with a response, on the `InvalidStatus` exception, and the canary does not read it.
 - No egress lookup in the canary **(call)**: it runs in the same Railway project and region as uw-stream, so uw-stream's egress lines cover the egress question, and the canary stays on one dependency.
 - Tests: parse cases as in Task 2; the `connect` event and the drop record carry the fields; a direct arm gets `null`.
 - Deploy: the push redeploys the canary (watch path `/scripts/ws-canary/**`). Its sockets reconnect once.

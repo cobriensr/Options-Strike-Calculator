@@ -4,8 +4,10 @@ Temporary diagnostic. Spec: docs/superpowers/specs/ws-canary-2026-10-28.md.
 
 Holds four websockets from one process to the same Fly-hosted echo server, two
 through Cloudflare (ws.ifelse.io) and two direct (echo.websocket.org), one quiet
-and one chatty each. Every drop prints one JSON line with the same fields as
-uw-stream's disconnect log (bar its egress_ip), so the two logs compare line for line.
+and one chatty each. Every drop prints one JSON line with uw-stream's disconnect-log
+fields, so the two logs compare line for line. Three differences: conn stands where
+uw-stream has shard (and the canary adds url), and the canary has no forced (it never
+forces a reconnect), egress_ip (it makes no lookup) or backoff (that is on its heartbeat).
 Each socket's Cloudflare ray and colo, from the handshake's CF-RAY, ride on its connect
 and drop lines, as on uw-stream's; the direct arms have none. Reconnects
 forever: 1 s after a connected session drops, and with a 1 s to 60 s exponential

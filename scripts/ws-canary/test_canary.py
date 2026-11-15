@@ -518,20 +518,37 @@ def test_hold_records_the_session_and_propagates_the_drop(monkeypatch, caplog) -
     ]
 
 
-def test_the_drop_record_of_a_held_session_carries_its_ray_and_colo(monkeypatch, caplog) -> None:
+@pytest.mark.parametrize(
+    ("name", "url", "handshake", "cf_ray", "cf_colo"),
+    [
+        ("cf-quiet", CF_URL, _cloudflare_handshake, _RAY, "MCI"),
+        ("direct-quiet", DIRECT_URL, _direct_handshake, None, None),
+    ],
+)
+def test_the_emitted_drop_line_carries_the_sockets_ray_and_colo(
+    monkeypatch, name: str, url: str, handshake, cf_ray: str | None, cf_colo: str | None
+) -> None:
     async def receive(ws):
         yield GREETING
         raise ConnectionClosedError(None, None)
 
-    _patch_connect(monkeypatch, _FakeWS(receive))
-    _record_events(monkeypatch)
-    conn = Conn("cf-quiet", CF_URL, chatty=False)
-    _run_hold(conn, caplog, raises=ConnectionClosedError)
-    # What _run does when _hold raises: the record comes from the stamped session.
-    rec = conn.end_session(ConnectionClosedError(None, None), now=time.monotonic())
-    assert rec["cf_ray"] == _RAY
-    assert rec["cf_colo"] == "MCI"
-    assert conn.session.cf_ray is None  # the next attempt starts with a fresh session
+    async def fake_sleep(delay: float) -> None:
+        raise _Stop  # the wait after the drop line: one session is all this runs
+
+    _patch_connect(monkeypatch, _FakeWS(receive, response=handshake()))
+    events = _record_events(monkeypatch)
+    monkeypatch.setattr(canary.asyncio, "sleep", fake_sleep)
+    conn = Conn(name, url, chatty=False)
+    with pytest.raises(_Stop):
+        asyncio.run(canary._run(conn))  # connect, drop line, then the wait
+    # The lines _run printed, not a record rebuilt by the test.
+    [(connect, connect_fields), (drop, drop_fields)] = events
+    assert (connect, drop) == ("connect", "drop")
+    assert (connect_fields["cf_ray"], connect_fields["cf_colo"]) == (cf_ray, cf_colo)
+    assert drop_fields["conn"] == name
+    assert drop_fields["exc_type"] == "ConnectionClosedError"
+    assert (drop_fields["cf_ray"], drop_fields["cf_colo"]) == (cf_ray, cf_colo)
+    assert conn.session == Session()  # the next attempt starts with a fresh session
 
 
 def test_a_direct_arm_connects_with_no_ray_and_no_colo(monkeypatch, caplog) -> None:
@@ -549,9 +566,6 @@ def test_a_direct_arm_connects_with_no_ray_and_no_colo(monkeypatch, caplog) -> N
     assert fields["url"] == DIRECT_URL
     assert fields["cf_ray"] is None
     assert fields["cf_colo"] is None
-    rec = conn.end_session(ConnectionClosedError(None, None), now=time.monotonic())
-    assert rec["cf_ray"] is None
-    assert rec["cf_colo"] is None
 
 
 @pytest.mark.parametrize(
