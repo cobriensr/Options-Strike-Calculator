@@ -340,8 +340,9 @@ Nightly constants (`nightly/src/constants.py`):
   export function assignQuintile(value: number, boundaries: ReadonlyArray<number>): number
   export function isAlignedFire(optionType: 'C' | 'P', cumNcp: number | null, cumNpp: number | null): boolean
   export function weekdayOf(dateIso: string): string    // the cron's `${date}T12:00:00Z` toLocaleDateString('en-US',{weekday:'long'})
-  export function scoreLotteryV2(weights: LotteryWeights, args: LotteryScoreInput): number | null
-  export function lotteryScoreTierV2(score: number | null, cutoffs: LotteryWeights['cutoffs']): 'tier1' | 'tier2' | 'tier3'
+  export function scoreLotteryV2(weights: DeepReadonly<LotteryWeights>, args: LotteryScoreInput): number | null
+  // lotteryScoreTierV2(score, cutoffs) was planned here and deleted in the final fix wave: nothing called it
+  // (the feed tiers on `feed_cutoffs` in SQL, the cron on `cutoffs.t1`).
   /** @deprecated Task 5 deletes it */ export function computeLotteryScoreV2(args: LotteryScoreInput): number | null  // scoreLotteryV2(SEED_LOTTERY_WEIGHTS, args)
   /** @deprecated Task 5 deletes it */ export const LOTTERY_TIER_THRESHOLDS_V2: LotteryWeights['cutoffs']           // SEED_LOTTERY_WEIGHTS.cutoffs
   ```
@@ -372,7 +373,7 @@ Nightly constants (`nightly/src/constants.py`):
   - `the seed parses` with `LotteryWeightsSchema`;
   - `the schema rejects`, one case each: an unknown key at the top level and in `features`, NaN or Infinity in a boundary, non-increasing boundaries, 3 boundaries, a ticker weight of 11, a fractional weight, `t1 <= t2`, `tier1_min_score <= tier2_min_score`, a `tod_weights` key missing, a q label `"5"`;
   - `scores with the weights it is given`: a copy of the seed with `ticker_weights.SNDK += 3` scores an SNDK fire exactly 3 higher;
-  - `lotteryScoreTierV2 reads the cutoffs it is given`.
+  - (`lotteryScoreTierV2 reads the cutoffs it is given` went with the function: deleted in the final fix wave.)
 - [ ] **Step 3:** Run `npx vitest run api/__tests__/lottery-score-weights-v2.test.ts`. Expected: FAIL (no module `lottery-weights-schema`).
 - [ ] **Step 4: Implement.**
   - The scorer body is today's, reading `weights.features.*`.
@@ -904,10 +905,14 @@ The description cites the spec and D5, says NULL `score_version` means "scored b
   def load_active(conn) -> StoredVersion
   def load_shadow(conn) -> StoredVersion | None
   def version_exists(conn, version: str) -> bool
+  def decided_since(conn, since: datetime) -> bool                 # any version with decided_at >= since (aware datetime)
+  def count_off_version(conn, version: str) -> int                 # fires with score_version set and <> version (final fix wave)
   def insert_candidate(conn, version: str, weights: Mapping, *, status: Literal["shadow", "rejected"],
                        trained_through: date, report: Mapping) -> bool     # ON CONFLICT (version) DO NOTHING RETURNING
   def record_session_eval(conn, version: str, session: date, entry: Mapping) -> bool
       # gate_report = jsonb_set(gate_report, ARRAY['sessions', <iso>], entry) WHERE version = %s AND status = 'shadow' RETURNING
+  def record_deferral(conn, version: str, night: date) -> int | None
+      # appends the ISO date to gate_report.deferred_nights WHERE version = %s AND status = 'shadow' AND the date is not there; RETURNING the length (final fix wave)
   def decide(conn, version: str, status: Literal["passed", "rejected"], verdict: Mapping) -> bool
       # status, decided_at, gate_report || {"verdict": …} WHERE version = %s AND status = 'shadow' RETURNING
   ```
@@ -946,7 +951,8 @@ The description cites the spec and D5, says NULL `score_version` means "scored b
   def fetch_feed_frame(conn, sessions: Sequence[date]) -> pd.DataFrame   # FEED_COLUMNS for those dates (LEFT JOIN lottery_ticker_stats)
   def run(ctx: StepContext) -> StepResult
   # monitoring.py
-  RefitNotice = Literal["promoted", "passed", "rejected", "candidate_rejected"]
+  RefitNotice = Literal["promoted", "passed", "rejected", "candidate_rejected", "off_version", "deferred"]
+  # off_version (warning, fingerprint [..., "off_version", <active version>]) and deferred (error, [..., "deferred", <shadow>]) came with the final fix wave
   def report_refit(kind: RefitNotice, *, version: str, reasons: Sequence[str],
                    extras: Mapping[str, int | float | str | list[str]]) -> None   # D9's table
   ```
@@ -960,7 +966,9 @@ The description cites the spec and D5, says NULL `score_version` means "scored b
     - record each elapsed session not yet in `gate_report.sessions`;
     - `decide_shadow`;
     - act per D6. A promotion calls `rescore_all(..., reason="promotion", expect_active=active.version, dry_run=False, deadline=ctx.deadline)`. A `RescoreDeadline` (the rollback is complete) counts as `promotion_deferred`, and the version stays `shadow`.
-  - **Counts:** `candidates_built`, `candidates_rejected`, `already_built`, `sessions_recorded`, `waiting`, `passed`, `promoted`, `rejected`, `promotion_deferred`, `rows_rescored`, `train_rows`, `eval_rows`.
+  - **Counts:** `candidates_built`, `candidates_rejected`, `already_built`, `already_decided`, `sessions_recorded`, `waiting`, `passed`, `promoted`, `rejected`, `promotion_deferred`, `rows_rescored`, `train_rows`, `eval_rows`, `fires_off_version`.
+    - `already_decided`: no shadow, and a version was decided since 00:00 UTC of the run's date (a re-run after the night's own decision), so nothing is built.
+    - `fires_off_version`: fires whose `score_version` is set and differs from the active version's (the residue of a seed fallback after a promotion, or of an undo), read every night. It sends a warning notice and changes no status.
   - **Status:** `partial` when a promotion is deferred, else `ok`. A rejection is `ok`, because its notice is the alert (Spec delta 10).
   - **Logs:** one line with the version, the decision and the counts. No weights, no tickers.
 
@@ -1168,7 +1176,7 @@ The description cites the spec and D5, says NULL `score_version` means "scored b
    - The scripts that read the frozen `ml/output/lottery_score_weights.json` are `daily_tracker.py`, `feature_audit.py`, `mine_outcome_patterns.py`, `score_lineage_audit.py`, `vix_regime_analysis.py` and `check_lottery_score_sum_invariant.py`. The nightly job runs the first four.
    - The store they read: `lottery_weights.load_pointer(conn, "active")` (Task 12) returns `(version, weights)`, validated. `weights["feed_cutoffs"]` is `{tier1_min_score, tier2_min_score}` (qas) and `weights["cutoffs"]` is `{t1, t2}` (bare score). `lottery_weights.score_frame` scores a frame. The tables are `lottery_score_versions` and `lottery_score_pointers`, and each fire carries `lottery_finder_fires.score_version` (NULL means scored before the store).
    - `feature_audit.py`'s hard-coded 13/10 (lines 39–40) comes from `feed_cutoffs`. `mine_outcome_patterns.py` and `score_lineage_audit.py` (line 87) still filter `inferred_structure IS NULL`, a predicate whose meaning changed when the classifier was retired. Phase 3 replaces it with the shared `SINGLE_LEG_FILTER` or the active definition and says which.
-   - Each report's header names the active `version` and `model_version` (phase 3 D8). No report segments by `score_version`: a promotion rescores every fire, so afterwards all fires share one version.
+   - Each report's header names the active `version` and `model_version` (phase 3 D8). No report segments by `score_version`: a promotion rescores every fire, so afterwards all fires share one version, except for the residue a seed fallback or an undo can leave on another version. That residue can exist and is counted every night (`fires_off_version`, with a notice); it is repaired by hand with `scripts/backfill_lottery_scores.py --only-tag` (nightly/README.md, "Refit").
    - The image already carries `ml/src/lottery_weights.py` from Task 20. The four reports run as subprocesses and connect with the child env's `DATABASE_URL` (phase 3 D6); only phase 3's in-process steps use `resources.connect_db`.
 3. **The ticker-weight-history CSV is retired** (owner, 2026-11-06), with the EMA. Phase 3 does not seed, move or publish it, and nothing in this plan writes it. The local `docs/tmp/lottery-ticker-weight-history.csv` is gitignored and stays as it is.
 4. **Phase 3, step order and the shared edits.** `lottery-refit` sits right after `outcome-check`; phase 3's steps go after it, registered with `lazy_step` or phase 3's `lazy_group_step`.

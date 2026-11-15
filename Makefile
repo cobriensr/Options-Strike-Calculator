@@ -219,8 +219,8 @@ refit:
 	@echo "════════════════════════════════════════════════════════════════"
 	@echo "  REFIT (dry runs) — the refit itself runs in the nightly service"
 	@echo "════════════════════════════════════════════════════════════════"
-	@# The refit runs in the nightly service's lottery-refit step (spec: docs/
-	@# superpowers/specs/2026-10-28-nightly-pipeline-automation-design.md,
+	@# The refit runs in the nightly service's lottery-refit step (spec:
+	@# docs/superpowers/specs/2026-10-28-nightly-pipeline-automation-design.md,
 	@# "Refit" decisions), so both commands here are dry runs: lottery_scoring.py
 	@# needs --through and prints the fit without storing it, and
 	@# backfill_lottery_scores.py writes nothing without --write. DATE is empty

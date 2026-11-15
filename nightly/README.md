@@ -515,7 +515,9 @@ told, and no live score changes.
   rejects as `shadow_starved` once 20 sessions have elapsed with fewer than 10
   evaluated, and otherwise passes or rejects on exactly the first 10 evaluated
   sessions, so a later session changes nothing. A pass promotes only when
-  `PROMOTION_ENABLED`; with it off the shadow is marked `passed`.
+  `PROMOTION_ENABLED`; with it off the shadow is marked `passed`. Only a `shadow` is
+  promoted: a `passed` version records a verdict reached against the `active` version
+  of its day, and the rescore refuses it.
 - Evaluation lags one session: session s is judged on the run after session s+1
   lands, so a fire whose net flow arrived late has its tape inversion by then. The
   newest session of the night is left for the next night.
@@ -523,6 +525,10 @@ told, and no live score changes.
   so a second one fails the step instead of queueing. A decided version (`passed`,
   `rejected`, `promoted`) is never re-opened. While promotion is off the cycle still
   runs and `active` never moves.
+- Every run, before it builds or judges anything, counts the fires tagged with a version
+  other than the active one (`fires_off_version`, below) and sends a notice when there
+  are any. That is a repair for the owner, not a refit failure: it never changes the
+  step's status or what the night does.
 
 **The same-night guard.** With no shadow, the step builds nothing when either:
 
@@ -545,7 +551,13 @@ a database error, and a pointer or score that moved under a promotion (`PointerM
 `ConcurrentScoreWriter`). The one exception is matched feed cutoffs the validator
 refuses: the creation check reports them as `invalid_weights`, and that candidate is
 stored `rejected` and announced. A promotion that starts too late, hits its deadline or
-waits out its 60 s lock timeout rolls back whole and is deferred instead (below).
+waits out its 60 s lock timeout rolls back whole and is deferred instead (below). A
+promotion whose connection drops is judged by the `active` pointer, read on a fresh
+connection: if it names the shadow, the commit was applied and only its acknowledgement
+was lost, so the step counts and announces it as promoted (the `promoted` notice then
+carries `commit_ack = lost` and no row counts, and `rows_rescored` is 0: take the total
+from the snapshot rows, step 2 of the undo). If it does not, or it cannot be read, the
+original error fails the step.
 
 **Counts.** Every result carries all of these, zero or not, in the `step lottery-refit`
 line and in the `counts` extra of the step alerts. The step also logs one line
@@ -566,6 +578,7 @@ naming the version and what it did, with no weight or ticker in it.
 | `rows_rescored`       | Fires the promotion's rescore changed; 0 unless `promoted`.                                    |
 | `train_rows`          | Rows in tonight's training window; 0 unless a candidate was trained.                           |
 | `eval_rows`           | Rows the verdict counted; 0 unless a shadow with an elapsed session was judged.                |
+| `fires_off_version`   | Fires whose `score_version` is set and is not the active version's. 0 means all agree.         |
 
 **The gates.** The values are in `ml/src/lottery_refit_gates.py`. Bands include both
 ends. A check that fails is listed in the verdict's `reasons`, in the order below, and
@@ -589,30 +602,53 @@ under that version's own feed cutoffs.
 
 The training window is 90 days (`TRAIN_WINDOW_DAYS`), the feed cutoffs are matched over
 the last 20 sessions (`FEED_CUTOFF_MATCH_SESSIONS`), and the match searches cutoffs up
-to 40 (`FEED_CUTOFF_SEARCH_MAX`).
+to 40 (`FEED_CUTOFF_SEARCH_MAX`). Tier 2 is searched from 6 and tier 1 from 7
+(`FEED_CUTOFF_FLOOR` is 6, one above the largest inversion bonus, 5). A feed cutoff of 5
+or less could tier a fire with no score (the feed counts it as `score 0` plus its bonus),
+which the gate counts as tier 3, so the gate would judge a tiering the feed does not
+show. A candidate that cannot match the active version's tier shares above that floor
+gets high cutoffs, which typically leave its tier 1 share under the band's 1%, so it is
+rejected at creation for that.
 
-**Notices.** Four fixed titles, all with the tags `service=nightly`,
+**Notices.** Six fixed titles, all with the tags `service=nightly`,
 `step=lottery-refit`, `refit` (the kind) and `version`. The extras are aggregates only:
 counts, ρ values, tier shares and ratios, the feed cutoffs before and after, the number
 of ticker weights that changed, the labels of flipped signs (`C/P`, `DTE0`), and
 `reasons`. Never a ticker, a weight or a fire. Sentry's new-issue rule mails each new
 issue at any level, so the fingerprint decides what mails:
 
-| Sentry title                               | Level   | When                                     | Mails                              |
-| ------------------------------------------ | ------- | ---------------------------------------- | ---------------------------------- |
-| `nightly refit promoted`                   | warning | A shadow passed and was promoted.        | Once per version.                  |
-| `nightly refit passed; promotion disabled` | warning | A shadow passed and promotion is off.    | Once per version.                  |
-| `nightly refit rejected`                   | error   | A shadow failed its gates or starved.    | Once per version.                  |
-| `nightly refit candidate rejected`         | error   | A new candidate failed a creation check. | Once per new first reason (below). |
+| Sentry title                                    | Level   | When                                               | Mails                                                      |
+| ----------------------------------------------- | ------- | -------------------------------------------------- | ---------------------------------------------------------- |
+| `nightly refit promoted`                        | warning | A shadow passed and was promoted.                  | Once per version.                                          |
+| `nightly refit passed; promotion disabled`      | warning | A shadow passed and promotion is off.              | Once per version.                                          |
+| `nightly refit rejected`                        | error   | A shadow failed its gates or starved.              | Once per version.                                          |
+| `nightly refit candidate rejected`              | error   | A new candidate failed a creation check.           | Once per new first reason (below).                         |
+| `nightly refit fires scored by another version` | warning | `fires_off_version` is above 0 (extra: the count). | Once per active version; resolve the issue after a repair. |
+| `nightly refit promotion deferred repeatedly`   | error   | A passing shadow was deferred on its third night.  | Once per version.                                          |
 
 A candidate rejected at creation groups by its first reason, not its version (owner,
 2026-11-06). A thin-data streak, the same reason night after night, is one issue and
 mails once; a new first reason opens and mails as a new issue. The streak shows in the
-issue's event count and the step's logs. A deferred promotion sends no refit notice: the
-step ends `partial` and `nightly step partial` warns, with the detail
-`promotion deferred to the next night`.
+issue's event count and the step's logs.
 
-**Reading `gate_report`.** Each version's `gate_report` (JSON) holds up to four
+A deferred promotion sends no refit notice on its first two nights: the step ends
+`partial` and `nightly step partial` warns, with the detail
+`promotion deferred to the next night`. Each deferred night is recorded on the shadow
+(`gate_report.deferred_nights`, one entry per UTC date, so a re-run of the same night
+adds none). On the third, the `promotion deferred repeatedly` error goes out with the
+version in its fingerprint, which says the promotion does not fit its window (the
+rescore needs `PROMOTION_MIN_SECONDS` before the step's deadline and
+`PROMOTION_CUTOFF_UTC`) and that the next night will defer it again; look at the
+window, the rescore's duration and the lock waits. A promotion or a rejection ends the
+count (the version is no longer a shadow), and a fourth night sends nothing more.
+
+`nightly refit fires scored by another version` is a repair, not a failure. After a
+promotion every fire carries the active tag. A fire that does not was scored by a live
+writer that fell back to the seed (the Vercel loader could not read the store for a
+cache period), or was left behind by an undo. The step counts those every night, in
+the same notice, and the repair is under "Vercel side" below.
+
+**Reading `gate_report`.** Each version's `gate_report` (JSON) holds up to five
 top-level keys. The paths below are the keys the code stores:
 
 - `creation`, written when the candidate is built: `creation.verdict.ok`,
@@ -632,6 +668,8 @@ top-level keys. The paths below are the keys the code stores:
 - `replaced`, written by a promotion, beside `verdict` and not inside it: the version
   `active` named when the promotion committed, the one the by-hand undo below points
   `active` back to. Every promotion records it, with or without a `verdict`.
+- `deferred_nights`, a list of the ISO dates on which this shadow's promotion was
+  deferred, oldest first. Absent until the first deferral.
 
 The stored `verdict` is the authoritative record of a decision. The `sessions` entries
 are a snapshot, written once when a session became evaluable and never recomputed;
@@ -689,9 +727,9 @@ such as `1, 2`.
    ```
 
    The value is `<previous>`: the version `active` named when the promotion committed.
-   The first promotion off the seed returns `seed-2026-06-17`. If it returns NULL (or no
-   row), stop and ask: it would mean a promotion made before the record existed, and
-   none exist.
+   The first promotion off the seed returns `seed-2026-06-17`. If the cell is blank or
+   psql prints `(0 rows)` (how it shows NULL, and no row), stop and ask: it would mean a
+   promotion made before the record existed, and none exist.
 
 4. Move `active` back and restore the scores, in one transaction. Steps 4 and 5 run in
    one interactive `psql` session: `BEGIN`, the two statements, read the counts, then
@@ -718,12 +756,39 @@ such as `1, 2`.
    If both match, run `COMMIT;` in the same session. Otherwise run `ROLLBACK;` and find
    out why.
 
+6. Repair the fires created between the promotion and the undo. They are in no snapshot
+   row, so step 4 left them with the promoted version's score and tag. Run the rescore
+   with the previous version over exactly those tags (see the window below):
+
+   ```bash
+   ml/.venv/Scripts/python scripts/backfill_lottery_scores.py \
+     --version <previous> --only-tag <promoted>          # a dry run: read the counts
+   ml/.venv/Scripts/python scripts/backfill_lottery_scores.py \
+     --version <previous> --only-tag <promoted> --write
+   ```
+
+   A pre-open undo usually has none, but run the dry run anyway and expect `scanned 0`
+   then. `--only-tag` is required: without it the run would rescore every fire scored
+   before the store existed, which carry no tag after step 4 undid the first promotion,
+   with `<previous>`'s weights and tag them. Both commands take the same window as the
+   undo itself: outside 13:00 to 24:00 UTC on weekdays, and not while a nightly run is
+   going (07:15 to 12:30 UTC, Tuesday to Saturday). They connect with `DATABASE_URL`
+   from `.env.local` (the production database), so run them deliberately.
+
 This writes nothing to `lottery_score_versions`: the undone version keeps its status
 `promoted`, and its `gate_report.verdict` still records the decision. `active` is the
 authority on what is live; the status of an undone version does not change, and the refit
 ignores it, since it reads only the `shadow` row and the `active` pointer. The `takeit`
 pointer is untouched by a promotion, so it needs nothing. A fire created after the
-promotion is in no snapshot row and keeps the promoted version's score and tag.
+promotion is in no snapshot row and keeps the promoted version's score and tag until
+step 6 runs. The next night's `fires_off_version` count says whether any is left.
+
+**One column is not rescored.** `cluster_bonus` is computed when a fire is inserted, from
+the inserting version's `t1` cutoff and the scores of that run, and neither a promotion
+nor a repair recomputes it: it stays on the version that inserted the fire, so after a
+promotion the column mixes versions. Nothing live reads it (only
+`scripts/analyze-tag-scorecard-2026-05-29.ts` does), and the undo does not restore it
+either.
 
 **Turning promotion on.** `PROMOTION_ENABLED` in `src/constants.py` is a reviewed
 constant, not an env var: it is read in one place, and flipping it rewrites the live
@@ -742,9 +807,13 @@ feed's scores and tiers.
    before the earliest US open) and `PROMOTION_MIN_SECONDS` (1,200 s): it starts only
    with that long left before both the step's own deadline and the cutoff, and its
    rescore stops at whichever comes first. One that starts too late, hits that deadline
-   or waits out the lock timeout rolls back whole. The version stays a shadow, no
-   refit notice goes out, the step is `partial` (`promotion_deferred`) and the next
-   night judges it again.
+   or waits out the lock timeout rolls back whole. The version stays a shadow, the step
+   is `partial` (`promotion_deferred`) and the next night judges it again. The first two
+   such nights send no refit notice; the third sends the `promotion deferred repeatedly`
+   error. The rescore's transaction also sets a 120 s
+   `idle_in_transaction_session_timeout`, so a process lost with its connection still
+   open is rolled back by the server two minutes later instead of holding the pointer
+   and the fire locks into the market session.
 5. On the promotion night check that the snapshot rows' fire count equals
    `rows_rescored`, `active` names the new version and `takeit` the seed, the next
    session's fires carry the new `score_version`, and the `nightly refit promoted`
@@ -754,6 +823,32 @@ feed's scores and tiers.
 through `api/_lib/lottery-weights-loader.ts`. When the store cannot give a valid pair
 they score with the frozen seed and send the Sentry error
 `lottery weights fallback to seed` from the Vercel project, not this service.
+
+After a promotion those fires carry the seed's tag and score. The feed tiers them with
+the active version's cutoffs, and phase 3's reports read stored scores on the assumption
+that all fires share one version, so they need repairing. This service does not repair
+them. The next night's refit counts them (`fires_off_version`, and a `nightly refit
+fires scored by another version` notice). Repair them by hand with the rescore, pinned
+to the active version and limited to the residue's tag. A seed fallback leaves the
+seed's, `seed-2026-06-17`; to see which tags there are:
+
+```sql
+SELECT score_version, count(*) FROM lottery_finder_fires
+ WHERE score_version IS NOT NULL GROUP BY 1 ORDER BY 2 DESC;
+```
+
+```bash
+ml/.venv/Scripts/python scripts/backfill_lottery_scores.py --only-tag <the residue's tag>
+ml/.venv/Scripts/python scripts/backfill_lottery_scores.py --only-tag <the residue's tag> --write
+```
+
+The first is a dry run. Without `--only-tag` the run would rescore every fire, including
+those scored before the store existed, which carry no tag. Run it outside 13:00 to
+24:00 UTC on weekdays and not while a nightly run is going (07:15 to 12:30 UTC, Tuesday
+to Saturday): it locks every fire it rewrites until it commits, and the live crons and
+a promotion write the same fires. It connects with `DATABASE_URL` from `.env.local`,
+which is the production database. Resolve the Sentry issue afterwards, so the next
+residue mails again.
 
 ## Alert meanings
 
@@ -768,30 +863,32 @@ text is log-safe by contract: a `TapeValidationError`'s or `R2VerifyError`'s
 message (names, counts and keys only), or a botocore `ClientError`'s error code.
 Otherwise it is empty. It never changes the grouping.
 
-| Sentry title                               | Level   | Meaning                                                                                                                                                                                                                                                                                                                |
-| ------------------------------------------ | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `nightly tape day failed`                  | error   | A day did not land. `detail` names the kind; `reason` may say more. Retried next night.                                                                                                                                                                                                                                |
-| `nightly tape day skipped_disk`            | error   | Free disk too low; the rest of the run was skipped.                                                                                                                                                                                                                                                                    |
-| `nightly tape day skipped_deadline`        | error   | The run ran out of time; the rest was skipped.                                                                                                                                                                                                                                                                         |
-| `nightly tape day not_posted`              | warning | UW had not posted a recent day. Usually clears itself.                                                                                                                                                                                                                                                                 |
-| `nightly tape day unavailable`             | warning | A marker was written; one issue per day. Check it was expected.                                                                                                                                                                                                                                                        |
-| `nightly tape day landed with warnings`    | warning | Landed, but a plausibility check flagged it (row ratio or time window) or cleanup failed.                                                                                                                                                                                                                              |
-| `nightly tape day relanded`                | warning | A day was re-landed after its UW ETag changed. Sent for every re-land, one issue per day; `warnings` lists any flags.                                                                                                                                                                                                  |
-| `nightly re-land identical content`        | warning | A re-land whose `rows` and `source-bytes` equal the old object's: likely ETag churn, not a rewrite. One issue per day.                                                                                                                                                                                                 |
-| `nightly rewrite check unavailable`        | warning | No probed day could be compared, so a rewrite would go unseen. `days` is how many were left unchecked.                                                                                                                                                                                                                 |
-| `nightly step failed`                      | error   | A step finished `failed` without raising. `enrich-outcomes`: a day failed, came back with no outcomes or priced none. `outcome-check`: a recent session has no outcomes. `lottery-refit` never ends `failed`: it raises (exception row below). Read the alerts below and the run log.                                  |
-| `nightly step partial`                     | warning | A step ran out of time with work left for the next night (`days_left` in `counts`). Expected while the history drains; look only if it persists. `lottery-refit`: a promotion was deferred (`promotion_deferred`); the shadow stays and the next night judges it again.                                                |
-| `nightly step skipped_deadline`            | error   | A step started with less than its own reserve left, so it did not run (the later steps still did). The tape or an earlier step overran its share; the next night runs it again.                                                                                                                                        |
-| `nightly outcomes all null`                | error   | `outcome-check`: a table has fires on one of the last 3 sessions (`OUTCOME_CHECK_SESSIONS`) and none has an outcome. Tags `table`, `day`; extras `rows`, `with_outcome`. One issue per table and day. See below.                                                                                                       |
-| `nightly outcomes mostly null`             | warning | `outcome-check`: fewer than 95% (`LOW_OUTCOME_SHARE`) of a table-day's fires have an outcome. One warning per run; `days` lists `table:day`. Fires the tape cannot price stay without one (see "Enrichment").                                                                                                          |
-| `nightly refit promoted`                   | warning | `lottery-refit`: a shadow passed its gates and was promoted: the live scores were rewritten and `active` moved. One issue per version. See "Refit".                                                                                                                                                                    |
-| `nightly refit passed; promotion disabled` | warning | `lottery-refit`: a shadow passed its gates; promotion is off, so it is marked `passed` and no live score changed. One issue per version. See "Refit".                                                                                                                                                                  |
-| `nightly refit rejected`                   | error   | `lottery-refit`: a shadow failed its gates or starved; `reasons` lists them. One issue per version. See "Refit".                                                                                                                                                                                                       |
-| `nightly refit candidate rejected`         | error   | `lottery-refit`: a new candidate failed a creation check and was stored `rejected`. One issue per first reason, so a thin-data streak mails once. See "Refit".                                                                                                                                                         |
-| exception tagged `step`                    | error   | A step raised (a database error, an import error). The step is `failed` and the log names the exception class; no `nightly step failed` event follows. `lottery-refit` also raises on invalid stored weights, a judged session with no feed rows, a second shadow, or a pointer or score that moved under a promotion. |
-| exception tagged `step` and `day`          | error   | One day of `enrich-outcomes` raised (its download, its connection, either script's pass). Counted in `days_failed`; the step goes on with the next day and retries this one next night.                                                                                                                                |
-| `nightly config invalid`                   | error   | Bad config. `fields` names the invalid settings. Sent only if `SENTRY_DSN` is valid.                                                                                                                                                                                                                                   |
-| `NYSE holiday table ends in {year}; ...`   | warning | From Oct 1 of the table's last year. Add the next year to `calendar_nyse.py`, or the job refuses to run.                                                                                                                                                                                                               |
+| Sentry title                                    | Level   | Meaning                                                                                                                                                                                                                                                                                                                                       |
+| ----------------------------------------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `nightly tape day failed`                       | error   | A day did not land. `detail` names the kind; `reason` may say more. Retried next night.                                                                                                                                                                                                                                                       |
+| `nightly tape day skipped_disk`                 | error   | Free disk too low; the rest of the run was skipped.                                                                                                                                                                                                                                                                                           |
+| `nightly tape day skipped_deadline`             | error   | The run ran out of time; the rest was skipped.                                                                                                                                                                                                                                                                                                |
+| `nightly tape day not_posted`                   | warning | UW had not posted a recent day. Usually clears itself.                                                                                                                                                                                                                                                                                        |
+| `nightly tape day unavailable`                  | warning | A marker was written; one issue per day. Check it was expected.                                                                                                                                                                                                                                                                               |
+| `nightly tape day landed with warnings`         | warning | Landed, but a plausibility check flagged it (row ratio or time window) or cleanup failed.                                                                                                                                                                                                                                                     |
+| `nightly tape day relanded`                     | warning | A day was re-landed after its UW ETag changed. Sent for every re-land, one issue per day; `warnings` lists any flags.                                                                                                                                                                                                                         |
+| `nightly re-land identical content`             | warning | A re-land whose `rows` and `source-bytes` equal the old object's: likely ETag churn, not a rewrite. One issue per day.                                                                                                                                                                                                                        |
+| `nightly rewrite check unavailable`             | warning | No probed day could be compared, so a rewrite would go unseen. `days` is how many were left unchecked.                                                                                                                                                                                                                                        |
+| `nightly step failed`                           | error   | A step finished `failed` without raising. `enrich-outcomes`: a day failed, came back with no outcomes or priced none. `outcome-check`: a recent session has no outcomes. `lottery-refit` never ends `failed`: it raises (exception row below). Read the alerts below and the run log.                                                         |
+| `nightly step partial`                          | warning | A step ran out of time with work left for the next night (`days_left` in `counts`). Expected while the history drains; look only if it persists. `lottery-refit`: a promotion was deferred (`promotion_deferred`); the shadow stays and the next night judges it again (the third night in a row also sends `promotion deferred repeatedly`). |
+| `nightly step skipped_deadline`                 | error   | A step started with less than its own reserve left, so it did not run (the later steps still did). The tape or an earlier step overran its share; the next night runs it again.                                                                                                                                                               |
+| `nightly outcomes all null`                     | error   | `outcome-check`: a table has fires on one of the last 3 sessions (`OUTCOME_CHECK_SESSIONS`) and none has an outcome. Tags `table`, `day`; extras `rows`, `with_outcome`. One issue per table and day. See below.                                                                                                                              |
+| `nightly outcomes mostly null`                  | warning | `outcome-check`: fewer than 95% (`LOW_OUTCOME_SHARE`) of a table-day's fires have an outcome. One warning per run; `days` lists `table:day`. Fires the tape cannot price stay without one (see "Enrichment").                                                                                                                                 |
+| `nightly refit promoted`                        | warning | `lottery-refit`: a shadow passed its gates and was promoted: the live scores were rewritten and `active` moved. One issue per version. See "Refit".                                                                                                                                                                                           |
+| `nightly refit passed; promotion disabled`      | warning | `lottery-refit`: a shadow passed its gates; promotion is off, so it is marked `passed` and no live score changed. One issue per version. See "Refit".                                                                                                                                                                                         |
+| `nightly refit rejected`                        | error   | `lottery-refit`: a shadow failed its gates or starved; `reasons` lists them. One issue per version. See "Refit".                                                                                                                                                                                                                              |
+| `nightly refit candidate rejected`              | error   | `lottery-refit`: a new candidate failed a creation check and was stored `rejected`. One issue per first reason, so a thin-data streak mails once. See "Refit".                                                                                                                                                                                |
+| `nightly refit fires scored by another version` | warning | `lottery-refit`: `fires_off_version` is above 0 (the count is in the extras): fires carry a `score_version` other than the active version's. A repair for you, not a failure; the step's status is unchanged. One issue per active version. Repair: "Vercel side" in "Refit".                                                                 |
+| `nightly refit promotion deferred repeatedly`   | error   | `lottery-refit`: a passing shadow's promotion was deferred on its third night (`deferred_nights` in extras). It does not fit its window; the next night defers it again. One issue per version. See "Refit".                                                                                                                                  |
+| exception tagged `step`                         | error   | A step raised (a database error, an import error). The step is `failed` and the log names the exception class; no `nightly step failed` event follows. `lottery-refit` also raises on invalid stored weights, a judged session with no feed rows, a second shadow, or a pointer or score that moved under a promotion.                        |
+| exception tagged `step` and `day`               | error   | One day of `enrich-outcomes` raised (its download, its connection, either script's pass). Counted in `days_failed`; the step goes on with the next day and retries this one next night.                                                                                                                                                       |
+| `nightly config invalid`                        | error   | Bad config. `fields` names the invalid settings. Sent only if `SENTRY_DSN` is valid.                                                                                                                                                                                                                                                          |
+| `NYSE holiday table ends in {year}; ...`        | warning | From Oct 1 of the table's last year. Add the next year to `calendar_nyse.py`, or the job refuses to run.                                                                                                                                                                                                                                      |
 
 A run that fails before its first day (R2 listing, work dir setup) sends the
 exception itself as an error event, and the steps still run. If the last session

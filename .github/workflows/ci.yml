@@ -138,7 +138,8 @@ jobs:
               - 'ml/pyproject.toml'
               # The api files those tests read: the score-parity fixtures
               # (test_lottery_weights.py, test_lottery_refit_gates.py,
-              # test_lottery_scoring.py, test_backfill_lottery_scores.py), the
+              # test_lottery_scoring.py, test_backfill_lottery_scores.py, and
+              # nightly/tests/test_refit_step.py and test_weights_store.py), the
               # inversion-bonus map and the feed's qasExprText (test_lottery_refit_gates.py).
               - 'api/__tests__/fixtures/lottery-score-parity.json'
               - 'api/__tests__/fixtures/lottery-score-parity-alt.json'
@@ -399,7 +400,8 @@ jobs:
 
       # The three steps below run from the repo root, in the nightly environment:
       # the files the image copies from outside nightly/, against nightly's pins.
-      # The ml job's "Scripts tests" runs the same tests against ml's pins.
+      # The ml job runs the same tests against ml's pins: the scripts/ ones in its
+      # "Scripts tests" step, the ml/tests/ ones in "Lint & Tests" (`make review`).
       - name: Lint shared image files
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         working-directory: .
@@ -460,7 +462,10 @@ jobs:
       # the enrich scripts put ml/src on sys.path when they load, so after them
       # a PYTHONPATH without /app/ml/src would still pass. As in
       # nightly/tests/test_image_layout.py, only PYTHONPATH may resolve them. The
-      # image has no scipy, and none of these imports may load it. Importing loads
+      # image has no scipy. A top-level `import scipy` in one of these modules fails
+      # the step by itself, with ModuleNotFoundError. The sys.modules assert is the
+      # second net: it fires if scipy ever reaches the image (as a transitive
+      # dependency, say) and one of these imports starts to load it. Importing loads
       # no settings and opens no connection; no network keeps it so.
       - name: Import the steps in the image
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
