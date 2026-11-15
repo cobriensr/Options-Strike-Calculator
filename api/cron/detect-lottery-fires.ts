@@ -102,6 +102,18 @@ import { parseUwHttpStatus, withRetry } from '../_lib/uw-fetch.js';
 // change it with care.
 const CANDLE_FETCH_DEADLINE_MS = 5_000;
 
+// How far into the run (the wrapper's clock, `Date.now() - ctx.startTimeMs`,
+// the same one the flow series cutoff reads) Pass 2 still starts a candle
+// lookup. The 5 s deadline caps each lookup, but the breaker opens only on a
+// failure, so a run of slow answers just under it is capped by nothing, and
+// the per-fire INSERTs share the same Pass 2 and the same 60 s. Past this mark
+// the lookups stop: a fire is written without range_pos, as after a failed
+// lookup (range_pos is display-only), and the skip is counted. A lookup
+// started at the mark ends by 50 s at the latest, which leaves 10 s of the
+// 60 s for the remaining INSERTs, which are never skipped. Stops candle
+// lookups only; the flow series have their own 30 s mark.
+const CANDLE_RUN_CUTOFF_MS = 45_000;
+
 // Per-chain print floor — matches the Python p14.py MIN_PRINTS / 14
 // scaling for a 7-min slice. The detector also gates on cntWindowMin
 // (≥5 in the rolling window) but we filter at the SQL level too so the
@@ -682,14 +694,17 @@ export default withCronInstrumentation(
     const candleCache = new Map<string, UWStockCandle[]>();
     // Candle lookups this run, one per ticker-day: UW failures (deadline
     // included), days UW returned no candles for, cash-index days skipped
-    // by design, and days skipped once the breaker opened. All go in the
-    // Axiom payload (→ `meta`). Failures and empty days each raise one
-    // Sentry warning per run, after the insert loop, and all but the
-    // index skips make a run that wrote fires 'partial' (see Status below).
+    // by design, days skipped once the breaker opened, and days skipped
+    // because the run was past CANDLE_RUN_CUTOFF_MS. All go in the Axiom
+    // payload (→ `meta`). Failures and empty days each raise one Sentry
+    // warning per run, after the insert loop, and all but the index skips
+    // make a run that wrote fires 'partial' (see Status below). A cutoff
+    // skip alone raises no warning: the counter and the status show it.
     let candleFetchFailures = 0;
     let candleFetchEmpty = 0;
     let candleFetchSkippedIndex = 0;
     let candleFetchSkippedBreaker = 0;
+    let candleFetchSkippedCutoff = 0;
     let candleBreakerOpen = false;
     let firstCandleFetchError: {
       ticker: string;
@@ -805,10 +820,13 @@ export default withCronInstrumentation(
         let flowSeries = tickerFlowCache.get(flowCacheKey);
         if (flowSeries == null) {
           flowSeries = { ts: [], cumNcp: [], cumNpp: [] };
+          // The run's age is the wrapper's clock (set before its in-progress
+          // check-in), the one silent boom and the win-rate warm-up use, so
+          // the two detectors cut off at the same moment of a run.
           const flowDeadlineMs = nextFlowSeriesDeadlineMs(
             flowSeriesFailures,
             flowSeriesSpentMs,
-            msSince(runStartedAt),
+            Date.now() - ctx.startTimeMs,
           );
           if (flowDeadlineMs == null) {
             flowSeriesSkippedBreaker += 1;
@@ -1033,8 +1051,8 @@ export default withCronInstrumentation(
         // spot position in the session range up to trigger time. Written
         // to the row for the display-only "NEW HIGH" badge; not used in
         // V2 scoring. With no candles (index root, UW failure, deadline,
-        // empty day, breaker skip) range_pos stays null and the fire is
-        // still written.
+        // empty day, breaker skip, run past the cutoff) range_pos stays null
+        // and the fire is still written.
         const cacheKey = `${rec.underlyingSymbol}_${rec.date}`;
         let candles = candleCache.get(cacheKey);
         if (candles == null) {
@@ -1048,6 +1066,10 @@ export default withCronInstrumentation(
             candleFetchSkippedIndex += 1;
           } else if (candleBreakerOpen) {
             candleFetchSkippedBreaker += 1;
+          } else if (Date.now() - ctx.startTimeMs >= CANDLE_RUN_CUTOFF_MS) {
+            // The empty array cached below makes the rest of this
+            // ticker-day's fires skip it too, uncounted.
+            candleFetchSkippedCutoff += 1;
           } else {
             const candleStartedAt = performance.now();
             try {
@@ -1423,14 +1445,21 @@ export default withCronInstrumentation(
     };
     if (flowSeriesFailures > 0 || flowSeriesSkippedBreaker > 0) {
       // One fingerprint for both, so one issue; the text tells a failure from
-      // a skip on time alone (nothing failed: slow answers spent the budget,
-      // or setup used the run's time). The detail carries both counts.
+      // a skip on time alone (no query failed at all: slow answers spent the
+      // budget, or setup used the run's time). A broken query counts as a
+      // failure here though it never opens the breaker, so the text goes by
+      // both counts, and the detail carries them with the skip count.
       reportRunProblem(
         'flow-series-failed',
-        flowSeriesFailures > 0
+        flowSeriesFailures > 0 || flowSeriesGenuineFailures > 0
           ? 'detect-lottery-fires: ticker flow series failed; fires written without flow features'
           : 'detect-lottery-fires: ticker flow series skipped, run time spent and no query failed; fires written without flow features',
-        { flowSeriesFailures, flowSeriesSkippedBreaker, firstFlowSeriesError },
+        {
+          flowSeriesFailures,
+          flowSeriesSkippedBreaker,
+          flowSeriesGenuineFailures,
+          firstFlowSeriesError,
+        },
       );
     }
     // A flow-series error that isn't Neon being slow is a broken query: the
@@ -1547,6 +1576,7 @@ export default withCronInstrumentation(
         candleFetchEmpty,
         candleFetchSkippedIndex,
         candleFetchSkippedBreaker,
+        candleFetchSkippedCutoff,
         takeitPrefetchFailures: takeitPrefetchError == null ? 0 : 1,
         takeitScoreFailures,
         weightsFallback: weightsFallback?.kind ?? null,
@@ -1573,10 +1603,11 @@ export default withCronInstrumentation(
     //     (no flow features or V2 score on that ticker's fires), a failed
     //     anchor-legs lookup, transient or not (anchor columns NULL on every
     //     fire), a stock candle lookup that failed, was skipped by the
-    //     breaker or came back empty (range_pos NULL on that ticker's
-    //     fires), a macro snapshot lookup that threw (that fire written with
-    //     EMPTY_MACRO, so no direction gate), a GexBot snapshot lookup
-    //     that threw (gex_* NULL on that fire), or a weights store that
+    //     breaker or the 45 s run cutoff, or came back empty (range_pos NULL
+    //     on that ticker's fires), a macro snapshot lookup that threw (that
+    //     fire written with EMPTY_MACRO, so no direction gate), a GexBot
+    //     snapshot lookup that threw (gex_* NULL on that fire), or a weights
+    //     store that
     //     couldn't be read (the fires are scored with the seed, and their
     //     score_version says so) makes the run 'partial' when it wrote
     //     fires. With nothing written, no row was degraded and the run stays
@@ -1598,6 +1629,7 @@ export default withCronInstrumentation(
       anchorLookupError != null ||
       candleFetchFailures > 0 ||
       candleFetchSkippedBreaker > 0 ||
+      candleFetchSkippedCutoff > 0 ||
       candleFetchEmpty > 0 ||
       macroSnapshotFailures > 0 ||
       gexLookupFailures > 0 ||
@@ -1631,6 +1663,7 @@ export default withCronInstrumentation(
         candleFetchEmpty,
         candleFetchSkippedIndex,
         candleFetchSkippedBreaker,
+        candleFetchSkippedCutoff,
         takeitPrefetchFailures: takeitPrefetchError == null ? 0 : 1,
         takeitPrefetchError,
         takeitPrefetchFailureKind,

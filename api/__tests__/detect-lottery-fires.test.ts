@@ -1270,6 +1270,112 @@ describe('detect-lottery-fires handler', () => {
       );
     });
 
+    // The breaker opens only on a failure, so a run of slow successes (each
+    // under the 5 s deadline) is not capped by it. The run-level stop is the
+    // 45 s mark, read off the wrapper's clock (ctx.startTimeMs, a Date), and
+    // it is checked where each ticker-day's lookup would start. SNDK's INSERT
+    // takes `insertMs`, so TSLA's lookup is reached that long into the run.
+    // Only Date and the timers are faked: a cutoff read off performance.now()
+    // would see no time pass.
+    describe.each([
+      {
+        insertMs: 44_999,
+        asks: ['SNDK', 'TSLA'],
+        skipped: 0,
+        status: 'success',
+        tslaRangePos: 'set',
+      },
+      {
+        insertMs: 45_000,
+        asks: ['SNDK'],
+        skipped: 1,
+        status: 'partial',
+        tslaRangePos: null,
+      },
+    ])(
+      'run cutoff, a ticker-day reached $insertMs ms into the run',
+      ({ insertMs, asks, skipped, status, tslaRangePos }) => {
+        it(`asks UW for ${asks.join(' and ')}, counts ${skipped} cutoff skip(s) and reports ${status}`, async () => {
+          stageTicks([
+            ...fireableSndkStream(),
+            ...streamFor('TSLA', 'TSLA260501C01175000'),
+          ]);
+          router.on('insert', (_call, nth) =>
+            nth === 0
+              ? new Promise((resolve) => {
+                  setTimeout(() => resolve([{ id: 1 }]), insertMs);
+                })
+              : [{ id: nth + 1 }],
+          );
+
+          vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+          const res = mockResponse();
+          const run = handler(authorizedReq(), res);
+          await vi.advanceTimersByTimeAsync(insertMs);
+          await run;
+
+          expect(res._status).toBe(200);
+          expect(fetchedTickers()).toEqual(asks);
+          expect(res._json).toMatchObject({
+            status,
+            inserted: 2,
+            candleFetchFailures: 0,
+            candleFetchSkippedBreaker: 0,
+            candleFetchSkippedCutoff: skipped,
+          });
+          // The fire is still written, as it is after a failed lookup: only
+          // range_pos is left out.
+          const [sndk, tsla] = extractAllInsertBinds(
+            mockSql,
+            'lottery_finder_fires',
+          );
+          expect(sndk!.get('range_pos_at_trigger')).toBeCloseTo(0.4, 5);
+          if (tslaRangePos === 'set') {
+            expect(tsla!.get('range_pos_at_trigger')).toBeCloseTo(0.4, 5);
+          } else {
+            expect(tsla!.get('underlying_symbol')).toBe('TSLA');
+            expect(tsla!.get('range_pos_at_trigger')).toBeNull();
+          }
+          // A skip is not a failure: no candle warning is raised for it.
+          expect(candleWarnCalls()).toEqual([]);
+          expect(mockSentryCaptureMessage).not.toHaveBeenCalledWith(
+            CANDLE_FAILED_MSG,
+            expect.anything(),
+          );
+        });
+      },
+    );
+
+    it('asks once per ticker-day after the cutoff and counts each ticker-day skipped, not each fire', async () => {
+      // SNDK's first INSERT takes 46 s. Both TSLA fires share one ticker-day,
+      // so the skip is one lookup, not two.
+      stageTicks([
+        ...fireableSndkStream(),
+        ...streamFor('TSLA', 'TSLA260501C01175000'),
+        ...streamFor('TSLA', 'TSLA260501P01175000'),
+      ]);
+      router.on('insert', (_call, nth) =>
+        nth === 0
+          ? new Promise((resolve) => {
+              setTimeout(() => resolve([{ id: 1 }]), 46_000);
+            })
+          : [{ id: nth + 1 }],
+      );
+
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+      const res = mockResponse();
+      const run = handler(authorizedReq(), res);
+      await vi.advanceTimersByTimeAsync(46_000);
+      await run;
+
+      expect(fetchedTickers()).toEqual(['SNDK']);
+      expect(res._json).toMatchObject({
+        status: 'partial',
+        inserted: 3,
+        candleFetchSkippedCutoff: 1,
+      });
+    });
+
     it('reports every candle counter to Axiom under meta, never as a top-level column', async () => {
       stageTicks(fireableSndkStream());
 
@@ -1283,6 +1389,7 @@ describe('detect-lottery-fires handler', () => {
         'candleFetchEmpty',
         'candleFetchFailures',
         'candleFetchSkippedBreaker',
+        'candleFetchSkippedCutoff',
         'candleFetchSkippedIndex',
       ]);
       // reportCronRun folds any key outside AXIOM_TOP_LEVEL_KEYS into
@@ -4089,8 +4196,9 @@ describe('detect-lottery-fires handler', () => {
       }
       router.on('insert', (_call, nth) => [{ id: nth + 1 }]);
 
+      // Date too: the cron measures the run from the wrapper's Date.now().
       vi.useFakeTimers({
-        toFake: ['setTimeout', 'clearTimeout', 'performance'],
+        toFake: ['setTimeout', 'clearTimeout', 'performance', 'Date'],
       });
       const res = mockResponse();
       const run = handler(authorizedReq(), res);
@@ -4158,8 +4266,9 @@ describe('detect-lottery-fires handler', () => {
       }
       router.on('insert', (_call, nth) => [{ id: nth + 1 }]);
 
+      // Date too: the cron measures the run from the wrapper's Date.now().
       vi.useFakeTimers({
-        toFake: ['setTimeout', 'clearTimeout', 'performance'],
+        toFake: ['setTimeout', 'clearTimeout', 'performance', 'Date'],
       });
       const res = mockResponse();
       const run = handler(authorizedReq(), res);
@@ -4240,8 +4349,9 @@ describe('detect-lottery-fires handler', () => {
       router.when('flowSeries', flowSeriesOf('TSLA'), ALIGNED_FLOW);
       router.on('insert', (_call, nth) => [{ id: nth + 1 }]);
 
+      // Date too: the cron measures the run from the wrapper's Date.now().
       vi.useFakeTimers({
-        toFake: ['setTimeout', 'clearTimeout', 'performance'],
+        toFake: ['setTimeout', 'clearTimeout', 'performance', 'Date'],
       });
       const res = mockResponse();
       let settled = false;
@@ -4294,9 +4404,9 @@ describe('detect-lottery-fires handler', () => {
       );
       router.on('insert', (_call, nth) => [{ id: nth + 1 }]);
 
-      vi.useFakeTimers({
-        toFake: ['setTimeout', 'clearTimeout', 'performance'],
-      });
+      // Date only: the cutoff reads the wrapper's clock, so a run measured on
+      // performance.now() would see no time pass and ask for the series.
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
       const res = mockResponse();
       const run = handler(authorizedReq(), res);
       await vi.advanceTimersByTimeAsync(31_000);
@@ -4389,6 +4499,73 @@ describe('detect-lottery-fires handler', () => {
         FLOW_FAILED_MSG,
         expect.anything(),
       );
+    });
+
+    it('does not say no query failed when a broken query and a time skip share a run', async () => {
+      stageSlowTicks(
+        [
+          ...fireableSndkStream(),
+          ...streamFor('TSLA', 'TSLA260501C01175000'),
+          ...streamFor('RKLB', 'RKLB260501C01175000'),
+        ],
+        20_000,
+      );
+      // 20 s setup. SNDK's series is a broken query: it fails at once and
+      // counts only as genuine (not toward the breaker). TSLA's answers 6 s
+      // later, and RKLB is then skipped: 4 s are left of the 30 s run cutoff,
+      // under the 5 s minimum. So a query failed, though flowSeriesFailures
+      // (deadline or transient failures) is 0.
+      const flowError = new Error('column "net_call_prem" does not exist');
+      router.when('flowSeries', flowSeriesOf('SNDK'), flowError);
+      router.when(
+        'flowSeries',
+        flowSeriesOf('TSLA'),
+        () =>
+          new Promise((resolve) => {
+            setTimeout(() => resolve(ALIGNED_FLOW), 6_000);
+          }),
+      );
+      router.on('insert', (_call, nth) => [{ id: nth + 1 }]);
+
+      vi.useFakeTimers({
+        toFake: ['setTimeout', 'clearTimeout', 'performance', 'Date'],
+      });
+      const res = mockResponse();
+      const run = handler(authorizedReq(), res);
+      await vi.advanceTimersByTimeAsync(26_000);
+      await run;
+
+      expect(res._json).toMatchObject({
+        status: 'error',
+        inserted: 3,
+        flowSeriesFailures: 0,
+        flowSeriesSkippedBreaker: 1,
+        flowSeriesGenuineFailures: 1,
+        flowSeriesMs: 6_000,
+      });
+      expect(router.calls('flowSeries').map((c) => c.params[0])).toEqual([
+        'SNDK',
+        'TSLA',
+      ]);
+      // The skip warning keeps the failure's fingerprint, says a query failed,
+      // and carries the genuine count so the text can be checked against it.
+      expect(mockSentryCaptureMessage).not.toHaveBeenCalledWith(
+        FLOW_SKIPPED_MSG,
+        expect.anything(),
+      );
+      const flowCaptures = mockSentryCaptureMessage.mock.calls.filter(
+        (call) => call[0] === FLOW_FAILED_MSG,
+      );
+      expect(flowCaptures).toHaveLength(1);
+      expect(flowCaptures[0]![1]).toMatchObject({
+        level: 'warning',
+        fingerprint: ['detect-lottery-fires', 'flow-series-failed'],
+        extra: {
+          flowSeriesFailures: 0,
+          flowSeriesSkippedBreaker: 1,
+          flowSeriesGenuineFailures: 1,
+        },
+      });
     });
 
     it('reports no setup degradation on a clean run', async () => {
