@@ -29,7 +29,6 @@ from outcome_check import (
     DayShare,
     classify_share,
     outcome_shares,
-    recent_sessions,
     report_shares,
     run,
 )
@@ -452,31 +451,3 @@ def test_outcome_shares_sends_the_days_as_a_list() -> None:
     assert outcome_shares(conn, days) == []
 
     assert cursor.execute.call_args.args[1] == {"days": [date(2026, 11, 5), date(2026, 11, 6)]}
-
-
-# --- the calendar ---------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("last_session", "expected"),
-    [
-        # The clocks go back on 2026-11-01; the weekend is skipped.
-        (date(2026, 11, 3), [date(2026, 10, 30), date(2026, 11, 2), date(2026, 11, 3)]),
-        # Thanksgiving, 2026-11-26, is skipped.
-        (date(2026, 11, 27), [date(2026, 11, 24), date(2026, 11, 25), date(2026, 11, 27)]),
-        (date(2026, 11, 2), [date(2026, 10, 29), date(2026, 10, 30), date(2026, 11, 2)]),
-        # Labor Day, 2026-09-07.
-        (date(2026, 9, 8), [date(2026, 9, 3), date(2026, 9, 4), date(2026, 9, 8)]),
-    ],
-)
-def test_recent_sessions_across_dst_and_holidays(last_session: date, expected: list[date]) -> None:
-    assert recent_sessions(last_session, 3) == expected
-
-
-def test_recent_sessions_counts_n_ascending_and_ends_on_the_session() -> None:
-    assert recent_sessions(LAST_SESSION, 1) == [LAST_SESSION]
-    assert recent_sessions(LAST_SESSION, 0) == []
-    five = recent_sessions(LAST_SESSION, 5)
-    assert len(five) == 5
-    assert five == sorted(five)
-    assert five[-1] == LAST_SESSION

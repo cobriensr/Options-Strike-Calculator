@@ -22,12 +22,12 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date
 from typing import TYPE_CHECKING, Literal
 
 import sentry_sdk
 
-from calendar_nyse import previous_trading_day
+from calendar_nyse import recent_sessions
 from constants import LOW_OUTCOME_SHARE, OUTCOME_CHECK_SESSIONS
 from resources import connect_db
 from steps import StepContext, StepResult
@@ -105,18 +105,6 @@ def report_shares(shares: Sequence[DayShare]) -> tuple[int, int]:
             fingerprint=["nightly-outcomes", "low", *days],
         )
     return null_days, len(low)
-
-
-def recent_sessions(last_session: date, n: int) -> list[date]:
-    """The `n` trading days ending on `last_session`, ascending."""
-    days: list[date] = []
-    day = last_session
-    for _ in range(n):
-        day = previous_trading_day(day)
-        days.append(day)
-        day -= timedelta(days=1)
-    days.reverse()
-    return days
 
 
 def run(ctx: StepContext) -> StepResult:

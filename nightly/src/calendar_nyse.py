@@ -81,6 +81,18 @@ def trading_days(start: date, end: date) -> list[date]:
     return days
 
 
+def recent_sessions(last_session: date, n: int) -> list[date]:
+    """The `n` trading days ending on `last_session`, ascending."""
+    days: list[date] = []
+    day = last_session
+    for _ in range(n):
+        day = previous_trading_day(day)
+        days.append(day)
+        day -= timedelta(days=1)
+    days.reverse()
+    return days
+
+
 def last_completed_session(now_utc: datetime) -> date:
     """The latest trading day whose 20:00 America/New_York has already passed."""
     if now_utc.tzinfo is None:
