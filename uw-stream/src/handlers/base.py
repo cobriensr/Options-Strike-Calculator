@@ -5,7 +5,10 @@ Each handler owns:
   (keyed by handler name, NOT `state.channels` — a shared handler's name is
   its channel family, e.g. ``net_flow``, which is not a subscribable channel).
 - A backpressure policy applied when the queue fills.
-- A drain loop that batches and flushes on size OR time threshold.
+- A drain loop that batches and flushes on size OR time threshold. It awaits
+  each flush before building the next batch, unless the class sets
+  ``flush_concurrency`` above 1, in which case up to that many flushes run
+  as tasks at once (see ``Handler.run``).
 
 Subclasses implement two hooks:
 
@@ -67,13 +70,27 @@ class Handler(ABC):
 
     name: str
 
+    # Queue capacity in payloads. None takes ``settings.ws_queue_size`` when the
+    # handler is built, so a handler that does not set one follows that setting.
+    queue_size: int | None = None
+
+    # Flushes in flight at once. 1 awaits each flush before the next batch is
+    # built. Above 1, ``run`` starts each flush as a task and builds the next
+    # batch while up to this many write, so a subclass may only raise it when its
+    # ``_flush`` shares no mutable state between calls and its writes commit in
+    # either order (``ON CONFLICT DO NOTHING`` on a source key does).
+    flush_concurrency: int = 1
+
     def __init__(self, name: str) -> None:
+        if self.flush_concurrency < 1:
+            raise ValueError(f"flush_concurrency must be at least 1, got {self.flush_concurrency}")
         self.name = name
         # Register a zeroed counters row now so /metrics → handlers lists every
         # handler built at boot, not only those that have seen traffic. Bounded:
         # keyed by the closed set of handler names.
         state.handler(name)
-        self.queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=settings.ws_queue_size)
+        queue_size = settings.ws_queue_size if self.queue_size is None else self.queue_size
+        self.queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=queue_size)
         # Resolve once at construction so hot path is allocation-free.
         self._batch_size = settings.ws_batch_size
         self._batch_interval = settings.ws_batch_interval_ms / 1000.0
@@ -99,6 +116,13 @@ class Handler(ABC):
         # The task running ``run()``, so a drain that gives up on the consumer's
         # in-flight flush can cancel it (see ``drain``).
         self._consumer: asyncio.Task | None = None
+        # Concurrent flushes only (flush_concurrency > 1). ``_flush_slots`` holds
+        # one permit per writer: the consumer takes one before it starts a flush
+        # and the flush task's done callback gives it back, so at most
+        # ``flush_concurrency`` tasks exist and ``_flush_tasks`` (task → the rows
+        # it writes) never grows past that. Both stay untouched at 1.
+        self._flush_slots = asyncio.Semaphore(self.flush_concurrency)
+        self._flush_tasks: dict[asyncio.Task, list[tuple]] = {}
 
     # ------------------------------------------------------------------
     # Producer side — called by the router on every payload.
@@ -170,6 +194,11 @@ class Handler(ABC):
 
         Exits cleanly when ``self._stopping`` is set so ``drain()`` can
         take over the in-memory batch without racing the consumer.
+
+        A batch is flushed by ``_flush_batch``: awaited here when
+        ``flush_concurrency`` is 1, started as one of at most that many flush
+        tasks otherwise. Exiting does not end those tasks; ``drain()`` waits for
+        them. A cancel of this task does end them.
         """
         loop = asyncio.get_running_loop()
         deadline = loop.time() + self._batch_interval
@@ -184,8 +213,7 @@ class Handler(ABC):
                 except TimeoutError:
                     # Time-based flush: drain whatever we have even if small.
                     if self._batch:
-                        await self._safe_flush(self._batch)
-                        self._batch = []
+                        await self._flush_batch()
                     deadline = loop.time() + self._batch_interval
                     continue
 
@@ -204,14 +232,67 @@ class Handler(ABC):
                     self._add_row(payload)
                     if len(self._batch) >= self._batch_size:
                         self._take_backlog()
-                        await self._safe_flush(self._batch)
-                        self._batch = []
+                        await self._flush_batch()
                         deadline = loop.time() + self._batch_interval
                 finally:
                     self.queue.task_done()
                     state.handler(self.name).queue_depth = self.queue.qsize()
+        except asyncio.CancelledError:
+            # At 1 the cancel reached the flush this task was awaiting. Flush
+            # tasks are not awaited here, so cancel them with it: none may
+            # outlive the consumer that started it.
+            self._cancel_flush_tasks()
+            raise
         finally:
             self._stopped.set()
+
+    async def _flush_batch(self) -> None:
+        """Write ``self._batch`` and leave ``self._batch`` empty.
+
+        At ``flush_concurrency`` 1 that is ``await _safe_flush`` and a reset,
+        exactly as before. Above 1 it waits for a free writer, hands the batch to
+        a task running ``_safe_flush`` and returns, so ``run`` builds the next
+        batch while the write goes on. While it waits the batch stays in
+        ``self._batch``, where a drain deadline counts it. Batches start in the
+        order they were built and may finish in either, which the idempotent
+        writes allow.
+        """
+        if self.flush_concurrency == 1:
+            await self._safe_flush(self._batch)
+            self._batch = []
+            return
+        await self._flush_slots.acquire()
+        batch, self._batch = self._batch, []
+        task = asyncio.create_task(self._safe_flush(batch), name=f"flush:{self.name}")
+        self._flush_tasks[task] = batch
+        task.add_done_callback(self._on_flush_task_done)
+
+    def _on_flush_task_done(self, task: asyncio.Task) -> None:
+        """Give the writer back, and collect how the flush task ended.
+
+        Nobody awaits a flush task, and an exception no one retrieves is only
+        reported when the task is garbage collected ("Task exception was never
+        retrieved"). ``_safe_flush`` swallows what a flush raises, so an
+        exception here is a failure of its own bookkeeping: report it. A task
+        that was cancelled, or that ended with an exception while being
+        cancelled (asyncpg turns a cancel into InterfaceError mid-unwind), is the
+        cancel we asked for and was never a failed write.
+        """
+        self._flush_tasks.pop(task, None)
+        self._flush_slots.release()
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is None or task.cancelling():
+            return
+        tags = {"component": "handler", "channel": self.name, "stage": "flush_task"}
+        capture_exception(exc, tags=tags)
+        log.error("flush task failed", extra={"channel": self.name, "err": str(exc)})
+
+    def _cancel_flush_tasks(self) -> None:
+        """Cancel every flush still running; do not wait for them to unwind."""
+        for task in list(self._flush_tasks):
+            task.cancel()
 
     def _add_row(self, payload: dict, *, stage: str | None = None) -> None:
         """Transform one payload onto the batch; report a bad one, never raise."""
@@ -260,7 +341,9 @@ class Handler(ABC):
         Steps:
           1. Signal ``run()`` to stop pulling from the queue.
           2. Wait for it to exit, including any flush it is in the middle
-             of, so the two never write the same rows.
+             of, and for every flush task it started (when
+             ``flush_concurrency`` is above 1), so none of them writes rows
+             the final flush writes too.
           3. Drain whatever is still in ``self.queue``.
           4. Append the drained items to the in-memory batch (after
              ``_transform``-ing them — same pipeline as the steady-state
@@ -285,21 +368,24 @@ class Handler(ABC):
         try:
             return await run_bounded(self._drain_inner(), deadline_s, name=f"drain:{self.name}")
         except TimeoutError:
-            # Either run() is still inside a slow or stalled flush
-            # ("consumer_busy"), or drain's own final flush is
-            # ("final_flush"). Either way self._batch holds the rows that
-            # were not written: the flush in flight plus, in the final
-            # flush, the slices after it. The wake-up sentinel is not a
-            # row. Nothing awaits between the deadline and these reads, so
-            # the cancelled inner drain has not touched the batch or the
-            # queue yet.
-            in_memory = len(self._batch)
+            # Either run() or a flush task it started is still inside a slow
+            # or stalled flush ("consumer_busy"), or drain's own final flush
+            # is ("final_flush"). Either way the rows that were not written
+            # are in self._batch (the flush in flight plus, in the final
+            # flush, the slices after it) and in the batches of the flush
+            # tasks still running (flush_concurrency above 1; a finished task
+            # has no rows left to lose). The wake-up sentinel is not a row.
+            # Nothing awaits between the deadline and these reads, so the
+            # cancelled inner drain has not touched the batch or the queue yet.
+            in_flight = [rows for task, rows in self._flush_tasks.items() if not task.done()]
+            in_memory = len(self._batch) + sum(len(rows) for rows in in_flight)
             queued = self.queue.qsize() - (1 if self._sentinel_queued else 0)
             context = {
                 "deadline_s": deadline_s,
                 "in_memory_batch": in_memory,
                 "queue_remaining": queued,
                 "lost_rows": in_memory + queued,
+                "in_flight_flushes": len(in_flight),
             }
             log.warning(
                 "drain deadline exceeded; unflushed rows lost",
@@ -312,11 +398,15 @@ class Handler(ABC):
                 context=context,
             )
             # In "consumer_busy" run() is still inside the flush whose rows were
-            # just reported lost. Cancel it: left running it would write rows the
-            # event called lost, or fail later and count the same rows again in
-            # lost_rows, which the drop reporter's final pass sends a second time.
-            if self._drain_stage == "consumer_busy" and self._consumer is not None:
-                self._consumer.cancel()
+            # just reported lost, or flush tasks are. Cancel them: left running
+            # they would write rows the event called lost, or fail later and
+            # count the same rows again in lost_rows, which the drop reporter's
+            # final pass sends a second time. The consumer may have exited
+            # already, leaving only flush tasks, so cancel those on their own.
+            if self._drain_stage == "consumer_busy":
+                if self._consumer is not None:
+                    self._consumer.cancel()
+                self._cancel_flush_tasks()
             return 0
 
     async def _drain_inner(self) -> int:
@@ -341,6 +431,12 @@ class Handler(ABC):
         #    bounded only by drain()'s deadline, which reports the rows if
         #    the consumer never finishes (or was never started).
         await self._stopped.wait()
+        # 2a. Wait for the flush tasks it started, for the same reason: the
+        #     final flush below must not write rows one of them still holds.
+        #     The consumer has exited, so no new one can start. A task leaves
+        #     ``_flush_tasks`` when it finishes, however it ends.
+        while self._flush_tasks:
+            await asyncio.wait(list(self._flush_tasks))
         self._drain_stage = "final_flush"
 
         # 3. Drain remaining payloads from the queue and run them
@@ -365,7 +461,8 @@ class Handler(ABC):
         # 4 + 5. Final flush of the combined batch, one DB attempt per slice.
         #    A transient retry would add backoff plus another 30 s
         #    command_timeout, which only runs past the deadline. The queue
-        #    can hold ws_queue_size rows (50,000 by default), so go out in
+        #    can hold ``queue_size`` rows (ws_queue_size, 50,000 by default;
+        #    200,000 for the shared option-trade handler), so go out in
         #    BACKLOG_BATCH_MAX slices rather than one transaction of dozens
         #    of INSERTs. Rows leave ``self._batch`` only once their slice
         #    returns, so a deadline hit counts the slice in flight and the

@@ -1894,3 +1894,28 @@ class TestTickerGate:
             QQQIntervalBAHandler,
         ):
             assert subclass()._enabled is False, subclass.__name__
+
+
+class TestQueueAndWriters:
+    """The Interval B/A handlers do not take the shared option-trade handler's
+    200,000-row queue or its two writers.
+
+    Their ``_flush`` aggregates in memory and re-queues alert rows when the
+    write fails, so two flushes at once would race on that state. They inherit
+    ``OptionTradesHandler`` and must set both values back explicitly.
+    """
+
+    @pytest.mark.parametrize(
+        "cls",
+        [SPYIntervalBAHandler, SPXWIntervalBAHandler, QQQIntervalBAHandler],
+        ids=lambda cls: cls.__name__,
+    )
+    def test_keep_the_default_queue_size_and_one_writer(self, monkeypatch, cls):
+        from config import settings
+
+        monkeypatch.setattr(settings, "ws_queue_size", 4321)
+
+        h = cls()
+
+        assert h.queue.maxsize == 4321  # follows the setting, unlike the shared handler
+        assert h.flush_concurrency == 1

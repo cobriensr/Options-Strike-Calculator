@@ -107,6 +107,19 @@ class OptionTradesHandler(Handler):
     would be counted twice.
     """
 
+    # On 2026-11-12 the open's backlog filled the 50,000-row default queue and
+    # evicted 24,585 trades: the one writer drained ~700-1,100 rows/s against
+    # ~1,050/s arriving while Neon was slow. That morning needed ~75,000 rows of
+    # room; 200,000 is ~5 minutes of backlog at the slow drain rate.
+    queue_size = 200_000
+    # Two flushes at once. ``_flush`` is one ``bulk_insert_ignore_conflict`` call
+    # with no state shared between calls, and ON CONFLICT (ws_trade_id) DO NOTHING
+    # lets two batches commit in either order. Neon used about half its compute
+    # during that backlog, so a second connection can use the rest; the pool's
+    # maximum of 10 leaves room for it. The Interval B/A subclasses set both
+    # back to the defaults (handlers/interval_ba.py).
+    flush_concurrency = 2
+
     def __init__(self, name: str = "option_trades") -> None:
         # Channel name is descriptive — the daemon registers this same
         # instance for every option_trades:<TICKER> entry in the handler

@@ -393,7 +393,7 @@ at boot, not at first use.
 | `WS_MAX_CHANNELS_PER_CONN`                     | no             | Default 45. Channels per socket (UW caps at 50). The socket count, mirrors included, must be 10 or fewer (UW's per-token cap) or the boot fails                                                                                                                                                                                                      |
 | `WS_REDUNDANT_OPTION_TRADES`                   | no             | Default `true`. Kill switch for the mirror sockets (below). `false` restores the 6 sockets from before them and idles the dedupe, with no code change; a redeploy applies it                                                                                                                                                                         |
 | `WS_RECEIVE_QUEUE_SIZE`                        | no             | Default 10000. Buffer between connectors and router. Read from the process environment only                                                                                                                                                                                                                                                          |
-| `WS_QUEUE_SIZE`                                | no             | Default 50000 (per handler queue)                                                                                                                                                                                                                                                                                                                    |
+| `WS_QUEUE_SIZE`                                | no             | Default 50000 (per handler queue). The shared `option_trades` handler ignores it: 200000, with two writers (see Queue size and writers).                                                                                                                                                                                                             |
 | `WS_BATCH_SIZE`                                | no             | Default 500 rows                                                                                                                                                                                                                                                                                                                                     |
 | `WS_BATCH_INTERVAL_MS`                         | no             | Default 2000 ms                                                                                                                                                                                                                                                                                                                                      |
 | `WS_BACKPRESSURE_POLICY`                       | no             | `drop_oldest` (default), `drop_newest`, or `block`                                                                                                                                                                                                                                                                                                   |
@@ -494,7 +494,10 @@ Per `handlers` row:
   or raised, and a flush cut short by a cancel is not counted. `flush_rows`
   is the rows passed to `_flush`. For `futures_trades` that is trade prints
   (the batch passed to the write), not the bars written, like
-  `write_attempted`. `flush_seconds` is the time spent inside those calls.
+  `write_attempted`. `flush_seconds` is the time spent inside those calls. Where
+  two flushes run at once (the shared `option_trades` handler, see Queue size
+  and writers) their times add, so it can grow by more than a minute in a
+  minute.
 - `interval_flush_max_s`: the longest single flush since the last minute line.
 - `interval_batch_max`: the most rows passed to one flush since the last
   minute line. A backlog take can exceed the normal batch size, up to
@@ -597,6 +600,56 @@ filter then reaches Railway as two keywords.
 
 Use the app's `time` field in each entry, not Railway's `timestamp`, and
 `minute_utc` to join a line to Neon's per-minute data.
+
+### Queue size and writers
+
+Every handler has one queue and, by default, one writer: 50,000 payloads
+(`WS_QUEUE_SIZE`) and one flush at a time. The exception is the shared
+`option_trades` handler, the one that takes every `option_trades:<TICKER>`
+channel except SPY, SPXW and QQQ: it has a 200,000-payload queue and two
+writers (`queue_size` and `flush_concurrency` in
+`src/handlers/option_trades.py`; `WS_QUEUE_SIZE` does not reach it). Its
+two batches are written at the same time, each on its own pool connection,
+and may commit in either order, which `ON CONFLICT (ws_trade_id) DO NOTHING`
+allows. The three Interval B/A handlers inherit from it and set both back to
+the defaults: their `_flush` aggregates in memory, so it must stay one at a
+time. Batches are built exactly as before (500 rows or 2 s, topped up from
+the backlog to 5,000); with two flushes already in flight the consumer holds
+the next batch until one finishes.
+
+Why: on 2026-11-12, 8:32 to 8:35 CT, 24,585 option trades were evicted from
+the full 50,000-row queue, because the one writer drained about 700 to 1,100
+rows/s against about 1,050/s arriving while Neon was slow. The sockets had
+delivered every trade. That morning needed room for about 75,000 rows, and
+200,000 is about five minutes of backlog at the slow drain rate.
+
+Memory: a queued payload is the parsed frame, a dict. Measured on the test
+fixture `tests/fixtures/option_trades_sample.json` (13 fields), 20,000 frames
+parsed by `orjson` and held took 1,282 bytes each by `tracemalloc` (1,985
+bytes counting every shared key and small int in full). So 200,000 queued
+payloads hold about 250 MiB (at most 380 MiB), plus 8 bytes a slot. A real
+frame may carry more fields than the fixture; read the real figure from
+`rss_mb` beside `queue_hwm` on the minute line. For scale, the process has
+so far peaked at 1.0 GB (see Memory numbers).
+
+How to read the shared handler's entry on the minute line at the open:
+
+- `queue_hwm` against 200,000. A peak of a few thousand to tens of
+  thousands is the open's backlog being worked off. A peak near 200,000 is a
+  queue about to drop.
+- `batch_max` at 5,000 means a backlog: each flush took the most it can
+  (`BACKLOG_BATCH_MAX`). It falling back to about 500 means the queue has
+  caught up.
+- `flush_s` is the seconds spent inside `_flush`, summed over the minute's
+  flushes. With two writers it can exceed 60, up to about 120. Above 60 shows
+  both writers were busy for most of that minute; it is not a stall by
+  itself. `flush_max_s` is still the longest single flush and the number to
+  watch for a slow Neon.
+- `dropped` is 0 when nothing was evicted. Anything above 0 on `option_trades`
+  is trades lost to the queue cap, and a `component=backpressure` Sentry
+  warning follows within a minute.
+- `pool_in_use_max` can now reach 2 from this handler alone. It matters only
+  beside the other handlers' flushes and the pool's 10.
 
 ### Memory numbers
 
@@ -1088,7 +1141,10 @@ comment in `marketHours.ts` says so.
   receive queue in front of the router. Drop policy is configurable. When
   a handler's batch fills while more is queued (a backlog, usually after a
   slow flush), it takes up to 5,000 queued rows into that one flush
-  (`BACKLOG_BATCH_MAX`) instead of writing 500 per round trip. Every
+  (`BACKLOG_BATCH_MAX`) instead of writing 500 per round trip. The shared
+  `option_trades` handler has a 200,000-row queue and writes two batches at
+  once (see Queue size and writers); every other handler keeps 50,000 rows
+  and one writer. Every
   60 s the `drop_reporter` task (`src/drop_reporter.py`) sends one Sentry
   warning tagged `component=backpressure` for each queue that dropped
   payloads or lost flush rows since its last report. It gives the new
@@ -1131,15 +1187,17 @@ comment in `marketHours.ts` says so.
   for itself, once per window). Before 2026-11-13 each logged-and-captured
   failure filed two issues.
 - **Shutdown drain.** On SIGTERM the daemon closes its sockets, releases
-  the lease, then drains every handler at once. Each drain waits for an
-  in-flight flush to finish, then writes what is left in its queue and
+  the lease, then drains every handler at once. Each drain waits for its
+  in-flight flushes to finish (one, or two on the shared `option_trades`
+  handler), then writes what is left in its queue and
   batch in slices of up to 5,000 rows (`BACKLOG_BATCH_MAX`), one DB attempt
   each with no retry, all inside a 30 s deadline (`DRAIN_DEADLINE_S` in
   `src/handlers/base.py`). The deadline is hard: at 30 s the drain is
   cancelled and left to unwind, not waited for. If it hits, the rows not yet
-  written are lost and a Sentry warning gives the counts (`lost_rows`); a
-  consumer flush still running at that point is cancelled too, so those rows
-  are neither written later nor counted again.
+  written are lost and a Sentry warning gives the counts (`lost_rows`, with
+  `in_flight_flushes`, how many flushes were still writing); every flush
+  still running at that point is cancelled too, so those rows are neither
+  written later nor counted again.
   Every other shutdown step has its own bound too
   (`_SHUTDOWN_STEP_TIMEOUTS_S` in `src/main.py`); a step that overruns is
   reported to Sentry (tag `step`) and the next one runs. Before the lease is

@@ -163,6 +163,13 @@ class IntervalBAHandler(OptionTradesHandler):
     # failure if the base class is instantiated directly.
     _TICKER: str = ""
 
+    # Back to the Handler defaults (ws_queue_size, one flush at a time), which
+    # OptionTradesHandler raises for the shared handler. ``_flush`` detaches and
+    # re-queues ``_pending_alerts`` around its writes, so two flushes at once
+    # would race on it.
+    queue_size = None
+    flush_concurrency = 1
+
     # Buckets older than this many windows are pruned per-chain on
     # every observe call. 3 = current + previous + one ahead-of-time
     # slot for clock skew, which is generous given UW's monotonic

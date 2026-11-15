@@ -16,6 +16,7 @@ from uuid import UUID
 
 import pytest
 
+from config import settings
 from handlers.option_trades import (
     _COLUMNS,
     OptionTradesHandler,
@@ -26,6 +27,7 @@ from handlers.option_trades import (
     _to_int,
     _to_uuid,
 )
+from state import state
 
 _FIXTURE_PATH = Path(__file__).parent / "fixtures" / "option_trades_sample.json"
 
@@ -339,3 +341,48 @@ class TestToUuid:
 
     def test_garbage_string_returns_none(self):
         assert _to_uuid("not-a-uuid") is None
+
+
+class TestQueueAndWriters:
+    """The shared handler's queue size and flush concurrency.
+
+    On 2026-11-12 its 50,000-row queue filled at the open and evicted 24,585
+    trades while one writer was slower than arrivals. It now holds 200,000 and
+    writes two batches at once. Spec: docs/superpowers/specs/
+    uw-stream-open-drain-2026-11-14.md. The Interval B/A subclasses keep the
+    defaults; test_interval_ba.py pins them.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clean_state(self):
+        state.handlers.clear()
+        yield
+        state.handlers.clear()
+
+    def test_the_shared_handler_has_a_200_000_queue_and_two_writers(self):
+        h = OptionTradesHandler()
+
+        assert h.queue.maxsize == 200_000
+        assert h.flush_concurrency == 2
+
+    def test_the_shared_queue_size_does_not_follow_ws_queue_size(self, monkeypatch):
+        monkeypatch.setattr(settings, "ws_queue_size", 10)
+
+        assert OptionTradesHandler().queue.maxsize == 200_000
+
+    async def test_a_full_queue_still_drops_the_oldest_and_counts_it(self, monkeypatch):
+        monkeypatch.setattr(settings, "ws_backpressure_policy", "drop_oldest")
+        h = OptionTradesHandler()
+        for n in range(200_000):  # filled directly: enqueue would also record dedupe keys
+            h.queue.put_nowait({"n": n})
+        assert h.queue.full()
+        metrics = state.handler(h.name)
+        assert metrics.drop_count == 0
+
+        await h.enqueue({"id": "f3f5e8c4-5a0e-4c3e-8d2b-6b1d6f2a9c10"})
+        await h.enqueue({"id": "0c0a2d4e-7a5b-4d0c-9e3f-1a2b3c4d5e6f"})
+
+        assert metrics.drop_count == 2
+        assert h.queue.qsize() == 200_000
+        assert h.queue.get_nowait() == {"n": 2}  # n=0 and n=1 were evicted
+        assert metrics.interval_queue_hwm == 200_000
