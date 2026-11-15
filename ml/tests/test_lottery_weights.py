@@ -581,35 +581,36 @@ OVR = "features.tod_weights_dow_overrides"
 # v2.test.ts) is ported case for case, with the Python-side extras at the end.
 REJECTED = [
     # Unknown keys: "no unknown keys anywhere".
-    ("an unknown key at the top level", set_("extra", 1), "extra", "unknown_key"),
+    # An unknown key is never named in the path (it can be a symbol): `<key>` stands for it.
+    ("an unknown key at the top level", set_("extra", 1), "<key>", "unknown_key"),
     (
         "an unknown key in features",
         set_("features.extra", 1),
-        "features.extra",
+        "features.<key>",
         "unknown_key",
     ),
     (
         "an unknown key in cutoffs",
         set_("cutoffs.derivation", "x"),
-        "cutoffs.derivation",
+        "cutoffs.<key>",
         "unknown_key",
     ),
     (
         "an unknown key in feed_cutoffs",
         set_("feed_cutoffs.extra", 1),
-        "feed_cutoffs.extra",
+        "feed_cutoffs.<key>",
         "unknown_key",
     ),
     (
         "an unknown key in a composite",
         set_(f"{CB0}.extra", 1),
-        f"{CB0}.extra",
+        f"{CB0}.<key>",
         "unknown_key",
     ),
     (
         "an unknown key in a composite match",
         set_(f"{CB0}.match.extra", "1"),
-        f"{CB0}.match.extra",
+        f"{CB0}.match.<key>",
         "unknown_key",
     ),
     # Boundaries.
@@ -853,7 +854,7 @@ REJECTED = [
     (
         "an extra tod_weights key",
         set_("features.tod_weights.EVENING", 0),
-        "features.tod_weights.EVENING",
+        "features.tod_weights.<key>",
         "unknown_key",
     ),
     (
@@ -865,13 +866,13 @@ REJECTED = [
     (
         "a dte_weights key '4'",
         set_("features.dte_weights.4", 0),
-        "features.dte_weights.4",
+        "features.dte_weights.<key>",
         "unknown_key",
     ),
     (
         "an extra option_type_weights key",
         set_("features.option_type_weights.X", 0),
-        "features.option_type_weights.X",
+        "features.option_type_weights.<key>",
         "unknown_key",
     ),
     (
@@ -886,13 +887,13 @@ REJECTED = [
             drop("features.dte_weights.0"),
             lambda w: w["features"]["dte_weights"].update({0: 2}),
         ),
-        "features.dte_weights.0",
+        "features.dte_weights.<key>",
         "unknown_key",
     ),
     (
         "a Saturday override",
         set_(f"{OVR}.Saturday", {"AM_open": 0, "MID": 0, "LUNCH": 0, "PM": 0}),
-        f"{OVR}.Saturday",
+        f"{OVR}.<key>",
         "unknown_key",
     ),
     (
@@ -979,7 +980,7 @@ REJECTED = [
     (
         "a camelCase winRate in place of win_rate",
         _rename_win_rate,
-        f"{CB0}.winRate",
+        f"{CB0}.<key>",
         "unknown_key",
     ),
     ("a composite without a note", drop(f"{CB0}.note"), f"{CB0}.note", "missing"),
@@ -1171,40 +1172,56 @@ def test_a_malformed_ticker_entry_is_named_by_its_slot_never_its_symbol(
     assert symbol.strip() not in repr(caught.value)
 
 
+def _container(w, dotted):
+    """The dict at a dotted path of ``w`` (the root for ``""``), indexes as ints."""
+    node = w
+    for part in dotted.split(".") if dotted else []:
+        node = node[int(part)] if isinstance(node, list) else node[part]
+    return node
+
+
 @pytest.mark.parametrize(
     "key",
-    ["two\nlines", "a b", "x" * 100, "ünï", "AAPL" + "!" * 30],
-    ids=["newline", "space", "long", "non-ascii", "symbol-and-punctuation"],
+    ["MSFT", "BRK.B", "two\nlines", "x" * 100, "ünï", "AAPL" + "!" * 30],
+    ids=[
+        "ticker",
+        "dotted-ticker",
+        "newline",
+        "long",
+        "non-ascii",
+        "symbol-punctuation",
+    ],
 )
-def test_an_unusual_unknown_key_is_written_as_a_short_repr_on_one_line(key):
-    # Only the ticker table is data by design; any other unknown key is a stored row's own
-    # text, which can hold anything: it is quoted and cut, so a path stays one short line.
+@pytest.mark.parametrize(
+    "where",
+    [
+        "",
+        "features",
+        "cutoffs",
+        "feed_cutoffs",
+        "features.tod_weights",
+        "features.dte_weights",
+        "features.option_type_weights",
+        CB0,
+        f"{CB0}.match",
+        OVR,
+    ],
+    ids=lambda p: p or "root",
+)
+def test_an_unknown_key_is_never_printed_wherever_it_sits(where, key):
+    # A stored row can put a symbol (or anything) at any level, and the message reaches
+    # logs and Sentry as the step's exception text: it names the position, not the key.
     w = _weights()
-    w["features"]["tod_weights"][key] = 0
+    _container(w, where)[key] = 0
 
     with pytest.raises(lw.WeightsInvalid) as caught:
         lw.validate_weights(w)
 
-    message = str(caught.value)
-    assert caught.value.rule == "unknown_key"
-    assert "\n" not in message
-    segment = caught.value.path.removeprefix("features.tod_weights.")
-    shown = repr(key)
-    # The repr, cut to 40 characters with `...` where it was cut.
-    assert segment == (shown if len(shown) <= 40 else f"{shown[:37]}...")
-    assert len(segment) <= 40
-    assert key not in message or len(key) <= 37  # a long key is never shown whole
-
-
-def test_a_plain_unknown_key_keeps_its_name_in_the_path():
-    # A name, a digit string or an index reads as before: the REJECTED table pins the rest.
-    w = _weights()
-    w["features"]["tod_weights"]["EVENING"] = 0
-
-    with pytest.raises(lw.WeightsInvalid) as caught:
-        lw.validate_weights(w)
-
-    assert caught.value.path == "features.tod_weights.EVENING"
+    expected = f"{where}.<key>" if where else "<key>"
+    assert (caught.value.path, caught.value.rule) == (expected, "unknown_key")
+    assert str(caught.value) == f"{expected}: unknown_key"
+    assert key not in str(caught.value)
+    assert key not in repr(caught.value)
 
 
 def _all_weekday_overrides(w):
