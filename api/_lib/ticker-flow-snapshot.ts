@@ -1,21 +1,32 @@
 /**
- * Ticker cumulative net-flow snapshot at a given fire time.
+ * Ticker cumulative net-flow series, and the snapshot at a fire time.
  *
  * Replaces the per-row LEFT JOIN LATERAL that commits 26b13630 + 426c1e91
  * added to all 7 lottery + silent-boom feed sort branches (caused ~30s
- * page loads). The snapshot is now computed once at detect time and
+ * page loads). The snapshot is computed once at detect time and
  * persisted to lottery_finder_fires.cum_ncp_at_fire / cum_npp_at_fire
  * (migration #158) so the feed query becomes a single column read.
  *
- * SQL is the same UNION/DISTINCT ON pattern as the original LATERAL,
- * but bounded by `ctSessionBounds(date).min` (the 08:30 CT session open)
- * instead of `date::timestamptz` (UTC midnight, 4-6h too wide).
+ * The series is bounded by `ctSessionBounds(date).min` (the 08:30 CT session
+ * open) instead of `date::timestamptz` (UTC midnight, 4-6h too wide).
  *
- * Spec: docs/superpowers/specs/lottery-silentboom-feed-perf-2026-05-17.md
+ * Which table the series comes from (spec:
+ * docs/superpowers/specs/lottery-flow-repair-and-indexes-2026-11-15.md):
+ * `ws_net_flow_per_ticker` holds one row per websocket tick (`ts` with
+ * milliseconds), `net_flow_per_ticker_history` one REST row per minute (`ts`
+ * on the minute, loaded at 21:25 UTC). After the close both hold the same
+ * day's flow, and a UNION of the two counts it twice: `DISTINCT ON (ts)` never
+ * merges a millisecond stamp with a minute stamp. So a ticker-day is read from
+ * ONE table: the WS rows when the session has any, the history rows only when
+ * it has none. A history row is a whole minute, so it is reached only once the
+ * minute is complete (its time is `ts + 60 s`): at a fire inside the minute it
+ * would carry up to 59 s of flow after the fire. A live run is WS only, since
+ * history for today does not exist yet.
+ *
+ * Original feed-perf spec: docs/superpowers/specs/lottery-silentboom-feed-perf-2026-05-17.md
  */
 
 import type { getDb } from './db.js';
-import { withDbRetry } from './db.js';
 import { ctSessionBounds } from '../../src/components/LotteryFinder/ct-window.js';
 
 export interface TickerFlowSnapshot {
@@ -41,54 +52,6 @@ export interface TickerFlowSeries {
 type DbSql = ReturnType<typeof getDb>;
 type DbNumeric = string | number | null;
 type DbTimestamp = string | Date;
-
-const num = (v: DbNumeric): number | null => (v == null ? null : Number(v));
-
-/**
- * One-shot snapshot — issues a single SUM query against the session
- * window up to `fireTs`. Use for backfill or when only a handful of
- * fires per (ticker, date) are expected in a given run.
- */
-export async function snapshotTickerFlowAtFire(
-  db: DbSql,
-  ticker: string,
-  date: string,
-  fireTs: Date,
-): Promise<TickerFlowSnapshot> {
-  const session = ctSessionBounds(date);
-  const fireIso = fireTs.toISOString();
-  const rows = (await withDbRetry(
-    () => db`
-      SELECT
-        SUM(net_call_prem) AS cum_ncp,
-        SUM(net_put_prem)  AS cum_npp
-      FROM (
-        SELECT DISTINCT ON (ts) net_call_prem, net_put_prem
-        FROM (
-          SELECT ts, net_call_prem, net_put_prem, 1 AS priority
-          FROM ws_net_flow_per_ticker
-          WHERE ticker = ${ticker}
-            AND ts >= ${session.min}::timestamptz
-            AND ts <= ${fireIso}::timestamptz
-          UNION ALL
-          SELECT ts, net_call_prem, net_put_prem, 2 AS priority
-          FROM net_flow_per_ticker_history
-          WHERE ticker = ${ticker}
-            AND ts >= ${session.min}::timestamptz
-            AND ts <= ${fireIso}::timestamptz
-        ) combined
-        ORDER BY ts, priority
-      ) unified
-    `,
-    2,
-    10_000,
-  )) as { cum_ncp: DbNumeric; cum_npp: DbNumeric }[];
-  const row = rows[0];
-  return {
-    cumNcp: row ? num(row.cum_ncp) : null,
-    cumNpp: row ? num(row.cum_npp) : null,
-  };
-}
 
 // How the detect crons bound the series fetch below, one place for both.
 //
@@ -152,8 +115,18 @@ export function nextFlowSeriesDeadlineMs(
 
 /**
  * Fetch the full ticker-day cumulative series. Window-functions the
- * unified per-minute deltas into running totals so callers can later
+ * per-tick (or per-minute) deltas into running totals so callers can later
  * binary-search for any fireTs without re-hitting the DB.
+ *
+ * The source is one table per ticker-day (see the header): the WS rows when
+ * the session has any, the history rows only when it has none. The history
+ * branch is gated by a NOT EXISTS on the WS table, a one-row probe of its
+ * (ticker, ts) unique index, so the WS branch keeps the shape the detector
+ * deadlines were measured on; when the day has WS rows the history branch
+ * does not run. A history row is a whole minute, so its time in the series is
+ * `ts + 60 s`: `flowAtFireTime()` reaches it only at or after the end of its
+ * minute, for any fire time, with no look-ahead. History keeps one row per
+ * minute across its `source` values (only 'rest' is written today).
  *
  * Returns an empty series (all arrays length 0) if neither source has
  * any rows for the ticker on that date — `flowAtFireTime()` then
@@ -173,22 +146,28 @@ export async function fetchTickerFlowSeries(
   const session = ctSessionBounds(date);
   const rows = (await db`
     WITH unified AS (
-      SELECT DISTINCT ON (ts)
-        ts, net_call_prem, net_put_prem
+      SELECT ts, net_call_prem, net_put_prem
+      FROM ws_net_flow_per_ticker
+      WHERE ticker = ${ticker}
+        AND ts >= ${session.min}::timestamptz
+        AND ts <= ${session.max}::timestamptz
+      UNION ALL
+      SELECT ts + INTERVAL '60 seconds' AS ts, net_call_prem, net_put_prem
       FROM (
-        SELECT ts, net_call_prem, net_put_prem, 1 AS priority
-        FROM ws_net_flow_per_ticker
-        WHERE ticker = ${ticker}
-          AND ts >= ${session.min}::timestamptz
-          AND ts <= ${session.max}::timestamptz
-        UNION ALL
-        SELECT ts, net_call_prem, net_put_prem, 2 AS priority
+        SELECT DISTINCT ON (ts) ts, net_call_prem, net_put_prem
         FROM net_flow_per_ticker_history
         WHERE ticker = ${ticker}
           AND ts >= ${session.min}::timestamptz
           AND ts <= ${session.max}::timestamptz
-      ) combined
-      ORDER BY ts, priority
+          AND NOT EXISTS (
+            SELECT 1
+            FROM ws_net_flow_per_ticker
+            WHERE ticker = ${ticker}
+              AND ts >= ${session.min}::timestamptz
+              AND ts <= ${session.max}::timestamptz
+          )
+        ORDER BY ts, source
+      ) minutes
     )
     SELECT
       ts,
