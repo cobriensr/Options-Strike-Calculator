@@ -36,7 +36,7 @@
 import { getDb, isRetryableDbError, withDbRetry } from './db.js';
 import logger from './logger.js';
 import { LotteryWeightsSchema } from './lottery-weights-schema.js';
-import type { LotteryWeights } from './lottery-weights-schema.js';
+import type { DeepReadonly, LotteryWeights } from './lottery-weights-schema.js';
 import {
   deepFreeze,
   SEED_LOTTERY_WEIGHTS,
@@ -46,7 +46,11 @@ import { Sentry } from './sentry.js';
 
 export interface VersionedWeights {
   version: string;
-  weights: LotteryWeights;
+  /**
+   * Read-only in the type as well as at run time (the object is deep-frozen and
+   * shared by every caller), so a write is a tsc error, not a TypeError in a cron.
+   */
+  weights: DeepReadonly<LotteryWeights>;
 }
 
 export interface WeightsFallback {
@@ -87,6 +91,20 @@ function describeError(err: unknown): string {
   return (err instanceof Error ? err.message : String(err)).slice(0, 300);
 }
 
+/**
+ * A validation issue's path as dotted text. An entry of `features.ticker_weights`
+ * is named `<ticker>` whatever its symbol: the text goes to Sentry, and a ticker
+ * in it would be market data in an alert (the Python validator does the same).
+ */
+function describePath(path: ReadonlyArray<PropertyKey>): string {
+  const segments = path.map((segment, i) =>
+    i === 2 && path[0] === 'features' && path[1] === 'ticker_weights'
+      ? '<ticker>'
+      : String(segment),
+  );
+  return segments.join('.') || 'the root';
+}
+
 /** The named pointer's version, validated, or the reason it can't be used. */
 function readPointer(
   rows: PointerRow[],
@@ -97,7 +115,7 @@ function readPointer(
   const parsed = LotteryWeightsSchema.safeParse(row.weights);
   if (!parsed.success) {
     const issue = parsed.error.issues[0];
-    const path = issue?.path.map(String).join('.') || 'the root';
+    const path = describePath(issue?.path ?? []);
     return `${name} version ${row.version} fails validation at ${path}: ${issue?.message ?? 'unknown issue'}`;
   }
   return { version: row.version, weights: parsed.data };
@@ -106,12 +124,21 @@ function readPointer(
 /**
  * Logging and alerting are best effort: a logger or Sentry that throws must
  * not take the loader down with it, because the caller is a scoring cron.
+ *
+ * A report that throws is itself reported, once, as a fixed warning that names
+ * the report and nothing of the exception: a Sentry or logger client's error
+ * text can carry the host it could not reach. If the warning cannot be logged
+ * either, the logger is the thing that is down and there is nothing left to tell.
  */
-function bestEffort(report: () => void): void {
+function bestEffort(report: string, send: () => void): void {
   try {
-    report();
+    send();
   } catch {
-    // Nothing else to report to; the caller still gets its result.
+    try {
+      logger.warn({ report }, 'lottery weights report failed');
+    } catch {
+      // The logger itself is down; the caller still gets its result.
+    }
   }
 }
 
@@ -158,10 +185,10 @@ async function attempt(): Promise<Attempt> {
 }
 
 function seedFallback(fallback: WeightsFallback): LoadedLotteryWeights {
-  bestEffort(() => {
+  bestEffort('fallback log', () => {
     logger.error(fallback, 'lottery weights fallback to seed');
   });
-  bestEffort(() => {
+  bestEffort('fallback alert', () => {
     Sentry.captureMessage('lottery weights fallback to seed', {
       level: 'error',
       fingerprint: ['lottery-weights-fallback', fallback.kind],
@@ -192,7 +219,7 @@ async function refresh(
     return outcome.value;
   }
   if (outcome.kind === 'transient' && previous?.value.fallback === null) {
-    bestEffort(() => {
+    bestEffort('stale-cache warning', () => {
       logger.warn(
         { reason: outcome.reason },
         'lottery weights reload failed; serving the cached version',

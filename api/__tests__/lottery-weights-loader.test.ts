@@ -10,7 +10,10 @@
 // with an empty cache.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { LotteryWeights } from '../_lib/lottery-weights-schema.js';
+import type {
+  DeepReadonly,
+  LotteryWeights,
+} from '../_lib/lottery-weights-schema.js';
 import {
   SEED_LOTTERY_WEIGHTS,
   SEED_LOTTERY_WEIGHTS_VERSION,
@@ -56,6 +59,13 @@ interface Row {
   version: string;
   weights: unknown;
 }
+
+/**
+ * The loader's weights are read-only in the type. The freeze tests write to
+ * them anyway, to prove the run-time freeze, so they drop the type here.
+ */
+const mutable = (weights: DeepReadonly<LotteryWeights>): LotteryWeights =>
+  weights as LotteryWeights;
 
 /** Valid weights that are not the seed: AAPL's ticker weight raised by one. */
 function refitWeights(): LotteryWeights {
@@ -239,6 +249,36 @@ describe('loadLotteryWeights', () => {
     expectFallbackReported('error');
   });
 
+  it.each([
+    ['a ticker weight out of range', { QQQQ: 99 }],
+    ['a ticker key that is not a symbol', { qqqq: 1 }],
+  ])(
+    'a malformed ticker entry (%s) is named <ticker>, never by its symbol',
+    async (_label, bad) => {
+      const weights = refitWeights();
+      weights.features.ticker_weights = bad as Record<string, number>;
+      h.mockSql.mockResolvedValueOnce([
+        activeRow(REFIT_VERSION, weights),
+        takeitRow(SEED_VERSION, structuredClone(SEED_LOTTERY_WEIGHTS)),
+      ]);
+      const { load } = await freshLoader();
+
+      const result = await load();
+
+      expect(result.fallback?.kind).toBe('error');
+      expect(result.fallback?.reason).toMatch(
+        /^active version refit-2026-11-12 fails validation at features\.ticker_weights\.<ticker>: /,
+      );
+      // The reason is what the alert and the log carry: no symbol anywhere in them.
+      const sent = JSON.stringify([
+        h.captureMessage.mock.calls,
+        h.error.mock.calls,
+      ]);
+      expect(sent).toContain('<ticker>');
+      expect(sent.toLowerCase()).not.toContain('qqqq');
+    },
+  );
+
   it('an invalid takeit row replaces both slots, not only its own', async () => {
     h.mockSql.mockResolvedValueOnce([
       activeRow(REFIT_VERSION, refitWeights()),
@@ -415,7 +455,7 @@ describe('loadLotteryWeights', () => {
   it('never throws: a Sentry that throws does not stop the fallback', async () => {
     h.mockSql.mockRejectedValueOnce(new Error('fetch failed'));
     h.captureMessage.mockImplementationOnce(() => {
-      throw new Error('sentry down');
+      throw new Error('sentry down at https://o123.ingest.sentry.io');
     });
     const { load } = await freshLoader();
 
@@ -423,6 +463,16 @@ describe('loadLotteryWeights', () => {
 
     expect(result.fallback?.kind).toBe('transient');
     expect(result.active.version).toBe(SEED_VERSION);
+    // The log line of the fallback still went out.
+    expect(h.error).toHaveBeenCalledTimes(1);
+    // And the lost alert is not silent: one fixed warning names it, with nothing of
+    // the exception, whose text can carry the host it could not reach.
+    expect(h.warn).toHaveBeenCalledTimes(1);
+    expect(h.warn).toHaveBeenCalledWith(
+      { report: 'fallback alert' },
+      'lottery weights report failed',
+    );
+    expect(JSON.stringify(h.warn.mock.calls)).not.toContain('sentry');
   });
 
   it('never throws: a logger that throws does not stop the alert or the fallback', async () => {
@@ -436,6 +486,27 @@ describe('loadLotteryWeights', () => {
 
     expect(result.fallback?.kind).toBe('transient');
     expectFallbackReported('transient');
+    expect(h.warn).toHaveBeenCalledWith(
+      { report: 'fallback log' },
+      'lottery weights report failed',
+    );
+  });
+
+  it('never throws: a logger that throws on the warning too is silent about it', async () => {
+    h.mockSql.mockRejectedValueOnce(new Error('fetch failed'));
+    h.captureMessage.mockImplementationOnce(() => {
+      throw new Error('sentry down');
+    });
+    h.warn.mockImplementation(() => {
+      throw new Error('logger down');
+    });
+    const { load } = await freshLoader();
+
+    const result = await load();
+
+    expect(result.fallback?.kind).toBe('transient');
+    expect(result.active.version).toBe(SEED_VERSION);
+    expect(h.warn).toHaveBeenCalledTimes(1);
   });
 
   it('never throws: a logger that throws does not stop the cached version', async () => {
@@ -545,14 +616,14 @@ describe('loadLotteryWeights', () => {
     const { load, seed } = await freshLoader();
 
     const result = await load();
-    const features = result.active.weights.features;
+    const features = mutable(result.active.weights).features;
     const composite = features.composite_bonuses[0]!;
 
     expect(() => {
       features.ticker_weights.AAPL = 99;
     }).toThrow(TypeError);
     expect(() => {
-      result.takeit.weights.cutoffs.t1 = 0;
+      mutable(result.takeit.weights).cutoffs.t1 = 0;
     }).toThrow(TypeError);
     expect(() => {
       features.composite_bonuses.push(composite);
@@ -573,13 +644,14 @@ describe('loadLotteryWeights', () => {
     const { load } = await freshLoader();
 
     const result = await load();
-    const composite = result.active.weights.features.composite_bonuses[0]!;
+    const active = mutable(result.active.weights);
+    const composite = active.features.composite_bonuses[0]!;
 
     expect(() => {
-      result.active.weights.features.ticker_weights.AAPL = 99;
+      active.features.ticker_weights.AAPL = 99;
     }).toThrow(TypeError);
     expect(() => {
-      result.takeit.weights.cutoffs.t1 = 0;
+      mutable(result.takeit.weights).cutoffs.t1 = 0;
     }).toThrow(TypeError);
     expect(() => {
       composite.match.ticker = 'ZZZ';
@@ -594,5 +666,29 @@ describe('loadLotteryWeights', () => {
     const again = await load();
     expect(again).toBe(result);
     expect(again.active.weights.features.ticker_weights.AAPL).toBe(0);
+  });
+
+  it('is read-only in the type as well: a write to a loaded version does not compile', async () => {
+    h.mockSql.mockResolvedValueOnce(promotedRows());
+    const { load } = await freshLoader();
+
+    const { active } = await load();
+
+    // Each directive is an error if the line below it compiles, so removing
+    // `DeepReadonly` from the loader's types fails tsc here.
+    expect(() => {
+      // @ts-expect-error a property of a loaded version is read-only
+      active.weights.cutoffs.t1 = 0;
+    }).toThrow(TypeError);
+    expect(() => {
+      // @ts-expect-error a ticker weight is read-only
+      active.weights.features.ticker_weights.AAPL = 99;
+    }).toThrow(TypeError);
+    expect(() => {
+      // @ts-expect-error a list of a loaded version has no push
+      active.weights.features.composite_bonuses.push(
+        active.weights.features.composite_bonuses[0]!,
+      );
+    }).toThrow(TypeError);
   });
 });
