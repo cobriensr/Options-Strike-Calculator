@@ -48,14 +48,6 @@ def _reset_recent_fires():
     recent_fires._reset_for_tests()
 
 
-# Every handler constructor registers its gauges in memory_stats's module-level
-# registry. Replacing it per test keeps one test's handlers out of another's
-# reading; monkeypatch puts the original back.
-@pytest.fixture(autouse=True)
-def _isolated_gauges(monkeypatch):
-    monkeypatch.setattr(memory_stats, "_gauges", {})
-
-
 # Bucket containing 17:06 UTC (2026-05-12 12:05-12:10 CT). All "same
 # bucket" timestamps below derive from this anchor so the alignment is
 # obvious in failure messages.

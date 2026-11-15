@@ -33,7 +33,9 @@ Twin of the guard in sidecar/conftest.py, ml/conftest.py and
 scripts/conftest.py. tests/test_no_database_guard.py proves each block.
 
 Also holds `service_log_records`, the fixture that captures what the service
-logger emits, shared by the connector and Sentry-setup tests.
+logger emits, shared by the connector and Sentry-setup tests, and the autouse
+fixture that gives every test an empty `memory_stats` gauge registry (every
+handler constructor registers gauges there).
 """
 
 from __future__ import annotations
@@ -192,6 +194,28 @@ def _tests_have_no_database_env_or_network(monkeypatch: pytest.MonkeyPatch) -> N
 
     monkeypatch.setattr(socket.socket, "connect", _guard(real_connect))
     monkeypatch.setattr(socket.socket, "connect_ex", _guard(real_connect_ex))
+
+
+@pytest.fixture(autouse=True)
+def _empty_gauge_registry(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Start every test with no memory gauges registered.
+
+    Every handler constructor registers its size gauges in ``memory_stats``'s
+    module-level registry, and the minute line and ``/metrics`` read all of it. A
+    registry shared across tests would show one test's handlers in another's
+    exact-shape assertions as soon as test order mattered. monkeypatch puts the
+    original dict back afterwards.
+
+    It looks the module up in ``sys.modules`` instead of importing it: a test
+    module that touches the registry (or a handler) has imported it by the time
+    any test runs, and a run that never imported it has no registry to reset.
+    The self-tests in test_no_database_guard.py run a probe suite under a copy
+    of this file in an empty directory, where ``src/`` is not on the path and an
+    import here would fail every probe test at setup.
+    """
+    module = sys.modules.get("memory_stats")
+    if module is not None:
+        monkeypatch.setattr(module, "_gauges", {})
 
 
 class _AttemptsSinceTestStart:

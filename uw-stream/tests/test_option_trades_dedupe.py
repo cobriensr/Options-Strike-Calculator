@@ -49,17 +49,6 @@ def _reset_state():
     recent_fires._reset_for_tests()
 
 
-@pytest.fixture(autouse=True)
-def _isolated_gauges(monkeypatch):
-    """An empty gauge registry per test.
-
-    Every handler constructor registers its gauges in ``memory_stats``'s
-    module-level registry; replacing it keeps one test's handlers out of
-    another's reading (monkeypatch puts the original back).
-    """
-    monkeypatch.setattr(memory_stats, "_gauges", {})
-
-
 class _Clock:
     def __init__(self) -> None:
         self.now = 1_000.0

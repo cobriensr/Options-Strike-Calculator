@@ -74,15 +74,14 @@ def _isolated_sockets(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _isolated_memory(monkeypatch):
-    """No gauges and fixed memory readings, so no test depends on the host or on another test.
+    """Fixed memory readings, so no test depends on the host.
 
-    ``memory_stats`` keeps its gauge registry in a module-level dict that every
-    handler constructor fills, and its readers open ``/proc`` and the cgroup, which
-    answer differently on Linux and on Windows. Replacing the registry and the two
-    readers (at the module ``pipeline_stats`` reads them from) pins the line's
-    ``memory`` object. The readers' own behaviour is in test_memory_stats.py.
+    ``memory_stats``'s readers open ``/proc`` and the cgroup, which answer
+    differently on Linux and on Windows. Replacing them (at the module
+    ``pipeline_stats`` reads them from) pins the line's ``memory`` object. The
+    readers' own behaviour is in test_memory_stats.py. The gauge registry starts
+    empty in every test by conftest's autouse fixture.
     """
-    monkeypatch.setattr(memory_stats, "_gauges", {})
     monkeypatch.setattr(memory_stats, "read_rss_bytes", lambda: _RSS_BYTES)
     monkeypatch.setattr(memory_stats, "read_cgroup_bytes", lambda: _CGROUP_BYTES)
 
