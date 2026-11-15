@@ -243,6 +243,90 @@ describe('LotteryTierBanner: tier counts', () => {
 });
 
 // ============================================================
+// TIER CUTOFFS (the response's, not a fixed pair)
+// ============================================================
+
+describe('LotteryTierBanner: tier cutoffs', () => {
+  const fires: LotteryFire[] = [
+    makeFire({ id: 1, scoreTier: 'tier1', score: 20 }),
+    makeFire({ id: 2, scoreTier: 'tier2', score: 14 }),
+    makeFire({ id: 3, scoreTier: 'tier3', score: 4 }),
+  ];
+  const tierTitles = () => ({
+    tier1: screen.getByText('🔥🔥🔥 1').getAttribute('title'),
+    tier2: screen.getByText('🔥🔥 1').getAttribute('title'),
+    tier3: screen.getByText('🔥 1').getAttribute('title'),
+  });
+
+  it("names the bands from the response's cutoffs", () => {
+    render(
+      <LotteryTierBanner
+        fires={fires}
+        total={3}
+        cutoffs={{
+          version: 'refit-2026-11-13',
+          tier1MinScore: 16,
+          tier2MinScore: 12,
+        }}
+      />,
+    );
+
+    const titles = tierTitles();
+    expect(titles.tier1).toContain('(qas ≥ 16)');
+    expect(titles.tier2).toContain('(qas 12–15)');
+    expect(titles.tier3).toContain('(qas < 12)');
+  });
+
+  it('follows a change of cutoffs, as after a promotion', () => {
+    const { rerender } = render(
+      <LotteryTierBanner
+        fires={fires}
+        total={3}
+        cutoffs={{
+          version: 'seed-2026-06-17',
+          tier1MinScore: 13,
+          tier2MinScore: 10,
+        }}
+      />,
+    );
+    expect(tierTitles().tier1).toContain('(qas ≥ 13)');
+
+    rerender(
+      <LotteryTierBanner
+        fires={fires}
+        total={3}
+        cutoffs={{
+          version: 'refit-2026-11-13',
+          tier1MinScore: 17,
+          tier2MinScore: 11,
+        }}
+      />,
+    );
+
+    expect(tierTitles().tier1).toContain('(qas ≥ 17)');
+    expect(tierTitles().tier2).toContain('(qas 11–16)');
+  });
+
+  it('says no number before a response has carried the cutoffs', () => {
+    render(<LotteryTierBanner fires={fires} total={3} />);
+
+    for (const title of Object.values(tierTitles())) {
+      // No cutoff, and none of the fixed 18 / 12 the banner used to print.
+      expect(title).not.toMatch(/qas|score [≥<0-9]|18|12/);
+      expect(title).toMatch(/^Tier [123] fires on the current page\./);
+    }
+  });
+
+  it('labels the quoted rates with the weights they were measured on', () => {
+    render(<LotteryTierBanner fires={fires} total={3} />);
+
+    expect(tierTitles().tier1).toContain(
+      'high-peak rate ~80%, measured on the 06-17 seed weights.',
+    );
+  });
+});
+
+// ============================================================
 // DOMINANT TICKER
 // ============================================================
 

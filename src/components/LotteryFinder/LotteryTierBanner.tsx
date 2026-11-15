@@ -1,5 +1,7 @@
 import { useMemo } from 'react';
-import type { LotteryFire } from './types.js';
+import type { LotteryFinderResponse, LotteryFire } from './types.js';
+
+type TierCutoffs = NonNullable<LotteryFinderResponse['tierCutoffs']>;
 
 interface LotteryTierBannerProps {
   fires: LotteryFire[];
@@ -8,6 +10,33 @@ interface LotteryTierBannerProps {
    *  headline number itself is the page count so it agrees with the tier
    *  sum (t1 + t2 + t3 === fires.length). */
   total: number;
+  /** The cutoffs the latest feed response tiered on (the active weights
+   *  version's qas thresholds, `tierCutoffs`). Absent before the first
+   *  response and from a server build that predates the field, and the
+   *  tier tooltips then name no number. */
+  cutoffs?: TierCutoffs;
+}
+
+/** The measured rates the tooltips quote were taken on the first version. */
+const RATE_NOTE = 'measured on the 06-17 seed weights';
+
+/**
+ * The tooltip of one tier's count: its band as `qas` numbers when the response
+ * carried the cutoffs, and no number at all while it has not.
+ */
+function tierTitle(
+  tier: 1 | 2 | 3,
+  cutoffs: TierCutoffs | undefined,
+  rate: string,
+): string {
+  let band = '';
+  if (cutoffs != null) {
+    const { tier1MinScore: t1, tier2MinScore: t2 } = cutoffs;
+    if (tier === 1) band = ` (qas ≥ ${t1})`;
+    else if (tier === 2) band = ` (qas ${t2}–${t1 - 1})`;
+    else band = ` (qas < ${t2})`;
+  }
+  return `Tier ${tier} fires on the current page${band}. Historical high-peak rate ~${rate}, ${RATE_NOTE}.`;
 }
 
 /**
@@ -20,7 +49,11 @@ interface LotteryTierBannerProps {
  * and the full-day total is shown separately as "of N today". The
  * "counts on current page" caption at the right end reinforces this.
  */
-export function LotteryTierBanner({ fires, total }: LotteryTierBannerProps) {
+export function LotteryTierBanner({
+  fires,
+  total,
+  cutoffs,
+}: LotteryTierBannerProps) {
   const summary = useMemo(() => {
     if (fires.length === 0) return null;
     let t1 = 0;
@@ -92,19 +125,19 @@ export function LotteryTierBanner({ fires, total }: LotteryTierBannerProps) {
 
         <span
           className="font-mono text-rose-300"
-          title="Tier 1 fires on the current page (score ≥ 18). Historical high-peak rate ~80%."
+          title={tierTitle(1, cutoffs, '80%')}
         >
           🔥🔥🔥 {t1}
         </span>
         <span
           className="font-mono text-amber-300"
-          title="Tier 2 fires on the current page (score 12–17). Historical high-peak rate ~63%."
+          title={tierTitle(2, cutoffs, '63%')}
         >
           🔥🔥 {t2}
         </span>
         <span
           className="font-mono text-neutral-400"
-          title="Tier 3 fires on the current page (score < 12). Historical high-peak rate ~32%."
+          title={tierTitle(3, cutoffs, '32%')}
         >
           🔥 {t3}
         </span>

@@ -1622,7 +1622,13 @@ export function LotteryFinderSection({
             score on the current page. Mirrors SilentBoomDayBanner. Hidden
             in compact mode (carries the "No lottery fires yet today"
             placeholder + populated day stats). */}
-        {!compact && <LotteryTierBanner fires={fires} total={total} />}
+        {!compact && (
+          <LotteryTierBanner
+            fires={fires}
+            total={total}
+            cutoffs={lotteryFinder.data?.tierCutoffs}
+          />
+        )}
 
         {/* Filter toolbar — single contained panel for date/scrub,
             sort/conviction, type/TOD, mode tags, ticker, and exit

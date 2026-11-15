@@ -1332,6 +1332,37 @@ describe('LotteryFinderSection: filter interactions', () => {
       );
     });
 
+    it('the day banner names the response’s cutoffs, never a fixed pair', () => {
+      mockUseLotteryFinder.mockReturnValue(
+        feedResult({
+          fires: [makeFire({ id: 1, score: 20, scoreTier: 'tier1' })],
+          total: 1,
+          tierCutoffs: CUTOFFS,
+        }),
+      );
+      const { rerender } = render(<LotteryFinderSection marketOpen={false} />);
+
+      const banner = screen.getByText('🔥🔥🔥 1');
+      expect(banner).toHaveAttribute(
+        'title',
+        expect.stringContaining('(qas ≥ 16)'),
+      );
+      expect(banner.getAttribute('title')).not.toMatch(/18|13/);
+
+      // A response from a server that sends no cutoffs: the banner says no
+      // number rather than the last one, or a fixed one.
+      mockUseLotteryFinder.mockReturnValue(
+        feedResult({
+          fires: [makeFire({ id: 1, score: 20, scoreTier: 'tier1' })],
+          total: 1,
+        }),
+      );
+      rerender(<LotteryFinderSection marketOpen={false} />);
+      expect(screen.getByText('🔥🔥🔥 1').getAttribute('title')).not.toContain(
+        'qas',
+      );
+    });
+
     it.each([
       ['before the first response', { ...defaultHookResult, data: null }],
       ['from a server build that sends no tierCutoffs', feedResult()],
