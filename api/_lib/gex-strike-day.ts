@@ -17,7 +17,8 @@ type Sql = ReturnType<typeof getDb>;
  * read the date as a CT wall-clock midnight instead of a UTC-session date.
  *
  * Tagged-template form for neon `sql\`…\`` callers; the result nests inside a
- * larger template. `tsCol` names the column (override when aliased).
+ * larger template. `tsCol` is required: it names the column, and callers pass
+ * the alias-qualified name (e.g. `'g.timestamp'`) when the table is aliased.
  */
 export function ctDayTsBounds(sql: Sql, dateIso: string, tsCol: string) {
   const t = sql.unsafe(tsCol);

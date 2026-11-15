@@ -76,14 +76,14 @@ const STORAGE_KEY = 'regime0dte:lastgood';
  * candle triggers are meaningful. Outside it the hook stops fetching.
  *
  * `getMarketCloseHourET` is an ET hour; ET is always one hour ahead of CT, so
- * the close in CT minutes is `(closeHourET - 1) * 60`. A null close (a closed
- * date) is treated as closed.
+ * the close in CT minutes is `(closeHourET - 1) * 60`. A null close (a listed
+ * holiday) is closed; a weekend has a normal close hour, so `isTradingDay` is
+ * what rules it out.
  */
 function inPollingWindow(now: Date): boolean {
   const ctDate = getCTDateStr(now);
-  if (!isTradingDay(ctDate)) return false;
   const closeHourET = getMarketCloseHourET(ctDate);
-  if (closeHourET === null) return false;
+  if (closeHourET === null || !isTradingDay(ctDate)) return false;
   const { hour, minute } = getCTTime(now);
   const totalMinutes = hour * 60 + minute;
   const windowOpen = 8 * 60 + 30; // 08:30 CT
