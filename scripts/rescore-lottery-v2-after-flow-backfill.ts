@@ -11,11 +11,17 @@
  *   npx tsx scripts/rescore-lottery-v2-after-flow-backfill.ts --since 2026-10-29 --apply    # writes
  *
  * Both modes READ the database DATABASE_URL points at (production, in
- * .env.local). The default is a dry run: it prints the before and after
- * counts and the rows per fire date, and writes nothing. `--apply` writes an
- * undo file under docs/tmp/lottery-v2-rescore/ (relative to the working
- * directory) first, then the scores, 500 rows to a statement, only where the
- * score is still NULL. A second `--apply` writes nothing and says so.
+ * .env.local). The default is a dry run: it prints the active version, the
+ * before and after counts and the rows per fire date, and writes nothing.
+ * It scores with the weights of the version the `active` pointer names and
+ * writes that version into `score_version`, as the detector does.
+ * `--apply` writes an undo file under docs/tmp/lottery-v2-rescore/ (relative
+ * to the working directory) first, then the scores and the version, 500 rows
+ * to a statement, only where the score is still NULL, the row's tag is what
+ * the dry run read, and the pointer still names that version. A second
+ * `--apply` writes nothing and says so. Run it after the close (15:00 CT),
+ * and not between 07:15 and 12:30 UTC, when the nightly refit may promote a
+ * new version.
  *
  * A "Redis not configured" log line at start is expected: the env file loads
  * after the imports, and this script never uses Redis.

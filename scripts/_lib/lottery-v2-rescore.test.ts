@@ -2,14 +2,33 @@
 
 /**
  * Pure and mocked tests for the lottery V2 re-score: the arguments, the score
- * itself (pinned to the live detector's own computation), the plan, the batch
- * writer's chunking and the report. The SQL runs for real in
+ * itself (pinned to the live detector's own computation, under any weights it
+ * is handed), the plan, the batch writer's chunking and guards, the stop on an
+ * unreadable store and the report. The SQL runs for real in
  * lottery-v2-rescore-pglite.test.ts.
  */
 
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { computeLotteryScoreV2 } from '../../api/_lib/lottery-score-weights-v2.js';
+const { mockLoadLotteryWeights, mockSql } = vi.hoisted(() => ({
+  mockLoadLotteryWeights: vi.fn(),
+  mockSql: vi.fn(),
+}));
+
+// The two modules the run reaches out through: the weights loader (the store)
+// and getDb (the database). Neither is reached for real here.
+vi.mock('../../api/_lib/lottery-weights-loader.js', () => ({
+  loadLotteryWeights: mockLoadLotteryWeights,
+}));
+vi.mock('../../api/_lib/db.js', () => ({ getDb: vi.fn(() => mockSql) }));
+
+import {
+  isAlignedFire,
+  scoreLotteryV2,
+  weekdayOf,
+} from '../../api/_lib/lottery-score-weights-v2.js';
+import type { LotteryWeights } from '../../api/_lib/lottery-weights-schema.js';
+import { SEED_LOTTERY_WEIGHTS } from '../../api/_lib/lottery-weights-seed.js';
 import {
   SEED_WEIGHTS_LIVE_FROM,
   applyUpdates,
@@ -18,10 +37,24 @@ import {
   parseArgs,
   planRows,
   rescoreRow,
+  runRescore,
   type CandidateRow,
   type RescoreResult,
   type ScoreUpdate,
 } from './lottery-v2-rescore.js';
+
+const SEED_VERSION = 'seed-2026-06-17';
+const REFIT_VERSION = 'refit-2026-11-04';
+
+// A later version's weights: the seed with two weights changed, so a row
+// scored with it differs from the same row scored with the seed.
+const REFIT_WEIGHTS: LotteryWeights = (() => {
+  const copy = structuredClone(SEED_LOTTERY_WEIGHTS);
+  copy.features.ticker_weights.SNDK =
+    (copy.features.ticker_weights.SNDK ?? 0) + 3;
+  copy.features.option_type_weights.P += 2;
+  return copy;
+})();
 
 function row(over: Partial<CandidateRow> = {}): CandidateRow {
   return {
@@ -36,6 +69,7 @@ function row(over: Partial<CandidateRow> = {}): CandidateRow {
     trigger_ask_pct: 0.8,
     cum_ncp_at_fire: 5_000_000,
     cum_npp_at_fire: 1_000_000,
+    score_version: null,
     ...over,
   };
 }
@@ -92,16 +126,13 @@ describe('parseArgs', () => {
 });
 
 // The cron's own computation, copied from detect-lottery-fires.ts Pass 1 on
-// purpose: this is what the re-score must stay equal to. If the cron's
-// derivation of isAligned or the weekday changes, this copy is the thing to
-// update, and the table below then says whether the script follows.
-function liveScore(r: CandidateRow): number | null {
-  const isAligned =
-    r.cum_ncp_at_fire != null &&
-    r.cum_npp_at_fire != null &&
-    ((r.option_type === 'C' && r.cum_ncp_at_fire > r.cum_npp_at_fire) ||
-      (r.option_type === 'P' && r.cum_npp_at_fire > r.cum_ncp_at_fire));
-  return computeLotteryScoreV2({
+// purpose: `scoreLotteryV2(active.weights, scoreInput)` with the input built
+// from the row's columns. This is what the re-score must stay equal to, under
+// whichever weights the active pointer names. If the cron's derivation of
+// isAligned or the weekday changes, this copy is the thing to update, and the
+// table below then says whether the script follows.
+function liveScore(weights: LotteryWeights, r: CandidateRow): number | null {
+  return scoreLotteryV2(weights, {
     ticker: r.underlying_symbol,
     tod: r.tod as 'MID',
     dte: r.dte,
@@ -109,10 +140,12 @@ function liveScore(r: CandidateRow): number | null {
     gammaAtTrigger: r.gamma_at_trigger ?? null,
     triggerAskPct: r.trigger_ask_pct ?? null,
     optionType: r.option_type,
-    isAligned,
-    dayOfWeek: new Date(`${r.date}T12:00:00Z`).toLocaleDateString('en-US', {
-      weekday: 'long',
-    }),
+    isAligned: isAlignedFire(
+      r.option_type,
+      r.cum_ncp_at_fire,
+      r.cum_npp_at_fire,
+    ),
+    dayOfWeek: weekdayOf(r.date),
   });
 }
 
@@ -154,49 +187,80 @@ describe('rescoreRow', () => {
     }
   }
 
-  it(`equals the live detector's score on all ${cases.length} rows of a grid`, () => {
-    expect(cases.length).toBe(200);
-    let scored = 0;
-    for (const r of cases) {
-      const expected = liveScore(r);
-      expect(rescoreRow(r), JSON.stringify(r)).toBe(expected);
-      if (expected != null) scored += 1;
-    }
-    // The grid exercises both outcomes.
-    expect(scored).toBeGreaterThan(30);
-    expect(scored).toBeLessThan(cases.length);
+  // The same grid under two versions' weights: the seed, and a later version
+  // whose ticker and option-type weights differ. The script must score with
+  // the weights it is handed, whichever version they belong to.
+  describe.each([
+    ['the seed', SEED_LOTTERY_WEIGHTS],
+    ['a later version', REFIT_WEIGHTS],
+  ])('under the weights of %s', (_label, weights) => {
+    it(`equals the live detector's score on all ${cases.length} rows of a grid`, () => {
+      expect(cases.length).toBe(200);
+      let scored = 0;
+      for (const r of cases) {
+        const expected = liveScore(weights, r);
+        expect(rescoreRow(weights, r), JSON.stringify(r)).toBe(expected);
+        if (expected != null) scored += 1;
+      }
+      // The grid exercises both outcomes.
+      expect(scored).toBeGreaterThan(30);
+      expect(scored).toBeLessThan(cases.length);
+    });
+  });
+
+  it('scores a row differently under a later version, so the grid above can tell the weights apart', () => {
+    const sndkCall = row();
+    const sndkPut = row({
+      option_type: 'P',
+      cum_ncp_at_fire: 1,
+      cum_npp_at_fire: 9,
+    });
+
+    expect(rescoreRow(REFIT_WEIGHTS, sndkCall)).toBe(
+      (rescoreRow(SEED_LOTTERY_WEIGHTS, sndkCall) as number) + 3,
+    );
+    expect(rescoreRow(REFIT_WEIGHTS, sndkPut)).toBe(
+      (rescoreRow(SEED_LOTTERY_WEIGHTS, sndkPut) as number) + 3 + 2,
+    );
   });
 
   it('gives a fire against the flow, and a tie, no score', () => {
     expect(
       rescoreRow(
+        SEED_LOTTERY_WEIGHTS,
         row({ option_type: 'C', cum_ncp_at_fire: 1, cum_npp_at_fire: 9 }),
       ),
     ).toBeNull();
     expect(
       rescoreRow(
+        SEED_LOTTERY_WEIGHTS,
         row({ option_type: 'P', cum_ncp_at_fire: 9, cum_npp_at_fire: 1 }),
       ),
     ).toBeNull();
     expect(
-      rescoreRow(row({ cum_ncp_at_fire: 5, cum_npp_at_fire: 5 })),
+      rescoreRow(
+        SEED_LOTTERY_WEIGHTS,
+        row({ cum_ncp_at_fire: 5, cum_npp_at_fire: 5 }),
+      ),
     ).toBeNull();
   });
 
   it('gives dte beyond 3 no score', () => {
-    expect(rescoreRow(row({ dte: 4 }))).toBeNull();
+    expect(rescoreRow(SEED_LOTTERY_WEIGHTS, row({ dte: 4 }))).toBeNull();
   });
 
   it('reports a tod the weights do not know as unscorable, never NaN', () => {
-    expect(rescoreRow(row({ tod: 'PRE_OPEN' }))).toBe('unscorable');
+    expect(rescoreRow(SEED_LOTTERY_WEIGHTS, row({ tod: 'PRE_OPEN' }))).toBe(
+      'unscorable',
+    );
   });
 });
 
 describe('planRows', () => {
-  it('sorts rows into to-score, stay-NULL and unscorable, and counts the to-score by date', () => {
-    const plan = planRows([
+  it('sorts rows into to-score, stay-NULL and unscorable, and counts the to-score by date and by the tag they hold', () => {
+    const plan = planRows(SEED_LOTTERY_WEIGHTS, [
       row({ id: '10', date: '2026-11-12' }),
-      row({ id: '11', date: '2026-11-13' }),
+      row({ id: '11', date: '2026-11-13', score_version: SEED_VERSION }),
       row({ id: '12', date: '2026-11-13' }),
       row({ id: '13', cum_ncp_at_fire: 1, cum_npp_at_fire: 9 }), // against the flow
       row({ id: '14', tod: 'PRE_OPEN' }), // unknown tod
@@ -205,16 +269,28 @@ describe('planRows', () => {
     expect(plan.examined).toBe(5);
     expect(plan.updates.map((u) => u.id)).toEqual(['10', '11', '12']);
     expect(plan.updates.every((u) => Number.isInteger(u.score))).toBe(true);
+    // The tag each row held is kept, for the write's guard and the undo.
+    expect(plan.updates.map((u) => u.previousVersion)).toEqual([
+      null,
+      SEED_VERSION,
+      null,
+    ]);
     expect(plan.stayNull).toBe(1);
     expect(plan.unscorable).toBe(1);
     expect(Object.fromEntries(plan.byDate)).toEqual({
       '2026-11-12': 1,
       '2026-11-13': 2,
     });
+    expect(plan.byPreviousVersion).toEqual(
+      new Map([
+        [null, 2],
+        [SEED_VERSION, 1],
+      ]),
+    );
   });
 
   it('plans nothing for no rows', () => {
-    expect(planRows([])).toMatchObject({
+    expect(planRows(SEED_LOTTERY_WEIGHTS, [])).toMatchObject({
       examined: 0,
       updates: [],
       stayNull: 0,
@@ -225,53 +301,81 @@ describe('planRows', () => {
 
 describe('applyUpdates', () => {
   const updates = (count: number): ScoreUpdate[] =>
-    Array.from({ length: count }, (_, i) => ({ id: String(i + 1), score: 7 }));
+    Array.from({ length: count }, (_, i) => ({
+      id: String(i + 1),
+      score: 7,
+      previousVersion: i % 2 === 0 ? null : SEED_VERSION,
+    }));
 
-  // A tagged-template stub that "writes" every id it is given.
+  // A tagged-template stub that "writes" every id it is given. The binds, in
+  // the statement's order: the version to write, then the ids, scores and
+  // previous tags, then the version the pointer must name.
   const writes = () =>
-    vi.fn(async (_strings: unknown, ids: string[]) =>
+    vi.fn(async (_strings: unknown, _version: string, ids: string[]) =>
       ids.map((id) => ({ id })),
     );
 
   it('writes 500 rows to a statement and returns the rows written', async () => {
     const sql = writes();
 
-    const written = await applyUpdates(sql as never, updates(1_200));
+    const written = await applyUpdates(
+      sql as never,
+      updates(1_200),
+      REFIT_VERSION,
+    );
 
     expect(written).toBe(1_200);
-    expect(sql.mock.calls.map((c) => (c[1] as string[]).length)).toEqual([
-      500, 500, 200,
-    ]);
-    // ids and scores travel as parallel arrays of the same length.
-    const [, ids, scores] = sql.mock.calls[0] as unknown as [
+    expect(sql.mock.calls.map((c) => c[2].length)).toEqual([500, 500, 200]);
+    // ids, scores and previous tags travel as parallel arrays of the same
+    // length; the version is bound twice, once to write and once to guard on.
+    const [, setVersion, ids, scores, previous, guardVersion] = sql.mock
+      .calls[0] as unknown as [
       unknown,
+      string,
       string[],
       number[],
+      Array<string | null>,
+      string,
     ];
     expect(scores).toHaveLength(ids.length);
+    expect(previous).toEqual(
+      ids.map((_, i) => (i % 2 === 0 ? null : SEED_VERSION)),
+    );
     expect(ids[0]).toBe('1');
+    expect([setVersion, guardVersion]).toEqual([REFIT_VERSION, REFIT_VERSION]);
   });
 
-  it('guards each statement with score IS NULL, so another writer’s score stays', async () => {
+  it('guards each statement on score IS NULL, the tag the row held and the active pointer, so another writer’s values stay', async () => {
     const sql = writes();
 
-    await applyUpdates(sql as never, updates(1));
+    await applyUpdates(sql as never, updates(1), REFIT_VERSION);
 
-    const text = (sql.mock.calls[0]![0] as unknown as string[]).join('${}');
+    const text = (sql.mock.calls[0]![0] as unknown as string[])
+      .join('${}')
+      .replaceAll(/\s+/g, ' ');
+    expect(text).toContain('SET score = u.score, score_version = ${}');
     expect(text).toContain('WHERE f.id = u.id AND f.score IS NULL');
+    expect(text).toContain(
+      'AND f.score_version IS NOT DISTINCT FROM u.previous_version',
+    );
+    expect(text).toContain("p.name = 'active' AND p.version = ${}");
     expect(text).toContain('unnest(');
   });
 
   it('counts only the rows the statement returned', async () => {
     const sql = vi.fn(async () => [{ id: '1' }]);
 
-    await expect(applyUpdates(sql as never, updates(3))).resolves.toBe(1);
+    await expect(
+      applyUpdates(sql as never, updates(3), REFIT_VERSION),
+    ).resolves.toBe(1);
   });
 
   it('writes nothing for nothing', async () => {
     const sql = writes();
 
-    await expect(applyUpdates(sql as never, [])).resolves.toBe(0);
+    await expect(applyUpdates(sql as never, [], REFIT_VERSION)).resolves.toBe(
+      0,
+    );
     expect(sql).not.toHaveBeenCalled();
   });
 
@@ -281,10 +385,47 @@ describe('applyUpdates', () => {
       .mockResolvedValueOnce([{ id: '1' }])
       .mockRejectedValueOnce(new Error('connection lost'));
 
-    await expect(applyUpdates(sql as never, updates(1_200))).rejects.toThrow(
-      'connection lost',
-    );
+    await expect(
+      applyUpdates(sql as never, updates(1_200), REFIT_VERSION),
+    ).rejects.toThrow('connection lost');
     expect(sql).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('runRescore when the weights store cannot be read', () => {
+  beforeEach(() => {
+    mockLoadLotteryWeights.mockReset();
+    mockSql.mockReset();
+  });
+
+  // The loader answers a store it cannot read with the seed in both slots and
+  // says why in `fallback`. Taking that for the active version would score
+  // and tag rows with a version the store never named.
+  it.each(['transient', 'error'] as const)(
+    'stops on a %s fallback before reading or writing a row, naming the reason',
+    async (kind) => {
+      mockLoadLotteryWeights.mockResolvedValue({
+        active: { version: SEED_VERSION, weights: SEED_LOTTERY_WEIGHTS },
+        takeit: { version: SEED_VERSION, weights: SEED_LOTTERY_WEIGHTS },
+        fallback: { kind, reason: 'connection lost' },
+      });
+
+      await expect(
+        runRescore({ apply: true, since: '2026-10-29', undoDir: 'unused' }),
+      ).rejects.toThrow(
+        `the weights store could not be read (${kind}: connection lost), so the active version is not known. Nothing was read or written.`,
+      );
+      expect(mockSql).not.toHaveBeenCalled();
+    },
+  );
+
+  it('lets a loader that rejects through, so the CLI prints it and exits 1', async () => {
+    mockLoadLotteryWeights.mockRejectedValue(new Error('loader exploded'));
+
+    await expect(
+      runRescore({ apply: false, since: '2026-10-29', undoDir: 'unused' }),
+    ).rejects.toThrow('loader exploded');
+    expect(mockSql).not.toHaveBeenCalled();
   });
 });
 
@@ -323,6 +464,7 @@ describe('formatReport', () => {
   const base: RescoreResult = {
     apply: false,
     since: '2026-10-29',
+    version: SEED_VERSION,
     before: { nullScoreWithFlow: 51_300, nullScoreNoFlow: 23, scored: 45_512 },
     after: { nullScoreWithFlow: 50_332, nullScoreNoFlow: 23, scored: 46_480 },
     plan: {
@@ -333,6 +475,10 @@ describe('formatReport', () => {
       byDate: new Map([
         ['2026-11-13', 700],
         ['2026-11-12', 268],
+      ]),
+      byPreviousVersion: new Map([
+        [SEED_VERSION, 68],
+        [null, 900],
       ]),
     },
     written: 0,
@@ -349,6 +495,21 @@ describe('formatReport', () => {
     // Dates in order, whatever order the map filled in.
     expect(text.indexOf('2026-11-12')).toBeLessThan(text.indexOf('2026-11-13'));
     expect(text).not.toContain('Undo file');
+  });
+
+  it('names the version the rows are scored with and tagged with, and the tags they hold now', () => {
+    const text = formatReport({ ...base, version: REFIT_VERSION });
+
+    expect(text).toContain(
+      `scored with the weights of the active version, ${REFIT_VERSION}, and tagged with it in score_version`,
+    );
+    expect(text).toContain('Rows to score by the score_version they hold now:');
+    // NULL is written as NULL, and the tags are listed in order.
+    expect(text).toContain('  NULL  900');
+    expect(text).toContain(`  ${SEED_VERSION}  68`);
+    expect(text.indexOf('  NULL  900')).toBeLessThan(
+      text.indexOf(`  ${SEED_VERSION}  68`),
+    );
   });
 
   it('reports an apply: rows written, the undo file, measured after counts', () => {
@@ -377,17 +538,23 @@ describe('formatReport', () => {
     });
 
     expect(text).toContain(
-      'WARNING: 8 planned rows were scored by another writer',
+      'WARNING: 8 planned rows were scored or tagged by another writer',
     );
   });
 
   it('says so when there is nothing to score', () => {
     const text = formatReport({
       ...base,
-      plan: { ...base.plan, toScore: 0, byDate: new Map() },
+      plan: {
+        ...base.plan,
+        toScore: 0,
+        byDate: new Map(),
+        byPreviousVersion: new Map(),
+      },
     });
 
     expect(text).toContain('Nothing to score.');
     expect(text).not.toContain('Rows to score by fire date');
+    expect(text).not.toContain('Rows to score by the score_version');
   });
 });

@@ -12,31 +12,47 @@
  * script is the second step: it gives those rows the score the detector would
  * have given them.
  *
- * The score is the live one. The scoring function is `scoreLotteryV2` with
- * the seed weights (the weights `computeLotteryScoreV2` applies and the cron
- * called at fire time), fed the same inputs the cron feeds it: the row's own
- * columns, `isAlignedFire` on the stored flow, and `weekdayOf` on the fire's
- * date. Nothing is copied from the cron; a parity test pins the two together.
+ * The score is the live one, and so is its version. The scoring function is
+ * `scoreLotteryV2`, called as the cron calls it, with the weights of the
+ * version the `active` pointer names (`loadLotteryWeights().active`, the
+ * loader the cron scores with), and the fire is tagged with that version in
+ * `score_version`, as the cron's INSERT tags it. The inputs are the same as
+ * the cron's: the row's own columns, `isAlignedFire` on the stored flow, and
+ * `weekdayOf` on the fire's date. A parity test pins the two together. This is
+ * the version rule of the one whole-table rescore
+ * (`scripts/backfill_lottery_scores.py`, run without `--version`): the active
+ * version, and the pointer must still name it when a row is written. That
+ * rescore cannot do this job: it has no way to scope a run, and rewrites every
+ * fire (about 1.06 million rows at the first promotion, per the Phase 4 plan,
+ * D5), where this repair must touch only the fires that had no flow. If the
+ * store cannot be read the loader answers with the seed in both slots; this
+ * script stops instead, as it would otherwise tag rows with a version the
+ * store did not give it.
  *
- * What it writes: `score`, on rows where it is NULL, and nothing else.
+ * What it writes: `score` and `score_version`, on rows where `score` is NULL,
+ * and nothing else.
  *   - `cluster_bonus` is not touched. The cron stores it in its own column and
  *     never folds it into `score`, so a recomputed `score` is complete without
  *     it. (A neighbour's bonus counts co-firing tier-1 tickers by score, so a
  *     NULL-score fire never counted; rerunning
  *     `backfill-lottery-cluster-bonus.py` afterwards is a separate, owner
  *     decision.)
- *   - `score_version` is not touched, as the cron does not write it yet.
+ *   - `score_version` takes the active version, whatever tag the row held
+ *     (NULL for a fire from before the store, or the version the cron wrote
+ *     with its NULL score). The undo file keeps the old tag of each row.
  *   - `combined_score` is a generated column and follows `score`.
  *
  * Which rows. `score IS NULL`, both flow columns set, `dte` 0 to 3, on or
  * after `--since`. A row the V2 scorer still gives NULL (a fire against the
- * flow) is examined and left as it is. A second run therefore selects the same
- * rows, scores them the same way, and writes nothing.
+ * flow) is examined and left as it is, tag and all. A second run therefore
+ * selects the same rows, scores them the same way, and writes nothing.
  *
- * Writes are batches of 500 through `unnest`, each guarded by `score IS NULL`
- * again, so a row some other writer scored in between is never overwritten.
- * Each batch is its own statement, so a failed run stops cleanly and a rerun
- * finishes it.
+ * Writes are batches of 500 through `unnest`, each guarded again by `score IS
+ * NULL`, by the `score_version` the row held when it was read, and by the
+ * `active` pointer still naming the version being written. So a row some other
+ * writer scored or tagged in between is never overwritten, and a promotion
+ * that moves the pointer stops the writes. Each batch is its own statement, so
+ * a failed run stops cleanly and a rerun finishes it.
  */
 
 import { mkdirSync, writeFileSync } from 'node:fs';
@@ -48,8 +64,14 @@ import {
   scoreLotteryV2,
   weekdayOf,
 } from '../../api/_lib/lottery-score-weights-v2.js';
-import type { TimeOfDay } from '../../api/_lib/lottery-weights-schema.js';
-import { SEED_LOTTERY_WEIGHTS } from '../../api/_lib/lottery-weights-seed.js';
+import {
+  loadLotteryWeights,
+  type VersionedWeights,
+} from '../../api/_lib/lottery-weights-loader.js';
+import type {
+  LotteryWeights,
+  TimeOfDay,
+} from '../../api/_lib/lottery-weights-schema.js';
 
 type Sql = ReturnType<typeof getDb>;
 
@@ -58,7 +80,8 @@ type Sql = ReturnType<typeof getDb>;
  * them on the scorer on 2026-09-07 (after the close; plan
  * 2026-11-05-nightly-pipeline-phase4.md, "quintile-boundary bug" section), and
  * a fire before that day was scored with older weights. Re-scoring one here
- * would be a methodology change, so `--since` may not go back past this day.
+ * would be a methodology change (the whole-table rescore does it on purpose,
+ * at a promotion), so `--since` may not go back past this day.
  */
 export const SEED_WEIGHTS_LIVE_FROM = '2026-09-08';
 
@@ -81,14 +104,17 @@ export interface CliArgs {
 
 export const USAGE = `Usage: npx tsx scripts/rescore-lottery-v2-after-flow-backfill.ts --since YYYY-MM-DD [options]
 
-Gives lottery_finder_fires rows the V2 score the detector would have given
-them, where the score is NULL, the flow columns are now set (run
-backfill-ticker-flow-at-fire.mjs first) and dte is 0 to 3. Writes only
-\`score\`, only where it is NULL. A second run writes nothing.
+Gives lottery_finder_fires rows the V2 score the detector would give them now,
+where the score is NULL, the flow columns are now set (run
+backfill-ticker-flow-at-fire.mjs first) and dte is 0 to 3. It scores with the
+weights of the version the 'active' pointer names and tags the row with that
+version in score_version, as the detector does. Writes only \`score\` and
+\`score_version\`, only where the score is NULL, and only while the pointer
+still names that version. A second run writes nothing.
 
 Options:
   --since <date>     first fire date to cover, YYYY-MM-DD (required; not before
-                     ${SEED_WEIGHTS_LIVE_FROM}, the first day the weights it scores with were live)
+                     ${SEED_WEIGHTS_LIVE_FROM}, the first day the seed weights were live)
   --apply            write (without it: dry run, which writes nothing)
   --dry-run          the default, said aloud; contradicts --apply
   --env-file <path>  .env.local to load (default: the nearest one up the tree)
@@ -138,7 +164,7 @@ export function parseArgs(argv: readonly string[]): CliArgs {
   }
   if (since < SEED_WEIGHTS_LIVE_FROM) {
     throw new Error(
-      `--since ${since} is before ${SEED_WEIGHTS_LIVE_FROM}, the first day the seed weights were live: earlier fires were scored with older weights, and re-scoring them with these would change their meaning`,
+      `--since ${since} is before ${SEED_WEIGHTS_LIVE_FROM}, the first day the seed weights were live: earlier fires were scored with older weights, and re-scoring them here would change their meaning`,
     );
   }
   return { apply, since, envFile, help };
@@ -160,16 +186,21 @@ export interface CandidateRow {
   trigger_ask_pct: number | null;
   cum_ncp_at_fire: number;
   cum_npp_at_fire: number;
+  /** The tag the row holds now: NULL for a fire from before the store. */
+  score_version: string | null;
 }
 
 /**
- * The V2 score for one row: the cron's computation, from the row's columns.
- * Null when the scorer says so (not aligned, or dte outside 0 to 3). NaN is
- * never returned: a `tod` the weights do not know would sum to NaN, and that
- * row is `'unscorable'` so it is counted and left alone.
+ * The V2 score for one row under `weights`: the cron's computation, from the
+ * row's columns. Null when the scorer says so (not aligned, or dte outside 0
+ * to 3). NaN is never returned: a `tod` the weights do not know would sum to
+ * NaN, and that row is `'unscorable'` so it is counted and left alone.
  */
-export function rescoreRow(row: CandidateRow): number | null | 'unscorable' {
-  const score = scoreLotteryV2(SEED_LOTTERY_WEIGHTS, {
+export function rescoreRow(
+  weights: LotteryWeights,
+  row: CandidateRow,
+): number | null | 'unscorable' {
+  const score = scoreLotteryV2(weights, {
     ticker: row.underlying_symbol,
     tod: row.tod as TimeOfDay,
     dte: row.dte,
@@ -191,6 +222,8 @@ export function rescoreRow(row: CandidateRow): number | null | 'unscorable' {
 export interface ScoreUpdate {
   id: string;
   score: number;
+  /** The tag the row held when it was read, which the write guards on. */
+  previousVersion: string | null;
 }
 
 export interface Plan {
@@ -204,25 +237,43 @@ export interface Plan {
   unscorable: number;
   /** Rows to score per fire date. */
   byDate: Map<string, number>;
+  /** Rows to score per the `score_version` they hold now (null is NULL). */
+  byPreviousVersion: Map<string | null, number>;
 }
 
-/** What the rows would get, with no I/O. */
-export function planRows(rows: readonly CandidateRow[]): Plan {
-  const plan: Plan = {
+function emptyPlan(): Plan {
+  return {
     examined: 0,
     updates: [],
     stayNull: 0,
     unscorable: 0,
     byDate: new Map(),
+    byPreviousVersion: new Map(),
   };
+}
+
+/** What the rows would get under `weights`, with no I/O. */
+export function planRows(
+  weights: LotteryWeights,
+  rows: readonly CandidateRow[],
+): Plan {
+  const plan = emptyPlan();
   for (const row of rows) {
     plan.examined += 1;
-    const score = rescoreRow(row);
+    const score = rescoreRow(weights, row);
     if (score === 'unscorable') plan.unscorable += 1;
     else if (score == null) plan.stayNull += 1;
     else {
-      plan.updates.push({ id: row.id, score });
+      plan.updates.push({
+        id: row.id,
+        score,
+        previousVersion: row.score_version,
+      });
       plan.byDate.set(row.date, (plan.byDate.get(row.date) ?? 0) + 1);
+      plan.byPreviousVersion.set(
+        row.score_version,
+        (plan.byPreviousVersion.get(row.score_version) ?? 0) + 1,
+      );
     }
   }
   return plan;
@@ -236,6 +287,12 @@ function mergePlan(into: Plan, next: Plan): void {
   into.unscorable += next.unscorable;
   for (const [date, n] of next.byDate) {
     into.byDate.set(date, (into.byDate.get(date) ?? 0) + n);
+  }
+  for (const [version, n] of next.byPreviousVersion) {
+    into.byPreviousVersion.set(
+      version,
+      (into.byPreviousVersion.get(version) ?? 0) + n,
+    );
   }
 }
 
@@ -292,14 +349,12 @@ export async function countScope(
  * filters on `f.id`: a bare `ORDER BY id` would name the text output column
  * and sort '10' before '9', which breaks the keyset.
  */
-async function planScope(sql: Sql, since: string): Promise<Plan> {
-  const plan: Plan = {
-    examined: 0,
-    updates: [],
-    stayNull: 0,
-    unscorable: 0,
-    byDate: new Map(),
-  };
+async function planScope(
+  sql: Sql,
+  since: string,
+  weights: LotteryWeights,
+): Promise<Plan> {
+  const plan = emptyPlan();
   let afterId = '0';
   for (;;) {
     const page = (await sql`
@@ -314,7 +369,8 @@ async function planScope(sql: Sql, since: string): Promise<Plan> {
         f.gamma_at_trigger::float8 AS gamma_at_trigger,
         f.trigger_ask_pct::float8 AS trigger_ask_pct,
         f.cum_ncp_at_fire::float8 AS cum_ncp_at_fire,
-        f.cum_npp_at_fire::float8 AS cum_npp_at_fire
+        f.cum_npp_at_fire::float8 AS cum_npp_at_fire,
+        f.score_version
       FROM lottery_finder_fires f
       WHERE f.score IS NULL
         AND f.cum_ncp_at_fire IS NOT NULL
@@ -325,7 +381,7 @@ async function planScope(sql: Sql, since: string): Promise<Plan> {
       ORDER BY f.id
       LIMIT ${PAGE_SIZE}
     `) as CandidateRow[];
-    mergePlan(plan, planRows(page));
+    mergePlan(plan, planRows(weights, page));
     const last = page.at(-1);
     if (last == null || page.length < PAGE_SIZE) return plan;
     afterId = last.id;
@@ -335,24 +391,36 @@ async function planScope(sql: Sql, since: string): Promise<Plan> {
 // ── Writes ──────────────────────────────────────────────────────────────────
 
 /**
- * Write the scores, 500 rows to a statement. `f.score IS NULL` again in the
- * UPDATE: the plan was read earlier, and a row another writer has scored since
- * keeps its value. Returns the number of rows actually written.
+ * Write the scores and `version`, 500 rows to a statement. Every statement
+ * re-checks what the plan was read on: `f.score IS NULL`, the tag the row held
+ * (`previousVersion`) and the `active` pointer still naming `version`. A row
+ * another writer has scored or tagged since keeps its value, and once a
+ * promotion has moved the pointer the statements write nothing. Returns the
+ * number of rows actually written.
  */
 export async function applyUpdates(
   sql: Sql,
   updates: readonly ScoreUpdate[],
+  version: string,
 ): Promise<number> {
   let written = 0;
   for (let i = 0; i < updates.length; i += WRITE_CHUNK) {
     const chunk = updates.slice(i, i + WRITE_CHUNK);
     const ids = chunk.map((u) => u.id);
     const scores = chunk.map((u) => u.score);
+    const previous = chunk.map((u) => u.previousVersion);
     const done = (await sql`
       UPDATE lottery_finder_fires AS f
-      SET score = u.score
-      FROM unnest(${ids}::bigint[], ${scores}::int[]) AS u(id, score)
-      WHERE f.id = u.id AND f.score IS NULL
+      SET score = u.score, score_version = ${version}
+      FROM unnest(${ids}::bigint[], ${scores}::int[], ${previous}::text[])
+        AS u(id, score, previous_version)
+      WHERE f.id = u.id
+        AND f.score IS NULL
+        AND f.score_version IS NOT DISTINCT FROM u.previous_version
+        AND EXISTS (
+          SELECT 1 FROM lottery_score_pointers p
+          WHERE p.name = 'active' AND p.version = ${version}
+        )
       RETURNING f.id
     `) as Array<{ id: unknown }>;
     written += done.length;
@@ -360,27 +428,37 @@ export async function applyUpdates(
   return written;
 }
 
-/**
- * The undo for a run, as written into its undo file. `$1` is the file's row
- * ids and `$2` their scores, in order (`lottery_finder_fires.score` is an
- * INTEGER, `id` a BIGINT). It clears a row only while it still holds the
- * score this run planned for it, so a row some other writer has scored since
- * (the nightly refit, say) keeps its score. Every row in the file was NULL
- * before the run, so NULL is what it restores; a row another writer gave the
- * same score is cleared too, and a re-run scores it again.
- */
-export const UNDO_STATEMENT =
-  'UPDATE lottery_finder_fires f SET score = NULL FROM unnest($1::bigint[], $2::int[]) u(id, score) WHERE f.id = u.id AND f.score = u.score';
+/** The version the `active` pointer names right now, or null if it has none. */
+async function activeVersionNow(sql: Sql): Promise<string | null> {
+  const rows = (await sql`
+    SELECT version FROM lottery_score_pointers WHERE name = 'active'
+  `) as Array<{ version: string }>;
+  return rows[0]?.version ?? null;
+}
 
 /**
- * The rows a run is about to score, each with the score it will get, in a file
- * written first, so the run can be undone (UNDO_STATEMENT). The score is
- * there because an undo by id alone would also clear a row another writer
- * scored between the plan and the undo.
+ * The undo for a run, as written into its undo file. `$1` is the file's row
+ * ids, `$2` their scores and `$3` the tag each held before, in order, and `$4`
+ * is the file's `version` (`lottery_finder_fires.score` is an INTEGER, `id` a
+ * BIGINT). It restores a row only while it still holds the score and the tag
+ * this run gave it, so a row some other writer has scored or tagged since (the
+ * nightly refit's promotion, say) keeps its values. Every row in the file had
+ * score NULL before the run, so NULL is what it restores; a row another writer
+ * gave the same score and tag is restored too, and a re-run scores it again.
+ */
+export const UNDO_STATEMENT =
+  'UPDATE lottery_finder_fires f SET score = NULL, score_version = u.previous_version FROM unnest($1::bigint[], $2::int[], $3::text[]) u(id, score, previous_version) WHERE f.id = u.id AND f.score = u.score AND f.score_version = $4';
+
+/**
+ * The rows a run is about to score, each with the score it will get and the
+ * tag it holds, in a file written first, so the run can be undone
+ * (UNDO_STATEMENT). The score is there because an undo by id alone would also
+ * restore a row another writer scored between the plan and the undo.
  */
 function writeUndoFile(
   dir: string,
   since: string,
+  version: string,
   updates: readonly ScoreUpdate[],
   now: Date,
 ): string {
@@ -389,19 +467,44 @@ function writeUndoFile(
   writeFileSync(
     file,
     JSON.stringify({
-      note: `Every row below had score NULL before this run, and was planned to get the score shown. Undo: ${UNDO_STATEMENT} with $1 = the id of each row and $2 = its score, in order.`,
+      note: `Every row below had score NULL before this run, and was planned to get the score shown, with score_version ${version}; previousVersion is the tag it held (null is NULL). Undo: ${UNDO_STATEMENT} with $1 = the id of each row, $2 = its score and $3 = its previousVersion, in order, and $4 = ${JSON.stringify(version)}.`,
       since,
-      rows: updates.map((u) => ({ id: u.id, score: u.score })),
+      version,
+      rows: updates.map((u) => ({
+        id: u.id,
+        score: u.score,
+        previousVersion: u.previousVersion,
+      })),
     }),
   );
   return file;
 }
 
+/**
+ * The active version and its weights, from the store the cron scores from. The
+ * loader answers a store it cannot read with the seed in both slots; scoring
+ * and tagging rows with that would put a version on them that the store never
+ * gave this run, so a fallback stops the run before anything is read or written.
+ */
+async function loadActive(): Promise<VersionedWeights> {
+  const loaded = await loadLotteryWeights();
+  if (loaded.fallback != null) {
+    throw new Error(
+      `the weights store could not be read (${loaded.fallback.kind}: ${loaded.fallback.reason}), so the active version is not known. Nothing was read or written.`,
+    );
+  }
+  return loaded.active;
+}
+
 // ── Run and report ──────────────────────────────────────────────────────────
+
+const n = (value: number): string => value.toLocaleString('en-US');
 
 export interface RescoreResult {
   apply: boolean;
   since: string;
+  /** The active version the rows are scored with and tagged with. */
+  version: string;
   before: ScopeCounts;
   /** Measured after an apply; a projection for a dry run. */
   after: ScopeCounts;
@@ -416,8 +519,9 @@ export async function runRescore(opts: {
   undoDir: string;
 }): Promise<RescoreResult> {
   const sql = getDb();
+  const active = await loadActive();
   const before = await countScope(sql, opts.since);
-  const plan = await planScope(sql, opts.since);
+  const plan = await planScope(sql, opts.since, active.weights);
   const { updates, ...planCounts } = plan;
   const summary = { ...planCounts, toScore: updates.length };
 
@@ -425,6 +529,7 @@ export async function runRescore(opts: {
     return {
       apply: opts.apply,
       since: opts.since,
+      version: active.version,
       before,
       after: {
         nullScoreWithFlow: before.nullScoreWithFlow - updates.length,
@@ -437,10 +542,16 @@ export async function runRescore(opts: {
     };
   }
 
-  const undoFile = writeUndoFile(opts.undoDir, opts.since, updates, new Date());
+  const undoFile = writeUndoFile(
+    opts.undoDir,
+    opts.since,
+    active.version,
+    updates,
+    new Date(),
+  );
   let written: number;
   try {
-    written = await applyUpdates(sql, updates);
+    written = await applyUpdates(sql, updates, active.version);
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
     throw new Error(
@@ -448,9 +559,19 @@ export async function runRescore(opts: {
       { cause: err },
     );
   }
+  // Every statement above wrote only while the pointer named this version, so
+  // a promotion in the middle of the run stops the writes. Say so, rather than
+  // end with a count that looks like a partial overlap with another writer.
+  const nowActive = await activeVersionNow(sql);
+  if (nowActive !== active.version) {
+    throw new Error(
+      `the active pointer moved from ${active.version} to ${nowActive ?? 'nothing'} during the run. ${n(written)} of ${n(updates.length)} planned rows were written under ${active.version} before it moved, and the rest were not. The undo file ${undoFile} lists every planned row. Run a dry run to see what is left; it scores with the new active version.`,
+    );
+  }
   return {
     apply: true,
     since: opts.since,
+    version: active.version,
     before,
     after: await countScope(sql, opts.since),
     plan: summary,
@@ -459,8 +580,6 @@ export async function runRescore(opts: {
   };
 }
 
-const n = (value: number): string => value.toLocaleString('en-US');
-
 export function formatReport(result: RescoreResult): string {
   const { before, after, plan } = result;
   const projected = result.apply ? '' : ' (projected)';
@@ -468,7 +587,7 @@ export function formatReport(result: RescoreResult): string {
     result.apply
       ? 'APPLY: scores were written.'
       : 'DRY RUN: nothing was written. Re-run with --apply to write.',
-    `Scope: lottery_finder_fires, date >= ${result.since}, dte 0 to 3; scored with the seed weights (the ones live at fire time).`,
+    `Scope: lottery_finder_fires, date >= ${result.since}, dte 0 to 3; scored with the weights of the active version, ${result.version}, and tagged with it in score_version.`,
     '',
     'Before:',
     `  score NULL, flow set    ${n(before.nullScoreWithFlow)}   (the rows this script examines)`,
@@ -491,11 +610,23 @@ export function formatReport(result: RescoreResult): string {
       lines.push(`  ${date}  ${n(plan.byDate.get(date) ?? 0)}`);
     }
   }
+  if (plan.byPreviousVersion.size > 0) {
+    // The tag the rows hold now, which the write replaces with the active one.
+    lines.push('', 'Rows to score by the score_version they hold now:');
+    const held = [...plan.byPreviousVersion].map(
+      ([version, count]) => [version ?? 'NULL', count] as const,
+    );
+    for (const [version, count] of held.sort(([a], [b]) =>
+      a.localeCompare(b),
+    )) {
+      lines.push(`  ${version}  ${n(count)}`);
+    }
+  }
   if (result.apply) {
     lines.push('', `Rows written: ${n(result.written)}`);
     if (result.written !== plan.toScore) {
       lines.push(
-        `WARNING: ${n(plan.toScore - result.written)} planned rows were scored by another writer since the read; they kept their value.`,
+        `WARNING: ${n(plan.toScore - result.written)} planned rows were scored or tagged by another writer since the read; they kept their value.`,
       );
     }
     if (result.undoFile != null) lines.push(`Undo file: ${result.undoFile}`);
