@@ -84,6 +84,7 @@
     "scripts/backfill-gamma-setup-fires.ts",
     "scripts/backfill-gex-target-features.ts",
     "scripts/backfill-lottery-score.ts",
+    "scripts/_lib/backfill-lottery-score-cli.test.ts",
     "scripts/rescore-lottery-v2-after-flow-backfill.ts",
     "scripts/_lib/lottery-v2-rescore.ts",
     "scripts/_lib/lottery-v2-rescore.test.ts",

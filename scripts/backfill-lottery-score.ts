@@ -1,14 +1,24 @@
 /**
- * One-shot backfill for lottery_finder_fires.score (migration #126).
+ * REFUSES TO RUN. It predates the versioned weights store, and a run now would
+ * break the rule that a fire's `score` and `score_version` always agree.
  *
- * Reads every row where score IS NULL, runs the canonical
+ * It fills every `score IS NULL` row with the V1 scorer and leaves
+ * `score_version` alone. Under the store, a NULL score is a fire the current
+ * scorer gated out (not aligned, or outside DTE 0-3), so a run would write a V1
+ * score on fires of a store version, under that version's tag, and a run during
+ * a promotion would trip its `ConcurrentScoreWriter` guard. Its replacement is
+ * `scripts/backfill_lottery_scores.py`: one transaction, the scores and their
+ * tags written together, a snapshot of every value it replaces. Refusing is
+ * reversible (delete the two statements below); deleting the file is the
+ * owner's call.
+ *
+ * Original one-shot backfill for lottery_finder_fires.score (migration #126):
+ * reads every row where score IS NULL, runs the canonical
  * `computeLotteryScore` from `api/_lib/lottery-score-weights.ts`
  * against the same columns the cron uses (underlying_symbol, mode,
  * entry_price, tod, option_type), and bulk-updates in batches.
  *
- * Zero drift: imports the production scoring function directly.
- *
- * Usage:
+ * Usage (while it was live):
  *   npx tsx scripts/backfill-lottery-score.ts
  *   npx tsx scripts/backfill-lottery-score.ts --dry-run
  */
@@ -17,6 +27,14 @@ import { config as loadEnv } from 'dotenv';
 import { neon } from '@neondatabase/serverless';
 import { computeLotteryScore } from '../api/_lib/lottery-score-weights.ts';
 import type { LotteryMode, TimeOfDay } from '../api/_lib/lottery-finder.ts';
+
+// Before the env file is read and before any connection is made.
+console.error(
+  '[backfill-lottery-score] refused: this script predates the versioned ' +
+    'lottery weights store and writes V1 scores under a store version. Use ' +
+    'scripts/backfill_lottery_scores.py (a dry run unless --write is given).',
+);
+process.exit(1);
 
 loadEnv({ path: '.env.local' });
 
