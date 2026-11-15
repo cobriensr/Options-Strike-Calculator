@@ -30,7 +30,7 @@ vi.mock('../_lib/sentry.js', () => ({
     captureException: mockSentryCapture,
     captureMessage: mockSentryMessage,
   },
-  metrics: { uwRateLimit: vi.fn() },
+  metrics: { uwRateLimit: vi.fn(), gexbotRateLimit: vi.fn() },
 }));
 
 import handler, { config } from '../cron/fetch-gexbot-fast.js';
@@ -168,6 +168,7 @@ describe('fetch-gexbot-fast handler', () => {
     process.env = originalEnv;
     vi.useRealTimers();
     vi.unstubAllGlobals();
+    vi.restoreAllMocks();
   });
 
   // ── Auth guard ────────────────────────────────────────────
@@ -727,20 +728,34 @@ describe('fetch-gexbot-fast handler', () => {
       ).length;
     }
 
-    it('http-429: quota exhaustion is not retried and is tagged 429', async () => {
+    it('http-429: a persistent 429 is retried, then reported as a warning, and the run is partial', async () => {
+      // A short rate limit, not a quota: 3 attempts on a 1 s then 2 s
+      // backoff, then the one failure is filed under the stable fingerprint
+      // at level warning. The run still says it failed (R4).
+      vi.useFakeTimers();
+      vi.setSystemTime(MARKET_TIME);
+      vi.spyOn(Math, 'random').mockReturnValue(0);
       const fetchMock = stubSpxOrderflowFailure(429);
       const req = mockRequest({
         method: 'GET',
         headers: { authorization: 'Bearer test-secret' },
       });
       const res = mockResponse();
-      await handler(req, res);
+      const pending = handler(req, res);
+      await vi.advanceTimersByTimeAsync(3500);
+      await pending;
 
-      expect(spxCalls(fetchMock)).toBe(1);
-      expect(res._json).toMatchObject({ status: 'partial', failed: 1 });
+      expect(spxCalls(fetchMock)).toBe(3);
+      expect(res._json).toMatchObject({
+        status: 'partial',
+        failed: 1,
+        rows: STORED_ROWS - 1,
+      });
+      expect(mockSentryCapture).toHaveBeenCalledTimes(1);
       expect(mockSentryCapture).toHaveBeenCalledWith(
         expect.objectContaining({ name: 'GexbotHttpError', status: 429 }),
         expect.objectContaining({
+          level: 'warning',
           fingerprint: [
             'gexbot-fetch-failure',
             'fetch-gexbot-fast',
@@ -749,6 +764,89 @@ describe('fetch-gexbot-fast handler', () => {
           tags: expect.objectContaining({ 'gexbot.status': '429' }),
         }),
       );
+    });
+
+    it('http-429: a 429 that the retry clears reports nothing and the run succeeds', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(MARKET_TIME);
+      vi.spyOn(Math, 'random').mockReturnValue(0);
+      let spxCallCount = 0;
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (input: string) => {
+          const url = String(input);
+          if (url.endsWith('/SPX/orderflow/orderflow')) {
+            spxCallCount += 1;
+            if (spxCallCount === 1) {
+              return {
+                ok: false,
+                status: 429,
+                text: async () => '{"error": "Rate limit exceeded."}',
+              } as Response;
+            }
+          }
+          return happyResponse(url);
+        }),
+      );
+      const res = mockResponse();
+      const pending = handler(
+        mockRequest({
+          method: 'GET',
+          headers: { authorization: 'Bearer test-secret' },
+        }),
+        res,
+      );
+      await vi.advanceTimersByTimeAsync(3500);
+      await pending;
+
+      expect(spxCallCount).toBe(2);
+      expect(res._json).toMatchObject({
+        status: 'success',
+        rows: STORED_ROWS,
+        failed: 0,
+      });
+      expect(mockSentryCapture).not.toHaveBeenCalled();
+      expect(mockSentryMessage).not.toHaveBeenCalled();
+    });
+
+    it('http-429: every call rate limited ends the run as an error, never a success', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(MARKET_TIME);
+      vi.spyOn(Math, 'random').mockReturnValue(0);
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(
+          async () =>
+            ({
+              ok: false,
+              status: 429,
+              text: async () => '{"error": "Rate limit exceeded."}',
+            }) as Response,
+        ),
+      );
+      const res = mockResponse();
+      const pending = handler(
+        mockRequest({
+          method: 'GET',
+          headers: { authorization: 'Bearer test-secret' },
+        }),
+        res,
+      );
+      // 144 calls in waves of 32, each wave 1 s + 2 s of backoff.
+      await vi.advanceTimersByTimeAsync(20_000);
+      await pending;
+
+      expect(res._json).toMatchObject({
+        status: 'error',
+        rows: 0,
+        failed: FETCH_TASKS,
+      });
+      // Capped at 10 events a tick, all warnings, one summary message.
+      expect(mockSentryCapture).toHaveBeenCalledTimes(10);
+      for (const call of mockSentryCapture.mock.calls) {
+        expect(call[1]).toMatchObject({ level: 'warning' });
+      }
+      expect(mockSentryMessage).toHaveBeenCalledTimes(1);
     });
 
     it('http-4xx: a 403 is tagged 403', async () => {

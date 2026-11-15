@@ -16,11 +16,18 @@
  *    request per second per ticker per metric."
  * The fetch crons hit each (ticker, endpoint) pair once per minute
  * (well under the cap). No client-side rate limiter — Vercel cron
- * cadence is the budget. AGENTS.md also says to "use a short timeout
+ * cadence is the budget. A 429 is that short limit being brushed (a
+ * burst, or two crons landing in the same second), so it is counted
+ * (`gexbot.rate_limited`) and the callers' `withRetry` retries it with
+ * backoff, bounded, waiting out `Retry-After` when sent. It is not a
+ * quota: only the EOD report route (`gexbot-eod.ts`) has one, reset at
+ * midnight ET. AGENTS.md also says to "use a short timeout
  * (about 1 second) for the snapshot routes"; we run 2.5 s on purpose
  * because GEXBot occasionally responds in 1–2 s under load (see
  * GEXBOT_TIMEOUT_MS).
  */
+
+import { metrics } from './sentry.js';
 
 export const GEXBOT_BASE = 'https://api.gex.bot/v2';
 
@@ -139,17 +146,48 @@ export type GexbotResponse = Record<string, unknown>;
  * `GEXBot <status> <path>: <body, first 200 chars>` text, which
  * `withRetry`'s classifier and the logs match on; `status` and `path`
  * expose the same facts without re-parsing it (see `classifyGexbotError`).
+ * `retryAfterMs` is the `Retry-After` of a 429 in ms, null when it sent none
+ * or sent something unreadable; `withRetry` reads it by that property name.
  */
 export class GexbotHttpError extends Error {
   readonly status: number;
   readonly path: string;
+  readonly retryAfterMs: number | null;
 
-  constructor(status: number, path: string, body: string) {
+  constructor(
+    status: number,
+    path: string,
+    body: string,
+    retryAfterMs: number | null = null,
+  ) {
     super(`GEXBot ${status} ${path}: ${body.slice(0, 200)}`);
     this.name = 'GexbotHttpError';
     this.status = status;
     this.path = path;
+    this.retryAfterMs = retryAfterMs;
   }
+}
+
+const RETRY_AFTER_SECONDS = /^\d+(?:\.\d+)?$/;
+// IMF-fixdate, the one HTTP-date form current servers send (RFC 9110).
+const RETRY_AFTER_HTTP_DATE =
+  /^[A-Z][a-z]{2}, \d{2} [A-Z][a-z]{2} \d{4} \d{2}:\d{2}:\d{2} GMT$/;
+
+/**
+ * A `Retry-After` header as ms: delta-seconds or an HTTP-date (read against
+ * the clock, never negative). Null for an absent or unreadable value, so a
+ * garbled header falls back to the default backoff instead of a bad wait.
+ */
+export function parseRetryAfterMs(
+  value: string | null | undefined,
+): number | null {
+  const v = value?.trim();
+  if (!v) return null;
+  if (RETRY_AFTER_SECONDS.test(v))
+    return Math.round(Number.parseFloat(v) * 1000);
+  if (!RETRY_AFTER_HTTP_DATE.test(v)) return null;
+  const at = Date.parse(v);
+  return Number.isNaN(at) ? null : Math.max(0, at - Date.now());
 }
 
 export type GexbotStatusClass =
@@ -173,8 +211,8 @@ function isNoData(err: GexbotHttpError): boolean {
 
 /**
  * Bucket a failed GEXBot call for Sentry. `statusClass` is the fingerprint
- * component, so a 401/403 (auth), 429 (quota) and 5xx (vendor outage) land in
- * separate issues instead of one `Error`. `statusTag` is the `gexbot.status`
+ * component, so a 401/403 (auth), 429 (rate limit) and 5xx (vendor outage) land
+ * in separate issues instead of one `Error`. `statusTag` is the `gexbot.status`
  * tag: the numeric HTTP status when there is one, otherwise the class.
  */
 export function classifyGexbotError(err: unknown): {
@@ -199,6 +237,18 @@ export function classifyGexbotError(err: unknown): {
 }
 
 /**
+ * Sentry level for a GEXBot fetch that failed after its retries. A 429 that
+ * outlasted the backoff is a warning: the limit is expected, the next tick
+ * re-fetches, and the cron still reports `partial` or `error` for the run.
+ * Everything else is an error.
+ */
+export function gexbotFailureLevel(
+  statusClass: GexbotStatusClass,
+): 'warning' | 'error' {
+  return statusClass === 'http-429' ? 'warning' : 'error';
+}
+
+/**
  * Internal: build the GEXBot bearer header value.
  *
  * Token format is `gexbot_custom_<secret>`. We accept either form
@@ -216,12 +266,13 @@ export function buildAuthHeader(apiKey: string): string {
  * Issue a single authenticated GEXBot request. Throws on non-2xx,
  * timeout, or network failure. A non-2xx throws `GexbotHttpError`
  * (status + path), so caller logs/Sentry can distinguish 401 (bad
- * token) vs 429 (quota) vs 5xx vs network errors.
+ * token) vs 429 (rate limit) vs 5xx vs network errors. Every 429 is
+ * counted here, `Retry-After` kept on the error.
  *
- * We deliberately don't pool, batch, or retry here. The cron-level
- * fan-out uses `Promise.allSettled` so one bad call doesn't take
- * down the batch, and re-runs happen on the next minute tick
- * (cheaper than a retry loop inside a tight rate-limit envelope).
+ * We deliberately don't pool or batch here, and the retry is the
+ * caller's `withRetry` (both crons wrap every call), not this function's:
+ * a call that fails after its retries is reported by the cron, and the
+ * next minute tick re-fetches.
  */
 async function gexbotFetch(
   apiKey: string,
@@ -241,6 +292,17 @@ async function gexbotFetch(
     const text = await res
       .text()
       .catch((e) => `[parse error: ${(e as Error).message}]`);
+    if (res.status === 429) {
+      // The ticker is the first segment; naming the route alone keeps the
+      // attribute to the route list instead of tickers x routes.
+      metrics.gexbotRateLimit(path.replace(/^\/[^/]+/, '/{ticker}'));
+      throw new GexbotHttpError(
+        res.status,
+        path,
+        text,
+        parseRetryAfterMs(res.headers?.get?.('retry-after')),
+      );
+    }
     throw new GexbotHttpError(res.status, path, text);
   }
 

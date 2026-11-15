@@ -39,6 +39,7 @@ import {
 } from '../_lib/cron-instrumentation.js';
 import {
   classifyGexbotError,
+  gexbotFailureLevel,
   fetchOrderflow,
   fetchClassicBasic,
   fetchMaxchange,
@@ -268,9 +269,11 @@ export default withCronInstrumentation(
           // length", which means no snapshot exists yet) and on timeouts
           // and network errors. Suppresses single-tick TimeoutError storms
           // (SENTRY-EMERALD-DESERT-8F: 214 events / 9 days) caused by GEXBot
-          // 1-2s slow minutes brushing the 2.5s per-call timeout. Every 4xx
-          // fails fast, including the 429 quota (resets at 00:00 ET) and a
-          // bad API key.
+          // 1-2s slow minutes brushing the 2.5s per-call timeout. A 429 is
+          // the vendor's short rate limit (one request a second per ticker
+          // per metric), so it retries too, on a 1 s then 2 s backoff that
+          // waits out a Retry-After of up to 3 s. Any other 4xx, a bad API
+          // key included, fails fast.
           let body: GexbotResponse;
           switch (task.kind) {
             case 'orderflow':
@@ -324,9 +327,12 @@ export default withCronInstrumentation(
           // Stable grouping: one issue per (cron, status class). Without it
           // Sentry split the same TimeoutError into two issues (8F by
           // message, 76 by internal timer frames), and keying on err.name
-          // alone put 401/403/429/5xx in one issue.
+          // alone put 401/403/429/5xx in one issue. A 429 that is still there
+          // after its retries is a warning; the run is `partial` or `error`
+          // all the same.
           const { statusClass, statusTag } = classifyGexbotError(result.err);
           Sentry.captureException(result.err, {
+            level: gexbotFailureLevel(statusClass),
             fingerprint: [
               'gexbot-fetch-failure',
               'fetch-gexbot-fast',

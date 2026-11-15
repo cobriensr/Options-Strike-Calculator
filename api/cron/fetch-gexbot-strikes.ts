@@ -31,6 +31,7 @@ import {
 } from '../_lib/cron-instrumentation.js';
 import {
   classifyGexbotError,
+  gexbotFailureLevel,
   fetchStatePerStrike,
   GEXBOT_TICKERS,
   STATE_CATEGORIES,
@@ -84,8 +85,9 @@ export default withCronInstrumentation(
           // Retry transient 5xx / timeout / ECONNRESET up to 2 times
           // (3 attempts total, 1s + 2s exponential backoff). Mirrors
           // the fetch-gexbot-fast wrap that suppressed SENTRY-EMERALD-
-          // DESERT-8F. Every 4xx (bad auth, incl. 429 quota) still fails
-          // fast.
+          // DESERT-8F. A 429 is the vendor's short rate limit, so it retries
+          // too (waiting out a Retry-After of up to 3 s). Any other 4xx (bad
+          // auth) still fails fast.
           const body = await withRetry(() =>
             fetchStatePerStrike(apiKey, ticker, category),
           );
@@ -107,9 +109,12 @@ export default withCronInstrumentation(
           // Stable grouping: one issue per (cron, status class). Without it
           // Sentry split the same TimeoutError into two issues (8F by
           // message, 76 by internal timer frames), and keying on err.name
-          // alone put 401/403/429/5xx in one issue.
+          // alone put 401/403/429/5xx in one issue. A 429 that is still there
+          // after its retries is a warning; the run is `partial` or `error`
+          // all the same.
           const { statusClass, statusTag } = classifyGexbotError(result.err);
           Sentry.captureException(result.err, {
+            level: gexbotFailureLevel(statusClass),
             fingerprint: [
               'gexbot-fetch-failure',
               'fetch-gexbot-strikes',
