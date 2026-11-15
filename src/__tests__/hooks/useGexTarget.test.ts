@@ -502,11 +502,11 @@ describe('useGexTarget: error handling', () => {
 });
 
 // ============================================================
-// BACKTEST MODE (initialDate)
+// BACKTEST MODE (a picked past date)
 // ============================================================
 
 describe('useGexTarget: backtest mode', () => {
-  it('fetches with date param when initialDate provided and does not poll', async () => {
+  it('fetches with date param when a past date is picked and does not poll', async () => {
     mockFetch.mockResolvedValue(
       mockBulkSnapshot({
         timestamp: '2026-03-28T15:00:00Z',
@@ -515,7 +515,13 @@ describe('useGexTarget: backtest mode', () => {
       }),
     );
 
-    renderHook(() => useGexTarget(true, '2026-03-28'));
+    const { result } = renderHook(() => useGexTarget(true));
+    await act(async () => {});
+    // Mounting fetched today. Count from the pick.
+    mockFetch.mockClear();
+    act(() => {
+      result.current.setSelectedDate('2026-03-28');
+    });
 
     await act(async () => {});
 
@@ -532,6 +538,10 @@ describe('useGexTarget: backtest mode', () => {
   });
 
   it('returns strikes from the backtest date and reports isLive=false', async () => {
+    // Mounting fetches today and gets the default empty response, so the 5750
+    // strike can only come from the picked date's own fetch.
+    const { result } = renderHook(() => useGexTarget(true));
+    await act(async () => {});
     mockFetch.mockResolvedValue(
       mockBulkSnapshot({
         timestamp: '2026-03-28T15:00:00Z',
@@ -543,8 +553,9 @@ describe('useGexTarget: backtest mode', () => {
         }),
       }),
     );
-
-    const { result } = renderHook(() => useGexTarget(true, '2026-03-28'));
+    act(() => {
+      result.current.setSelectedDate('2026-03-28');
+    });
 
     await waitFor(() => expect(result.current.oi?.target?.strike).toBe(5750));
 
@@ -785,7 +796,11 @@ describe('useGexTarget: scrubLive', () => {
       }),
     );
 
-    const { result } = renderHook(() => useGexTarget(true, '2020-01-02'));
+    const { result } = renderHook(() => useGexTarget(true));
+    await act(async () => {});
+    act(() => {
+      result.current.setSelectedDate('2020-01-02');
+    });
     await waitFor(() => expect(result.current.timestamps.length).toBe(1));
     expect(result.current.selectedDate).toBe('2020-01-02');
     expect(result.current.isLive).toBe(false);
@@ -874,7 +889,13 @@ describe('useGexTarget: live polling and freshness', () => {
       }),
     );
 
-    renderHook(() => useGexTarget(true, '2020-01-02'));
+    const { result } = renderHook(() => useGexTarget(true));
+    await act(async () => {});
+    // Mounting fetched today. Count from the pick.
+    mockFetch.mockClear();
+    act(() => {
+      result.current.setSelectedDate('2020-01-02');
+    });
 
     await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
     await act(async () => {
@@ -1296,5 +1317,141 @@ describe('useGexTarget: hoisted CT session formatter', () => {
     await waitFor(() => expect(result.current.candles.length).toBe(2));
 
     expect(result.current.candles.map((c) => c.close)).toEqual([2, 3]);
+  });
+});
+
+// ============================================================
+// ET MIDNIGHT WHILE THE APP IS OPEN
+//
+// The panel follows today unless the owner picked another date. Every case
+// starts 30 s before an ET midnight; the shared clock's timer is armed for
+// 1 s past it, so 31 s lands just after. Owner decision 2026-11-14.
+// ============================================================
+
+describe.each([
+  {
+    zone: 'EST (winter)',
+    start: '2026-11-10T04:59:30Z',
+    night: '2026-11-09',
+    morning: '2026-11-10',
+  },
+  {
+    zone: 'EDT (summer)',
+    start: '2026-07-15T03:59:30Z',
+    night: '2026-07-14',
+    morning: '2026-07-15',
+  },
+])('useGexTarget: across the $zone midnight', (m) => {
+  beforeEach(() => {
+    vi.setSystemTime(new Date(m.start));
+  });
+
+  async function crossMidnight() {
+    await act(async () => {
+      vi.advanceTimersByTime(31_000);
+    });
+  }
+
+  const fetchedUrls = () => mockFetch.mock.calls.map((c) => c[0] as string);
+
+  it('follows the new date and stays today', async () => {
+    const { result } = renderHook(() => useGexTarget(true));
+    await act(async () => {});
+    expect(result.current.selectedDate).toBe(m.night);
+    expect(result.current.isToday).toBe(true);
+    mockFetch.mockClear();
+
+    await crossMidnight();
+
+    expect(result.current.selectedDate).toBe(m.morning);
+    expect(result.current.isToday).toBe(true);
+    // The roll bulk-loaded the new date.
+    expect(fetchedUrls().at(-1)).toContain(`date=${m.morning}&all=true`);
+  });
+
+  it('polls the new date after the roll', async () => {
+    renderHook(() => useGexTarget(true));
+    await act(async () => {});
+    await crossMidnight();
+    mockFetch.mockClear();
+
+    await act(async () => {
+      vi.advanceTimersByTime(POLL_INTERVALS.GEX_TARGET);
+    });
+
+    expect(fetchedUrls()).toHaveLength(1);
+    expect(fetchedUrls()[0]).toContain(`date=${m.morning}`);
+    expect(fetchedUrls()[0]).not.toContain('all=true');
+  });
+
+  it('judges the date today in a render just past midnight, before the clock ticks', async () => {
+    const { result, rerender } = renderHook(() => useGexTarget(true));
+    await act(async () => {});
+
+    // The wall clock is 0.5 s past midnight; the shared clock's timer (armed
+    // for 1 s past it) has not fired, so the date is still the night's. A
+    // render now must judge it today by the same clock, not by the wall clock.
+    act(() => {
+      vi.setSystemTime(new Date(Date.parse(m.start) + 30_500));
+    });
+    rerender();
+
+    expect(result.current.selectedDate).toBe(m.night);
+    expect(result.current.isToday).toBe(true);
+  });
+
+  it('keeps a picked past date, and does not refetch or poll it', async () => {
+    const { result } = renderHook(() => useGexTarget(true));
+    await act(async () => {});
+    act(() => {
+      result.current.setSelectedDate('2026-03-11');
+    });
+    await act(async () => {});
+    expect(result.current.selectedDate).toBe('2026-03-11');
+    mockFetch.mockClear();
+
+    await crossMidnight();
+    await act(async () => {
+      vi.advanceTimersByTime(POLL_INTERVALS.GEX_TARGET * 3);
+    });
+
+    expect(result.current.selectedDate).toBe('2026-03-11');
+    expect(result.current.isToday).toBe(false);
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('LIVE from a past date goes back to following today', async () => {
+    const { result } = renderHook(() => useGexTarget(true));
+    await act(async () => {});
+    act(() => {
+      result.current.setSelectedDate('2026-03-11');
+    });
+    await act(async () => {});
+    expect(result.current.isToday).toBe(false);
+
+    act(() => {
+      result.current.scrubLive();
+    });
+    await act(async () => {});
+
+    expect(result.current.selectedDate).toBe(m.night);
+    expect(result.current.isToday).toBe(true);
+    expect(fetchedUrls().at(-1)).toContain(`date=${m.night}&all=true`);
+
+    // It is following, not pinned to the night's string.
+    await crossMidnight();
+    expect(result.current.selectedDate).toBe(m.morning);
+    expect(result.current.isToday).toBe(true);
+  });
+
+  it('keeps the same scrubLive function across renders', async () => {
+    const { result, rerender } = renderHook(() => useGexTarget(true));
+    await act(async () => {});
+    const before = result.current.scrubLive;
+
+    rerender();
+    await crossMidnight();
+
+    expect(result.current.scrubLive).toBe(before);
   });
 });

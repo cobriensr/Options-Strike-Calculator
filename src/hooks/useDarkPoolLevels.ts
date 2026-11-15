@@ -10,6 +10,9 @@
  *   3. Today, market open → fetch + poll every POLL_INTERVALS.DARK_POOL.
  *   4. Today, market closed → one-shot fetch (BACKTEST view of today).
  *
+ * The date follows today across ET midnight unless the owner picked another
+ * one (useFollowedDate). `scrubLive` also goes back to following today.
+ *
  * IMPORTANT: The `scrubTime` state is the hook's own internal time-scrubber
  * for historical browsing. It is NOT coupled to the app's time picker —
  * doing so caused the "panel appears frozen" bug because polling refetched
@@ -22,7 +25,7 @@ import { POLL_INTERVALS } from '../constants';
 import { getErrorMessage } from '../utils/error';
 import { checkIsOwner } from '../utils/auth';
 import { useTimeGridScrubber } from './useTimeGridScrubber';
-import { getETToday } from '../utils/timezone';
+import { useFollowedDate } from './useFollowedDate';
 import { usePolling } from './usePolling';
 
 /**
@@ -83,6 +86,7 @@ export interface UseDarkPoolLevelsReturn {
   scrubTo: (time: string) => void;
   /** All available HH:MM time slots for the trading session. */
   timeGrid: readonly string[];
+  /** Clear the scrub and go back to following today's date. */
   scrubLive: () => void;
 }
 
@@ -98,9 +102,14 @@ export function useDarkPoolLevels(
   const [fetchedAt, setFetchedAt] = useState<number | null>(null);
   const mountedRef = useRef(true);
 
-  // Own date state — decoupled from the app's vix.selectedDate so that
-  // browsing dark pool history doesn't re-anchor the Black-Scholes math.
-  const [selectedDate, setSelectedDate] = useState(getETToday);
+  // Own date — decoupled from the app's vix.selectedDate so that browsing
+  // dark pool history doesn't re-anchor the Black-Scholes math. It follows
+  // today across ET midnight unless the owner picked another date.
+  const {
+    date: selectedDate,
+    setDate: setSelectedDate,
+    today,
+  } = useFollowedDate();
 
   // Symbol selector — defaults to SPX for backward compat with the
   // pre-multi-symbol UX. NDX/SPY/QQQ require the daemon to be writing
@@ -113,7 +122,7 @@ export function useDarkPoolLevels(
   const {
     scrubTime,
     isScrubbed,
-    scrubLive,
+    scrubLive: clearScrub,
     canScrubPrev,
     canScrubNext,
     scrubPrev,
@@ -122,8 +131,9 @@ export function useDarkPoolLevels(
     timeGrid,
   } = useTimeGridScrubber();
 
-  // Recompute each render so the today-vs-past branch flips at midnight ET.
-  const isToday = selectedDate === getETToday();
+  // Judged against the shared clock the date follows, so the date and this
+  // flag turn in the same render at midnight ET.
+  const isToday = selectedDate === today;
 
   const isLive = isToday && scrubTime === null;
 
@@ -220,10 +230,19 @@ export function useDarkPoolLevels(
   }, []);
 
   // Reset scrub time when the date OR symbol changes so the view always
-  // starts live for the newly selected combination.
+  // starts live for the newly selected combination. This clears the scrub
+  // only: the exposed `scrubLive` below also returns the date to today, which
+  // here would undo every date the owner picks.
   useEffect(() => {
-    scrubLive();
-  }, [selectedDate, selectedSymbol, scrubLive]);
+    clearScrub();
+  }, [selectedDate, selectedSymbol, clearScrub]);
+
+  // The LIVE button: clear the scrub and go back to following today, so LIVE
+  // from a past date lands on today's live view and then rolls with it.
+  const scrubLive = useCallback(() => {
+    clearScrub();
+    setSelectedDate('');
+  }, [clearScrub, setSelectedDate]);
 
   // Branched eager-fetch effect: chooses between no-fetch / one-shot /
   // initial-fetch-then-poll based on owner + date + scrub + market-open.

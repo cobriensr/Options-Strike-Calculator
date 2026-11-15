@@ -873,3 +873,182 @@ describe('useDarkPoolLevels: abort', () => {
     expect(abortRef.signal?.aborted).toBe(true);
   });
 });
+
+// ============================================================
+// ET MIDNIGHT WHILE THE APP IS OPEN
+//
+// The panel follows today unless the owner picked another date. Every case
+// starts 30 s before an ET midnight; the shared clock's timer is armed for
+// 1 s past it, so 31 s lands just after. Owner decision 2026-11-14.
+// ============================================================
+
+describe.each([
+  {
+    zone: 'EST (winter)',
+    start: '2026-11-10T04:59:30Z',
+    night: '2026-11-09',
+    morning: '2026-11-10',
+  },
+  {
+    zone: 'EDT (summer)',
+    start: '2026-07-15T03:59:30Z',
+    night: '2026-07-14',
+    morning: '2026-07-15',
+  },
+])('useDarkPoolLevels: across the $zone midnight', (m) => {
+  beforeEach(() => {
+    vi.setSystemTime(new Date(m.start));
+  });
+
+  async function crossMidnight() {
+    await act(async () => {
+      vi.advanceTimersByTime(31_000);
+    });
+  }
+
+  const fetchedUrls = () => mockFetch.mock.calls.map((c) => c[0] as string);
+
+  it('follows the new date and stays live', async () => {
+    const { result } = renderHook(() => useDarkPoolLevels(true));
+    await act(async () => {});
+    expect(result.current.selectedDate).toBe(m.night);
+    expect(result.current.isLive).toBe(true);
+    mockFetch.mockClear();
+
+    await crossMidnight();
+
+    expect(result.current.selectedDate).toBe(m.morning);
+    expect(result.current.isLive).toBe(true);
+    // The roll refetched, for the new date and with no ?time=.
+    expect(fetchedUrls().at(-1)).toContain(`date=${m.morning}`);
+    expect(fetchedUrls().at(-1)).not.toContain('time=');
+  });
+
+  it('polls the new date after the roll', async () => {
+    renderHook(() => useDarkPoolLevels(true));
+    await act(async () => {});
+    await crossMidnight();
+    mockFetch.mockClear();
+
+    await act(async () => {
+      vi.advanceTimersByTime(POLL_INTERVALS.DARK_POOL);
+    });
+
+    expect(fetchedUrls()).toHaveLength(1);
+    expect(fetchedUrls()[0]).toContain(`date=${m.morning}`);
+  });
+
+  it('reads the date as today in a render just past midnight, before the clock ticks', async () => {
+    const { result, rerender } = renderHook(() => useDarkPoolLevels(true));
+    await act(async () => {});
+
+    // The wall clock is 0.5 s past midnight; the shared clock's timer (armed
+    // for 1 s past it) has not fired, so the date is still the night's. A
+    // render now must judge it live by the same clock, not by the wall clock.
+    act(() => {
+      vi.setSystemTime(new Date(Date.parse(m.start) + 30_500));
+    });
+    rerender();
+
+    expect(result.current.selectedDate).toBe(m.night);
+    expect(result.current.isLive).toBe(true);
+  });
+
+  it('clears a scrub in progress when the date rolls', async () => {
+    const { result } = renderHook(() => useDarkPoolLevels(true));
+    await act(async () => {});
+    act(() => {
+      result.current.scrubPrev();
+    });
+    await act(async () => {});
+    expect(result.current.isScrubbed).toBe(true);
+
+    await crossMidnight();
+
+    expect(result.current.scrubTime).toBeNull();
+    expect(result.current.selectedDate).toBe(m.morning);
+    expect(result.current.isLive).toBe(true);
+  });
+
+  it('keeps a picked past date, and does not refetch or poll it', async () => {
+    const { result } = renderHook(() => useDarkPoolLevels(true));
+    await act(async () => {});
+    act(() => {
+      result.current.setSelectedDate('2026-03-11');
+    });
+    await act(async () => {});
+    expect(result.current.selectedDate).toBe('2026-03-11');
+    mockFetch.mockClear();
+
+    await crossMidnight();
+    await act(async () => {
+      vi.advanceTimersByTime(POLL_INTERVALS.DARK_POOL * 3);
+    });
+
+    expect(result.current.selectedDate).toBe('2026-03-11');
+    expect(result.current.isLive).toBe(false);
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('keeps a picked past date when the symbol changes', async () => {
+    // The effect that clears the scrub on a date or symbol change must
+    // clear only the scrub, never the date.
+    const { result } = renderHook(() => useDarkPoolLevels(true));
+    await act(async () => {});
+    act(() => {
+      result.current.setSelectedDate('2026-03-11');
+    });
+    await act(async () => {});
+
+    act(() => {
+      result.current.setSelectedSymbol('NDX');
+    });
+    await act(async () => {});
+
+    expect(result.current.selectedDate).toBe('2026-03-11');
+    expect(fetchedUrls().at(-1)).toContain('date=2026-03-11');
+    expect(fetchedUrls().at(-1)).toContain('symbol=NDX');
+  });
+
+  it('LIVE from a past date goes back to following today', async () => {
+    const { result } = renderHook(() => useDarkPoolLevels(true));
+    await act(async () => {});
+    act(() => {
+      result.current.setSelectedDate('2026-03-11');
+    });
+    await act(async () => {});
+    expect(result.current.isLive).toBe(false);
+
+    act(() => {
+      result.current.scrubLive();
+    });
+    await act(async () => {});
+
+    expect(result.current.selectedDate).toBe(m.night);
+    expect(result.current.isLive).toBe(true);
+    expect(fetchedUrls().at(-1)).toContain(`date=${m.night}`);
+
+    // It is following, not pinned to the night's string.
+    await crossMidnight();
+    expect(result.current.selectedDate).toBe(m.morning);
+    expect(result.current.isLive).toBe(true);
+  });
+
+  it('follows today when the date field is emptied', async () => {
+    const { result } = renderHook(() => useDarkPoolLevels(true));
+    await act(async () => {});
+    act(() => {
+      result.current.setSelectedDate('2026-03-11');
+    });
+    await act(async () => {});
+
+    act(() => {
+      result.current.setSelectedDate('');
+    });
+    await act(async () => {});
+
+    expect(result.current.selectedDate).toBe(m.night);
+    expect(fetchedUrls().at(-1)).not.toContain('date=&');
+    expect(fetchedUrls().at(-1)).toContain(`date=${m.night}`);
+  });
+});

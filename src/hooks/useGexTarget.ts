@@ -20,13 +20,12 @@
  *                           today, and not scrubbed; updates cache on each poll.
  *   4. Scrub              → instant from cache; fallback single fetch on miss.
  *
- * Like `useGexPerStrike`, this hook owns its own `selectedDate` state —
- * the GexTarget panel is a live/backtest browsing tool, and picking a past
- * date here should NOT re-anchor the calculator's Black-Scholes math. The
- * `initialDate` parameter only seeds the state once at mount; after that,
- * the returned `setSelectedDate` is the only way to change it. Production
- * passes no `initialDate`; tests pass a fixed date for deterministic
- * branch coverage.
+ * Like `useGexPerStrike`, this hook owns its own `selectedDate` — the
+ * GexTarget panel is a live/backtest browsing tool, and picking a past date
+ * here should NOT re-anchor the calculator's Black-Scholes math. The date
+ * follows today across ET midnight unless the owner picked another one
+ * (useFollowedDate); the returned `setSelectedDate` is the only way to pick,
+ * and `scrubLive` goes back to following today.
  *
  * Live-ness has TWO independent signals:
  *   - The dispatch ladder decides whether the panel is *trying* to be
@@ -46,7 +45,7 @@ import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { POLL_INTERVALS } from '../constants';
 import { getErrorMessage } from '../utils/error';
 import { checkIsOwner } from '../utils/auth';
-import { getETToday } from '../utils/timezone';
+import { useFollowedDate } from './useFollowedDate';
 import { useScrubController } from './useScrubController';
 import { useWallClockFreshness } from './useWallClockFreshness';
 import { usePolling } from './usePolling';
@@ -170,9 +169,15 @@ export interface UseGexTargetReturn {
   openingPutStrike: number | null;
 
   // -- Date browsing (panel-local)
-  /** The date currently being viewed (YYYY-MM-DD in ET), panel-local state. */
+  /**
+   * The date currently being viewed (YYYY-MM-DD in ET): the owner's pick,
+   * else today, which it follows across ET midnight.
+   */
   selectedDate: string;
-  /** Change the viewed date. Clears scrub state as a side effect. */
+  /**
+   * Pick the viewed date. Clears scrub state as a side effect. '' or today's
+   * date means following today again.
+   */
   setSelectedDate: (date: string) => void;
   /** Every distinct trading date present in `gex_target_features`, ascending. */
   availableDates: string[];
@@ -200,7 +205,7 @@ export interface UseGexTargetReturn {
   /** Jump directly to a specific snapshot timestamp. */
   scrubTo: (ts: string) => void;
   /**
-   * Resume live mode. Clears scrub state AND resets `selectedDate` to today
+   * Resume live mode. Clears scrub state AND goes back to following today
    * if viewing a past date -- the "Live" control is the single way back to
    * the present across both scrub and backtest dimensions.
    */
@@ -247,10 +252,7 @@ function filterRegularSessionCT(candles: SPXCandle[]): SPXCandle[] {
   });
 }
 
-export function useGexTarget(
-  marketOpen: boolean,
-  initialDate?: string,
-): UseGexTargetReturn {
+export function useGexTarget(marketOpen: boolean): UseGexTargetReturn {
   const isOwner = checkIsOwner();
 
   // -- Per-snapshot data
@@ -268,15 +270,14 @@ export function useGexTarget(
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // -- Date state
-  // Panel-local date state. `initialDate` only seeds this once at mount;
-  // after that, `setSelectedDate` (exposed in the return) is the only way
-  // to change it. Production does not pass `initialDate` and lets the hook
-  // default to today. Tests pass a fixed date to exercise the branches
-  // deterministically.
-  const [selectedDate, setSelectedDate] = useState<string>(
-    () => initialDate ?? getETToday(),
-  );
+  // -- Date
+  // Panel-local date: the owner's pick (`setSelectedDate`, exposed in the
+  // return), else today's ET date, which it follows across midnight.
+  const {
+    date: selectedDate,
+    setDate: setSelectedDate,
+    today: todayET,
+  } = useFollowedDate();
 
   const mountedRef = useRef(true);
   /**
@@ -307,10 +308,10 @@ export function useGexTarget(
   const scrub = useScrubController(timestamps);
   const { scrubTimestamp, isScrubbed } = scrub;
 
-  // `todayET` recomputes each render so the panel flips from LIVE -> BACKTEST
-  // at the midnight-ET session boundary without needing an explicit state
-  // update. The `isToday` comparison then drives the dispatch ladder.
-  const todayET = getETToday();
+  // `todayET` is the shared clock the date follows, so the date and this
+  // flag turn together at the midnight-ET session boundary and a followed
+  // date stays LIVE across it. The `isToday` comparison then drives the
+  // dispatch ladder.
   const isToday = selectedDate === todayET;
 
   // Consecutive failure counter. Single transient Neon hang shouldn't
@@ -607,17 +608,14 @@ export function useGexTarget(
   const { canScrubPrev, canScrubNext, scrubPrev, scrubNext, scrubTo } = scrub;
 
   const scrubLive = useCallback(() => {
-    // Reset to live mode on both axes: clear scrub AND snap date back to
+    // Reset to live mode on both axes: clear scrub AND go back to following
     // today. If the user was on a past date, this also kicks the dispatch
-    // ladder into live polling via the `isToday` check. If they were
-    // already on today with just scrub active, the date setter is a no-op
-    // (state equality).
-    scrub.scrubLive();
-    setSelectedDate((cur) => {
-      const today = getETToday();
-      return cur === today ? cur : today;
-    });
-  }, [scrub]);
+    // ladder into live polling via the `isToday` check, and the date keeps
+    // rolling at midnight. If they were already following today with just
+    // scrub active, the date setter is a no-op (state equality).
+    clearScrub();
+    setSelectedDate('');
+  }, [clearScrub, setSelectedDate]);
 
   const refresh = useCallback(() => {
     allSnapshotsRef.current = new Map();
