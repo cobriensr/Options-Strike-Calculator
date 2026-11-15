@@ -221,10 +221,8 @@ describe('LotteryFinderTickerGroup', () => {
     );
     const badge = screen.getByTestId('lottery-new-high-badge');
     expect(badge).toBeInTheDocument();
-    // Sits in the top-right corner of its row, with nothing else to
-    // make room for.
+    // Sits in the top-right corner of its row.
     expect(badge).toHaveClass('absolute', 'top-2', 'right-2');
-    expect(badge).not.toHaveClass('top-8');
   });
 
   it('omits the NEW HIGH badge when rangePosAtTrigger is below 1.0 (including former TOP-RANGE 0.95) or null', () => {

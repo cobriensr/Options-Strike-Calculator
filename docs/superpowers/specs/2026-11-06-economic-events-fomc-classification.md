@@ -392,8 +392,8 @@ carry `FOMC` on speech days, and build-features ORs `FOMC` rows into
 **Q3. Store the whole UW window in the cron?**
 
 - **Default:** yes (phase 6), since it fixes a diagnosed train/serve skew.
-- It changes what the MACRO badge and live `days_to_next_event` see, so it
-  waits for the owner's OK.
+- It changes what live `days_to_next_event` sees, so it waits for the owner's
+  OK.
 - **Update 2026-11-14:** the badge is gone, so the "lets the MACRO badge see
   future events" reason no longer applies. The train/serve skew in
   `days_to_next_event` is still the reason to ask.

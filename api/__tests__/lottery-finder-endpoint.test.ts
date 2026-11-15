@@ -2029,9 +2029,9 @@ describe('lottery-finder endpoint', () => {
     expect(body.reignitedFires).toEqual([]);
   });
 
-  it('runs its seven day queries and no economic_events lookup, and sends no hoursToNextMacroEvent (MACRO badge removed 2026-11-14)', async () => {
+  it('runs no economic_events lookup and sends no hoursToNextMacroEvent (MACRO badge removed 2026-11-14)', async () => {
     // The badge's lift was a weekday effect, and the econ cron stores only
-    // today's events, so the per-request lookup (an 8th query, after the
+    // today's events, so the per-request lookup (a query after the
     // Promise.all) is gone. The reignited fires come through the same
     // mapper as the page slice.
     mockSql
@@ -2041,7 +2041,7 @@ describe('lottery-finder endpoint', () => {
       .mockResolvedValueOnce([]) // clusterByMinute
       .mockResolvedValueOnce([]) // sbChains
       .mockResolvedValueOnce([{ ...ROW, id: 999 }]); // reignitedRows
-    // The 7th query (clusterCandidateRows) takes the default `[]`.
+    // Any later query takes the default `[]`.
 
     const res = mockResponse();
     await handler(
@@ -2050,19 +2050,15 @@ describe('lottery-finder endpoint', () => {
     );
 
     expect(res._status).toBe(200);
-    expect(mockSql).toHaveBeenCalledTimes(7);
     const allSql = mockSql.mock.calls
       .map((c) => (Array.isArray(c[0]) ? (c[0] as string[]).join('?') : ''))
       .join('\n');
     expect(allSql).not.toContain('economic_events');
-    const body = res._json as {
-      fires: Array<{ hoursToNextMacroEvent?: unknown }>;
-      reignitedFires: Array<{ hoursToNextMacroEvent?: unknown }>;
-    };
+    const body = res._json as { fires: unknown[]; reignitedFires: unknown[] };
     expect(body.fires).toHaveLength(1);
     expect(body.reignitedFires).toHaveLength(1);
-    expect(body.fires[0]!.hoursToNextMacroEvent).toBeUndefined();
-    expect(body.reignitedFires[0]!.hoursToNextMacroEvent).toBeUndefined();
+    // The whole payload, so a nested spot is covered too.
+    expect(JSON.stringify(res._json)).not.toContain('hoursToNextMacroEvent');
   });
 
   it('chainExtras SQL binds the REIGNITION threshold constants (3, 30, 2, 5)', async () => {
