@@ -80,15 +80,16 @@ export function DateInput({
   // only if the field is left as a draft ('' = follow today, the same as an
   // incomplete field).
   //
-  // `from` is the `value` the draft was taken against, not a copy of it: the
-  // draft shows only while `value` still equals it, so a new value from
-  // outside (the LIVE button, the midnight roll) drops it with no effect to
-  // sync. Every blur and every complete date clears the state, so a lapsed
-  // draft cannot come back if `value` returns to what it was.
+  // `from` is the `value` the draft was taken against, not a copy of it. A
+  // new value from outside (the LIVE button, the midnight roll) drops the
+  // draft during render, with no effect: React's "adjust state when a prop
+  // changes" pattern, which re-renders at once and commits only the second
+  // pass. So a lapsed draft cannot come back if `value` returns to what it
+  // was, blur or no blur.
   const [pending, setPending] = useState<{ from: string; text: string } | null>(
     null,
   );
-  const draft = pending !== null && pending.from === value ? pending : null;
+  if (pending !== null && pending.from !== value) setPending(null);
 
   return (
     <span className="inline-flex items-center gap-1.5">
@@ -104,7 +105,7 @@ export function DateInput({
       <input
         id={inputId}
         type="date"
-        value={draft ? draft.text : value}
+        value={pending ? pending.text : value}
         onChange={(e) => {
           const next = e.target.value;
           if (isDraftText(next)) {
@@ -116,7 +117,7 @@ export function DateInput({
         }}
         onBlur={() => {
           setPending(null);
-          if (draft) onChange('');
+          if (pending) onChange('');
         }}
         min={min}
         max={max}

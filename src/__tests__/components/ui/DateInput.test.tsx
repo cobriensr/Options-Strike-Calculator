@@ -210,6 +210,21 @@ describe('DateInput: an incomplete field', () => {
     expect(onChange).not.toHaveBeenCalled();
   });
 
+  it('does not bring a lapsed draft back when the value returns with the field still focused', () => {
+    // No blur between: the draft lapsed the moment the value changed, so
+    // the value coming back must not revive it.
+    const { onChange, input, rerender } = setup('2026-04-20');
+    empty(input);
+
+    rerender(<DateInput label="d" value="2026-05-05" onChange={onChange} />);
+    expect(input.value).toBe('2026-05-05');
+    rerender(<DateInput label="d" value="2026-04-20" onChange={onChange} />);
+
+    expect(input.value).toBe('2026-04-20');
+    fireEvent.blur(input);
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
   it('shows the date and drops the draft when the same date is typed back', () => {
     const { onChange, input } = setup();
     empty(input);
