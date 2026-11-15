@@ -114,8 +114,8 @@ const PREFETCH_DEADLINE_MS = 5_000;
  * parallel sequential scan). The load outlives the run that started it
  * (later runs share it), so it may exceed the crons' 60 s maxDuration; a
  * hung one blocks Take-It for about two minute-runs. Its answer is kept in
- * Upstash for the ET day (takeit-winrate-cache.ts) so this runs once a day,
- * not once per instance.
+ * Upstash for the ET day (takeit-winrate-cache.ts; lottery only) so this runs
+ * once a day, not once per instance.
  */
 const WIN_RATE_LOAD_TIMEOUT_MS = 120_000;
 
@@ -172,8 +172,8 @@ interface WinRateEntry {
 // date changes. Each detect cron is its own function, so an instance holds
 // one entry in practice. Module state outlives a request on Fluid Compute,
 // which is the point: the load runs once per ET day per instance instead
-// of once per run. The Upstash day cache (takeit-winrate-cache.ts) is the
-// same idea across instances.
+// of once per run. The Upstash day cache (takeit-winrate-cache.ts, lottery
+// only) is the same idea across instances.
 const winRateCache: Partial<Record<AlertType, WinRateEntry>> = {};
 
 /**
