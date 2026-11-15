@@ -167,8 +167,10 @@ def main():
     # tier on qas = combined_score + inversionBonus(quintile), 13/10 cutoffs,
     # with null-score, direction_gated, and default-suppressed quintile-1/2
     # rows demoted to tier3 (the feed hides Q1/Q2 unless showAll). combined_score
-    # (generated) == the feed's displayed score = GREATEST(0, score +
-    # round_trip_deduct + fire_count_adj + gamma_bonus).
+    # (generated) = GREATEST(0, score + round_trip_deduct + gamma_bonus). The
+    # fire-count adjustment was retired on 2026-11-15 and migration #209
+    # redefines combined_score without it; before #209 it also carried it, so an
+    # audit run against a database that has not applied #209 still counts it.
     #
     # NOTE (point-in-time): inversion_quintile is the ticker's CURRENT rolling
     # quintile (joined now), not the value live when each fire fired — same as

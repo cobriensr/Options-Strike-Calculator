@@ -149,7 +149,6 @@ def make_feed_frame(days, per_day=None) -> pd.DataFrame:
     for day in days:
         frame = pd.DataFrame(_score_columns(symbols, day))
         frame["round_trip_score_deduct"] = 0
-        frame["fire_count_score_adjustment"] = 0
         frame["direction_gated"] = False
         frame["inversion_quintile"] = 3  # bonus 0
         parts.append(frame)
@@ -222,10 +221,13 @@ def test_gate_constants_match_the_plans_table():
 def test_feed_columns_extend_the_score_columns():
     assert g.FEED_COLUMNS == lw.SCORE_COLUMNS + (
         "round_trip_score_deduct",
-        "fire_count_score_adjustment",
         "direction_gated",
         "inversion_quintile",
     )
+    # The fire-count score adjustment was retired on 2026-11-15 and its column
+    # is dropped by migration #209, so a SELECT built from FEED_COLUMNS must
+    # not name it.
+    assert "fire_count_score_adjustment" not in g.FEED_COLUMNS
 
 
 def test_inversion_bonus_matches_the_ts_map():
@@ -249,11 +251,12 @@ def test_feed_qas_mirrors_the_feeds_displayed_score_sql():
     body = text[start : text.index("\n}\n", start)]
     for fragment in (
         "(GREATEST(0, COALESCE(${fireAlias}score, 0) ",
-        "+ COALESCE(${fireAlias}round_trip_score_deduct, 0) ",
-        "+ COALESCE(${fireAlias}fire_count_score_adjustment, 0)) ",
+        "+ COALESCE(${fireAlias}round_trip_score_deduct, 0)) ",
         "+ ${INVERSION_BONUS_CASE_SQL})",
     ):
         assert fragment in body
+    # No fire-count term: the adjustment was retired on 2026-11-15.
+    assert "fire_count" not in body
 
 
 def test_module_imports_without_scipy_or_utils():
@@ -435,23 +438,22 @@ def test_spearman_refuses_unequal_lengths():
 # ── feed_qas ────────────────────────────────────────────────────────────────
 
 
-def _sql_qas(score, round_trip, fire_count, quintile) -> int:
+def _sql_qas(score, round_trip, quintile) -> int:
     """The feed's displayed score for one row, transliterated from the SQL in
     api/lottery-finder.ts qasExprText: GREATEST(0, COALESCE(score, 0) +
-    COALESCE(round_trip_score_deduct, 0) + COALESCE(fire_count_score_adjustment,
-    0)) + CASE inversion_quintile ... ELSE 0 END."""
-    base = max(0, (score or 0) + (round_trip or 0) + (fire_count or 0))
+    COALESCE(round_trip_score_deduct, 0)) + CASE inversion_quintile ... ELSE 0
+    END."""
+    base = max(0, (score or 0) + (round_trip or 0))
     return base + {1: -5, 2: -2, 3: 0, 4: 3, 5: 5}.get(quintile, 0)
 
 
 def _feed(rows: list[dict]) -> pd.DataFrame:
-    """A feed frame from rows of (round_trip_score_deduct, fire_count_score_
-    adjustment, direction_gated, inversion_quintile); the score columns hold
-    placeholders, because feed_qas takes the scores as its own argument."""
+    """A feed frame from rows of (round_trip_score_deduct, direction_gated,
+    inversion_quintile); the score columns hold placeholders, because feed_qas
+    takes the scores as its own argument."""
     frame = pd.DataFrame(_score_columns(["AAA"] * len(rows), date(2026, 3, 2)))
     for column in (
         "round_trip_score_deduct",
-        "fire_count_score_adjustment",
         "direction_gated",
         "inversion_quintile",
     ):
@@ -459,10 +461,9 @@ def _feed(rows: list[dict]) -> pd.DataFrame:
     return frame
 
 
-def _row(rt=0, fc=0, gated=False, quintile=3) -> dict:
+def _row(rt=0, gated=False, quintile=3) -> dict:
     return {
         "round_trip_score_deduct": rt,
-        "fire_count_score_adjustment": fc,
         "direction_gated": gated,
         "inversion_quintile": quintile,
     }
@@ -503,29 +504,42 @@ def test_feed_qas_floors_at_zero_before_the_bonus():
         [
             _row(rt=-3, quintile=5),  # 2 - 3 = -1 -> 0, then +5 = 5 (not 4)
             _row(rt=-3, quintile=4),  # 0 + 3 = 3 (not 2)
-            _row(rt=-2, fc=-1, quintile=3),  # 2 - 3 = -1 -> 0
-            _row(rt=-1, fc=3, quintile=3),  # 2 + 2 = 4: the floor does not touch it
+            _row(rt=-3, quintile=3),  # 2 - 3 = -1 -> 0
+            _row(rt=-1, quintile=3),  # 2 - 1 = 1: the floor does not touch it
         ]
     )
     qas = g.feed_qas(pd.Series([2, 2, 2, 2], dtype="Int64"), feed)
-    assert qas.tolist() == [5.0, 3.0, 0.0, 4.0]
+    assert qas.tolist() == [5.0, 3.0, 0.0, 1.0]
 
 
-def test_feed_qas_reads_null_adjustments_and_odd_quintiles_as_zero():
-    # COALESCE(x, 0) on both adjustments, and CASE ... ELSE 0 on a quintile
-    # outside 1..5 (0, 6, a fraction): none of them changes the score.
+def test_feed_qas_reads_a_null_deduct_and_odd_quintiles_as_zero():
+    # COALESCE(x, 0) on the deduct, and CASE ... ELSE 0 on a quintile outside
+    # 1..5 (0, 6, a fraction): none of them changes the score.
     feed = _feed(
         [
-            _row(rt=None, fc=None, quintile=3),
-            _row(rt=None, fc=2, quintile=3),
-            _row(rt=-1, fc=None, quintile=3),
+            _row(rt=None, quintile=3),
+            _row(rt=-1, quintile=3),
             _row(quintile=0),
             _row(quintile=6),
             _row(quintile=3.5),
         ]
     )
-    qas = g.feed_qas(pd.Series([7] * 6, dtype="Int64"), feed)
-    assert qas.tolist() == [7.0, 9.0, 6.0, 7.0, 7.0, 7.0]
+    qas = g.feed_qas(pd.Series([7] * 5, dtype="Int64"), feed)
+    assert qas.tolist() == [7.0, 6.0, 7.0, 7.0, 7.0]
+
+
+def test_feed_qas_ignores_a_fire_count_adjustment_column():
+    # The fire-count score adjustment was retired on 2026-11-15: the qas does
+    # not depend on how many times a chain has fired. A frame that still
+    # carries the old column (an export from before migration #209) scores the
+    # same as one without it, whatever the column holds.
+    rows = [_row(rt=-1, quintile=3), _row(quintile=4), _row(rt=-3, quintile=5)]
+    plain = _feed(rows)
+    stale = _feed(rows)
+    stale["fire_count_score_adjustment"] = [-3, 2, None]
+    scores = pd.Series([12, 12, 2], dtype="Int64")
+    assert g.feed_qas(scores, stale).tolist() == g.feed_qas(scores, plain).tolist()
+    assert g.feed_qas(scores, stale).tolist() == [11.0, 15.0, 5.0]
 
 
 def test_feed_qas_matches_the_sql_transliteration_on_random_rows():
@@ -533,18 +547,13 @@ def test_feed_qas_matches_the_sql_transliteration_on_random_rows():
     n = 3000
     score = rng.integers(0, 18, n)
     rt = rng.choice([0, -1, -2, -3], n)
-    fc = rng.choice([0, 0, 0, -2, -1, 1, 2], n)
     quintile = rng.choice([3, 4, 5], n)  # the rows that are not forced
     feed = _feed(
-        [
-            _row(rt=int(a), fc=int(b), quintile=int(c))
-            for a, b, c in zip(rt, fc, quintile)
-        ]
+        [_row(rt=int(a), quintile=int(b)) for a, b in zip(rt, quintile)]
     )
     got = g.feed_qas(pd.Series(score, dtype="Int64"), feed)
     want = [
-        _sql_qas(int(s), int(a), int(b), int(c))
-        for s, a, b, c in zip(score, rt, fc, quintile)
+        _sql_qas(int(s), int(a), int(b)) for s, a, b in zip(score, rt, quintile)
     ]
     assert got.tolist() == [float(v) for v in want]
 

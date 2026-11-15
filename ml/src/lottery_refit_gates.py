@@ -98,10 +98,11 @@ FEED_CUTOFF_SEARCH_MAX = 40
 INVERSION_BONUS = {1: -5, 2: -2, 3: 0, 4: 3, 5: 5}
 
 # The frame ``feed_qas`` and ``daily_tier_shares`` read: the score columns, which
-# ``score_frame`` needs to rescore a fire, and the four the feed adds.
+# ``score_frame`` needs to rescore a fire, and the three the feed adds. The
+# fire-count score adjustment is not among them: it was retired on 2026-11-15
+# and migration #209 drops its column.
 _FEED_ONLY_COLUMNS = (
     "round_trip_score_deduct",
-    "fire_count_score_adjustment",
     "direction_gated",
     "inversion_quintile",
 )
@@ -233,14 +234,15 @@ def feed_qas(scores: pd.Series, feed: pd.DataFrame) -> pd.Series:
     classifies the same way:
 
         qas = GREATEST(0, COALESCE(score, 0)
-                          + COALESCE(round_trip_score_deduct, 0)
-                          + COALESCE(fire_count_score_adjustment, 0))
+                          + COALESCE(round_trip_score_deduct, 0))
               + CASE inversion_quintile 1 THEN -5 ... 5 THEN 5 ELSE 0 END
 
-    The floor at zero comes before the bonus. A NULL adjustment counts as 0, and
-    so does a NULL or out-of-range quintile. ``scores`` is what ``score_frame``
-    returns for ``feed`` under one weights version (``<NA>`` for a fire the
-    scorer gates out), on the same index.
+    The floor at zero comes before the bonus. A NULL deduct counts as 0, and
+    so does a NULL or out-of-range quintile. There is no fire-count term: that
+    adjustment was retired on 2026-11-15, so the qas does not depend on how many
+    times a chain has fired. ``scores`` is what ``score_frame`` returns for
+    ``feed`` under one weights version (``<NA>`` for a fire the scorer gates
+    out), on the same index.
 
     The result is NaN for the fires the feed shows as tier3 whatever their qas:
     a NULL score, ``direction_gated``, and an inversion quintile of 1 or 2 (the
@@ -252,14 +254,13 @@ def feed_qas(scores: pd.Series, feed: pd.DataFrame) -> pd.Series:
     _require_columns(feed, _FEED_ONLY_COLUMNS, "feed")
     score = scores.to_numpy(dtype="float64", na_value=np.nan)
     round_trip = np.nan_to_num(_floats(feed["round_trip_score_deduct"]))
-    fire_count = np.nan_to_num(_floats(feed["fire_count_score_adjustment"]))
     quintile = _floats(feed["inversion_quintile"])
     bonus = np.zeros(len(feed))
     for q, points in INVERSION_BONUS.items():
         bonus[quintile == q] = points
     # A <NA> score is NaN here and stays NaN through the sum and np.maximum
     # (np.fmax would swallow it), which is the forced tier3 of a NULL score.
-    qas = np.maximum(0.0, score + round_trip + fire_count) + bonus
+    qas = np.maximum(0.0, score + round_trip) + bonus
     forced = _flags(feed["direction_gated"]) | np.isin(quintile, (1, 2))
     qas[forced] = np.nan
     return pd.Series(qas, index=feed.index, name="qas")
