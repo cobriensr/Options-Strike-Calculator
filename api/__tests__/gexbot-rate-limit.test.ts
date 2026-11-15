@@ -1,11 +1,15 @@
 // @vitest-environment node
 
 /**
- * A GEXBot 429 is a short rate limit (one request a second per ticker per
- * metric), not a quota: `withRetry` retries it with backoff, bounded, waiting
- * out `Retry-After` when sent. Every 429 is counted (`gexbot.rate_limited`);
- * the two GEXBot crons file the failure that is left when the retries run out
- * (see their tests). The EOD report route is the one with a quota.
+ * A live-route GEXBot 429 is retried: `withRetry` backs off, bounded, waiting
+ * out `Retry-After` when sent. The vendor documents both a per-account
+ * short-window limit (429 with `Retry-After`) and daily/monthly pool quotas
+ * (429 with none, lasting until midnight ET), and the one burst seen was
+ * transient, so a retry is the right first response and the exhausted event
+ * carries the `Retry-After` it saw. Every 429 is counted
+ * (`gexbot.rate_limited`); the two GEXBot crons file the failure that is left
+ * when the retries run out (see their tests). The EOD report route treats a
+ * 429 as a quota and does not retry it.
  *
  * The real `gexbot-client.ts`, `uw-fetch.ts` (`withRetry`) and `sentry.ts` run
  * here; only `@sentry/node` is faked, so the assertions read what reaches it.
@@ -57,6 +61,7 @@ import {
   fetchOrderflow,
   GexbotHttpError,
   gexbotFailureLevel,
+  gexbotRetryAfterTags,
   parseRetryAfterMs,
 } from '../_lib/gexbot-client.js';
 import { withRetry } from '../_lib/uw-fetch.js';
@@ -129,7 +134,7 @@ describe('GEXBot 429 retry', () => {
     expect(sentry.captured).toEqual([]);
   });
 
-  it('is retried with a 1 s then 2 s backoff, not treated as a quota', async () => {
+  it('is retried with a 1 s then 2 s backoff', async () => {
     const fetchMock = vi.fn().mockResolvedValue(res429());
     vi.stubGlobal('fetch', fetchMock);
 
@@ -277,6 +282,61 @@ describe('parseRetryAfterMs', () => {
       expect(parseRetryAfterMs(value)).toBeNull();
     },
   );
+});
+
+describe('gexbotRetryAfterTags', () => {
+  const TAG = 'gexbot.retry_after_ms';
+
+  it.each([
+    [2000, '2000'],
+    [30_000, '30000'],
+    // A Retry-After of 0 is a header that was sent, not an absent one.
+    [0, '0'],
+    [null, 'none'],
+  ])('a 429 with Retry-After %j ms is tagged %j', (ms, tag) => {
+    const err = new GexbotHttpError(429, '/SPX/orderflow/orderflow', '', ms);
+    expect(gexbotRetryAfterTags(err)).toEqual({ [TAG]: tag });
+  });
+
+  it('tags nothing for a failure that is not a 429', () => {
+    expect(
+      gexbotRetryAfterTags(new GexbotHttpError(503, '/SPX/x', 'down')),
+    ).toEqual({});
+    // Even a 5xx that carried a Retry-After: the tag is for the 429 question.
+    expect(
+      gexbotRetryAfterTags(new GexbotHttpError(503, '/SPX/x', 'down', 5000)),
+    ).toEqual({});
+    expect(
+      gexbotRetryAfterTags(
+        Object.assign(new Error('timed out'), { name: 'TimeoutError' }),
+      ),
+    ).toEqual({});
+    expect(gexbotRetryAfterTags('not an error')).toEqual({});
+  });
+
+  describe('through the real fetch path', () => {
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    async function tagsAfter429(retryAfter: string | null) {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(res429(retryAfter)));
+      const err = await fetchOrderflow('k', 'SPX').catch((e: unknown) => e);
+      return gexbotRetryAfterTags(err);
+    }
+
+    it('reads the Retry-After header as ms', async () => {
+      expect(await tagsAfter429('2')).toEqual({ [TAG]: '2000' });
+    });
+
+    it('says none when the 429 sent no Retry-After (the quota shape)', async () => {
+      expect(await tagsAfter429(null)).toEqual({ [TAG]: 'none' });
+    });
+
+    it('says none when the Retry-After is unreadable', async () => {
+      expect(await tagsAfter429('soon')).toEqual({ [TAG]: 'none' });
+    });
+  });
 });
 
 describe('gexbotFailureLevel', () => {

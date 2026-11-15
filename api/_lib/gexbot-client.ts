@@ -11,20 +11,33 @@
  * Spec source: github.com/nfa-llc/gexbot-openapi
  *   (latest/gexbot.spec3.yaml, spec 2.13.0, published 2026-10-27)
  *
- * Rate-limit contract from AGENTS.md (verbatim):
- *   "Data updates at most once per second. Do not send more than one
- *    request per second per ticker per metric."
- * The fetch crons hit each (ticker, endpoint) pair once per minute
- * (well under the cap). No client-side rate limiter — Vercel cron
- * cadence is the budget. A 429 is that short limit being brushed (a
- * burst, or two crons landing in the same second), so it is counted
- * (`gexbot.rate_limited`) and the callers' `withRetry` retries it with
- * backoff, bounded, waiting out `Retry-After` when sent. It is not a
- * quota: only the EOD report route (`gexbot-eod.ts`) has one, reset at
- * midnight ET. AGENTS.md also says to "use a short timeout
- * (about 1 second) for the snapshot routes"; we run 2.5 s on purpose
- * because GEXBot occasionally responds in 1–2 s under load (see
- * GEXBOT_TIMEOUT_MS).
+ * Rate limits (vendor docs, spec 2.17.0, re-read 2026-11-14). GEXBot
+ * documents two different things that answer 429:
+ *   - a per-account short-window limit: an account sending requests in a
+ *     loop with no delay can be limited over a window such as a second or a
+ *     minute, all keys counted together. The 429 carries `Retry-After`.
+ *   - daily and monthly pool quotas per endpoint, reset at midnight ET.
+ *     The 429 carries no `Retry-After` and lasts until the reset.
+ * AGENTS.md's "do not send more than one request per second per ticker per
+ * metric" is the vendor's polling advice, not an enforced limit. The fetch
+ * crons hit each (ticker, endpoint) pair once per minute, with no
+ * client-side limiter: Vercel cron cadence is the budget.
+ *
+ * The one burst seen (2026-11-11: 4 calls within about 120 ms, nothing
+ * after) was transient. Whether it was the short-window limit is not
+ * established; one hypothesis is the two crons' roughly 256 calls starting
+ * together each minute, which that limit counts per account. So a live-route
+ * 429 is counted (`gexbot.rate_limited`) and the callers' `withRetry`
+ * retries it with backoff, bounded, waiting out `Retry-After` up to 3 s. A
+ * 429 still there after the retries is filed by the crons as one warning
+ * whose `gexbot.retry_after_ms` tag says which kind it was: a number is a
+ * `Retry-After` the vendor sent, `none` is a 429 with no usable one, which
+ * is the quota shape when it persists across ticks (`gexbotRetryAfterTags`).
+ * The EOD report route (`gexbot-eod.ts`) treats a 429 as a quota and stops.
+ *
+ * AGENTS.md also says to "use a short timeout (about 1 second) for the
+ * snapshot routes"; we run 2.5 s on purpose because GEXBot occasionally
+ * responds in 1–2 s under load (see GEXBOT_TIMEOUT_MS).
  */
 
 import { metrics } from './sentry.js';
@@ -237,10 +250,28 @@ export function classifyGexbotError(err: unknown): {
 }
 
 /**
+ * The tag that lets one exhausted 429 answer which limit it was: the
+ * short-window limit sends `Retry-After`, a pool quota does not. A tag, not an
+ * extra: Sentry tags are string-valued and searchable, so
+ * `gexbot.retry_after_ms:none` finds the quota-shaped ones, and this value is
+ * a short string either way. `Retry-After` in ms as a string (a sent 0 is
+ * `0`), or `none` when the 429 carried none or an unreadable one. Empty for
+ * any failure that is not a 429, so the tag only ever answers this question.
+ */
+export function gexbotRetryAfterTags(err: unknown): Record<string, string> {
+  if (!(err instanceof GexbotHttpError) || err.status !== 429) return {};
+  return {
+    'gexbot.retry_after_ms':
+      err.retryAfterMs === null ? 'none' : String(err.retryAfterMs),
+  };
+}
+
+/**
  * Sentry level for a GEXBot fetch that failed after its retries. A 429 that
- * outlasted the backoff is a warning: the limit is expected, the next tick
- * re-fetches, and the cron still reports `partial` or `error` for the run.
- * Everything else is an error.
+ * outlasted the backoff is a warning: the next tick re-fetches, and the cron
+ * still reports `partial` or `error` for the run. The `gexbot.retry_after_ms`
+ * tag says whether it was the short-window limit or a quota. Everything else
+ * is an error.
  */
 export function gexbotFailureLevel(
   statusClass: GexbotStatusClass,
