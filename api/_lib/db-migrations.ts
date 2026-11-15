@@ -5991,7 +5991,7 @@ export const MIGRATIONS: Migration[] = [
   {
     id: 209,
     description:
-      'Retire the Lottery Finder fire-count score adjustment (owner decision 2026-11-15; spec: docs/superpowers/specs/2026-11-15-retire-lottery-fire-count-adjustment.md). A re-fire is no better an entry than the first fire, and the bucket stored on an early fire was the chain-day final count, so the adjustment rewarded hindsight. Drops the trigger lottery_finder_fires_fc_adj_trg and its function update_lottery_fire_count_score_adj() (migration #167), then the combined_score generated column and the fire_count_score_adjustment column it reads, then recreates combined_score exactly as migration #168 defined it minus the fire-count term, and its (date DESC, combined_score DESC NULLS LAST) index. Dropping and re-adding a STORED generated column rewrites lottery_finder_fires (about 1.1M rows) under an ACCESS EXCLUSIVE lock, and the detect-lottery-fires cron writes to it every minute in market hours, so apply this on a weekend or after the close, right after the code that no longer reads the column is deployed.',
+      'Retire the Lottery Finder fire-count score adjustment (owner decision 2026-11-15; spec: docs/superpowers/specs/2026-11-15-retire-lottery-fire-count-adjustment.md). A re-fire is no better an entry than the first fire, and the bucket stored on an early fire was the chain-day final count, so the adjustment rewarded hindsight. Drops the trigger lottery_finder_fires_fc_adj_trg and its function update_lottery_fire_count_score_adj() (migration #167), then the combined_score generated column and the fire_count_score_adjustment column it reads, then recreates combined_score exactly as migration #168 defined it minus the fire-count term, and its (date DESC, combined_score DESC NULLS LAST) index. The view lottery_finder_fires_with_outcome (#177, SELECT * FROM lottery_finder_fires) depends on both columns and would block the DROP COLUMNs, so the migration drops the view first and recreates it last with the definition #177 gave it; its SELECT * now also picks up the columns added since #177 (the live view stops at spot_at_trigger), and nothing in the code reads it. Dropping and re-adding a STORED generated column rewrites lottery_finder_fires (about 1.1M rows) under an ACCESS EXCLUSIVE lock, and the detect-lottery-fires cron writes to it every minute in market hours, so apply this on a weekend or after the close, right after the code that no longer reads the column is deployed.',
     statements: (sql) => [
       // Fail fast if the table lock is not free: DROP COLUMN and ADD COLUMN
       // want ACCESS EXCLUSIVE on lottery_finder_fires, and a detect-cron
@@ -6000,6 +6000,11 @@ export const MIGRATIONS: Migration[] = [
       // migration can be run again. This bounds the wait for the lock, not the
       // rewrite once it is held.
       sql`SET LOCAL lock_timeout = '5s'`,
+      // Step 0: the #177 view. It is `SELECT *`, so it depends on every column
+      // of lottery_finder_fires, including combined_score and
+      // fire_count_score_adjustment, and Postgres refuses to drop either while
+      // the view exists. It is recreated as the last statement.
+      sql`DROP VIEW IF EXISTS lottery_finder_fires_with_outcome`,
       // Step 1: the #167 trigger and its function. The trigger goes first:
       // the function cannot be dropped while the trigger depends on it.
       sql`DROP TRIGGER IF EXISTS lottery_finder_fires_fc_adj_trg
@@ -6030,6 +6035,15 @@ export const MIGRATIONS: Migration[] = [
       // Step 4: the index the dropped column took with it.
       sql`CREATE INDEX IF NOT EXISTS lottery_finder_fires_combined_score_idx
             ON lottery_finder_fires (date DESC, combined_score DESC NULLS LAST)`,
+      // Step 5: the #177 view again, with #177's exact definition. Its
+      // `SELECT *` is expanded now, so it also carries the columns added since
+      // #177 and no longer has fire_count_score_adjustment.
+      sql`CREATE OR REPLACE VIEW lottery_finder_fires_with_outcome AS
+            SELECT *,
+              COALESCE(realized_flow_inversion_pct, realized_eod_pct) AS outcome_pct,
+              ((option_type = 'C' AND cum_ncp_at_fire > cum_npp_at_fire)
+                OR (option_type = 'P' AND cum_npp_at_fire > cum_ncp_at_fire)) AS is_aligned
+            FROM lottery_finder_fires`,
     ],
   },
 ];

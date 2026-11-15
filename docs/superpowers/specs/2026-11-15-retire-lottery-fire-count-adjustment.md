@@ -66,7 +66,9 @@ Each phase is at most 5 files, and each commit passes `npm run review` on its ow
   - leave the `.sql` files alone, since they're a record of what was applied;
   - for the three scripts, drop the column from their qas if trivial; otherwise add a one-line header noting the column was retired on 2026-11-15. Stay within 5 files per commit.
 
-**Phase 5: migration #209**, in `api/_lib/db-migrations.ts` and `api/__tests__/db.test.ts`. One `statements:` migration (one transaction):
+**Phase 5: migration #209**, in `api/_lib/db-migrations.ts` and `api/__tests__/db.test.ts`. One `statements:` migration (one transaction). Steps 0 and 7 were added in review: the view `lottery_finder_fires_with_outcome` (#177, `SELECT * FROM lottery_finder_fires`) depends on both columns we drop, so without them the DROP COLUMNs fail with "view … depends on it".
+- Before the steps: `SET LOCAL lock_timeout = '5s'`, as #194–#208 do, so a wait for the ACCESS EXCLUSIVE lock behind a running detect-cron insert fails fast and rolls back instead of queueing.
+0. `DROP VIEW IF EXISTS lottery_finder_fires_with_outcome`
 1. `DROP TRIGGER IF EXISTS lottery_finder_fires_fc_adj_trg ON lottery_finder_fires`
 2. `DROP FUNCTION IF EXISTS update_lottery_fire_count_score_adj()`
 3. `ALTER TABLE lottery_finder_fires DROP COLUMN IF EXISTS combined_score`. The column is a generated column that references the one we drop.
@@ -75,6 +77,7 @@ Each phase is at most 5 files, and each commit passes `npm run review` on its ow
    `GREATEST(0, COALESCE(score,0) + COALESCE(round_trip_score_deduct,0) + CASE … gamma … END)`.
    Copy #168's CASE verbatim.
 6. Recreate `lottery_finder_fires_combined_score_idx ON lottery_finder_fires (date DESC, combined_score DESC NULLS LAST)`.
+7. `CREATE OR REPLACE VIEW lottery_finder_fires_with_outcome` with #177's exact text. Its `SELECT *` is expanded again, so the view now also carries the columns added since #177 (the live view stops at `spot_at_trigger`) and has no `fire_count_score_adjustment`. Nothing in the code reads the view.
 
 Plus the `db.test.ts` updates per CLAUDE.md "DB Migrations": the applied-ids mock, the expected-output list, the mockSql and mockSql.transaction totals, and the breakdown comments.
 
@@ -86,7 +89,11 @@ Plus the `db.test.ts` updates per CLAUDE.md "DB Migrations": the applied-ids moc
 - The migration rewrites `lottery_finder_fires` (about 1.1M rows), because dropping and re-adding a STORED generated column rewrites the table. The table is locked meanwhile, and the detect cron writes to it every minute during market hours.
 - **Apply it on a weekend or after the close only**, right after the deploy, via `/api/journal/migrate`. That needs the owner's explicit go at apply time.
 - Production has applied every migration through #208 (checked 2026-11-15), so a migrate run applies only #209, unless another session lands one first. **Recheck that at apply time.**
-- Between the deploy and the migration, the feed's displayed qas (no adjustment) and its score-sort index (`combined_score`, still with it) disagree on order. Keep that window to minutes.
+- **Deploy first. That is a hard requirement.**
+  - The new code does not read `combined_score` or `fire_count_score_adjustment` at runtime: the feed sorts on `f.score` (`LOTTERY_FEED_ORDER_BY`), and the qas is computed from `score` and `round_trip_score_deduct`.
+  - So with the code deployed and #209 not yet applied, nothing misbehaves: the #167 trigger keeps writing a column nobody reads.
+  - Applying #209 BEFORE the deploy breaks the old code, which still selects `fire_count_score_adjustment`. The feed, the chip strip and the detector's tier monitor would all fail with Postgres error 42703 (undefined column).
+  - There is therefore no deploy-to-migration window to keep short. Only the apply itself needs the weekend or after-close slot.
 
 ## Open questions (defaults picked)
 - **Tier cutoffs** stay at 13/10. The default: the entry test above shows no quality loss at 13. Re-tune later only from a realized-outcome study on true first-tier entries.
@@ -103,5 +110,6 @@ Code, tests and the migration are written; **migration #209 is not applied.** Th
 - **The score no longer depends on fire count.** The old bucket-ladder tests are replaced by a table over fire counts 1, 2, 3, 4, 7, 8, 15, 16, 20 and 21 on one row, all giving the same score, qas and tier, plus a same-row-at-1-and-20 test.
 - **The ML mirror reads the TS source.** `ml/tests/test_lottery_refit_gates.py::test_feed_qas_mirrors_the_feeds_displayed_score_sql` parses `qasExprText` out of `api/lottery-finder.ts`, so it is red between the Phase 1 commit and the Phase 4 commit and green after both.
 - **Phase 4 scripts.** `scripts/feature_audit.py` reads `combined_score`, so it follows #209 on its own; only its comment changed. The other three dated scripts query the stored column to measure the tag itself, so they got a one-line retirement header and will not run after #209.
-- **Migration #209** has the six statements above, in that order. It has no `SET LOCAL lock_timeout`, which migrations #194–#208 use on their ALTERs of live tables; decide at apply time whether to add one (it bounds the wait for the lock, not the rewrite). `api/__tests__/migration-209-pglite.test.ts` runs it on pglite against rows the #167 trigger scored, and also checks that its gamma CASE text is #168's.
+- **Migration #209** has the statements above, in that order: the lock timeout, the view drop, steps 1–6, then the view recreate. The lock timeout bounds the wait for the lock, not the rewrite. `api/__tests__/migration-209-pglite.test.ts` replays #110, 124, 126, 134, 154, 158, 167, 168, 177 and 178, seeds rows the #167 trigger scored, applies #209, and checks the trigger, function and column are gone, the same inputs score the same at one fire and at sixteen, the view still serves `outcome_pct` and `is_aligned`, and the gamma CASE and the view text are #168's and #177's.
+- **The view blocked the first version.** The first draft of #209 had no view steps and could not apply: the review reproduced the "view … depends on it" error in pglite, and read-only `pg_depend` on production showed the view as the table's only dependent object.
 - **Nightly:** no file this change touches is one of the ten Nightly watch paths, so there is no push-time constraint from it.

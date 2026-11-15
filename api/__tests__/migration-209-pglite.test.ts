@@ -19,9 +19,14 @@ import { MIGRATIONS } from '../_lib/db-migrations.js';
 import { applyMigration, neonOverPglite } from './pglite-migrations';
 
 // lottery_finder_fires and what #209 touches, in order: the table, its later
-// columns, the round-trip deduct (#154), the fire-count adjustment, trigger and
-// first combined_score (#167), then gamma and the second combined_score (#168).
-const BEFORE_209 = [110, 126, 134, 154, 158, 167, 168, 178];
+// columns (#124 adds realized_flow_inversion_pct), the round-trip deduct (#154),
+// the fire-count adjustment, trigger and first combined_score (#167), then
+// gamma and the second combined_score (#168), then the view
+// lottery_finder_fires_with_outcome (#177), whose `SELECT *` makes it depend on
+// both columns #209 drops, and cluster_bonus (#178).
+const BEFORE_209 = [110, 124, 126, 134, 154, 158, 167, 168, 177, 178];
+
+const VIEW = 'lottery_finder_fires_with_outcome';
 
 interface Seed {
   id: number;
@@ -115,7 +120,33 @@ const rowsOf = async (ids: number[]): Promise<Row[]> =>
     )
   ).rows;
 
-let before: { single: Row[]; burst: Row[]; adjustments: Map<number, number> };
+/** The text of each statement of migration `id`, in order, without running it. */
+function statementTexts(id: number): string[] {
+  const migration = MIGRATIONS.find((m) => m.id === id);
+  const statements = migration?.statements?.(
+    neonOverPglite(pg) as unknown as Parameters<
+      NonNullable<typeof migration.statements>
+    >[0],
+  ) as unknown as { text: string }[] | undefined;
+  expect(statements, `migration #${id} has no statements`).toBeDefined();
+  return statements!.map((s) => s.text);
+}
+
+/** The view's column names, in order ([] when the view does not exist). */
+const viewColumns = async (): Promise<string[]> =>
+  (
+    await pg.query<{ column_name: string }>(
+      `SELECT column_name FROM information_schema.columns
+        WHERE table_name = '${VIEW}' ORDER BY ordinal_position`,
+    )
+  ).rows.map((r) => r.column_name);
+
+let before: {
+  single: Row[];
+  burst: Row[];
+  adjustments: Map<number, number>;
+  viewColumns: string[];
+};
 
 beforeAll(async () => {
   pg = new PGlite();
@@ -142,6 +173,7 @@ beforeAll(async () => {
     single: await rowsOf(CASES.map((c) => c.id)),
     burst: await rowsOf(BURST_IDS),
     adjustments: new Map(adj.rows.map((r) => [r.id, r.a])),
+    viewColumns: await viewColumns(),
   };
 
   await applyMigration(pg, 209);
@@ -161,6 +193,68 @@ describe('migration #209 (retire the fire-count score adjustment)', () => {
     // ...and it fed the old combined_score: 12 - 3 + 1 gamma = 10, 12 + 2 + 1.
     expect(before.single.find((r) => r.id === 1)?.combined_score).toBe(10);
     expect(before.burst.every((r) => r.combined_score === 15)).toBe(true);
+  });
+
+  it('starts with the #177 view depending on both columns #209 drops', () => {
+    // The view is `SELECT * FROM lottery_finder_fires`, so Postgres refuses to
+    // drop either column while it exists ("view ... depends on it"). Without
+    // this precondition the view tests below would pass on a database that
+    // never had the view.
+    expect(before.viewColumns).toEqual(
+      expect.arrayContaining([
+        'fire_count_score_adjustment',
+        'combined_score',
+        'outcome_pct',
+        'is_aligned',
+      ]),
+    );
+    // The view's column list was frozen when #177 created it, before #178.
+    expect(before.viewColumns).not.toContain('cluster_bonus');
+  });
+
+  it('recreates the view without the dropped column, and with the newer columns', async () => {
+    const after = await viewColumns();
+    expect(after).not.toContain('fire_count_score_adjustment');
+    expect(after).toEqual(
+      expect.arrayContaining(['combined_score', 'outcome_pct', 'is_aligned']),
+    );
+    // `SELECT *` is expanded again, so the view now carries the columns added
+    // since #177 (here #178's cluster_bonus); the live view stops at
+    // spot_at_trigger.
+    expect(after).toContain('cluster_bonus');
+  });
+
+  it('serves outcome_pct and is_aligned through the recreated view', async () => {
+    // outcome_pct = COALESCE(flow-inversion exit, held-to-EOD): the flow
+    // inversion value wins when both exist, and the held-to-EOD return fills in
+    // when it does not. is_aligned = a call with ncp > npp or a put with
+    // npp > ncp.
+    await seed({ id: 300, score: 10, rt: 0, gamma: null });
+    await seed({ id: 301, score: 10, rt: 0, gamma: null });
+    await pg.query(
+      `UPDATE lottery_finder_fires
+          SET realized_flow_inversion_pct = 3, realized_eod_pct = 7,
+              cum_ncp_at_fire = 5, cum_npp_at_fire = 1
+        WHERE id = 300`,
+    );
+    await pg.query(
+      `UPDATE lottery_finder_fires
+          SET realized_eod_pct = 7, cum_ncp_at_fire = 1, cum_npp_at_fire = 5
+        WHERE id = 301`,
+    );
+    const { rows } = await pg.query<{
+      id: number;
+      outcome_pct: number | null;
+      is_aligned: boolean | null;
+      combined_score: number;
+    }>(
+      `SELECT id, outcome_pct::float8 AS outcome_pct, is_aligned, combined_score
+         FROM ${VIEW} WHERE id IN (300, 301) ORDER BY id`,
+    );
+    expect(rows).toEqual([
+      { id: 300, outcome_pct: 3, is_aligned: true, combined_score: 10 },
+      { id: 301, outcome_pct: 7, is_aligned: false, combined_score: 10 },
+    ]);
   });
 
   it('drops the trigger and its function', async () => {
@@ -249,19 +343,41 @@ describe('migration #209 (retire the fire-count score adjustment)', () => {
     await expect(applyMigration(pg, 209)).resolves.toBeUndefined();
     const [row] = await rowsOf([1]);
     expect(row?.combined_score).toBe(13);
+    // The view is dropped and recreated, not left half-built.
+    expect(await viewColumns()).not.toContain('fire_count_score_adjustment');
   });
 
   it("starts with SET LOCAL lock_timeout so a busy table fails fast, as #194-#208's ALTERs do", () => {
     // DROP COLUMN / ADD COLUMN take ACCESS EXCLUSIVE on a table the detect
     // cron inserts into every minute. Without a lock timeout the transaction
     // would queue behind a running insert, and every reader behind it.
-    const migration = MIGRATIONS.find((m) => m.id === 209);
-    const statements = migration?.statements?.(
-      neonOverPglite(pg) as unknown as Parameters<
-        NonNullable<typeof migration.statements>
-      >[0],
-    ) as unknown as { text: string }[];
-    expect(statements[0]?.text).toBe("SET LOCAL lock_timeout = '5s'");
+    expect(statementTexts(209)[0]).toBe("SET LOCAL lock_timeout = '5s'");
+  });
+
+  it('drops the view right after the lock timeout and recreates it last', () => {
+    // The view depends on both dropped columns, so it has to be gone before
+    // the DROP COLUMNs run, and it is rebuilt only once the new combined_score
+    // and its index exist.
+    const texts = statementTexts(209);
+    expect(texts[1]).toBe(`DROP VIEW IF EXISTS ${VIEW}`);
+    expect(texts.at(-1)).toMatch(
+      new RegExp(`^CREATE OR REPLACE VIEW ${VIEW} AS`),
+    );
+    const firstColumnDrop = texts.findIndex((t) => /DROP COLUMN/.test(t));
+    expect(firstColumnDrop).toBeGreaterThan(1);
+  });
+
+  it("copies #177's view definition verbatim", () => {
+    // Same text as #177, so the view keeps its outcome_pct and is_aligned
+    // definitions. Whitespace is not part of the definition.
+    const viewOf = (id: number): string => {
+      const text = statementTexts(id).find((t) =>
+        /CREATE OR REPLACE VIEW/.test(t),
+      );
+      expect(text, `no view statement in #${id}`).toBeDefined();
+      return text!.replace(/\s+/g, ' ');
+    };
+    expect(viewOf(209)).toBe(viewOf(177));
   });
 
   it("copies #168's gamma CASE verbatim", () => {
@@ -269,15 +385,9 @@ describe('migration #209 (retire the fire-count score adjustment)', () => {
     // term. Compare the CASE text itself so a retuned threshold or a changed
     // excluded ticker in #209 cannot pass on the sample rows alone.
     const caseOf = (id: number): string => {
-      const migration = MIGRATIONS.find((m) => m.id === id);
-      const statements = migration?.statements?.(
-        neonOverPglite(pg) as unknown as Parameters<
-          NonNullable<typeof migration.statements>
-        >[0],
-      ) as unknown as { text: string }[];
-      const text = statements.find((s) =>
-        /ADD COLUMN combined_score/.test(s.text),
-      )?.text;
+      const text = statementTexts(id).find((t) =>
+        /ADD COLUMN combined_score/.test(t),
+      );
       const found = /CASE[\s\S]*?END/.exec(text ?? '');
       expect(found, `no gamma CASE in #${id}`).not.toBeNull();
       return found![0].replace(/\s+/g, ' ');

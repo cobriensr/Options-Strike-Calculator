@@ -106,8 +106,12 @@ beforeAll(async () => {
   // (#167 and #168 build it with the fire-count adjustment, #209 retires that
   // adjustment and rebuilds combined_score without it, as production has it),
   // cluster_bonus; then the weights store, which adds
-  // lottery_finder_fires.score_version.
-  for (const id of [110, 126, 134, 154, 158, 167, 168, 178, 208, 209]) {
+  // lottery_finder_fires.score_version. #124 and #177 are there for #209: the
+  // view #177 creates depends on the columns #209 drops, so #209 has to
+  // rebuild it (and #124 adds a column that view reads).
+  for (const id of [
+    110, 124, 126, 134, 154, 158, 167, 168, 177, 178, 208, 209,
+  ]) {
     await applyMigration(pg, id);
   }
 }, 120_000);
