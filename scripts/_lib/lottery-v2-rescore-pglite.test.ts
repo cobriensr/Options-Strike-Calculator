@@ -102,10 +102,12 @@ beforeAll(async () => {
   await pg.query("SET TIME ZONE 'America/Chicago'");
   // lottery_finder_fires and what the scored columns need, in order:
   // table, score, silent_boom_alerts (the flow migration alters both),
-  // round-trip deduct, flow-at-fire, fire-count adjustment, gamma and the
-  // generated combined_score, cluster_bonus; then the weights store, which
-  // adds lottery_finder_fires.score_version.
-  for (const id of [110, 126, 134, 154, 158, 167, 168, 178, 208]) {
+  // round-trip deduct, flow-at-fire, gamma and the generated combined_score
+  // (#167 and #168 build it with the fire-count adjustment, #209 retires that
+  // adjustment and rebuilds combined_score without it, as production has it),
+  // cluster_bonus; then the weights store, which adds
+  // lottery_finder_fires.score_version.
+  for (const id of [110, 126, 134, 154, 158, 167, 168, 178, 208, 209]) {
     await applyMigration(pg, id);
   }
 }, 120_000);
