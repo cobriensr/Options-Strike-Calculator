@@ -5,6 +5,8 @@
 **Owner:** ML pipeline (ml/src/takeit\_\*.py)
 **Empirical basis:** [burst-profitability-findings-2026-05-17.md](../../tmp/burst-profitability-findings-2026-05-17.md)
 
+> **Retired 2026-11-15:** the `fireCountScoreAdjustment` score term this spec mentions (shipped in `254c94ed`, stored in #167) was removed, because entering on a re-fire showed no edge and the stored bucket was hindsight. See [2026-11-15-retire-lottery-fire-count-adjustment.md](2026-11-15-retire-lottery-fire-count-adjustment.md). The `fire_count` / `fire_position` model features proposed here are a separate question and are untouched.
+
 ## Why
 
 Two strong univariate signals fell out of the 2026-05-17 burst-profitability analysis on 93 days / 626k fires:

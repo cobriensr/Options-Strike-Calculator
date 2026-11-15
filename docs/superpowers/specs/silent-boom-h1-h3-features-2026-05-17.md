@@ -228,6 +228,9 @@ May result in:
 - **adj_cofire**: should the score bonus stack with the existing
   `fire_count_score_adjustment` (which counts SAME-strike re-fires)?
   Yes — different signals (different strike vs same strike).
+  _(Retired 2026-11-15: the Lottery Finder's `fire_count_score_adjustment` was
+  removed, see `2026-11-15-retire-lottery-fire-count-adjustment.md`; this
+  answer is moot. Silent Boom never carried that column.)_
 - **Cross-cron adj_cofire**: defer to follow-up unless the intra-cron
   miss rate proves material in production.
 

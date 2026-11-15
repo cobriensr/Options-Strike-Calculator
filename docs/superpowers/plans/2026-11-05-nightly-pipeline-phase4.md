@@ -679,6 +679,9 @@ The description cites the spec and D5, says NULL `score_version` means "scored b
   INVERSION_BONUS = {1: -5, 2: -2, 3: 0, 4: 3, 5: 5}     # mirrors api/_lib/lottery-inversion-bonus.ts
   FEED_COLUMNS = SCORE_COLUMNS + ("round_trip_score_deduct", "fire_count_score_adjustment",
                                   "direction_gated", "inversion_quintile")
+  # Retired 2026-11-15: "fire_count_score_adjustment" is no longer in FEED_COLUMNS (the adjustment was
+  # removed and migration #209 drops the column); feed_qas has no fire-count term. See
+  # docs/superpowers/specs/2026-11-15-retire-lottery-fire-count-adjustment.md.
   @dataclass(frozen=True) class FeedCutoffs: tier1_min_score: int; tier2_min_score: int
   def spearman(x: pd.Series, y: pd.Series) -> float      # average-rank Pearson on pairwise non-null; nan if < 3 rows or constant
   def feed_qas(scores: pd.Series, feed: pd.DataFrame) -> pd.Series

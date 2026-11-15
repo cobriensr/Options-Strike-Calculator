@@ -15,7 +15,8 @@ so this class of bug can't hide again.
 - Phase 3 (2026-05-22) switched the `score` column to bare `computeLotteryScoreV2`
   (a 9/7-scale score, max ~17). Nobody recalibrated the feed cutoffs.
 - `combined_score` (generated) = `GREATEST(0, score + round_trip_deduct +
-  fire_count_adj + gammaCase)`. Inversion bonus ∈ [-5, +5]. So max observed
+  fire_count_adj + gammaCase)` _(retired 2026-11-15: `fire_count_adj` is gone,
+  see `2026-11-15-retire-lottery-fire-count-adjustment.md`)_. Inversion bonus ∈ [-5, +5]. So max observed
   `qas` over 30 days = **22**; p95 = 13, p85 = 10. tier1 (≥24) is mathematically
   impossible; tier2 (≥22) near-impossible.
 - Why it hid: the cron's "zero tier1 for 3 days" Sentry alert buckets with
