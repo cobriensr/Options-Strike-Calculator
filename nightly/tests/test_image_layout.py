@@ -189,7 +189,12 @@ def test_scripts_import_in_the_image_layout(tmp_path: Path):
 
 
 def _top_level_names(directory: Path) -> set[str]:
-    """What `import` finds directly in directory: *.py stems and package directories."""
+    """What `import` finds directly in directory: *.py stems and package directories.
+
+    Every directory counts, with or without an `__init__.py`. A namespace directory (none)
+    loses to a regular module of the same name elsewhere on the path, so the collision check
+    can over-report one. That is harmless: a false alarm, never a miss.
+    """
     names = {path.stem for path in directory.glob("*.py")}
     names.update(path.name for path in directory.iterdir() if path.is_dir())
     return {name for name in names if name.isidentifier()} - {"__init__", "__pycache__"}
