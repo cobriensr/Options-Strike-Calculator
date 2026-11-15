@@ -75,7 +75,9 @@ export const redis = createRedis();
  * `market-events.ts`, and the window cache in `api/events.ts`. The day and
  * window caches are read on every snapshot save or `/api/events` request and
  * written on a miss, the release lists are read on a miss of either, and a
- * failure falls through to the source.
+ * failure falls through to the source. So does the Take-It win-rate day cache
+ * (`takeit-winrate-cache.ts`): read before the 44-60 s Neon scan it replaces,
+ * where a hung Redis would otherwise eat the prefetch's 5 s deadline.
  */
 export const limiterRedis = createRedis({
   retry: { retries: 0 },
