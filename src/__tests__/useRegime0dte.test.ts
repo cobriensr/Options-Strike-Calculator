@@ -185,3 +185,108 @@ describe('useRegime0dte', () => {
     expect(result.current.displayData?.gate).toBe('calm');
   });
 });
+
+describe('useRegime0dte polling window follows the market calendar', () => {
+  /** Set the mocked CT clock and CT calendar date for the next render. */
+  function setCt(date: string, hour: number, minute: number) {
+    getCTDateStrMock.mockReturnValue(date);
+    getCTTimeMock.mockReturnValue({ hour, minute });
+  }
+
+  beforeEach(() => {
+    fetchMock.mockReset();
+    getCTTimeMock.mockReset();
+    getCTDateStrMock.mockReset();
+    localStorage.clear();
+  });
+
+  // Dates (marketHours.ts stays real): Saturday, Thanksgiving (full close).
+  it.each([
+    ['a Saturday', '2026-11-14'],
+    ['Thanksgiving (full-day close)', '2026-11-26'],
+  ])('does not fetch at 10:00 CT on %s', async (_label, date) => {
+    setCt(date, 10, 0);
+
+    const { result } = renderHook(() => useRegime0dte());
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(result.current.isWindowOpen).toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('does not schedule the polling interval on a Saturday (no fetch churn)', () => {
+    vi.useFakeTimers();
+    try {
+      setCt('2026-11-14', 10, 0);
+
+      renderHook(() => useRegime0dte());
+      act(() => {
+        vi.advanceTimersByTime(45_000 * 5);
+      });
+
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // 2026-11-27 closes at 13:00 ET, which is 12:00 CT.
+  it.each([
+    ['11:59 CT is open', 11, 59, true],
+    ['12:00 CT is closed', 12, 0, false],
+    ['14:00 CT is closed', 14, 0, false],
+  ])('half-day 2026-11-27: %s', async (_label, hour, minute, expectOpen) => {
+    setCt('2026-11-27', hour, minute);
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => makeResponse({ date: '2026-11-27' }),
+    });
+
+    const { result } = renderHook(() => useRegime0dte());
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(result.current.isWindowOpen).toBe(expectOpen);
+    if (expectOpen) {
+      await waitFor(() => {
+        expect(fetchMock).toHaveBeenCalled();
+      });
+    } else {
+      expect(fetchMock).not.toHaveBeenCalled();
+    }
+  });
+
+  // 2026-06-05 is a normal Friday: the session runs 08:30 to 15:00 CT.
+  it.each([
+    ['08:29 CT is closed', 8, 29, false],
+    ['08:30 CT is open', 8, 30, true],
+    ['14:59 CT is open', 14, 59, true],
+    ['15:00 CT is closed', 15, 0, false],
+  ])(
+    'normal weekday 2026-06-05: %s',
+    async (_label, hour, minute, expectOpen) => {
+      setCt('2026-06-05', hour, minute);
+      fetchMock.mockResolvedValue({
+        ok: true,
+        json: async () => makeResponse(),
+      });
+
+      const { result } = renderHook(() => useRegime0dte());
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      expect(result.current.isWindowOpen).toBe(expectOpen);
+      if (expectOpen) {
+        await waitFor(() => {
+          expect(fetchMock).toHaveBeenCalled();
+        });
+      } else {
+        expect(fetchMock).not.toHaveBeenCalled();
+      }
+    },
+  );
+});

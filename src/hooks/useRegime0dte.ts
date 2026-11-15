@@ -1,12 +1,14 @@
 /**
- * useRegime0dte — polls /api/regime-0dte during the 08:30–15:00 CT regular
- * session so the "0DTE Gamma Regime" panel updates as the gamma gate sets,
- * the IV surface breaks, and the down-only triggers latch through the day.
+ * useRegime0dte — polls /api/regime-0dte during the regular session so the
+ * "0DTE Gamma Regime" panel updates as the gamma gate sets, the IV surface
+ * breaks, and the down-only triggers latch through the day. The session is
+ * 08:30 CT to the close (15:00 CT, or 12:00 CT on a half-day), on trading days
+ * only: no polling on weekends or NYSE holidays.
  *
  * Thin wrapper over `usePolledWindowSignal` — that primitive owns the polling,
  * window-gating, abort-per-fetch, and last-good cache machinery. This file
  * supplies only the regime-specific config: the endpoint URL, the cache slot,
- * the 45s cadence, the 08:30–15:00 CT window predicate, and the CT "today"
+ * the 45s cadence, the market-calendar window predicate, and the CT "today"
  * staleness key. The exported `Regime0dteResponse` type and the window bounds
  * stay local.
  *
@@ -17,6 +19,7 @@
  */
 
 import { POLL_INTERVALS } from '../constants/index.js';
+import { isTradingDay, getMarketCloseHourET } from '../data/marketHours.js';
 import { getCTTime, getCTDateStr } from '../utils/timezone.js';
 import {
   usePolledWindowSignal,
@@ -67,15 +70,24 @@ export interface Regime0dteResponse {
 const STORAGE_KEY = 'regime0dte:lastgood';
 
 /**
- * Polling-window predicate. True during the 08:30–15:00 CT regular session
- * (the window over which the gamma gate, IV-break, and candle triggers are
- * meaningful). Outside this window the hook stops fetching.
+ * Polling-window predicate. True only on a trading day (not a weekend or NYSE
+ * holiday), from 08:30 CT up to the day's close: 15:00 CT normally, 12:00 CT on
+ * a half-day. This is the window over which the gamma gate, IV-break, and
+ * candle triggers are meaningful. Outside it the hook stops fetching.
+ *
+ * `getMarketCloseHourET` is an ET hour; ET is always one hour ahead of CT, so
+ * the close in CT minutes is `(closeHourET - 1) * 60`. A null close (a closed
+ * date) is treated as closed.
  */
 function inPollingWindow(now: Date): boolean {
+  const ctDate = getCTDateStr(now);
+  if (!isTradingDay(ctDate)) return false;
+  const closeHourET = getMarketCloseHourET(ctDate);
+  if (closeHourET === null) return false;
   const { hour, minute } = getCTTime(now);
   const totalMinutes = hour * 60 + minute;
   const windowOpen = 8 * 60 + 30; // 08:30 CT
-  const windowClose = 15 * 60; // 15:00 CT
+  const windowClose = (closeHourET - 1) * 60;
   return totalMinutes >= windowOpen && totalMinutes < windowClose;
 }
 
