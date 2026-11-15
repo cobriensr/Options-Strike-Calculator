@@ -22,6 +22,7 @@ import {
   tickerDirKey,
 } from './takeit-features.js';
 import { getBundle } from './takeit-bundle-loader.js';
+import { readWinRateCache, writeWinRateCache } from './takeit-winrate-cache.js';
 import {
   type TakeitBundle,
   featuresFromRow,
@@ -107,10 +108,14 @@ const PREFETCH_DEADLINE_MS = 5_000;
  * Upper bound on one shared win-rate load (see priorSessionWinRatesForDay).
  * It only frees the in-flight marker when a request hangs, so a later run
  * can try again; a slow load that does finish should land, because the
- * next attempt would be just as slow. The query measured 4.9 s on an idle
- * Neon and passed 10 s under load (2026-10-28). The load outlives the run
- * that started it (later runs share it), so it may exceed the crons' 60 s
- * maxDuration; a hung one blocks Take-It for about two minute-runs.
+ * next attempt would be just as slow. The lottery query measured 4.9 s on an
+ * idle Neon and passed 10 s under load (2026-10-28), then grew with its
+ * table: 44-60 s in 11 Neon spans from 2026-11-04 to 11-13 (1.75 GB, a
+ * parallel sequential scan). The load outlives the run that started it
+ * (later runs share it), so it may exceed the crons' 60 s maxDuration; a
+ * hung one blocks Take-It for about two minute-runs. Its answer is kept in
+ * Upstash for the ET day (takeit-winrate-cache.ts) so this runs once a day,
+ * not once per instance.
  */
 const WIN_RATE_LOAD_TIMEOUT_MS = 120_000;
 
@@ -167,12 +172,33 @@ interface WinRateEntry {
 // date changes. Each detect cron is its own function, so an instance holds
 // one entry in practice. Module state outlives a request on Fluid Compute,
 // which is the point: the load runs once per ET day per instance instead
-// of once per run.
+// of once per run. The Upstash day cache (takeit-winrate-cache.ts) is the
+// same idea across instances.
 const winRateCache: Partial<Record<AlertType, WinRateEntry>> = {};
 
 /**
+ * The day's rows from the Upstash cache, or else from `load` (Neon), which
+ * then stores them there for the next instance. Both cache calls are best
+ * effort and never throw: a Redis failure costs one more Neon load, not the
+ * run. A failed `load` rejects as before and stores nothing.
+ */
+async function winRatesFromUpstashOrLoad(
+  alertType: AlertType,
+  today: string,
+  load: (beforeDate: string) => Promise<PriorWinRateRow[]>,
+): Promise<PriorWinRateRow[]> {
+  const cached = await readWinRateCache(alertType, today);
+  if (cached != null) return cached;
+  const rows = await load(today);
+  await writeWinRateCache(alertType, today, rows);
+  return rows;
+}
+
+/**
  * The per-ticker prior-session win rates for the ET day `today`, loaded
- * once per day per alert type and shared by every run on this instance.
+ * once per day per alert type and shared by every run on this instance, and
+ * (since the Upstash day cache) by every instance: the key is read before
+ * Neon is asked.
  *
  * The answer depends only on `today`: `load(today)` must aggregate fires
  * dated strictly before it, and those rows' outcome columns are written by
@@ -192,7 +218,7 @@ export function priorSessionWinRatesForDay(
   const entry: WinRateEntry = {
     day: today,
     rows: withDeadline(
-      load(today),
+      winRatesFromUpstashOrLoad(alertType, today, load),
       WIN_RATE_LOAD_TIMEOUT_MS,
       'Take-It win-rate load',
     ),

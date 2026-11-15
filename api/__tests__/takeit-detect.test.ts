@@ -23,6 +23,18 @@ vi.mock('../_lib/takeit-features.js', async (importOriginal) => {
 vi.mock('../_lib/sentry.js', () => ({
   Sentry: { captureException: vi.fn() },
 }));
+// The win-rate day cache (takeit-winrate-cache.ts) is real; only its Redis
+// client and logger are faked, so its failure paths run for real.
+const { mockRedisGet, mockRedisSet } = vi.hoisted(() => ({
+  mockRedisGet: vi.fn(),
+  mockRedisSet: vi.fn(),
+}));
+vi.mock('../_lib/redis.js', () => ({
+  limiterRedis: { get: mockRedisGet, set: mockRedisSet },
+}));
+vi.mock('../_lib/logger.js', () => ({
+  default: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+}));
 
 import {
   awaitWinRateWarmup,
@@ -38,6 +50,7 @@ import {
   featuresForSilentBoom,
 } from '../_lib/takeit-features.js';
 import { Sentry } from '../_lib/sentry.js';
+import logger from '../_lib/logger.js';
 import type {
   LotteryAlertRow,
   SilentBoomAlertRow,
@@ -60,6 +73,9 @@ beforeEach(() => {
   baseDeps.fetchRecentSameType.mockResolvedValue([]);
   baseDeps.fetchRecentOtherTypeByChain.mockResolvedValue([]);
   baseDeps.fetchPriorSessionWinRateByTicker.mockResolvedValue([]);
+  // The day cache starts empty and accepts writes.
+  mockRedisGet.mockReset().mockResolvedValue(null);
+  mockRedisSet.mockReset().mockResolvedValue('OK');
 });
 
 describe('loadTakeitDetectContext', () => {
@@ -349,6 +365,10 @@ describe('priorSessionWinRatesForDay', () => {
 
     const a = priorSessionWinRatesForDay('lottery', '2026-01-06', load);
     const b = priorSessionWinRatesForDay('lottery', '2026-01-06', load);
+    // The load starts once the Upstash read has answered (a miss here).
+    await vi.waitFor(() => {
+      expect(load).toHaveBeenCalledOnce();
+    });
     resolveLoad(NVDA);
 
     await expect(a).resolves.toEqual(NVDA);
@@ -445,6 +465,144 @@ describe('priorSessionWinRatesForDay', () => {
     expect(silentBoom).toEqual(TSLA);
     expect(lotteryLoad).toHaveBeenCalledOnce();
     expect(silentBoomLoad).toHaveBeenCalledOnce();
+  });
+
+  describe('Upstash day cache', () => {
+    const KEY = 'takeit:winrates:v1:lottery:2026-02-02';
+
+    it('serves the day from Upstash when it is there: no Neon load, no write, and the next call is memory', async () => {
+      mockRedisGet.mockResolvedValueOnce(NVDA);
+      const load = vi.fn().mockResolvedValue(TSLA);
+
+      const first = await priorSessionWinRatesForDay(
+        'lottery',
+        '2026-02-02',
+        load,
+      );
+      const second = await priorSessionWinRatesForDay(
+        'lottery',
+        '2026-02-02',
+        load,
+      );
+
+      expect(first).toEqual(NVDA);
+      expect(second).toBe(first);
+      expect(load).not.toHaveBeenCalled();
+      expect(mockRedisGet).toHaveBeenCalledExactlyOnceWith(KEY);
+      expect(mockRedisSet).not.toHaveBeenCalled();
+    });
+
+    it('on a miss loads from Neon, then writes the rows under the day for the next instance', async () => {
+      const load = vi.fn().mockResolvedValue(NVDA);
+
+      const rows = await priorSessionWinRatesForDay(
+        'lottery',
+        '2026-02-03',
+        load,
+      );
+
+      expect(rows).toEqual(NVDA);
+      expect(load).toHaveBeenCalledExactlyOnceWith('2026-02-03');
+      expect(mockRedisSet).toHaveBeenCalledExactlyOnceWith(
+        'takeit:winrates:v1:lottery:2026-02-03',
+        NVDA,
+        { ex: 26 * 60 * 60 },
+      );
+    });
+
+    it('keys each alert type on its own, so silent boom never reads lottery rows', async () => {
+      const load = vi.fn().mockResolvedValue(TSLA);
+
+      await priorSessionWinRatesForDay('silentboom', '2026-02-04', load);
+
+      expect(mockRedisGet).toHaveBeenCalledExactlyOnceWith(
+        'takeit:winrates:v1:silentboom:2026-02-04',
+      );
+      expect(mockRedisSet).toHaveBeenCalledExactlyOnceWith(
+        'takeit:winrates:v1:silentboom:2026-02-04',
+        TSLA,
+        expect.anything(),
+      );
+    });
+
+    it('falls back to the Neon load when the Upstash read fails, with a warning, and still returns the rows', async () => {
+      const down = new Error('connect ETIMEDOUT');
+      mockRedisGet.mockRejectedValueOnce(down);
+      const load = vi.fn().mockResolvedValue(NVDA);
+
+      const rows = await priorSessionWinRatesForDay(
+        'lottery',
+        '2026-02-05',
+        load,
+      );
+
+      expect(rows).toEqual(NVDA);
+      expect(load).toHaveBeenCalledOnce();
+      expect(logger.warn).toHaveBeenCalledWith(
+        { err: down, key: 'takeit:winrates:v1:lottery:2026-02-05' },
+        'takeit win-rate cache: read failed; loading from Neon',
+      );
+    });
+
+    it('treats an unusable Upstash payload as a miss: the Neon rows win and replace it', async () => {
+      mockRedisGet.mockResolvedValueOnce([{ underlying_symbol: 7 }]);
+      const load = vi.fn().mockResolvedValue(NVDA);
+
+      const rows = await priorSessionWinRatesForDay(
+        'lottery',
+        '2026-02-06',
+        load,
+      );
+
+      expect(rows).toEqual(NVDA);
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          key: 'takeit:winrates:v1:lottery:2026-02-06',
+        }),
+        'takeit win-rate cache: unusable payload; loading from Neon',
+      );
+      expect(mockRedisSet).toHaveBeenCalledOnce();
+    });
+
+    it('still returns the rows when the Upstash write fails, with a warning', async () => {
+      const down = new Error('connect ETIMEDOUT');
+      mockRedisSet.mockRejectedValueOnce(down);
+      const load = vi.fn().mockResolvedValue(NVDA);
+
+      const rows = await priorSessionWinRatesForDay(
+        'lottery',
+        '2026-02-09',
+        load,
+      );
+
+      expect(rows).toEqual(NVDA);
+      expect(logger.warn).toHaveBeenCalledWith(
+        { err: down, key: 'takeit:winrates:v1:lottery:2026-02-09' },
+        'takeit win-rate cache: write failed; the next instance will load from Neon',
+      );
+    });
+
+    it('writes nothing for a failed load, and rejects as before', async () => {
+      const load = vi
+        .fn()
+        .mockRejectedValueOnce(new Error('db attempt timeout'));
+
+      await expect(
+        priorSessionWinRatesForDay('lottery', '2026-02-10', load),
+      ).rejects.toThrow('db attempt timeout');
+
+      expect(mockRedisSet).not.toHaveBeenCalled();
+    });
+
+    it('writes nothing for an empty answer: it would stand for the whole day', async () => {
+      const load = vi.fn().mockResolvedValue([]);
+
+      await expect(
+        priorSessionWinRatesForDay('lottery', '2026-02-11', load),
+      ).resolves.toEqual([]);
+
+      expect(mockRedisSet).not.toHaveBeenCalled();
+    });
   });
 
   it('keeps a slow load for up to 120 s, then drops a hung one so a later run can retry it', async () => {
