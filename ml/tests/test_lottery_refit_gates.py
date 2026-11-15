@@ -548,13 +548,9 @@ def test_feed_qas_matches_the_sql_transliteration_on_random_rows():
     score = rng.integers(0, 18, n)
     rt = rng.choice([0, -1, -2, -3], n)
     quintile = rng.choice([3, 4, 5], n)  # the rows that are not forced
-    feed = _feed(
-        [_row(rt=int(a), quintile=int(b)) for a, b in zip(rt, quintile)]
-    )
+    feed = _feed([_row(rt=int(a), quintile=int(b)) for a, b in zip(rt, quintile)])
     got = g.feed_qas(pd.Series(score, dtype="Int64"), feed)
-    want = [
-        _sql_qas(int(s), int(a), int(b)) for s, a, b in zip(score, rt, quintile)
-    ]
+    want = [_sql_qas(int(s), int(a), int(b)) for s, a, b in zip(score, rt, quintile)]
     assert got.tolist() == [float(v) for v in want]
 
 
