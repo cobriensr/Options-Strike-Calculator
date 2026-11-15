@@ -684,10 +684,13 @@ def test_promotion_merges_the_verdict_into_the_gate_report_in_the_same_transacti
         "active", "page", "snapshot", "update", "status", "pointer", "commit",
     ]
     assert db.committed["statuses"][CANDIDATE] == "promoted"
-    # `||` adds the verdict and keeps what the shadow already held.
+    # `||` adds the verdict and the version the promotion replaced, both at the top level
+    # (the verdict is the decision; `replaced` is no part of it), and keeps what the shadow
+    # already held.
     assert db.committed["gate_reports"][CANDIDATE] == {
         "creation": {"verdict": {"ok": True}},
         "sessions": {"2026-11-12": {"eval_rows": 700}},
+        "replaced": SEED,
         "verdict": VERDICT,
     }
     assert verdict == VERDICT  # the caller's mapping is not touched
@@ -695,19 +698,46 @@ def test_promotion_merges_the_verdict_into_the_gate_report_in_the_same_transacti
     assert status.params[1] == CANDIDATE
 
 
-def test_promotion_without_a_verdict_leaves_the_gate_report_alone():
+def test_promotion_without_a_verdict_adds_only_replaced_to_the_gate_report():
+    # `replaced` is recorded on every promotion, with or without a verdict.
     db = autocommit_db([fire(1, score=SEED_SCORE, version=SEED)])
     before = copy.deepcopy(db.committed["gate_reports"])
 
     promote(db)
 
     assert db.committed["statuses"][CANDIDATE] == "promoted"
-    assert db.committed["gate_reports"] == before
+    assert db.committed["gate_reports"] == {
+        CANDIDATE: {**before[CANDIDATE], "replaced": SEED}
+    }
+    assert db.of_kind("status")[0].params[0].adapted == {"replaced": SEED}
 
 
-def test_a_rolled_back_promotion_leaves_the_verdict_out():
-    # The status UPDATE (verdict merged) runs, then the pointer UPDATE matches nothing:
-    # the transaction rolls back and the verdict goes with it.
+def test_replaced_is_the_version_the_first_promotion_took_over_from_the_seed():
+    db = autocommit_db([fire(1, score=SEED_SCORE, version=SEED)])
+
+    promote(db)
+
+    assert SEED == "seed-2026-06-17"
+    assert db.committed["gate_reports"][CANDIDATE]["replaced"] == "seed-2026-06-17"
+
+
+def test_replaced_is_the_version_active_named_whatever_the_old_tags_say():
+    # The README's undo reads `replaced` to point `active` back. A hand-run `--version`
+    # rescore re-tags fires to a version `active` does not name, so the snapshot's old
+    # tags (SEED here) are not the version the promotion replaced (OTHER).
+    db = autocommit_db([fire(1, score=SEED_SCORE, version=SEED)], active=OTHER)
+
+    promote(db, expect_active=OTHER)
+
+    [snapshot] = db.committed["snapshots"]
+    assert snapshot["old_tags"] == [SEED]
+    assert db.committed["gate_reports"][CANDIDATE]["replaced"] == OTHER
+    assert db.committed["pointers"]["active"] == CANDIDATE
+
+
+def test_a_rolled_back_promotion_leaves_the_verdict_and_replaced_out():
+    # The status UPDATE (verdict and replaced merged) runs, then the pointer UPDATE matches
+    # nothing: the transaction rolls back and both go with it.
     db = autocommit_db([fire(1, score=SEED_SCORE)])
     before = copy.deepcopy(db.committed)
     db.hooks["pointer"] = lambda d: d.commit_elsewhere(
@@ -718,8 +748,10 @@ def test_a_rolled_back_promotion_leaves_the_verdict_out():
         promote(db, verdict=VERDICT)
 
     assert db.events[-3:] == ["status", "pointer", "rollback"]
-    assert db.of_kind("status")[0].params[0].adapted == {"verdict": VERDICT}  # it was sent
+    # They were sent.
+    assert db.of_kind("status")[0].params[0].adapted == {"replaced": SEED, "verdict": VERDICT}
     assert "verdict" not in db.committed["gate_reports"][CANDIDATE]
+    assert "replaced" not in db.committed["gate_reports"][CANDIDATE]
     assert db.committed["statuses"][CANDIDATE] == "shadow"
     before["pointers"]["active"] = OTHER  # the other session's change stands
     assert db.committed == before

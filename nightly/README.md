@@ -612,7 +612,7 @@ issue's event count and the step's logs. A deferred promotion sends no refit not
 step ends `partial` and `nightly step partial` warns, with the detail
 `promotion deferred to the next night`.
 
-**Reading `gate_report`.** Each version's `gate_report` (JSON) holds up to three
+**Reading `gate_report`.** Each version's `gate_report` (JSON) holds up to four
 top-level keys. The paths below are the keys the code stores:
 
 - `creation`, written when the candidate is built: `creation.verdict.ok`,
@@ -629,6 +629,9 @@ top-level keys. The paths below are the keys the code stores:
   `verdict.rho_candidate`, `verdict.rho_active`, `verdict.tier1_ratio`,
   `verdict.tier12_ratio` and `verdict.tier1_share`. A number that was not defined is
   null.
+- `replaced`, written by a promotion, beside `verdict` and not inside it: the version
+  `active` named when the promotion committed, the one the by-hand undo below points
+  `active` back to. Every promotion records it, with or without a `verdict`.
 
 The stored `verdict` is the authoritative record of a decision. The `sessions` entries
 are a snapshot, written once when a session became evaluable and never recomputed;
@@ -642,6 +645,7 @@ SELECT version, status, decided_at,
        gate_report -> 'verdict' ->> 'decision' AS decision,
        gate_report -> 'verdict' -> 'reasons' AS reasons,
        gate_report -> 'verdict' ->> 'rho_candidate' AS rho_candidate,
+       gate_report ->> 'replaced' AS replaced,
        gate_report -> 'creation' -> 'verdict' ->> 'ok' AS creation_ok
   FROM lottery_score_versions ORDER BY created_at DESC LIMIT 5;
 ```
@@ -676,18 +680,18 @@ such as `1, 2`.
     ORDER BY id;
    ```
 
-3. Find the version the promotion replaced from those rows' own old tags:
+3. Find the version the promotion replaced. The promotion recorded it in the promoted
+   version's `gate_report`, in the same transaction that moved `active`:
 
    ```sql
-   SELECT DISTINCT t FROM lottery_fire_value_snapshots, unnest(old_tags) AS t
-    WHERE id = ANY(ARRAY[<ids>]);
+   SELECT gate_report->>'replaced' FROM lottery_score_versions
+    WHERE version = '<promoted>';
    ```
 
-   A promotion re-tags every fire it touches, so the old tags are one version, plus NULL
-   for fires scored before the store existed. One non-NULL version is `<previous>`. NULL
-   alone, or NULL with `seed-2026-06-17`, is the first promotion off the seed, so
-   `<previous>` is `seed-2026-06-17`. Two or more non-NULL tags mean this is not a plain
-   promotion undo: stop and ask.
+   The value is `<previous>`: the version `active` named when the promotion committed.
+   The first promotion off the seed returns `seed-2026-06-17`. If it returns NULL (or no
+   row), stop and ask: it would mean a promotion made before the record existed, and
+   none exist.
 
 4. Move `active` back and restore the scores, in one transaction. Steps 4 and 5 run in
    one interactive `psql` session: `BEGIN`, the two statements, read the counts, then

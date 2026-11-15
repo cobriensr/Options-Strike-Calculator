@@ -34,9 +34,10 @@ back, having written nothing. Then:
    the ones this run read, and returns the ids it wrote. Fewer ids than the
    batch means another writer changed one of them in between:
    ``ConcurrentScoreWriter``. So the snapshot holds exactly what was replaced.
-4. For a promotion, it marks the version ``promoted``, merges the decision it
-   was given (``verdict``) into the version's ``gate_report``, and moves the
-   ``active`` pointer to it.
+4. For a promotion, it marks the version ``promoted``, merges into the version's
+   ``gate_report`` the version the pointer named (``replaced``, always) and the
+   decision it was given (``verdict``, when given), and moves the ``active``
+   pointer to it.
 
 Any exception rolls the whole transaction back, so the store holds either every
 new score, tag, status and pointer, or none of them. That covers an UPDATE
@@ -151,9 +152,11 @@ _UPDATE_SQL = (
     'RETURNING f.id'
 )
 _UPDATE_ROW = '(%s::bigint, %s::int, %s::text, %s::int, %s::text)'
-# `gate_report || '{}'` changes nothing, so a promotion with no verdict takes the same
-# statement. The patch is `{"verdict": <the decision>}`: jsonb `||` keeps the shadow's
-# creation report and session records and adds the verdict beside them.
+# The patch is `{"replaced": <the version the pointer named>}`, plus `"verdict": <the
+# decision>` when the caller has one. jsonb `||` keeps the shadow's creation report and
+# session records and adds the patch's keys beside them. `replaced` is on every promotion:
+# it is the version the by-hand undo (nightly/README.md, "Refit") points `active` back
+# to. It is not inside `verdict`, which is the decision summary the refit step hands over.
 _PROMOTE_SQL = (
     "UPDATE lottery_score_versions SET status = 'promoted', decided_at = now(), "
     "gate_report = gate_report || %s::jsonb "
@@ -236,7 +239,10 @@ def rescore_all(
     nightly refit's verdict summary). It is merged into the version's
     ``gate_report`` under ``verdict`` by the promotion's status UPDATE, so it
     commits, or rolls back, with the scores, the status and the pointer. Only a
-    promotion takes one (``expect_active`` set).
+    promotion takes one (``expect_active`` set). That same UPDATE merges
+    ``expect_active`` under ``replaced``, beside ``verdict`` and with or without
+    one: it is the version the pointer named under its lock, and the pointer
+    UPDATE re-checks it, so it is right whenever the promotion commits.
 
     ``dry_run`` runs the same reads and checks in a READ ONLY transaction,
     takes no lock, and returns the counts the write would give, with
@@ -438,8 +444,10 @@ def _write_page(
 def _promote(
     cur: Any, to_version: str, expect_active: str, verdict: Mapping[str, Any] | None
 ) -> None:
-    patch = Json({} if verdict is None else {'verdict': verdict})
-    cur.execute(_PROMOTE_SQL, (patch, to_version))
+    patch: dict[str, Any] = {'replaced': expect_active}
+    if verdict is not None:
+        patch['verdict'] = verdict
+    cur.execute(_PROMOTE_SQL, (Json(patch), to_version))
     if len(cur.fetchall()) != 1:
         raise PointerMoved(f'{to_version} is no longer a shadow or passed candidate')
     cur.execute(_MOVE_ACTIVE_SQL, (to_version, expect_active))
