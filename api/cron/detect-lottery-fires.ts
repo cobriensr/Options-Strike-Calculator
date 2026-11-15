@@ -596,8 +596,8 @@ export default withCronInstrumentation(
     // the DB. The per-tier counts are computed AFTER the insert loop by
     // querying today's fires through the exact feed tier logic (see the
     // post-loop block below) — not bucketed per-insert, because the feed
-    // tier needs the read-time qas (combined_score + per-ticker inversion
-    // bonus) which isn't available at insert time. See spec
+    // tier needs the read-time qas (score + round-trip deduct + per-ticker
+    // inversion bonus) which isn't available at insert time. See spec
     // docs/superpowers/specs/lottery-rescore-2026-05-22.md Phase 6 and
     // lottery-feed-tier-recalibration-2026-06-03.md.
     let skippedNoOi = 0;
@@ -1351,10 +1351,11 @@ export default withCronInstrumentation(
     // shares fate with what the user actually sees. We compute the SAME
     // quality-adjusted score (qas) the feed gates + badges on
     // (api/lottery-finder.ts qasExprText):
-    //   qas = GREATEST(0, score + round_trip_score_deduct
-    //                       + fire_count_score_adjustment)
+    //   qas = GREATEST(0, score + round_trip_score_deduct)
     //         + INVERSION_BONUS_CASE(s.inversion_quintile)
-    // and classify it with tierFromQas (api/_lib/lottery-tier.ts) on the
+    // (no fire-count term: that adjustment was retired on 2026-11-15; the
+    // detect test pins this SQL to the feed's text) and classify it with
+    // tierFromQas (api/_lib/lottery-tier.ts) on the
     // active version's feed_cutoffs — the same cutoffs the feed uses — so the
     // monitor cannot silently diverge from the feed again (the 24/22-vs-V2-scale
     // bug that hid for weeks).
@@ -1383,8 +1384,7 @@ export default withCronInstrumentation(
           SELECT f.score, f.direction_gated,
                  s.inversion_quintile,
                  (GREATEST(0, COALESCE(f.score, 0)
-                             + COALESCE(f.round_trip_score_deduct, 0)
-                             + COALESCE(f.fire_count_score_adjustment, 0))
+                             + COALESCE(f.round_trip_score_deduct, 0))
                   + ${db.unsafe(INVERSION_BONUS_CASE_SQL)}) AS qas
           FROM lottery_finder_fires f
           LEFT JOIN lottery_ticker_stats s
@@ -1549,8 +1549,8 @@ export default withCronInstrumentation(
     // MUST be (re)configured in the Sentry UI to query
     // `message:"detect-lottery-fires completed" feedTier1:0` — the feedTier*
     // counts are computed above through the exact feed tier logic (today's
-    // fires, qas = GREATEST(0, score + rt + fc) + inversion bonus — no gamma,
-    // matching the feed's qasExprText), so a cutoff/scale
+    // fires, qas = GREATEST(0, score + rt) + inversion bonus — no gamma, no
+    // fire count, matching the feed's qasExprText), so a cutoff/scale
     // mismatch that zeroes the feed's tier1 (the 2026-06-03 bug) also zeroes
     // feedTier1 and trips the alert. NOTE: the legacy alert keyed on
     // `insertedTier1` (per-insert bare-score 9/7) is now stale — that field

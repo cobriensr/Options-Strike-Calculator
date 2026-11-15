@@ -14,6 +14,7 @@ import {
   type SqlCall,
   type SqlRouter,
 } from './helpers/sql-router.js';
+import { expectedQasSql, squashSql } from './lottery-qas-sql';
 
 const mockSql = vi.fn();
 
@@ -664,9 +665,9 @@ describe('detect-lottery-fires handler', () => {
   it('feed-tier monitor counts today fires via the no-gamma qas (SQL-computed), matching the feed exactly', async () => {
     // After the insert loop, the cron queries today's fires and tiers them
     // through the EXACT feed logic. The monitor now reads the qas the SQL
-    // computes — GREATEST(0, score + round_trip_score_deduct +
-    // fire_count_score_adjustment) + inversion bonus — IDENTICAL to the feed's
-    // qasExprText('f.'). It DELIBERATELY no longer reads combined_score (which
+    // computes — GREATEST(0, score + round_trip_score_deduct) + inversion
+    // bonus — IDENTICAL to the feed's qasExprText('f.') (the next test pins
+    // the SQL text). It DELIBERATELY no longer reads combined_score (which
     // still folds in a +1 gamma CASE term the feed dropped), so the mock row
     // returns `qas` directly. tierFromQas on the seed feed cutoffs is 13/10.
     //
@@ -711,6 +712,42 @@ describe('detect-lottery-fires handler', () => {
       feedTier2: 2,
       feedTier3: 3,
     });
+  });
+
+  it('feed-tier monitor SQL computes the same qas as the feed and the chip strip, with no fire-count term', async () => {
+    // The monitor mirrors the feed's qasExprText('f.') by hand; if the two
+    // drift, "zero tier1" alerts stop meaning what the feed shows. This pins
+    // the monitor's SQL text to the expression the feed and the chip strip
+    // tests hold themselves to (lottery-qas-sql.ts). The fire-count score
+    // adjustment was retired on 2026-11-15, so no fire-count column may
+    // appear in it.
+    stageTicks(fireableSndkStream());
+    router.on('insert', [{ id: 42 }]);
+    router.on('tierMonitor', []);
+
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'GET',
+        headers: { authorization: 'Bearer test-secret' },
+      }),
+      res,
+    );
+    expect(res._status).toBe(200);
+
+    const monitorCalls = router.calls('tierMonitor');
+    expect(monitorCalls).toHaveLength(1);
+    const monitor = monitorCalls[0]!;
+    // db.unsafe(...) reaches the router as a bound `{ raw }` value, so put its
+    // text back where the `$N` placeholder sat before comparing.
+    const inlined = monitor.text.replace(/\$(\d+)/g, (placeholder, n) => {
+      const bound = monitor.params[Number(n) - 1];
+      return typeof bound === 'object' && bound !== null && 'raw' in bound
+        ? String((bound as { raw: unknown }).raw)
+        : placeholder;
+    });
+    expect(squashSql(inlined)).toContain(expectedQasSql('f.'));
+    expect(inlined).not.toContain('fire_count_score_adjustment');
   });
 
   it('persists scoreLotteryV2() output on the inserted row', async () => {
