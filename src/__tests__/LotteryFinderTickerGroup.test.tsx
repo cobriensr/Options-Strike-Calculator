@@ -200,87 +200,6 @@ describe('LotteryFinderTickerGroup', () => {
     ).toBeInTheDocument();
   });
 
-  it('renders the Macro Window badge for fires with hoursToNextMacroEvent in [72, 168]', () => {
-    // Retuned 2026-05-16 from the original 24-72h spec — the EDA rerun
-    // (ml/findings/eda-rerun-2026-05-16/) showed 24-72h is slightly
-    // anti-edge (0.92×/0.87×) while 72-168h is the actual edge bucket
-    // (1.19×/1.28× lift on N=57,533).
-    const fires = [
-      makeFire({
-        optionChainId: 'TSLA260514C00250000',
-        hoursToNextMacroEvent: 96, // 4 days — inside [72, 168]
-      }),
-      makeFire({
-        optionChainId: 'TSLA260514C00260000',
-        hoursToNextMacroEvent: null,
-      }),
-      makeFire({
-        optionChainId: 'TSLA260514C00270000',
-        hoursToNextMacroEvent: 48, // 2 days — now OUTSIDE the retuned window
-      }),
-      makeFire({
-        optionChainId: 'TSLA260514C00280000',
-        hoursToNextMacroEvent: 200, // > 7d — outside
-      }),
-    ];
-    render(
-      <LotteryFinderTickerGroup
-        ticker="TSLA"
-        fires={fires}
-        expanded={true}
-        onToggle={() => undefined}
-        marketOpen={true}
-        exitPolicy={EXIT_POLICY}
-      />,
-    );
-    // Only the 96h fire should get a badge.
-    const badges = screen.getAllByTestId('lottery-macro-window-badge');
-    expect(badges).toHaveLength(1);
-    expect(badges[0]).toHaveTextContent('MACRO 96h');
-  });
-
-  it('renders the Macro Window badge at the 72h lower boundary (inclusive)', () => {
-    render(
-      <LotteryFinderTickerGroup
-        ticker="TSLA"
-        fires={[
-          makeFire({
-            optionChainId: 'TSLA-72h',
-            hoursToNextMacroEvent: 72,
-          }),
-        ]}
-        expanded={true}
-        onToggle={() => undefined}
-        marketOpen={true}
-        exitPolicy={EXIT_POLICY}
-      />,
-    );
-    expect(
-      screen.getByTestId('lottery-macro-window-badge'),
-    ).toBeInTheDocument();
-  });
-
-  it('renders the Macro Window badge at the 168h upper boundary (inclusive)', () => {
-    render(
-      <LotteryFinderTickerGroup
-        ticker="TSLA"
-        fires={[
-          makeFire({
-            optionChainId: 'TSLA-168h',
-            hoursToNextMacroEvent: 168,
-          }),
-        ]}
-        expanded={true}
-        onToggle={() => undefined}
-        marketOpen={true}
-        exitPolicy={EXIT_POLICY}
-      />,
-    );
-    expect(
-      screen.getByTestId('lottery-macro-window-badge'),
-    ).toBeInTheDocument();
-  });
-
   it('renders the NEW HIGH badge when rangePosAtTrigger ≥ 1.0 (saturated clamp)', () => {
     // Retargeted 2026-05-16 from the original "TOP-RANGE ≥ 0.90" badge
     // — the EDA rerun showed only 1.01×/1.11× on top-10%, but the
@@ -301,7 +220,12 @@ describe('LotteryFinderTickerGroup', () => {
         exitPolicy={EXIT_POLICY}
       />,
     );
-    expect(screen.getByTestId('lottery-new-high-badge')).toBeInTheDocument();
+    const badge = screen.getByTestId('lottery-new-high-badge');
+    expect(badge).toBeInTheDocument();
+    // Sits in the top-right corner of its row, with nothing else to
+    // make room for.
+    expect(badge).toHaveClass('absolute', 'top-2', 'right-2');
+    expect(badge).not.toHaveClass('top-8');
   });
 
   it('omits the NEW HIGH badge when rangePosAtTrigger is below 1.0 (including former TOP-RANGE 0.95) or null', () => {
@@ -330,26 +254,6 @@ describe('LotteryFinderTickerGroup', () => {
     );
     expect(
       screen.queryByTestId('lottery-new-high-badge'),
-    ).not.toBeInTheDocument();
-  });
-
-  it('omits the Macro Window badge when hoursToNextMacroEvent is outside [72, 168]', () => {
-    render(
-      <LotteryFinderTickerGroup
-        ticker="TSLA"
-        fires={[
-          makeFire({ optionChainId: 'TSLA-71h', hoursToNextMacroEvent: 71 }),
-          makeFire({ optionChainId: 'TSLA-169h', hoursToNextMacroEvent: 169 }),
-          makeFire({ optionChainId: 'TSLA-null', hoursToNextMacroEvent: null }),
-        ]}
-        expanded={true}
-        onToggle={() => undefined}
-        marketOpen={true}
-        exitPolicy={EXIT_POLICY}
-      />,
-    );
-    expect(
-      screen.queryByTestId('lottery-macro-window-badge'),
     ).not.toBeInTheDocument();
   });
 

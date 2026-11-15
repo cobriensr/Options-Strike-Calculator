@@ -28,22 +28,6 @@ import {
 import { deltaFromAtFire } from '../../utils/macro-badges.js';
 
 /**
- * Macro Window badge — fires whose triggerTimeCt is in this hours-to-
- * next-high-impact-event window get a "MACRO Nh" pill.
- *
- * Retuned 2026-05-16 from the original 24-72h spec to **72-168h** (3-7
- * days before a high-impact event) after the EDA rerun on full data
- * (`ml/findings/eda-rerun-2026-05-16/`) showed:
- *   - 24-72h bucket: lift50 = 0.92×, lift100 = 0.87× (slightly anti-edge)
- *   - 72-168h bucket: lift50 = 1.19×, lift100 = 1.28× on N=57,533
- * The original EDA's 24-72h finding (claimed 1.32× / 1.56×) was based
- * on a smaller cohort; full-data re-validation flipped the winning
- * bucket. Display-only — not in the score.
- */
-const LF_MACRO_WINDOW_LO_HOURS = 72;
-const LF_MACRO_WINDOW_HI_HOURS = 168;
-
-/**
  * NEW HIGH threshold — `rangePosAtTrigger` is clamped to [0, 1] in
  * `api/_lib/uw-stock-candles.ts`; values that hit the upper clamp
  * (≥1.0) indicate the spike's spot punched ABOVE the session high
@@ -453,16 +437,6 @@ function LotteryFinderTickerGroupBase({
         className="space-y-2 border-t border-neutral-800 bg-neutral-950 p-2"
       >
         {fires.map((f) => {
-          // Macro Window badge — fires 24-72h before a high-impact
-          // macro event (FOMC/CPI/PCE/JOBS) show 1.32×/1.56× lift per
-          // the 2026-05-15 cross-section EDA. Display-only. Rendered
-          // here (rather than inside LotteryRow) so the row component
-          // is untouched while this badge is being rolled out.
-          const hrs = f.hoursToNextMacroEvent;
-          const inMacroWindow =
-            hrs != null &&
-            hrs >= LF_MACRO_WINDOW_LO_HOURS &&
-            hrs <= LF_MACRO_WINDOW_HI_HOURS;
           // NEW HIGH badge — fires whose underlying spot punched ABOVE
           // the session high mid-bar at trigger time (rangePosAtTrigger
           // saturated to its clamp at ≥1.0). 2026-05-16 EDA rerun found
@@ -478,21 +452,10 @@ function LotteryFinderTickerGroupBase({
           // group). Matches the existing LotteryFinderSection key.
           return (
             <div key={f.optionChainId} className="relative">
-              {inMacroWindow && (
-                <span
-                  data-testid="lottery-macro-window-badge"
-                  className="absolute top-2 right-2 z-10 rounded border border-purple-500/60 bg-purple-950/60 px-1.5 py-0.5 text-[10px] font-semibold text-purple-200"
-                  title={`Trigger fires ${Math.round(hrs)}h before the next high-impact economic event (FOMC/CPI/PCE/JOBS). 2026-05-16 EDA rerun found 1.19× win50 / 1.28× win100 lift on fires in the 72-168h window. Display-only.`}
-                >
-                  📅 MACRO {Math.round(hrs)}h
-                </span>
-              )}
               {isNewHigh && (
                 <span
                   data-testid="lottery-new-high-badge"
-                  className={`absolute z-10 rounded border border-emerald-500/60 bg-emerald-950/60 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-200 ${
-                    inMacroWindow ? 'top-8 right-2' : 'top-2 right-2'
-                  }`}
+                  className="absolute top-2 right-2 z-10 rounded border border-emerald-500/60 bg-emerald-950/60 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-200"
                   title={`Underlying spot punched above session high during the spike (range_pos clamped to ${rangePos.toFixed(2)} from a value ≥1). 2026-05-16 EDA rerun found 2.4× win100 lift on this cohort (N=143). Display-only; re-validate at N≥300.`}
                 >
                   🔺 NEW HIGH
