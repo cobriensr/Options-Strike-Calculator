@@ -90,6 +90,47 @@ export async function snapshotTickerFlowAtFire(
   };
 }
 
+// How the detect crons bound the series fetch below, one place for both.
+//
+// A call gets at most FLOW_SERIES_DEADLINE_MS. The query reads one ticker's
+// session (about 23,000 per-second rows) but the planner scans every ticker's
+// rows for the day through the (ts) index, so it grows through the session:
+// 1.1 s warm and 5.7–7.6 s on a cold compute (Neon EXPLAIN ANALYZE,
+// 2026-11-14), which the old 5 s line cut off on 133 runs from 2026-10-29.
+// The deadline abandons the query, it cannot cancel it, so a call is a single
+// attempt: a retry would start a second copy after the caller gave up.
+//
+// Two stops keep a bad run from eating the crons' 60 s maxDuration, which the
+// fires' INSERTs also have to fit in:
+//   - the breaker: FLOW_BREAKER_FAILURES deadline or transient failures stop
+//     the run asking (one slow ticker used to blank the rest of the run);
+//   - the phase budget: FLOW_PHASE_BUDGET_MS is all the time a run spends
+//     waiting on series, however many ticker-days it has. A call is not
+//     started with less than FLOW_SERIES_MIN_DEADLINE_MS left, and one
+//     started near the end gets only what is left.
+// A run's flow phase is therefore at most 25 s. The old rule capped one call
+// at 5 s but not the sum, so nine slow answers just under it took 44 s.
+export const FLOW_SERIES_DEADLINE_MS = 15_000;
+export const FLOW_PHASE_BUDGET_MS = 25_000;
+export const FLOW_SERIES_MIN_DEADLINE_MS = 5_000;
+export const FLOW_BREAKER_FAILURES = 2;
+
+/**
+ * The deadline for the next ticker-day's series, or null when the run should
+ * stop asking (the breaker is open or the phase budget is spent).
+ * `failures` counts deadline and transient failures so far in the run;
+ * `spentMs` is the time the run has spent waiting on series.
+ */
+export function nextFlowSeriesDeadlineMs(
+  failures: number,
+  spentMs: number,
+): number | null {
+  if (failures >= FLOW_BREAKER_FAILURES) return null;
+  const leftMs = FLOW_PHASE_BUDGET_MS - spentMs;
+  if (leftMs < FLOW_SERIES_MIN_DEADLINE_MS) return null;
+  return Math.min(FLOW_SERIES_DEADLINE_MS, leftMs);
+}
+
 /**
  * Fetch the full ticker-day cumulative series. Window-functions the
  * unified per-minute deltas into running totals so callers can later
@@ -98,6 +139,12 @@ export async function snapshotTickerFlowAtFire(
  * Returns an empty series (all arrays length 0) if neither source has
  * any rows for the ticker on that date — `flowAtFireTime()` then
  * returns `{ cumNcp: null, cumNpp: null }`.
+ *
+ * One attempt, no retry and no per-attempt timeout: the caller bounds it
+ * with `withDeadline` (see FLOW_SERIES_DEADLINE_MS above), and a retry would
+ * start a second copy of the query after that deadline gave up on the first.
+ * A Neon blip rejects with the driver's own error, which
+ * `isRetryableDbError` still classifies as transient.
  */
 export async function fetchTickerFlowSeries(
   db: DbSql,
@@ -105,36 +152,32 @@ export async function fetchTickerFlowSeries(
   date: string,
 ): Promise<TickerFlowSeries> {
   const session = ctSessionBounds(date);
-  const rows = (await withDbRetry(
-    () => db`
-      WITH unified AS (
-        SELECT DISTINCT ON (ts)
-          ts, net_call_prem, net_put_prem
-        FROM (
-          SELECT ts, net_call_prem, net_put_prem, 1 AS priority
-          FROM ws_net_flow_per_ticker
-          WHERE ticker = ${ticker}
-            AND ts >= ${session.min}::timestamptz
-            AND ts <= ${session.max}::timestamptz
-          UNION ALL
-          SELECT ts, net_call_prem, net_put_prem, 2 AS priority
-          FROM net_flow_per_ticker_history
-          WHERE ticker = ${ticker}
-            AND ts >= ${session.min}::timestamptz
-            AND ts <= ${session.max}::timestamptz
-        ) combined
-        ORDER BY ts, priority
-      )
-      SELECT
-        ts,
-        SUM(net_call_prem) OVER (ORDER BY ts) AS cum_ncp,
-        SUM(net_put_prem)  OVER (ORDER BY ts) AS cum_npp
-      FROM unified
-      ORDER BY ts
-    `,
-    2,
-    10_000,
-  )) as { ts: DbTimestamp; cum_ncp: DbNumeric; cum_npp: DbNumeric }[];
+  const rows = (await db`
+    WITH unified AS (
+      SELECT DISTINCT ON (ts)
+        ts, net_call_prem, net_put_prem
+      FROM (
+        SELECT ts, net_call_prem, net_put_prem, 1 AS priority
+        FROM ws_net_flow_per_ticker
+        WHERE ticker = ${ticker}
+          AND ts >= ${session.min}::timestamptz
+          AND ts <= ${session.max}::timestamptz
+        UNION ALL
+        SELECT ts, net_call_prem, net_put_prem, 2 AS priority
+        FROM net_flow_per_ticker_history
+        WHERE ticker = ${ticker}
+          AND ts >= ${session.min}::timestamptz
+          AND ts <= ${session.max}::timestamptz
+      ) combined
+      ORDER BY ts, priority
+    )
+    SELECT
+      ts,
+      SUM(net_call_prem) OVER (ORDER BY ts) AS cum_ncp,
+      SUM(net_put_prem)  OVER (ORDER BY ts) AS cum_npp
+    FROM unified
+    ORDER BY ts
+  `) as { ts: DbTimestamp; cum_ncp: DbNumeric; cum_npp: DbNumeric }[];
 
   const n = rows.length;
   const tsArr = new Array<number>(n);
