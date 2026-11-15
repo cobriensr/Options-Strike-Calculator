@@ -11,7 +11,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // vi.hoisted runs before vi.mock hoisting — safe to reference in factory
-const { mockInit, mockMetrics, mockHttpIntegration } = vi.hoisted(() => ({
+const {
+  mockInit,
+  mockMetrics,
+  mockHttpIntegration,
+  mockCaptureMessage,
+  mockScope,
+} = vi.hoisted(() => ({
   mockInit: vi.fn(),
   mockMetrics: {
     count: vi.fn(),
@@ -21,12 +27,21 @@ const { mockInit, mockMetrics, mockHttpIntegration } = vi.hoisted(() => ({
     name: 'Http',
     options,
   })),
+  mockCaptureMessage: vi.fn(),
+  mockScope: {
+    setLevel: vi.fn(),
+    setFingerprint: vi.fn(),
+    setTag: vi.fn(),
+    setExtra: vi.fn(),
+  },
 }));
 
 vi.mock('@sentry/node', () => ({
   init: mockInit,
   metrics: mockMetrics,
   httpIntegration: mockHttpIntegration,
+  captureMessage: mockCaptureMessage,
+  withScope: (cb: (scope: typeof mockScope) => void) => cb(mockScope),
 }));
 
 import { metrics } from '../_lib/sentry.js';
@@ -191,6 +206,82 @@ describe('metrics.rateLimited', () => {
     expect(mockMetrics.count).toHaveBeenCalledWith('api.rate_limited', 1, {
       attributes: { route: '/api/analyze' },
     });
+  });
+});
+
+// =============================================================
+// metrics.uwRateLimit / uwRateLimitExhausted / gexbotRateLimit
+// =============================================================
+
+describe('metrics.uwRateLimit', () => {
+  beforeEach(() => {
+    mockMetrics.count.mockClear();
+    mockCaptureMessage.mockClear();
+  });
+
+  it('counts one uw.rate_limited with the endpoint as its only attribute, and files nothing', () => {
+    metrics.uwRateLimit('/stock/{id}/greek-flow');
+
+    expect(mockMetrics.count).toHaveBeenCalledTimes(1);
+    expect(mockMetrics.count).toHaveBeenCalledWith('uw.rate_limited', 1, {
+      attributes: { endpoint: '/stock/{id}/greek-flow' },
+    });
+    expect(mockCaptureMessage).not.toHaveBeenCalled();
+  });
+});
+
+describe('metrics.uwRateLimitExhausted', () => {
+  beforeEach(() => {
+    mockMetrics.count.mockClear();
+    mockCaptureMessage.mockClear();
+    for (const fn of Object.values(mockScope)) fn.mockClear();
+  });
+
+  it('files one warning: a message without the endpoint, one fingerprint, the endpoint in a tag', () => {
+    metrics.uwRateLimitExhausted('/stock/{id}/greek-flow', '30');
+
+    expect(mockCaptureMessage).toHaveBeenCalledTimes(1);
+    expect(mockCaptureMessage).toHaveBeenCalledWith(
+      'UW 429: retries exhausted',
+    );
+    expect(mockScope.setLevel).toHaveBeenCalledWith('warning');
+    expect(mockScope.setFingerprint).toHaveBeenCalledWith([
+      'uw-rate-limit-exhausted',
+    ]);
+    expect(mockScope.setTag).toHaveBeenCalledWith(
+      'uw.endpoint',
+      '/stock/{id}/greek-flow',
+    );
+    expect(mockScope.setExtra).toHaveBeenCalledWith('retry_after_s', '30');
+  });
+
+  it('sends no retry_after_s when UW sent no Retry-After', () => {
+    metrics.uwRateLimitExhausted('/market/{id}/etf-tide', null);
+
+    expect(mockScope.setExtra).not.toHaveBeenCalled();
+  });
+
+  it('counts nothing itself: the 429s were counted as they came', () => {
+    metrics.uwRateLimitExhausted('/market/{id}/etf-tide', null);
+
+    expect(mockMetrics.count).not.toHaveBeenCalled();
+  });
+});
+
+describe('metrics.gexbotRateLimit', () => {
+  beforeEach(() => {
+    mockMetrics.count.mockClear();
+    mockCaptureMessage.mockClear();
+  });
+
+  it('counts one gexbot.rate_limited with the endpoint as its only attribute, and files nothing', () => {
+    metrics.gexbotRateLimit('/{ticker}/orderflow/orderflow');
+
+    expect(mockMetrics.count).toHaveBeenCalledTimes(1);
+    expect(mockMetrics.count).toHaveBeenCalledWith('gexbot.rate_limited', 1, {
+      attributes: { endpoint: '/{ticker}/orderflow/orderflow' },
+    });
+    expect(mockCaptureMessage).not.toHaveBeenCalled();
   });
 });
 

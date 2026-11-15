@@ -286,13 +286,18 @@ describe('requestEodReport', () => {
     ).toMatch(/^Bearer /);
   });
 
-  it('maps 429 to quota and cancels the body', async () => {
+  // The EOD route is the one GEXBot route with a quota (daily and monthly,
+  // reset at midnight ET), unlike the live routes, whose 429 is a short rate
+  // limit that `withRetry` retries (gexbot-rate-limit.test.ts). A quota 429 is
+  // answered once and reported as `quota`: the caller stops the run.
+  it('maps 429 to quota, asks once, and cancels the body', async () => {
     const res = zipResponse({ status: 429 });
     const cancel = vi.spyOn(res.body as ReadableStream, 'cancel');
     fetchMock.mockResolvedValueOnce(res);
     expect(await requestEodReport('k', 'SPX', signal)).toEqual({
       kind: 'quota',
     });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(cancel).toHaveBeenCalled();
   });
 
