@@ -322,6 +322,7 @@ import { cronGuard as realCronGuard } from '../_lib/cron-helpers.js';
 import { TransientDbError } from '../_lib/db.js';
 import logger from '../_lib/logger.js';
 import { Sentry } from '../_lib/sentry.js';
+import { readWinRateCache } from '../_lib/takeit-winrate-cache.js';
 import { BundleSchemaError } from '../_lib/takeit-score.js';
 
 // The real candle client. Its `uwFetch` import still resolves to the
@@ -3429,6 +3430,9 @@ describe('detect-lottery-fires handler', () => {
       'detect-lottery-fires: Take-It prefetch error; takeit_prob left null';
     const FLOW_FAILED_MSG =
       'detect-lottery-fires: ticker flow series failed; fires written without flow features';
+    // The same warning (and fingerprint) when time ran out and no query failed.
+    const FLOW_SKIPPED_MSG =
+      'detect-lottery-fires: ticker flow series skipped, run time spent and no query failed; fires written without flow features';
     const FLOW_ERROR_MSG =
       'detect-lottery-fires: ticker flow series query error; fires written without flow features';
     const FLOW_DEADLINE = 'ticker flow series passed its 15000 ms deadline';
@@ -3528,6 +3532,19 @@ describe('detect-lottery-fires handler', () => {
       const ran = router.ran();
       expect(ran.indexOf('winRates')).toBeGreaterThanOrEqual(0);
       expect(ran.indexOf('winRates')).toBeLessThan(ran.indexOf('recentFires'));
+      // That read is the first thing the run does: the cache module is
+      // mocked, and the router only sees Neon, so the router order can't show
+      // it. The read is asked for before the scan's first query goes out, so
+      // a cold Redis (up to 1.5 s) never delays the scan.
+      const readOrder = vi.mocked(readWinRateCache).mock.invocationCallOrder[0];
+      const firstNeonOrder = mockSql.mock.invocationCallOrder[0];
+      expect(readOrder).toBeDefined();
+      expect(firstNeonOrder).toBeDefined();
+      expect(readOrder!).toBeLessThan(firstNeonOrder!);
+      expect(vi.mocked(readWinRateCache)).toHaveBeenCalledWith(
+        'lottery',
+        today,
+      );
 
       // Both recent-fire queries get one retry and no per-attempt cap: the
       // 5 s prefetch deadline bounds the total, and a cap would turn a slow
@@ -4168,14 +4185,148 @@ describe('detect-lottery-fires handler', () => {
           b.get('cum_ncp_at_fire'),
         ),
       ).toEqual([5_000_000, 5_000_000, null]);
-      // The skip is reported once, as a warning, like a failure is.
+      // The skip is reported once, as a warning, like a failure is. Nothing
+      // failed, so the message says "skipped", not "failed", and the
+      // fingerprint is the failure's.
+      expect(mockSentryCaptureMessage).not.toHaveBeenCalledWith(
+        FLOW_FAILED_MSG,
+        expect.anything(),
+      );
       const flowCaptures = mockSentryCaptureMessage.mock.calls.filter(
-        (call) => call[0] === FLOW_FAILED_MSG,
+        (call) => call[0] === FLOW_SKIPPED_MSG,
       );
       expect(flowCaptures).toHaveLength(1);
       expect(flowCaptures[0]![1]).toMatchObject({
         level: 'warning',
+        fingerprint: ['detect-lottery-fires', 'flow-series-failed'],
+        tags: { 'cron.anomaly': 'flow-series-failed' },
         extra: { flowSeriesFailures: 0, flowSeriesSkippedBreaker: 1 },
+      });
+      expect(
+        vi
+          .mocked(logger.warn)
+          .mock.calls.filter((call) => call[1] === FLOW_SKIPPED_MSG),
+      ).toHaveLength(1);
+    });
+
+    // The tick scan answers after `delayMs`, as a slow Neon with retries
+    // would: every slice query waits, then the first slice returns `rows`.
+    function stageSlowTicks(rows: unknown[], delayMs: number): void {
+      router.on(
+        'ticks',
+        (_call, nth) =>
+          new Promise<unknown[]>((resolve) => {
+            setTimeout(
+              () => resolve(nth % TICK_SLICES === 0 ? rows : []),
+              delayMs,
+            );
+          }),
+      );
+    }
+
+    it('gives the first flow series only what is left of the 30 s run cutoff after a 20 s setup, and asks for no other ticker-day', async () => {
+      stageSlowTicks(
+        [...fireableSndkStream(), ...streamFor('TSLA', 'TSLA260501C01175000')],
+        20_000,
+      );
+      // SNDK's series stalls. TSLA would answer, but is never asked for: the
+      // breaker is still closed (one failure) and the 25 s budget has 15 s
+      // left, but the run is 30 s old when SNDK gives up.
+      router.when(
+        'flowSeries',
+        flowSeriesOf('SNDK'),
+        () => new Promise<never>(() => {}),
+      );
+      router.when('flowSeries', flowSeriesOf('TSLA'), ALIGNED_FLOW);
+      router.on('insert', (_call, nth) => [{ id: nth + 1 }]);
+
+      vi.useFakeTimers({
+        toFake: ['setTimeout', 'clearTimeout', 'performance'],
+      });
+      const res = mockResponse();
+      let settled = false;
+      const run = handler(authorizedReq(), res).finally(() => {
+        settled = true;
+      });
+      await vi.advanceTimersByTimeAsync(20_000); // the scan answers
+      expect(router.calls('flowSeries').map((c) => c.params[0])).toEqual([
+        'SNDK',
+      ]);
+      // SNDK got 10 s (30 less 20), not the 15 s a run with a fast setup gets:
+      // 1 ms short of it the run is still waiting.
+      await vi.advanceTimersByTimeAsync(9_999);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await run;
+
+      expect(res._status).toBe(200);
+      expect(res._json).toMatchObject({
+        status: 'partial',
+        inserted: 2,
+        flowSeriesFailures: 1,
+        flowSeriesSkippedBreaker: 1,
+        flowSeriesMs: 10_000,
+        firstFlowSeriesError: {
+          ticker: 'SNDK',
+          date: '2026-05-01',
+          error: 'ticker flow series passed its 10000 ms deadline',
+        },
+      });
+      expect(router.calls('flowSeries').map((c) => c.params[0])).toEqual([
+        'SNDK',
+      ]);
+      // Both fires are written, without flow features.
+      const binds = extractAllInsertBinds(mockSql, 'lottery_finder_fires');
+      expect(binds.map((b) => b.get('underlying_symbol'))).toEqual([
+        'SNDK',
+        'TSLA',
+      ]);
+      for (const b of binds) {
+        expect(b.get('cum_ncp_at_fire')).toBeNull();
+        expect(b.get('score')).toBeNull();
+      }
+    });
+
+    it('asks for no flow series once setup has used the 30 s run cutoff, writes the fires without flow, and reports a skip, not a failure', async () => {
+      stageSlowTicks(
+        [...fireableSndkStream(), ...streamFor('TSLA', 'TSLA260501C01175000')],
+        31_000,
+      );
+      router.on('insert', (_call, nth) => [{ id: nth + 1 }]);
+
+      vi.useFakeTimers({
+        toFake: ['setTimeout', 'clearTimeout', 'performance'],
+      });
+      const res = mockResponse();
+      const run = handler(authorizedReq(), res);
+      await vi.advanceTimersByTimeAsync(31_000);
+      await run;
+
+      expect(router.calls('flowSeries')).toEqual([]);
+      expect(res._json).toMatchObject({
+        status: 'partial',
+        inserted: 2,
+        flowSeriesFailures: 0,
+        flowSeriesSkippedBreaker: 2,
+        flowSeriesGenuineFailures: 0,
+        flowSeriesMs: 0,
+        firstFlowSeriesError: null,
+      });
+      for (const b of extractAllInsertBinds(mockSql, 'lottery_finder_fires')) {
+        expect(b.get('cum_ncp_at_fire')).toBeNull();
+        expect(b.get('score')).toBeNull();
+      }
+      expect(mockSentryCaptureMessage).not.toHaveBeenCalledWith(
+        FLOW_FAILED_MSG,
+        expect.anything(),
+      );
+      const skips = mockSentryCaptureMessage.mock.calls.filter(
+        (call) => call[0] === FLOW_SKIPPED_MSG,
+      );
+      expect(skips).toHaveLength(1);
+      expect(skips[0]![1]).toMatchObject({
+        fingerprint: ['detect-lottery-fires', 'flow-series-failed'],
+        extra: { flowSeriesFailures: 0, flowSeriesSkippedBreaker: 2 },
       });
     });
 

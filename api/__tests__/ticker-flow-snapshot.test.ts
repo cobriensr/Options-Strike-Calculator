@@ -7,6 +7,7 @@ import { isRetryableDbError } from '../_lib/db.js';
 import {
   FLOW_BREAKER_FAILURES,
   FLOW_PHASE_BUDGET_MS,
+  FLOW_RUN_CUTOFF_MS,
   FLOW_SERIES_DEADLINE_MS,
   FLOW_SERIES_MIN_DEADLINE_MS,
   fetchTickerFlowSeries,
@@ -176,31 +177,51 @@ describe('nextFlowSeriesDeadlineMs', () => {
   it('pins the numbers the crons’ 60 s budget was checked against', () => {
     expect(FLOW_SERIES_DEADLINE_MS).toBe(15_000);
     expect(FLOW_PHASE_BUDGET_MS).toBe(25_000);
+    expect(FLOW_RUN_CUTOFF_MS).toBe(30_000);
     expect(FLOW_SERIES_MIN_DEADLINE_MS).toBe(5_000);
     expect(FLOW_BREAKER_FAILURES).toBe(2);
   });
 
   it.each([
-    // [failures so far, ms already spent waiting, expected next deadline]
-    { failures: 0, spentMs: 0, expected: 15_000 },
-    { failures: 0, spentMs: 6_000, expected: 15_000 },
-    { failures: 0, spentMs: 10_000, expected: 15_000 },
+    // [failures so far, ms spent waiting, ms into the run, expected deadline]
+    { failures: 0, spentMs: 0, runElapsedMs: 0, expected: 15_000 },
+    { failures: 0, spentMs: 6_000, runElapsedMs: 8_000, expected: 15_000 },
+    { failures: 0, spentMs: 10_000, runElapsedMs: 15_000, expected: 15_000 },
     // The budget trims a deadline that would run past it.
-    { failures: 0, spentMs: 12_000, expected: 13_000 },
-    { failures: 1, spentMs: 15_000, expected: 10_000 },
+    { failures: 0, spentMs: 12_000, runElapsedMs: 4_000, expected: 13_000 },
+    { failures: 1, spentMs: 15_000, runElapsedMs: 17_000, expected: 10_000 },
     // One failure leaves the breaker closed; two open it.
-    { failures: 1, spentMs: 0, expected: 15_000 },
-    { failures: 2, spentMs: 0, expected: null },
-    { failures: 3, spentMs: 0, expected: null },
+    { failures: 1, spentMs: 0, runElapsedMs: 0, expected: 15_000 },
+    { failures: 2, spentMs: 0, runElapsedMs: 0, expected: null },
+    { failures: 3, spentMs: 0, runElapsedMs: 0, expected: null },
     // Less than the old 5 s deadline left: not worth starting.
-    { failures: 0, spentMs: 20_000, expected: 5_000 },
-    { failures: 0, spentMs: 20_001, expected: null },
-    { failures: 0, spentMs: 25_000, expected: null },
-    { failures: 0, spentMs: 40_000, expected: null },
+    { failures: 0, spentMs: 20_000, runElapsedMs: 0, expected: 5_000 },
+    { failures: 0, spentMs: 20_001, runElapsedMs: 0, expected: null },
+    { failures: 0, spentMs: 25_000, runElapsedMs: 0, expected: null },
+    { failures: 0, spentMs: 40_000, runElapsedMs: 0, expected: null },
+    // The run cutoff trims a deadline that would end after it: a setup that
+    // took 20 s leaves 10 s of the 30 s, though the budget has 25 s.
+    { failures: 0, spentMs: 0, runElapsedMs: 15_000, expected: 15_000 },
+    { failures: 0, spentMs: 0, runElapsedMs: 16_000, expected: 14_000 },
+    { failures: 0, spentMs: 0, runElapsedMs: 20_000, expected: 10_000 },
+    // 5 s of the cutoff left is the smallest call worth starting...
+    { failures: 0, spentMs: 0, runElapsedMs: 25_000, expected: 5_000 },
+    { failures: 0, spentMs: 0, runElapsedMs: 25_001, expected: null },
+    // ...and none starts at or after it. 33 s is the setup's retried worst case.
+    { failures: 0, spentMs: 0, runElapsedMs: 30_000, expected: null },
+    { failures: 0, spentMs: 0, runElapsedMs: 33_000, expected: null },
+    // Whichever of the two limits is nearer decides.
+    { failures: 0, spentMs: 12_000, runElapsedMs: 20_000, expected: 10_000 },
+    { failures: 0, spentMs: 18_000, runElapsedMs: 20_000, expected: 7_000 },
+    { failures: 1, spentMs: 0, runElapsedMs: 27_000, expected: null },
+    // An open breaker stops the run whatever the clock says.
+    { failures: 2, spentMs: 0, runElapsedMs: 3_000, expected: null },
   ])(
-    'after $failures failure(s) and $spentMs ms spent: $expected',
-    ({ failures, spentMs, expected }) => {
-      expect(nextFlowSeriesDeadlineMs(failures, spentMs)).toBe(expected);
+    'after $failures failure(s), $spentMs ms spent and $runElapsedMs ms into the run: $expected',
+    ({ failures, spentMs, runElapsedMs, expected }) => {
+      expect(nextFlowSeriesDeadlineMs(failures, spentMs, runElapsedMs)).toBe(
+        expected,
+      );
     },
   );
 
@@ -210,7 +231,7 @@ describe('nextFlowSeriesDeadlineMs', () => {
     let failures = 0;
     let spentMs = 0;
     for (;;) {
-      const deadline = nextFlowSeriesDeadlineMs(failures, spentMs);
+      const deadline = nextFlowSeriesDeadlineMs(failures, spentMs, spentMs);
       if (deadline == null) break;
       spentMs += deadline;
       failures += 1;
@@ -222,12 +243,45 @@ describe('nextFlowSeriesDeadlineMs', () => {
     spentMs = 0;
     let calls = 0;
     for (;;) {
-      const deadline = nextFlowSeriesDeadlineMs(0, spentMs);
+      const deadline = nextFlowSeriesDeadlineMs(0, spentMs, spentMs);
       if (deadline == null) break;
       spentMs += deadline - 1;
       calls += 1;
     }
     expect(spentMs).toBeLessThanOrEqual(FLOW_PHASE_BUDGET_MS);
     expect(calls).toBeGreaterThan(1);
+  });
+
+  it.each([0, 3_000, 10_000, 17_000, 22_000, 25_000, 28_000, 33_000])(
+    'never lets a call run past the run cutoff when the flow phase starts %i ms into the run',
+    (startMs) => {
+      // Worst case: each call takes its full deadline, then fails.
+      let failures = 0;
+      let spentMs = 0;
+      let runElapsedMs = startMs;
+      for (;;) {
+        const deadline = nextFlowSeriesDeadlineMs(
+          failures,
+          spentMs,
+          runElapsedMs,
+        );
+        if (deadline == null) break;
+        spentMs += deadline;
+        runElapsedMs += deadline;
+        failures += 1;
+      }
+      // The phase ends by the cutoff, or never starts if setup passed it.
+      expect(runElapsedMs).toBeLessThanOrEqual(
+        Math.max(startMs, FLOW_RUN_CUTOFF_MS),
+      );
+      expect(spentMs).toBeLessThanOrEqual(FLOW_PHASE_BUDGET_MS);
+    },
+  );
+
+  it('asks for nothing once setup has used the cutoff', () => {
+    expect(nextFlowSeriesDeadlineMs(0, 0, FLOW_RUN_CUTOFF_MS)).toBeNull();
+    expect(
+      nextFlowSeriesDeadlineMs(0, 0, FLOW_RUN_CUTOFF_MS + 3_000),
+    ).toBeNull();
   });
 });

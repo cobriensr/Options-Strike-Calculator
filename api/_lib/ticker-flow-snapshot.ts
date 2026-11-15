@@ -100,33 +100,52 @@ export async function snapshotTickerFlowAtFire(
 // The deadline abandons the query, it cannot cancel it, so a call is a single
 // attempt: a retry would start a second copy after the caller gave up.
 //
-// Two stops keep a bad run from eating the crons' 60 s maxDuration, which the
-// fires' INSERTs also have to fit in:
+// Three stops keep a bad run from eating the crons' 60 s maxDuration, which
+// the fires' INSERTs also have to fit in:
 //   - the breaker: FLOW_BREAKER_FAILURES deadline or transient failures stop
 //     the run asking (one slow ticker used to blank the rest of the run);
 //   - the phase budget: FLOW_PHASE_BUDGET_MS is all the time a run spends
 //     waiting on series, however many ticker-days it has. A call is not
 //     started with less than FLOW_SERIES_MIN_DEADLINE_MS left, and one
-//     started near the end gets only what is left.
-// A run's flow phase is therefore at most 25 s. The old rule capped one call
-// at 5 s but not the sum, so nine slow answers just under it took 44 s.
+//     started near the end gets only what is left;
+//   - the run cutoff: FLOW_RUN_CUTOFF_MS is how far into the run a call may
+//     still be waiting. The budget counts only the time spent on series, so a
+//     setup that already ran long (the tick scan and seed query retry for up
+//     to about 33 s) would push the whole phase past it. In lottery the
+//     series are read in Pass 1, before the anchor lookup and every INSERT,
+//     and a missed fire is not found again by the next run's window, so a
+//     60 s kill there loses the tick's fires for good. A call that would end
+//     after the cutoff is shortened to end at it, and none starts once less
+//     than FLOW_SERIES_MIN_DEADLINE_MS of it is left.
+// A run's flow phase is therefore at most 25 s and over by the 30 s mark. A
+// healthy run starts it a few seconds in, so the cutoff costs it nothing; a
+// run whose setup took 20 s gets 10 s, and one whose setup took 30 s or more
+// asks for nothing and writes its fires without flow features, which the
+// flow backfill and the re-score repair afterwards. The old rule capped one
+// call at 5 s but not the sum, so nine slow answers just under it took 44 s.
 export const FLOW_SERIES_DEADLINE_MS = 15_000;
 export const FLOW_PHASE_BUDGET_MS = 25_000;
+export const FLOW_RUN_CUTOFF_MS = 30_000;
 export const FLOW_SERIES_MIN_DEADLINE_MS = 5_000;
 export const FLOW_BREAKER_FAILURES = 2;
 
 /**
  * The deadline for the next ticker-day's series, or null when the run should
- * stop asking (the breaker is open or the phase budget is spent).
- * `failures` counts deadline and transient failures so far in the run;
- * `spentMs` is the time the run has spent waiting on series.
+ * stop asking (the breaker is open, the phase budget is spent, or the run is
+ * too near FLOW_RUN_CUTOFF_MS). `failures` counts deadline and transient
+ * failures so far in the run; `spentMs` is the time the run has spent waiting
+ * on series; `runElapsedMs` is the time since the run started.
  */
 export function nextFlowSeriesDeadlineMs(
   failures: number,
   spentMs: number,
+  runElapsedMs: number,
 ): number | null {
   if (failures >= FLOW_BREAKER_FAILURES) return null;
-  const leftMs = FLOW_PHASE_BUDGET_MS - spentMs;
+  const leftMs = Math.min(
+    FLOW_PHASE_BUDGET_MS - spentMs,
+    FLOW_RUN_CUTOFF_MS - runElapsedMs,
+  );
   if (leftMs < FLOW_SERIES_MIN_DEADLINE_MS) return null;
   return Math.min(FLOW_SERIES_DEADLINE_MS, leftMs);
 }

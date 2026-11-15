@@ -772,12 +772,16 @@ export default withCronInstrumentation(
     // alerts don't retry. Reported once per run, after the insert loop:
     //   - a deadline or transient (Neon) failure: warning, 'partial'. The
     //     second one opens the breaker, and so does a phase budget that
-    //     slow answers have spent: the remaining ticker-days are skipped
-    //     (nextFlowSeriesDeadlineMs, ticker-flow-snapshot.ts, has the
-    //     numbers and why). A skip is reported like a failure;
+    //     slow answers have spent, or a run that is 30 s old: the remaining
+    //     ticker-days are skipped (nextFlowSeriesDeadlineMs,
+    //     ticker-flow-snapshot.ts, has the numbers and why). A skip is
+    //     reported like a failure, under the same fingerprint, and its
+    //     message says "skipped" when nothing failed;
     //   - any other error (a broken query): error, the run reports 'error'.
     // The fetch is one attempt under a 15 s deadline, so the run's flow
-    // waits total at most 25 s of the function's 60 s.
+    // waits total at most 25 s, and none of it after the run's 30 s mark, of
+    // the function's 60 s. The run's age is measured from the wrapper's
+    // start (ctx.startTimeMs), as the win-rate warm-up measures it.
     let flowSeriesFailures = 0;
     let flowSeriesSkippedBreaker = 0;
     let flowSeriesGenuineFailures = 0;
@@ -1058,6 +1062,7 @@ export default withCronInstrumentation(
         const flowDeadlineMs = nextFlowSeriesDeadlineMs(
           flowSeriesFailures,
           flowSeriesSpentMs,
+          Date.now() - ctx.startTimeMs,
         );
         if (flowDeadlineMs == null) {
           flowSeriesSkippedBreaker += 1;
@@ -1312,8 +1317,13 @@ export default withCronInstrumentation(
     // itself is written. Each kind is reported once per run, with its first
     // case: Neon slow or blipping as a warning, a broken query as an error.
     if (flowSeriesFailures > 0 || flowSeriesSkippedBreaker > 0) {
+      // One fingerprint for both, so one issue; the text tells a failure from
+      // a skip on time alone (nothing failed: slow answers spent the budget,
+      // or setup used the run's time). The detail carries both counts.
       const message =
-        'detect-silent-boom: ticker flow series failed; alerts written without flow features';
+        flowSeriesFailures > 0
+          ? 'detect-silent-boom: ticker flow series failed; alerts written without flow features'
+          : 'detect-silent-boom: ticker flow series skipped, run time spent and no query failed; alerts written without flow features';
       const detail = {
         flowSeriesFailures,
         flowSeriesSkippedBreaker,

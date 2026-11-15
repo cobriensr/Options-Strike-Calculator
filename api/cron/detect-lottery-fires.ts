@@ -302,11 +302,14 @@ export default withCronInstrumentation(
     // there costs milliseconds, not the scan). A cold load outlasts the
     // Take-It prefetch's 5 s deadline (WIN_RATE_LOAD_TIMEOUT_MS bounds it at
     // 120 s), and that deadline covers waiting for it, so the prefetch is
-    // gated on it (see 3 below) rather than started with the scan. Started
-    // here, first, ahead of the scan. The pre-open runs (08:25–08:30 CT) wait for it (see the
-    // empty-scan branch), which warms the cache before the open. Not awaited
-    // here: the cache handles a rejection, and the prefetch joins the load or
-    // retries it if this one failed.
+    // gated on it (see 3 below) rather than started with the scan. The call
+    // is made before the scan's queries go out, but its first step is the
+    // Upstash read (up to 1.5 s), so on a miss the Neon load starts once that
+    // read answers, not ahead of the scan's queries. The pre-open runs
+    // (08:25–08:30 CT) wait for it (see the empty-scan branch), which warms
+    // the cache before the open. Not awaited here: the cache handles a
+    // rejection, and the prefetch joins the load or retries it if this one
+    // failed.
     const loadPriorWinRates = async (
       beforeDate: string,
     ): Promise<PriorWinRateRow[]> =>
@@ -646,12 +649,16 @@ export default withCronInstrumentation(
     // run, after the insert loop:
     //   - a deadline or transient (Neon) failure: warning, 'partial'. The
     //     second one opens the breaker, and so does a phase budget that
-    //     slow answers have spent: the remaining ticker-days are skipped
-    //     (nextFlowSeriesDeadlineMs, ticker-flow-snapshot.ts, has the
-    //     numbers and why). A skip is reported like a failure;
+    //     slow answers have spent, or a run that is 30 s old: the remaining
+    //     ticker-days are skipped (nextFlowSeriesDeadlineMs,
+    //     ticker-flow-snapshot.ts, has the numbers and why). A skip is
+    //     reported like a failure, under the same fingerprint, and its
+    //     message says "skipped" when nothing failed;
     //   - any other error (a broken query): error, the run reports 'error'.
     // The fetch is one attempt under a 15 s deadline, so the run's flow
-    // phase is at most 25 s of the function's 60 s.
+    // phase is at most 25 s, and none of it is spent after the run's 30 s
+    // mark (Pass 1 comes before every INSERT, and a missed fire is not found
+    // again), of the function's 60 s.
     let flowSeriesFailures = 0;
     let flowSeriesSkippedBreaker = 0;
     let flowSeriesGenuineFailures = 0;
@@ -801,6 +808,7 @@ export default withCronInstrumentation(
           const flowDeadlineMs = nextFlowSeriesDeadlineMs(
             flowSeriesFailures,
             flowSeriesSpentMs,
+            msSince(runStartedAt),
           );
           if (flowDeadlineMs == null) {
             flowSeriesSkippedBreaker += 1;
@@ -1414,9 +1422,14 @@ export default withCronInstrumentation(
       });
     };
     if (flowSeriesFailures > 0 || flowSeriesSkippedBreaker > 0) {
+      // One fingerprint for both, so one issue; the text tells a failure from
+      // a skip on time alone (nothing failed: slow answers spent the budget,
+      // or setup used the run's time). The detail carries both counts.
       reportRunProblem(
         'flow-series-failed',
-        'detect-lottery-fires: ticker flow series failed; fires written without flow features',
+        flowSeriesFailures > 0
+          ? 'detect-lottery-fires: ticker flow series failed; fires written without flow features'
+          : 'detect-lottery-fires: ticker flow series skipped, run time spent and no query failed; fires written without flow features',
         { flowSeriesFailures, flowSeriesSkippedBreaker, firstFlowSeriesError },
       );
     }
