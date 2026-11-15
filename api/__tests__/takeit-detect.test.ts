@@ -510,19 +510,34 @@ describe('priorSessionWinRatesForDay', () => {
       );
     });
 
-    it('keys each alert type on its own, so silent boom never reads lottery rows', async () => {
+    it('keeps silent boom off Upstash: its own load answers, with no read and no write', async () => {
+      // Its scan is small (about 124 MB) and had no Take-It NULLs from
+      // 2026-10-29, so a Redis read (up to 1.5 s, plus up to 1.5 s for the
+      // write) inside its 5 s prefetch only adds a dependency. Rows under a
+      // key of its own would not be read either.
+      mockRedisGet.mockResolvedValue(NVDA);
       const load = vi.fn().mockResolvedValue(TSLA);
 
-      await priorSessionWinRatesForDay('silentboom', '2026-02-04', load);
+      const rows = await priorSessionWinRatesForDay(
+        'silentboom',
+        '2026-02-04',
+        load,
+      );
 
-      expect(mockRedisGet).toHaveBeenCalledExactlyOnceWith(
-        'takeit:winrates:v1:silentboom:2026-02-04',
-      );
-      expect(mockRedisSet).toHaveBeenCalledExactlyOnceWith(
-        'takeit:winrates:v1:silentboom:2026-02-04',
-        TSLA,
-        expect.anything(),
-      );
+      expect(rows).toEqual(TSLA);
+      expect(load).toHaveBeenCalledExactlyOnceWith('2026-02-04');
+      expect(mockRedisGet).not.toHaveBeenCalled();
+      expect(mockRedisSet).not.toHaveBeenCalled();
+    });
+
+    it('starts silent boom’s load at once, not behind a cache read', () => {
+      // The Neon load is called in the same tick: nothing is awaited first.
+      const load = vi.fn(() => new Promise<typeof TSLA>(() => {}));
+
+      void priorSessionWinRatesForDay('silentboom', '2026-02-11', load);
+
+      expect(load).toHaveBeenCalledExactlyOnceWith('2026-02-11');
+      expect(mockRedisGet).not.toHaveBeenCalled();
     });
 
     it('falls back to the Neon load when the Upstash read fails, with a warning, and still returns the rows', async () => {

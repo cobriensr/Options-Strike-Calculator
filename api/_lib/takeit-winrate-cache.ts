@@ -10,13 +10,15 @@
  * from 2026-10-29, 16 of them from instances started mid-session).
  *
  * Here the answer is stored once per alert type and ET day, so an instance
- * that finds the key skips the scan, and so does every later one.
+ * that finds the key skips the scan, and so does every later one. Only
+ * lottery uses it (priorSessionWinRatesForDay, takeit-detect.ts): silent
+ * boom's scan is small and loads from Neon directly.
  *
  *   key  takeit:winrates:v1:<alertType>:<YYYY-MM-DD ET>
  *   TTL  26 h. A key is read only on its own ET date, so any write on that
  *        date outlives it (a write at 08:25 ET lasts to 10:25 ET the next
- *        day); the next day's key is a different one. Two keys a day, so
- *        nothing piles up.
+ *        day); the next day's key is a different one. One key a day for
+ *        lottery, so nothing piles up.
  *
  * Idempotent (R6): the key comes from the alert type and the date, never
  * from the clock, and two instances that both missed write the same value.
@@ -34,6 +36,10 @@ import logger from './logger.js';
 import { limiterRedis } from './redis.js';
 import type { AlertType } from './takeit-features.js';
 
+// Bump `v1` whenever the win-rate query or the row shape changes (a new
+// column, a different aggregation, a new unit). A key outlives a deploy by up
+// to 26 h, and a new deploy would otherwise read the old query's rows as its
+// own for the rest of the day. A bump orphans the old keys, which expire.
 const KEY_PREFIX = 'takeit:winrates:v1';
 const TTL_SECONDS = 26 * 60 * 60;
 
@@ -41,12 +47,16 @@ const TTL_SECONDS = 26 * 60 * 60;
 // takeit-detect.ts). A payload that is not exactly this is not trusted: an
 // empty list is refused too, because nothing writes one (see
 // writeWinRateCache) and an answer of "no ticker has a win rate" would turn
-// every Take-It win-rate feature into a missing value for the day.
+// every Take-It win-rate feature into a missing value for the day. A win
+// rate is a share of fires, so it lies in 0-1 (the same bound as
+// lottery-weights-schema.ts's win_rate): a value outside it is a corrupt
+// row, and one cached row would feed the scorer a number it never saw for
+// the whole day.
 const WinRateRowsSchema = z
   .array(
     z.object({
       underlying_symbol: z.string(),
-      win_rate: z.number().nullable(),
+      win_rate: z.number().min(0).max(1).nullable(),
     }),
   )
   .min(1);

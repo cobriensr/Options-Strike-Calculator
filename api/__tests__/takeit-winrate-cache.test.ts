@@ -61,6 +61,20 @@ describe('readWinRateCache', () => {
     expect(logger.warn).not.toHaveBeenCalled();
   });
 
+  it('accepts a win rate of exactly 0 or 1, and a null one', async () => {
+    const edges = [
+      { underlying_symbol: 'A', win_rate: 0 },
+      { underlying_symbol: 'B', win_rate: 1 },
+      { underlying_symbol: 'C', win_rate: null },
+    ];
+    mockGet.mockResolvedValueOnce(edges);
+
+    await expect(readWinRateCache('lottery', '2026-11-13')).resolves.toEqual(
+      edges,
+    );
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
   it.each([
     ['a string', 'not json rows'],
     ['an object, not a list', { underlying_symbol: 'NVDA' }],
@@ -69,6 +83,17 @@ describe('readWinRateCache', () => {
       'a win rate that is a string',
       [{ underlying_symbol: 'A', win_rate: '1' }],
     ],
+    // A rate is a share of winning fires, so outside 0-1 is a corrupt row
+    // (the same bound as the weights schema's win_rate): it would feed
+    // Take-It a value the model never saw, for the whole day.
+    [
+      'a win rate above 1',
+      [
+        { underlying_symbol: 'A', win_rate: 0.4 },
+        { underlying_symbol: 'B', win_rate: 5 },
+      ],
+    ],
+    ['a negative win rate', [{ underlying_symbol: 'A', win_rate: -0.2 }]],
     ['an empty list', []],
   ])(
     'treats %s as a miss and warns, so the load repairs the key',

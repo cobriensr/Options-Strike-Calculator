@@ -181,12 +181,19 @@ const winRateCache: Partial<Record<AlertType, WinRateEntry>> = {};
  * then stores them there for the next instance. Both cache calls are best
  * effort and never throw: a Redis failure costs one more Neon load, not the
  * run. A failed `load` rejects as before and stores nothing.
+ *
+ * Only lottery uses the cache. Its load is a 44-60 s scan of a 1.75 GB table.
+ * Silent boom's is a scan of about 124 MB that had no Take-It NULLs from
+ * 2026-10-29, so a Redis read (up to 1.5 s, and as long again for the write)
+ * inside its 5 s prefetch would only add a dependency; it loads from Neon
+ * directly, and starts the load in the same tick.
  */
 async function winRatesFromUpstashOrLoad(
   alertType: AlertType,
   today: string,
   load: (beforeDate: string) => Promise<PriorWinRateRow[]>,
 ): Promise<PriorWinRateRow[]> {
+  if (alertType !== 'lottery') return load(today);
   const cached = await readWinRateCache(alertType, today);
   if (cached != null) return cached;
   const rows = await load(today);
@@ -197,8 +204,8 @@ async function winRatesFromUpstashOrLoad(
 /**
  * The per-ticker prior-session win rates for the ET day `today`, loaded
  * once per day per alert type and shared by every run on this instance, and
- * (since the Upstash day cache) by every instance: the key is read before
- * Neon is asked.
+ * for lottery (the Upstash day cache) by every instance: the key is read
+ * before Neon is asked. Silent boom loads from Neon on its own.
  *
  * The answer depends only on `today`: `load(today)` must aggregate fires
  * dated strictly before it, and those rows' outcome columns are written by
