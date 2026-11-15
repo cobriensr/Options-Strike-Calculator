@@ -73,7 +73,8 @@ SHADOW_SESSIONS = 10
 # 2 x SHADOW_SESSIONS: a starved shadow is rejected instead of awaited forever.
 SHADOW_MAX_SESSIONS = 20
 
-# Re-measured 2026-11-14 on the tape-built era 06-17 -> 11-13 (73 sessions): daily
+# Re-measured 2026-11-14 on the tape-built era 06-17 -> 11-13 (73 sessions with fires;
+# the 07-23 -> 09-07 outage left none): daily
 # eval rows p10 1,344, min 535 (parquet era: p10 797, min 83). The floor is the
 # p10 over 2.5, rounded down to 50. Windows of 10 sessions held 10,995-38,129
 # (parquet era). Ten sessions of at least 500 rows hold at least 5,000, so
@@ -96,6 +97,12 @@ FEED_CUTOFF_SEARCH_MAX = 40
 # the CASE in INVERSION_BONUS_CASE_SQL beside it); the test parses both. A NULL
 # or other quintile adds 0.
 INVERSION_BONUS = {1: -5, 2: -2, 3: 0, 4: 3, 5: 5}
+
+# The feed shows a fire with a NULL score as qas = bonus (`score ?? 0`, floored at 0, plus
+# the bonus), so a feed cutoff of 5 or less can tier it, while `feed_qas` counts it tier3.
+# Cutoffs above the largest bonus cannot: the two agree there. `match_feed_cutoffs` therefore
+# searches from here (tier2) and one above (tier1, which stays above tier2).
+FEED_CUTOFF_FLOOR = max(INVERSION_BONUS.values()) + 1
 
 # The frame ``feed_qas`` and ``daily_tier_shares`` read: the score columns, which
 # ``score_frame`` needs to rescore a fire, and the three the feed adds. The
@@ -120,6 +127,7 @@ OUTCOME_COLUMN = "outcome_pct"
 
 __all__ = [
     "FEED_COLUMNS",
+    "FEED_CUTOFF_FLOOR",
     "FEED_CUTOFF_MATCH_SESSIONS",
     "FEED_CUTOFF_SEARCH_MAX",
     "INVERSION_BONUS",
@@ -304,12 +312,13 @@ def match_feed_cutoffs(
 
     Both series are qas (``feed_qas``) of the same trailing sessions, pooled. The
     target share of a tier is the share of the active's fires at or above its
-    cutoff, NaN counted below. For each tier the cutoff is the integer ``c`` in
-    0..``FEED_CUTOFF_SEARCH_MAX`` whose candidate share (at or above ``c``, NaN
-    below) is nearest the target; a tie goes to the larger ``c``. If tier2 does
-    not come out below tier1 it is set to ``tier1 - 1``. (That is -1 if tier1 is
-    0, which ``validate_weights`` then refuses, so ``check_creation`` reports
-    ``invalid_weights``.)
+    cutoff, NaN counted below. For each tier the cutoff is the integer ``c`` whose
+    candidate share (at or above ``c``, NaN below) is nearest the target; a tie
+    goes to the larger ``c``. Tier2 searches ``FEED_CUTOFF_FLOOR``..
+    ``FEED_CUTOFF_SEARCH_MAX`` and tier1 one above that, so a cutoff never falls
+    where the feed and ``feed_qas`` disagree about a NULL score (the floor's
+    comment says where), and tier2 stays below tier1. If tier2 does not come out
+    below tier1 it is set to ``tier1 - 1``, which is still at or above the floor.
 
     Distances are compared as exact fractions of two fire counts, so a tie is a
     tie and not an accident of float rounding.
@@ -320,18 +329,18 @@ def match_feed_cutoffs(
         raise ValueError("match_feed_cutoffs needs fires on both sides")
     reach = [int((cand >= c).sum()) for c in range(FEED_CUTOFF_SEARCH_MAX + 1)]
 
-    def nearest(cutoff: int) -> int:
+    def nearest(cutoff: int, lowest: int) -> int:
         hits = int((act >= cutoff).sum())
-        best_c, best_gap = 0, None
-        for c, count in enumerate(reach):
+        best_c, best_gap = lowest, None
+        for c in range(lowest, FEED_CUTOFF_SEARCH_MAX + 1):
             # |count/len(cand) - hits/len(act)|, scaled by len(cand) * len(act).
-            gap = abs(count * len(act) - hits * len(cand))
+            gap = abs(reach[c] * len(act) - hits * len(cand))
             if best_gap is None or gap <= best_gap:  # `<=`: the later c wins a tie
                 best_c, best_gap = c, gap
         return best_c
 
-    tier1 = nearest(active.tier1_min_score)
-    tier2 = nearest(active.tier2_min_score)
+    tier1 = nearest(active.tier1_min_score, FEED_CUTOFF_FLOOR + 1)
+    tier2 = nearest(active.tier2_min_score, FEED_CUTOFF_FLOOR)
     if tier2 >= tier1:
         tier2 = tier1 - 1
     return FeedCutoffs(tier1_min_score=tier1, tier2_min_score=tier2)

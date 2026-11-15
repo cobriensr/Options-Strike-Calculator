@@ -216,6 +216,7 @@ def test_gate_constants_match_the_plans_table():
     assert g.TIER1_SHARE_BAND == (0.01, 0.15)
     assert g.FEED_CUTOFF_MATCH_SESSIONS == 20
     assert g.FEED_CUTOFF_SEARCH_MAX == 40
+    assert g.FEED_CUTOFF_FLOOR == 6  # one above the largest inversion bonus, 5
 
 
 def test_feed_columns_extend_the_score_columns():
@@ -672,6 +673,34 @@ def test_match_feed_cutoffs_stays_inside_the_search_range():
     assert got == g.FeedCutoffs(tier1_min_score=40, tier2_min_score=39)
 
 
+def test_match_feed_cutoffs_never_lands_where_a_null_score_can_tier():
+    # The feed tiers a NULL-score fire by its bonus alone (`score ?? 0`), up to +5, while
+    # `feed_qas` counts it tier3. So a feed cutoff of 5 or less would make the gate judge a
+    # tiering the feed does not show. Cutoffs above the bonus are the ones both agree on.
+    assert g.FEED_CUTOFF_FLOOR == max(g.INVERSION_BONUS.values()) + 1 == 6
+    active = _qas(v20=5, v11=15, v2=80)  # targets 5% (>= 13) and 20% (>= 10)
+    # The candidate reaches 20% only at c <= 5. Searching from 0, tier2 would be 5.
+    candidate = _qas(v5=20, v1=80)
+    got = g.match_feed_cutoffs(candidate, active, g.FeedCutoffs(13, 10))
+    assert got.tier2_min_score > max(g.INVERSION_BONUS.values())
+    # Nothing is at or above 6, so every cutoff from there on is equally far from the
+    # target and the tie goes to the largest: the candidate cannot match the active's tiers
+    # above the bonus, and check_creation rejects it on its tier1 share (0 is under 1 %).
+    assert got == g.FeedCutoffs(tier1_min_score=40, tier2_min_score=39)
+
+
+def test_match_feed_cutoffs_may_land_exactly_on_the_floor_with_tier1_above_it():
+    # Both targets are 10% (nothing sits between the active's cutoffs). The candidate holds
+    # 10% on c = 2..6 and nothing from 7. Searching from 0 gives (6, 5): tier2 inside the
+    # disagreeing zone. Tier2 may use 6, the floor, but tier1 must stay above it.
+    active = _qas(v20=10, v2=90)
+    candidate = _qas(v6=10, v1=90)
+    got = g.match_feed_cutoffs(candidate, active, g.FeedCutoffs(13, 10))
+    assert got.tier2_min_score == g.FEED_CUTOFF_FLOOR
+    assert got.tier1_min_score > got.tier2_min_score
+    assert got == g.FeedCutoffs(tier1_min_score=40, tier2_min_score=6)
+
+
 def test_match_feed_cutoffs_counts_nan_below_and_in_the_denominator():
     cuts = g.FeedCutoffs(12, 1)
     # Active: 2 of 4 reach 12 (the NaN rows count, below): target 0.5. Without
@@ -949,15 +978,20 @@ def test_too_few_eval_rows(monkeypatch):
     # Ten sessions hold at least 10 * MIN_EVAL_ROWS_PER_SESSION = 5,000 rows, so
     # with the shipped constants this check cannot fire on its own: it is a
     # backstop. Raising the total floor one row above that shows the check itself.
-    monkeypatch.setattr(g, "MIN_EVAL_ROWS", 5_001)
-    v = run(rows=(500,) * 10)
+    # The shipped value is read before it is patched, so the test follows a retuned
+    # constant instead of a literal that was true on the day it was written.
+    shipped = g.MIN_EVAL_ROWS
+    rows = (g.MIN_EVAL_ROWS_PER_SESSION,) * g.SHADOW_SESSIONS
+    assert sum(rows) == shipped  # exactly the floor: the backstop relationship below
+    monkeypatch.setattr(g, "MIN_EVAL_ROWS", shipped + 1)
+    v = run(rows=rows)
     assert (v.decision, v.reasons, v.eval_rows) == (
         "reject",
         ("too_few_eval_rows",),
-        5000,
+        shipped,
     )
-    monkeypatch.setattr(g, "MIN_EVAL_ROWS", 5_000)
-    assert run(rows=(500,) * 10).decision == "pass"  # exactly 5,000
+    monkeypatch.setattr(g, "MIN_EVAL_ROWS", shipped)
+    assert run(rows=rows).decision == "pass"  # exactly the floor
 
 
 def test_the_shipped_floors_leave_the_total_check_a_backstop():
@@ -1089,9 +1123,10 @@ def test_every_failed_check_is_listed_in_vocabulary_order(monkeypatch):
     # test_too_few_eval_rows); a reversed ranking; nothing reaches tier1 under
     # (9, 3), so its share is 0 (under the band, ratio 0); and tier1+2 grows to
     # 7/32 over 4/32.
-    monkeypatch.setattr(g, "MIN_EVAL_ROWS", 5_001)
+    rows = (g.MIN_EVAL_ROWS_PER_SESSION,) * g.SHADOW_SESSIONS
+    monkeypatch.setattr(g, "MIN_EVAL_ROWS", g.MIN_EVAL_ROWS + 1)
     v = run(
-        rows=(500,) * 10,
+        rows=rows,
         candidate_eval=BAD_EVAL,
         active_eval=GOOD_EVAL,
         candidate_feed={"DDD": 4, "EEE": 4},
