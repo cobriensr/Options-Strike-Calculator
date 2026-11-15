@@ -407,23 +407,52 @@ function quoteFreshness(opts: {
 }
 
 /**
- * Track an upstream Unusual Whales rate-limit (429) response. Emits
- * both a metric (time-series counter, grouped by endpoint) AND a
- * scoped warning message so the first one pages immediately instead
- * of waiting for someone to notice the counter climb.
+ * Count one upstream Unusual Whales rate-limit (429) response. A count and
+ * nothing else: a 429 that a retry then clears is routine, and a warning per
+ * 429 opened one Sentry issue per endpoint (the path was in the message).
  *
- * Called from uwFetch. Follow-up to BE-CRON-002 — we're currently at
- * ~8% of UW's 120/min budget, but if that ever drifts we want to see
- * it immediately rather than after the data silently thins out.
+ * `endpoint` is a path template from `uwEndpointTemplate` (tickers, dates and
+ * option symbols collapsed), so the attribute stays bounded. Called from
+ * uwFetch on every 429. Query `sum(value,uw.rate_limited,counter,-)`, grouped
+ * by `endpoint`. Spec: docs/superpowers/specs/sentry-noise-fixes-2026-11-13.md,
+ * Phase 4.
  */
-function uwRateLimit(endpoint: string, retryAfter: string | null) {
+function uwRateLimit(endpoint: string) {
   Sentry.metrics.count('uw.rate_limited', 1, { attributes: { endpoint } });
+}
+
+/**
+ * Report that `withRetry` gave up on a UW 429: the one case worth a Sentry
+ * event, because the call failed. One stable message and fingerprint for every
+ * endpoint, so all of them group into one issue; the endpoint template rides
+ * in the `uw.endpoint` tag, `retry-after` in `retry_after_s`. A warning, so the
+ * email rule skips it. The caller still gets the thrown error and reports
+ * its own failure (a cron goes red).
+ *
+ * No once-per-run dedupe: the cron wrapper has no per-run scope (it does not
+ * open one) and module state would outlive the request (R1). A run that
+ * exhausts N calls files N events into the one issue.
+ */
+function uwRateLimitExhausted(endpoint: string, retryAfter: string | null) {
   Sentry.withScope((scope) => {
-    scope.setTag('uw.endpoint', endpoint);
     scope.setLevel('warning');
+    scope.setFingerprint(['uw-rate-limit-exhausted']);
+    scope.setTag('uw.endpoint', endpoint);
     if (retryAfter) scope.setExtra('retry_after_s', retryAfter);
-    Sentry.captureMessage(`UW 429 on ${endpoint}`);
+    Sentry.captureMessage('UW 429: retries exhausted');
   });
+}
+
+/**
+ * Count one GEXBot rate-limit (429) response, retried or not. `endpoint` is
+ * the route with the ticker replaced (`/{ticker}/orderflow/orderflow`), so the
+ * attribute is bounded by the route list, not the ticker list. The exhausted
+ * case is reported by the two GEXBot crons, which already file one capped,
+ * fingerprinted event per failed fetch. Query
+ * `sum(value,gexbot.rate_limited,counter,-)`, grouped by `endpoint`.
+ */
+function gexbotRateLimit(endpoint: string) {
+  Sentry.metrics.count('gexbot.rate_limited', 1, { attributes: { endpoint } });
 }
 
 /**
@@ -529,6 +558,8 @@ export const metrics = {
   cronDbTimeout,
   quoteFreshness,
   uwRateLimit,
+  uwRateLimitExhausted,
+  gexbotRateLimit,
   uwBudget,
   uwMinuteCount,
   tokenRefresh,

@@ -41,6 +41,7 @@ vi.mock('../_lib/sentry.js', () => ({
   metrics: {
     rateLimited: vi.fn(),
     uwRateLimit: vi.fn(),
+    uwRateLimitExhausted: vi.fn(),
     uwBudget: vi.fn(),
     uwMinuteCount: vi.fn(),
     tokenRefresh: vi.fn(),
@@ -84,6 +85,7 @@ import {
   sendError,
   withRetry,
   uwFetch,
+  UwHttpError,
   roundTo5Min,
   cronGuard,
   checkDataQuality,
@@ -639,18 +641,81 @@ describe('api-helpers', () => {
       expect(fn).toHaveBeenCalledTimes(2);
     });
 
-    // GEXBot 429 is a per-account daily/monthly pool quota that resets at
-    // 00:00 ET; a retry inside the minute cannot succeed, so fail fast.
-    it('does not retry a "GEXBot 429" quota error', async () => {
-      const fn = vi
-        .fn()
-        .mockRejectedValue(
-          new Error(
-            'GEXBot 429 /SPX/orderflow/orderflow: {"error":"Rate limit exceeded."}',
-          ),
-        );
-      await expect(withRetry(fn, 2)).rejects.toThrow('GEXBot 429');
-      expect(fn).toHaveBeenCalledTimes(1);
+    // GEXBot 429 is the short per-ticker, per-metric rate limit (one request a
+    // second), not a quota: retried on a 1 s then 2 s backoff, with up to 250 ms
+    // of jitter. The vendor-facing numbers are in gexbot-rate-limit.test.ts.
+    describe('"GEXBot 429" (short rate limit)', () => {
+      const msg =
+        'GEXBot 429 /SPX/orderflow/orderflow: {"error":"Rate limit exceeded."}';
+
+      it('is retried after a 1 s backoff', async () => {
+        vi.useFakeTimers();
+        vi.spyOn(Math, 'random').mockReturnValue(0);
+        try {
+          const fn = vi
+            .fn()
+            .mockRejectedValueOnce(new Error(msg))
+            .mockResolvedValue('recovered');
+          const promise = withRetry(fn, 1);
+          await vi.advanceTimersByTimeAsync(999);
+          expect(fn).toHaveBeenCalledTimes(1);
+          await vi.advanceTimersByTimeAsync(1);
+          await expect(promise).resolves.toBe('recovered');
+          expect(fn).toHaveBeenCalledTimes(2);
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      it('waits out a Retry-After of up to 3 s, carried as retryAfterMs', async () => {
+        vi.useFakeTimers();
+        vi.spyOn(Math, 'random').mockReturnValue(0);
+        try {
+          const fn = vi
+            .fn()
+            .mockRejectedValueOnce(
+              Object.assign(new Error(msg), { retryAfterMs: 3000 }),
+            )
+            .mockResolvedValue('recovered');
+          const promise = withRetry(fn, 1);
+          await vi.advanceTimersByTimeAsync(2999);
+          expect(fn).toHaveBeenCalledTimes(1);
+          await vi.advanceTimersByTimeAsync(1);
+          await expect(promise).resolves.toBe('recovered');
+        } finally {
+          vi.useRealTimers();
+        }
+      });
+
+      it('is not retried when Retry-After asks for more than 3 s: the next tick re-fetches', async () => {
+        const fn = vi
+          .fn()
+          .mockRejectedValue(
+            Object.assign(new Error(msg), { retryAfterMs: 3001 }),
+          );
+        await expect(withRetry(fn, 2)).rejects.toThrow('GEXBot 429');
+        expect(fn).toHaveBeenCalledTimes(1);
+      });
+
+      it('ignores a retryAfterMs that is not a usable number', async () => {
+        vi.useFakeTimers();
+        vi.spyOn(Math, 'random').mockReturnValue(0);
+        try {
+          for (const bad of [Number.NaN, -5, '2000', null]) {
+            const fn = vi
+              .fn()
+              .mockRejectedValueOnce(
+                Object.assign(new Error(msg), { retryAfterMs: bad }),
+              )
+              .mockResolvedValue('recovered');
+            const promise = withRetry(fn, 1);
+            await vi.advanceTimersByTimeAsync(1000);
+            await expect(promise).resolves.toBe('recovered');
+          }
+        } finally {
+          vi.useRealTimers();
+        }
+      });
     });
 
     // The orderflow route 500s deterministically when no snapshot exists.
@@ -1007,11 +1072,10 @@ describe('api-helpers', () => {
     });
 
     // ── BE-CRON-002 follow-up: 429 observability ────────────
-    // We're at ~8% of UW's 120/min budget steady-state, so 429s should
-    // never fire. But if they ever do, we want immediate visibility —
-    // these tests pin the Sentry emission path.
+    // Every 429 is counted under a path template; the warning for one the
+    // retry loop gives up on is `withRetry`'s (uw-rate-limit-reporting.test.ts).
 
-    it('emits uwRateLimit metric with stripped endpoint on 429', async () => {
+    it('counts a 429 under the endpoint template: query stripped, ticker collapsed', async () => {
       const { metrics: mockedMetrics } = await import('../_lib/sentry.js');
       vi.mocked(mockedMetrics.uwRateLimit).mockClear();
 
@@ -1030,17 +1094,39 @@ describe('api-helpers', () => {
       ).rejects.toThrow('UW API 429');
 
       expect(mockedMetrics.uwRateLimit).toHaveBeenCalledTimes(1);
-      // Query string stripped so identical endpoints group together
+      // Identical routes group together whatever the ticker or date
       expect(mockedMetrics.uwRateLimit).toHaveBeenCalledWith(
-        '/stock/SPX/strike-greeks',
-        '30',
+        '/stock/{id}/strike-greeks',
       );
     });
 
-    it('passes retryAfter=null when the header is absent on 429', async () => {
-      const { metrics: mockedMetrics } = await import('../_lib/sentry.js');
-      vi.mocked(mockedMetrics.uwRateLimit).mockClear();
+    it('throws an error carrying the status, endpoint template and retry-after', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: false,
+          status: 429,
+          headers: { get: (h: string) => (h === 'retry-after' ? '30' : null) },
+          text: () => Promise.resolve('Rate limited'),
+        }),
+      );
 
+      const err = await uwFetch('key123', '/stock/SPX/nope?x=1').catch(
+        (e: unknown) => e,
+      );
+
+      expect(err).toBeInstanceOf(UwHttpError);
+      expect(err).toMatchObject({
+        status: 429,
+        endpoint: '/stock/{id}/nope',
+        retryAfter: '30',
+        message: 'UW API 429: Rate limited',
+      });
+      // Grouped by Sentry as the plain Error it used to be.
+      expect((err as Error).name).toBe('Error');
+    });
+
+    it('carries retryAfter=null when the header is absent on 429', async () => {
       vi.stubGlobal(
         'fetch',
         vi.fn().mockResolvedValue({
@@ -1051,13 +1137,11 @@ describe('api-helpers', () => {
         }),
       );
 
-      await expect(uwFetch('key123', '/some/path')).rejects.toThrow(
-        'UW API 429',
-      );
-      expect(mockedMetrics.uwRateLimit).toHaveBeenCalledWith(
-        '/some/path',
-        null,
-      );
+      await expect(uwFetch('key123', '/some/path')).rejects.toMatchObject({
+        status: 429,
+        endpoint: '/some/path',
+        retryAfter: null,
+      });
     });
 
     it('does NOT emit uwRateLimit on non-429 errors', async () => {
@@ -2002,13 +2086,13 @@ describe('api-helpers', () => {
         ),
       ).rejects.toThrow('UW API 429');
 
+      // Only the path survives, without the host or the `/api` prefix.
       expect(mockedMetrics.uwRateLimit).toHaveBeenCalledWith(
-        '/api/stock/SPX/flow',
-        '60',
+        '/stock/{id}/flow',
       );
     });
 
-    it('falls back to raw path when URL parsing fails on 429', async () => {
+    it('falls back to a fixed label when URL parsing fails on 429', async () => {
       const { metrics: mockedMetrics } = await import('../_lib/sentry.js');
       vi.mocked(mockedMetrics.uwRateLimit).mockClear();
 
@@ -2040,10 +2124,8 @@ describe('api-helpers', () => {
       // Restore URL before assertions
       vi.stubGlobal('URL', OrigURL);
 
-      expect(mockedMetrics.uwRateLimit).toHaveBeenCalledWith(
-        'https://bad-url-for-test',
-        null,
-      );
+      // The raw URL is not a bounded attribute value.
+      expect(mockedMetrics.uwRateLimit).toHaveBeenCalledWith('other');
     });
   });
 });

@@ -25,14 +25,20 @@ vi.mock('../_lib/logger.js', () => ({
 }));
 
 // The cron raises its own warning through Sentry.captureMessage and metrics,
-// and uwFetch / the wrapper call setTag, uwRateLimit and uwBudget.
+// and uwFetch / withRetry / the wrapper call setTag, uwRateLimit,
+// uwRateLimitExhausted and uwBudget.
 vi.mock('../_lib/sentry.js', () => ({
   Sentry: {
     captureException: vi.fn(),
     captureMessage: vi.fn(),
     setTag: vi.fn(),
   },
-  metrics: { increment: vi.fn(), uwRateLimit: vi.fn(), uwBudget: vi.fn() },
+  metrics: {
+    increment: vi.fn(),
+    uwRateLimit: vi.fn(),
+    uwRateLimitExhausted: vi.fn(),
+    uwBudget: vi.fn(),
+  },
 }));
 
 import logger from '../_lib/logger.js';
@@ -591,6 +597,17 @@ describe('fetch-economic-calendar handler', () => {
       expect.objectContaining({
         message: expect.stringContaining('UW API 429'),
       }),
+    );
+    // Three 429s counted, the one the retries gave up on reported, under the
+    // route template (no query string, no date).
+    expect(metrics.uwRateLimit).toHaveBeenCalledTimes(3);
+    expect(metrics.uwRateLimit).toHaveBeenCalledWith(
+      '/market/economic-calendar',
+    );
+    expect(metrics.uwRateLimitExhausted).toHaveBeenCalledTimes(1);
+    expect(metrics.uwRateLimitExhausted).toHaveBeenCalledWith(
+      '/market/economic-calendar',
+      null,
     );
   });
 

@@ -28,16 +28,113 @@ import {
 // ============================================================
 
 /**
- * Retry an async operation with exponential backoff.
- * Only retries on transient errors (timeouts, connection resets).
- * Non-transient errors (bad SQL, constraint violations) throw immediately.
+ * A non-2xx answer from UW. The message keeps the historical
+ * `UW API <status>: <body, first 200 chars>` text that `parseUwHttpStatus` and
+ * `classifyRetryDelay` match on; `status`, `endpoint` (a template from
+ * `uwEndpointTemplate`) and `retryAfter` (the raw `retry-after` header) carry
+ * what `withRetry` needs to report a 429 it gave up on.
  *
- * Designed for cron jobs where a single missed invocation creates data gaps.
- * Interactive endpoints should NOT use this — users want fast failure.
+ * `name` stays `Error` and the constructor frame is left off the stack, so
+ * Sentry groups these exactly as it grouped the plain `Error` thrown before.
  */
+export class UwHttpError extends Error {
+  readonly status: number;
+  readonly endpoint: string;
+  readonly retryAfter: string | null;
+
+  constructor(
+    status: number,
+    endpoint: string,
+    body: string,
+    retryAfter: string | null,
+  ) {
+    super(`UW API ${status}: ${body.slice(0, 200)}`);
+    this.status = status;
+    this.endpoint = endpoint;
+    this.retryAfter = retryAfter;
+    Error.captureStackTrace(this, UwHttpError);
+  }
+}
+
+// A fixed part of a UW path is a lowercase word (`greek-flow`, `etf-tide`,
+// `net_prem`); a variable part is a ticker, option symbol, futures contract,
+// expiry or candle size, none of which is all lowercase letters.
+const FIXED_PATH_SEGMENT = /^[a-z_-]+$/;
+const ISO_DATE_SEGMENT = /^\d{4}-\d{2}-\d{2}$/;
+
 /**
- * Classify a thrown error message and return the backoff in ms before
- * the next retry, or `null` if the error is not retryable.
+ * Collapse a UW path to a template, for use as a metric attribute or a tag.
+ * The query string is dropped, an ISO date segment becomes `{date}`, and every
+ * segment that is not a lowercase word becomes `{id}`, so
+ * `/stock/SPY/greek-flow?date=2026-11-13` is `/stock/{id}/greek-flow`. The set
+ * of values is the set of UW route shapes, not tickers x dates x contracts. A
+ * full URL keeps only its path, without the `/api` prefix, and one that does
+ * not parse is `other`.
+ */
+export function uwEndpointTemplate(path: string): string {
+  let pathname: string;
+  if (path.startsWith('http')) {
+    try {
+      pathname = new URL(path).pathname.replace(/^\/api(?=\/|$)/, '');
+    } catch {
+      return 'other';
+    }
+  } else {
+    pathname = path.split(/[?#]/, 1)[0] ?? '';
+  }
+  return pathname
+    .split('/')
+    .map((segment) => {
+      if (segment === '' || FIXED_PATH_SEGMENT.test(segment)) return segment;
+      return ISO_DATE_SEGMENT.test(segment) ? '{date}' : '{id}';
+    })
+    .join('/');
+}
+
+/** Report a UW 429 that `withRetry` is about to throw: its retries ran out. */
+function reportRetriesExhausted(err: unknown): void {
+  if (err instanceof UwHttpError && err.status === 429) {
+    metrics.uwRateLimitExhausted(err.endpoint, err.retryAfter);
+  }
+}
+
+/**
+ * GEXBot's `Retry-After` in ms, when its error carries one. Read by shape, not
+ * by class, so this module does not import the GEXBot client.
+ */
+function retryAfterMsOf(err: unknown): number | null {
+  const ms = (err as { retryAfterMs?: unknown } | null)?.retryAfterMs;
+  return typeof ms === 'number' && Number.isFinite(ms) && ms >= 0 ? ms : null;
+}
+
+/**
+ * The longest GEXBot `Retry-After` a retry will wait out. A cron's worst case
+ * for one failing fetch is about 10.5 s (`GEXBOT_TIMEOUT_MS` in
+ * gexbot-client.ts); two waits of at most this plus jitter keep a 429 under it.
+ * A longer ask is not waited for: the next tick re-fetches.
+ */
+const GEXBOT_429_MAX_WAIT_MS = 3000;
+
+/**
+ * Backoff before retrying a GEXBot 429, or `null` when `Retry-After` asks for
+ * longer than `GEXBOT_429_MAX_WAIT_MS`. The vendor's limit is one request per
+ * second per ticker per metric, so the wait is `1000 × (attempt + 1)` (1 s,
+ * then 2 s), raised to `Retry-After` when sent, plus up to 250 ms of jitter so
+ * a wave of retries does not land in the same second.
+ */
+function gexbot429Delay(err: unknown, attempt: number): number | null {
+  const retryAfterMs = retryAfterMsOf(err);
+  if (retryAfterMs !== null && retryAfterMs > GEXBOT_429_MAX_WAIT_MS) {
+    return null;
+  }
+  return (
+    Math.max(retryAfterMs ?? 0, 1000 * (attempt + 1)) + Math.random() * 250
+  );
+}
+
+/**
+ * Classify a thrown error and return the backoff in ms before the next retry,
+ * or `null` if the error is not retryable.
  *
  * UW returns two distinct 429 sub-types whose right-sized backoffs
  * differ by ~20×:
@@ -53,21 +150,21 @@ import {
  * Network errors and 5xx upstream failures (500/502/503/504) keep the
  * existing exponential `1000 × (attempt + 1)`.
  *
- * Two GEXBot errors are never retried (`null`): `GEXBot 429` (a daily or
- * monthly quota that resets at 00:00 ET) and `GEXBot 500 … null or zero
- * length` (no snapshot exists yet). Other GEXBot 5xx still retry. UW and
- * every other caller are unaffected: both checks are anchored to the
- * `GEXBot` message prefix.
+ * GEXBot: a `GEXBot 429` is the per-ticker, per-metric rate limit (one request
+ * a second), so it retries with backoff (`gexbot429Delay`). `GEXBot 500 … null
+ * or zero length` (no snapshot exists yet) is never retried (`null`). Other
+ * GEXBot 5xx still retry. UW and every other caller are unaffected: both checks
+ * are anchored to the `GEXBot` message prefix. The EOD report route is not
+ * here: it does not go through `withRetry`, and its 429 is a quota.
  */
-function classifyRetryDelay(msg: string, attempt: number): number | null {
-  // GEXBot failures that retrying cannot fix, checked before the generic
-  // branches below (withRetry is shared across UW, GEXBot and others):
-  //  - `GEXBot 429`: a per-account daily/monthly endpoint-pool quota that
-  //    resets at 00:00 ET, so a retry inside the minute cannot succeed and
-  //    only burns more calls.
+function classifyRetryDelay(err: unknown, attempt: number): number | null {
+  const msg = err instanceof Error ? err.message : '';
+  // GEXBot failures, checked before the generic branches below (withRetry is
+  // shared across UW, GEXBot and others):
+  //  - `GEXBot 429`: a short rate limit; see gexbot429Delay.
   //  - `GEXBot 500 ... null or zero length`: the orderflow route's answer
   //    when no snapshot exists yet. Deterministic, not a blip.
-  if (/^GEXBot 429\b/.test(msg)) return null;
+  if (/^GEXBot 429\b/.test(msg)) return gexbot429Delay(err, attempt);
   if (/^GEXBot 500\b.*null or zero length/s.test(msg)) return null;
 
   // 429 — distinguish concurrency vs per-minute window
@@ -103,6 +200,18 @@ function classifyRetryDelay(msg: string, attempt: number): number | null {
   return null; // not retryable
 }
 
+/**
+ * Retry an async operation with exponential backoff.
+ * Only retries on transient errors (timeouts, connection resets).
+ * Non-transient errors (bad SQL, constraint violations) throw immediately.
+ *
+ * Designed for cron jobs where a single missed invocation creates data gaps.
+ * Interactive endpoints should NOT use this — users want fast failure.
+ *
+ * When it gives up on a UW 429 it reports that one failure to Sentry
+ * (`metrics.uwRateLimitExhausted`) before rethrowing; a 429 a retry clears
+ * is only counted by `uwFetch`.
+ */
 export async function withRetry<T>(
   fn: () => Promise<T>,
   retries: number = 2,
@@ -112,9 +221,11 @@ export async function withRetry<T>(
       return await fn();
     } catch (err) {
       const isLast = attempt === retries;
-      const msg = err instanceof Error ? err.message : '';
-      const delayMs = classifyRetryDelay(msg, attempt);
-      if (isLast || delayMs === null) throw err;
+      const delayMs = classifyRetryDelay(err, attempt);
+      if (isLast || delayMs === null) {
+        reportRetriesExhausted(err);
+        throw err;
+      }
       await new Promise((r) => setTimeout(r, delayMs));
     }
   }
@@ -254,26 +365,18 @@ export async function uwFetch<T>(
         .text()
         .catch((e) => `[parse error: ${(e as Error).message}]`);
 
-      // BE-CRON-002 follow-up: surface UW rate-limit hits to Sentry as a
-      // metric + scoped warning so we see budget pressure the moment it
-      // starts, instead of waiting for data to silently thin out. Endpoint
-      // is extracted with the query string stripped so identical routes
-      // group together in the metric.
-      if (res.status === 429) {
-        const endpoint = path.startsWith('http')
-          ? (() => {
-              try {
-                return new URL(path).pathname;
-              } catch {
-                return path;
-              }
-            })()
-          : (path.split('?')[0] ?? path);
-        const retryAfter = res.headers?.get?.('retry-after') ?? null;
-        metrics.uwRateLimit(endpoint, retryAfter);
-      }
+      // BE-CRON-002 follow-up: count every UW rate-limit hit so budget
+      // pressure shows the moment it starts, instead of data silently
+      // thinning out. Counting is all a 429 does here: whether it is worth a
+      // Sentry event depends on whether the retry loop clears it, which only
+      // `withRetry` knows (it reports the one it gives up on, from the
+      // endpoint and retry-after this error carries). The endpoint is a path
+      // template, so the metric's cardinality is the route list.
+      const endpoint = uwEndpointTemplate(path);
+      const retryAfter = res.headers?.get?.('retry-after') ?? null;
+      if (res.status === 429) metrics.uwRateLimit(endpoint);
 
-      throw new Error(`UW API ${res.status}: ${text.slice(0, 200)}`);
+      throw new UwHttpError(res.status, endpoint, text, retryAfter);
     }
 
     // Node types `.json()` as Promise<unknown> (was implicit `any` under DOM
