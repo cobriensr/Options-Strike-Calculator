@@ -32,6 +32,7 @@ import {
 import {
   classifyGexbotError,
   gexbotFailureLevel,
+  gexbotRetryAfterTags,
   fetchStatePerStrike,
   GEXBOT_TICKERS,
   STATE_CATEGORIES,
@@ -85,9 +86,9 @@ export default withCronInstrumentation(
           // Retry transient 5xx / timeout / ECONNRESET up to 2 times
           // (3 attempts total, 1s + 2s exponential backoff). Mirrors
           // the fetch-gexbot-fast wrap that suppressed SENTRY-EMERALD-
-          // DESERT-8F. A 429 is the vendor's short rate limit, so it retries
-          // too (waiting out a Retry-After of up to 3 s). Any other 4xx (bad
-          // auth) still fails fast.
+          // DESERT-8F. A 429 retries too (the one burst seen was transient),
+          // waiting out a Retry-After of up to 3 s. Any other 4xx (bad auth)
+          // still fails fast.
           const body = await withRetry(() =>
             fetchStatePerStrike(apiKey, ticker, category),
           );
@@ -111,7 +112,9 @@ export default withCronInstrumentation(
           // message, 76 by internal timer frames), and keying on err.name
           // alone put 401/403/429/5xx in one issue. A 429 that is still there
           // after its retries is a warning; the run is `partial` or `error`
-          // all the same.
+          // all the same. The 429's Retry-After rides in a tag (and the
+          // vendor's body in the error message), so the event shows whether
+          // it was the short-window limit (sent) or a quota (`none`).
           const { statusClass, statusTag } = classifyGexbotError(result.err);
           Sentry.captureException(result.err, {
             level: gexbotFailureLevel(statusClass),
@@ -126,6 +129,7 @@ export default withCronInstrumentation(
               'gexbot.ticker': result.ticker,
               'gexbot.endpoint': 'state',
               'gexbot.category': result.category,
+              ...gexbotRetryAfterTags(result.err),
             },
           });
           sentryCaptured += 1;

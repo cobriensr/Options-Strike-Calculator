@@ -729,9 +729,10 @@ describe('fetch-gexbot-fast handler', () => {
     }
 
     it('http-429: a persistent 429 is retried, then reported as a warning, and the run is partial', async () => {
-      // A short rate limit, not a quota: 3 attempts on a 1 s then 2 s
-      // backoff, then the one failure is filed under the stable fingerprint
-      // at level warning. The run still says it failed (R4).
+      // 3 attempts on a 1 s then 2 s backoff, then the one failure is filed
+      // under the stable fingerprint at level warning. The run still says it
+      // failed (R4). This stub sends no Retry-After, so the tag says `none`
+      // (the quota shape), and the vendor's body stays in the message.
       vi.useFakeTimers();
       vi.setSystemTime(MARKET_TIME);
       vi.spyOn(Math, 'random').mockReturnValue(0);
@@ -753,7 +754,11 @@ describe('fetch-gexbot-fast handler', () => {
       });
       expect(mockSentryCapture).toHaveBeenCalledTimes(1);
       expect(mockSentryCapture).toHaveBeenCalledWith(
-        expect.objectContaining({ name: 'GexbotHttpError', status: 429 }),
+        expect.objectContaining({
+          name: 'GexbotHttpError',
+          status: 429,
+          message: expect.stringContaining('upstream said no'),
+        }),
         expect.objectContaining({
           level: 'warning',
           fingerprint: [
@@ -761,7 +766,54 @@ describe('fetch-gexbot-fast handler', () => {
             'fetch-gexbot-fast',
             'http-429',
           ],
-          tags: expect.objectContaining({ 'gexbot.status': '429' }),
+          tags: expect.objectContaining({
+            'gexbot.status': '429',
+            'gexbot.retry_after_ms': 'none',
+          }),
+        }),
+      );
+    });
+
+    it('http-429: the exhausted event carries the Retry-After the vendor sent, in ms', async () => {
+      // Short-window limit (Retry-After present) versus pool quota (none) is
+      // the question the next 429 has to answer; the tag is the answer. A
+      // 2 s ask is waited out (twice), so all 3 attempts run.
+      vi.useFakeTimers();
+      vi.setSystemTime(MARKET_TIME);
+      vi.spyOn(Math, 'random').mockReturnValue(0);
+      const fetchMock = vi.fn(async (input: string) => {
+        const url = String(input);
+        if (url.endsWith('/SPX/orderflow/orderflow')) {
+          return {
+            ok: false,
+            status: 429,
+            headers: { get: (h: string) => (h === 'retry-after' ? '2' : null) },
+            text: async () => '{"error": "Rate limit exceeded."}',
+          } as unknown as Response;
+        }
+        return happyResponse(url);
+      });
+      vi.stubGlobal('fetch', fetchMock);
+      const pending = handler(
+        mockRequest({
+          method: 'GET',
+          headers: { authorization: 'Bearer test-secret' },
+        }),
+        mockResponse(),
+      );
+      await vi.advanceTimersByTimeAsync(5000);
+      await pending;
+
+      expect(spxCalls(fetchMock)).toBe(3);
+      expect(mockSentryCapture).toHaveBeenCalledTimes(1);
+      expect(mockSentryCapture).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status: 429,
+          retryAfterMs: 2000,
+          message: expect.stringContaining('Rate limit exceeded.'),
+        }),
+        expect.objectContaining({
+          tags: expect.objectContaining({ 'gexbot.retry_after_ms': '2000' }),
         }),
       );
     });
@@ -868,6 +920,9 @@ describe('fetch-gexbot-fast handler', () => {
           tags: expect.objectContaining({ 'gexbot.status': '403' }),
         }),
       );
+      // The Retry-After tag answers the 429 question only.
+      const tags = mockSentryCapture.mock.calls[0]?.[1]?.tags ?? {};
+      expect(Object.keys(tags)).not.toContain('gexbot.retry_after_ms');
     });
 
     it('no-data: orderflow 500 "null or zero length" is not retried and gets its own class', async () => {

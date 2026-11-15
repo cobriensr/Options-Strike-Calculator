@@ -40,6 +40,7 @@ import {
 import {
   classifyGexbotError,
   gexbotFailureLevel,
+  gexbotRetryAfterTags,
   fetchOrderflow,
   fetchClassicBasic,
   fetchMaxchange,
@@ -269,11 +270,10 @@ export default withCronInstrumentation(
           // length", which means no snapshot exists yet) and on timeouts
           // and network errors. Suppresses single-tick TimeoutError storms
           // (SENTRY-EMERALD-DESERT-8F: 214 events / 9 days) caused by GEXBot
-          // 1-2s slow minutes brushing the 2.5s per-call timeout. A 429 is
-          // the vendor's short rate limit (one request a second per ticker
-          // per metric), so it retries too, on a 1 s then 2 s backoff that
-          // waits out a Retry-After of up to 3 s. Any other 4xx, a bad API
-          // key included, fails fast.
+          // 1-2s slow minutes brushing the 2.5s per-call timeout. A 429
+          // retries too (the one burst seen was transient), on a 1 s then
+          // 2 s backoff that waits out a Retry-After of up to 3 s. Any other
+          // 4xx, a bad API key included, fails fast.
           let body: GexbotResponse;
           switch (task.kind) {
             case 'orderflow':
@@ -329,7 +329,9 @@ export default withCronInstrumentation(
           // message, 76 by internal timer frames), and keying on err.name
           // alone put 401/403/429/5xx in one issue. A 429 that is still there
           // after its retries is a warning; the run is `partial` or `error`
-          // all the same.
+          // all the same. The 429's Retry-After rides in a tag (and the
+          // vendor's body in the error message), so the event shows whether
+          // it was the short-window limit (sent) or a quota (`none`).
           const { statusClass, statusTag } = classifyGexbotError(result.err);
           Sentry.captureException(result.err, {
             level: gexbotFailureLevel(statusClass),
@@ -344,6 +346,7 @@ export default withCronInstrumentation(
               'gexbot.ticker': result.task.ticker,
               'gexbot.endpoint': result.task.kind,
               'gexbot.category': tagCategory,
+              ...gexbotRetryAfterTags(result.err),
             },
           });
           sentryCaptured += 1;
