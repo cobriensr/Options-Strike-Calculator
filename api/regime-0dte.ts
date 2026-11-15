@@ -32,7 +32,7 @@
  */
 
 import { z } from 'zod';
-import { setCacheHeaders } from './_lib/auth-helpers.js';
+import { setCacheHeaders } from './_lib/api-helpers.js';
 import { withDbReader } from './_lib/request-scope.js';
 import { getCTDateStr, getCTTime } from '../src/utils/timezone.js';
 import { evaluateRegime0dte, REGIME_0DTE } from './_lib/regime-0dte.js';

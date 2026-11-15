@@ -19,7 +19,7 @@ type Sql = ReturnType<typeof getDb>;
  * Tagged-template form for neon `sql\`…\`` callers; the result nests inside a
  * larger template. `tsCol` names the column (override when aliased).
  */
-export function ctDayTsBounds(sql: Sql, dateIso: string, tsCol = 'timestamp') {
+export function ctDayTsBounds(sql: Sql, dateIso: string, tsCol: string) {
   const t = sql.unsafe(tsCol);
   return sql`${t} >= ((${dateIso}::date)::timestamp AT TIME ZONE 'America/Chicago')
     AND ${t} <  (((${dateIso}::date) + 1)::timestamp AT TIME ZONE 'America/Chicago')`;
@@ -59,6 +59,7 @@ export function gexCtDayFilter(
  * Raw-SQL ($N-parameter) variant of {@link gexCtDayFilter} for callers that
  * build a string passed to `sql.query(text, params)`. `dateParam` is the
  * placeholder holding the ISO date (e.g. `'$1'`).
+ * Its bound expression must stay in step with {@link ctDayTsBounds}.
  */
 export function gexCtDayFilterSql(
   dateParam: string,
