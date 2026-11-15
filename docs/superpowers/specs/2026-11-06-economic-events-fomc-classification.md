@@ -199,7 +199,8 @@ The first matching rule wins:
 - **Lottery MACRO badge** (`lottery-finder.ts`, `event_type IN
 ('FOMC','CPI','PCE','JOBS')`):
   - no code change;
-  - it will now fire on real decision days only (see Q2).
+  - it will now fire on real decision days only (see Q2);
+  - **Removed 2026-11-14**, with its per-request lookup (see Q2).
 - **Cron hardening** (`fetch-economic-calendar.ts`):
   - an event with an unparseable `time` currently throws inside the filter
     and fails the whole day's run;
@@ -322,10 +323,13 @@ tests. Commits are grouped by file because the commit gate seals whole files.
    - Keep the current and next week, not just today.
    - Write with `ON CONFLICT … DO UPDATE` of forecast, previous, type and
      reported period.
-   - This fixes the live `days_to_next_event` NULL and lets the MACRO badge see
-     future events.
-7. **Re-measure the MACRO lift** (pending the owner; see Q2)
-   - A read-only study after the backfill.
+   - This fixes the live `days_to_next_event` NULL. It would also have let the
+     MACRO badge see future events; the badge is gone, so that reason no longer
+     applies (see Q3).
+7. **Re-measure the MACRO lift** (resolved 2026-11-14; see Q2)
+   - Badge removed: the lift was a weekday effect. Raw 72–168 h is 1.20× /
+     1.32×, weekday-adjusted 1.00; a week-shift placebo ranks the real
+     calendar 5th of 15.
 
 **Production backfill** runs after the 15:00 CT close. It also runs after that
 day's `build-features` post-close run (`45 20,21 * * 1-5` UTC; 15:45 CT in
@@ -375,12 +379,24 @@ carry `FOMC` on speech days, and build-features ORs `FOMC` rows into
   event were almost always under 72.
 - **Default:** re-run the 2026-05-16 EDA after the backfill (phase 7), then
   update or remove the figures.
+- **Resolved 2026-11-14:** badge removed: the lift was a weekday effect.
+  - On corrected labels the raw 72–168 h lift is 1.20× / 1.32× (win50 /
+    win100). Weekday-adjusted it is 1.00 (0.96–1.04) / 1.00 (0.94–1.07).
+  - A week-shift placebo (every event moved by whole weeks, -8 to +8)
+    reproduces the raw lift (72–168 h win50 1.14×–1.24×); the real calendar
+    ranks 5th of 15.
+  - The badge also could not fire live: the cron stores only today's events,
+    so no fire has seen an event 24–168 h ahead.
+  - Local report (untracked): `docs/tmp/macro-badge-remeasure-2026-11-14/REPORT.md`.
 
 **Q3. Store the whole UW window in the cron?**
 
 - **Default:** yes (phase 6), since it fixes a diagnosed train/serve skew.
 - It changes what the MACRO badge and live `days_to_next_event` see, so it
   waits for the owner's OK.
+- **Update 2026-11-14:** the badge is gone, so the "lets the MACRO badge see
+  future events" reason no longer applies. The train/serve skew in
+  `days_to_next_event` is still the reason to ask.
 
 **Q4. The 2026-07-22 → 09-07 gap: answered (2026-11-06, read-only).**
 
@@ -402,6 +418,7 @@ carry `FOMC` on speech days, and build-features ORs `FOMC` rows into
   federalreserve.gov on 2026-11-06.
 - `event_type` priority: FOMC, CPI, PCE, JOBS, GDP, FED, PMI, RETAIL,
   SENTIMENT, OTHER.
-- Lottery MACRO types are unchanged: FOMC, CPI, PCE, JOBS.
+- Lottery MACRO types were unchanged: FOMC, CPI, PCE, JOBS. (The badge that
+  used them was removed 2026-11-14.)
 - `MAX_PLAUSIBLE_EVENT_GAP_DAYS` = 10 (`economic-event-features.ts`): the longest
   calendar-day gap to the next event row that still counts as "the next event".
