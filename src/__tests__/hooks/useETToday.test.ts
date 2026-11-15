@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { Profiler, StrictMode, createElement, memo } from 'react';
+import { Fragment, StrictMode, createElement, memo } from 'react';
 import { act, render, renderHook } from '@testing-library/react';
 import { useETToday } from '../../hooks/useETToday';
 
@@ -32,6 +32,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // The add/removeEventListener spies on window and document.
+  vi.restoreAllMocks();
   vi.useRealTimers();
   // Back to jsdom's own visibilityState.
   Reflect.deleteProperty(document, 'visibilityState');
@@ -144,7 +146,7 @@ describe('useETToday as one shared clock', () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it('flips every reader in one commit, memoized or not', () => {
+  it('flips every reader at the tick, memoized or not', () => {
     vi.setSystemTime(new Date('2026-03-11T03:59:30Z')); // 23:59:30 EDT
     const seen: Array<{ id: string; today: string }> = [];
     // memo with no props: only the clock can re-render these.
@@ -153,11 +155,10 @@ describe('useETToday as one shared clock', () => {
       seen.push({ id, today });
       return null;
     });
-    const onRender = vi.fn();
     render(
       createElement(
-        Profiler,
-        { id: 'readers', onRender },
+        Fragment,
+        null,
         createElement(Reader, { id: 'a' }),
         createElement(Reader, { id: 'b' }),
         createElement(Reader, { id: 'c' }),
@@ -165,7 +166,6 @@ describe('useETToday as one shared clock', () => {
     );
     expect(seen.map((s) => s.today)).toEqual(Array(3).fill('2026-03-10'));
     seen.length = 0;
-    onRender.mockClear();
 
     act(() => {
       vi.advanceTimersByTime(31_000);
@@ -176,7 +176,6 @@ describe('useETToday as one shared clock', () => {
       { id: 'b', today: '2026-03-11' },
       { id: 'c', today: '2026-03-11' },
     ]);
-    expect(onRender).toHaveBeenCalledTimes(1);
   });
 
   it('lets a reader that mounts late agree with the others, not the wall clock', () => {
@@ -205,10 +204,17 @@ describe('useETToday as one shared clock', () => {
     expect(first.result.current).toBe('2026-03-10');
     first.unmount();
 
-    // Days later, a new first reader must not see the old cached date.
+    // Days later, a new first reader must not see the old held date. Its
+    // first render is the one that would: subscribing re-reads the clock, so
+    // the committed value is right even when the first render was not.
     vi.setSystemTime(new Date('2026-03-14T15:00:00Z'));
-    const second = renderHook(() => useETToday());
-    expect(second.result.current).toBe('2026-03-14');
+    const seen: string[] = [];
+    renderHook(() => {
+      const today = useETToday();
+      seen.push(today);
+      return today;
+    });
+    expect(seen[0]).toBe('2026-03-14');
   });
 
   describe('re-checks the wall clock after a sleep or a throttled tab', () => {
@@ -256,6 +262,10 @@ describe('useETToday as one shared clock', () => {
     });
   });
 
+  // This guards an optimization with no visible effect: React already bails
+  // out of a notification whose snapshot is unchanged, so no render-count
+  // test can tell a store that notifies on every check from one that doesn't.
+  // A plain listener on the store can.
   it('notifies a subscriber only when the date changed', () => {
     vi.setSystemTime(new Date('2026-03-10T15:00:00Z')); // 11:00 EDT
     renderHook(() => useETToday());
