@@ -125,7 +125,8 @@ vi.mock('../_lib/takeit-detect.js', () => ({
 }));
 // The real takeit-detect (used where a test calls importActual) reads and
 // writes its win-rate day cache through here: always a miss, so the tests
-// never reach Upstash (the suite blocks it).
+// never reach Upstash (the suite blocks it). Silent boom never calls it (only
+// lottery's load goes through the cache); a test below pins that.
 vi.mock('../_lib/takeit-winrate-cache.js', () => ({
   readWinRateCache: vi.fn(async () => null),
   writeWinRateCache: vi.fn(async () => undefined),
@@ -159,6 +160,10 @@ import { AXIOM_TOP_LEVEL_KEYS } from '../_lib/axiom-fields.js';
 import { TransientDbError } from '../_lib/db.js';
 import logger from '../_lib/logger.js';
 import { Sentry } from '../_lib/sentry.js';
+import {
+  readWinRateCache,
+  writeWinRateCache,
+} from '../_lib/takeit-winrate-cache.js';
 import { BundleSchemaError } from '../_lib/takeit-score.js';
 
 const GUARD = { apiKey: '', today: '2026-05-07' };
@@ -2516,6 +2521,9 @@ describe('detect-silent-boom handler', () => {
       'detect-silent-boom: Take-It prefetch error; takeit_prob left null';
     const FLOW_FAILED_MSG =
       'detect-silent-boom: ticker flow series failed; alerts written without flow features';
+    // The same warning (and fingerprint) when time ran out and no query failed.
+    const FLOW_SKIPPED_MSG =
+      'detect-silent-boom: ticker flow series skipped, run time spent and no query failed; alerts written without flow features';
     const FLOW_ERROR_MSG =
       'detect-silent-boom: ticker flow series query error; alerts written without flow features';
     const FLOW_DEADLINE = 'ticker flow series passed its 15000 ms deadline';
@@ -2539,9 +2547,7 @@ describe('detect-silent-boom handler', () => {
       sqlCalls().filter((c) => c.text.includes('ws_net_flow_per_ticker'));
 
     // Answer the win-rate load and the bucket scan by their SQL, not by their
-    // place in the run. The load goes out behind the Upstash day-cache read,
-    // so it no longer reaches Neon before the scan does. Everything else
-    // answers [].
+    // place in the run. Everything else answers [].
     function answerWinRatesAndScan(winRates: unknown[], buckets: unknown[]) {
       mockSql.mockImplementation(async (strings: TemplateStringsArray) => {
         const text = strings.join('${}');
@@ -2564,13 +2570,24 @@ describe('detect-silent-boom handler', () => {
     }
 
     // ticks → prior fires → 4 macro series → pre_trade_count, then the
-    // per-fire ticker flow series and INSERT staged by the caller.
+    // per-fire ticker flow series and INSERT staged by the caller. A
+    // `scanDelayMs` makes the bucket scan answer that late (a slow Neon with
+    // retries), under fake timers.
     function stageUpToFlowSeries(
       buckets = fireableSilentBoomStream(),
       fires = 1,
+      scanDelayMs = 0,
     ) {
-      return mockSql
-        .mockResolvedValueOnce(buckets) // ticks
+      const scan =
+        scanDelayMs > 0
+          ? mockSql.mockImplementationOnce(
+              () =>
+                new Promise((resolve) => {
+                  setTimeout(() => resolve(buckets), scanDelayMs);
+                }),
+            )
+          : mockSql.mockResolvedValueOnce(buckets);
+      return scan // ticks
         .mockResolvedValueOnce([]) // prior fires
         .mockResolvedValueOnce([]) // tide ticks
         .mockResolvedValueOnce([]) // tide_otm ticks
@@ -2648,14 +2665,24 @@ describe('detect-silent-boom handler', () => {
       const winRate = sqlCall('AVG(daily_rate)', 'FROM silent_boom_alerts');
       expect(winRate.text).toContain('AND date < ${}::date');
       expect(winRate.params).toEqual([today]);
-      // ...and it went out ahead of the prefetch's own recent-fire queries.
+      // ...and it went out ahead of the prefetch's own recent-fire queries,
+      // and of the bucket scan: silent boom's load starts in the same tick
+      // as the run, with no cache read in front of it.
       const texts = sqlCalls().map((c) => c.text);
       const winRateAt = texts.findIndex((t) => t.includes('AVG(daily_rate)'));
       const recentAt = texts.findIndex((t) =>
         t.includes('bucket_ct AS fire_time'),
       );
+      const scanAt = texts.findIndex((t) =>
+        t.includes('FROM ws_option_trades'),
+      );
       expect(winRateAt).toBeGreaterThanOrEqual(0);
       expect(winRateAt).toBeLessThan(recentAt);
+      expect(winRateAt).toBeLessThan(scanAt);
+      // Only lottery's load goes through the Upstash day cache: the real
+      // priorSessionWinRatesForDay ran here, and never touched it.
+      expect(readWinRateCache).not.toHaveBeenCalled();
+      expect(writeWinRateCache).not.toHaveBeenCalled();
 
       // Both recent-fire queries get one retry and no per-attempt cap: the
       // 5 s prefetch deadline bounds the total.
@@ -3212,13 +3239,121 @@ describe('detect-silent-boom handler', () => {
           b.get('cum_ncp_at_fire'),
         ),
       ).toEqual([5_000_000, 5_000_000, null]);
+      // Nothing failed, so the message says "skipped", not "failed", under
+      // the failure's fingerprint.
+      expect(mockSentryCaptureMessage).not.toHaveBeenCalledWith(
+        FLOW_FAILED_MSG,
+        expect.anything(),
+      );
       const flowCaptures = mockSentryCaptureMessage.mock.calls.filter(
-        (call) => call[0] === FLOW_FAILED_MSG,
+        (call) => call[0] === FLOW_SKIPPED_MSG,
       );
       expect(flowCaptures).toHaveLength(1);
       expect(flowCaptures[0]![1]).toMatchObject({
         level: 'warning',
+        fingerprint: ['detect-silent-boom', 'flow-series-failed'],
+        tags: { 'cron.anomaly': 'flow-series-failed' },
         extra: { flowSeriesFailures: 0, flowSeriesSkippedBreaker: 1 },
+      });
+      expect(
+        vi
+          .mocked(logger.warn)
+          .mock.calls.filter((call) => call[1] === FLOW_SKIPPED_MSG),
+      ).toHaveLength(1);
+    });
+
+    it('gives the first flow series only what is left of the 30 s run cutoff after a 20 s setup, and asks for no other ticker-day', async () => {
+      stageUpToFlowSeries(threeTickerBuckets(), 3, 20_000)
+        .mockReturnValueOnce(new Promise(() => {})) // SNDK flow series: stalls
+        .mockResolvedValueOnce([{ id: 1 }]) // SNDK insert
+        // NVDA and TSLA flow series are skipped: the run is 30 s old when
+        // SNDK gives up, though the breaker is closed and the budget has 15 s.
+        .mockResolvedValueOnce([{ id: 2 }]) // NVDA insert
+        .mockResolvedValueOnce([{ id: 3 }]); // TSLA insert
+
+      // Date too: the cron measures the run from the wrapper's Date.now().
+      vi.useFakeTimers({
+        toFake: ['setTimeout', 'clearTimeout', 'performance', 'Date'],
+      });
+      const res = mockResponse();
+      let settled = false;
+      const run = handler(authorizedReq(), res).finally(() => {
+        settled = true;
+      });
+      await vi.advanceTimersByTimeAsync(20_000); // the scan answers
+      expect(flowSeriesQueries()).toHaveLength(1);
+      // SNDK got 10 s (30 less 20), not the 15 s a run with a fast setup gets:
+      // 1 ms short of it the run is still waiting.
+      await vi.advanceTimersByTimeAsync(9_999);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await run;
+
+      expect(res._status).toBe(200);
+      expect(res._json).toMatchObject({
+        status: 'partial',
+        inserted: 3,
+        flowSeriesFailures: 1,
+        flowSeriesSkippedBreaker: 2,
+        flowSeriesMs: 10_000,
+        firstFlowSeriesError: {
+          ticker: 'SNDK',
+          date: '2026-05-07',
+          error: 'ticker flow series passed its 10000 ms deadline',
+        },
+      });
+      expect(flowSeriesQueries()).toHaveLength(1);
+      const inserts = extractAllInsertBinds(mockSql, 'silent_boom_alerts');
+      expect(inserts.map((b) => b.get('underlying_symbol'))).toEqual([
+        'SNDK',
+        'NVDA',
+        'TSLA',
+      ]);
+      for (const binds of inserts) {
+        expect(binds.get('cum_ncp_at_fire')).toBeNull();
+      }
+    });
+
+    it('asks for no flow series once setup has used the 30 s run cutoff, writes the alerts without flow, and reports a skip, not a failure', async () => {
+      stageUpToFlowSeries(twoTickerBuckets(), 2, 31_000)
+        .mockResolvedValueOnce([{ id: 1 }]) // SNDK insert
+        .mockResolvedValueOnce([{ id: 2 }]); // NVDA insert
+
+      vi.useFakeTimers({
+        toFake: ['setTimeout', 'clearTimeout', 'performance', 'Date'],
+      });
+      const res = mockResponse();
+      const run = handler(authorizedReq(), res);
+      await vi.advanceTimersByTimeAsync(31_000);
+      await run;
+
+      expect(flowSeriesQueries()).toHaveLength(0);
+      expect(res._json).toMatchObject({
+        status: 'partial',
+        inserted: 2,
+        flowSeriesFailures: 0,
+        flowSeriesSkippedBreaker: 2,
+        flowSeriesGenuineFailures: 0,
+        flowSeriesMs: 0,
+        firstFlowSeriesError: null,
+      });
+      for (const binds of extractAllInsertBinds(
+        mockSql,
+        'silent_boom_alerts',
+      )) {
+        expect(binds.get('cum_ncp_at_fire')).toBeNull();
+      }
+      expect(mockSentryCaptureMessage).not.toHaveBeenCalledWith(
+        FLOW_FAILED_MSG,
+        expect.anything(),
+      );
+      const skips = mockSentryCaptureMessage.mock.calls.filter(
+        (call) => call[0] === FLOW_SKIPPED_MSG,
+      );
+      expect(skips).toHaveLength(1);
+      expect(skips[0]![1]).toMatchObject({
+        fingerprint: ['detect-silent-boom', 'flow-series-failed'],
+        extra: { flowSeriesFailures: 0, flowSeriesSkippedBreaker: 2 },
       });
     });
 
