@@ -165,10 +165,12 @@ def test_pipeline_imports_no_step_module_at_load() -> None:
             [str(NIGHTLY_DIR / "src"), str(SCRIPTS_DIR), str(ML_SRC_DIR)]
         ),
     }
-    # Every repo module the step modules import that `pipeline` itself does not. The refit's
-    # set was read off `import refit_step` after `import pipeline`, plus the import graph
-    # (`_cli_paths` is imported inside the rescore script's CLI only): a module that is
-    # missing here could be pulled in at load without this test seeing it.
+    # The step modules and the shared files (scripts/, ml/src/) they pull in: every repo module
+    # that importing `refit_step`, `enrich_step` and `outcome_check` loads and `pipeline`
+    # itself does not. `monitoring` and `resources` are not here: they are nightly's own
+    # infrastructure, which `main` imports at load before any step runs, so keeping them out of
+    # `pipeline` would protect nothing. A step's module missing from this list could be pulled
+    # in at load without this test seeing it.
     loaded = (
         "outcome_check",
         "enrich_step",
@@ -176,8 +178,6 @@ def test_pipeline_imports_no_step_module_at_load() -> None:
         "enrich_silent_boom_outcomes",
         "refit_step",
         "weights_store",
-        "monitoring",
-        "resources",
         "_tape_reader",
         "_pipeline_retry",
         "_cli_paths",
@@ -185,6 +185,7 @@ def test_pipeline_imports_no_step_module_at_load() -> None:
         "lottery_scoring",
         "lottery_weights",
         "lottery_refit_gates",
+        "lottery_exit_policies",
     )
     # Print the names that did load, so a failure names the module that broke D2.
     code = f"import sys, pipeline; print([name for name in {loaded!r} if name in sys.modules])"

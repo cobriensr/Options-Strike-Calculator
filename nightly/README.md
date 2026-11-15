@@ -689,23 +689,30 @@ such as `1, 2`.
    `<previous>` is `seed-2026-06-17`. Two or more non-NULL tags mean this is not a plain
    promotion undo: stop and ask.
 
-4. Restore the scores and move `active` back, in one transaction. Do not commit yet:
+4. Move `active` back and restore the scores, in one transaction. Steps 4 and 5 run in
+   one interactive `psql` session: `BEGIN`, the two statements, read the counts, then
+   `COMMIT` or `ROLLBACK` in that same session. With `psql -c` or an autocommit client,
+   `BEGIN` does not persist, so the UPDATEs would commit before the counts are read and
+   the `ROLLBACK` would protect nothing. The pointer goes first, the order `rescore_all`
+   locks in (the pointer, then the fires), so a rescore that runs at the same time waits
+   on the pointer instead of deadlocking. Do not commit yet:
 
    ```sql
    BEGIN;
+   UPDATE lottery_score_pointers SET version = '<previous>', updated_at = now()
+    WHERE name = 'active' AND version = '<promoted>';
    UPDATE lottery_finder_fires f SET score = s.v::int, score_version = s.t
      FROM (SELECT unnest(fire_ids) AS id, unnest(old_values) AS v, unnest(old_tags) AS t
              FROM lottery_fire_value_snapshots
             WHERE id = ANY(ARRAY[<ids>]) AND column_name = 'score') s
     WHERE f.id = s.id AND f.score_version = '<promoted>';
-   UPDATE lottery_score_pointers SET version = '<previous>', updated_at = now()
-    WHERE name = 'active' AND version = '<promoted>';
    ```
 
-5. Read each statement's row count. The fires UPDATE must match `total` from step 2: the
-   `f.score_version = '<promoted>'` guard leaves a fire that a later write re-tagged
-   alone, so a smaller count means one was. The pointer UPDATE must say `UPDATE 1`. If
-   both match, run `COMMIT;`. Otherwise run `ROLLBACK;` and find out why.
+5. Read each statement's row count. The pointer UPDATE must say `UPDATE 1`. The fires
+   UPDATE must match `total` from step 2: the `f.score_version = '<promoted>'` guard
+   leaves a fire that a later write re-tagged alone, so a smaller count means one was.
+   If both match, run `COMMIT;` in the same session. Otherwise run `ROLLBACK;` and find
+   out why.
 
 This writes nothing to `lottery_score_versions`: the undone version keeps its status
 `promoted`, and its `gate_report.verdict` still records the decision. `active` is the
