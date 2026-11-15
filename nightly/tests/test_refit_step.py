@@ -1,6 +1,6 @@
 """Tests for the lottery-refit step: the nightly candidate lifecycle of plan D6.
 
-What is patched, at the `refit_step` module boundary (R3): `connect_db`, the seven
+What is patched, at the `refit_step` module boundary (R3): `connect_db`, the nine
 `weights_store` functions (an in-memory `FakeStore` with their semantics), `fetch_frame`
 (the fires table, filtered by the same date window the SQL uses), `rescore_all` and
 Sentry's `capture_message`. Nothing reaches a database or the network.
@@ -66,9 +66,8 @@ from lottery_weights import (
 import constants
 import refit_step
 import steps
-from calendar_nyse import trading_days
+from calendar_nyse import recent_sessions, trading_days
 from config import load_settings
-from outcome_check import recent_sessions
 from refit_step import fetch_feed_frame
 from steps import StepContext, StepResult
 from weights_store import StoredVersion
@@ -105,6 +104,7 @@ COUNT_NAMES = {
     "rows_rescored",
     "train_rows",
     "eval_rows",
+    "fires_off_version",
 }
 
 
@@ -212,14 +212,19 @@ def plain_copy(value: object) -> Any:
 
 
 class FakeStore:
-    """`lottery_score_versions` and its pointers, behind weights_store's seven functions.
+    """`lottery_score_versions` and its pointers, behind weights_store's nine functions.
 
     The same rules the real store enforces (and weights_store's own tests pin): a second
-    shadow is a UniqueViolation, `insert_candidate` is idempotent per version, a session is
-    recorded once, and `decide` touches only a shadow. A decision (`decide`, and a
-    promotion) stamps `decided_at` with `clock`, the instant the database's `now()` answers;
-    an insert does not, so a candidate rejected at creation has none. Every write goes
-    through JSON, so a numpy value in it fails here as it would in `psycopg2.extras.Json`.
+    shadow is a UniqueViolation, `insert_candidate` is idempotent per version, a session and
+    a deferred night are recorded once, and `decide` touches only a shadow. A decision
+    (`decide`, and a promotion) stamps `decided_at` with `clock`, the instant the database's
+    `now()` answers; an insert does not, so a candidate rejected at creation has none. Every
+    write goes through JSON, so a numpy value in it fails here as it would in
+    `psycopg2.extras.Json`.
+
+    `fire_tags` stands for the `score_version` of every stored fire (None: scored before the
+    store existed); `count_off_version` counts the tagged ones that differ from the version
+    asked about.
     """
 
     def __init__(self) -> None:
@@ -230,6 +235,8 @@ class FakeStore:
         self.records: list[tuple[str, date, bool]] = []
         self.clock = NOW
         self.since: list[datetime] = []
+        self.fire_tags: list[str | None] = []
+        self.counted_against: list[str] = []
         self._put(SEED_VERSION, SEED, "seed", None, {})
 
     def _put(
@@ -277,6 +284,11 @@ class FakeStore:
         self.calls.append("version_exists")
         return version in self.rows
 
+    def count_off_version(self, conn: Any, version: str) -> int:
+        self.calls.append("count_off_version")
+        self.counted_against.append(version)
+        return sum(tag is not None and tag != version for tag in self.fire_tags)
+
     def decided_since(self, conn: Any, since: datetime) -> bool:
         self.calls.append("decided_since")
         self.since.append(since)
@@ -316,6 +328,17 @@ class FakeStore:
         self.records.append((version, session, wrote))
         return wrote
 
+    def record_deferral(self, conn: Any, version: str, night: date) -> int | None:
+        self.calls.append("record_deferral")
+        row = self.rows.get(version)
+        if row is None or row["status"] != "shadow":
+            return None
+        nights = row["gate_report"].setdefault("deferred_nights", [])
+        if night.isoformat() in nights:
+            return None
+        nights.append(night.isoformat())
+        return len(nights)
+
     def decide(self, conn: Any, version: str, status: str, verdict: dict[str, Any]) -> bool:
         self.calls.append("decide")
         row = self.rows.get(version)
@@ -328,8 +351,9 @@ class FakeStore:
 
     def promote(self, version: str, expect_active: str, verdict: dict[str, Any] | None) -> None:
         """What `rescore_all`'s promotion transaction does when it commits: the status, the
-        verdict merged into the report (jsonb `||`), and the pointer."""
-        if self.active != expect_active or self.rows[version]["status"] not in ("shadow", "passed"):
+        verdict merged into the report (jsonb `||`), and the pointer. The `replaced` key it
+        also merges is not modelled: nothing in this file reads it."""
+        if self.active != expect_active or self.rows[version]["status"] != "shadow":
             raise PointerMoved("the active pointer moved")
         self.rows[version]["status"] = "promoted"
         self.rows[version]["decided_at"] = self.clock
@@ -409,9 +433,11 @@ def world(monkeypatch: pytest.MonkeyPatch) -> World:
         "load_active",
         "load_shadow",
         "version_exists",
+        "count_off_version",
         "decided_since",
         "insert_candidate",
         "record_session_eval",
+        "record_deferral",
         "decide",
     ):
         monkeypatch.setattr(refit_step, name, getattr(store, name))
@@ -571,6 +597,7 @@ def test_builds_a_shadow_when_none_exists(world: World, monkeypatch: pytest.Monk
     # (last_session - 90 days, last_session].
     assert world.store.calls == [
         "load_active",
+        "count_off_version",
         "load_shadow",
         "version_exists",
         "decided_since",
@@ -697,7 +724,13 @@ def test_rerun_after_a_decision_builds_no_second_candidate(
 
     assert world.store.rows == rows  # nothing inserted, nothing decided again
     assert world.store.active == active
-    assert world.store.calls == ["load_active", "load_shadow", "version_exists", "decided_since"]
+    assert world.store.calls == [
+        "load_active",
+        "count_off_version",
+        "load_shadow",
+        "version_exists",
+        "decided_since",
+    ]
     assert second.counts["already_decided"] == 1
     assert second.counts["candidates_built"] + second.counts["candidates_rejected"] == 0
     assert sum(second.counts.values()) == 1  # no training, no evaluation, no other count
@@ -926,7 +959,15 @@ def test_losing_the_insert_to_a_concurrent_run_of_the_same_night_counts_already_
 
 
 @pytest.mark.parametrize(
-    "failing", ["load_active", "load_shadow", "decided_since", "insert_candidate", "fetch"]
+    "failing",
+    [
+        "load_active",
+        "count_off_version",
+        "load_shadow",
+        "decided_since",
+        "insert_candidate",
+        "fetch",
+    ],
 )
 def test_a_database_error_fails_the_step_and_sends_no_notice(
     world: World, monkeypatch: pytest.MonkeyPatch, failing: str
@@ -957,6 +998,74 @@ def test_an_active_version_that_cannot_be_loaded_fails_the_step(
     with pytest.raises(LookupError):
         run_night(world)
 
+    world.notices.assert_not_called()
+
+
+# --- fires on another version than the active one --------------------------------
+
+OFF_VERSION_TITLE = "nightly refit fires scored by another version"
+PROMOTED_EARLIER = "refit-2026-09-01"
+
+
+def make_promoted_active(world: World) -> None:
+    """The active pointer on a promoted refit, as it stands after the first promotion."""
+    world.store._put(
+        PROMOTED_EARLIER, same_candidate(SEED, date(2026, 9, 1)), "promoted", date(2026, 9, 1), {}
+    )
+    world.store.active = PROMOTED_EARLIER
+
+
+@pytest.mark.parametrize("branch", ["build", "judge"])
+def test_fires_on_another_version_send_one_notice_and_change_nothing_else(
+    world: World, monkeypatch: pytest.MonkeyPatch, branch: str
+) -> None:
+    # After a promotion every fire carries the active tag. A fire tagged with another one
+    # (a seed fallback in the live scorer, a by-hand undo) is a repair for the owner.
+    make_promoted_active(world)
+    # Three fires on the seed and two on an older refit are residue; the active's own and
+    # the NULL ones (scored before the store existed) are not.
+    world.store.fire_tags = [SEED_VERSION] * 3 + ["refit-2026-08-01"] * 2
+    world.store.fire_tags += [PROMOTED_EARLIER] * 40 + [None] * 7
+    if branch == "build":
+        creation_world(world, monkeypatch, approve=True)
+        ctx_session = LAST_SESSION
+    else:
+        ctx_session = shadow_scenario(world, n_elapsed=3, per_session=40).last_session
+
+    result = run_night(world, ctx_session)
+
+    assert result.counts["fires_off_version"] == 5
+    assert result.status == "ok"  # not a refit failure: the lifecycle goes on
+    assert result.counts["candidates_built"] == int(branch == "build")
+    assert result.counts["waiting"] == int(branch == "judge")
+    # Counted against the ACTIVE version, once, right after it was loaded.
+    assert world.store.counted_against == [PROMOTED_EARLIER]
+    assert world.store.calls[:2] == ["load_active", "count_off_version"]
+    assert world.titles() == [OFF_VERSION_TITLE]
+    kwargs = world.notices.call_args.kwargs
+    assert kwargs["level"] == "warning"
+    assert kwargs["fingerprint"] == ["nightly-refit", "off_version", PROMOTED_EARLIER]
+    assert kwargs["tags"]["version"] == PROMOTED_EARLIER
+    # The count and nothing else: no tag, no fire, no ticker.
+    assert kwargs["extras"] == {"fires_off_version": 5, "reasons": []}
+
+
+@pytest.mark.parametrize(
+    "tags",
+    [[], [None] * 5, [SEED_VERSION] * 4, [SEED_VERSION] * 3 + [None] * 2],
+    ids=["no-fires", "only-untagged", "only-the-active-tag", "active-tag-and-untagged"],
+)
+def test_no_fires_on_another_version_sends_no_notice(
+    world: World, monkeypatch: pytest.MonkeyPatch, tags: list[str | None]
+) -> None:
+    # Before the first promotion the only tag is the seed's, which is the active one.
+    world.store.fire_tags = tags
+    creation_world(world, monkeypatch, approve=True)
+
+    result = run_night(world)
+
+    assert result.counts["fires_off_version"] == 0
+    assert result.counts["candidates_built"] == 1
     world.notices.assert_not_called()
 
 
@@ -1445,6 +1554,212 @@ def test_rescore_deadline_defers_the_promotion(
     assert world.rescore.call_args.kwargs["deadline"] == CLOCK + 3_600
     assert world.rescore.call_args.kwargs["deadline"] < ctx.deadline
     assert "decide" not in world.store.calls
+    # The night is on the shadow's report, whichever way it was deferred.
+    assert world.store.rows[s.version]["gate_report"]["deferred_nights"] == ["2026-11-12"]
+
+
+# --- a promotion deferred night after night --------------------------------------
+
+DEFERRED_TITLE = "nightly refit promotion deferred repeatedly"
+
+
+def defer_a_night(world: World, s: Scenario, day: int) -> StepResult:
+    """One night, 2026-11-<day>, on which a passing shadow reaches 15:00 UTC and so is not
+    promoted (the cutoff is long past)."""
+    world.wall = at(15, 0)
+    return run_night(world, s.last_session, now_utc=datetime(2026, 11, day, 7, 15, tzinfo=UTC))
+
+
+def test_the_third_deferred_night_sends_one_error_notice(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    s = promote_ready(world, monkeypatch)
+
+    results = [defer_a_night(world, s, day) for day in (12, 13)]
+
+    # One night is the window being short, two are still the owner's `step partial` email.
+    world.notices.assert_not_called()
+    assert [r.status for r in results] == ["partial", "partial"]
+    assert world.store.rows[s.version]["gate_report"]["deferred_nights"] == [
+        "2026-11-12",
+        "2026-11-13",
+    ]
+
+    third = defer_a_night(world, s, 14)
+
+    assert third.status == "partial" and third.detail == PARTIAL_DETAIL
+    assert world.titles() == [DEFERRED_TITLE]
+    kwargs = world.notices.call_args.kwargs
+    assert kwargs["level"] == "error"
+    assert kwargs["fingerprint"] == ["nightly-refit", "deferred", s.version]
+    assert kwargs["tags"]["version"] == s.version
+    assert kwargs["extras"] == {"deferred_nights": 3, "reasons": []}
+    assert world.store.rows[s.version]["status"] == "shadow"
+    # The fourth night adds no event: the fingerprint is the version, so it would only
+    # repeat the third's issue.
+    defer_a_night(world, s, 15)
+    assert world.titles() == [DEFERRED_TITLE]
+    assert world.store.rows[s.version]["gate_report"]["deferred_nights"][-1] == "2026-11-15"
+
+
+def test_a_rerun_of_the_third_night_records_and_announces_nothing_more(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    s = promote_ready(world, monkeypatch)
+    for day in (12, 13, 14):
+        defer_a_night(world, s, day)
+    assert world.titles() == [DEFERRED_TITLE]
+
+    rerun = defer_a_night(world, s, 14)
+
+    assert rerun.status == "partial"
+    assert rerun.counts["promotion_deferred"] == 1  # still deferred, just not recorded again
+    assert world.titles() == [DEFERRED_TITLE]
+    assert len(world.store.rows[s.version]["gate_report"]["deferred_nights"]) == 3
+
+
+@pytest.mark.parametrize("ending", ["promoted", "rejected"])
+def test_a_promotion_or_a_rejection_ends_the_count(
+    world: World, monkeypatch: pytest.MonkeyPatch, ending: str
+) -> None:
+    s = promote_ready(world, monkeypatch)
+    for day in (12, 13):
+        defer_a_night(world, s, day)
+    if ending == "rejected":
+        patch_verdict(
+            monkeypatch, verdict("reject", ("rho_below_active",), sessions=s.elapsed[:10])
+        )
+    world.wall = at(8, 0)  # an hour of window and more: the rescore runs
+
+    result = run_night(world, s.last_session, now_utc=datetime(2026, 11, 14, 7, 15, tzinfo=UTC))
+
+    assert result.status == "ok"
+    assert world.store.rows[s.version]["status"] == ending
+    # The third night is an ending, not a deferral: no `deferred` notice, only the decision's.
+    assert world.titles() == [
+        "nightly refit promoted" if ending == "promoted" else "nightly refit rejected"
+    ]
+    # Whatever the store holds is no longer recorded on: the shadow is out of `shadow`.
+    assert world.store.record_deferral(CONN, s.version, date(2026, 11, 15)) is None
+
+
+def test_a_deferral_that_cannot_be_recorded_fails_the_step(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    s = promote_ready(world, monkeypatch)
+    world.wall = at(15, 0)
+
+    def lost(*args: Any, **kwargs: Any) -> None:
+        raise psycopg2.OperationalError("connection lost")
+
+    monkeypatch.setattr(refit_step, "record_deferral", lost)
+
+    with pytest.raises(psycopg2.OperationalError):
+        run_night(world, s.last_session)
+
+    world.notices.assert_not_called()
+
+
+# --- a commit whose acknowledgement was lost -------------------------------------
+
+
+def commit_applied_then_connection_lost(world: World, s: Scenario) -> psycopg2.OperationalError:
+    """`rescore_all` as it behaves when the server applied the COMMIT and the answer never
+    arrived: the promotion is in the store, and the call raises."""
+    lost = psycopg2.OperationalError("server closed the connection unexpectedly")
+
+    def apply_then_raise(conn: Any, *, to_version: str, expect_active: str, **_: Any) -> None:
+        world.store.promote(to_version, expect_active, None)
+        raise lost
+
+    world.rescore.side_effect = apply_then_raise
+    return lost
+
+
+def test_a_lost_commit_acknowledgement_that_took_effect_is_a_promotion(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    s = promote_ready(world, monkeypatch)
+    commit_applied_then_connection_lost(world, s)
+
+    result = run_night(world, s.last_session)
+
+    assert world.store.active == s.version
+    assert result.status == "ok"
+    assert result.counts["promoted"] == 1
+    assert result.counts["promotion_deferred"] == 0
+    # The row counts were in the result that never arrived.
+    assert result.counts["rows_rescored"] == 0
+    # The pointer was read on a connection of its own: the first one is the dead one.
+    assert world.connects == 2
+    assert world.titles() == ["nightly refit promoted"]
+    kwargs = world.notices.call_args.kwargs
+    assert kwargs["fingerprint"] == ["nightly-refit", "promoted", s.version]
+    assert kwargs["extras"]["commit_ack"] == "lost"
+    assert "rows_rescored" not in kwargs["extras"]
+    assert world.rescore.call_count == 1  # never retried
+
+
+def test_a_lost_connection_that_rolled_back_fails_the_step_with_its_own_error(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    s = promote_ready(world, monkeypatch)
+    lost = psycopg2.OperationalError("server closed the connection unexpectedly")
+    world.rescore.side_effect = lost
+
+    with pytest.raises(psycopg2.OperationalError) as raised:
+        run_night(world, s.last_session)
+
+    # The pointer still names the old version: nothing was promoted, so nothing is announced.
+    assert raised.value is lost
+    assert world.store.active == SEED_VERSION
+    assert world.store.rows[s.version]["status"] == "shadow"
+    assert world.connects == 2
+    world.notices.assert_not_called()
+
+
+def test_an_unreadable_pointer_after_a_lost_connection_fails_with_the_original_error(
+    world: World, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    s = promote_ready(world, monkeypatch)
+    lost = commit_applied_then_connection_lost(world, s)
+    secret_host = "ep-quiet-pond-123456.us-east-2.aws.neon.tech"
+    opened: list[int] = []
+
+    @contextmanager
+    def second_connect_fails(settings: Any) -> Iterator[object]:
+        opened.append(1)
+        if len(opened) > 1:
+            raise psycopg2.OperationalError(f"could not connect to server at {secret_host}")
+        yield CONN
+
+    monkeypatch.setattr(refit_step, "connect_db", second_connect_fails)
+
+    with caplog.at_level(logging.WARNING), pytest.raises(psycopg2.OperationalError) as raised:
+        run_night(world, s.last_session)
+
+    # The error the step surfaces is the rescore's, not the probe's.
+    assert raised.value is lost
+    assert len(opened) == 2
+    world.notices.assert_not_called()
+    # The probe's failure is logged by its class: a connection error's text names the host.
+    assert "OperationalError" in caplog.text
+    assert secret_host not in caplog.text
+
+
+def test_a_lock_timeout_is_still_a_deferral_not_a_lost_commit(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # LockNotAvailable is an OperationalError: the handler order decides which it is.
+    s = promote_ready(world, monkeypatch)
+    world.rescore.side_effect = psycopg2.errors.LockNotAvailable("lock timeout")
+
+    result = run_night(world, s.last_session)
+
+    assert result.status == "partial"
+    assert result.counts["promotion_deferred"] == 1
+    assert world.connects == 1  # no second connection: no pointer probe
+    world.notices.assert_not_called()
 
 
 @pytest.mark.parametrize(

@@ -26,11 +26,13 @@ from psycopg2.extras import Json
 import weights_store
 from weights_store import (
     StoredVersion,
+    count_off_version,
     decide,
     decided_since,
     insert_candidate,
     load_active,
     load_shadow,
+    record_deferral,
     record_session_eval,
     version_exists,
 )
@@ -235,6 +237,28 @@ def test_decided_since_refuses_a_naive_datetime(since: Any) -> None:
         decided_since(conn, since)
 
     assert conn.executed == []
+
+
+# ── count_off_version ───────────────────────────────────────────────────────
+
+OFF_VERSION_SQL = (
+    "SELECT count(*) FROM lottery_finder_fires "
+    "WHERE score_version IS NOT NULL AND score_version <> %s"
+)
+
+
+def test_count_off_version_counts_the_tagged_fires_of_another_version() -> None:
+    conn = FakeConn([(5,), (0,)])
+
+    assert count_off_version(conn, "refit-2026-11-02") == 5
+    assert count_off_version(conn, "seed-2026-06-17") == 0
+
+    # Whole-text match. `IS NOT NULL` leaves out the fires scored before the store existed
+    # (a NULL tag): without it `<>` would still skip them, but a rewrite to `IS DISTINCT
+    # FROM` would count every one of them as residue. The version is the one parameter.
+    assert [sql for sql, _ in conn.executed] == [OFF_VERSION_SQL] * 2
+    assert [params for _, params in conn.executed] == [("refit-2026-11-02",), ("seed-2026-06-17",)]
+    assert not _is_write(OFF_VERSION_SQL)
 
 
 # ── insert_candidate ────────────────────────────────────────────────────────
@@ -456,6 +480,66 @@ def test_record_session_eval_refuses_a_datetime_session() -> None:
     assert conn.executed == []
 
 
+# ── record_deferral ─────────────────────────────────────────────────────────
+
+NIGHT_NOT_RECORDED = "AND NOT (COALESCE(gate_report->'deferred_nights', '[]'::jsonb) ? %s)"
+
+
+def test_record_deferral_counts_the_nights_and_records_each_once() -> None:
+    # The database answers the array's length after the append, and no row for a night it
+    # already holds.
+    conn = FakeConn([(1,), (2,), None])
+
+    first = record_deferral(conn, VERSION, date(2026, 11, 12))
+    second = record_deferral(conn, VERSION, date(2026, 11, 13))
+    again = record_deferral(conn, VERSION, date(2026, 11, 13))
+
+    assert (first, second, again) == (1, 2, None)
+    for sql, params in conn.executed:
+        assert NIGHT_NOT_RECORDED in sql
+        # The night appended and the night the guard looks for are the same ISO date.
+        assert params[0] == params[2]
+        assert params[1] == VERSION
+    assert [params[0] for _, params in conn.executed] == ["2026-11-12", "2026-11-13", "2026-11-13"]
+
+
+def test_record_deferral_appends_to_a_report_with_or_without_the_key() -> None:
+    # `jsonb_set` creates a top-level key, so a fresh report (only `creation`) gets its first
+    # night written; the guard and the append both read the key through a COALESCE, because
+    # `NULL ? 'x'` is NULL and a bare `gate_report->'deferred_nights'` is NULL on a first
+    # night, which would match no row.
+    conn = FakeConn([(1,)])
+
+    record_deferral(conn, VERSION, date(2026, 11, 12))
+
+    sql = conn.executed[0][0]
+    assert "jsonb_set(gate_report, ARRAY['deferred_nights'], " in sql
+    assert "COALESCE(gate_report->'deferred_nights', '[]'::jsonb) || to_jsonb(%s::text)" in sql
+    assert "NOT (gate_report->" not in sql
+
+
+def test_record_deferral_is_conditional_on_shadow() -> None:
+    conn = FakeConn([None])
+
+    nights = record_deferral(conn, VERSION, date(2026, 11, 12))
+
+    assert nights is None  # not a shadow (or no such version): nothing was written
+    sql = conn.executed[0][0]
+    assert sql.startswith("UPDATE lottery_score_versions SET ")
+    assert "WHERE version = %s AND status = 'shadow' " in sql
+    assert sql.endswith("RETURNING jsonb_array_length(gate_report->'deferred_nights')")
+
+
+def test_record_deferral_refuses_a_datetime_night() -> None:
+    # `datetime` is a `date`; its isoformat has a time part and would open a second key.
+    conn = FakeConn([(1,)])
+
+    with pytest.raises(TypeError, match="date"):
+        record_deferral(conn, VERSION, datetime(2026, 11, 12, 7, 15))
+
+    assert conn.executed == []
+
+
 # ── decide ──────────────────────────────────────────────────────────────────
 
 
@@ -527,17 +611,21 @@ def test_module_never_writes_pointers() -> None:
         assert not _is_write(sql), sql
 
     # Dynamically: run every public function and look at what reached the cursor.
-    conn = FakeConn([_stored_row(), None, (True,), (False,), (VERSION,), (VERSION,), (VERSION,)])
+    conn = FakeConn(
+        [_stored_row(), None, (True,), (0,), (False,), (VERSION,), (VERSION,), (1,), (VERSION,)]
+    )
     load_active(conn)
     load_shadow(conn)
     version_exists(conn, VERSION)
+    count_off_version(conn, VERSION)
     decided_since(conn, MIDNIGHT)
     insert_candidate(
         conn, VERSION, _weights(), status="shadow", trained_through=TRAINED_THROUGH, report={}
     )
     record_session_eval(conn, VERSION, date(2026, 11, 10), {})
+    record_deferral(conn, VERSION, date(2026, 11, 12))
     decide(conn, VERSION, "passed", {})
-    assert len(conn.executed) == 7
+    assert len(conn.executed) == 9
     for sql, _ in conn.executed:
         assert not ("lottery_score_pointers" in sql and _is_write(sql)), sql
 
@@ -564,12 +652,18 @@ def _calls() -> list[tuple[str, Any, Exception]]:
         ("load_active", lambda c: load_active(c), LOST),
         ("load_shadow", lambda c: load_shadow(c), LOST),
         ("version_exists", lambda c: version_exists(c, VERSION), LOST),
+        ("count_off_version", lambda c: count_off_version(c, VERSION), LOST),
         ("decided_since", lambda c: decided_since(c, MIDNIGHT), LOST),
         ("insert_candidate", _insert_shadow, LOST),
         ("insert_candidate_second_shadow", _insert_shadow, SECOND_SHADOW),
         (
             "record_session_eval",
             lambda c: record_session_eval(c, VERSION, date(2026, 11, 10), {}),
+            LOST,
+        ),
+        (
+            "record_deferral",
+            lambda c: record_deferral(c, VERSION, date(2026, 11, 12)),
             LOST,
         ),
         ("decide", lambda c: decide(c, VERSION, "rejected", {}), LOST),
@@ -580,8 +674,8 @@ def _calls() -> list[tuple[str, Any, Exception]]:
 def test_a_database_error_propagates_whole(name: str, call: Any, error: Exception) -> None:
     # A rejected statement is not "no row": a write that failed must not read as False, and
     # a read that failed must not read as "no shadow" or "nothing decided tonight". A second
-    # shadow in particular raises
-    # the unique violation: it never reads as the False of an insert that found its version.
+    # shadow in particular raises the unique violation: it never reads as the False of an
+    # insert that found its version.
     class Failing(FakeCursor):
         def execute(self, sql: str, params: Any = None) -> None:
             raise error

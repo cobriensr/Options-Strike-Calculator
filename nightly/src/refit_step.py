@@ -28,16 +28,27 @@ Failure rules (the step runner reports a raised exception to Sentry and fails th
   The one exception is the matched feed cutoffs the validator refuses, which the creation
   check reports as `invalid_weights`: that candidate is stored and announced.
 - A promotion that is started too late, or hits its deadline or the lock timeout (the
-  rescore rolled back whole), is deferred: the version stays a shadow, the step is
-  `partial`, no notice goes out. The deadline is the step's or `PROMOTION_CUTOFF_UTC`,
-  whichever comes first (see `_promotion_window`), so a rescore never runs into the
-  market session. `PointerMoved` and `ConcurrentScoreWriter` mean the active pointer or
-  the scores moved under it, and fail the step. The rescore is called once and never
-  retried.
+  rescore rolled back whole), is deferred: the version stays a shadow and the step is
+  `partial`. Each deferred night is recorded on the shadow (`gate_report.deferred_nights`)
+  and the third one sends a `deferred` notice, so a promotion that never fits the window
+  is not left to one `nightly step partial` email. The deadline is the step's or
+  `PROMOTION_CUTOFF_UTC`, whichever comes first (see `_promotion_window`), so a rescore
+  never runs into the market session. `PointerMoved` and `ConcurrentScoreWriter` mean the
+  active pointer or the scores moved under it, and fail the step. The rescore is called
+  once and never retried.
+- An `OperationalError` out of the rescore may be a commit the server applied whose
+  acknowledgement was lost. The step reads the `active` pointer on a connection of its
+  own: if it names the shadow, the promotion happened and is counted and announced as
+  one; otherwise (or if that read fails too) the original error propagates.
+- Every night, after the active version is loaded, the step counts the fires tagged with
+  some other version. Any count above 0 sends an `off_version` notice naming the active
+  version, and changes nothing else: the residue is a repair for the owner (the
+  `--only-tag` rescore in nightly/README.md), not a refit failure.
 - A write that finds nothing to do means another run of the same night got there first,
   and none of them alerts. `insert_candidate` answering False counts as `already_built`.
-  `record_session_eval` answering False is neither counted nor logged. `decide` answering
-  False shows only as the logged decision "already decided".
+  `record_session_eval` answering False is neither counted nor logged, and neither is
+  `record_deferral` answering None (the night was already recorded, so no second notice).
+  `decide` answering False shows only as the logged decision "already decided".
 
 Every value handed to the store or to Sentry is a Python int, float, str or list: no numpy
 scalar, which `json.dumps` refuses. Logs carry the version, the decision and the counts,
@@ -77,9 +88,10 @@ from lottery_refit_gates import (
 )
 from lottery_scoring import fetch_frame, train_weights
 from lottery_weights import refit_version_id, score_frame
+from psycopg2 import OperationalError
 from psycopg2.errors import LockNotAvailable
 
-from calendar_nyse import previous_trading_day, trading_days
+from calendar_nyse import previous_trading_day, recent_sessions, trading_days
 from constants import (
     PROMOTION_CUTOFF_UTC,
     PROMOTION_ENABLED,
@@ -87,16 +99,17 @@ from constants import (
     REFIT_STEP_NAME,
 )
 from monitoring import report_refit
-from outcome_check import recent_sessions
 from resources import connect_db
 from steps import StepContext, StepResult
 from weights_store import (
     StoredVersion,
+    count_off_version,
     decide,
     decided_since,
     insert_candidate,
     load_active,
     load_shadow,
+    record_deferral,
     record_session_eval,
     version_exists,
 )
@@ -121,10 +134,15 @@ COUNT_NAMES = (
     "rows_rescored",
     "train_rows",
     "eval_rows",
+    "fires_off_version",
 )
 
 # `StepResult.detail` is part of the `nightly step partial` fingerprint: a fixed phrase.
 DEFERRED_DETAIL = "promotion deferred to the next night"
+# The deferred night on which the owner is told: one night is the market window being short,
+# three in a row is a promotion that does not fit it. Exactly this night, not every one after
+# it: the notice's fingerprint is the version, so a later night would add nothing.
+DEFERRED_NOTICE_NIGHTS = 3
 
 # The feed's own frame: the columns `feed_qas` and `daily_tier_shares` read, for every fire
 # of the given sessions (the tier monitor counts them all), with the ticker's inversion
@@ -162,6 +180,7 @@ def run(ctx: StepContext) -> StepResult:
     counts = dict.fromkeys(COUNT_NAMES, 0)
     with connect_db(ctx.settings) as conn:
         active = load_active(conn)
+        _report_off_version(conn, active, counts)
         # Read before anything is built: a second shadow is refused by the store, and that
         # is a failure to surface, never an "already built" to hide.
         shadow = load_shadow(conn)
@@ -179,6 +198,27 @@ def run(ctx: StepContext) -> StepResult:
     if counts["promotion_deferred"]:
         return StepResult("partial", counts, DEFERRED_DETAIL)
     return StepResult("ok", counts)
+
+
+def _report_off_version(conn: connection, active: StoredVersion, counts: dict[str, int]) -> None:
+    """Count the fires tagged with another version than `active`, and tell the owner.
+
+    After a promotion every fire carries the active tag, so a fire that does not was scored
+    by a live writer that fell back to the seed, or was left behind by a by-hand undo. A
+    cache period of the Vercel loader is enough to produce some. The count changes no
+    status and no later decision: it is a repair for the owner, whose notice carries the
+    count and groups by the active version, so each active version mails once. Before the
+    first promotion the only tag is the seed's, which is the active one: the count is 0.
+    """
+    off_version = count_off_version(conn, active.version)
+    counts["fires_off_version"] = off_version
+    if off_version:
+        report_refit(
+            "off_version",
+            version=active.version,
+            reasons=(),
+            extras={"fires_off_version": off_version},
+        )
 
 
 # --- no shadow: build a candidate --------------------------------------------------
@@ -280,7 +320,12 @@ def _start_of_run_date(ctx: StepContext) -> datetime:
     the context carries, because the nightly cron fires at 07:15 UTC and the next scheduled
     run falls on the next UTC date.
     """
-    return datetime.combine(ctx.now_utc.astimezone(UTC).date(), time.min, tzinfo=UTC)
+    return datetime.combine(_run_date(ctx), time.min, tzinfo=UTC)
+
+
+def _run_date(ctx: StepContext) -> date:
+    """The UTC date the run started on: the night a deferral is recorded under."""
+    return ctx.now_utc.astimezone(UTC).date()
 
 
 # --- a shadow exists: record its new sessions and judge it ---------------------------
@@ -396,11 +441,18 @@ def _promote(
 
     `rescore_all` needs a connection with no open transaction: `connect_db` gives an
     autocommit one, and everything this step ran on it before is a SELECT, so none is open.
+
+    Any other `OperationalError` from it (a dropped connection, a cancelled statement) is
+    either a rollback or a COMMIT the server applied whose acknowledgement never arrived,
+    and the exception does not say which. The `active` pointer does: it moves in the same
+    transaction as the scores. So the step reads it on a connection of its own. If it names
+    the shadow, the promotion is real and is counted and announced like any other, without
+    the row counts, which only the lost result held (`commit_ack` says so). If it does not,
+    or that read fails too, the original error propagates and fails the step.
     """
     seconds_left, deadline = _promotion_window(ctx)
     if seconds_left < PROMOTION_MIN_SECONDS:
-        counts["promotion_deferred"] += 1
-        return shadow.version, "promotion deferred"
+        return _defer_promotion(conn, ctx, shadow, counts)
     try:
         result = rescore_all(
             conn,
@@ -413,8 +465,23 @@ def _promote(
             verdict=summary,
         )
     except (RescoreDeadline, LockNotAvailable):
-        counts["promotion_deferred"] += 1
-        return shadow.version, "promotion deferred"
+        return _defer_promotion(conn, ctx, shadow, counts)
+    except OperationalError:
+        if not _active_names(ctx, shadow.version):
+            raise
+        log.warning(
+            "%s %s: the commit was applied, its acknowledgement lost",
+            REFIT_STEP_NAME,
+            shadow.version,
+        )
+        counts["promoted"] += 1
+        report_refit(
+            "promoted",
+            version=shadow.version,
+            reasons=(),
+            extras={**extras, "commit_ack": "lost"},
+        )
+        return shadow.version, "promoted"
     counts["promoted"] += 1
     counts["rows_rescored"] = int(result.changed)
     report_refit(
@@ -428,6 +495,47 @@ def _promote(
         },
     )
     return shadow.version, "promoted"
+
+
+def _defer_promotion(
+    conn: connection, ctx: StepContext, shadow: StoredVersion, counts: dict[str, int]
+) -> tuple[str, str]:
+    """Leave the shadow as it is for the next night, record the night on it, and tell the
+    owner when it is the `DEFERRED_NOTICE_NIGHTS`th.
+
+    The write is keyed by the run's UTC date, so a re-run the same night records nothing and
+    sends no second notice. The step is `partial` either way (`promotion_deferred`).
+    """
+    counts["promotion_deferred"] += 1
+    nights = record_deferral(conn, shadow.version, _run_date(ctx))
+    if nights == DEFERRED_NOTICE_NIGHTS:
+        report_refit(
+            "deferred",
+            version=shadow.version,
+            reasons=(),
+            extras={"deferred_nights": nights},
+        )
+    return shadow.version, "promotion deferred"
+
+
+def _active_names(ctx: StepContext, version: str) -> bool:
+    """Whether the `active` pointer names `version`, read on a connection of its own.
+
+    False when it names another version and when the read fails: the caller then re-raises
+    the error it was handling. A failed read is logged by its class alone, because a
+    connection error's text can carry the database host.
+    """
+    try:
+        with connect_db(ctx.settings) as fresh:
+            return load_active(fresh).version == version
+    except Exception as exc:
+        log.warning(
+            "%s %s: could not read the active pointer (%s)",
+            REFIT_STEP_NAME,
+            version,
+            type(exc).__name__,
+        )
+        return False
 
 
 def _promotion_window(ctx: StepContext) -> tuple[float, float]:

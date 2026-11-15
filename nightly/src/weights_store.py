@@ -3,9 +3,10 @@
 `lottery_score_versions` holds one row per set of weights (`seed-…` from the migration,
 `refit-<trained_through>` from the nightly refit); `lottery_score_pointers` names which row
 scores the feed (`active`) and which feeds Take-It (`takeit`). This module reads the active
-and the shadow version (and whether any version was decided since a given instant) and
-writes only the candidate's own row: it inserts a candidate, records one evaluated session
-on it, and decides it. It never writes a pointer, and never sets `promoted`: only
+and the shadow version (and whether any version was decided since a given instant, and how
+many fires carry another version's tag) and writes only the candidate's own row: it inserts
+a candidate, records one evaluated session or one deferred night on it, and decides it. It
+never writes a pointer, and never sets `promoted`: only
 `backfill_lottery_scores.rescore_all` does, in its promotion transaction, which moves the
 pointer in the same commit. Every statement here is a single atomic statement, so a
 connection in autocommit mode (what `resources.connect_db` gives) is enough.
@@ -15,10 +16,11 @@ Every write is conditional or idempotent, so a re-run the same night changes not
   version returns False. A different version while a shadow exists is not a conflict on the
   version, it is the one-shadow partial unique index refusing, and the psycopg2
   `UniqueViolation` propagates: the caller built a second shadow.
-- `record_session_eval` and `decide` update only a row whose status is still `shadow`; a
-  False return means the row is not (or no longer) a shadow, or does not exist.
-  `record_session_eval` also writes each session once (D6: a session's record is never
-  recomputed), so False is also what a session already recorded returns.
+- `record_session_eval`, `record_deferral` and `decide` update only a row whose status is
+  still `shadow`; a False (or None) return means the row is not (or no longer) a shadow, or
+  does not exist. `record_session_eval` also writes each session once (D6: a session's
+  record is never recomputed), and `record_deferral` each night once, so the same session or
+  night again returns the same.
 
 Every weights object that is loaded goes through `validate_weights`, so a caller never
 scores or trains against a malformed version. A shadow is validated when it is inserted,
@@ -73,6 +75,14 @@ _EXISTS_SQL = "SELECT EXISTS (SELECT 1 FROM lottery_score_versions WHERE version
 # NULL, which `>=` never matches.
 _DECIDED_SINCE_SQL = "SELECT EXISTS (SELECT 1 FROM lottery_score_versions WHERE decided_at >= %s)"
 
+# A fire with a NULL tag was scored before the store existed (migration #208) and is not
+# counted: only a tag that names some other version is. No index backs it, so it scans the
+# table (about a million rows): the step runs it once a night.
+_OFF_VERSION_SQL = (
+    "SELECT count(*) FROM lottery_finder_fires "
+    "WHERE score_version IS NOT NULL AND score_version <> %s"
+)
+
 _INSERT_SQL = (
     f"INSERT INTO lottery_score_versions ({_COLUMNS}) "
     "VALUES (%s, %s, %s, %s, %s) "
@@ -96,6 +106,23 @@ _RECORD_EVAL_SQL = (
     "WHERE version = %s AND status = 'shadow' "
     "AND NOT (COALESCE(gate_report->'sessions', '{}'::jsonb) ? %s) "
     "RETURNING version"
+)
+
+# `gate_report.deferred_nights` is a JSON array of the ISO dates of the nights this shadow's
+# promotion was deferred. `jsonb_set` creates it (a top-level key, the last element of its
+# path), and `||` appends the night as one more element. The guard is the same as the
+# session record's: a night is written once, through a COALESCE so a report with no such key
+# still matches. RETURNING counts the array after the append: the nights deferred so far. A
+# shadow that has passed its gates stays a shadow only by being deferred, and a promotion or
+# a rejection takes it out of `status = 'shadow'`, so nothing writes the array after that and
+# the count is the consecutive one.
+_RECORD_DEFERRAL_SQL = (
+    "UPDATE lottery_score_versions "
+    "SET gate_report = jsonb_set(gate_report, ARRAY['deferred_nights'], "
+    "COALESCE(gate_report->'deferred_nights', '[]'::jsonb) || to_jsonb(%s::text)) "
+    "WHERE version = %s AND status = 'shadow' "
+    "AND NOT (COALESCE(gate_report->'deferred_nights', '[]'::jsonb) ? %s) "
+    "RETURNING jsonb_array_length(gate_report->'deferred_nights')"
 )
 
 _DECIDE_SQL = (
@@ -186,6 +213,20 @@ def decided_since(conn: connection, since: datetime) -> bool:
     return bool(decided)
 
 
+def count_off_version(conn: connection, version: str) -> int:
+    """How many fires carry a `score_version` other than `version`; NULL tags do not count.
+
+    Called with the active version's id, it counts the fires that were scored by another one
+    and tagged so: after a promotion every fire shares the active tag, so what it finds is
+    the residue of a seed fallback in the live scorer or of a by-hand undo. Before the first
+    promotion it is 0, since the only tag is the seed's. Read-only.
+    """
+    with conn.cursor() as cursor:
+        cursor.execute(_OFF_VERSION_SQL, (version,))
+        (count,) = cursor.fetchone()
+    return count
+
+
 def insert_candidate(
     conn: connection,
     version: str,
@@ -230,6 +271,25 @@ def record_session_eval(
     with conn.cursor() as cursor:
         cursor.execute(_RECORD_EVAL_SQL, (day, _json(entry), version, day))
         return cursor.fetchone() is not None
+
+
+def record_deferral(conn: connection, version: str, night: date) -> int | None:
+    """Add `night` to `gate_report.deferred_nights` of a shadow; the number of nights
+    recorded after this call, or None when this call wrote nothing.
+
+    Written once per night: the same night again, a version that is not (or no longer) a
+    shadow and one that does not exist all return None, and the caller cannot tell those
+    apart from the return alone. A shadow leaves `status = 'shadow'` when it is promoted or
+    rejected, and no later write reaches its row, so a promotion or a rejection ends the
+    count.
+    """
+    if isinstance(night, datetime) or not isinstance(night, date):
+        raise TypeError("record_deferral takes a datetime.date")
+    day = night.isoformat()
+    with conn.cursor() as cursor:
+        cursor.execute(_RECORD_DEFERRAL_SQL, (day, version, day))
+        row = cursor.fetchone()
+    return None if row is None else int(row[0])
 
 
 def decide(conn: connection, version: str, status: Decision, verdict: Mapping[str, Any]) -> bool:
