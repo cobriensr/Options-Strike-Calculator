@@ -15,9 +15,10 @@
  * documents two different things that answer 429:
  *   - a per-account short-window limit: an account sending requests in a
  *     loop with no delay can be limited over a window such as a second or a
- *     minute, all keys counted together. The 429 carries `Retry-After`.
+ *     minute, all keys counted together. The docs say this 429 carries
+ *     `Retry-After`.
  *   - daily and monthly pool quotas per endpoint, reset at midnight ET.
- *     The 429 carries no `Retry-After` and lasts until the reset.
+ *     The docs say nothing about `Retry-After` on a quota 429.
  * AGENTS.md's "do not send more than one request per second per ticker per
  * metric" is the vendor's polling advice, not an enforced limit. The fetch
  * crons hit each (ticker, endpoint) pair once per minute, with no
@@ -30,10 +31,13 @@
  * 429 is counted (`gexbot.rate_limited`) and the callers' `withRetry`
  * retries it with backoff, bounded, waiting out `Retry-After` up to 3 s. A
  * 429 still there after the retries is filed by the crons as one warning
- * whose `gexbot.retry_after_ms` tag says which kind it was: a number is a
- * `Retry-After` the vendor sent, `none` is a 429 with no usable one, which
- * is the quota shape when it persists across ticks (`gexbotRetryAfterTags`).
- * The EOD report route (`gexbot-eod.ts`) treats a 429 as a quota and stops.
+ * whose `gexbot.retry_after_ms` tag says what it carried: a number is a
+ * `Retry-After` the vendor sent, `none` is a 429 with no usable one
+ * (`gexbotRetryAfterTags`). The docs document `Retry-After` on the
+ * short-window limit and are silent for a quota 429, so `none` is only
+ * consistent with a quota; a 429 that persists across ticks is what confirms
+ * one. The EOD report route (`gexbot-eod.ts`) treats a 429 as a quota and
+ * stops.
  *
  * AGENTS.md also says to "use a short timeout (about 1 second) for the
  * snapshot routes"; we run 2.5 s on purpose because GEXBot occasionally
@@ -250,13 +254,15 @@ export function classifyGexbotError(err: unknown): {
 }
 
 /**
- * The tag that lets one exhausted 429 answer which limit it was: the
- * short-window limit sends `Retry-After`, a pool quota does not. A tag, not an
- * extra: Sentry tags are string-valued and searchable, so
- * `gexbot.retry_after_ms:none` finds the quota-shaped ones, and this value is
- * a short string either way. `Retry-After` in ms as a string (a sent 0 is
- * `0`), or `none` when the 429 carried none or an unreadable one. Empty for
- * any failure that is not a 429, so the tag only ever answers this question.
+ * The tag that puts the evidence for which limit an exhausted 429 was on the
+ * event. The docs say the short-window limit sends `Retry-After` and are
+ * silent for a pool quota, so a number is the short-window limit and `none` is
+ * only consistent with a quota; its persistence across ticks confirms it. A
+ * tag, not an extra: Sentry tags are string-valued and searchable, so
+ * `gexbot.retry_after_ms:none` finds those, and this value is a short string
+ * either way. `Retry-After` in ms as a string (a sent 0 is `0`), or `none`
+ * when the 429 carried none or an unreadable one. Empty for any failure that
+ * is not a 429, so the tag only ever answers this question.
  */
 export function gexbotRetryAfterTags(err: unknown): Record<string, string> {
   if (!(err instanceof GexbotHttpError) || err.status !== 429) return {};
@@ -270,8 +276,8 @@ export function gexbotRetryAfterTags(err: unknown): Record<string, string> {
  * Sentry level for a GEXBot fetch that failed after its retries. A 429 that
  * outlasted the backoff is a warning: the next tick re-fetches, and the cron
  * still reports `partial` or `error` for the run. The `gexbot.retry_after_ms`
- * tag says whether it was the short-window limit or a quota. Everything else
- * is an error.
+ * tag carries the evidence for which limit it was. Everything else is an
+ * error.
  */
 export function gexbotFailureLevel(
   statusClass: GexbotStatusClass,

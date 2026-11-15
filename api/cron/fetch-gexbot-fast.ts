@@ -330,8 +330,10 @@ export default withCronInstrumentation(
           // alone put 401/403/429/5xx in one issue. A 429 that is still there
           // after its retries is a warning; the run is `partial` or `error`
           // all the same. The 429's Retry-After rides in a tag (and the
-          // vendor's body in the error message), so the event shows whether
-          // it was the short-window limit (sent) or a quota (`none`).
+          // vendor's body in the error message). The docs put `Retry-After`
+          // on the short-window limit and are silent for a quota, so a number
+          // is the short-window limit and `none` is only consistent with a
+          // quota; persistence across ticks confirms it.
           const { statusClass, statusTag } = classifyGexbotError(result.err);
           Sentry.captureException(result.err, {
             level: gexbotFailureLevel(statusClass),

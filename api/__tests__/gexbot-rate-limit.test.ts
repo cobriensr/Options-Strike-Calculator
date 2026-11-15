@@ -4,9 +4,10 @@
  * A live-route GEXBot 429 is retried: `withRetry` backs off, bounded, waiting
  * out `Retry-After` when sent. The vendor documents both a per-account
  * short-window limit (429 with `Retry-After`) and daily/monthly pool quotas
- * (429 with none, lasting until midnight ET), and the one burst seen was
- * transient, so a retry is the right first response and the exhausted event
- * carries the `Retry-After` it saw. Every 429 is counted
+ * (lasting until midnight ET; the docs are silent on whether that 429 carries
+ * `Retry-After`), and the one burst seen was transient, so a retry is the
+ * right first response and the exhausted event carries the `Retry-After` it
+ * saw. Every 429 is counted
  * (`gexbot.rate_limited`); the two GEXBot crons file the failure that is left
  * when the retries run out (see their tests). The EOD report route treats a
  * 429 as a quota and does not retry it.
@@ -329,7 +330,7 @@ describe('gexbotRetryAfterTags', () => {
       expect(await tagsAfter429('2')).toEqual({ [TAG]: '2000' });
     });
 
-    it('says none when the 429 sent no Retry-After (the quota shape)', async () => {
+    it('says none when the 429 sent no Retry-After (consistent with a quota)', async () => {
       expect(await tagsAfter429(null)).toEqual({ [TAG]: 'none' });
     });
 
