@@ -7,7 +7,7 @@
  * series before it scores a fire. When that read passed its deadline, the fire
  * was still written, with `cum_ncp_at_fire` / `cum_npp_at_fire` NULL, and a
  * fire with no flow is not aligned, so its V2 score is NULL too. 2,032 fires
- * from 2026-10-29 to 2026-11-13 are that kind. `backfill-ticker-flow-at-fire.mjs`
+ * from 2026-10-29 to 2026-11-13 are that kind. `backfill-ticker-flow-at-fire.ts`
  * fills the two flow columns from the net-flow tables, point in time. This
  * script is the second step: it gives those rows the score the detector would
  * have given them.
@@ -106,7 +106,7 @@ export const USAGE = `Usage: npx tsx scripts/rescore-lottery-v2-after-flow-backf
 
 Gives lottery_finder_fires rows the V2 score the detector would give them now,
 where the score is NULL, the flow columns are now set (run
-backfill-ticker-flow-at-fire.mjs first) and dte is 0 to 3. It scores with the
+backfill-ticker-flow-at-fire.ts first) and dte is 0 to 3. It scores with the
 weights of the version the 'active' pointer names and tags the row with that
 version in score_version, as the detector does. Writes only \`score\` and
 \`score_version\`, only where the score is NULL, and only while the pointer
@@ -486,7 +486,7 @@ function writeUndoFile(
  * and tagging rows with that would put a version on them that the store never
  * gave this run, so a fallback stops the run before anything is read or written.
  */
-async function loadActive(): Promise<VersionedWeights> {
+export async function loadActive(): Promise<VersionedWeights> {
   const loaded = await loadLotteryWeights();
   if (loaded.fallback != null) {
     throw new Error(
