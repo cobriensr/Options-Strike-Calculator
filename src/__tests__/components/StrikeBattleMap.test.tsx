@@ -1,5 +1,6 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { act, render, screen, fireEvent } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { StrikeBattleMap } from '../../components/StrikeBattleMap';
 import type {
   GexStrikeExpiryResponse,
@@ -14,11 +15,17 @@ vi.mock('../../hooks/useGexStrikeExpiry', async () => {
   return { ...actual, useGexStrikeExpiry: vi.fn() };
 });
 
+// The mocked clock. `getETToday` reads this when called, and the shared ET
+// clock (useETToday) and the date helper (useFollowedDate) import it from the
+// same module, so moving `clock.today` moves the date they follow. The
+// midnight tests below move it; every other test sees the fixed day.
+const clock = vi.hoisted(() => ({ today: '2026-05-04' }));
+
 vi.mock('../../utils/timezone', async () => {
   const actual = await vi.importActual<typeof import('../../utils/timezone')>(
     '../../utils/timezone',
   );
-  return { ...actual, getETToday: () => '2026-05-04' };
+  return { ...actual, getETToday: () => clock.today };
 });
 
 import { useGexStrikeExpiry } from '../../hooks/useGexStrikeExpiry';
@@ -139,6 +146,7 @@ function happyPathReturn(): UseGexStrikeExpiryReturn {
 
 beforeEach(() => {
   mockHook.mockReset();
+  clock.today = '2026-05-04';
 });
 
 describe('StrikeBattleMap', () => {
@@ -346,5 +354,220 @@ describe('StrikeBattleMap', () => {
     fireEvent.click(liveBtn);
     const lastCall = mockHook.mock.calls.at(-1);
     expect(lastCall?.[2]).toBeNull();
+  });
+});
+
+// ============================================================
+// ET MIDNIGHT WHILE THE APP IS OPEN
+//
+// The panel follows today unless the owner picked another date. It is
+// memoized, so it skips App's midnight re-render: only the shared ET clock
+// can move it. Every case starts 30 s before an ET midnight; the clock's
+// timer is armed for 1 s past it, so 31 s lands just after. Owner decision
+// 2026-11-14.
+// ============================================================
+
+describe.each([
+  {
+    zone: 'EST (winter)',
+    start: '2026-11-10T04:59:30Z',
+    night: '2026-11-09',
+    morning: '2026-11-10',
+  },
+  {
+    zone: 'EDT (summer)',
+    start: '2026-07-15T03:59:30Z',
+    night: '2026-07-14',
+    morning: '2026-07-15',
+  },
+])('StrikeBattleMap: across the $zone midnight', (m) => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    vi.setSystemTime(new Date(m.start));
+    clock.today = m.night;
+    mockHook.mockReturnValue(happyPathReturn());
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** The wall clock passes midnight, then the shared clock's timer fires. */
+  function crossMidnight() {
+    clock.today = m.morning;
+    act(() => {
+      vi.advanceTimersByTime(31_000);
+    });
+  }
+
+  const dateInput = () =>
+    screen.getByLabelText<HTMLInputElement>('Strike Battle Map date');
+  const todayButton = () => screen.queryByRole('button', { name: /^today$/i });
+  /** The arguments of the panel's latest useGexStrikeExpiry call. */
+  const lastCall = () => mockHook.mock.calls.at(-1);
+
+  function pick(date: string) {
+    fireEvent.change(dateInput(), { target: { value: date } });
+  }
+
+  it('follows the new date and stays live', () => {
+    render(<StrikeBattleMap marketOpen={true} />);
+    expect(dateInput().value).toBe(m.night);
+    expect(lastCall()).toEqual([true, m.night, null]);
+
+    crossMidnight();
+
+    expect(dateInput().value).toBe(m.morning);
+    expect(lastCall()).toEqual([true, m.morning, null]);
+    expect(todayButton()).not.toBeInTheDocument();
+  });
+
+  it('rolls with no parent re-render', () => {
+    let parentRenders = 0;
+    function Parent() {
+      parentRenders += 1;
+      return <StrikeBattleMap marketOpen={true} />;
+    }
+    render(<Parent />);
+    const callsBefore = mockHook.mock.calls.length;
+
+    crossMidnight();
+
+    expect(parentRenders).toBe(1);
+    expect(mockHook.mock.calls.length).toBeGreaterThan(callsBefore);
+    expect(dateInput().value).toBe(m.morning);
+  });
+
+  it('clears a scrubbed minute when the date rolls', () => {
+    render(<StrikeBattleMap marketOpen={true} />);
+    fireEvent.change(screen.getByLabelText(/snapshot minute/i), {
+      target: { value: '600' },
+    });
+    expect(lastCall()?.[2]).not.toBeNull();
+
+    crossMidnight();
+
+    expect(lastCall()).toEqual([true, m.morning, null]);
+  });
+
+  it('judges the date live in a render just past midnight, before the clock ticks', () => {
+    render(<StrikeBattleMap marketOpen={true} />);
+
+    // The wall clock is past midnight; the shared clock has not ticked, so
+    // the date is still the night's. A render now (the strike-count click)
+    // must judge it live by the same clock, not by the wall clock.
+    clock.today = m.morning;
+    fireEvent.click(screen.getByRole('radio', { name: '20' }));
+
+    expect(dateInput().value).toBe(m.night);
+    expect(lastCall()).toEqual([true, m.night, null]);
+    expect(todayButton()).not.toBeInTheDocument();
+  });
+
+  it('keeps a picked past date', () => {
+    render(<StrikeBattleMap marketOpen={true} />);
+    pick('2026-04-20');
+    expect(lastCall()).toEqual([false, '2026-04-20', null]);
+    expect(todayButton()).toBeInTheDocument();
+
+    crossMidnight();
+
+    expect(dateInput().value).toBe('2026-04-20');
+    expect(lastCall()).toEqual([false, '2026-04-20', null]);
+    expect(todayButton()).toBeInTheDocument();
+  });
+
+  it('turns a picked tomorrow live when midnight reaches it', () => {
+    render(<StrikeBattleMap marketOpen={true} />);
+    pick(m.morning);
+    expect(lastCall()).toEqual([false, m.morning, null]);
+    expect(todayButton()).toBeInTheDocument();
+
+    crossMidnight();
+
+    expect(dateInput().value).toBe(m.morning);
+    expect(lastCall()).toEqual([true, m.morning, null]);
+    expect(todayButton()).not.toBeInTheDocument();
+  });
+
+  it('TODAY goes back to following the date', () => {
+    render(<StrikeBattleMap marketOpen={true} />);
+    pick('2026-04-20');
+
+    fireEvent.click(screen.getByRole('button', { name: /^today$/i }));
+
+    expect(dateInput().value).toBe(m.night);
+    expect(lastCall()).toEqual([true, m.night, null]);
+    expect(todayButton()).not.toBeInTheDocument();
+
+    // Following, not pinned to the night's string.
+    crossMidnight();
+
+    expect(dateInput().value).toBe(m.morning);
+    expect(lastCall()).toEqual([true, m.morning, null]);
+    expect(todayButton()).not.toBeInTheDocument();
+  });
+
+  it('TODAY clicked just past midnight, before the clock ticks, follows the new day', () => {
+    render(<StrikeBattleMap marketOpen={true} />);
+    pick('2026-04-20');
+
+    // The wall clock is past midnight; the shared clock has not ticked, so
+    // its `today` is still the night's. TODAY must not pin that string.
+    clock.today = m.morning;
+    fireEvent.click(screen.getByRole('button', { name: /^today$/i }));
+    act(() => {
+      vi.advanceTimersByTime(31_000);
+    });
+
+    expect(dateInput().value).toBe(m.morning);
+    expect(lastCall()).toEqual([true, m.morning, null]);
+    expect(todayButton()).not.toBeInTheDocument();
+  });
+
+  it('keeps the picked date while the field is empty, and follows today once it is left', () => {
+    render(<StrikeBattleMap marketOpen={true} />);
+    pick('2026-04-20');
+
+    // Emptying the field (the first "0" of a zero-padded month does it) is
+    // mid-edit: the data keeps the picked date.
+    pick('');
+
+    expect(dateInput().value).toBe('');
+    expect(lastCall()).toEqual([false, '2026-04-20', null]);
+
+    // Leaving it empty follows today.
+    fireEvent.blur(dateInput());
+
+    expect(dateInput().value).toBe(m.night);
+    expect(lastCall()).toEqual([true, m.night, null]);
+
+    crossMidnight();
+
+    expect(dateInput().value).toBe(m.morning);
+    expect(lastCall()).toEqual([true, m.morning, null]);
+  });
+});
+
+// Real timers: user-event's own waits never resolve under fake ones.
+describe('StrikeBattleMap: typing a date', () => {
+  it('takes a date typed key by key over the field', async () => {
+    const user = userEvent.setup();
+    mockHook.mockReturnValue(happyPathReturn());
+    render(<StrikeBattleMap marketOpen={true} />);
+    const input = screen.getByLabelText<HTMLInputElement>(
+      'Strike Battle Map date',
+    );
+
+    // Emptying the field first must not snap it back to today and lose the
+    // typing: the shared DateInput keeps an emptied field as a local draft.
+    await user.clear(input);
+    await user.type(input, '2026-04-21');
+
+    expect(input.value).toBe('2026-04-21');
+    expect(mockHook.mock.calls.at(-1)).toEqual([false, '2026-04-21', null]);
+    expect(
+      screen.getByRole('button', { name: /^today$/i }),
+    ).toBeInTheDocument();
   });
 });

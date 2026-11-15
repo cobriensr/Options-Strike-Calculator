@@ -42,7 +42,8 @@ import {
 } from '../../hooks/useGexStrikeExpiry';
 import { SectionBox } from '../ui';
 import { DateInput } from '../ui/DateInput';
-import { ctWallClockToUtcIso, getETToday } from '../../utils/timezone';
+import { useFollowedDate } from '../../hooks/useFollowedDate';
+import { ctWallClockToUtcIso } from '../../utils/timezone';
 import {
   computeConcentration,
   nearestOtmStrikes,
@@ -97,8 +98,14 @@ function utcIsoToCtMinute(iso: string): number | null {
 }
 
 function StrikeBattleMapInner({ marketOpen }: StrikeBattleMapProps) {
-  const today = getETToday();
-  const [selectedDate, setSelectedDate] = useState<string>(today);
+  // The date follows today across ET midnight unless the owner picked another
+  // one. This panel is memoized, so only the shared ET clock behind
+  // `useFollowedDate` re-renders it at the roll.
+  const {
+    date: selectedDate,
+    setDate: setSelectedDate,
+    today,
+  } = useFollowedDate();
   const [strikeCount, setStrikeCount] =
     useState<StrikeCount>(DEFAULT_STRIKE_COUNT);
   const [selectedMinuteCT, setSelectedMinuteCT] = useState<number | null>(null);
@@ -158,7 +165,7 @@ function StrikeBattleMapInner({ marketOpen }: StrikeBattleMapProps) {
       {!isLive && (
         <button
           type="button"
-          onClick={() => setSelectedDate(today)}
+          onClick={() => setSelectedDate('')}
           className="text-secondary hover:text-primary border-edge cursor-pointer rounded border bg-transparent px-2 py-0.5 font-mono text-[10px]"
         >
           TODAY
