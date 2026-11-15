@@ -28,7 +28,10 @@ export type BackupAction = 'rewrite' | 'delete' | 'fill' | 'tag';
  * sums of the 20 days before the row, so a thin day in that base pulls it up.
  */
 export interface ContaminatedRange {
-  /** Bar timestamps from here (inclusive, finite: the band before the scope starts from it) ... */
+  /**
+   * Bar timestamps from here (inclusive, finite) ... The band before the scope starts one
+   * minute after it, at `fromMs + BAR_CLOSE_LAG_MS`: the first row whose window can reach the range.
+   */
   fromMs: number;
   /** ... to here, exclusive. */
   toMs: number;
