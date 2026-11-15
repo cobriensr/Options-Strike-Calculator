@@ -143,14 +143,19 @@ mutation.
    needs it.
    - `useGexTarget`'s `initialDate` is test-only: production passes none,
      per the header at `useGexTarget.ts:26-28`. Delete it.
-   - Its four test call sites pick through the returned setter or a fake
-     clock. The helper gets no initial-pick parameter (R3).
+   - Its four test call sites (`useGexTarget.test.ts:518,547,788,877`)
+     pick through the returned setter. A fake clock can't start the hook
+     on a past date. Mounting now fetches today first, so those tests
+     clear `mockFetch` after the pick or revise their counts. The helper
+     gets no initial-pick parameter (R3).
 3. **Greek flow and zero gamma**, plus their tests.
 4. **Strike battle map and dealer regime**, plus their tests.
 5. **Greek heatmap and Periscope lottery**, plus their tests. The heatmap
    drops its own `visibilitychange` today, since the clock covers it.
 6. **GEX landscape, pin setup and opening flow** (display date and `max`),
-   plus tests. Split this phase if it passes 5 files.
+   in two commits:
+   - **6a. GEX landscape and pin setup**, plus their tests (4 files).
+   - **6b. Opening flow**, plus its test (2 files).
 7. **Lottery Finder and Silent Boom.** Neither panel has a rollover test
    today. The CT comparators move with them (design item 3).
    - **7a. Lottery Finder and `useLotteryFinder`**, plus tests.
@@ -162,7 +167,12 @@ mutation.
      fix: Silent Boom already resets on a date change.
    - **7c. The row hooks** `useNetFlowHistory`, `useContractTape` and
      `useTickerCandles`: their today comparisons move onto the shared
-     clock, plus tests.
+     clock.
+     - The three edits are the same, so one new shared test file,
+       `src/__tests__/hooks/rowHooksRollover.test.ts`, crosses midnight for
+       all three: 4 files.
+     - Edit the existing test files only if a mock there breaks. If that
+       pushes past 5 files, split per hook.
 8. **Interval B/A.** `IntervalBAFeed` and `useIntervalBAFeed`: `max` and
    the poll gate go on the shared clock, plus tests.
 9. **`useStickyUnion`.** Sweep other-date keys on a date change, plus its
