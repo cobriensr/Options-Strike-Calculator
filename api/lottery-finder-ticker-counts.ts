@@ -168,8 +168,9 @@ export default async function handler(
           takeit_prob,
           -- Score components carried through so the final SELECT (where the
           -- lottery_ticker_stats LEFT JOIN exposes inversion_quintile) can
-          -- gate the score floor on the DISPLAYED qas, mirroring /api/lottery-finder
-          -- exactly so chip totals never diverge from the feed (Fix C/D).
+          -- gate the score floor on the DISPLAYED qas, mirroring
+          -- /api/lottery-finder exactly so chip totals never diverge from the
+          -- feed (Fix C/D).
           score, round_trip_score_deduct,
           MAX(takeit_prob) OVER (
             PARTITION BY underlying_symbol, strike, option_type, expiry
