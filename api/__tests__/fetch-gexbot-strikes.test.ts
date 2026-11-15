@@ -473,7 +473,8 @@ describe('fetch-gexbot-strikes handler', () => {
       // 3 attempts on a 1 s then 2 s backoff, then the one failure is filed
       // under the stable fingerprint at level warning. The run still says it
       // failed (R4). This stub sends no Retry-After, so the tag says `none`
-      // (the quota shape), and the vendor's body stays in the message.
+      // (consistent with a quota, not proof of one), and the vendor's body
+      // stays in the message.
       vi.useFakeTimers();
       vi.setSystemTime(MARKET_TIME);
       vi.spyOn(Math, 'random').mockReturnValue(0);
@@ -516,9 +517,10 @@ describe('fetch-gexbot-strikes handler', () => {
     });
 
     it('http-429: the exhausted event carries the Retry-After the vendor sent, in ms', async () => {
-      // Short-window limit (Retry-After present) versus pool quota (none) is
-      // the question the next 429 has to answer; the tag is the answer. A
-      // 2 s ask is waited out (twice), so all 3 attempts run.
+      // Short-window limit versus pool quota is the question the next 429 has
+      // to answer; the tag carries the evidence (the docs put Retry-After on
+      // the short-window limit). A 2 s ask is waited out (twice), so all 3
+      // attempts run.
       vi.useFakeTimers();
       vi.setSystemTime(MARKET_TIME);
       vi.spyOn(Math, 'random').mockReturnValue(0);

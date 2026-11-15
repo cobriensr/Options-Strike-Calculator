@@ -35,8 +35,24 @@ the trial so we can quantify value before renewal/cancel decision.
 Field-by-field comparison vs existing stack lives in the conversation
 transcript (parsed from `github.com/nfa-llc/gexbot-openapi`,
 `latest/gexbot.spec3.yaml`, OAS 3.0.1, GEXBot v2.2.0). Auth is
-`Authorization: Bearer gexbot_custom_<secret>`. Rate limit: 1 req/sec per
-(ticker, metric). Refresh ≤ 1/sec. HTTP timeout ≤ 1s required.
+`Authorization: Bearer gexbot_custom_<secret>`. Refresh ≤ 1/sec.
+
+Rate limits, corrected 2026-11-14 against the vendor's rate-limits page and
+`AGENTS.md` (spec 2.17.0). The first draft read the vendor's polling advice as
+an enforced limit of 1 req/sec per (ticker, metric), and a required 1 s
+timeout. What the vendor says:
+
+- Polling advice: data updates at most once per second, so do not send more
+  than one request per second per ticker per metric. No per-second limit
+  applies by default.
+- A per-account short-window limit (a window such as one second or one minute,
+  counted across every key of the account) for requests sent in a loop with no
+  delay. It answers 429 with a `Retry-After` header.
+- Daily and monthly quotas per endpoint pool, unpublished. Daily quotas reset
+  at midnight ET and monthly quotas at midnight ET on the first of the month.
+  The docs say nothing about `Retry-After` on a quota 429.
+- Timeout: use about 1 s for the snapshot routes. This is advice. The client
+  runs 2.5 s on purpose (`GEXBOT_TIMEOUT_MS` in `api/_lib/gexbot-client.ts`).
 
 ## Decisions
 
