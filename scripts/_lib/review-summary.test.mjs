@@ -591,7 +591,11 @@ describe('the "npm : " prefix Windows PowerShell 5.1 puts on the first stderr li
   });
 });
 
-describe('review-summary CLI', () => {
+// Each CLI test spawns node, and a spawn can exceed the 15 s testTimeout
+// under the full gate's load.
+const CLI_TIMEOUT = 60_000;
+
+describe('review-summary CLI', { timeout: CLI_TIMEOUT }, () => {
   /** @param {string[]} args @param {{ input?: string }} [options] */
   function run(args, options = {}) {
     return spawnSync(process.execPath, [CLI, ...args], {
