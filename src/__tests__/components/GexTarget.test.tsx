@@ -523,3 +523,29 @@ describe('GexTarget: refresh control', () => {
     expect(refresh).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('GexTarget: date field', () => {
+  it('hands a picked date on, and an emptied field only once it is left', () => {
+    const setSelectedDate = vi.fn();
+    render(
+      <GexTarget
+        marketOpen={true}
+        gexTarget={makeHookResult({ setSelectedDate })}
+      />,
+    );
+    const input = screen.getByLabelText('Select date');
+
+    fireEvent.change(input, { target: { value: '2026-04-03' } });
+    expect(setSelectedDate.mock.calls).toEqual([['2026-04-03']]);
+
+    // Emptying is mid-edit (the first "0" of a zero-padded month does it):
+    // nothing is passed on and the field shows empty.
+    fireEvent.change(input, { target: { value: '' } });
+    expect(setSelectedDate.mock.calls).toEqual([['2026-04-03']]);
+    expect(input).toHaveValue('');
+
+    // Leaving it empty passes '' on once; the hook maps it to today.
+    fireEvent.blur(input);
+    expect(setSelectedDate.mock.calls).toEqual([['2026-04-03'], ['']]);
+  });
+});
