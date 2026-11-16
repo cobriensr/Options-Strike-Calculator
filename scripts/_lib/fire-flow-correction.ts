@@ -1099,8 +1099,8 @@ interface GapRowDb {
  * `ws_net_flow_per_ticker` carries the series' own session bounds on `ts` as
  * well as the minute's window, so it reads only what the series reads (a tick
  * past the session close hides no gap) and the planner has a bounded
- * (ticker, ts) range on the unique index `ws_net_flow_per_ticker_uq` to work
- * with.
+ * (ticker, ts) range on the covering unique index
+ * `ws_net_flow_per_ticker_cov_uq` to work with.
  */
 export async function readWsGaps(
   sql: Sql,

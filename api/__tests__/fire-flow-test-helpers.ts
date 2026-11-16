@@ -19,11 +19,12 @@ import { applyMigration } from './pglite-migrations';
  * In order: lottery_finder_fires (#110) and the columns the score and the flow
  * need (#124, #126, #154, #158, #167, #168, #177, #178), silent_boom_alerts
  * (#134), the flow tables (#121 WS, #122 history), then the weights store
- * (#208, which adds `score_version`) and #209 (which rebuilds `combined_score`
- * and the view #177 made, as production has them).
+ * (#208, which adds `score_version`), #209 (which rebuilds `combined_score`
+ * and the view #177 made, as production has them) and #210 (which swaps the
+ * WS table's plain unique (ticker, ts) index for the covering one).
  */
 const FIRE_MIGRATIONS = [
-  110, 121, 122, 124, 126, 134, 154, 158, 167, 168, 177, 178, 208, 209,
+  110, 121, 122, 124, 126, 134, 154, 158, 167, 168, 177, 178, 208, 209, 210,
 ];
 
 export async function buildFireTables(pg: PGlite): Promise<void> {

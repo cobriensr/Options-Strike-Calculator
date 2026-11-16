@@ -1359,8 +1359,9 @@ describe('WS gaps of the doubled rows (real SQL)', () => {
   it('reads the WS table only through its (ticker, ts) unique index, never a scan of the table', async () => {
     await seedGapWorld();
     // Migration #199 dropped the redundant (ticker, ts DESC) copy on production;
-    // the fixture still has it, so drop it here and the plan can only name the
-    // unique index the production probe uses.
+    // the fixture still has it (it is built from #121, and #210 already swapped
+    // the plain unique index for the covering one), so drop it here and the
+    // plan can only name the unique index the production probe uses.
     await pg.exec('DROP INDEX IF EXISTS ws_net_flow_per_ticker_ticker_ts_idx');
     const real = neonOverPglite(pg);
     const captured: Array<{ text: string; params: unknown[] }> = [];
@@ -1423,14 +1424,14 @@ describe('WS gaps of the doubled rows (real SQL)', () => {
         .map((n) => n['Index Name'])
         .filter((name): name is string => typeof name === 'string');
       for (const name of named) {
-        expect(name).toBe('ws_net_flow_per_ticker_uq');
+        expect(name).toBe('ws_net_flow_per_ticker_cov_uq');
       }
       const bitmapIndexes = nodes
         .filter((n) => n['Node Type'] === 'Bitmap Index Scan')
         .map((n) => String(n['Index Name']))
         .filter((name) => name.startsWith('ws_net_flow_per_ticker'));
       for (const name of bitmapIndexes) {
-        expect(name).toBe('ws_net_flow_per_ticker_uq');
+        expect(name).toBe('ws_net_flow_per_ticker_cov_uq');
       }
       expect(named.length + bitmapIndexes.length).toBeGreaterThan(0);
     } finally {
