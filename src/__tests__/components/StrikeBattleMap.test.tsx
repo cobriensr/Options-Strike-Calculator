@@ -450,6 +450,55 @@ describe.each([
     expect(lastCall()).toEqual([true, m.morning, null]);
   });
 
+  it('never asks for the new date at the old minute when it rolls while scrubbed', () => {
+    render(<StrikeBattleMap marketOpen={true} />);
+    fireEvent.change(screen.getByLabelText(/snapshot minute/i), {
+      target: { value: '600' },
+    });
+    mockHook.mockClear();
+
+    crossMidnight();
+
+    // Not just the last call: no render, committed or not, may pair the new
+    // date with the minute that belonged to the old one.
+    const stale = mockHook.mock.calls.filter(
+      (c) => c[1] === m.morning && c[2] !== null,
+    );
+    expect(stale).toEqual([]);
+    expect(lastCall()).toEqual([true, m.morning, null]);
+  });
+
+  it('never asks for a picked date at the old minute when a date is picked while scrubbed', () => {
+    render(<StrikeBattleMap marketOpen={true} />);
+    fireEvent.change(screen.getByLabelText(/snapshot minute/i), {
+      target: { value: '600' },
+    });
+    mockHook.mockClear();
+
+    pick('2026-04-20');
+
+    const stale = mockHook.mock.calls.filter(
+      (c) => c[1] === '2026-04-20' && c[2] !== null,
+    );
+    expect(stale).toEqual([]);
+    expect(lastCall()).toEqual([false, '2026-04-20', null]);
+  });
+
+  it('does not bring a scrubbed minute back when the date returns to the one it belonged to', () => {
+    render(<StrikeBattleMap marketOpen={true} />);
+    fireEvent.change(screen.getByLabelText(/snapshot minute/i), {
+      target: { value: '600' },
+    });
+
+    pick('2026-04-20');
+    pick(m.night);
+
+    // The minute went with the night it was set on; coming back to that date
+    // by hand starts at "latest", not at 10:00 again.
+    expect(lastCall()?.[1]).toBe(m.night);
+    expect(lastCall()?.[2]).toBeNull();
+  });
+
   it('judges the date live in a render just past midnight, before the clock ticks', () => {
     render(<StrikeBattleMap marketOpen={true} />);
 

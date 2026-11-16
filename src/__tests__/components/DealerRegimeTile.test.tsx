@@ -302,6 +302,55 @@ describe.each([
     expect(lastCall()).toEqual([true, null, null]);
   });
 
+  it('never asks for the new date at the old minute when it rolls while scrubbed', () => {
+    render(<DealerRegimeTile marketOpen={true} />);
+    fireEvent.change(screen.getByLabelText(/snapshot minute/i), {
+      target: { value: '600' },
+    });
+    mockHook.mockClear();
+
+    crossMidnight();
+
+    // Not just the last call: no render, committed or not, may pair the new
+    // date with the minute that belonged to the old one. `at` is built from
+    // the date it is for, so the new date shows in its leading digits.
+    const stale = mockHook.mock.calls.filter(
+      (c) => typeof c[2] === 'string' && c[2].startsWith(m.morning),
+    );
+    expect(stale).toEqual([]);
+    expect(lastCall()).toEqual([true, null, null]);
+  });
+
+  it('never asks for a picked date at the old minute when a date is picked while scrubbed', () => {
+    render(<DealerRegimeTile marketOpen={true} />);
+    fireEvent.change(screen.getByLabelText(/snapshot minute/i), {
+      target: { value: '600' },
+    });
+    mockHook.mockClear();
+
+    pick('2026-04-20');
+
+    const stale = mockHook.mock.calls.filter(
+      (c) => c[1] === '2026-04-20' && c[2] !== null,
+    );
+    expect(stale).toEqual([]);
+    expect(lastCall()).toEqual([false, '2026-04-20', null]);
+  });
+
+  it('does not bring a scrubbed minute back when the date returns to the one it belonged to', () => {
+    render(<DealerRegimeTile marketOpen={true} />);
+    fireEvent.change(screen.getByLabelText(/snapshot minute/i), {
+      target: { value: '600' },
+    });
+
+    pick('2026-04-20');
+    pick(m.night);
+
+    // The minute went with the night it was set on; coming back to that date
+    // by hand starts at "latest", not at 10:00 again.
+    expect(lastCall()).toEqual([true, null, null]);
+  });
+
   it('judges the date live in a render just past midnight, before the clock ticks', () => {
     const { rerender } = render(<DealerRegimeTile marketOpen={true} />);
 

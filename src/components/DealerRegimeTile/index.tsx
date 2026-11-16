@@ -21,7 +21,7 @@
  * Spec: docs/superpowers/specs/dealer-regime-tile-2026-05-03.md
  */
 
-import { memo, useEffect, useMemo, useState } from 'react';
+import { memo, useCallback, useMemo, useState } from 'react';
 import {
   useDealerRegime,
   type DealerRegimeRow,
@@ -62,16 +62,33 @@ function DealerRegimeTileInner({ marketOpen }: DealerRegimeTileProps) {
     setDate: setSelectedDate,
     today,
   } = useFollowedDate();
-  const [selectedMinuteCT, setSelectedMinuteCT] = useState<number | null>(null);
   const isLive = selectedDate === today;
   const liveAvailable = isLive && marketOpen;
 
-  // Reset minute filter when date changes — switching days should land
-  // on "latest available" for the new day rather than carrying a stale
-  // minute over.
-  useEffect(() => {
-    setSelectedMinuteCT(null);
-  }, [selectedDate]);
+  // A scrubbed minute belongs to the date it was set on. Keeping them together
+  // means no render, committed or not, pairs a new date (the ET midnight roll,
+  // or a date picked while scrubbed) with the old date's minute: that would
+  // fetch the new date at a minute from the old one before the clean request.
+  // Switching days lands on "latest available" rather than carrying the
+  // minute over (which would silently produce empty rows if the new day has
+  // different ts_minute coverage). A scrub for another date is dropped during
+  // render, with no effect, so it cannot come back if the date returns.
+  const [minuteScrub, setMinuteScrub] = useState<{
+    date: string;
+    minute: number;
+  } | null>(null);
+  if (minuteScrub !== null && minuteScrub.date !== selectedDate) {
+    setMinuteScrub(null);
+  }
+  const selectedMinuteCT =
+    minuteScrub !== null && minuteScrub.date === selectedDate
+      ? minuteScrub.minute
+      : null;
+  const setSelectedMinuteCT = useCallback(
+    (minute: number | null) =>
+      setMinuteScrub(minute === null ? null : { date: selectedDate, minute }),
+    [selectedDate],
+  );
 
   // Scrubbed timestamp drives both the API filter and the classifier's
   // `now` reference. When live (no scrubbing): null + Date.now() default.
