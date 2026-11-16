@@ -66,20 +66,22 @@ export default memo(function PinSetupTile({ marketOpen }: Props) {
 
   // Today (ET), from the shared ET clock, so a tab left open past midnight
   // moves with it: used to (a) seed the picker so it never reads "blank"
-  // and (b) clamp `max` so future dates can't be picked. The hook's `date`
-  // keeps its own sentinel: null is live, and the data follows the day by
-  // itself.
+  // and (b) set `max`, the browser's hint that a future date isn't wanted. The
+  // hook's `date` keeps its own sentinel: null is live, and the data follows
+  // the day by itself.
   const today = useETToday();
   // A pick, judged against the clock at the moment of the pick rather than
   // the render's `today` (as useFollowedDate does): in the second after
   // midnight, before the shared clock ticks, a pick of the new today must
-  // still mean live. '' (the field left empty) and today both go live; only a
-  // past date flips into historical mode, and a future date is refused, as
-  // `max` says.
+  // still mean live. '' (the field left empty) and today both go live; any
+  // other date flips into historical mode. A future date is passed on too:
+  // `max` is only a hint, and a partial date on the way to a past one is often
+  // a future one (Chrome forwards a complete date after each segment and keeps
+  // the old year, so typing 12152025 over 2026-11-16 passes through
+  // 2026-12-16). Refusing it snapped the field back and lost the month.
   const pickDate = useCallback(
     (picked: string) => {
       const now = getETToday();
-      if (picked > now) return;
       setDate(picked === '' || picked === now ? null : picked);
     },
     [setDate],

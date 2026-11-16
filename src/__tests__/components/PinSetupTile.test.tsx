@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -435,14 +436,55 @@ describe.each([
     expect(SETDATE.mock.calls).toEqual([['2026-04-20']]);
   });
 
-  it('refuses a future date, as max says', () => {
-    mockHook(makeStatus(), { date: null });
+  // A hook that keeps its date, as the real one does (the other tests hand the
+  // panel a fixed date).
+  function useStatefulHook() {
+    const [date, setDate] = useState<string | null>(null);
+    return {
+      data: makeStatus(),
+      loading: false,
+      error: null,
+      date,
+      setDate: (d: string | null) => {
+        SETDATE(d);
+        setDate(d);
+      },
+      refresh: REFRESH,
+    };
+  }
+
+  it('passes a future date on and keeps it in the field', () => {
+    mockUsePinSetupStatus.mockImplementation(useStatefulHook);
     render(<PinSetupTile marketOpen={true} />);
 
     pick(m.morning);
 
-    expect(SETDATE).not.toHaveBeenCalled();
-    expect(dateInput().value).toBe(m.night);
+    // `max` is a hint the browser does not enforce on typing. A typed future
+    // date is the owner's pick, and a partial date on the way to a past one
+    // (below) is often a future one.
+    expect(SETDATE.mock.calls).toEqual([[m.morning]]);
+    expect(dateInput().value).toBe(m.morning);
+  });
+
+  it('keeps every step of a month-later past date typed over the field', () => {
+    // Chrome forwards a complete date after each segment and keeps the old
+    // year: 12152025 over today goes 2026-01-.., 2026-12-.. (a future date),
+    // 2026-12-01, 2026-12-15, then the year lands. Refusing the future step
+    // snapped the field back and lost the month.
+    mockUsePinSetupStatus.mockImplementation(useStatefulHook);
+    render(<PinSetupTile marketOpen={true} />);
+
+    for (const step of [
+      '2026-01-16',
+      '2026-12-16',
+      '2026-12-01',
+      '2026-12-15',
+      '2025-12-15',
+    ]) {
+      pick(step);
+      expect(SETDATE.mock.calls.at(-1)).toEqual([step]);
+      expect(dateInput().value).toBe(step);
+    }
   });
 
   it('goes live when the new today is picked just past midnight, before the clock ticks', () => {

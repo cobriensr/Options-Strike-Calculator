@@ -995,4 +995,78 @@ describe.each([
 
     expect(lastAsk()?.[1]).toBe(m.morning);
   });
+
+  // -- Resets that live in children and refs, read through what they show.
+  // Five feeds, one minute apart: the Top 5 changes membership on the third
+  // (so one strike has been in the set longer than the rest and is marked
+  // Anchor), and spot climbs 2 pts a feed (a drift, which the bias summary
+  // reports). The panel is re-rendered per feed by flipping marketOpen.
+
+  const FEEDS = 5;
+  const feedStrikes = (k: number) => {
+    const price = 6880 + 2 * k;
+    // A..D stay; the fifth place is E for the first two feeds and F from the
+    // third on. The tracker stamps a newcomer with the timestamp the panel
+    // still holds in the render the data arrives in (it mirrors the feed one
+    // render late), so the change needs two feeds of history before it to
+    // leave the newcomer later than the rest.
+    const shifted = k >= 2;
+    const fifth = shifted ? 10_000_000 : 60_000_000;
+    const challenger = shifted ? 65_000_000 : 10_000_000;
+    return [
+      makeStrike(6900, price, 100_000_000, 1_000_000),
+      makeStrike(6910, price, 90_000_000, 1_000_000),
+      makeStrike(6920, price, 80_000_000, 1_000_000),
+      makeStrike(6930, price, 70_000_000, 1_000_000),
+      makeStrike(6940, price, fifth, 1_000_000),
+      makeStrike(6950, price, challenger, 1_000_000),
+    ];
+  };
+
+  function feedTheSession(onBiasChange: (summary: string | null) => void) {
+    mockScrub(null);
+    const panel = (marketOpen: boolean) => (
+      <CollapseAllContext.Provider value={collapseSignal}>
+        <GexLandscape marketOpen={marketOpen} onBiasChange={onBiasChange} />
+      </CollapseAllContext.Provider>
+    );
+    const view = render(panel(true));
+    for (let k = 0; k < FEEDS; k += 1) {
+      const timestamp = `${m.night}T19:4${k}:00.000Z`;
+      dataMock.mockReturnValue({
+        strikes: feedStrikes(k),
+        timestamps: [timestamp],
+        gexDelta5mMap: new Map<number, number | null>(),
+        gexDelta15mMap: new Map<number, number | null>(),
+        gexDelta30mMap: new Map<number, number | null>(),
+        loading: false,
+        error: null,
+        refresh: vi.fn(),
+      });
+      view.rerender(panel(k % 2 === 1));
+    }
+    fireEvent.click(screen.getByRole('tab', { name: 'Top 5 GEX' }));
+  }
+
+  it('clears the Top 5 anchor at the roll', () => {
+    feedTheSession(vi.fn());
+    expect(screen.queryAllByLabelText('Anchor strike')).toHaveLength(1);
+
+    crossMidnight();
+
+    // Anchor, not New: New lags one render, which was already so.
+    expect(screen.queryAllByLabelText('Anchor strike')).toHaveLength(0);
+  });
+
+  it('clears the price trend at the roll', () => {
+    const onBiasChange = vi.fn();
+    feedTheSession(onBiasChange);
+    expect(onBiasChange.mock.calls.at(-1)?.[0]).toContain(
+      'Price trend: DRIFTING UP',
+    );
+
+    crossMidnight();
+
+    expect(onBiasChange.mock.calls.at(-1)?.[0]).not.toContain('Price trend');
+  });
 });
