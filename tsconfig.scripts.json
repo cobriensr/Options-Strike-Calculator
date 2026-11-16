@@ -57,6 +57,7 @@
     "scripts/_lib/futures-derived-front-month-run.test.ts",
     "scripts/_lib/futures-derived-front-month-pglite.test.ts",
     "scripts/_lib/futures-derived-front-month-blank-pglite.test.ts",
+    "scripts/_lib/futures-derived-front-month-july-pglite.test.ts",
     "scripts/_lib/futures-volume-null.ts",
     "scripts/_lib/futures-volume-null-pglite.test.ts",
     "scripts/backfill-futures-bars.ts",

@@ -1184,6 +1184,7 @@ describe('applying the front-month recompute on real SQL (pglite)', () => {
     ) => ({
       inScope,
       toWrite,
+      deleted: 0,
       price,
       change1h,
       changeDay,
@@ -1229,6 +1230,21 @@ describe('applying the front-month recompute on real SQL (pglite)', () => {
             },
           },
           all: { rows: 0, toNull: 0 },
+        },
+      },
+      // The rules of 2026-11-15: GC is not in this world, and no CL row is before the scope.
+      beforeScopeRules: {
+        staleDelete: { byRoot: {}, all: { rows: 0, deleted: 0 } },
+        contractSwitch: {
+          byRoot: {
+            CL: {
+              at: '2026-07-21T22:00:00.000Z',
+              rows: 0,
+              dayChangeToNull: 0,
+              change1hAcross: 0,
+            },
+          },
+          all: { rows: 0, dayChangeToNull: 0 },
         },
       },
     });

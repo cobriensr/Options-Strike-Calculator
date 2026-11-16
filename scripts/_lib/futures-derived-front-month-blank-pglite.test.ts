@@ -983,6 +983,8 @@ describe('the GC and CL volume ratios set to NULL, on real SQL (pglite)', () => 
     ) => ({
       inScope,
       toWrite,
+      // No band row of this world has a bar before it that is old enough to be deleted.
+      deleted: 0,
       price,
       change1h,
       changeDay,
@@ -1031,6 +1033,34 @@ describe('the GC and CL volume ratios set to NULL, on real SQL (pglite)', () => 
             },
           },
           all: { rows: 7, toNull: 5 },
+        },
+      },
+      // The rules of 2026-11-15 find nothing here: no GC bar precedes the band rows (so none is stale,
+      // and the four stay), and no CL row is priced from a bar at or after the switch.
+      beforeScopeRules: {
+        staleDelete: {
+          byRoot: {
+            GC: {
+              rows: 4,
+              deleted: 0,
+              repeatsClose: 0,
+              over60Min: 0,
+              noBar: 4,
+              olderThanMin: 15,
+            },
+          },
+          all: { rows: 4, deleted: 0 },
+        },
+        contractSwitch: {
+          byRoot: {
+            CL: {
+              at: '2026-07-21T22:00:00.000Z',
+              rows: 0,
+              dayChangeToNull: 0,
+              change1hAcross: 0,
+            },
+          },
+          all: { rows: 0, dayChangeToNull: 0 },
         },
       },
     });

@@ -147,13 +147,17 @@ import {
 } from './futures-derived-batch.js';
 import {
   FRONT_MONTH,
+  acrossSwitch,
+  bandStartMs,
   frontMonthBackupLine,
   onRepairedDay,
+  priceBarStale,
   readFrontMonthBackup,
   repairedDays,
   volumeBaseContaminated,
   volumeBaseCutoffMs,
   blankOnlyBand,
+  type ContractSwitch,
   type FrontMonthBackup,
 } from './futures-derived-front-month.js';
 import {
@@ -1507,6 +1511,8 @@ export interface DayGroup {
   byField: Record<SnapshotField, number>;
   /** Of the volume ratios written (`byField.volumeRatio`), the ones the NULL rule sets (a contaminated base). */
   blanked: number;
+  /** Rows of `inScope` the junk-delete step deletes instead of writing (before-scope band only): never also in `toWrite`. */
+  deleted: number;
 }
 
 /**
@@ -1524,6 +1530,56 @@ export interface VolumeBlank {
    * written. Null until they are read.
    */
   band: { rows: number; toNull: number; fromMs: number; toMs: number } | null;
+}
+
+/**
+ * Front-month only: what the delete rule did to the before-scope band of a root
+ * (FRONT_MONTH.staleBandDelete). A row is stale when the bar it was priced from, the latest
+ * bar at or before the row less 60 s, is older than the freshness gate.
+ */
+export interface StaleBandStats {
+  /** The rows of the band. */
+  rows: number;
+  /** Rows to delete: the price bar is older than MAX_BAR_AGE_MS. */
+  deleted: number;
+  /** Of the deleted rows, those whose stored price is the close of their price bar. */
+  repeatsClose: number;
+  /** Of the deleted rows, those whose price bar is older than 60 min. */
+  over60Min: number;
+  /** Rows with no bar at or before them: kept. */
+  noBar: number;
+  /** Age in minutes of the price bar of each row with one, sorted. */
+  ages: number[];
+}
+
+/** One jump between consecutive bars, the evidence of where a series switched. */
+export interface SwitchJump {
+  fromTsMs: number;
+  toTsMs: number;
+  fromClose: number;
+  toClose: number;
+}
+
+/**
+ * Front-month only: what the switch rule did to the before-scope band of a root
+ * (FRONT_MONTH.contractSwitch).
+ */
+export interface SwitchStats {
+  atMs: number;
+  contracts: string;
+  /** Rows priced from a bar at or after the switch whose cash open is before it. */
+  rows: number;
+  /** Of those, the rows with a stored day change: set to NULL. */
+  dayChangeToNull: number;
+  /** Rows with a stored 1h change that reads a bar before the switch for a price bar from it: counted, not written. */
+  change1hAcross: number;
+  /** The largest jump between consecutive bars within a day of the switch; null with fewer than two bars. */
+  jump: SwitchJump | null;
+}
+
+export interface BandRuleStats {
+  staleDelete: StaleBandStats | null;
+  contractSwitch: SwitchStats | null;
 }
 
 export interface DaySplit {
@@ -1602,6 +1658,8 @@ export interface SnapshotSymbolReport {
   daySplit: DaySplit | null;
   /** Front-month only, null for a root with no contaminated base (and otherwise): see VolumeBlank. */
   volumeBlank: VolumeBlank | null;
+  /** Front-month only, null until the before-scope band of a root with a contaminated base is read. */
+  bandRules: BandRuleStats | null;
   /** A thin root's control, split by explanation; null for ES and NQ, which must match exactly. */
   thin: ThinControl | null;
 }
@@ -1625,11 +1683,20 @@ export interface JunkRow {
   symbol: Sym;
   tsMs: number;
   storedPrice: number;
-  /** The deleted bar whose close the stored price equals, and that close. */
+  /**
+   * The deleted bar whose close the stored price equals, and that close. For a `stale-band`
+   * row, the bar the row was priced from (the latest closed bar), which Phase 6 did not touch.
+   */
   barTsMs: number;
   barClose: number;
   /** The close of the latest closed bar at the row's ts: what the row could have said. */
   latestClose: number | null;
+  /**
+   * Front-month only: a row of the before-scope band deleted for a price bar older than the
+   * freshness gate (FRONT_MONTH.staleBandDelete). Absent: priced from a bar Phase 2 deleted.
+   * Both go through the junk-delete step.
+   */
+  kind?: 'stale-band';
   row: Row;
 }
 
@@ -1761,6 +1828,7 @@ const emptyDayGroup = (): DayGroup => ({
   toWrite: 0,
   byField: emptyFields(),
   blanked: 0,
+  deleted: 0,
 });
 
 const utcDay = (tsMs: number): string => iso(tsMs).slice(0, 10);
@@ -2448,45 +2516,287 @@ function blankVolumeRatios(
  * to NULL where one is stored. They are in no control, drift or information list. They go through
  * the same guarded UPDATE, backup, preflight and verify as every snapshot write, and count in
  * the rows to write and `--expect-snapshots`, and in the day split as their own kind.
+ *
+ * Two rules of the owner's decision 2026-11-15 act on the same rows (planStaleBand,
+ * planContractSwitch): a row priced from a stale bar is deleted by the junk-delete step and gets
+ * no write of its own, and a day change that reads the old contract for a price of the new one is
+ * set to NULL in the same UPDATE as the row's ratio.
  */
 async function blankBeforeScope(
   symbol: Sym,
   scopeStartMs: number,
   changes: SnapshotChange[],
   report: SnapshotSymbolReport,
+  junk: JunkRow[],
 ): Promise<void> {
   const band = blankOnlyBand(symbol, scopeStartMs);
   const stats = report.volumeBlank;
   if (band == null || stats == null) return;
   const rows = await readSnapshots(symbol, band.fromMs, band.toMs);
   const group = report.daySplit?.beforeScope;
-  stats.band = {
+  const bandStats = {
     rows: rows.length,
     toNull: 0,
     fromMs: band.fromMs,
     toMs: band.toMs,
   };
+  stats.band = bandStats;
   if (group != null) group.inScope += rows.length;
+  const stale = await planStaleBand(symbol, rows, band);
+  const across = await planContractSwitch(symbol, rows, band);
+  report.bandRules = {
+    staleDelete: stale?.stats ?? null,
+    contractSwitch: across?.stats ?? null,
+  };
   for (const row of rows) {
-    if (row.stored.volumeRatio == null) continue;
-    stats.band.toNull += 1;
+    const doomed = stale?.deletes.get(row.id);
+    if (doomed != null) {
+      // Deleted, not written: the row is gone, so a ratio write would only be undone.
+      junk.push(doomed);
+      if (group != null) group.deleted += 1;
+      continue;
+    }
+    const fields: SnapshotField[] = [];
+    const to = { ...row.stored };
+    if (across?.dayNull.has(row.id)) {
+      fields.push('changeDayPct');
+      to.changeDayPct = null;
+    }
+    const blanks = row.stored.volumeRatio != null;
+    if (blanks) {
+      fields.push('volumeRatio');
+      to.volumeRatio = null;
+      bandStats.toNull += 1;
+    }
+    if (fields.length === 0) continue;
     changes.push({
       id: row.id,
       symbol,
       tsMs: row.tsMs,
-      fields: ['volumeRatio'],
+      fields,
       from: row.stored,
-      to: { ...row.stored, volumeRatio: null },
+      to,
       row: row.row,
     });
     report.rowsToWrite += 1;
-    report.byField.volumeRatio += 1;
+    for (const f of fields) report.byField[f] += 1;
     if (group != null) {
       group.toWrite += 1;
-      group.byField.volumeRatio += 1;
-      group.blanked += 1;
+      for (const f of fields) group.byField[f] += 1;
+      if (blanks) group.blanked += 1;
     }
   }
+}
+
+/** The bars a before-scope row read for its price and its 1h reference, by snapshot id. */
+interface BandBars {
+  /** The latest bar at or before the row less BAR_CLOSE_LAG_MS: what computeSnapshot prices from. */
+  price: { tsMs: number; close: number } | null;
+  /** The latest bar at or before the row less an hour: the 1h reference, before its 15-minute bound. */
+  hourTsMs: number | null;
+}
+
+interface RawBandBars {
+  id: string;
+  price_ts: string | null;
+  price_close: string | null;
+  hour_ts: string | null;
+}
+
+const HOUR_MS = 60 * MINUTE_MS;
+
+/**
+ * For each snapshot row of the root from `fromMs` to `toMs`, the bars computeSnapshot reads
+ * for its price (the latest bar that has closed) and its 1h reference, paged by UTC days like
+ * readSnapshots. The age and the 15-minute bounds are applied by the callers, on the same
+ * millisecond values computeSnapshot compares.
+ */
+async function readBandBars(
+  symbol: Sym,
+  fromMs: number,
+  toMs: number,
+): Promise<Map<number, BandBars>> {
+  const out = new Map<number, BandBars>();
+  for (let at = fromMs; at < toMs; at += READ_PAGE_DAYS * DAY_MS) {
+    const from = iso(at);
+    const to = iso(Math.min(toMs, at + READ_PAGE_DAYS * DAY_MS));
+    const page = await readRows<RawBandBars>(
+      (sql) => sql`
+        SELECT f.id::text AS id,
+               to_char(p.ts AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS price_ts,
+               p.close::text AS price_close,
+               to_char(h.ts AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS hour_ts
+          FROM futures_snapshots f
+          LEFT JOIN LATERAL (
+                 SELECT ts, close FROM futures_bars
+                  WHERE symbol = f.symbol
+                    AND ts <= f.ts - ${BAR_CLOSE_LAG_MS / 1000}::float8 * interval '1 second'
+                  ORDER BY ts DESC LIMIT 1) p ON true
+          LEFT JOIN LATERAL (
+                 SELECT ts FROM futures_bars
+                  WHERE symbol = f.symbol
+                    AND ts <= f.ts - ${HOUR_MS / 1000}::float8 * interval '1 second'
+                  ORDER BY ts DESC LIMIT 1) h ON true
+         WHERE f.symbol = ${symbol}
+           AND f.ts >= ${from}::timestamptz AND f.ts < ${to}::timestamptz`,
+    );
+    for (const r of page) {
+      out.set(Number(r.id), {
+        price:
+          r.price_ts == null || r.price_close == null
+            ? null
+            : { tsMs: Date.parse(r.price_ts), close: Number(r.price_close) },
+        hourTsMs: r.hour_ts == null ? null : Date.parse(r.hour_ts),
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * Rule 1 (FRONT_MONTH.staleBandDelete): the rows of the band whose price bar is older than
+ * the freshness gate computeSnapshot applies (priceBarStale) are deleted, whatever their
+ * stored price. A row with no bar before it stays, and is counted. Null for a root with no rule.
+ */
+async function planStaleBand(
+  symbol: Sym,
+  rows: readonly SnapshotRow[],
+  band: { fromMs: number; toMs: number },
+): Promise<{ stats: StaleBandStats; deletes: Map<number, JunkRow> } | null> {
+  if (FRONT_MONTH.staleBandDelete[symbol] == null) return null;
+  const bars = await readBandBars(symbol, band.fromMs, band.toMs);
+  const stats: StaleBandStats = {
+    rows: rows.length,
+    deleted: 0,
+    repeatsClose: 0,
+    over60Min: 0,
+    noBar: 0,
+    ages: [],
+  };
+  const deletes = new Map<number, JunkRow>();
+  for (const row of rows) {
+    const price = bars.get(row.id)?.price;
+    if (price == null) {
+      stats.noBar += 1;
+      continue;
+    }
+    stats.ages.push((row.tsMs - price.tsMs) / MINUTE_MS);
+    if (!priceBarStale(row.tsMs, price.tsMs)) continue;
+    stats.deleted += 1;
+    if (price.close === row.stored.price) stats.repeatsClose += 1;
+    if (row.tsMs - price.tsMs > HOUR_MS) stats.over60Min += 1;
+    deletes.set(row.id, {
+      id: row.id,
+      symbol,
+      tsMs: row.tsMs,
+      storedPrice: row.stored.price,
+      barTsMs: price.tsMs,
+      barClose: price.close,
+      latestClose: price.close,
+      kind: 'stale-band',
+      row: row.row,
+    });
+  }
+  stats.ages.sort((a, b) => a - b);
+  return { stats, deletes };
+}
+
+/**
+ * The largest jump between consecutive bars of the root within a day either side of the
+ * switch: where the stored series changed contract, to check against the switch the profile
+ * names. Null with fewer than two bars.
+ */
+async function readSwitchJump(
+  symbol: Sym,
+  sw: ContractSwitch,
+): Promise<SwitchJump | null> {
+  const [jump] = await readRows<{
+    from_ts: string;
+    to_ts: string;
+    from_close: string;
+    to_close: string;
+  }>(
+    (sql) => sql`
+      SELECT to_char(prev_ts AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS from_ts,
+             to_char(ts AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS to_ts,
+             prev_close::text AS from_close, close::text AS to_close
+        FROM (SELECT ts, close,
+                     lag(ts) OVER (ORDER BY ts) AS prev_ts,
+                     lag(close) OVER (ORDER BY ts) AS prev_close
+                FROM futures_bars
+               WHERE symbol = ${symbol}
+                 AND ts >= ${iso(sw.atMs - DAY_MS)}::timestamptz
+                 AND ts < ${iso(sw.atMs + DAY_MS)}::timestamptz) b
+       WHERE prev_ts IS NOT NULL
+       ORDER BY abs(close - prev_close) DESC, ts
+       LIMIT 1`,
+  );
+  return jump == null
+    ? null
+    : {
+        fromTsMs: Date.parse(jump.from_ts),
+        toTsMs: Date.parse(jump.to_ts),
+        fromClose: Number(jump.from_close),
+        toClose: Number(jump.to_close),
+      };
+}
+
+/**
+ * Rule 2 (FRONT_MONTH.contractSwitch): a row priced from a bar at or after the switch whose
+ * day change reads the cash open of its ET date, which came before it, compares the new
+ * contract with the old one. Its day change is set to NULL where one is stored. Written
+ * nowhere else: a row of the ET date that opened after the switch reads the new contract for
+ * both, and a row before the switch reads the old one for both. The 1h change is the same
+ * across a bar before the switch; such rows are counted, not written. Null for a root with no switch.
+ */
+async function planContractSwitch(
+  symbol: Sym,
+  rows: readonly SnapshotRow[],
+  band: { fromMs: number; toMs: number },
+): Promise<{ stats: SwitchStats; dayNull: Set<number> } | null> {
+  const sw = FRONT_MONTH.contractSwitch[symbol];
+  if (sw == null) return null;
+  // A row more than two days after the switch reads a cash open after it, and an hour or a day
+  // is all a reference can reach back, so the bars of the first two days are all there is to read.
+  const fromMs = Math.max(band.fromMs, sw.atMs);
+  const toMs = Math.min(band.toMs, sw.atMs + 2 * DAY_MS);
+  const bars =
+    fromMs < toMs
+      ? await readBandBars(symbol, fromMs, toMs)
+      : new Map<number, BandBars>();
+  const stats: SwitchStats = {
+    atMs: sw.atMs,
+    contracts: sw.contracts,
+    rows: 0,
+    dayChangeToNull: 0,
+    change1hAcross: 0,
+    jump: await readSwitchJump(symbol, sw),
+  };
+  const dayNull = new Set<number>();
+  for (const row of rows) {
+    const read = bars.get(row.id);
+    if (read?.price == null) continue;
+    const open = Date.parse(
+      getETMarketOpenUtcIso(getETDateStr(new Date(row.tsMs))) ?? '',
+    );
+    if (acrossSwitch(symbol, open, read.price.tsMs)) {
+      stats.rows += 1;
+      if (row.stored.changeDayPct != null) {
+        stats.dayChangeToNull += 1;
+        dayNull.add(row.id);
+      }
+    }
+    // The 1h reference is the latest bar an hour back. A stored 1h change means it was within 15
+    // minutes of that hour (computeSnapshot would have stored NULL otherwise), so no bound here.
+    if (
+      row.stored.change1hPct != null &&
+      read.hourTsMs != null &&
+      acrossSwitch(symbol, read.hourTsMs, read.price.tsMs)
+    ) {
+      stats.change1hAcross += 1;
+    }
+  }
+  return { stats, dayNull };
 }
 
 async function planSnapshots(
@@ -2603,6 +2913,7 @@ async function planSnapshots(
           }
         : null,
       volumeBlank: null,
+      bandRules: null,
       thin: null,
       spanBars: spanBars.get(symbol) ?? null,
       volumeRatioLeft: 0,
@@ -2953,7 +3264,7 @@ async function planSnapshots(
 
     if (frontMonth) {
       blankVolumeRatios(symbol, rows, changes, report, repairedDaySet);
-      await blankBeforeScope(symbol, scope.fromMs, changes, report);
+      await blankBeforeScope(symbol, scope.fromMs, changes, report, junk);
     }
 
     const controlOfSymbol = await snapshotControl(
@@ -3678,7 +3989,9 @@ function unmatchedLargeText(u: UnmatchedLarge): string[] {
   return out;
 }
 
-function junkText(junk: JunkRow[]): string[] {
+function junkText(rows: JunkRow[]): string[] {
+  // The stale-band rows of the front-month profile are listed by their own rule (bandRulesText).
+  const junk = rows.filter((j) => j.kind !== 'stale-band');
   const out = [
     `  stale rows priced from a deleted junk bar (not recomputable; --delete-junk-stale deletes them, off by default): ${junk.length}`,
   ];
@@ -3818,6 +4131,7 @@ function daySplitsOf(
       total.inScope += split[kind].inScope;
       total.toWrite += split[kind].toWrite;
       total.blanked += split[kind].blanked;
+      total.deleted += split[kind].deleted;
       for (const f of SNAPSHOT_KEYS) total.byField[f] += split[kind].byField[f];
     }
     return total;
@@ -3840,8 +4154,11 @@ function ratioText(g: DayGroup): string {
   return `${count(g.byField.volumeRatio)}${nulls}`;
 }
 
-const dayGroupText = (g: DayGroup): string =>
-  `${count(g.toWrite)} to write of ${count(g.inScope)} (price ${count(g.byField.price)}, 1h ${count(g.byField.change1hPct)}, day ${count(g.byField.changeDayPct)}, ratio ${ratioText(g)})`;
+/** A group's rows to write, and with them the rows the junk-delete step deletes (only the before-scope band has any). */
+function dayGroupText(g: DayGroup): string {
+  const deleted = g.deleted === 0 ? '' : ` and ${count(g.deleted)} deleted`;
+  return `${count(g.toWrite)} to write${deleted} of ${count(g.inScope)} (price ${count(g.byField.price)}, 1h ${count(g.byField.change1hPct)}, day ${count(g.byField.changeDayPct)}, ratio ${ratioText(g)})`;
+}
 
 /**
  * The planned snapshot rows on the days Phase 6 changed a bar and on the rest. The owner
@@ -3915,10 +4232,62 @@ function volumeBandText(
   ];
 }
 
+const STALE_BAND_PREFIX = `deleted before the snapshot scope (price bar older than ${MAX_BAR_AGE_MS / MINUTE_MS} min):`;
+
+const signed = (n: number): string => `${n < 0 ? '' : '+'}${n}`;
+
+/** The rows with no bar before them, which stay, and the age of the price bar of every other row of the band. */
+function staleBandAgesText(stale: StaleBandStats, symbol: Sym): string {
+  const one = stale.noBar === 1;
+  const kept = `${count(stale.noBar)} ${one ? 'row has' : 'rows have'} no bar before ${one ? 'it' : 'them'} and ${one ? 'stays' : 'stay'}`;
+  const oldest = stale.ages.at(-1);
+  const ages =
+    oldest == null
+      ? ''
+      : `; price-bar age of the ${count(stale.ages.length)} rows with one: median ${Math.round(percentile(stale.ages, 0.5))} min, oldest ${Math.round(oldest)} min`;
+  return `    ${symbol}: ${kept}${ages}`;
+}
+
+/**
+ * The two rules of the owner's decision 2026-11-15 on the rows before the snapshot scope, per
+ * root: the rows deleted for a stale price bar, with how many repeat their bar's close (the
+ * class the frozen-stale delete of 2026-11-12 keeps), and the day changes set to NULL across
+ * the contract switch, with the 1h changes across it (counted) and the jump in the stored bars
+ * that shows where the switch is. Empty when no root has a rule.
+ */
+function bandRulesText(r: SnapshotStore): string[] {
+  const out: string[] = [];
+  for (const s of r.symbols) {
+    const stale = s.bandRules?.staleDelete;
+    const band = s.volumeBlank?.band;
+    if (stale == null || band == null) continue;
+    out.push(
+      `  ${STALE_BAND_PREFIX} ${s.symbol} ${count(stale.deleted)} of ${count(stale.rows)} rows from ${isoSecond(band.fromMs)} to ${isoSecond(band.toMs)} (--delete-junk-stale deletes them with the junk rows, off by default)`,
+      `    ${s.symbol}: of the ${count(stale.deleted)} rows, ${count(stale.repeatsClose)} repeat the close of their price bar (the frozen-stale delete of 2026-11-12 keeps those) and ${count(stale.deleted - stale.repeatsClose)} differ; ${count(stale.over60Min)} are over 60 min old`,
+      staleBandAgesText(stale, s.symbol),
+    );
+  }
+  for (const s of r.symbols) {
+    const across = s.bandRules?.contractSwitch;
+    if (across == null) continue;
+    const { jump } = across;
+    out.push(
+      `  day change set to NULL across the ${across.contracts} switch (rows priced from a bar at or after ${isoSecond(across.atMs)} whose cash open is before it): ${s.symbol} ${count(across.dayChangeToNull)} of ${count(across.rows)} rows`,
+      `    ${s.symbol}: 1h change across the switch (counted, not written): ${count(across.change1hAcross)} rows`,
+      jump == null
+        ? `    ${s.symbol}: no two bars within a day of the switch, so there is no jump to show`
+        : `    ${s.symbol}: the largest jump between consecutive bars within a day of the switch: ${jump.fromClose} at ${isoSecond(jump.fromTsMs)} to ${jump.toClose} at ${isoSecond(jump.toTsMs)} (${signed(Number((jump.toClose - jump.fromClose).toFixed(4)))}, ${Math.round((jump.toTsMs - jump.fromTsMs) / MINUTE_MS)} min apart); FRONT_MONTH.contractSwitch is where to move the switch if that jump is elsewhere`,
+    );
+  }
+  return out;
+}
+
 /** The same counts as plan.json carries them: front-month only, a flat object per kind of day. */
 export interface DayGroupCounts {
   inScope: number;
   toWrite: number;
+  /** Rows the junk-delete step deletes instead of writing; never also in `toWrite`. */
+  deleted: number;
   price: number;
   change1h: number;
   changeDay: number;
@@ -3952,6 +4321,42 @@ export interface FrontMonthPlanBlock {
       all: { rows: number; toNull: number };
     };
   };
+  /**
+   * The two rules of the owner's decision 2026-11-15 on the rows before the snapshot scope:
+   * the rows the junk-delete step deletes for a price bar older than `olderThanMin` minutes,
+   * and the day changes set to NULL across the contract switch at `at`, with the 1h changes
+   * across it (counted, not written). `rows` is what the rule looked at: the band's rows for
+   * the delete, the rows priced from the new contract on an ET date that opened before it for
+   * the switch.
+   */
+  beforeScopeRules: {
+    staleDelete: {
+      byRoot: Record<
+        string,
+        {
+          rows: number;
+          deleted: number;
+          repeatsClose: number;
+          over60Min: number;
+          noBar: number;
+          olderThanMin: number;
+        }
+      >;
+      all: { rows: number; deleted: number };
+    };
+    contractSwitch: {
+      byRoot: Record<
+        string,
+        {
+          at: string;
+          rows: number;
+          dayChangeToNull: number;
+          change1hAcross: number;
+        }
+      >;
+      all: { rows: number; dayChangeToNull: number };
+    };
+  };
 }
 
 export interface DaySplitCounts {
@@ -3963,6 +4368,7 @@ export interface DaySplitCounts {
 const dayGroupCounts = (g: DayGroup): DayGroupCounts => ({
   inScope: g.inScope,
   toWrite: g.toWrite,
+  deleted: g.deleted,
   price: g.byField.price,
   change1h: g.byField.change1hPct,
   changeDay: g.byField.changeDayPct,
@@ -4031,6 +4437,62 @@ function frontMonthPlanBlock(
         },
       },
     },
+    beforeScopeRules: beforeScopeRulesBlock(store),
+  };
+}
+
+/** The counts of bandRulesText, as plan.json carries them. */
+function beforeScopeRulesBlock(
+  store: SnapshotStore,
+): FrontMonthPlanBlock['beforeScopeRules'] {
+  const stale = store.symbols.flatMap((s) =>
+    s.bandRules?.staleDelete == null
+      ? []
+      : [{ symbol: s.symbol, stats: s.bandRules.staleDelete }],
+  );
+  const across = store.symbols.flatMap((s) =>
+    s.bandRules?.contractSwitch == null
+      ? []
+      : [{ symbol: s.symbol, stats: s.bandRules.contractSwitch }],
+  );
+  const sum = (n: number[]): number => n.reduce((a, b) => a + b, 0);
+  return {
+    staleDelete: {
+      byRoot: Object.fromEntries(
+        stale.map(({ symbol, stats }) => [
+          symbol,
+          {
+            rows: stats.rows,
+            deleted: stats.deleted,
+            repeatsClose: stats.repeatsClose,
+            over60Min: stats.over60Min,
+            noBar: stats.noBar,
+            olderThanMin: MAX_BAR_AGE_MS / MINUTE_MS,
+          },
+        ]),
+      ),
+      all: {
+        rows: sum(stale.map((s) => s.stats.rows)),
+        deleted: sum(stale.map((s) => s.stats.deleted)),
+      },
+    },
+    contractSwitch: {
+      byRoot: Object.fromEntries(
+        across.map(({ symbol, stats }) => [
+          symbol,
+          {
+            at: new Date(stats.atMs).toISOString(),
+            rows: stats.rows,
+            dayChangeToNull: stats.dayChangeToNull,
+            change1hAcross: stats.change1hAcross,
+          },
+        ]),
+      ),
+      all: {
+        rows: sum(across.map((s) => s.stats.rows)),
+        dayChangeToNull: sum(across.map((s) => s.stats.dayChangeToNull)),
+      },
+    },
   };
 }
 
@@ -4056,6 +4518,7 @@ function snapshotsText(r: SnapshotStore, repair?: RepairName): string[] {
     ...stepsByRootText(r),
     ...daySplitText(r),
     ...volumeBlankText(r),
+    ...bandRulesText(r),
   );
   for (const s of r.symbols) {
     out.push(
@@ -4921,12 +5384,15 @@ function deleteSnapshots(sql: Sql, rows: DeleteWrite[]) {
  * The rows a delete step's verify counts before and after, which hold all of its
  * planned rows: the recompute's snapshot scope for the junk delete, every row before
  * STALE_UNTIL_MS (the frozen delete's date limit) for the frozen one. Both lie in the
- * past, so no live writer adds to them.
+ * past, so no live writer adds to them. Under front-month the junk step also deletes the
+ * before-scope band rows of the stale rule, so its count starts at the earliest band.
  */
 function deleteScope(step: DeleteStep, repair?: RepairName): Range {
-  return step === 'junk'
-    ? scopeRanges(repair).snapshots
-    : { fromMs: 0, toMs: STALE_UNTIL_MS };
+  if (step !== 'junk') return { fromMs: 0, toMs: STALE_UNTIL_MS };
+  const scope = scopeRanges(repair).snapshots;
+  return repair === 'front-month'
+    ? { fromMs: bandStartMs(scope.fromMs), toMs: scope.toMs }
+    : scope;
 }
 
 async function countSnapshotsIn(range: Range): Promise<number> {
@@ -5707,6 +6173,27 @@ function volumeNullRuleText(): string {
   return `volume ratio is set to NULL where its 20-day base holds bars that cannot be rebuilt (owner decision 2026-11-13, extended 2026-11-14 to the rows before the snapshot scope): ${rules.join('; ')}`;
 }
 
+/**
+ * The header line of the rules for the rows before the snapshot scope (owner decision
+ * 2026-11-15): which roots lose the rows priced from a stale bar and which day change is set to
+ * NULL across a contract switch.
+ */
+function bandRulesHeaderText(): string {
+  const stale = Object.keys(FRONT_MONTH.staleBandDelete);
+  const rules = [
+    ...(stale.length === 0
+      ? []
+      : [
+          `${stale.join(', ')} rows of the before-scope band priced from a bar older than ${MAX_BAR_AGE_MS / MINUTE_MS} min are deleted by the junk-delete step (--delete-junk-stale)`,
+        ]),
+    ...Object.entries(FRONT_MONTH.contractSwitch).map(
+      ([root, sw]) =>
+        `${root} day change is set to NULL where the cash-open bar it reads is before the ${sw.contracts} switch at ${isoSecond(sw.atMs)} and the price bar is from it`,
+    ),
+  ];
+  return `before-scope rules (owner decision 2026-11-15): ${rules.join('; ')}`;
+}
+
 /** The report header of a front-month run. */
 function frontMonthHeader(
   opts: RecomputeOptions,
@@ -5725,6 +6212,7 @@ function frontMonthHeader(
     "no D1 lift (the first row's 20-day window starts after every thin root's last month-mixed bar), no stale-at-write rewrite, no frozen-stale delete, no volume-null step, no detector days",
     `the control checks the volume ratio of RTY, CL, GC and ZN one way only: the late-volume rule passes a stored ratio anywhere below the recomputed one, or one unit above it, so do not cite the control for those ratios; CL's is also set aside before ${isoSecond(FRONT_MONTH.writtenUntilMs)} wherever a changed bar in its 20-day window feeds it (ES and NQ are fine: no bar of theirs changed after 2026-09-14)`,
     volumeNullRuleText(),
+    bandRulesHeaderText(),
     ...(backup == null || opts.backup == null
       ? []
       : [frontMonthBackupLine(opts.backup, backup, opts.roots)]),
