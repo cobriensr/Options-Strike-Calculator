@@ -1,8 +1,9 @@
 """asyncpg connection pool and bulk-insert helper.
 
-A single pool serves every channel handler. Pool size is small (5)
-because handlers batch writes — high concurrency is not the bottleneck;
-batch size is.
+A single pool serves every channel handler. Pool size is small (0 to 10
+connections) because handlers batch writes — high concurrency is not the
+bottleneck; batch size is. The floor is 0 so Neon can suspend when nothing
+writes; see ``init_pool``.
 """
 
 from __future__ import annotations
@@ -321,20 +322,43 @@ async def _init_connection(conn: asyncpg.Connection) -> None:
 
 
 async def init_pool() -> asyncpg.Pool:
-    """Create the global pool. Idempotent."""
+    """Create the global pool and prove the database answers. Idempotent.
+
+    The pool opens no connection at creation (``min_size=0``), so a boot
+    check runs ``SELECT 1`` through ``fetch``. A failing check closes the pool,
+    leaves ``_pool`` None and re-raises: a bad ``DATABASE_URL`` still stops the
+    boot, and a retry builds a fresh pool.
+    """
     global _pool
     if _pool is not None:
         return _pool
-    # 5 handlers x 2 + headroom for health check + manual queries.
-    _pool = await asyncpg.create_pool(
+    # max_size: 5 handlers x 2 + headroom for health check + manual queries.
+    #
+    # min_size is 0 so Neon can suspend its compute when nothing writes
+    # (weekends, the CME 16:00-17:00 CT break). In asyncpg 0.32 a floor above 0
+    # reconnects the moment Neon closes the idle connections (Pool.
+    # _schedule_min_size_maintenance runs whenever get_size() < min_size), and
+    # floor connections are exempt from the 300 s max_inactive_connection_lifetime
+    # close, so the pool woke the compute on every suspend. With 0 both stop:
+    # idle connections close after 300 s and the next write opens one (the
+    # reconnect is covered by _with_db_retry). Spec:
+    # docs/superpowers/specs/2026-11-16-uw-stream-pool-floor.md.
+    pool = await asyncpg.create_pool(
         dsn=settings.database_url,
-        min_size=2,
+        min_size=0,
         max_size=10,
         command_timeout=30,
         init=_init_connection,
     )
-    log.info("asyncpg pool ready (min=2 max=10)")
-    return _pool
+    _pool = pool
+    try:
+        await fetch("boot_check", "SELECT 1")
+    except BaseException:
+        _pool = None
+        await pool.close()
+        raise
+    log.info("asyncpg pool ready (min=0 max=10)")
+    return pool
 
 
 def get_pool() -> asyncpg.Pool:

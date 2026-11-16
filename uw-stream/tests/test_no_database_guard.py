@@ -71,6 +71,8 @@ async def test_a_test_that_patches_create_pool_replaces_the_stub(monkeypatch):
     # tests/test_db.py patches create_pool this way.
     fake_pool = object()
     monkeypatch.setattr(asyncpg, "create_pool", AsyncMock(return_value=fake_pool))
+    # init_pool's boot check goes through fetch; patch it so no acquire runs.
+    monkeypatch.setattr(db, "fetch", AsyncMock())
     assert await db.init_pool() is fake_pool
 
 

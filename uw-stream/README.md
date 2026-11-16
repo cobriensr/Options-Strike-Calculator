@@ -569,7 +569,7 @@ How to read a late-data minute:
   Neon or the network. Check `pool_size_min` first (next bullet).
 - A `pool_size_min` below `pool_size_max` in the same minute, once the pool
   is warm (not in the first minutes after a deploy, while it grows from its
-  2 starting connections), is pool churn. asyncpg closes a pool connection
+  0 starting connections), is pool churn. asyncpg closes a pool connection
   idle for 300 s (its default `max_inactive_connection_lifetime`, which
   `src/db.py` leaves alone) and hands connections out last in, first out, so
   the ones only a burst uses expire and reconnect on the next burst. That
@@ -580,6 +580,12 @@ How to read a late-data minute:
   was slow" when the wait was the reconnect. `pool_size_max` alone hides the
   dip; `pool_size_min` shows it. It is a measurement, not a fix: nothing here
   changes a pool setting.
+- The pool has no floor (`min_size=0` in `src/db.py`), so Neon can suspend
+  its compute when nothing writes, and the pool starts at 0 connections.
+  `pool_size_min` of 0 in a quiet minute is normal: idle connections close
+  after 300 s and are not reopened until a write needs one. Boot opens one
+  connection for its `SELECT 1` check, which closes after 300 s idle like the
+  rest. Spec: `docs/superpowers/specs/2026-11-16-uw-stream-pool-floor.md`.
 - `pool_in_use_max` equals the pool's maximum (10) in the same minute as a
   high `flush_max_s`: flushes waited for a free connection. The pool was
   exhausted.
