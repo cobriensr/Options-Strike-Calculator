@@ -69,21 +69,26 @@
  * the check of what the write left (no retry, 5 s) = 41 s, inside the 60 s
  * margin. A unit test measures it from these constants and the real
  * `withDbRetry`, and fails when it outgrows the margin. The selection and the
- * weights read run before any group and are not part of that bound.
+ * weights read run before any group and are not part of that bound, so a step
+ * entered at or after the deadline (the pass before it ran long) runs neither,
+ * nor anything else: it is `partial` with `skippedNoTime`, and in the day's last
+ * slot it raises the residual alarm, as a failed selection does.
  *
- * Honest status (R4). A failed selection, series read or write makes the run
- * `partial` and is captured: a genuine error with `captureException`, a
- * transient one (a Neon blip, a read past its deadline) with a warning message,
- * the first of each kind per run. The run never reports `success` over a failed
- * write. The residual alarm fires only in the day's last slot: one error-level
- * Sentry message per table with a fixed fingerprint, when a fire of that ET date
- * is left whose series HAS a value at the fire but stayed NULL (or was held back
- * for the weights store), or whose ticker-day series could not be read (error,
- * deadline, or not started). Fires before the ticker's first WS tick and
- * pre-open fires are NOT residual. Only the current date counts: an older date
- * was alarmed at its own last slot. The same slot sends one warning message
- * (fingerprint `['fire-flow-repair-empty-series', table]`) when a ticker-day of
- * that date has an empty series, and the alarm carries that count in its extra.
+ * Honest status (R4). A failed or skipped selection, a failed series read or
+ * write makes the run `partial`. A failure is captured: a genuine error with
+ * `captureException`, a transient one (a Neon blip, a read past its deadline)
+ * with a warning message, the first of each kind per run. The run never reports
+ * `success` over a failed write. The residual alarm fires only in the day's last
+ * slot: one error-level Sentry message per table with a fixed fingerprint, when
+ * a fire of that ET date is left whose series HAS a value at the fire but stayed
+ * NULL (or was held back for the weights store), or whose ticker-day series
+ * could not be read (error, deadline, or not started), or when the selection
+ * failed or was skipped (the residual could not be evaluated). Fires before the
+ * ticker's first WS tick and pre-open fires are NOT residual. Only the current
+ * date counts: an older date was alarmed at its own last slot. The same slot
+ * sends one warning message (fingerprint
+ * `['fire-flow-repair-empty-series', table]`) when a ticker-day of that date has
+ * an empty series, and the alarm carries that count in its extra.
  *
  * Axiom: the crons put this step's counts in `metadata.flowRepair`, one nested
  * object, which `reportCronRun` JSON-stringifies into `meta`. No new top-level
@@ -303,6 +308,11 @@ export interface FlowRepairCounts {
   residualGroups: number;
   /** The selection query failed: nothing was repaired. */
   selectFailed: boolean;
+  /**
+   * The step was entered at or after its deadline (the pass before it used the
+   * time), so it ran no statement at all: nothing was selected or repaired.
+   */
+  skippedNoTime: boolean;
   /** This run is the day's last slot, so the residual alarm was evaluated. */
   lastSlot: boolean;
 }
@@ -671,6 +681,8 @@ const isLastSlot = (startTimeMs: number): boolean =>
   new Date(startTimeMs).getUTCHours() >= FLOW_REPAIR_LAST_SLOT_UTC_HOUR;
 
 function failureMessage(c: FlowRepairCounts): string {
+  // Nothing else ran, so nothing else can be counted.
+  if (c.skippedNoTime) return 'flow repair skipped: the pass left no time';
   const parts: string[] = [];
   if (c.selectFailed) parts.push('the NULL-flow selection failed');
   if (c.groupsReadFailed > 0) {
@@ -735,25 +747,36 @@ export async function repairNullFlow(
     residualFires: 0,
     residualGroups: 0,
     selectFailed: false,
+    // The selection and the weights read are not part of the margin's bound
+    // (see the header), so a step entered with the deadline already passed
+    // starts neither: the next slot picks everything up.
+    skippedNoTime: Date.now() >= deadlineMs,
     lastSlot: isLastSlot(startTimeMs),
   };
 
   let groups: Group[] = [];
-  try {
-    // One retry, 10 s an attempt: it runs once, before any group, so it is not
-    // part of the margin's bound, and it returns rows, not just counts.
-    groups = await withDbRetry(
-      () => selectNullFlowGroups(sql, table, lookbackDates(today)),
-      1,
-      10_000,
+  if (counts.skippedNoTime) {
+    logger.warn(
+      { job, table },
+      'fire flow repair skipped: the pass left no time',
     );
-  } catch (error) {
-    counts.selectFailed = true;
-    captureFailure(job, table, 'select', error, 1);
-    logger.error(
-      { err: error, job, table },
-      'fire flow repair selection failed',
-    );
+  } else {
+    try {
+      // One retry, 10 s an attempt: it runs once, before any group, so it is
+      // not part of the margin's bound, and it returns rows, not just counts.
+      groups = await withDbRetry(
+        () => selectNullFlowGroups(sql, table, lookbackDates(today)),
+        1,
+        10_000,
+      );
+    } catch (error) {
+      counts.selectFailed = true;
+      captureFailure(job, table, 'select', error, 1);
+      logger.error(
+        { err: error, job, table },
+        'fire flow repair selection failed',
+      );
+    }
   }
   counts.groups = groups.length;
 
@@ -855,8 +878,11 @@ export async function repairNullFlow(
     );
   }
 
+  // A selection that failed or never ran leaves the residual unknown, so in the
+  // last slot both raise the alarm.
   const alarm =
-    counts.lastSlot && (counts.residualFires > 0 || counts.selectFailed);
+    counts.lastSlot &&
+    (counts.residualFires > 0 || counts.selectFailed || counts.skippedNoTime);
   if (alarm) {
     Sentry.captureMessage(
       'Fire flow repair left fires without flow after the last slot of the day',
@@ -869,6 +895,7 @@ export async function repairNullFlow(
           residualFires: counts.residualFires,
           residualGroups: counts.residualGroups,
           selectFailed: counts.selectFailed,
+          skippedNoTime: counts.skippedNoTime,
           emptySeriesGroups: emptyToday.groups,
           emptySeriesFires: emptyToday.fires,
           sample: residualSample,
@@ -901,6 +928,7 @@ export async function repairNullFlow(
 
   const partial =
     counts.selectFailed ||
+    counts.skippedNoTime ||
     counts.groupsReadFailed > 0 ||
     counts.groupsWriteFailed > 0 ||
     counts.rescoreSkipped > 0 ||

@@ -172,7 +172,13 @@ const plainDb = (): Db => neonOverPglite(pg) as unknown as Db;
 /** One run of one table's repair, as a cron process starting at `slot` UTC. */
 async function run(
   table: FlowRepairTable,
-  opts: { slot?: string; today?: string; db?: Db } = {},
+  opts: {
+    slot?: string;
+    today?: string;
+    db?: Db;
+    /** The clock when the step is entered, past the handler start (the pass's time). */
+    enteredAfterMs?: number;
+  } = {},
 ): Promise<FlowRepairOutcome> {
   const today = opts.today ?? TODAY;
   const startTimeMs =
@@ -181,7 +187,7 @@ async function run(
   loaderClock += 61_000;
   vi.setSystemTime(loaderClock);
   await loadLotteryWeights();
-  vi.setSystemTime(startTimeMs);
+  vi.setSystemTime(startTimeMs + (opts.enteredAfterMs ?? 0));
   return repairNullFlow(opts.db ?? plainDb(), {
     table,
     job: `enrich-${table}`,
@@ -1106,6 +1112,103 @@ describe('repairNullFlow: the time budget', () => {
     expect(FLOW_REPAIR_CRON_MAX_DURATION_MS - FLOW_REPAIR_MARGIN_MS).toBe(
       240_000,
     );
+  });
+});
+
+describe('repairNullFlow: the pass left no time', () => {
+  // The step is entered with the clock at the deadline: the tape pass used it.
+  const AT_DEADLINE_MS =
+    FLOW_REPAIR_CRON_MAX_DURATION_MS - FLOW_REPAIR_MARGIN_MS;
+
+  it('selects and reads nothing, says it was skipped, and the next slot repairs the fire', async () => {
+    await seedMeta();
+    await seedFire({ id: 1 });
+    const statements: string[] = [];
+    const db = intercept((text) => {
+      statements.push(text);
+    });
+
+    const skipped = await run('lottery', {
+      slot: '22:40',
+      db,
+      enteredAfterMs: AT_DEADLINE_MS,
+    });
+
+    // Not the selection, not a series read, not a write: no statement at all.
+    expect(statements).toEqual([]);
+    expect(await lottery(1)).toMatchObject({ ncp: null, score: null });
+    expect(skipped.status).toBe('partial');
+    expect(skipped.message).toBe('flow repair skipped: the pass left no time');
+    expect(skipped.counts).toMatchObject({
+      skippedNoTime: true,
+      selectFailed: false,
+      groups: 0,
+      fires: 0,
+      written: 0,
+    });
+    // Not the last slot: the run says so in its status, and nothing is alarmed.
+    expect(residualAlarms()).toHaveLength(0);
+    expect(mockCaptureException).not.toHaveBeenCalled();
+
+    const next = await run('lottery', { slot: '23:40' });
+
+    expect(await lottery(1)).toMatchObject({ ncp: '175', version: SEED });
+    expect(next.status).toBe('success');
+    expect(next.counts).toMatchObject({ skippedNoTime: false, written: 1 });
+  });
+
+  it('in the last slot raises the residual alarm, as for a failed selection: what is left could not be evaluated', async () => {
+    await seedMeta();
+    await seedFire({ id: 1 });
+
+    const out = await run('lottery', {
+      slot: '23:40',
+      enteredAfterMs: AT_DEADLINE_MS,
+    });
+
+    expect(out.status).toBe('partial');
+    expect(out.counts).toMatchObject({ lastSlot: true, skippedNoTime: true });
+    expect(residualAlarms()).toHaveLength(1);
+    expect(residualAlarms()[0]![1]).toMatchObject({
+      level: 'error',
+      fingerprint: ['fire-flow-repair-residual', 'lottery'],
+      extra: { date: TODAY, skippedNoTime: true, selectFailed: false },
+    });
+    expect(await lottery(1)).toMatchObject({ ncp: null });
+  });
+
+  it('skips a silent boom run the same way', async () => {
+    await seedMeta();
+    await seedSilentBoom(pg, { id: 7, date: TODAY, at: `${TODAY}T15:00:00Z` });
+
+    const out = await run('silentboom', {
+      slot: '23:45',
+      enteredAfterMs: AT_DEADLINE_MS,
+    });
+
+    expect(out.status).toBe('partial');
+    expect(out.counts).toMatchObject({ skippedNoTime: true, groups: 0 });
+    expect(residualAlarms()).toHaveLength(1);
+    expect(residualAlarms()[0]![1].fingerprint).toEqual([
+      'fire-flow-repair-residual',
+      'silentboom',
+    ]);
+    expect(await boom(7)).toMatchObject({ ncp: null });
+  });
+
+  it('still runs with a millisecond to spare', async () => {
+    await seedMeta();
+    await seedFire({ id: 1 });
+
+    const out = await run('lottery', {
+      slot: '23:40',
+      enteredAfterMs: AT_DEADLINE_MS - 1,
+    });
+
+    expect(out.status).toBe('success');
+    expect(out.counts).toMatchObject({ skippedNoTime: false, written: 1 });
+    expect(await lottery(1)).toMatchObject({ ncp: '175' });
+    expect(residualAlarms()).toHaveLength(0);
   });
 });
 
