@@ -124,7 +124,7 @@ import {
   resetWeightsStore,
   seedLotteryFire,
   seedSilentBoom,
-} from './fire-flow-test-helpers';
+} from '../../api/__tests__/fire-flow-test-helpers';
 import {
   formatReport,
   moveRows,

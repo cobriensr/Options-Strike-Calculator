@@ -70,7 +70,7 @@ import {
   seedLotteryFire,
   seedSilentBoom,
   type LotterySeed,
-} from '../../scripts/_lib/fire-flow-test-helpers';
+} from './fire-flow-test-helpers';
 import {
   FLOW_REPAIR_CRON_MAX_DURATION_MS,
   FLOW_REPAIR_LOOKBACK_DAYS,

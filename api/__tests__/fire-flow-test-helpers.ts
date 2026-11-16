@@ -1,14 +1,19 @@
 /**
- * Fixtures for the real-SQL (pglite) tests of the two flow repair scripts,
+ * Fixtures for the real-SQL (pglite) tests of the flow repair: the cron's
+ * api/__tests__/fire-flow-repair-pglite.test.ts and the two scripts,
  * scripts/_lib/ticker-flow-backfill-pglite.test.ts and
- * scripts/_lib/fire-flow-correction-pglite.test.ts: the fire tables and the
- * weights store built from the REAL migrations, one row per helper call, and
- * the two net-flow tables the series is read from.
+ * scripts/_lib/fire-flow-correction-pglite.test.ts. The fire tables and the
+ * weights store are built from the REAL migrations, one row per helper call,
+ * and the two net-flow tables the series is read from.
+ *
+ * This file lives in api/__tests__/ and not in scripts/: Vercel's build
+ * type-checks all of api/ (tsconfig.api.json), and .vercelignore strips
+ * scripts/, so a test under api/ may not import from scripts/.
  */
 
 import type { PGlite } from '@electric-sql/pglite';
 
-import { applyMigration } from '../../api/__tests__/pglite-migrations';
+import { applyMigration } from './pglite-migrations';
 
 /**
  * In order: lottery_finder_fires (#110) and the columns the score and the flow

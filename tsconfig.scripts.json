@@ -93,7 +93,6 @@
     "scripts/_lib/ticker-flow-backfill.ts",
     "scripts/_lib/ticker-flow-backfill-pglite.test.ts",
     "scripts/_lib/ticker-flow-backfill-cli.test.ts",
-    "scripts/_lib/fire-flow-test-helpers.ts",
     "scripts/correct-doubled-fire-flow.ts",
     "scripts/_lib/fire-flow-correction.ts",
     "scripts/_lib/fire-flow-correction.test.ts",
