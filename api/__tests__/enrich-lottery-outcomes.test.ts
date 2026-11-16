@@ -134,10 +134,10 @@ interface Router {
   gaps?: Row[];
   /** Override the candidate SELECT (e.g. to reject). */
   tapeSelect?: () => Promise<Row[]>;
-  /** The flow repair step: ticker-days with a NULL-flow fire. */
-  flowGroups?: () => Promise<Row[]> | Row[];
-  /** The flow repair step: one ticker-day's NULL-flow fires. */
+  /** The flow repair step: the NULL-flow fires its one selection returns. */
   flowFires?: Row[];
+  /** The flow repair step: override the selection (e.g. to reject). */
+  flowSelect?: () => Promise<Row[]> | Row[];
   /** The flow repair step: the write's RETURNING (default: every id). */
   flowWrite?: (ids: string[]) => Promise<string[]> | string[];
   /** The flow repair step: the ids a short write left NULL. */
@@ -154,10 +154,10 @@ function route(r: Router): void {
   mockSql.mockImplementation(
     async (strings: TemplateStringsArray, ...values: unknown[]) => {
       const sqlText = strings.join(' ');
-      // The flow repair step's four statements, before the tape pass's own
+      // The flow repair step's three statements, before the tape pass's own
       // `FROM lottery_finder_fires` and `UPDATE lottery_finder_fires` matches.
-      if (sqlText.includes('GROUP BY f.underlying_symbol')) {
-        return r.flowGroups ? r.flowGroups() : [];
+      if (sqlText.includes('JOIN unnest')) {
+        return r.flowSelect ? r.flowSelect() : (r.flowFires ?? []);
       }
       if (sqlText.includes('cum_ncp_at_fire = u.ncp')) {
         const ids = (values[0] as string[]) ?? [];
@@ -166,9 +166,6 @@ function route(r: Router): void {
       }
       if (sqlText.includes('id = ANY(')) {
         return (r.flowStillNull ?? []).map((id) => ({ id }));
-      }
-      if (sqlText.includes('f.cum_ncp_at_fire IS NULL')) {
-        return r.flowFires ?? [];
       }
       if (sqlText.includes('DELETE FROM lottery_kept_tickers')) {
         return r.prune ? r.prune() : [];
@@ -700,12 +697,11 @@ describe('enrich-lottery-outcomes: failure paths and feed gaps', () => {
 
 // ── The flow repair step (api/_lib/fire-flow-repair.ts) ───────────────────────
 
-/** One ticker-day with a NULL-flow fire, as the selection returns it. */
-const FLOW_GROUP = { ticker: 'AAA', date: '2026-10-01', n_rows: 1 };
-
-/** A NULL-flow lottery fire at 14:35Z, as the driver returns it. */
+/** A NULL-flow lottery fire of AAA at 14:35Z, as the selection returns it. */
 function flowFire(id: number, o: Row = {}): Row {
   return {
+    ticker: 'AAA',
+    date: '2026-10-01',
     id: String(id),
     at: new Date('2026-10-01T14:35:00Z'),
     tod: 'MID',
@@ -750,7 +746,6 @@ describe('enrich-lottery-outcomes: flow repair step', () => {
     route({
       tapeCandidates: [fire(1)],
       aggregate: () => [agg(1)],
-      flowGroups: () => [FLOW_GROUP],
       flowFires: [flowFire(11)],
     });
 
@@ -788,7 +783,7 @@ describe('enrich-lottery-outcomes: flow repair step', () => {
   });
 
   it('puts its counts in one nested key, which Axiom folds into meta, never as new top-level keys', async () => {
-    route({ flowGroups: () => [FLOW_GROUP], flowFires: [flowFire(11)] });
+    route({ flowFires: [flowFire(11)] });
 
     const res = await run();
 
@@ -806,7 +801,7 @@ describe('enrich-lottery-outcomes: flow repair step', () => {
 
     await run();
 
-    const [call] = callsMatching('GROUP BY f.underlying_symbol');
+    const [call] = callsMatching('JOIN unnest');
     const [dates, , from, to] = call!.slice(1) as unknown[];
     expect(dates).toEqual([
       '2026-10-01',
@@ -822,7 +817,6 @@ describe('enrich-lottery-outcomes: flow repair step', () => {
     route({
       tapeCandidates: [fire(1)],
       aggregate: () => [agg(1)],
-      flowGroups: () => [FLOW_GROUP],
       flowFires: [flowFire(11)],
       flowWrite: () => Promise.reject(new Error('permission denied')),
     });
@@ -845,7 +839,7 @@ describe('enrich-lottery-outcomes: flow repair step', () => {
   });
 
   it('a failed series read makes the run partial and is captured', async () => {
-    route({ flowGroups: () => [FLOW_GROUP], flowFires: [flowFire(11)] });
+    route({ flowFires: [flowFire(11)] });
     mockFetchSeries.mockRejectedValue(new Error('relation does not exist'));
 
     const res = await run();
@@ -867,7 +861,7 @@ describe('enrich-lottery-outcomes: flow repair step', () => {
     route({
       tapeCandidates: [fire(1)],
       aggregate: () => [agg(1)],
-      flowGroups: () => Promise.reject(new Error('syntax error')),
+      flowSelect: () => Promise.reject(new Error('syntax error')),
     });
 
     const res = await run();
@@ -895,7 +889,6 @@ describe('enrich-lottery-outcomes: flow repair step', () => {
         }
         return ids.map((id) => agg(id));
       },
-      flowGroups: () => [FLOW_GROUP],
       flowFires: [flowFire(11)],
     });
 
@@ -904,6 +897,66 @@ describe('enrich-lottery-outcomes: flow repair step', () => {
     expect(res._json).toMatchObject({
       status: 'error',
       flowRepair: { written: 1 },
+    });
+  });
+
+  it('still repairs when the tape candidate SELECT throws, then fails the run with the tape error', async () => {
+    route({
+      tapeSelect: () => Promise.reject(new Error('neon: timeout')),
+      flowFires: [flowFire(11)],
+    });
+
+    const res = await run();
+
+    // The repair ran and wrote, after the tape pass had failed.
+    expect(flowWrites()).toHaveLength(1);
+    expect(lockCalls()).toHaveLength(0);
+    // The tape error is the run's error: 500, the real exception captured,
+    // an `error` run reported, and the repair's counts logged.
+    expect(res._status).toBe(500);
+    expect(mockCaptureException).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'neon: timeout' }),
+    );
+    expect(vi.mocked(reportCronRun).mock.calls.at(-1)![1]).toMatchObject({
+      status: 'error',
+    });
+  });
+
+  it('still repairs when the tape pass throws later, from a failed outcome UPDATE', async () => {
+    route({
+      tapeCandidates: [fire(1)],
+      aggregate: () => [agg(1)],
+      lockReturns: () => Promise.reject(new Error('neon: write timeout')),
+      flowFires: [flowFire(11)],
+    });
+
+    const res = await run();
+
+    expect(res._status).toBe(500);
+    expect(flowWrites()).toHaveLength(1);
+  });
+
+  it('holds back a fire it would re-score when the weights store cannot be read: nothing written, partial, counted', async () => {
+    route({ flowFires: [flowFire(11)] });
+    mockLoadWeights.mockResolvedValue({
+      active: {
+        version: SEED_LOTTERY_WEIGHTS_VERSION,
+        weights: SEED_LOTTERY_WEIGHTS,
+      },
+      takeit: {
+        version: SEED_LOTTERY_WEIGHTS_VERSION,
+        weights: SEED_LOTTERY_WEIGHTS,
+      },
+      fallback: { kind: 'error', reason: 'connection reset' },
+    });
+
+    const res = await run();
+
+    expect(flowWrites()).toHaveLength(0);
+    expect(res._json).toMatchObject({
+      status: 'partial',
+      message: expect.stringContaining('weights store could not be read'),
+      flowRepair: { fires: 1, written: 0, rescoreSkipped: 1 },
     });
   });
 
@@ -933,7 +986,7 @@ describe('enrich-lottery-outcomes: flow repair step', () => {
 
   describe('the residual alarm', () => {
     it('stays quiet in the first and second slot of the day, though a series read failed', async () => {
-      route({ flowGroups: () => [FLOW_GROUP], flowFires: [flowFire(11)] });
+      route({ flowFires: [flowFire(11)] });
       mockFetchSeries.mockRejectedValue(new Error('boom'));
 
       const first = await runAt('21:40');
@@ -945,7 +998,7 @@ describe('enrich-lottery-outcomes: flow repair step', () => {
     });
 
     it('fires once in the last slot with a fixed fingerprint when a ticker-day could not be read', async () => {
-      route({ flowGroups: () => [FLOW_GROUP], flowFires: [flowFire(11)] });
+      route({ flowFires: [flowFire(11)] });
       mockFetchSeries.mockRejectedValue(new Error('boom'));
 
       const res = await runAt('23:40');
@@ -964,7 +1017,6 @@ describe('enrich-lottery-outcomes: flow repair step', () => {
 
     it('fires in the last slot when a fire with a value stayed NULL (the write landed no row)', async () => {
       route({
-        flowGroups: () => [FLOW_GROUP],
         flowFires: [flowFire(11)],
         flowWrite: () => [],
         flowStillNull: ['11'],
@@ -980,7 +1032,6 @@ describe('enrich-lottery-outcomes: flow repair step', () => {
 
     it('does not count a fire before the first WS tick: nothing to write is not a residual', async () => {
       route({
-        flowGroups: () => [FLOW_GROUP],
         // 14:30:30Z is before the series' first point (14:31Z).
         flowFires: [flowFire(11, { at: new Date('2026-10-01T14:30:30Z') })],
       });
@@ -997,7 +1048,6 @@ describe('enrich-lottery-outcomes: flow repair step', () => {
 
     it('does not count a fire another writer filled first', async () => {
       route({
-        flowGroups: () => [FLOW_GROUP],
         flowFires: [flowFire(11)],
         flowWrite: () => [],
         flowStillNull: [],
@@ -1013,10 +1063,7 @@ describe('enrich-lottery-outcomes: flow repair step', () => {
     });
 
     it('does not count an older date: it was alarmed at its own last slot', async () => {
-      route({
-        flowGroups: () => [{ ...FLOW_GROUP, date: '2026-09-30' }],
-        flowFires: [flowFire(11)],
-      });
+      route({ flowFires: [flowFire(11, { date: '2026-09-30' })] });
       mockFetchSeries.mockRejectedValue(new Error('boom'));
 
       const res = await runAt('23:40');

@@ -55,7 +55,11 @@
  * ticker-day in the last 60 s of the 300 s, and its counts ride in
  * `metadata.flowRepair`. A failed read or write makes the run `partial`; the
  * last slot of the day (23:40 UTC) raises one Sentry error for fires still
- * without flow. Spec: docs/superpowers/specs/
+ * without flow. The two steps are independent: if the tape pass throws (its
+ * candidate SELECT, an aggregate read, an UPDATE), the repair still runs, and
+ * the tape error is rethrown after it, so the run stays an `error` with the
+ * real exception captured (the repair's counts are then logged, not in the
+ * Axiom event). Spec: docs/superpowers/specs/
  * lottery-flow-repair-and-indexes-2026-11-15.md, Phase B.
  *
  * Budget: maxDuration is 300 s. The pass starts no chunk after
@@ -260,7 +264,14 @@ export default withCronInstrumentation(
   async (ctx): Promise<CronResult> => {
     const sql = getDb();
 
-    const tape = await runTapePass(sql, ctx);
+    // The tape pass and the flow repair are independent: a throw in the pass
+    // (its candidate SELECT, a failed read or UPDATE) must not cost the repair
+    // its slot. The error is held and rethrown after the repair, so the run is
+    // still an `error` and the wrapper still captures the real exception.
+    const tapeRun = await runTapePass(sql, ctx).then(
+      (result) => ({ ok: true as const, tape: result }),
+      (error: unknown) => ({ ok: false as const, error }),
+    );
 
     // Best-effort, AFTER the enrichment writes have landed, so a prune
     // failure can never roll back or fail the primary job.
@@ -275,6 +286,17 @@ export default withCronInstrumentation(
       today: ctx.today,
       startTimeMs: ctx.startTimeMs,
     });
+
+    if (!tapeRun.ok) {
+      // The wrapper reports the throw without this run's metadata, so the
+      // repair's counts are logged here.
+      ctx.logger.info(
+        { flowRepair: flow.counts },
+        'enrich-lottery-outcomes: tape pass failed; flow repair ran',
+      );
+      throw tapeRun.error;
+    }
+    const { tape } = tapeRun;
 
     // `flowRepair` is one nested object, which reportCronRun folds into its
     // `meta` string: no new top-level Axiom column.

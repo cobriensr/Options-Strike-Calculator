@@ -383,10 +383,12 @@ export const SCHEDULE_MAP: Record<string, CronMonitorConfig> = {
   },
   'enrich-silent-boom-outcomes': {
     // Two post-close slots so a Friday alert gets a retry before the
-    // Monday retention cutoff.
+    // Monday retention cutoff. maxDuration is 300 s (the outcome pass takes up
+    // to 150 s, then the flow repair step up to 240 s from the start) → long
+    // runner, as enrich-lottery-outcomes is.
     schedule: '45 21,23 * * 1-5',
     checkinMargin: DEFAULT_MARGIN,
-    maxRuntime: DEFAULT_MAX_RUNTIME,
+    maxRuntime: LONG_RUNNER_MAX_RUNTIME,
   },
   'enrich-vega-spike-returns': {
     schedule: '*/5 13-21 * * 1-5',

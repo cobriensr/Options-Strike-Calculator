@@ -259,6 +259,12 @@ const residualAlarms = () =>
     ([, ctx]) => ctx?.fingerprint?.[0] === 'fire-flow-repair-residual',
   );
 
+/** The empty-series warnings sent, by their fixed fingerprint. */
+const emptySeriesWarnings = () =>
+  mockCaptureMessage.mock.calls.filter(
+    ([, ctx]) => ctx?.fingerprint?.[0] === 'fire-flow-repair-empty-series',
+  );
+
 describe('repairNullFlow: the series and the write', () => {
   it('fills a NULL-flow lottery fire from the WS rows, not the WS plus history sum', async () => {
     await seedMeta();
@@ -384,6 +390,12 @@ describe('repairNullFlow: which fires are selected, and which are residual', () 
     });
     expect(out.status).toBe('success');
     expect(residualAlarms()).toHaveLength(0);
+    // The series has ticks, only none yet at the fire: not an empty series.
+    expect(out.counts).toMatchObject({
+      emptySeriesGroups: 0,
+      emptySeriesFires: 0,
+    });
+    expect(emptySeriesWarnings()).toHaveLength(0);
   });
 
   it('never selects a fire from before the open, and it is not residual', async () => {
@@ -444,6 +456,8 @@ describe('repairNullFlow: which fires are selected, and which are residual', () 
       noValue: 1,
       written: 0,
       residualFires: 0,
+      emptySeriesGroups: 1,
+      emptySeriesFires: 1,
     });
     expect(residualAlarms()).toHaveLength(0);
   });
@@ -484,11 +498,96 @@ describe('repairNullFlow: which fires are selected, and which are residual', () 
       lookbackDates(TODAY),
     );
 
-    expect(groups).toEqual([
-      { ticker: 'AMD', date: TODAY, nRows: 2 },
-      { ticker: 'NVDA', date: TODAY, nRows: 1 },
-      { ticker: 'META', date: '2026-11-13', nRows: 1 },
+    expect(
+      groups.map((g) => ({
+        ticker: g.ticker,
+        date: g.date,
+        fires: g.fires.map((f) => f.id),
+      })),
+    ).toEqual([
+      { ticker: 'AMD', date: TODAY, fires: ['3', '4'] },
+      { ticker: 'NVDA', date: TODAY, fires: ['2'] },
+      { ticker: 'META', date: '2026-11-13', fires: ['1'] },
     ]);
+  });
+
+  it('returns each NULL-flow fire with the scorer inputs and the score state, in one statement for every ticker-day', async () => {
+    await seedFire({
+      id: 1,
+      ticker: 'AMD',
+      tod: 'PM',
+      dte: 2,
+      optionType: 'P',
+      volOi: 1.25,
+      gamma: 0.5,
+      askPct: 0.9,
+      scoreVersion: 'older-version',
+    });
+    await seedFire({ id: 2, ticker: 'NVDA', gamma: null });
+    await seedSilentBoom(pg, { id: 7, date: TODAY, at: `${TODAY}T15:00:00Z` });
+    const statements: string[] = [];
+    const db = intercept((text) => {
+      statements.push(text);
+    });
+
+    const groups = await selectNullFlowGroups(
+      db,
+      'lottery',
+      lookbackDates(TODAY),
+    );
+
+    // One read for all ticker-days, not one per group (R5).
+    expect(statements).toHaveLength(1);
+    expect(groups).toHaveLength(2);
+    expect(groups[0]!.fires).toEqual([
+      {
+        id: '1',
+        at: new Date(`${TODAY}T15:00:00Z`),
+        tod: 'PM',
+        dte: 2,
+        option_type: 'P',
+        trigger_vol_to_oi_window: 1.25,
+        gamma_at_trigger: 0.5,
+        trigger_ask_pct: 0.9,
+        score: null,
+        score_version: 'older-version',
+      },
+    ]);
+    expect(groups[1]!.fires[0]).toMatchObject({
+      id: '2',
+      gamma_at_trigger: null,
+    });
+    // A silent boom group carries only what its flow lookup needs.
+    const boomGroups = await selectNullFlowGroups(
+      plainDb(),
+      'silentboom',
+      lookbackDates(TODAY),
+    );
+    expect(boomGroups).toEqual([
+      {
+        ticker: 'META',
+        date: TODAY,
+        fires: [{ id: '7', at: new Date(`${TODAY}T15:00:00Z`) }],
+      },
+    ]);
+  });
+
+  it('reads the groups with one statement however many it holds, and one more per write', async () => {
+    await seedMeta();
+    for (const [i, ticker] of ['AAA', 'BBB', 'CCC', 'DDD'].entries()) {
+      await insertWsTick(pg, ticker, `${TODAY}T14:30:00.100Z`, 10, 1);
+      await seedFire({ id: i + 1, ticker });
+      await seedFire({ id: i + 11, ticker, at: `${TODAY}T15:30:00Z` });
+    }
+    const reads: string[] = [];
+    const db = intercept((text) => {
+      if (text.includes('JOIN unnest')) reads.push(text);
+    });
+
+    const out = await run('lottery', { db });
+
+    expect(reads).toHaveLength(1);
+    expect(out.counts).toMatchObject({ groups: 4, fires: 8, written: 8 });
   });
 
   // Every index on a fire table that leads with `date` serves the range (the
@@ -601,33 +700,137 @@ describe('repairNullFlow: the lottery re-score', () => {
     expect(after.rows).toEqual(before.rows);
   });
 
-  it('writes the flow but leaves the score when the weights store cannot be read, and says so', async () => {
-    await seedMeta();
-    await seedFire({ id: 1 });
-    await seedSilentBoom(pg, { id: 7, date: TODAY, at: `${TODAY}T15:00:00Z` });
+  describe('when the weights store cannot be read', () => {
     // No active pointer: the loader answers with its seed fallback.
-    await pg.query('DELETE FROM lottery_score_pointers');
+    const breakStore = () => pg.query('DELETE FROM lottery_score_pointers');
 
-    const out = await run('lottery');
+    it('writes nothing for a fire it would re-score, says so, and a later run with the store readable writes flow, score and tag together', async () => {
+      await seedMeta();
+      await seedFire({ id: 1 });
+      await breakStore();
 
-    expect(await lottery(1)).toMatchObject({
-      ncp: '175',
-      npp: '17.5',
-      score: null,
-      version: null,
+      const first = await run('lottery');
+
+      // Neither flow nor score: a row with flow and no score would never be
+      // selected again, so it would stay unscored for good.
+      expect(await lottery(1)).toMatchObject({
+        ncp: null,
+        npp: null,
+        score: null,
+        version: null,
+      });
+      expect(first.status).toBe('partial');
+      expect(first.message).toContain('weights store could not be read');
+      expect(first.counts).toMatchObject({
+        fires: 1,
+        written: 0,
+        scored: 0,
+        scoredNull: 0,
+        rescoreSkipped: 1,
+        notWritten: 0,
+        selectFailed: false,
+      });
+
+      await resetWeightsStore(pg);
+      const second = await run('lottery');
+
+      const row = await lottery(1);
+      expect(row).toMatchObject({ ncp: '175', npp: '17.5', version: SEED });
+      expect(row.score).toBe(liveScore({}, 175, 17.5));
+      expect(row.score).toBeTypeOf('number');
+      expect(second.status).toBe('success');
+      expect(second.counts).toMatchObject({
+        written: 1,
+        scored: 1,
+        rescoreSkipped: 0,
+      });
     });
-    expect(out.status).toBe('partial');
-    expect(out.message).toContain('weights store could not be read');
-    expect(out.counts).toMatchObject({
-      written: 1,
-      scored: 0,
-      scoredNull: 0,
-      rescoreSkipped: 1,
+
+    it('still writes the flow where no score is wanted: a fire that already has one, and a silent boom alert', async () => {
+      await seedMeta();
+      await seedFire({ id: 1 });
+      await seedFire({
+        id: 2,
+        at: `${TODAY}T15:01:00Z`,
+        score: 99,
+        scoreVersion: 'older-version',
+      });
+      await seedSilentBoom(pg, {
+        id: 7,
+        date: TODAY,
+        at: `${TODAY}T15:00:00Z`,
+      });
+      await breakStore();
+
+      const out = await run('lottery');
+      const boomOut = await run('silentboom');
+
+      // Only fire 1 would be re-scored, so only it waits for the store.
+      expect(await lottery(1)).toMatchObject({ ncp: null, score: null });
+      expect(await lottery(2)).toMatchObject({
+        ncp: '175',
+        score: 99,
+        version: 'older-version',
+      });
+      expect(out.counts).toMatchObject({
+        written: 1,
+        scoreLeft: 1,
+        rescoreSkipped: 1,
+      });
+      // Silent boom carries no score: the same store failure does not touch it.
+      expect(boomOut.status).toBe('success');
+      expect(await boom(7)).toMatchObject({ ncp: '175' });
     });
-    // Silent boom carries no score: the same store failure does not touch it.
-    const boomOut = await run('silentboom');
-    expect(boomOut.status).toBe('success');
-    expect(await boom(7)).toMatchObject({ ncp: '175' });
+
+    it('writes a pre-seed fire flow-only while it holds back the one it would re-score', async () => {
+      const day = '2026-09-07';
+      await seedMeta(day);
+      await seedMeta('2026-09-08');
+      await seedFire({ id: 1, date: day, at: `${day}T14:45:00Z` });
+      await seedFire({ id: 2, date: '2026-09-08', at: '2026-09-08T14:45:00Z' });
+      await breakStore();
+
+      const out = await run('lottery', { today: '2026-09-09' });
+
+      expect(await lottery(1)).toMatchObject({
+        ncp: '175',
+        score: null,
+        version: null,
+      });
+      expect(await lottery(2)).toMatchObject({ ncp: null, score: null });
+      expect(out.counts).toMatchObject({
+        written: 1,
+        scoreLeft: 1,
+        rescoreSkipped: 1,
+      });
+    });
+
+    it("counts the held-back fires of today's date as residual in the last slot, not an older date's", async () => {
+      await seedMeta();
+      await seedMeta('2026-11-13');
+      await seedFire({ id: 1 });
+      await seedFire({ id: 2, date: '2026-11-13', at: '2026-11-13T15:00:00Z' });
+      await breakStore();
+
+      const early = await run('lottery', { slot: '22:40' });
+      expect(early.counts).toMatchObject({ residualFires: 1, lastSlot: false });
+      expect(residualAlarms()).toHaveLength(0);
+
+      const last = await run('lottery', { slot: '23:40' });
+
+      expect(last.counts).toMatchObject({
+        rescoreSkipped: 2,
+        residualFires: 1,
+        residualGroups: 1,
+        lastSlot: true,
+      });
+      expect(last.status).toBe('partial');
+      expect(residualAlarms()).toHaveLength(1);
+      expect(residualAlarms()[0]![1].extra).toMatchObject({
+        residualFires: 1,
+        sample: ['META (done, 1)'],
+      });
+    });
   });
 
   it('does not re-score a fire from before the seed weights were live, nor one that already has a score', async () => {
@@ -706,6 +909,84 @@ describe('repairNullFlow: the lottery re-score', () => {
     expect(row.score).toBe(liveScore({}, 175, 17.5, REFIT_WEIGHTS));
     expect(second.status).toBe('success');
   });
+
+  it('writes nothing when another writer changed score_version (the score still NULL) between the read and the write, and the next run repairs the row against the new tag', async () => {
+    await seedMeta();
+    await seedFire({ id: 1 });
+    const db = intercept(async (text) => {
+      if (text.includes('UPDATE lottery_finder_fires')) {
+        await pg.query(
+          `UPDATE lottery_finder_fires
+              SET score_version = 'other-version' WHERE id = 1`,
+        );
+      }
+    });
+
+    const first = await run('lottery', { slot: '23:40', db });
+
+    expect(await lottery(1)).toMatchObject({
+      ncp: null,
+      npp: null,
+      score: null,
+      version: 'other-version',
+    });
+    expect(first.counts).toMatchObject({
+      written: 0,
+      notWritten: 1,
+      alreadyFilled: 0,
+      residualFires: 1,
+    });
+    expect(first.status).toBe('partial');
+    expect(residualAlarms()).toHaveLength(1);
+
+    const second = await run('lottery', { slot: '23:40' });
+
+    const row = await lottery(1);
+    expect(row).toMatchObject({ ncp: '175', version: SEED });
+    expect(row.score).toBe(liveScore({}, 175, 17.5));
+    expect(second.status).toBe('success');
+  });
+
+  it('writes nothing when another writer set a score between the read and the write, and the next run writes the flow and keeps that score', async () => {
+    await seedMeta();
+    await seedFire({ id: 1 });
+    const db = intercept(async (text) => {
+      if (text.includes('UPDATE lottery_finder_fires')) {
+        await pg.query(
+          `UPDATE lottery_finder_fires SET score = 50 WHERE id = 1`,
+        );
+      }
+    });
+
+    const first = await run('lottery', { slot: '23:40', db });
+
+    expect(await lottery(1)).toMatchObject({
+      ncp: null,
+      score: 50,
+      version: null,
+    });
+    expect(first.counts).toMatchObject({
+      written: 0,
+      notWritten: 1,
+      alreadyFilled: 0,
+      scored: 0,
+    });
+    expect(first.status).toBe('partial');
+
+    const second = await run('lottery');
+
+    // Scored now, so it is the already-scored kind: flow only.
+    expect(await lottery(1)).toMatchObject({
+      ncp: '175',
+      score: 50,
+      version: null,
+    });
+    expect(second.counts).toMatchObject({
+      written: 1,
+      scoreLeft: 1,
+      scored: 0,
+    });
+  });
 });
 
 describe('repairNullFlow: the time budget', () => {
@@ -775,6 +1056,50 @@ describe('repairNullFlow: the time budget', () => {
     });
     expect(out.status).toBe('partial');
     expect(residualAlarms()).toHaveLength(1);
+  });
+
+  it('starts no further write chunk once the deadline has passed inside a group, defers the rest of it, and the next slot writes them', async () => {
+    await seedMeta();
+    for (let id = 1; id <= 501; id += 1) {
+      await seedFire({
+        id,
+        at: `${TODAY}T15:00:${String(id % 60).padStart(2, '0')}Z`,
+      });
+    }
+    const deadline =
+      Date.parse(`${TODAY}T21:40:00Z`) +
+      FLOW_REPAIR_CRON_MAX_DURATION_MS -
+      FLOW_REPAIR_MARGIN_MS;
+    const updates: number[] = [];
+    // The first chunk starts in time; by the time it has landed the deadline
+    // has passed, so the second must not start.
+    const db = intercept((text, params) => {
+      if (text.includes('UPDATE lottery_finder_fires')) {
+        updates.push((params[0] as string[]).length);
+        vi.setSystemTime(deadline);
+      }
+    });
+
+    const first = await run('lottery', { db });
+
+    expect(updates).toEqual([500]);
+    expect(first.counts).toMatchObject({
+      groups: 1,
+      groupsDone: 0,
+      groupsDeferred: 1,
+      fires: 501,
+      written: 500,
+      residualFires: 1,
+    });
+    // A deferral alone is the budget doing its job, not a failure.
+    expect(first.status).toBe('success');
+    expect(await lottery(500)).toMatchObject({ ncp: '175' });
+    expect(await lottery(501)).toMatchObject({ ncp: null });
+
+    const second = await run('lottery');
+
+    expect(second.counts).toMatchObject({ fires: 1, written: 1 });
+    expect(await lottery(501)).toMatchObject({ ncp: '175' });
   });
 
   it('puts the deadline 60 s before the 300 s the crons are allowed', () => {
@@ -884,6 +1209,42 @@ describe('repairNullFlow: failures', () => {
     });
   });
 
+  it('a transient write failure is retried once, then a warning message with the fixed fingerprint, still partial, and the rows stay NULL', async () => {
+    let attempts = 0;
+    const db = intercept((text) => {
+      if (text.includes('UPDATE lottery_finder_fires')) {
+        attempts += 1;
+        throw new Error('Error connecting to database: fetch failed');
+      }
+    });
+
+    const out = await run('lottery', { db });
+
+    // Two ticker-days, one attempt and one retry each (FLOW_REPAIR_WRITE_RETRIES).
+    expect(attempts).toBe(4);
+    expect(await lottery(1)).toMatchObject({ ncp: null });
+    expect(await lottery(2)).toMatchObject({ ncp: null });
+    expect(out.status).toBe('partial');
+    expect(out.counts).toMatchObject({
+      groupsWriteFailed: 2,
+      written: 0,
+      notWritten: 2,
+    });
+    expect(mockCaptureException).not.toHaveBeenCalled();
+    // One message for the kind, however many ticker-days failed.
+    expect(mockCaptureMessage).toHaveBeenCalledTimes(1);
+    expect(mockCaptureMessage.mock.calls[0]![1]).toMatchObject({
+      level: 'warning',
+      fingerprint: [
+        'fire-flow-repair-failure',
+        'lottery',
+        'write',
+        'transient',
+      ],
+      extra: { failures: 2 },
+    });
+  });
+
   it('counts a row the write landed once, when the check on the rest then fails', async () => {
     await seedFire({ id: 3, ticker: 'AAA', at: `${TODAY}T15:01:00Z` });
     const db = intercept(async (text) => {
@@ -911,7 +1272,7 @@ describe('repairNullFlow: failures', () => {
 
   it('a failed selection is partial and captured, and in the last slot it raises the alarm too', async () => {
     const db = intercept((text) => {
-      if (text.includes('GROUP BY f.underlying_symbol')) {
+      if (text.includes('JOIN unnest')) {
         throw new Error('syntax error at or near "FROM"');
       }
     });
@@ -926,6 +1287,113 @@ describe('repairNullFlow: failures', () => {
     expect(last.status).toBe('partial');
     expect(residualAlarms()).toHaveLength(1);
     expect(residualAlarms()[0]![1].extra).toMatchObject({ selectFailed: true });
+  });
+});
+
+describe('repairNullFlow: ticker-days whose series is empty', () => {
+  beforeEach(async () => {
+    await insertWsTick(pg, 'AAA', `${TODAY}T14:30:00.100Z`, 10, 1);
+    await seedFire({ id: 1, ticker: 'AAA' });
+    // No flow row at all for NOPE: its series is empty.
+    await seedFire({ id: 2, ticker: 'NOPE' });
+    await seedFire({ id: 3, ticker: 'NOPE', at: `${TODAY}T15:01:00Z` });
+    // An older date's empty ticker-day: counted, but only today's is reported.
+    await seedFire({
+      id: 4,
+      ticker: 'OLD',
+      date: '2026-11-13',
+      at: '2026-11-13T15:00:00Z',
+    });
+  });
+
+  it('counts them in every slot and says nothing before the last slot', async () => {
+    const out = await run('lottery', { slot: '22:40' });
+
+    expect(out.counts).toMatchObject({
+      groups: 3,
+      noValue: 3,
+      written: 1,
+      emptySeriesGroups: 2,
+      emptySeriesFires: 3,
+    });
+    expect(out.status).toBe('success');
+    expect(emptySeriesWarnings()).toHaveLength(0);
+  });
+
+  it("in the last slot sends one warning with a fixed fingerprint and today's count only, and the run stays a success", async () => {
+    const out = await run('lottery', { slot: '23:40' });
+
+    expect(out.status).toBe('success');
+    expect(out.counts).toMatchObject({
+      emptySeriesGroups: 2,
+      residualFires: 0,
+    });
+    expect(emptySeriesWarnings()).toHaveLength(1);
+    const [message, ctx] = emptySeriesWarnings()[0]!;
+    expect(message).toContain('no flow');
+    expect(ctx).toMatchObject({
+      level: 'warning',
+      fingerprint: ['fire-flow-repair-empty-series', 'lottery'],
+      tags: { job: 'enrich-lottery', table: 'lottery' },
+      extra: {
+        date: TODAY,
+        emptySeriesGroups: 1,
+        emptySeriesFires: 2,
+        sample: ['NOPE (2)'],
+      },
+    });
+    expect(residualAlarms()).toHaveLength(0);
+  });
+
+  it('stays quiet in the last slot when only an older date had an empty series', async () => {
+    await pg.query('DELETE FROM lottery_finder_fires WHERE id IN (2, 3)');
+
+    const out = await run('lottery', { slot: '23:40' });
+
+    expect(out.counts).toMatchObject({
+      emptySeriesGroups: 1,
+      emptySeriesFires: 1,
+    });
+    expect(emptySeriesWarnings()).toHaveLength(0);
+  });
+
+  it("puts today's count in the residual alarm's extra, beside the warning", async () => {
+    const db = intercept((text, params) => {
+      if (text.includes('WITH unified') && params[0] === 'AAA') {
+        throw new Error('boom');
+      }
+    });
+
+    await run('lottery', { slot: '23:40', db });
+
+    expect(residualAlarms()).toHaveLength(1);
+    expect(residualAlarms()[0]![1].extra).toMatchObject({
+      residualFires: 1,
+      emptySeriesGroups: 1,
+      emptySeriesFires: 2,
+    });
+    expect(emptySeriesWarnings()).toHaveLength(1);
+  });
+
+  it('a silent boom ticker-day with no flow rows is reported the same way, under its own fingerprint', async () => {
+    await seedSilentBoom(pg, {
+      id: 7,
+      ticker: 'NOPE',
+      date: TODAY,
+      at: `${TODAY}T15:00:00Z`,
+    });
+
+    const out = await run('silentboom', { slot: '23:45' });
+
+    expect(out.counts).toMatchObject({
+      emptySeriesGroups: 1,
+      emptySeriesFires: 1,
+    });
+    expect(emptySeriesWarnings()).toHaveLength(1);
+    expect(emptySeriesWarnings()[0]![1]).toMatchObject({
+      fingerprint: ['fire-flow-repair-empty-series', 'silentboom'],
+      extra: { emptySeriesGroups: 1, sample: ['NOPE (1)'] },
+    });
   });
 });
 

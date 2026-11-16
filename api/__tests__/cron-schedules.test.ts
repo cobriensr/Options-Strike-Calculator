@@ -549,6 +549,22 @@ describe('cron-schedules SCHEDULE_MAP', () => {
     ).toBeGreaterThanOrEqual(maxDuration!);
   });
 
+  it.each(['enrich-lottery-outcomes', 'enrich-silent-boom-outcomes'])(
+    '%s: the monitor max runtime is longer than the 300 s function maxDuration',
+    (job) => {
+      // Both crons run the outcome pass and then the flow repair step, which
+      // starts no ticker-day after 240 s and can finish up to 41 s later: a run
+      // can fill the whole 300 s, and a monitor window of exactly 300 s would
+      // flag it as timed out before Vercel kills it.
+      const cfg = JSON.parse(
+        readFileSync(resolve(process.cwd(), 'vercel.json'), 'utf8'),
+      ) as { functions: Record<string, { maxDuration?: number }> };
+      const maxDuration = cfg.functions[`api/cron/${job}.ts`]?.maxDuration;
+      expect(maxDuration).toBe(300);
+      expect(SCHEDULE_MAP[job]!.maxRuntime * 60).toBeGreaterThan(maxDuration!);
+    },
+  );
+
   it('ET-anchored entries use the America/New_York timezone', () => {
     // Lock the market-hours monitors fixed by the 2026-06-08 DST triage
     // (plus the three GEXBot crons added 2026-10-28 and check-live-snapshots

@@ -51,7 +51,11 @@
  * ticker-day in the last 60 s of the 300 s (pinned in vercel.json `functions`),
  * and its counts ride in `metadata.flowRepair`. A failed read or write makes
  * the run `partial`; the last slot of the day (23:45 UTC) raises one Sentry
- * error for alerts still without flow. Spec: docs/superpowers/specs/
+ * error for alerts still without flow. The two steps are independent: if the
+ * outcome pass throws (its candidate SELECT, an aggregate read, an UPDATE), the
+ * repair still runs, and the pass's error is rethrown after it, so the run stays
+ * an `error` with the real exception captured (the repair's counts are then
+ * logged, not in the Axiom event). Spec: docs/superpowers/specs/
  * lottery-flow-repair-and-indexes-2026-11-15.md, Phase B.
  *
  * Environment: CRON_SECRET
@@ -63,6 +67,7 @@ import { getDb, withDbRetry } from '../_lib/db.js';
 import { WS_OPTION_TRADES_RETENTION_DAYS } from '../_lib/constants.js';
 import {
   withCronInstrumentation,
+  type CronContext,
   type CronResult,
 } from '../_lib/cron-instrumentation.js';
 import { repairNullFlow, worseStatus } from '../_lib/fire-flow-repair.js';
@@ -163,32 +168,42 @@ async function lockOutcomes(
   return rows.length;
 }
 
+async function runOutcomePass(sql: Sql, ctx: CronContext) {
+  const candidates = await selectCandidates(sql);
+  const { windows, skipped, inFlight } = prepareWindows(candidates, Date.now());
+  const pass = await enrichOutcomeWindows(sql, windows, {
+    job: 'enrich-silent-boom-outcomes',
+    recovery: 'scripts/enrich_silent_boom_outcomes.py',
+    logger: ctx.logger,
+    deadlineMs: ctx.startTimeMs + PASS_BUDGET_MS,
+    toUpdate: (w, r): AlertUpdate => ({
+      id: w.id,
+      peak: r.peakPct,
+      minToPeak: r.minutesToPeak,
+      r30: r.r30Pct,
+      r60: r.r60Pct,
+      r120: r.r120Pct,
+      eod: r.eodPct,
+      trail30: r.trail30_10Pct,
+    }),
+    lock: (updates) => lockOutcomes(sql, updates),
+  });
+  return { candidates: candidates.length, skipped, inFlight, pass };
+}
+
 export default withCronInstrumentation(
   'enrich-silent-boom-outcomes',
   async (ctx): Promise<CronResult> => {
     const sql = getDb();
-    const candidates = await selectCandidates(sql);
-    const { windows, skipped, inFlight } = prepareWindows(
-      candidates,
-      Date.now(),
+
+    // The outcome pass and the flow repair are independent: a throw in the pass
+    // (its candidate SELECT, an aggregate read, an UPDATE) must not cost the
+    // repair its slot. The error is held and rethrown after the repair, so the
+    // run is still an `error` and the wrapper still captures the exception.
+    const passRun = await runOutcomePass(sql, ctx).then(
+      (result) => ({ ok: true as const, result }),
+      (error: unknown) => ({ ok: false as const, error }),
     );
-    const pass = await enrichOutcomeWindows(sql, windows, {
-      job: 'enrich-silent-boom-outcomes',
-      recovery: 'scripts/enrich_silent_boom_outcomes.py',
-      logger: ctx.logger,
-      deadlineMs: ctx.startTimeMs + PASS_BUDGET_MS,
-      toUpdate: (w, r): AlertUpdate => ({
-        id: w.id,
-        peak: r.peakPct,
-        minToPeak: r.minutesToPeak,
-        r30: r.r30Pct,
-        r60: r.r60Pct,
-        r120: r.r120Pct,
-        eod: r.eodPct,
-        trail30: r.trail30_10Pct,
-      }),
-      lock: (updates) => lockOutcomes(sql, updates),
-    });
 
     // The flow repair runs last and starts no ticker-day in the final 60 s of
     // the 300 s. Its failures are counted in `flow` and cannot fail the
@@ -200,10 +215,21 @@ export default withCronInstrumentation(
       startTimeMs: ctx.startTimeMs,
     });
 
+    if (!passRun.ok) {
+      // The wrapper reports the throw without this run's metadata, so the
+      // repair's counts are logged here.
+      ctx.logger.info(
+        { flowRepair: flow.counts },
+        'enrich-silent-boom-outcomes: outcome pass failed; flow repair ran',
+      );
+      throw passRun.error;
+    }
+    const { candidates, skipped, inFlight, pass } = passRun.result;
+
     // `flowRepair` is one nested object, which reportCronRun folds into its
     // `meta` string: no new top-level Axiom column.
     const metadata = {
-      candidates: candidates.length,
+      candidates,
       updated: pass.locked,
       alreadyLocked: pass.alreadyLocked,
       skipped,

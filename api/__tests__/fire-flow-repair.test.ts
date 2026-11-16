@@ -11,15 +11,22 @@
  */
 
 import { readFileSync } from 'node:fs';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { withDbRetry } from '../_lib/db.js';
 import {
+  FLOW_REPAIR_CHECK_ATTEMPT_MS,
+  FLOW_REPAIR_CHECK_RETRIES,
   FLOW_REPAIR_CRON_MAX_DURATION_MS,
   FLOW_REPAIR_LAST_SLOT_UTC_HOUR,
+  FLOW_REPAIR_MARGIN_MS,
+  FLOW_REPAIR_WRITE_ATTEMPT_MS,
+  FLOW_REPAIR_WRITE_RETRIES,
   lookbackDates,
   worseStatus,
 } from '../_lib/fire-flow-repair.js';
 import type { CronStatus } from '../_lib/cron-instrumentation.js';
+import { FLOW_SERIES_DEADLINE_MS } from '../_lib/ticker-flow-snapshot.js';
 
 interface VercelConfig {
   crons: Array<{ path: string; schedule: string }>;
@@ -72,6 +79,62 @@ describe('worseStatus', () => {
     ['partial', 'error', 'error'],
   ])('the worse of %s and %s is %s', (a, b, worse) => {
     expect(worseStatus(a, b)).toBe(worse);
+  });
+});
+
+describe('the time margin', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /**
+   * Fake-clock milliseconds the REAL `withDbRetry` takes to give up on a call
+   * that never answers: every attempt runs to its timeout, with the backoff
+   * between attempts. (Measured, so a change to the retry loop moves it.)
+   */
+  async function giveUpMs(retries: number, attemptMs: number): Promise<number> {
+    vi.useFakeTimers();
+    let settled = false;
+    const gaveUp = withDbRetry(
+      () => new Promise<never>(() => {}),
+      retries,
+      attemptMs,
+    )
+      .catch(() => undefined)
+      .then(() => {
+        settled = true;
+      });
+    const stepMs = 500;
+    let elapsed = 0;
+    while (!settled && elapsed < 600_000) {
+      await vi.advanceTimersByTimeAsync(stepMs);
+      elapsed += stepMs;
+    }
+    await gaveUp;
+    return elapsed;
+  }
+
+  it('a ticker-day in flight when the deadline passes finishes inside FLOW_REPAIR_MARGIN_MS', async () => {
+    const write = await giveUpMs(
+      FLOW_REPAIR_WRITE_RETRIES,
+      FLOW_REPAIR_WRITE_ATTEMPT_MS,
+    );
+    const check = await giveUpMs(
+      FLOW_REPAIR_CHECK_RETRIES,
+      FLOW_REPAIR_CHECK_ATTEMPT_MS,
+    );
+
+    // A group that started just before the deadline reads its series (up to its
+    // own deadline), then writes one chunk and checks what the write left. No
+    // later chunk starts once the deadline has passed.
+    const worstCase = FLOW_SERIES_DEADLINE_MS + write + check;
+
+    // The measurement is not vacuous: one attempt takes at least its timeout.
+    expect(write).toBeGreaterThanOrEqual(FLOW_REPAIR_WRITE_ATTEMPT_MS);
+    expect(check).toBeGreaterThanOrEqual(FLOW_REPAIR_CHECK_ATTEMPT_MS);
+    expect(worstCase).toBeLessThanOrEqual(FLOW_REPAIR_MARGIN_MS);
+    // 15 s series + (2 x 10 s attempts + 1 s backoff) + 5 s check.
+    expect(worstCase).toBe(41_000);
   });
 });
 

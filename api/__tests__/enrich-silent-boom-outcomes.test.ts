@@ -54,6 +54,7 @@ vi.mock('../_lib/api-helpers.js', () => ({
 
 import handler from '../cron/enrich-silent-boom-outcomes.js';
 import { AXIOM_TOP_LEVEL_KEYS } from '../_lib/axiom-fields.js';
+import { reportCronRun } from '../_lib/axiom.js';
 
 const GUARD = { apiKey: '', today: '2026-10-01' };
 
@@ -94,13 +95,13 @@ function agg(id: number, o: Row = {}): Row {
 
 interface Router {
   candidates?: Row[];
+  /** Override the candidate SELECT (e.g. to reject). */
+  selectCandidates?: () => Promise<Row[]>;
   aggregate?: (ids: number[]) => Row[] | Promise<Row[]>;
   lockReturns?: (ids: number[]) => number[] | Promise<number[]>;
   /** Empty 5-min buckets the continuity probe reports. */
   gaps?: Row[];
-  /** The flow repair step: ticker-days with a NULL-flow alert. */
-  flowGroups?: () => Promise<Row[]> | Row[];
-  /** The flow repair step: one ticker-day's NULL-flow alerts. */
+  /** The flow repair step: the NULL-flow alerts its one selection returns. */
   flowAlerts?: Row[];
   /** The flow repair step: the write's RETURNING (default: every id). */
   flowWrite?: (ids: string[]) => Promise<string[]> | string[];
@@ -115,25 +116,20 @@ function route(r: Router): void {
       const sqlText = strings.join(' ');
       // The flow repair step's statements, before the outcome pass's own
       // `FROM silent_boom_alerts` and `UPDATE silent_boom_alerts` matches.
-      if (sqlText.includes('GROUP BY f.underlying_symbol')) {
-        return r.flowGroups ? r.flowGroups() : [];
-      }
+      if (sqlText.includes('JOIN unnest')) return r.flowAlerts ?? [];
       if (sqlText.includes('cum_ncp_at_fire = u.ncp')) {
         const ids = (values[0] as string[]) ?? [];
         const written = await (r.flowWrite ?? ((x) => x))(ids);
         return written.map((id) => ({ id }));
       }
       if (sqlText.includes('id = ANY(')) return [];
-      if (sqlText.includes('f.cum_ncp_at_fire IS NULL')) {
-        return r.flowAlerts ?? [];
-      }
       if (sqlText.includes('UPDATE silent_boom_alerts')) {
         const ids = values[0] as number[];
         const locked = await (r.lockReturns ?? ((x) => x))(ids);
         return locked.map((id) => ({ id: String(id) }));
       }
       if (sqlText.includes('FROM silent_boom_alerts')) {
-        return r.candidates ?? [];
+        return r.selectCandidates ? r.selectCandidates() : (r.candidates ?? []);
       }
       throw new Error(`unrouted SQL: ${sqlText.slice(0, 80)}`);
     },
@@ -381,11 +377,10 @@ describe('enrich-silent-boom-outcomes', () => {
 
 // ── The flow repair step (api/_lib/fire-flow-repair.ts) ───────────────────────
 
-/** One ticker-day with a NULL-flow alert, as the selection returns it. */
-const FLOW_GROUP = { ticker: 'AAA', date: '2026-10-01', n_rows: 1 };
-
-/** A NULL-flow alert whose bucket starts at 14:35Z (`bucket_ct`). */
+/** A NULL-flow alert of AAA whose bucket starts at 14:35Z (`bucket_ct`). */
 const flowAlert = (id: number, at = '2026-10-01T14:35:00Z'): Row => ({
+  ticker: 'AAA',
+  date: '2026-10-01',
   id: String(id),
   at: new Date(at),
 });
@@ -421,7 +416,6 @@ describe('enrich-silent-boom-outcomes: flow repair step', () => {
     route({
       candidates: [alert(1)],
       aggregate: () => [agg(1)],
-      flowGroups: () => [FLOW_GROUP],
       flowAlerts: [flowAlert(11)],
     });
 
@@ -449,7 +443,6 @@ describe('enrich-silent-boom-outcomes: flow repair step', () => {
     route({
       candidates: [alert(1)],
       aggregate: () => [agg(1)],
-      flowGroups: () => [FLOW_GROUP],
       flowAlerts: [flowAlert(11)],
       flowWrite: () => Promise.reject(new Error('permission denied')),
     });
@@ -471,8 +464,42 @@ describe('enrich-silent-boom-outcomes: flow repair step', () => {
     );
   });
 
+  it('still repairs when the candidate SELECT throws, then fails the run with that error', async () => {
+    route({
+      selectCandidates: () => Promise.reject(new Error('neon: timeout')),
+      flowAlerts: [flowAlert(11)],
+    });
+
+    const res = await run();
+
+    // The repair ran and wrote, after the outcome pass had failed.
+    expect(flowWrites()).toHaveLength(1);
+    expect(lockCalls()).toHaveLength(0);
+    expect(res._status).toBe(500);
+    expect(mockCaptureException).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'neon: timeout' }),
+    );
+    expect(vi.mocked(reportCronRun).mock.calls.at(-1)![1]).toMatchObject({
+      status: 'error',
+    });
+  });
+
+  it('still repairs when the outcome pass throws later, from a failed outcome UPDATE', async () => {
+    route({
+      candidates: [alert(1)],
+      aggregate: () => [agg(1)],
+      lockReturns: () => Promise.reject(new Error('neon: write timeout')),
+      flowAlerts: [flowAlert(11)],
+    });
+
+    const res = await run();
+
+    expect(res._status).toBe(500);
+    expect(flowWrites()).toHaveLength(1);
+  });
+
   it('a failed series read makes the run partial and is captured', async () => {
-    route({ flowGroups: () => [FLOW_GROUP], flowAlerts: [flowAlert(11)] });
+    route({ flowAlerts: [flowAlert(11)] });
     mockFetchSeries.mockRejectedValue(new Error('relation does not exist'));
 
     const res = await run();
@@ -490,7 +517,6 @@ describe('enrich-silent-boom-outcomes: flow repair step', () => {
       // A ticker whose tape went quiet at the close is the pass's error case.
       candidates: [alert(1), alert(2, 'TLT261002C00076000')],
       aggregate: () => [agg(1), agg(2, { tape_live: false })],
-      flowGroups: () => [FLOW_GROUP],
       flowAlerts: [flowAlert(11)],
     });
 
@@ -503,7 +529,7 @@ describe('enrich-silent-boom-outcomes: flow repair step', () => {
   });
 
   it('the residual alarm stays quiet in the first slot and fires once in the last, with a fixed fingerprint', async () => {
-    route({ flowGroups: () => [FLOW_GROUP], flowAlerts: [flowAlert(11)] });
+    route({ flowAlerts: [flowAlert(11)] });
     mockFetchSeries.mockRejectedValue(new Error('boom'));
 
     await runAt('21:45');
@@ -525,7 +551,6 @@ describe('enrich-silent-boom-outcomes: flow repair step', () => {
 
   it('does not count an alert before the first WS tick: nothing to write is not a residual', async () => {
     route({
-      flowGroups: () => [FLOW_GROUP],
       flowAlerts: [flowAlert(11, '2026-10-01T14:30:30Z')],
     });
 
