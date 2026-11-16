@@ -1434,6 +1434,21 @@ describe('WS gaps of the doubled rows (real SQL)', () => {
         expect(name).toBe('ws_net_flow_per_ticker_cov_uq');
       }
       expect(named.length + bitmapIndexes.length).toBeGreaterThan(0);
+      // Every index read of the WS table is bounded by the ticker and by both
+      // of the series' own session bounds (08:30 and 15:00 CT; this connection
+      // is on America/Chicago, so the plan prints them at -05), so a tick past
+      // the close, or another day's rows, are never read.
+      const wsIndexConds = nodes
+        .filter((n) =>
+          String(n['Index Name'] ?? '').startsWith('ws_net_flow_per_ticker'),
+        )
+        .map((n) => String(n['Index Cond']));
+      expect(wsIndexConds.length).toBeGreaterThan(0);
+      for (const cond of wsIndexConds) {
+        expect(cond).toContain("ticker = 'GAP'");
+        expect(cond).toContain("ts >= '2026-10-29 08:30:00-05'");
+        expect(cond).toContain("ts <= '2026-10-29 15:00:00-05'");
+      }
     } finally {
       await pg.exec('RESET enable_seqscan');
     }
