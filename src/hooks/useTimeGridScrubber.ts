@@ -74,8 +74,19 @@ export interface TimeGridScrubber {
   timeGrid: readonly string[];
 }
 
-export function useTimeGridScrubber(): TimeGridScrubber {
-  const [scrubTime, setScrubTime] = useState<string | null>(null);
+/**
+ * `scope` names what a scrub belongs to (a consumer passes its date and
+ * symbol). A scrub is dropped during render, with no effect, when the scope
+ * changes, so no render pairs the new scope with a time set in the old one
+ * (that would fetch the new view at the old time before the clean request),
+ * and it cannot come back if the scope returns.
+ */
+export function useTimeGridScrubber(scope = ''): TimeGridScrubber {
+  const [scrub, setScrub] = useState<{ scope: string; time: string } | null>(
+    null,
+  );
+  if (scrub !== null && scrub.scope !== scope) setScrub(null);
+  const scrubTime = scrub !== null && scrub.scope === scope ? scrub.time : null;
 
   const scrubTimeIdx = scrubTime !== null ? TIME_GRID.indexOf(scrubTime) : null;
 
@@ -85,31 +96,38 @@ export function useTimeGridScrubber(): TimeGridScrubber {
   const isScrubbed = scrubTime !== null;
 
   const scrubPrev = useCallback(() => {
-    setScrubTime((cur) => {
-      if (cur === null) return lastGridTimeBeforeNow();
-      const idx = TIME_GRID.indexOf(cur);
-      return idx > 0 ? (TIME_GRID[idx - 1] ?? cur) : cur;
+    setScrub((cur) => {
+      if (cur === null || cur.scope !== scope) {
+        return { scope, time: lastGridTimeBeforeNow() };
+      }
+      const idx = TIME_GRID.indexOf(cur.time);
+      return idx > 0 ? { scope, time: TIME_GRID[idx - 1] ?? cur.time } : cur;
     });
-  }, []);
+  }, [scope]);
 
   const scrubNext = useCallback(() => {
-    setScrubTime((cur) => {
-      if (cur === null) return cur;
-      const idx = TIME_GRID.indexOf(cur);
-      return idx < TIME_GRID.length - 1 ? (TIME_GRID[idx + 1] ?? cur) : cur;
+    setScrub((cur) => {
+      if (cur === null || cur.scope !== scope) return null;
+      const idx = TIME_GRID.indexOf(cur.time);
+      return idx < TIME_GRID.length - 1
+        ? { scope, time: TIME_GRID[idx + 1] ?? cur.time }
+        : cur;
     });
-  }, []);
+  }, [scope]);
 
-  const scrubTo = useCallback((time: string) => {
-    if (time === TIME_GRID.at(-1)) {
-      setScrubTime(null);
-    } else if (TIME_GRID.includes(time)) {
-      setScrubTime(time);
-    }
-  }, []);
+  const scrubTo = useCallback(
+    (time: string) => {
+      if (time === TIME_GRID.at(-1)) {
+        setScrub(null);
+      } else if (TIME_GRID.includes(time)) {
+        setScrub({ scope, time });
+      }
+    },
+    [scope],
+  );
 
   const scrubLive = useCallback(() => {
-    setScrubTime(null);
+    setScrub(null);
   }, []);
 
   return {

@@ -131,4 +131,68 @@ describe('useTimeGridScrubber', () => {
     act(() => result.current.scrubTo('10:00'));
     expect(result.current.canScrubPrev).toBe(true);
   });
+
+  // A scrub belongs to the scope (a date and a symbol) it was set in. When
+  // the scope changes the scrub is dropped during render, so no render pairs
+  // the new scope with the old time, and it cannot come back if the scope
+  // returns.
+  describe('scope', () => {
+    function setup(initial: string) {
+      const seen: Array<{ scope: string; scrubTime: string | null }> = [];
+      const hook = renderHook(
+        ({ scope }) => {
+          const scrubber = useTimeGridScrubber(scope);
+          seen.push({ scope, scrubTime: scrubber.scrubTime });
+          return scrubber;
+        },
+        { initialProps: { scope: initial } },
+      );
+      return { ...hook, seen };
+    }
+
+    it('keeps a scrub while the scope is unchanged', () => {
+      const { result, rerender } = setup('a');
+      act(() => result.current.scrubTo('10:00'));
+
+      rerender({ scope: 'a' });
+
+      expect(result.current.scrubTime).toBe('10:00');
+    });
+
+    it('drops the scrub when the scope changes, in every render', () => {
+      const { result, rerender, seen } = setup('a');
+      act(() => result.current.scrubTo('10:00'));
+
+      rerender({ scope: 'b' });
+
+      expect(result.current.scrubTime).toBeNull();
+      expect(result.current.isScrubbed).toBe(false);
+      // No render, committed or not, paired scope b with the time set in a.
+      expect(
+        seen.filter((s) => s.scope === 'b' && s.scrubTime !== null),
+      ).toEqual([]);
+    });
+
+    it('does not bring the scrub back when the scope returns', () => {
+      const { result, rerender } = setup('a');
+      act(() => result.current.scrubTo('10:00'));
+
+      rerender({ scope: 'b' });
+      rerender({ scope: 'a' });
+
+      expect(result.current.scrubTime).toBeNull();
+    });
+
+    it('scrubs again in the new scope', () => {
+      const { result, rerender } = setup('a');
+      act(() => result.current.scrubTo('10:00'));
+      rerender({ scope: 'b' });
+
+      act(() => result.current.scrubTo('11:00'));
+      expect(result.current.scrubTime).toBe('11:00');
+      act(() => result.current.scrubPrev());
+
+      expect(result.current.scrubTime).toBe('10:55');
+    });
+  });
 });

@@ -970,6 +970,77 @@ describe.each([
     expect(result.current.isLive).toBe(true);
   });
 
+  // A scrub time belongs to the date and symbol it was set on. The commit
+  // that carries a new date or symbol must not still hold the old time, or the
+  // effect that fetches runs with both and requests the new view at the old
+  // time before the clean request.
+  describe('never asks for a new view at the old scrub time', () => {
+    async function mountScrubbed() {
+      const hook = renderHook(() => useDarkPoolLevels(true));
+      await act(async () => {});
+      act(() => {
+        hook.result.current.scrubPrev();
+      });
+      await act(async () => {});
+      expect(hook.result.current.isScrubbed).toBe(true);
+      mockFetch.mockClear();
+      return hook;
+    }
+    const timedUrls = (needle: string) =>
+      fetchedUrls().filter((u) => u.includes(needle) && u.includes('time='));
+
+    it('when the date rolls while scrubbed', async () => {
+      await mountScrubbed();
+
+      await crossMidnight();
+
+      expect(timedUrls(`date=${m.morning}`)).toEqual([]);
+      expect(fetchedUrls().at(-1)).toContain(`date=${m.morning}`);
+      expect(fetchedUrls().at(-1)).not.toContain('time=');
+    });
+
+    it('when a date is picked while scrubbed', async () => {
+      const { result } = await mountScrubbed();
+
+      act(() => {
+        result.current.setSelectedDate('2026-03-11');
+      });
+      await act(async () => {});
+
+      expect(timedUrls('date=2026-03-11')).toEqual([]);
+      expect(fetchedUrls().at(-1)).not.toContain('time=');
+    });
+
+    it('when the symbol changes while scrubbed', async () => {
+      const { result } = await mountScrubbed();
+
+      act(() => {
+        result.current.setSelectedSymbol('NDX');
+      });
+      await act(async () => {});
+
+      expect(timedUrls('symbol=NDX')).toEqual([]);
+      expect(fetchedUrls().at(-1)).toContain('symbol=NDX');
+      expect(fetchedUrls().at(-1)).not.toContain('time=');
+    });
+
+    it('and a scrub does not come back when the date returns', async () => {
+      const { result } = await mountScrubbed();
+
+      act(() => {
+        result.current.setSelectedDate('2026-03-11');
+      });
+      await act(async () => {});
+      act(() => {
+        result.current.setSelectedDate(m.night);
+      });
+      await act(async () => {});
+
+      expect(result.current.isScrubbed).toBe(false);
+      expect(result.current.scrubTime).toBeNull();
+    });
+  });
+
   it('keeps a picked past date, and does not refetch or poll it', async () => {
     const { result } = renderHook(() => useDarkPoolLevels(true));
     await act(async () => {});

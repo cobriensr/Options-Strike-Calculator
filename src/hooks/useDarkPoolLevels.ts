@@ -118,7 +118,12 @@ export function useDarkPoolLevels(
 
   // Time scrubber: null = live (no ?time= param), HH:MM = scrubbed.
   // The shared `useTimeGridScrubber` owns navigation; per-feature `isLive`
-  // policy stays here because it depends on `isToday`.
+  // policy stays here because it depends on `isToday`. A scrub belongs to the
+  // date and symbol it was set on: the scrubber drops it during render when
+  // either changes, so the view always starts live for the new combination
+  // and no render, committed or not, pairs the new date or symbol with the old
+  // time. Its own `scrubLive` (renamed `clearScrub`) clears the scrub only;
+  // the exposed `scrubLive` below also returns the date to today.
   const {
     scrubTime,
     isScrubbed,
@@ -129,7 +134,7 @@ export function useDarkPoolLevels(
     scrubNext,
     scrubTo,
     timeGrid,
-  } = useTimeGridScrubber();
+  } = useTimeGridScrubber(`${selectedDate}|${selectedSymbol}`);
 
   // Judged against the shared clock the date follows, so the date and this
   // flag turn in the same render at midnight ET.
@@ -228,14 +233,6 @@ export function useDarkPoolLevels(
       mountedRef.current = false;
     };
   }, []);
-
-  // Reset scrub time when the date OR symbol changes so the view always
-  // starts live for the newly selected combination. This clears the scrub
-  // only: the exposed `scrubLive` below also returns the date to today, which
-  // here would undo every date the owner picks.
-  useEffect(() => {
-    clearScrub();
-  }, [selectedDate, selectedSymbol, clearScrub]);
 
   // The LIVE button: clear the scrub and go back to following today, so LIVE
   // from a past date lands on today's live view and then rolls with it.
