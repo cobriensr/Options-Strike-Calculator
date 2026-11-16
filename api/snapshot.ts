@@ -44,28 +44,20 @@
  * A live row's quotes must be fresh (P0.6, F11). When the quote poll stalls
  * or Schwab serves an old print, the inputs still match the quote state, so
  * only the quote's time shows the row is frozen. The client sends it as
- * quotedAt (the older of the SPX and VIX Schwab tradeTime, epoch ms). A live
- * save (isBacktest not true) that none of the three skips above caught gets a
- * verdict, and the rule would refuse it when:
+ * quotedAt (the older of the SPX and VIX Schwab tradeTime, epoch ms); a live
+ * save (isBacktest not true) that none of the three skips above caught is
+ * refused with 422 { error: 'quote-not-fresh', reason, saved: false } when:
  *   - no-quote-time: quotedAt is missing;
  *   - bad-entry-time: the entryTime label or the date does not give a slot;
  *   - quote-from-future: quotedAt is over 2 min ahead of this server's clock;
  *   - stale-quote: quotedAt is over 10 min behind the slot (exactly 10:00
  *     passes). The slot is the label's instant, not the clock.
- * SHADOW MODE (owner decision 2026-11-14), for Monday 2026-11-16's session:
- * the server records the verdict and saves the row either way, with the same
- * 200, so nothing is refused. Every judged save counts
- * snapshot.quote_freshness (attributes verdict, `ok` or the reason, and
- * would_alert) and records slot - quotedAt as snapshot.quote_behind_ms; a
- * would-be refusal also logs one warning. No Sentry event. After that close,
- * with no would-be refusal, the commit that added this paragraph is reverted
- * and the rule enforces: HTTP 422 { error: 'quote-not-fresh', reason, saved:
- * false }, a log, a snapshot.quote_refused count, and a Sentry error
- * (snapshot.stale_quote: <reason>, one issue per reason) for a slot inside
- * the session and for a missing time or an unreadable label at any hour.
- * Before the open and after the close the last quote is old by nature, so
- * those refusals are only a log and a count. The client retries a 422
- * quietly. A backtest save is not checked. Rule: api/_lib/quote-freshness.ts.
+ * The client retries a 422 quietly, so it alerts here: a Sentry error
+ * (snapshot.stale_quote: <reason>, one issue per reason) for a slot inside the
+ * session, and for a missing time or an unreadable label at any hour. Before
+ * the open and after the close the last quote is old by nature, so it is a
+ * log and a metric there. A backtest save is not checked. Rule:
+ * api/_lib/quote-freshness.ts.
  *
  * Called automatically by the frontend whenever results are computed.
  */
@@ -88,6 +80,7 @@ import {
 import {
   alertsOnRefusal,
   checkQuoteFreshness,
+  isoOrNull,
 } from './_lib/quote-freshness.js';
 import { isTradingDay } from '../src/data/marketHours.js';
 import { getETToday } from '../src/utils/timezone.js';
@@ -214,30 +207,41 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         .json({ id: null, saved: false, skipped: 'non-trading-day' });
     }
     if (isBacktest !== true) {
-      // Shadow: judge the quote and record the verdict, but never refuse. To
-      // enforce, revert the commit that put this block here.
       const verdict = checkQuoteFreshness({
         date,
         entryTime,
         quotedAt,
         nowMs: Date.now(),
       });
-      metrics.quoteFreshness({
-        verdict: verdict.ok ? 'ok' : verdict.reason,
-        wouldAlert: alertsOnRefusal(date, verdict),
-        behindMs: verdict.behindMs,
-      });
       if (!verdict.ok) {
+        const { reason, slotMs, behindMs } = verdict;
+        const context = {
+          date,
+          entryTime,
+          quotedAtIso: isoOrNull(quotedAt),
+          slotIso: isoOrNull(slotMs),
+          behindMs,
+        };
         logger.warn(
-          {
-            reason: verdict.reason,
-            behindMs: verdict.behindMs,
-            date,
-            entryTime,
-            quotedAt,
-          },
-          'Shadow: the quote-freshness rule would refuse this live save',
+          { ...context, reason },
+          'Refused a live snapshot save: the quote is not fresh',
         );
+        metrics.increment('snapshot.quote_refused');
+        if (alertsOnRefusal(date, verdict)) {
+          // The title names the reason, so an alert email says why; the
+          // fingerprint keeps one issue per reason.
+          Sentry.captureMessage(`snapshot.stale_quote: ${reason}`, {
+            level: 'error',
+            tags: { reason },
+            fingerprint: ['snapshot.stale_quote', reason],
+            extra: context,
+          });
+        }
+        res.setHeader('Cache-Control', 'no-store');
+        done({ status: 422, error: reason });
+        return res
+          .status(422)
+          .json({ error: 'quote-not-fresh', reason, saved: false });
       }
     }
 

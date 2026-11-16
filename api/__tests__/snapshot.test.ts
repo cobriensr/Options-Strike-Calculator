@@ -20,7 +20,6 @@ vi.mock('../_lib/sentry.js', () => ({
     request: vi.fn(() => vi.fn()),
     dbSave: vi.fn(),
     increment: vi.fn(),
-    quoteFreshness: vi.fn(),
   },
 }));
 
@@ -87,7 +86,6 @@ describe('POST /api/snapshot', () => {
     vi.mocked(metrics.dbSave).mockClear();
     vi.mocked(metrics.request).mockClear();
     vi.mocked(metrics.increment).mockClear();
-    vi.mocked(metrics.quoteFreshness).mockClear();
     vi.mocked(logger.error).mockClear();
     vi.mocked(getEventsForDate)
       .mockReset()
@@ -1041,14 +1039,13 @@ describe('POST /api/snapshot', () => {
     });
   });
 
-  // ── The quote's age (P0.6, F11), in shadow ──────────────────
-  // Owner decision 2026-11-14: through Monday 2026-11-16's close the server
-  // judges each live save's quote against its slot, records the verdict, and
-  // saves the row either way. After that close, with no would-be refusal, the
-  // commit that made the rule a shadow is reverted and the rule refuses (422).
-  // The clock is pinned to 10:00 AM CDT, so SLOT is also now.
+  // ── The quote's age (P0.6, F11) ─────────────────────────────
+  // A live save whose quote printed more than 10 minutes before its slot is
+  // refused with a 422: a stalled quote poll, or an old Schwab print, leaves
+  // inputs that still match the quote state. The clock is pinned to 10:00 AM
+  // CDT, so SLOT is also now.
 
-  describe('the quote’s age, in shadow', () => {
+  describe('the quote’s age', () => {
     const NOW_MS = Date.parse(NOW);
     const MIN = 60_000;
 
@@ -1071,47 +1068,24 @@ describe('POST /api/snapshot', () => {
         typeof vi.fn
       >;
 
-    /** The one verdict a judged save records, ok or not. */
-    const recorded = (
-      verdict: string,
-      wouldAlert: boolean,
-      behindMs: number | null,
-    ) => {
-      expect(metrics.quoteFreshness).toHaveBeenCalledTimes(1);
-      expect(metrics.quoteFreshness).toHaveBeenCalledWith({
-        verdict,
-        wouldAlert,
-        behindMs,
-      });
+    const notRefused = () => {
+      expect(Sentry.captureMessage).not.toHaveBeenCalled();
+      expect(metrics.increment).not.toHaveBeenCalled();
     };
 
-    /** A would-be refusal is one warning, with what a reader needs to place it. */
-    const warned = (fields: {
-      reason: string;
-      behindMs: number | null;
-      quotedAt: unknown;
-      entryTime?: string;
-    }) => {
-      expect(logger.warn).toHaveBeenCalledTimes(1);
+    /** Every refusal is logged and counted, whether or not it alerts. */
+    const expectLogged = (reason: string) => {
+      expect(metrics.increment).toHaveBeenCalledWith('snapshot.quote_refused');
       expect(logger.warn).toHaveBeenCalledWith(
-        {
-          reason: fields.reason,
-          behindMs: fields.behindMs,
-          date: TODAY,
-          entryTime: fields.entryTime ?? SLOT,
-          quotedAt: fields.quotedAt,
-        },
-        expect.stringContaining('would refuse'),
+        expect.objectContaining({ reason, date: TODAY }),
+        expect.stringContaining('quote'),
       );
     };
 
-    /** Shadow raises no Sentry event: it is a count, a log and a save. */
-    const noSentryEvent = () => {
-      expect(Sentry.captureMessage).not.toHaveBeenCalled();
-      expect(Sentry.captureException).not.toHaveBeenCalled();
-    };
+    /** The alert's title names the reason, so an email says why. */
+    const alertTitle = (reason: string) => `snapshot.stale_quote: ${reason}`;
 
-    it('saves a live row whose quote printed 30 s ago and records ok', async () => {
+    it('saves a live row whose quote printed 30 s ago', async () => {
       vi.mocked(saveSnapshot).mockResolvedValue(11);
 
       const res = await post(live(FRESH_QUOTE));
@@ -1119,129 +1093,157 @@ describe('POST /api/snapshot', () => {
       expect(res._status).toBe(200);
       expect(res._json).toEqual({ id: 11, saved: true });
       expect(done()).toHaveBeenCalledWith({ status: 200 });
-      recorded('ok', false, 30_000);
-      expect(logger.warn).not.toHaveBeenCalled();
-      noSentryEvent();
+      notRefused();
     });
 
-    it('records a quote exactly 10:00 behind its slot as ok', async () => {
+    it('saves a live row whose quote is exactly 10:00 behind its slot', async () => {
       vi.mocked(saveSnapshot).mockResolvedValue(12);
 
       const res = await post(live(NOW_MS - 10 * MIN));
 
       expect(res._json).toEqual({ id: 12, saved: true });
-      recorded('ok', false, 10 * MIN);
-      expect(logger.warn).not.toHaveBeenCalled();
+      notRefused();
     });
 
-    it('saves a row whose quote is 11 min behind exactly as a fresh one, and records the would-be refusal', async () => {
-      vi.mocked(saveSnapshot).mockResolvedValue(13);
+    it('refuses a live row whose quote is 11 min behind: 422, nothing saved, an in-session error', async () => {
       const quotedAt = NOW_MS - 11 * MIN;
 
       const res = await post(live(quotedAt));
 
-      // The answer is the one a fresh row gets: nothing tells the client.
-      expect(res._status).toBe(200);
-      expect(res._json).toEqual({ id: 13, saved: true });
-      expect(done()).toHaveBeenCalledTimes(1);
-      expect(done()).toHaveBeenCalledWith({ status: 200 });
-      expect(saveSnapshot).toHaveBeenCalledTimes(1);
-      expect(saveSnapshot).toHaveBeenCalledWith(
-        expect.objectContaining({ date: TODAY, entryTime: SLOT, quotedAt }),
+      expect(res._status).toBe(422);
+      expect(res._json).toEqual({
+        error: 'quote-not-fresh',
+        reason: 'stale-quote',
+        saved: false,
+      });
+      expect(res._headers['Cache-Control']).toBe('no-store');
+      expect(saveSnapshot).not.toHaveBeenCalled();
+      expect(done()).toHaveBeenCalledWith({
+        status: 422,
+        error: 'stale-quote',
+      });
+      expectLogged('stale-quote');
+      expect(Sentry.captureMessage).toHaveBeenCalledTimes(1);
+      expect(Sentry.captureMessage).toHaveBeenCalledWith(
+        alertTitle('stale-quote'),
+        {
+          level: 'error',
+          tags: { reason: 'stale-quote' },
+          // One issue per reason, whatever the title.
+          fingerprint: ['snapshot.stale_quote', 'stale-quote'],
+          extra: {
+            date: TODAY,
+            entryTime: SLOT,
+            quotedAtIso: new Date(quotedAt).toISOString(),
+            slotIso: '2026-03-10T15:00:00.000Z',
+            behindMs: 11 * MIN,
+          },
+        },
       );
-      recorded('stale-quote', true, 11 * MIN);
-      warned({ reason: 'stale-quote', behindMs: 11 * MIN, quotedAt });
-      noSentryEvent();
-      // The enforcing rule's own count stays out of the shadow's numbers.
-      expect(metrics.increment).not.toHaveBeenCalled();
     });
 
     it.each([
       ['absent', undefined],
       ['null', null],
     ])(
-      'saves a row whose quotedAt is %s (an old-bundle tab) and records no-quote-time',
+      'refuses a live row whose quotedAt is %s as no-quote-time',
       async (_label, quotedAt) => {
-        vi.mocked(saveSnapshot).mockResolvedValue(14);
-
         const res = await post(live(quotedAt));
 
-        expect(res._status).toBe(200);
-        expect(res._json).toEqual({ id: 14, saved: true });
-        recorded('no-quote-time', true, null);
-        warned({ reason: 'no-quote-time', behindMs: null, quotedAt });
-        noSentryEvent();
+        expect(res._status).toBe(422);
+        expect(res._json).toEqual({
+          error: 'quote-not-fresh',
+          reason: 'no-quote-time',
+          saved: false,
+        });
+        expect(saveSnapshot).not.toHaveBeenCalled();
+        expectLogged('no-quote-time');
+        expect(Sentry.captureMessage).toHaveBeenCalledWith(
+          alertTitle('no-quote-time'),
+          expect.objectContaining({
+            level: 'error',
+            tags: { reason: 'no-quote-time' },
+            fingerprint: ['snapshot.stale_quote', 'no-quote-time'],
+          }),
+        );
       },
     );
 
-    it('saves a quote 5 min ahead of the server clock and records quote-from-future', async () => {
-      vi.mocked(saveSnapshot).mockResolvedValue(15);
-      const quotedAt = NOW_MS + 5 * MIN;
+    it('refuses a quote 5 min ahead of the server clock as quote-from-future', async () => {
+      const res = await post(live(NOW_MS + 5 * MIN));
 
-      const res = await post(live(quotedAt));
-
-      expect(res._json).toEqual({ id: 15, saved: true });
-      // slot - quotedAt: negative, the quote is newer than its slot.
-      recorded('quote-from-future', true, -5 * MIN);
-      warned({ reason: 'quote-from-future', behindMs: -5 * MIN, quotedAt });
-      noSentryEvent();
+      expect(res._status).toBe(422);
+      expect((res._json as { reason: string }).reason).toBe(
+        'quote-from-future',
+      );
+      expect(saveSnapshot).not.toHaveBeenCalled();
+      expectLogged('quote-from-future');
+      expect(Sentry.captureMessage).toHaveBeenCalledWith(
+        alertTitle('quote-from-future'),
+        expect.objectContaining({ tags: { reason: 'quote-from-future' } }),
+      );
     });
 
-    it('saves a quote time past the Date range without throwing', async () => {
-      vi.mocked(saveSnapshot).mockResolvedValue(16);
+    it('refuses a quote time past the Date range without throwing', async () => {
       // 9e15 is a safe integer, so the schema passes it, and no Date holds it.
-      const quotedAt = 9_000_000_000_000_000;
+      const res = await post(live(9_000_000_000_000_000));
 
-      const res = await post(live(quotedAt));
-
-      expect(res._status).toBe(200);
-      expect(res._json).toEqual({ id: 16, saved: true });
-      recorded('quote-from-future', true, NOW_MS - quotedAt);
-      warned({
-        reason: 'quote-from-future',
-        behindMs: NOW_MS - quotedAt,
-        quotedAt,
-      });
-      noSentryEvent();
+      expect(res._status).toBe(422);
+      expect((res._json as { reason: string }).reason).toBe(
+        'quote-from-future',
+      );
+      expectLogged('quote-from-future');
+      expect(Sentry.captureMessage).toHaveBeenCalledWith(
+        alertTitle('quote-from-future'),
+        expect.objectContaining({
+          extra: expect.objectContaining({ quotedAtIso: null }),
+        }),
+      );
+      expect(Sentry.captureException).not.toHaveBeenCalled();
     });
 
-    it('saves a label that is not a clock time and records bad-entry-time', async () => {
-      vi.mocked(saveSnapshot).mockResolvedValue(17);
-
+    it('refuses a label that is not a clock time as bad-entry-time, and alerts', async () => {
       const res = await post(live(FRESH_QUOTE, { entryTime: '09:35' }));
 
-      expect(res._status).toBe(200);
-      expect(res._json).toEqual({ id: 17, saved: true });
-      recorded('bad-entry-time', true, null);
-      warned({
+      expect(res._status).toBe(422);
+      expect(res._json).toEqual({
+        error: 'quote-not-fresh',
         reason: 'bad-entry-time',
-        behindMs: null,
-        quotedAt: FRESH_QUOTE,
-        entryTime: '09:35',
+        saved: false,
       });
-      noSentryEvent();
+      expect(saveSnapshot).not.toHaveBeenCalled();
+      expectLogged('bad-entry-time');
+      expect(Sentry.captureMessage).toHaveBeenCalledWith(
+        alertTitle('bad-entry-time'),
+        expect.objectContaining({ tags: { reason: 'bad-entry-time' } }),
+      );
     });
 
-    // wouldAlert says whether the enforcing rule would have raised a Sentry
-    // error: a missing quote time or an unreadable label at any hour, a stale
-    // or future quote only inside the session. It splits the would-be
-    // refusals the owner has to weigh from the expected pre-open and
-    // after-close ones.
+    // A missing quote time or an unreadable label is a wiring bug at any
+    // hour, so it alerts even where a stale quote is only logged.
     it.each([
       ['no-quote-time', live(undefined, { entryTime: '6:00 PM CT' })],
       [
         'bad-entry-time',
         live(Date.parse('2026-03-10T22:59:00Z'), { entryTime: '18:00' }),
       ],
-    ])('marks %s as would-alert after the close', async (reason, body) => {
-      vi.setSystemTime(new Date('2026-03-10T23:00:00Z'));
-      vi.mocked(saveSnapshot).mockResolvedValue(18);
+    ])(
+      'alerts on %s after the close, where a stale quote only logs',
+      async (reason, body) => {
+        vi.setSystemTime(new Date('2026-03-10T23:00:00Z'));
 
-      const res = await post(body);
+        const res = await post(body);
 
-      expect(res._json).toEqual({ id: 18, saved: true });
-      recorded(reason, true, null);
-    });
+        expect(res._status).toBe(422);
+        expect((res._json as { reason: string }).reason).toBe(reason);
+        expectLogged(reason);
+        expect(Sentry.captureMessage).toHaveBeenCalledTimes(1);
+        expect(Sentry.captureMessage).toHaveBeenCalledWith(
+          alertTitle(reason),
+          expect.objectContaining({ level: 'error', tags: { reason } }),
+        );
+      },
+    );
 
     it.each([
       [
@@ -1259,25 +1261,23 @@ describe('POST /api/snapshot', () => {
         '2026-03-09T20:00:00Z',
       ],
     ])(
-      'records a stale quote %s as a would-be refusal that would not alert',
+      'refuses a stale quote %s with a log and a metric, not a Sentry error',
       async (_label, clock, entryTime, quotedIso) => {
         vi.setSystemTime(new Date(clock));
-        vi.mocked(saveSnapshot).mockResolvedValue(19);
-        const quotedAt = Date.parse(quotedIso);
 
-        const res = await post(live(quotedAt, { entryTime }));
+        const res = await post(live(Date.parse(quotedIso), { entryTime }));
 
-        expect(res._status).toBe(200);
-        expect(res._json).toEqual({ id: 19, saved: true });
-        // The slot is the label's instant, which here is also the clock.
-        recorded('stale-quote', false, Date.parse(clock) - quotedAt);
-        warned({
-          reason: 'stale-quote',
-          behindMs: Date.parse(clock) - quotedAt,
-          quotedAt,
-          entryTime,
-        });
-        noSentryEvent();
+        expect(res._status).toBe(422);
+        expect((res._json as { reason: string }).reason).toBe('stale-quote');
+        expect(saveSnapshot).not.toHaveBeenCalled();
+        expect(logger.warn).toHaveBeenCalledWith(
+          expect.objectContaining({ reason: 'stale-quote' }),
+          expect.any(String),
+        );
+        expect(metrics.increment).toHaveBeenCalledWith(
+          'snapshot.quote_refused',
+        );
+        expect(Sentry.captureMessage).not.toHaveBeenCalled();
       },
     );
 
@@ -1285,14 +1285,11 @@ describe('POST /api/snapshot', () => {
       ['isBacktest absent', {}],
       ['isBacktest false', { isBacktest: false }],
       ['isBacktest null', { isBacktest: null }],
-    ])('judges a live row with %s', async (_label, flag) => {
-      vi.mocked(saveSnapshot).mockResolvedValue(20);
-
+    ])('checks a live row with %s', async (_label, flag) => {
       const res = await post(live(NOW_MS - 11 * MIN, flag));
 
-      expect(res._status).toBe(200);
-      expect(saveSnapshot).toHaveBeenCalledTimes(1);
-      recorded('stale-quote', true, 11 * MIN);
+      expect(res._status).toBe(422);
+      expect(saveSnapshot).not.toHaveBeenCalled();
     });
 
     it.each([
@@ -1303,22 +1300,21 @@ describe('POST /api/snapshot', () => {
       ],
       ['today scrubbed back, no quote time', { entryTime: '9:00 AM CT' }],
       ['today with a stale quote time', { quotedAt: NOW_MS - 60 * MIN }],
-    ])('leaves a backtest row alone: %s', async (_label, patch) => {
-      vi.mocked(saveSnapshot).mockResolvedValue(21);
+    ])('does not check a backtest row: %s', async (_label, patch) => {
+      vi.mocked(saveSnapshot).mockResolvedValue(13);
 
       const res = await post(live(undefined, { isBacktest: true, ...patch }));
 
       expect(res._status).toBe(200);
-      expect(res._json).toEqual({ id: 21, saved: true });
+      expect(res._json).toEqual({ id: 13, saved: true });
       expect(saveSnapshot).toHaveBeenCalledTimes(1);
-      expect(metrics.quoteFreshness).not.toHaveBeenCalled();
-      expect(logger.warn).not.toHaveBeenCalled();
-      noSentryEvent();
+      notRefused();
     });
 
-    it('answers a live row for another date with its own skip, ahead of the verdict', async () => {
+    it('answers a live row for another date with its own skip, ahead of the quote check', async () => {
       const res = await post(live(undefined, { date: YESTERDAY }));
 
+      expect(res._status).toBe(200);
       expect(res._json).toEqual({
         id: null,
         saved: false,
@@ -1329,21 +1325,22 @@ describe('POST /api/snapshot', () => {
         'snapshot.live_save_for_other_date',
         expect.anything(),
       );
-      expect(metrics.quoteFreshness).not.toHaveBeenCalled();
+      expect(metrics.increment).not.toHaveBeenCalled();
     });
 
-    it('answers a future date with its own skip, ahead of the verdict', async () => {
+    it('answers a future date with its own skip, ahead of the quote check', async () => {
       const res = await post(live(undefined, { date: TOMORROW }));
 
+      expect(res._status).toBe(200);
       expect(res._json).toEqual({
         id: null,
         saved: false,
         skipped: 'future-date',
       });
-      expect(metrics.quoteFreshness).not.toHaveBeenCalled();
+      notRefused();
     });
 
-    it('answers a live row for a closed day with its own skip, ahead of the verdict', async () => {
+    it('answers a live row for a closed day with its own skip, ahead of the quote check', async () => {
       // 11:00 EDT on Good Friday: today, so the other-date skip lets it by.
       vi.setSystemTime(new Date('2026-04-03T15:00:00Z'));
 
@@ -1361,29 +1358,34 @@ describe('POST /api/snapshot', () => {
         'snapshot.save_for_non_trading_day',
         expect.anything(),
       );
-      expect(metrics.quoteFreshness).not.toHaveBeenCalled();
+      expect(metrics.increment).not.toHaveBeenCalled();
     });
 
-    it('rejects a quotedAt that is not a positive integer with a 400, before any verdict', async () => {
+    it('makes no event lookup for a refused row', async () => {
+      await post(live(NOW_MS - 11 * MIN));
+
+      expect(getEventsForDate).not.toHaveBeenCalled();
+    });
+
+    it('rejects a quotedAt that is not a positive integer with a 400', async () => {
       validating();
 
       const res = await post(live('1794001029801'));
 
       expect(res._status).toBe(400);
       expect(saveSnapshot).not.toHaveBeenCalled();
-      expect(metrics.quoteFreshness).not.toHaveBeenCalled();
+      notRefused();
     });
 
-    it('records a stale verdict first, so a failing database does not hide it', async () => {
+    it('refuses a stale quote before the database is touched, so a failing database does not hide it', async () => {
       vi.mocked(saveSnapshot).mockRejectedValue(new Error('DB error'));
 
       const res = await post(live(NOW_MS - 11 * MIN));
 
-      expect(res._status).toBe(200);
-      expect(res._json).toEqual({ id: null, saved: false });
-      recorded('stale-quote', true, 11 * MIN);
-      expect(Sentry.captureException).toHaveBeenCalledTimes(1);
-      expect(metrics.dbSave).toHaveBeenCalledWith('market_snapshots', false);
+      expect(res._status).toBe(422);
+      expect(saveSnapshot).not.toHaveBeenCalled();
+      expect(Sentry.captureException).not.toHaveBeenCalled();
+      expect(metrics.dbSave).not.toHaveBeenCalled();
     });
 
     it('still answers 200 saved:false when the database rejects a fresh row', async () => {
@@ -1393,7 +1395,6 @@ describe('POST /api/snapshot', () => {
 
       expect(res._status).toBe(200);
       expect(res._json).toEqual({ id: null, saved: false });
-      recorded('ok', false, 30_000);
       expect(Sentry.captureException).toHaveBeenCalledTimes(1);
       expect(metrics.increment).not.toHaveBeenCalled();
     });
