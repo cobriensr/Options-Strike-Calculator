@@ -107,10 +107,11 @@ interface AlertRow {
   takeit_model_version: string | null;
   inserted_at: DbTimestamp;
 
-  // Ticker net flow snapshotted at bucket_ct via LATERAL.
-  // NULL when the ws/REST tables hold no rows for this ticker at or
-  // before the alert (older alerts pre-WS-daemon, or universes not yet
-  // subscribed). The client uses these to detect flow-inversion vs.
+  // Ticker net flow at bucket_ct, read from the stored cum_*_at_fire columns
+  // (aliased below), one table per ticker-day at write time.
+  // NULL when the series had no value at the alert (older alerts
+  // pre-WS-daemon, a ticker outside the universe, a fire before the first
+  // websocket tick). The client uses these to detect flow-inversion vs.
   // the live snapshot from /api/ticker-net-flow-current.
   fire_time_cum_ncp: DbNullableNumeric;
   fire_time_cum_npp: DbNullableNumeric;
@@ -196,11 +197,17 @@ interface SilentBoomAlertResponse {
   /** Legs of that order, anchor first; non-null only for `multi_leg`. */
   spreadLegs: SpreadLeg[] | null;
   /**
-   * Ticker-level cumulative net call premium at bucket_ct, snapshotted
-   * by the silent-boom-feed LATERAL join against
-   * ws_net_flow_per_ticker + net_flow_per_ticker_history. Distinct from
-   * mktTideDiff (which is SPY-wide market tide). Null when the ws/REST
-   * tables held no rows for the ticker before the alert.
+   * Ticker-level cumulative net call premium at bucket_ct. The feed reads the
+   * stored `silent_boom_alerts.cum_ncp_at_fire` column; the detector wrote it
+   * from one ticker-day series that comes from ONE table: the websocket rows
+   * (`ws_net_flow_per_ticker`) when the session has any, the per-minute
+   * history rows (`net_flow_per_ticker_history`) only when it has none, a
+   * history minute counted only once it is complete (see
+   * api/_lib/ticker-flow-snapshot.ts). Distinct from mktTideDiff (which is
+   * SPY-wide market tide). Null when the series had no value at the bucket
+   * start (no row at or before it: a fire before the ticker's first websocket
+   * tick, or a ticker with no flow rows that day), or when the value has not
+   * been filled in yet.
    */
   tickerCumNcpAtFire: number | null;
   /** Ticker-level cumulative net put premium at bucket_ct. */
