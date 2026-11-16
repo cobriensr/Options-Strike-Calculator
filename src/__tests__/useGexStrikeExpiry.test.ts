@@ -4,6 +4,7 @@
  * skips the fetch entirely. Polls live (no `at`) at
  * POLL_INTERVALS.STRIKE_BATTLE_MAP, single-shot in snapshot mode.
  */
+import { StrictMode } from 'react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, waitFor, act } from '@testing-library/react';
 import { POLL_INTERVALS } from '../constants';
@@ -480,5 +481,170 @@ describe('useGexStrikeExpiry', () => {
     unmount();
 
     expect(signals.every((s) => s.aborted)).toBe(true);
+  });
+
+  // ── A hung endpoint ──────────────────────────────────────────────────────
+  // FETCH_TIMEOUT_MS equals the poll interval. A poll that aborted the round
+  // in flight just before its timeout fired meant a request that hung past the
+  // timeout was never counted as a miss, and no error ever surfaced. Only a new
+  // key (expiry, at) or unmount aborts a round now; a poll tick or a refresh
+  // with the same key waits for the round in flight, which then times out and
+  // counts.
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /**
+   * Hang every fetch, rejecting with its signal's reason when the signal
+   * aborts, as the browser does. AbortSignal.timeout does not fire under fake
+   * timers, so it is replaced by a signal that aborts on the fake clock. At a
+   * shared instant the poll's interval fires before a timeout armed in the same
+   * callback, as in Chrome (the interval re-arms first), because the interval
+   * was scheduled earlier.
+   */
+  function hangingFetchWithClockTimeouts() {
+    const timeoutSpy = vi
+      .spyOn(AbortSignal, 'timeout')
+      .mockImplementation((ms: number) => {
+        const timeout = new AbortController();
+        setTimeout(
+          () =>
+            timeout.abort(
+              new DOMException('The operation timed out.', 'TimeoutError'),
+            ),
+          ms,
+        );
+        return timeout.signal;
+      });
+    const signals: AbortSignal[] = [];
+    fetchMock.mockImplementation((_url: string, init?: RequestInit) => {
+      const signal = init?.signal;
+      if (signal) signals.push(signal);
+      return new Promise<Response>((_resolve, reject) => {
+        signal?.addEventListener('abort', () => reject(signal.reason));
+      });
+    });
+    return {
+      signals,
+      /** The timeout the hook asks its requests for, in ms. */
+      timeoutMs: () => timeoutSpy.mock.calls[0]?.[0] ?? 0,
+    };
+  }
+
+  const ALL_FAILED = 'Partial fetch failure: SPY, QQQ, SPX, NDX';
+
+  it('surfaces a hung endpoint after two timed-out rounds, though the poll ticks first', async () => {
+    vi.useFakeTimers();
+    const { timeoutMs } = hangingFetchWithClockTimeouts();
+    const { result } = renderHook(() => useGexStrikeExpiry(true, '2026-05-07'));
+    const advance = (ms: number) =>
+      act(async () => {
+        await vi.advanceTimersByTimeAsync(ms);
+      });
+    await act(async () => {});
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(timeoutMs()).toBeGreaterThan(0);
+
+    // Round one times out, then the poll ticks and starts round two. One miss
+    // is swallowed.
+    await advance(timeoutMs());
+    expect(fetchMock).toHaveBeenCalledTimes(8);
+    expect(result.current.error).toBeNull();
+
+    // The poll ticks first and finds round two still in flight: it starts
+    // nothing and aborts nothing. Then the round times out, its second miss.
+    await advance(timeoutMs());
+    expect(fetchMock).toHaveBeenCalledTimes(8);
+    expect(result.current.error).toBe(ALL_FAILED);
+  });
+
+  it('counts a request that times out as a missed poll', async () => {
+    vi.useFakeTimers();
+    const { timeoutMs } = hangingFetchWithClockTimeouts();
+    const { result } = renderHook(() =>
+      useGexStrikeExpiry(false, '2026-05-07'),
+    );
+    await act(async () => {});
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(timeoutMs());
+    });
+    expect(result.current.error).toBeNull();
+
+    act(() => {
+      result.current.refresh();
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(timeoutMs());
+    });
+
+    expect(result.current.error).toBe(ALL_FAILED);
+  });
+
+  it('starts nothing when a poll ticks with the same round still in flight', async () => {
+    // The real AbortSignal.timeout does not fire under fake timers, so the
+    // round is still in flight when the poll ticks.
+    vi.useFakeTimers();
+    const { signals } = holdingFetch({ honorAbort: true }, '2026-05-07');
+    renderHook(() => useGexStrikeExpiry(true, '2026-05-07'));
+    await act(async () => {});
+    expect(signals).toHaveLength(4);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(POLL_INTERVALS.STRIKE_BATTLE_MAP);
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(signals.every((s) => !s.aborted)).toBe(true);
+  });
+
+  it('waits for the round in flight when a refresh asks for the same key', async () => {
+    const { signals } = holdingFetch({ honorAbort: true }, '2026-05-07');
+    const { result } = renderHook(() =>
+      useGexStrikeExpiry(false, '2026-05-07'),
+    );
+    await waitFor(() => expect(signals).toHaveLength(4));
+
+    act(() => {
+      result.current.refresh();
+    });
+    await act(async () => {});
+
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(signals.every((s) => !s.aborted)).toBe(true);
+    expect(result.current.loading).toBe(true);
+  });
+
+  it('aborts the round in flight when only `at` changes', async () => {
+    const { signals } = holdingFetch({ honorAbort: true }, '2026-05-07');
+    const { rerender } = renderHook(
+      ({ at }) => useGexStrikeExpiry(false, '2026-05-07', at),
+      { initialProps: { at: null as string | null } },
+    );
+    await waitFor(() => expect(signals).toHaveLength(4));
+
+    rerender({ at: '2026-05-07T15:00:00Z' });
+
+    expect(signals.slice(0, 4).every((s) => s.aborted)).toBe(true);
+    await waitFor(() => expect(signals).toHaveLength(8));
+    expect(signals.slice(4).every((s) => !s.aborted)).toBe(true);
+  });
+
+  it('starts its round again after a StrictMode mount, unmount, mount', async () => {
+    fetchMock.mockImplementation(tickerRouter({}));
+    const { result } = renderHook(
+      () => useGexStrikeExpiry(false, '2026-05-07'),
+      {
+        wrapper: StrictMode,
+      },
+    );
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    // The first effect pass's round was aborted by the simulated unmount, and
+    // must not keep the second pass from starting its own.
+    expect(result.current.data.SPY?.ticker).toBe('SPY');
+    expect(result.current.data.NDX?.ticker).toBe('NDX');
   });
 });

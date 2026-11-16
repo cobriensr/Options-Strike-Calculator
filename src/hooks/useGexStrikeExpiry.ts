@@ -11,9 +11,11 @@
  * the `at` query parameter — used by the historical scrubber. No
  * polling because the past doesn't change.
  *
- * A newer round (a new date or minute, a poll, a refresh) aborts the one
- * before it and the older round's answer is ignored, so whichever was
- * requested last is the one on screen. An abort is not counted as a miss.
+ * A round for a new key (date or minute) aborts the one in flight and the
+ * older round's answer is ignored, so whichever key was requested last is the
+ * one on screen. A poll tick or a refresh for the same key waits for the round
+ * in flight instead, so a hung request times out and counts as a miss. An
+ * abort is not counted as a miss.
  *
  * Owner-or-guest: matches the API endpoint's auth tier. Public
  * visitors get 401 and the hook stays idle without surfacing a
@@ -187,9 +189,19 @@ export function useGexStrikeExpiry(
   const [errors, setErrors] =
     useState<Record<GexStrikeExpiryTicker, string | null>>(emptyErrors);
   const mountedRef = useRef(true);
-  // Cancels any in-flight round on rerun / unmount, so whichever round was
-  // requested last wins and a late answer from an older one cannot clobber it.
-  const abortRef = useRef<AbortController | null>(null);
+  // The round in flight, with the key (expiry, at) it asks for. A round for a
+  // different key aborts it, and so does unmount, so whichever key was
+  // requested last wins and a late answer from an older one cannot clobber
+  // it. A trigger for the SAME key (a poll tick, a refresh) does not: it
+  // returns and lets that round finish. Aborting it would also be wrong in
+  // the worst case. The request timeout equals the poll interval, so a poll
+  // that aborted a round just before its timeout fired meant a hung endpoint
+  // was never counted as a miss and no error ever surfaced. Left alone, the
+  // hung round times out and counts.
+  const inFlightRef = useRef<{
+    key: string;
+    ctrl: AbortController;
+  } | null>(null);
 
   // Per-ticker consecutive-failure counter. Only surfaces an error once
   // the same ticker fails FAIL_GRACE_COUNT polls in a row, so a single
@@ -198,9 +210,12 @@ export function useGexStrikeExpiry(
     useRef<Record<GexStrikeExpiryTicker, number>>(emptyFailCounts());
 
   const fetchAll = useCallback(async () => {
-    abortRef.current?.abort();
+    const key = `${expiry}|${at ?? ''}`;
+    const inFlight = inFlightRef.current;
+    if (inFlight !== null && inFlight.key === key) return;
+    inFlight?.ctrl.abort();
     const ctrl = new AbortController();
-    abortRef.current = ctrl;
+    inFlightRef.current = { key, ctrl };
 
     try {
       const results = await Promise.allSettled(
@@ -256,9 +271,13 @@ export function useGexStrikeExpiry(
       }
       if (mountedRef.current) setError(getErrorMessage(err));
     } finally {
-      // Only clear loading if this round wasn't superseded: a newer round owns
-      // loading until it lands.
-      if (mountedRef.current && abortRef.current === ctrl) setLoading(false);
+      // Only the round still in flight clears the marker and loading: a
+      // superseded round's finish must not, a newer round owns them. Clearing
+      // the marker here (on every path) is what lets the next trigger start.
+      if (inFlightRef.current?.ctrl === ctrl) {
+        inFlightRef.current = null;
+        if (mountedRef.current) setLoading(false);
+      }
     }
   }, [expiry, at]);
 
@@ -266,7 +285,8 @@ export function useGexStrikeExpiry(
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
-      abortRef.current?.abort();
+      inFlightRef.current?.ctrl.abort();
+      inFlightRef.current = null;
     };
   }, []);
 
