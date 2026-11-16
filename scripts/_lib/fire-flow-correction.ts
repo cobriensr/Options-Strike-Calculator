@@ -29,11 +29,17 @@
  *
  * Look-ahead. On a ticker-day with WS rows, a fire before that ticker's first
  * WS tick has no fixed value (live stored NULL). The old backfill wrote the
- * unshifted history sum with `ts <= fire` there, which is the whole first
- * minute: up to 59 s of flow after the fire. A stored value equal to that sum
- * is `lookahead`, and both flow columns are written NULL, as live stored them.
- * It is its own category in the counts, the per-date lines and the report. A
- * stored value that does not match the sum stays `other` / `no-fixed-value`.
+ * unshifted history sum with `ts <= fire` there: the history minutes up to and
+ * including the fire's minute, the last of them still open at the fire, so up
+ * to 59 s of flow after it. Only a fire in the session's first minute holds
+ * nothing but that partial minute; a later fire before the ticker's first tick
+ * also holds complete minutes. A stored value equal to that sum is `lookahead`,
+ * and both flow columns are written NULL, as live stored them. It is its own
+ * category in the counts, the per-date lines and the report. A stored value
+ * that does not match the sum stays `other` / `no-fixed-value`. The WS gap read
+ * below also covers these rows: it counts and lists the ones whose NULL leaves
+ * out at least one complete nonzero history minute before the fire (none, when
+ * every look-ahead fire is in the opening second).
  *
  * Scores (lottery only). The V2 score depends on flow only through alignment
  * (`isAlignedFire`; no flow at all is not aligned). For a corrected row whose
@@ -57,7 +63,11 @@
  * their summed flow. The report counts the doubled rows with at least one such
  * minute, the "material" ones (the gap flow exceeds 5% of the corrected flow on
  * either side) and, for lottery, those whose alignment the gap flow would flip.
- * One extra query per ticker-day that has a doubled row, never one per fire.
+ * The same reading is taken for each look-ahead row (a separate block: its
+ * corrected flow is NULL, so there is no materiality or alignment to judge).
+ * One extra query per ticker-day that has a doubled or a look-ahead row, never
+ * one per fire; its probe of the WS table is bounded by the session, as the
+ * series is.
  *
  * Writes. With `--apply` the plan is read in full first, an undo file is
  * written before the first UPDATE (and never over an existing file), and the
@@ -104,7 +114,7 @@ export const WS_FIRST_DAY = '2026-05-04';
 const WRITE_CHUNK = 500;
 /** Ticker-days read at once: as many as the detectors run in parallel. */
 const GROUP_CONCURRENCY = 3;
-/** Rows in each list (planned writes, material gaps, other mismatch) unless `--list-limit` says otherwise. */
+/** Rows in each list (planned writes, material gaps, look-ahead gaps, other mismatch) unless `--list-limit` says otherwise. */
 export const DEFAULT_LIST_LIMIT = 200;
 export const UNDO_DIR = 'docs/tmp/fire-flow-correction';
 /** One history row is one whole minute: it is complete 60 s after its stamp. */
@@ -143,13 +153,14 @@ Finds the fires whose cum_ncp_at_fire / cum_npp_at_fire were written doubled
 corrects them to the WS-only value a live run would have stored. Only a row
 whose stored value matches the doubled value, and not the WS-only value, is
 touched. A fire before its ticker's first WS tick, whose stored value is the
-first history minute (look-ahead), gets NULL flow, as live stored it. For
-lottery fires whose alignment (call or put against the flow) flips, the V2
-score follows: NULL (tagged with the active version) if the fire is now against
-the flow, a score from the active weights if it is now with it. Reports, per
-table and per date, the rows doubled, look-ahead, already correct, and other
+history sum up to the fire's minute (look-ahead), gets NULL flow, as live stored
+it. For lottery fires whose alignment (call or put against the flow) flips, the
+V2 score follows: NULL (tagged with the active version) if the fire is now
+against the flow, a score from the active weights if it is now with it. Reports,
+per table and per date, the rows doubled, look-ahead, already correct, and other
 (left alone, listed), every planned write, and the WS gaps of the doubled rows
-(visibility only: whether to fill them from history is an open owner decision).
+and of the look-ahead rows (visibility only: whether to fill them from history
+is an open owner decision).
 
 Options:
   --since <date>      first fire date to cover, YYYY-MM-DD (required; not before
@@ -159,8 +170,9 @@ Options:
   --dry-run           the default, said aloud; contradicts --apply
   --undo-file <file>  restore the values an earlier --apply wrote (with --apply;
                       without it, only counts the file's rows)
-  --list-limit <n>    rows to list under each of "planned writes", "material WS gaps" and
-                      "other mismatch" (default ${DEFAULT_LIST_LIMIT}; 0 lists none)
+  --list-limit <n>    rows to list under each of "planned writes", "material WS gaps",
+                      "look-ahead WS gaps" and "other mismatch" (default
+                      ${DEFAULT_LIST_LIMIT}; 0 lists none)
   --env-file <path>   .env.local to load (default: the nearest one up the tree)
   --help, -h          print this and exit`;
 
@@ -271,8 +283,8 @@ export type Verdict =
   | { kind: 'doubled'; fixed: Flow }
   /**
    * A fire before the ticker's first WS tick, on a day with WS rows, holding
-   * the first history minute (the old backfill's value). The fixed value is
-   * NULL, so the correction writes NULL.
+   * the history sum up to and including the fire's minute (the old backfill's
+   * value). The fixed value is NULL, so the correction writes NULL.
    */
   | { kind: 'lookahead' }
   | { kind: 'other'; reason: OtherReason; fixed: Flow | null };
@@ -310,9 +322,12 @@ export function classifyRow(input: {
   const { stored, fixed, hasWs, legacy } = input;
   if (sameFlow(stored, fixed)) return { kind: 'correct' };
   if (fixed == null) {
-    // No WS tick at or before the fire, so WS-only has nothing and the history
-    // sum with ts <= fire is exactly the first minute: what the old backfill
-    // wrote. Only on a day with WS rows; a history-only day has its own rule.
+    // No WS tick at or before the fire, so WS-only has nothing, and the history
+    // sum with ts <= fire is what the old backfill wrote: the history minutes up
+    // to and including the fire's minute. Only a fire in the session's first
+    // minute holds nothing but that partial minute; a later fire before the
+    // ticker's first tick also holds complete minutes. Only on a day with WS
+    // rows; a history-only day has its own rule.
     if (hasWs && sameFlow(stored, legacy.history)) return { kind: 'lookahead' };
     return { kind: 'other', reason: 'no-fixed-value', fixed: null };
   }
@@ -502,6 +517,13 @@ export interface Change {
   score: ScorePlan['kind'] | 'none';
   /** A doubled row's WS gap reading; null for look-ahead rows. */
   gap: GapInfo | null;
+  /**
+   * A look-ahead row's history minutes complete before the fire, the flow the
+   * NULL leaves out (no WS tick can lie in them: the ticker's first tick comes
+   * after the fire); null for doubled rows, and for a look-ahead row whose gap
+   * was not read.
+   */
+  lookaheadGap: GapReading | null;
 }
 
 export interface OtherRow {
@@ -596,7 +618,7 @@ export interface Judged {
   verdict: Verdict;
   /** The stored flow as numbers (`row.ncp` / `row.npp` are the exact text). */
   stored: Flow;
-  /** Doubled rows only. */
+  /** Doubled and look-ahead rows only. */
   gap: GapReading | null;
 }
 
@@ -698,6 +720,7 @@ export function recordRow(
     flipped,
     score: scoreKind,
     gap: fixed != null && gap != null ? gapInfo(row, fixed, gap) : null,
+    lookaheadGap: verdict.kind === 'lookahead' ? gap : null,
   });
 }
 
@@ -732,6 +755,22 @@ export interface GapRow {
   flips: boolean | null;
 }
 
+/**
+ * A look-ahead row holding at least one complete, nonzero history minute
+ * before the fire: flow the NULL it is corrected to leaves out.
+ */
+export interface LookaheadGapRow {
+  table: FireTable;
+  id: string;
+  date: string;
+  ticker: string;
+  /** The fire instant, ISO 8601 UTC. */
+  fireAt: string;
+  minutes: number;
+  gapNcp: number;
+  gapNpp: number;
+}
+
 export interface GapSummary {
   /** Doubled rows whose gap was read. */
   doubled: Record<FireTable, number>;
@@ -741,11 +780,24 @@ export interface GapSummary {
   material: Record<FireTable, number>;
   /** Material-gap lottery rows whose alignment the gap flow would flip. */
   flips: number;
+  /** The look-ahead rows: a fire before its ticker's first WS tick. */
+  lookahead: {
+    /** Look-ahead rows whose gap was read. */
+    read: Record<FireTable, number>;
+    /** ... with at least one complete nonzero history minute before the fire. */
+    withMinutes: Record<FireTable, number>;
+    /** The first `listLimit` of those, in the order of `changes`. */
+    rows: LookaheadGapRow[];
+  };
   /** The first `listLimit` material rows, in the order of `changes`. */
   rows: GapRow[];
 }
 
-/** The gap counts over the planned writes, and the first `listLimit` material rows. */
+/**
+ * The gap counts over the planned writes, the first `listLimit` material rows
+ * of the doubled ones, and the first `listLimit` look-ahead rows that hold a
+ * complete history minute before the fire.
+ */
 export function summarizeGaps(
   changes: readonly Change[],
   listLimit: number,
@@ -755,11 +807,35 @@ export function summarizeGaps(
     withGap: { lottery: 0, silentboom: 0 },
     material: { lottery: 0, silentboom: 0 },
     flips: 0,
+    lookahead: {
+      read: { lottery: 0, silentboom: 0 },
+      withMinutes: { lottery: 0, silentboom: 0 },
+      rows: [],
+    },
     rows: [],
   };
   for (const change of changes) {
-    const { gap } = change;
-    if (change.category !== 'doubled' || gap == null) continue;
+    const { gap, lookaheadGap } = change;
+    if (change.category === 'lookahead') {
+      if (lookaheadGap == null) continue;
+      summary.lookahead.read[change.table] += 1;
+      if (lookaheadGap.minutes === 0) continue;
+      summary.lookahead.withMinutes[change.table] += 1;
+      if (summary.lookahead.rows.length < listLimit) {
+        summary.lookahead.rows.push({
+          table: change.table,
+          id: change.id,
+          date: change.date,
+          ticker: change.ticker,
+          fireAt: change.fireAt,
+          minutes: lookaheadGap.minutes,
+          gapNcp: lookaheadGap.ncp,
+          gapNpp: lookaheadGap.npp,
+        });
+      }
+      continue;
+    }
+    if (gap == null) continue;
     summary.doubled[change.table] += 1;
     if (gap.minutes > 0) summary.withGap[change.table] += 1;
     if (!gap.material) continue;
@@ -1018,9 +1094,13 @@ interface GapRowDb {
  * The history minutes of one ticker-day that carry flow and have no WS tick in
  * [ts, ts + 60 s): the minutes a WS-only series misses. One round trip per
  * ticker-day, and the result is the gap minutes only (at most one per session
- * minute), which `gapAtFire` then cuts per fire in memory. The NOT EXISTS probes
- * `ws_net_flow_per_ticker` on its (ticker, ts) unique index, once per history
- * minute; the history side is the same one-row-per-minute read the series uses.
+ * minute), which `gapAtFire` then cuts per fire in memory. The history side is
+ * the same one-row-per-minute read the series uses. The NOT EXISTS probe of
+ * `ws_net_flow_per_ticker` carries the series' own session bounds on `ts` as
+ * well as the minute's window, so it reads only what the series reads (a tick
+ * past the session close hides no gap) and the planner has a bounded
+ * (ticker, ts) range on the unique index `ws_net_flow_per_ticker_uq` to work
+ * with.
  */
 export async function readWsGaps(
   sql: Sql,
@@ -1043,6 +1123,8 @@ export async function readWsGaps(
         SELECT 1
         FROM ws_net_flow_per_ticker w
         WHERE w.ticker = ${ticker}
+          AND w.ts >= ${session.min}::timestamptz
+          AND w.ts <= ${session.max}::timestamptz
           AND w.ts >= h.ts
           AND w.ts < h.ts + INTERVAL '60 seconds'
       )
@@ -1056,8 +1138,8 @@ export async function readWsGaps(
 }
 
 /**
- * Judge one ticker-day's fires. A ticker-day with a doubled row gets one more
- * read, its WS gaps.
+ * Judge one ticker-day's fires. A ticker-day with a doubled or a look-ahead row
+ * gets one more read, its WS gaps (one per ticker-day, whatever the rows).
  */
 async function judgeGroup(
   sql: Sql,
@@ -1089,12 +1171,12 @@ async function judgeGroup(
       gap: null as GapReading | null,
     };
   });
-  if (!judged.some((j) => j.verdict.kind === 'doubled')) return judged;
+  const readsGap = (j: { verdict: Verdict }): boolean =>
+    j.verdict.kind === 'doubled' || j.verdict.kind === 'lookahead';
+  if (!judged.some(readsGap)) return judged;
   const gapMinutes = await readWsGaps(sql, ticker, date);
   return judged.map((j) =>
-    j.verdict.kind === 'doubled'
-      ? { ...j, gap: gapAtFire(gapMinutes, j.row.atMs) }
-      : j,
+    readsGap(j) ? { ...j, gap: gapAtFire(gapMinutes, j.row.atMs) } : j,
   );
 }
 
@@ -1306,6 +1388,12 @@ export interface CorrectionResult {
   };
   written: Record<FireTable, number>;
   undoFile: string | null;
+  /**
+   * An apply during which the `active` pointer moved off `version`, yet every
+   * planned row was written (`to`: the version it names now, null for none).
+   * A move that left rows unwritten is an error instead. null: it did not move.
+   */
+  pointerMoved: { to: string | null } | null;
 }
 
 export async function runCorrection(opts: {
@@ -1356,6 +1444,7 @@ export async function runCorrection(opts: {
       plan: summary,
       written,
       undoFile: null,
+      pointerMoved: null,
     };
   }
   const undoFile = writeUndoFile(opts.undoDir, opts.since, changes, new Date());
@@ -1376,14 +1465,17 @@ export async function runCorrection(opts: {
     );
   }
   // A statement that sets a new tag writes only while the pointer names it, so
-  // a promotion in the middle of the run stops those writes. Say so, with what
-  // was written, rather than end with a count that looks like another writer's.
+  // a promotion in the middle of the run stops those writes. When rows were
+  // left unwritten, say so, with what was written, rather than end with a count
+  // that looks like another writer's. When every planned row was written the
+  // move cost nothing: the run is a success (exit 0) with a note in the report.
   const nowActive = await activeVersionNow(sql);
-  if (nowActive !== active.version) {
-    const wrote = written.lottery + written.silentboom;
-    const planned = toWrite.lottery + toWrite.silentboom;
+  const pointerMoved = nowActive === active.version ? null : { to: nowActive };
+  const wrote = written.lottery + written.silentboom;
+  const planned = toWrite.lottery + toWrite.silentboom;
+  if (pointerMoved != null && wrote < planned) {
     throw new Error(
-      `the active pointer moved from ${active.version} to ${nowActive ?? 'nothing'} during the run. ${n(wrote)} of ${n(planned)} planned rows were written under ${active.version} before it moved (lottery ${n(written.lottery)} of ${n(toWrite.lottery)}, silent boom ${n(written.silentboom)} of ${n(toWrite.silentboom)}). The rest were not written: a row that sets a new score_version needs the pointer to name ${active.version}, and a row another writer changed is skipped. The undo file ${undoFile} lists every planned row. Run a dry run to see what is left; it scores with the new active version.`,
+      `the active pointer moved from ${active.version} to ${pointerMoved.to ?? 'nothing'} during the run. ${n(wrote)} of ${n(planned)} planned rows were written under ${active.version} before it moved (lottery ${n(written.lottery)} of ${n(toWrite.lottery)}, silent boom ${n(written.silentboom)} of ${n(toWrite.silentboom)}). The rest were not written: a row that sets a new score_version needs the pointer to name ${active.version}, and a row another writer changed is skipped. The undo file ${undoFile} lists every planned row. Run a dry run to see what is left; it scores with the new active version.`,
     );
   }
   return {
@@ -1394,6 +1486,7 @@ export async function runCorrection(opts: {
     plan: summary,
     written,
     undoFile,
+    pointerMoved,
   };
 }
 
@@ -1476,7 +1569,7 @@ function headline(result: CorrectionResult): string {
 
 const REASON_TEXT: Record<OtherReason, string> = {
   'no-fixed-value':
-    'the fixed series has no value at the fire, and the stored value is not the first history minute',
+    'the fixed series has no value at the fire, and the stored value is not the history sum up to the fire',
   'history-only-day':
     'history-only day: not doubled, holds up to 59 s of look-ahead',
   unmatched: 'matches neither the fixed value nor a doubled value',
@@ -1523,8 +1616,34 @@ function describeGapRow(row: GapRow): string {
   return `    ${row.table} ${row.id} ${row.date} ${row.ticker}: ${n(row.minutes)} gap minute${row.minutes === 1 ? '' : 's'}, gap flow ${n(row.gapNcp)} / ${n(row.gapNpp)}, corrected ${n(row.ncp)} / ${n(row.npp)}, flips ${flips}`;
 }
 
-/** The WS gap block: counts, then the material rows up to the list limit. */
-function gapLines(gaps: GapSummary): string[] {
+function describeLookaheadGapRow(row: LookaheadGapRow): string {
+  return `    ${row.table} ${row.id} ${row.date} ${row.ticker} ${row.fireAt.slice(11)}: ${n(row.minutes)} gap minute${row.minutes === 1 ? '' : 's'}, gap flow ${n(row.gapNcp)} / ${n(row.gapNpp)}`;
+}
+
+/**
+ * The look-ahead gap block: how many look-ahead rows were read, how many hold a
+ * complete nonzero history minute before the fire (an explicit count, 0
+ * included), and those rows up to the list limit.
+ */
+function lookaheadGapLines(gaps: GapSummary): string[] {
+  const { read, withMinutes, rows } = gaps.lookahead;
+  if (read.lottery + read.silentboom === 0) return [];
+  const held = withMinutes.lottery + withMinutes.silentboom;
+  const lines = [
+    '',
+    'WS gaps before a look-ahead fire (the row is written NULL, as live stored it; the first WS tick comes after the fire, so a complete history minute before it is flow the NULL leaves out):',
+    `  Look-ahead rows read: lottery ${n(read.lottery)}, silent boom ${n(read.silentboom)}`,
+    `  holding at least one complete nonzero history minute before the fire: lottery ${n(withMinutes.lottery)}, silent boom ${n(withMinutes.silentboom)}`,
+  ];
+  for (const row of rows) lines.push(describeLookaheadGapRow(row));
+  if (held > rows.length) {
+    lines.push(`  ... ${n(held - rows.length)} more not listed (--list-limit)`);
+  }
+  return lines;
+}
+
+/** The WS gap block of the doubled rows: counts, then the material rows up to the list limit. */
+function doubledGapLines(gaps: GapSummary): string[] {
   const read = gaps.doubled.lottery + gaps.doubled.silentboom;
   if (read === 0) return [];
   const material = gaps.material.lottery + gaps.material.silentboom;
@@ -1609,7 +1728,7 @@ export function formatReport(result: CorrectionResult): string {
       );
     }
   }
-  lines.push(...gapLines(plan.gaps));
+  lines.push(...doubledGapLines(plan.gaps), ...lookaheadGapLines(plan.gaps));
   const otherTotal = plan.counts.lottery.other + plan.counts.silentboom.other;
   if (otherTotal > 0) {
     lines.push('', `Other mismatch (left alone): ${n(otherTotal)}`);
@@ -1641,6 +1760,11 @@ export function formatReport(result: CorrectionResult): string {
     if (written !== toWrite) {
       lines.push(
         `WARNING: ${n(toWrite - written)} planned rows were changed by another writer since the read; they kept their value.`,
+      );
+    }
+    if (result.pointerMoved != null) {
+      lines.push(
+        `NOTE: the active pointer moved from ${result.version} to ${result.pointerMoved.to ?? 'nothing'} during the run, after the plan was read. All ${n(toWrite)} planned rows were written anyway; the rows that took a new score_version carry ${result.version}, which the pointer no longer names.`,
       );
     }
     if (result.undoFile != null) lines.push(`Undo file: ${result.undoFile}`);

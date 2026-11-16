@@ -53,6 +53,7 @@ import {
   type Flow,
   type GapMinute,
   type GapReading,
+  type GapSummary,
   type LegacyAtFire,
   type Plan,
   type Verdict,
@@ -270,7 +271,8 @@ describe('classifyRow', () => {
 
   describe('look-ahead: a fire before the ticker’s first WS tick', () => {
     // The fixed series has no value there (live stored NULL). The old backfill
-    // wrote the unshifted history sum with ts <= fire: the whole first minute.
+    // wrote the unshifted history sum with ts <= fire: the minutes up to and
+    // including the fire's minute (here one, the first of the session).
     const FIRST_MINUTE = flow(-504_732, 99);
     const legacy = legacyOf(null, FIRST_MINUTE, FIRST_MINUTE);
 
@@ -709,6 +711,7 @@ describe('recordRow', () => {
         flipped: null,
         score: 'unchanged',
         gap: null,
+        lookaheadGap: null,
       },
     ]);
   });
@@ -811,6 +814,7 @@ describe('recordRow', () => {
           flipped: 'to-unaligned',
           score: 'nulled',
           gap: null,
+          lookaheadGap: null,
         },
       ]);
     });
@@ -927,11 +931,30 @@ describe('recordRow', () => {
       });
     });
 
-    it('a look-ahead row has no gap reading, whatever it is given', () => {
+    it('a look-ahead row keeps its reading as lookaheadGap, with no verdict on it: there is no corrected flow to be material against', () => {
       const plan = emptyPlan();
       record(plan, lotteryRow(), LOOKAHEAD, 200, GAP);
 
-      expect(plan.changes[0]?.gap).toBeNull();
+      expect(plan.changes[0]).toMatchObject({
+        gap: null,
+        lookaheadGap: { minutes: 5, ncp: 0, npp: 1_500 },
+      });
+    });
+
+    it('a doubled row has no lookaheadGap, and a look-ahead row that was not read has neither', () => {
+      const plan = emptyPlan();
+      record(
+        plan,
+        lotteryRow({ ncp: '2000', npp: '1600' }),
+        CORRECTED,
+        200,
+        GAP,
+      );
+      record(plan, lotteryRow({ id: '2' }), LOOKAHEAD);
+
+      expect(plan.changes[0]?.lookaheadGap).toBeNull();
+      expect(plan.changes[0]?.gap).not.toBeNull();
+      expect(plan.changes[1]).toMatchObject({ gap: null, lookaheadGap: null });
     });
   });
 });
@@ -1050,6 +1073,22 @@ describe('summarizeGaps', () => {
       flipped: null,
       score: table === 'lottery' ? 'unchanged' : 'none',
       gap,
+      lookaheadGap: null,
+    };
+  }
+
+  /** A look-ahead row: flow goes to NULL, and `reading` is what lies before the fire. */
+  function lookaheadChange(
+    id: string,
+    table: Change['table'],
+    reading: GapReading | null,
+    fireAt = '2026-10-29T13:40:30.000Z',
+  ): Change {
+    return {
+      ...doubledChange(id, table, null, 'lookahead'),
+      fireAt,
+      new: { ncp: null, npp: null, score: null, version: null },
+      lookaheadGap: reading,
     };
   }
   const NONE = { minutes: 0, ncp: 0, npp: 0, material: false, flips: null };
@@ -1077,8 +1116,8 @@ describe('summarizeGaps', () => {
     doubledChange('4', 'lottery', holding),
     doubledChange('5', 'silentboom', silent),
     doubledChange('6', 'silentboom', NONE),
-    // Look-ahead rows are not read for gaps.
-    doubledChange('7', 'lottery', null, 'lookahead'),
+    // A look-ahead row is not a doubled row: the doubled counts leave it out.
+    lookaheadChange('7', 'lottery', { minutes: 3, ncp: 30, npp: 3 }),
   ];
 
   it('counts the doubled rows read, the rows with a gap, the material gaps and the flips', () => {
@@ -1111,6 +1150,76 @@ describe('summarizeGaps', () => {
     // The counts stay exact past the cap.
     expect(summary.material).toEqual({ lottery: 2, silentboom: 1 });
     expect(summarizeGaps(changes, 0).rows).toEqual([]);
+  });
+
+  describe('look-ahead rows', () => {
+    const lookahead = [
+      // Ten complete minutes before the fire, a lottery row.
+      lookaheadChange('20', 'lottery', { minutes: 10, ncp: 1_300, npp: 130 }),
+      // In the first minute: read, nothing complete before it.
+      lookaheadChange('21', 'lottery', { minutes: 0, ncp: 0, npp: 0 }),
+      // A silent boom row with five minutes.
+      lookaheadChange(
+        '22',
+        'silentboom',
+        { minutes: 5, ncp: 800, npp: 80 },
+        '2026-10-29T13:35:00.000Z',
+      ),
+      // Never read: no reading, so not counted as read.
+      lookaheadChange('23', 'lottery', null),
+      // A doubled row's gap is not a look-ahead reading.
+      doubledChange('24', 'lottery', flipping),
+    ];
+
+    it('counts the look-ahead rows read and those holding a complete minute, per table', () => {
+      const summary = summarizeGaps(lookahead, 200);
+
+      expect(summary.lookahead.read).toEqual({ lottery: 2, silentboom: 1 });
+      expect(summary.lookahead.withMinutes).toEqual({
+        lottery: 1,
+        silentboom: 1,
+      });
+      // The doubled block is untouched by them.
+      expect(summary.doubled).toEqual({ lottery: 1, silentboom: 0 });
+    });
+
+    it('lists the rows holding a complete minute with the fire time, the minutes and the flow, up to the limit', () => {
+      expect(summarizeGaps(lookahead, 200).lookahead.rows).toEqual([
+        {
+          table: 'lottery',
+          id: '20',
+          date: '2026-10-29',
+          ticker: 'T20',
+          fireAt: '2026-10-29T13:40:30.000Z',
+          minutes: 10,
+          gapNcp: 1_300,
+          gapNpp: 130,
+        },
+        {
+          table: 'silentboom',
+          id: '22',
+          date: '2026-10-29',
+          ticker: 'T22',
+          fireAt: '2026-10-29T13:35:00.000Z',
+          minutes: 5,
+          gapNcp: 800,
+          gapNpp: 80,
+        },
+      ]);
+      const capped = summarizeGaps(lookahead, 1).lookahead;
+      expect(capped.rows.map((r) => r.id)).toEqual(['20']);
+      // The counts stay exact past the cap.
+      expect(capped.withMinutes).toEqual({ lottery: 1, silentboom: 1 });
+      expect(summarizeGaps(lookahead, 0).lookahead.rows).toEqual([]);
+    });
+
+    it('is all zeros and no rows when nothing is look-ahead', () => {
+      expect(summarizeGaps(changes.slice(0, 6), 200).lookahead).toEqual({
+        read: { lottery: 0, silentboom: 0 },
+        withMinutes: { lottery: 0, silentboom: 0 },
+        rows: [],
+      });
+    });
   });
 });
 
@@ -1283,6 +1392,7 @@ describe('the undo file', () => {
     flipped: 'to-unaligned',
     score: 'nulled',
     gap: null,
+    lookaheadGap: null,
   };
 
   it('holds every changed row with its old and new values, and says how to undo', () => {
@@ -1448,6 +1558,7 @@ const LISTED: Change[] = [
     flipped: 'to-unaligned',
     score: 'nulled',
     gap: null,
+    lookaheadGap: null,
   },
   {
     table: 'lottery',
@@ -1461,6 +1572,7 @@ const LISTED: Change[] = [
     flipped: null,
     score: 'unchanged',
     gap: null,
+    lookaheadGap: null,
   },
   {
     table: 'silentboom',
@@ -1474,8 +1586,23 @@ const LISTED: Change[] = [
     flipped: null,
     score: 'none',
     gap: null,
+    lookaheadGap: null,
   },
 ];
+
+/** No row was read for a gap, doubled or look-ahead. */
+const NO_GAPS: GapSummary = {
+  doubled: { lottery: 0, silentboom: 0 },
+  withGap: { lottery: 0, silentboom: 0 },
+  material: { lottery: 0, silentboom: 0 },
+  flips: 0,
+  lookahead: {
+    read: { lottery: 0, silentboom: 0 },
+    withMinutes: { lottery: 0, silentboom: 0 },
+    rows: [],
+  },
+  rows: [],
+};
 
 function result(over: Partial<CorrectionResult> = {}): CorrectionResult {
   const plan = emptyPlan();
@@ -1526,6 +1653,24 @@ function result(over: Partial<CorrectionResult> = {}): CorrectionResult {
         withGap: { lottery: 9, silentboom: 2 },
         material: { lottery: 4, silentboom: 1 },
         flips: 2,
+        // The fixture's 3 + 1 look-ahead rows were all read; one lottery row
+        // holds complete minutes.
+        lookahead: {
+          read: { lottery: 3, silentboom: 1 },
+          withMinutes: { lottery: 1, silentboom: 0 },
+          rows: [
+            {
+              table: 'lottery',
+              id: '12',
+              date: '2026-10-29',
+              ticker: 'MU',
+              fireAt: '2026-10-29T13:40:30.500Z',
+              minutes: 10,
+              gapNcp: 1_300,
+              gapNpp: 130,
+            },
+          ],
+        },
         rows: [
           {
             table: 'lottery',
@@ -1556,6 +1701,7 @@ function result(over: Partial<CorrectionResult> = {}): CorrectionResult {
     },
     written: { lottery: 0, silentboom: 0 },
     undoFile: null,
+    pointerMoved: null,
     ...over,
   };
 }
@@ -1657,23 +1803,96 @@ describe('formatReport', () => {
     expect(out).toContain('... 3 more not listed (--list-limit)');
   });
 
-  it('leaves the gap section out when no doubled row was read', () => {
+  it('leaves the gap sections out when no doubled and no look-ahead row was read', () => {
     const out = formatReport(
       result({
         plan: {
           ...result().plan,
-          gaps: {
-            doubled: { lottery: 0, silentboom: 0 },
-            withGap: { lottery: 0, silentboom: 0 },
-            material: { lottery: 0, silentboom: 0 },
-            flips: 0,
-            rows: [],
-          },
+          gaps: NO_GAPS,
         },
       }),
     );
 
     expect(out).not.toContain('WS gaps');
+    expect(out).not.toContain('Look-ahead rows read');
+  });
+
+  it('reports the look-ahead rows that hold complete history minutes, the explicit count, and the fire time of each', () => {
+    const out = formatReport(result());
+
+    expect(out).toContain('WS gaps before a look-ahead fire');
+    expect(out).toContain('Look-ahead rows read: lottery 3, silent boom 1');
+    expect(out).toContain(
+      'holding at least one complete nonzero history minute before the fire: lottery 1, silent boom 0',
+    );
+    expect(out).toContain(
+      '  lottery 12 2026-10-29 MU 13:40:30.500Z: 10 gap minutes, gap flow 1,300 / 130',
+    );
+    // One row held minutes and one is listed: nothing is left over.
+    expect(out).not.toContain('... 0 more');
+  });
+
+  it('prints an explicit zero for the look-ahead rows when none holds a complete minute, and no row', () => {
+    const out = formatReport(
+      result({
+        plan: {
+          ...result().plan,
+          gaps: {
+            ...result().plan.gaps,
+            lookahead: {
+              read: { lottery: 70, silentboom: 2 },
+              withMinutes: { lottery: 0, silentboom: 0 },
+              rows: [],
+            },
+          },
+        },
+      }),
+    );
+
+    expect(out).toContain('Look-ahead rows read: lottery 70, silent boom 2');
+    expect(out).toContain(
+      'holding at least one complete nonzero history minute before the fire: lottery 0, silent boom 0',
+    );
+    expect(out).not.toContain('MU 13:40:30.500Z');
+  });
+
+  it('says how many look-ahead rows were not listed when the limit cut the list', () => {
+    const out = formatReport(
+      result({
+        plan: {
+          ...result().plan,
+          gaps: {
+            ...result().plan.gaps,
+            lookahead: {
+              read: { lottery: 9, silentboom: 1 },
+              withMinutes: { lottery: 4, silentboom: 1 },
+              rows: result().plan.gaps.lookahead.rows,
+            },
+          },
+        },
+      }),
+    );
+
+    // 5 rows hold minutes, 1 is listed.
+    expect(out).toContain('... 4 more not listed (--list-limit)');
+  });
+
+  it('reports the look-ahead block without the doubled one when no doubled row was read', () => {
+    const out = formatReport(
+      result({
+        plan: {
+          ...result().plan,
+          gaps: {
+            ...NO_GAPS,
+            lookahead: result().plan.gaps.lookahead,
+          },
+        },
+      }),
+    );
+
+    expect(out).not.toContain('Doubled rows read');
+    expect(out).not.toContain('open owner decision');
+    expect(out).toContain('Look-ahead rows read: lottery 3, silent boom 1');
   });
 
   it('lists the other rows with the reason, and says how many were not listed', () => {
@@ -1704,6 +1923,48 @@ describe('formatReport', () => {
     expect(out).toContain(
       'Undo file: docs/tmp/fire-flow-correction/undo-x.json',
     );
+  });
+
+  it('an apply whose pointer moved, with every planned row written, carries a note that says so and claims nothing was left', () => {
+    const out = formatReport(
+      result({
+        apply: true,
+        written: { lottery: 28, silentboom: 6 },
+        undoFile: 'docs/tmp/fire-flow-correction/undo-x.json',
+        pointerMoved: { to: REFIT },
+      }),
+    );
+
+    expect(out).toContain(
+      `NOTE: the active pointer moved from ${SEED} to ${REFIT} during the run, after the plan was read. All 34 planned rows were written anyway; the rows that took a new score_version carry ${SEED}, which the pointer no longer names.`,
+    );
+    expect(out).not.toContain('not written');
+    expect(out).not.toContain('WARNING');
+  });
+
+  it('names a pointer that moved to nothing', () => {
+    const out = formatReport(
+      result({
+        apply: true,
+        written: { lottery: 28, silentboom: 6 },
+        undoFile: 'docs/tmp/fire-flow-correction/undo-x.json',
+        pointerMoved: { to: null },
+      }),
+    );
+
+    expect(out).toContain(`moved from ${SEED} to nothing during the run`);
+  });
+
+  it('a result whose pointer did not move has no note', () => {
+    const out = formatReport(
+      result({
+        apply: true,
+        written: { lottery: 28, silentboom: 6 },
+        undoFile: 'docs/tmp/fire-flow-correction/undo-x.json',
+      }),
+    );
+
+    expect(out).not.toContain('active pointer moved');
   });
 
   it('an apply that wrote nothing says so, and an empty plan says there is nothing to correct', () => {

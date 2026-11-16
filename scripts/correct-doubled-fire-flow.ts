@@ -13,13 +13,14 @@
  *
  * Both modes READ the database DATABASE_URL points at (production, in
  * .env.local): about two reads (a series, and an aggregate) per ticker-day with
- * fires, plus one more (the WS gaps) for a ticker-day with a doubled row, three
- * ticker-days at a time. The default is a dry run: it prints, per table and per
- * date, the rows correct, doubled, look-ahead (a fire before its ticker's first
- * WS tick, whose flow goes to NULL) and other (left alone, listed), what each
- * planned lottery fire's score would do, the alignment flips, every planned
- * write (up to --list-limit) with its old and new values, and the WS gaps of
- * the doubled rows (visibility only), and writes nothing. `--apply` writes an
+ * fires, plus one more (the WS gaps) for a ticker-day with a doubled or a
+ * look-ahead row, three ticker-days at a time. The default is a dry run: it
+ * prints, per table and per date, the rows correct, doubled, look-ahead (a fire
+ * before its ticker's first WS tick, whose flow goes to NULL) and other (left
+ * alone, listed), what each planned lottery fire's score would do, the
+ * alignment flips, every planned write (up to --list-limit) with its old and
+ * new values, and the WS gaps of the doubled rows and of the look-ahead rows
+ * (visibility only), and writes nothing. `--apply` writes an
  * undo file under docs/tmp/fire-flow-correction/ (relative to the working
  * directory) first, then the corrected values, 500 rows to a statement, each
  * only where the row still holds the values the dry run read. A second
@@ -30,8 +31,11 @@
  * A "Redis not configured" log line at start is expected: the env file loads
  * after the imports, and this script never uses Redis.
  *
- * Options: see --help. Exit codes: 0 done (or nothing to change), 1 any error
- * (bad argument, no env file, a DB error; a failed apply is safe to repeat).
+ * Options: see --help. Exit codes: 0 done (or nothing to change; also an apply
+ * during which the active score pointer moved but every planned row was still
+ * written, which the report notes), 1 any error (bad argument, no env file, a DB
+ * error, or an apply that left planned rows unwritten because the pointer moved;
+ * a failed apply is safe to repeat).
  */
 
 import { config } from 'dotenv';

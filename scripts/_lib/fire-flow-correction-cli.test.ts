@@ -69,11 +69,17 @@ const DRY_RESULT: CorrectionResult = {
       withGap: { lottery: 0, silentboom: 0 },
       material: { lottery: 0, silentboom: 0 },
       flips: 0,
+      lookahead: {
+        read: { lottery: 2, silentboom: 0 },
+        withMinutes: { lottery: 0, silentboom: 0 },
+        rows: [],
+      },
       rows: [],
     },
   },
   written: { lottery: 0, silentboom: 0 },
   undoFile: null,
+  pointerMoved: null,
 };
 
 const APPLY_RESULT: CorrectionResult = {
@@ -232,6 +238,22 @@ describe('correct-doubled-fire-flow CLI', () => {
       expect(runCorrection).not.toHaveBeenCalled();
     },
   );
+
+  it('exits 0 and prints the note when the pointer moved but every planned row was written', async () => {
+    runCorrection.mockResolvedValue({
+      ...APPLY_RESULT,
+      pointerMoved: { to: 'refit-2026-11-04' },
+    });
+
+    expect(await runCli('--since', '2026-10-29', '--apply')).toBe(0);
+
+    const out = printed(log);
+    expect(out).toContain(
+      'NOTE: the active pointer moved from seed-2026-06-17 to refit-2026-11-04',
+    );
+    expect(out).toContain('All 30 planned rows were written anyway');
+    expect(error).not.toHaveBeenCalled();
+  });
 
   it('exits 1 with the message when the run fails, naming the undo file it wrote', async () => {
     runCorrection.mockRejectedValue(

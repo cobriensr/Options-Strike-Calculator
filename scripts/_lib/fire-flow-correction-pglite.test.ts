@@ -43,6 +43,8 @@ const { pgRef, failRef, queryLog } = vi.hoisted(() => ({
     updates: false,
     /** Every read of the WS flow table rejects. */
     wsSelect: false,
+    /** Only the WS gap read (the statement that names `gap_ncp`) rejects. */
+    gapSelect: false,
     /** The per-fire reading of this ticker comes back empty. */
     shortLegacyFor: null as string | null,
     /** Runs once, just before the next UPDATE is sent. */
@@ -76,6 +78,9 @@ vi.mock('../../api/_lib/db.js', async (importOriginal) => {
         }
         if (failRef.wsSelect && text.includes('ws_net_flow_per_ticker')) {
           return Promise.reject(new Error('ws read failed: connection reset'));
+        }
+        if (failRef.gapSelect && text.includes('gap_ncp')) {
+          return Promise.reject(new Error('gap read failed: connection reset'));
         }
         if (
           failRef.shortLegacyFor != null &&
@@ -167,6 +172,7 @@ afterAll(async () => {
 beforeEach(async () => {
   failRef.updates = false;
   failRef.wsSelect = false;
+  failRef.gapSelect = false;
   failRef.shortLegacyFor = null;
   failRef.beforeUpdate = null;
   queryLog.length = 0;
@@ -521,6 +527,13 @@ describe('runCorrection against the fire tables (real SQL)', () => {
       flips: 0,
       rows: [],
     });
+    // The three look-ahead fires (LATE, PRE, LATE's bucket) are all in their
+    // ticker's first minute: no complete history minute before any of them.
+    expect(result.plan.gaps.lookahead).toEqual({
+      read: { lottery: 2, silentboom: 1 },
+      withMinutes: { lottery: 0, silentboom: 0 },
+      rows: [],
+    });
     // Row 5's fixed value is the WS-only 175 / 17.5, shown beside the 999 / 1.
     expect(result.plan.otherRows.find((r) => r.id === '5')).toMatchObject({
       stored: { ncp: 999, npp: 1 },
@@ -783,6 +796,9 @@ describe('runCorrection against the fire tables (real SQL)', () => {
     failRef.updates = false;
     const rerun = await run(true);
     expect(rerun.written).toEqual({ lottery: 6, silentboom: 2 });
+    // The pointer never moved: no note in the report.
+    expect(rerun.pointerMoved).toBeNull();
+    expect(formatReport(rerun)).not.toContain('active pointer moved');
     expect((await lotteryRow(1)).ncp).toBe('175');
   });
 
@@ -894,6 +910,54 @@ describe('runCorrection against the fire tables (real SQL)', () => {
       });
     });
 
+    it('when the active pointer moves but every planned row was still written, the run completes: a note, no rejection, no claim that rows were left', async () => {
+      // META alone: a doubled lottery row whose alignment holds (flow only,
+      // the tag stays) and a doubled silent boom row. Neither needs the
+      // pointer, so a move before the first UPDATE leaves nothing unwritten.
+      await insertWsTick(pg, 'META', '2026-10-29T14:30:00.984Z', 100, 10);
+      await insertWsTick(pg, 'META', '2026-10-29T14:30:31.250Z', 50, 5);
+      await insertWsTick(pg, 'META', '2026-10-29T14:31:02.007Z', 25, 2.5);
+      await insertHistoryMinute(pg, 'META', '2026-10-29T14:30:00Z', 150, 15);
+      await insertHistoryMinute(pg, 'META', '2026-10-29T14:31:00Z', 25, 2.5);
+      const at = '2026-10-29T14:45:00Z';
+      await seedLotteryFire(pg, {
+        id: 1,
+        date: '2026-10-29',
+        at,
+        ncp: 350,
+        npp: 35,
+        score: 50,
+        scoreVersion: SEED,
+      });
+      await seedSilentBoom(pg, {
+        id: 10,
+        date: '2026-10-29',
+        at,
+        ncp: 350,
+        npp: 35,
+      });
+      failRef.beforeUpdate = () => promote(REFIT, REFIT_WEIGHTS);
+
+      const result = await run(true);
+
+      expect(result.written).toEqual({ lottery: 1, silentboom: 1 });
+      expect(result.pointerMoved).toEqual({ to: REFIT });
+      expect(await lotteryRow(1)).toEqual({
+        ncp: '175',
+        npp: '17.5',
+        score: 50,
+        version: SEED,
+      });
+      expect((await silentRow(10)).ncp).toBe('175');
+      const report = formatReport(result);
+      expect(report).toContain(
+        `NOTE: the active pointer moved from ${SEED} to ${REFIT} during the run, after the plan was read. All 2 planned rows were written anyway`,
+      );
+      expect(report).not.toContain('not written');
+      expect(report).not.toContain('WARNING');
+      expect(readdirSync(undoDir)).toHaveLength(1);
+    });
+
     it('a failed read of the WS table while planning rejects the run before any file or write', async () => {
       await seedWorld();
       const before = await snapshot();
@@ -990,6 +1054,61 @@ async function seedGapWorld(): Promise<void> {
   });
 }
 
+/**
+ * The look-ahead fixtures, 2026-10-29 (CDT: the session opens 13:30:00Z).
+ *   LK    its first WS tick is at 13:45:20.5, so every fire before it is
+ *         look-ahead. History: 13:30 400 / 40, 13:31 to 13:39 100 / 10 each,
+ *         13:40 50 / 5.
+ *           lottery 30  call at 13:40:30, 10 minutes after the open: holds the
+ *                       history sum with ts <= fire, 1,350 / 135 -> look-ahead,
+ *                       with ten complete minutes (1,300 / 130) before it
+ *           silent  32  at 13:35:00, 900 / 90                    -> look-ahead,
+ *                       five complete minutes (800 / 80) before it
+ *   OPEN  its first WS tick is at 13:30:00.77, inside the first history minute
+ *         (13:30, 500 / 100).
+ *           lottery 31  call at 13:30:00.5, 500 / 100            -> look-ahead,
+ *                       and no minute is complete before it
+ */
+async function seedMidSessionLookahead(): Promise<void> {
+  const day = '2026-10-29';
+  await insertWsTick(pg, 'LK', `${day}T13:45:20.500Z`, 100, 10);
+  await insertHistoryMinute(pg, 'LK', `${day}T13:30:00Z`, 400, 40);
+  for (let minute = 31; minute <= 39; minute += 1) {
+    await insertHistoryMinute(pg, 'LK', `${day}T13:${minute}:00Z`, 100, 10);
+  }
+  await insertHistoryMinute(pg, 'LK', `${day}T13:40:00Z`, 50, 5);
+  await seedLotteryFire(pg, {
+    id: 30,
+    date: day,
+    at: `${day}T13:40:30Z`,
+    ticker: 'LK',
+    ncp: 1350,
+    npp: 135,
+  });
+  await seedSilentBoom(pg, {
+    id: 32,
+    date: day,
+    at: `${day}T13:35:00Z`,
+    ticker: 'LK',
+    ncp: 900,
+    npp: 90,
+  });
+}
+
+async function seedOpeningSecondLookahead(): Promise<void> {
+  const day = '2026-10-29';
+  await insertWsTick(pg, 'OPEN', `${day}T13:30:00.770Z`, 300, 60);
+  await insertHistoryMinute(pg, 'OPEN', `${day}T13:30:00Z`, 500, 100);
+  await seedLotteryFire(pg, {
+    id: 31,
+    date: day,
+    at: `${day}T13:30:00.500Z`,
+    ticker: 'OPEN',
+    ncp: 500,
+    npp: 100,
+  });
+}
+
 describe('WS gaps of the doubled rows (real SQL)', () => {
   const gapQueries = () => queryLog.filter((q) => q.text.includes('gap_ncp'));
 
@@ -1019,6 +1138,11 @@ describe('WS gaps of the doubled rows (real SQL)', () => {
       withGap: { lottery: 2, silentboom: 1 },
       material: { lottery: 1, silentboom: 1 },
       flips: 1,
+      lookahead: {
+        read: { lottery: 0, silentboom: 0 },
+        withMinutes: { lottery: 0, silentboom: 0 },
+        rows: [],
+      },
       rows: [
         {
           table: 'lottery',
@@ -1088,8 +1212,156 @@ describe('WS gaps of the doubled rows (real SQL)', () => {
     expect(formatReport(result)).not.toContain('WS gaps');
   });
 
-  it('probes the WS table through its (ticker, ts) index, once per history minute, not by scanning it', async () => {
+  it('a failed read of the WS gaps while planning rejects the run before any file or write', async () => {
     await seedGapWorld();
+    const before = await snapshot();
+    failRef.gapSelect = true;
+
+    await expect(run(true)).rejects.toThrow(
+      'gap read failed: connection reset',
+    );
+
+    expect(readdirSync(undoDir)).toEqual([]);
+    expect(await snapshot()).toEqual(before);
+    // Planning reached the gap read (the per-fire readings ran) and nothing
+    // wrote.
+    expect(queryLog.some((q) => q.text.includes('WITH ORDINALITY'))).toBe(true);
+    expect(queryLog.some((q) => q.text.includes('UPDATE'))).toBe(false);
+  });
+
+  it('a WS tick after the session close does not hide the gap of the last history minute: the probe is bounded like the series', async () => {
+    // 2026-10-29 closes the session at 15:00 CT = 20:00:00Z, inclusive. The
+    // series reads no WS tick after it, so the minute starting at the close is
+    // a gap even though a tick lands 30 s into it.
+    await insertWsTick(pg, 'END', '2026-10-29T14:30:10.500Z', 1, 1);
+    await insertWsTick(pg, 'END', '2026-10-29T20:00:30.000Z', 5, 5);
+    await insertHistoryMinute(pg, 'END', '2026-10-29T20:00:00Z', 0, 300);
+
+    const minutes = await readWsGaps(
+      neonOverPglite(pg) as unknown as Parameters<typeof readWsGaps>[0],
+      'END',
+      '2026-10-29',
+    );
+
+    expect(minutes.map((m) => new Date(m.ts).toISOString())).toEqual([
+      '2026-10-29T20:00:00.000Z',
+    ]);
+  });
+
+  describe('look-ahead rows', () => {
+    it('lists the fire ten minutes into the session, which holds ten complete history minutes, and not the fire in the opening second', async () => {
+      await seedMidSessionLookahead();
+      await seedOpeningSecondLookahead();
+
+      const result = await run(false);
+
+      expect(result.plan.counts.lottery.lookahead).toBe(2);
+      expect(result.plan.counts.silentboom.lookahead).toBe(1);
+      expect(result.plan.gaps.lookahead).toEqual({
+        read: { lottery: 2, silentboom: 1 },
+        withMinutes: { lottery: 1, silentboom: 1 },
+        rows: [
+          {
+            table: 'lottery',
+            id: '30',
+            date: '2026-10-29',
+            ticker: 'LK',
+            fireAt: '2026-10-29T13:40:30.000Z',
+            minutes: 10,
+            gapNcp: 1300,
+            gapNpp: 130,
+          },
+          {
+            table: 'silentboom',
+            id: '32',
+            date: '2026-10-29',
+            ticker: 'LK',
+            fireAt: '2026-10-29T13:35:00.000Z',
+            minutes: 5,
+            gapNcp: 800,
+            gapNpp: 80,
+          },
+        ],
+      });
+      const report = formatReport(result);
+      expect(report).toContain(
+        'holding at least one complete nonzero history minute before the fire: lottery 1, silent boom 1',
+      );
+      expect(report).toContain(
+        '  lottery 30 2026-10-29 LK 13:40:30.000Z: 10 gap minutes, gap flow 1,300 / 130',
+      );
+      expect(report).toContain(
+        '  silentboom 32 2026-10-29 LK 13:35:00.000Z: 5 gap minutes, gap flow 800 / 80',
+      );
+      // The opening-second fire is read and counted, and not listed.
+      expect(report).toContain(
+        'Look-ahead rows read: lottery 2, silent boom 1',
+      );
+      expect(report).not.toMatch(/lottery 31 [^\n]*gap minute/);
+    });
+
+    it('prints an explicit zero when every look-ahead fire is in the opening second', async () => {
+      await seedOpeningSecondLookahead();
+
+      const result = await run(false);
+
+      expect(result.plan.counts.lottery.lookahead).toBe(1);
+      expect(result.plan.gaps.lookahead).toEqual({
+        read: { lottery: 1, silentboom: 0 },
+        withMinutes: { lottery: 0, silentboom: 0 },
+        rows: [],
+      });
+      const report = formatReport(result);
+      expect(report).toContain(
+        'Look-ahead rows read: lottery 1, silent boom 0',
+      );
+      expect(report).toContain(
+        'holding at least one complete nonzero history minute before the fire: lottery 0, silent boom 0',
+      );
+      expect(report).not.toMatch(/gap minute/);
+    });
+
+    it('reads the gap once per ticker-day with a look-ahead row, also when the same day has a doubled row', async () => {
+      await seedMidSessionLookahead();
+      await seedOpeningSecondLookahead();
+      // LK, after its first WS tick: the WS tick plus the whole history.
+      await seedLotteryFire(pg, {
+        id: 33,
+        date: '2026-10-29',
+        at: '2026-10-29T13:50:00Z',
+        ticker: 'LK',
+        ncp: 1450,
+        npp: 145,
+      });
+
+      const result = await run(false);
+
+      expect(result.plan.counts.lottery).toMatchObject({
+        doubled: 1,
+        lookahead: 2,
+      });
+      // LK: three rows (two look-ahead, one doubled), one read. OPEN: one row,
+      // one read.
+      const queries = gapQueries();
+      expect(queries).toHaveLength(2);
+      expect(queries.map((q) => q.params[0]).sort()).toEqual(['LK', 'OPEN']);
+      // Both blocks come from the same read.
+      expect(result.plan.listedChanges.find((c) => c.id === '33')?.gap).toEqual(
+        { minutes: 11, ncp: 1350, npp: 135, material: true, flips: false },
+      );
+      expect(result.plan.gaps.lookahead.withMinutes).toEqual({
+        lottery: 1,
+        silentboom: 1,
+      });
+    });
+  });
+
+  it('reads the WS table only through its (ticker, ts) unique index, never a scan of the table', async () => {
+    await seedGapWorld();
+    // Migration #199 dropped the redundant (ticker, ts DESC) copy on production;
+    // the fixture still has it, so drop it here and the plan can only name the
+    // unique index the production probe uses.
+    await pg.exec('DROP INDEX IF EXISTS ws_net_flow_per_ticker_ticker_ts_idx');
     const real = neonOverPglite(pg);
     const captured: Array<{ text: string; params: unknown[] }> = [];
     const spy = Object.assign(
@@ -1145,19 +1417,20 @@ describe('WS gaps of the doubled rows (real SQL)', () => {
       for (const scan of wsScans) {
         expect(String(scan['Node Type'])).toMatch(/Index|Bitmap/);
       }
-      // ... and the one a scan names is on (ticker, ts), never the (ts)-only one.
+      // ... and the one a scan names is the (ticker, ts) unique index, never
+      // the (ts)-only one.
       const named = wsScans
         .map((n) => n['Index Name'])
         .filter((name): name is string => typeof name === 'string');
       for (const name of named) {
-        expect(name).toMatch(/^ws_net_flow_per_ticker_(uq|ticker_ts_idx)$/);
+        expect(name).toBe('ws_net_flow_per_ticker_uq');
       }
       const bitmapIndexes = nodes
         .filter((n) => n['Node Type'] === 'Bitmap Index Scan')
         .map((n) => String(n['Index Name']))
         .filter((name) => name.startsWith('ws_net_flow_per_ticker'));
       for (const name of bitmapIndexes) {
-        expect(name).toMatch(/^ws_net_flow_per_ticker_(uq|ticker_ts_idx)$/);
+        expect(name).toBe('ws_net_flow_per_ticker_uq');
       }
       expect(named.length + bitmapIndexes.length).toBeGreaterThan(0);
     } finally {
