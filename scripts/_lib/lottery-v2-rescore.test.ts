@@ -1,11 +1,11 @@
 // @vitest-environment node
 
 /**
- * Pure and mocked tests for the lottery V2 re-score: the arguments, the score
- * itself (pinned to the live detector's own computation, under any weights it
- * is handed), the plan, the batch writer's chunking and guards, the stop on an
- * unreadable store and the report. The SQL runs for real in
- * lottery-v2-rescore-pglite.test.ts.
+ * Pure and mocked tests for the lottery V2 re-score: the arguments, the plan,
+ * the batch writer's chunking and guards, the stop on an unreadable store and
+ * the report. The score itself, pinned to the live detector's own computation,
+ * is tested with its module (api/__tests__/lottery-flow-rescore.test.ts). The
+ * SQL runs for real in lottery-v2-rescore-pglite.test.ts.
  */
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -23,38 +23,23 @@ vi.mock('../../api/_lib/lottery-weights-loader.js', () => ({
 vi.mock('../../api/_lib/db.js', () => ({ getDb: vi.fn(() => mockSql) }));
 
 import {
-  isAlignedFire,
-  scoreLotteryV2,
-  weekdayOf,
-} from '../../api/_lib/lottery-score-weights-v2.js';
-import type { LotteryWeights } from '../../api/_lib/lottery-weights-schema.js';
+  SEED_WEIGHTS_LIVE_FROM,
+  type CandidateRow,
+} from '../../api/_lib/lottery-flow-rescore.js';
 import { SEED_LOTTERY_WEIGHTS } from '../../api/_lib/lottery-weights-seed.js';
 import {
-  SEED_WEIGHTS_LIVE_FROM,
   applyUpdates,
   countScope,
   formatReport,
   parseArgs,
   planRows,
-  rescoreRow,
   runRescore,
-  type CandidateRow,
   type RescoreResult,
   type ScoreUpdate,
 } from './lottery-v2-rescore.js';
 
 const SEED_VERSION = 'seed-2026-06-17';
 const REFIT_VERSION = 'refit-2026-11-04';
-
-// A later version's weights: the seed with two weights changed, so a row
-// scored with it differs from the same row scored with the seed.
-const REFIT_WEIGHTS: LotteryWeights = (() => {
-  const copy = structuredClone(SEED_LOTTERY_WEIGHTS);
-  copy.features.ticker_weights.SNDK =
-    (copy.features.ticker_weights.SNDK ?? 0) + 3;
-  copy.features.option_type_weights.P += 2;
-  return copy;
-})();
 
 function row(over: Partial<CandidateRow> = {}): CandidateRow {
   return {
@@ -121,137 +106,6 @@ describe('parseArgs', () => {
     expect(() => parseArgs(['--since', '2026-01-02'])).toThrow('older weights');
     expect(parseArgs(['--since', SEED_WEIGHTS_LIVE_FROM]).since).toBe(
       SEED_WEIGHTS_LIVE_FROM,
-    );
-  });
-});
-
-// The cron's own computation, copied from detect-lottery-fires.ts Pass 1 on
-// purpose: `scoreLotteryV2(active.weights, scoreInput)` with the input built
-// from the row's columns. This is what the re-score must stay equal to, under
-// whichever weights the active pointer names. If the cron's derivation of
-// isAligned or the weekday changes, this copy is the thing to update, and the
-// table below then says whether the script follows.
-function liveScore(weights: LotteryWeights, r: CandidateRow): number | null {
-  return scoreLotteryV2(weights, {
-    ticker: r.underlying_symbol,
-    tod: r.tod as 'MID',
-    dte: r.dte,
-    volOiWindow: r.trigger_vol_to_oi_window ?? null,
-    gammaAtTrigger: r.gamma_at_trigger ?? null,
-    triggerAskPct: r.trigger_ask_pct ?? null,
-    optionType: r.option_type,
-    isAligned: isAlignedFire(
-      r.option_type,
-      r.cum_ncp_at_fire,
-      r.cum_npp_at_fire,
-    ),
-    dayOfWeek: weekdayOf(r.date),
-  });
-}
-
-describe('rescoreRow', () => {
-  const tickers = ['SNDK', 'TSLA', 'SPY', 'NVDA', 'NOT_IN_THE_WEIGHTS'];
-  const tods = ['AM_open', 'MID', 'LUNCH', 'PM'];
-  const dates = [
-    '2026-11-09',
-    '2026-11-10',
-    '2026-11-11',
-    '2026-11-12',
-    '2026-11-13',
-  ];
-  const cases: CandidateRow[] = [];
-  let seq = 0;
-  for (const ticker of tickers) {
-    for (const tod of tods) {
-      for (const dte of [0, 1, 2, 3, 4]) {
-        for (const option_type of ['C', 'P'] as const) {
-          seq += 1;
-          cases.push(
-            row({
-              id: String(seq),
-              underlying_symbol: ticker,
-              tod,
-              dte,
-              option_type,
-              date: dates[seq % dates.length]!,
-              // Alternate aligned and against-the-flow, and null features.
-              cum_ncp_at_fire: seq % 3 === 0 ? 100 : 5_000_000,
-              cum_npp_at_fire: seq % 3 === 0 ? 5_000_000 : 100,
-              trigger_vol_to_oi_window: seq % 5 === 0 ? null : (seq % 9) / 3,
-              gamma_at_trigger: seq % 7 === 0 ? null : (seq % 11) / 200,
-              trigger_ask_pct: seq % 4 === 0 ? null : (seq % 10) / 10,
-            }),
-          );
-        }
-      }
-    }
-  }
-
-  // The same grid under two versions' weights: the seed, and a later version
-  // whose ticker and option-type weights differ. The script must score with
-  // the weights it is handed, whichever version they belong to.
-  describe.each([
-    ['the seed', SEED_LOTTERY_WEIGHTS],
-    ['a later version', REFIT_WEIGHTS],
-  ])('under the weights of %s', (_label, weights) => {
-    it(`equals the live detector's score on all ${cases.length} rows of a grid`, () => {
-      expect(cases.length).toBe(200);
-      let scored = 0;
-      for (const r of cases) {
-        const expected = liveScore(weights, r);
-        expect(rescoreRow(weights, r), JSON.stringify(r)).toBe(expected);
-        if (expected != null) scored += 1;
-      }
-      // The grid exercises both outcomes.
-      expect(scored).toBeGreaterThan(30);
-      expect(scored).toBeLessThan(cases.length);
-    });
-  });
-
-  it('scores a row differently under a later version, so the grid above can tell the weights apart', () => {
-    const sndkCall = row();
-    const sndkPut = row({
-      option_type: 'P',
-      cum_ncp_at_fire: 1,
-      cum_npp_at_fire: 9,
-    });
-
-    expect(rescoreRow(REFIT_WEIGHTS, sndkCall)).toBe(
-      (rescoreRow(SEED_LOTTERY_WEIGHTS, sndkCall) as number) + 3,
-    );
-    expect(rescoreRow(REFIT_WEIGHTS, sndkPut)).toBe(
-      (rescoreRow(SEED_LOTTERY_WEIGHTS, sndkPut) as number) + 3 + 2,
-    );
-  });
-
-  it('gives a fire against the flow, and a tie, no score', () => {
-    expect(
-      rescoreRow(
-        SEED_LOTTERY_WEIGHTS,
-        row({ option_type: 'C', cum_ncp_at_fire: 1, cum_npp_at_fire: 9 }),
-      ),
-    ).toBeNull();
-    expect(
-      rescoreRow(
-        SEED_LOTTERY_WEIGHTS,
-        row({ option_type: 'P', cum_ncp_at_fire: 9, cum_npp_at_fire: 1 }),
-      ),
-    ).toBeNull();
-    expect(
-      rescoreRow(
-        SEED_LOTTERY_WEIGHTS,
-        row({ cum_ncp_at_fire: 5, cum_npp_at_fire: 5 }),
-      ),
-    ).toBeNull();
-  });
-
-  it('gives dte beyond 3 no score', () => {
-    expect(rescoreRow(SEED_LOTTERY_WEIGHTS, row({ dte: 4 }))).toBeNull();
-  });
-
-  it('reports a tod the weights do not know as unscorable, never NaN', () => {
-    expect(rescoreRow(SEED_LOTTERY_WEIGHTS, row({ tod: 'PRE_OPEN' }))).toBe(
-      'unscorable',
     );
   });
 });
