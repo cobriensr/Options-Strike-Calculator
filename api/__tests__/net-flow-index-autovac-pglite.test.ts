@@ -167,6 +167,27 @@ async function applyHandSteps(pg: PGlite): Promise<void> {
   for (const step of HAND_STEPS) await pg.exec(step);
 }
 
+/** What a failed or cancelled CREATE INDEX CONCURRENTLY leaves behind. */
+async function markIndexInvalid(pg: PGlite, name: string): Promise<void> {
+  await pg.query(
+    `UPDATE pg_index SET indisvalid = false WHERE indexrelid = $1::regclass`,
+    [name],
+  );
+}
+
+/** Make the planner statistic the guard reads say the table is this big. */
+async function setReltuples(pg: PGlite, rows: number): Promise<void> {
+  await pg.query(
+    `UPDATE pg_class SET reltuples = $1 WHERE relname = 'ws_net_flow_per_ticker'`,
+    [rows],
+  );
+}
+
+const INVALID_INDEX_MESSAGE =
+  /ws_net_flow_per_ticker_cov_uq exists but is INVALID.*DROP INDEX CONCURRENTLY it and rebuild by hand/;
+const LARGE_UNBUILT_MESSAGE =
+  /ws_net_flow_per_ticker_cov_uq does not exist and ws_net_flow_per_ticker has more than 1000000 rows.*CREATE UNIQUE INDEX CONCURRENTLY/;
+
 interface IndexShape {
   unique: boolean;
   valid: boolean;
@@ -327,7 +348,7 @@ describe('migration #210 (covering unique index on ws_net_flow_per_ticker)', () 
     expect(after.rows[0]?.lock_timeout).toBe('0');
   });
 
-  it('sets the lock bound first and drops the plain index last, after the build', async () => {
+  it('sets the lock bound first, guards next, and drops the plain index last, after the build', async () => {
     // The queries are lazy: building the array runs nothing.
     const statements =
       MIGRATIONS.find((m) => m.id === 210)?.statements?.(
@@ -336,17 +357,21 @@ describe('migration #210 (covering unique index on ws_net_flow_per_ticker)', () 
     const texts = (statements as unknown as PgliteQuery[]).map((q) =>
       q.text.replace(/\s+/g, ' ').trim(),
     );
-    expect(texts).toHaveLength(4);
+    expect(texts).toHaveLength(5);
     expect(texts[0]).toBe("SET LOCAL lock_timeout = '5s'");
-    expect(texts[1]).toMatch(/^CREATE UNIQUE INDEX IF NOT EXISTS /);
-    expect(texts[2]).toMatch(/^ALTER TABLE ws_net_flow_per_ticker SET /);
+    // The guard runs before anything is created or dropped.
+    expect(texts[1]).toMatch(/^DO \$\$ /);
+    expect(texts[2]).toMatch(/^CREATE UNIQUE INDEX IF NOT EXISTS /);
+    expect(texts[3]).toMatch(/^ALTER TABLE ws_net_flow_per_ticker SET /);
     // A plain DROP INDEX holds ACCESS EXCLUSIVE to commit, so it follows the
     // other statements and the covering index is already in place.
-    expect(texts[3]).toBe(`DROP INDEX IF EXISTS ${PLAIN_INDEX}`);
+    expect(texts[4]).toBe(`DROP INDEX IF EXISTS ${PLAIN_INDEX}`);
   });
 
   it('is a no-op on a database where the hand-applied change is already in place', async () => {
     await applyHandSteps(pg);
+    // Prod-sized: the large-table guard must pass once the index exists.
+    await setReltuples(pg, 96_000_000);
     const before = {
       shape: await indexShape(pg, COV_INDEX),
       names: await indexNames(pg),
@@ -402,9 +427,80 @@ describe('migration #210 (covering unique index on ws_net_flow_per_ticker)', () 
     expect(await indexNames(pg)).not.toContain(PLAIN_INDEX);
   });
 
-  it('fails without changing anything when a duplicate (ticker, ts) blocks the build', async () => {
-    // Only reachable if the plain unique index is missing; the build is what
-    // guards the table, so a failure must leave the table as it was.
+  it('refuses an INVALID covering index left by a failed CONCURRENTLY build, after the hand steps', async () => {
+    // The hand build was cancelled, then the owner dropped the plain index
+    // anyway: nothing valid enforces (ticker, ts), and IF NOT EXISTS would
+    // skip the broken index by name.
+    await applyHandSteps(pg);
+    await markIndexInvalid(pg, COV_INDEX);
+    const namesBefore = await indexNames(pg);
+
+    await expect(runInTransaction(pg, 210)).rejects.toThrow(
+      INVALID_INDEX_MESSAGE,
+    );
+
+    expect(await indexNames(pg)).toEqual(namesBefore);
+    expect((await indexShape(pg, COV_INDEX)).valid).toBe(false);
+  });
+
+  it('refuses an INVALID covering index while the plain one still exists, and keeps uw-stream writing', async () => {
+    // The hand build failed before its DROP: only the plain index is valid.
+    // The migration must stop before its DROP INDEX removes it.
+    await pg.exec(HAND_STEPS[0]!);
+    await markIndexInvalid(pg, COV_INDEX);
+    expect(await writeTick(pg, 'NVDA', '2026-11-16T15:00:00.123Z')).toBe(1);
+
+    await expect(runInTransaction(pg, 210)).rejects.toThrow(
+      INVALID_INDEX_MESSAGE,
+    );
+
+    expect(await indexNames(pg)).toContain(PLAIN_INDEX);
+    // The ON CONFLICT (ticker, ts) arbiter is still there: a duplicate writes
+    // nothing and a fresh tick writes one row, with no "no unique or
+    // exclusion constraint matching" error.
+    expect(await writeTick(pg, 'NVDA', '2026-11-16T15:00:00.123Z')).toBe(0);
+    expect(await writeTick(pg, 'NVDA', '2026-11-16T15:00:00.124Z')).toBe(1);
+  });
+
+  it('refuses to build the covering index on a table that is already large', async () => {
+    await setReltuples(pg, 2_000_000);
+    const namesBefore = await indexNames(pg);
+    const optionsBefore = await reloptions(pg, 'ws_net_flow_per_ticker');
+
+    await expect(runInTransaction(pg, 210)).rejects.toThrow(
+      LARGE_UNBUILT_MESSAGE,
+    );
+
+    expect(await indexNames(pg)).toEqual(namesBefore);
+    expect(await indexNames(pg)).toContain(PLAIN_INDEX);
+    expect(await reloptions(pg, 'ws_net_flow_per_ticker')).toEqual(
+      optionsBefore,
+    );
+  });
+
+  it('seeds at exactly 1,000,000 rows, and refuses above', async () => {
+    await setReltuples(pg, 1_000_000);
+    await expect(runInTransaction(pg, 210)).resolves.toBeUndefined();
+    expect(await indexShape(pg, COV_INDEX)).toMatchObject({ valid: true });
+
+    const above = new PGlite();
+    try {
+      await buildNetFlowFixture(above);
+      await runInTransaction(above, 199);
+      await setReltuples(above, 1_000_001);
+      await expect(runInTransaction(above, 210)).rejects.toThrow(
+        LARGE_UNBUILT_MESSAGE,
+      );
+    } finally {
+      await above.close();
+    }
+  });
+
+  it('propagates the build error and leaves no covering index when a duplicate (ticker, ts) blocks it', async () => {
+    // Only reachable if the plain unique index is missing. This pins that the
+    // build error is not swallowed and that no non-unique index stands in for
+    // the covering unique one; the guard tests above cover a failed
+    // CONCURRENTLY build.
     await pg.exec(`DROP INDEX ${PLAIN_INDEX}`);
     for (let i = 0; i < 2; i++) {
       await pg.query(

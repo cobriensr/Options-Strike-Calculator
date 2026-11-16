@@ -6049,10 +6049,37 @@ export const MIGRATIONS: Migration[] = [
   {
     id: 210,
     description:
-      'Replace the plain unique index ws_net_flow_per_ticker_uq (ticker, ts) with the covering unique index ws_net_flow_per_ticker_cov_uq (ticker, ts) INCLUDE (net_call_prem, net_put_prem, net_call_vol, net_put_vol), and lower the table insert-vacuum scale factor from 0.01 to 0.001 (owner decision 2026-11-16, M1 of docs/superpowers/specs/lottery-flow-repair-and-indexes-2026-11-15.md). The per-ticker series read (fetchTickerFlowSeries, ticker-net-flow-current, net-flow-history, the Greek heatmap net flow) filters ticker = X plus a ts range and needs the premium and volume values, which the plain index does not hold, so the planner chose the (ts) index and scanned the whole day (about 0.9M rows) to return one ticker (5.7 to 7.6 s cold, 1.1 s warm, planner cost 14,079). The covering index lets it run as an index-only scan (planner cost 344). uw-stream writes with ON CONFLICT (ticker, ts) DO NOTHING, which infers the new unique index as its arbiter, so dedupe is unchanged. The table is insert-only, so the dead-tuple trigger never fires and only insert-vacuum keeps the visibility map current; at 0.001 it runs about every 96,000 inserts (roughly every 40 minutes of session) instead of about once a trading day, so today rows are all-visible and the index-only scan skips the heap for them. Applied to prod by hand on 2026-11-16 after the close with CREATE UNIQUE INDEX CONCURRENTLY, a check that the new index was valid, DROP INDEX CONCURRENTLY of the old one, then the ALTER TABLE SET; the IF NOT EXISTS and IF EXISTS statements here are an idempotent no-op on prod and seed a fresh database. This migration must never be the first time the index is built on a large table: the build here is not CONCURRENTLY (it cannot be, inside the migration transaction), so over about 96 million rows it would block every insert into the table uw-stream writes to for tens of minutes. Dropping ws_net_flow_per_ticker_ts_idx (M1b) is a separate, later step.',
+      'Replace the plain unique index ws_net_flow_per_ticker_uq (ticker, ts) with the covering unique index ws_net_flow_per_ticker_cov_uq (ticker, ts) INCLUDE (net_call_prem, net_put_prem, net_call_vol, net_put_vol), and lower the table insert-vacuum scale factor from 0.01 to 0.001 (owner decision 2026-11-16, M1 of docs/superpowers/specs/lottery-flow-repair-and-indexes-2026-11-15.md). The per-ticker series read (fetchTickerFlowSeries, ticker-net-flow-current, net-flow-history, the Greek heatmap net flow) filters ticker = X plus a ts range and needs the premium and volume values, which the plain index does not hold, so the planner chose the (ts) index and scanned the whole day (about 0.9M rows) to return one ticker (5.7 to 7.6 s cold, 1.1 s warm, planner cost 14,079). The covering index lets it run as an index-only scan (planner cost 344). uw-stream writes with ON CONFLICT (ticker, ts) DO NOTHING, which infers the new unique index as its arbiter, so dedupe is unchanged. The table is insert-only, so the dead-tuple trigger never fires and only insert-vacuum keeps the visibility map current; at 0.001 it runs about every 96,000 inserts (roughly every 40 minutes of session) instead of about once a trading day, so today rows are all-visible and the index-only scan skips the heap for them. Applied to prod by hand on 2026-11-16 after the close with CREATE UNIQUE INDEX CONCURRENTLY, a check that the new index was valid, DROP INDEX CONCURRENTLY of the old one, then the ALTER TABLE SET; the IF NOT EXISTS and IF EXISTS statements here are an idempotent no-op on prod and seed a fresh database. This migration must never be the first time the index is built on a large table: the build here is not CONCURRENTLY (it cannot be, inside the migration transaction) and takes a SHARE lock, so over about 96 million rows it would block every insert into the table uw-stream writes to for tens of minutes. A guard statement right after the lock bound makes both hazards fail closed, before anything changes: it raises when ws_net_flow_per_ticker_cov_uq exists but is INVALID (a failed or cancelled CREATE INDEX CONCURRENTLY, which the IF NOT EXISTS would skip by name before the DROP removed the only valid (ticker, ts) unique index, leaving uw-stream ON CONFLICT (ticker, ts) with no arbiter), and when the covering index does not exist and pg_class.reltuples for the table is above 1,000,000 (the hand build has not run). A fresh database has reltuples 0 or -1 and still seeds. Even a skipped CREATE INDEX IF NOT EXISTS takes the SHARE lock before it checks the name, so the 5 s lock bound covers it as well as the ACCESS EXCLUSIVE lock of the DROP INDEX. Dropping ws_net_flow_per_ticker_ts_idx (M1b) is a separate, later step.',
     statements: (sql) => [
-      // Fail fast instead of queueing writers behind the DROP INDEX lock.
+      // Fail fast instead of queueing writers behind the SHARE lock the CREATE
+      // takes (even when it skips) and the DROP's ACCESS EXCLUSIVE lock.
       sql`SET LOCAL lock_timeout = '5s'`,
+      // Fail closed before anything changes. (1) A failed or cancelled
+      // CREATE INDEX CONCURRENTLY leaves an INVALID index of this name, which
+      // the IF NOT EXISTS below skips by name; the DROP at the end would then
+      // remove the only valid (ticker, ts) unique index and uw-stream's
+      // ON CONFLICT (ticker, ts) would fail with "no unique or exclusion
+      // constraint matching". (2) With no covering index yet, a table over
+      // 1,000,000 rows (reltuples is -1 or 0 on a fresh database) means the
+      // hand build has not run, and building it here would block inserts.
+      sql`DO $$
+          BEGIN
+            IF EXISTS (
+              SELECT 1 FROM pg_index
+               WHERE indexrelid = to_regclass('ws_net_flow_per_ticker_cov_uq')
+                 AND NOT indisvalid
+            ) THEN
+              RAISE EXCEPTION 'ws_net_flow_per_ticker_cov_uq exists but is INVALID (a failed or cancelled CREATE INDEX CONCURRENTLY): DROP INDEX CONCURRENTLY it and rebuild by hand';
+            END IF;
+            IF to_regclass('ws_net_flow_per_ticker_cov_uq') IS NULL
+               AND (
+                 SELECT reltuples FROM pg_class
+                  WHERE oid = to_regclass('ws_net_flow_per_ticker')
+               ) > 1000000 THEN
+              RAISE EXCEPTION 'ws_net_flow_per_ticker_cov_uq does not exist and ws_net_flow_per_ticker has more than 1000000 rows (pg_class.reltuples): build it by hand with CREATE UNIQUE INDEX CONCURRENTLY first';
+            END IF;
+          END
+          $$`,
       sql`CREATE UNIQUE INDEX IF NOT EXISTS ws_net_flow_per_ticker_cov_uq
             ON ws_net_flow_per_ticker (ticker, ts)
             INCLUDE (net_call_prem, net_put_prem, net_call_vol, net_put_vol)`,
