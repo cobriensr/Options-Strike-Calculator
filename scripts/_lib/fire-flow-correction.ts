@@ -98,7 +98,7 @@ import {
   loadActive,
   rescoreRow,
   type CandidateRow,
-} from './lottery-v2-rescore.js';
+} from '../../api/_lib/lottery-flow-rescore.js';
 
 type Sql = ReturnType<typeof getDb>;
 

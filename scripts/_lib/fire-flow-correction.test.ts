@@ -58,7 +58,7 @@ import {
   type Plan,
   type Verdict,
 } from './fire-flow-correction.js';
-import type { CandidateRow } from './lottery-v2-rescore.js';
+import type { CandidateRow } from '../../api/_lib/lottery-flow-rescore.js';
 
 const SEED = 'seed-2026-06-17';
 const REFIT = 'refit-2026-11-04';
