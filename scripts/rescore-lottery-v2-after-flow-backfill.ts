@@ -4,7 +4,7 @@
  * The logic, and what it does and does not write, is in
  * scripts/_lib/lottery-v2-rescore.ts.
  *
- * Run it from the repo root, AFTER `node scripts/backfill-ticker-flow-at-fire.mjs`
+ * Run it from the repo root, AFTER `npx tsx scripts/backfill-ticker-flow-at-fire.ts`
  * has filled `cum_ncp_at_fire` / `cum_npp_at_fire` for the same dates:
  *
  *   npx tsx scripts/rescore-lottery-v2-after-flow-backfill.ts --since 2026-10-29            # dry run
