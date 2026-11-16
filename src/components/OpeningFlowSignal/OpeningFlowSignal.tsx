@@ -12,6 +12,7 @@
  */
 
 import { useState } from 'react';
+import { useETToday } from '../../hooks/useETToday.js';
 import { useOpeningFlowSignal } from '../../hooks/useOpeningFlowSignal.js';
 import { getETToday } from '../../utils/timezone.js';
 import { DateInput } from '../ui/DateInput.js';
@@ -27,7 +28,11 @@ export function OpeningFlowSignal(): React.ReactElement {
     isWindowOpen,
   );
 
-  const today = getETToday();
+  // `''` is live and the data follows the day on its own (live mode asks the
+  // server for its own date), so the clock only sets `max`. It is the shared
+  // ET clock, not a read of the wall clock on each render: an open tab moves
+  // `max` at midnight without waiting for another render.
+  const today = useETToday();
 
   // "Data not captured" empty state: historical mode where the window
   // is reported closed but every ticker payload is empty / no signal.
@@ -64,8 +69,12 @@ export function OpeningFlowSignal(): React.ReactElement {
                 // picking today in the date input would issue
                 // `?date=today` and put the hook in historical mode
                 // (no polling, one-shot read) — surprising UX when the
-                // user clearly expects fresh data for today.
-                setSelectedDate(next === today ? '' : next);
+                // user clearly expects fresh data for today. Today is
+                // read at the moment of the pick, not from this render:
+                // in the second after midnight, before the shared clock
+                // ticks, the render's `today` is still yesterday.
+                // Any other date, a future one included, is passed on.
+                setSelectedDate(next === getETToday() ? '' : next);
               }}
               label="Date"
               max={today}
