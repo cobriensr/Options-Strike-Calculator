@@ -105,7 +105,17 @@ Plus the `db.test.ts` updates per CLAUDE.md "DB Migrations": the applied-ids moc
 - The tier cutoffs stay at 13 and 10 (`api/_lib/lottery-tier.ts`).
 
 ## Implementation notes (2026-11-15, branch `fix/retire-fire-count-adj`)
-Code, tests and the migration are written; **migration #209 is not applied.** The apply is the open step (see "Data dependencies").
+Code, tests and the migration are written and deployed.
+
+**Applied to production 2026-11-16 at about 07:02 UTC** (owner's go). It ran through `scripts/migrate-db.ts`, not the endpoint, because the endpoint is held to Vercel's 300 s limit.
+- Production was at #208 beforehand.
+- The rewrite took 67 s, and the table shrank from 2,986 MB to 2,156 MB.
+- **Checked after:**
+  - the trigger, the function and `fire_count_score_adjustment` are gone;
+  - `combined_score` matches the new formula on all 1,111,476 rows;
+  - the view and the index are back;
+  - `/api/lottery-finder` and `/api/lottery-finder-ticker-counts` return 200.
+- **Backup:** the dropped values (id, `fire_count_score_adjustment`, old `combined_score`) are in the main checkout's `docs/tmp/fire-count-retire-209/`, which is gitignored.
 - **One qas, three places.** The feed (`qasExprText`), the chip strip and the detector's tier monitor each hold their own copy of the expression. `api/__tests__/lottery-qas-sql.ts` writes it once, and the three tests assert their captured SQL contains it (whitespace ignored), so one cannot change without the other two failing.
 - **The score no longer depends on fire count.** The old bucket-ladder tests are replaced by a table over fire counts 1, 2, 3, 4, 7, 8, 15, 16, 20 and 21 on one row, all giving the same score, qas and tier, plus a same-row-at-1-and-20 test.
 - **The ML mirror reads the TS source.** `ml/tests/test_lottery_refit_gates.py::test_feed_qas_mirrors_the_feeds_displayed_score_sql` parses `qasExprText` out of `api/lottery-finder.ts`, so it is red between the Phase 1 commit and the Phase 4 commit and green after both.
