@@ -27,6 +27,7 @@ const GUARD_RULES = new Set([
   'import-x/extensions',
   'import-x/no-restricted-paths',
   'no-restricted-imports',
+  'no-restricted-syntax',
 ]);
 
 /** Guard-related rule IDs reported for `code` linted as `file`, sorted. */
@@ -133,6 +134,109 @@ describe('eslint: browser code must not import api/', () => {
   });
 
   it.each(CASES)(
+    '%s',
+    async (_label, file, code, expected) => {
+      expect(await guardRuleIds(eslint, file, code)).toEqual(expected);
+    },
+    60_000,
+  );
+});
+
+/*
+ * The other direction: api/ must not import scripts/. Vercel's build runs
+ * `tsc --noEmit -p tsconfig.api.json`, which includes all of api/, tests
+ * too, and .vercelignore strips scripts/ (all but write-build-info.mjs) from
+ * the upload. An api/ file that imports scripts/ passes locally, where
+ * scripts/ exists, and fails the deploy with TS2307. A type-only import fails
+ * the same way, so it is flagged too. no-restricted-imports does not see a
+ * dynamic import(), so a no-restricted-syntax selector covers that.
+ */
+const SCRIPTS_USE = '\nexport const x = helper;\n';
+
+// [label, virtual file, code, expected rule IDs (sorted)]
+const SCRIPTS_CASES = [
+  [
+    'api/_lib: value import from scripts/',
+    'api/_lib/x.ts',
+    `import { helper } from '../../scripts/_lib/ticker-flow-backfill.js';${SCRIPTS_USE}`,
+    ['no-restricted-imports'],
+  ],
+  [
+    'api/cron: import type from scripts/',
+    'api/cron/x.ts',
+    `import type { helper } from '../../scripts/_lib/ticker-flow-backfill.js';${SCRIPTS_USE}`,
+    ['no-restricted-imports'],
+  ],
+  [
+    'api/ top level: value import from scripts/',
+    'api/x.ts',
+    `import { helper } from '../scripts/_lib/ticker-flow-backfill.js';${SCRIPTS_USE}`,
+    ['no-restricted-imports'],
+  ],
+  [
+    'api/__tests__ test: extension-less import from scripts/',
+    'api/__tests__/x.test.ts',
+    `import { helper } from '../../scripts/_lib/fire-flow-test-helpers';${SCRIPTS_USE}`,
+    ['no-restricted-imports'],
+  ],
+  [
+    'api/__tests__ helper (not *.test): import from scripts/',
+    'api/__tests__/x-helpers.ts',
+    `import { helper } from '../../scripts/_lib/fire-flow-test-helpers';${SCRIPTS_USE}`,
+    ['no-restricted-imports'],
+  ],
+  [
+    'api/_lib nested folder: value import from scripts/',
+    'api/_lib/deep/x.ts',
+    `import { helper } from '../../../scripts/_lib/ticker-flow-backfill.js';${SCRIPTS_USE}`,
+    ['no-restricted-imports'],
+  ],
+  [
+    'api/: re-export from scripts/',
+    'api/_lib/x.ts',
+    "export { helper } from '../../scripts/_lib/ticker-flow-backfill.js';\n",
+    ['no-restricted-imports'],
+  ],
+  [
+    'api/__tests__: dynamic import() of scripts/',
+    'api/__tests__/x.test.ts',
+    "const { helper } = await import('../../scripts/_lib/fire-flow-test-helpers');\nexport const x = helper;\n",
+    ['no-restricted-syntax'],
+  ],
+  [
+    'api/__tests__: a sibling helper import stays clean',
+    'api/__tests__/x.test.ts',
+    `import { helper } from './fire-flow-test-helpers';${SCRIPTS_USE}`,
+    [],
+  ],
+  [
+    'api/_lib: a module whose name only contains "scripts" stays clean',
+    'api/_lib/x.ts',
+    `import { helper } from '../_lib/scripts-registry.js';${SCRIPTS_USE}`,
+    [],
+  ],
+  [
+    'api/__tests__: dynamic import() of a sibling stays clean',
+    'api/__tests__/x.test.ts',
+    "const { helper } = await import('./pglite-migrations');\nexport const x = helper;\n",
+    [],
+  ],
+  [
+    'scripts/ importing api/ (the allowed direction) stays clean',
+    'scripts/_lib/x.ts',
+    `import { helper } from '../../api/_lib/flow-regime.js';${SCRIPTS_USE}`,
+    [],
+  ],
+];
+
+describe('eslint: api/ must not import scripts/', () => {
+  let eslint;
+
+  beforeAll(() => {
+    eslint = new ESLint({ cwd: ROOT });
+  });
+
+  it.each(SCRIPTS_CASES)(
     '%s',
     async (_label, file, code, expected) => {
       expect(await guardRuleIds(eslint, file, code)).toEqual(expected);

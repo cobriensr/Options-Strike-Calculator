@@ -35,6 +35,38 @@ const SRC_TESTS = [
 // types in src/types/.
 const NO_API_MESSAGE =
   'Browser code must not import api/. Move shared code or data into src/.';
+// api/ must not import scripts/. Vercel's build runs `tsc --noEmit -p
+// tsconfig.api.json`, which includes all of api/ (tests too), and
+// .vercelignore strips scripts/ (all but write-build-info.mjs) from the
+// upload. Such an import passes locally and fails the deploy with TS2307; a
+// type-only import fails the same way, so none is exempt.
+// `no-restricted-imports` covers imports and re-exports but not a dynamic
+// import(), so a syntax selector covers that. Shared test fixtures belong in
+// api/__tests__/ (scripts/ tests may import them from there).
+// scripts/_lib/eslint-api-guard.test.mjs keeps these rules honest.
+const NO_SCRIPTS_MESSAGE =
+  'api/ must not import scripts/: .vercelignore strips scripts/ from the Vercel build, so tsc -p tsconfig.api.json fails there (TS2307). Put shared code or test fixtures under api/.';
+const noScriptsImportsFromApi = {
+  'no-restricted-imports': [
+    'error',
+    {
+      patterns: [
+        {
+          regex: String.raw`^(\.\./)+scripts(/|$)`,
+          message: NO_SCRIPTS_MESSAGE,
+        },
+      ],
+    },
+  ],
+  'no-restricted-syntax': [
+    'error',
+    {
+      // The same pattern as an esquery regex, where `/` is escaped.
+      selector: String.raw`ImportExpression > Literal[value=/^(\.\.\/)+scripts(\/|$)/]`,
+      message: NO_SCRIPTS_MESSAGE,
+    },
+  ],
+};
 const noApiImportsFromSrc = {
   'import-x/no-restricted-paths': [
     'error',
@@ -138,6 +170,10 @@ export default [
         { ts: 'never', tsx: 'never', js: 'always', jsx: 'always' },
       ],
     },
+  },
+  {
+    files: ['api/**/*.ts'],
+    rules: noScriptsImportsFromApi,
   },
   {
     files: ['src/**/*.{ts,tsx}'],
