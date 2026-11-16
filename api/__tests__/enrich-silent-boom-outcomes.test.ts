@@ -4,24 +4,40 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 import { WS_OPTION_TRADES_RETENTION_DAYS } from '../_lib/constants.js';
 
-const { mockSql, mockCronGuard, mockCaptureMessage } = vi.hoisted(() => ({
+const {
+  mockSql,
+  mockCronGuard,
+  mockCaptureMessage,
+  mockCaptureException,
+  mockFetchSeries,
+} = vi.hoisted(() => ({
   mockSql: Object.assign(vi.fn(), { query: vi.fn() }),
   mockCronGuard: vi.fn(),
   mockCaptureMessage: vi.fn(),
+  mockCaptureException: vi.fn(),
+  mockFetchSeries: vi.fn(),
 }));
 
 vi.mock('../_lib/db.js', () => ({
   getDb: vi.fn(() => mockSql),
   withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
+  isRetryableDbError: () => false,
   TransientDbError: class TransientDbError extends Error {},
 }));
 
 vi.mock('../_lib/sentry.js', () => ({
   Sentry: {
-    captureException: vi.fn(),
+    captureException: mockCaptureException,
     captureMessage: mockCaptureMessage,
     setTag: vi.fn(),
   },
+}));
+
+// The flow repair step reads the series through this module. The SQL it runs
+// is covered by fire-flow-repair-pglite.test.ts; here it is the module boundary.
+vi.mock('../_lib/ticker-flow-snapshot.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../_lib/ticker-flow-snapshot.js')>()),
+  fetchTickerFlowSeries: mockFetchSeries,
 }));
 
 vi.mock('../_lib/logger.js', () => ({
@@ -37,6 +53,7 @@ vi.mock('../_lib/api-helpers.js', () => ({
 }));
 
 import handler from '../cron/enrich-silent-boom-outcomes.js';
+import { AXIOM_TOP_LEVEL_KEYS } from '../_lib/axiom-fields.js';
 
 const GUARD = { apiKey: '', today: '2026-10-01' };
 
@@ -81,6 +98,12 @@ interface Router {
   lockReturns?: (ids: number[]) => number[] | Promise<number[]>;
   /** Empty 5-min buckets the continuity probe reports. */
   gaps?: Row[];
+  /** The flow repair step: ticker-days with a NULL-flow alert. */
+  flowGroups?: () => Promise<Row[]> | Row[];
+  /** The flow repair step: one ticker-day's NULL-flow alerts. */
+  flowAlerts?: Row[];
+  /** The flow repair step: the write's RETURNING (default: every id). */
+  flowWrite?: (ids: string[]) => Promise<string[]> | string[];
 }
 
 const text = (call: unknown[]): string =>
@@ -90,6 +113,20 @@ function route(r: Router): void {
   mockSql.mockImplementation(
     async (strings: TemplateStringsArray, ...values: unknown[]) => {
       const sqlText = strings.join(' ');
+      // The flow repair step's statements, before the outcome pass's own
+      // `FROM silent_boom_alerts` and `UPDATE silent_boom_alerts` matches.
+      if (sqlText.includes('GROUP BY f.underlying_symbol')) {
+        return r.flowGroups ? r.flowGroups() : [];
+      }
+      if (sqlText.includes('cum_ncp_at_fire = u.ncp')) {
+        const ids = (values[0] as string[]) ?? [];
+        const written = await (r.flowWrite ?? ((x) => x))(ids);
+        return written.map((id) => ({ id }));
+      }
+      if (sqlText.includes('id = ANY(')) return [];
+      if (sqlText.includes('f.cum_ncp_at_fire IS NULL')) {
+        return r.flowAlerts ?? [];
+      }
       if (sqlText.includes('UPDATE silent_boom_alerts')) {
         const ids = values[0] as number[];
         const locked = await (r.lockReturns ?? ((x) => x))(ids);
@@ -115,10 +152,9 @@ const aggregateCalls = (): Array<[string, unknown[]]> =>
     (c) => !c[0].includes('generate_series'),
   );
 
+/** The outcome UPDATEs (not the flow repair's UPDATE of the same table). */
 const lockCalls = () =>
-  mockSql.mock.calls.filter((c) =>
-    text(c).includes('UPDATE silent_boom_alerts'),
-  );
+  mockSql.mock.calls.filter((c) => text(c).includes('enriched_at = NOW()'));
 
 async function run() {
   const res = mockResponse();
@@ -130,6 +166,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockSql.mockReset();
   mockSql.query.mockReset();
+  mockFetchSeries.mockReset();
   mockCronGuard.mockReturnValue(GUARD);
   vi.useFakeTimers({ toFake: ['Date'] });
   vi.setSystemTime(new Date(RUN_AT));
@@ -339,5 +376,166 @@ describe('enrich-silent-boom-outcomes', () => {
     const res = await run();
 
     expect(res._status).toBe(500);
+  });
+});
+
+// ── The flow repair step (api/_lib/fire-flow-repair.ts) ───────────────────────
+
+/** One ticker-day with a NULL-flow alert, as the selection returns it. */
+const FLOW_GROUP = { ticker: 'AAA', date: '2026-10-01', n_rows: 1 };
+
+/** A NULL-flow alert whose bucket starts at 14:35Z (`bucket_ct`). */
+const flowAlert = (id: number, at = '2026-10-01T14:35:00Z'): Row => ({
+  id: String(id),
+  at: new Date(at),
+});
+
+/** AAA's cumulative flow: call premium over put premium from 14:31Z on. */
+const SERIES = {
+  ts: [Date.parse('2026-10-01T14:31:00Z')],
+  cumNcp: [500],
+  cumNpp: [50],
+};
+
+const flowWrites = () =>
+  mockSql.mock.calls.filter((c) => text(c).includes('cum_ncp_at_fire = u.ncp'));
+
+/** The residual alarm messages sent, by their fixed fingerprint. */
+const residualAlarms = () =>
+  mockCaptureMessage.mock.calls.filter(
+    ([, ctx]) => ctx?.fingerprint?.[0] === 'fire-flow-repair-residual',
+  );
+
+/** Run as the slot that starts at `hhmm` UTC on 2026-10-01. */
+async function runAt(hhmm: string) {
+  vi.setSystemTime(new Date(`2026-10-01T${hhmm}:00Z`));
+  return run();
+}
+
+describe('enrich-silent-boom-outcomes: flow repair step', () => {
+  beforeEach(() => {
+    mockFetchSeries.mockResolvedValue(SERIES);
+  });
+
+  it('repairs a NULL-flow alert after the outcome pass, with its counts under metadata.flowRepair', async () => {
+    route({
+      candidates: [alert(1)],
+      aggregate: () => [agg(1)],
+      flowGroups: () => [FLOW_GROUP],
+      flowAlerts: [flowAlert(11)],
+    });
+
+    const res = await run();
+
+    const [lock] = lockCalls();
+    const [flow] = flowWrites();
+    expect(mockSql.mock.calls.indexOf(lock!)).toBeLessThan(
+      mockSql.mock.calls.indexOf(flow!),
+    );
+    // Silent boom carries no flow-derived score: ids, call flow, put flow.
+    expect(flow!.slice(1)).toEqual([['11'], [500], [50]]);
+    expect(mockFetchSeries).toHaveBeenCalledWith(mockSql, 'AAA', '2026-10-01');
+    expect(AXIOM_TOP_LEVEL_KEYS.has('flowRepair')).toBe(false);
+    expect(res._json).toMatchObject({
+      status: 'success',
+      rows: 1,
+      updated: 1,
+      flowRepair: { groups: 1, groupsDone: 1, written: 1, scored: 0 },
+    });
+    expect(res._json).not.toHaveProperty('written');
+  });
+
+  it('a rejected flow write is never a success: partial, captured, and the outcome result still lands', async () => {
+    route({
+      candidates: [alert(1)],
+      aggregate: () => [agg(1)],
+      flowGroups: () => [FLOW_GROUP],
+      flowAlerts: [flowAlert(11)],
+      flowWrite: () => Promise.reject(new Error('permission denied')),
+    });
+
+    const res = await run();
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'partial',
+      updated: 1,
+      message: expect.stringContaining('1 ticker-day(s) failed to write'),
+      flowRepair: { groupsWriteFailed: 1, written: 0, notWritten: 1 },
+    });
+    expect(mockCaptureException).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'permission denied' }),
+      expect.objectContaining({
+        tags: expect.objectContaining({ table: 'silentboom', kind: 'write' }),
+      }),
+    );
+  });
+
+  it('a failed series read makes the run partial and is captured', async () => {
+    route({ flowGroups: () => [FLOW_GROUP], flowAlerts: [flowAlert(11)] });
+    mockFetchSeries.mockRejectedValue(new Error('relation does not exist'));
+
+    const res = await run();
+
+    expect(res._json).toMatchObject({
+      status: 'partial',
+      flowRepair: { groupsReadFailed: 1, written: 0 },
+    });
+    expect(flowWrites()).toHaveLength(0);
+    expect(mockCaptureException).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not soften an outcome-pass error: a clean repair leaves the status error', async () => {
+    route({
+      // A ticker whose tape went quiet at the close is the pass's error case.
+      candidates: [alert(1), alert(2, 'TLT261002C00076000')],
+      aggregate: () => [agg(1), agg(2, { tape_live: false })],
+      flowGroups: () => [FLOW_GROUP],
+      flowAlerts: [flowAlert(11)],
+    });
+
+    const res = await run();
+
+    expect(res._json).toMatchObject({
+      status: 'error',
+      flowRepair: { written: 1 },
+    });
+  });
+
+  it('the residual alarm stays quiet in the first slot and fires once in the last, with a fixed fingerprint', async () => {
+    route({ flowGroups: () => [FLOW_GROUP], flowAlerts: [flowAlert(11)] });
+    mockFetchSeries.mockRejectedValue(new Error('boom'));
+
+    await runAt('21:45');
+    expect(residualAlarms()).toHaveLength(0);
+
+    const last = await runAt('23:45');
+
+    expect(last._json).toMatchObject({
+      status: 'partial',
+      flowRepair: { lastSlot: true, residualFires: 1 },
+    });
+    expect(residualAlarms()).toHaveLength(1);
+    expect(residualAlarms()[0]![1]).toMatchObject({
+      level: 'error',
+      fingerprint: ['fire-flow-repair-residual', 'silentboom'],
+      tags: { job: 'enrich-silent-boom-outcomes', table: 'silentboom' },
+    });
+  });
+
+  it('does not count an alert before the first WS tick: nothing to write is not a residual', async () => {
+    route({
+      flowGroups: () => [FLOW_GROUP],
+      flowAlerts: [flowAlert(11, '2026-10-01T14:30:30Z')],
+    });
+
+    const res = await runAt('23:45');
+
+    expect(res._json).toMatchObject({
+      status: 'success',
+      flowRepair: { noValue: 1, written: 0, residualFires: 0 },
+    });
+    expect(flowWrites()).toHaveLength(0);
+    expect(residualAlarms()).toHaveLength(0);
   });
 });

@@ -43,6 +43,17 @@
  * Monday's run no longer reaches Friday's alerts. About 250 alerts a day,
  * i.e. a few chunks.
  *
+ * Flow repair: after the outcome pass, `repairNullFlow`
+ * (api/_lib/fire-flow-repair.ts) fills `cum_ncp_at_fire` / `cum_npp_at_fire`
+ * of the alerts of today and the four days before it that the live detector
+ * wrote without flow (its series read ran past its deadline). A step of this
+ * cron, not a cron: no schedule, monitor or env var of its own. It starts no
+ * ticker-day in the last 60 s of the 300 s (pinned in vercel.json `functions`),
+ * and its counts ride in `metadata.flowRepair`. A failed read or write makes
+ * the run `partial`; the last slot of the day (23:45 UTC) raises one Sentry
+ * error for alerts still without flow. Spec: docs/superpowers/specs/
+ * lottery-flow-repair-and-indexes-2026-11-15.md, Phase B.
+ *
  * Environment: CRON_SECRET
  *
  * Spec: docs/superpowers/specs/lottery-enrichment-starvation-2026-10-02.md
@@ -54,6 +65,7 @@ import {
   withCronInstrumentation,
   type CronResult,
 } from '../_lib/cron-instrumentation.js';
+import { repairNullFlow, worseStatus } from '../_lib/fire-flow-repair.js';
 import {
   enrichOutcomeWindows,
   outcomePassStatus,
@@ -66,7 +78,9 @@ type Sql = ReturnType<typeof getDb>;
 /**
  * No chunk starts after this much of the run: the same 150 s as the
  * lottery tape pass (TAPE_PASS_BUDGET_MS), leaving ~150 s of the 300 s
- * Fluid Compute default maxDuration for an in-flight chunk and its write.
+ * maxDuration (the Fluid Compute default, pinned in vercel.json `functions`
+ * since the flow repair step measures its own deadline from it) for an
+ * in-flight chunk and its write, and then the flow repair step.
  */
 const PASS_BUDGET_MS = 150_000;
 
@@ -176,6 +190,18 @@ export default withCronInstrumentation(
       lock: (updates) => lockOutcomes(sql, updates),
     });
 
+    // The flow repair runs last and starts no ticker-day in the final 60 s of
+    // the 300 s. Its failures are counted in `flow` and cannot fail the
+    // outcomes above.
+    const flow = await repairNullFlow(sql, {
+      table: 'silentboom',
+      job: 'enrich-silent-boom-outcomes',
+      today: ctx.today,
+      startTimeMs: ctx.startTimeMs,
+    });
+
+    // `flowRepair` is one nested object, which reportCronRun folds into its
+    // `meta` string: no new top-level Axiom column.
     const metadata = {
       candidates: candidates.length,
       updated: pass.locked,
@@ -187,21 +213,26 @@ export default withCronInstrumentation(
       noPrints: pass.noPrintsIds.length,
       unreadable: pass.unreadableIds.length,
       readFailed: pass.readFailedIds.length,
+      flowRepair: flow.counts,
     };
     ctx.logger.info(metadata, 'enrich-silent-boom-outcomes completed');
 
-    const status = outcomePassStatus(pass);
+    const passStatus = outcomePassStatus(pass);
+    if (passStatus === 'error') {
+      return {
+        status: 'error',
+        rows: pass.locked,
+        message:
+          `${pass.tapeGapIds.length} alert(s) with a ws_option_trades ` +
+          `gap and ${pass.readFailedIds.length} whose tape read kept ` +
+          'timing out; left unenriched',
+        metadata,
+      };
+    }
     return {
-      status,
+      status: worseStatus(passStatus, flow.status),
       rows: pass.locked,
-      ...(status === 'error'
-        ? {
-            message:
-              `${pass.tapeGapIds.length} alert(s) with a ws_option_trades ` +
-              `gap and ${pass.readFailedIds.length} whose tape read kept ` +
-              'timing out; left unenriched',
-          }
-        : {}),
+      ...(flow.message != null ? { message: flow.message } : {}),
       metadata,
     };
   },

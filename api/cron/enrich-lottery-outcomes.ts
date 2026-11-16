@@ -47,6 +47,17 @@
  * so its values were wrong. That simulation is deleted; the Python pass
  * (scripts/enrich_lottery_outcomes.py) is the only implementation.
  *
+ * Flow repair: after the tape pass and the prune, `repairNullFlow`
+ * (api/_lib/fire-flow-repair.ts) fills the flow columns, and the V2 score, of
+ * the fires of today and the four days before it that the live detector wrote
+ * without flow (its series read ran past its deadline). It is a step of this
+ * cron, not a cron: no schedule, monitor or env var of its own. It starts no
+ * ticker-day in the last 60 s of the 300 s, and its counts ride in
+ * `metadata.flowRepair`. A failed read or write makes the run `partial`; the
+ * last slot of the day (23:40 UTC) raises one Sentry error for fires still
+ * without flow. Spec: docs/superpowers/specs/
+ * lottery-flow-repair-and-indexes-2026-11-15.md, Phase B.
+ *
  * Budget: maxDuration is 300 s. The pass starts no chunk after
  * TAPE_PASS_BUDGET_MS; whatever is left is picked up by the next run. A
  * 4.4K-fire day measured 109 s of tape reads (worst chunk 11.7 s) on
@@ -80,6 +91,7 @@ import {
   type CronContext,
   type CronResult,
 } from '../_lib/cron-instrumentation.js';
+import { repairNullFlow, worseStatus } from '../_lib/fire-flow-repair.js';
 import {
   enrichOutcomeWindows,
   outcomePassStatus,
@@ -254,6 +266,18 @@ export default withCronInstrumentation(
     // failure can never roll back or fail the primary job.
     await pruneKeptTickers(sql);
 
+    // The flow repair runs last: the tape pass can take ~110 s of the 300 s,
+    // and the repair starts no ticker-day in the final 60 s. Its failures are
+    // counted in `flow` and cannot fail the tape result above.
+    const flow = await repairNullFlow(sql, {
+      table: 'lottery',
+      job: 'enrich-lottery-outcomes',
+      today: ctx.today,
+      startTimeMs: ctx.startTimeMs,
+    });
+
+    // `flowRepair` is one nested object, which reportCronRun folds into its
+    // `meta` string: no new top-level Axiom column.
     const metadata = {
       candidates: tape.candidates,
       updated: tape.locked,
@@ -265,6 +289,7 @@ export default withCronInstrumentation(
       noPrints: tape.noPrintsIds.length,
       unreadable: tape.unreadableIds.length,
       readFailed: tape.readFailedIds.length,
+      flowRepair: flow.counts,
     };
 
     ctx.logger.info(metadata, 'enrich-lottery-outcomes completed');
@@ -281,7 +306,13 @@ export default withCronInstrumentation(
         metadata,
       };
     }
-    return { status: tapeStatus, rows: tape.locked, metadata };
+    const status = worseStatus(tapeStatus, flow.status);
+    return {
+      status,
+      rows: tape.locked,
+      ...(flow.message != null ? { message: flow.message } : {}),
+      metadata,
+    };
   },
   // marketHours: false is REQUIRED — every slot runs after the close
   // (cronGuard defaults to marketHours: true and would reject the request).
