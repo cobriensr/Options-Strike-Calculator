@@ -537,7 +537,13 @@ function planFire(
 
 /**
  * Read one ticker-day's series, then write what it gives the group's fires.
- * Never throws: a failed read or write comes back in `state` and `error`.
+ * A failed read or write does not throw: it comes back in `state` and `error`.
+ * The planning between the two (`flowAtFireTime`, `planFire`) is outside both
+ * guards on purpose: a throw there is a bug (a series of the wrong shape, a fire
+ * row the scorer cannot take), not a database or network failure, so it
+ * propagates out of this function and out of `repairNullFlow` instead of being
+ * counted as one. The cron captures it (tags `step: flow-repair`) and the run
+ * is an `error`.
  * `deadlineMs` is checked before every write chunk after the first, so a big
  * group cannot run on past the margin (see the header).
  */
@@ -689,8 +695,9 @@ function failureMessage(c: FlowRepairCounts): string {
 /**
  * Run the repair step for one table, from inside its enrich cron. A database or
  * series failure never throws: it is counted, captured and returned in the
- * outcome's status. (Only a bug in this module throws, and the cron's wrapper
- * reports that as an error.)
+ * outcome's status. (Only a bug in this module throws, from the planning in
+ * `repairGroup`; the cron captures it with `step: flow-repair` and reports the
+ * run as an error, and a tape-pass error stays the run's error.)
  *
  * `startTimeMs` is the handler start (`ctx.startTimeMs`): the deadline and the
  * last-slot test both measure from it. `today` is the cron's ET date.

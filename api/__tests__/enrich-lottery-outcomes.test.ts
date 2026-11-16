@@ -936,6 +936,67 @@ describe('enrich-lottery-outcomes: flow repair step', () => {
     expect(flowWrites()).toHaveLength(1);
   });
 
+  describe('when the repair itself throws (a bug in it, not a failed read or write)', () => {
+    // A series whose `ts` getter throws: the planning code reads it outside any
+    // try, so the throw reaches the cron from `repairNullFlow`.
+    const brokenSeries = () => ({
+      get ts(): number[] {
+        throw new Error('repair bug');
+      },
+      cumNcp: [] as number[],
+      cumNpp: [] as number[],
+    });
+
+    it('keeps the tape error as the run error: the repair error is captured apart, tagged, and does not replace it', async () => {
+      route({
+        tapeSelect: () => Promise.reject(new Error('neon: timeout')),
+        flowFires: [flowFire(11)],
+      });
+      mockFetchSeries.mockResolvedValue(brokenSeries());
+
+      const res = await run();
+
+      expect(res._status).toBe(500);
+      // Both errors are captured: the repair's with its tags, the tape's by the
+      // wrapper, which is how the cron has always reported a throw.
+      expect(mockCaptureException).toHaveBeenCalledTimes(2);
+      expect(mockCaptureException).toHaveBeenCalledWith(
+        expect.objectContaining({ message: 'repair bug' }),
+        { tags: { job: 'enrich-lottery-outcomes', step: 'flow-repair' } },
+      );
+      expect(mockCaptureException).toHaveBeenCalledWith(
+        expect.objectContaining({ message: 'neon: timeout' }),
+      );
+      // The run is an `error` for the tape's reason.
+      expect(vi.mocked(reportCronRun).mock.calls.at(-1)![1]).toMatchObject({
+        status: 'error',
+        message: 'neon: timeout',
+      });
+    });
+
+    it('lets the repair error fail the run when the tape pass was fine, captured once', async () => {
+      route({
+        tapeCandidates: [fire(1)],
+        aggregate: () => [agg(1)],
+        flowFires: [flowFire(11)],
+      });
+      mockFetchSeries.mockResolvedValue(brokenSeries());
+
+      const res = await run();
+
+      expect(res._status).toBe(500);
+      expect(lockCalls()).toHaveLength(1); // the tape result landed
+      expect(mockCaptureException).toHaveBeenCalledTimes(1);
+      expect(mockCaptureException).toHaveBeenCalledWith(
+        expect.objectContaining({ message: 'repair bug' }),
+      );
+      expect(vi.mocked(reportCronRun).mock.calls.at(-1)![1]).toMatchObject({
+        status: 'error',
+        message: 'repair bug',
+      });
+    });
+  });
+
   it('holds back a fire it would re-score when the weights store cannot be read: nothing written, partial, counted', async () => {
     route({ flowFires: [flowFire(11)] });
     mockLoadWeights.mockResolvedValue({

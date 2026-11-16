@@ -55,8 +55,10 @@
  * outcome pass throws (its candidate SELECT, an aggregate read, an UPDATE), the
  * repair still runs, and the pass's error is rethrown after it, so the run stays
  * an `error` with the real exception captured (the repair's counts are then
- * logged, not in the Axiom event). Spec: docs/superpowers/specs/
- * lottery-flow-repair-and-indexes-2026-11-15.md, Phase B.
+ * logged, not in the Axiom event; a throw from the repair itself is captured on
+ * its own, tagged `step: flow-repair`, and does not replace the pass's error).
+ * Spec:
+ * docs/superpowers/specs/lottery-flow-repair-and-indexes-2026-11-15.md, Phase B.
  *
  * Environment: CRON_SECRET
  *
@@ -70,13 +72,18 @@ import {
   type CronContext,
   type CronResult,
 } from '../_lib/cron-instrumentation.js';
-import { repairNullFlow, worseStatus } from '../_lib/fire-flow-repair.js';
+import {
+  repairNullFlow,
+  worseStatus,
+  type FlowRepairOutcome,
+} from '../_lib/fire-flow-repair.js';
 import {
   enrichOutcomeWindows,
   outcomePassStatus,
   prepareWindows,
   type OutcomeCandidate,
 } from '../_lib/option-outcome-aggregate.js';
+import { Sentry } from '../_lib/sentry.js';
 
 type Sql = ReturnType<typeof getDb>;
 
@@ -207,13 +214,24 @@ export default withCronInstrumentation(
 
     // The flow repair runs last and starts no ticker-day in the final 60 s of
     // the 300 s. Its failures are counted in `flow` and cannot fail the
-    // outcomes above.
-    const flow = await repairNullFlow(sql, {
-      table: 'silentboom',
-      job: 'enrich-silent-boom-outcomes',
-      today: ctx.today,
-      startTimeMs: ctx.startTimeMs,
-    });
+    // outcomes above. It throws only on a bug in the repair itself. When the
+    // outcome pass had already failed, that pass error stays the run's error:
+    // the repair's is captured on its own and not allowed to replace it.
+    let flow: FlowRepairOutcome;
+    try {
+      flow = await repairNullFlow(sql, {
+        table: 'silentboom',
+        job: 'enrich-silent-boom-outcomes',
+        today: ctx.today,
+        startTimeMs: ctx.startTimeMs,
+      });
+    } catch (repairError) {
+      if (passRun.ok) throw repairError;
+      Sentry.captureException(repairError, {
+        tags: { job: 'enrich-silent-boom-outcomes', step: 'flow-repair' },
+      });
+      throw passRun.error;
+    }
 
     if (!passRun.ok) {
       // The wrapper reports the throw without this run's metadata, so the

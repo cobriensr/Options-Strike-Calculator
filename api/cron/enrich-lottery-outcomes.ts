@@ -59,8 +59,9 @@
  * candidate SELECT, an aggregate read, an UPDATE), the repair still runs, and
  * the tape error is rethrown after it, so the run stays an `error` with the
  * real exception captured (the repair's counts are then logged, not in the
- * Axiom event). Spec: docs/superpowers/specs/
- * lottery-flow-repair-and-indexes-2026-11-15.md, Phase B.
+ * Axiom event; a throw from the repair itself is captured on its own, tagged
+ * `step: flow-repair`, and does not replace the tape error). Spec:
+ * docs/superpowers/specs/lottery-flow-repair-and-indexes-2026-11-15.md, Phase B.
  *
  * Budget: maxDuration is 300 s. The pass starts no chunk after
  * TAPE_PASS_BUDGET_MS; whatever is left is picked up by the next run. A
@@ -85,7 +86,7 @@
  */
 
 import { getDb, withDbRetry, safeDbVoid } from '../_lib/db.js';
-import { metrics } from '../_lib/sentry.js';
+import { Sentry, metrics } from '../_lib/sentry.js';
 import {
   KEPT_RETENTION_DAYS,
   WS_OPTION_TRADES_RETENTION_DAYS,
@@ -95,7 +96,11 @@ import {
   type CronContext,
   type CronResult,
 } from '../_lib/cron-instrumentation.js';
-import { repairNullFlow, worseStatus } from '../_lib/fire-flow-repair.js';
+import {
+  repairNullFlow,
+  worseStatus,
+  type FlowRepairOutcome,
+} from '../_lib/fire-flow-repair.js';
 import {
   enrichOutcomeWindows,
   outcomePassStatus,
@@ -279,13 +284,25 @@ export default withCronInstrumentation(
 
     // The flow repair runs last: the tape pass can take ~110 s of the 300 s,
     // and the repair starts no ticker-day in the final 60 s. Its failures are
-    // counted in `flow` and cannot fail the tape result above.
-    const flow = await repairNullFlow(sql, {
-      table: 'lottery',
-      job: 'enrich-lottery-outcomes',
-      today: ctx.today,
-      startTimeMs: ctx.startTimeMs,
-    });
+    // counted in `flow` and cannot fail the tape result above. It throws only
+    // on a bug in the repair itself. When the tape pass had already failed, that
+    // pass error stays the run's error: the repair's is captured on its own and
+    // not allowed to replace it.
+    let flow: FlowRepairOutcome;
+    try {
+      flow = await repairNullFlow(sql, {
+        table: 'lottery',
+        job: 'enrich-lottery-outcomes',
+        today: ctx.today,
+        startTimeMs: ctx.startTimeMs,
+      });
+    } catch (repairError) {
+      if (tapeRun.ok) throw repairError;
+      Sentry.captureException(repairError, {
+        tags: { job: 'enrich-lottery-outcomes', step: 'flow-repair' },
+      });
+      throw tapeRun.error;
+    }
 
     if (!tapeRun.ok) {
       // The wrapper reports the throw without this run's metadata, so the
