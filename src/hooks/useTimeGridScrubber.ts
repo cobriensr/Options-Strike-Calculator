@@ -81,7 +81,7 @@ export interface TimeGridScrubber {
  * (that would fetch the new view at the old time before the clean request),
  * and it cannot come back if the scope returns.
  */
-export function useTimeGridScrubber(scope = ''): TimeGridScrubber {
+export function useTimeGridScrubber(scope: string): TimeGridScrubber {
   const [scrub, setScrub] = useState<{ scope: string; time: string } | null>(
     null,
   );

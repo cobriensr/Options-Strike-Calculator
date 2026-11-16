@@ -289,8 +289,10 @@ export function useDarkPoolLevels(
 
   // Stabilize the returned object's identity so a parent `useMemo` keyed on
   // this hook's return value holds across polls when no field changed. Every
-  // field below is either a primitive, a stable useState value/setter, or a
-  // stable useCallback (refresh + all scrubber fns), and `timeGrid` is the
+  // field below is a primitive, a stable useState value/setter, or a
+  // useCallback (refresh, and the scrub functions: scrubPrev, scrubNext and
+  // scrubTo change with the date and symbol scope, which changes selectedDate
+  // or selectedSymbol in this memo's deps too), and `timeGrid` is the
   // module-level `TIME_GRID` constant — so this memo only recomputes when a
   // value genuinely changes, not on every render.
   return useMemo(

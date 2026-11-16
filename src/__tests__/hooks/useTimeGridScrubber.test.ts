@@ -37,7 +37,7 @@ describe('useTimeGridScrubber', () => {
   });
 
   it('starts in live mode', () => {
-    const { result } = renderHook(() => useTimeGridScrubber());
+    const { result } = renderHook(() => useTimeGridScrubber('test'));
     expect(result.current.scrubTime).toBeNull();
     expect(result.current.isScrubbed).toBe(false);
     expect(result.current.canScrubPrev).toBe(true);
@@ -45,12 +45,12 @@ describe('useTimeGridScrubber', () => {
   });
 
   it('exposes the full TIME_GRID', () => {
-    const { result } = renderHook(() => useTimeGridScrubber());
+    const { result } = renderHook(() => useTimeGridScrubber('test'));
     expect(result.current.timeGrid).toBe(TIME_GRID);
   });
 
   it('scrubPrev from live anchors at the slot at-or-before now (CT)', () => {
-    const { result } = renderHook(() => useTimeGridScrubber());
+    const { result } = renderHook(() => useTimeGridScrubber('test'));
     act(() => result.current.scrubPrev());
     // Mocked clock = 11:42 CT → last slot at-or-before is 11:40
     expect(result.current.scrubTime).toBe('11:40');
@@ -58,7 +58,7 @@ describe('useTimeGridScrubber', () => {
   });
 
   it('scrubPrev from scrubbed steps one slot earlier', () => {
-    const { result } = renderHook(() => useTimeGridScrubber());
+    const { result } = renderHook(() => useTimeGridScrubber('test'));
     act(() => result.current.scrubTo('10:30'));
     expect(result.current.scrubTime).toBe('10:30');
     act(() => result.current.scrubPrev());
@@ -66,7 +66,7 @@ describe('useTimeGridScrubber', () => {
   });
 
   it('scrubPrev clamps at the first slot', () => {
-    const { result } = renderHook(() => useTimeGridScrubber());
+    const { result } = renderHook(() => useTimeGridScrubber('test'));
     act(() => result.current.scrubTo('08:30'));
     expect(result.current.canScrubPrev).toBe(false);
     act(() => result.current.scrubPrev());
@@ -74,20 +74,20 @@ describe('useTimeGridScrubber', () => {
   });
 
   it('scrubNext from scrubbed steps one slot later', () => {
-    const { result } = renderHook(() => useTimeGridScrubber());
+    const { result } = renderHook(() => useTimeGridScrubber('test'));
     act(() => result.current.scrubTo('10:30'));
     act(() => result.current.scrubNext());
     expect(result.current.scrubTime).toBe('10:35');
   });
 
   it('scrubNext is a no-op in live mode', () => {
-    const { result } = renderHook(() => useTimeGridScrubber());
+    const { result } = renderHook(() => useTimeGridScrubber('test'));
     act(() => result.current.scrubNext());
     expect(result.current.scrubTime).toBeNull();
   });
 
   it('scrubNext clamps at the last slot', () => {
-    const { result } = renderHook(() => useTimeGridScrubber());
+    const { result } = renderHook(() => useTimeGridScrubber('test'));
     act(() => result.current.scrubTo('14:55'));
     act(() => result.current.scrubNext());
     expect(result.current.scrubTime).toBe('15:00');
@@ -97,7 +97,7 @@ describe('useTimeGridScrubber', () => {
   });
 
   it('scrubTo(lastSlot) resumes live mode', () => {
-    const { result } = renderHook(() => useTimeGridScrubber());
+    const { result } = renderHook(() => useTimeGridScrubber('test'));
     act(() => result.current.scrubTo('10:30'));
     expect(result.current.isScrubbed).toBe(true);
     act(() => result.current.scrubTo('15:00'));
@@ -106,7 +106,7 @@ describe('useTimeGridScrubber', () => {
   });
 
   it('scrubTo ignores values not in the grid', () => {
-    const { result } = renderHook(() => useTimeGridScrubber());
+    const { result } = renderHook(() => useTimeGridScrubber('test'));
     act(() => result.current.scrubTo('10:00'));
     expect(result.current.scrubTime).toBe('10:00');
     act(() => result.current.scrubTo('not-a-slot'));
@@ -116,7 +116,7 @@ describe('useTimeGridScrubber', () => {
   });
 
   it('scrubLive returns to null', () => {
-    const { result } = renderHook(() => useTimeGridScrubber());
+    const { result } = renderHook(() => useTimeGridScrubber('test'));
     act(() => result.current.scrubTo('10:30'));
     act(() => result.current.scrubLive());
     expect(result.current.scrubTime).toBeNull();
@@ -124,7 +124,7 @@ describe('useTimeGridScrubber', () => {
   });
 
   it('canScrubPrev: true from live, false at first slot, true otherwise', () => {
-    const { result } = renderHook(() => useTimeGridScrubber());
+    const { result } = renderHook(() => useTimeGridScrubber('test'));
     expect(result.current.canScrubPrev).toBe(true); // live
     act(() => result.current.scrubTo('08:30'));
     expect(result.current.canScrubPrev).toBe(false); // first slot
