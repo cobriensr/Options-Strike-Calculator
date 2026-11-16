@@ -7,8 +7,9 @@
  * so the integration stays meaningful.
  */
 
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, fireEvent, render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 
 import type {
   GreekHeatmapResponse,
@@ -484,5 +485,271 @@ describe('GreekHeatmapSection', () => {
     expect(
       screen.getByText(/no net-flow data for this date/i),
     ).toBeInTheDocument();
+  });
+});
+
+// ============================================================
+// ET MIDNIGHT WHILE THE APP IS OPEN
+//
+// The section follows today unless the owner picked another date. It re-derived
+// `today` only when the tab became visible, so an open tab kept treating
+// yesterday as today until it was refocused; now the shared ET clock moves
+// it. Every case starts 30 s before an ET midnight; the clock's timer is
+// armed for 1 s past it, so 31 s lands just after. The real getETToday()
+// reads the faked Date. Owner decision 2026-11-14.
+// ============================================================
+
+describe.each([
+  {
+    zone: 'EST (winter)',
+    start: '2026-11-10T04:59:30Z',
+    night: '2026-11-09',
+    morning: '2026-11-10',
+  },
+  {
+    zone: 'EDT (summer)',
+    start: '2026-07-15T03:59:30Z',
+    night: '2026-07-14',
+    morning: '2026-07-15',
+  },
+])('GreekHeatmapSection: across the $zone midnight', (m) => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    vi.setSystemTime(new Date(m.start));
+    mockUseGreekHeatmap.mockReturnValue({
+      data: makeData(),
+      loading: false,
+      error: null,
+      refresh: mockRefresh,
+    });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** The shared clock's timer fires, just past midnight. */
+  function crossMidnight() {
+    act(() => {
+      vi.advanceTimersByTime(31_000);
+    });
+  }
+
+  type HookArgs = {
+    ticker: string;
+    date?: string;
+    at?: string;
+    enabled: boolean;
+  };
+  const dateInput = () =>
+    screen.getByLabelText<HTMLInputElement>('Heatmap expiry date');
+  const historicalBadge = () => screen.queryByText('Historical');
+  /** The arguments of the section's latest useGreekHeatmap call. */
+  const lastArgs = () =>
+    mockUseGreekHeatmap.mock.calls.at(-1)?.[0] as HookArgs | undefined;
+  const allArgs = () =>
+    mockUseGreekHeatmap.mock.calls.map((c) => c[0] as HookArgs);
+
+  function pick(date: string) {
+    fireEvent.change(dateInput(), { target: { value: date } });
+  }
+
+  it('follows the new date and stays on the live data path', () => {
+    render(<GreekHeatmapSection marketOpen={true} />);
+    expect(dateInput().value).toBe(m.night);
+    expect(lastArgs()).toMatchObject({ date: undefined, enabled: true });
+
+    crossMidnight();
+
+    expect(dateInput().value).toBe(m.morning);
+    expect(lastArgs()).toMatchObject({ date: undefined, enabled: true });
+    expect(historicalBadge()).not.toBeInTheDocument();
+  });
+
+  it('rolls on the clock alone, with no visibilitychange', () => {
+    // The section used to learn about the new day only when the tab became
+    // visible. The shared clock's timer moves it; nothing here fires the event.
+    const visibility = vi.fn();
+    document.addEventListener('visibilitychange', visibility);
+    try {
+      render(<GreekHeatmapSection marketOpen={true} />);
+
+      crossMidnight();
+
+      expect(visibility).not.toHaveBeenCalled();
+      expect(dateInput().value).toBe(m.morning);
+      expect(dateInput().max).toBe(m.morning);
+    } finally {
+      document.removeEventListener('visibilitychange', visibility);
+    }
+  });
+
+  it('moves the picker max to the new day', () => {
+    render(<GreekHeatmapSection marketOpen={true} />);
+    expect(dateInput().max).toBe(m.night);
+
+    crossMidnight();
+
+    expect(dateInput().max).toBe(m.morning);
+  });
+
+  it('rolls with no parent re-render', () => {
+    let parentRenders = 0;
+    function Parent() {
+      parentRenders += 1;
+      return <GreekHeatmapSection marketOpen={true} />;
+    }
+    render(<Parent />);
+    const callsBefore = mockUseGreekHeatmap.mock.calls.length;
+
+    crossMidnight();
+
+    expect(parentRenders).toBe(1);
+    expect(mockUseGreekHeatmap.mock.calls.length).toBeGreaterThan(callsBefore);
+    expect(dateInput().value).toBe(m.morning);
+  });
+
+  it('judges the date live in a render just past midnight, before the clock ticks', () => {
+    render(<GreekHeatmapSection marketOpen={true} />);
+
+    // The wall clock is past midnight; the shared clock has not ticked, so
+    // the date is still the night's. A render now (the strike-range change)
+    // must judge it live by the same clock, not by the wall clock.
+    act(() => {
+      vi.setSystemTime(new Date(Date.parse(m.start) + 30_500));
+    });
+    fireEvent.change(screen.getByLabelText(/visible strike range/i), {
+      target: { value: '20' },
+    });
+
+    expect(dateInput().value).toBe(m.night);
+    expect(lastArgs()).toMatchObject({ date: undefined, enabled: true });
+    expect(historicalBadge()).not.toBeInTheDocument();
+  });
+
+  it('keeps a picked past date', () => {
+    render(<GreekHeatmapSection marketOpen={true} />);
+    pick('2026-04-20');
+    expect(lastArgs()).toMatchObject({ date: '2026-04-20', enabled: false });
+    expect(historicalBadge()).toBeInTheDocument();
+
+    crossMidnight();
+
+    expect(dateInput().value).toBe('2026-04-20');
+    expect(lastArgs()).toMatchObject({ date: '2026-04-20', enabled: false });
+    expect(historicalBadge()).toBeInTheDocument();
+  });
+
+  it('turns a picked tomorrow live when midnight reaches it', () => {
+    render(<GreekHeatmapSection marketOpen={true} />);
+    pick(m.morning);
+    expect(lastArgs()).toMatchObject({ date: m.morning, enabled: false });
+    expect(historicalBadge()).toBeInTheDocument();
+
+    crossMidnight();
+
+    expect(dateInput().value).toBe(m.morning);
+    expect(lastArgs()).toMatchObject({ date: undefined, enabled: true });
+    expect(historicalBadge()).not.toBeInTheDocument();
+  });
+
+  it('keeps the picked date while the field is empty, and follows today once it is left', () => {
+    render(<GreekHeatmapSection marketOpen={true} />);
+    pick('2026-04-20');
+
+    // Emptying the field (the first "0" of a zero-padded month does it) is
+    // mid-edit: the data keeps the picked date.
+    pick('');
+
+    expect(dateInput().value).toBe('');
+    expect(lastArgs()).toMatchObject({ date: '2026-04-20', enabled: false });
+
+    // Leaving it empty follows today.
+    fireEvent.blur(dateInput());
+
+    expect(dateInput().value).toBe(m.night);
+    expect(lastArgs()).toMatchObject({ date: undefined, enabled: true });
+
+    crossMidnight();
+
+    expect(dateInput().value).toBe(m.morning);
+    expect(lastArgs()).toMatchObject({ date: undefined, enabled: true });
+  });
+
+  it('never asks for the new date at the old minute when it rolls while scrubbed', () => {
+    render(<GreekHeatmapSection marketOpen={true} />);
+    fireEvent.click(screen.getByRole('button', { name: /previous minute/i }));
+    expect(lastArgs()?.at).toBeDefined();
+    mockUseGreekHeatmap.mockClear();
+
+    crossMidnight();
+
+    // Not just the last call: no render, committed or not, may keep the
+    // minute that belonged to the old date.
+    expect(allArgs().filter((a) => a.at !== undefined)).toEqual([]);
+    expect(lastArgs()).toMatchObject({ date: undefined, enabled: true });
+  });
+
+  it('never asks for a picked date at the old minute when a date is picked while scrubbed', () => {
+    render(<GreekHeatmapSection marketOpen={true} />);
+    fireEvent.click(screen.getByRole('button', { name: /previous minute/i }));
+    mockUseGreekHeatmap.mockClear();
+
+    pick('2026-04-20');
+
+    expect(allArgs().filter((a) => a.at !== undefined)).toEqual([]);
+    expect(lastArgs()).toMatchObject({ date: '2026-04-20', enabled: false });
+  });
+
+  it('never asks for a new ticker at the old minute when the ticker changes while scrubbed', () => {
+    render(<GreekHeatmapSection marketOpen={true} />);
+    fireEvent.click(screen.getByRole('button', { name: /previous minute/i }));
+    mockUseGreekHeatmap.mockClear();
+
+    fireEvent.change(screen.getByLabelText('Heatmap ticker'), {
+      target: { value: 'QQQ' },
+    });
+
+    expect(allArgs().filter((a) => a.at !== undefined)).toEqual([]);
+    expect(lastArgs()).toMatchObject({ ticker: 'QQQ' });
+  });
+
+  it('does not bring a scrubbed minute back when the date returns to the one it belonged to', () => {
+    render(<GreekHeatmapSection marketOpen={true} />);
+    fireEvent.click(screen.getByRole('button', { name: /previous minute/i }));
+
+    pick('2026-04-20');
+    pick(m.night);
+
+    expect(lastArgs()?.at).toBeUndefined();
+  });
+});
+
+describe('GreekHeatmapSection: typing a date', () => {
+  it('takes a date typed key by key over the field', async () => {
+    vi.resetAllMocks();
+    mockUseGreekHeatmap.mockReturnValue({
+      data: makeData(),
+      loading: false,
+      error: null,
+      refresh: mockRefresh,
+    });
+    const user = userEvent.setup();
+    render(<GreekHeatmapSection marketOpen={true} />);
+    const input = screen.getByLabelText<HTMLInputElement>(
+      'Heatmap expiry date',
+    );
+
+    // Emptying the field first must not snap it back to today and lose the
+    // typing: the shared DateInput keeps an emptied field as a local draft.
+    await user.clear(input);
+    await user.type(input, '2026-04-21');
+
+    expect(input.value).toBe('2026-04-21');
+    expect(
+      (mockUseGreekHeatmap.mock.calls.at(-1)?.[0] as { date?: string }).date,
+    ).toBe('2026-04-21');
+    expect(screen.getByText('Historical')).toBeInTheDocument();
   });
 });

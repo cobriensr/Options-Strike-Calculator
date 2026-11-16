@@ -27,8 +27,9 @@ import {
   DEFAULT_GREEK_HEATMAP_TICKER,
   GREEK_HEATMAP_TICKER_UNIVERSE,
 } from '../../constants/greekHeatmapUniverse';
+import { useFollowedDate } from '../../hooks/useFollowedDate';
 import { useGreekHeatmap } from '../../hooks/useGreekHeatmap';
-import { getETDateStr } from '../../utils/timezone';
+import { DateInput } from '../ui/DateInput';
 import { SectionBox } from '../ui/SectionBox';
 
 import { DataAgeBadge } from './DataAgeBadge';
@@ -71,12 +72,36 @@ export function GreekHeatmapSection({ marketOpen }: GreekHeatmapSectionProps) {
 
 function GreekHeatmapBody({ marketOpen }: GreekHeatmapSectionProps) {
   const [ticker, setTicker] = useState<string>(DEFAULT_GREEK_HEATMAP_TICKER);
-  const [selectedDate, setSelectedDate] = useState<string>(() =>
-    getETDateStr(new Date()),
-  );
+  // The date follows today across ET midnight unless the owner picked another
+  // one (the shared ET clock behind `useFollowedDate`). `today` is that same
+  // clock, so the date and the live check turn together at the roll, and the
+  // picker's `max` moves with it. This replaces a `today` re-read only on tab
+  // refocus, which left an open tab on yesterday.
+  const {
+    date: selectedDate,
+    setDate: setSelectedDate,
+    today,
+  } = useFollowedDate();
   // ISO 8601 UTC of the scrubbed minute, or null = LIVE (latest).
-  // Default LIVE; the MinuteScrubber flips it when the user drags.
-  const [scrubbedAt, setScrubbedAt] = useState<string | null>(null);
+  // Default LIVE; the MinuteScrubber flips it when the user drags. The minute
+  // is stored with the (ticker, date) it was set on and read only while that
+  // pair is selected: indexed against another pair it would return empty or,
+  // worse, look like it showed the new pair at that timestamp. A scrub for
+  // another pair is dropped during render, with no effect, so no render pairs
+  // the new ticker or date with the old minute (that would fetch it before the
+  // clean request), and it cannot come back if the pair returns.
+  const scrubScope = `${ticker}|${selectedDate}`;
+  const [scrub, setScrub] = useState<{ scope: string; at: string } | null>(
+    null,
+  );
+  if (scrub !== null && scrub.scope !== scrubScope) setScrub(null);
+  const scrubbedAt =
+    scrub !== null && scrub.scope === scrubScope ? scrub.at : null;
+  const setScrubbedAt = useCallback(
+    (at: string | null) =>
+      setScrub(at === null ? null : { scope: scrubScope, at }),
+    [scrubScope],
+  );
   const [strikeRange, setStrikeRange] = useState<number>(10);
   const [highlightedStrike, setHighlightedStrike] = useState<number | null>(
     null,
@@ -85,48 +110,21 @@ function GreekHeatmapBody({ marketOpen }: GreekHeatmapSectionProps) {
     null,
   );
 
-  // `today` is the ET-anchored "current trading date" we compare
-  // `selectedDate` against. We re-derive it on tab refocus so a
-  // session left open across the ET midnight rollover doesn't keep
-  // treating yesterday's date as today (which would silently route
-  // the section's polling through the wrong query branch). Anchored
-  // to `visibilitychange` rather than a timer so we don't burn CPU
-  // when the tab is idle.
-  const [today, setToday] = useState(() => getETDateStr(new Date()));
-  useEffect(() => {
-    const onVisible = () => {
-      if (document.visibilityState === 'visible') {
-        setToday(getETDateStr(new Date()));
-      }
-    };
-    document.addEventListener('visibilitychange', onVisible);
-    return () => document.removeEventListener('visibilitychange', onVisible);
-  }, []);
   const isViewingToday = selectedDate === today;
   const isLiveTip = scrubbedAt === null;
   // Date min/max bounds for the picker — 90-day floor matches the
-  // backfill window. Both bounds anchored to ET so the picker can't
-  // drift one calendar day ahead of `today` after the UTC midnight
-  // rollover (which fires at 19:00 ET — well before the user goes
-  // home). Without ET anchoring, after that flip the user could pick
-  // a "future" ET date and trigger the Historical badge for tomorrow.
+  // backfill window. Both bounds come from `today`, the ET date from the
+  // shared clock, so the picker can't drift one calendar day ahead of it after
+  // the UTC midnight rollover (which fires at 19:00 ET — well before the user
+  // goes home): without that, the user could pick a "future" ET date and
+  // trigger the Historical badge for tomorrow. They move with it at ET
+  // midnight. The floor is calendar arithmetic on `today` (noon UTC keeps it
+  // clear of any day boundary).
   const dateBounds = useMemo(() => {
-    const todayET = getETDateStr(new Date());
-    const ninetyAgo = new Date();
-    ninetyAgo.setUTCDate(ninetyAgo.getUTCDate() - 90);
-    return {
-      min: getETDateStr(ninetyAgo),
-      max: todayET,
-    };
-  }, []);
-
-  // Reset the scrubber to LIVE when the ticker or date changes — the
-  // prior scrubbedAt was indexed against a different (ticker, date)
-  // pair and would either return empty or, worse, look like it's
-  // showing the new ticker at that timestamp.
-  useEffect(() => {
-    setScrubbedAt(null);
-  }, [ticker, selectedDate]);
+    const floor = new Date(`${today}T12:00:00Z`);
+    floor.setUTCDate(floor.getUTCDate() - 90);
+    return { min: floor.toISOString().slice(0, 10), max: today };
+  }, [today]);
 
   const { data, loading, error, stale, transient, refresh } = useGreekHeatmap({
     ticker,
@@ -200,18 +198,18 @@ function GreekHeatmapBody({ marketOpen }: GreekHeatmapSectionProps) {
             ))}
           </select>
         </label>
-        <label className="inline-flex items-center gap-1.5 text-[11px] text-neutral-400">
+        <span className="inline-flex items-center gap-1.5 text-[11px] text-neutral-400">
           Date
-          <input
-            type="date"
-            className={DATE_INPUT_CLASS}
+          <DateInput
             value={selectedDate}
             min={dateBounds.min}
             max={dateBounds.max}
-            onChange={(e) => setSelectedDate(e.target.value || today)}
-            aria-label="Heatmap expiry date"
+            onChange={setSelectedDate}
+            label="Heatmap expiry date"
+            labelVisible={false}
+            className={DATE_INPUT_CLASS}
           />
-        </label>
+        </span>
         <label className="inline-flex items-center gap-1.5 text-[11px] text-neutral-400">
           Strikes
           <select

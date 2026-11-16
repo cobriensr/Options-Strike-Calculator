@@ -10,11 +10,12 @@
  * Spec: docs/superpowers/specs/periscope-lottery-alerts-2026-05-19.md
  */
 
-import { useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import { SectionBox } from '../ui';
+import { DateInput } from '../ui/DateInput.js';
 import { UwTunedPausedBanner } from '../ui/UwTunedPausedBanner.js';
+import { useFollowedDate } from '../../hooks/useFollowedDate.js';
 import { usePeriscopeLotteryFeed } from '../../hooks/usePeriscopeLotteryFeed.js';
-import { getETDateStr } from '../../utils/timezone.js';
 import { buildSpxwOcc, spxwUwChainUrl } from './buildSpxwOcc.js';
 import type { LotteryFireType, PeriscopeLotteryFire } from './types.js';
 
@@ -33,8 +34,15 @@ export function PeriscopeLotteryPanel({
   marketOpen,
   defaultCollapsed,
 }: Props): React.ReactElement {
-  const today = useMemo(() => getETDateStr(new Date()), []);
-  const [selectedDate, setSelectedDate] = useState<string>(today);
+  // The date follows today across ET midnight unless the owner picked another
+  // one (the shared ET clock behind `useFollowedDate`). `today` is that same
+  // clock, so a tab left open stops polling yesterday as live and the
+  // picker's `max` lets the owner pick the new day.
+  const {
+    date: selectedDate,
+    setDate: setSelectedDate,
+    today,
+  } = useFollowedDate();
   const historical = selectedDate < today;
   const { fires, paused, loading, error, fetchedAt } = usePeriscopeLotteryFeed({
     date: selectedDate,
@@ -61,14 +69,14 @@ export function PeriscopeLotteryPanel({
       >
         Date
       </label>
-      <input
+      <DateInput
         id="periscope-lottery-date"
-        type="date"
         value={selectedDate}
         max={today}
-        onChange={(e) => setSelectedDate(e.target.value || today)}
+        onChange={setSelectedDate}
+        label="Pick a date to view Periscope Lottery fires"
+        labelVisible={false}
         className="border-edge bg-input text-primary rounded-md border px-2 py-0.5 font-mono text-[11px]"
-        aria-label="Pick a date to view Periscope Lottery fires"
       />
       <FreshnessChip fetchedAt={fetchedAt} loading={loading} />
     </div>

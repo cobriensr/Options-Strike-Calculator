@@ -4,8 +4,9 @@
  * sectioning, empty states, badge rendering, and outcome pill.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, within, fireEvent } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { act, render, screen, within, fireEvent } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { PeriscopeLotteryPanel } from './PeriscopeLotteryPanel';
 import type { PeriscopeLotteryFire } from './types';
 
@@ -294,5 +295,216 @@ describe('PeriscopeLotteryPanel pause on GEXBot data', () => {
     render(<PeriscopeLotteryPanel marketOpen={true} />);
     expect(screen.queryByRole('status')).toBeNull();
     expect(screen.getByText(/MM gamma \+ charm extremes/)).toBeInTheDocument();
+  });
+});
+
+function mockEmptyFeed() {
+  mockFeed.mockReturnValue({
+    fires: [],
+    loading: false,
+    error: null,
+    fetchedAt: null,
+    paused: false,
+    refresh: vi.fn(),
+  });
+}
+
+// ============================================================
+// ET MIDNIGHT WHILE THE APP IS OPEN
+//
+// The panel follows today unless the owner picked another date. It froze
+// `today` at mount (useMemo with no deps), so a tab left open past ET
+// midnight kept polling yesterday as live through the next session, and
+// `max` stopped the owner picking the new day. The shared ET clock now moves
+// it. Every case starts 30 s before an ET midnight; the clock's timer is
+// armed for 1 s past it, so 31 s lands just after. The real getETToday()
+// reads the faked Date. Owner decision 2026-11-14.
+// ============================================================
+
+describe.each([
+  {
+    zone: 'EST (winter)',
+    start: '2026-11-10T04:59:30Z',
+    night: '2026-11-09',
+    morning: '2026-11-10',
+  },
+  {
+    zone: 'EDT (summer)',
+    start: '2026-07-15T03:59:30Z',
+    night: '2026-07-14',
+    morning: '2026-07-15',
+  },
+])('PeriscopeLotteryPanel: across the $zone midnight', (m) => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    vi.setSystemTime(new Date(m.start));
+    mockEmptyFeed();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** The shared clock's timer fires, just past midnight. */
+  function crossMidnight() {
+    act(() => {
+      vi.advanceTimersByTime(31_000);
+    });
+  }
+
+  const picker = () =>
+    screen.getByLabelText<HTMLInputElement>(
+      'Pick a date to view Periscope Lottery fires',
+    );
+  /** The arguments of the panel's latest usePeriscopeLotteryFeed call. */
+  const lastCall = () =>
+    lastArgs.mock.calls.at(-1)?.[0] as {
+      date: string;
+      marketOpen: boolean;
+      historical: boolean;
+    };
+
+  function pick(date: string) {
+    fireEvent.change(picker(), { target: { value: date } });
+  }
+
+  it('follows the new date, keeps it live, and moves the picker max', () => {
+    render(<PeriscopeLotteryPanel marketOpen={true} />);
+    expect(picker().value).toBe(m.night);
+    expect(picker().max).toBe(m.night);
+    expect(lastCall()).toMatchObject({ date: m.night, historical: false });
+
+    crossMidnight();
+
+    expect(picker().value).toBe(m.morning);
+    expect(picker().max).toBe(m.morning);
+    expect(lastCall()).toMatchObject({ date: m.morning, historical: false });
+  });
+
+  it('rolls with no parent re-render', () => {
+    let parentRenders = 0;
+    function Parent() {
+      parentRenders += 1;
+      return <PeriscopeLotteryPanel marketOpen={true} />;
+    }
+    render(<Parent />);
+    const callsBefore = lastArgs.mock.calls.length;
+
+    crossMidnight();
+
+    expect(parentRenders).toBe(1);
+    expect(lastArgs.mock.calls.length).toBeGreaterThan(callsBefore);
+    expect(picker().value).toBe(m.morning);
+  });
+
+  it('judges the date live in a render just past midnight, before the clock ticks', () => {
+    const { rerender } = render(<PeriscopeLotteryPanel marketOpen={true} />);
+
+    // The wall clock is past midnight; the shared clock has not ticked, so
+    // the date is still the night's. A render now (the market-open prop
+    // changes) must judge it live by the same clock, not by the wall clock.
+    act(() => {
+      vi.setSystemTime(new Date(Date.parse(m.start) + 30_500));
+    });
+    rerender(<PeriscopeLotteryPanel marketOpen={false} />);
+
+    expect(picker().value).toBe(m.night);
+    expect(lastCall()).toMatchObject({
+      date: m.night,
+      marketOpen: false,
+      historical: false,
+    });
+  });
+
+  it('keeps a picked past date, historical', () => {
+    render(<PeriscopeLotteryPanel marketOpen={true} />);
+    pick('2026-04-20');
+    expect(lastCall()).toMatchObject({
+      date: '2026-04-20',
+      historical: true,
+    });
+
+    crossMidnight();
+
+    expect(picker().value).toBe('2026-04-20');
+    expect(lastCall()).toMatchObject({
+      date: '2026-04-20',
+      historical: true,
+    });
+  });
+
+  it('lets a picked tomorrow become the live day when midnight reaches it', () => {
+    render(<PeriscopeLotteryPanel marketOpen={true} />);
+    pick(m.morning);
+    expect(picker().max).toBe(m.night);
+    expect(lastCall()).toMatchObject({ date: m.morning, historical: false });
+
+    crossMidnight();
+
+    expect(picker().value).toBe(m.morning);
+    expect(picker().max).toBe(m.morning);
+    expect(lastCall()).toMatchObject({ date: m.morning, historical: false });
+  });
+
+  it('lets the owner pick the new day once it has begun', () => {
+    render(<PeriscopeLotteryPanel marketOpen={true} />);
+    pick('2026-04-20');
+
+    crossMidnight();
+    // `max` is the new day, so the new day itself is a valid pick, and
+    // picking it means following today again.
+    expect(picker().max).toBe(m.morning);
+    pick(m.morning);
+
+    expect(picker().value).toBe(m.morning);
+    expect(lastCall()).toMatchObject({ date: m.morning, historical: false });
+  });
+
+  it('keeps the picked date while the field is empty, and follows today once it is left', () => {
+    render(<PeriscopeLotteryPanel marketOpen={true} />);
+    pick('2026-04-20');
+
+    // Emptying the field (the first "0" of a zero-padded month does it) is
+    // mid-edit: the data keeps the picked date.
+    pick('');
+
+    expect(picker().value).toBe('');
+    expect(lastCall()).toMatchObject({
+      date: '2026-04-20',
+      historical: true,
+    });
+
+    // Leaving it empty follows today.
+    fireEvent.blur(picker());
+
+    expect(picker().value).toBe(m.night);
+    expect(lastCall()).toMatchObject({ date: m.night, historical: false });
+
+    crossMidnight();
+
+    expect(picker().value).toBe(m.morning);
+    expect(lastCall()).toMatchObject({ date: m.morning, historical: false });
+  });
+});
+
+describe('PeriscopeLotteryPanel: typing a date', () => {
+  it('takes a date typed key by key over the field', async () => {
+    mockEmptyFeed();
+    const user = userEvent.setup();
+    render(<PeriscopeLotteryPanel marketOpen={true} />);
+    const input = screen.getByLabelText<HTMLInputElement>(
+      'Pick a date to view Periscope Lottery fires',
+    );
+
+    // Emptying the field first must not snap it back to today and lose the
+    // typing: the shared DateInput keeps an emptied field as a local draft.
+    await user.clear(input);
+    await user.type(input, '2026-04-21');
+
+    expect(input.value).toBe('2026-04-21');
+    expect(lastArgs.mock.calls.at(-1)?.[0]).toMatchObject({
+      date: '2026-04-21',
+      historical: true,
+    });
   });
 });
