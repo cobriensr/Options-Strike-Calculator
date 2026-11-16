@@ -23,8 +23,8 @@ export {
 const HOUR_MS = 60 * 60 * 1000;
 
 /**
- * A repo at <base>/repo with one commit on `branch`, ignoring docs/tmp/ as
- * the real repo does; returns its path.
+ * A repo at <base>/repo with one commit on `branch`, ignoring docs/tmp/ and
+ * .superpowers/ as the real repo does; returns its path.
  */
 export function initRepo(base, branch = 'main') {
   const repo = path.join(base, 'repo');
@@ -33,7 +33,7 @@ export function initRepo(base, branch = 'main') {
   git(repo, 'config', 'commit.gpgsign', 'false');
   git(repo, 'config', 'core.autocrlf', 'false');
   writeFileSync(path.join(repo, 'README.md'), 'base\n');
-  writeFileSync(path.join(repo, '.gitignore'), 'docs/tmp/\n');
+  writeFileSync(path.join(repo, '.gitignore'), 'docs/tmp/\n.superpowers/\n');
   git(repo, 'add', '-A');
   git(repo, 'commit', '-q', '-m', 'base');
   return repo;
@@ -101,6 +101,23 @@ export function idleFiles(wt) {
 export function age(wt, hours = 48) {
   const when = new Date(Date.now() - hours * HOUR_MS);
   for (const file of idleFiles(wt)) utimesSync(file, when, when);
+}
+
+/**
+ * Write `files` ({ 'sub/name': string | Buffer }) under `dir`, each with an
+ * mtime `hoursOld` hours ago, whole seconds so any filesystem keeps it
+ * exactly. For a worktree's .superpowers/ ledger and for a copy of one.
+ */
+export function writeFiles(dir, files, hoursOld = 48) {
+  const when = new Date(
+    Math.floor((Date.now() - hoursOld * HOUR_MS) / 1000) * 1000,
+  );
+  for (const [rel, body] of Object.entries(files)) {
+    const file = path.join(dir, ...rel.split('/'));
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, body);
+    utimesSync(file, when, when);
+  }
 }
 
 export function branches(repo) {
