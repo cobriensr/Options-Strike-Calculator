@@ -129,12 +129,12 @@ Four items from the re-review of B4:
 3. `isLotteryFire` (`'score_version' in fire`) is gone: `planFire` takes the table the selection was made for and branches on it, so the choice no longer depends on which columns a row happens to carry.
 4. The row-returning selection was `EXPLAIN ANALYZE`d on production; the "not measured" caveat is gone from "Cost".
 
-### Phase C: indexes (not built; each needs the owner's OK)
+### Phase C: indexes (M1 applied 2026-11-16; M1b and M2 not built, each needs the owner's OK)
 
-All three are applied by hand with a direct connection outside 13:00 to 22:00 UTC on weekdays, with `CONCURRENTLY`, and then shipped as idempotent `IF NOT EXISTS` / `IF EXISTS` migrations, as #184 and #199 were. Apply by hand first, deploy the migration after: otherwise `migrateDb` would try a blocking `CREATE UNIQUE INDEX` over 96 million rows inside one HTTP transaction. The next free migration id is 210 (the latest on `main` is #209).
+All three are applied by hand with a direct connection outside 13:00 to 22:00 UTC on weekdays, with `CONCURRENTLY`, and then shipped as idempotent `IF NOT EXISTS` / `IF EXISTS` migrations, as #184 and #199 were. Apply by hand first, deploy the migration after: otherwise `migrateDb` would try a blocking `CREATE UNIQUE INDEX` over 96 million rows inside one HTTP transaction. M1 took migration #210 (the latest on `main` was #209); the next free id is 211, so check `main` first.
 
-- **M1.** Covering unique index on `ws_net_flow_per_ticker (ticker, ts) INCLUDE (net_call_prem, net_put_prem, net_call_vol, net_put_vol)`, replacing `ws_net_flow_per_ticker_uq`, plus `autovacuum_vacuum_insert_scale_factor = 0.001` on the table. uw-stream's `ON CONFLICT (ticker, ts)` infers the new index. Measured planner cost of the index-only plan is 344 against 14,079 today. About +2.5 GB over `uq` while both exist.
-- **M1b.** Drop `ws_net_flow_per_ticker_ts_idx` (2.2 GB) a week after M1, only if its `idx_scan` is flat.
+- **M1, applied by hand 2026-11-16 (owner OK), migration #210.** Covering unique index on `ws_net_flow_per_ticker (ticker, ts) INCLUDE (net_call_prem, net_put_prem, net_call_vol, net_put_vol)`, replacing `ws_net_flow_per_ticker_uq`, plus `autovacuum_vacuum_insert_scale_factor = 0.001` on the table. uw-stream's `ON CONFLICT (ticker, ts)` infers the new index. Measured planner cost of the index-only plan is 344 against 14,079 today. About +2.5 GB over `uq` while both exist.
+- **M1b.** Drop `ws_net_flow_per_ticker_ts_idx` (2.2 GB) a week after M1, only if its `idx_scan` is flat. Earliest check date: 2026-11-23.
 - **M2.** `lottery_finder_fires (underlying_symbol, date) INCLUDE (peak_ceiling_pct) WHERE peak_ceiling_pct IS NOT NULL`, about 45 MB, for the Take-It win-rate load (44 to 60 s today).
 
 The exact DDL and its measurements are in the findings, section 6.
