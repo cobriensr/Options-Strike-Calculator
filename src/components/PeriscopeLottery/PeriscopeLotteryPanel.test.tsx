@@ -433,17 +433,27 @@ describe.each([
     });
   });
 
-  it('lets a picked tomorrow become the live day when midnight reaches it', () => {
+  it('treats a picked tomorrow as not live until midnight reaches it', () => {
     render(<PeriscopeLotteryPanel marketOpen={true} />);
     pick(m.morning);
+
+    // Live means the picked date is today. A future date is not today: it does
+    // not poll, and shows what the panel shows for any date that is not live.
     expect(picker().max).toBe(m.night);
-    expect(lastCall()).toMatchObject({ date: m.morning, historical: false });
+    expect(lastCall()).toMatchObject({ date: m.morning, historical: true });
+    expect(screen.queryByText(/auto-refreshes every 60s/)).toBeNull();
+    expect(
+      screen.getByText(/historical — outcomes locked/),
+    ).toBeInTheDocument();
 
     crossMidnight();
 
+    // Now it is today: live, polling, auto-refreshing.
     expect(picker().value).toBe(m.morning);
     expect(picker().max).toBe(m.morning);
     expect(lastCall()).toMatchObject({ date: m.morning, historical: false });
+    expect(screen.getByText(/auto-refreshes every 60s/)).toBeInTheDocument();
+    expect(screen.queryByText(/historical — outcomes locked/)).toBeNull();
   });
 
   it('lets the owner pick the new day once it has begun', () => {

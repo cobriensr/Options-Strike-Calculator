@@ -43,7 +43,10 @@ export function PeriscopeLotteryPanel({
     setDate: setSelectedDate,
     today,
   } = useFollowedDate();
-  const historical = selectedDate < today;
+  // Live means the selected date is today. A picked future date is not today:
+  // it does not poll and is not shown as auto-refreshing, like any date that
+  // is not live. It turns live when midnight reaches it.
+  const historical = selectedDate !== today;
   const { fires, paused, loading, error, fetchedAt } = usePeriscopeLotteryFeed({
     date: selectedDate,
     marketOpen,

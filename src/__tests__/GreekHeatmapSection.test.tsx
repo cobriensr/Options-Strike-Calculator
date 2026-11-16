@@ -505,12 +505,19 @@ describe.each([
     start: '2026-11-10T04:59:30Z',
     night: '2026-11-09',
     morning: '2026-11-10',
+    // Today minus 90 calendar days. 2026-11-09 is 90 days after 2026-08-11, but
+    // 90 x 24 h before 23:59 EST on 11-09 is 00:59 EDT on 08-12: the floor is
+    // calendar arithmetic, not an instant 90 days back.
+    floorNight: '2026-08-11',
+    floorMorning: '2026-08-12',
   },
   {
     zone: 'EDT (summer)',
     start: '2026-07-15T03:59:30Z',
     night: '2026-07-14',
     morning: '2026-07-15',
+    floorNight: '2026-04-15',
+    floorMorning: '2026-04-16',
   },
 ])('GreekHeatmapSection: across the $zone midnight', (m) => {
   beforeEach(() => {
@@ -583,6 +590,15 @@ describe.each([
     } finally {
       document.removeEventListener('visibilitychange', visibility);
     }
+  });
+
+  it('keeps the picker floor 90 days back from today, and moves it across the roll', () => {
+    render(<GreekHeatmapSection marketOpen={true} />);
+    expect(dateInput().min).toBe(m.floorNight);
+
+    crossMidnight();
+
+    expect(dateInput().min).toBe(m.floorMorning);
   });
 
   it('moves the picker max to the new day', () => {
