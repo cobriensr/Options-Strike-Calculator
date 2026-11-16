@@ -16,6 +16,7 @@ import { z } from 'zod';
 import {
   BAR_CLOSE_LAG_MS,
   FUTURES_SYMBOLS,
+  MAX_BAR_AGE_MS,
   VOLUME_WINDOW_MS,
 } from '../../api/_lib/futures-derive.js';
 import type { BackupBar } from './futures-derived-attribution.js';
@@ -39,6 +40,25 @@ export interface ContaminatedRange {
   reason: string;
 }
 
+/** Why a rule of the before-scope band applies to a root, in one line. */
+export interface BandRule {
+  reason: string;
+}
+
+/**
+ * A root whose stored series moved to the next contract month at `atMs`. Every bar
+ * from there on is the new contract and every bar before it the old one, so a change
+ * that reads a bar on each side is the spread between them (a roll, not a price move).
+ */
+export interface ContractSwitch {
+  /** The first instant of the new contract's bars. */
+  atMs: number;
+  /** The old and the new contract, as the report names them (CLQ6/CLU6). */
+  contracts: string;
+  /** What expired and what the series moved to, in one line. */
+  reason: string;
+}
+
 export interface FrontMonthProfile {
   /** The UTC days Phase 6 changed bars in, half-open. */
   span: { startMs: number; endMs: number };
@@ -57,6 +77,19 @@ export interface FrontMonthProfile {
    * ratio, whether or not Phase 6 moved it. A root with no entry is clean.
    */
   contaminatedBase: Readonly<Record<string, ContaminatedRange>>;
+  /**
+   * Per root, the rows of its before-scope band (blankOnlyBand) that are deleted when the
+   * bar they were priced from is older than MAX_BAR_AGE_MS (owner decision 2026-11-15):
+   * the old series held so few bars there that the price is the close of a bar hours or
+   * days old. Deleted through the junk-delete step. A root with no entry keeps its rows.
+   */
+  staleBandDelete: Readonly<Record<string, BandRule>>;
+  /**
+   * Per root, the contract switch inside its before-scope band (owner decision 2026-11-15):
+   * a row whose day change reads the cash-open bar of the old contract and a price bar of
+   * the new one has its day change set to NULL.
+   */
+  contractSwitch: Readonly<Record<string, ContractSwitch>>;
 }
 
 export const FRONT_MONTH: FrontMonthProfile = {
@@ -84,6 +117,22 @@ export const FRONT_MONTH: FrontMonthProfile = {
       toMs: Date.UTC(2026, 6, 22),
       reason:
         'the days 07-17, 07-20 and 07-21 are the expiring CLQ6 (34k, 12k and 8k against about 200k a day), and UW has no prints to rebuild them',
+    },
+  },
+  staleBandDelete: {
+    GC: {
+      reason:
+        'the old calendar series held so few GC bars (993 in July against about 30k for each other root) that the stored price is the close of a bar hours or days old, and no repair can rebuild the bars it should have read',
+    },
+  },
+  contractSwitch: {
+    CL: {
+      // 17:00 CT on 07-21 (CDT): the open of the 07-22 session. The report prints the largest
+      // jump between consecutive bars around it, which is where the stored series changes.
+      atMs: Date.UTC(2026, 6, 21, 22),
+      contracts: 'CLQ6/CLU6',
+      reason:
+        "CLQ6 expired on 2026-07-21, its last session, and the stored series (the old gap cron's CL.c.0) moved to CLU6 from the 2026-07-22 session: the day change of a row after the switch reads the cash open of an ET date before it, the CLQ6 bar",
     },
   },
 };
@@ -132,6 +181,41 @@ export function blankOnlyBand(
   if (range == null) return null;
   const fromMs = range.fromMs + BAR_CLOSE_LAG_MS;
   return fromMs < scopeStartMs ? { fromMs, toMs: scopeStartMs } : null;
+}
+
+/**
+ * The first row any before-scope band reaches, or the scope start when no root has one:
+ * where a delete step's row count has to start to hold every row of the bands.
+ */
+export function bandStartMs(scopeStartMs: number): number {
+  const starts = Object.keys(FRONT_MONTH.contaminatedBase).flatMap((root) => {
+    const band = blankOnlyBand(root, scopeStartMs);
+    return band == null ? [] : [band.fromMs];
+  });
+  return Math.min(scopeStartMs, ...starts);
+}
+
+/**
+ * True when the bar a row was priced from is too old to stand for its price: older than
+ * MAX_BAR_AGE_MS at the row's time. The test computeSnapshot applies to the latest closed
+ * bar (`atMs - latestMs > MAX_BAR_AGE_MS`), so a row of exactly the gate is fresh.
+ */
+export function priceBarStale(atMs: number, barTsMs: number): boolean {
+  return atMs - barTsMs > MAX_BAR_AGE_MS;
+}
+
+/**
+ * True when a change that reads a reference bar at `referenceMs` and the price bar at
+ * `priceBarMs` compares the two contracts of the root's switch: the reference is before it
+ * and the price bar is from it. False for a root with no switch.
+ */
+export function acrossSwitch(
+  symbol: string,
+  referenceMs: number,
+  priceBarMs: number,
+): boolean {
+  const sw = FRONT_MONTH.contractSwitch[symbol];
+  return sw != null && referenceMs < sw.atMs && priceBarMs >= sw.atMs;
 }
 
 // ── The Phase 6 backup ──────────────────────────────────────────────────────

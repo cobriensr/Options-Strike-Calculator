@@ -34,11 +34,15 @@ import {
   type BackupBar,
   type Bar,
 } from './futures-derived-attribution.js';
+import { MAX_BAR_AGE_MS } from '../../api/_lib/futures-derive.js';
 import {
   FRONT_MONTH,
+  acrossSwitch,
+  bandStartMs,
   blankOnlyBand,
   frontMonthBackupLine,
   onRepairedDay,
+  priceBarStale,
   readFrontMonthBackup,
   repairedDays,
   volumeBaseContaminated,
@@ -469,6 +473,96 @@ describe('the volume ratio base that cannot be rebuilt', () => {
     for (const cutoff of ['GC', 'CL'].map((r) => volumeBaseCutoffMs(r) ?? 0)) {
       expect(cutoff).toBeLessThan(SNAPSHOT_CONTROL_FROM_MS);
     }
+  });
+});
+
+// ── The rules for the wrong July values (owner decision 2026-11-15) ──────────
+
+describe('the stale price bar rule of the before-scope band', () => {
+  it('names GC alone, with a reason in one line', () => {
+    expect(Object.keys(FRONT_MONTH.staleBandDelete)).toEqual(['GC']);
+    const reason = FRONT_MONTH.staleBandDelete.GC?.reason ?? '';
+    expect(reason).not.toBe('');
+    expect(reason).not.toContain('\n');
+  });
+
+  it.each([
+    ['a bar of the minute before the row', 60_000, false],
+    ['a bar 14 min 59.999 s before the row', MAX_BAR_AGE_MS - 1, false],
+    ['a bar exactly 15 min before the row', MAX_BAR_AGE_MS, false],
+    ['a bar 15 min and 1 ms before the row', MAX_BAR_AGE_MS + 1, true],
+    ['a bar an hour before the row', 3_600_000, true],
+    ['a bar 3.4 days before the row', 3.4 * 86_400_000, true],
+  ])('%s: stale %s', (_name, age, stale) => {
+    const at = ms('2026-07-10T15:30:00.123Z');
+    expect(priceBarStale(at, at - age)).toBe(stale);
+  });
+
+  it('is the freshness gate of computeSnapshot, not a copy of its number', () => {
+    // The threshold is imported from the module that applies it to a live snapshot.
+    expect(MAX_BAR_AGE_MS).toBe(15 * 60 * 1000);
+  });
+});
+
+describe('the contract switch of the CL day change', () => {
+  const iso = (tsMs: number): string => new Date(tsMs).toISOString();
+  const open = ms('2026-07-21T13:30:00Z');
+
+  it('names CL alone, at the first minute of the 2026-07-22 session, with a reason in one line', () => {
+    expect(Object.keys(FRONT_MONTH.contractSwitch)).toEqual(['CL']);
+    const sw = FRONT_MONTH.contractSwitch.CL;
+    // 17:00 CT on 2026-07-21 (CDT), when CLU6 became the front month of the next session.
+    expect(iso(sw?.atMs ?? 0)).toBe('2026-07-21T22:00:00.000Z');
+    expect(sw?.contracts).toBe('CLQ6/CLU6');
+    expect(sw?.reason).toContain('CLQ6');
+    expect(sw?.reason).toContain('CLU6');
+    expect(sw?.reason).not.toContain('\n');
+  });
+
+  it('puts every rule inside the before-scope band of its root, or the rule would never run', () => {
+    const scopeStart = scopeRanges('front-month').snapshots.fromMs;
+    for (const root of [
+      ...Object.keys(FRONT_MONTH.staleBandDelete),
+      ...Object.keys(FRONT_MONTH.contractSwitch),
+    ]) {
+      expect(blankOnlyBand(root, scopeStart)).not.toBeNull();
+    }
+    for (const [root, sw] of Object.entries(FRONT_MONTH.contractSwitch)) {
+      const band = blankOnlyBand(root, scopeStart);
+      expect(sw.atMs).toBeGreaterThanOrEqual(band?.fromMs ?? Infinity);
+      expect(sw.atMs).toBeLessThan(scopeStart);
+    }
+  });
+
+  it.each([
+    // The day open is before the switch in every row below, so the price bar decides.
+    ['the last bar before the switch', 'CL', '2026-07-21T21:59:00Z', false],
+    ['the first bar of the new contract', 'CL', '2026-07-21T22:00:00Z', true],
+    ['a bar the next morning', 'CL', '2026-07-22T09:00:00Z', true],
+    ['the same bars of another root', 'GC', '2026-07-21T22:00:00Z', false],
+    ['an unknown root', 'XX', '2026-07-21T22:00:00Z', false],
+  ])('a row priced from %s (%s): %s', (_name, root, priceBar, across) => {
+    expect(acrossSwitch(root, open, ms(priceBar))).toBe(across);
+  });
+
+  it('is false when the reference bar is at or after the switch, whatever the price bar', () => {
+    const sw = ms('2026-07-21T22:00:00Z');
+    expect(acrossSwitch('CL', sw, ms('2026-07-22T10:00:00Z'))).toBe(false);
+    expect(acrossSwitch('CL', sw - 1, sw)).toBe(true);
+    expect(acrossSwitch('CL', sw, sw)).toBe(false);
+    // The cash open of the 2026-07-22 ET date is the next day's: the day change of that date is clean.
+    expect(
+      acrossSwitch(
+        'CL',
+        ms('2026-07-22T13:30:00Z'),
+        ms('2026-07-22T15:00:00Z'),
+      ),
+    ).toBe(false);
+  });
+
+  it('starts the delete scope at the earliest band, GC from 06-15 14:12Z', () => {
+    const scopeStart = ms('2026-07-28T00:00:00Z');
+    expect(iso(bandStartMs(scopeStart))).toBe('2026-06-15T14:12:00.000Z');
   });
 });
 
