@@ -6046,4 +6046,23 @@ export const MIGRATIONS: Migration[] = [
             FROM lottery_finder_fires`,
     ],
   },
+  {
+    id: 210,
+    description:
+      'Replace the plain unique index ws_net_flow_per_ticker_uq (ticker, ts) with the covering unique index ws_net_flow_per_ticker_cov_uq (ticker, ts) INCLUDE (net_call_prem, net_put_prem, net_call_vol, net_put_vol), and lower the table insert-vacuum scale factor from 0.01 to 0.001 (owner decision 2026-11-16, M1 of docs/superpowers/specs/lottery-flow-repair-and-indexes-2026-11-15.md). The per-ticker series read (fetchTickerFlowSeries, ticker-net-flow-current, net-flow-history, the Greek heatmap net flow) filters ticker = X plus a ts range and needs the premium and volume values, which the plain index does not hold, so the planner chose the (ts) index and scanned the whole day (about 0.9M rows) to return one ticker (5.7 to 7.6 s cold, 1.1 s warm, planner cost 14,079). The covering index lets it run as an index-only scan (planner cost 344). uw-stream writes with ON CONFLICT (ticker, ts) DO NOTHING, which infers the new unique index as its arbiter, so dedupe is unchanged. The table is insert-only, so the dead-tuple trigger never fires and only insert-vacuum keeps the visibility map current; at 0.001 it runs about every 96,000 inserts (roughly every 40 minutes of session) instead of about once a trading day, so today rows are all-visible and the index-only scan skips the heap for them. Applied to prod by hand on 2026-11-16 after the close with CREATE UNIQUE INDEX CONCURRENTLY, a check that the new index was valid, DROP INDEX CONCURRENTLY of the old one, then the ALTER TABLE SET; the IF NOT EXISTS and IF EXISTS statements here are an idempotent no-op on prod and seed a fresh database. This migration must never be the first time the index is built on a large table: the build here is not CONCURRENTLY (it cannot be, inside the migration transaction), so over about 96 million rows it would block every insert into the table uw-stream writes to for tens of minutes. Dropping ws_net_flow_per_ticker_ts_idx (M1b) is a separate, later step.',
+    statements: (sql) => [
+      // Fail fast instead of queueing writers behind the DROP INDEX lock.
+      sql`SET LOCAL lock_timeout = '5s'`,
+      sql`CREATE UNIQUE INDEX IF NOT EXISTS ws_net_flow_per_ticker_cov_uq
+            ON ws_net_flow_per_ticker (ticker, ts)
+            INCLUDE (net_call_prem, net_put_prem, net_call_vol, net_put_vol)`,
+      // SHARE UPDATE EXCLUSIVE: blocks no read or write (see #199).
+      sql`ALTER TABLE ws_net_flow_per_ticker
+            SET (autovacuum_vacuum_insert_scale_factor = 0.001)`,
+      // Last: a plain DROP INDEX takes ACCESS EXCLUSIVE on the table and holds
+      // it to commit (as in #199), so it runs only after the covering index is
+      // in place, and only while the old index still exists.
+      sql`DROP INDEX IF EXISTS ws_net_flow_per_ticker_uq`,
+    ],
+  },
 ];
