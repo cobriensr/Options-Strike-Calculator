@@ -39,7 +39,7 @@
  * that does not match the sum stays `other` / `no-fixed-value`. The WS gap read
  * below also covers these rows: it counts and lists the ones whose NULL leaves
  * out at least one complete nonzero history minute before the fire (none, when
- * every look-ahead fire is in the opening second).
+ * every look-ahead fire is in the session's first minute).
  *
  * Scores (lottery only). The V2 score depends on flow only through alignment
  * (`isAlignedFire`; no flow at all is not aligned). For a corrected row whose
