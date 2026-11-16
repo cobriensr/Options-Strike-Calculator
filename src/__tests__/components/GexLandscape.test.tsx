@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, within } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { act, render, screen, fireEvent, within } from '@testing-library/react';
 import GexLandscape from '../../components/GexLandscape';
 import { CollapseAllContext } from '../../components/collapse-context';
 import type { CollapseSignal } from '../../components/collapse-context';
@@ -25,8 +25,21 @@ import type { BiasMetrics } from '../../components/GexLandscape/types';
 
 vi.mock('../../utils/auth', () => ({ checkIsOwner: () => true }));
 
+// The mock takes (marketOpen, date, at) so a test can read what the panel
+// asks for; the typed signature keeps the unused parameters honest.
+interface LandscapeData {
+  strikes: GexStrikeLevel[];
+  timestamps: string[];
+  gexDelta5mMap: Map<number, number | null>;
+  gexDelta15mMap: Map<number, number | null>;
+  gexDelta30mMap: Map<number, number | null>;
+  loading: boolean;
+  error: string | null;
+  refresh: () => void;
+}
+
 const dataMock = vi.hoisted(() =>
-  vi.fn(() => ({
+  vi.fn<(...args: unknown[]) => LandscapeData>(() => ({
     strikes: [] as GexStrikeLevel[],
     timestamps: [] as string[],
     // Δ% maps are computed inline by the hook from the endpoint's
@@ -55,7 +68,9 @@ const scrubMock = vi.hoisted(() =>
 );
 
 vi.mock('../../hooks/useGexLandscapeData', () => ({
-  useGexLandscapeData: () => dataMock(),
+  // Forward the arguments so a test can read the date and pin the panel asks
+  // for: (marketOpen, date, at).
+  useGexLandscapeData: (...args: unknown[]) => dataMock(...args),
 }));
 
 vi.mock('../../hooks/useScrubController', () => ({
@@ -815,5 +830,169 @@ describe('StrikeTable — Δ%, ATM row and reinforcement marks carry no gamma or
     }
     expect(up.title).toMatch(/growing/);
     expect(down.title).toMatch(/shrinking/);
+  });
+});
+
+// ============================================================
+// ET MIDNIGHT WHILE THE APP IS OPEN
+//
+// The panel follows today. Its date has no picker (the endpoint is today
+// only), so it exists to key the local resets: the scrub pin and mirrored
+// timestamps, the Top 5 tracker and the price-trend buffer. The panel is
+// memoized, so only the shared ET clock moves it. Every case starts 30 s
+// before an ET midnight; the clock's timer is armed for 1 s past it, so 31 s
+// lands just after. The real getETToday() reads the faked Date. Owner
+// decision 2026-11-14.
+// ============================================================
+
+describe.each([
+  {
+    zone: 'EST (winter)',
+    start: '2026-11-10T04:59:30Z',
+    night: '2026-11-09',
+    morning: '2026-11-10',
+  },
+  {
+    zone: 'EDT (summer)',
+    start: '2026-07-15T03:59:30Z',
+    night: '2026-07-14',
+    morning: '2026-07-15',
+  },
+])('GexLandscape: across the $zone midnight', (m) => {
+  const NIGHT_PIN = `${m.night}T19:40:00.000Z`;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    vi.setSystemTime(new Date(m.start));
+    dataMock.mockReturnValue({
+      strikes: baseStrikes,
+      timestamps: [NIGHT_PIN],
+      gexDelta5mMap: new Map<number, number | null>(),
+      gexDelta15mMap: new Map<number, number | null>(),
+      gexDelta30mMap: new Map<number, number | null>(),
+      loading: false,
+      error: null,
+      refresh: vi.fn(),
+    });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /**
+   * A scrub controller whose pin the test holds. Once armed, scrubLive clears
+   * the pin as the real controller does; before that it only records the call,
+   * so a clear on mount does not drop the pin the test starts with.
+   */
+  function mockScrub(initialPin: string | null) {
+    let pin = initialPin;
+    let armed = false;
+    const scrubLive = vi.fn(() => {
+      if (armed) pin = null;
+    });
+    scrubMock.mockImplementation(() => ({
+      scrubTimestamp: pin,
+      isScrubbed: pin !== null,
+      canScrubPrev: false,
+      canScrubNext: false,
+      scrubPrev: vi.fn(),
+      scrubNext: vi.fn(),
+      scrubTo: vi.fn(),
+      scrubLive,
+    }));
+    return {
+      scrubLive,
+      arm: () => {
+        armed = true;
+      },
+    };
+  }
+
+  /** The shared clock's timer fires, just past midnight. */
+  function crossMidnight() {
+    act(() => {
+      vi.advanceTimersByTime(31_000);
+    });
+  }
+
+  /** The (marketOpen, date, at) of the panel's latest data-hook call. */
+  const lastAsk = () => dataMock.mock.calls.at(-1);
+
+  function renderPanel() {
+    return render(
+      <CollapseAllContext.Provider value={collapseSignal}>
+        <GexLandscape marketOpen={true} />
+      </CollapseAllContext.Provider>,
+    );
+  }
+
+  it('follows the new date and clears the scrub it carried', () => {
+    const { scrubLive, arm } = mockScrub(NIGHT_PIN);
+    renderPanel();
+    expect(lastAsk()?.[1]).toBe(m.night);
+    scrubLive.mockClear();
+    arm();
+
+    crossMidnight();
+
+    expect(lastAsk()?.[1]).toBe(m.morning);
+    // The pin and the mirrored timestamps are reset at the roll.
+    expect(scrubLive).toHaveBeenCalled();
+    expect(lastAsk()?.[2]).toBeNull();
+  });
+
+  it('never asks for the new date at the old pin', () => {
+    const { arm } = mockScrub(NIGHT_PIN);
+    renderPanel();
+    dataMock.mockClear();
+    arm();
+
+    crossMidnight();
+
+    // Not just the last call: no render, committed or not, may pair the new
+    // date with the pin that was set on the old one.
+    const stale = dataMock.mock.calls.filter(
+      (c) => c[1] === m.morning && c[2] !== null,
+    );
+    expect(stale).toEqual([]);
+    expect(lastAsk()).toEqual([true, m.morning, null]);
+  });
+
+  it('rolls with no parent re-render', () => {
+    mockScrub(null);
+    let parentRenders = 0;
+    function Parent() {
+      parentRenders += 1;
+      return (
+        <CollapseAllContext.Provider value={collapseSignal}>
+          <GexLandscape marketOpen={true} />
+        </CollapseAllContext.Provider>
+      );
+    }
+    render(<Parent />);
+    const callsBefore = dataMock.mock.calls.length;
+
+    crossMidnight();
+
+    expect(parentRenders).toBe(1);
+    expect(dataMock.mock.calls.length).toBeGreaterThan(callsBefore);
+    expect(lastAsk()?.[1]).toBe(m.morning);
+  });
+
+  it('keeps following when LIVE is resumed, including just past midnight', () => {
+    mockScrub(NIGHT_PIN);
+    renderPanel();
+
+    // The wall clock is past midnight; the shared clock has not ticked, so
+    // its `today` is still the night's. Resuming live must not pin that string.
+    act(() => {
+      vi.setSystemTime(new Date(Date.parse(m.start) + 30_500));
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Resume live' }));
+    crossMidnight();
+
+    expect(lastAsk()?.[1]).toBe(m.morning);
   });
 });

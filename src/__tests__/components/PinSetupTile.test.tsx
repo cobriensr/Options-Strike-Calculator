@@ -1,5 +1,5 @@
-import { describe, it, expect, vi } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 const mockUsePinSetupStatus = vi.fn();
@@ -311,5 +311,188 @@ describe('PinSetupTile', () => {
       screen.getByRole('button', { name: /Refresh pin setup data/i }),
     );
     expect(REFRESH).toHaveBeenCalled();
+  });
+});
+
+// ============================================================
+// ET MIDNIGHT WHILE THE APP IS OPEN
+//
+// The hook's `date` keeps its sentinel: null is live, and the data follows
+// the day on its own. What the panel owns is the display: the picker shows
+// `date ?? today` and clamps `max` to today. Both used to be latched at
+// mount, so an open tab showed yesterday and `max` blocked the new day. They
+// come from the shared ET clock now, and the panel is memoized, so only that
+// clock re-renders it at the roll. Every case starts 30 s before an ET
+// midnight; the clock's timer is armed for 1 s past it, so 31 s lands just
+// after. The real getETToday() reads the faked Date. Owner decision
+// 2026-11-14.
+// ============================================================
+
+describe.each([
+  {
+    zone: 'EST (winter)',
+    start: '2026-11-10T04:59:30Z',
+    night: '2026-11-09',
+    morning: '2026-11-10',
+  },
+  {
+    zone: 'EDT (summer)',
+    start: '2026-07-15T03:59:30Z',
+    night: '2026-07-14',
+    morning: '2026-07-15',
+  },
+])('PinSetupTile: across the $zone midnight', (m) => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    vi.setSystemTime(new Date(m.start));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** The shared clock's timer fires, just past midnight. */
+  function crossMidnight() {
+    act(() => {
+      vi.advanceTimersByTime(31_000);
+    });
+  }
+
+  const dateInput = () => screen.getByLabelText<HTMLInputElement>(/^Date$/i);
+
+  function pick(date: string) {
+    fireEvent.change(dateInput(), { target: { value: date } });
+  }
+
+  it('shows today in the picker and clamps max to it, and both move to the new day', () => {
+    mockHook(makeStatus(), { date: null });
+    render(<PinSetupTile marketOpen={true} />);
+    expect(dateInput().value).toBe(m.night);
+    expect(dateInput().max).toBe(m.night);
+
+    crossMidnight();
+
+    expect(dateInput().value).toBe(m.morning);
+    expect(dateInput().max).toBe(m.morning);
+    expect(SETDATE).not.toHaveBeenCalled();
+  });
+
+  it('rolls with no parent re-render', () => {
+    mockHook(makeStatus(), { date: null });
+    let parentRenders = 0;
+    function Parent() {
+      parentRenders += 1;
+      return <PinSetupTile marketOpen={true} />;
+    }
+    render(<Parent />);
+    const callsBefore = mockUsePinSetupStatus.mock.calls.length;
+
+    crossMidnight();
+
+    expect(parentRenders).toBe(1);
+    expect(mockUsePinSetupStatus.mock.calls.length).toBeGreaterThan(
+      callsBefore,
+    );
+    expect(dateInput().value).toBe(m.morning);
+  });
+
+  it('shows the night in a render just past midnight, before the clock ticks', () => {
+    mockHook(makeStatus(), { date: null });
+    const { rerender } = render(<PinSetupTile marketOpen={true} />);
+
+    // The wall clock is past midnight; the shared clock has not ticked. A
+    // render now (the market-open prop changes) reads the same clock the
+    // rest of the app does, not the wall clock.
+    act(() => {
+      vi.setSystemTime(new Date(Date.parse(m.start) + 30_500));
+    });
+    rerender(<PinSetupTile marketOpen={false} />);
+
+    expect(dateInput().value).toBe(m.night);
+    expect(dateInput().max).toBe(m.night);
+  });
+
+  it('keeps a picked past date in the picker across the roll, and moves max', () => {
+    mockHook(makeStatus({ date: '2026-04-20', mode: 'historical' }), {
+      date: '2026-04-20',
+    });
+    render(<PinSetupTile marketOpen={true} />);
+    expect(dateInput().value).toBe('2026-04-20');
+
+    crossMidnight();
+
+    expect(dateInput().value).toBe('2026-04-20');
+    expect(dateInput().max).toBe(m.morning);
+    expect(SETDATE).not.toHaveBeenCalled();
+  });
+
+  it('hands a picked past date to the hook', () => {
+    mockHook(makeStatus(), { date: null });
+    render(<PinSetupTile marketOpen={true} />);
+
+    pick('2026-04-20');
+
+    expect(SETDATE.mock.calls).toEqual([['2026-04-20']]);
+  });
+
+  it('refuses a future date, as max says', () => {
+    mockHook(makeStatus(), { date: null });
+    render(<PinSetupTile marketOpen={true} />);
+
+    pick(m.morning);
+
+    expect(SETDATE).not.toHaveBeenCalled();
+    expect(dateInput().value).toBe(m.night);
+  });
+
+  it('goes live when the new today is picked just past midnight, before the clock ticks', () => {
+    mockHook(makeStatus({ date: '2026-04-20', mode: 'historical' }), {
+      date: '2026-04-20',
+    });
+    render(<PinSetupTile marketOpen={true} />);
+
+    // The wall clock is past midnight; the shared clock has not ticked, so
+    // its `today` is still the night's. The pick is compared with the clock
+    // at the moment of the pick, so it still means live, not a historical
+    // request for today.
+    act(() => {
+      vi.setSystemTime(new Date(Date.parse(m.start) + 30_500));
+    });
+    pick(m.morning);
+
+    expect(SETDATE.mock.calls).toEqual([[null]]);
+  });
+
+  it('returns to live when the field is left empty, not when it empties', () => {
+    mockHook(makeStatus({ date: '2026-04-20', mode: 'historical' }), {
+      date: '2026-04-20',
+    });
+    render(<PinSetupTile marketOpen={true} />);
+
+    // Emptying the field (the first "0" of a zero-padded month does it) is
+    // mid-edit.
+    pick('');
+    expect(SETDATE).not.toHaveBeenCalled();
+    expect(dateInput().value).toBe('');
+
+    fireEvent.blur(dateInput());
+
+    expect(SETDATE.mock.calls).toEqual([[null]]);
+  });
+});
+
+describe('PinSetupTile: typing a date', () => {
+  it('takes a date typed key by key over the field', async () => {
+    mockHook(makeStatus(), { date: null });
+    const user = userEvent.setup();
+    render(<PinSetupTile marketOpen={true} />);
+    const input = screen.getByLabelText<HTMLInputElement>(/^Date$/i);
+
+    // Emptying the field first must not go live and lose the typing: the
+    // shared DateInput keeps an emptied field as a local draft.
+    await user.clear(input);
+    await user.type(input, '2026-04-21');
+
+    expect(SETDATE.mock.calls).toEqual([['2026-04-21']]);
   });
 });

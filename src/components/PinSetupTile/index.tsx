@@ -13,14 +13,16 @@
  *   - Stale indicator when snapshot is > 30 min old during market
  */
 
-import { memo, useMemo } from 'react';
+import { memo, useCallback, useMemo } from 'react';
 import { theme } from '../../themes';
 import { tint } from '../../utils/ui-utils';
-import { getETDateStr } from '../../utils/timezone';
+import { getETToday } from '../../utils/timezone';
+import { useETToday } from '../../hooks/useETToday';
 import {
   usePinSetupStatus,
   type PinSetupStatus,
 } from '../../hooks/usePinSetupStatus';
+import { DateInput } from '../ui/DateInput';
 import Sparkline from './Sparkline';
 import {
   formatEvaluatedAt,
@@ -62,9 +64,26 @@ export default memo(function PinSetupTile({ marketOpen }: Props) {
     marketOpen,
   });
 
-  // Today (ET) — used to (a) seed the picker so it never reads "blank"
-  // and (b) clamp `max` so future dates can't be picked.
-  const today = useMemo(() => getETDateStr(new Date()), []);
+  // Today (ET), from the shared ET clock, so a tab left open past midnight
+  // moves with it: used to (a) seed the picker so it never reads "blank"
+  // and (b) clamp `max` so future dates can't be picked. The hook's `date`
+  // keeps its own sentinel: null is live, and the data follows the day by
+  // itself.
+  const today = useETToday();
+  // A pick, judged against the clock at the moment of the pick rather than
+  // the render's `today` (as useFollowedDate does): in the second after
+  // midnight, before the shared clock ticks, a pick of the new today must
+  // still mean live. '' (the field left empty) and today both go live; only a
+  // past date flips into historical mode, and a future date is refused, as
+  // `max` says.
+  const pickDate = useCallback(
+    (picked: string) => {
+      const now = getETToday();
+      if (picked > now) return;
+      setDate(picked === '' || picked === now ? null : picked);
+    },
+    [setDate],
+  );
   const stateColor = data ? STATE_COLOR[data.state] : theme.textMuted;
 
   const isStale = useMemo(() => {
@@ -250,27 +269,20 @@ export default memo(function PinSetupTile({ marketOpen }: Props) {
               >
                 Date
               </label>
-              <input
+              <DateInput
                 id="pin-setup-date"
-                type="date"
                 // Default-display today so the picker never reads as
                 // empty / "mm/dd/yyyy" — `date` stays null in live mode.
                 value={date ?? today}
                 max={today}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  // Empty (user cleared) OR today's date both mean
-                  // "go live" — only past dates flip into historical
-                  // mode. Without this, picking today would issue a
-                  // historical-mode request to the server.
-                  setDate(!v || v === today ? null : v);
-                }}
-                className="rounded border px-1.5 py-0.5 font-mono text-[10px]"
-                style={{
-                  backgroundColor: theme.inputBg,
-                  color: theme.text,
-                  borderColor: theme.border,
-                }}
+                // Empty (the field left empty) OR today's date both mean
+                // "go live" — only past dates flip into historical mode.
+                // Without this, picking today would issue a
+                // historical-mode request to the server.
+                onChange={pickDate}
+                label="Date"
+                labelVisible={false}
+                className="border-edge bg-input text-primary rounded border px-1.5 py-0.5 font-mono text-[10px]"
               />
               {date && (
                 <button

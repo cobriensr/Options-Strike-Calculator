@@ -52,7 +52,7 @@ import { boolPersistOpts } from '../../hooks/persist-encoding';
 import { usePersistedState } from '../../hooks/usePersistedState';
 import { useScrubController } from '../../hooks/useScrubController';
 import { useTopStrikesTracker } from '../../hooks/useTopStrikesTracker';
-import { getETToday } from '../../utils/timezone';
+import { useFollowedDate } from '../../hooks/useFollowedDate';
 import { BiasPanel } from './BiasPanel';
 import { ClassificationLegend } from './ClassificationLegend';
 import { ScrubControls } from '../ScrubControls';
@@ -112,7 +112,12 @@ const GexLandscape = memo(function GexLandscape({
   // data comes from periscope_snapshots which only captures SPX 0DTE.
   // The prior multi-ticker selector lived here; SPY/QQQ flow hunting
   // moved elsewhere per feedback_hunt_flow_in_spy_qqq.md.
-  const [selectedDate, setSelectedDate] = useState<string>(() => getETToday());
+  // The date follows today across ET midnight (the shared ET clock behind
+  // `useFollowedDate`). It has no picker here (the endpoint is today only),
+  // so it exists to key the resets that belong to a session: the scrub pin
+  // and mirrored timestamps, the Top 5 tracker and the price-trend buffer.
+  // This panel is memoized, so only the shared clock re-renders it at the roll.
+  const { date: selectedDate, setDate: setSelectedDate } = useFollowedDate();
 
   // Scrub state machine. We need the controller's `scrubTimestamp` BEFORE
   // calling the data hook so we can pass it through as `at`. The
@@ -135,6 +140,22 @@ const GexLandscape = memo(function GexLandscape({
   const scrub = useScrubController(liveTimestamps);
   const { scrubTimestamp, isScrubbed, canScrubPrev, canScrubNext } = scrub;
 
+  // A scrub pin belongs to the date it was set on: the previous date's pinned
+  // ts is meaningless against another date's snapshot list. When the date
+  // changes (the ET midnight roll), the pin and the mirrored `liveTimestamps`
+  // are reset during render, with no effect, so the stale ones never reach a
+  // commit. The data hook is asked for the pin only while it still belongs to
+  // the selected date, so no render, committed or not, pairs a new date with
+  // the old pin.
+  const clearScrub = scrub.scrubLive;
+  const [pinDate, setPinDate] = useState(selectedDate);
+  if (pinDate !== selectedDate) {
+    setPinDate(selectedDate);
+    clearScrub();
+    setLiveTimestamps([]);
+  }
+  const at = pinDate === selectedDate ? scrubTimestamp : null;
+
   const {
     strikes,
     timestamps,
@@ -144,7 +165,7 @@ const GexLandscape = memo(function GexLandscape({
     loading,
     error,
     refresh,
-  } = useGexLandscapeData(marketOpen, selectedDate, scrubTimestamp);
+  } = useGexLandscapeData(marketOpen, selectedDate, at);
 
   // Mirror live `timestamps` into the scrub controller's input. The
   // controller can't depend on the same hook's output without creating
@@ -165,27 +186,13 @@ const GexLandscape = memo(function GexLandscape({
   const timestamp = scrubTimestamp ?? liveTimestamps.at(-1) ?? null;
   const isLive = scrubTimestamp == null && marketOpen;
 
-  // `scrubLive` resets the scrub pin AND snaps the date back to today
+  // `scrubLive` resets the scrub pin AND goes back to following today
   // (mirrors the original useGexPerStrike behaviour — a single button
   // returns the panel to "now" across both axes).
   const scrubLive = useCallback(() => {
-    scrub.scrubLive();
-    setSelectedDate((cur) => {
-      const today = getETToday();
-      return cur === today ? cur : today;
-    });
-  }, [scrub]);
-
-  // Reset scrub when the user changes date — the previous selection's
-  // pinned ts is meaningless against a different date's snapshot list.
-  // Also reset `liveTimestamps` so the scrub controller doesn't see
-  // stale timestamps from the previous date while the new fetch is in
-  // flight.
-  const clearScrub = scrub.scrubLive;
-  useEffect(() => {
     clearScrub();
-    setLiveTimestamps([]);
-  }, [selectedDate, clearScrub]);
+    setSelectedDate('');
+  }, [clearScrub, setSelectedDate]);
 
   const spotRowRef = useRef<HTMLDivElement>(null);
   // Scroll to ATM row only once on initial data arrival; never on scrub.
