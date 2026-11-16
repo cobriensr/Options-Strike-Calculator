@@ -23,29 +23,51 @@
  *     stamp, which merges that one pair.
  * A row is `correct` when both stored columns equal the fixed value, `doubled`
  * when the ticker-day has WS rows and both equal a doubled candidate (and not
- * the fixed value), and `other` for everything else. Only `doubled` rows are
- * written, with the fixed value. "Equal" is within FLOW_TOLERANCE_USD, half a
- * cent.
+ * the fixed value, and not the WS-only reading either), `lookahead` (below) and
+ * `other` for everything else. Doubled rows are written with the fixed value.
+ * "Equal" is within FLOW_TOLERANCE_USD, half a cent.
+ *
+ * Look-ahead. On a ticker-day with WS rows, a fire before that ticker's first
+ * WS tick has no fixed value (live stored NULL). The old backfill wrote the
+ * unshifted history sum with `ts <= fire` there, which is the whole first
+ * minute: up to 59 s of flow after the fire. A stored value equal to that sum
+ * is `lookahead`, and both flow columns are written NULL, as live stored them.
+ * It is its own category in the counts, the per-date lines and the report. A
+ * stored value that does not match the sum stays `other` / `no-fixed-value`.
  *
  * Scores (lottery only). The V2 score depends on flow only through alignment
- * (`isAlignedFire`). For a corrected row whose alignment did not change, the
- * score and its tag are left alone. Aligned before and not after: the score
- * becomes NULL, as live scoring gives, and `score_version` is left as it was.
- * Not aligned before and aligned after: the score is computed with the weights
- * of the version the `active` pointer names (`loadActive`, `rescoreRow`: the
- * rescore's own helpers) and written with `score_version` = that version. A
- * fire before SEED_WEIGHTS_LIVE_FROM is never re-scored (an earlier fire was
- * scored with older weights); its flow is corrected, its score left, and it is
- * counted. `silent_boom_alerts` carries no flow-derived score.
+ * (`isAlignedFire`; no flow at all is not aligned). For a corrected row whose
+ * alignment did not change, the score and its tag are left alone. Aligned
+ * before and not after (a doubled row now against the flow, or any look-ahead
+ * row): the score becomes NULL and `score_version` becomes the active version,
+ * as live scoring stores it (a NULL score with `active.version` bound, see
+ * detect-lottery-fires.ts). A fire before SEED_WEIGHTS_LIVE_FROM gets the NULL
+ * score too (NULL needs no weights) and keeps its tag. Not aligned before and
+ * aligned after: the score is computed with the weights of the version the
+ * `active` pointer names (`loadActive`, `rescoreRow`: the rescore's own
+ * helpers) and written with `score_version` = that version, except for a fire
+ * before SEED_WEIGHTS_LIVE_FROM, whose flow is corrected and score left (an
+ * earlier fire was scored with older weights). `silent_boom_alerts` carries no
+ * flow-derived score.
+ *
+ * WS gaps (visibility only; the corrected value stays WS-only, as live stored
+ * it, and an owner decision on filling gaps from history is pending). For each
+ * doubled row: the history minutes complete at the fire (`ts + 60 s <= fire`)
+ * with a nonzero call or put premium and no WS tick in [ts, ts + 60 s), and
+ * their summed flow. The report counts the doubled rows with at least one such
+ * minute, the "material" ones (the gap flow exceeds 5% of the corrected flow on
+ * either side) and, for lottery, those whose alignment the gap flow would flip.
+ * One extra query per ticker-day that has a doubled row, never one per fire.
  *
  * Writes. With `--apply` the plan is read in full first, an undo file is
- * written before the first UPDATE, and the writes are batches of 500 through
- * `unnest`, each guarded on the values the plan was read on (both flow columns,
- * the score and its tag), so a row any other writer changed in between is
- * skipped and a rerun finds nothing left. A write that sets a new
- * `score_version` also requires the `active` pointer to still name it.
- * `--undo-file` restores the old values, guarded on the row still holding the
- * values this run wrote.
+ * written before the first UPDATE (and never over an existing file), and the
+ * writes are batches of 500 through `unnest`, each guarded on the values the
+ * plan was read on (both flow columns, the score and its tag; NULL compares as
+ * a value, so a flow moving to or from NULL is guarded both ways), so a row any
+ * other writer changed in between is skipped and a rerun finds nothing left. A
+ * write that sets a new `score_version` also requires the `active` pointer to
+ * still name it. `--undo-file` restores the old values, guarded on the row
+ * still holding the values this run wrote.
  */
 
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -82,9 +104,17 @@ export const WS_FIRST_DAY = '2026-05-04';
 const WRITE_CHUNK = 500;
 /** Ticker-days read at once: as many as the detectors run in parallel. */
 const GROUP_CONCURRENCY = 3;
-/** Rows listed under "other mismatch" unless `--list-limit` says otherwise. */
+/** Rows in each list (planned writes, material gaps, other mismatch) unless `--list-limit` says otherwise. */
 export const DEFAULT_LIST_LIMIT = 200;
 export const UNDO_DIR = 'docs/tmp/fire-flow-correction';
+/** One history row is one whole minute: it is complete 60 s after its stamp. */
+const HISTORY_MINUTE_MS = 60_000;
+/**
+ * A WS gap is material when its flow exceeds this share of the corrected
+ * (WS-only) flow on the call or the put side. An operating choice for the
+ * report, not a methodology: nothing is written from it.
+ */
+export const MATERIAL_GAP_FRACTION = 0.05;
 
 export type FireTable = 'lottery' | 'silentboom';
 
@@ -112,10 +142,14 @@ Finds the fires whose cum_ncp_at_fire / cum_npp_at_fire were written doubled
 (the WS tick rows plus the per-minute history rows, summed together) and
 corrects them to the WS-only value a live run would have stored. Only a row
 whose stored value matches the doubled value, and not the WS-only value, is
-touched. For lottery fires whose alignment (call or put against the flow)
-flips, the V2 score follows: NULL if the fire is now against the flow, a
-score from the active weights if it is now with it. Reports, per table and per
-date, the rows doubled, already correct, and other (left alone, listed).
+touched. A fire before its ticker's first WS tick, whose stored value is the
+first history minute (look-ahead), gets NULL flow, as live stored it. For
+lottery fires whose alignment (call or put against the flow) flips, the V2
+score follows: NULL (tagged with the active version) if the fire is now against
+the flow, a score from the active weights if it is now with it. Reports, per
+table and per date, the rows doubled, look-ahead, already correct, and other
+(left alone, listed), every planned write, and the WS gaps of the doubled rows
+(visibility only: whether to fill them from history is an open owner decision).
 
 Options:
   --since <date>      first fire date to cover, YYYY-MM-DD (required; not before
@@ -125,7 +159,8 @@ Options:
   --dry-run           the default, said aloud; contradicts --apply
   --undo-file <file>  restore the values an earlier --apply wrote (with --apply;
                       without it, only counts the file's rows)
-  --list-limit <n>    rows to list under "other mismatch" (default ${DEFAULT_LIST_LIMIT}; 0 lists none)
+  --list-limit <n>    rows to list under each of "planned writes", "material WS gaps" and
+                      "other mismatch" (default ${DEFAULT_LIST_LIMIT}; 0 lists none)
   --env-file <path>   .env.local to load (default: the nearest one up the tree)
   --help, -h          print this and exit`;
 
@@ -221,7 +256,10 @@ export interface LegacyAtFire {
 }
 
 export type OtherReason =
-  /** The fixed series has no value at the fire (empty, or before its first row). */
+  /**
+   * The fixed series has no value at the fire (empty, or before its first row)
+   * and the stored value is not the look-ahead history sum.
+   */
   | 'no-fixed-value'
   /** A ticker-day with no WS rows: not doubled, but holds up to 59 s of look-ahead. */
   | 'history-only-day'
@@ -231,6 +269,12 @@ export type OtherReason =
 export type Verdict =
   | { kind: 'correct' }
   | { kind: 'doubled'; fixed: Flow }
+  /**
+   * A fire before the ticker's first WS tick, on a day with WS rows, holding
+   * the first history minute (the old backfill's value). The fixed value is
+   * NULL, so the correction writes NULL.
+   */
+  | { kind: 'lookahead' }
   | { kind: 'other'; reason: OtherReason; fixed: Flow | null };
 
 function near(a: number, b: number): boolean {
@@ -266,10 +310,17 @@ export function classifyRow(input: {
   const { stored, fixed, hasWs, legacy } = input;
   if (sameFlow(stored, fixed)) return { kind: 'correct' };
   if (fixed == null) {
+    // No WS tick at or before the fire, so WS-only has nothing and the history
+    // sum with ts <= fire is exactly the first minute: what the old backfill
+    // wrote. Only on a day with WS rows; a history-only day has its own rule.
+    if (hasWs && sameFlow(stored, legacy.history)) return { kind: 'lookahead' };
     return { kind: 'other', reason: 'no-fixed-value', fixed: null };
   }
+  // A stored value equal to the WS-only reading is what a run that saw the
+  // ticks the fixed read has not (or the other way round) holds: not doubled.
   if (
     hasWs &&
+    !sameFlow(stored, legacy.ws) &&
     (sameFlow(stored, legacy.union) || sameFlow(stored, wsPlusHistory(legacy)))
   ) {
     return { kind: 'doubled', fixed };
@@ -295,51 +346,65 @@ export interface LotteryScoreInputs {
 export type ScorePlan =
   /** Alignment did not change, or the score already is what live scoring gives. */
   | { kind: 'unchanged' }
-  /** Aligned before, against the flow now: NULL, tag left. */
+  /**
+   * Aligned before, against the flow (or without flow) now: NULL, tagged with
+   * the active version, which is what live scoring stores for such a fire.
+   */
   | { kind: 'nulled' }
+  /**
+   * The same for a fire before SEED_WEIGHTS_LIVE_FROM: NULL needs no weights,
+   * and the tag is left, since the fire was scored under older ones.
+   */
+  | { kind: 'nulled-pre-seed' }
   /** With the flow now: the active version's score. */
   | { kind: 'set'; score: number }
-  /** A fire from before SEED_WEIGHTS_LIVE_FROM whose alignment flipped: left. */
+  /** A fire from before SEED_WEIGHTS_LIVE_FROM that is now with the flow: left. */
   | { kind: 'left-pre-seed' }
   /** With the flow now, but the weights have no table for its `tod`. */
   | { kind: 'left-unscorable' };
 
-/** Whether a call or put fire is with the flow before the correction and after it. */
+/**
+ * Whether a call or put fire is with the flow before the correction and after
+ * it. A fixed flow of null (a look-ahead row) is not aligned.
+ */
 export function alignmentFlip(
   optionType: 'C' | 'P',
   stored: Flow,
-  fixed: Flow,
+  fixed: Flow | null,
 ): 'to-unaligned' | 'to-aligned' | null {
   const was = isAlignedFire(optionType, stored.ncp, stored.npp);
-  const now = isAlignedFire(optionType, fixed.ncp, fixed.npp);
+  const now = isAlignedFire(optionType, fixed?.ncp ?? null, fixed?.npp ?? null);
   if (was === now) return null;
   return now ? 'to-aligned' : 'to-unaligned';
 }
 
 /**
  * What the score does when the row's flow goes from the stored value (the
- * `cum_*` of `input.row`) to the fixed one.
+ * `cum_*` of `input.row`) to the fixed one (null: no flow, not aligned).
  */
 export function planScore(
   weights: LotteryWeights,
   input: LotteryScoreInputs,
-  fixed: Flow,
+  fixed: Flow | null,
 ): ScorePlan {
   const { row, score } = input;
+  const preSeed = row.date < SEED_WEIGHTS_LIVE_FROM;
   const flip = alignmentFlip(
     row.option_type,
     { ncp: row.cum_ncp_at_fire, npp: row.cum_npp_at_fire },
     fixed,
   );
   if (flip == null) return { kind: 'unchanged' };
-  if (row.date < SEED_WEIGHTS_LIVE_FROM) return { kind: 'left-pre-seed' };
   if (flip === 'to-unaligned') {
-    return score == null ? { kind: 'unchanged' } : { kind: 'nulled' };
+    if (score == null) return { kind: 'unchanged' };
+    return preSeed ? { kind: 'nulled-pre-seed' } : { kind: 'nulled' };
   }
+  if (preSeed) return { kind: 'left-pre-seed' };
+  // Aligned after means there is a flow to score with.
   const rescored = rescoreRow(weights, {
     ...row,
-    cum_ncp_at_fire: fixed.ncp,
-    cum_npp_at_fire: fixed.npp,
+    cum_ncp_at_fire: fixed!.ncp,
+    cum_npp_at_fire: fixed!.npp,
   });
   if (rescored === 'unscorable') return { kind: 'left-unscorable' };
   if (rescored == null || rescored === score) return { kind: 'unchanged' };
@@ -348,24 +413,95 @@ export function planScore(
 
 // ── The plan ────────────────────────────────────────────────────────────────
 
-/** The four stored values a write replaces, as exact text (null is NULL). */
+/**
+ * The four stored values a write replaces, as exact text (null is NULL). The
+ * flow is null in the `new` side of a look-ahead row.
+ */
 export interface Stored {
-  ncp: string;
-  npp: string;
+  ncp: string | null;
+  npp: string | null;
   score: number | null;
   version: string | null;
 }
+
+// ── WS gaps ─────────────────────────────────────────────────────────────────
+
+/** One history minute that has flow and no WS tick: `ts` is the minute's start. */
+export interface GapMinute {
+  ts: number;
+  ncp: number;
+  npp: number;
+}
+
+/** The gap minutes complete at one fire, and their flow. */
+export interface GapReading {
+  minutes: number;
+  ncp: number;
+  npp: number;
+}
+
+export interface GapInfo extends GapReading {
+  /** The gap flow exceeds MATERIAL_GAP_FRACTION of the corrected flow, either side. */
+  material: boolean;
+  /** Lottery, material gaps only: adding the gap flow would flip the alignment. */
+  flips: boolean | null;
+}
+
+/**
+ * The gap minutes that were complete at the fire. A history row is a whole
+ * minute, so it is reached once `ts + 60 s <= fire`: the rule the series uses.
+ */
+export function gapAtFire(
+  minutes: readonly GapMinute[],
+  fireMs: number,
+): GapReading {
+  const reading: GapReading = { minutes: 0, ncp: 0, npp: 0 };
+  for (const minute of minutes) {
+    if (minute.ts + HISTORY_MINUTE_MS > fireMs) continue;
+    reading.minutes += 1;
+    reading.ncp += minute.ncp;
+    reading.npp += minute.npp;
+  }
+  return reading;
+}
+
+/** Whether the gap flow exceeds MATERIAL_GAP_FRACTION of the corrected flow on the call or the put side. */
+export function gapIsMaterial(gap: GapReading, corrected: Flow): boolean {
+  return (
+    Math.abs(gap.ncp) > MATERIAL_GAP_FRACTION * Math.abs(corrected.ncp) ||
+    Math.abs(gap.npp) > MATERIAL_GAP_FRACTION * Math.abs(corrected.npp)
+  );
+}
+
+/** Whether adding the gap flow to the corrected flow changes a lottery fire's alignment. */
+export function gapFlips(
+  optionType: 'C' | 'P',
+  corrected: Flow,
+  gap: GapReading,
+): boolean {
+  return (
+    isAlignedFire(optionType, corrected.ncp, corrected.npp) !==
+    isAlignedFire(optionType, corrected.ncp + gap.ncp, corrected.npp + gap.npp)
+  );
+}
+
+export type ChangeCategory = 'doubled' | 'lookahead';
 
 export interface Change {
   table: FireTable;
   id: string;
   date: string;
   ticker: string;
+  /** The fire instant, ISO 8601 UTC. */
+  fireAt: string;
+  category: ChangeCategory;
   old: Stored;
   new: Stored;
   /** Alignment flipped on the correction. */
   flipped: 'to-unaligned' | 'to-aligned' | null;
   score: ScorePlan['kind'] | 'none';
+  /** A doubled row's WS gap reading; null for look-ahead rows. */
+  gap: GapInfo | null;
 }
 
 export interface OtherRow {
@@ -381,6 +517,7 @@ export interface OtherRow {
 export interface Counts {
   correct: number;
   doubled: number;
+  lookahead: number;
   other: number;
 }
 
@@ -392,12 +529,12 @@ export interface Plan {
   otherReasons: Map<OtherReason, number>;
   /** The first `listLimit` other-mismatch rows; the counts above are exact. */
   otherRows: OtherRow[];
-  /** Planned writes: the doubled rows. */
+  /** Planned writes: the doubled rows and the look-ahead rows. */
   changes: Change[];
 }
 
 function emptyCounts(): Counts {
-  return { correct: 0, doubled: 0, other: 0 };
+  return { correct: 0, doubled: 0, lookahead: 0, other: 0 };
 }
 
 function emptyPlan(): Plan {
@@ -453,15 +590,41 @@ function toCandidate(row: FireRow): CandidateRow {
   };
 }
 
+/** One row, judged: what it holds, what it should hold, and its WS gap if it was read. */
+export interface Judged {
+  row: FireRow;
+  verdict: Verdict;
+  /** The stored flow as numbers (`row.ncp` / `row.npp` are the exact text). */
+  stored: Flow;
+  /** Doubled rows only. */
+  gap: GapReading | null;
+}
+
+/** What turns a judged row into a planned write. */
+export interface PlanContext {
+  weights: LotteryWeights;
+  /** The version a re-scored or NULLed lottery row is tagged with. */
+  activeVersion: string;
+  listLimit: number;
+}
+
+function gapInfo(row: FireRow, corrected: Flow, reading: GapReading): GapInfo {
+  const material = gapIsMaterial(reading, corrected);
+  return {
+    ...reading,
+    material,
+    flips:
+      material && row.lottery != null
+        ? gapFlips(row.lottery.optionType, corrected, reading)
+        : null,
+  };
+}
+
 /** Fold one judged row into the plan. */
 export function recordRow(
   plan: Plan,
-  row: FireRow,
-  verdict: Verdict,
-  stored: Flow,
-  weights: LotteryWeights,
-  activeVersion: string,
-  listLimit: number,
+  { row, verdict, stored, gap }: Judged,
+  ctx: PlanContext,
 ): void {
   plan.scanned[row.table] += 1;
   const day = plan.byDate.get(row.date) ?? emptyCounts();
@@ -474,7 +637,7 @@ export function recordRow(
       verdict.reason,
       (plan.otherReasons.get(verdict.reason) ?? 0) + 1,
     );
-    if (plan.otherRows.length < listLimit) {
+    if (plan.otherRows.length < ctx.listLimit) {
       plan.otherRows.push({
         table: row.table,
         id: row.id,
@@ -487,8 +650,10 @@ export function recordRow(
     }
     return;
   }
-  if (verdict.kind !== 'doubled') return;
+  if (verdict.kind === 'correct') return;
 
+  // The value the row moves to: the fixed flow, or none for look-ahead.
+  const fixed = verdict.kind === 'doubled' ? verdict.fixed : null;
   const old: Stored = {
     ncp: row.ncp,
     npp: row.npp,
@@ -497,24 +662,28 @@ export function recordRow(
   };
   const next: Stored = {
     ...old,
-    ncp: numToText(verdict.fixed.ncp),
-    npp: numToText(verdict.fixed.npp),
+    ncp: fixed == null ? null : numToText(fixed.ncp),
+    npp: fixed == null ? null : numToText(fixed.npp),
   };
   let flipped: Change['flipped'] = null;
   let scoreKind: Change['score'] = 'none';
   if (row.lottery != null) {
     const plain = toCandidate(row);
-    flipped = alignmentFlip(plain.option_type, stored, verdict.fixed);
+    flipped = alignmentFlip(plain.option_type, stored, fixed);
     const scorePlan = planScore(
-      weights,
+      ctx.weights,
       { row: plain, score: row.lottery.score },
-      verdict.fixed,
+      fixed,
     );
     scoreKind = scorePlan.kind;
-    if (scorePlan.kind === 'nulled') next.score = null;
+    if (scorePlan.kind === 'nulled') {
+      next.score = null;
+      next.version = ctx.activeVersion;
+    }
+    if (scorePlan.kind === 'nulled-pre-seed') next.score = null;
     if (scorePlan.kind === 'set') {
       next.score = scorePlan.score;
-      next.version = activeVersion;
+      next.version = ctx.activeVersion;
     }
   }
   plan.changes.push({
@@ -522,11 +691,96 @@ export function recordRow(
     id: row.id,
     date: row.date,
     ticker: row.ticker,
+    fireAt: new Date(row.atMs).toISOString(),
+    category: verdict.kind,
     old,
     new: next,
     flipped,
     score: scoreKind,
+    gap: fixed != null && gap != null ? gapInfo(row, fixed, gap) : null,
   });
+}
+
+// ── Listing the plan ────────────────────────────────────────────────────────
+
+/**
+ * The planned writes in the order the report lists them: by date, then table
+ * (lottery first), then id. A copy: the plan itself is not reordered.
+ */
+export function orderPlanned(changes: readonly Change[]): Change[] {
+  return [...changes].sort(
+    (a, b) =>
+      a.date.localeCompare(b.date) ||
+      a.table.localeCompare(b.table) ||
+      Number(a.id) - Number(b.id),
+  );
+}
+
+/** A material-gap row, with what the report prints beside it. */
+export interface GapRow {
+  table: FireTable;
+  id: string;
+  date: string;
+  ticker: string;
+  minutes: number;
+  gapNcp: number;
+  gapNpp: number;
+  /** The corrected (WS-only) flow. */
+  ncp: number;
+  npp: number;
+  /** Lottery: whether the gap flow would flip the alignment; silent boom: null. */
+  flips: boolean | null;
+}
+
+export interface GapSummary {
+  /** Doubled rows whose gap was read. */
+  doubled: Record<FireTable, number>;
+  /** ... with at least one history minute that has no WS tick. */
+  withGap: Record<FireTable, number>;
+  /** ... whose gap flow exceeds MATERIAL_GAP_FRACTION of the corrected flow on a side. */
+  material: Record<FireTable, number>;
+  /** Material-gap lottery rows whose alignment the gap flow would flip. */
+  flips: number;
+  /** The first `listLimit` material rows, in the order of `changes`. */
+  rows: GapRow[];
+}
+
+/** The gap counts over the planned writes, and the first `listLimit` material rows. */
+export function summarizeGaps(
+  changes: readonly Change[],
+  listLimit: number,
+): GapSummary {
+  const summary: GapSummary = {
+    doubled: { lottery: 0, silentboom: 0 },
+    withGap: { lottery: 0, silentboom: 0 },
+    material: { lottery: 0, silentboom: 0 },
+    flips: 0,
+    rows: [],
+  };
+  for (const change of changes) {
+    const { gap } = change;
+    if (change.category !== 'doubled' || gap == null) continue;
+    summary.doubled[change.table] += 1;
+    if (gap.minutes > 0) summary.withGap[change.table] += 1;
+    if (!gap.material) continue;
+    summary.material[change.table] += 1;
+    if (gap.flips === true) summary.flips += 1;
+    if (summary.rows.length < listLimit) {
+      summary.rows.push({
+        table: change.table,
+        id: change.id,
+        date: change.date,
+        ticker: change.ticker,
+        minutes: gap.minutes,
+        gapNcp: gap.ncp,
+        gapNpp: gap.npp,
+        ncp: Number(change.new.ncp),
+        npp: Number(change.new.npp),
+        flips: gap.flips,
+      });
+    }
+  }
+  return summary;
 }
 
 // ── Reads ───────────────────────────────────────────────────────────────────
@@ -754,13 +1008,63 @@ export async function readLegacyAtFires(
   };
 }
 
-/** Judge one ticker-day's fires. */
+interface GapRowDb {
+  ts: Date | string;
+  gap_ncp: DbText;
+  gap_npp: DbText;
+}
+
+/**
+ * The history minutes of one ticker-day that carry flow and have no WS tick in
+ * [ts, ts + 60 s): the minutes a WS-only series misses. One round trip per
+ * ticker-day, and the result is the gap minutes only (at most one per session
+ * minute), which `gapAtFire` then cuts per fire in memory. The NOT EXISTS probes
+ * `ws_net_flow_per_ticker` on its (ticker, ts) unique index, once per history
+ * minute; the history side is the same one-row-per-minute read the series uses.
+ */
+export async function readWsGaps(
+  sql: Sql,
+  ticker: string,
+  date: string,
+): Promise<GapMinute[]> {
+  const session = ctSessionBounds(date);
+  const rows = (await sql`
+    SELECT h.ts, h.ncp::text AS gap_ncp, h.npp::text AS gap_npp
+    FROM (
+      SELECT DISTINCT ON (ts) ts, net_call_prem AS ncp, net_put_prem AS npp
+      FROM net_flow_per_ticker_history
+      WHERE ticker = ${ticker}
+        AND ts >= ${session.min}::timestamptz
+        AND ts <= ${session.max}::timestamptz
+      ORDER BY ts, source
+    ) h
+    WHERE (COALESCE(h.ncp, 0) <> 0 OR COALESCE(h.npp, 0) <> 0)
+      AND NOT EXISTS (
+        SELECT 1
+        FROM ws_net_flow_per_ticker w
+        WHERE w.ticker = ${ticker}
+          AND w.ts >= h.ts
+          AND w.ts < h.ts + INTERVAL '60 seconds'
+      )
+    ORDER BY h.ts
+  `) as GapRowDb[];
+  return rows.map((r) => ({
+    ts: toMs(r.ts),
+    ncp: Number(r.gap_ncp ?? 0),
+    npp: Number(r.gap_npp ?? 0),
+  }));
+}
+
+/**
+ * Judge one ticker-day's fires. A ticker-day with a doubled row gets one more
+ * read, its WS gaps.
+ */
 async function judgeGroup(
   sql: Sql,
   ticker: string,
   date: string,
   rows: readonly FireRow[],
-): Promise<Array<{ row: FireRow; verdict: Verdict; stored: Flow }>> {
+): Promise<Judged[]> {
   const series = await fetchTickerFlowSeries(sql, ticker, date);
   const reading = await readLegacyAtFires(
     sql,
@@ -768,7 +1072,7 @@ async function judgeGroup(
     date,
     rows.map((r) => r.atMs),
   );
-  return rows.map((row, i) => {
+  const judged = rows.map((row, i) => {
     const at = flowAtFireTime(series, new Date(row.atMs));
     const fixed =
       at.cumNcp == null || at.cumNpp == null
@@ -782,8 +1086,16 @@ async function judgeGroup(
       row,
       stored,
       verdict: classifyRow({ stored, fixed, hasWs: reading.hasWs, legacy }),
+      gap: null as GapReading | null,
     };
   });
+  if (!judged.some((j) => j.verdict.kind === 'doubled')) return judged;
+  const gapMinutes = await readWsGaps(sql, ticker, date);
+  return judged.map((j) =>
+    j.verdict.kind === 'doubled'
+      ? { ...j, gap: gapAtFire(gapMinutes, j.row.atMs) }
+      : j,
+  );
 }
 
 /**
@@ -798,6 +1110,11 @@ export async function planCorrection(
   activeVersion: string,
 ): Promise<Plan> {
   const plan = emptyPlan();
+  const ctx: PlanContext = {
+    weights,
+    activeVersion,
+    listLimit: opts.listLimit,
+  };
   for (const date of await candidateDates(sql, opts.since)) {
     const byTicker = new Map<string, FireRow[]>();
     for (const row of await loadDay(sql, date)) {
@@ -812,17 +1129,7 @@ export async function planCorrection(
       ([ticker, rows]) => judgeGroup(sql, ticker, date, rows),
     );
     for (const group of judged) {
-      for (const { row, verdict, stored } of group) {
-        recordRow(
-          plan,
-          row,
-          verdict,
-          stored,
-          weights,
-          activeVersion,
-          opts.listLimit,
-        );
-      }
+      for (const one of group) recordRow(plan, one, ctx);
     }
   }
   return plan;
@@ -830,19 +1137,22 @@ export async function planCorrection(
 
 // ── Writes and undo ─────────────────────────────────────────────────────────
 
-/** What an undo file holds per row: the table, the id, the values before and after. */
+/**
+ * What an undo file holds per row: the table, the id, the values before and
+ * after. A look-ahead row's `new` flow is null, and its undo moves from NULL.
+ */
 const UndoRowSchema = z.object({
   table: z.enum(['lottery', 'silentboom']),
   id: z.string().regex(/^\d+$/),
   old: z.object({
-    ncp: z.string(),
-    npp: z.string(),
+    ncp: z.string().nullable(),
+    npp: z.string().nullable(),
     score: z.number().int().nullable(),
     version: z.string().nullable(),
   }),
   new: z.object({
-    ncp: z.string(),
-    npp: z.string(),
+    ncp: z.string().nullable(),
+    npp: z.string().nullable(),
     score: z.number().int().nullable(),
     version: z.string().nullable(),
   }),
@@ -866,7 +1176,11 @@ function toUndoRow(change: Change): UndoRow {
   };
 }
 
-/** The undo file, written before the first UPDATE. Returns its path. */
+/**
+ * The undo file, written before the first UPDATE. Returns its path. `wx`: a
+ * file already there is never overwritten (it is the only record of an earlier
+ * run), and `flush` puts it on disk before the first UPDATE can need it.
+ */
 export function writeUndoFile(
   dir: string,
   since: string,
@@ -882,15 +1196,18 @@ export function writeUndoFile(
       since,
       rows: changes.map(toUndoRow),
     }),
+    { flag: 'wx', flush: true },
   );
   return file;
 }
 
 /**
  * Move rows from `from` to `to`, 500 to a statement, each guarded on the row
- * still holding `from` in every column. `guardPointer` (the apply direction)
- * also requires the `active` pointer to name `to.version` when a row's tag
- * changes. Returns the number of rows actually written.
+ * still holding `from` in every column. A NULL flow is a value: the guard is
+ * IS NOT DISTINCT FROM, so a look-ahead row moves from its number to NULL on
+ * apply and from NULL back to its number on undo (`=` would match neither).
+ * The apply direction also requires the `active` pointer to name `to.version`
+ * when a row's tag changes. Returns the number of rows actually written.
  */
 export async function moveRows(
   sql: Sql,
@@ -930,8 +1247,8 @@ export async function moveRows(
             ) AS u(id, from_ncp, from_npp, from_score, from_version,
                    to_ncp, to_npp, to_score, to_version)
             WHERE f.id = u.id
-              AND f.cum_ncp_at_fire = u.from_ncp
-              AND f.cum_npp_at_fire = u.from_npp
+              AND f.cum_ncp_at_fire IS NOT DISTINCT FROM u.from_ncp
+              AND f.cum_npp_at_fire IS NOT DISTINCT FROM u.from_npp
               AND f.score IS NOT DISTINCT FROM u.from_score
               AND f.score_version IS NOT DISTINCT FROM u.from_version
               AND (
@@ -952,8 +1269,8 @@ export async function moveRows(
               ${toNcp}::numeric[], ${toNpp}::numeric[]
             ) AS u(id, from_ncp, from_npp, to_ncp, to_npp)
             WHERE f.id = u.id
-              AND f.cum_ncp_at_fire = u.from_ncp
-              AND f.cum_npp_at_fire = u.from_npp
+              AND f.cum_ncp_at_fire IS NOT DISTINCT FROM u.from_ncp
+              AND f.cum_npp_at_fire IS NOT DISTINCT FROM u.from_npp
             RETURNING f.id`
     ) as Array<{ id: unknown }>;
     written += done.length;
@@ -975,7 +1292,7 @@ const n = (value: number): string => value.toLocaleString('en-US');
 export interface CorrectionResult {
   apply: boolean;
   since: string;
-  /** The active version a re-scored row is tagged with. */
+  /** The active version a re-scored or NULLed row is tagged with. */
   version: string;
   nullFlow: Record<FireTable, number>;
   plan: Omit<Plan, 'changes'> & {
@@ -983,6 +1300,9 @@ export interface CorrectionResult {
     score: Map<Change['score'], number>;
     toUnaligned: string[];
     toAligned: string[];
+    /** The first `listLimit` planned writes, by date, table and id. */
+    listedChanges: Change[];
+    gaps: GapSummary;
   };
   written: Record<FireTable, number>;
   undoFile: string | null;
@@ -1016,7 +1336,16 @@ export async function runCorrection(opts: {
       if (change.flipped === 'to-aligned') toAligned.push(change.id);
     }
   }
-  const summary = { ...rest, toWrite, score, toUnaligned, toAligned };
+  const ordered = orderPlanned(changes);
+  const summary = {
+    ...rest,
+    toWrite,
+    score,
+    toUnaligned,
+    toAligned,
+    listedChanges: ordered.slice(0, opts.listLimit),
+    gaps: summarizeGaps(ordered, opts.listLimit),
+  };
   const written: Record<FireTable, number> = { lottery: 0, silentboom: 0 };
   if (!opts.apply || changes.length === 0) {
     return {
@@ -1047,11 +1376,14 @@ export async function runCorrection(opts: {
     );
   }
   // A statement that sets a new tag writes only while the pointer names it, so
-  // a promotion in the middle of the run stops those writes. Say so.
+  // a promotion in the middle of the run stops those writes. Say so, with what
+  // was written, rather than end with a count that looks like another writer's.
   const nowActive = await activeVersionNow(sql);
   if (nowActive !== active.version) {
+    const wrote = written.lottery + written.silentboom;
+    const planned = toWrite.lottery + toWrite.silentboom;
     throw new Error(
-      `the active pointer moved from ${active.version} to ${nowActive ?? 'nothing'} during the run. Rows whose score changed may not have been written. The undo file ${undoFile} lists every planned row. Run a dry run to see what is left.`,
+      `the active pointer moved from ${active.version} to ${nowActive ?? 'nothing'} during the run. ${n(wrote)} of ${n(planned)} planned rows were written under ${active.version} before it moved (lottery ${n(written.lottery)} of ${n(toWrite.lottery)}, silent boom ${n(written.silentboom)} of ${n(toWrite.silentboom)}). The rest were not written: a row that sets a new score_version needs the pointer to name ${active.version}, and a row another writer changed is skipped. The undo file ${undoFile} lists every planned row. Run a dry run to see what is left; it scores with the new active version.`,
     );
   }
   return {
@@ -1077,9 +1409,14 @@ export async function runUndo(opts: {
   file: string;
   apply: boolean;
 }): Promise<UndoResult> {
-  const parsed = UndoFileSchema.safeParse(
-    JSON.parse(readFileSync(opts.file, 'utf8')) as unknown,
-  );
+  const text = readFileSync(opts.file, 'utf8');
+  let body: unknown;
+  try {
+    body = JSON.parse(text);
+  } catch (err) {
+    throw new Error(`${opts.file} is not valid JSON`, { cause: err });
+  }
+  const parsed = UndoFileSchema.safeParse(body);
   if (!parsed.success) {
     const issue = parsed.error.issues[0];
     throw new Error(
@@ -1138,7 +1475,8 @@ function headline(result: CorrectionResult): string {
 }
 
 const REASON_TEXT: Record<OtherReason, string> = {
-  'no-fixed-value': 'the fixed series has no value at the fire',
+  'no-fixed-value':
+    'the fixed series has no value at the fire, and the stored value is not the first history minute',
   'history-only-day':
     'history-only day: not doubled, holds up to 59 s of look-ahead',
   unmatched: 'matches neither the fixed value nor a doubled value',
@@ -1147,41 +1485,104 @@ const REASON_TEXT: Record<OtherReason, string> = {
 const SCORE_TEXT: Record<Change['score'], string> = {
   none: 'no score (silent boom)',
   unchanged: 'alignment unchanged: score and tag left',
-  nulled: 'now against the flow: score set to NULL',
+  nulled:
+    'now against the flow: score set to NULL and tagged with the active version',
+  'nulled-pre-seed': `fire before ${SEED_WEIGHTS_LIVE_FROM}, now against the flow: score set to NULL, tag left`,
   set: 'now with the flow: score computed with the active weights',
-  'left-pre-seed': `fire before ${SEED_WEIGHTS_LIVE_FROM}: flow corrected, score left`,
+  'left-pre-seed': `fire before ${SEED_WEIGHTS_LIVE_FROM}, now with the flow: flow corrected, score left`,
   'left-unscorable': 'unknown tod: flow corrected, score left',
 };
 
+const CATEGORY_TEXT: Record<ChangeCategory, string> = {
+  doubled: 'doubled',
+  lookahead: 'look-ahead',
+};
+
+/** Right-aligned numeric columns, `CELL` wide. */
+const CELL = 11;
+const cells = (values: ReadonlyArray<number | string>): string =>
+  values.map((v) => (typeof v === 'number' ? n(v) : v).padStart(CELL)).join('');
+/** Where the first column of the per-table and per-date blocks starts. */
+const LABEL = 26;
+
+const scoreAndTag = (s: Stored): string =>
+  `${s.score ?? 'NULL'} (${s.version ?? 'NULL'})`;
+
+/** One planned write: the fire, its category, and what each stored column goes from and to. */
+function describeChange(c: Change): string {
+  const flow = `flow ${c.old.ncp ?? 'NULL'} / ${c.old.npp ?? 'NULL'} -> ${c.new.ncp ?? 'NULL'} / ${c.new.npp ?? 'NULL'}`;
+  const score =
+    c.table === 'lottery'
+      ? `; score ${scoreAndTag(c.old)} -> ${scoreAndTag(c.new)}`
+      : '';
+  return `  ${c.table} ${c.id} ${c.date} ${c.ticker} ${c.fireAt.slice(11)} ${CATEGORY_TEXT[c.category]}: ${flow}${score}`;
+}
+
+function describeGapRow(row: GapRow): string {
+  const flips = row.flips == null ? 'n/a' : row.flips ? 'yes' : 'no';
+  return `    ${row.table} ${row.id} ${row.date} ${row.ticker}: ${n(row.minutes)} gap minute${row.minutes === 1 ? '' : 's'}, gap flow ${n(row.gapNcp)} / ${n(row.gapNpp)}, corrected ${n(row.ncp)} / ${n(row.npp)}, flips ${flips}`;
+}
+
+/** The WS gap block: counts, then the material rows up to the list limit. */
+function gapLines(gaps: GapSummary): string[] {
+  const read = gaps.doubled.lottery + gaps.doubled.silentboom;
+  if (read === 0) return [];
+  const material = gaps.material.lottery + gaps.material.silentboom;
+  const pct = Math.round(MATERIAL_GAP_FRACTION * 100);
+  const lines = [
+    '',
+    'WS gaps (doubled rows only; the corrected value stays WS-only, as live stored it. Whether to fill gaps from history is an open owner decision):',
+    `  Doubled rows read: lottery ${n(gaps.doubled.lottery)}, silent boom ${n(gaps.doubled.silentboom)}`,
+    `  with at least one history minute that has no WS tick: lottery ${n(gaps.withGap.lottery)}, silent boom ${n(gaps.withGap.silentboom)}`,
+    `  material (gap flow over ${pct}% of the corrected flow on either side): lottery ${n(gaps.material.lottery)}, silent boom ${n(gaps.material.silentboom)}`,
+    `  material-gap lottery rows whose alignment the gap flow would flip: ${n(gaps.flips)}`,
+  ];
+  for (const row of gaps.rows) lines.push(describeGapRow(row));
+  if (material > gaps.rows.length) {
+    lines.push(
+      `  ... ${n(material - gaps.rows.length)} more not listed (--list-limit)`,
+    );
+  }
+  return lines;
+}
+
 export function formatReport(result: CorrectionResult): string {
   const { plan } = result;
+  const toWrite = plan.toWrite.lottery + plan.toWrite.silentboom;
   const lines = [
     headline(result),
     `Scope: lottery_finder_fires and silent_boom_alerts, date >= ${result.since}, flow set. Active weights version: ${result.version}.`,
     '',
-    'Per table:                  scanned   correct   doubled     other',
+    `${'Per table:'.padEnd(LABEL)}${cells(['scanned', 'correct', 'doubled', 'look-ahead', 'other'])}`,
   ];
   for (const table of ['lottery', 'silentboom'] as const) {
     const c = plan.counts[table];
     lines.push(
-      `  ${TABLE_NAME[table].padEnd(24)}${n(plan.scanned[table]).padStart(9)}${n(c.correct).padStart(10)}${n(c.doubled).padStart(10)}${n(c.other).padStart(10)}`,
+      `  ${TABLE_NAME[table].padEnd(LABEL - 2)}${cells([plan.scanned[table], c.correct, c.doubled, c.lookahead, c.other])}`,
     );
   }
   lines.push(
     '',
-    `Rows with NULL flow in scope (the backfill's job, not touched): lottery ${n(result.nullFlow.lottery)}, silent boom ${n(result.nullFlow.silentboom)}`,
+    `Rows with NULL flow in scope (not touched: the backfill's job, and a fire before its ticker's first WS tick stays NULL by design): lottery ${n(result.nullFlow.lottery)}, silent boom ${n(result.nullFlow.silentboom)}`,
   );
   if (plan.byDate.size > 0) {
-    lines.push('', 'Per fire date:                correct   doubled     other');
+    lines.push(
+      '',
+      `${'Per fire date:'.padEnd(LABEL + CELL)}${cells(['correct', 'doubled', 'look-ahead', 'other'])}`,
+    );
     for (const date of [...plan.byDate.keys()].sort()) {
       const c = plan.byDate.get(date) ?? emptyCounts();
+      const label = `  ${date}`.padEnd(LABEL + CELL);
       lines.push(
-        `  ${date}${n(c.correct).padStart(18)}${n(c.doubled).padStart(10)}${n(c.other).padStart(10)}`,
+        `${label}${cells([c.correct, c.doubled, c.lookahead, c.other])}`,
       );
     }
   }
   if (plan.score.size > 0) {
-    lines.push('', 'Doubled lottery rows, by what the score does:');
+    lines.push(
+      '',
+      'Planned lottery rows (doubled and look-ahead), by what the score does:',
+    );
     for (const [kind, count] of [...plan.score].sort(([a], [b]) =>
       a.localeCompare(b),
     )) {
@@ -1196,6 +1597,19 @@ export function formatReport(result: CorrectionResult): string {
       `  now with the flow:    ${plan.toAligned.join(', ') || 'none'}`,
     );
   }
+  if (toWrite > 0) {
+    lines.push(
+      '',
+      `Planned writes, fire time in UTC (${n(plan.listedChanges.length)} of ${n(toWrite)} listed):`,
+      ...plan.listedChanges.map(describeChange),
+    );
+    if (toWrite > plan.listedChanges.length) {
+      lines.push(
+        `  ... ${n(toWrite - plan.listedChanges.length)} more not listed (--list-limit)`,
+      );
+    }
+  }
+  lines.push(...gapLines(plan.gaps));
   const otherTotal = plan.counts.lottery.other + plan.counts.silentboom.other;
   if (otherTotal > 0) {
     lines.push('', `Other mismatch (left alone): ${n(otherTotal)}`);
@@ -1215,7 +1629,6 @@ export function formatReport(result: CorrectionResult): string {
       );
     }
   }
-  const toWrite = plan.toWrite.lottery + plan.toWrite.silentboom;
   lines.push(
     '',
     `To write: lottery ${n(plan.toWrite.lottery)}, silent boom ${n(plan.toWrite.silentboom)}`,

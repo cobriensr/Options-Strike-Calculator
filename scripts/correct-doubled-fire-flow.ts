@@ -13,13 +13,17 @@
  *
  * Both modes READ the database DATABASE_URL points at (production, in
  * .env.local): about two reads (a series, and an aggregate) per ticker-day with
- * fires, three ticker-days at a time. The default is a dry run: it prints, per
- * table and per date, the rows correct, doubled and other (left alone, listed),
- * what each corrected lottery fire's score would do, and the alignment flips,
- * and writes nothing. `--apply` writes an undo file under
- * docs/tmp/fire-flow-correction/ (relative to the working directory) first,
- * then the corrected values, 500 rows to a statement, each only where the row
- * still holds the values the dry run read. A second `--apply` writes nothing.
+ * fires, plus one more (the WS gaps) for a ticker-day with a doubled row, three
+ * ticker-days at a time. The default is a dry run: it prints, per table and per
+ * date, the rows correct, doubled, look-ahead (a fire before its ticker's first
+ * WS tick, whose flow goes to NULL) and other (left alone, listed), what each
+ * planned lottery fire's score would do, the alignment flips, every planned
+ * write (up to --list-limit) with its old and new values, and the WS gaps of
+ * the doubled rows (visibility only), and writes nothing. `--apply` writes an
+ * undo file under docs/tmp/fire-flow-correction/ (relative to the working
+ * directory) first, then the corrected values, 500 rows to a statement, each
+ * only where the row still holds the values the dry run read. A second
+ * `--apply` writes nothing.
  * `--undo-file` restores the old values from such a file, row by row, only
  * where a row still holds the corrected ones.
  *

@@ -51,16 +51,26 @@ const DRY_RESULT: CorrectionResult = {
   plan: {
     scanned: { lottery: 100, silentboom: 10 },
     counts: {
-      lottery: { correct: 70, doubled: 25, other: 5 },
-      silentboom: { correct: 4, doubled: 5, other: 1 },
+      lottery: { correct: 70, doubled: 23, lookahead: 2, other: 5 },
+      silentboom: { correct: 4, doubled: 5, lookahead: 0, other: 1 },
     },
-    byDate: new Map([['2026-10-29', { correct: 74, doubled: 30, other: 6 }]]),
+    byDate: new Map([
+      ['2026-10-29', { correct: 74, doubled: 28, lookahead: 2, other: 6 }],
+    ]),
     otherReasons: new Map(),
     otherRows: [],
     toWrite: { lottery: 25, silentboom: 5 },
     score: new Map(),
     toUnaligned: [],
     toAligned: [],
+    listedChanges: [],
+    gaps: {
+      doubled: { lottery: 0, silentboom: 0 },
+      withGap: { lottery: 0, silentboom: 0 },
+      material: { lottery: 0, silentboom: 0 },
+      flips: 0,
+      rows: [],
+    },
   },
   written: { lottery: 0, silentboom: 0 },
   undoFile: null,
@@ -193,6 +203,8 @@ describe('correct-doubled-fire-flow CLI', () => {
       'Usage: npx tsx scripts/correct-doubled-fire-flow.ts',
     );
     expect(out).toContain('2026-05-04');
+    // --list-limit caps the planned writes and the material gaps too.
+    expect(out).toContain('"planned writes", "material WS gaps"');
     expect(out).not.toContain('Database host');
     expect(resolveEnvFile).not.toHaveBeenCalled();
     expect(config).not.toHaveBeenCalled();
