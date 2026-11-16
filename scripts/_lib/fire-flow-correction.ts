@@ -86,7 +86,10 @@ import { z } from 'zod';
 
 import { getDb } from '../../api/_lib/db.js';
 import { isAlignedFire } from '../../api/_lib/lottery-score-weights-v2.js';
-import type { LotteryWeights } from '../../api/_lib/lottery-weights-schema.js';
+import type {
+  DeepReadonly,
+  LotteryWeights,
+} from '../../api/_lib/lottery-weights-schema.js';
 import {
   fetchTickerFlowSeries,
   flowAtFireTime,
@@ -398,7 +401,7 @@ export function alignmentFlip(
  * `cum_*` of `input.row`) to the fixed one (null: no flow, not aligned).
  */
 export function planScore(
-  weights: LotteryWeights,
+  weights: DeepReadonly<LotteryWeights>,
   input: LotteryScoreInputs,
   fixed: Flow | null,
 ): ScorePlan {
@@ -624,7 +627,7 @@ export interface Judged {
 
 /** What turns a judged row into a planned write. */
 export interface PlanContext {
-  weights: LotteryWeights;
+  weights: DeepReadonly<LotteryWeights>;
   /** The version a re-scored or NULLed lottery row is tagged with. */
   activeVersion: string;
   listLimit: number;
@@ -1188,7 +1191,7 @@ async function judgeGroup(
 export async function planCorrection(
   sql: Sql,
   opts: { since: string; listLimit: number },
-  weights: LotteryWeights,
+  weights: DeepReadonly<LotteryWeights>,
   activeVersion: string,
 ): Promise<Plan> {
   const plan = emptyPlan();

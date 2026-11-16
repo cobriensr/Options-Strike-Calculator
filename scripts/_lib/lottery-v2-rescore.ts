@@ -65,7 +65,10 @@ import {
   rescoreRow,
   type CandidateRow,
 } from '../../api/_lib/lottery-flow-rescore.js';
-import type { LotteryWeights } from '../../api/_lib/lottery-weights-schema.js';
+import type {
+  DeepReadonly,
+  LotteryWeights,
+} from '../../api/_lib/lottery-weights-schema.js';
 
 // The scoring rule and the loader live in api/_lib/lottery-flow-rescore.ts,
 // shared with the post-close flow repair and the correction.
@@ -194,7 +197,7 @@ function emptyPlan(): Plan {
 
 /** What the rows would get under `weights`, with no I/O. */
 export function planRows(
-  weights: LotteryWeights,
+  weights: DeepReadonly<LotteryWeights>,
   rows: readonly CandidateRow[],
 ): Plan {
   const plan = emptyPlan();
@@ -292,7 +295,7 @@ export async function countScope(
 async function planScope(
   sql: Sql,
   since: string,
-  weights: LotteryWeights,
+  weights: DeepReadonly<LotteryWeights>,
 ): Promise<Plan> {
   const plan = emptyPlan();
   let afterId = '0';

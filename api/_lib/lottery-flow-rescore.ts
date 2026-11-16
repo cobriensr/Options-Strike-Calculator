@@ -22,7 +22,11 @@ import {
   loadLotteryWeights,
   type VersionedWeights,
 } from './lottery-weights-loader.js';
-import type { LotteryWeights, TimeOfDay } from './lottery-weights-schema.js';
+import type {
+  DeepReadonly,
+  LotteryWeights,
+  TimeOfDay,
+} from './lottery-weights-schema.js';
 
 /**
  * The first ET trading day the seed weights were live. Commit f9f220fa put
@@ -59,7 +63,7 @@ export interface CandidateRow {
  * NaN, and that row is `'unscorable'` so it is counted and left alone.
  */
 export function rescoreRow(
-  weights: LotteryWeights,
+  weights: DeepReadonly<LotteryWeights>,
   row: CandidateRow,
 ): number | null | 'unscorable' {
   const score = scoreLotteryV2(weights, {
