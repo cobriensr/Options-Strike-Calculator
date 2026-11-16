@@ -997,6 +997,26 @@ describe('enrich-lottery-outcomes: flow repair step', () => {
     });
   });
 
+  it('scores a lottery fire because the selection was the lottery one, not because of the columns its row carries', async () => {
+    // A row without a `score_version` key at all. Choosing the lottery path by
+    // `'score_version' in fire` would take it for a silent boom alert and write
+    // its flow only.
+    const row = flowFire(11);
+    delete row.score_version;
+    route({ flowFires: [row] });
+
+    const res = await run();
+
+    const [flow] = flowWrites();
+    const [, , , toScore, toVersion] = flow!.slice(1) as unknown[][];
+    expect(toVersion).toEqual([SEED_LOTTERY_WEIGHTS_VERSION]);
+    expect(toScore![0]).toBeTypeOf('number');
+    expect(res._json).toMatchObject({
+      status: 'success',
+      flowRepair: { written: 1, scored: 1, scoreLeft: 0 },
+    });
+  });
+
   it('holds back a fire it would re-score when the weights store cannot be read: nothing written, partial, counted', async () => {
     route({ flowFires: [flowFire(11)] });
     mockLoadWeights.mockResolvedValue({

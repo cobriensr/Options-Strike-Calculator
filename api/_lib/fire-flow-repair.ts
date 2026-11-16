@@ -194,11 +194,12 @@ interface LotteryFire extends BoomFire {
 
 type NullFire = BoomFire | LotteryFire;
 
-/** Only a lottery fire has a score to give (silent boom alerts carry none). */
-const isLotteryFire = (fire: NullFire): fire is LotteryFire =>
-  'score_version' in fire;
-
-/** The NULL-flow fires of one ticker-day, as the selection returned them. */
+/**
+ * The NULL-flow fires of one ticker-day, as the selection returned them:
+ * `LotteryFire`s from the lottery selection, `BoomFire`s from the silent boom
+ * one. Which kind a group holds is known from the table the selection was made
+ * for, never from the columns a row happens to carry.
+ */
 interface Group {
   ticker: string;
   /** `YYYY-MM-DD` */
@@ -494,21 +495,25 @@ const toMs = (v: Date | string): number =>
  * for good. A later slot, with the store readable, writes all three together.
  */
 function planFire(
-  fire: NullFire,
+  table: FlowRepairTable,
+  nullFire: NullFire,
   group: Group,
   flow: { ncp: number; npp: number },
   active: VersionedWeights | null,
   outcome: GroupOutcome,
 ): Planned | null {
   const flowOnly: Planned = {
-    id: fire.id,
+    id: nullFire.id,
     ncp: flow.ncp,
     npp: flow.npp,
     fromVersion: null,
     toVersion: null,
     toScore: null,
   };
-  if (!isLotteryFire(fire)) return flowOnly;
+  // Only a lottery fire has a score to give (silent boom alerts carry none).
+  if (table !== 'lottery') return flowOnly;
+  // The lottery selection returns the `LotteryFire` columns, every row of it.
+  const fire = nullFire as LotteryFire;
   // A fire from before the seed weights was scored with older weights, and one
   // that already has a score is not the NULL-score kind this repair is for.
   if (group.date < SEED_WEIGHTS_LIVE_FROM || fire.score != null) {
@@ -587,6 +592,7 @@ async function repairGroup(
       continue;
     }
     const plan = planFire(
+      table,
       fire,
       group,
       { ncp: cumNcp, npp: cumNpp },

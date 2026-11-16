@@ -559,6 +559,23 @@ describe('enrich-silent-boom-outcomes: flow repair step', () => {
     });
   });
 
+  it('writes a silent boom alert flow-only because the selection was the silent boom one, whatever columns its row carries', async () => {
+    // A row that carries lottery's score columns. Choosing the lottery path by
+    // `'score_version' in fire` would take it for a lottery fire, find no active
+    // weights (they are not loaded for this table) and hold the alert back.
+    route({
+      flowAlerts: [{ ...flowAlert(11), score: null, score_version: null }],
+    });
+
+    const res = await run();
+
+    expect(flowWrites()).toHaveLength(1);
+    expect(res._json).toMatchObject({
+      status: 'success',
+      flowRepair: { written: 1, scored: 0, scoreLeft: 0, rescoreSkipped: 0 },
+    });
+  });
+
   it('a failed series read makes the run partial and is captured', async () => {
     route({ flowAlerts: [flowAlert(11)] });
     mockFetchSeries.mockRejectedValue(new Error('relation does not exist'));
