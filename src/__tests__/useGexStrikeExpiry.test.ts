@@ -341,4 +341,144 @@ describe('useGexStrikeExpiry', () => {
     expect(result.current.data.SPX).toBeNull();
     expect(result.current.data.NDX).toBeNull();
   });
+
+  // ── Superseded requests (R6 client: key ingests on a response-echoed
+  // identity and abort superseded fetches) ──────────────────────────────
+
+  /**
+   * A fetch whose requests for any of `holdExpiries` hang until `release()`.
+   * Every other expiry answers at once. Each response echoes its expiry, so a
+   * test can tell which request a payload came from. With `honorAbort` the
+   * held request rejects with an AbortError when its signal aborts, as the
+   * browser does; without it the request answers late regardless, as a
+   * response that was already in flight when it was superseded does.
+   */
+  function holdingFetch(
+    { honorAbort }: { honorAbort: boolean },
+    ...holdExpiries: string[]
+  ) {
+    const held: Array<() => void> = [];
+    const signals: AbortSignal[] = [];
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      const params = new URL(url, 'http://localhost').searchParams;
+      const expiry = params.get('expiry') ?? '';
+      const ticker = params.get('ticker') as GexStrikeExpiryTicker;
+      const body = jsonResponse(emptyResp(ticker, { expiry }));
+      if (!holdExpiries.includes(expiry)) return Promise.resolve(body);
+      if (init?.signal) signals.push(init.signal);
+      return new Promise<Response>((resolve, reject) => {
+        held.push(() => resolve(body));
+        if (honorAbort) {
+          init?.signal?.addEventListener('abort', () =>
+            reject(
+              new DOMException('The operation was aborted.', 'AbortError'),
+            ),
+          );
+        }
+      });
+    });
+    return { release: () => held.forEach((r) => r()), signals };
+  }
+
+  const renderFor = (expiry: string) =>
+    renderHook(({ e }) => useGexStrikeExpiry(false, e), {
+      initialProps: { e: expiry },
+    });
+
+  it('ignores a late response from a request a newer one superseded', async () => {
+    const { release } = holdingFetch({ honorAbort: false }, '2026-05-06');
+    const { result, rerender } = renderFor('2026-05-06');
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4));
+
+    rerender({ e: '2026-05-07' });
+    await waitFor(() =>
+      expect(result.current.data.SPY?.expiry).toBe('2026-05-07'),
+    );
+
+    // The superseded request answers after the newer one landed. Its fetch
+    // ignores the abort here, as a response already in flight can.
+    await act(async () => {
+      release();
+    });
+
+    expect(result.current.data.SPY?.expiry).toBe('2026-05-07');
+    expect(result.current.data.NDX?.expiry).toBe('2026-05-07');
+    expect(result.current.error).toBeNull();
+  });
+
+  it('aborts the superseded request', async () => {
+    const { signals } = holdingFetch({ honorAbort: true }, '2026-05-06');
+    const { rerender } = renderFor('2026-05-06');
+    await waitFor(() => expect(signals).toHaveLength(4));
+    expect(signals.every((s) => !s.aborted)).toBe(true);
+
+    rerender({ e: '2026-05-07' });
+
+    expect(signals.every((s) => s.aborted)).toBe(true);
+  });
+
+  it('does not count an aborted fetch as a missed poll', async () => {
+    // Round one hangs and is aborted by round two, in which SPY really fails
+    // once. One real miss is swallowed; an abort counted as a miss would make
+    // it two and surface the error.
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      const params = new URL(url, 'http://localhost').searchParams;
+      const expiry = params.get('expiry') ?? '';
+      const ticker = params.get('ticker') as GexStrikeExpiryTicker;
+      if (expiry === '2026-05-06') {
+        return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () =>
+            reject(new DOMException('aborted', 'AbortError')),
+          );
+        });
+      }
+      if (ticker === 'SPY') return Promise.resolve(jsonResponse({}, 500));
+      return Promise.resolve(jsonResponse(emptyResp(ticker, { expiry })));
+    });
+    const { result, rerender } = renderFor('2026-05-06');
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4));
+
+    rerender({ e: '2026-05-07' });
+    await waitFor(() =>
+      expect(result.current.data.QQQ?.expiry).toBe('2026-05-07'),
+    );
+    await act(async () => {});
+
+    expect(result.current.error).toBeNull();
+    expect(result.current.errors.SPY).toBeNull();
+  });
+
+  it('keeps loading until the latest request lands, not the superseded one', async () => {
+    const first = holdingFetch({ honorAbort: false }, '2026-05-06');
+    const { result, rerender } = renderFor('2026-05-06');
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4));
+    expect(result.current.loading).toBe(true);
+
+    // The newer request is held too; the superseded one settles first.
+    fetchMock.mockReset();
+    const second = holdingFetch({ honorAbort: false }, '2026-05-07');
+    rerender({ e: '2026-05-07' });
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(4));
+
+    await act(async () => {
+      first.release();
+    });
+    expect(result.current.loading).toBe(true);
+
+    await act(async () => {
+      second.release();
+    });
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.data.SPY?.expiry).toBe('2026-05-07');
+  });
+
+  it('aborts in-flight requests on unmount', async () => {
+    const { signals } = holdingFetch({ honorAbort: true }, '2026-05-06');
+    const { unmount } = renderFor('2026-05-06');
+    await waitFor(() => expect(signals).toHaveLength(4));
+
+    unmount();
+
+    expect(signals.every((s) => s.aborted)).toBe(true);
+  });
 });

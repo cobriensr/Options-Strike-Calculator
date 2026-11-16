@@ -11,6 +11,10 @@
  * the `at` query parameter — used by the historical scrubber. No
  * polling because the past doesn't change.
  *
+ * A newer round (a new date or minute, a poll, a refresh) aborts the one
+ * before it and the older round's answer is ignored, so whichever was
+ * requested last is the one on screen. An abort is not counted as a miss.
+ *
  * Owner-or-guest: matches the API endpoint's auth tier. Public
  * visitors get 401 and the hook stays idle without surfacing a
  * user-visible error.
@@ -151,12 +155,13 @@ async function fetchOne(
   ticker: GexStrikeExpiryTicker,
   expiry: string,
   at: string | null,
+  signal: AbortSignal,
 ): Promise<GexStrikeExpiryResponse | null> {
   const qs = new URLSearchParams({ ticker, expiry });
   if (at) qs.set('at', at);
   const res = await fetch(`/api/gex-strike-expiry?${qs.toString()}`, {
     credentials: 'same-origin',
-    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+    signal: AbortSignal.any([signal, AbortSignal.timeout(FETCH_TIMEOUT_MS)]),
   });
   if (!res.ok) {
     // 401 for anon visitors is expected and non-fatal — the hook
@@ -182,6 +187,9 @@ export function useGexStrikeExpiry(
   const [errors, setErrors] =
     useState<Record<GexStrikeExpiryTicker, string | null>>(emptyErrors);
   const mountedRef = useRef(true);
+  // Cancels any in-flight round on rerun / unmount, so whichever round was
+  // requested last wins and a late answer from an older one cannot clobber it.
+  const abortRef = useRef<AbortController | null>(null);
 
   // Per-ticker consecutive-failure counter. Only surfaces an error once
   // the same ticker fails FAIL_GRACE_COUNT polls in a row, so a single
@@ -190,12 +198,18 @@ export function useGexStrikeExpiry(
     useRef<Record<GexStrikeExpiryTicker, number>>(emptyFailCounts());
 
   const fetchAll = useCallback(async () => {
+    abortRef.current?.abort();
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
+
     try {
       const results = await Promise.allSettled(
-        TICKERS.map((t) => fetchOne(t, expiry, at)),
+        TICKERS.map((t) => fetchOne(t, expiry, at, ctrl.signal)),
       );
 
-      if (!mountedRef.current) return;
+      // Unmounted or superseded by a newer round while in flight: bail before
+      // touching state or the failure counters (an aborted fetch is not a miss).
+      if (!mountedRef.current || ctrl.signal.aborted) return;
 
       const next = emptyData();
       const nextErrors = emptyErrors();
@@ -232,7 +246,9 @@ export function useGexStrikeExpiry(
           : null,
       );
     } catch (err) {
-      // Filter expected abort path; everything else is operator-visible.
+      // A superseded round's abort is expected; everything else is
+      // operator-visible.
+      if (ctrl.signal.aborted) return;
       if (!(err instanceof DOMException && err.name === 'AbortError')) {
         captureUnlessAuth(err, {
           tags: { context: 'gex_strike_expiry_outer' },
@@ -240,7 +256,9 @@ export function useGexStrikeExpiry(
       }
       if (mountedRef.current) setError(getErrorMessage(err));
     } finally {
-      if (mountedRef.current) setLoading(false);
+      // Only clear loading if this round wasn't superseded: a newer round owns
+      // loading until it lands.
+      if (mountedRef.current && abortRef.current === ctrl) setLoading(false);
     }
   }, [expiry, at]);
 
@@ -248,6 +266,7 @@ export function useGexStrikeExpiry(
     mountedRef.current = true;
     return () => {
       mountedRef.current = false;
+      abortRef.current?.abort();
     };
   }, []);
 
