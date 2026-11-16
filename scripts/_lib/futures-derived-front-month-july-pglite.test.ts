@@ -540,6 +540,8 @@ const STALE =
   'deleted before the snapshot scope (price bar older than 15 min):';
 const SWITCH =
   'day change set to NULL across the CLQ6/CLU6 switch (rows priced from a bar at or after 2026-07-21T22:00:00Z whose cash open is before it):';
+const BAND =
+  'volume ratio set to NULL before the snapshot scope (blank only, 20-day base holds unrebuildable bars):';
 
 // ── The world is what the tests say it is ───────────────────────────────────
 
@@ -572,6 +574,19 @@ describe('the rules for the wrong July values, in the dry run', () => {
 
     expect(text).toContain(
       'before-scope rules (owner decision 2026-11-15): GC rows of the before-scope band priced from a bar older than 15 min are deleted by the junk-delete step (--delete-junk-stale); CL day change is set to NULL where the cash-open bar it reads is before the CLQ6/CLU6 switch at 2026-07-21T22:00:00Z and the price bar is from it',
+    );
+
+    // The ratio line counts the rows that stay: N can never include a deleted row, so M does not
+    // either. GC has 5 band rows and 2 are deleted: 3 of 3, with the deleted count named. CL deletes
+    // none: its line, and the line of a band with no deletes anywhere, keep their old shape.
+    expect(text).toContain(
+      `${BAND} GC 3 of 3 rows from 2026-06-15T14:12:00Z to 2026-07-28T00:00:00Z; 2 more are deleted, see below`,
+    );
+    expect(text).toContain(
+      `${BAND} CL 5 of 7 rows from 2026-07-17T00:01:00Z to 2026-07-28T00:00:00Z\n`,
+    );
+    expect(text).toContain(
+      `${BAND} all roots 8 of 10 rows; 2 more are deleted, see below`,
     );
 
     // Rule 1: gc (120 min) and ge (15 min and 1 ms) of the five GC band rows; ga has no bar before it.
@@ -762,6 +777,15 @@ describe('the rules for the wrong July values, on real SQL (pglite)', () => {
     expect(snapshotLine(ids.ge)).toBeUndefined();
 
     // plan.json: the counts of both rules, and the deleted rows in the day split.
+    // The band's row count is the rows that stay (GC 5 less the 2 deleted), as N is: the deleted count
+    // is in beforeScopeRules below.
+    expect(
+      (
+        pointer().frontMonth?.volumeRatioNull as {
+          beforeScope: { byRoot: Record<string, { rows: number }> };
+        }
+      ).beforeScope.byRoot,
+    ).toMatchObject({ GC: { rows: 3, toNull: 3 }, CL: { rows: 7, toNull: 5 } });
     expect(pointer().frontMonth?.beforeScopeRules).toEqual({
       staleDelete: {
         byRoot: {
@@ -812,6 +836,11 @@ describe('the rules for the wrong July values, on real SQL (pglite)', () => {
       `${STALE} GC 0 of 3 rows from 2026-06-15T14:12:00Z to 2026-07-28T00:00:00Z`,
     );
     expect(again).toContain(`${SWITCH} CL 0 of 3 rows`);
+    // The deleted rows are gone, so the ratio line has the old shape again: 3 rows stay, none left to blank.
+    expect(again).toContain(
+      `${BAND} GC 0 of 3 rows from 2026-06-15T14:12:00Z to 2026-07-28T00:00:00Z\n`,
+    );
+    expect(again).toContain(`${BAND} all roots 0 of 10 rows\n`);
     expect(again).toContain('--expect-snapshots 0');
     // Nothing to delete, so the apply command carries no delete flag.
     expect(again).not.toContain('--expect-junk-deletes');

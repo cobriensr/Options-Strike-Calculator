@@ -1529,7 +1529,15 @@ export interface VolumeBlank {
    * read for the NULL rule alone, with the ones among them that have a stored ratio, which are
    * written. Null until they are read.
    */
-  band: { rows: number; toNull: number; fromMs: number; toMs: number } | null;
+  band: {
+    /** The band's rows that stay: `toNull` counts among these, so the rows the stale-band rule deletes are not here. */
+    rows: number;
+    toNull: number;
+    /** The band's rows the junk-delete step deletes instead (FRONT_MONTH.staleBandDelete). */
+    deleted: number;
+    fromMs: number;
+    toMs: number;
+  } | null;
 }
 
 /**
@@ -2534,15 +2542,18 @@ async function blankBeforeScope(
   if (band == null || stats == null) return;
   const rows = await readSnapshots(symbol, band.fromMs, band.toMs);
   const group = report.daySplit?.beforeScope;
+  const stale = await planStaleBand(symbol, rows, band);
+  const deleted = stale?.deletes.size ?? 0;
+  // `rows` is what stays, as `toNull` is: a deleted row gets no write, so it can never be in `toNull`.
   const bandStats = {
-    rows: rows.length,
+    rows: rows.length - deleted,
     toNull: 0,
+    deleted,
     fromMs: band.fromMs,
     toMs: band.toMs,
   };
   stats.band = bandStats;
   if (group != null) group.inScope += rows.length;
-  const stale = await planStaleBand(symbol, rows, band);
   const across = await planContractSwitch(symbol, rows, band);
   report.bandRules = {
     staleDelete: stale?.stats ?? null,
@@ -4223,14 +4234,19 @@ function volumeBandText(
   if (bands.length === 0) return [];
   const rows = bands.reduce((n, b) => n + b.band.rows, 0);
   const toNull = bands.reduce((n, b) => n + b.band.toNull, 0);
+  const deleted = bands.reduce((n, b) => n + b.band.deleted, 0);
   return [
     ...bands.map(
       ({ symbol, band }) =>
-        `  ${BAND_PREFIX} ${symbol} ${count(band.toNull)} of ${count(band.rows)} rows from ${isoSecond(band.fromMs)} to ${isoSecond(band.toMs)}`,
+        `  ${BAND_PREFIX} ${symbol} ${count(band.toNull)} of ${count(band.rows)} rows from ${isoSecond(band.fromMs)} to ${isoSecond(band.toMs)}${deletedMoreText(band.deleted)}`,
     ),
-    `  ${BAND_PREFIX} all roots ${count(toNull)} of ${count(rows)} rows`,
+    `  ${BAND_PREFIX} all roots ${count(toNull)} of ${count(rows)} rows${deletedMoreText(deleted)}`,
   ];
 }
+
+/** The rows of the band the stale rule deletes, which the counts before it leave out; nothing when there are none. */
+const deletedMoreText = (deleted: number): string =>
+  deleted === 0 ? '' : `; ${count(deleted)} more are deleted, see below`;
 
 const STALE_BAND_PREFIX = `deleted before the snapshot scope (price bar older than ${MAX_BAR_AGE_MS / MINUTE_MS} min):`;
 
@@ -4311,7 +4327,8 @@ export interface FrontMonthPlanBlock {
     all: { inScope: number; toNull: number };
     /**
      * The same rule for the rows before the snapshot scope (owner decision 2026-11-14): per root the
-     * rows read between `from` and `to` and the ones with a stored ratio, which are written alone.
+     * rows between `from` and `to` that stay (the stale rule's deleted rows are counted in
+     * `beforeScopeRules`, not here) and the ones with a stored ratio, which are written.
      */
     beforeScope: {
       byRoot: Record<
