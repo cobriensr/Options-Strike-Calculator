@@ -131,6 +131,32 @@ panels follow the new date too".
 - **Stale comments.** `LotteryFinder/index.tsx:462` says "ET-midnight
   auto-roll" but the code compares the CT date.
 
+### Found while building Phases 4 and 5
+
+- **The scrubbed minute travels with its date.** An effect that clears the
+  minute on a date change runs one commit late. The commit that carries the
+  new date (the roll, or a date picked while scrubbed) still holds the old
+  minute, so the panel asks for the new date at the old minute before the
+  clean request. Store the minute as `{date, minute}` (a scope string, or a
+  `{scope, at}` pair), read it only while that date is selected, and drop it
+  during render when it no longer matches. Dropping it also stops it coming
+  back if the date returns. Done for strike battle map, dealer regime, dark
+  pool (`useTimeGridScrubber(scope)`) and the heatmap. **Every remaining
+  phase that has a scrubbed time follows this rule**, and its tests assert
+  over every hook or fetch call, not the last one.
+- **`useGexStrikeExpiry`.** It now drops superseded responses: a new key
+  `(expiry, at)` aborts the round in flight and the older answer is ignored.
+  A poll tick or a refresh with the same key lets the round in flight finish.
+  The request timeout equals the poll interval, so aborting on every poll made
+  a hung endpoint never count as a miss.
+- **Raw `type="date"` inputs.** A native date input fires `input` with `''`
+  on the first `0` of a zero-padded month or day, and with garbage years like
+  `0002-04-09` while the year is typed. A raw input that maps `''` to today
+  loses the typing. Each raw input moves to the shared `DateInput`, which
+  holds those values as a draft until the date is complete or the field is
+  left. This was done for the heatmap and the Periscope lottery. Still to
+  move: pin setup (6a), Lottery Finder (7a) and Silent Boom (7b).
+
 ## Phases
 
 Each phase is one commit of 5 files or fewer. Each runs `npm run review`,
@@ -163,16 +189,22 @@ mutation.
 6. **GEX landscape, pin setup and opening flow** (display date and `max`),
    in two commits:
    - **6a. GEX landscape and pin setup**, plus their tests (4 files).
+     Pin setup's raw date input moves to the shared `DateInput`. If either
+     panel has a scrubbed time, store it with its date.
    - **6b. Opening flow**, plus its test (2 files).
 7. **Lottery Finder and Silent Boom.** Neither panel has a rollover test
    today. The CT comparators move with them (design item 3).
    - **7a. Lottery Finder and `useLotteryFinder`**, plus tests.
      - Replace `manualDatePick` and the 60 s interval with the helper.
-     - Reset the minute on a date change.
+     - Reset the minute on a date change: store it with its date.
      - Move `useLotteryFinder`'s CT today onto the shared clock.
+     - Move the raw date input (`LotteryFinder/index.tsx:1639`) to the shared
+       `DateInput`.
      - Fix the stale comment.
-   - **7b. Silent Boom**, plus tests. Same changes as 7a, without the minute
-     fix: Silent Boom already resets on a date change.
+   - **7b. Silent Boom**, plus tests. Same changes as 7a, including the raw
+     date input (`SilentBoom/index.tsx:1560`), and storing any scrubbed minute
+     with its date. Silent Boom already resets on a date change, but by an
+     effect, which runs one commit late.
    - **7c. The row hooks** `useNetFlowHistory`, `useContractTape` and
      `useTickerCandles`: their today comparisons move onto the shared
      clock.
