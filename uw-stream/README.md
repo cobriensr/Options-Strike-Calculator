@@ -567,11 +567,12 @@ How to read a late-data minute:
 - A handler's `flush_max_s` is high, `loop_lag_max_s` is near 0 and
   `pool_in_use_max` is below the pool size: the write itself was slow, so
   Neon or the network. Check `pool_size_min` first (next bullet).
-- A `pool_size_min` below `pool_size_max` in the same minute, once the pool
-  is warm (not in the first minutes after a deploy, while it grows from its
-  0 starting connections), is pool churn. asyncpg closes a pool connection
-  idle for 300 s (its default `max_inactive_connection_lifetime`, which
-  `src/db.py` leaves alone) and hands connections out last in, first out, so
+- A `pool_size_min` below `pool_size_max` in a minute where a handler entry
+  shows `flushes` above 0, once the pool is warm (not in the first minutes
+  after a deploy: the pool starts at 0 connections, the boot check opens 1,
+  and it grows as flushes need more), is pool churn. asyncpg closes a pool
+  connection idle for 300 s (its default `max_inactive_connection_lifetime`,
+  which `src/db.py` leaves alone) and hands connections out last in, first out, so
   the ones only a burst uses expire and reconnect on the next burst. That
   fits lag at the `:x0` and `:x5` minutes. asyncpg counts only connected
   holders in both `get_size()` and `get_idle_size()`, so a flush waiting
@@ -581,11 +582,13 @@ How to read a late-data minute:
   dip; `pool_size_min` shows it. It is a measurement, not a fix: nothing here
   changes a pool setting.
 - The pool has no floor (`min_size=0` in `src/db.py`), so Neon can suspend
-  its compute when nothing writes, and the pool starts at 0 connections.
-  `pool_size_min` of 0 in a quiet minute is normal: idle connections close
-  after 300 s and are not reopened until a write needs one. Boot opens one
-  connection for its `SELECT 1` check, which closes after 300 s idle like the
-  rest. Spec: `docs/superpowers/specs/2026-11-16-uw-stream-pool-floor.md`.
+  its compute when nothing writes. It starts at 0 connections, and boot opens
+  1 for its `SELECT 1` check. With no floor, every connection closes after
+  300 s idle and none is reopened until a write needs one. So in a minute
+  where no handler entry shows `flushes` above 0, `pool_size_min` below
+  `pool_size_max`, down to 0, is that idle close and not churn, and a
+  `pool_size_min` of 0 in a quiet minute is normal. Spec:
+  `docs/superpowers/specs/2026-11-16-uw-stream-pool-floor.md`.
 - `pool_in_use_max` equals the pool's maximum (10) in the same minute as a
   high `flush_max_s`: flushes waited for a free connection. The pool was
   exhausted.

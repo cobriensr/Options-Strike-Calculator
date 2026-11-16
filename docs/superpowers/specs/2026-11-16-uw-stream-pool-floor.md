@@ -49,15 +49,24 @@ Cost: with the 2-CU minimum, an awake weekend is up to about 100 CU-hours.
 - Boot check, so a bad `DATABASE_URL` still fails at boot: with `min_size=0`
   `create_pool` opens no connection, and on a weekend nothing writes until the
   Sunday 17:00 CT open. After the pool is created, `init_pool` runs `SELECT 1`
-  through `fetch` (the existing transient retry). If the check raises, close
-  the pool, reset `_pool` to None and re-raise, so `init_pool` stays idempotent
-  and nothing holds a half-made pool. The check's connection is closed after
-  300 s idle (or by Neon's suspend) and nothing reconnects it.
+  through `fetch` (the existing transient retry). If the check raises, reset
+  `_pool` to None, terminate the pool and re-raise the check's error, so
+  `init_pool` stays idempotent and nothing holds a half-made pool. It is
+  `terminate()` (synchronous), not `close()`: a failed check leaves nothing to
+  drain, and `close()` waits for every connection to be released. If
+  `terminate()` itself raises, that is logged as a warning and the check's
+  error still reaches the caller, so a bad `DATABASE_URL` surfaces as itself.
+  The check's connection is closed after 300 s idle (or by Neon's suspend) and
+  nothing reconnects it.
 - `uw-stream/requirements.txt`: `asyncpg==0.32.0`, with a one-line comment
   pointing at this spec.
 - `uw-stream/tests/test_db.py`: assert `min_size == 0` and `max_size == 10`;
-  the boot check runs once; a failing check closes the pool, leaves `_pool` None
-  and raises; a second `init_pool` after a success does not re-run the check.
+  the boot check runs once; a failing check terminates the pool, leaves `_pool`
+  None and raises; a failing `terminate()` does not replace the check's error;
+  a second `init_pool` after a success does not re-run the check. Three tests
+  leave `fetch` unpatched and run the real boot path (`get_pool()`, then the
+  retry policy): success, two transient errors then success, and three
+  transient errors (the boot fails and the pool is terminated).
 - `uw-stream/README.md` Pipeline diagnostics: the pool now starts at 0
   connections, not 2. `pool_size_min` at 0 in a quiet minute is normal.
 

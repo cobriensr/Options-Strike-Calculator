@@ -15,6 +15,7 @@ With no floor, ``create_pool`` opens no connection, so ``init_pool`` runs
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import asyncpg
@@ -33,10 +34,37 @@ def _reset_pool_singleton():
 
 
 def _fake_pool() -> MagicMock:
-    """A pool double: only ``close`` is awaited by ``init_pool`` itself."""
+    """A pool double for tests that patch ``db.fetch``: ``init_pool`` itself only
+    calls ``terminate`` (sync) on a failed check, never ``close``. ``close`` is an
+    ``AsyncMock`` so a test can assert it was not awaited.
+    """
     pool = MagicMock()
     pool.close = AsyncMock()
     return pool
+
+
+def _pool_with_conn(conn: MagicMock) -> MagicMock:
+    """A pool double for tests that run the real ``fetch``: ``acquire()`` is an
+    async context manager yielding ``conn``, as asyncpg's is.
+    """
+
+    @asynccontextmanager
+    async def _acquire():
+        yield conn
+
+    pool = MagicMock()
+    pool.acquire = MagicMock(side_effect=_acquire)
+    pool.close = AsyncMock()
+    return pool
+
+
+def _conn(*fetch_results) -> MagicMock:
+    """A connection double whose ``fetch`` yields ``fetch_results`` in order
+    (an exception instance is raised).
+    """
+    conn = MagicMock()
+    conn.fetch = AsyncMock(side_effect=list(fetch_results))
+    return conn
 
 
 @pytest.mark.asyncio
@@ -108,10 +136,10 @@ async def test_second_init_pool_does_not_rerun_the_boot_check():
 
 
 @pytest.mark.asyncio
-async def test_failed_boot_check_closes_the_pool_and_propagates():
+async def test_failed_boot_check_terminates_the_pool_and_propagates():
     """A bad DATABASE_URL must still fail the boot: the check's error reaches the
-    caller, the pool is closed, and ``_pool`` is back to None so nothing holds a
-    half-made pool.
+    caller, the pool is terminated (nothing to drain, so no wait on ``close``),
+    and ``_pool`` is back to None so nothing holds a half-made pool.
     """
     fake_pool = _fake_pool()
     failure = asyncpg.InvalidPasswordError("password authentication failed")
@@ -125,10 +153,36 @@ async def test_failed_boot_check_closes_the_pool_and_propagates():
         await db.init_pool()
 
     assert caught.value is failure
-    fake_pool.close.assert_awaited_once()
+    fake_pool.terminate.assert_called_once_with()
+    fake_pool.close.assert_not_awaited()
     assert db._pool is None
     with pytest.raises(RuntimeError, match="Pool not initialized"):
         db.get_pool()
+
+
+@pytest.mark.asyncio
+async def test_a_failing_terminate_does_not_replace_the_boot_check_error(service_log_records):
+    """If the cleanup itself raises, the caller still sees the check's error (a bad
+    DATABASE_URL must not surface as a terminate error), ``_pool`` is None, and the
+    cleanup failure is logged.
+    """
+    fake_pool = _fake_pool()
+    fake_pool.terminate.side_effect = RuntimeError("terminate blew up")
+    failure = asyncpg.InvalidPasswordError("password authentication failed")
+
+    with (
+        patch("db.asyncpg.create_pool", AsyncMock(return_value=fake_pool)),
+        patch("db.fetch", AsyncMock(side_effect=failure)),
+        pytest.raises(asyncpg.InvalidPasswordError) as caught,
+    ):
+        await db.init_pool()
+
+    assert caught.value is failure
+    fake_pool.terminate.assert_called_once_with()
+    assert db._pool is None
+    warnings = [r for r in service_log_records if "terminate failed" in r.getMessage()]
+    assert len(warnings) == 1
+    assert warnings[0].err == "terminate blew up"
 
 
 @pytest.mark.asyncio
@@ -148,8 +202,8 @@ async def test_init_pool_retries_from_scratch_after_a_failed_boot_check():
     assert result is second_pool
     assert create_pool_mock.await_count == 2
     assert fetch_mock.await_count == 2
-    first_pool.close.assert_awaited_once()
-    second_pool.close.assert_not_awaited()
+    first_pool.terminate.assert_called_once_with()
+    second_pool.terminate.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -167,3 +221,71 @@ async def test_pool_ready_is_logged_only_after_the_boot_check_passes(service_log
 
     ready = [r.getMessage() for r in service_log_records if "pool ready" in r.getMessage()]
     assert ready == ["asyncpg pool ready (min=0 max=10)"]
+
+
+# The tests below leave ``db.fetch`` unpatched, so the boot check runs the real
+# path: fetch -> get_pool() -> pool.acquire() -> conn.fetch, inside _with_db_retry.
+# That is what needs ``_pool`` set before the check runs.
+
+
+@pytest.fixture
+def instant_retries(monkeypatch):
+    """No backoff sleep between retry attempts."""
+    monkeypatch.setattr(db, "_DB_RETRY_BACKOFF_S", (0, 0))
+
+
+@pytest.mark.asyncio
+async def test_boot_check_goes_through_the_pool_when_fetch_is_not_patched():
+    conn = _conn([])
+    pool = _pool_with_conn(conn)
+
+    with patch("db.asyncpg.create_pool", AsyncMock(return_value=pool)):
+        result = await db.init_pool()
+
+    assert result is pool
+    assert db._pool is pool
+    conn.fetch.assert_awaited_once_with("SELECT 1")
+    pool.acquire.assert_called_once_with()
+    pool.terminate.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_boot_check_retries_a_transient_error_and_keeps_the_pool(instant_retries):
+    """Two ``InterfaceError`` (a connection torn down under the pool) then a
+    success: the retry policy absorbs them, so the boot goes on.
+    """
+    conn = _conn(
+        asyncpg.InterfaceError("connection is closed"),
+        asyncpg.InterfaceError("connection is closed"),
+        [],
+    )
+    pool = _pool_with_conn(conn)
+
+    with patch("db.asyncpg.create_pool", AsyncMock(return_value=pool)):
+        result = await db.init_pool()
+
+    assert result is pool
+    assert db._pool is pool
+    assert conn.fetch.await_count == 3
+    pool.terminate.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_boot_check_fails_the_boot_when_the_transient_error_persists(instant_retries):
+    """Three transient errors exhaust the retries: the last one surfaces, the pool
+    is terminated and ``_pool`` is None.
+    """
+    errors = [asyncpg.InterfaceError(f"connection is closed {n}") for n in range(3)]
+    conn = _conn(*errors)
+    pool = _pool_with_conn(conn)
+
+    with (
+        patch("db.asyncpg.create_pool", AsyncMock(return_value=pool)),
+        pytest.raises(asyncpg.InterfaceError) as caught,
+    ):
+        await db.init_pool()
+
+    assert caught.value is errors[-1]
+    assert conn.fetch.await_count == 3
+    pool.terminate.assert_called_once_with()
+    assert db._pool is None

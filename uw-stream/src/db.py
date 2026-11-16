@@ -325,9 +325,9 @@ async def init_pool() -> asyncpg.Pool:
     """Create the global pool and prove the database answers. Idempotent.
 
     The pool opens no connection at creation (``min_size=0``), so a boot
-    check runs ``SELECT 1`` through ``fetch``. A failing check closes the pool,
-    leaves ``_pool`` None and re-raises: a bad ``DATABASE_URL`` still stops the
-    boot, and a retry builds a fresh pool.
+    check runs ``SELECT 1`` through ``fetch``. A failing check terminates the
+    pool, leaves ``_pool`` None and re-raises the check's error: a bad
+    ``DATABASE_URL`` still stops the boot, and a retry builds a fresh pool.
     """
     global _pool
     if _pool is not None:
@@ -350,12 +350,23 @@ async def init_pool() -> asyncpg.Pool:
         command_timeout=30,
         init=_init_connection,
     )
+    # fetch() reads the pool through get_pool(), so _pool is set before the check.
     _pool = pool
     try:
         await fetch("boot_check", "SELECT 1")
     except BaseException:
         _pool = None
-        await pool.close()
+        # terminate(), not close(): a failed check leaves nothing to drain, and
+        # close() waits for every connection to be released. A cleanup failure
+        # is logged and must not replace the check's error (a bad DATABASE_URL
+        # has to surface as itself), so the bare raise below re-raises that.
+        try:
+            pool.terminate()
+        except Exception as cleanup_exc:
+            log.warning(
+                "asyncpg pool terminate failed after a failed boot check",
+                extra={"err_type": type(cleanup_exc).__name__, "err": str(cleanup_exc)},
+            )
         raise
     log.info("asyncpg pool ready (min=0 max=10)")
     return pool
