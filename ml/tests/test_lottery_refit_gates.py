@@ -727,8 +727,15 @@ function qasExprText(fireAlias: QasFireAlias): string {
 
 
 def _assert_qas_expression_pinned(source: str) -> None:
-    start = source.index("function qasExprText(")
-    body = _squash(source[start : source.index("\n}\n", start)])
+    start = source.find("function qasExprText(")
+    end = source.find("\n}\n", start)
+    if start == -1 or end == -1:
+        _stale_floor(
+            "qasExprText is not in api/lottery-finder.ts as a function with a closing "
+            "brace (renamed, moved or reshaped), so the feed's qas expression cannot be "
+            "checked against the one the floor was derived from"
+        )
+    body = _squash(source[start:end])
     if body != _squash(QAS_EXPR_TEXT_BODY):
         _stale_floor(
             "qasExprText in api/lottery-finder.ts is no longer the expression the floor "
@@ -742,31 +749,41 @@ def test_the_feed_qas_expression_is_the_one_the_floor_was_derived_from():
 
 
 @pytest.mark.parametrize(
-    ("old", "new"),
+    ("old", "new", "reason"),
     [
         # A term inside GREATEST, before the deduct term.
         (
             "COALESCE(${fireAlias}score, 0) `",
             "COALESCE(${fireAlias}score, 0) + 1 `",
+            "no longer the expression",
         ),
         # A term inside GREATEST, after the deduct term.
         (
             "COALESCE(${fireAlias}round_trip_score_deduct, 0)) `",
             "COALESCE(${fireAlias}round_trip_score_deduct, 0) + 1) `",
+            "no longer the expression",
         ),
         # A term between GREATEST(...) and the inversion bonus.
-        ("`+ ${INVERSION_BONUS_CASE_SQL})`", "`+ 1 + ${INVERSION_BONUS_CASE_SQL})`"),
+        (
+            "`+ ${INVERSION_BONUS_CASE_SQL})`",
+            "`+ 1 + ${INVERSION_BONUS_CASE_SQL})`",
+            "no longer the expression",
+        ),
+        # The function renamed, so there is nothing to compare.
+        ("function qasExprText(", "function qasExprTextRenamed(", "is not in"),
     ],
-    ids=["before the deduct", "after the deduct", "before the bonus"],
+    ids=["before the deduct", "after the deduct", "before the bonus", "renamed"],
 )
-def test_an_extra_qas_term_fails_the_pin_instead_of_leaving_the_floor_stale(old, new):
+def test_an_extra_qas_term_fails_the_pin_instead_of_leaving_the_floor_stale(
+    old, new, reason
+):
     # The three fragments test_feed_qas_mirrors_the_feeds_displayed_score_sql looks for
     # miss a term put here; the pin does not. The replace must change the text, or a
     # moved line would leave this case vacuous.
     text = LOTTERY_FINDER.read_text(encoding="utf-8")
     mutant = text.replace(old, new, 1)
     assert mutant != text, f"{old!r} is no longer in lottery-finder.ts"
-    with pytest.raises(AssertionError, match="no longer the expression") as raised:
+    with pytest.raises(AssertionError, match=reason) as raised:
         _assert_qas_expression_pinned(mutant)
     assert "NULL_SCORE_QAS_MAX" in str(raised.value)
     assert "FEED_CUTOFF_FLOOR" in str(raised.value)
@@ -777,7 +794,9 @@ def test_an_extra_qas_term_fails_the_pin_instead_of_leaving_the_floor_stale(old,
 # brackets. Neither may write a value above 0. A guard that only reads the integers it
 # understands would pass a `+2`, a `0.5`, a named constant or a changed computation
 # unparsed, so each parse takes every token raw, fails on any that is not an integer
-# literal, and pins as squashed text the statements that carry a bracket to the column.
+# literal, and pins as squashed text the statements that carry a bracket to the column,
+# the SQL `SET` clauses that write it included. An entry in a bracket list that is not
+# a plain object or tuple (a spread, a star) fails too.
 _INTEGER = re.compile(r"-?\d+")
 
 
@@ -801,6 +820,32 @@ def _pin_statements(source: str, pins: tuple[tuple[str, str, str], ...]) -> None
             _stale_floor(f"expected one {what} in the source, found {len(found)}")
         if _squash(found[0]) != expected:
             _stale_floor(f"{what} is now `{_squash(found[0])}`, not `{expected}`")
+
+
+# The assignments to the column in a SQL `SET` clause, each with its right-hand side. A
+# `WHERE round_trip_score_deduct = 0` comparison is not one, so only text after a `SET`
+# and before the clause ends (WHERE, FROM, RETURNING, a closing quote or backtick) counts.
+_SET_CLAUSE = re.compile(
+    r"\bSET\b(.*?)(?=\bWHERE\b|\bFROM\b|\bRETURNING\b|'|`|;|\Z)", re.S
+)
+_COLUMN_ASSIGNMENT = re.compile(
+    r"\bround_trip_score_deduct\s*=(?!=)\s*(.*?)\s*(?:,|\Z)", re.S
+)
+
+
+def _pin_column_writes(source: str, where: str, expected: list[str]) -> None:
+    """`source` assigns `round_trip_score_deduct` in exactly the `expected` right-hand
+    sides, in order, and each squashes to what is expected."""
+    found = [
+        _squash(rhs)
+        for clause in _SET_CLAUSE.findall(source)
+        for rhs in _COLUMN_ASSIGNMENT.findall(clause)
+    ]
+    if found != expected:
+        _stale_floor(
+            f"{where} assigns round_trip_score_deduct {len(found)} time(s), to {found}, "
+            f"not {len(expected)} time(s), to {expected}"
+        )
 
 
 # What the cron does with a bracket, up to the UPDATE that writes it.
@@ -841,11 +886,18 @@ def _cron_deducts(source: str) -> list[int]:
     brackets = re.search(r"const BRACKETS\b[^=]*=\s*\[(.*?)\];", source, re.S)
     if brackets is None:
         _stale_floor("BRACKETS moved or changed shape in evaluate-round-trip.ts")
-    entries = brackets[1].count("{")
-    tokens = [t.strip() for t in re.findall(r"\bdeduct:\s*([^,}]+)", brackets[1])]
-    if not tokens or len(tokens) != entries:
+    text = re.sub(r"//[^\n]*|/\*.*?\*/", "", brackets[1], flags=re.S)
+    entries = re.findall(r"\{[^{}]*\}", text)
+    leftover = _squash(re.sub(r"\{[^{}]*\}", "", text)).strip(" ,")
+    if leftover:
         _stale_floor(
-            f"BRACKETS has {entries} entries but {len(tokens)} `deduct:` values"
+            f"BRACKETS holds `{leftover}` besides its entries, so a spread or a computed "
+            "entry could add a deduct that cannot be read here"
+        )
+    tokens = [t.strip() for t in re.findall(r"\bdeduct:\s*([^,}]+)", text)]
+    if not tokens or len(tokens) != len(entries):
+        _stale_floor(
+            f"BRACKETS has {len(entries)} entries but {len(tokens)} `deduct:` values"
         )
     uses = len(re.findall(r"\bBRACKETS\b", source))
     if uses != 2:
@@ -854,6 +906,8 @@ def _cron_deducts(source: str) -> list[int]:
             "definition and the loop in computeDeduct), so something else may add to it"
         )
     _pin_statements(source, CRON_PINS)
+    # The two UPDATEs (lottery, silent boom) write the pushed value as it is.
+    _pin_column_writes(source, "evaluate-round-trip.ts", ["u.deduct", "u.deduct"])
     compute = re.search(
         r"function computeDeduct\([^)]*\)[^{]*\{(.*?)\n\}", source, re.S
     )
@@ -903,10 +957,18 @@ def _backfill_deducts(source: str) -> list[int]:
     if block is None:
         _stale_floor("BRACKETS moved or changed shape in backfill_round_trip_score.py")
     text = re.sub(r"#[^\n]*", "", block[1])
-    entries = text.count("(")
+    entries = re.findall(r"\([^()]*\)", text)
+    leftover = _squash(re.sub(r"\([^()]*\)", "", text)).strip(" ,")
+    if leftover:
+        _stale_floor(
+            f"BRACKETS holds `{leftover}` besides its tuples, so a star or a computed "
+            "entry could add a deduct that cannot be read here"
+        )
     tokens = [t.strip() for t in re.findall(r"\(\s*[^,()]+,([^,()]+)\)", text)]
-    if not tokens or len(tokens) != entries:
-        _stale_floor(f"BRACKETS has {entries} tuples but {len(tokens)} deduct values")
+    if not tokens or len(tokens) != len(entries):
+        _stale_floor(
+            f"BRACKETS has {len(entries)} tuples but {len(tokens)} deduct values"
+        )
     uses = len(re.findall(r"\bBRACKETS\b", source))
     if uses != 2:
         _stale_floor(
@@ -914,6 +976,19 @@ def _backfill_deducts(source: str) -> list[int]:
             "(its definition and the loop in compute_deduct)"
         )
     _pin_statements(source, BACKFILL_PINS)
+    # The one UPDATE that sets the deduct takes the pinned payload as it is.
+    _pin_column_writes(source, "backfill_round_trip_score.py", ["%s"])
+    # Each of these appears once today. A second with_columns could reshape the column
+    # after the pinned one, and a second `def compute_deduct` could replace the function.
+    for pattern, what in (
+        (r"\bwith_columns\b", "with_columns"),
+        (r"\bdef compute_deduct\b", "def compute_deduct"),
+    ):
+        count = len(re.findall(pattern, source))
+        if count != 1:
+            _stale_floor(
+                f"`{what}` appears {count} times in backfill_round_trip_score.py, not once"
+            )
     compute = re.search(
         r"^def compute_deduct\([^)]*\)[^\n]*:\n((?:[ \t]+[^\n]*\n|[ \t]*\n)+)",
         source,
@@ -1012,6 +1087,29 @@ def test_the_round_trip_deduct_is_never_positive():
             "const ded = updates.map((u) => u.deduct + 1);",
             "list of deducts handed to the UPDATE is now",
         ),
+        # The SET clauses that put the value in the column.
+        (
+            "round_trip_score_deduct = u.deduct",
+            "round_trip_score_deduct = ABS(u.deduct)",
+            "assigns round_trip_score_deduct",
+        ),
+        (
+            "round_trip_score_deduct = u.deduct",
+            "round_trip_score_deduct = u.deduct + 3",
+            "assigns round_trip_score_deduct",
+        ),
+        (
+            "  return 0;\n}",
+            "  return 0;\n}\n"
+            "const RAW = `UPDATE lottery_finder_fires SET round_trip_score_deduct = 2`;",
+            "assigns round_trip_score_deduct",
+        ),
+        # A spread in the bracket list, which an entry count does not see.
+        (
+            "{ cutoff: -0.1, deduct: -1 },",
+            "{ cutoff: -0.1, deduct: -1 },\n  ...EXTRA_BRACKETS,",
+            "besides its entries",
+        ),
     ],
     ids=[
         "added bracket",
@@ -1027,6 +1125,10 @@ def test_the_round_trip_deduct_is_never_positive():
         "no-flow ternary",
         "push changed",
         "ded changed",
+        "column write wrapped",
+        "column write plus 3",
+        "third column write",
+        "spread entry",
     ],
 )
 def test_a_bad_cron_deduct_fails_the_guard_instead_of_leaving_the_floor_stale(
@@ -1084,6 +1186,37 @@ def test_a_bad_cron_deduct_fails_the_guard_instead_of_leaving_the_floor_stale(
             "deduct column is now",
         ),
         ("int(r['deduct']),", "int(r['deduct']) + 1,", "UPDATE payload is now"),
+        # The SET clause that puts the value in the column.
+        (
+            "round_trip_score_deduct = %s '",
+            "round_trip_score_deduct = ABS(%s) '",
+            "assigns round_trip_score_deduct",
+        ),
+        (
+            "round_trip_score_deduct = %s '",
+            "round_trip_score_deduct = %s + 3 '",
+            "assigns round_trip_score_deduct",
+        ),
+        (
+            "args = p.parse_args()",
+            "args = p.parse_args()\n"
+            "    RAW = 'UPDATE lottery_finder_fires SET round_trip_score_deduct = 2'",
+            "assigns round_trip_score_deduct",
+        ),
+        # A star in the bracket list, which a tuple count does not see.
+        ("(-0.10, -1),", "(-0.10, -1),\n    *EXTRA,", "besides its tuples"),
+        # The column reshaped after the pinned statement, or the function replaced.
+        (
+            "eligible = eligible.with_columns(pl.Series('deduct', deducts))",
+            "eligible = eligible.with_columns(pl.Series('deduct', deducts))\n"
+            "    eligible = eligible.with_columns((pl.col('deduct') * -1).alias('deduct'))",
+            "`with_columns` appears 2 times",
+        ),
+        (
+            "def main() -> int:",
+            "def compute_deduct(net_pct):\n    return 5\n\n\ndef main() -> int:",
+            "`def compute_deduct` appears 2 times",
+        ),
     ],
     ids=[
         "added bracket",
@@ -1098,6 +1231,12 @@ def test_a_bad_cron_deduct_fails_the_guard_instead_of_leaving_the_floor_stale(
         "computation changed",
         "column changed",
         "payload changed",
+        "column write wrapped",
+        "column write plus 3",
+        "third column write",
+        "star entry",
+        "second with_columns",
+        "second def",
     ],
 )
 def test_a_bad_backfill_deduct_fails_the_guard_instead_of_leaving_the_floor_stale(
