@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useState } from 'react';
 import {
   boolPersistOpts,
   convictionFloorPersistOpts,
@@ -14,6 +14,8 @@ import {
 } from '../../hooks/usePersistedState.js';
 import { SectionBox } from '../ui/SectionBox.js';
 import { CompactDisclosure } from '../ui/CompactDisclosure.js';
+import { DateInput } from '../ui/DateInput.js';
+import { useFollowedDate } from '../../hooks/useFollowedDate.js';
 import { useLotteryFinder } from '../../hooks/useLotteryFinder.js';
 import { useLotteryFinderTickerCounts } from '../../hooks/useLotteryFinderTickerCounts.js';
 import { useNeverVanishFeed } from '../../hooks/useNeverVanishFeed.js';
@@ -358,16 +360,6 @@ const MODE_FILTERS: Array<{ value: LotteryMode | null; label: string }> = [
   { value: 'B_multi_day_DTE1_3', label: 'Mode B (DTE 1-3)' },
 ];
 
-const todayCt = (): string => {
-  const fmt = new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'America/Chicago',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  });
-  return fmt.format(new Date());
-};
-
 /**
  * djb2 string hash → unsigned base36. Produces a single opaque token with
  * NO `:`/`|` delimiters, so it can be appended to a `:`-delimited union
@@ -471,16 +463,33 @@ export function LotteryFinderSection({
   marketOpen,
   compact = false,
 }: LotteryFinderSectionProps) {
-  const [date, setDate] = useState<string>(todayCt());
-  // True once the user has manually picked a date from the date input.
-  // Gates the ET-midnight auto-roll (finding #4): a tab left open past
-  // midnight should advance to the new trading day so the never-vanish
-  // union rescopes (storageKey flips) instead of upserting the new day's
-  // fires into the prior day's union — but ONLY when the user is sitting on
-  // the live day, never when they've scrubbed back to a historical date.
-  const [manualDatePick, setManualDatePick] = useState<boolean>(false);
-  /** 1-minute bucket the slider is on; null = whole day. */
-  const [minute, setMinute] = useState<string | null>(null);
+  // The trading day (ET, the date lottery fires are stamped with): the
+  // owner's pick, else today, which it follows across ET midnight. A tab left
+  // open past midnight moves to the new day in the same commit as every other
+  // reader of the shared clock, so the never-vanish union rescopes
+  // (storageKey flips) instead of upserting the new day's fires into the
+  // prior day's union — but only when the owner is following today: a date
+  // they picked stays put. `today` is that same clock, so the date and every
+  // live check turn together.
+  const { date, setDate, today } = useFollowedDate();
+  const dateInputId = useId();
+  // 1-minute bucket the slider is on; null = whole day. It is stored with the
+  // date it was set on and read only while that date is selected: indexed
+  // against another day it would ask the server for that day at a minute that
+  // was picked on this one. A minute for another date is dropped during
+  // render, with no effect (an effect runs one commit late, so the commit
+  // that carries the new date would still ask for it at the old minute), and
+  // it cannot come back if the date returns.
+  const [scrub, setScrub] = useState<{ date: string; minute: string } | null>(
+    null,
+  );
+  if (scrub !== null && scrub.date !== date) setScrub(null);
+  const minute = scrub !== null && scrub.date === date ? scrub.minute : null;
+  const setMinute = useCallback(
+    (next: string | null) =>
+      setScrub(next === null ? null : { date, minute: next }),
+    [date],
+  );
   const [exitPolicy, setExitPolicy] = useState<ExitPolicy>(
     'realizedTrail30_10Pct',
   );
@@ -569,8 +578,27 @@ export function LotteryFinderSection({
     DEFAULT_TAKEIT_FLOOR,
     floatPersistOpts,
   );
-  /** 0-based page index. Reset to 0 whenever a filter or minute changes. */
-  const [page, setPage] = useState<number>(0);
+  // 0-based page index. Reset to 0 whenever a filter or minute changes, and
+  // stored with its date like the minute: a date change (a pick, or the roll)
+  // drops it during render, so no render asks for the new date at the old
+  // page.
+  const [pageAt, setPageAt] = useState<{ date: string; page: number }>({
+    date,
+    page: 0,
+  });
+  if (pageAt.date !== date) setPageAt({ date, page: 0 });
+  const page = pageAt.date === date ? pageAt.page : 0;
+  const setPage = useCallback(
+    (next: number | ((prev: number) => number)) =>
+      setPageAt((prev) => {
+        const current = prev.date === date ? prev.page : 0;
+        const value = typeof next === 'function' ? next(current) : next;
+        return prev.date === date && value === current
+          ? prev
+          : { date, page: value };
+      }),
+    [date],
+  );
 
   // (Phase 2C: the 10 localStorage write effects that lived here were
   // collapsed into the `usePersistedState` calls above. Same keys,
@@ -582,7 +610,7 @@ export function LotteryFinderSection({
   useEffect(() => {
     setPage(0);
   }, [
-    date,
+    setPage,
     minute,
     tickerFilter,
     reloadOnly,
@@ -656,7 +684,7 @@ export function LotteryFinderSection({
   const tickerCounts = useLotteryFinderTickerCounts({
     date,
     marketOpen,
-    historical: date !== todayCt(),
+    historical: date !== today,
     reload: reloadOnly ? true : null,
     cheapCallPm: cheapCallPmOnly ? true : null,
     mode: modeFilter,
@@ -706,7 +734,7 @@ export function LotteryFinderSection({
   // the trader. Minute-scrub buckets and paged slices pass through the raw
   // server response; the union persists in localStorage across the detour and
   // resumes on return.
-  const unionEngaged = minute == null && page === 0 && date === todayCt();
+  const unionEngaged = minute == null && page === 0 && date === today;
   const filterSig = buildLotteryFilterSig({
     minTakeitProb: takeitFloor,
     minTier: CONVICTION_TO_MIN_TIER[convictionFloor],
@@ -823,27 +851,8 @@ export function LotteryFinderSection({
     return () => clearInterval(id);
   }, []);
 
-  // Midnight auto-roll (finding #4). A tab left open across the trading-day
-  // boundary must advance `date` to the new live day so the never-vanish
-  // union's storageKey rescopes — otherwise the new day's fires would upsert
-  // into the prior day's union and the count / pin state would bleed across
-  // days. We only auto-advance when the user is sitting on the live day
-  // (`!manualDatePick`); a user who scrubbed back to a historical replay is
-  // left untouched. Low-frequency (60s) check off its own interval — the
-  // `setDate` is a true no-op on the dominant case where the day is
-  // unchanged (React bails out on an equal primitive), so this cannot drive
-  // a render loop.
-  useEffect(() => {
-    if (manualDatePick) return;
-    const id = setInterval(() => {
-      const live = todayCt();
-      setDate((prev) => (prev === live ? prev : live));
-    }, 60_000);
-    return () => clearInterval(id);
-  }, [manualDatePick]);
-
-  const isLive = minute == null && date === todayCt();
-  const isHistorical = date !== todayCt();
+  const isLive = minute == null && date === today;
+  const isHistorical = date !== today;
   // Counts on the chips reflect the current page only — after filter
   // changes the list refetches, but cross-page counts would need a
   // separate aggregation query. Acceptable: the user clicks the chip
@@ -1633,24 +1642,29 @@ export function LotteryFinderSection({
             state (All day + minute bucket + replay caption) at the
             ~660px side-by-side pane width. */}
           <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs">
-            <label className="flex items-center gap-1.5">
-              <span className={SECTION_LABEL}>date</span>
-              <input
-                type="date"
+            <span className="flex items-center gap-1.5">
+              <label htmlFor={dateInputId} className={SECTION_LABEL}>
+                date
+              </label>
+              {/* The shared DateInput holds a half-typed or emptied date as a
+                  local draft: a native date input fires `input` with ''
+                  on the first "0" of a zero-padded month, and with years
+                  like 0002 on the way to 2026. An emptied field follows
+                  today once it is left, and a date picked here drops the
+                  scrubbed minute and page with it (see `scrub` above). A
+                  future date is passed on, never refused: typing a past
+                  date whose month is later than the current one passes
+                  through future dates. */}
+              <DateInput
+                id={dateInputId}
                 value={date}
-                max={todayCt()}
-                onChange={(e) => {
-                  setDate(e.target.value);
-                  setMinute(null);
-                  // Mark the date as user-chosen so the ET-midnight
-                  // auto-roll won't yank them off a historical replay.
-                  // Picking today again re-arms the auto-roll.
-                  setManualDatePick(e.target.value !== todayCt());
-                }}
+                max={today}
+                onChange={setDate}
+                label="Select trading day"
+                labelVisible={false}
                 className="rounded-md border border-neutral-800 bg-neutral-900/60 px-1.5 py-1 font-mono text-[11px] text-neutral-100 focus:border-neutral-600 focus:outline-none"
-                aria-label="Select trading day"
               />
-            </label>
+            </span>
             <div className="flex items-center gap-1">
               <FilterChip
                 size="compact"
@@ -1664,7 +1678,7 @@ export function LotteryFinderSection({
                 }
                 ariaPressed={minute == null}
               >
-                {date === todayCt() ? 'Live' : 'All day'}
+                {date === today ? 'Live' : 'All day'}
               </FilterChip>
               {/* Per-minute controls. Lo = 08:30 CT, hi = 15:00 CT
                 (regular session). For today, hi is further capped at
@@ -1676,7 +1690,7 @@ export function LotteryFinderSection({
               {(() => {
                 const lo = Date.parse(scrubBounds.min);
                 const hi = Date.parse(scrubBounds.max);
-                const isToday = date === todayCt();
+                const isToday = date === today;
                 const effectiveHi = isToday ? Math.min(hi, nowMinuteMs) : hi;
                 const noValidBucket = effectiveHi < lo;
                 const cur = minute ? Date.parse(minute) : null;

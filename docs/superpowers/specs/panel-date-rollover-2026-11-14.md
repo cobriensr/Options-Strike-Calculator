@@ -154,8 +154,23 @@ panels follow the new date too".
   `0002-04-09` while the year is typed. A raw input that maps `''` to today
   loses the typing. Each raw input moves to the shared `DateInput`, which
   holds those values as a draft until the date is complete or the field is
-  left. This was done for the heatmap and the Periscope lottery. Still to
-  move: pin setup (6a), Lottery Finder (7a) and Silent Boom (7b).
+  left. This was done for the heatmap, the Periscope lottery, pin setup (6a)
+  and Lottery Finder (7a). Still to move: Silent Boom (7b).
+
+### Found while building Phase 7a
+
+- **The "clearing the date field" bug was real.** On the old Lottery Finder, an
+  emptied date field threw `RangeError: Invalid time value` from
+  `ctSessionBounds('')` (the new tests failed with it on the old code). The
+  shared `DateInput` plus `useFollowedDate` (`''` follows today) removes it.
+- **The page number needs the same rule as the minute.** The effect that resets
+  `page` to 0 on a date change runs one commit late too, so a pick (or the
+  roll) while on page 2 asked for the new date at offset 100 before the clean
+  request. Lottery Finder stores the page with its date and drops it during
+  render, like the minute. Silent Boom checks for the same (7b).
+- **Test fixtures dated with the CT date.** `LotteryFinderSection.test.tsx`
+  dated its fires with the CT date, which differs from the ET date from 23:00
+  to 24:00 CT, so the suite would fail then. The fixture uses `getETToday()`.
 
 ## Phases
 

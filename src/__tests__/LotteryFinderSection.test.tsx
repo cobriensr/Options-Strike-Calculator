@@ -6,8 +6,10 @@
  * left intact (small, pure components).
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { act, render, screen, fireEvent } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { getETToday } from '../utils/timezone';
 import type {
   LotteryFinderResponse,
   LotteryFire,
@@ -70,21 +72,17 @@ import { LotteryFinderSection } from '../components/LotteryFinder';
 // ── Fixtures ──────────────────────────────────────────────────────────
 
 // The component's never-vanish union is only ENGAGED on the live day
-// (`date === todayCt()`), and its hard-floor/cross-day `retain` guard purges
+// (`date === today`), and its hard-floor/cross-day `retain` guard purges
 // any pinned row whose `f.date` is not the engaged day. Engaged-path fixtures
-// must therefore be dated to TODAY (CT) or the guard correctly drops them.
-// Computed identically to the component's `todayCt()` so the two agree.
-const TODAY_CT = new Intl.DateTimeFormat('en-CA', {
-  timeZone: 'America/Chicago',
-  year: 'numeric',
-  month: '2-digit',
-  day: '2-digit',
-}).format(new Date());
+// must therefore be dated to TODAY (ET) or the guard correctly drops them.
+// Computed like the panel's `today` (the shared ET clock) so the two agree:
+// lottery fires are stamped with the ET date.
+const TODAY_ET = getETToday();
 
 function makeFire(overrides: Partial<LotteryFire> = {}): LotteryFire {
   return {
     id: 1,
-    date: TODAY_CT,
+    date: TODAY_ET,
     triggerTimeCt: '2026-05-08T19:30:00Z',
     entryTimeCt: '2026-05-08T19:31:00Z',
     optionChainId: 'AAPL260508C00200000',
@@ -1118,7 +1116,7 @@ describe('LotteryFinderSection: never-vanish findings #1/#2/#3', () => {
 // Fix 1 — union does NOT engage on a historical replay
 // ============================================================
 //
-// `unionEngaged` must include a `date === todayCt()` guard (matching the
+// `unionEngaged` must include a `date === today` guard (matching the
 // SilentBoom panel shape `!isHistorical && bucketIso == null && page === 0`).
 // On a PAST date at page 0 with no minute selected the union must stay
 // disengaged: rows pass straight through the server slice, no historical
@@ -2477,5 +2475,354 @@ describe('LotteryFinderSection: pagination edge states', () => {
     fireEvent.click(backBtn);
     const lastCall = mockUseLotteryFinder.mock.calls.at(-1);
     expect(lastCall?.[0]).toMatchObject({ page: 0 });
+  });
+});
+
+// ============================================================
+// Midnight rollover (docs/superpowers/specs/panel-date-rollover-2026-11-14.md,
+// Phase 7a, design items 2 and 3)
+//
+// The panel kept its date in `useState(todayCt())` and rolled it with a 60 s
+// interval that left a user-picked date alone, so an open tab sat on
+// yesterday for up to a minute after midnight and called it "historical" in
+// the gap. It follows the shared ET clock now (`useFollowedDate`): the date is
+// the owner's pick, else today. A pick of today, or an emptied field, follows
+// again; any other date stays put, a future one included. A scrubbed minute
+// and a page number belong to the date they were set on and are dropped
+// during render when the date moves, so no render asks for the new date at
+// the old minute or page. Every case starts 30 s before an ET midnight; the
+// clock's timer is armed for 1 s past it, so 31 s lands just after. The real
+// getETToday() reads the faked Date. Every assertion on what the hooks were
+// asked reads every render pass, not only the last. Owner decision
+// 2026-11-14.
+// ============================================================
+
+interface FinderArgs {
+  date: string;
+  minute: string | null;
+  page: number;
+}
+interface CountsArgs {
+  date: string;
+  historical: boolean;
+}
+
+/** What the panel handed useLotteryFinder, one entry per render pass. */
+const finderArgs = (): FinderArgs[] =>
+  mockUseLotteryFinder.mock.calls.map((c) => c[0] as FinderArgs);
+/** What the panel handed the ticker-counts hook, one entry per render pass. */
+const countsArgs = (): CountsArgs[] =>
+  mockUseLotteryFinderTickerCounts.mock.calls.map((c) => c[0] as CountsArgs);
+
+const dateInput = () =>
+  screen.getByLabelText<HTMLInputElement>(/select trading day/i);
+
+function pick(date: string) {
+  fireEvent.change(dateInput(), { target: { value: date } });
+}
+
+/** The mode chip reads "Live" on today and "All day" on any other date. */
+const liveChip = () => screen.queryByRole('button', { name: /^Live$/ });
+const allDayChip = () => screen.queryByRole('button', { name: /^All day$/ });
+
+function stepBackOneMinute() {
+  fireEvent.click(
+    screen.getByRole('button', { name: /step back one minute/i }),
+  );
+}
+
+/** Any render of the panel: a filter chip flips local state. */
+function rerenderPanel() {
+  fireEvent.click(screen.getByRole('button', { name: /Cheap-call-PM only/i }));
+}
+
+describe.each([
+  {
+    zone: 'EST (winter)',
+    start: '2026-11-10T04:59:30Z',
+    night: '2026-11-09',
+    morning: '2026-11-10',
+    next: '2026-11-11',
+  },
+  {
+    zone: 'EDT (summer)',
+    start: '2026-07-15T03:59:30Z',
+    night: '2026-07-14',
+    morning: '2026-07-15',
+    next: '2026-07-16',
+  },
+])('LotteryFinderSection: across the $zone midnight', (m) => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    vi.setSystemTime(new Date(m.start));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** The shared clock's timer fires, just past midnight. */
+  function crossMidnight() {
+    act(() => {
+      vi.advanceTimersByTime(31_000);
+    });
+  }
+
+  /** The wall clock passes midnight; the shared clock has not ticked yet. */
+  function wallClockPastMidnight() {
+    act(() => {
+      vi.setSystemTime(new Date(Date.parse(m.start) + 30_500));
+    });
+  }
+
+  it('follows the new day with no parent re-render: date, max, live label and both hooks', () => {
+    let parentRenders = 0;
+    function Parent() {
+      parentRenders += 1;
+      return <LotteryFinderSection marketOpen={true} />;
+    }
+    render(<Parent />);
+    expect(dateInput().value).toBe(m.night);
+    expect(dateInput().max).toBe(m.night);
+
+    crossMidnight();
+
+    expect(parentRenders).toBe(1);
+    expect(dateInput().value).toBe(m.morning);
+    expect(dateInput().max).toBe(m.morning);
+    expect(liveChip()).toBeInTheDocument();
+    // Every render asked for the night or the morning, never a half state,
+    // and the new day was never called historical.
+    expect(new Set(finderArgs().map((a) => a.date))).toEqual(
+      new Set([m.night, m.morning]),
+    );
+    expect(finderArgs().at(-1)).toMatchObject({
+      date: m.morning,
+      minute: null,
+      page: 0,
+    });
+    expect(countsArgs().every((a) => !a.historical)).toBe(true);
+    expect(countsArgs().at(-1)?.date).toBe(m.morning);
+  });
+
+  it('keeps the night live in a render just past midnight, before the clock ticks', () => {
+    render(<LotteryFinderSection marketOpen={true} />);
+
+    // The wall clock is past midnight; the shared clock has not ticked. A
+    // render now reads the same clock the rest of the app does, so the night
+    // is still today, not the wall clock's yesterday.
+    wallClockPastMidnight();
+    rerenderPanel();
+
+    expect(dateInput().value).toBe(m.night);
+    expect(dateInput().max).toBe(m.night);
+    expect(liveChip()).toBeInTheDocument();
+    expect(countsArgs().every((a) => !a.historical)).toBe(true);
+    expect(finderArgs().every((a) => a.date === m.night)).toBe(true);
+  });
+
+  it('keeps a picked past date across the roll, and moves max', () => {
+    render(<LotteryFinderSection marketOpen={true} />);
+    pick('2026-04-20');
+    const picked = finderArgs().length;
+
+    crossMidnight();
+
+    expect(dateInput().value).toBe('2026-04-20');
+    expect(dateInput().max).toBe(m.morning);
+    expect(allDayChip()).toBeInTheDocument();
+    // Every render from the pick on asked for the picked day and called it
+    // historical, across the roll as before it.
+    expect(
+      finderArgs()
+        .slice(picked - 1)
+        .every((a) => a.date === '2026-04-20'),
+    ).toBe(true);
+    expect(
+      countsArgs()
+        .slice(-2)
+        .every((a) => a.date === '2026-04-20' && a.historical),
+    ).toBe(true);
+  });
+
+  it('follows again when today is picked back, across the roll', () => {
+    render(<LotteryFinderSection marketOpen={true} />);
+    pick('2026-04-20');
+    pick(m.night);
+    expect(dateInput().value).toBe(m.night);
+
+    crossMidnight();
+
+    // A stored date would stay on the night. A pick of today is following.
+    expect(dateInput().value).toBe(m.morning);
+    expect(finderArgs().at(-1)?.date).toBe(m.morning);
+    expect(liveChip()).toBeInTheDocument();
+  });
+
+  it('keeps the night a past pick when it is picked just past midnight, before the clock ticks', () => {
+    render(<LotteryFinderSection marketOpen={true} />);
+    pick('2026-04-20');
+
+    // By the wall clock the night is yesterday. Judged against the render's
+    // stale `today` it would pass for following, and the pick would be lost
+    // at the roll.
+    wallClockPastMidnight();
+    pick(m.night);
+    crossMidnight();
+
+    expect(dateInput().value).toBe(m.night);
+    expect(dateInput().max).toBe(m.morning);
+    expect(allDayChip()).toBeInTheDocument();
+  });
+
+  it('follows when the new today is picked just past midnight, before the clock ticks', () => {
+    render(<LotteryFinderSection marketOpen={true} />);
+    pick('2026-04-20');
+
+    // The wall clock is past midnight; the shared clock's `today` is still
+    // the night's. The pick is compared with the clock at the moment of the
+    // pick, so it follows: it moves again at the next midnight. A stored
+    // date would stay on the morning.
+    wallClockPastMidnight();
+    pick(m.morning);
+    crossMidnight();
+    expect(dateInput().value).toBe(m.morning);
+    act(() => {
+      vi.advanceTimersByTime(24 * 60 * 60 * 1000);
+    });
+
+    expect(dateInput().value).toBe(m.next);
+  });
+
+  it('passes a future date on and keeps it in the field', () => {
+    render(<LotteryFinderSection marketOpen={true} />);
+
+    pick(m.morning);
+
+    // `max` is a hint the browser does not enforce on typing. A typed future
+    // date is the owner's pick, and a partial date on the way to a past one
+    // (below) is often a future one.
+    expect(finderArgs().at(-1)?.date).toBe(m.morning);
+    expect(dateInput().value).toBe(m.morning);
+  });
+
+  it('keeps every step of a month-later past date typed over the field', () => {
+    // Chrome forwards a complete date after each segment and keeps the old
+    // year: 12152025 over today goes 2026-01-.., 2026-12-.. (a future date),
+    // 2026-12-01, 2026-12-15, then the year lands. Refusing the future step
+    // snapped the field back and lost the month.
+    render(<LotteryFinderSection marketOpen={true} />);
+
+    for (const step of [
+      '2026-01-16',
+      '2026-12-16',
+      '2026-12-01',
+      '2026-12-15',
+      '2025-12-15',
+    ]) {
+      pick(step);
+      expect(finderArgs().at(-1)?.date).toBe(step);
+      expect(dateInput().value).toBe(step);
+    }
+  });
+
+  it('follows today when the field is left empty, not when it empties, and never asks for an empty date', () => {
+    render(<LotteryFinderSection marketOpen={true} />);
+    pick('2026-04-20');
+
+    // Emptying the field (the first "0" of a zero-padded month does it) is
+    // mid-edit.
+    pick('');
+    expect(finderArgs().at(-1)?.date).toBe('2026-04-20');
+    expect(dateInput().value).toBe('');
+
+    fireEvent.blur(dateInput());
+
+    expect(finderArgs().at(-1)?.date).toBe(m.night);
+    expect(dateInput().value).toBe(m.night);
+    // `ctSessionBounds('')` formats an Invalid Date.
+    expect(finderArgs().some((a) => a.date === '')).toBe(false);
+    expect(countsArgs().some((a) => a.date === '')).toBe(false);
+  });
+
+  it('drops a scrubbed minute at the roll, with no request for the new day at the old minute', () => {
+    render(<LotteryFinderSection marketOpen={true} />);
+    stepBackOneMinute();
+    const scrubbed = finderArgs().at(-1);
+    expect(scrubbed?.date).toBe(m.night);
+    expect(scrubbed?.minute).not.toBeNull();
+    // Any other render keeps the minute while its date is selected.
+    rerenderPanel();
+    expect(finderArgs().at(-1)?.minute).toBe(scrubbed?.minute);
+    const beforeRoll = finderArgs().length;
+
+    crossMidnight();
+
+    const afterRoll = finderArgs().slice(beforeRoll);
+    expect(afterRoll.length).toBeGreaterThan(0);
+    expect(afterRoll.every((a) => a.date === m.morning)).toBe(true);
+    expect(afterRoll.every((a) => a.minute === null)).toBe(true);
+    expect(screen.queryByText('(1-min)')).not.toBeInTheDocument();
+  });
+
+  it('drops a scrubbed minute on a pick, and it does not come back when the date does', () => {
+    render(<LotteryFinderSection marketOpen={true} />);
+    stepBackOneMinute();
+    expect(finderArgs().at(-1)?.minute).not.toBeNull();
+    const beforePick = finderArgs().length;
+
+    pick('2026-04-20');
+    pick(m.night);
+
+    // Every render since the first pick: no minute, whichever date it asked
+    // for, including the night the minute was set on.
+    const afterPick = finderArgs().slice(beforePick);
+    expect(afterPick.map((a) => a.date)).toContain('2026-04-20');
+    expect(afterPick.map((a) => a.date)).toContain(m.night);
+    expect(afterPick.every((a) => a.minute === null)).toBe(true);
+  });
+
+  it('drops the page on a pick, with no request for the new date at the old page', () => {
+    mockUseLotteryFinder.mockReturnValue(
+      feedResult({
+        fires: [makeFire({ id: 1, optionChainId: 'PAGED' })],
+        total: 120,
+        hasMore: true,
+      }),
+    );
+    render(<LotteryFinderSection marketOpen={true} />);
+    pick('2026-04-20');
+    fireEvent.click(screen.getByRole('button', { name: /next page/i }));
+    expect(finderArgs().at(-1)).toMatchObject({
+      date: '2026-04-20',
+      page: 1,
+    });
+    const beforePick = finderArgs().length;
+
+    pick('2026-04-21');
+
+    const afterPick = finderArgs().slice(beforePick);
+    expect(afterPick.length).toBeGreaterThan(0);
+    expect(afterPick.every((a) => a.date === '2026-04-21')).toBe(true);
+    expect(afterPick.every((a) => a.page === 0)).toBe(true);
+  });
+});
+
+describe('LotteryFinderSection: typing a date', () => {
+  it('takes a date typed key by key over the field, and asks for no half-typed date', async () => {
+    const user = userEvent.setup();
+    render(<LotteryFinderSection marketOpen={true} />);
+    pick('2026-04-20');
+    const before = finderArgs().length;
+
+    // Emptying the field first must not follow today and lose the typing:
+    // the shared DateInput keeps an emptied field as a local draft.
+    await user.clear(dateInput());
+    await user.type(dateInput(), '2026-04-21');
+
+    const since = finderArgs().slice(before);
+    expect(since.length).toBeGreaterThan(0);
+    expect(new Set(since.map((a) => a.date))).toEqual(new Set(['2026-04-21']));
+    expect(dateInput().value).toBe('2026-04-21');
   });
 });
