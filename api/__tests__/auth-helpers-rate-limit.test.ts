@@ -77,6 +77,7 @@ vi.mock('../_lib/logger.js', () => ({
 import {
   GUEST_KEY_FAILS_PER_HOUR,
   guestKeyBudgetSpent,
+  hourWindow,
   recordGuestKeyFailure,
   rejectIfRateLimited,
 } from '../_lib/auth-helpers.js';
@@ -536,6 +537,11 @@ describe('rejectIfRateLimited', () => {
 
         await expect(recordGuestKeyFailure()).resolves.toBeUndefined();
 
+        expect(mockLoggerWarn).toHaveBeenCalledTimes(1);
+        expect(mockLoggerWarn).toHaveBeenCalledWith(
+          { err },
+          expect.stringContaining('guest-key'),
+        );
         expect(mockCaptureException).toHaveBeenCalledTimes(1);
         expect(mockCaptureException).toHaveBeenCalledWith(
           err,
@@ -544,6 +550,42 @@ describe('rejectIfRateLimited', () => {
             fingerprint: RECORD_FINGERPRINT,
           }),
         );
+        expect(mockCaptureMessage).not.toHaveBeenCalled();
+      });
+
+      it.each([
+        ['an "Aborted" pseudo-result', ['Aborted', 1], 'Aborted'],
+        ['a null count', [null, 1], null],
+        ['an empty reply', [], undefined],
+      ])(
+        'treats %s as a failed count and reports it under the same fingerprint',
+        async (_label, reply, count) => {
+          mockExec.mockResolvedValueOnce(reply);
+
+          await expect(recordGuestKeyFailure()).resolves.toBeUndefined();
+
+          expect(mockLoggerWarn).toHaveBeenCalledWith(
+            { count },
+            expect.stringContaining('malformed INCR reply'),
+          );
+          expect(mockCaptureMessage).toHaveBeenCalledTimes(1);
+          expect(mockCaptureMessage).toHaveBeenCalledWith(
+            expect.stringContaining('malformed INCR reply'),
+            expect.objectContaining({
+              level: 'warning',
+              fingerprint: RECORD_FINGERPRINT,
+            }),
+          );
+          expect(mockCaptureException).not.toHaveBeenCalled();
+        },
+      );
+
+      it('reports nothing when the reply is a count', async () => {
+        await recordGuestKeyFailure();
+
+        expect(mockCaptureMessage).not.toHaveBeenCalled();
+        expect(mockCaptureException).not.toHaveBeenCalled();
+        expect(mockLoggerWarn).not.toHaveBeenCalled();
       });
 
       it('does nothing, and reports nothing, when Upstash is not configured', async () => {
@@ -554,7 +596,34 @@ describe('rejectIfRateLimited', () => {
 
         expect(mockPipeline).not.toHaveBeenCalled();
         expect(mockCaptureException).not.toHaveBeenCalled();
+        expect(mockCaptureMessage).not.toHaveBeenCalled();
       });
+    });
+  });
+
+  describe('hourWindow', () => {
+    const HOUR = 3_600_000;
+    const H = 500_000;
+
+    it.each([
+      ['the first millisecond of the hour', H * HOUR, 3600],
+      ['5 s into the hour', H * HOUR + 5_000, 3595],
+      ['just past a half hour', H * HOUR + 1_800_001, 1800],
+      ['the last millisecond of the hour', (H + 1) * HOUR - 1, 1],
+    ])('gives the epoch hour and the seconds left at %s', (_l, nowMs, left) => {
+      expect(hourWindow(nowMs)).toEqual({ epochHour: H, secondsLeft: left });
+    });
+
+    it('moves to the next hour at its first millisecond', () => {
+      expect(hourWindow((H + 1) * HOUR).epochHour).toBe(H + 1);
+    });
+
+    it('keys the failure count on the same hour it reports', async () => {
+      await recordGuestKeyFailure();
+
+      expect(mockIncr).toHaveBeenCalledWith(
+        `authfail:guest-key:${hourWindow(Date.now()).epochHour}`,
+      );
     });
   });
 

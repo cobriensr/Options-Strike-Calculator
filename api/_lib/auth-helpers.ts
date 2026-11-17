@@ -448,6 +448,22 @@ export async function rejectIfRateLimited(
 const HOUR_MS = 3_600_000;
 
 /**
+ * The epoch hour a moment falls in, and the whole seconds left until the next
+ * hour starts (1 to 3600). The one place this arithmetic is written: the
+ * failure count is keyed on `epochHour`, and guest-key login derives its
+ * `Retry-After` and its once-an-hour Sentry message from the same two values.
+ */
+export function hourWindow(nowMs: number): {
+  epochHour: number;
+  secondsLeft: number;
+} {
+  return {
+    epochHour: Math.floor(nowMs / HOUR_MS),
+    secondsLeft: Math.ceil((HOUR_MS - (nowMs % HOUR_MS)) / 1000),
+  };
+}
+
+/**
  * Wrong guest keys guest-key login accepts in one epoch hour, counted across
  * every client, before it refuses all attempts until the next hour. The
  * per-minute limiter bounds one client; this bounds the total. An operational
@@ -468,7 +484,20 @@ export const GUEST_KEY_FAILS_PER_HOUR = 20;
 const GUEST_KEY_FAIL_TTL_SEC = 7200;
 
 function guestKeyFailureKey(): string {
-  return `authfail:guest-key:${Math.floor(Date.now() / HOUR_MS)}`;
+  return `authfail:guest-key:${hourWindow(Date.now()).epochHour}`;
+}
+
+/**
+ * Sentry context shared by every failure to count a wrong guest key. The
+ * pinned fingerprint collapses an Upstash outage, which fires on every wrong
+ * key, into one warning-level issue.
+ */
+function guestKeyRecordFailureContext() {
+  return {
+    level: 'warning' as const,
+    fingerprint: ['guest-key-failure-record'],
+    tags: { limiter: 'guest-key-budget' },
+  };
 }
 
 /**
@@ -496,26 +525,35 @@ export async function guestKeyBudgetSpent(): Promise<boolean> {
  * Count one wrong guest key against this hour's budget.
  *
  * Never throws: the caller is already answering 401, and a failed count only
- * means that attempt goes unrecorded. The failure is logged and sent to
- * Sentry under one pinned fingerprint, so an Upstash outage is one issue.
+ * means that attempt goes unrecorded. A Redis error, or an INCR reply that is
+ * not a count, is logged and sent to Sentry under one pinned fingerprint, so
+ * an Upstash outage is one issue. The reply is checked as `isRateLimited` and
+ * `guestKeyBudgetSpent` check theirs.
  */
 export async function recordGuestKeyFailure(): Promise<void> {
   if (!isRedisConfigured()) return;
 
   const key = guestKeyFailureKey();
   try {
-    await limiterRedis
+    const results = await limiterRedis
       .pipeline()
       .incr(key)
       .expire(key, GUEST_KEY_FAIL_TTL_SEC)
       .exec();
+    const count: unknown = results[0];
+    if (typeof count !== 'number') {
+      logger.warn(
+        { count },
+        'Guest-key failure count got a malformed INCR reply',
+      );
+      Sentry.captureMessage(
+        'Guest-key failure count got a malformed INCR reply',
+        guestKeyRecordFailureContext(),
+      );
+    }
   } catch (err) {
     logger.warn({ err }, 'Could not record a failed guest-key attempt');
-    Sentry.captureException(err, {
-      level: 'warning',
-      fingerprint: ['guest-key-failure-record'],
-      tags: { limiter: 'guest-key-budget' },
-    });
+    Sentry.captureException(err, guestKeyRecordFailureContext());
   }
 }
 

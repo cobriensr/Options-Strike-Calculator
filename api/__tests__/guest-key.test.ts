@@ -3,13 +3,30 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { isolationScopeStub, mockRequest, mockResponse } from './helpers';
 
-const { mockDone, mockCaptureMessage, mockCaptureException } = vi.hoisted(
-  () => ({
-    mockDone: vi.fn(),
-    mockCaptureMessage: vi.fn(),
-    mockCaptureException: vi.fn(),
-  }),
-);
+// Every mock the handler's modules call is created here, once, so a handler
+// imported again after `vi.resetModules()` (see `freshHandler`) is wired to
+// the same spies the tests assert on.
+const {
+  mockDone,
+  mockCaptureMessage,
+  mockCaptureException,
+  mockCheckBot,
+  mockRateLimit,
+  mockInvalid,
+  mockBudgetSpent,
+  mockRecordFailure,
+  mockIsValidGuestKey,
+} = vi.hoisted(() => ({
+  mockDone: vi.fn(),
+  mockCaptureMessage: vi.fn(),
+  mockCaptureException: vi.fn(),
+  mockCheckBot: vi.fn(),
+  mockRateLimit: vi.fn(),
+  mockInvalid: vi.fn(),
+  mockBudgetSpent: vi.fn(),
+  mockRecordFailure: vi.fn(),
+  mockIsValidGuestKey: vi.fn(),
+}));
 
 vi.mock('../_lib/sentry.js', () => ({
   Sentry: {
@@ -23,28 +40,31 @@ vi.mock('../_lib/sentry.js', () => ({
 }));
 
 // The bot check, limiter, failure budget and body check are stubbed; the
-// local-deployment rule stays real so the Secure flag tests below pin the
-// handler's actual output.
+// local-deployment rule and the hour arithmetic stay real so the Secure flag
+// and Retry-After tests below pin the handler's actual output.
 vi.mock('../_lib/api-helpers.js', async () => {
-  const { isLocalDeployment } = await vi.importActual<
+  const { isLocalDeployment, hourWindow } = await vi.importActual<
     typeof import('../_lib/auth-helpers.js')
   >('../_lib/auth-helpers.js');
   return {
     isLocalDeployment,
-    checkBot: vi.fn(),
-    rejectIfRateLimited: vi.fn(),
-    respondIfInvalid: vi.fn(),
-    guestKeyBudgetSpent: vi.fn(),
-    recordGuestKeyFailure: vi.fn(),
+    hourWindow,
+    checkBot: mockCheckBot,
+    rejectIfRateLimited: mockRateLimit,
+    respondIfInvalid: mockInvalid,
+    guestKeyBudgetSpent: mockBudgetSpent,
+    recordGuestKeyFailure: mockRecordFailure,
   };
 });
 
-// Real key comparison, wrapped so a test can assert it was or was not reached.
+// Real key comparison, behind a spy so a test can assert it was or was not
+// reached.
 vi.mock('../_lib/guest-auth.js', async () => {
   const actual = await vi.importActual<typeof import('../_lib/guest-auth.js')>(
     '../_lib/guest-auth.js',
   );
-  return { ...actual, isValidGuestKey: vi.fn(actual.isValidGuestKey) };
+  mockIsValidGuestKey.mockImplementation(actual.isValidGuestKey);
+  return { ...actual, isValidGuestKey: mockIsValidGuestKey };
 });
 
 import handler from '../auth/guest-key.js';
@@ -61,15 +81,23 @@ const ORIGINAL_ENV = { ...process.env };
 const HOUR_MS = 3_600_000;
 const BUDGET_FINGERPRINT = ['guest-key-failure-budget'];
 const BUDGET_UNAVAILABLE_FINGERPRINT = ['guest-key-budget-unavailable'];
+const HOUR = 500_001;
 
-/**
- * Pin the clock `offsetMs` into the given epoch hour. The handler reports a
- * spent budget once per instance per hour and remembers the last hour it
- * reported, so each test that spends the budget uses an hour of its own.
- */
+/** Pin the clock `offsetMs` into the given epoch hour. */
 function setClock(epochHour: number, offsetMs = 0): void {
   vi.useFakeTimers({ toFake: ['Date'] });
   vi.setSystemTime(epochHour * HOUR_MS + offsetMs);
+}
+
+/**
+ * The handler as a newly loaded module. It remembers, in one module-level
+ * number, the last hour it sent the spent-budget message for, so a test that
+ * counts that message must not inherit the hour a previous test left behind.
+ * The spies are hoisted above, so the new copy reports to the same ones.
+ */
+async function freshHandler(): Promise<typeof handler> {
+  vi.resetModules();
+  return (await import('../auth/guest-key.js')).default;
 }
 
 function post(key = 'wrong-key-12345678') {
@@ -164,13 +192,15 @@ describe('POST /api/auth/guest-key', () => {
 
   describe('hourly failure budget', () => {
     it('rejects when the hourly failure budget is spent', async () => {
-      setClock(500_001, 5_000);
+      setClock(HOUR, 5_000);
       process.env.GUEST_ACCESS_KEYS = 'right-key-12345678';
       vi.mocked(guestKeyBudgetSpent).mockResolvedValue(true);
       const res = mockResponse();
 
       // Even the right key is refused: the budget is checked before the key.
-      await handler(post('right-key-12345678'), res);
+      await (
+        await freshHandler()
+      )(post('right-key-12345678'), res);
 
       expect(res._status).toBe(429);
       expect(res._json).toEqual({
@@ -189,7 +219,7 @@ describe('POST /api/auth/guest-key', () => {
     });
 
     it('sends Retry-After as the seconds left in the hour', async () => {
-      setClock(500_002, 5_000);
+      setClock(HOUR, 5_000);
       vi.mocked(guestKeyBudgetSpent).mockResolvedValue(true);
       const res = mockResponse();
 
@@ -199,7 +229,7 @@ describe('POST /api/auth/guest-key', () => {
     });
 
     it('checks the budget before it parses the body', async () => {
-      setClock(500_003);
+      setClock(HOUR);
       vi.mocked(guestKeyBudgetSpent).mockResolvedValue(true);
       const res = mockResponse();
 
@@ -210,25 +240,26 @@ describe('POST /api/auth/guest-key', () => {
     });
 
     it('sends one Sentry message per hour however many requests are refused', async () => {
-      setClock(500_004, 1_000);
+      setClock(HOUR, 1_000);
       vi.mocked(guestKeyBudgetSpent).mockResolvedValue(true);
+      const instance = await freshHandler();
 
       for (let i = 0; i < 3; i += 1) {
         const res = mockResponse();
-        await handler(post(), res);
+        await instance(post(), res);
         expect(res._status).toBe(429);
       }
       expect(mockCaptureMessage).toHaveBeenCalledTimes(1);
 
       // Last millisecond of the same hour: still no second message.
-      vi.setSystemTime(500_005 * HOUR_MS - 1);
-      await handler(post(), mockResponse());
+      vi.setSystemTime((HOUR + 1) * HOUR_MS - 1);
+      await instance(post(), mockResponse());
       expect(mockCaptureMessage).toHaveBeenCalledTimes(1);
 
       // The next hour reports again, once.
-      vi.setSystemTime(500_005 * HOUR_MS);
-      await handler(post(), mockResponse());
-      await handler(post(), mockResponse());
+      vi.setSystemTime((HOUR + 1) * HOUR_MS);
+      await instance(post(), mockResponse());
+      await instance(post(), mockResponse());
       expect(mockCaptureMessage).toHaveBeenCalledTimes(2);
     });
 

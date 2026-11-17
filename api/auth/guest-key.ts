@@ -24,6 +24,7 @@ import { Sentry, metrics } from '../_lib/sentry.js';
 import {
   checkBot,
   guestKeyBudgetSpent,
+  hourWindow,
   isLocalDeployment,
   recordGuestKeyFailure,
   rejectIfRateLimited,
@@ -31,8 +32,6 @@ import {
 } from '../_lib/api-helpers.js';
 import { guestKeySchema } from '../_lib/validation.js';
 import { buildGuestSetCookies, isValidGuestKey } from '../_lib/guest-auth.js';
-
-const HOUR_MS = 3_600_000;
 
 /**
  * The epoch hour for which this instance last sent the "budget spent"
@@ -42,10 +41,9 @@ const HOUR_MS = 3_600_000;
  */
 let lastBudgetReportHour = -1;
 
-function reportBudgetSpentOncePerHour(nowMs: number): void {
-  const hour = Math.floor(nowMs / HOUR_MS);
-  if (hour === lastBudgetReportHour) return;
-  lastBudgetReportHour = hour;
+function reportBudgetSpentOncePerHour(epochHour: number): void {
+  if (epochHour === lastBudgetReportHour) return;
+  lastBudgetReportHour = epochHour;
   Sentry.captureMessage(
     'Guest-key login refused: hourly failure budget spent',
     {
@@ -97,11 +95,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return res.status(503).json({ error: 'Try again later' });
       }
       if (budgetSpent) {
-        const nowMs = Date.now();
-        reportBudgetSpentOncePerHour(nowMs);
-        const retryAfterSec = Math.ceil((HOUR_MS - (nowMs % HOUR_MS)) / 1000);
+        const { epochHour, secondsLeft } = hourWindow(Date.now());
+        reportBudgetSpentOncePerHour(epochHour);
         done({ status: 429 });
-        res.setHeader('Retry-After', String(retryAfterSec));
+        res.setHeader('Retry-After', String(secondsLeft));
         res.setHeader('Cache-Control', 'no-store');
         return res
           .status(429)
