@@ -173,6 +173,22 @@ describe('runGit', () => {
     expect(result).toMatchObject({ status: 1, stdout: '' });
   });
 
+  it("writes the input option to git's stdin, NUL bytes included", () => {
+    // `hash-object --stdin` prints the id of the blob it was fed.
+    const body = 'a\0b\n';
+    const expected = writeBlob('stdin.txt', body);
+    const result = runGit(['-C', repo, 'hash-object', '--stdin'], cleanEnv(), {
+      input: body,
+    });
+    expect(result).toMatchObject({ status: 0, stdout: `${expected}\n` });
+  });
+
+  it('gives git an empty stdin when there is no input option', () => {
+    const emptyBlob = writeBlob('empty.txt', '');
+    const result = runGit(['-C', repo, 'hash-object', '--stdin'], cleanEnv());
+    expect(result).toMatchObject({ status: 0, stdout: `${emptyBlob}\n` });
+  });
+
   it('throws a GitError when git cannot be spawned', () => {
     const args = ['--version'];
     expectGitError(

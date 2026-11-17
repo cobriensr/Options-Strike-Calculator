@@ -16,6 +16,10 @@
 # When adding a new top-level directory that Vercel shouldn't touch,
 # add it here (with a leading "/") AND to vercel.json's ignoreCommand
 # path list to keep the two aligned.
+#
+# scripts/_lib/vercel-build-file-set.mjs is the guard that checks the
+# build's file set against this file: nothing `npm run build` compiles may
+# lie under a path stripped here.
 
 # Railway-deployed services — never run on Vercel
 /sidecar/

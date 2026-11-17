@@ -37,9 +37,11 @@ export class GitError extends Error {
  *
  * @param {string[]} args
  * @param {NodeJS.ProcessEnv} env
+ * @param {{ input?: string }} [options] `input` is written to git's stdin
+ *   (default: an empty stdin, which git sees as EOF).
  * @returns {{ status: number | null, stdout: string, stderr: string }}
  */
-export function runGit(args, env) {
+export function runGit(args, env, { input } = {}) {
   // spawnSync would run a missing env as process.env (`options.env ||
   // process.env`), silently undoing a caller's stripped env.
   if (env === null || typeof env !== 'object') {
@@ -51,6 +53,7 @@ export function runGit(args, env) {
   const result = spawnSync('git', args, {
     encoding: 'utf8',
     env,
+    input,
     maxBuffer: MAX_GIT_OUTPUT,
     windowsHide: true,
   });

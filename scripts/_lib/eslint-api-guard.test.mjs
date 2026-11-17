@@ -4,16 +4,24 @@ import { ESLint } from 'eslint';
 import { beforeAll, describe, expect, it } from 'vitest';
 
 /**
- * Guard for the "browser code must not import api/" rules in eslint.config.ts.
+ * Guard for two import rules in eslint.config.ts: "browser code must not
+ * import api/" (first block of cases) and "api/ must not import scripts/"
+ * (second block, further down).
  *
- * Vite dev serves a browser import as a module at the file's own path, so an
- * import from api/ is requested under /api/, where the dev proxy and the e2e
- * specs' page.route('**\/api/**') stubs catch it and the app never mounts.
- * CI also skips E2E for api/-only changes because these rules forbid that
- * import. import-x/no-restricted-paths fails open: an import its resolver
- * can't resolve is silently allowed. A resolver or glob change could switch
- * the guard off without a single lint error, so these tests lint
- * representative imports with the real config and fail instead.
+ * Browser code and api/: Vite dev serves a browser import as a module at the
+ * file's own path, so an import from api/ is requested under /api/, where the
+ * dev proxy and the e2e specs' page.route('**\/api/**') stubs catch it and
+ * the app never mounts. CI also skips E2E for api/-only changes because these
+ * rules forbid that import. import-x/no-restricted-paths fails open: an
+ * import its resolver can't resolve is silently allowed. A resolver or glob
+ * change could switch the guard off without a single lint error, so these
+ * tests lint representative imports with the real config and fail instead.
+ *
+ * api/ and scripts/: Vercel strips scripts/ from the build that compiles all
+ * of api/, so an api/ import of it passes locally and fails the deploy. The
+ * second block lints every import form (declaration, re-export, dynamic and
+ * template-literal import(), import type, triple-slash reference) and the
+ * resolved config, so a flat-config merge can't switch a part of it off.
  *
  * Each case lints source text at a virtual path (nothing is written to disk)
  * and asserts the exact set of guard-related rule IDs it reports.
@@ -24,6 +32,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 const ROOT = process.cwd();
 
 const GUARD_RULES = new Set([
+  '@typescript-eslint/triple-slash-reference',
   'import-x/extensions',
   'import-x/no-restricted-paths',
   'no-restricted-imports',
@@ -149,7 +158,13 @@ describe('eslint: browser code must not import api/', () => {
  * the upload. An api/ file that imports scripts/ passes locally, where
  * scripts/ exists, and fails the deploy with TS2307. A type-only import fails
  * the same way, so it is flagged too. no-restricted-imports does not see a
- * dynamic import(), so a no-restricted-syntax selector covers that.
+ * dynamic import(), a template-literal import() or an import type
+ * (`typeof import('x')`), so no-restricted-syntax selectors cover those. A
+ * triple-slash `/// <reference path="…" />` (TS6053 when the file is gone) is
+ * covered by @typescript-eslint/triple-slash-reference. The recommended preset
+ * turns the rule on, and its default `path: 'never'` forbids path references.
+ * Which files the Vercel build compiles is checked against the real resolver
+ * by vercel-build-file-set.test.mjs; these cases cover the lint message.
  */
 const SCRIPTS_USE = '\nexport const x = helper;\n';
 
@@ -216,6 +231,199 @@ const SCRIPTS_CASES = [
     ['no-restricted-syntax'],
   ],
   [
+    'api/_lib: typeof import() of scripts/ reaching a member (the qualifier path)',
+    'api/_lib/x.ts',
+    "export type Member = typeof import('../../scripts/_lib/x.js').member;\n",
+    ['no-restricted-syntax'],
+  ],
+  [
+    // Only the import type's own specifier counts. A scripts/ path used as a
+    // type argument is a string literal type, which tsc never resolves, so a
+    // descendant selector (`TSImportType Literal`) would be a false positive.
+    'api/_lib: scripts/ path as a type argument of an import type stays clean',
+    'api/_lib/x.ts',
+    "export type A = import('./foo.js').T<'../../scripts/a.js'>;\n",
+    [],
+  ],
+  // Non-normalized specifiers that still reach the top-level scripts/. A regex
+  // can't resolve a path, so the rule is: a `..` segment, then optional `.` or
+  // empty segments, then a `scripts` segment.
+  [
+    'api/_lib: ./../ prefix before scripts/',
+    'api/_lib/x.ts',
+    `import { helper } from './../../scripts/_lib/ticker-flow-backfill.js';${SCRIPTS_USE}`,
+    ['no-restricted-imports'],
+  ],
+  [
+    'api/_lib: a detour through a sibling folder before scripts/',
+    'api/_lib/x.ts',
+    `import { helper } from '../_lib/../../scripts/_lib/ticker-flow-backfill.js';${SCRIPTS_USE}`,
+    ['no-restricted-imports'],
+  ],
+  [
+    'api/_lib: a `.` segment between ../ and scripts/',
+    'api/_lib/x.ts',
+    `import { helper } from '.././scripts/_lib/ticker-flow-backfill.js';${SCRIPTS_USE}`,
+    ['no-restricted-imports'],
+  ],
+  [
+    'api/_lib: re-export through a detour to scripts/',
+    'api/_lib/x.ts',
+    "export { helper } from '../_lib/../../scripts/_lib/ticker-flow-backfill.js';\n",
+    ['no-restricted-imports'],
+  ],
+  [
+    'api/__tests__: dynamic import() with a ./../ prefix before scripts/',
+    'api/__tests__/x.test.ts',
+    "const { helper } = await import('./../../scripts/_lib/fire-flow-test-helpers');\nexport const x = helper;\n",
+    ['no-restricted-syntax'],
+  ],
+  [
+    'api/__tests__: dynamic import() with a detour before scripts/',
+    'api/__tests__/x.test.ts',
+    "const { helper } = await import('../_lib/../../scripts/_lib/fire-flow-test-helpers');\nexport const x = helper;\n",
+    ['no-restricted-syntax'],
+  ],
+  [
+    'api/_lib: import type with a ./../ prefix before scripts/',
+    'api/_lib/x.ts',
+    "export type Helper = import('./../../scripts/_lib/ticker-flow-backfill.js').Backfill;\n",
+    ['no-restricted-syntax'],
+  ],
+  [
+    'api/_lib: typeof import() with a detour before scripts/',
+    'api/_lib/x.ts',
+    "export type Mod = typeof import('../_lib/../../scripts/_lib/ticker-flow-backfill.js');\n",
+    ['no-restricted-syntax'],
+  ],
+  // The tail of the path still counts when it has no trailing slash or has an
+  // empty segment. A regex mutation that drops either one used to survive.
+  [
+    'api/_lib: an empty segment before scripts/',
+    'api/_lib/x.ts',
+    `import { helper } from '../..//scripts/_lib/ticker-flow-backfill.js';${SCRIPTS_USE}`,
+    ['no-restricted-imports'],
+  ],
+  [
+    'api/_lib: the bare scripts folder, no trailing slash',
+    'api/_lib/x.ts',
+    `import { helper } from '../../scripts';${SCRIPTS_USE}`,
+    // The extension rule also fires: a folder import has no `.js`.
+    ['import-x/extensions', 'no-restricted-imports'],
+  ],
+  [
+    'api/__tests__: dynamic import() of the bare scripts folder',
+    'api/__tests__/x.test.ts',
+    "const { helper } = await import('../../scripts');\nexport const x = helper;\n",
+    ['no-restricted-syntax'],
+  ],
+  // A case-insensitive checkout (Windows, macOS) resolves `../Scripts/x` to the
+  // real folder, so the local build passes where the Linux build fails. Each
+  // form needs its own case-insensitive match: an import declaration goes
+  // through no-restricted-imports, the rest through three esquery regexes.
+  [
+    'api/_lib: import from a Scripts/ folder spelled with a capital',
+    'api/_lib/x.ts',
+    `import { helper } from '../../Scripts/_lib/ticker-flow-backfill.js';${SCRIPTS_USE}`,
+    ['no-restricted-imports'],
+  ],
+  [
+    'api/__tests__: dynamic import() of a Scripts/ folder spelled with a capital',
+    'api/__tests__/x.test.ts',
+    "const { helper } = await import('../../Scripts/_lib/fire-flow-test-helpers');\nexport const x = helper;\n",
+    ['no-restricted-syntax'],
+  ],
+  [
+    'api/__tests__: template-literal import() of a SCRIPTS/ folder in capitals',
+    'api/__tests__/x.test.ts',
+    'const { helper } = await import(`../../SCRIPTS/_lib/fire-flow-test-helpers`);\nexport const x = helper;\n',
+    ['no-restricted-syntax'],
+  ],
+  [
+    'api/_lib: import type of a Scripts/ folder spelled with a capital',
+    'api/_lib/x.ts',
+    "export type Helper = import('../../Scripts/_lib/ticker-flow-backfill.js').Backfill;\n",
+    ['no-restricted-syntax'],
+  ],
+  // A template-literal specifier is no `Literal`, so it needs its own selector.
+  [
+    'api/__tests__: template-literal import() of scripts/',
+    'api/__tests__/x.test.ts',
+    'const { helper } = await import(`../../scripts/_lib/fire-flow-test-helpers`);\nexport const x = helper;\n',
+    ['no-restricted-syntax'],
+  ],
+  [
+    'api/__tests__: template-literal import() of scripts/ with a substitution',
+    'api/__tests__/x.test.ts',
+    'const { helper } = await import(`../../scripts/_lib/${name}`);\nexport const x = helper;\n',
+    ['no-restricted-syntax'],
+  ],
+  [
+    'api/__tests__: template-literal import() with a detour before scripts/',
+    'api/__tests__/x.test.ts',
+    'const { helper } = await import(`../_lib/../../scripts/_lib/fire-flow-test-helpers`);\nexport const x = helper;\n',
+    ['no-restricted-syntax'],
+  ],
+  [
+    'api/__tests__: template-literal import() of a sibling stays clean',
+    'api/__tests__/x.test.ts',
+    'const { helper } = await import(`./pglite-migrations`);\nexport const x = helper;\n',
+    [],
+  ],
+  [
+    'api/__tests__: template-literal import() with no static prefix stays clean',
+    'api/__tests__/x.test.ts',
+    'const { helper } = await import(`./${name}`);\nexport const x = helper;\n',
+    [],
+  ],
+  [
+    'api/__tests__: template-literal import() of a "scripts-" name stays clean',
+    'api/__tests__/x.test.ts',
+    'const { helper } = await import(`../_lib/scripts-registry.js`);\nexport const x = helper;\n',
+    [],
+  ],
+  // A triple-slash reference is neither an import nor an import type.
+  [
+    'api/_lib: triple-slash reference path to scripts/',
+    'api/_lib/x.ts',
+    '/// <reference path="../../scripts/_lib/x.ts" />\nexport const x = 1;\n',
+    ['@typescript-eslint/triple-slash-reference'],
+  ],
+  [
+    'api/__tests__: triple-slash reference path to scripts/',
+    'api/__tests__/x.test.ts',
+    '/// <reference path="../../scripts/_lib/x.ts" />\nexport const x = 1;\n',
+    ['@typescript-eslint/triple-slash-reference'],
+  ],
+  [
+    // From api/_lib/, `../../scripts-foo/` is a root folder next to api/.
+    'api/_lib: a "scripts-foo" folder next to api/ stays clean',
+    'api/_lib/x.ts',
+    `import { helper } from '../../scripts-foo/a.js';${SCRIPTS_USE}`,
+    [],
+  ],
+  [
+    // `../scripts-foo/` from api/_lib/ is api/scripts-foo/.
+    'api/_lib: a "scripts-foo" folder inside api/ stays clean',
+    'api/_lib/x.ts',
+    `import { helper } from '../scripts-foo/a.js';${SCRIPTS_USE}`,
+    [],
+  ],
+  [
+    'api/_lib: a ./scripts-registry.js import stays clean',
+    'api/_lib/x.ts',
+    `import { helper } from './scripts-registry.js';${SCRIPTS_USE}`,
+    [],
+  ],
+  [
+    // Not top-level scripts/: no `..` segment leads into it, so it resolves
+    // below the importing file's own folder. Pins the one-sided rule.
+    'api/_lib: a scripts/ folder below the importing file stays clean',
+    'api/_lib/x.ts',
+    `import { helper } from './scripts/a.js';${SCRIPTS_USE}`,
+    [],
+  ],
+  [
     'api/__tests__: typeof import() of a sibling stays clean',
     'api/__tests__/x.test.ts',
     "const mod = await vi.importActual<typeof import('./pglite-migrations')>('./pglite-migrations');\nexport const x = mod;\n",
@@ -258,6 +466,50 @@ describe('eslint: api/ must not import scripts/', () => {
     '%s',
     async (_label, file, code, expected) => {
       expect(await guardRuleIds(eslint, file, code)).toEqual(expected);
+    },
+    60_000,
+  );
+});
+
+/*
+ * Flat config replaces a rule's options instead of merging them, so a block
+ * added after the api/ guard that sets no-restricted-imports or
+ * no-restricted-syntax for api/ files would switch part of it off without a
+ * lint error. This reads the resolved config, so the failure names the rule.
+ */
+describe('eslint: the api/ scripts guard survives config merging', () => {
+  let eslint;
+
+  beforeAll(() => {
+    eslint = new ESLint({ cwd: ROOT });
+  });
+
+  it.each(['api/_lib/x.ts', 'api/__tests__/x.test.ts'])(
+    '%s resolves to the guard rules at error severity',
+    async (file) => {
+      const { rules } = await eslint.calculateConfigForFile(
+        path.join(ROOT, file),
+      );
+
+      const [importsSeverity, importsOptions] = rules['no-restricted-imports'];
+      expect(importsSeverity).toBe(2);
+      expect(
+        importsOptions.patterns.some(({ regex }) =>
+          new RegExp(regex, 'u').test('../../scripts/x.js'),
+        ),
+      ).toBe(true);
+
+      const [syntaxSeverity, ...selectors] = rules['no-restricted-syntax'];
+      expect(syntaxSeverity).toBe(2);
+      expect(selectors.map((s) => s.selector)).toEqual(
+        expect.arrayContaining([
+          expect.stringMatching(/^ImportExpression > Literal\[/),
+          expect.stringMatching(/^ImportExpression > TemplateLiteral\[/),
+          expect.stringMatching(/^TSImportType > Literal\[/),
+        ]),
+      );
+
+      expect(rules['@typescript-eslint/triple-slash-reference'][0]).toBe(2);
     },
     60_000,
   );

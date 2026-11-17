@@ -38,22 +38,54 @@ const NO_API_MESSAGE =
 // api/ must not import scripts/. Vercel's build runs `tsc --noEmit -p
 // tsconfig.api.json`, which includes all of api/ (tests too), and
 // .vercelignore strips scripts/ (all but write-build-info.mjs) from the
-// upload. Such an import passes locally and fails the deploy with TS2307; a
-// type-only import fails the same way, so none is exempt.
-// `no-restricted-imports` covers imports and re-exports but not a dynamic
-// import() or an import type (`typeof import('x')`), so syntax selectors cover
-// those. Shared test fixtures belong in
-// api/__tests__/ (scripts/ tests may import them from there).
-// scripts/_lib/eslint-api-guard.test.mjs keeps these rules honest.
+// upload. Such an import passes locally and fails the deploy with TS2307 (a
+// triple-slash reference path, with TS6053); a type-only import fails the same
+// way, so none is exempt. Shared test fixtures belong in api/__tests__/
+// (scripts/ tests may import them from there).
+// Which rule sees which form:
+//  - `no-restricted-imports`: import and re-export declarations.
+//  - `no-restricted-syntax`: what it does not see, a dynamic import(), a
+//    template-literal import() and an import type (`typeof import('x')`).
+//  - `@typescript-eslint/triple-slash-reference`: `/// <reference path>`. The
+//    recommended preset turns the rule on, and its default `path: 'never'`
+//    forbids path references.
+// Flat config replaces a rule's options instead of merging them, so a later
+// block that sets these rules for api/ files would switch part of the guard
+// off. Its block therefore sits after every other block that can match api/,
+// and scripts/_lib/eslint-api-guard.test.mjs checks the resolved config and
+// lints each form.
+// A regex can't resolve a path, so the rule is a pattern: a `scripts` segment
+// whose previous segment, skipping `.` and empty ones, is `..`. Normalizing a
+// path cancels each `dir/..` pair and drops each `.`, so a named folder right
+// before `scripts` stays in the path; only a `..` there can land on the
+// top-level scripts/. `../../scripts/x`, `./../../scripts/x` and
+// `../_lib/../../scripts/x` all match. It also matches a `..` that lands inside
+// api/ (`../scripts/x` from api/cron/), so a real api/**/scripts/ folder would
+// be flagged; none exists. `scripts-foo`, `./scripts-registry.js` and
+// `./scripts/x` (below the importing file) don't match.
+// A template literal is matched on its first quasi (`../../scripts/${x}`). tsc
+// doesn't resolve one with a substitution, but Vercel's runtime has no
+// scripts/ either.
+// This lint rule is the early, readable failure. The check that follows the
+// real resolver over everything .vercelignore strips, from api/ and src/ alike,
+// is scripts/_lib/vercel-build-file-set.test.mjs.
+// The match is case-insensitive: a Windows or macOS checkout resolves
+// `../Scripts/x` to the real folder, so the local build passes. The
+// no-restricted-imports pattern says so with `caseSensitive: false` (the
+// rule's default, spelled out) and the esquery regexes carry the `i` flag.
 const NO_SCRIPTS_MESSAGE =
   'api/ must not import scripts/: .vercelignore strips scripts/ from the Vercel build, so tsc -p tsconfig.api.json fails there (TS2307). Put shared code or test fixtures under api/.';
+const SCRIPTS_SPECIFIER = String.raw`^(?:.*/)?\.\./(?:\.?/)*scripts(?:/|$)`;
+// The same regex as an esquery attribute value, where `/` must be escaped.
+const SCRIPTS_SPECIFIER_ESQUERY = `/${SCRIPTS_SPECIFIER.replaceAll('/', '\\/')}/i`;
 const noScriptsImportsFromApi = {
   'no-restricted-imports': [
     'error',
     {
       patterns: [
         {
-          regex: String.raw`^(\.\./)+scripts(/|$)`,
+          regex: SCRIPTS_SPECIFIER,
+          caseSensitive: false,
           message: NO_SCRIPTS_MESSAGE,
         },
       ],
@@ -62,8 +94,11 @@ const noScriptsImportsFromApi = {
   'no-restricted-syntax': [
     'error',
     {
-      // The same pattern as an esquery regex, where `/` is escaped.
-      selector: String.raw`ImportExpression > Literal[value=/^(\.\.\/)+scripts(\/|$)/]`,
+      selector: `ImportExpression > Literal[value=${SCRIPTS_SPECIFIER_ESQUERY}]`,
+      message: NO_SCRIPTS_MESSAGE,
+    },
+    {
+      selector: `ImportExpression > TemplateLiteral[quasis.0.value.cooked=${SCRIPTS_SPECIFIER_ESQUERY}]`,
       message: NO_SCRIPTS_MESSAGE,
     },
     {
@@ -72,7 +107,9 @@ const noScriptsImportsFromApi = {
       // Vercel build like an import does. The specifier is the node's
       // `source`, a direct Literal child (typescript-eslint 8.60; the old
       // `argument` wrapper is only a deprecated alias that is not traversed).
-      selector: String.raw`TSImportType > Literal[value=/^(\.\.\/)+scripts(\/|$)/]`,
+      // Direct, so a scripts/ path in a type argument (a string literal type
+      // tsc never resolves) is not flagged.
+      selector: `TSImportType > Literal[value=${SCRIPTS_SPECIFIER_ESQUERY}]`,
       message: NO_SCRIPTS_MESSAGE,
     },
   ],
@@ -182,10 +219,6 @@ export default [
     },
   },
   {
-    files: ['api/**/*.ts'],
-    rules: noScriptsImportsFromApi,
-  },
-  {
     files: ['src/**/*.{ts,tsx}'],
     ignores: [...SRC_TESTS, ...API_COMPILED_SRC],
     plugins: { 'import-x': importX },
@@ -260,6 +293,12 @@ export default [
       'sonarjs/cognitive-complexity': 'off',
       'sonarjs/no-nested-functions': 'off',
     },
+  },
+  // Keep this after every block that can match api/ (see the comment on
+  // noScriptsImportsFromApi). prettier only switches formatting rules off.
+  {
+    files: ['api/**/*.ts'],
+    rules: noScriptsImportsFromApi,
   },
   prettier,
 ];
