@@ -43,9 +43,9 @@ export const VOL_TO_OI_WINDOW_BONUS_POINTS = 1;
  * penalize on it.
  *
  * `range_pos_at_trigger` has no effect on the score. The detect cron
- * still writes it on every new fire, for the ml/ research scripts;
- * nothing in the app reads it since the NEW HIGH badge was removed
- * (2026-11-17).
+ * still writes it on every new fire. Nothing in the UI or scoring reads
+ * it; `api/lottery-export.ts` still passes it through to the export
+ * (CSV and JSON) via `f.*`, and the ml/ research scripts read it.
  */
 
 /**

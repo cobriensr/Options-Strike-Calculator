@@ -19,7 +19,7 @@ Study: `docs/tmp/newhigh-weekday-2026-11-17/REPORT.md` (gitignored, main checkou
   - CRWD split 4-for-1 in early July (`spot_at_first` was $783 on 07-01 and $193 on 07-07).
   - The 10-29 backfill (`scripts/backfill-range-pos.mjs`) compared split-adjusted UW candles with the unadjusted stored spot, so `range_pos` clamped at 1.
   - SOXS is the mirror case: a reverse split (about $4 on 07-10, about $54 on 07-17) pinned 253 fires from 05-22 to 07-02 at 0.
-- **No other reader.** `range_pos_at_trigger` is not a score input (`api/_lib/lottery-score-bonuses.ts:45`) and not a Take-It feature.
+- **No other reader in the UI or scoring.** `range_pos_at_trigger` is not a score input (`api/_lib/lottery-score-bonuses.ts:45`) and not a Take-It feature. One pass-through remains: `api/lottery-export.ts` selects `f.*` and writes every column to its CSV and JSON output, so the column still reaches the owner's export. The ml/ research scripts read it too.
 
 ## Phase 1: remove the badge and the client field (one review loop)
 
@@ -34,7 +34,7 @@ Study: `docs/tmp/newhigh-weekday-2026-11-17/REPORT.md` (gitignored, main checkou
 **Kept**
 - The `range_pos_at_trigger` column, the detector's write and `computeRangePos`. Owner rule: keep working collectors even when unread. The ml/ EDA scripts still read the column.
 
-**Commits.** At most 5 files per commit. Follow the MACRO removal sequence: badge first, then the field made optional, then the field removed (`7dbd1218..e3240310`).
+**Commits.** At most 5 files per commit. Order used (as in the MACRO removal, `7dbd1218..e3240310`, but with the optional step first): field made optional, badge removed, API stops sending it, comments reworded, field deleted. The optional step comes first because the ticker-group test drops its fixture line in the badge commit, and that test only type-checks once the field is optional.
 
 ## Data dependencies
 None: no migration, env var or external API change.

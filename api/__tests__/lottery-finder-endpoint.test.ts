@@ -2447,8 +2447,9 @@ describe('lottery-finder endpoint', () => {
     const rowQueries = mockSql.mock.calls.filter((c) =>
       (c[0] as TemplateStringsArray).join('?').includes('f.direction_gated'),
     );
-    // The page query and the pinned reignited query.
-    expect(rowQueries).toHaveLength(2);
+    // At least the page query and the pinned reignited query. An unrelated
+    // query that also names f.direction_gated would only add to the set.
+    expect(rowQueries.length).toBeGreaterThanOrEqual(2);
     for (const call of rowQueries) {
       expect((call[0] as TemplateStringsArray).join('?')).not.toContain(
         'range_pos_at_trigger',

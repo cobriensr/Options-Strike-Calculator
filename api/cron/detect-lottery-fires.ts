@@ -1049,11 +1049,11 @@ export default withCronInstrumentation(
         // Range position — fetch 1-min stock candles for the underlying
         // × fire date (cached across fires on the same ticker) and compute
         // spot position in the session range up to trigger time. Written
-        // to the row for research only: no reader in the app (the NEW HIGH
-        // badge was the last, removed 2026-11-17) and none in V2 scoring.
-        // With no candles (index root, UW failure, deadline,
-        // empty day, breaker skip, run past the cutoff) range_pos stays null
-        // and the fire is still written.
+        // to the row for research: nothing in the UI or V2 scoring reads
+        // it, api/lottery-export.ts still passes it through via f.*, and
+        // the ml/ research scripts read it. With no candles (index root,
+        // UW failure, deadline, empty day, breaker skip, run past the
+        // cutoff) range_pos stays null and the fire is still written.
         const cacheKey = `${rec.underlyingSymbol}_${rec.date}`;
         let candles = candleCache.get(cacheKey);
         if (candles == null) {

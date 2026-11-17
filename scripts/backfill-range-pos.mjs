@@ -2,9 +2,10 @@
 
 /**
  * Backfill lottery_finder_fires.range_pos_at_trigger: the fire's spot
- * position in its underlying's session range at trigger time, behind the
- * "NEW HIGH" badge. The cron stopped filling it on 2026-05-18 (it called
- * UW without a key and swallowed the 401); spec:
+ * position in its underlying's session range at trigger time. Research
+ * only: the UI and scoring don't read it, and it still appears in the
+ * export (api/lottery-export.ts). The cron stopped filling it on
+ * 2026-05-18 (it called UW without a key and swallowed the 401); spec:
  * docs/superpowers/specs/range-pos-fix-and-backfill-2026-10-28.md, Phase 2.
  *
  * For each (underlying, date) with NULL rows:
