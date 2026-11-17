@@ -174,10 +174,6 @@ interface FireRow {
   // raw `score` is preserved on the row; the feed overrides the
   // displayed `scoreTier` to 'tier3' when this flag is set.
   direction_gated: boolean;
-  // Range Kill (migration #153). Position of spot_at_first within the
-  // underlying's session range at trigger_time_ct ∈ [0, 1]. NULL on
-  // pre-#153 fires + new fires where the UW candle fetch failed.
-  range_pos_at_trigger: DbNullableNumeric;
   // Round-trip score deduct (migration #154, spec
   // round-trip-score-deduct-production-2026-05-16.md). Computed 60-75
   // min post-fire by the evaluate-round-trip cron from ws_option_trades.
@@ -747,7 +743,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           f.realized_eod_pct,
           f.peak_ceiling_pct, f.minutes_to_peak,
           f.inserted_at, f.enriched_at,
-          f.score, f.direction_gated, f.range_pos_at_trigger,
+          f.score, f.direction_gated,
           f.round_trip_net_pct, f.round_trip_score_deduct,
           f.gamma_at_trigger,
           f.takeit_prob, f.takeit_top_features, f.takeit_model_version,
@@ -1156,7 +1152,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           f.realized_eod_pct,
           f.peak_ceiling_pct, f.minutes_to_peak,
           f.inserted_at, f.enriched_at,
-          f.score, f.direction_gated, f.range_pos_at_trigger,
+          f.score, f.direction_gated,
           f.round_trip_net_pct, f.round_trip_score_deduct,
           f.gamma_at_trigger,
           f.takeit_prob, f.takeit_top_features, f.takeit_model_version,
@@ -1695,15 +1691,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           minutesToPeak: num(r.minutes_to_peak),
           enrichedAt: r.enriched_at != null ? toIso(r.enriched_at) : null,
         },
-
-        // Position of spot at trigger time within the underlying's
-        // session range ∈ [0, 1]. The UI uses this for the Range Kill
-        // filter chip (hide bottom-10%) and the top-range badge.
-        // Null for pre-#153 rows + new fires whose UW candle fetch
-        // failed; the score-bonus -3 penalty applies only when the
-        // value is < 0.10, so null rows score with their original
-        // weights.
-        rangePosAtTrigger: num(r.range_pos_at_trigger),
 
         insertedAt: toIso(r.inserted_at),
       };

@@ -282,7 +282,6 @@ const ROW = {
   // → Tier 1 (≥18). Ticker stats reflect a "reliable" SNDK row.
   score: 20,
   direction_gated: false,
-  range_pos_at_trigger: null,
   // Round-trip score deduct (migration #154 / Phase 2C). Null until the
   // evaluate-round-trip cron has run for the alert; deduct defaults to 0.
   round_trip_net_pct: null,
@@ -2417,6 +2416,44 @@ describe('lottery-finder endpoint', () => {
     expect(body.reignitedFires).toHaveLength(1);
     // The whole payload, so a nested spot is covered too.
     expect(JSON.stringify(res._json)).not.toContain('hoursToNextMacroEvent');
+  });
+
+  it('selects no range_pos_at_trigger and sends no rangePosAtTrigger (NEW HIGH badge removed 2026-11-17)', async () => {
+    // The badge was the field's only reader. The column stays in the table
+    // for research, but neither the page query nor the pinned reignited
+    // query selects it, and the mapper forwards it nowhere. Both mocked rows
+    // carry the column anyway, so a mapper that still forwarded it would fail.
+    mockSql
+      .mockResolvedValueOnce([{ ...ROW, range_pos_at_trigger: '1' }]) // rows
+      .mockResolvedValueOnce([{ total: 1 }]) // total
+      .mockResolvedValueOnce([]) // chainExtras
+      .mockResolvedValueOnce([]) // clusterByMinute
+      .mockResolvedValueOnce([]) // sbChains
+      .mockResolvedValueOnce([{ ...ROW, id: 999, range_pos_at_trigger: '1' }]); // reignitedRows
+    // Any later query takes the default `[]`.
+
+    const res = mockResponse();
+    await handler(
+      mockRequest({ method: 'GET', query: { date: '2026-05-01' } }),
+      res,
+    );
+
+    expect(res._status).toBe(200);
+    const body = res._json as { fires: unknown[]; reignitedFires: unknown[] };
+    expect(body.fires).toHaveLength(1);
+    expect(body.reignitedFires).toHaveLength(1);
+    // The whole payload, so the pinned rows are covered too.
+    expect(JSON.stringify(res._json)).not.toContain('rangePosAtTrigger');
+    const rowQueries = mockSql.mock.calls.filter((c) =>
+      (c[0] as TemplateStringsArray).join('?').includes('f.direction_gated'),
+    );
+    // The page query and the pinned reignited query.
+    expect(rowQueries).toHaveLength(2);
+    for (const call of rowQueries) {
+      expect((call[0] as TemplateStringsArray).join('?')).not.toContain(
+        'range_pos_at_trigger',
+      );
+    }
   });
 
   it('chainExtras SQL binds the REIGNITION threshold constants (3, 30, 2, 5)', async () => {
