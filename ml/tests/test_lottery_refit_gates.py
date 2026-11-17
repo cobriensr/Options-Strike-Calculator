@@ -770,7 +770,11 @@ def test_the_feed_qas_expression_is_the_one_the_floor_was_derived_from():
             "no longer the expression",
         ),
         # The function renamed, so there is nothing to compare.
-        ("function qasExprText(", "function qasExprTextRenamed(", "is not in"),
+        (
+            "function qasExprText(",
+            "function qasExprTextRenamed(",
+            "qasExprText is not in",
+        ),
     ],
     ids=["before the deduct", "after the deduct", "before the bonus", "renamed"],
 )
@@ -842,9 +846,15 @@ def _pin_column_writes(source: str, where: str, expected: list[str]) -> None:
         for rhs in _COLUMN_ASSIGNMENT.findall(clause)
     ]
     if found != expected:
+        # The counts are worth a clause only when they differ.
+        counts = (
+            f" ({len(found)} assignments, not {len(expected)})"
+            if len(found) != len(expected)
+            else ""
+        )
         _stale_floor(
-            f"{where} assigns round_trip_score_deduct {len(found)} time(s), to {found}, "
-            f"not {len(expected)} time(s), to {expected}"
+            f"{where} assigns round_trip_score_deduct to {found}, expected {expected}"
+            f"{counts}"
         )
 
 
