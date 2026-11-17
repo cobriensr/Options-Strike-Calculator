@@ -578,39 +578,18 @@ export function LotteryFinderSection({
     DEFAULT_TAKEIT_FLOOR,
     floatPersistOpts,
   );
-  // 0-based page index. Reset to 0 whenever a filter or minute changes, and
-  // stored with its date like the minute: a date change (a pick, or the roll)
-  // drops it during render, so no render asks for the new date at the old
-  // page.
-  const [pageAt, setPageAt] = useState<{ date: string; page: number }>({
+  // 0-based page index. It belongs to the result set it was set on: the date,
+  // the scrubbed minute and every filter. Otherwise the owner could be on page
+  // 3, click a filter, and land on an empty page 3 of a 1-page result set. The
+  // page is stored with a scope string built from all of them (JSON, so no two
+  // sets collide), read only while that scope is current, and dropped during
+  // render when it is not. An effect that reset it would run one commit late:
+  // the commit that carries the new filter (or date) would still ask the
+  // server for the old page (offset 100 on page 2) before the clean request.
+  // Dropping it also stops the old page coming back when the filter or the
+  // date does. A new filter or minute control belongs in this list.
+  const pageScope = JSON.stringify([
     date,
-    page: 0,
-  });
-  if (pageAt.date !== date) setPageAt({ date, page: 0 });
-  const page = pageAt.date === date ? pageAt.page : 0;
-  const setPage = useCallback(
-    (next: number | ((prev: number) => number)) =>
-      setPageAt((prev) => {
-        const current = prev.date === date ? prev.page : 0;
-        const value = typeof next === 'function' ? next(current) : next;
-        return prev.date === date && value === current
-          ? prev
-          : { date, page: value };
-      }),
-    [date],
-  );
-
-  // (Phase 2C: the 10 localStorage write effects that lived here were
-  // collapsed into the `usePersistedState` calls above. Same keys,
-  // same encodings, same defaults.)
-
-  // Reset to page 0 whenever the result set's identity changes.
-  // Otherwise the user could be on page 3, click a filter, and land
-  // on an empty page 3 of a 1-page result set.
-  useEffect(() => {
-    setPage(0);
-  }, [
-    setPage,
     minute,
     tickerFilter,
     reloadOnly,
@@ -631,6 +610,27 @@ export function LotteryFinderSection({
     maxFireCount,
     showFilteredTickers,
   ]);
+  const [pageAt, setPageAt] = useState<{ scope: string; page: number }>({
+    scope: pageScope,
+    page: 0,
+  });
+  if (pageAt.scope !== pageScope) setPageAt({ scope: pageScope, page: 0 });
+  const page = pageAt.scope === pageScope ? pageAt.page : 0;
+  const setPage = useCallback(
+    (next: number | ((prev: number) => number)) =>
+      setPageAt((prev) => {
+        const current = prev.scope === pageScope ? prev.page : 0;
+        const value = typeof next === 'function' ? next(current) : next;
+        return prev.scope === pageScope && value === current
+          ? prev
+          : { scope: pageScope, page: value };
+      }),
+    [pageScope],
+  );
+
+  // (Phase 2C: the 10 localStorage write effects that lived here were
+  // collapsed into the `usePersistedState` calls above. Same keys,
+  // same encodings, same defaults.)
 
   // Burst chip → numeric fire_count floor. 1 = no floor; >1 turns into
   // a server-side filter on both the feed and ticker-counts endpoints.

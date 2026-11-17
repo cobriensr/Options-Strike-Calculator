@@ -7,7 +7,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { act, render, screen, fireEvent } from '@testing-library/react';
+import { act, render, screen, fireEvent, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { getETToday } from '../utils/timezone';
 import type {
@@ -2805,6 +2805,269 @@ describe.each([
     expect(afterPick.length).toBeGreaterThan(0);
     expect(afterPick.every((a) => a.date === '2026-04-21')).toBe(true);
     expect(afterPick.every((a) => a.page === 0)).toBe(true);
+  });
+
+  it('drops the page at the roll, with no request for the new day at the old page', () => {
+    mockUseLotteryFinder.mockReturnValue(
+      feedResult({
+        fires: [makeFire({ id: 1, optionChainId: 'PAGED' })],
+        total: 300,
+        hasMore: true,
+      }),
+    );
+    render(<LotteryFinderSection marketOpen={true} />);
+    // The pager exists only off the live union: a scrubbed minute on today.
+    stepBackOneMinute();
+    fireEvent.click(screen.getByRole('button', { name: /next page/i }));
+    fireEvent.click(screen.getByRole('button', { name: /next page/i }));
+    expect(finderArgs().at(-1)).toMatchObject({ date: m.night, page: 2 });
+    const beforeRoll = finderArgs().length;
+
+    crossMidnight();
+
+    const afterRoll = finderArgs().slice(beforeRoll);
+    expect(afterRoll.length).toBeGreaterThan(0);
+    expect(afterRoll.every((a) => a.date === m.morning)).toBe(true);
+    expect(afterRoll.every((a) => a.page === 0)).toBe(true);
+    expect(afterRoll.every((a) => a.minute === null)).toBe(true);
+  });
+});
+
+// ============================================================
+// The page belongs to the view it was set on: the date, the scrubbed minute
+// and every filter. The page used to be reset by an effect on those, which
+// runs one commit late: toggling a filter on page 2 asked the server for
+// page 2 of the new filter (offset 100) before the clean request, and a
+// render-phase fix for the date alone left the filters out. The page is
+// stored with a scope string built from all of them, read only while that
+// scope is current, and dropped during render when it is not. So no render
+// pairs a new view with the old page, and the old page cannot come back when
+// the view does. Every assertion reads every render pass handed to the feed
+// hook. Owner decision 2026-11-14.
+// ============================================================
+
+describe('LotteryFinderSection: the page follows its date, minute and filters', () => {
+  const chip = (name: string | RegExp) => screen.getByRole('button', { name });
+  const testId = (id: string) => screen.getByTestId(id);
+  /** The row of controls a toolbar group sits in (its label's parent). */
+  const rowOf = (label: string) =>
+    screen.getByText(label, { selector: 'span' }).parentElement as HTMLElement;
+  const nextPage = () =>
+    fireEvent.click(screen.getByRole('button', { name: /next page/i }));
+
+  /**
+   * Every control the reset effect listed (all but date and minute), as a
+   * flip away from the default and the click that puts it back.
+   */
+  const FILTERS: Array<{
+    name: string;
+    flip: () => void;
+    restore: () => void;
+  }> = [
+    {
+      name: 'sortMode',
+      flip: () => fireEvent.click(chip('score')),
+      restore: () => fireEvent.click(chip('newest')),
+    },
+    {
+      name: 'convictionFloor',
+      flip: () => fireEvent.click(chip(/Tier 1/)),
+      restore: () =>
+        fireEvent.click(
+          within(rowOf('conviction')).getByRole('button', { name: /^all$/ }),
+        ),
+    },
+    {
+      name: 'minFireCount',
+      flip: () => fireEvent.click(testId('burst-filter-gte3')),
+      restore: () => fireEvent.click(testId('burst-filter-all')),
+    },
+    {
+      name: 'takeitFloor',
+      flip: () => fireEvent.click(testId('takeit-floor-0')),
+      restore: () => fireEvent.click(testId('takeit-floor-0.7')),
+    },
+    {
+      name: 'minPremiumK',
+      flip: () =>
+        fireEvent.change(testId('lottery-min-premium-input'), {
+          target: { value: '100' },
+        }),
+      restore: () =>
+        fireEvent.change(testId('lottery-min-premium-input'), {
+          target: { value: '' },
+        }),
+    },
+    {
+      name: 'maxFireCount',
+      flip: () =>
+        fireEvent.change(testId('lottery-max-fires-input'), {
+          target: { value: '5' },
+        }),
+      restore: () =>
+        fireEvent.change(testId('lottery-max-fires-input'), {
+          target: { value: '' },
+        }),
+    },
+    {
+      name: 'reloadOnly',
+      flip: () => fireEvent.click(chip(/RE-LOAD only/)),
+      restore: () => fireEvent.click(chip(/RE-LOAD only/)),
+    },
+    {
+      name: 'cheapCallPmOnly',
+      flip: () => fireEvent.click(chip(/Cheap-call-PM only/)),
+      restore: () => fireEvent.click(chip(/Cheap-call-PM only/)),
+    },
+    {
+      name: 'showFilteredTickers',
+      flip: () => fireEvent.click(testId('lottery-show-filtered-toggle')),
+      restore: () => fireEvent.click(testId('lottery-show-filtered-toggle')),
+    },
+    {
+      name: 'modeFilter',
+      flip: () => fireEvent.click(chip(/Mode A/)),
+      restore: () => fireEvent.click(chip('All modes')),
+    },
+    {
+      name: 'optionTypeFilter',
+      flip: () => fireEvent.click(chip('calls')),
+      restore: () =>
+        fireEvent.click(
+          within(rowOf('type')).getAllByRole('button', { name: /^all$/ })[0]!,
+        ),
+    },
+    {
+      name: 'moneynessMode',
+      flip: () => fireEvent.click(testId('lottery-moneyness-otm-chip')),
+      restore: () => fireEvent.click(testId('lottery-moneyness-all-chip')),
+    },
+    {
+      name: 'todFilter',
+      flip: () => fireEvent.click(chip('AM_open')),
+      restore: () => fireEvent.click(chip('all TOD')),
+    },
+    {
+      name: 'hideLatePm',
+      flip: () => fireEvent.click(chip(/hide post-14:30/)),
+      restore: () => fireEvent.click(chip(/hide post-14:30/)),
+    },
+    {
+      name: 'hideGated',
+      flip: () => fireEvent.click(testId('lottery-hide-gated-chip')),
+      restore: () => fireEvent.click(testId('lottery-hide-gated-chip')),
+    },
+    {
+      name: 'hideCounterFlow',
+      flip: () => fireEvent.click(testId('lottery-hide-counter-flow-chip')),
+      restore: () => fireEvent.click(testId('lottery-hide-counter-flow-chip')),
+    },
+    {
+      name: 'aggressivePremium',
+      flip: () => fireEvent.click(testId('lottery-aggressive-premium-chip')),
+      restore: () => fireEvent.click(testId('lottery-aggressive-premium-chip')),
+    },
+    {
+      name: 'tickerFilter',
+      flip: () => fireEvent.click(chip(/^AAPL/)),
+      restore: () => fireEvent.click(chip(/^AAPL/)),
+    },
+  ];
+
+  /** A past day with a three-page result, on page 2 (0-based). */
+  function renderOnPage2() {
+    mockUseLotteryFinder.mockReturnValue(
+      feedResult({
+        fires: [makeFire({ id: 1, optionChainId: 'PAGED' })],
+        total: 300,
+        hasMore: true,
+      }),
+    );
+    mockUseLotteryFinderTickerCounts.mockReturnValue({
+      data: {
+        tickers: [
+          {
+            ticker: 'AAPL',
+            count: 5,
+            peakBestPct: null,
+            latestTriggerTimeCt: '2026-04-20T19:00:00Z',
+          },
+        ],
+      },
+      loading: false,
+      error: null,
+      fetchedAt: null,
+      refresh: vi.fn(),
+    });
+    render(<LotteryFinderSection marketOpen={false} />);
+    pick('2026-04-20');
+    nextPage();
+    nextPage();
+    expect(finderArgs().at(-1)).toMatchObject({
+      date: '2026-04-20',
+      page: 2,
+    });
+  }
+
+  it.each(FILTERS.map((f) => [f.name, f] as const))(
+    'drops page 2 when %s changes, with no request for the new filter at the old page, and does not bring it back',
+    (_name, { flip, restore }) => {
+      renderOnPage2();
+      const beforeFlip = finderArgs().length;
+
+      flip();
+
+      const afterFlip = finderArgs().slice(beforeFlip);
+      expect(afterFlip.length).toBeGreaterThan(0);
+      expect(afterFlip.every((a) => a.page === 0)).toBe(true);
+
+      restore();
+
+      // The control is back where it was, and so is the scope the page was
+      // set on: it must not come back with it.
+      expect(finderArgs().length).toBeGreaterThan(beforeFlip + 1);
+      expect(
+        finderArgs()
+          .slice(beforeFlip)
+          .every((a) => a.page === 0),
+      ).toBe(true);
+    },
+  );
+
+  it('drops page 2 when the minute changes, and does not bring it back', () => {
+    renderOnPage2();
+    const beforeScrub = finderArgs().length;
+
+    stepBackOneMinute();
+    const scrubbed = finderArgs().at(-1);
+    expect(scrubbed?.minute).not.toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: /^All day$/ }));
+
+    const since = finderArgs().slice(beforeScrub);
+    expect(since.length).toBeGreaterThan(1);
+    expect(since.every((a) => a.page === 0)).toBe(true);
+  });
+
+  it('drops page 2 when another date is picked, and does not bring it back when the date does', () => {
+    renderOnPage2();
+    const beforePick = finderArgs().length;
+
+    pick('2026-04-21');
+    pick('2026-04-20');
+
+    const since = finderArgs().slice(beforePick);
+    expect(since.map((a) => a.date)).toContain('2026-04-21');
+    expect(since.at(-1)?.date).toBe('2026-04-20');
+    expect(since.every((a) => a.page === 0)).toBe(true);
+  });
+
+  it('keeps page 2 through a change that is not part of the view', () => {
+    renderOnPage2();
+
+    // The realized-exit policy changes the row badges, not the result set.
+    fireEvent.click(chip('hard 30m'));
+
+    expect(finderArgs().at(-1)).toMatchObject({ page: 2 });
   });
 });
 
