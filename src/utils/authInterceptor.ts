@@ -22,7 +22,8 @@
  *   1. **Debounce** — track 401 timestamps and only proceed after the
  *      DEBOUNCE_THRESHOLD'th 401 within DEBOUNCE_WINDOW_MS. One-off blips
  *      never trigger.
- *   2. **Server confirm** — call `/api/auth/whoami` (always 200) and act
+ *   2. **Server confirm** — call `/api/auth/whoami` (200 for any reply the
+ *      interceptor acts on; a non-OK reply such as 429 is ignored) and act
  *      only when the server reports `mode === 'public'`. The server is
  *      the source of truth; the client's hint cookies are a render hint,
  *      not a session.

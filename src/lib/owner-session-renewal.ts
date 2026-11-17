@@ -19,9 +19,11 @@
  *
  * A failure is silent and is not retried before the next day or the next start:
  * a failed request (a laptop waking, a network blip, a 5xx the server reports
- * itself) does not matter to a cookie with months left. It does not go through
- * the 401 interceptor either: `whoami` always answers 200, and a `/api/auth/*`
- * path is never counted by it.
+ * itself, a 429 from the per-client limit) does not matter to a cookie with
+ * months left. It does not go through the 401 interceptor either: `whoami`
+ * answers 200 except for 405, 429 and 5xx, none of which is a 401, so the
+ * interceptor never counts them, and a `/api/auth/*` path is never counted by
+ * it. This module never reads the status.
  *
  * Started from main.tsx, outside React, so a render failure in a new build
  * does not stop the renewal. The timer runs for the life of the page; stopping
