@@ -7,7 +7,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, waitFor, act } from '@testing-library/react';
 import { useLotteryFinder } from '../hooks/useLotteryFinder';
 import { POLL_INTERVALS } from '../constants';
-import { getCTDateStr } from '../utils/timezone';
+import { getETToday } from '../utils/timezone';
 import { captureUnlessAuth } from '../lib/sentry-helpers';
 import { INVALID_SHAPE_ERROR } from '../lib/response-guard';
 import type { LotteryFinderResponse } from '../components/LotteryFinder/types';
@@ -359,13 +359,14 @@ describe('useLotteryFinder', () => {
   it('polls every OTM_FLOW when marketOpen and no minute, page 0', async () => {
     vi.useFakeTimers();
     // Pin wall-clock to a fixed instant so the hook's `historical` gate
-    // (`date !== getCTDateStr(new Date())`) sees `date` AS today. Fake timers
-    // mock Date, so without this the hook would read 1970 and gate historical.
+    // (`date !== today`, the shared ET clock) sees `date` AS today. Fake
+    // timers mock Date, so without this the hook would read 1970 and gate
+    // historical.
     vi.setSystemTime(new Date('2026-06-09T18:00:00Z'));
-    const today = getCTDateStr(new Date());
+    const today = getETToday();
     fetchMock.mockResolvedValue(jsonResponse(emptyFinder({ date: today })));
     renderHook(() =>
-      // TODAY in CT — otherwise FIX 2 gates this to historical (no poll).
+      // TODAY in ET — otherwise FIX 2 gates this to historical (no poll).
       useLotteryFinder({ date: today, marketOpen: true }),
     );
     await act(async () => {
@@ -416,7 +417,7 @@ describe('useLotteryFinder', () => {
 
   it('does not poll a HISTORICAL (past) date even on page 0 with no minute', async () => {
     // FIX 2: a past trading day is an immutable snapshot. `historical` must
-    // include the `date !== todayCt()` term, so browsing a past date (page 0,
+    // include the `date !== today` term, so browsing a past date (page 0,
     // no minute) single-fetches instead of polling an unchanging snapshot.
     vi.useFakeTimers();
     fetchMock.mockResolvedValue(
@@ -901,4 +902,131 @@ describe('useLotteryFinder: tierCutoffs response schema', () => {
       });
     },
   );
+});
+
+// ============================================================
+// Midnight rollover (docs/superpowers/specs/panel-date-rollover-2026-11-14.md,
+// design item 3)
+//
+// The hook gates polling on `date !== today`: a past day is an immutable
+// snapshot and is fetched once. `today` was the CT date read from the wall
+// clock on each render, which is wrong twice. Lottery Finder's days are
+// stamped with the ET date, so from 23:00 to 24:00 CT, when ET is already on
+// the new day, the new day was called historical and not polled. And nothing
+// re-rendered the hook at midnight, so a day that had become yesterday kept
+// polling. `today` is the shared ET clock now. Every case starts 30 s before
+// an ET midnight; the clock's timer is armed for 1 s past it, so 31 s lands
+// just after, which is 23:00:31 CT the evening before. Owner decision
+// 2026-11-14.
+// ============================================================
+
+describe.each([
+  {
+    zone: 'EST (winter)',
+    start: '2026-11-10T04:59:30Z',
+    night: '2026-11-09',
+    morning: '2026-11-10',
+  },
+  {
+    zone: 'EDT (summer)',
+    start: '2026-07-15T03:59:30Z',
+    night: '2026-07-14',
+    morning: '2026-07-15',
+  },
+])('useLotteryFinder: across the $zone midnight', (m) => {
+  type Args = Parameters<typeof useLotteryFinder>[0];
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(m.start));
+    // Answer each request with the date it asked for, so no response is
+    // gated out as another day's.
+    fetchMock.mockImplementation(async (url: string) =>
+      jsonResponse(
+        emptyFinder({
+          date: new URL(url, 'http://x').searchParams.get('date') ?? '',
+        }),
+      ),
+    );
+  });
+
+  const advance = (ms: number) =>
+    act(async () => {
+      await vi.advanceTimersByTimeAsync(ms);
+    });
+
+  /** The `date` of every request so far, in order. */
+  const datesRequested = () =>
+    fetchMock.mock.calls.map((c) =>
+      new URL(c[0] as string, 'http://x').searchParams.get('date'),
+    );
+
+  function mount(args: Partial<Args> = {}) {
+    return renderHook((p: Partial<Args>) =>
+      useLotteryFinder({ date: m.night, marketOpen: true, ...args, ...p }),
+    );
+  }
+
+  it('stops polling the night once it is yesterday', async () => {
+    mount();
+    await advance(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    // The poll at 30 s is the night's; the roll comes at 31 s.
+    await advance(31_000);
+    const afterRoll = fetchMock.mock.calls.length;
+    await advance(POLL_INTERVALS.OTM_FLOW * 3);
+
+    expect(fetchMock.mock.calls.length).toBe(afterRoll);
+    expect(new Set(datesRequested())).toEqual(new Set([m.night]));
+  });
+
+  it('polls the new day as live, though CT has not reached it', async () => {
+    const { rerender } = mount();
+    await advance(0);
+    await advance(31_000);
+
+    // The panel moves to the new day. By the wall clock it is 23:00:31 CT the
+    // evening before, so a CT comparison calls the new day historical.
+    rerender({ date: m.morning });
+    await advance(0);
+    expect(datesRequested().at(-1)).toBe(m.morning);
+
+    const before = fetchMock.mock.calls.length;
+    await advance(POLL_INTERVALS.OTM_FLOW);
+
+    expect(fetchMock.mock.calls.length).toBe(before + 1);
+    expect(datesRequested().at(-1)).toBe(m.morning);
+  });
+
+  it('keeps polling the night in a render just past midnight, before the clock ticks', async () => {
+    const { rerender } = mount();
+    await advance(0);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    // The wall clock is past midnight; the shared clock has not ticked. A
+    // render now (a filter change) reads the same clock the rest of the app
+    // does, so the night is still the live day, not the wall clock's
+    // yesterday.
+    act(() => {
+      vi.setSystemTime(new Date(Date.parse(m.start) + 30_500));
+    });
+    rerender({ ticker: 'AAPL' });
+    await advance(0);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    // The poll interval, 30 s after mount, fires before the clock's 31 s.
+    await advance(POLL_INTERVALS.OTM_FLOW);
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('fetches a past day once, across the roll', async () => {
+    mount({ date: '2026-04-20' });
+    await advance(0);
+    await advance(31_000);
+    await advance(POLL_INTERVALS.OTM_FLOW * 3);
+
+    expect(datesRequested()).toEqual(['2026-04-20']);
+  });
 });

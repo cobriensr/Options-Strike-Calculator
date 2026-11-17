@@ -21,7 +21,7 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { z } from 'zod';
 import { POLL_INTERVALS } from '../constants/index.js';
-import { getCTDateStr } from '../utils/timezone.js';
+import { useETToday } from './useETToday.js';
 import { useFetchedData, type UseFetchedDataResult } from './useFetchedData.js';
 import {
   claimReport,
@@ -211,16 +211,18 @@ export function useLotteryFinder({
   // FIX 2: also fold in `date !== today` — a PAST trading day is an immutable
   // snapshot, so polling it every 30s just re-fetches identical data (and, in
   // concert with the component's engaged gate, would re-ingest historical rows
-  // into the live never-vanish union). `todayCt` here is computed exactly like
-  // the component's `todayCt()`: `getCTDateStr(new Date())` uses the same
-  // `Intl.DateTimeFormat('en-CA', { timeZone: 'America/Chicago', ... })`.
+  // into the live never-vanish union). `today` is the shared ET clock, the
+  // one the component's date follows: lottery days are stamped with the ET
+  // date, so a CT comparison would call the new day historical from 23:00 to
+  // 24:00 CT, and a wall-clock read on each render would not move at midnight
+  // unless something else re-rendered the hook.
   //
   // The cross-day staleness gate lives in the primitive via `requestKey`/
   // `responseKey`: a prior-day response is nulled at the data layer BEFORE
   // the page cache reads `fetched.data`, so the cache never stores cross-day
   // data (the `if (fetched.data == null) return` guard in the save effect
   // skips a gated-null response) and every derived value stays coherent.
-  const todayCt = getCTDateStr(new Date());
+  const today = useETToday();
 
   // A body that fails the schema is handled like a failed fetch: the
   // throw lands in useFetchedData's catch, which sets `error` and keeps
@@ -255,7 +257,7 @@ export function useLotteryFinder({
     url,
     marketOpen,
     pollIntervalMs: POLL_INTERVALS.OTM_FLOW,
-    historical: minute != null || page !== 0 || date !== todayCt,
+    historical: minute != null || page !== 0 || date !== today,
     parse,
     requestKey: date,
     responseKey: (d) => d.date?.slice(0, 10),
