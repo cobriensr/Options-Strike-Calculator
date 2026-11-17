@@ -1,29 +1,39 @@
 // @vitest-environment node
 
 /**
- * GET /api/auth/whoami when the renewal cookies cannot be built.
+ * GET /api/auth/whoami when a step it depends on fails: the renewal cookies
+ * cannot be built, or the rate limiter itself throws.
  *
  * Kept apart from auth-whoami.test.ts because it replaces the api-helpers
- * boundary: the owner check passes, then `buildOwnerSessionCookies` throws.
- * The endpoint must answer 500 with one Sentry capture of that error, set no
- * cookie, and still tell caches not to store the failure.
+ * boundary: the request carries an owner cookie, the limiter lets it through,
+ * the owner check passes, then `buildOwnerSessionCookies` throws (or the
+ * limiter throws first). The endpoint must answer 500 with one Sentry capture
+ * of that error, set no cookie, and still tell caches not to store the
+ * failure.
  */
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
-const { mockCaptureException, mockBuildCookies } = vi.hoisted(() => ({
-  mockCaptureException: vi.fn(),
-  mockBuildCookies: vi.fn(),
-}));
+const { mockCaptureException, mockBuildCookies, mockLimiter } = vi.hoisted(
+  () => ({
+    mockCaptureException: vi.fn(),
+    mockBuildCookies: vi.fn(),
+    mockLimiter: vi.fn(),
+  }),
+);
 
 vi.mock('../_lib/api-helpers.js', () => ({
   isOwner: vi.fn(() => true),
   isLocalDeployment: vi.fn(() => false),
   buildOwnerSessionCookies: mockBuildCookies,
+  OWNER_COOKIE: 'sc-owner',
+  parseCookies: vi.fn(() => ({ 'sc-owner': 'presented-value' })),
+  rejectIfRateLimited: mockLimiter,
 }));
 
 vi.mock('../_lib/guest-auth.js', () => ({
+  GUEST_COOKIE: 'sc-guest',
   isGuest: vi.fn(() => false),
 }));
 
@@ -43,6 +53,7 @@ describe('GET /api/auth/whoami renewal failure', () => {
 
   beforeEach(() => {
     mockCaptureException.mockClear();
+    mockLimiter.mockReset().mockResolvedValue(false);
     mockBuildCookies.mockReset().mockImplementation(() => {
       throw failure;
     });
@@ -65,5 +76,19 @@ describe('GET /api/auth/whoami renewal failure', () => {
 
     expect(res._status).toBe(500);
     expect(res._headers['Cache-Control']).toBe('no-store');
+  });
+
+  it('answers 500 and captures once when the limiter throws, before any cookie is built', async () => {
+    const limiterFailure = new Error('limiter unavailable');
+    mockLimiter.mockRejectedValueOnce(limiterFailure);
+    const res = mockResponse();
+    await handler(mockRequest({ method: 'GET' }), res);
+
+    expect(res._status).toBe(500);
+    expect(res._json).toEqual({ error: 'Internal server error' });
+    expect(res._headers['Set-Cookie']).toBeUndefined();
+    expect(mockBuildCookies).not.toHaveBeenCalled();
+    expect(mockCaptureException).toHaveBeenCalledTimes(1);
+    expect(mockCaptureException).toHaveBeenCalledWith(limiterFailure);
   });
 });

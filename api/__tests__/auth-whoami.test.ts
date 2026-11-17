@@ -1,9 +1,24 @@
 // @vitest-environment node
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
-import handler from '../auth/whoami.js';
+// Everything in api-helpers stays real except the two members the limiter
+// tests watch: the limiter itself, and isOwner (wrapped, so the owner tests
+// still run the real check and the limiter tests can see it was not reached).
+vi.mock('../_lib/api-helpers.js', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('../_lib/api-helpers.js')>();
+  return {
+    ...actual,
+    rejectIfRateLimited: vi.fn(),
+    isOwner: vi.fn(actual.isOwner),
+  };
+});
+
+import handler, { WHOAMI_PER_MINUTE } from '../auth/whoami.js';
+import { isOwner, rejectIfRateLimited } from '../_lib/api-helpers.js';
+import { metrics } from '../_lib/sentry.js';
 
 const ORIGINAL_ENV = { ...process.env };
 
@@ -11,10 +26,13 @@ beforeEach(() => {
   process.env = { ...ORIGINAL_ENV };
   delete process.env.GUEST_ACCESS_KEYS;
   delete process.env.OWNER_SECRET;
+  vi.mocked(rejectIfRateLimited).mockReset().mockResolvedValue(false);
+  vi.mocked(isOwner).mockClear();
 });
 
 afterEach(() => {
   process.env = { ...ORIGINAL_ENV };
+  vi.restoreAllMocks();
 });
 
 describe('GET /api/auth/whoami', () => {
@@ -107,6 +125,147 @@ describe('GET /api/auth/whoami', () => {
     const res = mockResponse();
     await handler(mockRequest({ method: 'GET' }), res);
     expect(res._headers['Cache-Control']).toBe('no-store');
+  });
+});
+
+// A request that carries a credential cookie is rate-limited per client before
+// either cookie is checked. A request with no credential cookie is the common
+// public visit and never reaches the limiter.
+describe('GET /api/auth/whoami rate limit', () => {
+  const OWNER_SECRET = 'owner-secret-9876';
+  const GUEST_KEY = 'alpha-key-1234';
+
+  // What the real limiter does when it rejects: it writes the 429 itself and
+  // returns true, so the handler must send nothing more.
+  function limiterRejects(): void {
+    vi.mocked(rejectIfRateLimited).mockImplementation(async (_req, res) => {
+      res.setHeader('Cache-Control', 'no-store');
+      res
+        .status(429)
+        .json({ error: 'Too many requests. Try again in 30 seconds.' });
+      return true;
+    });
+  }
+
+  it('limits a request carrying sc-owner', async () => {
+    process.env.OWNER_SECRET = OWNER_SECRET;
+    limiterRejects();
+    const done = vi.fn();
+    vi.spyOn(metrics, 'request').mockReturnValue(done);
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'GET',
+        headers: { cookie: `sc-owner=${OWNER_SECRET}; sc-hint=1` },
+      }),
+      res,
+    );
+    expect(res._status).toBe(429);
+    expect(res._json).not.toHaveProperty('mode');
+    expect(isOwner).not.toHaveBeenCalled();
+    expect(res._headers['Set-Cookie']).toBeUndefined();
+    expect(done).toHaveBeenCalledTimes(1);
+    expect(done).toHaveBeenCalledWith({ status: 429 });
+  });
+
+  it('limits a request carrying sc-guest', async () => {
+    process.env.GUEST_ACCESS_KEYS = GUEST_KEY;
+    limiterRejects();
+    const done = vi.fn();
+    vi.spyOn(metrics, 'request').mockReturnValue(done);
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'GET',
+        headers: { cookie: `sc-guest=${GUEST_KEY}; sc-guest-hint=1` },
+      }),
+      res,
+    );
+    expect(res._status).toBe(429);
+    expect(res._json).not.toHaveProperty('mode');
+    expect(isOwner).not.toHaveBeenCalled();
+    expect(res._headers['Set-Cookie']).toBeUndefined();
+    expect(done).toHaveBeenCalledTimes(1);
+    expect(done).toHaveBeenCalledWith({ status: 429 });
+  });
+
+  it.each([
+    ['no cookie header', {}],
+    ['only the hint cookies', { cookie: 'sc-hint=1; sc-guest-hint=1' }],
+    ['an empty sc-owner value', { cookie: 'sc-owner=; sc-hint=1' }],
+    ['an empty sc-guest value', { cookie: 'sc-guest=; sc-guest-hint=1' }],
+    ['only unrelated cookies', { cookie: 'theme=dark; lang=en' }],
+  ])(
+    'does not consult the limiter without a credential cookie: %s',
+    async (_label, headers) => {
+      const res = mockResponse();
+      await handler(mockRequest({ method: 'GET', headers }), res);
+      expect(rejectIfRateLimited).not.toHaveBeenCalled();
+      expect(res._status).toBe(200);
+      expect(res._json).toEqual({ mode: 'public' });
+    },
+  );
+
+  it('does not consult the limiter for a non-GET request', async () => {
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'POST',
+        headers: { cookie: `sc-owner=${OWNER_SECRET}` },
+      }),
+      res,
+    );
+    expect(res._status).toBe(405);
+    expect(rejectIfRateLimited).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['sc-owner', 'sc-owner=a-presented-value'],
+    ['sc-guest', 'sc-guest=a-presented-value'],
+    ['both', 'sc-owner=a-presented-value; sc-guest=a-presented-value'],
+  ])(
+    'limiter key and budget, before the cookie check: %s',
+    async (_label, cookie) => {
+      const req = mockRequest({ method: 'GET', headers: { cookie } });
+      const res = mockResponse();
+      await handler(req, res);
+      expect(WHOAMI_PER_MINUTE).toBe(30);
+      expect(rejectIfRateLimited).toHaveBeenCalledTimes(1);
+      expect(rejectIfRateLimited).toHaveBeenCalledWith(
+        req,
+        res,
+        'auth-whoami',
+        30,
+      );
+      const limiterOrder =
+        vi.mocked(rejectIfRateLimited).mock.invocationCallOrder[0];
+      const ownerOrder = vi.mocked(isOwner).mock.invocationCallOrder[0];
+      expect(limiterOrder).toBeDefined();
+      expect(ownerOrder).toBeDefined();
+      expect(limiterOrder).toBeLessThan(ownerOrder ?? 0);
+    },
+  );
+
+  it('owner renewal under the limit', async () => {
+    process.env.OWNER_SECRET = OWNER_SECRET;
+    process.env.APP_URL = 'https://example.com';
+    delete process.env.VERCEL_ENV;
+    vi.mocked(rejectIfRateLimited).mockResolvedValue(false);
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'GET',
+        headers: { cookie: `sc-owner=${OWNER_SECRET}; sc-hint=1` },
+      }),
+      res,
+    );
+    expect(rejectIfRateLimited).toHaveBeenCalledTimes(1);
+    expect(res._status).toBe(200);
+    expect(res._json).toEqual({ mode: 'owner' });
+    expect(res._headers['Set-Cookie']).toEqual([
+      `sc-owner=${OWNER_SECRET}; Path=/; Max-Age=34560000; HttpOnly; SameSite=Strict; Secure`,
+      'sc-hint=1; Path=/; Max-Age=34560000; SameSite=Strict; Secure',
+    ]);
   });
 });
 

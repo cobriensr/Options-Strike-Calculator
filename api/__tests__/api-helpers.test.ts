@@ -174,12 +174,38 @@ describe('api-helpers', () => {
       const rejected = rejectIfNotOwner(req, res);
       expect(rejected).toBe(true);
       expect(res._status).toBe(401);
-      expect(res._json).toEqual({
-        error: 'Not authenticated',
-        code: 'no_secret',
-      });
+      expect(res._json).toEqual({ error: 'Not authenticated' });
       expect(res._headers['Cache-Control']).toBe('no-store');
     });
+
+    // The reason stays in the server log; the same body goes out for every
+    // way a request can fail the owner check, so the reply tells a caller
+    // nothing about which one it hit.
+    it.each([
+      ['no_secret', undefined, undefined],
+      ['no_cookie', 'secret123', undefined],
+      ['cookie_mismatch', 'secret123', `${OWNER_COOKIE}=wrong`],
+    ] as const)(
+      'logs reason %s and sends the same 401 body',
+      (reason, secret, cookie) => {
+        if (secret === undefined) delete process.env.OWNER_SECRET;
+        else process.env.OWNER_SECRET = secret;
+        vi.mocked(logger.warn).mockClear();
+        const req = mockRequest({
+          url: '/api/quotes',
+          headers: cookie === undefined ? {} : { cookie },
+        });
+        const res = mockResponse();
+        expect(rejectIfNotOwner(req, res)).toBe(true);
+        expect(res._status).toBe(401);
+        expect(res._json).toEqual({ error: 'Not authenticated' });
+        expect(logger.warn).toHaveBeenCalledTimes(1);
+        expect(logger.warn).toHaveBeenCalledWith(
+          expect.objectContaining({ path: '/api/quotes', reason }),
+          `401 owner check failed: ${reason}`,
+        );
+      },
+    );
 
     it('returns false for owner', () => {
       process.env.OWNER_SECRET = 'secret123';

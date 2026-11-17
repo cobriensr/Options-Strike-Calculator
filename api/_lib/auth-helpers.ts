@@ -199,9 +199,10 @@ export function rejectIfNotOwner(
       },
       `401 owner check failed: ${reason}`,
     );
-    // Don't cache 401s at the edge — each request should check the cookie
+    // Don't cache 401s at the edge — each request should check the cookie.
+    // The reason stays in the log above; every failure gets the same body.
     res.setHeader('Cache-Control', 'no-store');
-    res.status(401).json({ error: 'Not authenticated', code: reason });
+    res.status(401).json({ error: 'Not authenticated' });
     return true;
   }
   return false;
