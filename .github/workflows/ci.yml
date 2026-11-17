@@ -78,11 +78,19 @@ jobs:
               # hardcodes, so an edit to the file must run this job (api/**
               # alone starts only the app job).
               - 'api/_lib/market-events.ts'
+              # ml/tests/test_setups_backtest_zero_gamma_loader.py reads the
+              # zero_gamma_levels table's CREATE out of this file.
+              - 'api/_lib/db-migrations.ts'
+              # ml/tests/test_anchor_backfill_extract.py reads the multileg
+              # trade codes out of this file.
+              - 'api/_lib/multileg-codes.ts'
               # ml/tests/test_lottery_weights.py, test_lottery_refit_gates.py and
               # test_lottery_scoring.py read these five api files (the score-parity
               # fixtures, the inversion-bonus map, the feed's qasExprText and the
-              # round-trip deduct's brackets), so an edit to one must run this job
-              # (api/** alone starts only the app job).
+              # round-trip deduct's brackets in the cron), so an edit to one must
+              # run this job (api/** alone starts only the app job). The backfill
+              # script that copies those brackets, which test_lottery_refit_gates.py
+              # also reads, is under scripts/** above.
               - 'api/__tests__/fixtures/lottery-score-parity.json'
               - 'api/__tests__/fixtures/lottery-score-parity-alt.json'
               - 'api/_lib/lottery-inversion-bonus.ts'
@@ -110,9 +118,9 @@ jobs:
             # which is not an image file. Pytest run from the root loads
             # scripts/conftest.py for the scripts tests, and ml/conftest.py and
             # ml/pyproject.toml for the ml tests. Those tests also read five api
-            # files, so the list names them. Keep this list, that tuple, the
-            # Dockerfile COPY lines and the five root-level steps in the nightly
-            # job below in step.
+            # files and the round-trip backfill script, so the list names them.
+            # Keep this list, that tuple, the Dockerfile COPY lines and the five
+            # root-level steps in the nightly job below in step.
             nightly:
               - 'nightly/**'
               - 'scripts/_tape_reader.py'
@@ -142,12 +150,14 @@ jobs:
               # test_lottery_scoring.py, test_backfill_lottery_scores.py, and
               # nightly/tests/test_refit_step.py and test_weights_store.py), the
               # inversion-bonus map, the feed's qasExprText and the round-trip
-              # deduct's brackets (test_lottery_refit_gates.py).
+              # deduct's brackets (test_lottery_refit_gates.py), then the backfill
+              # script that copies those brackets, which that test also reads.
               - 'api/__tests__/fixtures/lottery-score-parity.json'
               - 'api/__tests__/fixtures/lottery-score-parity-alt.json'
               - 'api/_lib/lottery-inversion-bonus.ts'
               - 'api/lottery-finder.ts'
               - 'api/cron/evaluate-round-trip.ts'
+              - 'scripts/backfill_round_trip_score.py'
               - '.dockerignore'
               - '.github/workflows/ci.yml'
             # What the browser loads under test. api/** is left out: the specs
