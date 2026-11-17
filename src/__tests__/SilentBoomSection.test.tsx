@@ -1989,6 +1989,14 @@ describe.each([
     render(<Parent />);
     expect(dateInput().value).toBe(m.night);
     expect(dateInput().max).toBe(m.night);
+    // The bucket picker's upper bound is capped at the current bucket on
+    // today. The night's whole session is past, so the picker is open and
+    // lists every bucket.
+    const bucketSelect = screen.getByLabelText<HTMLSelectElement>(
+      /jump to a specific 5-min bucket/i,
+    );
+    expect(bucketSelect).toBeEnabled();
+    expect(bucketSelect.options.length).toBeGreaterThan(1);
 
     crossMidnight();
 
@@ -1996,6 +2004,12 @@ describe.each([
     expect(dateInput().value).toBe(m.morning);
     expect(dateInput().max).toBe(m.morning);
     expect(liveChip()).toBeInTheDocument();
+    // On the new day 08:30 CT is later than now, so no bucket exists yet: the
+    // picker is disabled and lists none. Judging "today" on the CT date, which
+    // is still the night's until 24:00 CT, would lift the cap and offer the
+    // whole of a day that has not started.
+    expect(bucketSelect).toBeDisabled();
+    expect(bucketSelect.options.length).toBe(1);
     // Every render asked for the night or the morning, never a half state,
     // and the new day was never called historical.
     expect(new Set(feedArgs().map((a) => a.date))).toEqual(
@@ -2028,6 +2042,7 @@ describe.each([
     render(<SilentBoomSection marketOpen={true} />);
     pick('2026-04-20');
     const picked = feedArgs().length;
+    const pickedCounts = countsArgs().length;
 
     crossMidnight();
 
@@ -2035,15 +2050,15 @@ describe.each([
     expect(dateInput().max).toBe(m.morning);
     expect(allDayChip()).toBeInTheDocument();
     // Every render from the pick on asked for the picked day and called it
-    // historical, across the roll as before it.
+    // historical, across the roll as before it, for both hooks.
     const since = feedArgs().slice(picked - 1);
     expect(since.every((a) => a.date === '2026-04-20' && a.historical)).toBe(
       true,
     );
+    const sinceCounts = countsArgs().slice(pickedCounts - 1);
+    expect(sinceCounts.length).toBeGreaterThan(1);
     expect(
-      countsArgs()
-        .slice(-2)
-        .every((a) => a.date === '2026-04-20' && a.historical),
+      sinceCounts.every((a) => a.date === '2026-04-20' && a.historical),
     ).toBe(true);
   });
 
@@ -2209,13 +2224,16 @@ describe.each([
       date: '2026-04-20',
       page: 2,
     });
+    const beforeRoll = feedArgs().length;
 
     crossMidnight();
 
-    expect(feedArgs().at(-1)).toMatchObject({
-      date: '2026-04-20',
-      page: 2,
-    });
+    // Every render after the roll still asks for the picked day's page 2.
+    const afterRoll = feedArgs().slice(beforeRoll);
+    expect(afterRoll.length).toBeGreaterThan(0);
+    expect(
+      afterRoll.every((a) => a.date === '2026-04-20' && a.page === 2),
+    ).toBe(true);
   });
 });
 
@@ -2491,6 +2509,17 @@ describe('SilentBoomSection: the page follows its date, bucket and filters', () 
         ),
     },
     {
+      // Zero to the default 0.5: both sit at or below 0.5 and at or above 0,
+      // so a scope that kept `minVolOi > 0.5` (1.0 to 0 above flips it) or
+      // `minVolOi > 0` cannot see this one.
+      name: 'minVolOi (0 to 0.5)',
+      first: () =>
+        fireEvent.click(
+          within(rowOf('vol/OI')).getByRole('button', { name: /^all$/ }),
+        ),
+      second: () => fireEvent.click(chip('≥0.5')),
+    },
+    {
       name: 'optionTypeFilter',
       first: () => fireEvent.click(chip('calls')),
       second: () => fireEvent.click(chip('puts')),
@@ -2514,7 +2543,7 @@ describe('SilentBoomSection: the page follows its date, bucket and filters', () 
   ];
 
   it.each(PAIRS.map((p) => [p.name, p] as const))(
-    'drops page 2 when %s moves between two non-default values',
+    'drops page 2 when %s moves from one value to another',
     (_name, { first, second }) => {
       renderOnPage2();
       first();
