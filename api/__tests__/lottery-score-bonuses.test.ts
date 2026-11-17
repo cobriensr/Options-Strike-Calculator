@@ -48,7 +48,7 @@ describe('applyEmpiricalBonuses', () => {
   });
 });
 
-// Note: the Range Kill -3 penalty (rangePosAtTrigger < 0.10) was
+// Note: the Range Kill -3 penalty (range_pos_at_trigger < 0.10) was
 // shipped and retired on the same day (2026-05-16) after the EDA
 // rerun showed no edge at the bottom-10% cohort on the corrected
 // equity-ticker session-range column. See

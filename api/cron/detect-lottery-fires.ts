@@ -108,7 +108,7 @@ const CANDLE_FETCH_DEADLINE_MS = 5_000;
 // failure, so a run of slow answers just under it is capped by nothing, and
 // the per-fire INSERTs share the same Pass 2 and the same 60 s. Past this mark
 // the lookups stop: a fire is written without range_pos, as after a failed
-// lookup (range_pos is display-only), and the skip is counted. A lookup
+// lookup (range_pos is research-only), and the skip is counted. A lookup
 // started at the mark ends by 50 s at the latest, which leaves 10 s of the
 // 60 s for the remaining INSERTs, which are never skipped. Stops candle
 // lookups only; the flow series have their own 30 s mark.
@@ -1049,8 +1049,9 @@ export default withCronInstrumentation(
         // Range position — fetch 1-min stock candles for the underlying
         // × fire date (cached across fires on the same ticker) and compute
         // spot position in the session range up to trigger time. Written
-        // to the row for the display-only "NEW HIGH" badge; not used in
-        // V2 scoring. With no candles (index root, UW failure, deadline,
+        // to the row for research only: no reader in the app (the NEW HIGH
+        // badge was the last, removed 2026-11-17) and none in V2 scoring.
+        // With no candles (index root, UW failure, deadline,
         // empty day, breaker skip, run past the cutoff) range_pos stays null
         // and the fire is still written.
         const cacheKey = `${rec.underlyingSymbol}_${rec.date}`;

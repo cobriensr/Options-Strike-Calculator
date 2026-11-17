@@ -832,7 +832,7 @@ describe('detect-lottery-fires handler', () => {
     expect(Number.isInteger(score)).toBe(true);
   });
 
-  it('computes range_pos_at_trigger from UW stock candles for display use', async () => {
+  it('computes range_pos_at_trigger from UW stock candles for research use', async () => {
     // SNDK fixture's spot_at_first is 1170 (per the tick fixture).
     // Build a session where high=1200, low=1150 BEFORE trigger time —
     // range_pos = (1170 - 1150) / (1200 - 1150) = 0.4 (mid-range).
@@ -870,7 +870,7 @@ describe('detect-lottery-fires handler', () => {
     // Spot 1170 between low 1150 and high 1200 → 0.4
     expect(binds.get('range_pos_at_trigger')).toBeCloseTo(0.4, 5);
     // V2 score: ticker_flow_snapshot returns [] → isAligned=false → null.
-    // range_pos is written for display only; V2 scoring ignores it.
+    // range_pos is written for research only; V2 scoring ignores it.
     expect(binds.get('score')).toBeNull();
   });
 
@@ -879,8 +879,8 @@ describe('detect-lottery-fires handler', () => {
     // -3 bottom-10% penalty was driven by a dimensionally-buggy EDA
     // finding (see ml/findings/eda-rerun-2026-05-16/). The corrected
     // 604K-row column shows no edge at the bottom tail, so the score
-    // bonus layer no longer reads range_pos. range_pos still gets
-    // written for the display-only "NEW HIGH" badge.
+    // bonus layer no longer reads range_pos. range_pos is still
+    // written, for research only.
     //
     // Spot=1170, candle high=1500, low=1170 → range_pos = 0 (bottom-10%).
     // Pre-retirement this would have scored 22 (base 25 − 3). Post-
@@ -908,7 +908,7 @@ describe('detect-lottery-fires handler', () => {
     const binds = extractInsertBinds(mockSql, 'lottery_finder_fires');
     expect(binds.get('range_pos_at_trigger')).toBe(0);
     // V2 score: ticker_flow_snapshot returns [] → isAligned=false → null.
-    // range_pos is written for display only (NEW HIGH badge); not scored.
+    // range_pos is written for research only; not scored.
     expect(binds.get('score')).toBeNull();
   });
 

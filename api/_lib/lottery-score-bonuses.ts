@@ -42,10 +42,10 @@ export const VOL_TO_OI_WINDOW_BONUS_POINTS = 1;
  * either tail of the equity-ticker session range, so we no longer
  * penalize on it.
  *
- * `rangePosAtTrigger` is still passed in for forward compatibility
- * (the cron writes it on every new fire) but it has no effect on
- * the score. The display-only "NEW HIGH" badge on saturated-1.0
- * fires still uses the column.
+ * `range_pos_at_trigger` has no effect on the score. The detect cron
+ * still writes it on every new fire, for the ml/ research scripts;
+ * nothing in the app reads it since the NEW HIGH badge was removed
+ * (2026-11-17).
  */
 
 /**
