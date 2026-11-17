@@ -1,6 +1,6 @@
 # Lottery / Silent Boom flow repair and the flow-table indexes (2026-11-15)
 
-Status: Phase A is built on branch `fix/flow-series-ws-first` (A0 to A5) and was revised twice after the 2026-11-15 production dry run (A6, 2026-11-16: the look-ahead category, the planned-writes list, the score-tag rules and the WS-gap report; A7, 2026-11-16: the look-ahead wording and its own WS-gap block, a session-bounded gap probe, and a moved pointer that left nothing unwritten ending as a success). The correction has not been applied to production: the owner runs it, dry run first. Phase B (the automatic post-close repair) is built on branch `fix/fire-flow-auto-repair` (B0 to B3, then a review fix round B4, 2026-11-16) and not yet deployed. Phase C is designed here and not built.
+Status (2026-11-16): Phase A is on main (151a9e68), and its correction was applied to production on 2026-11-16 at 08:53 UTC (2,159 rows; undo file in docs/tmp/fire-flow-correction/). Phase B is on main (5feda673) and deploys with 1ea32d05, which moved its test helper into api/ for Vercel's type-check. Phase C: M1 was applied by hand on 2026-11-16 23:53-23:59 UTC (owner OK) and is recorded as migration #210. M1b (drop ts_idx, earliest check 2026-11-23) and M2 are not built.
 
 Source findings (read-only investigation, 2026-11-15, local and gitignored): `docs/tmp/lottery-flow-repair-and-index-findings-2026-11-15.md`, sections 1, 2, 3 and 6. The facts this spec relies on are repeated below, so it reads without that file.
 
@@ -40,7 +40,7 @@ Known limit, same as a live run: a day where the WS stream covers only part of t
 
 ## 3. Phases
 
-### Phase A: the series fix and the correction (built now)
+### Phase A: the series fix and the correction (on main, correction applied 2026-11-16)
 
 Scope: A0 to A7, none over five files per commit.
 
@@ -61,7 +61,7 @@ A7 changed, in the correction: the look-ahead rule is described as what it match
 
 The correction is NOT run by the build. The owner runs it, dry run first (section 6).
 
-### Phase B: automatic post-close repair (built, B0 to B3)
+### Phase B: automatic post-close repair (on main, B0 to B4; deploys with 1ea32d05)
 
 An extra step in `enrich-lottery-outcomes` (slots 21:40, 22:40, 23:40 UTC) and `enrich-silent-boom-outcomes` (21:45, 23:45 UTC), both post-close, both DB-only, through one shared `api/_lib/fire-flow-repair.ts`. No new cron, no new Sentry monitor, no new Python.
 
@@ -134,6 +134,8 @@ Four items from the re-review of B4:
 All three are applied by hand with a direct connection outside 13:00 to 22:00 UTC on weekdays, with `CONCURRENTLY`, and then shipped as idempotent `IF NOT EXISTS` / `IF EXISTS` migrations, as #184 and #199 were. Apply by hand first, deploy the migration after: otherwise `migrateDb` would try a blocking `CREATE UNIQUE INDEX` over 96 million rows inside one HTTP transaction. M1 took migration #210 (the latest on `main` was #209); the next free id is 211, so check `main` first.
 
 - **M1, applied by hand 2026-11-16 (owner OK), migration #210.** Covering unique index on `ws_net_flow_per_ticker (ticker, ts) INCLUDE (net_call_prem, net_put_prem, net_call_vol, net_put_vol)`, replacing `ws_net_flow_per_ticker_uq`, plus `autovacuum_vacuum_insert_scale_factor = 0.001` on the table. uw-stream's `ON CONFLICT (ticker, ts)` infers the new index. Measured planner cost of the index-only plan is 344 against 14,079 today. About +2.5 GB over `uq` while both exist.
+  - Result, measured when it was applied (2026-11-16, 23:53-23:59 UTC): the `CONCURRENTLY` build took 315 s and the new index is 4,938 MB. The old unique index was dropped once the new one was valid, an arbiter and used by the plan. The NVDA 2026-11-16 series read went from 7,073 ms (an Index Scan on `ts_idx` that read 848,505 rows to return 23,461) to 53 ms (an Index Only Scan on `ws_net_flow_per_ticker_cov_uq`, 7,087 heap fetches, which the new 0.001 insert-vacuum setting should shrink).
+  - The migration (#210) is a no-op on production and seeds a fresh database. It fails closed before changing anything when the covering index exists but is INVALID, or when it does not exist and the table has more than 1,000,000 rows (`pg_class.reltuples`).
 - **M1b.** Drop `ws_net_flow_per_ticker_ts_idx` (2.2 GB) a week after M1, only if its `idx_scan` is flat. Earliest check date: 2026-11-23.
 - **M2.** `lottery_finder_fires (underlying_symbol, date) INCLUDE (peak_ceiling_pct) WHERE peak_ceiling_pct IS NOT NULL`, about 45 MB, for the Take-It win-rate load (44 to 60 s today).
 
