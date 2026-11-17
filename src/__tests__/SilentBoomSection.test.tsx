@@ -2509,9 +2509,8 @@ describe('SilentBoomSection: the page follows its date, bucket and filters', () 
         ),
     },
     {
-      // Zero to the default 0.5: both sit at or below 0.5 and at or above 0,
-      // so a scope that kept `minVolOi > 0.5` (1.0 to 0 above flips it) or
-      // `minVolOi > 0` cannot see this one.
+      // Zero to the default 0.5: both sit at or below 0.5, so a scope that
+      // kept `minVolOi > 0.5` (1.0 to 0 above flips it) cannot see this one.
       name: 'minVolOi (0 to 0.5)',
       first: () =>
         fireEvent.click(
