@@ -131,6 +131,9 @@ globalThis.addEventListener('unhandledrejection', (e) => {
 // a console error. The guard here keeps dev clean without affecting production.
 if (import.meta.env.PROD)
   initBotId({
+    // Every path whose handler runs the server bot check, and no other:
+    // api/__tests__/botid-protect-sync.test.ts fails on a path in either list
+    // that is missing from the other.
     protect: [
       { path: '/api/quotes', method: 'GET' },
       { path: '/api/chain', method: 'GET' },
@@ -163,7 +166,6 @@ if (import.meta.env.PROD)
       { path: '/api/positions', method: 'GET' },
       { path: '/api/positions', method: 'POST' },
       { path: '/api/vix-ohlc', method: 'GET' },
-      { path: '/api/vix1d-daily', method: 'GET' },
       { path: '/api/pre-market', method: 'GET' },
       { path: '/api/pre-market', method: 'POST' },
       { path: '/api/iv-term-structure', method: 'GET' },
@@ -195,7 +197,6 @@ if (import.meta.env.PROD)
       { path: '/api/zero-gamma', method: 'GET' },
       { path: '/api/dealer-regime', method: 'GET' },
       { path: '/api/vix-snapshots-recent', method: 'GET' },
-      { path: '/api/ml/analyze-plots', method: 'POST' },
       { path: '/api/lottery-finder', method: 'GET' },
       { path: '/api/lottery-finder-ticker-counts', method: 'GET' },
       { path: '/api/lottery-export', method: 'GET' },
@@ -214,7 +215,6 @@ if (import.meta.env.PROD)
       { path: '/api/strike-trade-volume', method: 'GET' },
       { path: '/api/system-status', method: 'GET' },
       { path: '/api/auth/guest-key', method: 'POST' },
-      { path: '/api/auth/guest-logout', method: 'POST' },
       { path: '/api/auth/schwab-status', method: 'GET' },
       { path: '/api/panel-prefs', method: 'GET' },
       { path: '/api/panel-prefs', method: 'PUT' },
