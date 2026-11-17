@@ -166,8 +166,9 @@ panels follow the new date too".
 - **The page number needs the same rule as the minute.** The effect that resets
   `page` to 0 on a date change runs one commit late too, so a pick (or the
   roll) while on page 2 asked for the new date at offset 100 before the clean
-  request. Lottery Finder stores the page with its date and drops it during
-  render, like the minute. Silent Boom checks for the same (7b).
+  request. Lottery Finder stores the page with its date, minute and every
+  filter and drops it during render, like the minute (the filter version is
+  the 7a follow-up, below). Silent Boom uses the filter version (7b).
 - **Test fixtures dated with the CT date.** `LotteryFinderSection.test.tsx`
   dated its fires with the CT date, which differs from the ET date from 23:00
   to 24:00 CT, so the suite would fail then. The fixture uses `getETToday()`.

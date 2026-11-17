@@ -2371,7 +2371,10 @@ describe('SilentBoomSection: the page follows its date, bucket and filters', () 
     );
     mockUseSilentBoomTickerCounts.mockReturnValue({
       data: {
-        tickers: [{ ticker: 'AAPL', count: 5 }],
+        tickers: [
+          { ticker: 'AAPL', count: 5 },
+          { ticker: 'MSFT', count: 3 },
+        ],
       },
       loading: false,
       error: null,
@@ -2412,6 +2415,142 @@ describe('SilentBoomSection: the page follows its date, bucket and filters', () 
       ).toBe(true);
     },
   );
+
+  /**
+   * A change from one non-default value to another, per control. The flip
+   * table above always starts at the default, so a scope that kept only "is it
+   * set" (`tickerFilter !== null`, `minPremiumK > 0`, `sortMode === 'newest'`)
+   * would still pass it: default to set changes the flag. These pairs move
+   * between two set values, which only the value itself can tell apart. The
+   * first value is chosen to also stay on the same side of the common
+   * collapses (`> 0`) as the default. The booleans have no pair: a boolean is
+   * already a flag.
+   */
+  const PAIRS: Array<{
+    name: string;
+    first: () => void;
+    second: () => void;
+  }> = [
+    {
+      name: 'sortMode',
+      first: () => fireEvent.click(chip('spike ratio')),
+      second: () => fireEvent.click(chip('vol/OI')),
+    },
+    {
+      name: 'convictionFloor',
+      first: () => fireEvent.click(chip(/Tier 1/)),
+      second: () => fireEvent.click(chip(/Tier 2\+/)),
+    },
+    {
+      name: 'burstFilter',
+      first: () => fireEvent.click(chip(/≥50×/)),
+      second: () => fireEvent.click(chip(/20-50×/)),
+    },
+    {
+      // The default is 0.70: 0.80 and 0.60 are both set and both non-default.
+      name: 'takeitFloor',
+      first: () => fireEvent.click(testId('takeit-floor-0.8')),
+      second: () => fireEvent.click(testId('takeit-floor-0.6')),
+    },
+    {
+      name: 'minDte',
+      first: () =>
+        fireEvent.change(screen.getByLabelText('Minimum DTE'), {
+          target: { value: '1' },
+        }),
+      second: () =>
+        fireEvent.change(screen.getByLabelText('Minimum DTE'), {
+          target: { value: '2' },
+        }),
+    },
+    {
+      name: 'minPremiumK',
+      first: () =>
+        fireEvent.change(
+          screen.getByLabelText('Minimum premium in thousands of dollars'),
+          { target: { value: '100' } },
+        ),
+      second: () =>
+        fireEvent.change(
+          screen.getByLabelText('Minimum premium in thousands of dollars'),
+          { target: { value: '200' } },
+        ),
+    },
+    {
+      name: 'askPctBand',
+      first: () => fireEvent.click(chip('70-80%')),
+      second: () => fireEvent.click(chip('80-90%')),
+    },
+    {
+      // The default is 0.5: 1.0 stays above zero with it, and 0 is non-default.
+      name: 'minVolOi',
+      first: () => fireEvent.click(chip('≥1.0')),
+      second: () =>
+        fireEvent.click(
+          within(rowOf('vol/OI')).getByRole('button', { name: /^all$/ }),
+        ),
+    },
+    {
+      name: 'optionTypeFilter',
+      first: () => fireEvent.click(chip('calls')),
+      second: () => fireEvent.click(chip('puts')),
+    },
+    {
+      name: 'moneynessMode',
+      first: () => fireEvent.click(testId('silent-boom-moneyness-otm-chip')),
+      second: () => fireEvent.click(testId('silent-boom-moneyness-itm-chip')),
+    },
+    {
+      name: 'todFilter',
+      first: () => fireEvent.click(chip('AM_open')),
+      second: () => fireEvent.click(chip('MID')),
+    },
+    {
+      // A second ticker while one is already active.
+      name: 'tickerFilter',
+      first: () => fireEvent.click(chip(/^AAPL/)),
+      second: () => fireEvent.click(chip(/^MSFT/)),
+    },
+  ];
+
+  it.each(PAIRS.map((p) => [p.name, p] as const))(
+    'drops page 2 when %s moves between two non-default values',
+    (_name, { first, second }) => {
+      renderOnPage2();
+      first();
+      nextPage();
+      nextPage();
+      expect(feedArgs().at(-1)?.page).toBe(2);
+      const beforeSecond = feedArgs().length;
+
+      second();
+
+      const afterSecond = feedArgs().slice(beforeSecond);
+      expect(afterSecond.length).toBeGreaterThan(0);
+      expect(afterSecond.every((a) => a.page === 0)).toBe(true);
+    },
+  );
+
+  it('keeps page 0 across a bucket-to-bucket scrub, and shows no pager to raise it under a bucket', () => {
+    renderOnPage2();
+    const beforeScrub = feedArgs().length;
+
+    stepBackOneBucket();
+    // The pager is hidden while a bucket is set, so a page above 0 cannot be
+    // reached under one. A scope that kept only "is a bucket set" would be
+    // indistinguishable from the real one, and this is why.
+    expect(
+      screen.queryByRole('button', { name: /next page/i }),
+    ).not.toBeInTheDocument();
+    stepBackOneBucket();
+
+    const since = feedArgs().slice(beforeScrub);
+    expect(since.length).toBeGreaterThan(1);
+    expect(since.every((a) => a.page === 0)).toBe(true);
+    expect(
+      screen.queryByRole('button', { name: /next page/i }),
+    ).not.toBeInTheDocument();
+  });
 
   it('drops page 2 when the bucket changes, and does not bring it back', () => {
     renderOnPage2();
