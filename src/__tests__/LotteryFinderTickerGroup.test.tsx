@@ -109,7 +109,6 @@ function makeFire(overrides: Partial<LotteryFire> = {}): LotteryFire {
       minutesToPeak: 12,
       enrichedAt: '2026-05-14T20:00:00Z',
     },
-    rangePosAtTrigger: null,
     qualityAdjustedScore: 15,
     inversionQuintile: null,
     inversionBlend: null,
@@ -199,50 +198,18 @@ describe('LotteryFinderTickerGroup', () => {
     ).toBeInTheDocument();
   });
 
-  it('renders the NEW HIGH badge when rangePosAtTrigger ≥ 1.0 (saturated clamp)', () => {
-    // Retargeted 2026-05-16 from the original "TOP-RANGE ≥ 0.90" badge
-    // — the EDA rerun showed only 1.01×/1.11× on top-10%, but the
-    // saturated-1.0 sub-bucket (spot punched above session high during
-    // the spike) has 2.4× win100 lift on N=143.
+  it('renders no NEW HIGH badge for a fire carrying a saturated range position', () => {
+    // The badge was removed 2026-11-17 (its 2.4x win100 lift did not hold out
+    // of sample). Nothing reads `rangePosAtTrigger` now, so build the fire the
+    // way an older payload carried it and check no badge appears.
+    const saturatedFire = {
+      ...makeFire({ optionChainId: 'TSLA-saturated' }),
+      rangePosAtTrigger: 1.0,
+    };
     render(
       <LotteryFinderTickerGroup
         ticker="TSLA"
-        fires={[
-          makeFire({
-            optionChainId: 'TSLA-saturated',
-            rangePosAtTrigger: 1.0,
-          }),
-        ]}
-        expanded={true}
-        onToggle={() => undefined}
-        marketOpen={true}
-        exitPolicy={EXIT_POLICY}
-      />,
-    );
-    const badge = screen.getByTestId('lottery-new-high-badge');
-    expect(badge).toBeInTheDocument();
-    // Sits in the top-right corner of its row.
-    expect(badge).toHaveClass('absolute', 'top-2', 'right-2');
-  });
-
-  it('omits the NEW HIGH badge when rangePosAtTrigger is below 1.0 (including former TOP-RANGE 0.95) or null', () => {
-    render(
-      <LotteryFinderTickerGroup
-        ticker="TSLA"
-        fires={[
-          makeFire({
-            optionChainId: 'TSLA-top10pct',
-            rangePosAtTrigger: 0.95, // previously TOP-RANGE; now no badge
-          }),
-          makeFire({
-            optionChainId: 'TSLA-mid',
-            rangePosAtTrigger: 0.5,
-          }),
-          makeFire({
-            optionChainId: 'TSLA-null',
-            rangePosAtTrigger: null,
-          }),
-        ]}
+        fires={[saturatedFire]}
         expanded={true}
         onToggle={() => undefined}
         marketOpen={true}
@@ -250,8 +217,12 @@ describe('LotteryFinderTickerGroup', () => {
       />,
     );
     expect(
+      screen.getByTestId('lottery-row-TSLA-saturated'),
+    ).toBeInTheDocument();
+    expect(
       screen.queryByTestId('lottery-new-high-badge'),
     ).not.toBeInTheDocument();
+    expect(screen.queryByText(/NEW HIGH/)).not.toBeInTheDocument();
   });
 
   it('calls onToggle with the ticker name when the header is clicked', () => {

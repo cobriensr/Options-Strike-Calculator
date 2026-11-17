@@ -27,21 +27,6 @@ import {
 } from '../../utils/ticker-rollup-aggregates.js';
 import { deltaFromAtFire } from '../../utils/macro-badges.js';
 
-/**
- * NEW HIGH threshold — `rangePosAtTrigger` is clamped to [0, 1] in
- * `api/_lib/uw-stock-candles.ts`; values that hit the upper clamp
- * (≥1.0) indicate the spike's spot punched ABOVE the session high
- * mid-bar — a clean breakout-momentum tell.
- *
- * Retargeted 2026-05-16 from the original "top-10% TOP-RANGE" badge
- * (range_pos ≥ 0.90) after the EDA rerun showed top-10% has only
- * lift50 = 1.01× / lift100 = 1.11× (essentially baseline). The
- * saturated-1.0 sub-bucket (N=143) shows win50 = 55.9%, win100 = 46.9%
- * — a real ~2.4× win100 lift, but small N. Display-only; re-validate
- * scoring effect at N≥300 before adding any score weight.
- */
-const LF_NEW_HIGH_THRESHOLD = 1.0;
-
 interface LotteryFinderTickerGroupProps {
   ticker: string;
   fires: LotteryFire[];
@@ -436,40 +421,18 @@ function LotteryFinderTickerGroupBase({
         {...panelProps}
         className="space-y-2 border-t border-neutral-800 bg-neutral-950 p-2"
       >
-        {fires.map((f) => {
-          // NEW HIGH badge — fires whose underlying spot punched ABOVE
-          // the session high mid-bar at trigger time (rangePosAtTrigger
-          // saturated to its clamp at ≥1.0). 2026-05-16 EDA rerun found
-          // 55.9% win50 / 46.9% win100 on N=143 — a real ~2.4× win100
-          // lift, small N. Display-only until N≥300 re-validation.
-          // Retargeted from the original top-10% TOP-RANGE badge after
-          // the rerun showed only 1.01×/1.11× lift on top-10%.
-          const rangePos = f.rangePosAtTrigger;
-          const isNewHigh =
-            rangePos != null && rangePos >= LF_NEW_HIGH_THRESHOLD;
+        {fires.map((f) => (
           // Key by chain (server response is chain-day-deduped to one
           // row per chain, so optionChainId is unique within the
           // group). Matches the existing LotteryFinderSection key.
-          return (
-            <div key={f.optionChainId} className="relative">
-              {isNewHigh && (
-                <span
-                  data-testid="lottery-new-high-badge"
-                  className="absolute top-2 right-2 z-10 rounded border border-emerald-500/60 bg-emerald-950/60 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-200"
-                  title={`Underlying spot punched above session high during the spike (range_pos clamped to ${rangePos.toFixed(2)} from a value ≥1). 2026-05-16 EDA rerun found 2.4× win100 lift on this cohort (N=143). Display-only; re-validate at N≥300.`}
-                >
-                  🔺 NEW HIGH
-                </span>
-              )}
-              <LotteryRow
-                fire={f}
-                marketOpen={marketOpen}
-                exitPolicy={exitPolicy}
-                liveFlowSnapshot={liveFlowSnapshot}
-              />
-            </div>
-          );
-        })}
+          <LotteryRow
+            key={f.optionChainId}
+            fire={f}
+            marketOpen={marketOpen}
+            exitPolicy={exitPolicy}
+            liveFlowSnapshot={liveFlowSnapshot}
+          />
+        ))}
       </div>
     </div>
   );
