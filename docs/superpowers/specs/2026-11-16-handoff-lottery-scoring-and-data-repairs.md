@@ -225,7 +225,7 @@
 - **Tier counts after the retirement.**
   - Expected on the default feed: tier 1 rises from about 12 to 16.5 chains a day, and tier 1+2 from 29 to 37.
   - The feed computes its score in SQL from the raw score plus the round-trip deduct. It doesn't read `combined_score`, which still adds +1 for high gamma.
-  - Tier tables built before #209 used the hindsight score, so note that when comparing.
+  - Tier tables built before #209 used the hindsight score, so note that when comparing. The round-trip deduct may also add information from after the fire (4.12).
 - **Sentry, 11-16.**
   - New and unexplained: `TypeError: O["Error"] is not a constructor`, in the frontend, 1 event at 15:24 UTC.
   - Known: the uw-stream reconnect storm and `ConnectionClosedError`.
@@ -235,9 +235,30 @@
   - `.worktrees/retire-fire-count-adj` is empty but held by VS Code.
   - Close its editor tabs or reload the window, then `rmdir` it. It contains no `node_modules` link.
 
+### 4.12 Measure when the round-trip deduct is written (read-only, can start without a decision)
+
+- **What.** The round-trip deduct may be a second input from after the fire in the stored tiers. #209 removed the first one, the fire-count adjustment.
+  - `round_trip_score_deduct` (0 to −3, DTE ≤ 7 only) comes from `api/cron/evaluate-round-trip.ts`. It is based on the net ask-minus-bid share of the contract's volume in the 60 minutes after the fire, so it reflects selling after the fire, not price.
+  - The cron runs every 10 minutes and evaluates fires 60–75 minutes old. A catch-up pass picks up older ones from the same day. By design, the deduct can't land until at least an hour after the fire.
+  - The feed adds the deduct to the score before it sets the tier (`api/lottery-finder.ts` ~:327 and ~:374). A fire shows its full tier when it appears and can drop a tier about an hour later.
+- **Why it matters.**
+  - Tier tables use the final stored score, so they include a filter a trader can't apply when the fire appears.
+  - The re-fire report's tier means, in realized %: adding the deduct on top of the final-count score moved tier 1 from −3.0 to −2.2 (+0.8) and tier 2 from −1.5 to −0.6 (+0.9). The fire-count adjustment had already added +1.4 to tier 1.
+  - The deduct's effect on the raw score alone wasn't measured. Neither was the 60–75-minute timing: it comes from a code comment (report, "Train/serve skew and scoring").
+- **Facts to account for.**
+  - No column records when the deduct was written. The column is `NOT NULL DEFAULT 0`, so a fire not yet evaluated reads as no penalty. `round_trip_net_pct IS NULL` marks those fires.
+  - Fires from before the cron went live (05-16) got their deduct from `scripts/backfill_round_trip_score.py`, weeks after the fact.
+  - Before 10-02, Friday fires after about 15:05 ET were never evaluated (1,946 lottery fires in 30 days, per the cron's header comment). They read as no penalty. That leaves a Friday bias in any tier-by-weekday table from that period.
+- **Method.**
+  1. **Write time.** During one session, record each fire's `round_trip_net_pct` every 10 minutes using read-only SQL. Note the fire's age when the value first appears. Report the median, 90th percentile and maximum lag, and the share never evaluated by the next morning.
+  2. **Tier history as seen at the fire.** Rebuild the tier tables from the score without the deduct, using true first fires and the same realized exit as the re-fire study. Compare them with the stored-score tables.
+  3. **The deduct as an exit signal.** For fires whose deduct is ≤ −1, compare exiting at the minute the deduct lands with holding to the realized exit. This shows whether the deduct is worth more as a "get out" signal than as a tier input.
+  - Use day-clustered CIs, as in 4.8.
+- **Output.** A plain report to the owner. Keeping the deduct in the tier, showing it as a separate marker, or showing tiers as of the fire is the owner's call.
+
 ## 5. Suggested order
 
-1. **4.8.** It is read-only and needs no decision.
+1. **4.8 and 4.12.** Both are read-only and need no decision.
 2. **4.1 and 4.2 as one code change.** They must land before any repair. Otherwise a rebuild keeps stale values and 03-26 still fails.
 3. **4.3, then 4.4, then one feature rebuild covering every affected date.**
 4. **4.5 and 4.6.** For each: backup, the owner's go, then a hand spot-check.
