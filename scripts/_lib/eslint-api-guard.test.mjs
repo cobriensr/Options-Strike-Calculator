@@ -204,6 +204,24 @@ const SCRIPTS_CASES = [
     ['no-restricted-syntax'],
   ],
   [
+    'api/__tests__: typeof import() type argument pointing at scripts/',
+    'api/__tests__/x.test.ts',
+    "const mod = await vi.importActual<typeof import('../../scripts/_lib/ticker-flow-backfill.js')>('./pglite-migrations');\nexport const x = mod;\n",
+    ['no-restricted-syntax'],
+  ],
+  [
+    'api/_lib: import() type of scripts/ in a type alias',
+    'api/_lib/x.ts',
+    "export type Helper = import('../../scripts/_lib/ticker-flow-backfill.js').Backfill;\n",
+    ['no-restricted-syntax'],
+  ],
+  [
+    'api/__tests__: typeof import() of a sibling stays clean',
+    'api/__tests__/x.test.ts',
+    "const mod = await vi.importActual<typeof import('./pglite-migrations')>('./pglite-migrations');\nexport const x = mod;\n",
+    [],
+  ],
+  [
     'api/__tests__: a sibling helper import stays clean',
     'api/__tests__/x.test.ts',
     `import { helper } from './fire-flow-test-helpers';${SCRIPTS_USE}`,

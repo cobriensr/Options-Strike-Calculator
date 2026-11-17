@@ -41,7 +41,8 @@ const NO_API_MESSAGE =
 // upload. Such an import passes locally and fails the deploy with TS2307; a
 // type-only import fails the same way, so none is exempt.
 // `no-restricted-imports` covers imports and re-exports but not a dynamic
-// import(), so a syntax selector covers that. Shared test fixtures belong in
+// import() or an import type (`typeof import('x')`), so syntax selectors cover
+// those. Shared test fixtures belong in
 // api/__tests__/ (scripts/ tests may import them from there).
 // scripts/_lib/eslint-api-guard.test.mjs keeps these rules honest.
 const NO_SCRIPTS_MESSAGE =
@@ -63,6 +64,15 @@ const noScriptsImportsFromApi = {
     {
       // The same pattern as an esquery regex, where `/` is escaped.
       selector: String.raw`ImportExpression > Literal[value=/^(\.\.\/)+scripts(\/|$)/]`,
+      message: NO_SCRIPTS_MESSAGE,
+    },
+    {
+      // An import type, `typeof import('../../scripts/x.js')` or
+      // `import('../../scripts/x.js').T`: tsc resolves it, so it fails the
+      // Vercel build like an import does. The specifier is the node's
+      // `source`, a direct Literal child (typescript-eslint 8.60; the old
+      // `argument` wrapper is only a deprecated alias that is not traversed).
+      selector: String.raw`TSImportType > Literal[value=/^(\.\.\/)+scripts(\/|$)/]`,
       message: NO_SCRIPTS_MESSAGE,
     },
   ],
