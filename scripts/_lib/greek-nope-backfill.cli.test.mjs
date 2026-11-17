@@ -13,7 +13,15 @@ import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import {
+  CHILD_TEST_TIMEOUT,
+  CHILD_TIMEOUT,
+} from './spawn-timeout.fixtures.mjs';
+
+// Every test spawns node. The child gets CHILD_TIMEOUT; the test gets more, so
+// a slow child fails with its own stderr, not as "Test timed out in 15000ms".
+vi.setConfig({ testTimeout: CHILD_TEST_TIMEOUT });
 
 const SCRIPTS = [
   {
@@ -106,7 +114,7 @@ function run({ file, args, cols }, sqlMode) {
         STUB_COLS: String(cols),
       },
       encoding: 'utf8',
-      timeout: 60_000,
+      timeout: CHILD_TIMEOUT,
     },
   );
 }
@@ -181,7 +189,7 @@ describe('the backfill scripts, run end to end', () => {
         '-e',
         "fetch('https://example.com/x').catch((e) => { console.error(e.message); process.exit(3); })",
       ],
-      { encoding: 'utf8', timeout: 60_000 },
+      { encoding: 'utf8', timeout: CHILD_TIMEOUT },
     );
 
     expect(result.status).toBe(3);

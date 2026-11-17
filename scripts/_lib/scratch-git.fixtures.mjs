@@ -112,21 +112,50 @@ export function cleanEnv(extra = {}, drop = []) {
   return env;
 }
 
-/** Git for test setup, as a fixed test identity; trimmed stdout. */
+/**
+ * How long one git call of the `git` fixture below may take. A call is a
+ * synchronous spawn, which vitest cannot interrupt, so one that stalls (a
+ * machine under load, a lock, a prompt) looked like a hang with no command
+ * named: the prune ledger suite once sat 600 s. A normal call takes well
+ * under a second, a loaded one a few seconds.
+ */
+export const GIT_TIMEOUT = 120_000;
+
+/**
+ * Git for test setup, as a fixed test identity; trimmed stdout. A call that
+ * outlasts GIT_TIMEOUT throws an error that names the git command and the
+ * directory: execFileSync's own message says only "spawnSync git ETIMEDOUT".
+ * Any other failure is execFileSync's error as it is, with git's stderr.
+ */
 export function git(cwd, ...args) {
-  return execFileSync(
-    // Test-only: the modules under test run `git` from PATH too.
-    // eslint-disable-next-line sonarjs/no-os-command-from-path
-    'git',
-    ['-c', 'user.name=test', '-c', 'user.email=test@example.invalid', ...args],
-    {
-      cwd,
-      env: cleanEnv(),
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-      windowsHide: true,
-    },
-  ).trim();
+  try {
+    return execFileSync(
+      // Test-only: the modules under test run `git` from PATH too.
+      // eslint-disable-next-line sonarjs/no-os-command-from-path
+      'git',
+      [
+        '-c',
+        'user.name=test',
+        '-c',
+        'user.email=test@example.invalid',
+        ...args,
+      ],
+      {
+        cwd,
+        env: cleanEnv(),
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: GIT_TIMEOUT,
+        windowsHide: true,
+      },
+    ).trim();
+  } catch (err) {
+    if (err.code !== 'ETIMEDOUT') throw err;
+    throw new Error(
+      `git ${args.join(' ')} timed out after ${GIT_TIMEOUT} ms in ${cwd}`,
+      { cause: err },
+    );
+  }
 }
 
 /** A worktree's own admin dir (.git, or .git/worktrees/<name>). */

@@ -13,7 +13,16 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import {
+  CHILD_TEST_TIMEOUT,
+  CHILD_TIMEOUT,
+} from './spawn-timeout.fixtures.mjs';
+
+// Every test spawns node. The child gets CHILD_TIMEOUT; the test gets more, so
+// a slow child fails with its own stderr, not as "Test timed out in 15000ms"
+// (seen under a full-suite run on 2026-11-17).
+vi.setConfig({ testTimeout: CHILD_TEST_TIMEOUT });
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const CLI = path.join(HERE, '..', 'watch-deploy.mjs');
@@ -27,6 +36,7 @@ function run(args, env = process.env) {
   return spawnSync(process.execPath, [CLI, ...args], {
     encoding: 'utf8',
     env,
+    timeout: CHILD_TIMEOUT,
     windowsHide: true,
   });
 }

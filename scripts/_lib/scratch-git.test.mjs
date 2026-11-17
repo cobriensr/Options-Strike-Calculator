@@ -13,16 +13,27 @@
  * run, and a weak fixture fails where it is written.
  */
 
+import { execFileSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import {
+  GIT_TIMEOUT,
   PINNED_COMMIT_DATE,
   cleanEnv,
   git,
   makeTempDir,
   setupScratchGit,
 } from './scratch-git.fixtures.mjs';
+
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal();
+  return { ...actual, execFileSync: vi.fn(actual.execFileSync) };
+});
+
+const { execFileSync: realExecFileSync } =
+  await vi.importActual('node:child_process');
 
 setupScratchGit();
 
@@ -94,5 +105,59 @@ describe('the pinned commit clock', () => {
     const second = commitOnNewBranch(repo, 'second', 'also adds x');
 
     expect(second).not.toBe(first);
+  });
+});
+
+describe('the git fixture timeout', () => {
+  /** An alias that runs a child for 3 s: git has nothing to answer until then. */
+  const STALL = 'alias.stall=!node -e "setTimeout(() => {}, 3000)"';
+  // git is killed at the limit but its child runs on, holding the directory
+  // it started in: so not one of the temp dirs, which the suite removes next.
+  const CWD = tmpdir();
+
+  it('gives each git call a time limit, and the error names the git command and its directory', () => {
+    let limit;
+    // The real spawn, with the limit cut to half a second so the test does
+    // not wait for GIT_TIMEOUT.
+    vi.mocked(execFileSync).mockImplementationOnce((file, args, options) => {
+      limit = options.timeout;
+      return realExecFileSync(file, args, { ...options, timeout: 500 });
+    });
+
+    expect(() => git(CWD, '-c', STALL, 'stall')).toThrow(
+      `git -c ${STALL} stall timed out after ${GIT_TIMEOUT} ms in ${CWD}`,
+    );
+    expect(limit).toBe(GIT_TIMEOUT);
+  });
+
+  it('keeps the cause, so the signal that stopped git is still there', () => {
+    vi.mocked(execFileSync).mockImplementationOnce((file, args, options) =>
+      realExecFileSync(file, args, { ...options, timeout: 500 }),
+    );
+
+    let error;
+    try {
+      git(CWD, '-c', STALL, 'stall');
+    } catch (err) {
+      error = err;
+    }
+
+    expect(error.cause).toMatchObject({ code: 'ETIMEDOUT', signal: 'SIGTERM' });
+  });
+
+  it('leaves any other failure as execFileSync reports it, with git stderr', () => {
+    const repo = makeTempDir('scratch-git-fail-');
+    git(repo, 'init', '-q', '-b', 'main');
+
+    let error;
+    try {
+      git(repo, 'rev-parse', '--verify', 'no-such-ref');
+    } catch (err) {
+      error = err;
+    }
+
+    expect(error.message).toContain('rev-parse --verify no-such-ref');
+    expect(error.message).not.toContain('timed out');
+    expect(error.status).toBe(128);
   });
 });
