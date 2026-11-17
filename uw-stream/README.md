@@ -572,18 +572,18 @@ How to read a late-data minute:
   after a deploy, and not after a stretch of more than 300 s with no flushes,
   such as the CME 16:00-17:00 CT break or the Sunday 17:00 CT open: the pool
   is then at 0 or 1 connections and grows as flushes need more, so the first
-  minute with flushes shows `pool_size_min` 0 and `pool_size_max` 1 or more),
-  is pool churn. asyncpg closes a pool connection idle for 300 s (its default
+  minute with flushes shows `pool_size_min` 0 (1 right after a deploy, from
+  the boot check's connection) and `pool_size_max` 1 or more), is pool churn.
+  asyncpg closes a pool connection idle for 300 s (its default
   `max_inactive_connection_lifetime`, which `src/db.py` leaves alone) and
   hands connections out last in, first out, so the ones only a burst uses
   expire and reconnect on the next burst. That fits lag at the `:x0` and `:x5`
-  minutes. asyncpg counts only connected
-  holders in both `get_size()` and `get_idle_size()`, so a flush waiting
-  while asyncpg opens a new connection shows in neither pool number, and
-  `pool_in_use_max` can stay low. The line then reads as "the write itself
-  was slow" when the wait was the reconnect. `pool_size_max` alone hides the
-  dip; `pool_size_min` shows it. It is a measurement, not a fix: nothing here
-  changes a pool setting.
+  minutes. asyncpg counts only connected holders in both `get_size()` and
+  `get_idle_size()`, so a flush waiting while asyncpg opens a new connection
+  shows in neither pool number, and `pool_in_use_max` can stay low. The line
+  then reads as "the write itself was slow" when the wait was the reconnect.
+  `pool_size_max` alone hides the dip; `pool_size_min` shows it. It is a
+  measurement, not a fix: nothing here changes a pool setting.
 - The pool has no floor (`min_size=0` in `src/db.py`), so Neon can suspend
   its compute when nothing writes. It starts at 0 connections, and boot opens
   1 for its `SELECT 1` check. With no floor, every connection closes after

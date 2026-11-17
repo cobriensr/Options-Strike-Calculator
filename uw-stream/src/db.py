@@ -383,8 +383,8 @@ async def close_pool() -> None:
     """Drain and close the pool. Safe to call on shutdown.
 
     ``_pool`` is None afterwards whatever ``close`` does. If it raises, or the
-    shutdown step's bound cancels it, the pool is half closed and must not be
-    handed out again; the exception still propagates.
+    shutdown step's bound cancels it, asyncpg has terminated the pool, which
+    must not be handed out again; the exception still propagates.
     """
     global _pool
     pool = _pool
