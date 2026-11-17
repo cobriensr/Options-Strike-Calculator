@@ -101,7 +101,6 @@ function makeFire(overrides: Partial<LotteryFire> = {}): LotteryFire {
       minutesToPeak: null,
       enrichedAt: null,
     },
-    rangePosAtTrigger: null,
     qualityAdjustedScore: 15,
     inversionQuintile: null,
     inversionBlend: null,

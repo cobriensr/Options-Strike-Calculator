@@ -370,15 +370,10 @@ export interface LotteryFire {
   outcomes: LotteryFireOutcomes;
 
   /**
-   * Range Kill (#153). Position of `entry.spotAtFirst` within the
-   * underlying's session range at trigger time ∈ [0, 1]. Drives the
-   * "hide range-bottom" filter chip + a "TOP-RANGE" badge for fires
-   * in the top 10%. The score-bonus layer applies a -3 penalty when
-   * this value is < 0.10 (bottom-10% kill cohort: 2.4% win50, 0.07×
-   * baseline lift per the 2026-05-15 EDA). Null on pre-#153 fires
-   * and on fires whose UW candle fetch failed at insert time.
+   * Nothing reads this since the NEW HIGH badge came out; the next
+   * commit deletes it.
    */
-  rangePosAtTrigger: number | null;
+  rangePosAtTrigger?: number | null;
 
   /**
    * Inversion-quality bonus integrated into the score. Server computes
