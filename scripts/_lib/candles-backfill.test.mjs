@@ -31,6 +31,10 @@ import {
   toEtfRows,
   toIndexRows,
 } from './candles-backfill.mjs';
+import {
+  CHILD_TEST_TIMEOUT,
+  CHILD_TIMEOUT,
+} from './spawn-timeout.fixtures.mjs';
 
 // 2026-11-06 is a Friday, EST (UTC−5); 02:00 CT. Chosen so "today" in ET is
 // 2026-11-06 and the finished days before it are plain.
@@ -1557,53 +1561,61 @@ describe('processIndexDay', () => {
 
 // ── The scripts' own flags, through plain node ─────────────
 
-describe('the candle scripts exit 2 on bad flags, before any network', () => {
-  const scripts = [
-    path.resolve(__dirname, '../backfill-etf-candles-1m.mjs'),
-    path.resolve(__dirname, '../backfill-spx-candles-1m.mjs'),
-  ];
+// Each test spawns node, and a spawn can exceed the 15 s testTimeout under the
+// full gate's load. The child gets CHILD_TIMEOUT and the test more, so a slow
+// child fails with its own stderr (spawn-timeout.fixtures.mjs).
+describe(
+  'the candle scripts exit 2 on bad flags, before any network',
+  { timeout: CHILD_TEST_TIMEOUT },
+  () => {
+    const scripts = [
+      path.resolve(__dirname, '../backfill-etf-candles-1m.mjs'),
+      path.resolve(__dirname, '../backfill-spx-candles-1m.mjs'),
+    ];
 
-  function runCli(script, args) {
-    const env = { ...process.env };
-    delete env.UW_API_KEY;
-    delete env.DATABASE_URL;
-    return spawnSync(process.execPath, [script, ...args], {
-      env,
-      encoding: 'utf8',
+    function runCli(script, args) {
+      const env = { ...process.env };
+      delete env.UW_API_KEY;
+      delete env.DATABASE_URL;
+      return spawnSync(process.execPath, [script, ...args], {
+        env,
+        encoding: 'utf8',
+        timeout: CHILD_TIMEOUT,
+      });
+    }
+
+    it.each(scripts)('%s needs a range', (script) => {
+      const result = runCli(script, []);
+      expect(result.status).toBe(2);
+      expect(result.stderr).toContain('--from and --to are required');
     });
-  }
 
-  it.each(scripts)('%s needs a range', (script) => {
-    const result = runCli(script, []);
-    expect(result.status).toBe(2);
-    expect(result.stderr).toContain('--from and --to are required');
-  });
-
-  it.each(scripts)('%s refuses half a range', (script) => {
-    const result = runCli(script, ['--from', '2026-07-22']);
-    expect(result.status).toBe(2);
-    expect(result.stderr).toContain('--from and --to go together');
-  });
-
-  it.each(scripts)('%s refuses a range with no trading day', (script) => {
-    const result = runCli(script, [
-      '--from',
-      '2026-09-05',
-      '--to',
-      '2026-09-07',
-    ]);
-    expect(result.status).toBe(2);
-    expect(result.stderr).toContain('no trading days between');
-  });
-
-  it.each(scripts)('%s refuses a range that reaches today', (script) => {
-    const today = new Date().toLocaleDateString('en-CA', {
-      timeZone: 'America/New_York',
+    it.each(scripts)('%s refuses half a range', (script) => {
+      const result = runCli(script, ['--from', '2026-07-22']);
+      expect(result.status).toBe(2);
+      expect(result.stderr).toContain('--from and --to go together');
     });
-    const result = runCli(script, ['--from', today, '--to', today]);
-    // Either the to-today rule (ET) or, late in the evening in CT, the older
-    // after-today rule: both are a bad flag.
-    expect(result.status).toBe(2);
-    expect(result.stderr).toMatch(/not a finished day|is after today/);
-  });
-});
+
+    it.each(scripts)('%s refuses a range with no trading day', (script) => {
+      const result = runCli(script, [
+        '--from',
+        '2026-09-05',
+        '--to',
+        '2026-09-07',
+      ]);
+      expect(result.status).toBe(2);
+      expect(result.stderr).toContain('no trading days between');
+    });
+
+    it.each(scripts)('%s refuses a range that reaches today', (script) => {
+      const today = new Date().toLocaleDateString('en-CA', {
+        timeZone: 'America/New_York',
+      });
+      const result = runCli(script, ['--from', today, '--to', today]);
+      // Either the to-today rule (ET) or, late in the evening in CT, the older
+      // after-today rule: both are a bad flag.
+      expect(result.status).toBe(2);
+      expect(result.stderr).toMatch(/not a finished day|is after today/);
+    });
+  },
+);

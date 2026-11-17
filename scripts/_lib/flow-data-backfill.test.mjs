@@ -34,6 +34,10 @@ import {
   toMarketTideRows,
   toNetFlowRows,
 } from './flow-data-backfill.mjs';
+import {
+  CHILD_TEST_TIMEOUT,
+  CHILD_TIMEOUT,
+} from './spawn-timeout.fixtures.mjs';
 
 // 2026-11-06 is a Friday, EST (UTC−5); 03:00 ET. "Today" in ET is 2026-11-06,
 // so every date below is a finished day.
@@ -1303,8 +1307,9 @@ describe('sampleFiveMinuteRows and storeSampledDay (the two inline scripts)', ()
 });
 
 // Each test below spawns node: Windows process spawn under full-suite load is
-// slow, so the spawn and the test share one generous limit.
-const SPAWN_TIMEOUT = 60_000;
+// slow. The child gets CHILD_TIMEOUT and the test more, so a slow child fails
+// with its own stderr (spawn-timeout.fixtures.mjs). The same limit for both
+// would let the test's timeout hide the child's failure.
 
 /**
  * The two scripts run end to end as child processes, with the network replaced
@@ -1314,7 +1319,7 @@ const SPAWN_TIMEOUT = 60_000;
  */
 describe(
   'the inline backfill scripts, run end to end',
-  { timeout: SPAWN_TIMEOUT },
+  { timeout: CHILD_TEST_TIMEOUT },
   () => {
     const SCRIPTS = [
       {
@@ -1354,7 +1359,7 @@ describe(
             STUB_SQL: sqlMode,
           },
           encoding: 'utf8',
-          timeout: SPAWN_TIMEOUT,
+          timeout: CHILD_TIMEOUT,
         },
       );
     }
@@ -1404,7 +1409,7 @@ describe(
           '-e',
           "fetch('https://example.com/x').catch((e) => { console.error(e.message); process.exit(3); })",
         ],
-        { encoding: 'utf8', timeout: SPAWN_TIMEOUT },
+        { encoding: 'utf8', timeout: CHILD_TIMEOUT },
       );
 
       expect(result.status).toBe(3);
@@ -1628,7 +1633,7 @@ describe('runFlowScript', () => {
 
 describe(
   'the flow_data scripts exit before any network on bad flags or a missing key',
-  { timeout: SPAWN_TIMEOUT },
+  { timeout: CHILD_TEST_TIMEOUT },
   () => {
     const scripts = [
       path.resolve(process.cwd(), 'scripts', 'backfill-local.mjs'),
@@ -1643,6 +1648,7 @@ describe(
       return spawnSync(process.execPath, [script, ...args], {
         env: { ...clean, ...env },
         encoding: 'utf8',
+        timeout: CHILD_TIMEOUT,
       });
     }
 
