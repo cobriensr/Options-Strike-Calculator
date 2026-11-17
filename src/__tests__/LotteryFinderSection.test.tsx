@@ -2991,6 +2991,12 @@ describe('LotteryFinderSection: the page follows its date, minute and filters', 
             peakBestPct: null,
             latestTriggerTimeCt: '2026-04-20T19:00:00Z',
           },
+          {
+            ticker: 'MSFT',
+            count: 3,
+            peakBestPct: null,
+            latestTriggerTimeCt: '2026-04-20T19:00:00Z',
+          },
         ],
       },
       loading: false,
@@ -3030,6 +3036,116 @@ describe('LotteryFinderSection: the page follows its date, minute and filters', 
           .slice(beforeFlip)
           .every((a) => a.page === 0),
       ).toBe(true);
+    },
+  );
+
+  /**
+   * A change from one non-default value to another, per control. The flip
+   * table above always starts at the default, so a scope that kept only "is it
+   * set" (`minute !== null`, `tickerFilter !== null`, `minPremiumK > 0`,
+   * `sortMode === 'chronological'`) would still pass it: default to set
+   * changes the flag. These pairs move between two set values, which only the
+   * value itself can tell apart. The first value is chosen to also stay on the
+   * same side of the common collapses (`> 0`) as the default. The booleans
+   * have no pair: a boolean is already a flag.
+   */
+  const PAIRS: Array<{
+    name: string;
+    first: () => void;
+    second: () => void;
+  }> = [
+    {
+      name: 'sortMode',
+      first: () => fireEvent.click(chip('score')),
+      second: () => fireEvent.click(chip('peak')),
+    },
+    {
+      name: 'convictionFloor',
+      first: () => fireEvent.click(chip(/Tier 1/)),
+      second: () => fireEvent.click(chip(/Tier 2\+/)),
+    },
+    {
+      name: 'minFireCount',
+      first: () => fireEvent.click(testId('burst-filter-gte3')),
+      second: () => fireEvent.click(testId('burst-filter-gte8')),
+    },
+    {
+      // The default is 0.70: 0.80 and 0.60 are both set and both non-default.
+      name: 'takeitFloor',
+      first: () => fireEvent.click(testId('takeit-floor-0.8')),
+      second: () => fireEvent.click(testId('takeit-floor-0.6')),
+    },
+    {
+      name: 'minPremiumK',
+      first: () =>
+        fireEvent.change(testId('lottery-min-premium-input'), {
+          target: { value: '100' },
+        }),
+      second: () =>
+        fireEvent.change(testId('lottery-min-premium-input'), {
+          target: { value: '200' },
+        }),
+    },
+    {
+      name: 'maxFireCount',
+      first: () =>
+        fireEvent.change(testId('lottery-max-fires-input'), {
+          target: { value: '5' },
+        }),
+      second: () =>
+        fireEvent.change(testId('lottery-max-fires-input'), {
+          target: { value: '6' },
+        }),
+    },
+    {
+      name: 'modeFilter',
+      first: () => fireEvent.click(chip(/Mode A/)),
+      second: () => fireEvent.click(chip(/Mode B/)),
+    },
+    {
+      name: 'optionTypeFilter',
+      first: () => fireEvent.click(chip('calls')),
+      second: () => fireEvent.click(chip('puts')),
+    },
+    {
+      name: 'moneynessMode',
+      first: () => fireEvent.click(testId('lottery-moneyness-otm-chip')),
+      second: () => fireEvent.click(testId('lottery-moneyness-itm-chip')),
+    },
+    {
+      name: 'todFilter',
+      first: () => fireEvent.click(chip('AM_open')),
+      second: () => fireEvent.click(chip('MID')),
+    },
+    {
+      // A second ticker while one is already active.
+      name: 'tickerFilter',
+      first: () => fireEvent.click(chip(/^AAPL/)),
+      second: () => fireEvent.click(chip(/^MSFT/)),
+    },
+    {
+      // Scrub, page on, scrub again: the pager shows under a minute here.
+      name: 'minute',
+      first: () => stepBackOneMinute(),
+      second: () => stepBackOneMinute(),
+    },
+  ];
+
+  it.each(PAIRS.map((p) => [p.name, p] as const))(
+    'drops page 2 when %s moves between two non-default values',
+    (_name, { first, second }) => {
+      renderOnPage2();
+      first();
+      nextPage();
+      nextPage();
+      expect(finderArgs().at(-1)?.page).toBe(2);
+      const beforeSecond = finderArgs().length;
+
+      second();
+
+      const afterSecond = finderArgs().slice(beforeSecond);
+      expect(afterSecond.length).toBeGreaterThan(0);
+      expect(afterSecond.every((a) => a.page === 0)).toBe(true);
     },
   );
 
