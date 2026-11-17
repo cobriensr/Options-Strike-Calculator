@@ -1150,6 +1150,27 @@ describe('pruneWorktrees when the ledger step fails', () => {
     expect(branches(repo)).toContain('fix/x');
   });
 
+  it('counts a worktree that another run removed right after the copy as removed, not as a changed ledger', () => {
+    const dest = path.join(ledgersDir(repo), 'x');
+    vi.mocked(renameSync).mockImplementation((from, to) => {
+      real.renameSync(from, to);
+      real.rmSync(wt, { recursive: true, force: true });
+    });
+
+    const { result, errors } = prune();
+
+    expect(errors).toEqual([]);
+    expect(result).toMatchObject({
+      action: 'removed',
+      reason: 'already removed by another run; branch fix/x kept',
+      ledger: { dest, files: LEDGER_FILES, state: 'copied' },
+    });
+    // The copy is in place, whole.
+    expect(readTree(dest)).toEqual(asTree(LEDGER));
+    expect(entries()).toEqual(['x']);
+    expect(branches(repo)).toContain('fix/x');
+  });
+
   it('keeps the worktree when the folder for the copies cannot be made', () => {
     // A file where docs/ should be, so docs/tmp/worktree-ledgers/ cannot exist.
     writeFileSync(path.join(repo, 'docs'), 'a file, not a folder\n');

@@ -891,6 +891,9 @@ function confirmUnchanged(entry, ctx, plan) {
   try {
     const changed = ledgerChanges(plan.files, readLedger(entry.path));
     if (changed.length > 0) {
+      // A worktree removed since the copy has no ledger left: every file
+      // reads as changed, though nothing was written.
+      if (isGone(entry.path)) return { gone: true };
       return {
         keep: `ledger changed after the copy: ${sample(changed, ledgerPath)}`,
       };
