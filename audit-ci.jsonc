@@ -132,5 +132,51 @@
     // ships to production. Remove this entry once `npm ls minimatch` shows
     // no copy below 11.0.1.
     "GHSA-g3hv-75wg-m249", // minimatch globparts amplification
+
+    // ── picomatch (dev and build tooling only) ────────────────────────────
+    // GHSA-fc5q-39xc-vjpf (high, CWE-1333): a single-branch repeated
+    // extglob such as `+(*)` or `+(*a)` skips analyzeRepeatedExtglob in
+    // lib/parse.js, and the regex it compiles to backtracks exponentially
+    // on a short crafted string (probed 2026-11-17: `+(*a)` against 24
+    // `a`s and a `!` takes 0.76 s on 4.0.4). The attacker must supply the
+    // glob pattern; a hostile path or file name alone does not trigger it.
+    //
+    // No fix exists (checked 2026-11-17): the advisory covers `<= 4.0.7`,
+    // lists no patched version, and 4.0.7 is the latest release on npm.
+    // So no upgrade or `overrides` entry can clear it. Two copies:
+    // - 4.0.4 at the root: vite, vitest, tinyglobby (and fdir, its peer),
+    //   @rollup/pluginutils (workbox-build's rollup plugins, @vercel/nft)
+    //   and rollup-plugin-visualizer.
+    // - 2.3.2 under anymatch (chokidar 3, from @vercel/toolbar), micromatch
+    //   (fast-glob, from @vercel/microfrontends and ts-morph) and readdirp.
+    // The lockfile marks several of these as non-dev only because
+    // @vercel/toolbar is in `dependencies`.
+    //
+    // Reachability: no request input reaches picomatch.
+    // - Nothing in api/, src/, sidecar/, uw-stream/ or nightly/ imports
+    //   picomatch, micromatch, anymatch, minimatch, tinyglobby or
+    //   fast-glob, and the built browser bundle holds no picomatch code
+    //   (grepped dist/ for picomatch and its POSIX_REGEX_SOURCE table,
+    //   2026-11-17). @vercel/toolbar is imported only by vite.config.ts (a
+    //   Vite plugin that runs in Node) and, behind `import.meta.env.DEV`,
+    //   by src/main.tsx, so none of it ships in the production bundle.
+    // - The one direct use is scripts/_lib/coverage-thresholds.test.mjs, a
+    //   vitest test that loads vitest's own copy and feeds it the coverage
+    //   globs and threshold keys from vite.config.ts plus this repo's file
+    //   paths.
+    // - The other patterns are the repo's own config and build globs:
+    //   vitest's test and coverage include/exclude lists and threshold keys
+    //   (vite.config.ts), the fixed `**/{microfrontends.json,...}` that
+    //   @vercel/microfrontends gives fast-glob, and the one path
+    //   (.git/HEAD) the toolbar gives chokidar. @vercel/node passes
+    //   @vercel/nft its `excludeFiles` globs, and vercel.json sets none.
+    //   The visualizer (ANALYZE=true only) and workbox-build's bundler set
+    //   no include or exclude filter here.
+    // Remove this entry once a picomatch release above 4.0.7 fixes the
+    // advisory and `npm ls picomatch` shows no copy at or below 4.0.7. The
+    // 2.3.2 copies only move when anymatch, micromatch and readdirp (or
+    // their parents, chokidar 3 and fast-glob) take a fixed release, or
+    // through an override that crosses from the 2.x line to the fixed one.
+    "GHSA-fc5q-39xc-vjpf", // picomatch single-branch extglob ReDoS
   ],
 }
