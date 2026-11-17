@@ -13,6 +13,10 @@ import {
   lowestByMetric,
   evaluateLcov,
 } from './coverage-floor.mjs';
+import {
+  CHILD_TEST_TIMEOUT,
+  CHILD_TIMEOUT,
+} from './spawn-timeout.fixtures.mjs';
 
 /**
  * One lcov record in the layout vitest's istanbul lcov reporter writes:
@@ -454,10 +458,10 @@ describe('evaluateLcov', () => {
 });
 
 // Each CLI test spawns node: Windows process spawn under full-suite
-// multi-session load took 15.2 s (2026-10-29), past the 15 s testTimeout.
-const CLI_TIMEOUT = 60_000;
-
-describe('check-coverage-floor CLI', { timeout: CLI_TIMEOUT }, () => {
+// multi-session load took 15.2 s (2026-10-29), past the 15 s testTimeout. The
+// child gets CHILD_TIMEOUT and the test more, so a slow child fails with its
+// own stderr (spawn-timeout.fixtures.mjs).
+describe('check-coverage-floor CLI', { timeout: CHILD_TEST_TIMEOUT }, () => {
   // vitest runs from the repo root (same convention as vercel-ignore-command).
   const cli = path.resolve(
     process.cwd(),
@@ -480,7 +484,11 @@ describe('check-coverage-floor CLI', { timeout: CLI_TIMEOUT }, () => {
       mkdirSync(path.join(cwd, 'coverage'));
       writeFileSync(path.join(cwd, 'coverage', 'lcov.info'), report);
     }
-    return spawnSync(process.execPath, [cli], { cwd, encoding: 'utf8' });
+    return spawnSync(process.execPath, [cli], {
+      cwd,
+      encoding: 'utf8',
+      timeout: CHILD_TIMEOUT,
+    });
   }
 
   it('exits 1 with a clear message when coverage/lcov.info is missing', () => {
