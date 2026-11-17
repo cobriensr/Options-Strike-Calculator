@@ -5,11 +5,13 @@
  * gitignored `.superpowers/` folder is copied to
  * <repo>/docs/tmp/worktree-ledgers/<name>/ before `git worktree remove` would
  * delete it. Every case runs real git against a throwaway repo (fixtures in
- * prune-worktrees.fixtures.mjs). The cases that need the filesystem to fail or
- * change at one exact moment wrap three node:fs calls (copyFileSync,
- * renameSync, unlinkSync); every other call runs for real.
+ * prune-worktrees.fixtures.mjs). The cases that need the filesystem or git to
+ * fail or change at one exact moment wrap four node:fs calls (copyFileSync,
+ * readdirSync, renameSync, unlinkSync) and spawnSync; every other call runs
+ * for real.
  */
 
+import { spawnSync } from 'node:child_process';
 import {
   copyFileSync,
   existsSync,
@@ -41,6 +43,8 @@ import {
   adminDir,
   age,
   branches,
+  commitFile,
+  git,
   initRepo,
   makeTempDir,
   setupScratchGit,
@@ -49,8 +53,14 @@ import {
 import {
   checkSettled,
   formatResult,
+  formatSummary,
   pruneWorktrees,
 } from './prune-worktrees.mjs';
+
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal();
+  return { ...actual, spawnSync: vi.fn(actual.spawnSync) };
+});
 
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal();
@@ -58,12 +68,15 @@ vi.mock('node:fs', async (importOriginal) => {
     ...actual,
     default: actual,
     copyFileSync: vi.fn(actual.copyFileSync),
+    readdirSync: vi.fn(actual.readdirSync),
     renameSync: vi.fn(actual.renameSync),
     unlinkSync: vi.fn(actual.unlinkSync),
   };
 });
 
 const real = await vi.importActual('node:fs');
+const { spawnSync: realSpawnSync } =
+  await vi.importActual('node:child_process');
 
 setupScratchGit();
 
@@ -177,6 +190,26 @@ describe('formatResult with a ledger', () => {
       }),
     ).toBe('removed a (branch fix/a deleted, was f00d)');
   });
+
+  it('counts ledger errors apart from git errors in the summary', () => {
+    const summary = (errors, ledgerErrors) =>
+      formatSummary({
+        dryRun: false,
+        results: [{ action: 'kept' }],
+        errors,
+        ledgerErrors,
+      });
+    expect(summary(['a', 'b', 'c'], 1)).toBe(
+      'worktrees prune: removed 0, kept 1, 2 git errors, 1 ledger error',
+    );
+    expect(summary(['a', 'b'], 2)).toBe(
+      'worktrees prune: removed 0, kept 1, 2 ledger errors',
+    );
+    // A caller with no ledger errors to report passes none.
+    expect(summary(['a'], undefined)).toBe(
+      'worktrees prune: removed 0, kept 1, 1 git error',
+    );
+  });
 });
 
 describe('pruneWorktrees copies the ledger out', () => {
@@ -184,42 +217,12 @@ describe('pruneWorktrees copies the ledger out', () => {
   let outcome;
   let results;
   let outsideTarget = '';
-  let mirror = '';
   const wts = {};
-  const placed = {};
-  const mtimesBefore = {};
-
-  /** mtimes of every file under a copy, by relative path. */
-  function mtimes(dir) {
-    return Object.fromEntries(
-      Object.keys(readTree(dir)).map((rel) => [
-        rel,
-        statSync(path.join(dir, rel)).mtimeMs,
-      ]),
-    );
-  }
 
   beforeAll(() => {
     repo = initRepo(makeTempDir('prune-ledger-'));
-    const copies = ledgersDir(repo);
 
     wts.copied = addLedgerWorktree(repo, 'copied');
-
-    // The hand copies the controller made: the ledger as it is.
-    wts.identical = addLedgerWorktree(repo, 'identical');
-    writeFiles(path.join(copies, 'identical'), LEDGER, 120);
-    mtimesBefore.identical = mtimes(path.join(copies, 'identical'));
-
-    // A copy that is not the same: one file differs, one is extra, one is gone.
-    for (const [name, files] of Object.entries({
-      bytes: { ...LEDGER, 'brief.md': 'goal: something else\n' },
-      extra: { ...LEDGER, 'stray.md': 'not in the ledger\n' },
-      missing: { 'brief.md': LEDGER['brief.md'] },
-    })) {
-      wts[name] = addLedgerWorktree(repo, name);
-      writeFiles(path.join(copies, name), files, 120);
-      placed[name] = readTree(path.join(copies, name));
-    }
 
     // A folder with a file that a link must never lead a copy to.
     outsideTarget = makeTempDir('prune-ledger-target-');
@@ -228,24 +231,6 @@ describe('pruneWorktrees copies the ledger out', () => {
     // A link inside the ledger.
     wts.linked = addLedgerWorktree(repo, 'linked');
     linkDir(outsideTarget, path.join(wts.linked, '.superpowers', 'shared'));
-
-    // A copy with every file and a link besides is not the same copy.
-    wts.linkin = addLedgerWorktree(repo, 'linkin');
-    writeFiles(path.join(copies, 'linkin'), LEDGER, 120);
-    linkDir(outsideTarget, path.join(copies, 'linkin', 'shared'));
-
-    // The plain name taken by a file, and by a link to a folder that holds
-    // exactly the ledger: neither is a copy, and a link is not read through.
-    wts.asfile = addLedgerWorktree(repo, 'asfile');
-    writeFileSync(path.join(copies, 'asfile'), 'a file, not a folder\n');
-    wts.aslink = addLedgerWorktree(repo, 'aslink');
-    mirror = makeTempDir('prune-ledger-mirror-');
-    writeFiles(mirror, LEDGER, 120);
-    linkDir(mirror, path.join(copies, 'aslink'));
-
-    // A link at the plain name whose target is gone: still taken.
-    wts.dangling = addLedgerWorktree(repo, 'dangling');
-    linkDir(path.join(mirror, 'no such folder'), path.join(copies, 'dangling'));
 
     // A nested worktree name must not put its copy inside another's.
     wts.nested = addLedgerWorktree(repo, 'group/feat');
@@ -310,6 +295,125 @@ describe('pruneWorktrees copies the ledger out', () => {
       readdirSync(ledgersDir(repo)).filter((name) => name.startsWith('.')),
     ).toEqual([]);
   });
+
+  it('flattens a nested worktree name to one folder', () => {
+    const dest = path.join(ledgersDir(repo), 'group__feat');
+    expect(results.get('group/feat')).toMatchObject({
+      action: 'removed',
+      ledger: { dest, files: LEDGER_FILES, state: 'copied' },
+    });
+    expect(readTree(dest)).toEqual(asTree(LEDGER));
+    expect(existsSync(path.join(ledgersDir(repo), 'group'))).toBe(false);
+  });
+
+  it('keeps a worktree whose ledger holds a link, never following it', () => {
+    expect(results.get('linked')).toMatchObject({
+      action: 'kept',
+      reason: 'ledger holds a link or special file: .superpowers/shared',
+    });
+    expect(results.get('linked').ledger).toBeUndefined();
+    // Nothing of it was copied, not the link and not what it points at.
+    expect(existsSync(path.join(ledgersDir(repo), 'linked'))).toBe(false);
+    expect(readdirSync(ledgersDir(repo)).join('|')).not.toContain('linked');
+    expect(existsSync(wts.linked)).toBe(true);
+    expect(readFileSync(path.join(outsideTarget, 'secret.txt'), 'utf8')).toBe(
+      'outside\n',
+    );
+    // Keeping it for a link is a decision, not a failure.
+    expect(outcome.errors).toEqual([]);
+  });
+
+  it('keeps a worktree whose newest ledger file is recent, though its git clocks are old', () => {
+    expect(results.get('recent')).toMatchObject({
+      action: 'kept',
+      reason: expect.stringMatching(/^idle 1\.\dh, under the 24h minimum$/),
+    });
+    expect(existsSync(wts.recent)).toBe(true);
+    expect(existsSync(path.join(ledgersDir(repo), 'recent'))).toBe(false);
+  });
+
+  it('prints a worktree with no ledger exactly as it always did', () => {
+    const none = results.get('none');
+    expect(none.ledger).toBeUndefined();
+    expect(none).toMatchObject({ action: 'removed' });
+    expect(formatResult(none)).toBe(
+      `removed none (branch fix/none deleted, was ${none.deletedBranchSha})`,
+    );
+    expect(existsSync(path.join(ledgersDir(repo), 'none'))).toBe(false);
+    expect(existsSync(wts.none)).toBe(false);
+  });
+
+  it('treats a ledger folder holding no file as no ledger', () => {
+    const hollow = results.get('hollow');
+    expect(hollow.ledger).toBeUndefined();
+    expect(hollow.action).toBe('removed');
+    expect(existsSync(path.join(ledgersDir(repo), 'hollow'))).toBe(false);
+  });
+});
+
+// Its own fixture, so that each hook stays well inside its timeout when the
+// machine is loaded: every worktree here costs a few dozen git calls.
+describe('pruneWorktrees never overwrites a copy', () => {
+  let repo = '';
+  let results;
+  let outsideTarget = '';
+  let mirror = '';
+  const wts = {};
+  const placed = {};
+  const mtimesBefore = {};
+
+  /** mtimes of every file under a copy, by relative path. */
+  function mtimes(dir) {
+    return Object.fromEntries(
+      Object.keys(readTree(dir)).map((rel) => [
+        rel,
+        statSync(path.join(dir, rel)).mtimeMs,
+      ]),
+    );
+  }
+
+  beforeAll(() => {
+    repo = initRepo(makeTempDir('prune-ledger-keep-'));
+    const copies = ledgersDir(repo);
+
+    // The hand copies the controller made: the ledger as it is.
+    wts.identical = addLedgerWorktree(repo, 'identical');
+    writeFiles(path.join(copies, 'identical'), LEDGER, 120);
+    mtimesBefore.identical = mtimes(path.join(copies, 'identical'));
+
+    // A copy that is not the same: one file differs, one is extra, one is gone.
+    for (const [name, files] of Object.entries({
+      bytes: { ...LEDGER, 'brief.md': 'goal: something else\n' },
+      extra: { ...LEDGER, 'stray.md': 'not in the ledger\n' },
+      missing: { 'brief.md': LEDGER['brief.md'] },
+    })) {
+      wts[name] = addLedgerWorktree(repo, name);
+      writeFiles(path.join(copies, name), files, 120);
+      placed[name] = readTree(path.join(copies, name));
+    }
+
+    // A copy with every file and a link besides is not the same copy.
+    outsideTarget = makeTempDir('prune-ledger-target-');
+    writeFileSync(path.join(outsideTarget, 'secret.txt'), 'outside\n');
+    wts.linkin = addLedgerWorktree(repo, 'linkin');
+    writeFiles(path.join(copies, 'linkin'), LEDGER, 120);
+    linkDir(outsideTarget, path.join(copies, 'linkin', 'shared'));
+
+    // The plain name taken by a file, and by a link to a folder that holds
+    // exactly the ledger: neither is a copy, and a link is not read through.
+    wts.asfile = addLedgerWorktree(repo, 'asfile');
+    writeFileSync(path.join(copies, 'asfile'), 'a file, not a folder\n');
+    wts.aslink = addLedgerWorktree(repo, 'aslink');
+    mirror = makeTempDir('prune-ledger-mirror-');
+    writeFiles(mirror, LEDGER, 120);
+    linkDir(mirror, path.join(copies, 'aslink'));
+
+    // A link at the plain name whose target is gone: still taken.
+    wts.dangling = addLedgerWorktree(repo, 'dangling');
+    linkDir(path.join(mirror, 'no such folder'), path.join(copies, 'dangling'));
+
+    results = byName(pruneWorktrees({ repoRoot: repo }));
+  }, FIXTURE_TIMEOUT);
 
   it('skips the copy when an identical one is already there, and removes the worktree', () => {
     const dest = path.join(ledgersDir(repo), 'identical');
@@ -382,60 +486,6 @@ describe('pruneWorktrees copies the ledger out', () => {
     // What the link points at was not added to.
     expect(readTree(mirror)).toEqual(asTree(LEDGER));
   });
-
-  it('flattens a nested worktree name to one folder', () => {
-    const dest = path.join(ledgersDir(repo), 'group__feat');
-    expect(results.get('group/feat')).toMatchObject({
-      action: 'removed',
-      ledger: { dest, files: LEDGER_FILES, state: 'copied' },
-    });
-    expect(readTree(dest)).toEqual(asTree(LEDGER));
-    expect(existsSync(path.join(ledgersDir(repo), 'group'))).toBe(false);
-  });
-
-  it('keeps a worktree whose ledger holds a link, never following it', () => {
-    expect(results.get('linked')).toMatchObject({
-      action: 'kept',
-      reason: 'ledger holds a link or special file: .superpowers/shared',
-    });
-    expect(results.get('linked').ledger).toBeUndefined();
-    // Nothing of it was copied, not the link and not what it points at.
-    expect(existsSync(path.join(ledgersDir(repo), 'linked'))).toBe(false);
-    expect(readdirSync(ledgersDir(repo)).join('|')).not.toContain('linked');
-    expect(existsSync(wts.linked)).toBe(true);
-    expect(readFileSync(path.join(outsideTarget, 'secret.txt'), 'utf8')).toBe(
-      'outside\n',
-    );
-    // Keeping it for a link is a decision, not a failure.
-    expect(outcome.errors).toEqual([]);
-  });
-
-  it('keeps a worktree whose newest ledger file is recent, though its git clocks are old', () => {
-    expect(results.get('recent')).toMatchObject({
-      action: 'kept',
-      reason: expect.stringMatching(/^idle 1\.\dh, under the 24h minimum$/),
-    });
-    expect(existsSync(wts.recent)).toBe(true);
-    expect(existsSync(path.join(ledgersDir(repo), 'recent'))).toBe(false);
-  });
-
-  it('prints a worktree with no ledger exactly as it always did', () => {
-    const none = results.get('none');
-    expect(none.ledger).toBeUndefined();
-    expect(none).toMatchObject({ action: 'removed' });
-    expect(formatResult(none)).toBe(
-      `removed none (branch fix/none deleted, was ${none.deletedBranchSha})`,
-    );
-    expect(existsSync(path.join(ledgersDir(repo), 'none'))).toBe(false);
-    expect(existsSync(wts.none)).toBe(false);
-  });
-
-  it('treats a ledger folder holding no file as no ledger', () => {
-    const hollow = results.get('hollow');
-    expect(hollow.ledger).toBeUndefined();
-    expect(hollow.action).toBe('removed');
-    expect(existsSync(path.join(ledgersDir(repo), 'hollow'))).toBe(false);
-  });
 });
 
 describe('checkSettled and the ledger', () => {
@@ -459,6 +509,21 @@ describe('checkSettled and the ledger', () => {
     writeFileSync(path.join(target, 'fresh.txt'), 'now\n');
     wts.linked = addLedgerWorktree(repo, 'linked');
     linkDir(target, path.join(wts.linked, '.superpowers', 'shared'));
+
+    // The whole ledger folder is a link: git status would see an untracked
+    // file, so these are asked with the status known clean.
+    wts.toplink = addWorktree(repo, '.worktrees/toplink', 'fix/toplink');
+    linkDir(target, path.join(wts.toplink, '.superpowers'));
+    age(wts.toplink);
+
+    wts.manylinks = addLedgerWorktree(repo, 'manylinks');
+    for (const name of ['l1', 'l2', 'l3', 'l4']) {
+      linkDir(target, path.join(wts.manylinks, '.superpowers', name));
+    }
+
+    // A link in a ledger written just now: idle comes first.
+    wts.freshlinked = addLedgerWorktree(repo, 'freshlinked', LEDGER, 0);
+    linkDir(target, path.join(wts.freshlinked, '.superpowers', 'shared'));
   }, FIXTURE_TIMEOUT);
 
   it('passes a worktree whose ledger is as old as its git clocks', () => {
@@ -479,8 +544,30 @@ describe('checkSettled and the ledger', () => {
     expect(verdict.idle).toBeLessThan(4);
   });
 
-  it('does not read the mtime of a file behind a link', () => {
-    expect(checkSettled(wts.linked).keep).toBeNull();
+  it('holds a worktree whose ledger holds a link, and never reads through it', () => {
+    // Read through the link, the file written just now would make it idle.
+    expect(checkSettled(wts.linked)).toEqual({
+      keep: 'ledger holds a link or special file: .superpowers/shared',
+      kind: 'ledger-link',
+    });
+  });
+
+  it('holds a worktree whose ledger folder is itself a link', () => {
+    expect(checkSettled(wts.toplink, { statusKnownClean: true })).toEqual({
+      keep: 'ledger holds a link or special file: .superpowers',
+      kind: 'ledger-link',
+    });
+  });
+
+  it('names the first few links and counts the rest', () => {
+    expect(checkSettled(wts.manylinks, { statusKnownClean: true })).toEqual({
+      keep: 'ledger holds a link or special file: .superpowers/l1, .superpowers/l2, .superpowers/l3 and 1 more',
+      kind: 'ledger-link',
+    });
+  });
+
+  it('asks about the idle clock before the links', () => {
+    expect(checkSettled(wts.freshlinked).kind).toBe('idle');
   });
 });
 
@@ -590,9 +677,39 @@ describe('pruneWorktrees when the ledger step fails', () => {
 
   afterEach(() => {
     vi.mocked(copyFileSync).mockReset();
+    vi.mocked(readdirSync).mockReset();
     vi.mocked(renameSync).mockReset();
+    vi.mocked(spawnSync).mockReset();
     vi.mocked(unlinkSync).mockReset();
   });
+
+  /**
+   * Hand the real result of each git call whose args satisfy `match` to
+   * `handle`, and return what it returns. Every other call is untouched.
+   */
+  function onGit(match, handle) {
+    vi.mocked(spawnSync).mockImplementation((command, args, options) => {
+      const result = realSpawnSync(command, args, options);
+      return match(args) ? handle(result) : result;
+    });
+  }
+
+  /** The `git rev-parse HEAD` that reads a worktree's HEAD. */
+  function readsHead(args) {
+    return args.at(-2) === 'rev-parse' && args.at(-1) === 'HEAD';
+  }
+
+  /** Make readdirSync fail on `target`, as a permission error would. */
+  function failReaddirOf(target, when = () => true) {
+    vi.mocked(readdirSync).mockImplementation((dir, options) => {
+      if (dir === target && when()) {
+        throw Object.assign(new Error('EACCES: permission denied, scandir'), {
+          code: 'EACCES',
+        });
+      }
+      return real.readdirSync(dir, options);
+    });
+  }
 
   /** Fail the copy of one file, as a permission error would. */
   function failCopyOf(name) {
@@ -864,6 +981,173 @@ describe('pruneWorktrees when the ledger step fails', () => {
       ledger: { dest, files: LEDGER_FILES, state: 'identical' },
     });
     expect(entries()).toEqual(['x']);
+  });
+
+  it('keeps a detached worktree whose HEAD moved during the copy, with its new commit reachable', () => {
+    // Detached, a commit made now belongs to no branch: removing the
+    // worktree would leave it for gc.
+    git(wt, 'checkout', '-q', '--detach');
+    age(wt);
+    let late = '';
+    vi.mocked(renameSync).mockImplementation((from, to) => {
+      real.renameSync(from, to);
+      late = commitFile(wt, 'late.txt', 'late\n', 'late commit');
+    });
+
+    const { result, errors } = prune();
+
+    expect(errors).toEqual([]);
+    expect(result).toMatchObject({
+      action: 'kept',
+      reason: 'HEAD moved during the ledger copy',
+      ledger: { state: 'copied' },
+    });
+    expect(existsSync(wt)).toBe(true);
+    expect(git(wt, 'rev-parse', 'HEAD')).toBe(late);
+    expect(git(repo, 'cat-file', '-t', late)).toBe('commit');
+  });
+
+  it('records a failed HEAD re-read after the copy as a git error and keeps the worktree', () => {
+    let reads = 0;
+    onGit(readsHead, (result) => {
+      // The first read is the one in the checks; the second follows the copy.
+      reads += 1;
+      return reads === 2
+        ? { ...result, status: 128, stdout: '', stderr: 'fatal: bad HEAD\n' }
+        : result;
+    });
+
+    const outcome = prune();
+
+    expect(reads).toBe(2);
+    expect(outcome.result).toMatchObject({
+      action: 'kept',
+      reason: 'HEAD check failed: fatal: bad HEAD',
+      ledger: { state: 'copied' },
+    });
+    expect(outcome.errors).toHaveLength(1);
+    expect(outcome.errors[0]).toMatch(
+      /^x: HEAD check failed: git .*rev-parse HEAD: fatal: bad HEAD$/,
+    );
+    expect(formatSummary(outcome)).toBe(
+      'worktrees prune: removed 0, kept 1, 1 git error',
+    );
+    expect(existsSync(wt)).toBe(true);
+  });
+
+  it('still refuses a link that appears after the checks, before copying anything', () => {
+    let first = true;
+    onGit(readsHead, (result) => {
+      // The first read comes after checkSettled and before the plan.
+      if (first) {
+        first = false;
+        linkDir(
+          makeTempDir('prune-ledger-late-'),
+          path.join(wt, '.superpowers', 'shared'),
+        );
+      }
+      return result;
+    });
+
+    const { result, errors } = prune();
+
+    expect(result).toMatchObject({
+      action: 'kept',
+      reason: 'ledger holds a link or special file: .superpowers/shared',
+    });
+    expect(result.ledger).toBeUndefined();
+    expect(errors).toEqual([]);
+    expect(existsSync(ledgersDir(repo))).toBe(false);
+  });
+
+  it('records a ledger it cannot read again before the removal and keeps the worktree', () => {
+    let armed = false;
+    vi.mocked(renameSync).mockImplementation((from, to) => {
+      real.renameSync(from, to);
+      armed = true;
+    });
+    failReaddirOf(path.join(wt, '.superpowers'), () => {
+      const fail = armed;
+      armed = false;
+      return fail;
+    });
+
+    const outcome = prune();
+
+    const reason = 'ledger re-check failed: EACCES: permission denied, scandir';
+    expect(outcome.result).toMatchObject({
+      action: 'kept',
+      reason,
+      ledger: {
+        dest: path.join(ledgersDir(repo), 'x'),
+        files: LEDGER_FILES,
+        state: 'copied',
+      },
+    });
+    expect(outcome.errors).toEqual([`x: ${reason}`]);
+    expect(formatSummary(outcome)).toBe(
+      'worktrees prune: removed 0, kept 1, 1 ledger error',
+    );
+    expect(existsSync(wt)).toBe(true);
+  });
+
+  it('records a copies folder it cannot read while planning, and starts no copy', () => {
+    const dest = path.join(ledgersDir(repo), 'x');
+    writeFiles(dest, { 'brief.md': 'an older copy\n' }, 120);
+    failReaddirOf(dest);
+
+    const outcome = prune();
+
+    const reason = 'ledger copy failed: EACCES: permission denied, scandir';
+    expect(outcome.result).toMatchObject({ action: 'kept', reason });
+    expect(outcome.result.ledger).toBeUndefined();
+    expect(outcome.errors).toEqual([`x: ${reason}`]);
+    expect(formatSummary(outcome)).toBe(
+      'worktrees prune: removed 0, kept 1, 1 ledger error',
+    );
+    // Not even a temporary folder: it failed before the copy began.
+    expect(entries()).toEqual(['x']);
+    expect(existsSync(wt)).toBe(true);
+  });
+
+  it('counts a worktree that another run removed while the copies folder was read as removed too', () => {
+    const dest = path.join(ledgersDir(repo), 'x');
+    writeFiles(dest, { 'brief.md': 'an older copy\n' }, 120);
+    failReaddirOf(dest, () => {
+      real.rmSync(wt, { recursive: true, force: true });
+      return true;
+    });
+
+    const { result, errors } = prune();
+
+    expect(errors).toEqual([]);
+    expect(result).toMatchObject({
+      action: 'removed',
+      reason: 'already removed by another run; branch fix/x kept',
+    });
+    expect(entries()).toEqual(['x']);
+  });
+
+  it('counts a worktree that another run removed during the copy as removed, not as a failed copy', () => {
+    let first = true;
+    vi.mocked(copyFileSync).mockImplementation((from, to, flags) => {
+      if (first) {
+        first = false;
+        real.rmSync(wt, { recursive: true, force: true });
+      }
+      return real.copyFileSync(from, to, flags);
+    });
+
+    const { result, errors } = prune();
+
+    expect(errors).toEqual([]);
+    expect(result).toMatchObject({
+      action: 'removed',
+      reason: 'already removed by another run; branch fix/x kept',
+    });
+    expect(result.ledger).toBeUndefined();
+    expect(entries()).toEqual([]);
+    expect(branches(repo)).toContain('fix/x');
   });
 
   it('keeps the worktree when the folder for the copies cannot be made', () => {

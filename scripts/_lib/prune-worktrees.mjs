@@ -21,9 +21,10 @@
  *   commits still to replay only in the worktree's admin dir;
  * - it has no gitignored scratch files in docs/tmp/, which a removal would
  *   delete;
- * - its HEAD did not move while it was being checked;
- * - its `.superpowers/` ledger, if it holds a file, holds no link or other
- *   special file, and is copied out safely (next paragraph).
+ * - its `.superpowers/` ledger holds no link or other special file;
+ * - its HEAD did not move while it was being checked, nor, when a ledger was
+ *   copied, while it was being copied;
+ * - a ledger it holds is copied out safely (next paragraph).
  * checkInUse, checkSettled and pruneName (the .worktrees/ scope test) are
  * exported so that scripts/_lib/session-status.mjs asks the same questions:
  * "safe to remove" has one definition.
@@ -36,9 +37,9 @@
  * the same files and bytes counts as the copy; any other is never touched,
  * and the copy goes to <name>-<UTC timestamp> instead. Links are never
  * followed (lstat only). Any error keeps the worktree, and so does a ledger
- * file that changed between the copy and the removal. A dry run reads the
- * ledger and writes nothing. A worktree with no ledger file is untouched by
- * all of this.
+ * file, or HEAD, that changed between the copy and the removal. A dry run
+ * reads the ledger and writes nothing. A worktree with no ledger file is
+ * untouched by all of this.
  * Removal is `git worktree remove` without --force, then any link it left
  * behind and the emptied folder (on Windows git leaves an ignored
  * node_modules junction: see clearLeftover), then `git branch -D` on its
@@ -332,9 +333,12 @@ function adminDirOf(wtPath) {
   return git(['-C', wtPath, 'rev-parse', '--absolute-git-dir']).trim();
 }
 
-/** `a.rel` before `b.rel`, whatever the folder's listing order was. */
-function byRel(a, b) {
-  return a.rel.localeCompare(b.rel);
+/**
+ * Orders names the same way wherever this module sorts them, whatever order
+ * a folder lists its files in.
+ */
+function compareText(a, b) {
+  return a.localeCompare(b);
 }
 
 /**
@@ -365,8 +369,8 @@ function walkTree(top) {
     }
   }
   return {
-    files: files.sort(byRel),
-    odd: odd.sort((a, b) => a.localeCompare(b)),
+    files: files.sort((a, b) => compareText(a.rel, b.rel)),
+    odd: odd.sort(compareText),
   };
 }
 
@@ -383,18 +387,23 @@ function ledgerPath(rel) {
   return rel === '' ? LEDGER_DIR : `${LEDGER_DIR}/${rel}`;
 }
 
+/** Why a ledger holding the links or special files `odd` is not copied. */
+function linkReason(odd) {
+  return `ledger holds a link or special file: ${sample(odd, ledgerPath)}`;
+}
+
 /**
  * Hours since the newest mtime of the admin dir's `index` and `logs/HEAD`, or
- * of any file in the worktree's `.superpowers/` ledger; null when neither
- * admin file exists, which no ledger can make up for. A clock that runs
- * behind a file's mtime reads as 0, not negative.
+ * of any file in the worktree's ledger (readLedger's result, null for none);
+ * null when neither admin file exists, which no ledger can make up for. A
+ * clock that runs behind a file's mtime reads as 0, not negative.
  */
-function idleHours(admin, wtPath) {
+function idleHours(admin, ledger) {
   const mtimes = [path.join(admin, 'index'), path.join(admin, 'logs', 'HEAD')]
     .map((file) => statSync(file, { throwIfNoEntry: false })?.mtimeMs)
     .filter((mtime) => mtime !== undefined);
   if (mtimes.length === 0) return null;
-  for (const file of readLedger(wtPath)?.files ?? []) mtimes.push(file.mtimeMs);
+  for (const file of ledger?.files ?? []) mtimes.push(file.mtimeMs);
   const newest = mtimes.reduce((a, b) => Math.max(a, b));
   return Math.max(0, Date.now() - newest) / HOUR_MS;
 }
@@ -484,12 +493,14 @@ export function checkInUse(entry, cwd) {
  * least `minIdleHours` (the git clocks and the newest file in its
  * `.superpowers/` ledger, read without following a link), a clean
  * `git status`, no stopped rebase, merge, cherry-pick, revert or bisect, no
- * gitignored scratch files. Cheapest first; `git status` on a full checkout
+ * gitignored scratch files, and no link or special file in the ledger, which
+ * a copy would not follow. Cheapest first; `git status` on a full checkout
  * is the slow one.
  *
  * Returns `{ keep: null, idle }` (idle in hours) when all pass, else
  * `{ keep, kind }`: the reason, and the kind 'idle-unknown', 'idle' (with
- * `idle`), 'dirty', 'in-progress' (with `operation`) or 'scratch'.
+ * `idle`), 'dirty', 'in-progress' (with `operation`), 'scratch' or
+ * 'ledger-link'.
  *
  * `statusKnownClean` skips the `git status` run, for a caller that has just
  * read the status itself.
@@ -502,7 +513,8 @@ export function checkSettled(
   { minIdleHours = MIN_IDLE_HOURS, statusKnownClean = false } = {},
 ) {
   const admin = adminDirOf(wtPath);
-  const idle = idleHours(admin, wtPath);
+  const ledger = readLedger(wtPath);
+  const idle = idleHours(admin, ledger);
   if (idle === null) {
     return {
       keep: 'idle time unknown: no admin index or logs/HEAD',
@@ -539,6 +551,9 @@ export function checkSettled(
       keep: `ignored scratch files in ${SCRATCH_DIR}/: ${sample(scratch, (file) => file)}`,
       kind: 'scratch',
     };
+  }
+  if (ledger !== null && ledger.odd.length > 0) {
+    return { keep: linkReason(ledger.odd), kind: 'ledger-link' };
   }
   return { keep: null, idle };
 }
@@ -711,11 +726,9 @@ function planLedger(entry, root) {
   const ledger = readLedger(entry.path);
   if (ledger === null) return { none: true };
   const { files, odd } = ledger;
-  if (odd.length > 0) {
-    return {
-      keep: `ledger holds a link or special file: ${sample(odd, ledgerPath)}`,
-    };
-  }
+  // checkSettled already keeps a worktree for a link; this is for one made
+  // since, and costs nothing to ask again before copying.
+  if (odd.length > 0) return { keep: linkReason(odd) };
   if (files.length === 0) return { none: true };
 
   const source = path.join(entry.path, LEDGER_DIR);
@@ -749,22 +762,31 @@ function previewLedger(plan) {
 }
 
 /**
- * `planLedger`, with a failure turned into a keep: the error is recorded as
- * every other failure is, and the worktree stays.
+ * `planLedger`, with a failure turned into a keep (or `{ gone: true }`, see
+ * stepFailure): the error is recorded as every other failure is, and the
+ * worktree stays.
  */
 function prepareLedger(entry, ctx) {
   try {
     return planLedger(entry, ctx.root);
   } catch (err) {
-    return ledgerFailure(entry, ctx, 'copy', err);
+    return stepFailure(entry, ctx, 'ledger copy', err, true);
   }
 }
 
-/** `{ keep }` for a failed ledger step, and the error in the run's errors. */
-function ledgerFailure(entry, ctx, step, err, ledger) {
-  const reason = `ledger ${step} failed: ${err.message}`;
-  ctx.errors.push(`${entry.name}: ${reason}`);
-  return { keep: reason, ledger };
+/**
+ * What a step that failed after the checks passed turns into. When another
+ * run has removed the worktree meanwhile (two sessions starting at the same
+ * moment), nothing failed: `{ gone: true }`, for the caller to report as
+ * alreadyGone does. Otherwise `{ keep: '<what> failed: <detail>' }`, with the
+ * error recorded in ctx.errors, and counted in ctx.ledgerErrors when it is
+ * the ledger's (`isLedger`) rather than a git command's.
+ */
+function stepFailure(entry, ctx, what, err, isLedger) {
+  if (isGone(entry.path)) return { gone: true };
+  ctx.errors.push(`${entry.name}: ${what} failed: ${err.message}`);
+  if (isLedger) ctx.ledgerErrors += 1;
+  return { keep: `${what} failed: ${err.detail ?? err.message}` };
 }
 
 /**
@@ -853,42 +875,63 @@ function ledgerChanges(before, ledger) {
     now.delete(file.rel);
   }
   changed.push(...now.keys());
-  return changed.sort((a, b) => a.localeCompare(b));
+  return changed.sort(compareText);
+}
+
+/**
+ * Once the copy is in place, what must still hold right before the removal:
+ * the ledger is as it was planned, and HEAD is the one the checks passed. The
+ * checks' own HEAD re-read ran before the copy; a commit made during it, on
+ * a detached HEAD, would otherwise be removed with the worktree and left on
+ * no branch.
+ *
+ * Returns `{}` when both hold, else `{ keep }` or `{ gone: true }`.
+ */
+function confirmUnchanged(entry, ctx, plan) {
+  try {
+    const changed = ledgerChanges(plan.files, readLedger(entry.path));
+    if (changed.length > 0) {
+      return {
+        keep: `ledger changed after the copy: ${sample(changed, ledgerPath)}`,
+      };
+    }
+  } catch (err) {
+    return stepFailure(entry, ctx, 'ledger re-check', err, true);
+  }
+  try {
+    const head = git(['-C', entry.path, 'rev-parse', 'HEAD']).trim();
+    return head === entry.head
+      ? {}
+      : { keep: 'HEAD moved during the ledger copy' };
+  } catch (err) {
+    return stepFailure(entry, ctx, 'HEAD check', err, false);
+  }
 }
 
 /**
  * Put the ledger out of the way of `git worktree remove`: copy it per `plan`
- * (a planLedger result that is not `keep`), then read it again, right before
- * the removal, and stop if anything in it changed since the plan.
+ * (a planLedger result that is not `keep`), then confirmUnchanged.
  *
  * Returns `{}` for a worktree with no ledger, else `{ ledger }` (what
- * happened to it, for the result line) and, when the worktree must stay,
- * `keep` (the reason). A failure is recorded in ctx.errors.
+ * happened to it, for the result line) and, when the worktree must not be
+ * removed, `keep` (the reason), or `gone` (another run removed it). A failure
+ * is recorded in ctx.errors.
  */
 function archiveLedger(entry, ctx, plan) {
   if (plan.none) return {};
+  if (plan.state === 'copy') {
+    try {
+      placeCopy(plan);
+    } catch (err) {
+      return stepFailure(entry, ctx, 'ledger copy', err, true);
+    }
+  }
   const ledger = {
     dest: plan.dest,
     files: plan.files.length,
     state: plan.state === 'copy' ? 'copied' : 'identical',
   };
-  if (plan.state === 'copy') {
-    try {
-      placeCopy(plan);
-    } catch (err) {
-      return ledgerFailure(entry, ctx, 'copy', err);
-    }
-  }
-  try {
-    const changed = ledgerChanges(plan.files, readLedger(entry.path));
-    if (changed.length > 0) {
-      const names = sample(changed, ledgerPath);
-      return { keep: `ledger changed after the copy: ${names}`, ledger };
-    }
-  } catch (err) {
-    return ledgerFailure(entry, ctx, 're-check', err, ledger);
-  }
-  return { ledger };
+  return { ...confirmUnchanged(entry, ctx, plan), ledger };
 }
 
 /** `result` with the ledger's outcome on it, when there was a ledger. */
@@ -899,6 +942,10 @@ function withLedger(result, ledger) {
 /** Copy the ledger out, then remove the worktree if that went well. */
 function removeWithLedger(entry, ctx, note, plan) {
   const archived = archiveLedger(entry, ctx, plan);
+  if (archived.gone) {
+    const gone = alreadyGone(entry, ctx, 'already removed by another run');
+    return withLedger(gone, archived.ledger);
+  }
   if (archived.keep !== undefined) {
     const kept = { ...entry, action: 'kept', reason: archived.keep };
     return withLedger(kept, archived.ledger);
@@ -983,6 +1030,9 @@ function pruneOne(entry, wt, ctx) {
 function finishPrune(entry, ctx, idle) {
   const note = `merged, clean, idle ${formatHours(idle)}`;
   const plan = prepareLedger(entry, ctx);
+  if (plan.gone) {
+    return alreadyGone(entry, ctx, 'already removed by another run');
+  }
   if (plan.keep !== undefined) {
     return { ...entry, action: 'kept', reason: plan.keep };
   }
@@ -1011,8 +1061,9 @@ function finishPrune(entry, ctx, idle) {
  * kept for a link: `{ dest, files, state }`, where state is 'copied',
  * 'identical' (a copy was already at dest), or on a dry run 'would-copy' or
  * 'identical'. errors holds one message per failed git command, failed copy
- * of a ledger, or failed clean-up of a removed worktree's folder; a missing
- * local main is one error and stops the run before any worktree is checked.
+ * or re-check of a ledger, or failed clean-up of a removed worktree's folder;
+ * ledgerErrors counts those of them that are the ledger's. A missing local
+ * main is one error and stops the run before any worktree is checked.
  *
  * @param {{ repoRoot: string, minIdleHours?: number, dryRun?: boolean }} options
  */
@@ -1028,8 +1079,14 @@ export function pruneWorktrees({
     dryRun,
     cwd: process.cwd(),
     errors: [],
+    ledgerErrors: 0,
   };
-  const done = (results) => ({ dryRun, results, errors: ctx.errors });
+  const done = (results) => ({
+    dryRun,
+    results,
+    errors: ctx.errors,
+    ledgerErrors: ctx.ledgerErrors,
+  });
 
   let worktrees;
   try {
@@ -1104,13 +1161,20 @@ export function formatResult(result) {
   return `removed ${name} (${reason}${ledger})`;
 }
 
-/** `worktrees prune[ (dry run)]: removed N, kept M[, K git errors]` */
-export function formatSummary({ dryRun, results, errors }) {
+/**
+ * `worktrees prune[ (dry run)]: removed N, kept M[, K git errors][, L ledger
+ * errors]`. `ledgerErrors` (of the `errors`) is the ledger's own; the rest are
+ * called git errors, as they always were.
+ */
+export function formatSummary({ dryRun, results, errors, ledgerErrors = 0 }) {
   const kept = results.filter((result) => result.action === 'kept').length;
   const removed = results.length - kept;
   const label = dryRun ? 'worktrees prune (dry run)' : 'worktrees prune';
   const verb = dryRun ? 'would remove' : 'removed';
-  const errorNote =
-    errors.length > 0 ? `, ${plural(errors.length, 'git error')}` : '';
+  const gitErrors = errors.length - ledgerErrors;
+  const errorNote = [
+    gitErrors > 0 ? `, ${plural(gitErrors, 'git error')}` : '',
+    ledgerErrors > 0 ? `, ${plural(ledgerErrors, 'ledger error')}` : '',
+  ].join('');
   return `${label}: ${verb} ${removed}, kept ${kept}${errorNote}`;
 }

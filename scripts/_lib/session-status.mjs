@@ -26,9 +26,10 @@
  * `npm run worktrees:prune` would remove. That is prune-worktrees.mjs's own
  * scope test (`pruneName`: under <repo>/.worktrees/) and its `checkInUse` and
  * `checkSettled`, not copies, so "safe to remove" has one definition: idle for
- * 24 hours, no stopped rebase, merge, cherry-pick, revert or bisect, no
- * ignored scratch files in docs/tmp/, and the current directory not inside
- * it. A merged worktree that fails one is tagged `merged (why)`. One
+ * 24 hours (the newest write in its `.superpowers/` ledger counts), no
+ * stopped rebase, merge, cherry-pick, revert or bisect, no ignored scratch
+ * files in docs/tmp/, no link in the ledger, and the current directory not
+ * inside it. A merged worktree that fails one is tagged `merged (why)`. One
  * difference remains: prune compares with the local main and this module with
  * origin/main.
  */
@@ -313,6 +314,8 @@ export function holdLabel(verdict) {
       return `${verdict.operation} in progress`;
     case 'scratch':
       return 'docs/tmp files';
+    case 'ledger-link':
+      return 'ledger link';
     default:
       return verdict.keep;
   }

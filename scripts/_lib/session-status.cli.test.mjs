@@ -12,7 +12,13 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { appendFileSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  appendFileSync,
+  mkdirSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { beforeAll, describe, expect, it } from 'vitest';
@@ -168,6 +174,15 @@ describe('session-status CLI: a real repository', () => {
     const scratch = addWorktree(repo, '.worktrees/scratch', 'feat/scratch');
     mkdirSync(path.join(scratch, 'docs', 'tmp'), { recursive: true });
     writeFileSync(path.join(scratch, 'docs', 'tmp', 'report.log'), 'notes\n');
+    // Merged, clean and old (below), but its gitignored .superpowers/ ledger
+    // holds a link, which prune never copies through.
+    const ledgerLink = addWorktree(repo, '.worktrees/ledgerlink', 'feat/ll');
+    mkdirSync(path.join(ledgerLink, '.superpowers'));
+    symlinkSync(
+      makeTempDir('session-status-ledger-target-'),
+      path.join(ledgerLink, '.superpowers', 'shared'),
+      process.platform === 'win32' ? 'junction' : 'dir',
+    );
     // Two commits, the first of which lands on main under another id.
     const partial = addWorktree(repo, '.worktrees/partial', 'feat/partial');
     const partialFirst = commitFile(partial, 'p1.txt', 'p1\n');
@@ -191,7 +206,16 @@ describe('session-status CLI: a real repository', () => {
     pauseRebase(paused, 'origin/main');
 
     // Old enough for prune. The rest are fresh, or not clean, or not merged.
-    for (const wt of [rebased, detached, scratch, paused, outside]) age(wt);
+    for (const wt of [
+      rebased,
+      detached,
+      scratch,
+      ledgerLink,
+      paused,
+      outside,
+    ]) {
+      age(wt);
+    }
     age(fresh, 3);
 
     first = run(['--no-ci'], { cwd: repo });
@@ -267,6 +291,10 @@ describe('session-status CLI: a real repository', () => {
     expect(row(first.stdout, 'scratch')[5]).toBe('merged (docs/tmp files)');
   });
 
+  it('keeps the merged tag but no candidate while the ledger holds a link', () => {
+    expect(row(first.stdout, 'ledgerlink')[5]).toBe('merged (ledger link)');
+  });
+
   it('keeps the merged tag but no candidate while a rebase is stopped in the worktree', () => {
     // Fixture check: clean to git status, HEAD in origin/main, work pending.
     const paused = path.join(repo, '.worktrees', 'paused');
@@ -298,9 +326,9 @@ describe('session-status CLI: a real repository', () => {
 
   it('lists the cleanup candidates last, and counts only those prune would remove', () => {
     const names = worktreeRows(first.stdout).map((cells) => cells[0]);
-    expect(names).toHaveLength(11);
+    expect(names).toHaveLength(12);
     expect(names.slice(-2).sort()).toEqual(['detached', 'rebased']);
-    expect(first.stdout).toContain('WORKTREES (11) - cleanup candidates: 2');
+    expect(first.stdout).toContain('WORKTREES (12) - cleanup candidates: 2');
   });
 
   it('agrees with `npm run worktrees:prune`: every plain merged row is one it would remove, and it keeps each held row for the reason shown', () => {
@@ -324,6 +352,9 @@ describe('session-status CLI: a real repository', () => {
     expect(wouldRemove.sort()).toEqual(['detached', 'gone', 'rebased']);
     expect(dry.stdout).toMatch(/^kept fresh: idle /m);
     expect(dry.stdout).toMatch(/^kept scratch: ignored scratch files /m);
+    expect(dry.stdout).toMatch(
+      /^kept ledgerlink: ledger holds a link or special file: \.superpowers\/shared$/m,
+    );
     expect(dry.stdout).toMatch(/^kept paused: rebase in progress$/m);
   });
 
@@ -336,7 +367,7 @@ describe('session-status CLI: a real repository', () => {
     expect(inside.status).toBe(0);
     expect(row(inside.stdout, 'rebased')[5]).toBe('merged (current directory)');
     expect(row(inside.stdout, 'detached')[5]).toBe('merged');
-    expect(inside.stdout).toContain('WORKTREES (11) - cleanup candidates: 1');
+    expect(inside.stdout).toContain('WORKTREES (12) - cleanup candidates: 1');
   });
 
   it('reads the right repository when a git hook exports GIT_DIR and GIT_INDEX_FILE', () => {

@@ -362,6 +362,13 @@ describe('holdLabel', () => {
       },
       'docs/tmp files',
     ],
+    [
+      {
+        kind: 'ledger-link',
+        keep: 'ledger holds a link or special file: .superpowers/shared',
+      },
+      'ledger link',
+    ],
   ])('%j reads %s', (verdict, label) => {
     expect(holdLabel(verdict)).toBe(label);
   });
@@ -1418,6 +1425,14 @@ describe('collectStatus: cleanup candidates', () => {
         kind: 'scratch',
       },
       'merged (docs/tmp files)',
+    ],
+    [
+      'has a link in its .superpowers/ ledger',
+      {
+        keep: 'ledger holds a link or special file: .superpowers/shared',
+        kind: 'ledger-link',
+      },
+      'merged (ledger link)',
     ],
     [
       'has a rebase stopped in it',
