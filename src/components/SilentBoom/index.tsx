@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useState } from 'react';
 import {
   boolPersistOpts,
   convictionFloorPersistOpts,
@@ -14,6 +14,8 @@ import {
 } from '../../hooks/usePersistedState.js';
 import { SectionBox } from '../ui/SectionBox.js';
 import { CompactDisclosure } from '../ui/CompactDisclosure.js';
+import { DateInput } from '../ui/DateInput.js';
+import { useFollowedDate } from '../../hooks/useFollowedDate.js';
 import { useSilentBoomFeed } from '../../hooks/useSilentBoomFeed.js';
 import { useSilentBoomTickerCounts } from '../../hooks/useSilentBoomTickerCounts.js';
 import { useNeverVanishFeed } from '../../hooks/useNeverVanishFeed.js';
@@ -426,16 +428,6 @@ interface SilentBoomSectionProps {
   compact?: boolean;
 }
 
-const todayCt = (): string => {
-  const fmt = new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'America/Chicago',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  });
-  return fmt.format(new Date());
-};
-
 /**
  * djb2 string hash → unsigned base36. Produces a single opaque token with
  * NO `:`/`|` delimiters, so it can be appended to a `:`-delimited union
@@ -515,15 +507,16 @@ export function SilentBoomSection({
   marketOpen,
   compact = false,
 }: SilentBoomSectionProps) {
-  const [date, setDate] = useState<string>(todayCt());
-  // True once the user has manually picked a historical date from the date
-  // input. Gates the Central-midnight auto-roll (finding #4): a tab left
-  // open past midnight should advance to the new trading day so the
-  // never-vanish union rescopes (storageKey flips) instead of upserting the
-  // new day's alerts into the prior day's union — but ONLY when the user is
-  // sitting on the live day, never when they've scrubbed back to a
-  // historical date.
-  const [manualDatePick, setManualDatePick] = useState<boolean>(false);
+  // The trading day (ET, the date silent-boom alerts are stamped with): the
+  // owner's pick, else today, which it follows across ET midnight. A tab left
+  // open past midnight moves to the new day in the same commit as every other
+  // reader of the shared clock, so the never-vanish union rescopes
+  // (storageKey flips) instead of upserting the new day's alerts into the
+  // prior day's union — but only when the owner is following today: a date
+  // they picked stays put. `today` is that same clock, so the date and every
+  // live check turn together.
+  const { date, setDate, today } = useFollowedDate();
+  const dateInputId = useId();
   const [tickerFilter, setTickerFilter] = useState<string | null>(null);
   const [optionTypeFilter, setOptionTypeFilter] = useState<OptionType | null>(
     null,
@@ -623,26 +616,43 @@ export function SilentBoomSection({
     DEFAULT_TAKEIT_FLOOR,
     floatPersistOpts,
   );
-  /** ISO of the 5-min bucket the scrubber is on; null = whole day. */
-  const [bucketIso, setBucketIso] = useState<string | null>(null);
-  const [page, setPage] = useState<number>(0);
+  // ISO of the 5-min bucket the scrubber is on; null = whole day. It is
+  // stored with the date it was set on and read only while that date is
+  // selected: a bucket from yesterday shouldn't carry over to the new day. A
+  // bucket for another date is dropped during render, with no effect (an
+  // effect runs one commit late, so the commit that carries the new date
+  // would still filter it by the old bucket), and it cannot come back if the
+  // date returns. The bucket is a client-side filter: the feed hook never
+  // receives it.
+  const [scrub, setScrub] = useState<{
+    date: string;
+    bucketIso: string;
+  } | null>(null);
+  if (scrub !== null && scrub.date !== date) setScrub(null);
+  const bucketIso =
+    scrub !== null && scrub.date === date ? scrub.bucketIso : null;
+  const setBucketIso = useCallback(
+    (next: string | null) =>
+      setScrub(next === null ? null : { date, bucketIso: next }),
+    [date],
+  );
 
   // (Phase 2B: the 16 localStorage write effects that lived here were
   // collapsed into the `usePersistedState` calls above. Same keys,
   // same encodings, same defaults.)
 
-  // Reset bucket scrub when the date changes — a bucket from yesterday
-  // shouldn't carry over.
-  useEffect(() => {
-    setBucketIso(null);
-  }, [date]);
-
-  // Reset page on any filter change so we don't land on an empty page.
-  // hideLatePm is server-side (Phase 4); a flip changes the server's
-  // total + pagination so the page must reset.
-  useEffect(() => {
-    setPage(0);
-  }, [
+  // 0-based page index. It belongs to the result set it was set on: the date,
+  // the scrubbed bucket and every filter, so the owner doesn't land on an
+  // empty page 3 of a 1-page result set after clicking a filter (hideLatePm
+  // is server-side too: a flip changes the server's total + pagination). The
+  // page is stored with a scope string built from all of them (JSON, so no
+  // two sets collide), read only while that scope is current, and dropped
+  // during render when it is not. An effect that reset it would run one
+  // commit late: the commit that carries the new filter (or date) would still
+  // ask the server for the old page (offset 100 on page 2) before the clean
+  // request. Dropping it also stops the old page coming back when the filter
+  // or the date does. A new filter or bucket control belongs in this list.
+  const pageScope = JSON.stringify([
     date,
     tickerFilter,
     optionTypeFilter,
@@ -664,8 +674,25 @@ export function SilentBoomSection({
     aggressivePremium,
     moneynessMode,
   ]);
+  const [pageAt, setPageAt] = useState<{ scope: string; page: number }>({
+    scope: pageScope,
+    page: 0,
+  });
+  if (pageAt.scope !== pageScope) setPageAt({ scope: pageScope, page: 0 });
+  const page = pageAt.scope === pageScope ? pageAt.page : 0;
+  const setPage = useCallback(
+    (next: number | ((prev: number) => number)) =>
+      setPageAt((prev) => {
+        const current = prev.scope === pageScope ? prev.page : 0;
+        const value = typeof next === 'function' ? next(current) : next;
+        return prev.scope === pageScope && value === current
+          ? prev
+          : { scope: pageScope, page: value };
+      }),
+    [pageScope],
+  );
 
-  const isHistorical = date !== todayCt();
+  const isHistorical = date !== today;
   const isLive = !isHistorical && bucketIso == null;
 
   const silentBoomFeed = useSilentBoomFeed({
@@ -842,27 +869,6 @@ export function SilentBoomSection({
     }, 30_000);
     return () => clearInterval(id);
   }, []);
-
-  // Central-midnight auto-roll (finding #4). A tab left open across the
-  // trading-day boundary must advance `date` to the new live day so the
-  // never-vanish union's storageKey rescopes — otherwise the new day's
-  // alerts would upsert into the prior day's union and the count / pin
-  // state would bleed across days. We only auto-advance when the user is
-  // sitting on the live day (`!manualDatePick`); a user who scrubbed back
-  // to a historical replay is left untouched. Uses the SAME Central-day
-  // basis (`todayCt()`) the component already uses for `isLive` /
-  // `isHistorical`, so the roll and those flags stay internally consistent.
-  // Low-frequency (60s) check off its own interval — `setDate` is a true
-  // no-op on the dominant case where the day is unchanged (React bails out
-  // on an equal primitive), so this cannot drive a render loop.
-  useEffect(() => {
-    if (manualDatePick) return;
-    const id = setInterval(() => {
-      const live = todayCt();
-      setDate((prev) => (prev === live ? prev : live));
-    }, 60_000);
-    return () => clearInterval(id);
-  }, [manualDatePick]);
 
   // Apply the client-side filters (bucket scrub + late-PM hide) to the
   // server-paginated list. Server `total` and pagination remain tied to
@@ -1554,24 +1560,29 @@ export function SilentBoomSection({
               state (All day + 5-min bucket + replay caption) at the
               ~660px side-by-side pane width. */}
           <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs">
-            <label className="flex items-center gap-1.5">
-              <span className={SECTION_LABEL}>date</span>
-              <input
-                type="date"
+            <span className="flex items-center gap-1.5">
+              <label htmlFor={dateInputId} className={SECTION_LABEL}>
+                date
+              </label>
+              {/* The shared DateInput holds a half-typed or emptied date as a
+                  local draft: a native date input fires `input` with ''
+                  on the first "0" of a zero-padded month, and with years
+                  like 0002 on the way to 2026. An emptied field follows
+                  today once it is left, and a date picked here drops the
+                  scrubbed bucket and page with it (see `scrub` above). A
+                  future date is passed on, never refused: typing a past
+                  date whose month is later than the current one passes
+                  through future dates. */}
+              <DateInput
+                id={dateInputId}
                 value={date}
-                max={todayCt()}
-                onChange={(e) => {
-                  setDate(e.target.value);
-                  setBucketIso(null);
-                  // Mark the date as user-chosen so the Central-midnight
-                  // auto-roll won't yank them off a historical replay.
-                  // Picking today again re-arms the auto-roll.
-                  setManualDatePick(e.target.value !== todayCt());
-                }}
+                max={today}
+                onChange={setDate}
+                label="Select trading day"
+                labelVisible={false}
                 className="rounded-md border border-neutral-800 bg-neutral-900/60 px-1.5 py-1 font-mono text-[11px] text-neutral-100 focus:border-neutral-600 focus:outline-none"
-                aria-label="Select trading day"
               />
-            </label>
+            </span>
             <div className="flex items-center gap-1">
               <FilterChip
                 size="compact"
@@ -1585,12 +1596,12 @@ export function SilentBoomSection({
                 }
                 ariaPressed={bucketIso == null}
               >
-                {date === todayCt() ? 'Live' : 'All day'}
+                {date === today ? 'Live' : 'All day'}
               </FilterChip>
               {(() => {
                 const lo = Date.parse(scrubBounds.min);
                 const hi = Date.parse(scrubBounds.max);
-                const isToday = date === todayCt();
+                const isToday = date === today;
                 const effectiveHi = isToday ? Math.min(hi, nowBucketMs) : hi;
                 const noValidBucket = effectiveHi < lo;
                 const cur = bucketIso ? Date.parse(bucketIso) : null;

@@ -6,8 +6,11 @@
  * children are left intact (small, pure components).
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { Profiler } from 'react';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { act, render, screen, fireEvent, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { getETToday } from '../utils/timezone';
 import type { SilentBoomAlert } from '../components/SilentBoom/types';
 
 // ── Mocks ─────────────────────────────────────────────────────────────
@@ -53,21 +56,18 @@ import { SilentBoomSection } from '../components/SilentBoom';
 
 // The never-vanish union is only ENGAGED on the live day, and its hard-floor
 // / cross-day `retain` guard purges any pinned alert whose `a.date` is not the
-// engaged day. Engaged-path fixtures must therefore be dated to TODAY (CT) or
-// the guard correctly drops them. Computed identically to the component's
-// `todayCt()`. `bucketCt` is only a union-key segment + TOD-display source, so
-// it is left at a fixed value (retain keys off `date`, not `bucketCt`).
-const TODAY_CT = new Intl.DateTimeFormat('en-CA', {
-  timeZone: 'America/Chicago',
-  year: 'numeric',
-  month: '2-digit',
-  day: '2-digit',
-}).format(new Date());
+// engaged day. Engaged-path fixtures must therefore be dated to TODAY (ET) or
+// the guard correctly drops them. Computed like the panel's `today` (the
+// shared ET clock): silent-boom alerts are stamped with the ET date, which
+// differs from the CT date from 23:00 to 24:00 CT. `bucketCt` is only a
+// union-key segment + TOD-display source, so it is left at a fixed value
+// (retain keys off `date`, not `bucketCt`).
+const TODAY_ET = getETToday();
 
 function makeAlert(overrides: Partial<SilentBoomAlert> = {}): SilentBoomAlert {
   return {
     id: 1,
-    date: TODAY_CT,
+    date: TODAY_ET,
     bucketCt: '2026-05-08T14:30:00Z',
     optionChainId: 'AAPL260508C00200000',
     underlyingSymbol: 'AAPL',
@@ -1854,5 +1854,617 @@ describe('SilentBoomSection: pagination edge states', () => {
     fireEvent.click(backBtn);
     const lastCall = mockUseSilentBoomFeed.mock.calls.at(-1);
     expect(lastCall?.[0]).toMatchObject({ page: 0 });
+  });
+});
+
+// ============================================================
+// Midnight rollover (docs/superpowers/specs/panel-date-rollover-2026-11-14.md,
+// Phase 7b, design items 2 and 3)
+//
+// Silent Boom kept its date in `useState(todayCt())` and rolled it with a 60 s
+// interval that left a user-picked date alone, so an open tab sat on
+// yesterday for up to a minute after midnight and called it "historical" in
+// the gap. It follows the shared ET clock now (`useFollowedDate`), as Lottery
+// Finder does: the date is the owner's pick, else today; a pick of today, or
+// an emptied field, follows again; any other date stays put, a future one
+// included. The scrubbed bucket and the page number belong to the view they
+// were set on (the date, and for the page every filter) and are dropped
+// during render when it changes, so no commit shows the new date at the old
+// bucket and no render asks for it at the old page. Every case starts 30 s
+// before an ET midnight; the clock's timer is armed for 1 s past it, so 31 s
+// lands just after. The real getETToday() reads the faked Date. Assertions on
+// what the feed hooks were asked read every render pass, and assertions on
+// the bucket read every commit (the bucket is a client-side filter: the feed
+// hook never receives it). Owner decision 2026-11-14.
+// ============================================================
+
+interface FeedArgs {
+  date: string;
+  page: number;
+  historical: boolean;
+}
+
+/** What the panel handed useSilentBoomFeed, one entry per render pass. */
+const feedArgs = (): FeedArgs[] =>
+  mockUseSilentBoomFeed.mock.calls.map((c) => c[0] as FeedArgs);
+/** What the panel handed the ticker-counts hook, one entry per render pass. */
+const countsArgs = (): FeedArgs[] =>
+  mockUseSilentBoomTickerCounts.mock.calls.map((c) => c[0] as FeedArgs);
+
+const dateInput = () =>
+  screen.getByLabelText<HTMLInputElement>(/select trading day/i);
+
+function pick(date: string) {
+  fireEvent.change(dateInput(), { target: { value: date } });
+}
+
+/** The mode chip reads "Live" on today and "All day" on any other date. */
+const liveChip = () => screen.queryByRole('button', { name: /^Live$/ });
+const allDayChip = () => screen.queryByRole('button', { name: /^All day$/ });
+
+function stepBackOneBucket() {
+  fireEvent.click(
+    screen.getByRole('button', { name: /step back one 5-min bucket/i }),
+  );
+}
+
+/** Any render of the panel: a client-side filter chip flips local state. */
+function rerenderPanel() {
+  fireEvent.click(screen.getByRole('button', { name: /hide ghosts/i }));
+}
+
+interface Commit {
+  date: string;
+  scrubbed: boolean;
+}
+
+/**
+ * Render the panel and record what each commit put on screen: the date in the
+ * field and whether the "(5-min)" bucket marker is showing. The profiler
+ * reports after the DOM is updated, so this is what the owner sees.
+ */
+function renderWithCommits(ui: React.ReactElement): Commit[] {
+  const commits: Commit[] = [];
+  render(
+    <Profiler
+      id="silent-boom"
+      onRender={() => {
+        commits.push({
+          date: dateInput().value,
+          scrubbed: screen.queryByText('(5-min)') !== null,
+        });
+      }}
+    >
+      {ui}
+    </Profiler>,
+  );
+  return commits;
+}
+
+describe.each([
+  {
+    zone: 'EST (winter)',
+    start: '2026-11-10T04:59:30Z',
+    night: '2026-11-09',
+    morning: '2026-11-10',
+    next: '2026-11-11',
+  },
+  {
+    zone: 'EDT (summer)',
+    start: '2026-07-15T03:59:30Z',
+    night: '2026-07-14',
+    morning: '2026-07-15',
+    next: '2026-07-16',
+  },
+])('SilentBoomSection: across the $zone midnight', (m) => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    vi.setSystemTime(new Date(m.start));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** The shared clock's timer fires, just past midnight. */
+  function crossMidnight() {
+    act(() => {
+      vi.advanceTimersByTime(31_000);
+    });
+  }
+
+  /** The wall clock passes midnight; the shared clock has not ticked yet. */
+  function wallClockPastMidnight() {
+    act(() => {
+      vi.setSystemTime(new Date(Date.parse(m.start) + 30_500));
+    });
+  }
+
+  it('follows the new day with no parent re-render: date, max, live label and both hooks', () => {
+    let parentRenders = 0;
+    function Parent() {
+      parentRenders += 1;
+      return <SilentBoomSection marketOpen={true} />;
+    }
+    render(<Parent />);
+    expect(dateInput().value).toBe(m.night);
+    expect(dateInput().max).toBe(m.night);
+
+    crossMidnight();
+
+    expect(parentRenders).toBe(1);
+    expect(dateInput().value).toBe(m.morning);
+    expect(dateInput().max).toBe(m.morning);
+    expect(liveChip()).toBeInTheDocument();
+    // Every render asked for the night or the morning, never a half state,
+    // and the new day was never called historical.
+    expect(new Set(feedArgs().map((a) => a.date))).toEqual(
+      new Set([m.night, m.morning]),
+    );
+    expect(feedArgs().at(-1)).toMatchObject({ date: m.morning, page: 0 });
+    expect(feedArgs().every((a) => !a.historical)).toBe(true);
+    expect(countsArgs().every((a) => !a.historical)).toBe(true);
+    expect(countsArgs().at(-1)?.date).toBe(m.morning);
+  });
+
+  it('keeps the night live in a render just past midnight, before the clock ticks', () => {
+    render(<SilentBoomSection marketOpen={true} />);
+
+    // The wall clock is past midnight; the shared clock has not ticked. A
+    // render now reads the same clock the rest of the app does, so the night
+    // is still today, not the wall clock's yesterday.
+    wallClockPastMidnight();
+    rerenderPanel();
+
+    expect(dateInput().value).toBe(m.night);
+    expect(dateInput().max).toBe(m.night);
+    expect(liveChip()).toBeInTheDocument();
+    expect(feedArgs().every((a) => !a.historical)).toBe(true);
+    expect(countsArgs().every((a) => !a.historical)).toBe(true);
+    expect(feedArgs().every((a) => a.date === m.night)).toBe(true);
+  });
+
+  it('keeps a picked past date across the roll, and moves max', () => {
+    render(<SilentBoomSection marketOpen={true} />);
+    pick('2026-04-20');
+    const picked = feedArgs().length;
+
+    crossMidnight();
+
+    expect(dateInput().value).toBe('2026-04-20');
+    expect(dateInput().max).toBe(m.morning);
+    expect(allDayChip()).toBeInTheDocument();
+    // Every render from the pick on asked for the picked day and called it
+    // historical, across the roll as before it.
+    const since = feedArgs().slice(picked - 1);
+    expect(since.every((a) => a.date === '2026-04-20' && a.historical)).toBe(
+      true,
+    );
+    expect(
+      countsArgs()
+        .slice(-2)
+        .every((a) => a.date === '2026-04-20' && a.historical),
+    ).toBe(true);
+  });
+
+  it('follows again when today is picked back, across the roll', () => {
+    render(<SilentBoomSection marketOpen={true} />);
+    pick('2026-04-20');
+    pick(m.night);
+    expect(dateInput().value).toBe(m.night);
+
+    crossMidnight();
+
+    // A stored date would stay on the night. A pick of today is following.
+    expect(dateInput().value).toBe(m.morning);
+    expect(feedArgs().at(-1)?.date).toBe(m.morning);
+    expect(liveChip()).toBeInTheDocument();
+  });
+
+  it('keeps the night a past pick when it is picked just past midnight, before the clock ticks', () => {
+    render(<SilentBoomSection marketOpen={true} />);
+    pick('2026-04-20');
+
+    // By the wall clock the night is yesterday. Judged against the render's
+    // stale `today` it would pass for following, and the pick would be lost
+    // at the roll.
+    wallClockPastMidnight();
+    pick(m.night);
+    crossMidnight();
+
+    expect(dateInput().value).toBe(m.night);
+    expect(dateInput().max).toBe(m.morning);
+    expect(allDayChip()).toBeInTheDocument();
+  });
+
+  it('follows when the new today is picked just past midnight, before the clock ticks', () => {
+    render(<SilentBoomSection marketOpen={true} />);
+    pick('2026-04-20');
+
+    // The wall clock is past midnight; the shared clock's `today` is still
+    // the night's. The pick is compared with the clock at the moment of the
+    // pick, so it follows: it moves again at the next midnight. A stored
+    // date would stay on the morning.
+    wallClockPastMidnight();
+    pick(m.morning);
+    crossMidnight();
+    expect(dateInput().value).toBe(m.morning);
+    act(() => {
+      vi.advanceTimersByTime(24 * 60 * 60 * 1000);
+    });
+
+    expect(dateInput().value).toBe(m.next);
+  });
+
+  it('passes a future date on and keeps it in the field', () => {
+    render(<SilentBoomSection marketOpen={true} />);
+
+    pick(m.morning);
+
+    // `max` is a hint the browser does not enforce on typing. A typed future
+    // date is the owner's pick, and a partial date on the way to a past one
+    // (below) is often a future one.
+    expect(feedArgs().at(-1)?.date).toBe(m.morning);
+    expect(dateInput().value).toBe(m.morning);
+  });
+
+  it('keeps every step of a month-later past date typed over the field', () => {
+    // Chrome forwards a complete date after each segment and keeps the old
+    // year: 12152025 over today goes 2026-01-.., 2026-12-.. (a future date),
+    // 2026-12-01, 2026-12-15, then the year lands. Refusing the future step
+    // snapped the field back and lost the month.
+    render(<SilentBoomSection marketOpen={true} />);
+
+    for (const step of [
+      '2026-01-16',
+      '2026-12-16',
+      '2026-12-01',
+      '2026-12-15',
+      '2025-12-15',
+    ]) {
+      pick(step);
+      expect(feedArgs().at(-1)?.date).toBe(step);
+      expect(dateInput().value).toBe(step);
+    }
+  });
+
+  it('follows today when the field is left empty, not when it empties, and never asks for an empty date', () => {
+    render(<SilentBoomSection marketOpen={true} />);
+    pick('2026-04-20');
+
+    // Emptying the field (the first "0" of a zero-padded month does it) is
+    // mid-edit.
+    pick('');
+    expect(feedArgs().at(-1)?.date).toBe('2026-04-20');
+    expect(dateInput().value).toBe('');
+
+    fireEvent.blur(dateInput());
+
+    expect(feedArgs().at(-1)?.date).toBe(m.night);
+    expect(dateInput().value).toBe(m.night);
+    // `ctSessionBounds('')` formats an Invalid Date.
+    expect(feedArgs().some((a) => a.date === '')).toBe(false);
+    expect(countsArgs().some((a) => a.date === '')).toBe(false);
+  });
+
+  it('drops a scrubbed bucket at the roll: no commit shows the new day at the old bucket', () => {
+    const commits = renderWithCommits(<SilentBoomSection marketOpen={true} />);
+    stepBackOneBucket();
+    expect(commits.at(-1)).toEqual({ date: m.night, scrubbed: true });
+    // Any other render keeps the bucket while its date is selected.
+    rerenderPanel();
+    expect(commits.at(-1)).toEqual({ date: m.night, scrubbed: true });
+    const beforeRoll = commits.length;
+    const feedBeforeRoll = feedArgs().length;
+
+    crossMidnight();
+
+    const afterRoll = commits.slice(beforeRoll);
+    expect(afterRoll.length).toBeGreaterThan(0);
+    expect(afterRoll.every((c) => c.date === m.morning && !c.scrubbed)).toBe(
+      true,
+    );
+    const feedAfterRoll = feedArgs().slice(feedBeforeRoll);
+    expect(feedAfterRoll.length).toBeGreaterThan(0);
+    expect(
+      feedAfterRoll.every(
+        (a) => a.date === m.morning && a.page === 0 && !a.historical,
+      ),
+    ).toBe(true);
+  });
+
+  it('drops a scrubbed bucket on a pick, and it does not come back when the date does', () => {
+    const commits = renderWithCommits(<SilentBoomSection marketOpen={true} />);
+    stepBackOneBucket();
+    expect(commits.at(-1)?.scrubbed).toBe(true);
+    const beforePick = commits.length;
+
+    pick('2026-04-20');
+    pick(m.night);
+
+    // Every commit since the first pick: no bucket, whichever date it shows,
+    // including the night the bucket was set on.
+    const afterPick = commits.slice(beforePick);
+    expect(afterPick.map((c) => c.date)).toContain('2026-04-20');
+    expect(afterPick.map((c) => c.date)).toContain(m.night);
+    expect(afterPick.every((c) => !c.scrubbed)).toBe(true);
+  });
+
+  it('keeps a past day on its page across the roll (a live day is never paged, so the roll has none to drop)', () => {
+    // The pager exists only on a past day with no bucket, and a bucket resets
+    // the page, so a roll from the live day never carries a page. What the
+    // roll must not do is touch a past day's page.
+    mockUseSilentBoomFeed.mockReturnValue(
+      feedResult({
+        alerts: [makeAlert({ id: 1, optionChainId: 'PAGED' })],
+        total: 300,
+        hasMore: true,
+      }),
+    );
+    render(<SilentBoomSection marketOpen={true} />);
+    pick('2026-04-20');
+    fireEvent.click(screen.getByRole('button', { name: /next page/i }));
+    fireEvent.click(screen.getByRole('button', { name: /next page/i }));
+    expect(feedArgs().at(-1)).toMatchObject({
+      date: '2026-04-20',
+      page: 2,
+    });
+
+    crossMidnight();
+
+    expect(feedArgs().at(-1)).toMatchObject({
+      date: '2026-04-20',
+      page: 2,
+    });
+  });
+});
+
+// ============================================================
+// The page belongs to the view it was set on: the date, the scrubbed bucket
+// and every filter. The page used to be reset by an effect on those, which
+// runs one commit late: toggling a filter on page 2 asked the server for
+// page 2 of the new filter (offset 100) before the clean request. The page is
+// stored with a scope string built from all of them, read only while that
+// scope is current, and dropped during render when it is not. So no render
+// pairs a new view with the old page, and the old page cannot come back when
+// the view does. Every assertion reads every render pass handed to the feed
+// hook. Owner decision 2026-11-14.
+// ============================================================
+
+describe('SilentBoomSection: the page follows its date, bucket and filters', () => {
+  const chip = (name: string | RegExp) => screen.getByRole('button', { name });
+  const testId = (id: string) => screen.getByTestId(id);
+  /** The row of controls a toolbar group sits in (its label's parent). */
+  const rowOf = (label: string) =>
+    screen.getByText(label, { selector: 'span' }).parentElement as HTMLElement;
+  const nextPage = () =>
+    fireEvent.click(screen.getByRole('button', { name: /next page/i }));
+
+  /**
+   * Every control the reset effect listed (all but date and bucket; the DTE
+   * bucket is a constant), as a flip away from the default and the click that
+   * puts it back.
+   */
+  const FILTERS: Array<{
+    name: string;
+    flip: () => void;
+    restore: () => void;
+  }> = [
+    {
+      name: 'sortMode',
+      flip: () => fireEvent.click(chip('spike ratio')),
+      restore: () => fireEvent.click(chip('newest')),
+    },
+    {
+      name: 'convictionFloor',
+      flip: () => fireEvent.click(chip(/Tier 1/)),
+      restore: () =>
+        fireEvent.click(
+          within(rowOf('conviction')).getByRole('button', { name: /^all$/ }),
+        ),
+    },
+    {
+      name: 'burstFilter',
+      flip: () => fireEvent.click(chip(/≥50×/)),
+      restore: () => fireEvent.click(chip('all bursts')),
+    },
+    {
+      name: 'takeitFloor',
+      flip: () => fireEvent.click(testId('takeit-floor-0')),
+      restore: () => fireEvent.click(testId('takeit-floor-0.7')),
+    },
+    {
+      name: 'minDte',
+      flip: () =>
+        fireEvent.change(screen.getByLabelText('Minimum DTE'), {
+          target: { value: '1' },
+        }),
+      restore: () =>
+        fireEvent.change(screen.getByLabelText('Minimum DTE'), {
+          target: { value: '' },
+        }),
+    },
+    {
+      name: 'minPremiumK',
+      flip: () =>
+        fireEvent.change(
+          screen.getByLabelText('Minimum premium in thousands of dollars'),
+          { target: { value: '100' } },
+        ),
+      restore: () =>
+        fireEvent.change(
+          screen.getByLabelText('Minimum premium in thousands of dollars'),
+          { target: { value: '' } },
+        ),
+    },
+    {
+      name: 'askPctBand',
+      flip: () => fireEvent.click(chip('70-80%')),
+      restore: () => fireEvent.click(chip('all ask%')),
+    },
+    {
+      name: 'minVolOi',
+      flip: () => fireEvent.click(chip('≥1.0')),
+      restore: () => fireEvent.click(chip('≥0.5')),
+    },
+    {
+      name: 'optionTypeFilter',
+      flip: () => fireEvent.click(chip('calls')),
+      restore: () =>
+        fireEvent.click(
+          within(rowOf('type')).getAllByRole('button', { name: /^all$/ })[0]!,
+        ),
+    },
+    {
+      name: 'moneynessMode',
+      flip: () => fireEvent.click(testId('silent-boom-moneyness-otm-chip')),
+      restore: () => fireEvent.click(testId('silent-boom-moneyness-all-chip')),
+    },
+    {
+      name: 'todFilter',
+      flip: () => fireEvent.click(chip('AM_open')),
+      restore: () => fireEvent.click(chip('all TOD')),
+    },
+    {
+      name: 'hideLatePm',
+      flip: () => fireEvent.click(chip(/hide post-14:30/)),
+      restore: () => fireEvent.click(chip(/hide post-14:30/)),
+    },
+    {
+      name: 'hideGhosts',
+      flip: () => fireEvent.click(chip(/hide ghosts/)),
+      restore: () => fireEvent.click(chip(/hide ghosts/)),
+    },
+    {
+      name: 'hideGated',
+      flip: () => fireEvent.click(testId('silent-boom-hide-gated-chip')),
+      restore: () => fireEvent.click(testId('silent-boom-hide-gated-chip')),
+    },
+    {
+      name: 'hideCounterFlow',
+      flip: () => fireEvent.click(testId('silent-boom-hide-counter-flow-chip')),
+      restore: () =>
+        fireEvent.click(testId('silent-boom-hide-counter-flow-chip')),
+    },
+    {
+      name: 'aggressivePremium',
+      flip: () =>
+        fireEvent.click(testId('silent-boom-aggressive-premium-chip')),
+      restore: () =>
+        fireEvent.click(testId('silent-boom-aggressive-premium-chip')),
+    },
+    {
+      name: 'tickerFilter',
+      flip: () => fireEvent.click(chip(/^AAPL/)),
+      restore: () => fireEvent.click(chip(/^AAPL/)),
+    },
+  ];
+
+  /** A past day with a three-page result, on page 2 (0-based). */
+  function renderOnPage2() {
+    mockUseSilentBoomFeed.mockReturnValue(
+      feedResult({
+        alerts: [makeAlert({ id: 1, optionChainId: 'PAGED' })],
+        total: 300,
+        hasMore: true,
+      }),
+    );
+    mockUseSilentBoomTickerCounts.mockReturnValue({
+      data: {
+        tickers: [{ ticker: 'AAPL', count: 5 }],
+      },
+      loading: false,
+      error: null,
+      fetchedAt: null,
+      refresh: vi.fn(),
+    });
+    render(<SilentBoomSection marketOpen={false} />);
+    pick('2026-04-20');
+    nextPage();
+    nextPage();
+    expect(feedArgs().at(-1)).toMatchObject({
+      date: '2026-04-20',
+      page: 2,
+    });
+  }
+
+  it.each(FILTERS.map((f) => [f.name, f] as const))(
+    'drops page 2 when %s changes, with no request for the new filter at the old page, and does not bring it back',
+    (_name, { flip, restore }) => {
+      renderOnPage2();
+      const beforeFlip = feedArgs().length;
+
+      flip();
+
+      const afterFlip = feedArgs().slice(beforeFlip);
+      expect(afterFlip.length).toBeGreaterThan(0);
+      expect(afterFlip.every((a) => a.page === 0)).toBe(true);
+
+      restore();
+
+      // The control is back where it was, and so is the scope the page was
+      // set on: it must not come back with it.
+      expect(feedArgs().length).toBeGreaterThan(beforeFlip + 1);
+      expect(
+        feedArgs()
+          .slice(beforeFlip)
+          .every((a) => a.page === 0),
+      ).toBe(true);
+    },
+  );
+
+  it('drops page 2 when the bucket changes, and does not bring it back', () => {
+    renderOnPage2();
+    const beforeScrub = feedArgs().length;
+
+    stepBackOneBucket();
+    expect(screen.getByText('(5-min)')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /^All day$/ }));
+    expect(screen.queryByText('(5-min)')).not.toBeInTheDocument();
+
+    const since = feedArgs().slice(beforeScrub);
+    expect(since.length).toBeGreaterThan(1);
+    expect(since.every((a) => a.page === 0)).toBe(true);
+  });
+
+  it('drops page 2 when another date is picked, and does not bring it back when the date does', () => {
+    renderOnPage2();
+    const beforePick = feedArgs().length;
+
+    pick('2026-04-21');
+    pick('2026-04-20');
+
+    const since = feedArgs().slice(beforePick);
+    expect(since.map((a) => a.date)).toContain('2026-04-21');
+    expect(since.at(-1)?.date).toBe('2026-04-20');
+    expect(since.every((a) => a.page === 0)).toBe(true);
+  });
+
+  it('keeps page 2 through a change that is not part of the view', () => {
+    renderOnPage2();
+
+    // The realized-exit policy changes the row badges, not the result set.
+    fireEvent.click(chip('120m'));
+
+    expect(feedArgs().at(-1)).toMatchObject({ page: 2 });
+  });
+});
+
+describe('SilentBoomSection: typing a date', () => {
+  it('takes a date typed key by key over the field, and asks for no half-typed date', async () => {
+    const user = userEvent.setup();
+    render(<SilentBoomSection marketOpen={true} />);
+    pick('2026-04-20');
+    const before = feedArgs().length;
+
+    // Emptying the field first must not follow today and lose the typing:
+    // the shared DateInput keeps an emptied field as a local draft.
+    await user.clear(dateInput());
+    await user.type(dateInput(), '2026-04-21');
+
+    const since = feedArgs().slice(before);
+    expect(since.length).toBeGreaterThan(0);
+    expect(new Set(since.map((a) => a.date))).toEqual(new Set(['2026-04-21']));
+    expect(dateInput().value).toBe('2026-04-21');
   });
 });

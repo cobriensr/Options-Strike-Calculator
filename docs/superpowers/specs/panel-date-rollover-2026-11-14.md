@@ -171,6 +171,37 @@ panels follow the new date too".
 - **Test fixtures dated with the CT date.** `LotteryFinderSection.test.tsx`
   dated its fires with the CT date, which differs from the ET date from 23:00
   to 24:00 CT, so the suite would fail then. The fixture uses `getETToday()`.
+- **Lottery Finder's page was keyed on the date only.** The reset effect also
+  listed 18 filters, so a filter flip on page 2 still asked for offset 100
+  for one commit. The page is now stored with a scope string of the date, the
+  minute and every filter, and the effect is gone.
+
+### Found while building Phase 7b
+
+- **Silent Boom takes its bucket client-side.** `useSilentBoomFeed` never
+  receives the scrubbed bucket, so the one-commit-late reset did not send a
+  request: the commit that carried the new date filtered its rows by
+  yesterday's bucket ("No alerts in this 5-min bucket", with the "(5-min)"
+  marker). A pick reset the bucket in its handler; only the roll relied on the
+  effect. The bucket is stored with its date and dropped during render, as in
+  7a. The tests read every commit, not every hook call.
+- **A roll never carries a page here.** The pager shows only on a past day
+  with no bucket, and a bucket resets the page, so a live day is never paged.
+  The page is stored with a scope string of the date, the bucket and the 17
+  filters that effect listed (the DTE bucket is a constant), and that effect
+  is gone.
+- **The second `setInterval` only ticks a time of day.** It floors
+  `Date.now()` to the 5-minute bucket for the scrubber's upper bound and
+  compares no date. It stays.
+- **`useStickyUnion` lags the roll by one commit.** The panel re-keys the
+  union in the same commit as the date (the storage key carries the date),
+  but the hook resets and rehydrates in an effect on a key change, so the
+  commit that carries the new key still returns the old key's snapshot:
+  yesterday's union rows show under the new date for one commit, then go
+  (checked with a profiler probe, not kept). Lottery Finder uses the same
+  hook and has the same single commit. This is Phase 9's to fix, in the hook.
+- **Test fixtures** dated their alerts with the CT date. They use
+  `getETToday()`.
 
 ## Phases
 
