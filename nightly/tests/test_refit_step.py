@@ -141,7 +141,6 @@ def make_fires(sessions: Sequence[date], per_session: int, *, seed: int = 11) ->
             "realized_eod_pct": outcome,
             "peak_ceiling_pct": np.abs(outcome) + 100.0,
             "round_trip_score_deduct": 0.0,
-            "fire_count_score_adjustment": 0.0,
             "direction_gated": False,
             # 3-5: a quintile of 1 or 2 forces the feed's tier3 and would thin the tiers.
             "inversion_quintile": rng.integers(3, 6, n).astype("float64"),
@@ -2037,7 +2036,6 @@ def _feed_row(day: date, *, gated: bool | None = False) -> tuple[Any, ...]:
         "cum_npp_at_fire": Decimal("80"),
         "date": day,
         "round_trip_score_deduct": None,
-        "fire_count_score_adjustment": Decimal("-2"),
         "direction_gated": gated,
         "inversion_quintile": Decimal("4"),
     }
@@ -2060,7 +2058,9 @@ def test_fetch_feed_frame_reads_the_feed_columns_for_those_sessions() -> None:
     for column in ("dte", "gamma_at_trigger", "cum_ncp_at_fire", "inversion_quintile"):
         assert frame[column].dtype == "float64", column
     assert frame["gamma_at_trigger"].isna().all()
-    assert frame["fire_count_score_adjustment"].tolist() == [-2.0, -2.0]
+    # The retired fire-count column is not selected: migration #209 drops it, and a
+    # SELECT that named it would fail on the first run after the drop.
+    assert "fire_count_score_adjustment" not in sql
     # The flag is not a number: it stays as the database gave it, a NULL included.
     assert frame["direction_gated"].tolist() == [False, None]
     assert frame["date"].tolist() == days
