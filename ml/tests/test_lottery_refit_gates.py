@@ -216,7 +216,8 @@ def test_gate_constants_match_the_plans_table():
     assert g.TIER1_SHARE_BAND == (0.01, 0.15)
     assert g.FEED_CUTOFF_MATCH_SESSIONS == 20
     assert g.FEED_CUTOFF_SEARCH_MAX == 40
-    assert g.FEED_CUTOFF_FLOOR == 8  # one above the largest NULL-score qas: bonus 5 + 2
+    # One above the largest NULL-score qas, which is the inversion bonus, 5.
+    assert g.FEED_CUTOFF_FLOOR == 6
 
 
 def test_feed_columns_extend_the_score_columns():
@@ -674,74 +675,97 @@ def test_match_feed_cutoffs_stays_inside_the_search_range():
 
 
 def test_the_floor_is_derived_from_the_largest_qas_a_null_score_fire_can_reach():
-    # The feed's SQL floor gives a NULL-score fire `0 + fire_count_score_adjustment +
-    # inversion bonus`: up to +2 and +5. The gate counts such a fire tier3, so the two
-    # agree only for cutoffs above their sum. Each part is a named constant.
-    assert g.FIRE_COUNT_ADJUSTMENT_MAX == 2
+    # The feed's SQL gives a NULL-score fire `GREATEST(0, 0 + round_trip_score_deduct) +
+    # inversion bonus`. The deduct is never positive (the guard below), so the zero floor
+    # leaves 0 before the bonus is added and the qas tops out at the largest bonus, 5. The
+    # gate counts such a fire tier3, so the two agree only for cutoffs above 5. The
+    # expression itself is held by test_feed_qas_mirrors_the_feeds_displayed_score_sql,
+    # which fails if `qasExprText` gains a term, so it is not checked again here.
     assert max(g.INVERSION_BONUS.values()) == 5
-    assert g.NULL_SCORE_QAS_MAX == g.FIRE_COUNT_ADJUSTMENT_MAX + 5 == 7
-    assert g.FEED_CUTOFF_FLOOR == g.NULL_SCORE_QAS_MAX + 1 == 8
+    assert g.NULL_SCORE_QAS_MAX == 5
+    assert g.FEED_CUTOFF_FLOOR == g.NULL_SCORE_QAS_MAX + 1 == 6
 
 
-TRIGGER_DEFINITION = "CREATE OR REPLACE FUNCTION update_lottery_fire_count_score_adj()"
+EVALUATE_ROUND_TRIP = ROOT / "api" / "cron" / "evaluate-round-trip.ts"
 
 
-def _trigger_ladder(migrations: str) -> list[int]:
-    """The values of the `fire_count_score_adjustment` ladder in the trigger's one
-    definition in the migrations text (`-3` .. `ELSE 2`)."""
-    # Postgres runs the last definition, so a redefinition may change the ladder while the
-    # first match here still reads the old one and leaves the floor stale.
-    count = migrations.count(TRIGGER_DEFINITION)
-    assert count == 1, (
-        f"update_lottery_fire_count_score_adj is defined {count} times in "
-        "api/_lib/db-migrations.ts, not once. The ladder that writes "
-        "fire_count_score_adjustment may have changed: update FIRE_COUNT_ADJUSTMENT_MAX "
-        "in ml/src/lottery_refit_gates.py (and so NULL_SCORE_QAS_MAX and "
-        "FEED_CUTOFF_FLOOR) from its source, then point this test at it."
+def _round_trip_deducts(source: str) -> list[int]:
+    """Every value api/cron/evaluate-round-trip.ts can give `round_trip_score_deduct`:
+    the `deduct` of each `BRACKETS` entry, then the `return` that ends `computeDeduct`
+    when no bracket matches."""
+    brackets = re.search(r"const BRACKETS\b[^=]*=\s*\[(.*?)\];", source, re.S)
+    assert brackets is not None, (
+        "BRACKETS moved or changed shape in evaluate-round-trip.ts"
     )
-    start = migrations.index(TRIGGER_DEFINITION)
-    ladder = re.search(r"new_adj := CASE(.*?)END;", migrations[start:], re.S)
-    assert ladder is not None, "the trigger's ladder moved or changed shape"
-    return [int(v) for v in re.findall(r"(?:THEN|ELSE)\s+(-?\d+)", ladder[1])]
-
-
-def test_the_fire_count_adjustment_max_is_the_triggers_largest_value():
-    # The only writer of `fire_count_score_adjustment` is the trigger of migration #167,
-    # and its ladder is the source of the +2. If a migration changes the ladder, this fails
-    # first and the floor must follow. (The backfill UPDATE beside it uses the same ladder.)
-    text = (ROOT / "api" / "_lib" / "db-migrations.ts").read_text(encoding="utf-8")
-    values = _trigger_ladder(text)
-    assert values == [-3, -1, 0, 1, 2]
-    assert max(values) == g.FIRE_COUNT_ADJUSTMENT_MAX
-
-
-def test_a_redefined_trigger_fails_the_floor_test_instead_of_leaving_it_stale():
-    # A later migration redefines the trigger with a higher top bracket. Reading the
-    # first definition would stay green on the old ladder; the count of definitions fails.
-    text = (ROOT / "api" / "_lib" / "db-migrations.ts").read_text(encoding="utf-8")
-    redefined = (
-        text
-        + f"\n{TRIGGER_DEFINITION}\n"
-        + "new_adj := CASE WHEN new_count = 1 THEN -3 ELSE 4 END;\n"
+    values = [int(v) for v in re.findall(r"deduct:\s*(-?\d+)", brackets[1])]
+    assert values, "BRACKETS holds no `deduct:` entries; the parse needs updating"
+    compute = re.search(
+        r"function computeDeduct\([^)]*\)[^{]*\{(.*?)\n\}", source, re.S
     )
-    with pytest.raises(AssertionError, match="defined 2 times") as raised:
-        _trigger_ladder(redefined)
-    assert "update FIRE_COUNT_ADJUSTMENT_MAX" in str(raised.value)
+    assert compute is not None, "computeDeduct moved or changed shape"
+    fallthrough = re.findall(r"return\s+(-?\d+)\s*;", compute[1])
+    assert fallthrough, "computeDeduct has no numeric fall-through return"
+    return values + [int(v) for v in fallthrough]
 
 
-@pytest.mark.parametrize("reach", [5, 7])
+def _assert_no_positive_deduct(source: str) -> None:
+    positive = [v for v in _round_trip_deducts(source) if v > 0]
+    assert not positive, (
+        f"round_trip_score_deduct can be positive ({positive}) in "
+        "api/cron/evaluate-round-trip.ts. NULL_SCORE_QAS_MAX in "
+        "ml/src/lottery_refit_gates.py assumes it never is (a NULL-score fire's qas is "
+        "GREATEST(0, deduct) + the inversion bonus, at most the bonus): revisit "
+        "NULL_SCORE_QAS_MAX, and so FEED_CUTOFF_FLOOR, before this passes."
+    )
+
+
+def test_the_round_trip_deduct_is_never_positive():
+    # The only writer of `round_trip_score_deduct` is api/cron/evaluate-round-trip.ts:
+    # BRACKETS gives -3, -2 or -1 and the fall-through gives 0 (the column is NOT NULL
+    # DEFAULT 0). That is why NULL_SCORE_QAS_MAX leaves the deduct out. If a bracket or
+    # the fall-through turns positive, a NULL-score fire's qas could pass the bonus and
+    # the floor would sit too low.
+    _assert_no_positive_deduct(EVALUATE_ROUND_TRIP.read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        # A positive bracket added after the existing three.
+        (
+            "{ cutoff: -0.1, deduct: -1 },",
+            "{ cutoff: -0.1, deduct: -1 },\n  { cutoff: 9, deduct: 2 },",
+        ),
+        # An existing bracket turned positive.
+        ("{ cutoff: -0.1, deduct: -1 },", "{ cutoff: -0.1, deduct: 1 },"),
+        # The fall-through turned positive.
+        ("  return 0;\n}", "  return 1;\n}"),
+    ],
+    ids=["added bracket", "bracket flipped", "fall-through"],
+)
+def test_a_positive_deduct_fails_the_guard_instead_of_leaving_the_floor_stale(old, new):
+    # Each mutant of the real source makes the guard fail and name the constant to revisit.
+    # The replace must change the text, or a moved line would leave this case vacuous.
+    text = EVALUATE_ROUND_TRIP.read_text(encoding="utf-8")
+    mutant = text.replace(old, new, 1)
+    assert mutant != text, f"{old!r} is no longer in evaluate-round-trip.ts"
+    with pytest.raises(AssertionError, match="can be positive") as raised:
+        _assert_no_positive_deduct(mutant)
+    assert "NULL_SCORE_QAS_MAX" in str(raised.value)
+
+
+@pytest.mark.parametrize("reach", [3, 5])
 def test_match_feed_cutoffs_never_lands_where_a_null_score_can_tier(reach):
-    # A cutoff of 7 or less can tier a NULL-score fire on the feed (qas up to 7), while
-    # `feed_qas` counts it tier3, so the gate would judge a tiering the feed does not show.
-    # 5 is the bonus alone (the displayed tier); 7 adds the fire-count adjustment (the SQL
-    # floor, which serves `minTier` and the chip counts).
+    # A cutoff of 5 or less can tier a NULL-score fire on the feed (its qas is at most the
+    # inversion bonus, 5), while `feed_qas` counts it tier3, so the gate would judge a
+    # tiering the feed does not show.
     active = _qas(v20=5, v11=15, v2=80)  # targets 5% (>= 13) and 20% (>= 10)
     # The candidate reaches 20% only at c <= `reach`. Searching from 0, tier2 would be
-    # `reach` (the larger c wins a tie): 5, and 7, which the first floor of 6 let through.
+    # `reach` (the larger c wins a tie): 3, and 5, the bonus itself.
     candidate = _qas(**{f"v{reach}": 20, "v1": 80})
     got = g.match_feed_cutoffs(candidate, active, g.FeedCutoffs(13, 10))
     assert got.tier2_min_score > g.NULL_SCORE_QAS_MAX
-    # Nothing is at or above 8, so every cutoff from there on is equally far from the
+    # Nothing is at or above 6, so every cutoff from there on is equally far from the
     # target and the tie goes to the largest: the candidate cannot match the active's tiers
     # above the floor, and check_creation rejects it on its tier1 share (0 is under 1 %).
     assert got == g.FeedCutoffs(tier1_min_score=40, tier2_min_score=39)
@@ -749,14 +773,14 @@ def test_match_feed_cutoffs_never_lands_where_a_null_score_can_tier(reach):
 
 def test_match_feed_cutoffs_may_land_exactly_on_the_floor_with_tier1_above_it():
     # Both targets are 10% (nothing sits between the active's cutoffs). The candidate holds
-    # 10% on c = 2..8 and nothing from 9. Searching from 0 gives (8, 7): tier2 inside the
-    # disagreeing zone. Tier2 may use 8, the floor, but tier1 must stay above it.
+    # 10% on c = 2..6 and nothing from 7. Searching from 0 gives (6, 5): tier2 inside the
+    # disagreeing zone. Tier2 may use 6, the floor, but tier1 must stay above it.
     active = _qas(v20=10, v2=90)
-    candidate = _qas(v8=10, v1=90)
+    candidate = _qas(v6=10, v1=90)
     got = g.match_feed_cutoffs(candidate, active, g.FeedCutoffs(13, 10))
     assert got.tier2_min_score == g.FEED_CUTOFF_FLOOR
     assert got.tier1_min_score > got.tier2_min_score
-    assert got == g.FeedCutoffs(tier1_min_score=40, tier2_min_score=8)
+    assert got == g.FeedCutoffs(tier1_min_score=40, tier2_min_score=6)
 
 
 def test_match_feed_cutoffs_counts_nan_below_and_in_the_denominator():

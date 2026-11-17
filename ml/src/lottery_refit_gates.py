@@ -98,18 +98,15 @@ FEED_CUTOFF_SEARCH_MAX = 40
 # or other quintile adds 0.
 INVERSION_BONUS = {1: -5, 2: -2, 3: 0, 4: 3, 5: 5}
 
-# The largest `fire_count_score_adjustment` any fire can carry. The only writer is the
-# `update_lottery_fire_count_score_adj` trigger (migration #167 in api/_lib/db-migrations.ts),
-# whose ladder is -3 for one fire on a chain-day, -1 for 2-3, 0 for 4-7, +1 for 8-15 and +2
-# from 16; the test parses it. The round-trip deduct beside it is never positive.
-FIRE_COUNT_ADJUSTMENT_MAX = 2
-
 # A fire with a NULL score still gets a qas on the feed: `GREATEST(0, COALESCE(score, 0) +
-# round_trip_score_deduct + fire_count_score_adjustment) + inversion bonus` (`qasExprText`
-# in api/lottery-finder.ts, which serves the `minTier` floor and the chip counts). With the
-# score and the deduct at 0 that is the largest adjustment plus the largest bonus. The feed's
-# displayed tier leaves the adjustment out of such a row, so it tops out lower, at the bonus.
-NULL_SCORE_QAS_MAX = FIRE_COUNT_ADJUSTMENT_MAX + max(INVERSION_BONUS.values())
+# round_trip_score_deduct) + inversion bonus` (`qasExprText` in api/lottery-finder.ts, which
+# serves the `minTier` floor and the chip counts). The deduct is never positive: its writer,
+# api/cron/evaluate-round-trip.ts, gives -3, -2 or -1 from its BRACKETS and 0 otherwise (the
+# column is NOT NULL DEFAULT 0), and a test parses that file. So the zero floor, which comes
+# before the bonus, leaves 0 and the largest qas such a fire can reach is the largest bonus.
+# The fire-count adjustment used to add up to 2 here; it was retired on 2026-11-15
+# (migration #209 drops its column) and `qasExprText` no longer has the term.
+NULL_SCORE_QAS_MAX = max(INVERSION_BONUS.values())
 
 # `feed_qas` counts a NULL-score fire tier3, so a feed cutoff at or below NULL_SCORE_QAS_MAX
 # would let the feed tier a fire the gate did not count. Cutoffs above it cannot: the two
@@ -143,7 +140,6 @@ __all__ = [
     "FEED_CUTOFF_FLOOR",
     "FEED_CUTOFF_MATCH_SESSIONS",
     "FEED_CUTOFF_SEARCH_MAX",
-    "FIRE_COUNT_ADJUSTMENT_MAX",
     "INVERSION_BONUS",
     "MIN_EVAL_ROWS",
     "MIN_EVAL_ROWS_PER_SESSION",
