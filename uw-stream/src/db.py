@@ -380,12 +380,20 @@ def get_pool() -> asyncpg.Pool:
 
 
 async def close_pool() -> None:
-    """Drain and close the pool. Safe to call on shutdown."""
+    """Drain and close the pool. Safe to call on shutdown.
+
+    ``_pool`` is None afterwards whatever ``close`` does. If it raises, or the
+    shutdown step's bound cancels it, the pool is half closed and must not be
+    handed out again; the exception still propagates.
+    """
     global _pool
-    if _pool is None:
+    pool = _pool
+    if pool is None:
         return
-    await _pool.close()
-    _pool = None
+    try:
+        await pool.close()
+    finally:
+        _pool = None
     log.info("asyncpg pool closed")
 
 

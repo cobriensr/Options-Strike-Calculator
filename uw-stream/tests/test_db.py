@@ -1,4 +1,4 @@
-"""Unit tests for src/db.py: pool sizing and the boot check.
+"""Unit tests for src/db.py: pool sizing, the boot check and the pool close.
 
 The pool is ``min_size=0, max_size=10``. The ceiling matches the daemon's
 handler concurrency: 5 channels (flow_alerts, option_trades,
@@ -15,6 +15,7 @@ With no floor, ``create_pool`` opens no connection, so ``init_pool`` runs
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -289,3 +290,72 @@ async def test_boot_check_fails_the_boot_when_the_transient_error_persists(insta
     assert conn.fetch.await_count == 3
     pool.terminate.assert_called_once_with()
     assert db._pool is None
+
+
+# ``close_pool`` runs at shutdown inside main's bounded step, which cancels it on a
+# timeout. Whatever ``close`` does, the module must not keep the closed or
+# half-closed pool.
+
+
+@pytest.mark.asyncio
+async def test_close_pool_closes_logs_and_clears_the_pool(service_log_records):
+    pool = _fake_pool()
+    db._pool = pool
+
+    await db.close_pool()
+
+    pool.close.assert_awaited_once_with()
+    assert db._pool is None
+    closed = [r.getMessage() for r in service_log_records if "pool closed" in r.getMessage()]
+    assert closed == ["asyncpg pool closed"]
+
+
+@pytest.mark.asyncio
+async def test_close_pool_on_no_pool_is_a_noop(service_log_records):
+    assert db._pool is None
+
+    await db.close_pool()
+
+    assert db._pool is None
+    assert not any("pool closed" in r.getMessage() for r in service_log_records)
+
+
+@pytest.mark.asyncio
+async def test_a_failing_close_clears_the_pool_and_re_raises(service_log_records):
+    """If ``close`` raises, the same error reaches the caller, ``_pool`` is None
+    (the pool is half closed and must not be handed out again) and the "closed" line
+    is not logged.
+    """
+    pool = _fake_pool()
+    failure = RuntimeError("close blew up")
+    pool.close.side_effect = failure
+    db._pool = pool
+
+    with pytest.raises(RuntimeError) as caught:
+        await db.close_pool()
+
+    assert caught.value is failure
+    pool.close.assert_awaited_once_with()
+    assert db._pool is None
+    with pytest.raises(RuntimeError, match="Pool not initialized"):
+        db.get_pool()
+    assert not any("pool closed" in r.getMessage() for r in service_log_records)
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_close_clears_the_pool_and_propagates_the_cancellation(
+    service_log_records,
+):
+    """The shutdown step's bound cancels ``close_pool`` mid-``close``: the
+    cancellation propagates (the bound relies on it) and ``_pool`` is still None.
+    """
+    pool = _fake_pool()
+    pool.close.side_effect = asyncio.CancelledError()
+    db._pool = pool
+
+    with pytest.raises(asyncio.CancelledError):
+        await db.close_pool()
+
+    pool.close.assert_awaited_once_with()
+    assert db._pool is None
+    assert not any("pool closed" in r.getMessage() for r in service_log_records)

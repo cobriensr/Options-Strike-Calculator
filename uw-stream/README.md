@@ -544,7 +544,7 @@ label is missing from the sequence.
 | `loop_lag_max_s`                 | The longest the event loop kept the sampler waiting past its 0.25 s sleep (elapsed minus 0.25 s, never below 0). Near 0 is healthy; seconds mean something blocked the loop.                               |
 | `loop_lag_over_1s`               | How many of those samples were 1 s or more.                                                                                                                                                                  |
 | `pool_size_max`                  | Most connections open in the DB pool (its max is 10), sampled four times a second. `null` when the pool was never sampled.                                                                                   |
-| `pool_size_min`                  | Fewest connections open at any sample in the minute. Below `pool_size_max` in the same minute means the pool changed size inside it: connections closed and reopened (or, just after a deploy, the pool grew). `null` when never sampled. |
+| `pool_size_min`                  | Fewest connections open at any sample in the minute. Below `pool_size_max` means the pool changed size inside it; "How to read a late-data minute" lists the causes. `null` when never sampled.              |
 | `pool_in_use_max`                | Most connections checked out (size minus idle) at any sample. A hold shorter than 0.25 s can fall between two samples. `null` when never sampled.                                                          |
 | `receive_queue_hwm`              | As under `/metrics` above, for the minute.                                                                                                                                                                   |
 | `receive_queue_dropped`          | Frames the receive queue dropped in the minute.                                                                                                                                                              |
@@ -569,12 +569,15 @@ How to read a late-data minute:
   Neon or the network. Check `pool_size_min` first (next bullet).
 - A `pool_size_min` below `pool_size_max` in a minute where a handler entry
   shows `flushes` above 0, once the pool is warm (not in the first minutes
-  after a deploy: the pool starts at 0 connections, the boot check opens 1,
-  and it grows as flushes need more), is pool churn. asyncpg closes a pool
-  connection idle for 300 s (its default `max_inactive_connection_lifetime`,
-  which `src/db.py` leaves alone) and hands connections out last in, first out, so
-  the ones only a burst uses expire and reconnect on the next burst. That
-  fits lag at the `:x0` and `:x5` minutes. asyncpg counts only connected
+  after a deploy, and not after a stretch of more than 300 s with no flushes,
+  such as the CME 16:00-17:00 CT break or the Sunday 17:00 CT open: the pool
+  is then at 0 or 1 connections and grows as flushes need more, so the first
+  minute with flushes shows `pool_size_min` 0 and `pool_size_max` 1 or more),
+  is pool churn. asyncpg closes a pool connection idle for 300 s (its default
+  `max_inactive_connection_lifetime`, which `src/db.py` leaves alone) and
+  hands connections out last in, first out, so the ones only a burst uses
+  expire and reconnect on the next burst. That fits lag at the `:x0` and `:x5`
+  minutes. asyncpg counts only connected
   holders in both `get_size()` and `get_idle_size()`, so a flush waiting
   while asyncpg opens a new connection shows in neither pool number, and
   `pool_in_use_max` can stay low. The line then reads as "the write itself
