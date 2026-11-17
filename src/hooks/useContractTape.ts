@@ -12,6 +12,7 @@
  */
 
 import { POLL_INTERVALS } from '../constants/index.js';
+import { useETToday } from './useETToday.js';
 import { useFetchedData, type UseFetchedDataResult } from './useFetchedData.js';
 import type { ContractTapeResponse } from '../components/LotteryFinder/types.js';
 
@@ -30,14 +31,6 @@ interface UseContractTapeArgs {
   marketOpen: boolean;
 }
 
-const todayCt = (): string =>
-  new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'America/Chicago',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).format(new Date());
-
 export function useContractTape({
   chain,
   date,
@@ -53,9 +46,13 @@ export function useContractTape({
     if (to) params.set('to', to);
     url = `/api/lottery-contract-tape?${params.toString()}`;
   }
-  // Historical = not today → single fetch, no polling. Matches the
-  // original `date === todayCt()` gate the bespoke implementation used.
-  const historical = date !== todayCt();
+  // Historical = not today → single fetch, no polling. Today is the shared
+  // ET clock (`useETToday`): the rows are fed ET-stamped fire dates, so a CT
+  // comparison would call the new day historical from 23:00 to 24:00 CT, and
+  // a wall-clock read on each render would not move at midnight unless
+  // something re-rendered the row.
+  const today = useETToday();
+  const historical = date !== today;
   return useFetchedData<ContractTapeResponse>({
     url,
     marketOpen,

@@ -16,6 +16,7 @@
 
 import { POLL_INTERVALS } from '../constants/index.js';
 import type { TickerCandlesResponse } from '../components/LotteryFinder/types.js';
+import { useETToday } from './useETToday.js';
 import { useFetchedData, type UseFetchedDataResult } from './useFetchedData.js';
 
 interface UseTickerCandlesArgs {
@@ -29,14 +30,6 @@ interface UseTickerCandlesArgs {
   marketOpen: boolean;
 }
 
-const todayCt = (): string =>
-  new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'America/Chicago',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).format(new Date());
-
 export function useTickerCandles({
   ticker,
   date,
@@ -46,12 +39,18 @@ export function useTickerCandles({
   const url = enabled
     ? `/api/ticker-candles?ticker=${encodeURIComponent(ticker)}&date=${encodeURIComponent(date)}`
     : null;
+  // Historical = not today → single fetch, no polling. Today is the shared
+  // ET clock (`useETToday`): the rows are fed ET-stamped fire dates, so a CT
+  // comparison would call the new day historical from 23:00 to 24:00 CT, and
+  // a wall-clock read on each render would not move at midnight unless
+  // something re-rendered the row.
+  const today = useETToday();
 
   return useFetchedData<TickerCandlesResponse>({
     url,
     marketOpen,
     pollIntervalMs: POLL_INTERVALS.OTM_FLOW,
-    historical: date !== todayCt(),
+    historical: date !== today,
     // Cross-day staleness gate — matches the feed hooks: a prior-day
     // response is nulled until its echoed date matches the request.
     requestKey: date,
