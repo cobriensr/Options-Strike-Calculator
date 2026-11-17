@@ -136,8 +136,9 @@ export const LotteryWeightsSchema = z.strictObject({
   /**
    * Cutoffs on the feed's quality-adjusted score (qas), which set its tier 1 and
    * tier 2. `qasExprText` in `api/lottery-finder.ts` defines it:
-   * `GREATEST(0, score + round_trip_score_deduct + fire_count_score_adjustment)`
-   * plus the inversion bonus, each term NULL as 0. The cluster bonus is not in it.
+   * `GREATEST(0, score + round_trip_score_deduct)` plus the inversion bonus, each
+   * term NULL as 0. The cluster bonus is not in it, and neither is a fire-count
+   * term (retired on 2026-11-15).
    */
   feed_cutoffs: z
     .strictObject({
