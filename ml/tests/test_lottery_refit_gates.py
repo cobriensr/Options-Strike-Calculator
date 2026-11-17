@@ -31,6 +31,7 @@ import sys
 from datetime import date, timedelta
 from decimal import Decimal
 from pathlib import Path
+from typing import NoReturn
 
 import numpy as np
 import pandas as pd
@@ -678,80 +679,438 @@ def test_the_floor_is_derived_from_the_largest_qas_a_null_score_fire_can_reach()
     # The feed's SQL gives a NULL-score fire `GREATEST(0, 0 + round_trip_score_deduct) +
     # inversion bonus`. The deduct is never positive (the guard below), so the zero floor
     # leaves 0 before the bonus is added and the qas tops out at the largest bonus, 5. The
-    # gate counts such a fire tier3, so the two agree only for cutoffs above 5. The
-    # expression itself is held by test_feed_qas_mirrors_the_feeds_displayed_score_sql,
-    # which fails if `qasExprText` gains a term, so it is not checked again here.
+    # gate counts such a fire tier3, so the two agree only for cutoffs above 5.
+    #
+    # The expression is held three ways. test_feed_qas_mirrors_the_feeds_displayed_score_sql
+    # checks three fragments of it with `in`, so a term added outside them still passes.
+    # test_the_feed_qas_expression_is_the_one_the_floor_was_derived_from, below, compares
+    # the whole `qasExprText` body exactly and names these constants. And the app job's
+    # `expectedQasSql` (api/__tests__/lottery-qas-sql.ts) pins it on the api side.
     assert max(g.INVERSION_BONUS.values()) == 5
     assert g.NULL_SCORE_QAS_MAX == 5
     assert g.FEED_CUTOFF_FLOOR == g.NULL_SCORE_QAS_MAX + 1 == 6
 
 
+LOTTERY_FINDER = ROOT / "api" / "lottery-finder.ts"
 EVALUATE_ROUND_TRIP = ROOT / "api" / "cron" / "evaluate-round-trip.ts"
+BACKFILL_ROUND_TRIP = ROOT / "scripts" / "backfill_round_trip_score.py"
 
 
-def _round_trip_deducts(source: str) -> list[int]:
-    """Every value api/cron/evaluate-round-trip.ts can give `round_trip_score_deduct`:
-    the `deduct` of each `BRACKETS` entry, then the `return` that ends `computeDeduct`
-    when no bracket matches."""
-    brackets = re.search(r"const BRACKETS\b[^=]*=\s*\[(.*?)\];", source, re.S)
-    assert brackets is not None, (
-        "BRACKETS moved or changed shape in evaluate-round-trip.ts"
-    )
-    values = [int(v) for v in re.findall(r"deduct:\s*(-?\d+)", brackets[1])]
-    assert values, "BRACKETS holds no `deduct:` entries; the parse needs updating"
-    compute = re.search(
-        r"function computeDeduct\([^)]*\)[^{]*\{(.*?)\n\}", source, re.S
-    )
-    assert compute is not None, "computeDeduct moved or changed shape"
-    fallthrough = re.findall(r"return\s+(-?\d+)\s*;", compute[1])
-    assert fallthrough, "computeDeduct has no numeric fall-through return"
-    return values + [int(v) for v in fallthrough]
+def _squash(text: str) -> str:
+    """`text` with every run of whitespace as one space."""
+    return " ".join(text.split())
 
 
-def _assert_no_positive_deduct(source: str) -> None:
-    positive = [v for v in _round_trip_deducts(source) if v > 0]
-    assert not positive, (
-        f"round_trip_score_deduct can be positive ({positive}) in "
-        "api/cron/evaluate-round-trip.ts. NULL_SCORE_QAS_MAX in "
-        "ml/src/lottery_refit_gates.py assumes it never is (a NULL-score fire's qas is "
-        "GREATEST(0, deduct) + the inversion bonus, at most the bonus): revisit "
-        "NULL_SCORE_QAS_MAX, and so FEED_CUTOFF_FLOOR, before this passes."
+def _stale_floor(reason: str) -> NoReturn:
+    """Fail a guard on `reason`, and name the constants a person has to revisit."""
+    raise AssertionError(
+        f"{reason}. NULL_SCORE_QAS_MAX in ml/src/lottery_refit_gates.py is the largest qas "
+        "a NULL-score fire can reach. It holds only while the feed's qas is "
+        "GREATEST(0, score + round_trip_score_deduct) plus the inversion bonus and the "
+        "deduct is never positive: revisit NULL_SCORE_QAS_MAX, and so "
+        "FEED_CUTOFF_FLOOR, before this passes."
     )
 
 
-def test_the_round_trip_deduct_is_never_positive():
-    # The only writer of `round_trip_score_deduct` is api/cron/evaluate-round-trip.ts:
-    # BRACKETS gives -3, -2 or -1 and the fall-through gives 0 (the column is NOT NULL
-    # DEFAULT 0). That is why NULL_SCORE_QAS_MAX leaves the deduct out. If a bracket or
-    # the fall-through turns positive, a NULL-score fire's qas could pass the bonus and
-    # the floor would sit too low.
-    _assert_no_positive_deduct(EVALUATE_ROUND_TRIP.read_text(encoding="utf-8"))
+# The body of `qasExprText` (api/lottery-finder.ts) that the floor was derived from. It is
+# compared with whitespace squashed, so a reformat passes and any other change fails.
+QAS_EXPR_TEXT_BODY = """\
+function qasExprText(fireAlias: QasFireAlias): string {
+  if (!(QAS_FIRE_ALIAS_WHITELIST as readonly string[]).includes(fireAlias)) {
+    throw new Error(`qasExprText: invalid fire alias "${fireAlias}"`);
+  }
+  return (
+    `(GREATEST(0, COALESCE(${fireAlias}score, 0) ` +
+    `+ COALESCE(${fireAlias}round_trip_score_deduct, 0)) ` +
+    `+ ${INVERSION_BONUS_CASE_SQL})`
+  );"""
+
+
+def _assert_qas_expression_pinned(source: str) -> None:
+    start = source.index("function qasExprText(")
+    body = _squash(source[start : source.index("\n}\n", start)])
+    if body != _squash(QAS_EXPR_TEXT_BODY):
+        _stale_floor(
+            "qasExprText in api/lottery-finder.ts is no longer the expression the floor "
+            f"was derived from (it is now `{body}`). Update expectedQasSql in "
+            "api/__tests__/lottery-qas-sql.ts and feed_qas to match"
+        )
+
+
+def test_the_feed_qas_expression_is_the_one_the_floor_was_derived_from():
+    _assert_qas_expression_pinned(LOTTERY_FINDER.read_text(encoding="utf-8"))
 
 
 @pytest.mark.parametrize(
     ("old", "new"),
     [
+        # A term inside GREATEST, before the deduct term.
+        (
+            "COALESCE(${fireAlias}score, 0) `",
+            "COALESCE(${fireAlias}score, 0) + 1 `",
+        ),
+        # A term inside GREATEST, after the deduct term.
+        (
+            "COALESCE(${fireAlias}round_trip_score_deduct, 0)) `",
+            "COALESCE(${fireAlias}round_trip_score_deduct, 0) + 1) `",
+        ),
+        # A term between GREATEST(...) and the inversion bonus.
+        ("`+ ${INVERSION_BONUS_CASE_SQL})`", "`+ 1 + ${INVERSION_BONUS_CASE_SQL})`"),
+    ],
+    ids=["before the deduct", "after the deduct", "before the bonus"],
+)
+def test_an_extra_qas_term_fails_the_pin_instead_of_leaving_the_floor_stale(old, new):
+    # The three fragments test_feed_qas_mirrors_the_feeds_displayed_score_sql looks for
+    # miss a term put here; the pin does not. The replace must change the text, or a
+    # moved line would leave this case vacuous.
+    text = LOTTERY_FINDER.read_text(encoding="utf-8")
+    mutant = text.replace(old, new, 1)
+    assert mutant != text, f"{old!r} is no longer in lottery-finder.ts"
+    with pytest.raises(AssertionError, match="no longer the expression") as raised:
+        _assert_qas_expression_pinned(mutant)
+    assert "NULL_SCORE_QAS_MAX" in str(raised.value)
+    assert "FEED_CUTOFF_FLOOR" in str(raised.value)
+
+
+# `round_trip_score_deduct` has two writers: the live cron, api/cron/evaluate-round-trip.ts,
+# and the one-shot backfill, scripts/backfill_round_trip_score.py, which copies its
+# brackets. Neither may write a value above 0. A guard that only reads the integers it
+# understands would pass a `+2`, a `0.5`, a named constant or a changed computation
+# unparsed, so each parse takes every token raw, fails on any that is not an integer
+# literal, and pins as squashed text the statements that carry a bracket to the column.
+_INTEGER = re.compile(r"-?\d+")
+
+
+def _integers(tokens: list[str], where: str) -> list[int]:
+    """`tokens` as integers. A token that is not an integer literal fails: whatever it
+    evaluates to, it cannot be shown to be <= 0."""
+    for token in tokens:
+        if not _INTEGER.fullmatch(token):
+            _stale_floor(
+                f"{where} holds `{token}`, which is not an integer literal and so cannot "
+                "be shown to be <= 0"
+            )
+    return [int(token) for token in tokens]
+
+
+def _pin_statements(source: str, pins: tuple[tuple[str, str, str], ...]) -> None:
+    """Each pin is (what, a pattern for the one statement, that statement squashed)."""
+    for what, pattern, expected in pins:
+        found = re.findall(pattern, source, re.M)
+        if len(found) != 1:
+            _stale_floor(f"expected one {what} in the source, found {len(found)}")
+        if _squash(found[0]) != expected:
+            _stale_floor(f"{what} is now `{_squash(found[0])}`, not `{expected}`")
+
+
+# What the cron does with a bracket, up to the UPDATE that writes it.
+CRON_PINS = (
+    (
+        "loop over BRACKETS in computeDeduct",
+        r"for \(const b of BRACKETS\) \{[^{}]*\}",
+        "for (const b of BRACKETS) { if (netPct < b.cutoff) return b.deduct; }",
+    ),
+    (
+        "assignment of the deduct",
+        r"\bconst deduct\b[^;]*;",
+        "const deduct = isNoFlow || row.dte > SCORE_DEDUCT_DTE_MAX ? 0 : "
+        "computeDeduct(netPct);",
+    ),
+    (
+        "assignment to deduct, in any form",
+        r"\bdeduct\s*[-+*/|&?%]*=(?!=)[^;]*;",
+        "deduct = isNoFlow || row.dte > SCORE_DEDUCT_DTE_MAX ? 0 : computeDeduct(netPct);",
+    ),
+    (
+        "push of the deduct onto the updates",
+        r"\bupdates\.push\([^;]*;",
+        "updates.push({ id: row.id, netPct, deduct });",
+    ),
+    (
+        "list of deducts handed to the UPDATE",
+        r"\bconst ded\b[^;]*;",
+        "const ded = updates.map((u) => u.deduct);",
+    ),
+)
+
+
+def _cron_deducts(source: str) -> list[int]:
+    """Every value api/cron/evaluate-round-trip.ts can give `round_trip_score_deduct`:
+    the `deduct` of each `BRACKETS` entry, then the `return`s that end `computeDeduct`
+    when no bracket matches."""
+    brackets = re.search(r"const BRACKETS\b[^=]*=\s*\[(.*?)\];", source, re.S)
+    if brackets is None:
+        _stale_floor("BRACKETS moved or changed shape in evaluate-round-trip.ts")
+    entries = brackets[1].count("{")
+    tokens = [t.strip() for t in re.findall(r"\bdeduct:\s*([^,}]+)", brackets[1])]
+    if not tokens or len(tokens) != entries:
+        _stale_floor(
+            f"BRACKETS has {entries} entries but {len(tokens)} `deduct:` values"
+        )
+    uses = len(re.findall(r"\bBRACKETS\b", source))
+    if uses != 2:
+        _stale_floor(
+            f"BRACKETS appears {uses} times in evaluate-round-trip.ts, not twice (its "
+            "definition and the loop in computeDeduct), so something else may add to it"
+        )
+    _pin_statements(source, CRON_PINS)
+    compute = re.search(
+        r"function computeDeduct\([^)]*\)[^{]*\{(.*?)\n\}", source, re.S
+    )
+    if compute is None:
+        _stale_floor("computeDeduct moved or changed shape")
+    # The loop is pinned above, so what is left of the body is the fall-through.
+    rest = re.sub(CRON_PINS[0][1], "", compute[1])
+    returns = [t.strip() for t in re.findall(r"\breturn\s+([^;]+);", rest)]
+    if not returns:
+        _stale_floor("computeDeduct has no fall-through return")
+    return _integers(tokens, "a BRACKETS entry") + _integers(
+        returns, "computeDeduct's fall-through return"
+    )
+
+
+# What the backfill does with a bracket, up to the UPDATE payload.
+BACKFILL_PINS = (
+    (
+        "loop over BRACKETS in compute_deduct",
+        r"for cutoff, deduct in BRACKETS:\n(?:[ \t]{8,}[^\n]*\n)+",
+        "for cutoff, deduct in BRACKETS: if net_pct < cutoff: return deduct",
+    ),
+    (
+        "list of deducts",
+        r"^[ \t]*deducts = [^\n]*$",
+        "deducts = [compute_deduct(v) for v in "
+        "eligible['post_fire_net_pct_of_volume'].to_list()]",
+    ),
+    (
+        "deduct column",
+        r"^[ \t]*eligible = eligible\.with_columns\(pl\.Series\('deduct'[^\n]*$",
+        "eligible = eligible.with_columns(pl.Series('deduct', deducts))",
+    ),
+    (
+        "deduct in the UPDATE payload",
+        r"\bint\(r\['deduct'\][^\n]*",
+        "int(r['deduct']),",
+    ),
+)
+
+
+def _backfill_deducts(source: str) -> list[int]:
+    """Every value scripts/backfill_round_trip_score.py can give
+    `round_trip_score_deduct`: the second item of each `BRACKETS` tuple, then the
+    `return`s of `compute_deduct` other than the one in its loop."""
+    block = re.search(r"^BRACKETS\s*=\s*\[(.*?)^\]", source, re.S | re.M)
+    if block is None:
+        _stale_floor("BRACKETS moved or changed shape in backfill_round_trip_score.py")
+    text = re.sub(r"#[^\n]*", "", block[1])
+    entries = text.count("(")
+    tokens = [t.strip() for t in re.findall(r"\(\s*[^,()]+,([^,()]+)\)", text)]
+    if not tokens or len(tokens) != entries:
+        _stale_floor(f"BRACKETS has {entries} tuples but {len(tokens)} deduct values")
+    uses = len(re.findall(r"\bBRACKETS\b", source))
+    if uses != 2:
+        _stale_floor(
+            f"BRACKETS appears {uses} times in backfill_round_trip_score.py, not twice "
+            "(its definition and the loop in compute_deduct)"
+        )
+    _pin_statements(source, BACKFILL_PINS)
+    compute = re.search(
+        r"^def compute_deduct\([^)]*\)[^\n]*:\n((?:[ \t]+[^\n]*\n|[ \t]*\n)+)",
+        source,
+        re.M,
+    )
+    if compute is None:
+        _stale_floor("compute_deduct moved or changed shape")
+    rest = re.sub(BACKFILL_PINS[0][1], "", re.sub(r"#[^\n]*", "", compute[1]))
+    returns = [t.strip() for t in re.findall(r"\breturn\s+([^\n]+)", rest)]
+    if not returns:
+        _stale_floor("compute_deduct has no return besides the one in its loop")
+    return _integers(tokens, "a BRACKETS tuple") + _integers(
+        returns, "compute_deduct's return"
+    )
+
+
+def _assert_never_positive(values: list[int], where: str) -> None:
+    positive = [v for v in values if v > 0]
+    if positive:
+        _stale_floor(f"round_trip_score_deduct can be positive ({positive}) in {where}")
+
+
+def _assert_cron_never_positive(source: str) -> None:
+    _assert_never_positive(_cron_deducts(source), "api/cron/evaluate-round-trip.ts")
+
+
+def _assert_backfill_never_positive(source: str) -> None:
+    _assert_never_positive(
+        _backfill_deducts(source), "scripts/backfill_round_trip_score.py"
+    )
+
+
+def test_the_round_trip_deduct_is_never_positive():
+    # Two things write `round_trip_score_deduct`: the live cron
+    # (api/cron/evaluate-round-trip.ts) and a one-shot, idempotent backfill
+    # (scripts/backfill_round_trip_score.py) with the same brackets. Both give -3, -2 or
+    # -1 and otherwise 0 (the column is NOT NULL DEFAULT 0). That is why NULL_SCORE_QAS_MAX
+    # leaves the deduct out. If a bracket or a fall-through turns positive in either, a
+    # NULL-score fire's qas could pass the bonus and the floor would sit too low.
+    _assert_cron_never_positive(EVALUATE_ROUND_TRIP.read_text(encoding="utf-8"))
+    _assert_backfill_never_positive(BACKFILL_ROUND_TRIP.read_text(encoding="utf-8"))
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "reason"),
+    [
         # A positive bracket added after the existing three.
         (
             "{ cutoff: -0.1, deduct: -1 },",
             "{ cutoff: -0.1, deduct: -1 },\n  { cutoff: 9, deduct: 2 },",
+            "can be positive",
         ),
         # An existing bracket turned positive.
-        ("{ cutoff: -0.1, deduct: -1 },", "{ cutoff: -0.1, deduct: 1 },"),
+        (
+            "{ cutoff: -0.1, deduct: -1 },",
+            "{ cutoff: -0.1, deduct: 1 },",
+            "can be positive",
+        ),
         # The fall-through turned positive.
-        ("  return 0;\n}", "  return 1;\n}"),
+        ("  return 0;\n}", "  return 1;\n}", "can be positive"),
+        # A value that is not a plain integer, whatever it evaluates to.
+        (
+            "deduct: -1 }",
+            "deduct: +2 }",
+            "not an integer literal",
+        ),
+        ("deduct: -1 }", "deduct: 0.5 }", "not an integer literal"),
+        ("deduct: -1 }", "deduct: SOME_CONST }", "not an integer literal"),
+        ("deduct: -1 }", "deduct: -1 + 3 }", "not an integer literal"),
+        # The fall-through returns something that is not an integer.
+        ("  return 0;\n}", "  return 0 + 3;\n}", "not an integer literal"),
+        # BRACKETS is added to after its definition.
+        (
+            "  return 0;\n}",
+            "  return 0;\n}\nBRACKETS.push({ cutoff: 1, deduct: 3 });",
+            "appears 3 times",
+        ),
+        # The statements that compute and carry the written value.
+        (
+            ": computeDeduct(netPct);",
+            ": computeDeduct(netPct) + 3;",
+            "assignment of the deduct is now",
+        ),
+        (
+            "? 0\n            : computeDeduct(netPct);",
+            "? 1\n            : computeDeduct(netPct);",
+            "assignment of the deduct is now",
+        ),
+        (
+            "updates.push({ id: row.id, netPct, deduct });",
+            "updates.push({ id: row.id, netPct, deduct: deduct + 1 });",
+            "push of the deduct onto the updates is now",
+        ),
+        (
+            "const ded = updates.map((u) => u.deduct);",
+            "const ded = updates.map((u) => u.deduct + 1);",
+            "list of deducts handed to the UPDATE is now",
+        ),
     ],
-    ids=["added bracket", "bracket flipped", "fall-through"],
+    ids=[
+        "added bracket",
+        "bracket flipped",
+        "fall-through",
+        "plus sign",
+        "fraction",
+        "named constant",
+        "expression",
+        "fall-through expression",
+        "BRACKETS pushed to",
+        "computation changed",
+        "no-flow ternary",
+        "push changed",
+        "ded changed",
+    ],
 )
-def test_a_positive_deduct_fails_the_guard_instead_of_leaving_the_floor_stale(old, new):
-    # Each mutant of the real source makes the guard fail and name the constant to revisit.
-    # The replace must change the text, or a moved line would leave this case vacuous.
+def test_a_bad_cron_deduct_fails_the_guard_instead_of_leaving_the_floor_stale(
+    old, new, reason
+):
+    # Each mutant of the real source makes the guard fail, for the reason named, and name
+    # the constants to revisit. The replace must change the text, or a moved line would
+    # leave this case vacuous.
     text = EVALUATE_ROUND_TRIP.read_text(encoding="utf-8")
     mutant = text.replace(old, new, 1)
     assert mutant != text, f"{old!r} is no longer in evaluate-round-trip.ts"
-    with pytest.raises(AssertionError, match="can be positive") as raised:
-        _assert_no_positive_deduct(mutant)
+    with pytest.raises(AssertionError, match=reason) as raised:
+        _assert_cron_never_positive(mutant)
     assert "NULL_SCORE_QAS_MAX" in str(raised.value)
+    assert "FEED_CUTOFF_FLOOR" in str(raised.value)
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "reason"),
+    [
+        # A positive bracket added after the existing three.
+        ("(-0.10, -1),", "(-0.10, -1),\n    (9, 2),", "can be positive"),
+        # An existing bracket turned positive.
+        ("(-0.10, -1),", "(-0.10, 1),", "can be positive"),
+        # The guard's return, and the fall-through, turned positive.
+        (
+            "# NaN check\n        return 0",
+            "# NaN check\n        return 1",
+            "can be positive",
+        ),
+        (
+            "            return deduct\n    return 0",
+            "            return deduct\n    return 1",
+            "can be positive",
+        ),
+        # A value that is not a plain integer, whatever it evaluates to.
+        ("(-0.10, -1),", "(-0.10, +2),", "not an integer literal"),
+        ("(-0.10, -1),", "(-0.10, 0.5),", "not an integer literal"),
+        ("(-0.10, -1),", "(-0.10, SOME_CONST),", "not an integer literal"),
+        ("(-0.10, -1),", "(-0.10, -1 + 3),", "not an integer literal"),
+        (
+            "            return deduct\n    return 0",
+            "            return deduct\n    return 0 + 3",
+            "not an integer literal",
+        ),
+        # The statements that compute and carry the written value.
+        (
+            "compute_deduct(v) for v",
+            "compute_deduct(v) + 1 for v",
+            "list of deducts is now",
+        ),
+        (
+            "pl.Series('deduct', deducts)",
+            "pl.Series('deduct', deducts + 1)",
+            "deduct column is now",
+        ),
+        ("int(r['deduct']),", "int(r['deduct']) + 1,", "UPDATE payload is now"),
+    ],
+    ids=[
+        "added bracket",
+        "bracket flipped",
+        "guard return",
+        "fall-through",
+        "plus sign",
+        "fraction",
+        "named constant",
+        "expression",
+        "fall-through expression",
+        "computation changed",
+        "column changed",
+        "payload changed",
+    ],
+)
+def test_a_bad_backfill_deduct_fails_the_guard_instead_of_leaving_the_floor_stale(
+    old, new, reason
+):
+    # The same for the backfill script, parsed by the same rules.
+    text = BACKFILL_ROUND_TRIP.read_text(encoding="utf-8")
+    mutant = text.replace(old, new, 1)
+    assert mutant != text, f"{old!r} is no longer in backfill_round_trip_score.py"
+    with pytest.raises(AssertionError, match=reason) as raised:
+        _assert_backfill_never_positive(mutant)
+    assert "NULL_SCORE_QAS_MAX" in str(raised.value)
+    assert "FEED_CUTOFF_FLOOR" in str(raised.value)
 
 
 @pytest.mark.parametrize("reach", [3, 5])

@@ -100,10 +100,12 @@ INVERSION_BONUS = {1: -5, 2: -2, 3: 0, 4: 3, 5: 5}
 
 # A fire with a NULL score still gets a qas on the feed: `GREATEST(0, COALESCE(score, 0) +
 # round_trip_score_deduct) + inversion bonus` (`qasExprText` in api/lottery-finder.ts, which
-# serves the `minTier` floor and the chip counts). The deduct is never positive: its writer,
-# api/cron/evaluate-round-trip.ts, gives -3, -2 or -1 from its BRACKETS and 0 otherwise (the
-# column is NOT NULL DEFAULT 0), and a test parses that file. So the zero floor, which comes
-# before the bonus, leaves 0 and the largest qas such a fire can reach is the largest bonus.
+# serves the `minTier` floor and the chip counts). The deduct is never positive. It has two
+# writers: the live cron, api/cron/evaluate-round-trip.ts, and the one-shot backfill,
+# scripts/backfill_round_trip_score.py, which copies its brackets. Both give -3, -2 or -1 and
+# otherwise 0 (the column is NOT NULL DEFAULT 0), and a test parses both. So the zero floor,
+# which comes before the bonus, leaves 0 and the largest qas such a fire can reach is the
+# largest bonus. A test also pins the `qasExprText` body, so a new term fails there first.
 # The fire-count adjustment used to add up to 2 here; it was retired on 2026-11-15
 # (migration #209 drops its column) and `qasExprText` no longer has the term.
 NULL_SCORE_QAS_MAX = max(INVERSION_BONUS.values())

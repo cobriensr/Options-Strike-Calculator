@@ -604,14 +604,16 @@ The training window is 90 days (`TRAIN_WINDOW_DAYS`), the feed cutoffs are match
 the last 20 sessions (`FEED_CUTOFF_MATCH_SESSIONS`), and the match searches cutoffs up
 to 40 (`FEED_CUTOFF_SEARCH_MAX`). Tier 2 is searched from 6 and tier 1 from 7
 (`FEED_CUTOFF_FLOOR` is 6). The feed's SQL floor gives a fire with no score a qas of up
-to 5: the score counts as 0, the round-trip deduct is never positive
-(`api/cron/evaluate-round-trip.ts` writes -3, -2, -1 or 0, and a test parses it), the
-zero floor comes before the inversion bonus, and the bonus adds up to 5
-(`NULL_SCORE_QAS_MAX`). The fire-count adjustment used to add up to 2 more, which made
-the floor 8; it was retired on 2026-11-15 (migration #209). The gate counts such a fire
-as tier 3. A feed cutoff of 5 or less could therefore tier a fire the gate did not
-count, and the gate would judge a tiering the feed does not show. A candidate that
-cannot match the active version's tier shares above that floor gets high cutoffs, which
+to 5: the score counts as 0, the round-trip deduct is never positive (the cron
+`api/cron/evaluate-round-trip.ts` and the one-shot backfill
+`scripts/backfill_round_trip_score.py` write -3, -2, -1 or 0, and a test parses both),
+the zero floor comes before the inversion bonus, and the bonus adds up to 5
+(`NULL_SCORE_QAS_MAX`). A test also pins the feed's `qasExprText`, so a new term in it
+fails there first. The fire-count adjustment used to add up to 2 more, which made the
+floor 8; it was retired on 2026-11-15 (migration #209). The gate counts such a fire as
+tier 3. A feed cutoff of 5 or less could therefore tier a fire the gate did not count,
+and the gate would judge a tiering the feed does not show. A candidate that cannot
+match the active version's tier shares above that floor gets high cutoffs, which
 typically leave its tier 1 share under the band's 1%, so it is rejected at creation for
 that.
 
