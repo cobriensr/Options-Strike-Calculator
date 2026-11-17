@@ -14,6 +14,7 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import type { ZodSafeParseResult, ZodSafeParseError } from 'zod';
 import { checkBotId } from 'botid/server';
 
+import { rateLimitIp } from './client-ip.js';
 import { isRedisConfigured } from './env.js';
 import { limiterRedis } from './redis.js';
 import logger from './logger.js';
@@ -389,18 +390,20 @@ async function isRateLimited(
 
 /**
  * Extract a rate-limit key from the request.
- * Uses X-Real-Ip (set by Vercel), then X-Forwarded-For, then 'unknown'.
+ * Uses X-Real-Ip (set by Vercel), then X-Forwarded-For, then 'unknown'. The
+ * address goes through `rateLimitIp`, so an IPv6 client counts once per /64
+ * and a value that is not an address counts under 'unknown'.
  */
 function getRateLimitKey(req: VercelRequest, endpoint: string): string {
   const realIp = req.headers['x-real-ip'];
-  if (typeof realIp === 'string' && realIp) return `${endpoint}:${realIp}`;
+  if (typeof realIp === 'string' && realIp) {
+    return `${endpoint}:${rateLimitIp(realIp)}`;
+  }
 
   const forwarded = req.headers['x-forwarded-for'];
   const ip =
-    typeof forwarded === 'string'
-      ? (forwarded.split(',')[0]?.trim() ?? 'unknown')
-      : 'unknown';
-  return `${endpoint}:${ip}`;
+    typeof forwarded === 'string' ? forwarded.split(',')[0]?.trim() : undefined;
+  return `${endpoint}:${rateLimitIp(ip)}`;
 }
 
 /**
@@ -436,6 +439,84 @@ export async function rejectIfRateLimited(
     return true;
   }
   return false;
+}
+
+// ============================================================
+// GUEST-KEY FAILURE BUDGET
+// ============================================================
+
+const HOUR_MS = 3_600_000;
+
+/**
+ * Wrong guest keys guest-key login accepts in one epoch hour, counted across
+ * every client, before it refuses all attempts until the next hour. The
+ * per-minute limiter bounds one client; this bounds the total. An operational
+ * knob: a real guest types a wrong key a few times a month, so 20 an hour is
+ * far above normal use and low enough to stop a sustained run of guesses.
+ */
+export const GUEST_KEY_FAILS_PER_HOUR = 20;
+
+/**
+ * Lifetime of an hour's failure counter. The epoch hour is part of the key
+ * name, so the counter is only read and written during its own hour and the
+ * next hour starts at a different key. 7200 s is that hour plus a full hour
+ * spare for clock skew between instances; the key then expires on its own.
+ * Like the minute counters, INCR and EXPIRE are one pipelined request, not a
+ * transaction: if the server fails between them, that one hour-keyed counter
+ * keeps no TTL, and no later request reads it.
+ */
+const GUEST_KEY_FAIL_TTL_SEC = 7200;
+
+function guestKeyFailureKey(): string {
+  return `authfail:guest-key:${Math.floor(Date.now() / HOUR_MS)}`;
+}
+
+/**
+ * Whether this hour's wrong-key count has reached `GUEST_KEY_FAILS_PER_HOUR`.
+ *
+ * Throws when Redis fails or answers with something other than a count, so
+ * the caller can refuse the attempt rather than let it through unchecked.
+ * Returns false when Upstash isn't configured (local dev and most tests), as
+ * the request limiter does. The check and `recordGuestKeyFailure` are not one
+ * atomic step, so attempts already in flight when the budget runs out can
+ * overshoot it by the number in flight; the per-client limiter caps that.
+ */
+export async function guestKeyBudgetSpent(): Promise<boolean> {
+  if (!isRedisConfigured()) return false;
+
+  const count: unknown = await limiterRedis.get(guestKeyFailureKey());
+  if (count === null) return false;
+  if (typeof count !== 'number' || !Number.isInteger(count) || count < 0) {
+    throw new Error('Guest-key failure count is malformed');
+  }
+  return count >= GUEST_KEY_FAILS_PER_HOUR;
+}
+
+/**
+ * Count one wrong guest key against this hour's budget.
+ *
+ * Never throws: the caller is already answering 401, and a failed count only
+ * means that attempt goes unrecorded. The failure is logged and sent to
+ * Sentry under one pinned fingerprint, so an Upstash outage is one issue.
+ */
+export async function recordGuestKeyFailure(): Promise<void> {
+  if (!isRedisConfigured()) return;
+
+  const key = guestKeyFailureKey();
+  try {
+    await limiterRedis
+      .pipeline()
+      .incr(key)
+      .expire(key, GUEST_KEY_FAIL_TTL_SEC)
+      .exec();
+  } catch (err) {
+    logger.warn({ err }, 'Could not record a failed guest-key attempt');
+    Sentry.captureException(err, {
+      level: 'warning',
+      fingerprint: ['guest-key-failure-record'],
+      tags: { limiter: 'guest-key-budget' },
+    });
+  }
 }
 
 // ============================================================

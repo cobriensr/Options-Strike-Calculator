@@ -14,6 +14,7 @@ import { mockRequest, mockResponse } from './helpers';
 
 const {
   mockPipeline,
+  mockGet,
   mockIncr,
   mockExpire,
   mockExec,
@@ -25,6 +26,7 @@ const {
   mockLoggerWarn,
 } = vi.hoisted(() => ({
   mockPipeline: vi.fn(),
+  mockGet: vi.fn(),
   mockIncr: vi.fn(),
   mockExpire: vi.fn(),
   mockExec: vi.fn(),
@@ -41,7 +43,7 @@ const {
 // is caught.
 vi.mock('../_lib/redis.js', () => ({
   redis: { pipeline: mockDefaultPipeline },
-  limiterRedis: { pipeline: mockPipeline },
+  limiterRedis: { pipeline: mockPipeline, get: mockGet },
 }));
 
 vi.mock('botid/server', () => ({
@@ -72,7 +74,12 @@ vi.mock('../_lib/logger.js', () => ({
   default: { warn: mockLoggerWarn, error: vi.fn(), info: vi.fn() },
 }));
 
-import { rejectIfRateLimited } from '../_lib/auth-helpers.js';
+import {
+  GUEST_KEY_FAILS_PER_HOUR,
+  guestKeyBudgetSpent,
+  recordGuestKeyFailure,
+  rejectIfRateLimited,
+} from '../_lib/auth-helpers.js';
 
 const REDIS_ERROR_METRIC = 'api_helpers.rate_limit_redis_error';
 const LIMITER_FINGERPRINT = ['request-limiter-redis-unavailable'];
@@ -85,6 +92,10 @@ const LIMITER_CONTEXT = {
 /** 2026-11-06T15:30:20Z, 20 s into epoch minute 29899650. */
 const T0 = Date.UTC(2026, 10, 6, 15, 30, 20);
 const T0_MINUTE = 29899650;
+/** The epoch hour that contains T0, which keys the guest-key failure count. */
+const T0_HOUR = Math.floor(T0 / 3_600_000);
+const BUDGET_KEY = `authfail:guest-key:${T0_HOUR}`;
+const RECORD_FINGERPRINT = ['guest-key-failure-record'];
 
 /** Epoch-ms of the first millisecond of the minute after `ms`. */
 function nextMinuteStart(ms: number): number {
@@ -371,6 +382,179 @@ describe('rejectIfRateLimited', () => {
       expect(mockIncr).toHaveBeenCalledWith(
         `ratelimit:auth-init:${ip}:${T0_MINUTE}`,
       );
+    });
+
+    it('collapses an IPv6 /64 into one counter, from either header', async () => {
+      await rejectIfRateLimited(
+        request('2001:db8:aaaa:bbbb:1111:2222:3333:4444'),
+        mockResponse(),
+        'auth-init',
+        5,
+      );
+      await rejectIfRateLimited(
+        mockRequest({
+          headers: {
+            'x-forwarded-for': '2001:db8:aaaa:bbbb:ffff::1, 10.0.0.1',
+          },
+        }),
+        mockResponse(),
+        'auth-init',
+        5,
+      );
+      await rejectIfRateLimited(
+        request('2001:db8:aaaa:bbbc::1'),
+        mockResponse(),
+        'auth-init',
+        5,
+      );
+
+      expect(mockIncr.mock.calls.map(([key]) => key)).toEqual([
+        `ratelimit:auth-init:2001:db8:aaaa:bbbb::/64:${T0_MINUTE}`,
+        `ratelimit:auth-init:2001:db8:aaaa:bbbb::/64:${T0_MINUTE}`,
+        `ratelimit:auth-init:2001:db8:aaaa:bbbc::/64:${T0_MINUTE}`,
+      ]);
+    });
+
+    it('counts addresses of one IPv6 /64 against the same limit', async () => {
+      expect(
+        (await hit('auth-init', 1, request('2001:db8:aaaa:bbbb::1'))).rejected,
+      ).toBe(false);
+      expect(
+        (await hit('auth-init', 1, request('2001:db8:aaaa:bbbb::2'))).rejected,
+      ).toBe(true);
+    });
+
+    it('keys an IPv4-mapped IPv6 address as its IPv4 form', async () => {
+      await hit('auth-init', 5, request('::ffff:203.0.113.7'));
+
+      expect(mockIncr).toHaveBeenCalledWith(
+        `ratelimit:auth-init:203.0.113.7:${T0_MINUTE}`,
+      );
+    });
+
+    it('keys a value that is not an address as "unknown"', async () => {
+      await hit('auth-init', 5, request('not-an-ip'));
+
+      expect(mockIncr).toHaveBeenCalledWith(
+        `ratelimit:auth-init:unknown:${T0_MINUTE}`,
+      );
+    });
+  });
+
+  describe('guest-key failure budget', () => {
+    beforeEach(() => {
+      mockGet.mockReset();
+    });
+
+    it('allows 20 failed attempts an hour', () => {
+      expect(GUEST_KEY_FAILS_PER_HOUR).toBe(20);
+    });
+
+    describe('guestKeyBudgetSpent', () => {
+      it.each([
+        ['at the budget', 20, true],
+        ['over the budget', 35, true],
+        ['one under the budget', 19, false],
+        ['with no failures yet', null, false],
+      ])('reads %s', async (_label, count, spent) => {
+        mockGet.mockResolvedValueOnce(count);
+
+        await expect(guestKeyBudgetSpent()).resolves.toBe(spent);
+        expect(mockGet).toHaveBeenCalledTimes(1);
+        expect(mockGet).toHaveBeenCalledWith(BUDGET_KEY);
+      });
+
+      it('moves to a new key when the hour changes', async () => {
+        mockGet.mockResolvedValue(null);
+        await guestKeyBudgetSpent();
+        vi.setSystemTime(T0 + 3_600_000);
+        await guestKeyBudgetSpent();
+
+        expect(mockGet.mock.calls.map(([key]) => key)).toEqual([
+          `authfail:guest-key:${T0_HOUR}`,
+          `authfail:guest-key:${T0_HOUR + 1}`,
+        ]);
+      });
+
+      it('rejects when Redis fails, so the caller can fail closed', async () => {
+        const err = new Error('connect timeout');
+        mockGet.mockRejectedValueOnce(err);
+
+        await expect(guestKeyBudgetSpent()).rejects.toBe(err);
+      });
+
+      it.each([
+        ['an "Aborted" pseudo-reply', 'Aborted'],
+        ['a negative count', -1],
+        ['an object', { count: 20 }],
+        ['a fractional count', 1.5],
+      ])(
+        'rejects on %s rather than reading it as "not spent"',
+        async (_label, reply) => {
+          mockGet.mockResolvedValueOnce(reply);
+
+          await expect(guestKeyBudgetSpent()).rejects.toThrow(/malformed/i);
+        },
+      );
+
+      it('is false, without a Redis call, when Upstash is not configured', async () => {
+        delete process.env.KV_REST_API_URL;
+        delete process.env.UPSTASH_REDIS_REST_URL;
+
+        await expect(guestKeyBudgetSpent()).resolves.toBe(false);
+        expect(mockGet).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('recordGuestKeyFailure', () => {
+      it('counts the failure under the hour key with a 7200 s TTL in one round trip', async () => {
+        await recordGuestKeyFailure();
+
+        expect(mockPipeline).toHaveBeenCalledTimes(1);
+        expect(mockIncr).toHaveBeenCalledTimes(1);
+        expect(mockIncr).toHaveBeenCalledWith(BUDGET_KEY);
+        expect(mockExpire).toHaveBeenCalledTimes(1);
+        expect(mockExpire).toHaveBeenCalledWith(BUDGET_KEY, 7200);
+        expect(mockExec).toHaveBeenCalledTimes(1);
+        expect(mockDefaultPipeline).not.toHaveBeenCalled();
+      });
+
+      it('raises the count that guestKeyBudgetSpent reads', async () => {
+        for (let i = 0; i < GUEST_KEY_FAILS_PER_HOUR; i += 1) {
+          await recordGuestKeyFailure();
+        }
+
+        mockGet.mockImplementation(
+          async (key: string) => store.get(key)?.value ?? null,
+        );
+        await expect(guestKeyBudgetSpent()).resolves.toBe(true);
+      });
+
+      it('resolves and reports to Sentry when Redis fails', async () => {
+        const err = new Error('connect timeout');
+        mockExec.mockRejectedValueOnce(err);
+
+        await expect(recordGuestKeyFailure()).resolves.toBeUndefined();
+
+        expect(mockCaptureException).toHaveBeenCalledTimes(1);
+        expect(mockCaptureException).toHaveBeenCalledWith(
+          err,
+          expect.objectContaining({
+            level: 'warning',
+            fingerprint: RECORD_FINGERPRINT,
+          }),
+        );
+      });
+
+      it('does nothing, and reports nothing, when Upstash is not configured', async () => {
+        delete process.env.KV_REST_API_URL;
+        delete process.env.UPSTASH_REDIS_REST_URL;
+
+        await expect(recordGuestKeyFailure()).resolves.toBeUndefined();
+
+        expect(mockPipeline).not.toHaveBeenCalled();
+        expect(mockCaptureException).not.toHaveBeenCalled();
+      });
     });
   });
 
