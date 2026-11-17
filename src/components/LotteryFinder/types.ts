@@ -370,12 +370,6 @@ export interface LotteryFire {
   outcomes: LotteryFireOutcomes;
 
   /**
-   * Nothing reads this since the NEW HIGH badge came out; the next
-   * commit deletes it.
-   */
-  rangePosAtTrigger?: number | null;
-
-  /**
    * Inversion-quality bonus integrated into the score. Server computes
    * qualityAdjustedScore = score + inversionQualityBonus(quintile)
    * at SELECT time (Phase 3 — Path A in spec
