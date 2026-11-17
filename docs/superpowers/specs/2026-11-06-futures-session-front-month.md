@@ -487,7 +487,7 @@ Steps:
 
 ## Results
 
-Counts come from the run logs and reports kept locally under `docs/tmp/` (`futures-repair-0728/`, `futures-derived-recompute-front-month-2/` and `-3/`; gitignored) and from the run ledger. Times are UTC unless marked CT.
+Counts come from the run logs and reports kept locally under `docs/tmp/` (`futures-repair-0728/`, `futures-derived-recompute-front-month-2/`, `-3/`, `-4/`, `-6/` and `-7/`; gitignored) and from the run ledger. Times are UTC unless marked CT.
 
 **Start date (owner, 2026-11-12 10:20 CT).** History was repaired from 2026-07-28, not from 09-04.
 
@@ -551,8 +551,14 @@ Counts come from the run logs and reports kept locally under `docs/tmp/` (`futur
   - Backup `docs/tmp/futures-derived-recompute-front-month-4/backup-2026-11-15T07-32-38-157Z.jsonl`: 1,317 lines, all `["volumeRatio"]` to NULL, sha256 `551af8c6481e063e222d4efb0cb2fea5c24e271389c96f8a3cb8f2fb3a8d2925`.
   - **Dry run 5** (code c7c889be, done 08:00Z): planned 0, the band 0 of 3,260. A live recount found 1 ratio left on CL from 07-17 to 07-27 (the 07-17 00:00Z row) and 0 on GC from the 07-05 evening to 07-27.
 - **The wrong July prices (round 6; owner decision 2026-11-15 about 16:05 CT, "fix the clearly wrong").**
-  - A read-only check of the band rows found: GC 06-15 14:12Z to 07-28 (1,487 rows) priced right on the contract (3 same-minute samples within 0.05% of the front on 07-28 and 07-29) but 544 rows priced from a bar over 60 minutes old (median age 11 min, p90 28 h, max 3.4 days); and CL on the 07-22 session priced on CLU6 with a day change against the CLQ6 open. CL 07-17 to 07-21 prices stay (real CLQ6 prints, fresh).
-  - Rules and tests as under Phase 6b above. The dry run of this round, the apply and a second dry run are below when they are done.
+  - A read-only check of the band rows found: GC 06-15 14:12Z to 07-28 (1,487 rows) priced right on the contract (3 same-minute samples within 0.05% of the front on 07-28 and 07-29) but 544 rows priced from a bar over 15 minutes old (`computeSnapshot`'s freshness gate), all of them also over 60 minutes. The price-bar age over all 1,487 rows has median 11 min, p90 28 h, max 3.4 days. Every one of the 544 repeats its stale bar's close, which is why the 11-12 frozen-stale delete (it takes only rows whose price differs from the last bar's close) kept them. The check also found CL on the 07-22 session priced on CLU6 with a day change against the CLQ6 open. CL 07-17 to 07-21 prices stay (real CLQ6 prints, fresh).
+  - Rules and tests as under Phase 6b above.
+  - **Owner decision 2026-11-16 about 00:2x CT, "Delete the 544".** The CL set is ET date 07-21 rows priced from CLU6 (07-22 00:00Z on), 47 rows, not trade date 07-22: the day change compares with the first bar at or after 9:30 ET of the row's ET date, and the 07-22 rows compare with the 07-22 cash open, which is clean. The switch pin is 07-21 22:00Z (CLQ6's last bar 07-21 18:29Z, CLU6's first 07-22 00:00Z); any pin between selects the same rows.
+  - **Dry run 6** (code ad71f3ea, 2026-11-16 21:05:40Z to 21:32:02Z): GC junk delete 544 of 1,487 band rows (06-15 14:12Z to 07-28), all stale and equal to their bar's close; junk in scope 0, other roots 0. CL day change to NULL 47 of 47; price, 1h change and ratio 0; 1h change across the switch 0. Repaired-day 0, window-only 0, round-5 band ratio 0 (CL 0 of 1,773, GC 0 of 943 plus the 544 deleted). Pre-market 0 (58 in scope), fires 0 (control 414 of 414). Method control 18,027 of 18,027; thin-root other 0 on ZN, RTY, CL, GC; ES and NQ exact; attribution 0 on all six.
+  - **Apply**, 2026-11-16 21:34:25Z to 22:02:14Z on ad71f3ea, with `--expect-snapshots 47 --expect-premarket 0 --expect-fires 0 --delete-junk-stale --expect-junk-deletes 544`: 47 rows changed and verified, 544 deleted and verified, 0 pre-market, 0 fires.
+  - Backup `docs/tmp/futures-derived-recompute-front-month-6/backup-2026-11-16T22-02-12-942Z.jsonl`: 591 lines. CL 47, all ET date 07-21, ts 07-22 00:05:30Z to 03:55:30Z, `["changeDayPct"]` to NULL; GC 544 full-row deletes, 06-21 22:00Z to 07-26 22:05Z (June 218, July 326). sha256 `d0db6e9081af5ea1915d6d229a6e6b6d8db2e74003bd50409346ad0450038797`.
+  - **Dry run 7** (22:03:34Z to 22:31:45Z): planned 0. Snapshots 0 (repaired-day 0 of 15,255, window-only 0 of 108,371, band 0 of 2,716), junk 0 (GC 0 of 943), CL day change 0 of 47, pre-market 0, fires 0; control 18,072 of 18,072; attribution 0 on all six.
+  - **Live recount** (read-only, after the apply): CL day changes mixing CLQ6 and CLU6: 0 (was 47); the 3 left on ET 07-21 rows are before the switch, on CLQ6, and clean. GC band 06-15 14:12Z to 07-28: 943 rows (June 430, July 513), 0 stale (was 544).
 
 **Left as is (not written, by design).**
 
@@ -561,6 +567,8 @@ Counts come from the run logs and reports kept locally under `docs/tmp/` (`futur
 - The 6 untagged 11-02 bars.
 - The 1,387 minutes with NULL flow.
 - Bars before 2026-07-28: not re-derived, `contract` stays NULL (Open question 6).
+- The CL prices of 07-17 to 07-21 (real CLQ6 prints, fresh).
+- GC rows in scope with a stale price bar outside the band, not in the owner's decision: August 6 (none equal to their bar's close), September 1 (equal).
 
 **Formula note.** `computeSnapshot`'s 20-day volume base averages the sums of UTC days (`api/_lib/futures-derive.ts:273-303`), so a Sunday-evening session and the current partial day each count as a day, and the oldest day of the window is partial too. Not changed here.
 
@@ -572,7 +580,7 @@ Counts come from the run logs and reports kept locally under `docs/tmp/` (`futur
 4. Apply #204 and #205 (#201–#203 went in on 2026-11-07), push Phases 1–3b, run the seed. **Done 2026-11-08.**
 5. Phases 4a, 4b, 4c. **Done 2026-11-08.**
 6. Phase 5a (push any time), then Phase 5b: re-run the seed after a 17:00 CT open, then push uw-stream. Before 2026-12-09. **Done: 5a 2026-11-08; 5b seed re-run and uw-stream push 2026-11-11, live check passed 2026-11-12.**
-7. Phase 6, outside market hours, then Phase 6b. **Done: Phase 6 write run 2026-11-13; Phase 6b applied 2026-11-14.**
+7. Phase 6, outside market hours, then Phase 6b. **Done: Phase 6 write run 2026-11-13; Phase 6b applied 2026-11-14; rounds 5 and 6 of it (the rows before the 07-28 scope; the July prices) applied 2026-11-15 and 2026-11-16.**
 8. Phase 7. **Done 2026-11-14.**
 
 Between steps 5 and 6, the cron fills gaps by the new rule while live bars still follow the old one. Phase 6 covers that window.
