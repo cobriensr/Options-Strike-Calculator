@@ -4,10 +4,11 @@ node_modules/
 # Build output
 dist/
 
-# Environment
-.env
-.env.local
-.env.*.local
+# Environment: every .env variant is ignored (vercel env pull writes
+# .env.local, .env.production and others). Only the example files are tracked.
+.env*
+!.env.example
+!sidecar/.env.example
 
 # IDE
 .vscode/
@@ -57,7 +58,6 @@ __snapshots__/
 !.claude/skills/periscope/references
 !.claude/skills/periscope/references/**
 .vercel
-.env*.local
 .clone/
 
 # Sonar

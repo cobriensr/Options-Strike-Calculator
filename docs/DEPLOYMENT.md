@@ -234,11 +234,10 @@ About 255 scripts in `scripts/` (plus `_lib/`, `ops/`, `eod-flow-analysis/` and 
 
 ## CI
 
-Four workflow files in `.github/workflows/`:
+Three workflow files in `.github/workflows/`:
 
 - **ci.yml**: on pushes to main, PRs and manual dispatch. A `paths-filter` job picks the gates that run. The **App Quality Gate** (`npm run audit` + `npm run review`) runs when `src/`, `api/`, `scripts/`, `e2e/`, `.github/`, config or lockfiles change. **E2E Tests** (Chromium only) runs after the app gate passes, when a file the browser loads changes (`src/`, `e2e/`, `playwright.config.ts`, `vite.config.ts`, `tsconfig.json`, `index.html`, `public/`, `package*.json`, or the two workflow files); `api/`-only changes skip it. The **ML**, **Sidecar**, **uw-stream** and **nightly** gates each run when their folder changes.
 - **e2e-nightly.yml**: all three browsers, weekdays at 23:00 UTC and on manual dispatch, with no path filter.
 - **ml-pipeline.yml**: 01:45 UTC Tue–Sat and manual dispatch. Job `pipeline` runs `make all`, uploads plots to Vercel Blob, calls `/api/ml/analyze-plots`, and commits `ml/findings.json` + plots. Job `takeit-retrain` then rebuilds the Take-It training set, retrains, warns when out-of-fold Brier > 0.27, and uploads bundles with `scripts/upload_takeit_bundles.mjs`. **The workflow is disabled in GitHub** (last run 2026-04-17), so neither job runs.
-- **neon_workflow.yml**: creates a Neon branch per PR (expires after 14 days) and deletes it when the PR closes.
 
-`ml-pipeline.yml` needs the repository secrets `DATABASE_URL`, `BLOB_READ_WRITE_TOKEN`, `VERCEL_URL`, `CRON_SECRET` and `VERCEL_BYPASS_SECRET`. `neon_workflow.yml` needs the secret `NEON_API_KEY` and the variable `NEON_PROJECT_ID`. The `ci.yml` gates need none.
+`ml-pipeline.yml` needs the repository secrets `DATABASE_URL`, `BLOB_READ_WRITE_TOKEN`, `VERCEL_URL`, `CRON_SECRET` and `VERCEL_BYPASS_SECRET`. The `ci.yml` gates need none.
