@@ -89,7 +89,13 @@ def test_the_fake_url_is_in_place():
 # ── Subprocess probes ────────────────────────────────────────────────────────
 
 
-def _run_probe(tmp_path: Path, probe_source: str, extra_files=None, extra_args=()):
+def _run_probe(
+    tmp_path: Path,
+    probe_source: str,
+    extra_files=None,
+    extra_args=(),
+    extra_env=None,
+):
     """Run a probe suite under a copy of the real conftest in an empty dir."""
     shutil.copy(Path(__file__).resolve().parent.parent / "conftest.py", tmp_path)
     (tmp_path / "test_probe.py").write_text(textwrap.dedent(probe_source))
@@ -98,6 +104,7 @@ def _run_probe(tmp_path: Path, probe_source: str, extra_files=None, extra_args=(
     env = dict(os.environ)
     env.update(dict.fromkeys(BLOCKED_ENV_NAMES, "set-by-the-parent-run"))
     env["DATABASE_URL"] = "postgresql://real:secret@invalid.invalid/prod"
+    env.update(extra_env or {})
     env["PYTHONPATH"] = str(tmp_path)
     return subprocess.run(
         [
@@ -150,6 +157,48 @@ def test_env_is_forced_to_the_fake_and_scrubbed(tmp_path):
             assert os.environ["DATABASE_URL"] == FAKE_DATABASE_URL
             assert "BLOB_READ_WRITE_TOKEN" not in os.environ
         """,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_an_exported_sentry_dsn_never_reaches_a_test(tmp_path):
+    # SENTRY_DSN is not a database name, but init_sentry() reads it, so a DSN
+    # exported in the developer's shell would reach a real client the first time
+    # a test called an unpatched init_sentry(). The names are spelled out here
+    # because the probe's conftest copy is the thing under test: reading the
+    # list from it would pass vacuously once the entry was dropped.
+    result = _run_probe(
+        tmp_path,
+        """
+        import os
+
+        import pytest
+
+        FAKE_DSN = "https://public@sentry.example.invalid/1"
+
+        # What a source module read at import (collection) time would see.
+        DSN_AT_IMPORT = os.environ.get("SENTRY_DSN")
+
+        @pytest.fixture
+        def own_fake_dsn(monkeypatch):
+            # The shape of tests/conftest.py's sentry_events fixture.
+            monkeypatch.setenv("SENTRY_DSN", FAKE_DSN)
+
+        def test_import_time_sees_no_dsn():
+            assert DSN_AT_IMPORT is None
+
+        # .get() rather than `in os.environ`: a failure then prints one value,
+        # not the whole environment.
+        def test_a_test_sees_no_dsn():
+            assert os.environ.get("SENTRY_DSN") is None
+
+        def test_a_fixture_still_sets_its_own_fake(own_fake_dsn):
+            assert os.environ.get("SENTRY_DSN") == FAKE_DSN
+
+        def test_the_fake_does_not_outlive_its_test():
+            assert os.environ.get("SENTRY_DSN") is None
+        """,
+        extra_env={"SENTRY_DSN": "https://parent@sentry.example.invalid/9"},
     )
     assert result.returncode == 0, result.stdout + result.stderr
 

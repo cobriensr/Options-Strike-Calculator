@@ -30,6 +30,8 @@ The CI job `takeit-retrain` (`.github/workflows/ml-pipeline.yml`) is not a test,
 
 `DATABASE_URL`, `DATABASE_URL_UNPOOLED`, `POSTGRES_URL`, `POSTGRES_URL_NON_POOLING`, `POSTGRES_PRISMA_URL`, `NEON_DATABASE_URL`, plus the writable remote stores `KV_REST_API_URL`, `KV_REST_API_TOKEN`, `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN`, `BLOB_READ_WRITE_TOKEN` and the `R2_*` credentials (`R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_ENDPOINT_URL`, `R2_BUCKET_FULLTAPE`). A test that needs a value sets its own fake after the setup has run.
 
+The sidecar block also strips `SENTRY_DSN`. It is not a store, but `init_sentry()` reads it, and the sidecar's `sentry_sdk` is the real package, so a DSN exported in the shell would reach a real client the first time a test called an unpatched `init_sentry()`. `tests/conftest.py` sets its own fake DSN in the `sentry_events` fixture, after the strip.
+
 ## Production stores (2026-11-05)
 
 The same design, extended: the stores record into the same attempts log, so the existing `afterEach` and `afterAll` checks (Vitest) and the session-end check (Python) fail a run that swallowed an attempt. The message is "tests must not reach a production store". A read reaches production as surely as a write, so reads are blocked too.

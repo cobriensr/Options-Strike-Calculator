@@ -711,11 +711,10 @@ class TestSeedArchivePost:
         assert status == 404
 
     def test_post_401_when_seed_archive_not_configured(self) -> None:
-        """All admin-auth rejection paths return 401 with the same body so
-        an external probe can't distinguish 'disabled' from 'wrong token'
-        — that distinction was an enumeration oracle for the admin
-        surface. Operators can still tell the two states apart via the
-        ``seed endpoint not configured`` server-side log line.
+        """Every admin-auth rejection returns 401 with the same body, so a
+        caller can't tell 'disabled' from 'wrong token', which would show
+        which admin routes exist. Operators can still tell the two states
+        apart via the ``seed endpoint not configured`` server-side log line.
         """
         status, body = _run_post_request()
         assert status == 401

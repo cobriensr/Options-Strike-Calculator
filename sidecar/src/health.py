@@ -290,10 +290,9 @@ class HealthHandler(BaseHTTPRequestHandler):
             self.wfile.write(b"Not found")
             return
 
-        # Unify all auth-rejection paths to 401 so an external probe can't
-        # distinguish "endpoint disabled" from "wrong token" — that
-        # distinction is an enumeration oracle for the admin surface.
-        # Operators can still tell the two states apart via server logs.
+        # Answer 401 on every auth rejection so a caller can't tell "endpoint
+        # disabled" from "wrong token", which would show which admin routes
+        # exist. Operators can still tell the two states apart via server logs.
         if self.seed_archive is None:
             log.warning("seed endpoint not configured (seed_archive is None)")
             self.send_response(401)

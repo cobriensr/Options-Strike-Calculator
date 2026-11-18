@@ -23,7 +23,7 @@ psycopg2.pool.ThreadedConnectionPool themselves, which replaces the stub.
 
 DATABASE_URL is forced to a fake value here, so config.Settings() (which
 validates at import) never sees a real one, and the other database and
-writable-store env names are removed before every test.
+writable-store env names, and SENTRY_DSN, are removed before every test.
 
 Twin of the guard in uw-stream/conftest.py, ml/conftest.py and
 scripts/conftest.py. sidecar/tests/test_no_database_guard.py proves each
@@ -48,8 +48,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 FAKE_DATABASE_URL = "postgresql://test:" + "fakefixture" + "@localhost/test"
 
 # Every name a database client or a writable remote store reads, other than
-# DATABASE_URL (forced to the fake above). Tests that need a value set their
-# own fake with monkeypatch.setenv.
+# DATABASE_URL (forced to the fake above), and SENTRY_DSN. Tests that need a
+# value set their own fake with monkeypatch.setenv.
 BLOCKED_ENV_NAMES = (
     "DATABASE_URL_UNPOOLED",
     "POSTGRES_URL",
@@ -66,6 +66,9 @@ BLOCKED_ENV_NAMES = (
     "R2_SECRET_ACCESS_KEY",
     "R2_ENDPOINT_URL",
     "R2_BUCKET_FULLTAPE",
+    # Not a database name: init_sentry() reads it, so a DSN exported in the
+    # shell would reach a real client if a test called it unpatched.
+    "SENTRY_DSN",
 )
 
 _BLOCK_MESSAGE = "tests must not connect to a database"
