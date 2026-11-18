@@ -371,13 +371,13 @@ class TestArchiveBearerGate:
         wrong = "Bearer wrong-secret-value"
 
         _run_request(path, headers={})
-        assert "no Authorization header" in caplog.text
-        assert "bearer mismatch" not in caplog.text
+        assert "reason missing" in caplog.text
+        assert "reason wrong" not in caplog.text
 
         caplog.clear()
         _run_request(path, headers={"Authorization": wrong})
-        assert "bearer mismatch" in caplog.text
-        assert "no Authorization header" not in caplog.text
+        assert "reason wrong" in caplog.text
+        assert "reason missing" not in caplog.text
 
         # Neither the configured secret nor the offered value is logged.
         assert SHARED_SECRET not in caplog.text
@@ -1424,6 +1424,10 @@ class TestClientAddress:
     def test_two_empty_headers_fall_through_to_the_socket_address(self) -> None:
         assert self._reported({"X-Real-IP": "", "X-Forwarded-For": ""}) == "127.0.0.1"
 
+    def test_the_spaces_around_an_x_real_ip_are_dropped(self) -> None:
+        """`http.server` drops the spaces before a header value, not after it."""
+        assert self._reported({"X-Real-IP": "203.0.113.7  "}) == "203.0.113.7"
+
     @pytest.mark.parametrize("header", ["X-Forwarded-For", "X-Real-IP"])
     def test_a_long_value_is_cut_at_200_characters(self, header: str) -> None:
         assert self._reported({header: "9" * 5000}) == "9" * 200
@@ -1444,21 +1448,26 @@ class TestArchiveCheckReports:
             )
         assert status == 401
         assert body == _UNAUTHORIZED
-        report.assert_called_once_with("archive", "127.0.0.1")
+        report.assert_called_once_with("archive", "127.0.0.1", "wrong")
 
     @pytest.mark.parametrize(
-        "headers",
-        [{}, {"Authorization": "Bearer "}, {"Authorization": "Bearer caf\xe9"}],
-        ids=["missing", "empty-bearer", "non-ascii"],
+        ("headers", "reason"),
+        [
+            ({}, "missing"),
+            ({"Authorization": ""}, "missing"),
+            ({"Authorization": "Bearer "}, "wrong"),
+            ({"Authorization": "Bearer caf\xe9"}, "wrong"),
+        ],
+        ids=["missing", "empty-header", "empty-bearer", "non-ascii"],
     )
     def test_a_missing_or_malformed_header_reports_too(
-        self, headers: dict[str, str]
+        self, headers: dict[str, str], reason: str
     ) -> None:
         with patch("health.report_mismatch") as report:
             status, body = _run_request(_ARCHIVE_PATH, headers=headers)
         assert status == 401
         assert body == _UNAUTHORIZED
-        report.assert_called_once_with("archive", "127.0.0.1")
+        report.assert_called_once_with("archive", "127.0.0.1", reason)
 
     def test_the_report_carries_the_header_address(self) -> None:
         with patch("health.report_mismatch") as report:
@@ -1466,7 +1475,7 @@ class TestArchiveCheckReports:
                 _ARCHIVE_PATH,
                 headers={"Authorization": "Bearer wrong", "X-Real-IP": "203.0.113.7"},
             )
-        report.assert_called_once_with("archive", "203.0.113.7")
+        report.assert_called_once_with("archive", "203.0.113.7", "wrong")
 
     def test_a_valid_bearer_reports_nothing(self) -> None:
         with (
@@ -1491,12 +1500,16 @@ class TestArchiveCheckReports:
 
 class TestTakeitExplainCheckReports:
     @pytest.mark.parametrize(
-        "headers",
-        [{}, {"Authorization": "Bearer wrong"}, {"Authorization": "Bearer caf\xe9"}],
+        ("headers", "reason"),
+        [
+            ({}, "missing"),
+            ({"Authorization": "Bearer wrong"}, "wrong"),
+            ({"Authorization": "Bearer caf\xe9"}, "wrong"),
+        ],
         ids=["missing", "wrong", "non-ascii"],
     )
     def test_a_failed_bearer_reports_the_takeit_explain_surface(
-        self, headers: dict[str, str]
+        self, headers: dict[str, str], reason: str
     ) -> None:
         with (
             patch.dict(sys.modules, {"takeit_server": _fake_takeit()}),
@@ -1507,7 +1520,7 @@ class TestTakeitExplainCheckReports:
             )
         assert status == 401
         assert body == _UNAUTHORIZED
-        report.assert_called_once_with("takeit-explain", "127.0.0.1")
+        report.assert_called_once_with("takeit-explain", "127.0.0.1", reason)
 
     def test_a_valid_bearer_reports_nothing(self) -> None:
         with (
@@ -1534,12 +1547,17 @@ class TestTakeitExplainCheckReports:
 
 class TestSeedCheckReports:
     @pytest.mark.parametrize(
-        "headers",
-        [{}, {"X-Admin-Token": "wrong"}, {"X-Admin-Token": "caf\xe9"}],
-        ids=["missing", "wrong", "non-ascii"],
+        ("headers", "reason"),
+        [
+            ({}, "missing"),
+            ({"X-Admin-Token": ""}, "missing"),
+            ({"X-Admin-Token": "wrong"}, "wrong"),
+            ({"X-Admin-Token": "caf\xe9"}, "wrong"),
+        ],
+        ids=["missing", "empty-header", "wrong", "non-ascii"],
     )
     def test_a_failed_token_reports_the_seed_surface(
-        self, monkeypatch: pytest.MonkeyPatch, headers: dict[str, str]
+        self, monkeypatch: pytest.MonkeyPatch, headers: dict[str, str], reason: str
     ) -> None:
         HealthHandler.seed_archive = staticmethod(lambda: {"failed": 0})
         monkeypatch.setenv("ARCHIVE_SEED_TOKEN", "right")
@@ -1547,14 +1565,14 @@ class TestSeedCheckReports:
             status, body = _run_post_request(headers=headers)
         assert status == 401
         assert body == _UNAUTHORIZED
-        report.assert_called_once_with("seed", "127.0.0.1")
+        report.assert_called_once_with("seed", "127.0.0.1", reason)
 
     def test_a_token_sent_when_none_is_configured_reports(self) -> None:
         HealthHandler.seed_archive = staticmethod(lambda: {"failed": 0})
         with patch("health.report_mismatch") as report:
             status, _body = _run_post_request(headers={"X-Admin-Token": "anything"})
         assert status == 401
-        report.assert_called_once_with("seed", "127.0.0.1")
+        report.assert_called_once_with("seed", "127.0.0.1", "wrong")
 
     def test_the_report_carries_the_header_address(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1565,7 +1583,7 @@ class TestSeedCheckReports:
             _run_post_request(
                 headers={"X-Admin-Token": "wrong", "X-Forwarded-For": "198.51.100.9"}
             )
-        report.assert_called_once_with("seed", "198.51.100.9")
+        report.assert_called_once_with("seed", "198.51.100.9", "wrong")
 
     def test_a_right_token_reports_nothing(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1608,6 +1626,40 @@ class TestSecretCheckLogs:
         assert len(errors) == 1
         assert "archive" in errors[0]
         assert "127.0.0.1" in errors[0]
+
+    @pytest.mark.parametrize(
+        ("headers", "reason"),
+        [({}, "missing"), ({"Authorization": "Bearer wrong"}, "wrong")],
+        ids=["missing", "wrong"],
+    )
+    def test_a_rejected_bearer_logs_one_warning_with_surface_reason_and_client(
+        self, headers: dict[str, str], reason: str, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        _run_request(_ARCHIVE_PATH, headers={**headers, "X-Real-IP": "203.0.113.7"})
+
+        warnings = [
+            r.getMessage()
+            for r in caplog.records
+            if r.name == "sidecar" and r.levelname == "WARNING"
+        ]
+        assert warnings == [
+            f"archive secret check failed (reason {reason}, client 203.0.113.7)"
+        ]
+
+    def test_a_rejected_seed_token_logs_one_warning(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        HealthHandler.seed_archive = staticmethod(lambda: {"failed": 0})
+        monkeypatch.setenv("ARCHIVE_SEED_TOKEN", "right")
+
+        _run_post_request(headers={"X-Admin-Token": "wrong"})
+
+        warnings = [
+            r.getMessage()
+            for r in caplog.records
+            if r.name == "sidecar" and r.levelname == "WARNING"
+        ]
+        assert warnings == ["seed secret check failed (reason wrong, client 127.0.0.1)"]
 
     def test_each_failing_check_logs_its_own_error(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture

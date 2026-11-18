@@ -26,7 +26,9 @@ from urllib.parse import parse_qs, urlparse
 from archive_seeder import SeedBusyError
 from auth import (
     SHARED_SECRET_ENV,
+    Surface,
     bearer_ok,
+    mismatch_reason,
     report_mismatch,
     seed_token,
     shared_secret,
@@ -302,8 +304,9 @@ class HealthHandler(BaseHTTPRequestHandler):
 
         # Auth gate — single-owner token from env, compared in constant time
         # (see auth.token_ok) so it can't be guessed from response timing.
-        if not token_ok(self.headers.get("X-Admin-Token"), seed_token()):
-            report_mismatch("seed", self._client_ip())
+        token = self.headers.get("X-Admin-Token")
+        if not token_ok(token, seed_token()):
+            report_mismatch("seed", self._client_ip(), mismatch_reason(token))
             self.send_response(401)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
@@ -394,31 +397,29 @@ class HealthHandler(BaseHTTPRequestHandler):
     def _client_ip(self) -> str:
         """The client address to log with a failed secret check.
 
-        `X-Real-IP` if the request has one, else the raw `X-Forwarded-For`,
-        else the socket's peer address. A client can send either header, so
-        the result is only logged, never trusted, and it is cut at
+        `X-Real-IP` if it has text, else the raw `X-Forwarded-For`, else the
+        socket's peer address. A client can send either header, so the result
+        is only logged, never trusted, and it is cut at
         `_MAX_LOGGED_CLIENT_LEN` characters.
         """
         address = (
-            self.headers.get("X-Real-IP")
+            (self.headers.get("X-Real-IP") or "").strip()
             or self.headers.get("X-Forwarded-For")
             or self.client_address[0]
         )
         return address[:_MAX_LOGGED_CLIENT_LEN]
 
-    def _require_bearer(self, secret: str, surface: str) -> bool:
+    def _require_bearer(self, secret: str, surface: Surface) -> bool:
         """Return True when the request carries `Bearer <secret>`.
 
-        Otherwise report the failed check for `surface` (one of
-        `auth.SURFACES`), answer 401 and return False. The log line says
-        whether the header was missing or wrong, and never the value of either.
+        Otherwise report the failed check for `surface`, answer 401 and return
+        False. The report's one log line says whether the header was missing or
+        wrong, and never the value of either.
         """
         header = self.headers.get("Authorization")
         if bearer_ok(header, secret):
             return True
-        reason = "no Authorization header" if header is None else "bearer mismatch"
-        log.warning("%s rejected: %s", surface, reason)
-        report_mismatch(surface, self._client_ip())
+        report_mismatch(surface, self._client_ip(), mismatch_reason(header))
         self._send_json(401, {"error": "unauthorized"})
         return False
 
