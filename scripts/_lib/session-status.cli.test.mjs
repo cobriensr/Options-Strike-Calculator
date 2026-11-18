@@ -11,7 +11,6 @@
  * for real.
  */
 
-import { spawnSync } from 'node:child_process';
 import {
   appendFileSync,
   mkdirSync,
@@ -33,6 +32,7 @@ import {
   pauseRebase,
   setupScratchGit,
 } from './prune-worktrees.fixtures.mjs';
+import { SLOW_CHILD_TIMEOUT, spawnChild } from './spawn-timeout.fixtures.mjs';
 
 setupScratchGit();
 
@@ -45,10 +45,11 @@ const PRUNE_CLI = path.join(HERE, '..', 'prune-merged-worktrees.mjs');
  * @param {{ cwd?: string, env?: NodeJS.ProcessEnv }} [options]
  */
 function run(args, { cwd = process.cwd(), env = cleanEnv() } = {}) {
-  return spawnSync(process.execPath, [CLI, ...args], {
+  return spawnChild(process.execPath, [CLI, ...args], {
     cwd,
     env,
     encoding: 'utf8',
+    timeout: SLOW_CHILD_TIMEOUT,
     windowsHide: true,
   });
 }
@@ -332,10 +333,11 @@ describe('session-status CLI: a real repository', () => {
   });
 
   it('agrees with `npm run worktrees:prune`: every plain merged row is one it would remove, and it keeps each held row for the reason shown', () => {
-    const dry = spawnSync(process.execPath, [PRUNE_CLI, '--dry-run'], {
+    const dry = spawnChild(process.execPath, [PRUNE_CLI, '--dry-run'], {
       cwd: repo,
       env: cleanEnv(),
       encoding: 'utf8',
+      timeout: SLOW_CHILD_TIMEOUT,
       windowsHide: true,
     });
     expect(dry.status).toBe(0);

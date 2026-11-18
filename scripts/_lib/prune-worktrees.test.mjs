@@ -9,7 +9,6 @@
  * that real git cannot produce on demand are in prune-worktrees.races.test.mjs.
  */
 
-import { spawnSync } from 'node:child_process';
 import {
   existsSync,
   mkdirSync,
@@ -49,6 +48,7 @@ import {
   pruneName,
   pruneWorktrees,
 } from './prune-worktrees.mjs';
+import { SLOW_CHILD_TIMEOUT, spawnChild } from './spawn-timeout.fixtures.mjs';
 
 // vitest runs from the repo root (same convention as check-coverage-floor).
 const CLI = path.resolve(
@@ -1026,10 +1026,11 @@ describe('prune-merged-worktrees CLI', () => {
   }, FIXTURE_TIMEOUT);
 
   function runCli(cwd, args = [], extraEnv = {}) {
-    return spawnSync(process.execPath, [CLI, ...args], {
+    return spawnChild(process.execPath, [CLI, ...args], {
       cwd,
       env: cleanEnv(extraEnv),
       encoding: 'utf8',
+      timeout: SLOW_CHILD_TIMEOUT,
       windowsHide: true,
     });
   }

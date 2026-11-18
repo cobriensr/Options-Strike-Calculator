@@ -6,11 +6,11 @@
  * scratch-git.fixtures.mjs, and each test file calls setupScratchGit()
  * itself. Not itself a test file; vitest only collects *.test.mjs.
  */
-import { spawnSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { expect } from 'vitest';
 import { adminDir, cleanEnv } from './scratch-git.fixtures.mjs';
+import { SLOW_CHILD_TIMEOUT, spawnChild } from './spawn-timeout.fixtures.mjs';
 
 // vitest runs from the repo root (same convention as check-coverage-floor).
 export const ROOT = process.cwd();
@@ -39,18 +39,19 @@ const DROPPED_ENV = new Set(['CLAUDECODE', 'NPM_LIFECYCLE_EVENT']);
 /**
  * Run a command with every gate input set explicitly (cleanEnv plus
  * `extraEnv`); returns `{ status, stdout, stderr }` whatever its exit code.
- * Throws only when it can't be spawned.
+ * Throws when it can't be spawned, or runs past SLOW_CHILD_TIMEOUT: a commit
+ * runs the whole gate hook, which makes many git calls of its own. The error
+ * names the command, the limit and the stderr so far (spawnChild).
  */
 export function run(cwd, command, args, extraEnv = {}) {
   // Test-only: `git` from PATH, as the module under test and the hook use.
-  const result = spawnSync(command, args, {
+  return spawnChild(command, args, {
     cwd,
     env: cleanEnv(extraEnv, DROPPED_ENV),
     encoding: 'utf8',
+    timeout: SLOW_CHILD_TIMEOUT,
     windowsHide: true,
   });
-  if (result.error) throw result.error;
-  return result;
 }
 
 /**
