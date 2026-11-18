@@ -182,9 +182,10 @@ export function withRequestScope(
  * `done({ status: 429 })`, and the handler does not run. The limiter runs
  * inside the `try` too, so a throw from it soft-degrades like the guard does.
  *
- * The inner handler keeps ownership of the rest of its concerns — a stricter
- * limit of its own, Zod 400s, 404 early returns — and is responsible for
- * calling `done({ status: 200 })` on the success path before writing its JSON.
+ * The inner handler keeps ownership of the rest of its concerns — its own
+ * limit (with `opts.rateLimit: 0`, so the two do not stack), Zod 400s, 404
+ * early returns — and is responsible for calling `done({ status: 200 })` on
+ * the success path before writing its JSON.
  *
  * Usage:
  * ```ts

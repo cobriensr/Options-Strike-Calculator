@@ -8,7 +8,7 @@
  * guard, bot check, owner-gate, Zod validation, and the happy path.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
 // ── Mocks ────────────────────────────────────────────────
@@ -80,6 +80,10 @@ describe('GET /api/zero-gamma', () => {
     vi.mocked(logger.error).mockClear();
   });
 
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   it('returns 405 for POST', async () => {
     const res = mockResponse();
     await handler(mockRequest({ method: 'POST' }), res);
@@ -140,6 +144,52 @@ describe('GET /api/zero-gamma', () => {
       'reader:/api/zero-gamma',
       120,
     );
+  });
+
+  // These two run the real isOwner (auth-helpers.js is only partly mocked), so
+  // the exemption is driven by a real cookie against OWNER_SECRET.
+  describe('owner exemption from the reader limit', () => {
+    const SECRET = 'reader-limit-test-owner-secret-0123456789';
+
+    beforeEach(() => {
+      vi.stubEnv('OWNER_SECRET', SECRET);
+      vi.mocked(rejectIfRateLimited).mockClear();
+      mockSql.mockResolvedValueOnce([]);
+    });
+
+    it('a request carrying the owner cookie is not limited', async () => {
+      const res = mockResponse();
+
+      await handler(
+        mockRequest({
+          method: 'GET',
+          headers: { cookie: `sc-owner=${SECRET}` },
+        }),
+        res,
+      );
+
+      expect(res._status).toBe(200);
+      expect(rejectIfRateLimited).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['a wrong owner cookie', { cookie: 'sc-owner=not-the-owner-secret' }],
+      ['no cookie', {}],
+    ])('%s is limited at 120', async (_name, headers) => {
+      const req = mockRequest({ method: 'GET', headers });
+      const res = mockResponse();
+
+      await handler(req, res);
+
+      expect(res._status).toBe(200);
+      expect(rejectIfRateLimited).toHaveBeenCalledTimes(1);
+      expect(rejectIfRateLimited).toHaveBeenCalledWith(
+        req,
+        res,
+        'reader:/api/zero-gamma',
+        120,
+      );
+    });
   });
 
   it('returns empty payload for owner when no rows exist', async () => {
