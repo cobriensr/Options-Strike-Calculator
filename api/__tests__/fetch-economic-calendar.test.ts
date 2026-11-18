@@ -24,6 +24,10 @@ vi.mock('../_lib/logger.js', () => ({
   },
 }));
 
+// cronGuard reports a failed secret check through this module; its own
+// test covers what it reports.
+vi.mock('../_lib/auth-failure.js', () => ({ reportSecretMismatch: vi.fn() }));
+
 // The cron raises its own warning through Sentry.captureMessage and metrics,
 // and uwFetch / withRetry / the wrapper call setTag, uwRateLimit,
 // uwRateLimitExhausted and uwBudget.
