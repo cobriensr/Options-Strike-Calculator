@@ -13,8 +13,9 @@ Each run:
 1. Lists the days already in R2 and plans the newest missing sessions, up to 30
    days of catch-up (`CATCHUP_MAX_DAYS`). The calendar starts at 2026-01-02
    (`TAPE_START`). A planned day starts only inside the window under "How much of
-   the run the tape gets". At the measured pace (about 200 s a day) all 30 fit
-   today, so a night lands up to 30 days and a longer backlog takes more nights.
+   the run the tape gets". At the measured pace (204 s a day at the median, 324 s
+   the slowest) its 11,400 s start about 55 days a night, 35 at the slowest, so
+   all 30 fit: a night lands up to 30 days and a longer backlog takes more nights.
 2. For each planned day, newest first: downloads the zip from UW, converts it to
    Parquet with polars (zstd level 3), checks it (see "Row and day checks"), and
    uploads it to R2. The upload is checked against the local byte count. A
