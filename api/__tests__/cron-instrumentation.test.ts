@@ -61,6 +61,10 @@ vi.mock('../_lib/axiom.js', () => ({
   reportCronRun: vi.fn().mockResolvedValue(undefined),
 }));
 
+// The real cronGuard reports a failed secret check through this module; what it
+// reports is covered in auth-failure.test.ts.
+vi.mock('../_lib/auth-failure.js', () => ({ reportSecretMismatch: vi.fn() }));
+
 vi.mock('../_lib/sentry.js', () => ({
   Sentry: {
     setTag: vi.fn(),
@@ -126,6 +130,7 @@ import {
   _resetDsnCacheForTest,
 } from '../_lib/cron-instrumentation.js';
 import { cronGuard } from '../_lib/api-helpers.js';
+import { reportSecretMismatch } from '../_lib/auth-failure.js';
 import { reportCronRun } from '../_lib/axiom.js';
 import { Sentry, metrics } from '../_lib/sentry.js';
 import { withDbRetry } from '../_lib/db.js';
@@ -383,14 +388,12 @@ describe('withCronInstrumentation', () => {
       timeCheck: () => false,
     });
     const res = mockResponse();
+    const req = mockRequest({
+      method: 'GET',
+      headers: { authorization: 'Bearer not-the-secret' },
+    });
 
-    await wrapped(
-      mockRequest({
-        method: 'GET',
-        headers: { authorization: 'Bearer not-the-secret' },
-      }),
-      res,
-    );
+    await wrapped(req, res);
 
     expect(handler).not.toHaveBeenCalled();
     expect(res._status).toBe(401);
@@ -398,6 +401,24 @@ describe('withCronInstrumentation', () => {
     // should still alert.
     expect(fetchMock).not.toHaveBeenCalled();
     expect(waitUntil).not.toHaveBeenCalled();
+    // Reported once, by the guard: the wrapper's own pre-check
+    // (`isCronAuthenticated`) only decides about check-ins and must not add a
+    // second report.
+    expect(reportSecretMismatch).toHaveBeenCalledTimes(1);
+    expect(reportSecretMismatch).toHaveBeenCalledWith('cron', req);
+  });
+
+  it('an authenticated run does not report a secret mismatch', async () => {
+    useRealCronGuard();
+    const wrapped = withCronInstrumentation(
+      'monitored-job',
+      vi.fn(async () => ({ status: 'success' as const })),
+      { timeCheck: () => true, requireApiKey: false },
+    );
+
+    await wrapped(authedCronReq(), mockResponse());
+
+    expect(reportSecretMismatch).not.toHaveBeenCalled();
   });
 
   it('intentional skip: a rejecting check-in fetch still writes the skip response', async () => {

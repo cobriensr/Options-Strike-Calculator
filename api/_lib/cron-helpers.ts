@@ -16,6 +16,7 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
+import { reportSecretMismatch } from './auth-failure.js';
 import { MARKET_MINUTES } from './constants.js';
 import logger from './logger.js';
 // Direct import (not via api-helpers/auth-helpers): see secret-compare.ts.
@@ -278,12 +279,11 @@ export function cronGuard(
     return null;
   }
 
+  // One branch for an unset secret and a wrong token: the response is the same
+  // for both and so is the report. An unset secret skips the compare.
   const cronSecret = process.env.CRON_SECRET;
-  if (!cronSecret) {
-    res.status(401).json({ error: 'Unauthorized' });
-    return null;
-  }
-  if (!bearerMatches(req.headers.authorization, cronSecret)) {
+  if (!cronSecret || !bearerMatches(req.headers.authorization, cronSecret)) {
+    reportSecretMismatch('cron', req);
     res.status(401).json({ error: 'Unauthorized' });
     return null;
   }

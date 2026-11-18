@@ -17,6 +17,9 @@ const { mockWarnWeakSecretsOnce } = vi.hoisted(() => ({
 vi.mock('../_lib/secret-strength.js', () => ({
   warnWeakSecretsOnce: mockWarnWeakSecretsOnce,
 }));
+// cronGuard reports its rejected bearer through this module; replaced so the
+// 401 case below logs nothing (covered in auth-failure.test.ts).
+vi.mock('../_lib/auth-failure.js', () => ({ reportSecretMismatch: vi.fn() }));
 import { OWNER_COOKIE, isOwner } from '../_lib/auth-helpers.js';
 import { cronGuard } from '../_lib/cron-helpers.js';
 

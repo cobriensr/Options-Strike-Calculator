@@ -59,6 +59,10 @@ vi.mock('../_lib/logger.js', () => ({
   default: { warn: vi.fn(), error: vi.fn(), info: vi.fn() },
 }));
 
+// cronGuard reports a failed secret check through this module; what it reports
+// is covered in auth-failure.test.ts.
+vi.mock('../_lib/auth-failure.js', () => ({ reportSecretMismatch: vi.fn() }));
+
 // Mock timezone + marketHours so isMarketHours/isMarketOpen branches are reachable
 vi.mock('../../src/utils/timezone.js', () => ({
   getETDayOfWeek: vi.fn().mockReturnValue(1), // Monday by default
@@ -95,6 +99,7 @@ import {
 } from '../_lib/api-helpers.js';
 import { z } from 'zod';
 import { getAccessToken } from '../_lib/schwab.js';
+import { reportSecretMismatch } from '../_lib/auth-failure.js';
 import { metrics } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 import { checkBotId } from 'botid/server';
@@ -1542,6 +1547,116 @@ describe('api-helpers', () => {
         skipped: true,
         reason: 'Outside time window',
       });
+    });
+  });
+
+  // ============================================================
+  // CRON GUARD: FAILED SECRET CHECKS ARE REPORTED
+  // ============================================================
+
+  describe('cronGuard secret mismatch reporting', () => {
+    beforeEach(() => {
+      vi.mocked(reportSecretMismatch).mockClear();
+    });
+
+    it('reports a wrong bearer once, with the cron surface and the request', () => {
+      process.env.CRON_SECRET = 'correct';
+      const req = mockRequest({
+        method: 'GET',
+        headers: { authorization: 'Bearer wrong' },
+      });
+      const res = mockResponse();
+
+      expect(cronGuard(req, res)).toBeNull();
+
+      expect(res._status).toBe(401);
+      expect(res._json).toEqual({ error: 'Unauthorized' });
+      expect(reportSecretMismatch).toHaveBeenCalledTimes(1);
+      expect(reportSecretMismatch).toHaveBeenCalledWith('cron', req);
+    });
+
+    it('reports a request with no Authorization header', () => {
+      process.env.CRON_SECRET = 'correct';
+      const req = mockRequest({ method: 'GET', headers: {} });
+      const res = mockResponse();
+
+      expect(cronGuard(req, res)).toBeNull();
+
+      expect(res._status).toBe(401);
+      expect(reportSecretMismatch).toHaveBeenCalledTimes(1);
+      expect(reportSecretMismatch).toHaveBeenCalledWith('cron', req);
+    });
+
+    it('reports a request that arrives while CRON_SECRET is unset', () => {
+      delete process.env.CRON_SECRET;
+      const req = mockRequest({
+        method: 'GET',
+        headers: { authorization: 'Bearer anything' },
+      });
+      const res = mockResponse();
+
+      expect(cronGuard(req, res)).toBeNull();
+
+      expect(res._status).toBe(401);
+      expect(res._json).toEqual({ error: 'Unauthorized' });
+      expect(reportSecretMismatch).toHaveBeenCalledTimes(1);
+      expect(reportSecretMismatch).toHaveBeenCalledWith('cron', req);
+    });
+
+    it('reports a wrong bearer on a ?force=1 request, which skips only the time gate', () => {
+      process.env.CRON_SECRET = 'correct';
+      const req = mockRequest({
+        method: 'GET',
+        headers: { authorization: 'Bearer wrong' },
+        query: { force: '1' },
+      });
+
+      expect(
+        cronGuard(req, mockResponse(), { timeCheck: () => false }),
+      ).toBeNull();
+
+      expect(reportSecretMismatch).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not report a request with the right secret', () => {
+      process.env.CRON_SECRET = 'secret';
+      process.env.UW_API_KEY = 'uw_key';
+      const req = mockRequest({
+        method: 'GET',
+        headers: { authorization: 'Bearer secret' },
+      });
+
+      expect(cronGuard(req, mockResponse())).not.toBeNull();
+
+      expect(reportSecretMismatch).not.toHaveBeenCalled();
+    });
+
+    it('does not report a request refused for its method, whatever its token', () => {
+      process.env.CRON_SECRET = 'correct';
+      const req = mockRequest({
+        method: 'POST',
+        headers: { authorization: 'Bearer wrong' },
+      });
+      const res = mockResponse();
+
+      expect(cronGuard(req, res)).toBeNull();
+
+      expect(res._status).toBe(405);
+      expect(reportSecretMismatch).not.toHaveBeenCalled();
+    });
+
+    it('does not report a correct request that arrives outside the time window', () => {
+      process.env.CRON_SECRET = 'secret';
+      const req = mockRequest({
+        method: 'GET',
+        headers: { authorization: 'Bearer secret' },
+      });
+
+      expect(
+        cronGuard(req, mockResponse(), { timeCheck: () => false }),
+      ).toBeNull();
+
+      expect(reportSecretMismatch).not.toHaveBeenCalled();
     });
   });
 

@@ -40,6 +40,9 @@ vi.mock('../_lib/secret-compare.js', async (importOriginal) => {
 // cron-instrumentation's heavy neighbours, stubbed so isCronAuthenticated
 // can be imported.
 vi.mock('../_lib/api-helpers.js', () => ({ cronGuard: vi.fn() }));
+// cronGuard reports a failed secret check through this module (covered in
+// auth-failure.test.ts); the sentry mock below has no `metrics` for it.
+vi.mock('../_lib/auth-failure.js', () => ({ reportSecretMismatch: vi.fn() }));
 vi.mock('../_lib/axiom.js', () => ({ reportCronRun: vi.fn() }));
 vi.mock('../_lib/sentry.js', () => ({
   Sentry: { setTag: vi.fn(), captureException: vi.fn() },
