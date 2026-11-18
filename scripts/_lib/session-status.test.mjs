@@ -40,7 +40,7 @@ import {
   tagWorktree,
   worktreeName,
 } from './session-status.mjs';
-import { GitError } from './git-run.mjs';
+import { GIT_TIMEOUT_MS, GitError } from './git-run.mjs';
 import { UsageError, evaluateDeploy } from './watch-deploy.mjs';
 import {
   checkInUse,
@@ -889,6 +889,17 @@ class Failure extends Error {
   }
 }
 
+/**
+ * What the faked `git` is when execFile's timeout kills it: `killed` and a
+ * signal, no exit code, and whatever it had printed by then.
+ */
+class Killed extends Error {
+  constructor(stderr = '') {
+    super(stderr);
+    this.stderr = stderr;
+  }
+}
+
 const ROOT = 'F:/dev/repo';
 const GOOD_REMOTE = 'https://github.com/o/n.git';
 const SUBJECTS = ['one', 'two', 'three', 'four', 'five', 'six'];
@@ -1006,10 +1017,10 @@ function fakeGit(allArgs) {
 
   switch (cmd) {
     case 'worktree':
-      if (world.listing instanceof Failure) throw world.listing;
+      if (world.listing instanceof Error) throw world.listing;
       return world.listing ?? world.checkouts.map(record).join('');
     case 'fetch':
-      if (world.fetch instanceof Failure) throw world.fetch;
+      if (world.fetch instanceof Error) throw world.fetch;
       return world.fetch;
     case 'rev-parse':
       if (more.includes('--git-common-dir')) return `${world.commonDir}\n`;
@@ -1098,6 +1109,16 @@ function installFakes() {
       } catch (err) {
         if (err.code === 'ENOENT') {
           callback(err, '', '');
+        } else if (err instanceof Killed) {
+          callback(
+            Object.assign(new Error('Command failed'), {
+              killed: true,
+              signal: 'SIGTERM',
+              code: null,
+            }),
+            '',
+            err.stderr,
+          );
         } else if (err instanceof Failure) {
           callback(
             Object.assign(new Error(`Command failed: ${file}`), {
@@ -1864,6 +1885,46 @@ describe('collectStatus: git is not usable here', () => {
     const error = await collectStatus(OPTIONS).catch((e) => e);
     expect(error).not.toBeInstanceOf(SetupError);
     expect(error.message).toMatch(/unable to read the index/);
+  });
+});
+
+describe('collectStatus: a git call that outlasts its limit', () => {
+  it('gives every git call the same limit as git-run.mjs does', async () => {
+    await collectStatus({ ...OPTIONS, fetch: true });
+    const gitCallsMade = vi
+      .mocked(execFile)
+      .mock.calls.filter(([file]) => file === 'git');
+    // `git fetch origin` is among them: the one a credential prompt can hold.
+    expect(gitCallsMade.some(([, args]) => args[0] === 'fetch')).toBe(true);
+    expect(gitCallsMade.length).toBeGreaterThan(1);
+    for (const [, args, options] of gitCallsMade) {
+      expect(options.timeout, args.join(' ')).toBe(GIT_TIMEOUT_MS);
+    }
+  });
+
+  it('reports a fetch that was killed as a timeout, and carries on with the old ref', async () => {
+    world.fetch = new Killed();
+    const result = await collectStatus({ ...OPTIONS, fetch: true });
+    expect(result.fetchError).toBe(
+      `timed out after ${GIT_TIMEOUT_MS / 1000} s`,
+    );
+    expect(formatReport(result)).toContain(
+      `warning: git fetch origin failed: timed out after ${GIT_TIMEOUT_MS / 1000} s`,
+    );
+    expect(result.worktrees.length).toBeGreaterThan(0);
+  });
+
+  it('throws a GitError that names the command and says it timed out, whatever the child printed first', async () => {
+    // What a kill leaves on stderr says nothing about the cause: this one
+    // would read as "not a git repository" if it were taken for it.
+    world.listing = new Killed('fatal: not a git repository (partial output)');
+    const error = await collectStatus(OPTIONS).catch((e) => e);
+    expect(error).toBeInstanceOf(GitError);
+    expect(error).not.toBeInstanceOf(SetupError);
+    expect(error.detail).toBe(`timed out after ${GIT_TIMEOUT_MS / 1000} s`);
+    expect(error.message).toBe(
+      `git worktree list --porcelain -z: timed out after ${GIT_TIMEOUT_MS / 1000} s`,
+    );
   });
 });
 

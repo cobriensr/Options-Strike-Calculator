@@ -36,7 +36,7 @@
 import { execFile } from 'node:child_process';
 import { existsSync, statSync } from 'node:fs';
 import { parseArgs as parseNodeArgs } from 'node:util';
-import { GitError } from './git-run.mjs';
+import { GIT_TIMEOUT_MS, GitError } from './git-run.mjs';
 import {
   checkInUse,
   checkSettled,
@@ -582,9 +582,13 @@ export function formatReport(report) {
 /**
  * Run `git <args>` in the current directory; resolves to stdout. Rejects with
  * SetupError when git is not installed, GitError (stderr in `detail`)
- * otherwise. The env is prune-worktrees.mjs's `gitEnv()`: a git hook exports
- * GIT_DIR and GIT_INDEX_FILE, which would aim every `-C <dir>` call here at
- * the hook's repository.
+ * otherwise. A call gets GIT_TIMEOUT_MS, as in git-run.mjs: with no limit a
+ * stuck git (a credential prompt under `--fetch`, an index lock) would hang
+ * the command for good. One killed at the limit rejects with a GitError whose
+ * detail says it timed out, and not with what it had printed by then, which
+ * says nothing about the cause. The env is prune-worktrees.mjs's `gitEnv()`: a
+ * git hook exports GIT_DIR and GIT_INDEX_FILE, which would aim every
+ * `-C <dir>` call here at the hook's repository.
  *
  * @param {string[]} args
  * @returns {Promise<string>}
@@ -601,6 +605,7 @@ function git(args) {
         encoding: 'utf8',
         env: gitEnv(),
         maxBuffer: MAX_GIT_OUTPUT,
+        timeout: GIT_TIMEOUT_MS,
         windowsHide: true,
       },
       (error, stdout, stderr) => {
@@ -611,6 +616,12 @@ function git(args) {
             new SetupError('git is not installed or not on PATH', {
               cause: error,
             }),
+          );
+        } else if (error.killed) {
+          // execFile killed git at the limit (an output overflow sets `code`
+          // and leaves `killed` unset).
+          reject(
+            new GitError(args, `timed out after ${GIT_TIMEOUT_MS / 1000} s`),
           );
         } else {
           reject(new GitError(args, String(stderr).trim() || error.message));
