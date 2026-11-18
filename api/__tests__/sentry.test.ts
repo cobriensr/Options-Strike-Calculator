@@ -445,6 +445,32 @@ describe('metrics.increment', () => {
 });
 
 // =============================================================
+// metrics.secretMismatch
+// =============================================================
+
+describe('metrics.secretMismatch', () => {
+  beforeEach(() => {
+    mockMetrics.count.mockClear();
+  });
+
+  it.each(['cron', 'notify', 'analyze-plots'])(
+    'counts a failed secret check on the %s surface',
+    (surface) => {
+      metrics.secretMismatch(surface);
+
+      expect(mockMetrics.count).toHaveBeenCalledTimes(1);
+      expect(mockMetrics.count).toHaveBeenCalledWith(
+        'auth.secret_mismatch',
+        1,
+        {
+          attributes: { surface },
+        },
+      );
+    },
+  );
+});
+
+// =============================================================
 // beforeSend — UW 5xx fingerprint collapse + secret scrubbing
 // =============================================================
 

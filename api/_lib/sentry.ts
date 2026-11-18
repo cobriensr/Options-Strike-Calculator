@@ -524,6 +524,15 @@ function anthropicCache(model: string, hit: boolean) {
   });
 }
 
+/**
+ * Count a failed machine-secret check. `surface` names the route family
+ * (`cron`, `notify`, `analyze-plots`), so a rate alert can tell a scan of one
+ * from a deploy that rotated another's secret.
+ */
+function secretMismatch(surface: string) {
+  Sentry.metrics.count('auth.secret_mismatch', 1, { attributes: { surface } });
+}
+
 /** Increment a named counter by 1. */
 function increment(name: string) {
   Sentry.metrics.count(name, 1);
@@ -544,6 +553,7 @@ export const metrics = {
   dbSave,
   cacheResult,
   anthropicCache,
+  secretMismatch,
   increment,
 };
 
