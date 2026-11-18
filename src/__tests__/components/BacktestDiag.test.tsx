@@ -176,6 +176,39 @@ describe('BacktestDiag', () => {
     expect(dashes.length).toBeGreaterThanOrEqual(1);
   });
 
+  /** The value cell of the diagnostic row labelled `label`. */
+  function rowValue(label: string): string | null {
+    const row = screen.getByText(label).closest('tr');
+    return row?.cells[1]?.textContent ?? null;
+  }
+
+  it('shows the previous close with two decimals when it is known', () => {
+    render(
+      <BacktestDiag
+        snapshot={makeSnapshot({ previousClose: 5795 })}
+        history={makeHistory()}
+        {...timeProps}
+      />,
+    );
+    expect(rowValue('Prev Close')).toBe('5795.00');
+  });
+
+  it.each([0, -1, Number.NaN])(
+    'BacktestDiag shows a dash for an unknown previous close (%s)',
+    (previousClose) => {
+      render(
+        <BacktestDiag
+          snapshot={makeSnapshot({ previousClose })}
+          history={makeHistory()}
+          {...timeProps}
+        />,
+      );
+      // History sends 0 when the previous session is unknown: not "0.00".
+      expect(rowValue('Prev Close')).toBe('—');
+      expect(rowValue('Gap')).toBe('—');
+    },
+  );
+
   it('displays opening range when present', () => {
     render(
       <BacktestDiag

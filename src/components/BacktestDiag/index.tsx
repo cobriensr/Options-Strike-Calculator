@@ -55,7 +55,11 @@ export default function BacktestDiag({
     ['SPX Open', snapshot.runningOHLC.open.toFixed(2)],
     ['SPX Hi→Now', snapshot.runningOHLC.high.toFixed(2)],
     ['SPX Lo→Now', snapshot.runningOHLC.low.toFixed(2)],
-    ['Prev Close', snapshot.previousClose.toFixed(2)],
+    [
+      'Prev Close',
+      // History sends 0 when it can't name the previous session.
+      snapshot.previousClose > 0 ? snapshot.previousClose.toFixed(2) : '—',
+    ],
     [
       'Gap',
       snapshot.previousClose > 0
