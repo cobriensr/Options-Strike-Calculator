@@ -123,6 +123,40 @@ describe('reportSecretMismatch', () => {
     expect(fields.path).toBe('/api/cron/example');
   });
 
+  describe('path length', () => {
+    const MAX_LOGGED_PATH = 200;
+
+    async function loggedPath(url: string): Promise<string> {
+      const { reportSecretMismatch } = await freshModule();
+      reportSecretMismatch('cron', request({}, url));
+      const [fields] = mockWarn.mock.calls[0] as [{ path: string }];
+      return fields.path;
+    }
+
+    it('cuts a longer path to its first 200 characters', async () => {
+      const url = `/api/cron/${'a'.repeat(500)}`;
+
+      const path = await loggedPath(url);
+
+      expect(path).toHaveLength(MAX_LOGGED_PATH);
+      expect(path).toBe(url.slice(0, MAX_LOGGED_PATH));
+    });
+
+    it('cuts a path of 201 characters and keeps one of 200', async () => {
+      const exact = `/${'a'.repeat(MAX_LOGGED_PATH - 1)}`;
+
+      expect(await loggedPath(exact)).toBe(exact);
+      mockWarn.mockClear();
+      expect(await loggedPath(`${exact}a`)).toBe(exact);
+    });
+
+    it('drops a long query string before it can count against the cap', async () => {
+      const path = await loggedPath(`/api/cron/example?q=${'a'.repeat(500)}`);
+
+      expect(path).toBe('/api/cron/example');
+    });
+  });
+
   it('logs an empty path when the request has no url', async () => {
     const { reportSecretMismatch } = await freshModule();
 
@@ -183,7 +217,7 @@ describe('reportSecretMismatch', () => {
   });
 
   describe('Sentry message', () => {
-    it('sends the pinned message, level and fingerprint', async () => {
+    it('sends the pinned message, level, fingerprint and surface tag', async () => {
       const { reportSecretMismatch } = await freshModule();
 
       reportSecretMismatch('analyze-plots', request());
@@ -192,6 +226,7 @@ describe('reportSecretMismatch', () => {
       expect(mockCaptureMessage).toHaveBeenCalledWith(MESSAGE, {
         level: 'warning',
         fingerprint: ['secret-mismatch', 'analyze-plots'],
+        tags: { surface: 'analyze-plots' },
       });
     });
 
@@ -241,13 +276,19 @@ describe('reportSecretMismatch', () => {
       reportSecretMismatch('notify', request());
 
       expect(mockCaptureMessage).toHaveBeenCalledTimes(3);
-      const fingerprints = mockCaptureMessage.mock.calls.map(
-        ([, options]) => (options as { fingerprint: string[] }).fingerprint,
+      const options = mockCaptureMessage.mock.calls.map(
+        ([, sent]) =>
+          sent as { fingerprint: string[]; tags: { surface: string } },
       );
-      expect(fingerprints).toEqual([
+      expect(options.map((sent) => sent.fingerprint)).toEqual([
         ['secret-mismatch', 'cron'],
         ['secret-mismatch', 'notify'],
         ['secret-mismatch', 'analyze-plots'],
+      ]);
+      expect(options.map((sent) => sent.tags)).toEqual([
+        { surface: 'cron' },
+        { surface: 'notify' },
+        { surface: 'analyze-plots' },
       ]);
     });
 
@@ -325,8 +366,10 @@ describe('reportSecretMismatch', () => {
     for (const length of [37, 44, 41, 29, 53]) {
       expect(sent).not.toMatch(new RegExp(`\\b${length}\\b`));
     }
-    // What the payload does carry.
+    // What the payload does carry: the path, the flag, and the Sentry options
+    // (so the check above covers the tag, not only the message and fingerprint).
     expect(sent).toContain('/api/example');
     expect(sent).toContain('hadCredential');
+    expect(sent).toContain('"tags":{"surface":"notify"}');
   });
 });

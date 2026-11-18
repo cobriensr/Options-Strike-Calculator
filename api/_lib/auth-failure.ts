@@ -9,11 +9,13 @@
  *
  * - a counter (`auth.secret_mismatch`, tagged with the surface) and one
  *   structured log line, for every mismatch;
- * - one Sentry message per surface per 10 minutes, so a burst of guesses opens
- *   one issue per surface rather than one event per request.
+ * - one Sentry message per surface per 10 minutes, so a burst of failed
+ *   requests opens one issue per surface rather than one event per request. The
+ *   issue is tagged with the surface, since the fingerprint is not shown.
  *
- * What is reported is the surface, the path (no query string), the client
- * address and whether the surface's own credential header was present at all.
+ * What is reported is the surface, the path (no query string, cut at
+ * `MAX_LOGGED_PATH` characters), the client address and whether the surface's
+ * own credential header was present at all.
  * Never a header value, a cookie, a query value, or any length.
  *
  * Imports only the client-address, logger and Sentry modules, never
@@ -42,16 +44,20 @@ const MESSAGE = 'Secret check failed';
 /** Shortest gap between two Sentry messages for one surface. */
 const SENTRY_INTERVAL_MS = 10 * 60 * 1000;
 
+/** Longest path written to the log, so one request cannot bloat a line. */
+const MAX_LOGGED_PATH = 200;
+
 // When each surface last sent its Sentry message. The key is the closed
 // `SecretSurface` union, never anything from a request, so it holds at most
 // three entries.
 const lastSentryAt = new Map<SecretSurface, number>();
 
-/** The request path with any query string removed. */
+/** The request path with any query string removed, cut at the log limit. */
 function pathOf(req: VercelRequest): string {
   const url = req.url ?? '';
   const queryAt = url.indexOf('?');
-  return queryAt === -1 ? url : url.slice(0, queryAt);
+  const path = queryAt === -1 ? url : url.slice(0, queryAt);
+  return path.slice(0, MAX_LOGGED_PATH);
 }
 
 /** Whether the surface's own credential header held anything. */
@@ -97,5 +103,6 @@ export function reportSecretMismatch(
   Sentry.captureMessage(MESSAGE, {
     level: 'warning',
     fingerprint: ['secret-mismatch', surface],
+    tags: { surface },
   });
 }

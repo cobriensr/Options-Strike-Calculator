@@ -526,8 +526,8 @@ function anthropicCache(model: string, hit: boolean) {
 
 /**
  * Count a failed machine-secret check. `surface` names the route family
- * (`cron`, `notify`, `analyze-plots`), so a rate alert can tell a scan of one
- * from a deploy that rotated another's secret.
+ * (`cron`, `notify`, `analyze-plots`), so a rate alert can show repeated
+ * failures on one of them.
  */
 function secretMismatch(surface: string) {
   Sentry.metrics.count('auth.secret_mismatch', 1, { attributes: { surface } });
