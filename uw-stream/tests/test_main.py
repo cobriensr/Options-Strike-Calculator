@@ -14,6 +14,7 @@ import inspect
 
 import pytest
 
+import auth
 import bounded
 import main
 import notify
@@ -1085,6 +1086,45 @@ async def test_the_boot_line_names_the_setting_as_the_default_queue_size(
     (boot,) = [r for r in service_log_records if r.getMessage() == "uw-stream starting"]
     assert boot.default_queue_size == main.settings.ws_queue_size
     assert not hasattr(boot, "queue_size")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("token", "reported"),
+    [("short-token", True), ("", False), ("t" * 32, False)],
+    ids=["short", "unset", "long-enough"],
+)
+async def test_a_short_metrics_token_is_reported_once_sentry_is_up_and_boot_goes_on(
+    _reset_notify_state, monkeypatch, token, reported
+):
+    """The report comes right after ``init_sentry`` (an event needs the client), and the run
+    carries on to the pool, the lease and the pipeline: a short token never stops boot."""
+    _stub_pipeline(monkeypatch)
+    events: list[object] = []
+
+    async def _recording_pool() -> None:
+        events.append("init_pool")
+
+    monkeypatch.setattr(main, "init_sentry", lambda: events.append("init_sentry"))
+    monkeypatch.setattr(main, "init_pool", _recording_pool)
+    monkeypatch.setattr(
+        auth,
+        "capture_message",
+        lambda message, **kwargs: events.append((message, kwargs["level"], kwargs["params"])),
+    )
+    monkeypatch.setattr(main.settings, "internal_metrics_token", token)
+    _sigterm_once_run_is_waiting(monkeypatch)
+
+    await asyncio.wait_for(main._run(), timeout=_RUN_TIMEOUT_S)
+
+    report = (
+        "Configured secret shorter than the minimum: %s",
+        "error",
+        ("INTERNAL_METRICS_TOKEN",),
+    )
+    assert events == (
+        ["init_sentry", report, "init_pool"] if reported else ["init_sentry", "init_pool"]
+    )
 
 
 @pytest.mark.asyncio

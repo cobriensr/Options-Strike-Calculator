@@ -174,7 +174,15 @@ Single asyncio process:
      `X-Metrics-Token` header matching `INTERNAL_METRICS_TOKEN`; a missing
      or wrong header gets 401. While `INTERNAL_METRICS_TOKEN` is unset,
      every request gets 401 and the first one logs a warning. `/healthz`
-     needs no header.
+     needs no header. With the token set, each refused request logs one
+     warning with the reason (missing or wrong header) and the client
+     (`X-Real-IP`, else the whole `X-Forwarded-For`, else the socket's peer,
+     each cut at 200 characters), and at most once per 10 minutes an ERROR
+     `Secret check failed on metrics (client <address>)` that also files a
+     Sentry event (`src/auth.py`). A token set to fewer than 32 characters
+     logs and files one ERROR at boot, `Configured secret shorter than the
+     minimum: INTERNAL_METRICS_TOKEN`, and the service boots anyway. Neither
+     report holds a token, a presented credential or a length.
 6. **Subscription watchdog** (`src/subscription_watchdog.py`): checks
    every 120 s after a 5-minute grace, and sends a Sentry warning when a
    configured channel stays unsubscribed for two checks in a row.
@@ -409,7 +417,7 @@ at boot, not at first use.
 | `INTERVAL_BA_PUSH_CONFLUENCE_ONLY`             | no             | Default `true`. Only alerts with a cross-symbol confluence partner send a Web Push                                                                                                                                                                                                                                                                   |
 | `VERCEL_NOTIFY_URL`                            | no             | Vercel `/api/push/notify` URL. Push is off unless this and the secret are set                                                                                                                                                                                                                                                                        |
 | `INTERNAL_NOTIFY_SECRET`                       | no             | Shared with Vercel's variable of the same name                                                                                                                                                                                                                                                                                                       |
-| `INTERNAL_METRICS_TOKEN`                       | cond.          | Required for `/metrics`: requests must send it in an `X-Metrics-Token` header. Unset, `/metrics` answers 401 to every request; the service still boots                                                                                                                                                                                               |
+| `INTERNAL_METRICS_TOKEN`                       | cond.          | Required for `/metrics`: requests must send it in an `X-Metrics-Token` header. Unset, `/metrics` answers 401 to every request; the service still boots. Under 32 characters it is reported at boot (an ERROR and a Sentry event) and still works                                                                                                    |
 | `WS_LEASE_ENABLED`                             | no             | Default `true`. WS connection lease (deploy-overlap guard, see below). `false` bypasses it. When `true`, both KV vars below are required                                                                                                                                                                                                             |
 | `KV_REST_API_URL`                              | cond.          | Upstash REST base URL, same store the main app uses. Required when `WS_LEASE_ENABLED=true`                                                                                                                                                                                                                                                           |
 | `KV_REST_API_TOKEN`                            | cond.          | Upstash REST bearer token. Required when `WS_LEASE_ENABLED=true`                                                                                                                                                                                                                                                                                     |

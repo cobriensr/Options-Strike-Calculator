@@ -14,6 +14,7 @@ from aiohttp import web
 
 import memory_stats
 import socket_stats
+from auth import report_mismatch
 from config import settings
 from logger_setup import log
 from state import state
@@ -114,9 +115,31 @@ async def healthz(_request: web.Request) -> web.Response:
 # unset, so that warning is written once per process, not per request.
 _metrics_token_unset_logged = False
 
+# The most characters of a client address written to a log line. X-Real-IP and
+# X-Forwarded-For are whatever the caller sends, so neither is logged whole.
+_MAX_LOGGED_CLIENT_LEN = 200
+
 
 def _unauthorized() -> web.Response:
     return web.json_response({"error": "unauthorized"}, status=401)
+
+
+def _client_ip(request: web.Request) -> str:
+    """The client address to log with a refused request.
+
+    ``X-Real-IP`` if it has text, else the raw ``X-Forwarded-For`` (the whole
+    value, not a hop picked out of it), else the socket's peer address. A
+    caller can send either header, so the result is only logged, never
+    trusted, and each header is cut at ``_MAX_LOGGED_CLIENT_LEN`` characters.
+    Pass it to a log call as an argument, never as part of the template.
+    """
+    real_ip = request.headers.get("X-Real-IP", "").strip()
+    if real_ip:
+        return real_ip[:_MAX_LOGGED_CLIENT_LEN]
+    forwarded = request.headers.get("X-Forwarded-For", "")
+    if forwarded.strip():
+        return forwarded[:_MAX_LOGGED_CLIENT_LEN]
+    return request.remote or "unknown"
 
 
 async def metrics(request: web.Request) -> web.Response:
@@ -128,6 +151,11 @@ async def metrics(request: web.Request) -> web.Response:
     With the token unset, every request gets the same 401 and the first
     one logs a warning. The service still boots without the token; only
     this route depends on it.
+
+    With the token set, a request that sends no header or a wrong one is
+    reported (``auth.report_mismatch``: one warning per request, and an ERROR
+    that reaches Sentry at most once per 10 minutes). The 401 is the same
+    either way.
     """
     global _metrics_token_unset_logged
     expected = settings.internal_metrics_token
@@ -136,12 +164,16 @@ async def metrics(request: web.Request) -> web.Response:
             _metrics_token_unset_logged = True
             log.warning("INTERNAL_METRICS_TOKEN is unset; /metrics answers 401 to every request")
         return _unauthorized()
+    got = request.headers.get("X-Metrics-Token")
+    if got is None:
+        report_mismatch(_client_ip(request), "missing")
+        return _unauthorized()
     # Compare bytes: aiohttp decodes header bytes as UTF-8 with
     # surrogateescape, and compare_digest raises on non-ASCII str input.
-    got = request.headers.get("X-Metrics-Token", "")
     if not hmac.compare_digest(
         got.encode("utf-8", "surrogateescape"), expected.encode("utf-8", "surrogateescape")
     ):
+        report_mismatch(_client_ip(request), "wrong")
         return _unauthorized()
     now = datetime.now(UTC)
     # Read here, after the auth gate, so a caller without the token gets nothing.

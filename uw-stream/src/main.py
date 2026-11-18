@@ -23,6 +23,7 @@ import aiohttp
 
 import notify
 import socket_stats
+from auth import report_weak_secrets
 from bounded import run_bounded
 from channel_registry import handler_class_for_channel
 from config import settings
@@ -155,6 +156,9 @@ def _build_handlers(channels: list[str]) -> dict[str, Handler]:
 
 async def _run() -> None:
     init_sentry()
+    # A short metrics token is a weak lock, not a broken service: report it and
+    # keep booting. After init_sentry, so the report files an event.
+    report_weak_secrets()
     log.info(
         "uw-stream starting",
         extra={

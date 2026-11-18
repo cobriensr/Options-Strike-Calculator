@@ -13,18 +13,29 @@ repeats.
 
 from __future__ import annotations
 
+import hmac
 import json
+import logging
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
+import auth
 import handlers.base
 import memory_stats
 import socket_stats
 from config import Settings, settings
-from health import HEALTH_STARTUP_GRACE_S, _is_trading_hours, build_app, healthz, metrics
+from health import (
+    HEALTH_STARTUP_GRACE_S,
+    _client_ip,
+    _is_trading_hours,
+    build_app,
+    healthz,
+    metrics,
+)
 from logger_setup import RateLimitedLogger
 from state import state
 
@@ -290,13 +301,18 @@ _TOKEN = "expected-token"
 _UNAUTHORIZED = {"error": "unauthorized"}
 
 
+_PEER = "203.0.113.9"
+
+
 class _StubRequest:
     """Minimal stand-in for aiohttp.web.Request — `metrics()` only
-    consults ``request.headers.get(name, default)``.
+    consults ``request.headers.get(name, default)`` and ``request.remote``
+    (the socket's peer address, or None when the transport has none).
     """
 
-    def __init__(self, headers: dict[str, str] | None = None):
+    def __init__(self, headers: dict[str, str] | None = None, remote: str | None = _PEER):
         self.headers = headers or {}
+        self.remote = remote
 
 
 @pytest.fixture
@@ -304,6 +320,13 @@ def _restore_metrics_token():
     saved = settings.internal_metrics_token
     yield
     settings.internal_metrics_token = saved
+
+
+@pytest.fixture(autouse=True)
+def _no_metrics_error_reported_yet(monkeypatch):
+    """A refused request files an ERROR once per 10 minutes, process-wide; start every
+    test with none filed, so no test depends on the order the others ran in."""
+    monkeypatch.setattr(auth, "_last_error_at", None)
 
 
 @pytest.fixture
@@ -366,18 +389,22 @@ async def test_metrics_unset_token_warning_logs_once(_restore_metrics_token, met
 
 async def test_metrics_requires_token_when_configured(_restore_metrics_token, metrics_warnings):
     """With INTERNAL_METRICS_TOKEN set, a request without the
-    X-Metrics-Token header is rejected 401.
+    X-Metrics-Token header is rejected 401, and the one warning says the header
+    was missing and who sent the request.
     """
     settings.internal_metrics_token = _TOKEN
     resp = await metrics(_StubRequest())  # type: ignore[arg-type]
 
     assert resp.status == 401
     assert await _read_json(resp) == _UNAUTHORIZED
-    assert metrics_warnings == []
+    assert len(metrics_warnings) == 1
+    assert "missing" in metrics_warnings[0]
+    assert _PEER in metrics_warnings[0]
 
 
 async def test_metrics_rejects_wrong_token(_restore_metrics_token, metrics_warnings):
-    """With INTERNAL_METRICS_TOKEN set, a mismatched header is rejected 401."""
+    """With INTERNAL_METRICS_TOKEN set, a mismatched header is rejected 401, with
+    one warning that says the header was wrong and who sent the request."""
     settings.internal_metrics_token = _TOKEN
     resp = await metrics(
         _StubRequest({"X-Metrics-Token": "wrong"}),  # type: ignore[arg-type]
@@ -385,6 +412,9 @@ async def test_metrics_rejects_wrong_token(_restore_metrics_token, metrics_warni
 
     assert resp.status == 401
     assert await _read_json(resp) == _UNAUTHORIZED
+    assert len(metrics_warnings) == 1
+    assert "wrong" in metrics_warnings[0]
+    assert _PEER in metrics_warnings[0]
 
 
 async def test_metrics_rejects_non_ascii_token_with_401(_restore_metrics_token, metrics_warnings):
@@ -411,6 +441,155 @@ async def test_metrics_accepts_matching_token(_restore_metrics_token, metrics_wa
     assert resp.status == 200
     assert {"uptime_seconds", "ws_connected", "channels", "handlers", "sockets"} <= body.keys()
     assert metrics_warnings == []
+
+
+# ── /metrics: reporting a refused request ───────────────────
+
+
+@pytest.mark.parametrize(
+    ("headers", "remote", "expected"),
+    [
+        ({"X-Real-IP": "198.51.100.4", "X-Forwarded-For": "192.0.2.1"}, _PEER, "198.51.100.4"),
+        ({"X-Real-IP": "  198.51.100.4 \t"}, _PEER, "198.51.100.4"),
+        ({"X-Real-IP": "   ", "X-Forwarded-For": "192.0.2.1"}, _PEER, "192.0.2.1"),
+        ({"X-Real-IP": "", "X-Forwarded-For": "192.0.2.1"}, _PEER, "192.0.2.1"),
+        # The whole value, not its first hop: a caller can put anything there.
+        (
+            {"X-Forwarded-For": "10.9.9.9, 192.0.2.1, 198.51.100.4"},
+            _PEER,
+            "10.9.9.9, 192.0.2.1, 198.51.100.4",
+        ),
+        ({"X-Forwarded-For": "   "}, _PEER, _PEER),
+        ({}, _PEER, _PEER),
+        ({}, None, "unknown"),
+        ({"X-Real-IP": " "}, None, "unknown"),
+    ],
+    ids=[
+        "real-ip-wins",
+        "real-ip-stripped",
+        "blank-real-ip-falls-through",
+        "empty-real-ip-falls-through",
+        "forwarded-for-whole-value",
+        "blank-forwarded-for-falls-through",
+        "peer",
+        "no-peer",
+        "blank-real-ip-no-peer",
+    ],
+)
+def test_client_ip_prefers_real_ip_then_forwarded_for_then_the_peer(headers, remote, expected):
+    assert _client_ip(_StubRequest(headers, remote)) == expected  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("header", ["X-Real-IP", "X-Forwarded-For"])
+def test_client_ip_is_cut_at_200_characters(header):
+    """A caller picks both headers, so neither is logged at any length."""
+    assert _client_ip(_StubRequest({header: "9" * 5_000})) == "9" * 200  # type: ignore[arg-type]
+    assert _client_ip(_StubRequest({header: "9" * 200})) == "9" * 200  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("headers", "reason"),
+    [({}, "missing"), ({"X-Metrics-Token": "wrong"}, "wrong"), ({"X-Metrics-Token": ""}, "wrong")],
+    ids=["no-header", "wrong-token", "empty-header"],
+)
+async def test_a_refused_request_is_reported_with_its_client_and_reason(
+    _restore_metrics_token, metrics_warnings, headers, reason
+):
+    settings.internal_metrics_token = _TOKEN
+    with patch("health.report_mismatch") as report:
+        resp = await metrics(
+            _StubRequest({**headers, "X-Real-IP": "198.51.100.4"}),  # type: ignore[arg-type]
+        )
+
+    assert resp.status == 401
+    report.assert_called_once_with("198.51.100.4", reason)
+
+
+async def test_an_accepted_request_is_not_reported(_restore_metrics_token, metrics_warnings):
+    settings.internal_metrics_token = _TOKEN
+    with patch("health.report_mismatch") as report:
+        resp = await metrics(_StubRequest({"X-Metrics-Token": _TOKEN}))  # type: ignore[arg-type]
+
+    assert resp.status == 200
+    report.assert_not_called()
+
+
+@pytest.mark.parametrize("headers", [{}, {"X-Metrics-Token": ""}, {"X-Metrics-Token": "anything"}])
+async def test_an_unset_token_keeps_its_behaviour_and_reports_no_mismatch(
+    _restore_metrics_token, metrics_warnings, headers
+):
+    """Unset: 401 for everyone, one warning per process naming the variable, and no
+    failed-check report: there is no token a request could have got wrong."""
+    settings.internal_metrics_token = ""
+    with patch("health.report_mismatch") as report:
+        for _ in range(3):
+            resp = await metrics(_StubRequest(headers))  # type: ignore[arg-type]
+            assert resp.status == 401
+
+    report.assert_not_called()
+    assert len(metrics_warnings) == 1
+    assert "INTERNAL_METRICS_TOKEN" in metrics_warnings[0]
+
+
+@pytest.mark.parametrize(
+    ("configured", "headers"),
+    [
+        ("", {}),
+        (_TOKEN, {}),
+        (_TOKEN, {"X-Metrics-Token": "wrong"}),
+        (_TOKEN, {"X-Metrics-Token": "\udcff"}),
+    ],
+    ids=["unset", "missing", "wrong", "non-ascii"],
+)
+async def test_every_refusal_is_the_same_401_bytes(
+    _restore_metrics_token, metrics_warnings, configured, headers
+):
+    """What the caller sees is unchanged by the reporting: status, content type, body."""
+    settings.internal_metrics_token = configured
+
+    resp = await metrics(_StubRequest(headers))  # type: ignore[arg-type]
+
+    assert resp.status == 401
+    assert resp.content_type == "application/json"
+    assert resp.body == b'{"error": "unauthorized"}'
+
+
+async def test_the_token_is_compared_in_constant_time_on_bytes(
+    _restore_metrics_token, metrics_warnings
+):
+    """A str with non-ASCII characters makes compare_digest raise; bytes do not."""
+    settings.internal_metrics_token = _TOKEN
+    with patch("health.hmac.compare_digest", wraps=hmac.compare_digest) as compare:
+        await metrics(_StubRequest({"X-Metrics-Token": "tökén"}))  # type: ignore[arg-type]
+
+    compare.assert_called_once()
+    assert all(isinstance(arg, bytes) for arg in compare.call_args.args)
+
+
+async def test_a_refusal_logs_no_token_and_no_length(
+    _restore_metrics_token, service_log_records, monkeypatch
+):
+    """Nothing the service writes for a refused request holds the configured token, the
+    presented one, or the length of either; the reason and the client address are all it adds."""
+    configured = "configured-token-" + "c" * 24  # 41 characters
+    presented = "presented-credential-" + "p" * 16  # 37 characters
+    settings.internal_metrics_token = configured
+    monkeypatch.setattr("sentry_setup._sentry_enabled", False)
+
+    resp = await metrics(
+        _StubRequest({"X-Metrics-Token": presented, "X-Real-IP": "198.51.100.4"})  # type: ignore[arg-type]
+    )
+
+    assert resp.status == 401
+    assert [r.levelno for r in service_log_records] == [logging.WARNING, logging.ERROR]
+    for record in service_log_records:
+        everything = " ".join(
+            [record.getMessage(), str(record.args), str(record.__dict__.get("context", ""))]
+        ).replace("198.51.100.4", "")
+        assert configured not in everything
+        assert presented not in everything
+        assert "41" not in everything
+        assert "37" not in everything
 
 
 def test_settings_boot_without_metrics_token(monkeypatch):
