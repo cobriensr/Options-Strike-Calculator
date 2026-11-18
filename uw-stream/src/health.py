@@ -147,9 +147,11 @@ def _check_token(request: web.Request) -> Literal["unset", "missing", "wrong", "
     """How the request's ``X-Metrics-Token`` stands against ``INTERNAL_METRICS_TOKEN``.
 
     The configured and the presented token are locals of this function and of no
-    other: the SDK records the local variables of every frame an unhandled error
-    passes through, so a token held in ``metrics`` itself would travel to Sentry
-    with an error raised after the gate. This frame has returned by then.
+    other. ``init_sentry`` sets ``include_local_variables=False``, so the SDK no
+    longer sends the locals of the frames an unhandled error passes through. This
+    split and the key-name scrub in ``sentry_setup._before_send`` stay as a second
+    layer: a token held in ``metrics`` itself would not outlast this frame, which
+    has returned by the time an error is raised after the gate.
     """
     expected = settings.internal_metrics_token
     if not expected:

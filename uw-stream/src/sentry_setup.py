@@ -217,6 +217,13 @@ def init_sentry() -> None:
             # nightly/src/monitoring.py does. The libraries' own ERROR records
             # are the exception: see ``_attach_library_error_handlers``.
             integrations=[LoggingIntegration(level=logging.INFO, event_level=None)],
+            # Send no frame local variables. The SDK's default records every
+            # local of every frame an error passes through, and a secret held
+            # in a local (a token being compared, a setting) would travel with
+            # it. The key-name scrubs in ``_before_send`` and the compare in
+            # ``health._check_token`` stay as a second layer. As
+            # nightly/src/monitoring.py does.
+            include_local_variables=False,
         )
         # Tag every event so the shared sidecar DSN can be filtered.
         sentry_sdk.set_tag("service", "uw-stream")

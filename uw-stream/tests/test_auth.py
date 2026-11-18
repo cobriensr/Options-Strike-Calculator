@@ -181,16 +181,28 @@ class TestReportMismatch:
         assert kwargs["params"] == (CLIENT,)
         assert kwargs["context"] == {"reason": "wrong"}
 
+    @pytest.mark.parametrize("reason", ["missing", "wrong"])
+    def test_the_reason_is_a_tag_beside_the_component_and_kind(
+        self, clock: _Clock, reports: MagicMock, reason: str
+    ) -> None:
+        auth.report_mismatch(CLIENT, reason)  # type: ignore[arg-type]
+
+        assert reports.call_args.kwargs["tags"] == {
+            "component": "auth",
+            "kind": "secret_check_failed",
+            "reason": reason,
+        }
+
     def test_request_derived_text_never_enters_the_template(
         self, clock: _Clock, sdk_off: None, service_log_records
     ) -> None:
         """Sentry groups the event by its template, so the client string is an argument.
         A client that sends template syntax gets it logged as it is, not formatted."""
-        hostile = "%s %d %(x)s {0}\nERROR forged line"
-        auth.report_mismatch(hostile, "wrong")
+        template_text = "%s %d %(x)s {0}\nERROR second line"
+        auth.report_mismatch(template_text, "wrong")
 
         (line,) = _lines(service_log_records, logging.ERROR)
-        assert hostile in line
+        assert template_text in line
         assert line.startswith("Secret check failed on metrics (client ")
 
     def test_a_second_call_inside_ten_minutes_files_no_error(

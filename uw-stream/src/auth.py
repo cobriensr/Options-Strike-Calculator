@@ -30,7 +30,7 @@ MIN_SECRET_LEN = 32
 Reason = Literal["missing", "wrong"]
 
 # Shortest gap between two failed-check ERRORs. Sentry opens an issue event for
-# each, and a probe can fail the check on every request.
+# each, and a misconfigured caller can fail the check on every request.
 _ERROR_INTERVAL_S = 10 * 60
 
 # When the last failed-check ERROR was filed (a `time.monotonic()` reading), or
@@ -60,6 +60,9 @@ def report_weak_secrets() -> None:
     """
     weak = weak_secret_names()
     if weak:
+        # The Sentry alert rule "Auth: wrong secret, short secret or guest-key
+        # limit" matches messages that start with this text; reword it and
+        # update the rule.
         capture_message(
             "Configured secret shorter than the minimum: %s",
             level="error",
@@ -86,10 +89,13 @@ def report_mismatch(client_ip: str, reason: Reason) -> None:
     if _last_error_at is not None and now - _last_error_at < _ERROR_INTERVAL_S:
         return
     _last_error_at = now
+    # The Sentry alert rule "Auth: wrong secret, short secret or guest-key limit"
+    # matches messages that start with this text; reword it and update the rule.
+    # The reason is a tag, as on the other two services, and stays in the extras.
     capture_message(
         "Secret check failed on metrics (client %s)",
         level="error",
         params=(client_ip,),
-        tags={"component": "auth", "kind": "secret_check_failed"},
+        tags={"component": "auth", "kind": "secret_check_failed", "reason": reason},
         context={"reason": reason},
     )

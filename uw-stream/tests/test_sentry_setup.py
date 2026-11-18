@@ -12,6 +12,7 @@ from __future__ import annotations
 import io
 import json
 import logging
+import secrets
 from collections.abc import Iterator
 from types import SimpleNamespace
 from typing import Any
@@ -474,11 +475,11 @@ class TestCaptureMessageParams:
         )
 
     def test_a_percent_sign_inside_an_argument_is_not_formatted_again(self, service_log_records):
-        hostile = "%s %d %(x)s {0} 100%"
-        sentry_setup.capture_message(self.TEMPLATE, level="error", params=(hostile,))
+        template_text = "%s %d %(x)s {0} 100%"
+        sentry_setup.capture_message(self.TEMPLATE, level="error", params=(template_text,))
 
         (record,) = service_log_records
-        assert record.getMessage() == f"Secret check failed on metrics (client {hostile})"
+        assert record.getMessage() == f"Secret check failed on metrics (client {template_text})"
 
     def test_a_template_and_arguments_that_disagree_do_not_raise(
         self, sdk_transport, service_log_records
@@ -791,6 +792,60 @@ class TestProductionConfiguration:
         ]
 
 
+def _failing_frame() -> tuple[BaseException, str]:
+    """An exception raised under a frame that holds a local nothing scrubs.
+
+    The local's name is not one ``_scrub_tokens`` blanks, and its value is built at
+    run time, so the source lines the SDK sends beside a frame don't hold it.
+    """
+    expected = f"plainvalue-{secrets.token_hex(8)}"
+    try:
+        raise RuntimeError("query failed")
+    except RuntimeError as exc:
+        return exc, expected
+
+
+class TestFrameLocals:
+    """Frame locals stay out of the events the client built from ``init_sentry`` sends.
+
+    The check is on the bytes the in-memory transport kept. The scrubs on key names
+    stay as a second layer, but a value under a name nothing scrubs would pass them.
+    """
+
+    def test_a_local_variable_value_is_not_in_the_payload(self, production_client):
+        exc, expected = _failing_frame()
+
+        sentry_sdk.capture_exception(exc)
+
+        (event,) = production_client.transport.events()
+        frames = event["exception"]["values"][0]["stacktrace"]["frames"]
+        # Without a frame holding the local the check below would prove nothing.
+        assert "_failing_frame" in [frame["function"] for frame in frames]
+        assert expected.encode() not in b"".join(production_client.transport.payloads)
+
+    def test_the_sdk_default_would_send_the_same_local(self, production_client):
+        """The control: with the option left out, the same exception carries the
+        local, so the test above is able to fail."""
+        options = {
+            k: v for k, v in production_client.passed.items() if k != "include_local_variables"
+        }
+        client = sentry_sdk.Client(transport=_MemoryTransport, **options)
+        try:
+            with sentry_sdk.isolation_scope() as scope:
+                scope.set_client(client)
+                exc, expected = _failing_frame()
+                sentry_sdk.capture_exception(exc)
+                transport = client.transport
+                assert isinstance(transport, _MemoryTransport)
+                assert len(transport.events()) == 1
+                assert expected.encode() in b"".join(transport.payloads)
+        finally:
+            client.close()
+
+    def test_init_passes_the_option_off(self, production_client):
+        assert production_client.passed["include_local_variables"] is False
+
+
 _FAILED_CHECK = "Secret check failed on metrics (client %s)"
 _SHORT_SECRET = "Configured secret shorter than the minimum: %s"
 _WEAK_TOKEN = "weak-metrics-token-value"
@@ -819,6 +874,7 @@ class TestAuthReports:
         assert event["logentry"]["message"] == _FAILED_CHECK
         assert event["logentry"]["params"] == ["203.0.113.7"]
         assert event["tags"]["component"] == "auth"
+        assert event["tags"]["reason"] == "wrong"
         assert event["extra"]["reason"] == "wrong"
 
     def test_a_missing_header_files_the_same_template(self, sdk_transport):
@@ -826,6 +882,7 @@ class TestAuthReports:
 
         (event,) = sdk_transport.events()
         assert event["logentry"]["message"] == _FAILED_CHECK
+        assert event["tags"]["reason"] == "missing"
         assert event["extra"]["reason"] == "missing"
 
     def test_further_refusals_inside_the_window_file_no_more_events(self, sdk_transport):
