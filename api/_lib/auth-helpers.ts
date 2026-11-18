@@ -332,6 +332,30 @@ function limiterFailureContext() {
   };
 }
 
+/** Shortest gap between two Sentry events from the request limiter. */
+const LIMITER_SENTRY_INTERVAL_MS = 60_000;
+
+// When this instance last sent a limiter failure to Sentry. One number, so it
+// holds no more than one entry however many requests fail.
+let lastLimiterSentryAt = Number.NEGATIVE_INFINITY;
+
+/**
+ * Whether a limiter failure may go to Sentry now: at most one per instance per
+ * 60 s. The fingerprint already folds an outage into one issue, but every
+ * guarded request still sent an event, so the event count followed guest
+ * traffic. The log line, the counter and the fail-open result are not
+ * throttled.
+ *
+ * The send time is recorded before the event goes out, so a Sentry that throws
+ * costs that one failure and no later one inside the window.
+ */
+function limiterSentryDue(): boolean {
+  const now = Date.now();
+  if (now - lastLimiterSentryAt < LIMITER_SENTRY_INTERVAL_MS) return false;
+  lastLimiterSentryAt = now;
+  return true;
+}
+
 /**
  * Check if a request should be rate-limited.
  * Uses Upstash Redis to count requests per key in fixed epoch-minute buckets
@@ -341,7 +365,8 @@ function limiterFailureContext() {
  * Requests that arrive while blocked still INCR; that only affects the
  * current bucket.
  *
- * Used on auth endpoints to prevent brute-force and abuse.
+ * Used on the auth endpoints, the data readers and the health check to cap
+ * how often one client can call them.
  * Fails open (returns false) if Redis is unavailable or answers with
  * something other than a count: don't block legitimate requests if the rate
  * limiter itself is down. Uses the fail-fast `limiterRedis` client (no
@@ -379,17 +404,21 @@ async function isRateLimited(
         'Rate limiter got a malformed INCR reply; failing open',
       );
       metrics.increment('api_helpers.rate_limit_redis_error');
-      Sentry.captureMessage(
-        'Rate limiter got a malformed INCR reply',
-        limiterFailureContext(),
-      );
+      if (limiterSentryDue()) {
+        Sentry.captureMessage(
+          'Rate limiter got a malformed INCR reply',
+          limiterFailureContext(),
+        );
+      }
       return false; // fail open
     }
     return count > maxPerMinute;
   } catch (err) {
     logger.warn({ err }, 'Rate limiter Redis call failed; failing open');
     metrics.increment('api_helpers.rate_limit_redis_error');
-    Sentry.captureException(err, limiterFailureContext());
+    if (limiterSentryDue()) {
+      Sentry.captureException(err, limiterFailureContext());
+    }
     return false; // fail open
   }
 }
@@ -474,7 +503,7 @@ export function hourWindow(nowMs: number): {
  * every client, before it refuses all attempts until the next hour. The
  * per-minute limiter bounds one client; this bounds the total. An operational
  * knob: a real guest types a wrong key a few times a month, so 20 an hour is
- * far above normal use and low enough to stop a sustained run of guesses.
+ * far above normal use and low enough to stop a long run of wrong keys.
  */
 export const GUEST_KEY_FAILS_PER_HOUR = 20;
 

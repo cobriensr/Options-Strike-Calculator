@@ -51,7 +51,9 @@ export const redis = createRedis();
 /**
  * Fail-fast client for the limiters: the UW rate-limit and concurrency
  * limiters and the per-IP request limiter (`rejectIfRateLimited` in
- * `auth-helpers.ts`), which all fail OPEN on any Redis error. On Upstash
+ * `auth-helpers.ts`), which fail OPEN on any Redis error, and the guest-key
+ * failure budget (`guestKeyBudgetSpent` in `auth-helpers.ts`), which fails
+ * CLOSED: an unreadable count refuses the attempt with a 503. On Upstash
  * defaults (5 retries with exponential backoff, undici's 10 s connect
  * timeout) one limiter call took ~64 s to give up during the 2026-09-29
  * connect-timeout outage, and `uwFetch` makes up to three of them per UW

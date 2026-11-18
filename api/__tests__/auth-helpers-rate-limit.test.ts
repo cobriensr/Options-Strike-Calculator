@@ -167,9 +167,10 @@ async function hit(
   endpoint = 'auth-init',
   max = 5,
   req = request(),
+  limiter: typeof rejectIfRateLimited = rejectIfRateLimited,
 ): Promise<ReturnType<typeof mockResponse> & { rejected: boolean }> {
   const res = mockResponse();
-  const rejected = await rejectIfRateLimited(req, res, endpoint, max);
+  const rejected = await limiter(req, res, endpoint, max);
   return Object.assign(res, { rejected });
 }
 
@@ -653,11 +654,23 @@ describe('rejectIfRateLimited', () => {
   });
 
   describe('failing open', () => {
+    // The limiter's Sentry throttle is module state, so each test takes a
+    // fresh copy of auth-helpers to start with it empty.
+    let limiter: typeof rejectIfRateLimited;
+    beforeEach(async () => {
+      vi.resetModules();
+      ({ rejectIfRateLimited: limiter } =
+        await import('../_lib/auth-helpers.js'));
+    });
+
+    const hitFresh = (max: number, req = request()) =>
+      hit('auth-init', max, req, limiter);
+
     it('lets the request through when the pipeline rejects, and surfaces the failure', async () => {
       const err = new Error('connect timeout');
       mockExec.mockRejectedValueOnce(err);
 
-      const res = await hit('auth-init', 0);
+      const res = await hitFresh(0);
 
       expect(res.rejected).toBe(false);
       expect(res._status).toBe(200);
@@ -679,7 +692,7 @@ describe('rejectIfRateLimited', () => {
       );
       mockExec.mockRejectedValueOnce(err);
 
-      const res = await hit('auth-init', 0);
+      const res = await hitFresh(0);
 
       expect(res.rejected).toBe(false);
       expect(mockIncrement).toHaveBeenCalledWith(REDIS_ERROR_METRIC);
@@ -695,7 +708,7 @@ describe('rejectIfRateLimited', () => {
       async (_label, reply, count) => {
         mockExec.mockResolvedValueOnce(reply);
 
-        const res = await hit('auth-init', 0);
+        const res = await hitFresh(0);
 
         expect(res.rejected).toBe(false);
         expect(res._status).toBe(200);
@@ -713,22 +726,77 @@ describe('rejectIfRateLimited', () => {
       },
     );
 
-    it('reports every failure of an outage under one pinned fingerprint', async () => {
-      mockExec.mockRejectedValue(new Error('upstash is down'));
+    describe('Sentry throttle during an outage', () => {
+      const WINDOW_MS = 60_000;
 
-      for (let i = 0; i < 3; i += 1) {
-        await hit('auth-init', 5, request(`203.0.113.${i}`));
-      }
+      beforeEach(() => {
+        mockExec.mockRejectedValue(new Error('upstash is down'));
+      });
 
-      expect(mockCaptureException).toHaveBeenCalledTimes(3);
-      const fingerprints = mockCaptureException.mock.calls.map(
-        ([, context]) => (context as { fingerprint: string[] }).fingerprint,
-      );
-      expect(fingerprints).toEqual([
-        LIMITER_FINGERPRINT,
-        LIMITER_FINGERPRINT,
-        LIMITER_FINGERPRINT,
-      ]);
+      it('sends one capture for two failures inside 60 s, and fails open, logs and counts both', async () => {
+        const first = await hitFresh(5, request('203.0.113.1'));
+        vi.setSystemTime(T0 + WINDOW_MS - 1);
+        const second = await hitFresh(5, request('203.0.113.2'));
+
+        expect(first.rejected).toBe(false);
+        expect(second.rejected).toBe(false);
+        expect(mockCaptureException).toHaveBeenCalledTimes(1);
+        expect(mockLoggerWarn).toHaveBeenCalledTimes(2);
+        expect(mockIncrement).toHaveBeenCalledTimes(2);
+        expect(mockIncrement).toHaveBeenNthCalledWith(1, REDIS_ERROR_METRIC);
+        expect(mockIncrement).toHaveBeenNthCalledWith(2, REDIS_ERROR_METRIC);
+      });
+
+      it('sends a second capture for a failure 60 s after the first', async () => {
+        await hitFresh(5);
+        vi.setSystemTime(T0 + WINDOW_MS);
+        await hitFresh(5);
+
+        expect(mockCaptureException).toHaveBeenCalledTimes(2);
+        const fingerprints = mockCaptureException.mock.calls.map(
+          ([, context]) => (context as { fingerprint: string[] }).fingerprint,
+        );
+        expect(fingerprints).toEqual([
+          LIMITER_FINGERPRINT,
+          LIMITER_FINGERPRINT,
+        ]);
+      });
+
+      it('measures the 60 s from the last capture, not from the last failure', async () => {
+        await hitFresh(5);
+        vi.setSystemTime(T0 + 40_000);
+        await hitFresh(5);
+        vi.setSystemTime(T0 + 80_000);
+        await hitFresh(5);
+
+        // Sent at T0 and T0 + 80 s; the failure at T0 + 40 s was inside the
+        // first window and must not have pushed it.
+        expect(mockCaptureException).toHaveBeenCalledTimes(2);
+      });
+
+      it('shares one window between a failed call and a malformed reply', async () => {
+        await hitFresh(5);
+        mockExec.mockResolvedValueOnce(['Aborted', 1]);
+        const res = await hitFresh(5);
+
+        expect(res.rejected).toBe(false);
+        expect(mockLoggerWarn).toHaveBeenCalledTimes(2);
+        expect(mockCaptureException).toHaveBeenCalledTimes(1);
+        expect(mockCaptureMessage).not.toHaveBeenCalled();
+      });
+
+      it('opens the window before the send, so a Sentry that throws costs one failure only', async () => {
+        mockCaptureException.mockImplementationOnce(() => {
+          throw new Error('sentry down');
+        });
+
+        await hitFresh(5).catch(() => undefined);
+        vi.setSystemTime(T0 + 1_000);
+        const second = await hitFresh(5);
+
+        expect(second.rejected).toBe(false);
+        expect(mockCaptureException).toHaveBeenCalledTimes(1);
+      });
     });
   });
 });
