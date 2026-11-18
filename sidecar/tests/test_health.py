@@ -24,6 +24,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+import auth
 import health
 from health import HealthHandler
 
@@ -33,10 +34,13 @@ VALID_BEARER = {"Authorization": f"Bearer {SHARED_SECRET}"}
 
 @pytest.fixture(autouse=True)
 def _shared_secret_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Every test starts with the bearer secret configured, and with the
-    once-per-process unset-secret error not yet logged."""
+    """Every test starts with the bearer secret configured, with the
+    once-per-process unset-secret error not yet logged, and with no failed-check
+    error yet logged for any surface (that one is throttled to once per 10
+    minutes, so a test that expects it would depend on the test order)."""
     monkeypatch.setenv("TAKEIT_SIDECAR_SHARED_SECRET", SHARED_SECRET)
     monkeypatch.setattr(health, "_unset_secret_logged", False)
+    monkeypatch.setattr(auth, "_last_error_at", dict.fromkeys(auth.SURFACES))
 
 
 def _header_lines(headers: Mapping[str, str] | None) -> str:
@@ -1379,3 +1383,265 @@ class TestArchive500Sentry:
         assert kwargs["tags"]["component"] == "archive"
         # Caller-supplied tags (`**tags` in _archive_500) reach Sentry too.
         assert kwargs["tags"]["date"] == "2024-01-01..2024-01-02"
+
+
+# ---------------------------------------------------------------------------
+# Failed secret checks are reported: the surface and the client address
+# ---------------------------------------------------------------------------
+
+_ARCHIVE_PATH = "/archive/day-summary?date=2024-01-15"
+_UNAUTHORIZED = {"error": "unauthorized"}
+
+
+class TestClientAddress:
+    """The address a failed check reports. It is only logged, never trusted."""
+
+    @staticmethod
+    def _reported(headers: dict[str, str]) -> str:
+        with patch("health.report_mismatch") as report:
+            _run_request(_ARCHIVE_PATH, headers=headers)
+        report.assert_called_once()
+        return report.call_args.args[1]
+
+    def test_x_real_ip_wins_over_x_forwarded_for(self) -> None:
+        reported = self._reported(
+            {"X-Real-IP": "203.0.113.7", "X-Forwarded-For": "198.51.100.9, 10.0.0.1"}
+        )
+        assert reported == "203.0.113.7"
+
+    def test_x_forwarded_for_is_reported_raw_when_there_is_no_x_real_ip(self) -> None:
+        """Not split into hops: the client can write every hop but the last."""
+        reported = self._reported({"X-Forwarded-For": "198.51.100.9, 10.0.0.1"})
+        assert reported == "198.51.100.9, 10.0.0.1"
+
+    def test_the_socket_address_is_the_fallback(self) -> None:
+        assert self._reported({}) == "127.0.0.1"
+
+    def test_an_empty_x_real_ip_falls_through_to_x_forwarded_for(self) -> None:
+        reported = self._reported({"X-Real-IP": "", "X-Forwarded-For": "198.51.100.9"})
+        assert reported == "198.51.100.9"
+
+    def test_two_empty_headers_fall_through_to_the_socket_address(self) -> None:
+        assert self._reported({"X-Real-IP": "", "X-Forwarded-For": ""}) == "127.0.0.1"
+
+    @pytest.mark.parametrize("header", ["X-Forwarded-For", "X-Real-IP"])
+    def test_a_long_value_is_cut_at_200_characters(self, header: str) -> None:
+        assert self._reported({header: "9" * 5000}) == "9" * 200
+
+    @pytest.mark.parametrize("header", ["X-Forwarded-For", "X-Real-IP"])
+    def test_a_200_character_value_is_kept_whole(self, header: str) -> None:
+        assert self._reported({header: "9" * 200}) == "9" * 200
+
+
+class TestArchiveCheckReports:
+    @pytest.mark.parametrize(("path", "query", "_result"), _ARCHIVE_ROUTE_CASES)
+    def test_a_wrong_bearer_on_any_archive_route_reports_the_archive_surface(
+        self, path: str, query: str, _result: object
+    ) -> None:
+        with patch("health.report_mismatch") as report:
+            status, body = _run_request(
+                path, headers={"Authorization": "Bearer wrong-secret"}
+            )
+        assert status == 401
+        assert body == _UNAUTHORIZED
+        report.assert_called_once_with("archive", "127.0.0.1")
+
+    @pytest.mark.parametrize(
+        "headers",
+        [{}, {"Authorization": "Bearer "}, {"Authorization": "Bearer caf\xe9"}],
+        ids=["missing", "empty-bearer", "non-ascii"],
+    )
+    def test_a_missing_or_malformed_header_reports_too(
+        self, headers: dict[str, str]
+    ) -> None:
+        with patch("health.report_mismatch") as report:
+            status, body = _run_request(_ARCHIVE_PATH, headers=headers)
+        assert status == 401
+        assert body == _UNAUTHORIZED
+        report.assert_called_once_with("archive", "127.0.0.1")
+
+    def test_the_report_carries_the_header_address(self) -> None:
+        with patch("health.report_mismatch") as report:
+            _run_request(
+                _ARCHIVE_PATH,
+                headers={"Authorization": "Bearer wrong", "X-Real-IP": "203.0.113.7"},
+            )
+        report.assert_called_once_with("archive", "203.0.113.7")
+
+    def test_a_valid_bearer_reports_nothing(self) -> None:
+        with (
+            patch("health.report_mismatch") as report,
+            patch("archive_query.day_summary_text") as day_summary,
+        ):
+            # A future date answers 404 before any query runs.
+            status, _body = _run_request("/archive/day-summary?date=2999-01-01")
+        assert status == 404
+        day_summary.assert_not_called()
+        report.assert_not_called()
+
+    def test_an_unset_secret_is_not_a_mismatch(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("TAKEIT_SIDECAR_SHARED_SECRET")
+        with patch("health.report_mismatch") as report:
+            status, _body = _run_request(_ARCHIVE_PATH, headers={})
+        assert status == 503
+        report.assert_not_called()
+
+
+class TestTakeitExplainCheckReports:
+    @pytest.mark.parametrize(
+        "headers",
+        [{}, {"Authorization": "Bearer wrong"}, {"Authorization": "Bearer caf\xe9"}],
+        ids=["missing", "wrong", "non-ascii"],
+    )
+    def test_a_failed_bearer_reports_the_takeit_explain_surface(
+        self, headers: dict[str, str]
+    ) -> None:
+        with (
+            patch.dict(sys.modules, {"takeit_server": _fake_takeit()}),
+            patch("health.report_mismatch") as report,
+        ):
+            status, body, _read = _run_post_with_body(
+                "/takeit/explain", body=b"{}", headers=headers
+            )
+        assert status == 401
+        assert body == _UNAUTHORIZED
+        report.assert_called_once_with("takeit-explain", "127.0.0.1")
+
+    def test_a_valid_bearer_reports_nothing(self) -> None:
+        with (
+            patch.dict(sys.modules, {"takeit_server": _fake_takeit()}),
+            patch("health.report_mismatch") as report,
+        ):
+            status, _body, _read = _run_post_with_body(
+                "/takeit/explain", body=b"{}", headers=VALID_BEARER
+            )
+        assert status == 200
+        report.assert_not_called()
+
+    def test_a_disabled_server_reports_nothing(self) -> None:
+        with (
+            patch.dict(sys.modules, {"takeit_server": _fake_takeit(enabled=False)}),
+            patch("health.report_mismatch") as report,
+        ):
+            status, _body, _read = _run_post_with_body(
+                "/takeit/explain", body=b"{}", headers={}
+            )
+        assert status == 503
+        report.assert_not_called()
+
+
+class TestSeedCheckReports:
+    @pytest.mark.parametrize(
+        "headers",
+        [{}, {"X-Admin-Token": "wrong"}, {"X-Admin-Token": "caf\xe9"}],
+        ids=["missing", "wrong", "non-ascii"],
+    )
+    def test_a_failed_token_reports_the_seed_surface(
+        self, monkeypatch: pytest.MonkeyPatch, headers: dict[str, str]
+    ) -> None:
+        HealthHandler.seed_archive = staticmethod(lambda: {"failed": 0})
+        monkeypatch.setenv("ARCHIVE_SEED_TOKEN", "right")
+        with patch("health.report_mismatch") as report:
+            status, body = _run_post_request(headers=headers)
+        assert status == 401
+        assert body == _UNAUTHORIZED
+        report.assert_called_once_with("seed", "127.0.0.1")
+
+    def test_a_token_sent_when_none_is_configured_reports(self) -> None:
+        HealthHandler.seed_archive = staticmethod(lambda: {"failed": 0})
+        with patch("health.report_mismatch") as report:
+            status, _body = _run_post_request(headers={"X-Admin-Token": "anything"})
+        assert status == 401
+        report.assert_called_once_with("seed", "127.0.0.1")
+
+    def test_the_report_carries_the_header_address(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        HealthHandler.seed_archive = staticmethod(lambda: {"failed": 0})
+        monkeypatch.setenv("ARCHIVE_SEED_TOKEN", "right")
+        with patch("health.report_mismatch") as report:
+            _run_post_request(
+                headers={"X-Admin-Token": "wrong", "X-Forwarded-For": "198.51.100.9"}
+            )
+        report.assert_called_once_with("seed", "198.51.100.9")
+
+    def test_a_right_token_reports_nothing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        HealthHandler.seed_archive = staticmethod(lambda: {"failed": 0})
+        monkeypatch.setenv("ARCHIVE_SEED_TOKEN", "right")
+        with patch("health.report_mismatch") as report:
+            status, _body = _run_post_request(headers={"X-Admin-Token": "right"})
+        assert status == 200
+        report.assert_not_called()
+
+    def test_an_unconfigured_seeder_is_not_a_secret_check(self) -> None:
+        with patch("health.report_mismatch") as report:
+            status, _body = _run_post_request(headers={"X-Admin-Token": "anything"})
+        assert status == 401
+        report.assert_not_called()
+
+
+class TestSecretCheckLogs:
+    """The real reporter, end to end: what a failed check writes to the log."""
+
+    @staticmethod
+    def _lines(caplog: pytest.LogCaptureFixture, level: str) -> list[str]:
+        return [
+            r.getMessage()
+            for r in caplog.records
+            if r.name == "sidecar"
+            and r.levelname == level
+            and "ecret check failed" in r.getMessage()
+        ]
+
+    def test_repeated_failures_log_one_error_and_a_warning_for_each(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        for _ in range(3):
+            _run_request(_ARCHIVE_PATH, headers={"Authorization": "Bearer wrong"})
+        warnings = self._lines(caplog, "WARNING")
+        errors = self._lines(caplog, "ERROR")
+        assert len(warnings) == 3
+        assert len(errors) == 1
+        assert "archive" in errors[0]
+        assert "127.0.0.1" in errors[0]
+
+    def test_each_failing_check_logs_its_own_error(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        HealthHandler.seed_archive = staticmethod(lambda: {"failed": 0})
+        monkeypatch.setenv("ARCHIVE_SEED_TOKEN", "right")
+        with patch.dict(sys.modules, {"takeit_server": _fake_takeit()}):
+            _run_request(_ARCHIVE_PATH, headers={})
+            _run_post_with_body("/takeit/explain", body=b"{}", headers={})
+            _run_post_request(headers={"X-Admin-Token": "wrong"})
+        errors = self._lines(caplog, "ERROR")
+        assert len(errors) == 3
+        for surface in ("archive", "takeit-explain", "seed"):
+            assert sum(surface in line for line in errors) == 1
+
+    def test_the_log_holds_no_secret_no_presented_credential_and_no_length(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        shared = "configured-shared-" + "s" * 10  # 28 characters
+        seed = "configured-seed-token-" + "t" * 12  # 34 characters
+        presented_bearer = "presented-bearer-" + "b" * 24  # 41 characters
+        presented_token = "presented-token-" + "p" * 25  # 41 characters
+        monkeypatch.setenv("TAKEIT_SIDECAR_SHARED_SECRET", shared)
+        monkeypatch.setenv("ARCHIVE_SEED_TOKEN", seed)
+        HealthHandler.seed_archive = staticmethod(lambda: {"failed": 0})
+        header = {"Authorization": f"Bearer {presented_bearer}"}
+
+        with patch.dict(sys.modules, {"takeit_server": _fake_takeit()}):
+            _run_request(_ARCHIVE_PATH, headers=header)
+            _run_post_with_body("/takeit/explain", body=b"{}", headers=header)
+            _run_post_request(headers={"X-Admin-Token": presented_token})
+
+        logged = "\n".join(r.getMessage() for r in caplog.records)
+        assert "ecret check failed" in logged
+        for value in (shared, seed, presented_bearer, presented_token):
+            assert value not in logged
+            assert str(len(value)) not in logged

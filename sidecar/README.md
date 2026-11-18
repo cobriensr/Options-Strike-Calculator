@@ -16,6 +16,9 @@ The DuckDB archive needs a persistent `/data` volume, and the SHAP explainer kee
 - **Take-It SHAP server**: `src/takeit_server.py` serves `/takeit/explain` and `/takeit/health` for the `takeit-fill-shap` cron. On the first request per alert type it downloads that model bundle from private Vercel Blob (the `takeit/latest.json` manifest, then the versioned `.joblib`) and keeps it loaded.
 - **Archive reads**: `src/archive_query.py` runs DuckDB over the Parquet archive for the read-only `/archive/*` routes, with a cap on concurrent queries. Every `/archive/*` request must carry `Authorization: Bearer <TAKEIT_SIDECAR_SHARED_SECRET>`, checked before a query slot is taken; with the variable unset the routes answer 503. `/health` and `/takeit/health` need no header.
 
+- **Failed secret checks**: each rejected `/archive/*` bearer, `/takeit/explain` bearer and `X-Admin-Token` logs a WARNING with the client address (`X-Real-IP`, else the raw `X-Forwarded-For`, else the socket peer; cut at 200 characters and only logged, never trusted). At most once per check per 10 minutes it also logs an ERROR, which Sentry reports as an event. The response is still the same 401. A log line never holds a secret, a presented value or a length.
+- **Short secrets**: at boot, a set `TAKEIT_SIDECAR_SHARED_SECRET` or `ARCHIVE_SEED_TOKEN` under 32 characters logs one ERROR naming the variable. The sidecar still starts and still accepts that secret.
+
 The sidecar writes nothing to Postgres. Its callers are [`api/_lib/archive-sidecar.ts`](../api/_lib/archive-sidecar.ts) and [`api/cron/fetch-day-ohlc.ts`](../api/cron/fetch-day-ohlc.ts) (both via `SIDECAR_URL`), and [`api/cron/takeit-fill-shap.ts`](../api/cron/takeit-fill-shap.ts) (via `SIDECAR_TAKEIT_URL`).
 
 ## Local development
@@ -87,7 +90,7 @@ railway redeploy --service sidecar -y
 ```text
 src/
   main.py             # Entry point: env check, HTTP server
-  auth.py             # Shared-secret checks (bearer, admin token), compared as bytes
+  auth.py             # Shared-secret checks (bearer, admin token) compared as bytes; short-secret list and failed-check report
   config.py           # Env vars + settings
   db.py               # psycopg2 pool, boot verification, /health probe
   front_month.py      # Front-month CTE SQL for archive queries

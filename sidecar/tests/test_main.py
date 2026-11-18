@@ -22,6 +22,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+import auth
 import config
 import main
 from conftest import FAKE_DATABASE_URL as _FAKE_DB_URL
@@ -203,6 +204,87 @@ def test_main_does_not_report_when_db_verification_succeeds(
 
     patched_subsystems["verify_connection"].assert_called_once()
     patched_subsystems["capture_exception"].assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# main() — short shared secrets
+# ---------------------------------------------------------------------------
+
+
+def _boot_errors(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [
+        r.getMessage()
+        for r in caplog.records
+        if r.name == "sidecar" and r.levelname == "ERROR"
+    ]
+
+
+def test_main_logs_one_error_naming_a_short_secret_and_not_its_value(
+    monkeypatch: pytest.MonkeyPatch,
+    patched_subsystems: dict[str, MagicMock],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The error names the variable. It carries no value and no length, not
+    even the minimum, and a short secret does not stop the boot."""
+    short = "short-shared-value"  # 18 characters
+    monkeypatch.setenv("DATABASE_URL", _FAKE_DB_URL)
+    monkeypatch.setenv(auth.SHARED_SECRET_ENV, short)
+    monkeypatch.setenv(auth.SEED_TOKEN_ENV, "t" * 40)
+
+    main.main()
+
+    errors = _boot_errors(caplog)
+    assert len(errors) == 1
+    assert auth.SHARED_SECRET_ENV in errors[0]
+    assert auth.SEED_TOKEN_ENV not in errors[0]
+    assert short not in errors[0]
+    assert "18" not in errors[0]
+    assert str(auth.MIN_SECRET_LEN) not in errors[0]
+    patched_subsystems["start_health_server"].assert_called_once()
+    patched_subsystems["wait_for_shutdown"].assert_called_once()
+
+
+def test_main_names_every_short_secret_in_the_one_error(
+    monkeypatch: pytest.MonkeyPatch,
+    patched_subsystems: dict[str, MagicMock],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setenv("DATABASE_URL", _FAKE_DB_URL)
+    monkeypatch.setenv(auth.SHARED_SECRET_ENV, "x" * 7)
+    monkeypatch.setenv(auth.SEED_TOKEN_ENV, "y" * 9)
+
+    main.main()
+
+    errors = _boot_errors(caplog)
+    assert len(errors) == 1
+    assert auth.SHARED_SECRET_ENV in errors[0]
+    assert auth.SEED_TOKEN_ENV in errors[0]
+    assert "xxx" not in errors[0]
+    assert "yyy" not in errors[0]
+
+
+@pytest.mark.parametrize(
+    ("shared", "seed"),
+    [(None, None), ("", ""), ("a" * 32, "b" * 32), ("a" * 64, None)],
+    ids=["unset", "empty", "at-the-minimum", "long"],
+)
+def test_main_logs_no_secret_error_when_no_secret_is_short(
+    monkeypatch: pytest.MonkeyPatch,
+    patched_subsystems: dict[str, MagicMock],
+    caplog: pytest.LogCaptureFixture,
+    shared: str | None,
+    seed: str | None,
+) -> None:
+    monkeypatch.setenv("DATABASE_URL", _FAKE_DB_URL)
+    for name, value in ((auth.SHARED_SECRET_ENV, shared), (auth.SEED_TOKEN_ENV, seed)):
+        if value is None:
+            monkeypatch.delenv(name, raising=False)
+        else:
+            monkeypatch.setenv(name, value)
+
+    main.main()
+
+    assert _boot_errors(caplog) == []
 
 
 def test_main_wires_health_server_with_db_probe_and_seeder_only(

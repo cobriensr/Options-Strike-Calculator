@@ -24,7 +24,14 @@ from typing import Any, ClassVar
 from urllib.parse import parse_qs, urlparse
 
 from archive_seeder import SeedBusyError
-from auth import SHARED_SECRET_ENV, bearer_ok, shared_secret, token_ok
+from auth import (
+    SHARED_SECRET_ENV,
+    bearer_ok,
+    report_mismatch,
+    seed_token,
+    shared_secret,
+    token_ok,
+)
 from logger_setup import log
 
 # 3-year window cap on /archive/*-batch range queries. A 3-year range
@@ -54,6 +61,9 @@ def _log_unset_secret() -> None:
     level = log.error if first else log.warning
     level("%s is not set; /archive/* is unavailable", SHARED_SECRET_ENV)
 
+
+# Longest client address written to a log line, so one request can't bloat it.
+_MAX_LOGGED_CLIENT_LEN = 200
 
 # Upper bound on POST /takeit/explain request bodies.
 # The server binds 0.0.0.0, so an unbounded `rfile.read(content_length)`
@@ -292,9 +302,8 @@ class HealthHandler(BaseHTTPRequestHandler):
 
         # Auth gate — single-owner token from env, compared in constant time
         # (see auth.token_ok) so it can't be guessed from response timing.
-        if not token_ok(
-            self.headers.get("X-Admin-Token"), os.environ.get("ARCHIVE_SEED_TOKEN", "")
-        ):
+        if not token_ok(self.headers.get("X-Admin-Token"), seed_token()):
+            report_mismatch("seed", self._client_ip())
             self.send_response(401)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
@@ -353,7 +362,7 @@ class HealthHandler(BaseHTTPRequestHandler):
             )
             return
 
-        if not self._require_bearer(shared_secret(), "takeit explain"):
+        if not self._require_bearer(shared_secret(), "takeit-explain"):
             return
 
         content_length = int(self.headers.get("Content-Length", "0") or 0)
@@ -382,17 +391,34 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(json.dumps(body).encode())
 
-    def _require_bearer(self, secret: str, what: str) -> bool:
+    def _client_ip(self) -> str:
+        """The client address to log with a failed secret check.
+
+        `X-Real-IP` if the request has one, else the raw `X-Forwarded-For`,
+        else the socket's peer address. A client can send either header, so
+        the result is only logged, never trusted, and it is cut at
+        `_MAX_LOGGED_CLIENT_LEN` characters.
+        """
+        address = (
+            self.headers.get("X-Real-IP")
+            or self.headers.get("X-Forwarded-For")
+            or self.client_address[0]
+        )
+        return address[:_MAX_LOGGED_CLIENT_LEN]
+
+    def _require_bearer(self, secret: str, surface: str) -> bool:
         """Return True when the request carries `Bearer <secret>`.
 
-        Otherwise answer 401 and return False. The log line says whether the
-        header was missing or wrong, and never the value of either.
+        Otherwise report the failed check for `surface` (one of
+        `auth.SURFACES`), answer 401 and return False. The log line says
+        whether the header was missing or wrong, and never the value of either.
         """
         header = self.headers.get("Authorization")
         if bearer_ok(header, secret):
             return True
         reason = "no Authorization header" if header is None else "bearer mismatch"
-        log.warning("%s rejected: %s", what, reason)
+        log.warning("%s rejected: %s", surface, reason)
+        report_mismatch(surface, self._client_ip())
         self._send_json(401, {"error": "unauthorized"})
         return False
 
@@ -407,7 +433,7 @@ class HealthHandler(BaseHTTPRequestHandler):
             _log_unset_secret()
             self._send_json(503, {"error": "archive unavailable"})
             return False
-        return self._require_bearer(secret, "archive request")
+        return self._require_bearer(secret, "archive")
 
     def _dispatch_bounded_archive(self, handler_name: str) -> None:
         """Run an /archive/* handler under the concurrency-bound slot.

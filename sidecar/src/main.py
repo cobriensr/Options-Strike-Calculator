@@ -33,6 +33,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import archive_seeder
+from auth import weak_secret_names
 from config import settings
 from db import drain_pool, is_db_healthy, verify_connection
 from health import start_health_server
@@ -77,6 +78,13 @@ def main() -> None:
             ", ".join(missing),
         )
         sys.exit(1)
+
+    # A short shared secret is a weak lock, but the sidecar still serves with
+    # it: report it (Sentry turns the ERROR into an event) and keep booting.
+    # The log names the variables only, never a value or any length.
+    weak = weak_secret_names()
+    if weak:
+        log.error("Configured secret shorter than the minimum: %s", ", ".join(weak))
 
     # Take-It SHAP routes (Phase 3d, spec
     # docs/superpowers/specs/takeit-phase3-production-scoring-2026-05-16.md)
