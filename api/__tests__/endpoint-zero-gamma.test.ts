@@ -146,7 +146,7 @@ describe('GET /api/zero-gamma', () => {
     );
   });
 
-  // These two run the real isOwner (auth-helpers.js is only partly mocked), so
+  // These three run the real isOwner (auth-helpers.js is only partly mocked), so
   // the exemption is driven by a real cookie against OWNER_SECRET.
   describe('owner exemption from the reader limit', () => {
     const SECRET = 'reader-limit-test-owner-secret-0123456789';

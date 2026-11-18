@@ -196,11 +196,10 @@ describe('POST /api/auth/guest-key', () => {
       process.env.GUEST_ACCESS_KEYS = 'right-key-12345678';
       vi.mocked(guestKeyBudgetSpent).mockResolvedValue(true);
       const res = mockResponse();
+      const instance = await freshHandler();
 
       // Even the right key is refused: the budget is checked before the key.
-      await (
-        await freshHandler()
-      )(post('right-key-12345678'), res);
+      await instance(post('right-key-12345678'), res);
 
       expect(res._status).toBe(429);
       expect(res._json).toEqual({
