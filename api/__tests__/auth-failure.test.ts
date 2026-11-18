@@ -365,6 +365,141 @@ describe('reportSecretMismatch', () => {
     });
   });
 
+  // A caller that sends nothing must not use up the window a wrong secret
+  // needs: the Sentry alert may later be narrowed to `reason:wrong`.
+  describe('Sentry throttle is per surface and reason', () => {
+    const missing = () => request();
+    const wrong = () => request({ authorization: 'Bearer something' });
+    const notifyWrong = () => request({ 'x-internal-notify-secret': 'a' });
+
+    function sentReasons(): string[] {
+      return mockCaptureMessage.mock.calls.map(
+        ([, sent]) => (sent as { tags: { reason: string } }).tags.reason,
+      );
+    }
+
+    it('a missing then a wrong inside 10 min send two messages, tagged in that order', async () => {
+      const { reportSecretMismatch } = await freshModule();
+
+      reportSecretMismatch('cron', missing());
+      vi.advanceTimersByTime(60 * 1000);
+      reportSecretMismatch('cron', wrong());
+
+      expect(sentReasons()).toEqual(['missing', 'wrong']);
+      const fingerprints = mockCaptureMessage.mock.calls.map(
+        ([, sent]) => (sent as { fingerprint: string[] }).fingerprint,
+      );
+      expect(fingerprints).toEqual([
+        ['secret-mismatch', 'cron'],
+        ['secret-mismatch', 'cron'],
+      ]);
+    });
+
+    it('a wrong then a missing inside 10 min send two messages too', async () => {
+      const { reportSecretMismatch } = await freshModule();
+
+      reportSecretMismatch('cron', wrong());
+      reportSecretMismatch('cron', missing());
+
+      expect(sentReasons()).toEqual(['wrong', 'missing']);
+    });
+
+    it.each([
+      ['missing', missing],
+      ['wrong', wrong],
+    ])('a second %s inside 10 min sends nothing', async (_reason, again) => {
+      const { reportSecretMismatch } = await freshModule();
+
+      reportSecretMismatch('cron', again());
+      reportSecretMismatch('cron', again());
+      vi.advanceTimersByTime(TEN_MINUTES_MS - 1);
+      reportSecretMismatch('cron', again());
+
+      expect(mockCaptureMessage).toHaveBeenCalledTimes(1);
+    });
+
+    it('a wrong 10 min after the first wrong sends again, a missing in between or not', async () => {
+      const { reportSecretMismatch } = await freshModule();
+
+      reportSecretMismatch('cron', wrong());
+      vi.advanceTimersByTime(TEN_MINUTES_MS - 1000);
+      reportSecretMismatch('cron', missing());
+      vi.advanceTimersByTime(1000);
+      reportSecretMismatch('cron', wrong());
+
+      expect(sentReasons()).toEqual(['wrong', 'missing', 'wrong']);
+    });
+
+    it('a missing 10 min after the first missing sends again', async () => {
+      const { reportSecretMismatch } = await freshModule();
+
+      reportSecretMismatch('cron', missing());
+      vi.advanceTimersByTime(TEN_MINUTES_MS);
+      reportSecretMismatch('cron', missing());
+
+      expect(sentReasons()).toEqual(['missing', 'missing']);
+    });
+
+    it('keeps the surfaces apart for the same reason', async () => {
+      const { reportSecretMismatch } = await freshModule();
+
+      reportSecretMismatch('cron', wrong());
+      reportSecretMismatch('notify', notifyWrong());
+
+      expect(mockCaptureMessage).toHaveBeenCalledTimes(2);
+    });
+
+    it('holds at most one message per surface and reason, however many requests come', async () => {
+      const { reportSecretMismatch } = await freshModule();
+
+      // Varied paths, addresses and credential values: nothing taken from a
+      // request may open a new throttle entry.
+      for (let i = 0; i < 200; i += 1) {
+        for (const surface of SURFACES) {
+          const header =
+            surface === 'notify' ? 'x-internal-notify-secret' : 'authorization';
+          reportSecretMismatch(
+            surface,
+            mockRequest({
+              url: `/api/example/${i}?q=${i}`,
+              headers: {
+                'x-real-ip': `203.0.113.${i % 250}`,
+                ...(i % 2 === 0 ? { [header]: `value-${i}` } : {}),
+              },
+            }),
+          );
+        }
+      }
+
+      // 3 surfaces x 2 reasons is the most the window can hold.
+      expect(mockCaptureMessage).toHaveBeenCalledTimes(6);
+      const keys = mockCaptureMessage.mock.calls.map(([, sent]) => {
+        const { fingerprint, tags } = sent as {
+          fingerprint: string[];
+          tags: { reason: string };
+        };
+        return `${fingerprint[1]}:${tags.reason}`;
+      });
+      expect(new Set(keys).size).toBe(6);
+    });
+
+    it('opens the window before the send for each reason, so a throw costs one failure only', async () => {
+      mockCaptureMessage.mockImplementationOnce(() => {
+        throw new Error('sentry down');
+      });
+      const { reportSecretMismatch } = await freshModule();
+
+      expect(() => reportSecretMismatch('cron', wrong())).toThrow(
+        'sentry down',
+      );
+      expect(() => reportSecretMismatch('cron', wrong())).not.toThrow();
+      // The other reason's window is untouched by that failure.
+      reportSecretMismatch('cron', missing());
+
+      expect(sentReasons()).toEqual(['wrong', 'missing']);
+    });
+  });
+
   it('never includes the Authorization header, the notify header, a cookie, the query string or a length', async () => {
     // Distinct prefixes and lengths, so a leak of any of them is findable.
     const bearer = 'zq9-bearer-'.padEnd(37, 'x');

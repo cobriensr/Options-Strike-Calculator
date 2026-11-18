@@ -9,12 +9,14 @@
  *
  * - a counter (`auth.secret_mismatch`, tagged with the surface) and one
  *   structured log line, for every mismatch;
- * - one Sentry message per surface per 10 minutes, so a burst of failed
- *   requests opens one issue per surface rather than one event per request. The
- *   issue is tagged with the surface, since the fingerprint is not shown, and
- *   with a `reason`: `missing` when the surface's credential header was empty
- *   or absent (a caller that sent nothing), `wrong` when one came and did not
- *   match (a secret one side has not picked up).
+ * - one Sentry message per surface and reason per 10 minutes, so a burst of
+ *   failed requests opens one issue per surface rather than one event per
+ *   request. The issue is tagged with the surface, since the fingerprint is not
+ *   shown, and with a `reason`: `missing` when the surface's credential header
+ *   was empty or absent (a caller that sent nothing), `wrong` when one came and
+ *   did not match (a secret one side has not picked up). The two reasons have
+ *   separate windows, so a caller that sends nothing cannot hide a wrong
+ *   secret.
  *
  * What is reported is the surface, the path (no query string, cut at
  * `MAX_LOGGED_PATH` characters), the client address and whether the surface's
@@ -46,16 +48,21 @@ const CREDENTIAL_HEADER: Record<SecretSurface, string> = {
 // matches messages that start with this text; reword it and update the rule.
 const MESSAGE = 'Secret check failed';
 
-/** Shortest gap between two Sentry messages for one surface. */
+/** Why a check failed: no credential came, or one came and did not match. */
+type MismatchReason = 'missing' | 'wrong';
+
+/** Shortest gap between two Sentry messages for one surface and reason. */
 const SENTRY_INTERVAL_MS = 10 * 60 * 1000;
 
 /** Longest path written to the log, so one request cannot bloat a line. */
 const MAX_LOGGED_PATH = 200;
 
-// When each surface last sent its Sentry message. The key is the closed
-// `SecretSurface` union, never anything from a request, so it holds at most
-// three entries.
-const lastSentryAt = new Map<SecretSurface, number>();
+// When each surface and reason last sent its Sentry message. The key is built
+// from the two closed unions, never from anything in a request, so it holds at
+// most six entries (three surfaces by two reasons). Each reason has its own
+// window so a caller that sends nothing cannot use up the one a wrong secret
+// needs.
+const lastSentryAt = new Map<`${SecretSurface}:${MismatchReason}`, number>();
 
 /** The request path with any query string removed, cut at the log limit. */
 function pathOf(req: VercelRequest): string {
@@ -77,9 +84,9 @@ function clientIp(req: VercelRequest): string {
 }
 
 /**
- * Count and log one failed secret check, and send the surface's Sentry message
- * unless it sent one in the last 10 minutes. Call it once per request, at the
- * place the surface sends its 401.
+ * Count and log one failed secret check, and send its Sentry message unless
+ * the same surface sent one for the same reason in the last 10 minutes. Call it
+ * once per request, at the place the surface sends its 401.
  *
  * The send time is recorded before the message goes out, so a Sentry that
  * throws costs that one call and no later one inside the window: the guards
@@ -91,26 +98,26 @@ export function reportSecretMismatch(
   req: VercelRequest,
 ): void {
   metrics.secretMismatch(surface);
+  const credentialSent = hadCredential(surface, req);
   logger.warn(
     {
       surface,
       path: pathOf(req),
       ip: clientIp(req),
-      hadCredential: hadCredential(surface, req),
+      hadCredential: credentialSent,
     },
     MESSAGE,
   );
 
+  const reason: MismatchReason = credentialSent ? 'wrong' : 'missing';
+  const key = `${surface}:${reason}` as const;
   const now = Date.now();
-  const last = lastSentryAt.get(surface);
+  const last = lastSentryAt.get(key);
   if (last !== undefined && now - last < SENTRY_INTERVAL_MS) return;
-  lastSentryAt.set(surface, now);
+  lastSentryAt.set(key, now);
   Sentry.captureMessage(MESSAGE, {
     level: 'warning',
     fingerprint: ['secret-mismatch', surface],
-    tags: {
-      surface,
-      reason: hadCredential(surface, req) ? 'wrong' : 'missing',
-    },
+    tags: { surface, reason },
   });
 }
