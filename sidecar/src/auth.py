@@ -5,21 +5,91 @@ own compare block. The comparison runs on bytes: `hmac.compare_digest`
 raises TypeError for a str with non-ASCII characters, and `http.server`
 decodes header bytes as latin-1, so any client can hand a handler such a
 str.
+
+It also holds the two checks that make a bad secret visible: the boot-time
+list of secrets that are too short (`weak_secret_names`) and the report of a
+failed check (`report_mismatch`). Neither one logs a secret, a presented
+credential, or the length of either.
 """
 
 from __future__ import annotations
 
 import hmac
 import os
+import threading
+import time
+
+from logger_setup import log
 
 # The Take-It SHAP secret is also the bearer on the /archive/* routes. The
 # Vercel side holds the same value as SIDECAR_TAKEIT_SECRET.
 SHARED_SECRET_ENV = "TAKEIT_SIDECAR_SHARED_SECRET"
 
+# The token the X-Admin-Token header of POST /admin/seed-archive must match.
+SEED_TOKEN_ENV = "ARCHIVE_SEED_TOKEN"
+
+# A secret set to fewer characters than this is logged at boot as too weak.
+MIN_SECRET_LEN = 32
+
+# The routes that check a secret and report a failure. These are the only keys
+# of the throttle below, so nothing taken from a request can grow it.
+SURFACES = ("archive", "takeit-explain", "seed")
+
+# Shortest gap between two ERROR logs for one surface. Sentry turns every
+# ERROR log into an event, and a probe can fail the check on every request.
+_ERROR_INTERVAL_S = 10 * 60
+
+# When each surface last logged its ERROR (a `time.monotonic()` reading), or
+# None while it has not. Fixed keys, written under the lock.
+_last_error_at: dict[str, float | None] = dict.fromkeys(SURFACES)
+_throttle_lock = threading.Lock()
+
 
 def shared_secret() -> str:
     """The configured bearer secret; empty when unset."""
     return os.environ.get(SHARED_SECRET_ENV, "")
+
+
+def seed_token() -> str:
+    """The configured seed token; empty when unset."""
+    return os.environ.get(SEED_TOKEN_ENV, "")
+
+
+def weak_secret_names() -> list[str]:
+    """Names of the secrets that are set but shorter than `MIN_SECRET_LEN`.
+
+    An unset or empty secret is not listed: the routes answer 503 or 401 for
+    that and say so themselves. Only the names are returned, never a value.
+    """
+    secrets = {SHARED_SECRET_ENV: shared_secret(), SEED_TOKEN_ENV: seed_token()}
+    return [name for name, value in secrets.items() if 0 < len(value) < MIN_SECRET_LEN]
+
+
+def report_mismatch(surface: str, client_ip: str) -> None:
+    """Log one failed secret check; call it where the route sends its 401.
+
+    Every call logs a WARNING. At most once per surface per 10 minutes it also
+    logs an ERROR, which Sentry turns into an event, so a burst of failed
+    requests opens one issue per surface and not one event per request.
+    `client_ip` is only logged, never trusted. A surface outside `SURFACES` gets
+    the WARNING and no ERROR, which keeps the throttle's keys fixed.
+
+    The time is recorded before the ERROR goes out, so a log sink that throws
+    costs that one call and no later one inside the window.
+    """
+    log.warning("%s secret check failed (client %s)", surface, client_ip)
+    with _throttle_lock:
+        if surface not in _last_error_at:
+            return
+        last = _last_error_at[surface]
+        now = time.monotonic()
+        if last is not None and now - last < _ERROR_INTERVAL_S:
+            return
+        _last_error_at[surface] = now
+    # The surface is part of the template: Sentry groups a logged event by its
+    # unformatted message, so each surface opens its own issue, as the Vercel
+    # side's fingerprint does. The client address stays a parameter.
+    log.error(f"Secret check failed on {surface} (client %s)", client_ip)
 
 
 def _matches(got: str | None, expected: str) -> bool:
