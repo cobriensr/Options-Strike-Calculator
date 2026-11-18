@@ -15,12 +15,13 @@ import logging
 from collections.abc import Iterator
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import aiohttp
 import asyncpg.exceptions
 import pytest
 import sentry_sdk
+from aiohttp.test_utils import TestClient, TestServer
 from sentry_sdk.envelope import Envelope
 from sentry_sdk.integrations.aiohttp import AioHttpIntegration
 from sentry_sdk.integrations.excepthook import ExcepthookIntegration
@@ -28,6 +29,8 @@ from sentry_sdk.integrations.logging import EventHandler, LoggingIntegration
 from sentry_sdk.transport import Transport
 
 import auth
+import health
+import memory_stats
 import sentry_setup
 from config import settings
 from logger_setup import log
@@ -191,6 +194,77 @@ class TestTokenScrubbing:
     def test_scrub_runs_even_when_fingerprint_branch_fires(self):
         event = {"exception": {"values": [{"value": "url=wss://x/y?token=COMBO_KEY (transient)"}]}}
         out = _before_send(event, _hint_with(TimeoutError("flush")))
+        assert "COMBO_KEY" not in out["exception"]["values"][0]["value"]
+        assert out["fingerprint"] == ["uw-stream-transient-db", "TimeoutError"]
+
+
+class TestSecretHeaderBlanking:
+    """A request header named like a secret never leaves the process.
+
+    The SDK's aiohttp integration attaches the request's headers to every event captured
+    while a request is handled, and its own redaction list (Authorization, Cookie, X-API-Key,
+    X-Forwarded-For, X-Real-IP) does not name ``X-Metrics-Token``. ``_before_send`` blanks any
+    header whose name holds ``token`` or ``secret``, for every event.
+    """
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "X-Metrics-Token",
+            "x-metrics-token",
+            "X-METRICS-TOKEN",
+            "X-Auth-Token",
+            "Token",
+            "X-Internal-Secret",
+            "x-notify-SECRET",
+            "My-Secret-Thing",
+        ],
+    )
+    def test_a_header_named_like_a_secret_is_blanked(self, name):
+        event = {"request": {"headers": {name: "the-secret-value", "User-Agent": "curl/8"}}}
+
+        out = _before_send(event, {})
+
+        assert out["request"]["headers"][name] == "[Filtered]"
+        assert "the-secret-value" not in json.dumps(out)
+
+    def test_other_headers_and_the_rest_of_the_event_are_left_alone(self):
+        headers = {"User-Agent": "curl/8", "Accept": "*/*", "Content-Type": "application/json"}
+        event = {
+            "message": "kept",
+            "request": {"url": "http://x/metrics", "headers": {**headers, "X-Metrics-Token": "v"}},
+        }
+
+        out = _before_send(event, {})
+
+        assert out["message"] == "kept"
+        assert out["request"]["url"] == "http://x/metrics"
+        assert {k: v for k, v in out["request"]["headers"].items() if k in headers} == headers
+
+    @pytest.mark.parametrize(
+        "event",
+        [
+            {},
+            {"request": None},
+            {"request": {}},
+            {"request": {"headers": None}},
+            {"request": {"headers": ["X-Metrics-Token"]}},
+            {"request": {"headers": {1: "x"}}},
+        ],
+        ids=["empty", "request-none", "no-headers", "headers-none", "headers-list", "int-name"],
+    )
+    def test_an_event_without_headers_in_the_expected_shape_passes_through(self, event):
+        assert _before_send(event, {}) == event
+
+    def test_the_blanking_does_not_stop_the_fingerprint_or_the_scrub(self):
+        event = {
+            "exception": {"values": [{"value": "url=wss://x/y?token=COMBO_KEY"}]},
+            "request": {"headers": {"X-Metrics-Token": "the-secret-value"}},
+        }
+
+        out = _before_send(event, _hint_with(TimeoutError("flush")))
+
+        assert out["request"]["headers"]["X-Metrics-Token"] == "[Filtered]"
         assert "COMBO_KEY" not in out["exception"]["values"][0]["value"]
         assert out["fingerprint"] == ["uw-stream-transient-db", "TimeoutError"]
 
@@ -418,6 +492,23 @@ class TestCaptureMessageParams:
         (event,) = sdk_transport.events()
         assert event["logentry"]["message"] == "no placeholder here"
         assert event["logentry"]["params"] == ["a", "b"]
+
+    def test_a_send_that_fails_does_not_raise_and_the_line_is_still_written(
+        self, monkeypatch, service_log_records
+    ):
+        """The Sentry leg is best effort: a transport that throws must not fail the caller,
+        and the ERROR line the report exists to write is already out by then."""
+        monkeypatch.setattr(sentry_setup, "_sentry_enabled", True)
+        monkeypatch.setattr(
+            sentry_sdk, "capture_event", MagicMock(side_effect=RuntimeError("down"))
+        )
+
+        sentry_setup.capture_message(self.TEMPLATE, level="error", params=("203.0.113.7",))
+
+        assert [(r.levelno, r.getMessage()) for r in service_log_records] == [
+            (logging.ERROR, "Secret check failed on metrics (client 203.0.113.7)"),
+            (logging.ERROR, "Failed to forward message to Sentry: down"),
+        ]
 
 
 class TestCaptureMessageLogLine:
@@ -797,3 +888,63 @@ class TestAuthReports:
             }
         ).replace("198.51.100.4", "")
         assert not any(ch.isdigit() for ch in reported)
+
+
+_CONFIGURED_TOKEN = "configured-token-" + "c" * 24
+_PRESENTED_TOKEN = "presented-credential-" + "p" * 16
+
+
+class TestMetricsRequestEvents:
+    """Events filed from inside a real aiohttp request, with ``init_sentry``'s own options.
+
+    The aiohttp integration attaches the request's headers to any event captured while the
+    request is handled. ``TestAuthReports`` calls ``auth.report_*`` outside a request, so the
+    integration never runs there; these go through ``health.build_app()`` on a loopback server.
+    Each asserts the headers did reach the event (so the check below it is not vacuous).
+    """
+
+    @pytest.fixture(autouse=True)
+    def _state(self, monkeypatch):
+        monkeypatch.setattr(auth, "_last_error_at", None)
+        monkeypatch.setattr(settings, "internal_metrics_token", _CONFIGURED_TOKEN)
+
+    @staticmethod
+    def _request_headers(event: dict[str, Any]) -> dict[str, str]:
+        return {k.lower(): v for k, v in event["request"]["headers"].items()}
+
+    async def test_a_refused_request_files_one_event_and_no_token_leaves_the_process(
+        self, production_client
+    ):
+        async with TestClient(TestServer(health.build_app())) as client:
+            response = await client.get(
+                "/metrics",
+                headers={"X-Metrics-Token": _PRESENTED_TOKEN, "X-Real-IP": "203.0.113.7"},
+            )
+
+        assert response.status == 401
+        (event,) = production_client.transport.events()
+        assert event["logentry"]["message"] == _FAILED_CHECK
+        assert event["logentry"]["params"] == ["203.0.113.7"]
+        headers = self._request_headers(event)
+        assert "user-agent" in headers
+        assert headers["x-metrics-token"] == "[Filtered]"
+        sent = b"".join(production_client.transport.payloads)
+        assert _PRESENTED_TOKEN.encode() not in sent
+        assert _CONFIGURED_TOKEN.encode() not in sent
+
+    async def test_an_unhandled_error_after_the_gate_leaves_no_token_in_its_event(
+        self, production_client, monkeypatch
+    ):
+        def failing_snapshot() -> None:
+            raise RuntimeError("memory read failed")
+
+        monkeypatch.setattr(memory_stats, "snapshot", failing_snapshot)
+
+        async with TestClient(TestServer(health.build_app())) as client:
+            response = await client.get("/metrics", headers={"X-Metrics-Token": _CONFIGURED_TOKEN})
+
+        assert response.status == 500
+        (event,) = production_client.transport.events()
+        assert event["exception"]["values"][0]["type"] == "RuntimeError"
+        assert self._request_headers(event)["x-metrics-token"] == "[Filtered]"
+        assert _CONFIGURED_TOKEN.encode() not in b"".join(production_client.transport.payloads)

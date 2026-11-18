@@ -46,8 +46,40 @@ def _scrub_tokens(value: Any) -> Any:
     return value
 
 
+# What the SDK writes in place of a value it filters.
+_FILTERED = "[Filtered]"
+
+
+def _blank_secret_headers(event: dict[str, Any]) -> None:
+    """Replace, in place, the value of every request header named like a secret.
+
+    The SDK's aiohttp integration attaches the request's headers to every event
+    captured while a request is handled (an unhandled error in a route, or a
+    report made from one). Its own redaction list covers Authorization, Cookie,
+    X-API-Key, X-Forwarded-For and X-Real-IP, not ``X-Metrics-Token``, so the
+    token a caller sent, right or wrong, would travel with the event. Any header
+    whose lowercased name contains ``token`` or ``secret`` is blanked, which keeps
+    a future header of that kind out too. The event and the other headers stay.
+    """
+    request = event.get("request")
+    if not isinstance(request, dict):
+        return
+    headers = request.get("headers")
+    if not isinstance(headers, dict):
+        return
+    for name in headers:
+        if isinstance(name, str) and ("token" in name.lower() or "secret" in name.lower()):
+            headers[name] = _FILTERED
+
+
 def _before_send(event: dict[str, Any], hint: dict[str, Any]) -> dict[str, Any]:
-    """Scrub UW tokens, then collapse transient DB errors into one Sentry issue.
+    """Blank secret headers, scrub UW tokens, then collapse transient DB errors
+    into one Sentry issue.
+
+    Step 0 — blank request headers named like a secret (``_blank_secret_headers``).
+    It can't raise on any event shape, and it runs first and outside the guarded
+    steps below: if it ever did, the SDK would drop the event, which is the safe
+    way to fail for a header that may hold a credential.
 
     Step 1 — always-on token redaction (runs regardless of exception
     presence so ``capture_message`` is covered too).
@@ -63,6 +95,9 @@ def _before_send(event: dict[str, Any], hint: dict[str, Any]) -> dict[str, Any]:
     init → db module load → settings requirement at import time (tests
     stub settings out via env vars).
     """
+    # Step 0 — blank secret headers (see the docstring for why it is unguarded).
+    _blank_secret_headers(event)
+
     # Step 1 — scrub tokens. Done first so even if the fingerprint
     # branch raises, the event still leaves with the secret redacted.
     try:

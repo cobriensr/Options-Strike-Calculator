@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hmac
 from datetime import UTC, datetime, time, timedelta
+from typing import Literal
 from zoneinfo import ZoneInfo
 
 from aiohttp import web
@@ -142,6 +143,29 @@ def _client_ip(request: web.Request) -> str:
     return request.remote or "unknown"
 
 
+def _check_token(request: web.Request) -> Literal["unset", "missing", "wrong", "ok"]:
+    """How the request's ``X-Metrics-Token`` stands against ``INTERNAL_METRICS_TOKEN``.
+
+    The configured and the presented token are locals of this function and of no
+    other: the SDK records the local variables of every frame an unhandled error
+    passes through, so a token held in ``metrics`` itself would travel to Sentry
+    with an error raised after the gate. This frame has returned by then.
+    """
+    expected = settings.internal_metrics_token
+    if not expected:
+        return "unset"
+    got = request.headers.get("X-Metrics-Token")
+    if got is None:
+        return "missing"
+    # Compare bytes: aiohttp decodes header bytes as UTF-8 with
+    # surrogateescape, and compare_digest raises on non-ASCII str input.
+    if hmac.compare_digest(
+        got.encode("utf-8", "surrogateescape"), expected.encode("utf-8", "surrogateescape")
+    ):
+        return "ok"
+    return "wrong"
+
+
 async def metrics(request: web.Request) -> web.Response:
     """JSON snapshot of per-channel subscription state, per-handler counters,
     memory, and global state.
@@ -158,22 +182,14 @@ async def metrics(request: web.Request) -> web.Response:
     either way.
     """
     global _metrics_token_unset_logged
-    expected = settings.internal_metrics_token
-    if not expected:
+    verdict = _check_token(request)
+    if verdict == "unset":
         if not _metrics_token_unset_logged:
             _metrics_token_unset_logged = True
             log.warning("INTERNAL_METRICS_TOKEN is unset; /metrics answers 401 to every request")
         return _unauthorized()
-    got = request.headers.get("X-Metrics-Token")
-    if got is None:
-        report_mismatch(_client_ip(request), "missing")
-        return _unauthorized()
-    # Compare bytes: aiohttp decodes header bytes as UTF-8 with
-    # surrogateescape, and compare_digest raises on non-ASCII str input.
-    if not hmac.compare_digest(
-        got.encode("utf-8", "surrogateescape"), expected.encode("utf-8", "surrogateescape")
-    ):
-        report_mismatch(_client_ip(request), "wrong")
+    if verdict != "ok":
+        report_mismatch(_client_ip(request), verdict)
         return _unauthorized()
     now = datetime.now(UTC)
     # Read here, after the auth gate, so a caller without the token gets nothing.
