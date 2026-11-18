@@ -10,8 +10,13 @@
 
 const ENTRY_TIME_PATTERN = /^(\d{1,2}):(\d{1,2})\s*(AM|PM)(?:\s+(CT|ET))?$/i;
 
-/** ET's clock reads this many minutes ahead of CT's. */
-const ET_AHEAD_OF_CT_MIN = 60;
+/**
+ * ET's clock reads this many minutes ahead of CT's every hour the market
+ * trades. The two zones switch to and from DST at different instants, so the
+ * gap is not 60 for one hour on each DST Sunday (07:00-08:00 UTC in March,
+ * 06:00-07:00 UTC in November).
+ */
+export const ET_AHEAD_OF_CT_MIN = 60;
 
 /**
  * Minutes since midnight CT for an entry_time label, so labels in either zone
