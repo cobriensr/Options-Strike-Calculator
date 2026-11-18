@@ -13,6 +13,7 @@ import { useAutoFill } from '../../hooks/useAutoFill';
 import { useVixData } from '../../hooks/useVixData';
 import { useVix1dData } from '../../hooks/useVix1dData';
 import { IV_MODES } from '../../constants';
+import { getETDateStr } from '../../utils/timezone';
 import { loadCachedVixData } from '../../utils/vixStorage';
 import type { IVMode, VIXDataMap } from '../../types';
 import type { MarketDataState } from '../../hooks/useMarketData';
@@ -259,12 +260,13 @@ describe('the VIX field on a past date (useVixData + useAutoFill)', () => {
   // to DIRECT. The pin (Friday 2026-05-08, 13:00 ET) falls after every past
   // date below (the latest is 2026-03-17, the quotes' asOf), so P1, P2 and
   // the table dates stay past.
-  const today = '2026-05-08';
+  const PINNED_NOW = '2026-05-08T17:00:00Z';
+  const today = getETDateStr(new Date(PINNED_NOW));
 
   beforeEach(() => {
     // Only Date is faked, so timers and waitFor keep running.
     vi.useFakeTimers({ toFake: ['Date'] });
-    vi.setSystemTime(new Date('2026-05-08T17:00:00Z'));
+    vi.setSystemTime(new Date(PINNED_NOW));
     vi.mocked(loadCachedVixData).mockReturnValue({
       data: VIX_OHLC,
       source: 'test',

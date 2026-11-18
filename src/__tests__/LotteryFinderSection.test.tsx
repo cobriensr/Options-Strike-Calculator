@@ -9,6 +9,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, render, screen, fireEvent, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { getETDateStr } from '../utils/timezone';
 import type {
   LotteryFinderResponse,
   LotteryFire,
@@ -83,7 +84,7 @@ import { LotteryFinderSection } from '../components/LotteryFinder';
 // latest is PAST = 2026-05-08), so those stay historical. The "across the
 // midnight" blocks set their own clocks.
 const PINNED_NOW = '2026-06-15T17:00:00Z';
-const TODAY_ET = '2026-06-15';
+const TODAY_ET = getETDateStr(new Date(PINNED_NOW));
 
 function makeFire(overrides: Partial<LotteryFire> = {}): LotteryFire {
   return {

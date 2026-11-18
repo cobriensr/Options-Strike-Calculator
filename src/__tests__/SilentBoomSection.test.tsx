@@ -10,6 +10,7 @@ import { Profiler } from 'react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, render, screen, fireEvent, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { getETDateStr } from '../utils/timezone';
 import type { SilentBoomAlert } from '../components/SilentBoom/types';
 
 // ── Mocks ─────────────────────────────────────────────────────────────
@@ -68,7 +69,7 @@ import { SilentBoomSection } from '../components/SilentBoom';
 // latest is the 2026-05-08 the historical-replay tests pick), so those stay
 // historical. The "across the midnight" blocks set their own clocks.
 const PINNED_NOW = '2026-06-15T17:00:00Z';
-const TODAY_ET = '2026-06-15';
+const TODAY_ET = getETDateStr(new Date(PINNED_NOW));
 
 function makeAlert(overrides: Partial<SilentBoomAlert> = {}): SilentBoomAlert {
   return {
