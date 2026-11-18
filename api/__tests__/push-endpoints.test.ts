@@ -33,6 +33,13 @@ vi.mock('../_lib/push.js', () => ({
   sendPushToOwner: mockSendPushToOwner,
 }));
 
+// `notify.ts` reports a failed secret check through this module; what it
+// reports is covered in auth-failure.test.ts.
+const mockReportSecretMismatch = vi.hoisted(() => vi.fn());
+vi.mock('../_lib/auth-failure.js', () => ({
+  reportSecretMismatch: mockReportSecretMismatch,
+}));
+
 import subscribeHandler from '../push/subscribe.js';
 import unsubscribeHandler from '../push/unsubscribe.js';
 import notifyHandler from '../push/notify.js';
@@ -187,6 +194,7 @@ describe('POST /api/push/notify', () => {
     vi.restoreAllMocks();
     mockSql.mockReset();
     mockSendPushToOwner.mockReset();
+    mockReportSecretMismatch.mockReset();
     process.env.INTERNAL_NOTIFY_SECRET = REAL_SECRET;
   });
 
@@ -278,6 +286,85 @@ describe('POST /api/push/notify', () => {
       res,
     );
     expect(res._status).toBe(401);
+  });
+
+  describe('secret mismatch reporting', () => {
+    it('reports a wrong header once, with the notify surface and the request', async () => {
+      const req = mockRequest({
+        method: 'POST',
+        body: VALID_NOTIFY_BODY,
+        headers: { 'x-internal-notify-secret': 'wrong-token' },
+      });
+      const res = mockResponse();
+
+      await notifyHandler(req, res);
+
+      expect(res._status).toBe(401);
+      expect(res._json).toEqual({ error: 'Unauthorized' });
+      expect(mockReportSecretMismatch).toHaveBeenCalledTimes(1);
+      expect(mockReportSecretMismatch).toHaveBeenCalledWith('notify', req);
+    });
+
+    it('reports a request with no secret header', async () => {
+      const req = mockRequest({ method: 'POST', body: VALID_NOTIFY_BODY });
+      const res = mockResponse();
+
+      await notifyHandler(req, res);
+
+      expect(res._status).toBe(401);
+      expect(mockReportSecretMismatch).toHaveBeenCalledTimes(1);
+      expect(mockReportSecretMismatch).toHaveBeenCalledWith('notify', req);
+    });
+
+    it('reports a request that arrives while INTERNAL_NOTIFY_SECRET is unset', async () => {
+      delete process.env.INTERNAL_NOTIFY_SECRET;
+      const req = mockRequest({
+        method: 'POST',
+        body: VALID_NOTIFY_BODY,
+        headers: { 'x-internal-notify-secret': 'anything' },
+      });
+      const res = mockResponse();
+
+      await notifyHandler(req, res);
+
+      expect(res._status).toBe(401);
+      expect(res._json).toEqual({ error: 'Unauthorized' });
+      expect(mockReportSecretMismatch).toHaveBeenCalledTimes(1);
+      expect(mockReportSecretMismatch).toHaveBeenCalledWith('notify', req);
+    });
+
+    it('does not report a request with the right secret', async () => {
+      mockSendPushToOwner.mockResolvedValue({ sent: 1, expired: 0, failed: 0 });
+      const res = mockResponse();
+
+      await notifyHandler(
+        mockRequest({
+          method: 'POST',
+          body: VALID_NOTIFY_BODY,
+          headers: { 'x-internal-notify-secret': REAL_SECRET },
+        }),
+        res,
+      );
+
+      expect(res._status).toBe(200);
+      expect(mockReportSecretMismatch).not.toHaveBeenCalled();
+    });
+
+    it('does not report a request refused for its method, or one refused for its body', async () => {
+      await notifyHandler(mockRequest({ method: 'GET' }), mockResponse());
+      const invalid = mockResponse();
+      await notifyHandler(
+        mockRequest({
+          method: 'POST',
+          body: { body: 'no title' },
+          headers: { 'x-internal-notify-secret': REAL_SECRET },
+        }),
+        invalid,
+      );
+
+      expect(invalid._status).toBe(400);
+      expect(mockReportSecretMismatch).not.toHaveBeenCalled();
+    });
   });
 
   it('returns 400 for missing title', async () => {

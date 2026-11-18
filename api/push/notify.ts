@@ -15,6 +15,7 @@
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
+import { reportSecretMismatch } from '../_lib/auth-failure.js';
 import { sendPushToOwner } from '../_lib/push.js';
 import { Sentry, metrics } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
@@ -44,6 +45,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
 
       if (!verifySecret(req)) {
+        reportSecretMismatch('notify', req);
         done({ status: 401 });
         return res.status(401).json({ error: 'Unauthorized' });
       }

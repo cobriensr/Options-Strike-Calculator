@@ -25,10 +25,18 @@ vi.mock('../_lib/plot-analysis-prompts.js', () => ({
   PLOT_ANALYSIS_SYSTEM_PROMPT: 'You are a plot analyst.',
 }));
 
-const { mockList, mockBlobGet, mockStream } = vi.hoisted(() => ({
-  mockList: vi.fn(),
-  mockBlobGet: vi.fn(),
-  mockStream: vi.fn(),
+const { mockList, mockBlobGet, mockStream, mockReportSecretMismatch } =
+  vi.hoisted(() => ({
+    mockList: vi.fn(),
+    mockBlobGet: vi.fn(),
+    mockStream: vi.fn(),
+    mockReportSecretMismatch: vi.fn(),
+  }));
+
+// The handler reports a failed secret check through this module; what it
+// reports is covered in auth-failure.test.ts.
+vi.mock('../_lib/auth-failure.js', () => ({
+  reportSecretMismatch: mockReportSecretMismatch,
 }));
 
 vi.mock('@vercel/blob', () => ({
@@ -109,6 +117,7 @@ describe('POST /api/ml/analyze-plots', () => {
     mockList.mockReset();
     mockBlobGet.mockReset();
     mockStream.mockReset();
+    mockReportSecretMismatch.mockReset();
 
     savedEnv = {
       CRON_SECRET: process.env.CRON_SECRET,
@@ -193,6 +202,84 @@ describe('POST /api/ml/analyze-plots', () => {
     expect(res._status).toBe(401);
     expect(res._json).toEqual({ error: 'Unauthorized' });
     expect(mockList).not.toHaveBeenCalled();
+  });
+
+  describe('secret mismatch reporting', () => {
+    it('reports a wrong token once, with the analyze-plots surface and the request', async () => {
+      const req = mockRequest({
+        method: 'POST',
+        headers: { authorization: 'Bearer wrong-secret' },
+      });
+      const res = mockResponse();
+
+      await handler(req, res);
+
+      expect(res._status).toBe(401);
+      expect(res._json).toEqual({ error: 'Unauthorized' });
+      expect(mockReportSecretMismatch).toHaveBeenCalledTimes(1);
+      expect(mockReportSecretMismatch).toHaveBeenCalledWith(
+        'analyze-plots',
+        req,
+      );
+    });
+
+    it('reports a request with no Authorization header', async () => {
+      const req = mockRequest({ method: 'POST', headers: {} });
+      const res = mockResponse();
+
+      await handler(req, res);
+
+      expect(res._status).toBe(401);
+      expect(mockReportSecretMismatch).toHaveBeenCalledTimes(1);
+      expect(mockReportSecretMismatch).toHaveBeenCalledWith(
+        'analyze-plots',
+        req,
+      );
+    });
+
+    it('reports a request that arrives while CRON_SECRET is unset', async () => {
+      delete process.env.CRON_SECRET;
+      const req = mockRequest({
+        method: 'POST',
+        headers: { authorization: 'Bearer something' },
+      });
+      const res = mockResponse();
+
+      await handler(req, res);
+
+      expect(res._status).toBe(401);
+      expect(res._json).toEqual({ error: 'Unauthorized' });
+      expect(mockReportSecretMismatch).toHaveBeenCalledTimes(1);
+      expect(mockReportSecretMismatch).toHaveBeenCalledWith(
+        'analyze-plots',
+        req,
+      );
+    });
+
+    it('does not report a request with the right secret', async () => {
+      delete process.env.ANTHROPIC_API_KEY; // stop at the next gate
+      const res = mockResponse();
+
+      await handler(makeAuthRequest(), res);
+
+      expect(res._status).toBe(500);
+      expect(mockReportSecretMismatch).not.toHaveBeenCalled();
+    });
+
+    it('does not report a request refused for its method, whatever its token', async () => {
+      const res = mockResponse();
+
+      await handler(
+        mockRequest({
+          method: 'GET',
+          headers: { authorization: 'Bearer wrong-secret' },
+        }),
+        res,
+      );
+
+      expect(res._status).toBe(405);
+      expect(mockReportSecretMismatch).not.toHaveBeenCalled();
+    });
   });
 
   it('right secret passes the auth gate (next gate: ANTHROPIC_API_KEY)', async () => {

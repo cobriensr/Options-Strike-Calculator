@@ -18,6 +18,7 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { list, get } from '@vercel/blob';
 import Anthropic from '@anthropic-ai/sdk';
+import { reportSecretMismatch } from '../_lib/auth-failure.js';
 import { getDb } from '../_lib/db.js';
 import { Sentry, metrics } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
@@ -249,12 +250,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   // ── Auth: Bearer token check against CRON_SECRET ────────
+  // One branch for an unset secret and a wrong token: the response is the same
+  // for both and so is the report. An unset secret skips the compare.
   const cronSecret = process.env.CRON_SECRET;
-  if (!cronSecret) {
-    done({ status: 401 });
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
-  if (!bearerMatches(req.headers.authorization, cronSecret)) {
+  if (!cronSecret || !bearerMatches(req.headers.authorization, cronSecret)) {
+    reportSecretMismatch('analyze-plots', req);
     done({ status: 401 });
     return res.status(401).json({ error: 'Unauthorized' });
   }
