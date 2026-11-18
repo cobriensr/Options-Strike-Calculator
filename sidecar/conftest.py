@@ -3,11 +3,14 @@ test off a real database.
 
 No test may connect to or write to a real database (owner rule, 2026-11-04;
 spec: docs/superpowers/specs/tests-no-db-2026-11-04.md). This file installs
-session-wide mocks for two external packages, psycopg2 and sentry_sdk. Both
-are in requirements.txt, so the mocks don't exist for a missing install:
-they keep tests from ever needing a live database driver, database or Sentry
-client. Every other mock (db, logger_setup, config, sentry_setup) is managed
-per-test-file so each file's assertions match its own fixture setup.
+a session-wide mock for psycopg2, and one for sentry_sdk when it isn't
+installed. Both packages are in requirements.txt, so the mocks don't exist for
+a missing install: they keep tests from ever needing a live database driver or
+database. The real sentry_sdk is used when present: with no client set up it
+sends nothing, and tests that need a client build one over an in-memory
+transport (tests/conftest.py). Every other mock (db, logger_setup, config,
+sentry_setup) is managed per-test-file so each file's assertions match its own
+fixture setup.
 
 The psycopg2 mock is installed unconditionally, replacing a real psycopg2
 that a plugin or an earlier conftest may have imported. Its connect() and
@@ -156,9 +159,8 @@ def _tests_never_reach_a_database():
 #
 # psycopg2 is mocked unconditionally, replacing whatever a plugin or an
 # earlier import put in sys.modules, so the tests never get the real driver.
-# sentry_sdk is mocked only when nothing has imported it yet (the "not in
-# sys.modules" check below), so a real install that a plugin imported first
-# stays. Nothing in the sidecar imports either before this conftest loads.
+# sentry_sdk is mocked only when it can't be imported (see the end of this
+# file). Nothing in the sidecar imports either before this conftest loads.
 #
 # Packages like `db`, `logger_setup`, `config`, and `sentry_setup` are
 # all sidecar source modules that exist on disk and can be imported
@@ -185,6 +187,11 @@ mock_psycopg2.pool = mock_psycopg2_pool
 sys.modules["psycopg2"] = mock_psycopg2
 sys.modules["psycopg2.pool"] = mock_psycopg2_pool
 
-# sentry_sdk — optional, used by sidecar/src/sentry_setup.py lazy path.
-if "sentry_sdk" not in sys.modules:
+# sentry_sdk — used by sidecar/src/sentry_setup.py lazy path. The real package
+# is used when it is installed (tests/conftest.py builds a real client over an
+# in-memory transport, which sends nothing); a mock stands in only for a venv
+# without it. An uninitialised SDK has no client and sends nothing.
+try:
+    import sentry_sdk  # noqa: F401
+except ImportError:
     sys.modules["sentry_sdk"] = MagicMock()

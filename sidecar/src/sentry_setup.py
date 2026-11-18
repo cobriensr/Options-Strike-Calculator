@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import os
 import re
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 
 from logger_setup import log
@@ -194,7 +196,8 @@ def _redact_value(value: Any) -> Any:
     Strings go through ``redact_credentials``. Bytes are decoded (UTF-8,
     ``errors="replace"``), redacted, and returned as ``str``. Dict values
     whose key is sensitive (``dsn``, ``password``, ``token``, ...) are
-    blanked whatever they hold. That covers Sentry frame locals and extras.
+    blanked whatever they hold. That covers extras, and frame locals if a
+    client is built that sends them.
     Walks dicts, lists and tuples; other types pass through. Returns a new
     structure rather than mutating the input.
     """
@@ -253,10 +256,12 @@ def _before_send(event: Any, hint: Any) -> Any:
     """Sentry ``before_send`` hook: scrub credentials from the whole event.
 
     Walks every value in the event: exception values, ``message`` and
-    ``logentry``, breadcrumbs, extras, and stack-frame locals (where a
-    ``dsn`` variable would otherwise carry the password). Never raises. If
-    redaction fails, it sends a minimal, value-free event (exception types
-    and tags only) rather than the raw one, and logs the failure type.
+    ``logentry``, breadcrumbs and extras. Frame locals are no longer sent
+    (``include_local_variables=False`` in ``init_sentry``). The key scrub that
+    blanks a ``dsn`` or ``password`` local stays as a second layer, for a
+    client built without that option. Never raises. If redaction fails, it
+    sends a minimal, value-free event (exception types and tags only) rather
+    than the raw one, and logs the failure type.
     """
     try:
         return _redact_value(event)
@@ -322,6 +327,12 @@ def init_sentry() -> None:
             # Scrub credentials (DSNs, libpq password params) from every
             # outgoing event — see redact_credentials.
             before_send=_before_send,
+            # Send no frame local variables. The SDK's default records every
+            # local of every frame an error passes through, and a secret held
+            # in a local (a token being compared, a connection string) would
+            # travel with it. The key scrub in `_before_send` stays as a second
+            # layer. As nightly/src/monitoring.py does.
+            include_local_variables=False,
         )
         _sentry_enabled = True
         log.info("Sentry initialized for futures-sidecar")
@@ -423,3 +434,23 @@ def capture_message(
             sentry_sdk.capture_message(message, level=level)
     except Exception as inner:
         log.error("Failed to forward message to Sentry: %s", inner)
+
+
+@contextmanager
+def event_tags(tags: dict[str, str]) -> Iterator[None]:
+    """Put ``tags`` on every Sentry event filed inside the ``with`` block.
+
+    For an event the SDK's logging integration files from an ERROR log record:
+    that record has no scope of its own to carry a tag, so the tags go on a
+    forked scope that lasts for the block and no longer. Does nothing when
+    Sentry is disabled.
+    """
+    if not _sentry_enabled:
+        yield
+        return
+
+    import sentry_sdk
+
+    with sentry_sdk.new_scope() as scope:
+        _apply_scope(scope, tags, None)
+        yield

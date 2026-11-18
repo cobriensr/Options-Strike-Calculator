@@ -7,10 +7,14 @@ Sentry when initialized.
 
 from __future__ import annotations
 
+import secrets
 import sys
+from collections.abc import Callable
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+import sentry_sdk
 
 import sentry_setup
 
@@ -122,6 +126,7 @@ class TestInitSentry:
         assert init_kwargs["sample_rate"] == pytest.approx(1.0)
         assert init_kwargs["traces_sample_rate"] == pytest.approx(0.0)
         assert init_kwargs["server_name"] == "futures-sidecar"
+        assert init_kwargs["include_local_variables"] is False
 
     def test_init_swallows_sdk_failure(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A Sentry init exception must not block sidecar startup."""
@@ -252,6 +257,103 @@ class TestCaptureExceptionEnabled:
         init_kwargs = mock_sentry_sdk.init.call_args.kwargs
         assert init_kwargs["before_send"] is sentry_setup._before_send
         assert "send_default_pii" not in init_kwargs
+
+
+class TestEventTags:
+    """`event_tags` puts tags on the events filed inside its block, and only there."""
+
+    def test_does_nothing_when_sentry_is_disabled(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        mock_sentry_sdk = MagicMock()
+        monkeypatch.setitem(sys.modules, "sentry_sdk", mock_sentry_sdk)
+        ran: list[bool] = []
+
+        with sentry_setup.event_tags({"reason": "wrong"}):
+            ran.append(True)
+
+        assert ran == [True]
+        mock_sentry_sdk.new_scope.assert_not_called()
+
+    def test_tags_a_forked_scope_that_ends_with_the_block(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(sentry_setup, "_sentry_enabled", True)
+        mock_sentry_sdk = MagicMock()
+        mock_scope = MagicMock()
+        mock_sentry_sdk.new_scope.return_value.__enter__.return_value = mock_scope
+        mock_sentry_sdk.new_scope.return_value.__exit__.return_value = None
+        monkeypatch.setitem(sys.modules, "sentry_sdk", mock_sentry_sdk)
+
+        with sentry_setup.event_tags({"reason": "missing"}):
+            mock_scope.set_tag.assert_called_once_with("reason", "missing")
+            mock_sentry_sdk.new_scope.return_value.__exit__.assert_not_called()
+
+        mock_sentry_sdk.new_scope.return_value.__exit__.assert_called_once()
+
+    def test_a_block_that_raises_still_ends_the_scope_and_the_error_escapes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(sentry_setup, "_sentry_enabled", True)
+        mock_sentry_sdk = MagicMock()
+        mock_sentry_sdk.new_scope.return_value.__exit__.return_value = None
+        monkeypatch.setitem(sys.modules, "sentry_sdk", mock_sentry_sdk)
+
+        with (
+            pytest.raises(RuntimeError, match="sink down"),
+            sentry_setup.event_tags({"reason": "wrong"}),
+        ):
+            raise RuntimeError("sink down")
+
+        mock_sentry_sdk.new_scope.return_value.__exit__.assert_called_once()
+
+
+def _failing_frame() -> tuple[BaseException, str]:
+    """An exception raised under a frame that holds a local nothing scrubs.
+
+    The local's name is not one `_SENSITIVE_KEYS` blanks, and its value is built
+    at run time, so the source lines the SDK sends beside a frame don't hold it.
+    """
+    expected = f"plainvalue-{secrets.token_hex(8)}"
+    try:
+        raise RuntimeError("query failed")
+    except RuntimeError as exc:
+        return exc, expected
+
+
+class TestFrameLocals:
+    """Frame locals stay out of the events a real client sends.
+
+    The client is built from `init_sentry`'s own options over an in-memory
+    transport (see `sentry_events` in tests/conftest.py), and the check is on the
+    bytes it would have sent.
+    """
+
+    def test_a_local_variable_value_is_not_in_the_payload(
+        self, sentry_events: Callable[..., Any]
+    ) -> None:
+        transport = sentry_events()
+        exc, expected = _failing_frame()
+
+        sentry_sdk.capture_exception(exc)
+
+        (event,) = transport.events()
+        frames = event["exception"]["values"][0]["stacktrace"]["frames"]
+        # Without a frame holding the local the check below would prove nothing.
+        assert "_failing_frame" in [frame["function"] for frame in frames]
+        assert expected.encode() not in b"".join(transport.payloads)
+
+    def test_the_sdk_default_would_send_the_same_local(
+        self, sentry_events: Callable[..., Any]
+    ) -> None:
+        """The control: with the option left out, the same exception carries the
+        local, so the test above is able to fail."""
+        transport = sentry_events(without=("include_local_variables",))
+        exc, expected = _failing_frame()
+
+        sentry_sdk.capture_exception(exc)
+
+        assert expected.encode() in b"".join(transport.payloads)
 
 
 # ---------------------------------------------------------------------------
