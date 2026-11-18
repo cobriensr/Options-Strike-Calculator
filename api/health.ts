@@ -12,8 +12,14 @@
  * `latencyMs` per service. Internal error messages (which could leak
  * Schwab token state, Postgres connection strings, etc.) are logged
  * to Sentry but NOT surfaced in the response body. Audit 2026-05-19.
+ *
+ * Rate-limited per client address (30 a minute, a valid owner cookie exempt),
+ * so an anonymous caller cannot turn each ping into a Postgres query, a Redis
+ * PING and a Schwab token read. The daily cron and an uptime monitor stay far
+ * under it.
  */
 import type { VercelRequest, VercelResponse } from '@vercel/node';
+import { isOwner, rejectIfRateLimited } from './_lib/auth-helpers.js';
 import { getDb, withDbRetry } from './_lib/db.js';
 import { getAccessToken } from './_lib/schwab.js';
 import { redis } from './_lib/redis.js';
@@ -58,10 +64,12 @@ async function checkService(
   }
 }
 
-export default async function handler(
-  _req: VercelRequest,
-  res: VercelResponse,
-) {
+export default async function handler(req: VercelRequest, res: VercelResponse) {
+  // The limiter sends the 429 itself, before any service is touched.
+  if (!isOwner(req) && (await rejectIfRateLimited(req, res, 'health', 30))) {
+    return;
+  }
+
   const [postgres, redisStatus, schwab] = await Promise.all([
     checkService('postgres', async () => {
       const sql = getDb();

@@ -1,9 +1,16 @@
 // @vitest-environment node
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
 // ── Mocks ─────────────────────────────────────────────────────
+// Keep the rest of auth-helpers real (the owner-cookie check runs for real)
+// and spy on the limiter, to pin the limit this route sets.
+vi.mock('../_lib/auth-helpers.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../_lib/auth-helpers.js')>()),
+  rejectIfRateLimited: vi.fn(),
+}));
+
 const mockDbFn = vi.fn();
 vi.mock('../_lib/db.js', () => ({
   getDb: vi.fn(() => mockDbFn),
@@ -28,6 +35,7 @@ vi.mock('../_lib/sentry.js', () => ({
 }));
 
 import handler from '../health.js';
+import { rejectIfRateLimited } from '../_lib/auth-helpers.js';
 
 // ── Tests ─────────────────────────────────────────────────────
 describe('GET /api/health', () => {
@@ -37,6 +45,83 @@ describe('GET /api/health', () => {
     mockPing.mockReset();
     mockGetAccessToken.mockReset();
     mockCaptureException.mockReset();
+    vi.mocked(rejectIfRateLimited).mockReset();
+    vi.mocked(rejectIfRateLimited).mockResolvedValue(false);
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  describe('per-IP request limit', () => {
+    const OWNER_SECRET = 'health-limit-test-owner-secret-0123456789';
+
+    beforeEach(() => {
+      vi.stubEnv('OWNER_SECRET', OWNER_SECRET);
+      mockDbFn.mockResolvedValue([{ '?column?': 1 }]);
+      mockPing.mockResolvedValue('PONG');
+      mockGetAccessToken.mockResolvedValue({ token: 'tok_123' });
+    });
+
+    it.each([
+      ['a wrong owner cookie', { cookie: 'sc-owner=not-the-owner-secret' }],
+      ['no cookie', {}],
+    ])(
+      '%s is limited at 30 a minute under the route name',
+      async (_name, headers) => {
+        const req = mockRequest({ method: 'GET', headers });
+        const res = mockResponse();
+
+        await handler(req, res);
+
+        expect(res._status).toBe(200);
+        expect(rejectIfRateLimited).toHaveBeenCalledTimes(1);
+        expect(rejectIfRateLimited).toHaveBeenCalledWith(
+          req,
+          res,
+          'health',
+          30,
+        );
+      },
+    );
+
+    it('answers 429 and checks no service when the limiter rejects', async () => {
+      vi.mocked(rejectIfRateLimited).mockImplementationOnce(
+        async (_req, res) => {
+          res
+            .status(429)
+            .json({ error: 'Too many requests. Try again in 30 seconds.' });
+          return true;
+        },
+      );
+      const res = mockResponse();
+
+      await handler(mockRequest({ method: 'GET' }), res);
+
+      expect(res._status).toBe(429);
+      expect(res._json).toEqual({
+        error: 'Too many requests. Try again in 30 seconds.',
+      });
+      expect(mockDbFn).not.toHaveBeenCalled();
+      expect(mockPing).not.toHaveBeenCalled();
+      expect(mockGetAccessToken).not.toHaveBeenCalled();
+    });
+
+    it('a request carrying the owner cookie never reaches the limiter', async () => {
+      const res = mockResponse();
+
+      await handler(
+        mockRequest({
+          method: 'GET',
+          headers: { cookie: `sc-owner=${OWNER_SECRET}` },
+        }),
+        res,
+      );
+
+      expect(res._status).toBe(200);
+      expect(res._json).toMatchObject({ status: 'healthy' });
+      expect(rejectIfRateLimited).not.toHaveBeenCalled();
+    });
   });
 
   it('returns 200 healthy when all services are up', async () => {

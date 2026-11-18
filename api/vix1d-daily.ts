@@ -7,10 +7,13 @@
  * `public/vix1d-daily.json` baseline.
  *
  * Public — no auth required (same as the static file it replaces).
- * Cached for 24 hours at the CDN layer.
+ * Cached for 24 hours at the CDN layer. Rate-limited per client address
+ * (30 a minute, a valid owner cookie exempt) for the requests that miss it;
+ * the app fetches this once per load.
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
+import { isOwner, rejectIfRateLimited } from './_lib/auth-helpers.js';
 import { Sentry, metrics } from './_lib/sentry.js';
 import { redis } from './_lib/redis.js';
 import { setCacheHeaders } from './_lib/api-helpers.js';
@@ -20,15 +23,20 @@ const REDIS_KEY = 'vix1d:daily-map';
 /** 24 hours — cron refreshes daily. */
 const CACHE_TTL = 24 * 60 * 60;
 
-export default async function handler(
-  _req: VercelRequest,
-  res: VercelResponse,
-) {
+export default async function handler(req: VercelRequest, res: VercelResponse) {
   return Sentry.withIsolationScope(async (scope) => {
     scope.setTransactionName('GET /api/vix1d-daily');
     const done = metrics.request('/api/vix1d-daily');
 
     try {
+      if (
+        !isOwner(req) &&
+        (await rejectIfRateLimited(req, res, 'vix1d-daily', 30))
+      ) {
+        done({ status: 429 }); // the limiter already sent the 429
+        return;
+      }
+
       const dailyMap = await redis.get<Vix1dDailyMap>(REDIS_KEY);
 
       if (!dailyMap || Object.keys(dailyMap).length === 0) {
