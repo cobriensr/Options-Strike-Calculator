@@ -18,16 +18,33 @@ describe('captureUnlessAuth', () => {
     expect(Sentry.captureException).toHaveBeenCalledWith(err, undefined);
   });
 
-  it('captures errors tagged with non-401 status', () => {
-    const err = Object.assign(new Error('500'), { status: 500 });
-    captureUnlessAuth(err);
-    expect(Sentry.captureException).toHaveBeenCalledTimes(1);
-  });
+  it.each([500, 403, 404, 503])(
+    'captures errors tagged with status %i',
+    (status) => {
+      const err = Object.assign(new Error(String(status)), { status });
+      captureUnlessAuth(err);
+      expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it('skips errors tagged with status 401', () => {
     const err = Object.assign(new Error('Not authenticated'), { status: 401 });
     captureUnlessAuth(err);
     expect(Sentry.captureException).not.toHaveBeenCalled();
+  });
+
+  // A limited guest is expected traffic: the server already counts each limit
+  // with `metrics.rateLimited`, so a frontend event per 429 only adds noise.
+  it('skips errors tagged with status 429', () => {
+    const err = Object.assign(new Error('Too many requests'), { status: 429 });
+    captureUnlessAuth(err);
+    expect(Sentry.captureException).not.toHaveBeenCalled();
+  });
+
+  it('captures errors where status is stringly-typed "429" (defensive)', () => {
+    const err = Object.assign(new Error('weird'), { status: '429' });
+    captureUnlessAuth(err);
+    expect(Sentry.captureException).toHaveBeenCalledTimes(1);
   });
 
   it('forwards the options arg to Sentry.captureException', () => {
