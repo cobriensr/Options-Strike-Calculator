@@ -29,15 +29,21 @@ MIN_SECRET_LEN = 32
 # that does not match. The closed set is the only text the report adds.
 Reason = Literal["missing", "wrong"]
 
-# Shortest gap between two failed-check ERRORs. Sentry opens an issue event for
-# each, and a misconfigured caller can fail the check on every request.
+# The closed set that makes up the throttle's keys, below.
+REASONS: tuple[Reason, ...] = ("missing", "wrong")
+
+# Shortest gap between two failed-check ERRORs for one reason. Sentry opens an
+# issue event for each, and a misconfigured caller can fail the check on every
+# request. Each reason has its own window, so a caller that sends no header
+# cannot use up the one a wrong token needs.
 _ERROR_INTERVAL_S = 10 * 60
 
-# When the last failed-check ERROR was filed (a `time.monotonic()` reading), or
-# None while none has been. One value, so nothing taken from a request can grow
-# it. `report_mismatch` runs on the event loop with no await in it, so the read
-# and the write below can't interleave and no lock is needed.
-_last_error_at: float | None = None
+# When the last failed-check ERROR was filed for each reason (a
+# `time.monotonic()` reading), or None while none has been. Two entries, keyed on
+# the closed `Reason` set, so nothing taken from a request can grow it.
+# `report_mismatch` runs on the event loop with no await in it, so the read and
+# the write below can't interleave and no lock is needed.
+_last_error_at: dict[str, float | None] = dict.fromkeys(REASONS)
 
 
 def weak_secret_names() -> list[str]:
@@ -75,20 +81,24 @@ def report_mismatch(client_ip: str, reason: Reason) -> None:
     """Report one refused /metrics request; call it where the route sends its 401.
 
     Every call logs one WARNING with the reason and the client. At most once per
-    10 minutes it also files an ERROR (a log line and a Sentry event), so a burst
-    of refused requests opens one issue and not one event per request.
-    `client_ip` is only logged, never trusted, and goes in as an argument: the
-    ERROR's template is constant, which is what Sentry groups on.
+    reason per 10 minutes it also files an ERROR (a log line and a Sentry event),
+    so a burst of refused requests opens one issue and not one event per request,
+    and a caller that sends no header cannot hide a wrong token. `client_ip` is
+    only logged, never trusted, and goes in as an argument: the ERROR's template
+    is constant, which is what Sentry groups on. A reason outside `REASONS` gets
+    the WARNING and no ERROR, which keeps the throttle's keys fixed.
 
     The time is recorded before the ERROR goes out, so a reporter that throws
     costs that one call and no later one inside the window.
     """
-    global _last_error_at
     log.warning("/metrics rejected: %s X-Metrics-Token header (client %s)", reason, client_ip)
-    now = time.monotonic()
-    if _last_error_at is not None and now - _last_error_at < _ERROR_INTERVAL_S:
+    if reason not in _last_error_at:
         return
-    _last_error_at = now
+    now = time.monotonic()
+    last = _last_error_at[reason]
+    if last is not None and now - last < _ERROR_INTERVAL_S:
+        return
+    _last_error_at[reason] = now
     # The Sentry alert rule "Auth: wrong secret, short secret or guest-key limit"
     # matches messages that start with this text; reword it and update the rule.
     # The reason is a tag, as on the other two services, and stays in the extras.

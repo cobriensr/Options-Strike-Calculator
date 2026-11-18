@@ -177,9 +177,10 @@ Single asyncio process:
      needs no header. With the token set, each refused request logs one
      warning with the reason (missing or wrong header) and the client
      (`X-Real-IP`, else the whole `X-Forwarded-For`, else the socket's peer,
-     each cut at 200 characters), and at most once per 10 minutes an ERROR
-     `Secret check failed on metrics (client <address>)` that also files a
-     Sentry event (`src/auth.py`). A token set to fewer than 32 characters
+     each cut at 200 characters), and at most once per reason per 10 minutes
+     an ERROR `Secret check failed on metrics (client <address>)` that also
+     files a Sentry event (`src/auth.py`); each reason has its own window, so a
+     request with no header cannot hide a wrong token. A token set to fewer than 32 characters
      logs and files one ERROR at boot, `Configured secret shorter than the
      minimum: INTERNAL_METRICS_TOKEN`, and the service boots anyway. The
      refusal event carries a `reason` tag, `missing` or `wrong`. Neither

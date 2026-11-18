@@ -22,14 +22,14 @@ FAILED_CHECK = "Secret check failed on metrics (client %s)"
 SHORT_SECRET = "Configured secret shorter than the minimum: %s"
 
 # What the module held at import, before any test reported a failed check.
-_INITIAL_LAST_ERROR_AT = auth._last_error_at
+_INITIAL_LAST_ERROR_AT = dict(auth._last_error_at)
 
 
 @pytest.fixture(autouse=True)
 def _no_error_reported_yet(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The ERROR is throttled for 10 minutes; start every test with none reported, so no
-    test depends on the order the others ran in."""
-    monkeypatch.setattr(auth, "_last_error_at", None)
+    """The ERROR is throttled for 10 minutes per reason; start every test with none
+    reported, so no test depends on the order the others ran in."""
+    monkeypatch.setattr(auth, "_last_error_at", dict.fromkeys(auth.REASONS))
 
 
 class _Clock:
@@ -152,10 +152,13 @@ class TestReportWeakSecrets:
 
 
 class TestReportMismatch:
+    def test_the_reasons_are_the_two_a_check_can_fail_for(self) -> None:
+        assert auth.REASONS == ("missing", "wrong")
+
     def test_nothing_has_been_reported_when_the_module_loads(self) -> None:
         """None, not 0: ``time.monotonic()`` can read under 600 s after boot, and a zero
-        would then hide the first ERROR."""
-        assert _INITIAL_LAST_ERROR_AT is None
+        would then hide the first ERROR. One entry per reason."""
+        assert _INITIAL_LAST_ERROR_AT == {"missing": None, "wrong": None}
 
     def test_every_call_logs_one_warning_with_the_reason_and_the_client(
         self, clock: _Clock, reports: MagicMock, service_log_records
@@ -205,28 +208,56 @@ class TestReportMismatch:
         assert template_text in line
         assert line.startswith("Secret check failed on metrics (client ")
 
-    def test_a_second_call_inside_ten_minutes_files_no_error(
-        self, clock: _Clock, reports: MagicMock, service_log_records
+    @pytest.mark.parametrize("reason", ["missing", "wrong"])
+    def test_a_second_call_for_a_reason_inside_ten_minutes_files_no_error(
+        self, reason: str, clock: _Clock, reports: MagicMock, service_log_records
     ) -> None:
-        auth.report_mismatch(CLIENT, "wrong")
+        auth.report_mismatch(CLIENT, reason)  # type: ignore[arg-type]
         clock.now += 599.0
-        auth.report_mismatch("203.0.113.8", "wrong")
+        auth.report_mismatch("203.0.113.8", reason)  # type: ignore[arg-type]
 
         assert reports.call_count == 1
         assert len(_lines(service_log_records, logging.WARNING)) == 2
 
+    @pytest.mark.parametrize("reason", ["missing", "wrong"])
     def test_the_error_returns_when_ten_minutes_have_passed(
-        self, clock: _Clock, reports: MagicMock
+        self, reason: str, clock: _Clock, reports: MagicMock
     ) -> None:
-        auth.report_mismatch(CLIENT, "wrong")
+        auth.report_mismatch(CLIENT, reason)  # type: ignore[arg-type]
         clock.now += 600.0
-        auth.report_mismatch(CLIENT, "wrong")
+        auth.report_mismatch(CLIENT, reason)  # type: ignore[arg-type]
         assert reports.call_count == 2
 
         # The window restarts from the second error, not the first.
         clock.now += 599.0
-        auth.report_mismatch(CLIENT, "wrong")
+        auth.report_mismatch(CLIENT, reason)  # type: ignore[arg-type]
         assert reports.call_count == 2
+
+    @pytest.mark.parametrize(("first", "second"), [("missing", "wrong"), ("wrong", "missing")])
+    def test_the_other_reason_inside_ten_minutes_files_its_own_error(
+        self, first: str, second: str, clock: _Clock, reports: MagicMock
+    ) -> None:
+        """A caller that sends nothing must not use up the window a wrong token needs,
+        nor the other way round: the Sentry alert may later be narrowed to ``reason:wrong``."""
+        auth.report_mismatch(CLIENT, first)  # type: ignore[arg-type]
+        clock.now += 60.0
+        auth.report_mismatch("203.0.113.8", second)  # type: ignore[arg-type]
+
+        assert reports.call_count == 2
+        tagged = [call.kwargs["tags"]["reason"] for call in reports.call_args_list]
+        assert tagged == [first, second]
+
+    def test_a_wrong_ten_minutes_after_the_first_wrong_files_again_whatever_came_between(
+        self, clock: _Clock, reports: MagicMock
+    ) -> None:
+        auth.report_mismatch(CLIENT, "wrong")
+        clock.now += 599.0
+        auth.report_mismatch(CLIENT, "missing")
+        clock.now += 1.0
+        auth.report_mismatch(CLIENT, "wrong")
+
+        tagged = [call.kwargs["tags"]["reason"] for call in reports.call_args_list]
+        assert tagged == ["wrong", "missing", "wrong"]
 
     def test_a_clock_that_starts_low_does_not_hide_the_first_error(
         self, clock: _Clock, reports: MagicMock
@@ -248,13 +279,27 @@ class TestReportMismatch:
 
         assert reports.call_count == 1
 
-    def test_the_state_is_one_number_whatever_the_client_sends(
+    def test_the_state_is_one_number_per_reason_whatever_the_client_sends(
         self, clock: _Clock, reports: MagicMock
     ) -> None:
-        """A single value, so nothing taken from a request can grow it."""
+        """Two values, one per reason, so nothing taken from a request can grow it."""
         for i in range(50):
-            auth.report_mismatch(f"203.0.113.{i}", "wrong")
-        assert isinstance(auth._last_error_at, float)
+            auth.report_mismatch(f"203.0.113.{i}", auth.REASONS[i % 2])
+            clock.now += 1.0
+        assert set(auth._last_error_at) == {"missing", "wrong"}
+        assert all(isinstance(v, float) for v in auth._last_error_at.values())
+        # 50 s of calls inside the 10 minutes: one ERROR for each reason.
+        assert reports.call_count == 2
+
+    def test_an_unknown_reason_adds_no_throttle_key(
+        self, clock: _Clock, reports: MagicMock, service_log_records
+    ) -> None:
+        """A reason outside the two gets the WARNING and no ERROR."""
+        auth.report_mismatch(CLIENT, "not-a-reason")  # type: ignore[arg-type]
+
+        assert set(auth._last_error_at) == {"missing", "wrong"}
+        reports.assert_not_called()
+        assert len(_lines(service_log_records, logging.WARNING)) == 1
 
     def test_the_lines_carry_the_client_and_no_other_number(
         self, clock: _Clock, sdk_off: None, service_log_records

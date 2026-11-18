@@ -863,7 +863,7 @@ class TestAuthReports:
 
     @pytest.fixture(autouse=True)
     def _state(self, monkeypatch):
-        monkeypatch.setattr(auth, "_last_error_at", None)
+        monkeypatch.setattr(auth, "_last_error_at", dict.fromkeys(auth.REASONS))
         monkeypatch.setattr(settings, "internal_metrics_token", _WEAK_TOKEN)
 
     def test_a_refused_request_files_one_error_event_grouped_on_its_template(self, sdk_transport):
@@ -884,6 +884,18 @@ class TestAuthReports:
         assert event["logentry"]["message"] == _FAILED_CHECK
         assert event["tags"]["reason"] == "missing"
         assert event["extra"]["reason"] == "missing"
+
+    @pytest.mark.parametrize(("first", "second"), [("missing", "wrong"), ("wrong", "missing")])
+    def test_the_other_reason_inside_the_window_files_its_own_event(
+        self, sdk_transport, first, second
+    ):
+        """A header-less caller must not use up the window a wrong token needs."""
+        auth.report_mismatch("203.0.113.7", first)
+        auth.report_mismatch("198.51.100.4", second)
+
+        events = sdk_transport.events()
+        assert [e["tags"]["reason"] for e in events] == [first, second]
+        assert {e["logentry"]["message"] for e in events} == {_FAILED_CHECK}
 
     def test_further_refusals_inside_the_window_file_no_more_events(self, sdk_transport):
         for client in ("203.0.113.7", "198.51.100.4", "192.0.2.1"):
@@ -962,7 +974,7 @@ class TestMetricsRequestEvents:
 
     @pytest.fixture(autouse=True)
     def _state(self, monkeypatch):
-        monkeypatch.setattr(auth, "_last_error_at", None)
+        monkeypatch.setattr(auth, "_last_error_at", dict.fromkeys(auth.REASONS))
         monkeypatch.setattr(settings, "internal_metrics_token", _CONFIGURED_TOKEN)
 
     @staticmethod

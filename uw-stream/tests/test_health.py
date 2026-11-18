@@ -326,7 +326,7 @@ def _restore_metrics_token():
 def _no_metrics_error_reported_yet(monkeypatch):
     """A refused request files an ERROR once per 10 minutes, process-wide; start every
     test with none filed, so no test depends on the order the others ran in."""
-    monkeypatch.setattr(auth, "_last_error_at", None)
+    monkeypatch.setattr(auth, "_last_error_at", dict.fromkeys(auth.REASONS))
 
 
 @pytest.fixture
