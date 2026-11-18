@@ -84,6 +84,9 @@ def main() -> None:
     # The log names the variables only, never a value or any length.
     weak = weak_secret_names()
     if weak:
+        # The Sentry alert rule "Auth: wrong secret, short secret or guest-key
+        # limit" matches messages that start with this text; reword it and
+        # update the rule.
         log.error("Configured secret shorter than the minimum: %s", ", ".join(weak))
 
     # Take-It SHAP routes (Phase 3d, spec
