@@ -11,7 +11,10 @@
  *   structured log line, for every mismatch;
  * - one Sentry message per surface per 10 minutes, so a burst of failed
  *   requests opens one issue per surface rather than one event per request. The
- *   issue is tagged with the surface, since the fingerprint is not shown.
+ *   issue is tagged with the surface, since the fingerprint is not shown, and
+ *   with a `reason`: `missing` when the surface's credential header was empty
+ *   or absent (a caller that sent nothing), `wrong` when one came and did not
+ *   match (a secret one side has not picked up).
  *
  * What is reported is the surface, the path (no query string, cut at
  * `MAX_LOGGED_PATH` characters), the client address and whether the surface's
@@ -39,6 +42,8 @@ const CREDENTIAL_HEADER: Record<SecretSurface, string> = {
   'analyze-plots': 'authorization',
 };
 
+// The Sentry alert rule "Auth: wrong secret, short secret or guest-key limit"
+// matches messages that start with this text; reword it and update the rule.
 const MESSAGE = 'Secret check failed';
 
 /** Shortest gap between two Sentry messages for one surface. */
@@ -103,6 +108,9 @@ export function reportSecretMismatch(
   Sentry.captureMessage(MESSAGE, {
     level: 'warning',
     fingerprint: ['secret-mismatch', surface],
-    tags: { surface },
+    tags: {
+      surface,
+      reason: hadCredential(surface, req) ? 'wrong' : 'missing',
+    },
   });
 }

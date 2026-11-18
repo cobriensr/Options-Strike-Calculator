@@ -217,7 +217,7 @@ describe('reportSecretMismatch', () => {
   });
 
   describe('Sentry message', () => {
-    it('sends the pinned message, level, fingerprint and surface tag', async () => {
+    it('sends the pinned message, level, fingerprint, surface tag and a reason of missing when no credential came', async () => {
       const { reportSecretMismatch } = await freshModule();
 
       reportSecretMismatch('analyze-plots', request());
@@ -226,9 +226,51 @@ describe('reportSecretMismatch', () => {
       expect(mockCaptureMessage).toHaveBeenCalledWith(MESSAGE, {
         level: 'warning',
         fingerprint: ['secret-mismatch', 'analyze-plots'],
-        tags: { surface: 'analyze-plots' },
+        tags: { surface: 'analyze-plots', reason: 'missing' },
       });
     });
+
+    it('tags a reason of wrong when a credential came and did not match', async () => {
+      const { reportSecretMismatch } = await freshModule();
+
+      reportSecretMismatch(
+        'analyze-plots',
+        request({ authorization: 'Bearer something' }),
+      );
+
+      expect(mockCaptureMessage).toHaveBeenCalledTimes(1);
+      expect(mockCaptureMessage).toHaveBeenCalledWith(MESSAGE, {
+        level: 'warning',
+        fingerprint: ['secret-mismatch', 'analyze-plots'],
+        tags: { surface: 'analyze-plots', reason: 'wrong' },
+      });
+    });
+
+    it.each<
+      [(typeof SURFACES)[number], Record<string, string | string[]>, string]
+    >([
+      ['cron', {}, 'missing'],
+      ['cron', { authorization: 'Bearer a' }, 'wrong'],
+      ['cron', { 'x-internal-notify-secret': 'a' }, 'missing'],
+      ['notify', {}, 'missing'],
+      ['notify', { 'x-internal-notify-secret': 'a' }, 'wrong'],
+      ['notify', { authorization: 'Bearer a' }, 'missing'],
+      ['analyze-plots', {}, 'missing'],
+      ['analyze-plots', { authorization: 'Bearer a' }, 'wrong'],
+    ])(
+      '%s with %j is reported with a reason of %s',
+      async (surface, headers, reason) => {
+        const { reportSecretMismatch } = await freshModule();
+
+        reportSecretMismatch(surface, request(headers));
+
+        const [, sent] = mockCaptureMessage.mock.calls[0] as [
+          string,
+          { tags: { reason: string } },
+        ];
+        expect(sent.tags.reason).toBe(reason);
+      },
+    );
 
     it('second mismatch inside 10 min sends no Sentry message', async () => {
       const { reportSecretMismatch } = await freshModule();
@@ -286,9 +328,9 @@ describe('reportSecretMismatch', () => {
         ['secret-mismatch', 'analyze-plots'],
       ]);
       expect(options.map((sent) => sent.tags)).toEqual([
-        { surface: 'cron' },
-        { surface: 'notify' },
-        { surface: 'analyze-plots' },
+        { surface: 'cron', reason: 'missing' },
+        { surface: 'notify', reason: 'missing' },
+        { surface: 'analyze-plots', reason: 'missing' },
       ]);
     });
 
@@ -370,6 +412,6 @@ describe('reportSecretMismatch', () => {
     // (so the check above covers the tag, not only the message and fingerprint).
     expect(sent).toContain('/api/example');
     expect(sent).toContain('hadCredential');
-    expect(sent).toContain('"tags":{"surface":"notify"}');
+    expect(sent).toContain('"tags":{"surface":"notify","reason":"wrong"}');
   });
 });

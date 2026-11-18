@@ -44,6 +44,9 @@ let lastBudgetReportHour = -1;
 function reportBudgetSpentOncePerHour(epochHour: number): void {
   if (epochHour === lastBudgetReportHour) return;
   lastBudgetReportHour = epochHour;
+  // The Sentry alert rule "Auth: wrong secret, short secret or guest-key limit"
+  // matches this whole text exactly (not a prefix); reword it and update the
+  // rule.
   Sentry.captureMessage(
     'Guest-key login refused: hourly failure budget spent',
     {

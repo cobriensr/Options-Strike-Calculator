@@ -31,6 +31,8 @@ const CHECKED_SECRETS = [
   'INTERNAL_NOTIFY_SECRET',
 ] as const;
 
+// The Sentry alert rule "Auth: wrong secret, short secret or guest-key limit"
+// matches messages that start with this text; reword it and update the rule.
 const WARNING_MESSAGE = 'Configured secret shorter than the minimum';
 
 /**
