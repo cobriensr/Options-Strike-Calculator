@@ -15,6 +15,7 @@ credential, or the length of either.
 from __future__ import annotations
 
 import hmac
+import itertools
 import os
 import threading
 import time
@@ -41,18 +42,23 @@ Surface = Literal["archive", "takeit-explain", "seed"]
 # report adds, and it is the `reason` tag on the Sentry event.
 Reason = Literal["missing", "wrong"]
 
-# The surfaces are the only keys of the throttle below, so nothing taken from a
-# request can grow it.
+# The two closed sets that make up the throttle's keys, below.
 SURFACES: tuple[Surface, ...] = ("archive", "takeit-explain", "seed")
+REASONS: tuple[Reason, ...] = ("missing", "wrong")
 
-# Shortest gap between two ERROR logs for one surface. Sentry turns every
-# ERROR log into an event, and a misconfigured caller can fail the check on
-# every request.
+# Shortest gap between two ERROR logs for one surface and reason. Sentry turns
+# every ERROR log into an event, and a misconfigured caller can fail the check
+# on every request. Each reason has its own window, so a caller that sends
+# nothing cannot use up the one a wrong secret needs.
 _ERROR_INTERVAL_S = 10 * 60
 
-# When each surface last logged its ERROR (a `time.monotonic()` reading), or
-# None while it has not. Fixed keys, written under the lock.
-_last_error_at: dict[str, float | None] = dict.fromkeys(SURFACES)
+# When each surface and reason last logged its ERROR (a `time.monotonic()`
+# reading), or None while it has not. The surfaces and the reasons are the only
+# parts of a key, so nothing taken from a request can grow it: six entries,
+# written under the lock.
+_last_error_at: dict[tuple[str, str], float | None] = dict.fromkeys(
+    itertools.product(SURFACES, REASONS)
+)
 _throttle_lock = threading.Lock()
 
 
@@ -90,11 +96,13 @@ def report_mismatch(surface: Surface, client_ip: str, reason: Reason) -> None:
     """Log one failed secret check; call it where the route sends its 401.
 
     Every call logs one WARNING with the surface, the reason and the client.
-    At most once per surface per 10 minutes it also logs an ERROR, which Sentry
-    turns into an event tagged `reason`, so a burst of failed requests opens
-    one issue per surface and not one event per request. `client_ip` is only
-    logged, never trusted. A surface outside `SURFACES` gets the WARNING and no
-    ERROR, which keeps the throttle's keys fixed.
+    At most once per surface and reason per 10 minutes it also logs an ERROR,
+    which Sentry turns into an event tagged `reason`, so a burst of failed
+    requests opens one issue per surface and not one event per request, and a
+    caller that sends nothing cannot hide a wrong secret. `client_ip` is only
+    logged, never trusted. A surface or reason outside `SURFACES` and
+    `REASONS` gets the WARNING and no ERROR, which keeps the throttle's keys
+    fixed.
 
     The time is recorded before the ERROR goes out, so a log sink that throws
     costs that one call and no later one inside the window.
@@ -102,14 +110,15 @@ def report_mismatch(surface: Surface, client_ip: str, reason: Reason) -> None:
     log.warning(
         "%s secret check failed (reason %s, client %s)", surface, reason, client_ip
     )
+    key = (surface, reason)
     with _throttle_lock:
-        if surface not in _last_error_at:
+        if key not in _last_error_at:
             return
-        last = _last_error_at[surface]
+        last = _last_error_at[key]
         now = time.monotonic()
         if last is not None and now - last < _ERROR_INTERVAL_S:
             return
-        _last_error_at[surface] = now
+        _last_error_at[key] = now
     # The surface is part of the template: Sentry groups a logged event by its
     # unformatted message, so each surface opens its own issue, as the Vercel
     # side's fingerprint does. The client address stays a parameter. The

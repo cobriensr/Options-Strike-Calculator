@@ -9,6 +9,7 @@ which we intercept with a tiny fake wfile so we can assert JSON shape.
 from __future__ import annotations
 
 import io
+import itertools
 import json
 import os
 import sys
@@ -36,11 +37,15 @@ VALID_BEARER = {"Authorization": f"Bearer {SHARED_SECRET}"}
 def _shared_secret_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Every test starts with the bearer secret configured, with the
     once-per-process unset-secret error not yet logged, and with no failed-check
-    error yet logged for any surface (that one is throttled to once per 10
-    minutes, so a test that expects it would depend on the test order)."""
+    error yet logged for any surface and reason (that one is throttled to once
+    per 10 minutes, so a test that expects it would depend on the test order)."""
     monkeypatch.setenv("TAKEIT_SIDECAR_SHARED_SECRET", SHARED_SECRET)
     monkeypatch.setattr(health, "_unset_secret_logged", False)
-    monkeypatch.setattr(auth, "_last_error_at", dict.fromkeys(auth.SURFACES))
+    monkeypatch.setattr(
+        auth,
+        "_last_error_at",
+        dict.fromkeys(itertools.product(auth.SURFACES, auth.REASONS)),
+    )
 
 
 def _header_lines(headers: Mapping[str, str] | None) -> str:
@@ -1660,6 +1665,18 @@ class TestSecretCheckLogs:
             if r.name == "sidecar" and r.levelname == "WARNING"
         ]
         assert warnings == ["seed secret check failed (reason wrong, client 127.0.0.1)"]
+
+    def test_a_request_with_no_bearer_does_not_hide_a_wrong_one(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Each reason has its own 10-minute window on a surface."""
+        _run_request(_ARCHIVE_PATH, headers={})
+        _run_request(_ARCHIVE_PATH, headers={"Authorization": "Bearer wrong"})
+        _run_request(_ARCHIVE_PATH, headers={"Authorization": "Bearer wrong again"})
+        _run_request(_ARCHIVE_PATH, headers={})
+
+        assert len(self._lines(caplog, "WARNING")) == 4
+        assert len(self._lines(caplog, "ERROR")) == 2
 
     def test_each_failing_check_logs_its_own_error(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture

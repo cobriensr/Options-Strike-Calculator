@@ -197,7 +197,7 @@ _INITIAL_THROTTLE = dict(auth._last_error_at)
 
 @pytest.fixture(autouse=True)
 def _no_error_logged_yet(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The failed-check ERROR is throttled per surface for 10 minutes; start
+    """The failed-check ERROR is throttled per surface and reason for 10 minutes; start
     every test with none logged, so no test depends on the order they ran in."""
     monkeypatch.setattr(auth, "_last_error_at", dict(_INITIAL_THROTTLE))
 
@@ -269,14 +269,20 @@ class TestReportMismatch:
     def test_the_surfaces_are_the_three_checks_that_serve_traffic(self) -> None:
         assert auth.SURFACES == ("archive", "takeit-explain", "seed")
 
-    def test_no_surface_has_logged_an_error_when_the_module_loads(self) -> None:
+    def test_the_reasons_are_the_two_a_check_can_fail_for(self) -> None:
+        assert auth.REASONS == ("missing", "wrong")
+
+    def test_no_surface_and_reason_has_logged_an_error_when_the_module_loads(
+        self,
+    ) -> None:
         """None, not 0: `time.monotonic()` can read under 600 s after boot, and
-        a zero would then hide the first ERROR."""
-        assert _INITIAL_THROTTLE == {
-            "archive": None,
-            "takeit-explain": None,
-            "seed": None,
-        }
+        a zero would then hide the first ERROR. One entry per surface and
+        reason, six in all."""
+        assert {
+            (surface, reason): None
+            for surface in ("archive", "takeit-explain", "seed")
+            for reason in ("missing", "wrong")
+        } == _INITIAL_THROTTLE
 
     def test_every_call_logs_one_warning_with_the_surface_reason_and_client(
         self, clock: _Clock, caplog: pytest.LogCaptureFixture
@@ -324,26 +330,87 @@ class TestReportMismatch:
         templates = [r.msg for r in caplog.records if r.levelname == "ERROR"]
         assert len(set(templates)) == 2
 
-    def test_a_second_call_inside_ten_minutes_logs_no_error(
-        self, clock: _Clock, caplog: pytest.LogCaptureFixture
+    @pytest.mark.parametrize("reason", ["missing", "wrong"])
+    def test_a_second_call_for_a_reason_inside_ten_minutes_logs_no_error(
+        self, reason: str, clock: _Clock, caplog: pytest.LogCaptureFixture
     ) -> None:
-        auth.report_mismatch("archive", "203.0.113.7", "wrong")
+        auth.report_mismatch("archive", "203.0.113.7", reason)
         clock.now += 599.0
-        auth.report_mismatch("archive", "203.0.113.8", "wrong")
+        auth.report_mismatch("archive", "203.0.113.8", reason)
         assert _levels(caplog) == ["WARNING", "ERROR", "WARNING"]
 
+    @pytest.mark.parametrize("reason", ["missing", "wrong"])
     def test_the_error_returns_when_ten_minutes_have_passed(
-        self, clock: _Clock, caplog: pytest.LogCaptureFixture
+        self, reason: str, clock: _Clock, caplog: pytest.LogCaptureFixture
     ) -> None:
-        auth.report_mismatch("archive", "203.0.113.7", "wrong")
+        auth.report_mismatch("archive", "203.0.113.7", reason)
         clock.now += 600.0
-        auth.report_mismatch("archive", "203.0.113.7", "wrong")
+        auth.report_mismatch("archive", "203.0.113.7", reason)
         assert _levels(caplog) == ["WARNING", "ERROR", "WARNING", "ERROR"]
 
         # The window restarts from the second error, not the first.
         clock.now += 599.0
-        auth.report_mismatch("archive", "203.0.113.7", "wrong")
+        auth.report_mismatch("archive", "203.0.113.7", reason)
         assert _levels(caplog)[-1] == "WARNING"
+
+    @pytest.mark.parametrize(
+        ("first", "second"), [("missing", "wrong"), ("wrong", "missing")]
+    )
+    def test_the_other_reason_inside_ten_minutes_logs_its_own_error(
+        self,
+        first: str,
+        second: str,
+        clock: _Clock,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A caller that sends nothing must not use up the window a wrong secret
+        needs, nor the other way round: the Sentry alert may later be narrowed
+        to `reason:wrong`."""
+        auth.report_mismatch("archive", "203.0.113.7", first)
+        clock.now += 60.0
+        auth.report_mismatch("archive", "203.0.113.8", second)
+        assert _levels(caplog) == ["WARNING", "ERROR", "WARNING", "ERROR"]
+
+    def test_a_wrong_ten_minutes_after_the_first_wrong_logs_again_whatever_came_between(
+        self, clock: _Clock, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        auth.report_mismatch("archive", "203.0.113.7", "wrong")
+        clock.now += 599.0
+        auth.report_mismatch("archive", "203.0.113.7", "missing")
+        clock.now += 1.0
+        auth.report_mismatch("archive", "203.0.113.7", "wrong")
+        assert _levels(caplog) == [
+            "WARNING",
+            "ERROR",
+            "WARNING",
+            "ERROR",
+            "WARNING",
+            "ERROR",
+        ]
+
+    def test_each_reason_has_its_own_window_on_each_surface(
+        self, clock: _Clock, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        for surface in auth.SURFACES:
+            for reason in auth.REASONS:
+                auth.report_mismatch(surface, "203.0.113.7", reason)
+        assert len(_errors(caplog)) == 6
+
+    def test_the_state_never_grows_past_one_entry_per_surface_and_reason(
+        self, clock: _Clock, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """However many requests come, and whatever they carry: the keys are
+        the six fixed pairs, so nothing taken from a request can grow them."""
+        pairs = {(s, r) for s in auth.SURFACES for r in auth.REASONS}
+        for i in range(300):
+            surface = auth.SURFACES[i % 3]
+            reason = auth.REASONS[(i // 3) % 2]
+            auth.report_mismatch(surface, f"203.0.113.{i % 250}", reason)
+            clock.now += 1.0
+        assert set(auth._last_error_at) == pairs
+        assert len(auth._last_error_at) == 6
+        # 300 s of calls inside the 10 minutes: one ERROR for each of the six.
+        assert len(_errors(caplog)) == 6
 
     def test_each_surface_has_its_own_window(
         self, clock: _Clock, caplog: pytest.LogCaptureFixture
@@ -381,13 +448,18 @@ class TestReportMismatch:
     def test_an_unknown_surface_warns_and_adds_no_throttle_key(
         self, clock: _Clock, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """The throttle dict holds only the fixed surfaces, so nothing derived
-        from a request can grow it."""
+        """The throttle dict holds only the fixed surface and reason pairs, so
+        nothing derived from a request can grow it."""
         keys_before = set(auth._last_error_at)
         auth.report_mismatch("not-a-surface", "203.0.113.7", "wrong")
         auth.report_mismatch("x" * 10_000, "203.0.113.7", "wrong")
-        assert _levels(caplog) == ["WARNING", "WARNING"]
-        assert set(auth._last_error_at) == keys_before == set(auth.SURFACES)
+        auth.report_mismatch("archive", "203.0.113.7", "not-a-reason")
+        assert _levels(caplog) == ["WARNING", "WARNING", "WARNING"]
+        assert (
+            set(auth._last_error_at)
+            == keys_before
+            == {(s, r) for s in auth.SURFACES for r in auth.REASONS}
+        )
 
     def test_two_requests_that_both_find_no_error_log_one(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
@@ -503,16 +575,35 @@ class TestReasonTag:
             "Secret check failed on seed (client %s)": "wrong",
         }
 
-    def test_a_throttled_report_files_no_event(
-        self, sentry_events: Callable[..., Any]
+    @pytest.mark.parametrize("reason", ["missing", "wrong"])
+    def test_a_second_report_for_the_same_reason_files_no_event(
+        self, reason: str, sentry_events: Callable[..., Any]
     ) -> None:
         transport = sentry_events()
 
-        auth.report_mismatch("archive", "203.0.113.7", "missing")
-        auth.report_mismatch("archive", "198.51.100.4", "wrong")
+        auth.report_mismatch("archive", "203.0.113.7", reason)
+        auth.report_mismatch("archive", "198.51.100.4", reason)
 
         (event,) = transport.events()
-        assert event["tags"]["reason"] == "missing"
+        assert event["tags"]["reason"] == reason
+        assert event["logentry"]["params"] == ["203.0.113.7"]
+
+    @pytest.mark.parametrize(
+        ("first", "second"), [("missing", "wrong"), ("wrong", "missing")]
+    )
+    def test_the_other_reason_files_its_own_event_tagged_in_order(
+        self, first: str, second: str, sentry_events: Callable[..., Any]
+    ) -> None:
+        """A report with nothing sent must not use up the window a wrong
+        secret needs."""
+        transport = sentry_events()
+
+        auth.report_mismatch("archive", "203.0.113.7", first)
+        auth.report_mismatch("archive", "198.51.100.4", second)
+
+        events = transport.events()
+        assert [e["tags"]["reason"] for e in events] == [first, second]
+        assert {e["logentry"]["message"] for e in events} == {_FAILED_CHECK}
 
     def test_with_sentry_off_a_report_still_logs_and_raises_nothing(
         self, caplog: pytest.LogCaptureFixture
