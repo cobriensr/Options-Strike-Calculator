@@ -63,6 +63,10 @@ vi.mock('../_lib/push.js', () => ({ sendPushToOwner: mockSendPush }));
 
 vi.mock('../_lib/logger.js', () => ({ default: mockLogger }));
 
+// cronGuard reports a failed secret check through this module; its own
+// test covers what it reports.
+vi.mock('../_lib/auth-failure.js', () => ({ reportSecretMismatch: vi.fn() }));
+
 vi.mock('../_lib/sentry.js', () => ({
   Sentry: mockSentry,
   metrics: { increment: vi.fn() },
