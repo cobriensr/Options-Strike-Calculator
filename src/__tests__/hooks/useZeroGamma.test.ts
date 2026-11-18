@@ -400,27 +400,48 @@ describe('useZeroGamma date settling', () => {
     expect(result.current.latest?.ts).toBe('2026-04-23T20:10:00.000Z');
   });
 
-  it('surfaces a timeout that rejects as an AbortError, as WebKit does', async () => {
-    // WebKit gives a timed-out fetch the same AbortError name and message as
-    // a user abort. Only the hook's own abort is skipped, so the timeout must
-    // still set the error and end loading.
-    const timeout = new AbortController();
-    const timeoutSpy = vi
-      .spyOn(AbortSignal, 'timeout')
-      .mockReturnValue(timeout.signal);
-    const calls = stubPendingFetch(true);
+  // WebKit gives a timed-out fetch the same AbortError name and message as a
+  // user abort; other browsers use a TimeoutError. Only the hook's own abort is
+  // skipped, so either way the timeout must set the error and end loading, and
+  // the error reads "Request timed out" rather than the browser's own text.
+  it.each([
+    ['an AbortError, as WebKit does', 'Fetch is aborted', 'AbortError'],
+    ['a TimeoutError', 'The operation timed out.', 'TimeoutError'],
+  ])(
+    'reports our own timeout as "Request timed out" when it rejects as %s',
+    async (_label, message, name) => {
+      const timeout = new AbortController();
+      const timeoutSpy = vi
+        .spyOn(AbortSignal, 'timeout')
+        .mockReturnValue(timeout.signal);
+      const calls = stubPendingFetch(true);
+      const { result } = renderDated(null);
+      await act(async () => {});
+      expect(timeoutSpy).toHaveBeenCalledWith(5_000);
+      expect(result.current.loading).toBe(true);
+
+      await act(async () => {
+        timeout.abort(new DOMException(message, name));
+        await vi.advanceTimersByTimeAsync(0);
+      });
+
+      expect(calls[0]?.signal.aborted).toBe(true);
+      expect(result.current.error).toBe('Request timed out');
+      expect(result.current.loading).toBe(false);
+    },
+  );
+
+  it('keeps the browser message for a failure that is not the timeout', async () => {
+    // The timeout signal exists but has not fired, so the rejection is some
+    // other failure and its own message is the useful one.
+    vi.spyOn(AbortSignal, 'timeout').mockReturnValue(
+      new AbortController().signal,
+    );
+    mockFetch.mockReset().mockRejectedValueOnce(new TypeError('Load failed'));
     const { result } = renderDated(null);
     await act(async () => {});
-    expect(timeoutSpy).toHaveBeenCalledWith(5_000);
-    expect(result.current.loading).toBe(true);
 
-    await act(async () => {
-      timeout.abort(new DOMException('Fetch is aborted', 'AbortError'));
-      await vi.advanceTimersByTimeAsync(0);
-    });
-
-    expect(calls[0]?.signal.aborted).toBe(true);
-    expect(result.current.error).not.toBeNull();
+    expect(result.current.error).toBe('Load failed');
     expect(result.current.loading).toBe(false);
   });
 

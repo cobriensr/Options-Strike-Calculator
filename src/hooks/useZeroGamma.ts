@@ -73,12 +73,13 @@ export function useZeroGamma(
     const ctrl = new AbortController();
     abortRef.current = ctrl;
 
+    const timeout = AbortSignal.timeout(5_000);
     try {
       const qs = new URLSearchParams({ ticker });
       if (date) qs.set('date', date);
       const res = await fetch(`/api/zero-gamma?${qs}`, {
         credentials: 'same-origin',
-        signal: AbortSignal.any([ctrl.signal, AbortSignal.timeout(5_000)]),
+        signal: AbortSignal.any([ctrl.signal, timeout]),
       });
 
       if (!mountedRef.current) return;
@@ -102,7 +103,11 @@ export function useZeroGamma(
       // Only our own abort is skipped, not any AbortError by name: WebKit
       // rejects the 5 s timeout with the same AbortError as a user abort.
       if (ctrl.signal.aborted) return;
-      if (mountedRef.current) setError(getErrorMessage(err));
+      // The timeout signal itself says whether it fired, in every browser, so
+      // the user sees one message instead of each browser's own text.
+      if (mountedRef.current) {
+        setError(timeout.aborted ? 'Request timed out' : getErrorMessage(err));
+      }
     } finally {
       // Only clear loading if this fetch wasn't superseded — a newer
       // fetch owns loading=true until it itself resolves.
