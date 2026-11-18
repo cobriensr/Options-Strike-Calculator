@@ -10,6 +10,7 @@
 
 import { spawnSync } from 'node:child_process';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { GIT_TIMEOUT_MS } from './git-run.mjs';
 import { FIXTURE_TIMEOUT } from './scratch-git.fixtures.mjs';
 import {
   CHILD_TEST_TIMEOUT,
@@ -61,12 +62,26 @@ function thrownBy(fn) {
 }
 
 describe('the limits', () => {
-  it('give a test more time than its child, and a slow child less than a hook', () => {
+  it('give a test more time than its child', () => {
     expect(CHILD_TEST_TIMEOUT).toBeGreaterThan(CHILD_TIMEOUT);
     expect(SLOW_CHILD_TIMEOUT).toBeGreaterThan(CHILD_TIMEOUT);
-    // A hook that waits on a slow child must fail with the child named, not
-    // as a hook timeout that names nothing.
+  });
+
+  // Each limit sits inside the next, so the innermost one to fire is the one
+  // that names what stalled: a git call (GIT_TIMEOUT_MS) inside a CLI child
+  // that runs it (SLOW_CHILD_TIMEOUT) inside the hook or test that waits on the
+  // child (FIXTURE_TIMEOUT). With two of them equal, a git stall inside a CLI
+  // could be reported as the CLI, or as the hook.
+  it('nest strictly: a git call, inside a slow CLI child, inside a hook', () => {
+    expect(GIT_TIMEOUT_MS).toBeLessThan(SLOW_CHILD_TIMEOUT);
     expect(SLOW_CHILD_TIMEOUT).toBeLessThan(FIXTURE_TIMEOUT);
+  });
+
+  it('leave the CLI child room to report a git call that timed out', () => {
+    // The CLI has to catch the GitError, print it and exit before its own
+    // limit: a margin well over a loaded machine's process start.
+    expect(SLOW_CHILD_TIMEOUT - GIT_TIMEOUT_MS).toBeGreaterThanOrEqual(60_000);
+    expect(FIXTURE_TIMEOUT - SLOW_CHILD_TIMEOUT).toBeGreaterThanOrEqual(60_000);
   });
 });
 

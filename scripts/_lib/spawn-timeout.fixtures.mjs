@@ -17,6 +17,7 @@
  */
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
+import { GIT_TIMEOUT_MS } from './git-run.mjs';
 import { FIXTURE_TIMEOUT } from './scratch-git.fixtures.mjs';
 
 /**
@@ -34,12 +35,16 @@ export const CHILD_TEST_TIMEOUT = CHILD_TIMEOUT + 30_000;
 /**
  * The limit of a child that runs a whole CLI over a scratch repo, which makes
  * many git calls of its own (the prune and session-status CLIs, the review
- * gate). It is half of FIXTURE_TIMEOUT, so by construction it fires inside
- * the hook or test that waits on the child (those get FIXTURE_TIMEOUT from
- * setupScratchGit), and the failure names the child instead of a hook
- * timeout.
+ * gate). The three limits nest, innermost first: one git call (GIT_TIMEOUT_MS,
+ * 300 s) inside the CLI child (this one, halfway to the next: 450 s) inside
+ * the hook or test that waits on the child (FIXTURE_TIMEOUT, 600 s, from
+ * setupScratchGit). Whichever fires first names what stalled: a stuck git
+ * makes the CLI print its GitError and exit before the CLI's own limit, and a
+ * stuck CLI is killed by spawnChild before the hook gives up. Equal limits
+ * would race, and a git stall could be named as the CLI. Derived from the other
+ * two, so the order holds when either moves; spawn-timeout.test.mjs asserts it.
  */
-export const SLOW_CHILD_TIMEOUT = FIXTURE_TIMEOUT / 2;
+export const SLOW_CHILD_TIMEOUT = (GIT_TIMEOUT_MS + FIXTURE_TIMEOUT) / 2;
 
 /** How much of the child's stderr an error quotes. */
 const STDERR_TAIL = 500;
