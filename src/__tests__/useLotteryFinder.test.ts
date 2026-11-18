@@ -916,7 +916,7 @@ describe('useLotteryFinder: tierCutoffs response schema', () => {
 // re-rendered the hook at midnight, so a day that had become yesterday kept
 // polling. `today` is the shared ET clock now. Every case starts 30 s before
 // an ET midnight; the clock's timer is armed for 1 s past it, so 31 s lands
-// just after, which is 23:00:31 CT the evening before. Owner decision
+// just after, which is 23:00:01 CT the evening before. Owner decision
 // 2026-11-14.
 // ============================================================
 
@@ -986,7 +986,7 @@ describe.each([
     await advance(0);
     await advance(31_000);
 
-    // The panel moves to the new day. By the wall clock it is 23:00:31 CT the
+    // The panel moves to the new day. By the wall clock it is 23:00:01 CT the
     // evening before, so a CT comparison calls the new day historical.
     rerender({ date: m.morning });
     await advance(0);

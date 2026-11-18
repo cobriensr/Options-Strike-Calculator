@@ -10,7 +10,6 @@ import { Profiler } from 'react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, render, screen, fireEvent, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { getETToday } from '../utils/timezone';
 import type { SilentBoomAlert } from '../components/SilentBoom/types';
 
 // ── Mocks ─────────────────────────────────────────────────────────────
@@ -57,12 +56,19 @@ import { SilentBoomSection } from '../components/SilentBoom';
 // The never-vanish union is only ENGAGED on the live day, and its hard-floor
 // / cross-day `retain` guard purges any pinned alert whose `a.date` is not the
 // engaged day. Engaged-path fixtures must therefore be dated to TODAY (ET) or
-// the guard correctly drops them. Computed like the panel's `today` (the
-// shared ET clock): silent-boom alerts are stamped with the ET date, which
-// differs from the CT date from 23:00 to 24:00 CT. `bucketCt` is only a
-// union-key segment + TOD-display source, so it is left at a fixed value
-// (retain keys off `date`, not `bucketCt`).
-const TODAY_ET = getETToday();
+// the guard correctly drops them. Silent-boom alerts are stamped with the ET
+// date, which differs from the CT date from 23:00 to 24:00 CT. `bucketCt` is
+// only a union-key segment + TOD-display source, so it is left at a fixed
+// value (retain keys off `date`, not `bucketCt`).
+//
+// The clock is pinned (file-level beforeEach below) so `today` cannot move
+// under a fixture: a run that crossed ET midnight turned fixtures dated at
+// import time into yesterday's, and the guard dropped them. The pin, Monday
+// 2026-06-15 12:00 CT, falls after every fixture this file means as past (the
+// latest is the 2026-05-08 the historical-replay tests pick), so those stay
+// historical. The "across the midnight" blocks set their own clocks.
+const PINNED_NOW = '2026-06-15T17:00:00Z';
+const TODAY_ET = '2026-06-15';
 
 function makeAlert(overrides: Partial<SilentBoomAlert> = {}): SilentBoomAlert {
   return {
@@ -173,7 +179,14 @@ function feedResult(
   };
 }
 
+afterEach(() => {
+  vi.useRealTimers();
+});
+
 beforeEach(() => {
+  // Only Date is faked, so timers, waitFor and user-event keep running.
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(new Date(PINNED_NOW));
   vi.clearAllMocks();
   // Clear localStorage between tests so persisted prefs don't leak
   // across cases (sortMode, convictionFloor, hideLatePm, hideGhosts,

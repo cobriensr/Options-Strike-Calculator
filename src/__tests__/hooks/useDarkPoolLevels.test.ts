@@ -36,6 +36,15 @@ function makeLevel(overrides: Partial<DarkPoolLevel> = {}): DarkPoolLevel {
 
 beforeEach(() => {
   vi.useFakeTimers({ shouldAdvanceTime: true });
+  // Pinned to Thursday 2026-04-02 12:00 ET: ET midnight is 12 h away, so no
+  // run, and none of the `advanceTimersByTime` calls below, can cross it. The
+  // hook follows today across ET midnight: its date moves, so its fetch
+  // callback changes, the eager-fetch effect refires and one fetch lands for
+  // the new date, with any scrub dropped (a scrub belongs to its date). A
+  // clock that started within a few poll intervals of midnight saw that fetch
+  // in the "does not poll" tests. The latest past date below is 2026-03-28,
+  // and the mocked responses carry 2026-04-02.
+  vi.setSystemTime(new Date('2026-04-02T16:00:00Z'));
   mockFetch.mockReset().mockResolvedValue({
     ok: true,
     json: async () => ({ levels: [], date: '2026-04-02' }),

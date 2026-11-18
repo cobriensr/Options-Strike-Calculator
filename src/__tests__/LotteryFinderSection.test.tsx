@@ -9,7 +9,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, render, screen, fireEvent, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { getETToday } from '../utils/timezone';
 import type {
   LotteryFinderResponse,
   LotteryFire,
@@ -75,9 +74,16 @@ import { LotteryFinderSection } from '../components/LotteryFinder';
 // (`date === today`), and its hard-floor/cross-day `retain` guard purges
 // any pinned row whose `f.date` is not the engaged day. Engaged-path fixtures
 // must therefore be dated to TODAY (ET) or the guard correctly drops them.
-// Computed like the panel's `today` (the shared ET clock) so the two agree:
-// lottery fires are stamped with the ET date.
-const TODAY_ET = getETToday();
+// Lottery fires are stamped with the ET date.
+//
+// The clock is pinned (file-level beforeEach below) so `today` cannot move
+// under a fixture: a run that crossed ET midnight turned fixtures dated at
+// import time into yesterday's, and the guard dropped them. The pin, Monday
+// 2026-06-15 12:00 CT, falls after every fixture this file means as past (the
+// latest is PAST = 2026-05-08), so those stay historical. The "across the
+// midnight" blocks set their own clocks.
+const PINNED_NOW = '2026-06-15T17:00:00Z';
+const TODAY_ET = '2026-06-15';
 
 function makeFire(overrides: Partial<LotteryFire> = {}): LotteryFire {
   return {
@@ -252,7 +258,14 @@ function feedResult(
   };
 }
 
+afterEach(() => {
+  vi.useRealTimers();
+});
+
 beforeEach(() => {
+  // Only Date is faked, so timers, waitFor and user-event keep running.
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(new Date(PINNED_NOW));
   vi.clearAllMocks();
   // Clear localStorage between tests so persisted prefs don't leak
   // between test cases (sortMode, convictionFloor, hideLatePm,

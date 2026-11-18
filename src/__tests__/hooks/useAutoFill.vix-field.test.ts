@@ -13,7 +13,6 @@ import { useAutoFill } from '../../hooks/useAutoFill';
 import { useVixData } from '../../hooks/useVixData';
 import { useVix1dData } from '../../hooks/useVix1dData';
 import { IV_MODES } from '../../constants';
-import { getETToday } from '../../utils/timezone';
 import { loadCachedVixData } from '../../utils/vixStorage';
 import type { IVMode, VIXDataMap } from '../../types';
 import type { MarketDataState } from '../../hooks/useMarketData';
@@ -253,9 +252,19 @@ function renderCalculator(initialMode: IVMode) {
 // ============================================================
 
 describe('the VIX field on a past date (useVixData + useAutoFill)', () => {
-  const today = getETToday();
+  // `today` is the pinned clock's ET date, not the date at collection: the
+  // hooks judge "today" on the clock at render time, so a run that crossed ET
+  // midnight made a `today` read at collection a past date. A past date never
+  // gets today's live VIX or VIX1D, so the test's "today" steps never switched
+  // to DIRECT. The pin (Friday 2026-05-08, 13:00 ET) falls after every past
+  // date below (the latest is 2026-03-17, the quotes' asOf), so P1, P2 and
+  // the table dates stay past.
+  const today = '2026-05-08';
 
   beforeEach(() => {
+    // Only Date is faked, so timers and waitFor keep running.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-05-08T17:00:00Z'));
     vi.mocked(loadCachedVixData).mockReturnValue({
       data: VIX_OHLC,
       source: 'test',
@@ -264,6 +273,7 @@ describe('the VIX field on a past date (useVixData + useAutoFill)', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.useRealTimers();
   });
 
   it("holds the past date's daily VIX in DIRECT mode, not today's live VIX", async () => {
