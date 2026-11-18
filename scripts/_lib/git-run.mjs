@@ -17,7 +17,19 @@ import { spawnSync } from 'node:child_process';
  */
 const MAX_GIT_OUTPUT = 64 * 1024 * 1024;
 
-/** A git command that could not run or exited non-zero. */
+/**
+ * How long one git call may take before it is killed and reported as a
+ * GitError. A call is a synchronous spawn: with no limit, a stuck git (an
+ * index lock, a prompt, a dead drive) blocks the caller for good, in the
+ * SessionStart prune, the pre-commit gate and every test that runs these
+ * modules. Five minutes is far above any healthy call, a few seconds even on a
+ * machine under full load, and under the 600 s the scratch-git test hooks get
+ * (FIXTURE_TIMEOUT in scratch-git.fixtures.mjs), so a stall inside a hook
+ * fails with the command named, not as a hook timeout that names nothing.
+ */
+export const GIT_TIMEOUT_MS = 300_000;
+
+/** A git command that could not run, timed out, or exited non-zero. */
 export class GitError extends Error {
   /**
    * @param {string[]} args
@@ -32,8 +44,8 @@ export class GitError extends Error {
 
 /**
  * Run git; returns `{ status, stdout, stderr }` whatever the exit code.
- * Throws GitError only when git could not run, and TypeError when `env` is
- * missing.
+ * Throws GitError only when git could not run or ran past GIT_TIMEOUT_MS, and
+ * TypeError when `env` is missing.
  *
  * @param {string[]} args
  * @param {NodeJS.ProcessEnv} env
@@ -55,9 +67,19 @@ export function runGit(args, env, { input } = {}) {
     env,
     input,
     maxBuffer: MAX_GIT_OUTPUT,
+    timeout: GIT_TIMEOUT_MS,
     windowsHide: true,
   });
-  if (result.error) throw new GitError(args, result.error.message);
+  if (result.error) {
+    // spawnSync's own message for a kill at the limit is "spawnSync git
+    // ETIMEDOUT": no limit in it, so a reader cannot tell a stall from a
+    // failure to start.
+    const detail =
+      result.error.code === 'ETIMEDOUT'
+        ? `timed out after ${GIT_TIMEOUT_MS / 1000} s`
+        : result.error.message;
+    throw new GitError(args, detail);
+  }
   return result;
 }
 

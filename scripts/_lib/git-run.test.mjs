@@ -7,18 +7,32 @@
  * PATH with no git on it, not a mock.
  */
 
+import { spawnSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { beforeAll, describe, expect, it, vi } from 'vitest';
-import { GitError, git, runGit } from './git-run.mjs';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { GIT_TIMEOUT_MS, GitError, git, runGit } from './git-run.mjs';
 import {
+  FIXTURE_TIMEOUT,
   cleanEnv,
   makeTempDir,
   git as scratchGit,
   setupScratchGit,
 } from './scratch-git.fixtures.mjs';
 
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal();
+  return { ...actual, spawnSync: vi.fn(actual.spawnSync) };
+});
+
+const { spawnSync: realSpawnSync } =
+  await vi.importActual('node:child_process');
+
 setupScratchGit();
+
+afterEach(() => {
+  vi.mocked(spawnSync).mockReset();
+});
 
 /** spawnSync's own maxBuffer when none is passed. */
 const SPAWN_SYNC_DEFAULT_BUFFER = 1024 * 1024;
@@ -219,5 +233,68 @@ describe('runGit', () => {
 
   it('throws a TypeError when env is missing, instead of using process.env', () => {
     expectMissingEnv(thrownBy(() => runGit(['--version'], undefined)));
+  });
+});
+
+describe('the time limit on every git call', () => {
+  /** An alias that runs a child for 3 s: git has nothing to answer until then. */
+  const STALL = ['-c', 'alias.stall=!node -e "setTimeout(() => {}, 3000)"'];
+
+  /**
+   * Run the next spawn for real and keep the limit the module asked for. With
+   * `cutTo`, run it with that limit instead, so a stall does not take the
+   * real one to show. A call that must finish gets no `cutTo`: under load even
+   * `git --version` can take longer than a fraction of a second.
+   */
+  function watchNextSpawn({ cutTo } = {}) {
+    const seen = { limit: undefined };
+    vi.mocked(spawnSync).mockImplementationOnce((command, args, options) => {
+      seen.limit = options.timeout;
+      const own =
+        cutTo === undefined ? options : { ...options, timeout: cutTo };
+      return realSpawnSync(command, args, own);
+    });
+    return seen;
+  }
+
+  it('is set, far above a healthy call and under the fixture timeout, so a stall in a hook names itself', () => {
+    expect(GIT_TIMEOUT_MS).toBeGreaterThanOrEqual(120_000);
+    expect(GIT_TIMEOUT_MS).toBeLessThan(FIXTURE_TIMEOUT);
+  });
+
+  it.each([
+    ['git', git],
+    ['runGit', runGit],
+  ])('is passed to spawnSync by %s', (_name, run) => {
+    const seen = watchNextSpawn();
+
+    run(['--version'], cleanEnv());
+
+    expect(seen.limit).toBeGreaterThan(0);
+    expect(seen.limit).toBe(GIT_TIMEOUT_MS);
+  });
+
+  it.each([
+    ['git', git],
+    ['runGit', runGit],
+  ])(
+    'makes %s throw a GitError that says it timed out and after how long, and names the command',
+    (_name, run) => {
+      watchNextSpawn({ cutTo: 500 });
+      const args = [...STALL, 'stall'];
+
+      expectGitError(
+        thrownBy(() => run(args, cleanEnv())),
+        args,
+        `timed out after ${GIT_TIMEOUT_MS / 1000} s`,
+      );
+    },
+  );
+
+  it('leaves a git that ran and failed as it was, not as a timeout', () => {
+    const err = thrownBy(() => git(missingRef(), cleanEnv()));
+
+    expect(err.detail).toBe('fatal: Needed a single revision');
+    expect(err.detail).not.toContain('timed out');
   });
 });
