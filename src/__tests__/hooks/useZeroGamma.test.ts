@@ -38,6 +38,15 @@ afterEach(() => {
   vi.stubGlobal('fetch', mockFetch);
 });
 
+// useDebounced's default delay: how long a changed date waits before refetching.
+const SETTLE_MS = 250;
+
+async function advance(ms: number): Promise<void> {
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(ms);
+  });
+}
+
 describe('useZeroGamma', () => {
   it('fetches initial data and populates latest + history', async () => {
     const { result } = renderHook(() => useZeroGamma('SPX', true));
@@ -166,7 +175,7 @@ describe('useZeroGamma', () => {
     await act(async () => {});
     mockFetch.mockClear();
     rerender({ d: '2026-04-23' });
-    await act(async () => {});
+    await advance(SETTLE_MS);
     expect(mockFetch).toHaveBeenCalledWith(
       '/api/zero-gamma?ticker=SPX&date=2026-04-23',
       expect.any(Object),
@@ -218,5 +227,201 @@ describe('useZeroGamma', () => {
     expect(aborts[0]?.aborted).toBe(false);
     unmount();
     expect(aborts[0]?.aborted).toBe(true);
+  });
+});
+
+describe('useZeroGamma date settling', () => {
+  interface PendingFetch {
+    url: string;
+    signal: AbortSignal;
+    resolve: (payload: unknown) => void;
+  }
+
+  /**
+   * Every fetch stays pending until the test resolves it. With `honorAbort`
+   * it rejects with an AbortError when its signal aborts, like a real fetch;
+   * without it the response can still arrive after the abort, so the tests
+   * can check the hook never writes it to state.
+   */
+  function stubPendingFetch(honorAbort: boolean): PendingFetch[] {
+    const calls: PendingFetch[] = [];
+    mockFetch.mockReset().mockImplementation(
+      (url: string, init: RequestInit) =>
+        new Promise((resolve, reject) => {
+          const signal = init.signal as AbortSignal;
+          if (honorAbort) {
+            signal.addEventListener('abort', () =>
+              reject(new DOMException('aborted', 'AbortError')),
+            );
+          }
+          calls.push({
+            url,
+            signal,
+            resolve: (payload) =>
+              resolve({ ok: true, json: async () => payload }),
+          });
+        }),
+    );
+    return calls;
+  }
+
+  async function respond(call: PendingFetch, ts: string): Promise<void> {
+    const row = { ...SAMPLE_LATEST, ts };
+    await act(async () => {
+      call.resolve({ latest: row, history: [row] });
+      await vi.advanceTimersByTimeAsync(0);
+    });
+  }
+
+  const urls = () => mockFetch.mock.calls.map((c) => c[0] as string);
+
+  function renderDated(initial: string | null) {
+    return renderHook(
+      ({ d }: { d: string | null }) => useZeroGamma('SPX', true, d),
+      { initialProps: { d: initial } },
+    );
+  }
+
+  it('fetches on mount without waiting for the delay', async () => {
+    renderDated('2026-04-22');
+    await act(async () => {});
+    expect(urls()).toEqual(['/api/zero-gamma?ticker=SPX&date=2026-04-22']);
+  });
+
+  it('refetches once per ticker for a burst of date changes', async () => {
+    const { rerender } = renderHook(
+      ({ d }: { d: string | null }) => [
+        useZeroGamma('SPX', true, d),
+        useZeroGamma('NDX', true, d),
+        useZeroGamma('SPY', true, d),
+      ],
+      { initialProps: { d: '2026-04-20' as string | null } },
+    );
+    await act(async () => {});
+    expect(mockFetch).toHaveBeenCalledTimes(3);
+    mockFetch.mockClear();
+
+    for (const d of ['2026-04-21', '2026-04-22', '2026-04-23']) {
+      rerender({ d });
+      await advance(SETTLE_MS - 50);
+    }
+    // Each step came inside the previous one's window: nothing yet.
+    expect(mockFetch).not.toHaveBeenCalled();
+
+    await advance(50);
+    expect(urls().sort()).toEqual([
+      '/api/zero-gamma?ticker=NDX&date=2026-04-23',
+      '/api/zero-gamma?ticker=SPX&date=2026-04-23',
+      '/api/zero-gamma?ticker=SPY&date=2026-04-23',
+    ]);
+
+    await advance(SETTLE_MS * 4);
+    expect(mockFetch).toHaveBeenCalledTimes(3);
+  });
+
+  it('refetches again for a date change after the window', async () => {
+    const { rerender } = renderDated('2026-04-20');
+    await act(async () => {});
+    mockFetch.mockClear();
+
+    rerender({ d: '2026-04-21' });
+    await advance(SETTLE_MS);
+    expect(urls()).toEqual(['/api/zero-gamma?ticker=SPX&date=2026-04-21']);
+
+    rerender({ d: '2026-04-22' });
+    await advance(SETTLE_MS);
+    expect(urls()).toEqual([
+      '/api/zero-gamma?ticker=SPX&date=2026-04-21',
+      '/api/zero-gamma?ticker=SPX&date=2026-04-22',
+    ]);
+  });
+
+  it('drops a pending date change when unmounted', async () => {
+    const { rerender, unmount } = renderDated('2026-04-20');
+    await act(async () => {});
+    mockFetch.mockClear();
+
+    rerender({ d: '2026-04-21' });
+    unmount();
+    await advance(SETTLE_MS * 2);
+
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('aborts the superseded request and ignores its response when it arrives before the new one', async () => {
+    const calls = stubPendingFetch(false);
+    const { result, rerender } = renderDated('2026-04-22');
+    await act(async () => {});
+    expect(calls).toHaveLength(1);
+
+    rerender({ d: '2026-04-23' });
+    await advance(SETTLE_MS);
+
+    expect(calls).toHaveLength(2);
+    expect(calls[0]?.signal.aborted).toBe(true);
+    expect(calls[1]?.signal.aborted).toBe(false);
+
+    await respond(calls[0]!, '2026-04-22T20:10:00.000Z');
+    expect(result.current.latest).toBeNull();
+    expect(result.current.loading).toBe(true);
+
+    await respond(calls[1]!, '2026-04-23T20:10:00.000Z');
+    expect(result.current.latest?.ts).toBe('2026-04-23T20:10:00.000Z');
+    expect(result.current.loading).toBe(false);
+    expect(result.current.error).toBeNull();
+  });
+
+  it('does not let a superseded response replace newer data', async () => {
+    const calls = stubPendingFetch(false);
+    const { result, rerender } = renderDated('2026-04-22');
+    await act(async () => {});
+
+    rerender({ d: '2026-04-23' });
+    await advance(SETTLE_MS);
+    await respond(calls[1]!, '2026-04-23T20:10:00.000Z');
+
+    await respond(calls[0]!, '2026-04-22T20:10:00.000Z');
+
+    expect(result.current.latest?.ts).toBe('2026-04-23T20:10:00.000Z');
+    expect(result.current.error).toBeNull();
+  });
+
+  it('sets no error when the superseded request rejects as aborted', async () => {
+    const calls = stubPendingFetch(true);
+    const { result, rerender } = renderDated('2026-04-22');
+    await act(async () => {});
+
+    rerender({ d: '2026-04-23' });
+    await advance(SETTLE_MS);
+    expect(calls[0]?.signal.aborted).toBe(true);
+    await respond(calls[1]!, '2026-04-23T20:10:00.000Z');
+
+    expect(result.current.error).toBeNull();
+    expect(result.current.latest?.ts).toBe('2026-04-23T20:10:00.000Z');
+  });
+
+  it('stops polling once a scrubbed date has settled', async () => {
+    const { rerender } = renderDated(null);
+    await act(async () => {});
+    rerender({ d: '2026-04-22' });
+    await advance(SETTLE_MS);
+    mockFetch.mockClear();
+
+    await advance(POLL_INTERVALS.ZERO_GAMMA * 2);
+
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('resumes polling when the date returns to live', async () => {
+    const { rerender } = renderDated('2026-04-22');
+    await act(async () => {});
+    rerender({ d: null });
+    await advance(SETTLE_MS);
+    expect(urls().at(-1)).toBe('/api/zero-gamma?ticker=SPX');
+    mockFetch.mockClear();
+
+    await advance(POLL_INTERVALS.ZERO_GAMMA);
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
   });
 });

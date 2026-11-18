@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { renderHook, waitFor } from '@testing-library/react';
+import { act, renderHook, waitFor } from '@testing-library/react';
 
 // ── Mocks ─────────────────────────────────────────────────────
 // Sentry helper is a no-op in tests — we only care it isn't a hard
@@ -21,6 +21,7 @@ vi.mock('../constants', async () => {
   };
 });
 
+import { captureUnlessAuth } from '../lib/sentry-helpers';
 import {
   useIntervalBAFeed,
   type IntervalBAFeedAlert,
@@ -207,5 +208,311 @@ describe('useIntervalBAFeed', () => {
     });
     expect(result.current.error).toBe('boom');
     expect(result.current.alerts).toEqual([]);
+  });
+});
+
+describe('useIntervalBAFeed settling and abort', () => {
+  // useDebounced's default delay: how long a changed date or time window
+  // waits before the hook fetches it.
+  const SETTLE_MS = 250;
+
+  interface PendingFetch {
+    url: string;
+    signal: AbortSignal;
+    resolve: (payload: unknown) => void;
+    reject: (err: unknown) => void;
+  }
+
+  /**
+   * A fetch whose every call stays pending until the test settles it. With
+   * `honorAbort` it rejects with the signal's reason when its signal aborts,
+   * like a real fetch; without it the response can still arrive after the
+   * abort, so the tests can check the hook never writes it to state.
+   */
+  function stubPendingFetch(honorAbort: boolean): PendingFetch[] {
+    const calls: PendingFetch[] = [];
+    globalThis.fetch = vi.fn(
+      (url: string, init: RequestInit) =>
+        new Promise((resolve, reject) => {
+          const signal = init.signal as AbortSignal;
+          if (honorAbort) {
+            signal.addEventListener('abort', () => reject(signal.reason));
+          }
+          calls.push({
+            url,
+            signal,
+            resolve: (payload) =>
+              resolve({
+                ok: true,
+                status: 200,
+                statusText: 'OK',
+                json: async () => payload,
+              }),
+            reject,
+          });
+        }),
+    ) as unknown as typeof fetch;
+    return calls;
+  }
+
+  function fetchUrls(): string[] {
+    return (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.map(
+      (c) => c[0] as string,
+    );
+  }
+
+  async function advance(ms: number): Promise<void> {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ms);
+    });
+  }
+
+  async function respond(call: PendingFetch, payload: unknown): Promise<void> {
+    await act(async () => {
+      call.resolve(payload);
+      await vi.advanceTimersByTimeAsync(0);
+    });
+  }
+
+  function renderFeed(initial: UseIntervalBAFeedParams, marketOpen = false) {
+    return renderHook(
+      (params: UseIntervalBAFeedParams) =>
+        useIntervalBAFeed(params, marketOpen),
+      { initialProps: initial },
+    );
+  }
+
+  const emptyPayload = { alerts: [], summary: { ...baseSummary, count: 0 } };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it('fetches on mount without waiting for the delay', () => {
+    mockFetchJson(emptyPayload);
+
+    renderFeed(baseParams);
+
+    expect(fetchUrls()).toHaveLength(1);
+  });
+
+  it.each([
+    ['startTime', ['08:31', '08:32', '08:33'], 'startTime=08%3A33'],
+    ['endTime', ['14:58', '14:57', '14:56'], 'endTime=14%3A56'],
+    ['date', ['2026-05-13', '2026-05-14', '2026-05-15'], 'date=2026-05-15'],
+  ] as const)(
+    'sends one request for a burst of %s changes, with the last value',
+    async (field, values, expected) => {
+      mockFetchJson(emptyPayload);
+      const { rerender } = renderFeed(baseParams);
+
+      for (const value of values) {
+        rerender({ ...baseParams, [field]: value });
+        await advance(SETTLE_MS - 50);
+      }
+      // Each change came inside the previous one's window: nothing yet.
+      expect(fetchUrls()).toHaveLength(1);
+
+      await advance(50);
+      expect(fetchUrls()).toHaveLength(2);
+      expect(fetchUrls()[1]).toContain(expected);
+
+      await advance(SETTLE_MS * 4);
+      expect(fetchUrls()).toHaveLength(2);
+    },
+  );
+
+  it('sends one request when the date and both times change together', async () => {
+    mockFetchJson(emptyPayload);
+    const { rerender } = renderFeed(baseParams);
+
+    rerender({
+      ...baseParams,
+      date: '2026-05-13',
+      startTime: '09:00',
+      endTime: '14:00',
+    });
+    await advance(SETTLE_MS);
+
+    expect(fetchUrls()).toHaveLength(2);
+    expect(fetchUrls()[1]).toContain('date=2026-05-13');
+    expect(fetchUrls()[1]).toContain('startTime=09%3A00');
+    expect(fetchUrls()[1]).toContain('endTime=14%3A00');
+  });
+
+  it('sends a second request for a change after the window', async () => {
+    mockFetchJson(emptyPayload);
+    const { rerender } = renderFeed(baseParams);
+
+    rerender({ ...baseParams, startTime: '09:00' });
+    await advance(SETTLE_MS);
+    expect(fetchUrls()).toHaveLength(2);
+
+    rerender({ ...baseParams, startTime: '09:30' });
+    await advance(SETTLE_MS);
+    expect(fetchUrls()).toHaveLength(3);
+    expect(fetchUrls()[2]).toContain('startTime=09%3A30');
+  });
+
+  it('fetches a filter change at once, without the delay', () => {
+    mockFetchJson(emptyPayload);
+    const { rerender } = renderFeed(baseParams);
+
+    rerender({ ...baseParams, optionType: 'C' });
+
+    expect(fetchUrls()).toHaveLength(2);
+    expect(fetchUrls()[1]).toContain('optionType=C');
+  });
+
+  it('drops a pending change when unmounted', async () => {
+    mockFetchJson(emptyPayload);
+    const { rerender, unmount } = renderFeed(baseParams);
+
+    rerender({ ...baseParams, startTime: '09:00' });
+    unmount();
+    await advance(SETTLE_MS * 2);
+
+    expect(fetchUrls()).toHaveLength(1);
+  });
+
+  it('aborts the superseded request and ignores its response when it arrives before the new one', async () => {
+    const calls = stubPendingFetch(false);
+    const { result, rerender } = renderFeed(baseParams);
+    expect(calls).toHaveLength(1);
+
+    rerender({ ...baseParams, startTime: '09:00' });
+    await advance(SETTLE_MS);
+
+    expect(calls).toHaveLength(2);
+    expect(calls[0]?.signal.aborted).toBe(true);
+    expect(calls[1]?.signal.aborted).toBe(false);
+
+    await respond(calls[0]!, { alerts: [baseAlert], summary: baseSummary });
+    expect(result.current.alerts).toEqual([]);
+    expect(result.current.summary).toBeNull();
+    expect(result.current.fetchedAt).toBeNull();
+    expect(result.current.loading).toBe(true);
+
+    const newer = { ...baseAlert, id: 2 };
+    await respond(calls[1]!, { alerts: [newer], summary: baseSummary });
+    expect(result.current.alerts).toEqual([newer]);
+    expect(result.current.loading).toBe(false);
+  });
+
+  it('does not let a superseded response replace newer data', async () => {
+    const calls = stubPendingFetch(false);
+    const { result, rerender } = renderFeed(baseParams);
+
+    rerender({ ...baseParams, startTime: '09:00' });
+    await advance(SETTLE_MS);
+    const newer = { ...baseAlert, id: 2 };
+    await respond(calls[1]!, { alerts: [newer], summary: baseSummary });
+    expect(result.current.alerts).toEqual([newer]);
+
+    await respond(calls[0]!, { alerts: [baseAlert], summary: baseSummary });
+
+    expect(result.current.alerts).toEqual([newer]);
+  });
+
+  it('aborts the in-flight request on unmount without an error or a report', async () => {
+    const calls = stubPendingFetch(true);
+    const { unmount } = renderFeed(baseParams);
+    expect(calls[0]?.signal.aborted).toBe(false);
+
+    unmount();
+    await advance(0);
+
+    expect(calls[0]?.signal.aborted).toBe(true);
+    expect(captureUnlessAuth).not.toHaveBeenCalled();
+  });
+
+  it('treats an aborted request as no error and sends no report', async () => {
+    const calls = stubPendingFetch(true);
+    const { result, rerender } = renderFeed(baseParams);
+
+    rerender({ ...baseParams, startTime: '09:00' });
+    await advance(SETTLE_MS);
+    expect(calls[0]?.signal.aborted).toBe(true);
+    await respond(calls[1]!, { alerts: [baseAlert], summary: baseSummary });
+
+    expect(result.current.error).toBeNull();
+    expect(result.current.alerts).toHaveLength(1);
+    expect(captureUnlessAuth).not.toHaveBeenCalled();
+  });
+
+  it('still surfaces and reports a network failure', async () => {
+    const calls = stubPendingFetch(false);
+    const failure = new Error('network down');
+    const { result } = renderFeed(baseParams);
+
+    await act(async () => {
+      calls[0]?.reject(failure);
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    expect(result.current.error).toBe('network down');
+    expect(result.current.loading).toBe(false);
+    expect(captureUnlessAuth).toHaveBeenCalledTimes(1);
+    expect(captureUnlessAuth).toHaveBeenCalledWith(failure, {
+      tags: { context: 'interval_ba_feed' },
+    });
+  });
+
+  it('keeps the 15 s timeout: its expiry surfaces as an error, not as an abort', async () => {
+    const timeout = new AbortController();
+    const timeoutSpy = vi
+      .spyOn(AbortSignal, 'timeout')
+      .mockReturnValue(timeout.signal);
+    const calls = stubPendingFetch(true);
+    const { result } = renderFeed(baseParams);
+    expect(timeoutSpy).toHaveBeenCalledWith(15_000);
+
+    await act(async () => {
+      timeout.abort(
+        new DOMException('The operation timed out.', 'TimeoutError'),
+      );
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    expect(calls[0]?.signal.aborted).toBe(true);
+    expect(result.current.error).toContain('timed out');
+    expect(result.current.loading).toBe(false);
+    expect(captureUnlessAuth).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps polling at its interval while viewing today with the market open', async () => {
+    mockFetchJson(emptyPayload);
+    renderFeed({ ...baseParams, date: todayCt() }, true);
+    expect(fetchUrls()).toHaveLength(1);
+
+    await advance(30);
+    expect(fetchUrls()).toHaveLength(2);
+    await advance(30);
+    expect(fetchUrls()).toHaveLength(3);
+  });
+
+  it('polls with the last settled params, not a change still waiting', async () => {
+    mockFetchJson(emptyPayload);
+    const today = todayCt();
+    const { rerender } = renderFeed({ ...baseParams, date: today }, true);
+
+    rerender({ ...baseParams, date: today, startTime: '09:00' });
+    await advance(30);
+    expect(fetchUrls()).toHaveLength(2);
+    expect(fetchUrls()[1]).toContain('startTime=08%3A30');
+
+    await advance(SETTLE_MS - 30);
+    expect(fetchUrls().at(-1)).toContain('startTime=09%3A00');
+    expect(
+      fetchUrls()
+        .slice(0, -1)
+        .every((url) => url.includes('startTime=08%3A30')),
+    ).toBe(true);
   });
 });

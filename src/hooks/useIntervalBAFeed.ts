@@ -4,20 +4,28 @@
  *
  * Refetch model:
  *   - Always: re-fetch when date / time / filter inputs change, or
- *     when the caller bumps `refresh()`.
+ *     when the caller bumps `refresh()`. The date and the two times are
+ *     held until they stop changing (useDebounced's default delay), so a
+ *     held arrow key on a time input sends one request, not one per step.
+ *     The first fetch on mount and a filter change are not delayed.
+ *   - Superseded requests are aborted when the settled params change or
+ *     the component unmounts; an aborted request is not an error and its
+ *     response is never written to state.
  *   - Auto-polling: when `marketOpen` is true AND the selected `date`
  *     is today (CT calendar), the hook bumps `refreshTick` every
  *     POLL_INTERVALS.ALERTS ms so the live feed stays in lockstep with
  *     `useIntervalBAAlerts` — without this the toast banner would surface
  *     a new alert while the history table stayed stale until the user
- *     hit the refresh button. Historical dates never poll.
+ *     hit the refresh button. Historical dates never poll. A poll uses
+ *     the settled date and times.
  *
  * Spec: docs/superpowers/specs/interval-ba-ask-alert-2026-05-12.md.
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { POLL_INTERVALS } from '../constants';
 import { captureUnlessAuth } from '../lib/sentry-helpers';
+import { useDebounced } from './useDebounced.js';
 import { usePolling } from './usePolling';
 
 export interface IntervalBAFeedAlert {
@@ -136,15 +144,31 @@ export function useIntervalBAFeed(
     setRefreshTick((n) => n + 1);
   }, []);
 
+  // The date and time inputs step (a held arrow key sends ~30 changes a
+  // second), so settle them before they drive a fetch. One memoized object
+  // keeps the three fields on one timer: a change to several at once is one
+  // refetch, and the object stays stable between renders so it can't loop.
+  const selection = useMemo(
+    () => ({
+      date: params.date,
+      startTime: params.startTime,
+      endTime: params.endTime,
+    }),
+    [params.date, params.startTime, params.endTime],
+  );
+  const settled = useDebounced(selection);
+
   useEffect(() => {
-    let cancelled = false;
-    const url = buildUrl(params);
+    // Aborted when the settled params change, on a refresh or poll tick, and
+    // on unmount, so a superseded response never reaches state.
+    const ctrl = new AbortController();
+    const url = buildUrl({ ...params, ...settled });
     setLoading(true);
     setError(null);
 
     fetch(url, {
       credentials: 'same-origin',
-      signal: AbortSignal.timeout(15_000),
+      signal: AbortSignal.any([ctrl.signal, AbortSignal.timeout(15_000)]),
     })
       .then(async (res) => {
         if (!res.ok) {
@@ -160,7 +184,7 @@ export function useIntervalBAFeed(
         return res.json();
       })
       .then((data: unknown) => {
-        if (cancelled) return;
+        if (ctrl.signal.aborted) return;
         if (
           typeof data !== 'object' ||
           data === null ||
@@ -180,9 +204,10 @@ export function useIntervalBAFeed(
         setLoading(false);
       })
       .catch((err: unknown) => {
-        if (cancelled) return;
+        // Only our own abort is skipped. The 15 s timeout also aborts the
+        // request, but through the combined signal, so it still surfaces.
+        if (ctrl.signal.aborted) return;
         const msg = err instanceof Error ? err.message : String(err);
-        if (msg === 'The operation was aborted') return;
         captureUnlessAuth(err, {
           tags: { context: 'interval_ba_feed' },
         });
@@ -190,20 +215,16 @@ export function useIntervalBAFeed(
         setLoading(false);
       });
 
-    return () => {
-      cancelled = true;
-    };
-    // Intentionally enumerate each `params` field rather than depend on
-    // the `params` object itself — the parent re-creates the object
-    // every render, which would re-fire the fetch on unrelated parent
-    // updates. Each access here is listed individually so a new field
-    // added to `params` would surface as a TS error before becoming a
-    // missed dep.
+    return () => ctrl.abort();
+    // Intentionally enumerate each `params` field (the date and times
+    // arrive through `settled`) rather than depend on the `params` object
+    // itself — the parent re-creates the object every render, which would
+    // re-fire the fetch on unrelated parent updates. Each access here is
+    // listed individually so a new field added to `params` would surface
+    // as a TS error before becoming a missed dep.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
-    params.date,
-    params.startTime,
-    params.endTime,
+    settled,
     params.optionType,
     params.minPremium,
     params.confluenceOnly,
@@ -219,15 +240,16 @@ export function useIntervalBAFeed(
   // overlaps with the next tick is harmlessly aborted on the next
   // refreshTick bump.
   //
-  // The `params.date === todayCt()` predicate is evaluated per render so
+  // The `settled.date === todayCt()` predicate is evaluated per render so
   // a midnight rollover correctly flips the gate and stops polling the
-  // (now historical) prior date.
+  // (now historical) prior date. It reads the settled date, the one the
+  // fetch effect uses, so the poll never refetches a date not yet shown.
   usePolling(
     () => {
       setRefreshTick((n) => n + 1);
     },
     POLL_INTERVALS.ALERTS,
-    [marketOpen, params.date === todayCt()],
+    [marketOpen, settled.date === todayCt()],
   );
 
   return { alerts, summary, loading, error, fetchedAt, refresh };

@@ -8,7 +8,10 @@
  *
  * Date mode (date='YYYY-MM-DD'): one-shot fetch of all snapshots for
  * that calendar day (no polling — the past doesn't change). `latest`
- * is the last snapshot of the day.
+ * is the last snapshot of the day. A changed `date` is held until it stops
+ * changing (useDebounced's default delay) before it refetches, so stepping
+ * the date input sends one request per ticker, not one per step. The
+ * first fetch on mount is not delayed.
  *
  * Owner-or-guest: matches the API endpoint's auth tier
  * (guardOwnerOrGuestEndpoint). Public visitors get 401 and the hook
@@ -19,6 +22,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { POLL_INTERVALS } from '../constants';
 import { getErrorMessage } from '../utils/error';
 import { getAccessMode } from '../utils/auth';
+import { useDebounced } from './useDebounced.js';
 import { usePolling } from './usePolling';
 
 export interface ZeroGammaRow {
@@ -47,9 +51,13 @@ interface ApiResponse {
 export function useZeroGamma(
   ticker: string,
   marketOpen: boolean,
-  date: string | null = null,
+  dateInput: string | null = null,
 ): UseZeroGammaReturn {
   const accessMode = getAccessMode();
+  // The date input steps (a held arrow key sends ~30 changes a second), so
+  // settle it before it drives a refetch. The fetch and the poll gate read
+  // the settled date, so a poll never fetches a date that isn't shown yet.
+  const date = useDebounced(dateInput);
   const [latest, setLatest] = useState<ZeroGammaRow | null>(null);
   const [history, setHistory] = useState<ZeroGammaRow[]>([]);
   const [loading, setLoading] = useState(true);
