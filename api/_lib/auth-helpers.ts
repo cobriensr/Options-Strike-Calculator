@@ -332,19 +332,23 @@ function limiterFailureContext() {
   };
 }
 
-/** Shortest gap between two Sentry events from the request limiter. */
+/**
+ * Shortest gap between two Sentry events from the Redis limiters here: the
+ * request limiter and the guest-key failure count.
+ */
 const LIMITER_SENTRY_INTERVAL_MS = 60_000;
 
-// When this instance last sent a limiter failure to Sentry. One number, so it
-// holds no more than one entry however many requests fail.
+// When this instance last sent such a failure to Sentry. One number, shared by
+// both limiters, so it holds no more than one entry however many requests fail.
 let lastLimiterSentryAt = Number.NEGATIVE_INFINITY;
 
 /**
  * Whether a limiter failure may go to Sentry now: at most one per instance per
- * 60 s. The fingerprint already folds an outage into one issue, but every
- * guarded request still sent an event, so the event count followed guest
- * traffic. The log line, the counter and the fail-open result are not
- * throttled.
+ * 60 s, for the request limiter (`isRateLimited`) and the guest-key failure
+ * count (`recordGuestKeyFailure`) together. The fingerprints already fold an
+ * outage into one issue each, but every guarded request still sent an event,
+ * so the event count followed guest traffic. The log line, the counter and the
+ * fail-open or fail-closed result are not throttled.
  *
  * The send time is recorded before the event goes out, so a Sentry that throws
  * costs that one failure and no later one inside the window.
@@ -562,8 +566,10 @@ export async function guestKeyBudgetSpent(): Promise<boolean> {
  * Never throws: the caller is already answering 401, and a failed count only
  * means that attempt goes unrecorded. A Redis error, or an INCR reply that is
  * not a count, is logged and sent to Sentry under one pinned fingerprint, so
- * an Upstash outage is one issue. The reply is checked as `isRateLimited` and
- * `guestKeyBudgetSpent` check theirs.
+ * an Upstash outage is one issue, and at most once a minute per instance: it
+ * shares `limiterSentryDue`'s window with the request limiter, so an outage
+ * that fails both sends one event a minute between them. The reply is checked
+ * as `isRateLimited` and `guestKeyBudgetSpent` check theirs.
  */
 export async function recordGuestKeyFailure(): Promise<void> {
   if (!isRedisConfigured()) return;
@@ -581,14 +587,18 @@ export async function recordGuestKeyFailure(): Promise<void> {
         { count },
         'Guest-key failure count got a malformed INCR reply',
       );
-      Sentry.captureMessage(
-        'Guest-key failure count got a malformed INCR reply',
-        guestKeyRecordFailureContext(),
-      );
+      if (limiterSentryDue()) {
+        Sentry.captureMessage(
+          'Guest-key failure count got a malformed INCR reply',
+          guestKeyRecordFailureContext(),
+        );
+      }
     }
   } catch (err) {
     logger.warn({ err }, 'Could not record a failed guest-key attempt');
-    Sentry.captureException(err, guestKeyRecordFailureContext());
+    if (limiterSentryDue()) {
+      Sentry.captureException(err, guestKeyRecordFailureContext());
+    }
   }
 }
 

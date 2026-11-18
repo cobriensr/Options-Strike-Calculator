@@ -509,8 +509,18 @@ describe('rejectIfRateLimited', () => {
     });
 
     describe('recordGuestKeyFailure', () => {
+      // Its Sentry throttle is module state shared with the request limiter, so
+      // each test takes a fresh copy of auth-helpers to start with it empty.
+      let record: typeof recordGuestKeyFailure;
+      let limiter: typeof rejectIfRateLimited;
+      beforeEach(async () => {
+        vi.resetModules();
+        ({ recordGuestKeyFailure: record, rejectIfRateLimited: limiter } =
+          await import('../_lib/auth-helpers.js'));
+      });
+
       it('counts the failure under the hour key with a 7200 s TTL in one round trip', async () => {
-        await recordGuestKeyFailure();
+        await record();
 
         expect(mockPipeline).toHaveBeenCalledTimes(1);
         expect(mockIncr).toHaveBeenCalledTimes(1);
@@ -523,7 +533,7 @@ describe('rejectIfRateLimited', () => {
 
       it('raises the count that guestKeyBudgetSpent reads', async () => {
         for (let i = 0; i < GUEST_KEY_FAILS_PER_HOUR; i += 1) {
-          await recordGuestKeyFailure();
+          await record();
         }
 
         mockGet.mockImplementation(
@@ -536,7 +546,7 @@ describe('rejectIfRateLimited', () => {
         const err = new Error('connect timeout');
         mockExec.mockRejectedValueOnce(err);
 
-        await expect(recordGuestKeyFailure()).resolves.toBeUndefined();
+        await expect(record()).resolves.toBeUndefined();
 
         expect(mockLoggerWarn).toHaveBeenCalledTimes(1);
         expect(mockLoggerWarn).toHaveBeenCalledWith(
@@ -563,7 +573,7 @@ describe('rejectIfRateLimited', () => {
         async (_label, reply, count) => {
           mockExec.mockResolvedValueOnce(reply);
 
-          await expect(recordGuestKeyFailure()).resolves.toBeUndefined();
+          await expect(record()).resolves.toBeUndefined();
 
           expect(mockLoggerWarn).toHaveBeenCalledWith(
             { count },
@@ -581,8 +591,81 @@ describe('rejectIfRateLimited', () => {
         },
       );
 
+      describe('Sentry throttle during an outage', () => {
+        const WINDOW_MS = 60_000;
+
+        beforeEach(() => {
+          mockExec.mockRejectedValue(new Error('upstash is down'));
+        });
+
+        it('sends one capture for two failures inside 60 s, and still resolves, logs and never throws', async () => {
+          await expect(record()).resolves.toBeUndefined();
+          vi.setSystemTime(T0 + WINDOW_MS - 1);
+          await expect(record()).resolves.toBeUndefined();
+
+          expect(mockCaptureException).toHaveBeenCalledTimes(1);
+          expect(mockLoggerWarn).toHaveBeenCalledTimes(2);
+        });
+
+        it('sends a second capture for a failure 60 s after the first', async () => {
+          await record();
+          vi.setSystemTime(T0 + WINDOW_MS);
+          await record();
+
+          expect(mockCaptureException).toHaveBeenCalledTimes(2);
+          const fingerprints = mockCaptureException.mock.calls.map(
+            ([, context]) => (context as { fingerprint: string[] }).fingerprint,
+          );
+          expect(fingerprints).toEqual([
+            RECORD_FINGERPRINT,
+            RECORD_FINGERPRINT,
+          ]);
+        });
+
+        it('shares one window between a failed call and a malformed reply', async () => {
+          await record();
+          mockExec.mockResolvedValueOnce(['Aborted', 1]);
+          await record();
+
+          expect(mockLoggerWarn).toHaveBeenCalledTimes(2);
+          expect(mockCaptureException).toHaveBeenCalledTimes(1);
+          expect(mockCaptureMessage).not.toHaveBeenCalled();
+        });
+
+        it('shares the request limiter window: one capture for a limiter failure and a count failure inside 60 s', async () => {
+          await hit('auth-init', 5, request(), limiter);
+          await record();
+
+          expect(mockCaptureException).toHaveBeenCalledTimes(1);
+          expect(mockLoggerWarn).toHaveBeenCalledTimes(2);
+        });
+
+        it('shares the request limiter window the other way round too', async () => {
+          await record();
+          vi.setSystemTime(T0 + WINDOW_MS - 1);
+          await hit('auth-init', 5, request(), limiter);
+          expect(mockCaptureException).toHaveBeenCalledTimes(1);
+
+          vi.setSystemTime(T0 + WINDOW_MS);
+          await record();
+          expect(mockCaptureException).toHaveBeenCalledTimes(2);
+        });
+
+        it('opens the window before the send, so a Sentry that throws costs one failure only', async () => {
+          mockCaptureException.mockImplementationOnce(() => {
+            throw new Error('sentry down');
+          });
+
+          await record().catch(() => undefined);
+          vi.setSystemTime(T0 + 1_000);
+          await expect(record()).resolves.toBeUndefined();
+
+          expect(mockCaptureException).toHaveBeenCalledTimes(1);
+        });
+      });
+
       it('reports nothing when the reply is a count', async () => {
-        await recordGuestKeyFailure();
+        await record();
 
         expect(mockCaptureMessage).not.toHaveBeenCalled();
         expect(mockCaptureException).not.toHaveBeenCalled();
@@ -593,7 +676,7 @@ describe('rejectIfRateLimited', () => {
         delete process.env.KV_REST_API_URL;
         delete process.env.UPSTASH_REDIS_REST_URL;
 
-        await expect(recordGuestKeyFailure()).resolves.toBeUndefined();
+        await expect(record()).resolves.toBeUndefined();
 
         expect(mockPipeline).not.toHaveBeenCalled();
         expect(mockCaptureException).not.toHaveBeenCalled();
