@@ -35,6 +35,9 @@ export const SETTLE_DELAY_MS = 10_000;
  */
 const GH_CALL_TIMEOUT_MS = 60_000;
 
+/** What the CLI says when `gh` cannot be started. */
+const GH_MISSING = 'the `gh` CLI is not installed or not on PATH';
+
 /** Process exit codes of scripts/watch-deploy.mjs. */
 export const EXIT = Object.freeze({
   OK: 0,
@@ -47,7 +50,7 @@ export const USAGE = [
   'usage: node scripts/watch-deploy.mjs <sha> [--timeout <min>] [--repo owner/name]',
   '  Polls the commit statuses (Vercel, Railway) and check runs of <sha> every',
   `  ${POLL_INTERVAL_MS / 1000} s until all are terminal. --timeout defaults to ${DEFAULT_TIMEOUT_MINUTES} minutes; --repo to origin's.`,
-  '  Exit 0 all passed, 1 a failure, 2 timeout, 3 bad arguments or gh missing.',
+  '  Exit 0 all passed, 1 a failure, 2 timeout, 3 bad arguments, or gh missing or not answering.',
 ].join('\n');
 
 /** Bad command-line arguments, or no way to find the repo. */
@@ -499,9 +502,7 @@ function runGh(args, timeoutMs) {
         if (!error) {
           resolve(String(stdout));
         } else if (error.code === 'ENOENT') {
-          reject(
-            new GhError('the `gh` CLI is not installed or not on PATH', true),
-          );
+          reject(new GhError(GH_MISSING, true));
         } else if (error.killed) {
           // execFile killed the child at the timeout. Whatever it printed
           // before then says nothing about the cause, so never read it as a
@@ -522,20 +523,36 @@ function runGh(args, timeoutMs) {
 }
 
 /**
- * True when `gh` can run at all. The CLI calls it before `resolveRepo` so a
- * missing `gh` fails at once with its own message, not after a `git remote`
- * lookup or an unrelated "pass --repo" error. `runGh` still handles ENOENT,
- * because `gh` can vanish between this check and a poll, and `watchDeploy` is
- * callable without it.
+ * Why `gh` cannot be used, or null when `gh --version` runs. The CLI calls it
+ * before `resolveRepo` so a missing `gh` fails at once with its own message,
+ * not after a `git remote` lookup or an unrelated "pass --repo" error. `runGh`
+ * still handles ENOENT, because `gh` can vanish between this check and a poll,
+ * and `watchDeploy` is callable without it.
  *
- * @returns {Promise<boolean>}
+ * The call gets the limit of every `gh api` call (GH_CALL_TIMEOUT_MS): a `gh`
+ * that never answers would otherwise hold the CLI for good before it polls
+ * anything. One killed at the limit is a problem of its own, named as one, not
+ * "not installed": it is there and not answering.
+ *
+ * @returns {Promise<string | null>}
  */
-export function ghAvailable() {
+export function ghProblem() {
   return new Promise((resolve) => {
-    // eslint-disable-next-line sonarjs/no-os-command-from-path -- as in runGh
-    execFile('gh', ['--version'], { windowsHide: true }, (error) => {
-      resolve(!error);
-    });
+    execFile(
+      // eslint-disable-next-line sonarjs/no-os-command-from-path -- as in runGh
+      'gh',
+      ['--version'],
+      { timeout: GH_CALL_TIMEOUT_MS, windowsHide: true },
+      (error) => {
+        if (!error) {
+          resolve(null);
+        } else if (error.killed) {
+          resolve(`gh --version timed out after ${GH_CALL_TIMEOUT_MS / 1000}s`);
+        } else {
+          resolve(GH_MISSING);
+        }
+      },
+    );
   });
 }
 

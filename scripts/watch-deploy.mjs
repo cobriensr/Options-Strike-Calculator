@@ -15,13 +15,13 @@
  *
  * Exit codes: 0 everything success, skipped or neutral; 1 any failure,
  * cancellation or timed-out check; 2 the timeout was reached; 3 bad
- * arguments or `gh` missing.
+ * arguments, or `gh` missing or not answering `gh --version` within 60 s.
  */
 import {
   EXIT,
   USAGE,
   UsageError,
-  ghAvailable,
+  ghProblem,
   parseArgs,
   resolveRepo,
   watchDeploy,
@@ -38,10 +38,9 @@ async function main(argv) {
       console.log(USAGE);
       return EXIT.OK;
     }
-    if (!(await ghAvailable())) {
-      console.error(
-        'watch-deploy: the `gh` CLI is not installed or not on PATH',
-      );
+    const problem = await ghProblem();
+    if (problem !== null) {
+      console.error(`watch-deploy: ${problem}`);
       return EXIT.BAD_ARGS;
     }
     const repo = args.repo ?? resolveRepo();

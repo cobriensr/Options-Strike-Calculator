@@ -29,7 +29,7 @@ import {
   UsageError,
   evaluateDeploy,
   fetchPayloads,
-  ghAvailable,
+  ghProblem,
   parseArgs,
   repoFromRemoteUrl,
   resolveRepo,
@@ -1048,24 +1048,26 @@ describe('fetchPayloads', () => {
   });
 });
 
-describe('ghAvailable', () => {
+describe('ghProblem', () => {
+  const MISSING = 'the `gh` CLI is not installed or not on PATH';
+
   beforeEach(() => {
     vi.mocked(execFile).mockReset();
   });
 
-  it('is true when gh --version runs', async () => {
+  it('is null when gh --version runs', async () => {
     vi.mocked(execFile).mockImplementation((file, args, options, callback) => {
       callback(null, 'gh version 2.65.0\n', '');
     });
 
-    await expect(ghAvailable()).resolves.toBe(true);
+    await expect(ghProblem()).resolves.toBeNull();
     expect(vi.mocked(execFile).mock.calls[0]?.slice(0, 2)).toEqual([
       'gh',
       ['--version'],
     ]);
   });
 
-  it('is false when gh is not installed', async () => {
+  it('says gh is not installed when it cannot be started', async () => {
     vi.mocked(execFile).mockImplementation((file, args, options, callback) => {
       callback(
         Object.assign(new Error('spawn gh ENOENT'), { code: 'ENOENT' }),
@@ -1073,6 +1075,36 @@ describe('ghAvailable', () => {
         '',
       );
     });
-    await expect(ghAvailable()).resolves.toBe(false);
+    await expect(ghProblem()).resolves.toBe(MISSING);
+  });
+
+  it('gives gh --version the limit every gh api call gets', async () => {
+    vi.mocked(execFile).mockImplementation((file, args, options, callback) => {
+      callback(null, '{}', '');
+    });
+
+    await ghProblem();
+    await fetchPayloads('o/n', SHA);
+
+    const [version, status] = vi.mocked(execFile).mock.calls.map((c) => c[2]);
+    expect(version?.timeout).toBeGreaterThan(0);
+    expect(version?.timeout).toBe(status?.timeout);
+  });
+
+  it('names the timeout, not a missing gh, when gh --version is killed at its limit', async () => {
+    vi.mocked(execFile).mockImplementation((file, args, options, callback) => {
+      // What execFile reports once its timeout has killed the child, and
+      // what the child had printed before it: nothing about the cause.
+      callback(
+        Object.assign(new Error('killed'), { killed: true, signal: 'SIGTERM' }),
+        '',
+        'gh: something printed first',
+      );
+    });
+
+    const problem = await ghProblem();
+
+    expect(problem).toBe('gh --version timed out after 60s');
+    expect(problem).not.toBe(MISSING);
   });
 });
