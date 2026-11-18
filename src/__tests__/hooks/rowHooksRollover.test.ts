@@ -12,13 +12,16 @@
  * And nothing re-rendered a row at midnight, so a row dated the night kept
  * polling a day that had become yesterday. `today` is the shared ET clock now
  * (useETToday), which re-renders every mounted row in the same commit at the
- * roll. Cases start 30 s before an ET midnight (or, for the CT window, at
- * 23:30 CT); the clock's timer is armed for 1 s past midnight, so 31 s lands
- * just after, which is 23:00:31 CT the evening before. No case calls
- * `rerender`. (A row's own fetch result does re-render it, so the case that
- * stops polling is timed to put a poll after the roll: a row that only reads
- * the wall clock on a render would still make that one poll.) Owner decision
- * 2026-11-14.
+ * roll. The shared clock's timer is armed for 1 s past midnight, which is
+ * 23:00:01 CT the evening before. Cases start 30 s before an ET midnight,
+ * except the two that poll across the roll (stops-polling and
+ * starts-polling), each of which derives its start from the poll interval
+ * (all three hooks poll on POLL_INTERVALS.OTM_FLOW), so a change to that
+ * constant cannot break a correct row, and the CT-window case, which starts
+ * at 23:30 CT. No case calls `rerender`. (A row's own fetch result does
+ * re-render it, so the stops-polling case puts a poll after the roll: a row
+ * that only reads the wall clock on a render would still make that one
+ * poll.) Owner decision 2026-11-14.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -103,10 +106,17 @@ const advance = (ms: number) =>
     await vi.advanceTimersByTimeAsync(ms);
   });
 
+/** All three hooks poll on this one constant. */
+const INTERVAL = POLL_INTERVALS.OTM_FLOW;
+/** The shared clock fires this long after an ET midnight. */
+const ROLL_LAG_MS = 1_000;
+/** How long before midnight the polls straddle it: the first poll lands here. */
+const POLL_LEAD_MS = 10_000;
+
 describe.each([
   {
     zone: 'EST (winter)',
-    start: '2026-11-10T04:59:30Z',
+    midnight: '2026-11-10T05:00:00Z',
     // 23:30 CT the evening before, ET already on the new day.
     window: '2026-11-10T05:30:00Z',
     night: '2026-11-09',
@@ -114,30 +124,36 @@ describe.each([
   },
   {
     zone: 'EDT (summer)',
-    start: '2026-07-15T03:59:30Z',
+    midnight: '2026-07-15T04:00:00Z',
     window: '2026-07-15T04:30:00Z',
     night: '2026-07-14',
     morning: '2026-07-15',
   },
 ])('row hooks across the $zone midnight', (m) => {
+  /** Pin the fake clock `leadMs` before this zone's ET midnight. */
+  const startBeforeMidnight = (leadMs: number) =>
+    vi.setSystemTime(new Date(Date.parse(m.midnight) - leadMs));
+
   describe.each(HOOKS)('$name', ({ mount }) => {
     it('stops polling the night once it is yesterday, with no parent re-render', async () => {
       vi.useFakeTimers();
-      // 40 s before midnight, so the polls fall 10 s before it (30 s) and 20 s
-      // after it (60 s), the roll at 41 s in between. A poll's own result
-      // re-renders the row, which would read a wall-clock "today" too late by
-      // one poll; only a row that rolled at 41 s skips the poll at 60 s.
-      vi.setSystemTime(new Date(Date.parse(m.start) - 10_000));
+      // Start one interval and 10 s before midnight, so the first poll lands
+      // 10 s before it, the roll 1 s after it, and the second poll one
+      // interval after the first, which is past the roll for any interval over
+      // 11 s. A poll's own result re-renders the row, which would read a
+      // wall-clock "today" too late by one poll; only a row that rolled skips
+      // the second poll.
+      startBeforeMidnight(INTERVAL + POLL_LEAD_MS);
       mount(m.night);
       await advance(0);
       expect(fetchMock).toHaveBeenCalledTimes(1);
-      await advance(POLL_INTERVALS.OTM_FLOW);
+      await advance(INTERVAL);
       expect(fetchMock).toHaveBeenCalledTimes(2);
 
-      // Midnight at 40 s, the roll at 41 s, the poll that would be at 60 s.
-      await advance(31_000);
+      // Through midnight and the roll, to one second past the second poll.
+      await advance(INTERVAL + ROLL_LAG_MS);
       expect(fetchMock).toHaveBeenCalledTimes(2);
-      await advance(POLL_INTERVALS.OTM_FLOW * 3);
+      await advance(INTERVAL * 3);
 
       expect(fetchMock).toHaveBeenCalledTimes(2);
       // Every request asked for the night's own data.
@@ -146,17 +162,22 @@ describe.each([
 
     it('starts polling a row dated the new day at the roll, with no parent re-render', async () => {
       vi.useFakeTimers();
-      vi.setSystemTime(new Date(m.start));
-      // Dated tomorrow while it is still the night: a single fetch.
+      // The same start as above: one interval and 10 s before midnight.
+      startBeforeMidnight(INTERVAL + POLL_LEAD_MS);
+      // Dated tomorrow while it is still the night: a single fetch, and no
+      // poll at the first interval, which a row treated as live would make.
       mount(m.morning);
       await advance(0);
-      await advance(POLL_INTERVALS.OTM_FLOW);
+      await advance(INTERVAL);
       expect(fetchMock).toHaveBeenCalledTimes(1);
 
-      // 23:00:31 CT the evening before: ET is on the new day, CT is not.
-      await advance(31_000);
+      // Through midnight to the roll (23:00:01 CT the evening before): ET is
+      // on the new day, CT is not. The first poll of the live row is one
+      // interval after the roll.
+      await advance(POLL_LEAD_MS + ROLL_LAG_MS);
       const afterRoll = fetchMock.mock.calls.length;
-      await advance(POLL_INTERVALS.OTM_FLOW);
+      expect(afterRoll).toBe(1);
+      await advance(INTERVAL);
 
       expect(fetchMock.mock.calls.length).toBe(afterRoll + 1);
       expect(new Set(datesRequested())).toEqual(new Set([m.morning]));
@@ -169,7 +190,7 @@ describe.each([
       await advance(0);
       expect(fetchMock).toHaveBeenCalledTimes(1);
 
-      await advance(POLL_INTERVALS.OTM_FLOW * 3);
+      await advance(INTERVAL * 3);
 
       // A CT comparator calls the new day historical here and never polls.
       expect(fetchMock).toHaveBeenCalledTimes(4);
@@ -178,11 +199,12 @@ describe.each([
 
     it('keeps a past-dated row historical across the roll', async () => {
       vi.useFakeTimers();
-      vi.setSystemTime(new Date(m.start));
+      startBeforeMidnight(INTERVAL + POLL_LEAD_MS);
       mount('2026-04-20');
       await advance(0);
-      await advance(31_000);
-      await advance(POLL_INTERVALS.OTM_FLOW * 3);
+      // Through midnight and the roll, then three more intervals.
+      await advance(INTERVAL + POLL_LEAD_MS + ROLL_LAG_MS);
+      await advance(INTERVAL * 3);
 
       expect(datesRequested()).toEqual(['2026-04-20']);
     });
