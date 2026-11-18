@@ -99,7 +99,8 @@ export function useZeroGamma(
       setHistory(data.history);
       setError(null);
     } catch (err) {
-      if (err instanceof DOMException && err.name === 'AbortError') return;
+      // Only our own abort is skipped, not any AbortError by name: WebKit
+      // rejects the 5 s timeout with the same AbortError as a user abort.
       if (ctrl.signal.aborted) return;
       if (mountedRef.current) setError(getErrorMessage(err));
     } finally {

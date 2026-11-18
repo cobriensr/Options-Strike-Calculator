@@ -328,9 +328,13 @@ describe('useIntervalBAFeed settling and abort', () => {
     },
   );
 
-  it('sends one request when the date and both times change together', async () => {
+  it('holds a change to the date and both times on one timer and sends one request', async () => {
     mockFetchJson(emptyPayload);
     const { rerender } = renderFeed(baseParams);
+    // Drain the timer the mount itself starts, so the count below is only
+    // the timers the change adds.
+    await advance(SETTLE_MS);
+    const base = vi.getTimerCount();
 
     rerender({
       ...baseParams,
@@ -338,6 +342,9 @@ describe('useIntervalBAFeed settling and abort', () => {
       startTime: '09:00',
       endTime: '14:00',
     });
+    // Separate timers per field would fire in separate callbacks, which a
+    // browser need not batch into one render; one timer cannot split.
+    expect(vi.getTimerCount() - base).toBe(1);
     await advance(SETTLE_MS);
 
     expect(fetchUrls()).toHaveLength(2);

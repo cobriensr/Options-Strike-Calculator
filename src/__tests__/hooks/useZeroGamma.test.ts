@@ -239,9 +239,9 @@ describe('useZeroGamma date settling', () => {
 
   /**
    * Every fetch stays pending until the test resolves it. With `honorAbort`
-   * it rejects with an AbortError when its signal aborts, like a real fetch;
-   * without it the response can still arrive after the abort, so the tests
-   * can check the hook never writes it to state.
+   * it rejects with the signal's reason when its signal aborts, like a real
+   * fetch; without it the response can still arrive after the abort, so the
+   * tests can check the hook never writes it to state.
    */
   function stubPendingFetch(honorAbort: boolean): PendingFetch[] {
     const calls: PendingFetch[] = [];
@@ -250,9 +250,7 @@ describe('useZeroGamma date settling', () => {
         new Promise((resolve, reject) => {
           const signal = init.signal as AbortSignal;
           if (honorAbort) {
-            signal.addEventListener('abort', () =>
-              reject(new DOMException('aborted', 'AbortError')),
-            );
+            signal.addEventListener('abort', () => reject(signal.reason));
           }
           calls.push({
             url,
@@ -301,14 +299,16 @@ describe('useZeroGamma date settling', () => {
     expect(mockFetch).toHaveBeenCalledTimes(3);
     mockFetch.mockClear();
 
+    // This file's fake clock also follows real time (shouldAdvanceTime), so
+    // the steps keep 100 ms of slack under the window rather than a bare 50.
     for (const d of ['2026-04-21', '2026-04-22', '2026-04-23']) {
       rerender({ d });
-      await advance(SETTLE_MS - 50);
+      await advance(SETTLE_MS - 100);
     }
     // Each step came inside the previous one's window: nothing yet.
     expect(mockFetch).not.toHaveBeenCalled();
 
-    await advance(50);
+    await advance(100);
     expect(urls().sort()).toEqual([
       '/api/zero-gamma?ticker=NDX&date=2026-04-23',
       '/api/zero-gamma?ticker=SPX&date=2026-04-23',
@@ -398,6 +398,30 @@ describe('useZeroGamma date settling', () => {
 
     expect(result.current.error).toBeNull();
     expect(result.current.latest?.ts).toBe('2026-04-23T20:10:00.000Z');
+  });
+
+  it('surfaces a timeout that rejects as an AbortError, as WebKit does', async () => {
+    // WebKit gives a timed-out fetch the same AbortError name and message as
+    // a user abort. Only the hook's own abort is skipped, so the timeout must
+    // still set the error and end loading.
+    const timeout = new AbortController();
+    const timeoutSpy = vi
+      .spyOn(AbortSignal, 'timeout')
+      .mockReturnValue(timeout.signal);
+    const calls = stubPendingFetch(true);
+    const { result } = renderDated(null);
+    await act(async () => {});
+    expect(timeoutSpy).toHaveBeenCalledWith(5_000);
+    expect(result.current.loading).toBe(true);
+
+    await act(async () => {
+      timeout.abort(new DOMException('Fetch is aborted', 'AbortError'));
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    expect(calls[0]?.signal.aborted).toBe(true);
+    expect(result.current.error).not.toBeNull();
+    expect(result.current.loading).toBe(false);
   });
 
   it('stops polling once a scrubbed date has settled', async () => {
