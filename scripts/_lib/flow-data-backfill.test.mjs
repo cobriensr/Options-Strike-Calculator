@@ -1,6 +1,5 @@
 // @vitest-environment node
 
-import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -34,10 +33,7 @@ import {
   toMarketTideRows,
   toNetFlowRows,
 } from './flow-data-backfill.mjs';
-import {
-  CHILD_TEST_TIMEOUT,
-  CHILD_TIMEOUT,
-} from './spawn-timeout.fixtures.mjs';
+import { CHILD_TEST_TIMEOUT, spawnChild } from './spawn-timeout.fixtures.mjs';
 
 // 2026-11-06 is a Friday, EST (UTC−5); 03:00 ET. "Today" in ET is 2026-11-06,
 // so every date below is a finished day.
@@ -1307,9 +1303,10 @@ describe('sampleFiveMinuteRows and storeSampledDay (the two inline scripts)', ()
 });
 
 // Each test below spawns node: Windows process spawn under full-suite load is
-// slow. The child gets CHILD_TIMEOUT and the test more, so a slow child fails
-// with its own stderr (spawn-timeout.fixtures.mjs). The same limit for both
-// would let the test's timeout hide the child's failure.
+// slow. spawnChild gives the child its limit (CHILD_TIMEOUT) and the test gets
+// more, so a slow child fails with an error that names it, its limit and its
+// stderr so far (spawn-timeout.fixtures.mjs). The same limit for both would let
+// the test's timeout hide the child's failure.
 
 /**
  * The two scripts run end to end as child processes, with the network replaced
@@ -1337,7 +1334,7 @@ describe(
     function run(file, sqlMode) {
       const clean = { ...process.env };
       delete clean.SENTRY_DSN;
-      return spawnSync(
+      return spawnChild(
         process.execPath,
         [
           '--import',
@@ -1359,7 +1356,6 @@ describe(
             STUB_SQL: sqlMode,
           },
           encoding: 'utf8',
-          timeout: CHILD_TIMEOUT,
         },
       );
     }
@@ -1396,7 +1392,7 @@ describe(
     );
 
     it('the stub throws on any host but Unusual Whales and the test database (no real network from a child process)', () => {
-      const result = spawnSync(
+      const result = spawnChild(
         process.execPath,
         [
           '--import',
@@ -1409,7 +1405,7 @@ describe(
           '-e',
           "fetch('https://example.com/x').catch((e) => { console.error(e.message); process.exit(3); })",
         ],
-        { encoding: 'utf8', timeout: CHILD_TIMEOUT },
+        { encoding: 'utf8' },
       );
 
       expect(result.status).toBe(3);
@@ -1645,10 +1641,9 @@ describe(
       const clean = { ...process.env };
       delete clean.UW_API_KEY;
       delete clean.DATABASE_URL;
-      return spawnSync(process.execPath, [script, ...args], {
+      return spawnChild(process.execPath, [script, ...args], {
         env: { ...clean, ...env },
         encoding: 'utf8',
-        timeout: CHILD_TIMEOUT,
       });
     }
 

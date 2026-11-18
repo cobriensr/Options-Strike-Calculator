@@ -1,6 +1,5 @@
 // @vitest-environment node
 
-import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -31,10 +30,7 @@ import {
   toEtfRows,
   toIndexRows,
 } from './candles-backfill.mjs';
-import {
-  CHILD_TEST_TIMEOUT,
-  CHILD_TIMEOUT,
-} from './spawn-timeout.fixtures.mjs';
+import { CHILD_TEST_TIMEOUT, spawnChild } from './spawn-timeout.fixtures.mjs';
 
 // 2026-11-06 is a Friday, EST (UTC−5); 02:00 CT. Chosen so "today" in ET is
 // 2026-11-06 and the finished days before it are plain.
@@ -1562,8 +1558,9 @@ describe('processIndexDay', () => {
 // ── The scripts' own flags, through plain node ─────────────
 
 // Each test spawns node, and a spawn can exceed the 15 s testTimeout under the
-// full gate's load. The child gets CHILD_TIMEOUT and the test more, so a slow
-// child fails with its own stderr (spawn-timeout.fixtures.mjs).
+// full gate's load. spawnChild gives the child its limit (CHILD_TIMEOUT) and
+// the test gets more, so a slow child fails with an error that names it, its
+// limit and its stderr so far (spawn-timeout.fixtures.mjs).
 describe(
   'the candle scripts exit 2 on bad flags, before any network',
   { timeout: CHILD_TEST_TIMEOUT },
@@ -1577,10 +1574,9 @@ describe(
       const env = { ...process.env };
       delete env.UW_API_KEY;
       delete env.DATABASE_URL;
-      return spawnSync(process.execPath, [script, ...args], {
+      return spawnChild(process.execPath, [script, ...args], {
         env,
         encoding: 'utf8',
-        timeout: CHILD_TIMEOUT,
       });
     }
 

@@ -17,7 +17,6 @@
  * The fixtures are .txt files, not .log, because the repo ignores *.log.
  */
 
-import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -29,10 +28,7 @@ import {
   parseReviewLog,
   summarizeReviewLog,
 } from './review-summary.mjs';
-import {
-  CHILD_TEST_TIMEOUT,
-  CHILD_TIMEOUT,
-} from './spawn-timeout.fixtures.mjs';
+import { CHILD_TEST_TIMEOUT, spawnChild } from './spawn-timeout.fixtures.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const CLI = path.join(HERE, '..', 'review-summary.mjs');
@@ -596,15 +592,15 @@ describe('the "npm : " prefix Windows PowerShell 5.1 puts on the first stderr li
 });
 
 // Each CLI test spawns node, and a spawn can exceed the 15 s testTimeout
-// under the full gate's load. The child gets CHILD_TIMEOUT and the test more,
-// so a slow child fails with its own stderr (spawn-timeout.fixtures.mjs).
+// under the full gate's load. spawnChild gives the child its limit
+// (CHILD_TIMEOUT) and the test gets more, so a slow child fails with an error
+// that names it, its limit and its stderr so far (spawn-timeout.fixtures.mjs).
 describe('review-summary CLI', { timeout: CHILD_TEST_TIMEOUT }, () => {
   /** @param {string[]} args @param {{ input?: string }} [options] */
   function run(args, options = {}) {
-    return spawnSync(process.execPath, [CLI, ...args], {
+    return spawnChild(process.execPath, [CLI, ...args], {
       encoding: 'utf8',
       input: options.input,
-      timeout: CHILD_TIMEOUT,
       windowsHide: true,
     });
   }
