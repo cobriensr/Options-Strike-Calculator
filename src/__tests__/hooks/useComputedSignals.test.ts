@@ -57,6 +57,7 @@ function makeInputs(
     liveVix9d: 17,
     liveVvix: 90,
     liveOpeningRange: undefined,
+    quotesMarketOpen: true,
     historySnapshot: null,
     isBacktest: false,
     ...overrides,
@@ -494,6 +495,78 @@ describe('useComputedSignals', () => {
         } as unknown as HistorySnapshot,
       });
       expect(s.overnightGap).toBeNull();
+    });
+  });
+
+  // ── Price context from the live SPX quote ───────────────
+
+  describe('live SPX price context', () => {
+    /** Today's quote, in session: it opened 20 pts over the prior close. */
+    const LIVE_SPX = { open: 5690, high: 5720, low: 5680, prevClose: 5670 };
+
+    const priceContext = (s: ReturnType<typeof compute>) => ({
+      spxOpen: s.spxOpen,
+      spxHigh: s.spxHigh,
+      spxLow: s.spxLow,
+      prevClose: s.prevClose,
+      overnightGap: s.overnightGap,
+    });
+    const NO_PRICE_CONTEXT = {
+      spxOpen: null,
+      spxHigh: null,
+      spxLow: null,
+      prevClose: null,
+      overnightGap: null,
+    };
+
+    it('fills open, high, low, previous close and gap from the quote in session', () => {
+      const s = compute({ liveSpx: LIVE_SPX });
+      expect(priceContext(s)).toEqual({
+        spxOpen: 5690,
+        spxHigh: 5720,
+        spxLow: 5680,
+        prevClose: 5670,
+        overnightGap: ((5690 - 5670) / 5670) * 100,
+      });
+    });
+
+    it('useComputedSignals ignores the live SPX quote on a past date', () => {
+      const s = compute({
+        isBacktest: true,
+        historySnapshot: null,
+        liveSpx: LIVE_SPX,
+      });
+      expect(priceContext(s)).toEqual(NO_PRICE_CONTEXT);
+    });
+
+    it.each([
+      [
+        'before the 8:30 CT open, the quote still on the prior session',
+        { open: 5640, high: 5668, low: 5631, prevClose: 5655 },
+      ],
+      [
+        'after the 15:00 CT close, its prevClose rolled to today’s close',
+        { open: 5690, high: 5720, low: 5680, prevClose: 5712 },
+      ],
+    ])('leaves the price context null %s', (_when, liveSpx) => {
+      // The /api/quotes payload says the cash session was not open.
+      const s = compute({ liveSpx, quotesMarketOpen: false });
+      expect(priceContext(s)).toEqual(NO_PRICE_CONTEXT);
+    });
+
+    it('takes the history snapshot, not the quote, when it has one', () => {
+      const s = compute({
+        liveSpx: LIVE_SPX,
+        historySnapshot: {
+          runningOHLC: { open: 5680, high: 5700, low: 5660 },
+          previousClose: 5650,
+          vix1d: 15,
+          vix9d: 17,
+          vvix: 90,
+        } as unknown as HistorySnapshot,
+      });
+      expect(s.spxOpen).toBe(5680);
+      expect(s.prevClose).toBe(5650);
     });
   });
 
