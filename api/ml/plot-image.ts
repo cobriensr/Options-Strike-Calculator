@@ -6,15 +6,29 @@
  * ETag-based caching.
  *
  * Public read — no auth required (plot images are not sensitive).
+ *
+ * Rate-limited per client address (a valid owner cookie exempt). The carousel
+ * lists 25 plots (`PLOT_GROUPS` in `PlotCarousel.tsx`), loads only the active
+ * one and the browser caches it for an hour, so flipping through every plot
+ * in a minute is 25 requests; 30 covers that with room for revalidations.
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { get } from '@vercel/blob';
+import { isOwner, rejectIfRateLimited } from '../_lib/auth-helpers.js';
 import logger from '../_lib/logger.js';
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'GET') {
     return res.status(405).json({ error: 'GET only' });
+  }
+
+  // The limiter sends the 429 itself, before any parsing or Blob read.
+  if (
+    !isOwner(req) &&
+    (await rejectIfRateLimited(req, res, 'ml-plot-image', 30))
+  ) {
+    return;
   }
 
   const name = req.query.name;

@@ -1,9 +1,16 @@
 // @vitest-environment node
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
 // ── Mocks ─────────────────────────────────────────────────────
+// Keep the rest of auth-helpers real (the owner-cookie check runs for real)
+// and spy on the limiter, to pin the limit this route sets.
+vi.mock('../_lib/auth-helpers.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../_lib/auth-helpers.js')>()),
+  rejectIfRateLimited: vi.fn(),
+}));
+
 const mockGet = vi.fn();
 vi.mock('@vercel/blob', () => ({
   get: (...args: unknown[]) => mockGet(...args),
@@ -15,6 +22,7 @@ vi.mock('../_lib/logger.js', () => ({
 
 import handler from '../ml/plot-image.js';
 import logger from '../_lib/logger.js';
+import { rejectIfRateLimited } from '../_lib/auth-helpers.js';
 
 // ── Helpers ───────────────────────────────────────────────────
 function makeStreamResult(
@@ -49,6 +57,12 @@ describe('GET /api/ml/plot-image', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     mockGet.mockReset();
+    vi.mocked(rejectIfRateLimited).mockReset();
+    vi.mocked(rejectIfRateLimited).mockResolvedValue(false);
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
   it('returns 405 for non-GET methods', async () => {
@@ -58,6 +72,108 @@ describe('GET /api/ml/plot-image', () => {
 
     expect(res._status).toBe(405);
     expect(res._json).toEqual({ error: 'GET only' });
+  });
+
+  describe('per-IP request limit', () => {
+    const OWNER_SECRET = 'plot-limit-test-owner-secret-0123456789';
+
+    beforeEach(() => {
+      vi.stubEnv('OWNER_SECRET', OWNER_SECRET);
+    });
+
+    function limitTheRequest() {
+      vi.mocked(rejectIfRateLimited).mockImplementationOnce(async (_r, res) => {
+        res
+          .status(429)
+          .json({ error: 'Too many requests. Try again in 30 seconds.' });
+        return true;
+      });
+    }
+
+    it('does not count a non-GET request: the method gate comes first', async () => {
+      const res = mockResponse();
+
+      await handler(mockRequest({ method: 'POST' }), res);
+
+      expect(res._status).toBe(405);
+      expect(rejectIfRateLimited).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['a wrong owner cookie', { cookie: 'sc-owner=not-the-owner-secret' }],
+      ['no cookie', {}],
+    ])(
+      '%s is limited at 30 a minute under the route name',
+      async (_name, headers) => {
+        mockGet.mockResolvedValueOnce(null);
+        const req = mockRequest({
+          method: 'GET',
+          query: { name: 'correlations' },
+          headers,
+        });
+        const res = mockResponse();
+
+        await handler(req, res);
+
+        expect(res._status).toBe(404);
+        expect(rejectIfRateLimited).toHaveBeenCalledTimes(1);
+        expect(rejectIfRateLimited).toHaveBeenCalledWith(
+          req,
+          res,
+          'ml-plot-image',
+          30,
+        );
+      },
+    );
+
+    it('answers 429 and makes no Blob call when the limiter rejects', async () => {
+      limitTheRequest();
+      const res = mockResponse();
+
+      await handler(
+        mockRequest({ method: 'GET', query: { name: 'correlations' } }),
+        res,
+      );
+
+      expect(res._status).toBe(429);
+      expect(res._json).toEqual({
+        error: 'Too many requests. Try again in 30 seconds.',
+      });
+      expect(mockGet).not.toHaveBeenCalled();
+    });
+
+    it('limits before it validates the name', async () => {
+      limitTheRequest();
+      const res = mockResponse();
+
+      await handler(
+        mockRequest({ method: 'GET', query: { name: '../../etc/passwd' } }),
+        res,
+      );
+
+      expect(res._status).toBe(429);
+      expect(mockGet).not.toHaveBeenCalled();
+    });
+
+    it('a request carrying the owner cookie never reaches the limiter', async () => {
+      mockGet.mockResolvedValueOnce(
+        makeStreamResult(new Uint8Array([137, 80, 78, 71])),
+      );
+      const res = mockResponse();
+
+      await handler(
+        mockRequest({
+          method: 'GET',
+          query: { name: 'correlations' },
+          headers: { cookie: `sc-owner=${OWNER_SECRET}` },
+        }),
+        res,
+      );
+
+      expect(res._status).toBe(200);
+      expect(mockGet).toHaveBeenCalledTimes(1);
+      expect(rejectIfRateLimited).not.toHaveBeenCalled();
+    });
   });
 
   it('returns 400 when name parameter is missing', async () => {
