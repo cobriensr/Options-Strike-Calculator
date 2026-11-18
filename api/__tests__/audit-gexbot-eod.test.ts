@@ -19,6 +19,11 @@ const { mockCapture, mockException, mockReport, mockError, eod } = vi.hoisted(
 vi.mock('../_lib/logger.js', () => ({
   default: { info: vi.fn(), warn: vi.fn(), error: mockError },
 }));
+
+// cronGuard reports a failed secret check through this module; its own
+// test covers what it reports.
+vi.mock('../_lib/auth-failure.js', () => ({ reportSecretMismatch: vi.fn() }));
+
 vi.mock('../_lib/sentry.js', () => ({
   Sentry: {
     setTag: vi.fn(),
