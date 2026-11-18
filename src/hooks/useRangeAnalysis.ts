@@ -12,12 +12,21 @@ import { toETTime } from '../utils/calculator';
 import { SIGNALS, DEFAULTS } from '../constants';
 import { classifyOpeningRange } from '../utils/classifiers';
 import { getEarlyCloseHourET } from '../data/marketHours';
-import type { EventItem } from '../types/api';
+import type { EventItem, QuoteSlice } from '../types/api';
 import type { HistorySnapshot } from './useHistoryData';
 
 // ============================================================
 // TYPES
 // ============================================================
+
+/**
+ * The live SPX quote's session fields: the day's open, high and low so far,
+ * and the prior session's close.
+ */
+export type LiveSpxContext = Pick<
+  QuoteSlice,
+  'open' | 'high' | 'low' | 'prevClose'
+>;
 
 export interface RangeAnalysisSignals {
   // ET time (computed once, used everywhere)
@@ -62,6 +71,18 @@ function parkinsonRV(high: number, low: number): number {
   if (high <= 0 || low <= 0 || high <= low) return 0;
   const logHL = Math.log(high / low);
   return Math.sqrt(1 / (4 * Math.LN2)) * logHL * Math.sqrt(252);
+}
+
+/**
+ * A price worth storing: finite and above zero, else null. The live quote may
+ * carry 0 or a stale value before SPX's first print (assumed, not captured),
+ * and /api/history sends previousClose 0 for a session it can't name. A 0
+ * stored as a price would read as a −100% gap, and `prev_close = 0` would
+ * overwrite a good stored value on the snapshot upsert. A stale value passes
+ * this check; the caller keeps the quote out of the rows outside the session.
+ */
+function positivePrice(value: number | null | undefined): number | null {
+  return value != null && Number.isFinite(value) && value > 0 ? value : null;
 }
 
 /**
@@ -113,6 +134,10 @@ interface RangeAnalysisInputs {
   // Live quotes
   liveOpeningRange: { high: number; low: number } | undefined;
 
+  // The live SPX quote's open, high, low and prior close. The caller passes
+  // it for today only: a past date's price context is its history's.
+  liveSpx?: LiveSpxContext;
+
   // Yesterday's SPX OHLC for RV/IV (live mode)
   liveYesterdayHigh?: number;
   liveYesterdayLow?: number;
@@ -141,6 +166,7 @@ export function useRangeAnalysis(
     vix1d,
     medianHlPct,
     liveOpeningRange,
+    liveSpx,
     liveYesterdayHigh,
     liveYesterdayLow,
     livePriorDays,
@@ -189,15 +215,21 @@ export function useRangeAnalysis(
     }
 
     // ── Price context ────────────────────────────────────────
+    // The history snapshot wins; without one, the live SPX quote.
     if (historySnapshot) {
       result.spxOpen = historySnapshot.runningOHLC?.open ?? null;
       result.spxHigh = historySnapshot.runningOHLC?.high ?? null;
       result.spxLow = historySnapshot.runningOHLC?.low ?? null;
-      result.prevClose = historySnapshot.previousClose ?? null;
-      if (result.spxOpen && result.prevClose && result.prevClose > 0) {
-        result.overnightGap =
-          ((result.spxOpen - result.prevClose) / result.prevClose) * 100;
-      }
+      result.prevClose = positivePrice(historySnapshot.previousClose);
+    } else if (liveSpx) {
+      result.spxOpen = positivePrice(liveSpx.open);
+      result.spxHigh = positivePrice(liveSpx.high);
+      result.spxLow = positivePrice(liveSpx.low);
+      result.prevClose = positivePrice(liveSpx.prevClose);
+    }
+    if (result.spxOpen && result.prevClose && result.prevClose > 0) {
+      result.overnightGap =
+        ((result.spxOpen - result.prevClose) / result.prevClose) * 100;
     }
 
     if (!vix || !spot) return result;
@@ -263,6 +295,7 @@ export function useRangeAnalysis(
     vix1d,
     medianHlPct,
     liveOpeningRange,
+    liveSpx,
     liveYesterdayHigh,
     liveYesterdayLow,
     livePriorDays,

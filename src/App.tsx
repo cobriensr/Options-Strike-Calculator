@@ -612,6 +612,8 @@ export default function StrikeCalculator() {
     liveVix9d: market.data.quotes?.vix9d?.price ?? undefined,
     liveVvix: market.data.quotes?.vvix?.price ?? undefined,
     liveOpeningRange: market.data.intraday?.openingRange ?? undefined,
+    liveSpx: market.data.quotes?.spx ?? undefined,
+    quotesMarketOpen: market.data.quotes?.marketOpen ?? false,
     liveYesterdayHigh: yesterday?.high,
     liveYesterdayLow: yesterday?.low,
     liveYesterdayOpen: yesterday?.open,

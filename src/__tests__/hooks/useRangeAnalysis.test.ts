@@ -361,6 +361,152 @@ describe('useRangeAnalysis — history snapshot RV', () => {
 });
 
 // ============================================================
+// Price context from the live SPX quote
+// ============================================================
+
+/** A mid-morning SPX quote: it opened under the prior close (a gap down). */
+const LIVE_SPX = { open: 7487, high: 7501.2, low: 7480.1, prevClose: 7560.87 };
+
+describe('useRangeAnalysis — live SPX price context', () => {
+  it('fills open, high, low and previous close from the live SPX quote when there is no history snapshot', () => {
+    const result = render({ liveSpx: LIVE_SPX });
+
+    expect(result.spxOpen).toBe(7487);
+    expect(result.spxHigh).toBe(7501.2);
+    expect(result.spxLow).toBe(7480.1);
+    expect(result.prevClose).toBe(7560.87);
+    // (7487 - 7560.87) / 7560.87 * 100, unrounded.
+    expect(result.overnightGap).toBeCloseTo(-0.977, 4);
+  });
+
+  it('follows the live quote as it ticks, with nothing else changing', () => {
+    const { result, rerender } = renderHook(
+      ({ liveSpx }) => useRangeAnalysis(makeInputs({ liveSpx })),
+      { initialProps: { liveSpx: LIVE_SPX } },
+    );
+    expect(result.current.spxHigh).toBe(7501.2);
+
+    rerender({ liveSpx: { ...LIVE_SPX, high: 7510.5, low: 7478.25 } });
+
+    expect(result.current.spxHigh).toBe(7510.5);
+    expect(result.current.spxLow).toBe(7478.25);
+  });
+
+  it('fills the price context before the VIX or spot are known', () => {
+    const result = render({
+      vix: undefined,
+      spot: undefined,
+      liveSpx: LIVE_SPX,
+    });
+
+    expect(result.spxOpen).toBe(7487);
+    expect(result.prevClose).toBe(7560.87);
+    expect(result.overnightGap).toBeCloseTo(-0.977, 4);
+  });
+
+  it('prefers the history snapshot over the live quote', () => {
+    const snapshot = makeSnapshot({
+      previousClose: 5700,
+      runningOHLC: { open: 5720, high: 5730, low: 5690, last: 5700 },
+    });
+
+    const result = render({ historySnapshot: snapshot, liveSpx: LIVE_SPX });
+
+    expect(result.spxOpen).toBe(5720);
+    expect(result.spxHigh).toBe(5730);
+    expect(result.spxLow).toBe(5690);
+    expect(result.prevClose).toBe(5700);
+    expect(result.overnightGap).toBeCloseTo(0.351, 2);
+  });
+
+  it('leaves the price context null with neither a history snapshot nor a live quote', () => {
+    const result = render({ liveSpx: undefined });
+
+    expect(result.spxOpen).toBeNull();
+    expect(result.spxHigh).toBeNull();
+    expect(result.spxLow).toBeNull();
+    expect(result.prevClose).toBeNull();
+    expect(result.overnightGap).toBeNull();
+  });
+
+  // The quote may carry 0 (or a stale value) for open, high and low before
+  // SPX's first print. That is assumed, not captured: either way a 0 is stored
+  // as null, never as a 0 open or a -100% gap.
+  it('a zero open stores null open and null gap', () => {
+    const result = render({ liveSpx: { ...LIVE_SPX, open: 0 } });
+
+    expect(result.spxOpen).toBeNull();
+    expect(result.overnightGap).toBeNull();
+    expect(result.prevClose).toBe(7560.87);
+  });
+
+  it('a quote of zeros for open, high and low stores nulls, and keeps the previous close', () => {
+    const result = render({
+      liveSpx: { open: 0, high: 0, low: 0, prevClose: 7560.87 },
+    });
+
+    expect(result.spxOpen).toBeNull();
+    expect(result.spxHigh).toBeNull();
+    expect(result.spxLow).toBeNull();
+    expect(result.prevClose).toBe(7560.87);
+    expect(result.overnightGap).toBeNull();
+  });
+
+  it('a history snapshot with previousClose 0 gives a null previous close and a null gap', () => {
+    const snapshot = makeSnapshot({
+      previousClose: 0,
+      runningOHLC: { open: 5720, high: 5730, low: 5690, last: 5700 },
+    });
+
+    const result = render({ historySnapshot: snapshot });
+
+    expect(result.spxOpen).toBe(5720);
+    expect(result.prevClose).toBeNull();
+    expect(result.overnightGap).toBeNull();
+  });
+
+  // Each field on its own: the one bad value goes null, the rest stay. A
+  // quote field that is zero, negative or not a number is not a print.
+  // undefined and null are what JSON can actually deliver: /api/quotes is only
+  // cast, so a missing or null field reaches the hook as one of them.
+  const FIELDS = [
+    ['open', 'spxOpen'],
+    ['high', 'spxHigh'],
+    ['low', 'spxLow'],
+    ['prevClose', 'prevClose'],
+  ] as const;
+  const BAD_VALUES = [
+    0,
+    -5,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    undefined as unknown as number,
+    null as unknown as number,
+  ];
+
+  it.each(
+    FIELDS.flatMap(([field, signal]) =>
+      BAD_VALUES.map((bad) => [field, bad, signal] as const),
+    ),
+  )('a live quote %s of %s stores null for %s only', (field, bad, signal) => {
+    const result = render({ liveSpx: { ...LIVE_SPX, [field]: bad } });
+
+    expect(result[signal]).toBeNull();
+    for (const [otherField, otherSignal] of FIELDS) {
+      if (otherField !== field) {
+        expect(result[otherSignal]).toBe(LIVE_SPX[otherField]);
+      }
+    }
+    // The gap needs both the open and the previous close.
+    if (field === 'open' || field === 'prevClose') {
+      expect(result.overnightGap).toBeNull();
+    } else {
+      expect(result.overnightGap).toBeCloseTo(-0.977, 4);
+    }
+  });
+});
+
+// ============================================================
 // Edge cases — no vix or spot
 // ============================================================
 

@@ -20,6 +20,7 @@ import { useMemo } from 'react';
 import { useRegimeClassification } from './useRegimeClassification';
 import { useTermStructure } from './useTermStructure';
 import { useRangeAnalysis } from './useRangeAnalysis';
+import type { LiveSpxContext } from './useRangeAnalysis';
 import type { EventItem } from '../types/api';
 import type { HistorySnapshot } from './useHistoryData';
 
@@ -155,6 +156,23 @@ interface HookInputs {
   liveVvix: number | undefined;
   liveOpeningRange: { high: number; low: number } | undefined;
 
+  // The live SPX quote's open, high, low and prior close, for today's rows.
+  // Used only when `isBacktest` is false (the quote is today's, so a past
+  // date, even while its history loads, never takes it) and
+  // `quotesMarketOpen` is true.
+  liveSpx?: LiveSpxContext;
+
+  /**
+   * `marketOpen` of the /api/quotes payload that `liveSpx` came from: the
+   * server's cash-session flag at the time it fetched the quote, so the flag
+   * and the values always belong together. Before the open the quote may
+   * still hold yesterday's open, high and low, and after the close its
+   * `prevClose` may roll to today's close, either of which gives a wrong
+   * overnight gap; `useAnalysisContext` also sends prevClose and the gap to
+   * /api/analyze. App passes `market.data.quotes?.marketOpen ?? false`.
+   */
+  quotesMarketOpen: boolean;
+
   // Yesterday's SPX OHLC for RV/IV and the cluster tilt. The names say "live"
   // but App passes the one resolved value (resolveYesterday): the history
   // snapshot's previous day, else the live feed's on today only, else absent
@@ -200,6 +218,8 @@ export function useComputedSignals(inputs: HookInputs): ComputedSignals {
     liveVix9d,
     liveVvix,
     liveOpeningRange,
+    liveSpx,
+    quotesMarketOpen,
     liveYesterdayHigh,
     liveYesterdayLow,
     liveYesterdayOpen,
@@ -251,6 +271,7 @@ export function useComputedSignals(inputs: HookInputs): ComputedSignals {
     vix1d,
     medianHlPct: regime.medianHlPct,
     liveOpeningRange,
+    liveSpx: !isBacktest && quotesMarketOpen ? liveSpx : undefined,
     liveYesterdayHigh,
     liveYesterdayLow,
     livePriorDays,

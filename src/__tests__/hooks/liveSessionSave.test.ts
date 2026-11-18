@@ -11,7 +11,8 @@
  * A step into a new hour refetches /api/vix-ohlc (useVixData keys on the
  * hour), and its late answer re-renders App while that slot's POST is in
  * flight; a replay of a past date must not lose its top-of-hour slot to the
- * same re-render.
+ * same re-render. A live row also carries the SPX quote's open, high, low and
+ * previous close, which a past date never takes from the live quote.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -163,6 +164,16 @@ function quoteTimesAt(n: number) {
   return { spx: polled - SPX_PRINT_AGE_MS, vix: polled - VIX_PRINT_AGE_MS };
 }
 
+/**
+ * The SPX quote's session fields, as Schwab sends them: the day's open and
+ * low, and the prior session's close, which is not the history's 7690. The
+ * high is the poll's own (it climbs 2.5 over the last print).
+ */
+const SPX_OPEN = 7742.25;
+const SPX_LOW = 7731.5;
+const SPX_PREV_CLOSE = 7691.25;
+const SPX_HIGH_OVER_PRINT = 2.5;
+
 /** The nth poll's quotes: SPX climbs 4 points a poll, off the history's. */
 function quotesAt(n: number): QuotesResponse {
   const spx = 7750 + 4 * n;
@@ -179,7 +190,13 @@ function quotesAt(n: number): QuotesResponse {
   });
   return {
     spy: quote(spx / 10 + 0.037, times.spx),
-    spx: quote(spx, times.spx),
+    spx: {
+      ...quote(spx, times.spx),
+      open: SPX_OPEN,
+      high: spx + SPX_HIGH_OVER_PRINT,
+      low: SPX_LOW,
+      prevClose: SPX_PREV_CLOSE,
+    },
     vix: quote(17.5 + n * 0.01, times.vix),
     vix1d: quote(14.2, times.vix),
     vix9d: null,
@@ -281,12 +298,15 @@ function useLiveSession() {
     historyData,
     vix1dStatic,
   });
-  // App's wiring, argument for argument: yesterday resolved once, then the
-  // cluster multiplier from it, with no Market Regime panel mounted.
+  // App's wiring, argument for argument: the one backtest flag (the selected
+  // date is past in ET, judged against the date clock), yesterday resolved
+  // once, then the cluster multiplier from it, with no Market Regime panel
+  // mounted.
+  const analysisIsBacktest = isPastETDate(vix.selectedDate, vix.etToday);
   const yesterday = resolveYesterday(
     historySnapshot?.yesterday,
     market.data.yesterday?.yesterday,
-    isPastETDate(vix.selectedDate),
+    analysisIsBacktest,
   );
   const cluster = useClusterMultiplier({
     vix: iv.dVix ? Number.parseFloat(iv.dVix) : null,
@@ -312,12 +332,14 @@ function useLiveSession() {
     liveVix9d: undefined,
     liveVvix: undefined,
     liveOpeningRange: undefined,
+    liveSpx: market.data.quotes?.spx ?? undefined,
+    quotesMarketOpen: market.data.quotes?.marketOpen ?? false,
     liveYesterdayHigh: yesterday?.high,
     liveYesterdayLow: yesterday?.low,
     liveYesterdayOpen: yesterday?.open,
     liveYesterdayClose: yesterday?.close,
     historySnapshot,
-    isBacktest: false,
+    isBacktest: analysisIsBacktest,
   });
   useSnapshotSave(
     results,
@@ -352,6 +374,7 @@ function useLiveSession() {
     timeEdited,
     historySnapshot,
     cluster,
+    signals,
   };
 }
 
@@ -561,6 +584,62 @@ describe('a live session after the page loaded', () => {
     }
   });
 
+  it('a live save posts the quote’s open, high, low and previous close, and the gap they give', async () => {
+    await runSession(12);
+
+    const live = posts.filter((p) => p.body.isBacktest === false);
+    expect(live.length).toBeGreaterThan(0);
+    for (const post of live) {
+      const slot = String(post.body.entryTime);
+      // The row's SPX names its poll: 7750 + 4n. The high is that poll's own.
+      const n = ((post.body.spx as number) - 7750) / 4;
+      expect(post.body.spxOpen, slot).toBe(SPX_OPEN);
+      expect(post.body.spxHigh, slot).toBe(7750 + 4 * n + SPX_HIGH_OVER_PRINT);
+      expect(post.body.spxLow, slot).toBe(SPX_LOW);
+      // The quote's prior close, not the history's 7690.
+      expect(post.body.prevClose, slot).toBe(SPX_PREV_CLOSE);
+      // (7742.25 - 7691.25) / 7691.25 * 100
+      expect(post.body.overnightGap, slot).toBeCloseTo(0.66309, 4);
+    }
+  });
+
+  it('saves no price context from a quotes payload that says the cash session is closed', async () => {
+    const hook = await runSession(2);
+    expect(hook.result.current.signals.spxOpen).toBe(SPX_OPEN);
+
+    // Pre-open or post-close: the payload's marketOpen is false, so its open,
+    // high, low and prevClose can't be trusted for a row.
+    const closed = { ...quotesAt(3), marketOpen: false };
+    await advance(58_000);
+    act(() => hook.result.current.setQuotes(closed));
+    await settle(2000);
+
+    const { signals } = hook.result.current;
+    for (const field of [
+      'spxOpen',
+      'spxHigh',
+      'spxLow',
+      'prevClose',
+      'overnightGap',
+    ] as const) {
+      expect(signals[field], field).toBeNull();
+    }
+    const fromClosedPoll = posts.filter(
+      (p) => p.body.spx === closed.spx!.price,
+    );
+    expect(fromClosedPoll.length).toBeGreaterThan(0);
+    for (const post of fromClosedPoll) {
+      expect(post.body.spxOpen).toBeNull();
+      expect(post.body.prevClose).toBeNull();
+    }
+
+    // The next in-session payload fills it again.
+    await advance(58_000);
+    act(() => hook.result.current.setQuotes(quotesAt(4)));
+    await settle(2000);
+    expect(hook.result.current.signals.spxOpen).toBe(SPX_OPEN);
+  });
+
   it('keeps the last live quote through a quotes outage, not the page-load candle', async () => {
     const hook = await runSession(3);
     const lastQuote = quotesAt(3);
@@ -756,6 +835,49 @@ describe('a replay of a past date', () => {
       // A replay has no live quote to date: the server's guard skips it.
       expect(rows.get(slot)!, slot).not.toHaveProperty('quotedAt');
     }
+  });
+});
+
+// Review focus: the live quote carries today's open, high, low and prior
+// close, so it must never fill a past date's price context, not even in the
+// moment the date's own history has not landed (the snapshot is null then).
+describe("a past date's price context, while live quotes are loaded", () => {
+  const PRICE_CONTEXT = [
+    'spxOpen',
+    'spxHigh',
+    'spxLow',
+    'prevClose',
+    'overnightGap',
+  ] as const;
+
+  it("is null while the date's history loads, then the history's own, never the quote's", async () => {
+    overrideHistory(PAST_DATE, historyAfter(PAST_DATE, 1500));
+    const hook = renderHook(() => useLiveSession());
+    await settle(2000);
+    // Today, live: the quote's price context.
+    expect(hook.result.current.signals.spxOpen).toBe(SPX_OPEN);
+    expect(hook.result.current.signals.prevClose).toBe(SPX_PREV_CLOSE);
+
+    act(() => hook.result.current.vix.setSelectedDate(PAST_DATE));
+    await settle(500);
+
+    // The history is still on its way: no snapshot, and the quote stays out.
+    expect(hook.result.current.historySnapshot).toBeNull();
+    for (const field of PRICE_CONTEXT) {
+      expect(hook.result.current.signals[field], field).toBeNull();
+    }
+    expect(posts.filter((p) => p.body.date === PAST_DATE)).toEqual([]);
+
+    await settle(3000);
+    expect(hook.result.current.historySnapshot).not.toBeNull();
+    const { signals } = hook.result.current;
+    // The date's own session: its first candle's open (7700 less its 1 pt
+    // step) and the history's previous close, not the quote's.
+    expect(signals.spxOpen).toBe(7699);
+    expect(signals.prevClose).toBe(7690);
+    expect(signals.overnightGap).toBeCloseTo(0.11704, 4);
+    expect(signals.spxOpen).not.toBe(SPX_OPEN);
+    expect(signals.prevClose).not.toBe(SPX_PREV_CLOSE);
   });
 });
 
