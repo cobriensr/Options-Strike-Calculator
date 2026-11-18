@@ -13,15 +13,14 @@
  * polling a day that had become yesterday. `today` is the shared ET clock now
  * (useETToday), which re-renders every mounted row in the same commit at the
  * roll. The shared clock's timer is armed for 1 s past midnight, which is
- * 23:00:01 CT the evening before. Cases start 30 s before an ET midnight,
- * except the two that poll across the roll (stops-polling and
- * starts-polling), each of which derives its start from the poll interval
- * (all three hooks poll on POLL_INTERVALS.OTM_FLOW), so a change to that
- * constant cannot break a correct row, and the CT-window case, which starts
- * at 23:30 CT. No case calls `rerender`. (A row's own fetch result does
- * re-render it, so the stops-polling case puts a poll after the roll: a row
- * that only reads the wall clock on a render would still make that one
- * poll.) Owner decision 2026-11-14.
+ * 23:00:01 CT the evening before. Every case but the CT-window one starts one
+ * poll interval and 10 s before an ET midnight (INTERVAL + POLL_LEAD_MS; all
+ * three hooks poll on POLL_INTERVALS.OTM_FLOW), so a change to that constant
+ * cannot break a correct row, down to the bound the precondition test below
+ * pins. The CT-window case starts at 23:30 CT. No case calls `rerender`. (A
+ * row's own fetch result does re-render it, so the stops-polling case puts a
+ * poll after the roll: a row that only reads the wall clock on a render would
+ * still make that one poll.) Owner decision 2026-11-14.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -108,10 +107,26 @@ const advance = (ms: number) =>
 
 /** All three hooks poll on this one constant. */
 const INTERVAL = POLL_INTERVALS.OTM_FLOW;
-/** The shared clock fires this long after an ET midnight. */
+/**
+ * The shared clock fires this long after an ET midnight. Mirrors
+ * MIDNIGHT_SLACK_MS in src/utils/timezone.ts (private there); change them
+ * together.
+ */
 const ROLL_LAG_MS = 1_000;
 /** How long before midnight the polls straddle it: the first poll lands here. */
 const POLL_LEAD_MS = 10_000;
+
+// The stops-polling case lands its first poll POLL_LEAD_MS before midnight and
+// the roll ROLL_LAG_MS after it, so its second poll, one INTERVAL after the
+// first, falls after the roll only if INTERVAL exceeds their sum. At or below
+// 11 s the case fails on correct hooks: the second poll comes before the roll
+// (and at exactly 11 s it ties with it), so the guard is strictly greater.
+it('has a poll interval the stops-polling case can straddle', () => {
+  expect(
+    INTERVAL,
+    'stops-polling needs its second poll after the roll',
+  ).toBeGreaterThan(POLL_LEAD_MS + ROLL_LAG_MS);
+});
 
 describe.each([
   {
@@ -176,6 +191,9 @@ describe.each([
       // interval after the roll.
       await advance(POLL_LEAD_MS + ROLL_LAG_MS);
       const afterRoll = fetchMock.mock.calls.length;
+      // No fetch at the roll itself: the row starts polling, it does not
+      // refetch. (Without this, the line below reads as a repeat of the check
+      // above.)
       expect(afterRoll).toBe(1);
       await advance(INTERVAL);
 
