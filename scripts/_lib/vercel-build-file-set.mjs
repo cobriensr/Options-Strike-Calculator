@@ -22,7 +22,7 @@ import {
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import ts from 'typescript';
-import { GitError, runGit } from './git-run.mjs';
+import { git } from './git-run.mjs';
 
 /**
  * The tsc projects `npm run build` compiles, in the order it runs them. The
@@ -63,7 +63,8 @@ const REMOVE_OPTIONS = {
  *
  * @param {string} vercelIgnoreText the contents of .vercelignore
  * @returns {{ strippedAmong: (paths: string[]) => Set<string>, dispose: () => void }}
- * @throws {GitError} when git is missing, or `git init` or `check-ignore` fails.
+ * @throws a GitError (git-run.mjs) when git is missing, or `git init` or
+ *   `check-ignore` fails; `strippedAmong` throws the same way.
  */
 export function createStripMatcher(vercelIgnoreText) {
   const dir = mkdtempSync(path.join(tmpdir(), 'vercelignore-'));
@@ -77,20 +78,10 @@ export function createStripMatcher(vercelIgnoreText) {
     GIT_CONFIG_NOSYSTEM: '1',
     GIT_CONFIG_GLOBAL: path.join(dir, 'no-gitconfig'),
   };
-  /** Git in `dir`; a status outside `okStatuses` throws a GitError. */
-  const git = (args, { input, okStatuses = [0] } = {}) => {
-    const fullArgs = ['-C', dir, ...args];
-    const result = runGit(fullArgs, env, { input });
-    if (!okStatuses.includes(result.status)) {
-      const stderr = result.stderr.trim();
-      const reason = stderr === '' ? '' : `: ${stderr}`;
-      throw new GitError(fullArgs, `exit code ${result.status}${reason}`);
-    }
-    return result;
-  };
+  const gitInDir = (args, options) => git(['-C', dir, ...args], env, options);
 
   try {
-    git(['init', '-q', '--template=']);
+    gitInDir(['init', '-q', '--template=']);
     writeFileSync(
       path.join(dir, '.gitignore'),
       vercelIgnoreText.replaceAll('\r\n', '\n'),
@@ -110,7 +101,7 @@ export function createStripMatcher(vercelIgnoreText) {
       if (paths.length === 0) return new Set();
       // Exit 0: some path is ignored. 1: none is. Anything else is a failure,
       // and throws.
-      const result = git(
+      const stdout = gitInDir(
         [
           '-c',
           'core.ignorecase=true',
@@ -123,7 +114,7 @@ export function createStripMatcher(vercelIgnoreText) {
         ],
         { input: `${paths.join('\0')}\0`, okStatuses: [0, 1] },
       );
-      return new Set(result.stdout.split('\0').filter(Boolean));
+      return new Set(stdout.split('\0').filter(Boolean));
     },
     dispose() {
       rmSync(dir, REMOVE_OPTIONS);
@@ -208,9 +199,15 @@ function dependencies(file, text, options) {
  * imports but the program has anyway (a `typeRoots` folder) is one line with
  * no chain.
  *
- * Residual, not covered: an ambient .d.ts in a stripped root (say
- * `e2e/globals.d.ts`) is dropped with the root and nothing imports it, so the
- * globals it declared vanish on Vercel with no finding here.
+ * Residuals, not covered:
+ * - an ambient .d.ts in a stripped root (say `e2e/globals.d.ts`) is dropped
+ *   with the root and nothing imports it, so the globals it declared vanish on
+ *   Vercel with no finding here;
+ * - a tsconfig `extends` that points into a stripped path: the config files
+ *   are read, not checked, so the local build finds the base and Vercel's
+ *   doesn't;
+ * - an api/ runtime file read (fs) of a stripped path: the asset scan below
+ *   covers only what vite reads.
  *
  * @param {string} root repo root
  * @param {{ strippedAmong: (paths: string[]) => Set<string> }} matcher

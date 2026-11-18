@@ -131,6 +131,25 @@ describe('git', () => {
     );
   });
 
+  it('returns the stdout of an exit listed in okStatuses, and still throws on one that is not', () => {
+    // `config --get` exits 1 when the key is unset: an answer, not a failure.
+    const unset = ['-C', repo, 'config', '--get', 'gitrun.unset'];
+    expect(git(unset, cleanEnv(), { okStatuses: [0, 1] })).toBe('');
+    const args = missingRef();
+    expectGitError(
+      thrownBy(() => git(args, cleanEnv(), { okStatuses: [0, 1] })),
+      args,
+      'fatal: Needed a single revision',
+    );
+  });
+
+  it("writes the input option to git's stdin", () => {
+    const body = 'a\0b\n';
+    const expected = writeBlob('git-stdin.txt', body);
+    const args = ['-C', repo, 'hash-object', '--stdin'];
+    expect(git(args, cleanEnv(), { input: body })).toBe(`${expected}\n`);
+  });
+
   it('throws a GitError when git cannot be spawned', () => {
     const args = ['--version'];
     expectGitError(

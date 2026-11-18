@@ -19,7 +19,7 @@ import {
   it,
   vi,
 } from 'vitest';
-import { GitError, runGit } from './git-run.mjs';
+import { GitError, git, runGit } from './git-run.mjs';
 import {
   createStripMatcher,
   findStrippedAssetRefs,
@@ -29,10 +29,11 @@ import {
 // Both mocks wrap the real function, so every test runs real git and real
 // file-system calls. A test queues one failing call (mockImplementationOnce) to
 // reach what real git and a real disk won't produce on demand: `git init`
-// failing, and the clean-up after it failing too.
+// failing, and the clean-up after it failing too. Only `git` is wrapped: the
+// matcher calls it, and the test's own `runGit` calls stay real.
 vi.mock('./git-run.mjs', async (importOriginal) => {
   const actual = await importOriginal();
-  return { ...actual, runGit: vi.fn(actual.runGit) };
+  return { ...actual, git: vi.fn(actual.git) };
 });
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal();
@@ -72,9 +73,12 @@ vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
  * The matcher is pinned against the real file below, so a git config that
  * changes the answers fails loudly instead of letting an offender through.
  * Its git runs apart from the machine's: the hostile-environment test pins
- * the GIT_* filter and `core.excludesFile=`; GIT_CONFIG_GLOBAL and
- * `--template=` each block a hostile global init.templateDir on their own, so
- * no environment can tell which one is missing, and the args test pins them.
+ * the GIT_* filter (its case-insensitive match on Windows only) and
+ * `core.excludesFile=`; GIT_CONFIG_GLOBAL and `--template=` each block a
+ * hostile global init.templateDir on their own, so no environment can tell
+ * which one is missing, and the args tests pin them, with the check-ignore
+ * settings (`core.ignorecase=true` is a no-op on Windows, where git init sets
+ * it).
  *
  * Case: a Windows or macOS checkout resolves `../Scripts/x` to the real
  * folder, so tsc reports a path Linux never has. Matching ignores case.
@@ -90,7 +94,13 @@ vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
  * - the reverse, a false alarm: a quoted path in a comment, or a literal only
  *   vitest reads in vite.config.ts, is flagged though vite build ignores it;
  * - an ambient .d.ts in a stripped root (`e2e/globals.d.ts`): the root is
- *   dropped and nothing imports it, so it vanishes with no finding.
+ *   dropped and nothing imports it, so it vanishes with no finding;
+ * - a tsconfig `extends` that points into a stripped path: the config files
+ *   are read, not checked, so the local build finds the base and Vercel's
+ *   doesn't;
+ * - an api/ runtime file read (fs) of a stripped path: the asset scan covers
+ *   only what vite reads, so a function that reads docs/ at run time ships
+ *   without it.
  *
  * The checker has fixture tests below, so a regression in it can't pass for
  * "nothing is stripped". Fixtures use a minimal tsconfig pair (no lib, no
@@ -275,7 +285,7 @@ describe('createStripMatcher (the real .vercelignore)', () => {
     const err = thrownBy(() => matcher.strippedAmong(['..']));
     expect(err).toBeInstanceOf(GitError);
     expect(err.message).toMatch(
-      /check-ignore --no-index --stdin -z: exit code 128: fatal: .*outside repository/,
+      /check-ignore --no-index --stdin -z: fatal: .*outside repository/,
     );
   });
 });
@@ -362,13 +372,33 @@ describe('createStripMatcher (isolation from the machine)', () => {
     ).toEqual(new Set(['scripts/x.ts']));
   });
 
+  // Windows env names are case-insensitive, and Object.entries(process.env)
+  // lists a variable under the case it was set in: `Git_Dir` is GIT_DIR to git
+  // there. Elsewhere `Git_Dir` is a different, harmless variable.
+  it.runIf(process.platform === 'win32')(
+    'drops a GIT_* variable set in mixed case (Git_Dir)',
+    () => {
+      const { home } = hostileHome();
+      vi.stubEnv('Git_Dir', path.join(home, 'repo'));
+      expect(
+        makeMatcher(realIgnore).strippedAmong(['api/b.ts', 'scripts/x.ts']),
+      ).toEqual(new Set(['scripts/x.ts']));
+    },
+  );
+
+  /** The git calls the matcher makes for one strippedAmong, from a fresh dir. */
+  function gitCallsOfOneLookup() {
+    vi.mocked(git).mockClear();
+    makeMatcher('/x/\n').strippedAmong(['x/a.ts']);
+    const [initCall, checkCall] = vi.mocked(git).mock.calls;
+    return { initCall, checkCall };
+  }
+
   it('runs git in its own directory, with no template and a global config of its own', () => {
     // GIT_CONFIG_GLOBAL and --template= each block a hostile global
     // init.templateDir alone, so no environment fails when only one is
     // dropped. This pins both on the call.
-    vi.mocked(runGit).mockClear();
-    makeMatcher('/x/\n').strippedAmong(['x/a.ts']);
-    const [initCall, checkCall] = vi.mocked(runGit).mock.calls;
+    const { initCall, checkCall } = gitCallsOfOneLookup();
     const [initArgs, env] = initCall;
     const dir = initArgs[1];
     expect(initArgs).toEqual(['-C', dir, 'init', '-q', '--template=']);
@@ -377,50 +407,54 @@ describe('createStripMatcher (isolation from the machine)', () => {
     expect(path.dirname(env.GIT_CONFIG_GLOBAL)).toBe(dir);
     expect(existsSync(env.GIT_CONFIG_GLOBAL)).toBe(false);
   });
+
+  it('asks check-ignore to ignore case and to empty the global excludes file', () => {
+    // core.ignorecase=true is already set by `git init` on Windows, and the
+    // XDG ignore file is only a hostile input in the test above; this pins
+    // both settings on the call wherever the tests run.
+    const { checkCall } = gitCallsOfOneLookup();
+    const checkArgs = checkCall[0].join(' ');
+    expect(checkArgs).toContain('-c core.ignorecase=true ');
+    expect(checkArgs).toContain('-c core.excludesFile= check-ignore ');
+  });
 });
 
 describe('createStripMatcher (failures)', () => {
   /** The dir the matcher made, from the `-C <dir>` of its first git call. */
-  const dirOfFirstGitCall = () => vi.mocked(runGit).mock.calls[0][0][1];
+  const dirOfFirstGitCall = () => vi.mocked(git).mock.calls[0][0][1];
 
   it('throws a GitError naming the command when git is not installed', () => {
     vi.stubEnv('PATH', scratchDir('no-git-path-'));
-    vi.mocked(runGit).mockClear();
+    vi.mocked(git).mockClear();
     const err = thrownBy(() => createStripMatcher('/x/\n'));
     expect(err).toBeInstanceOf(GitError);
     expect(err.message).toMatch(/^git -C .+ init -q.*: spawnSync git ENOENT$/);
     expect(existsSync(dirOfFirstGitCall())).toBe(false);
   });
 
-  it("throws a GitError with git's own message when git init fails, and removes its dir", () => {
-    vi.mocked(runGit).mockClear();
-    vi.mocked(runGit).mockImplementationOnce(() => ({
-      status: 128,
-      stdout: '',
-      stderr: 'fatal: cannot mkdir .git\n',
-    }));
-    const err = thrownBy(() => createStripMatcher('/x/\n'));
-    expect(err).toBeInstanceOf(GitError);
-    expect(err.detail).toBe('exit code 128: fatal: cannot mkdir .git');
-    expect(err.message).toMatch(/^git -C .+ init -q.*: exit code 128/);
+  it('rethrows the GitError of a failed git init, and removes its dir', () => {
+    vi.mocked(git).mockClear();
+    const failure = new GitError(['init'], 'fatal: cannot mkdir .git');
+    vi.mocked(git).mockImplementationOnce(() => {
+      throw failure;
+    });
+    expect(thrownBy(() => createStripMatcher('/x/\n'))).toBe(failure);
     expect(existsSync(dirOfFirstGitCall())).toBe(false);
   });
 
   it('reports the original error when removing its dir fails as well', () => {
-    vi.mocked(runGit).mockClear();
-    vi.mocked(runGit).mockImplementationOnce(() => ({
-      status: 128,
-      stdout: '',
-      stderr: 'fatal: cannot mkdir .git\n',
-    }));
+    vi.mocked(git).mockClear();
+    const failure = new GitError(['init'], 'fatal: cannot mkdir .git');
+    vi.mocked(git).mockImplementationOnce(() => {
+      throw failure;
+    });
     vi.mocked(rmSync).mockImplementationOnce(() => {
       throw new Error('EBUSY: resource busy or locked');
     });
     const err = thrownBy(() => createStripMatcher('/x/\n'));
     // The dir the failed clean-up left behind.
     removeQuietly(dirOfFirstGitCall());
-    expect(err).toBeInstanceOf(GitError);
-    expect(err.detail).toBe('exit code 128: fatal: cannot mkdir .git');
+    expect(err).toBe(failure);
   });
 });
 

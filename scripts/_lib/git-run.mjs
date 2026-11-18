@@ -62,15 +62,20 @@ export function runGit(args, env, { input } = {}) {
 }
 
 /**
- * Run git; stdout on exit 0, GitError (with git's stderr) otherwise.
+ * Run git; stdout on an exit listed in okStatuses (default: 0), GitError (with
+ * git's stderr) otherwise.
  *
  * @param {string[]} args
  * @param {NodeJS.ProcessEnv} env
+ * @param {{ input?: string, okStatuses?: Array<number | null> }} [options]
+ *   `input` is written to git's stdin. `okStatuses` (default `[0]`) lists the
+ *   exit codes that are an answer, not a failure: `git check-ignore` exits 1
+ *   for "nothing ignored", so it passes `[0, 1]`.
  * @returns {string}
  */
-export function git(args, env) {
-  const { status, stdout, stderr } = runGit(args, env);
-  if (status !== 0) {
+export function git(args, env, { input, okStatuses = [0] } = {}) {
+  const { status, stdout, stderr } = runGit(args, env, { input });
+  if (!okStatuses.includes(status)) {
     throw new GitError(args, stderr.trim() || `exit code ${status}`);
   }
   return stdout;
