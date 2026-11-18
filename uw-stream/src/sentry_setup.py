@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Sequence
 from typing import Any
 
 from logger_setup import log, scrub_log_tokens
@@ -246,12 +247,21 @@ _MESSAGE_LOG_LEVELS = {
 }
 
 
+def _format_message(template: str, params: Sequence[object]) -> str:
+    """``template % params``, or the template with the arguments beside it when they disagree."""
+    try:
+        return template % tuple(params)
+    except (TypeError, ValueError):
+        return f"{template} {tuple(params)!r}"
+
+
 def capture_message(
     message: str,
     *,
     level: str = "warning",
     context: dict[str, Any] | None = None,
     tags: dict[str, str] | None = None,
+    params: Sequence[object] = (),
 ) -> None:
     """Report a non-exception event to Sentry and the structured log.
 
@@ -261,12 +271,21 @@ def capture_message(
     ``event_level=None``, so the line is a breadcrumb on the capture. A ``level``
     outside ``_MESSAGE_LOG_LEVELS`` logs at WARNING, as the line always did, and
     does not raise: a reporting helper must not fail the caller that is reporting.
+
+    With ``params``, ``message`` is a ``%``-style template. The log line carries the
+    formatted text; the event carries the template and the arguments apart, as the
+    SDK's logging integration files a record logged as ``log.error(template, *args)``.
+    Sentry groups that event by the template, so a message that names a varying value
+    (a client address) is one issue, not one per value. Put request-derived text in
+    ``params``, never in ``message``. Without ``params`` the text is sent as it is,
+    which is what every existing caller wants.
     """
     log_level = _MESSAGE_LOG_LEVELS.get(level, logging.WARNING)
+    text = _format_message(message, params) if params else message
     if context:
-        log.log(log_level, "%s (context=%s)", message, context)
+        log.log(log_level, "%s (context=%s)", text, context)
     else:
-        log.log(log_level, "%s", message)
+        log.log(log_level, "%s", text)
 
     if not _sentry_enabled:
         return
@@ -276,6 +295,18 @@ def capture_message(
 
         with sentry_sdk.new_scope() as scope:
             _apply_scope(scope, tags, context)
-            sentry_sdk.capture_message(message, level=level)
+            if params:
+                sentry_sdk.capture_event(
+                    {
+                        "logentry": {
+                            "message": message,
+                            "formatted": text,
+                            "params": list(params),
+                        },
+                        "level": level,
+                    }
+                )
+            else:
+                sentry_sdk.capture_message(message, level=level)
     except Exception as inner:
         log.error("Failed to forward message to Sentry: %s", inner)

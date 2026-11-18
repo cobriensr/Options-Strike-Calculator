@@ -27,7 +27,9 @@ from sentry_sdk.integrations.excepthook import ExcepthookIntegration
 from sentry_sdk.integrations.logging import EventHandler, LoggingIntegration
 from sentry_sdk.transport import Transport
 
+import auth
 import sentry_setup
+from config import settings
 from logger_setup import log
 from sentry_setup import _before_send
 
@@ -341,6 +343,83 @@ class TestLoggingIntegration:
         ]
 
 
+class TestCaptureMessageParams:
+    """``capture_message(template, params=...)`` files the template and its arguments apart.
+
+    That is the shape the SDK's logging integration files for ``log.error(template, *args)``
+    (its ``logentry``), and Sentry groups such an event by the template. The same text as one
+    pre-formatted string is a different message for every argument, so one failing check seen
+    from many client addresses would open one issue per address.
+    """
+
+    TEMPLATE = "Secret check failed on metrics (client %s)"
+
+    def test_the_event_carries_the_template_and_the_arguments_apart(self, sdk_transport):
+        sentry_setup.capture_message(
+            self.TEMPLATE, level="error", params=("203.0.113.7",), tags={"component": "auth"}
+        )
+
+        (event,) = sdk_transport.events()
+        assert event["level"] == "error"
+        assert event["logentry"] == {
+            "message": self.TEMPLATE,
+            "formatted": "Secret check failed on metrics (client 203.0.113.7)",
+            "params": ["203.0.113.7"],
+        }
+        assert event["tags"]["component"] == "auth"
+
+    def test_two_arguments_share_one_template(self, sdk_transport):
+        """What Sentry groups on is the template, and it does not vary with the argument."""
+        for client in ("203.0.113.7", "198.51.100.4"):
+            sentry_setup.capture_message(self.TEMPLATE, level="error", params=(client,))
+
+        first, second = sdk_transport.events()
+        assert first["logentry"]["message"] == second["logentry"]["message"] == self.TEMPLATE
+        assert first["logentry"]["params"] != second["logentry"]["params"]
+
+    def test_a_message_formatted_in_advance_is_a_different_message_per_argument(
+        self, sdk_transport
+    ):
+        """The case the params keyword exists to avoid: no params, one message per client."""
+        for client in ("203.0.113.7", "198.51.100.4"):
+            sentry_setup.capture_message(self.TEMPLATE % client, level="error")
+
+        first, second = sdk_transport.events()
+        assert first["message"] != second["message"]
+        assert "logentry" not in first
+
+    def test_the_log_line_is_the_formatted_text_with_the_context(self, service_log_records):
+        sentry_setup.capture_message(
+            self.TEMPLATE, level="error", params=("203.0.113.7",), context={"reason": "wrong"}
+        )
+
+        (record,) = service_log_records
+        assert record.levelno == logging.ERROR
+        assert record.getMessage() == (
+            "Secret check failed on metrics (client 203.0.113.7) (context={'reason': 'wrong'})"
+        )
+
+    def test_a_percent_sign_inside_an_argument_is_not_formatted_again(self, service_log_records):
+        hostile = "%s %d %(x)s {0} 100%"
+        sentry_setup.capture_message(self.TEMPLATE, level="error", params=(hostile,))
+
+        (record,) = service_log_records
+        assert record.getMessage() == f"Secret check failed on metrics (client {hostile})"
+
+    def test_a_template_and_arguments_that_disagree_do_not_raise(
+        self, sdk_transport, service_log_records
+    ):
+        """A reporting helper must not fail the caller that is reporting: the line and
+        the event keep the template and show the arguments beside it."""
+        sentry_setup.capture_message("no placeholder here", level="error", params=("a", "b"))
+
+        (record,) = service_log_records
+        assert record.getMessage() == "no placeholder here ('a', 'b')"
+        (event,) = sdk_transport.events()
+        assert event["logentry"]["message"] == "no placeholder here"
+        assert event["logentry"]["params"] == ["a", "b"]
+
+
 class TestCaptureMessageLogLine:
     """``capture_message`` logs one line, at the level the capture is filed at.
 
@@ -619,3 +698,102 @@ class TestProductionConfiguration:
             ("websockets.client", "error"),
             ("asyncio", "error"),
         ]
+
+
+_FAILED_CHECK = "Secret check failed on metrics (client %s)"
+_SHORT_SECRET = "Configured secret shorter than the minimum: %s"
+_WEAK_TOKEN = "weak-metrics-token-value"
+
+
+class TestAuthReports:
+    """What the real SDK files for the two reports in ``auth``, through a capturing transport.
+
+    ``init_sentry`` turns the logging integration's events off, so a bare ``log.error``
+    files nothing (``test_a_service_logger_error_files_no_event``). Both reports go
+    through ``capture_message`` instead, and these tests read what the client sent.
+    ``test_health.py`` pins the other half: ``health.metrics`` calls ``report_mismatch``
+    with the client and the reason.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _state(self, monkeypatch):
+        monkeypatch.setattr(auth, "_last_error_at", None)
+        monkeypatch.setattr(settings, "internal_metrics_token", _WEAK_TOKEN)
+
+    def test_a_refused_request_files_one_error_event_grouped_on_its_template(self, sdk_transport):
+        auth.report_mismatch("203.0.113.7", "wrong")
+
+        (event,) = sdk_transport.events()
+        assert event["level"] == "error"
+        assert event["logentry"]["message"] == _FAILED_CHECK
+        assert event["logentry"]["params"] == ["203.0.113.7"]
+        assert event["tags"]["component"] == "auth"
+        assert event["extra"]["reason"] == "wrong"
+
+    def test_a_missing_header_files_the_same_template(self, sdk_transport):
+        auth.report_mismatch("203.0.113.7", "missing")
+
+        (event,) = sdk_transport.events()
+        assert event["logentry"]["message"] == _FAILED_CHECK
+        assert event["extra"]["reason"] == "missing"
+
+    def test_further_refusals_inside_the_window_file_no_more_events(self, sdk_transport):
+        for client in ("203.0.113.7", "198.51.100.4", "192.0.2.1"):
+            auth.report_mismatch(client, "wrong")
+
+        (event,) = sdk_transport.events()
+        assert event["logentry"]["params"] == ["203.0.113.7"]
+
+    def test_the_event_survives_the_before_send_of_the_production_configuration(
+        self, production_client
+    ):
+        auth.report_mismatch("203.0.113.7", "wrong")
+
+        (event,) = production_client.transport.events()
+        assert event["level"] == "error"
+        assert event["server_name"] == "uw-stream"
+        assert event["logentry"]["message"] == _FAILED_CHECK
+        assert event["logentry"]["params"] == ["203.0.113.7"]
+
+    def test_a_short_token_files_one_boot_event_naming_the_variable(self, sdk_transport):
+        auth.report_weak_secrets()
+
+        (event,) = sdk_transport.events()
+        assert event["level"] == "error"
+        assert event["logentry"]["message"] == _SHORT_SECRET
+        assert event["logentry"]["params"] == ["INTERNAL_METRICS_TOKEN"]
+
+    def test_a_long_enough_token_files_no_boot_event(self, sdk_transport, monkeypatch):
+        monkeypatch.setattr(settings, "internal_metrics_token", "t" * 32)
+
+        auth.report_weak_secrets()
+
+        assert sdk_transport.events() == []
+
+    def test_the_boot_event_holds_neither_the_token_nor_a_number(self, sdk_transport):
+        auth.report_weak_secrets()
+
+        (event,) = sdk_transport.events()
+        assert _WEAK_TOKEN.encode() not in b"".join(sdk_transport.payloads)
+        # The text the report fills: the message, its context and tags, and the breadcrumb
+        # that is its own log line. An event id or a timestamp may hold any digits, so
+        # numbers are looked for in these only.
+        reported = json.dumps(
+            {
+                **{k: event.get(k) for k in ("logentry", "extra", "tags")},
+                "breadcrumbs": [c["message"] for c in event["breadcrumbs"]["values"]],
+            }
+        )
+        assert not any(ch.isdigit() for ch in reported)
+
+    def test_the_refusal_event_holds_no_number_beside_the_client(self, sdk_transport):
+        auth.report_mismatch("198.51.100.4", "wrong")
+
+        (event,) = sdk_transport.events()
+        reported = json.dumps(
+            {
+                **{k: event.get(k) for k in ("logentry", "extra", "tags")},
+                "breadcrumbs": [c["message"] for c in event["breadcrumbs"]["values"]],
+            }
+        ).replace("198.51.100.4", "")
+        assert not any(ch.isdigit() for ch in reported)
