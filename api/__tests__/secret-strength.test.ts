@@ -26,6 +26,9 @@ vi.mock('../_lib/sentry.js', () => ({
 
 // The check runs on the cron path, which must not load the request-path auth
 // modules (botid, Redis). A direct import of one of them throws on import.
+// The logger and Sentry modules are mocked above, so this guards only
+// secret-strength.ts's own imports; it does not follow what those two modules
+// import.
 vi.mock('../_lib/auth-helpers.js', () => {
   throw new Error('secret-strength must not load auth-helpers');
 });
@@ -238,6 +241,29 @@ describe('warnWeakSecretsOnce', () => {
     expect(mockCaptureMessage).not.toHaveBeenCalled();
     expect(mockWarn).not.toHaveBeenCalled();
   });
+
+  // The flag is set before the reports, so a reporter that throws costs the
+  // first call only: `isOwner` and `cronGuard` call this on nearly every
+  // request, and a second throw would repeat on each of them.
+  it.each([
+    ['logger.warn', mockWarn],
+    ['Sentry.captureMessage', mockCaptureMessage],
+  ])(
+    'a throw from %s fails the first call only, and nothing is reported again',
+    async (_name, reporter) => {
+      vi.stubEnv('OWNER_SECRET', 'a'.repeat(10));
+      reporter.mockImplementationOnce(() => {
+        throw new Error('reporter down');
+      });
+      const { warnWeakSecretsOnce } = await freshModule();
+
+      expect(() => warnWeakSecretsOnce()).toThrow('reporter down');
+      expect(() => warnWeakSecretsOnce()).not.toThrow();
+      expect(() => warnWeakSecretsOnce()).not.toThrow();
+
+      expect(reporter).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it('empty list sends nothing', async () => {
     vi.stubEnv('OWNER_SECRET', 'a'.repeat(32));

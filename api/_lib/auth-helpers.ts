@@ -163,8 +163,8 @@ let ownerSecretWarned = false;
  * Returns false for public visitors — the endpoint should return 401.
  *
  * Also runs the once-per-instance short-secret check (warn-only), because
- * this runs on nearly every request; after the first call it is one boolean
- * read.
+ * this runs on nearly every request. On Vercel, after the first call that is
+ * one boolean read; elsewhere each call also reads `process.env.VERCEL`.
  */
 export function isOwner(req: VercelRequest): boolean {
   warnWeakSecretsOnce();

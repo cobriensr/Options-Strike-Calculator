@@ -40,6 +40,10 @@ const WARNING_MESSAGE = 'Configured secret shorter than the minimum';
  * `GUEST_ACCESS_KEYS[<index>]` for each key under `MIN_GUEST_KEY_LEN` after
  * trimming. An unset or empty variable is not reported.
  *
+ * Lengths are counted in characters (UTF-16 code units, `String.length`), not
+ * bytes. `getConfiguredGuestKeys` in guest-auth.ts bounds a key in bytes; the
+ * two agree for ASCII keys.
+ *
  * The guest list is parsed here (split on `,`, trim, drop empty entries) and
  * `<index>` is the position among the non-empty entries. It does not reuse
  * `getConfiguredGuestKeys`, which sits behind auth-helpers and drops keys
@@ -67,8 +71,9 @@ export function weakSecretNames(): string[] {
 }
 
 // Set on the first evaluation, whatever it finds: the environment does not
-// change while an instance lives, so every later call is one boolean read.
-// A boolean, not a map keyed by anything from a request, so it cannot grow.
+// change while an instance lives, so on Vercel every later call is one boolean
+// read. A boolean, not a map keyed by anything from a request, so it cannot
+// grow.
 let checked = false;
 
 /**
