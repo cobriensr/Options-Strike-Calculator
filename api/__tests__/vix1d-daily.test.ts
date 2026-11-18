@@ -73,6 +73,7 @@ describe('GET /api/vix1d-daily per-IP request limit', () => {
       await handler(req, res);
 
       expect(res._status).toBe(200);
+      expect(res._json).toEqual(SAMPLE_MAP);
       expect(rejectIfRateLimited).toHaveBeenCalledTimes(1);
       expect(rejectIfRateLimited).toHaveBeenCalledWith(
         req,

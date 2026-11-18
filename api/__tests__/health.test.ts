@@ -75,6 +75,7 @@ describe('GET /api/health', () => {
         await handler(req, res);
 
         expect(res._status).toBe(200);
+        expect(res._json).toMatchObject({ status: 'healthy' });
         expect(rejectIfRateLimited).toHaveBeenCalledTimes(1);
         expect(rejectIfRateLimited).toHaveBeenCalledWith(
           req,

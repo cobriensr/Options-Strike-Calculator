@@ -22,6 +22,8 @@ interface PlotGroup {
   plots: string[];
 }
 
+// api/ml/plot-image.ts limits each address to 30 requests a minute; keep the
+// total number of plots here (25 now) under that.
 const PLOT_GROUPS: PlotGroup[] = [
   { label: 'Overview', plots: ['timeline', 'stationarity', 'correlations'] },
   {
