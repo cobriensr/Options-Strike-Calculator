@@ -29,17 +29,37 @@ const MAX_GIT_OUTPUT = 64 * 1024 * 1024;
  */
 export const GIT_TIMEOUT_MS = 300_000;
 
-/** A git command that could not run, timed out, or exited non-zero. */
+/**
+ * A git command that could not run, timed out, or exited non-zero. `timedOut`
+ * is true for the one killed at GIT_TIMEOUT_MS (see gitTimeoutError): a caller
+ * that turns a failure into advice, such as "run `git fetch`", tests it, and
+ * never the wording of `detail`.
+ */
 export class GitError extends Error {
   /**
    * @param {string[]} args
    * @param {string} detail git's stderr, or why git could not run.
+   * @param {{ timedOut?: boolean }} [options]
    */
-  constructor(args, detail) {
+  constructor(args, detail, { timedOut = false } = {}) {
     super(`git ${args.join(' ')}: ${detail}`);
     this.name = 'GitError';
     this.detail = detail;
+    this.timedOut = timedOut;
   }
+}
+
+/**
+ * The GitError for a git call killed at GIT_TIMEOUT_MS. Every producer builds
+ * it here, runGit and session-status's async spawn, so the two agree on the
+ * text and on `timedOut`.
+ *
+ * @param {string[]} args
+ */
+export function gitTimeoutError(args) {
+  return new GitError(args, `timed out after ${GIT_TIMEOUT_MS / 1000} s`, {
+    timedOut: true,
+  });
 }
 
 /**
@@ -74,11 +94,8 @@ export function runGit(args, env, { input } = {}) {
     // spawnSync's own message for a kill at the limit is "spawnSync git
     // ETIMEDOUT": no limit in it, so a reader cannot tell a stall from a
     // failure to start.
-    const detail =
-      result.error.code === 'ETIMEDOUT'
-        ? `timed out after ${GIT_TIMEOUT_MS / 1000} s`
-        : result.error.message;
-    throw new GitError(args, detail);
+    if (result.error.code === 'ETIMEDOUT') throw gitTimeoutError(args);
+    throw new GitError(args, result.error.message);
   }
   return result;
 }

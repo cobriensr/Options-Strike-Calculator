@@ -36,7 +36,7 @@
 import { execFile } from 'node:child_process';
 import { existsSync, statSync } from 'node:fs';
 import { parseArgs as parseNodeArgs } from 'node:util';
-import { GIT_TIMEOUT_MS, GitError } from './git-run.mjs';
+import { GIT_TIMEOUT_MS, GitError, gitTimeoutError } from './git-run.mjs';
 import {
   checkInUse,
   checkSettled,
@@ -620,9 +620,7 @@ function git(args) {
         } else if (error.killed) {
           // execFile killed git at the limit (an output overflow sets `code`
           // and leaves `killed` unset).
-          reject(
-            new GitError(args, `timed out after ${GIT_TIMEOUT_MS / 1000} s`),
-          );
+          reject(gitTimeoutError(args));
         } else {
           reject(new GitError(args, String(stderr).trim() || error.message));
         }
@@ -1007,6 +1005,9 @@ async function resolveBase() {
     ).trim();
   } catch (err) {
     if (err instanceof SetupError) throw err;
+    // A git killed at its limit says nothing about the ref: the advice below
+    // would send the owner to fetch for a stall.
+    if (err instanceof GitError && err.timedOut) throw err;
     throw new SetupError(
       `no ${BASE_REF} ref here; run \`git fetch origin\` or pass --fetch`,
       { cause: err },

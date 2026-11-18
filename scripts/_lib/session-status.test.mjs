@@ -1026,6 +1026,7 @@ function fakeGit(allArgs) {
       if (more.includes('--git-common-dir')) return `${world.commonDir}\n`;
       if (more.some((a) => a.startsWith('origin/main'))) {
         if (world.baseSha === null) throw new Failure('', 1);
+        if (world.baseSha instanceof Error) throw world.baseSha;
         return `${world.baseSha}\n`;
       }
       throw new Failure(`unscripted rev-parse ${joined}`);
@@ -1912,6 +1913,19 @@ describe('collectStatus: a git call that outlasts its limit', () => {
       `warning: git fetch origin failed: timed out after ${GIT_TIMEOUT_MS / 1000} s`,
     );
     expect(result.worktrees.length).toBeGreaterThan(0);
+  });
+
+  it('surfaces a timed-out rev-parse of origin/main as the timeout, not as a missing ref to fetch', async () => {
+    world.baseSha = new Killed();
+    const error = await collectStatus(OPTIONS).catch((e) => e);
+    expect(error).toBeInstanceOf(GitError);
+    expect(error).not.toBeInstanceOf(SetupError);
+    expect(error.timedOut).toBe(true);
+    expect(error.message).toBe(
+      `git rev-parse --verify --quiet origin/main^{commit}: timed out after ${GIT_TIMEOUT_MS / 1000} s`,
+    );
+    // The advice for a missing ref would send the owner to fetch.
+    expect(error.message).not.toMatch(/git fetch|--fetch/);
   });
 
   it('throws a GitError that names the command and says it timed out, whatever the child printed first', async () => {

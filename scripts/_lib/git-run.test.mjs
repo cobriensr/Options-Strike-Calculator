@@ -283,11 +283,12 @@ describe('the time limit on every git call', () => {
       watchNextSpawn({ cutTo: 500 });
       const args = [...STALL, 'stall'];
 
-      expectGitError(
-        thrownBy(() => run(args, cleanEnv())),
-        args,
-        `timed out after ${GIT_TIMEOUT_MS / 1000} s`,
-      );
+      const err = thrownBy(() => run(args, cleanEnv()));
+
+      expectGitError(err, args, `timed out after ${GIT_TIMEOUT_MS / 1000} s`);
+      // A caller tells a timeout from any other failure by this, not by the
+      // wording of the detail.
+      expect(err.timedOut).toBe(true);
     },
   );
 
@@ -296,5 +297,13 @@ describe('the time limit on every git call', () => {
 
     expect(err.detail).toBe('fatal: Needed a single revision');
     expect(err.detail).not.toContain('timed out');
+    expect(err.timedOut).toBe(false);
+  });
+
+  it('does not take a git that cannot be spawned for a timeout either', () => {
+    const err = thrownBy(() => git(['--version'], envWithoutGit()));
+
+    expect(err.detail).toBe('spawnSync git ENOENT');
+    expect(err.timedOut).toBe(false);
   });
 });
