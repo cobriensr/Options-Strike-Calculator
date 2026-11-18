@@ -1,4 +1,3 @@
-import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -8,10 +7,7 @@ import {
   parseIndexHtml,
   checkBuildOutput,
 } from './build-output.mjs';
-import {
-  CHILD_TEST_TIMEOUT,
-  CHILD_TIMEOUT,
-} from './spawn-timeout.fixtures.mjs';
+import { CHILD_TEST_TIMEOUT, spawnChild } from './spawn-timeout.fixtures.mjs';
 
 /**
  * index.html in the layout `vite build` writes: the entry module script,
@@ -374,9 +370,10 @@ describe('checkBuildOutput: lazy-only libraries', () => {
 });
 
 // Each CLI test spawns node: Windows process spawn under full-suite
-// multi-session load took 16.7 s (2026-10-29), past the 15 s testTimeout. The
-// child gets CHILD_TIMEOUT and the test more, so a slow child fails with its
-// own stderr (spawn-timeout.fixtures.mjs).
+// multi-session load took 16.7 s (2026-10-29), past the 15 s testTimeout.
+// spawnChild gives the child its limit (CHILD_TIMEOUT) and the test gets more,
+// so a slow child fails with an error that names it, its limit and its stderr
+// so far (spawn-timeout.fixtures.mjs).
 describe('check-build-output CLI', { timeout: CHILD_TEST_TIMEOUT }, () => {
   // vitest runs from the repo root (same convention as check-coverage-floor).
   const cli = path.resolve(process.cwd(), 'scripts', 'check-build-output.mjs');
@@ -399,11 +396,7 @@ describe('check-build-output CLI', { timeout: CHILD_TEST_TIMEOUT }, () => {
         writeFileSync(path.join(cwd, 'dist', 'assets', name), source);
       }
     }
-    return spawnSync(process.execPath, [cli], {
-      cwd,
-      encoding: 'utf8',
-      timeout: CHILD_TIMEOUT,
-    });
+    return spawnChild(process.execPath, [cli], { cwd, encoding: 'utf8' });
   }
 
   const CLEAN_ASSETS = {

@@ -9,18 +9,15 @@
  * scripts run on import.
  */
 
-import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { describe, expect, it, vi } from 'vitest';
-import {
-  CHILD_TEST_TIMEOUT,
-  CHILD_TIMEOUT,
-} from './spawn-timeout.fixtures.mjs';
+import { CHILD_TEST_TIMEOUT, spawnChild } from './spawn-timeout.fixtures.mjs';
 
-// Every test spawns node. The child gets CHILD_TIMEOUT; the test gets more, so
-// a slow child fails with its own stderr, not as "Test timed out in 15000ms".
+// Every test spawns node through spawnChild. The child's limit (CHILD_TIMEOUT)
+// is below the test's, so a slow child fails with an error that names it, its
+// limit and its stderr so far, not as "Test timed out in 15000ms".
 vi.setConfig({ testTimeout: CHILD_TEST_TIMEOUT });
 
 const SCRIPTS = [
@@ -91,7 +88,7 @@ const SCRIPTS = [
 function run({ file, args, cols }, sqlMode) {
   const clean = { ...process.env };
   delete clean.SENTRY_DSN;
-  return spawnSync(
+  return spawnChild(
     process.execPath,
     [
       '--import',
@@ -114,7 +111,6 @@ function run({ file, args, cols }, sqlMode) {
         STUB_COLS: String(cols),
       },
       encoding: 'utf8',
-      timeout: CHILD_TIMEOUT,
     },
   );
 }
@@ -176,7 +172,7 @@ describe('the backfill scripts, run end to end', () => {
   );
 
   it('the stub throws on any host but Unusual Whales and the test database (no real network from a child process)', () => {
-    const result = spawnSync(
+    const result = spawnChild(
       process.execPath,
       [
         '--import',
@@ -189,7 +185,7 @@ describe('the backfill scripts, run end to end', () => {
         '-e',
         "fetch('https://example.com/x').catch((e) => { console.error(e.message); process.exit(3); })",
       ],
-      { encoding: 'utf8', timeout: CHILD_TIMEOUT },
+      { encoding: 'utf8' },
     );
 
     expect(result.status).toBe(3);
