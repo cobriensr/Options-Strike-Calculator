@@ -181,14 +181,17 @@ Single asyncio process:
      `Secret check failed on metrics (client <address>)` that also files a
      Sentry event (`src/auth.py`). A token set to fewer than 32 characters
      logs and files one ERROR at boot, `Configured secret shorter than the
-     minimum: INTERNAL_METRICS_TOKEN`, and the service boots anyway. Neither
+     minimum: INTERNAL_METRICS_TOKEN`, and the service boots anyway. The
+     refusal event carries a `reason` tag, `missing` or `wrong`. Neither
      report holds a token, a presented credential or a length. The SDK's
      aiohttp integration would attach the request's headers to any event
      filed during a request, so `sentry_setup._before_send` blanks the value
      of every request header whose name contains `token` or `secret`
-     (`X-Metrics-Token` included) on every event, and the compare lives in
-     `health._check_token` so no token is a local variable of the route an
-     unhandled error passes through.
+     (`X-Metrics-Token` included) on every event. `init_sentry` also sets
+     `include_local_variables=False`, so no event carries frame local
+     variables; the key scrub and the compare in `health._check_token` (so no
+     token is a local variable of the route an unhandled error passes through)
+     stay as a second layer.
 6. **Subscription watchdog** (`src/subscription_watchdog.py`): checks
    every 120 s after a 5-minute grace, and sends a Sentry warning when a
    configured channel stays unsubscribed for two checks in a row.
