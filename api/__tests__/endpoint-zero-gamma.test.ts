@@ -29,6 +29,13 @@ vi.mock('../_lib/guest-auth.js', () => ({
   guardOwnerOrGuestEndpoint: vi.fn().mockResolvedValue(false),
 }));
 
+// The wrapper's default reader limiter lives in auth-helpers.js. Keep the rest
+// of that module real and spy on the limiter, to pin the limit this route sets.
+vi.mock('../_lib/auth-helpers.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../_lib/auth-helpers.js')>()),
+  rejectIfRateLimited: vi.fn().mockResolvedValue(false),
+}));
+
 const mockSql = vi.fn();
 vi.mock('../_lib/db.js', () => ({
   getDb: vi.fn(() => mockSql),
@@ -58,6 +65,7 @@ vi.mock('../_lib/logger.js', () => ({
 
 import handler from '../zero-gamma.js';
 import { guardOwnerOrGuestEndpoint } from '../_lib/guest-auth.js';
+import { rejectIfRateLimited } from '../_lib/auth-helpers.js';
 import { Sentry } from '../_lib/sentry.js';
 import logger from '../_lib/logger.js';
 import { TransientDbError } from '../_lib/db.js';
@@ -115,6 +123,23 @@ describe('GET /api/zero-gamma', () => {
     );
     expect(res._status).toBe(400);
     expect(mockSql).not.toHaveBeenCalled();
+  });
+
+  it('allows 120 a minute per client, double the reader default, for the three-ticker fan-out', async () => {
+    vi.mocked(rejectIfRateLimited).mockClear();
+    mockSql.mockResolvedValueOnce([]);
+    const req = mockRequest({ method: 'GET' });
+    const res = mockResponse();
+
+    await handler(req, res);
+
+    expect(rejectIfRateLimited).toHaveBeenCalledTimes(1);
+    expect(rejectIfRateLimited).toHaveBeenCalledWith(
+      req,
+      res,
+      'reader:/api/zero-gamma',
+      120,
+    );
   });
 
   it('returns empty payload for owner when no rows exist', async () => {

@@ -152,4 +152,6 @@ export default withDbReader(
     done({ status: 200 });
     return res.status(200).json(response);
   },
+  // Over the 60 default: 3 ticker fetches per poll and per date change.
+  { rateLimit: 120 },
 );
