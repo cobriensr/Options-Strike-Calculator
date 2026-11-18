@@ -43,6 +43,8 @@ vi.mock('../_lib/logger.js', () => ({
 
 vi.mock('../_lib/auth-helpers.js', () => ({
   guardOwnerEndpoint: vi.fn(async () => false),
+  isOwner: vi.fn(() => false),
+  rejectIfRateLimited: vi.fn(async () => false),
 }));
 
 vi.mock('../_lib/guest-auth.js', () => ({
@@ -52,7 +54,11 @@ vi.mock('../_lib/guest-auth.js', () => ({
 import { withDbReader, withRequestScope } from '../_lib/request-scope.js';
 import { TransientDbError } from '../_lib/db.js';
 import { Sentry, metrics } from '../_lib/sentry.js';
-import { guardOwnerEndpoint } from '../_lib/auth-helpers.js';
+import {
+  guardOwnerEndpoint,
+  isOwner,
+  rejectIfRateLimited,
+} from '../_lib/auth-helpers.js';
 import { guardOwnerOrGuestEndpoint } from '../_lib/guest-auth.js';
 
 describe('withRequestScope', () => {
@@ -142,6 +148,9 @@ describe('withDbReader', () => {
     // "guard passed" behavior so tests not exercising rejection proceed.
     vi.mocked(guardOwnerEndpoint).mockResolvedValue(false);
     vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
+    // Default caller: not the owner, under the limit.
+    vi.mocked(isOwner).mockReturnValue(false);
+    vi.mocked(rejectIfRateLimited).mockResolvedValue(false);
   });
 
   it('runs the inner handler with the scoped req/res/done; no catch on success', async () => {
@@ -380,5 +389,180 @@ describe('withDbReader', () => {
     await wrapped(mockRequest({ method: 'GET' }), res);
 
     expect(mockSetTag).toHaveBeenCalledWith('endpoint', '/api/zero-gamma');
+  });
+});
+
+describe('withDbReader default rate limit', () => {
+  const okHandler = () =>
+    vi.fn(async (_req, r, done) => {
+      done({ status: 200 });
+      r.status(200).json({ ok: true });
+    });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(guardOwnerEndpoint).mockResolvedValue(false);
+    vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
+    vi.mocked(isOwner).mockReturnValue(false);
+    vi.mocked(rejectIfRateLimited).mockResolvedValue(false);
+  });
+
+  it.each(['owner-or-guest', 'public'] as const)(
+    "auth='%s' → a valid owner cookie is never limited",
+    async (auth) => {
+      vi.mocked(isOwner).mockReturnValue(true);
+      const res = mockResponse();
+      const handler = okHandler();
+      const wrapped = withDbReader('/api/x', 'x', auth, handler);
+
+      await wrapped(mockRequest({ method: 'GET' }), res);
+
+      expect(rejectIfRateLimited).not.toHaveBeenCalled();
+      expect(handler).toHaveBeenCalledTimes(1);
+      expect(res._status).toBe(200);
+    },
+  );
+
+  it("auth='owner-or-guest' → limits a guest at 60 a minute, keyed reader:<path>, after the guard", async () => {
+    const req = mockRequest({ method: 'GET' });
+    const res = mockResponse();
+    const handler = okHandler();
+    const wrapped = withDbReader('/api/x', 'x', 'owner-or-guest', handler);
+
+    await wrapped(req, res);
+
+    expect(rejectIfRateLimited).toHaveBeenCalledTimes(1);
+    expect(rejectIfRateLimited).toHaveBeenCalledWith(
+      req,
+      res,
+      'reader:/api/x',
+      60,
+    );
+    const guardOrder = vi.mocked(guardOwnerOrGuestEndpoint).mock
+      .invocationCallOrder[0]!;
+    const limiterOrder =
+      vi.mocked(rejectIfRateLimited).mock.invocationCallOrder[0]!;
+    expect(guardOrder).toBeLessThan(limiterOrder);
+    expect(handler).toHaveBeenCalledTimes(1);
+  });
+
+  it("auth='public' → limits the caller at 30 a minute", async () => {
+    const req = mockRequest({ method: 'GET' });
+    const res = mockResponse();
+    const wrapped = withDbReader(
+      '/api/ml/plots',
+      'ml_plots',
+      'public',
+      okHandler(),
+    );
+
+    await wrapped(req, res);
+
+    expect(rejectIfRateLimited).toHaveBeenCalledTimes(1);
+    expect(rejectIfRateLimited).toHaveBeenCalledWith(
+      req,
+      res,
+      'reader:/api/ml/plots',
+      30,
+    );
+  });
+
+  it("auth='owner' → no default limit (only the owner passes that guard)", async () => {
+    const handler = okHandler();
+    const wrapped = withDbReader('/api/x', 'x', 'owner', handler);
+
+    await wrapped(mockRequest({ method: 'GET' }), mockResponse());
+
+    expect(rejectIfRateLimited).not.toHaveBeenCalled();
+    expect(handler).toHaveBeenCalledTimes(1);
+  });
+
+  it('a limited request gets the 429, done({ status: 429 }) once, and never reaches the handler', async () => {
+    vi.mocked(rejectIfRateLimited).mockImplementation(async (_req, res) => {
+      res
+        .status(429)
+        .json({ error: 'Too many requests. Try again in 30 seconds.' });
+      return true;
+    });
+    const res = mockResponse();
+    const handler = okHandler();
+    const wrapped = withDbReader('/api/x', 'x', 'owner-or-guest', handler);
+
+    await wrapped(mockRequest({ method: 'GET' }), res);
+
+    expect(handler).not.toHaveBeenCalled();
+    expect(res._status).toBe(429);
+    expect(res._json).toEqual({
+      error: 'Too many requests. Try again in 30 seconds.',
+    });
+    expect(mockDone).toHaveBeenCalledTimes(1);
+    expect(mockDone).toHaveBeenCalledWith({ status: 429 });
+    expect(Sentry.captureException).not.toHaveBeenCalled();
+  });
+
+  it('opts.rateLimit replaces the default', async () => {
+    const req = mockRequest({ method: 'GET' });
+    const res = mockResponse();
+    const wrapped = withDbReader('/api/x', 'x', 'owner-or-guest', okHandler(), {
+      rateLimit: 120,
+    });
+
+    await wrapped(req, res);
+
+    expect(rejectIfRateLimited).toHaveBeenCalledTimes(1);
+    expect(rejectIfRateLimited).toHaveBeenCalledWith(
+      req,
+      res,
+      'reader:/api/x',
+      120,
+    );
+  });
+
+  it.each(['owner-or-guest', 'public'] as const)(
+    "auth='%s' → opts.rateLimit: 0 skips the limiter and runs the handler",
+    async (auth) => {
+      const handler = okHandler();
+      const wrapped = withDbReader('/api/x', 'x', auth, handler, {
+        rateLimit: 0,
+      });
+
+      await wrapped(mockRequest({ method: 'GET' }), mockResponse());
+
+      expect(rejectIfRateLimited).not.toHaveBeenCalled();
+      expect(handler).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('a guard rejection (401) never reaches the limiter', async () => {
+    vi.mocked(guardOwnerOrGuestEndpoint).mockImplementation(async (_req, r) => {
+      r.status(401).json({ error: 'Not authenticated' });
+      return true;
+    });
+    const res = mockResponse();
+    const handler = okHandler();
+    const wrapped = withDbReader('/api/x', 'x', 'owner-or-guest', handler);
+
+    await wrapped(mockRequest({ method: 'GET' }), res);
+
+    expect(res._status).toBe(401);
+    expect(rejectIfRateLimited).not.toHaveBeenCalled();
+    expect(isOwner).not.toHaveBeenCalled();
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it('a limiter that throws soft-degrades to the 500 and Sentry capture, and the handler does not run', async () => {
+    const err = new Error('limiter blew up');
+    vi.mocked(rejectIfRateLimited).mockRejectedValue(err);
+    const res = mockResponse();
+    const handler = okHandler();
+    const wrapped = withDbReader('/api/x', 'x', 'owner-or-guest', handler);
+
+    await wrapped(mockRequest({ method: 'GET' }), res);
+
+    expect(handler).not.toHaveBeenCalled();
+    expect(res._status).toBe(500);
+    expect(res._json).toEqual({ error: 'Internal error' });
+    expect(mockDone).toHaveBeenCalledWith({ status: 500 });
+    expect(Sentry.captureException).toHaveBeenCalledWith(err);
   });
 });

@@ -14,7 +14,11 @@
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { guardOwnerEndpoint } from './auth-helpers.js';
+import {
+  guardOwnerEndpoint,
+  isOwner,
+  rejectIfRateLimited,
+} from './auth-helpers.js';
 import { guardOwnerOrGuestEndpoint } from './guest-auth.js';
 import { metrics, Sentry } from './sentry.js';
 import { sendDbErrorResponse } from './transient-db-response.js';
@@ -27,6 +31,35 @@ import { sendDbErrorResponse } from './transient-db-response.js';
  *   - `'public'`        → no guard (e.g. plot listings with no private data).
  */
 export type DbReaderAuth = 'owner' | 'owner-or-guest' | 'public';
+
+/**
+ * Default per-client requests a minute for a `withDbReader` route, by who can
+ * reach it. The count is per client address and per route.
+ *
+ * Why these numbers: the busiest normal page is a 10 s poll (6 a minute) plus
+ * a short fan-out after a filter or date change, so one browser stays well
+ * under 60 on any route; a route whose normal use can pass half of that sets
+ * its own `opts.rateLimit`. A guest key can be shared and a public route
+ * carries no credential at all, so neither should be able to turn one reader
+ * into an unbounded database load. The public figure is half the guest one:
+ * the only public reader is fetched once per page load.
+ *
+ * Why the owner is exempt (owner decision, 2026-11-17): the owner is the main
+ * user and is already authenticated by the cookie, so a limit would only slow
+ * the person the tool is for, and what it guards against does not carry that
+ * cookie. `'owner'` routes get no default for the same reason: only the owner
+ * gets past that guard.
+ *
+ * The limiter fails open when Redis is down (see `rejectIfRateLimited`).
+ */
+const READER_RATE_LIMITS = { guest: 60, public: 30 } as const;
+
+/** The default limit for an auth mode; 0 means no default. */
+function defaultReaderLimit(auth: DbReaderAuth): number {
+  if (auth === 'owner-or-guest') return READER_RATE_LIMITS.guest;
+  if (auth === 'public') return READER_RATE_LIMITS.public;
+  return 0;
+}
 
 /**
  * Tracking handle returned by `metrics.request` for status/duration
@@ -142,9 +175,16 @@ export function withRequestScope(
  *   - Both paths record the real status through `done` so the request
  *     metric matches the response (`503` / `500`, never a guessed status).
  *
- * The inner handler keeps ownership of the rest of its concerns — rate
- * limiting, Zod 400s, 404 early returns — and is responsible for calling
- * `done({ status: 200 })` on the success path before writing its JSON.
+ * After the guard passes, the wrapper applies a default per-client rate limit
+ * (see `READER_RATE_LIMITS`): `'owner-or-guest'` routes get the guest limit,
+ * `'public'` routes the public one, `'owner'` routes none. A valid owner
+ * cookie is never limited. A limited request gets the 429 and
+ * `done({ status: 429 })`, and the handler does not run. The limiter runs
+ * inside the `try` too, so a throw from it soft-degrades like the guard does.
+ *
+ * The inner handler keeps ownership of the rest of its concerns — a stricter
+ * limit of its own, Zod 400s, 404 early returns — and is responsible for
+ * calling `done({ status: 200 })` on the success path before writing its JSON.
  *
  * Usage:
  * ```ts
@@ -167,14 +207,23 @@ export function withRequestScope(
  * @param handler The inner endpoint logic. Receives `(req, res, done)`.
  * @param opts.serverErrorBody Body returned on a genuine 500. Defaults to
  *   `{ error: 'Internal error' }`.
+ * @param opts.rateLimit Requests a minute per client address for this route,
+ *   replacing the default for its auth mode; `0` turns the wrapper's limiter
+ *   off. Set it above a route's normal peak when one browser can exceed the
+ *   default (say why in a comment), or to `0` when the handler keeps its own
+ *   limiter so the two do not stack. The limiter key is `reader:<path>`.
  */
 export function withDbReader(
   path: string,
   label: string,
   auth: DbReaderAuth,
   handler: ScopedHandler,
-  opts: { serverErrorBody?: Record<string, unknown> } = {},
+  opts: {
+    serverErrorBody?: Record<string, unknown>;
+    rateLimit?: number;
+  } = {},
 ): (req: VercelRequest, res: VercelResponse) => Promise<void> {
+  const rateLimit = opts.rateLimit ?? defaultReaderLimit(auth);
   return withRequestScope('GET', path, async (req, res, done) => {
     // Latch: done() is not idempotent (each call emits a fresh metric). A
     // throw after a handler's done({status:200}) would otherwise
@@ -190,6 +239,14 @@ export function withDbReader(
         const guard =
           auth === 'owner' ? guardOwnerEndpoint : guardOwnerOrGuestEndpoint;
         if (await guard(req, res, onceDone)) return; // guard sent 401/403
+      }
+      const limited =
+        rateLimit > 0 &&
+        !isOwner(req) &&
+        (await rejectIfRateLimited(req, res, `reader:${path}`, rateLimit));
+      if (limited) {
+        onceDone({ status: 429 }); // the limiter already sent the 429
+        return;
       }
       await handler(req, res, onceDone);
     } catch (err) {

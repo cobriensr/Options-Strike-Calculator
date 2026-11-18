@@ -231,4 +231,6 @@ export default withDbReader(
     done({ status: 200 });
     res.status(200).json(parseDetailRow(rows[0]!));
   },
+  // 0: the rejectIfRateLimited call above is this route's limiter; don't stack.
+  { rateLimit: 0 },
 );
