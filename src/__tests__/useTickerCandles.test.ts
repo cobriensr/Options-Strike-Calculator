@@ -7,6 +7,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, waitFor, act } from '@testing-library/react';
 import { useTickerCandles } from '../hooks/useTickerCandles';
 import { POLL_INTERVALS } from '../constants';
+import { getETDateStr } from '../utils/timezone';
 import type { TickerCandlesResponse } from '../components/LotteryFinder/types';
 
 const fetchMock = vi.fn();
@@ -43,20 +44,18 @@ function emptyCandles(
   };
 }
 
-// "polls today" pins the fake clock to CT noon. Without `now` the fake clock
-// starts at the real time, and the hook's URL is derived from `date`, which the
-// test takes from todayCt(). In the 30 s before 00:00 CT the poll interval
-// rolls todayCt() on the re-render, the URL changes, the eager-fetch effect
-// fires again and the test sees 3 fetches, not 2.
+// The hook compares `date` with the shared ET clock (`useETToday`), so a row
+// polls only while its date is the ET date, and it rolls at 23:00:01 CT (1 s
+// past ET midnight), not at CT midnight. Every fake-timer test here runs on a
+// pinned clock. With no `now` the fake clock starts at the real time, and from
+// 23:00 to 24:00 CT the ET date is already the next day: a `date` taken from
+// the real clock is then yesterday's, the hook calls the row historical, and a
+// "does not poll" test passes for that reason, not the one it names, while a
+// "polls" test sees one fetch. The pin is Thursday 2026-05-07, 13:00 ET: after
+// the past dates the tests use (2024-01-01, 2026-05-06). The rollover itself
+// is in hooks/rowHooksRollover.test.ts.
 const PINNED_NOW = new Date('2026-05-07T17:00:00Z');
-
-const todayCt = (): string =>
-  new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'America/Chicago',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).format(new Date());
+const TODAY_ET = getETDateStr(PINNED_NOW);
 
 describe('useTickerCandles', () => {
   it('does not fetch when enabled=false', async () => {
@@ -186,7 +185,7 @@ describe('useTickerCandles', () => {
     renderHook(() =>
       useTickerCandles({
         ticker: 'SPY',
-        date: todayCt(),
+        date: TODAY_ET,
         enabled: true,
         marketOpen: true,
       }),
@@ -202,7 +201,7 @@ describe('useTickerCandles', () => {
   });
 
   it('does not poll on historical date', async () => {
-    vi.useFakeTimers();
+    vi.useFakeTimers({ now: PINNED_NOW });
     fetchMock.mockResolvedValue(jsonResponse(emptyCandles()));
     renderHook(() =>
       useTickerCandles({
@@ -223,12 +222,12 @@ describe('useTickerCandles', () => {
   });
 
   it('does not poll when marketOpen=false', async () => {
-    vi.useFakeTimers();
+    vi.useFakeTimers({ now: PINNED_NOW });
     fetchMock.mockResolvedValue(jsonResponse(emptyCandles()));
     renderHook(() =>
       useTickerCandles({
         ticker: 'SPY',
-        date: todayCt(),
+        date: TODAY_ET,
         enabled: true,
         marketOpen: false,
       }),
