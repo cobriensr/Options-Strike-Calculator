@@ -35,6 +35,9 @@ vi.mock('../_lib/sentry.js', () => ({
   Sentry: {
     withIsolationScope: vi.fn((cb) => cb({ setTransactionName: vi.fn() })),
     captureException: vi.fn(),
+    // `isOwner` reports a short fixture secret once on Vercel (the bot test
+    // sets VERCEL), through `Sentry.captureMessage`.
+    captureMessage: vi.fn(),
   },
   metrics: {
     request: vi.fn(() => vi.fn()),

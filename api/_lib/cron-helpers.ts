@@ -20,6 +20,7 @@ import { MARKET_MINUTES } from './constants.js';
 import logger from './logger.js';
 // Direct import (not via api-helpers/auth-helpers): see secret-compare.ts.
 import { bearerMatches } from './secret-compare.js';
+import { warnWeakSecretsOnce } from './secret-strength.js';
 import { getMarketCloseHourET } from '../../src/data/marketHours.js';
 import {
   getETTime,
@@ -266,6 +267,11 @@ export function cronGuard(
     requireApiKey = true,
     deferSkipResponse = false,
   } = opts;
+
+  // Once-per-instance short-secret check (warn-only); runs before any
+  // rejection so a short CRON_SECRET is reported even on a request refused
+  // for its method or its token.
+  warnWeakSecretsOnce();
 
   if (req.method !== 'GET') {
     res.status(405).json({ error: 'GET only' });

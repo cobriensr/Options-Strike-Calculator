@@ -20,6 +20,7 @@ import { limiterRedis } from './redis.js';
 import logger from './logger.js';
 import { metrics, Sentry } from './sentry.js';
 import { secretEquals } from './secret-compare.js';
+import { warnWeakSecretsOnce } from './secret-strength.js';
 
 // The shared secret-comparison helpers (R2). They live in a dependency-free
 // module so the cron path can import them without this file's botid/redis
@@ -160,8 +161,13 @@ let ownerSecretWarned = false;
  * Verify that the request is from the site owner.
  * Returns true if the owner cookie matches OWNER_SECRET.
  * Returns false for public visitors — the endpoint should return 401.
+ *
+ * Also runs the once-per-instance short-secret check (warn-only), because
+ * this runs on nearly every request; after the first call it is one boolean
+ * read.
  */
 export function isOwner(req: VercelRequest): boolean {
+  warnWeakSecretsOnce();
   const secret = process.env.OWNER_SECRET;
   if (!secret) {
     if (!ownerSecretWarned && process.env.VERCEL) {
