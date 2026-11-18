@@ -127,10 +127,12 @@ const spxDayDataSchema = z.object({
   previousDay: historyDaySummarySchema.nullable(),
 });
 
-// api/history.ts passes Schwab's raw previousClose through, and Schwab may
-// leave it out on an empty day. For the VIX family a missing one becomes 0,
-// which is what the endpoint sends for a failed symbol and what the VIX
-// reads already treat as "unknown".
+// api/history.ts sends previousClose 0 for a failed symbol and for an unknown
+// previous session, and the VIX reads already treat 0 as "unknown". The VIX
+// family keeps `.default(0)` so a missing key reads the same: an old
+// `history:v3` entry, or a response the browser cached before the endpoint
+// took previousDay.close, can lack the key (Schwab left its previousClose out
+// on an empty day, and JSON drops undefined). SPX stays strict.
 const vixFamilyDayDataSchema = spxDayDataSchema.extend({
   previousClose: z.number().default(0),
 });

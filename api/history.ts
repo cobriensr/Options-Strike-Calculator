@@ -7,6 +7,11 @@
  *
  * All five symbols are fetched in parallel from Schwab's priceHistory API.
  *
+ * Each symbol's `previousClose` is the previous session's last 5-minute close
+ * (its `previousDay.close`), or 0 when the window lacks the target's prior
+ * trading day. Schwab's own previousClose is the close before the window
+ * starts, 7 days before the target, so it is neither requested nor read.
+ *
  * Owner-or-guest (uses Schwab credentials).
  *
  * Cache strategy (Redis entry TTL; the browser max-age matches on hit and miss):
@@ -23,6 +28,7 @@ import {
 } from './_lib/api-helpers.js';
 import { redis } from './_lib/redis.js';
 import { getETTotalMinutes, getETDateStr } from '../src/utils/timezone.js';
+import { parseIsoDate, priorTradingDay } from '../src/data/marketHours.js';
 import logger from './_lib/logger.js';
 
 // ============================================================
@@ -41,7 +47,6 @@ interface SchwabCandle {
 interface SchwabPriceHistory {
   symbol: string;
   candles: SchwabCandle[];
-  previousClose: number;
 }
 
 interface ProcessedCandle {
@@ -65,6 +70,10 @@ interface DaySummary {
 
 interface SymbolDayData {
   candles: ProcessedCandle[];
+  /**
+   * The close of `previousDay` when it is the target's prior trading day
+   * (`priorTradingDay`), else 0: no `previousDay`, or an older session.
+   */
   previousClose: number;
   previousDay: DaySummary | null;
 }
@@ -202,13 +211,77 @@ function repairCachedCandles(
 }
 
 /**
+ * The `previousClose` a symbol serves: the last 5-minute close of its previous
+ * session, or 0 when it has none. Only `expectedDate`, the target's prior
+ * trading day, counts as the previous session. When Schwab's window lacks that
+ * day but holds an earlier one, `previousDay` is the earlier session, and its
+ * close would pass as yesterday's, so it serves 0. A previousDay whose close
+ * is not a finite number serves 0 as well.
+ */
+function previousCloseOf(
+  previousDay: DaySummary | null | undefined,
+  expectedDate: string,
+): number {
+  if (previousDay?.date !== expectedDate) return 0;
+  const { close } = previousDay;
+  return typeof close === 'number' && Number.isFinite(close) ? close : 0;
+}
+
+/**
+ * A stored response with each symbol's previousClose set to what the fetch
+ * path would serve for its previousDay (previousCloseOf). A stored entry from
+ * before the fetch path did so holds Schwab's range-start value, a week before
+ * the target, for the rest of its 90-day TTL, and an older one may lack the
+ * key, so the repair happens on every read and the stored value is not
+ * rewritten. `expectedDate` is the prior trading day of the request's date.
+ * Any symbol that is a non-null object is repaired, a missing previousClose
+ * included. A symbol that is not an object is passed through as stored, and an
+ * entry that needs no repair comes back as the same object. Repairs are logged
+ * and not sent to Sentry: a stored entry would report on every hit.
+ */
+function repairCachedPreviousClose(
+  response: HistoryResponse,
+  cacheKey: string,
+  expectedDate: string,
+): HistoryResponse {
+  const repaired: HistoryResponse = { ...response };
+  const repairs: {
+    field: string;
+    stored: number | undefined;
+    served: number;
+    previousDayDate: string | null;
+  }[] = [];
+  for (const field of SYMBOL_FIELDS) {
+    const day = response[field] as SymbolDayData | null | undefined;
+    if (typeof day !== 'object' || day === null || Array.isArray(day)) continue;
+    const served = previousCloseOf(day.previousDay, expectedDate);
+    if (day.previousClose === served) continue;
+    repairs.push({
+      field,
+      stored: day.previousClose as number | undefined,
+      served,
+      previousDayDate: day.previousDay?.date ?? null,
+    });
+    repaired[field] = { ...day, previousClose: served };
+  }
+  if (repairs.length === 0) return response;
+  logger.warn(
+    { cacheKey, expected: expectedDate, repaired: repairs },
+    'Cached history held a previousClose other than the previous session close; served that close',
+  );
+  return repaired;
+}
+
+/**
  * Read a cached entry. A Redis error or a wrong-shaped value is a miss, and
  * the fetch path then overwrites the key, so a bad entry heals on the next
  * request instead of being served until its TTL runs out. A hit comes back
- * with its candles sorted and unique (repairCachedCandles).
+ * with its candles sorted and unique (repairCachedCandles) and its
+ * previousClose taken from its previousDay (repairCachedPreviousClose).
  */
 async function readCachedHistory(
   cacheKey: string,
+  expectedPreviousDate: string,
 ): Promise<CachedHistory | null> {
   let cached: unknown;
   try {
@@ -219,7 +292,11 @@ async function readCachedHistory(
   if (cached == null) return null;
   if (isCachedHistory(cached)) {
     return {
-      response: repairCachedCandles(cached.response, cacheKey),
+      response: repairCachedPreviousClose(
+        repairCachedCandles(cached.response, cacheKey),
+        cacheKey,
+        expectedPreviousDate,
+      ),
       complete: cached.complete,
     };
   }
@@ -277,12 +354,15 @@ function computeOHLC(
 
 /**
  * Fetch priceHistory for a single symbol and extract the target date + previous day.
+ * `expectedPreviousDate` is the target's prior trading day: the only session
+ * whose close is served as `previousClose` (previousCloseOf).
  */
 async function fetchSymbolHistory(
   symbol: string,
   startMs: number,
   endMs: number,
   targetDate: string,
+  expectedPreviousDate: string,
 ): Promise<SymbolFetchResult> {
   const empty: SymbolFetchResult = {
     candles: [],
@@ -300,7 +380,6 @@ async function fetchSymbolHistory(
     startDate: String(startMs),
     endDate: String(endMs),
     needExtendedHoursData: 'false',
-    needPreviousClose: 'true',
   });
 
   const result = await schwabFetch<SchwabPriceHistory>(
@@ -321,7 +400,7 @@ async function fetchSymbolHistory(
     return empty;
   }
 
-  const { candles: allCandles, previousClose } = result.data;
+  const { candles: allCandles } = result.data;
 
   // Group candles by ET date, filtering to regular hours only
   const byDate = new Map<string, SchwabCandle[]>();
@@ -359,6 +438,17 @@ async function fetchSymbolHistory(
     ? sortUniqueByDatetime(byDate.get(prevDate) ?? [])
     : [];
   const previousDay = prevDate ? computeOHLC(prevCandles, prevDate) : null;
+  if (previousDay && previousDay.date !== expectedPreviousDate) {
+    logger.warn(
+      {
+        symbol,
+        date: targetDate,
+        previousDayDate: previousDay.date,
+        expected: expectedPreviousDate,
+      },
+      'Schwab window lacks the prior trading day; serving previousClose 0',
+    );
+  }
 
   // Process target candles
   const processed: ProcessedCandle[] = targetCandles.map((c) => ({
@@ -372,7 +462,7 @@ async function fetchSymbolHistory(
 
   return {
     candles: processed,
-    previousClose,
+    previousClose: previousCloseOf(previousDay, expectedPreviousDate),
     previousDay,
     ok: true,
     hadDuplicates,
@@ -392,7 +482,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       const dateParam =
         typeof req.query?.date === 'string' ? req.query.date : '';
-      if (!dateParam || !/^\d{4}-\d{2}-\d{2}$/.test(dateParam)) {
+      // priorTradingDay below throws on an impossible date (2026-02-30,
+      // which parseIsoDate rejects) and on one near year 0, where toISOString
+      // switches to extended-year strings (0000-01-01 passes parseIsoDate).
+      // Schwab holds no 5-minute data before 2000 anyway.
+      if (parseIsoDate(dateParam) === null || dateParam < '2000-01-01') {
         done({ status: 400 });
         return res.status(400).json({
           error: 'Missing or invalid date parameter. Use ?date=YYYY-MM-DD',
@@ -410,10 +504,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           .json({ error: 'Cannot fetch history for future dates' });
       }
 
+      const expectedPreviousDate = priorTradingDay(dateParam);
+
       // Try Redis cache (past dates are cached long-term)
       const cacheKey = `${REDIS_PREFIX}${dateParam}`;
       if (!isToday) {
-        const cached = await readCachedHistory(cacheKey);
+        const cached = await readCachedHistory(cacheKey, expectedPreviousDate);
         if (cached) {
           metrics.cacheResult('/api/history', true);
           res.setHeader('Cache-Control', cacheControlFor(cached.complete));
@@ -429,12 +525,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const endMs = targetMs + 2 * 24 * 60 * 60 * 1000;
 
       // Fetch all 5 symbols in parallel
+      const fetchSymbol = (symbol: string) =>
+        fetchSymbolHistory(
+          symbol,
+          startMs,
+          endMs,
+          dateParam,
+          expectedPreviousDate,
+        );
       const [spx, vix, vix1d, vix9d, vvix] = await Promise.all([
-        fetchSymbolHistory('$SPX', startMs, endMs, dateParam),
-        fetchSymbolHistory('$VIX', startMs, endMs, dateParam),
-        fetchSymbolHistory('$VIX1D', startMs, endMs, dateParam),
-        fetchSymbolHistory('$VIX9D', startMs, endMs, dateParam),
-        fetchSymbolHistory('$VVIX', startMs, endMs, dateParam),
+        fetchSymbol('$SPX'),
+        fetchSymbol('$VIX'),
+        fetchSymbol('$VIX1D'),
+        fetchSymbol('$VIX9D'),
+        fetchSymbol('$VVIX'),
       ]);
 
       const results = [spx, vix, vix1d, vix9d, vvix];

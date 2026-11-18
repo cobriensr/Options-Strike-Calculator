@@ -53,8 +53,10 @@ const TARGET_DATE = '2026-03-10';
 const CACHE_KEY = `history:v3:${TARGET_DATE}`;
 
 /**
- * Create a candle at a specific ET time on a given date.
- * Converts ET to approximate UTC ms for Schwab candle format.
+ * Create a candle at a specific ET time on a given date. The offset is the
+ * EDT one (UTC-4), so use it only for dates after the March DST change
+ * (2026-03-09 and 2026-03-10 here). The datetime is placed by UTC, so it reads
+ * the same ET time on any host.
  */
 function makeCandle(
   dateStr: string,
@@ -65,12 +67,35 @@ function makeCandle(
   low: number,
   close: number,
 ) {
-  // Build ET datetime string and convert to UTC (add ~5h)
-  const etDate = new Date(
-    `${dateStr}T${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:00`,
-  );
-  const utcMs = etDate.getTime() + 5 * 60 * 60 * 1000;
-  return { open, high, low, close, volume: 10000, datetime: utcMs };
+  const hh = String(hour).padStart(2, '0');
+  const mm = String(minute).padStart(2, '0');
+  const datetime = new Date(`${dateStr}T${hh}:${mm}:00-04:00`).getTime();
+  return { open, high, low, close, volume: 10000, datetime };
+}
+
+/** A flat candle at an ISO instant (with its UTC offset) and a close. */
+function flatCandle(iso: string, close: number) {
+  return {
+    open: close,
+    high: close,
+    low: close,
+    close,
+    volume: 10000,
+    datetime: new Date(iso).getTime(),
+  };
+}
+
+/** A previous-session summary whose close is `close`. */
+function previousDaySummary(close: number) {
+  return {
+    date: '2026-03-09',
+    open: close - 1,
+    high: close + 2,
+    low: close - 3,
+    close,
+    rangePct: 0.1,
+    rangePts: 5,
+  };
 }
 
 /** A successful Schwab priceHistory result with one target-date candle. */
@@ -107,6 +132,10 @@ const SYMBOL_KEYS = ['spx', 'vix', 'vix1d', 'vix9d', 'vvix'] as const;
 const FETCH_DUP_MESSAGE = 'Schwab returned duplicate candles';
 const CACHE_DUP_MESSAGE =
   'Cached history held duplicate or unordered candles; served normalized';
+const CACHE_PREV_CLOSE_MESSAGE =
+  'Cached history held a previousClose other than the previous session close; served that close';
+const HOLE_MESSAGE =
+  'Schwab window lacks the prior trading day; serving previousClose 0';
 
 function sessionCandle(dayOfMonth: number, slot: number, close: number) {
   return {
@@ -169,8 +198,15 @@ function cachedCandles(count = SESSION_SLOTS) {
   });
 }
 
-function cachedEntry(candles: unknown[], candleCount = candles.length) {
-  const day = () => ({ candles, previousClose: 5380, previousDay: null });
+function cachedEntry(
+  candles: unknown[],
+  candleCount = candles.length,
+  previous: { previousClose: number; previousDay: unknown } = {
+    previousClose: 5380,
+    previousDay: previousDaySummary(5380),
+  },
+) {
+  const day = () => ({ candles, ...previous });
   return {
     response: {
       date: TARGET_DATE,
@@ -231,14 +267,53 @@ describe('GET /api/history', () => {
     expect((res._json as { error: string }).error).toContain('future');
   });
 
+  // 2026-02-30 and 2026-13-01 are not dates; 0000-01-01 is, but priorTradingDay
+  // throws on it, and Schwab holds nothing before 2000. A 400, not a 500 with
+  // a Sentry event.
+  it.each(['2026-02-30', '2026-13-01', '0000-01-01', '1999-12-31'])(
+    'answers 400 for the invalid date %s without reaching Schwab or Sentry',
+    async (date) => {
+      const res = mockResponse();
+      await handler(mockRequest({ query: { date } }), res);
+
+      expect(res._status).toBe(400);
+      expect((res._json as { error: string }).error).toContain(
+        'Missing or invalid date',
+      );
+      expect(schwabFetch).not.toHaveBeenCalled();
+      expect(redis.get).not.toHaveBeenCalled();
+      expect(Sentry.captureException).not.toHaveBeenCalled();
+    },
+  );
+
   it('returns cached data from Redis when available', async () => {
     const cachedData = {
       date: TARGET_DATE,
-      spx: { candles: [], previousClose: 5500, previousDay: null },
-      vix: { candles: [], previousClose: 18, previousDay: null },
-      vix1d: { candles: [], previousClose: 15, previousDay: null },
-      vix9d: { candles: [], previousClose: 17, previousDay: null },
-      vvix: { candles: [], previousClose: 90, previousDay: null },
+      spx: {
+        candles: [],
+        previousClose: 5500,
+        previousDay: previousDaySummary(5500),
+      },
+      vix: {
+        candles: [],
+        previousClose: 18,
+        previousDay: previousDaySummary(18),
+      },
+      vix1d: {
+        candles: [],
+        previousClose: 15,
+        previousDay: previousDaySummary(15),
+      },
+      vix9d: {
+        candles: [],
+        previousClose: 17,
+        previousDay: previousDaySummary(17),
+      },
+      vvix: {
+        candles: [],
+        previousClose: 90,
+        previousDay: previousDaySummary(90),
+      },
       candleCount: 0,
       asOf: '2026-03-10T20:00:00Z',
     };
@@ -315,25 +390,25 @@ describe('GET /api/history', () => {
           open: number;
           high: number;
           low: number;
+          close: number;
         } | null;
       };
       candleCount: number;
     };
 
     expect(json.date).toBe(targetDate);
-    expect(json.spx.previousClose).toBe(5380);
-    // Candles should be processed (may vary by local TZ, so just check structure)
-    expect(json.spx.candles.length).toBeGreaterThanOrEqual(0);
-    if (json.spx.candles.length > 0) {
-      // Each candle should have a time string
-      expect(json.spx.candles[0]!.time).toBeDefined();
-      expect(typeof json.spx.candles[0]!.time).toBe('string');
+    // Each target-day candle is processed and carries a time string.
+    expect(json.spx.candles.map((c) => c.open)).toEqual([5450, 5460, 5475]);
+    for (const candle of json.spx.candles) {
+      expect(typeof candle.time).toBe('string');
     }
-    // Previous day summary should exist if candles were in regular hours
-    if (json.spx.previousDay) {
-      expect(json.spx.previousDay.date).toBe(prevDate);
-      expect(json.spx.previousDay.open).toBe(5400);
-    }
+    expect(json.spx.previousDay).toMatchObject({
+      date: prevDate,
+      open: 5400,
+      close: 5425,
+    });
+    // The previous session's last close, not Schwab's raw 5380.
+    expect(json.spx.previousClose).toBe(5425);
   });
 
   it('handles schwabFetch error for a symbol gracefully', async () => {
@@ -831,7 +906,7 @@ describe('GET /api/history', () => {
         entry.response.vix = {
           candles: [...cachedCandles(3), ...cachedCandles(3)],
           previousClose: 18,
-          previousDay: null,
+          previousDay: previousDaySummary(18),
         };
         const res = await hit(entry);
 
@@ -842,11 +917,31 @@ describe('GET /api/history', () => {
 
       it.each([
         ['a null symbol', { spx: null }],
-        ['a symbol with no candles field', { spx: { previousClose: 1 } }],
-        ['candles that are not an array', { spx: { candles: 'bad' } }],
+        ['a symbol that is a string', { spx: 'bad' }],
+        ['a symbol that is an array', { spx: [] }],
+        [
+          'a symbol with no candles field',
+          { spx: { previousClose: 1, previousDay: previousDaySummary(1) } },
+        ],
+        [
+          'candles that are not an array',
+          {
+            spx: {
+              candles: 'bad',
+              previousClose: 5380,
+              previousDay: previousDaySummary(5380),
+            },
+          },
+        ],
         [
           'candles with no datetime',
-          { spx: { candles: [{ close: 1 }, null] } },
+          {
+            spx: {
+              candles: [{ close: 1 }, null],
+              previousClose: 5380,
+              previousDay: previousDaySummary(5380),
+            },
+          },
         ],
       ])(
         'passes a stored entry with %s through as stored',
@@ -860,6 +955,418 @@ describe('GET /api/history', () => {
 
           expect(res._json).toEqual(response);
           expect(logger.warn).not.toHaveBeenCalled();
+        },
+      );
+    });
+  });
+
+  // The request window starts 7 days before the target, so Schwab's own
+  // previousClose is the close before that start: 2026-11-06 got 7720.39. The
+  // endpoint serves the previous session's last 5-minute close instead, which
+  // for 2026-11-05 is its 7356.73 settlement.
+  describe("previousClose is the target session's previous close", () => {
+    const NOV_TARGET = '2026-11-06';
+    // Each symbol's last close on the session before the target, and the
+    // range-start value Schwab sends as previousClose.
+    const SYMBOLS = {
+      spx: { name: '$SPX', prevLast: 7356.73, schwabRaw: 7720.39 },
+      vix: { name: '$VIX', prevLast: 17.95, schwabRaw: 17.2 },
+      vix1d: { name: '$VIX1D', prevLast: 14.4, schwabRaw: 13.1 },
+      vix9d: { name: '$VIX9D', prevLast: 16.25, schwabRaw: 15.5 },
+      vvix: { name: '$VVIX', prevLast: 92.8, schwabRaw: 88.4 },
+    } as const;
+
+    /**
+     * A session whose last 5-minute bar, 15:55 ET, closes at `lastClose`.
+     * `offset` is the ET offset on `day`: EST (-05:00) for the November
+     * dates, EDT (-04:00) for the April and September ones.
+     */
+    function session(day: string, lastClose: number, offset = '-05:00') {
+      return [
+        flatCandle(`${day}T09:30:00${offset}`, lastClose - 20),
+        flatCandle(`${day}T12:00:00${offset}`, lastClose + 15),
+        flatCandle(`${day}T15:55:00${offset}`, lastClose),
+      ];
+    }
+
+    type Sym = (typeof SYMBOLS)[keyof typeof SYMBOLS];
+
+    /** Every symbol's priceHistory returns `candlesFor(symbol)`. */
+    function mockSchwab(candlesFor: (symbol: Sym) => unknown[]) {
+      vi.mocked(schwabFetch).mockImplementation(async (path: string) => {
+        const name = new URLSearchParams(path.split('?')[1]).get('symbol');
+        const symbol = Object.values(SYMBOLS).find((s) => s.name === name)!;
+        return {
+          ok: true as const,
+          data: {
+            symbol: symbol.name,
+            candles: candlesFor(symbol),
+            previousClose: symbol.schwabRaw,
+          },
+        };
+      });
+    }
+
+    // Windows around the target. 2026-10-30 is an earlier session, 2026-11-05
+    // the prior trading day, 2026-11-09 a session after the target.
+    const earlier = (s: Sym) => session('2026-10-30', s.prevLast - 111);
+    const prior = (s: Sym) => session('2026-11-05', s.prevLast);
+    const target = (s: Sym) => session(NOV_TARGET, s.prevLast + 50);
+    const later = (s: Sym) => session('2026-11-09', s.prevLast + 99);
+
+    async function fetchOn(date: string) {
+      const res = mockResponse();
+      await handler(mockRequest({ query: { date } }), res);
+      expect(res._status).toBe(200);
+      return res._json as HistoryJson;
+    }
+
+    const fetchNov = () => fetchOn(NOV_TARGET);
+
+    it("serves each symbol's previous session close, not Schwab's range-start previousClose", async () => {
+      mockSchwab((s) => [
+        ...earlier(s),
+        ...prior(s),
+        ...target(s),
+        ...later(s),
+      ]);
+
+      const json = await fetchNov();
+
+      expect(json.spx.previousClose).toBe(7356.73);
+      expect(json.vix.previousClose).toBe(17.95);
+      expect(json.vix1d.previousClose).toBe(14.4);
+      expect(json.vix9d.previousClose).toBe(16.25);
+      expect(json.vvix.previousClose).toBe(92.8);
+      expect(json.spx.previousDay).toMatchObject({
+        date: '2026-11-05',
+        close: 7356.73,
+      });
+      // The long-lived cache entry carries the corrected value too.
+      const [, entry] = vi.mocked(redis.set).mock.calls[0] as [
+        string,
+        { response: HistoryJson },
+      ];
+      expect(entry.response.spx.previousClose).toBe(7356.73);
+      expect(entry.response.vix.previousClose).toBe(17.95);
+    });
+
+    it('serves previousClose 0 for every symbol when the window holds no previous session', async () => {
+      mockSchwab((s) => [...target(s), ...later(s)]);
+
+      const json = await fetchNov();
+
+      for (const key of SYMBOL_KEYS) {
+        expect(json[key].previousClose).toBe(0);
+        expect(json[key].previousDay).toBeNull();
+      }
+    });
+
+    it('serves previousClose 0 and no previousDay when the target has no candles of its own', async () => {
+      // Sessions before the target but none on it: with no candles of its own
+      // the target is not found, so no session counts as its previous one.
+      mockSchwab((s) => [...earlier(s), ...prior(s)]);
+
+      const json = await fetchNov();
+
+      for (const key of SYMBOL_KEYS) {
+        expect(json[key].previousClose).toBe(0);
+        expect(json[key].previousDay).toBeNull();
+      }
+    });
+
+    it.each([
+      ['null', null],
+      ['missing', undefined],
+    ])(
+      "serves previousClose 0 when the previous session's last candle has a %s close",
+      async (_label, brokenClose) => {
+        mockSchwab((s) => [
+          ...earlier(s),
+          ...prior(s).slice(0, -1),
+          { ...prior(s).at(-1)!, close: brokenClose },
+          ...target(s),
+        ]);
+
+        const json = await fetchNov();
+
+        for (const key of SYMBOL_KEYS) {
+          expect(json[key].previousClose).toBe(0);
+        }
+      },
+    );
+
+    // Schwab can drop the session right before the target and still return an
+    // earlier one. That older close is not yesterday's, so it is not served.
+    describe('when the window lacks the prior trading day', () => {
+      it("serves previousClose 0 for the symbol that lacks it and warns once, leaving the others' closes", async () => {
+        mockSchwab((s) =>
+          s.name === '$SPX'
+            ? [...earlier(s), ...target(s)]
+            : [...earlier(s), ...prior(s), ...target(s)],
+        );
+
+        const json = await fetchNov();
+
+        expect(json.spx.previousClose).toBe(0);
+        // The summary itself is the older session, as before.
+        expect(json.spx.previousDay).toMatchObject({ date: '2026-10-30' });
+        expect(json.vix.previousClose).toBe(17.95);
+        expect(logger.warn).toHaveBeenCalledTimes(1);
+        expect(logger.warn).toHaveBeenCalledWith(
+          {
+            symbol: '$SPX',
+            date: NOV_TARGET,
+            previousDayDate: '2026-10-30',
+            expected: '2026-11-05',
+          },
+          HOLE_MESSAGE,
+        );
+      });
+
+      it('does not cache the hole as a good close: the stored entry carries 0', async () => {
+        mockSchwab((s) => [...earlier(s), ...target(s)]);
+
+        await fetchNov();
+
+        const [, entry] = vi.mocked(redis.set).mock.calls[0] as [
+          string,
+          { response: HistoryJson },
+        ];
+        for (const key of SYMBOL_KEYS) {
+          expect(entry.response[key].previousClose).toBe(0);
+        }
+      });
+    });
+
+    // A weekend or a holiday between the target and its previous session is
+    // not a hole: priorTradingDay skips them.
+    it.each([
+      ['a weekend', '2026-11-09', '2026-11-06', '-05:00'],
+      ['Labor Day', '2026-09-08', '2026-09-04', '-04:00'],
+      ['Good Friday', '2026-04-06', '2026-04-02', '-04:00'],
+      ['Memorial Day', '2026-05-26', '2026-05-22', '-04:00'],
+      ['Juneteenth', '2026-06-22', '2026-06-18', '-04:00'],
+      ['Independence Day observed', '2026-07-06', '2026-07-02', '-04:00'],
+    ])(
+      'does not treat %s as a hole: serves the last session before it',
+      async (_label, targetDate, priorDate, offset) => {
+        mockSchwab((s) => [
+          ...session(priorDate, s.prevLast, offset),
+          ...session(targetDate, s.prevLast + 50, offset),
+        ]);
+
+        const json = await fetchOn(targetDate);
+
+        expect(json.spx.previousClose).toBe(7356.73);
+        expect(json.vix.previousClose).toBe(17.95);
+        expect(json.spx.previousDay).toMatchObject({ date: priorDate });
+        expect(logger.warn).not.toHaveBeenCalled();
+      },
+    );
+
+    describe('on a cache hit', () => {
+      async function hit(entry: unknown, date = TARGET_DATE) {
+        vi.mocked(redis.get).mockResolvedValue(entry);
+        const res = mockResponse();
+        await handler(mockRequest({ query: { date } }), res);
+        expect(res._status).toBe(200);
+        expect(res._headers['X-Cache']).toBe('HIT');
+        expect(schwabFetch).not.toHaveBeenCalled();
+        expect(redis.set).not.toHaveBeenCalled();
+        return res._json as HistoryJson;
+      }
+
+      /** A stored entry as written before the fix: Schwab's range-start value. */
+      function staleEntry() {
+        const entry = cachedEntry(cachedCandles());
+        for (const key of SYMBOL_KEYS) {
+          const { prevLast, schwabRaw } = SYMBOLS[key];
+          entry.response[key] = {
+            ...entry.response[key],
+            previousClose: schwabRaw,
+            previousDay: previousDaySummary(prevLast),
+          };
+        }
+        return entry;
+      }
+
+      it("serves each symbol's previous day close and leaves the stored entry alone", async () => {
+        const entry = staleEntry();
+
+        const json = await hit(entry);
+
+        expect(json.spx.previousClose).toBe(7356.73);
+        expect(json.vix.previousClose).toBe(17.95);
+        expect(json.vix1d.previousClose).toBe(14.4);
+        expect(json.vix9d.previousClose).toBe(16.25);
+        expect(json.vvix.previousClose).toBe(92.8);
+        // Only previousClose changes in the response.
+        for (const key of SYMBOL_KEYS) {
+          expect(json[key].candles).toEqual(entry.response[key].candles);
+          expect(json[key].previousDay).toEqual(
+            entry.response[key].previousDay,
+          );
+        }
+        // The stored object keeps Schwab's value: the repair is on read only.
+        expect(entry.response.spx.previousClose).toBe(7720.39);
+        expect(logger.warn).toHaveBeenCalledTimes(1);
+        expect(logger.warn).toHaveBeenCalledWith(
+          {
+            cacheKey: CACHE_KEY,
+            expected: '2026-03-09',
+            repaired: SYMBOL_KEYS.map((field) => ({
+              field,
+              stored: SYMBOLS[field].schwabRaw,
+              served: SYMBOLS[field].prevLast,
+              previousDayDate: '2026-03-09',
+            })),
+          },
+          CACHE_PREV_CLOSE_MESSAGE,
+        );
+        expect(Sentry.captureMessage).not.toHaveBeenCalled();
+      });
+
+      it.each([
+        ['null', { previousDay: null }, null],
+        ['absent', {}, null],
+        [
+          'one with no numeric close',
+          { previousDay: { ...previousDaySummary(7356.73), close: 'bad' } },
+          '2026-03-09',
+        ],
+      ])(
+        'serves previousClose 0 when the stored previousDay is %s',
+        async (_label, previousDayField, previousDayDate) => {
+          const spx = {
+            candles: cachedCandles(),
+            previousClose: 7720.39,
+            ...previousDayField,
+          };
+          const response = { ...cachedEntry(cachedCandles()).response, spx };
+
+          const json = await hit({ response, complete: true });
+
+          expect(json.spx).toEqual({ ...spx, previousClose: 0 });
+          expect(logger.warn).toHaveBeenCalledTimes(1);
+          expect(logger.warn).toHaveBeenCalledWith(
+            {
+              cacheKey: CACHE_KEY,
+              expected: '2026-03-09',
+              repaired: [
+                { field: 'spx', stored: 7720.39, served: 0, previousDayDate },
+              ],
+            },
+            CACHE_PREV_CLOSE_MESSAGE,
+          );
+        },
+      );
+
+      // An entry stored while Schwab left the field out has no previousClose
+      // key: JSON drops undefined. Its previousDay still says what to serve.
+      it('serves previousDay.close for a stored symbol with no previousClose key', async () => {
+        const spx = {
+          candles: cachedCandles(),
+          previousDay: previousDaySummary(5380),
+        };
+        const response = { ...cachedEntry(cachedCandles()).response, spx };
+
+        const json = await hit({ response, complete: true });
+
+        expect(json.spx).toEqual({ ...spx, previousClose: 5380 });
+        expect(logger.warn).toHaveBeenCalledTimes(1);
+        expect(logger.warn).toHaveBeenCalledWith(
+          {
+            cacheKey: CACHE_KEY,
+            expected: '2026-03-09',
+            repaired: [
+              {
+                field: 'spx',
+                stored: undefined,
+                served: 5380,
+                previousDayDate: '2026-03-09',
+              },
+            ],
+          },
+          CACHE_PREV_CLOSE_MESSAGE,
+        );
+      });
+
+      it('serves 0 for a stored symbol with neither previousClose nor previousDay', async () => {
+        const response = {
+          ...cachedEntry(cachedCandles()).response,
+          spx: { candles: cachedCandles() },
+        };
+
+        const json = await hit({ response, complete: true });
+
+        expect(json.spx.previousClose).toBe(0);
+        expect(logger.warn).toHaveBeenCalledTimes(1);
+      });
+
+      // The stored previousDay is an older session than the request's prior
+      // trading day (2026-03-09 for 2026-03-10): its close is not yesterday's.
+      it('serves previousClose 0 when the stored previousDay is not the prior trading day', async () => {
+        const entry = cachedEntry(cachedCandles());
+        entry.response.spx = {
+          ...entry.response.spx,
+          previousClose: 7720.39,
+          previousDay: { ...previousDaySummary(7300), date: '2026-03-06' },
+        };
+
+        const json = await hit(entry);
+
+        expect(json.spx.previousClose).toBe(0);
+        expect(json.vix.previousClose).toBe(5380);
+        expect(logger.warn).toHaveBeenCalledTimes(1);
+        expect(logger.warn).toHaveBeenCalledWith(
+          {
+            cacheKey: CACHE_KEY,
+            expected: '2026-03-09',
+            repaired: [
+              {
+                field: 'spx',
+                stored: 7720.39,
+                served: 0,
+                previousDayDate: '2026-03-06',
+              },
+            ],
+          },
+          CACHE_PREV_CLOSE_MESSAGE,
+        );
+      });
+
+      // 2026-09-04 is the last session before Labor Day, so for 2026-09-08 it
+      // is the prior trading day and nothing needs repair.
+      it('leaves a stored previousDay that skips a holiday alone', async () => {
+        const entry = cachedEntry(cachedCandles(), undefined, {
+          previousClose: 5380,
+          previousDay: { ...previousDaySummary(5380), date: '2026-09-04' },
+        });
+
+        const json = await hit(entry, '2026-09-08');
+
+        expect(json).toEqual(entry.response);
+        expect(logger.warn).not.toHaveBeenCalled();
+      });
+
+      it.each([
+        ["the previous day's close", cachedEntry(cachedCandles())],
+        [
+          'previousClose 0 with no previous session',
+          cachedEntry(cachedCandles(), undefined, {
+            previousClose: 0,
+            previousDay: null,
+          }),
+        ],
+      ])(
+        'serves a stored entry already holding %s unchanged and logs nothing',
+        async (_label, entry) => {
+          const json = await hit(entry);
+
+          expect(json).toEqual(entry.response);
+          expect(logger.warn).not.toHaveBeenCalled();
+          expect(Sentry.captureMessage).not.toHaveBeenCalled();
         },
       );
     });

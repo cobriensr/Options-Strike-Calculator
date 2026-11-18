@@ -767,13 +767,15 @@ describe('useHistoryData: malformed 200 payloads', () => {
 });
 
 // ============================================================
-// TESTS: SCHWAB'S OPTIONAL previousClose
+// TESTS: A MISSING previousClose
 // ============================================================
 
-// api/history.ts passes Schwab's raw previousClose through, and Schwab may
-// leave it out on an empty day, so JSON drops the key. The VIX-family
-// symbols tolerate that (0, as for a failed symbol); SPX stays strict.
-describe("useHistoryData: Schwab's missing previousClose", () => {
+// An old `history:v3` entry, or a response the browser cached before
+// api/history.ts took previousDay.close, can lack previousClose: Schwab left
+// its own out on an empty day, and JSON drops undefined. The VIX-family
+// symbols tolerate that (0, as the endpoint sends for a failed symbol or an
+// unknown previous session); SPX stays strict.
+describe('useHistoryData: a missing previousClose', () => {
   function withoutPreviousClose(
     symbol: HistoryResponse['vix'],
   ): Record<string, unknown> {
