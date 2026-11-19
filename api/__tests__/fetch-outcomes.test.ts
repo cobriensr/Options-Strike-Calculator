@@ -476,7 +476,8 @@ describe('fetch-outcomes handler', () => {
   // ── Backfill mode ─────────────────────────────────────────
 
   describe('backfill mode', () => {
-    // Helper: daily candles spanning several days (timestamps at midnight UTC)
+    // Helper: daily candles spanning several days (stamped at a midnight in
+    // CT/ET, 05:00Z, as Schwab stamps them)
     function makeDailyCandles() {
       // Use dates that are clearly in the past relative to 2026-03-24
       return [
@@ -833,6 +834,28 @@ describe('fetch-outcomes handler', () => {
         vix1dMissingDates: [],
       });
       expect(noCloseWarns()).toEqual([]);
+    });
+
+    it('treats a VIX1D close of 0 as a real close: not listed, not warned about, stored as 0', async () => {
+      mockDailyHistory();
+      mockRedisGet.mockResolvedValue({
+        '2026-03-20': { o: 0, h: 0, l: 0, c: 0 },
+        '2026-03-21': { o: 15, h: 16, l: 14, c: 15.2 },
+        '2026-03-22': { o: 15, h: 17, l: 14, c: 15.3 },
+        '2026-03-23': { o: 15, h: 18, l: 14, c: 15.4 },
+      });
+
+      const res = mockResponse();
+      await handler(backfillReq(), res);
+
+      expect(res._json).toMatchObject({
+        insertedDates: ALL_DAYS,
+        vix1dMissingDates: [],
+      });
+      expect(noCloseWarns()).toEqual([]);
+      expect(mockInsertOutcomeIfMissing).toHaveBeenCalledWith(
+        expect.objectContaining({ date: '2026-03-20', vix1dClose: 0 }),
+      );
     });
 
     it('adds up a mixed run: inserted, already present and failed days', async () => {

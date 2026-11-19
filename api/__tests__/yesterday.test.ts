@@ -24,7 +24,10 @@ function makeDailyCandle(
   low: number,
   close: number,
 ) {
-  // Schwab daily candles use midnight UTC timestamps
+  // The fixture stamps 00:00Z of the trading day. Real Schwab daily bars are
+  // stamped at a midnight in CT/ET (04:00-06:00Z), not at midnight UTC. The
+  // handler reads the stamp's UTC calendar date (msToDateStr), which is the
+  // trading day for either stamp, so the fixture gives the same dates.
   return {
     open,
     high,
