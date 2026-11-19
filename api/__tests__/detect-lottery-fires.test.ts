@@ -656,8 +656,8 @@ describe('detect-lottery-fires handler', () => {
   it('feed-tier monitor counts today fires via the no-gamma qas (SQL-computed), matching the feed exactly', async () => {
     // After the insert loop, the cron queries today's fires and tiers them
     // through the EXACT feed logic. The monitor now reads the qas the SQL
-    // computes — GREATEST(0, score + round_trip_score_deduct) + inversion
-    // bonus — IDENTICAL to the feed's qasExprText('f.') (the next test pins
+    // computes — GREATEST(0, score) + inversion bonus, with no round-trip
+    // deduct — IDENTICAL to the feed's qasExprText('f.') (the next test pins
     // the SQL text). It DELIBERATELY no longer reads combined_score (which
     // still folds in a +1 gamma CASE term the feed dropped), so the mock row
     // returns `qas` directly. tierFromQas on the seed feed cutoffs is 13/10.
@@ -739,6 +739,9 @@ describe('detect-lottery-fires handler', () => {
     });
     expect(squashSql(inlined)).toContain(expectedQasSql('f.'));
     expect(inlined).not.toContain('fire_count_score_adjustment');
+    // The round-trip deduct lands about an hour after the fire, so the
+    // monitor's tier leaves it out, as the feed does.
+    expect(inlined).not.toContain('round_trip_score_deduct');
   });
 
   it('persists scoreLotteryV2() output on the inserted row', async () => {

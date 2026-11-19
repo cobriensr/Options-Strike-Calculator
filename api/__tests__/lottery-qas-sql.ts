@@ -24,13 +24,15 @@ export type QasAlias = 'f.' | 'ranked.' | 'cd.';
 export const squashSql = (sql: string): string => sql.replace(/\s+/g, '');
 
 /**
- * GREATEST(0, score + round_trip_score_deduct) + the inversion bonus CASE,
- * with the fire columns prefixed by `alias`. No fire-count term: the fire-count
- * adjustment was retired on 2026-11-15, so the qas does not depend on how many
- * times a chain has fired.
+ * GREATEST(0, score) + the inversion bonus CASE, with the fire columns
+ * prefixed by `alias`. No round-trip deduct term: the tier is the one shown at
+ * the fire, and the deduct only lands about an hour later (spec
+ * docs/superpowers/specs/2026-11-17-freeze-tier-at-fire-design.md). No
+ * fire-count term either: the fire-count adjustment was retired on 2026-11-15,
+ * so the qas does not depend on how many times a chain has fired.
  */
 export function expectedQasSql(alias: QasAlias): string {
   return squashSql(
-    `GREATEST(0, COALESCE(${alias}score, 0) + COALESCE(${alias}round_trip_score_deduct, 0)) + ${INVERSION_BONUS_CASE_SQL}`,
+    `GREATEST(0, COALESCE(${alias}score, 0)) + ${INVERSION_BONUS_CASE_SQL}`,
   );
 }

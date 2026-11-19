@@ -166,12 +166,12 @@ export default async function handler(
           option_type,
           expiry,
           takeit_prob,
-          -- Score components carried through so the final SELECT (where the
+          -- Score carried through so the final SELECT (where the
           -- lottery_ticker_stats LEFT JOIN exposes inversion_quintile) can
           -- gate the score floor on the DISPLAYED qas, mirroring
           -- /api/lottery-finder exactly so chip totals never diverge from the
           -- feed (Fix C/D).
-          score, round_trip_score_deduct,
+          score,
           MAX(takeit_prob) OVER (
             PARTITION BY underlying_symbol, strike, option_type, expiry
           ) AS chain_max_takeit,
@@ -209,7 +209,7 @@ export default async function handler(
           expiry,
           chain_peak_pct,
           chain_latest_trigger,
-          score, round_trip_score_deduct
+          score
         FROM ranked
         WHERE rn = 1
           AND (${minFireCount}::int IS NULL OR fc >= ${minFireCount ?? 0})
@@ -225,19 +225,16 @@ export default async function handler(
       LEFT JOIN lottery_ticker_stats s ON s.ticker = cd.underlying_symbol
       WHERE ${keptSuppressionSql(db, 'cd', showAll, keptTickers)}
         -- Fix C/D: the score floor (minQas: minScore, or the active version's
-        -- cutoff for minTier) gates on the DISPLAYED qas (= GREATEST(0, score +
-        -- rt) + inversion bonus; no gamma, no fire count), not raw score, so
-        -- the chip count matches the qas-filtered feed. Same expression as
-        -- qasExprText in api/lottery-finder.ts (pinned by
+        -- cutoff for minTier) gates on the DISPLAYED qas (= GREATEST(0, score)
+        -- + inversion bonus; no round-trip deduct, no gamma, no fire count),
+        -- not raw score, so the chip count matches the qas-filtered feed. Same
+        -- expression as qasExprText in api/lottery-finder.ts (pinned by
         -- api/__tests__/lottery-qas-sql.ts).
         AND (
           ${minQas ?? null}::int IS NULL
           OR (
-            GREATEST(
-              0,
-              COALESCE(cd.score, 0)
-              + COALESCE(cd.round_trip_score_deduct, 0)
-            ) + ${db.unsafe(INVERSION_BONUS_CASE_SQL)}
+            GREATEST(0, COALESCE(cd.score, 0))
+            + ${db.unsafe(INVERSION_BONUS_CASE_SQL)}
           ) >= ${minQas ?? 0}
         )
       GROUP BY cd.underlying_symbol

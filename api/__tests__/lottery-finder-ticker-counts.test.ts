@@ -487,9 +487,9 @@ describe('lottery-finder-ticker-counts handler', () => {
     expect(body.filters.showAll).toBe(false);
   });
 
-  it('FIX D: minScore gates the chip on the DISPLAYED qas (GREATEST(0,score+rt)+inversion CASE), not raw score', async () => {
+  it('FIX D: minScore gates the chip on the DISPLAYED qas (GREATEST(0,score)+inversion CASE), not raw score', async () => {
     // Chip totals must mirror the qas-filtered feed (post-Fix-C). The chip
-    // query carries score/rt through ranked → chain_day and gates minScore
+    // query carries score through ranked → chain_day and gates minScore
     // on the qas expression in the final WHERE (where the lottery_ticker_stats
     // LEFT JOIN exposes inversion_quintile). This test fails loudly if the
     // chip reverts to raw `score >= minScore`, or if its qas drifts from the
@@ -524,6 +524,9 @@ describe('lottery-finder-ticker-counts handler', () => {
     // The retired fire-count term is gone: the query neither carries the
     // column through its CTEs nor adds it to the qas.
     expect(sql).not.toContain('fire_count_score_adjustment');
+    // The round-trip deduct is left out of the tier: the query neither
+    // carries the column through its CTEs nor adds it to the qas.
+    expect(sql).not.toContain('round_trip_score_deduct');
     // OLD raw-score predicate is gone.
     expect(sql).not.toContain('OR score >= ?');
     // Floor value still binds.
@@ -580,7 +583,7 @@ describe('lottery-finder-ticker-counts handler', () => {
           .join('?')
           .replace(/\s+/g, ' ');
         expect(sql).toContain('COALESCE(cd.score, 0)');
-        expect(sql).toContain('COALESCE(cd.round_trip_score_deduct, 0)');
+        expect(sql).not.toContain('round_trip_score_deduct');
         // The request is echoed, as minScore is.
         const body = res._json as {
           filters: { minTier: string | null; minScore: number | null };

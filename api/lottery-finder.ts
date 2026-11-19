@@ -178,9 +178,11 @@ interface FireRow {
   // round-trip-score-deduct-production-2026-05-16.md). Computed 60-75
   // min post-fire by the evaluate-round-trip cron from ws_option_trades.
   // round_trip_net_pct in [-1, +1]; deduct is a stepped bracket: < -0.50
-  // → -3, [-0.50, -0.30) → -2, [-0.30, -0.10) → -1, else 0. Applied to
-  // the displayed score at read time so a strong-tier alert that
-  // round-tripped within an hour gets demoted in the panel.
+  // → -3, [-0.50, -0.30) → -2, [-0.30, -0.10) → -1, else 0. It does NOT
+  // enter the displayed score or tier (it lands about an hour after the fire,
+  // so the tier is the one shown at the fire; spec
+  // docs/superpowers/specs/2026-11-17-freeze-tier-at-fire-design.md). It only
+  // drives the round-tripped pill.
   round_trip_net_pct: DbNullableNumeric;
   round_trip_score_deduct: number | null;
   // Gamma at trigger time (migration #168). Captured by the detect
@@ -320,16 +322,21 @@ const num = (v: DbNullableNumeric): number | null =>
  * Build the DISPLAYED quality-adjusted score (qas) SQL EXPRESSION TEXT that
  * the row badge derives via {@link qualityAdjustedScore} + tierFromQas.
  *
- *   qas = GREATEST(0, <p>score + <p>round_trip_score_deduct)
+ *   qas = GREATEST(0, <p>score)
  *         + INVERSION_BONUS_CASE(s.inversion_quintile)
  *
- * This is the EFFECTIVE pre-inversion score POST-Fix-B (read-time gamma
+ * This is the stored score floored at 0, POST-Fix-B (read-time gamma
  * double-count removed — gamma is already credited via the V2 gamma-quintile
  * weight baked into the stored score) PLUS the inversion bonus. There is no
- * fire-count term: the fire-count score adjustment was retired on 2026-11-15
- * (spec 2026-11-15-retire-lottery-fire-count-adjustment.md), so the qas does
- * not depend on how many times a chain has fired. The pre-inversion term
- * equals the combined_score GENERATED column MINUS its gamma CASE term.
+ * round-trip deduct term: the deduct lands about an hour after the fire, so
+ * the tier is left as the one shown at the fire (spec
+ * docs/superpowers/specs/2026-11-17-freeze-tier-at-fire-design.md); the deduct
+ * still drives the round-tripped pill. There is no fire-count term either: the
+ * fire-count score adjustment was retired on 2026-11-15 (spec
+ * 2026-11-15-retire-lottery-fire-count-adjustment.md), so the qas does not
+ * depend on how many times a chain has fired. The combined_score GENERATED
+ * column still folds in the round-trip deduct and a gamma CASE term; nothing
+ * reads it.
  *
  * The chip strip (api/lottery-finder-ticker-counts.ts) and the detector's
  * feed-tier monitor (api/cron/detect-lottery-fires.ts) compute this same
@@ -366,8 +373,7 @@ function qasExprText(fireAlias: QasFireAlias): string {
     throw new Error(`qasExprText: invalid fire alias "${fireAlias}"`);
   }
   return (
-    `(GREATEST(0, COALESCE(${fireAlias}score, 0) ` +
-    `+ COALESCE(${fireAlias}round_trip_score_deduct, 0)) ` +
+    `(GREATEST(0, COALESCE(${fireAlias}score, 0)) ` +
     `+ ${INVERSION_BONUS_CASE_SQL})`
   );
 }
@@ -659,9 +665,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // that would reshuffle the feed mid-session whenever the
     // evaluate-round-trip cron writes a deduct 60-75min post-fire — the
     // user's mental map of which alerts were near the top at fire time
-    // would silently drift. Deducted fires now render dimmed in-place via
-    // LotteryRow's round-tripped pill, preserving the EV signal without
-    // mutating sort position. The peak sort relies on
+    // would silently drift. The deduct is likewise left out of the tier and
+    // the displayed score (spec
+    // docs/superpowers/specs/2026-11-17-freeze-tier-at-fire-design.md), so a
+    // row keeps the tier it showed at the fire. Deducted fires render dimmed
+    // in-place via LotteryRow's round-tripped pill, preserving the EV signal
+    // without mutating sort position or tier. The peak sort relies on
     // (date DESC, trigger_time_ct DESC) for the date prefix.
     // Per-row cum_ncp / cum_npp at fire time come straight off the row
     // (migration #158 cum_ncp_at_fire / cum_npp_at_fire columns,
@@ -770,8 +779,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           AND (${minTakeitProb}::numeric IS NULL OR f.chain_max_takeit >= ${minTakeitProb}::numeric)
           -- Fix C: the score floor (minQas: minScore, or the active version's
           -- cutoff for minTier) gates on the DISPLAYED qas (the value the tier
-          -- badge uses), not the raw score. qas = GREATEST(0, score + rt)
-          -- + inversion bonus (no gamma, no fire count). Applied at the rep
+          -- badge uses), not the raw score. qas = GREATEST(0, score)
+          -- + inversion bonus (no round-trip deduct, no gamma, no fire
+          -- count). Applied at the rep
           -- row (rn=1, post-LEFT JOIN s) alongside the other rep-level gates
           -- so it reads s.inversion_quintile; identical expression in the
           -- count query so pagination/total stay coherent.
@@ -793,7 +803,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           SELECT
             underlying_symbol, strike, option_type, expiry,
             takeit_prob,
-            score, round_trip_score_deduct,
+            score,
             ROW_NUMBER() OVER (
               PARTITION BY underlying_symbol, strike, option_type, expiry
               ORDER BY trigger_time_ct DESC, id DESC
@@ -834,7 +844,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               AND (${maxFireCount ?? null}::int IS NULL OR ranked.fc <= ${maxFireCount ?? 0})
               AND (${minTakeitProb}::numeric IS NULL OR ranked.chain_max_takeit >= ${minTakeitProb}::numeric)
               -- Fix C: qas-based score floor, minQas (identical expression to
-              -- the row queries). qas = GREATEST(0, score + rt) + inversion
+              -- the row queries). qas = GREATEST(0, score) + inversion
               -- bonus.
               AND (${minQas ?? null}::int IS NULL OR ${db.unsafe(qasExprText('ranked.'))} >= ${minQas ?? 0})
             ) AS passes_user_filters
@@ -1380,10 +1390,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const toLotteryFire = (r: FireRow) => {
       const rawScore = r.score == null ? null : Number(r.score);
       // Round-trip score deduct (migration #154 / Phase 2C of
-      // round-trip-score-deduct-production-2026-05-16.md). Read-time
-      // adjustment: a -3 deduct applied to a tier1-edge score can
-      // demote it to tier2 or tier3. Raw `score` stays on the row;
-      // `score` field below carries the displayed/effective value.
+      // round-trip-score-deduct-production-2026-05-16.md). It is left out of
+      // `score` and the tier so the tier is the one shown at the fire (it
+      // lands about an hour later; spec
+      // docs/superpowers/specs/2026-11-17-freeze-tier-at-fire-design.md). It
+      // still drives the round-tripped pill via `roundTripScoreDeduct`.
       const rtDeduct =
         r.round_trip_score_deduct == null
           ? 0
@@ -1400,8 +1411,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // fire's position is FROZEN at detect time. The `combined_score`
       // GENERATED column (migrations #159/#167/#168/#209) still exists and
       // its index still exists, but the ORDER BY no longer consumes
-      // them — see api/lottery-finder.ts:417-433 for the rationale.
-      // Deducted fires render dimmed in-place via LotteryRow's
+      // them — see the score-sort comment above the rows query for the
+      // rationale. Deducted fires render dimmed in-place via LotteryRow's
       // round-tripped pill rather than reshuffling in the feed.
       //
       // Gamma at trigger time + the derived V1-era flat +1 bonus.
@@ -1415,10 +1426,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // ALSO added this V1-era flat +1 here at read time, double-counting
       // gamma. We now count gamma ONCE (in `score`) and drop gammaAdj from
       // the effective-score composition. The effective pre-inversion score
-      // is therefore GREATEST(0, score + round_trip_score_deduct) — the SAME
-      // expression the qas SQL filter (qasExprText) gates the score floor
-      // (minScore / minTier) on, so the feed's displayed score, its qas
-      // filter, and the SQL all agree.
+      // is therefore GREATEST(0, score) — the SAME expression the qas SQL
+      // filter (qasExprText) gates the score floor (minScore / minTier) on,
+      // so the feed's displayed score, its qas filter, and the SQL all
+      // agree.
       //
       // ⚠️ This is NOT equal to the stored `combined_score` GENERATED column
       // (migrations #168/#209), which STILL carries a +1 gamma CASE term.
@@ -1431,7 +1442,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         gammaAtTrigger,
         r.underlying_symbol,
       );
-      const score = rawScore == null ? null : Math.max(0, rawScore + rtDeduct);
+      const score = rawScore == null ? null : Math.max(0, rawScore);
       const roundTripNetPct =
         r.round_trip_net_pct == null ? null : Number(r.round_trip_net_pct);
       // Phase 4 direction-gate override (spec:
@@ -1441,12 +1452,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // UI badge + tier filters agree with the demoted semantics.
       const directionGated = r.direction_gated === true;
       // Phase 3 inversion-quality filter: tier is derived from
-      // qualityAdjustedScore (combined_score + per-ticker inversion
-      // bonus) using the ACTIVE weights version's feed cutoffs (the seed's
-      // are Tier 1 >= 13 / Tier 2 >= 10, recalibrated 2026-06-03 — spec
-      // lottery-feed-tier-recalibration-2026-06-03.md). Raw `score` stays
-      // as the combined_score value; `qualityAdjustedScore` is exposed as
-      // an additional field on the row.
+      // qualityAdjustedScore (the stored score floored at 0, plus the
+      // per-ticker inversion bonus) using the ACTIVE weights version's feed
+      // cutoffs (the seed's are Tier 1 >= 13 / Tier 2 >= 10, recalibrated
+      // 2026-06-03 — spec lottery-feed-tier-recalibration-2026-06-03.md).
+      // `qualityAdjustedScore` is exposed as an additional field on the row.
       const inversionQuintile =
         r.ticker_inversion_quintile != null
           ? Number(r.ticker_inversion_quintile)
@@ -1518,8 +1528,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         dte: Number(r.dte),
 
         score,
-        // Pre-deduct score so the UI can show "was X, deducted to Y".
-        // Equals `score` when no deduct or score was null.
+        // The stored score before the zero floor. No UI reads it; it equals
+        // `score` unless the stored score is negative.
         rawScore,
         roundTripNetPct,
         roundTripScoreDeduct: rtDeduct,

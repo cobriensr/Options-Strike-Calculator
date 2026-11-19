@@ -620,13 +620,13 @@ describe('lottery-finder endpoint', () => {
   // FIX C — minScore gates on the DISPLAYED qas, not raw `score`
   // ============================================================
   //
-  // The badge's tier comes from qualityAdjustedScore = GREATEST(0, score + rt)
-  // + inversion bonus (no gamma, no fire count). The minScore filter must
-  // gate on THAT qas value, not the raw `score` column, so the conviction chip
-  // hides exactly the rows whose badge is below the floor. The qas is computed
-  // IN SQL (identical expression in rows + count queries) so pagination/total
-  // stay coherent.
-  it('FIX C: minScore gates on the qas SQL expression (GREATEST(0, score+rt) + inversion CASE), not raw f.score', async () => {
+  // The badge's tier comes from qualityAdjustedScore = GREATEST(0, score)
+  // + inversion bonus (no round-trip deduct, no gamma, no fire count). The
+  // minScore filter must gate on THAT qas value, not the raw `score` column,
+  // so the conviction chip hides exactly the rows whose badge is below the
+  // floor. The qas is computed IN SQL (identical expression in rows + count
+  // queries) so pagination/total stay coherent.
+  it('FIX C: minScore gates on the qas SQL expression (GREATEST(0, score) + inversion CASE), not raw f.score', async () => {
     mockSql.mockResolvedValueOnce([ROW]).mockResolvedValueOnce([{ total: 1 }]);
 
     const req = mockRequest({
@@ -656,6 +656,10 @@ describe('lottery-finder endpoint', () => {
     // nor adds the column.
     expect(rowsSql).not.toContain('fire_count_score_adjustment');
     expect(countSql).not.toContain('fire_count_score_adjustment');
+    // The round-trip deduct is left out of the tier, so the count query no
+    // longer carries the column at all (the rows query keeps it for the pill,
+    // so only the count query is asserted here).
+    expect(countSql).not.toContain('round_trip_score_deduct');
     // The OLD raw-score predicate must be GONE from both queries.
     expect(rowsSql).not.toContain('f.score >= ?');
     expect(countSql).not.toContain('OR score >= ?');
@@ -1590,10 +1594,12 @@ describe('lottery-finder endpoint', () => {
     expect(mockSql).not.toHaveBeenCalled();
   });
 
-  it('applies round-trip score deduct and re-derives tier (-3 demotes tier2 → tier3)', async () => {
-    // V2 tiers (recalibrated 2026-06-03): tier1 ≥ 13, tier2 ≥ 10, else tier3.
-    // Default ROW fixture has inversion_quintile=5 (+5 bonus).
-    // score=7 + deduct=-3 = 4 → qas = 4 + 5 = 9 → tier3 (was tier2 at qas=12).
+  it('keeps the tier shown at the fire when a -3 deduct lands (score 7, Q5 stays tier2)', async () => {
+    // Seed cutoffs: tier1 ≥ 13, tier2 ≥ 10, else tier3. Default ROW fixture
+    // has inversion_quintile=5 (+5 bonus). The deduct is left out of the tier
+    // (docs/superpowers/specs/2026-11-17-freeze-tier-at-fire-design.md), so
+    // score=7 → qas = 7 + 5 = 12 → tier2, the same tier the row showed before
+    // the deduct landed. The deduct still passes through for the pill.
     mockSql
       .mockResolvedValueOnce([
         {
@@ -1618,18 +1624,19 @@ describe('lottery-finder endpoint', () => {
       }[];
     };
     expect(body.fires[0]).toMatchObject({
-      score: 4,
+      score: 7,
       rawScore: 7,
       roundTripNetPct: -0.65,
       roundTripScoreDeduct: -3,
-      scoreTier: 'tier3',
+      qualityAdjustedScore: 12,
+      scoreTier: 'tier2',
     });
   });
 
-  it('demotes tier1 → tier2 when -3 deduct lands score on the V2 tier2 cutoff', async () => {
-    // V2 tiers: tier1 ≥ 13, tier2 ≥ 10. Default ROW Q5 (+5 bonus).
-    // score=8 + deduct=-3 = 5 → qas = 5 + 5 = 10 → tier2 (at cutoff;
-    // pre-deduct qas = 8 + 5 = 13 = tier1).
+  it('keeps tier1 when a -3 deduct lands on a score of 8 (qas 13)', async () => {
+    // Seed cutoffs: tier1 ≥ 13, tier2 ≥ 10. Default ROW Q5 (+5 bonus).
+    // score=8 → qas = 8 + 5 = 13 = tier1 (at the cutoff). The -3 deduct
+    // would have dropped it to qas 10 = tier2; it no longer enters the tier.
     mockSql
       .mockResolvedValueOnce([
         {
@@ -1652,10 +1659,10 @@ describe('lottery-finder endpoint', () => {
       }[];
     };
     expect(body.fires[0]).toMatchObject({
-      score: 5,
-      qualityAdjustedScore: 10,
+      score: 8,
+      qualityAdjustedScore: 13,
       inversionQuintile: 5,
-      scoreTier: 'tier2',
+      scoreTier: 'tier1',
     });
   });
 
@@ -1680,16 +1687,51 @@ describe('lottery-finder endpoint', () => {
     });
   });
 
-  it('floors negative effective score at 0', async () => {
-    // score=1 + deduct=-3 → −2 → floored to 0. Then qas = 0 + 5 (Q5)
-    // = 5 → tier3 under V2 cutoffs (< 10). The Math.max(0, ...) floor
-    // is on the displayed `score` field, not on `qualityAdjustedScore`.
+  it('floors a negative stored score at 0', async () => {
+    // A stored score of -2 (no deduct) is floored to 0 on the displayed
+    // `score`; `rawScore` keeps the stored value. qas = 0 + 5 (Q5) = 5 →
+    // tier3 under the seed cutoffs (< 10). The floor is on the displayed
+    // `score` field, not on `qualityAdjustedScore`.
     mockSql
       .mockResolvedValueOnce([
         {
           ...ROW,
-          score: 1,
-          round_trip_net_pct: '-0.80',
+          score: -2,
+          round_trip_net_pct: null,
+          round_trip_score_deduct: 0,
+        },
+      ])
+      .mockResolvedValueOnce([{ total: 1 }]);
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-01' } });
+    const res = mockResponse();
+    await handler(req, res);
+    const body = res._json as {
+      fires: {
+        score: number | null;
+        rawScore: number | null;
+        qualityAdjustedScore: number;
+        scoreTier: string;
+      }[];
+    };
+    expect(body.fires[0]).toMatchObject({
+      score: 0,
+      rawScore: -2,
+      qualityAdjustedScore: 5,
+      scoreTier: 'tier3',
+    });
+  });
+
+  it('a NULL-score fire with a deduct keeps a null score and stays tier3', async () => {
+    // A fire with no stored score has nothing to floor: `score` and `rawScore`
+    // stay null. The qas treats it as 0 (0 + 5 for Q5 = 5), below the tier2
+    // cutoff, so tier3. The deduct passes through for the pill but does not
+    // enter the qas.
+    mockSql
+      .mockResolvedValueOnce([
+        {
+          ...ROW,
+          score: null,
+          round_trip_net_pct: '-0.70',
           round_trip_score_deduct: -3,
         },
       ])
@@ -1701,12 +1743,16 @@ describe('lottery-finder endpoint', () => {
       fires: {
         score: number | null;
         rawScore: number | null;
+        roundTripScoreDeduct: number;
+        qualityAdjustedScore: number;
         scoreTier: string;
       }[];
     };
     expect(body.fires[0]).toMatchObject({
-      score: 0,
-      rawScore: 1,
+      score: null,
+      rawScore: null,
+      roundTripScoreDeduct: -3,
+      qualityAdjustedScore: 5,
       scoreTier: 'tier3',
     });
   });
@@ -2532,17 +2578,18 @@ describe('lottery-finder endpoint', () => {
       });
     });
 
-    it('applies round_trip_score_deduct alone: a 10-fire chain that round-tripped scores raw - 2', async () => {
+    it('ignores round_trip_score_deduct: a chain that round-tripped keeps its raw score', async () => {
       const fire = await feedFire({
         ...ROW,
         fire_count: 10,
         round_trip_score_deduct: -2,
       });
-      // ROW's raw score is 20: 20 - 2 = 18, with no +1 for the 8-15 bucket.
+      // ROW's raw score is 20. The deduct is left out of the score and the
+      // tier, and there is no +1 for the 8-15 fire-count bucket either.
       expect(fire).toMatchObject({
         rawScore: 20,
         roundTripScoreDeduct: -2,
-        score: 18,
+        score: 20,
       });
     });
   });
