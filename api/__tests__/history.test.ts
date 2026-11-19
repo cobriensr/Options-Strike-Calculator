@@ -411,32 +411,172 @@ describe('GET /api/history', () => {
     expect(json.spx.previousClose).toBe(5425);
   });
 
-  it('handles schwabFetch error for a symbol gracefully', async () => {
-    vi.spyOn(console, 'error').mockImplementation(() => {});
+  // $SPX is the one symbol the page and the backfill cannot do without. When
+  // it fails, a 200 with no candles reads as "no data for that date" and hides
+  // the cause (the Schwab login lapsed on 2026-11-18 and every cache miss
+  // answered 200 empty). A failed VIX-family symbol with $SPX fine keeps its
+  // short-TTL 200.
+  describe('when $SPX fails', () => {
+    const LOGGED_OUT_BODY = {
+      error: 'Schwab is logged out. The owner needs to log in to Schwab again.',
+      code: 'schwab_logged_out',
+    };
+    const FETCH_FAILED_BODY = {
+      error: 'Schwab history fetch failed',
+      code: 'schwab_fetch_failed',
+    };
+    const loggedOut = {
+      ok: false as const,
+      error: '[SCHWAB_TOKEN_EXPIRED] No tokens found',
+      status: 401,
+      code: 'SCHWAB_TOKEN_EXPIRED' as const,
+    };
+    const spxOnly = (spxFailure: unknown) => async (path: string) =>
+      path.includes('SPX') ? spxFailure : okFetch();
 
-    vi.mocked(schwabFetch).mockResolvedValue({
-      ok: false,
-      error: 'Schwab API error (500): Internal error',
-      status: 502,
-      code: 'SCHWAB_API_500',
+    afterEach(() => {
+      vi.useRealTimers();
     });
 
-    const res = mockResponse();
-    await handler(mockRequest({ query: { date: TARGET_DATE } }), res);
+    it('answers 503 schwab_logged_out, uncached, when every symbol finds no tokens', async () => {
+      const done = vi.fn();
+      vi.mocked(metrics.request).mockReturnValueOnce(done);
+      vi.mocked(schwabFetch).mockResolvedValue(loggedOut);
+      const res = mockResponse();
+      await handler(mockRequest({ query: { date: TARGET_DATE } }), res);
 
-    expect(res._status).toBe(200);
-    const json = res._json as {
-      spx: { candles: unknown[] };
-      candleCount: number;
-    };
-    // Should return empty data, not error
-    expect(json.spx.candles).toEqual([]);
-    expect(json.candleCount).toBe(0);
-    // Each failed symbol surfaces as a named Sentry warning.
-    expect(Sentry.captureMessage).toHaveBeenCalledWith(
-      'history: $SPX fetch failed',
-      { level: 'warning' },
+      expect(res._status).toBe(503);
+      expect(res._json).toEqual(LOGGED_OUT_BODY);
+      expect(res._headers['Cache-Control']).toBe('no-store');
+      expect(res._headers['X-Cache']).toBeUndefined();
+      expect(redis.set).not.toHaveBeenCalled();
+      expect(done).toHaveBeenCalledWith({
+        status: 503,
+        error: 'schwab_logged_out',
+      });
+      // A logged-out Schwab is not an unhandled error. The per-symbol
+      // warnings are its only Sentry trace, so they stay: one for each of the
+      // five symbols, $SPX among them.
+      expect(Sentry.captureException).not.toHaveBeenCalled();
+      expect(Sentry.captureMessage).toHaveBeenCalledWith(
+        'history: $SPX fetch failed',
+        { level: 'warning' },
+      );
+      expect(Sentry.captureMessage).toHaveBeenCalledTimes(5);
+    });
+
+    it('answers 503 when only $SPX is logged out and the VIX family answers', async () => {
+      vi.mocked(schwabFetch).mockImplementation(
+        spxOnly(loggedOut) as typeof schwabFetch,
+      );
+      const res = mockResponse();
+      await handler(mockRequest({ query: { date: TARGET_DATE } }), res);
+
+      expect(res._status).toBe(503);
+      expect(res._json).toEqual(LOGGED_OUT_BODY);
+      expect(redis.set).not.toHaveBeenCalled();
+    });
+
+    it('writes no 120 s entry for today either, which a failed fetch used to leave', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(new Date(`${TARGET_DATE}T16:00:00Z`));
+      vi.mocked(schwabFetch).mockResolvedValue(loggedOut);
+      const res = mockResponse();
+      await handler(mockRequest({ query: { date: TARGET_DATE } }), res);
+
+      expect(res._status).toBe(503);
+      expect(res._headers['Cache-Control']).toBe('no-store');
+      expect(redis.set).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['a refresh that failed for another reason', 'SCHWAB_TOKEN_ERROR', 500],
+      ['a data API that rejected a held token', 'SCHWAB_API_REJECTED', 401],
+      ['a network failure', 'SCHWAB_API_NETWORK', 504],
+      ['a Schwab 500', 'SCHWAB_API_500', 502],
+    ] as const)(
+      'answers 502 schwab_fetch_failed, uncached, on %s',
+      async (_label, code, status) => {
+        const done = vi.fn();
+        vi.mocked(metrics.request).mockReturnValueOnce(done);
+        vi.mocked(schwabFetch).mockResolvedValue({
+          ok: false,
+          error: `[${code}] upstream failed`,
+          status,
+          code,
+        });
+        const res = mockResponse();
+        await handler(mockRequest({ query: { date: TARGET_DATE } }), res);
+
+        expect(res._status).toBe(502);
+        expect(res._json).toEqual(FETCH_FAILED_BODY);
+        expect(res._headers['Cache-Control']).toBe('no-store');
+        expect(redis.set).not.toHaveBeenCalled();
+        expect(done).toHaveBeenCalledWith({
+          status: 502,
+          error: 'schwab_fetch_failed',
+        });
+        // Each failed symbol still surfaces as a named Sentry warning.
+        expect(Sentry.captureMessage).toHaveBeenCalledWith(
+          'history: $SPX fetch failed',
+          { level: 'warning' },
+        );
+      },
     );
+
+    it('answers 502 when $SPX failed for another reason and the VIX family is logged out', async () => {
+      // The $SPX failure decides, not the other symbols'.
+      vi.mocked(schwabFetch).mockImplementation((async (path: string) =>
+        path.includes('SPX')
+          ? {
+              ok: false,
+              error: '[SCHWAB_API_503] down',
+              status: 502,
+              code: 'SCHWAB_API_503',
+            }
+          : loggedOut) as typeof schwabFetch);
+      const res = mockResponse();
+      await handler(mockRequest({ query: { date: TARGET_DATE } }), res);
+
+      expect(res._status).toBe(502);
+      expect(res._json).toEqual(FETCH_FAILED_BODY);
+    });
+
+    it('keeps the short-TTL 200 when $SPX is fine and the VIX family is logged out', async () => {
+      vi.mocked(schwabFetch).mockImplementation((async (path: string) =>
+        path.includes('SPX') ? okFetch() : loggedOut) as typeof schwabFetch);
+      const res = mockResponse();
+      await handler(mockRequest({ query: { date: TARGET_DATE } }), res);
+
+      expect(res._status).toBe(200);
+      expect(res._headers['Cache-Control']).toBe('private, max-age=120');
+      expect(redis.set).toHaveBeenCalledWith(
+        CACHE_KEY,
+        {
+          response: expect.objectContaining({ date: TARGET_DATE }),
+          complete: false,
+        },
+        { ex: 120 },
+      );
+    });
+
+    it('keeps the 200 with empty candles when $SPX answers with none: a date beyond Schwab’s window', async () => {
+      vi.mocked(schwabFetch).mockResolvedValue({
+        ok: true,
+        data: { symbol: '$SPX', candles: [] },
+      });
+      const res = mockResponse();
+      await handler(mockRequest({ query: { date: TARGET_DATE } }), res);
+
+      expect(res._status).toBe(200);
+      const json = res._json as {
+        spx: { candles: unknown[] };
+        candleCount: number;
+      };
+      expect(json.spx.candles).toEqual([]);
+      expect(json.candleCount).toBe(0);
+      expect(redis.set).not.toHaveBeenCalled();
+    });
   });
 
   it('does NOT write the long-TTL cache when a symbol fetch fails (AUD-M1)', async () => {

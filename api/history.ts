@@ -16,7 +16,12 @@
  *
  * Cache strategy (Redis entry TTL; the browser max-age matches on hit and miss):
  *   - Past dates, every symbol fetched: 90 days in Redis, 1 day in the browser
- *   - Past dates with a failed symbol, or today: 120s (self-heals)
+ *   - Past dates with a failed VIX-family symbol, or today: 120s (self-heals)
+ *
+ * A failed $SPX fetch is not a 200 with no candles: 503 `schwab_logged_out`
+ * when the Schwab login lapsed, 502 `schwab_fetch_failed` for anything else,
+ * both `no-store` and with no Redis write. $SPX answering with no candles (a
+ * date beyond Schwab's window) stays a 200.
  */
 
 import { Sentry, metrics } from './_lib/sentry.js';
@@ -26,6 +31,7 @@ import {
   guardOwnerOrGuestEndpoint,
   sendError,
 } from './_lib/api-helpers.js';
+import type { SchwabErrorCode } from './_lib/schwab-fetch.js';
 import { redis } from './_lib/redis.js';
 import { getETTotalMinutes, getETDateStr } from '../src/utils/timezone.js';
 import { parseIsoDate, priorTradingDay } from '../src/data/marketHours.js';
@@ -86,6 +92,12 @@ interface SymbolDayData {
  */
 interface SymbolFetchResult extends SymbolDayData {
   ok: boolean;
+  /**
+   * Why the Schwab fetch failed (`schwabFetch`'s `code`), null when `ok`.
+   * SCHWAB_TOKEN_EXPIRED is a lapsed login; anything else is some other
+   * failure. The handler answers differently for a failed $SPX.
+   */
+  failure: SchwabErrorCode | null;
   /** The target day's candles repeated a datetime (dropped before returning). */
   hadDuplicates: boolean;
 }
@@ -369,6 +381,7 @@ async function fetchSymbolHistory(
     previousClose: 0,
     previousDay: null,
     ok: false,
+    failure: null,
     hadDuplicates: false,
   };
 
@@ -397,7 +410,7 @@ async function fetchSymbolHistory(
     Sentry.captureMessage(`history: ${symbol} fetch failed`, {
       level: 'warning',
     });
-    return empty;
+    return { ...empty, failure: result.code };
   }
 
   const { candles: allCandles } = result.data;
@@ -465,6 +478,7 @@ async function fetchSymbolHistory(
     previousClose: previousCloseOf(previousDay, expectedPreviousDate),
     previousDay,
     ok: true,
+    failure: null,
     hadDuplicates,
   };
 }
@@ -540,6 +554,35 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         fetchSymbol('$VIX9D'),
         fetchSymbol('$VVIX'),
       ]);
+
+      // $SPX is the symbol the page and the backfill cannot do without. A 200
+      // with no candles for a failed $SPX reads as "no data for that date": it
+      // hid a lapsed Schwab login (2026-11-18) behind "Schwab keeps ~60 days",
+      // and for today it was cached for 120 s. So say what failed, uncached.
+      // 503 and not 401: the owner's session is fine, and the client's auth
+      // interceptor counts a 401 from any non-auth path toward its sign-in
+      // probe (src/utils/authInterceptor.ts). `code` names the failure the way
+      // the crons name it (`schwab_logged_out`). The message is shown to
+      // guests too (the header's NO INTRADAY tooltip, BacktestDiag), who
+      // cannot log in to Schwab, so it names the owner. A failed VIX-family
+      // symbol with $SPX fine still gets the short-TTL 200 below.
+      if (!spx.ok) {
+        const [status, code, message] =
+          spx.failure === 'SCHWAB_TOKEN_EXPIRED'
+            ? ([
+                503,
+                'schwab_logged_out',
+                'Schwab is logged out. The owner needs to log in to Schwab again.',
+              ] as const)
+            : ([
+                502,
+                'schwab_fetch_failed',
+                'Schwab history fetch failed',
+              ] as const);
+        done({ status, error: code });
+        sendError(res, status, message, code);
+        return;
+      }
 
       const results = [spx, vix, vix1d, vix9d, vvix];
 

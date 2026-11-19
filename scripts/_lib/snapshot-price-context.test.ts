@@ -1324,6 +1324,81 @@ describe('readHistoryResponse', () => {
       });
     },
   );
+
+  describe('a Schwab failure that /api/history names', () => {
+    const body = (code: unknown) =>
+      JSON.stringify({ error: 'Schwab is logged out.', code });
+
+    it('says logged-out for a 503 with code schwab_logged_out: every later date would fail the same way', () => {
+      expect(
+        readHistoryResponse(LIVE_DATE, 503, body('schwab_logged_out')),
+      ).toEqual({ kind: 'logged-out', status: 503 });
+    });
+
+    it.each([
+      ['a 503 with another code', 503, body('schwab_fetch_failed')],
+      ['a 503 with no code', 503, '{"error":"Service Unavailable"}'],
+      ['a 503 that is not JSON', 503, '<html>503</html>'],
+      ['a 503 whose code is not a string', 503, body(['schwab_logged_out'])],
+      ['a 502 with the logged-out code', 502, body('schwab_logged_out')],
+      ['a 200 with the logged-out code', 200, body('schwab_logged_out')],
+    ])('is not logged-out for %s', (_name, status, text) => {
+      expect(readHistoryResponse(LIVE_DATE, status, text).kind).not.toBe(
+        'logged-out',
+      );
+    });
+
+    it('keeps a 502 a per-date failure, with the code in the detail', () => {
+      expect(
+        readHistoryResponse(LIVE_DATE, 502, body('schwab_fetch_failed')),
+      ).toEqual({ kind: 'failed', detail: 'HTTP 502 (schwab_fetch_failed)' });
+    });
+
+    it('names a 503 with another code the same way', () => {
+      expect(
+        readHistoryResponse(LIVE_DATE, 503, body('some_other_code')),
+      ).toEqual({ kind: 'failed', detail: 'HTTP 503 (some_other_code)' });
+    });
+
+    it.each([
+      ['no code', '{"error":"boom"}'],
+      ['a code that is not a string', body(42)],
+      ['a code with spaces and markup', body('<b>bad code</b>')],
+      ['a code of a hundred characters', body('a'.repeat(100))],
+      ['an empty code', body('')],
+      ['a body that is not JSON', 'upstream <html>'],
+      ['an empty body', ''],
+      // The edges of /^[a-z][a-z0-9_]{0,39}$/: 41 characters, a trailing
+      // newline ($ is the end of the string, not of a line), an uppercase
+      // letter, a leading digit or underscore, an escape character.
+      ['a code of 41 characters', body('a'.repeat(41))],
+      ['a code with a trailing newline', body('schwab_fetch_failed\n')],
+      ['a code with an uppercase letter', body('schwab_Fetch_failed')],
+      ['a code that starts with a digit', body('4xx_failed')],
+      ['a code that starts with an underscore', body('_fetch_failed')],
+      ['a code with an escape character', body('schwab\u001b[31m_failed')],
+      ['a code with a hyphen', body('schwab-fetch-failed')],
+    ])('leaves a 502 with %s as plain HTTP 502', (_name, text) => {
+      // The body is the response of a host we do not control end to end: only
+      // a short snake-case token is copied into the report.
+      expect(readHistoryResponse(LIVE_DATE, 502, text)).toEqual({
+        kind: 'failed',
+        detail: 'HTTP 502',
+      });
+    });
+
+    it.each([
+      ['one letter', 'a'],
+      ['40 characters, the longest', 'a'.repeat(40)],
+      ['letters, digits and underscores', 'http_502_fetch_failed_2'],
+      ['a trailing underscore', 'schwab_'],
+    ])('copies a code of %s into the detail', (_name, code) => {
+      expect(readHistoryResponse(LIVE_DATE, 502, body(code))).toEqual({
+        kind: 'failed',
+        detail: `HTTP 502 (${code})`,
+      });
+    });
+  });
 });
 
 // ── Arguments ───────────────────────────────────────────────────────────────

@@ -885,6 +885,79 @@ describe('a history fetch that goes wrong', () => {
     expect(readdirSync(undoDir)).toEqual([]);
     expect(statements.some((s) => /UPDATE/.test(s))).toBe(false);
   });
+
+  // The Schwab login lapsed on 2026-11-18: /api/history answered 200 with no
+  // candles, and a dry run read every date as "empty history". It now answers
+  // 503 schwab_logged_out, and every later date would fail the same way.
+  describe('when /api/history says Schwab is logged out', () => {
+    const LOGGED_OUT = () =>
+      new Response(
+        JSON.stringify({
+          error:
+            'Schwab is logged out. The owner needs to log in to Schwab again.',
+          code: 'schwab_logged_out',
+        }),
+        { status: 503 },
+      );
+    const fetchedDates = () =>
+      fetchMock.mock.calls.map((call) =>
+        new URL(String(call[0])).searchParams.get('date'),
+      );
+
+    it('stops the run at that date, names the cause, and writes nothing', async () => {
+      answers.set('2026-11-03', LOGGED_OUT);
+
+      const run = dry();
+
+      await expect(run).rejects.toThrow(
+        'Refusing to go on. 2026-11-03: Schwab is logged out (/api/history answered 503). Log in to Schwab, then re-run. Nothing was written.',
+      );
+      await expect(run).rejects.not.toThrow(SECRET);
+      expect(fetchedDates()).toEqual(['2026-11-03']);
+      expect(pause).not.toHaveBeenCalled();
+      expect(readdirSync(undoDir)).toEqual([]);
+      expect(statements.some((s) => /UPDATE/.test(s))).toBe(false);
+    });
+
+    it('stops before the dates after it are fetched, whatever came before', async () => {
+      answers.set(LIVE_DATE, LOGGED_OUT);
+
+      await expect(dry()).rejects.toThrow(
+        `Refusing to go on. ${LIVE_DATE}: Schwab is logged out`,
+      );
+      expect(fetchedDates()).toEqual(['2026-11-03', LIVE_DATE]);
+      expect(readdirSync(undoDir)).toEqual([]);
+    });
+
+    it('leaves a 502 a failure of that date alone, with the code in the report', async () => {
+      answers.set(
+        '2026-11-03',
+        () =>
+          new Response(
+            JSON.stringify({
+              error: 'Schwab history fetch failed',
+              code: 'schwab_fetch_failed',
+            }),
+            { status: 502 },
+          ),
+      );
+
+      const result = await dry();
+
+      expect(result.dates.find((d) => d.date === '2026-11-03')).toMatchObject({
+        fetch: 'failed',
+        fetchDetail: 'HTTP 502 (schwab_fetch_failed)',
+        skippedDate: 'no-history',
+      });
+      // Every other date was still fetched and planned.
+      expect(fetchedDates()).toEqual(['2026-11-03', LIVE_DATE, BACKTEST_DATE]);
+      expect(result.dates.flatMap((d) => d.results).length).toBe(6);
+      expect(exitCodeOfDryRun(result)).toBe(1);
+      expect(formatReport(result)).toContain(
+        'HTTP 502 (schwab_fetch_failed) (1 date): 2026-11-03',
+      );
+    });
+  });
 });
 
 describe('a redirect from the history endpoint', () => {

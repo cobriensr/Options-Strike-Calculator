@@ -560,18 +560,48 @@ export type HistoryFetch =
   | { kind: 'ok'; history: DateHistory }
   /** The auth was refused: every date would fail the same way. */
   | { kind: 'denied'; status: number }
+  /** The Schwab login lapsed: every date would fail the same way. */
+  | { kind: 'logged-out'; status: number }
   | { kind: 'failed'; detail: string };
 
 /**
  * An empty answer is a failure: the endpoint answers 200 with no candles for a
- * Schwab failure as well as for a date older than Schwab's 5-minute window,
- * and the two cannot be told apart from here.
+ * date older than Schwab's 5-minute window. A deployed endpoint answers a
+ * failed Schwab fetch with a 502 or a 503 instead (see `statusDetail`), but
+ * one that predates that answered it with a 200 and no candles too, and the
+ * two cannot be told apart from here, so the detail names both.
  */
 const EMPTY_HISTORY =
   "empty history: a Schwab failure, or a date older than Schwab's 5-minute window";
 
+/** The `code` /api/history answers a logged-out Schwab with, on a 503. */
+const LOGGED_OUT_CODE = 'schwab_logged_out';
+
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
+
+/**
+ * The `code` of a non-200 /api/history body, when it is a short snake-case
+ * token and so safe to print; null for anything else, a body that is not JSON
+ * included. The body is a response, not something this script wrote.
+ */
+function errorCodeOf(text: string): string | null {
+  try {
+    const body: unknown = JSON.parse(text);
+    if (!isRecord(body)) return null;
+    const { code } = body;
+    return typeof code === 'string' && /^[a-z][a-z0-9_]{0,39}$/.test(code)
+      ? code
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/** `HTTP 502 (schwab_fetch_failed)`: the status, and the code the body names. */
+function statusDetail(status: number, code: string | null): string {
+  return code == null ? `HTTP ${status}` : `HTTP ${status} (${code})`;
+}
 
 /** `next` starts after `earlier`. False when either is NaN. */
 const startsAfter = (next: number, earlier: number): boolean => next > earlier;
@@ -581,8 +611,12 @@ const numberOrNaN = (value: unknown): number =>
   typeof value === 'number' ? value : Number.NaN;
 
 /**
- * Reduce one `/api/history` answer to what the plan reads. A non-200, a body
- * that is not JSON, one with no `spx`, one echoing another date, and
+ * Reduce one `/api/history` answer to what the plan reads. A 401 or 403 is
+ * `denied` and a 503 whose body has `code: 'schwab_logged_out'` is
+ * `logged-out`: both end the run, as every later date would fail the same way.
+ * Any other non-200 is `failed` for that date, with the status and the
+ * body's `code` when it has a short one (`HTTP 502 (schwab_fetch_failed)`). A
+ * body that is not JSON, one with no `spx`, one echoing another date, and
  * candles that are not an array of objects are `failed`, each named, and so is
  * a 200 with no candles (EMPTY_HISTORY) and candles whose `datetime`s do not
  * strictly ascend: `/api/history` sorts and dedupes them, so a repeat or an
@@ -596,7 +630,12 @@ export function readHistoryResponse(
   text: string,
 ): HistoryFetch {
   if (status === 401 || status === 403) return { kind: 'denied', status };
-  if (status !== 200) return { kind: 'failed', detail: `HTTP ${status}` };
+  if (status !== 200) {
+    const code = errorCodeOf(text);
+    return status === 503 && code === LOGGED_OUT_CODE
+      ? { kind: 'logged-out', status }
+      : { kind: 'failed', detail: statusDetail(status, code) };
+  }
   let body: unknown;
   try {
     body = JSON.parse(text);
@@ -1519,6 +1558,11 @@ export async function runDryRun(opts: {
       if (fetched.kind === 'denied') {
         throw new Error(
           `Refusing to go on. ${date}: /api/history answered ${fetched.status}: the owner cookie was refused. Check OWNER_SECRET. Nothing was written.`,
+        );
+      }
+      if (fetched.kind === 'logged-out') {
+        throw new Error(
+          `Refusing to go on. ${date}: Schwab is logged out (/api/history answered ${fetched.status}). Log in to Schwab, then re-run. Nothing was written.`,
         );
       }
       if (fetched.kind === 'ok') history = fetched.history;

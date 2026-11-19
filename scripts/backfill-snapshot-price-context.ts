@@ -27,7 +27,9 @@
  * per kind for a hand check, and the dates whose training_features pick would
  * change. It prints a progress line per date to stderr. It writes a plan file
  * under docs/tmp/snapshot-price-context/ (relative to the working directory)
- * and nothing to the database.
+ * and nothing to the database. If the Schwab login has lapsed, /api/history
+ * answers 503 and the run stops at the first date it fetches, with "Schwab is
+ * logged out (/api/history answered 503)": log in to Schwab again, then re-run.
  *
  * `--apply --plan F` applies exactly that file: no fetch, no re-plan, no
  * OWNER_SECRET. The file is checked first. Then an undo file is written, then
@@ -41,12 +43,13 @@
  *
  * Options: see --help. Exit codes: 0 done (or nothing to change), 1 any error
  * (bad argument, no env file, a missing OWNER_SECRET or APP_URL, a refused
- * cookie, a plan file that fails its check, a DB error, an apply that stopped
- * part-way), a dry run in which any date's history failed or came back empty
- * (the rest of the dates are planned, and the report lists the failed ones for
- * a re-run with --since and --until), and an apply or an undo that wrote fewer
- * rows than it planned. The code is set on `process.exitCode`, never with
- * `process.exit`, so a piped stdout is flushed before the process ends.
+ * cookie, Schwab logged out (/api/history answered 503), a plan file that
+ * fails its check, a DB error, an apply that stopped part-way), a dry run in
+ * which any date's history failed or came back empty (the rest of the dates
+ * are planned, and the report lists the failed ones for a re-run with --since
+ * and --until), and an apply or an undo that wrote fewer rows than it planned.
+ * The code is set on `process.exitCode`, never with `process.exit`, so a piped
+ * stdout is flushed before the process ends.
  */
 
 import { config } from 'dotenv';
