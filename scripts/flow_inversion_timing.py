@@ -5,35 +5,54 @@ Re-runs `simulate_flow_inversion` against the parquet+flow inputs for
 every enriched fire, capturing the inversion timestamp directly so we
 can compute (inversion_ts − trigger_ts) in minutes. Aggregates per
 ticker / mode / tier / dte and writes a markdown report to
-docs/tmp/flow-inversion-timing-{LATEST_DATE}.md.
+docs/tmp/flow-inversion-timing-{LATEST_DATE}.md (or --out-dir).
 
 Useful for: knowing how long after a fire to start watching for the
 exit signal on a given ticker, and spotting fast-vs-slow tape regimes.
 
+Tiers are the feed's: each fire's quality-adjusted score (qas) against the
+feed cutoffs of the ACTIVE lottery weights, read from the store. A failed read
+of the weights ends the run before any report is written. (Owner ruling,
+2026-11-19: the bare-score split this report used to apply is gone.)
+
 Read-only — does not modify the DB or production code.
 
-A day whose archive file is missing is skipped with one line naming it, and
-the skipped days are listed at the end. When no day had a file, the run says
+The per-day numbers come from `derive_day`, which turns one tape day into one
+small frame (`DERIVED_COLUMNS`: the fire id, minutes to the inversion and the
+exit pct). The report joins those rows to the fires on id, so the ticker, mode,
+tier, dte and option type always come from the fire as it is now. Two ways to
+run, one of which is required:
+
+  --parquet-dir DIR   derive every fire date from {date}-trades.parquet in DIR
+                      (the Bot-EOD archive; `make update` passes the Makefile's
+                      PARQUET_DIR). A day whose file is missing is skipped with
+                      one line naming it.
+  --derived-dir DIR   read {date}.parquet, the files `derive_day` wrote, from
+                      DIR. A day without one is skipped, listed as "not
+                      derived yet".
+
+The skipped days are listed at the end. When no day had a file, the run says
 so and exits 0, so `make update` carries on; a run that read days but timed
 no inversion still exits non-zero.
 
 Usage:
     ml/.venv/Scripts/python scripts/flow_inversion_timing.py --parquet-dir <bot-eod-dir>
-
---parquet-dir is the Bot-EOD archive, the directory of
-{date}-trades.parquet files (`make update` passes the Makefile's PARQUET_DIR).
+    ml/.venv/Scripts/python scripts/flow_inversion_timing.py --derived-dir <derived-dir>
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
-import re
 import sys
 import time
+from collections.abc import Iterable
+from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import numpy as np
 import pandas as pd
 import psycopg2
 
@@ -46,6 +65,7 @@ sys.path.insert(0, str(ROOT / 'scripts'))
 from _cli_paths import (  # noqa: E402
     existing_dir,
     format_dates,
+    load_env_file,
     warn_missing_archive,
 )
 from enrich_lottery_outcomes import (  # noqa: E402
@@ -54,17 +74,40 @@ from enrich_lottery_outcomes import (  # noqa: E402
     resample_minute_mid,
 )
 
+# The feed's tier rule: qas and the cutoffs it is read against.
+sys.path.insert(0, str(ROOT / 'ml' / 'src'))
+from lottery_refit_gates import FeedCutoffs, feed_qas  # noqa: E402
+from lottery_weights import WeightsInvalid, load_pointer  # noqa: E402
+
 _CT_TZ = ZoneInfo('America/Chicago')
 
+# Bump when derive_day's numbers change: the nightly re-derives every day.
+DERIVE_VERSION = 1
+DERIVED_COLUMNS: tuple[str, ...] = ('id', 'minutes_to_inversion', 'realized_pct')
+DERIVED_DTYPES = {c: ('int64' if c == 'id' else 'float64') for c in DERIVED_COLUMNS}
 
-def load_env() -> None:
-    with ENV_FILE.open() as f:
-        for line in f:
-            m = re.match(r'^([A-Z_][A-Z0-9_]*)=(.*)$', line.strip())
-            if m:
-                os.environ.setdefault(
-                    m.group(1), m.group(2).strip('"').strip("'")
-                )
+# Every fire with a flow-inversion value, with the three columns the feed's qas
+# reads besides the score (the join is the feed's own: nightly/src/refit_step.py,
+# api/lottery-finder.ts). No ORDER BY: each caller adds its own.
+FIRES_SQL = """
+SELECT f.id, f.date, f.option_chain_id, f.underlying_symbol, f.option_type,
+       f.trigger_time_ct, f.entry_price, f.mode, f.dte, f.score,
+       f.realized_flow_inversion_pct AS flow_inv,
+       f.round_trip_score_deduct, f.direction_gated, s.inversion_quintile
+FROM lottery_finder_fires f
+LEFT JOIN lottery_ticker_stats s ON s.ticker = f.underlying_symbol
+WHERE f.realized_flow_inversion_pct IS NOT NULL
+"""
+
+# A day's fingerprint covers what the derived rows depend on besides the tape:
+# which fires have an inversion value.
+_FINGERPRINT_EXPR = "md5(string_agg(id::text, ',' ORDER BY id))"
+DAY_FINGERPRINT_SQL = f"""
+SELECT date, {_FINGERPRINT_EXPR} AS fingerprint
+FROM lottery_finder_fires
+WHERE realized_flow_inversion_pct IS NOT NULL
+GROUP BY date
+"""
 
 
 def latest_fire_date(conn) -> str:
@@ -78,141 +121,311 @@ def latest_fire_date(conn) -> str:
     return row[0].isoformat() if hasattr(row[0], 'isoformat') else str(row[0])[:10]
 
 
+# ============================================================
+# Per-day driver
+# ============================================================
+
+
+def _derived_frame(rows: list[dict]) -> pd.DataFrame:
+    """`rows` as DERIVED_COLUMNS with pinned dtypes (id int64, the rest
+    float64), ordered by id. No rows is a valid frame."""
+    frame = pd.DataFrame(rows, columns=list(DERIVED_COLUMNS)).astype(DERIVED_DTYPES)
+    return frame.sort_values('id', kind='stable', ignore_index=True)
+
+
+def derive_day(
+    conn, day: date, tape_path: Path, fires_for_date: pd.DataFrame
+) -> pd.DataFrame:
+    """The inversion timings of one day's fires, from the day's tape file and
+    the day's net flow (read through `conn`).
+
+    Returns DERIVED_COLUMNS exactly: `id` int64, the rest float64, one row per
+    fire whose simulation ended in a true inversion (so possibly none),
+    ordered by id. An EOD fallback is not a timing: it would skew the
+    distribution toward 15:00. The tape may be either layout: float or
+    decimal128 numerics, a bool or a text `canceled`, a tz-aware or a
+    naive-UTC `executed_at`.
+    """
+    if fires_for_date.empty:
+        return _derived_frame([])
+    date_str = day.isoformat()
+    sub = fires_for_date
+
+    chains = sub['option_chain_id'].unique().tolist()
+    df = pd.read_parquet(
+        tape_path,
+        columns=['executed_at', 'option_chain_id', 'price',
+                 'canceled', 'nbbo_bid', 'nbbo_ask', 'size'],
+        filters=[('option_chain_id', 'in', chains)],
+    )
+    # January-April tapes store the numerics as decimal128, which pandas reads
+    # as Python Decimal objects; coerce to float64 at the boundary.
+    for col in ('price', 'nbbo_bid', 'nbbo_ask', 'size'):
+        df[col] = pd.to_numeric(df[col], errors='coerce').astype('float64')
+    if df['canceled'].dtype == bool:
+        df = df[~df['canceled']]
+    else:
+        df = df[df['canceled'].astype(str).str.lower().isin(['f','false','0',''])]
+    df = df[df['price'] > 0]
+    if df['executed_at'].dt.tz is None:
+        df['executed_at'] = df['executed_at'].dt.tz_localize('UTC')
+    df = df.sort_values(['option_chain_id', 'executed_at'], kind='stable')
+    chain_idx = dict(iter(df.groupby('option_chain_id', sort=False)))
+
+    # Per-chain minute mids cache.
+    minute_cache: dict[str, list[tuple]] = {}
+    # Per (ticker, type) flow cache, from the enrichment script's own
+    # loader so the window is the one its values are written from.
+    flow_cache: dict[tuple[str, str], list[tuple]] = {}
+    for ticker in sub['underlying_symbol'].unique():
+        for opt_type in ('C', 'P'):
+            flow_cache[(ticker, opt_type)] = load_matched_flow(
+                conn, date_str, ticker, opt_type
+            )
+
+    timings: list[dict] = []
+    for _, fire in sub.iterrows():
+        chain_df = chain_idx.get(fire['option_chain_id'])
+        if chain_df is None:
+            continue
+        if fire['option_chain_id'] not in minute_cache:
+            minute_cache[fire['option_chain_id']] = resample_minute_mid(chain_df)
+        minutes = minute_cache[fire['option_chain_id']]
+        flow = flow_cache.get((fire['underlying_symbol'], fire['option_type']), [])
+
+        trigger_ts = fire['trigger_time_ct']
+        if hasattr(trigger_ts, 'tz_localize') and trigger_ts.tz is None:
+            trigger_ts = trigger_ts.tz_localize('UTC')
+        if hasattr(trigger_ts, 'to_pydatetime'):
+            trigger_ts = trigger_ts.to_pydatetime()
+
+        exit_pct, exit_ts, status = simulate_flow_inversion(
+            minutes, flow, float(fire['entry_price']), trigger_ts
+        )
+        # Only record true inversion exits — EOD fallbacks have a
+        # different meaning and would skew the timing toward 15:00.
+        if status != 'inversion' or exit_ts is None:
+            continue
+        mins_to_inv = (exit_ts - trigger_ts).total_seconds() / 60.0
+        timings.append({
+            'id': int(fire['id']),
+            'minutes_to_inversion': mins_to_inv,
+            'realized_pct': float(exit_pct),
+        })
+    return _derived_frame(timings)
+
+
+def fires_for_day(conn, day: date) -> pd.DataFrame:
+    """One day's fires, the same rows (and columns) as the whole-population
+    read."""
+    return pd.read_sql(
+        FIRES_SQL + ' AND f.date = %s ORDER BY f.trigger_time_ct',
+        conn,
+        params=(day,),
+    )
+
+
+def fingerprint_rows(fires: pd.DataFrame) -> str:
+    """md5 hex of the day's canonical fire list: the ids joined by commas,
+    ascending numeric. The SQL twin is DAY_FINGERPRINT_SQL, which reads the
+    fires that have an inversion value; `fires` is already that set."""
+    text = ','.join(str(int(fire_id)) for fire_id in fires['id'].sort_values())
+    return hashlib.md5(text.encode('utf-8'), usedforsecurity=False).hexdigest()
+
+
+def _as_date(value) -> date:
+    """A date from what a driver may hand back: a date, a datetime or ISO text."""
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    return date.fromisoformat(str(value)[:10])
+
+
+def day_fingerprints(conn) -> dict[date, str]:
+    """Each day's fingerprint, as the database computes it."""
+    cur = conn.cursor()
+    cur.execute(DAY_FINGERPRINT_SQL)
+    return {_as_date(day): str(digest) for day, digest in cur.fetchall()}
+
+
+def load_derived(
+    derived_dir: Path, days: Iterable[str]
+) -> tuple[pd.DataFrame, list[str]]:
+    """The derived rows of `days` (ISO dates), and the days with no file.
+
+    A day's file is `{day}.parquet`; one that holds no rows is a derived day.
+    The rows come back as DERIVED_COLUMNS with pinned dtypes. A file that
+    lacks a column raises ValueError naming it.
+    """
+    frames: list[pd.DataFrame] = []
+    missing: list[str] = []
+    for day in days:
+        path = derived_dir / f'{day}.parquet'
+        if not path.exists():
+            missing.append(day)
+            continue
+        frame = pd.read_parquet(path)
+        absent = [c for c in DERIVED_COLUMNS if c not in frame.columns]
+        if absent:
+            raise ValueError(f'{path.name}: derived file lacks columns {", ".join(absent)}')
+        frames.append(frame[list(DERIVED_COLUMNS)])
+    rows = pd.concat(frames, ignore_index=True) if frames else _derived_frame([])
+    return rows.astype(DERIVED_DTYPES), missing
+
+
+# ============================================================
+# Tiers (the feed's)
+# ============================================================
+
+
+def load_active_cutoffs(conn) -> tuple[str, FeedCutoffs]:
+    """The active weights' version and feed cutoffs. A failed read ends the
+    run (non-zero, before any report): there is no fallback to other cutoffs."""
+    try:
+        version, weights = load_pointer(conn, 'active')
+        return version, FeedCutoffs.from_weights(weights)
+    except (WeightsInvalid, LookupError, psycopg2.Error) as exc:
+        # A DB error's text can hold the DSN: name its class only.
+        detail = (
+            type(exc).__name__
+            if isinstance(exc, psycopg2.Error)
+            else f'{type(exc).__name__}: {exc}'
+        )
+        sys.exit(
+            f'[timing] cannot read the active lottery weights ({detail}); '
+            'no report written'
+        )
+
+
+def tier_labels(fires: pd.DataFrame, cutoffs: FeedCutoffs) -> pd.Series:
+    """T1 / T2 / T3 as the feed tiers each fire: its qas against the cutoffs.
+
+    qas is NaN for the fires the feed forces to tier 3 (a NULL score,
+    direction_gated, an inversion quintile of 1 or 2), and NaN fails both
+    comparisons.
+    """
+    qas = feed_qas(fires['score'], fires)
+    labels = np.where(
+        qas >= cutoffs.tier1_min_score,
+        'T1',
+        np.where(qas >= cutoffs.tier2_min_score, 'T2', 'T3'),
+    )
+    return pd.Series(labels, index=fires.index, name='tier')
+
+
+LOOK_AHEAD_NOTE = (
+    "inversion_quintile is the ticker's current value, not the value when each "
+    'fire fired (look-ahead), as on the feed'
+)
+
+
+def tier_header(version: str, cutoffs: FeedCutoffs) -> str:
+    """The report lines that say which weights the tiers come from."""
+    return (
+        f'Active lottery weights: {version}\n'
+        f'T1 = qas ≥ {cutoffs.tier1_min_score}, T2 = qas ≥ {cutoffs.tier2_min_score} '
+        f'(feed cutoffs of version {version})\n'
+        "qas is the feed's quality-adjusted score; a fire the feed forces to "
+        'tier 3 (NULL score, direction-gated, inversion quintile 1 or 2) is T3.\n'
+        f'{LOOK_AHEAD_NOTE}\n'
+    )
+
+
+# ============================================================
+# Main
+# ============================================================
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument(
         '--parquet-dir',
         type=existing_dir,
-        required=True,
         help='Bot-EOD archive: the directory of {date}-trades.parquet files.',
+    )
+    source.add_argument(
+        '--derived-dir',
+        type=existing_dir,
+        help='Per-day derived files: the directory of {date}.parquet files.',
+    )
+    parser.add_argument(
+        '--out-dir',
+        type=Path,
+        default=ROOT / 'docs' / 'tmp',
+        help='Where the report is written (default: docs/tmp under the repo root).',
     )
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
-    load_env()
+    load_env_file(ENV_FILE)
     db_url = os.environ.get('DATABASE_URL_UNPOOLED') or os.environ['DATABASE_URL']
     conn = psycopg2.connect(db_url)
-    out_path = ROOT / 'docs' / 'tmp' / f'flow-inversion-timing-{latest_fire_date(conn)}.md'
+    version, cutoffs = load_active_cutoffs(conn)
+    out_path = args.out_dir / f'flow-inversion-timing-{latest_fire_date(conn)}.md'
 
     print('[timing] loading fires…')
-    fires = pd.read_sql(
-        """
-        SELECT id, date, option_chain_id, underlying_symbol, option_type,
-               trigger_time_ct, entry_price, mode, dte, score,
-               realized_flow_inversion_pct AS flow_inv
-        FROM lottery_finder_fires
-        WHERE realized_flow_inversion_pct IS NOT NULL
-        ORDER BY date, trigger_time_ct
-        """,
-        conn,
-    )
-    fires['tier'] = fires['score'].apply(
-        lambda s: 'T1' if pd.notna(s) and s >= 18
-        else ('T2' if pd.notna(s) and s >= 12 else 'T3')
-    )
+    fires = pd.read_sql(FIRES_SQL + ' ORDER BY f.date, f.trigger_time_ct', conn)
+    fires['tier'] = tier_labels(fires, cutoffs)
     print(f'[timing] {len(fires):,} fires with non-null flow_inv across '
           f'{fires["date"].nunique()} dates')
 
     # Bucket by date so we load each parquet once.
-    timings = []  # list of dicts (one per fire)
-    missing: list[str] = []
-    days_read = 0
     t0 = time.time()
-    for d, sub in fires.groupby('date', sort=True):
-        date_str = d.isoformat() if hasattr(d, 'isoformat') else str(d)[:10]
-        path = args.parquet_dir / f'{date_str}-trades.parquet'
-        if not path.exists():
-            warn_missing_archive(
-                '[timing]', date_str, path, f'{len(sub):,} fires not timed'
-            )
-            missing.append(date_str)
-            continue
-        days_read += 1
-
-        chains = sub['option_chain_id'].unique().tolist()
-        df = pd.read_parquet(
-            path,
-            columns=['executed_at', 'option_chain_id', 'price',
-                     'canceled', 'nbbo_bid', 'nbbo_ask', 'size'],
-            filters=[('option_chain_id', 'in', chains)],
+    day_groups = [(_as_date(d), sub) for d, sub in fires.groupby('date', sort=True)]
+    chunks: list[pd.DataFrame] = []
+    missing: list[str] = []
+    if args.derived_dir is not None:
+        derived, missing = load_derived(
+            args.derived_dir, [day.isoformat() for day, _ in day_groups]
         )
-        if df['canceled'].dtype == bool:
-            df = df[~df['canceled']]
-        else:
-            df = df[df['canceled'].astype(str).str.lower().isin(['f','false','0',''])]
-        df = df[df['price'] > 0]
-        if df['executed_at'].dt.tz is None:
-            df['executed_at'] = df['executed_at'].dt.tz_localize('UTC')
-        df = df.sort_values(['option_chain_id', 'executed_at'], kind='stable')
-        chain_idx = dict(iter(df.groupby('option_chain_id', sort=False)))
-
-        # Per-chain minute mids cache.
-        minute_cache: dict[str, list[tuple]] = {}
-        # Per (ticker, type) flow cache, from the enrichment script's own
-        # loader so the window is the one its values are written from.
-        flow_cache: dict[tuple[str, str], list[tuple]] = {}
-        for ticker in sub['underlying_symbol'].unique():
-            for opt_type in ('C', 'P'):
-                flow_cache[(ticker, opt_type)] = load_matched_flow(
-                    conn, date_str, ticker, opt_type
+        days_read = len(day_groups) - len(missing)
+        skipped_why = 'not derived yet'
+        skipped_summary = f'{len(missing)} day(s) skipped, not derived yet'
+        no_day_note = 'no derived day to read — no report written'
+    else:
+        days_read = 0
+        for day, sub in day_groups:
+            date_str = day.isoformat()
+            path = args.parquet_dir / f'{date_str}-trades.parquet'
+            if not path.exists():
+                warn_missing_archive(
+                    '[timing]', date_str, path, f'{len(sub):,} fires not timed'
                 )
-
-        for _, fire in sub.iterrows():
-            chain_df = chain_idx.get(fire['option_chain_id'])
-            if chain_df is None:
+                missing.append(date_str)
                 continue
-            if fire['option_chain_id'] not in minute_cache:
-                minute_cache[fire['option_chain_id']] = resample_minute_mid(chain_df)
-            minutes = minute_cache[fire['option_chain_id']]
-            flow = flow_cache.get((fire['underlying_symbol'], fire['option_type']), [])
+            days_read += 1
+            chunk = derive_day(conn, day, path, sub)
+            chunks.append(chunk)
+            print(f'  [{date_str}] {len(sub):,} fires → {len(chunk):,} inversion timings')
+        derived = pd.concat(chunks, ignore_index=True) if chunks else _derived_frame([])
+        skipped_why = 'archive missing'
+        skipped_summary = f'{len(missing)} day(s) skipped for a missing archive'
+        no_day_note = 'no archive day to read — no report written'
 
-            trigger_ts = fire['trigger_time_ct']
-            if hasattr(trigger_ts, 'tz_localize') and trigger_ts.tz is None:
-                trigger_ts = trigger_ts.tz_localize('UTC')
-            if hasattr(trigger_ts, 'to_pydatetime'):
-                trigger_ts = trigger_ts.to_pydatetime()
+    # The fire is the source of ticker, mode, tier, dte and option type: a
+    # derived row whose fire has since left the population is left out.
+    attrs = fires[['id', 'underlying_symbol', 'mode', 'tier', 'dte', 'option_type']]
+    attrs = attrs.rename(columns={'underlying_symbol': 'ticker'}).astype({'dte': 'int64'})
+    df = derived.merge(attrs, on='id', how='inner', validate='1:1')
 
-            exit_pct, exit_ts, status = simulate_flow_inversion(
-                minutes, flow, float(fire['entry_price']), trigger_ts
-            )
-            # Only record true inversion exits — EOD fallbacks have a
-            # different meaning and would skew the timing toward 15:00.
-            if status != 'inversion' or exit_ts is None:
-                continue
-            mins_to_inv = (exit_ts - trigger_ts).total_seconds() / 60.0
-            timings.append({
-                'id': int(fire['id']),
-                'ticker': fire['underlying_symbol'],
-                'mode': fire['mode'],
-                'tier': fire['tier'],
-                'dte': int(fire['dte']),
-                'option_type': fire['option_type'],
-                'minutes_to_inversion': mins_to_inv,
-                'realized_pct': float(exit_pct),
-            })
-        print(f'  [{date_str}] {len(sub):,} fires → {len([t for t in timings if t.get("id") in set(sub["id"])]):,} inversion timings')
-
-    print(f'[timing] computed in {time.time() - t0:.1f}s; {len(timings):,} inversions')
-    print(
-        f'[timing] {days_read} day(s) read, {len(missing)} day(s) skipped '
-        'for a missing archive'
-    )
+    print(f'[timing] computed in {time.time() - t0:.1f}s; {len(df):,} inversions')
+    print(f'[timing] {days_read} day(s) read, {skipped_summary}')
     if missing:
-        line = f'[timing] skipped (archive missing): {format_dates(missing)}'
+        line = f'[timing] skipped ({skipped_why}): {format_dates(missing)}'
         print(line)
         print(line, file=sys.stderr)
 
-    if not timings:
+    if df.empty:
         if days_read == 0 and missing:
             # Missing archives are a skip, not a failure (owner rule
             # 2026-10-29): say so and let `make update` carry on.
-            print('[timing] no archive day to read — no report written')
+            print(f'[timing] {no_day_note}')
             return
         sys.exit('[timing] no inversion timings collected — nothing to report')
-
-    df = pd.DataFrame(timings)
 
     def fmt_stats(s: pd.Series) -> str:
         s = s.dropna()
@@ -226,11 +439,12 @@ def main(argv: list[str] | None = None) -> None:
                 f'mean={s.mean():>5.1f}')
 
     lines = ['# Flow-inversion timing analysis\n']
+    lines.append(tier_header(version, cutoffs))
     lines.append(f'Dataset: {len(df):,} fires where flow_inversion fired '
                  f'(EOD-fallback excluded — those would skew distribution).\n')
     if missing:
         lines.append(
-            f'{len(missing)} day(s) skipped (archive missing): '
+            f'{len(missing)} day(s) skipped ({skipped_why}): '
             f'{format_dates(missing)}. Their fires are not timed here.\n'
         )
     lines.append('## Aggregate (all fires with true inversion)\n')
@@ -292,7 +506,7 @@ def main(argv: list[str] | None = None) -> None:
         lines.append(f'    {label:<10} {n:>6,} {100*n/total:>4.1f}% {100*cum/total:>4.1f}%')
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text('\n'.join(lines))
+    out_path.write_text('\n'.join(lines), encoding='utf-8')
     print('\n'.join(lines))
     print(f'\n[timing] report → {out_path}')
 

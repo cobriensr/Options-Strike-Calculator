@@ -131,6 +131,11 @@ def fires_frame(extra_days: tuple[str, ...] = ()) -> pd.DataFrame:
                 'dte': 0,
                 'score': 20,
                 'flow_inv': 10.0,
+                # What the feed's qas reads besides the score; the timing
+                # report tiers with it (tune_flow_inversion ignores them).
+                'round_trip_score_deduct': 0,
+                'direction_gated': False,
+                'inversion_quintile': 3,
             }
         )
     return pd.DataFrame(rows)
@@ -295,6 +300,14 @@ def test_timing_reads_each_ticker_and_side_through_the_loader(
     monkeypatch.setattr(timing, 'ENV_FILE', env_file)
     # The report lands under ROOT/docs/tmp: keep it out of the repo.
     monkeypatch.setattr(timing, 'ROOT', tmp_path)
+    monkeypatch.setattr(
+        timing,
+        'load_pointer',
+        lambda _conn, _name: (
+            'v-test',
+            {'feed_cutoffs': {'tier1_min_score': 16, 'tier2_min_score': 12}},
+        ),
+    )
     monkeypatch.setattr(timing, 'load_matched_flow', loader)
     simulated: list[tuple] = []
 

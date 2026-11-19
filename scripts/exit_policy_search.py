@@ -2,7 +2,7 @@
 """Exhaustive exit-policy search across all enriched lottery fires.
 
 For every fire in lottery_finder_fires (date 2026-04-13 → today), pulls
-the post-entry tick stream from the day's EOD parquet and computes:
+the post-entry tick stream from the day's tape file and computes:
 
   Existing policies (already in DB — used as baselines):
     - realized_trail30_10_pct   (activate +30%, exit -10pp drop)
@@ -11,7 +11,7 @@ the post-entry tick stream from the day's EOD parquet and computes:
     - realized_eod_pct
     - realized_flow_inversion_pct
 
-  New candidates (computed here from parquet):
+  New candidates (computed here from the tape):
     - exit_at_N for N ∈ {15, 30, 45, 60, 90, 120, 180} min
     - trail_25_10  (activate +25%, exit -10pp)
     - trail_50_15  (activate +50%, exit -15pp)
@@ -23,28 +23,43 @@ the post-entry tick stream from the day's EOD parquet and computes:
                               top of it)
 
 Outputs an aggregate comparison + per-mode/tier/TOD breakdown to
-docs/tmp/.
+docs/tmp/ (or --out-dir).
+
+Tiers are the feed's: each fire's quality-adjusted score (qas) against the
+feed cutoffs of the ACTIVE lottery weights, read from the store. A failed read
+of the weights ends the run before any report is written. (Owner ruling,
+2026-11-19: the bare-score split this report used to apply is gone.)
 
 Read-only — does not modify the DB.
 
-A day whose archive file is missing is skipped with one line naming it, and
-the skipped days are listed at the end and in the report. When no day had a
+The per-day numbers come from `derive_day`, which turns one tape day into one
+small frame (`DERIVED_COLUMNS`). Two ways to run, one of which is required:
+
+  --parquet-dir DIR   derive every fire date from {date}-trades.parquet in DIR
+                      (the Bot-EOD archive; `make update` passes the Makefile's
+                      PARQUET_DIR). A day whose file is missing is skipped with
+                      one line naming it.
+  --derived-dir DIR   read {date}.parquet, the files `derive_day` wrote, from
+                      DIR. A day without one is skipped, listed as "not
+                      derived yet".
+
+The skipped days are listed at the end and in the report. When no day had a
 file, the run says so and exits 0, so `make update` carries on.
 
 Usage:
     ml/.venv/Scripts/python scripts/exit_policy_search.py --parquet-dir <bot-eod-dir>
-
---parquet-dir is the Bot-EOD archive, the directory of
-{date}-trades.parquet files (`make update` passes the Makefile's PARQUET_DIR).
+    ml/.venv/Scripts/python scripts/exit_policy_search.py --derived-dir <derived-dir>
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
-import re
 import sys
 import time
+from collections.abc import Iterable
+from datetime import date, datetime
 from pathlib import Path
 
 import numpy as np
@@ -58,20 +73,65 @@ sys.path.insert(0, str(ROOT / 'scripts'))
 from _cli_paths import (  # noqa: E402
     existing_dir,
     format_dates,
+    load_env_file,
     warn_missing_archive,
 )
 
+# The feed's tier rule: qas and the cutoffs it is read against.
+sys.path.insert(0, str(ROOT / 'ml' / 'src'))
+from lottery_refit_gates import FeedCutoffs, feed_qas  # noqa: E402
+from lottery_weights import WeightsInvalid, load_pointer  # noqa: E402
 
-def load_env() -> None:
-    if not ENV_FILE.exists():
-        sys.exit(f'Missing env file: {ENV_FILE}')
-    with ENV_FILE.open() as f:
-        for line in f:
-            m = re.match(r'^([A-Z_][A-Z0-9_]*)=(.*)$', line.strip())
-            if m:
-                os.environ.setdefault(
-                    m.group(1), m.group(2).strip('"').strip("'")
-                )
+# Bump when derive_day's numbers change: the nightly re-derives every day.
+DERIVE_VERSION = 1
+DERIVED_COLUMNS: tuple[str, ...] = (
+    'id',
+    'at_15m',
+    'at_30m',
+    'at_45m',
+    'at_60m',
+    'at_90m',
+    'at_120m',
+    'at_180m',
+    'trail_25_10',
+    'trail_50_15',
+    'trail_75_25',
+    'cap25_floor10',
+    'flow_inv_or_trail50_15',
+)
+DERIVED_DTYPES = {c: ('int64' if c == 'id' else 'float64') for c in DERIVED_COLUMNS}
+N_VALUES = [15, 30, 45, 60, 90, 120, 180]
+
+# Every enriched fire, with the three columns the feed's qas reads besides the
+# score (the join is the feed's own: nightly/src/refit_step.py, api/lottery-finder.ts).
+# No ORDER BY: each caller adds its own.
+FIRES_SQL = """
+SELECT f.id, f.date, f.option_chain_id, f.entry_time_ct, f.entry_price,
+       f.mode, f.tod, f.score,
+       f.peak_ceiling_pct      AS peak,
+       f.realized_trail30_10_pct   AS trail,
+       f.realized_hard30m_pct      AS hard30,
+       f.realized_tier50_holdeod_pct AS tier50,
+       f.realized_eod_pct          AS eod,
+       f.realized_flow_inversion_pct AS flow_inv,
+       f.round_trip_score_deduct, f.direction_gated, s.inversion_quintile
+FROM lottery_finder_fires f
+LEFT JOIN lottery_ticker_stats s ON s.ticker = f.underlying_symbol
+WHERE f.peak_ceiling_pct IS NOT NULL
+"""
+
+# A day's fingerprint covers what the derived values depend on besides the tape:
+# which fires are enriched and which of them have an inversion value.
+_FINGERPRINT_EXPR = (
+    "md5(string_agg(id::text || ':' || (realized_flow_inversion_pct IS NOT NULL)::int::text, "
+    "',' ORDER BY id))"
+)
+DAY_FINGERPRINT_SQL = f"""
+SELECT date, {_FINGERPRINT_EXPR} AS fingerprint
+FROM lottery_finder_fires
+WHERE peak_ceiling_pct IS NOT NULL
+GROUP BY date
+"""
 
 
 # ============================================================
@@ -169,28 +229,28 @@ def flow_inv_or_trail(
 # ============================================================
 
 
-def process_date(
-    target_date: str,
-    fires_for_date: pd.DataFrame,
-    parquet_dir: Path,
-) -> pd.DataFrame | None:
-    """Policy rows for the day's fires, or None (after one line naming the
-    day and path) when the day's archive file is missing."""
-    path = parquet_dir / f'{target_date}-trades.parquet'
-    if not path.exists():
-        warn_missing_archive(
-            '[search]',
-            target_date,
-            path,
-            f'{len(fires_for_date):,} fires not searched',
-        )
-        return None
+def _derived_frame(rows: list[dict]) -> pd.DataFrame:
+    """`rows` as DERIVED_COLUMNS with pinned dtypes (id int64, the rest
+    float64), ordered by id. No rows is a valid frame."""
+    frame = pd.DataFrame(rows, columns=list(DERIVED_COLUMNS)).astype(DERIVED_DTYPES)
+    return frame.sort_values('id', kind='stable', ignore_index=True)
 
+
+def derive_day(tape_path: Path, fires_for_date: pd.DataFrame) -> pd.DataFrame:
+    """The policy values of one day's fires, from the day's tape file.
+
+    Returns DERIVED_COLUMNS exactly: `id` int64, the rest float64, one row per
+    fire that has a post-entry print (so possibly none), ordered by id. The
+    tape may be either layout: float or decimal128 numerics, a bool or a
+    text `canceled`, a tz-aware or a naive-UTC `executed_at`.
+    """
+    if fires_for_date.empty:
+        return _derived_frame([])
     chains = fires_for_date['option_chain_id'].unique().tolist()
     # `canceled` was bool in older parquets and string ('f'/'t') in newer
     # ones — push only the chain filter, post-filter canceled in pandas.
     df = pd.read_parquet(
-        path,
+        tape_path,
         columns=['executed_at', 'option_chain_id', 'price', 'canceled'],
         filters=[('option_chain_id', 'in', chains)],
     )
@@ -204,7 +264,6 @@ def process_date(
     df = df.sort_values(['option_chain_id', 'executed_at'], kind='stable')
     chain_idx = dict(iter(df.groupby('option_chain_id', sort=False)))
 
-    N_VALUES = [15, 30, 45, 60, 90, 120, 180]
     out_rows: list[dict] = []
 
     for _, fire in fires_for_date.iterrows():
@@ -249,7 +308,146 @@ def process_date(
         )
         out_rows.append(rec)
 
-    return pd.DataFrame(out_rows)
+    return _derived_frame(out_rows)
+
+
+def process_date(
+    target_date: str,
+    fires_for_date: pd.DataFrame,
+    parquet_dir: Path,
+) -> pd.DataFrame | None:
+    """Policy rows for the day's fires, or None (after one line naming the
+    day and path) when the day's archive file is missing."""
+    path = parquet_dir / f'{target_date}-trades.parquet'
+    if not path.exists():
+        warn_missing_archive(
+            '[search]',
+            target_date,
+            path,
+            f'{len(fires_for_date):,} fires not searched',
+        )
+        return None
+    return derive_day(path, fires_for_date)
+
+
+def fires_for_day(conn, day: date) -> pd.DataFrame:
+    """One day's fires, the same rows (and columns) as the whole-population
+    read."""
+    return pd.read_sql(
+        FIRES_SQL + ' AND f.date = %s ORDER BY f.id', conn, params=(day,)
+    )
+
+
+def fingerprint_rows(fires: pd.DataFrame) -> str:
+    """md5 hex of the day's canonical fire list: `id:has_inversion` joined by
+    commas, ascending numeric id. The SQL twin is DAY_FINGERPRINT_SQL."""
+    ordered = fires.sort_values('id')
+    text = ','.join(
+        f'{int(fire_id)}:{int(has_inversion)}'
+        for fire_id, has_inversion in zip(
+            ordered['id'], ordered['flow_inv'].notna(), strict=True
+        )
+    )
+    return hashlib.md5(text.encode('utf-8'), usedforsecurity=False).hexdigest()
+
+
+def _as_date(value) -> date:
+    """A date from what a driver may hand back: a date, a datetime or ISO text."""
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    return date.fromisoformat(str(value)[:10])
+
+
+def day_fingerprints(conn) -> dict[date, str]:
+    """Each enriched day's fingerprint, as the database computes it."""
+    cur = conn.cursor()
+    cur.execute(DAY_FINGERPRINT_SQL)
+    return {_as_date(day): str(digest) for day, digest in cur.fetchall()}
+
+
+def load_derived(
+    derived_dir: Path, days: Iterable[str]
+) -> tuple[pd.DataFrame, list[str]]:
+    """The derived rows of `days` (ISO dates), and the days with no file.
+
+    A day's file is `{day}.parquet`; one that holds no rows is a derived day.
+    The rows come back as DERIVED_COLUMNS with pinned dtypes. A file that
+    lacks a column raises ValueError naming it.
+    """
+    frames: list[pd.DataFrame] = []
+    missing: list[str] = []
+    for day in days:
+        path = derived_dir / f'{day}.parquet'
+        if not path.exists():
+            missing.append(day)
+            continue
+        frame = pd.read_parquet(path)
+        absent = [c for c in DERIVED_COLUMNS if c not in frame.columns]
+        if absent:
+            raise ValueError(f'{path.name}: derived file lacks columns {", ".join(absent)}')
+        frames.append(frame[list(DERIVED_COLUMNS)])
+    rows = pd.concat(frames, ignore_index=True) if frames else _derived_frame([])
+    return rows.astype(DERIVED_DTYPES), missing
+
+
+# ============================================================
+# Tiers (the feed's)
+# ============================================================
+
+
+def load_active_cutoffs(conn) -> tuple[str, FeedCutoffs]:
+    """The active weights' version and feed cutoffs. A failed read ends the
+    run (non-zero, before any report): there is no fallback to other cutoffs."""
+    try:
+        version, weights = load_pointer(conn, 'active')
+        return version, FeedCutoffs.from_weights(weights)
+    except (WeightsInvalid, LookupError, psycopg2.Error) as exc:
+        # A DB error's text can hold the DSN: name its class only.
+        detail = (
+            type(exc).__name__
+            if isinstance(exc, psycopg2.Error)
+            else f'{type(exc).__name__}: {exc}'
+        )
+        sys.exit(
+            f'[search] cannot read the active lottery weights ({detail}); '
+            'no report written'
+        )
+
+
+def tier_labels(fires: pd.DataFrame, cutoffs: FeedCutoffs) -> pd.Series:
+    """T1 / T2 / T3 as the feed tiers each fire: its qas against the cutoffs.
+
+    qas is NaN for the fires the feed forces to tier 3 (a NULL score,
+    direction_gated, an inversion quintile of 1 or 2), and NaN fails both
+    comparisons.
+    """
+    qas = feed_qas(fires['score'], fires)
+    labels = np.where(
+        qas >= cutoffs.tier1_min_score,
+        'T1',
+        np.where(qas >= cutoffs.tier2_min_score, 'T2', 'T3'),
+    )
+    return pd.Series(labels, index=fires.index, name='tier')
+
+
+LOOK_AHEAD_NOTE = (
+    "inversion_quintile is the ticker's current value, not the value when each "
+    'fire fired (look-ahead), as on the feed'
+)
+
+
+def tier_header(version: str, cutoffs: FeedCutoffs) -> str:
+    """The report lines that say which weights the tiers come from."""
+    return (
+        f'Active lottery weights: {version}\n'
+        f'T1 = qas ≥ {cutoffs.tier1_min_score}, T2 = qas ≥ {cutoffs.tier2_min_score} '
+        f'(feed cutoffs of version {version})\n'
+        "qas is the feed's quality-adjusted score; a fire the feed forces to "
+        'tier 3 (NULL score, direction-gated, inversion quintile 1 or 2) is T3.\n'
+        f'{LOOK_AHEAD_NOTE}\n'
+    )
 
 
 # ============================================================
@@ -268,78 +466,85 @@ def latest_fire_date(conn) -> str:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument(
         '--parquet-dir',
         type=existing_dir,
-        required=True,
         help='Bot-EOD archive: the directory of {date}-trades.parquet files.',
+    )
+    source.add_argument(
+        '--derived-dir',
+        type=existing_dir,
+        help='Per-day derived files: the directory of {date}.parquet files.',
+    )
+    parser.add_argument(
+        '--out-dir',
+        type=Path,
+        default=ROOT / 'docs' / 'tmp',
+        help='Where the report is written (default: docs/tmp under the repo root).',
     )
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
-    load_env()
+    load_env_file(ENV_FILE)
     db_url = os.environ.get('DATABASE_URL_UNPOOLED') or os.environ['DATABASE_URL']
     conn = psycopg2.connect(db_url)
-    out_path = ROOT / 'docs' / 'tmp' / f'lottery-exit-policy-search-{latest_fire_date(conn)}.md'
+    version, cutoffs = load_active_cutoffs(conn)
+    out_path = args.out_dir / f'lottery-exit-policy-search-{latest_fire_date(conn)}.md'
     print('[search] loading fires…')
-    fires = pd.read_sql(
-        """
-        SELECT id, date, option_chain_id, entry_time_ct, entry_price,
-               mode, tod, score,
-               peak_ceiling_pct      AS peak,
-               realized_trail30_10_pct   AS trail,
-               realized_hard30m_pct      AS hard30,
-               realized_tier50_holdeod_pct AS tier50,
-               realized_eod_pct          AS eod,
-               realized_flow_inversion_pct AS flow_inv
-        FROM lottery_finder_fires
-        WHERE peak_ceiling_pct IS NOT NULL
-        """,
-        conn,
-    )
+    fires = pd.read_sql(FIRES_SQL + ' ORDER BY f.date, f.id', conn)
     print(f'[search] {len(fires):,} enriched fires across '
           f'{fires["date"].nunique()} dates')
 
-    # Pre-compute tier label.
-    fires['tier'] = fires['score'].apply(
-        lambda s: 'T1' if pd.notna(s) and s >= 18 else
-                  ('T2' if pd.notna(s) and s >= 12 else 'T3')
-    )
+    fires['tier'] = tier_labels(fires, cutoffs)
 
     t0 = time.time()
+    day_groups = [(_as_date(d), sub) for d, sub in fires.groupby('date', sort=True)]
     derived_chunks: list[pd.DataFrame] = []
     missing: list[str] = []
-    for d, sub in fires.groupby('date', sort=True):
-        date_str = d.isoformat() if hasattr(d, 'isoformat') else str(d)[:10]
-        print(f'  [{date_str}] processing {len(sub):,} fires…')
-        chunk = process_date(date_str, sub, args.parquet_dir)
-        if chunk is None:
-            missing.append(date_str)
-            continue
-        derived_chunks.append(chunk)
-    derived = pd.concat(derived_chunks, ignore_index=True) if derived_chunks else pd.DataFrame()
+    if args.derived_dir is not None:
+        derived, missing = load_derived(
+            args.derived_dir, [day.isoformat() for day, _ in day_groups]
+        )
+        days_read = len(day_groups) - len(missing)
+        skipped_why = 'not derived yet'
+        skipped_summary = f'{len(missing)} day(s) skipped, not derived yet'
+        no_day_note = 'no derived day to read — no report written'
+        values_source = 'derived'
+    else:
+        for day, sub in day_groups:
+            date_str = day.isoformat()
+            print(f'  [{date_str}] processing {len(sub):,} fires…')
+            chunk = process_date(date_str, sub, args.parquet_dir)
+            if chunk is None:
+                missing.append(date_str)
+                continue
+            derived_chunks.append(chunk)
+        derived = pd.concat(derived_chunks, ignore_index=True) if derived_chunks else _derived_frame([])
+        days_read = len(derived_chunks)
+        skipped_why = 'archive missing'
+        skipped_summary = f'{len(missing)} day(s) skipped for a missing archive'
+        no_day_note = 'no archive day to read — no report written'
+        values_source = 'parquet-derived'
     print(f'[search] derived in {time.time() - t0:.1f}s; rows={len(derived):,}')
-    print(
-        f'[search] {len(derived_chunks)} day(s) read, {len(missing)} day(s) '
-        'skipped for a missing archive'
-    )
+    print(f'[search] {days_read} day(s) read, {skipped_summary}')
     if missing:
-        line = f'[search] skipped (archive missing): {format_dates(missing)}'
+        line = f'[search] skipped ({skipped_why}): {format_dates(missing)}'
         print(line)
         print(line, file=sys.stderr)
 
-    if not derived_chunks:
+    if days_read == 0:
         # Missing archives are a skip, not a failure (owner rule
         # 2026-10-29): say so and let `make update` carry on.
-        print('[search] no archive day to read — no report written')
+        print(f'[search] {no_day_note}')
         return
     if derived.empty:
         sys.exit('[search] no fire produced a policy row — nothing to report')
 
     # Merge derived back onto fires for the comparison.
-    df = fires.merge(derived, on='id', how='left')
+    df = fires.merge(derived, on='id', how='left', validate='1:1')
 
     POLICIES = [
         ('flow_inv', 'flow_inv (existing)'),
@@ -367,7 +572,8 @@ def main(argv: list[str] | None = None) -> None:
         n = len(s)
         if n == 0:
             return 0, np.nan, np.nan, np.nan, np.nan
-        mean = s.mean(); med = s.median()
+        mean = s.mean()
+        med = s.median()
         std = s.std(ddof=1) if n > 1 else 0.0
         win = (s > 0).mean() * 100
         sharpe = mean / std if std > 0 else 0.0
@@ -375,14 +581,15 @@ def main(argv: list[str] | None = None) -> None:
 
     lines: list[str] = []
     lines.append('# Lottery exit-policy search (parquet-derived candidates)\n')
+    lines.append(tier_header(version, cutoffs))
     lines.append(f'Dataset: {len(df):,} enriched fires across '
                  f'{df["date"].nunique()} trading days '
                  f'({df["date"].min()} → {df["date"].max()}), '
                  f'{df["ticker"].nunique() if "ticker" in df.columns else "?"} tickers.\n'.replace('"',""))
     if missing:
         lines.append(
-            f'{len(missing)} day(s) skipped (archive missing): '
-            f'{format_dates(missing)}. Their fires have no parquet-derived '
+            f'{len(missing)} day(s) skipped ({skipped_why}): '
+            f'{format_dates(missing)}. Their fires have no {values_source} '
             'policy values here.\n'
         )
 
@@ -450,7 +657,7 @@ def main(argv: list[str] | None = None) -> None:
         lines.append('')
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text('\n'.join(lines))
+    out_path.write_text('\n'.join(lines), encoding='utf-8')
     print('\n'.join(lines))
     print(f'\n[search] report written to {out_path}')
 

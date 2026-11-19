@@ -5,7 +5,8 @@ ingest-flow.py.
 The readers take the archive as `--parquet-dir` (no home-directory default;
 the Makefile passes its PARQUET_DIR) and fail by name when it is missing.
 The two `make update` reports skip a day whose file is missing, name it,
-and exit 0 when no day had one. ingest-flow.py, the writer, takes
+and exit 0 when no day had one. (They also take `--derived-dir`, the per-day
+derived files: test_policy_timing_derive.py.) ingest-flow.py, the writer, takes
 `--archive-dir`, defaulting to where it has always written. The enrich
 scripts' tests are in test_enrich_missing_archive.py. Run:
 
@@ -80,21 +81,31 @@ READERS = [
 ]
 
 
+def test_tune_requires_parquet_dir(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as exc:
+        tuning.parse_args([])
+    assert exc.value.code == 2
+    assert '--parquet-dir' in capsys.readouterr().err
+
+
 @pytest.mark.parametrize(
     'parse_args',
     [
         pytest.param(timing.parse_args, id='flow_inversion_timing'),
         pytest.param(policy_search.parse_args, id='exit_policy_search'),
-        pytest.param(tuning.parse_args, id='tune_flow_inversion'),
     ],
 )
-def test_update_reports_require_parquet_dir(
+def test_update_reports_require_one_source(
     parse_args, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    """These two read the tape or per-day derived files: one source is
+    required, and the group message names both flags."""
     with pytest.raises(SystemExit) as exc:
         parse_args([])
     assert exc.value.code == 2
-    assert '--parquet-dir' in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert '--parquet-dir' in err
+    assert '--derived-dir' in err
 
 
 @pytest.mark.parametrize('parse_args', READERS)
@@ -200,10 +211,21 @@ def _timing_fires(*days: str) -> pd.DataFrame:
                 'dte': 0,
                 'score': 20,
                 'flow_inv': 12.5,
+                'round_trip_score_deduct': 0,
+                'direction_gated': False,
+                'inversion_quintile': 3,
             }
             for i, day in enumerate(days)
         ]
     )
+
+
+# The active weights both reports tier by (owner ruling, 2026-11-19): the
+# pointer read is faked at the module boundary, so no test reaches a database.
+ACTIVE_WEIGHTS = (
+    'v-test',
+    {'feed_cutoffs': {'tier1_min_score': 16, 'tier2_min_score': 12}},
+)
 
 
 @pytest.fixture
@@ -213,6 +235,7 @@ def timing_db(
     """Stand in for Neon at the psycopg2 / pandas boundary."""
     monkeypatch.setenv('DATABASE_URL', 'postgresql://test/none')
     monkeypatch.setattr(timing.psycopg2, 'connect', lambda _url: _Conn())
+    monkeypatch.setattr(timing, 'load_pointer', lambda _conn, _name: ACTIVE_WEIGHTS)
     fires = _timing_fires('2026-07-22', '2026-07-23', '2026-07-24')
     monkeypatch.setattr(timing.pd, 'read_sql', lambda _sql, _conn: fires)
     return fires
@@ -331,6 +354,9 @@ def _policy_fires(*days: str) -> pd.DataFrame:
                 'tier50': 5.0,
                 'eod': -30.0,
                 'flow_inv': 12.5,
+                'round_trip_score_deduct': 0,
+                'direction_gated': False,
+                'inversion_quintile': 3,
             }
             for i, day in enumerate(days)
         ]
@@ -361,6 +387,7 @@ def policy_db(
     the docs/tmp report lands there."""
     monkeypatch.setenv('DATABASE_URL', 'postgresql://test/none')
     monkeypatch.setattr(policy_search.psycopg2, 'connect', lambda _url: _Conn())
+    monkeypatch.setattr(policy_search, 'load_pointer', lambda _conn, _name: ACTIVE_WEIGHTS)
     monkeypatch.setattr(policy_search, 'ROOT', tmp_path)
     fires = _policy_fires('2026-07-22', '2026-07-23', '2026-07-24')
     monkeypatch.setattr(policy_search.pd, 'read_sql', lambda _sql, _conn: fires)
