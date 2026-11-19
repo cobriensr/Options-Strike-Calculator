@@ -12,15 +12,23 @@
  *   1. one UW GET /stock/{ticker}/ohlc/1m?date= (3 at a time, one retry on
  *      5xx / 429 / network / timeout);
  *   2. range_pos per fire with the cron's computeRangePos, from the fire's
- *      trigger time and spot_at_first;
- *   3. batched `UPDATE … FROM unnest(...)` in ≤500-row chunks, guarded by
+ *      trigger time and spot_at_first, after the split guard (3);
+ *   3. split guard: UW's candles are adjusted for later splits but the
+ *      stored spot isn't, and computeRangePos clamps that gap to 0 or 1 (the
+ *      10-29 run pinned 1,183 CRWD and SOXS fires that way). A fire whose
+ *      spot is more than 20% outside its pre-trigger candle range
+ *      (SPLIT_GUARD_RATIO) stays NULL and is reported as a split mismatch;
+ *   4. batched `UPDATE … FROM unnest(...)` in ≤500-row chunks, guarded by
  *      `range_pos_at_trigger IS NULL`, so a re-run (or a killed run) only
  *      fills what is still empty.
  *
  * Skipped by design: cash-index roots (UW answers 422,
  * `cboe_index_access_missing`) and today's in-progress session. A day UW
  * has no candles for, a fire with no candle before its trigger, a flat
- * range or a NULL spot stays NULL and is counted in the report.
+ * range, a NULL spot or a split mismatch stays NULL and is counted in the
+ * report. A split mismatch is counted apart from the others and its
+ * ticker-days are listed; a re-run meets those fires again, since they are
+ * still NULL.
  *
  * Runs against whatever DATABASE_URL points at (.env.local = PRODUCTION).
  * Refuses to start 08:15–15:30 CT on weekdays: its 3 UW calls in flight
@@ -43,6 +51,7 @@ import { neon } from '@neondatabase/serverless';
 
 import {
   CASH_INDEX_ROOTS,
+  SPLIT_GUARD_RATIO,
   chunk,
   fetchDayCandles,
   isMarketHoursCt,
@@ -197,9 +206,11 @@ const stats = {
   rowsWritten: 0,
   rowsAlreadyFilled: 0,
   rowsLeftNull: 0,
+  rowsSplitMismatch: 0,
   batches: 0,
 };
 const noCandleDays = [];
+const splitMismatchDays = [];
 const failures = [];
 let pending = { ids: [], positions: [] };
 const startedAt = Date.now();
@@ -248,12 +259,16 @@ async function processTickerDay(day) {
   } else {
     stats.daysOk++;
     const fires = await readNullFires(day);
-    const { ids, positions, leftNull } = rangePosUpdates(
+    const { ids, positions, leftNull, splitMismatch } = rangePosUpdates(
       fires,
       outcome.candles,
     );
     stats.rowsComputed += ids.length;
     stats.rowsLeftNull += leftNull;
+    stats.rowsSplitMismatch += splitMismatch;
+    if (splitMismatch > 0) {
+      splitMismatchDays.push(`${day.ticker} ${day.date} (${splitMismatch})`);
+    }
     for (let k = 0; k < ids.length; k++) {
       pending.ids.push(ids[k]);
       pending.positions.push(positions[k]);
@@ -281,7 +296,8 @@ function printReport(beforeCounts, afterCounts) {
   say(
     `fires: ${stats.rowsComputed} computed · ${stats.rowsWritten} ${writeVerb} · ` +
       `${stats.rowsAlreadyFilled} already filled · ` +
-      `${stats.rowsLeftNull} left NULL`,
+      `${stats.rowsLeftNull} left NULL · ` +
+      `${stats.rowsSplitMismatch} split mismatch (also left NULL)`,
   );
   // "Already filled" = rows another run filled first, or rows of a chunk
   // whose UPDATE committed but whose response was lost (timeout, blip), so
@@ -342,6 +358,19 @@ function printReport(beforeCounts, afterCounts) {
   say();
   say(`ticker-days with no candles from UW (${noCandleDays.length}):`);
   for (const line of chunk(noCandleDays.sort(), 6))
+    say(`  ${line.join(' · ')}`);
+
+  const bandPct = Math.round((SPLIT_GUARD_RATIO - 1) * 100);
+  say();
+  say(
+    `split mismatches: ${stats.rowsSplitMismatch} fires on ` +
+      `${splitMismatchDays.length} ticker-days, left NULL`,
+  );
+  say(
+    `  meaning: spot more than ${bandPct}% outside the session's candle ` +
+      "range, likely a split between the fire and UW's split-adjusted candles",
+  );
+  for (const line of chunk(splitMismatchDays.sort(), 6))
     say(`  ${line.join(' · ')}`);
 
   say();

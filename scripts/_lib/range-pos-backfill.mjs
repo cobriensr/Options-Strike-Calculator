@@ -15,8 +15,14 @@
  *   - computeRangePos  ← api/_lib/uw-stock-candles.ts
  *   - CASH_INDEX_ROOTS ← api/_lib/constants.ts
  *
+ * The split guard (SPLIT_GUARD_RATIO, preTriggerRange, isSplitMismatch) is
+ * this backfill's own, with no TypeScript original: UW's candles are
+ * split-adjusted but a stored spot isn't, and computeRangePos would clamp
+ * the gap to 0 or 1.
+ *
  * Spec: docs/superpowers/specs/range-pos-fix-and-backfill-2026-10-28.md
- * (Phase 2).
+ * (Phase 2); the split guard is Task 1 of
+ * docs/superpowers/specs/2026-11-19-range-pos-split-repair-and-badge-text.md.
  *
  * The UW GET itself is uw-day-fetch.mjs's fetchUwDayRows, shared with the
  * net-prem-ticks backfill.
@@ -86,6 +92,71 @@ export function computeRangePos(candles, triggerTimeIso, spotAtFirst) {
   return Math.max(0, Math.min(1, pos));
 }
 
+// ── Split guard ────────────────────────────────────────────
+
+/**
+ * How far outside the pre-trigger candle range a spot may sit before the
+ * fire counts as a split mismatch: above high × 1.2 or below low ÷ 1.2.
+ *
+ * Why this exists: UW's 1-min candles are adjusted for later splits, but
+ * the fire's stored spot_at_first is the price at the time. After a split
+ * the two are on different scales, and computeRangePos's clamp turns the
+ * gap into a 0 or a 1 (the 10-29 run did that to 1,183 CRWD and SOXS
+ * rows). The live cron needs no guard: it compares same-day live spot with
+ * same-day live candles.
+ *
+ * Why 1.2: the smallest common split is 3-for-2 (1.5×), so any split fails
+ * the guard, and a stock can't trade 20% outside its own session range at
+ * one instant. A real spot a hair past the last candle's high or low is
+ * well under 1%.
+ */
+export const SPLIT_GUARD_RATIO = 1.2;
+
+/**
+ * Low and high over the candles whose start_time is at or before the
+ * trigger, parsed and skipped exactly as computeRangePos does (candles may
+ * come in any order; UW sends them newest first). Null when the trigger
+ * isn't a time or no candle gives a finite low and high. A flat range
+ * (high equal to low) is finite and is returned.
+ */
+export function preTriggerRange(candles, triggerTimeIso) {
+  const triggerMs =
+    triggerTimeIso instanceof Date
+      ? triggerTimeIso.getTime()
+      : new Date(triggerTimeIso).getTime();
+  if (!Number.isFinite(triggerMs)) return null;
+
+  let high = -Infinity;
+  let low = Infinity;
+  for (const c of candles) {
+    const ms = new Date(c.start_time).getTime();
+    if (!Number.isFinite(ms) || ms > triggerMs) continue;
+    const h = Number.parseFloat(c.high);
+    const l = Number.parseFloat(c.low);
+    if (Number.isFinite(h) && h > high) high = h;
+    if (Number.isFinite(l) && l < low) low = l;
+  }
+  return Number.isFinite(high) && Number.isFinite(low) ? { low, high } : null;
+}
+
+/**
+ * True when the spot sits more than SPLIT_GUARD_RATIO outside the
+ * pre-trigger candle range (spot above high × ratio or below low ÷ ratio):
+ * the signature of a split between the fire and UW's split-adjusted candles.
+ * False when there is no pre-trigger range or the spot isn't finite;
+ * computeRangePos returns null for those. Only candles at or before the
+ * trigger count, so a later candle can't rescue a fire.
+ */
+export function isSplitMismatch(candles, triggerTimeIso, spot) {
+  if (!Number.isFinite(spot)) return false;
+  const range = preTriggerRange(candles, triggerTimeIso);
+  if (range == null) return false;
+  return (
+    spot > range.high * SPLIT_GUARD_RATIO ||
+    spot < range.low / SPLIT_GUARD_RATIO
+  );
+}
+
 // ── Selection ──────────────────────────────────────────────
 
 /**
@@ -104,13 +175,22 @@ export function selectionWindow({ from, to }) {
  * Map one ticker-day's NULL fires to UPDATE arrays. `id` is BIGSERIAL,
  * which Neon returns as a string; it's passed through untouched.
  * `spot` comes from `spot_at_first::float8`; a NULL spot stays NULL.
+ *
+ * A fire that fails the split guard (isSplitMismatch) stays NULL and is
+ * counted in `splitMismatch`; every other fire computeRangePos can't place
+ * (no spot, no candle before the trigger, a flat range) is in `leftNull`.
  */
 export function rangePosUpdates(fires, candles) {
   const ids = [];
   const positions = [];
   let leftNull = 0;
+  let splitMismatch = 0;
   for (const fire of fires) {
     const spot = fire.spot == null ? Number.NaN : Number(fire.spot);
+    if (isSplitMismatch(candles, fire.trigger_time_ct, spot)) {
+      splitMismatch++;
+      continue;
+    }
     const pos = computeRangePos(candles, fire.trigger_time_ct, spot);
     if (pos == null) {
       leftNull++;
@@ -119,7 +199,7 @@ export function rangePosUpdates(fires, candles) {
     ids.push(fire.id);
     positions.push(pos);
   }
-  return { ids, positions, leftNull };
+  return { ids, positions, leftNull, splitMismatch };
 }
 
 /**
