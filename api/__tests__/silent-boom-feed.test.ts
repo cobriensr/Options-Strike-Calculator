@@ -244,8 +244,8 @@ describe('silent-boom-feed handler', () => {
         makeAlert({
           score: -5,
           score_tier: 'tier3',
-          round_trip_net_pct: '-0.60',
-          round_trip_score_deduct: -3,
+          round_trip_net_pct: null,
+          round_trip_score_deduct: 0,
         }),
       ])
       .mockResolvedValueOnce([]); // cluster-candidate query
@@ -483,7 +483,8 @@ describe('silent-boom-feed handler', () => {
       const strings = call[0] as TemplateStringsArray | undefined;
       const sqlText = (strings ?? []).join(' ');
       expect(sqlText).toContain('GREATEST(0, score) >=');
-      expect(sqlText).not.toContain('score + COALESCE(round_trip_score_deduct');
+      // The rows SELECT is `s.*`, so neither query names the column today.
+      expect(sqlText).not.toContain('round_trip_score_deduct');
     }
   });
 
@@ -1254,9 +1255,8 @@ describe('silent-boom-feed handler', () => {
           (call[0] as TemplateStringsArray | undefined) ?? []
         ).join(' ');
         expect(sqlText).toContain('GREATEST(0, score) >=');
-        expect(sqlText).not.toContain(
-          'score + COALESCE(round_trip_score_deduct',
-        );
+        // The rows SELECT is `s.*`, so neither query names the column today.
+        expect(sqlText).not.toContain('round_trip_score_deduct');
         // The raw-score predicate must be gone (drift = total/rows mismatch).
         expect(sqlText).not.toContain('OR score >=');
       }

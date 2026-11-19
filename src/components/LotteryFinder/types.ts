@@ -168,10 +168,13 @@ export interface LotteryFire {
   expiry: string;
   dte: number;
 
-  /** Composite score (0-25). The stored score floored at 0, whose tier is
-   *  the one shown at the fire. `null` only on rows pre-#126 backfill. */
+  /** The stored score floored at 0. The round-trip deduct is not in it.
+   *  `null` only on rows pre-#126 backfill. */
   score: number | null;
-  /** Tier label derived from `score` (tier3 when score is null). */
+  /** Tier from `qualityAdjustedScore` (score floored at 0 plus the inversion
+   *  bonus) on the active version's feed cutoffs; tier3 when direction-gated,
+   *  and a null score lands in tier3 because its qas is at most the bonus.
+   *  The round-trip deduct does not move it. */
   scoreTier: LotteryScoreTier;
   /**
    * Phase 4 direction gate (spec:

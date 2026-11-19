@@ -784,9 +784,9 @@ def test_the_feed_qas_expression_is_the_one_the_floor_was_derived_from():
 def test_an_extra_qas_term_fails_the_pin_instead_of_leaving_the_floor_stale(
     old, new, reason
 ):
-    # The two fragments test_feed_qas_mirrors_the_feeds_displayed_score_sql looks for
-    # miss a term put here; the pin does not. The replace must change the text, or a
-    # moved line would leave this case vacuous.
+    # Each mutant must fail the exact pin for the reason named. The fragment test also
+    # catches the first two and errors on the rename; a term between GREATEST(...) and
+    # the bonus passes it, and only the pin catches that.
     text = LOTTERY_FINDER.read_text(encoding="utf-8")
     mutant = text.replace(old, new, 1)
     assert mutant != text, f"{old!r} is no longer in lottery-finder.ts"
