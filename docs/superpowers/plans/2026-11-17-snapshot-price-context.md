@@ -330,9 +330,22 @@ their two test files (5 files), then `BacktestDiag` and its test (2 files).
   - The script covers dates through 2026-11-18 only. From 2026-11-19, live
     rows carry the quote's real-time open, high and low (Task 2), which must
     not be overwritten. The server builder (phase 5) owns those dates.
+    The apply checks it again from the plan file: a plan with an update
+    dated after 2026-11-18, or an `until` after it, is refused before any
+    write.
+  - The precondition behind that cutoff: Tasks 1-3 were deployed after the
+    2026-11-18 close (pushed as b0720297 at 2026-11-19 01:04 UTC), so no live
+    row dated 2026-11-18 or earlier carries a quote open. A save made after
+    the close is a replay row, because `rowKind` in
+    `src/hooks/useSnapshotSave.ts` returns `'backtest'` for an entry time
+    behind the clock by more than `REPLAY_LAG_MINUTES` (5, in
+    `src/utils/timezone.ts`).
   - The stored spot (`spx`) keeps its 5-minute peek until phase 6. Other
     stored values derive from it, such as the opening-range share consumed,
     so rewriting it alone would leave a row inconsistent.
+  - Until phase 6, some replayed rows will hold an `spx` above `spx_high` or
+    below `spx_low`, because the stored spot keeps its peek. No reader in
+    `api/` or `src/` assumes `spx` lies inside that range.
   - A date with fewer candles than its slot count, or with no previous-day
     close, is skipped whole.
 - CLI:
@@ -361,11 +374,16 @@ their two test files (5 files), then `BacktestDiag` and its test (2 files).
     "9:35 AM ET" gives the same result as "8:35 AM CT".
   - `a NaN spx_open counts as missing`.
   - `pre-market and unparseable labels are skipped as no-slot`.
-  - `a backtest row gets only prev_close and gap, from its own spx_open`:
-    - Stored `prev_close 7720.39`, `spx_open 7377.65`, gap −4.44.
+  - `a replayed row gets high, low, prev_close and gap, the gap from its own spx_open`:
+    - Stored `prev_close 7720.39`, `spx_open 7377.65`, gap −4.44, and a
+      high and low that include the 5-minute peek.
     - `previousDayClose` 7356.73.
-    - Expect `prev_close 7356.73` and gap ≈ 0.28437. High and low are
-      untouched.
+    - Expect `spx_high` and `spx_low` as of the slot (the peek removed),
+      `prev_close 7356.73` and gap ≈ 0.28437.
+    - `spx_open` is never written: a row whose stored open differs from
+      the as-of open at 2 decimals is skipped as `open-mismatch`.
+  - `a replayed row on bad candles gets only prev_close and gap`: its high
+    and low stay as stored and the report names it.
   - `a row already right is skipped as unchanged`.
   - `a date with fewer candles than its slot count is skipped whole`: 77
     candles on a full day.
