@@ -19,6 +19,12 @@
  *
  * `displayData` is what the UI should render. It prefers the fresh
  * fetch result (`data`) and falls back to the date-specific cache.
+ *
+ * Access: /api/opening-flow-signal is owner-or-guest. For a public visitor
+ * (`getAccessMode() === 'public'`, read at every render) the hook makes no
+ * request of any kind (mount, poll, date pick or `refresh()`), schedules no
+ * poll, and returns no data: `displayData` is null even when the cache slots
+ * hold an earlier session's payload.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -31,6 +37,7 @@ import {
   summarizeZodIssues,
 } from '../lib/response-guard.js';
 import { captureUnlessAuth } from '../lib/sentry-helpers.js';
+import { getAccessMode } from '../utils/auth.js';
 import { getCTTime } from '../utils/timezone.js';
 import { getErrorMessage } from '../utils/error.js';
 import { usePolling } from './usePolling.js';
@@ -236,6 +243,10 @@ export function useOpeningFlowSignal(date?: string): State & {
 } {
   const effectiveDate: string | null =
     date != null && date !== '' ? date : null;
+  // /api/opening-flow-signal is owner-or-guest. Read at render, never frozen
+  // in a ref, so signing in with a guest key (no reload) starts the fetch and
+  // dropping to public stops it.
+  const isPublic = getAccessMode() === 'public';
 
   const [state, setState] = useState<State>(INITIAL_STATE);
   const [cachedData, setCachedData] = useState<OpeningFlowResponse | null>(() =>
@@ -250,6 +261,11 @@ export function useOpeningFlowSignal(date?: string): State & {
 
   const fetchOnce = useCallback(async () => {
     abortRef.current?.abort();
+    // The one request gate: the mount fetch, a date pick, the poll tick and
+    // refresh() all land here. A public visitor draws no 401, and a request
+    // from before they dropped to public is aborted, so its late reply can't
+    // write the cache.
+    if (isPublic) return;
     const ctrl = new AbortController();
     abortRef.current = ctrl;
 
@@ -337,7 +353,7 @@ export function useOpeningFlowSignal(date?: string): State & {
         error: getErrorMessage(err),
       }));
     }
-  }, [effectiveDate]);
+  }, [effectiveDate, isPublic]);
 
   // Refresh cached payload when the date arg changes — historical
   // dates have their own LS slot and `cachedData` must reflect that
@@ -372,21 +388,37 @@ export function useOpeningFlowSignal(date?: string): State & {
     setIsWindowOpen(open);
     if (open) void fetchOnce();
   }, [fetchOnce]);
-  usePolling(tick, POLL_INTERVALS.OPENING_FLOW, [effectiveDate == null]);
+  usePolling(tick, POLL_INTERVALS.OPENING_FLOW, [
+    effectiveDate == null,
+    !isPublic,
+  ]);
 
   useEffect(() => () => abortRef.current?.abort(), []);
 
-  const displayData = state.data ?? cachedData;
+  // A public visitor is shown nothing: not the last-good payload in
+  // localStorage (the live slot never expires, so it can be a previous
+  // guest's or owner's UW-derived data), and not data or an error left in
+  // memory from before they dropped to public. The window is closed too, so
+  // the panel doesn't claim a fetch is coming.
+  const visibleState = isPublic ? INITIAL_STATE : state;
+  const displayData = isPublic ? null : (state.data ?? cachedData);
   const isHistorical = effectiveDate != null;
 
   return useMemo(
     () => ({
-      ...state,
+      ...visibleState,
       refresh: fetchOnce,
-      isWindowOpen,
+      isWindowOpen: !isPublic && isWindowOpen,
       displayData,
       isHistorical,
     }),
-    [state, fetchOnce, isWindowOpen, displayData, isHistorical],
+    [
+      visibleState,
+      fetchOnce,
+      isPublic,
+      isWindowOpen,
+      displayData,
+      isHistorical,
+    ],
   );
 }

@@ -4,22 +4,30 @@
  * /api/opening-flow-signal contract is handled like a failed fetch, so the
  * panel never renders (and crashes on) a malformed payload.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import {
   useOpeningFlowSignal,
   type OpeningFlowResponse,
 } from '../../hooks/useOpeningFlowSignal';
 import { captureUnlessAuth } from '../../lib/sentry-helpers';
+import { getAccessMode, type AccessMode } from '../../utils/auth';
 
 vi.mock('../../lib/sentry-helpers', () => ({
   captureUnlessAuth: vi.fn(),
 }));
+vi.mock('../../utils/auth', () => ({
+  getAccessMode: vi.fn(() => 'owner'),
+}));
 const mockCaptureUnlessAuth = vi.mocked(captureUnlessAuth);
+const mockGetAccessMode = vi.mocked(getAccessMode);
 
 const fetchMock = vi.fn();
 
 const LIVE_KEY = 'openingFlowSignal.lastGood';
+const HISTORICAL_KEY = 'openingFlowSignal.lastGood:2026-05-12';
+// 08:30 CT: inside the 08:25-08:50 polling window.
+const IN_WINDOW = new Date('2026-05-13T13:30:00Z');
 
 function okResponse(body: unknown): Response {
   return { ok: true, status: 200, json: async () => body } as Response;
@@ -75,11 +83,28 @@ function seedLiveCache(data: unknown): void {
   );
 }
 
+function seedHistoricalCache(data: unknown): void {
+  localStorage.setItem(
+    HISTORICAL_KEY,
+    JSON.stringify({
+      data,
+      savedAt: '2026-05-12T21:00:00Z',
+      date: '2026-05-12',
+    }),
+  );
+}
+
 beforeEach(() => {
   fetchMock.mockReset();
   mockCaptureUnlessAuth.mockClear();
+  mockGetAccessMode.mockReturnValue('owner');
   globalThis.fetch = fetchMock as unknown as typeof fetch;
   localStorage.clear();
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.useRealTimers();
 });
 
 describe('useOpeningFlowSignal: malformed 200 payloads', () => {
@@ -321,3 +346,246 @@ describe('useOpeningFlowSignal: last-good cache validation', () => {
     expect(result.current.displayData).toEqual(cached);
   });
 });
+
+// /api/opening-flow-signal is owner-or-guest. A public visitor's request is a
+// 401 that the panel shows as a red "HTTP 401", and the never-expiring live
+// cache slot would show them a previous session's UW-derived payload.
+describe('useOpeningFlowSignal: public visitor', () => {
+  beforeEach(() => {
+    mockGetAccessMode.mockReturnValue('public');
+  });
+
+  it('makes no eager fetch for the live signal and stays idle', async () => {
+    const { result } = renderHook(() => useOpeningFlowSignal());
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(result.current.loading).toBe(false);
+    expect(result.current.error).toBeNull();
+    expect(result.current.data).toBeNull();
+    expect(result.current.displayData).toBeNull();
+  });
+
+  it('makes no historical fetch on mount or on a date pick', async () => {
+    const { result, rerender } = renderHook(
+      ({ date }: { date?: string }) => useOpeningFlowSignal(date),
+      { initialProps: { date: '2026-05-12' } as { date?: string } },
+    );
+    rerender({ date: '2026-05-11' });
+    rerender({ date: undefined });
+    rerender({ date: '2026-05-08' });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(result.current.error).toBeNull();
+    expect(result.current.displayData).toBeNull();
+  });
+
+  it('schedules no poll and fetches nothing inside the signal window', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(IN_WINDOW);
+    const setIntervalSpy = vi.spyOn(globalThis, 'setInterval');
+
+    const { result } = renderHook(() => useOpeningFlowSignal());
+    // The mount fetch, then several 30s poll periods.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000 * 5);
+    });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(setIntervalSpy).not.toHaveBeenCalledWith(
+      expect.any(Function),
+      30_000,
+    );
+    expect(result.current.isWindowOpen).toBe(false);
+  });
+
+  it('shows no cached payload, live or historical', () => {
+    seedLiveCache(makeResponse());
+    seedHistoricalCache(makeResponse({ date: '2026-05-12' }));
+
+    const live = renderHook(() => useOpeningFlowSignal());
+    const historical = renderHook(() => useOpeningFlowSignal('2026-05-12'));
+
+    expect(live.result.current.displayData).toBeNull();
+    expect(historical.result.current.displayData).toBeNull();
+    // Hidden, not deleted: a purge is the caller's job, and a later guest
+    // login on this browser may still use the cache.
+    expect(localStorage.getItem(LIVE_KEY)).not.toBeNull();
+    expect(localStorage.getItem(HISTORICAL_KEY)).not.toBeNull();
+  });
+
+  it('makes no request when refresh is called', async () => {
+    const { result } = renderHook(() => useOpeningFlowSignal());
+
+    await act(async () => {
+      await result.current.refresh();
+    });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('hides data fetched while signed in once the visitor drops to public', async () => {
+    mockGetAccessMode.mockReturnValue('guest');
+    const body = makeResponse();
+    fetchMock.mockResolvedValue(okResponse(body));
+    const { result, rerender } = renderHook(() => useOpeningFlowSignal());
+    await waitFor(() => {
+      expect(result.current.displayData).toEqual(body);
+    });
+
+    mockGetAccessMode.mockReturnValue('public');
+    rerender();
+
+    expect(result.current.data).toBeNull();
+    expect(result.current.displayData).toBeNull();
+    expect(result.current.error).toBeNull();
+    expect(result.current.loading).toBe(false);
+  });
+
+  it('aborts the request in flight on a drop to public, and stores nothing from its late reply', async () => {
+    mockGetAccessMode.mockReturnValue('guest');
+    let signal: AbortSignal | undefined;
+    let reply: (res: Response) => void = () => {};
+    fetchMock.mockImplementation(
+      (_url: string, init: RequestInit) =>
+        new Promise<Response>((resolve) => {
+          signal = init.signal ?? undefined;
+          reply = resolve;
+        }),
+    );
+    const { result, rerender } = renderHook(() => useOpeningFlowSignal());
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+    expect(signal?.aborted).toBe(false);
+
+    mockGetAccessMode.mockReturnValue('public');
+    rerender();
+    expect(signal?.aborted).toBe(true);
+
+    await act(async () => {
+      reply(okResponse(makeResponse()));
+      await Promise.resolve();
+    });
+
+    expect(localStorage.getItem(LIVE_KEY)).toBeNull();
+    expect(result.current.displayData).toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['the live signal', undefined, '/api/opening-flow-signal'],
+    [
+      'a historical date',
+      '2026-05-12',
+      '/api/opening-flow-signal?date=2026-05-12',
+    ],
+  ])(
+    'starts fetching %s once the visitor signs in without a reload',
+    async (_label, date, url) => {
+      const body = makeResponse({ date: date ?? '2026-05-13' });
+      fetchMock.mockResolvedValue(okResponse(body));
+      const { result, rerender } = renderHook(() => useOpeningFlowSignal(date));
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(fetchMock).not.toHaveBeenCalled();
+
+      // The mode is read at render, not frozen at mount.
+      mockGetAccessMode.mockReturnValue('guest');
+      rerender();
+
+      await waitFor(() => {
+        expect(result.current.displayData).toEqual(body);
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock).toHaveBeenCalledWith(
+        url,
+        expect.objectContaining({ credentials: 'include' }),
+      );
+    },
+  );
+});
+
+describe.each(['owner', 'guest'] as const satisfies readonly AccessMode[])(
+  'useOpeningFlowSignal: %s keeps fetching',
+  (mode) => {
+    beforeEach(() => {
+      mockGetAccessMode.mockReturnValue(mode);
+    });
+
+    it('fetches the live signal on mount, even outside the window', async () => {
+      const body = makeResponse();
+      fetchMock.mockResolvedValue(okResponse(body));
+
+      const { result } = renderHook(() => useOpeningFlowSignal());
+
+      await waitFor(() => {
+        expect(result.current.displayData).toEqual(body);
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/opening-flow-signal',
+        expect.objectContaining({ credentials: 'include' }),
+      );
+      expect(localStorage.getItem(LIVE_KEY)).not.toBeNull();
+    });
+
+    it('fetches a historical date on mount and again on each date pick', async () => {
+      fetchMock.mockResolvedValue(okResponse(makeResponse()));
+      const { rerender } = renderHook(
+        ({ date }: { date: string }) => useOpeningFlowSignal(date),
+        { initialProps: { date: '2026-05-12' } },
+      );
+      await waitFor(() => {
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+      });
+      expect(fetchMock.mock.calls[0]![0]).toBe(
+        '/api/opening-flow-signal?date=2026-05-12',
+      );
+
+      rerender({ date: '2026-05-11' });
+      await waitFor(() => {
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+      });
+      expect(fetchMock.mock.calls[1]![0]).toBe(
+        '/api/opening-flow-signal?date=2026-05-11',
+      );
+    });
+
+    it('polls every 30s inside the window and reports it open', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(IN_WINDOW);
+      const setIntervalSpy = vi.spyOn(globalThis, 'setInterval');
+      fetchMock.mockResolvedValue(okResponse(makeResponse()));
+
+      const { result } = renderHook(() => useOpeningFlowSignal());
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(result.current.isWindowOpen).toBe(true);
+      expect(setIntervalSpy).toHaveBeenCalledWith(expect.any(Function), 30_000);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(30_000);
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('serves the cached payload while the first fetch is out', () => {
+      const cached = makeResponse();
+      seedLiveCache(cached);
+      fetchMock.mockReturnValue(new Promise(() => {}));
+
+      const { result } = renderHook(() => useOpeningFlowSignal());
+
+      expect(result.current.displayData).toEqual(cached);
+    });
+  },
+);
