@@ -91,8 +91,9 @@ function feedPayload(alert: IntervalBAFeedAlert) {
  * answers with `alertFor(date)`; a row endpoint answers with the date it was
  * asked for, which its hook checks against its own. With `latencyMs` (real
  * timers only) a response waits that long, so React renders between a request
- * and its response, as it does with a real network: with an instant mock the
- * two state updates batch and a loading flip never reaches the DOM.
+ * and its response, as it does with a real network. An instant mock can hide a
+ * loading flip, because the two state updates batch into one render: 10 ms of
+ * latency makes the feed test deterministic.
  */
 function routeFetch(
   alertFor: (date: string) => IntervalBAFeedAlert,
@@ -611,6 +612,8 @@ describe.each([
   };
   const alertFor = (date: string) =>
     date === m.night ? NIGHT_ALERT : MORNING_ALERT;
+  // The summary banner's first line: "1 alert · $1.4M total premium".
+  const SUMMARY_BANNER = /^alerts? ·/;
   let fetchSpy: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
@@ -775,21 +778,80 @@ describe.each([
     render(<IntervalBAFeed />);
     await settle();
     expect(screen.getByText('5822')).toBeInTheDocument();
+    expect(screen.getByText(SUMMARY_BANNER)).toBeInTheDocument();
+    expect(screen.getByText('extreme 1')).toBeInTheDocument();
 
     crossMidnight();
     await flush();
 
     // The field reads the new day while the held alerts are still the night's,
     // and the date is held by the debounce: no row, so none carries a date its
-    // alert was not fetched for.
+    // alert was not fetched for, and no summary of the night's totals beside
+    // the loading text.
     expect(dateInput().value).toBe(m.morning);
     expect(screen.queryByText('5822')).toBeNull();
+    expect(screen.queryByText(SUMMARY_BANNER)).toBeNull();
+    expect(screen.queryByText('extreme 1')).toBeNull();
     expect(screen.getByText(/Loading interval B\/A feed/)).toBeInTheDocument();
+
+    // Still inside the debounce, a moment before the new date settles.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(SETTLE_MS - 10);
+    });
+    expect(screen.queryByText(SUMMARY_BANNER)).toBeNull();
 
     await settle();
 
     expect(screen.getByText('5811')).toBeInTheDocument();
     expect(screen.queryByText('5822')).toBeNull();
+    expect(screen.getByText(SUMMARY_BANNER)).toBeInTheDocument();
+  });
+
+  // The roll's fetch fails, then the owner refreshes. The error is the new
+  // date's answer: the night's rows and totals do not come back while the
+  // retry is in flight, and the error stays until it succeeds.
+  it('shows no night row or total when the new date fails and the feed is refreshed', async () => {
+    let morningRequests = 0;
+    globalThis.fetch = vi.fn((url: string) => {
+      const date = new URL(url, 'http://x').searchParams.get('date');
+      if (date === m.night) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          statusText: 'OK',
+          json: () => Promise.resolve(feedPayload(NIGHT_ALERT)),
+        });
+      }
+      morningRequests += 1;
+      // The first request for the new date fails; the retry never answers.
+      if (morningRequests > 1) return new Promise(() => {});
+      return Promise.resolve({
+        ok: false,
+        status: 500,
+        statusText: 'Internal Server Error',
+        json: () => Promise.resolve({ error: 'upstream down' }),
+      });
+    }) as unknown as typeof globalThis.fetch;
+    render(<IntervalBAFeed />);
+    await settle();
+    expect(screen.getByText('5822')).toBeInTheDocument();
+
+    crossMidnight();
+    await flush();
+    await settle();
+
+    expect(screen.getByRole('alert')).toHaveTextContent('upstream down');
+    expect(screen.queryByText('5822')).toBeNull();
+    expect(screen.queryByText(SUMMARY_BANNER)).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh feed' }));
+    await flush();
+
+    // The retry is out and unanswered.
+    expect(morningRequests).toBe(2);
+    expect(screen.getByRole('alert')).toHaveTextContent('upstream down');
+    expect(screen.queryByText('5822')).toBeNull();
+    expect(screen.queryByText(SUMMARY_BANNER)).toBeNull();
   });
 
   it('keeps an open row from asking for the new date with the night contract', async () => {
@@ -907,5 +969,91 @@ describe.each([
 
     expect(screen.getByText('5811')).toBeInTheDocument();
     expect(screen.queryByText('5822')).toBeNull();
+  });
+});
+
+// ============================================================
+// A hung upstream
+//
+// Each poll aborts the request before it, so a hung upstream never reaches the
+// 15 s timeout and raises no error: the last rows would sit under a frozen
+// "updated" stamp and look fresh. While the feed polls, a newest response more
+// than three polls old (30 ms each here, the mock above) is labelled "stale".
+// ============================================================
+
+describe('IntervalBAFeed: a live feed whose upstream hangs', () => {
+  /** Every request, unanswered until the test answers it. */
+  const held: { answer: (payload: unknown) => void }[] = [];
+
+  beforeEach(() => {
+    held.length = 0;
+    vi.useFakeTimers({ now: new Date(PINNED_NOW) });
+    globalThis.fetch = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          held.push({
+            answer: (payload) =>
+              resolve({
+                ok: true,
+                status: 200,
+                statusText: 'OK',
+                json: () => Promise.resolve(payload),
+              }),
+          });
+        }),
+    ) as unknown as typeof globalThis.fetch;
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  const step = (ms: number) =>
+    act(async () => {
+      await vi.advanceTimersByTimeAsync(ms);
+    });
+  const answerLatest = () =>
+    act(async () => {
+      held.at(-1)?.answer(feedPayload(SAMPLE_ALERT));
+      await vi.advanceTimersByTimeAsync(0);
+    });
+  const UPDATED = /^updated \d{2}:\d{2}:\d{2} CT$/;
+
+  it('labels the updated stamp stale after three polls with no answer, and a fresh response clears it', async () => {
+    render(<IntervalBAFeed marketOpen />);
+    await answerLatest();
+    expect(screen.getByText(UPDATED)).toBeInTheDocument();
+    expect(screen.queryByText('stale')).toBeNull();
+
+    for (let i = 0; i < 3; i += 1) {
+      await step(30);
+      expect(screen.queryByText('stale')).toBeNull();
+    }
+    await step(30);
+
+    // A word, not only a colour; the rows and the stamp stay where they were.
+    expect(screen.getByText('stale')).toBeInTheDocument();
+    expect(screen.getByText(UPDATED)).toBeInTheDocument();
+    expect(screen.getByText('5800')).toBeInTheDocument();
+
+    await answerLatest();
+
+    expect(screen.queryByText('stale')).toBeNull();
+  });
+
+  it('clears the label when the feed moves to a past date, which does not poll', async () => {
+    render(<IntervalBAFeed marketOpen />);
+    await answerLatest();
+    await step(120);
+    expect(screen.getByText('stale')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText<HTMLInputElement>('Date'), {
+      target: { value: '2026-04-20' },
+    });
+    await step(300);
+
+    // The past date's request is still unanswered, and no poll is coming.
+    expect(screen.queryByText('stale')).toBeNull();
   });
 });

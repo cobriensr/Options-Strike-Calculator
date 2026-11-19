@@ -102,7 +102,7 @@ export function IntervalBAFeed({
       moneyness,
     ],
   );
-  const { alerts, summary, loading, error, fetchedAt, refresh } =
+  const { alerts, summary, loading, error, fetchedAt, stale, refresh } =
     useIntervalBAFeed(params, marketOpen);
 
   return (
@@ -141,6 +141,14 @@ export function IntervalBAFeed({
               {fetchedAt != null && (
                 <span className="font-sans text-[10px] text-neutral-500">
                   updated {formatFetchedAtCT(fetchedAt)} CT
+                </span>
+              )}
+              {stale && (
+                <span
+                  className="font-sans text-[10px] font-semibold text-amber-300"
+                  title="No response for over three polls. The rows shown may be out of date."
+                >
+                  stale
                 </span>
               )}
               <button
@@ -249,8 +257,8 @@ export function IntervalBAFeed({
           </div>
         </div>
 
-        {/* Summary banner */}
-        {summary && summary.count > 0 && (
+        {/* Summary banner: never beside the loading text, whose date it is not */}
+        {!loading && summary && summary.count > 0 && (
           <div className="flex flex-wrap items-center gap-3 rounded-md border border-neutral-800/80 bg-neutral-950/40 px-3 py-2 text-xs">
             <span className="font-sans">
               <span className="text-neutral-100">{summary.count}</span>{' '}

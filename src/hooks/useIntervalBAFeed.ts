@@ -11,9 +11,14 @@
  *   - Superseded requests are aborted when the settled params change or
  *     the component unmounts; an aborted request is not an error and its
  *     response is never written to state.
- *   - `loading` is true while the held alerts answer different params than
+ *   - The hook never returns data for params it has not answered.
+ *     `loading` is true while the held alerts answer different params than
  *     the ones asked for (a date held by the debounce, a fetch in flight),
- *     and only then: a poll or a refresh of the same params keeps the rows.
+ *     and a poll or a refresh of the same params does not set it, so the
+ *     rows stay mounted. A fetch that fails has answered its params with an
+ *     error: the older params' alerts and summary are dropped, and the error
+ *     stays until a fetch for the params succeeds (a retry or a poll is not
+ *     a moment to show the old rows again).
  *   - Auto-polling: when `marketOpen` is true AND the settled `date` is
  *     today (the shared ET clock, `useETToday`), the hook bumps
  *     `refreshTick` every POLL_INTERVALS.ALERTS ms so the live feed stays
@@ -21,6 +26,10 @@
  *     banner would surface a new alert while the history table stayed
  *     stale until the user hit the refresh button. Historical dates never
  *     poll. A poll uses the settled date and times.
+ *   - Each poll aborts a slow predecessor, so a hung upstream never reaches
+ *     the 15 s timeout and raises no error: the last rows would sit there
+ *     looking fresh. `stale` surfaces it by age instead: while polling, the
+ *     newest response is more than three poll intervals old.
  *
  * Spec: docs/superpowers/specs/interval-ba-ask-alert-2026-05-12.md.
  */
@@ -97,6 +106,12 @@ export interface UseIntervalBAFeedState {
   loading: boolean;
   error: string | null;
   fetchedAt: number | null;
+  /**
+   * True while the feed is polling and its newest response is more than three
+   * poll intervals old (a hung upstream: each poll aborts the last, so no
+   * error is raised). False on a feed that does not poll.
+   */
+  stale: boolean;
   refresh: () => void;
 }
 
@@ -145,6 +160,9 @@ export function useIntervalBAFeed(
   const [responseKey, setResponseKey] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [fetchedAt, setFetchedAt] = useState<number | null>(null);
+  // When the last poll tick fired. Staleness is derived from it, not from a
+  // `Date.now()` in render (impure), and the tick is what re-renders the hook.
+  const [polledAt, setPolledAt] = useState<number | null>(null);
   // Bumping ``refreshTick`` re-runs the fetch effect without changing
   // any of the user-facing params — that's the manual-refresh path.
   // Same effect handles param-driven refetches AND manual ones, so
@@ -184,7 +202,6 @@ export function useIntervalBAFeed(
     const fetchParams = { ...params, ...settled };
     const url = buildUrl(fetchParams);
     const fetchKey = paramsKey(fetchParams);
-    setError(null);
 
     fetch(url, {
       credentials: 'same-origin',
@@ -221,6 +238,9 @@ export function useIntervalBAFeed(
         setAlerts(typed.alerts);
         setSummary(typed.summary);
         setFetchedAt(Date.now());
+        // Only an answer clears the error: a run does not, so a retry of a
+        // failed fetch (a refresh, a poll) does not flash the old rows.
+        setError(null);
         setResponseKey(fetchKey);
       })
       .catch((err: unknown) => {
@@ -232,8 +252,11 @@ export function useIntervalBAFeed(
           tags: { context: 'interval_ba_feed' },
         });
         setError(msg);
-        // A failed fetch has answered too: the feed shows the error, not a
-        // spinner for ever.
+        // A failed fetch has answered its params too: the feed shows the
+        // error, not a spinner for ever. The alerts held are an older key's,
+        // so they go with it.
+        setAlerts([]);
+        setSummary(null);
         setResponseKey(fetchKey);
       });
 
@@ -271,13 +294,26 @@ export function useIntervalBAFeed(
   // date is the CT date of the SPXW expiry, but nothing fires or polls from
   // 23:00 to 24:00 CT, the only hour the two dates differ.
   const today = useETToday();
+  const polling = marketOpen && settled.date === today;
   usePolling(
     () => {
       setRefreshTick((n) => n + 1);
+      setPolledAt(Date.now());
     },
     POLL_INTERVALS.ALERTS,
-    [marketOpen, settled.date === today],
+    [polling],
   );
 
-  return { alerts, summary, loading, error, fetchedAt, refresh };
+  // Each tick aborts the request before it, so a hung upstream never reaches
+  // the 15 s timeout and never raises an error: without this the last rows sit
+  // under a frozen "updated" stamp and look fresh. While polling, a newest
+  // response more than three poll intervals old is stale. A feed that does not
+  // poll is never stale: it does not expect another response.
+  const stale =
+    polling &&
+    fetchedAt !== null &&
+    polledAt !== null &&
+    polledAt - fetchedAt > 3 * POLL_INTERVALS.ALERTS;
+
+  return { alerts, summary, loading, error, fetchedAt, stale, refresh };
 }

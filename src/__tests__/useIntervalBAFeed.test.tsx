@@ -214,6 +214,54 @@ describe('useIntervalBAFeed', () => {
     expect(result.current.error).toBe('boom');
     expect(result.current.alerts).toEqual([]);
   });
+
+  // A 2xx the feed cannot use is a failed fetch, not an empty day: it shows an
+  // error, reports it once, and holds no alerts.
+  it.each([
+    ['a string', 'not an object'],
+    ['null', null],
+    ['an object with no alerts', { summary: baseSummary }],
+    ['an object with no summary', { alerts: [baseAlert] }],
+    ['alerts that are not an array', { alerts: 'x', summary: baseSummary }],
+  ])('reports a malformed 2xx payload: %s', async (_name, payload) => {
+    mockFetchJson(payload);
+
+    const { result } = renderHook(() => useIntervalBAFeed(baseParams));
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+    expect(result.current.error).toBe('malformed response');
+    expect(result.current.alerts).toEqual([]);
+    expect(result.current.summary).toBeNull();
+    expect(captureUnlessAuth).toHaveBeenCalledTimes(1);
+    expect(captureUnlessAuth).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'malformed response' }),
+      { tags: { context: 'interval_ba_feed' } },
+    );
+  });
+
+  it('reports a 2xx whose body is not JSON', async () => {
+    const failure = new SyntaxError('Unexpected token < in JSON at position 0');
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      json: vi.fn().mockRejectedValue(failure),
+    }) as unknown as typeof fetch;
+
+    const { result } = renderHook(() => useIntervalBAFeed(baseParams));
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+    expect(result.current.error).toBe(failure.message);
+    expect(result.current.alerts).toEqual([]);
+    expect(captureUnlessAuth).toHaveBeenCalledTimes(1);
+    expect(captureUnlessAuth).toHaveBeenCalledWith(failure, {
+      tags: { context: 'interval_ba_feed' },
+    });
+  });
 });
 
 describe('useIntervalBAFeed settling and abort', () => {
@@ -577,6 +625,102 @@ describe('useIntervalBAFeed settling and abort', () => {
     expect(fetchUrls().length).toBeGreaterThan(4);
     expect(seen.length).toBeGreaterThan(4);
     expect(seen.every((loading) => !loading)).toBe(true);
+  });
+
+  // The hook never returns data for a key it does not answer. A fetch that
+  // fails has answered its key with an error, so the older key's alerts and
+  // summary go, and the error stays until a fetch for the key succeeds: a
+  // retry (a refresh or a poll) is not a moment to show the old rows again.
+  it('holds no alerts for a date whose fetch failed, and keeps the error through a retry', async () => {
+    const calls = stubPendingFetch(false);
+    const { result, rerender } = renderFeed(baseParams);
+    await respond(calls[0]!, { alerts: [baseAlert], summary: baseSummary });
+    expect(result.current.alerts).toEqual([baseAlert]);
+
+    rerender({ ...baseParams, date: '2026-05-13' });
+    await advance(SETTLE_MS);
+    await act(async () => {
+      calls[1]!.reject(new Error('upstream down'));
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    expect(result.current.error).toBe('upstream down');
+    expect(result.current.loading).toBe(false);
+    expect(result.current.alerts).toEqual([]);
+    expect(result.current.summary).toBeNull();
+
+    // The retry is in flight: still the error, still no rows of the old date.
+    act(() => result.current.refresh());
+    await advance(0);
+    expect(calls).toHaveLength(3);
+    expect(result.current.error).toBe('upstream down');
+    expect(result.current.loading).toBe(false);
+    expect(result.current.alerts).toEqual([]);
+    expect(result.current.summary).toBeNull();
+
+    // Only an answer for the key clears the error.
+    const newer = { ...baseAlert, id: 2 };
+    await respond(calls[2]!, { alerts: [newer], summary: baseSummary });
+    expect(result.current.error).toBeNull();
+    expect(result.current.alerts).toEqual([newer]);
+    expect(result.current.summary).toEqual(baseSummary);
+  });
+
+  // Each poll aborts its predecessor, so a hung upstream never reaches the
+  // 15 s timeout and raises no error: the last rows would sit there looking
+  // fresh. `stale` surfaces it by age: no response for over three polls.
+  describe('stale', () => {
+    it('is set once no response has landed for three polls, and a fresh response clears it', async () => {
+      const calls = stubPendingFetch(false);
+      const { result } = renderFeed({ ...baseParams, date: TODAY_ET }, true);
+      await respond(calls[0]!, { alerts: [baseAlert], summary: baseSummary });
+      expect(result.current.stale).toBe(false);
+
+      // Polls at 30 ms; each aborts the last and none is answered.
+      for (let i = 0; i < 3; i += 1) {
+        await advance(30);
+        expect(result.current.stale).toBe(false);
+      }
+      await advance(30);
+      expect(result.current.stale).toBe(true);
+      expect(calls).toHaveLength(5);
+
+      await respond(calls.at(-1)!, {
+        alerts: [baseAlert],
+        summary: baseSummary,
+      });
+      expect(result.current.stale).toBe(false);
+    });
+
+    it('is cleared when polling stops, and never set on a feed that does not poll', async () => {
+      const calls = stubPendingFetch(false);
+      const { result, rerender } = renderHook(
+        ({ open }: { open: boolean }) =>
+          useIntervalBAFeed({ ...baseParams, date: TODAY_ET }, open),
+        { initialProps: { open: true } },
+      );
+      await respond(calls[0]!, { alerts: [baseAlert], summary: baseSummary });
+      for (let i = 0; i < 4; i += 1) await advance(30);
+      expect(result.current.stale).toBe(true);
+
+      // The market closes: the feed no longer polls, so it is not stale.
+      rerender({ open: false });
+      expect(result.current.stale).toBe(false);
+    });
+
+    it.each([
+      ['a past date with the market open', '2026-05-12', true],
+      ['today with the market closed', TODAY_ET, false],
+    ])('is never set on %s', async (_name, date, open) => {
+      const calls = stubPendingFetch(false);
+      const { result } = renderFeed({ ...baseParams, date }, open);
+      await respond(calls[0]!, { alerts: [baseAlert], summary: baseSummary });
+
+      await advance(1_000);
+
+      expect(calls).toHaveLength(1);
+      expect(result.current.stale).toBe(false);
+    });
   });
 });
 

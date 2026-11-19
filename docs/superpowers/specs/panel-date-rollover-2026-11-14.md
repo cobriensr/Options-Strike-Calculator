@@ -223,14 +223,37 @@ panels follow the new date too".
   start of each run, so each 10 s poll swapped the rows for the loading text
   and back: an expanded row collapsed itself, and the expanded state was lost
   on every poll. With the key comparison, a poll or a refresh of the same
-  params leaves `loading` false and the rows mounted. (A test with an instant
-  mock fetch cannot see this: the two state updates batch. The polling test
-  gives the mock 10 ms of latency.)
-- **The poll gate reads the settled date.** `[marketOpen, settled.date ===
-  today]`, with `today` from the shared ET clock. A following feed's settled
-  date lags the roll by the debounce, so the gate closes at the roll, nothing
-  is polled while the date is held, and the feed asks once for the new date and
-  then polls it.
+  params leaves `loading` false and the rows mounted. (An instant mock fetch
+  can hide this in the feed test: the two state updates batch into one render.
+  10 ms of latency on the mock makes the feed test deterministic; the hook's
+  own poll test, which renders under `act`, catches it with an instant mock.)
+- **The poll gate reads the settled date.** The hook polls when `marketOpen` is
+  true and `settled.date === today`, with `today` from the shared ET clock. A
+  following feed's settled date lags the roll by the debounce, so the gate
+  closes at the roll, nothing is polled while the date is held, and the feed
+  asks once for the new date and then polls it.
+- **A failed fetch kept the older key's alerts.** The failure path set
+  `responseKey` but left `alerts` and `summary` from the key before it, and
+  the next run cleared the error at its start. After the roll's fetch failed, a
+  refresh (or a poll) left `loading` false and `error` null while the retry was
+  in flight, so the night's rows showed under the new date, and an outage
+  flickered between the error banner and the old rows. The hook now never
+  returns data for a key it has not answered: a failure drops the alerts and
+  the summary, and the error is cleared only by a success, not by the start of
+  a retry.
+- **The summary banner sat outside the loading branch.** The totals of the
+  held alerts ("extreme 7, $9M") showed beside "Loading…" from the roll until
+  the new date answered. The banner is drawn only when the feed is not loading.
+- **Aborting the predecessor hides a hung upstream.** Each 10 s poll aborts the
+  request before it, so a hung upstream never reaches the 15 s timeout and
+  raises no error, and the last rows sat under a frozen "updated" stamp. That
+  is the cost of abort-on-supersede: a slow request is replaced, not waited
+  for, so a request that never answers is never reported. The hook surfaces it
+  by age instead: `stale` is true while the feed polls and its newest response
+  is more than three poll intervals old (`3 * POLL_INTERVALS.ALERTS`), taken
+  from the time of the last poll tick so render stays pure, and the feed
+  labels the "updated" stamp "stale" in amber. A feed that does not poll is
+  never stale.
 
 ## Phases
 
