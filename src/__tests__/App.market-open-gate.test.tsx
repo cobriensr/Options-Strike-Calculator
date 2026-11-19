@@ -427,6 +427,15 @@ describe('App polling gate (market clock AND owner-or-guest)', () => {
           ),
         ).toEqual(new Set([s.gate]));
       }
+      // /api/flow-regime is owner-or-guest, so App tells a public visitor's
+      // section to leave the flow-regime badge out.
+      expect(
+        new Set(
+          argsAt(h.marketRegimeSection, 0).map(
+            (arg) => (arg as { showFlowRegime: boolean }).showFlowRegime,
+          ),
+        ),
+      ).toEqual(new Set([s.mode !== 'public']));
 
       // GatedSection returns null when its gate is false and otherwise renders
       // its nav anchor on the first render, before any lazy chunk resolves, so
@@ -531,7 +540,7 @@ describe('App polling gate (market clock AND owner-or-guest)', () => {
         expect.objectContaining({ marketOpen: true }),
       );
       expect(lastArgAt(h.marketRegimeSection, 0)).toEqual(
-        expect.objectContaining({ marketOpen: true }),
+        expect.objectContaining({ marketOpen: true, showFlowRegime: true }),
       );
 
       h.access.mode = 'public';
@@ -544,7 +553,7 @@ describe('App polling gate (market clock AND owner-or-guest)', () => {
         expect.objectContaining({ marketOpen: false }),
       );
       expect(lastArgAt(h.marketRegimeSection, 0)).toEqual(
-        expect.objectContaining({ marketOpen: false }),
+        expect.objectContaining({ marketOpen: false, showFlowRegime: false }),
       );
     });
   });
