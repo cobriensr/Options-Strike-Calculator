@@ -11,9 +11,8 @@
  *     code). Same format means the same vector space for analog
  *     retrieval; symbol divergence is the honesty signal.
  *   - `readDayOhlcFromPostgres` — structured OHLC + simple excursion
- *     metrics for the day_embeddings OHLC columns. Same value
- *     conventions as the sidecar's `?? high - open` / `?? open - low`
- *     fallbacks already used in fetch-day-ohlc.
+ *     metrics (`high - open`, `open - low`) for the day_embeddings OHLC
+ *     columns; the only OHLC source fetch-day-ohlc reads.
  *   - `fetchDayOhlcFromPostgres` — the fail-soft (null on DB error)
  *     wrapper the regime-0DTE scorecard relies on.
  *   - `fetchVixCloseFromPostgres` — the day's VIX close from `outcomes`.
@@ -171,8 +170,7 @@ export interface DayOhlcRead {
  * Returns null when the day has no bars; throws on a DB error.
  *
  * `up_excursion` / `down_excursion` use the simple definitions
- * (`high - open`, `open - low`) — the same fallback that fetch-day-ohlc
- * already applies when the sidecar omits these fields.
+ * (`high - open`, `open - low`).
  */
 export async function readDayOhlcFromPostgres(
   dateIso: string,
