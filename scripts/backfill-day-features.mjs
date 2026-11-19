@@ -19,7 +19,8 @@
  *   BACKFILL_START  — YYYY-MM-DD (default 2010-06-07)
  *   BACKFILL_END    — YYYY-MM-DD (default yesterday UTC)
  *   SIDECAR_URL     — required
- *   SIDECAR_TAKEIT_SECRET — required; the sidecar's bearer, sent on /archive/* calls
+ *   SIDECAR_TAKEIT_SECRET — required; the sidecar's bearer, sent on
+ *                     /archive/* calls
  *   DATABASE_URL    — required
  *   CONCURRENCY     — default 4 (sidecar DuckDB bottleneck means
  *                     higher values buy nothing until that's fixed)

@@ -79,8 +79,9 @@ describe('the backfill scripts that call the sidecar archive', () => {
     '%s gets past the startup check when SIDECAR_TAKEIT_SECRET is set',
     (file) => {
       // An empty range: main() prints its banner and no chunk is fetched. It
-      // then fails on the database count (a closed loopback port), which is
-      // not what is checked here.
+      // then fails on the database count (the Neon driver can't build a
+      // request URL from a loopback host, so nothing is sent), which is not
+      // what is checked here.
       const result = run(file, {
         SIDECAR_TAKEIT_SECRET: 'test-bearer-not-real',
         BACKFILL_START: '2022-01-01',

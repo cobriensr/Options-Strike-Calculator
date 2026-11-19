@@ -26,7 +26,8 @@
  *   BACKFILL_START  — YYYY-MM-DD (default 2010-06-07)
  *   BACKFILL_END    — YYYY-MM-DD (default yesterday UTC)
  *   SIDECAR_URL     — required
- *   SIDECAR_TAKEIT_SECRET — required; the sidecar's bearer, sent on /archive/* calls
+ *   SIDECAR_TAKEIT_SECRET — required; the sidecar's bearer, sent on
+ *                     /archive/* calls
  *   OPENAI_API_KEY  — required
  *   DATABASE_URL    — required (Neon Postgres)
  */

@@ -34,8 +34,8 @@
  *   --every N : sample every Nth weekday (default 1 = all).
  *
  * Env: DATABASE_URL (required), SIDECAR_URL (ground-truth directions;
- * none without it), SIDECAR_TAKEIT_SECRET (the sidecar's bearer, sent on
- * /archive/* calls).
+ * none without it), SIDECAR_TAKEIT_SECRET (required whenever SIDECAR_URL is
+ * set; the sidecar's bearer, sent on /archive/* calls).
  */
 
 import { readFileSync, writeFileSync } from 'node:fs';
