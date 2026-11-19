@@ -10,11 +10,7 @@ const { mockLogger, mockSentry } = vi.hoisted(() => ({
 vi.mock('../_lib/logger.js', () => ({ default: mockLogger }));
 vi.mock('../_lib/sentry.js', () => ({ Sentry: mockSentry }));
 
-import {
-  fetchDayFeatures,
-  fetchDaySummary,
-  sidecarArchiveHeaders,
-} from '../_lib/archive-sidecar.js';
+import { fetchDayFeatures, fetchDaySummary } from '../_lib/archive-sidecar.js';
 
 function okSummary() {
   return {
@@ -48,33 +44,11 @@ describe('archive-sidecar', () => {
   });
 
   afterEach(() => {
-    process.env.SIDECAR_URL = originalUrl;
+    if (originalUrl === undefined) delete process.env.SIDECAR_URL;
+    else process.env.SIDECAR_URL = originalUrl;
     if (originalSecret === undefined) delete process.env.SIDECAR_TAKEIT_SECRET;
     else process.env.SIDECAR_TAKEIT_SECRET = originalSecret;
     vi.restoreAllMocks();
-  });
-
-  describe('sidecarArchiveHeaders', () => {
-    it('returns the bearer when SIDECAR_TAKEIT_SECRET is set', () => {
-      expect(sidecarArchiveHeaders()).toEqual({
-        Authorization: 'Bearer s3cret',
-      });
-      expect(mockLogger.warn).not.toHaveBeenCalled();
-    });
-
-    it.each([undefined, ''])(
-      'returns null and warns when SIDECAR_TAKEIT_SECRET is %j',
-      (value) => {
-        if (value === undefined) delete process.env.SIDECAR_TAKEIT_SECRET;
-        else process.env.SIDECAR_TAKEIT_SECRET = value;
-
-        expect(sidecarArchiveHeaders()).toBeNull();
-        expect(mockLogger.warn).toHaveBeenCalledTimes(1);
-        expect(mockLogger.warn).toHaveBeenCalledWith(
-          'SIDECAR_TAKEIT_SECRET unset: sidecar archive request skipped',
-        );
-      },
-    );
   });
 
   it('returns the summary when the sidecar responds 200', async () => {
@@ -102,13 +76,17 @@ describe('archive-sidecar', () => {
     expect(mockLogger.warn).not.toHaveBeenCalled();
   });
 
+  // An empty secret is as good as an unset one.
   it.each([
-    ['fetchDaySummary', () => fetchDaySummary('2024-08-05')],
-    ['fetchDayFeatures', () => fetchDayFeatures('2024-08-05')],
+    ['fetchDaySummary', undefined, () => fetchDaySummary('2024-08-05')],
+    ['fetchDaySummary', '', () => fetchDaySummary('2024-08-05')],
+    ['fetchDayFeatures', undefined, () => fetchDayFeatures('2024-08-05')],
+    ['fetchDayFeatures', '', () => fetchDayFeatures('2024-08-05')],
   ] as const)(
-    'skips the request, returns null and raises archive_sidecar.secret_unset when the secret is unset (%s)',
-    async (_name, call) => {
-      delete process.env.SIDECAR_TAKEIT_SECRET;
+    'skips the request, returns null and raises archive_sidecar.secret_unset (%s, secret %j)',
+    async (_name, secret, call) => {
+      if (secret === undefined) delete process.env.SIDECAR_TAKEIT_SECRET;
+      else process.env.SIDECAR_TAKEIT_SECRET = secret;
       const spy = vi
         .spyOn(globalThis, 'fetch')
         .mockResolvedValueOnce(okSummary());
@@ -116,6 +94,10 @@ describe('archive-sidecar', () => {
       expect(await call()).toBeNull();
 
       expect(spy).not.toHaveBeenCalled();
+      expect(mockLogger.warn).toHaveBeenCalledTimes(1);
+      expect(mockLogger.warn).toHaveBeenCalledWith(
+        'SIDECAR_TAKEIT_SECRET unset: sidecar archive request skipped',
+      );
       expect(mockSentry.captureMessage).toHaveBeenCalledTimes(1);
       expect(mockSentry.captureMessage).toHaveBeenCalledWith(
         'archive_sidecar.secret_unset',
@@ -127,22 +109,7 @@ describe('archive-sidecar', () => {
     },
   );
 
-  it('treats an empty SIDECAR_TAKEIT_SECRET like an unset one', async () => {
-    process.env.SIDECAR_TAKEIT_SECRET = '';
-    const spy = vi
-      .spyOn(globalThis, 'fetch')
-      .mockResolvedValueOnce(okSummary());
-
-    expect(await fetchDaySummary('2024-08-05')).toBeNull();
-
-    expect(spy).not.toHaveBeenCalled();
-    expect(mockSentry.captureMessage).toHaveBeenCalledWith(
-      'archive_sidecar.secret_unset',
-      expect.objectContaining({ level: 'warning' }),
-    );
-  });
-
-  it('puts only the request path in the secret_unset capture and warning', async () => {
+  it('puts only the request path in the secret_unset capture', async () => {
     delete process.env.SIDECAR_TAKEIT_SECRET;
     vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(okSummary());
 

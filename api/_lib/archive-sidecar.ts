@@ -13,14 +13,13 @@
  *     The analyze endpoint treats archive context as additive — a
  *     failed fetch should degrade the prompt, not break the call.
  *   - Errors go to logger.warn, not Sentry. A sidecar outage is worth
- *     knowing about but it's not an application bug. The exception is
- *     a 401/403: the sidecar refused our bearer, which is a config
- *     error, so it also raises the `archive_sidecar.unauthorized` Sentry
- *     warning.
+ *     knowing about but it's not an application bug. The exceptions are
+ *     config errors: a 401/403 raises `archive_sidecar.unauthorized`,
+ *     and an unset secret raises `archive_sidecar.secret_unset`. Both
+ *     are Sentry warnings.
  *   - No request is sent while SIDECAR_TAKEIT_SECRET is unset or empty:
- *     the call returns null and raises the `archive_sidecar.secret_unset`
- *     Sentry warning. Every request that is sent carries
- *     `sidecarArchiveHeaders()`.
+ *     the call returns null. Every request that is sent carries the
+ *     bearer from `sidecarArchiveHeaders()`.
  *
  * Env:
  *   SIDECAR_URL — required. No default; absence disables archive
@@ -45,10 +44,12 @@ function sidecarUrl(): string | null {
  * Request headers for the sidecar's /archive/* routes: the bearer from
  * SIDECAR_TAKEIT_SECRET, the same secret its /takeit/* routes take.
  * Returns null, after a warning, when the secret is unset or empty; the
- * caller must then skip the request. Shared by `getJson` and
- * `api/cron/fetch-day-ohlc.ts`.
+ * caller must then skip the request. The plain-node scripts have their
+ * own `scripts/_lib/sidecar-headers.mjs`, which throws instead: a script
+ * run should stop, while the analyze path treats archive context as
+ * optional.
  */
-export function sidecarArchiveHeaders(): Record<string, string> | null {
+function sidecarArchiveHeaders(): Record<string, string> | null {
   const secret = process.env.SIDECAR_TAKEIT_SECRET;
   if (!secret) {
     logger.warn('SIDECAR_TAKEIT_SECRET unset: sidecar archive request skipped');
@@ -115,9 +116,8 @@ async function getJson<T>(
  *
  * Returns null when SIDECAR_URL or SIDECAR_TAKEIT_SECRET is unset, the
  * sidecar is unreachable, the date has no ES bars in the archive (404),
- * or any other failure.
- * Callers should treat null as "no archive context available" and
- * proceed without it.
+ * or any other failure. Callers should treat null as "no archive context
+ * available" and proceed without it.
  */
 export async function fetchDaySummary(dateIso: string): Promise<string | null> {
   const body = await getJson<{ date: string; summary: string }>(
@@ -131,9 +131,9 @@ export async function fetchDaySummary(dateIso: string): Promise<string | null> {
  * Used by the Phase C feature-embedding backend.
  *
  * Returns null when SIDECAR_URL or SIDECAR_TAKEIT_SECRET is unset, or on
- * any sidecar / network failure. Callers should treat
- * null as "no feature-based analog context available" and either fall
- * back to the text-embedding backend or skip the block entirely.
+ * any sidecar / network failure. Callers should treat null as "no
+ * feature-based analog context available" and either fall back to the
+ * text-embedding backend or skip the block entirely.
  */
 export async function fetchDayFeatures(
   dateIso: string,

@@ -71,38 +71,9 @@ function makeCronReq() {
   });
 }
 
-function sidecarEmpty() {
-  mockFetch.mockResolvedValueOnce({
-    ok: true,
-    json: async () => ({ rows: [] }),
-  });
-}
-
-function sidecarRow(date: string) {
-  mockFetch.mockResolvedValueOnce({
-    ok: true,
-    json: async () => ({
-      rows: [
-        {
-          date,
-          symbol: 'ESM6',
-          summary: '…',
-          open: 5300,
-          high: 5320,
-          low: 5285,
-          close: 5310,
-          range: 35,
-          up_excursion: 20,
-          down_excursion: 15,
-        },
-      ],
-    }),
-  });
-}
-
-function targetFromSidecarUrl(): string {
-  const url = String(mockFetch.mock.calls[0]?.[0] ?? '');
-  return /from=([\d-]+)/.exec(url)?.[1] ?? '';
+/** A complete regular session of SPX bars, ready for the cron to label. */
+function fullDay() {
+  mockedReadOhlcPg.mockResolvedValueOnce({ ohlc: PG_OHLC, barCount: 390 });
 }
 
 describe('fetch-day-ohlc handler', () => {
@@ -112,12 +83,7 @@ describe('fetch-day-ohlc handler', () => {
     vi.resetAllMocks();
     mockSql.mockResolvedValue([]);
     mockFetch.mockReset();
-    process.env = {
-      ...originalEnv,
-      CRON_SECRET: 'test-secret',
-      SIDECAR_URL: 'http://sidecar.local',
-      SIDECAR_TAKEIT_SECRET: 's3cret',
-    };
+    process.env = { ...originalEnv, CRON_SECRET: 'test-secret' };
     // Tuesday (ET) — the run labels Monday 2026-04-20.
     runOn('2026-04-21');
   });
@@ -131,18 +97,8 @@ describe('fetch-day-ohlc handler', () => {
     const res = mockResponse();
     await handler(makeCronReq(), res);
     expect(mockFetch).not.toHaveBeenCalled();
+    expect(mockedReadOhlcPg).not.toHaveBeenCalled();
     expect(mockSql).not.toHaveBeenCalled();
-  });
-
-  it('skips when SIDECAR_URL is unset', async () => {
-    process.env.SIDECAR_URL = '';
-    const res = mockResponse();
-    await handler(makeCronReq(), res);
-    expect(res._status).toBe(200);
-    expect(res._json).toMatchObject({
-      skipped: true,
-      reason: 'SIDECAR_URL missing',
-    });
   });
 
   // ── Target date: prior trading day, Tue–Sat schedule ─────────────
@@ -162,18 +118,106 @@ describe('fetch-day-ohlc handler', () => {
     ['Saturday after Good Friday labels Thursday', '2026-04-04', '2026-04-02'],
   ])('%s', async (_label, etToday, expected) => {
     runOn(etToday);
-    sidecarRow(expected);
+    fullDay();
     mockSql.mockResolvedValueOnce([{ date: expected }]);
 
     const res = mockResponse();
     await handler(makeCronReq(), res);
 
-    expect(targetFromSidecarUrl()).toBe(expected);
+    expect(mockedReadOhlcPg).toHaveBeenCalledWith(expected);
     expect(res._json).toMatchObject({ targetDate: expected, updated: 1 });
   });
 
+  // ── Postgres is the only source ───────────────────────────────────
+
+  it.each([
+    [
+      'both set',
+      { SIDECAR_URL: 'http://sidecar.local', SIDECAR_TAKEIT_SECRET: 's3cret' },
+    ],
+    ['both unset', {}],
+  ])(
+    'never calls fetch, whatever the sidecar env holds (%s)',
+    async (_label, env) => {
+      Object.assign(process.env, env);
+      fullDay();
+      mockSql.mockResolvedValueOnce([{ date: '2026-04-20' }]);
+
+      const res = mockResponse();
+      await handler(makeCronReq(), res);
+
+      expect(mockFetch).not.toHaveBeenCalled();
+      expect(res._status).toBe(200);
+      expect(res._json).toMatchObject({
+        job: 'fetch-day-ohlc',
+        status: 'success',
+        source: 'postgres',
+        updated: 1,
+      });
+    },
+  );
+
+  it('updates the day_embeddings row with the Postgres OHLC', async () => {
+    fullDay();
+    // UPDATE ... RETURNING date → one row returned
+    mockSql.mockResolvedValueOnce([{ date: '2026-04-20' }]);
+
+    const res = mockResponse();
+    await handler(makeCronReq(), res);
+
+    expect(mockedReadOhlcPg).toHaveBeenCalledWith('2026-04-20');
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      job: 'fetch-day-ohlc',
+      status: 'success',
+      targetDate: '2026-04-20',
+      updated: 1,
+    });
+    expect(mockSql).toHaveBeenCalledTimes(1);
+    // Tagged template: args are (strings, ...values) in column order.
+    expect(mockSql.mock.calls[0]?.slice(1)).toEqual([
+      5300,
+      5320,
+      5285,
+      5310,
+      35,
+      20,
+      15,
+      '2026-04-20',
+    ]);
+    expect(Sentry.captureException).not.toHaveBeenCalled();
+  });
+
+  it('accepts a complete early-close half day (210 bars)', async () => {
+    runOn('2026-11-28'); // Sat after Black Friday
+    mockedReadOhlcPg.mockResolvedValueOnce({ ohlc: PG_OHLC, barCount: 210 });
+    mockSql.mockResolvedValueOnce([{ date: '2026-11-27' }]);
+
+    const res = mockResponse();
+    await handler(makeCronReq(), res);
+
+    expect(mockedReadOhlcPg).toHaveBeenCalledWith('2026-11-27');
+    expect(res._json).toMatchObject({ status: 'success', updated: 1 });
+  });
+
+  it('reports a skip, not a success, when no day_embeddings row matched', async () => {
+    fullDay();
+    mockSql.mockResolvedValueOnce([]); // no row matched
+
+    const res = mockResponse();
+    await handler(makeCronReq(), res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      status: 'skipped',
+      reason: 'no_day_embeddings_row',
+      updated: 0,
+    });
+  });
+
+  // ── Feed failures skip loudly ─────────────────────────────────────
+
   it('warns and skips a trading day with no bars at all (feed down)', async () => {
-    sidecarEmpty();
     mockedReadOhlcPg.mockResolvedValueOnce(null);
 
     const res = mockResponse();
@@ -194,62 +238,7 @@ describe('fetch-day-ohlc handler', () => {
     );
   });
 
-  it('falls through to Postgres when the sidecar row is malformed', async () => {
-    mockFetch.mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({
-        rows: [{ date: '2026-04-20', open: '5300', high: '5320', low: 5285 }],
-      }),
-    });
-    mockedReadOhlcPg.mockResolvedValueOnce({ ohlc: PG_OHLC, barCount: 390 });
-    mockSql.mockResolvedValueOnce([{ date: '2026-04-20' }]);
-
-    const res = mockResponse();
-    await handler(makeCronReq(), res);
-
-    expect(mockedReadOhlcPg).toHaveBeenCalledWith('2026-04-20');
-    expect(res._json).toMatchObject({ source: 'postgres', updated: 1 });
-  });
-
-  it('fails the run when the sidecar body is not JSON', async () => {
-    mockFetch.mockResolvedValueOnce({
-      ok: true,
-      json: async () => {
-        throw new SyntaxError('Unexpected token < in JSON');
-      },
-    });
-
-    const res = mockResponse();
-    await handler(makeCronReq(), res);
-
-    expect(res._status).toBe(500);
-    expect(Sentry.captureException).toHaveBeenCalled();
-    expect(mockedReadOhlcPg).not.toHaveBeenCalled();
-    expect(mockSql).not.toHaveBeenCalled();
-  });
-
-  it('falls back to Postgres OHLC when sidecar returns no rows', async () => {
-    sidecarEmpty();
-    mockedReadOhlcPg.mockResolvedValueOnce({ ohlc: PG_OHLC, barCount: 390 });
-    mockSql.mockResolvedValueOnce([{ date: '2026-04-20' }]);
-
-    const res = mockResponse();
-    await handler(makeCronReq(), res);
-
-    expect(mockedReadOhlcPg).toHaveBeenCalledWith('2026-04-20');
-    expect(res._status).toBe(200);
-    expect(res._json).toMatchObject({
-      job: 'fetch-day-ohlc',
-      status: 'success',
-      source: 'postgres',
-      updated: 1,
-    });
-  });
-
-  // ── Completeness guard ────────────────────────────────────────────
-
-  it('refuses to label a partial Postgres day and warns', async () => {
-    sidecarEmpty();
+  it('refuses to label a partial day and warns', async () => {
     mockedReadOhlcPg.mockResolvedValueOnce({ ohlc: PG_OHLC, barCount: 82 });
 
     const res = mockResponse();
@@ -273,217 +262,42 @@ describe('fetch-day-ohlc handler', () => {
     );
   });
 
-  it('accepts a complete early-close half day (210 bars)', async () => {
-    runOn('2026-11-28'); // Sat after Black Friday
-    sidecarEmpty();
-    mockedReadOhlcPg.mockResolvedValueOnce({ ohlc: PG_OHLC, barCount: 210 });
-    mockSql.mockResolvedValueOnce([{ date: '2026-11-27' }]);
-
-    const res = mockResponse();
-    await handler(makeCronReq(), res);
-
-    expect(mockedReadOhlcPg).toHaveBeenCalledWith('2026-11-27');
-    expect(res._json).toMatchObject({ status: 'success', updated: 1 });
-  });
-
   // ── Failure modes surface (R4) ────────────────────────────────────
 
   it('fails the run when the Postgres OHLC read is rejected', async () => {
-    sidecarEmpty();
     mockedReadOhlcPg.mockRejectedValueOnce(new Error('pg down'));
 
     const res = mockResponse();
     await handler(makeCronReq(), res);
 
     expect(res._status).toBe(500);
-    expect(Sentry.captureException).toHaveBeenCalled();
+    expect(res._json).not.toMatchObject({ status: 'success' });
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'pg down' }),
+    );
+    expect(reportCronRun).toHaveBeenCalledWith(
+      'fetch-day-ohlc',
+      expect.objectContaining({ status: 'error' }),
+    );
     expect(mockSql).not.toHaveBeenCalled();
+    expect(mockFetch).not.toHaveBeenCalled();
   });
 
   it('fails the run when the day_embeddings UPDATE is rejected', async () => {
-    sidecarRow('2026-04-20');
+    fullDay();
     mockSql.mockRejectedValueOnce(new Error('update rejected'));
 
     const res = mockResponse();
     await handler(makeCronReq(), res);
 
     expect(res._status).toBe(500);
-    expect(Sentry.captureException).toHaveBeenCalled();
-  });
-
-  it('updates day_embeddings row with structured OHLC', async () => {
-    sidecarRow('2026-04-20');
-    // UPDATE ... RETURNING date → one row returned
-    mockSql.mockResolvedValueOnce([{ date: '2026-04-20' }]);
-
-    const res = mockResponse();
-    await handler(makeCronReq(), res);
-
-    expect(res._status).toBe(200);
-    expect(res._json).toMatchObject({
-      job: 'fetch-day-ohlc',
-      status: 'success',
-      updated: 1,
-    });
-    const fetchUrl = String(mockFetch.mock.calls[0]?.[0] ?? '');
-    expect(fetchUrl).toContain('from=2026-04-20');
-    expect(fetchUrl).toContain('to=2026-04-20');
-  });
-
-  it('reports a skip, not a success, when no day_embeddings row matched', async () => {
-    sidecarRow('2026-04-20');
-    mockSql.mockResolvedValueOnce([]); // no row matched
-
-    const res = mockResponse();
-    await handler(makeCronReq(), res);
-
-    expect(res._status).toBe(200);
-    expect(res._json).toMatchObject({
-      status: 'skipped',
-      reason: 'no_day_embeddings_row',
-      updated: 0,
-    });
-  });
-
-  it('500s and reports to Sentry on sidecar HTTP failure', async () => {
-    mockFetch.mockResolvedValueOnce({
-      ok: false,
-      status: 503,
-      json: async () => ({}),
-    });
-
-    const res = mockResponse();
-    await handler(makeCronReq(), res);
-
-    expect(res._status).toBe(500);
-    expect(Sentry.captureException).toHaveBeenCalled();
-  });
-
-  it.each([
-    ['unset', undefined],
-    ['empty', ''],
-  ])(
-    'fails the run without calling the sidecar when SIDECAR_TAKEIT_SECRET is %s',
-    async (_label, value) => {
-      if (value === undefined) delete process.env.SIDECAR_TAKEIT_SECRET;
-      else process.env.SIDECAR_TAKEIT_SECRET = value;
-      // Rows a fallback would happily label from, so a regression shows.
-      mockedReadOhlcPg.mockResolvedValue({ ohlc: PG_OHLC, barCount: 390 });
-      mockSql.mockResolvedValue([{ date: '2026-04-20' }]);
-
-      const res = mockResponse();
-      await handler(makeCronReq(), res);
-
-      expect(res._status).toBe(500);
-      expect(res._json).not.toMatchObject({ status: 'success' });
-      expect(mockFetch).not.toHaveBeenCalled();
-      expect(Sentry.captureException).toHaveBeenCalledWith(
-        expect.objectContaining({ message: 'SIDECAR_TAKEIT_SECRET missing' }),
-      );
-      expect(reportCronRun).toHaveBeenCalledWith(
-        'fetch-day-ohlc',
-        expect.objectContaining({ status: 'error' }),
-      );
-      expect(mockedReadOhlcPg).not.toHaveBeenCalled();
-      expect(mockSql).not.toHaveBeenCalled();
-    },
-  );
-
-  it('stays a quiet skip when SIDECAR_URL and the secret are both unset', async () => {
-    process.env.SIDECAR_URL = '';
-    delete process.env.SIDECAR_TAKEIT_SECRET;
-
-    const res = mockResponse();
-    await handler(makeCronReq(), res);
-
-    expect(res._status).toBe(200);
-    expect(res._json).toMatchObject({
-      skipped: true,
-      reason: 'SIDECAR_URL missing',
-    });
-    expect(mockFetch).not.toHaveBeenCalled();
-    expect(Sentry.captureException).not.toHaveBeenCalled();
-  });
-
-  it('sends the sidecar bearer on the archive request', async () => {
-    sidecarRow('2026-04-20');
-    mockSql.mockResolvedValueOnce([{ date: '2026-04-20' }]);
-
-    const res = mockResponse();
-    await handler(makeCronReq(), res);
-
-    expect(mockFetch).toHaveBeenCalledWith(
-      expect.stringContaining('/archive/day-summary-batch?'),
-      expect.objectContaining({
-        headers: { Authorization: 'Bearer s3cret' },
-        signal: expect.any(AbortSignal),
-      }),
+    expect(res._json).not.toMatchObject({ status: 'success' });
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'update rejected' }),
     );
-    expect(res._json).toMatchObject({ status: 'success', updated: 1 });
-  });
-
-  it.each([401, 403])(
-    'fails the run, not success, when the sidecar answers %i',
-    async (status) => {
-      process.env.SIDECAR_TAKEIT_SECRET = 'wrong';
-      mockFetch.mockResolvedValueOnce({
-        ok: false,
-        status,
-        json: async () => ({ error: 'unauthorized' }),
-      });
-
-      const res = mockResponse();
-      await handler(makeCronReq(), res);
-
-      expect(res._status).toBe(500);
-      expect(res._json).not.toMatchObject({ status: 'success' });
-      expect(Sentry.captureException).toHaveBeenCalledWith(
-        expect.objectContaining({ message: `sidecar ${status}` }),
-      );
-      expect(reportCronRun).toHaveBeenCalledWith(
-        'fetch-day-ohlc',
-        expect.objectContaining({ status: 'error' }),
-      );
-      expect(mockedReadOhlcPg).not.toHaveBeenCalled();
-      expect(mockSql).not.toHaveBeenCalled();
-    },
-  );
-
-  it('500s and reports to Sentry when the sidecar fetch rejects (timeout)', async () => {
-    // AbortSignal.timeout(15_000) rejects the fetch with a TimeoutError.
-    mockFetch.mockRejectedValueOnce(
-      new DOMException('timeout', 'TimeoutError'),
+    expect(reportCronRun).toHaveBeenCalledWith(
+      'fetch-day-ohlc',
+      expect.objectContaining({ status: 'error' }),
     );
-
-    const res = mockResponse();
-    await handler(makeCronReq(), res);
-
-    expect(res._status).toBe(500);
-    expect(Sentry.captureException).toHaveBeenCalled();
-    expect(mockedReadOhlcPg).not.toHaveBeenCalled();
-    expect(mockSql).not.toHaveBeenCalled();
-  });
-
-  // 404 means "not in the (frozen) archive" — same semantic as rows:[]
-  // — fall through to Postgres rather than 500-ing the cron.
-  it('falls back to Postgres OHLC when sidecar returns 404 (not in archive)', async () => {
-    mockFetch.mockResolvedValueOnce({
-      ok: false,
-      status: 404,
-      json: async () => ({}),
-    });
-    mockedReadOhlcPg.mockResolvedValueOnce({ ohlc: PG_OHLC, barCount: 390 });
-    mockSql.mockResolvedValueOnce([{ date: '2026-04-20' }]);
-
-    const res = mockResponse();
-    await handler(makeCronReq(), res);
-
-    expect(res._status).toBe(200);
-    expect(res._json).toMatchObject({
-      job: 'fetch-day-ohlc',
-      source: 'postgres',
-      updated: 1,
-    });
-    expect(Sentry.captureException).not.toHaveBeenCalled();
   });
 });

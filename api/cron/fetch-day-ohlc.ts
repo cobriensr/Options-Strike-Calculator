@@ -2,10 +2,10 @@
  * GET /api/cron/fetch-day-ohlc
  *
  * Nightly cron that populates the OHLC + excursion columns on the
- * day_embeddings row for the most recent trading day. The sidecar's
- * /archive/day-summary-batch is asked first, but its archive is frozen
- * at 2026-04-17, so in practice the source is `index_candles_1m (SPX)`
- * regular-session bars (Postgres, fed in real time).
+ * day_embeddings row for the most recent trading day. The source is the
+ * `index_candles_1m (SPX)` regular-session bars (Postgres, fed in real
+ * time). The sidecar archive is frozen at 2026-04-17 and the target is
+ * always a later date, so this cron makes no sidecar call.
  *
  * Kept intentionally simple — no embedding generation, no migration
  * logic, just an UPDATE on the columns added by migration #76. If the
@@ -26,12 +26,9 @@
  * Schedule: 0 23 * * 2-6   (6 PM CT Tue-Sat — after ES settles at
  *                           4 PM CT)
  *
- * Environment: CRON_SECRET, SIDECAR_URL, SIDECAR_TAKEIT_SECRET (the
- * sidecar bearer, via sidecarArchiveHeaders; unset or empty fails the run
- * before any fetch), DATABASE_URL
+ * Environment: CRON_SECRET, DATABASE_URL
  */
 
-import { sidecarArchiveHeaders } from '../_lib/archive-sidecar.js';
 import { getDb, withDbRetry } from '../_lib/db.js';
 import { readDayOhlcFromPostgres } from '../_lib/postgres-day-summary.js';
 import { Sentry, metrics } from '../_lib/sentry.js';
@@ -68,121 +65,43 @@ function feedFailureSkip(
   };
 }
 
-interface SummaryRow {
-  date: string;
-  open?: number;
-  high?: number;
-  low?: number;
-  close?: number;
-  range?: number;
-  up_excursion?: number;
-  down_excursion?: number;
-}
-
 export default withCronInstrumentation(
   'fetch-day-ohlc',
   async (ctx): Promise<CronResult> => {
     const { logger } = ctx;
     // ctx.today is the ET date; a 6 PM CT run is still "today" in ET.
     const targetDate = priorTradingDay(ctx.today);
-    const sidecarUrl = process.env.SIDECAR_URL?.trim().replace(/\/$/, '');
+    // The one source of the OHLC; kept in the run result and the log so
+    // the key stays continuous with earlier runs.
+    const source = 'postgres';
 
-    if (!sidecarUrl) {
-      logger.warn('fetch-day-ohlc: SIDECAR_URL not configured');
-      return {
-        status: 'skipped',
-        message: 'SIDECAR_URL missing',
-        metadata: { skipped: true, reason: 'SIDECAR_URL missing' },
-      };
+    // Read index_candles_1m (SPX). A DB reject propagates so the run
+    // reports an error, not a skip.
+    const pg = await readDayOhlcFromPostgres(targetDate);
+    const expectedBars = cashSessionMinutes(targetDate);
+    if (!pg) {
+      return feedFailureSkip(logger, 'no_bars', {
+        targetDate,
+        barCount: 0,
+        expectedBars,
+      });
     }
-
-    // With the bearer unset the sidecar would refuse the call, so fail the
-    // run (a config error) instead of calling it or falling back to
-    // Postgres: the 401 path below fails the run the same way.
-    const headers = sidecarArchiveHeaders();
-    if (!headers) throw new Error('SIDECAR_TAKEIT_SECRET missing');
-
-    // Single-date batch call. The archive is frozen at 2026-04-17, so for
-    // any newer date it answers `rows: []` or 404 — both mean "not in the
-    // archive" and fall through to Postgres. 5xx and other non-ok
-    // statuses still escalate.
-    const url =
-      `${sidecarUrl}/archive/day-summary-batch` +
-      `?from=${encodeURIComponent(targetDate)}&to=${encodeURIComponent(targetDate)}`;
-    const sidecarRes = await fetch(url, {
-      headers,
-      signal: AbortSignal.timeout(15_000),
-    });
-    if (!sidecarRes.ok && sidecarRes.status !== 404) {
-      throw new Error(`sidecar ${sidecarRes.status}`);
+    if (pg.barCount < expectedBars) {
+      return feedFailureSkip(logger, 'incomplete_day', {
+        targetDate,
+        barCount: pg.barCount,
+        expectedBars,
+      });
     }
-    const body = sidecarRes.ok
-      ? ((await sidecarRes.json()) as { rows?: SummaryRow[] })
-      : { rows: [] as SummaryRow[] };
-    const sidecarRow = body.rows?.[0];
-
-    interface ResolvedOhlc {
-      open: number;
-      high: number;
-      low: number;
-      close: number;
-      range: number;
-      upExc: number;
-      downExc: number;
-    }
-
-    let ohlc: ResolvedOhlc;
-    let source: 'sidecar' | 'postgres';
-
-    if (
-      sidecarRow &&
-      typeof sidecarRow.open === 'number' &&
-      typeof sidecarRow.high === 'number' &&
-      typeof sidecarRow.low === 'number' &&
-      typeof sidecarRow.close === 'number'
-    ) {
-      ohlc = {
-        open: sidecarRow.open,
-        high: sidecarRow.high,
-        low: sidecarRow.low,
-        close: sidecarRow.close,
-        range: sidecarRow.range ?? sidecarRow.high - sidecarRow.low,
-        upExc: sidecarRow.up_excursion ?? sidecarRow.high - sidecarRow.open,
-        downExc: sidecarRow.down_excursion ?? sidecarRow.open - sidecarRow.low,
-      };
-      source = 'sidecar';
-    } else {
-      // Not in the (frozen) archive: read index_candles_1m (SPX). A DB
-      // reject propagates so the run reports an error, not a skip.
-      const pg = await readDayOhlcFromPostgres(targetDate);
-      const expectedBars = cashSessionMinutes(targetDate);
-      if (!pg) {
-        return feedFailureSkip(logger, 'no_bars', {
-          targetDate,
-          barCount: 0,
-          expectedBars,
-        });
-      }
-      if (pg.barCount < expectedBars) {
-        return feedFailureSkip(logger, 'incomplete_day', {
-          targetDate,
-          barCount: pg.barCount,
-          expectedBars,
-        });
-      }
-      ohlc = {
-        open: pg.ohlc.open,
-        high: pg.ohlc.high,
-        low: pg.ohlc.low,
-        close: pg.ohlc.close,
-        range: pg.ohlc.range,
-        upExc: pg.ohlc.up_excursion,
-        downExc: pg.ohlc.down_excursion,
-      };
-      source = 'postgres';
-      metrics.increment('fetch_day_ohlc.postgres_fallback');
-      logger.info({ targetDate }, 'fetch-day-ohlc: using Postgres fallback');
-    }
+    const ohlc = {
+      open: pg.ohlc.open,
+      high: pg.ohlc.high,
+      low: pg.ohlc.low,
+      close: pg.ohlc.close,
+      range: pg.ohlc.range,
+      upExc: pg.ohlc.up_excursion,
+      downExc: pg.ohlc.down_excursion,
+    };
 
     const sql = getDb();
     const result = await withDbRetry(
