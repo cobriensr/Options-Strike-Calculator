@@ -63,15 +63,15 @@ describe('archive-sidecar', () => {
     });
 
     it.each([undefined, ''])(
-      'returns no header and warns when SIDECAR_TAKEIT_SECRET is %j',
+      'returns null and warns when SIDECAR_TAKEIT_SECRET is %j',
       (value) => {
         if (value === undefined) delete process.env.SIDECAR_TAKEIT_SECRET;
         else process.env.SIDECAR_TAKEIT_SECRET = value;
 
-        expect(sidecarArchiveHeaders()).toEqual({});
+        expect(sidecarArchiveHeaders()).toBeNull();
         expect(mockLogger.warn).toHaveBeenCalledTimes(1);
-        expect(String(mockLogger.warn.mock.calls[0]?.[0])).toContain(
-          'SIDECAR_TAKEIT_SECRET',
+        expect(mockLogger.warn).toHaveBeenCalledWith(
+          'SIDECAR_TAKEIT_SECRET unset: sidecar archive request skipped',
         );
       },
     );
@@ -102,18 +102,71 @@ describe('archive-sidecar', () => {
     expect(mockLogger.warn).not.toHaveBeenCalled();
   });
 
-  it('sends no Authorization header and warns when the secret is unset', async () => {
-    delete process.env.SIDECAR_TAKEIT_SECRET;
+  it.each([
+    ['fetchDaySummary', () => fetchDaySummary('2024-08-05')],
+    ['fetchDayFeatures', () => fetchDayFeatures('2024-08-05')],
+  ] as const)(
+    'skips the request, returns null and raises archive_sidecar.secret_unset when the secret is unset (%s)',
+    async (_name, call) => {
+      delete process.env.SIDECAR_TAKEIT_SECRET;
+      const spy = vi
+        .spyOn(globalThis, 'fetch')
+        .mockResolvedValueOnce(okSummary());
+
+      expect(await call()).toBeNull();
+
+      expect(spy).not.toHaveBeenCalled();
+      expect(mockSentry.captureMessage).toHaveBeenCalledTimes(1);
+      expect(mockSentry.captureMessage).toHaveBeenCalledWith(
+        'archive_sidecar.secret_unset',
+        expect.objectContaining({
+          level: 'warning',
+          fingerprint: ['archive_sidecar.secret_unset'],
+        }),
+      );
+    },
+  );
+
+  it('treats an empty SIDECAR_TAKEIT_SECRET like an unset one', async () => {
+    process.env.SIDECAR_TAKEIT_SECRET = '';
     const spy = vi
       .spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(okSummary());
 
-    expect(await fetchDaySummary('2024-08-05')).toBe('x');
+    expect(await fetchDaySummary('2024-08-05')).toBeNull();
 
-    expect(initOf(spy).headers).toEqual({});
-    expect(String(mockLogger.warn.mock.calls[0]?.[0])).toContain(
-      'SIDECAR_TAKEIT_SECRET',
+    expect(spy).not.toHaveBeenCalled();
+    expect(mockSentry.captureMessage).toHaveBeenCalledWith(
+      'archive_sidecar.secret_unset',
+      expect.objectContaining({ level: 'warning' }),
     );
+  });
+
+  it('puts only the request path in the secret_unset capture and warning', async () => {
+    delete process.env.SIDECAR_TAKEIT_SECRET;
+    vi.spyOn(globalThis, 'fetch').mockResolvedValueOnce(okSummary());
+
+    await fetchDaySummary('2024-08-05');
+
+    expect(mockSentry.captureMessage).toHaveBeenCalledWith(
+      'archive_sidecar.secret_unset',
+      expect.objectContaining({
+        extra: { path: '/archive/day-summary?date=2024-08-05' },
+      }),
+    );
+  });
+
+  it('returns null without a warning or capture when SIDECAR_URL and the secret are both unset', async () => {
+    delete process.env.SIDECAR_URL;
+    delete process.env.SIDECAR_TAKEIT_SECRET;
+    const spy = vi.spyOn(globalThis, 'fetch');
+
+    expect(await fetchDaySummary('2024-08-05')).toBeNull();
+    expect(await fetchDayFeatures('2024-08-05')).toBeNull();
+
+    expect(spy).not.toHaveBeenCalled();
+    expect(mockLogger.warn).not.toHaveBeenCalled();
+    expect(mockSentry.captureMessage).not.toHaveBeenCalled();
   });
 
   it.each([

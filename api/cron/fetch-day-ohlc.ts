@@ -27,7 +27,8 @@
  *                           4 PM CT)
  *
  * Environment: CRON_SECRET, SIDECAR_URL, SIDECAR_TAKEIT_SECRET (the
- * sidecar bearer, via sidecarArchiveHeaders), DATABASE_URL
+ * sidecar bearer, via sidecarArchiveHeaders; unset or empty fails the run
+ * before any fetch), DATABASE_URL
  */
 
 import { sidecarArchiveHeaders } from '../_lib/archive-sidecar.js';
@@ -95,6 +96,12 @@ export default withCronInstrumentation(
       };
     }
 
+    // With the bearer unset the sidecar would refuse the call, so fail the
+    // run (a config error) instead of calling it or falling back to
+    // Postgres: the 401 path below fails the run the same way.
+    const headers = sidecarArchiveHeaders();
+    if (!headers) throw new Error('SIDECAR_TAKEIT_SECRET missing');
+
     // Single-date batch call. The archive is frozen at 2026-04-17, so for
     // any newer date it answers `rows: []` or 404 — both mean "not in the
     // archive" and fall through to Postgres. 5xx and other non-ok
@@ -103,7 +110,7 @@ export default withCronInstrumentation(
       `${sidecarUrl}/archive/day-summary-batch` +
       `?from=${encodeURIComponent(targetDate)}&to=${encodeURIComponent(targetDate)}`;
     const sidecarRes = await fetch(url, {
-      headers: sidecarArchiveHeaders(),
+      headers,
       signal: AbortSignal.timeout(15_000),
     });
     if (!sidecarRes.ok && sidecarRes.status !== 404) {

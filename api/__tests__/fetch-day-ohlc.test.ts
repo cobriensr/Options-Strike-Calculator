@@ -116,6 +116,7 @@ describe('fetch-day-ohlc handler', () => {
       ...originalEnv,
       CRON_SECRET: 'test-secret',
       SIDECAR_URL: 'http://sidecar.local',
+      SIDECAR_TAKEIT_SECRET: 's3cret',
     };
     // Tuesday (ET) — the run labels Monday 2026-04-20.
     runOn('2026-04-21');
@@ -358,8 +359,53 @@ describe('fetch-day-ohlc handler', () => {
     expect(Sentry.captureException).toHaveBeenCalled();
   });
 
+  it.each([
+    ['unset', undefined],
+    ['empty', ''],
+  ])(
+    'fails the run without calling the sidecar when SIDECAR_TAKEIT_SECRET is %s',
+    async (_label, value) => {
+      if (value === undefined) delete process.env.SIDECAR_TAKEIT_SECRET;
+      else process.env.SIDECAR_TAKEIT_SECRET = value;
+      // Rows a fallback would happily label from, so a regression shows.
+      mockedReadOhlcPg.mockResolvedValue({ ohlc: PG_OHLC, barCount: 390 });
+      mockSql.mockResolvedValue([{ date: '2026-04-20' }]);
+
+      const res = mockResponse();
+      await handler(makeCronReq(), res);
+
+      expect(res._status).toBe(500);
+      expect(res._json).not.toMatchObject({ status: 'success' });
+      expect(mockFetch).not.toHaveBeenCalled();
+      expect(Sentry.captureException).toHaveBeenCalledWith(
+        expect.objectContaining({ message: 'SIDECAR_TAKEIT_SECRET missing' }),
+      );
+      expect(reportCronRun).toHaveBeenCalledWith(
+        'fetch-day-ohlc',
+        expect.objectContaining({ status: 'error' }),
+      );
+      expect(mockedReadOhlcPg).not.toHaveBeenCalled();
+      expect(mockSql).not.toHaveBeenCalled();
+    },
+  );
+
+  it('stays a quiet skip when SIDECAR_URL and the secret are both unset', async () => {
+    process.env.SIDECAR_URL = '';
+    delete process.env.SIDECAR_TAKEIT_SECRET;
+
+    const res = mockResponse();
+    await handler(makeCronReq(), res);
+
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({
+      skipped: true,
+      reason: 'SIDECAR_URL missing',
+    });
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(Sentry.captureException).not.toHaveBeenCalled();
+  });
+
   it('sends the sidecar bearer on the archive request', async () => {
-    process.env.SIDECAR_TAKEIT_SECRET = 's3cret';
     sidecarRow('2026-04-20');
     mockSql.mockResolvedValueOnce([{ date: '2026-04-20' }]);
 

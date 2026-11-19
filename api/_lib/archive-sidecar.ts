@@ -17,14 +17,18 @@
  *     a 401/403: the sidecar refused our bearer, which is a config
  *     error, so it also raises the `archive_sidecar.unauthorized` Sentry
  *     warning.
- *   - Every request carries `sidecarArchiveHeaders()`.
+ *   - No request is sent while SIDECAR_TAKEIT_SECRET is unset or empty:
+ *     the call returns null and raises the `archive_sidecar.secret_unset`
+ *     Sentry warning. Every request that is sent carries
+ *     `sidecarArchiveHeaders()`.
  *
  * Env:
  *   SIDECAR_URL — required. No default; absence disables archive
  *                 context gracefully.
  *   SIDECAR_TAKEIT_SECRET — the sidecar's bearer (equal to Railway's
  *                 TAKEIT_SIDECAR_SHARED_SECRET), sent as
- *                 `Authorization: Bearer <secret>`.
+ *                 `Authorization: Bearer <secret>`. Required to call
+ *                 the sidecar at all.
  */
 
 import logger from './logger.js';
@@ -40,16 +44,15 @@ function sidecarUrl(): string | null {
 /**
  * Request headers for the sidecar's /archive/* routes: the bearer from
  * SIDECAR_TAKEIT_SECRET, the same secret its /takeit/* routes take.
- * With the secret unset it returns no header and logs a warning.
- * Shared by `getJson` and `api/cron/fetch-day-ohlc.ts`.
+ * Returns null, after a warning, when the secret is unset or empty; the
+ * caller must then skip the request. Shared by `getJson` and
+ * `api/cron/fetch-day-ohlc.ts`.
  */
-export function sidecarArchiveHeaders(): Record<string, string> {
+export function sidecarArchiveHeaders(): Record<string, string> | null {
   const secret = process.env.SIDECAR_TAKEIT_SECRET;
   if (!secret) {
-    logger.warn(
-      'SIDECAR_TAKEIT_SECRET unset: sidecar archive request sent without Authorization',
-    );
-    return {};
+    logger.warn('SIDECAR_TAKEIT_SECRET unset: sidecar archive request skipped');
+    return null;
   }
   return { Authorization: `Bearer ${secret}` };
 }
@@ -61,11 +64,21 @@ async function getJson<T>(
   const base = sidecarUrl();
   if (!base) return null;
 
+  const headers = sidecarArchiveHeaders();
+  if (!headers) {
+    Sentry.captureMessage('archive_sidecar.secret_unset', {
+      level: 'warning',
+      fingerprint: ['archive_sidecar.secret_unset'],
+      extra: { path },
+    });
+    return null;
+  }
+
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const res = await fetch(`${base}${path}`, {
-      headers: sidecarArchiveHeaders(),
+      headers,
       signal: controller.signal,
     });
     if (res.status === 401 || res.status === 403) {
@@ -100,8 +113,9 @@ async function getJson<T>(
  * Fetch the canonical deterministic text summary for a single trading
  * day from the sidecar. Used as input to the embedding pipeline.
  *
- * Returns null when SIDECAR_URL is unset, the sidecar is unreachable,
- * the date has no ES bars in the archive (404), or any other failure.
+ * Returns null when SIDECAR_URL or SIDECAR_TAKEIT_SECRET is unset, the
+ * sidecar is unreachable, the date has no ES bars in the archive (404),
+ * or any other failure.
  * Callers should treat null as "no archive context available" and
  * proceed without it.
  */
@@ -116,7 +130,8 @@ export async function fetchDaySummary(dateIso: string): Promise<string | null> {
  * Fetch the 60-dim engineered feature vector for a single trading day.
  * Used by the Phase C feature-embedding backend.
  *
- * Returns null on any sidecar / network failure. Callers should treat
+ * Returns null when SIDECAR_URL or SIDECAR_TAKEIT_SECRET is unset, or on
+ * any sidecar / network failure. Callers should treat
  * null as "no feature-based analog context available" and either fall
  * back to the text-embedding backend or skip the block entirely.
  */
