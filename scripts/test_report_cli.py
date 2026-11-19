@@ -18,13 +18,12 @@ subprocesses against a fixed session. What is pinned here:
 * A failed database call, or a bad `--as-of`, ends the run before anything is
   written.
 
-Neon is faked at the module boundary: `psycopg2.connect` and
-`pandas.read_sql` / `read_sql_query`. No test reaches a database. The fake for
-the windowed reports applies the date bounds the SQL text states, the way
-Postgres would, so a bound dropped from the query shows in what the report
-analyses. The scripts still read the frozen weights JSON (the next task moves
-that to the store), so the weights read is pointed at a temporary file or
-stubbed.
+Neon is faked at the module boundary: `psycopg2.connect`,
+`pandas.read_sql` / `read_sql_query` and `_report_weights.load_pointer`, where
+all four reports' read of the active weights lives (what the weights say is
+pinned in test_report_weights.py). No test reaches a database. The fake for the
+windowed reports applies the date bounds the SQL text states, the way Postgres
+would, so a bound dropped from the query shows in what the report analyses.
 
 The UTF-8 tests make `Path.write_text` and `Path.open` default to cp1252 when
 no encoding is named (`legacy_text_default`), so a dropped `encoding='utf-8'`
@@ -36,7 +35,6 @@ fails on any host, UTF-8 mode or not. Run:
 from __future__ import annotations
 
 import csv
-import json
 import re
 import sys
 from collections.abc import Callable
@@ -53,6 +51,7 @@ import pytest
 SCRIPTS = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPTS))
 
+import _report_weights  # noqa: E402
 import daily_tracker  # noqa: E402
 import feature_audit  # noqa: E402
 import mine_outcome_patterns as mining  # noqa: E402
@@ -60,6 +59,16 @@ import score_lineage_audit as lineage  # noqa: E402
 
 SESSION = date(2026, 11, 4)
 FAKE_URL = 'postgresql://fake/db'
+ACTIVE_VERSION = 'refit-2026-11-01'
+# What the four reports read of the active weights: the tracker its bare
+# cutoffs, the audit its feed cutoffs and header fields. Mining and lineage
+# hand the weights to a scorer the tests stub, so they read only the version.
+ACTIVE_WEIGHTS = {
+    'model_version': 'v-test',
+    'trained_through': '2026-10-30',
+    'cutoffs': {'t1': 16, 't2': 12},
+    'feed_cutoffs': {'tier1_min_score': 16, 'tier2_min_score': 12},
+}
 
 MODULES = {
     'feature_audit': feature_audit,
@@ -171,6 +180,16 @@ def _snapshot(directory: Path) -> dict[str, tuple[int, int]]:
 
 
 @pytest.fixture(autouse=True)
+def active_weights(monkeypatch) -> None:
+    """The store read, faked where the reports' shared reader makes it."""
+    monkeypatch.setattr(
+        _report_weights,
+        'load_pointer',
+        lambda _conn, _name: (ACTIVE_VERSION, ACTIVE_WEIGHTS),
+    )
+
+
+@pytest.fixture(autouse=True)
 def default_dir(tmp_path, monkeypatch) -> Path:
     """Where a run with no destination argument lands, and no env file.
 
@@ -241,7 +260,7 @@ def _audit_frame(n: int = 300) -> pd.DataFrame:
             'alert_seq': rng.integers(1, 30, n).astype(float),
             'reload_tagged': rng.choice([False, True], n),
             'cheap_call_pm_tagged': rng.choice([False, True], n),
-            'combined_score': rng.integers(8, 20, n).astype(float),
+            'round_trip_score_deduct': 0,
             'direction_gated': False,
             'date': rng.choice(
                 [date(2026, 10, d) for d in range(5, 30)] + [SESSION], n
@@ -266,21 +285,6 @@ def _audit_frame(n: int = 300) -> pd.DataFrame:
 def feature_audit_run(tmp_path, monkeypatch) -> Run:
     out_dir = tmp_path / 'audit' / 'nested'
     urls = _fake_database(monkeypatch)
-    weights = tmp_path / 'weights.json'
-    weights.write_text(
-        json.dumps(
-            {
-                'model_version': 'v-test',
-                'trained_at': '2026-11-01',
-                'training_sample': {
-                    'n': 1234,
-                    'date_range': ['2026-05-01', '2026-11-04'],
-                },
-            }
-        ),
-        encoding='utf-8',
-    )
-    monkeypatch.setattr(feature_audit, 'WEIGHTS_JSON', weights)
     queries = _serve(monkeypatch, 'read_sql', _audit_frame())
     return Run(
         main=feature_audit.main,
@@ -335,11 +339,6 @@ def _read_rows(path: Path) -> list[dict[str, str]]:
 
 
 def tracker_run(tmp_path, monkeypatch) -> Run:
-    repo = tmp_path / 'repo'
-    weights = repo / 'ml' / 'output' / 'lottery_score_weights.json'
-    weights.parent.mkdir(parents=True)
-    weights.write_text(json.dumps({'cutoffs': {'t1': 16, 't2': 12}}), encoding='utf-8')
-    monkeypatch.setattr(daily_tracker, 'ROOT', repo)
     state = tmp_path / 'state'
     state.mkdir()
     csv_path = state / 'lottery-tracking.csv'
@@ -395,7 +394,6 @@ def mining_run(tmp_path, monkeypatch) -> Run:
     queries = _serve(
         monkeypatch, 'read_sql_query', _fetched_fires(), _in_the_sql_window
     )
-    monkeypatch.setattr(mining, 'load_weights', lambda: {'model_version': 'v-test'})
     features = pd.DataFrame(
         {key: ['x', 'y', 'x', 'y'] for key in mining.FEATURE_KEYS}
         | {'outcome_pct': [60.0, -60.0, 10.0, 0.0]}
@@ -432,7 +430,6 @@ def lineage_run(tmp_path, monkeypatch) -> Run:
     queries = _serve(
         monkeypatch, 'read_sql_query', _fetched_fires(), _in_the_sql_window
     )
-    monkeypatch.setattr(lineage, 'load_weights', lambda: {'model_version': 'v-test'})
     table = pd.DataFrame(
         [
             {
@@ -488,7 +485,8 @@ def test_feature_audit_writes_into_out_dir(
     text = run.output.read_bytes().decode('utf-8')  # UTF-8 though the default is cp1252
     assert text.startswith('# Fire-row feature audit')
     assert 'Dataset: 300 fires' in text
-    assert '(2026-05-01 → 2026-11-04)' in text
+    # The ≥ is not in cp1252 either.
+    assert f'T1 = qas ≥ 16, T2 = qas ≥ 12 (feed cutoffs of version {ACTIVE_VERSION})' in text
     assert _snapshot(default_dir) == {}
     assert _snapshot(SHIPPED_DOCS_TMP) == shipped_before
 
@@ -578,7 +576,8 @@ def test_mining_window_is_anchored_to_as_of(
     ]
     text = run.output.read_bytes().decode('utf-8')  # the Ł is not in cp1252
     assert text.startswith('# Lottery composite candidates — 2026-11-04')
-    assert 'Sample: the 90 days up to 2026-11-04, aligned non-structure' in text
+    assert f'Active lottery weights: {ACTIVE_VERSION} (model_version v-test)' in text
+    assert 'Sample: the 90 days up to 2026-11-04, aligned single-leg' in text
     assert f'ticker={NON_ASCII_TICKER} & tod=AM_open' in text
     assert _snapshot(default_dir) == {}
     assert _snapshot(SHIPPED_DOCS_TMP) == shipped_before
@@ -602,7 +601,8 @@ def test_lineage_window_is_anchored_to_as_of(
     ]
     text = run.output.read_bytes().decode('utf-8')  # the ✓ is not in cp1252
     assert text.startswith('# Lottery Score Lineage Audit — 2026-11-04')
-    assert 'Window: the 30 days up to 2026-11-04, enriched aligned' in text
+    assert f'Active lottery weights: {ACTIVE_VERSION} (model_version v-test)' in text
+    assert 'Window: the 30 days up to 2026-11-04, enriched aligned single-leg' in text
     assert '✓' in text
     assert _snapshot(default_dir) == {}
     assert _snapshot(SHIPPED_DOCS_TMP) == shipped_before

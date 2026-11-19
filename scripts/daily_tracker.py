@@ -9,6 +9,10 @@ duplicating.
 
 Read-only against the DB except for its own CSV append.
 
+The T1/T2 split is the ACTIVE weights version's bare `cutoffs` (t1, t2) on the
+stored score, read from the store (phase 3 D8). A weights read that fails ends
+the run before any fire is read or the CSV is touched; there is no fallback.
+
 Usage:
     ml/.venv/Scripts/python scripts/daily_tracker.py [--csv PATH]
 
@@ -35,6 +39,7 @@ CSV_PATH = ROOT / 'docs' / 'tmp' / 'lottery-tracking.csv'
 
 sys.path.insert(0, str(ROOT / 'scripts'))
 from _cli_paths import load_env_file  # noqa: E402
+from _report_weights import load_active_weights  # noqa: E402
 
 # Order of CSV columns. Adding a new column at the end is safe (existing
 # rows just get a blank trailing field on read). Don't reorder.
@@ -87,6 +92,15 @@ def main(argv: list[str] | None = None) -> None:
     db_url = os.environ.get('DATABASE_URL_UNPOOLED') or os.environ['DATABASE_URL']
     conn = psycopg2.connect(db_url)
 
+    # The active weights' bare tier cutoffs, read before any fire is read or the
+    # CSV is touched. The score distribution moves with every promoted version,
+    # so a stale pair would report ~0 tier1/tier2 every night and the tracker
+    # would be useless (the V1 18/12 caught by manual review 2026-05-22).
+    version, weights = load_active_weights(conn, 'track')
+    t1_cutoff = int(weights['cutoffs']['t1'])
+    t2_cutoff = int(weights['cutoffs']['t2'])
+    print(f'[track] active weights {version}: T1 score >= {t1_cutoff}, T2 >= {t2_cutoff}')
+
     df = pd.read_sql(
         """
         SELECT date, mode, score, peak_ceiling_pct AS peak,
@@ -105,21 +119,6 @@ def main(argv: list[str] | None = None) -> None:
         latest.isoformat() if hasattr(latest, 'isoformat') else str(latest)[:10]
     )
     today_df = df[df['date'] == latest]
-
-    # Load V2 tier cutoffs from the weights JSON instead of hardcoding the
-    # legacy V1 thresholds (18/12). The V2 score distribution maxes out
-    # around 17, so V1 cutoffs would report ~0 tier1/tier2 every night and
-    # the tracker would be useless (caught by manual review 2026-05-22).
-    weights_path = ROOT / 'ml' / 'output' / 'lottery_score_weights.json'
-    if not weights_path.exists():
-        sys.exit(
-            f'[track] weights JSON not found at {weights_path} — '
-            f'run `make refit` first (or set LOTTERY_REFIT=1)'
-        )
-    import json as _json  # local: keep top-of-file imports stable
-    weights = _json.loads(weights_path.read_text())
-    t1_cutoff = int(weights['cutoffs']['t1'])
-    t2_cutoff = int(weights['cutoffs']['t2'])
 
     def _classify(s):
         if not pd.notna(s):

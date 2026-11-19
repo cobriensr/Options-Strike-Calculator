@@ -4,8 +4,10 @@
 Phase 1 of the lottery outcome-mining + lineage spec
 (docs/superpowers/specs/lottery-outcome-mining-and-lineage-2026-05-22.md).
 
-Queries the 90 days up to --as-of (default: today) of aligned non-structure
-fires, computes a 7-element feature tuple per fire, then scans all 2- and
+Queries the 90 days up to --as-of (default: today) of aligned single-leg
+fires (`lottery_scoring.SINGLE_LEG_FILTER`, the population the refit trains on),
+computes a 7-element feature tuple per fire from the ACTIVE weights (read from
+the store; a failed read ends the run, with no fallback), then scans all 2- and
 3-feature sub-tuples for combinations that lift winners (outcome_pct >= 50) or
 losers (outcome_pct <= -50) beyond the marginal threshold.
 
@@ -19,7 +21,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import sys
 from datetime import date
@@ -35,19 +36,23 @@ import psycopg2
 
 ROOT = Path(__file__).resolve().parent.parent
 ENV_FILE = ROOT / ".env.local"
-WEIGHTS_PATH = ROOT / "ml" / "output" / "lottery_score_weights.json"
 REPORT_DIR = ROOT / "docs" / "tmp"
 
 # `_cli_paths.load_env_file` reads ENV_FILE into os.environ (DATABASE_URL); a
-# missing file is fine, the nightly service has none.
+# missing file is fine, the nightly service has none. `_report_weights` reads
+# the active weights and puts ml/src on sys.path, which the two imports from
+# there below rely on.
 sys.path.insert(0, str(ROOT / "scripts"))
 from _cli_paths import load_env_file  # noqa: E402
+from _report_weights import load_active_weights  # noqa: E402
+from lottery_scoring import SINGLE_LEG_FILTER  # noqa: E402
+from score_components import assign_quintile  # noqa: E402
 
 # ---------------------------------------------------------------------------
-# SQL fetch (mirrors FETCH_QUERY in ml/src/lottery_scoring.py)
+# SQL fetch (the same population as TRAINING_FILTER_SQL in ml/src/lottery_scoring.py)
 # ---------------------------------------------------------------------------
 
-FETCH_QUERY = """
+FETCH_QUERY = f"""
 SELECT
     id,
     underlying_symbol,
@@ -72,27 +77,30 @@ WHERE
         (option_type = 'C' AND cum_ncp_at_fire > cum_npp_at_fire)
         OR (option_type = 'P' AND cum_npp_at_fire > cum_ncp_at_fire)
     )
-    AND inferred_structure IS NULL
+    AND {SINGLE_LEG_FILTER}
     AND COALESCE(realized_flow_inversion_pct, realized_eod_pct) IS NOT NULL
 ORDER BY id
 """
 
 
-def fetch_fires(as_of: date) -> pd.DataFrame:
-    """Fetch aligned, filtered fires and return with outcome_pct column.
-
-    The window is the 90 days ending on `as_of`, both ends inclusive, so a run
-    for a session never reads a fire dated after it, whenever it runs.
-    """
+def connect():
+    """Open the Neon connection (the unpooled DSN when there is one)."""
     db_url = os.environ.get("DATABASE_URL_UNPOOLED") or os.environ.get("DATABASE_URL")
     if not db_url:
         sys.exit("DATABASE_URL not set")
 
     print("Connecting to database...")
-    conn = psycopg2.connect(db_url, sslmode="require", connect_timeout=15)
+    return psycopg2.connect(db_url, sslmode="require", connect_timeout=15)
+
+
+def fetch_fires(conn, as_of: date) -> pd.DataFrame:
+    """Fetch aligned, filtered fires and return with outcome_pct column.
+
+    The window is the 90 days ending on `as_of`, both ends inclusive, so a run
+    for a session never reads a fire dated after it, whenever it runs.
+    """
     print("Fetching fires...")
     df = pd.read_sql_query(FETCH_QUERY, conn, params={"as_of": as_of})
-    conn.close()
     print(f"Fetched {len(df):,} rows before final filter")
 
     # Outcome column: prefer flow_inversion, fall back to eod
@@ -119,20 +127,6 @@ def fetch_fires(as_of: date) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 # Feature tuple construction
 # ---------------------------------------------------------------------------
-
-# Import assign_quintile from score_components.  The script lives in
-# scripts/, so we add ml/src/ to path explicitly (mirrors lottery_scoring.py).
-sys.path.insert(0, str(ROOT / "ml" / "src"))
-from score_components import assign_quintile  # noqa: E402
-
-
-def load_weights() -> dict:
-    """Load lottery_score_weights.json."""
-    if not WEIGHTS_PATH.exists():
-        sys.exit(f"Weights file missing: {WEIGHTS_PATH}\n"
-                 "Run: ml/.venv/Scripts/python ml/src/lottery_scoring.py")
-    with WEIGHTS_PATH.open() as fh:
-        return json.load(fh)
 
 
 def build_feature_tuples(df: pd.DataFrame, weights: dict) -> pd.DataFrame:
@@ -339,6 +333,8 @@ def _table_header() -> str:
 
 def render_report(
     as_of: date,
+    version: str,
+    model_version: str,
     n_total: int,
     n_winners: int,
     n_losers: int,
@@ -373,7 +369,8 @@ def render_report(
         f"# Lottery composite candidates — {date_str}",
         "",
         "Trigger: nightly mine_outcome_patterns.py",
-        f"Sample: the 90 days up to {date_str}, aligned non-structure (n={n_total:,}) | "
+        f"Active lottery weights: {version} (model_version {model_version})",
+        f"Sample: the 90 days up to {date_str}, aligned single-leg (n={n_total:,}) | "
         f"winners (>=50%) = {n_winners:,} | losers (<=-50%) = {n_losers:,}",
         f"Mining threshold: support >= {MIN_SUPPORT}, "
         f"net_score lift over best singleton >= {MARGINAL_DELTA}",
@@ -445,10 +442,17 @@ def main(argv: list[str] | None = None) -> None:
     as_of = args.as_of or date.today()
     load_env_file(ENV_FILE)
 
-    weights = load_weights()
-    print(f"Loaded weights: {weights['model_version']}")
+    conn = connect()
+    try:
+        # The active weights come first: a failed read ends the run
+        # (ActiveWeightsError) before any fire is read or any file is written.
+        version, weights = load_active_weights(conn, "mining")
+        model_version = weights["model_version"]
+        print(f"Loaded weights: {version} (model_version {model_version})")
 
-    df_raw = fetch_fires(as_of)
+        df_raw = fetch_fires(conn, as_of)
+    finally:
+        conn.close()
 
     # An empty window must end the run (as score_lineage_audit does), not divide
     # by zero below or write an empty report.
@@ -545,6 +549,8 @@ def main(argv: list[str] | None = None) -> None:
     # Render and write report
     report_md = render_report(
         as_of=as_of,
+        version=version,
+        model_version=model_version,
         n_total=n_total,
         n_winners=n_winners,
         n_losers=n_losers,

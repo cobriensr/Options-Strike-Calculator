@@ -9,6 +9,10 @@ Highlights the levers worth turning into entry filters.
 Read-only, no DB writes. Writes lottery-feature-audit-{latest fire date}.md to
 docs/tmp/ (or --out-dir).
 
+The T1/T2 split is the feed's: each fire's qas against the feed cutoffs of the
+ACTIVE weights version, read from the store (phase 3 D8). A weights read that
+fails ends the run before any report is written; there is no fallback.
+
 Usage:
     ml/.venv/Scripts/python scripts/feature_audit.py [--out-dir DIR]
 """
@@ -16,10 +20,11 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import sys
+from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -27,68 +32,59 @@ import psycopg2
 
 ROOT = Path(__file__).resolve().parent.parent
 ENV_FILE = ROOT / '.env.local'
-WEIGHTS_JSON = ROOT / 'ml' / 'output' / 'lottery_score_weights.json'
 REPORT_DIR = ROOT / 'docs' / 'tmp'
-
-# Feed tier cutoffs — mirror the user-facing feed EXACTLY so the audit's
-# "Tier 2+" subset is the population actually traded. The feed tiers on
-# qas = GREATEST(0, score) + inversionBonus(quintile) with these cutoffs
-# (api/_lib/lottery-tier.ts TIER_CUTOFFS_V2) and demotes direction-gated rows
-# to tier3. Recalibrated 2026-06-03 from 24/22 — before that the audit used the
-# stale V1 18/12 on the bare score, so its "Tier 1" was always empty and its
-# "Tier 2+" was a tiny score-12-17 sliver, NOT what the feed shows. Keep in
-# sync with the TS constants. Spec: lottery-feed-tier-recalibration-2026-06-03.
-TIER1_CUTOFF = 13
-TIER2_CUTOFF = 10
-
-# Quintiles suppressed by the feed's DEFAULT view (api/lottery-finder.ts:
-# `showAll OR inversion_quintile IS NULL OR inversion_quintile > 2`). The audit
-# excludes these from the traded Tier 2+ population so feature stats aren't
-# contaminated by fires the user never sees.
-SUPPRESSED_QUINTILES = (1, 2)
 
 sys.path.insert(0, str(ROOT / 'scripts'))
 from _cli_paths import load_env_file  # noqa: E402
-
-# Per-ticker inversion-quality bonus — single Python source of truth, imported
-# from the enrich script (mirrors api/_lib/lottery-inversion-bonus.ts). Avoids a
-# third hand-copy of the map that could silently drift on the next retune.
-from enrich_lottery_outcomes import (  # noqa: E402
-    INVERSION_BONUS_BY_QUINTILE,
+from _report_weights import (  # noqa: E402
+    FeedCutoffs,
+    load_active_weights,
+    tier_header,
+    tier_labels,
 )
 
+# `_report_weights` puts ml/src on sys.path. The audit's drift watch needs the
+# qas values themselves, which `tier_labels` does not return.
+from lottery_refit_gates import feed_qas  # noqa: E402
 
-def scoring_regime_lines() -> list[str]:
+
+def scoring_regime_lines(
+    version: str, weights: Mapping[str, Any], cutoffs: FeedCutoffs
+) -> list[str]:
     """Header block stamping the active scoring regime.
 
     The feature audit stratifies on the feed's Tier 2+ subset (qas-derived).
-    Because `make update` re-backfills the score column under freshly-refit
-    weights every night, that subset silently re-bases on each retrain — so
-    feature numbers are ONLY comparable across snapshots sharing the same
-    model_version. Stamp it so cross-snapshot diffs segment by regime instead
-    of comparing different scoring universes. See memory
+    Once a refit is promoted the `score` column is rescored under the new
+    weights, and that subset re-bases — so feature numbers are ONLY comparable
+    across snapshots sharing the same version. Stamp it (with `model_version`
+    and `trained_through`) so cross-snapshot diffs segment by regime instead of
+    comparing different scoring universes. See memory
     project_feature_audit_regime_segmentation.
     """
-    out = ['## Scoring regime (segment cross-snapshot comparisons by this)\n']
-    try:
-        w = json.loads(WEIGHTS_JSON.read_text())
-        ts = w.get('training_sample', {})
-        rng = ts.get('date_range') or ['?', '?']
-        out.append(f'    model_version : {w.get("model_version", "?")}')
-        out.append(f'    trained_at    : {w.get("trained_at", "?")}')
-        out.append(
-            f'    train sample  : n={ts.get("n", "?"):,} '
-            f'({rng[0]} → {rng[1]})'
-            if isinstance(ts.get('n'), int)
-            else f'    train sample  : n={ts.get("n", "?")} ({rng[0]} → {rng[1]})'
-        )
-    except (OSError, ValueError) as e:
-        out.append(f'    (could not read {WEIGHTS_JSON.name}: {e})')
-    out.append(
-        f'    tier cutoffs  : T1 qas>={TIER1_CUTOFF}, T2 qas>={TIER2_CUTOFF}  '
-        '(qas = max(0, score) + inversion bonus; mirrors the feed)\n'
+    return [
+        '## Scoring regime (segment cross-snapshot comparisons by this)\n',
+        tier_header(version, cutoffs),
+        f'    model_version   : {weights["model_version"]}',
+        f'    trained_through : {weights["trained_through"]}',
+    ]
+
+
+def add_feed_tiers(df: pd.DataFrame, cutoffs: FeedCutoffs) -> pd.DataFrame:
+    """`df` with the feed's qas, its tier and whether the fire is Tier 2+ eligible.
+
+    Mirrors the user-facing feed EXACTLY so the audit's "Tier 2+" subset is the
+    population actually traded: the tier is `_report_weights.tier_labels` (qas
+    against `cutoffs`, the active version's feed cutoffs). qas is NaN for the
+    fires the feed forces to tier 3 (a NULL score, direction-gated, a default-
+    hidden inversion quintile of 1 or 2), and those are not eligible, so feature
+    stats aren't contaminated by fires the user never sees.
+    """
+    qas = feed_qas(df['score'], df)
+    return df.assign(
+        qas=qas,
+        tier=tier_labels(df, cutoffs),
+        tier_eligible=qas.notna(),
     )
-    return out
 
 
 def stats(s: pd.Series):
@@ -126,44 +122,6 @@ def latest_fire_date(conn) -> str:
     return row[0].isoformat() if hasattr(row[0], 'isoformat') else str(row[0])[:10]
 
 
-def assign_feed_tiers(df: pd.DataFrame) -> pd.DataFrame:
-    """Return `df` with `qas`, `tier` and `tier_eligible` columns.
-
-    Mirrors the feed's tier exactly (api/lottery-finder.ts), vectorized: tier
-    on qas = GREATEST(0, score) + inversionBonus(quintile), 13/10 cutoffs,
-    with null-score, direction_gated, and default-suppressed quintile-1/2
-    rows demoted to tier3 (the feed hides Q1/Q2 unless showAll). The feed
-    fixed its tier at the fire and leaves the round-trip deduct out of it
-    (docs/superpowers/specs/2026-11-17-freeze-tier-at-fire-design.md), so the
-    audit reads `score`, not `combined_score`: that generated column still
-    carries the deduct and the gamma +1.
-
-    NOTE (point-in-time): inversion_quintile is the ticker's CURRENT rolling
-    quintile (joined now), not the value live when each fire fired — same as
-    the feed renders historical rows today, but it means a ticker whose
-    quintile has since moved is re-tiered with today's bonus (a look-ahead vs
-    the as-traded label). Surfaced in the report header.
-    """
-    q = pd.to_numeric(df['inversion_quintile'], errors='coerce')
-    bonus = q.map(INVERSION_BONUS_BY_QUINTILE).fillna(0)
-    score = pd.to_numeric(df['score'], errors='coerce').fillna(0).clip(lower=0)
-    qas = score + bonus
-    demoted = (
-        df['score'].isna()
-        | df['direction_gated'].fillna(False).astype(bool)
-        | q.isin(SUPPRESSED_QUINTILES)
-    )
-    out = df.copy()
-    out['qas'] = qas
-    out['tier'] = np.where(
-        demoted,
-        'T3',
-        np.where(qas >= TIER1_CUTOFF, 'T1', np.where(qas >= TIER2_CUTOFF, 'T2', 'T3')),
-    )
-    out['tier_eligible'] = ~demoted
-    return out
-
-
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -180,6 +138,10 @@ def main(argv: list[str] | None = None) -> None:
     load_env_file(ENV_FILE)
     db_url = os.environ.get('DATABASE_URL_UNPOOLED') or os.environ['DATABASE_URL']
     conn = psycopg2.connect(db_url)
+    # The active weights before any fire is read or any file is written: a
+    # failed read ends the run (ActiveWeightsError), with no fallback cutoffs.
+    version, weights = load_active_weights(conn, 'audit')
+    cutoffs = FeedCutoffs.from_weights(weights)
     out_path = args.out_dir / f'lottery-feature-audit-{latest_fire_date(conn)}.md'
     df = pd.read_sql(
         """
@@ -195,7 +157,7 @@ def main(argv: list[str] | None = None) -> None:
           spx_spot_charm_oi, spx_spot_vanna_oi,
           gex_strike_call_minus_put, gex_strike_call_ask_minus_bid,
           gex_strike_put_ask_minus_bid,
-          direction_gated, date,
+          f.round_trip_score_deduct, direction_gated, date,
           s.inversion_quintile,
           realized_flow_inversion_pct AS flow_inv
         FROM lottery_finder_fires f
@@ -205,7 +167,17 @@ def main(argv: list[str] | None = None) -> None:
         conn,
     )
     print(f'[audit] {len(df):,} fires with flow_inversion populated')
-    df = assign_feed_tiers(df)
+
+    # Tier the way the feed does (api/lottery-finder.ts): qas against the
+    # active feed cutoffs, with null-score, direction_gated and default-hidden
+    # quintile-1/2 fires forced to tier3 (the feed hides Q1/Q2 unless showAll).
+    #
+    # NOTE (point-in-time): inversion_quintile is the ticker's CURRENT rolling
+    # quintile (joined now), not the value live when each fire fired — same as
+    # the feed renders historical rows today, but it means a ticker whose
+    # quintile has since moved is re-tiered with today's bonus (a look-ahead vs
+    # the as-traded label). Surfaced in the report header.
+    df = add_feed_tiers(df, cutoffs)
 
     # Build alert_seq buckets — first fire vs reload-cluster vs hot-chain.
     def aseq_bucket(s):
@@ -228,33 +200,32 @@ def main(argv: list[str] | None = None) -> None:
 
     lines = ['# Fire-row feature audit — flow-inversion Sharpe by feature\n']
     lines.append(f'Dataset: {len(df):,} fires with flow_inv populated.\n')
-    lines.extend(scoring_regime_lines())
-    # Drift watch: the 13/10 cutoffs are the ~p85/p95 of the qas distribution
-    # at calibration time. Show the live percentiles over the RECENT window
-    # (last ~21 trading days — current regime; all-history would read low
-    # because qas isn't comparable across retrains) so silent re-basing (the
-    # way 24/22 went stale) is visible night-over-night. If these drift far from
-    # 13/10, the feed is over/under-filling tier1/2 and the cutoffs need a refit.
+    lines.extend(scoring_regime_lines(version, weights, cutoffs))
+    # Drift watch: the active feed cutoffs are matched to the qas distribution
+    # (a refit places them at the ~p85/p95 of the trailing sessions). Show the
+    # live percentiles over the RECENT window (last ~21 trading days — current
+    # regime; all-history would read low because qas isn't comparable across
+    # retrains) so silent re-basing (the way 24/22 went stale) is visible
+    # night-over-night. If these drift far from the cutoffs, the feed is
+    # over/under-filling tier1/2 and the cutoffs need a refit.
     recent_dates = sorted(pd.to_datetime(df['date']).dropna().unique())[-21:]
     recent_mask = pd.to_datetime(df['date']).isin(recent_dates)
     # Tier-eligible only (scored, aligned, not Q1/Q2-suppressed) — the same
-    # population the 13/10 cutoffs were calibrated on; including null-score
-    # misaligned fires would drag the percentiles down and misrepresent drift.
+    # population the cutoffs are matched on; including null-score misaligned
+    # fires would drag the percentiles down and misrepresent drift.
     qas_live = pd.to_numeric(
         df.loc[recent_mask & df['tier_eligible'], 'qas'],
         errors='coerce',
     ).dropna()
     if len(qas_live):
         lines.append(
-            f'    live qas dist : p85={qas_live.quantile(0.85):.0f} '
+            f'    live qas dist   : p85={qas_live.quantile(0.85):.0f} '
             f'p95={qas_live.quantile(0.95):.0f} max={qas_live.max():.0f} '
-            f'(last {len(recent_dates)}d; cutoffs t2={TIER2_CUTOFF}/t1={TIER1_CUTOFF} '
+            f'(last {len(recent_dates)}d; cutoffs '
+            f't2={cutoffs.tier2_min_score}/t1={cutoffs.tier1_min_score} '
             'should track p85/p95)'
         )
-    lines.append(
-        '    caveat        : inversion_quintile is point-in-time-current '
-        '(look-ahead vs as-traded); Q1/Q2 excluded from Tier 2+ per feed default\n'
-    )
+    lines.append('')
     lines.append('## Baselines\n')
     lines.append('    ' + baseline('all fires', df))
     lines.append('    ' + baseline('Tier 2+', df[df['tier'].isin(['T1','T2'])]))
