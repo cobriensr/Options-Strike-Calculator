@@ -351,6 +351,8 @@ describe('fetch-outcomes backfill against Postgres (pglite)', () => {
       saved: 3,
       present: 1,
       skipped: 0,
+      insertedDates: ['2026-03-21', '2026-03-22', '2026-03-23'],
+      vix1dMissingDates: [],
     });
     // The stored day keeps its settlement, VIX and, above all, vix1d_close.
     expect(await stored('2026-03-20')).toEqual(STORED_DAY);
@@ -405,10 +407,44 @@ describe('fetch-outcomes backfill against Postgres (pglite)', () => {
       saved: 0,
       present: 4,
       skipped: 0,
+      insertedDates: [],
+      vix1dMissingDates: [],
     });
     expect(
       await Promise.all(Object.keys(VIX1D_MAP).map((d) => stored(d))),
     ).toEqual(afterFirst);
+  });
+
+  it('stores NULL for a day the map has no close for, names it, and a re-run cannot repair it', async () => {
+    const mapWithGap = Object.fromEntries(
+      Object.entries(VIX1D_MAP).filter(([date]) => date !== '2026-03-22'),
+    );
+    mockSchwabDailyHistory();
+    mockRedisGet.mockResolvedValueOnce(mapWithGap);
+
+    const first = await runBackfill();
+
+    expect(first._json).toMatchObject({
+      saved: 4,
+      insertedDates: ['2026-03-20', '2026-03-21', '2026-03-22', '2026-03-23'],
+      vix1dMissingDates: ['2026-03-22'],
+    });
+    expect((await stored('2026-03-22'))!.vix1d_close).toBeNull();
+    expect((await stored('2026-03-21'))!.vix1d_close).toBe(15.2);
+
+    // The map gets the close later; the day is stored, so DO NOTHING keeps
+    // its NULL. That is why the first run's response names it.
+    mockSchwabDailyHistory();
+    mockRedisGet.mockResolvedValueOnce(VIX1D_MAP);
+    const second = await runBackfill();
+
+    expect(second._json).toMatchObject({
+      saved: 0,
+      present: 4,
+      insertedDates: [],
+      vix1dMissingDates: [],
+    });
+    expect((await stored('2026-03-22'))!.vix1d_close).toBeNull();
   });
 
   it('with no VIX1D map it still fills the gaps (NULL vix1d_close) and keeps the stored day', async () => {
@@ -424,6 +460,9 @@ describe('fetch-outcomes backfill against Postgres (pglite)', () => {
       saved: 3,
       present: 1,
       skipped: 0,
+      insertedDates: ['2026-03-21', '2026-03-22', '2026-03-23'],
+      // No map: every inserted day is stored without a VIX1D close.
+      vix1dMissingDates: ['2026-03-21', '2026-03-22', '2026-03-23'],
     });
     expect((await stored('2026-03-21'))!.vix1d_close).toBeNull();
     expect(await stored('2026-03-20')).toEqual(STORED_DAY);

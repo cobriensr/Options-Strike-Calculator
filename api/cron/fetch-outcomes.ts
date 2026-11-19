@@ -388,7 +388,9 @@ interface DailyCandle {
   low: number;
   close: number;
   volume: number;
-  datetime: number; // Unix ms (midnight UTC of trading day)
+  // Unix ms. Schwab stamps a daily bar at a midnight in CT/ET (04:00-06:00Z),
+  // not at midnight UTC, so getETDateStr of the stamp names the trading day.
+  datetime: number;
 }
 
 interface DailyHistoryResponse {
@@ -477,6 +479,10 @@ async function handleBackfill(res: VercelResponse) {
     let present = 0;
     let skipped = 0;
     const insertedDates: string[] = [];
+    // The inserted days stored with a NULL vix1d_close: the map had no close
+    // for them (or no map at all). A re-run cannot fill them (the day now has
+    // a row, and the insert is DO NOTHING), so the run names them.
+    const vix1dMissingDates: string[] = [];
     const failedDates: string[] = [];
     let firstError: unknown;
 
@@ -503,6 +509,7 @@ async function handleBackfill(res: VercelResponse) {
 
       try {
         const vixCandle = vixByDate.get(dateStr);
+        const vix1dClose = vix1dMap?.[dateStr]?.c;
 
         const inserted = await insertOutcomeIfMissing({
           date: dateStr,
@@ -511,11 +518,12 @@ async function handleBackfill(res: VercelResponse) {
           dayHigh: candle.high,
           dayLow: candle.low,
           vixClose: vixCandle?.close,
-          vix1dClose: vix1dMap?.[dateStr]?.c,
+          vix1dClose,
         });
         if (inserted) {
           saved++;
           insertedDates.push(dateStr);
+          if (vix1dClose == null) vix1dMissingDates.push(dateStr);
         } else {
           present++;
         }
@@ -525,6 +533,13 @@ async function handleBackfill(res: VercelResponse) {
         failedDates.push(dateStr);
         firstError ??= err;
       }
+    }
+
+    if (vix1dMissingDates.length > 0) {
+      logger.warn(
+        { dates: vix1dMissingDates },
+        'fetch-outcomes: backfill stored days with no VIX1D close (NULL vix1d_close; a re-run will not fill them)',
+      );
     }
 
     // Derived from failures only: days that were already stored are not
@@ -552,9 +567,17 @@ async function handleBackfill(res: VercelResponse) {
       'fetch-outcomes: backfill complete',
     );
 
-    return res
-      .status(status === 'error' ? 500 : 200)
-      .json({ backfill: true, status, saved, present, skipped });
+    // The run is triggered by hand, so the response is what the operator
+    // reads: the counts, the days inserted and the ones left without VIX1D.
+    return res.status(status === 'error' ? 500 : 200).json({
+      backfill: true,
+      status,
+      saved,
+      present,
+      skipped,
+      insertedDates,
+      vix1dMissingDates,
+    });
   } catch (err) {
     Sentry.setTag('cron.job', 'fetch-outcomes');
     Sentry.captureException(err);

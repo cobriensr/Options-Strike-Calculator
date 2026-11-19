@@ -569,6 +569,8 @@ describe('fetch-outcomes handler', () => {
       '2026-03-23': { o: 15, h: 18, l: 14, c: 15.4 },
     };
 
+    const ALL_DAYS = ['2026-03-20', '2026-03-21', '2026-03-22', '2026-03-23'];
+
     beforeEach(() => {
       // resetAllMocks cleared every default: by default the map is there and
       // every day is new.
@@ -602,6 +604,9 @@ describe('fetch-outcomes handler', () => {
         saved: 4,
         present: 0,
         skipped: 0,
+        insertedDates: ALL_DAYS,
+        // The map holds no close for 03-22.
+        vix1dMissingDates: ['2026-03-22'],
       });
       expect(mockInsertOutcomeIfMissing).toHaveBeenCalledTimes(4);
 
@@ -641,6 +646,8 @@ describe('fetch-outcomes handler', () => {
         saved: 0,
         present: 4,
         skipped: 0,
+        insertedDates: [],
+        vix1dMissingDates: [],
       });
       expect(mockCaptureException).not.toHaveBeenCalled();
     });
@@ -692,6 +699,8 @@ describe('fetch-outcomes handler', () => {
           saved: 4,
           present: 0,
           skipped: 0,
+          insertedDates: ALL_DAYS,
+          vix1dMissingDates: ALL_DAYS,
         });
         for (const [input] of mockInsertOutcomeIfMissing.mock.calls) {
           expect(input.vix1dClose).toBeUndefined();
@@ -699,6 +708,11 @@ describe('fetch-outcomes handler', () => {
         expect(logger.warn).toHaveBeenCalledWith(
           { key: 'vix1d:daily-map' },
           expect.stringContaining('VIX1D map missing'),
+        );
+        // ...and one more warn naming every day that was stored without one.
+        expect(logger.warn).toHaveBeenCalledWith(
+          { dates: ALL_DAYS },
+          expect.stringContaining('no VIX1D close'),
         );
         expect(mockCaptureException).not.toHaveBeenCalled();
       },
@@ -719,6 +733,8 @@ describe('fetch-outcomes handler', () => {
         saved: 4,
         present: 0,
         skipped: 0,
+        insertedDates: ALL_DAYS,
+        vix1dMissingDates: ALL_DAYS,
       });
       for (const [input] of mockInsertOutcomeIfMissing.mock.calls) {
         expect(input.vix1dClose).toBeUndefined();
@@ -750,6 +766,75 @@ describe('fetch-outcomes handler', () => {
       );
     });
 
+    // A day stored with a NULL vix1d_close can never be repaired by a re-run
+    // (DO NOTHING), so the run names it: one warn, and the response lists it.
+    function noCloseWarns() {
+      const warn = logger.warn as ReturnType<typeof vi.fn>;
+      return warn.mock.calls.filter(([, message]) =>
+        String(message).includes('no VIX1D close'),
+      );
+    }
+
+    it('lists an inserted day the map has no close for, with one warn naming it', async () => {
+      mockDailyHistory(); // the default map holds no close for 03-22
+
+      const res = mockResponse();
+      await handler(backfillReq(), res);
+
+      expect(res._json).toMatchObject({
+        insertedDates: ALL_DAYS,
+        vix1dMissingDates: ['2026-03-22'],
+      });
+      expect(noCloseWarns()).toEqual([
+        [{ dates: ['2026-03-22'] }, expect.stringContaining('no VIX1D close')],
+      ]);
+      // The map itself is fine, so no whole-map warning.
+      expect(logger.warn).not.toHaveBeenCalledWith(
+        { key: 'vix1d:daily-map' },
+        expect.anything(),
+      );
+    });
+
+    it('keeps a present day and a failed day out of vix1dMissingDates, even when the map lacks them', async () => {
+      mockDailyHistory();
+      // The map lacks 03-20 (present below) and 03-22 (its insert fails).
+      mockRedisGet.mockResolvedValue({
+        '2026-03-21': { o: 15, h: 16, l: 14, c: 15.2 },
+        '2026-03-23': { o: 15, h: 18, l: 14, c: 15.4 },
+      });
+      mockInsertOutcomeIfMissing
+        .mockResolvedValueOnce(false) // 03-20 already stored
+        .mockResolvedValueOnce(true)
+        .mockRejectedValueOnce(new Error('connection lost'))
+        .mockResolvedValueOnce(true);
+
+      const res = mockResponse();
+      await handler(backfillReq(), res);
+
+      expect(res._json).toMatchObject({
+        insertedDates: ['2026-03-21', '2026-03-23'],
+        vix1dMissingDates: [],
+      });
+      expect(noCloseWarns()).toEqual([]);
+    });
+
+    it('lists no missing dates and does not warn when every inserted day has a close', async () => {
+      mockDailyHistory();
+      mockRedisGet.mockResolvedValue({
+        ...VIX1D_MAP,
+        '2026-03-22': { o: 15, h: 17, l: 14, c: 15.3 },
+      });
+
+      const res = mockResponse();
+      await handler(backfillReq(), res);
+
+      expect(res._json).toMatchObject({
+        insertedDates: ALL_DAYS,
+        vix1dMissingDates: [],
+      });
+      expect(noCloseWarns()).toEqual([]);
+    });
+
     it('adds up a mixed run: inserted, already present and failed days', async () => {
       mockDailyHistory();
       mockInsertOutcomeIfMissing
@@ -768,6 +853,9 @@ describe('fetch-outcomes handler', () => {
         saved: 2,
         present: 1,
         skipped: 1,
+        // Neither the present day (03-21) nor the failed one (03-22) is listed.
+        insertedDates: ['2026-03-20', '2026-03-23'],
+        vix1dMissingDates: [],
       });
       expect(mockCaptureException).toHaveBeenCalledTimes(1);
       expect(mockCaptureException).toHaveBeenCalledWith(
@@ -835,6 +923,8 @@ describe('fetch-outcomes handler', () => {
         saved: 2,
         present: 0,
         skipped: 2,
+        insertedDates: ['2026-03-20', '2026-03-21'],
+        vix1dMissingDates: [],
       });
       // One Sentry event per run (not per day), naming the failed days.
       expect(mockCaptureException).toHaveBeenCalledTimes(1);
@@ -884,6 +974,8 @@ describe('fetch-outcomes handler', () => {
         saved: 4,
         present: 0,
         skipped: 0,
+        insertedDates: ALL_DAYS,
+        vix1dMissingDates: ['2026-03-22'],
       });
       expect(mockCaptureException).not.toHaveBeenCalled();
     });
@@ -903,6 +995,8 @@ describe('fetch-outcomes handler', () => {
         saved: 0,
         present: 0,
         skipped: 4,
+        insertedDates: [],
+        vix1dMissingDates: [],
       });
       expect(mockCaptureException).toHaveBeenCalledTimes(1);
       expect(mockCaptureException).toHaveBeenCalledWith(neonDown, {
