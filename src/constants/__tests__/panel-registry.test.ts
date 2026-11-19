@@ -11,7 +11,6 @@ describe('getPanelRegistry', () => {
     expect(ids).toEqual([
       'sec-datetime',
       'sec-spot-price',
-      'sec-premarket',
       'sec-premarket-futures',
       'sec-advanced',
       'sec-iv',
@@ -21,6 +20,44 @@ describe('getPanelRegistry', () => {
       'sec-positions',
       'results',
     ]);
+  });
+
+  // Both cards in Pre-Market Signals (the opening-flow signal and the pin
+  // setup) read owner-or-guest endpoints, so nothing public is left in it: a
+  // public visitor gets no panel, nav or prefs entry, and the panel's hooks
+  // never mount to fetch.
+  it('omits sec-premarket for a public visitor, with or without market data', () => {
+    for (const hasMarketOrSnapshot of [true, false]) {
+      const ids = getPanelRegistry({
+        isAuthenticated: false,
+        hasMarketOrSnapshot,
+      }).map((e) => e.id);
+      expect(ids).not.toContain('sec-premarket');
+    }
+  });
+
+  it('keeps sec-premarket between sec-spot-price and sec-premarket-futures for an owner or guest, with or without market data', () => {
+    for (const hasMarketOrSnapshot of [true, false]) {
+      const entries = getPanelRegistry({
+        isAuthenticated: true,
+        hasMarketOrSnapshot,
+      });
+      const inputs = entries.filter((e) => e.group === 'Inputs');
+      expect(inputs.map((e) => e.id)).toEqual([
+        'sec-datetime',
+        'sec-spot-price',
+        'sec-premarket',
+        'sec-premarket-futures',
+        'sec-advanced',
+        'sec-iv',
+        'sec-risk',
+      ]);
+      expect(inputs.find((e) => e.id === 'sec-premarket')).toEqual({
+        id: 'sec-premarket',
+        label: 'Pre-Market Signals',
+        group: 'Inputs',
+      });
+    }
   });
 
   // /api/regime-0dte is withDbReader(..., 'owner-or-guest'): the panel is never

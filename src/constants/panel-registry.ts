@@ -46,7 +46,20 @@ export function getPanelRegistry(
   const list: PanelRegistryEntry[] = [
     { id: 'sec-datetime', label: 'Date & Time', group: 'Inputs' },
     { id: 'sec-spot-price', label: 'Spot Price', group: 'Inputs' },
-    { id: 'sec-premarket', label: 'Pre-Market Signals', group: 'Inputs' },
+  ];
+  // /api/opening-flow-signal and /api/pin-setup-status are owner-or-guest, and
+  // both cards in the panel read them, so a public visitor would only get a red
+  // "HTTP 401" (or last session's cached opening-flow data). No panel, nav or
+  // prefs entry for them. Listed here to keep the panel between Spot Price and
+  // Pre-Market Futures Inputs.
+  if (isAuthenticated) {
+    list.push({
+      id: 'sec-premarket',
+      label: 'Pre-Market Signals',
+      group: 'Inputs',
+    });
+  }
+  list.push(
     {
       id: 'sec-premarket-futures',
       label: 'Pre-Market Futures Inputs',
@@ -56,7 +69,7 @@ export function getPanelRegistry(
     { id: 'sec-iv', label: 'Implied Volatility', group: 'Inputs' },
     { id: 'sec-risk', label: 'Risk Calculator', group: 'Inputs' },
     { id: 'sec-regime', label: 'Market Regime', group: 'Market Context' },
-  ];
+  );
   // /api/regime-0dte is owner-or-guest, so the panel is never mounted for a
   // public visitor (it could only show a placeholder or a 401), and it has no
   // nav or prefs entry.
