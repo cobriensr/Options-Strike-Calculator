@@ -24,6 +24,13 @@ interface Props {
   results: CalculationResults | null;
   errors: Record<string, string>;
   market: MarketDataState;
+  /**
+   * Whether the term-structure card may poll today's VIX trajectory: App's
+   * clock AND owner-or-guest flag (`liveMarketOpen`), not `market.marketOpen`.
+   * /api/vix-snapshots-recent is owner-or-guest, and this card renders for
+   * public visitors too.
+   */
+  marketOpen: boolean;
   selectedDate: string;
   /**
    * Today's ET date from the clock `selectedDate` follows (useVixData's), so
@@ -50,6 +57,7 @@ export default function IVInputSection({
   results,
   errors,
   market,
+  marketOpen,
   selectedDate,
   etToday,
   historySnapshot,
@@ -258,7 +266,7 @@ export default function IVInputSection({
             initialVvix={historySnapshot?.vvix ?? liveQuotes?.vvix?.price}
             termShape={termShape}
             termShapeAdvice={termShapeAdvice}
-            marketOpen={market.marketOpen && !historySnapshot && !pastDate}
+            marketOpen={marketOpen && !historySnapshot && !pastDate}
           />
         </div>
       )}

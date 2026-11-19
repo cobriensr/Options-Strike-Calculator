@@ -25,6 +25,12 @@ interface Props {
   skewPct: number;
   selectedDate: string;
   market: MarketDataState;
+  /**
+   * Whether the flow-regime badge may poll: App's clock AND owner-or-guest flag
+   * (`liveMarketOpen`), not `market.marketOpen`. /api/flow-regime is
+   * owner-or-guest, and this card renders for public visitors too.
+   */
+  marketOpen: boolean;
   /** App's cluster multiplier (useClusterMultiplier): the panel shows it, and
    * DeltaRegimeGuide applies it. App computes it whether or not this card is
    * open. */
@@ -44,6 +50,7 @@ export default function MarketRegimeSection({
   skewPct,
   selectedDate,
   market,
+  marketOpen,
   cluster,
   historySnapshot,
   historyCandles,
@@ -104,7 +111,7 @@ export default function MarketRegimeSection({
           <VIXRangeAnalysis vix={vixNum} spot={results?.spot ?? null} />
           {!historySnapshot && (
             <div className="mt-4">
-              <FlowRegimeBadge marketOpen={market.marketOpen} />
+              <FlowRegimeBadge marketOpen={marketOpen} />
             </div>
           )}
           {results &&

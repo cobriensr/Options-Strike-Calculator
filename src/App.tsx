@@ -995,6 +995,7 @@ export default function StrikeCalculator() {
                 results={results}
                 errors={errors}
                 market={market}
+                marketOpen={liveMarketOpen}
                 selectedDate={vix.selectedDate}
                 etToday={vix.etToday}
                 historySnapshot={historySnapshot}
@@ -1029,6 +1030,7 @@ export default function StrikeCalculator() {
                 skewPct={skewPct}
                 selectedDate={vix.selectedDate}
                 market={market}
+                marketOpen={liveMarketOpen}
                 cluster={cluster}
                 historySnapshot={historySnapshot}
                 historyCandles={historyData.history?.spx.candles}

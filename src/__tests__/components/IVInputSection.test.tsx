@@ -52,6 +52,7 @@ function renderSection(overrides: Record<string, unknown> = {}) {
     results: null,
     errors: {} as Record<string, string>,
     market: mockMarket,
+    marketOpen: false,
     selectedDate: getETToday(),
     etToday: getETToday(),
     onUseVix1dAsSigma: vi.fn(),
@@ -418,7 +419,8 @@ describe('IVInputSection', () => {
     it("does not poll today's VIX trajectory for a past date without history", () => {
       renderSection({
         dVix: '20.5',
-        market: { ...liveMarket, marketOpen: true },
+        market: liveMarket,
+        marketOpen: true,
         selectedDate: '2026-03-10',
         historySnapshot: null,
       });
@@ -429,11 +431,26 @@ describe('IVInputSection', () => {
     it("polls today's VIX trajectory on today while the market is open", () => {
       renderSection({
         dVix: '18.5',
-        market: { ...liveMarket, marketOpen: true },
+        market: liveMarket,
+        marketOpen: true,
         selectedDate: getETToday(),
       });
 
       expect(vi.mocked(useVixTrajectory)).toHaveBeenLastCalledWith(true);
+    });
+
+    it('takes the poll gate from the marketOpen prop, not market.marketOpen', () => {
+      // The prop is App's clock AND owner-or-guest flag: /api/vix-snapshots-recent
+      // is owner-or-guest, so a public visitor must not poll it even while the
+      // market clock says open.
+      renderSection({
+        dVix: '18.5',
+        market: { ...liveMarket, marketOpen: true },
+        marketOpen: false,
+        selectedDate: getETToday(),
+      });
+
+      expect(vi.mocked(useVixTrajectory)).toHaveBeenLastCalledWith(false);
     });
 
     it('fills today from live quotes, with no snapshot yet', async () => {
@@ -481,7 +498,8 @@ describe('IVInputSection', () => {
         const user = userEvent.setup();
         const { props, rerender } = renderSection({
           dVix: '18.5',
-          market: { ...liveMarket, marketOpen: true },
+          market: liveMarket,
+          marketOpen: true,
           selectedDate: '2026-03-17',
           etToday: '2026-03-17',
         });

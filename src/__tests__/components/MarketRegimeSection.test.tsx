@@ -14,6 +14,17 @@ import type {
 } from '../../types/api';
 import { computeClusterSignal } from '../../utils/volatility-cluster';
 
+// The badge polls /api/flow-regime (owner-or-guest). Replaced by a spy on its
+// props so the section's own wiring is what is read, and so no render here
+// fires that fetch.
+const { flowRegimeBadge } = vi.hoisted(() => ({ flowRegimeBadge: vi.fn() }));
+vi.mock('../../components/FlowRegimeBadge', () => ({
+  default: (props: unknown) => {
+    flowRegimeBadge(props);
+    return null;
+  },
+}));
+
 const defaultSignals: ComputedSignals = {
   vix1d: undefined,
   vix9d: undefined,
@@ -133,6 +144,30 @@ const noCluster: ClusterMultiplier = {
 };
 
 describe('MarketRegimeSection', () => {
+  it.each([true, false])(
+    'hands the flow-regime badge the marketOpen prop (%s), not market.marketOpen',
+    (open) => {
+      // The prop is App's clock AND owner-or-guest flag. market.marketOpen is
+      // the clock alone, so it is set to the opposite to tell them apart.
+      render(
+        <MarketRegimeSection
+          dVix="20"
+          results={null}
+          errors={{}}
+          skewPct={0}
+          selectedDate="2026-03-12"
+          market={{ ...mockMarket, marketOpen: !open }}
+          marketOpen={open}
+          cluster={noCluster}
+          signals={defaultSignals}
+          chain={null}
+        />,
+      );
+
+      expect(flowRegimeBadge).toHaveBeenLastCalledWith({ marketOpen: open });
+    },
+  );
+
   it('renders section heading', () => {
     render(
       <MarketRegimeSection
@@ -142,6 +177,7 @@ describe('MarketRegimeSection', () => {
         skewPct={0}
         selectedDate="2026-03-12"
         market={mockMarket}
+        marketOpen={false}
         cluster={noCluster}
         signals={defaultSignals}
         chain={null}
@@ -159,6 +195,7 @@ describe('MarketRegimeSection', () => {
         skewPct={0}
         selectedDate="2026-03-12"
         market={mockMarket}
+        marketOpen={false}
         cluster={noCluster}
         signals={defaultSignals}
         chain={null}
@@ -178,6 +215,7 @@ describe('MarketRegimeSection', () => {
         skewPct={0}
         selectedDate="2026-03-12"
         market={mockMarket}
+        marketOpen={false}
         cluster={noCluster}
         signals={defaultSignals}
         chain={null}
@@ -197,6 +235,7 @@ describe('MarketRegimeSection', () => {
         skewPct={0}
         selectedDate="2026-03-12"
         market={mockMarket}
+        marketOpen={false}
         cluster={noCluster}
         signals={defaultSignals}
         chain={null}
@@ -215,6 +254,7 @@ describe('MarketRegimeSection', () => {
         skewPct={0}
         selectedDate="2026-03-12"
         market={mockMarket}
+        marketOpen={false}
         cluster={noCluster}
         signals={defaultSignals}
         chain={null}
@@ -236,6 +276,7 @@ describe('MarketRegimeSection', () => {
         skewPct={0}
         selectedDate="2026-03-12"
         market={mockMarket}
+        marketOpen={false}
         cluster={noCluster}
         signals={defaultSignals}
         chain={null}
@@ -254,6 +295,7 @@ describe('MarketRegimeSection', () => {
         skewPct={0}
         selectedDate="2026-03-12"
         market={mockMarket}
+        marketOpen={false}
         cluster={noCluster}
         signals={defaultSignals}
         chain={null}
@@ -339,6 +381,7 @@ describe('MarketRegimeSection', () => {
         skewPct={0}
         selectedDate="2026-03-12"
         market={mockMarket}
+        marketOpen={false}
         cluster={noCluster}
         historySnapshot={snapshot}
         historyCandles={candles}
@@ -361,6 +404,7 @@ describe('MarketRegimeSection', () => {
         skewPct={0}
         selectedDate="2026-03-12"
         market={mockMarket}
+        marketOpen={false}
         cluster={noCluster}
         signals={defaultSignals}
         chain={null}
@@ -404,6 +448,7 @@ describe('MarketRegimeSection', () => {
         skewPct={0}
         selectedDate="2026-03-12"
         market={mockMarket}
+        marketOpen={false}
         cluster={noCluster}
         historySnapshot={snapshot}
         historyCandles={[]}
@@ -439,6 +484,7 @@ describe('MarketRegimeSection', () => {
           skewPct={0}
           selectedDate="2026-03-12"
           market={mockMarket}
+          marketOpen={false}
           cluster={cluster}
           signals={defaultSignals}
           chain={null}
@@ -481,6 +527,7 @@ describe('MarketRegimeSection', () => {
           skewPct={0}
           selectedDate="2026-03-12"
           market={mockMarket}
+          marketOpen={false}
           cluster={{ ...hotCluster, isEdited: true }}
           signals={defaultSignals}
           chain={null}
@@ -499,6 +546,7 @@ describe('MarketRegimeSection', () => {
           skewPct={0}
           selectedDate="2026-03-12"
           market={mockMarket}
+          marketOpen={false}
           cluster={{ ...noCluster, isEdited: true }}
           signals={defaultSignals}
           chain={null}
@@ -596,6 +644,7 @@ describe('MarketRegimeSection', () => {
           skewPct={0}
           selectedDate="2026-03-12"
           market={liveMarket}
+          marketOpen={false}
           cluster={noCluster}
           historySnapshot={historySnapshot}
           signals={defaultSignals}
