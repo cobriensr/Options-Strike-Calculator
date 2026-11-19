@@ -28,8 +28,18 @@ type Mode = 'owner' | 'guest' | 'public';
 const h = vi.hoisted(() => ({
   access: { mode: 'owner' as 'owner' | 'guest' | 'public' },
   market: { current: {} as Record<string, unknown> },
-  /** Panel ids the PanelRouter stand-in renders: one plain, two gated. */
-  renderedPanels: ['sec-premarket', 'sec-gex-target', 'sec-gex-landscape'],
+  /**
+   * Panel ids the PanelRouter stand-in renders: plain ones, ones behind a
+   * GatedSection, and the two sections that poll through a leaf of their own
+   * (sec-iv's term structure, sec-regime's flow-regime badge).
+   */
+  renderedPanels: [
+    'sec-premarket',
+    'sec-iv',
+    'sec-regime',
+    'sec-gex-target',
+    'sec-gex-landscape',
+  ],
   nullComponent: () => null,
   panelPrefs: {
     order: [] as string[],
@@ -58,6 +68,7 @@ const h = vi.hoisted(() => ({
   },
   intervalBAAlertState: { alerts: [] as unknown[], acknowledge: vi.fn() },
   intervalBAMute: { muted: false, toggle: vi.fn() },
+  analysisContext: {},
   useChainData: vi.fn(),
   useAlertPolling: vi.fn(),
   useIntervalBAAlerts: vi.fn(),
@@ -66,6 +77,8 @@ const h = vi.hoisted(() => ({
   useGexTarget: vi.fn(),
   useComputedSignals: vi.fn(),
   preMarketSignals: vi.fn(),
+  ivInputSection: vi.fn(),
+  marketRegimeSection: vi.fn(),
   gexTarget: vi.fn(),
   gexLandscape: vi.fn(),
   optionsAlertsView: vi.fn(),
@@ -122,8 +135,10 @@ vi.mock('../hooks/useSnapshotSave', () => ({
   useSnapshotSave: vi.fn(),
   buildSnapshotMeta: () => ({}),
 }));
+// Stable, like the real hook's memoized return: App's panelMap memo depends on
+// it, and a new object per render would rebuild the map every time.
 vi.mock('../hooks/useAnalysisContext', () => ({
-  useAnalysisContext: () => ({}),
+  useAnalysisContext: () => h.analysisContext,
 }));
 vi.mock('../hooks/usePushSubscription', () => ({
   usePushSubscription: () => ({ subscribe: vi.fn() }),
@@ -162,6 +177,18 @@ vi.mock('@vercel/speed-insights/react', () => ({
 vi.mock('../components/PreMarketSignals', () => ({
   default: (props: unknown) => {
     h.preMarketSignals(props);
+    return null;
+  },
+}));
+vi.mock('../components/IVInputSection', () => ({
+  default: (props: unknown) => {
+    h.ivInputSection(props);
+    return null;
+  },
+}));
+vi.mock('../components/MarketRegimeSection', () => ({
+  default: (props: unknown) => {
+    h.marketRegimeSection(props);
     return null;
   },
 }));
@@ -251,7 +278,7 @@ const SCENARIOS: readonly Scenario[] = [
   },
 ];
 
-function marketFor(s: Scenario): Record<string, unknown> {
+function marketFor(s: Scenario, hasData = true): Record<string, unknown> {
   return {
     data: {
       quotes:
@@ -263,9 +290,9 @@ function marketFor(s: Scenario): Record<string, unknown> {
       events: null,
     },
     loading: false,
-    // Other panels need market context to render; keep it on in every
-    // scenario so a missing panel can only come from the access gate.
-    hasData: true,
+    // Other panels need market context to render; keep it on unless a test
+    // turns it off, so a missing panel can only come from the access gate.
+    hasData,
     needsAuth: false,
     fetchedAt: null,
     quotesFetchedAt: null,
@@ -274,20 +301,57 @@ function marketFor(s: Scenario): Record<string, unknown> {
   };
 }
 
-function mountApp() {
-  return render(
-    createElement(
-      ToastContext.Provider,
-      { value: { show: vi.fn() } },
-      createElement(App),
-    ),
+// One value for every render: App's `toast` is a dependency of a callback the
+// panelMap memo depends on, so a new object per render would rebuild the map.
+const TOAST = { show: vi.fn() };
+
+function appElement() {
+  return createElement(
+    ToastContext.Provider,
+    { value: TOAST },
+    createElement(App),
   );
+}
+
+function mountApp() {
+  return render(appElement());
 }
 
 /** Every call a mock took, which must be non-empty, as its nth argument. */
 function argsAt(mock: ReturnType<typeof vi.fn>, index: number): unknown[] {
   expect(mock.mock.calls.length).toBeGreaterThan(0);
   return mock.mock.calls.map((call) => call[index]);
+}
+
+/** A mock's most recent call, as its nth argument. */
+function lastArgAt(mock: ReturnType<typeof vi.fn>, index: number): unknown {
+  expect(mock.mock.calls.length).toBeGreaterThan(0);
+  return mock.mock.calls.at(-1)?.[index];
+}
+
+/** What the most recent render handed every polling hook, as one object. */
+function lastPollingGates() {
+  return {
+    useChainData: lastArgAt(h.useChainData, 1),
+    useAlertPolling: lastArgAt(h.useAlertPolling, 0),
+    useIntervalBAAlerts: lastArgAt(h.useIntervalBAAlerts, 0),
+    useDarkPoolLevels: lastArgAt(h.useDarkPoolLevels, 0),
+    useGexTarget: lastArgAt(h.useGexTarget, 0),
+    usePeriscopeExposure: (
+      lastArgAt(h.usePeriscopeExposure, 0) as { marketOpen: boolean }
+    ).marketOpen,
+  };
+}
+
+function allPollingGates(value: boolean) {
+  return {
+    useChainData: value,
+    useAlertPolling: value,
+    useIntervalBAAlerts: value,
+    useDarkPoolLevels: value,
+    useGexTarget: value,
+    usePeriscopeExposure: value,
+  };
 }
 
 describe('App polling gate (market clock AND owner-or-guest)', () => {
@@ -346,18 +410,37 @@ describe('App polling gate (market clock AND owner-or-guest)', () => {
     });
 
     it('hands the panels the gate as `marketOpen`', async () => {
-      mountApp();
+      const { container } = mountApp();
 
       expect(new Set(argsAt(h.preMarketSignals, 0))).toEqual(
         new Set([{ marketOpen: s.gate }]),
       );
-
-      if (s.mode === 'public') {
-        // The gated panels are not in a public visitor's page at all.
-        expect(h.gexTarget).not.toHaveBeenCalled();
-        expect(h.gexLandscape).not.toHaveBeenCalled();
-        return;
+      // Both sections render for a public visitor too, and each polls through
+      // a leaf of its own (an owner-or-guest endpoint), so each is handed the
+      // gate rather than reading the clock off `market`.
+      for (const section of [h.ivInputSection, h.marketRegimeSection]) {
+        expect(
+          new Set(
+            argsAt(section, 0).map(
+              (arg) => (arg as { marketOpen: boolean }).marketOpen,
+            ),
+          ),
+        ).toEqual(new Set([s.gate]));
       }
+
+      // GatedSection returns null when its gate is false and otherwise renders
+      // its nav anchor on the first render, before any lazy chunk resolves, so
+      // this is a synchronous check. A public visitor's page has neither panel
+      // at all; an owner's or guest's has both.
+      const isPublic = s.mode === 'public';
+      expect(container.querySelector('#sec-gex-target') === null).toBe(
+        isPublic,
+      );
+      expect(container.querySelector('#sec-gex-landscape') === null).toBe(
+        isPublic,
+      );
+      if (isPublic) return;
+
       // GexTarget and GexLandscape are lazy chunks behind a Suspense boundary.
       await waitFor(() => {
         expect(h.gexTarget).toHaveBeenCalled();
@@ -391,6 +474,78 @@ describe('App polling gate (market clock AND owner-or-guest)', () => {
           ),
         ),
       ).toEqual(new Set([s.gate]));
+    });
+  });
+
+  describe('changes inside one mount', () => {
+    const OWNER_LIVE: Scenario = {
+      name: 'owner, clock open, quotes present and open',
+      mode: 'owner',
+      clockOpen: true,
+      quotesFlag: true,
+      gate: true,
+    };
+
+    it.each([
+      ['calculator view', '', () => h.preMarketSignals],
+      ['alerts view', '#alerts', () => h.optionsAlertsView],
+    ] as const)(
+      'the clock closing turns every poll and panel gate off (%s)',
+      (_view, hash, panel) => {
+        globalThis.location.hash = hash;
+        h.access.mode = 'owner';
+        h.market.current = marketFor(OWNER_LIVE);
+        const { rerender } = mountApp();
+        expect(lastPollingGates()).toEqual(allPollingGates(true));
+        expect(lastArgAt(panel(), 0)).toEqual(
+          expect.objectContaining({ marketOpen: true }),
+        );
+
+        // The session ends and quotes stops answering: data.quotes keeps its
+        // last payload, which still says the market is open.
+        h.market.current = marketFor({ ...OWNER_LIVE, clockOpen: false });
+        rerender(appElement());
+
+        expect(lastPollingGates()).toEqual(allPollingGates(false));
+        expect(lastArgAt(panel(), 0)).toEqual(
+          expect.objectContaining({ marketOpen: false }),
+        );
+      },
+    );
+
+    it('losing owner or guest access turns the panel gate off, though nothing else about the market changed', () => {
+      // No market data, so hasMarketContext is false before and after and the
+      // access flip cannot move the panels through it: liveMarketOpen is the
+      // only value the panelMap closures read that changes, so this fails if
+      // it drops out of that memo's dependencies. The same market object is
+      // reused, which also keeps `market` out of the dependencies that move.
+      const market = marketFor(
+        { ...OWNER_LIVE, quotesFlag: null, gate: true },
+        false,
+      );
+      h.access.mode = 'owner';
+      h.market.current = market;
+      const { rerender } = mountApp();
+      expect(lastArgAt(h.preMarketSignals, 0)).toEqual({ marketOpen: true });
+      expect(lastArgAt(h.ivInputSection, 0)).toEqual(
+        expect.objectContaining({ marketOpen: true }),
+      );
+      expect(lastArgAt(h.marketRegimeSection, 0)).toEqual(
+        expect.objectContaining({ marketOpen: true }),
+      );
+
+      h.access.mode = 'public';
+      rerender(appElement());
+
+      expect(h.market.current).toBe(market);
+      expect(lastPollingGates()).toEqual(allPollingGates(false));
+      expect(lastArgAt(h.preMarketSignals, 0)).toEqual({ marketOpen: false });
+      expect(lastArgAt(h.ivInputSection, 0)).toEqual(
+        expect.objectContaining({ marketOpen: false }),
+      );
+      expect(lastArgAt(h.marketRegimeSection, 0)).toEqual(
+        expect.objectContaining({ marketOpen: false }),
+      );
     });
   });
 });

@@ -10,9 +10,11 @@ import { describe, it, expect } from 'vitest';
  * also hands it the date-based backtest flag and the quotes payload's
  * marketOpen. Each compiles with the argument missing (liveSpx is optional,
  * and the flags can be passed as a wrong value), and the hooks' own tests pass
- * the values by prop, so only this test pins the wiring. Mounting <App /> in
- * jsdom is too heavy (see App.panel-render.test.tsx), so this reads the source
- * the way App.cluster-mult-wiring.test.ts does. The flag's own definition,
+ * the values by prop, so only this test pins the wiring. This file reads the
+ * source, the way App.cluster-mult-wiring.test.ts does, so the wiring stays
+ * visible without the three dozen module mocks a mounted <App /> needs; the
+ * mounted gate values (what every polling hook and panel receives) are pinned
+ * in App.market-open-gate.test.tsx. The flag's own definition,
  * `analysisIsBacktest`, is pinned in App.date-clock-wiring.test.ts.
  */
 const appSource = readFileSync(path.resolve(__dirname, '../App.tsx'), 'utf-8');

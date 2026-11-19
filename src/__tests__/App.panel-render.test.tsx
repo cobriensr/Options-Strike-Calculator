@@ -14,13 +14,15 @@ import {
  *     resolver must emit panel ids in the exact registry sequence.
  *   - Group order matches PANEL_GROUP_ORDER + Results.
  *
- * Mounting <App /> in jsdom is too heavy here (it would pull in
- * websockets, lazy chunks, and live API calls). Instead we exercise
- * the same resolver pipeline App.tsx uses internally — the
- * `resolvedGroups` + `resolvedPanelsByGroup` machinery — and assert
- * the output sequence. If a future App.tsx change deviates from the
- * resolver contract, the lint+typecheck pass will surface it; this
- * test guards the resolver inputs/outputs that drive the render.
+ * A real mount of <App /> needs its data hooks and panels mocked at
+ * the module boundary (three dozen `vi.mock`s: App.market-open-gate.test.tsx
+ * does it for the polling gate), and with all of them mocked the panels
+ * are not really rendered. Here we exercise the same resolver pipeline
+ * App.tsx uses internally — the `resolvedGroups` +
+ * `resolvedPanelsByGroup` machinery — and assert the output sequence.
+ * If a future App.tsx change deviates from the resolver contract, the
+ * lint+typecheck pass will surface it; this test guards the resolver
+ * inputs/outputs that drive the render.
  */
 describe('Default-order panel render contract', () => {
   const registryGroups: PanelGroup[] = [...PANEL_GROUP_ORDER, 'Results'];
