@@ -29,6 +29,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import _report_weights as report_weights  # noqa: E402
 import flow_inversion_timing as timing  # noqa: E402
 import tune_flow_inversion as tune  # noqa: E402
 
@@ -301,7 +302,7 @@ def test_timing_reads_each_ticker_and_side_through_the_loader(
     # The report lands under ROOT/docs/tmp: keep it out of the repo.
     monkeypatch.setattr(timing, 'ROOT', tmp_path)
     monkeypatch.setattr(
-        timing,
+        report_weights,
         'load_pointer',
         lambda _conn, _name: (
             'v-test',

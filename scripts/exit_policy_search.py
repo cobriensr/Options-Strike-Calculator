@@ -76,11 +76,12 @@ from _cli_paths import (  # noqa: E402
     load_env_file,
     warn_missing_archive,
 )
-
-# The feed's tier rule: qas and the cutoffs it is read against.
-sys.path.insert(0, str(ROOT / 'ml' / 'src'))
-from lottery_refit_gates import FeedCutoffs, feed_qas  # noqa: E402
-from lottery_weights import WeightsInvalid, load_pointer  # noqa: E402
+from _report_weights import (  # noqa: E402
+    FeedCutoffs,
+    load_active_weights,
+    tier_header,
+    tier_labels,
+)
 
 # Bump when derive_day's numbers change: the nightly re-derives every day.
 DERIVE_VERSION = 1
@@ -107,7 +108,7 @@ N_VALUES = [15, 30, 45, 60, 90, 120, 180]
 # No ORDER BY: each caller adds its own.
 FIRES_SQL = """
 SELECT f.id, f.date, f.option_chain_id, f.entry_time_ct, f.entry_price,
-       f.mode, f.tod, f.score,
+       f.underlying_symbol, f.mode, f.tod, f.score,
        f.peak_ceiling_pct      AS peak,
        f.realized_trail30_10_pct   AS trail,
        f.realized_hard30m_pct      AS hard30,
@@ -393,64 +394,6 @@ def load_derived(
 
 
 # ============================================================
-# Tiers (the feed's)
-# ============================================================
-
-
-def load_active_cutoffs(conn) -> tuple[str, FeedCutoffs]:
-    """The active weights' version and feed cutoffs. A failed read ends the
-    run (non-zero, before any report): there is no fallback to other cutoffs."""
-    try:
-        version, weights = load_pointer(conn, 'active')
-        return version, FeedCutoffs.from_weights(weights)
-    except (WeightsInvalid, LookupError, psycopg2.Error) as exc:
-        # A DB error's text can hold the DSN: name its class only.
-        detail = (
-            type(exc).__name__
-            if isinstance(exc, psycopg2.Error)
-            else f'{type(exc).__name__}: {exc}'
-        )
-        sys.exit(
-            f'[search] cannot read the active lottery weights ({detail}); '
-            'no report written'
-        )
-
-
-def tier_labels(fires: pd.DataFrame, cutoffs: FeedCutoffs) -> pd.Series:
-    """T1 / T2 / T3 as the feed tiers each fire: its qas against the cutoffs.
-
-    qas is NaN for the fires the feed forces to tier 3 (a NULL score,
-    direction_gated, an inversion quintile of 1 or 2), and NaN fails both
-    comparisons.
-    """
-    qas = feed_qas(fires['score'], fires)
-    labels = np.where(
-        qas >= cutoffs.tier1_min_score,
-        'T1',
-        np.where(qas >= cutoffs.tier2_min_score, 'T2', 'T3'),
-    )
-    return pd.Series(labels, index=fires.index, name='tier')
-
-
-LOOK_AHEAD_NOTE = (
-    "inversion_quintile is the ticker's current value, not the value when each "
-    'fire fired (look-ahead), as on the feed'
-)
-
-
-def tier_header(version: str, cutoffs: FeedCutoffs) -> str:
-    """The report lines that say which weights the tiers come from."""
-    return (
-        f'Active lottery weights: {version}\n'
-        f'T1 = qas ≥ {cutoffs.tier1_min_score}, T2 = qas ≥ {cutoffs.tier2_min_score} '
-        f'(feed cutoffs of version {version})\n'
-        "qas is the feed's quality-adjusted score; a fire the feed forces to "
-        'tier 3 (NULL score, direction-gated, inversion quintile 1 or 2) is T3.\n'
-        f'{LOOK_AHEAD_NOTE}\n'
-    )
-
-
-# ============================================================
 # Main
 # ============================================================
 
@@ -491,7 +434,8 @@ def main(argv: list[str] | None = None) -> None:
     load_env_file(ENV_FILE)
     db_url = os.environ.get('DATABASE_URL_UNPOOLED') or os.environ['DATABASE_URL']
     conn = psycopg2.connect(db_url)
-    version, cutoffs = load_active_cutoffs(conn)
+    version, weights = load_active_weights(conn, 'search')
+    cutoffs = FeedCutoffs.from_weights(weights)
     out_path = args.out_dir / f'lottery-exit-policy-search-{latest_fire_date(conn)}.md'
     print('[search] loading fires…')
     fires = pd.read_sql(FIRES_SQL + ' ORDER BY f.date, f.id', conn)
@@ -585,7 +529,7 @@ def main(argv: list[str] | None = None) -> None:
     lines.append(f'Dataset: {len(df):,} enriched fires across '
                  f'{df["date"].nunique()} trading days '
                  f'({df["date"].min()} → {df["date"].max()}), '
-                 f'{df["ticker"].nunique() if "ticker" in df.columns else "?"} tickers.\n'.replace('"',""))
+                 f'{df["underlying_symbol"].nunique()} tickers.\n')
     if missing:
         lines.append(
             f'{len(missing)} day(s) skipped ({skipped_why}): '

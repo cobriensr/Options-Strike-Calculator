@@ -18,7 +18,8 @@ test, in each script:
   the run before any report is written.
 
 Neon is faked at the module boundary (psycopg2.connect, pandas.read_sql and
-`load_pointer`); no test reaches a database. Run:
+`_report_weights.load_pointer`, where both scripts' active-weights read lives);
+no test reaches a database. Run:
 
     ml/.venv/Scripts/python -m pytest -q scripts/test_policy_timing_derive.py
 """
@@ -45,9 +46,10 @@ import pytest
 SCRIPTS = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPTS))
 
+import _report_weights as report_weights  # noqa: E402
 import exit_policy_search as policy  # noqa: E402
 import flow_inversion_timing as timing  # noqa: E402
-from lottery_weights import WeightsInvalid  # noqa: E402  (ml/src is on sys.path by now)
+from lottery_weights import WeightsInvalid  # noqa: E402  (_report_weights put ml/src on sys.path)
 
 DAYS = ('2026-07-23', '2026-07-24')
 VERSION = 'v-2026-11-19'
@@ -303,6 +305,7 @@ class Kit:
     columns: tuple[str, ...]
     report_stem: str
     order_by: str
+    tag: str  # the log prefix: "[search]" / "[timing]"
 
     def derive(self, tape: Path, fires_for_day: pd.DataFrame, day: str) -> pd.DataFrame:
         if self.module is timing:
@@ -322,8 +325,8 @@ class Kit:
         return {t: found.get(t, 0) for t in ('T1', 'T2', 'T3')}
 
 
-EXIT_KIT = Kit(policy, POLICY_COLUMNS, 'lottery-exit-policy-search', 'f.id')
-TIMING_KIT = Kit(timing, TIMING_COLUMNS, 'flow-inversion-timing', 'f.trigger_time_ct')
+EXIT_KIT = Kit(policy, POLICY_COLUMNS, 'lottery-exit-policy-search', 'f.id', 'search')
+TIMING_KIT = Kit(timing, TIMING_COLUMNS, 'flow-inversion-timing', 'f.trigger_time_ct', 'timing')
 
 
 @pytest.fixture(params=[EXIT_KIT, TIMING_KIT], ids=['exit_policy_search', 'flow_inversion_timing'])
@@ -348,7 +351,8 @@ class Harness:
         monkeypatch.setattr(module, 'ENV_FILE', tmp_path / 'no-such.env')
         monkeypatch.setattr(module, 'ROOT', tmp_path)
         monkeypatch.setattr(module.psycopg2, 'connect', lambda _url: FlowConn())
-        monkeypatch.setattr(module, 'load_pointer', self._load_pointer)
+        # The read lives in _report_weights, shared by both scripts.
+        monkeypatch.setattr(report_weights, 'load_pointer', self._load_pointer)
 
     def _load_pointer(self, _conn: object, name: str) -> tuple[str, dict]:
         self.pointer_names.append(name)
@@ -535,6 +539,24 @@ def test_a_tape_without_a_needed_column_fails_by_name(kit: Kit, tmp_path: Path) 
         kit.derive(short, fires, DAYS[0])
 
 
+def test_a_corrupt_price_fails_rather_than_becoming_nan(kit: Kit, tmp_path: Path) -> None:
+    """A value that is no number is an error: coerced to NaN it would drop its
+    print (price > 0 is False) and the day would report on the rest."""
+    fires = make_fires({})
+    full = write_tape(tmp_path / 'full.parquet', chain_prints(fires['option_chain_id'][0], DAYS[0]))
+    table = pq.read_table(full)
+    prices = [str(v) for v in table['price'].to_pylist()]
+    prices[3] = 'oops'
+    corrupt = table.set_column(
+        table.schema.get_field_index('price'), 'price', pa.array(prices, pa.string())
+    )
+    bad = tmp_path / 'bad.parquet'
+    pq.write_table(corrupt, bad)
+
+    with pytest.raises((ValueError, TypeError)):
+        kit.derive(bad, fires, DAYS[0])
+
+
 def test_derive_output_is_ordered_by_id(kit: Kit, tmp_path: Path) -> None:
     fires = make_fires({'id': 9}, {'id': 3}, {'id': 5})
     archive = write_archive(tmp_path / 'archive', fires)
@@ -675,10 +697,17 @@ def test_day_fingerprints_parses_dates(kit: Kit) -> None:
 
 def test_fires_sql_reads_the_feed_columns_and_ends_at_its_where(kit: Kit) -> None:
     sql = ' '.join(kit.module.FIRES_SQL.split())
+    selected = sql.split(' FROM ')[0]
 
     assert 'LEFT JOIN lottery_ticker_stats s ON s.ticker = f.underlying_symbol' in sql
-    for column in ('f.round_trip_score_deduct', 'f.direction_gated', 's.inversion_quintile'):
-        assert column in sql
+    # In the SELECT list, not merely somewhere in the text (the join names the symbol too).
+    for column in (
+        'f.underlying_symbol',
+        'f.round_trip_score_deduct',
+        'f.direction_gated',
+        's.inversion_quintile',
+    ):
+        assert column in selected, column
     assert 'ORDER BY' not in sql
     population = (
         'f.peak_ceiling_pct IS NOT NULL'
@@ -967,6 +996,22 @@ def test_a_fire_without_derived_values_stays_in_the_exit_report(exit_harness: Ha
     assert re.search(r'exit at 30 min\s+1\s', report)
 
 
+def test_exit_report_counts_the_tickers_in_its_dataset_line(exit_harness: Harness) -> None:
+    fires = make_fires(
+        {'ticker': 'TSLA'},
+        {'ticker': 'AAPL'},
+        {'ticker': 'TSLA', 'day': DAYS[1]},
+    )
+
+    report = exit_harness.report_of(fires)
+
+    assert (
+        'Dataset: 3 enriched fires across 2 trading days '
+        '(2026-07-23 → 2026-07-24), 2 tickers.'
+    ) in report
+    assert '?' not in report.split('## Aggregate')[0]
+
+
 def test_the_same_id_in_two_derived_days_fails_the_report(kit: Kit, harness: Harness) -> None:
     """Derived rows are one per fire: a duplicate id is a corrupt derived dir,
     and the report must not average it in twice."""
@@ -1078,6 +1123,8 @@ def test_reports_fail_without_active_weights(kit: Kit, harness: Harness, failure
 
     message = str(exc.value.code)
     assert exc.value.code not in (0, None)
+    assert message.startswith(f'[{kit.tag}] cannot read the active lottery weights (')
+    assert message.endswith('no report written')
     assert type(failure).__name__ in message
     assert 'hunter2' not in message  # a DB error's text can hold the DSN
     # Nothing was read or written: no fires, no report, no fallback tiers.
@@ -1100,8 +1147,92 @@ def test_report_header_names_the_active_version_and_cutoffs(kit: Kit, harness: H
 
 
 def test_reports_have_no_bare_score_tier_cutoffs(kit: Kit) -> None:
-    source = Path(kit.module.__file__).read_text(encoding='utf-8')
+    for module in (kit.module, report_weights):
+        source = Path(module.__file__).read_text(encoding='utf-8')
 
-    assert '>= 18' not in source
-    assert '>= 12' not in source
-    assert '≥ 18' not in source
+        assert '>= 18' not in source, module.__name__
+        assert '>= 12' not in source, module.__name__
+        assert '≥ 18' not in source, module.__name__
+
+
+# ── the shared module: _report_weights ────────────────────────
+
+
+def test_neither_script_keeps_its_own_copy_of_the_shared_pieces(kit: Kit) -> None:
+    """The read-or-exit contract, the tiers and the header text live once, in
+    _report_weights: the scripts hold that module's objects, not copies."""
+    for name in ('FeedCutoffs', 'load_active_weights', 'tier_labels', 'tier_header'):
+        assert getattr(kit.module, name) is getattr(report_weights, name), name
+    # Nothing a copy would need is left in the script.
+    for name in ('load_active_cutoffs', 'LOOK_AHEAD_NOTE', 'load_pointer', 'feed_qas'):
+        assert not hasattr(kit.module, name), name
+    source = Path(kit.module.__file__).read_text(encoding='utf-8')
+    for text in ('def load_active', 'def tier_', 'LOOK_AHEAD', 'feed_qas', 'load_pointer'):
+        assert text not in source, text
+
+
+def test_load_active_weights_returns_the_version_and_the_full_weights(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Task 3b's reports read more than the cutoffs: the whole object comes back."""
+    weights = {**WEIGHTS, 'features': {'ticker_weights': {}}}
+    asked: list[str] = []
+
+    def load_pointer(_conn: object, name: str) -> tuple[str, dict]:
+        asked.append(name)
+        return 'v-shared', weights
+
+    monkeypatch.setattr(report_weights, 'load_pointer', load_pointer)
+
+    version, got = report_weights.load_active_weights(object(), 'anything')
+
+    assert version == 'v-shared'
+    assert got is weights
+    assert asked == ['active']
+
+
+@pytest.mark.parametrize(
+    ('failure', 'detail'),
+    [
+        pytest.param(
+            LookupError('lottery_score_pointers has no row named active'),
+            'LookupError: lottery_score_pointers has no row named active',
+            id='no-active-pointer',
+        ),
+        pytest.param(
+            WeightsInvalid('features.dte_weights', 'range'),
+            f'WeightsInvalid: {WeightsInvalid("features.dte_weights", "range")}',
+            id='invalid-weights',
+        ),
+        pytest.param(
+            psycopg2.OperationalError('host=db.example password=hunter2'),
+            'OperationalError',
+            id='db-error',
+        ),
+    ],
+)
+def test_load_active_weights_exits_naming_the_tag_and_the_class(
+    monkeypatch: pytest.MonkeyPatch, failure: Exception, detail: str
+) -> None:
+    def load_pointer(_conn: object, _name: str) -> tuple[str, dict]:
+        raise failure
+
+    monkeypatch.setattr(report_weights, 'load_pointer', load_pointer)
+
+    with pytest.raises(SystemExit) as exc:
+        report_weights.load_active_weights(object(), 'a-tag')
+
+    # A DB error's text can hold the DSN: its class is named, its text is not.
+    assert exc.value.code == (
+        f'[a-tag] cannot read the active lottery weights ({detail}); no report written'
+    )
+
+
+def test_load_active_weights_does_not_swallow_a_bug(monkeypatch: pytest.MonkeyPatch) -> None:
+    def load_pointer(_conn: object, _name: str) -> tuple[str, dict]:
+        raise RuntimeError('a bug')
+
+    monkeypatch.setattr(report_weights, 'load_pointer', load_pointer)
+
+    with pytest.raises(RuntimeError, match='a bug'):
+        report_weights.load_active_weights(object(), 'a-tag')

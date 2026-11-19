@@ -26,6 +26,7 @@ import pytest
 SCRIPTS = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPTS))
 
+import _report_weights as report_weights  # noqa: E402
 import backfill_net_flow_history as net_flow  # noqa: E402
 import exit_policy_search as policy_search  # noqa: E402
 import flow_inversion_timing as timing  # noqa: E402
@@ -235,7 +236,7 @@ def timing_db(
     """Stand in for Neon at the psycopg2 / pandas boundary."""
     monkeypatch.setenv('DATABASE_URL', 'postgresql://test/none')
     monkeypatch.setattr(timing.psycopg2, 'connect', lambda _url: _Conn())
-    monkeypatch.setattr(timing, 'load_pointer', lambda _conn, _name: ACTIVE_WEIGHTS)
+    monkeypatch.setattr(report_weights, 'load_pointer', lambda _conn, _name: ACTIVE_WEIGHTS)
     fires = _timing_fires('2026-07-22', '2026-07-23', '2026-07-24')
     monkeypatch.setattr(timing.pd, 'read_sql', lambda _sql, _conn: fires)
     return fires
@@ -343,6 +344,7 @@ def _policy_fires(*days: str) -> pd.DataFrame:
                 'id': i + 1,
                 'date': date.fromisoformat(day),
                 'option_chain_id': f'TSLA{day.replace("-", "")[2:]}C00300000',
+                'underlying_symbol': 'TSLA',
                 'entry_time_ct': pd.Timestamp(f'{day}T15:00:00Z'),
                 'entry_price': 1.0,
                 'mode': 'A',
@@ -387,7 +389,7 @@ def policy_db(
     the docs/tmp report lands there."""
     monkeypatch.setenv('DATABASE_URL', 'postgresql://test/none')
     monkeypatch.setattr(policy_search.psycopg2, 'connect', lambda _url: _Conn())
-    monkeypatch.setattr(policy_search, 'load_pointer', lambda _conn, _name: ACTIVE_WEIGHTS)
+    monkeypatch.setattr(report_weights, 'load_pointer', lambda _conn, _name: ACTIVE_WEIGHTS)
     monkeypatch.setattr(policy_search, 'ROOT', tmp_path)
     fires = _policy_fires('2026-07-22', '2026-07-23', '2026-07-24')
     monkeypatch.setattr(policy_search.pd, 'read_sql', lambda _sql, _conn: fires)

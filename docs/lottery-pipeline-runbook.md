@@ -36,6 +36,8 @@ Refreshes the research layer using the freshly-enriched fires. Order: `refit →
 - **flow_inversion_timing**: re-runs the inversion algorithm to capture exit timestamps; reports per-ticker median time-to-inversion + distribution → `docs/tmp/flow-inversion-timing-{LATEST_DATE}.md`. Slowest step (~3 min — parquet replay).
 - **daily_tracker**: appends one row to `docs/tmp/lottery-tracking.csv` (idempotent on date — same-day reruns overwrite).
 
+The exit_policy_search and flow_inversion_timing reports tier fires by the feed's qas against the active weights' `feed_cutoffs` (owner, 2026-11-19), and `make update` exits non-zero when the active weights can't be read.
+
 ### Chaining
 
 `make nightly update` runs both in one shot. Use this; manual two-step is only useful when debugging.
