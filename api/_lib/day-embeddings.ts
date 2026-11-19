@@ -5,8 +5,10 @@
  * table, and text format are different.
  *
  * Flow:
- *   1. Sidecar produces a deterministic `summary` string for a date
- *      (`fetchDaySummary` → `/archive/day-summary`).
+ *   1. A deterministic `summary` string for a date. Nightly it comes from
+ *      `fetchDaySummaryFromPostgres` (`api/_lib/postgres-day-summary.ts`);
+ *      the pre-2026-04-17 corpus came from the sidecar archive's
+ *      `/archive/day-summary` (`fetchDaySummary`).
  *   2. OpenAI `text-embedding-3-large` truncated to 2000 dims produces
  *      the vector — same model/dims as `embeddings.ts` so Neon's
  *      HNSW 2000-dim index cap is respected.

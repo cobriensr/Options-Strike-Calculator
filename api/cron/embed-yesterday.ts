@@ -8,8 +8,8 @@
  *
  * Skips (200, `skipped: true`) rather than failing when:
  *   - the target weekday is a NYSE holiday (`not_trading_day`);
- *   - neither source has bars for it (`no_summary`);
- *   - the Postgres source is a PARTIAL day (`incomplete_day`) — fewer
+ *   - Postgres has no bars for it (`no_summary`);
+ *   - the day is PARTIAL in Postgres (`incomplete_day`) — fewer
  *     regular-session bars than the session has (390, or 210 on an
  *     early close). A feed that died mid-session must never land as a
  *     complete day (it did on 2026-07-22 with 82 bars and 2026-09-21
@@ -23,8 +23,10 @@
  * bucketed with the same cut-points the range forecast queries by.
  *
  * Depends on:
- *   - Railway sidecar `/archive/day-summary` reachable via SIDECAR_URL
- *     (frozen at 2026-04-17; new dates fall through to Postgres)
+ *   - `index_candles_1m` (SPX) on Neon, read through
+ *     `api/_lib/postgres-day-summary.ts`. The sidecar archive is frozen
+ *     at 2026-04-17 and the target is always a later date, so this cron
+ *     makes no sidecar call.
  *   - OpenAI API key for text-embedding-3-large @ 2000 dims
  *   - `day_embeddings` table (migration #73) present on Neon
  *
@@ -33,7 +35,6 @@
  */
 
 import { vixBucketOf } from '../_lib/analog-range-forecast.js';
-import { fetchDaySummary } from '../_lib/archive-sidecar.js';
 import {
   DAY_EMBEDDING_DIMS,
   upsertDayEmbedding,
@@ -126,33 +127,29 @@ export default withCronInstrumentation(
       return skipped('not_trading_day', { date });
     }
 
-    let summary = await fetchDaySummary(date);
-    let source: 'sidecar' | 'postgres' = 'sidecar';
-    if (!summary) {
-      // The sidecar archive is frozen at 2026-04-17, so new dates land
-      // here. index_candles_1m (SPX) is populated by Schwab streaming in
-      // real time. A DB reject propagates: the wrapper reports an error.
-      const pg = await fetchDaySummaryFromPostgres(date);
-      const expectedBars = cashSessionMinutes(date);
-      if (!pg) {
-        return feedFailureSkip(log, 'no_summary', {
-          date,
-          barCount: 0,
-          expectedBars,
-        });
-      }
-      if (pg.barCount < expectedBars) {
-        return feedFailureSkip(log, 'incomplete_day', {
-          date,
-          barCount: pg.barCount,
-          expectedBars,
-        });
-      }
-      summary = pg.summary;
-      source = 'postgres';
-      metrics.increment('embed_yesterday.postgres_fallback');
-      log.info({ date }, 'embed-yesterday: using Postgres fallback');
+    // The one source of the summary; kept in the run result and the log so
+    // the key stays continuous with earlier runs.
+    const source = 'postgres';
+
+    // index_candles_1m (SPX) is populated by Schwab streaming in real
+    // time. A DB reject propagates: the wrapper reports an error.
+    const pg = await fetchDaySummaryFromPostgres(date);
+    const expectedBars = cashSessionMinutes(date);
+    if (!pg) {
+      return feedFailureSkip(log, 'no_summary', {
+        date,
+        barCount: 0,
+        expectedBars,
+      });
     }
+    if (pg.barCount < expectedBars) {
+      return feedFailureSkip(log, 'incomplete_day', {
+        date,
+        barCount: pg.barCount,
+        expectedBars,
+      });
+    }
+    const { summary } = pg;
 
     const vixBucket = vixBucketOf(await fetchVixCloseFromPostgres(date));
 
