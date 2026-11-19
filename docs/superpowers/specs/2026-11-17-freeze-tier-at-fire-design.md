@@ -77,9 +77,10 @@ The round-trip deduct is measured from the hour after a fire, so it can only lan
 
 **UI changes**
 
-- **Pill.** The label "round-tripped −N" and the dimming stay. The tooltip changes in `LotteryRow.tsx` and `SilentBoomRow.tsx`. Proposed text:
-  - Lottery Finder: "Sellers dominated this contract in the hour after the fire (deduct −N). It describes what already happened: Lottery fires with a deduct were down about 28% on average when it landed, and it did not predict further loss. The tier is the one shown at the fire."
-  - Silent Boom: the same text, with the 28% figure marked as measured on Lottery Finder fires.
+- **Pill.** The label "round-tripped −N" and the dimming stay. The tooltip changes in `LotteryRow.tsx` and `SilentBoomRow.tsx`, and the pill gets an `aria-label` that starts with its visible text, as the sibling badges have. Shipped text:
+  - Lottery Finder: "Sellers outweighed buyers in the hour after the fire (deduct −N). It describes selling that already happened, not what comes next: Lottery fires still held when a deduct landed finished about where they stood then (at -1: down about 28% when it landed, 29% at the 30/10 trail exit). The tier is the one shown at the fire."
+  - Silent Boom: the same text for the alert, with the figures marked as measured on Lottery Finder fires.
+  - Why it differs from the first proposal: that wording said deducted fires "were down about 28% on average". That holds only for −1 fires. Held −3 fires were down 16.6% at landing, the same as fires with no deduct. What holds at every level is that landing and exit match: −1 27.9→29.0, −2 22.6→22.9, −3 16.6→16.7 (`docs/tmp/roundtrip-tiers-2026-11-17/REPORT.md`, step 3).
 - `types.ts` comments for `score`, `rawScore` and `roundTripScoreDeduct`, in both feeds.
 
 **Tests that flip**

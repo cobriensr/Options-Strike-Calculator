@@ -333,6 +333,7 @@ This task touches eight files, above the usual five. `expectedQasSql` holds the 
   `Sellers dominated this contract in the hour after the fire (deduct ${roundTripDeduct}). It reports a loss that already happened: Lottery fires still held when a -1 deduct landed were already down about 28% and finished down about 29%. The tier is the one shown at the fire.`
 - **Silent Boom:**
   `Sellers dominated this contract in the hour after the alert (deduct ${roundTripDeduct}). It reports a loss that already happened: on Lottery Finder fires, those still held when a -1 deduct landed were already down about 28% and finished down about 29%. The tier is the one shown at the alert.`
+- **Superseded in the final fix wave.** The shipped copy leads with "Sellers outweighed buyers… finished about where they stood then", because "reports a loss that already happened" is false at −3. The spec's "UI changes" section has the shipped text and the reason.
 
 **Steps:**
 
