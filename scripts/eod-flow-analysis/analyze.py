@@ -164,7 +164,7 @@ def build_days(
 def build_from_dir(args: argparse.Namespace, spill_dir: Path) -> int:
     available = tape_files(args.tape_dir)
     days = [args.day] if args.day else from_chains_start(available)
-    return build_days(args, days, available.get, lambda day: None, spill_dir)
+    return build_days(args, days, available.get, lambda _day: None, spill_dir)
 
 
 def build_from_r2(args: argparse.Namespace, work_dir: Path, spill_dir: Path) -> int:

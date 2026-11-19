@@ -26,7 +26,7 @@ Errors and logs carry column names and counts only, never a row of tape data.
 from __future__ import annotations
 
 import os
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -137,25 +137,19 @@ def connect(temp_dir: Path | None = None) -> duckdb.DuckDBPyConnection:
     return con
 
 
-def _side_sql() -> str:
+def _case_sql(column: str, pairs: Iterable[tuple[str, str]], default_sql: str) -> str:
+    """A CASE over the list `column`: the first tag it contains gives its value, else `default_sql`."""
     whens = " ".join(
-        f"WHEN list_contains(tag_list, {_literal(tag)}) THEN {_literal(side)}"
-        for tag, side in SIDE_TAGS.items()
+        f"WHEN list_contains({column}, {_literal(tag)}) THEN {_literal(value)}" for tag, value in pairs
     )
-    return f"CASE {whens} ELSE {_literal(NO_SIDE)} END"
-
-
-def _equity_type_sql() -> str:
-    whens = " ".join(
-        f"WHEN list_contains(tag_list, {_literal(tag)}) THEN {_literal(equity_type)}"
-        for tag, equity_type in EQUITY_TYPE_TAGS
-    )
-    return f"CASE {whens} ELSE NULL END"
+    return f"CASE {whens} ELSE {default_sql} END"
 
 
 def _chains_sql(tape_path: Path, day: date, tmp_path: Path) -> str:
     """The COPY that writes `tmp_path`: kept prints, summed per chain, cast to CHAINS_COLUMNS."""
     casts = ", ".join(f'CAST("{name}" AS {sql_type}) AS "{name}"' for name, sql_type in CHAINS_COLUMNS)
+    side_case = _case_sql("tag_list", SIDE_TAGS.items(), _literal(NO_SIDE))
+    equity_type_case = _case_sql("tag_list", EQUITY_TYPE_TAGS, "NULL")
     return f"""
         COPY (
             WITH kept AS (
@@ -181,7 +175,7 @@ def _chains_sql(tape_path: Path, day: date, tmp_path: Path) -> str:
                   AND CAST(premium AS DOUBLE) >= {MIN_PREMIUM}
             ),
             sided AS (
-                SELECT *, {_side_sql()} AS side, {_equity_type_sql()} AS equity_type
+                SELECT *, {side_case} AS side, {equity_type_case} AS equity_type
                 FROM kept
             ),
             chains AS (

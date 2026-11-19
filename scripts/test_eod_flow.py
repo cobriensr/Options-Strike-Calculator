@@ -11,7 +11,7 @@ and the analyze CLI over them (scripts/eod-flow-analysis/analyze.py).
   headlines print times in CT.
 - analyze.py: `--tape-dir | --r2` is the source; `--r2` is tested only by
   replacing `_tape_reader.TapeReader`, the module analyze imports it from
-  inside main.
+  inside build_from_r2.
 
 Every file a test writes is under tmp_path. The 23 tracked by-day parquets are
 frozen history: one test reads a schema from one of them and nothing writes
@@ -388,6 +388,21 @@ def test_a_tag_must_match_whole_not_as_a_substring(tmp_path):
     assert chains[0]['equity_type'] is None
 
 
+def test_the_side_and_equity_case_sql_is_pinned():
+    """The CASE text built from SIDE_TAGS and EQUITY_TYPE_TAGS, character for character."""
+    sql = _eod_flow._chains_sql(Path('tape.parquet'), DAY, Path('out.tmp'))
+    side = (
+        "CASE WHEN list_contains(tag_list, 'ask_side') THEN 'ask' "
+        "WHEN list_contains(tag_list, 'bid_side') THEN 'bid' "
+        "WHEN list_contains(tag_list, 'mid_side') THEN 'mid' ELSE 'no_side' END"
+    )
+    equity_type = (
+        "CASE WHEN list_contains(tag_list, 'index') THEN 'Index' "
+        "WHEN list_contains(tag_list, 'etf') THEN 'ETF' ELSE NULL END"
+    )
+    assert f'SELECT *, {side} AS side, {equity_type} AS equity_type' in sql
+
+
 def test_build_chains_layouts_agree_and_match_the_pinned_schema(tmp_path):
     rows = [
         trade(option_chain_id='AAPL260616C00200000', price=0.0125, underlying_price=199.99),
@@ -564,28 +579,27 @@ def test_a_day_with_no_kept_rows_writes_an_empty_file_with_the_schema(tmp_path):
 
 
 def test_connect_pins_zone_threads_memory_and_spill(tmp_path):
-    reference = duckdb.connect()
-    reference.execute("SET memory_limit = '4GB'")
-    four_gb = reference.execute("SELECT current_setting('memory_limit')").fetchone()[0]
+    with duckdb.connect() as reference:
+        reference.execute("SET memory_limit = '4GB'")
+        four_gb = reference.execute("SELECT current_setting('memory_limit')").fetchone()[0]
 
-    con = _eod_flow.connect()
-    zone, threads, memory = con.execute(
-        "SELECT current_setting('TimeZone'), current_setting('threads'), "
-        "current_setting('memory_limit')"
-    ).fetchone()
+    with _eod_flow.connect() as con:
+        zone, threads, memory = con.execute(
+            "SELECT current_setting('TimeZone'), current_setting('threads'), "
+            "current_setting('memory_limit')"
+        ).fetchone()
     assert (zone, threads, memory) == ('UTC', 4, four_gb)
 
-    spill = _eod_flow.connect(tmp_path).execute(
-        "SELECT current_setting('temp_directory')"
-    ).fetchone()[0]
+    with _eod_flow.connect(tmp_path) as spilling:
+        spill = spilling.execute("SELECT current_setting('temp_directory')").fetchone()[0]
     assert Path(spill).resolve() == tmp_path.resolve()
 
 
 @pytest.mark.parametrize('zone', ['America/Chicago', 'Asia/Tokyo'])
 def test_connect_overrides_the_host_zone(host_zone, zone):
     host_zone(zone)
-    con = _eod_flow.connect()
-    assert con.execute("SELECT current_setting('TimeZone')").fetchone()[0] == 'UTC'
+    with _eod_flow.connect() as con:
+        assert con.execute("SELECT current_setting('TimeZone')").fetchone()[0] == 'UTC'
 
 
 # ── rollup and the headlines ───────────────────────────────────
@@ -1082,8 +1096,8 @@ class FakeTapeReader:
 
 @pytest.fixture
 def lake(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Lake:
-    """analyze imports TapeReader from _tape_reader inside main, so that module's
-    attribute is the boundary to patch."""
+    """analyze imports TapeReader from _tape_reader inside build_from_r2, at call time,
+    so that module's attribute is the boundary to patch."""
     fixture_dir = tmp_path / 'fixture-tape'
     fixture_dir.mkdir()
     fake = Lake(
