@@ -30,7 +30,7 @@ WEIGHTS_JSON = ROOT / 'ml' / 'output' / 'lottery_score_weights.json'
 
 # Feed tier cutoffs — mirror the user-facing feed EXACTLY so the audit's
 # "Tier 2+" subset is the population actually traded. The feed tiers on
-# qas = combined_score + inversionBonus(quintile) with these cutoffs
+# qas = GREATEST(0, score) + inversionBonus(quintile) with these cutoffs
 # (api/_lib/lottery-tier.ts TIER_CUTOFFS_V2) and demotes direction-gated rows
 # to tier3. Recalibrated 2026-06-03 from 24/22 — before that the audit used the
 # stale V1 18/12 on the bare score, so its "Tier 1" was always empty and its
@@ -81,7 +81,7 @@ def scoring_regime_lines() -> list[str]:
         out.append(f'    (could not read {WEIGHTS_JSON.name}: {e})')
     out.append(
         f'    tier cutoffs  : T1 qas>={TIER1_CUTOFF}, T2 qas>={TIER2_CUTOFF}  '
-        '(qas = combined_score + inversion bonus; mirrors the feed)\n'
+        '(qas = max(0, score) + inversion bonus; mirrors the feed)\n'
     )
     return out
 
@@ -133,6 +133,44 @@ def latest_fire_date(conn) -> str:
     return row[0].isoformat() if hasattr(row[0], 'isoformat') else str(row[0])[:10]
 
 
+def assign_feed_tiers(df: pd.DataFrame) -> pd.DataFrame:
+    """Return `df` with `qas`, `tier` and `tier_eligible` columns.
+
+    Mirrors the feed's tier exactly (api/lottery-finder.ts), vectorized: tier
+    on qas = GREATEST(0, score) + inversionBonus(quintile), 13/10 cutoffs,
+    with null-score, direction_gated, and default-suppressed quintile-1/2
+    rows demoted to tier3 (the feed hides Q1/Q2 unless showAll). The feed
+    fixed its tier at the fire and leaves the round-trip deduct out of it
+    (docs/superpowers/specs/2026-11-17-freeze-tier-at-fire-design.md), so the
+    audit reads `score`, not `combined_score`: that generated column still
+    carries the deduct and the gamma +1.
+
+    NOTE (point-in-time): inversion_quintile is the ticker's CURRENT rolling
+    quintile (joined now), not the value live when each fire fired — same as
+    the feed renders historical rows today, but it means a ticker whose
+    quintile has since moved is re-tiered with today's bonus (a look-ahead vs
+    the as-traded label). Surfaced in the report header.
+    """
+    q = pd.to_numeric(df['inversion_quintile'], errors='coerce')
+    bonus = q.map(INVERSION_BONUS_BY_QUINTILE).fillna(0)
+    score = pd.to_numeric(df['score'], errors='coerce').fillna(0).clip(lower=0)
+    qas = score + bonus
+    demoted = (
+        df['score'].isna()
+        | df['direction_gated'].fillna(False).astype(bool)
+        | q.isin(SUPPRESSED_QUINTILES)
+    )
+    out = df.copy()
+    out['qas'] = qas
+    out['tier'] = np.where(
+        demoted,
+        'T3',
+        np.where(qas >= TIER1_CUTOFF, 'T1', np.where(qas >= TIER2_CUTOFF, 'T2', 'T3')),
+    )
+    out['tier_eligible'] = ~demoted
+    return out
+
+
 def main():
     load_env()
     db_url = os.environ.get('DATABASE_URL_UNPOOLED') or os.environ['DATABASE_URL']
@@ -152,7 +190,7 @@ def main():
           spx_spot_charm_oi, spx_spot_vanna_oi,
           gex_strike_call_minus_put, gex_strike_call_ask_minus_bid,
           gex_strike_put_ask_minus_bid,
-          combined_score, direction_gated, date,
+          direction_gated, date,
           s.inversion_quintile,
           realized_flow_inversion_pct AS flow_inv
         FROM lottery_finder_fires f
@@ -162,36 +200,7 @@ def main():
         conn,
     )
     print(f'[audit] {len(df):,} fires with flow_inversion populated')
-
-    # Mirror the feed's tier exactly (api/lottery-finder.ts), vectorized:
-    # tier on qas = combined_score + inversionBonus(quintile), 13/10 cutoffs,
-    # with null-score, direction_gated, and default-suppressed quintile-1/2
-    # rows demoted to tier3 (the feed hides Q1/Q2 unless showAll). combined_score
-    # (generated) = GREATEST(0, score + round_trip_deduct + gamma_bonus). The
-    # fire-count adjustment was retired on 2026-11-15 and migration #209
-    # redefines combined_score without it; before #209 it also carried it, so an
-    # audit run against a database that has not applied #209 still counts it.
-    #
-    # NOTE (point-in-time): inversion_quintile is the ticker's CURRENT rolling
-    # quintile (joined now), not the value live when each fire fired — same as
-    # the feed renders historical rows today, but it means a ticker whose
-    # quintile has since moved is re-tiered with today's bonus (a look-ahead vs
-    # the as-traded label). Surfaced in the report header.
-    q = pd.to_numeric(df['inversion_quintile'], errors='coerce')
-    bonus = q.map(INVERSION_BONUS_BY_QUINTILE).fillna(0)
-    qas = pd.to_numeric(df['combined_score'], errors='coerce').fillna(0) + bonus
-    df['qas'] = qas
-    demoted = (
-        df['score'].isna()
-        | df['direction_gated'].fillna(False).astype(bool)
-        | q.isin(SUPPRESSED_QUINTILES)
-    )
-    df['tier'] = np.where(
-        demoted,
-        'T3',
-        np.where(qas >= TIER1_CUTOFF, 'T1', np.where(qas >= TIER2_CUTOFF, 'T2', 'T3')),
-    )
-    df['tier_eligible'] = ~demoted
+    df = assign_feed_tiers(df)
 
     # Build alert_seq buckets — first fire vs reload-cluster vs hot-chain.
     def aseq_bucket(s):
