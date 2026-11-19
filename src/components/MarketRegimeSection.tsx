@@ -31,6 +31,13 @@ interface Props {
    * owner-or-guest, and this card renders for public visitors too.
    */
   marketOpen: boolean;
+  /**
+   * Whether to show the flow-regime badge: App passes `isAuthenticated`.
+   * /api/flow-regime is owner-or-guest, so a public visitor's badge could only
+   * read "No flow regime read yet", which is not true. Past dates
+   * (`historySnapshot`) never show it.
+   */
+  showFlowRegime: boolean;
   /** App's cluster multiplier (useClusterMultiplier): the panel shows it, and
    * DeltaRegimeGuide applies it. App computes it whether or not this card is
    * open. */
@@ -51,6 +58,7 @@ export default function MarketRegimeSection({
   selectedDate,
   market,
   marketOpen,
+  showFlowRegime,
   cluster,
   historySnapshot,
   historyCandles,
@@ -109,7 +117,7 @@ export default function MarketRegimeSection({
       {showRegime && (
         <div className="mt-4">
           <VIXRangeAnalysis vix={vixNum} spot={results?.spot ?? null} />
-          {!historySnapshot && (
+          {showFlowRegime && !historySnapshot && (
             <div className="mt-4">
               <FlowRegimeBadge marketOpen={marketOpen} />
             </div>

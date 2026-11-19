@@ -1031,6 +1031,7 @@ export default function StrikeCalculator() {
                 selectedDate={vix.selectedDate}
                 market={market}
                 marketOpen={liveMarketOpen}
+                showFlowRegime={isAuthenticated}
                 cluster={cluster}
                 historySnapshot={historySnapshot}
                 historyCandles={historyData.history?.spx.candles}
@@ -1470,6 +1471,7 @@ export default function StrikeCalculator() {
       historyData.history?.spx,
       historyRefreshKey,
       historySnapshot,
+      isAuthenticated,
       ivMode,
       liveMarketOpen,
       market,

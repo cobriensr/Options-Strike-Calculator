@@ -22,6 +22,7 @@
  */
 
 import { POLL_INTERVALS } from '../constants';
+import { getAccessMode } from '../utils/auth';
 import { useFetchedData } from './useFetchedData';
 import type { FlowRegime, FlowRegimeColor } from '../types/flow-regime';
 
@@ -124,7 +125,10 @@ export function parseFlowRegime(raw: unknown): FlowRegimeResponse {
 
 export function useFlowRegime({ marketOpen }: Options): UseFlowRegimeReturn {
   const { data, loading, error, refresh } = useFetchedData<FlowRegimeResponse>({
-    url: '/api/flow-regime',
+    // /api/flow-regime is owner-or-guest. A null url is no fetch and no poll in
+    // useFetchedData, so a public visitor never draws the 401 (the badge shows
+    // it as a red "HTTP 401" alert).
+    url: getAccessMode() === 'public' ? null : '/api/flow-regime',
     marketOpen,
     pollIntervalMs: POLL_INTERVALS.FLOW_REGIME,
     parse: parseFlowRegime,

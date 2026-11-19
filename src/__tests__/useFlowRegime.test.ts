@@ -11,11 +11,18 @@ import {
   type FlowRegimeResponse,
 } from '../hooks/useFlowRegime';
 
+vi.mock('../utils/auth', () => ({
+  getAccessMode: vi.fn(() => 'owner'),
+}));
+
+import { getAccessMode } from '../utils/auth';
+
 const fetchMock = vi.fn();
 
 beforeEach(() => {
   fetchMock.mockReset();
   globalThis.fetch = fetchMock as unknown as typeof fetch;
+  vi.mocked(getAccessMode).mockReturnValue('owner');
 });
 
 afterEach(() => {
@@ -117,6 +124,39 @@ describe('useFlowRegime', () => {
       await vi.advanceTimersByTimeAsync(60_000);
     });
     expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  // /api/flow-regime is owner-or-guest: a public visitor's mount fetch is a 401
+  // that the badge would show as a red "HTTP 401" alert, so the hook never asks.
+  it('does not fetch or poll for a public visitor, even with the market open', async () => {
+    vi.mocked(getAccessMode).mockReturnValue('public');
+    vi.useFakeTimers();
+    const { result } = renderHook(() => useFlowRegime({ marketOpen: true }));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(180_000);
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(result.current).toMatchObject({
+      latest: null,
+      date: null,
+      loading: false,
+      error: null,
+    });
+  });
+
+  it('fetches and polls for a guest, as for an owner', async () => {
+    vi.mocked(getAccessMode).mockReturnValue('guest');
+    vi.useFakeTimers();
+    fetchMock.mockResolvedValue(jsonResponse(sampleResponse()));
+    renderHook(() => useFlowRegime({ marketOpen: true }));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it('does NOT poll when marketOpen is false (gate)', async () => {
