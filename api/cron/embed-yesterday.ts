@@ -1,10 +1,24 @@
 /**
- * GET /api/cron/embed-yesterday
+ * GET /api/cron/embed-yesterday[?date=YYYY-MM-DD]
  *
  * Nightly cron: compute the text summary + embedding for yesterday's
  * trading day and upsert into `day_embeddings`. Keeps the analog
  * cohort fresh so today's analyze calls can compare against the most
  * recent full session.
+ *
+ * Manual re-embed: `GET ...?date=2026-11-18` with the CRON_SECRET bearer
+ * embeds that ET date instead of the prior weekday. It exists for a day
+ * the nightly run skipped (`incomplete_day` or `no_summary`) that has
+ * since had its bars repaired: nothing else ever targets a past day again.
+ * Triggered by hand; Vercel's scheduler sends no query. `date` must be a
+ * real YYYY-MM-DD calendar date strictly BEFORE today (ET), since a day
+ * is embedded once it is over. Anything else (a bad format, today, a
+ * later day, a repeated param) throws before any source is read, and the
+ * wrapper answers 500 `{ error }` naming the cause. The override runs
+ * the same path as the nightly target: the same skips below, the same
+ * Postgres summary read, VIX bucket and upsert. It cannot force a
+ * partial day through. Re-running a day is safe: the upsert is
+ * idempotent.
  *
  * Skips (200, `skipped: true`) rather than failing when:
  *   - the target weekday is a NYSE holiday (`not_trading_day`);
@@ -25,8 +39,9 @@
  * Depends on:
  *   - `index_candles_1m` (SPX) on Neon, read through
  *     `api/_lib/postgres-day-summary.ts`. The sidecar archive is frozen
- *     at 2026-04-17 and the target is always a later date, so this cron
- *     makes no sidecar call.
+ *     at 2026-04-17 and the nightly target is always a later date, so
+ *     this cron makes no sidecar call. A `?date=` on or before that day
+ *     reads Postgres too, and skips `no_summary` if Postgres has no bars.
  *   - OpenAI API key for text-embedding-3-large @ 2000 dims
  *   - `day_embeddings` table (migration #73) present on Neon
  *
@@ -53,6 +68,7 @@ import { Sentry, metrics } from '../_lib/sentry.js';
 import {
   cashSessionMinutes,
   isTradingDay,
+  parseIsoDate,
 } from '../../src/data/marketHours.js';
 
 // maxDuration (60s) is set in vercel.json's `functions{}` block
@@ -83,6 +99,37 @@ class EmbedYesterdayError extends Error {
     super(kind);
     this.name = 'EmbedYesterdayError';
   }
+}
+
+/** A rejected `?date=`: no day was targeted, so the payload carries no date. */
+class InvalidDateParamError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'InvalidDateParamError';
+  }
+}
+
+/**
+ * The ET date to embed: `?date=` when given and valid, else the prior
+ * weekday of `today`. Weekday-only stepping keeps the Tue–Sat schedule →
+ * Mon–Fri mapping; a holiday is skipped by the handler rather than
+ * re-embedding the day before.
+ */
+function resolveTargetDate(dateParam: unknown, today: string): string {
+  if (dateParam === undefined) return priorWeekday(today);
+  // Any defined non-string (e.g. a repeated ?date= array) is invalid too.
+  if (typeof dateParam !== 'string' || parseIsoDate(dateParam) == null) {
+    throw new InvalidDateParamError(
+      'embed-yesterday: invalid date param (expected YYYY-MM-DD)',
+    );
+  }
+  // A day is embedded once it is over, the same as the nightly run.
+  if (dateParam >= today) {
+    throw new InvalidDateParamError(
+      `embed-yesterday: date ${dateParam} is not before today (${today})`,
+    );
+  }
+  return dateParam;
 }
 
 type SkipReason = 'not_trading_day' | 'no_summary' | 'incomplete_day';
@@ -117,10 +164,12 @@ export default withCronInstrumentation(
   'embed-yesterday',
   async (ctx): Promise<CronResult> => {
     const { today, logger: log } = ctx;
-    // Weekday-only stepping keeps the Tue–Sat schedule → Mon–Fri mapping;
-    // a holiday is skipped below rather than re-embedding the day before.
-    const date = priorWeekday(today);
-    log.info({ date, invokedOn: today }, 'embed-yesterday start');
+    const dateParam = ctx.req?.query.date;
+    const date = resolveTargetDate(dateParam, today);
+    log.info(
+      { date, invokedOn: today, override: dateParam !== undefined },
+      'embed-yesterday start',
+    );
 
     if (!isTradingDay(date)) {
       log.info({ date }, 'embed-yesterday: target is a market holiday');
@@ -205,17 +254,25 @@ export default withCronInstrumentation(
   {
     marketHours: false,
     requireApiKey: false,
+    // `?date=` is read from the request.
+    passReq: true,
     // Both legacy 500 shapes are `{date, error: <kind-or-msg>}`.
     // EmbedYesterdayError sentinels carry the date + kind verbatim;
     // any other thrown error falls back to `{date, error: <msg>}`
-    // using the priorWeekday-derived date.
+    // using the date the run targeted (the override, else priorWeekday).
     errorPayload: (err, ctx) => {
-      const date = priorWeekday(ctx.today);
       if (err instanceof EmbedYesterdayError) {
         return { date: err.date, error: err.kind };
       }
       const msg = err instanceof Error ? err.message : String(err);
-      return { date, error: msg };
+      // A rejected override targeted no day: say why, name no date.
+      if (err instanceof InvalidDateParamError) return { error: msg };
+      // Any other throw came after the handler resolved its target, so
+      // resolving again from the same ctx cannot throw.
+      return {
+        date: resolveTargetDate(ctx.req?.query.date, ctx.today),
+        error: msg,
+      };
     },
   },
 );

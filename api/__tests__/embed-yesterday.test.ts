@@ -38,6 +38,7 @@ vi.stubGlobal('fetch', mockFetch);
 import handler from '../cron/embed-yesterday.js';
 import { upsertDayEmbedding } from '../_lib/day-embeddings.js';
 import { generateEmbedding } from '../_lib/embeddings.js';
+import logger from '../_lib/logger.js';
 import {
   fetchDaySummaryFromPostgres,
   fetchVixCloseFromPostgres,
@@ -61,10 +62,11 @@ const SAT_AFTER_HALF_DAY = new Date('2026-11-28T07:00:00.000Z');
 const VALID_EMBED = Array.from({ length: 2000 }, () => 0.001);
 const PG_SUMMARY = '2026-04-21 SPX | open 5700.00 | ...';
 
-function cronReq() {
+function cronReq(query: Record<string, unknown> = {}) {
   return mockRequest({
     method: 'GET',
     headers: { authorization: 'Bearer test-secret' },
+    query: query as never,
   });
 }
 
@@ -392,5 +394,251 @@ describe('embed-yesterday handler', () => {
       expect.objectContaining({ vixBucket: null }),
     );
     expect(res._status).toBe(200);
+  });
+
+  // ── ?date= override ───────────────────────────────────────────────
+  //
+  // On WED (2026-04-22) the nightly target is 2026-04-21. The override
+  // targets a different day, 2026-04-14 (a Tuesday), so a result that
+  // still names 04-21 is the nightly target leaking through. 04-14 is
+  // inside the window the sidecar archive once covered (it froze on
+  // 04-17); the summary now comes from Postgres for every date.
+
+  describe('?date= override', () => {
+    const OVERRIDE = '2026-04-14';
+    const OVERRIDE_SUMMARY = '2026-04-14 SPX | open 5650.00 | ...';
+
+    /** The summary Postgres returns for OVERRIDE, with `barCount` bars. */
+    function overrideDay(barCount = 390) {
+      mockedFetchSummaryPg.mockResolvedValueOnce({
+        summary: OVERRIDE_SUMMARY,
+        barCount,
+      });
+    }
+
+    // ?date= must not open a way past the cron secret: the guard answers
+    // before the override is read, so nothing is read or written.
+    it.each([
+      ['no bearer', {}],
+      ['a wrong bearer', { authorization: 'Bearer wrong-secret' }],
+    ])(
+      'rejects %s with 401 even with a valid ?date=, reading and writing nothing',
+      async (_label, headers) => {
+        const res = mockResponse();
+        await handler(
+          mockRequest({
+            method: 'GET',
+            headers,
+            query: { date: OVERRIDE } as never,
+          }),
+          res,
+        );
+
+        expect(res._status).toBe(401);
+        expect(res._json).toEqual({ error: 'Unauthorized' });
+        expect(mockedFetchSummaryPg).not.toHaveBeenCalled();
+        expect(mockedFetchVix).not.toHaveBeenCalled();
+        expect(mockedEmbed).not.toHaveBeenCalled();
+        expect(mockedUpsert).not.toHaveBeenCalled();
+        expect(mockFetch).not.toHaveBeenCalled();
+      },
+    );
+
+    it('targets the given date: the Postgres summary read, the VIX read and the upsert get it', async () => {
+      overrideDay();
+      mockedFetchVix.mockResolvedValueOnce(23.1);
+      mockedEmbed.mockResolvedValueOnce(VALID_EMBED);
+      mockedUpsert.mockResolvedValueOnce(true);
+
+      const res = mockResponse();
+      await handler(cronReq({ date: OVERRIDE }), res);
+
+      expect(mockedFetchSummaryPg).toHaveBeenCalledOnce();
+      expect(mockedFetchSummaryPg).toHaveBeenCalledWith(OVERRIDE);
+      expect(mockedFetchVix).toHaveBeenCalledWith(OVERRIDE);
+      expect(mockedEmbed).toHaveBeenCalledWith(OVERRIDE_SUMMARY);
+      expect(mockedUpsert).toHaveBeenCalledOnce();
+      expect(mockedUpsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          date: OVERRIDE,
+          symbol: 'SPX',
+          summary: OVERRIDE_SUMMARY,
+          vixBucket: 'elevated',
+        }),
+      );
+      expect(mockFetch).not.toHaveBeenCalled();
+      expect(res._status).toBe(200);
+      expect(res._json).toMatchObject({
+        status: 'success',
+        date: OVERRIDE,
+        source: 'postgres',
+      });
+    });
+
+    it('marks the start log as an override, and a plain run as not one', async () => {
+      mockedFetchSummaryPg.mockResolvedValue({
+        summary: PG_SUMMARY,
+        barCount: 390,
+      });
+      mockedEmbed.mockResolvedValue(VALID_EMBED);
+      mockedUpsert.mockResolvedValue(true);
+
+      await handler(cronReq({ date: OVERRIDE }), mockResponse());
+      expect(logger.info).toHaveBeenCalledWith(
+        { date: OVERRIDE, invokedOn: '2026-04-22', override: true },
+        'embed-yesterday start',
+      );
+
+      vi.mocked(logger.info).mockClear();
+      await handler(cronReq(), mockResponse());
+      expect(logger.info).toHaveBeenCalledWith(
+        { date: '2026-04-21', invokedOn: '2026-04-22', override: false },
+        'embed-yesterday start',
+      );
+    });
+
+    it('keeps the prior-weekday target when no date is given, whatever else is in the query', async () => {
+      fullDay();
+      mockedEmbed.mockResolvedValueOnce(VALID_EMBED);
+      mockedUpsert.mockResolvedValueOnce(true);
+
+      const res = mockResponse();
+      await handler(cronReq({ force: '1' }), res);
+
+      expect(mockedFetchSummaryPg).toHaveBeenCalledWith('2026-04-21');
+      expect(mockedUpsert).toHaveBeenCalledWith(
+        expect.objectContaining({ date: '2026-04-21' }),
+      );
+      expect(res._json).toMatchObject({
+        status: 'success',
+        date: '2026-04-21',
+      });
+    });
+
+    // A day is embedded once it is over, the same as the nightly run:
+    // today (ET) and anything later are refused, and so is a malformed date.
+    it.each([
+      ['a non-padded date', '2026-4-14', /invalid date param/],
+      ['an impossible calendar date', '2026-02-30', /invalid date param/],
+      ['garbage', 'yesterday', /invalid date param/],
+      ['a timestamp', '2026-04-14T00:00:00Z', /invalid date param/],
+      ['an empty string', '', /invalid date param/],
+      ['a repeated param', ['2026-04-14', '2026-04-13'], /invalid date param/],
+      // String(['2026-04-14']) is a valid date, so only the type check
+      // rejects this one.
+      ['an array holding one date', ['2026-04-14'], /invalid date param/],
+      ['today', '2026-04-22', /2026-04-22 is not before today \(2026-04-22\)/],
+      [
+        'a future date',
+        '2026-04-23',
+        /2026-04-23 is not before today \(2026-04-22\)/,
+      ],
+    ])(
+      'rejects %s and names the cause, before any source is read',
+      async (_label, date, cause) => {
+        const res = mockResponse();
+        await handler(cronReq({ date }), res);
+
+        expect(res._status).toBe(500);
+        expect(res._json).toEqual({ error: expect.stringMatching(cause) });
+        expect(Sentry.captureException).toHaveBeenCalledOnce();
+        expect(mockedFetchSummaryPg).not.toHaveBeenCalled();
+        expect(mockedFetchVix).not.toHaveBeenCalled();
+        expect(mockedEmbed).not.toHaveBeenCalled();
+        expect(mockedUpsert).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([
+      ['a market holiday (Good Friday)', '2026-04-03'],
+      ['a weekend day', '2026-04-18'],
+    ])(
+      'skips %s as not_trading_day, before reading Postgres',
+      async (_label, date) => {
+        const res = mockResponse();
+        await handler(cronReq({ date }), res);
+
+        expect(res._status).toBe(200);
+        expect(res._json).toMatchObject({
+          status: 'skipped',
+          skipped: true,
+          reason: 'not_trading_day',
+          date,
+        });
+        expect(mockedFetchSummaryPg).not.toHaveBeenCalled();
+        expect(mockedEmbed).not.toHaveBeenCalled();
+        expect(mockedUpsert).not.toHaveBeenCalled();
+        expect(Sentry.captureMessage).not.toHaveBeenCalled();
+      },
+    );
+
+    it('still skips a partial day as incomplete_day: no forcing past the guard', async () => {
+      // The 2026-11-18 shape: a Schwab logout left the day 19 bars short.
+      overrideDay(371);
+
+      const res = mockResponse();
+      await handler(cronReq({ date: OVERRIDE }), res);
+
+      expect(res._status).toBe(200);
+      expect(res._json).toMatchObject({
+        status: 'skipped',
+        skipped: true,
+        reason: 'incomplete_day',
+        date: OVERRIDE,
+        barCount: 371,
+        expectedBars: 390,
+      });
+      expect(mockedEmbed).not.toHaveBeenCalled();
+      expect(mockedUpsert).not.toHaveBeenCalled();
+      expect(Sentry.captureMessage).toHaveBeenCalledWith(
+        'embed-yesterday: incomplete_day, day not embedded',
+        expect.objectContaining({ level: 'warning' }),
+      );
+    });
+
+    it('still skips a day with no bars as no_summary', async () => {
+      mockedFetchSummaryPg.mockResolvedValueOnce(null);
+
+      const res = mockResponse();
+      await handler(cronReq({ date: OVERRIDE }), res);
+
+      expect(res._json).toMatchObject({
+        status: 'skipped',
+        reason: 'no_summary',
+        date: OVERRIDE,
+      });
+      expect(mockedUpsert).not.toHaveBeenCalled();
+    });
+
+    it('reports the override date when the Postgres read fails', async () => {
+      mockedFetchSummaryPg.mockRejectedValueOnce(new Error('pg down'));
+
+      const res = mockResponse();
+      await handler(cronReq({ date: OVERRIDE }), res);
+
+      expect(res._status).toBe(500);
+      expect(res._json).toEqual({ date: OVERRIDE, error: 'pg down' });
+      expect(Sentry.captureException).toHaveBeenCalledOnce();
+    });
+
+    it('reports the override date when the upsert fails', async () => {
+      overrideDay();
+      mockedEmbed.mockResolvedValueOnce(VALID_EMBED);
+      mockedUpsert.mockResolvedValueOnce(false);
+
+      const res = mockResponse();
+      await handler(cronReq({ date: OVERRIDE }), res);
+
+      expect(res._status).toBe(500);
+      expect(res._json).toEqual({ date: OVERRIDE, error: 'upsert_failed' });
+    });
+
+    it('reports no date for a rejected override, not the prior weekday it never targeted', async () => {
+      const res = mockResponse();
+      await handler(cronReq({ date: 'nope' }), res);
+
+      expect(res._status).toBe(500);
+      expect(res._json).not.toHaveProperty('date');
+    });
   });
 });
