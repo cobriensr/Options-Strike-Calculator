@@ -1,9 +1,11 @@
 /**
  * IntervalBAFeed — historical backtest panel for SPXW Interval B/A alerts.
  *
- * Pick a CT calendar date + intraday time window (08:30–15:00 default)
+ * Pick a calendar date (it follows today's ET date across midnight unless
+ * you pick another) + an intraday CT time window (08:30–15:00 default)
  * and the table shows every alert that fired in that slice, sorted
- * newest-first. Each row deep-links to UW's per-contract page so the
+ * newest-first. The time window is a filter on any date: it stays when
+ * the date rolls. Each row deep-links to UW's per-contract page so the
  * user can inspect the underlying tape.
  *
  * Distinct from `IntervalBAAlertBanner` (the live bottom-right toast
@@ -18,6 +20,7 @@ import { useMemo, useState } from 'react';
 import { SectionBox } from '../ui/SectionBox';
 import { DateInput } from '../ui/DateInput';
 import { TimeInputCT } from '../ui/TimeInputCT';
+import { useFollowedDate } from '../../hooks/useFollowedDate';
 import { useIntervalBAFeed } from '../../hooks/useIntervalBAFeed';
 import { IntervalBARow } from './IntervalBARow';
 
@@ -36,15 +39,6 @@ const CHIP_ACTIVE = 'border-sky-500/70 bg-sky-950/40 text-sky-200';
 
 const SECTION_LABEL =
   'text-[10px] font-semibold tracking-[0.08em] text-neutral-500 uppercase';
-
-function todayCt(): string {
-  return new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'America/Chicago',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).format(new Date());
-}
 
 function formatPremiumCompact(n: number): string {
   if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(1)}M`;
@@ -74,7 +68,12 @@ interface IntervalBAFeedProps {
 export function IntervalBAFeed({
   marketOpen = false,
 }: Readonly<IntervalBAFeedProps> = {}) {
-  const [date, setDate] = useState<string>(todayCt());
+  // The owner's pick, else today (the shared ET clock): a tab left open past
+  // ET midnight moves to the new day, and a date picked stays put. Clearing
+  // the field follows today (the shared DateInput forwards '' only when the
+  // field is left empty), so the request never carries `date=`, which the
+  // server answers with a 400. `today` is that same clock, for `max`.
+  const { date, setDate, today } = useFollowedDate();
   const [startTime, setStartTime] = useState<string>('08:30');
   const [endTime, setEndTime] = useState<string>('15:00');
   const [optionType, setOptionType] = useState<'C' | 'P' | null>(null);
@@ -123,7 +122,7 @@ export function IntervalBAFeed({
               value={date}
               onChange={setDate}
               label="Date"
-              max={todayCt()}
+              max={today}
             />
             <TimeInputCT
               value={startTime}

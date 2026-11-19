@@ -11,13 +11,13 @@
  *   - Superseded requests are aborted when the settled params change or
  *     the component unmounts; an aborted request is not an error and its
  *     response is never written to state.
- *   - Auto-polling: when `marketOpen` is true AND the selected `date`
- *     is today (CT calendar), the hook bumps `refreshTick` every
- *     POLL_INTERVALS.ALERTS ms so the live feed stays in lockstep with
- *     `useIntervalBAAlerts` — without this the toast banner would surface
- *     a new alert while the history table stayed stale until the user
- *     hit the refresh button. Historical dates never poll. A poll uses
- *     the settled date and times.
+ *   - Auto-polling: when `marketOpen` is true AND the settled `date` is
+ *     today (the shared ET clock, `useETToday`), the hook bumps
+ *     `refreshTick` every POLL_INTERVALS.ALERTS ms so the live feed stays
+ *     in lockstep with `useIntervalBAAlerts` — without this the toast
+ *     banner would surface a new alert while the history table stayed
+ *     stale until the user hit the refresh button. Historical dates never
+ *     poll. A poll uses the settled date and times.
  *
  * Spec: docs/superpowers/specs/interval-ba-ask-alert-2026-05-12.md.
  */
@@ -26,6 +26,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { POLL_INTERVALS } from '../constants';
 import { captureUnlessAuth } from '../lib/sentry-helpers';
 import { useDebounced } from './useDebounced.js';
+import { useETToday } from './useETToday';
 import { usePolling } from './usePolling';
 
 export interface IntervalBAFeedAlert {
@@ -109,21 +110,6 @@ function buildUrl(p: UseIntervalBAFeedParams): string {
   if (p.confluenceOnly) sp.set('confluenceOnly', '1');
   if (p.moneyness) sp.set('moneyness', p.moneyness);
   return `/api/interval-ba-feed?${sp.toString()}`;
-}
-
-/**
- * CT calendar date in YYYY-MM-DD form. Duplicated here (rather than
- * imported from the IntervalBAFeed component) to keep the hook
- * self-contained — multiple call sites compute "today" the same way
- * already.
- */
-function todayCt(): string {
-  return new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'America/Chicago',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).format(new Date());
 }
 
 export function useIntervalBAFeed(
@@ -240,16 +226,21 @@ export function useIntervalBAFeed(
   // overlaps with the next tick is harmlessly aborted on the next
   // refreshTick bump.
   //
-  // The `settled.date === todayCt()` predicate is evaluated per render so
-  // a midnight rollover correctly flips the gate and stops polling the
-  // (now historical) prior date. It reads the settled date, the one the
-  // fetch effect uses, so the poll never refetches a date not yet shown.
+  // The gate reads the settled date, the one the fetch effect uses, so a poll
+  // never refetches a date that is not shown yet. "Today" is the shared ET
+  // clock, subscribed to (`useETToday`), so the gate flips in the commit at ET
+  // midnight (23:00:01 CT): it stops polling a feed left on the prior date and
+  // starts polling one on the new day. A following feed's settled date lags
+  // the roll by the debounce, so it polls the new day from then. The feed's
+  // date is the CT date of the SPXW expiry, but nothing fires or polls from
+  // 23:00 to 24:00 CT, the only hour the two dates differ.
+  const today = useETToday();
   usePolling(
     () => {
       setRefreshTick((n) => n + 1);
     },
     POLL_INTERVALS.ALERTS,
-    [marketOpen, settled.date === todayCt()],
+    [marketOpen, settled.date === today],
   );
 
   return { alerts, summary, loading, error, fetchedAt, refresh };

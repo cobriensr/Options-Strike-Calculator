@@ -28,17 +28,18 @@ import {
   type IntervalBAFeedSummary,
   type UseIntervalBAFeedParams,
 } from '../hooks/useIntervalBAFeed';
+import { POLL_INTERVALS } from '../constants';
+import { getETDateStr } from '../utils/timezone';
 
-// CT calendar "today" — mirrors the hook's own todayCt() so the polling
-// gate predicate matches regardless of the wall-clock day the suite runs.
-function todayCt(): string {
-  return new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'America/Chicago',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).format(new Date());
-}
+// The hook gates its poll on `params.date` being today on the shared ET clock
+// (`useETToday`), which rolls at 23:00:01 CT (1 s past ET midnight). Every
+// test here that reads "today" runs on a pinned clock (file-level beforeEach):
+// with no pin, a run from 23:00 to 24:00 CT gets a CT `date` that is already
+// yesterday's, the hook calls it historical, and a "does not poll" test passes
+// because of that, not the market. The pin is Thursday 2026-05-14, 13:00 ET,
+// after the fixtures' date (2026-05-12), which stays a past day.
+const PINNED_NOW = '2026-05-14T17:00:00Z';
+const TODAY_ET = getETDateStr(new Date(PINNED_NOW));
 
 const baseAlert: IntervalBAFeedAlert = {
   id: 1,
@@ -93,11 +94,15 @@ function mockFetchJson(payload: unknown, ok = true): void {
 
 describe('useIntervalBAFeed', () => {
   beforeEach(() => {
+    // Only Date is faked, so the real timers and waitFor below keep running.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date(PINNED_NOW));
     vi.clearAllMocks();
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.useRealTimers();
   });
 
   it('starts in the loading state with empty data', () => {
@@ -165,7 +170,7 @@ describe('useIntervalBAFeed', () => {
     mockFetchJson({ alerts: [baseAlert], summary: baseSummary });
 
     const { unmount } = renderHook(() =>
-      useIntervalBAFeed({ ...baseParams, date: todayCt() }, false),
+      useIntervalBAFeed({ ...baseParams, date: TODAY_ET }, false),
     );
 
     await waitFor(() => {
@@ -182,7 +187,7 @@ describe('useIntervalBAFeed', () => {
     mockFetchJson({ alerts: [baseAlert], summary: baseSummary });
 
     const { unmount } = renderHook(() =>
-      useIntervalBAFeed({ ...baseParams, date: todayCt() }, true),
+      useIntervalBAFeed({ ...baseParams, date: TODAY_ET }, true),
     );
 
     // Mount fetch + at least one poll-driven refetch.
@@ -286,7 +291,9 @@ describe('useIntervalBAFeed settling and abort', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.useFakeTimers();
+    // Every timer faked, on the pinned clock: the polling tests below read
+    // "today", and a fake clock with no `now` starts at the real time.
+    vi.useFakeTimers({ now: new Date(PINNED_NOW) });
   });
 
   afterEach(() => {
@@ -495,7 +502,7 @@ describe('useIntervalBAFeed settling and abort', () => {
 
   it('keeps polling at its interval while viewing today with the market open', async () => {
     mockFetchJson(emptyPayload);
-    renderFeed({ ...baseParams, date: todayCt() }, true);
+    renderFeed({ ...baseParams, date: TODAY_ET }, true);
     expect(fetchUrls()).toHaveLength(1);
 
     await advance(30);
@@ -506,7 +513,7 @@ describe('useIntervalBAFeed settling and abort', () => {
 
   it('polls with the last settled params, not a change still waiting', async () => {
     mockFetchJson(emptyPayload);
-    const today = todayCt();
+    const today = TODAY_ET;
     const { rerender } = renderFeed({ ...baseParams, date: today }, true);
 
     rerender({ ...baseParams, date: today, startTime: '09:00' });
@@ -521,5 +528,165 @@ describe('useIntervalBAFeed settling and abort', () => {
         .slice(0, -1)
         .every((url) => url.includes('startTime=08%3A30')),
     ).toBe(true);
+  });
+});
+
+// ============================================================
+// Midnight rollover (docs/superpowers/specs/panel-date-rollover-2026-11-14.md,
+// Phase 8, design item 3)
+//
+// The poll gate was `settled.date === todayCt()`, a CT date read from the wall
+// clock on each render. It was wrong twice: from 23:00 to 24:00 CT, when ET is
+// already on the new day, a feed on the new day was called historical and did
+// not poll; and a per-render read does not flip at midnight without a render,
+// so a feed left on the night kept polling it. The gate reads `today` from the
+// shared ET clock (`useETToday`), which re-renders the hook at the roll, 1 s
+// past ET midnight (23:00:01 CT the evening before). The auto-poll is 30 ms
+// here (the mock above), so each case starts 500 ms before midnight: the roll
+// is 1.5 s in. A poll's own result re-renders the hook, so the case that
+// starts polling at the roll is the one that tells the shared clock from a
+// wall-clock read: a historical feed has no polls to re-render it. The
+// `date` is constant in these cases, so the settle delay does not move them;
+// the roll of a date that follows today is on the feed component's tests.
+// ============================================================
+
+describe.each([
+  {
+    zone: 'EST (winter)',
+    midnight: '2026-11-10T05:00:00Z',
+    // 23:30 CT the evening before, ET already on the new day.
+    window: '2026-11-10T05:30:00Z',
+    night: '2026-11-09',
+    morning: '2026-11-10',
+  },
+  {
+    zone: 'EDT (summer)',
+    midnight: '2026-07-15T04:00:00Z',
+    window: '2026-07-15T04:30:00Z',
+    night: '2026-07-14',
+    morning: '2026-07-15',
+  },
+])('useIntervalBAFeed: across the $zone midnight', (m) => {
+  const POLL_MS = POLL_INTERVALS.ALERTS;
+  /** Midnight is this far after the start; the roll is 1 s after midnight. */
+  const LEAD_MS = 500;
+  const ROLL_MS = LEAD_MS + 1_000;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // Every timer is faked: the shared clock's roll and the hook's poll.
+    vi.useFakeTimers();
+    mockFetchJson({ alerts: [baseAlert], summary: baseSummary });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  const startAt = (iso: string, leadMs = 0) =>
+    vi.setSystemTime(new Date(Date.parse(iso) - leadMs));
+  /**
+   * Advance in one-poll steps, each in its own act(): a poll sets state, and
+   * the refetch it triggers runs when React flushes that update. One act
+   * around the whole advance would batch the polls into a single refetch.
+   */
+  const advance = async (ms: number) => {
+    if (ms === 0) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+      return;
+    }
+    for (let left = ms; left > 0; left -= POLL_MS) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(Math.min(POLL_MS, left));
+      });
+    }
+  };
+  const requests = () =>
+    (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls;
+  /** The `date` of every request so far, in order. */
+  const datesRequested = () =>
+    requests().map((c) =>
+      new URL(c[0] as string, 'http://x').searchParams.get('date'),
+    );
+
+  it('stops polling a feed left on the night once the roll comes', async () => {
+    startAt(m.midnight, LEAD_MS);
+    renderHook(() => useIntervalBAFeed({ ...baseParams, date: m.night }, true));
+    await advance(0);
+    expect(requests()).toHaveLength(1);
+
+    // Through midnight, before the roll at 1.5 s: still the night's day to the
+    // shared clock, so it keeps polling.
+    await advance(ROLL_MS - 100);
+    const beforeRoll = requests().length;
+    expect(beforeRoll).toBeGreaterThan(10);
+
+    // Past the roll the night is yesterday: the poll stops.
+    await advance(200);
+    const afterRoll = requests().length;
+    await advance(POLL_MS * 10);
+
+    expect(requests()).toHaveLength(afterRoll);
+    expect(new Set(datesRequested())).toEqual(new Set([m.night]));
+  });
+
+  it('starts polling a feed dated the new day at the roll, with no re-render but the roll', async () => {
+    startAt(m.midnight, LEAD_MS);
+    renderHook(() =>
+      useIntervalBAFeed({ ...baseParams, date: m.morning }, true),
+    );
+    await advance(0);
+    // Dated tomorrow while it is still the night: the mount fetch only, and
+    // none even once the wall clock passes midnight, before the roll.
+    await advance(ROLL_MS - 100);
+    expect(requests()).toHaveLength(1);
+
+    // 23:00:01 CT the evening before: ET is on the new day, CT is not.
+    await advance(200);
+    const afterRoll = requests().length;
+    await advance(POLL_MS * 5);
+
+    expect(requests().length).toBeGreaterThan(afterRoll);
+    expect(new Set(datesRequested())).toEqual(new Set([m.morning]));
+  });
+
+  it('polls a feed dated the new ET day at 23:30 CT, when CT is still on the night', async () => {
+    startAt(m.window);
+    renderHook(() =>
+      useIntervalBAFeed({ ...baseParams, date: m.morning }, true),
+    );
+    await advance(0);
+    expect(requests()).toHaveLength(1);
+
+    await advance(POLL_MS * 5);
+
+    // A CT comparator calls the new day historical here and never polls.
+    expect(requests().length).toBeGreaterThan(1);
+    expect(new Set(datesRequested())).toEqual(new Set([m.morning]));
+  });
+
+  it('does not poll a feed on the new day when the market is closed', async () => {
+    startAt(m.window);
+    renderHook(() =>
+      useIntervalBAFeed({ ...baseParams, date: m.morning }, false),
+    );
+    await advance(0);
+    await advance(POLL_MS * 5);
+
+    expect(requests()).toHaveLength(1);
+  });
+
+  it('keeps a past-dated feed from polling across the roll', async () => {
+    startAt(m.midnight, LEAD_MS);
+    renderHook(() =>
+      useIntervalBAFeed({ ...baseParams, date: '2026-04-20' }, true),
+    );
+    await advance(0);
+    await advance(ROLL_MS + 500);
+
+    expect(datesRequested()).toEqual(['2026-04-20']);
   });
 });

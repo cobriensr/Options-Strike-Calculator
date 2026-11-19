@@ -33,9 +33,17 @@ const TickerNetFlowChart = lazy(() =>
 
 interface IntervalBARowProps {
   alert: IntervalBAFeedAlert;
-  /** YYYY-MM-DD CT date of the parent's picker — used for tape/flow fetches. */
+  /**
+   * YYYY-MM-DD date of the parent's picker: its pick, else today's ET date,
+   * which it follows across ET midnight. Used for the tape/flow fetches; the
+   * lazy hooks compare it with the shared ET today to decide whether to poll.
+   */
   date: string;
-  /** Whether the picker's date is today (drives polling on the lazy hooks). */
+  /**
+   * Whether the market is open: the feed's own `marketOpen`, which App fills
+   * from the Schwab quotes' flag. It is not "the date is today": the lazy
+   * hooks poll only when this is true AND `date` is today.
+   */
   marketOpen: boolean;
 }
 

@@ -1,9 +1,21 @@
 // @vitest-environment jsdom
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from '@testing-library/react';
 import { IntervalBAFeed } from '../components/IntervalBAFeed/IntervalBAFeed';
 import type { IntervalBAFeedAlert } from '../hooks/useIntervalBAFeed';
+
+// The feed's date follows today on the shared ET clock, so every test that
+// renders it runs on a pinned clock: a run that crossed ET midnight would
+// refetch for the new day in the middle of a test. The pin is Thursday
+// 2026-05-14, 13:00 ET. The rollover cases at the end set their own clocks.
+const PINNED_NOW = '2026-05-14T17:00:00Z';
 
 const SAMPLE_ALERT: IntervalBAFeedAlert = {
   id: 1,
@@ -42,6 +54,9 @@ function mockFetch(payload: unknown, ok = true): ReturnType<typeof vi.fn> {
 
 describe('IntervalBAFeed', () => {
   beforeEach(() => {
+    // Only Date is faked, so timers, waitFor and user-event keep running.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date(PINNED_NOW));
     // Default to an empty response so the loading transition completes.
     mockFetch({
       alerts: [],
@@ -57,6 +72,7 @@ describe('IntervalBAFeed', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.useRealTimers();
   });
 
   it('renders the section heading + methodology text', async () => {
@@ -433,5 +449,193 @@ describe('IntervalBAFeed', () => {
     // assert each piece individually rather than the merged string.
     expect(screen.getByText('3')).toBeInTheDocument();
     expect(screen.getByText(/^alerts ·/)).toBeInTheDocument();
+  });
+});
+
+// ============================================================
+// Midnight rollover (docs/superpowers/specs/panel-date-rollover-2026-11-14.md,
+// Phase 8, design items 2 and 3)
+//
+// The feed kept its date in `useState(todayCt())`, so a tab left open past
+// midnight stayed on yesterday and `max` blocked the new day. Clearing the
+// date field sent `date=` and the server answered 400. The date follows the
+// shared ET clock now (`useFollowedDate`): the owner's pick, else today; a
+// pick of today, or an emptied field, follows again; any other date stays
+// put. (The date is the CT date of the SPXW expiry, but nothing fires or polls
+// from 23:00 to 24:00 CT, the only hour the two differ.) The Start and End
+// times are filters that apply to any date, so they stay across the roll. The
+// hook holds a changed date for 250 ms (useDebounced) before it fetches, so a
+// date that follows the roll, or a pick, refetches once, 250 ms after it: each
+// case settles after a change. Every case starts 30 s before an ET midnight;
+// the clock's timer is armed for 1 s past it, so 31 s lands just after
+// (23:00:01 CT the evening before). The auto-poll is off here (marketOpen
+// defaults to false); its gate is tested on the hook. Every assertion on
+// requests reads the whole sequence, and no case calls `rerender`.
+// ============================================================
+
+describe.each([
+  {
+    zone: 'EST (winter)',
+    start: '2026-11-10T04:59:30Z',
+    night: '2026-11-09',
+    morning: '2026-11-10',
+  },
+  {
+    zone: 'EDT (summer)',
+    start: '2026-07-15T03:59:30Z',
+    night: '2026-07-14',
+    morning: '2026-07-15',
+  },
+])('IntervalBAFeed: across the $zone midnight', (m) => {
+  /** useDebounced's default delay: a changed date waits this long to fetch. */
+  const SETTLE_MS = 250;
+  let fetchSpy: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    vi.setSystemTime(new Date(m.start));
+    fetchSpy = mockFetch({
+      alerts: [],
+      summary: {
+        count: 0,
+        total_premium: 0,
+        extreme: 0,
+        critical: 0,
+        warning: 0,
+      },
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  /** The shared clock's timer fires, just past midnight. */
+  function crossMidnight() {
+    act(() => {
+      vi.advanceTimersByTime(31_000);
+    });
+  }
+  const flush = () => act(async () => {});
+  /** Let a changed date settle: past the debounce, with its fetch resolved. */
+  const settle = () =>
+    act(async () => {
+      await vi.advanceTimersByTimeAsync(SETTLE_MS + 50);
+    });
+
+  const dateInput = () => screen.getByLabelText<HTMLInputElement>('Date');
+  function pick(date: string) {
+    fireEvent.change(dateInput(), { target: { value: date } });
+  }
+  /** The query string of every request so far, in order. */
+  const requested = () =>
+    fetchSpy.mock.calls.map(
+      (c) => new URL(c[0] as string, 'http://x').searchParams,
+    );
+  const datesRequested = () => requested().map((p) => p.get('date'));
+
+  it('follows the new ET day with no parent re-render: field, max, and one refetch for the new date after the debounce', async () => {
+    let parentRenders = 0;
+    function Parent() {
+      parentRenders += 1;
+      return <IntervalBAFeed />;
+    }
+    render(<Parent />);
+    await flush();
+    expect(dateInput().value).toBe(m.night);
+    expect(dateInput().max).toBe(m.night);
+    expect(datesRequested()).toEqual([m.night]);
+
+    crossMidnight();
+    await flush();
+
+    expect(parentRenders).toBe(1);
+    expect(dateInput().value).toBe(m.morning);
+    expect(dateInput().max).toBe(m.morning);
+    // The new date is held for the debounce: no request for it yet, and none
+    // for the night again.
+    expect(datesRequested()).toEqual([m.night]);
+
+    await settle();
+
+    expect(datesRequested()).toEqual([m.night, m.morning]);
+    // The time window is a filter, not part of the day: it stays.
+    expect(requested().every((p) => p.get('startTime') === '08:30')).toBe(true);
+    expect(requested().every((p) => p.get('endTime') === '15:00')).toBe(true);
+  });
+
+  it('keeps a picked past date across the roll, and moves max', async () => {
+    render(<IntervalBAFeed />);
+    await flush();
+    pick('2026-04-20');
+    await settle();
+    expect(datesRequested()).toEqual([m.night, '2026-04-20']);
+
+    crossMidnight();
+    await flush();
+    await settle();
+
+    expect(dateInput().value).toBe('2026-04-20');
+    expect(dateInput().max).toBe(m.morning);
+    // Nothing was requested for the new day: the pick held.
+    expect(datesRequested()).toEqual([m.night, '2026-04-20']);
+  });
+
+  it('follows again when today is picked back, across the roll', async () => {
+    render(<IntervalBAFeed />);
+    await flush();
+    pick('2026-04-20');
+    await settle();
+    pick(m.night);
+    await settle();
+
+    crossMidnight();
+    await flush();
+    await settle();
+
+    // A stored date would stay on the night. A pick of today is following.
+    expect(dateInput().value).toBe(m.morning);
+    expect(datesRequested()).toEqual([
+      m.night,
+      '2026-04-20',
+      m.night,
+      m.morning,
+    ]);
+  });
+
+  it('follows today when the field is left empty, not when it empties, and never sends an empty date', async () => {
+    render(<IntervalBAFeed />);
+    await flush();
+    pick('2026-04-20');
+    await settle();
+
+    // Emptying the field (the first "0" of a zero-padded month does it) is
+    // mid-edit: no request, even after the debounce, and the field shows what
+    // was typed.
+    pick('');
+    await settle();
+    expect(datesRequested()).toEqual([m.night, '2026-04-20']);
+    expect(dateInput().value).toBe('');
+
+    fireEvent.blur(dateInput());
+    await settle();
+
+    // `date=` is a 400 from the server.
+    expect(datesRequested()).toEqual([m.night, '2026-04-20', m.night]);
+    expect(dateInput().value).toBe(m.night);
+  });
+
+  it('passes a future date on and keeps it in the field', async () => {
+    render(<IntervalBAFeed />);
+    await flush();
+
+    // `max` is a hint the browser does not enforce on typing; a partial date on
+    // the way to a past one is often a future one.
+    pick(m.morning);
+    await settle();
+
+    expect(datesRequested()).toEqual([m.night, m.morning]);
+    expect(dateInput().value).toBe(m.morning);
   });
 });
