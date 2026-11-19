@@ -168,7 +168,8 @@ export interface LotteryFire {
   expiry: string;
   dte: number;
 
-  /** Composite score (0-25). `null` only on rows pre-#126 backfill. */
+  /** Composite score (0-25). The stored score floored at 0, whose tier is
+   *  the one shown at the fire. `null` only on rows pre-#126 backfill. */
   score: number | null;
   /** Tier label derived from `score` (tier3 when score is null). */
   scoreTier: LotteryScoreTier;
@@ -190,14 +191,14 @@ export interface LotteryFire {
   /** Distinct cheap-OTM-ask 0DTE strike count for this row's ticker+side
    *  (0 when not a cluster). */
   clusterStrikeCount?: number;
-  /** Pre-deduct score as stored on the row. Same as `score` when no
-   *  round-trip deduct has been applied (migration #154 / Phase 2C). */
+  /** The stored score before the zero floor. No UI reads it. */
   rawScore?: number | null;
   /** Post-fire (ask − bid) / total volume over a 60-min window from
    *  the evaluate-round-trip cron. Null until that cron has run. */
   roundTripNetPct?: number | null;
-  /** Stepped bracket deduct (0 / -1 / -2 / -3) applied to `score` at
-   *  read time. Drives the "Hide round-tripped" filter chip. */
+  /** Stepped bracket deduct (0 / -1 / -2 / -3), written by the cron about 65
+   *  minutes after the fire. It drives the round-tripped pill and the dimmed
+   *  row, and does not change `score` or the tier. */
   roundTripScoreDeduct?: number;
   /**
    * Volume-weighted gamma over the rolling trigger window — captured

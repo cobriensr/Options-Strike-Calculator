@@ -679,7 +679,7 @@ export const LotteryRow = memo(function LotteryRow({
         <div
           data-testid="lottery-row-round-tripped-pill"
           className="mb-1.5 inline-flex items-center gap-1 rounded border border-amber-500/50 bg-amber-950/40 px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-amber-200 uppercase"
-          title={`Post-fire flow turned bid-dominated (60-min window). Score deduct ${roundTripDeduct}. EDA: deducted fires had +11.4pp trail-loss rate vs baseline — treat as lower-EV.`}
+          title={`Sellers dominated this contract in the hour after the fire (deduct ${roundTripDeduct}). It reports a loss that already happened: Lottery fires still held when a -1 deduct landed were already down about 28% and finished down about 29%. The tier is the one shown at the fire.`}
         >
           round-tripped {roundTripDeduct}
         </div>

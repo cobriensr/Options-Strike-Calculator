@@ -1686,6 +1686,15 @@ describe('LotteryRow: round-tripped dim treatment', () => {
 
     const pill = screen.getByTestId('lottery-row-round-tripped-pill');
     expect(pill).toHaveTextContent('round-tripped -2');
+    expect(pill).toHaveAttribute(
+      'title',
+      expect.stringContaining('(deduct -2)'),
+    );
+    expect(pill).toHaveAttribute(
+      'title',
+      expect.stringContaining('The tier is the one shown at the fire.'),
+    );
+    expect(pill.getAttribute('title')).not.toContain('lower-EV');
   });
 
   it('leaves the container at full opacity and omits the pill when deduct is 0', () => {

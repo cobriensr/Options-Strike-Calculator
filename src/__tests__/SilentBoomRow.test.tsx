@@ -1197,6 +1197,19 @@ describe('SilentBoomRow: round-tripped dim treatment', () => {
 
     const pill = screen.getByTestId('silent-boom-row-round-tripped-pill');
     expect(pill).toHaveTextContent('round-tripped -2');
+    expect(pill).toHaveAttribute(
+      'title',
+      expect.stringContaining('(deduct -2)'),
+    );
+    expect(pill).toHaveAttribute(
+      'title',
+      expect.stringContaining('The tier is the one shown at the alert.'),
+    );
+    expect(pill).toHaveAttribute(
+      'title',
+      expect.stringContaining('on Lottery Finder fires'),
+    );
+    expect(pill.getAttribute('title')).not.toContain('lower-EV');
   });
 
   it('leaves the container at full opacity and omits the pill when deduct is 0', () => {

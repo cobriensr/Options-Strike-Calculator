@@ -599,7 +599,7 @@ export const SilentBoomRow = memo(function SilentBoomRow({
         <div
           data-testid="silent-boom-row-round-tripped-pill"
           className="mb-1.5 inline-flex items-center gap-1 rounded border border-amber-500/50 bg-amber-950/40 px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-amber-200 uppercase"
-          title={`Post-fire flow turned bid-dominated (60-min window). Score deduct ${roundTripDeduct}. EDA: deducted alerts had +14.4pp trail-loss rate vs baseline — treat as lower-EV.`}
+          title={`Sellers dominated this contract in the hour after the alert (deduct ${roundTripDeduct}). It reports a loss that already happened: on Lottery Finder fires, those still held when a -1 deduct landed were already down about 28% and finished down about 29%. The tier is the one shown at the alert.`}
         >
           round-tripped {roundTripDeduct}
         </div>
