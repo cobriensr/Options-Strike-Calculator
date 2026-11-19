@@ -28,16 +28,19 @@ Pipeline (5 phases): `analyze → ingest → plots → backfill-flow → enrich`
 
 ### `make update`
 
-Refreshes the research layer using the freshly-enriched fires. Order: `refit → exit_policy_search → feature_audit → flow_inversion_timing → daily_tracker`.
+Refreshes the research layer using the freshly-enriched fires. Order: `refit → exit_policy_search → feature_audit → flow_inversion_timing → daily_tracker → mine_outcome_patterns → score_lineage_audit → takeit-drift`.
 
 - **refit**: regenerates [ml/data/lottery_score_weights.json](../ml/data/lottery_score_weights.json), syncs to [api/\_lib/lottery-score-weights.ts](../api/_lib/lottery-score-weights.ts), backfills the `score` column on every fire under the new weights.
 - **exit_policy_search**: 18 exit policies head-to-head across all enriched fires → `docs/tmp/lottery-exit-policy-search-{LATEST_DATE}.md`.
 - **feature_audit**: Sharpe lift per fire-row feature on the Tier 2+ subset → `docs/tmp/lottery-feature-audit-{LATEST_DATE}.md`.
 - **flow_inversion_timing**: re-runs the inversion algorithm to capture exit timestamps; reports per-ticker median time-to-inversion + distribution → `docs/tmp/flow-inversion-timing-{LATEST_DATE}.md`. Slowest step (~3 min — parquet replay).
 - **daily_tracker**: appends one row to `docs/tmp/lottery-tracking.csv` (idempotent on date — same-day reruns overwrite).
+- **mine_outcome_patterns**: scans 2- and 3-feature combinations of the 90 days of single-leg fires up to the `--as-of` date for ones that lift winners or losers beyond their best single feature → `docs/tmp/lottery-composite-candidates-{DATE}.md` (`{DATE}` is the `--as-of` date, today by default).
+- **score_lineage_audit**: per day-of-week attribution of each score component over the last 30 days of single-leg fires, flagging components that contribute more to losers than winners → `docs/tmp/lottery-score-lineage-{DATE}.md` (`{DATE}` as above).
+- **takeit-drift** (`make takeit-drift`): TAKE-IT AUC and reliability drift over the enriched window → `docs/tmp/takeit-drift-{DATE}.md` and `ml/plots/takeit-drift/reliability_<feed>_{DATE}.png`.
 - **Flags on the four Neon-only reports** (all optional; `make update` passes none): `--out-dir DIR` on `feature_audit.py`, `mine_outcome_patterns.py` and `score_lineage_audit.py` (default `docs/tmp`); `--as-of YYYY-MM-DD` on `mine_outcome_patterns.py` and `score_lineage_audit.py` (default today; the 90- or 30-day window ends on it, it names the report, and fires dated after it are left out); `--csv PATH` on `daily_tracker.py` (default `docs/tmp/lottery-tracking.csv`).
 
-The exit_policy_search and flow_inversion_timing reports tier fires by the feed's qas against the active weights' `feed_cutoffs` (owner, 2026-11-19), and `make update` exits non-zero when the active weights can't be read.
+Six reports read the active weights version from the store, not the frozen JSON (owner, 2026-11-19; phase 3 D8). exit_policy_search, flow_inversion_timing and feature_audit tier fires by the feed's qas against its `feed_cutoffs`. daily_tracker uses its bare `cutoffs` on the stored score. mine_outcome_patterns and score_lineage_audit build their features and components from its `features`, and they select single-leg fires (`anchor_leg_kind = 'single'`, the population the refit trains on) in place of the old `inferred_structure IS NULL`. Each names the version in its output, and `make update` exits non-zero when the active weights can't be read.
 
 ### Chaining
 
