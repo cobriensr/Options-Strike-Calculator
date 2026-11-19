@@ -10,15 +10,25 @@ subprocesses against a fixed session. What is pinned here:
 * `--as-of YYYY-MM-DD` (mining, lineage) anchors the SQL window to that day, not
   to the database's CURRENT_DATE, and names the report. Without it the day is
   today.
+* The window runs from `--as-of` back 90 days (mining) or 30 days (lineage), both
+  ends inclusive: a fire dated after `--as-of` is left out, and a window with no
+  fire ends the run.
 * The env file is optional (the nightly service has none) and the reports write
   UTF-8.
 * A failed database call, or a bad `--as-of`, ends the run before anything is
   written.
 
 Neon is faked at the module boundary: `psycopg2.connect` and
-`pandas.read_sql` / `read_sql_query`. No test reaches a database. The scripts
-still read the frozen weights JSON (the next task moves that to the store), so
-the weights read is pointed at a temporary file or stubbed. Run:
+`pandas.read_sql` / `read_sql_query`. No test reaches a database. The fake for
+the windowed reports applies the date bounds the SQL text states, the way
+Postgres would, so a bound dropped from the query shows in what the report
+analyses. The scripts still read the frozen weights JSON (the next task moves
+that to the store), so the weights read is pointed at a temporary file or
+stubbed.
+
+The UTF-8 tests make `Path.write_text` and `Path.open` default to cp1252 when
+no encoding is named (`legacy_text_default`), so a dropped `encoding='utf-8'`
+fails on any host, UTF-8 mode or not. Run:
 
     ml/.venv/Scripts/python -m pytest -q scripts/test_report_cli.py
 """
@@ -27,10 +37,11 @@ from __future__ import annotations
 
 import csv
 import json
+import re
 import sys
 from collections.abc import Callable
-from dataclasses import dataclass
-from datetime import date
+from dataclasses import dataclass, field
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -63,6 +74,8 @@ SHIPPED_DESTINATIONS = {
     'mining': mining.REPORT_DIR,
     'lineage': lineage.REPORT_DIR,
 }
+# The repo's real docs/tmp. No test may change it; the happy-path tests snapshot it.
+SHIPPED_DOCS_TMP = SHIPPED_DESTINATIONS['feature_audit']
 
 
 # ── fakes at the module boundary ─────────────────────────────────────────────
@@ -105,13 +118,43 @@ def _fake_database(monkeypatch) -> list[str]:
     return urls
 
 
-def _serve(monkeypatch, reader: str, frame: pd.DataFrame) -> list[tuple[str, Any]]:
-    """Patch pandas' `reader`; return the (sql, params) pairs it was given."""
+def _in_the_sql_window(sql: str, params: dict, frame: pd.DataFrame) -> pd.DataFrame:
+    """What Postgres would return: the rows inside the date bounds the SQL states.
+
+    The lower bound is read from `date >= %(as_of)s::date - INTERVAL 'N days'`
+    and must be there. The upper bound, `AND date <= %(as_of)s::date`, is applied
+    only when the SQL has it, so a query that loses it hands the report a fire
+    from after the session.
+    """
+    lower = re.search(r"date >= %\(as_of\)s::date - INTERVAL '(\d+) days'", sql)
+    assert lower, 'the query has no as_of lower bound'
+    as_of = params['as_of']
+    keep = frame['date'] >= as_of - timedelta(days=int(lower.group(1)))
+    if 'AND date <= %(as_of)s::date' in sql:
+        keep &= frame['date'] <= as_of
+    served = frame[keep]
+    # Only the columns the SELECT lists: lineage's names `date`, mining's does not.
+    return served if re.search(r'^\s+date,\s*$', sql, re.MULTILINE) else served.drop(
+        columns='date'
+    )
+
+
+def _serve(
+    monkeypatch,
+    reader: str,
+    frame: pd.DataFrame,
+    answer: Callable[[str, Any, pd.DataFrame], pd.DataFrame] | None = None,
+) -> list[tuple[str, Any]]:
+    """Patch pandas' `reader`; return the (sql, params) pairs it was given.
+
+    It serves `frame`, or what `answer(sql, params, frame)` makes of it.
+    """
     queries: list[tuple[str, Any]] = []
 
     def read(sql, con, params=None, **kwargs):
         queries.append((sql, params))
-        return frame.copy()
+        served = frame if answer is None else answer(sql, params, frame)
+        return served.copy()
 
     monkeypatch.setattr(pd, reader, read)
     return queries
@@ -145,6 +188,30 @@ def default_dir(tmp_path, monkeypatch) -> Path:
     return decoy
 
 
+@pytest.fixture
+def legacy_text_default(monkeypatch) -> None:
+    """A host whose default text encoding is a legacy code page (cp1252).
+
+    A `Path.write_text` or `Path.open` that names no encoding is made in cp1252
+    whatever this host's own default is, so a dropped `encoding='utf-8'` fails
+    here and in CI, where UTF-8 mode would hide it (U+2192 and U+0141 are not in
+    cp1252, and a UTF-8 0x81 byte is not valid in it).
+    """
+    real_write_text = Path.write_text
+    real_open = Path.open
+
+    def write_text(self, data, encoding=None, **kwargs):
+        return real_write_text(self, data, encoding=encoding or 'cp1252', **kwargs)
+
+    def open_(self, mode='r', buffering=-1, encoding=None, errors=None, newline=None):
+        if 'b' not in mode and encoding is None:
+            encoding = 'cp1252'
+        return real_open(self, mode, buffering, encoding, errors, newline)
+
+    monkeypatch.setattr(Path, 'write_text', write_text)
+    monkeypatch.setattr(Path, 'open', open_)
+
+
 # ── one run per script ───────────────────────────────────────────────────────
 
 
@@ -158,6 +225,7 @@ class Run:
     urls: list[str]  # DSNs psycopg2.connect got
     queries: list[tuple[str, Any]]  # (sql, params) the report read
     reader: str  # the pandas reader that served them
+    analysed: list[pd.DataFrame] = field(default_factory=list)  # fires analysed
 
 
 def _audit_frame(n: int = 300) -> pd.DataFrame:
@@ -226,8 +294,9 @@ def feature_audit_run(tmp_path, monkeypatch) -> Run:
     )
 
 
-# A non-ASCII ticker: the CSV is UTF-8 whatever the host's default text
-# encoding is (U+0141 is not in cp1252, and its UTF-8 byte 0x81 is not valid in it).
+# A non-ASCII ticker, for the tracker CSV and the mining report: both are UTF-8
+# whatever the host's default text encoding is (U+0141 is not in cp1252, and its
+# UTF-8 byte 0x81 is not valid in it).
 NON_ASCII_TICKER = 'SPŁ'
 
 
@@ -289,29 +358,61 @@ def tracker_run(tmp_path, monkeypatch) -> Run:
     )
 
 
+AFTER_SESSION = date(2026, 11, 5)  # a fire the run for 11-04 must not read
+INSIDE_90_NOT_30 = date(2026, 9, 15)  # 50 days back: in mining's window, not lineage's
+BEFORE_90 = date(2026, 7, 1)  # 126 days back, in neither window
+# fire id -> the date it fired. Four are in both windows.
+FIRE_DATES = {
+    1: date(2026, 11, 2),
+    2: date(2026, 11, 3),
+    3: SESSION,
+    4: SESSION,
+    5: AFTER_SESSION,
+    6: INSIDE_90_NOT_30,
+    7: BEFORE_90,
+}
+
+
 def _fetched_fires() -> pd.DataFrame:
-    """What the mining and lineage queries return; only what fetch_fires reads."""
+    """What the mining and lineage tables hold, before their date bounds apply.
+
+    Only the columns fetch_fires reads, plus `date` for the fake to filter on.
+    """
     return pd.DataFrame(
         {
-            'date': [date(2026, 11, 2), date(2026, 11, 3), SESSION, SESSION],
-            'realized_flow_inversion_pct': [60.0, -60.0, 10.0, None],
-            'realized_eod_pct': [55.0, -70.0, 12.0, 0.0],
-            'peak_ceiling_pct': [90.0, 5.0, 30.0, 20.0],
+            'id': list(FIRE_DATES),
+            'date': list(FIRE_DATES.values()),
+            'realized_flow_inversion_pct': [60.0, -60.0, 10.0, None, 40.0, 15.0, 20.0],
+            'realized_eod_pct': [55.0, -70.0, 12.0, 0.0, 35.0, 10.0, 18.0],
+            'peak_ceiling_pct': [90.0, 5.0, 30.0, 20.0, 80.0, 40.0, 50.0],
         }
-    )
+    )  # fmt: skip
 
 
 def mining_run(tmp_path, monkeypatch) -> Run:
     out_dir = tmp_path / 'mining'
     urls = _fake_database(monkeypatch)
-    queries = _serve(monkeypatch, 'read_sql_query', _fetched_fires())
+    queries = _serve(
+        monkeypatch, 'read_sql_query', _fetched_fires(), _in_the_sql_window
+    )
     monkeypatch.setattr(mining, 'load_weights', lambda: {'model_version': 'v-test'})
     features = pd.DataFrame(
         {key: ['x', 'y', 'x', 'y'] for key in mining.FEATURE_KEYS}
         | {'outcome_pct': [60.0, -60.0, 10.0, 0.0]}
     )
-    monkeypatch.setattr(mining, 'build_feature_tuples', lambda df, weights: features)
-    monkeypatch.setattr(mining, 'scan_combos', lambda *args, **kwargs: ([], 0, 0))
+    analysed: list[pd.DataFrame] = []
+
+    def build_feature_tuples(df, weights):
+        analysed.append(df)
+        return features
+
+    combo = {  # one winning composite, named for a non-ASCII ticker
+        'combo': f'ticker={NON_ASCII_TICKER} & tod=AM_open',
+        'n_total': 40, 'n_winners': 12, 'n_losers': 2, 'lift_win': 3.0,
+        'lift_loss': 0.5, 'net_score': 2.5, 'best_singleton_net': 1.0, 'marginal': 1.5,
+    }  # fmt: skip
+    monkeypatch.setattr(mining, 'build_feature_tuples', build_feature_tuples)
+    monkeypatch.setattr(mining, 'scan_combos', lambda *args, **kwargs: ([combo], 1, 1))
     return Run(
         main=mining.main,
         argv=['--as-of', '2026-11-04', '--out-dir', str(out_dir)],
@@ -321,13 +422,16 @@ def mining_run(tmp_path, monkeypatch) -> Run:
         urls=urls,
         queries=queries,
         reader='read_sql_query',
+        analysed=analysed,
     )
 
 
 def lineage_run(tmp_path, monkeypatch) -> Run:
     out_dir = tmp_path / 'lineage'
     urls = _fake_database(monkeypatch)
-    queries = _serve(monkeypatch, 'read_sql_query', _fetched_fires())
+    queries = _serve(
+        monkeypatch, 'read_sql_query', _fetched_fires(), _in_the_sql_window
+    )
     monkeypatch.setattr(lineage, 'load_weights', lambda: {'model_version': 'v-test'})
     table = pd.DataFrame(
         [
@@ -338,9 +442,13 @@ def lineage_run(tmp_path, monkeypatch) -> Run:
             }
         ]
     )  # fmt: skip
-    monkeypatch.setattr(
-        lineage, 'run_attribution', lambda df, weights: (table, table[table['flagged']])
-    )
+    analysed: list[pd.DataFrame] = []
+
+    def run_attribution(df, weights):
+        analysed.append(df)
+        return table, table[table['flagged']]
+
+    monkeypatch.setattr(lineage, 'run_attribution', run_attribution)
     return Run(
         main=lineage.main,
         argv=['--as-of', '2026-11-04', '--out-dir', str(out_dir)],
@@ -350,6 +458,7 @@ def lineage_run(tmp_path, monkeypatch) -> Run:
         urls=urls,
         queries=queries,
         reader='read_sql_query',
+        analysed=analysed,
     )
 
 
@@ -365,26 +474,30 @@ AS_OF_REPORTS = ('mining', 'lineage')
 # ── the destination ──────────────────────────────────────────────────────────
 
 
-def test_feature_audit_writes_into_out_dir(tmp_path, monkeypatch, default_dir):
+def test_feature_audit_writes_into_out_dir(
+    tmp_path, monkeypatch, default_dir, legacy_text_default
+):
     run = feature_audit_run(tmp_path, monkeypatch)
+    shipped_before = _snapshot(SHIPPED_DOCS_TMP)
 
     run.main(run.argv)
 
     assert [p.name for p in run.out_dir.iterdir()] == [
         'lottery-feature-audit-2026-11-04.md'
     ]
-    text = run.output.read_text(encoding='utf-8')
+    text = run.output.read_bytes().decode('utf-8')  # UTF-8 though the default is cp1252
     assert text.startswith('# Fire-row feature audit')
     assert 'Dataset: 300 fires' in text
     assert '(2026-05-01 → 2026-11-04)' in text
-    assert '→'.encode() in run.output.read_bytes()
     assert _snapshot(default_dir) == {}
+    assert _snapshot(SHIPPED_DOCS_TMP) == shipped_before
 
 
 def test_tracker_csv_path_is_respected_and_row_replaced(
-    tmp_path, monkeypatch, default_dir
+    tmp_path, monkeypatch, default_dir, legacy_text_default
 ):
     run = tracker_run(tmp_path, monkeypatch)
+    shipped_before = _snapshot(SHIPPED_DOCS_TMP)
     before = _read_rows(run.output)
     assert [r['date'] for r in before] == ['2026-11-03', '2026-11-04']
 
@@ -403,6 +516,7 @@ def test_tracker_csv_path_is_respected_and_row_replaced(
     }
     assert _snapshot(run.out_dir).keys() == {'lottery-tracking.csv'}
     assert _snapshot(default_dir) == {}
+    assert _snapshot(SHIPPED_DOCS_TMP) == shipped_before
 
 
 def test_tracker_with_no_enriched_fires_exits_and_leaves_the_csv_alone(
@@ -446,37 +560,89 @@ def test_the_shipped_defaults_are_docs_tmp_under_the_repo_root():
 # ── the session date ─────────────────────────────────────────────────────────
 
 
-def test_mining_window_is_anchored_to_as_of(tmp_path, monkeypatch, default_dir):
+def test_mining_window_is_anchored_to_as_of(
+    tmp_path, monkeypatch, default_dir, legacy_text_default
+):
     run = mining_run(tmp_path, monkeypatch)
+    shipped_before = _snapshot(SHIPPED_DOCS_TMP)
 
     run.main(run.argv)
 
     ((sql, params),) = run.queries
     assert "%(as_of)s::date - INTERVAL '90 days'" in sql
+    assert 'AND date <= %(as_of)s::date' in sql
     assert 'CURRENT_DATE' not in sql
     assert params == {'as_of': date(2026, 11, 4)}
     assert [p.name for p in run.out_dir.iterdir()] == [
         'lottery-composite-candidates-2026-11-04.md'
     ]
-    text = run.output.read_text(encoding='utf-8')
+    text = run.output.read_bytes().decode('utf-8')  # the Ł is not in cp1252
     assert text.startswith('# Lottery composite candidates — 2026-11-04')
+    assert 'Sample: the 90 days up to 2026-11-04, aligned non-structure' in text
+    assert f'ticker={NON_ASCII_TICKER} & tod=AM_open' in text
     assert _snapshot(default_dir) == {}
+    assert _snapshot(SHIPPED_DOCS_TMP) == shipped_before
 
 
-def test_lineage_window_is_anchored_to_as_of(tmp_path, monkeypatch, default_dir):
+def test_lineage_window_is_anchored_to_as_of(
+    tmp_path, monkeypatch, default_dir, legacy_text_default
+):
     run = lineage_run(tmp_path, monkeypatch)
+    shipped_before = _snapshot(SHIPPED_DOCS_TMP)
 
     run.main(run.argv)
 
     ((sql, params),) = run.queries
     assert "%(as_of)s::date - INTERVAL '30 days'" in sql
+    assert 'AND date <= %(as_of)s::date' in sql
     assert 'CURRENT_DATE' not in sql
     assert params == {'as_of': date(2026, 11, 4)}
     assert [p.name for p in run.out_dir.iterdir()] == [
         'lottery-score-lineage-2026-11-04.md'
     ]
-    text = run.output.read_text(encoding='utf-8')
+    text = run.output.read_bytes().decode('utf-8')  # the ✓ is not in cp1252
     assert text.startswith('# Lottery Score Lineage Audit — 2026-11-04')
+    assert 'Window: the 30 days up to 2026-11-04, enriched aligned' in text
+    assert '✓' in text
+    assert _snapshot(default_dir) == {}
+    assert _snapshot(SHIPPED_DOCS_TMP) == shipped_before
+
+
+@pytest.mark.parametrize(
+    ('name', 'analysed_ids'),
+    [
+        pytest.param('mining', {1, 2, 3, 4, 6}, id='mining-90-days'),
+        pytest.param('lineage', {1, 2, 3, 4}, id='lineage-30-days'),
+    ],
+)
+def test_the_window_ends_at_as_of_and_reaches_back_its_length(
+    name, analysed_ids, tmp_path, monkeypatch, default_dir
+):
+    """A fire dated after the session is left out, as is one before the window."""
+    run = BUILDERS[name](tmp_path, monkeypatch)
+
+    run.main(run.argv)
+
+    (fires,) = run.analysed
+    analysed = {FIRE_DATES[i] for i in fires['id']}
+    assert AFTER_SESSION not in analysed
+    assert BEFORE_90 not in analysed
+    assert set(fires['id']) == analysed_ids
+
+
+@pytest.mark.parametrize('name', AS_OF_REPORTS)
+def test_an_empty_window_ends_the_run_and_writes_nothing(
+    name, tmp_path, monkeypatch, default_dir
+):
+    run = BUILDERS[name](tmp_path, monkeypatch)
+    _serve(monkeypatch, 'read_sql_query', _fetched_fires().iloc[0:0])
+
+    with pytest.raises(SystemExit) as exit_info:
+        run.main(run.argv)
+
+    assert 'No fires found' in str(exit_info.value.code)
+    assert run.analysed == []
+    assert not run.out_dir.exists()
     assert _snapshot(default_dir) == {}
 
 

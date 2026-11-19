@@ -35,6 +35,7 @@ Refreshes the research layer using the freshly-enriched fires. Order: `refit →
 - **feature_audit**: Sharpe lift per fire-row feature on the Tier 2+ subset → `docs/tmp/lottery-feature-audit-{LATEST_DATE}.md`.
 - **flow_inversion_timing**: re-runs the inversion algorithm to capture exit timestamps; reports per-ticker median time-to-inversion + distribution → `docs/tmp/flow-inversion-timing-{LATEST_DATE}.md`. Slowest step (~3 min — parquet replay).
 - **daily_tracker**: appends one row to `docs/tmp/lottery-tracking.csv` (idempotent on date — same-day reruns overwrite).
+- **Flags on the four Neon-only reports** (all optional; `make update` passes none): `--out-dir DIR` on `feature_audit.py`, `mine_outcome_patterns.py` and `score_lineage_audit.py` (default `docs/tmp`); `--as-of YYYY-MM-DD` on `mine_outcome_patterns.py` and `score_lineage_audit.py` (default today; the 90- or 30-day window ends on it, it names the report, and fires dated after it are left out); `--csv PATH` on `daily_tracker.py` (default `docs/tmp/lottery-tracking.csv`).
 
 The exit_policy_search and flow_inversion_timing reports tier fires by the feed's qas against the active weights' `feed_cutoffs` (owner, 2026-11-19), and `make update` exits non-zero when the active weights can't be read.
 

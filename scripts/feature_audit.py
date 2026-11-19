@@ -47,11 +47,12 @@ TIER2_CUTOFF = 10
 # contaminated by fires the user never sees.
 SUPPRESSED_QUINTILES = (1, 2)
 
+sys.path.insert(0, str(ROOT / 'scripts'))
+from _cli_paths import load_env_file  # noqa: E402
+
 # Per-ticker inversion-quality bonus — single Python source of truth, imported
 # from the enrich script (mirrors api/_lib/lottery-inversion-bonus.ts). Avoids a
 # third hand-copy of the map that could silently drift on the next retune.
-sys.path.insert(0, str(ROOT / 'scripts'))
-from _cli_paths import load_env_file  # noqa: E402
 from enrich_lottery_outcomes import (  # noqa: E402
     INVERSION_BONUS_BY_QUINTILE,
 )

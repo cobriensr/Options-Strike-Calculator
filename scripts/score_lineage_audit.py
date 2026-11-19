@@ -67,6 +67,7 @@ SELECT
 FROM lottery_finder_fires
 WHERE
     date >= %(as_of)s::date - INTERVAL '30 days'
+    AND date <= %(as_of)s::date
     AND cum_ncp_at_fire IS NOT NULL
     AND cum_npp_at_fire IS NOT NULL
     AND (
@@ -80,7 +81,11 @@ ORDER BY id
 
 
 def fetch_fires(as_of: date) -> pd.DataFrame:
-    """Fetch aligned, filtered fires for the 30 days up to `as_of`."""
+    """Fetch aligned, filtered fires for the 30 days ending on `as_of`.
+
+    Both ends are inclusive, so a run for a session never reads a fire dated
+    after it, whenever it runs.
+    """
     db_url = os.environ.get("DATABASE_URL_UNPOOLED") or os.environ.get("DATABASE_URL")
     if not db_url:
         sys.exit("DATABASE_URL not set")
@@ -315,7 +320,7 @@ def render_report(
     lines: list[str] = [
         f"# Lottery Score Lineage Audit — {date_str}",
         "",
-        f"Window: last 30 days enriched aligned non-structure (n={n_fires:,})",
+        f"Window: the 30 days up to {date_str}, enriched aligned non-structure (n={n_fires:,})",
         "Winner threshold: outcome_pct >= +50% | Loser: outcome_pct <= -50%",
         f"Flag criteria: attribution_gap < 0 AND (n_win + n_loss) >= {MIN_SUPPORT}",
         "",

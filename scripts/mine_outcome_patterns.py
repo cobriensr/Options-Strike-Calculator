@@ -65,6 +65,7 @@ SELECT
 FROM lottery_finder_fires
 WHERE
     date >= %(as_of)s::date - INTERVAL '90 days'
+    AND date <= %(as_of)s::date
     AND cum_ncp_at_fire IS NOT NULL
     AND cum_npp_at_fire IS NOT NULL
     AND (
@@ -80,8 +81,8 @@ ORDER BY id
 def fetch_fires(as_of: date) -> pd.DataFrame:
     """Fetch aligned, filtered fires and return with outcome_pct column.
 
-    The window is the 90 days up to `as_of`, so a report for a given session
-    reads the same fires whenever it runs.
+    The window is the 90 days ending on `as_of`, both ends inclusive, so a run
+    for a session never reads a fire dated after it, whenever it runs.
     """
     db_url = os.environ.get("DATABASE_URL_UNPOOLED") or os.environ.get("DATABASE_URL")
     if not db_url:
@@ -372,7 +373,7 @@ def render_report(
         f"# Lottery composite candidates — {date_str}",
         "",
         "Trigger: nightly mine_outcome_patterns.py",
-        f"Sample: last 90d aligned non-structure (n={n_total:,}) | "
+        f"Sample: the 90 days up to {date_str}, aligned non-structure (n={n_total:,}) | "
         f"winners (>=50%) = {n_winners:,} | losers (<=-50%) = {n_losers:,}",
         f"Mining threshold: support >= {MIN_SUPPORT}, "
         f"net_score lift over best singleton >= {MARGINAL_DELTA}",
@@ -448,6 +449,12 @@ def main(argv: list[str] | None = None) -> None:
     print(f"Loaded weights: {weights['model_version']}")
 
     df_raw = fetch_fires(as_of)
+
+    # An empty window must end the run (as score_lineage_audit does), not divide
+    # by zero below or write an empty report.
+    if df_raw.empty:
+        sys.exit("No fires found — nothing to analyze")
+
     df = build_feature_tuples(df_raw, weights)
 
     n_total = len(df)
