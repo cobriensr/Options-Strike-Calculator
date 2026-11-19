@@ -158,12 +158,13 @@ export default withCronInstrumentation(
       throw new EmbedYesterdayError('embed_failed', date);
     }
 
-    // Summary format: "YYYY-MM-DD SYM | ...". Second whitespace token is
-    // the front-month symbol. Defensive slice: if the format ever
-    // changes, we fall back to 'ES' so the row still persists with a
-    // sane symbol rather than failing the whole upsert.
+    // Summary format: "YYYY-MM-DD SYM | ...". The second whitespace token
+    // is the symbol: SPX in the summaries `postgres-day-summary.ts`
+    // builds. Defensive slice: if the format ever changes, we fall back
+    // to 'SPX' so the row still persists with the symbol its bars came
+    // from rather than failing the whole upsert.
     const parts = summary.split(' ');
-    const symbol = parts[1] ?? 'ES';
+    const symbol = parts[1] ?? 'SPX';
 
     const ok = await upsertDayEmbedding({
       date,

@@ -132,6 +132,26 @@ describe('embed-yesterday handler', () => {
     );
   });
 
+  it('defaults the symbol to SPX when the summary has no second token', async () => {
+    // Postgres builds every summary as "YYYY-MM-DD SPX | ...". If that
+    // format ever changes, the row must still be labelled SPX, not ES.
+    mockedFetchSummaryPg.mockResolvedValueOnce({
+      summary: 'malformed',
+      barCount: 390,
+    });
+    mockedEmbed.mockResolvedValueOnce(VALID_EMBED);
+    mockedUpsert.mockResolvedValueOnce(true);
+
+    const res = mockResponse();
+    await handler(cronReq(), res);
+
+    expect(mockedUpsert).toHaveBeenCalledWith(
+      expect.objectContaining({ summary: 'malformed', symbol: 'SPX' }),
+    );
+    expect(res._status).toBe(200);
+    expect(res._json).toMatchObject({ status: 'success', symbol: 'SPX' });
+  });
+
   it('skips back to Friday when invoked on Monday', async () => {
     vi.setSystemTime(MON);
     fullDay();
