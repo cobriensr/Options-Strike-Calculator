@@ -9,17 +9,19 @@ of that component to winners vs. losers and flags cells where the
 component contributes MORE to losers than winners (anti-predictive).
 
 Writes a daily Markdown report to:
-  docs/tmp/lottery-score-lineage-{YYYY-MM-DD}.md
+  docs/tmp/lottery-score-lineage-{as-of date}.md   (or --out-dir)
+
+The window is the 30 days up to --as-of (default: today).
 
 Usage:
-    ml/.venv/Scripts/python scripts/score_lineage_audit.py
+    ml/.venv/Scripts/python scripts/score_lineage_audit.py [--as-of YYYY-MM-DD] [--out-dir DIR]
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
-import re
 import sys
 from datetime import date
 from pathlib import Path
@@ -36,26 +38,13 @@ ENV_FILE = ROOT / ".env.local"
 WEIGHTS_PATH = ROOT / "ml" / "output" / "lottery_score_weights.json"
 REPORT_DIR = ROOT / "docs" / "tmp"
 
-# ---------------------------------------------------------------------------
-# Environment loading (same pattern as mine_outcome_patterns.py)
-# ---------------------------------------------------------------------------
-
-
-def load_env() -> None:
-    """Load DATABASE_URL from .env.local into os.environ."""
-    if not ENV_FILE.exists():
-        sys.exit(f"Missing env file: {ENV_FILE}")
-    with ENV_FILE.open() as fh:
-        for line in fh:
-            m = re.match(r"^([A-Z_][A-Z0-9_]*)=(.*)$", line.strip())
-            if m:
-                os.environ.setdefault(
-                    m.group(1), m.group(2).strip('"').strip("'")
-                )
-
+# `_cli_paths.load_env_file` reads ENV_FILE into os.environ (DATABASE_URL); a
+# missing file is fine, the nightly service has none.
+sys.path.insert(0, str(ROOT / "scripts"))
+from _cli_paths import load_env_file  # noqa: E402
 
 # ---------------------------------------------------------------------------
-# SQL fetch — last 30 days, same alignment gate as Phase 1
+# SQL fetch — the 30 days up to --as-of, same alignment gate as Phase 1
 # ---------------------------------------------------------------------------
 
 FETCH_QUERY = """
@@ -77,7 +66,7 @@ SELECT
     score
 FROM lottery_finder_fires
 WHERE
-    date >= CURRENT_DATE - INTERVAL '30 days'
+    date >= %(as_of)s::date - INTERVAL '30 days'
     AND cum_ncp_at_fire IS NOT NULL
     AND cum_npp_at_fire IS NOT NULL
     AND (
@@ -90,16 +79,16 @@ ORDER BY id
 """
 
 
-def fetch_fires() -> pd.DataFrame:
-    """Fetch aligned, filtered fires for the last 30 days."""
+def fetch_fires(as_of: date) -> pd.DataFrame:
+    """Fetch aligned, filtered fires for the 30 days up to `as_of`."""
     db_url = os.environ.get("DATABASE_URL_UNPOOLED") or os.environ.get("DATABASE_URL")
     if not db_url:
-        sys.exit("DATABASE_URL not set — run load_env() first")
+        sys.exit("DATABASE_URL not set")
 
     print("Connecting to database...")
     conn = psycopg2.connect(db_url, sslmode="require", connect_timeout=15)
-    print("Fetching fires (last 30 days)...")
-    df = pd.read_sql_query(FETCH_QUERY, conn)
+    print(f"Fetching fires (30 days up to {as_of.isoformat()})...")
+    df = pd.read_sql_query(FETCH_QUERY, conn, params={"as_of": as_of})
     conn.close()
     print(f"Fetched {len(df):,} rows before final filter")
 
@@ -284,7 +273,6 @@ def check_am_open_sanity(full_table: pd.DataFrame) -> tuple[bool, str]:
 
     positive_dow_count = int((tod_rows["gap"] > 0).sum())
     total_dow_count = len(tod_rows)
-    ratio = positive_dow_count / total_dow_count if total_dow_count > 0 else 0.0
 
     # We can't isolate AM_open specifically in the aggregated table (it's mixed
     # across all tod values), so instead we verify the tod component's mean gap
@@ -315,7 +303,7 @@ _RECOMMENDED_ACTIONS = {
 
 
 def render_report(
-    today: date,
+    as_of: date,
     n_fires: int,
     full_table: pd.DataFrame,
     flagged: pd.DataFrame,
@@ -323,12 +311,12 @@ def render_report(
     sanity_passed: bool,
     sanity_detail: str,
 ) -> str:
-    date_str = today.strftime("%Y-%m-%d")
+    date_str = as_of.strftime("%Y-%m-%d")
     lines: list[str] = [
         f"# Lottery Score Lineage Audit — {date_str}",
         "",
         f"Window: last 30 days enriched aligned non-structure (n={n_fires:,})",
-        f"Winner threshold: outcome_pct >= +50% | Loser: outcome_pct <= -50%",
+        "Winner threshold: outcome_pct >= +50% | Loser: outcome_pct <= -50%",
         f"Flag criteria: attribution_gap < 0 AND (n_win + n_loss) >= {MIN_SUPPORT}",
         "",
         "## Per-DOW x component attribution table",
@@ -430,13 +418,34 @@ def render_report(
 # ---------------------------------------------------------------------------
 
 
-def main() -> None:
-    load_env()
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--as-of",
+        type=date.fromisoformat,
+        default=None,
+        metavar="YYYY-MM-DD",
+        help="Session date: the 30-day window ends here and names the report "
+        "(default: today).",
+    )
+    parser.add_argument(
+        "--out-dir",
+        type=Path,
+        default=REPORT_DIR,
+        help="Where the report is written (default: docs/tmp under the repo root).",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = parse_args(argv)
+    as_of = args.as_of or date.today()
+    load_env_file(ENV_FILE)
 
     weights = load_weights()
     print(f"Loaded weights: {weights['model_version']}")
 
-    df = fetch_fires()
+    df = fetch_fires(as_of)
 
     if df.empty:
         sys.exit("No fires found — nothing to analyze")
@@ -467,9 +476,8 @@ def main() -> None:
         icon = "✓" if mean_gap > 0 else "✗"
         print(f"  {comp}: {mean_gap:+.3f} {icon}")
 
-    today = date.today()
     report_md = render_report(
-        today=today,
+        as_of=as_of,
         n_fires=len(df),
         full_table=full_table,
         flagged=flagged,
@@ -478,8 +486,8 @@ def main() -> None:
         sanity_detail=sanity_detail,
     )
 
-    REPORT_DIR.mkdir(parents=True, exist_ok=True)
-    report_path = REPORT_DIR / f"lottery-score-lineage-{today.strftime('%Y-%m-%d')}.md"
+    args.out_dir.mkdir(parents=True, exist_ok=True)
+    report_path = args.out_dir / f"lottery-score-lineage-{as_of.strftime('%Y-%m-%d')}.md"
     report_path.write_text(report_md, encoding="utf-8")
     print(f"\nWrote report: {report_path}")
 

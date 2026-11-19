@@ -6,17 +6,18 @@ realized_flow_inversion_pct in each bin (discrete fields) or quintile
 (continuous fields) and report the spread between best and worst bin.
 Highlights the levers worth turning into entry filters.
 
-Read-only, no DB writes.
+Read-only, no DB writes. Writes lottery-feature-audit-{latest fire date}.md to
+docs/tmp/ (or --out-dir).
 
 Usage:
-    ml/.venv/Scripts/python scripts/feature_audit.py
+    ml/.venv/Scripts/python scripts/feature_audit.py [--out-dir DIR]
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
-import re
 import sys
 from pathlib import Path
 
@@ -27,6 +28,7 @@ import psycopg2
 ROOT = Path(__file__).resolve().parent.parent
 ENV_FILE = ROOT / '.env.local'
 WEIGHTS_JSON = ROOT / 'ml' / 'output' / 'lottery_score_weights.json'
+REPORT_DIR = ROOT / 'docs' / 'tmp'
 
 # Feed tier cutoffs — mirror the user-facing feed EXACTLY so the audit's
 # "Tier 2+" subset is the population actually traded. The feed tiers on
@@ -48,6 +50,8 @@ SUPPRESSED_QUINTILES = (1, 2)
 # Per-ticker inversion-quality bonus — single Python source of truth, imported
 # from the enrich script (mirrors api/_lib/lottery-inversion-bonus.ts). Avoids a
 # third hand-copy of the map that could silently drift on the next retune.
+sys.path.insert(0, str(ROOT / 'scripts'))
+from _cli_paths import load_env_file  # noqa: E402
 from enrich_lottery_outcomes import (  # noqa: E402
     INVERSION_BONUS_BY_QUINTILE,
 )
@@ -84,18 +88,6 @@ def scoring_regime_lines() -> list[str]:
         '(qas = max(0, score) + inversion bonus; mirrors the feed)\n'
     )
     return out
-
-
-def load_env():
-    if not ENV_FILE.exists():
-        sys.exit(f'Missing env file: {ENV_FILE}')
-    with ENV_FILE.open() as f:
-        for line in f:
-            m = re.match(r'^([A-Z_][A-Z0-9_]*)=(.*)$', line.strip())
-            if m:
-                os.environ.setdefault(
-                    m.group(1), m.group(2).strip('"').strip("'")
-                )
 
 
 def stats(s: pd.Series):
@@ -171,11 +163,23 @@ def assign_feed_tiers(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def main():
-    load_env()
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        '--out-dir',
+        type=Path,
+        default=REPORT_DIR,
+        help='Where the report is written (default: docs/tmp under the repo root).',
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = parse_args(argv)
+    load_env_file(ENV_FILE)
     db_url = os.environ.get('DATABASE_URL_UNPOOLED') or os.environ['DATABASE_URL']
     conn = psycopg2.connect(db_url)
-    out_path = ROOT / 'docs' / 'tmp' / f'lottery-feature-audit-{latest_fire_date(conn)}.md'
+    out_path = args.out_dir / f'lottery-feature-audit-{latest_fire_date(conn)}.md'
     df = pd.read_sql(
         """
         SELECT
@@ -204,11 +208,15 @@ def main():
 
     # Build alert_seq buckets — first fire vs reload-cluster vs hot-chain.
     def aseq_bucket(s):
-        if pd.isna(s): return 'unknown'
+        if pd.isna(s):
+            return 'unknown'
         s = int(s)
-        if s == 1: return 'first'
-        if s <= 5: return 'early(2-5)'
-        if s <= 20: return 'mid(6-20)'
+        if s == 1:
+            return 'first'
+        if s <= 5:
+            return 'early(2-5)'
+        if s <= 20:
+            return 'mid(6-20)'
         return 'late(21+)'
     df['alert_seq_bucket'] = df['alert_seq'].apply(aseq_bucket)
 
@@ -344,7 +352,7 @@ def main():
         lines.append(f'    {col:<32} {spread:>+7.4f}  {str(best_label):<12} {best_sh:>+11.4f}  {best_n:>7,}')
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text('\n'.join(lines))
+    out_path.write_text('\n'.join(lines), encoding='utf-8')
     print('\n'.join(lines))
     print(f'\n[audit] report → {out_path}')
 

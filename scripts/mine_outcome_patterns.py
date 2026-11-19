@@ -4,23 +4,23 @@
 Phase 1 of the lottery outcome-mining + lineage spec
 (docs/superpowers/specs/lottery-outcome-mining-and-lineage-2026-05-22.md).
 
-Queries last 90-day aligned non-structure fires, computes a 7-element
-feature tuple per fire, then scans all 2- and 3-feature sub-tuples for
-combinations that lift winners (outcome_pct >= 50) or losers
-(outcome_pct <= -50) beyond the marginal threshold.
+Queries the 90 days up to --as-of (default: today) of aligned non-structure
+fires, computes a 7-element feature tuple per fire, then scans all 2- and
+3-feature sub-tuples for combinations that lift winners (outcome_pct >= 50) or
+losers (outcome_pct <= -50) beyond the marginal threshold.
 
 Writes a daily Markdown report to:
-  docs/tmp/lottery-composite-candidates-{YYYY-MM-DD}.md
+  docs/tmp/lottery-composite-candidates-{as-of date}.md   (or --out-dir)
 
 Usage:
-    ml/.venv/Scripts/python scripts/mine_outcome_patterns.py
+    ml/.venv/Scripts/python scripts/mine_outcome_patterns.py [--as-of YYYY-MM-DD] [--out-dir DIR]
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
-import re
 import sys
 from datetime import date
 from itertools import combinations
@@ -38,23 +38,10 @@ ENV_FILE = ROOT / ".env.local"
 WEIGHTS_PATH = ROOT / "ml" / "output" / "lottery_score_weights.json"
 REPORT_DIR = ROOT / "docs" / "tmp"
 
-# ---------------------------------------------------------------------------
-# Environment loading (mirrors scripts/backfill_lottery_scores.py pattern)
-# ---------------------------------------------------------------------------
-
-
-def load_env() -> None:
-    """Load DATABASE_URL from .env.local into os.environ."""
-    if not ENV_FILE.exists():
-        sys.exit(f"Missing env file: {ENV_FILE}")
-    with ENV_FILE.open() as fh:
-        for line in fh:
-            m = re.match(r"^([A-Z_][A-Z0-9_]*)=(.*)$", line.strip())
-            if m:
-                os.environ.setdefault(
-                    m.group(1), m.group(2).strip('"').strip("'")
-                )
-
+# `_cli_paths.load_env_file` reads ENV_FILE into os.environ (DATABASE_URL); a
+# missing file is fine, the nightly service has none.
+sys.path.insert(0, str(ROOT / "scripts"))
+from _cli_paths import load_env_file  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # SQL fetch (mirrors FETCH_QUERY in ml/src/lottery_scoring.py)
@@ -77,7 +64,7 @@ SELECT
     cum_npp_at_fire
 FROM lottery_finder_fires
 WHERE
-    date >= CURRENT_DATE - INTERVAL '90 days'
+    date >= %(as_of)s::date - INTERVAL '90 days'
     AND cum_ncp_at_fire IS NOT NULL
     AND cum_npp_at_fire IS NOT NULL
     AND (
@@ -90,16 +77,20 @@ ORDER BY id
 """
 
 
-def fetch_fires() -> pd.DataFrame:
-    """Fetch aligned, filtered fires and return with outcome_pct column."""
+def fetch_fires(as_of: date) -> pd.DataFrame:
+    """Fetch aligned, filtered fires and return with outcome_pct column.
+
+    The window is the 90 days up to `as_of`, so a report for a given session
+    reads the same fires whenever it runs.
+    """
     db_url = os.environ.get("DATABASE_URL_UNPOOLED") or os.environ.get("DATABASE_URL")
     if not db_url:
-        sys.exit("DATABASE_URL not set — run load_env() first")
+        sys.exit("DATABASE_URL not set")
 
     print("Connecting to database...")
     conn = psycopg2.connect(db_url, sslmode="require", connect_timeout=15)
     print("Fetching fires...")
-    df = pd.read_sql_query(FETCH_QUERY, conn)
+    df = pd.read_sql_query(FETCH_QUERY, conn, params={"as_of": as_of})
     conn.close()
     print(f"Fetched {len(df):,} rows before final filter")
 
@@ -346,7 +337,7 @@ def _table_header() -> str:
 
 
 def render_report(
-    today: date,
+    as_of: date,
     n_total: int,
     n_winners: int,
     n_losers: int,
@@ -356,7 +347,7 @@ def render_report(
     losing: list[dict],
 ) -> str:
     """Render the full Markdown report string."""
-    date_str = today.strftime("%Y-%m-%d")
+    date_str = as_of.strftime("%Y-%m-%d")
 
     # Determine summary stats
     n_win_candidates = len(winning)
@@ -429,13 +420,34 @@ def render_report(
 # ---------------------------------------------------------------------------
 
 
-def main() -> None:
-    load_env()
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--as-of",
+        type=date.fromisoformat,
+        default=None,
+        metavar="YYYY-MM-DD",
+        help="Session date: the 90-day window ends here and names the report "
+        "(default: today).",
+    )
+    parser.add_argument(
+        "--out-dir",
+        type=Path,
+        default=REPORT_DIR,
+        help="Where the report is written (default: docs/tmp under the repo root).",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = parse_args(argv)
+    as_of = args.as_of or date.today()
+    load_env_file(ENV_FILE)
 
     weights = load_weights()
     print(f"Loaded weights: {weights['model_version']}")
 
-    df_raw = fetch_fires()
+    df_raw = fetch_fires(as_of)
     df = build_feature_tuples(df_raw, weights)
 
     n_total = len(df)
@@ -443,7 +455,7 @@ def main() -> None:
     n_winners = int(is_winner.sum())
     n_losers = int(is_loser.sum())
 
-    print(f"\nSample breakdown:")
+    print("\nSample breakdown:")
     print(f"  Total fires:  {n_total:,}")
     print(f"  Winners (>= +50%): {n_winners:,}  ({100*n_winners/n_total:.1f}%)")
     print(f"  Losers  (<= -50%): {n_losers:,}  ({100*n_losers/n_total:.1f}%)")
@@ -524,9 +536,8 @@ def main() -> None:
         )
 
     # Render and write report
-    today = date.today()
     report_md = render_report(
-        today=today,
+        as_of=as_of,
         n_total=n_total,
         n_winners=n_winners,
         n_losers=n_losers,
@@ -536,8 +547,8 @@ def main() -> None:
         losing=losing_combos,
     )
 
-    REPORT_DIR.mkdir(parents=True, exist_ok=True)
-    report_path = REPORT_DIR / f"lottery-composite-candidates-{today.strftime('%Y-%m-%d')}.md"
+    args.out_dir.mkdir(parents=True, exist_ok=True)
+    report_path = args.out_dir / f"lottery-composite-candidates-{as_of.strftime('%Y-%m-%d')}.md"
     report_path.write_text(report_md, encoding="utf-8")
     print(f"\nWrote report: {report_path}")
 

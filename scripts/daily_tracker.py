@@ -10,14 +10,17 @@ duplicating.
 Read-only against the DB except for its own CSV append.
 
 Usage:
-    ml/.venv/Scripts/python scripts/daily_tracker.py
+    ml/.venv/Scripts/python scripts/daily_tracker.py [--csv PATH]
+
+--csv is the tracking file to read and rewrite (default: the one under
+docs/tmp).
 """
 
 from __future__ import annotations
 
+import argparse
 import csv
 import os
-import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,6 +32,9 @@ import psycopg2
 ROOT = Path(__file__).resolve().parent.parent
 ENV_FILE = ROOT / '.env.local'
 CSV_PATH = ROOT / 'docs' / 'tmp' / 'lottery-tracking.csv'
+
+sys.path.insert(0, str(ROOT / 'scripts'))
+from _cli_paths import load_env_file  # noqa: E402
 
 # Order of CSV columns. Adding a new column at the end is safe (existing
 # rows just get a blank trailing field on read). Don't reorder.
@@ -53,16 +59,6 @@ COLUMNS = [
 ]
 
 
-def load_env() -> None:
-    with ENV_FILE.open() as f:
-        for line in f:
-            m = re.match(r'^([A-Z_][A-Z0-9_]*)=(.*)$', line.strip())
-            if m:
-                os.environ.setdefault(
-                    m.group(1), m.group(2).strip('"').strip("'")
-                )
-
-
 def stats(s):
     s = pd.to_numeric(s, errors='coerce').dropna()
     n = len(s)
@@ -74,8 +70,20 @@ def stats(s):
     return n, mean, sharpe
 
 
-def main() -> None:
-    load_env()
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        '--csv',
+        type=Path,
+        default=CSV_PATH,
+        help='The tracking CSV to update (default: docs/tmp under the repo root).',
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = parse_args(argv)
+    load_env_file(ENV_FILE)
     db_url = os.environ.get('DATABASE_URL_UNPOOLED') or os.environ['DATABASE_URL']
     conn = psycopg2.connect(db_url)
 
@@ -174,14 +182,14 @@ def main() -> None:
     # Idempotent append: if a row already exists for this date, replace
     # it (so re-running after a partial enrichment doesn't duplicate).
     existing = []
-    if CSV_PATH.exists():
-        with CSV_PATH.open() as f:
+    if args.csv.exists():
+        with args.csv.open(encoding='utf-8') as f:
             existing = list(csv.DictReader(f))
     existing = [r for r in existing if r.get('date') != latest_iso]
     existing.append(row)
 
-    CSV_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with CSV_PATH.open('w', newline='') as f:
+    args.csv.parent.mkdir(parents=True, exist_ok=True)
+    with args.csv.open('w', newline='', encoding='utf-8') as f:
         w = csv.DictWriter(f, fieldnames=COLUMNS, extrasaction='ignore')
         w.writeheader()
         for r in existing:
@@ -194,7 +202,7 @@ def main() -> None:
           f'{row["n_fires_total_window"]:,} fires, '
           f'flow_inv Sharpe={row["flow_inv_sharpe"]} '
           f'(T2+={row["t2plus_sharpe"]}, ModeB={row["modeB_sharpe"]})')
-    print(f'[track] CSV → {CSV_PATH}  ({len(existing)} rows)')
+    print(f'[track] CSV → {args.csv}  ({len(existing)} rows)')
 
 
 if __name__ == '__main__':
