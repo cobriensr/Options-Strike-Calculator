@@ -131,15 +131,20 @@ describe('fetch-day-ohlc handler', () => {
   // ── Postgres is the only source ───────────────────────────────────
 
   it.each([
-    [
-      'both set',
-      { SIDECAR_URL: 'http://sidecar.local', SIDECAR_TAKEIT_SECRET: 's3cret' },
-    ],
-    ['both unset', {}],
-  ])(
+    ['both set', 'http://sidecar.local', 's3cret'],
+    ['both unset', undefined, undefined],
+  ] as const)(
     'never calls fetch, whatever the sidecar env holds (%s)',
-    async (_label, env) => {
-      Object.assign(process.env, env);
+    async (_label, url, secret) => {
+      // The runner's own shell may export either variable, so unset them
+      // here rather than assume the copy made in beforeEach lacks them.
+      if (url === undefined) delete process.env.SIDECAR_URL;
+      else process.env.SIDECAR_URL = url;
+      if (secret === undefined) delete process.env.SIDECAR_TAKEIT_SECRET;
+      else process.env.SIDECAR_TAKEIT_SECRET = secret;
+      // Keeps the row's label true.
+      expect(process.env.SIDECAR_URL).toBe(url);
+      expect(process.env.SIDECAR_TAKEIT_SECRET).toBe(secret);
       fullDay();
       mockSql.mockResolvedValueOnce([{ date: '2026-04-20' }]);
 
