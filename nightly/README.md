@@ -608,15 +608,14 @@ to 40 (`FEED_CUTOFF_SEARCH_MAX`). Tier 2 is searched from 6 and tier 1 from 7
 to 5: the score counts as 0, the zero floor comes before the inversion bonus, and the
 bonus adds up to 5 (`NULL_SCORE_QAS_MAX`). The round-trip deduct was left out of the
 feed's qas when the feed fixed its tier at the fire, so it no longer bears on this floor
-(`docs/superpowers/specs/2026-11-17-freeze-tier-at-fire-design.md`). A test also pins the
-feed's `qasExprText`, so a new term in it fails there first. The fire-count adjustment
-used to add up to 2 more, which made the floor 8; it was retired on 2026-11-15
-(migration #209). The gate counts such a fire as
-tier 3. A feed cutoff of 5 or less could therefore tier a fire the gate did not count,
-and the gate would judge a tiering the feed does not show. A candidate that cannot
-match the active version's tier shares above that floor gets high cutoffs, which
-typically leave its tier 1 share under the band's 1%, so it is rejected at creation for
-that.
+(`docs/superpowers/specs/2026-11-17-freeze-tier-at-fire-design.md`). A test also pins
+the feed's `qasExprText`, so a new term in it fails there first. The fire-count
+adjustment used to add up to 2 more, which made the floor 8; it was retired on
+2026-11-15 (migration #209). The gate counts such a fire as tier 3. A feed cutoff of 5
+or less could therefore tier a fire the gate did not count, and the gate would judge a
+tiering the feed does not show. A candidate that cannot match the active version's tier
+shares above that floor gets high cutoffs, which typically leave its tier 1 share under
+the band's 1%, so it is rejected at creation for that.
 
 **Notices.** Six fixed titles, all with the tags `service=nightly`,
 `step=lottery-refit`, `refit` (the kind) and `version`. The extras are aggregates only:

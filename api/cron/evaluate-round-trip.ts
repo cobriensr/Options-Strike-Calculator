@@ -4,10 +4,12 @@
  * Runs every 10 min from the 09:25 ET open buffer until 80 min after the
  * day's close (see POST_CLOSE_EVAL_MIN). Computes
  * `post_fire_net_pct_of_volume` for alerts fired 60-75 min ago, stores
- * it on the alert row, and applies a stepped score deduct based on the
- * Phase 1 EDA brackets.
+ * it on the alert row, and stores a stepped deduct based on the Phase 1
+ * EDA brackets. The feeds show the deduct as the round-tripped pill and do
+ * not apply it to the tier.
  *
  * Spec: docs/superpowers/specs/round-trip-score-deduct-production-2026-05-16.md
+ * Tier change: docs/superpowers/specs/2026-11-17-freeze-tier-at-fire-design.md
  *
  * Source schema: ws_option_trades.side is already classified as
  * 'ask'|'bid'|'mid'|'no_side' by the WS daemon — we DON'T need to

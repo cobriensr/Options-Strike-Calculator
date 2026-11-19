@@ -44,11 +44,16 @@ export function inversionQualityBonus(quintile: number | null): number {
   return 0;
 }
 
+/**
+ * The feed's quality-adjusted score: `score` plus the inversion bonus.
+ * `score` is the stored score floored at 0 (the caller floors it; a null
+ * score goes in as 0). The round-trip deduct is not part of it.
+ */
 export function qualityAdjustedScore(
-  combinedScore: number,
+  score: number,
   quintile: number | null,
 ): number {
-  return combinedScore + inversionQualityBonus(quintile);
+  return score + inversionQualityBonus(quintile);
 }
 
 /**

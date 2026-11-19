@@ -230,6 +230,8 @@
   - Expected on the default feed: tier 1 rises from about 12 to 16.5 chains a day, and tier 1+2 from 29 to 37.
   - The feed computes its score in SQL from the raw score (plus the round-trip deduct until the 4.12 change lands; from then on the deduct is left out). It doesn't read `combined_score`, which still adds +1 for high gamma.
   - Tier tables built before #209 used the hindsight score, so note that when comparing. The round-trip deduct may also add information from after the fire (4.12).
+  - After the 4.12 change ships, end-of-day tier counts rise further, because the deduct no longer demotes fires. On true first fires (REPORT step 2), tier 1 goes from 5,569 to 6,015 (+8%) and tier 2 from 4,457 to 4,912 (+10%). Don't blame that rise on the fire-count retirement.
+  - The 11-18 shadow candidate's feed cutoffs, and the `gate_report.sessions` entries recorded before the deploy, use the old qas; entries after it use the new one. `decide_shadow` recomputes from the frames, so its verdict is consistent. Expect a step of about one point in the per-session shares at the deploy.
 - **Sentry, 11-16.**
   - New and unexplained: `TypeError: O["Error"] is not a constructor`, in the frontend, 1 event at 15:24 UTC.
   - Known: the uw-stream reconnect storm and `ConnectionClosedError`.
