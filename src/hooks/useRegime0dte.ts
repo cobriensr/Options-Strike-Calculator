@@ -20,6 +20,7 @@
 
 import { POLL_INTERVALS } from '../constants/index.js';
 import { isTradingDay, getMarketCloseHourET } from '../data/marketHours.js';
+import { getAccessMode } from '../utils/auth.js';
 import { getCTTime, getCTDateStr } from '../utils/timezone.js';
 import {
   usePolledWindowSignal,
@@ -91,12 +92,21 @@ function inPollingWindow(now: Date): boolean {
   return totalMinutes >= windowOpen && totalMinutes < windowClose;
 }
 
+/**
+ * /api/regime-0dte is owner-or-guest, so the window is closed for a public
+ * visitor: no mount fetch, no poll, no 401 for the panel to show as an alert.
+ * The primitive routes all three through this predicate.
+ */
+function inLiveWindow(now: Date): boolean {
+  return getAccessMode() !== 'public' && inPollingWindow(now);
+}
+
 export function useRegime0dte(): PolledWindowSignalResult<Regime0dteResponse> {
   return usePolledWindowSignal<Regime0dteResponse>({
     url: '/api/regime-0dte',
     storageKey: STORAGE_KEY,
     pollMs: POLL_INTERVALS.REGIME_0DTE,
-    inWindow: inPollingWindow,
+    inWindow: inLiveWindow,
     todayStr: () => getCTDateStr(new Date()),
   });
 }

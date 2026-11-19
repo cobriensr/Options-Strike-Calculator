@@ -18,6 +18,11 @@ vi.mock('../utils/timezone', async () => {
   };
 });
 
+vi.mock('../utils/auth', () => ({
+  getAccessMode: vi.fn(() => 'owner'),
+}));
+
+import { getAccessMode } from '../utils/auth';
 import { useRegime0dte } from '../hooks/useRegime0dte';
 import type { Regime0dteResponse } from '../hooks/useRegime0dte';
 
@@ -69,7 +74,44 @@ describe('useRegime0dte', () => {
     // Default: inside the 08:30–15:00 CT session, "today" is 2026-06-05.
     getCTTimeMock.mockReturnValue({ hour: 10, minute: 0 });
     getCTDateStrMock.mockReturnValue('2026-06-05');
+    vi.mocked(getAccessMode).mockReturnValue('owner');
     localStorage.clear();
+  });
+
+  // /api/regime-0dte is owner-or-guest: a public visitor's fetch is a 401 that
+  // the panel would show as a red alert, so the hook never asks.
+  it('does not fetch, poll or open the window for a public visitor inside the CT session', async () => {
+    vi.mocked(getAccessMode).mockReturnValue('public');
+    vi.useFakeTimers();
+    try {
+      const { result } = renderHook(() => useRegime0dte());
+      // The eager fetch, then several 45s poll periods and window-watcher ticks.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(45_000 * 5);
+      });
+
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(result.current.isWindowOpen).toBe(false);
+      expect(result.current.displayData).toBeNull();
+      expect(result.current.error).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('fetches inside the window for a guest, as for an owner', async () => {
+    vi.mocked(getAccessMode).mockReturnValue('guest');
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => makeResponse({ gate: 'big_move' }),
+    });
+
+    const { result } = renderHook(() => useRegime0dte());
+
+    await waitFor(() => {
+      expect(result.current.displayData?.gate).toBe('big_move');
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it('populates displayData.gate after a successful fetch inside the window', async () => {

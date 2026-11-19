@@ -17,11 +17,34 @@ describe('getPanelRegistry', () => {
       'sec-iv',
       'sec-risk',
       'sec-regime',
-      'sec-regime-0dte',
       'sec-history',
       'sec-positions',
       'results',
     ]);
+  });
+
+  // /api/regime-0dte is withDbReader(..., 'owner-or-guest'): a public visitor
+  // could only ever see "Waiting for the open" in the panel, or a 401.
+  it('omits sec-regime-0dte for a public visitor, with or without market data', () => {
+    for (const hasMarketOrSnapshot of [true, false]) {
+      const ids = getPanelRegistry({
+        isAuthenticated: false,
+        hasMarketOrSnapshot,
+      }).map((e) => e.id);
+      expect(ids).not.toContain('sec-regime-0dte');
+    }
+  });
+
+  it('puts sec-regime-0dte right after sec-regime for an owner or guest, with or without market data', () => {
+    for (const hasMarketOrSnapshot of [true, false]) {
+      const ids = getPanelRegistry({
+        isAuthenticated: true,
+        hasMarketOrSnapshot,
+      }).map((e) => e.id);
+      expect(ids.indexOf('sec-regime-0dte')).toBe(
+        ids.indexOf('sec-regime') + 1,
+      );
+    }
   });
 
   it('adds sec-charts when hasMarketOrSnapshot is true (no auth)', () => {

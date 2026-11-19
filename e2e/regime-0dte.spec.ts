@@ -2,8 +2,10 @@
  * Regime0dte panel — Phase 4 Playwright coverage for the "0DTE Gamma Regime"
  * section (plan: docs/superpowers/plans/2026-06-07-regime-0dte-panel.md, Task 11).
  *
- * The panel is non-auth-gated, so it renders for a public visitor on a plain
- * `/` load with the backend APIs aborted. During CI / local test runs the
+ * The panel is owner-or-guest (the panel registry leaves it out for a public
+ * visitor), but the e2e dev server resolves every visitor as owner
+ * (`getAccessMode()` is 'owner' under `import.meta.env.DEV`), so it renders on
+ * a plain `/` load with the backend APIs aborted. During CI / local test runs the
  * market is CLOSED, so the live hook's window is shut and the panel renders
  * its "waiting for the open" placeholder rather than the four sub-viz. These
  * tests therefore assert the section landmark + the closed-market placeholder
