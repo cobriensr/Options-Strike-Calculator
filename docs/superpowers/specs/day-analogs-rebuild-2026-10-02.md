@@ -242,8 +242,8 @@ P1 is split to respect the five-files-per-phase rule.
   - the `ARCHIVE_*` env vars and the Railway `/data` volume.
 - **Remove from Vercel:**
   - `api/_lib/archive-sidecar.ts`;
-  - the sidecar branch in `embed-yesterday`. `fetch-day-ohlc` already has
-    none: it reads Postgres directly.
+  - ~~the sidecar branch in `embed-yesterday`~~. Already removed, like
+    `fetch-day-ohlc`'s: both crons read Postgres directly.
 - **Remove or port the scripts** `backfill-day-{embeddings,features,ohlc}.mjs`
   and `compare-analog-backends.mjs`.
 - **Keep** the SHAP/takeit routes, the multileg routes and Theta.

@@ -182,8 +182,8 @@ SPY + VIX + Time ──→ useCalculation() ──→ results (strikes, premiums
 
                     ┌─── Railway: sidecar ───────────────────────────────────────┐
                     │  takeit-fill-shap cron → sidecar /takeit/explain           │
-                    │  embed-yesterday → sidecar /archive/* (DuckDB archive      │
-                    │    frozen at 2026-04-17; Postgres fallback after)          │
+                    │  analyze analog blocks → sidecar /archive/* (DuckDB        │
+                    │    archive frozen at 2026-04-17; older backtests only)     │
                     └────────────────────────────────────────────────────────────┘
 
                     ┌─── Historical Data ────────────────────────────────────────┐
@@ -699,8 +699,10 @@ The TBBO microstructure routes (`/archive/tbbo-day-microstructure`, `/archive/tb
 **Consumed by the Vercel side via:**
 
 - `api/_lib/archive-sidecar.ts` — typed client for `/archive/day-summary` + `/archive/day-features`
-- `api/cron/embed-yesterday.ts` — nightly, pulls yesterday's summary + stores OpenAI text-embedding-3-large (2000-dim) into `day_embeddings` for analog cohort retrieval; falls back to Postgres (`api/_lib/postgres-day-summary.ts`) for dates past the archive freeze
+- `api/_lib/analyze-context-fetchers.ts` — the analog blocks (`fetchSimilarDaysContext`, `fetchRangeForecastContext`) ask the archive for the analysis date's day summary (the similar-days block also its features); only a backtest dated on or before 2026-04-17 gets a row back
 - `api/cron/takeit-fill-shap.ts` — SHAP explanations for Take-It fires
+
+`api/cron/embed-yesterday.ts` makes no sidecar call. Nightly it builds yesterday's summary from Postgres (`api/_lib/postgres-day-summary.ts`, with no archive step) and stores the OpenAI text-embedding-3-large (2000-dim) embedding in `day_embeddings` for analog cohort retrieval. `fetch-day-ohlc` reads Postgres directly too.
 
 Multi-leg detection is not a sidecar concern either: the `detect-lottery-fires` and `detect-silent-boom` crons read the exchange's multi-leg trade code on the anchor print in `api/_lib/anchor-legs.ts` and store five spread-leg columns (migration 197), which the Lottery Finder and Silent Boom panels show as a "spread leg" badge. The former Railway classifier is retired ([design](superpowers/specs/2026-10-28-classifier-replacement-design.md)).
 
