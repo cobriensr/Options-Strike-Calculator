@@ -6,8 +6,9 @@ import { describe, it, expect } from 'vitest';
  * Guards App.tsx's half of the cluster multiplier fix (F24). The multiplier
  * was state that only the Volatility Clustering panel set, and the panel sits
  * in the collapsed Market Regime card, so every page load used and saved 1.
- * Mounting <App /> in jsdom is too heavy (see App.panel-render.test.tsx), so
- * this reads the source the way App.iv-mode-wiring.test.ts does.
+ * This file reads the source, the way App.iv-mode-wiring.test.ts does, so the
+ * wiring stays visible without the three dozen module mocks a mounted <App />
+ * needs (App.market-open-gate.test.tsx mounts it, for the polling gate).
  * useClusterMultiplier.test.ts covers the hook's half: its value is right on
  * its own, with no panel mounted.
  */

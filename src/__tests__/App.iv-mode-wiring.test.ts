@@ -7,9 +7,10 @@ import { describe, it, expect } from 'vitest';
  * without Schwab VIX1D, useAutoFill picks VIX mode provisionally and picks
  * once more when the static VIX1D table loads, unless the user picked a
  * mode in the meantime. The flag only protects that pick if every user
- * path into setIvMode sets it. Mounting <App /> in jsdom is too heavy (see
- * App.panel-render.test.tsx), so this reads the source the way
- * App.nav-anchors.test.ts does. useAutoFill.test.ts covers the hook's half.
+ * path into setIvMode sets it. This file reads the source, the way
+ * App.nav-anchors.test.ts does, so the wiring stays visible without the three
+ * dozen module mocks a mounted <App /> needs (App.market-open-gate.test.tsx
+ * mounts it, for the polling gate). useAutoFill.test.ts covers the hook's half.
  */
 const appSource = readFileSync(path.resolve(__dirname, '../App.tsx'), 'utf-8');
 

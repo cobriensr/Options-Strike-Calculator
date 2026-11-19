@@ -10,9 +10,10 @@ import { describe, it, expect } from 'vitest';
  * the moment after ET midnight (before the clock ticks) the followed date
  * reads as past. Each of those compiles with `getETToday()` or an omitted
  * argument in its place, and the hooks' own tests pass the value by prop, so
- * only this test pins the wiring. Mounting <App /> in jsdom is too heavy (see
- * App.panel-render.test.tsx), so this reads the source the way
- * App.iv-mode-wiring.test.ts does.
+ * only this test pins the wiring. This file reads the source, the way
+ * App.iv-mode-wiring.test.ts does, so the wiring stays visible without the
+ * three dozen module mocks a mounted <App /> needs (App.market-open-gate.test.tsx
+ * mounts it, for the polling gate).
  */
 const appSource = readFileSync(path.resolve(__dirname, '../App.tsx'), 'utf-8');
 
