@@ -17,7 +17,7 @@
  *   BACKFILL_START  — YYYY-MM-DD (default 2010-06-07)
  *   BACKFILL_END    — YYYY-MM-DD (default yesterday UTC)
  *   SIDECAR_URL     — required
- *   SIDECAR_TAKEIT_SECRET — the sidecar's bearer, sent on /archive/* calls
+ *   SIDECAR_TAKEIT_SECRET — required; the sidecar's bearer, sent on /archive/* calls
  *   DATABASE_URL    — required
  */
 
@@ -43,6 +43,16 @@ for (const [k, v] of Object.entries({ SIDECAR_URL, DATABASE_URL })) {
     console.error(`Missing ${k}`);
     process.exit(1);
   }
+}
+
+// The sidecar refuses /archive/* calls without its bearer, and the chunk loop
+// below counts a thrown error and carries on, so check it here, once, instead
+// of failing every chunk on it.
+try {
+  sidecarArchiveHeaders();
+} catch (err) {
+  console.error(err.message);
+  process.exit(1);
 }
 
 const sql = neon(DATABASE_URL);

@@ -17,7 +17,7 @@ describe('scripts that call the sidecar archive', () => {
   // is still caught.
   const ARCHIVE_CALL = /\$\{\w+\}\/archive\//g;
   const HEADERS_ARG = /headers: sidecarArchiveHeaders\(\)/g;
-  // A 401 or 503 chunk must stop the run, not be skipped.
+  // A non-2xx response must throw, not be read as an empty batch.
   const THROWS_ON_NON_2XX = /throw new Error\(`sidecar \$\{res\.status\}/g;
 
   const callers = readdirSync(scriptsDir)
