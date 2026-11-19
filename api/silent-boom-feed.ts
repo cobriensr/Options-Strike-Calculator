@@ -93,7 +93,10 @@ interface AlertRow {
   spread_legs?: SpreadLeg[] | null;
   /** Migration #154 / spec round-trip-score-deduct-production-2026-05-16.md.
    *  See lottery-finder.ts for the bracket semantics — same brackets apply
-   *  here. NULL until the evaluate-round-trip cron has run for the alert. */
+   *  here. NULL until the evaluate-round-trip cron has run for the alert.
+   *  The deduct is shown (the round-tripped pill) but not applied: it lands
+   *  about an hour after the alert, so the tier is the one shown at the alert
+   *  (spec docs/superpowers/specs/2026-11-17-freeze-tier-at-fire-design.md). */
   round_trip_net_pct: DbNullableNumeric;
   round_trip_score_deduct: number | null;
   /** Take-It calibrated win probability (migration #155, spec
@@ -145,20 +148,21 @@ interface SilentBoomAlertResponse {
   entryPrice: number;
   openInterest: number;
   /**
-   * Effective conviction score = raw insert-time score + round-trip
-   * deduct (Phase 2C of round-trip-score-deduct-production-2026-05-16.md).
-   * Floored at 0 so a -3 deduct on a low-score row doesn't go negative.
+   * Displayed conviction score = the insert-time score, floored at 0. The
+   * round-trip deduct is not applied, so the tier is the one shown at the
+   * alert (spec docs/superpowers/specs/2026-11-17-freeze-tier-at-fire-design.md).
    */
   score: number | null;
-  /** Pre-deduct score as stored on the row. Same as `score` when no deduct. */
+  /** The stored score before the zero floor. */
   rawScore: number | null;
   /** Migration #154. Post-fire (ask−bid)/total over a 60-min window. NULL
    *  until the evaluate-round-trip cron has run. Range [-1, +1]. */
   roundTripNetPct: number | null;
-  /** Stepped bracket deduct (0 / -1 / -2 / -3). */
+  /** Stepped bracket deduct (0 / -1 / -2 / -3). Shown, not applied: it drives
+   *  the round-tripped pill and does not change `score` or `scoreTier`. */
   roundTripScoreDeduct: number;
   /** 'tier1' | 'tier2' | 'tier3' — re-derived at read time from the
-   *  effective score so the displayed tier matches the displayed score.
+   *  displayed score so the displayed tier matches the displayed score.
    *  Null only on legacy rows with no score. */
   scoreTier: SilentBoomTierOrNull;
   /**
@@ -462,7 +466,7 @@ export default async function handler(
         AND (${q.optionType ?? null}::text IS NULL OR option_type = ${q.optionType ?? null}::text)
         AND vol_oi >= ${q.minVolOi}::numeric
         AND spike_ratio >= ${q.minSpikeRatio}::numeric
-        AND (${q.minScore ?? null}::int IS NULL OR GREATEST(0, score + COALESCE(round_trip_score_deduct, 0)) >= ${q.minScore ?? null}::int)
+        AND (${q.minScore ?? null}::int IS NULL OR GREATEST(0, score) >= ${q.minScore ?? null}::int)
         AND (${todLo}::int IS NULL OR (
           EXTRACT(HOUR FROM bucket_ct AT TIME ZONE 'America/Chicago')::int * 60 +
           EXTRACT(MINUTE FROM bucket_ct AT TIME ZONE 'America/Chicago')::int
@@ -529,7 +533,7 @@ export default async function handler(
           AND (${q.optionType ?? null}::text IS NULL OR option_type = ${q.optionType ?? null}::text)
           AND vol_oi >= ${q.minVolOi}::numeric
           AND spike_ratio >= ${q.minSpikeRatio}::numeric
-          AND (${q.minScore ?? null}::int IS NULL OR GREATEST(0, score + COALESCE(round_trip_score_deduct, 0)) >= ${q.minScore ?? null}::int)
+          AND (${q.minScore ?? null}::int IS NULL OR GREATEST(0, score) >= ${q.minScore ?? null}::int)
           AND (${todLo}::int IS NULL OR (
             EXTRACT(HOUR FROM bucket_ct AT TIME ZONE 'America/Chicago')::int * 60 +
             EXTRACT(MINUTE FROM bucket_ct AT TIME ZONE 'America/Chicago')::int
@@ -604,8 +608,12 @@ export default async function handler(
     const alerts: SilentBoomAlertResponse[] = rows.map((r) => {
       // Round-trip score deduct (migration #154 / spec
       // round-trip-score-deduct-production-2026-05-16.md). Same brackets
-      // as Lottery. Silent boom stores `score_tier` on insert, so we
-      // re-derive the effective tier from (score + deduct) at read time.
+      // as Lottery. It is shown (`roundTripScoreDeduct`, which drives the
+      // round-tripped pill) but not applied: it lands about an hour after
+      // the alert, so the tier is the one shown at the alert (spec
+      // docs/superpowers/specs/2026-11-17-freeze-tier-at-fire-design.md).
+      // Silent boom stores `score_tier` on insert, so we re-derive the tier
+      // from the stored score floored at 0 at read time.
       // direction_gated still overrides to tier3 — that gate is
       // independent of round-trip and runs first in the override chain.
       const rawScore = r.score;
@@ -613,8 +621,7 @@ export default async function handler(
         r.round_trip_score_deduct == null
           ? 0
           : Number(r.round_trip_score_deduct);
-      const effectiveScore =
-        rawScore == null ? null : Math.max(0, rawScore + rtDeduct);
+      const effectiveScore = rawScore == null ? null : Math.max(0, rawScore);
       const directionGated = r.direction_gated === true;
       const tierFromScore = silentBoomScoreTier(effectiveScore);
       // Honor the detector's TAKE-IT-conditioned gate exemption (spec:

@@ -177,9 +177,10 @@ describe('silent-boom-feed handler', () => {
     expect(body.alerts[0]?.avgHoldMinutes).toBe(89);
   });
 
-  it('applies round-trip score deduct and re-derives tier (-3 demotes tier2 → tier3)', async () => {
-    // silent-boom tiers: tier1 ≥ 21, tier2 ≥ 8, else tier3.
-    // score=10 + deduct -3 → effective 7 → tier3 (was tier2).
+  it('keeps the stored tier when a -3 deduct lands (score 10 stays tier2)', async () => {
+    // silent-boom tiers: tier1 ≥ 21, tier2 ≥ 8, else tier3. The deduct lands
+    // about an hour after the alert and is left out of score and tier, so
+    // score=10 stays 10 → tier2 (it would have been 7 → tier3 with the deduct).
     mockSql
       .mockResolvedValueOnce([{ n: 1 }])
       .mockResolvedValueOnce([
@@ -204,15 +205,15 @@ describe('silent-boom-feed handler', () => {
       }[];
     };
     expect(body.alerts[0]).toMatchObject({
-      score: 7,
+      score: 10,
       rawScore: 10,
       roundTripNetPct: -0.75,
       roundTripScoreDeduct: -3,
-      scoreTier: 'tier3',
+      scoreTier: 'tier2',
     });
   });
 
-  it('demotes tier1 → tier2 when -3 deduct drops score below 21', async () => {
+  it('keeps tier1 when a -3 deduct lands on a score of 23', async () => {
     mockSql
       .mockResolvedValueOnce([{ n: 1 }])
       .mockResolvedValueOnce([
@@ -230,18 +231,21 @@ describe('silent-boom-feed handler', () => {
     const body = res._json as {
       alerts: { score: number | null; scoreTier: string | null }[];
     };
-    expect(body.alerts[0]).toMatchObject({ score: 20, scoreTier: 'tier2' });
+    expect(body.alerts[0]).toMatchObject({ score: 23, scoreTier: 'tier1' });
   });
 
-  it('preserves tier1 when -1 deduct keeps score >= 21', async () => {
+  it('floors a negative stored score at 0 and leaves rawScore as stored', async () => {
+    // Stored scores run from -31 to +46. The displayed score is floored at 0
+    // (the SQL minScore gate uses the same GREATEST(0, score)); rawScore is
+    // the stored value before the floor.
     mockSql
       .mockResolvedValueOnce([{ n: 1 }])
       .mockResolvedValueOnce([
         makeAlert({
-          score: 25,
-          score_tier: 'tier1',
-          round_trip_net_pct: '-0.20',
-          round_trip_score_deduct: -1,
+          score: -5,
+          score_tier: 'tier3',
+          round_trip_net_pct: '-0.60',
+          round_trip_score_deduct: -3,
         }),
       ])
       .mockResolvedValueOnce([]); // cluster-candidate query
@@ -249,9 +253,17 @@ describe('silent-boom-feed handler', () => {
     const res = mockResponse();
     await handler(req, res);
     const body = res._json as {
-      alerts: { score: number | null; scoreTier: string | null }[];
+      alerts: {
+        score: number | null;
+        rawScore: number | null;
+        scoreTier: string | null;
+      }[];
     };
-    expect(body.alerts[0]).toMatchObject({ score: 24, scoreTier: 'tier1' });
+    expect(body.alerts[0]).toMatchObject({
+      score: 0,
+      rawScore: -5,
+      scoreTier: 'tier3',
+    });
   });
 
   it('passes through deduct=0 cleanly when no round-trip evaluation yet', async () => {
@@ -465,13 +477,13 @@ describe('silent-boom-feed handler', () => {
     // filters the count fails this test. The 3rd call is the cluster
     // candidate query which does not carry the minScore filter by design.
     // Fix 3: the predicate gates on the DISPLAYED effective score, so the
-    // literal is the GREATEST(...) form, not the raw `score >=`.
+    // literal is the GREATEST(...) form, not the raw `score >=`. The deduct
+    // is not part of it.
     for (const call of mockSql.mock.calls.slice(0, 2)) {
       const strings = call[0] as TemplateStringsArray | undefined;
       const sqlText = (strings ?? []).join(' ');
-      expect(sqlText).toContain(
-        'GREATEST(0, score + COALESCE(round_trip_score_deduct, 0)) >=',
-      );
+      expect(sqlText).toContain('GREATEST(0, score) >=');
+      expect(sqlText).not.toContain('score + COALESCE(round_trip_score_deduct');
     }
   });
 
@@ -1215,12 +1227,13 @@ describe('silent-boom-feed handler', () => {
   // Fix 3 — minScore gates on the DISPLAYED effective score.
   // ------------------------------------------------------------------
 
-  it('minScore predicate gates on effectiveScore (GREATEST(0, score + deduct)) in count + all sort branches', async () => {
-    // The displayed tier derives from effectiveScore = GREATEST(0, score +
-    // round_trip_score_deduct). The minScore filter must gate on that same
-    // value so total/rows agree with the rendered tier. Verify the count
-    // query AND every sort-branch row query carry the byte-identical
-    // effective-score predicate.
+  it('minScore predicate gates on effectiveScore (GREATEST(0, score)) in count + all sort branches', async () => {
+    // The displayed tier derives from effectiveScore = GREATEST(0, score);
+    // the round-trip deduct is left out (spec
+    // docs/superpowers/specs/2026-11-17-freeze-tier-at-fire-design.md). The
+    // minScore filter must gate on that same value so total/rows agree with
+    // the rendered tier. Verify the count query AND every sort-branch row
+    // query carry the byte-identical effective-score predicate.
     for (const sort of ['newest', 'spike_ratio', 'vol_oi', 'peak'] as const) {
       mockSql
         .mockResolvedValueOnce([{ n: 1 }]) // count
@@ -1240,8 +1253,9 @@ describe('silent-boom-feed handler', () => {
         const sqlText = (
           (call[0] as TemplateStringsArray | undefined) ?? []
         ).join(' ');
-        expect(sqlText).toContain(
-          'GREATEST(0, score + COALESCE(round_trip_score_deduct, 0)) >=',
+        expect(sqlText).toContain('GREATEST(0, score) >=');
+        expect(sqlText).not.toContain(
+          'score + COALESCE(round_trip_score_deduct',
         );
         // The raw-score predicate must be gone (drift = total/rows mismatch).
         expect(sqlText).not.toContain('OR score >=');
@@ -1250,17 +1264,16 @@ describe('silent-boom-feed handler', () => {
     }
   });
 
-  it('excludes a row that raw-passes minScore but is effective-below-floor, and the displayed tier matches', async () => {
-    // score=23 raw passes minScore=21, but a -3 round-trip deduct drops
-    // the effective score to 20 → tier2. The SQL gate (which the DB
-    // applies) would exclude it from a real query; here we assert the
-    // read-time effective score + tier the handler computes for such a
-    // row so the displayed value matches the gated predicate.
+  it('keeps an alert at the minScore floor, and its tier, when a -3 deduct lands', async () => {
+    // score=21 sits exactly at minScore=21 and is tier1. A -3 round-trip
+    // deduct lands later; it is left out of the SQL gate and of the displayed
+    // score and tier, so the alert stays in the list at 21 / tier1 (the deduct
+    // would have dropped it to 18 → tier2 and out of the minScore=21 list).
     mockSql
       .mockResolvedValueOnce([{ n: 1 }])
       .mockResolvedValueOnce([
         makeAlert({
-          score: 23,
+          score: 21,
           score_tier: 'tier1',
           round_trip_score_deduct: -3,
           round_trip_net_pct: '-0.6',
@@ -1277,9 +1290,9 @@ describe('silent-boom-feed handler', () => {
     const body = res._json as {
       alerts: { score: number | null; scoreTier: string | null }[];
     };
-    // Effective = GREATEST(0, 23 + (-3)) = 20 → tier2 (below the 21 floor).
-    expect(body.alerts[0]?.score).toBe(20);
-    expect(body.alerts[0]?.scoreTier).toBe('tier2');
+    // Effective = GREATEST(0, 21) = 21 → tier1, at the 21 floor.
+    expect(body.alerts[0]?.score).toBe(21);
+    expect(body.alerts[0]?.scoreTier).toBe('tier1');
   });
 
   // ------------------------------------------------------------------
@@ -1312,6 +1325,31 @@ describe('silent-boom-feed handler', () => {
     expect(body.alerts[0]?.scoreTier).toBe('tier1');
     // The "Gated" pill (direction_gated) is unchanged.
     expect(body.alerts[0]?.directionGated).toBe(true);
+  });
+
+  it('gated TAKE-IT-exempt alert with a deduct shows the tier of its stored score', async () => {
+    // Exempt gated rows show the tier of the stored score. A -3 deduct that
+    // lands later is left out of that tier: score 23 stays tier1.
+    mockSql
+      .mockResolvedValueOnce([{ n: 1 }])
+      .mockResolvedValueOnce([
+        makeAlert({
+          score: 23,
+          score_tier: 'tier1',
+          direction_gated: true,
+          takeit_prob: '0.72',
+          round_trip_score_deduct: -3,
+        }),
+      ])
+      .mockResolvedValueOnce([]);
+    const req = mockRequest({ method: 'GET', query: { date: '2026-05-07' } });
+    const res = mockResponse();
+    await handler(req, res);
+
+    const body = res._json as {
+      alerts: { score: number | null; scoreTier: string | null }[];
+    };
+    expect(body.alerts[0]).toMatchObject({ score: 23, scoreTier: 'tier1' });
   });
 
   it('gated row with takeit_prob below 0.70 is forced to tier3', async () => {

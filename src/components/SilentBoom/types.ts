@@ -120,6 +120,7 @@ export interface SilentBoomAlert {
   entryPrice: number;
   openInterest: number;
   /** Composite conviction score. See api/_lib/silent-boom-score.ts.
+   *  The stored score floored at 0, whose tier is the one shown at the alert.
    *  Null only on legacy rows pre-Phase-1. */
   score: number | null;
   /** 'tier1' | 'tier2' | 'tier3'; null only on legacy rows. */
@@ -142,15 +143,15 @@ export interface SilentBoomAlert {
   /** Distinct cheap-OTM-ask 0DTE strike count for this row's ticker+side
    *  (0 when not a cluster). */
   clusterStrikeCount?: number;
-  /** Pre-deduct score as stored on the row. Same as `score` when no
-   *  round-trip deduct has been applied. */
+  /** The stored score before the zero floor. No UI reads it. */
   rawScore?: number | null;
   /** Post-fire (ask − bid) / total volume over a 60-min window
    *  (Phase 2B cron / migration #154). Null until the evaluate-round-trip
    *  cron has run for the alert. Range [-1, +1]. */
   roundTripNetPct?: number | null;
-  /** Stepped bracket deduct (0 / -1 / -2 / -3) — applied to `score` at
-   *  read time, drives the "Hide round-tripped" filter chip. */
+  /** Stepped bracket deduct (0 / -1 / -2 / -3), written by the cron about 65
+   *  minutes after the alert. It drives the round-tripped pill and the dimmed
+   *  row, and does not change `score` or the tier. */
   roundTripScoreDeduct?: number;
   /**
    * Take-It calibrated win probability (migration #155, spec
