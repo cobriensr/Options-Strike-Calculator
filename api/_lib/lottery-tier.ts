@@ -1,6 +1,7 @@
 /**
- * V2 tier classification — operates on `qualityAdjustedScore`
- * (combined_score + inversion bonus) instead of bare combined_score.
+ * V2 tier classification — operates on `qualityAdjustedScore` (the stored
+ * score floored at 0, plus the inversion bonus) instead of bare
+ * combined_score.
  *
  * The cutoffs belong to a weights version (`feed_cutoffs` in
  * `lottery-weights-schema.ts`), so the callers pass the active version's:

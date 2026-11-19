@@ -335,8 +335,8 @@ const num = (v: DbNullableNumeric): number | null =>
  * fire-count score adjustment was retired on 2026-11-15 (spec
  * 2026-11-15-retire-lottery-fire-count-adjustment.md), so the qas does not
  * depend on how many times a chain has fired. The combined_score GENERATED
- * column still folds in the round-trip deduct and a gamma CASE term; nothing
- * reads it.
+ * column still folds in the round-trip deduct and a gamma CASE term; the feed,
+ * the chip strip and the tier monitor don't read it.
  *
  * The chip strip (api/lottery-finder-ticker-counts.ts) and the detector's
  * feed-tier monitor (api/cron/detect-lottery-fires.ts) compute this same
@@ -779,12 +779,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           AND (${minTakeitProb}::numeric IS NULL OR f.chain_max_takeit >= ${minTakeitProb}::numeric)
           -- Fix C: the score floor (minQas: minScore, or the active version's
           -- cutoff for minTier) gates on the DISPLAYED qas (the value the tier
-          -- badge uses), not the raw score. qas = GREATEST(0, score)
-          -- + inversion bonus (no round-trip deduct, no gamma, no fire
-          -- count). Applied at the rep
-          -- row (rn=1, post-LEFT JOIN s) alongside the other rep-level gates
-          -- so it reads s.inversion_quintile; identical expression in the
-          -- count query so pagination/total stay coherent.
+          -- badge uses), not the raw score. qas = GREATEST(0, score) +
+          -- inversion bonus (no round-trip deduct, no gamma, no fire count).
+          -- Applied at the rep row (rn=1, post-LEFT JOIN s) alongside the
+          -- other rep-level gates so it reads s.inversion_quintile; identical
+          -- expression in the count query so pagination/total stay coherent.
           AND (${minQas ?? null}::int IS NULL OR ${db.unsafe(qasExprText('f.'))} >= ${minQas ?? 0})
           AND ${keptSuppressionSql(db, 'f', showAll, keptTickers)}
         ORDER BY ${db.unsafe(LOTTERY_FEED_ORDER_BY[sort])}
@@ -844,8 +843,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               AND (${maxFireCount ?? null}::int IS NULL OR ranked.fc <= ${maxFireCount ?? 0})
               AND (${minTakeitProb}::numeric IS NULL OR ranked.chain_max_takeit >= ${minTakeitProb}::numeric)
               -- Fix C: qas-based score floor, minQas (identical expression to
-              -- the row queries). qas = GREATEST(0, score) + inversion
-              -- bonus.
+              -- the row queries). qas = GREATEST(0, score) + inversion bonus.
               AND (${minQas ?? null}::int IS NULL OR ${db.unsafe(qasExprText('ranked.'))} >= ${minQas ?? 0})
             ) AS passes_user_filters
           FROM ranked
@@ -1405,15 +1403,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // FINAL count, i.e. hindsight (spec
       // 2026-11-15-retire-lottery-fire-count-adjustment.md).
       //
-      // NOTE — displayed score ≠ SQL sort key, BY DESIGN (2026-05-28).
-      // We intentionally reopened the divergence that commit 4fc7ec99
-      // closed: the feed now sorts on the raw `f.score` column so a
-      // fire's position is FROZEN at detect time. The `combined_score`
-      // GENERATED column (migrations #159/#167/#168/#209) still exists and
-      // its index still exists, but the ORDER BY no longer consumes
-      // them — see the score-sort comment above the rows query for the
-      // rationale. Deducted fires render dimmed in-place via LotteryRow's
-      // round-tripped pill rather than reshuffling in the feed.
+      // NOTE — the displayed score is the stored score floored at 0, and the
+      // sort still uses the raw `f.score` column, so a fire's position is
+      // FROZEN at detect time. The two differ only for a negative stored
+      // score. The `combined_score` GENERATED column (migrations
+      // #159/#167/#168/#209) still exists and its index still exists, but
+      // the ORDER BY no longer consumes them — see the score-sort comment
+      // above the rows query for the rationale. Deducted fires render dimmed
+      // in-place via LotteryRow's round-tripped pill rather than reshuffling
+      // in the feed.
       //
       // Gamma at trigger time + the derived V1-era flat +1 bonus.
       // Surfaced ONLY for the HIGH-Γ display chip (gamma-sign indicator)
