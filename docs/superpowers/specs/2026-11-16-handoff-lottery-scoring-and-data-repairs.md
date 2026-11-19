@@ -196,6 +196,10 @@
   - Compare the raw lift with the weekday-standardized lift, and run a week-shift placebo.
   - Use day-clustered CIs.
 - **Output.** A plain report to the owner. Whether to keep or remove the badge is the owner's call.
+- **Result (2026-11-17): done, badge removed** (owner-approved, pushed as 99e1bd90..c40f09c1). Report: main checkout `docs/tmp/newhigh-weekday-2026-11-17/REPORT.md`.
+  - No edge: realized trail 30/10, badge minus no badge on true first fires, −4.5 pts (CI −19.6..+9.9). Weekday standardization moved results by 0.6 pts or less, so weekday was not the problem.
+  - 81.6% of badge rows were a stock-split artifact: the 10-29 `scripts/backfill-range-pos.mjs` run compared split-adjusted UW candles with unadjusted `spot_at_first` (CRWD 4:1 pinned at 1.0 05-19..07-01, SOXS reverse split pinned at 0 05-22..07-10).
+  - **Still open, owner's call:** repair or NULL the ~1,181 bad CRWD/SOXS `range_pos_at_trigger` rows (a production write), and add a split guard to the backfill (`scripts/_lib/range-pos-backfill.mjs`). Until then, any study using that column drops those ticker windows.
 
 ### 4.9 Store UW's economic-calendar window (code, now a nice-to-have)
 
@@ -224,7 +228,7 @@
 
 - **Tier counts after the retirement.**
   - Expected on the default feed: tier 1 rises from about 12 to 16.5 chains a day, and tier 1+2 from 29 to 37.
-  - The feed computes its score in SQL from the raw score plus the round-trip deduct. It doesn't read `combined_score`, which still adds +1 for high gamma.
+  - The feed computes its score in SQL from the raw score (plus the round-trip deduct until the 4.12 change lands; from then on the deduct is left out). It doesn't read `combined_score`, which still adds +1 for high gamma.
   - Tier tables built before #209 used the hindsight score, so note that when comparing. The round-trip deduct may also add information from after the fire (4.12).
 - **Sentry, 11-16.**
   - New and unexplained: `TypeError: O["Error"] is not a constructor`, in the frontend, 1 event at 15:24 UTC.
@@ -255,6 +259,11 @@
   3. **The deduct as an exit signal.** For fires whose deduct is ≤ −1, compare exiting at the minute the deduct lands with holding to the realized exit. This shows whether the deduct is worth more as a "get out" signal than as a tier input.
   - Use day-clustered CIs, as in 4.8.
 - **Output.** A plain report to the owner. Keeping the deduct in the tier, showing it as a separate marker, or showing tiers as of the fire is the owner's call.
+- **Result (2026-11-17): done.** Reports in the main checkout: `docs/tmp/round-trip-timing-2026-11-17/REPORT.md` (step 1) and `docs/tmp/roundtrip-tiers-2026-11-17/REPORT.md` (steps 2 and 3).
+  - **Step 1.** The deduct lands a median 65.6 min after the fire (p99 71.1, max 80.9); 99.0% land on the first eligible 10-minute tick. No fire of 11-17 was left unevaluated.
+  - **Step 2.** Tier 1 as seen at the fire averages −2.8% realized; 7.4% of it drops a tier when the deduct lands, and counting those drops makes the record read +0.9 pts better than what could be traded.
+  - **Step 3.** As an exit signal the deduct is worth +0.13 pts per fire (CI −0.08..+0.33): deduct −1 fires still held are already down 28% when it lands and finish down 29%.
+  - **Decision (owner, 2026-11-17/18):** the tier is fixed as of the fire on Lottery Finder and Silent Boom, computed at read time without the deduct, and the round-tripped pill stays as a separate marker. Spec `2026-11-17-freeze-tier-at-fire-design.md`, plan `docs/superpowers/plans/2026-11-18-freeze-tier-at-fire.md`.
 
 ## 5. Suggested order
 
