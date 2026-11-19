@@ -282,6 +282,14 @@ export default function StrikeCalculator() {
 
   // Data hooks
   const market = useMarketData();
+  // The gate for every poll and `marketOpen` panel prop: the client clock
+  // (RTH, holiday and half-day aware) AND an owner or guest viewer, whose
+  // endpoints these are. Not `data.quotes?.marketOpen`: that is the server's
+  // flag from the last successful /api/quotes call, so it stays true after the
+  // close once quotes starts failing (a lapsed Schwab login) and is false all
+  // session when the tab loaded while logged out, though these feeds come from
+  // UW and GEXBot, not Schwab.
+  const liveMarketOpen = isAuthenticated && market.marketOpen;
   const {
     fileInputRef: vixFileInputRef,
     handleFileUpload: vixRawUpload,
@@ -301,12 +309,12 @@ export default function StrikeCalculator() {
   const vix1dStatic = useVix1dData();
   const chainData = useChainData(
     market.hasData && !historyData.hasHistory,
-    market.data.quotes?.marketOpen ?? false,
+    liveMarketOpen,
   );
-  const alertState = useAlertPolling(market.data.quotes?.marketOpen ?? false);
+  const alertState = useAlertPolling(liveMarketOpen);
   const intervalBAMute = useIntervalBAMute();
   const intervalBAAlertState = useIntervalBAAlerts(
-    market.data.quotes?.marketOpen ?? false,
+    liveMarketOpen,
     intervalBAMute.muted,
   );
   // Web Push v2 (interval-ba-push-v2-2026-05-12.md): subscribe() runs
@@ -315,13 +323,13 @@ export default function StrikeCalculator() {
   // Notification permission CTA stays functional in v2-dormant mode.
   const pushSub = usePushSubscription();
 
-  const darkPool = useDarkPoolLevels(market.data.quotes?.marketOpen ?? false);
+  const darkPool = useDarkPoolLevels(liveMarketOpen);
   // Periscope panel time-travel: null = follow live (latest slot,
   // polling on); set = view a historical slot, polling paused.
   const [periscopeSlot, setPeriscopeSlot] =
     useState<PeriscopeSelectedSlot | null>(null);
   const periscope = usePeriscopeExposure({
-    marketOpen: market.data.quotes?.marketOpen ?? false,
+    marketOpen: liveMarketOpen,
     spotHint: market.data.quotes?.spx?.price ?? null,
     selectedSlot: periscopeSlot,
   });
@@ -334,7 +342,7 @@ export default function StrikeCalculator() {
   // `useGexLandscapeData` →
   // `/api/gex-landscape`. SPX-only since Phase 3 of the MM swap, so
   // App.tsx no longer threads ticker or per-strike props through.
-  const gexTarget = useGexTarget(market.data.quotes?.marketOpen ?? false);
+  const gexTarget = useGexTarget(liveMarketOpen);
   const { results, errors } = useCalculation(
     dSpot,
     dSpx,
@@ -912,9 +920,7 @@ export default function StrikeCalculator() {
                 id="sec-premarket"
                 className="block scroll-mt-(--anchor-offset)"
               />
-              <PreMarketSignals
-                marketOpen={market.data.quotes?.marketOpen ?? false}
-              />
+              <PreMarketSignals marketOpen={liveMarketOpen} />
             </>
           ),
         ],
@@ -1106,10 +1112,7 @@ export default function StrikeCalculator() {
               label="GEX Target"
               fallback={<SkeletonSection lines={6} tall />}
             >
-              <GexTarget
-                marketOpen={market.data.quotes?.marketOpen ?? false}
-                gexTarget={gexTarget}
-              />
+              <GexTarget marketOpen={liveMarketOpen} gexTarget={gexTarget} />
             </GatedSection>
           ),
         ],
@@ -1123,7 +1126,7 @@ export default function StrikeCalculator() {
               fallback={<SkeletonSection lines={6} tall />}
             >
               <GexLandscape
-                marketOpen={market.data.quotes?.marketOpen ?? false}
+                marketOpen={liveMarketOpen}
                 onBiasChange={setGexBiasContext}
               />
             </GatedSection>
@@ -1138,9 +1141,7 @@ export default function StrikeCalculator() {
               label="Zero Gamma"
               fallback={<SkeletonSection lines={4} />}
             >
-              <ZeroGammaPanel
-                marketOpen={market.data.quotes?.marketOpen ?? false}
-              />
+              <ZeroGammaPanel marketOpen={liveMarketOpen} />
             </GatedSection>
           ),
         ],
@@ -1152,9 +1153,7 @@ export default function StrikeCalculator() {
               id="sec-vega-spikes"
               label="Dir Vega Spikes"
             >
-              <VegaSpikeFeed
-                marketOpen={market.data.quotes?.marketOpen ?? false}
-              />
+              <VegaSpikeFeed marketOpen={liveMarketOpen} />
             </GatedSection>
           ),
         ],
@@ -1166,9 +1165,7 @@ export default function StrikeCalculator() {
               id="sec-interval-ba-history"
               label="Interval B/A History"
             >
-              <IntervalBAFeed
-                marketOpen={market.data.quotes?.marketOpen ?? false}
-              />
+              <IntervalBAFeed marketOpen={liveMarketOpen} />
             </GatedSection>
           ),
         ],
@@ -1181,9 +1178,7 @@ export default function StrikeCalculator() {
               label="Greek Flow"
               fallback={<SkeletonSection lines={5} />}
             >
-              <GreekFlowPanel
-                marketOpen={market.data.quotes?.marketOpen ?? false}
-              />
+              <GreekFlowPanel marketOpen={liveMarketOpen} />
             </GatedSection>
           ),
         ],
@@ -1196,9 +1191,7 @@ export default function StrikeCalculator() {
               label="Dealer Regime"
               fallback={<SkeletonSection lines={2} />}
             >
-              <DealerRegimeTile
-                marketOpen={market.data.quotes?.marketOpen ?? false}
-              />
+              <DealerRegimeTile marketOpen={liveMarketOpen} />
             </GatedSection>
           ),
         ],
@@ -1211,9 +1204,7 @@ export default function StrikeCalculator() {
               label="Strike Battle Map"
               fallback={<SkeletonSection lines={5} />}
             >
-              <StrikeBattleMap
-                marketOpen={market.data.quotes?.marketOpen ?? false}
-              />
+              <StrikeBattleMap marketOpen={liveMarketOpen} />
             </GatedSection>
           ),
         ],
@@ -1226,9 +1217,7 @@ export default function StrikeCalculator() {
               label="0DTE Greek Heatmap"
               fallback={<SkeletonSection lines={5} />}
             >
-              <GreekHeatmapSection
-                marketOpen={market.data.quotes?.marketOpen ?? false}
-              />
+              <GreekHeatmapSection marketOpen={liveMarketOpen} />
             </GatedSection>
           ),
         ],
@@ -1243,7 +1232,7 @@ export default function StrikeCalculator() {
             >
               <PeriscopeLotteryPanel
                 defaultCollapsed
-                marketOpen={market.data.quotes?.marketOpen ?? false}
+                marketOpen={liveMarketOpen}
               />
             </GatedSection>
           ),
@@ -1258,7 +1247,7 @@ export default function StrikeCalculator() {
               fallback={<SkeletonSection lines={3} />}
             >
               <GexbotSection
-                marketOpen={market.data.quotes?.marketOpen ?? false}
+                marketOpen={liveMarketOpen}
                 spxSpot={market.data.quotes?.spx?.price ?? null}
               />
             </GatedSection>
@@ -1273,9 +1262,7 @@ export default function StrikeCalculator() {
               label="Gamma-Node Composite Detector"
               fallback={<SkeletonSection lines={4} />}
             >
-              <GammaNodeDetectorPanel
-                marketOpen={market.data.quotes?.marketOpen ?? false}
-              />
+              <GammaNodeDetectorPanel marketOpen={liveMarketOpen} />
             </GatedSection>
           ),
         ],
@@ -1310,10 +1297,7 @@ export default function StrikeCalculator() {
               label="Futures"
               fallback={<SkeletonSection lines={5} />}
             >
-              <FuturesPanel
-                defaultCollapsed
-                marketOpen={market.data.quotes?.marketOpen ?? false}
-              />
+              <FuturesPanel defaultCollapsed marketOpen={liveMarketOpen} />
             </LazySection>
           ),
         ],
@@ -1407,9 +1391,7 @@ export default function StrikeCalculator() {
               label="Contract Tracker"
               fallback={<SkeletonSection lines={5} tall />}
             >
-              <TrackerSection
-                marketOpen={market.data.quotes?.marketOpen ?? false}
-              />
+              <TrackerSection marketOpen={liveMarketOpen} />
             </LazySection>
           ),
         ],
@@ -1487,6 +1469,7 @@ export default function StrikeCalculator() {
       historyRefreshKey,
       historySnapshot,
       ivMode,
+      liveMarketOpen,
       market,
       multiplier,
       periscope,
@@ -1648,7 +1631,7 @@ export default function StrikeCalculator() {
           <>
             {notificationPrompt}
             <OptionsAlertsView
-              marketOpen={market.data.quotes?.marketOpen ?? false}
+              marketOpen={liveMarketOpen}
               hasMarketContext={hasMarketContext}
             />
           </>

@@ -49,4 +49,13 @@ describe('App live SPX price context wiring', () => {
       'isBacktest: analysisIsBacktest,',
     );
   });
+
+  it("reads the quotes payload's marketOpen nowhere else: every poll and panel gate is the clock-and-access flag", () => {
+    // The quote's flag says whether the quote is a live RTH print. As a
+    // polling gate it stays true after the close once quotes starts failing,
+    // and is false all session when the tab loaded logged out. The mounted
+    // gate values are pinned in App.market-open-gate.test.tsx; this keeps a
+    // new panel from reaching for the old flag.
+    expect(appCode.match(/quotes\?\.marketOpen/g)).toHaveLength(1);
+  });
 });
