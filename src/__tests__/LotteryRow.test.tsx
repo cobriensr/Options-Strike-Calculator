@@ -1690,11 +1690,28 @@ describe('LotteryRow: round-tripped dim treatment', () => {
       'title',
       expect.stringContaining('(deduct -2)'),
     );
+    // The two figures the copy rests on: held fires finished about where
+    // they stood when the deduct landed, shown at the -1 level.
+    expect(pill).toHaveAttribute(
+      'title',
+      expect.stringContaining('finished about where they stood then'),
+    );
+    expect(pill).toHaveAttribute(
+      'title',
+      expect.stringContaining('at -1: down about 28%'),
+    );
     expect(pill).toHaveAttribute(
       'title',
       expect.stringContaining('The tier is the one shown at the fire.'),
     );
     expect(pill.getAttribute('title')).not.toContain('lower-EV');
+
+    // The accessible name leads with the visible text and carries the same
+    // tooltip text, so a screen reader hears what a hover shows.
+    const label = pill.getAttribute('aria-label') ?? '';
+    expect(label).toMatch(/^round-tripped -2\. /);
+    expect(label).toContain('The tier is the one shown at the fire.');
+    expect(label).toBe(`round-tripped -2. ${pill.getAttribute('title')}`);
   });
 
   it('leaves the container at full opacity and omits the pill when deduct is 0', () => {

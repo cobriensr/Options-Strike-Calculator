@@ -589,6 +589,10 @@ export const SilentBoomRow = memo(function SilentBoomRow({
 
   const roundTripDeduct = alert.roundTripScoreDeduct ?? 0;
   const isRoundTripped = roundTripDeduct < 0;
+  // One string for the hover text and the accessible name, which leads with
+  // the pill's visible text so the two cannot drift apart.
+  const roundTripTooltip = `Sellers outweighed buyers in the hour after the alert (deduct ${roundTripDeduct}). It describes selling that already happened, not what comes next: on Lottery Finder fires, those still held when a deduct landed finished about where they stood then (at -1: down about 28% when it landed, 29% at the 30/10 trail exit). The tier is the one shown at the alert.`;
+  const roundTripLabel = `round-tripped ${roundTripDeduct}. ${roundTripTooltip}`;
 
   return (
     <div
@@ -599,7 +603,8 @@ export const SilentBoomRow = memo(function SilentBoomRow({
         <div
           data-testid="silent-boom-row-round-tripped-pill"
           className="mb-1.5 inline-flex items-center gap-1 rounded border border-amber-500/50 bg-amber-950/40 px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-amber-200 uppercase"
-          title={`Sellers dominated this contract in the hour after the alert (deduct ${roundTripDeduct}). It reports a loss that already happened: on Lottery Finder fires, those still held when a -1 deduct landed were already down about 28% and finished down about 29%. The tier is the one shown at the alert.`}
+          title={roundTripTooltip}
+          aria-label={roundTripLabel}
         >
           round-tripped {roundTripDeduct}
         </div>
