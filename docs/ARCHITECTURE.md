@@ -218,7 +218,7 @@ Core endpoints only. As of 2026-10-29, `api/` holds 92 endpoint files outside `_
 | `GET /api/intraday`          | Schwab (`priceHistory`, 5-min)                                      | Today's OHLC + 30-min opening range         | 2 min                 | 10 min                                    |
 | `GET /api/yesterday`         | Schwab (`priceHistory`, daily)                                      | Prior 5 days SPX OHLC for rolling RV        | 1 hour                | 1 day                                     |
 | `GET /api/chain`             | Schwab (`chains`, 0DTE)                                             | Live option chain with per-strike deltas    | 30s                   | 5 min                                     |
-| `GET /api/history`           | Schwab (`priceHistory`, 5-min SPX/VIX/VIX1D/VIX9D/VVIX)             | Historical candles for backtesting          | 120s (today/VIX gap)  | 1 day browser + 90 days Redis (past days) |
+| `GET /api/history`           | Schwab (`priceHistory`, 5-min SPX/VIX/VIX1D/VIX9D/VVIX)             | Historical candles for backtesting          | 120s (today/VIX gap)  | 5 min browser + 90 days Redis (past days) |
 | `GET /api/movers`            | Schwab (`movers`)                                                   | Market movers                               | 2 min                 | 10 min                                    |
 | `GET/POST /api/positions`    | Schwab Trader API / CSV upload                                      | Live SPX 0DTE positions + spreads           | —                     | —                                         |
 | `GET /api/events`            | FRED + Finnhub                                                      | Economic calendar events                    | 5 min edge + 7d Redis | 5 min edge + 7d Redis                     |
@@ -240,7 +240,7 @@ Core endpoints only. As of 2026-10-29, `api/` holds 92 endpoint files outside `_
 | `GET/POST /api/pre-market`   | Neon (`auto-prefill-premarket` cron from `futures_bars`, or manual) | ES overnight Globex H/L/C/VWAP              | 2 min                 | 2 min                                     |
 | `GET /api/vix-ohlc`          | Neon Postgres                                                       | VIX OHLC from snapshots                     | 1 hour                | 1 hour                                    |
 
-`/api/history` caches by date rather than market state: today, or a day with a failed VIX-family symbol ("VIX gap" above), gets 120s; a complete past day is kept 90 days in Redis and 1 day in the browser. A failed `$SPX` is not cached at all: it answers 503 `schwab_logged_out` when the Schwab login lapsed and 502 `schwab_fetch_failed` for anything else, both `no-store` with no Redis write. `$SPX` answering with no candles (a date beyond Schwab's window) stays a 200.
+`/api/history` caches by date rather than market state: today, or a day with a failed VIX-family symbol ("VIX gap" above), gets 120s; a complete past day is kept 90 days in Redis and 5 minutes in the browser. A failed `$SPX` is not cached at all: it answers 503 `schwab_logged_out` when the Schwab login lapsed and 502 `schwab_fetch_failed` for anything else, both `no-store` with no Redis write. `$SPX` answering with no candles (a date beyond Schwab's window) stays a 200.
 
 ### Access Levels
 

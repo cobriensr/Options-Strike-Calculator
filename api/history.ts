@@ -15,7 +15,8 @@
  * Owner-or-guest (uses Schwab credentials).
  *
  * Cache strategy (Redis entry TTL; the browser max-age matches on hit and miss):
- *   - Past dates, every symbol fetched: 90 days in Redis, 1 day in the browser
+ *   - Past dates, every symbol fetched: 90 days in Redis, 5 minutes in the
+ *     browser (short so a server-side correction reaches it within minutes)
  *   - Past dates with a failed VIX-family symbol, or today: 120s (self-heals)
  *
  * A failed $SPX fetch is not a 200 with no candles: 503 `schwab_logged_out`
@@ -116,7 +117,7 @@ interface HistoryResponse {
 /**
  * Redis entry. `complete` (a past date where every symbol fetched) is stored
  * so a hit replays the browser max-age the original response got: a 120 s
- * partial entry must not come back with the day-long one.
+ * partial entry must not come back with the longer complete max-age.
  */
 interface CachedHistory {
   response: HistoryResponse;
@@ -133,12 +134,14 @@ const REDIS_PREFIX = 'history:v3:';
 const PAST_CACHE_TTL = 90 * 24 * 60 * 60;
 
 /**
- * Browser-only lifetime: a day for a complete past date, else 120 s. Never a
+ * Browser-only lifetime: 5 minutes for a complete past date, else 120 s. The
+ * complete lifetime stays short so a server-side correction reaches the
+ * browser within minutes; Redis holds the long-lived copy. Never a
  * shared-cache directive, because the CDN would serve this guarded response
  * without running the guard.
  */
 function cacheControlFor(complete: boolean): string {
-  return `private, max-age=${complete ? 86400 : 120}`;
+  return `private, max-age=${complete ? 300 : 120}`;
 }
 
 /** Envelope check only: `response` is an object and `complete` a boolean. */
@@ -625,9 +628,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         asOf: new Date().toISOString(),
       };
 
-      // Only a complete past-date response earns the long Redis TTL and the
-      // long browser max-age. Today's data is still accumulating, and a
-      // partial-failure response must not be cached for a day.
+      // Only a complete past-date response earns the 90-day Redis TTL and the
+      // 300 s browser max-age. Today's data is still accumulating, and a
+      // partial-failure response must not be cached for that long.
       const complete = !isToday && allOk;
       const entry: CachedHistory = { response, complete };
 

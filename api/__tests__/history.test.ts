@@ -644,9 +644,9 @@ describe('GET /api/history', () => {
     });
 
     // A partial past-date result is cached for 120 s; its hit must not get
-    // the day-long browser max-age that only a complete result earns.
+    // the 300 s browser max-age that only a complete result earns.
     it.each([
-      [true, 'private, max-age=86400'],
+      [true, 'private, max-age=300'],
       [false, 'private, max-age=120'],
     ])('Redis hit with complete: %s → %s', async (complete, cacheControl) => {
       const cachedResponse = { date: TARGET_DATE, candleCount: 1 };
@@ -665,7 +665,7 @@ describe('GET /api/history', () => {
       expectNoSharedCache(res._headers);
     });
 
-    it('complete past-date fetch: private, max-age=86400', async () => {
+    it('complete past-date fetch: private, max-age=300', async () => {
       vi.mocked(schwabFetch).mockResolvedValue(okFetch());
       const res = mockResponse();
       await handler(mockRequest({ query: { date: TARGET_DATE } }), res);
@@ -674,7 +674,7 @@ describe('GET /api/history', () => {
       // The fetch path ran: one call per symbol, no Redis hit.
       expect(schwabFetch).toHaveBeenCalledTimes(5);
       expect(res._headers['X-Cache']).toBeUndefined();
-      expect(res._headers['Cache-Control']).toBe('private, max-age=86400');
+      expect(res._headers['Cache-Control']).toBe('private, max-age=300');
       expectNoSharedCache(res._headers);
     });
 
@@ -783,7 +783,7 @@ describe('GET /api/history', () => {
         expect(schwabFetch).toHaveBeenCalledTimes(5);
         expect(res._status).toBe(200);
         expect(res._headers['X-Cache']).toBeUndefined();
-        expect(res._headers['Cache-Control']).toBe('private, max-age=86400');
+        expect(res._headers['Cache-Control']).toBe('private, max-age=300');
         expect(res._json).toMatchObject({ date: TARGET_DATE, candleCount: 1 });
         expect(redis.set).toHaveBeenCalledWith(
           CACHE_KEY,
@@ -1003,7 +1003,7 @@ describe('GET /api/history', () => {
           const res = await hit(cachedEntry(candles));
 
           expect(res._json).toEqual(cachedEntry(cachedCandles()).response);
-          expect(res._headers['Cache-Control']).toBe('private, max-age=86400');
+          expect(res._headers['Cache-Control']).toBe('private, max-age=300');
           // The fetched entry is repaired in the response only: its own
           // candle array keeps the order and length it had.
           expect(candles.map((c) => c.datetime)).toEqual(before);
