@@ -587,7 +587,7 @@ A multi-phase ML system that augments the rule-based analyze endpoint with stati
 
 **Analog-retrieval (historical-similar-day) phases:**
 
-- **Phase B — Text-Embedding Day Analogs** ✅ Shipped. OpenAI `text-embedding-3-large` (2000-dim) over sidecar-generated session text; analog search via pgvector. Dates after the archive freeze (2026-04-17) fall back to Postgres-built session text.
+- **Phase B — Text-Embedding Day Analogs** ✅ Shipped. OpenAI `text-embedding-3-large` (2000-dim) over sidecar-generated session text; analog search via pgvector. Dates after the archive freeze (2026-04-17) use Postgres-built session text.
 - **Phase C — Engineered-Feature Analog Backend** ✅ Shipped. 60-dim numeric feature vector alternative; `DAY_ANALOG_BACKEND` env switches backends.
 - **Phase 3a — TBBO DBN → Parquet Converter** ✅ Shipped, since retired. Produced the persistent archive under `year=YYYY/part.parquet`; the DBN converters were removed 2026-09-30 with Databento, so the archive is frozen.
 - **Phase 4b — TBBO Archive + 1-Year OFI Percentile** ✅ Shipped, percentile since removed. Archive seeded from Vercel Blob; the live OFI percentile route went with Databento (no live TBBO).
