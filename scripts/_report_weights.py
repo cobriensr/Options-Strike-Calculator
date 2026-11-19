@@ -5,9 +5,10 @@ The reports that read Neon tier fires the way the feed does (owner ruling,
 feed cutoffs of the ACTIVE weights version, read from the store. This module is
 the one place that rule lives:
 
-* `load_active_weights(conn, tag)` reads the active pointer, or ends the run.
-  A report that cannot name the weights it describes writes nothing, and never
-  falls back to other cutoffs or to the frozen JSON (R4).
+* `load_active_weights(conn, tag)` reads the active pointer, or raises
+  `ActiveWeightsError`. A report that cannot name the weights it describes
+  writes nothing, and never falls back to other cutoffs or to the frozen JSON
+  (R4).
 * `tier_labels(fires, cutoffs)` is the feed's T1 / T2 / T3, from
   `lottery_refit_gates.feed_qas`, the Python mirror of the feed.
 * `tier_header(version, cutoffs)` is the report text that names the weights.
@@ -35,6 +36,7 @@ from lottery_weights import WeightsInvalid, load_pointer  # noqa: E402
 
 __all__ = [
     'LOOK_AHEAD_NOTE',
+    'ActiveWeightsError',
     'FeedCutoffs',
     'load_active_weights',
     'tier_header',
@@ -47,14 +49,27 @@ LOOK_AHEAD_NOTE = (
 )
 
 
+class ActiveWeightsError(RuntimeError):
+    """The active weights could not be read, so no report may be written.
+
+    Raised, not `sys.exit`-ed, so that a script run as a subprocess ends with a
+    traceback whose last line names this class (the nightly reports that class
+    to Sentry, and reads it from a traceback's last line or from a last line
+    ending in Error). The message is `[tag] ...` and never holds a DB error's
+    text.
+    """
+
+
 def load_active_weights(conn: Any, tag: str) -> tuple[str, Mapping[str, Any]]:
     """The active weights' version and their full, validated weights object.
 
-    Any failure to read them ends the run: `sys.exit` with a `[tag]` message
-    that names the exception class and, for `WeightsInvalid` (a path and a
-    rule) and `LookupError` (no active pointer), its text. The text of a
-    database error is never echoed: it can hold the DSN. Nothing else is
-    caught, so a bug still shows as a traceback.
+    Any failure to read them raises `ActiveWeightsError` with a `[tag]`
+    message that names the exception class and, for `WeightsInvalid` (a path
+    and a rule) and `LookupError` (no active pointer), its text. The text of a
+    database error is never echoed: it can hold the DSN. The cause is left
+    out of the traceback too (`from None`), as its text would reach the log.
+    There is no fallback. Nothing else is caught, so a bug still shows as
+    itself.
     """
     try:
         return load_pointer(conn, 'active')
@@ -64,10 +79,10 @@ def load_active_weights(conn: Any, tag: str) -> tuple[str, Mapping[str, Any]]:
             if isinstance(exc, psycopg2.Error)
             else f'{type(exc).__name__}: {exc}'
         )
-        sys.exit(
+        raise ActiveWeightsError(
             f'[{tag}] cannot read the active lottery weights ({detail}); '
             'no report written'
-        )
+        ) from None
 
 
 def tier_labels(fires: pd.DataFrame, cutoffs: FeedCutoffs) -> pd.Series:

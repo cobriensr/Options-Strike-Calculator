@@ -1118,11 +1118,10 @@ def test_reports_fail_without_active_weights(kit: Kit, harness: Harness, failure
     archive = write_archive(harness.tmp / 'archive', fires)
     harness.failure = failure
 
-    with pytest.raises(SystemExit) as exc:
+    with pytest.raises(report_weights.ActiveWeightsError) as exc:
         harness.run('--parquet-dir', str(archive))
 
-    message = str(exc.value.code)
-    assert exc.value.code not in (0, None)
+    message = str(exc.value)
     assert message.startswith(f'[{kit.tag}] cannot read the active lottery weights (')
     assert message.endswith('no report written')
     assert type(failure).__name__ in message
@@ -1211,7 +1210,7 @@ def test_load_active_weights_returns_the_version_and_the_full_weights(
         ),
     ],
 )
-def test_load_active_weights_exits_naming_the_tag_and_the_class(
+def test_load_active_weights_raises_naming_the_tag_and_the_class(
     monkeypatch: pytest.MonkeyPatch, failure: Exception, detail: str
 ) -> None:
     def load_pointer(_conn: object, _name: str) -> tuple[str, dict]:
@@ -1219,13 +1218,23 @@ def test_load_active_weights_exits_naming_the_tag_and_the_class(
 
     monkeypatch.setattr(report_weights, 'load_pointer', load_pointer)
 
-    with pytest.raises(SystemExit) as exc:
+    with pytest.raises(report_weights.ActiveWeightsError) as exc:
         report_weights.load_active_weights(object(), 'a-tag')
 
     # A DB error's text can hold the DSN: its class is named, its text is not.
-    assert exc.value.code == (
+    assert str(exc.value) == (
         f'[a-tag] cannot read the active lottery weights ({detail}); no report written'
     )
+    # `from None`: the cause stays out of the traceback, whatever it says.
+    assert exc.value.__cause__ is None
+    assert exc.value.__suppress_context__ is True
+
+
+def test_active_weights_error_is_a_named_runtime_error() -> None:
+    assert issubclass(report_weights.ActiveWeightsError, RuntimeError)
+    assert 'ActiveWeightsError' in report_weights.__all__
+    # The nightly reads the class from a traceback's last line: it must end in Error.
+    assert report_weights.ActiveWeightsError.__name__.endswith('Error')
 
 
 def test_load_active_weights_does_not_swallow_a_bug(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1234,5 +1243,82 @@ def test_load_active_weights_does_not_swallow_a_bug(monkeypatch: pytest.MonkeyPa
 
     monkeypatch.setattr(report_weights, 'load_pointer', load_pointer)
 
-    with pytest.raises(RuntimeError, match='a bug'):
+    with pytest.raises(RuntimeError, match='a bug') as exc:
         report_weights.load_active_weights(object(), 'a-tag')
+
+    assert not isinstance(exc.value, report_weights.ActiveWeightsError)
+
+
+# Runs a report script as `__main__` the way the nightly does (a subprocess), with
+# the connection and the weights read faked inside it: the read fails with a DB
+# error whose text holds a password.
+FAILING_READ_DRIVER = """
+import runpy, sys
+sys.path.insert(0, sys.argv[1])
+import psycopg2
+import _report_weights
+
+psycopg2.connect = lambda _url: object()
+
+
+def _fail(_conn, _name):
+    raise psycopg2.OperationalError('host=db.example password=hunter2')
+
+
+_report_weights.load_pointer = _fail
+script = sys.argv[2]
+sys.argv = [script, *sys.argv[3:]]
+runpy.run_path(script, run_name='__main__')
+"""
+
+
+@pytest.mark.parametrize(
+    ('script', 'tag'),
+    [
+        pytest.param('exit_policy_search.py', 'search', id='exit_policy_search'),
+        pytest.param('flow_inversion_timing.py', 'timing', id='flow_inversion_timing'),
+    ],
+)
+def test_a_failed_weights_read_ends_the_script_with_a_named_error_and_no_dsn(
+    script: str, tag: str, tmp_path: Path
+) -> None:
+    """The nightly runs these as subprocesses and reports the exception class
+    from the traceback's last line: it must name ActiveWeightsError, and the
+    DB error behind it (and its text) must not be in the traceback."""
+    env = {k: v for k, v in os.environ.items() if k != 'PYTHONPATH'}
+    env['PYTHONUTF8'] = '1'
+    env['DATABASE_URL'] = 'postgresql://test/none'
+    env['DATABASE_URL_UNPOOLED'] = 'postgresql://test/none'
+    derived = tmp_path / 'derived'
+    derived.mkdir()
+
+    done = subprocess.run(
+        [
+            sys.executable,
+            '-c',
+            FAILING_READ_DRIVER,
+            str(SCRIPTS),
+            str(SCRIPTS / script),
+            '--derived-dir',
+            str(derived),
+            '--out-dir',
+            str(tmp_path / 'out'),
+        ],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding='utf-8',
+        timeout=120,
+        check=False,
+    )
+
+    assert done.returncode == 1, done.stderr
+    last_line = done.stderr.rstrip().splitlines()[-1]
+    assert last_line.startswith(
+        f'_report_weights.ActiveWeightsError: [{tag}] cannot read the active lottery weights '
+        '(OperationalError); no report written'
+    )
+    for text in ('hunter2', 'During handling of the above exception', 'direct cause'):
+        assert text not in done.stderr, text
+    assert not (tmp_path / 'out').exists()
