@@ -13,6 +13,13 @@
  *
  * Idempotent: ON CONFLICT (date) DO UPDATE — safe to run multiple times.
  *
+ * `?backfill=true` is the other mode (see handleBackfill below). It FILLS
+ * history and never rewrites it: it inserts only the days that have no
+ * outcomes row (ON CONFLICT DO NOTHING) and leaves every stored row as it
+ * is. A day takes its OHLC and settlement (the daily bar's close) from the
+ * Schwab daily SPX bars, its VIX close from the daily VIX bars, and its
+ * VIX1D close from the CBOE map in Redis that refresh-vix1d keeps.
+ *
  * Environment: SCHWAB_CLIENT_ID, SCHWAB_CLIENT_SECRET, CRON_SECRET
  */
 
@@ -24,8 +31,10 @@ import {
   checkDataQuality,
 } from '../_lib/api-helpers.js';
 import { Sentry, metrics } from '../_lib/sentry.js';
-import { saveOutcome, getDb } from '../_lib/db.js';
+import { saveOutcome, insertOutcomeIfMissing, getDb } from '../_lib/db.js';
+import { redis } from '../_lib/redis.js';
 import logger from '../_lib/logger.js';
+import type { Vix1dDailyMap } from './refresh-vix1d.js';
 import {
   deriveCronStatus,
   withCronInstrumentation,
@@ -268,10 +277,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.query.backfill === 'true') {
     // Backfill bypasses time check but still needs auth — check method +
     // secret only. Bespoke response shape (`{backfill, status, saved,
-    // skipped}`) keeps it out of the standard wrapper. It is triggered by
-    // hand, not scheduled: no cron monitor or Axiom event covers it, so
-    // the HTTP status (500 when every day failed) and the Sentry event
-    // are its failure signals.
+    // present, skipped}`) keeps it out of the standard wrapper. It is
+    // triggered by hand, not scheduled: no cron monitor or Axiom event
+    // covers it, so the HTTP status (500 when every day failed) and the
+    // Sentry event are its failure signals.
     const guard = cronGuard(req, res, {
       marketHours: false,
       requireApiKey: false,
@@ -388,6 +397,48 @@ interface DailyHistoryResponse {
   empty: boolean;
 }
 
+/**
+ * The CBOE VIX1D daily map, written to this Redis key by
+ * api/cron/refresh-vix1d.ts and read by api/vix1d-daily.ts.
+ */
+const VIX1D_MAP_KEY = 'vix1d:daily-map';
+
+/**
+ * The VIX1D daily map, or null when it can't be had. Schwab's daily history
+ * has no VIX1D, so the CBOE map is the backfill's only source for it, but it
+ * is optional: a missing or empty map and a failed Redis read each warn with
+ * their cause and return null, and the days are saved with a NULL
+ * vix1d_close instead of the run failing.
+ */
+async function readVix1dMap(): Promise<Vix1dDailyMap | null> {
+  let map: Vix1dDailyMap | null;
+  try {
+    map = await redis.get<Vix1dDailyMap>(VIX1D_MAP_KEY);
+  } catch (err) {
+    logger.warn(
+      { err, key: VIX1D_MAP_KEY },
+      'fetch-outcomes: backfill VIX1D map read failed, saving NULL vix1d_close',
+    );
+    return null;
+  }
+  if (!map || Object.keys(map).length === 0) {
+    logger.warn(
+      { key: VIX1D_MAP_KEY },
+      'fetch-outcomes: backfill VIX1D map missing or empty in Redis (refresh-vix1d has not run, or the key expired), saving NULL vix1d_close',
+    );
+    return null;
+  }
+  return map;
+}
+
+/**
+ * Fill the outcomes of the last ~62 days that have no row. Existing rows are
+ * never touched (insertOutcomeIfMissing is ON CONFLICT DO NOTHING), so a
+ * re-run is harmless and a stored vix1d_close survives. Each missing day
+ * takes its settlement (the daily bar's close) and OHLC from the Schwab
+ * daily SPX bars, its VIX close from the daily VIX bars and its VIX1D close
+ * from the CBOE map.
+ */
 async function handleBackfill(res: VercelResponse) {
   try {
     // Fetch ~2 months of daily SPX candles
@@ -420,8 +471,12 @@ async function handleBackfill(res: VercelResponse) {
       );
     }
 
+    // saved: inserted now. present: the date already had a row, left as is.
+    // skipped: the insert failed.
     let saved = 0;
+    let present = 0;
     let skipped = 0;
+    const insertedDates: string[] = [];
     const failedDates: string[] = [];
     let firstError: unknown;
 
@@ -441,22 +496,29 @@ async function handleBackfill(res: VercelResponse) {
       );
     }
 
+    const vix1dMap = await readVix1dMap();
+
     for (const candle of candles) {
       const dateStr = getETDateStr(new Date(candle.datetime));
 
       try {
         const vixCandle = vixByDate.get(dateStr);
 
-        await saveOutcome({
+        const inserted = await insertOutcomeIfMissing({
           date: dateStr,
           settlement: candle.close,
           dayOpen: candle.open,
           dayHigh: candle.high,
           dayLow: candle.low,
           vixClose: vixCandle?.close,
-          vix1dClose: undefined, // VIX1D not available in daily history
+          vix1dClose: vix1dMap?.[dateStr]?.c,
         });
-        saved++;
+        if (inserted) {
+          saved++;
+          insertedDates.push(dateStr);
+        } else {
+          present++;
+        }
       } catch (err) {
         logger.warn({ err, date: dateStr }, 'Backfill: skipped candle');
         skipped++;
@@ -465,7 +527,9 @@ async function handleBackfill(res: VercelResponse) {
       }
     }
 
-    // Some days failing → 'partial'; every day failing → 'error' (500).
+    // Derived from failures only: days that were already stored are not
+    // failures, so an all-present run is a success. Some days failing →
+    // 'partial'; every day failing → 'error' (500).
     const status = deriveCronStatus(skipped, candles.length);
 
     if (skipped > 0) {
@@ -477,13 +541,20 @@ async function handleBackfill(res: VercelResponse) {
     }
 
     logger.info(
-      { status, saved, skipped, total: candles.length },
+      {
+        status,
+        saved,
+        present,
+        skipped,
+        total: candles.length,
+        insertedDates,
+      },
       'fetch-outcomes: backfill complete',
     );
 
     return res
       .status(status === 'error' ? 500 : 200)
-      .json({ backfill: true, status, saved, skipped });
+      .json({ backfill: true, status, saved, present, skipped });
   } catch (err) {
     Sentry.setTag('cron.job', 'fetch-outcomes');
     Sentry.captureException(err);

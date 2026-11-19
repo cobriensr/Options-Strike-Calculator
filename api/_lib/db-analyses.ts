@@ -66,7 +66,7 @@ export async function saveAnalysis(
 // OUTCOMES (for future use)
 // ============================================================
 
-export async function saveOutcome(input: {
+export interface OutcomeInput {
   date: string;
   settlement: number;
   dayOpen: number;
@@ -74,12 +74,27 @@ export async function saveOutcome(input: {
   dayLow: number;
   vixClose?: number;
   vix1dClose?: number;
-}) {
+}
+
+/** The three columns an outcome row derives from its day's OHLC. */
+function deriveOutcomeColumns(input: OutcomeInput) {
+  return {
+    rangePts: Math.round(input.dayHigh - input.dayLow),
+    rangePct:
+      input.dayOpen > 0 ? (input.dayHigh - input.dayLow) / input.dayOpen : null,
+    closeVsOpen: input.settlement - input.dayOpen,
+  };
+}
+
+/**
+ * Save a day's outcome, replacing the stored row for that date (every
+ * column, `vix1d_close` included). The end-of-day run uses it to re-save
+ * today. Never use it to fill history: a caller without a VIX1D close would
+ * blank the stored one. That is `insertOutcomeIfMissing`.
+ */
+export async function saveOutcome(input: OutcomeInput) {
   const sql = getDb();
-  const rangePts = Math.round(input.dayHigh - input.dayLow);
-  const rangePct =
-    input.dayOpen > 0 ? (input.dayHigh - input.dayLow) / input.dayOpen : null;
-  const closeVsOpen = input.settlement - input.dayOpen;
+  const { rangePts, rangePct, closeVsOpen } = deriveOutcomeColumns(input);
 
   await withDbRetry(
     () => sql`
@@ -107,6 +122,42 @@ export async function saveOutcome(input: {
     2,
     10_000,
   );
+}
+
+/**
+ * Insert a day's outcome only when the date has no row; an existing row is
+ * left exactly as it is. Returns true when a row was inserted, false when
+ * the date was already stored. A database error rejects, so a failed day is
+ * never counted as present.
+ *
+ * The key is the trading date, so a re-run or a retry is idempotent: a retry
+ * after a lost response finds the committed row and returns false.
+ */
+export async function insertOutcomeIfMissing(
+  input: OutcomeInput,
+): Promise<boolean> {
+  const sql = getDb();
+  const { rangePts, rangePct, closeVsOpen } = deriveOutcomeColumns(input);
+
+  const inserted = await withDbRetry(
+    () => sql`
+    INSERT INTO outcomes (
+      date, settlement, day_open, day_high, day_low,
+      day_range_pts, day_range_pct, close_vs_open,
+      vix_close, vix1d_close
+    ) VALUES (
+      ${input.date}, ${input.settlement},
+      ${input.dayOpen}, ${input.dayHigh}, ${input.dayLow},
+      ${rangePts}, ${rangePct}, ${closeVsOpen},
+      ${input.vixClose ?? null}, ${input.vix1dClose ?? null}
+    )
+    ON CONFLICT (date) DO NOTHING
+    RETURNING date
+  `,
+    2,
+    10_000,
+  );
+  return inserted.length > 0;
 }
 
 // ============================================================

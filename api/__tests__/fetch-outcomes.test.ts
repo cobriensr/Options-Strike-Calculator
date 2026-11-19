@@ -5,6 +5,8 @@ import { mockRequest, mockResponse } from './helpers';
 
 // Use vi.hoisted so mocks are available when vi.mock factories run (hoisted above imports)
 const mockSaveOutcome = vi.hoisted(() => vi.fn());
+const mockInsertOutcomeIfMissing = vi.hoisted(() => vi.fn());
+const mockRedisGet = vi.hoisted(() => vi.fn());
 
 vi.mock('../_lib/api-helpers.js', async (importOriginal) => {
   const actual =
@@ -22,9 +24,17 @@ const mockSql = vi.hoisted(() =>
 );
 vi.mock('../_lib/db.js', () => ({
   saveOutcome: mockSaveOutcome,
+  insertOutcomeIfMissing: mockInsertOutcomeIfMissing,
   getDb: vi.fn(() => mockSql),
   withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
 }));
+
+// The backfill reads the CBOE VIX1D daily map the refresh-vix1d cron keeps in
+// Redis. The rest of the module stays real.
+vi.mock('../_lib/redis.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../_lib/redis.js')>();
+  return { ...actual, redis: { get: mockRedisGet } };
+});
 
 vi.mock('../_lib/logger.js', () => ({
   default: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -42,6 +52,7 @@ vi.mock('../_lib/sentry.js', async (importOriginal) => {
 
 import handler from '../cron/fetch-outcomes.js';
 import { schwabFetch } from '../_lib/api-helpers.js';
+import logger from '../_lib/logger.js';
 
 const mockedSchwabFetch = schwabFetch as ReturnType<typeof vi.fn>;
 
@@ -550,7 +561,22 @@ describe('fetch-outcomes handler', () => {
       ];
     }
 
-    it('fetches daily candles and saves each completed day', async () => {
+    // The CBOE VIX1D daily map that refresh-vix1d keeps in Redis, keyed by
+    // trading day. 03-22 is left out to cover a day the map does not hold.
+    const VIX1D_MAP = {
+      '2026-03-20': { o: 14, h: 16, l: 13, c: 15.1 },
+      '2026-03-21': { o: 15, h: 16, l: 14, c: 15.2 },
+      '2026-03-23': { o: 15, h: 18, l: 14, c: 15.4 },
+    };
+
+    beforeEach(() => {
+      // resetAllMocks cleared every default: by default the map is there and
+      // every day is new.
+      mockRedisGet.mockResolvedValue(VIX1D_MAP);
+      mockInsertOutcomeIfMissing.mockResolvedValue(true);
+    });
+
+    it('fetches daily candles and fills each completed day that has no row', async () => {
       mockedSchwabFetch.mockResolvedValueOnce({
         ok: true,
         data: { candles: makeDailyCandles(), symbol: '$SPX', empty: false },
@@ -559,7 +585,6 @@ describe('fetch-outcomes handler', () => {
         ok: true,
         data: { candles: makeVixDailyCandles(), symbol: '$VIX', empty: false },
       });
-      mockSaveOutcome.mockResolvedValue(undefined);
 
       const req = mockRequest({
         method: 'GET',
@@ -570,26 +595,192 @@ describe('fetch-outcomes handler', () => {
       await handler(req, res);
 
       expect(res._status).toBe(200);
-      // Today (2026-03-24) should be excluded, so 4 days saved
-      expect(res._json).toMatchObject({
+      // Today (2026-03-24) should be excluded, so 4 days inserted
+      expect(res._json).toEqual({
         backfill: true,
         status: 'success',
         saved: 4,
+        present: 0,
         skipped: 0,
       });
-      expect(mockSaveOutcome).toHaveBeenCalledTimes(4);
+      expect(mockInsertOutcomeIfMissing).toHaveBeenCalledTimes(4);
 
-      // Verify one of the saved outcomes has VIX data joined by date
-      expect(mockSaveOutcome).toHaveBeenCalledWith(
+      // One of the days carries the daily bar, the VIX close joined by date
+      // and the VIX1D close from the CBOE map.
+      expect(mockInsertOutcomeIfMissing).toHaveBeenCalledWith({
+        date: '2026-03-20',
+        settlement: 5640,
+        dayOpen: 5600,
+        dayHigh: 5650,
+        dayLow: 5580,
+        vixClose: 18,
+        vix1dClose: 15.1,
+      });
+    });
+
+    it('never calls saveOutcome: its DO UPDATE would overwrite a stored day', async () => {
+      mockDailyHistory();
+
+      await handler(backfillReq(), mockResponse());
+
+      expect(mockInsertOutcomeIfMissing).toHaveBeenCalled();
+      expect(mockSaveOutcome).not.toHaveBeenCalled();
+    });
+
+    it('counts a day that already has a row as present, and the run is a success', async () => {
+      mockDailyHistory();
+      mockInsertOutcomeIfMissing.mockResolvedValue(false);
+
+      const res = mockResponse();
+      await handler(backfillReq(), res);
+
+      expect(res._status).toBe(200);
+      expect(res._json).toEqual({
+        backfill: true,
+        status: 'success',
+        saved: 0,
+        present: 4,
+        skipped: 0,
+      });
+      expect(mockCaptureException).not.toHaveBeenCalled();
+    });
+
+    it('takes vix1dClose from the CBOE map by date, and leaves it undefined for a day the map lacks', async () => {
+      mockDailyHistory();
+
+      await handler(backfillReq(), mockResponse());
+
+      const byDate = Object.fromEntries(
+        mockInsertOutcomeIfMissing.mock.calls.map(([input]) => [
+          input.date,
+          input.vix1dClose,
+        ]),
+      );
+      expect(byDate).toEqual({
+        '2026-03-20': 15.1,
+        '2026-03-21': 15.2,
+        '2026-03-22': undefined,
+        '2026-03-23': 15.4,
+      });
+    });
+
+    it('reads the VIX1D map once per run, from the key the refresh cron writes', async () => {
+      mockDailyHistory();
+
+      await handler(backfillReq(), mockResponse());
+
+      expect(mockRedisGet).toHaveBeenCalledTimes(1);
+      expect(mockRedisGet).toHaveBeenCalledWith('vix1d:daily-map');
+    });
+
+    it.each([
+      ['is missing from Redis', null],
+      ['is empty', {}],
+    ])(
+      'saves NULL vix1d and warns, without failing, when the VIX1D map %s',
+      async (_label, map) => {
+        mockDailyHistory();
+        mockRedisGet.mockResolvedValue(map);
+
+        const res = mockResponse();
+        await handler(backfillReq(), res);
+
+        expect(res._status).toBe(200);
+        expect(res._json).toEqual({
+          backfill: true,
+          status: 'success',
+          saved: 4,
+          present: 0,
+          skipped: 0,
+        });
+        for (const [input] of mockInsertOutcomeIfMissing.mock.calls) {
+          expect(input.vix1dClose).toBeUndefined();
+        }
+        expect(logger.warn).toHaveBeenCalledWith(
+          { key: 'vix1d:daily-map' },
+          expect.stringContaining('VIX1D map missing'),
+        );
+        expect(mockCaptureException).not.toHaveBeenCalled();
+      },
+    );
+
+    it('saves NULL vix1d and warns with the cause, without failing, when the Redis read throws', async () => {
+      mockDailyHistory();
+      const redisDown = new Error('Redis: connect ETIMEDOUT');
+      mockRedisGet.mockRejectedValue(redisDown);
+
+      const res = mockResponse();
+      await handler(backfillReq(), res);
+
+      expect(res._status).toBe(200);
+      expect(res._json).toEqual({
+        backfill: true,
+        status: 'success',
+        saved: 4,
+        present: 0,
+        skipped: 0,
+      });
+      for (const [input] of mockInsertOutcomeIfMissing.mock.calls) {
+        expect(input.vix1dClose).toBeUndefined();
+      }
+      expect(logger.warn).toHaveBeenCalledWith(
+        { err: redisDown, key: 'vix1d:daily-map' },
+        expect.stringContaining('VIX1D map read failed'),
+      );
+    });
+
+    it('logs the inserted dates and leaves the days that were present out of them', async () => {
+      mockDailyHistory();
+      mockInsertOutcomeIfMissing
+        .mockResolvedValueOnce(false) // 03-20 already stored
+        .mockResolvedValueOnce(true)
+        .mockResolvedValueOnce(false)
+        .mockResolvedValueOnce(true);
+
+      await handler(backfillReq(), mockResponse());
+
+      expect(logger.info).toHaveBeenCalledWith(
         expect.objectContaining({
-          date: '2026-03-20',
-          settlement: 5640,
-          dayOpen: 5600,
-          dayHigh: 5650,
-          dayLow: 5580,
-          vixClose: 18,
-          vix1dClose: undefined,
+          insertedDates: ['2026-03-21', '2026-03-23'],
+          saved: 2,
+          present: 2,
+          skipped: 0,
         }),
+        'fetch-outcomes: backfill complete',
+      );
+    });
+
+    it('adds up a mixed run: inserted, already present and failed days', async () => {
+      mockDailyHistory();
+      mockInsertOutcomeIfMissing
+        .mockResolvedValueOnce(true) // 03-20 inserted
+        .mockResolvedValueOnce(false) // 03-21 already stored
+        .mockRejectedValueOnce(new Error('connection lost')) // 03-22 fails
+        .mockResolvedValueOnce(true); // 03-23 inserted
+
+      const res = mockResponse();
+      await handler(backfillReq(), res);
+
+      expect(res._status).toBe(200);
+      expect(res._json).toEqual({
+        backfill: true,
+        status: 'partial',
+        saved: 2,
+        present: 1,
+        skipped: 1,
+      });
+      expect(mockCaptureException).toHaveBeenCalledTimes(1);
+      expect(mockCaptureException).toHaveBeenCalledWith(
+        expect.objectContaining({ message: 'connection lost' }),
+        {
+          tags: { 'cron.job': 'fetch-outcomes', mode: 'backfill' },
+          extra: {
+            saved: 2,
+            skipped: 1,
+            total: 4,
+            failedDates: ['2026-03-22'],
+          },
+        },
       );
     });
 
@@ -612,7 +803,7 @@ describe('fetch-outcomes handler', () => {
       expect(res._json).toEqual({ error: 'SPX history unavailable' });
     });
 
-    it('skips days where saveOutcome throws and counts them in skipped', async () => {
+    it('skips days where the insert throws and counts them in skipped', async () => {
       mockedSchwabFetch.mockResolvedValueOnce({
         ok: true,
         data: { candles: makeDailyCandles(), symbol: '$SPX', empty: false },
@@ -622,10 +813,10 @@ describe('fetch-outcomes handler', () => {
         data: { candles: makeVixDailyCandles(), symbol: '$VIX', empty: false },
       });
 
-      // First two saves succeed, third and fourth fail
-      mockSaveOutcome
-        .mockResolvedValueOnce(undefined)
-        .mockResolvedValueOnce(undefined)
+      // First two inserts succeed, third and fourth fail
+      mockInsertOutcomeIfMissing
+        .mockResolvedValueOnce(true)
+        .mockResolvedValueOnce(true)
         .mockRejectedValueOnce(new Error('duplicate key'))
         .mockRejectedValueOnce(new Error('duplicate key'));
 
@@ -642,6 +833,7 @@ describe('fetch-outcomes handler', () => {
         backfill: true,
         status: 'partial',
         saved: 2,
+        present: 0,
         skipped: 2,
       });
       // One Sentry event per run (not per day), naming the failed days.
@@ -681,7 +873,6 @@ describe('fetch-outcomes handler', () => {
 
     it('reports status success and sends nothing to Sentry when every day saves', async () => {
       mockDailyHistory();
-      mockSaveOutcome.mockResolvedValue(undefined);
 
       const res = mockResponse();
       await handler(backfillReq(), res);
@@ -691,15 +882,16 @@ describe('fetch-outcomes handler', () => {
         backfill: true,
         status: 'success',
         saved: 4,
+        present: 0,
         skipped: 0,
       });
       expect(mockCaptureException).not.toHaveBeenCalled();
     });
 
-    it('every save fails → 500, status error, one Sentry event with the first error', async () => {
+    it('every insert fails → 500, status error, one Sentry event with the first error', async () => {
       mockDailyHistory();
       const neonDown = new Error('Neon: connection terminated');
-      mockSaveOutcome.mockRejectedValue(neonDown);
+      mockInsertOutcomeIfMissing.mockRejectedValue(neonDown);
 
       const res = mockResponse();
       await handler(backfillReq(), res);
@@ -709,6 +901,7 @@ describe('fetch-outcomes handler', () => {
         backfill: true,
         status: 'error',
         saved: 0,
+        present: 0,
         skipped: 4,
       });
       expect(mockCaptureException).toHaveBeenCalledTimes(1);
@@ -751,6 +944,7 @@ describe('fetch-outcomes handler', () => {
             'fetch-outcomes backfill: Schwab returned no completed daily SPX candles',
         }),
       );
+      expect(mockInsertOutcomeIfMissing).not.toHaveBeenCalled();
       expect(mockSaveOutcome).not.toHaveBeenCalled();
     });
   });
