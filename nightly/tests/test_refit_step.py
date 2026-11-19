@@ -140,7 +140,6 @@ def make_fires(sessions: Sequence[date], per_session: int, *, seed: int = 11) ->
             "realized_flow_inversion_pct": outcome,
             "realized_eod_pct": outcome,
             "peak_ceiling_pct": np.abs(outcome) + 100.0,
-            "round_trip_score_deduct": 0.0,
             "direction_gated": False,
             # 3-5: a quintile of 1 or 2 forces the feed's tier3 and would thin the tiers.
             "inversion_quintile": rng.integers(3, 6, n).astype("float64"),
@@ -2035,7 +2034,6 @@ def _feed_row(day: date, *, gated: bool | None = False) -> tuple[Any, ...]:
         "cum_ncp_at_fire": Decimal("120.5"),
         "cum_npp_at_fire": Decimal("80"),
         "date": day,
-        "round_trip_score_deduct": None,
         "direction_gated": gated,
         "inversion_quintile": Decimal("4"),
     }

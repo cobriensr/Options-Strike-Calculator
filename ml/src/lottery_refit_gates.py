@@ -98,16 +98,14 @@ FEED_CUTOFF_SEARCH_MAX = 40
 # or other quintile adds 0.
 INVERSION_BONUS = {1: -5, 2: -2, 3: 0, 4: 3, 5: 5}
 
-# A fire with a NULL score still gets a qas on the feed: `GREATEST(0, COALESCE(score, 0) +
-# round_trip_score_deduct) + inversion bonus` (`qasExprText` in api/lottery-finder.ts, which
-# serves the `minTier` floor and the chip counts). The deduct is never positive. It has two
-# writers: the live cron, api/cron/evaluate-round-trip.ts, and the one-shot backfill,
-# scripts/backfill_round_trip_score.py, which copies its brackets. Both give -3, -2 or -1 and
-# otherwise 0 (the column is NOT NULL DEFAULT 0), and a test parses both. So the zero floor,
-# which comes before the bonus, leaves 0 and the largest qas such a fire can reach is the
-# largest bonus. A test also pins the `qasExprText` body, so a new term fails there first.
-# The fire-count adjustment used to add up to 2 here; it was retired on 2026-11-15
-# (migration #209 drops its column) and `qasExprText` no longer has the term.
+# A fire with a NULL score still gets a qas on the feed: `GREATEST(0, COALESCE(score, 0)) +
+# inversion bonus` (`qasExprText` in api/lottery-finder.ts, which serves the `minTier` floor
+# and the chip counts). That is 0 plus the bonus, so the largest qas such a fire can reach is
+# the largest bonus. A test pins the `qasExprText` body, so a new term fails there first.
+# The round-trip deduct was left out when the feed fixed its tier at the fire
+# (docs/superpowers/specs/2026-11-17-freeze-tier-at-fire-design.md), and the fire-count
+# adjustment, which used to add up to 2 here, was retired before that (migration #209 drops
+# its column). The value is unchanged.
 NULL_SCORE_QAS_MAX = max(INVERSION_BONUS.values())
 
 # `feed_qas` counts a NULL-score fire tier3, so a feed cutoff at or below NULL_SCORE_QAS_MAX
@@ -117,11 +115,11 @@ NULL_SCORE_QAS_MAX = max(INVERSION_BONUS.values())
 FEED_CUTOFF_FLOOR = NULL_SCORE_QAS_MAX + 1
 
 # The frame ``feed_qas`` and ``daily_tier_shares`` read: the score columns, which
-# ``score_frame`` needs to rescore a fire, and the three the feed adds. The
-# fire-count score adjustment is not among them: it was retired on 2026-11-15
-# and migration #209 drops its column.
+# ``score_frame`` needs to rescore a fire, and the two the feed adds. Neither the
+# fire-count score adjustment (retired on 2026-11-15; migration #209 drops its column)
+# nor the round-trip deduct (left out of the feed's qas when it fixed its tier at the
+# fire) is among them.
 _FEED_ONLY_COLUMNS = (
-    "round_trip_score_deduct",
     "direction_gated",
     "inversion_quintile",
 )
@@ -254,16 +252,17 @@ def feed_qas(scores: pd.Series, feed: pd.DataFrame) -> pd.Series:
     badges on, and the tier monitor in api/cron/detect-lottery-fires.ts, which
     classifies the same way:
 
-        qas = GREATEST(0, COALESCE(score, 0)
-                          + COALESCE(round_trip_score_deduct, 0))
+        qas = GREATEST(0, COALESCE(score, 0))
               + CASE inversion_quintile 1 THEN -5 ... 5 THEN 5 ELSE 0 END
 
-    The floor at zero comes before the bonus. A NULL deduct counts as 0, and
-    so does a NULL or out-of-range quintile. There is no fire-count term: that
-    adjustment was retired on 2026-11-15, so the qas does not depend on how many
-    times a chain has fired. ``scores`` is what ``score_frame`` returns for
-    ``feed`` under one weights version (``<NA>`` for a fire the scorer gates
-    out), on the same index.
+    The floor at zero comes before the bonus. A NULL or out-of-range quintile
+    counts as 0. There is no fire-count term: that adjustment was retired on
+    2026-11-15, so the qas does not depend on how many times a chain has fired.
+    There is no round-trip term either: the feed fixed its tier at the fire
+    (docs/superpowers/specs/2026-11-17-freeze-tier-at-fire-design.md), so a
+    deduct that lands later does not move it. ``scores`` is what
+    ``score_frame`` returns for ``feed`` under one weights version (``<NA>``
+    for a fire the scorer gates out), on the same index.
 
     The result is NaN for the fires the feed shows as tier3 whatever their qas:
     a NULL score, ``direction_gated``, and an inversion quintile of 1 or 2 (the
@@ -274,14 +273,13 @@ def feed_qas(scores: pd.Series, feed: pd.DataFrame) -> pd.Series:
         raise ValueError("scores and feed must have the same index")
     _require_columns(feed, _FEED_ONLY_COLUMNS, "feed")
     score = scores.to_numpy(dtype="float64", na_value=np.nan)
-    round_trip = np.nan_to_num(_floats(feed["round_trip_score_deduct"]))
     quintile = _floats(feed["inversion_quintile"])
     bonus = np.zeros(len(feed))
     for q, points in INVERSION_BONUS.items():
         bonus[quintile == q] = points
-    # A <NA> score is NaN here and stays NaN through the sum and np.maximum
+    # A <NA> score is NaN here and stays NaN through np.maximum and the sum
     # (np.fmax would swallow it), which is the forced tier3 of a NULL score.
-    qas = np.maximum(0.0, score + round_trip) + bonus
+    qas = np.maximum(0.0, score) + bonus
     forced = _flags(feed["direction_gated"]) | np.isin(quintile, (1, 2))
     qas[forced] = np.nan
     return pd.Series(qas, index=feed.index, name="qas")
