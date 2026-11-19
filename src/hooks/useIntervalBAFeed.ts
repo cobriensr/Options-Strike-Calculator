@@ -11,6 +11,9 @@
  *   - Superseded requests are aborted when the settled params change or
  *     the component unmounts; an aborted request is not an error and its
  *     response is never written to state.
+ *   - `loading` is true while the held alerts answer different params than
+ *     the ones asked for (a date held by the debounce, a fetch in flight),
+ *     and only then: a poll or a refresh of the same params keeps the rows.
  *   - Auto-polling: when `marketOpen` is true AND the settled `date` is
  *     today (the shared ET clock, `useETToday`), the hook bumps
  *     `refreshTick` every POLL_INTERVALS.ALERTS ms so the live feed stays
@@ -112,13 +115,34 @@ function buildUrl(p: UseIntervalBAFeedParams): string {
   return `/api/interval-ba-feed?${sp.toString()}`;
 }
 
+/**
+ * One string for every field of the params, so two requests are "the same
+ * request" exactly when their keys are equal. The tuple is JSON-encoded, so a
+ * value holding the separator cannot make two different requests collide.
+ */
+function paramsKey(p: UseIntervalBAFeedParams): string {
+  return JSON.stringify([
+    p.date,
+    p.startTime,
+    p.endTime,
+    p.optionType,
+    p.minPremium,
+    p.confluenceOnly,
+    p.moneyness,
+  ]);
+}
+
 export function useIntervalBAFeed(
   params: UseIntervalBAFeedParams,
   marketOpen: boolean = false,
 ): UseIntervalBAFeedState {
   const [alerts, setAlerts] = useState<IntervalBAFeedAlert[]>([]);
   const [summary, setSummary] = useState<IntervalBAFeedSummary | null>(null);
-  const [loading, setLoading] = useState(true);
+  // The key of the params the held `alerts` were last fetched for, or null
+  // before the first response. `loading` is derived from it (below), not set
+  // by each fetch, so it stays false across a poll or a refresh of the same
+  // params and the rows are not unmounted every ten seconds.
+  const [responseKey, setResponseKey] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [fetchedAt, setFetchedAt] = useState<number | null>(null);
   // Bumping ``refreshTick`` re-runs the fetch effect without changing
@@ -144,12 +168,22 @@ export function useIntervalBAFeed(
   );
   const settled = useDebounced(selection);
 
+  // Loading is a comparison of keys: the params asked for now (the raw date and
+  // times, not the settled ones) against the params the held alerts answer.
+  // The feed hands each row the date it asked for, so a row must never render
+  // with a date its alerts were not fetched for: while a changed date waits out
+  // the debounce, or its fetch is in flight, the two keys differ and the feed
+  // is loading.
+  const requestKey = paramsKey(params);
+  const loading = responseKey !== requestKey;
+
   useEffect(() => {
     // Aborted when the settled params change, on a refresh or poll tick, and
     // on unmount, so a superseded response never reaches state.
     const ctrl = new AbortController();
-    const url = buildUrl({ ...params, ...settled });
-    setLoading(true);
+    const fetchParams = { ...params, ...settled };
+    const url = buildUrl(fetchParams);
+    const fetchKey = paramsKey(fetchParams);
     setError(null);
 
     fetch(url, {
@@ -187,7 +221,7 @@ export function useIntervalBAFeed(
         setAlerts(typed.alerts);
         setSummary(typed.summary);
         setFetchedAt(Date.now());
-        setLoading(false);
+        setResponseKey(fetchKey);
       })
       .catch((err: unknown) => {
         // Only our own abort is skipped. The 15 s timeout also aborts the
@@ -198,7 +232,9 @@ export function useIntervalBAFeed(
           tags: { context: 'interval_ba_feed' },
         });
         setError(msg);
-        setLoading(false);
+        // A failed fetch has answered too: the feed shows the error, not a
+        // spinner for ever.
+        setResponseKey(fetchKey);
       });
 
     return () => ctrl.abort();

@@ -69,10 +69,11 @@ export function IntervalBAFeed({
   marketOpen = false,
 }: Readonly<IntervalBAFeedProps> = {}) {
   // The owner's pick, else today (the shared ET clock): a tab left open past
-  // ET midnight moves to the new day, and a date picked stays put. Clearing
-  // the field follows today (the shared DateInput forwards '' only when the
-  // field is left empty), so the request never carries `date=`, which the
-  // server answers with a 400. `today` is that same clock, for `max`.
+  // ET midnight moves to the new day, and any other date picked stays put
+  // (picking today follows it again). Clearing the field follows today (the
+  // shared DateInput forwards '' only when the field is left empty), so the
+  // request never carries `date=`, which the server answers with a 400.
+  // `today` is that same clock, for `max`.
   const { date, setDate, today } = useFollowedDate();
   const [startTime, setStartTime] = useState<string>('08:30');
   const [endTime, setEndTime] = useState<string>('15:00');

@@ -204,6 +204,34 @@ panels follow the new date too".
 - **Test fixtures** dated their alerts with the CT date. They use
   `getETToday()`.
 
+### Found while building Phase 8
+
+- **The feed's alerts were not stored with the date they belong to.**
+  `useIntervalBAFeed` kept `alerts` and a `loading` flag that each fetch set
+  true and false, and the feed handed every row the date it asked for. From
+  the commit that changed the date until its response landed, the rows
+  rendered yesterday's alerts under the new date, and a row opened in that
+  window asked for the new date with yesterday's contract (a tape request that
+  pairs the two). Before the debounce the window was one fetch; the 250 ms
+  settle (`useDebounced`) widens it to a quarter second plus the fetch. The
+  fix is the Phase 7 rule again, in the hook: `loading` is derived from keys
+  (`requestKey` from every raw param, `responseKey` the params a fetch
+  settled for, set on success and on failure and never on our own abort), so
+  the feed is loading from the roll until the new date has answered and draws
+  no row meanwhile.
+- **Every poll flipped `loading`.** The fetch effect set `loading` true at the
+  start of each run, so each 10 s poll swapped the rows for the loading text
+  and back: an expanded row collapsed itself, and the expanded state was lost
+  on every poll. With the key comparison, a poll or a refresh of the same
+  params leaves `loading` false and the rows mounted. (A test with an instant
+  mock fetch cannot see this: the two state updates batch. The polling test
+  gives the mock 10 ms of latency.)
+- **The poll gate reads the settled date.** `[marketOpen, settled.date ===
+  today]`, with `today` from the shared ET clock. A following feed's settled
+  date lags the roll by the debounce, so the gate closes at the roll, nothing
+  is polled while the date is held, and the feed asks once for the new date and
+  then polls it.
+
 ## Phases
 
 Each phase is one commit of 5 files or fewer. Each runs `npm run review`,

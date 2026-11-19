@@ -529,6 +529,55 @@ describe('useIntervalBAFeed settling and abort', () => {
         .every((url) => url.includes('startTime=08%3A30')),
     ).toBe(true);
   });
+
+  // `loading` is derived from keys: the params the held data was fetched for
+  // against the params now asked for (the raw date and times, not the settled
+  // ones). Rows are drawn from `alerts` and given the date asked for, so a row
+  // must never render with a date other than the one its alerts were fetched
+  // for, in the debounce window or while the new date's fetch is in flight.
+  it('is loading while a changed date is held and until its response lands, keeping the old alerts meanwhile', async () => {
+    const calls = stubPendingFetch(false);
+    const { result, rerender } = renderFeed(baseParams);
+    await respond(calls[0]!, { alerts: [baseAlert], summary: baseSummary });
+    expect(result.current.loading).toBe(false);
+
+    // The date changed and the hook has not settled it yet: the held alerts
+    // belong to the old date, so the feed is loading.
+    rerender({ ...baseParams, date: '2026-05-13' });
+    expect(result.current.loading).toBe(true);
+    expect(result.current.alerts).toEqual([baseAlert]);
+
+    await advance(SETTLE_MS);
+    expect(calls).toHaveLength(2);
+    expect(result.current.loading).toBe(true);
+
+    await respond(calls[1]!, { alerts: [], summary: baseSummary });
+    expect(result.current.loading).toBe(false);
+  });
+
+  it('does not flip loading on a poll or a manual refresh', async () => {
+    mockFetchJson(emptyPayload);
+    const seen: boolean[] = [];
+    const { result } = renderHook(() => {
+      const state = useIntervalBAFeed({ ...baseParams, date: TODAY_ET }, true);
+      seen.push(state.loading);
+      return state;
+    });
+    await advance(0);
+    expect(result.current.loading).toBe(false);
+    seen.length = 0;
+
+    // A poll sets state at each step, so each step renders. Every render
+    // between the polls and the refresh is already loaded: the rows stay
+    // mounted instead of being replaced by "Loading" and remounted.
+    for (let i = 0; i < 4; i += 1) await advance(30);
+    act(() => result.current.refresh());
+    await advance(30);
+
+    expect(fetchUrls().length).toBeGreaterThan(4);
+    expect(seen.length).toBeGreaterThan(4);
+    expect(seen.every((loading) => !loading)).toBe(true);
+  });
 });
 
 // ============================================================

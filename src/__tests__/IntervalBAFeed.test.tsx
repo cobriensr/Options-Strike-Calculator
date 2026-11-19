@@ -11,6 +11,26 @@ import {
 import { IntervalBAFeed } from '../components/IntervalBAFeed/IntervalBAFeed';
 import type { IntervalBAFeedAlert } from '../hooks/useIntervalBAFeed';
 
+// Shorten the feed's auto-poll so the polling cases below step a few
+// milliseconds, not ten seconds, each. Only the polling cases set marketOpen.
+vi.mock('../constants', async () => {
+  const actual =
+    await vi.importActual<typeof import('../constants')>('../constants');
+  return {
+    ...actual,
+    POLL_INTERVALS: { ...actual.POLL_INTERVALS, ALERTS: 30 },
+  };
+});
+
+// The expanded row's charts are stubbed: their layout is not under test, and
+// the rows' own requests are.
+vi.mock('../components/charts/ContractTapeChart', () => ({
+  ContractTapeChart: () => <div data-testid="contract-tape-chart" />,
+}));
+vi.mock('../components/charts/TickerNetFlowChart', () => ({
+  TickerNetFlowChart: () => <div data-testid="ticker-netflow-chart" />,
+}));
+
 // The feed's date follows today on the shared ET clock, so every test that
 // renders it runs on a pinned clock: a run that crossed ET midnight would
 // refetch for the new day in the middle of a test. The pin is Thursday
@@ -50,6 +70,55 @@ function mockFetch(payload: unknown, ok = true): ReturnType<typeof vi.fn> {
   });
   globalThis.fetch = fetch as unknown as typeof globalThis.fetch;
   return fetch;
+}
+
+function feedPayload(alert: IntervalBAFeedAlert) {
+  return {
+    alerts: [alert],
+    summary: {
+      count: 1,
+      total_premium: alert.total_premium,
+      extreme: 1,
+      critical: 0,
+      warning: 0,
+    },
+  };
+}
+
+/**
+ * A fetch that answers the feed and its expanded rows' three endpoints by URL,
+ * and returns every request so far as `"<path> <date>"`, in order. The feed
+ * answers with `alertFor(date)`; a row endpoint answers with the date it was
+ * asked for, which its hook checks against its own. With `latencyMs` (real
+ * timers only) a response waits that long, so React renders between a request
+ * and its response, as it does with a real network: with an instant mock the
+ * two state updates batch and a loading flip never reaches the DOM.
+ */
+function routeFetch(
+  alertFor: (date: string) => IntervalBAFeedAlert,
+  latencyMs = 0,
+): string[] {
+  const requests: string[] = [];
+  globalThis.fetch = vi.fn((url: string) => {
+    const u = new URL(url, 'http://x');
+    const date = u.searchParams.get('date') ?? '';
+    requests.push(`${u.pathname} ${date}`);
+    const payload =
+      u.pathname === '/api/interval-ba-feed'
+        ? feedPayload(alertFor(date))
+        : { date, series: [], candles: [], previousClose: null };
+    const response = {
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      json: () => Promise.resolve(payload),
+    };
+    if (latencyMs === 0) return Promise.resolve(response);
+    return new Promise((resolve) => {
+      setTimeout(() => resolve(response), latencyMs);
+    });
+  }) as unknown as typeof globalThis.fetch;
+  return requests;
 }
 
 describe('IntervalBAFeed', () => {
@@ -450,6 +519,38 @@ describe('IntervalBAFeed', () => {
     expect(screen.getByText('3')).toBeInTheDocument();
     expect(screen.getByText(/^alerts ·/)).toBeInTheDocument();
   });
+
+  // The feed polls today during market hours (30 ms here, the mock above). A
+  // poll used to flip `loading` on, which swapped the rows for the loading
+  // text and back: every row remounted collapsed, so a row the owner had
+  // opened closed itself every ten seconds.
+  it('leaves an expanded row open across polls of the same day', async () => {
+    // 10 ms of latency against the 30 ms poll: a render lands between each
+    // poll's request and its response.
+    const requests = routeFetch(() => SAMPLE_ALERT, 10);
+    const feedRequests = () =>
+      requests.filter((r) => r.startsWith('/api/interval-ba-feed')).length;
+    render(<IntervalBAFeed marketOpen />);
+
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Expand charts for SPXW' }),
+    );
+    expect(
+      screen.getByRole('button', { name: 'Collapse charts' }),
+    ).toBeInTheDocument();
+    const asked = feedRequests();
+
+    // Three polls: each one's response lands, and the row is still open.
+    await waitFor(() => {
+      expect(feedRequests()).toBeGreaterThanOrEqual(asked + 3);
+    });
+    await act(async () => {});
+
+    expect(
+      screen.getByRole('button', { name: 'Collapse charts' }),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId('contract-tape-chart')).toBeInTheDocument();
+  });
 });
 
 // ============================================================
@@ -466,33 +567,63 @@ describe('IntervalBAFeed', () => {
 // times are filters that apply to any date, so they stay across the roll. The
 // hook holds a changed date for 250 ms (useDebounced) before it fetches, so a
 // date that follows the roll, or a pick, refetches once, 250 ms after it: each
-// case settles after a change. Every case starts 30 s before an ET midnight;
-// the clock's timer is armed for 1 s past it, so 31 s lands just after
-// (23:00:01 CT the evening before). The auto-poll is off here (marketOpen
-// defaults to false); its gate is tested on the hook. Every assertion on
-// requests reads the whole sequence, and no case calls `rerender`.
+// case settles after a change. Every case starts 30 s before an ET midnight
+// (the polling case, 5 ms); the clock's timer is armed for 1 s past it, so
+// 31 s lands just after (23:00:01 CT the evening before). The auto-poll is off
+// (marketOpen defaults to false) except in the one case that rolls a polling
+// feed; the gate itself is tested on the hook. Every assertion on requests
+// reads the whole sequence, and no case calls `rerender`.
+//
+// A row's date is the feed's date, but its alerts are the ones last fetched.
+// The feed is `loading` from the roll until the new date's response lands, so
+// no row is drawn with a date its alerts were not fetched for, and an expanded
+// row never asks for the new date with the old day's contract.
 // ============================================================
 
 describe.each([
   {
     zone: 'EST (winter)',
     start: '2026-11-10T04:59:30Z',
+    midnight: '2026-11-10T05:00:00Z',
     night: '2026-11-09',
     morning: '2026-11-10',
   },
   {
     zone: 'EDT (summer)',
     start: '2026-07-15T03:59:30Z',
+    midnight: '2026-07-15T04:00:00Z',
     night: '2026-07-14',
     morning: '2026-07-15',
   },
 ])('IntervalBAFeed: across the $zone midnight', (m) => {
   /** useDebounced's default delay: a changed date waits this long to fetch. */
   const SETTLE_MS = 250;
+  // Distinct strikes tell the night's alert from the morning's on screen.
+  const NIGHT_ALERT: IntervalBAFeedAlert = {
+    ...SAMPLE_ALERT,
+    id: 1,
+    strike: 5822,
+  };
+  const MORNING_ALERT: IntervalBAFeedAlert = {
+    ...SAMPLE_ALERT,
+    id: 2,
+    strike: 5811,
+  };
+  const alertFor = (date: string) =>
+    date === m.night ? NIGHT_ALERT : MORNING_ALERT;
   let fetchSpy: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    // setInterval is faked for the one case that polls (usePolling).
+    vi.useFakeTimers({
+      toFake: [
+        'setTimeout',
+        'clearTimeout',
+        'setInterval',
+        'clearInterval',
+        'Date',
+      ],
+    });
     vi.setSystemTime(new Date(m.start));
     fetchSpy = mockFetch({
       alerts: [],
@@ -637,5 +768,144 @@ describe.each([
 
     expect(datesRequested()).toEqual([m.night, m.morning]);
     expect(dateInput().value).toBe(m.morning);
+  });
+
+  it('draws no row from the roll until the new date has answered, and then only its alerts', async () => {
+    routeFetch(alertFor);
+    render(<IntervalBAFeed />);
+    await settle();
+    expect(screen.getByText('5822')).toBeInTheDocument();
+
+    crossMidnight();
+    await flush();
+
+    // The field reads the new day while the held alerts are still the night's,
+    // and the date is held by the debounce: no row, so none carries a date its
+    // alert was not fetched for.
+    expect(dateInput().value).toBe(m.morning);
+    expect(screen.queryByText('5822')).toBeNull();
+    expect(screen.getByText(/Loading interval B\/A feed/)).toBeInTheDocument();
+
+    await settle();
+
+    expect(screen.getByText('5811')).toBeInTheDocument();
+    expect(screen.queryByText('5822')).toBeNull();
+  });
+
+  it('keeps an open row from asking for the new date with the night contract', async () => {
+    const requests = routeFetch(alertFor);
+    render(<IntervalBAFeed />);
+    await settle();
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Expand charts for SPXW' }),
+    );
+    await settle();
+    const night = [
+      `/api/interval-ba-feed ${m.night}`,
+      `/api/lottery-contract-tape ${m.night}`,
+      `/api/net-flow-history ${m.night}`,
+      `/api/ticker-candles ${m.night}`,
+    ];
+    expect(requests).toEqual(night);
+
+    crossMidnight();
+    await flush();
+
+    // The roll unmounts the open row: its three hooks do not re-point at the
+    // new date while their alert is still the night's.
+    expect(requests).toEqual(night);
+
+    await settle();
+
+    expect(requests).toEqual([...night, `/api/interval-ba-feed ${m.morning}`]);
+    // The new day's rows start closed.
+    expect(
+      screen.getByRole('button', { name: 'Expand charts for SPXW' }),
+    ).toBeInTheDocument();
+  });
+
+  it('stops polling the night at the roll and polls the new day once its date settles, with one request for it', async () => {
+    // Off the poll grid: a 30 ms poll ticks at 990 and 1020 ms, and the roll
+    // is 1005 ms in. The date settles 250 ms after the roll commits, the
+    // gate reopens then, and polling starts over from there.
+    vi.setSystemTime(new Date(Date.parse(m.midnight) - 5));
+    render(<IntervalBAFeed marketOpen />);
+    await flush();
+    // Each poll in its own act: one act around a long advance batches the
+    // state-driven polls into one refetch.
+    for (let i = 0; i < 33; i += 1) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(30);
+      });
+    }
+    const before = fetchSpy.mock.calls.length;
+    expect(before).toBeGreaterThan(10);
+    expect(new Set(datesRequested())).toEqual(new Set([m.night]));
+
+    // The roll. The date is held: the poll gate closes with the settled date
+    // still on the night, and nothing is requested for either day.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(20);
+    });
+    expect(dateInput().value).toBe(m.morning);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100);
+    });
+    expect(fetchSpy.mock.calls.length).toBe(before);
+
+    // The date settles: exactly one request, for the new day.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(160);
+    });
+    await flush();
+    expect(datesRequested().slice(before)).toEqual([m.morning]);
+
+    // And the new day polls from then.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30);
+    });
+    await flush();
+    expect(datesRequested().slice(before)).toEqual([m.morning, m.morning]);
+  });
+
+  it('does not let the night response, arriving after the roll, replace the new day', async () => {
+    // A fetch that never looks at its abort signal, held until the test
+    // answers it: the night's request is still in flight at the roll.
+    const held: { date: string; answer: (p: unknown) => void }[] = [];
+    globalThis.fetch = vi.fn((url: string) => {
+      const date = new URL(url, 'http://x').searchParams.get('date') ?? '';
+      return new Promise((resolve) => {
+        held.push({
+          date,
+          answer: (payload) =>
+            resolve({
+              ok: true,
+              status: 200,
+              statusText: 'OK',
+              json: () => Promise.resolve(payload),
+            }),
+        });
+      });
+    }) as unknown as typeof globalThis.fetch;
+    render(<IntervalBAFeed />);
+    await flush();
+    crossMidnight();
+    await flush();
+    await settle();
+    expect(held.map((h) => h.date)).toEqual([m.night, m.morning]);
+
+    await act(async () => {
+      held[1]?.answer(feedPayload(MORNING_ALERT));
+    });
+    expect(screen.getByText('5811')).toBeInTheDocument();
+
+    // The night's answer arrives last. Its request was aborted when the date
+    // settled, so it must not reach state.
+    await act(async () => {
+      held[0]?.answer(feedPayload(NIGHT_ALERT));
+    });
+
+    expect(screen.getByText('5811')).toBeInTheDocument();
+    expect(screen.queryByText('5822')).toBeNull();
   });
 });
