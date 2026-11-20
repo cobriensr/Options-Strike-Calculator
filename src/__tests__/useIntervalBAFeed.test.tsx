@@ -668,12 +668,12 @@ describe('useIntervalBAFeed settling and abort', () => {
 
   // Each poll aborts its predecessor, so a hung upstream never reaches the
   // 15 s timeout and raises no error: the last rows would sit there looking
-  // fresh. `stale` surfaces it by count: more than three polls in a row went
-  // unanswered. A count, not a time, so an idle gap (a closed market, a
-  // throttled tab, a laptop asleep) or a step of the system clock cannot set
-  // or hide it.
+  // fresh. `stale` surfaces it by count: three polls in a row went unanswered
+  // and a fourth is in flight. Only polls count, not a refresh click. A count,
+  // not a time, so an idle gap (a closed market, a throttled tab, a laptop
+  // asleep) or a step of the system clock cannot set or hide it.
   describe('stale', () => {
-    it('is set once no response has landed for three polls, and a fresh response clears it', async () => {
+    it('is set when a fourth poll is issued after three unanswered, and a fresh response clears it', async () => {
       const calls = stubPendingFetch(false);
       const { result } = renderFeed({ ...baseParams, date: TODAY_ET }, true);
       await respond(calls[0]!, { alerts: [baseAlert], summary: baseSummary });
@@ -723,6 +723,83 @@ describe('useIntervalBAFeed settling and abort', () => {
 
       expect(calls).toHaveLength(1);
       expect(result.current.stale).toBe(false);
+    });
+
+    // A refresh click re-runs the fetch but is not a poll: four quick clicks on
+    // a healthy feed with a request in flight are not four unanswered polls.
+    it('does not count a refresh click: four clicks on an answered feed with a request in flight', async () => {
+      const calls = stubPendingFetch(false);
+      const { result } = renderFeed({ ...baseParams, date: TODAY_ET }, true);
+      await respond(calls[0]!, { alerts: [baseAlert], summary: baseSummary });
+      await advance(30);
+      expect(calls).toHaveLength(2);
+      expect(result.current.stale).toBe(false);
+
+      for (let i = 0; i < 4; i += 1) {
+        act(() => result.current.refresh());
+        await advance(0);
+        expect(result.current.stale).toBe(false);
+      }
+
+      expect(calls).toHaveLength(6);
+    });
+
+    // The real fetch rejects when its signal aborts. That rejection is our own
+    // abort, never an answer: counting it would clear `stale` on every poll.
+    it('does not count our own abort as an answer: a fetch that rejects when aborted', async () => {
+      const calls = stubPendingFetch(true);
+      const { result } = renderFeed({ ...baseParams, date: TODAY_ET }, true);
+      await respond(calls[0]!, { alerts: [baseAlert], summary: baseSummary });
+
+      for (let i = 0; i < 3; i += 1) {
+        await advance(30);
+        expect(result.current.stale).toBe(false);
+      }
+      await advance(30);
+
+      expect(calls).toHaveLength(5);
+      expect(calls[1]?.signal.aborted).toBe(true);
+      expect(result.current.stale).toBe(true);
+      expect(result.current.error).toBeNull();
+    });
+
+    // A fetch that ignores its abort can still deliver a response after the
+    // poll that superseded it. The hook drops it, and it is not an answer.
+    it('does not count a superseded poll that answers late', async () => {
+      const calls = stubPendingFetch(false);
+      const { result } = renderFeed({ ...baseParams, date: TODAY_ET }, true);
+      await respond(calls[0]!, { alerts: [baseAlert], summary: baseSummary });
+      for (let i = 0; i < 4; i += 1) await advance(30);
+      expect(result.current.stale).toBe(true);
+      expect(calls[1]?.signal.aborted).toBe(true);
+
+      await respond(calls[1]!, { alerts: [baseAlert], summary: baseSummary });
+
+      expect(result.current.stale).toBe(true);
+      expect(result.current.alerts).toEqual([baseAlert]);
+    });
+
+    // Known limit: a feed that has never been answered has no answer to be
+    // stale. Each poll aborts the one before it, so a hung first fetch never
+    // reaches its 15 s timeout and never errors. The feed stays on "Loading"
+    // (the spinner is the cue, refresh is disabled, polls keep retrying) and
+    // `stale` stays false.
+    it('stays loading, not stale and not in error, when no fetch has ever been answered', async () => {
+      const calls = stubPendingFetch(true);
+      const { result } = renderFeed({ ...baseParams, date: TODAY_ET }, true);
+
+      for (let i = 0; i < 6; i += 1) {
+        await advance(30);
+        expect(result.current.stale).toBe(false);
+      }
+
+      expect(calls).toHaveLength(7);
+      expect(result.current).toMatchObject({
+        stale: false,
+        loading: true,
+        error: null,
+        fetchedAt: null,
+      });
     });
 
     it('does not flash after an idle gap: the market opens five minutes after the last response', async () => {

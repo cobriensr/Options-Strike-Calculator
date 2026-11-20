@@ -21,16 +21,18 @@
  *     a moment to show the old rows again).
  *   - Auto-polling: when `marketOpen` is true AND the settled `date` is
  *     today (the shared ET clock, `useETToday`), the hook bumps
- *     `refreshTick` every POLL_INTERVALS.ALERTS ms so the live feed stays
+ *     `pollTick` every POLL_INTERVALS.ALERTS ms so the live feed stays
  *     in lockstep with `useIntervalBAAlerts` — without this the toast
  *     banner would surface a new alert while the history table stayed
  *     stale until the user hit the refresh button. Historical dates never
  *     poll. A poll uses the settled date and times.
  *   - Each poll aborts a slow predecessor, so a hung upstream never reaches
  *     the 15 s timeout and raises no error: the last rows would sit there
- *     looking fresh. `stale` surfaces it by count instead: while polling,
- *     more than three polls (or refreshes) in a row have gone unanswered. A
- *     count, not an age, so an idle gap or a clock step cannot set or hide it.
+ *     looking fresh. `stale` surfaces it by count instead: while polling, it
+ *     is true once three polls in a row have gone unanswered and a fourth is
+ *     in flight. Only polls count, not a refresh click. A count, not an age,
+ *     so an idle gap or a clock step cannot set or hide it. A feed that has
+ *     never been answered has nothing to be stale: it stays on "Loading".
  *
  * Spec: docs/superpowers/specs/interval-ba-ask-alert-2026-05-12.md.
  */
@@ -108,10 +110,11 @@ export interface UseIntervalBAFeedState {
   error: string | null;
   fetchedAt: number | null;
   /**
-   * True while the feed is polling and more than three polls (or refreshes) in
-   * a row have gone unanswered (a hung upstream: each poll aborts the last, so
-   * no error is raised). An error counts as an answer. False on a feed that
-   * does not poll.
+   * True while the feed is polling and three polls in a row have gone
+   * unanswered with a fourth in flight (a hung upstream: each poll aborts the
+   * last, so no error is raised). Only polls count, not a refresh click. An
+   * error counts as an answer. False on a feed that does not poll, and on one
+   * that has never been answered (it shows "Loading").
    */
   stale: boolean;
   refresh: () => void;
@@ -167,11 +170,15 @@ export function useIntervalBAFeed(
   // Same effect handles param-driven refetches AND manual ones, so
   // the in-flight cancellation logic doesn't have to be duplicated.
   const [refreshTick, setRefreshTick] = useState(0);
-  // The `refreshTick` of the newest fetch that was answered (a success or a
-  // failure, never our own abort), or null before the first answer. A tick is
-  // a poll or a refresh, so `refreshTick - answeredTick` counts the attempts
-  // since the last answer, with no clock in it (`stale`, below).
-  const [answeredTick, setAnsweredTick] = useState<number | null>(null);
+  // Bumped only by the poll, and it re-runs the fetch effect the same way. It
+  // is kept apart from `refreshTick` so that `stale` counts polls alone: a
+  // refresh click is not a poll that went unanswered.
+  const [pollTick, setPollTick] = useState(0);
+  // The `pollTick` the newest answered fetch started at (a success or a
+  // failure, never our own abort), or null before the first answer. So
+  // `pollTick - answeredPollTick` counts the polls issued since the last
+  // answer, with no clock in it (`stale`, below).
+  const [answeredPollTick, setAnsweredPollTick] = useState<number | null>(null);
   const refresh = useCallback(() => {
     setRefreshTick((n) => n + 1);
   }, []);
@@ -203,7 +210,7 @@ export function useIntervalBAFeed(
     // Aborted when the settled params change, on a refresh or poll tick, and
     // on unmount, so a superseded response never reaches state.
     const ctrl = new AbortController();
-    const tick = refreshTick;
+    const startedAtPoll = pollTick;
     const fetchParams = { ...params, ...settled };
     const url = buildUrl(fetchParams);
     const fetchKey = paramsKey(fetchParams);
@@ -247,7 +254,7 @@ export function useIntervalBAFeed(
         // failed fetch (a refresh, a poll) does not flash the old rows.
         setError(null);
         setResponseKey(fetchKey);
-        setAnsweredTick(tick);
+        setAnsweredPollTick(startedAtPoll);
       })
       .catch((err: unknown) => {
         // Only our own abort is skipped. The 15 s timeout also aborts the
@@ -265,7 +272,7 @@ export function useIntervalBAFeed(
         setSummary(null);
         setResponseKey(fetchKey);
         // An error is an answer: it is on screen, so the feed is not hung.
-        setAnsweredTick(tick);
+        setAnsweredPollTick(startedAtPoll);
       });
 
     return () => ctrl.abort();
@@ -283,6 +290,7 @@ export function useIntervalBAFeed(
     params.confluenceOnly,
     params.moneyness,
     refreshTick,
+    pollTick,
   ]);
 
   // Auto-poll the live feed when the user is looking at today's date
@@ -291,7 +299,7 @@ export function useIntervalBAFeed(
   // closed-market sessions skip polling entirely (no new rows arrive).
   // The fetch effect above handles cancellation, so a slow request that
   // overlaps with the next tick is harmlessly aborted on the next
-  // refreshTick bump.
+  // pollTick bump.
   //
   // The gate reads the settled date, the one the fetch effect uses, so a poll
   // never refetches a date that is not shown yet. "Today" is the shared ET
@@ -305,23 +313,28 @@ export function useIntervalBAFeed(
   const polling = marketOpen && settled.date === today;
   usePolling(
     () => {
-      setRefreshTick((n) => n + 1);
+      setPollTick((n) => n + 1);
     },
     POLL_INTERVALS.ALERTS,
     [polling],
   );
 
-  // Each tick aborts the request before it, so a hung upstream never reaches
+  // Each poll aborts the request before it, so a hung upstream never reaches
   // the 15 s timeout and never raises an error: without this the last rows sit
   // under a frozen "updated" stamp and look fresh. While polling, more than
-  // three ticks (polls, or a refresh) since the last answer is stale. It is a
+  // three polls issued since the last answer is stale: the three before the
+  // newest were each aborted by the next and the fourth is in flight. Only
+  // polls count, so a refresh click on a healthy feed never sets it. It is a
   // count, not an age: a time since the last response would be set by an idle
   // gap (a closed market, a throttled tab, a laptop asleep) and hidden by a
   // backward step of the system clock, and reading the clock in render is
-  // impure. A feed that does not poll is never stale, and one that has never
-  // been answered shows "Loading", not a stale stamp.
+  // impure. A feed that does not poll is never stale. One that has never been
+  // answered has no answer to be stale: a hung first fetch is aborted by each
+  // poll before its timeout, so it shows "Loading" (refresh disabled, polls
+  // still retrying) and never errors. That is a known limit; the spinner is
+  // the cue.
   const stale =
-    polling && answeredTick !== null && refreshTick - answeredTick > 3;
+    polling && answeredPollTick !== null && pollTick - answeredPollTick > 3;
 
   return { alerts, summary, loading, error, fetchedAt, stale, refresh };
 }

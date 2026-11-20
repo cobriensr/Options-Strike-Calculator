@@ -977,8 +977,9 @@ describe.each([
 //
 // Each poll aborts the request before it, so a hung upstream never reaches the
 // 15 s timeout and raises no error: the last rows would sit under a frozen
-// "updated" stamp and look fresh. While the feed polls, a newest response more
-// than three polls old (30 ms each here, the mock above) is labelled "stale".
+// "updated" stamp and look fresh. While the feed polls (30 ms each here, the
+// mock above), three unanswered polls with a fourth in flight label the stamp
+// "stale".
 // ============================================================
 
 describe('IntervalBAFeed: a live feed whose upstream hangs', () => {
@@ -1020,7 +1021,7 @@ describe('IntervalBAFeed: a live feed whose upstream hangs', () => {
     });
   const UPDATED = /^updated \d{2}:\d{2}:\d{2} CT$/;
 
-  it('labels the updated stamp stale after three polls with no answer, and a fresh response clears it', async () => {
+  it('labels the updated stamp stale once three polls are unanswered and a fourth is in flight, and a fresh response clears it', async () => {
     render(<IntervalBAFeed marketOpen />);
     await answerLatest();
     expect(screen.getByText(UPDATED)).toBeInTheDocument();
@@ -1036,7 +1037,7 @@ describe('IntervalBAFeed: a live feed whose upstream hangs', () => {
     expect(screen.getByText('stale')).toBeInTheDocument();
     expect(screen.getByText('stale')).toHaveAttribute(
       'title',
-      expect.stringContaining('polls in a row got no answer'),
+      expect.stringContaining('Three polls in a row went unanswered'),
     );
     expect(screen.getByText(UPDATED)).toBeInTheDocument();
     expect(screen.getByText('5800')).toBeInTheDocument();

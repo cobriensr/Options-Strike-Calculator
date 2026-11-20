@@ -249,13 +249,21 @@ panels follow the new date too".
   raises no error, and the last rows sat under a frozen "updated" stamp. That
   is the cost of abort-on-supersede: a slow request is replaced, not waited
   for, so a request that never answers is never reported. The hook surfaces it
-  by count: `stale` is true while the feed polls and more than three ticks
-  (polls or refreshes) have gone by since the last answered fetch, and the feed
-  labels the "updated" stamp "stale" in amber. The count is `refreshTick`
-  minus the tick of the newest answered fetch (a success or an error, never
+  by count: `stale` is true while the feed polls and a fourth poll is in flight
+  after three that went unanswered (each aborted by the next), and the feed
+  labels the "updated" stamp "stale" in amber. The count is `pollTick` minus the
+  `pollTick` the newest answered fetch started at (a success or an error, never
   our own abort), so it reads no clock in render and keeps no mirrored state.
-  A feed that does not poll is never stale, and an error counts as an answer
-  (the error banner is already on screen).
+  Only polls count: a refresh click re-runs the fetch through its own
+  `refreshTick`, and four quick clicks on a healthy feed are not four
+  unanswered polls. A feed that does not poll is never stale, and an error
+  counts as an answer (the error banner is already on screen).
+- **Known limit: a feed that has never been answered is never stale.** A hung
+  first fetch while polling is aborted by the next poll before its 15 s
+  timeout, so no answer ever exists to be stale and no error is raised. The
+  hook returns `stale: false`, `loading: true`, `error: null`; the feed shows
+  "Loading" with the refresh button disabled, and the polls keep retrying. The
+  spinner is the cue, and a test pins the state.
 - **The first `stale` compared times, and two flaws followed.** It compared the
   newest response's age with `3 * POLL_INTERVALS.ALERTS`, at the last poll
   tick. After an idle gap (the market closed for five minutes, a throttled tab,
@@ -263,8 +271,10 @@ panels follow the new date too".
   response was old, though one poll had gone unanswered. After a backward step
   of the system clock the difference went negative and ten unanswered polls
   never set it. An outage whose fetches all failed also set it, though each
-  failure was answered. The count has none of these: idle gaps add no ticks,
-  and a clock step changes nothing.
+  failure was answered. The count has none of these: idle gaps add no polls,
+  and a clock step changes nothing. A first count-based version let a refresh
+  click add a tick as well; the review found four quick clicks flashed the
+  label, so the polls have their own counter.
 
 ## Phases
 
