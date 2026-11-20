@@ -1,5 +1,6 @@
 // @vitest-environment node
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
+import { availableParallelism } from 'node:os';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import { describe, it, expect } from 'vitest';
@@ -20,13 +21,20 @@ import config, { SPAWN_TEST_FILES, TEST_INCLUDE } from '../../vite.config.ts';
  * coverage-thresholds.test.mjs, which fails when a coverage glob matches no
  * files.
  *
- * A file starts a child process when it, or a module it imports (through
- * relative imports, other tests excluded), imports child_process, unless it
- * replaces that module outright with a `vi.mock` factory that takes no
- * parameter: session-status.test.mjs and watch-deploy.test.mjs do, run no
- * child and stay in `main`. A factory that takes `importOriginal` wraps the
- * real module, so its file counts. Tinyglobby loads through vitest's own
- * dependency tree, the copy vitest globs with.
+ * A file starts a child process when it, or a module it reaches, holds a
+ * quoted `child_process` or `node:child_process` string in code: an import, a
+ * `require`, `createRequire(...)('child_process')`, `getBuiltinModule` or
+ * `vi.importActual`. It reaches a module through any quoted `./` or `../`
+ * string that names a code file, whether in an import, a `new URL` or a path
+ * join, and through other test files. The one exemption: a file that replaces
+ * the module outright with a `vi.mock` factory that takes no parameter and
+ * never undoes it, such as session-status.test.mjs and watch-deploy.test.mjs,
+ * and has no use of the module that the mock does not cover (a `require` or a
+ * `vi.importActual`). It runs no child and stays in `main`. A factory that
+ * takes `importOriginal` wraps the real module, so its file counts.
+ *
+ * Tinyglobby loads through vitest's own dependency tree, the copy vitest
+ * globs with.
  */
 
 // vitest runs from the repo root (same convention as coverage-thresholds.test.mjs).
@@ -36,126 +44,372 @@ const { globSync } = createRequire(
   createRequire(import.meta.url).resolve('vitest/package.json'),
 )('tinyglobby');
 
+// The module's name is spliced into the samples below, so that this file holds
+// no quoted literal of it (the scan below reads this file too).
+const CP = ['child', 'process'].join('_');
+const NODE_CP = `node:${CP}`;
+
+/** A quoted `child_process` or `node:child_process`, in any kind of quote. */
+const CHILD_PROCESS_LITERAL = /(['"`])(?:node:)?child_process\1/;
+
 /**
- * `from '<child_process>'`, `import '<child_process>'` and
- * `import('<child_process>')`, with or without the `node:` prefix.
+ * The uses a `vi.mock` of the module covers: a static or dynamic import, and
+ * the `vi.mock` call's own argument.
  */
-const CHILD_PROCESS_IMPORT =
-  /\b(?:from|import)[\s(]*['"](?:node:)?child_process['"]/;
+const MOCKED_USES =
+  /(?:\b(?:from|import)[\s(]*|\bvi\.mock\(\s*)(['"`])(?:node:)?child_process\1/g;
 
-/** `vi.mock('<child_process>', () => ...)`: a factory with no parameter. */
-const CHILD_PROCESS_REPLACED =
-  /vi\.mock\(\s*['"](?:node:)?child_process['"]\s*,\s*\(\s*\)\s*=>/;
+/** `vi.mock('<child_process>', () => ...)`, async or a function, no parameter. */
+const PARAMETERLESS_FACTORY =
+  /\bvi\.mock\(\s*(['"`])(?:node:)?child_process\1\s*,\s*(?:async\s*)?(?:\(\s*\)\s*=>|function\s*\(\s*\)\s*\{)/;
 
-/** A relative import: `from './x.mjs'` or `import('../y')`. */
-const RELATIVE_IMPORT = /\b(?:from|import)[\s(]*['"](\.{1,2}\/[^'"]+)['"]/g;
+/** A quoted relative path, as in vercel-build-file-set.mjs. */
+const RELATIVE_LITERAL = /(['"`])(\.{1,2}\/[^'"`\r\n]*)\1/g;
 
-/** The code lines of a source: those that do not start a comment. */
+const CODE_FILE = /\.[cm]?[jt]sx?$/;
+const EXTENSIONS = [
+  '.ts',
+  '.tsx',
+  '.mts',
+  '.cts',
+  '.js',
+  '.mjs',
+  '.cjs',
+  '.jsx',
+];
+/** TypeScript writes the compiled extension in an import of a source file. */
+const SOURCE_OF = {
+  '.js': ['.ts', '.tsx'],
+  '.mjs': ['.mts'],
+  '.cjs': ['.cts'],
+  '.jsx': ['.tsx'],
+};
+
+/**
+ * A source with its comments blanked: line comments, and block comments even
+ * when code follows on the line where one ends. A `/*` inside a string, such
+ * as a glob, only counts at the start of a line.
+ */
 function codeOf(source) {
+  let inBlock = false;
   return source
     .split('\n')
-    .filter((line) => !/^\s*(?:\/\/|\/\*|\*)/.test(line))
+    .map((line) => {
+      let rest = line;
+      while (inBlock || rest.trimStart().startsWith('/*')) {
+        if (!inBlock) {
+          inBlock = true;
+          rest = rest.trimStart().slice(2);
+        }
+        const end = rest.indexOf('*/');
+        if (end === -1) return '';
+        rest = rest.slice(end + 2);
+        inBlock = false;
+      }
+      return rest.trimStart().startsWith('//') ? '' : rest;
+    })
     .join('\n');
 }
 
-const importsChildProcess = (code) => CHILD_PROCESS_IMPORT.test(code);
-const replacesChildProcess = (code) => CHILD_PROCESS_REPLACED.test(code);
+/** Whether the code uses the module in a way a no-parameter `vi.mock` replaces. */
+function replacesChildProcess(code) {
+  if (!PARAMETERLESS_FACTORY.test(code)) return false;
+  // What is left once the covered uses are gone must not name the module. That
+  // is what a require or a vi.importActual leaves, and also a vi.doUnmock or a
+  // vi.unmock, which takes the mock away again.
+  return !CHILD_PROCESS_LITERAL.test(code.replace(MOCKED_USES, ''));
+}
 
-// The module name is spliced into the samples below, so that this file does not
-// itself contain an import of it (the scan below reads this file too).
-const NODE = 'node:child_process';
-const BARE = 'child_process';
+/** The files a relative path may name, most likely first. */
+function candidatesOf(base) {
+  const extension = path.extname(base);
+  const stem = base.slice(0, base.length - extension.length);
+  return [
+    base,
+    ...(SOURCE_OF[extension] ?? []).map((source) => `${stem}${source}`),
+    ...EXTENSIONS.map((suffix) => `${base}${suffix}`),
+    ...EXTENSIONS.map((suffix) => path.join(base, `index${suffix}`)),
+  ];
+}
 
-describe('the child_process rules (self-check of the detector)', () => {
+/**
+ * Whether running a test file starts a child process. `read` gives a file's
+ * source, or undefined when there is no such file.
+ */
+function createDetector(read) {
+  const sources = new Map();
+  const sourceOf = (file) => {
+    if (!sources.has(file)) sources.set(file, read(file));
+    return sources.get(file);
+  };
+
+  function resolveLiteral(from, literal) {
+    const base = path.resolve(path.dirname(from), literal);
+    return candidatesOf(base).find(
+      (file) => CODE_FILE.test(file) && sourceOf(file) !== undefined,
+    );
+  }
+
+  /** What one file says about child_process; each file is read once. */
+  const infos = new Map();
+  function infoOf(file) {
+    let info = infos.get(file);
+    if (info === undefined) {
+      const source = sourceOf(file);
+      const code = source === undefined ? '' : codeOf(source);
+      info = {
+        names: CHILD_PROCESS_LITERAL.test(code),
+        replaces: replacesChildProcess(code),
+        dependencies: [...code.matchAll(RELATIVE_LITERAL)]
+          .map((match) => resolveLiteral(file, match[2]))
+          .filter((dependency) => dependency !== undefined),
+      };
+      infos.set(file, info);
+    }
+    return info;
+  }
+
+  return function startsChildProcesses(testFile) {
+    if (infoOf(testFile).replaces) return false;
+    const seen = new Set();
+    const pending = [testFile];
+    while (pending.length > 0) {
+      const file = pending.pop();
+      if (seen.has(file)) continue;
+      seen.add(file);
+      const info = infoOf(file);
+      if (info.names) return true;
+      pending.push(...info.dependencies);
+    }
+    return false;
+  };
+}
+
+/** The source of a file on disk, or undefined for a directory or a missing file. */
+function readFromDisk(file) {
+  try {
+    return statSync(file).isFile() ? readFileSync(file, 'utf8') : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+describe('the detector, on small trees of files', () => {
+  /** Whether `main.test.mjs` of the tree starts a child process. */
+  function startsIn(files) {
+    const at = (name) => path.resolve('/fx', name);
+    const tree = new Map(
+      Object.entries(files).map(([name, source]) => [at(name), source]),
+    );
+    return createDetector((file) => tree.get(file))(at('main.test.mjs'));
+  }
+
+  const lines = (...parts) => parts.join('\n');
+  const helperImports = { 'fx-helper.mjs': `import cp from '${NODE_CP}';` };
+
   it.each([
-    [`import { spawnSync } from '${NODE}';`, true],
-    [`} from "${BARE}";`, true],
-    [`const cp = await import('${NODE}');`, true],
-    [` * calls spawnSync from '${NODE}'`, false],
-    ["import path from 'node:path';", false],
-  ])('importsChildProcess(%j) is %s', (line, expected) => {
-    expect(importsChildProcess(codeOf(line))).toBe(expected);
+    ['a static import', `import { spawnSync } from '${NODE_CP}';`],
+    ['a bare specifier without the node: prefix', `import cp from "${CP}";`],
+    ['a dynamic import', `const cp = await import('${NODE_CP}');`],
+    ['a require', `const cp = require('${CP}');`],
+    [
+      'createRequire',
+      lines(
+        `const require = createRequire(import.meta.url);`,
+        `const cp = require('${NODE_CP}');`,
+      ),
+    ],
+    ['getBuiltinModule', `const cp = process.getBuiltinModule('${NODE_CP}');`],
+    ['vi.importActual', `const cp = await vi.importActual('${NODE_CP}');`],
+    ['a template literal', 'const cp = require(`' + NODE_CP + '`);'],
+    [
+      'a factory that takes importOriginal',
+      lines(
+        `vi.mock('${NODE_CP}', async (importOriginal) => importOriginal());`,
+        `import { spawnSync } from '${NODE_CP}';`,
+      ),
+    ],
+    [
+      'a parameterless factory that wraps the real module',
+      lines(
+        `vi.mock('${NODE_CP}', async () => vi.importActual('${NODE_CP}'));`,
+        `import { spawnSync } from '${NODE_CP}';`,
+      ),
+    ],
+    [
+      'a parameterless factory next to a require, which it does not cover',
+      lines(
+        `vi.mock('${NODE_CP}', () => ({ execFile: vi.fn() }));`,
+        `const cp = require('${NODE_CP}');`,
+      ),
+    ],
+    [
+      'a parameterless factory undone by vi.doUnmock',
+      lines(
+        `vi.mock('${NODE_CP}', () => ({ execFile: vi.fn() }));`,
+        `vi.doUnmock('${NODE_CP}');`,
+        `import { execFile } from '${NODE_CP}';`,
+      ),
+    ],
+    [
+      'a parameterless factory undone by vi.unmock',
+      lines(
+        `vi.mock('${NODE_CP}', () => ({}));`,
+        `vi.unmock('${NODE_CP}');`,
+        `import cp from '${NODE_CP}';`,
+      ),
+    ],
+    [
+      'code after a block comment on the same line',
+      `/* note */ import cp from '${NODE_CP}';`,
+    ],
+    [
+      'code after a block comment that closes on a later line',
+      lines('/*', ' * note', ` */ import cp from '${NODE_CP}';`),
+    ],
+    [
+      'code after a glob in a string, which holds a slash and a star',
+      lines(`const glob = 'src/**/*.ts';`, `import cp from '${NODE_CP}';`),
+    ],
+  ])('finds %s', (_label, source) => {
+    expect(startsIn({ 'main.test.mjs': source })).toBe(true);
   });
 
   it.each([
-    [`vi.mock('${NODE}', () => ({ execFile: vi.fn() }));`, true],
-    [`vi.mock('${BARE}', ()=>({}))`, true],
-    [`vi.mock('${NODE}', async (importOriginal) => {`, false],
-    ["vi.mock('node:fs', () => ({}));", false],
-  ])('replacesChildProcess(%j) is %s', (line, expected) => {
-    expect(replacesChildProcess(codeOf(line))).toBe(expected);
+    [
+      'an import of a module that imports it',
+      `import { run } from './fx-helper.mjs';`,
+    ],
+    [
+      'a new URL, not an import',
+      `const helper = new URL('./fx-helper.mjs', import.meta.url);`,
+    ],
+    [
+      'a path join with a quoted relative path',
+      `const helper = path.join(here, './fx-helper.mjs');`,
+    ],
+  ])('follows %s', (_label, source) => {
+    expect(startsIn({ 'main.test.mjs': source, ...helperImports })).toBe(true);
+  });
+
+  it('follows an import of another test file', () => {
+    expect(
+      startsIn({
+        'main.test.mjs': `import './fx-other.test.mjs';`,
+        'fx-other.test.mjs': `import cp from '${NODE_CP}';`,
+      }),
+    ).toBe(true);
+  });
+
+  it.each([
+    ['./fx-h.tsx', 'fx-h.tsx'],
+    ['./fx-h.mts', 'fx-h.mts'],
+    ['./fx-h.cts', 'fx-h.cts'],
+    ['./fx-h.cjs', 'fx-h.cjs'],
+    ['./fx-h.jsx', 'fx-h.jsx'],
+    ['./fx-h.js', 'fx-h.ts'],
+    ['./fx-h.js', 'fx-h.tsx'],
+    ['./fx-h.mjs', 'fx-h.mts'],
+    ['./fx-h.cjs', 'fx-h.cts'],
+    ['./fx-h.jsx', 'fx-h.tsx'],
+    ['./fx-h', 'fx-h.mts'],
+    ['./fx-h', 'fx-h.cjs'],
+    ['./fx-dir', 'fx-dir/index.ts'],
+    ['./fx-dir', 'fx-dir/index.tsx'],
+    ['./fx-dir', 'fx-dir/index.mjs'],
+  ])('resolves %s to %s', (specifier, file) => {
+    expect(
+      startsIn({
+        'main.test.mjs': `import x from '${specifier}';`,
+        [file]: `import cp from '${NODE_CP}';`,
+      }),
+    ).toBe(true);
+  });
+
+  it.each([
+    ['no use of the module', `import path from 'node:path';`],
+    ['the name in a line comment', `// import cp from '${NODE_CP}';`],
+    [
+      'the name in a block comment',
+      lines('/*', ` * from '${NODE_CP}'`, ' */', 'const x = 1;'),
+    ],
+    [
+      'the name in a block comment before code on the same line',
+      `/* import cp from '${NODE_CP}' */ const x = 1;`,
+    ],
+    [
+      'a parameterless factory that replaces the module, and its import',
+      lines(
+        `vi.mock('${NODE_CP}', () => ({ execFile: vi.fn() }));`,
+        `import { execFile } from '${NODE_CP}';`,
+      ),
+    ],
+    [
+      'an async parameterless factory that replaces the module',
+      lines(
+        `vi.mock('${NODE_CP}', async () => ({ execFile: vi.fn() }));`,
+        `const { execFile } = await import('${NODE_CP}');`,
+      ),
+    ],
+    [
+      'a function factory with no parameter',
+      lines(
+        `vi.mock('${CP}', function () { return {}; });`,
+        `import cp from '${CP}';`,
+      ),
+    ],
+    [
+      'a replaced module and a helper that imports it, under the same mock',
+      lines(
+        `vi.mock('${NODE_CP}', () => ({}));`,
+        `import { run } from './fx-helper.mjs';`,
+      ),
+    ],
+    [
+      'a relative path to a file that is not there',
+      `const x = new URL('./fx-missing.mjs', import.meta.url);`,
+    ],
+    [
+      'a relative path to a file that is not code',
+      `const x = './fx-data.json';`,
+    ],
+  ])('finds nothing in %s', (_label, source) => {
+    expect(
+      startsIn({
+        'main.test.mjs': source,
+        ...helperImports,
+        'fx-data.json': `{ "cp": "${CP}" }`,
+      }),
+    ).toBe(false);
+  });
+
+  it('stops on files that import each other', () => {
+    expect(
+      startsIn({
+        'main.test.mjs': `import './fx-a.mjs';`,
+        'fx-a.mjs': `import './fx-b.mjs';`,
+        'fx-b.mjs': `import './fx-a.mjs';\nimport './main.test.mjs';`,
+      }),
+    ).toBe(false);
   });
 });
-
-/** Repo-relative, forward slashes. */
-const slashed = (file) => file.split(path.sep).join('/');
-
-/** The file a relative import names, or null for a missing file. */
-function resolveImport(from, specifier) {
-  const base = path.resolve(path.dirname(from), specifier);
-  const candidates = [
-    base,
-    base.replace(/\.js$/, '.ts'),
-    `${base}.ts`,
-    `${base}.mjs`,
-    `${base}.js`,
-    path.join(base, 'index.ts'),
-  ];
-  return (
-    candidates.find((file) => existsSync(file) && statSync(file).isFile()) ??
-    null
-  );
-}
-
-const isTestFile = (file) => /\.(?:test|spec)\.(?:ts|tsx|mjs)$/.test(file);
-
-/** What one file says about child_process; each file is read once. */
-const infos = new Map();
-function infoOf(file) {
-  let info = infos.get(file);
-  if (info === undefined) {
-    const code = codeOf(readFileSync(file, 'utf8'));
-    info = {
-      imports: importsChildProcess(code),
-      replaces: replacesChildProcess(code),
-      dependencies: [...code.matchAll(RELATIVE_IMPORT)]
-        .map((match) => resolveImport(file, match[1]))
-        .filter((dependency) => dependency !== null && !isTestFile(dependency)),
-    };
-    infos.set(file, info);
-  }
-  return info;
-}
-
-/** Whether running the test file starts a child process. */
-function startsChildProcesses(testFile) {
-  if (infoOf(testFile).replaces) return false;
-  const seen = new Set();
-  const pending = [testFile];
-  while (pending.length > 0) {
-    const file = pending.pop();
-    if (seen.has(file)) continue;
-    seen.add(file);
-    const info = infoOf(file);
-    if (info.imports) return true;
-    pending.push(...info.dependencies);
-  }
-  return false;
-}
 
 const byName = (a, b) => a.localeCompare(b);
 
 /** The test files a vitest project collects, as vitest globs them. */
 function filesOf({ include, exclude = configDefaults.exclude }) {
   return globSync(include, { cwd: ROOT, ignore: exclude, onlyFiles: true })
-    .map(slashed)
+    .map((file) => file.split(path.sep).join('/'))
     .sort(byName);
 }
 
+const startsChildProcesses = createDetector(readFromDisk);
 const everyTestFile = filesOf({ include: TEST_INCLUDE });
 const spawning = everyTestFile.filter((file) =>
   startsChildProcesses(path.join(ROOT, file)),
 );
+
+const isTestFile = (file) => /\.(?:test|spec)\.(?:ts|tsx|mjs)$/.test(file);
 
 describe('SPAWN_TEST_FILES', () => {
   it('finds the test files that start a child process, directly or through a fixture', () => {
@@ -177,12 +431,14 @@ describe('SPAWN_TEST_FILES', () => {
 
   it('lists every test file that starts a child process', () => {
     const missing = spawning.filter((file) => !SPAWN_TEST_FILES.includes(file));
-    expect(missing).toEqual([]);
+    expect(missing, 'add these to SPAWN_TEST_FILES in vite.config.ts').toEqual(
+      [],
+    );
   });
 
   it('names only files that exist', () => {
     const gone = SPAWN_TEST_FILES.filter(
-      (file) => !existsSync(path.join(ROOT, file)),
+      (file) => readFromDisk(path.join(ROOT, file)) === undefined,
     );
     expect(gone).toEqual([]);
   });
@@ -211,14 +467,28 @@ describe('the spawn and main projects', () => {
     ]);
   });
 
-  it('run the spawn project first', () => {
-    expect(spawn.sequence.groupOrder).toBeLessThan(main.sequence.groupOrder);
+  it('leave the root config without a test.include', () => {
+    expect(
+      config.test.include,
+      "a project that extends the root config gets its own include joined onto the root's (vite mergeConfig concatenates arrays), so a root include would put every test file in the spawn project",
+    ).toBeUndefined();
   });
 
-  it('give the spawn project a few workers, not the machine', () => {
+  it('run the spawn project first, in a group above 0', () => {
+    expect(spawn.sequence.groupOrder).toBeLessThan(main.sequence.groupOrder);
+    expect(
+      spawn.sequence.groupOrder,
+      'a group-0 project with one worker is moved into vitest sequential group, which runs after every other group',
+    ).toBeGreaterThanOrEqual(1);
+  });
+
+  it('give the spawn project a few workers, never more than the machine would', () => {
     expect(Number.isInteger(spawn.maxWorkers)).toBe(true);
     expect(spawn.maxWorkers).toBeGreaterThanOrEqual(1);
     expect(spawn.maxWorkers).toBeLessThanOrEqual(6);
+    expect(spawn.maxWorkers).toBeLessThanOrEqual(
+      Math.max(1, availableParallelism() - 1),
+    );
     expect(main.maxWorkers).toBeUndefined();
   });
 

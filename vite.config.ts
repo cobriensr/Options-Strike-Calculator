@@ -1,3 +1,4 @@
+import { availableParallelism } from 'node:os';
 import { configDefaults, defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
@@ -21,13 +22,15 @@ export const TEST_INCLUDE = [
  * exactly these and the `main` project excludes exactly these, so a file is in
  * one project and never both or neither. A test that starts a child process
  * but is missing here fails scripts/_lib/spawn-test-group.test.mjs; so does an
- * entry whose file is gone. A file that only mocks `node:child_process` does
- * not start one and belongs in `main`.
+ * entry whose file is gone. A file that replaces `node:child_process` outright,
+ * with a `vi.mock` factory that takes no parameter, starts nothing and belongs
+ * in `main`; a factory that wraps the real module does start children.
  */
 export const SPAWN_TEST_FILES = [
   'api/__tests__/no-database-guard.test.ts',
   'api/__tests__/vercel-ignore-command.test.ts',
   'scripts/_lib/backfill-cli.test.mjs',
+  'scripts/_lib/backfill-sidecar-startup.test.mjs',
   'scripts/_lib/build-output.test.mjs',
   'scripts/_lib/candles-backfill.test.mjs',
   'scripts/_lib/coverage-floor.test.mjs',
@@ -211,25 +214,33 @@ export default defineConfig({
     // collapses once runnable threads outnumber cores (git rev-parse: 60 ms at
     // 8 busy cores, 674 ms at 16, 22.9 s at 48), and the gate's 15 workers
     // alone made git spawns average 855 ms (50 ms alone). The git fixture
-    // suites make 400-650 spawns each, so they blew their hook limits and
-    // spawn-timeout's 10 s child never wrote before the kill.
+    // suites make 400-650 spawns each, so they blew their hook limits, and a
+    // `node -e` child of spawn-timeout.test.mjs had written nothing when its
+    // 10 s limit killed it.
+    //
+    // The group orders are 1 and 2, not 0 and 1: a project at order 0 whose
+    // maxWorkers is 1 (VITEST_MAX_WORKERS=1, --no-file-parallelism, or a
+    // 2-CPU machine) is moved into vitest's `sequential` group, which runs
+    // after every other group.
     projects: [
       {
         extends: true,
         test: {
           name: 'spawn',
           include: SPAWN_TEST_FILES,
-          sequence: { groupOrder: 0 },
-          // The width, measured 2026-11-19 with the group alone on the
-          // machine (21 files, 1046 tests; a git spawn is about 50 ms on an
-          // idle one). The rule: the fastest width whose mean git spawn stays
-          // under 150 ms, 3x idle.
+          sequence: { groupOrder: 1 },
+          // The width: 6, or fewer where the machine has fewer cores (vitest's
+          // own default is cores - 1, at least 1: a 4-vCPU CI runner gets 3).
+          // 6 was measured 2026-11-19 with the group alone on the 16-core
+          // workstation (the group then held 21 files and 1046 tests; a git
+          // spawn is about 50 ms on an idle machine). The rule: the fastest
+          // width whose mean git spawn stays under 150 ms, 3x idle.
           //   workers  wall       mean git spawn  slowest ledger beforeAll
           //   2        103-110 s  60-64 ms        7.1 s
           //   3        73-76 s    64-66 ms        7.0 s
           //   4        59-60 s    70-72 ms        8.0 s
           //   6        50 s       79 ms           9.5 s
-          maxWorkers: 6,
+          maxWorkers: Math.min(6, Math.max(1, availableParallelism() - 1)),
         },
       },
       {
@@ -238,7 +249,7 @@ export default defineConfig({
           name: 'main',
           include: TEST_INCLUDE,
           exclude: [...configDefaults.exclude, ...SPAWN_TEST_FILES],
-          sequence: { groupOrder: 1 },
+          sequence: { groupOrder: 2 },
         },
       },
     ],
