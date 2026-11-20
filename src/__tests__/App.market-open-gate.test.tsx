@@ -213,20 +213,29 @@ vi.mock('../components/OptionsAlerts', () => ({
 
 // The real router walks the whole registry, which would pull in every lazy
 // panel. This one renders only the panels this test reads, through the same
-// panelMap closures App builds.
+// panelMap closures App builds, and only those the registry lists for the
+// current access mode (the real router skips an id that is not in
+// `resolvedPanelsByGroup`), so a panel the registry hides from a public
+// visitor is not rendered here either.
 vi.mock('../components/PanelRouter', () => ({
   PanelRouter: ({
     panelMap,
+    resolvedPanelsByGroup,
   }: {
     panelMap: ReadonlyMap<string, () => ReactNode>;
-  }) =>
-    createElement(
+    resolvedPanelsByGroup: ReadonlyMap<string, readonly string[]>;
+  }) => {
+    const registered = new Set([...resolvedPanelsByGroup.values()].flat());
+    return createElement(
       Fragment,
       null,
-      ...h.renderedPanels.map((id) =>
-        createElement(Fragment, { key: id }, panelMap.get(id)?.()),
-      ),
-    ),
+      ...h.renderedPanels
+        .filter((id) => registered.has(id))
+        .map((id) =>
+          createElement(Fragment, { key: id }, panelMap.get(id)?.()),
+        ),
+    );
+  },
 }));
 
 interface Scenario {
@@ -412,9 +421,15 @@ describe('App polling gate (market clock AND owner-or-guest)', () => {
     it('hands the panels the gate as `marketOpen`', async () => {
       const { container } = mountApp();
 
-      expect(new Set(argsAt(h.preMarketSignals, 0))).toEqual(
-        new Set([{ marketOpen: s.gate }]),
-      );
+      // Pre-Market Signals reads two owner-or-guest endpoints, so the registry
+      // lists it for an owner or guest only: a public visitor never mounts it.
+      if (s.mode === 'public') {
+        expect(h.preMarketSignals).not.toHaveBeenCalled();
+      } else {
+        expect(new Set(argsAt(h.preMarketSignals, 0))).toEqual(
+          new Set([{ marketOpen: s.gate }]),
+        );
+      }
       // Both sections render for a public visitor too, and each polls through
       // a leaf of its own (an owner-or-guest endpoint), so each is handed the
       // gate rather than reading the clock off `market`.
@@ -437,10 +452,13 @@ describe('App polling gate (market clock AND owner-or-guest)', () => {
         ),
       ).toEqual(new Set([s.mode !== 'public']));
 
-      // GatedSection returns null when its gate is false and otherwise renders
-      // its nav anchor on the first render, before any lazy chunk resolves, so
-      // this is a synchronous check. A public visitor's page has neither panel
-      // at all; an owner's or guest's has both.
+      // Neither panel is in a public visitor's registry (they need owner or
+      // guest access plus market context), so the router never renders them,
+      // and GatedSection's own gate (pinned in GatedSection.test.tsx) is a
+      // second line behind that. Otherwise GatedSection renders its nav anchor
+      // on the first render, before any lazy chunk resolves, so this is a
+      // synchronous check. A public visitor's page has neither panel at all; an
+      // owner's or guest's has both.
       const isPublic = s.mode === 'public';
       expect(container.querySelector('#sec-gex-target') === null).toBe(
         isPublic,
@@ -524,10 +542,12 @@ describe('App polling gate (market clock AND owner-or-guest)', () => {
 
     it('losing owner or guest access turns the panel gate off, though nothing else about the market changed', () => {
       // No market data, so hasMarketContext is false before and after and the
-      // access flip cannot move the panels through it: liveMarketOpen is the
-      // only value the panelMap closures read that changes, so this fails if
-      // it drops out of that memo's dependencies. The same market object is
-      // reused, which also keeps `market` out of the dependencies that move.
+      // access flip cannot move the panels through it. The same market object
+      // is reused, which keeps `market` out of the dependencies that move. What
+      // does move is isAuthenticated and the liveMarketOpen derived from it, so
+      // this fails if both leave the panelMap memo's dependencies. Dropping
+      // liveMarketOpen alone is not caught, and cannot be: it is a function of
+      // isAuthenticated and `market`, which stay listed.
       const market = marketFor(
         { ...OWNER_LIVE, quotesFlag: null, gate: true },
         false,
@@ -543,12 +563,15 @@ describe('App polling gate (market clock AND owner-or-guest)', () => {
         expect.objectContaining({ marketOpen: true, showFlowRegime: true }),
       );
 
+      // Pre-Market Signals leaves the registry with the owner's access, so the
+      // flip unmounts it rather than handing it a closed gate.
+      h.preMarketSignals.mockClear();
       h.access.mode = 'public';
       rerender(appElement());
 
       expect(h.market.current).toBe(market);
       expect(lastPollingGates()).toEqual(allPollingGates(false));
-      expect(lastArgAt(h.preMarketSignals, 0)).toEqual({ marketOpen: false });
+      expect(h.preMarketSignals).not.toHaveBeenCalled();
       expect(lastArgAt(h.ivInputSection, 0)).toEqual(
         expect.objectContaining({ marketOpen: false }),
       );
