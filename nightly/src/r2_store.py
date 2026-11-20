@@ -8,6 +8,9 @@ Every listing is scoped to the `fulltape/` prefix; the bucket also holds `gexbot
 which this module never touches. Nothing here logs or embeds credentials or tape data.
 
 Retries: `max_attempts=5` in botocore's standard mode means 6 total attempts per request.
+
+`make_client` is the one client config for this bucket: `R2Store` and `ResearchStore`
+(`research_store.py`) both build theirs with it, one client per store.
 """
 
 from __future__ import annotations
@@ -16,6 +19,7 @@ import json
 import re
 from datetime import UTC, date, datetime
 from pathlib import Path
+from typing import Any
 
 import boto3
 from boto3.s3.transfer import TransferConfig
@@ -33,7 +37,7 @@ _MULTIPART_THRESHOLD = 64 * 2**20
 
 
 class R2VerifyError(Exception):
-    """An uploaded object's size on R2 differs from the local file."""
+    """An object's size on R2 differs from the local file it was uploaded from or fetched to."""
 
 
 def _parse_day(pattern: re.Pattern[str], key: str) -> date | None:
@@ -59,36 +63,85 @@ def tape_key(day: date) -> str:
     return f"{_PREFIX}{day.isoformat()}-fulltape.parquet"
 
 
+def make_client(settings: Settings) -> Any:
+    """A boto3 S3 client for the R2 bucket. One per store, never shared across threads."""
+    return boto3.client(
+        "s3",
+        endpoint_url=settings.r2_endpoint_url,
+        aws_access_key_id=settings.r2_access_key_id.get_secret_value(),
+        aws_secret_access_key=settings.r2_secret_access_key.get_secret_value(),
+        region_name="auto",
+        verify=True,
+        config=Config(
+            signature_version="s3v4",
+            retries={"mode": "standard", "max_attempts": 5},
+        ),
+    )
+
+
+def verify_upload_size(client: Any, bucket: str, key: str, local: int) -> None:
+    """HEAD an uploaded object and require its ContentLength to equal `local`.
+
+    Any failure (a different size, or a HEAD that errors) deletes the key, best effort,
+    before raising R2VerifyError: an object nobody could verify must not stay behind to
+    be mistaken for a good one.
+    """
+    try:
+        remote = client.head_object(Bucket=bucket, Key=key)["ContentLength"]
+        if remote != local:
+            raise R2VerifyError(f"{key}: uploaded {local} bytes but R2 reports {remote}")
+    except Exception as exc:
+        try:
+            client.delete_object(Bucket=bucket, Key=key)
+        except Exception as delete_exc:
+            raise R2VerifyError(
+                f"{key}: could not verify {local} uploaded bytes and could not delete it; "
+                "the key may remain"
+            ) from delete_exc
+        if isinstance(exc, R2VerifyError):
+            raise
+        raise R2VerifyError(f"{key}: could not verify {local} uploaded bytes") from exc
+
+
 class R2Store:
     """Reads and writes tape days in the Full Tape bucket."""
 
     def __init__(self, settings: Settings) -> None:
         self._bucket = settings.r2_bucket_fulltape
-        self._client = boto3.client(
-            "s3",
-            endpoint_url=settings.r2_endpoint_url,
-            aws_access_key_id=settings.r2_access_key_id.get_secret_value(),
-            aws_secret_access_key=settings.r2_secret_access_key.get_secret_value(),
-            region_name="auto",
-            verify=True,
-            config=Config(
-                signature_version="s3v4",
-                retries={"mode": "standard", "max_attempts": 5},
-            ),
-        )
+        self._client = make_client(settings)
         self._transfer = TransferConfig(
             multipart_threshold=_MULTIPART_THRESHOLD,
             use_threads=False,
             preferred_transfer_client="classic",
         )
 
+    def _objects(self, prefix: str) -> list[dict[str, Any]]:
+        """Every object directly under `prefix` (no subfolders), across all pages."""
+        paginator = self._client.get_paginator("list_objects_v2")
+        objects: list[dict[str, Any]] = []
+        for page in paginator.paginate(Bucket=self._bucket, Prefix=prefix, Delimiter="/"):
+            objects.extend(page.get("Contents", []))
+        return objects
+
     def _keys(self, prefix: str) -> list[str]:
         """Every key directly under `prefix` (no subfolders), across all pages."""
-        paginator = self._client.get_paginator("list_objects_v2")
-        keys: list[str] = []
-        for page in paginator.paginate(Bucket=self._bucket, Prefix=prefix, Delimiter="/"):
-            keys.extend(obj["Key"] for obj in page.get("Contents", []))
-        return keys
+        return [obj["Key"] for obj in self._objects(prefix)]
+
+    def tape_etags(self) -> dict[date, str]:
+        """Landed days mapped to their object's ETag, quotes stripped.
+
+        One paginated listing of `fulltape/` and no `head_object`: the listing already
+        carries each ETag. Only `fulltape/{date}-fulltape.parquet` keys count, so a marker,
+        a `_superseded` copy or a stray object never appears. A single-part upload's ETag
+        is the body's MD5; a multipart one ends in `-<parts>`: compare it as an opaque
+        string, never as a digest.
+        """
+        etags: dict[date, str] = {}
+        for obj in self._objects(_PREFIX):
+            day = _parse_day(_TAPE_RE, obj["Key"])
+            if day is not None:
+                etags[day] = obj["ETag"].strip('"')
+        return etags
 
     def landed(self) -> dict[date, dict[str, str]]:
         """Landed days mapped to their user metadata (`{}` for legacy objects).
@@ -130,22 +183,7 @@ class R2Store:
             ExtraArgs={"Metadata": metadata},
             Config=self._transfer,
         )
-        local = path.stat().st_size
-        try:
-            remote = self._client.head_object(Bucket=self._bucket, Key=key)["ContentLength"]
-            if remote != local:
-                raise R2VerifyError(f"{key}: uploaded {local} bytes but R2 reports {remote}")
-        except Exception as exc:
-            try:
-                self._client.delete_object(Bucket=self._bucket, Key=key)
-            except Exception as delete_exc:
-                raise R2VerifyError(
-                    f"{key}: could not verify {local} uploaded bytes and could not delete it; "
-                    "the key may remain"
-                ) from delete_exc
-            if isinstance(exc, R2VerifyError):
-                raise
-            raise R2VerifyError(f"{key}: could not verify {local} uploaded bytes") from exc
+        verify_upload_size(self._client, self._bucket, key, path.stat().st_size)
 
     def supersede(self, day: date, source_etag: str) -> str:
         """Copy the current object aside before a re-land; returns the copy's key.

@@ -7,6 +7,7 @@ provoked at the boto3 client boundary.
 
 from __future__ import annotations
 
+import hashlib
 import socket
 from collections.abc import Iterator
 from datetime import date
@@ -20,7 +21,8 @@ from botocore.exceptions import ClientError
 from moto import mock_aws
 
 from config import Settings, load_settings
-from r2_store import R2Store, R2VerifyError, tape_key
+from r2_store import R2Store, R2VerifyError, make_client, tape_key
+from research_store import ResearchStore
 
 BUCKET = "test-bucket"
 D1 = date(2026, 10, 26)
@@ -31,6 +33,16 @@ META = {
     "schema-version": "nightly-1",
     "source-etag": "gcs-etag-1",
 }
+
+
+@pytest.fixture(autouse=True)
+def _isolated_home(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """boto3 reads ~/.aws and may cache under the home dir; keep it off the real one."""
+    home = tmp_path_factory.mktemp("home")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
 
 
 @pytest.fixture
@@ -260,3 +272,86 @@ def test_unavailable_round_trip(s3, store: R2Store) -> None:
 def test_transfers_are_single_threaded(store: R2Store) -> None:
     assert store._transfer.use_threads is False
     assert store._transfer.preferred_transfer_client == "classic"
+
+
+def _md5(body: bytes) -> str:
+    return hashlib.md5(body, usedforsecurity=False).hexdigest()
+
+
+def test_tape_etags_lists_only_tape_keys(s3, store: R2Store) -> None:
+    _put(s3, tape_key(D1), body=b"one")
+    _put(s3, tape_key(D2), body=b"two", metadata=META)
+    _put(s3, "gexbot-eod/SPX/2026-10-28.zip")
+    _put(s3, "fulltape/_unavailable/2026-10-25.json")
+    _put(s3, "fulltape/_superseded/2026-10-27-etag.parquet")
+    _put(s3, "fulltape/notes.txt")
+    _put(s3, "fulltape/2026-02-30-fulltape.parquet")  # an impossible date
+    _put(s3, "fulltape/2026-10-28-fulltape.parquet.bak")  # starts like a tape key, is not one
+    _put(s3, "fulltape/2026-10-29-notes.txt")
+
+    with (
+        patch.object(store._client, "head_object", wraps=store._client.head_object) as head,
+        patch.object(
+            store._client, "list_objects_v2", wraps=store._client.list_objects_v2
+        ) as listing,
+    ):
+        etags = store.tape_etags()
+
+    # S3 hands back a single-part ETag as the body's MD5 in quotes; the quotes are gone.
+    assert etags == {D1: _md5(b"one"), D2: _md5(b"two")}
+    assert all('"' not in etag for etag in etags.values())
+    assert head.call_count == 0
+    assert listing.call_count == 1
+
+
+def test_tape_etags_empty_bucket(s3, store: R2Store) -> None:
+    assert store.tape_etags() == {}
+
+
+def test_tape_etags_reads_every_page(s3, store: R2Store) -> None:
+    days = [date(2026, 3, n) for n in range(1, 8)]
+    for d in days:
+        _put(s3, tape_key(d), body=d.isoformat().encode())
+    real = store._client.get_paginator
+    with patch.object(
+        store._client, "get_paginator", side_effect=lambda op: _small_pages(real(op))
+    ):
+        assert store.tape_etags() == {d: _md5(d.isoformat().encode()) for d in days}
+
+
+def test_tape_etags_list_error_propagates(s3, store: R2Store) -> None:
+    err = ClientError({"Error": {"Code": "500", "Message": "boom"}}, "ListObjectsV2")
+    with (
+        patch.object(store._client, "list_objects_v2", side_effect=err),
+        pytest.raises(ClientError),
+    ):
+        store.tape_etags()
+
+
+def test_make_client_config(settings: Settings) -> None:
+    """One client config for both stores: TLS verified, s3v4 signing, 5 attempts."""
+    with patch("r2_store.boto3.client") as client:
+        make_client(settings)
+        R2Store(settings)
+        ResearchStore(settings)
+
+    assert client.call_count == 3
+    for call in client.call_args_list:
+        assert call.args == ("s3",)
+        assert call.kwargs["verify"] is True
+        assert call.kwargs["region_name"] == "auto"
+        assert call.kwargs["endpoint_url"] == settings.r2_endpoint_url
+        assert call.kwargs["aws_access_key_id"] == settings.r2_access_key_id.get_secret_value()
+        assert (
+            call.kwargs["aws_secret_access_key"] == settings.r2_secret_access_key.get_secret_value()
+        )
+        config = call.kwargs["config"]
+        assert config.signature_version == "s3v4"
+        assert config.retries == {"mode": "standard", "max_attempts": 5}
+
+
+def test_make_client_builds_a_working_client(s3, settings: Settings) -> None:
+    client = make_client(settings)
+    assert client.meta.region_name == "auto"
+    assert client.meta.config.signature_version == "s3v4"
+    assert client.list_objects_v2(Bucket=BUCKET)["KeyCount"] == 0
