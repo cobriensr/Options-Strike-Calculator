@@ -37,7 +37,7 @@
   - It returns true when, over candles whose `start_time` ≤ trigger, spot > high × 1.2 or spot < low ÷ 1.2.
   - It returns false when there is no pre-trigger candle, no finite range or no finite spot. `computeRangePos` already returns null for those.
 - `rangePosUpdates(fires, candles)` leaves a fire that fails the guard NULL and counts it as `splitMismatch`, separately from `leftNull`. It returns `{ ids, positions, leftNull, splitMismatch }`.
-- `backfill-range-pos.mjs` tallies `splitMismatch`. The report prints the count, a one-line meaning (spot more than 20% outside the session's candle range, likely a split between the fire and UW's split-adjusted candles) and the affected ticker-days. Update the header comment.
+- `backfill-range-pos.mjs` tallies `splitMismatch`. The report prints the count, a one-line meaning (spot more than 20% outside the session's candle range, likely a split between the fire and UW's split-adjusted candles, or a bad stored spot of 0 or below, which fails the guard too) and the affected ticker-days. Update the header comment.
 - `computeRangePos` stays unchanged: it is an exact port of `api/_lib/uw-stock-candles.ts`, pinned by test. The live cron needs no guard, because it compares same-day live spot with same-day live candles.
 - Tests:
   - CRWD-like case (spot 620.49, candles 153.25–155.88): fails the guard, stays NULL, counted.
