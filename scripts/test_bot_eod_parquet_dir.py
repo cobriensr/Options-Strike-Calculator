@@ -7,8 +7,9 @@ the Makefile passes its PARQUET_DIR) and fail by name when it is missing.
 The two `make update` reports skip a day whose file is missing, name it,
 and exit 0 when no day had one. (They also take `--derived-dir`, the per-day
 derived files: test_policy_timing_derive.py.) ingest-flow.py, the writer, takes
-`--archive-dir`, defaulting to where it has always written. The enrich
-scripts' tests are in test_enrich_missing_archive.py. Run:
+`--archive-dir`, defaulting to where it has always written. The Makefile's
+retired net-flow backfill and its R2 tape targets are checked at the end. The
+enrich scripts' tests are in test_enrich_missing_archive.py. Run:
 
     ml/.venv/Scripts/python -m pytest scripts/test_bot_eod_parquet_dir.py -q
 """
@@ -16,6 +17,8 @@ scripts' tests are in test_enrich_missing_archive.py. Run:
 from __future__ import annotations
 
 import importlib.util
+import shutil
+import subprocess
 import sys
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -327,11 +330,161 @@ def test_ingest_flow_names_the_csv_it_looked_for(
     csvs = tmp_path / 'EOD-OptionFlow'
     csvs.mkdir()
 
-    rc = ingest_flow.main(['2026-07-23', '--input-dir', str(csvs), '--dry-run'])
+    rc = ingest_flow.main(['2026-07-23', '--input-dir', str(csvs)])
 
     assert rc == 2
     expected = csvs / 'bot-eod-report-2026-07-23.csv'
     assert f'CSV not found: {expected}' in capsys.readouterr().err
+
+
+# ── Makefile: the retired steps and the tape targets ───────────
+
+MAKEFILE = SCRIPTS.parent / 'Makefile'
+TAPE_TARGETS = ('analyze', 'analyze-one', 'dry-run')
+R2_VARS = (
+    'R2_ACCESS_KEY_ID',
+    'R2_SECRET_ACCESS_KEY',
+    'R2_ENDPOINT_URL',
+    'R2_BUCKET_FULLTAPE',
+)
+
+
+def _makefile_text() -> str:
+    return MAKEFILE.read_text(encoding='utf-8')
+
+
+def _rule(text: str, name: str) -> tuple[list[str], list[str]]:
+    """The prerequisites and the recipe lines of the first `name:` rule."""
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        if line.startswith(f'{name}:'):
+            recipe: list[str] = []
+            for body in lines[i + 1 :]:
+                if not body.startswith('\t'):
+                    break
+                recipe.append(body)
+            return line.split(':', 1)[1].split(), recipe
+    raise AssertionError(f'no `{name}:` rule in the Makefile')
+
+
+def test_makefile_drops_backfill_flow_and_reads_the_tape() -> None:
+    text = _makefile_text()
+    assert 'backfill_net_flow_history' not in text
+    assert 'backfill-flow' not in text
+    assert '13 visualizations' not in text  # whale_plots writes 14 now
+    for name in TAPE_TARGETS:
+        _, recipe = _rule(text, name)
+        day_lines = [line for line in recipe if 'analyze.py --day' in line]
+        assert day_lines, f'{name} no longer runs analyze.py --day'
+        for line in day_lines:
+            assert line.rstrip().endswith(' --r2'), line
+            assert 'source $(ENV_FILE)' in line, line
+
+
+def test_makefile_never_passes_ingest_flow_a_retired_flag() -> None:
+    # Join `\`-continued recipe lines so a flag on the second line is seen.
+    logical = _makefile_text().replace('\\\n', ' ').splitlines()
+    ingest = [
+        line
+        for line in logical
+        if 'scripts/ingest-flow.py' in line and not line.lstrip('\t @').startswith('#')
+    ]
+    assert len(ingest) == 2, 'expected ingest and dry-run to run ingest-flow.py'
+    for line in ingest:
+        assert '--dry-run' not in line, line
+        assert '--skip-archive' not in line, line
+    # dry-run keeps the CSV; the real ingest is the one that deletes it.
+    dry_run = _rule(_makefile_text(), 'dry-run')[1]
+    assert any(
+        'ingest-flow.py' in line and '--keep-csv' in line
+        for line in '\n'.join(dry_run).replace('\\\n', ' ').splitlines()
+    )
+
+
+def test_tape_targets_gate_on_the_env_and_not_the_csv() -> None:
+    text = _makefile_text()
+    for name in TAPE_TARGETS:
+        prerequisites, _ = _rule(text, name)
+        assert prerequisites == ['check-r2-env'], name
+    assert _rule(text, 'ingest')[0] == ['check']
+    _, check_recipe = _rule(text, 'check')
+    assert 'BLOB_READ_WRITE_TOKEN' not in '\n'.join(check_recipe)
+
+
+def _check_r2_env(
+    tmp_path: Path, env_lines: list[str] | None, *args: str
+) -> subprocess.CompletedProcess[str]:
+    """Run `make check-r2-env` against a throwaway env file (None: no file)
+    and an empty CSV dir, so no real file or pending date is read."""
+    env_file = tmp_path / '.env.local'
+    if env_lines is not None:
+        env_file.write_text('\n'.join(env_lines) + '\n')
+    csvs = tmp_path / 'EOD-OptionFlow'
+    csvs.mkdir(exist_ok=True)
+    return subprocess.run(
+        [
+            'make',
+            '--no-print-directory',
+            'check-r2-env',
+            f'ENV_FILE={env_file.as_posix()}',
+            f'INPUT_DIR={csvs.as_posix()}',
+            *args,
+        ],
+        cwd=SCRIPTS.parent,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+
+
+def _r2_env_lines(skip: str | None = None) -> list[str]:
+    return [f'{name}=sentinel-{name}' for name in R2_VARS if name != skip]
+
+
+needs_make = pytest.mark.skipif(
+    shutil.which('make') is None, reason='GNU make is not installed'
+)
+
+
+@needs_make
+def test_check_r2_env_passes_and_prints_no_value(tmp_path: Path) -> None:
+    done = _check_r2_env(tmp_path, _r2_env_lines(), 'DATE=2026-11-04')
+
+    assert done.returncode == 0, done.stderr
+    assert 'sentinel-' not in done.stdout + done.stderr
+
+
+@needs_make
+@pytest.mark.parametrize('missing', R2_VARS)
+def test_check_r2_env_names_the_missing_var_and_prints_no_value(
+    tmp_path: Path, missing: str
+) -> None:
+    done = _check_r2_env(tmp_path, _r2_env_lines(skip=missing), 'DATE=2026-11-04')
+
+    assert done.returncode == 2
+    assert missing in done.stdout + done.stderr
+    assert 'sentinel-' not in done.stdout + done.stderr
+
+
+@needs_make
+def test_check_r2_env_names_a_missing_env_file(tmp_path: Path) -> None:
+    done = _check_r2_env(tmp_path, None, 'DATE=2026-11-04')
+
+    assert done.returncode == 2
+    # The gate's own message, not bash's "No such file" from sourcing it.
+    missing_file = (tmp_path / '.env.local').as_posix()
+    assert f'{missing_file} not found' in done.stdout + done.stderr
+
+
+@needs_make
+def test_check_r2_env_needs_a_date(tmp_path: Path) -> None:
+    """With no pending CSV there is no default DATE to read the tape for."""
+    done = _check_r2_env(tmp_path, _r2_env_lines())
+
+    assert done.returncode == 2
+    assert 'DATE' in done.stdout + done.stderr
+    assert 'sentinel-' not in done.stdout + done.stderr
 
 
 # ── exit_policy_search ─────────────────────────────────────────

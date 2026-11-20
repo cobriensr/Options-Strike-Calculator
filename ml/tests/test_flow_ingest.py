@@ -1,24 +1,17 @@
-"""Unit tests for scripts/ingest-flow.py — exercises transform + validation."""
+"""Unit tests for scripts/ingest-flow.py: header check, closed enums, the
+Bot-EOD archive write, and main() end to end on a small synthetic CSV."""
 
 from __future__ import annotations
 
 import importlib.util
-import sys
-from datetime import UTC, datetime
+import re
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import polars as pl
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-
-# ingest-flow.py does a bare `from _pipeline_retry import ...`, which resolves
-# only when scripts/ is on sys.path. When loaded as a script that's automatic
-# (the script's own dir is on the path); loaded here via importlib it is not,
-# so add it explicitly before exec_module or collection fails with
-# ModuleNotFoundError: No module named '_pipeline_retry'.
-sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
 # Load the script as a module (script filename has hyphens, not a valid identifier)
 _spec = importlib.util.spec_from_file_location(
@@ -28,74 +21,173 @@ assert _spec is not None and _spec.loader is not None
 ingest_flow = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(ingest_flow)
 
+DAY = "2026-04-24"
 
-def _make_lf() -> pl.LazyFrame:
-    """Synthetic CSV-like LazyFrame matching the schema (subset of cols)."""
-    return pl.LazyFrame(
+# Shape mirrors actual UW samples: `f`/`t` for `canceled`, a `+00` UTC offset.
+# The AAPL row carries `extended_hours_trade`: the archive keeps every print,
+# so it must survive the run.
+ROWS = [
+    "2026-04-24 14:00:00.000000+00,SPY,SPY260515P00650000,ask,650,put,2026-05-15,710.76,1.25,1.35,1.25,1.35,1.30,3,390,3,121751,0.25,-0.07,-0.14,0.003,0.225,-0.029,1.30,,XPHO,{},f,auto,ETF",
+    "2026-04-24 14:00:01.000000+00,QQQ,QQQ260515C00500000,bid,500,call,2026-05-15,510.00,5.00,5.10,5.00,5.10,5.05,1,505,1,2426,0.20,0.50,-0.05,0.01,0.30,-0.10,5.05,,XCBO,{},t,auto,ETF",
+    "2026-04-24 14:00:02.000000+00,AAPL,AAPL260515C00200000,ask,200,call,2026-05-15,205.00,1.00,1.10,1.00,1.10,1.05,1,105,1,500,0.30,0.40,-0.08,0.02,0.20,-0.15,1.05,Tech,XPHO,{extended_hours_trade},f,auto,Common Stock",
+]
+
+
+def _write_csv(tmp_path: Path, rows: list[str] = ROWS) -> Path:
+    input_dir = tmp_path / "EOD-OptionFlow"
+    input_dir.mkdir(exist_ok=True)
+    csv = input_dir / f"bot-eod-report-{DAY}.csv"
+    header = ",".join(ingest_flow.FLOW_SCHEMA.keys())
+    csv.write_text("\n".join([header, *rows]) + "\n")
+    return csv
+
+
+def _run(tmp_path: Path, *extra: str) -> int:
+    return ingest_flow.main(
         [
-            # In-window 13:30 UTC (08:30 CT) — keep
-            {
-                "executed_at": datetime(2026, 4, 24, 13, 30, tzinfo=UTC),
-                "underlying_symbol": "SPY",
-                "report_flags": "{}",
-                "canceled": "f",
-            },
-            # Pre-market 12:00 UTC (07:00 CT) — drop
-            {
-                "executed_at": datetime(2026, 4, 24, 12, 0, tzinfo=UTC),
-                "underlying_symbol": "SPY",
-                "report_flags": "{}",
-                "canceled": "f",
-            },
-            # 19:59 UTC (14:59 CT) — keep
-            {
-                "executed_at": datetime(2026, 4, 24, 19, 59, tzinfo=UTC),
-                "underlying_symbol": "QQQ",
-                "report_flags": "{}",
-                "canceled": "f",
-            },
-            # 20:00 UTC (15:00 CT) — drop (exclusive end)
-            {
-                "executed_at": datetime(2026, 4, 24, 20, 0, tzinfo=UTC),
-                "underlying_symbol": "QQQ",
-                "report_flags": "{}",
-                "canceled": "f",
-            },
-            # In-window but ETH-flagged — drop
-            {
-                "executed_at": datetime(2026, 4, 24, 14, 0, tzinfo=UTC),
-                "underlying_symbol": "AAPL",
-                "report_flags": "{extended_hours_trade}",
-                "canceled": "f",
-            },
+            DAY,
+            "--input-dir",
+            str(tmp_path / "EOD-OptionFlow"),
+            "--archive-dir",
+            str(tmp_path / "Bot-Eod-parquet"),
+            *extra,
         ]
     )
 
 
-def test_transform_filters_to_cash_session() -> None:
-    df = ingest_flow.transform(_make_lf(), "2026-04-24").collect()
-    # Should keep only the two in-window non-ETH rows: SPY 13:30 and QQQ 19:59
-    assert df.height == 2
-    symbols = sorted(df["underlying_symbol"].to_list())
-    assert symbols == ["QQQ", "SPY"]
+def _archive(tmp_path: Path) -> Path:
+    return tmp_path / "Bot-Eod-parquet" / f"{DAY}-trades.parquet"
 
 
-def test_transform_drops_extended_hours_trade() -> None:
-    df = ingest_flow.transform(_make_lf(), "2026-04-24").collect()
-    assert "AAPL" not in df["underlying_symbol"].to_list()
+# --- main(): the archive is the only output ---------------------------------
 
 
-def test_transform_sort_is_stable_by_symbol() -> None:
-    df = ingest_flow.transform(_make_lf(), "2026-04-24").collect()
-    symbols = df["underlying_symbol"].to_list()
-    assert symbols == sorted(symbols), f"Not sorted by symbol: {symbols}"
+def test_ingest_writes_the_archive_and_never_touches_blob(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No Blob token is needed, nothing is uploaded, and the module no longer
+    carries a Blob client."""
+    monkeypatch.delenv("BLOB_READ_WRITE_TOKEN", raising=False)
+    csv = _write_csv(tmp_path)
+
+    rc = _run(tmp_path)
+
+    assert rc == 0
+    assert _archive(tmp_path).is_file()
+    assert not csv.exists()
+    assert not hasattr(ingest_flow, "requests")
+    assert not hasattr(ingest_flow, "upload_to_blob")
 
 
-def test_transform_adds_date_and_ingested_at() -> None:
-    df = ingest_flow.transform(_make_lf(), "2026-04-24").collect()
-    assert "date" in df.columns
-    assert "ingested_at" in df.columns
-    assert df["date"][0].isoformat() == "2026-04-24"
+def test_archive_holds_every_print_of_the_csv(tmp_path: Path) -> None:
+    """The archive is the unfiltered CSV: the extended-hours print stays, and
+    `canceled` keeps UW's `f`/`t` literals."""
+    _write_csv(tmp_path)
+
+    assert _run(tmp_path) == 0
+
+    df = pl.read_parquet(_archive(tmp_path))
+    assert df.height == 3
+    assert sorted(df["underlying_symbol"].to_list()) == ["AAPL", "QQQ", "SPY"]
+    assert sorted(df["canceled"].to_list()) == ["f", "f", "t"]
+    assert df["executed_at"].dtype == pl.Datetime("us", "UTC")
+    assert df["expiry"].dtype == pl.Date
+    assert df.columns == list(ingest_flow.FLOW_SCHEMA.keys())
+
+
+def test_keep_csv_keeps_it(tmp_path: Path) -> None:
+    csv = _write_csv(tmp_path)
+
+    assert _run(tmp_path, "--keep-csv") == 0
+
+    assert csv.is_file()
+    assert _archive(tmp_path).is_file()
+
+
+def test_top_underlyings_summary_counts_every_print(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The closing summary reads the archive, so the extended-hours AAPL print
+    is counted too."""
+    _write_csv(tmp_path)
+
+    assert _run(tmp_path) == 0
+
+    out = capsys.readouterr().out
+    assert "Top 10 underlyings:" in out
+    summary = out.split("Top 10 underlyings:")[1]
+    counts = {
+        sym: int(n.replace(",", ""))
+        for sym, n in re.findall(r"^\s+(\S+)\s+([\d,]+)$", summary, re.MULTILINE)
+    }
+    assert counts == {"SPY": 1, "QQQ": 1, "AAPL": 1}
+
+
+@pytest.mark.parametrize("flag", ["--dry-run", "--skip-archive"])
+def test_retired_flags_are_rejected(tmp_path: Path, flag: str) -> None:
+    _write_csv(tmp_path)
+    with pytest.raises(SystemExit) as exc:
+        _run(tmp_path, flag)
+    assert exc.value.code == 2
+
+
+def test_empty_csv_exits_2_and_writes_no_archive(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    csv = _write_csv(tmp_path, rows=[])
+
+    rc = _run(tmp_path)
+
+    assert rc == 2
+    assert "ERROR: empty CSV" in capsys.readouterr().err
+    assert not _archive(tmp_path).exists()
+    assert csv.exists()
+
+
+def test_bad_date_exits_2(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    rc = ingest_flow.main(["24-04-2026", "--input-dir", str(tmp_path)])
+
+    assert rc == 2
+    assert "date must be YYYY-MM-DD" in capsys.readouterr().err
+
+
+# --- main(): closed enums are checked on the archive ------------------------
+
+
+def test_closed_enums_checked_on_the_archive(tmp_path: Path) -> None:
+    """An unknown `side` in the CSV fails the run by name, and the CSV is not
+    deleted: it is only removed after the enum check passes."""
+    bad = [ROWS[0].replace(",ask,650,", ",lifted,650,"), *ROWS[1:]]
+    csv = _write_csv(tmp_path, rows=bad)
+
+    with pytest.raises(ValueError, match="side"):
+        _run(tmp_path)
+
+    assert csv.exists()
+
+
+def test_enum_check_reads_the_archive_not_the_csv(tmp_path: Path) -> None:
+    """A valid CSV next to an existing archive that holds an unknown value
+    fails: the check looks at what is on disk, the archive."""
+    csv = _write_csv(tmp_path)
+    archive = _archive(tmp_path)
+    archive.parent.mkdir(parents=True)
+    pl.DataFrame(
+        {
+            "underlying_symbol": ["SPY"],
+            "side": ["lifted"],
+            "option_type": ["put"],
+            "equity_type": ["ETF"],
+        }
+    ).write_parquet(archive)
+
+    with pytest.raises(ValueError, match="side"):
+        _run(tmp_path)
+
+    assert csv.exists()
+
+
+# --- validate_categoricals ---------------------------------------------------
 
 
 def test_validate_categoricals_passes_on_known_values() -> None:
@@ -144,6 +236,9 @@ def test_validate_categoricals_allows_nulls() -> None:
     ingest_flow.validate_categoricals(df)  # nulls should not trigger
 
 
+# --- write_full_archive ------------------------------------------------------
+
+
 def test_write_full_archive_atomic_rename(tmp_path: Path) -> None:
     """Happy path: parquet lands at the final path, no .tmp left behind."""
     archive = tmp_path / "2026-04-24-trades.parquet"
@@ -170,11 +265,7 @@ def test_write_full_archive_crash_leaves_no_final_file(tmp_path: Path) -> None:
     assert not archive.exists()
 
 
-def test_blob_pathname_format() -> None:
-    assert (
-        ingest_flow.blob_pathname("2026-04-24")
-        == "flow/year=2026/month=04/day=24/data.parquet"
-    )
+# --- validate_header ---------------------------------------------------------
 
 
 def test_validate_header_passes_on_correct_header(tmp_path: Path) -> None:
@@ -197,141 +288,3 @@ def test_validate_header_fails_on_missing_column(tmp_path: Path) -> None:
     csv.write_text(",".join(cols) + "\n")
     with pytest.raises(ValueError, match="rho"):
         ingest_flow.validate_header(csv)
-
-
-def test_upload_dispatches_singleshot_for_small_files(tmp_path: Path) -> None:
-    """Files under MULTIPART_THRESHOLD should go through _upload_singleshot."""
-    small = tmp_path / "small.parquet"
-    small.write_bytes(b"x" * (ingest_flow.MULTIPART_THRESHOLD - 1))
-    with (
-        patch.object(
-            ingest_flow, "_upload_singleshot", return_value={"url": "single"}
-        ) as ss,
-        patch.object(ingest_flow, "_upload_multipart") as mp,
-    ):
-        result = ingest_flow.upload_to_blob(small, "flow/x.parquet", "tok")
-    assert result == {"url": "single"}
-    ss.assert_called_once()
-    mp.assert_not_called()
-
-
-def test_upload_dispatches_multipart_for_large_files(tmp_path: Path) -> None:
-    """Files >= MULTIPART_THRESHOLD should go through _upload_multipart."""
-    large = tmp_path / "large.parquet"
-    large.write_bytes(b"x" * ingest_flow.MULTIPART_THRESHOLD)
-    with (
-        patch.object(ingest_flow, "_upload_singleshot") as ss,
-        patch.object(
-            ingest_flow, "_upload_multipart", return_value={"url": "multi"}
-        ) as mp,
-    ):
-        result = ingest_flow.upload_to_blob(large, "flow/x.parquet", "tok")
-    assert result == {"url": "multi"}
-    ss.assert_not_called()
-    mp.assert_called_once()
-
-
-def test_multipart_chunks_and_completes_in_order(tmp_path: Path) -> None:
-    """_upload_multipart should chunk by PART_SIZE, number parts 1..N, and call
-    create→upload×N→complete in that order with the right etags."""
-    # 2.5 parts worth of bytes — last chunk is smaller
-    parquet = tmp_path / "mid.parquet"
-    parquet.write_bytes(b"a" * int(ingest_flow.MULTIPART_PART_SIZE * 2.5))
-
-    create_resp = MagicMock(
-        ok=True, json=MagicMock(return_value={"key": "K", "uploadId": "U"})
-    )
-    part_responses = [
-        MagicMock(ok=True, json=MagicMock(return_value={"etag": f"E{i}"}))
-        for i in (1, 2, 3)
-    ]
-    complete_resp = MagicMock(
-        ok=True,
-        headers={"content-type": "application/json"},
-        json=MagicMock(return_value={"url": "https://blob/x", "pathname": "p"}),
-    )
-    # Sequence: create, part1, part2, part3, complete
-    with patch.object(
-        ingest_flow.requests,
-        "post",
-        side_effect=[create_resp, *part_responses, complete_resp],
-    ) as post:
-        result = ingest_flow._upload_multipart(parquet, "flow/x.parquet", "tok")
-
-    assert result == {"url": "https://blob/x", "pathname": "p"}
-    assert post.call_count == 5  # create + 3 parts + complete
-
-    # Verify x-mpu-action sequence
-    actions = [c.kwargs["headers"]["x-mpu-action"] for c in post.call_args_list]
-    assert actions == ["create", "upload", "upload", "upload", "complete"]
-
-    # Verify part numbers are 1, 2, 3 in order
-    part_numbers = [
-        c.kwargs["headers"]["x-mpu-part-number"]
-        for c in post.call_args_list
-        if c.kwargs["headers"]["x-mpu-action"] == "upload"
-    ]
-    assert part_numbers == ["1", "2", "3"]
-
-    # Verify complete payload carries all 3 etags with their part numbers
-    complete_body = post.call_args_list[-1].kwargs["json"]
-    assert complete_body == [
-        {"partNumber": 1, "etag": "E1"},
-        {"partNumber": 2, "etag": "E2"},
-        {"partNumber": 3, "etag": "E3"},
-    ]
-
-
-def test_multipart_propagates_part_failure(tmp_path: Path) -> None:
-    """If a single part upload fails, the whole multipart raises and the
-    caller (main) won't delete the source CSV."""
-    parquet = tmp_path / "mid.parquet"
-    parquet.write_bytes(b"a" * int(ingest_flow.MULTIPART_PART_SIZE * 1.5))
-
-    create_resp = MagicMock(
-        ok=True, json=MagicMock(return_value={"key": "K", "uploadId": "U"})
-    )
-    # 400 is NON-retryable (RETRYABLE_HTTP_STATUS = {403,429,500,502,503,504}),
-    # so the part upload fails permanently on the first attempt and raises
-    # RuntimeError immediately — no retry loop, no backoff sleeps. (A 500 here
-    # would be retried 6x with real backoff before raising _TransientHTTP,
-    # which is exercised in scripts/test_pipeline_retry.py instead.)
-    bad_part = MagicMock(ok=False, status_code=400, text="server boom")
-    with (
-        patch.object(ingest_flow.requests, "post", side_effect=[create_resp, bad_part]),
-        pytest.raises(RuntimeError, match="mpu part 1 failed"),
-    ):
-        ingest_flow._upload_multipart(parquet, "flow/x.parquet", "tok")
-
-
-def test_full_pipeline_through_real_csv_shape(tmp_path: Path) -> None:
-    """End-to-end: write a CSV that matches UW's wire format (incl. `f`/`t`
-    for `canceled` and `+00` UTC offset), scan with FLOW_SCHEMA, transform,
-    collect. Catches schema/cast bugs the synthetic LazyFrame tests miss.
-    """
-    csv = tmp_path / "bot-eod-report-2026-04-24.csv"
-    header = ",".join(ingest_flow.FLOW_SCHEMA.keys())
-    # Two in-window rows (one canceled, one not) and one ETH-flagged row that
-    # should be dropped. Shape mirrors actual UW samples.
-    rows = [
-        # In-window, canceled=f, normal flags → kept, canceled=False
-        "2026-04-24 14:00:00.000000+00,SPY,SPY260515P00650000,ask,650,put,2026-05-15,710.76,1.25,1.35,1.25,1.35,1.30,3,390,3,121751,0.25,-0.07,-0.14,0.003,0.225,-0.029,1.30,,XPHO,{},f,auto,ETF",
-        # In-window, canceled=t, normal flags → kept, canceled=True
-        "2026-04-24 14:00:01.000000+00,QQQ,QQQ260515C00500000,bid,500,call,2026-05-15,510.00,5.00,5.10,5.00,5.10,5.05,1,505,1,2426,0.20,0.50,-0.05,0.01,0.30,-0.10,5.05,,XCBO,{},t,auto,ETF",
-        # In-window but extended_hours_trade flagged → dropped
-        "2026-04-24 14:00:02.000000+00,AAPL,AAPL260515C00200000,ask,200,call,2026-05-15,205.00,1.00,1.10,1.00,1.10,1.05,1,105,1,500,0.30,0.40,-0.08,0.02,0.20,-0.15,1.05,Tech,XPHO,{extended_hours_trade},f,auto,Common Stock",
-    ]
-    csv.write_text(header + "\n" + "\n".join(rows) + "\n")
-
-    lf = pl.scan_csv(csv, schema=ingest_flow.FLOW_SCHEMA, infer_schema_length=0)
-    df = ingest_flow.transform(lf, "2026-04-24").collect()
-
-    assert df.height == 2, f"Expected 2 rows after ETH filter, got {df.height}"
-    assert df["canceled"].dtype == pl.Boolean
-    assert sorted(df["canceled"].to_list()) == [False, True]
-    assert df["executed_at"].dtype == pl.Datetime("us", "UTC")
-    assert df["expiry"].dtype == pl.Date
-    assert df["date"][0].isoformat() == "2026-04-24"
-    assert "ingested_at" in df.columns
-    # Sort assertion: QQQ before SPY alphabetically
-    assert df["underlying_symbol"].to_list() == ["QQQ", "SPY"]
