@@ -236,6 +236,10 @@ describe('isSplitMismatch', () => {
     // The smallest common split, 3-for-2: any split must fail the guard.
     ['1.5x the high (a 3-for-2 split)', 100 * 1.5],
     ['low / 1.5 (a 2-for-3 reverse split)', 90 / 1.5],
+    // Not a split, but the same signature: below low / 1.2. The report's
+    // meaning line names both causes.
+    ['of 0 (a bad stored spot)', 0],
+    ['below 0 (a bad stored spot)', -5],
   ])('flags a spot %s', (_label, spot) => {
     expect(isSplitMismatch(PLAIN_CANDLES, PLAIN_TRIGGER, spot)).toBe(true);
   });
@@ -435,6 +439,17 @@ describe('rangePosUpdates', () => {
     ];
     expect(computeRangePos(CRWD_CANDLES, CRWD_TRIGGER, 620.49)).toBe(1);
     expect(rangePosUpdates(fires, CRWD_CANDLES)).toEqual({
+      ids: [],
+      positions: [],
+      leftNull: 0,
+      splitMismatch: 1,
+    });
+  });
+
+  it('leaves a fire with a stored spot of 0 NULL and counts it as a mismatch', () => {
+    // A bad stored spot, not a split; it fails the guard the same way.
+    const fires = [{ id: '3', trigger_time_ct: PLAIN_TRIGGER, spot: 0 }];
+    expect(rangePosUpdates(fires, PLAIN_CANDLES)).toEqual({
       ids: [],
       positions: [],
       leftNull: 0,

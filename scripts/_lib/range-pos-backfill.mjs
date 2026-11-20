@@ -142,7 +142,9 @@ export function preTriggerRange(candles, triggerTimeIso) {
 /**
  * True when the spot sits more than SPLIT_GUARD_RATIO outside the
  * pre-trigger candle range (spot above high × ratio or below low ÷ ratio):
- * the signature of a split between the fire and UW's split-adjusted candles.
+ * the signature of a split between the fire and UW's split-adjusted candles,
+ * or of a bad stored spot (a spot of 0 or below is under low ÷ ratio, so it
+ * fails here too). Either way the fire stays NULL.
  * False when there is no pre-trigger range or the spot isn't finite;
  * computeRangePos returns null for those. Only candles at or before the
  * trigger count, so a later candle can't rescue a fire.

@@ -18,7 +18,8 @@
  *      10-29 run pinned 1,183 CRWD and SOXS fires that way). A fire whose
  *      spot sits outside its pre-trigger candle range by more than
  *      SPLIT_GUARD_RATIO (1.2 today: above high × 1.2 or below low ÷ 1.2)
- *      stays NULL and is reported as a split mismatch;
+ *      stays NULL and is reported as a split mismatch (a stored spot of 0
+ *      or below fails it too, so the count can hold a bad spot);
  *   4. batched `UPDATE … FROM unnest(...)` in ≤500-row chunks, guarded by
  *      `range_pos_at_trigger IS NULL`, so a re-run (or a killed run) only
  *      fills what is still empty.
@@ -369,7 +370,8 @@ function printReport(beforeCounts, afterCounts) {
   );
   say(
     `  meaning: spot more than ${bandPct}% outside the session's candle ` +
-      "range, likely a split between the fire and UW's split-adjusted candles",
+      "range, likely a split between the fire and UW's split-adjusted " +
+      'candles, or a bad stored spot (0 or below)',
   );
   for (const line of chunk(splitMismatchDays.sort(), 6))
     say(`  ${line.join(' · ')}`);
