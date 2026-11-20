@@ -607,6 +607,24 @@ def test_a_manifest_the_store_cannot_read_is_not_a_manifest_error(
         Manifest.load(store)
 
 
+def test_a_listing_error_while_checking_a_missing_manifest_propagates(
+    rig: Rig, settings: Settings
+) -> None:
+    # get_json reads None for a missing key and for a stored `null`; the listing tells them
+    # apart. A listing that cannot be made must not be read as "missing": that would start an
+    # empty manifest over one the step could not see.
+    denied = ClientError({"Error": {"Code": "AccessDenied"}}, "ListObjectsV2")
+    store = ResearchStore(settings)
+    with (
+        patch.object(ResearchStore, "get_json", return_value=None),
+        patch.object(ResearchStore, "list", side_effect=denied),
+        pytest.raises(ClientError) as raised,
+    ):
+        Manifest.load(store)
+
+    assert raised.value is denied
+
+
 # --- targets, stale_days and fresh_days --------------------------------------------------
 
 
