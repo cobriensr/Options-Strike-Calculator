@@ -11,7 +11,6 @@ import type {
   LotteryFire,
 } from '../components/LotteryFinder/types';
 import { LotteryFinderTickerGroup } from '../components/LotteryFinder/LotteryFinderTickerGroup';
-import { computeAccessibleName } from 'dom-accessibility-api';
 import {
   genericElementsWithAriaLabel,
   srHintText,
@@ -1221,7 +1220,7 @@ describe('LotteryFinderTickerGroup', () => {
     it('gives the flow chip a short hint as hidden text, not an aria-label', () => {
       renderGroup();
       const chip = screen.getByTestId('lottery-ticker-flow-MSFT');
-      expect(srHintText(chip)).toBe('ticker net flow versus bias');
+      expect(srHintText(chip)).toBe('ticker flow versus bias');
       expect(chip).not.toHaveAttribute('aria-label');
       expect(chip.getAttribute('title')).toContain('aligned = same direction');
     });
@@ -1240,10 +1239,12 @@ describe('LotteryFinderTickerGroup', () => {
     // strikes, premium, last-hit time, best peak) keeps only its `title`;
     // a chip whose text is cryptic (bias, tide, flow, density, gated and the
     // conviction, was-conviction, storm and sweep flags) gets a short hint.
-    /** `typical`: the always-on chips. The other variants light every chip:
-     *  two strikes (strikes summary and spread), a gated fire, fires 20
-     *  minutes apart (density), and the conviction (`strong` is the ✦✦
-     *  cheap pre-PM cluster, `high` the plain ✦), was-conviction (`was`,
+    /** `typical`: the always-on chips, on two 3-digit strikes. The other
+     *  variants light every chip and use the longest strikes summary the
+     *  header can show: 15 distinct 4-digit strikes, so it reads
+     *  `7500C, 7510C, 7520C +12 more (140pt)`. They also have a gated fire,
+     *  fires 20 minutes apart (density), and the conviction (`strong` is the
+     *  ✦✦ cheap pre-PM cluster, `high` the plain ✦), was-conviction (`was`,
      *  which needs live conviction off), storm and sweep flags. */
     function renderFullHeader(variant: 'typical' | 'strong' | 'high' | 'was') {
       const full = variant !== 'typical';
@@ -1252,20 +1253,18 @@ describe('LotteryFinderTickerGroup', () => {
         tickerCumNcpAtFire: 5_000_000,
         tickerCumNppAtFire: 1_000_000,
       };
-      const first = makeFire({
-        optionChainId: 'TSLA260514C00250000',
-        strike: 250,
-        directionGated: full,
+      const strikes = full
+        ? Array.from({ length: 15 }, (_, i) => 7500 + i * 10)
+        : [250, 260];
+      const fires = strikes.map((strike, i) => {
+        const f = makeFire({
+          optionChainId: `TSLA260514C${String(strike * 1000).padStart(8, '0')}`,
+          strike,
+          directionGated: full && i === 0,
+          ...(i === 1 ? { triggerTimeCt: '2026-05-14T19:50:00Z' } : {}),
+        });
+        return { ...f, macro: { ...f.macro, ...tideMacro } };
       });
-      const second = makeFire({
-        optionChainId: 'TSLA260514C00260000',
-        strike: 260,
-        triggerTimeCt: '2026-05-14T19:50:00Z',
-      });
-      const fires = [first, second].map((f) => ({
-        ...f,
-        macro: { ...f.macro, ...tideMacro },
-      }));
       return render(
         <LotteryFinderTickerGroup
           ticker="TSLA"
@@ -1286,17 +1285,14 @@ describe('LotteryFinderTickerGroup', () => {
       );
     }
 
-    const toggleButtonName = () =>
-      computeAccessibleName(screen.getByRole('button'));
-
     it.each(['typical', 'strong', 'high', 'was'] as const)(
       'header (%s): the toggle button’s accessible name is at most 400 characters',
       (variant) => {
         renderFullHeader(variant);
-        const name = toggleButtonName();
+        const button = screen.getByRole('button');
         // The hints are part of that name, so the name carries them.
-        expect(name).toContain('Market Tide versus bias');
-        expect(name.length).toBeLessThanOrEqual(400);
+        expect(button).toHaveAccessibleName(/Market Tide versus bias/);
+        expect(button).toHaveAccessibleName(/^[\s\S]{0,400}$/);
       },
     );
 
@@ -1344,10 +1340,10 @@ describe('LotteryFinderTickerGroup', () => {
         srHintText(screen.getByTestId(`lottery-ticker-${id}-TSLA`));
       expect(hint('strong-conviction')).toBe('cheap (≤ $1), before 12:30 CT');
       expect(hint('storm')).toBe('8+ fires, 20+ re-triggers or $500K');
-      expect(hint('cluster')).toBe('context only, not conviction');
-      expect(hint('bias')).toBe('net calls versus puts');
+      expect(hint('cluster')).toBe('context, not conviction');
+      expect(hint('bias')).toBe('calls versus puts');
       expect(hint('tide')).toBe('Market Tide versus bias');
-      expect(hint('flow')).toBe('ticker net flow versus bias');
+      expect(hint('flow')).toBe('ticker flow versus bias');
       expect(hint('density')).toBe('first to last alert');
       expect(hint('gated')).toBe('demoted by the tide gate');
     });
@@ -1356,7 +1352,7 @@ describe('LotteryFinderTickerGroup', () => {
       renderFullHeader('high');
       expect(
         srHintText(screen.getByTestId('lottery-ticker-conviction-TSLA')),
-      ).toBe('3+ fires, one side, within 15 min');
+      ).toBe('3+ fires, one side, several strikes, within 15 min');
       cleanup();
 
       renderFullHeader('was');
