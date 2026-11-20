@@ -220,24 +220,32 @@ vi.mock('../components/OptionsAlerts', () => ({
 
 // The real router walks the whole registry, which would pull in every lazy
 // panel. This one renders only the panels this test reads, through the same
-// panelMap closures App builds, and only those the registry lists for the
-// current access mode (the real router skips an id that is not in
-// `resolvedPanelsByGroup`), so a panel the registry hides from a public
-// visitor is not rendered here either.
+// panelMap closures App builds, and keeps the real router's skips: an id the
+// registry does not list for the current access mode (the real router walks
+// `resolvedGroups` and reads each group's ids from `resolvedPanelsByGroup`),
+// so a panel the registry hides from a public visitor is not rendered here
+// either, and an id `isHidden` says the visitor hid.
 vi.mock('../components/PanelRouter', () => ({
   PanelRouter: ({
     panelMap,
+    resolvedGroups,
     resolvedPanelsByGroup,
+    isHidden,
   }: {
     panelMap: ReadonlyMap<string, () => ReactNode>;
+    resolvedGroups: readonly string[];
     resolvedPanelsByGroup: ReadonlyMap<string, readonly string[]>;
+    isHidden: (id: string) => boolean;
   }) => {
-    const registered = new Set([...resolvedPanelsByGroup.values()].flat());
+    const registered = new Set(
+      resolvedGroups.flatMap((group) => resolvedPanelsByGroup.get(group) ?? []),
+    );
     return createElement(
       Fragment,
       null,
       ...h.renderedPanels
         .filter((id) => !h.routeByRegistry.on || registered.has(id))
+        .filter((id) => !isHidden(id))
         .map((id) =>
           createElement(Fragment, { key: id }, panelMap.get(id)?.()),
         ),
@@ -523,12 +531,12 @@ describe('App polling gate (market clock AND owner-or-guest)', () => {
     });
 
     it.each([
-      ['public', false],
-      ['owner', true],
-      ['guest', true],
+      ['public', 'does not see', false],
+      ['owner', 'sees', true],
+      ['guest', 'sees', true],
     ] as const)(
-      'a %s visitor with market data sees GexTarget and GexLandscape: %s',
-      (mode, shown) => {
+      'a visitor with %s access and market data %s GexTarget and GexLandscape',
+      (mode, _verb, shown) => {
         h.access.mode = mode;
         h.market.current = marketFor({
           name: mode,
