@@ -46,7 +46,7 @@ describe('gexbotBadge — direction arrow splits at 0', () => {
   ])('cvroflow %s renders %s (%s)', (value, arrow, word) => {
     const b = gexbotBadge(ctx({ oneCvroflow: value }));
     expect(b?.label.startsWith(`GEX ${arrow}`)).toBe(true);
-    expect(b?.ariaLabel).toContain(word);
+    expect(b?.srText).toContain(word);
   });
 
   it('shows ↑ for a small positive value that the old >1 split called down', () => {
@@ -56,7 +56,7 @@ describe('gexbotBadge — direction arrow splits at 0', () => {
   it('renders · + flat when cvr is null', () => {
     const b = gexbotBadge(ctx({ oneCvroflow: null }));
     expect(b?.label).toContain('·');
-    expect(b?.ariaLabel).toContain('flat');
+    expect(b?.srText).toContain('flat');
     expect(b?.label).toContain('—');
   });
 });
@@ -130,7 +130,7 @@ describe('gexbotBadge — tooltip formatting', () => {
     expect(b?.tooltip).not.toMatch(/r vs hit/);
     expect(b?.tooltip).not.toMatch(/anti-signal/);
     expect(b?.tooltip).not.toContain('0DTE cvroflow');
-    expect(b?.ariaLabel).not.toContain('1DTE+');
+    expect(b?.srText).not.toContain('1DTE+');
   });
 
   it('uses taker wording with no dealer claims in any text', () => {
@@ -138,7 +138,7 @@ describe('gexbotBadge — tooltip formatting', () => {
     expect(b?.tooltip).toContain('taker');
     expect(dealerClaims(b!.tooltip)).toEqual([]);
     expect(dealerClaims(b!.label)).toEqual([]);
-    expect(dealerClaims(b!.ariaLabel)).toEqual([]);
+    expect(dealerClaims(b!.srText)).toEqual([]);
   });
 });
 
@@ -154,8 +154,8 @@ describe('gexbotBadge — shape and accessibility', () => {
     expect(up?.cls).toContain('text-sky-200');
   });
 
-  it('ariaLabel is single-line (no newline tokens that confuse screen readers)', () => {
-    expect(gexbotBadge(ctx())?.ariaLabel).not.toContain('\n');
+  it('srText is single-line (no newline tokens that confuse screen readers)', () => {
+    expect(gexbotBadge(ctx())?.srText).not.toContain('\n');
   });
 
   it('tooltip uses newlines to separate rows', () => {

@@ -29,6 +29,7 @@ import { computeFlowInverted } from '../../utils/flow-inverted.js';
 import { computeExitNow } from '../../utils/exit-now.js';
 import { gexbotBadge } from '../../utils/gexbot-badge.js';
 import { CohortCountdown } from '../ui/CohortCountdown.js';
+import { SrHint } from '../ui/SrHint.js';
 import { computeCountdownRemaining } from '../ui/cohort-countdown-utils.js';
 import { useNowMinute } from '../../hooks/useNowMinute.js';
 import type { TickerNetFlowSnapshot } from '../../hooks/useTickerNetFlowBatch.js';
@@ -668,10 +669,15 @@ export const LotteryRow = memo(function LotteryRow({
 
   const roundTripDeduct = fire.roundTripScoreDeduct ?? 0;
   const isRoundTripped = roundTripDeduct < 0;
-  // One string for the hover text and the accessible name, which leads with
-  // the pill's visible text so the two cannot drift apart.
+  // One string for the hover text and the pill's hidden text, so a screen
+  // reader hears what a hover shows. The visible "round-tripped -2" leads it.
   const roundTripTooltip = `Sellers outweighed buyers in the hour after the fire (deduct ${roundTripDeduct}). It describes selling that already happened, not what comes next: Lottery fires still held when a deduct landed finished about where they stood then (at -1: down about 28% when it landed, 29% at the 30/10 trail exit). The tier is the one shown at the fire.`;
-  const roundTripLabel = `round-tripped ${roundTripDeduct}. ${roundTripTooltip}`;
+  const exitTooltip =
+    exitNow.reason === 'expired'
+      ? 'Cohort P75 hold elapsed — historical median peak has passed.'
+      : exitNow.reason === 'inverted'
+        ? 'Ticker net flow inverted — strongest documented exit signal.'
+        : 'Hold expired + flow inverted — both exit rules fired.';
 
   return (
     <div
@@ -684,9 +690,9 @@ export const LotteryRow = memo(function LotteryRow({
           data-testid="lottery-row-round-tripped-pill"
           className="mb-1.5 inline-flex items-center gap-1 rounded border border-amber-500/50 bg-amber-950/40 px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-amber-200 uppercase"
           title={roundTripTooltip}
-          aria-label={roundTripLabel}
         >
           round-tripped {roundTripDeduct}
+          <SrHint>{roundTripTooltip}</SrHint>
         </div>
       )}
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
@@ -695,9 +701,9 @@ export const LotteryRow = memo(function LotteryRow({
         <span
           className={`rounded border px-1.5 py-0.5 text-[11px] leading-none font-semibold ${tier.cls}`}
           title={tier.tooltip}
-          aria-label={tier.tooltip}
         >
           {tier.label}
+          <SrHint>{tier.tooltip}</SrHint>
         </span>
         {/* Inversion-quality quintile chip (Phase 4 — spec
             lottery-inversion-quality-filter-2026-05-19.md). Q1=worst /
@@ -713,9 +719,9 @@ export const LotteryRow = memo(function LotteryRow({
             data-testid="lottery-quintile-chip"
             className={`inline-flex items-center rounded-md px-1.5 py-0.5 text-[10px] leading-none font-medium ${quintileChipClass(fire.inversionQuintile)}`}
             title={quintileChipTooltip(fire)}
-            aria-label={quintileChipTooltip(fire)}
           >
             Q{fire.inversionQuintile}
+            <SrHint>{quintileChipTooltip(fire)}</SrHint>
           </span>
         )}
         {/* Phase 4 direction-gate pill — surfaces the demote reason
@@ -727,9 +733,9 @@ export const LotteryRow = memo(function LotteryRow({
             data-testid="lottery-gated-pill"
             className={`rounded border px-1.5 py-0.5 text-[10px] leading-none font-semibold ${gated.cls}`}
             title={gated.tooltip}
-            aria-label={gated.tooltip}
           >
             {gated.label}
+            <SrHint>{gated.tooltip}</SrHint>
           </span>
         )}
         {/* Per-ticker flow at fire time — frozen snapshot. Sits
@@ -740,9 +746,9 @@ export const LotteryRow = memo(function LotteryRow({
             data-testid="lottery-row-flow-chip"
             className={`rounded border px-1.5 py-0.5 text-[10px] leading-none font-semibold ${flow.cls}`}
             title={flow.tooltip}
-            aria-label={flow.tooltip}
           >
             {flow.label}
+            <SrHint>{flow.tooltip}</SrHint>
           </span>
         )}
         {/* Flow Match / Mismatch — does the ticker's live cum NCP/NPP
@@ -753,9 +759,9 @@ export const LotteryRow = memo(function LotteryRow({
             data-testid="lottery-flow-match-badge"
             className={`rounded border px-1.5 py-0.5 text-[10px] leading-none font-semibold ${flowMatch.cls}`}
             title={flowMatch.tooltip}
-            aria-label={flowMatch.tooltip}
           >
             {flowMatch.label}
+            <SrHint>{flowMatch.tooltip}</SrHint>
           </span>
         )}
         {/* Flow Inverted — strongest documented exit signal: tailwind
@@ -765,9 +771,9 @@ export const LotteryRow = memo(function LotteryRow({
             data-testid="lottery-flow-inverted-badge"
             className={`rounded border px-1.5 py-0.5 text-[10px] leading-none font-semibold ${flowInverted.cls}`}
             title={flowInverted.tooltip}
-            aria-label={flowInverted.tooltip}
           >
             {flowInverted.label}
+            <SrHint>{flowInverted.tooltip}</SrHint>
           </span>
         )}
         {/* Take-It score tile (Phase 4 of takeit-phase3-production-scoring-
@@ -801,9 +807,9 @@ export const LotteryRow = memo(function LotteryRow({
             data-testid="lottery-gex-badge"
             className={`rounded border px-1.5 py-0.5 text-[10px] leading-none font-semibold ${gexbot.cls}`}
             title={gexbot.tooltip}
-            aria-label={gexbot.ariaLabel}
           >
             {gexbot.label}
+            <SrHint>{gexbot.srText}</SrHint>
           </span>
         )}
         {/* Avg-hold-minutes hint — historical P75 minutes-to-peak among
@@ -859,9 +865,9 @@ export const LotteryRow = memo(function LotteryRow({
             <span
               className={`text-xs leading-none font-bold ${ci.cls}`}
               title={ci.tooltip}
-              aria-label={ci.tooltip}
             >
               {ci.label}
+              <SrHint>{ci.tooltip}</SrHint>
             </span>
           )}
           <span className="font-mono text-base text-neutral-200 group-hover:text-blue-200">
@@ -1034,9 +1040,9 @@ export const LotteryRow = memo(function LotteryRow({
             data-testid="lottery-row-reload-delta"
             className={`rounded border px-1.5 py-0.5 text-[10px] font-semibold ${reloadBadge.className}`}
             title={reloadBadge.title}
-            aria-label={reloadBadge.title}
           >
             {reloadBadge.label}
+            <SrHint>{reloadBadge.title}</SrHint>
           </span>
         )}
         {fire.tags.cheapCallPm && (
@@ -1061,9 +1067,9 @@ export const LotteryRow = memo(function LotteryRow({
           <span
             className={`rounded border px-1.5 py-0.5 text-[10px] leading-none font-semibold ${tide.cls}`}
             title={tide.tooltip}
-            aria-label={tide.tooltip}
           >
             {tide.label}
+            <SrHint>{tide.tooltip}</SrHint>
           </span>
         )}
 
@@ -1212,16 +1218,10 @@ export const LotteryRow = memo(function LotteryRow({
           <span
             data-testid="lottery-exit-now-badge"
             className="ml-2 inline-flex animate-pulse items-center rounded border border-red-500/70 bg-red-950/60 px-1.5 py-0.5 text-[10px] leading-none font-bold tracking-wide text-red-100"
-            title={
-              exitNow.reason === 'expired'
-                ? 'Cohort P75 hold elapsed — historical median peak has passed.'
-                : exitNow.reason === 'inverted'
-                  ? 'Ticker net flow inverted — strongest documented exit signal.'
-                  : 'Hold expired + flow inverted — both exit rules fired.'
-            }
-            aria-label={`Exit signal active: ${exitNow.reason}`}
+            title={exitTooltip}
           >
             EXIT
+            <SrHint>{exitTooltip}</SrHint>
           </span>
         )}
         <button

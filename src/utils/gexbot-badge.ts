@@ -2,7 +2,7 @@
  * Shared GexBot context-badge factory used by both SilentBoomRow and
  * LotteryRow. Previously this was a 53-line literal clone across both
  * components; now both feeds import the same function so any tweak to
- * the tooltip / direction logic / aria-label happens in one place.
+ * the tooltip / direction logic / screen-reader text happens in one place.
  *
  * The badge is informational only — it does NOT participate in
  * filtering or sorting. It shows GEXBot taker-flow values captured at fire
@@ -16,12 +16,13 @@ export interface GexbotBadgeSpec {
   cls: string;
   tooltip: string;
   /**
-   * Terse single-line aria-label. Newlines tokenize unpredictably
-   * across screen-reader engines, so the verbose multi-line `tooltip`
-   * stays in the `title` attribute and the SR-facing label is one
-   * sentence.
+   * Terse single-line text for the badge's visually hidden hint (a
+   * `SrHint` inside the badge, read after the visible label). Newlines
+   * tokenize unpredictably across screen-reader engines, so the verbose
+   * multi-line `tooltip` stays in the `title` attribute and the
+   * SR-facing text is one sentence.
    */
-  ariaLabel: string;
+  srText: string;
 }
 
 /** The three flow lines are one 1-2 s vendor step, not a per-minute rate. */
@@ -57,6 +58,6 @@ export function gexbotBadge(gex: GexbotFireContext): GexbotBadgeSpec | null {
     label: `GEX ${direction}${cvrStr}`,
     cls: 'border-sky-500/50 bg-sky-950/40 text-sky-200',
     tooltip,
-    ariaLabel: `GexBot snapshot: next-expiry cvroflow ${cvrStr} ${arrowWord}`,
+    srText: `GexBot snapshot: next-expiry cvroflow ${cvrStr} ${arrowWord}`,
   };
 }

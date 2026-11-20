@@ -14,6 +14,7 @@ import type {
   LotteryFireMacro,
   LotteryTickerStats,
 } from '../components/LotteryFinder/types';
+import { genericElementsWithAriaLabel, srHintText } from './helpers/aria';
 
 // ── Mocks ─────────────────────────────────────────────────────────────
 
@@ -47,15 +48,17 @@ vi.mock('../hooks/useNowMinute', () => ({
 
 // Stub the heavy chart components so the row's expand-state branch
 // renders without dragging in lightweight-charts or SVG layout. Use
-// data-testid markers so the expanded panel is detectable.
+// data-testid markers so the expanded panel is detectable. The real charts
+// name themselves with `role="img"`; the stubs do the same, so the
+// screen-reader guard below doesn't trip on a stub.
 vi.mock('../components/charts/ContractTapeChart', () => ({
   ContractTapeChart: ({ ariaLabel }: { ariaLabel: string }) => (
-    <div data-testid="contract-tape-chart" aria-label={ariaLabel} />
+    <div data-testid="contract-tape-chart" role="img" aria-label={ariaLabel} />
   ),
 }));
 vi.mock('../components/charts/TickerNetFlowChart', () => ({
   TickerNetFlowChart: ({ ariaLabel }: { ariaLabel: string }) => (
-    <div data-testid="ticker-netflow-chart" aria-label={ariaLabel} />
+    <div data-testid="ticker-netflow-chart" role="img" aria-label={ariaLabel} />
   ),
 }));
 
@@ -1706,12 +1709,15 @@ describe('LotteryRow: round-tripped dim treatment', () => {
     );
     expect(pill.getAttribute('title')).not.toContain('lower-EV');
 
-    // The accessible name leads with the visible text and carries the same
-    // tooltip text, so a screen reader hears what a hover shows.
-    const label = pill.getAttribute('aria-label') ?? '';
-    expect(label).toMatch(/^round-tripped -2\. /);
-    expect(label).toContain('The tier is the one shown at the fire.');
-    expect(label).toBe(`round-tripped -2. ${pill.getAttribute('title')}`);
+    // The pill is a bare div, so the tooltip reaches a screen reader as
+    // hidden text after the visible "round-tripped -2", not as an
+    // aria-label (prohibited on a generic element, mostly ignored).
+    expect(pill).not.toHaveAttribute('aria-label');
+    expect(srHintText(pill)).toBe(pill.getAttribute('title'));
+    expect(srHintText(pill)).toContain(
+      'The tier is the one shown at the fire.',
+    );
+    expect(pill.textContent).toMatch(/^round-tripped -2 — Sellers outweighed/);
   });
 
   it('leaves the container at full opacity and omits the pill when deduct is 0', () => {
@@ -2259,5 +2265,287 @@ describe('LotteryRow: sibling taker-flow pills', () => {
     const title =
       screen.getByTestId('sibling-pill-AAPL-SPY').getAttribute('title') ?? '';
     expect(title).toMatch(/as of latest fire/);
+  });
+});
+
+// ============================================================
+// SCREEN-READER TEXT — the badges' hover explanations must reach assistive
+// tech. aria-label on a bare span or div is prohibited by ARIA 1.2 and
+// mostly ignored, so each explanation is hidden text inside the badge (an
+// `SrHint`) and `title` stays for the mouse.
+// ============================================================
+
+describe('LotteryRow: badge explanations reach screen readers', () => {
+  const TRIGGER = '2026-05-15T13:30:00.000Z';
+  const LEGS = [
+    {
+      optionType: 'C' as const,
+      strike: 726,
+      expiry: '2026-05-15',
+      size: 40,
+      price: 1.15,
+      tradeCode: 'mlet',
+    },
+    {
+      optionType: 'C' as const,
+      strike: 727,
+      expiry: '2026-05-15',
+      size: 40,
+      price: 0.7,
+      tradeCode: 'mlet',
+    },
+  ];
+
+  /** A fire that lights every badge the row can show (ticker, strike and
+   *  option-type spans carry no aria-label and are not in play). */
+  function makeFullyBadgedFire(): LotteryFire {
+    return makeFire({
+      optionType: 'C',
+      triggerTimeCt: TRIGGER,
+      firstFireTimeCt: '2026-05-15T13:00:00.000Z',
+      fireCount: 4,
+      scoreTier: 'tier2',
+      directionGated: true,
+      roundTripScoreDeduct: -2,
+      inversionQuintile: 4,
+      inversionBlend: 0.42,
+      inversionN21d: 12,
+      inversionN90d: 40,
+      tickerStats: makeStats({ tier: 'reliable' }),
+      takeitProb: 0.72,
+      takeitTopFeatures: {
+        positive: [{ name: 'dte', shap_value: 0.12, feature_value: 0 }],
+        negative: [],
+      },
+      peakTakeitProb: 0.81,
+      peakTakeitAt: '2026-05-15T13:10:00.000Z',
+      entry: {
+        price: 0.6,
+        openInterest: 5000,
+        spotAtFirst: 198.5,
+        spotAtTrigger: 198.5,
+        alertSeq: 3,
+        minutesSincePrevFire: 15,
+      },
+      tags: {
+        flowQuad: 'call_ask',
+        tod: 'PM',
+        mode: 'A_intraday_0DTE',
+        reload: true,
+        cheapCallPm: true,
+        burstRatioVsPrev: 2.5,
+        entryDropPctVsPrev: -42,
+      },
+      macro: makeMacro({
+        mktTideDiff: 1500,
+        tickerCumNcpAtFire: 10_000_000,
+        tickerCumNppAtFire: 1_000_000,
+      }),
+      gex: {
+        oneCvroflow: 3.2,
+        netPutDex: -1200,
+        oneDexoflow: 1.1,
+        oneGexoflow: 0.4,
+        zcvr: 0.9,
+        zeroGamma: 5300,
+        spot: 5310,
+        capturedAt: '2026-05-15T13:29:50.000Z',
+      },
+      anchorLegKind: 'multi_leg',
+      spreadLeg: { fires: 2, totalFires: 4, shape: 'vertical', legs: LEGS },
+      historicalFires: [
+        {
+          triggerTimeCt: '2026-05-15T13:00:00.000Z',
+          entryPrice: 1.0,
+          spotAtTrigger: 200,
+          anchorLegKind: 'single',
+        },
+        {
+          triggerTimeCt: '2026-05-15T13:10:00.000Z',
+          entryPrice: 0.8,
+          spotAtTrigger: 200,
+          anchorLegKind: 'multi_leg',
+        },
+        {
+          triggerTimeCt: '2026-05-15T13:20:00.000Z',
+          entryPrice: 0.7,
+          spotAtTrigger: 200,
+          anchorLegKind: 'stock_tied',
+        },
+      ],
+      reignited: true,
+      megaCluster: true,
+      megaClusterSize: 14,
+      dualFlag: true,
+      gammaAtTrigger: 0.03,
+      gammaScoreAdjustment: 1,
+    });
+  }
+
+  /** `tailwind`: the live tape still agrees with the call (Flow Match).
+   *  `inverted`: it has reversed (Flow Mismatch, Flow Inverted, EXIT). */
+  function renderFullyBadged(variant: 'tailwind' | 'inverted') {
+    vi.useFakeTimers();
+    // Five minutes after the trigger: the "hot" chip shows and the cohort
+    // countdown is still inside its window.
+    vi.setSystemTime(new Date(Date.parse(TRIGGER) + 5 * 60_000));
+    mockUseGexbotData.mockReturnValue({
+      rows: [
+        {
+          ticker: 'SPY',
+          netDex: 1_500_000,
+          zgr: 0.8,
+          capturedAt: TRIGGER,
+          verdict: 'agree',
+        },
+        {
+          ticker: 'QQQ',
+          netDex: -900_000,
+          zgr: 0.5,
+          capturedAt: TRIGGER,
+          verdict: 'disagree',
+        },
+        {
+          ticker: 'IWM',
+          netDex: null,
+          zgr: null,
+          capturedAt: null,
+          verdict: 'none',
+        },
+      ],
+      loading: false,
+      error: null,
+      freshestAt: TRIGGER,
+    });
+    const view = render(
+      <LotteryRow
+        fire={makeFullyBadgedFire()}
+        exitPolicy="realizedTrail30_10Pct"
+        marketOpen
+        liveFlowSnapshot={
+          variant === 'tailwind'
+            ? { cumNcp: 20_000_000, cumNpp: 5_000_000, asOfTs: TRIGGER }
+            : { cumNcp: 1_000_000, cumNpp: 20_000_000, asOfTs: TRIGGER }
+        }
+      />,
+    );
+    // The reignites list and the chart panels are part of the row too.
+    fireEvent.click(screen.getByTestId('lottery-reignites-toggle'));
+    fireEvent.click(screen.getByRole('button', { name: /▸ expand/ }));
+    return view;
+  }
+
+  afterEach(() => {
+    vi.useRealTimers();
+    // The sibling bar's hook mock is shared by every test in the file;
+    // put back its loading default so later tests start from it.
+    mockUseGexbotData.mockReturnValue({
+      rows: [],
+      loading: true,
+      error: null,
+      freshestAt: null,
+    });
+  });
+
+  it.each(['tailwind', 'inverted'] as const)(
+    'a fully badged row (%s) has no aria-label on a role-less, non-interactive element',
+    (variant) => {
+      const { container } = renderFullyBadged(variant);
+      // The badges this guards are on screen, so an empty result can't pass
+      // by rendering less.
+      for (const id of [
+        'lottery-row-round-tripped-pill',
+        'lottery-quintile-chip',
+        'lottery-gated-pill',
+        'lottery-row-flow-chip',
+        'lottery-flow-match-badge',
+        'takeit-score-tile',
+        'sibling-pill-AAPL-SPY',
+        'lottery-gex-badge',
+        'cohort-countdown',
+        'lottery-row-reload-delta',
+        'contract-tape-chart',
+        'ticker-netflow-chart',
+      ]) {
+        expect(screen.getByTestId(id)).toBeInTheDocument();
+      }
+      // The tier, CI and Market Tide badges have no testid.
+      expect(
+        container.querySelector('[title^="Tier 2 (score"]'),
+      ).not.toBeNull();
+      expect(
+        container.querySelector('[title^="AAPL: 220 fires"]'),
+      ).not.toBeNull();
+      expect(container.querySelector('[title^="Market Tide"]')).not.toBeNull();
+      expect(
+        within(screen.getByTestId('lottery-reignites-list')).getAllByRole(
+          'img',
+        ),
+      ).toHaveLength(3); // the three spread / stock-tied fire markers
+      expect(screen.getByText('hot')).toBeInTheDocument();
+      if (variant === 'inverted') {
+        expect(
+          screen.getByTestId('lottery-flow-inverted-badge'),
+        ).toBeInTheDocument();
+        expect(
+          screen.getByTestId('lottery-exit-now-badge'),
+        ).toBeInTheDocument();
+      }
+
+      expect(genericElementsWithAriaLabel(container)).toEqual([]);
+    },
+  );
+
+  it('gives every badge its hover explanation as hidden text after the visible label', () => {
+    const { container } = renderFullyBadged('inverted');
+    const hintOf = (testId: string) =>
+      srHintText(screen.getByTestId(testId)) ?? '';
+    const titleOf = (testId: string) =>
+      screen.getByTestId(testId).getAttribute('title') ?? '';
+
+    // Hidden text equals the hover text, badge by badge.
+    for (const id of [
+      'lottery-row-round-tripped-pill',
+      'lottery-quintile-chip',
+      'lottery-gated-pill',
+      'lottery-row-flow-chip',
+      'lottery-flow-match-badge',
+      'lottery-flow-inverted-badge',
+      'lottery-row-reload-delta',
+      'lottery-exit-now-badge',
+      'cohort-countdown',
+    ]) {
+      expect(hintOf(id), id).not.toBe('');
+      expect(hintOf(id), id).toBe(titleOf(id));
+      expect(screen.getByTestId(id), id).not.toHaveAttribute('aria-label');
+    }
+
+    // Tier badge, CI chip and Market Tide chip have no testid; find them by
+    // the hover text they carry.
+    for (const prefix of [
+      'Tier 2 (score',
+      'AAPL: 220 fires',
+      'Market Tide NCP',
+    ]) {
+      const badge = container.querySelector(`[title^="${prefix}"]`);
+      expect(badge, prefix).not.toBeNull();
+      expect(srHintText(badge!), prefix).toBe(badge!.getAttribute('title'));
+      expect(badge!, prefix).not.toHaveAttribute('aria-label');
+    }
+
+    // The GEXBot badge keeps its terse single-line hint; the multi-line
+    // tooltip stays in `title`.
+    expect(hintOf('lottery-gex-badge')).toBe(
+      'GexBot snapshot: next-expiry cvroflow 3.20 up',
+    );
+    expect(titleOf('lottery-gex-badge')).toContain('\n');
+
+    // The label a sighted user sees comes first, the explanation after it.
+    expect(screen.getByTestId('lottery-gated-pill').textContent).toMatch(
+      /^Gated — Counter-trend per OTM Market Tide/,
+    );
+    expect(screen.getByTestId('lottery-exit-now-badge').textContent).toMatch(
+      /^EXIT — Ticker net flow inverted/,
+    );
   });
 });
