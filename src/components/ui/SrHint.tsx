@@ -9,8 +9,11 @@
  * hint from running together when read aloud (the Schwab expiry badge uses
  * the same separator).
  *
+ * `normal-case` keeps a badge's `uppercase` from reaching the hint: a browser
+ * exposes the transformed text, so a screen reader would read it shouted.
+ *
  * Leave the hint out where it would only repeat the visible text.
  */
 export function SrHint({ children }: { children: string }) {
-  return <span className="sr-only">{` — ${children}`}</span>;
+  return <span className="sr-only normal-case">{` — ${children}`}</span>;
 }

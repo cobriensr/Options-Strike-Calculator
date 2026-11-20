@@ -10,6 +10,20 @@ describe('SrHint', () => {
     expect(hint!.textContent).toBe(' — Tier 2: solid setup.');
   });
 
+  it('resets text-transform so an uppercase badge does not shout the hint', () => {
+    // Badges such as the round-trip pill are `uppercase`. The hint is
+    // inside them, so without normal-case it inherits the transform, and a
+    // browser exposes the transformed text to a screen reader.
+    const { container } = render(
+      <span className="uppercase">
+        round-tripped -2
+        <SrHint>Sellers outweighed buyers.</SrHint>
+      </span>,
+    );
+    const hint = container.querySelector('.sr-only')!;
+    expect(hint).toHaveClass('sr-only', 'normal-case');
+  });
+
   it('keeps the visible label and the hint apart when read in one run', () => {
     // A screen reader reads the badge's text content: the label, then the
     // hint. Without the separator the two would run together ("T2Tier 2...").
