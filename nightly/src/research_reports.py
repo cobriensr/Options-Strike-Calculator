@@ -21,6 +21,9 @@ Status of a report step:
 - `failed`: `script exited {code}` (plus ` ({class})` when the log names one), `script timed
   out` (the process is killed at the step's deadline) or `no output written` (exit 0 with an
   output missing or empty, which `exit_policy_search.py`'s "no derived day" path does).
+- `partial`: the script ran and its outputs are published as on `ok`, but a derived day the
+  manifest calls fresh was not in R2 (`derived day missing`; `inputs_missing` counts them). A
+  failure above outranks it.
 The log is published whatever happens, before the outputs. An exception (R2, the manifest,
 the database) propagates to `run_steps`, which reports the step failed with its class name.
 
@@ -76,6 +79,7 @@ _ROLLUP_FAMILY = "eod-flow"
 # Fixed phrases: they are part of the `nightly step failed` / `partial` fingerprint.
 _TIMED_OUT_DETAIL = "script timed out"
 _NO_OUTPUT_DETAIL = "no output written"
+_MISSING_INPUT_DETAIL = "derived day missing"
 _NO_DAYS_DETAIL = "no chains days"
 _NOT_IN_ROLLUP_DETAIL = "latest session not in rollup"
 
@@ -366,15 +370,32 @@ def _fresh_derived_names(family: FamilyName, ctx: StepContext, store: ResearchSt
     ]
 
 
-def _sync_inputs(report: ScriptReport, ctx: StepContext, store: ResearchStore, in_dir: Path) -> int:
-    """Download what the report reads into `in_dir`; the number of files."""
+def _sync_inputs(
+    report: ScriptReport, ctx: StepContext, store: ResearchStore, in_dir: Path
+) -> tuple[int, int]:
+    """Download what the report reads into `in_dir`; (files synced, files missing).
+
+    Only a fire family has files it expects: the fresh days its manifest vouches for. One that
+    R2 no longer holds is skipped by `sync_down`, and nothing else would notice (the derive
+    step never redoes a day its manifest calls fresh), so it is counted and logged here: the
+    step name and the two counts, never a day or a file name.
+    """
     if report.inputs == "none":
-        return 0
+        return 0, 0
     prefix = _state_prefix(report.inputs)
     if report.inputs == "chains":
-        return len(store.sync_down(prefix, in_dir))
+        return len(store.sync_down(prefix, in_dir)), 0
     names = _fresh_derived_names(report.inputs, ctx, store)
-    return len(store.sync_down(prefix, in_dir, names))
+    synced = len(store.sync_down(prefix, in_dir, names))
+    missing = len(names) - synced  # distinct days, and sync_down returns a subset: never < 0
+    if missing:
+        log.warning(
+            "research-report %s derived input missing: expected=%d synced=%d",
+            report.step,
+            len(names),
+            synced,
+        )
+    return synced, missing
 
 
 def _outputs_written(out_dir: Path, patterns: Sequence[str]) -> bool:
@@ -416,7 +437,7 @@ def run_report(report: ScriptReport, ctx: StepContext) -> StepResult:
     store = ResearchStore(ctx.settings)
     work = _prepare(report.step)
     try:
-        synced = _sync_inputs(report, ctx, store, work / _IN)
+        synced, missing = _sync_inputs(report, ctx, store, work / _IN)
         run = run_script(
             report.script,
             report.extra_args(ctx.last_session, work / _IN, work / _OUT),
@@ -436,11 +457,17 @@ def run_report(report: ScriptReport, ctx: StepContext) -> StepResult:
         "files_uploaded": files,
         "bytes_uploaded": size,
         "inputs_synced": synced,
+        "inputs_missing": missing,
         "log_uploaded": log_uploaded,
         "exit_code": run.returncode or 0,
         "timed_out": int(run.timed_out),
     }
-    result = StepResult("failed" if detail else "ok", counts, detail)
+    if detail:  # a failure outranks a short input
+        result = StepResult("failed", counts, detail)
+    elif missing:
+        result = StepResult("partial", counts, _MISSING_INPUT_DETAIL)
+    else:
+        result = StepResult("ok", counts)
     _log_step(report.step, result, started)
     return result
 

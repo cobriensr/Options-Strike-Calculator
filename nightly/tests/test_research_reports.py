@@ -79,6 +79,7 @@ NO_COUNTS = {
     "files_uploaded": 0,
     "bytes_uploaded": 0,
     "inputs_synced": 0,
+    "inputs_missing": 0,
     "log_uploaded": 1,
     "exit_code": 0,
     "timed_out": 0,
@@ -1123,6 +1124,7 @@ def test_inputs_sync_only_fresh_derived_days(rig: Rig) -> None:
 
     assert asserted_valid(result).status == "ok"
     assert result.counts["inputs_synced"] == 2
+    assert result.counts["inputs_missing"] == 0  # a stale day or one with no fires is not expected
     seen = rig.body(f"research/exit-policy/{SESSION}/lottery-exit-policy-search-2026-11-11.md")
     # Oldest first is fresh_days' order; the script lists the directory.
     assert seen.decode() == "2026-11-06.parquet,2026-11-10.parquet|conn_open=False"
@@ -1152,7 +1154,8 @@ def test_each_fire_family_reads_its_own_derived_folder(rig: Rig) -> None:
 
     result = run_report(report_for("flow-timing-report"), rig.ctx())
 
-    assert result.counts["inputs_synced"] == 2
+    assert result.status == "ok"
+    assert (result.counts["inputs_synced"], result.counts["inputs_missing"]) == (2, 0)
     seen = rig.body(f"research/flow-timing/{SESSION}/flow-inversion-timing-2026-11-11.md")
     assert seen.decode() == "2026-11-09.parquet,2026-11-10.parquet|conn_open=False"
 
@@ -1171,7 +1174,7 @@ def test_a_seeded_day_is_not_fresh_for_a_fire_family(rig: Rig) -> None:
 
     result = run_report(report_for("exit-policy-report"), rig.ctx())
 
-    assert result.counts["inputs_synced"] == 0
+    assert (result.counts["inputs_synced"], result.counts["inputs_missing"]) == (0, 0)
 
 
 def test_no_fresh_day_still_runs_the_script_on_an_empty_directory(rig: Rig) -> None:
@@ -1187,9 +1190,85 @@ def test_no_fresh_day_still_runs_the_script_on_an_empty_directory(rig: Rig) -> N
     result = run_report(report_for("exit-policy-report"), rig.ctx())
 
     assert result.status == "ok"
-    assert result.counts["inputs_synced"] == 0
+    assert (result.counts["inputs_synced"], result.counts["inputs_missing"]) == (0, 0)
     seen = rig.body(f"research/exit-policy/{SESSION}/lottery-exit-policy-search-x.md")
     assert seen.decode() == "|conn_open=False"
+
+
+def one_fresh_derived_day_missing_from_r2(rig: Rig, body: str, **names: object) -> None:
+    """Two days the manifest calls fresh, of which R2 holds only the older one's derived object."""
+    for day in (D1, D2):
+        rig.land(day)
+    rig.put(rig.derived_key("exit-policy", D1))  # D2's object is gone
+    rig.wanted["exit-policy"] = {D1: "fp1", D2: "fp2"}
+    rig.set_manifest({"exit-policy": {D1: "fp1", D2: "fp2"}})
+    rig.script("scripts/exit_policy_search.py", body, **names)
+
+
+def test_a_fresh_derived_day_missing_from_r2_makes_the_report_partial(
+    rig: Rig, caplog: pytest.LogCaptureFixture
+) -> None:
+    name = "lottery-exit-policy-search-2026-11-11.md"
+    one_fresh_derived_day_missing_from_r2(rig, LIST_INPUT, OUTPUT=name, FLAG=str(rig.flag))
+
+    with caplog.at_level(logging.INFO, logger="research_reports"):
+        result = run_report(report_for("exit-policy-report"), rig.ctx())
+
+    report = rig.body(f"research/exit-policy/{SESSION}/{name}")
+    assert report.decode() == "2026-11-06.parquet|conn_open=False"  # the day R2 still holds
+    assert asserted_valid(result) == StepResult(
+        "partial",
+        {
+            **NO_COUNTS,
+            "inputs_synced": 1,
+            "inputs_missing": 1,
+            "files_uploaded": 1,
+            "bytes_uploaded": len(report),
+        },
+        "derived day missing",
+    )
+    # Published exactly as on ok: the report and the log.
+    assert rig.keys(f"research/exit-policy/{SESSION}/") == [
+        f"research/exit-policy/{SESSION}/{name}"
+    ]
+    assert rig.keys("research/_logs/") == [f"research/_logs/{SESSION}/exit-policy-report.log"]
+    # One warning for the shortfall: the step and the two counts, no day and no file name.
+    (warning,) = [r for r in caplog.records if "expected=" in r.getMessage()]
+    assert warning.name == "research_reports"
+    assert warning.levelno == logging.WARNING
+    message = warning.getMessage()
+    assert "exit-policy-report" in message
+    assert "expected=2" in message
+    assert "synced=1" in message
+    assert "2026" not in message
+    assert "parquet" not in message
+    for record in caplog.records:
+        if record.name == "research_reports":
+            assert "2026-11-0" not in record.getMessage()
+            assert "parquet" not in record.getMessage()
+
+
+@pytest.mark.parametrize(
+    ("body", "detail"),
+    [
+        (RAISE, "script exited 1 (ValueError)"),
+        ("print('nothing written')\n", "no output written"),
+    ],
+    ids=["a non-zero exit", "no output"],
+)
+def test_a_failing_script_with_a_missing_input_stays_failed(
+    rig: Rig, body: str, detail: str
+) -> None:
+    one_fresh_derived_day_missing_from_r2(rig, body)
+
+    result = run_report(report_for("exit-policy-report"), rig.ctx())
+
+    assert asserted_valid(result).status == "failed"
+    assert result.detail == detail  # the failure, not "derived day missing"
+    assert result.counts["inputs_missing"] == 1
+    assert result.counts["files_uploaded"] == 0
+    assert rig.keys(f"research/exit-policy/{SESSION}/") == []
+    assert rig.keys("research/_logs/") == [f"research/_logs/{SESSION}/exit-policy-report.log"]
 
 
 def test_the_database_connection_is_closed_before_the_script_starts(rig: Rig) -> None:
