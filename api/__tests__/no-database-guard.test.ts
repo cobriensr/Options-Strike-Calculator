@@ -135,6 +135,11 @@ describe('trackDbAttempts', () => {
 // would. The same runner probes the afterEach for a package first imported
 // after vi.resetModules(), which this file cannot do: it has already imported
 // every package at the top.
+//
+// The test limit is the nested run's (120 s), then runProbe's removal retries
+// (about 55 s at most), then a margin. spawnSync blocks the worker, so vitest
+// checks a test's time only after it returns; a lower limit would hide an EPERM
+// that the retries were still riding out.
 describe('the setup.ts hooks, run in a one-file project', () => {
   const repoRoot = path.resolve(
     path.dirname(fileURLToPath(import.meta.url)),
@@ -167,17 +172,36 @@ describe('the setup.ts hooks, run in a one-file project', () => {
           ([key]) => !key.startsWith('VITEST') && key !== 'NODE_OPTIONS',
         ),
       );
+      // The run's cwd is the repo root, with the project passed by absolute
+      // path: a process that outlives spawnSync (a worker, esbuild) would
+      // otherwise hold `dir` as its cwd, and Windows refuses to delete it.
       const result = spawnSync(
         process.execPath,
-        [vitestBin, 'run', '--root', dir, '--config', 'vitest.config.mjs'],
-        { cwd: dir, env, encoding: 'utf8', timeout: 120_000 },
+        [
+          vitestBin,
+          'run',
+          '--root',
+          dir,
+          '--config',
+          path.join(dir, 'vitest.config.mjs'),
+        ],
+        { cwd: repoRoot, env, encoding: 'utf8', timeout: 120_000 },
       );
       return {
         status: result.status,
         output: `${result.stdout}${result.stderr}`,
       };
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      // Backstop for a process that still has a file open in `dir`: EPERM on
+      // Windows, retried with a linear back-off (1 s, 2 s, ... 10 s: about 55 s
+      // in all) until that process lets go. A run under full-suite load held
+      // the directory for about 41 s (2026-11-19).
+      rmSync(dir, {
+        recursive: true,
+        force: true,
+        maxRetries: 10,
+        retryDelay: 1000,
+      });
     }
   }
 
@@ -201,12 +225,12 @@ describe('the setup.ts hooks, run in a one-file project', () => {
     expect(output).toContain(BLOCK_MESSAGE);
     expect(output).toContain('this test tried: neon');
     expect(output).not.toContain('hunter2');
-  }, 130_000);
+  }, 190_000);
 
   it('passes the same file when nothing tried', () => {
     const { status, output } = runProbe(probe('void neon;'));
     expect(status, output).toBe(0);
-  }, 130_000);
+  }, 190_000);
 
   // The import after the reset runs the setup.ts mock factory afresh, which
   // imports a new db-guard instance. A swallowed attempt must still land in
@@ -261,7 +285,7 @@ describe('the setup.ts hooks, run in a one-file project', () => {
       expect(output).toContain(`this test tried: ${kind}`);
       expect(output).not.toContain('hunter2');
     },
-    130_000,
+    190_000,
   );
 
   it('passes a reset-and-import that makes no call', () => {
@@ -269,7 +293,7 @@ describe('the setup.ts hooks, run in a one-file project', () => {
       afterReset('@neondatabase/serverless', 'void mod;'),
     );
     expect(status, output).toBe(0);
-  }, 130_000);
+  }, 190_000);
 });
 
 describe('the env scrub', () => {
