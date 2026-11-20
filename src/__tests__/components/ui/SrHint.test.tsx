@@ -24,6 +24,19 @@ describe('SrHint', () => {
     expect(hint).toHaveClass('sr-only', 'normal-case');
   });
 
+  it('keeps the hint out of selections so a copied row pastes only visible text', () => {
+    // sr-only text is still selectable: copying a contract name out of a row
+    // would pick up the hidden sentence. select-none (user-select: none)
+    // drops it from the clipboard and leaves the accessibility tree alone.
+    const { container } = render(
+      <span>
+        SPY 727 C<SrHint>Tier 2: solid setup.</SrHint> 05/15
+      </span>,
+    );
+    const hint = container.querySelector('.sr-only')!;
+    expect(hint).toHaveClass('sr-only', 'normal-case', 'select-none');
+  });
+
   it('keeps the visible label and the hint apart when read in one run', () => {
     // A screen reader reads the badge's text content: the label, then the
     // hint. Without the separator the two would run together ("T2Tier 2...").

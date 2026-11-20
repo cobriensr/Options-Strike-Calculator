@@ -12,8 +12,14 @@
  * `normal-case` keeps a badge's `uppercase` from reaching the hint: a browser
  * exposes the transformed text, so a screen reader would read it shouted.
  *
+ * `select-none` keeps the hint out of selections and copies, so copying a
+ * row's text pastes only what is visible. Screen readers are unaffected, and
+ * browser find-in-page still matches the hidden text.
+ *
  * Leave the hint out where it would only repeat the visible text.
  */
 export function SrHint({ children }: { children: string }) {
-  return <span className="sr-only normal-case">{` — ${children}`}</span>;
+  return (
+    <span className="sr-only normal-case select-none">{` — ${children}`}</span>
+  );
 }
