@@ -1,38 +1,37 @@
 # ml/src/takeit_drift_monitor.py
-# Daily TAKE-IT drift + validation monitor. Runs as part of `make update`
-# (the user's existing daily research target). Outputs:
-#   - docs/tmp/takeit-drift-YYYY-MM-DD.md  (committed by make update)
-#   - ml/plots/takeit-drift/reliability_<feed>_<date>.png (committed)
+# Daily TAKE-IT drift + validation monitor. `make takeit-drift` runs it from the
+# command line and the nightly job calls run_drift in-process. Outputs, written
+# to the dirs it is given (defaults: docs/tmp and ml/plots/takeit-drift):
+#   - takeit-drift-YYYY-MM-DD.md
+#   - reliability_<feed>_<date>.png
 #   - rows in takeit_health_daily (ml_-prefixed metric_name)
+# Every date is the as_of date (the session), never the clock.
 #
 # Targets compared:
 #   - peak_ceiling_pct >= 20    (the model's training target)
 #   - realized_trail30_10_pct >= 0  (trade-worthiness target)
 # The divergence between rolling AUCs on these two targets is itself a
 # tracked metric — the empirical case for the deferred realized-target retrain.
+#
+# The imports are plain, and neither scikit-learn nor ml/src/utils is imported:
+# the nightly image has neither. A missing dependency raises ImportError, which
+# the step catches; a SystemExit here would end the whole nightly run.
 
 from __future__ import annotations
 
+import argparse
 import datetime as dt
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
-try:
-    import matplotlib
+import matplotlib
 
-    matplotlib.use("Agg")  # must precede pyplot import
-    import matplotlib.pyplot as plt
-    import numpy as np
-    import pandas as pd
-    import psycopg2
-    from sklearn.metrics import roc_auc_score
-except ImportError:
-    print("Missing dependencies. Run:")
-    print("  ml/.venv/Scripts/pip install -r ml/requirements.txt")
-    sys.exit(1)
-
-from utils import get_connection  # type: ignore[import-not-found]  # noqa: I001
-
+matplotlib.use("Agg")  # must precede pyplot import
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import psycopg2
 
 ML_ROOT = Path(__file__).resolve().parent.parent
 REPO_ROOT = ML_ROOT.parent
@@ -46,12 +45,25 @@ FEATURE_Z_ALERT = 3.0
 
 
 def rolling_auc(y_true: np.ndarray, y_pred: np.ndarray) -> float:
-    """AUC, returns NaN if y_true is single-class, empty, or y_pred has NaN."""
+    """AUC as the Mann-Whitney U statistic over average ranks (ties count half).
+
+    y_true holds two labels (0/1), the higher one the positive class. Returns NaN
+    if y_true is single-class or empty, or y_pred has NaN. Equals scikit-learn's
+    roc_auc_score to float precision (ml/tests/test_takeit_drift_auc_sklearn.py)
+    without importing it: the nightly image carries no scikit-learn.
+    """
+    y_true = np.asarray(y_true)
+    y_pred = np.asarray(y_pred, dtype=float)
     if len(y_true) == 0 or len(np.unique(y_true)) < 2:
         return float("nan")
     if np.any(np.isnan(y_pred)):
         return float("nan")
-    return float(roc_auc_score(y_true, y_pred))
+    ranks = pd.Series(y_pred).rank(method="average").to_numpy()
+    positive = y_true == y_true.max()
+    n_pos = int(positive.sum())
+    n_neg = len(y_true) - n_pos
+    rank_sum = float(ranks[positive].sum())
+    return (rank_sum - n_pos * (n_pos + 1) / 2) / (n_pos * n_neg)
 
 
 def reliability_bins(
@@ -128,7 +140,9 @@ def fetch_recent_fires(
     conn: psycopg2.extensions.connection,
     feed: str,
     lookback_days: int,
+    as_of: dt.date,
 ) -> pd.DataFrame:
+    """Fires of `feed` dated `lookback_days` before `as_of` or later, with a score."""
     table = "lottery_finder_fires" if feed == "lottery" else "silent_boom_alerts"
     sql = f"""
       SELECT
@@ -141,21 +155,21 @@ def fetch_recent_fires(
         peak_ceiling_pct,
         realized_trail30_10_pct
       FROM {table}
-      WHERE date >= CURRENT_DATE - INTERVAL '{lookback_days} days'
+      WHERE date >= %s
         AND takeit_prob IS NOT NULL
         AND peak_ceiling_pct IS NOT NULL
     """
-    return pd.read_sql(sql, conn, parse_dates=["date"])
+    cutoff = as_of - dt.timedelta(days=lookback_days)
+    return pd.read_sql(sql, conn, params=(cutoff,), parse_dates=["date"])
 
 
-def compute_feed_drift(df: pd.DataFrame, feed: str) -> dict:
+def compute_feed_drift(df: pd.DataFrame, feed: str, as_of: dt.date) -> dict:
     out: dict = {"feed": feed, "n_rows_total": len(df)}
     if df.empty:
         return out
 
-    today = pd.Timestamp.now("UTC").normalize().tz_localize(None).date()
     for window_days, label in [(7, "7d"), (30, "30d")]:
-        cutoff = today - dt.timedelta(days=window_days)
+        cutoff = as_of - dt.timedelta(days=window_days)
         win = df[df["date"] >= pd.Timestamp(cutoff)]
         if win.empty:
             continue
@@ -169,7 +183,7 @@ def compute_feed_drift(df: pd.DataFrame, feed: str) -> dict:
             out[f"auc_{label}_realized"] = rolling_auc(real_label, y_pred)
 
     # Per-segment AUC on 30d window
-    cutoff30 = today - dt.timedelta(days=30)
+    cutoff30 = as_of - dt.timedelta(days=30)
     win30 = df[df["date"] >= pd.Timestamp(cutoff30)]
     if not win30.empty:
         y_pred = win30["takeit_prob"].to_numpy()
@@ -226,12 +240,13 @@ def render_markdown_report(
     return "\n".join(lines)
 
 
-def plot_reliability(df: pd.DataFrame, feed: str, today_str: str) -> Path | None:
+def plot_reliability(
+    df: pd.DataFrame, feed: str, as_of: dt.date, plot_dir: Path
+) -> Path | None:
+    """Write the feed's 30-day reliability curve to `plot_dir`; None without rows."""
     if df.empty:
         return None
-    cutoff30 = pd.Timestamp.now("UTC").normalize().tz_localize(None) - pd.Timedelta(
-        days=30
-    )
+    cutoff30 = pd.Timestamp(as_of) - pd.Timedelta(days=30)
     win = df[df["date"] >= cutoff30]
     if win.empty:
         return None
@@ -239,8 +254,9 @@ def plot_reliability(df: pd.DataFrame, feed: str, today_str: str) -> Path | None
     y_true = (win["peak_ceiling_pct"].to_numpy() >= 20).astype(int)
     bins = reliability_bins(y_true, y_pred, n_bins=10)
 
-    PLOT_DIR.mkdir(parents=True, exist_ok=True)
-    out_path = PLOT_DIR / f"reliability_{feed}_{today_str}.png"
+    today_str = as_of.isoformat()
+    plot_dir.mkdir(parents=True, exist_ok=True)
+    out_path = plot_dir / f"reliability_{feed}_{today_str}.png"
     fig, ax = plt.subplots(figsize=(8, 6))
     pred = [b[0] for b in bins]
     actual = [b[1] for b in bins]
@@ -256,55 +272,109 @@ def plot_reliability(df: pd.DataFrame, feed: str, today_str: str) -> Path | None
     return out_path
 
 
-def main() -> int:
-    today_str = dt.date.today().isoformat()
+@dataclass(frozen=True)
+class DriftRun:
+    """What one run wrote: the report, the plots that had rows, and the number of
+    takeit_health_daily upserts executed (NaN metrics are not written)."""
+
+    report_path: Path
+    plot_paths: tuple[Path, ...]
+    metrics_written: int
+
+
+def run_drift(
+    conn: psycopg2.extensions.connection,
+    as_of: dt.date,
+    report_dir: Path,
+    plot_dir: Path,
+) -> DriftRun:
+    """Read both feeds' recent fires, write the report and reliability plots, and
+    upsert the AUC metrics for `as_of`. Commits once, after the last upsert."""
+    as_of_str = as_of.isoformat()
+    lottery_df = fetch_recent_fires(conn, "lottery", 30, as_of)
+    sb_df = fetch_recent_fires(conn, "silent_boom", 30, as_of)
+
+    lottery_summary = compute_feed_drift(lottery_df, "lottery", as_of)
+    sb_summary = compute_feed_drift(sb_df, "silent_boom", as_of)
+
+    plots = (
+        plot_reliability(lottery_df, "lottery", as_of, plot_dir),
+        plot_reliability(sb_df, "silent_boom", as_of, plot_dir),
+    )
+
+    report = render_markdown_report(as_of_str, lottery_summary, sb_summary)
+    report_dir.mkdir(parents=True, exist_ok=True)
+    report_path = report_dir / f"takeit-drift-{as_of_str}.md"
+    report_path.write_text(report, encoding="utf-8")
+
+    # Persist key metrics to takeit_health_daily (ml_-prefixed names)
+    metrics_written = 0
+    with conn.cursor() as cur:
+        for feed_name, s in (
+            ("lottery", lottery_summary),
+            ("silent_boom", sb_summary),
+        ):
+            for key in (
+                "auc_7d_peak",
+                "auc_30d_peak",
+                "auc_7d_realized",
+                "auc_30d_realized",
+            ):
+                val = s.get(key)
+                if val is None or (isinstance(val, float) and np.isnan(val)):
+                    continue
+                cur.execute(
+                    """
+                    INSERT INTO takeit_health_daily
+                      (date, feed, metric_name, metric_value)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (date, feed, metric_name)
+                    DO UPDATE SET
+                      metric_value = EXCLUDED.metric_value,
+                      computed_at = NOW()
+                    """,
+                    (as_of, feed_name, f"ml_{key}", float(val)),
+                )
+                metrics_written += 1
+    conn.commit()
+    return DriftRun(
+        report_path=report_path,
+        plot_paths=tuple(p for p in plots if p is not None),
+        metrics_written=metrics_written,
+    )
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Daily TAKE-IT drift monitor")
+    parser.add_argument(
+        "--as-of",
+        type=dt.date.fromisoformat,
+        default=None,
+        help="session date, YYYY-MM-DD (default: today)",
+    )
+    parser.add_argument(
+        "--out-dir",
+        type=Path,
+        default=DOCS_TMP,
+        help="where the markdown report goes (default: docs/tmp)",
+    )
+    parser.add_argument(
+        "--plot-dir",
+        type=Path,
+        default=PLOT_DIR,
+        help="where the reliability plots go (default: ml/plots/takeit-drift)",
+    )
+    args = parser.parse_args(argv)
+    as_of = args.as_of or dt.date.today()
+
+    from utils import get_connection  # type: ignore[import-not-found]
+
     conn = get_connection()
     try:
-        lottery_df = fetch_recent_fires(conn, "lottery", 30)
-        sb_df = fetch_recent_fires(conn, "silent_boom", 30)
-
-        lottery_summary = compute_feed_drift(lottery_df, "lottery")
-        sb_summary = compute_feed_drift(sb_df, "silent_boom")
-
-        plot_reliability(lottery_df, "lottery", today_str)
-        plot_reliability(sb_df, "silent_boom", today_str)
-
-        report = render_markdown_report(today_str, lottery_summary, sb_summary)
-        DOCS_TMP.mkdir(parents=True, exist_ok=True)
-        report_path = DOCS_TMP / f"takeit-drift-{today_str}.md"
-        report_path.write_text(report, encoding="utf-8")
-        print(f"Wrote {report_path}")
-
-        # Persist key metrics to takeit_health_daily (ml_-prefixed names)
-        with conn.cursor() as cur:
-            for feed_name, s in (
-                ("lottery", lottery_summary),
-                ("silent_boom", sb_summary),
-            ):
-                for key in (
-                    "auc_7d_peak",
-                    "auc_30d_peak",
-                    "auc_7d_realized",
-                    "auc_30d_realized",
-                ):
-                    val = s.get(key)
-                    if val is None or (isinstance(val, float) and np.isnan(val)):
-                        continue
-                    cur.execute(
-                        """
-                        INSERT INTO takeit_health_daily
-                          (date, feed, metric_name, metric_value)
-                        VALUES (%s, %s, %s, %s)
-                        ON CONFLICT (date, feed, metric_name)
-                        DO UPDATE SET
-                          metric_value = EXCLUDED.metric_value,
-                          computed_at = NOW()
-                        """,
-                        (today_str, feed_name, f"ml_{key}", float(val)),
-                    )
-            conn.commit()
+        run = run_drift(conn, as_of, args.out_dir, args.plot_dir)
     finally:
         conn.close()
+    print(f"Wrote {run.report_path}")
     return 0
 
 

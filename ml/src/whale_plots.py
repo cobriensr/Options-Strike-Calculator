@@ -1,21 +1,31 @@
 """Whale move detection visualizations.
 
-Builds all 13 charts derived from the whale-detection checklist
-(`docs/whale-detection-checklist.md`) against the EOD options-flow
-parquet archive at `scripts/eod-flow-analysis/output/by-day/`.
+Builds the 13 charts (14 PNGs: plot 01 draws one per ticker) derived from the
+whale-detection checklist (`docs/whale-detection-checklist.md`) against the EOD
+options-flow chains, one `{date}-chains.parquet` per session.
 
-Outputs to `ml/plots/whale-detection/`.
+Reads `--by-day-dir` (default `scripts/eod-flow-analysis/output/by-day/`) and
+writes to `--out-dir` (default `ml/plots/whale-detection/`). It writes nowhere
+else. Exit code 0 when no plot failed (plot 03 writes nothing when the latest
+session had no whales), 1 when one did.
 
 Run:
-    ml/.venv/Scripts/python ml/src/whale_plots.py
+    ml/.venv/Scripts/python ml/src/whale_plots.py [--by-day-dir DIR] [--out-dir DIR]
+
+It runs as a script, in a subprocess of the nightly job, where a non-zero exit
+is the failure: a missing dependency exits 1 with a message.
 """
 
 from __future__ import annotations
 
+import argparse
 import sys
 from pathlib import Path
 
 try:
+    import matplotlib
+
+    matplotlib.use("Agg")  # files only, never plt.show(); needs no display
     import matplotlib.pyplot as plt
     import numpy as np
     import polars as pl
@@ -55,10 +65,13 @@ NEUTRAL_COLOR = "#737373"
 # ---------------------------------------------------------------------------
 
 
-def load_data() -> pl.DataFrame:
-    files = sorted(PARQUET_DIR.glob("*-chains.parquet"))
+def load_data(by_day_dir: Path) -> pl.DataFrame:
+    """Every `*-chains.parquet` in `by_day_dir`, concatenated strictly: the files
+    share one schema (seeded days and days built from the tape differ only in
+    whether `equity_type` and `sector` are filled)."""
+    files = sorted(by_day_dir.glob("*-chains.parquet"))
     if not files:
-        raise FileNotFoundError(f"No parquet files in {PARQUET_DIR}")
+        raise FileNotFoundError(f"No parquet files in {by_day_dir}")
     df = pl.concat([pl.read_parquet(f) for f in files])
     df = df.with_columns(
         pl.when((pl.col("ask_size") + pl.col("bid_size")) > 0)
@@ -950,10 +963,30 @@ def plot_13_strike_magnet(qual: pl.DataFrame, output_dir: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def main() -> int:
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    print(f"→ Loading data from {PARQUET_DIR}")
-    df = load_data()
+def _parse_args(argv: list[str] | None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Whale move detection plots")
+    parser.add_argument(
+        "--by-day-dir",
+        type=Path,
+        default=PARQUET_DIR,
+        help="dir of {date}-chains.parquet files (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--out-dir",
+        type=Path,
+        default=OUTPUT_DIR,
+        help="where the PNGs go (default: %(default)s)",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parse_args(argv)
+    by_day_dir: Path = args.by_day_dir
+    out_dir: Path = args.out_dir
+    out_dir.mkdir(parents=True, exist_ok=True)
+    print(f"→ Loading data from {by_day_dir}")
+    df = load_data(by_day_dir)
     print(
         f"  loaded {df.height:,} chains, {df['ticker'].n_unique()} tickers, "
         f"{df['trade_date'].min()} → {df['trade_date'].max()}"
@@ -971,33 +1004,33 @@ def main() -> int:
     print("→ Detecting pairs")
     pairs = detect_pairs(qual, df)
 
-    print(f"→ Building plots into {OUTPUT_DIR}")
+    print(f"→ Building plots into {out_dir}")
     # Run each plot in isolation so a single rendering failure doesn't abandon
     # the remaining plots. Collect failures and surface a non-zero exit at the
     # end so the operator sees which specific plots broke.
     plot_calls = [
-        ("01_daily_footprint", lambda: plot_01_daily_footprint(qual, OUTPUT_DIR)),
-        ("02_timeline", lambda: plot_02_timeline(qual, df, OUTPUT_DIR)),
-        ("03_todays_level_map", lambda: plot_03_todays_level_map(qual, df, OUTPUT_DIR)),
-        ("04_outcome_scatter", lambda: plot_04_outcome_scatter(qual, OUTPUT_DIR)),
-        ("05_time_to_target", lambda: plot_05_time_to_target(qual, OUTPUT_DIR)),
-        ("06_rr_distribution", lambda: plot_06_rr_distribution(qual, OUTPUT_DIR)),
+        ("01_daily_footprint", lambda: plot_01_daily_footprint(qual, out_dir)),
+        ("02_timeline", lambda: plot_02_timeline(qual, df, out_dir)),
+        ("03_todays_level_map", lambda: plot_03_todays_level_map(qual, df, out_dir)),
+        ("04_outcome_scatter", lambda: plot_04_outcome_scatter(qual, out_dir)),
+        ("05_time_to_target", lambda: plot_05_time_to_target(qual, out_dir)),
+        ("06_rr_distribution", lambda: plot_06_rr_distribution(qual, out_dir)),
         (
             "07_premium_distribution",
-            lambda: plot_07_premium_distribution(df, thresholds, OUTPUT_DIR),
+            lambda: plot_07_premium_distribution(df, thresholds, out_dir),
         ),
-        ("08_filter_funnel", lambda: plot_08_filter_funnel(df, thresholds, OUTPUT_DIR)),
+        ("08_filter_funnel", lambda: plot_08_filter_funnel(df, thresholds, out_dir)),
         (
             "09_trade_count_distribution",
-            lambda: plot_09_trade_count_distribution(df, thresholds, OUTPUT_DIR),
+            lambda: plot_09_trade_count_distribution(df, thresholds, out_dir),
         ),
-        ("10_alignment_matrix", lambda: plot_10_alignment_matrix(qual, OUTPUT_DIR)),
+        ("10_alignment_matrix", lambda: plot_10_alignment_matrix(qual, out_dir)),
         (
             "11_synthetic_detector",
-            lambda: plot_11_synthetic_detector(qual, pairs, OUTPUT_DIR),
+            lambda: plot_11_synthetic_detector(qual, pairs, out_dir),
         ),
-        ("12_minute_clustering", lambda: plot_12_minute_clustering(qual, OUTPUT_DIR)),
-        ("13_strike_magnet", lambda: plot_13_strike_magnet(qual, OUTPUT_DIR)),
+        ("12_minute_clustering", lambda: plot_12_minute_clustering(qual, out_dir)),
+        ("13_strike_magnet", lambda: plot_13_strike_magnet(qual, out_dir)),
     ]
     failures: list[tuple[str, str]] = []
     for name, fn in plot_calls:
@@ -1010,50 +1043,33 @@ def main() -> int:
     if failures:
         print(
             f"\n⚠️  {len(failures)}/{len(plot_calls)} plot(s) failed; "
-            f"{len(plot_calls) - len(failures)} succeeded in {OUTPUT_DIR}",
+            f"{len(plot_calls) - len(failures)} succeeded in {out_dir}",
             file=sys.stderr,
         )
-        print_pipeline_summary(df["trade_date"].max())
+        print_pipeline_summary(df["trade_date"].max(), out_dir)
         return 1
 
-    print(f"\n✅ All plots written to {OUTPUT_DIR}")
-    print_pipeline_summary(df["trade_date"].max())
+    print(f"\n✅ All plots written to {out_dir}")
+    print_pipeline_summary(df["trade_date"].max(), out_dir)
     return 0
 
 
-def print_pipeline_summary(latest_date) -> None:
-    """Print the nightly pipeline output summary using the date from the loaded
-    data — owned here (not the Makefile) because Make expands
-    `DATE ?= $(shell ls ...)` lazily, so the date silently goes empty after
-    ingest-flow.py deletes the source CSV.
-    """
+def print_pipeline_summary(latest_date, out_dir: Path) -> None:
+    """Print the latest session's date (from the loaded data, so it is never
+    empty) and where the plots went. It prints this on a failed run too, so it
+    does not say the run completed."""
     iso = (
         latest_date.isoformat()
         if hasattr(latest_date, "isoformat")
         else str(latest_date)
     )
-    y, m, d = iso.split("-")
     bar = "═" * 64
     print()
     print(bar)
-    print(f"  ✅ Nightly pipeline complete for {iso}")
+    print(f"  Whale plots for the session ending {iso}")
     print(bar)
     print()
-    print("Outputs:")
-    print(
-        "  • EOD aggregate:  "
-        f"scripts/eod-flow-analysis/output/by-day/{iso}-chains.parquet"
-    )
-    print(
-        "  • Cumulative:     scripts/eod-flow-analysis/output/cumulative-headlines.txt"
-    )
-    print(f"  • Vercel Blob:    flow/year={y}/month={m}/day={d}/data.parquet")
-    print(f"  • Archive:        ~/Desktop/Bot-Eod-parquet/{iso}-trades.parquet")
-    print("  • Plots:          ml/plots/whale-detection/*.png")
-    print()
-    print(
-        "Next: review cumulative-headlines.txt, scan plots, commit per-day artifacts."
-    )
+    print(f"  Plots: {out_dir}")
 
 
 if __name__ == "__main__":
