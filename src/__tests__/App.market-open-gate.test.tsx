@@ -52,7 +52,9 @@ const h = vi.hoisted(() => ({
     order: [] as string[],
     groupOrder: [] as string[],
     hidden: new Set<string>(),
-    isHidden: () => false,
+    // Hides nothing, as default prefs do; a test swaps in its own and the
+    // afterEach below puts this one back.
+    isHidden: (() => false) as (id: string) => boolean,
   },
   vix: {
     fileInputRef: { current: null },
@@ -224,7 +226,9 @@ vi.mock('../components/OptionsAlerts', () => ({
 // registry does not list for the current access mode (the real router walks
 // `resolvedGroups` and reads each group's ids from `resolvedPanelsByGroup`),
 // so a panel the registry hides from a public visitor is not rendered here
-// either, and an id `isHidden` says the visitor hid.
+// either, and an id `isHidden` says the visitor hid. It emits panels in
+// `renderedPanels` order, not in group order as the real router does, so no
+// test may rely on render order.
 vi.mock('../components/PanelRouter', () => ({
   PanelRouter: ({
     panelMap,
@@ -393,6 +397,7 @@ describe('App polling gate (market clock AND owner-or-guest)', () => {
   afterEach(() => {
     globalThis.location.hash = '';
     h.routeByRegistry.on = true;
+    h.panelPrefs.isHidden = () => false;
   });
 
   describe.each(SCENARIOS)('$name', (s) => {
@@ -554,6 +559,29 @@ describe('App polling gate (market clock AND owner-or-guest)', () => {
         );
       },
     );
+  });
+
+  // The router skips a panel `panelPrefs.isHidden` reports, and App hands it
+  // that function (`isHidden={panelPrefs.isHidden}`). A visitor who hid
+  // GexTarget loses only that panel: the registry still lists both for an
+  // owner with market data, so the missing one can only come from `isHidden`.
+  describe('a panel the visitor hid', () => {
+    it('is left out while the others still render', () => {
+      h.access.mode = 'owner';
+      h.market.current = marketFor({
+        name: 'owner',
+        mode: 'owner',
+        clockOpen: true,
+        quotesFlag: true,
+        gate: true,
+      });
+      h.panelPrefs.isHidden = (id) => id === 'sec-gex-target';
+
+      const { container } = mountApp();
+
+      expect(container.querySelector('#sec-gex-target')).toBeNull();
+      expect(container.querySelector('#sec-gex-landscape')).not.toBeNull();
+    });
   });
 
   describe('changes inside one mount', () => {
