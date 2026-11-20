@@ -11,11 +11,11 @@ import type {
   LotteryFire,
 } from '../components/LotteryFinder/types';
 import { LotteryFinderTickerGroup } from '../components/LotteryFinder/LotteryFinderTickerGroup';
+import { computeAccessibleName } from 'dom-accessibility-api';
 import {
   genericElementsWithAriaLabel,
   srHintText,
   titledElementsNeedingHint,
-  titledElementsWithoutHint,
 } from './helpers/aria';
 
 vi.mock('../components/LotteryFinder/LotteryRow', () => ({
@@ -1180,8 +1180,8 @@ describe('LotteryFinderTickerGroup', () => {
 
   describe('screen-reader text on the tide and flow chips', () => {
     // Both chips are bare spans inside the group's toggle button, so an
-    // aria-label on them would be prohibited and mostly ignored. Their
-    // question is hidden text; the longer aligned / counter key stays in
+    // aria-label on them would be prohibited and mostly ignored. A short
+    // hint is hidden text; the longer aligned / counter key stays in
     // `title`. The text stays short because the toggle button's accessible
     // name is built from its content, these chips included.
     function renderGroup() {
@@ -1210,22 +1210,18 @@ describe('LotteryFinderTickerGroup', () => {
       );
     }
 
-    it('gives the tide chip its question as hidden text, not an aria-label', () => {
+    it('gives the tide chip a short hint as hidden text, not an aria-label', () => {
       renderGroup();
       const chip = screen.getByTestId('lottery-ticker-tide-MSFT');
-      expect(srHintText(chip)).toBe(
-        "Does Market Tide direction agree with this ticker's bias?",
-      );
+      expect(srHintText(chip)).toBe('Market Tide versus bias');
       expect(chip).not.toHaveAttribute('aria-label');
       expect(chip.getAttribute('title')).toContain('aligned = same direction');
     });
 
-    it('gives the flow chip its question as hidden text, not an aria-label', () => {
+    it('gives the flow chip a short hint as hidden text, not an aria-label', () => {
       renderGroup();
       const chip = screen.getByTestId('lottery-ticker-flow-MSFT');
-      expect(srHintText(chip)).toBe(
-        "Does per-ticker net flow direction at fire time agree with this ticker's bias?",
-      );
+      expect(srHintText(chip)).toBe('ticker net flow versus bias');
       expect(chip).not.toHaveAttribute('aria-label');
       expect(chip.getAttribute('title')).toContain('aligned = same direction');
     });
@@ -1236,11 +1232,21 @@ describe('LotteryFinderTickerGroup', () => {
     });
   });
 
-  describe('screen-reader hints on every titled header chip', () => {
-    /** Every chip the header can show: two strikes (strikes summary and
-     *  spread), a gated fire, fires 20 minutes apart (density), and the
-     *  conviction / was-conviction / storm / sweep flags. */
-    function renderFullHeader(variant: 'strong' | 'high' | 'was') {
+  describe("hidden text inside the group's toggle button", () => {
+    // Every chip sits inside the toggle <button>, so its hidden text is part
+    // of the button's accessible name, read on every Tab stop. The header
+    // shows about 150 characters; hints are budgeted so the whole name stays
+    // at most 400. A chip whose visible text explains itself (the count,
+    // strikes, premium, last-hit time, best peak) keeps only its `title`;
+    // a chip whose text is cryptic (bias, tide, flow, density, gated and the
+    // conviction, was-conviction, storm and sweep flags) gets a short hint.
+    /** `typical`: the always-on chips. The other variants light every chip:
+     *  two strikes (strikes summary and spread), a gated fire, fires 20
+     *  minutes apart (density), and the conviction (`strong` is the ✦✦
+     *  cheap pre-PM cluster, `high` the plain ✦), was-conviction (`was`,
+     *  which needs live conviction off), storm and sweep flags. */
+    function renderFullHeader(variant: 'typical' | 'strong' | 'high' | 'was') {
+      const full = variant !== 'typical';
       const tideMacro = {
         mktTideDiff: 200,
         tickerCumNcpAtFire: 5_000_000,
@@ -1249,7 +1255,7 @@ describe('LotteryFinderTickerGroup', () => {
       const first = makeFire({
         optionChainId: 'TSLA260514C00250000',
         strike: 250,
-        directionGated: true,
+        directionGated: full,
       });
       const second = makeFire({
         optionChainId: 'TSLA260514C00260000',
@@ -1268,114 +1274,95 @@ describe('LotteryFinderTickerGroup', () => {
           onToggle={() => undefined}
           marketOpen={true}
           exitPolicy={EXIT_POLICY}
-          conviction={variant !== 'was'}
+          conviction={variant === 'strong' || variant === 'high'}
           strongConviction={variant === 'strong'}
-          storm
-          clusterStrikes={3}
-          wasConvictionAt={Date.parse('2026-05-14T18:40:00Z')}
-          wasConvictionFireCount={4}
+          storm={full}
+          clusterStrikes={full ? 3 : 0}
+          wasConvictionAt={
+            variant === 'was' ? Date.parse('2026-05-14T18:40:00Z') : null
+          }
+          wasConvictionFireCount={variant === 'was' ? 4 : 0}
         />,
       );
     }
 
-    // The rule, precisely: an element with a non-empty `title` needs an
-    // SrHint as a direct child, unless it has a role, is natively
-    // interactive or already shows its title text.
-    it.each(['strong', 'high', 'was'] as const)(
-      'a full header (%s): every titled element has an SrHint child unless it has a role, is natively interactive or already shows its title',
+    const toggleButtonName = () =>
+      computeAccessibleName(screen.getByRole('button'));
+
+    it.each(['typical', 'strong', 'high', 'was'] as const)(
+      'header (%s): the toggle button’s accessible name is at most 400 characters',
       (variant) => {
-        const { container } = renderFullHeader(variant);
-        // Every chip is on screen, so an empty result can't pass by
-        // rendering less.
-        for (const id of [
-          'lottery-ticker-strikes-TSLA',
-          'lottery-ticker-bias-TSLA',
-          'lottery-ticker-tide-TSLA',
-          'lottery-ticker-flow-TSLA',
-          'lottery-ticker-density-TSLA',
-          'lottery-ticker-premium-TSLA',
-          'lottery-ticker-gated-TSLA',
-          'lottery-ticker-last-TSLA',
-          'lottery-ticker-storm-TSLA',
-          'lottery-ticker-cluster-TSLA',
-        ]) {
-          expect(screen.getByTestId(id), id).toBeInTheDocument();
-        }
-        expect(titledElementsNeedingHint(container).length).toBeGreaterThan(12);
-        expect(titledElementsWithoutHint(container)).toEqual([]);
+        renderFullHeader(variant);
+        const name = toggleButtonName();
+        // The hints are part of that name, so the name carries them.
+        expect(name).toContain('Market Tide versus bias');
+        expect(name.length).toBeLessThanOrEqual(400);
       },
     );
 
-    it('keeps each header hint under 100 characters: the chips are part of the toggle button’s accessible name', () => {
-      for (const variant of ['strong', 'high', 'was'] as const) {
-        const { container } = renderFullHeader(variant);
-        for (const el of titledElementsNeedingHint(container)) {
-          const hint = srHintText(el) ?? '';
-          expect(hint.length, hint).toBeLessThan(100);
-        }
-        cleanup();
+    it('keeps a hint on exactly the chips whose visible text is cryptic', () => {
+      const { container } = renderFullHeader('strong');
+      // Every titled chip is on screen. The ones left without a hint are
+      // the self-explanatory ones, by testid or by the start of the title.
+      const unhinted = titledElementsNeedingHint(container)
+        .filter((el) => srHintText(el) == null)
+        .map(
+          (el) =>
+            el.getAttribute('data-testid') ??
+            (el.getAttribute('title') ?? '').split(' ').slice(0, 3).join(' '),
+        )
+        .sort();
+      expect(unhinted).toEqual(
+        [
+          'Number of distinct', // count
+          'lottery-ticker-strikes-TSLA',
+          'lottery-ticker-premium-TSLA',
+          'lottery-ticker-last-TSLA',
+          'Best peak return', // best-peak label
+          'Best peak return', // best-peak value
+        ].sort(),
+      );
+      for (const id of [
+        'strong-conviction',
+        'storm',
+        'cluster',
+        'bias',
+        'tide',
+        'flow',
+        'density',
+        'gated',
+      ]) {
+        const chip = screen.getByTestId(`lottery-ticker-${id}-TSLA`);
+        expect(srHintText(chip), id).not.toBeNull();
+        expect(chip, id).toHaveAttribute('title');
       }
     });
 
-    it('words each chip in a short hint', () => {
-      const { container } = renderFullHeader('strong');
+    it('words each kept hint short', () => {
+      renderFullHeader('strong');
       const hint = (id: string) =>
         srHintText(screen.getByTestId(`lottery-ticker-${id}-TSLA`));
-      expect(hint('strong-conviction')).toBe(
-        'Conviction cluster that is also cheap (every fire ≤ $1) and pre-PM.',
-      );
-      expect(hint('storm')).toBe(
-        '8 or more fires, a chain with 20 or more re-triggers, or $500K total premium.',
-      );
-      expect(hint('cluster')).toBe(
-        '3 or more cheap OTM ask-side 0DTE strikes. Context only, not a conviction signal.',
-      );
-      expect(hint('strikes')).toBe(
-        'Distinct strike and side pairs; the spread in points is in parentheses.',
-      );
-      expect(hint('bias')).toBe(
-        "Net call versus put bias across this ticker's alerts.",
-      );
-      expect(hint('density')).toBe(
-        'Time from the first to the last alert in this group.',
-      );
-      expect(hint('premium')).toBe(
-        "Sum of trigger-window premium across this ticker's fires",
-      );
-      expect(hint('gated')).toBe(
-        'Alerts demoted to tier 3 by the Market Tide direction gate.',
-      );
-      expect(hint('last')).toBe(
-        'Most recent alert trigger time (CT) for this ticker today.',
-      );
-      // The count, best-peak label and peak value have no testid.
-      expect(
-        srHintText(container.querySelector('[title^="Number of distinct"]')!),
-      ).toBe('Distinct chains today, not raw alert hits.');
-      const peakTitled = Array.from(
-        container.querySelectorAll('[title^="Best peak return"]'),
-      ).map((el) => srHintText(el));
-      expect(peakTitled).toEqual([
-        'Look-ahead reference, not tradeable.',
-        'Best peak return across every alert today.',
-      ]);
+      expect(hint('strong-conviction')).toBe('cheap (≤ $1), before 12:30 CT');
+      expect(hint('storm')).toBe('8+ fires, 20+ re-triggers or $500K');
+      expect(hint('cluster')).toBe('context only, not conviction');
+      expect(hint('bias')).toBe('net calls versus puts');
+      expect(hint('tide')).toBe('Market Tide versus bias');
+      expect(hint('flow')).toBe('ticker net flow versus bias');
+      expect(hint('density')).toBe('first to last alert');
+      expect(hint('gated')).toBe('demoted by the tide gate');
     });
 
-    it('words the high-conviction and was-conviction chips in short hints', () => {
+    it('words the high-conviction and was-conviction hints short', () => {
       renderFullHeader('high');
       expect(
         srHintText(screen.getByTestId('lottery-ticker-conviction-TSLA')),
-      ).toBe(
-        '3 or more fires, one direction, several strikes, within 15 minutes.',
-      );
+      ).toBe('3+ fires, one side, within 15 min');
       cleanup();
 
       renderFullHeader('was');
       expect(
         srHintText(screen.getByTestId('lottery-ticker-was-conviction-TSLA')),
-      ).toMatch(
-        /^Conviction window began at \d\d:\d\d CT with 4 fires; no longer live\.$/,
-      );
+      ).toBe('conviction since dropped');
     });
   });
 });
