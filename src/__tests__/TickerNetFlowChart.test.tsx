@@ -10,6 +10,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, act } from '@testing-library/react';
 import { TickerNetFlowChart } from '../components/charts/TickerNetFlowChart';
+import {
+  srHintText,
+  titledElementsNeedingHint,
+  titledElementsWithoutHint,
+} from './helpers/aria';
 import type {
   NetFlowTick,
   TickerCandle,
@@ -736,6 +741,50 @@ describe('TickerNetFlowChart: UW-style inline header', () => {
       screen.getByRole('group', { name: /net-flow summary for SPY/i }),
     ).toBeInTheDocument();
   });
+
+  // The six metric spans are bare spans with a `title` (mouse-only) inside
+  // the role="group" wrapper; only the wrapper has a role. Rule: an element
+  // with a non-empty title needs an SrHint child, unless it has a role, is
+  // natively interactive or already shows its title text.
+  it('every titled header element has an SrHint child unless it has a role, is natively interactive or already shows its title', () => {
+    const { container } = render(
+      <TickerNetFlowChart
+        series={ticks}
+        candles={[makeCandle({ ts: '2026-05-29T16:37:00Z', close: 757.44 })]}
+        symbol="SPY"
+        ariaLabel="t"
+      />,
+    );
+    expect(titledElementsNeedingHint(container)).toHaveLength(6);
+    expect(titledElementsWithoutHint(container)).toEqual([]);
+  });
+
+  it.each([
+    ['NCP', 'Cumulative Net Call Premium $ (call buys − call sells)'],
+    ['NPP', 'Cumulative Net Put Premium $ (put buys − put sells)'],
+    [
+      'Δ$',
+      'Premium divergence: NCP − NPP. Positive = bull $-flow; negative = bear $-flow.',
+    ],
+    ['NCV', 'Cumulative net call volume (contracts)'],
+    ['NPV', 'Cumulative net put volume (contracts)'],
+    ['Δv', 'Net volume (contracts): NCV − NPV. Bottom-pane series.'],
+  ])(
+    'repeats the %s hover text as hidden text after its value',
+    (label, text) => {
+      render(
+        <TickerNetFlowChart
+          series={ticks}
+          candles={[]}
+          symbol="SPY"
+          ariaLabel="t"
+        />,
+      );
+      const metric = screen.getByText(label).closest('[title]')!;
+      expect(metric).toHaveAttribute('title', text);
+      expect(srHintText(metric)).toBe(text);
+    },
+  );
 
   it('does not render the header in the waiting state', () => {
     render(

@@ -48,6 +48,19 @@ import {
   isDroppedTickTs,
 } from './netflow-time-grid.js';
 import type { Point } from './netflow-time-grid.js';
+import { SrHint } from '../ui/SrHint.js';
+
+// Hover text of the inline header's metric spans. Each is also that span's
+// hidden text (see SrHint), so a screen reader hears what a hover shows, and
+// one string each keeps the two from drifting apart.
+const NCP_TOOLTIP = 'Cumulative Net Call Premium $ (call buys − call sells)';
+const NPP_TOOLTIP = 'Cumulative Net Put Premium $ (put buys − put sells)';
+const PREMIUM_DIVERGENCE_TOOLTIP =
+  'Premium divergence: NCP − NPP. Positive = bull $-flow; negative = bear $-flow.';
+const NCV_TOOLTIP = 'Cumulative net call volume (contracts)';
+const NPV_TOOLTIP = 'Cumulative net put volume (contracts)';
+const NET_VOLUME_TOOLTIP =
+  'Net volume (contracts): NCV − NPV. Bottom-pane series.';
 
 /** Live crosshair readout state — populated on hover, cleared on leave. */
 interface CrosshairReadout {
@@ -745,7 +758,7 @@ function TickerNetFlowChartInner({
           </span>
           <span
             className="inline-flex items-center gap-1.5"
-            title="Cumulative Net Call Premium $ (call buys − call sells)"
+            title={NCP_TOOLTIP}
           >
             <span
               aria-hidden
@@ -755,10 +768,11 @@ function TickerNetFlowChartInner({
             <span className="text-neutral-100">
               {fmtHeaderPremium(headerStats.ncp)}
             </span>
+            <SrHint>{NCP_TOOLTIP}</SrHint>
           </span>
           <span
             className="inline-flex items-center gap-1.5"
-            title="Cumulative Net Put Premium $ (put buys − put sells)"
+            title={NPP_TOOLTIP}
           >
             <span
               aria-hidden
@@ -768,9 +782,10 @@ function TickerNetFlowChartInner({
             <span className="text-neutral-100">
               {fmtHeaderPremium(headerStats.npp)}
             </span>
+            <SrHint>{NPP_TOOLTIP}</SrHint>
           </span>
           {/* Premium divergence — derived, signed color, no dot. */}
-          <span title="Premium divergence: NCP − NPP. Positive = bull $-flow; negative = bear $-flow.">
+          <span title={PREMIUM_DIVERGENCE_TOOLTIP}>
             <span className="text-neutral-400">Δ$</span>{' '}
             <span
               className={
@@ -779,26 +794,29 @@ function TickerNetFlowChartInner({
             >
               {fmtHeaderPremium(headerStats.diff)}
             </span>
+            <SrHint>{PREMIUM_DIVERGENCE_TOOLTIP}</SrHint>
           </span>
           {/* Contract-volume split — distinguishes big-money $ flow from
               retail-contract flow that the dollar Δ alone can hide. */}
-          <span title="Cumulative net call volume (contracts)">
+          <span title={NCV_TOOLTIP}>
             <span className="text-neutral-400">NCV</span>{' '}
             <span className="text-neutral-100">
               {fmtHeaderVol(headerStats.ncv)}
             </span>
+            <SrHint>{NCV_TOOLTIP}</SrHint>
           </span>
-          <span title="Cumulative net put volume (contracts)">
+          <span title={NPV_TOOLTIP}>
             <span className="text-neutral-400">NPV</span>{' '}
             <span className="text-neutral-100">
               {fmtHeaderVol(headerStats.npv)}
             </span>
+            <SrHint>{NPV_TOOLTIP}</SrHint>
           </span>
           {/* Net volume (Δv = NCV − NPV) — the bottom pane's series; slate
               dot maps it to that pane. Signed color. */}
           <span
             className="inline-flex items-center gap-1.5"
-            title="Net volume (contracts): NCV − NPV. Bottom-pane series."
+            title={NET_VOLUME_TOOLTIP}
           >
             <span
               aria-hidden
@@ -812,6 +830,7 @@ function TickerNetFlowChartInner({
             >
               {fmtHeaderVol(headerStats.diffVol)}
             </span>
+            <SrHint>{NET_VOLUME_TOOLTIP}</SrHint>
           </span>
         </div>
       )}
