@@ -23,6 +23,20 @@ _spec.loader.exec_module(ingest_flow)
 
 DAY = "2026-04-24"
 
+
+@pytest.fixture(autouse=True)
+def _default_dirs_stay_under_tmp(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Move the script's default dirs into tmp_path: a run that ignored
+    --archive-dir or --input-dir would otherwise write under the home
+    directory, where the owner's real Bot-EOD archive lives."""
+    monkeypatch.setattr(
+        ingest_flow, "DEFAULT_ARCHIVE_DIR", tmp_path / "default-archive"
+    )
+    monkeypatch.setattr(ingest_flow, "DEFAULT_INPUT_DIR", tmp_path / "default-input")
+
+
 # Shape mirrors actual UW samples: `f`/`t` for `canceled`, a `+00` UTC offset.
 # The AAPL row carries `extended_hours_trade`: the archive keeps every print,
 # so it must survive the run.
@@ -123,6 +137,34 @@ def test_top_underlyings_summary_counts_every_print(
     assert counts == {"SPY": 1, "QQQ": 1, "AAPL": 1}
 
 
+def test_null_underlying_symbol_is_labelled_in_the_summary(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A blank symbol in the CSV is a null in the archive; the summary labels
+    it instead of failing to format it."""
+    blank = ROWS[0].replace(",SPY,SPY260515P", ",,SPY260515P")
+    assert blank != ROWS[0]
+    _write_csv(tmp_path, rows=[blank, *ROWS[1:]])
+
+    assert _run(tmp_path) == 0
+
+    assert "(null)" in capsys.readouterr().out.split("Top 10 underlyings:")[1]
+
+
+def test_summary_failure_keeps_the_csv(tmp_path: Path) -> None:
+    """The summary is computed before the CSV is deleted, so a failure there
+    leaves the CSV in place."""
+    csv = _write_csv(tmp_path)
+
+    with patch.object(
+        pl.LazyFrame, "group_by", side_effect=RuntimeError("summary failed")
+    ):
+        with pytest.raises(RuntimeError, match="summary failed"):
+            _run(tmp_path)
+
+    assert csv.exists()
+
+
 @pytest.mark.parametrize("flag", ["--dry-run", "--skip-archive"])
 def test_retired_flags_are_rejected(tmp_path: Path, flag: str) -> None:
     _write_csv(tmp_path)
@@ -151,6 +193,19 @@ def test_bad_date_exits_2(tmp_path: Path, capsys: pytest.CaptureFixture[str]) ->
     assert "date must be YYYY-MM-DD" in capsys.readouterr().err
 
 
+def test_header_mismatch_writes_no_archive_and_keeps_csv(tmp_path: Path) -> None:
+    """The header is checked before anything is written: a renamed column
+    fails the run by name, leaves no archive, and keeps the CSV."""
+    csv = _write_csv(tmp_path)
+    csv.write_text(csv.read_text().replace(",rho,", ",rho_renamed,", 1))
+
+    with pytest.raises(ValueError, match="rho_renamed"):
+        _run(tmp_path)
+
+    assert csv.exists()
+    assert not _archive(tmp_path).exists()
+
+
 # --- main(): closed enums are checked on the archive ------------------------
 
 
@@ -166,25 +221,72 @@ def test_closed_enums_checked_on_the_archive(tmp_path: Path) -> None:
     assert csv.exists()
 
 
-def test_enum_check_reads_the_archive_not_the_csv(tmp_path: Path) -> None:
-    """A valid CSV next to an existing archive that holds an unknown value
-    fails: the check looks at what is on disk, the archive."""
-    csv = _write_csv(tmp_path)
+def _write_archive(tmp_path: Path, sides: list[str]) -> Path:
+    """An existing archive with one row per entry of `sides`, nothing else
+    the run reads."""
     archive = _archive(tmp_path)
-    archive.parent.mkdir(parents=True)
+    archive.parent.mkdir(parents=True, exist_ok=True)
     pl.DataFrame(
         {
-            "underlying_symbol": ["SPY"],
-            "side": ["lifted"],
-            "option_type": ["put"],
-            "equity_type": ["ETF"],
+            "underlying_symbol": ["SPY"] * len(sides),
+            "side": sides,
+            "option_type": ["put"] * len(sides),
+            "equity_type": ["ETF"] * len(sides),
         }
     ).write_parquet(archive)
+    return archive
+
+
+def test_enum_check_reads_the_archive_not_the_csv(tmp_path: Path) -> None:
+    """A valid CSV next to an existing archive (same row count) that holds an
+    unknown value fails: the check looks at what is on disk, the archive."""
+    csv = _write_csv(tmp_path)
+    _write_archive(tmp_path, ["lifted", "ask", "bid"])
 
     with pytest.raises(ValueError, match="side"):
         _run(tmp_path)
 
     assert csv.exists()
+
+
+# --- main(): a reused archive must match the CSV ----------------------------
+
+
+def test_matching_existing_archive_is_reused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A second run finds the archive with the CSV's row count, leaves it
+    untouched, and still deletes the CSV."""
+    csv = _write_csv(tmp_path)
+    assert _run(tmp_path, "--keep-csv") == 0
+    archive = _archive(tmp_path)
+    written = archive.stat().st_mtime_ns
+    capsys.readouterr()
+
+    assert _run(tmp_path) == 0
+
+    assert "Archive already exists, skipping" in capsys.readouterr().out
+    assert archive.stat().st_mtime_ns == written
+    assert not csv.exists()
+
+
+def test_mismatched_existing_archive_is_not_reused(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An archive with a different row count than the CSV fails the run
+    (exit 2), names both counts and the path, and keeps the CSV."""
+    csv = _write_csv(tmp_path)
+    archive = _write_archive(tmp_path, ["ask"])
+    before = archive.read_bytes()
+
+    rc = _run(tmp_path)
+
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert str(archive) in err
+    assert "has 1 rows but the CSV has 3" in err
+    assert csv.exists()
+    assert archive.read_bytes() == before
 
 
 # --- validate_categoricals ---------------------------------------------------

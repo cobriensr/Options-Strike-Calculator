@@ -7,9 +7,11 @@ the Makefile passes its PARQUET_DIR) and fail by name when it is missing.
 The two `make update` reports skip a day whose file is missing, name it,
 and exit 0 when no day had one. (They also take `--derived-dir`, the per-day
 derived files: test_policy_timing_derive.py.) ingest-flow.py, the writer, takes
-`--archive-dir`, defaulting to where it has always written. The Makefile's
-retired net-flow backfill and its R2 tape targets are checked at the end. The
-enrich scripts' tests are in test_enrich_missing_archive.py. Run:
+`--archive-dir`, defaulting to where it has always written. The `Makefile` and
+`backfill-flow.sh` sections, after the `ingest-flow` one, check the Makefile's
+retired net-flow backfill and R2 tape targets and the loop script over
+ingest-flow.py. The enrich scripts' tests are in
+test_enrich_missing_archive.py. Run:
 
     ml/.venv/Scripts/python -m pytest scripts/test_bot_eod_parquet_dir.py -q
 """
@@ -17,6 +19,7 @@ enrich scripts' tests are in test_enrich_missing_archive.py. Run:
 from __future__ import annotations
 
 import importlib.util
+import os
 import shutil
 import subprocess
 import sys
@@ -379,6 +382,29 @@ def test_makefile_drops_backfill_flow_and_reads_the_tape() -> None:
         for line in day_lines:
             assert line.rstrip().endswith(' --r2'), line
             assert 'source $(ENV_FILE)' in line, line
+    # The same scan over the whole file, so a fourth analyze.py --day line
+    # anywhere (outside the three targets above) is held to --r2 too. The true
+    # count is 3: analyze, analyze-one and dry-run.
+    every_day_line = [
+        line
+        for line in text.splitlines()
+        if 'analyze.py --day' in line and not line.lstrip('\t @').startswith('#')
+    ]
+    assert len(every_day_line) == 3
+    for line in every_day_line:
+        assert line.rstrip().endswith(' --r2'), line
+
+
+def test_nightly_one_reads_the_tape_before_it_ingests() -> None:
+    """analyze-one comes first, so a day whose tape is not in R2 yet fails
+    before ingest deletes its CSV, and a re-run completes it."""
+    _, recipe = _rule(_makefile_text(), 'nightly-one')
+    sub_makes = [line for line in recipe if 'analyze-one' in line]
+    assert len(sub_makes) == 1
+    goals = sub_makes[0].split()
+    assert goals.index('analyze-one') < goals.index('ingest') < goals.index(
+        'enrich-one'
+    )
 
 
 def test_makefile_never_passes_ingest_flow_a_retired_flag() -> None:
@@ -409,6 +435,8 @@ def test_tape_targets_gate_on_the_env_and_not_the_csv() -> None:
     assert _rule(text, 'ingest')[0] == ['check']
     _, check_recipe = _rule(text, 'check')
     assert 'BLOB_READ_WRITE_TOKEN' not in '\n'.join(check_recipe)
+    # `check` guards only `ingest`, and ingest-flow.py reads no env var.
+    assert 'ENV_FILE' not in '\n'.join(check_recipe)
 
 
 def _check_r2_env(
@@ -485,6 +513,141 @@ def test_check_r2_env_needs_a_date(tmp_path: Path) -> None:
     assert done.returncode == 2
     assert 'DATE' in done.stdout + done.stderr
     assert 'sentinel-' not in done.stdout + done.stderr
+
+
+# ── backfill-flow.sh ───────────────────────────────────────────
+
+BACKFILL_SH = SCRIPTS / 'backfill-flow.sh'
+# One UW wire-format row (30 columns), dated 2026-04-24.
+FLOW_ROW = (
+    '2026-04-24 14:00:00.000000+00,SPY,SPY260515P00650000,ask,650,put,2026-05-15,'
+    '710.76,1.25,1.35,1.25,1.35,1.30,3,390,3,121751,0.25,-0.07,-0.14,0.003,0.225,'
+    '-0.029,1.30,,XPHO,{},f,auto,ETF'
+)
+
+
+def _bash() -> str | None:
+    """A bash that takes Windows paths: Git's on Windows (PATH's `bash` can be
+    the WSL launcher), PATH's elsewhere. None when there isn't one."""
+    if os.name != 'nt':
+        return shutil.which('bash')
+    git = shutil.which('git')
+    if git is None:
+        return None
+    for root in Path(git).resolve().parents[1:3]:
+        candidate = root / 'bin' / 'bash.exe'
+        if candidate.is_file():
+            return str(candidate)
+    return None
+
+
+needs_bash = pytest.mark.skipif(_bash() is None, reason='no usable bash')
+
+
+def _flow_csv(csvs: Path, day: str, renamed: str | None = None) -> Path:
+    """A one-row bot-eod CSV for `day`; `renamed` breaks that header column."""
+    columns = [
+        f'{name}_renamed' if name == renamed else name
+        for name in ingest_flow.FLOW_SCHEMA
+    ]
+    path = csvs / f'bot-eod-report-{day}.csv'
+    path.write_text(
+        ','.join(columns) + '\n' + FLOW_ROW.replace('2026-04-24', day) + '\n'
+    )
+    return path
+
+
+def _backfill(tmp_path: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    """Run backfill-flow.sh over tmp_path's CSV dir, writing archives under
+    tmp_path, with no Blob token in the environment."""
+    home = tmp_path / 'home'
+    env = {
+        **os.environ,
+        'INPUT_DIR': (tmp_path / 'csvs').as_posix(),
+        'PYTHON': Path(sys.executable).as_posix(),
+        'PYTHONUTF8': '1',  # the ingest prints arrows; a Windows pipe is cp1252
+        # A run that loses --archive-dir would write to ~/Desktop/Bot-Eod-parquet,
+        # the owner's real archive. Point the home directory into tmp_path so
+        # even that lands under it.
+        'HOME': home.as_posix(),
+        'USERPROFILE': str(home),
+    }
+    env.pop('BLOB_READ_WRITE_TOKEN', None)
+    bash = _bash()
+    assert bash is not None
+    return subprocess.run(
+        [
+            bash,
+            BACKFILL_SH.as_posix(),
+            '--archive-dir',
+            (tmp_path / 'archive').as_posix(),
+            *args,
+        ],
+        cwd=SCRIPTS.parent,
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding='utf-8',
+        timeout=120,
+        check=False,
+    )
+
+
+def test_backfill_script_no_longer_mentions_blob_or_dry_run() -> None:
+    text = BACKFILL_SH.read_text(encoding='utf-8')
+    assert 'BLOB_READ_WRITE_TOKEN' not in text
+    assert 'Blob' not in text
+    assert '--dry-run' not in text
+
+
+@needs_bash
+def test_backfill_script_ingests_every_csv_with_no_blob_token(
+    tmp_path: Path,
+) -> None:
+    csvs = tmp_path / 'csvs'
+    csvs.mkdir()
+    days = ('2026-04-23', '2026-04-24')
+    for day in days:
+        _flow_csv(csvs, day)
+
+    done = _backfill(tmp_path)
+
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert 'Processed 2 file(s)' in done.stdout
+    for day in days:
+        assert (tmp_path / 'archive' / f'{day}-trades.parquet').is_file()
+        assert not (csvs / f'bot-eod-report-{day}.csv').exists()
+
+
+@needs_bash
+def test_backfill_script_passes_keep_csv_through(tmp_path: Path) -> None:
+    csvs = tmp_path / 'csvs'
+    csvs.mkdir()
+    csv = _flow_csv(csvs, '2026-04-24')
+
+    done = _backfill(tmp_path, '--keep-csv')
+
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert csv.is_file()
+    assert (tmp_path / 'archive' / '2026-04-24-trades.parquet').is_file()
+
+
+@needs_bash
+def test_backfill_script_stops_at_the_first_failure(tmp_path: Path) -> None:
+    """The earlier date has a broken header: the run fails, and the later
+    date is neither ingested nor deleted."""
+    csvs = tmp_path / 'csvs'
+    csvs.mkdir()
+    bad = _flow_csv(csvs, '2026-04-23', renamed='rho')
+    later = _flow_csv(csvs, '2026-04-24')
+
+    done = _backfill(tmp_path)
+
+    assert done.returncode != 0
+    assert 'rho_renamed' in done.stderr
+    assert bad.is_file()
+    assert later.is_file()
+    assert not (tmp_path / 'archive' / '2026-04-24-trades.parquet').exists()
 
 
 # ── exit_policy_search ─────────────────────────────────────────

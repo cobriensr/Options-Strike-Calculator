@@ -1,25 +1,27 @@
 #!/usr/bin/env bash
 #
-# Backfill the EOD options flow Parquet archive from local CSVs.
+# Ingest every local EOD options flow CSV into the Bot-EOD archive.
 #
-# Walks $INPUT_DIR for files matching bot-eod-report-YYYY-MM-DD.csv and
-# runs scripts/ingest-flow.py against each in date order. Sequential by
-# design: each ingest is dominated by Blob upload throughput, parallelism
-# would just contend on the same uplink.
+# Walks $INPUT_DIR for files matching bot-eod-report-YYYY-MM-DD.csv and runs
+# scripts/ingest-flow.py against each, oldest date first, one at a time. Each
+# run writes that date's {date}-trades.parquet to the archive dir
+# (ingest-flow's default, ~/Desktop/Bot-Eod-parquet, unless you pass
+# --archive-dir) and then deletes the CSV. Nothing is uploaded, and no token or
+# env file is needed.
 #
-# Idempotent via the script's own delete-after-upload behavior — once a
-# CSV is gone, it's already in Blob. Pre-existing parquet files at the
-# Blob target path will be overwritten (allowOverwrite=true).
+# Re-runnable: a date whose CSV is gone is not seen again. An archive parquet
+# that already exists is reused only when its row count matches the CSV;
+# otherwise that date fails (exit 2) and its CSV is kept.
 #
-# Stops on the FIRST failure (set -e + explicit exit). A single bad day
-# should not silently skip and corrupt the date sequence — the operator
-# decides what to do.
+# Stops on the FIRST failure (set -e). A single bad day should not silently
+# skip and corrupt the date sequence — the operator decides what to do.
 #
 # Usage:
-#   set -a; source .env.local; set +a       # export BLOB_READ_WRITE_TOKEN
-#   bash scripts/backfill-flow.sh            # process all CSVs in default dir
-#   bash scripts/backfill-flow.sh --keep-csv # preserve source CSVs
-#   bash scripts/backfill-flow.sh --dry-run  # local Parquet only, no upload
+#   bash scripts/backfill-flow.sh                       # every CSV in the default dir
+#   bash scripts/backfill-flow.sh --keep-csv            # preserve source CSVs
+#   bash scripts/backfill-flow.sh --archive-dir <dir>   # write the archive elsewhere
+#
+# Every argument is passed to scripts/ingest-flow.py unchanged.
 #
 # Env:
 #   INPUT_DIR — defaults to ~/Downloads/EOD-OptionFlow
@@ -43,14 +45,6 @@ fi
 
 if [[ ! -x "$PYTHON" ]]; then
   echo "ERROR: Python interpreter not executable: $PYTHON" >&2
-  exit 2
-fi
-
-# Pre-flight token check unless this is a dry run. Catches the
-# missing-env case ONCE upfront instead of failing on every CSV.
-if [[ " $* " != *" --dry-run "* ]] && [[ -z "${BLOB_READ_WRITE_TOKEN:-}" ]]; then
-  echo "ERROR: BLOB_READ_WRITE_TOKEN not set." >&2
-  echo "Run: set -a; source .env.local; set +a" >&2
   exit 2
 fi
 

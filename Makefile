@@ -2,8 +2,9 @@
 #
 # The Railway `nightly` job builds the flow research outputs every night from
 # the Full Tape in R2 and writes them to R2 `research/`. The targets here are
-# the local counterpart. Nothing a local target writes is committed: the
-# tracked by-day parquets are frozen history, and only the plots stay tracked.
+# the local counterpart. No new by-day parquet or report is committed: the
+# tracked by-day parquets are frozen history, and only the plots stay tracked
+# (`make plots` rewrites them).
 #
 # Default usage (after dropping new CSV(s) into ~/Downloads/EOD-OptionFlow/):
 #
@@ -104,6 +105,9 @@ help:
 	@echo "                                but parquets are on disk (CSV consumed by a previous"
 	@echo "                                invocation). Run as 'make nightly update' to chain the"
 	@echo "                                research refresh after."
+	@echo "                                A date needs its tape in R2, which lands after the 07:15"
+	@echo "                                UTC Railway run: an earlier run fails that date, keeps its"
+	@echo "                                CSV, and a re-run completes it."
 	@echo "  make nightly DATE=YYYY-MM-DD  Run pipeline for one specific date (no loop)"
 	@echo "  make download-fulltape        Download UW Full Tape zip → ~/Downloads/EOD-FullTape/"
 	@echo "                                fulltape-DATE.csv (40-col raw tape, separate schema"
@@ -124,7 +128,8 @@ help:
 	@echo "  make tune                     Heavy parameter grid for flow-inversion (~25m). Run weekly,"
 	@echo "                                not nightly — same dataset every night doesn't move the answer."
 	@echo "  make dry-run                  Run analyze + ingest --keep-csv + plots"
-	@echo "  make check                    Sanity-check date detection and env"
+	@echo "  make check                    Sanity-check date detection, the CSV and the venv (the"
+	@echo "                                guard for ingest)"
 	@echo "  make py-test-cov              Run all 3 Python suites with coverage,"
 	@echo "                                fail-fast (ml, sidecar, uw-stream)"
 	@echo ""
@@ -133,6 +138,9 @@ help:
 	@echo "  CSV_PATH   = $(CSV_PATH)"
 	@echo "  INPUT_DIR  = $(INPUT_DIR)"
 
+# The guard for `ingest`, its only user: the CSV and the venv. No env file,
+# because ingest-flow.py reads no environment variable (the tape targets use
+# `check-r2-env` below).
 check:
 	@echo "→ Sanity checks"
 	@if [[ -z "$(DATE)" ]]; then \
@@ -143,10 +151,6 @@ check:
 	  echo "  ❌ CSV not found: $(CSV_PATH)"; \
 	  exit 2; \
 	fi
-	@if [[ ! -f "$(ENV_FILE)" ]]; then \
-	  echo "  ❌ $(ENV_FILE) not found"; \
-	  exit 2; \
-	fi
 	@if [[ ! -x "$(PYTHON)" ]]; then \
 	  echo "  ❌ Python venv not found at $(PYTHON)"; \
 	  exit 2; \
@@ -154,7 +158,6 @@ check:
 	@echo "  ✅ DATE       = $(DATE)"
 	@echo "  ✅ CSV_PATH   = $(CSV_PATH) ($$(du -h "$(CSV_PATH)" | cut -f1))"
 	@echo "  ✅ Python     = $(PYTHON)"
-	@echo "  ✅ Env file   = $(ENV_FILE)"
 
 # Env-only gate for the targets that read the Full Tape from R2 (analyze,
 # analyze-one, dry-run). They never read the bot-eod CSV, so they skip `check`,
@@ -481,6 +484,7 @@ endif
 #
 # Per-date `analyze` passes --no-rollup; the cumulative rollup is regenerated
 # once at the end of the loop in `nightly`'s closing pass.
+# analyze-one goes first and needs the day's tape in R2 (it lands after the 07:15 UTC Railway run): an earlier run fails the date with its CSV kept, and a re-run completes it.
 nightly-one:
 	@if [[ -z "$(DATE)" ]]; then \
 	  echo "❌ nightly-one requires DATE=YYYY-MM-DD"; \

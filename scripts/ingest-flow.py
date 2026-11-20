@@ -187,9 +187,27 @@ def main(argv: list[str] | None = None) -> int:
 
     archive_path = archive_parquet_path(args.date, args.archive_dir)
     if archive_path.exists():
+        # Reuse it only if it holds this CSV's rows: the CSV is deleted below,
+        # so an archive of some other file would otherwise be locked in.
+        archive_rows = (
+            pl.scan_parquet(archive_path)
+            .select(pl.len())
+            .collect(engine="streaming")
+            .item()
+        )
+        if archive_rows != raw_count:
+            print(
+                f"ERROR: existing archive {archive_path} has {archive_rows:,} rows "
+                f"but the CSV has {raw_count:,}; not reusing it, and the CSV is "
+                "kept. Delete the archive to rewrite it from the CSV, or check "
+                "which of the two is right.",
+                file=sys.stderr,
+            )
+            return 2
         print(
             f"→ Archive already exists, skipping: {archive_path} "
-            f"({archive_path.stat().st_size / 1024**2:.1f} MB)"
+            f"({archive_path.stat().st_size / 1024**2:.1f} MB, "
+            f"{archive_rows:,} rows, same as the CSV)"
         )
     else:
         print(f"→ Writing full archive Parquet: {archive_path}")
@@ -210,10 +228,7 @@ def main(argv: list[str] | None = None) -> int:
         .collect(engine="streaming")
     )
 
-    if not args.keep_csv:
-        print(f"→ Deleting source CSV: {csv_path}")
-        csv_path.unlink()
-
+    # Computed before the CSV is deleted, so a failure here leaves it in place.
     tops = (
         archive.group_by("underlying_symbol")
         .len()
@@ -221,9 +236,15 @@ def main(argv: list[str] | None = None) -> int:
         .head(10)
         .collect(engine="streaming")
     )
+
+    if not args.keep_csv:
+        print(f"→ Deleting source CSV: {csv_path}")
+        csv_path.unlink()
+
     print("\nTop 10 underlyings:")
     for sym, n in tops.iter_rows():
-        print(f"  {sym:<10} {n:>10,}")
+        label = "(null)" if sym is None else sym
+        print(f"  {label:<10} {n:>10,}")
 
     return 0
 
