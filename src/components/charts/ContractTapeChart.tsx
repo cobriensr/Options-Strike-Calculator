@@ -32,6 +32,7 @@
 import { memo, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { ContractTapeBar } from '../LotteryFinder/types.js';
 import { viewBoxHeightFor } from '../../constants/chart-layout.js';
+import { SrHint } from '../ui/SrHint.js';
 
 interface ContractTapeChartProps {
   /** Per-minute bars from /api/lottery-contract-tape. */
@@ -360,11 +361,9 @@ function ContractTapeChartInner({
 
   if (layout == null) {
     return (
-      <div
-        className="font-mono text-[9px] text-neutral-500"
-        aria-label={ariaLabel}
-      >
+      <div className="font-mono text-[9px] text-neutral-500">
         no tape data — daemon may not have indexed this contract
+        <SrHint>{ariaLabel}</SrHint>
       </div>
     );
   }

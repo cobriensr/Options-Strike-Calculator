@@ -3,6 +3,7 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import { ContractTapeChart } from '../components/charts/ContractTapeChart';
 import { viewBoxHeightFor } from '../constants/chart-layout';
 import type { ContractTapeBar } from '../components/LotteryFinder/types';
+import { genericElementsWithAriaLabel, srHintText } from './helpers/aria';
 
 // ── Fixture factory ──────────────────────────────────────────
 
@@ -33,11 +34,15 @@ describe('ContractTapeChart: empty state', () => {
     ).toBeInTheDocument();
   });
 
-  it('exposes the aria-label on the empty placeholder', () => {
-    render(
+  it('names the empty placeholder with hidden text, not an aria-label', () => {
+    // The placeholder is a bare div, so an aria-label on it would be
+    // prohibited and mostly ignored; the chart's name is text inside it.
+    const { container } = render(
       <ContractTapeChart series={[]} ariaLabel="AAPL 200C tape (empty)" />,
     );
-    expect(screen.getByLabelText('AAPL 200C tape (empty)')).toBeInTheDocument();
+    const placeholder = screen.getByText(/no tape data/i);
+    expect(srHintText(placeholder)).toBe('AAPL 200C tape (empty)');
+    expect(genericElementsWithAriaLabel(container)).toEqual([]);
   });
 });
 
