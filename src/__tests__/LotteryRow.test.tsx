@@ -8,18 +8,24 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, within } from '@testing-library/react';
+import {
+  render,
+  screen,
+  fireEvent,
+  getNodeText,
+  within,
+} from '@testing-library/react';
 import type {
   LotteryFire,
   LotteryFireMacro,
   LotteryTickerStats,
 } from '../components/LotteryFinder/types';
+import { EXIT_POLICY_TOOLTIPS } from '../components/LotteryFinder/types';
 import {
   genericElementsWithAriaLabel,
   squashText,
   srHintText,
   titledElementsNeedingHint,
-  titledElementsWithoutHint,
 } from './helpers/aria';
 
 // ── Mocks ─────────────────────────────────────────────────────────────
@@ -800,9 +806,15 @@ describe('LotteryRow: exit-policy fallback', () => {
         marketOpen={false}
       />,
     );
-    // Both realized and peak are null → at least two em-dashes appear in the
-    // realized + peak block. We assert that "—" is present at least once.
-    expect(screen.getAllByText(/—/).length).toBeGreaterThan(0);
+    // Every hint span's own text is " — <hint>", so a /—/ regex matches the
+    // row whatever it prints for a null. Read the realized figure's own text
+    // nodes instead (getNodeText leaves out its hint child), and match the
+    // peak chip's exact text.
+    const realized = screen.getByTitle(
+      EXIT_POLICY_TOOLTIPS.realizedFlowInversionPct,
+    );
+    expect(getNodeText(realized)).toBe('—');
+    expect(screen.getByText('peak —')).toBeInTheDocument();
   });
 
   it('shows the EOD fallback when the selected policy is null but realizedEodPct is populated', () => {
@@ -2587,10 +2599,30 @@ describe('LotteryRow: badge explanations reach screen readers', () => {
     );
   });
 
+  /** The one titled element left without a hint, pinned exactly: the expiry
+   *  chip inside the UW contract link. Its text already shows the expiry and
+   *  the DTE, and the link's accessible name is built from its content, so a
+   *  hint would only repeat them. It keeps its `title` for the mouse. A
+   *  second unhinted element, or a different one, fails here. */
+  const expiryChip = (container: HTMLElement): Element => {
+    const chips = titledElementsNeedingHint(container).filter(
+      (el) => srHintText(el) == null,
+    );
+    expect(chips).toHaveLength(1);
+    const chip = chips[0]!;
+    expect(chip.closest('a[href]')).not.toBeNull();
+    expect(chip.getAttribute('title')).toMatch(
+      /^Expires \d\d\/\d\d\/\d{4} — 0DTE \(same day\)$/,
+    );
+    expect(chip.textContent).toBe('5/8 · 0D');
+    return chip;
+  };
+
   // The rule, precisely: an element with a non-empty `title` needs an
   // SrHint as a direct child, unless it has a role, is natively interactive
   // (button, a[href], input, select, textarea, summary) or already shows its
-  // title text. `title` alone is mouse-only.
+  // title text. `title` alone is mouse-only. The one exception is the expiry
+  // chip inside the UW contract link (see `expiryChip`).
   it.each(['tailwind', 'inverted', 'pending'] as const)(
     'a fully badged row (%s): every titled element has an SrHint child unless it has a role, is natively interactive or already shows its title',
     (variant) => {
@@ -2618,21 +2650,43 @@ describe('LotteryRow: badge explanations reach screen readers', () => {
         expect(screen.getByText('DTE')).toBeInTheDocument(); // SHAP flag chip
       }
 
-      expect(titledElementsWithoutHint(container)).toEqual([]);
+      // The expiry chip is the only exception, pinned by `expiryChip`.
+      expect(expiryChip(container)).toBeDefined();
     },
   );
 
-  it('a fully badged row: a hint repeats its hover text word for word, except the terse GEXBot and sibling-pill hints', () => {
+  it('a fully badged row: a hint repeats its hover text word for word, except the terse GEXBot and sibling-pill hints and the expiry chip', () => {
     const { container } = renderFullyBadged('inverted');
     const needing = titledElementsNeedingHint(container);
     // Guards against passing by finding nothing to compare.
     expect(needing.length).toBeGreaterThan(30);
+    const expiry = expiryChip(container);
     for (const el of needing) {
       const id = el.getAttribute('data-testid') ?? '';
-      if (/^(lottery-gex-badge|sibling-pill-)/.test(id)) continue;
+      if (/^(lottery-gex-badge|sibling-pill-)/.test(id) || el === expiry) {
+        continue;
+      }
       expect(squashText(srHintText(el)), el.outerHTML.slice(0, 100)).toBe(
         squashText(el.getAttribute('title')),
       );
     }
+  });
+
+  it('names the UW contract link by its ticker, strike and Call/Put, without repeating the expiry its chip shows', () => {
+    renderFullyBadged('tailwind');
+    const link = screen
+      .getAllByRole('link')
+      .find(
+        (el) =>
+          el.getAttribute('title') ===
+          'Open AAPL260508C00200000 on Unusual Whales',
+      );
+    expect(link).toBeDefined();
+    // The visible "C" is an abbreviation, so its hint stays.
+    expect(link).toHaveAccessibleName(/200\s*C\s*— Call/);
+    // The chip's own text carries the expiry and the DTE; its hover
+    // sentence is not part of the name.
+    expect(link).toHaveAccessibleName(/5\/8 · 0D$/);
+    expect(link).not.toHaveAccessibleName(/Expires/);
   });
 });
