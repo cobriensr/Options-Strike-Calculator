@@ -455,7 +455,10 @@ const APPLY_SQL = `
 /**
  * Put the backed-up values back. Conditional on the row differing from its
  * backed-up value, so a row already restored is skipped and a second undo
- * writes nothing.
+ * writes nothing. The row's own underlying_symbol must be one of
+ * SPLIT_REPAIRS' tickers ($3), not just the label the backup file carries
+ * (undoPlan checks that), so a hand-edited file can't restore another
+ * ticker's row.
  */
 const RESTORE_SQL = `
   WITH restored AS (
@@ -463,6 +466,7 @@ const RESTORE_SQL = `
     SET range_pos_at_trigger = v.old_pos
     FROM unnest($1::bigint[], $2::numeric[]) AS v(id, old_pos)
     WHERE f.id = v.id
+      AND f.underlying_symbol = ANY($3::text[])
       AND f.range_pos_at_trigger IS DISTINCT FROM v.old_pos
     RETURNING 1
   )
@@ -512,8 +516,13 @@ export function applyInBatches(sql, rows) {
 
 /** `rows` are `{ id, old }` from undoPlan. */
 export function restoreInBatches(sql, rows) {
+  const tickers = SPLIT_REPAIRS.map((r) => r.ticker);
   return inBatches(rows, (batch) =>
-    sql.query(RESTORE_SQL, [batch.map((r) => r.id), batch.map((r) => r.old)]),
+    sql.query(RESTORE_SQL, [
+      batch.map((r) => r.id),
+      batch.map((r) => r.old),
+      tickers,
+    ]),
   );
 }
 
@@ -524,7 +533,13 @@ async function writeBackup(rows, say) {
   const file = backupPath(createdAt);
   const doc = buildBackup({ rows, createdAt });
   await mkdir(dirname(file), { recursive: true });
-  await writeFile(file, `${JSON.stringify(doc, null, 2)}\n`, 'utf8');
+  // 'wx': a file already at this path is an error, never overwritten. The
+  // name has one-second resolution, so a second run in the same second, or a
+  // stale file, must not replace an earlier run's record of the values.
+  await writeFile(file, `${JSON.stringify(doc, null, 2)}\n`, {
+    encoding: 'utf8',
+    flag: 'wx',
+  });
   verifyBackupText(doc, await readFile(file, 'utf8'));
   say(`backup: ${file} (${doc.rows.length} rows, read back OK)`);
   return file;

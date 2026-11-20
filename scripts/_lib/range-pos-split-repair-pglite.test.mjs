@@ -33,7 +33,14 @@ const mocks = vi.hoisted(() => {
     files,
     fetchDayCandles: vi.fn(),
     mkdir: vi.fn(async () => undefined),
-    writeFile: vi.fn(async (path, text) => {
+    // Honors flag 'wx' like fs: an existing path is an error, not an overwrite.
+    writeFile: vi.fn(async (path, text, options) => {
+      if (options?.flag === 'wx' && files.has(path)) {
+        throw Object.assign(
+          new Error(`EEXIST: file already exists, open '${path}'`),
+          { code: 'EEXIST' },
+        );
+      }
       files.set(path, text);
     }),
     readFile: vi.fn(async (path) => {
@@ -405,6 +412,32 @@ describe('restoreInBatches', () => {
     expect(second).toEqual([{ size: 1, written: 0 }]);
     expect(await stored()).toEqual({ 1: null });
   });
+
+  it("does not restore a row of another ticker, whatever the backup's own label says", async () => {
+    await insertFire({
+      id: '1',
+      ticker: 'AAPL',
+      date: '2026-05-19',
+      spot: 200,
+      old: '0.7',
+    }); // labelled CRWD in the backup
+    await insertFire({
+      id: '2',
+      ticker: 'CRWD',
+      date: '2026-05-19',
+      spot: 620,
+      old: '0.7',
+    }); // really CRWD
+    const results = [];
+    for await (const r of restoreInBatches(makeSql(), [
+      back('1', '1'),
+      back('2', '1'),
+    ])) {
+      results.push(r);
+    }
+    expect(results).toEqual([{ size: 2, written: 1 }]);
+    expect(await stored()).toEqual({ 1: '0.7', 2: '1' });
+  });
 });
 
 // ── The two runs ───────────────────────────────────────────
@@ -674,6 +707,22 @@ describe('runRepair', () => {
     );
   });
 
+  it('aborts before any write, and keeps the old file, when a backup of the same name already exists', async () => {
+    frozenClock();
+    await seedWorld();
+    uwAnswers();
+    mocks.files.set(BACKUP_FILE, 'the backup from an earlier run');
+    const sql = makeSql();
+    await expect(
+      runRepair({ sql, apiKey: 'k', apply: true, say: collect().say }),
+    ).rejects.toThrow(/EEXIST/);
+    expect(mocks.files.get(BACKUP_FILE)).toBe('the backup from an earlier run');
+    expect(await stored()).toEqual(ORIGINAL);
+    expect(sql.query.mock.calls.some(([text]) => /UPDATE/i.test(text))).toBe(
+      false,
+    );
+  });
+
   it('aborts before any write when the backup does not read back the same', async () => {
     await seedWorld();
     uwAnswers();
@@ -814,6 +863,32 @@ describe('runUndo', () => {
     expect(lines.join('\n')).toContain(
       'rejected 1 row(s) of tickers outside SPLIT_REPAIRS',
     );
+  });
+
+  it('leaves a row alone when a hand-edited backup labels the id of an AAPL row as CRWD', async () => {
+    await seedWorld();
+    mocks.files.set(
+      BACKUP_FILE,
+      JSON.stringify({
+        version: 1,
+        rows: [
+          { id: '3002', ticker: 'CRWD', old: '0.1' }, // really AAPL
+          { id: '1001', ticker: 'CRWD', old: '0.2' },
+        ],
+      }),
+    );
+
+    const result = await runUndo({
+      sql: makeSql(),
+      backupPath: BACKUP_FILE,
+      apply: true,
+      say: collect().say,
+    });
+
+    const after = await stored();
+    expect(after['3002']).toBe('1'); // AAPL row left alone
+    expect(after['1001']).toBe('0.2');
+    expect(result.restored).toBe(1);
   });
 
   it('fails on a missing file and on a backup it cannot read', async () => {
