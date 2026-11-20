@@ -362,9 +362,11 @@ export function useOpeningFlowSignal(date?: string): State & {
     setCachedData(loadCache(effectiveDate));
     // Reset the in-memory `data` so stale fetches from the previous
     // date don't bleed through as the new effective payload while the
-    // fresh fetch is in flight.
+    // fresh fetch is in flight. A change of access mode resets it too:
+    // data or an error held from before a drop to public must not be
+    // what a visitor who signs back in sees until the new fetch lands.
     setState(INITIAL_STATE);
-  }, [effectiveDate]);
+  }, [effectiveDate, isPublic]);
 
   // Eager fetch on mount / date change. Live mode ALWAYS fetches once,
   // even outside the polling window — otherwise loading the page at 9 AM

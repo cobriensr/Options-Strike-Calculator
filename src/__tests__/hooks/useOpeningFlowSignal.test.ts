@@ -83,6 +83,21 @@ function seedLiveCache(data: unknown): void {
   );
 }
 
+/** renderHook, plus every value the hook returned, one per render. */
+function renderRecorded() {
+  const renders: ReturnType<typeof useOpeningFlowSignal>[] = [];
+  const rendered = renderHook(() => {
+    const value = useOpeningFlowSignal();
+    renders.push(value);
+    return value;
+  });
+  return { ...rendered, renders };
+}
+
+function notOkResponse(status: number): Response {
+  return { ok: false, status, json: async () => ({}) } as Response;
+}
+
 function seedHistoricalCache(data: unknown): void {
   localStorage.setItem(
     HISTORICAL_KEY,
@@ -433,18 +448,68 @@ describe('useOpeningFlowSignal: public visitor', () => {
     mockGetAccessMode.mockReturnValue('guest');
     const body = makeResponse();
     fetchMock.mockResolvedValue(okResponse(body));
-    const { result, rerender } = renderHook(() => useOpeningFlowSignal());
+    const { result, rerender, renders } = renderRecorded();
     await waitFor(() => {
       expect(result.current.displayData).toEqual(body);
     });
 
+    const before = renders.length;
     mockGetAccessMode.mockReturnValue('public');
     rerender();
 
+    // The first render after the drop commits before any effect runs, so it
+    // is the one that would paint the held payload: it must already be empty.
+    expect(renders[before]?.data).toBeNull();
+    expect(renders[before]?.displayData).toBeNull();
     expect(result.current.data).toBeNull();
     expect(result.current.displayData).toBeNull();
     expect(result.current.error).toBeNull();
     expect(result.current.loading).toBe(false);
+  });
+
+  it('hides an error left in memory once the visitor drops to public', async () => {
+    mockGetAccessMode.mockReturnValue('guest');
+    fetchMock.mockResolvedValue(notOkResponse(401));
+    const { result, rerender, renders } = renderRecorded();
+    await waitFor(() => {
+      expect(result.current.error).toBe('HTTP 401');
+    });
+
+    const before = renders.length;
+    mockGetAccessMode.mockReturnValue('public');
+    rerender();
+
+    expect(renders[before]?.error).toBeNull();
+    expect(result.current.error).toBeNull();
+    expect(result.current.loading).toBe(false);
+  });
+
+  it('starts clean, not from the earlier session, when the visitor signs back in', async () => {
+    mockGetAccessMode.mockReturnValue('guest');
+    const body = makeResponse();
+    fetchMock
+      .mockResolvedValueOnce(okResponse(body))
+      // The second sign-in's fetch never settles, so only state the hook kept
+      // from before the drop can show up as `data`.
+      .mockReturnValueOnce(new Promise(() => {}));
+    const { result, rerender } = renderHook(() => useOpeningFlowSignal());
+    await waitFor(() => {
+      expect(result.current.data).toEqual(body);
+    });
+
+    mockGetAccessMode.mockReturnValue('public');
+    rerender();
+    mockGetAccessMode.mockReturnValue('guest');
+    rerender();
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+    expect(result.current.data).toBeNull();
+    expect(result.current.fetchedAt).toBeNull();
+    expect(result.current.loading).toBe(true);
+    // The last-good cache slot still serves the panel meanwhile.
+    expect(result.current.displayData).toEqual(body);
   });
 
   it('aborts the request in flight on a drop to public, and stores nothing from its late reply', async () => {
@@ -586,6 +651,72 @@ describe.each(['owner', 'guest'] as const satisfies readonly AccessMode[])(
       const { result } = renderHook(() => useOpeningFlowSignal());
 
       expect(result.current.displayData).toEqual(cached);
+    });
+
+    it('surfaces a non-2xx reply by name and keeps the cached payload', async () => {
+      const cached = makeResponse();
+      seedLiveCache(cached);
+      fetchMock.mockResolvedValue(notOkResponse(401));
+
+      const { result } = renderHook(() => useOpeningFlowSignal());
+
+      await waitFor(() => {
+        expect(result.current.error).toBe('HTTP 401');
+      });
+      expect(result.current.loading).toBe(false);
+      expect(result.current.data).toBeNull();
+      expect(result.current.displayData).toEqual(cached);
+      const stored = JSON.parse(localStorage.getItem(LIVE_KEY)!) as {
+        data: OpeningFlowResponse;
+      };
+      expect(stored.data).toEqual(cached);
+    });
+
+    it('surfaces a rejected fetch by name and keeps the cached payload', async () => {
+      const cached = makeResponse();
+      seedLiveCache(cached);
+      fetchMock.mockRejectedValue(new Error('network down'));
+
+      const { result } = renderHook(() => useOpeningFlowSignal());
+
+      await waitFor(() => {
+        expect(result.current.error).toBe('network down');
+      });
+      expect(result.current.loading).toBe(false);
+      expect(result.current.data).toBeNull();
+      expect(result.current.displayData).toEqual(cached);
+    });
+
+    it('does not fetch again on a plain re-render once the first fetch settles', async () => {
+      fetchMock.mockResolvedValue(okResponse(makeResponse()));
+      const { result, rerender } = renderHook(() => useOpeningFlowSignal());
+      await waitFor(() => {
+        expect(result.current.data).not.toBeNull();
+      });
+
+      rerender();
+      rerender();
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not fetch again when the mode flips between owner and guest', async () => {
+      fetchMock.mockResolvedValue(okResponse(makeResponse()));
+      const { result, rerender } = renderHook(() => useOpeningFlowSignal());
+      await waitFor(() => {
+        expect(result.current.data).not.toBeNull();
+      });
+
+      mockGetAccessMode.mockReturnValue(mode === 'owner' ? 'guest' : 'owner');
+      rerender();
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
     });
   },
 );
