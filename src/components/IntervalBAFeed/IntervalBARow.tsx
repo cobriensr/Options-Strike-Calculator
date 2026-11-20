@@ -41,8 +41,9 @@ interface IntervalBARowProps {
   date: string;
   /**
    * Whether the market is open: the feed's own `marketOpen`, which App fills
-   * from the Schwab quotes' flag. It is not "the date is today": the lazy
-   * hooks poll only when this is true AND `date` is today.
+   * with `liveMarketOpen` (the client clock, holiday and half-day aware, and an
+   * owner or guest viewer). It is not "the date is today": the lazy hooks poll
+   * only when this is true AND `date` is today.
    */
   marketOpen: boolean;
 }

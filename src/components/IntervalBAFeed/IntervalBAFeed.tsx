@@ -58,9 +58,11 @@ function formatFetchedAtCT(ms: number): string {
 
 interface IntervalBAFeedProps {
   /**
-   * Whether the user's session is live (drives polling on the lazy
-   * tape/flow hooks inside expanded rows). Defaults to false so the
-   * component is usable in tests and SSR without prop wiring.
+   * Whether the market is open for this viewer: App passes `liveMarketOpen`
+   * (the client clock, holiday and half-day aware, and an owner or guest). The
+   * feed polls when it is true and the date shown is today, and so do the lazy
+   * tape/flow hooks inside expanded rows. Defaults to false so the component is
+   * usable in tests and SSR without prop wiring.
    */
   marketOpen?: boolean;
 }
