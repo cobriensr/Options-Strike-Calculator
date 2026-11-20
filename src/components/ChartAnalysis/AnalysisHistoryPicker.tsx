@@ -35,6 +35,8 @@ interface Props {
   readonly onRunIndexChange: (index: number) => void;
   readonly selectedAnalysis: AnalysisEntry | null;
   readonly loading: boolean;
+  /** Set when the selected date's analyses failed to load. */
+  readonly analysesError: string | null;
   readonly filteredAnalysesCount: number;
 }
 
@@ -88,6 +90,7 @@ export default function AnalysisHistoryPicker({
   onRunIndexChange,
   selectedAnalysis,
   loading,
+  analysesError,
   filteredAnalysesCount,
 }: Props) {
   return (
@@ -269,19 +272,25 @@ export default function AnalysisHistoryPicker({
         <AnalysisHistoryItem analysis={selectedAnalysis} />
       )}
 
-      {/* ── Empty state ───────────────────────────────────── */}
-      {selectedDate && !loading && filteredAnalysesCount === 0 && (
-        <div
-          className="rounded-lg px-3 py-4 text-center font-sans text-[11px]"
-          style={{ color: theme.textMuted }}
-        >
-          No{' '}
-          {modeFilter === 'all'
-            ? ''
-            : MODE_LABELS[modeFilter as AnalysisMode].label + ' '}
-          analyses found for this date.
-        </div>
-      )}
+      {/* ── Error: the date's analyses failed to load ─────── */}
+      {analysesError && !loading && <ErrorMsg>{analysesError}</ErrorMsg>}
+
+      {/* ── Empty state: not after a failure, which proves nothing ─ */}
+      {selectedDate &&
+        !loading &&
+        !analysesError &&
+        filteredAnalysesCount === 0 && (
+          <div
+            className="rounded-lg px-3 py-4 text-center font-sans text-[11px]"
+            style={{ color: theme.textMuted }}
+          >
+            No{' '}
+            {modeFilter === 'all'
+              ? ''
+              : MODE_LABELS[modeFilter as AnalysisMode].label + ' '}
+            analyses found for this date.
+          </div>
+        )}
     </>
   );
 }

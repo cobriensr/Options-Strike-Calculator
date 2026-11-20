@@ -107,6 +107,23 @@ function mockFetch(
 
 // ── Tests ──────────────────────────────────────────────────
 
+function jsonResponse(body: unknown) {
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { 'Content-Type': 'application/json' },
+  });
+}
+
+/** One entry-mode analysis at 10:00 AM whose structure reads `structure`. */
+function analysesFor(structure: string) {
+  return [
+    makeEntry(1, 'entry', '10:00 AM', {
+      structure,
+      analysis: makeAnalysis({ structure }),
+    }),
+  ];
+}
+
 /** Let any request a mount or rerender started settle, or not start. */
 async function flush() {
   await act(async () => {
@@ -235,6 +252,7 @@ describe('AnalysisHistory', () => {
       await waitFor(() => {
         expect(fetchMock).toHaveBeenCalledWith(
           expect.stringContaining('date=2025-03-01'),
+          expect.objectContaining({ signal: expect.any(AbortSignal) }),
         );
       });
     });
@@ -600,6 +618,7 @@ describe('AnalysisHistory', () => {
       await waitFor(() => {
         expect(fetchMock).toHaveBeenCalledWith(
           expect.stringContaining('date=2025-03-01'),
+          expect.objectContaining({ signal: expect.any(AbortSignal) }),
         );
       });
 
@@ -945,6 +964,72 @@ describe('AnalysisHistory', () => {
       expect(screen.getByText(/No analyses saved yet/)).toBeInTheDocument();
     });
 
+    // No refreshKey bump anywhere in this one, so the only thing that can
+    // abort the picked date's request at the drop, and refetch it on sign-in,
+    // is `isOwner` in that effect's deps.
+    it('aborts the picked date request when the owner drops to guest, keeps nothing from its late reply, and fetches it once on sign-in', async () => {
+      const dateCalls: {
+        signal: AbortSignal | undefined;
+        reply: (res: Response) => void;
+      }[] = [];
+      // Ignores the abort, as a reply already on the wire would.
+      const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+        if (url.includes('dates=true')) {
+          return Promise.resolve(jsonResponse({ dates: DATES }));
+        }
+        return new Promise<Response>((resolve) => {
+          dateCalls.push({ signal: init?.signal ?? undefined, reply: resolve });
+        });
+      });
+      vi.stubGlobal('fetch', fetchMock);
+      const user = userEvent.setup();
+      const { container, rerender } = render(<AnalysisHistory />);
+      await waitFor(() => {
+        expect(screen.getByText(/Select a date/)).toBeInTheDocument();
+      });
+      await user.selectOptions(screen.getByLabelText('Date'), '2025-03-01');
+      await waitFor(() => {
+        expect(dateCalls).toHaveLength(1);
+      });
+      expect(dateCalls[0]?.signal?.aborted).toBe(false);
+
+      access.mode = 'guest';
+      rerender(<AnalysisHistory />);
+      expect(dateCalls[0]?.signal?.aborted).toBe(true);
+      expect(container).toBeEmptyDOMElement();
+
+      await act(async () => {
+        dateCalls[0]?.reply(
+          jsonResponse({ analyses: analysesFor('FIRST DATE CONDOR') }),
+        );
+        await Promise.resolve();
+      });
+      expect(dateCalls).toHaveLength(1);
+
+      access.mode = 'owner';
+      rerender(<AnalysisHistory />);
+      await waitFor(() => {
+        expect(dateCalls).toHaveLength(2);
+      });
+      // The reply the drop discarded is not what the owner sees while the
+      // new request waits, or after it.
+      expect(screen.getByLabelText('Date')).toHaveValue('2025-03-01');
+      expect(screen.queryByText('FIRST DATE CONDOR')).not.toBeInTheDocument();
+      await act(async () => {
+        dateCalls[1]?.reply(
+          jsonResponse({ analyses: analysesFor('SECOND REPLY CONDOR') }),
+        );
+        await Promise.resolve();
+      });
+      await waitFor(() => {
+        expect(
+          screen.getAllByText('SECOND REPLY CONDOR').length,
+        ).toBeGreaterThan(0);
+      });
+      expect(screen.queryByText('FIRST DATE CONDOR')).not.toBeInTheDocument();
+      expect(dateCalls).toHaveLength(2);
+    });
+
     it('makes no analyses request for the picked date once the owner has dropped to guest', async () => {
       const fetchMock = mockFetch();
       vi.stubGlobal('fetch', fetchMock);
@@ -959,6 +1044,7 @@ describe('AnalysisHistory', () => {
       await waitFor(() => {
         expect(fetchMock).toHaveBeenCalledWith(
           expect.stringContaining('date=2025-03-01'),
+          expect.objectContaining({ signal: expect.any(AbortSignal) }),
         );
       });
       const callsAsOwner = fetchMock.mock.calls.length;
@@ -972,6 +1058,260 @@ describe('AnalysisHistory', () => {
 
       expect(fetchMock).toHaveBeenCalledTimes(callsAsOwner);
       expect(container).toBeEmptyDOMElement();
+    });
+  });
+
+  // A reply for one date that fails (a rejected fetch, a non-ok status, a 2xx
+  // whose body isn't JSON) proves nothing about that date: the panel says it
+  // failed, not that there is nothing, and shows none of the date picked
+  // before it. The error has its own state, apart from the dates list's.
+  describe('a failed analyses fetch', () => {
+    const FIRST_STRUCTURE = 'FIRST DATE CONDOR';
+    const ERROR_TEXT = 'Failed to load analyses for this date';
+    const FAILURES = [
+      ['a rejected fetch', () => Promise.reject(new Error('Network error'))],
+      ['a 500', () => Promise.resolve(new Response('', { status: 500 }))],
+      [
+        'a 200 whose body is not JSON',
+        () =>
+          Promise.resolve(
+            new Response('<!DOCTYPE html>', {
+              status: 200,
+              headers: { 'Content-Type': 'text/html' },
+            }),
+          ),
+      ],
+    ] as const;
+
+    /** The dates list, plus a reply per date; any other date has none. */
+    function fetchByDate(replies: Record<string, () => Promise<Response>>) {
+      return vi.fn().mockImplementation((url: string) => {
+        if (url.includes('dates=true')) {
+          return Promise.resolve(jsonResponse({ dates: DATES }));
+        }
+        const date = /date=([\d-]+)/.exec(url)?.[1] ?? '';
+        return (
+          replies[date] ??
+          (() => Promise.resolve(jsonResponse({ analyses: [] })))
+        )();
+      });
+    }
+
+    const firstDateOk = () =>
+      Promise.resolve(jsonResponse({ analyses: analysesFor(FIRST_STRUCTURE) }));
+
+    async function renderOnFirstDate(
+      fetchMock: ReturnType<typeof vi.fn>,
+      props: { refreshKey?: number } = {},
+    ) {
+      vi.stubGlobal('fetch', fetchMock);
+      const user = userEvent.setup();
+      const rendered = render(<AnalysisHistory {...props} />);
+      await waitFor(() => {
+        expect(screen.getByText(/Select a date/)).toBeInTheDocument();
+      });
+      await user.selectOptions(screen.getByLabelText('Date'), '2025-03-01');
+      await waitFor(() => {
+        expect(screen.getAllByText(FIRST_STRUCTURE).length).toBeGreaterThan(0);
+      });
+      return { ...rendered, user };
+    }
+
+    it.each(FAILURES)(
+      'after %s for a second date, shows the error, not the first date or the empty state',
+      async (_label, fail) => {
+        const { user } = await renderOnFirstDate(
+          fetchByDate({ '2025-03-01': firstDateOk, '2025-02-28': fail }),
+        );
+
+        await user.selectOptions(screen.getByLabelText('Date'), '2025-02-28');
+
+        await waitFor(() => {
+          expect(screen.getByText(ERROR_TEXT)).toBeInTheDocument();
+        });
+        expect(screen.queryByText(FIRST_STRUCTURE)).not.toBeInTheDocument();
+        expect(screen.queryByText('Loading...')).not.toBeInTheDocument();
+        expect(
+          screen.queryByText(/No.*analyses found for this date/),
+        ).not.toBeInTheDocument();
+        // The dates list loaded fine, so its message stays out of it.
+        expect(
+          screen.queryByText(/Failed to load analysis dates/),
+        ).not.toBeInTheDocument();
+      },
+    );
+
+    it('clears the error when a successful date is picked next', async () => {
+      const { user } = await renderOnFirstDate(
+        fetchByDate({
+          '2025-03-01': firstDateOk,
+          '2025-02-28': () =>
+            Promise.resolve(new Response('', { status: 500 })),
+        }),
+      );
+      await user.selectOptions(screen.getByLabelText('Date'), '2025-02-28');
+      await waitFor(() => {
+        expect(screen.getByText(ERROR_TEXT)).toBeInTheDocument();
+      });
+
+      await user.selectOptions(screen.getByLabelText('Date'), '2025-03-01');
+
+      await waitFor(() => {
+        expect(screen.getAllByText(FIRST_STRUCTURE).length).toBeGreaterThan(0);
+      });
+      expect(screen.queryByText(ERROR_TEXT)).not.toBeInTheDocument();
+    });
+
+    it('clears the error when the date is set back to none', async () => {
+      const { user } = await renderOnFirstDate(
+        fetchByDate({
+          '2025-03-01': firstDateOk,
+          '2025-02-28': () => Promise.reject(new Error('Network error')),
+        }),
+      );
+      await user.selectOptions(screen.getByLabelText('Date'), '2025-02-28');
+      await waitFor(() => {
+        expect(screen.getByText(ERROR_TEXT)).toBeInTheDocument();
+      });
+
+      await user.selectOptions(screen.getByLabelText('Date'), '');
+
+      expect(screen.queryByText(ERROR_TEXT)).not.toBeInTheDocument();
+      expect(
+        screen.queryByText(/No.*analyses found for this date/),
+      ).not.toBeInTheDocument();
+    });
+
+    it('clears the error when a refreshKey bump starts the next request', async () => {
+      let failing = true;
+      const fetchMock = fetchByDate({
+        '2025-03-01': () =>
+          failing
+            ? Promise.resolve(new Response('', { status: 500 }))
+            : firstDateOk(),
+      });
+      vi.stubGlobal('fetch', fetchMock);
+      const user = userEvent.setup();
+      const { rerender } = render(<AnalysisHistory refreshKey={0} />);
+      await waitFor(() => {
+        expect(screen.getByText(/Select a date/)).toBeInTheDocument();
+      });
+      await user.selectOptions(screen.getByLabelText('Date'), '2025-03-01');
+      await waitFor(() => {
+        expect(screen.getByText(ERROR_TEXT)).toBeInTheDocument();
+      });
+
+      failing = false;
+      rerender(<AnalysisHistory refreshKey={1} />);
+
+      await waitFor(() => {
+        expect(screen.getAllByText(FIRST_STRUCTURE).length).toBeGreaterThan(0);
+      });
+      expect(screen.queryByText(ERROR_TEXT)).not.toBeInTheDocument();
+    });
+
+    it('keeps both messages when the dates list and the date both fail, neither overwriting the other', async () => {
+      let datesFail = false;
+      const fetchMock = vi.fn().mockImplementation((url: string) => {
+        if (url.includes('dates=true')) {
+          return datesFail
+            ? Promise.resolve(new Response('', { status: 500 }))
+            : Promise.resolve(jsonResponse({ dates: DATES }));
+        }
+        return Promise.resolve(new Response('', { status: 500 }));
+      });
+      vi.stubGlobal('fetch', fetchMock);
+      const user = userEvent.setup();
+      const { rerender } = render(<AnalysisHistory refreshKey={0} />);
+      await waitFor(() => {
+        expect(screen.getByText(/Select a date/)).toBeInTheDocument();
+      });
+      await user.selectOptions(screen.getByLabelText('Date'), '2025-03-01');
+      await waitFor(() => {
+        expect(screen.getByText(ERROR_TEXT)).toBeInTheDocument();
+      });
+
+      datesFail = true;
+      rerender(<AnalysisHistory refreshKey={1} />);
+
+      await waitFor(() => {
+        expect(
+          screen.getByText(/Failed to load analysis dates/),
+        ).toBeInTheDocument();
+      });
+      await waitFor(() => {
+        expect(screen.getByText(ERROR_TEXT)).toBeInTheDocument();
+      });
+    });
+
+    // R6: the request a date pick supersedes is aborted, and a reply that
+    // still arrives (one already on the wire ignores the abort) is dropped,
+    // or it would put the first date's analyses under the second date's error.
+    it('drops the late reply of a date the next pick superseded', async () => {
+      let replyFirst: (res: Response) => void = () => {};
+      let firstSignal: AbortSignal | undefined;
+      const fetchMock = vi.fn().mockImplementation((url: string, init) => {
+        if (url.includes('dates=true')) {
+          return Promise.resolve(jsonResponse({ dates: DATES }));
+        }
+        if (url.includes('date=2025-03-01')) {
+          firstSignal = (init as RequestInit).signal ?? undefined;
+          return new Promise<Response>((resolve) => {
+            replyFirst = resolve;
+          });
+        }
+        return Promise.resolve(new Response('', { status: 500 }));
+      });
+      vi.stubGlobal('fetch', fetchMock);
+      const user = userEvent.setup();
+      render(<AnalysisHistory />);
+      await waitFor(() => {
+        expect(screen.getByText(/Select a date/)).toBeInTheDocument();
+      });
+      await user.selectOptions(screen.getByLabelText('Date'), '2025-03-01');
+      expect(firstSignal?.aborted).toBe(false);
+      await user.selectOptions(screen.getByLabelText('Date'), '2025-02-28');
+      await waitFor(() => {
+        expect(screen.getByText(ERROR_TEXT)).toBeInTheDocument();
+      });
+      expect(firstSignal?.aborted).toBe(true);
+
+      await act(async () => {
+        replyFirst(jsonResponse({ analyses: analysesFor(FIRST_STRUCTURE) }));
+        await Promise.resolve();
+      });
+
+      expect(screen.queryByText(FIRST_STRUCTURE)).not.toBeInTheDocument();
+      expect(screen.getByText(ERROR_TEXT)).toBeInTheDocument();
+    });
+
+    // The first date's times were auto-selected from analyses that stayed in
+    // state while the second date loaded, so a second date with other times
+    // opened on a time it doesn't have and showed nothing.
+    it('shows a second date whose times differ from the first', async () => {
+      const second = [
+        makeEntry(5, 'entry', '11:30 AM', {
+          structure: 'SECOND DATE CONDOR',
+          analysis: makeAnalysis({ structure: 'SECOND DATE CONDOR' }),
+        }),
+      ];
+      const { user } = await renderOnFirstDate(
+        fetchByDate({
+          '2025-03-01': firstDateOk,
+          '2025-02-28': () =>
+            Promise.resolve(jsonResponse({ analyses: second })),
+        }),
+      );
+
+      await user.selectOptions(screen.getByLabelText('Date'), '2025-02-28');
+
+      await waitFor(() => {
+        expect(screen.getByLabelText('Entry Time')).toHaveValue('11:30 AM');
+      });
+      expect(screen.getAllByText('SECOND DATE CONDOR').length).toBeGreaterThan(
+        0,
+      );
+      expect(screen.queryByText(FIRST_STRUCTURE)).not.toBeInTheDocument();
     });
   });
 

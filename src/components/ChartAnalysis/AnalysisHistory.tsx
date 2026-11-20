@@ -17,6 +17,8 @@ import { checkIsOwner } from '../../utils/auth';
 import { parseEntryTimeMinutes } from '../../utils/entry-time';
 import AnalysisHistoryPicker from './AnalysisHistoryPicker';
 
+const ANALYSES_ERROR_MESSAGE = 'Failed to load analyses for this date';
+
 // ── Component ──────────────────────────────────────────────
 
 interface Props {
@@ -31,10 +33,13 @@ export default function AnalysisHistory({
 }: Props) {
   // The panel is owner-only: it renders nothing for a guest, so a guest has
   // no use for what /api/analyses (owner-or-guest) would hand back, and a
-  // public visitor would only draw a 401. Read at every render, above the
-  // effects, never frozen in a ref or state: it is in both fetch effects'
-  // deps, so signing in as the owner without a reload starts the fetches and
-  // dropping to guest or public runs the cleanups that abort them.
+  // public visitor would only draw a 401. The registry lists it for the owner
+  // alone, so a change of access mode mounts or unmounts it, and a fresh mount
+  // reads the mode here. This read, at every render above the effects (never
+  // frozen in a ref or state), and the `isOwner` in both fetch effects' deps
+  // are the backstop for an instance that outlives a mode change: it makes no
+  // request as a non-owner, a drop aborts the request in flight, and signing
+  // back in refetches.
   const isOwner = checkIsOwner();
 
   const [allDates, setAllDates] = useState<DateEntry[]>([]);
@@ -46,6 +51,9 @@ export default function AnalysisHistory({
   const [selectedRunIndex, setSelectedRunIndex] = useState(0);
   const [loading, setLoading] = useState(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
+  // Its own state, apart from the dates list's `fetchError`, so neither fetch
+  // can overwrite or clear the other's message.
+  const [analysesError, setAnalysesError] = useState<string | null>(null);
 
   // ── Fetch dates on mount + when refreshKey changes ────
 
@@ -114,12 +122,14 @@ export default function AnalysisHistory({
   // ── Fetch analyses when date changes ───────────────────
 
   useEffect(() => {
-    // Every run supersedes the one before it, whose cleanup cancelled its
-    // fetch, and a cancelled fetch never reaches the `setLoading(false)` after
+    // Every run supersedes the one before it, whose cleanup aborted its
+    // fetch, and an aborted fetch never reaches the `setLoading(false)` after
     // its reply. So the flag is cleared here, for the no-date and non-owner
     // branches below; the fetch path's `setLoading(true)` follows in the same
-    // effect and React batches the two, so there's no flicker.
+    // effect and React batches the two, so there's no flicker. The previous
+    // fetch's error goes with it: it described a request that is gone.
     setLoading(false);
+    setAnalysesError(null);
 
     // A non-owner asks for nothing, and drops what an earlier owner session
     // left, like the no-date case.
@@ -130,27 +140,37 @@ export default function AnalysisHistory({
       return;
     }
 
-    let cancelled = false;
+    const controller = new AbortController();
     setLoading(true);
+    // The previous date's analyses go before the request, so a reply that
+    // fails (a non-ok status, a body that isn't JSON, a rejected fetch)
+    // leaves none on screen under this date, and the time and mode
+    // auto-selects have none to pick from while it is in flight.
+    setAnalyses([]);
     setSelectedTime('');
     setSelectedMode('');
 
     (async () => {
       try {
-        const res = await fetch(`/api/analyses?date=${selectedDate}`);
-        if (!res.ok) return;
+        const res = await fetch(`/api/analyses?date=${selectedDate}`, {
+          signal: controller.signal,
+        });
+        if (!res.ok) {
+          if (!controller.signal.aborted)
+            setAnalysesError(ANALYSES_ERROR_MESSAGE);
+          return;
+        }
         const data = await res.json();
-        if (!cancelled) setAnalyses(data.analyses ?? []);
+        if (!controller.signal.aborted) setAnalyses(data.analyses ?? []);
       } catch {
-        if (!cancelled) setAnalyses([]);
+        if (!controller.signal.aborted)
+          setAnalysesError(ANALYSES_ERROR_MESSAGE);
       } finally {
-        if (!cancelled) setLoading(false);
+        if (!controller.signal.aborted) setLoading(false);
       }
     })();
 
-    return () => {
-      cancelled = true;
-    };
+    return () => controller.abort();
   }, [selectedDate, refreshKey, isOwner]);
 
   // ── Filter analyses by mode filter ─────────────────────
@@ -284,6 +304,7 @@ export default function AnalysisHistory({
         onRunIndexChange={setSelectedRunIndex}
         selectedAnalysis={selectedAnalysis}
         loading={loading}
+        analysesError={analysesError}
         filteredAnalysesCount={filteredAnalyses.length}
       />
     </SectionBox>
