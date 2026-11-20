@@ -22,7 +22,7 @@ import {
 } from '../../utils/macro-badges.js';
 import { computeFlowMatch } from '../../utils/flow-match.js';
 import { computeFlowInverted } from '../../utils/flow-inverted.js';
-import { computeExitNow } from '../../utils/exit-now.js';
+import { computeExitNow, exitReasonTooltip } from '../../utils/exit-now.js';
 import { gexbotBadge } from '../../utils/gexbot-badge.js';
 import { CohortCountdown } from '../ui/CohortCountdown.js';
 import { SrHint } from '../ui/SrHint.js';
@@ -403,6 +403,34 @@ const spikeBadge = (
   };
 };
 
+// Hover text of the badges and figures that have no tooltip builder above.
+// Each is also that element's hidden text (see SrHint), so one string each.
+const HOT_TOOLTIP =
+  'Spike bucket fired within the last 10 minutes — alert is still hot.';
+const VOL_OI_TOOLTIP =
+  'Vol/OI in the spike bucket — share of the whole open interest that traded in 5 minutes.';
+const ASK_PCT_TOOLTIP =
+  'Ask-side share of the spike bucket. ≥70% → directional buy pressure.';
+const PEAK_CEILING_TOOLTIP =
+  'Peak ceiling — best-case % gain. Look-ahead reference, not tradeable.';
+const MINUTES_TO_PEAK_TOOLTIP =
+  'Minutes from spike bucket start to the peak print.';
+const PREMIUM_TOOLTIP =
+  'Spike-bucket premium: entry price × spike volume × 100';
+const SPOT_TOOLTIP =
+  'Underlying spot at the moment the spike bucket fired (frozen snapshot — does not track intraday drift).';
+const BASELINE_TOOLTIP =
+  'Median per-bucket volume in the 4 buckets preceding the spike — the baseline the multiplier was measured against.';
+const EOD_TOOLTIP = 'Realized return at the last tick of the session.';
+const TRAIL_TOOLTIP =
+  'Trail-30/10 exit: activate trailing stop at +30% from entry, exit at 10pp giveback from running peak; hold to EoD if peak never crosses +30%. Recommended exit policy.';
+
+/** Hover text of the footer's %OTM figure. */
+const otmFooterTooltip = (otmPct: number): string =>
+  otmPct >= 0
+    ? `Strike was ${(otmPct * 100).toFixed(1)}% out of the money at fire time.`
+    : `Strike was ${(Math.abs(otmPct) * 100).toFixed(1)}% in the money at fire time.`;
+
 /**
  * Custom equality: re-render only when something visible changed.
  * The `alert` object identity flips on every 30s poll because it's
@@ -593,12 +621,15 @@ export const SilentBoomRow = memo(function SilentBoomRow({
   // One string for the hover text and the pill's hidden text, so a screen
   // reader hears what a hover shows. The visible "round-tripped -2" leads it.
   const roundTripTooltip = `Sellers outweighed buyers in the hour after the alert (deduct ${roundTripDeduct}). It describes selling that already happened, not what comes next: on Lottery Finder fires, those still held when a deduct landed finished about where they stood then (at -1: down about 28% when it landed, 29% at the 30/10 trail exit). The tier is the one shown at the alert.`;
-  const exitTooltip =
-    exitNow.reason === 'expired'
-      ? 'Cohort P75 hold elapsed — historical median peak has passed.'
-      : exitNow.reason === 'inverted'
-        ? 'Ticker net flow inverted — strongest documented exit signal.'
-        : 'Hold expired + flow inverted — both exit rules fired.';
+  // Hover text that is also a badge's hidden text (see the round-trip pill):
+  // one string each, so the two can't drift apart.
+  const avgHoldTooltip = `Cohort avg hold ~${alert.avgHoldMinutes} minutes — historical P75 of minutes-to-peak among winners (peak ≥ 50%) for ${alert.scoreTier ?? 'tier3'} alerts on ${alert.underlyingSymbol}. Use as a typical exit-window expectation, not a hard rule.`;
+  const optionTypeName = alert.optionType === 'C' ? 'Call' : 'Put';
+  const dteTooltip = `Expires ${formatExpiryFull(alert.expiry)} — ${
+    alert.dte === 0
+      ? '0DTE (same day)'
+      : `${alert.dte} day${alert.dte === 1 ? '' : 's'} to expiry`
+  }`;
 
   return (
     <div
@@ -720,6 +751,7 @@ export const SilentBoomRow = memo(function SilentBoomRow({
             title={triggerLeg.tooltip}
           >
             {triggerLeg.label}
+            <SrHint>{triggerLeg.tooltip}</SrHint>
           </span>
         )}
         {/* GexBot context badge — GEXBot taker-flow snapshot at fire time
@@ -743,9 +775,10 @@ export const SilentBoomRow = memo(function SilentBoomRow({
             lookup in api/_lib/silent-boom-hold.ts. */}
         <span
           className="rounded border border-neutral-700 bg-neutral-900 px-1.5 py-0.5 font-mono text-[10px] leading-none text-neutral-300"
-          title={`Cohort avg hold ~${alert.avgHoldMinutes} minutes — historical P75 of minutes-to-peak among winners (peak ≥ 50%) for ${alert.scoreTier ?? 'tier3'} alerts on ${alert.underlyingSymbol}. Use as a typical exit-window expectation, not a hard rule.`}
+          title={avgHoldTooltip}
         >
           ~{alert.avgHoldMinutes}min
+          <SrHint>{avgHoldTooltip}</SrHint>
         </span>
         {/* Live countdown vs. the cohort P75 hold time. Ticks every
             minute, goes amber at ≤15m and red on expiry. Pairs with
@@ -776,19 +809,17 @@ export const SilentBoomRow = memo(function SilentBoomRow({
           </span>
           <span
             className={`rounded border px-1.5 py-0.5 text-[10px] font-bold ${optionTypeBadge(alert.optionType)}`}
-            title={alert.optionType === 'C' ? 'Call' : 'Put'}
+            title={optionTypeName}
           >
             {alert.optionType}
+            <SrHint>{optionTypeName}</SrHint>
           </span>
           <span
             className={`rounded border px-1.5 py-0.5 font-mono text-[10px] leading-none ${dteChipClass(alert.dte)}`}
-            title={`Expires ${formatExpiryFull(alert.expiry)} — ${
-              alert.dte === 0
-                ? '0DTE (same day)'
-                : `${alert.dte} day${alert.dte === 1 ? '' : 's'} to expiry`
-            }`}
+            title={dteTooltip}
           >
             {formatExpiryShort(alert.expiry)} · {alert.dte}D
+            <SrHint>{dteTooltip}</SrHint>
           </span>
           <span
             className="text-[10px] text-neutral-600 group-hover:text-blue-400"
@@ -810,13 +841,14 @@ export const SilentBoomRow = memo(function SilentBoomRow({
           Date.now() - new Date(alert.bucketCt).getTime() < 10 * 60_000 && (
             <span
               className="inline-flex items-center gap-1 rounded border border-red-500/50 bg-red-950/40 px-1.5 py-0.5 text-[10px] font-semibold text-red-200"
-              title="Spike bucket fired within the last 10 minutes — alert is still hot."
+              title={HOT_TOOLTIP}
             >
               <span
                 className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-red-400"
                 aria-hidden
               />
               hot
+              <SrHint>{HOT_TOOLTIP}</SrHint>
             </span>
           )}
 
@@ -825,26 +857,23 @@ export const SilentBoomRow = memo(function SilentBoomRow({
           title={spike.tooltip}
         >
           {spike.label} burst
+          <SrHint>{spike.tooltip}</SrHint>
         </span>
 
-        <span
-          className="text-[11px] text-neutral-300"
-          title="Vol/OI in the spike bucket — share of the whole open interest that traded in 5 minutes."
-        >
+        <span className="text-[11px] text-neutral-300" title={VOL_OI_TOOLTIP}>
           vol/OI{' '}
           <span className="font-mono text-neutral-100">
             {(alert.volOi * 100).toFixed(0)}%
           </span>
+          <SrHint>{VOL_OI_TOOLTIP}</SrHint>
         </span>
 
-        <span
-          className="text-[11px] text-neutral-300"
-          title="Ask-side share of the spike bucket. ≥70% → directional buy pressure."
-        >
+        <span className="text-[11px] text-neutral-300" title={ASK_PCT_TOOLTIP}>
           ask%{' '}
           <span className="font-mono text-neutral-100">
             {(alert.askPct * 100).toFixed(0)}%
           </span>
+          <SrHint>{ASK_PCT_TOOLTIP}</SrHint>
         </span>
 
         {/* Market Tide context — display-only. */}
@@ -866,12 +895,14 @@ export const SilentBoomRow = memo(function SilentBoomRow({
             title={primaryTooltip}
           >
             {formatPct(primaryValue)}
+            <SrHint>{primaryTooltip}</SrHint>
           </span>
           <span
             className="text-[10px] tracking-wide text-neutral-500 uppercase"
             title={primaryTooltip}
           >
             {primaryLabel}
+            <SrHint>{primaryTooltip}</SrHint>
           </span>
           {/* When peak is not the primary, show it as a small reference
               chip so the look-ahead ceiling is always visible. When
@@ -879,9 +910,10 @@ export const SilentBoomRow = memo(function SilentBoomRow({
           {exitPolicy !== 'peakCeilingPct' && peak != null && (
             <span
               className={`font-mono text-xs ${pctClass(peak)}`}
-              title="Peak ceiling — best-case % gain. Look-ahead reference, not tradeable."
+              title={PEAK_CEILING_TOOLTIP}
             >
               peak {formatPct(peak)}
+              <SrHint>{PEAK_CEILING_TOOLTIP}</SrHint>
             </span>
           )}
           {exitPolicy === 'peakCeilingPct' &&
@@ -890,9 +922,9 @@ export const SilentBoomRow = memo(function SilentBoomRow({
             peak > 0 && (
               <span
                 className="text-[10px] text-neutral-500"
-                title="Minutes from spike bucket start to the peak print."
+                title={MINUTES_TO_PEAK_TOOLTIP}
               >
-                t+{mtp.toFixed(0)}m
+                t+{mtp.toFixed(0)}m<SrHint>{MINUTES_TO_PEAK_TOOLTIP}</SrHint>
               </span>
             )}
         </div>
@@ -905,7 +937,7 @@ export const SilentBoomRow = memo(function SilentBoomRow({
             {formatDollar(alert.entryPrice)}
           </span>
         </span>
-        <span title="Spike-bucket premium: entry price × spike volume × 100">
+        <span title={PREMIUM_TOOLTIP}>
           prem{' '}
           <span
             className="font-mono text-sky-300"
@@ -913,10 +945,11 @@ export const SilentBoomRow = memo(function SilentBoomRow({
           >
             {formatPremiumAmount(alert.entryPrice * alert.spikeVolume * 100)}
           </span>
+          <SrHint>{PREMIUM_TOOLTIP}</SrHint>
         </span>
         {alert.underlyingPriceAtSpike != null &&
           Number.isFinite(alert.underlyingPriceAtSpike) && (
-            <span title="Underlying spot at the moment the spike bucket fired (frozen snapshot — does not track intraday drift).">
+            <span title={SPOT_TOOLTIP}>
               spot{' '}
               <span
                 className="font-mono text-neutral-300"
@@ -924,16 +957,13 @@ export const SilentBoomRow = memo(function SilentBoomRow({
               >
                 {alert.underlyingPriceAtSpike.toFixed(2)}
               </span>
+              <SrHint>{SPOT_TOOLTIP}</SrHint>
             </span>
           )}
         {otmPct != null && (
           <span
             data-testid={`silent-boom-row-otm-pct-${alert.optionChainId}-${alert.bucketCt}`}
-            title={
-              otmPct >= 0
-                ? `Strike was ${(otmPct * 100).toFixed(1)}% out of the money at fire time.`
-                : `Strike was ${(Math.abs(otmPct) * 100).toFixed(1)}% in the money at fire time.`
-            }
+            title={otmFooterTooltip(otmPct)}
           >
             %OTM{' '}
             <span
@@ -943,6 +973,7 @@ export const SilentBoomRow = memo(function SilentBoomRow({
             >
               {(otmPct * 100).toFixed(1)}%
             </span>
+            <SrHint>{otmFooterTooltip(otmPct)}</SrHint>
           </span>
         )}
         <span>
@@ -951,11 +982,12 @@ export const SilentBoomRow = memo(function SilentBoomRow({
             {formatVol(alert.spikeVolume)}
           </span>
         </span>
-        <span title="Median per-bucket volume in the 4 buckets preceding the spike — the baseline the multiplier was measured against.">
+        <span title={BASELINE_TOOLTIP}>
           baseline{' '}
           <span className="font-mono text-neutral-300">
             {formatVol(alert.baselineVolume)}
           </span>
+          <SrHint>{BASELINE_TOOLTIP}</SrHint>
         </span>
         <span>
           OI{' '}
@@ -965,9 +997,10 @@ export const SilentBoomRow = memo(function SilentBoomRow({
         </span>
         <span
           className={`font-mono ${pctClass(realizedEod)}`}
-          title="Realized return at the last tick of the session."
+          title={EOD_TOOLTIP}
         >
           eod {formatPct(realizedEod)}
+          <SrHint>{EOD_TOOLTIP}</SrHint>
         </span>
         {/* Phase 2 trail-30/10 exit — recommended exit policy. Activate
             trailing stop at +30%, exit at 10pp giveback from running
@@ -977,9 +1010,10 @@ export const SilentBoomRow = memo(function SilentBoomRow({
         <span
           data-testid="silent-boom-trail3010"
           className={`font-mono text-[10px] ${pctClass(realizedTrail)}`}
-          title="Trail-30/10 exit: activate trailing stop at +30% from entry, exit at 10pp giveback from running peak; hold to EoD if peak never crosses +30%. Recommended exit policy."
+          title={TRAIL_TOOLTIP}
         >
           trail30 {formatPct(realizedTrail)}
+          <SrHint>{TRAIL_TOOLTIP}</SrHint>
         </span>
         <span className="ml-auto text-neutral-500">
           {alert.outcomes.enrichedAt ? 'enriched' : 'pending enrich'}
@@ -992,10 +1026,10 @@ export const SilentBoomRow = memo(function SilentBoomRow({
           <span
             data-testid="silent-boom-exit-now-badge"
             className="ml-2 inline-flex animate-pulse items-center rounded border border-red-500/70 bg-red-950/60 px-1.5 py-0.5 text-[10px] leading-none font-bold tracking-wide text-red-100"
-            title={exitTooltip}
+            title={exitReasonTooltip(exitNow.reason)}
           >
             EXIT
-            <SrHint>{exitTooltip}</SrHint>
+            <SrHint>{exitReasonTooltip(exitNow.reason)}</SrHint>
           </span>
         )}
         <button
@@ -1030,9 +1064,10 @@ export const SilentBoomRow = memo(function SilentBoomRow({
                 </span>
                 <span
                   className={`rounded border px-1 py-px text-[10px] leading-none font-bold ${optionTypeBadge(alert.optionType)}`}
-                  title={alert.optionType === 'C' ? 'Call' : 'Put'}
+                  title={optionTypeName}
                 >
                   {alert.optionType}
+                  <SrHint>{optionTypeName}</SrHint>
                 </span>
                 <span className="text-neutral-600">·</span>
                 <span className="font-mono text-xs text-neutral-300">

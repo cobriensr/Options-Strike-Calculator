@@ -14,7 +14,13 @@ import type {
   SilentBoomAlert,
   SilentBoomExitPolicy,
 } from '../components/SilentBoom/types';
-import { genericElementsWithAriaLabel, srHintText } from './helpers/aria';
+import {
+  genericElementsWithAriaLabel,
+  squashText,
+  srHintText,
+  titledElementsNeedingHint,
+  titledElementsWithoutHint,
+} from './helpers/aria';
 
 // ── Mocks ─────────────────────────────────────────────────────────────
 
@@ -1454,8 +1460,10 @@ describe('SilentBoomRow: badge explanations reach screen readers', () => {
     },
   ];
 
-  /** An alert that lights every badge the row can show. */
-  function makeFullyBadgedAlert(): SilentBoomAlert {
+  /** An alert that lights every badge the row can show. `flagsLanded` false
+   *  leaves the SHAP top features null, so the Take-It tile shows its
+   *  "flags…" placeholder instead of the flag chips. */
+  function makeFullyBadgedAlert(flagsLanded: boolean): SilentBoomAlert {
     return makeAlert({
       optionType: 'C',
       bucketCt: BUCKET,
@@ -1470,10 +1478,12 @@ describe('SilentBoomRow: badge explanations reach screen readers', () => {
       spreadShape: 'vertical',
       spreadLegs: LEGS,
       takeitProb: 0.72,
-      takeitTopFeatures: {
-        positive: [{ name: 'dte', shap_value: 0.12, feature_value: 0 }],
-        negative: [],
-      },
+      takeitTopFeatures: flagsLanded
+        ? {
+            positive: [{ name: 'dte', shap_value: 0.12, feature_value: 0 }],
+            negative: [{ name: 'vol_oi', shap_value: -0.05, feature_value: 3 }],
+          }
+        : null,
       underlyingPriceAtSpike: 198.5,
       gex: {
         oneCvroflow: 3.2,
@@ -1489,8 +1499,13 @@ describe('SilentBoomRow: badge explanations reach screen readers', () => {
   }
 
   /** `tailwind`: the live tape still agrees with the call (Flow Match).
-   *  `inverted`: it has reversed (Flow Mismatch, Flow Inverted, EXIT). */
-  function renderFullyBadged(variant: 'tailwind' | 'inverted') {
+   *  `inverted`: it has reversed (Flow Mismatch, Flow Inverted, EXIT).
+   *  `peak-primary`: tailwind, the primary figure is the peak (so the t+Nm
+   *  chip shows instead of the peak chip) and the SHAP flags haven't landed
+   *  ("flags…"). */
+  function renderFullyBadged(
+    variant: 'tailwind' | 'inverted' | 'peak-primary',
+  ) {
     vi.useFakeTimers();
     // Five minutes after the bucket: the "hot" chip shows and the cohort
     // countdown is still inside its window.
@@ -1524,12 +1539,12 @@ describe('SilentBoomRow: badge explanations reach screen readers', () => {
       freshestAt: BUCKET,
     });
     const view = renderRow(
-      makeFullyBadgedAlert(),
+      makeFullyBadgedAlert(variant !== 'peak-primary'),
       true,
-      'realized60mPct',
-      variant === 'tailwind'
-        ? { cumNcp: 20_000_000, cumNpp: 5_000_000, asOfTs: BUCKET }
-        : { cumNcp: 1_000_000, cumNpp: 20_000_000, asOfTs: BUCKET },
+      variant === 'peak-primary' ? 'peakCeilingPct' : 'realized60mPct',
+      variant === 'inverted'
+        ? { cumNcp: 1_000_000, cumNpp: 20_000_000, asOfTs: BUCKET }
+        : { cumNcp: 20_000_000, cumNpp: 5_000_000, asOfTs: BUCKET },
     );
     // The chart panels are part of the row too.
     fireEvent.click(screen.getByRole('button', { name: /▸ expand/ }));
@@ -1548,7 +1563,7 @@ describe('SilentBoomRow: badge explanations reach screen readers', () => {
     });
   });
 
-  it.each(['tailwind', 'inverted'] as const)(
+  it.each(['tailwind', 'inverted', 'peak-primary'] as const)(
     'a fully badged row (%s) has no aria-label on a role-less, non-interactive element',
     (variant) => {
       const { container } = renderFullyBadged(variant);
@@ -1634,5 +1649,58 @@ describe('SilentBoomRow: badge explanations reach screen readers', () => {
     expect(
       screen.getByTestId('silent-boom-exit-now-badge').textContent,
     ).toMatch(/^EXIT — Ticker net flow inverted/);
+  });
+
+  // The rule, precisely: an element with a non-empty `title` needs an
+  // SrHint as a direct child, unless it has a role, is natively interactive
+  // (button, a[href], input, select, textarea, summary) or already shows its
+  // title text. `title` alone is mouse-only.
+  it.each(['tailwind', 'inverted', 'peak-primary'] as const)(
+    'a fully badged row (%s): every titled element has an SrHint child unless it has a role, is natively interactive or already shows its title',
+    (variant) => {
+      const { container } = renderFullyBadged(variant);
+      // Badges that carry a title and no aria-label are on screen.
+      for (const text of [
+        'hot',
+        '~197min',
+        /burst$/,
+        /^vol\/OI/,
+        /^ask%/,
+        /^eod /,
+        /^trail30 /,
+      ]) {
+        expect(screen.getAllByText(text).length, String(text)).toBeGreaterThan(
+          0,
+        );
+      }
+      expect(
+        screen.getByText('trigger print: spread leg · call vertical 726/727'),
+      ).toBeInTheDocument();
+      expect(screen.getByTestId('takeit-score-chip')).toBeInTheDocument();
+      if (variant === 'peak-primary') {
+        expect(screen.getByText('flags…')).toBeInTheDocument();
+        expect(screen.getByText(/^t\+12m$/)).toBeInTheDocument();
+      } else {
+        expect(screen.getByText('Take-It')).toBeInTheDocument();
+        expect(screen.getByText('DTE')).toBeInTheDocument(); // SHAP flag chip
+        expect(screen.getByText(/^peak \+47\.0%$/)).toBeInTheDocument();
+      }
+
+      expect(titledElementsWithoutHint(container)).toEqual([]);
+    },
+  );
+
+  it('a fully badged row: a hint repeats its hover text word for word, except the terse GEXBot and sibling-pill hints', () => {
+    const { container } = renderFullyBadged('inverted');
+    const needing = titledElementsNeedingHint(container);
+    // Guards against passing by finding nothing to compare.
+    expect(needing.length).toBeGreaterThan(20);
+    for (const el of needing) {
+      const id = el.getAttribute('data-testid') ?? '';
+      if (/^(silent-boom-gex-badge|sibling-pill-)/.test(id)) continue;
+      expect(squashText(srHintText(el)), el.outerHTML.slice(0, 100)).toBe(
+        squashText(el.getAttribute('title')),
+      );
+    }
   });
 });
