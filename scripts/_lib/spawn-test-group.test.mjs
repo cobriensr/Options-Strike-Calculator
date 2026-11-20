@@ -27,11 +27,19 @@ import config, { SPAWN_TEST_FILES, TEST_INCLUDE } from '../../vite.config.ts';
  * `vi.importActual`. It reaches a module through any quoted `./` or `../`
  * string that names a code file, whether in an import, a `new URL` or a path
  * join, and through other test files. The one exemption: a file that replaces
- * the module outright with a `vi.mock` factory that takes no parameter and
- * never undoes it, such as session-status.test.mjs and watch-deploy.test.mjs,
- * and has no use of the module that the mock does not cover (a `require` or a
- * `vi.importActual`). It runs no child and stays in `main`. A factory that
- * takes `importOriginal` wraps the real module, so its file counts.
+ * the module outright with a `vi.mock` factory that takes no parameter, such
+ * as session-status.test.mjs and watch-deploy.test.mjs. The mock covers every
+ * import of the module, in the file and in the files it reaches, so those run
+ * no child and the file stays in `main`. A use the mock does not cover still
+ * counts, in the file or in a file it reaches: a `require`, `createRequire`,
+ * `getBuiltinModule`, `vi.importActual`, or a `vi.doUnmock` that takes the mock
+ * away. A factory that takes `importOriginal` wraps the real module, so its
+ * file counts.
+ *
+ * The limits of a guard that reads literals: a probe source built inside a
+ * template string, two `vi.mock` calls for the same module, and a `/*` inside a
+ * template literal can each hide a spawn from it. The file then just runs at
+ * full width, in `main`.
  *
  * Tinyglobby loads through vitest's own dependency tree, the copy vitest
  * globs with.
@@ -111,13 +119,14 @@ function codeOf(source) {
     .join('\n');
 }
 
-/** Whether the code uses the module in a way a no-parameter `vi.mock` replaces. */
-function replacesChildProcess(code) {
-  if (!PARAMETERLESS_FACTORY.test(code)) return false;
-  // What is left once the covered uses are gone must not name the module. That
-  // is what a require or a vi.importActual leaves, and also a vi.doUnmock or a
-  // vi.unmock, which takes the mock away again.
-  return !CHILD_PROCESS_LITERAL.test(code.replace(MOCKED_USES, ''));
+/**
+ * Whether the code names the module in a way a `vi.mock` does not cover: what
+ * is left once the covered uses are gone. A require, a createRequire call,
+ * getBuiltinModule and vi.importActual leave a literal behind, and so does a
+ * vi.doUnmock or a vi.unmock, which takes the mock away again.
+ */
+function bypassesMock(code) {
+  return CHILD_PROCESS_LITERAL.test(code.replace(MOCKED_USES, ''));
 }
 
 /** The files a relative path may name, most likely first. */
@@ -159,7 +168,8 @@ function createDetector(read) {
       const code = source === undefined ? '' : codeOf(source);
       info = {
         names: CHILD_PROCESS_LITERAL.test(code),
-        replaces: replacesChildProcess(code),
+        bypasses: bypassesMock(code),
+        replaces: PARAMETERLESS_FACTORY.test(code),
         dependencies: [...code.matchAll(RELATIVE_LITERAL)]
           .map((match) => resolveLiteral(file, match[2]))
           .filter((dependency) => dependency !== undefined),
@@ -170,7 +180,9 @@ function createDetector(read) {
   }
 
   return function startsChildProcesses(testFile) {
-    if (infoOf(testFile).replaces) return false;
+    // The test file's mock covers every import in the files it reaches, so
+    // there only a use past the mock counts; every file is still read.
+    const replaced = infoOf(testFile).replaces;
     const seen = new Set();
     const pending = [testFile];
     while (pending.length > 0) {
@@ -178,7 +190,7 @@ function createDetector(read) {
       if (seen.has(file)) continue;
       seen.add(file);
       const info = infoOf(file);
-      if (info.names) return true;
+      if (replaced ? info.bypasses : info.names) return true;
       pending.push(...info.dependencies);
     }
     return false;
@@ -290,6 +302,34 @@ describe('the detector, on small trees of files', () => {
     ],
   ])('follows %s', (_label, source) => {
     expect(startsIn({ 'main.test.mjs': source, ...helperImports })).toBe(true);
+  });
+
+  it.each([
+    ['createRequire', `createRequire(import.meta.url)('${NODE_CP}');`],
+    ['getBuiltinModule', `process.getBuiltinModule('${NODE_CP}');`],
+    ['vi.importActual', `await vi.importActual('${NODE_CP}');`],
+  ])(
+    'finds %s in a helper, which a parameterless mock does not cover',
+    (_label, use) => {
+      expect(
+        startsIn({
+          'main.test.mjs': lines(
+            `vi.mock('${NODE_CP}', () => ({}));`,
+            `import { run } from './fx-helper.mjs';`,
+          ),
+          'fx-helper.mjs': `const cp = ${use}`,
+        }),
+      ).toBe(true);
+    },
+  );
+
+  it('finds a helper that the factory itself loads, which reaches the module past the mock', () => {
+    expect(
+      startsIn({
+        'main.test.mjs': `vi.mock('${NODE_CP}', async () => (await import('./fx-real.mjs')).default);`,
+        'fx-real.mjs': `export default process.getBuiltinModule('${NODE_CP}');`,
+      }),
+    ).toBe(true);
   });
 
   it('follows an import of another test file', () => {
@@ -440,7 +480,10 @@ describe('SPAWN_TEST_FILES', () => {
     const gone = SPAWN_TEST_FILES.filter(
       (file) => readFromDisk(path.join(ROOT, file)) === undefined,
     );
-    expect(gone).toEqual([]);
+    expect(
+      gone,
+      'remove these from SPAWN_TEST_FILES in vite.config.ts',
+    ).toEqual([]);
   });
 
   it('names only test files, each once, in sorted order', () => {
