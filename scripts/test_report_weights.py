@@ -195,19 +195,27 @@ def mining_frame() -> pd.DataFrame:
 
 
 class FakeCursor:
+    """What feature_audit's `latest_fire_date` asks of a cursor. Its query is a
+    read of Neon like the pandas ones, so it is logged as one: the weights read
+    has to come before it too."""
+
+    def __init__(self, events: list[str]) -> None:
+        self.events = events
+
     def execute(self, _sql: str, _params: Any = None) -> None:
-        pass
+        self.events.append('read')
 
     def fetchone(self) -> tuple[date]:
         return (SESSION,)
 
 
 class FakeConnection:
-    def __init__(self) -> None:
+    def __init__(self, events: list[str]) -> None:
+        self.events = events
         self.closed = False
 
     def cursor(self) -> FakeCursor:
-        return FakeCursor()
+        return FakeCursor(self.events)
 
     def close(self) -> None:
         self.closed = True
@@ -279,7 +287,7 @@ class Harness:
 
     def _connect(self, *_args: object, **_kwargs: object) -> FakeConnection:
         self.events.append('connect')
-        conn = FakeConnection()
+        conn = FakeConnection(self.events)
         self.conns.append(conn)
         return conn
 
@@ -312,6 +320,8 @@ def test_every_report_reads_the_active_pointer_first_on_its_own_connection(
 
     harness.run()
 
+    # Nothing is read before the pointer, not even feature_audit's
+    # latest-fire-date cursor query (the fake cursor logs it as a 'read').
     assert harness.events[:2] == ['connect', 'pointer:active']
     assert 'read' in harness.events[2:]
     assert harness.events.count('connect') == 1
@@ -322,6 +332,7 @@ def test_every_report_reads_the_active_pointer_first_on_its_own_connection(
 def test_every_report_uses_the_shared_reader_and_keeps_no_copy(kit: Kit) -> None:
     module = kit.module
     assert module.load_active_weights is report_weights.load_active_weights
+    assert module.__file__ is not None
     source = Path(module.__file__).read_text(encoding='utf-8')
     assert 'load_pointer' not in source
     assert 'def load_weights' not in source
@@ -330,6 +341,7 @@ def test_every_report_uses_the_shared_reader_and_keeps_no_copy(kit: Kit) -> None
 
 @pytest.mark.parametrize('kit', KITS)
 def test_no_report_reads_the_frozen_weights_json(kit: Kit) -> None:
+    assert kit.module.__file__ is not None
     source = Path(kit.module.__file__).read_text(encoding='utf-8')
 
     assert 'lottery_score_weights.json' not in source
@@ -354,6 +366,21 @@ def test_feature_audit_splits_tiers_with_the_active_feed_cutoffs() -> None:
     assert active['tier_eligible'].tolist() == [True, True, True]
     assert not hasattr(feature_audit, 'TIER1_CUTOFF')
     assert not hasattr(feature_audit, 'TIER2_CUTOFF')
+
+
+def test_feature_audit_qas_adds_the_inversion_bonus_and_the_round_trip_deduct() -> None:
+    frame = _fires([8.0, 14.0])
+    frame['inversion_quintile'] = [5, 5]  # +5
+    frame['round_trip_score_deduct'] = [0, -1]
+
+    active = feature_audit.add_feed_tiers(frame, report_weights.FeedCutoffs.from_weights(ACTIVE))
+    older = feature_audit.add_feed_tiers(frame, report_weights.FeedCutoffs.from_weights(OLDER))
+
+    # 8 + 5 = 13 and max(0, 14 - 1) + 5 = 18. Neither is its bare score's tier.
+    assert active['qas'].tolist() == [13.0, 18.0]
+    # 13 is T1 on the seed's 13/10 and T2 on 16/12; 18 is T1 on both.
+    assert active['tier'].tolist() == ['T2', 'T1']
+    assert older['tier'].tolist() == ['T1', 'T1']
 
 
 def test_feature_audit_tiers_the_fires_the_feed_forces_to_tier_3() -> None:
@@ -657,6 +684,10 @@ def test_invalid_active_weights_fail_the_report_without_a_fallback(
     # ...nothing was written, anywhere, and the frozen JSON was never opened.
     assert list(tmp_path.rglob('*')) == []
     assert json_opens == []
+    # Mining and lineage close the connection they opened on this path too (the
+    # error ends the run, so only a `finally` gets there).
+    if kit in (MINING, LINEAGE):
+        assert [c.closed for c in harness.conns] == [True]
 
 
 # Runs a report script as `__main__` the way the nightly does (a subprocess), with

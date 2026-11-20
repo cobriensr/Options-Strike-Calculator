@@ -1,21 +1,32 @@
 /**
- * Lottery fire score weights — derived from a rolling historical window
- * by `ml/src/lottery_scoring.py` and frozen as a TypeScript constant.
- * Source-of-truth is `ml/data/lottery_score_weights.json`; this module
- * mirrors that file inline so the cron handler doesn't touch the
- * filesystem at runtime.
+ * Legacy V1 lottery score helpers, plus the two things the feed still
+ * imports from here: the `LotteryScoreTier` type and `gammaScoreAdjustment`.
  *
- * Regenerate via `make refit` (which runs the refit + this sync script
- * + a score backfill). Do NOT hand-edit — changes will be lost on the
- * next refit.
+ * This file does not hold the live weights. The crons score with
+ * `scoreLotteryV2` (`lottery-score-weights-v2.ts`) over the `active` (feed)
+ * and `takeit` pointers of the weights store, which
+ * `lottery-weights-loader.ts` reads. When the store can't be read the loader
+ * falls back to the frozen seed, `lottery-weights-seed.ts`. A new set of
+ * weights is a new version in the store, never an edit here.
  *
- * Score formula (sum of buckets, range 0-25):
+ * Nothing regenerates this file. It used to be synced from
+ * `ml/data/lottery_score_weights.json` by
+ * `scripts/sync_lottery_score_weights.py` during `make refit`. Now `make
+ * refit` is a pair of dry runs, that script has no caller, and the JSON it
+ * reads no longer exists. Edit this file by hand.
+ *
+ * The V1 scorer below (`computeLotteryScore`, `lotteryScoreTier` and the
+ * constants they read) serves no cron or endpoint. Its callers are
+ * `api/__tests__/lottery-score-weights.test.ts` and, for
+ * `computeLotteryScore`, two one-off scripts: `scripts/backfill-lottery-score.ts`
+ * and `scripts/replay-lottery-fires-2026-05-18.ts`.
+ *
+ * V1 score formula (sum of buckets, range 0-25):
  *   ticker (0/5/7/10) + mode (0/5) + price (0/3/5) + tod (0/2/3) + option_type (0/2)
  *
- * Tier cutoffs (validated by `lottery_score_distribution.json`):
- *   Tier 1 — score ≥18 (~80% high-peak rate, ~4 fires/day)
- *   Tier 2 — 12 ≤ score < 18 (~63% high-peak rate, ~84 fires/day)
- *   Tier 3 — score < 12 (~32% high-peak rate, the remainder)
+ * V1 tier cutoffs on that score: Tier 1 ≥18, Tier 2 12-17, Tier 3 <12. The
+ * feed does not use them: it tiers on qas against the active version's
+ * `feed_cutoffs` (`lottery-tier.ts`).
  */
 
 import type { LotteryMode, TimeOfDay } from './lottery-finder.js';
@@ -121,11 +132,10 @@ export function computeLotteryScore(args: {
  * Threshold is the LF decile-5 inflection; excluded tickers SPY/USO
  * showed -7pp/-16pp lift reversal in the same study.
  *
- * NOTE: This block is baked into render_ts() in
- * scripts/sync_lottery_score_weights.py because callers
- * (api/lottery-finder.ts, api/__tests__/lottery-score-weights.test.ts)
- * depend on it. Do NOT remove from the template — `make refit` will
- * regenerate this file from the template every night.
+ * NOTE: `api/lottery-finder.ts` and
+ * `api/__tests__/lottery-score-weights.test.ts` call this. A copy of it is
+ * also baked into `render_ts()` in `scripts/sync_lottery_score_weights.py`,
+ * which nothing runs now; `make refit` no longer regenerates this file.
  */
 export function gammaScoreAdjustment(
   gamma: number | null,
