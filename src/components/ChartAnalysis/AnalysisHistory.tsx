@@ -29,6 +29,14 @@ export default function AnalysisHistory({
   refreshKey,
   defaultCollapsed,
 }: Props) {
+  // The panel is owner-only: it renders nothing for a guest, so a guest has
+  // no use for what /api/analyses (owner-or-guest) would hand back, and a
+  // public visitor would only draw a 401. Read at every render, above the
+  // effects, never frozen in a ref or state: it is in both fetch effects'
+  // deps, so signing in as the owner without a reload starts the fetches and
+  // dropping to guest or public runs the cleanups that abort them.
+  const isOwner = checkIsOwner();
+
   const [allDates, setAllDates] = useState<DateEntry[]>([]);
   const [modeFilter, setModeFilter] = useState<ModeFilter>('all');
   const [selectedDate, setSelectedDate] = useState<string>('');
@@ -42,6 +50,14 @@ export default function AnalysisHistory({
   // ── Fetch dates on mount + when refreshKey changes ────
 
   useEffect(() => {
+    if (!isOwner) {
+      // Drop what an earlier owner session left, so a visitor who signs back
+      // in doesn't open on its list or its error before the refetch lands.
+      setAllDates([]);
+      setFetchError(null);
+      return;
+    }
+
     const controller = new AbortController();
     (async () => {
       try {
@@ -72,7 +88,7 @@ export default function AnalysisHistory({
       }
     })();
     return () => controller.abort();
-  }, [refreshKey]);
+  }, [refreshKey, isOwner]);
 
   // ── Filtered dates based on mode filter ────────────────
 
@@ -98,7 +114,16 @@ export default function AnalysisHistory({
   // ── Fetch analyses when date changes ───────────────────
 
   useEffect(() => {
-    if (!selectedDate) {
+    // Every run supersedes the one before it, whose cleanup cancelled its
+    // fetch, and a cancelled fetch never reaches the `setLoading(false)` after
+    // its reply. So the flag is cleared here, for the no-date and non-owner
+    // branches below; the fetch path's `setLoading(true)` follows in the same
+    // effect and React batches the two, so there's no flicker.
+    setLoading(false);
+
+    // A non-owner asks for nothing, and drops what an earlier owner session
+    // left, like the no-date case.
+    if (!isOwner || !selectedDate) {
       setAnalyses([]);
       setSelectedTime('');
       setSelectedMode('');
@@ -126,7 +151,7 @@ export default function AnalysisHistory({
     return () => {
       cancelled = true;
     };
-  }, [selectedDate, refreshKey]);
+  }, [selectedDate, refreshKey, isOwner]);
 
   // ── Filter analyses by mode filter ─────────────────────
 
@@ -203,9 +228,9 @@ export default function AnalysisHistory({
     setSelectedRunIndex(0);
   }, []);
 
-  // Owner gating — only render for authenticated owner (or local dev)
-  // Placed after hooks to satisfy Rules of Hooks
-  const isOwner = checkIsOwner();
+  // Owner gating: only the owner (or local dev) sees the panel. This sits
+  // after the hooks to satisfy the Rules of Hooks; the fetch effects above
+  // already made no request for a non-owner.
   if (!isOwner) return null;
 
   // ── Render ─────────────────────────────────────────────

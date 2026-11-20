@@ -977,6 +977,29 @@ describe.each(['owner', 'guest'] as const satisfies readonly AccessMode[])(
       },
     );
 
+    // The effect clears `loading` for every run, then the fetch path sets it
+    // again; React batches the two, so a date pick that replaces a fetch in
+    // flight never paints a frame with loading false (AppHeader's "Loading…"
+    // badge would blink). The comment above the effect makes that claim; this
+    // pins it on every render, not only the last.
+    it('keeps loading true on every render when a date pick replaces a fetch in flight', async () => {
+      fetchMock.mockReturnValue(new Promise(() => {}));
+      const { result, rerender, renders } = renderRecorded('2024-03-04');
+      await waitFor(() => {
+        expect(result.current.loading).toBe(true);
+      });
+
+      const before = renders.length;
+      rerender({ date: '2024-03-05' });
+      await flush();
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(fetchMock.mock.calls[1]![0]).toBe('/api/history?date=2024-03-05');
+      const after = renders.slice(before);
+      expect(after.length).toBeGreaterThan(0);
+      expect(after.map((r) => r.loading)).toEqual(after.map(() => true));
+    });
+
     it('fetches again on each date pick', async () => {
       mockHistoryFetch(mockHistory);
       const { result, rerender } = renderRecorded('2024-03-04');

@@ -1,8 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import AnalysisHistory from '../../components/ChartAnalysis/AnalysisHistory';
 import type { AnalysisResult } from '../../components/ChartAnalysis/types';
+import type { AccessMode } from '../../utils/auth';
+
+// The panel reads its access mode at every render, so a test flips it between
+// renders. `checkIsOwner` is the one function the component imports.
+const access = vi.hoisted(() => ({ mode: 'owner' as AccessMode }));
+vi.mock('../../utils/auth', () => ({
+  checkIsOwner: () => access.mode === 'owner',
+}));
 
 // ── Mock data ──────────────────────────────────────────────
 
@@ -99,9 +107,24 @@ function mockFetch(
 
 // ── Tests ──────────────────────────────────────────────────
 
+/** Let any request a mount or rerender started settle, or not start. */
+async function flush() {
+  await act(async () => {
+    await Promise.resolve();
+  });
+}
+
+/** Number of requests the component made for the dates list. */
+function datesCalls(fetchMock: ReturnType<typeof vi.fn>) {
+  return fetchMock.mock.calls.filter((c: unknown[]) =>
+    (c[0] as string).includes('dates=true'),
+  ).length;
+}
+
 describe('AnalysisHistory', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    access.mode = 'owner';
   });
 
   describe('empty state', () => {
@@ -756,6 +779,230 @@ describe('AnalysisHistory', () => {
           screen.getByText(/Failed to load analysis dates/),
         ).toBeInTheDocument();
       });
+    });
+  });
+
+  // /api/analyses is owner-or-guest, but the panel is owner-only: it renders
+  // nothing for a guest. Before the gate, the effects ran ahead of the
+  // component's own `return null`, so a guest fetched a list nothing showed
+  // and a public visitor drew a 401 per page load.
+  describe.each(['guest', 'public'] as const)('%s visitor', (mode) => {
+    beforeEach(() => {
+      access.mode = mode;
+    });
+
+    it('renders nothing and makes no request on mount', async () => {
+      const fetchMock = mockFetch();
+      vi.stubGlobal('fetch', fetchMock);
+
+      const { container } = render(<AnalysisHistory />);
+      await flush();
+
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(container).toBeEmptyDOMElement();
+    });
+
+    it('makes no request after a refreshKey change either', async () => {
+      const fetchMock = mockFetch();
+      vi.stubGlobal('fetch', fetchMock);
+
+      const { container, rerender } = render(
+        <AnalysisHistory refreshKey={0} />,
+      );
+      rerender(<AnalysisHistory refreshKey={1} />);
+      rerender(<AnalysisHistory refreshKey={2} />);
+      await flush();
+
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(container).toBeEmptyDOMElement();
+    });
+  });
+
+  describe('access mode changes without a reload', () => {
+    it('fetches the dates once when a public visitor becomes the owner', async () => {
+      access.mode = 'public';
+      const fetchMock = mockFetch();
+      vi.stubGlobal('fetch', fetchMock);
+      const { container, rerender } = render(<AnalysisHistory />);
+      await flush();
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(container).toBeEmptyDOMElement();
+
+      access.mode = 'owner';
+      rerender(<AnalysisHistory />);
+
+      await waitFor(() => {
+        expect(screen.getByText(/Select a date/)).toBeInTheDocument();
+      });
+      // A plain re-render as the owner doesn't fetch again.
+      rerender(<AnalysisHistory />);
+      await flush();
+      expect(datesCalls(fetchMock)).toBe(1);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('aborts the dates request in flight when the owner drops to guest, and keeps nothing from its late reply', async () => {
+      const calls: {
+        signal: AbortSignal | undefined;
+        reply: (res: Response) => void;
+      }[] = [];
+      // Ignores the abort, as a reply already on the wire would: only the
+      // component's own guard stands between this reply and its state.
+      const fetchMock = vi.fn(
+        (_url: string, init?: RequestInit) =>
+          new Promise<Response>((resolve) => {
+            calls.push({ signal: init?.signal ?? undefined, reply: resolve });
+          }),
+      );
+      vi.stubGlobal('fetch', fetchMock);
+      const { container, rerender } = render(<AnalysisHistory />);
+      await flush();
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(calls[0]?.signal?.aborted).toBe(false);
+
+      access.mode = 'guest';
+      rerender(<AnalysisHistory />);
+      expect(calls[0]?.signal?.aborted).toBe(true);
+      expect(container).toBeEmptyDOMElement();
+
+      await act(async () => {
+        calls[0]?.reply(
+          new Response(JSON.stringify({ dates: DATES }), { status: 200 }),
+        );
+        await Promise.resolve();
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(container).toBeEmptyDOMElement();
+
+      // Signing back in asks again, and the answer that was dropped must not
+      // be what the owner sees while it waits: the empty state, not the list.
+      access.mode = 'owner';
+      rerender(<AnalysisHistory />);
+      await flush();
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(screen.getByText(/No analyses saved yet/)).toBeInTheDocument();
+      expect(screen.queryByText(/Select a date/)).not.toBeInTheDocument();
+    });
+
+    it('drops the dates an owner session held when it drops to guest', async () => {
+      const fetchMock = mockFetch();
+      vi.stubGlobal('fetch', fetchMock);
+      const user = userEvent.setup();
+      const { container, rerender } = render(<AnalysisHistory />);
+      await waitFor(() => {
+        expect(screen.getByText(/Select a date/)).toBeInTheDocument();
+      });
+      await user.selectOptions(screen.getByLabelText('Date'), '2025-03-01');
+      await waitFor(() => {
+        expect(screen.getByLabelText('Entry Time')).toBeInTheDocument();
+      });
+
+      access.mode = 'guest';
+      rerender(<AnalysisHistory />);
+      expect(container).toBeEmptyDOMElement();
+
+      // The second dates request never settles, so only held state could put
+      // the list on screen.
+      fetchMock.mockImplementation((url: string) =>
+        url.includes('dates=true')
+          ? new Promise<Response>(() => {})
+          : Promise.resolve(
+              new Response(JSON.stringify({ analyses: ANALYSES }), {
+                status: 200,
+              }),
+            ),
+      );
+      access.mode = 'owner';
+      rerender(<AnalysisHistory />);
+      await flush();
+
+      expect(screen.getByText(/No analyses saved yet/)).toBeInTheDocument();
+      expect(screen.queryByLabelText('Date')).not.toBeInTheDocument();
+    });
+
+    it('drops a dates error an owner session held when it drops to guest', async () => {
+      const fetchMock = vi.fn().mockRejectedValue(new Error('Network error'));
+      vi.stubGlobal('fetch', fetchMock);
+      const { container, rerender } = render(<AnalysisHistory />);
+      await waitFor(() => {
+        expect(
+          screen.getByText(/Failed to load analysis dates/),
+        ).toBeInTheDocument();
+      });
+
+      access.mode = 'guest';
+      rerender(<AnalysisHistory />);
+      expect(container).toBeEmptyDOMElement();
+
+      fetchMock.mockReturnValue(new Promise<Response>(() => {}));
+      access.mode = 'owner';
+      rerender(<AnalysisHistory />);
+      await flush();
+
+      expect(
+        screen.queryByText(/Failed to load analysis dates/),
+      ).not.toBeInTheDocument();
+      expect(screen.getByText(/No analyses saved yet/)).toBeInTheDocument();
+    });
+
+    it('makes no analyses request for the picked date once the owner has dropped to guest', async () => {
+      const fetchMock = mockFetch();
+      vi.stubGlobal('fetch', fetchMock);
+      const user = userEvent.setup();
+      const { container, rerender } = render(
+        <AnalysisHistory refreshKey={0} />,
+      );
+      await waitFor(() => {
+        expect(screen.getByText(/Select a date/)).toBeInTheDocument();
+      });
+      await user.selectOptions(screen.getByLabelText('Date'), '2025-03-01');
+      await waitFor(() => {
+        expect(fetchMock).toHaveBeenCalledWith(
+          expect.stringContaining('date=2025-03-01'),
+        );
+      });
+      const callsAsOwner = fetchMock.mock.calls.length;
+
+      // The picked date is still in state; a refreshKey bump re-runs the
+      // effect that fetches for it, and only the owner gate stops it.
+      access.mode = 'guest';
+      rerender(<AnalysisHistory refreshKey={0} />);
+      rerender(<AnalysisHistory refreshKey={1} />);
+      await flush();
+
+      expect(fetchMock).toHaveBeenCalledTimes(callsAsOwner);
+      expect(container).toBeEmptyDOMElement();
+    });
+  });
+
+  describe('loading flag', () => {
+    it('clears Loading... when a filter change drops the date whose fetch is in flight', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockImplementation((url: string) =>
+          url.includes('dates=true')
+            ? Promise.resolve(
+                new Response(JSON.stringify({ dates: DATES }), {
+                  status: 200,
+                }),
+              )
+            : new Promise<Response>(() => {}),
+        ),
+      );
+      const user = userEvent.setup();
+      render(<AnalysisHistory />);
+      await waitFor(() => {
+        expect(screen.getByText(/Select a date/)).toBeInTheDocument();
+      });
+      await user.selectOptions(screen.getByLabelText('Date'), '2025-03-01');
+      expect(screen.getByText('Loading...')).toBeInTheDocument();
+
+      // The filter change resets the date to none: the cancelled fetch never
+      // clears the flag itself, so the effect has to.
+      await user.click(screen.getByText('Review'));
+
+      expect(screen.getByLabelText('Date')).toHaveValue('');
+      expect(screen.queryByText('Loading...')).not.toBeInTheDocument();
     });
   });
 });

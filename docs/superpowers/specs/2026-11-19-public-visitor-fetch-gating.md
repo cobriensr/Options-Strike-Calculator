@@ -35,6 +35,7 @@ A public visitor (no owner or guest session) should never call an owner-or-guest
    - Add `isOwner` to `PanelRegistryContext` and list `sec-history` only for the owner.
    - Gate `sec-charts` on `isAuthenticated && hasMarketOrSnapshot` (it is gated on `hasMarketOrSnapshot` alone today), so stale `market.data` after a downgrade doesn't show it.
    - Files: `AnalysisHistory.tsx` and its test, `panel-registry.ts` and its test, `App.tsx`.
+   - Landed as 4 commits: (1) `AnalysisHistory` and its tests; (2) `sec-charts` gate, with `isOwner` added to `PanelRegistryContext` as optional and passed by `App.tsx` and `PanelPrefsModal.tsx`; (3) `isOwner` made required, `sec-history` owner-only; (4) tests pinning the `isOwner` wiring. A required field up front would have changed 2 production callers and 3 test files in one commit, over the 5-file cap.
 4. **`useMarketData` (audit E, 6.1).**
    - Skip `/api/quotes`, `/api/intraday`, `/api/yesterday` and `/api/movers` for public. Keep `/api/events`, which is public.
    - Make the mount fetch and the poll gate follow the live access mode, not a once-set `isOwner` state:
