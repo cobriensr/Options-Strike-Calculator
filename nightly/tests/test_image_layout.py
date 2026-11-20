@@ -227,11 +227,13 @@ def _image_pythonpath(root: Path) -> str:
 # PYTHONPATH entry.
 # weights_store and lottery_scoring import from ml/src at load and must work first.
 # The steps follow: lazy_step defers refit_step, so a missing file would go unseen until
-# 07:15. The research reports come last: a missing file or dependency there fails a
-# report step at 07:15, not the boot. The venv has no scipy, scikit-learn or SQLAlchemy,
-# so the closing loop holds where they are installed too: the reports import
-# lottery_weights and lottery_scoring, and a module-level import of one of the three
-# would make the image need a package it does not install.
+# 07:15. The research reports come next: a missing file or dependency there fails a
+# report step at 07:15, not the boot. The three research step modules close the list:
+# pipeline registers them lazily (lazy_step and lazy_group_step import nothing at load), so
+# a missing file or dependency would go unseen until a run here too. The venv has no scipy,
+# scikit-learn or SQLAlchemy, so the closing loop holds where they are installed too: the
+# reports import lottery_weights and lottery_scoring, and a module-level import of one of
+# the three would make the image need a package it does not install.
 IMAGE_IMPORT_CHECK = "\n".join(
     [
         "import sys",
@@ -242,6 +244,7 @@ IMAGE_IMPORT_CHECK = "\n".join(
         "import _eod_flow, _report_weights, exit_policy_search, flow_inversion_timing",
         "import feature_audit, daily_tracker, mine_outcome_patterns, score_lineage_audit",
         "import whale_plots, takeit_drift_monitor, score_components",
+        "import research_derive, research_reports, research_db_steps",
         "for heavy in ('sklearn', 'scipy', 'sqlalchemy'):",
         "    assert heavy not in sys.modules, f'importing the image modules loaded {heavy}'",
     ]
