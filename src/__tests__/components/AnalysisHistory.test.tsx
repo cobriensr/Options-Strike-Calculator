@@ -1490,6 +1490,151 @@ describe('AnalysisHistory', () => {
     });
   });
 
+  // The effects abort the request the next one supersedes. A real browser
+  // rejects an aborted fetch with an AbortError, and a reply already on the
+  // wire may still arrive; either settles after the next request has started,
+  // so each must leave that request's state alone. These pin the
+  // `signal.aborted` guards a mock that ignores the signal never reaches.
+  describe('a superseded request that settles after the next one started', () => {
+    const ERROR_TEXT = 'Failed to load analyses for this date';
+
+    /** Pending until its request is aborted, then rejects as a browser does. */
+    function rejectOnAbort(init?: RequestInit) {
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () =>
+          reject(new DOMException('aborted', 'AbortError')),
+        );
+      });
+    }
+
+    /**
+     * Lets a rejection already queued by an abort propagate through the
+     * effect's catch and finally. There is nothing to wait for when the
+     * guard works (nothing happens), so this is a short real timer.
+     */
+    async function settleRejections() {
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      });
+    }
+
+    it('keeps Loading... for the second date when the first date is aborted (finally guard)', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn((url: string, init?: RequestInit) =>
+          url.includes('dates=true')
+            ? Promise.resolve(jsonResponse({ dates: DATES }))
+            : rejectOnAbort(init),
+        ),
+      );
+      const user = userEvent.setup();
+      render(<AnalysisHistory />);
+      await waitFor(() => {
+        expect(screen.getByLabelText('Date')).toBeInTheDocument();
+      });
+      await user.selectOptions(screen.getByLabelText('Date'), '2025-03-01');
+      await waitFor(() => {
+        expect(screen.getByText('Loading...')).toBeInTheDocument();
+      });
+
+      await user.selectOptions(screen.getByLabelText('Date'), '2025-02-28');
+      await settleRejections();
+
+      // The first date's AbortError has settled; the second is still pending.
+      expect(screen.getByText('Loading...')).toBeInTheDocument();
+      expect(screen.queryByText(ERROR_TEXT)).not.toBeInTheDocument();
+    });
+
+    it('ignores the late 500 of a date the next pick superseded (non-ok guard)', async () => {
+      const replies: Record<string, (res: Response) => void> = {};
+      // Ignores the abort, as a reply already on the wire would.
+      vi.stubGlobal(
+        'fetch',
+        vi.fn((url: string) => {
+          if (url.includes('dates=true')) {
+            return Promise.resolve(jsonResponse({ dates: DATES }));
+          }
+          const date = /date=([\d-]+)/.exec(url)?.[1] ?? '';
+          return new Promise<Response>((resolve) => {
+            replies[date] = resolve;
+          });
+        }),
+      );
+      const user = userEvent.setup();
+      render(<AnalysisHistory />);
+      await waitFor(() => {
+        expect(screen.getByLabelText('Date')).toBeInTheDocument();
+      });
+      await user.selectOptions(screen.getByLabelText('Date'), '2025-03-01');
+      await waitFor(() => {
+        expect(replies['2025-03-01']).toBeDefined();
+      });
+      await user.selectOptions(screen.getByLabelText('Date'), '2025-02-28');
+      await waitFor(() => {
+        expect(replies['2025-02-28']).toBeDefined();
+      });
+
+      // The first date's 500 lands after the second date's request started,
+      // then the second date succeeds. Nothing clears an error between them
+      // but the next effect run, so a 500 that got through would stay.
+      await act(async () => {
+        replies['2025-03-01']!(new Response('', { status: 500 }));
+        await Promise.resolve();
+      });
+      await act(async () => {
+        replies['2025-02-28']!(
+          jsonResponse({ analyses: analysesFor('SECOND DATE CONDOR') }),
+        );
+        await Promise.resolve();
+      });
+
+      await waitFor(() => {
+        expect(
+          screen.getAllByText('SECOND DATE CONDOR').length,
+        ).toBeGreaterThan(0);
+      });
+      expect(screen.queryByText(ERROR_TEXT)).not.toBeInTheDocument();
+    });
+
+    it('shows no dates error when a refresh aborts the dates request in flight (catch guard)', async () => {
+      let call = 0;
+      let resolveSecond: (res: Response) => void = () => {};
+      vi.stubGlobal(
+        'fetch',
+        vi.fn((_url: string, init?: RequestInit) => {
+          call += 1;
+          if (call === 1) return rejectOnAbort(init);
+          return new Promise<Response>((resolve) => {
+            resolveSecond = resolve;
+          });
+        }),
+      );
+      const { rerender } = render(<AnalysisHistory refreshKey={0} />);
+      await flush();
+      expect(call).toBe(1);
+
+      rerender(<AnalysisHistory refreshKey={1} />);
+      await settleRejections();
+
+      // The first request's AbortError has settled; the second is pending.
+      expect(call).toBe(2);
+      expect(
+        screen.queryByText(/Failed to load analysis dates/),
+      ).not.toBeInTheDocument();
+
+      await act(async () => {
+        resolveSecond(jsonResponse({ dates: DATES }));
+        await Promise.resolve();
+      });
+      await waitFor(() => {
+        expect(screen.getByLabelText('Date')).toBeInTheDocument();
+      });
+      expect(
+        screen.queryByText(/Failed to load analysis dates/),
+      ).not.toBeInTheDocument();
+    });
+  });
+
   describe('loading flag', () => {
     it('clears Loading... when a filter change drops the date whose fetch is in flight', async () => {
       vi.stubGlobal(
