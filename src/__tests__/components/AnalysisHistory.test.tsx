@@ -3,7 +3,11 @@ import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import AnalysisHistory from '../../components/ChartAnalysis/AnalysisHistory';
 import type { AnalysisResult } from '../../components/ChartAnalysis/types';
+import { captureUnlessAuth } from '../../lib/sentry-helpers';
 import type { AccessMode } from '../../utils/auth';
+
+vi.mock('../../lib/sentry-helpers', () => ({ captureUnlessAuth: vi.fn() }));
+const mockCaptureUnlessAuth = vi.mocked(captureUnlessAuth);
 
 // The panel reads its access mode at every render, so a test flips it between
 // renders. `checkIsOwner` is the one function the component imports.
@@ -141,6 +145,7 @@ function datesCalls(fetchMock: ReturnType<typeof vi.fn>) {
 describe('AnalysisHistory', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
+    mockCaptureUnlessAuth.mockClear();
     access.mode = 'owner';
   });
 
@@ -1283,6 +1288,176 @@ describe('AnalysisHistory', () => {
 
       expect(screen.queryByText(FIRST_STRUCTURE)).not.toBeInTheDocument();
       expect(screen.getByText(ERROR_TEXT)).toBeInTheDocument();
+    });
+
+    // A 2xx whose JSON has the wrong shape is rejected whole, before any of it
+    // reaches state, where a wrong type would throw during render. It shows
+    // the same message as any other failure, and reaches Sentry by name.
+    const MALFORMED_ANALYSES = [
+      ['analyses that is a string', { analyses: 'x' }],
+      ['no analyses key', {}],
+      ['a null body', null],
+      ['an entry that is not an object', { analyses: [null] }],
+      ['an entry missing its fields', { analyses: [{ id: 1 }] }],
+      [
+        'an entry with an unknown mode',
+        { analyses: [{ ...analysesFor('X')[0], mode: 'weekly' }] },
+      ],
+      [
+        'an analysis whose observations are a string',
+        {
+          analyses: [
+            {
+              ...analysesFor('X')[0],
+              analysis: { ...analysesFor('X')[0]!.analysis, observations: 'x' },
+            },
+          ],
+        },
+      ],
+    ] as const;
+
+    it.each(MALFORMED_ANALYSES)(
+      'after a 200 with %s for a second date, shows the error and reports it, keeping nothing',
+      async (_label, body) => {
+        const { user } = await renderOnFirstDate(
+          fetchByDate({
+            '2025-03-01': firstDateOk,
+            '2025-02-28': () => Promise.resolve(jsonResponse(body)),
+          }),
+        );
+        expect(mockCaptureUnlessAuth).not.toHaveBeenCalled();
+
+        await user.selectOptions(screen.getByLabelText('Date'), '2025-02-28');
+
+        await waitFor(() => {
+          expect(screen.getByText(ERROR_TEXT)).toBeInTheDocument();
+        });
+        expect(screen.queryByText(FIRST_STRUCTURE)).not.toBeInTheDocument();
+        expect(screen.queryByText('Loading...')).not.toBeInTheDocument();
+        expect(
+          screen.queryByText(/No.*analyses found for this date/),
+        ).not.toBeInTheDocument();
+        expect(mockCaptureUnlessAuth).toHaveBeenCalledTimes(1);
+        const [error, options] = mockCaptureUnlessAuth.mock.calls[0]!;
+        expect((error as Error).message).toBe(
+          'analyses response failed schema validation',
+        );
+        expect(options).toEqual({
+          contexts: {
+            analyses: {
+              date: '2025-02-28',
+              issues: expect.arrayContaining([expect.any(String)]),
+              issueCount: expect.any(Number),
+            },
+          },
+        });
+      },
+    );
+
+    // A stored row that predates a field must still load: the server stores
+    // null for the blocks a mode doesn't produce and for a SIT OUT's delta,
+    // and the older arrays may be absent.
+    it('still shows a SIT OUT row whose blocks are null and whose arrays are absent', async () => {
+      const sitOut = {
+        ...analysesFor('SIT OUT')[0],
+        suggestedDelta: null,
+        hedge: null,
+        analysis: {
+          mode: 'entry',
+          structure: 'SIT OUT',
+          confidence: 'LOW',
+          suggestedDelta: null,
+          reasoning: 'No edge today',
+          structureRationale: 'Nothing to sell',
+          chartConfidence: null,
+          strikeGuidance: null,
+          managementRules: null,
+          entryPlan: null,
+          directionalOpportunity: null,
+          hedge: null,
+          periscopeNotes: null,
+          review: null,
+        },
+      };
+      const { user } = await renderOnFirstDate(
+        fetchByDate({
+          '2025-03-01': firstDateOk,
+          '2025-02-28': () =>
+            Promise.resolve(jsonResponse({ analyses: [sitOut] })),
+        }),
+      );
+
+      await user.selectOptions(screen.getByLabelText('Date'), '2025-02-28');
+
+      await waitFor(() => {
+        expect(screen.getAllByText('SIT OUT').length).toBeGreaterThan(0);
+      });
+      expect(screen.queryByText(ERROR_TEXT)).not.toBeInTheDocument();
+      expect(mockCaptureUnlessAuth).not.toHaveBeenCalled();
+    });
+
+    // The dates reply gets the same treatment, and the list from before it
+    // goes with it: nothing the panel shows came from a body it can't trust.
+    it.each([
+      ['dates that is a string', { dates: 'x' }],
+      ['no dates key', {}],
+      ['a date entry missing its counts', { dates: [{ date: '2025-03-01' }] }],
+      ['a date entry that is null', { dates: [null] }],
+    ] as const)(
+      'shows the dates error and reports it for a 200 with %s',
+      async (_label, body) => {
+        vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(body)));
+
+        render(<AnalysisHistory />);
+
+        await waitFor(() => {
+          expect(
+            screen.getByText(/Failed to load analysis dates/),
+          ).toBeInTheDocument();
+        });
+        expect(screen.queryByLabelText('Date')).not.toBeInTheDocument();
+        expect(mockCaptureUnlessAuth).toHaveBeenCalledTimes(1);
+        const [error, options] = mockCaptureUnlessAuth.mock.calls[0]!;
+        expect((error as Error).message).toBe(
+          'analyses dates response failed schema validation',
+        );
+        expect(options).toEqual({
+          contexts: {
+            analysesDates: {
+              issues: expect.arrayContaining([expect.any(String)]),
+              issueCount: expect.any(Number),
+            },
+          },
+        });
+      },
+    );
+
+    it('drops the list a refresh replaces with a malformed dates reply', async () => {
+      let malformed = false;
+      vi.stubGlobal(
+        'fetch',
+        vi
+          .fn()
+          .mockImplementation(() =>
+            Promise.resolve(
+              jsonResponse(malformed ? { dates: 'x' } : { dates: DATES }),
+            ),
+          ),
+      );
+      const { rerender } = render(<AnalysisHistory refreshKey={0} />);
+      await waitFor(() => {
+        expect(screen.getByLabelText('Date')).toBeInTheDocument();
+      });
+
+      malformed = true;
+      rerender(<AnalysisHistory refreshKey={1} />);
+
+      await waitFor(() => {
+        expect(
+          screen.getByText(/Failed to load analysis dates/),
+        ).toBeInTheDocument();
+      });
+      expect(screen.queryByLabelText('Date')).not.toBeInTheDocument();
     });
 
     // The first date's times were auto-selected from analyses that stayed in

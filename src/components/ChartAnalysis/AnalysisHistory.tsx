@@ -16,7 +16,11 @@ import { SectionBox } from '../ui';
 import { checkIsOwner } from '../../utils/auth';
 import { parseEntryTimeMinutes } from '../../utils/entry-time';
 import AnalysisHistoryPicker from './AnalysisHistoryPicker';
+import { analysesResponseSchema, datesResponseSchema } from './analyses-schema';
+import { captureUnlessAuth } from '../../lib/sentry-helpers';
+import { summarizeZodIssues } from '../../lib/response-guard';
 
+const DATES_ERROR_MESSAGE = 'Failed to load analysis dates';
 const ANALYSES_ERROR_MESSAGE = 'Failed to load analyses for this date';
 
 // ── Component ──────────────────────────────────────────────
@@ -73,25 +77,38 @@ export default function AnalysisHistory({
           signal: controller.signal,
         });
         if (!res.ok) {
-          if (!controller.signal.aborted)
-            setFetchError('Failed to load analysis dates');
+          if (!controller.signal.aborted) setFetchError(DATES_ERROR_MESSAGE);
           return;
         }
         const text = await res.text();
         if (!text.startsWith('{')) {
-          if (!controller.signal.aborted)
-            setFetchError('Failed to load analysis dates');
+          if (!controller.signal.aborted) setFetchError(DATES_ERROR_MESSAGE);
           return;
         }
-        const data = JSON.parse(text);
-        if (!controller.signal.aborted) {
-          setAllDates(data.dates ?? []);
-          setFetchError(null);
+        const body: unknown = JSON.parse(text);
+        if (controller.signal.aborted) return;
+        const parsed = datesResponseSchema.safeParse(body);
+        if (!parsed.success) {
+          // A well-formed reply of the wrong shape: nothing from it is kept,
+          // and the list from before it goes too, as the catch below does.
+          captureUnlessAuth(
+            new Error('analyses dates response failed schema validation'),
+            {
+              contexts: {
+                analysesDates: summarizeZodIssues(parsed.error.issues),
+              },
+            },
+          );
+          setAllDates([]);
+          setFetchError(DATES_ERROR_MESSAGE);
+          return;
         }
+        setAllDates(parsed.data.dates);
+        setFetchError(null);
       } catch {
         if (!controller.signal.aborted) {
           setAllDates([]);
-          setFetchError('Failed to load analysis dates');
+          setFetchError(DATES_ERROR_MESSAGE);
         }
       }
     })();
@@ -160,8 +177,31 @@ export default function AnalysisHistory({
             setAnalysesError(ANALYSES_ERROR_MESSAGE);
           return;
         }
-        const data = await res.json();
-        if (!controller.signal.aborted) setAnalyses(data.analyses ?? []);
+        const body: unknown = await res.json();
+        if (controller.signal.aborted) return;
+        const parsed = analysesResponseSchema.safeParse(body);
+        if (!parsed.success) {
+          // A well-formed reply of the wrong shape: nothing from it is kept
+          // (the previous date's rows went before the request), and the panel
+          // says it failed rather than that there is nothing.
+          captureUnlessAuth(
+            new Error('analyses response failed schema validation'),
+            {
+              contexts: {
+                analyses: {
+                  date: selectedDate,
+                  ...summarizeZodIssues(parsed.error.issues),
+                },
+              },
+            },
+          );
+          setAnalysesError(ANALYSES_ERROR_MESSAGE);
+          return;
+        }
+        // The schema checks what the panel reads, and its output is looser
+        // than `AnalysisEntry` (the server stores `null` for blocks the shared
+        // type calls optional), so this is the one cast.
+        setAnalyses(parsed.data.analyses as AnalysisEntry[]);
       } catch {
         if (!controller.signal.aborted)
           setAnalysesError(ANALYSES_ERROR_MESSAGE);
