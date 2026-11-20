@@ -29,6 +29,13 @@ const h = vi.hoisted(() => ({
   access: { mode: 'owner' as 'owner' | 'guest' | 'public' },
   market: { current: {} as Record<string, unknown> },
   /**
+   * True: the PanelRouter stand-in renders only the ids the registry lists, as
+   * the real router does. False: it renders every id in `renderedPanels`, so a
+   * test can reach App's own per-panel gates (GatedSection's `gate`) that the
+   * registry would otherwise cover.
+   */
+  routeByRegistry: { on: true },
+  /**
    * Panel ids the PanelRouter stand-in renders: plain ones, ones behind a
    * GatedSection, and the two sections that poll through a leaf of their own
    * (sec-iv's term structure, sec-regime's flow-regime badge).
@@ -230,7 +237,7 @@ vi.mock('../components/PanelRouter', () => ({
       Fragment,
       null,
       ...h.renderedPanels
-        .filter((id) => registered.has(id))
+        .filter((id) => !h.routeByRegistry.on || registered.has(id))
         .map((id) =>
           createElement(Fragment, { key: id }, panelMap.get(id)?.()),
         ),
@@ -377,6 +384,7 @@ describe('App polling gate (market clock AND owner-or-guest)', () => {
 
   afterEach(() => {
     globalThis.location.hash = '';
+    h.routeByRegistry.on = true;
   });
 
   describe.each(SCENARIOS)('$name', (s) => {
@@ -502,6 +510,42 @@ describe('App polling gate (market clock AND owner-or-guest)', () => {
         ),
       ).toEqual(new Set([s.gate]));
     });
+  });
+
+  // The registry already leaves the market-context panels out of a public
+  // visitor's list, so the scenarios above never reach App's own gate on them
+  // (`hasMarketContext = isAuthenticated && hasMarketOrSnapshot`, handed to each
+  // GatedSection). Render them regardless of the registry to pin that gate: it
+  // is the second line if the registry ever lists one.
+  describe('GatedSection gate, with the registry out of the way', () => {
+    beforeEach(() => {
+      h.routeByRegistry.on = false;
+    });
+
+    it.each([
+      ['public', false],
+      ['owner', true],
+      ['guest', true],
+    ] as const)(
+      'a %s visitor with market data sees GexTarget and GexLandscape: %s',
+      (mode, shown) => {
+        h.access.mode = mode;
+        h.market.current = marketFor({
+          name: mode,
+          mode,
+          clockOpen: true,
+          quotesFlag: true,
+          gate: mode !== 'public',
+        });
+
+        const { container } = mountApp();
+
+        expect(container.querySelector('#sec-gex-target') !== null).toBe(shown);
+        expect(container.querySelector('#sec-gex-landscape') !== null).toBe(
+          shown,
+        );
+      },
+    );
   });
 
   describe('changes inside one mount', () => {
