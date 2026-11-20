@@ -14,7 +14,13 @@ import type {
   LotteryFireMacro,
   LotteryTickerStats,
 } from '../components/LotteryFinder/types';
-import { genericElementsWithAriaLabel, srHintText } from './helpers/aria';
+import {
+  genericElementsWithAriaLabel,
+  squashText,
+  srHintText,
+  titledElementsNeedingHint,
+  titledElementsWithoutHint,
+} from './helpers/aria';
 
 // ── Mocks ─────────────────────────────────────────────────────────────
 
@@ -2296,9 +2302,10 @@ describe('LotteryRow: badge explanations reach screen readers', () => {
     },
   ];
 
-  /** A fire that lights every badge the row can show (ticker, strike and
-   *  option-type spans carry no aria-label and are not in play). */
-  function makeFullyBadgedFire(): LotteryFire {
+  /** A fire that lights every badge the row can show. `flagsLanded` false
+   *  leaves the SHAP top features null, so the Take-It tile shows its
+   *  "flags…" placeholder instead of the flag chips. */
+  function makeFullyBadgedFire(flagsLanded: boolean): LotteryFire {
     return makeFire({
       optionType: 'C',
       triggerTimeCt: TRIGGER,
@@ -2313,10 +2320,12 @@ describe('LotteryRow: badge explanations reach screen readers', () => {
       inversionN90d: 40,
       tickerStats: makeStats({ tier: 'reliable' }),
       takeitProb: 0.72,
-      takeitTopFeatures: {
-        positive: [{ name: 'dte', shap_value: 0.12, feature_value: 0 }],
-        negative: [],
-      },
+      takeitTopFeatures: flagsLanded
+        ? {
+            positive: [{ name: 'dte', shap_value: 0.12, feature_value: 0 }],
+            negative: [{ name: 'vol_oi', shap_value: -0.05, feature_value: 3 }],
+          }
+        : null,
       peakTakeitProb: 0.81,
       peakTakeitAt: '2026-05-15T13:10:00.000Z',
       entry: {
@@ -2383,12 +2392,37 @@ describe('LotteryRow: badge explanations reach screen readers', () => {
   }
 
   /** `tailwind`: the live tape still agrees with the call (Flow Match).
-   *  `inverted`: it has reversed (Flow Mismatch, Flow Inverted, EXIT). */
-  function renderFullyBadged(variant: 'tailwind' | 'inverted') {
+   *  `inverted`: it has reversed (Flow Mismatch, Flow Inverted, EXIT).
+   *  `pending`: tailwind, SHAP flags not landed yet ("flags…"), and an exit
+   *  policy with no result, so the end-of-day fallback figure shows. */
+  function renderFullyBadged(variant: 'tailwind' | 'inverted' | 'pending') {
     vi.useFakeTimers();
     // Five minutes after the trigger: the "hot" chip shows and the cohort
     // countdown is still inside its window.
     vi.setSystemTime(new Date(Date.parse(TRIGGER) + 5 * 60_000));
+    // A non-empty tape, so the expanded panel's side-volume strip (avg fill,
+    // OI, total premium, %OTM) renders.
+    mockUseContractTape.mockReturnValue({
+      data: {
+        series: [
+          {
+            ts: TRIGGER,
+            askVol: 100,
+            bidVol: 50,
+            midVol: 25,
+            noSideVol: 0,
+            totalVol: 175,
+            avgPrice: 1.25,
+            highPrice: 1.3,
+            lowPrice: 1.2,
+          },
+        ],
+      },
+      loading: false,
+      error: null,
+      fetchedAt: null,
+      refresh: vi.fn(),
+    });
     mockUseGexbotData.mockReturnValue({
       rows: [
         {
@@ -2419,13 +2453,17 @@ describe('LotteryRow: badge explanations reach screen readers', () => {
     });
     const view = render(
       <LotteryRow
-        fire={makeFullyBadgedFire()}
-        exitPolicy="realizedTrail30_10Pct"
+        fire={makeFullyBadgedFire(variant !== 'pending')}
+        exitPolicy={
+          variant === 'pending'
+            ? 'realizedFlowInversionPct'
+            : 'realizedTrail30_10Pct'
+        }
         marketOpen
         liveFlowSnapshot={
-          variant === 'tailwind'
-            ? { cumNcp: 20_000_000, cumNpp: 5_000_000, asOfTs: TRIGGER }
-            : { cumNcp: 1_000_000, cumNpp: 20_000_000, asOfTs: TRIGGER }
+          variant === 'inverted'
+            ? { cumNcp: 1_000_000, cumNpp: 20_000_000, asOfTs: TRIGGER }
+            : { cumNcp: 20_000_000, cumNpp: 5_000_000, asOfTs: TRIGGER }
         }
       />,
     );
@@ -2447,7 +2485,7 @@ describe('LotteryRow: badge explanations reach screen readers', () => {
     });
   });
 
-  it.each(['tailwind', 'inverted'] as const)(
+  it.each(['tailwind', 'inverted', 'pending'] as const)(
     'a fully badged row (%s) has no aria-label on a role-less, non-interactive element',
     (variant) => {
       const { container } = renderFullyBadged(variant);
@@ -2547,5 +2585,54 @@ describe('LotteryRow: badge explanations reach screen readers', () => {
     expect(screen.getByTestId('lottery-exit-now-badge').textContent).toMatch(
       /^EXIT — Ticker net flow inverted/,
     );
+  });
+
+  // The rule, precisely: an element with a non-empty `title` needs an
+  // SrHint as a direct child, unless it has a role, is natively interactive
+  // (button, a[href], input, select, textarea, summary) or already shows its
+  // title text. `title` alone is mouse-only.
+  it.each(['tailwind', 'inverted', 'pending'] as const)(
+    'a fully badged row (%s): every titled element has an SrHint child unless it has a role, is natively interactive or already shows its title',
+    (variant) => {
+      const { container } = renderFullyBadged(variant);
+      // Badges that carry a title and no aria-label are on screen.
+      for (const text of [
+        'REIGNITED',
+        'DUAL FLAG',
+        'HIGH-Γ',
+        'hot',
+        'cheap-call-PM',
+        'PM', // time-of-day
+        '~160min',
+      ]) {
+        expect(screen.getAllByText(text).length, text).toBeGreaterThan(0);
+      }
+      expect(screen.getByTestId('takeit-score-chip')).toBeInTheDocument();
+      expect(screen.getByTestId('takeit-peak-marker')).toBeInTheDocument();
+      expect(screen.getByText(/CLUSTER ×14/)).toBeInTheDocument();
+      if (variant === 'pending') {
+        expect(screen.getByText('flags…')).toBeInTheDocument();
+        expect(screen.getByText('eod')).toBeInTheDocument();
+      } else {
+        expect(screen.getByText('Take-It')).toBeInTheDocument();
+        expect(screen.getByText('DTE')).toBeInTheDocument(); // SHAP flag chip
+      }
+
+      expect(titledElementsWithoutHint(container)).toEqual([]);
+    },
+  );
+
+  it('a fully badged row: a hint repeats its hover text word for word, except the terse GEXBot and sibling-pill hints', () => {
+    const { container } = renderFullyBadged('inverted');
+    const needing = titledElementsNeedingHint(container);
+    // Guards against passing by finding nothing to compare.
+    expect(needing.length).toBeGreaterThan(30);
+    for (const el of needing) {
+      const id = el.getAttribute('data-testid') ?? '';
+      if (/^(lottery-gex-badge|sibling-pill-)/.test(id)) continue;
+      expect(squashText(srHintText(el)), el.outerHTML.slice(0, 100)).toBe(
+        squashText(el.getAttribute('title')),
+      );
+    }
   });
 });

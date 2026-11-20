@@ -26,7 +26,7 @@ import {
 } from '../../utils/macro-badges.js';
 import { computeFlowMatch } from '../../utils/flow-match.js';
 import { computeFlowInverted } from '../../utils/flow-inverted.js';
-import { computeExitNow } from '../../utils/exit-now.js';
+import { computeExitNow, exitReasonTooltip } from '../../utils/exit-now.js';
 import { gexbotBadge } from '../../utils/gexbot-badge.js';
 import { CohortCountdown } from '../ui/CohortCountdown.js';
 import { SrHint } from '../ui/SrHint.js';
@@ -344,6 +344,40 @@ const flowInvertedBadge = (
       'Ticker net flow agreed with this alert at fire time but no longer does. Per the lottery-net-flow-eda simulation, this is the strongest documented exit signal — the matched side has stopped winning.',
   };
 };
+
+// Hover text of the badges and figures that have no tooltip builder above.
+// Each is also that element's hidden text (see SrHint), so one string each.
+const REIGNITED_TOOLTIP =
+  'REIGNITION: chain fired 3+ times, went quiet ≥30 min, then re-ignited with ≥2 post-gap fires. Daily top 5 by post-gap intensity. 70% precision on outlier-peak winners (vs 40% baseline); median realized trail30/10 +18%.';
+const DUAL_FLAG_TOOLTIP =
+  'DUAL FLAG: this chain fired on BOTH Lottery Finder AND Silent Boom today. Highest-conviction cohort — 81% win rate on best fire / median best peak 64% (vs 72% / 35% LF-only) on the 25-day backtest. ~39 chain-days/day on average.';
+const HOT_TOOLTIP =
+  'Latest fire on this chain was within the last 10 minutes — chain is still hot.';
+const CHEAP_CALL_PM_TOOLTIP =
+  'Cheap-call-PM: entry < $1, call, PM session. The selection rule from the 15-day backtest — 18.9% lottery rate vs 9.1% RE-LOAD baseline. Caveat: edge concentrated in 1-2 outlier days/15.';
+const TIME_OF_DAY_TOOLTIP = 'Time-of-day bucket — AM_open / MID / LUNCH / PM';
+const PEAK_TOOLTIP =
+  'Best-case peak return — % gain at the highest post-entry print. Look-ahead reference, not tradeable.';
+const PREMIUM_TOOLTIP =
+  'Trigger-window premium: entry price × window contracts × 100';
+const SPOT_TOOLTIP =
+  'Underlying spot at the moment this fire triggered (frozen snapshot — does not track intraday drift).';
+const AVG_FILL_TOOLTIP = 'Volume-weighted avg fill across the session';
+const OPEN_INTEREST_TOOLTIP = 'Open interest at fire time';
+const TAPE_PREMIUM_TOOLTIP =
+  'Total premium traded today = totalVol × avgFill × 100';
+
+/** Hover text of the always-visible footer's %OTM figure. */
+const otmFooterTooltip = (otmPct: number): string =>
+  otmPct >= 0
+    ? `Strike was ${(otmPct * 100).toFixed(1)}% out of the money at fire time.`
+    : `Strike was ${(Math.abs(otmPct) * 100).toFixed(1)}% in the money at fire time.`;
+
+/** Hover text of the %OTM figure in the expanded contract strip. */
+const otmPanelTooltip = (otmPct: number): string =>
+  otmPct >= 0
+    ? `${(otmPct * 100).toFixed(1)}% out of the money`
+    : `${(Math.abs(otmPct) * 100).toFixed(1)}% in the money`;
 
 export const LotteryRow = memo(function LotteryRow({
   fire,
@@ -672,12 +706,32 @@ export const LotteryRow = memo(function LotteryRow({
   // One string for the hover text and the pill's hidden text, so a screen
   // reader hears what a hover shows. The visible "round-tripped -2" leads it.
   const roundTripTooltip = `Sellers outweighed buyers in the hour after the fire (deduct ${roundTripDeduct}). It describes selling that already happened, not what comes next: Lottery fires still held when a deduct landed finished about where they stood then (at -1: down about 28% when it landed, 29% at the 30/10 trail exit). The tier is the one shown at the fire.`;
-  const exitTooltip =
-    exitNow.reason === 'expired'
-      ? 'Cohort P75 hold elapsed — historical median peak has passed.'
-      : exitNow.reason === 'inverted'
-        ? 'Ticker net flow inverted — strongest documented exit signal.'
-        : 'Hold expired + flow inverted — both exit rules fired.';
+  // Hover text that is also a badge's hidden text (see the round-trip pill):
+  // one string each, so the two can't drift apart.
+  const avgHoldTooltip =
+    fire.scoreTier === 'tier1'
+      ? `Cohort avg hold ~${fire.avgHoldMinutes} minutes — historical P75 of minutes-to-peak among winners (peak ≥ 50%) for tier 1 ${fire.underlyingSymbol} fires. Tier 1 winners often run on slow tail moves so this is typically LONGER than tier 2's. Use as a typical exit-window expectation, not a hard rule.`
+      : `Cohort avg hold ~${fire.avgHoldMinutes} minutes — historical P75 of minutes-to-peak among winners (peak ≥ 50%) for ${fire.scoreTier} ${fire.underlyingSymbol} fires. Use as a typical exit-window expectation, not a hard rule.`;
+  const optionTypeName = fire.optionType === 'C' ? 'Call' : 'Put';
+  const dteTooltip = `Expires ${formatExpiryFull(fire.expiry)} — ${
+    fire.dte === 0
+      ? '0DTE (same day)'
+      : `${fire.dte} day${fire.dte === 1 ? '' : 's'} to expiry`
+  }`;
+  // Set only for a multi-fire chain; a single fire has nothing to explain.
+  const firstFireTooltip =
+    fire.fireCount > 1
+      ? `First fire ${formatTimeCT(fire.firstFireTimeCt || fire.triggerTimeCt)} CT · latest ${formatTimeCT(fire.triggerTimeCt)} CT`
+      : undefined;
+  const megaClusterTooltip =
+    fire.megaClusterSize != null
+      ? `MEGA CLUSTER: ${fire.megaClusterSize} distinct tickers fired in this CT minute. Cohort lift: +16.3% median realized trail30/10 vs +6-7% baseline (5/15 cluster analysis on 93-day fires).`
+      : 'MEGA CLUSTER: ≥12 distinct tickers fired in this CT minute. +16.3% median realized trail30/10 vs +6-7% baseline.';
+  const highGammaTooltip =
+    fire.gammaAtTrigger != null
+      ? `HIGH-Γ bonus +1: trigger-window gamma = ${fire.gammaAtTrigger.toFixed(4)} ≥ 0.025 threshold. Empirical lift: +4.8pp (LF) / +10.7pp (SB) on trail30/10 winrate. SPY + USO are excluded because the signal reverses on those tickers.`
+      : 'HIGH-Γ bonus +1: gamma at trigger ≥ 0.025 (non-excluded ticker).';
+  const eodFallbackTooltip = `Selected policy (${EXIT_POLICY_LABELS[exitPolicy]}) returned no exit for this fire. Showing realized end-of-session return as a fallback so the row remains informative. Most common cause: late-PM trigger leaves <5 min of post-trigger flow data for the inversion algorithm to detect.`;
 
   return (
     <div
@@ -824,13 +878,10 @@ export const LotteryRow = memo(function LotteryRow({
             so a long tier1 number doesn't read as a typo. */}
         <span
           className="rounded border border-neutral-700 bg-neutral-900 px-1.5 py-0.5 font-mono text-[10px] leading-none text-neutral-300"
-          title={
-            fire.scoreTier === 'tier1'
-              ? `Cohort avg hold ~${fire.avgHoldMinutes} minutes — historical P75 of minutes-to-peak among winners (peak ≥ 50%) for tier 1 ${fire.underlyingSymbol} fires. Tier 1 winners often run on slow tail moves so this is typically LONGER than tier 2's. Use as a typical exit-window expectation, not a hard rule.`
-              : `Cohort avg hold ~${fire.avgHoldMinutes} minutes — historical P75 of minutes-to-peak among winners (peak ≥ 50%) for ${fire.scoreTier} ${fire.underlyingSymbol} fires. Use as a typical exit-window expectation, not a hard rule.`
-          }
+          title={avgHoldTooltip}
         >
           ~{fire.avgHoldMinutes}min
+          <SrHint>{avgHoldTooltip}</SrHint>
         </span>
         {/* Live countdown vs. the cohort P75 hold time. Ticks every
             minute, goes amber at ≤15m and red on expiry. Pairs with
@@ -875,9 +926,10 @@ export const LotteryRow = memo(function LotteryRow({
           </span>
           <span
             className={`rounded border px-1.5 py-0.5 text-[10px] font-bold ${optionTypeBadge(fire.optionType)}`}
-            title={fire.optionType === 'C' ? 'Call' : 'Put'}
+            title={optionTypeName}
           >
             {fire.optionType}
+            <SrHint>{optionTypeName}</SrHint>
           </span>
           {/* Expiry + DTE — 0DTE highlighted in rose so it's
               scannable at a glance. The user trades 0DTE only, so
@@ -885,13 +937,10 @@ export const LotteryRow = memo(function LotteryRow({
               multi-day contract that slipped past the mode filter. */}
           <span
             className={`rounded border px-1.5 py-0.5 font-mono text-[10px] leading-none ${dteChipClass(fire.dte)}`}
-            title={`Expires ${formatExpiryFull(fire.expiry)} — ${
-              fire.dte === 0
-                ? '0DTE (same day)'
-                : `${fire.dte} day${fire.dte === 1 ? '' : 's'} to expiry`
-            }`}
+            title={dteTooltip}
           >
             {formatExpiryShort(fire.expiry)} · {fire.dte}D
+            <SrHint>{dteTooltip}</SrHint>
           </span>
           <span
             className="text-[10px] text-neutral-600 group-hover:text-blue-400"
@@ -909,13 +958,10 @@ export const LotteryRow = memo(function LotteryRow({
             position is unaffected. */}
         <span
           className="font-mono text-xs text-neutral-400"
-          title={
-            fire.fireCount > 1
-              ? `First fire ${formatTimeCT(fire.firstFireTimeCt || fire.triggerTimeCt)} CT · latest ${formatTimeCT(fire.triggerTimeCt)} CT`
-              : undefined
-          }
+          title={firstFireTooltip}
         >
           {formatTimeCT(fire.firstFireTimeCt || fire.triggerTimeCt)} CT
+          {firstFireTooltip != null && <SrHint>{firstFireTooltip}</SrHint>}
         </span>
 
         {/* Alert seq + RE-LOAD + cheap-call-PM badges */}
@@ -959,10 +1005,11 @@ export const LotteryRow = memo(function LotteryRow({
         {fire.reignited === true && (
           <span
             className="inline-flex items-center gap-1 rounded border border-orange-400/60 bg-orange-900/40 px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-orange-100 uppercase"
-            title="REIGNITION: chain fired 3+ times, went quiet ≥30 min, then re-ignited with ≥2 post-gap fires. Daily top 5 by post-gap intensity. 70% precision on outlier-peak winners (vs 40% baseline); median realized trail30/10 +18%."
+            title={REIGNITED_TOOLTIP}
           >
             <span aria-hidden="true">🔥</span>
             REIGNITED
+            <SrHint>{REIGNITED_TOOLTIP}</SrHint>
           </span>
         )}
         {/* MEGA-CLUSTER chip — this fire landed in a CT minute where
@@ -974,16 +1021,13 @@ export const LotteryRow = memo(function LotteryRow({
         {fire.megaCluster === true && (
           <span
             className="inline-flex items-center gap-1 rounded border border-sky-400/60 bg-sky-900/40 px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-sky-100 uppercase"
-            title={
-              fire.megaClusterSize != null
-                ? `MEGA CLUSTER: ${fire.megaClusterSize} distinct tickers fired in this CT minute. Cohort lift: +16.3% median realized trail30/10 vs +6-7% baseline (5/15 cluster analysis on 93-day fires).`
-                : 'MEGA CLUSTER: ≥12 distinct tickers fired in this CT minute. +16.3% median realized trail30/10 vs +6-7% baseline.'
-            }
+            title={megaClusterTooltip}
           >
             <span aria-hidden="true">🌐</span>
             {fire.megaClusterSize != null
               ? `CLUSTER ×${fire.megaClusterSize}`
               : 'MEGA CLUSTER'}
+            <SrHint>{megaClusterTooltip}</SrHint>
           </span>
         )}
         {/* DUAL-FLAG chip — chain appears in BOTH lottery_finder_fires
@@ -994,10 +1038,11 @@ export const LotteryRow = memo(function LotteryRow({
         {fire.dualFlag === true && (
           <span
             className="inline-flex items-center gap-1 rounded border border-emerald-400/60 bg-emerald-900/40 px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-emerald-100 uppercase"
-            title="DUAL FLAG: this chain fired on BOTH Lottery Finder AND Silent Boom today. Highest-conviction cohort — 81% win rate on best fire / median best peak 64% (vs 72% / 35% LF-only) on the 25-day backtest. ~39 chain-days/day on average."
+            title={DUAL_FLAG_TOOLTIP}
           >
             <span aria-hidden="true">⚑⚑</span>
             DUAL FLAG
+            <SrHint>{DUAL_FLAG_TOOLTIP}</SrHint>
           </span>
         )}
         {/* HIGH-Γ chip — fire's trigger-window gamma ≥ 0.025 AND
@@ -1009,14 +1054,11 @@ export const LotteryRow = memo(function LotteryRow({
         {fire.gammaScoreAdjustment != null && fire.gammaScoreAdjustment > 0 && (
           <span
             className="inline-flex items-center gap-1 rounded border border-violet-400/60 bg-violet-900/40 px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-violet-100 uppercase"
-            title={
-              fire.gammaAtTrigger != null
-                ? `HIGH-Γ bonus +1: trigger-window gamma = ${fire.gammaAtTrigger.toFixed(4)} ≥ 0.025 threshold. Empirical lift: +4.8pp (LF) / +10.7pp (SB) on trail30/10 winrate. SPY + USO are excluded because the signal reverses on those tickers.`
-                : 'HIGH-Γ bonus +1: gamma at trigger ≥ 0.025 (non-excluded ticker).'
-            }
+            title={highGammaTooltip}
           >
             <span aria-hidden="true">Γ↑</span>
             HIGH-Γ
+            <SrHint>{highGammaTooltip}</SrHint>
           </span>
         )}
         {/* "Still hot" indicator — only when market is open and the
@@ -1026,13 +1068,14 @@ export const LotteryRow = memo(function LotteryRow({
           nowMs - new Date(fire.triggerTimeCt).getTime() < 10 * 60_000 && (
             <span
               className="inline-flex items-center gap-1 rounded border border-red-500/50 bg-red-950/40 px-1.5 py-0.5 text-[10px] font-semibold text-red-200"
-              title="Latest fire on this chain was within the last 10 minutes — chain is still hot."
+              title={HOT_TOOLTIP}
             >
               <span
                 className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-red-400"
                 aria-hidden
               />
               hot
+              <SrHint>{HOT_TOOLTIP}</SrHint>
             </span>
           )}
         {reloadBadge != null && (
@@ -1048,18 +1091,20 @@ export const LotteryRow = memo(function LotteryRow({
         {fire.tags.cheapCallPm && (
           <span
             className="rounded border border-fuchsia-500/40 bg-fuchsia-950/30 px-1.5 py-0.5 text-[10px] font-semibold text-fuchsia-200"
-            title="Cheap-call-PM: entry < $1, call, PM session. The selection rule from the 15-day backtest — 18.9% lottery rate vs 9.1% RE-LOAD baseline. Caveat: edge concentrated in 1-2 outlier days/15."
+            title={CHEAP_CALL_PM_TOOLTIP}
           >
             cheap-call-PM
+            <SrHint>{CHEAP_CALL_PM_TOOLTIP}</SrHint>
           </span>
         )}
 
         {/* Time-of-day badge */}
         <span
           className={`rounded border px-1.5 py-0.5 text-[10px] font-semibold ${todBadge(fire.tags.tod)}`}
-          title="Time-of-day bucket — AM_open / MID / LUNCH / PM"
+          title={TIME_OF_DAY_TOOLTIP}
         >
           {fire.tags.tod}
+          <SrHint>{TIME_OF_DAY_TOOLTIP}</SrHint>
         </span>
 
         {/* Macro context: only Market Tide today (compact). */}
@@ -1083,6 +1128,7 @@ export const LotteryRow = memo(function LotteryRow({
             title={EXIT_POLICY_TOOLTIPS[exitPolicy]}
           >
             {formatPct(realized)}
+            <SrHint>{EXIT_POLICY_TOOLTIPS[exitPolicy]}</SrHint>
           </span>
           {/* EOD fallback — only when the selected policy returned null
               and we can show the user what the option actually did at
@@ -1092,17 +1138,16 @@ export const LotteryRow = memo(function LotteryRow({
           {showEodFallback && (
             <span
               className={`font-mono text-xs italic ${pctClass(eodFallback)}`}
-              title={`Selected policy (${EXIT_POLICY_LABELS[exitPolicy]}) returned no exit for this fire. Showing realized end-of-session return as a fallback so the row remains informative. Most common cause: late-PM trigger leaves <5 min of post-trigger flow data for the inversion algorithm to detect.`}
+              title={eodFallbackTooltip}
             >
               {formatPct(eodFallback)}{' '}
               <span className="not-italic opacity-60">eod</span>
+              <SrHint>{eodFallbackTooltip}</SrHint>
             </span>
           )}
-          <span
-            className="text-[10px] text-neutral-500"
-            title="Best-case peak return — % gain at the highest post-entry print. Look-ahead reference, not tradeable."
-          >
+          <span className="text-[10px] text-neutral-500" title={PEAK_TOOLTIP}>
             peak {formatPct(peak)}
+            <SrHint>{PEAK_TOOLTIP}</SrHint>
           </span>
         </div>
       </div>
@@ -1140,7 +1185,7 @@ export const LotteryRow = memo(function LotteryRow({
             {formatDollar(fire.entry.price)}
           </span>
         </span>
-        <span title="Trigger-window premium: entry price × window contracts × 100">
+        <span title={PREMIUM_TOOLTIP}>
           prem{' '}
           <span
             className="font-mono text-sky-300"
@@ -1150,21 +1195,19 @@ export const LotteryRow = memo(function LotteryRow({
               fire.entry.price * fire.trigger.windowSize * 100,
             )}
           </span>
+          <SrHint>{PREMIUM_TOOLTIP}</SrHint>
         </span>
-        <span title="Underlying spot at the moment this fire triggered (frozen snapshot — does not track intraday drift).">
+        <span title={SPOT_TOOLTIP}>
           spot{' '}
           <span className="font-mono text-neutral-300">
             {fireSpot != null ? fireSpot.toFixed(2) : '—'}
           </span>
+          <SrHint>{SPOT_TOOLTIP}</SrHint>
         </span>
         {otmPct != null && (
           <span
             data-testid={`lottery-row-otm-pct-${fire.optionChainId}`}
-            title={
-              otmPct >= 0
-                ? `Strike was ${(otmPct * 100).toFixed(1)}% out of the money at fire time.`
-                : `Strike was ${(Math.abs(otmPct) * 100).toFixed(1)}% in the money at fire time.`
-            }
+            title={otmFooterTooltip(otmPct)}
           >
             %OTM{' '}
             <span
@@ -1174,6 +1217,7 @@ export const LotteryRow = memo(function LotteryRow({
             >
               {(otmPct * 100).toFixed(1)}%
             </span>
+            <SrHint>{otmFooterTooltip(otmPct)}</SrHint>
           </span>
         )}
         <span>
@@ -1205,6 +1249,7 @@ export const LotteryRow = memo(function LotteryRow({
           <span className="font-mono text-neutral-300">
             {fire.forecastHighPeakPct}
           </span>
+          <SrHint>{tier.tooltip}</SrHint>
         </span>
         <span className="ml-auto text-neutral-500">
           {EXIT_POLICY_LABELS[exitPolicy]}
@@ -1218,10 +1263,10 @@ export const LotteryRow = memo(function LotteryRow({
           <span
             data-testid="lottery-exit-now-badge"
             className="ml-2 inline-flex animate-pulse items-center rounded border border-red-500/70 bg-red-950/60 px-1.5 py-0.5 text-[10px] leading-none font-bold tracking-wide text-red-100"
-            title={exitTooltip}
+            title={exitReasonTooltip(exitNow.reason)}
           >
             EXIT
-            <SrHint>{exitTooltip}</SrHint>
+            <SrHint>{exitReasonTooltip(exitNow.reason)}</SrHint>
           </span>
         )}
         <button
@@ -1262,9 +1307,10 @@ export const LotteryRow = memo(function LotteryRow({
                 </span>
                 <span
                   className={`rounded border px-1 py-px text-[10px] leading-none font-bold ${optionTypeBadge(fire.optionType)}`}
-                  title={fire.optionType === 'C' ? 'Call' : 'Put'}
+                  title={optionTypeName}
                 >
                   {fire.optionType}
+                  <SrHint>{optionTypeName}</SrHint>
                 </span>
                 <span className="text-neutral-600">·</span>
                 <span className="font-mono text-xs text-neutral-300">
@@ -1319,35 +1365,32 @@ export const LotteryRow = memo(function LotteryRow({
                   </span>
                 </span>
                 {tapeStats.avgFill != null && (
-                  <span title="Volume-weighted avg fill across the session">
+                  <span title={AVG_FILL_TOOLTIP}>
                     Avg fill{' '}
                     <span className="text-neutral-200">
                       {formatDollar(tapeStats.avgFill)}
                     </span>
+                    <SrHint>{AVG_FILL_TOOLTIP}</SrHint>
                   </span>
                 )}
-                <span title="Open interest at fire time">
+                <span title={OPEN_INTEREST_TOOLTIP}>
                   OI{' '}
                   <span className="text-neutral-200">
                     {formatVol(fire.entry.openInterest)}
                   </span>
+                  <SrHint>{OPEN_INTEREST_TOOLTIP}</SrHint>
                 </span>
                 {tapeTotalPremium != null && (
-                  <span title="Total premium traded today = totalVol × avgFill × 100">
+                  <span title={TAPE_PREMIUM_TOOLTIP}>
                     Prem{' '}
                     <span className="text-neutral-200">
                       {formatPremiumAmount(tapeTotalPremium)}
                     </span>
+                    <SrHint>{TAPE_PREMIUM_TOOLTIP}</SrHint>
                   </span>
                 )}
                 {otmPct != null && (
-                  <span
-                    title={
-                      otmPct >= 0
-                        ? `${(otmPct * 100).toFixed(1)}% out of the money`
-                        : `${(Math.abs(otmPct) * 100).toFixed(1)}% in the money`
-                    }
-                  >
+                  <span title={otmPanelTooltip(otmPct)}>
                     %OTM{' '}
                     <span
                       className={
@@ -1356,6 +1399,7 @@ export const LotteryRow = memo(function LotteryRow({
                     >
                       {(otmPct * 100).toFixed(1)}%
                     </span>
+                    <SrHint>{otmPanelTooltip(otmPct)}</SrHint>
                   </span>
                 )}
                 <span className="ml-auto text-neutral-500">
