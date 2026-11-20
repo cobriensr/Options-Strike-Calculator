@@ -890,18 +890,18 @@ export const SilentBoomRow = memo(function SilentBoomRow({
         <span className="flex-1" />
 
         <div className="flex items-baseline gap-3">
-          <span
-            className={`font-mono text-lg font-bold ${pctClass(primaryValue)}`}
-            title={primaryTooltip}
-          >
-            {formatPct(primaryValue)}
-            <SrHint>{primaryTooltip}</SrHint>
-          </span>
-          <span
-            className="text-[10px] tracking-wide text-neutral-500 uppercase"
-            title={primaryTooltip}
-          >
-            {primaryLabel}
+          {/* The figure and its label share one tooltip, so one wrapper
+              carries the title and the single hint: two adjacent hints
+              would read the same sentence twice. */}
+          <span className="flex items-baseline gap-3" title={primaryTooltip}>
+            <span
+              className={`font-mono text-lg font-bold ${pctClass(primaryValue)}`}
+            >
+              {formatPct(primaryValue)}
+            </span>
+            <span className="text-[10px] tracking-wide text-neutral-500 uppercase">
+              {primaryLabel}
+            </span>
             <SrHint>{primaryTooltip}</SrHint>
           </span>
           {/* When peak is not the primary, show it as a small reference

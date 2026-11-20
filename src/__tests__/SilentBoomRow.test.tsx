@@ -1703,4 +1703,21 @@ describe('SilentBoomRow: badge explanations reach screen readers', () => {
       );
     }
   });
+
+  it('reads the primary figure and its label as one unit: one hover, one hint', () => {
+    // Both share the exit-policy tooltip. Two adjacent hints would read the
+    // same 100+ character sentence twice, so one wrapper carries the title
+    // and the single hint, after the figure and the label.
+    renderFullyBadged('tailwind');
+    const figure = screen.getByText('+22.5%');
+    const label = screen.getByText('60m');
+    const unit = figure.closest('[title]')!;
+    expect(label.closest('[title]')).toBe(unit);
+    expect(unit.querySelectorAll('.sr-only')).toHaveLength(1);
+    expect(srHintText(unit)).toBe(unit.getAttribute('title'));
+    expect(unit.textContent).toMatch(/^\+22\.5%60m — /);
+    // Neither child carries a title of its own.
+    expect(figure).not.toHaveAttribute('title');
+    expect(label).not.toHaveAttribute('title');
+  });
 });
