@@ -5,11 +5,14 @@ import AxeBuilder from '@axe-core/playwright';
  * E2E coverage for the panel-prefs modal's drag-to-reorder UI.
  * Spec: docs/superpowers/specs/panel-reordering-2026-05-17.md
  *
- * We block /api/** so the modal opens against a public-mode page
- * (no owner cookie, no panel-prefs GET round-trip stalls the test).
- * In public mode the modal still shows the always-visible panels
- * (Inputs group + Market Regime + Position Monitor + the
- * always-pinned Results), which is enough to exercise the drag UI.
+ * The dev server resolves every visitor as the owner
+ * (`getAccessMode()` returns 'owner' under `import.meta.env.DEV`), so
+ * this is not a public-mode page. We block /api/** so no market data
+ * and no panel-prefs GET or PUT resolve (no round trip stalls the
+ * test). The modal then lists the owner's panels that need no market
+ * data (the Inputs group, Market Regime, Analysis History, Position
+ * Monitor, the always-pinned Results and others), which is enough to
+ * exercise the drag UI.
  */
 test.describe('Panel reorder modal', () => {
   test.beforeEach(async ({ page }) => {
@@ -81,8 +84,8 @@ test.describe('Panel reorder modal', () => {
       .getByRole('checkbox', { name: 'Hide Date & Time' })
       .click({ force: true });
 
-    // Public mode has no panel-prefs PUT, so optimistic UI state still
-    // flips and the reset button becomes enabled.
+    // The /api/** block aborts the panel-prefs PUT, so the optimistic UI
+    // state still flips and the reset button becomes enabled.
     await expect(resetVisibility).toBeEnabled();
   });
 

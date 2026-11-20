@@ -70,9 +70,12 @@ describe('App panel alignment', () => {
   it('every registry panel id has a renderer entry in App.tsx', () => {
     const registryIds = allRegistryIds();
     expect(registryIds.length).toBeGreaterThan(15);
-    // Only the owner is listed Analysis History, so the viewers above must
-    // include one for its renderer and anchor to be checked at all.
+    // Only the owner is listed Analysis History, and only an owner or guest
+    // with market data is listed Chart Analysis, so the viewers and market
+    // states above must include those for their renderers and anchors to be
+    // checked at all.
     expect(registryIds).toContain('sec-history');
+    expect(registryIds).toContain('sec-charts');
 
     const rendererKeys = extractRendererKeys(appSource);
     const missing = registryIds.filter((id) => !rendererKeys.has(id));

@@ -132,6 +132,44 @@ describe('PanelPrefsModal', () => {
     ).toBeChecked();
   });
 
+  // `isOwner` can change while the modal stays mounted (an owner who becomes
+  // a guest) with `isAuthenticated` still true, so the registry memo has to
+  // follow it: a stale checkbox would toggle a panel the guest never gets.
+  it('drops the Analysis History checkbox when the owner becomes a guest, keeping Chart Analysis', () => {
+    const prefs = makePrefs();
+    const { rerender } = render(
+      <PanelPrefsModal
+        isOpen
+        onClose={() => undefined}
+        panelPrefs={prefs}
+        isAuthenticated
+        isOwner
+        hasMarketOrSnapshot
+      />,
+    );
+    expect(
+      screen.getByRole('checkbox', { name: /Hide Analysis History/ }),
+    ).toBeInTheDocument();
+
+    rerender(
+      <PanelPrefsModal
+        isOpen
+        onClose={() => undefined}
+        panelPrefs={prefs}
+        isAuthenticated
+        isOwner={false}
+        hasMarketOrSnapshot
+      />,
+    );
+
+    expect(
+      screen.queryByRole('checkbox', { name: /Analysis History/ }),
+    ).toBeNull();
+    expect(
+      screen.getByRole('checkbox', { name: /Hide Chart Analysis/ }),
+    ).toBeInTheDocument();
+  });
+
   it('checkbox state reflects hidden status (inverted)', () => {
     render(
       <PanelPrefsModal
