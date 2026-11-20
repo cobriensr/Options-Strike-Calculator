@@ -9,6 +9,13 @@
  * time they cover. It does not use them for today at the current time while
  * live quotes exist (without them it shows them, as the only source), nor
  * for a today time after the last candle, where live Schwab data stands.
+ *
+ * Access: /api/history is owner-or-guest. For a public visitor
+ * (`getAccessMode() === 'public'`, read at every render) there is no history:
+ * the hook makes no request for any date, and returns `history` null and
+ * `error` null, so AppHeader shows no "NO INTRADAY / Not authenticated" badge
+ * for a past date the visitor picks. The mode sits in the effect's deps, so
+ * signing in without a reload fetches the selected date.
  */
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
@@ -25,6 +32,7 @@ import {
   summarizeZodIssues,
 } from '../lib/response-guard';
 import { captureUnlessAuth } from '../lib/sentry-helpers';
+import { getAccessMode } from '../utils/auth';
 import { getErrorMessage } from '../utils/error';
 import { getETToday, getETTotalMinutes } from '../utils/timezone';
 import { getMarketCloseHourET } from '../data/marketHours';
@@ -340,11 +348,27 @@ function computeOpeningRange(
 // ============================================================
 
 export function useHistoryData(selectedDate: string): UseHistoryDataReturn {
-  const [history, setHistory] = useState<HistoryResponse | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // /api/history is owner-or-guest. Read at render, never frozen in a ref, so
+  // signing in with a guest key (no reload) starts the fetch and dropping to
+  // public stops it.
+  const isPublic = getAccessMode() === 'public';
+
+  const [heldHistory, setHistory] = useState<HistoryResponse | null>(null);
+  const [heldLoading, setLoading] = useState(false);
+  const [heldError, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    // The one request gate. A request from before the visitor dropped to
+    // public was aborted by the cleanup of the effect run that started it, so
+    // its late reply can't write state; what the hook held is cleared here,
+    // so a visitor who signs back in doesn't start from the earlier session's.
+    if (isPublic) {
+      setHistory(null);
+      setError(null);
+      setLoading(false);
+      return;
+    }
+
     if (!selectedDate) {
       setHistory(null);
       setError(null);
@@ -388,7 +412,15 @@ export function useHistoryData(selectedDate: string): UseHistoryDataReturn {
     });
 
     return () => controller.abort();
-  }, [selectedDate]);
+  }, [selectedDate, isPublic]);
+
+  // A public visitor is shown nothing: not history or an error left in memory
+  // from before they dropped to public (the first render after the drop
+  // commits before the effect above clears them), and not the loading flag of
+  // a request that was aborted.
+  const history = isPublic ? null : heldHistory;
+  const loading = !isPublic && heldLoading;
+  const error = isPublic ? null : heldError;
 
   const getStateAtTime = useCallback(
     (hourET: number, minuteET: number): HistorySnapshot | null => {

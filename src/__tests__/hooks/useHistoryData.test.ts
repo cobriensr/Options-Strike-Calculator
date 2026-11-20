@@ -1,11 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { renderHook, waitFor } from '@testing-library/react';
+import { act, renderHook, waitFor } from '@testing-library/react';
 import {
   historyVixOHLC,
   useHistoryData,
   useHistoryVixOHLCFallback,
 } from '../../hooks/useHistoryData';
 import { captureUnlessAuth } from '../../lib/sentry-helpers';
+import { getAccessMode, type AccessMode } from '../../utils/auth';
 import { getETToday } from '../../utils/timezone';
 import type { VIXDataMap, VIXDayData } from '../../types';
 import type { HistoryResponse } from '../../types/api';
@@ -13,7 +14,11 @@ import type { HistoryResponse } from '../../types/api';
 vi.mock('../../lib/sentry-helpers', () => ({
   captureUnlessAuth: vi.fn(),
 }));
+vi.mock('../../utils/auth', () => ({
+  getAccessMode: vi.fn(() => 'owner'),
+}));
 const mockCaptureUnlessAuth = vi.mocked(captureUnlessAuth);
+const mockGetAccessMode = vi.mocked(getAccessMode);
 
 // ============================================================
 // MOCK DATA
@@ -102,6 +107,7 @@ let fetchMock: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
   mockCaptureUnlessAuth.mockClear();
+  mockGetAccessMode.mockReturnValue('owner');
   fetchMock = vi.fn(() =>
     Promise.resolve({
       ok: false,
@@ -844,6 +850,355 @@ describe('useHistoryData: a missing previousClose', () => {
     expect(result.current.error).toBe('invalid response shape');
     expect(result.current.history).toBeNull();
     expect(mockCaptureUnlessAuth).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ============================================================
+// TESTS: ACCESS MODE
+// ============================================================
+
+/**
+ * renderHook with a changeable date, plus every value the hook returned, one
+ * per render. `snapshot` is `getStateAtTime(10, 0)` as that render saw it.
+ */
+function renderRecorded(initialDate = '2024-03-04') {
+  const renders: (ReturnType<typeof useHistoryData> & {
+    snapshot: ReturnType<ReturnType<typeof useHistoryData>['getStateAtTime']>;
+  })[] = [];
+  const rendered = renderHook(
+    ({ date }: { date: string }) => {
+      const value = useHistoryData(date);
+      renders.push({ ...value, snapshot: value.getStateAtTime(10, 0) });
+      return value;
+    },
+    { initialProps: { date: initialDate } },
+  );
+  return { ...rendered, renders };
+}
+
+/** Let any request the mount or a rerender started settle or not start. */
+async function flush() {
+  await act(async () => {
+    await Promise.resolve();
+  });
+}
+
+// A date the hook skips before any request, whatever the viewer's access.
+const SKIPPED_DATES = [
+  ['empty', ''],
+  ['in the future', '2099-12-31'],
+  ['a Saturday', '2024-03-02'],
+  ['a Sunday', '2024-03-03'],
+  ['a market holiday', '2025-12-25'],
+] as const;
+
+describe.each(['owner', 'guest'] as const satisfies readonly AccessMode[])(
+  'useHistoryData: %s keeps fetching',
+  (mode) => {
+    beforeEach(() => {
+      mockGetAccessMode.mockReturnValue(mode);
+    });
+
+    it('fetches the selected past date and returns its history', async () => {
+      mockHistoryFetch(mockHistory);
+
+      const { result } = renderHook(() => useHistoryData('2024-03-04'));
+
+      await waitFor(() => {
+        expect(result.current.hasHistory).toBe(true);
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/history?date=2024-03-04',
+        expect.objectContaining({ credentials: 'same-origin' }),
+      );
+      expect(result.current.history).toEqual(mockHistory);
+      expect(result.current.error).toBeNull();
+      expect(result.current.loading).toBe(false);
+    });
+
+    it('surfaces a non-2xx reply by name', async () => {
+      mockHistoryError(503, 'Schwab unavailable');
+
+      const { result } = renderHook(() => useHistoryData('2024-03-04'));
+
+      await waitFor(() => {
+        expect(result.current.error).toBe('Schwab unavailable');
+      });
+      expect(result.current.loading).toBe(false);
+      expect(result.current.history).toBeNull();
+    });
+
+    it('surfaces a rejected fetch by name', async () => {
+      fetchMock.mockRejectedValue(new Error('Network failure'));
+
+      const { result } = renderHook(() => useHistoryData('2024-03-04'));
+
+      await waitFor(() => {
+        expect(result.current.error).toBe('Network failure');
+      });
+      expect(result.current.loading).toBe(false);
+      expect(result.current.history).toBeNull();
+    });
+
+    it.each(SKIPPED_DATES)(
+      'makes no request for a date that is %s',
+      async (_label, date) => {
+        const { result } = renderHook(() => useHistoryData(date));
+        await flush();
+
+        expect(fetchMock).not.toHaveBeenCalled();
+        expect(result.current.history).toBeNull();
+        expect(result.current.error).toBeNull();
+        expect(result.current.loading).toBe(false);
+      },
+    );
+
+    it('fetches again on each date pick', async () => {
+      mockHistoryFetch(mockHistory);
+      const { result, rerender } = renderRecorded('2024-03-04');
+      await waitFor(() => {
+        expect(result.current.hasHistory).toBe(true);
+      });
+
+      rerender({ date: '2024-03-05' });
+      await waitFor(() => {
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+      });
+      expect(fetchMock.mock.calls[1]![0]).toBe('/api/history?date=2024-03-05');
+    });
+
+    it('does not fetch again on a plain re-render', async () => {
+      mockHistoryFetch(mockHistory);
+      const { result, rerender } = renderRecorded();
+      await waitFor(() => {
+        expect(result.current.hasHistory).toBe(true);
+      });
+
+      rerender({ date: '2024-03-04' });
+      rerender({ date: '2024-03-04' });
+      await flush();
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not fetch again, or drop its history, when the mode flips between owner and guest', async () => {
+      mockHistoryFetch(mockHistory);
+      const { result, rerender } = renderRecorded();
+      await waitFor(() => {
+        expect(result.current.hasHistory).toBe(true);
+      });
+
+      mockGetAccessMode.mockReturnValue(mode === 'owner' ? 'guest' : 'owner');
+      rerender({ date: '2024-03-04' });
+      await flush();
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(result.current.history).toEqual(mockHistory);
+      expect(result.current.hasHistory).toBe(true);
+    });
+  },
+);
+
+// /api/history is owner-or-guest. For a public visitor "no history" is the
+// answer, not an error: the unmocked fetch below is a 401 "Not authenticated",
+// which a hook that asked would hand to AppHeader as a red "NO INTRADAY"
+// badge on every past date the visitor picks.
+describe('useHistoryData: public visitor', () => {
+  beforeEach(() => {
+    mockGetAccessMode.mockReturnValue('public');
+  });
+
+  it('makes no request for a past date on mount, and shows no history and no error', async () => {
+    const { result } = renderHook(() => useHistoryData('2024-03-04'));
+    await flush();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(result.current.history).toBeNull();
+    expect(result.current.error).toBeNull();
+    expect(result.current.loading).toBe(false);
+    expect(result.current.hasHistory).toBe(false);
+    expect(result.current.getStateAtTime(10, 0)).toBeNull();
+  });
+
+  describe('today (clock pinned to a Wednesday session)', () => {
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(new Date('2026-03-04T15:00:00Z'));
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('makes no request for today either', async () => {
+      const today = getETToday();
+      expect(today).toBe('2026-03-04');
+
+      const { result } = renderHook(() => useHistoryData(today));
+      await flush();
+
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(result.current.error).toBeNull();
+      expect(result.current.loading).toBe(false);
+    });
+  });
+
+  it('makes no request on a date pick, whatever the date', async () => {
+    const { result, rerender } = renderRecorded('2024-03-04');
+    for (const date of ['2024-03-05', '', '2099-12-31', '2024-03-06']) {
+      rerender({ date });
+    }
+    await flush();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(result.current.history).toBeNull();
+    expect(result.current.error).toBeNull();
+    expect(result.current.loading).toBe(false);
+  });
+
+  it('hides history fetched while signed in once the visitor drops to public', async () => {
+    mockGetAccessMode.mockReturnValue('guest');
+    mockHistoryFetch(mockHistory);
+    const { result, rerender, renders } = renderRecorded();
+    await waitFor(() => {
+      expect(result.current.hasHistory).toBe(true);
+    });
+    expect(renders.at(-1)?.snapshot).not.toBeNull();
+
+    const before = renders.length;
+    mockGetAccessMode.mockReturnValue('public');
+    rerender({ date: '2024-03-04' });
+
+    // The first render after the drop commits before any effect runs, so it
+    // is the one that would paint the held history: it must already be empty.
+    expect(renders[before]?.history).toBeNull();
+    expect(renders[before]?.hasHistory).toBe(false);
+    expect(renders[before]?.snapshot).toBeNull();
+    expect(renders[before]?.error).toBeNull();
+    expect(result.current.history).toBeNull();
+    expect(result.current.hasHistory).toBe(false);
+    expect(result.current.getStateAtTime(10, 0)).toBeNull();
+    expect(result.current.error).toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('hides an error left in memory once the visitor drops to public', async () => {
+    mockGetAccessMode.mockReturnValue('guest');
+    mockHistoryError(401, 'Not authenticated');
+    const { result, rerender, renders } = renderRecorded();
+    await waitFor(() => {
+      expect(result.current.error).toBe('Not authenticated');
+    });
+
+    const before = renders.length;
+    mockGetAccessMode.mockReturnValue('public');
+    rerender({ date: '2024-03-04' });
+
+    expect(renders[before]?.error).toBeNull();
+    expect(result.current.error).toBeNull();
+    expect(result.current.loading).toBe(false);
+  });
+
+  it('aborts the request in flight on a drop to public, and keeps nothing from its late reply', async () => {
+    mockGetAccessMode.mockReturnValue('guest');
+    let signal: AbortSignal | undefined;
+    let reply: (res: unknown) => void = () => {};
+    fetchMock
+      .mockImplementationOnce(
+        (_url: string, init: RequestInit) =>
+          new Promise((resolve) => {
+            signal = init.signal ?? undefined;
+            reply = resolve;
+          }),
+      )
+      // The sign-back-in's request never settles, so only history kept from
+      // the aborted one could show up below.
+      .mockReturnValueOnce(new Promise(() => {}));
+    const { result, rerender, renders } = renderRecorded();
+    await waitFor(() => {
+      expect(result.current.loading).toBe(true);
+    });
+    expect(signal?.aborted).toBe(false);
+
+    const before = renders.length;
+    mockGetAccessMode.mockReturnValue('public');
+    rerender({ date: '2024-03-04' });
+    expect(signal?.aborted).toBe(true);
+    expect(renders[before]?.loading).toBe(false);
+    expect(result.current.loading).toBe(false);
+
+    await act(async () => {
+      reply({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve(mockHistory),
+      });
+      await Promise.resolve();
+    });
+    expect(result.current.history).toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    mockGetAccessMode.mockReturnValue('guest');
+    rerender({ date: '2024-03-04' });
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+    expect(result.current.history).toBeNull();
+    expect(result.current.hasHistory).toBe(false);
+  });
+
+  it('fetches the selected date once the visitor signs in without a reload', async () => {
+    mockHistoryFetch(mockHistory);
+    const { result, rerender } = renderRecorded();
+    await flush();
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    // The mode is read at render and sits in the effect's deps, not frozen at
+    // mount: signing in with a guest key starts the fetch for the date the
+    // visitor already picked.
+    mockGetAccessMode.mockReturnValue('guest');
+    rerender({ date: '2024-03-04' });
+
+    await waitFor(() => {
+      expect(result.current.hasHistory).toBe(true);
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/history?date=2024-03-04',
+      expect.objectContaining({ credentials: 'same-origin' }),
+    );
+    expect(result.current.history).toEqual(mockHistory);
+    expect(result.current.error).toBeNull();
+  });
+
+  it('starts clean, not from the earlier session, when the visitor signs back in', async () => {
+    mockGetAccessMode.mockReturnValue('guest');
+    fetchMock
+      .mockImplementationOnce(() =>
+        Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve(mockHistory),
+        }),
+      )
+      .mockReturnValueOnce(new Promise(() => {}));
+    const { result, rerender } = renderRecorded();
+    await waitFor(() => {
+      expect(result.current.hasHistory).toBe(true);
+    });
+
+    mockGetAccessMode.mockReturnValue('public');
+    rerender({ date: '2024-03-04' });
+    mockGetAccessMode.mockReturnValue('guest');
+    rerender({ date: '2024-03-04' });
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+    expect(result.current.history).toBeNull();
+    expect(result.current.hasHistory).toBe(false);
+    expect(result.current.loading).toBe(true);
   });
 });
 
