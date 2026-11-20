@@ -23,10 +23,13 @@ export const TEST_INCLUDE = [
  * one project and never both or neither. A test that starts a child process
  * but is missing here fails scripts/_lib/spawn-test-group.test.mjs; so does an
  * entry whose file is gone. A file that replaces `node:child_process` outright,
- * with a `vi.mock` factory that takes no parameter, starts nothing, in it or in
- * a file it reaches, and belongs in `main`; unless one of them uses the module
- * past the mock (a `require`, `getBuiltinModule`, `vi.importActual`). A factory
- * that wraps the real module does start children.
+ * with a `vi.mock` factory that takes no parameter, belongs in `main`: the mock
+ * covers the imports of the files it imports, so they start nothing. Two things
+ * still put it here. A use of the module past the mock, in it or in a file it
+ * reaches (a `require`, `getBuiltinModule`, `vi.importActual`). And a file it
+ * loads with `import()`, `require()` or `vi.importActual()` that names the
+ * module, since the factory may be loading it and then it gets the real
+ * module. A factory that wraps the real module does start children.
  */
 export const SPAWN_TEST_FILES = [
   'api/__tests__/no-database-guard.test.ts',

@@ -29,12 +29,17 @@ import config, { SPAWN_TEST_FILES, TEST_INCLUDE } from '../../vite.config.ts';
  * join, and through other test files. The one exemption: a file that replaces
  * the module outright with a `vi.mock` factory that takes no parameter, such
  * as session-status.test.mjs and watch-deploy.test.mjs. The mock covers every
- * import of the module, in the file and in the files it reaches, so those run
- * no child and the file stays in `main`. A use the mock does not cover still
- * counts, in the file or in a file it reaches: a `require`, `createRequire`,
+ * import of the module in the files the test imports, so those run no child
+ * and the file stays in `main`. Two things still count. A use the mock does
+ * not cover, in the file or in a file it reaches: a `require`, `createRequire`,
  * `getBuiltinModule`, `vi.importActual`, or a `vi.doUnmock` that takes the mock
- * away. A factory that takes `importOriginal` wraps the real module, so its
- * file counts.
+ * away. And a file the test loads at run time with `import()`, `require()` or
+ * `vi.importActual()`, or one it reaches, if it names the module at all: the
+ * factory may be the one loading it, and vitest gives a file the factory loads
+ * the real module. The guard cannot tell a load in the factory from one in a
+ * test body, so a mocked file that loads its module under test that way would
+ * be listed though it runs no child. A factory that takes `importOriginal`
+ * wraps the real module, so its file counts.
  *
  * The limits of a guard that reads literals: a probe source built inside a
  * template string, two `vi.mock` calls for the same module, and a `/*` inside a
@@ -73,6 +78,14 @@ const PARAMETERLESS_FACTORY =
 
 /** A quoted relative path, as in vercel-build-file-set.mjs. */
 const RELATIVE_LITERAL = /(['"`])(\.{1,2}\/[^'"`\r\n]*)\1/g;
+
+/**
+ * A relative path loaded at run time: `import('./x')`, `require('./x')` or
+ * `vi.importActual('./x')`. A mock factory that does this gets the real module
+ * for the file and for everything the file reaches.
+ */
+const LOADED_LITERAL =
+  /\b(?:import|require|importActual)\s*\(\s*(['"`])(\.{1,2}\/[^'"`\r\n]*)\1/g;
 
 const CODE_FILE = /\.[cm]?[jt]sx?$/;
 const EXTENSIONS = [
@@ -170,30 +183,44 @@ function createDetector(read) {
         names: CHILD_PROCESS_LITERAL.test(code),
         bypasses: bypassesMock(code),
         replaces: PARAMETERLESS_FACTORY.test(code),
-        dependencies: [...code.matchAll(RELATIVE_LITERAL)]
-          .map((match) => resolveLiteral(file, match[2]))
-          .filter((dependency) => dependency !== undefined),
+        dependencies: resolveAll(file, code, RELATIVE_LITERAL),
+        loaded: resolveAll(file, code, LOADED_LITERAL),
       };
       infos.set(file, info);
     }
     return info;
   }
 
-  return function startsChildProcesses(testFile) {
-    // The test file's mock covers every import in the files it reaches, so
-    // there only a use past the mock counts; every file is still read.
-    const replaced = infoOf(testFile).replaces;
+  function resolveAll(file, code, literal) {
+    return [...code.matchAll(literal)]
+      .map((match) => resolveLiteral(file, match[2]))
+      .filter((dependency) => dependency !== undefined);
+  }
+
+  /** Whether `key` holds for a start file or any file it reaches. */
+  function reaches(starts, key) {
     const seen = new Set();
-    const pending = [testFile];
+    const pending = [...starts];
     while (pending.length > 0) {
       const file = pending.pop();
       if (seen.has(file)) continue;
       seen.add(file);
       const info = infoOf(file);
-      if (replaced ? info.bypasses : info.names) return true;
+      if (info[key]) return true;
       pending.push(...info.dependencies);
     }
     return false;
+  }
+
+  return function startsChildProcesses(testFile) {
+    const test = infoOf(testFile);
+    if (!test.replaces) return reaches([testFile], 'names');
+    // The test file's mock covers every import in the files it reaches, so
+    // there only a use past the mock counts.
+    if (reaches([testFile], 'bypasses')) return true;
+    // A file loaded at run time may be loaded by the factory itself, and then
+    // it and everything it reaches get the real module: the strict check.
+    return reaches(test.loaded, 'names');
   };
 }
 
@@ -323,11 +350,71 @@ describe('the detector, on small trees of files', () => {
     },
   );
 
-  it('finds a helper that the factory itself loads, which reaches the module past the mock', () => {
+  it('finds getBuiltinModule in a helper that the factory loads', () => {
     expect(
       startsIn({
         'main.test.mjs': `vi.mock('${NODE_CP}', async () => (await import('./fx-real.mjs')).default);`,
         'fx-real.mjs': `export default process.getBuiltinModule('${NODE_CP}');`,
+      }),
+    ).toBe(true);
+  });
+
+  // Vitest gives a file that the factory loads the real module, so a plain
+  // import in that file spawns, though the same import in a file the test
+  // imports statically gets the mock.
+  const factoryLoading = (load) =>
+    lines(
+      `vi.mock('${NODE_CP}', async () => {`,
+      `  ${load}`,
+      `  return { spawnSync: real.spawnSync };`,
+      `});`,
+    );
+
+  it.each([
+    ['an import()', `const { real } = await import('./fx-real.mjs');`],
+    ['a require', `const { real } = require('./fx-real.mjs');`],
+    [
+      'vi.importActual',
+      `const { real } = await vi.importActual('./fx-real.mjs');`,
+    ],
+  ])(
+    'finds a plain import in a helper that the factory loads with %s',
+    (_label, load) => {
+      expect(
+        startsIn({
+          'main.test.mjs': factoryLoading(load),
+          'fx-real.mjs': lines(
+            `import * as cp from '${NODE_CP}';`,
+            `export const real = cp;`,
+          ),
+        }),
+      ).toBe(true);
+    },
+  );
+
+  it('finds a plain import two static imports behind a helper that the factory loads', () => {
+    expect(
+      startsIn({
+        'main.test.mjs': factoryLoading(
+          `const { real } = await import('./fx-real.mjs');`,
+        ),
+        'fx-real.mjs': `export { real } from './fx-inner.mjs';`,
+        'fx-inner.mjs': lines(
+          `import * as cp from '${NODE_CP}';`,
+          `export const real = cp;`,
+        ),
+      }),
+    ).toBe(true);
+  });
+
+  it('counts a module that a test body loads with import(), which looks the same as the factory loading it', () => {
+    expect(
+      startsIn({
+        'main.test.mjs': lines(
+          `vi.mock('${NODE_CP}', () => ({}));`,
+          `it('x', async () => { await import('./fx-helper.mjs'); });`,
+        ),
+        ...helperImports,
       }),
     ).toBe(true);
   });
@@ -406,6 +493,13 @@ describe('the detector, on small trees of files', () => {
       ),
     ],
     [
+      'a parameterless factory and a run-time load of a module that never names it',
+      lines(
+        `vi.mock('${NODE_CP}', () => ({}));`,
+        `const { x } = await import('./fx-plain.mjs');`,
+      ),
+    ],
+    [
       'a relative path to a file that is not there',
       `const x = new URL('./fx-missing.mjs', import.meta.url);`,
     ],
@@ -418,6 +512,7 @@ describe('the detector, on small trees of files', () => {
       startsIn({
         'main.test.mjs': source,
         ...helperImports,
+        'fx-plain.mjs': `export const x = 1;`,
         'fx-data.json': `{ "cp": "${CP}" }`,
       }),
     ).toBe(false);
