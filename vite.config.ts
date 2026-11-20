@@ -1,4 +1,4 @@
-import { defineConfig } from 'vitest/config';
+import { configDefaults, defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 import { VitePWA } from 'vite-plugin-pwa';
@@ -7,6 +7,46 @@ import { sentryVitePlugin } from '@sentry/vite-plugin';
 import { vercelToolbar } from '@vercel/toolbar/plugins/vite';
 
 const analyze = process.env.ANALYZE === 'true';
+
+/** Every test file vitest collects. */
+export const TEST_INCLUDE = [
+  'src/**/*.{test,spec}.{ts,tsx}',
+  'api/**/*.{test,spec}.{ts,tsx}',
+  'scripts/_lib/**/*.{test,spec}.{ts,mjs}',
+];
+
+/**
+ * The test files that start child processes (git, node, a nested vitest), the
+ * `spawn` project below. Repo-relative, sorted. The `spawn` project includes
+ * exactly these and the `main` project excludes exactly these, so a file is in
+ * one project and never both or neither. A test that starts a child process
+ * but is missing here fails scripts/_lib/spawn-test-group.test.mjs; so does an
+ * entry whose file is gone. A file that only mocks `node:child_process` does
+ * not start one and belongs in `main`.
+ */
+export const SPAWN_TEST_FILES = [
+  'api/__tests__/no-database-guard.test.ts',
+  'api/__tests__/vercel-ignore-command.test.ts',
+  'scripts/_lib/backfill-cli.test.mjs',
+  'scripts/_lib/build-output.test.mjs',
+  'scripts/_lib/candles-backfill.test.mjs',
+  'scripts/_lib/coverage-floor.test.mjs',
+  'scripts/_lib/flow-data-backfill.test.mjs',
+  'scripts/_lib/git-run.test.mjs',
+  'scripts/_lib/greek-nope-backfill.cli.test.mjs',
+  'scripts/_lib/net-prem-ticks-backfill.test.mjs',
+  'scripts/_lib/prune-worktrees.ledger.test.mjs',
+  'scripts/_lib/prune-worktrees.races.test.mjs',
+  'scripts/_lib/prune-worktrees.test.mjs',
+  'scripts/_lib/review-gate.cli.test.mjs',
+  'scripts/_lib/review-gate.test.mjs',
+  'scripts/_lib/review-summary.test.mjs',
+  'scripts/_lib/scratch-git.test.mjs',
+  'scripts/_lib/session-status.cli.test.mjs',
+  'scripts/_lib/spawn-timeout.test.mjs',
+  'scripts/_lib/vercel-build-file-set.test.mjs',
+  'scripts/_lib/watch-deploy.cli.test.mjs',
+];
 
 export default defineConfig({
   plugins: [
@@ -156,10 +196,51 @@ export default defineConfig({
     // sets 600 s).
     hookTimeout: 60_000,
     setupFiles: ['./src/__tests__/setup.ts'],
-    include: [
-      'src/**/*.{test,spec}.{ts,tsx}',
-      'api/**/*.{test,spec}.{ts,tsx}',
-      'scripts/_lib/**/*.{test,spec}.{ts,mjs}',
+    // No `include` here, on purpose: a project that extends this config gets
+    // its own `include` concatenated onto the root one (vite's mergeConfig
+    // joins arrays), so a root list would put every test file in `spawn` too.
+    // The root then has vitest's default include, which vitest appends to
+    // coverage.exclude as before (scripts/_lib/coverage-thresholds.test.mjs
+    // mirrors that).
+    //
+    // Two projects, run one after the other (sequence.groupOrder), so that the
+    // tests that start child processes never share the CPU with the full-width
+    // run. Both extend this config: same environment, setup file, timeouts and
+    // coverage. Why (docs/superpowers/specs/gate-spawn-test-group-2026-11-19.md,
+    // measured 2026-11-19 on the 16-core workstation): a process start
+    // collapses once runnable threads outnumber cores (git rev-parse: 60 ms at
+    // 8 busy cores, 674 ms at 16, 22.9 s at 48), and the gate's 15 workers
+    // alone made git spawns average 855 ms (50 ms alone). The git fixture
+    // suites make 400-650 spawns each, so they blew their hook limits and
+    // spawn-timeout's 10 s child never wrote before the kill.
+    projects: [
+      {
+        extends: true,
+        test: {
+          name: 'spawn',
+          include: SPAWN_TEST_FILES,
+          sequence: { groupOrder: 0 },
+          // The width, measured 2026-11-19 with the group alone on the
+          // machine (21 files, 1046 tests; a git spawn is about 50 ms on an
+          // idle one). The rule: the fastest width whose mean git spawn stays
+          // under 150 ms, 3x idle.
+          //   workers  wall       mean git spawn  slowest ledger beforeAll
+          //   2        103-110 s  60-64 ms        7.1 s
+          //   3        73-76 s    64-66 ms        7.0 s
+          //   4        59-60 s    70-72 ms        8.0 s
+          //   6        50 s       79 ms           9.5 s
+          maxWorkers: 6,
+        },
+      },
+      {
+        extends: true,
+        test: {
+          name: 'main',
+          include: TEST_INCLUDE,
+          exclude: [...configDefaults.exclude, ...SPAWN_TEST_FILES],
+          sequence: { groupOrder: 1 },
+        },
+      },
     ],
     coverage: {
       provider: 'v8',

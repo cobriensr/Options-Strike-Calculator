@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { createRequire } from 'node:module';
 import { describe, it, expect } from 'vitest';
+import { configDefaults } from 'vitest/config';
 import config from '../../vite.config.ts';
 
 /**
@@ -49,15 +50,17 @@ const globKeys = Object.keys(coverage.thresholds).filter(
 /**
  * The files vitest's coverage map holds, listed the way its coverage provider
  * lists them: tinyglobby over coverage.include, ignoring coverage.exclude plus
- * test.include, then re-filtered through picomatch with isIncluded()'s
- * options. test.include is the only exclusion vitest appends that drops a
- * file coverage.exclude keeps (tests in nested __tests__ folders). The setup
- * file, src/__tests__/setup.ts, is inside coverage.include but already under
+ * the root config's test.include, then re-filtered through picomatch with
+ * isIncluded()'s options. vite.config.ts sets no root test.include (its two
+ * projects each set their own), so that is vitest's default include. It is the
+ * only exclusion vitest appends that drops a file coverage.exclude keeps
+ * (tests in nested __tests__ folders). The setup file,
+ * src/__tests__/setup.ts, is inside coverage.include but already under
  * src/__tests__/**; the config-file, virtual-module and node_modules patterns
  * match nothing under src/ or api/. Repo-relative, forward slashes, sorted.
  */
 function coveredFiles() {
-  const ignore = [...coverage.exclude, ...config.test.include];
+  const ignore = [...coverage.exclude, ...configDefaults.include];
   return globSync(coverage.include, {
     cwd: ROOT,
     ignore,
