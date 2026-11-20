@@ -37,8 +37,9 @@ const h = vi.hoisted(() => ({
   routeByRegistry: { on: true },
   /**
    * Panel ids the PanelRouter stand-in renders: plain ones, ones behind a
-   * GatedSection, and the two sections that poll through a leaf of their own
-   * (sec-iv's term structure, sec-regime's flow-regime badge).
+   * GatedSection, the two sections that poll through a leaf of their own
+   * (sec-iv's term structure, sec-regime's flow-regime badge), and the two
+   * Charts & History panels the registry lists by access mode.
    */
   renderedPanels: [
     'sec-premarket',
@@ -46,6 +47,8 @@ const h = vi.hoisted(() => ({
     'sec-regime',
     'sec-gex-target',
     'sec-gex-landscape',
+    'sec-charts',
+    'sec-history',
   ],
   nullComponent: () => null,
   panelPrefs: {
@@ -218,6 +221,12 @@ vi.mock('../components/OptionsAlerts', () => ({
     h.optionsAlertsView(props);
     return null;
   },
+}));
+// The two Charts & History panels fetch /api/analyses on mount; only the
+// anchor App renders around each is read here.
+vi.mock('../components/ChartAnalysis', () => ({ default: h.nullComponent }));
+vi.mock('../components/ChartAnalysis/AnalysisHistory', () => ({
+  default: h.nullComponent,
 }));
 
 // The real router walks the whole registry, which would pull in every lazy
@@ -581,6 +590,75 @@ describe('App polling gate (market clock AND owner-or-guest)', () => {
 
       expect(container.querySelector('#sec-gex-target')).toBeNull();
       expect(container.querySelector('#sec-gex-landscape')).not.toBeNull();
+    });
+  });
+
+  // Chart Analysis asks /api/analyses on mount and is listed for an owner or
+  // guest with market data. Analysis History is the owner's alone: it renders
+  // nothing for a guest. App hands the registry `isAuthenticated` and
+  // `isOwner` from the one access mode, so the anchors it renders are the
+  // registry's answer to each viewer.
+  describe('Charts & History panels, by access mode', () => {
+    const viewer = (mode: Mode): Scenario => ({
+      name: mode,
+      mode,
+      clockOpen: true,
+      quotesFlag: true,
+      gate: mode !== 'public',
+    });
+
+    it.each([
+      { mode: 'owner', charts: true, history: true },
+      { mode: 'guest', charts: true, history: false },
+      { mode: 'public', charts: false, history: false },
+    ] as const)(
+      'a $mode with market data gets Chart Analysis: $charts, Analysis History: $history',
+      ({ mode, charts, history }) => {
+        h.access.mode = mode;
+        h.market.current = marketFor(viewer(mode));
+
+        const { container } = mountApp();
+
+        expect(container.querySelector('#sec-charts') !== null).toBe(charts);
+        expect(container.querySelector('#sec-history') !== null).toBe(history);
+      },
+    );
+
+    // `market.data` is never cleared, so after a drop the market context is
+    // still there and only the access mode moved. The same market object is
+    // reused to keep it out of the dependencies that change.
+    it('an owner who drops to public with the market data still held loses both panels', () => {
+      h.access.mode = 'owner';
+      const market = marketFor(viewer('owner'));
+      h.market.current = market;
+      const { container, rerender } = mountApp();
+      expect(container.querySelector('#sec-charts')).not.toBeNull();
+      expect(container.querySelector('#sec-history')).not.toBeNull();
+
+      h.access.mode = 'public';
+      rerender(appElement());
+
+      expect(h.market.current).toBe(market);
+      expect(container.querySelector('#sec-charts')).toBeNull();
+      expect(container.querySelector('#sec-history')).toBeNull();
+    });
+
+    // isAuthenticated stays true across this flip, so only `isOwner` moves
+    // the registry: it has to sit in the dependencies of the memo that builds
+    // it.
+    it('an owner who becomes a guest keeps Chart Analysis and loses Analysis History', () => {
+      h.access.mode = 'owner';
+      const market = marketFor(viewer('owner'));
+      h.market.current = market;
+      const { container, rerender } = mountApp();
+      expect(container.querySelector('#sec-history')).not.toBeNull();
+
+      h.access.mode = 'guest';
+      rerender(appElement());
+
+      expect(h.market.current).toBe(market);
+      expect(container.querySelector('#sec-charts')).not.toBeNull();
+      expect(container.querySelector('#sec-history')).toBeNull();
     });
   });
 

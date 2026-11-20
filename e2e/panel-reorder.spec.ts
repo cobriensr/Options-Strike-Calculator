@@ -8,7 +8,7 @@ import AxeBuilder from '@axe-core/playwright';
  * We block /api/** so the modal opens against a public-mode page
  * (no owner cookie, no panel-prefs GET round-trip stalls the test).
  * In public mode the modal still shows the always-visible panels
- * (Inputs group + Analysis History + Position Monitor + the
+ * (Inputs group + Market Regime + Position Monitor + the
  * always-pinned Results), which is enough to exercise the drag UI.
  */
 test.describe('Panel reorder modal', () => {
