@@ -114,12 +114,14 @@ jobs:
             # count too. Three scripts that are not image files are loaded by those
             # tests: scripts/test_enrich_provenance.py imports the fulltape script,
             # scripts/test_research_flow_window.py imports tune_flow_inversion.py and
-            # scripts/test_eod_flow.py runs eod-flow-analysis/analyze.py. Pytest run
-            # from the root loads scripts/conftest.py for the scripts tests, and
-            # ml/conftest.py and ml/pyproject.toml for the ml tests. Those tests also
-            # read four api files, so the list names them. Keep this list, that
-            # tuple, the Dockerfile COPY lines and the five root-level steps in the
-            # nightly job below in step.
+            # scripts/test_eod_flow.py runs eod-flow-analysis/analyze.py. That test
+            # also reads the schema of a tracked file, the by-day chains parquet
+            # for 2026-04-13, so the list names it. Pytest run from the root loads
+            # scripts/conftest.py for the scripts tests, and ml/conftest.py and
+            # ml/pyproject.toml for the ml tests. Those tests also read four api
+            # files, so the list names them. Keep this list, that tuple, the
+            # Dockerfile COPY lines and the five root-level steps in the nightly
+            # job below in step.
             nightly:
               - 'nightly/**'
               - 'scripts/_tape_reader.py'
@@ -157,6 +159,7 @@ jobs:
               - 'scripts/enrich_silent_boom_outcomes_fulltape.py'
               - 'scripts/tune_flow_inversion.py'
               - 'scripts/eod-flow-analysis/analyze.py'
+              - 'scripts/eod-flow-analysis/output/by-day/2026-04-13-chains.parquet'
               - 'scripts/conftest.py'
               - 'ml/tests/test_lottery_weights.py'
               - 'ml/tests/test_lottery_refit_gates.py'
@@ -164,6 +167,7 @@ jobs:
               - 'ml/tests/test_whale_plots.py'
               - 'ml/tests/test_takeit_drift_monitor.py'
               - 'ml/tests/test_score_components.py'
+              - 'ml/tests/test_lottery_ticker_quality.py'
               - 'ml/conftest.py'
               - 'ml/pyproject.toml'
               # The api files those tests read: the score-parity fixtures
@@ -502,6 +506,7 @@ jobs:
           ml/tests/test_whale_plots.py
           ml/tests/test_takeit_drift_monitor.py
           ml/tests/test_score_components.py
+          ml/tests/test_lottery_ticker_quality.py
 
       # The only check of the .dockerignore semantics: nightly/tests/test_image_layout.py
       # reads text and cannot see a later pattern re-exclude a file, but a COPY of an
