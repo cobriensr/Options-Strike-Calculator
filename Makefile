@@ -484,7 +484,9 @@ endif
 #
 # Per-date `analyze` passes --no-rollup; the cumulative rollup is regenerated
 # once at the end of the loop in `nightly`'s closing pass.
-# analyze-one goes first and needs the day's tape in R2 (it lands after the 07:15 UTC Railway run): an earlier run fails the date with its CSV kept, and a re-run completes it.
+# analyze-one goes first and needs the day's tape in R2 (it lands after the
+# 07:15 UTC Railway run): an earlier run fails the date with its CSV kept, and
+# a re-run completes it.
 nightly-one:
 	@if [[ -z "$(DATE)" ]]; then \
 	  echo "❌ nightly-one requires DATE=YYYY-MM-DD"; \
@@ -535,7 +537,7 @@ dry-run: check-r2-env
 	@echo "✅ Dry run complete — no CSV deletion."
 
 clean:
-	@echo "Nothing to clean: the tracked by-day parquets are frozen history, new outputs are never committed, and plots stay tracked."
+	@echo 'Nothing to clean: no new by-day parquet or report is committed; only the plots stay tracked (`make plots` rewrites them).'
 
 # Build-cache canary: compare the deployed API's baked-in SHA to the
 # local git HEAD. A mismatch means Vercel served a stale Function

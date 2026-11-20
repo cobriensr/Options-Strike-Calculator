@@ -326,7 +326,10 @@ def test_main_runs_as_a_script_with_the_dirs_the_nightly_passes(by_day_dir, tmp_
         ],
         cwd=tmp_path,
         capture_output=True,
-        text=True,
+        # The child writes UTF-8 (PYTHONIOENCODING below); decode it as such, not
+        # as the host's locale (cp1252 here when PYTHONUTF8 is off), or the
+        # reader thread dies on the first non-cp1252 byte and child.stderr is lost.
+        encoding="utf-8",
         timeout=300,
         check=False,
         env={**os.environ, "MPLBACKEND": "Agg", "PYTHONIOENCODING": "utf-8"},

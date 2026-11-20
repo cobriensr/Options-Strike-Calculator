@@ -245,7 +245,8 @@ def _resolve_dates(
         if start > end:
             raise ValueError(f"Range start {start} after end {end}")
         # Intersect with what's actually in the archive — avoids download attempts
-        # for dates that don't exist (weekends, days you haven't ingested yet).
+        # for dates that don't exist (weekends, and every day after the archive's
+        # last write: the Blob ingest is retired, so it gains no new days).
         available = list_archive_dates(token=token)
         return [d for d in available if start <= d <= end]
     raise TypeError(f"Unsupported date_or_range type: {type(date_or_range).__name__}")

@@ -52,6 +52,41 @@ def _load_hyphenated(stem: str):
 
 ingest_flow = _load_hyphenated('ingest-flow')
 
+# The home directory when this file was collected, before any test moves it:
+# the dirs ingest-flow.py defaults to were computed from it at import.
+REAL_HOME = Path.home()
+
+
+@pytest.fixture(autouse=True)
+def _isolated_home(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> Path:
+    """Point the home directory into a pytest temp dir for every test here.
+
+    ingest-flow.py and the Makefile default to ~/Desktop/Bot-Eod-parquet and
+    ~/Downloads/EOD-OptionFlow, the owner's real archive and CSV dir. A test
+    that loses an --archive-dir or INPUT_DIR (or runs a script with no
+    argument) would write there; this left synthetic parquets in the real home
+    once. Path.home() and make's $(HOME) read USERPROFILE on Windows and HOME
+    elsewhere, so set both. A path computed at import still holds the real home:
+    compare against REAL_HOME, never against Path.home().
+    """
+    home = tmp_path_factory.mktemp('home')
+    monkeypatch.setenv('HOME', str(home))
+    monkeypatch.setenv('USERPROFILE', str(home))
+    return home
+
+
+def test_every_test_here_runs_with_its_home_in_a_temp_dir(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    # Asks for no fixture on purpose: it passes only while the autouse one runs.
+    home = Path.home()
+
+    assert home != REAL_HOME
+    assert tmp_path_factory.getbasetemp() in home.parents
+    assert Path(os.environ['HOME']) == Path(os.environ['USERPROFILE']) == home
+
 
 def _touch(directory: Path, *names: str) -> None:
     for name in names:
@@ -310,8 +345,10 @@ def test_timing_still_fails_when_days_were_read_but_nothing_timed(
 
 def test_ingest_flow_archives_where_it_always_has_by_default() -> None:
     args = ingest_flow.parse_args(['2026-07-23'])
-    assert args.archive_dir == Path.home() / 'Desktop' / 'Bot-Eod-parquet'
-    assert args.input_dir == Path.home() / 'Downloads' / 'EOD-OptionFlow'
+    # The defaults are fixed at import from the real home, which the autouse
+    # fixture has moved by now (and Path.home() with it).
+    assert args.archive_dir == REAL_HOME / 'Desktop' / 'Bot-Eod-parquet'
+    assert args.input_dir == REAL_HOME / 'Downloads' / 'EOD-OptionFlow'
 
 
 def test_ingest_flow_takes_the_input_and_archive_dirs(tmp_path: Path) -> None:
@@ -460,7 +497,10 @@ def _check_r2_env(
         ],
         cwd=SCRIPTS.parent,
         capture_output=True,
-        text=True,
+        # The recipe prints UTF-8 (❌). Decoding it as the host's locale
+        # (cp1252 when PYTHONUTF8 is off) kills the reader thread and leaves
+        # stdout None.
+        encoding='utf-8',
         timeout=60,
         check=False,
     )
