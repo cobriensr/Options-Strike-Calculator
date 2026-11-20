@@ -1,0 +1,46 @@
+import { describe, it, expect } from 'vitest';
+import { render, screen } from '@testing-library/react';
+import { SrHint } from '../../../components/ui/SrHint';
+
+describe('SrHint', () => {
+  it('renders the hint inside an sr-only span, led by a dash separator', () => {
+    const { container } = render(<SrHint>Tier 2: solid setup.</SrHint>);
+    const hint = container.querySelector('span.sr-only');
+    expect(hint).not.toBeNull();
+    expect(hint!.textContent).toBe(' — Tier 2: solid setup.');
+  });
+
+  it('keeps the visible label and the hint apart when read in one run', () => {
+    // A screen reader reads the badge's text content: the label, then the
+    // hint. Without the separator the two would run together ("T2Tier 2...").
+    render(
+      <span data-testid="badge">
+        T2
+        <SrHint>Tier 2: solid setup.</SrHint>
+      </span>,
+    );
+    expect(screen.getByTestId('badge').textContent).toBe(
+      'T2 — Tier 2: solid setup.',
+    );
+  });
+
+  it('adds nothing a screen reader skips: no aria-hidden, no aria-label', () => {
+    const { container } = render(<SrHint>Explains the badge.</SrHint>);
+    const hint = container.querySelector('.sr-only')!;
+    expect(hint).not.toHaveAttribute('aria-hidden');
+    expect(hint).not.toHaveAttribute('aria-label');
+    expect(hint).not.toHaveAttribute('role');
+  });
+
+  it('leaves the parent badge out of getByText by its own label', () => {
+    // Testing Library matches an element's own text nodes, so a badge that
+    // gains a hint child is still found by its visible label.
+    render(
+      <span>
+        Gated
+        <SrHint>Counter-trend per OTM Market Tide.</SrHint>
+      </span>,
+    );
+    expect(screen.getByText('Gated')).toBeInTheDocument();
+  });
+});
