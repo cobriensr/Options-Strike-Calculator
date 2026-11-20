@@ -954,6 +954,29 @@ describe.each(['owner', 'guest'] as const satisfies readonly AccessMode[])(
       },
     );
 
+    // The effect's cleanup aborts the request in flight, and an aborted
+    // request never reaches the `setLoading(false)` after its reply, so a
+    // skipped date has to clear the flag itself or AppHeader keeps a "Loading…"
+    // badge next to BACKTEST for as long as that date is selected.
+    it.each(SKIPPED_DATES)(
+      'clears loading when a date that is %s replaces a fetch in flight',
+      async (_label, date) => {
+        fetchMock.mockReturnValue(new Promise(() => {}));
+        const { result, rerender } = renderRecorded('2024-03-04');
+        await waitFor(() => {
+          expect(result.current.loading).toBe(true);
+        });
+
+        rerender({ date });
+        await flush();
+
+        expect(result.current.loading).toBe(false);
+        expect(result.current.history).toBeNull();
+        expect(result.current.error).toBeNull();
+        expect(fetchMock).toHaveBeenCalledTimes(1);
+      },
+    );
+
     it('fetches again on each date pick', async () => {
       mockHistoryFetch(mockHistory);
       const { result, rerender } = renderRecorded('2024-03-04');

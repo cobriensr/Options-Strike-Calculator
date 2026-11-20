@@ -358,6 +358,13 @@ export function useHistoryData(selectedDate: string): UseHistoryDataReturn {
   const [heldError, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    // Every run supersedes the one before it, whose request its cleanup
+    // aborted, and an aborted request never reaches the `setLoading(false)`
+    // after its reply. So the flag is cleared here, for the public branch and
+    // each skipped date below; the fetch path's `setLoading(true)` follows in
+    // the same effect and React batches the two, so there's no flicker.
+    setLoading(false);
+
     // The one request gate. A request from before the visitor dropped to
     // public was aborted by the cleanup of the effect run that started it, so
     // its late reply can't write state; what the hook held is cleared here,
@@ -365,7 +372,6 @@ export function useHistoryData(selectedDate: string): UseHistoryDataReturn {
     if (isPublic) {
       setHistory(null);
       setError(null);
-      setLoading(false);
       return;
     }
 
