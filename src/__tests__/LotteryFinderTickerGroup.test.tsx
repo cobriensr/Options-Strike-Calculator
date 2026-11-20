@@ -11,6 +11,7 @@ import type {
   LotteryFire,
 } from '../components/LotteryFinder/types';
 import { LotteryFinderTickerGroup } from '../components/LotteryFinder/LotteryFinderTickerGroup';
+import { genericElementsWithAriaLabel, srHintText } from './helpers/aria';
 
 vi.mock('../components/LotteryFinder/LotteryRow', () => ({
   LotteryRow: ({ fire }: { fire: LotteryFire }) => (
@@ -1169,6 +1170,64 @@ describe('LotteryFinderTickerGroup', () => {
       expect(screen.getByTestId('lottery-ticker-flow-MSFT')).toHaveTextContent(
         'flow mixed',
       );
+    });
+  });
+
+  describe('screen-reader text on the tide and flow chips', () => {
+    // Both chips are bare spans inside the group's toggle button, so an
+    // aria-label on them would be prohibited and mostly ignored. Their
+    // question is hidden text; the longer aligned / counter key stays in
+    // `title`. The text stays short because the toggle button's accessible
+    // name is built from its content, these chips included.
+    function renderGroup() {
+      const base = makeFire({
+        optionChainId: 'MSFT260515C00400000',
+        underlyingSymbol: 'MSFT',
+      });
+      const fire = {
+        ...base,
+        macro: {
+          ...base.macro,
+          mktTideDiff: 200,
+          tickerCumNcpAtFire: 5_000_000,
+          tickerCumNppAtFire: 1_000_000,
+        },
+      };
+      return render(
+        <LotteryFinderTickerGroup
+          ticker="MSFT"
+          fires={[fire]}
+          expanded={false}
+          onToggle={() => undefined}
+          marketOpen={true}
+          exitPolicy={EXIT_POLICY}
+        />,
+      );
+    }
+
+    it('gives the tide chip its question as hidden text, not an aria-label', () => {
+      renderGroup();
+      const chip = screen.getByTestId('lottery-ticker-tide-MSFT');
+      expect(srHintText(chip)).toBe(
+        "Does Market Tide direction agree with this ticker's bias?",
+      );
+      expect(chip).not.toHaveAttribute('aria-label');
+      expect(chip.getAttribute('title')).toContain('aligned = same direction');
+    });
+
+    it('gives the flow chip its question as hidden text, not an aria-label', () => {
+      renderGroup();
+      const chip = screen.getByTestId('lottery-ticker-flow-MSFT');
+      expect(srHintText(chip)).toBe(
+        "Does per-ticker net flow direction at fire time agree with this ticker's bias?",
+      );
+      expect(chip).not.toHaveAttribute('aria-label');
+      expect(chip.getAttribute('title')).toContain('aligned = same direction');
+    });
+
+    it('leaves no aria-label on a role-less, non-interactive header element', () => {
+      const { container } = renderGroup();
+      expect(genericElementsWithAriaLabel(container)).toEqual([]);
     });
   });
 });

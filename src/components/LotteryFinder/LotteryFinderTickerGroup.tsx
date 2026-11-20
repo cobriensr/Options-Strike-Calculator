@@ -10,6 +10,7 @@ import { memo, useCallback, useMemo } from 'react';
 import type { ExitPolicy, LotteryFire } from './types.js';
 import { LotteryRow } from './LotteryRow.js';
 import { disclosureA11yProps } from '../ui/disclosure.js';
+import { SrHint } from '../ui/SrHint.js';
 import type { TickerNetFlowSnapshot } from '../../hooks/useTickerNetFlowBatch.js';
 import {
   BURST_STORM_BADGE_LABEL,
@@ -346,18 +347,27 @@ function LotteryFinderTickerGroupBase({
           <span
             className={`rounded px-1.5 py-0.5 font-mono text-[11px] leading-none font-semibold ${alignChipClass(agg.tide.align)}`}
             title="Does Market Tide (NCP − NPP) direction agree with this ticker's bias? aligned = same direction (tape is on the bet's side), counter = opposite (tape fighting), mixed = inconsistent across alerts, unknown = no tide data."
-            aria-label="Does Market Tide direction agree with this ticker's bias?"
             data-testid={`lottery-ticker-tide-${ticker}`}
           >
             {formatTideLabel(agg.tide)}
+            {/* The chips sit inside the group's toggle button, so their hidden
+                text is part of that button's accessible name. It stays the
+                one-line question; the aligned / counter / mixed key is in the
+                hover text only. */}
+            <SrHint>
+              Does Market Tide direction agree with this ticker's bias?
+            </SrHint>
           </span>
           <span
             className={`rounded px-1.5 py-0.5 font-mono text-[11px] leading-none font-semibold ${alignChipClass(agg.flow.align)}`}
             title="Does per-ticker net flow (cumNcpAtFire − cumNppAtFire) direction agree with this ticker's bias? Unlike Market Tide (which is the full-tape market-wide aggregate), this is restricted to cumulative flow on this ticker's options at fire time. aligned = same direction; counter = opposite (tape fighting the bet); mixed = inconsistent across alerts; unknown = no fire-time snapshot."
-            aria-label="Does per-ticker net flow direction at fire time agree with this ticker's bias?"
             data-testid={`lottery-ticker-flow-${ticker}`}
           >
             {formatFlowLabel(agg.flow)}
+            <SrHint>
+              Does per-ticker net flow direction at fire time agree with this
+              ticker's bias?
+            </SrHint>
           </span>
           {agg.spreadMinutes != null && (
             <span
