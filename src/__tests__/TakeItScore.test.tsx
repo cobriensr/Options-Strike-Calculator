@@ -4,6 +4,11 @@ import { describe, expect, it } from 'vitest';
 
 import { TakeItScore } from '../components/TakeItScore/TakeItScore';
 import { takeitProbClass } from '../components/TakeItScore/takeit-prob-class';
+import {
+  srHintText,
+  titledElementsNeedingHint,
+  titledElementsWithoutHint,
+} from './helpers/aria';
 
 describe('takeitProbClass', () => {
   it('maps the spec-resolved decision #6 colour bands', () => {
@@ -231,6 +236,79 @@ describe('<TakeItScore>', () => {
       const marker = screen.getByTestId('takeit-peak-marker');
       expect(marker).toHaveTextContent('peak 0.72');
       expect(marker).not.toHaveTextContent('@');
+    });
+  });
+
+  describe('screen-reader hints (title is mouse-only)', () => {
+    const FLAGS = {
+      positive: [{ name: 'session_phase', shap_value: 0.31, feature_value: 2 }],
+      negative: [
+        { name: 'is_itm_at_fire', shap_value: -0.24, feature_value: 1 },
+      ],
+    };
+
+    it('repeats the scored chip hover text as hidden text after the score', () => {
+      render(<TakeItScore prob={0.78} topFeatures={FLAGS} />);
+      const chip = screen.getByTestId('takeit-score-chip');
+      expect(srHintText(chip)).toBe(chip.getAttribute('title'));
+      expect(srHintText(chip)).toContain('reaches at least +20%');
+      expect(chip.textContent).toMatch(/^Take-It 0\.78 — How confident/);
+    });
+
+    it('repeats the unscored chip hover text too', () => {
+      render(<TakeItScore prob={null} topFeatures={FLAGS} />);
+      const chip = screen.getByTestId('takeit-score-chip');
+      expect(srHintText(chip)).toBe(
+        'No score — the model bundle was unavailable when this alert fired.',
+      );
+    });
+
+    it('repeats the peak marker hover text, with its time', () => {
+      render(
+        <TakeItScore
+          prob={0.62}
+          topFeatures={null}
+          peakProb={0.78}
+          peakAt="2026-05-29T14:28:00Z"
+        />,
+      );
+      const marker = screen.getByTestId('takeit-peak-marker');
+      expect(srHintText(marker)).toBe(marker.getAttribute('title'));
+      expect(srHintText(marker)).toContain(
+        'Chain peaked at TAKE-IT 0.78 at 09:28 CT.',
+      );
+    });
+
+    it('repeats the "flags…" placeholder hover text', () => {
+      render(<TakeItScore prob={0.55} topFeatures={null} />);
+      const placeholder = screen.getByText('flags…');
+      expect(srHintText(placeholder)).toBe(
+        'SHAP flags arrive ~2 min after the alert fires',
+      );
+    });
+
+    it('repeats each SHAP flag chip hover text, positive and negative', () => {
+      render(<TakeItScore prob={0.68} expanded topFeatures={FLAGS} />);
+      expect(srHintText(screen.getByText('Time of day'))).toBe(
+        'SHAP 0.310 · value 2',
+      );
+      expect(srHintText(screen.getByText('ITM at fire'))).toBe(
+        'SHAP -0.240 · value 1',
+      );
+    });
+
+    it('leaves no titled element without a hint, in every state', () => {
+      const { container } = render(
+        <TakeItScore
+          prob={0.68}
+          expanded
+          topFeatures={FLAGS}
+          peakProb={0.9}
+          peakAt="2026-05-29T14:28:00Z"
+        />,
+      );
+      expect(titledElementsNeedingHint(container).length).toBe(4);
+      expect(titledElementsWithoutHint(container)).toEqual([]);
     });
   });
 

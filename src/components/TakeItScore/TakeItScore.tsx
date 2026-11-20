@@ -24,7 +24,10 @@
 
 import { memo } from 'react';
 
+import { SrHint } from '../ui/SrHint.js';
 import { takeitProbClass } from './takeit-prob-class.js';
+
+const FLAGS_PENDING_TOOLTIP = 'SHAP flags arrive ~2 min after the alert fires';
 
 /** Top-K SHAP contribution as emitted by sidecar /takeit/explain. */
 interface ShapContribution {
@@ -163,16 +166,23 @@ function FlagChips({
   const dotCls = variant === 'positive' ? 'bg-emerald-400' : 'bg-rose-400';
   return (
     <div className="flex flex-wrap items-center gap-1">
-      {contributions.slice(0, 3).map((c) => (
-        <span
-          key={c.name}
-          className="inline-flex items-center gap-1 rounded border border-neutral-700 bg-neutral-900/60 px-1.5 py-0.5 text-[10px] text-neutral-200"
-          title={`SHAP ${c.shap_value.toFixed(3)} · value ${String(c.feature_value)}`}
-        >
-          <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${dotCls}`} />
-          {featureLabel(c.name)}
-        </span>
-      ))}
+      {contributions.slice(0, 3).map((c) => {
+        const shapText = `SHAP ${c.shap_value.toFixed(3)} · value ${String(c.feature_value)}`;
+        return (
+          <span
+            key={c.name}
+            className="inline-flex items-center gap-1 rounded border border-neutral-700 bg-neutral-900/60 px-1.5 py-0.5 text-[10px] text-neutral-200"
+            title={shapText}
+          >
+            <span
+              aria-hidden
+              className={`h-1.5 w-1.5 rounded-full ${dotCls}`}
+            />
+            {featureLabel(c.name)}
+            <SrHint>{shapText}</SrHint>
+          </span>
+        );
+      })}
     </div>
   );
 }
@@ -201,6 +211,10 @@ function TakeItScoreInner(props: TakeItScoreProps) {
   const peakTitle = showPeak
     ? `Chain peaked at TAKE-IT ${peakRounded!.toFixed(2)}${peakWhen}. The feed keeps a chain visible on its peak (not the latest fire), so it never disappears intraday once it clears the floor.`
     : undefined;
+  const chipTooltip =
+    prob == null
+      ? 'No score — the model bundle was unavailable when this alert fired.'
+      : 'How confident the model is this trade reaches at least +20% above entry. 0–1, higher is better; ~0.70+ is where the historical edge concentrates.';
   const cls = takeitProbClass(prob);
   const padding = compact ? 'px-1.5 py-0.5' : 'px-2 py-1';
   const labelPrefix = compact ? '' : 'Take-It ';
@@ -219,15 +233,12 @@ function TakeItScoreInner(props: TakeItScoreProps) {
     >
       <span
         className={`inline-flex items-center gap-1 rounded border ${cls} ${padding} text-[10px] font-semibold tracking-wide uppercase`}
-        title={
-          prob == null
-            ? 'No score — the model bundle was unavailable when this alert fired.'
-            : 'How confident the model is this trade reaches at least +20% above entry. 0–1, higher is better; ~0.70+ is where the historical edge concentrates.'
-        }
+        title={chipTooltip}
         data-testid="takeit-score-chip"
       >
         <span className="opacity-70">{labelPrefix}</span>
         <span className="tabular-nums">{formatProb(prob)}</span>
+        <SrHint>{chipTooltip}</SrHint>
       </span>
       {showPeak && (
         <span
@@ -237,14 +248,16 @@ function TakeItScoreInner(props: TakeItScoreProps) {
         >
           peak {peakRounded!.toFixed(2)}
           {peakTime && <span className="opacity-70">@ {peakTime}</span>}
+          <SrHint>{peakTitle!}</SrHint>
         </span>
       )}
       {prob != null && parsed == null && (
         <span
           className="rounded border border-neutral-700 bg-neutral-900 px-1.5 py-0.5 text-[10px] text-neutral-500"
-          title="SHAP flags arrive ~2 min after the alert fires"
+          title={FLAGS_PENDING_TOOLTIP}
         >
           flags…
+          <SrHint>{FLAGS_PENDING_TOOLTIP}</SrHint>
         </span>
       )}
       {expanded && parsed && (
