@@ -25,6 +25,7 @@ import { computeFlowInverted } from '../../utils/flow-inverted.js';
 import { computeExitNow } from '../../utils/exit-now.js';
 import { gexbotBadge } from '../../utils/gexbot-badge.js';
 import { CohortCountdown } from '../ui/CohortCountdown.js';
+import { SrHint } from '../ui/SrHint.js';
 import { computeCountdownRemaining } from '../ui/cohort-countdown-utils.js';
 import { signedOtmPct } from '../../utils/moneyness.js';
 import { describeSpread } from '../../utils/spread-badge.js';
@@ -589,10 +590,15 @@ export const SilentBoomRow = memo(function SilentBoomRow({
 
   const roundTripDeduct = alert.roundTripScoreDeduct ?? 0;
   const isRoundTripped = roundTripDeduct < 0;
-  // One string for the hover text and the accessible name, which leads with
-  // the pill's visible text so the two cannot drift apart.
+  // One string for the hover text and the pill's hidden text, so a screen
+  // reader hears what a hover shows. The visible "round-tripped -2" leads it.
   const roundTripTooltip = `Sellers outweighed buyers in the hour after the alert (deduct ${roundTripDeduct}). It describes selling that already happened, not what comes next: on Lottery Finder fires, those still held when a deduct landed finished about where they stood then (at -1: down about 28% when it landed, 29% at the 30/10 trail exit). The tier is the one shown at the alert.`;
-  const roundTripLabel = `round-tripped ${roundTripDeduct}. ${roundTripTooltip}`;
+  const exitTooltip =
+    exitNow.reason === 'expired'
+      ? 'Cohort P75 hold elapsed — historical median peak has passed.'
+      : exitNow.reason === 'inverted'
+        ? 'Ticker net flow inverted — strongest documented exit signal.'
+        : 'Hold expired + flow inverted — both exit rules fired.';
 
   return (
     <div
@@ -604,9 +610,9 @@ export const SilentBoomRow = memo(function SilentBoomRow({
           data-testid="silent-boom-row-round-tripped-pill"
           className="mb-1.5 inline-flex items-center gap-1 rounded border border-amber-500/50 bg-amber-950/40 px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-amber-200 uppercase"
           title={roundTripTooltip}
-          aria-label={roundTripLabel}
         >
           round-tripped {roundTripDeduct}
+          <SrHint>{roundTripTooltip}</SrHint>
         </div>
       )}
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
@@ -615,9 +621,9 @@ export const SilentBoomRow = memo(function SilentBoomRow({
         <span
           className={`rounded border px-1.5 py-0.5 text-[11px] leading-none font-semibold ${tier.cls}`}
           title={tier.tooltip}
-          aria-label={tier.tooltip}
         >
           {tier.label}
+          <SrHint>{tier.tooltip}</SrHint>
         </span>
         {/* Phase 4 direction-gate pill — surfaces the demote reason
             so the user can distinguish "low score" from "counter-trend
@@ -628,9 +634,9 @@ export const SilentBoomRow = memo(function SilentBoomRow({
             data-testid="silent-boom-gated-pill"
             className={`rounded border px-1.5 py-0.5 text-[10px] leading-none font-semibold ${gated.cls}`}
             title={gated.tooltip}
-            aria-label={gated.tooltip}
           >
             {gated.label}
+            <SrHint>{gated.tooltip}</SrHint>
           </span>
         )}
         {/* Per-ticker flow at fire time — frozen snapshot. Sits
@@ -641,9 +647,9 @@ export const SilentBoomRow = memo(function SilentBoomRow({
             data-testid="silent-boom-row-flow-chip"
             className={`rounded border px-1.5 py-0.5 text-[10px] leading-none font-semibold ${flow.cls}`}
             title={flow.tooltip}
-            aria-label={flow.tooltip}
           >
             {flow.label}
+            <SrHint>{flow.tooltip}</SrHint>
           </span>
         )}
         {/* Flow Match / Mismatch — does the ticker's live cum NCP/NPP
@@ -654,9 +660,9 @@ export const SilentBoomRow = memo(function SilentBoomRow({
             data-testid="silent-boom-flow-match-badge"
             className={`rounded border px-1.5 py-0.5 text-[10px] leading-none font-semibold ${flowMatch.cls}`}
             title={flowMatch.tooltip}
-            aria-label={flowMatch.tooltip}
           >
             {flowMatch.label}
+            <SrHint>{flowMatch.tooltip}</SrHint>
           </span>
         )}
         {/* Flow Inverted — strongest documented exit signal: tailwind
@@ -666,9 +672,9 @@ export const SilentBoomRow = memo(function SilentBoomRow({
             data-testid="silent-boom-flow-inverted-badge"
             className={`rounded border px-1.5 py-0.5 text-[10px] leading-none font-semibold ${flowInverted.cls}`}
             title={flowInverted.tooltip}
-            aria-label={flowInverted.tooltip}
           >
             {flowInverted.label}
+            <SrHint>{flowInverted.tooltip}</SrHint>
           </span>
         )}
         {/* Take-It score tile (Phase 4 of takeit-phase3-production-scoring-
@@ -699,9 +705,9 @@ export const SilentBoomRow = memo(function SilentBoomRow({
             data-testid="silent-boom-spread-confirmed-badge"
             className={`rounded border px-1.5 py-0.5 text-[10px] leading-none font-semibold ${spreadConfirmed.cls}`}
             title={spreadConfirmed.tooltip}
-            aria-label={spreadConfirmed.tooltip}
           >
             {spreadConfirmed.label}
+            <SrHint>{spreadConfirmed.tooltip}</SrHint>
           </span>
         )}
         {/* Trigger-print leg badge — was the print that fired the alert a
@@ -725,9 +731,9 @@ export const SilentBoomRow = memo(function SilentBoomRow({
             data-testid="silent-boom-gex-badge"
             className={`rounded border px-1.5 py-0.5 text-[10px] leading-none font-semibold ${gexbot.cls}`}
             title={gexbot.tooltip}
-            aria-label={gexbot.ariaLabel}
           >
             {gexbot.label}
+            <SrHint>{gexbot.srText}</SrHint>
           </span>
         )}
         {/* Avg-hold-minutes hint — historical P75 minutes-to-peak among
@@ -846,9 +852,9 @@ export const SilentBoomRow = memo(function SilentBoomRow({
           <span
             className={`rounded border px-1.5 py-0.5 text-[10px] leading-none font-semibold ${tide.cls}`}
             title={tide.tooltip}
-            aria-label={tide.tooltip}
           >
             {tide.label}
+            <SrHint>{tide.tooltip}</SrHint>
           </span>
         )}
 
@@ -986,16 +992,10 @@ export const SilentBoomRow = memo(function SilentBoomRow({
           <span
             data-testid="silent-boom-exit-now-badge"
             className="ml-2 inline-flex animate-pulse items-center rounded border border-red-500/70 bg-red-950/60 px-1.5 py-0.5 text-[10px] leading-none font-bold tracking-wide text-red-100"
-            title={
-              exitNow.reason === 'expired'
-                ? 'Cohort P75 hold elapsed — historical median peak has passed.'
-                : exitNow.reason === 'inverted'
-                  ? 'Ticker net flow inverted — strongest documented exit signal.'
-                  : 'Hold expired + flow inverted — both exit rules fired.'
-            }
-            aria-label={`Exit signal active: ${exitNow.reason}`}
+            title={exitTooltip}
           >
             EXIT
+            <SrHint>{exitTooltip}</SrHint>
           </span>
         )}
         <button

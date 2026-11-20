@@ -14,6 +14,7 @@ import type {
   SilentBoomAlert,
   SilentBoomExitPolicy,
 } from '../components/SilentBoom/types';
+import { genericElementsWithAriaLabel, srHintText } from './helpers/aria';
 
 // ── Mocks ─────────────────────────────────────────────────────────────
 
@@ -36,15 +37,17 @@ vi.mock('../hooks/useTickerCandles', () => ({
 
 // Stub the heavy chart components so the row's expand-state branch
 // renders without dragging in lightweight-charts or SVG layout. Use
-// data-testid markers so the expanded panel is detectable.
+// data-testid markers so the expanded panel is detectable. The real charts
+// name themselves with `role="img"`; the stubs do the same, so the
+// screen-reader guard below doesn't trip on a stub.
 vi.mock('../components/charts/ContractTapeChart', () => ({
   ContractTapeChart: ({ ariaLabel }: { ariaLabel: string }) => (
-    <div data-testid="contract-tape-chart" aria-label={ariaLabel} />
+    <div data-testid="contract-tape-chart" role="img" aria-label={ariaLabel} />
   ),
 }));
 vi.mock('../components/charts/TickerNetFlowChart', () => ({
   TickerNetFlowChart: ({ ariaLabel }: { ariaLabel: string }) => (
-    <div data-testid="ticker-netflow-chart" aria-label={ariaLabel} />
+    <div data-testid="ticker-netflow-chart" role="img" aria-label={ariaLabel} />
   ),
 }));
 
@@ -1221,12 +1224,15 @@ describe('SilentBoomRow: round-tripped dim treatment', () => {
     );
     expect(pill.getAttribute('title')).not.toContain('lower-EV');
 
-    // The accessible name leads with the visible text and carries the same
-    // tooltip text, so a screen reader hears what a hover shows.
-    const label = pill.getAttribute('aria-label') ?? '';
-    expect(label).toMatch(/^round-tripped -2\. /);
-    expect(label).toContain('The tier is the one shown at the alert.');
-    expect(label).toBe(`round-tripped -2. ${pill.getAttribute('title')}`);
+    // The pill is a bare div, so the tooltip reaches a screen reader as
+    // hidden text after the visible "round-tripped -2", not as an
+    // aria-label (prohibited on a generic element, mostly ignored).
+    expect(pill).not.toHaveAttribute('aria-label');
+    expect(srHintText(pill)).toBe(pill.getAttribute('title'));
+    expect(srHintText(pill)).toContain(
+      'The tier is the one shown at the alert.',
+    );
+    expect(pill.textContent).toMatch(/^round-tripped -2 — Sellers outweighed/);
   });
 
   it('leaves the container at full opacity and omits the pill when deduct is 0', () => {
@@ -1417,5 +1423,216 @@ describe('SilentBoomRow: sibling taker-flow pills', () => {
     const title =
       screen.getByTestId('sibling-pill-AAPL-SPY').getAttribute('title') ?? '';
     expect(title).toMatch(/as of 5-min bucket start/);
+  });
+});
+
+// ============================================================
+// SCREEN-READER TEXT — the badges' hover explanations must reach assistive
+// tech. aria-label on a bare span or div is prohibited by ARIA 1.2 and
+// mostly ignored, so each explanation is hidden text inside the badge (an
+// `SrHint`) and `title` stays for the mouse.
+// ============================================================
+
+describe('SilentBoomRow: badge explanations reach screen readers', () => {
+  const BUCKET = '2026-05-15T13:30:00.000Z';
+  const LEGS = [
+    {
+      optionType: 'C' as const,
+      strike: 726,
+      expiry: '2026-05-15',
+      size: 40,
+      price: 1.15,
+      tradeCode: 'mlet',
+    },
+    {
+      optionType: 'C' as const,
+      strike: 727,
+      expiry: '2026-05-15',
+      size: 40,
+      price: 0.7,
+      tradeCode: 'mlet',
+    },
+  ];
+
+  /** An alert that lights every badge the row can show. */
+  function makeFullyBadgedAlert(): SilentBoomAlert {
+    return makeAlert({
+      optionType: 'C',
+      bucketCt: BUCKET,
+      scoreTier: 'tier2',
+      directionGated: true,
+      roundTripScoreDeduct: -2,
+      mktTideDiff: 1500,
+      tickerCumNcpAtFire: 10_000_000,
+      tickerCumNppAtFire: 1_000_000,
+      multiLegShare: 0.3,
+      anchorLegKind: 'multi_leg',
+      spreadShape: 'vertical',
+      spreadLegs: LEGS,
+      takeitProb: 0.72,
+      takeitTopFeatures: {
+        positive: [{ name: 'dte', shap_value: 0.12, feature_value: 0 }],
+        negative: [],
+      },
+      underlyingPriceAtSpike: 198.5,
+      gex: {
+        oneCvroflow: 3.2,
+        netPutDex: -1200,
+        oneDexoflow: 1.1,
+        oneGexoflow: 0.4,
+        zcvr: 0.9,
+        zeroGamma: 5300,
+        spot: 5310,
+        capturedAt: '2026-05-15T13:29:50.000Z',
+      },
+    });
+  }
+
+  /** `tailwind`: the live tape still agrees with the call (Flow Match).
+   *  `inverted`: it has reversed (Flow Mismatch, Flow Inverted, EXIT). */
+  function renderFullyBadged(variant: 'tailwind' | 'inverted') {
+    vi.useFakeTimers();
+    // Five minutes after the bucket: the "hot" chip shows and the cohort
+    // countdown is still inside its window.
+    vi.setSystemTime(new Date(Date.parse(BUCKET) + 5 * 60_000));
+    mockUseGexbotData.mockReturnValue({
+      rows: [
+        {
+          ticker: 'SPY',
+          netDex: 1_500_000,
+          zgr: 0.8,
+          capturedAt: BUCKET,
+          verdict: 'agree',
+        },
+        {
+          ticker: 'QQQ',
+          netDex: -900_000,
+          zgr: 0.5,
+          capturedAt: BUCKET,
+          verdict: 'disagree',
+        },
+        {
+          ticker: 'IWM',
+          netDex: null,
+          zgr: null,
+          capturedAt: null,
+          verdict: 'none',
+        },
+      ],
+      loading: false,
+      error: null,
+      freshestAt: BUCKET,
+    });
+    const view = renderRow(
+      makeFullyBadgedAlert(),
+      true,
+      'realized60mPct',
+      variant === 'tailwind'
+        ? { cumNcp: 20_000_000, cumNpp: 5_000_000, asOfTs: BUCKET }
+        : { cumNcp: 1_000_000, cumNpp: 20_000_000, asOfTs: BUCKET },
+    );
+    // The chart panels are part of the row too.
+    fireEvent.click(screen.getByRole('button', { name: /▸ expand/ }));
+    return view;
+  }
+
+  afterEach(() => {
+    vi.useRealTimers();
+    // The sibling bar's hook mock is shared by every test in the file;
+    // put back its loading default so later tests start from it.
+    mockUseGexbotData.mockReturnValue({
+      rows: [],
+      loading: true,
+      error: null,
+      freshestAt: null,
+    });
+  });
+
+  it.each(['tailwind', 'inverted'] as const)(
+    'a fully badged row (%s) has no aria-label on a role-less, non-interactive element',
+    (variant) => {
+      const { container } = renderFullyBadged(variant);
+      // The badges this guards are on screen, so an empty result can't pass
+      // by rendering less.
+      for (const id of [
+        'silent-boom-row-round-tripped-pill',
+        'silent-boom-gated-pill',
+        'silent-boom-row-flow-chip',
+        'silent-boom-flow-match-badge',
+        'silent-boom-spread-confirmed-badge',
+        'silent-boom-trigger-leg-badge',
+        'silent-boom-gex-badge',
+        'takeit-score-tile',
+        'sibling-pill-AAPL-SPY',
+        'cohort-countdown',
+        'contract-tape-chart',
+        'ticker-netflow-chart',
+      ]) {
+        expect(screen.getByTestId(id)).toBeInTheDocument();
+      }
+      // The tier and Market Tide badges have no testid.
+      expect(
+        container.querySelector('[title^="Tier 2 (score"]'),
+      ).not.toBeNull();
+      expect(container.querySelector('[title^="Market Tide"]')).not.toBeNull();
+      expect(screen.getByText('hot')).toBeInTheDocument();
+      if (variant === 'inverted') {
+        expect(
+          screen.getByTestId('silent-boom-flow-inverted-badge'),
+        ).toBeInTheDocument();
+        expect(
+          screen.getByTestId('silent-boom-exit-now-badge'),
+        ).toBeInTheDocument();
+      }
+
+      expect(genericElementsWithAriaLabel(container)).toEqual([]);
+    },
+  );
+
+  it('gives every badge its hover explanation as hidden text after the visible label', () => {
+    const { container } = renderFullyBadged('inverted');
+    const hintOf = (testId: string) =>
+      srHintText(screen.getByTestId(testId)) ?? '';
+    const titleOf = (testId: string) =>
+      screen.getByTestId(testId).getAttribute('title') ?? '';
+
+    // Hidden text equals the hover text, badge by badge.
+    for (const id of [
+      'silent-boom-row-round-tripped-pill',
+      'silent-boom-gated-pill',
+      'silent-boom-row-flow-chip',
+      'silent-boom-flow-match-badge',
+      'silent-boom-flow-inverted-badge',
+      'silent-boom-spread-confirmed-badge',
+      'silent-boom-exit-now-badge',
+      'cohort-countdown',
+    ]) {
+      expect(hintOf(id), id).not.toBe('');
+      expect(hintOf(id), id).toBe(titleOf(id));
+      expect(screen.getByTestId(id), id).not.toHaveAttribute('aria-label');
+    }
+
+    // Tier and Market Tide chips have no testid; find them by hover text.
+    for (const prefix of ['Tier 2 (score', 'Market Tide NCP']) {
+      const badge = container.querySelector(`[title^="${prefix}"]`);
+      expect(badge, prefix).not.toBeNull();
+      expect(srHintText(badge!), prefix).toBe(badge!.getAttribute('title'));
+      expect(badge!, prefix).not.toHaveAttribute('aria-label');
+    }
+
+    // The GEXBot badge keeps its terse single-line hint; the multi-line
+    // tooltip stays in `title`.
+    expect(hintOf('silent-boom-gex-badge')).toBe(
+      'GexBot snapshot: next-expiry cvroflow 3.20 up',
+    );
+    expect(titleOf('silent-boom-gex-badge')).toContain('\n');
+
+    // The label a sighted user sees comes first, the explanation after it.
+    expect(screen.getByTestId('silent-boom-gated-pill').textContent).toMatch(
+      /^Gated \(Soft\) — Counter-trend per Market Tide/,
+    );
+    expect(
+      screen.getByTestId('silent-boom-exit-now-badge').textContent,
+    ).toMatch(/^EXIT — Ticker net flow inverted/);
   });
 });
