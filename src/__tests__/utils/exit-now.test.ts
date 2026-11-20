@@ -1,5 +1,28 @@
 import { describe, it, expect } from 'vitest';
-import { computeExitNow } from '../../utils/exit-now';
+import { computeExitNow, exitReasonTooltip } from '../../utils/exit-now';
+
+describe('exitReasonTooltip', () => {
+  it.each([
+    ['expired', 'Cohort P75 hold elapsed — historical median peak has passed.'],
+    [
+      'inverted',
+      'Ticker net flow inverted — strongest documented exit signal.',
+    ],
+    [
+      'expired_and_inverted',
+      'Hold expired + flow inverted — both exit rules fired.',
+    ],
+  ] as const)('explains %s', (reason, text) => {
+    expect(exitReasonTooltip(reason)).toBe(text);
+  });
+
+  it('gives every reason its own text', () => {
+    const texts = (
+      ['expired', 'inverted', 'expired_and_inverted'] as const
+    ).map(exitReasonTooltip);
+    expect(new Set(texts).size).toBe(3);
+  });
+});
 
 describe('computeExitNow', () => {
   it('returns inactive when nothing has fired', () => {

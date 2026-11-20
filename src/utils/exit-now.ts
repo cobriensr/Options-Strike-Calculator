@@ -16,9 +16,22 @@
 
 export type ExitNowReason = 'expired' | 'inverted' | 'expired_and_inverted';
 
-export interface ExitNowResult {
-  active: boolean;
-  reason: ExitNowReason | null;
+export type ExitNowResult =
+  | { active: true; reason: ExitNowReason }
+  | { active: false; reason: null };
+
+const EXIT_REASON_TOOLTIPS: Record<ExitNowReason, string> = {
+  expired: 'Cohort P75 hold elapsed — historical median peak has passed.',
+  inverted: 'Ticker net flow inverted — strongest documented exit signal.',
+  expired_and_inverted: 'Hold expired + flow inverted — both exit rules fired.',
+};
+
+/**
+ * Hover text for the EXIT chip, and the same words for its hidden
+ * screen-reader hint. One table so the Lottery and Silent Boom rows agree.
+ */
+export function exitReasonTooltip(reason: ExitNowReason): string {
+  return EXIT_REASON_TOOLTIPS[reason];
 }
 
 interface ComputeExitNowArgs {
