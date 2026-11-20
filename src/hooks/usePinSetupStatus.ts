@@ -5,9 +5,14 @@
  * hours, otherwise issues a single fetch on mount. Historical mode
  * (caller passes a YYYY-MM-DD date): one-shot fetch, no polling.
  *
- * The endpoint is owner-or-guest tier; this hook does not gate on
- * ownership — the server returns 401 for unauthorized callers and we
- * surface the error in `error`.
+ * Access: the endpoint is owner-or-guest tier. For a public visitor
+ * (`getAccessMode() === 'public'`, read at every render) the hook makes no
+ * request of any kind (mount, date pick, poll or `refresh()`), schedules no
+ * poll whatever `marketOpen` its caller passes, and returns no data, error or
+ * loading flag, so the tile never shows an "HTTP 401". The picked `date`
+ * is kept, so a visitor who signs in without a reload fetches it. An
+ * owner or guest fetches as before, and a switch between those two does not
+ * refetch.
  */
 
 import { useState, useEffect, useRef, useCallback } from 'react';
@@ -20,6 +25,7 @@ import {
   summarizeZodIssues,
 } from '../lib/response-guard';
 import { captureUnlessAuth } from '../lib/sentry-helpers';
+import { getAccessMode } from '../utils/auth';
 import { getErrorMessage } from '../utils/error';
 import { usePolling } from './usePolling';
 
@@ -104,6 +110,11 @@ interface Options {
 export function usePinSetupStatus({
   marketOpen,
 }: Options): UsePinSetupStatusReturn {
+  // /api/pin-setup-status is owner-or-guest. Read at render, never frozen in a
+  // ref, so signing in with a guest key (no reload) starts the fetch and
+  // dropping to public stops it.
+  const isPublic = getAccessMode() === 'public';
+
   const [data, setData] = useState<PinSetupStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -114,72 +125,80 @@ export function usePinSetupStatus({
   // Key of the request whose bad body was last reported (see claimReport).
   const reportedKeyRef = useRef<string | null>(null);
 
-  const doFetch = useCallback(async (currentDate: string | null) => {
-    abortRef.current?.abort();
-    const ctrl = new AbortController();
-    abortRef.current = ctrl;
-    setLoading(true);
+  const doFetch = useCallback(
+    async (currentDate: string | null) => {
+      abortRef.current?.abort();
+      // The one request gate: the mount fetch, a date pick, the poll tick and
+      // refresh() all land here. A public visitor draws no 401, and a request
+      // from before they dropped to public is aborted, so its late reply
+      // can't write state.
+      if (isPublic) return;
+      const ctrl = new AbortController();
+      abortRef.current = ctrl;
+      setLoading(true);
 
-    // A bad 2xx body is handled like a failed fetch: last-good `data`
-    // stays, nothing malformed is stored. It's reported once per request,
-    // not once per poll.
-    const rejectBody = (
-      message: string,
-      report: Error,
-      detail: Record<string, unknown>,
-    ) => {
-      if (claimReport(reportedKeyRef, currentDate ?? 'live')) {
-        captureUnlessAuth(report, {
-          contexts: { pinSetupStatus: { date: currentDate, ...detail } },
-        });
-      }
-      setError(message);
-    };
+      // A bad 2xx body is handled like a failed fetch: last-good `data`
+      // stays, nothing malformed is stored. It's reported once per request,
+      // not once per poll.
+      const rejectBody = (
+        message: string,
+        report: Error,
+        detail: Record<string, unknown>,
+      ) => {
+        if (claimReport(reportedKeyRef, currentDate ?? 'live')) {
+          captureUnlessAuth(report, {
+            contexts: { pinSetupStatus: { date: currentDate, ...detail } },
+          });
+        }
+        setError(message);
+      };
 
-    try {
-      const url = currentDate
-        ? `/api/pin-setup-status?date=${encodeURIComponent(currentDate)}`
-        : '/api/pin-setup-status';
-      const res = await fetch(url, {
-        credentials: 'include',
-        signal: ctrl.signal,
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      let body: unknown;
       try {
-        body = await res.json();
-      } catch (err) {
+        const url = currentDate
+          ? `/api/pin-setup-status?date=${encodeURIComponent(currentDate)}`
+          : '/api/pin-setup-status';
+        const res = await fetch(url, {
+          credentials: 'include',
+          signal: ctrl.signal,
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        let body: unknown;
+        try {
+          body = await res.json();
+        } catch (err) {
+          if (ctrl.signal.aborted) return;
+          // A 2xx that isn't JSON (an HTML error page, a truncated body).
+          rejectBody(
+            NOT_JSON_ERROR,
+            new Error('pin-setup-status response was not JSON'),
+            { detail: getErrorMessage(err) },
+          );
+          return;
+        }
         if (ctrl.signal.aborted) return;
-        // A 2xx that isn't JSON (an HTML error page, a truncated body).
-        rejectBody(
-          NOT_JSON_ERROR,
-          new Error('pin-setup-status response was not JSON'),
-          { detail: getErrorMessage(err) },
-        );
-        return;
+        const parsed = pinSetupStatusSchema.safeParse(body);
+        if (!parsed.success) {
+          rejectBody(
+            INVALID_SHAPE_ERROR,
+            new Error('pin-setup-status response failed schema validation'),
+            summarizeZodIssues(parsed.error.issues),
+          );
+          return;
+        }
+        // A good response re-arms the report latch.
+        reportedKeyRef.current = null;
+        setData(parsed.data);
+        setError(null);
+      } catch (err) {
+        // Superseded by a newer fetch, or unmounted: nothing to update.
+        if (ctrl.signal.aborted) return;
+        setError(getErrorMessage(err));
+      } finally {
+        if (!ctrl.signal.aborted) setLoading(false);
       }
-      if (ctrl.signal.aborted) return;
-      const parsed = pinSetupStatusSchema.safeParse(body);
-      if (!parsed.success) {
-        rejectBody(
-          INVALID_SHAPE_ERROR,
-          new Error('pin-setup-status response failed schema validation'),
-          summarizeZodIssues(parsed.error.issues),
-        );
-        return;
-      }
-      // A good response re-arms the report latch.
-      reportedKeyRef.current = null;
-      setData(parsed.data);
-      setError(null);
-    } catch (err) {
-      // Superseded by a newer fetch, or unmounted: nothing to update.
-      if (ctrl.signal.aborted) return;
-      setError(getErrorMessage(err));
-    } finally {
-      if (!ctrl.signal.aborted) setLoading(false);
-    }
-  }, []);
+    },
+    [isPublic],
+  );
 
   const refresh = useCallback(() => {
     void doFetch(date);
@@ -187,17 +206,41 @@ export function usePinSetupStatus({
 
   useEffect(() => () => abortRef.current?.abort(), []);
 
+  // A change of access mode drops what the hook holds: data or an error kept
+  // from before a drop to public must not be what a visitor who signs back in
+  // sees until the new fetch lands.
+  useEffect(() => {
+    setData(null);
+    setError(null);
+  }, [isPublic]);
+
   // Eager fetch on mount / date change. usePolling only schedules the
   // recurring tick — never the initial fetch.
   useEffect(() => {
     void doFetch(date);
   }, [date, doFetch]);
 
-  // Poll only in live mode while the cash session is open.
+  // Poll only in live mode while the cash session is open and the visitor is
+  // an owner or guest.
   const pollLive = useCallback(() => {
     void doFetch(null);
   }, [doFetch]);
-  usePolling(pollLive, POLL_INTERVALS.PIN_SETUP, [date == null, marketOpen]);
+  usePolling(pollLive, POLL_INTERVALS.PIN_SETUP, [
+    date == null,
+    marketOpen,
+    !isPublic,
+  ]);
 
-  return { data, loading, error, date, setDate, refresh };
+  // A public visitor is shown nothing: not data or an error left in memory
+  // from before they dropped to public (the first render after the drop
+  // commits before the reset effect above runs), and not the "Loading…" of a
+  // request that will never be sent.
+  return {
+    data: isPublic ? null : data,
+    loading: isPublic ? false : loading,
+    error: isPublic ? null : error,
+    date,
+    setDate,
+    refresh,
+  };
 }
