@@ -31,6 +31,7 @@ describe('Default-order panel render contract', () => {
     const registry = getPanelRegistry({
       isAuthenticated: true,
       hasMarketOrSnapshot: true,
+      isOwner: true,
     });
     const groups = resolveGroupOrder([], registryGroups);
     expect(groups).toEqual([
@@ -58,12 +59,33 @@ describe('Default-order panel render contract', () => {
     ]);
     // Last id must be results
     expect(sequence.at(-1)).toBe('results');
+    // The owner is the one viewer listed Analysis History, right after Chart
+    // Analysis
+    expect(sequence.indexOf('sec-history')).toBe(
+      sequence.indexOf('sec-charts') + 1,
+    );
+  });
+
+  it('guest with market data: gets Chart Analysis but not the owner-only Analysis History', () => {
+    const registry = getPanelRegistry({
+      isAuthenticated: true,
+      hasMarketOrSnapshot: true,
+      isOwner: false,
+    });
+    const groups = resolveGroupOrder([], registryGroups);
+    const sequence: string[] = [];
+    for (const group of groups) {
+      sequence.push(...resolvePanelOrder([], registry, group));
+    }
+    expect(sequence).toContain('sec-charts');
+    expect(sequence).not.toContain('sec-history');
   });
 
   it('public visitor (no auth, no market): hides auth/market-only panels', () => {
     const registry = getPanelRegistry({
       isAuthenticated: false,
       hasMarketOrSnapshot: false,
+      isOwner: false,
     });
     const groups = resolveGroupOrder([], registryGroups);
     const sequence: string[] = [];
@@ -77,6 +99,8 @@ describe('Default-order panel render contract', () => {
     expect(sequence).not.toContain('sec-ml-insights');
     expect(sequence).not.toContain('sec-periscope-history');
     expect(sequence).not.toContain('sec-periscope-lessons');
+    // Owner-only panels must NOT appear
+    expect(sequence).not.toContain('sec-history');
     // Market-only panels must NOT appear
     expect(sequence).not.toContain('sec-darkpool');
     expect(sequence).not.toContain('sec-gex-target');
@@ -85,7 +109,6 @@ describe('Default-order panel render contract', () => {
     // Always-on panels still appear
     expect(sequence).toContain('sec-datetime');
     expect(sequence).toContain('sec-regime');
-    expect(sequence).toContain('sec-history');
     expect(sequence).toContain('sec-positions');
     expect(sequence).toContain('results');
   });
@@ -94,6 +117,7 @@ describe('Default-order panel render contract', () => {
     const registry = getPanelRegistry({
       isAuthenticated: false,
       hasMarketOrSnapshot: true,
+      isOwner: false,
     });
     const groups = resolveGroupOrder([], registryGroups);
     const sequence: string[] = [];
@@ -128,6 +152,7 @@ describe('Default-order panel render contract', () => {
     const registry = getPanelRegistry({
       isAuthenticated: true,
       hasMarketOrSnapshot: true,
+      isOwner: true,
     });
     const inputs = resolvePanelOrder(
       ['sec-spot-price', 'sec-iv', 'sec-datetime'],

@@ -86,10 +86,50 @@ describe('PanelPrefsModal', () => {
       />,
     );
     expect(screen.getByText('Date & Time')).toBeInTheDocument();
-    expect(screen.getByText('Analysis History')).toBeInTheDocument();
+    expect(screen.getByText('Position Monitor')).toBeInTheDocument();
+    // Owner-only: a public visitor has no Analysis History to show or hide.
+    expect(screen.queryByText('Analysis History')).toBeNull();
     expect(screen.queryByText('Dark Pool Levels')).toBeNull();
     expect(screen.queryByText('Futures Calculator')).toBeNull();
     expect(screen.queryByText('BWB Calculator')).toBeNull();
+  });
+
+  // The panel renders nothing for a guest, so a checkbox for it would toggle
+  // an empty anchor. The modal hands the registry its own `isOwner`, apart
+  // from `isAuthenticated`; a guest is the one viewer where they differ.
+  it('offers a guest no Analysis History checkbox, but still Chart Analysis', () => {
+    render(
+      <PanelPrefsModal
+        isOpen
+        onClose={() => undefined}
+        panelPrefs={makePrefs()}
+        isAuthenticated
+        isOwner={false}
+        hasMarketOrSnapshot
+      />,
+    );
+    expect(
+      screen.queryByRole('checkbox', { name: /Analysis History/ }),
+    ).toBeNull();
+    expect(
+      screen.getByRole('checkbox', { name: /Hide Chart Analysis/ }),
+    ).toBeChecked();
+  });
+
+  it('offers the owner an Analysis History checkbox', () => {
+    render(
+      <PanelPrefsModal
+        isOpen
+        onClose={() => undefined}
+        panelPrefs={makePrefs()}
+        isAuthenticated
+        isOwner
+        hasMarketOrSnapshot
+      />,
+    );
+    expect(
+      screen.getByRole('checkbox', { name: /Hide Analysis History/ }),
+    ).toBeChecked();
   });
 
   it('checkbox state reflects hidden status (inverted)', () => {

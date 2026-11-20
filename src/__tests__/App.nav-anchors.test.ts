@@ -7,17 +7,24 @@ const appSource = readFileSync(path.resolve(__dirname, '../App.tsx'), 'utf-8');
 
 const RESULTS_ID = 'results';
 
+// Public visitor, guest, owner: `isOwner` implies `isAuthenticated`.
+const VIEWERS = [
+  { isAuthenticated: false, isOwner: false },
+  { isAuthenticated: true, isOwner: false },
+  { isAuthenticated: true, isOwner: true },
+] as const;
+
 /**
- * Returns every panel id from the registry across both auth states and
+ * Returns every panel id from the registry across the three viewers and
  * both market-context states — the union covers what could ever appear
  * in the nav.
  */
 function allRegistryIds(): string[] {
   const seen = new Set<string>();
-  for (const isAuthenticated of [false, true] as const) {
+  for (const viewer of VIEWERS) {
     for (const hasMarketOrSnapshot of [false, true] as const) {
       for (const entry of getPanelRegistry({
-        isAuthenticated,
+        ...viewer,
         hasMarketOrSnapshot,
       })) {
         seen.add(entry.id);
@@ -63,6 +70,9 @@ describe('App panel alignment', () => {
   it('every registry panel id has a renderer entry in App.tsx', () => {
     const registryIds = allRegistryIds();
     expect(registryIds.length).toBeGreaterThan(15);
+    // Only the owner is listed Analysis History, so the viewers above must
+    // include one for its renderer and anchor to be checked at all.
+    expect(registryIds).toContain('sec-history');
 
     const rendererKeys = extractRendererKeys(appSource);
     const missing = registryIds.filter((id) => !rendererKeys.has(id));

@@ -35,11 +35,10 @@ export interface PanelRegistryContext {
   hasMarketOrSnapshot: boolean;
   /**
    * The strict owner gate (`accessMode === 'owner'`); a guest is
-   * `isAuthenticated` but not `isOwner`. Optional for this commit, which only
-   * threads it through the callers; the next one makes it required and lists
-   * the owner-only panels by it.
+   * `isAuthenticated` but not `isOwner`. Lists the panels that only the owner
+   * can use.
    */
-  isOwner?: boolean;
+  isOwner: boolean;
 }
 
 /**
@@ -50,7 +49,7 @@ export interface PanelRegistryContext {
 export function getPanelRegistry(
   ctx: PanelRegistryContext,
 ): PanelRegistryEntry[] {
-  const { isAuthenticated, hasMarketOrSnapshot } = ctx;
+  const { isAuthenticated, hasMarketOrSnapshot, isOwner } = ctx;
   const list: PanelRegistryEntry[] = [
     { id: 'sec-datetime', label: 'Date & Time', group: 'Inputs' },
     { id: 'sec-spot-price', label: 'Spot Price', group: 'Inputs' },
@@ -169,11 +168,16 @@ export function getPanelRegistry(
       group: 'Charts & History',
     });
   }
-  list.push({
-    id: 'sec-history',
-    label: 'Analysis History',
-    group: 'Charts & History',
-  });
+  // The component renders nothing for a guest, and /api/analyses is
+  // owner-or-guest, so a guest or public visitor listed here would only get a
+  // nav and prefs entry that leads to an empty anchor.
+  if (isOwner) {
+    list.push({
+      id: 'sec-history',
+      label: 'Analysis History',
+      group: 'Charts & History',
+    });
+  }
   if (isAuthenticated) {
     list.push({
       id: 'sec-ml-insights',

@@ -1,10 +1,16 @@
 import { describe, it, expect } from 'vitest';
 import { getPanelRegistry, PANEL_GROUP_ORDER } from '../panel-registry';
 
+// The three viewers the registry tells apart: `isAuthenticated` is true for a
+// guest as well as the owner, `isOwner` only for the owner.
+const PUBLIC = { isAuthenticated: false, isOwner: false } as const;
+const GUEST = { isAuthenticated: true, isOwner: false } as const;
+const OWNER = { isAuthenticated: true, isOwner: true } as const;
+
 describe('getPanelRegistry', () => {
   it('returns only Inputs + base panels for a public visitor (no auth, no data)', () => {
     const ids = getPanelRegistry({
-      isAuthenticated: false,
+      ...PUBLIC,
       hasMarketOrSnapshot: false,
     }).map((e) => e.id);
 
@@ -16,7 +22,6 @@ describe('getPanelRegistry', () => {
       'sec-iv',
       'sec-risk',
       'sec-regime',
-      'sec-history',
       'sec-positions',
       'results',
     ]);
@@ -29,7 +34,7 @@ describe('getPanelRegistry', () => {
   it('omits sec-premarket for a public visitor, with or without market data', () => {
     for (const hasMarketOrSnapshot of [true, false]) {
       const ids = getPanelRegistry({
-        isAuthenticated: false,
+        ...PUBLIC,
         hasMarketOrSnapshot,
       }).map((e) => e.id);
       expect(ids).not.toContain('sec-premarket');
@@ -37,26 +42,25 @@ describe('getPanelRegistry', () => {
   });
 
   it('keeps sec-premarket between sec-spot-price and sec-premarket-futures for an owner or guest, with or without market data', () => {
-    for (const hasMarketOrSnapshot of [true, false]) {
-      const entries = getPanelRegistry({
-        isAuthenticated: true,
-        hasMarketOrSnapshot,
-      });
-      const inputs = entries.filter((e) => e.group === 'Inputs');
-      expect(inputs.map((e) => e.id)).toEqual([
-        'sec-datetime',
-        'sec-spot-price',
-        'sec-premarket',
-        'sec-premarket-futures',
-        'sec-advanced',
-        'sec-iv',
-        'sec-risk',
-      ]);
-      expect(inputs.find((e) => e.id === 'sec-premarket')).toEqual({
-        id: 'sec-premarket',
-        label: 'Pre-Market Signals',
-        group: 'Inputs',
-      });
+    for (const viewer of [OWNER, GUEST]) {
+      for (const hasMarketOrSnapshot of [true, false]) {
+        const entries = getPanelRegistry({ ...viewer, hasMarketOrSnapshot });
+        const inputs = entries.filter((e) => e.group === 'Inputs');
+        expect(inputs.map((e) => e.id)).toEqual([
+          'sec-datetime',
+          'sec-spot-price',
+          'sec-premarket',
+          'sec-premarket-futures',
+          'sec-advanced',
+          'sec-iv',
+          'sec-risk',
+        ]);
+        expect(inputs.find((e) => e.id === 'sec-premarket')).toEqual({
+          id: 'sec-premarket',
+          label: 'Pre-Market Signals',
+          group: 'Inputs',
+        });
+      }
     }
   });
 
@@ -65,7 +69,7 @@ describe('getPanelRegistry', () => {
   it('omits sec-regime-0dte for a public visitor, with or without market data', () => {
     for (const hasMarketOrSnapshot of [true, false]) {
       const ids = getPanelRegistry({
-        isAuthenticated: false,
+        ...PUBLIC,
         hasMarketOrSnapshot,
       }).map((e) => e.id);
       expect(ids).not.toContain('sec-regime-0dte');
@@ -73,14 +77,15 @@ describe('getPanelRegistry', () => {
   });
 
   it('puts sec-regime-0dte right after sec-regime for an owner or guest, with or without market data', () => {
-    for (const hasMarketOrSnapshot of [true, false]) {
-      const ids = getPanelRegistry({
-        isAuthenticated: true,
-        hasMarketOrSnapshot,
-      }).map((e) => e.id);
-      expect(ids.indexOf('sec-regime-0dte')).toBe(
-        ids.indexOf('sec-regime') + 1,
-      );
+    for (const viewer of [OWNER, GUEST]) {
+      for (const hasMarketOrSnapshot of [true, false]) {
+        const ids = getPanelRegistry({ ...viewer, hasMarketOrSnapshot }).map(
+          (e) => e.id,
+        );
+        expect(ids.indexOf('sec-regime-0dte')).toBe(
+          ids.indexOf('sec-regime') + 1,
+        );
+      }
     }
   });
 
@@ -89,9 +94,8 @@ describe('getPanelRegistry', () => {
   // alone would leave a now-public visitor with the panel and its request.
   it('omits sec-charts for a public visitor even with market data', () => {
     const ids = getPanelRegistry({
-      isAuthenticated: false,
+      ...PUBLIC,
       hasMarketOrSnapshot: true,
-      isOwner: false,
     }).map((e) => e.id);
 
     expect(ids).not.toContain('sec-charts');
@@ -103,15 +107,14 @@ describe('getPanelRegistry', () => {
   });
 
   it.each([
-    ['an owner', true],
-    ['a guest', false],
+    ['an owner', OWNER],
+    ['a guest', GUEST],
   ])(
     'puts sec-charts first in Charts & History for %s with market data',
-    (_who, isOwner) => {
+    (_who, viewer) => {
       const entries = getPanelRegistry({
-        isAuthenticated: true,
+        ...viewer,
         hasMarketOrSnapshot: true,
-        isOwner,
       });
       const charts = entries.filter((e) => e.group === 'Charts & History');
 
@@ -124,16 +127,63 @@ describe('getPanelRegistry', () => {
   );
 
   it.each([
-    ['an owner', true],
-    ['a guest', false],
-  ])('omits sec-charts for %s with no market data', (_who, isOwner) => {
+    ['an owner', OWNER],
+    ['a guest', GUEST],
+  ])('omits sec-charts for %s with no market data', (_who, viewer) => {
     const ids = getPanelRegistry({
-      isAuthenticated: true,
+      ...viewer,
       hasMarketOrSnapshot: false,
-      isOwner,
     }).map((e) => e.id);
 
     expect(ids).not.toContain('sec-charts');
+  });
+
+  // The component renders nothing for a guest and /api/analyses is
+  // owner-or-guest, so only the owner gets a panel, a nav entry and a prefs
+  // entry; a guest used to get the last two for an empty anchor.
+  it('lists sec-history for the owner, with or without market data', () => {
+    for (const hasMarketOrSnapshot of [true, false]) {
+      const entries = getPanelRegistry({ ...OWNER, hasMarketOrSnapshot });
+
+      expect(entries.find((e) => e.id === 'sec-history')).toEqual({
+        id: 'sec-history',
+        label: 'Analysis History',
+        group: 'Charts & History',
+      });
+    }
+  });
+
+  it('puts sec-history right after sec-charts for the owner with market data', () => {
+    const ids = getPanelRegistry({
+      ...OWNER,
+      hasMarketOrSnapshot: true,
+    }).map((e) => e.id);
+
+    expect(ids.indexOf('sec-history')).toBe(ids.indexOf('sec-charts') + 1);
+  });
+
+  it.each([
+    ['a guest', GUEST],
+    ['a public visitor', PUBLIC],
+  ])(
+    'omits sec-history for %s, with or without market data',
+    (_who, viewer) => {
+      for (const hasMarketOrSnapshot of [true, false]) {
+        const ids = getPanelRegistry({ ...viewer, hasMarketOrSnapshot }).map(
+          (e) => e.id,
+        );
+        expect(ids).not.toContain('sec-history');
+      }
+    },
+  );
+
+  it('differs between the owner and a guest by sec-history alone', () => {
+    for (const hasMarketOrSnapshot of [true, false]) {
+      const owner = getPanelRegistry({ ...OWNER, hasMarketOrSnapshot });
+      const guest = getPanelRegistry({ ...GUEST, hasMarketOrSnapshot });
+
+      expect(guest).toEqual(owner.filter((e) => e.id !== 'sec-history'));
+    }
   });
 
   // Both /api/periscope-map and /api/periscope-exposure sit behind
@@ -142,7 +192,7 @@ describe('getPanelRegistry', () => {
   it('omits sec-periscope-exposure for a public visitor even with market data', () => {
     for (const hasMarketOrSnapshot of [true, false]) {
       const ids = getPanelRegistry({
-        isAuthenticated: false,
+        ...PUBLIC,
         hasMarketOrSnapshot,
       }).map((e) => e.id);
       expect(ids).not.toContain('sec-periscope-exposure');
@@ -150,47 +200,53 @@ describe('getPanelRegistry', () => {
   });
 
   it('adds sec-periscope-exposure for an owner or guest with market data, last in Market Context', () => {
-    const entries = getPanelRegistry({
-      isAuthenticated: true,
-      hasMarketOrSnapshot: true,
-    });
-    const marketContext = entries
-      .filter((e) => e.group === 'Market Context')
-      .map((e) => e.id);
+    for (const viewer of [OWNER, GUEST]) {
+      const entries = getPanelRegistry({
+        ...viewer,
+        hasMarketOrSnapshot: true,
+      });
+      const marketContext = entries
+        .filter((e) => e.group === 'Market Context')
+        .map((e) => e.id);
 
-    expect(marketContext).toContain('sec-periscope-exposure');
-    expect(marketContext.at(-1)).toBe('sec-periscope-exposure');
-    expect(marketContext.slice(-2)[0]).toBe('sec-gamma-node-detector');
+      expect(marketContext).toContain('sec-periscope-exposure');
+      expect(marketContext.at(-1)).toBe('sec-periscope-exposure');
+      expect(marketContext.slice(-2)[0]).toBe('sec-gamma-node-detector');
+    }
   });
 
   it('omits sec-periscope-exposure for an owner or guest with no market data (App renders it only under hasMarketContext)', () => {
-    const ids = getPanelRegistry({
-      isAuthenticated: true,
-      hasMarketOrSnapshot: false,
-    }).map((e) => e.id);
-    expect(ids).not.toContain('sec-periscope-exposure');
+    for (const viewer of [OWNER, GUEST]) {
+      const ids = getPanelRegistry({
+        ...viewer,
+        hasMarketOrSnapshot: false,
+      }).map((e) => e.id);
+      expect(ids).not.toContain('sec-periscope-exposure');
+    }
   });
 
   it('adds auth-only panels when isAuthenticated is true (no market data)', () => {
-    const ids = getPanelRegistry({
-      isAuthenticated: true,
-      hasMarketOrSnapshot: false,
-    }).map((e) => e.id);
+    for (const viewer of [OWNER, GUEST]) {
+      const ids = getPanelRegistry({
+        ...viewer,
+        hasMarketOrSnapshot: false,
+      }).map((e) => e.id);
 
-    expect(ids).toContain('sec-futures');
-    expect(ids).toContain('sec-ml-insights');
-    expect(ids).toContain('sec-periscope-history');
-    expect(ids).toContain('sec-periscope-lessons');
-    expect(ids).toContain('sec-tracker');
-    expect(ids).toContain('sec-bwb');
-    // market+auth panels still excluded
-    expect(ids).not.toContain('sec-darkpool');
-    expect(ids).not.toContain('sec-gexbot');
+      expect(ids).toContain('sec-futures');
+      expect(ids).toContain('sec-ml-insights');
+      expect(ids).toContain('sec-periscope-history');
+      expect(ids).toContain('sec-periscope-lessons');
+      expect(ids).toContain('sec-tracker');
+      expect(ids).toContain('sec-bwb');
+      // market+auth panels still excluded
+      expect(ids).not.toContain('sec-darkpool');
+      expect(ids).not.toContain('sec-gexbot');
+    }
   });
 
   it('returns the full panel set for an authenticated owner with market data', () => {
     const entries = getPanelRegistry({
-      isAuthenticated: true,
+      ...OWNER,
       hasMarketOrSnapshot: true,
     });
     const ids = entries.map((e) => e.id);
@@ -242,7 +298,7 @@ describe('getPanelRegistry', () => {
     // navSections array in App.tsx was missing both panels even though
     // they rendered in the JSX. The registry restores them.
     const ids = getPanelRegistry({
-      isAuthenticated: true,
+      ...OWNER,
       hasMarketOrSnapshot: true,
     }).map((e) => e.id);
     expect(ids).toContain('sec-gexbot');
@@ -251,7 +307,7 @@ describe('getPanelRegistry', () => {
 
   it('assigns every togglable panel id to a group in PANEL_GROUP_ORDER', () => {
     const entries = getPanelRegistry({
-      isAuthenticated: true,
+      ...OWNER,
       hasMarketOrSnapshot: true,
     }).filter((e) => e.id !== 'results');
     for (const entry of entries) {
@@ -261,7 +317,7 @@ describe('getPanelRegistry', () => {
 
   it('every panel id matches the server Zod regex /^sec-[a-z0-9-]+$/ (except results)', () => {
     const entries = getPanelRegistry({
-      isAuthenticated: true,
+      ...OWNER,
       hasMarketOrSnapshot: true,
     });
     const togglable = entries.filter((e) => e.id !== 'results');
@@ -272,7 +328,7 @@ describe('getPanelRegistry', () => {
 
   it('relabels the GEXBot panel as taker flow without changing its id', () => {
     const entry = getPanelRegistry({
-      isAuthenticated: true,
+      ...OWNER,
       hasMarketOrSnapshot: true,
     }).find((e) => e.id === 'sec-gexbot');
     expect(entry?.label).toBe('GEXBot Taker Flow');
