@@ -441,7 +441,7 @@ def main(argv: list[str] | None = None) -> None:
         lines.append(f'  Stable (|train−test| < 0.05)? {"YES" if stable else "NO — likely overfit"}')
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text('\n'.join(lines))
+    out_path.write_text('\n'.join(lines), encoding='utf-8')
     print('\n'.join(lines))
     print(f'\n[tune] report → {out_path}')
 

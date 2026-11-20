@@ -479,7 +479,7 @@ def main() -> None:
     lines.append('See main agent summary for amplifiers / anti-filters / sample-size caveats.')
     lines.append('')
 
-    FINDINGS_MD.write_text('\n'.join(lines))
+    FINDINGS_MD.write_text('\n'.join(lines), encoding='utf-8')
     print(f'wrote: {FINDINGS_MD}')
 
     # Also dump the tagged frame for inspection
