@@ -123,8 +123,9 @@ def test_the_fixture_weights_are_real_store_weights() -> None:
 
 
 def _fires(scores: list[float | None]) -> pd.DataFrame:
-    """Fires shaped like the audit's SELECT, one per score: no round-trip
-    deduct and inversion quintile 3 (no bonus), so qas is the score."""
+    """Fires shaped like the audit's SELECT, one per score: inversion quintile 3
+    (no bonus), so qas is the score. The SELECT has no round-trip deduct: the
+    feed's tier leaves it out (owner decision 2026-11-17)."""
     n = len(scores)
     return pd.DataFrame(
         {
@@ -139,7 +140,6 @@ def _fires(scores: list[float | None]) -> pd.DataFrame:
             'cheap_call_pm_tagged': [False] * n,
             'direction_gated': [False] * n,
             'date': [SESSION] * n,
-            'round_trip_score_deduct': [0] * n,
             'inversion_quintile': [3] * n,
             'flow_inv': [10.0 * (i + 1) for i in range(n)],
         }
@@ -368,19 +368,27 @@ def test_feature_audit_splits_tiers_with_the_active_feed_cutoffs() -> None:
     assert not hasattr(feature_audit, 'TIER2_CUTOFF')
 
 
-def test_feature_audit_qas_adds_the_inversion_bonus_and_the_round_trip_deduct() -> None:
+def test_feature_audit_qas_adds_the_inversion_bonus_and_ignores_the_round_trip_deduct() -> None:
     frame = _fires([8.0, 14.0])
     frame['inversion_quintile'] = [5, 5]  # +5
+    # 2026-11-17 decision: the feed's tier leaves the round-trip deduct out, so a
+    # stored -1 on the second fire must not move its qas (it was 18, now 19).
     frame['round_trip_score_deduct'] = [0, -1]
 
     active = feature_audit.add_feed_tiers(frame, report_weights.FeedCutoffs.from_weights(ACTIVE))
     older = feature_audit.add_feed_tiers(frame, report_weights.FeedCutoffs.from_weights(OLDER))
+    without_deduct = feature_audit.add_feed_tiers(
+        frame.drop(columns=['round_trip_score_deduct']),
+        report_weights.FeedCutoffs.from_weights(ACTIVE),
+    )
 
-    # 8 + 5 = 13 and max(0, 14 - 1) + 5 = 18. Neither is its bare score's tier.
-    assert active['qas'].tolist() == [13.0, 18.0]
-    # 13 is T1 on the seed's 13/10 and T2 on 16/12; 18 is T1 on both.
+    # 8 + 5 = 13 and 14 + 5 = 19. Neither is its bare score's tier.
+    assert active['qas'].tolist() == [13.0, 19.0]
+    # 13 is T1 on the seed's 13/10 and T2 on 16/12; 19 is T1 on both.
     assert active['tier'].tolist() == ['T2', 'T1']
     assert older['tier'].tolist() == ['T1', 'T1']
+    # The frame without the column gives the same qas: nothing reads it.
+    assert without_deduct['qas'].tolist() == active['qas'].tolist()
 
 
 def test_feature_audit_tiers_the_fires_the_feed_forces_to_tier_3() -> None:
@@ -424,6 +432,10 @@ def test_feature_audit_header_names_the_active_version(
     assert f'Active lottery weights: {VERSION}' in regime
     assert f'(feed cutoffs of version {VERSION})' in regime
     assert 'T1 = qas ≥ 16, T2 = qas ≥ 12' in regime
+    # The header says what qas is: the score floored at 0 plus the inversion
+    # bonus, with no round-trip deduct (owner decision 2026-11-17).
+    assert 'qas = GREATEST(0, score) + inversion bonus' in regime
+    assert 'deduct' not in regime
     assert re.search(r'model_version\s*: rescore-v9-test', regime)
     assert re.search(r'trained_through\s*: 2026-10-30', regime)
     assert report_weights.LOOK_AHEAD_NOTE in regime
@@ -442,10 +454,12 @@ def test_feature_audit_selects_the_columns_the_feed_tier_reads(
 
     (sql,) = [' '.join(s.split()) for s, _ in harness.reads]
     selected = sql.split(' FROM ')[0]
-    for column in ('score', 'round_trip_score_deduct', 'direction_gated', 'inversion_quintile'):
+    for column in ('score', 'direction_gated', 'inversion_quintile'):
         assert column in selected, column
     assert 'LEFT JOIN lottery_ticker_stats' in sql
     assert 'combined_score' not in sql  # the feed does not tier on it
+    # 2026-11-17 decision: the feed's qas leaves the round-trip deduct out.
+    assert 'round_trip_score_deduct' not in sql
 
 
 # ── daily_tracker ─────────────────────────────────────────────

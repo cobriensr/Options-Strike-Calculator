@@ -260,7 +260,6 @@ def _audit_frame(n: int = 300) -> pd.DataFrame:
             'alert_seq': rng.integers(1, 30, n).astype(float),
             'reload_tagged': rng.choice([False, True], n),
             'cheap_call_pm_tagged': rng.choice([False, True], n),
-            'round_trip_score_deduct': 0,
             'direction_gated': False,
             'date': rng.choice(
                 [date(2026, 10, d) for d in range(5, 30)] + [SESSION], n

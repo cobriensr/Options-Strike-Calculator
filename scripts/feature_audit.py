@@ -9,9 +9,10 @@ Highlights the levers worth turning into entry filters.
 Read-only, no DB writes. Writes lottery-feature-audit-{latest fire date}.md to
 docs/tmp/ (or --out-dir).
 
-The T1/T2 split is the feed's: each fire's qas against the feed cutoffs of the
-ACTIVE weights version, read from the store (phase 3 D8). A weights read that
-fails ends the run before any report is written; there is no fallback.
+The T1/T2 split is the feed's: each fire's qas (GREATEST(0, score) + inversion
+bonus, no round-trip deduct) against the feed cutoffs of the ACTIVE weights
+version, read from the store (phase 3 D8). A weights read that fails ends the
+run before any report is written; there is no fallback.
 
 Usage:
     ml/.venv/Scripts/python scripts/feature_audit.py [--out-dir DIR]
@@ -73,8 +74,9 @@ def add_feed_tiers(df: pd.DataFrame, cutoffs: FeedCutoffs) -> pd.DataFrame:
     """`df` with the feed's qas, its tier and whether the fire is Tier 2+ eligible.
 
     Mirrors the user-facing feed EXACTLY so the audit's "Tier 2+" subset is the
-    population actually traded: the tier is `_report_weights.tier_labels` (qas
-    against `cutoffs`, the active version's feed cutoffs). qas is NaN for the
+    population actually traded: the tier is `_report_weights.tier_labels` (qas =
+    GREATEST(0, score) + inversion bonus, against `cutoffs`, the active
+    version's feed cutoffs; no round-trip deduct, no gamma term). qas is NaN for the
     fires the feed forces to tier 3 (a NULL score, direction-gated, a default-
     hidden inversion quintile of 1 or 2), and those are not eligible, so feature
     stats aren't contaminated by fires the user never sees.
@@ -157,7 +159,7 @@ def main(argv: list[str] | None = None) -> None:
           spx_spot_charm_oi, spx_spot_vanna_oi,
           gex_strike_call_minus_put, gex_strike_call_ask_minus_bid,
           gex_strike_put_ask_minus_bid,
-          f.round_trip_score_deduct, direction_gated, date,
+          direction_gated, date,
           s.inversion_quintile,
           realized_flow_inversion_pct AS flow_inv
         FROM lottery_finder_fires f
@@ -171,6 +173,10 @@ def main(argv: list[str] | None = None) -> None:
     # Tier the way the feed does (api/lottery-finder.ts): qas against the
     # active feed cutoffs, with null-score, direction_gated and default-hidden
     # quintile-1/2 fires forced to tier3 (the feed hides Q1/Q2 unless showAll).
+    # qas = GREATEST(0, score) + inversionBonus(quintile): the feed fixed its
+    # tier at the fire and leaves the round-trip deduct and the gamma +1 out
+    # (docs/superpowers/specs/2026-11-17-freeze-tier-at-fire-design.md), so the
+    # SELECT reads `score`, not `combined_score` (which still carries both).
     #
     # NOTE (point-in-time): inversion_quintile is the ticker's CURRENT rolling
     # quintile (joined now), not the value live when each fire fired — same as
