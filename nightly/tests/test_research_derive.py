@@ -499,6 +499,17 @@ def test_an_absent_manifest_loads_empty(rig: Rig, settings: Settings) -> None:
     assert manifest.get("chains", DAYS[0]) is None
 
 
+def test_a_key_that_only_starts_like_the_manifests_is_not_the_manifest(
+    rig: Rig, settings: Settings
+) -> None:
+    # The existence check lists by prefix: a neighbour object must not read as a `null` manifest.
+    rig.s3.put_object(Bucket=BUCKET, Key=f"{MANIFEST_KEY}.bak", Body=b"{}")
+
+    manifest = Manifest.load(ResearchStore(settings))
+
+    assert manifest.families == {}
+
+
 def test_the_manifest_round_trips_through_r2(rig: Rig, settings: Settings) -> None:
     store = ResearchStore(settings)
     manifest = Manifest.load(store)
@@ -550,6 +561,7 @@ BAD_MANIFESTS: dict[str, bytes] = {
     "not utf-8": b"\xff\xfe\x00",
     "a list": b"[]",
     "a number": b"7",
+    "null": b"null",
     "no version": json.dumps({"families": {}}).encode(),
     "version 2": json.dumps({"version": 2, "families": {}}).encode(),
     "version true": json.dumps({"version": True, "families": {}}).encode(),
@@ -599,12 +611,14 @@ def test_a_manifest_the_store_cannot_read_is_not_a_manifest_error(
 
 
 def test_targets_cover_landed_days_in_each_familys_range(rig: Rig) -> None:
-    before_chains = _eod_flow.CHAINS_START.replace(day=10)  # 2026-04-10: fires, no chains
+    first = _eod_flow.CHAINS_START  # the first by-day session itself: chains cover it
+    before_chains = first.replace(day=10)  # 2026-04-10: fires, no chains
     after = LAST_SESSION.replace(day=12)
-    landed = {before_chains: "ea", DAYS[0]: "eb", LAST_SESSION: "ec", after: "ed"}
+    landed = {before_chains: "ea", first: "ez", DAYS[0]: "eb", LAST_SESSION: "ec", after: "ed"}
     for family in FIRE_FAMILIES:
         rig.precheck[family] = {
             before_chains: fires_frame(before_chains),
+            first: fires_frame(first),
             DAYS[0]: fires_frame(DAYS[0]),
             DAYS[1]: fires_frame(DAYS[1]),  # fires, but the tape has not landed
             after: fires_frame(after),  # landed, but after the last session
@@ -615,12 +629,18 @@ def test_targets_cover_landed_days_in_each_familys_range(rig: Rig) -> None:
 
     version = research_derive.CHAINS_VERSION
     assert set(result) == set(FAMILIES)
-    assert result["chains"] == {DAYS[0]: f"eb|v{version}", LAST_SESSION: f"ec|v{version}"}
+    assert result["chains"] == {
+        first: f"ez|v{version}",
+        DAYS[0]: f"eb|v{version}",
+        LAST_SESSION: f"ec|v{version}",
+    }
     for family in FIRE_FAMILIES:
         script = SCRIPTS[family]
-        digest = {d: script.fingerprint_rows(fires_frame(d)) for d in (before_chains, DAYS[0])}
+        days = (before_chains, first, DAYS[0])
+        digest = {d: script.fingerprint_rows(fires_frame(d)) for d in days}
         assert result[family] == {
             before_chains: f"ea|v{script.DERIVE_VERSION}|{digest[before_chains]}",
+            first: f"ez|v{script.DERIVE_VERSION}|{digest[first]}",
             DAYS[0]: f"eb|v{script.DERIVE_VERSION}|{digest[DAYS[0]]}",
         }
         rig.day_fingerprints[family].assert_called_once_with(rig.conn)
@@ -644,22 +664,23 @@ def _targets(**families: dict[date, str]) -> dict[str, dict[date, str]]:
 
 def test_stale_days_lists_each_day_with_its_stale_families_newest_first() -> None:
     manifest = Manifest()
-    manifest.set("chains", DAYS[0], "c0")  # fresh
-    manifest.set("exit-policy", DAYS[0], "old")  # stale
-    manifest.set("chains", DAYS[1], "c1")
+    manifest.set("chains", DAYS[1], "c1")  # day 1 is fresh in both families that cover it
     manifest.set("exit-policy", DAYS[1], "x1")
-    manifest.set("flow-timing", DAYS[1], "t1")  # the whole of day 1 is fresh
+    manifest.set("exit-policy", DAYS[2], "old")  # stale: the target moved on
+    # The targets go in oldest first, so the stale days are met oldest first: only a sort
+    # puts the newest on top.
     wanted = _targets(
         chains={DAYS[0]: "c0", DAYS[1]: "c1", DAYS[2]: "c2"},
-        exit_policy={DAYS[0]: "x0", DAYS[1]: "x1"},
-        flow_timing={DAYS[1]: "t1", DAYS[2]: "t2"},
+        exit_policy={DAYS[1]: "x1", DAYS[2]: "x2", DAYS[3]: "x3"},
+        flow_timing={DAYS[0]: "t0"},
     )
 
     result = stale_days(manifest, wanted)
 
     assert list(result.items()) == [
-        (DAYS[2], ("chains", "flow-timing")),
-        (DAYS[0], ("exit-policy",)),
+        (DAYS[3], ("exit-policy",)),
+        (DAYS[2], ("chains", "exit-policy")),
+        (DAYS[0], ("chains", "flow-timing")),
     ]
 
 
@@ -684,7 +705,8 @@ def test_fresh_days_are_the_matching_days_oldest_first() -> None:
     manifest.set("flow-timing", DAYS[2], "t2")
     manifest.set("flow-timing", DAYS[0], "t0")
     manifest.set("flow-timing", DAYS[1], "stale")
-    wanted = _targets(flow_timing={DAYS[0]: "t0", DAYS[1]: "t1", DAYS[2]: "t2", DAYS[3]: "t3"})
+    # The order a GROUP BY with no ORDER BY may hand the targets over in: not by date.
+    wanted = _targets(flow_timing={DAYS[2]: "t2", DAYS[0]: "t0", DAYS[3]: "t3", DAYS[1]: "t1"})
 
     assert fresh_days(manifest, wanted, "flow-timing") == [DAYS[0], DAYS[2]]
 
@@ -1434,6 +1456,21 @@ def test_malformed_manifest_fails_without_resetting(
     capture_exception.assert_not_called()  # the failed result is what run_steps reports
 
 
+def test_a_null_manifest_fails_the_step_without_resetting(
+    rig: Rig, settings: Settings, clock: Clock
+) -> None:
+    # `null` is valid JSON, and the store reads it back as None, as it does an absent key.
+    rig.put_manifest(b"null")
+
+    result = rig.run(_ctx(settings, clock))
+
+    assert (result.status, result.detail) == ("failed", MANIFEST_DETAIL)
+    assert dict(result.counts) == _full_counts(0)
+    assert rig.puts() == []
+    assert rig.manifest_bytes() == b"null"
+    rig.reader.fetch_day.assert_not_called()
+
+
 def test_a_manifest_that_is_not_json_fails_the_step_too(
     rig: Rig, settings: Settings, clock: Clock
 ) -> None:
@@ -1534,7 +1571,6 @@ def test_only_fulltape_and_research_prefixes_are_listed(
     # Objects of the other jobs share the bucket; the step must not so much as name them.
     rig.s3.put_object(Bucket=BUCKET, Key="gexbot-eod/SPX/2026-11-05.zip", Body=b"zip")
     rig.s3.put_object(Bucket=BUCKET, Key="backups/strike_exposures/2026-11-05.parquet", Body=b"p")
-    rig.put_manifest({"version": 1, "families": {}})
 
     rig.run(_ctx(settings, clock))
 
@@ -1545,6 +1581,7 @@ def test_only_fulltape_and_research_prefixes_are_listed(
     ]
     assert ("ListObjectsV2", "fulltape/") in touched
     assert ("GetObject", MANIFEST_KEY) in touched
+    assert ("ListObjectsV2", MANIFEST_KEY) in touched  # the absent manifest's existence check
     assert all(str(name).startswith(("fulltape/", "research/")) for _, name in touched), touched
     # Only the tape listing reaches the tape prefix: no tape object is read, written or deleted.
     assert [op for op, name in touched if str(name).startswith("fulltape/")] == ["ListObjectsV2"]
@@ -1695,3 +1732,67 @@ def test_release_runs_even_when_a_derive_raises(
     rig.run(_ctx(settings, clock))
 
     assert call(DAYS[4]) in rig.reader.release.call_args_list
+
+
+def _release_fails_on(rig: Rig, day: date) -> None:
+    """Make the reader's release raise for `day`, as an unlink on a locked file would."""
+
+    def release(released: date) -> None:
+        rig.events.append(f"release {released}")
+        if released == day:
+            raise OSError(f"cannot unlink /tmp/nightly/research-tape/{released}: ep-x.neon.tech")
+
+    rig.reader.release.side_effect = release
+
+
+def test_a_release_that_raises_does_not_lose_the_days_result_or_the_run_counts(
+    rig: Rig, settings: Settings, clock: Clock, caplog: pytest.LogCaptureFixture
+) -> None:
+    _release_fails_on(rig, DAYS[3])
+
+    with caplog.at_level(logging.INFO, logger="research_derive"):
+        result = rig.run(_ctx(settings, clock))
+
+    assert result.status == "ok"
+    assert dict(result.counts) == _full_counts(5)  # the day whose release raised is counted
+    assert (rig.manifest() or {}) == rig.expected_manifest(DAYS)
+    assert _isos(rig.events, "fetch") == [str(d) for d in NEWEST_FIRST]  # and the others ran on
+    # Logged by class, as a warning, never by the exception's text.
+    released = [
+        r for r in caplog.records if r.name == "research_derive" and "OSError" in r.getMessage()
+    ]
+    assert len(released) == 1
+    assert released[0].levelno == logging.WARNING
+    assert DAYS[3].isoformat() in released[0].getMessage()
+    assert "/tmp" not in caplog.text
+    assert "ep-x" not in caplog.text
+
+
+def test_a_release_that_raises_does_not_replace_a_failed_days_outcome(
+    rig: Rig, settings: Settings, clock: Clock, capture_exception: MagicMock
+) -> None:
+    failure = RuntimeError("boom")
+    rig.derive_errors[("exit-policy", DAYS[4])] = failure
+    _release_fails_on(rig, DAYS[4])
+
+    result = rig.run(_ctx(settings, clock))
+
+    assert result.status == "failed"
+    assert result.counts["days_failed"] == 1
+    assert result.counts["days_derived"] == 4
+    # The day's own exception is the one sent, and the release's is not.
+    capture_exception.assert_called_once_with(
+        failure, tags={"step": STEP_NAME, "day": DAYS[4].isoformat()}
+    )
+
+
+def test_a_release_that_raises_does_not_replace_a_kill(
+    rig: Rig, settings: Settings, clock: Clock
+) -> None:
+    rig.fetch_errors[NEWEST_FIRST[0]] = SystemExit(143)
+    _release_fails_on(rig, NEWEST_FIRST[0])
+
+    with pytest.raises(SystemExit):
+        rig.run(_ctx(settings, clock))
+
+    rig.reader.__exit__.assert_called_once()

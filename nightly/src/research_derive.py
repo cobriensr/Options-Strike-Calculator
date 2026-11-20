@@ -36,8 +36,10 @@ Failures: an Exception in a day (its download, a build, a derive, an upload, the
 is counted in `days_failed`, sent once through `capture_exception` tagged with the step and the
 day (`monitoring.scrub_event` cuts a data library's text), and the loop goes on, up to
 RESEARCH_MAX_DAY_FAILURES; the days after that are `days_left`. A malformed manifest fails the
-step before anything is read or written, and is never reset. A day whose tape is gone from R2
-since the listing is `days_tape_missing`: neither derived nor failed.
+step before anything is read or written, and is never reset: that covers a stored JSON `null`,
+which the store reads back as it does a missing key. A day whose tape is gone from R2 since the
+listing is `days_tape_missing`: neither derived nor failed. A cached tape file that will not
+delete (an OSError) is logged by class and changes nothing else.
 
 Status: `failed` if a day failed or the manifest is malformed, else `partial` if days are left
 (they come first) or the last session's tape has not landed, else `ok`. The details are fixed
@@ -79,6 +81,9 @@ from resources import connect_db, open_reader
 from steps import StepContext, StepResult
 
 if TYPE_CHECKING:
+    from types import ModuleType
+
+    import pandas as pd
     from _tape_reader import TapeReader
     from psycopg2.extensions import connection
 
@@ -103,6 +108,26 @@ FAMILY_KEYS: Mapping[FamilyName, Callable[[date], str]] = MappingProxyType(
 # used, so each family always gets its own script's `DERIVE_VERSION`.
 _FIRE_SCRIPTS = MappingProxyType(
     {"exit-policy": exit_policy_search, "flow-timing": flow_inversion_timing}
+)
+
+
+def _exit_policy_derive(
+    script: ModuleType, conn: connection, day: date, tape_path: Path, fires: pd.DataFrame
+) -> pd.DataFrame:
+    return script.derive_day(tape_path, fires)
+
+
+def _flow_timing_derive(
+    script: ModuleType, conn: connection, day: date, tape_path: Path, fires: pd.DataFrame
+) -> pd.DataFrame:
+    return script.derive_day(conn, day, tape_path, fires)
+
+
+# How each fire family calls its script's `derive_day`, whose arguments differ: exit-policy
+# reads only the tape and the fires, flow-timing also reads the day's net flow through `conn`.
+# The function is looked up on the script module when called, so a patch on the module holds.
+_FIRE_DERIVES = MappingProxyType(
+    {"exit-policy": _exit_policy_derive, "flow-timing": _flow_timing_derive}
 )
 
 # The `step` tag on a day's exception: the name pipeline.STEPS registers this step under.
@@ -190,6 +215,10 @@ class Manifest:
         except ValueError:  # the store's: the body is not valid UTF-8 JSON
             raise _malformed("not valid JSON") from None
         if raw is None:
+            # `get_json` gives None for a missing key and for a stored JSON `null` alike, and
+            # only the first may start an empty manifest: the second would reset it silently.
+            if MANIFEST_KEY in store.list(MANIFEST_KEY):
+                raise _malformed("body is null")
             return cls()
         return cls(_checked_families(raw))
 
@@ -355,7 +384,7 @@ def _derive_day(
         error = type(exc).__name__
         sentry_sdk.capture_exception(exc, tags={"step": _STEP, "day": iso})
     finally:
-        reader.release(day)
+        _release(reader, day)
     for family in progress.families:
         counts[_WRITTEN_COUNT[family]] += 1
     counts["rows_written"] += progress.rows
@@ -374,6 +403,17 @@ def _derive_day(
             ",".join(progress.families),
             progress.rows,
             seconds,
+        )
+
+
+def _release(reader: TapeReader, day: date) -> None:
+    """Delete the day's cached tape. A file that will not go is logged by class and goes on:
+    it must not replace the day's outcome, or a kill, or lose the counts of the run."""
+    try:
+        reader.release(day)
+    except OSError as exc:
+        log.warning(
+            "research-derive %s tape file not released (%s)", day.isoformat(), type(exc).__name__
         )
 
 
@@ -423,11 +463,7 @@ def _derive_fire_family(
     script = _FIRE_SCRIPTS[family]
     fires = script.fires_for_day(conn, day)
     fingerprint = f"{etag}|v{script.DERIVE_VERSION}|{script.fingerprint_rows(fires)}"
-    # The two scripts' derive_day take different arguments.
-    if family == "exit-policy":
-        derived = script.derive_day(tape_path, fires)
-    else:
-        derived = script.derive_day(conn, day, tape_path, fires)
+    derived = _FIRE_DERIVES[family](script, conn, day, tape_path, fires)
     with _work_file(day, family) as out:
         # Written even with no rows: the day is derived, and the empty file says so.
         derived.to_parquet(out, index=False)
