@@ -1,8 +1,13 @@
 import { memo } from 'react';
+import { SrHint } from './SrHint.js';
 
 /**
  * Status badge with tinted background — used in the header for LIVE,
  * CLOSED, BACKTEST, etc.
+ *
+ * `title` is the mouse-only hover text. `srHint` is the same explanation
+ * as hidden text after the label, for a screen reader (see SrHint); it is
+ * opt-in, so a caller that only wants a hover keeps its markup.
  *
  * `shortLabel` is what a phone shows (below sm), without the dot and with
  * tighter padding. `label` stays the text screen readers get at every
@@ -16,12 +21,14 @@ export const StatusBadge = memo(function StatusBadge({
   color,
   dot,
   title,
+  srHint,
 }: {
   label: string;
   shortLabel?: string;
   color: string;
   dot?: boolean;
   title?: string;
+  srHint?: string;
 }) {
   const cls =
     'rounded-full px-2.5 py-0.5 font-mono text-[10px] font-semibold' +
@@ -49,6 +56,7 @@ export const StatusBadge = memo(function StatusBadge({
           <span className="max-sm:sr-only">{full}</span>
         </>
       )}
+      {srHint != null && <SrHint>{srHint}</SrHint>}
     </span>
   );
 });

@@ -291,6 +291,33 @@ describe('StatusBadge', () => {
     expect(container.querySelector('[aria-hidden]')).toBeNull();
     expect(container.firstElementChild).not.toHaveClass('max-sm:px-2');
   });
+
+  it('adds srHint after the label as hidden text, and keeps title for the mouse', () => {
+    render(
+      <StatusBadge
+        label="stock-tied leg"
+        color="#808080"
+        title="The exchange flagged the print."
+        srHint="The exchange flagged the print."
+      />,
+    );
+    const badge = screen.getByText('stock-tied leg');
+    expect(badge).toHaveAttribute('title', 'The exchange flagged the print.');
+    expect(badge.querySelector('.sr-only')).toHaveTextContent(
+      'The exchange flagged the print.',
+    );
+    expect(badge.textContent).toBe(
+      'stock-tied leg — The exchange flagged the print.',
+    );
+  });
+
+  it('adds no hidden text when srHint is absent, so the header badges are unchanged', () => {
+    const { container } = render(
+      <StatusBadge label="LIVE" color="#4ade80" title="Quotes are live" />,
+    );
+    expect(container.querySelector('.sr-only')).toBeNull();
+    expect(container.firstElementChild?.textContent).toBe('LIVE');
+  });
 });
 
 describe('ErrorMsg', () => {

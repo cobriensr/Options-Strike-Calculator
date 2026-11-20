@@ -66,6 +66,7 @@ export const SpreadLegBadge = memo(function SpreadLegBadge({
     <StatusBadge
       label={content.label}
       title={content.title}
+      srHint={content.title}
       color={theme.textSecondary}
     />
   );
