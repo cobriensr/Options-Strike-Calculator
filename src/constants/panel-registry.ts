@@ -30,8 +30,16 @@ export interface PanelRegistryEntry {
 }
 
 export interface PanelRegistryContext {
+  /** Owner or guest: the viewer can read owner-or-guest endpoints. */
   isAuthenticated: boolean;
   hasMarketOrSnapshot: boolean;
+  /**
+   * The strict owner gate (`accessMode === 'owner'`); a guest is
+   * `isAuthenticated` but not `isOwner`. Optional for this commit, which only
+   * threads it through the callers; the next one makes it required and lists
+   * the owner-only panels by it.
+   */
+  isOwner?: boolean;
 }
 
 /**
@@ -150,7 +158,11 @@ export function getPanelRegistry(
       group: 'Futures',
     });
   }
-  if (hasMarketOrSnapshot) {
+  // The panel asks /api/analyses (owner-or-guest) on mount which modes have
+  // run for the date, and `market.data` outlives a drop to public (nothing
+  // clears it), so `hasMarketOrSnapshot` alone would keep it mounted, and
+  // fetching, for a visitor who is no longer signed in.
+  if (isAuthenticated && hasMarketOrSnapshot) {
     list.push({
       id: 'sec-charts',
       label: 'Chart Analysis',

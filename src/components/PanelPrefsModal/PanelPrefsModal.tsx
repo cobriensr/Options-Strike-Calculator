@@ -245,8 +245,8 @@ export function PanelPrefsModal({
 
   // Build the registry view filtered by context + grouped + ordered.
   const registry = useMemo(
-    () => getPanelRegistry({ isAuthenticated, hasMarketOrSnapshot }),
-    [isAuthenticated, hasMarketOrSnapshot],
+    () => getPanelRegistry({ isAuthenticated, hasMarketOrSnapshot, isOwner }),
+    [isAuthenticated, hasMarketOrSnapshot, isOwner],
   );
 
   const registryGroups: PanelGroup[] = useMemo(

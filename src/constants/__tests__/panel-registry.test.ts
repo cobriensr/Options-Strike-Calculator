@@ -84,18 +84,56 @@ describe('getPanelRegistry', () => {
     }
   });
 
-  it('adds sec-charts when hasMarketOrSnapshot is true (no auth)', () => {
+  // Chart Analysis asks /api/analyses (owner-or-guest) on mount, and
+  // `market.data` stays set after a drop to public, so `hasMarketOrSnapshot`
+  // alone would leave a now-public visitor with the panel and its request.
+  it('omits sec-charts for a public visitor even with market data', () => {
     const ids = getPanelRegistry({
       isAuthenticated: false,
       hasMarketOrSnapshot: true,
+      isOwner: false,
     }).map((e) => e.id);
 
-    expect(ids).toContain('sec-charts');
-    // auth-only panels still excluded
+    expect(ids).not.toContain('sec-charts');
+    // auth-only panels stay excluded too
     expect(ids).not.toContain('sec-futures');
     expect(ids).not.toContain('sec-bwb');
     expect(ids).not.toContain('sec-tracker');
     expect(ids).not.toContain('sec-darkpool'); // needs auth+market
+  });
+
+  it.each([
+    ['an owner', true],
+    ['a guest', false],
+  ])(
+    'puts sec-charts first in Charts & History for %s with market data',
+    (_who, isOwner) => {
+      const entries = getPanelRegistry({
+        isAuthenticated: true,
+        hasMarketOrSnapshot: true,
+        isOwner,
+      });
+      const charts = entries.filter((e) => e.group === 'Charts & History');
+
+      expect(charts[0]).toEqual({
+        id: 'sec-charts',
+        label: 'Chart Analysis',
+        group: 'Charts & History',
+      });
+    },
+  );
+
+  it.each([
+    ['an owner', true],
+    ['a guest', false],
+  ])('omits sec-charts for %s with no market data', (_who, isOwner) => {
+    const ids = getPanelRegistry({
+      isAuthenticated: true,
+      hasMarketOrSnapshot: false,
+      isOwner,
+    }).map((e) => e.id);
+
+    expect(ids).not.toContain('sec-charts');
   });
 
   // Both /api/periscope-map and /api/periscope-exposure sit behind

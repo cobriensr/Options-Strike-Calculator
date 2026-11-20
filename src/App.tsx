@@ -775,8 +775,8 @@ export default function StrikeCalculator() {
   // render loop below. Adding a new panel is a one-line edit in
   // src/constants/panel-registry.ts.
   const panelRegistry = useMemo(
-    () => getPanelRegistry({ isAuthenticated, hasMarketOrSnapshot }),
-    [isAuthenticated, hasMarketOrSnapshot],
+    () => getPanelRegistry({ isAuthenticated, hasMarketOrSnapshot, isOwner }),
+    [isAuthenticated, hasMarketOrSnapshot, isOwner],
   );
 
   // Canonical group order is PANEL_GROUP_ORDER + Results (which the
