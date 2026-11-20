@@ -17,8 +17,11 @@ Usage:
         --parquet-dir <bot-eod-dir>
 
 Pass --date, or --parquet-dir to use the date of the newest
-{date}-trades.parquet in that directory (`make backfill-flow` passes the
-Makefile's PARQUET_DIR).
+{date}-trades.parquet in that directory.
+
+Manual use only: no Makefile target runs this script any more (`make nightly`
+used to). The `fetch-net-flow-history` cron fills the table; run this by hand
+to repair a day that cron missed.
 """
 
 from __future__ import annotations

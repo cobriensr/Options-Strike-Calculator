@@ -2,8 +2,11 @@
 
 Pattern: lazy local cache. First read of a date downloads the Parquet from
 Blob to ~/.flow-archive-cache/year=YYYY/month=MM/day=DD/data.parquet, every
-subsequent query is local-disk-fast. Cache is intentionally separate from
-the transient ~/.flow-archive/ directory used by the ingest script.
+subsequent query is local-disk-fast.
+
+The Blob archive is frozen at 46 days (2026-04-13 -> 2026-06-16):
+scripts/ingest-flow.py no longer writes it, and this reader keeps working over
+what is there.
 
 Usage:
     from flow_archive import load_flow
@@ -35,7 +38,7 @@ from pathlib import Path
 import polars as pl
 import requests
 
-# --- Config (mirrors scripts/ingest-flow.py) -----------------------
+# --- Config (the Blob settings scripts/ingest-flow.py used to upload with) ---
 
 BLOB_API_BASE = "https://vercel.com/api/blob"
 BLOB_API_VERSION = "12"
