@@ -2,6 +2,7 @@ import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import { render, screen, act } from '@testing-library/react';
 import { CohortCountdown } from '../../components/ui/CohortCountdown';
 import { computeCountdownRemaining } from '../../components/ui/cohort-countdown-utils';
+import { srHintText } from '../helpers/aria';
 
 describe('computeCountdownRemaining', () => {
   it('returns full P75 when triggered exactly now', () => {
@@ -61,6 +62,27 @@ describe('CohortCountdown component', () => {
     const chip = screen.getByTestId('cohort-countdown');
     expect(chip).toHaveTextContent('expired');
     expect(chip.className).toContain('red');
+  });
+
+  it('gives screen readers the hover explanation as hidden text, not an aria-label', () => {
+    const trigger = '2026-05-15T19:00:00.000Z';
+    vi.setSystemTime(new Date(Date.parse(trigger) + 100 * 60_000));
+    render(<CohortCountdown triggerTimeCt={trigger} p75MinutesToPeak={340} />);
+    const chip = screen.getByTestId('cohort-countdown');
+    expect(chip).not.toHaveAttribute('aria-label');
+    expect(srHintText(chip)).toBe(chip.getAttribute('title'));
+    expect(srHintText(chip)).toBe(
+      '240 min until cohort P75 hold time (340 min) is up. Use as a typical exit-window expectation, not a hard rule.',
+    );
+  });
+
+  it('carries the expired explanation as hidden text once the window has elapsed', () => {
+    const trigger = '2026-05-15T19:00:00.000Z';
+    vi.setSystemTime(new Date(Date.parse(trigger) + 400 * 60_000));
+    render(<CohortCountdown triggerTimeCt={trigger} p75MinutesToPeak={340} />);
+    const chip = screen.getByTestId('cohort-countdown');
+    expect(srHintText(chip)).toContain('Consider exiting.');
+    expect(srHintText(chip)).toBe(chip.getAttribute('title'));
   });
 
   it('omits chip entirely when p75MinutesToPeak is null', () => {

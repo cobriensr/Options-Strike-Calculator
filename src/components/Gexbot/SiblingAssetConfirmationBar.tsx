@@ -32,6 +32,7 @@ import { memo } from 'react';
 import { useGexbotData } from '../../hooks/useGexbotData';
 import type { SiblingConfirmRow } from '../../hooks/useGexbotData';
 import { formatTimeCT } from '../../utils/component-formatters';
+import { SrHint } from '../ui/SrHint';
 import { GEXBOT_UNDERLYING_ORDER } from './ticker-order';
 
 interface SiblingAssetConfirmationBarProps {
@@ -82,10 +83,15 @@ function formatNetDex(v: number): string {
   return `${v < 0 ? '-' : '+'}${scaled}`;
 }
 
-function verdictText(row: SiblingConfirmRow): string {
+/** What a pill says about its sibling, without the ticker the pill shows. */
+function verdictPhrase(row: SiblingConfirmRow): string {
   return row.verdict === 'none'
-    ? `${row.ticker} taker flow: no reading`
-    : `${row.ticker} taker flow ${VERDICT_LABEL[row.verdict]}`;
+    ? 'taker flow: no reading'
+    : `taker flow ${VERDICT_LABEL[row.verdict]}`;
+}
+
+function verdictText(row: SiblingConfirmRow): string {
+  return `${row.ticker} ${verdictPhrase(row)}`;
 }
 
 function pillTitle(row: SiblingConfirmRow, asOfLabel: string): string {
@@ -153,13 +159,13 @@ function SiblingBarBody({
         siblings.map((row) => (
           <span
             key={row.ticker}
-            aria-label={verdictText(row)}
             data-testid={`sibling-pill-${ticker}-${row.ticker}`}
             className={`inline-flex items-center gap-1 rounded-sm border px-1.5 py-0.5 text-[10px] tabular-nums ${VERDICT_CLASS[row.verdict]}`}
             title={pillTitle(row, asOfLabel)}
           >
             <span className="font-semibold">{row.ticker}</span>
             <span aria-hidden>{GLYPH[row.verdict]}</span>
+            <SrHint>{verdictPhrase(row)}</SrHint>
           </span>
         ))
       ) : (

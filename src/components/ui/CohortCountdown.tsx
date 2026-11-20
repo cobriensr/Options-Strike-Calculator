@@ -26,6 +26,7 @@
 
 import { memo, useEffect, useState } from 'react';
 import { computeCountdownRemaining } from './cohort-countdown-utils.js';
+import { SrHint } from './SrHint.js';
 
 interface CohortCountdownProps {
   /** ISO timestamp when the alert triggered. */
@@ -83,9 +84,9 @@ export const CohortCountdown = memo(function CohortCountdown({
       data-testid="cohort-countdown"
       className={`rounded border px-1.5 py-0.5 font-mono text-[10px] leading-none font-semibold ${cls}`}
       title={tooltip}
-      aria-label={tooltip}
     >
       {label}
+      <SrHint>{tooltip}</SrHint>
     </span>
   );
 });

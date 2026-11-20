@@ -4,6 +4,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 
 import { SiblingAssetConfirmationBar } from '../components/Gexbot/SiblingAssetConfirmationBar';
 import type { SiblingConfirmRow } from '../hooks/useGexbotData';
+import { genericElementsWithAriaLabel, srHintText } from './helpers/aria';
 import { dealerClaims } from './helpers/dealer-claims';
 
 const mockUseGexbotData = vi.fn();
@@ -139,14 +140,30 @@ describe('<SiblingAssetConfirmationBar>', () => {
     expect(screen.getByTestId('sibling-bar-AAPL-call')).toBeInTheDocument();
     expect(screen.getByTestId('sibling-pill-AAPL-SPY')).toHaveTextContent('✓');
     expect(screen.getByTestId('sibling-pill-AAPL-IWM')).toHaveTextContent('✗');
-    expect(screen.getByTestId('sibling-pill-AAPL-SPY')).toHaveAttribute(
-      'aria-label',
-      'SPY taker flow agrees',
-    );
-    expect(screen.getByTestId('sibling-pill-AAPL-IWM')).toHaveAttribute(
-      'aria-label',
-      'IWM taker flow disagrees',
-    );
+  });
+
+  it('gives each pill its verdict as hidden text, not an aria-label', () => {
+    // The pill is a bare span, so aria-label would be prohibited and
+    // mostly ignored. The verdict is text inside it: "SPY" is visible, the
+    // glyph is aria-hidden, and a screen reader reads "SPY — taker flow
+    // agrees".
+    loaded([makeRow('SPY', 'agree'), makeRow('IWM', 'disagree')]);
+    renderBar();
+    const spy = screen.getByTestId('sibling-pill-AAPL-SPY');
+    const iwm = screen.getByTestId('sibling-pill-AAPL-IWM');
+    expect(srHintText(spy)).toBe('taker flow agrees');
+    expect(srHintText(iwm)).toBe('taker flow disagrees');
+    expect(spy).not.toHaveAttribute('aria-label');
+    expect(iwm).not.toHaveAttribute('aria-label');
+    expect(genericElementsWithAriaLabel(spy.parentElement!)).toEqual([]);
+  });
+
+  it('keeps the bar itself a named group', () => {
+    loaded([makeRow('SPY', 'agree')]);
+    renderBar();
+    expect(
+      screen.getByRole('group', { name: 'Sibling taker flow for AAPL call' }),
+    ).toBe(screen.getByTestId('sibling-bar-AAPL-call'));
   });
 
   it('applies emerald to agree and rose to disagree', () => {
@@ -166,7 +183,8 @@ describe('<SiblingAssetConfirmationBar>', () => {
     const pill = screen.getByTestId('sibling-pill-AAPL-QQQ');
     expect(pill).toHaveTextContent('—');
     expect(pill.className).toMatch(/tertiary/);
-    expect(pill).toHaveAttribute('aria-label', 'QQQ taker flow: no reading');
+    expect(srHintText(pill)).toBe('taker flow: no reading');
+    expect(pill).not.toHaveAttribute('aria-label');
   });
 
   it('says "no data" once, not per pill, when no sibling has a read', () => {
