@@ -9,17 +9,17 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, within } from '@testing-library/react';
 import type {
   SilentBoomAlert,
   SilentBoomExitPolicy,
 } from '../components/SilentBoom/types';
+import { SILENT_BOOM_EXIT_POLICY_TOOLTIPS } from '../components/SilentBoom/types';
 import {
   genericElementsWithAriaLabel,
   squashText,
   srHintText,
   titledElementsNeedingHint,
-  titledElementsWithoutHint,
 } from './helpers/aria';
 
 // ── Mocks ─────────────────────────────────────────────────────────────
@@ -305,8 +305,13 @@ describe('SilentBoomRow: null outcomes', () => {
         },
       }),
     );
-    // At least one em-dash present in the realized/peak block.
-    expect(screen.getAllByText(/—/).length).toBeGreaterThan(0);
+    // Every hint span's own text is " — <hint>", so a /—/ regex matches the
+    // row whatever it prints for a null. Match the exact placeholder inside
+    // the primary figure's wrapper (its title is the policy's tooltip).
+    const primary = screen.getByTitle(
+      SILENT_BOOM_EXIT_POLICY_TOOLTIPS.realized60mPct,
+    );
+    expect(within(primary).getByText('—')).toBeInTheDocument();
     expect(screen.getByText('pending enrich')).toBeInTheDocument();
   });
 });
@@ -1651,10 +1656,30 @@ describe('SilentBoomRow: badge explanations reach screen readers', () => {
     ).toMatch(/^EXIT — Ticker net flow inverted/);
   });
 
+  /** The one titled element left without a hint, pinned exactly: the expiry
+   *  chip inside the UW contract link. Its text already shows the expiry and
+   *  the DTE, and the link's accessible name is built from its content, so a
+   *  hint would only repeat them. It keeps its `title` for the mouse. A
+   *  second unhinted element, or a different one, fails here. */
+  const expiryChip = (container: HTMLElement): Element => {
+    const chips = titledElementsNeedingHint(container).filter(
+      (el) => srHintText(el) == null,
+    );
+    expect(chips).toHaveLength(1);
+    const chip = chips[0]!;
+    expect(chip.closest('a[href]')).not.toBeNull();
+    expect(chip.getAttribute('title')).toMatch(
+      /^Expires \d\d\/\d\d\/\d{4} — 0DTE \(same day\)$/,
+    );
+    expect(chip.textContent).toBe('5/8 · 0D');
+    return chip;
+  };
+
   // The rule, precisely: an element with a non-empty `title` needs an
   // SrHint as a direct child, unless it has a role, is natively interactive
   // (button, a[href], input, select, textarea, summary) or already shows its
-  // title text. `title` alone is mouse-only.
+  // title text. `title` alone is mouse-only. The one exception is the expiry
+  // chip inside the UW contract link (see `expiryChip`).
   it.each(['tailwind', 'inverted', 'peak-primary'] as const)(
     'a fully badged row (%s): every titled element has an SrHint child unless it has a role, is natively interactive or already shows its title',
     (variant) => {
@@ -1686,22 +1711,44 @@ describe('SilentBoomRow: badge explanations reach screen readers', () => {
         expect(screen.getByText(/^peak \+47\.0%$/)).toBeInTheDocument();
       }
 
-      expect(titledElementsWithoutHint(container)).toEqual([]);
+      // The expiry chip is the only exception, pinned by `expiryChip`.
+      expect(expiryChip(container)).toBeDefined();
     },
   );
 
-  it('a fully badged row: a hint repeats its hover text word for word, except the terse GEXBot and sibling-pill hints', () => {
+  it('a fully badged row: a hint repeats its hover text word for word, except the terse GEXBot and sibling-pill hints and the expiry chip', () => {
     const { container } = renderFullyBadged('inverted');
     const needing = titledElementsNeedingHint(container);
     // Guards against passing by finding nothing to compare.
     expect(needing.length).toBeGreaterThan(20);
+    const expiry = expiryChip(container);
     for (const el of needing) {
       const id = el.getAttribute('data-testid') ?? '';
-      if (/^(silent-boom-gex-badge|sibling-pill-)/.test(id)) continue;
+      if (/^(silent-boom-gex-badge|sibling-pill-)/.test(id) || el === expiry) {
+        continue;
+      }
       expect(squashText(srHintText(el)), el.outerHTML.slice(0, 100)).toBe(
         squashText(el.getAttribute('title')),
       );
     }
+  });
+
+  it('names the UW contract link by its ticker, strike and Call/Put, without repeating the expiry its chip shows', () => {
+    renderFullyBadged('tailwind');
+    const link = screen
+      .getAllByRole('link')
+      .find(
+        (el) =>
+          el.getAttribute('title') ===
+          'Open AAPL260508C00200000 on Unusual Whales',
+      );
+    expect(link).toBeDefined();
+    // The visible "C" is an abbreviation, so its hint stays.
+    expect(link).toHaveAccessibleName(/AAPL\s*200\s*C\s*— Call/);
+    // The chip's own text carries the expiry and the DTE; its hover
+    // sentence is not part of the name.
+    expect(link).toHaveAccessibleName(/5\/8 · 0D/);
+    expect(link).not.toHaveAccessibleName(/Expires/);
   });
 
   it('reads the primary figure and its label as one unit: one hover, one hint', () => {

@@ -534,6 +534,8 @@ export const SilentBoomRow = memo(function SilentBoomRow({
     remainingMin,
     flowInverted: flowInverted != null,
   });
+  // The EXIT chip's hover text and its hidden hint are the same words.
+  const exitTooltip = exitNow.active ? exitReasonTooltip(exitNow.reason) : null;
 
   const [expanded, setExpanded] = useState(false);
 
@@ -814,12 +816,14 @@ export const SilentBoomRow = memo(function SilentBoomRow({
             {alert.optionType}
             <SrHint>{optionTypeName}</SrHint>
           </span>
+          {/* No SrHint: the link's name is built from its content, and this
+              chip's text already shows the expiry and the DTE. The title
+              stays for the mouse. */}
           <span
             className={`rounded border px-1.5 py-0.5 font-mono text-[10px] leading-none ${dteChipClass(alert.dte)}`}
             title={dteTooltip}
           >
             {formatExpiryShort(alert.expiry)} · {alert.dte}D
-            <SrHint>{dteTooltip}</SrHint>
           </span>
           <span
             className="text-[10px] text-neutral-600 group-hover:text-blue-400"
@@ -1022,14 +1026,14 @@ export const SilentBoomRow = memo(function SilentBoomRow({
             flow-inversion signals into a single high-visibility
             indicator. Placed at the far right so it's the first thing
             the eye lands on when scrolling the list. */}
-        {exitNow.active && (
+        {exitTooltip != null && (
           <span
             data-testid="silent-boom-exit-now-badge"
             className="ml-2 inline-flex animate-pulse items-center rounded border border-red-500/70 bg-red-950/60 px-1.5 py-0.5 text-[10px] leading-none font-bold tracking-wide text-red-100"
-            title={exitReasonTooltip(exitNow.reason)}
+            title={exitTooltip}
           >
             EXIT
-            <SrHint>{exitReasonTooltip(exitNow.reason)}</SrHint>
+            <SrHint>{exitTooltip}</SrHint>
           </span>
         )}
         <button
