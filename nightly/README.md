@@ -101,11 +101,11 @@ config-file path (config-as-code is deprecated).
 - Restart policy `NEVER`: a failed run alerts and waits for the next night
   instead of looping and re-downloading the tape.
 - Root directory `/` (the repo root) and Dockerfile path `/nightly/Dockerfile`.
-  The build context is the repo root because the image copies ten files from
-  outside `nightly/`: the enrich scripts, the refit modules and what they import
-  (`IMAGE_FILES` in `tests/test_image_layout.py`; build it with
+  The build context is the repo root because the image copies twenty-one files from
+  outside `nightly/`: the enrich scripts, the refit modules, the research reports and
+  what they import (`IMAGE_FILES` in `tests/test_image_layout.py`; build it with
   `docker build -f nightly/Dockerfile .`).
-- Watch paths, exactly these fourteen: only the image inputs redeploy, so doc and test
+- Watch paths, exactly these twenty-five: only the image inputs redeploy, so doc and test
   edits don't.
   - `/nightly/Dockerfile`
   - `/nightly/requirements.txt`
@@ -117,10 +117,21 @@ config-file path (config-as-code is deprecated).
   - `/scripts/backfill_lottery_scores.py`
   - `/scripts/enrich_lottery_outcomes.py`
   - `/scripts/enrich_silent_boom_outcomes.py`
+  - `/scripts/_eod_flow.py`
+  - `/scripts/_report_weights.py`
+  - `/scripts/exit_policy_search.py`
+  - `/scripts/flow_inversion_timing.py`
+  - `/scripts/feature_audit.py`
+  - `/scripts/daily_tracker.py`
+  - `/scripts/mine_outcome_patterns.py`
+  - `/scripts/score_lineage_audit.py`
   - `/ml/src/lottery_exit_policies.py`
   - `/ml/src/lottery_refit_gates.py`
   - `/ml/src/lottery_scoring.py`
   - `/ml/src/lottery_weights.py`
+  - `/ml/src/whale_plots.py`
+  - `/ml/src/takeit_drift_monitor.py`
+  - `/ml/src/score_components.py`
 
 A file added to or removed from the image changes six places together, listed at
 the top of the `Dockerfile`: its `COPY` lines, these watch paths, the root

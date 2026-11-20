@@ -34,11 +34,11 @@ e2e/
 playwright-report/
 test-results/
 scripts/
-# The nightly image (nightly/Dockerfile, repo-root context) copies six of these
+# The nightly image (nightly/Dockerfile, repo-root context) copies fourteen of these
 # files. Same three steps as src/data above: re-admit the directory, ignore its
 # contents, then re-admit each file. Keep that order. A COPY of an ignored path
 # fails the build. IMAGE_FILES in nightly/tests/test_image_layout.py lists the files.
-# ml/src/ is not ignored, so the four files it copies need no re-admit.
+# ml/src/ is not ignored, so the seven files it copies need no re-admit.
 !scripts/
 scripts/*
 !scripts/_tape_reader.py
@@ -47,6 +47,14 @@ scripts/*
 !scripts/backfill_lottery_scores.py
 !scripts/enrich_lottery_outcomes.py
 !scripts/enrich_silent_boom_outcomes.py
+!scripts/_eod_flow.py
+!scripts/_report_weights.py
+!scripts/exit_policy_search.py
+!scripts/flow_inversion_timing.py
+!scripts/feature_audit.py
+!scripts/daily_tracker.py
+!scripts/mine_outcome_patterns.py
+!scripts/score_lineage_audit.py
 
 # Sidecar service (separate Railway service, own Dockerfile)
 sidecar/
