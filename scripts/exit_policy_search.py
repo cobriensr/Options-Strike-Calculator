@@ -25,10 +25,12 @@ the post-entry tick stream from the day's tape file and computes:
 Outputs an aggregate comparison + per-mode/tier/TOD breakdown to
 docs/tmp/ (or --out-dir).
 
-Tiers are the feed's: each fire's quality-adjusted score (qas) against the
-feed cutoffs of the ACTIVE lottery weights, read from the store. A failed read
-of the weights ends the run before any report is written. (Owner ruling,
-2026-11-19: the bare-score split this report used to apply is gone.)
+Tiers are the feed's: each fire's quality-adjusted score (qas = GREATEST(0,
+score) + inversion bonus, no round-trip deduct) against the feed cutoffs of the
+ACTIVE lottery weights, read from the store. A failed read of the weights ends
+the run before any report is written. (Owner ruling, 2026-11-19: the bare-score
+split this report used to apply is gone. Owner decision, 2026-11-17: the feed
+fixes its tier at the fire, so the deduct is not in the qas.)
 
 Read-only — does not modify the DB.
 
@@ -103,9 +105,11 @@ DERIVED_COLUMNS: tuple[str, ...] = (
 DERIVED_DTYPES = {c: ('int64' if c == 'id' else 'float64') for c in DERIVED_COLUMNS}
 N_VALUES = [15, 30, 45, 60, 90, 120, 180]
 
-# Every enriched fire, with the three columns the feed's qas reads besides the
-# score (the join is the feed's own: nightly/src/refit_step.py, api/lottery-finder.ts).
-# No ORDER BY: each caller adds its own.
+# Every enriched fire, with the two columns the feed's qas reads besides the
+# score: GREATEST(0, score) + the inversion bonus, with no round-trip deduct
+# (the feed fixes its tier at the fire). The join is the feed's own:
+# nightly/src/refit_step.py, api/lottery-finder.ts. No ORDER BY: each caller
+# adds its own.
 FIRES_SQL = """
 SELECT f.id, f.date, f.option_chain_id, f.entry_time_ct, f.entry_price,
        f.underlying_symbol, f.mode, f.tod, f.score,
@@ -115,7 +119,7 @@ SELECT f.id, f.date, f.option_chain_id, f.entry_time_ct, f.entry_price,
        f.realized_tier50_holdeod_pct AS tier50,
        f.realized_eod_pct          AS eod,
        f.realized_flow_inversion_pct AS flow_inv,
-       f.round_trip_score_deduct, f.direction_gated, s.inversion_quintile
+       f.direction_gated, s.inversion_quintile
 FROM lottery_finder_fires f
 LEFT JOIN lottery_ticker_stats s ON s.ticker = f.underlying_symbol
 WHERE f.peak_ceiling_pct IS NOT NULL

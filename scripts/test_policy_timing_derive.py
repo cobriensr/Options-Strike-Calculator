@@ -160,7 +160,9 @@ def make_fires(*specs: dict) -> pd.DataFrame:
     """The rows both scripts read, one per spec, each on its own chain.
 
     A superset of what the two FIRES_SQL statements select, so one frame
-    serves either script. The default fire has qas 20 (score 20, no deduct,
+    serves either script: it also carries `round_trip_score_deduct`, which
+    neither SQL selects since the 2026-11-17 decision, so a case can show a
+    report ignores it. The default fire has qas 20 (score 20, no deduct,
     quintile 3 adds nothing), which is tier 1 under the 16/12 cutoffs.
     """
     rows = []
@@ -703,11 +705,13 @@ def test_fires_sql_reads_the_feed_columns_and_ends_at_its_where(kit: Kit) -> Non
     # In the SELECT list, not merely somewhere in the text (the join names the symbol too).
     for column in (
         'f.underlying_symbol',
-        'f.round_trip_score_deduct',
         'f.direction_gated',
         's.inversion_quintile',
     ):
         assert column in selected, column
+    # 2026-11-17 decision: the feed's qas leaves the round-trip deduct out, so
+    # the report does not read it.
+    assert 'round_trip_score_deduct' not in sql
     assert 'ORDER BY' not in sql
     population = (
         'f.peak_ceiling_pct IS NOT NULL'
@@ -1062,6 +1066,9 @@ def test_reports_write_utf8(
 
 
 # ── owner ruling 2026-11-19: tier the way the feed does ───────
+# The feed's tier is fixed at the fire (owner decision 2026-11-17, spec
+# 2026-11-17-freeze-tier-at-fire-design.md): qas = GREATEST(0, score) + the
+# inversion bonus, with no round-trip deduct and no gamma term.
 
 TIER_CASES = [
     pytest.param({'score': 17}, 'T1', id='qas-17-is-T1'),
@@ -1069,7 +1076,13 @@ TIER_CASES = [
     pytest.param({'score': 14}, 'T2', id='qas-14-is-T2-where-13-10-would-say-T1'),
     pytest.param({'score': 12}, 'T2', id='qas-at-the-T2-cutoff'),
     pytest.param({'score': 11}, 'T3', id='qas-11-is-T3'),
-    pytest.param({'score': 18, 'deduct': -3}, 'T2', id='round-trip-deduct-takes-18-to-15'),
+    # 2026-11-17 decision: the -3 deduct is ignored, so qas stays 18 (T1); it
+    # was 15 (T2) while the feed took the deduct off.
+    pytest.param(
+        {'score': 18, 'deduct': -3, 'quintile': 3}, 'T1', id='round-trip-deduct-is-ignored'
+    ),
+    # Bare 14 is T2 under 16/12; the quintile 5 bonus makes it qas 19 (T1).
+    pytest.param({'score': 14, 'quintile': 5}, 'T1', id='quintile-5-bonus-takes-14-to-19'),
     pytest.param({'score': 14, 'quintile': 4}, 'T1', id='quintile-bonus-takes-14-to-17'),
     pytest.param({'score': 17, 'quintile': None}, 'T1', id='no-ticker-stats-row-adds-nothing'),
     pytest.param({'score': 20, 'quintile': 2}, 'T3', id='quintile-2-is-forced-T3'),
@@ -1141,6 +1154,10 @@ def test_report_header_names_the_active_version_and_cutoffs(kit: Kit, harness: H
     assert 'seed-2026-06-17' in report
     assert 'T1 = qas ≥ 13, T2 = qas ≥ 10 (feed cutoffs of version seed-2026-06-17)' in report
     assert LOOK_AHEAD_LINE in report
+    # What qas is: the floored score plus the inversion bonus, with no round-trip
+    # deduct (owner decision 2026-11-17).
+    assert 'qas = GREATEST(0, score) + inversion bonus' in report
+    assert 'deduct' not in report
     assert 'score ≥ 18' not in report
     assert 'score ≥ 12' not in report
 

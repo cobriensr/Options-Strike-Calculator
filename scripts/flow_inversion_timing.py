@@ -10,10 +10,12 @@ docs/tmp/flow-inversion-timing-{LATEST_DATE}.md (or --out-dir).
 Useful for: knowing how long after a fire to start watching for the
 exit signal on a given ticker, and spotting fast-vs-slow tape regimes.
 
-Tiers are the feed's: each fire's quality-adjusted score (qas) against the
-feed cutoffs of the ACTIVE lottery weights, read from the store. A failed read
-of the weights ends the run before any report is written. (Owner ruling,
-2026-11-19: the bare-score split this report used to apply is gone.)
+Tiers are the feed's: each fire's quality-adjusted score (qas = GREATEST(0,
+score) + inversion bonus, no round-trip deduct) against the feed cutoffs of the
+ACTIVE lottery weights, read from the store. A failed read of the weights ends
+the run before any report is written. (Owner ruling, 2026-11-19: the bare-score
+split this report used to apply is gone. Owner decision, 2026-11-17: the feed
+fixes its tier at the fire, so the deduct is not in the qas.)
 
 Read-only — does not modify the DB or production code.
 
@@ -86,14 +88,16 @@ DERIVE_VERSION = 1
 DERIVED_COLUMNS: tuple[str, ...] = ('id', 'minutes_to_inversion', 'realized_pct')
 DERIVED_DTYPES = {c: ('int64' if c == 'id' else 'float64') for c in DERIVED_COLUMNS}
 
-# Every fire with a flow-inversion value, with the three columns the feed's qas
-# reads besides the score (the join is the feed's own: nightly/src/refit_step.py,
-# api/lottery-finder.ts). No ORDER BY: each caller adds its own.
+# Every fire with a flow-inversion value, with the two columns the feed's qas
+# reads besides the score: GREATEST(0, score) + the inversion bonus, with no
+# round-trip deduct (the feed fixes its tier at the fire). The join is the
+# feed's own: nightly/src/refit_step.py, api/lottery-finder.ts. No ORDER BY:
+# each caller adds its own.
 FIRES_SQL = """
 SELECT f.id, f.date, f.option_chain_id, f.underlying_symbol, f.option_type,
        f.trigger_time_ct, f.entry_price, f.mode, f.dte, f.score,
        f.realized_flow_inversion_pct AS flow_inv,
-       f.round_trip_score_deduct, f.direction_gated, s.inversion_quintile
+       f.direction_gated, s.inversion_quintile
 FROM lottery_finder_fires f
 LEFT JOIN lottery_ticker_stats s ON s.ticker = f.underlying_symbol
 WHERE f.realized_flow_inversion_pct IS NOT NULL

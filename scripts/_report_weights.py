@@ -1,7 +1,8 @@
 """The active lottery weights and the feed's tiers, for the research reports.
 
 The reports that read Neon tier fires the way the feed does (owner ruling,
-2026-11-19; phase 3's D8): each fire's quality-adjusted score (qas) against the
+2026-11-19; phase 3's D8): each fire's quality-adjusted score (qas =
+GREATEST(0, score) + the inversion bonus, with no round-trip deduct) against the
 feed cutoffs of the ACTIVE weights version, read from the store. This module is
 the one place that rule lives:
 
@@ -88,9 +89,12 @@ def load_active_weights(conn: Any, tag: str) -> tuple[str, Mapping[str, Any]]:
 def tier_labels(fires: pd.DataFrame, cutoffs: FeedCutoffs) -> pd.Series:
     """T1 / T2 / T3 as the feed tiers each fire: its qas against the cutoffs.
 
-    `fires` carries the stored `score` and the three columns the feed adds
-    (`round_trip_score_deduct`, `direction_gated`, `inversion_quintile`). qas
-    is NaN for the fires the feed forces to tier 3 (a NULL score,
+    `fires` carries the stored `score` and the two columns the feed adds
+    (`direction_gated`, `inversion_quintile`). qas is GREATEST(0, score) plus
+    the inversion bonus: the feed fixed its tier at the fire, so the
+    round-trip deduct and the gamma term are not in it (owner decision
+    2026-11-17, docs/superpowers/specs/2026-11-17-freeze-tier-at-fire-design.md).
+    It is NaN for the fires the feed forces to tier 3 (a NULL score,
     direction_gated, an inversion quintile of 1 or 2), and NaN fails both
     comparisons.
     """
@@ -109,7 +113,8 @@ def tier_header(version: str, cutoffs: FeedCutoffs) -> str:
         f'Active lottery weights: {version}\n'
         f'T1 = qas ≥ {cutoffs.tier1_min_score}, T2 = qas ≥ {cutoffs.tier2_min_score} '
         f'(feed cutoffs of version {version})\n'
-        "qas is the feed's quality-adjusted score; a fire the feed forces to "
-        'tier 3 (NULL score, direction-gated, inversion quintile 1 or 2) is T3.\n'
+        "qas = GREATEST(0, score) + inversion bonus, the feed's quality-adjusted "
+        'score; a fire the feed forces to tier 3 (NULL score, direction-gated, '
+        'inversion quintile 1 or 2) is T3.\n'
         f'{LOOK_AHEAD_NOTE}\n'
     )
