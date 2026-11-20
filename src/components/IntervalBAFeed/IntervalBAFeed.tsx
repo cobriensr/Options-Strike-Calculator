@@ -146,7 +146,7 @@ export function IntervalBAFeed({
               {stale && (
                 <span
                   className="font-sans text-[10px] font-semibold text-amber-300"
-                  title="No response for over three polls. The rows shown may be out of date."
+                  title="More than three polls in a row got no answer. The rows shown may be out of date."
                 >
                   stale
                 </span>

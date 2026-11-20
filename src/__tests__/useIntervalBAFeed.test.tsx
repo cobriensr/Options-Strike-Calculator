@@ -668,7 +668,10 @@ describe('useIntervalBAFeed settling and abort', () => {
 
   // Each poll aborts its predecessor, so a hung upstream never reaches the
   // 15 s timeout and raises no error: the last rows would sit there looking
-  // fresh. `stale` surfaces it by age: no response for over three polls.
+  // fresh. `stale` surfaces it by count: more than three polls in a row went
+  // unanswered. A count, not a time, so an idle gap (a closed market, a
+  // throttled tab, a laptop asleep) or a step of the system clock cannot set
+  // or hide it.
   describe('stale', () => {
     it('is set once no response has landed for three polls, and a fresh response clears it', async () => {
       const calls = stubPendingFetch(false);
@@ -720,6 +723,88 @@ describe('useIntervalBAFeed settling and abort', () => {
 
       expect(calls).toHaveLength(1);
       expect(result.current.stale).toBe(false);
+    });
+
+    it('does not flash after an idle gap: the market opens five minutes after the last response', async () => {
+      const calls = stubPendingFetch(false);
+      const { result, rerender } = renderHook(
+        ({ open }: { open: boolean }) =>
+          useIntervalBAFeed({ ...baseParams, date: TODAY_ET }, open),
+        { initialProps: { open: false } },
+      );
+      await respond(calls[0]!, { alerts: [baseAlert], summary: baseSummary });
+      await advance(300_000);
+      expect(calls).toHaveLength(1);
+
+      rerender({ open: true });
+      expect(result.current.stale).toBe(false);
+
+      // The first poll is out and unanswered: one poll, not over three. The
+      // newest response is five minutes old, which says nothing here.
+      await advance(30);
+      expect(calls).toHaveLength(2);
+      expect(result.current.stale).toBe(false);
+    });
+
+    it('is set by unanswered polls after the system clock steps back an hour', async () => {
+      const calls = stubPendingFetch(false);
+      const { result } = renderFeed({ ...baseParams, date: TODAY_ET }, true);
+      await respond(calls[0]!, { alerts: [baseAlert], summary: baseSummary });
+
+      vi.setSystemTime(new Date(Date.now() - 3_600_000));
+      for (let i = 0; i < 3; i += 1) {
+        await advance(30);
+        expect(result.current.stale).toBe(false);
+      }
+      await advance(30);
+
+      expect(calls).toHaveLength(5);
+      expect(result.current.stale).toBe(true);
+    });
+
+    it('is never set while every poll is answered', async () => {
+      mockFetchJson(emptyPayload);
+      const seen: boolean[] = [];
+      renderHook(() => {
+        const state = useIntervalBAFeed(
+          { ...baseParams, date: TODAY_ET },
+          true,
+        );
+        seen.push(state.stale);
+        return state;
+      });
+      await advance(0);
+
+      for (let i = 0; i < 10; i += 1) await advance(30);
+
+      expect(fetchUrls().length).toBeGreaterThan(10);
+      expect(seen.length).toBeGreaterThan(10);
+      expect(seen.every((stale) => !stale)).toBe(true);
+    });
+
+    it('counts a failed fetch as an answer: an outage shows its error, not the stale label', async () => {
+      const okResponse = {
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        json: vi.fn().mockResolvedValue(emptyPayload),
+      };
+      globalThis.fetch = vi
+        .fn()
+        .mockResolvedValueOnce(okResponse)
+        .mockRejectedValue(
+          new Error('upstream down'),
+        ) as unknown as typeof fetch;
+      const { result } = renderFeed({ ...baseParams, date: TODAY_ET }, true);
+      await advance(0);
+      expect(result.current.error).toBeNull();
+
+      for (let i = 0; i < 6; i += 1) {
+        await advance(30);
+        expect(result.current.stale).toBe(false);
+      }
+
+      expect(result.current.error).toBe('upstream down');
     });
   });
 });

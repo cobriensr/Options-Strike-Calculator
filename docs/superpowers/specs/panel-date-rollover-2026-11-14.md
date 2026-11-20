@@ -249,11 +249,22 @@ panels follow the new date too".
   raises no error, and the last rows sat under a frozen "updated" stamp. That
   is the cost of abort-on-supersede: a slow request is replaced, not waited
   for, so a request that never answers is never reported. The hook surfaces it
-  by age instead: `stale` is true while the feed polls and its newest response
-  is more than three poll intervals old (`3 * POLL_INTERVALS.ALERTS`), taken
-  from the time of the last poll tick so render stays pure, and the feed
-  labels the "updated" stamp "stale" in amber. A feed that does not poll is
-  never stale.
+  by count: `stale` is true while the feed polls and more than three ticks
+  (polls or refreshes) have gone by since the last answered fetch, and the feed
+  labels the "updated" stamp "stale" in amber. The count is `refreshTick`
+  minus the tick of the newest answered fetch (a success or an error, never
+  our own abort), so it reads no clock in render and keeps no mirrored state.
+  A feed that does not poll is never stale, and an error counts as an answer
+  (the error banner is already on screen).
+- **The first `stale` compared times, and two flaws followed.** It compared the
+  newest response's age with `3 * POLL_INTERVALS.ALERTS`, at the last poll
+  tick. After an idle gap (the market closed for five minutes, a throttled tab,
+  a laptop waking) the first poll after the gap set it, because the last
+  response was old, though one poll had gone unanswered. After a backward step
+  of the system clock the difference went negative and ten unanswered polls
+  never set it. An outage whose fetches all failed also set it, though each
+  failure was answered. The count has none of these: idle gaps add no ticks,
+  and a clock step changes nothing.
 
 ## Phases
 

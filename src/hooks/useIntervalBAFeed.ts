@@ -28,8 +28,9 @@
  *     poll. A poll uses the settled date and times.
  *   - Each poll aborts a slow predecessor, so a hung upstream never reaches
  *     the 15 s timeout and raises no error: the last rows would sit there
- *     looking fresh. `stale` surfaces it by age instead: while polling, the
- *     newest response is more than three poll intervals old.
+ *     looking fresh. `stale` surfaces it by count instead: while polling,
+ *     more than three polls (or refreshes) in a row have gone unanswered. A
+ *     count, not an age, so an idle gap or a clock step cannot set or hide it.
  *
  * Spec: docs/superpowers/specs/interval-ba-ask-alert-2026-05-12.md.
  */
@@ -107,9 +108,10 @@ export interface UseIntervalBAFeedState {
   error: string | null;
   fetchedAt: number | null;
   /**
-   * True while the feed is polling and its newest response is more than three
-   * poll intervals old (a hung upstream: each poll aborts the last, so no
-   * error is raised). False on a feed that does not poll.
+   * True while the feed is polling and more than three polls (or refreshes) in
+   * a row have gone unanswered (a hung upstream: each poll aborts the last, so
+   * no error is raised). An error counts as an answer. False on a feed that
+   * does not poll.
    */
   stale: boolean;
   refresh: () => void;
@@ -160,14 +162,16 @@ export function useIntervalBAFeed(
   const [responseKey, setResponseKey] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [fetchedAt, setFetchedAt] = useState<number | null>(null);
-  // When the last poll tick fired. Staleness is derived from it, not from a
-  // `Date.now()` in render (impure), and the tick is what re-renders the hook.
-  const [polledAt, setPolledAt] = useState<number | null>(null);
   // Bumping ``refreshTick`` re-runs the fetch effect without changing
   // any of the user-facing params — that's the manual-refresh path.
   // Same effect handles param-driven refetches AND manual ones, so
   // the in-flight cancellation logic doesn't have to be duplicated.
   const [refreshTick, setRefreshTick] = useState(0);
+  // The `refreshTick` of the newest fetch that was answered (a success or a
+  // failure, never our own abort), or null before the first answer. A tick is
+  // a poll or a refresh, so `refreshTick - answeredTick` counts the attempts
+  // since the last answer, with no clock in it (`stale`, below).
+  const [answeredTick, setAnsweredTick] = useState<number | null>(null);
   const refresh = useCallback(() => {
     setRefreshTick((n) => n + 1);
   }, []);
@@ -199,6 +203,7 @@ export function useIntervalBAFeed(
     // Aborted when the settled params change, on a refresh or poll tick, and
     // on unmount, so a superseded response never reaches state.
     const ctrl = new AbortController();
+    const tick = refreshTick;
     const fetchParams = { ...params, ...settled };
     const url = buildUrl(fetchParams);
     const fetchKey = paramsKey(fetchParams);
@@ -242,6 +247,7 @@ export function useIntervalBAFeed(
         // failed fetch (a refresh, a poll) does not flash the old rows.
         setError(null);
         setResponseKey(fetchKey);
+        setAnsweredTick(tick);
       })
       .catch((err: unknown) => {
         // Only our own abort is skipped. The 15 s timeout also aborts the
@@ -258,6 +264,8 @@ export function useIntervalBAFeed(
         setAlerts([]);
         setSummary(null);
         setResponseKey(fetchKey);
+        // An error is an answer: it is on screen, so the feed is not hung.
+        setAnsweredTick(tick);
       });
 
     return () => ctrl.abort();
@@ -298,7 +306,6 @@ export function useIntervalBAFeed(
   usePolling(
     () => {
       setRefreshTick((n) => n + 1);
-      setPolledAt(Date.now());
     },
     POLL_INTERVALS.ALERTS,
     [polling],
@@ -306,14 +313,15 @@ export function useIntervalBAFeed(
 
   // Each tick aborts the request before it, so a hung upstream never reaches
   // the 15 s timeout and never raises an error: without this the last rows sit
-  // under a frozen "updated" stamp and look fresh. While polling, a newest
-  // response more than three poll intervals old is stale. A feed that does not
-  // poll is never stale: it does not expect another response.
+  // under a frozen "updated" stamp and look fresh. While polling, more than
+  // three ticks (polls, or a refresh) since the last answer is stale. It is a
+  // count, not an age: a time since the last response would be set by an idle
+  // gap (a closed market, a throttled tab, a laptop asleep) and hidden by a
+  // backward step of the system clock, and reading the clock in render is
+  // impure. A feed that does not poll is never stale, and one that has never
+  // been answered shows "Loading", not a stale stamp.
   const stale =
-    polling &&
-    fetchedAt !== null &&
-    polledAt !== null &&
-    polledAt - fetchedAt > 3 * POLL_INTERVALS.ALERTS;
+    polling && answeredTick !== null && refreshTick - answeredTick > 3;
 
   return { alerts, summary, loading, error, fetchedAt, stale, refresh };
 }

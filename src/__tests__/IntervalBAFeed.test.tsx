@@ -1034,6 +1034,10 @@ describe('IntervalBAFeed: a live feed whose upstream hangs', () => {
 
     // A word, not only a colour; the rows and the stamp stay where they were.
     expect(screen.getByText('stale')).toBeInTheDocument();
+    expect(screen.getByText('stale')).toHaveAttribute(
+      'title',
+      expect.stringContaining('polls in a row got no answer'),
+    );
     expect(screen.getByText(UPDATED)).toBeInTheDocument();
     expect(screen.getByText('5800')).toBeInTheDocument();
 
