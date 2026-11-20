@@ -5,7 +5,10 @@
  * tests that run a child node process, and spawnChild, which gives the child
  * its limit and turns a killed or unstartable child into an error that names
  * it. The children here are real node processes, with limits cut to a fraction
- * of a second.
+ * of a second. What a child had written to stderr before the kill depends on
+ * how fast the machine starts node (8.6 s for `node -e ''` with 16 busy cores,
+ * 2026-11-19), so the quoting of that stderr is checked against a mocked
+ * spawnSync, and the real-spawn tests assert only what holds at any speed.
  */
 
 import { spawnSync } from 'node:child_process';
@@ -27,8 +30,8 @@ vi.mock('node:child_process', async (importOriginal) => {
 const { spawnSync: realSpawnSync } =
   await vi.importActual('node:child_process');
 
-// One test lets a child run for STARTED_LIMIT before the kill, which is most of
-// vitest's default 15 s.
+// A real child that runs to its exit gets CHILD_TIMEOUT, and node can take
+// seconds to start on a loaded machine: more than vitest's default 15 s.
 vi.setConfig({ testTimeout: CHILD_TEST_TIMEOUT });
 
 afterEach(() => {
@@ -36,10 +39,20 @@ afterEach(() => {
 });
 
 /**
- * How long a test that needs the child to have written to stderr lets it run
- * before the kill: node can take seconds to start on a loaded machine.
+ * What spawnSync returns for a child it killed at its limit, having read
+ * `stderr` from it (a string when the call set an encoding, else a Buffer).
  */
-const STARTED_LIMIT = 10_000;
+function killedAtLimit(stderr) {
+  return {
+    status: null,
+    signal: 'SIGTERM',
+    stdout: '',
+    stderr,
+    error: Object.assign(new Error('spawnSync node ETIMEDOUT'), {
+      code: 'ETIMEDOUT',
+    }),
+  };
+}
 
 /**
  * A child that writes the value of the JavaScript expression `text` to
@@ -111,22 +124,56 @@ describe('spawnChild', () => {
     expect(result.stderr.trim()).toBe('err');
   });
 
-  it('throws when the child outlasts its limit, naming the child, the limit and the tail of its stderr so far', () => {
+  // A real child, killed at its limit. Whether it had written anything by then
+  // depends on how fast the machine started it, so this asserts only what holds
+  // either way: the command, the limit and the spawn's own error. The stderr
+  // quote is the next two tests.
+  it('throws when the child outlasts its limit, naming the child and the limit', () => {
     const err = thrownBy(() =>
       spawnChild(process.execPath, stalling("'x'.repeat(5000) + 'THE END'"), {
         encoding: 'utf8',
-        timeout: STARTED_LIMIT,
+        timeout: 500,
       }),
     );
 
-    expect(err.message).toMatch(/^child process timed out after 10 s: node/);
+    expect(err.message).toMatch(/^child process timed out after 0\.5 s: node/);
     expect(err.message).toContain('-e process.stderr.write(');
     expect(err.message).toContain("'x'.repeat(5000) + 'THE END'");
-    // The end of what the child wrote, not all 5000 characters of it.
-    expect(err.message).toContain('stderr so far:\nxxx');
-    expect(err.message).toContain('xxxTHE END');
-    expect(err.message.length).toBeLessThan(900);
     expect(err.cause).toMatchObject({ code: 'ETIMEDOUT' });
+  });
+
+  it('quotes the last 500 characters of the stderr the child wrote, trimmed', () => {
+    const written = `${'x'.repeat(5000)}THE END`;
+    vi.mocked(spawnSync).mockReturnValue(killedAtLimit(`${written}\n`));
+
+    const err = thrownBy(() =>
+      spawnChild(process.execPath, ['-e', 'ignored'], {
+        encoding: 'utf8',
+        timeout: 10_000,
+      }),
+    );
+
+    const [head, quoted] = err.message.split('\nstderr so far:\n');
+    expect(head).toMatch(
+      /^child process timed out after 10 s: node(?:\.exe)? -e ignored$/,
+    );
+    // The end of what the child wrote, not all 5000 characters of it, and
+    // without the newline it ended on.
+    expect(quoted).toHaveLength(500);
+    expect(quoted).toBe(written.slice(-500));
+    expect(err.cause).toMatchObject({ code: 'ETIMEDOUT' });
+  });
+
+  it('quotes no stderr when the spawn had no encoding, so stderr is a Buffer', () => {
+    vi.mocked(spawnSync).mockReturnValue(killedAtLimit(Buffer.from('boom')));
+
+    const err = thrownBy(() =>
+      spawnChild(process.execPath, ['-e', 'ignored'], { timeout: 10_000 }),
+    );
+
+    expect(err.message).toMatch(
+      /^child process timed out after 10 s: node(?:\.exe)? -e ignored$/,
+    );
   });
 
   it('says nothing about stderr when the child wrote none', () => {
