@@ -15,14 +15,14 @@ That's it. Anything else (`make refit`, `make enrich`, etc.) is also valid as a 
 
 ### `make nightly`
 
-Pipeline (5 phases): `analyze → ingest → plots → backfill-flow → enrich`.
+Pipeline (4 steps): `analyze → ingest → plots → enrich`.
 
 - Analyzes today's `bot-eod-report-YYYY-MM-DD.csv` from `~/Downloads/EOD-OptionFlow/`
 - Writes the per-trade parquet to `~/Desktop/Bot-Eod-parquet/{DATE}-trades.parquet`
-- Backfills `net_flow_per_ticker_history` from UW REST (so flow_inversion can compute even when the Vercel cron silently fails)
+- Does not backfill `net_flow_per_ticker_history`: the `fetch-net-flow-history` cron fills it. `scripts/backfill_net_flow_history.py` is manual-only, to repair a day that cron missed (flow_inversion can't compute without it)
 - Replays the parquet against `lottery_finder_fires` to populate the realized exit columns (`scripts/enrich_lottery_outcomes.py` and `scripts/enrich_silent_boom_outcomes.py` can read the R2 Full Tape instead with `--r2`, and take `--select` and `--dry-run`)
 
-**Resume mode**: if the CSV was already consumed in a prior run but the parquet is on disk, `make nightly` auto-falls-back to `plots → backfill-flow → enrich` only. Safe to re-run.
+**Resume mode**: if the CSV was already consumed in a prior run but the parquet is on disk, `make nightly` auto-falls-back to `plots → enrich` only. Safe to re-run.
 
 **If it fails partway**: exit non-zero, chained `update` won't run — that's the safety net. Investigate, fix, re-run.
 
@@ -40,7 +40,7 @@ Refreshes the research layer using the freshly-enriched fires. Order: `refit →
 - **takeit-drift** (`make takeit-drift`): TAKE-IT AUC and reliability drift over the enriched window → `docs/tmp/takeit-drift-{DATE}.md` and `ml/plots/takeit-drift/reliability_<feed>_{DATE}.png`.
 - **Flags on the four Neon-only reports** (all optional; `make update` passes none): `--out-dir DIR` on `feature_audit.py`, `mine_outcome_patterns.py` and `score_lineage_audit.py` (default `docs/tmp`); `--as-of YYYY-MM-DD` on `mine_outcome_patterns.py` and `score_lineage_audit.py` (default today; the 90- or 30-day window ends on it, it names the report, and fires dated after it are left out); `--csv PATH` on `daily_tracker.py` (default `docs/tmp/lottery-tracking.csv`).
 
-Six reports read the active weights version from the store, not the frozen JSON (owner, 2026-11-19; phase 3 D8). exit_policy_search, flow_inversion_timing and feature_audit tier fires by the feed's qas against its `feed_cutoffs`. daily_tracker uses its bare `cutoffs` on the stored score. mine_outcome_patterns and score_lineage_audit build their features and components from its `features`, and they select single-leg fires (`anchor_leg_kind = 'single'`, the population the refit trains on) in place of the old `inferred_structure IS NULL`. Each names the version in its output, and `make update` exits non-zero when the active weights can't be read.
+Six reports read the active weights version from the store, not the frozen JSON (owner, 2026-11-19; phase 3 D8). exit_policy_search, flow_inversion_timing and feature_audit tier fires by the feed's qas against its `feed_cutoffs`. The qas is `GREATEST(0, score) + inversion bonus`, with no round-trip deduct and no gamma term: the feed fixes its tier at the fire (owner, 2026-11-17). daily_tracker uses its bare `cutoffs` on the stored score. mine_outcome_patterns and score_lineage_audit build their features and components from its `features`, and they select single-leg fires (`anchor_leg_kind = 'single'`, the population the refit trains on) in place of the old `inferred_structure IS NULL`. Each names the version in its output, and `make update` exits non-zero when the active weights can't be read.
 
 ### Chaining
 
@@ -98,7 +98,7 @@ Drift signals to watch for over time:
 | Symptom                                      | Likely cause                                           | Fix                                                                                                                                           |
 | -------------------------------------------- | ------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------- |
 | `make nightly` errors at `check`             | No CSV in `~/Downloads/EOD-OptionFlow/` AND no parquet | Drop the CSV, or wait for Bot to deliver it                                                                                                   |
-| `[backfill-flow] empty_tickers=41`           | UW REST is down / API key expired                      | Check `UW_API_KEY` in `.env.local`; retry once UW is back                                                                                     |
+| Net-flow history missing for a day           | `fetch-net-flow-history` cron missed that day          | Run `scripts/backfill_net_flow_history.py --date YYYY-MM-DD`; `empty_tickers=41` in its `[backfill-flow]` log = UW down or key expired        |
 | `[enrich] unenriched fires: 0` immediately   | Vercel cron already ran and populated everything       | No-op — proceed                                                                                                                               |
 | `[track] no enriched fires found`            | DB query returned 0 rows                               | Ran before `enrich` — re-run `make update`                                                                                                    |
 | `make tune` shows huge train/test Sharpe gap | Overfit (sample too small)                             | Wait for more days, then re-tune                                                                                                              |
