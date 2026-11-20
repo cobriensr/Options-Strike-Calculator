@@ -11,7 +11,6 @@ import type {
   SilentBoomExitPolicy,
 } from '../components/SilentBoom/types';
 import { SilentBoomTickerGroup } from '../components/SilentBoom/SilentBoomTickerGroup';
-import { computeAccessibleName } from 'dom-accessibility-api';
 import {
   genericElementsWithAriaLabel,
   srHintText,
@@ -1043,7 +1042,7 @@ describe('SilentBoomTickerGroup', () => {
     it('gives the flow chip a short hint as hidden text, not an aria-label', () => {
       renderGroup();
       const chip = screen.getByTestId('silent-boom-ticker-flow-MSFT');
-      expect(srHintText(chip)).toBe('ticker net flow versus bias');
+      expect(srHintText(chip)).toBe('ticker flow versus bias');
       expect(chip).not.toHaveAttribute('aria-label');
       expect(chip.getAttribute('title')).toContain('aligned = same direction');
     });
@@ -1062,10 +1061,12 @@ describe('SilentBoomTickerGroup', () => {
     // strikes, premium, last-hit time, best peak) keeps only its `title`;
     // a chip whose text is cryptic (bias, tide, flow, density, gated and the
     // conviction, was-conviction, storm and sweep flags) gets a short hint.
-    /** `typical`: the always-on chips. The other variants light every chip:
-     *  two strikes (strikes summary and spread), a gated alert, alerts 20
-     *  minutes apart (density), and the conviction (`strong` is the ✦✦
-     *  cheap pre-PM cluster, `high` the plain ✦), was-conviction (`was`,
+    /** `typical`: the always-on chips, on two 3-digit strikes. The other
+     *  variants light every chip and use the longest strikes summary the
+     *  header can show: 15 distinct 4-digit strikes, so it reads
+     *  `7500C, 7510C, 7520C +12 more (140pt)`. They also have a gated alert,
+     *  alerts 20 minutes apart (density), and the conviction (`strong` is the
+     *  ✦✦ cheap pre-PM cluster, `high` the plain ✦), was-conviction (`was`,
      *  which needs live conviction off), storm and sweep flags. */
     function renderFullHeader(variant: 'typical' | 'strong' | 'high' | 'was') {
       const full = variant !== 'typical';
@@ -1074,22 +1075,19 @@ describe('SilentBoomTickerGroup', () => {
         tickerCumNcpAtFire: 5_000_000,
         tickerCumNppAtFire: 1_000_000,
       };
-      const alerts = [
+      const strikes = full
+        ? Array.from({ length: 15 }, (_, i) => 7500 + i * 10)
+        : [250, 260];
+      const alerts = strikes.map((strike, i) =>
         makeAlert({
-          optionChainId: 'TSLA260514C00250000',
+          optionChainId: `TSLA260514C${String(strike * 1000).padStart(8, '0')}`,
           underlyingSymbol: 'TSLA',
-          strike: 250,
-          directionGated: full,
+          strike,
+          directionGated: full && i === 0,
+          ...(i === 1 ? { bucketCt: '2026-05-14T14:50:00Z' } : {}),
           ...tideFields,
         }),
-        makeAlert({
-          optionChainId: 'TSLA260514C00260000',
-          underlyingSymbol: 'TSLA',
-          strike: 260,
-          bucketCt: '2026-05-14T14:50:00Z',
-          ...tideFields,
-        }),
-      ];
+      );
       return render(
         <SilentBoomTickerGroup
           ticker="TSLA"
@@ -1110,17 +1108,14 @@ describe('SilentBoomTickerGroup', () => {
       );
     }
 
-    const toggleButtonName = () =>
-      computeAccessibleName(screen.getByRole('button'));
-
     it.each(['typical', 'strong', 'high', 'was'] as const)(
       'header (%s): the toggle button’s accessible name is at most 400 characters',
       (variant) => {
         renderFullHeader(variant);
-        const name = toggleButtonName();
+        const button = screen.getByRole('button');
         // The hints are part of that name, so the name carries them.
-        expect(name).toContain('Market Tide versus bias');
-        expect(name.length).toBeLessThanOrEqual(400);
+        expect(button).toHaveAccessibleName(/Market Tide versus bias/);
+        expect(button).toHaveAccessibleName(/^[\s\S]{0,400}$/);
       },
     );
 
@@ -1168,10 +1163,10 @@ describe('SilentBoomTickerGroup', () => {
         srHintText(screen.getByTestId(`silent-boom-ticker-${id}-TSLA`));
       expect(hint('strong-conviction')).toBe('cheap (≤ $1), before 12:30 CT');
       expect(hint('storm')).toBe('8+ alerts, ×100 spike or $500K');
-      expect(hint('cluster')).toBe('context only, not conviction');
-      expect(hint('bias')).toBe('net calls versus puts');
+      expect(hint('cluster')).toBe('context, not conviction');
+      expect(hint('bias')).toBe('calls versus puts');
       expect(hint('tide')).toBe('Market Tide versus bias');
-      expect(hint('flow')).toBe('ticker net flow versus bias');
+      expect(hint('flow')).toBe('ticker flow versus bias');
       expect(hint('density')).toBe('first to last alert');
       expect(hint('gated')).toBe('demoted by the tide gate');
     });
@@ -1180,7 +1175,7 @@ describe('SilentBoomTickerGroup', () => {
       renderFullHeader('high');
       expect(
         srHintText(screen.getByTestId('silent-boom-ticker-conviction-TSLA')),
-      ).toBe('3+ alerts, one side, within 15 min');
+      ).toBe('3+ alerts, one side, several strikes, within 15 min');
       cleanup();
 
       renderFullHeader('was');

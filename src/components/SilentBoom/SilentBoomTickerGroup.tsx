@@ -267,7 +267,9 @@ function SilentBoomTickerGroupBase({
                 data-testid={`silent-boom-ticker-conviction-${ticker}`}
               >
                 {HIGH_CONVICTION_BADGE_LABEL}
-                <SrHint>3+ alerts, one side, within 15 min</SrHint>
+                <SrHint>
+                  3+ alerts, one side, several strikes, within 15 min
+                </SrHint>
               </span>
             ))}
           {!showConvictionBadge &&
@@ -302,7 +304,7 @@ function SilentBoomTickerGroupBase({
               data-testid={`silent-boom-ticker-cluster-${ticker}`}
             >
               🎰 OTM SWEEP ×{clusterStrikes}
-              <SrHint>context only, not conviction</SrHint>
+              <SrHint>context, not conviction</SrHint>
             </span>
           )}
           {strikesWithSpread && (
@@ -321,7 +323,7 @@ function SilentBoomTickerGroupBase({
               data-testid={`silent-boom-ticker-bias-${ticker}`}
             >
               {formatBiasLabel(agg.bias)}
-              <SrHint>net calls versus puts</SrHint>
+              <SrHint>calls versus puts</SrHint>
             </span>
           )}
           <span
@@ -338,7 +340,7 @@ function SilentBoomTickerGroupBase({
             data-testid={`silent-boom-ticker-flow-${ticker}`}
           >
             {formatFlowLabel(agg.flow)}
-            <SrHint>ticker net flow versus bias</SrHint>
+            <SrHint>ticker flow versus bias</SrHint>
           </span>
           {agg.spreadMinutes != null && (
             <span
