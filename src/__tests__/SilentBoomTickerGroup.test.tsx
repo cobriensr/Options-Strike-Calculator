@@ -5,13 +5,18 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { cleanup, render, screen, fireEvent } from '@testing-library/react';
 import type {
   SilentBoomAlert,
   SilentBoomExitPolicy,
 } from '../components/SilentBoom/types';
 import { SilentBoomTickerGroup } from '../components/SilentBoom/SilentBoomTickerGroup';
-import { genericElementsWithAriaLabel, srHintText } from './helpers/aria';
+import {
+  genericElementsWithAriaLabel,
+  srHintText,
+  titledElementsNeedingHint,
+  titledElementsWithoutHint,
+} from './helpers/aria';
 
 vi.mock('../components/SilentBoom/SilentBoomRow', () => ({
   SilentBoomRow: ({ alert }: { alert: SilentBoomAlert }) => (
@@ -1050,6 +1055,155 @@ describe('SilentBoomTickerGroup', () => {
     it('leaves no aria-label on a role-less, non-interactive header element', () => {
       const { container } = renderGroup();
       expect(genericElementsWithAriaLabel(container)).toEqual([]);
+    });
+  });
+
+  describe('screen-reader hints on every titled header chip', () => {
+    /** Every chip the header can show: two strikes (strikes summary and
+     *  spread), a gated alert, alerts 20 minutes apart (density), and the
+     *  conviction / was-conviction / storm / sweep flags. */
+    function renderFullHeader(variant: 'strong' | 'high' | 'was') {
+      const tideFields = {
+        mktTideDiff: 200,
+        tickerCumNcpAtFire: 5_000_000,
+        tickerCumNppAtFire: 1_000_000,
+      };
+      const alerts = [
+        makeAlert({
+          optionChainId: 'TSLA260514C00250000',
+          underlyingSymbol: 'TSLA',
+          strike: 250,
+          directionGated: true,
+          ...tideFields,
+        }),
+        makeAlert({
+          optionChainId: 'TSLA260514C00260000',
+          underlyingSymbol: 'TSLA',
+          strike: 260,
+          bucketCt: '2026-05-14T14:50:00Z',
+          ...tideFields,
+        }),
+      ];
+      return render(
+        <SilentBoomTickerGroup
+          ticker="TSLA"
+          alerts={alerts}
+          expanded={false}
+          onToggle={() => undefined}
+          marketOpen={true}
+          exitPolicy={EXIT_POLICY}
+          conviction={variant !== 'was'}
+          strongConviction={variant === 'strong'}
+          storm
+          clusterStrikes={3}
+          wasConvictionAt={Date.parse('2026-05-14T13:40:00Z')}
+          wasConvictionFireCount={4}
+        />,
+      );
+    }
+
+    // The rule, precisely: an element with a non-empty `title` needs an
+    // SrHint as a direct child, unless it has a role, is natively
+    // interactive or already shows its title text.
+    it.each(['strong', 'high', 'was'] as const)(
+      'a full header (%s): every titled element has an SrHint child unless it has a role, is natively interactive or already shows its title',
+      (variant) => {
+        const { container } = renderFullHeader(variant);
+        // Every chip is on screen, so an empty result can't pass by
+        // rendering less.
+        for (const id of [
+          'silent-boom-ticker-strikes-TSLA',
+          'silent-boom-ticker-bias-TSLA',
+          'silent-boom-ticker-tide-TSLA',
+          'silent-boom-ticker-flow-TSLA',
+          'silent-boom-ticker-density-TSLA',
+          'silent-boom-ticker-premium-TSLA',
+          'silent-boom-ticker-gated-TSLA',
+          'silent-boom-ticker-last-TSLA',
+          'silent-boom-ticker-storm-TSLA',
+          'silent-boom-ticker-cluster-TSLA',
+        ]) {
+          expect(screen.getByTestId(id), id).toBeInTheDocument();
+        }
+        expect(titledElementsNeedingHint(container).length).toBeGreaterThan(12);
+        expect(titledElementsWithoutHint(container)).toEqual([]);
+      },
+    );
+
+    it('keeps each header hint under 100 characters: the chips are part of the toggle button’s accessible name', () => {
+      for (const variant of ['strong', 'high', 'was'] as const) {
+        const { container } = renderFullHeader(variant);
+        for (const el of titledElementsNeedingHint(container)) {
+          const hint = srHintText(el) ?? '';
+          expect(hint.length, hint).toBeLessThan(100);
+        }
+        cleanup();
+      }
+    });
+
+    it('words each chip in a short hint', () => {
+      const { container } = renderFullHeader('strong');
+      const hint = (id: string) =>
+        srHintText(screen.getByTestId(`silent-boom-ticker-${id}-TSLA`));
+      expect(hint('strong-conviction')).toBe(
+        'Conviction cluster that is also cheap (every alert ≤ $1) and pre-PM.',
+      );
+      expect(hint('storm')).toBe(
+        '8 or more alerts, a ×100 or larger spike, or $500K total premium.',
+      );
+      expect(hint('cluster')).toBe(
+        '3 or more cheap OTM ask-side 0DTE strikes. Context only, not a conviction signal.',
+      );
+      expect(hint('strikes')).toBe(
+        'Distinct strike and side pairs; the spread in points is in parentheses.',
+      );
+      expect(hint('bias')).toBe(
+        "Net call versus put bias across this ticker's alerts.",
+      );
+      expect(hint('density')).toBe(
+        'Time from the first to the last alert in this group.',
+      );
+      expect(hint('premium')).toBe(
+        "Sum of spike-bucket premium across this ticker's alerts",
+      );
+      expect(hint('gated')).toBe(
+        'Alerts demoted to tier 3 by the Market Tide direction gate.',
+      );
+      expect(hint('last')).toBe(
+        'Most recent alert spike-bucket time (CT) for this ticker today.',
+      );
+      // The count, best-peak label and peak value have no testid.
+      expect(
+        srHintText(container.querySelector('[title^="Number of distinct"]')!),
+      ).toBe(
+        'Distinct chain and spike-bucket alerts today; a repeat spike counts once.',
+      );
+      const peakTitled = Array.from(
+        container.querySelectorAll('[title^="Best peak return"]'),
+      ).map((el) => srHintText(el));
+      expect(peakTitled).toEqual([
+        'Look-ahead reference, not tradeable.',
+        'Best peak return across every alert today.',
+      ]);
+    });
+
+    it('words the high-conviction and was-conviction chips in short hints', () => {
+      renderFullHeader('high');
+      expect(
+        srHintText(screen.getByTestId('silent-boom-ticker-conviction-TSLA')),
+      ).toBe(
+        '3 or more alerts, one direction, several strikes, within 15 minutes.',
+      );
+      cleanup();
+
+      renderFullHeader('was');
+      expect(
+        srHintText(
+          screen.getByTestId('silent-boom-ticker-was-conviction-TSLA'),
+        ),
+      ).toMatch(
+        /^Conviction window began at \d\d:\d\d CT with 4 alerts; no longer live\.$/,
+      );
     });
   });
 

@@ -242,6 +242,14 @@ function SilentBoomTickerGroupBase({
             title="Number of distinct (chain × spike-bucket) silent-boom alerts for this ticker today. Each spike bucket counts once per chain even if the same contract spikes again later in the session."
           >
             {count} alert{count === 1 ? '' : 's'}
+            {/* Every hint below is a short form of the chip's hover text:
+                the chips sit inside the group's toggle button, so their
+                hidden text is part of that button's accessible name. The
+                full hover text stays in `title`. */}
+            <SrHint>
+              Distinct chain and spike-bucket alerts today; a repeat spike
+              counts once.
+            </SrHint>
           </span>
           {showConvictionBadge &&
             (showStrongConvictionBadge ? (
@@ -251,6 +259,10 @@ function SilentBoomTickerGroupBase({
                 data-testid={`silent-boom-ticker-strong-conviction-${ticker}`}
               >
                 {STRONG_CONVICTION_BADGE_LABEL}
+                <SrHint>
+                  Conviction cluster that is also cheap (every alert ≤ $1) and
+                  pre-PM.
+                </SrHint>
               </span>
             ) : (
               <span
@@ -259,6 +271,10 @@ function SilentBoomTickerGroupBase({
                 data-testid={`silent-boom-ticker-conviction-${ticker}`}
               >
                 {HIGH_CONVICTION_BADGE_LABEL}
+                <SrHint>
+                  3 or more alerts, one direction, several strikes, within 15
+                  minutes.
+                </SrHint>
               </span>
             ))}
           {!showConvictionBadge &&
@@ -273,6 +289,7 @@ function SilentBoomTickerGroupBase({
               >
                 was ✦ {CT_TIME_FMT.format(new Date(wasConvictionAt))} (
                 {wasConvictionFireCount}a)
+                <SrHint>{`Conviction window began at ${CT_TIME_FMT.format(new Date(wasConvictionAt))} CT with ${wasConvictionFireCount} alerts; no longer live.`}</SrHint>
               </span>
             )}
           {showStormBadge && (
@@ -282,6 +299,10 @@ function SilentBoomTickerGroupBase({
               data-testid={`silent-boom-ticker-storm-${ticker}`}
             >
               {BURST_STORM_BADGE_LABEL}
+              <SrHint>
+                8 or more alerts, a ×100 or larger spike, or $500K total
+                premium.
+              </SrHint>
             </span>
           )}
           {showClusterBadge && (
@@ -291,6 +312,10 @@ function SilentBoomTickerGroupBase({
               data-testid={`silent-boom-ticker-cluster-${ticker}`}
             >
               🎰 OTM SWEEP ×{clusterStrikes}
+              <SrHint>
+                3 or more cheap OTM ask-side 0DTE strikes. Context only, not a
+                conviction signal.
+              </SrHint>
             </span>
           )}
           {strikesWithSpread && (
@@ -300,6 +325,10 @@ function SilentBoomTickerGroupBase({
               data-testid={`silent-boom-ticker-strikes-${ticker}`}
             >
               {strikesWithSpread}
+              <SrHint>
+                Distinct strike and side pairs; the spread in points is in
+                parentheses.
+              </SrHint>
             </span>
           )}
           {agg.bias && (
@@ -309,6 +338,9 @@ function SilentBoomTickerGroupBase({
               data-testid={`silent-boom-ticker-bias-${ticker}`}
             >
               {formatBiasLabel(agg.bias)}
+              <SrHint>
+                Net call versus put bias across this ticker's alerts.
+              </SrHint>
             </span>
           )}
           <span
@@ -343,6 +375,9 @@ function SilentBoomTickerGroupBase({
               data-testid={`silent-boom-ticker-density-${ticker}`}
             >
               {formatSpreadDuration(agg.spreadMinutes)}
+              <SrHint>
+                Time from the first to the last alert in this group.
+              </SrHint>
             </span>
           )}
           {agg.totalPremium != null && (
@@ -352,6 +387,9 @@ function SilentBoomTickerGroupBase({
               data-testid={`silent-boom-ticker-premium-${ticker}`}
             >
               prem {formatPremiumAmount(agg.totalPremium)}
+              <SrHint>
+                Sum of spike-bucket premium across this ticker's alerts
+              </SrHint>
             </span>
           )}
           {agg.gatedCount > 0 && (
@@ -361,6 +399,9 @@ function SilentBoomTickerGroupBase({
               data-testid={`silent-boom-ticker-gated-${ticker}`}
             >
               {agg.gatedCount} gated
+              <SrHint>
+                Alerts demoted to tier 3 by the Market Tide direction gate.
+              </SrHint>
             </span>
           )}
         </div>
@@ -372,18 +413,23 @@ function SilentBoomTickerGroupBase({
           >
             last <span className="font-mono text-neutral-300">{lastHitCt}</span>{' '}
             CT
+            <SrHint>
+              Most recent alert spike-bucket time (CT) for this ticker today.
+            </SrHint>
           </span>
           <span
             className="text-neutral-500"
             title="Best peak return across every alert for this ticker today. Look-ahead reference (not tradeable) — expand the row to see realized exits per the selected policy."
           >
             best peak
+            <SrHint>Look-ahead reference, not tradeable.</SrHint>
           </span>
           <span
             className={`font-mono font-semibold ${peakColorClass(peakBest)}`}
             title="Best peak return across every alert for this ticker today. Look-ahead reference (not tradeable)."
           >
             {formatPeakPct(peakBest)}
+            <SrHint>Best peak return across every alert today.</SrHint>
           </span>
         </div>
       </button>
