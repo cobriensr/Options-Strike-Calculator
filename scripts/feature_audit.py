@@ -76,10 +76,10 @@ def add_feed_tiers(df: pd.DataFrame, cutoffs: FeedCutoffs) -> pd.DataFrame:
     Mirrors the user-facing feed EXACTLY so the audit's "Tier 2+" subset is the
     population actually traded: the tier is `_report_weights.tier_labels` (qas =
     GREATEST(0, score) + inversion bonus, against `cutoffs`, the active
-    version's feed cutoffs; no round-trip deduct, no gamma term). qas is NaN for the
-    fires the feed forces to tier 3 (a NULL score, direction-gated, a default-
-    hidden inversion quintile of 1 or 2), and those are not eligible, so feature
-    stats aren't contaminated by fires the user never sees.
+    version's feed cutoffs; no round-trip deduct, no gamma term). qas is NaN
+    for the fires the feed forces to tier 3 (a NULL score, direction-gated, a
+    default-hidden inversion quintile of 1 or 2), and those are not eligible,
+    so feature stats aren't contaminated by fires the user never sees.
     """
     qas = feed_qas(df['score'], df)
     return df.assign(

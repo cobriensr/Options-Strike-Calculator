@@ -253,7 +253,6 @@ def _timing_fires(*days: str) -> pd.DataFrame:
                 'dte': 0,
                 'score': 20,
                 'flow_inv': 12.5,
-                'round_trip_score_deduct': 0,
                 'direction_gated': False,
                 'inversion_quintile': 3,
             }
@@ -712,7 +711,6 @@ def _policy_fires(*days: str) -> pd.DataFrame:
                 'tier50': 5.0,
                 'eod': -30.0,
                 'flow_inv': 12.5,
-                'round_trip_score_deduct': 0,
                 'direction_gated': False,
                 'inversion_quintile': 3,
             }

@@ -1077,7 +1077,7 @@ TIER_CASES = [
     pytest.param({'score': 12}, 'T2', id='qas-at-the-T2-cutoff'),
     pytest.param({'score': 11}, 'T3', id='qas-11-is-T3'),
     # 2026-11-17 decision: the -3 deduct is ignored, so qas stays 18 (T1); it
-    # was 15 (T2) while the feed took the deduct off.
+    # was 15 (T2) while the feed subtracted the deduct.
     pytest.param(
         {'score': 18, 'deduct': -3, 'quintile': 3}, 'T1', id='round-trip-deduct-is-ignored'
     ),

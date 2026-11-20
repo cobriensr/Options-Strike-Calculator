@@ -134,7 +134,6 @@ def fires_frame(extra_days: tuple[str, ...] = ()) -> pd.DataFrame:
                 'flow_inv': 10.0,
                 # What the feed's qas reads besides the score; the timing
                 # report tiers with it (tune_flow_inversion ignores them).
-                'round_trip_score_deduct': 0,
                 'direction_gated': False,
                 'inversion_quintile': 3,
             }
