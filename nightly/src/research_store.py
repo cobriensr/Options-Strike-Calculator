@@ -9,7 +9,8 @@ Single-threaded by design, like `R2Store`: one boto3 client per store, built by
 `upload_file`, `download_file` or the `*_fileobj` and `copy` calls: they run a thread pool over
 the one client, and a client shared across threads once sent half its R2 calls without TLS
 verification (Windows workstation, 2026-10-28). urllib3 warns before it sends an unverified
-request, so turning that warning into an error (below) stops one from going out.
+request, so each store turns that warning into an error when it is built (`__init__`), which
+stops one from going out. Importing the module changes no warning filter.
 
 Logs carry the key, byte counts and seconds only: never a credential, the endpoint, a row of
 data or the text of a report.
@@ -22,6 +23,7 @@ import logging
 import time
 import warnings
 from collections.abc import Iterable, Mapping
+from contextlib import closing
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from typing import Any
@@ -31,9 +33,6 @@ from botocore.exceptions import ClientError
 
 from config import Settings
 from r2_store import R2VerifyError, make_client, verify_upload_size
-
-# At import, so no client built from here on can send an unverified request unnoticed.
-warnings.simplefilter("error", urllib3.exceptions.InsecureRequestWarning)
 
 log = logging.getLogger(__name__)
 
@@ -88,6 +87,10 @@ class ResearchStore:
     """Reads and writes research outputs in the Full Tape bucket, under `research/` only."""
 
     def __init__(self, settings: Settings) -> None:
+        # urllib3 warns before it sends, so an error here stops an unverified request
+        # from going out. botocore wraps it as an HTTPClientError (see _is_tls_guard_error
+        # in scripts/_tape_reader.py).
+        warnings.filterwarnings("error", category=urllib3.exceptions.InsecureRequestWarning)
         self._bucket = settings.r2_bucket_fulltape
         self._client = make_client(settings)
 
@@ -138,31 +141,36 @@ class ResearchStore:
         if response is None:
             return False
         expected = response["ContentLength"]
-        body = response["Body"]
-        dest.parent.mkdir(parents=True, exist_ok=True)
         part = _part_path(dest)
         written = 0
-        try:
-            with part.open("wb") as out:
-                for chunk in body.iter_chunks(_DOWNLOAD_CHUNK_BYTES):
-                    out.write(chunk)
-                    written += len(chunk)
-            if written != expected:
-                raise R2VerifyError(f"{key}: downloaded {written} bytes but R2 reports {expected}")
-            part.replace(dest)
-        except BaseException:
-            part.unlink(missing_ok=True)
-            raise
-        finally:
-            body.close()
+        # Closing covers everything from here, the mkdir too; only the `.part` is unlinked.
+        with closing(response["Body"]) as body:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                with part.open("wb") as out:
+                    for chunk in body.iter_chunks(_DOWNLOAD_CHUNK_BYTES):
+                        out.write(chunk)
+                        written += len(chunk)
+                if written != expected:
+                    raise R2VerifyError(
+                        f"{key}: downloaded {written} bytes but R2 reports {expected}"
+                    )
+                part.replace(dest)
+            except BaseException:
+                part.unlink(missing_ok=True)
+                raise
         log.info("research get %s bytes=%d seconds=%.1f", key, written, time.monotonic() - started)
         return True
 
     def put_json(self, key: str, obj: object) -> None:
-        """Store `obj` as a JSON object. An object json cannot encode raises before any request."""
+        """Store `obj` as a JSON object.
+
+        An object json cannot encode raises before any request: a TypeError for a type it
+        does not know, a ValueError for a NaN or an infinity, which strict JSON has no form for.
+        """
         _check(key)
         started = time.monotonic()
-        data = json.dumps(obj).encode()
+        data = json.dumps(obj, allow_nan=False).encode()
         self._client.put_object(
             Bucket=self._bucket, Key=key, Body=data, ContentType=_JSON_CONTENT_TYPE
         )

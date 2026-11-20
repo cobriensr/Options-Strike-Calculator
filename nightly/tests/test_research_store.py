@@ -87,6 +87,7 @@ class _Body:
     def __init__(self, chunks: list[bytes], then_raise: Exception | None = None) -> None:
         self._chunks = chunks
         self._then_raise = then_raise
+        self.closed = False
 
     def iter_chunks(self, chunk_size: int = 1024) -> Iterator[bytes]:
         yield from self._chunks
@@ -97,7 +98,7 @@ class _Body:
         return b"".join(self._chunks)
 
     def close(self) -> None:
-        pass
+        self.closed = True
 
 
 # --- keys ------------------------------------------------------------------------------
@@ -302,6 +303,42 @@ def test_get_file_stream_error_propagates_and_leaves_no_part(
     assert not _part(dest).exists()
 
 
+def test_get_file_closes_the_body_when_the_dest_dir_cannot_be_made(
+    store: ResearchStore, tmp_path: Path
+) -> None:
+    body = _Body([b"abc"])
+    response = {"Body": body, "ContentLength": 3}
+    with (
+        patch.object(store._client, "get_object", return_value=response),
+        patch.object(Path, "mkdir", side_effect=PermissionError("denied")),
+        pytest.raises(PermissionError, match="denied"),
+    ):
+        store.get_file(KEY, tmp_path / "out" / "r.md")
+    assert body.closed is True
+    assert list(tmp_path.rglob("*")) == []
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        pytest.param(None, id="success"),
+        pytest.param(ConnectionResetError("reset"), id="stream-error"),
+    ],
+)
+def test_get_file_closes_the_body_after_the_stream(
+    store: ResearchStore, tmp_path: Path, failure: Exception | None
+) -> None:
+    body = _Body([b"abc"], then_raise=failure)
+    response = {"Body": body, "ContentLength": 3}
+    with patch.object(store._client, "get_object", return_value=response):
+        if failure is None:
+            assert store.get_file(KEY, tmp_path / "r.md") is True
+        else:
+            with pytest.raises(ConnectionResetError):
+                store.get_file(KEY, tmp_path / "r.md")
+    assert body.closed is True
+
+
 def test_get_file_access_denied_is_not_reported_as_missing(
     store: ResearchStore, tmp_path: Path
 ) -> None:
@@ -354,6 +391,20 @@ def test_get_json_access_denied_is_not_reported_as_missing(store: ResearchStore)
 def test_put_json_unserializable_stores_nothing(s3, store: ResearchStore) -> None:
     with pytest.raises(TypeError):
         store.put_json("research/state/x.json", {"x": object()})
+    assert _keys(s3) == []
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+def test_put_json_refuses_nan_and_infinity_before_any_request(
+    s3, store: ResearchStore, bad: float
+) -> None:
+    """Python writes a bare NaN or Infinity, which no strict JSON reader accepts."""
+    with (
+        patch.object(store._client, "put_object") as put,
+        pytest.raises(ValueError, match="Out of range float values are not JSON compliant"),
+    ):
+        store.put_json("research/state/x.json", {"stats": [1.5, bad]})
+    put.assert_not_called()
     assert _keys(s3) == []
 
 
@@ -498,13 +549,25 @@ def test_never_uses_transfer_threads(s3, store: ResearchStore, tmp_path: Path) -
             p.stop()
 
 
-def test_import_turns_the_unverified_tls_warning_into_an_error() -> None:
-    """The module installs the filter itself; pytest's own filters must not be what passes this."""
+def test_constructing_a_store_turns_the_unverified_tls_warning_into_an_error(
+    settings: Settings,
+) -> None:
+    """The store installs the filter itself; pytest's own filters must not be what passes this."""
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")  # a baseline under which the warning would be dropped
-        runpy.run_path(research_store.__file__)  # a fresh import: runs the module-level filter
+        warnings.warn("before", urllib3.exceptions.InsecureRequestWarning, stacklevel=1)  # no raise
+        ResearchStore(settings)
         with pytest.raises(urllib3.exceptions.InsecureRequestWarning):
             warnings.warn("probe", urllib3.exceptions.InsecureRequestWarning, stacklevel=1)
+
+
+def test_importing_the_module_leaves_the_warning_filters_alone() -> None:
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        baseline = list(warnings.filters)
+        runpy.run_path(research_store.__file__)  # a fresh import: runs every module-level line
+        assert warnings.filters == baseline
+        warnings.warn("probe", urllib3.exceptions.InsecureRequestWarning, stacklevel=1)  # no raise
 
 
 def test_logs_carry_key_bytes_and_seconds_only(
