@@ -275,6 +275,11 @@ function LotteryFinderTickerGroupBase({
             title="Number of distinct (chain × day) triggers for this ticker today. The feed collapses repeat fires on the same chain to the most recent row, so this count is unique chains, not raw alert hits."
           >
             {count} fire{count === 1 ? '' : 's'}
+            {/* Every hint below is a short form of the chip's hover text:
+                the chips sit inside the group's toggle button, so their
+                hidden text is part of that button's accessible name. The
+                full hover text stays in `title`. */}
+            <SrHint>Distinct chains today, not raw alert hits.</SrHint>
           </span>
           {showConvictionBadge &&
             (showStrongConvictionBadge ? (
@@ -284,6 +289,10 @@ function LotteryFinderTickerGroupBase({
                 data-testid={`lottery-ticker-strong-conviction-${ticker}`}
               >
                 {STRONG_CONVICTION_BADGE_LABEL}
+                <SrHint>
+                  Conviction cluster that is also cheap (every fire ≤ $1) and
+                  pre-PM.
+                </SrHint>
               </span>
             ) : (
               <span
@@ -292,6 +301,10 @@ function LotteryFinderTickerGroupBase({
                 data-testid={`lottery-ticker-conviction-${ticker}`}
               >
                 {HIGH_CONVICTION_BADGE_LABEL}
+                <SrHint>
+                  3 or more fires, one direction, several strikes, within 15
+                  minutes.
+                </SrHint>
               </span>
             ))}
           {!showConvictionBadge &&
@@ -306,6 +319,7 @@ function LotteryFinderTickerGroupBase({
               >
                 was ✦ {CT_TIME_FMT.format(new Date(wasConvictionAt))} (
                 {wasConvictionFireCount}f)
+                <SrHint>{`Conviction window began at ${CT_TIME_FMT.format(new Date(wasConvictionAt))} CT with ${wasConvictionFireCount} fires; no longer live.`}</SrHint>
               </span>
             )}
           {showStormBadge && (
@@ -315,6 +329,10 @@ function LotteryFinderTickerGroupBase({
               data-testid={`lottery-ticker-storm-${ticker}`}
             >
               {BURST_STORM_BADGE_LABEL}
+              <SrHint>
+                8 or more fires, a chain with 20 or more re-triggers, or $500K
+                total premium.
+              </SrHint>
             </span>
           )}
           {showClusterBadge && (
@@ -324,6 +342,10 @@ function LotteryFinderTickerGroupBase({
               data-testid={`lottery-ticker-cluster-${ticker}`}
             >
               🎰 OTM SWEEP ×{clusterStrikes}
+              <SrHint>
+                3 or more cheap OTM ask-side 0DTE strikes. Context only, not a
+                conviction signal.
+              </SrHint>
             </span>
           )}
           {strikesWithSpread && (
@@ -333,6 +355,10 @@ function LotteryFinderTickerGroupBase({
               data-testid={`lottery-ticker-strikes-${ticker}`}
             >
               {strikesWithSpread}
+              <SrHint>
+                Distinct strike and side pairs; the spread in points is in
+                parentheses.
+              </SrHint>
             </span>
           )}
           {agg.bias && (
@@ -342,6 +368,9 @@ function LotteryFinderTickerGroupBase({
               data-testid={`lottery-ticker-bias-${ticker}`}
             >
               {formatBiasLabel(agg.bias)}
+              <SrHint>
+                Net call versus put bias across this ticker's alerts.
+              </SrHint>
             </span>
           )}
           <span
@@ -376,6 +405,9 @@ function LotteryFinderTickerGroupBase({
               data-testid={`lottery-ticker-density-${ticker}`}
             >
               {formatSpreadDuration(agg.spreadMinutes)}
+              <SrHint>
+                Time from the first to the last alert in this group.
+              </SrHint>
             </span>
           )}
           {agg.totalPremium != null && (
@@ -385,6 +417,9 @@ function LotteryFinderTickerGroupBase({
               data-testid={`lottery-ticker-premium-${ticker}`}
             >
               prem {formatPremiumAmount(agg.totalPremium)}
+              <SrHint>
+                Sum of trigger-window premium across this ticker's fires
+              </SrHint>
             </span>
           )}
           {agg.gatedCount > 0 && (
@@ -394,6 +429,9 @@ function LotteryFinderTickerGroupBase({
               data-testid={`lottery-ticker-gated-${ticker}`}
             >
               {agg.gatedCount} gated
+              <SrHint>
+                Alerts demoted to tier 3 by the Market Tide direction gate.
+              </SrHint>
             </span>
           )}
         </div>
@@ -405,18 +443,23 @@ function LotteryFinderTickerGroupBase({
           >
             last <span className="font-mono text-neutral-300">{lastHitCt}</span>{' '}
             CT
+            <SrHint>
+              Most recent alert trigger time (CT) for this ticker today.
+            </SrHint>
           </span>
           <span
             className="text-neutral-500"
             title="Best peak return across every alert for this ticker today. Look-ahead reference (not tradeable) — expand the row to see realized exits per the selected policy."
           >
             best peak
+            <SrHint>Look-ahead reference, not tradeable.</SrHint>
           </span>
           <span
             className={`font-mono font-semibold ${peakColorClass(peakBest)}`}
             title="Best peak return across every alert for this ticker today. Look-ahead reference (not tradeable)."
           >
             {formatPeakPct(peakBest)}
+            <SrHint>Best peak return across every alert today.</SrHint>
           </span>
         </div>
       </button>

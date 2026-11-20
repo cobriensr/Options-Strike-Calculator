@@ -5,13 +5,18 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { cleanup, render, screen, fireEvent } from '@testing-library/react';
 import type {
   ExitPolicy,
   LotteryFire,
 } from '../components/LotteryFinder/types';
 import { LotteryFinderTickerGroup } from '../components/LotteryFinder/LotteryFinderTickerGroup';
-import { genericElementsWithAriaLabel, srHintText } from './helpers/aria';
+import {
+  genericElementsWithAriaLabel,
+  srHintText,
+  titledElementsNeedingHint,
+  titledElementsWithoutHint,
+} from './helpers/aria';
 
 vi.mock('../components/LotteryFinder/LotteryRow', () => ({
   LotteryRow: ({ fire }: { fire: LotteryFire }) => (
@@ -1228,6 +1233,149 @@ describe('LotteryFinderTickerGroup', () => {
     it('leaves no aria-label on a role-less, non-interactive header element', () => {
       const { container } = renderGroup();
       expect(genericElementsWithAriaLabel(container)).toEqual([]);
+    });
+  });
+
+  describe('screen-reader hints on every titled header chip', () => {
+    /** Every chip the header can show: two strikes (strikes summary and
+     *  spread), a gated fire, fires 20 minutes apart (density), and the
+     *  conviction / was-conviction / storm / sweep flags. */
+    function renderFullHeader(variant: 'strong' | 'high' | 'was') {
+      const tideMacro = {
+        mktTideDiff: 200,
+        tickerCumNcpAtFire: 5_000_000,
+        tickerCumNppAtFire: 1_000_000,
+      };
+      const first = makeFire({
+        optionChainId: 'TSLA260514C00250000',
+        strike: 250,
+        directionGated: true,
+      });
+      const second = makeFire({
+        optionChainId: 'TSLA260514C00260000',
+        strike: 260,
+        triggerTimeCt: '2026-05-14T19:50:00Z',
+      });
+      const fires = [first, second].map((f) => ({
+        ...f,
+        macro: { ...f.macro, ...tideMacro },
+      }));
+      return render(
+        <LotteryFinderTickerGroup
+          ticker="TSLA"
+          fires={fires}
+          expanded={false}
+          onToggle={() => undefined}
+          marketOpen={true}
+          exitPolicy={EXIT_POLICY}
+          conviction={variant !== 'was'}
+          strongConviction={variant === 'strong'}
+          storm
+          clusterStrikes={3}
+          wasConvictionAt={Date.parse('2026-05-14T18:40:00Z')}
+          wasConvictionFireCount={4}
+        />,
+      );
+    }
+
+    // The rule, precisely: an element with a non-empty `title` needs an
+    // SrHint as a direct child, unless it has a role, is natively
+    // interactive or already shows its title text.
+    it.each(['strong', 'high', 'was'] as const)(
+      'a full header (%s): every titled element has an SrHint child unless it has a role, is natively interactive or already shows its title',
+      (variant) => {
+        const { container } = renderFullHeader(variant);
+        // Every chip is on screen, so an empty result can't pass by
+        // rendering less.
+        for (const id of [
+          'lottery-ticker-strikes-TSLA',
+          'lottery-ticker-bias-TSLA',
+          'lottery-ticker-tide-TSLA',
+          'lottery-ticker-flow-TSLA',
+          'lottery-ticker-density-TSLA',
+          'lottery-ticker-premium-TSLA',
+          'lottery-ticker-gated-TSLA',
+          'lottery-ticker-last-TSLA',
+          'lottery-ticker-storm-TSLA',
+          'lottery-ticker-cluster-TSLA',
+        ]) {
+          expect(screen.getByTestId(id), id).toBeInTheDocument();
+        }
+        expect(titledElementsNeedingHint(container).length).toBeGreaterThan(12);
+        expect(titledElementsWithoutHint(container)).toEqual([]);
+      },
+    );
+
+    it('keeps each header hint under 100 characters: the chips are part of the toggle button’s accessible name', () => {
+      for (const variant of ['strong', 'high', 'was'] as const) {
+        const { container } = renderFullHeader(variant);
+        for (const el of titledElementsNeedingHint(container)) {
+          const hint = srHintText(el) ?? '';
+          expect(hint.length, hint).toBeLessThan(100);
+        }
+        cleanup();
+      }
+    });
+
+    it('words each chip in a short hint', () => {
+      const { container } = renderFullHeader('strong');
+      const hint = (id: string) =>
+        srHintText(screen.getByTestId(`lottery-ticker-${id}-TSLA`));
+      expect(hint('strong-conviction')).toBe(
+        'Conviction cluster that is also cheap (every fire ≤ $1) and pre-PM.',
+      );
+      expect(hint('storm')).toBe(
+        '8 or more fires, a chain with 20 or more re-triggers, or $500K total premium.',
+      );
+      expect(hint('cluster')).toBe(
+        '3 or more cheap OTM ask-side 0DTE strikes. Context only, not a conviction signal.',
+      );
+      expect(hint('strikes')).toBe(
+        'Distinct strike and side pairs; the spread in points is in parentheses.',
+      );
+      expect(hint('bias')).toBe(
+        "Net call versus put bias across this ticker's alerts.",
+      );
+      expect(hint('density')).toBe(
+        'Time from the first to the last alert in this group.',
+      );
+      expect(hint('premium')).toBe(
+        "Sum of trigger-window premium across this ticker's fires",
+      );
+      expect(hint('gated')).toBe(
+        'Alerts demoted to tier 3 by the Market Tide direction gate.',
+      );
+      expect(hint('last')).toBe(
+        'Most recent alert trigger time (CT) for this ticker today.',
+      );
+      // The count, best-peak label and peak value have no testid.
+      expect(
+        srHintText(container.querySelector('[title^="Number of distinct"]')!),
+      ).toBe('Distinct chains today, not raw alert hits.');
+      const peakTitled = Array.from(
+        container.querySelectorAll('[title^="Best peak return"]'),
+      ).map((el) => srHintText(el));
+      expect(peakTitled).toEqual([
+        'Look-ahead reference, not tradeable.',
+        'Best peak return across every alert today.',
+      ]);
+    });
+
+    it('words the high-conviction and was-conviction chips in short hints', () => {
+      renderFullHeader('high');
+      expect(
+        srHintText(screen.getByTestId('lottery-ticker-conviction-TSLA')),
+      ).toBe(
+        '3 or more fires, one direction, several strikes, within 15 minutes.',
+      );
+      cleanup();
+
+      renderFullHeader('was');
+      expect(
+        srHintText(screen.getByTestId('lottery-ticker-was-conviction-TSLA')),
+      ).toMatch(
+        /^Conviction window began at \d\d:\d\d CT with 4 fires; no longer live\.$/,
+      );
     });
   });
 });
