@@ -142,7 +142,8 @@ def fetch_recent_fires(
     lookback_days: int,
     as_of: dt.date,
 ) -> pd.DataFrame:
-    """Fires of `feed` dated `lookback_days` before `as_of` or later, with a score."""
+    """Fires of `feed` dated from `lookback_days` before `as_of` through `as_of`, with
+    a score. Both ends come from `as_of`, so a historical run never reads later fires."""
     table = "lottery_finder_fires" if feed == "lottery" else "silent_boom_alerts"
     sql = f"""
       SELECT
@@ -156,11 +157,12 @@ def fetch_recent_fires(
         realized_trail30_10_pct
       FROM {table}
       WHERE date >= %s
+        AND date <= %s
         AND takeit_prob IS NOT NULL
         AND peak_ceiling_pct IS NOT NULL
     """
     cutoff = as_of - dt.timedelta(days=lookback_days)
-    return pd.read_sql(sql, conn, params=(cutoff,), parse_dates=["date"])
+    return pd.read_sql(sql, conn, params=(cutoff, as_of), parse_dates=["date"])
 
 
 def compute_feed_drift(df: pd.DataFrame, feed: str, as_of: dt.date) -> dict:
@@ -208,12 +210,12 @@ def compute_feed_drift(df: pd.DataFrame, feed: str, as_of: dt.date) -> dict:
 
 
 def render_markdown_report(
-    today_str: str,
+    as_of_str: str,
     lottery: dict,
     silent_boom: dict,
 ) -> str:
     lines: list[str] = []
-    lines.append(f"# TAKE-IT drift report — {today_str}")
+    lines.append(f"# TAKE-IT drift report — {as_of_str}")
     lines.append("")
     for feed_name, summary in [("lottery", lottery), ("silent_boom", silent_boom)]:
         lines.append(f"## {feed_name}")
@@ -254,9 +256,9 @@ def plot_reliability(
     y_true = (win["peak_ceiling_pct"].to_numpy() >= 20).astype(int)
     bins = reliability_bins(y_true, y_pred, n_bins=10)
 
-    today_str = as_of.isoformat()
+    as_of_str = as_of.isoformat()
     plot_dir.mkdir(parents=True, exist_ok=True)
-    out_path = plot_dir / f"reliability_{feed}_{today_str}.png"
+    out_path = plot_dir / f"reliability_{feed}_{as_of_str}.png"
     fig, ax = plt.subplots(figsize=(8, 6))
     pred = [b[0] for b in bins]
     actual = [b[1] for b in bins]
@@ -264,7 +266,7 @@ def plot_reliability(
     ax.plot(pred, actual, "o-", label=feed)
     ax.set_xlabel("predicted prob (bin mean)")
     ax.set_ylabel("actual rate (peak >= 20%)")
-    ax.set_title(f"TAKE-IT reliability — {feed} — 30d ending {today_str}")
+    ax.set_title(f"TAKE-IT reliability — {feed} — 30d ending {as_of_str}")
     ax.legend()
     ax.grid(alpha=0.3)
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
@@ -289,59 +291,72 @@ def run_drift(
     plot_dir: Path,
 ) -> DriftRun:
     """Read both feeds' recent fires, write the report and reliability plots, and
-    upsert the AUC metrics for `as_of`. Commits once, after the last upsert."""
-    as_of_str = as_of.isoformat()
-    lottery_df = fetch_recent_fires(conn, "lottery", 30, as_of)
-    sb_df = fetch_recent_fires(conn, "silent_boom", 30, as_of)
+    upsert the AUC metrics for `as_of`. Commits once, after the last upsert.
 
-    lottery_summary = compute_feed_drift(lottery_df, "lottery", as_of)
-    sb_summary = compute_feed_drift(sb_df, "silent_boom", as_of)
+    On any error the open transaction is rolled back and the error is re-raised;
+    a rollback that fails too never replaces it. The caller owns the connection
+    and closes it on error.
+    """
+    try:
+        as_of_str = as_of.isoformat()
+        lottery_df = fetch_recent_fires(conn, "lottery", 30, as_of)
+        sb_df = fetch_recent_fires(conn, "silent_boom", 30, as_of)
 
-    plots = (
-        plot_reliability(lottery_df, "lottery", as_of, plot_dir),
-        plot_reliability(sb_df, "silent_boom", as_of, plot_dir),
-    )
+        lottery_summary = compute_feed_drift(lottery_df, "lottery", as_of)
+        sb_summary = compute_feed_drift(sb_df, "silent_boom", as_of)
 
-    report = render_markdown_report(as_of_str, lottery_summary, sb_summary)
-    report_dir.mkdir(parents=True, exist_ok=True)
-    report_path = report_dir / f"takeit-drift-{as_of_str}.md"
-    report_path.write_text(report, encoding="utf-8")
+        plots = (
+            plot_reliability(lottery_df, "lottery", as_of, plot_dir),
+            plot_reliability(sb_df, "silent_boom", as_of, plot_dir),
+        )
 
-    # Persist key metrics to takeit_health_daily (ml_-prefixed names)
-    metrics_written = 0
-    with conn.cursor() as cur:
-        for feed_name, s in (
-            ("lottery", lottery_summary),
-            ("silent_boom", sb_summary),
-        ):
-            for key in (
-                "auc_7d_peak",
-                "auc_30d_peak",
-                "auc_7d_realized",
-                "auc_30d_realized",
+        report = render_markdown_report(as_of_str, lottery_summary, sb_summary)
+        report_dir.mkdir(parents=True, exist_ok=True)
+        report_path = report_dir / f"takeit-drift-{as_of_str}.md"
+        report_path.write_text(report, encoding="utf-8")
+
+        # Persist key metrics to takeit_health_daily (ml_-prefixed names)
+        metrics_written = 0
+        with conn.cursor() as cur:
+            for feed_name, s in (
+                ("lottery", lottery_summary),
+                ("silent_boom", sb_summary),
             ):
-                val = s.get(key)
-                if val is None or (isinstance(val, float) and np.isnan(val)):
-                    continue
-                cur.execute(
-                    """
-                    INSERT INTO takeit_health_daily
-                      (date, feed, metric_name, metric_value)
-                    VALUES (%s, %s, %s, %s)
-                    ON CONFLICT (date, feed, metric_name)
-                    DO UPDATE SET
-                      metric_value = EXCLUDED.metric_value,
-                      computed_at = NOW()
-                    """,
-                    (as_of, feed_name, f"ml_{key}", float(val)),
-                )
-                metrics_written += 1
-    conn.commit()
-    return DriftRun(
-        report_path=report_path,
-        plot_paths=tuple(p for p in plots if p is not None),
-        metrics_written=metrics_written,
-    )
+                for key in (
+                    "auc_7d_peak",
+                    "auc_30d_peak",
+                    "auc_7d_realized",
+                    "auc_30d_realized",
+                ):
+                    val = s.get(key)
+                    if val is None or (isinstance(val, float) and np.isnan(val)):
+                        continue
+                    cur.execute(
+                        """
+                        INSERT INTO takeit_health_daily
+                          (date, feed, metric_name, metric_value)
+                        VALUES (%s, %s, %s, %s)
+                        ON CONFLICT (date, feed, metric_name)
+                        DO UPDATE SET
+                          metric_value = EXCLUDED.metric_value,
+                          computed_at = NOW()
+                        """,
+                        (as_of, feed_name, f"ml_{key}", float(val)),
+                    )
+                    metrics_written += 1
+        conn.commit()
+        return DriftRun(
+            report_path=report_path,
+            plot_paths=tuple(p for p in plots if p is not None),
+            metrics_written=metrics_written,
+        )
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception as rollback_error:
+            # Class name only: a database error message can name the host.
+            print(f"rollback failed: {type(rollback_error).__name__}", file=sys.stderr)
+        raise
 
 
 def main(argv: list[str] | None = None) -> int:

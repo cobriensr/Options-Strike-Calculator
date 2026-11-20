@@ -6,8 +6,8 @@ options-flow chains, one `{date}-chains.parquet` per session.
 
 Reads `--by-day-dir` (default `scripts/eod-flow-analysis/output/by-day/`) and
 writes to `--out-dir` (default `ml/plots/whale-detection/`). It writes nowhere
-else. Exit code 0 when no plot failed (plot 03 writes nothing when the latest
-session had no whales), 1 when one did.
+else. Exit code 0 when no plot failed, 1 when one did. Plot 03 draws the latest
+session that has whales and writes nothing only when no session has any.
 
 Run:
     ml/.venv/Scripts/python ml/src/whale_plots.py [--by-day-dir DIR] [--out-dir DIR]

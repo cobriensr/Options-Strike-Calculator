@@ -254,9 +254,10 @@ def test_fixture_whales_pass_the_checklist(by_day_dir):
 
 def test_whale_plots_writes_only_to_out_dir(by_day_dir, tmp_path, capsys):
     # The default out dir is the tracked ml/plots/whale-detection. It must be
-    # there to be watched, and be the module's default, or this proves nothing.
+    # there to be watched (populated, whatever the count), and be the module's
+    # default, or this proves nothing.
     assert whale_plots.OUTPUT_DIR.resolve() == REAL_PLOT_DIR.resolve()
-    assert len(pngs(REAL_PLOT_DIR)) == 14
+    assert len(pngs(REAL_PLOT_DIR)) > 0
     before = snapshot(REAL_PLOT_DIR)
     out = tmp_path / "out"
 
@@ -333,21 +334,35 @@ def test_main_runs_as_a_script_with_the_dirs_the_nightly_passes(by_day_dir, tmp_
 
     assert child.returncode == 0, child.stderr
     assert pngs(out) == EXPECTED_PNGS
+    # The copy's own default dirs (REPO_ROOT is tmp_path/app) were never made.
+    assert not (tmp_path / "app" / "ml" / "plots").exists()
+    assert not (tmp_path / "app" / "scripts").exists()
 
 
 # ── print_pipeline_summary ────────────────────────────────────────────────────
 
 
 @pytest.mark.parametrize("latest", ["2026-10-30", date(2026, 10, 30)])
-def test_print_pipeline_summary_prints_only_the_date_and_out_dir(
-    latest, tmp_path, capsys
-):
-    whale_plots.print_pipeline_summary(latest, tmp_path / "out")
+def test_print_pipeline_summary_prints_only_the_date_and_out_dir(latest, capsys):
+    # A fixed dir, so the retired-text check cannot trip on a tmp path's name.
+    out_dir = Path("plots-out")
+
+    whale_plots.print_pipeline_summary(latest, out_dir)
 
     printed = capsys.readouterr().out
     assert "2026-10-30" in printed
-    assert str(tmp_path / "out") in printed
+    assert str(out_dir) in printed
     # The retired Make-era lines: where the aggregate, the Blob copy and the
-    # archive were, and what to commit.
-    for retired in ("blob", "archive", "commit", "aggregate", "cumulative", "~/"):
+    # archive were, what to commit, and the "complete" banner (it also printed
+    # on a failed run).
+    for retired in (
+        "blob",
+        "archive",
+        "commit",
+        "aggregate",
+        "cumulative",
+        "~/",
+        "complete",
+        "nightly",
+    ):
         assert retired not in printed.lower()

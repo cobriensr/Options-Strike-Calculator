@@ -65,6 +65,9 @@ class FakeCursor:
         if self.conn.fail_on and self.conn.fail_on in sql:
             raise RuntimeError("connection lost")
         if "INSERT INTO takeit_health_daily" in sql:
+            attempt = len(self.conn.upserts) + 1
+            if attempt == self.conn.fail_on_upsert:
+                raise RuntimeError(f"upsert {attempt} failed")
             self.conn.upserts.append(params)
             return
         if "FROM lottery_finder_fires" in sql:
@@ -84,12 +87,25 @@ class FakeCursor:
 
 
 class FakeConn:
-    def __init__(self, frames: dict[str, pd.DataFrame], fail_on: str | None = None):
+    """`fail_on`: any statement containing this text raises. `fail_on_upsert`: the
+    n-th upsert (1-based) raises after n-1 went through. `rollback_error`: the
+    rollback itself raises."""
+
+    def __init__(
+        self,
+        frames: dict[str, pd.DataFrame],
+        fail_on: str | None = None,
+        fail_on_upsert: int | None = None,
+        rollback_error: bool = False,
+    ):
         self.frames = frames
         self.fail_on = fail_on
+        self.fail_on_upsert = fail_on_upsert
+        self.rollback_error = rollback_error
         self.executed: list[tuple[str, tuple | None]] = []
         self.upserts: list[tuple] = []
         self.commits = 0
+        self.rollbacks = 0
         self.closed = False
 
     def cursor(self) -> FakeCursor:
@@ -97,6 +113,11 @@ class FakeConn:
 
     def commit(self) -> None:
         self.commits += 1
+
+    def rollback(self) -> None:
+        self.rollbacks += 1
+        if self.rollback_error:
+            raise OSError("rollback blew up")
 
     def close(self) -> None:
         self.closed = True
@@ -494,8 +515,12 @@ def test_fetch_window_uses_as_of_param(feed, table):
     ((sql, params),) = conn.executed
     assert "current_date" not in sql.lower()
     assert f"FROM {table}" in sql
+    # Both ends come from as_of, in the order the params are bound: a historical
+    # as_of must not read fires dated after it.
     assert "date >= %s" in sql
-    assert params == (AS_OF - dt.timedelta(days=30),)
+    assert "date <= %s" in sql
+    assert sql.index("date >= %s") < sql.index("date <= %s")
+    assert params == (AS_OF - dt.timedelta(days=30), AS_OF)
     assert len(frame) == 12
     assert pd.api.types.is_datetime64_any_dtype(frame["date"])
 
@@ -503,7 +528,7 @@ def test_fetch_window_uses_as_of_param(feed, table):
 def test_fetch_window_follows_the_lookback():
     conn = FakeConn({"lottery": fires(separable=True)})
     fetch_recent_fires(conn, "lottery", 7, AS_OF)
-    assert conn.executed[0][1] == (dt.date(2026, 10, 28),)
+    assert conn.executed[0][1] == (dt.date(2026, 10, 28), AS_OF)
 
 
 # --- plot_reliability ---------------------------------------------------------
@@ -609,9 +634,14 @@ def test_run_drift_with_an_empty_feed_writes_one_plot_and_only_that_feeds_metric
 
 
 @pytest.mark.parametrize(
-    "failing_sql", ["FROM silent_boom_alerts", "INSERT INTO takeit_health_daily"]
+    "failing_sql",
+    [
+        "FROM lottery_finder_fires",
+        "FROM silent_boom_alerts",
+        "INSERT INTO takeit_health_daily",
+    ],
 )
-def test_run_drift_surfaces_a_database_failure_and_does_not_commit(
+def test_run_drift_surfaces_a_database_failure_rolls_back_and_does_not_commit(
     tmp_path, failing_sql
 ):
     conn = FakeConn(
@@ -623,6 +653,41 @@ def test_run_drift_surfaces_a_database_failure_and_does_not_commit(
         run_drift(conn, AS_OF, tmp_path, tmp_path)
 
     assert conn.commits == 0
+    assert conn.rollbacks == 1
+    assert not conn.closed  # the caller owns the connection
+
+
+def test_run_drift_rolls_back_the_upserts_made_before_a_later_one_fails(tmp_path):
+    conn = FakeConn(
+        {"lottery": fires(separable=True), "silent_boom": fires(separable=True)},
+        fail_on_upsert=2,
+    )
+
+    with pytest.raises(RuntimeError, match="upsert 2 failed"):
+        run_drift(conn, AS_OF, tmp_path, tmp_path)
+
+    assert len(conn.upserts) == 1  # the first went through, uncommitted
+    assert conn.commits == 0
+    assert conn.rollbacks == 1
+    assert not conn.closed
+
+
+def test_a_failed_rollback_does_not_mask_the_original_error(tmp_path, capsys):
+    conn = FakeConn(
+        {"lottery": fires(separable=True), "silent_boom": fires(separable=True)},
+        fail_on_upsert=2,
+        rollback_error=True,
+    )
+
+    with pytest.raises(RuntimeError, match="upsert 2 failed"):
+        run_drift(conn, AS_OF, tmp_path, tmp_path)
+
+    assert conn.rollbacks == 1
+    assert conn.commits == 0
+    # The failed rollback is reported by class name only, never its message.
+    err = capsys.readouterr().err
+    assert "rollback failed: OSError" in err
+    assert "rollback blew up" not in err
 
 
 # --- main ---------------------------------------------------------------------
