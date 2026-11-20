@@ -221,6 +221,13 @@ function SilentBoomTickerGroupBase({
 
   return (
     <div className="overflow-hidden rounded border border-neutral-800 bg-neutral-950/40">
+      {/* Every chip below sits inside this toggle button, so a chip's hidden
+          text (SrHint) is part of the button's accessible name, read on
+          every Tab stop. The header shows about 150 characters; the hints
+          are kept short enough that a full header's name stays under 400
+          (a test asserts it). A chip whose visible text explains itself
+          (the count, strikes, premium, last-hit time, best peak) keeps only
+          its `title` for the mouse; the others get a few words. */}
       <button
         {...triggerProps}
         onClick={handleToggle}
@@ -242,14 +249,6 @@ function SilentBoomTickerGroupBase({
             title="Number of distinct (chain × spike-bucket) silent-boom alerts for this ticker today. Each spike bucket counts once per chain even if the same contract spikes again later in the session."
           >
             {count} alert{count === 1 ? '' : 's'}
-            {/* Every hint below is a short form of the chip's hover text:
-                the chips sit inside the group's toggle button, so their
-                hidden text is part of that button's accessible name. The
-                full hover text stays in `title`. */}
-            <SrHint>
-              Distinct chain and spike-bucket alerts today; a repeat spike
-              counts once.
-            </SrHint>
           </span>
           {showConvictionBadge &&
             (showStrongConvictionBadge ? (
@@ -259,10 +258,7 @@ function SilentBoomTickerGroupBase({
                 data-testid={`silent-boom-ticker-strong-conviction-${ticker}`}
               >
                 {STRONG_CONVICTION_BADGE_LABEL}
-                <SrHint>
-                  Conviction cluster that is also cheap (every alert ≤ $1) and
-                  pre-PM.
-                </SrHint>
+                <SrHint>cheap (≤ $1), before 12:30 CT</SrHint>
               </span>
             ) : (
               <span
@@ -271,10 +267,7 @@ function SilentBoomTickerGroupBase({
                 data-testid={`silent-boom-ticker-conviction-${ticker}`}
               >
                 {HIGH_CONVICTION_BADGE_LABEL}
-                <SrHint>
-                  3 or more alerts, one direction, several strikes, within 15
-                  minutes.
-                </SrHint>
+                <SrHint>3+ alerts, one side, within 15 min</SrHint>
               </span>
             ))}
           {!showConvictionBadge &&
@@ -289,7 +282,7 @@ function SilentBoomTickerGroupBase({
               >
                 was ✦ {CT_TIME_FMT.format(new Date(wasConvictionAt))} (
                 {wasConvictionFireCount}a)
-                <SrHint>{`Conviction window began at ${CT_TIME_FMT.format(new Date(wasConvictionAt))} CT with ${wasConvictionFireCount} alerts; no longer live.`}</SrHint>
+                <SrHint>conviction since dropped</SrHint>
               </span>
             )}
           {showStormBadge && (
@@ -299,10 +292,7 @@ function SilentBoomTickerGroupBase({
               data-testid={`silent-boom-ticker-storm-${ticker}`}
             >
               {BURST_STORM_BADGE_LABEL}
-              <SrHint>
-                8 or more alerts, a ×100 or larger spike, or $500K total
-                premium.
-              </SrHint>
+              <SrHint>8+ alerts, ×100 spike or $500K</SrHint>
             </span>
           )}
           {showClusterBadge && (
@@ -312,10 +302,7 @@ function SilentBoomTickerGroupBase({
               data-testid={`silent-boom-ticker-cluster-${ticker}`}
             >
               🎰 OTM SWEEP ×{clusterStrikes}
-              <SrHint>
-                3 or more cheap OTM ask-side 0DTE strikes. Context only, not a
-                conviction signal.
-              </SrHint>
+              <SrHint>context only, not conviction</SrHint>
             </span>
           )}
           {strikesWithSpread && (
@@ -325,10 +312,6 @@ function SilentBoomTickerGroupBase({
               data-testid={`silent-boom-ticker-strikes-${ticker}`}
             >
               {strikesWithSpread}
-              <SrHint>
-                Distinct strike and side pairs; the spread in points is in
-                parentheses.
-              </SrHint>
             </span>
           )}
           {agg.bias && (
@@ -338,9 +321,7 @@ function SilentBoomTickerGroupBase({
               data-testid={`silent-boom-ticker-bias-${ticker}`}
             >
               {formatBiasLabel(agg.bias)}
-              <SrHint>
-                Net call versus put bias across this ticker's alerts.
-              </SrHint>
+              <SrHint>net calls versus puts</SrHint>
             </span>
           )}
           <span
@@ -349,13 +330,7 @@ function SilentBoomTickerGroupBase({
             data-testid={`silent-boom-ticker-tide-${ticker}`}
           >
             {formatTideLabel(agg.tide)}
-            {/* The chips sit inside the group's toggle button, so their hidden
-                text is part of that button's accessible name. It stays the
-                one-line question; the aligned / counter / mixed key is in the
-                hover text only. */}
-            <SrHint>
-              Does Market Tide direction agree with this ticker's bias?
-            </SrHint>
+            <SrHint>Market Tide versus bias</SrHint>
           </span>
           <span
             className={`rounded px-1.5 py-0.5 font-mono text-[11px] leading-none font-semibold ${alignChipClass(agg.flow.align)}`}
@@ -363,10 +338,7 @@ function SilentBoomTickerGroupBase({
             data-testid={`silent-boom-ticker-flow-${ticker}`}
           >
             {formatFlowLabel(agg.flow)}
-            <SrHint>
-              Does per-ticker net flow direction at fire time agree with this
-              ticker's bias?
-            </SrHint>
+            <SrHint>ticker net flow versus bias</SrHint>
           </span>
           {agg.spreadMinutes != null && (
             <span
@@ -375,9 +347,7 @@ function SilentBoomTickerGroupBase({
               data-testid={`silent-boom-ticker-density-${ticker}`}
             >
               {formatSpreadDuration(agg.spreadMinutes)}
-              <SrHint>
-                Time from the first to the last alert in this group.
-              </SrHint>
+              <SrHint>first to last alert</SrHint>
             </span>
           )}
           {agg.totalPremium != null && (
@@ -387,9 +357,6 @@ function SilentBoomTickerGroupBase({
               data-testid={`silent-boom-ticker-premium-${ticker}`}
             >
               prem {formatPremiumAmount(agg.totalPremium)}
-              <SrHint>
-                Sum of spike-bucket premium across this ticker's alerts
-              </SrHint>
             </span>
           )}
           {agg.gatedCount > 0 && (
@@ -399,9 +366,7 @@ function SilentBoomTickerGroupBase({
               data-testid={`silent-boom-ticker-gated-${ticker}`}
             >
               {agg.gatedCount} gated
-              <SrHint>
-                Alerts demoted to tier 3 by the Market Tide direction gate.
-              </SrHint>
+              <SrHint>demoted by the tide gate</SrHint>
             </span>
           )}
         </div>
@@ -413,23 +378,18 @@ function SilentBoomTickerGroupBase({
           >
             last <span className="font-mono text-neutral-300">{lastHitCt}</span>{' '}
             CT
-            <SrHint>
-              Most recent alert spike-bucket time (CT) for this ticker today.
-            </SrHint>
           </span>
           <span
             className="text-neutral-500"
             title="Best peak return across every alert for this ticker today. Look-ahead reference (not tradeable) — expand the row to see realized exits per the selected policy."
           >
             best peak
-            <SrHint>Look-ahead reference, not tradeable.</SrHint>
           </span>
           <span
             className={`font-mono font-semibold ${peakColorClass(peakBest)}`}
             title="Best peak return across every alert for this ticker today. Look-ahead reference (not tradeable)."
           >
             {formatPeakPct(peakBest)}
-            <SrHint>Best peak return across every alert today.</SrHint>
           </span>
         </div>
       </button>
