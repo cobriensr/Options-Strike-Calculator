@@ -137,7 +137,7 @@ describe('trackDbAttempts', () => {
 // every package at the top.
 //
 // The test limit is the nested run's (120 s), then runProbe's removal retries
-// (about 55 s at most), then a margin. spawnSync blocks the worker, so vitest
+// (about 66 s at most), then a margin. spawnSync blocks the worker, so vitest
 // checks a test's time only after it returns; a lower limit would hide an EPERM
 // that the retries were still riding out.
 describe('the setup.ts hooks, run in a one-file project', () => {
@@ -193,9 +193,11 @@ describe('the setup.ts hooks, run in a one-file project', () => {
       };
     } finally {
       // Backstop for a process that still has a file open in `dir`: EPERM on
-      // Windows, retried with a linear back-off (1 s, 2 s, ... 10 s: about 55 s
-      // in all) until that process lets go. A run under full-suite load held
-      // the directory for about 41 s (2026-11-19).
+      // Windows, retried with a linear back-off until that process lets go:
+      // Node sleeps retryDelay * k before retry k and makes maxRetries + 1
+      // sleeps, so 1 s + 2 s + ... + 11 s, about 66 s (measured on Node 24
+      // for Windows). A run under full-suite load held the directory for
+      // about 41 s (2026-11-19).
       rmSync(dir, {
         recursive: true,
         force: true,
@@ -225,12 +227,12 @@ describe('the setup.ts hooks, run in a one-file project', () => {
     expect(output).toContain(BLOCK_MESSAGE);
     expect(output).toContain('this test tried: neon');
     expect(output).not.toContain('hunter2');
-  }, 190_000);
+  }, 240_000);
 
   it('passes the same file when nothing tried', () => {
     const { status, output } = runProbe(probe('void neon;'));
     expect(status, output).toBe(0);
-  }, 190_000);
+  }, 240_000);
 
   // The import after the reset runs the setup.ts mock factory afresh, which
   // imports a new db-guard instance. A swallowed attempt must still land in
@@ -285,7 +287,7 @@ describe('the setup.ts hooks, run in a one-file project', () => {
       expect(output).toContain(`this test tried: ${kind}`);
       expect(output).not.toContain('hunter2');
     },
-    190_000,
+    240_000,
   );
 
   it('passes a reset-and-import that makes no call', () => {
@@ -293,7 +295,7 @@ describe('the setup.ts hooks, run in a one-file project', () => {
       afterReset('@neondatabase/serverless', 'void mod;'),
     );
     expect(status, output).toBe(0);
-  }, 190_000);
+  }, 240_000);
 });
 
 describe('the env scrub', () => {
