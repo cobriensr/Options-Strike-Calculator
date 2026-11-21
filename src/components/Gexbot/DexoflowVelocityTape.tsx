@@ -27,6 +27,7 @@
 import { memo, useMemo } from 'react';
 
 import { useGexbotData } from '../../hooks/useGexbotData';
+import { SrHint } from '../ui/SrHint.js';
 import { formatDte } from './types';
 import {
   formatTakerDelta,
@@ -161,14 +162,14 @@ function Cell({ value }: { value: number | null }) {
         : value < 0
           ? 'negative'
           : 'flat';
-  const ariaLabel = `${verdict} ${formatTakerDelta(value)}`;
   return (
     <td className="px-3 py-1.5 text-right tabular-nums">
-      <span className={cls} aria-label={ariaLabel}>
+      <span className={cls}>
         <span className="mr-1.5" aria-hidden>
           {glyph}
         </span>
         {formatTakerDelta(value)}
+        <SrHint>{verdict}</SrHint>
       </span>
     </td>
   );
