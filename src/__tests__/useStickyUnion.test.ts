@@ -1134,53 +1134,75 @@ describe('useStickyUnion: same-commit rehydrate', () => {
   // A retracted row still in storage must never draw, not even for the commit
   // that carries the key. The ingest effect evicts it, but it runs after that
   // commit, so the render read has to skip tombstoned keys itself.
-  it('never commits a tombstoned stored row on a mount', () => {
-    seed('tomb-mount', [
-      { id: 'x', pct: 1 },
-      { id: 'y', pct: 2 },
-    ]);
+  // With and without `retain`: useNeverVanishFeed forwards both, and a render
+  // read that skipped tombstones only when there is no `retain` would pass the
+  // first case alone.
+  const RETAIN_CASES: [string, ((a: Alert) => boolean) | undefined][] = [
+    ['without retain', undefined],
+    ['with a retain that accepts every row', () => true],
+  ];
 
-    const { committed } = renderRecorded({
-      items: [],
-      storageKey: 'tomb-mount',
-      tombstones: new Set(['x']),
-    });
-
-    expect(committed.length).toBeGreaterThan(0);
-    for (const c of committed) expect(c.ids).toEqual(['y']);
-  });
-
-  it('never commits a tombstoned stored row under a new key, and the eviction still reaches storage', () => {
-    vi.useFakeTimers();
-    try {
-      seed('tomb-B', [
+  it.each(RETAIN_CASES)(
+    'never commits a tombstoned stored row on a mount, %s',
+    (_name, retain) => {
+      seed('tomb-mount', [
         { id: 'x', pct: 1 },
         { id: 'y', pct: 2 },
       ]);
-      const tombstones = new Set(['x']);
-      const { committed, rerender } = renderRecorded({
-        items: [{ id: 'a', pct: 9 }],
-        storageKey: 'tomb-A',
-        tombstones,
+
+      const { committed } = renderRecorded({
+        items: [],
+        storageKey: 'tomb-mount',
+        tombstones: new Set(['x']),
+        ...(retain !== undefined && { retain }),
       });
 
-      rerender({ items: [], storageKey: 'tomb-B', tombstones });
+      expect(committed.length).toBeGreaterThan(0);
+      for (const c of committed) expect(c.ids).toEqual(['y']);
+    },
+  );
 
-      const underB = idsUnder(committed, 'tomb-B');
-      expect(underB.length).toBeGreaterThan(0);
-      for (const ids of underB) expect(ids).toEqual(['y']);
-      // The ingest effect still evicts it, and the persisted blob follows.
-      act(() => {
-        vi.advanceTimersByTime(1_000);
-      });
-      const persisted = JSON.parse(
-        localStorage.getItem('tomb-B') ?? '[]',
-      ) as Array<[string, Alert]>;
-      expect(persisted.map(([k]) => k)).toEqual(['y']);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
+  it.each(RETAIN_CASES)(
+    'never commits a tombstoned stored row under a new key, and the eviction still reaches storage, %s',
+    (_name, retain) => {
+      vi.useFakeTimers();
+      try {
+        seed('tomb-B', [
+          { id: 'x', pct: 1 },
+          { id: 'y', pct: 2 },
+        ]);
+        const tombstones = new Set(['x']);
+        const retainProp = retain !== undefined ? { retain } : {};
+        const { committed, rerender } = renderRecorded({
+          items: [{ id: 'a', pct: 9 }],
+          storageKey: 'tomb-A',
+          tombstones,
+          ...retainProp,
+        });
+
+        rerender({
+          items: [],
+          storageKey: 'tomb-B',
+          tombstones,
+          ...retainProp,
+        });
+
+        const underB = idsUnder(committed, 'tomb-B');
+        expect(underB.length).toBeGreaterThan(0);
+        for (const ids of underB) expect(ids).toEqual(['y']);
+        // The ingest effect still evicts it, and the persisted blob follows.
+        act(() => {
+          vi.advanceTimersByTime(1_000);
+        });
+        const persisted = JSON.parse(
+          localStorage.getItem('tomb-B') ?? '[]',
+        ) as Array<[string, Alert]>;
+        expect(persisted.map(([k]) => k)).toEqual(['y']);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
 
   it('does not re-read storage on a re-render, even when the tombstones are a new Set every render', () => {
     seed('tomb-reread', [
