@@ -1016,9 +1016,13 @@ describe('AnalysisHistory', () => {
       await waitFor(() => {
         expect(dateCalls).toHaveLength(2);
       });
+      // The drop cleared the dates list, so the Date select is back only
+      // once the dates refetch lands, which the wait above doesn't cover.
+      await waitFor(() => {
+        expect(screen.getByLabelText('Date')).toHaveValue('2025-03-01');
+      });
       // The reply the drop discarded is not what the owner sees while the
       // new request waits, or after it.
-      expect(screen.getByLabelText('Date')).toHaveValue('2025-03-01');
       expect(screen.queryByText('FIRST DATE CONDOR')).not.toBeInTheDocument();
       await act(async () => {
         dateCalls[1]?.reply(
@@ -1508,13 +1512,14 @@ describe('AnalysisHistory', () => {
     }
 
     /**
-     * Lets a rejection already queued by an abort propagate through the
-     * effect's catch and finally. There is nothing to wait for when the
-     * guard works (nothing happens), so this is a short real timer.
+     * Lets a rejection already queued by an abort run through the effect's
+     * catch and finally. The mock rejects synchronously on abort and both
+     * handlers are microtasks, so one macrotask turn drains them: nothing
+     * here waits on a clock, and it works for any machine speed.
      */
     async function settleRejections() {
       await act(async () => {
-        await new Promise((resolve) => setTimeout(resolve, 20));
+        await new Promise((resolve) => setTimeout(resolve, 0));
       });
     }
 
