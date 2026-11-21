@@ -12,6 +12,8 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { StrikeBox } from '../../components/GexTarget/StrikeBox';
+import { RankArrow } from '../../components/GexTarget/StrikeBox/RankArrow';
+import { genericElementsWithAriaLabel } from '../helpers/aria';
 import type { StrikeScore, MagnetFeatures } from '../../utils/gex-target';
 
 // ── Fixture helpers ───────────────────────────────────────────────────
@@ -184,10 +186,10 @@ describe('StrikeBox: Periscope Γ overlay', () => {
       />,
     );
     expect(
-      screen.getByLabelText(
-        'Periscope gamma sign matches the naive Hedge sign',
-      ),
-    ).toBeInTheDocument();
+      screen.getByRole('img', {
+        name: 'Periscope gamma sign matches the naive Hedge sign',
+      }),
+    ).toHaveTextContent('✓');
   });
 
   it('shows the ✗ marker on a UW-era slice when the Periscope gamma sign differs from the naive Hedge sign', () => {
@@ -201,10 +203,10 @@ describe('StrikeBox: Periscope Γ overlay', () => {
       />,
     );
     expect(
-      screen.getByLabelText(
-        'Periscope gamma sign differs from the naive Hedge sign',
-      ),
-    ).toBeInTheDocument();
+      screen.getByRole('img', {
+        name: 'Periscope gamma sign differs from the naive Hedge sign',
+      }),
+    ).toHaveTextContent('✗');
   });
 
   it.each([
@@ -232,7 +234,9 @@ describe('StrikeBox: Periscope Γ overlay', () => {
       );
       expect(screen.queryByText('✗')).toBeNull();
       expect(
-        screen.queryByLabelText(/Periscope gamma sign (matches|differs)/),
+        screen.queryByRole('img', {
+          name: /Periscope gamma sign (matches|differs)/,
+        }),
       ).toBeNull();
     },
   );
@@ -247,11 +251,30 @@ describe('StrikeBox: Periscope Γ overlay', () => {
       />,
     );
     expect(
-      screen.queryByLabelText(/Periscope gamma sign matches/),
+      screen.queryByRole('img', { name: /Periscope gamma sign matches/ }),
     ).not.toBeInTheDocument();
     expect(
-      screen.queryByLabelText(/Periscope gamma sign differs/),
+      screen.queryByRole('img', { name: /Periscope gamma sign differs/ }),
     ).not.toBeInTheDocument();
+  });
+
+  it('names no bare span or div on a slice that shows both the ✓ and ✗ markers', () => {
+    // Naive gexDollars defaults to +2B: 5800 matches (+), 5750 differs (-).
+    const mm = new Map<number, number>([
+      [5800, 3_500_000_000],
+      [5750, -3_500_000_000],
+    ]);
+    const { container } = render(
+      <StrikeBox
+        leaderboard={[makeStrike(5800), makeStrike(5750)]}
+        mmGammaMap={mm}
+        mmGammaCapturedAt={UW_SLICE}
+      />,
+    );
+    expect(
+      screen.getAllByRole('img', { name: /Periscope gamma sign/ }),
+    ).toHaveLength(2);
+    expect(genericElementsWithAriaLabel(container)).toEqual([]);
   });
 });
 
@@ -466,7 +489,22 @@ describe('StrikeBox: rank arrows', () => {
     // First render: prevRanksRef is empty so every entry is 'new'.
     // The effect fires and sets rankChanges to {type:'new'}, which persists
     // until the next top5 change — so the "NEW" badge is what the user sees.
-    expect(screen.getByLabelText('New entry')).toBeInTheDocument();
+    expect(screen.getByRole('img', { name: 'New entry' })).toHaveTextContent(
+      'NEW',
+    );
+  });
+});
+
+describe('RankArrow: every state names its glyph as an image', () => {
+  it.each([
+    ['new', { type: 'new', delta: 0 }, 'New entry', 'NEW'],
+    ['up', { type: 'up', delta: 2 }, 'Rank improved by 2', '↑2'],
+    ['down', { type: 'down', delta: -3 }, 'Rank worsened by 3', '↓3'],
+    ['same', { type: 'same', delta: 0 }, 'Rank unchanged', '—'],
+  ] as const)('%s', (_state, info, name, glyph) => {
+    const { container } = render(<RankArrow info={info} />);
+    expect(screen.getByRole('img', { name })).toHaveTextContent(glyph);
+    expect(genericElementsWithAriaLabel(container)).toEqual([]);
   });
 });
 
@@ -744,7 +782,7 @@ describe('StrikeBox: rank arrows (up / down)', () => {
     );
 
     // After first render + effect flush, all entries show "New entry" (prevRanksRef was empty)
-    const newArrows = screen.getAllByLabelText('New entry');
+    const newArrows = screen.getAllByRole('img', { name: 'New entry' });
     expect(newArrows.length).toBeGreaterThanOrEqual(1);
 
     // Rerender with swapped order so rank changes fire
@@ -767,9 +805,9 @@ describe('StrikeBox: rank arrows (up / down)', () => {
     // After rerender: 5750 was rank 2 → now rank 1 (↑1), 5800 was rank 1 → now rank 2 (↓1).
     // aria-labels now include the delta count ("Rank improved by 1", "Rank worsened by 1").
     const allArrows = [
-      ...screen.queryAllByLabelText(/Rank improved/),
-      ...screen.queryAllByLabelText(/Rank worsened/),
-      ...screen.queryAllByLabelText('Rank unchanged'),
+      ...screen.queryAllByRole('img', { name: /Rank improved/ }),
+      ...screen.queryAllByRole('img', { name: /Rank worsened/ }),
+      ...screen.queryAllByRole('img', { name: 'Rank unchanged' }),
     ];
     expect(allArrows.length).toBeGreaterThanOrEqual(2);
   });

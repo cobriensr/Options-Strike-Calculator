@@ -227,6 +227,7 @@ export const Row = memo(function Row({
             <span>{formatGexBare(mmGamma)}</span>
             {mmAgreement === 'agree' && (
               <span
+                role="img"
                 aria-label="Periscope gamma sign matches the naive Hedge sign"
                 title="Periscope gamma sign matches the naive Hedge sign"
                 style={{ color: theme.green }}
@@ -236,6 +237,7 @@ export const Row = memo(function Row({
             )}
             {mmAgreement === 'disagree' && (
               <span
+                role="img"
                 aria-label="Periscope gamma sign differs from the naive Hedge sign"
                 title="Periscope gamma sign differs from the naive Hedge sign"
                 style={{ color: theme.red }}
