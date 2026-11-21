@@ -37,7 +37,7 @@ export default function DeltaStrikesTable({
           are dropped on mobile — primary trade-decision data
           (strike + premium + Δ) stays. Rotate to landscape or use the
           desktop view to see the full table. */}
-      <div className="space-y-2 md:hidden" aria-label="Delta strikes">
+      <section className="space-y-2 md:hidden" aria-label="Delta strikes">
         {allDeltas.map((row, i) => {
           if ('error' in row) return null;
           const r = row;
@@ -94,7 +94,7 @@ export default function DeltaStrikesTable({
             </div>
           );
         })}
-      </div>
+      </section>
 
       {/* Desktop (md+): full 14-col table. */}
       <ScrollHint className="hidden md:block">

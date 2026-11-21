@@ -119,7 +119,10 @@ test.describe('Responsive Layout', () => {
     await expect(
       page.getByRole('table', { name: /^Strike prices by delta/ }),
     ).toBeHidden();
-    const cards = results.locator('div[aria-label="Delta strikes"]');
+    // Both the cards and the table's wrapper are <section aria-label="Delta
+    // strikes">; a role query skips the one that is display:none, so this is
+    // the cards.
+    const cards = results.getByRole('region', { name: 'Delta strikes' });
     await expect(cards).toBeVisible();
     await expect(cards.getByText('5\u0394', { exact: true })).toBeVisible();
     await expectNoSidewaysScroll(page);
@@ -210,9 +213,11 @@ test.describe('Responsive Layout', () => {
     // ScrollHint's horizontal scroller (table > section > overflow div)
     const table = page.getByRole('table', { name: /^Strike prices by delta/ });
     await expect(table).toBeVisible();
-    await expect(
-      results.locator('div[aria-label="Delta strikes"]'),
-    ).toBeHidden();
+    // The cards and the table's wrapper share the "Delta strikes" region
+    // name; only the table's is displayed (a role query skips display:none).
+    const regions = results.getByRole('region', { name: 'Delta strikes' });
+    await expect(regions).toHaveCount(1);
+    await expect(regions.getByRole('table')).toBeVisible();
     await expect(table.locator('xpath=../..')).toHaveCSS('overflow-x', 'auto');
 
     // ...so the page itself doesn't scroll sideways, header and lazy
