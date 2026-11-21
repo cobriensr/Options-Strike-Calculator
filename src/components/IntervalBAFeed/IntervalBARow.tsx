@@ -15,6 +15,7 @@ import { useNetFlowHistory } from '../../hooks/useNetFlowHistory.js';
 import { useTickerCandles } from '../../hooks/useTickerCandles.js';
 import { ContractTapeChart } from '../charts/ContractTapeChart.js';
 import ErrorBoundary from '../ErrorBoundary.js';
+import { SrHint } from '../ui/SrHint.js';
 import { EXPANDED_ROW_CHART_HEIGHT } from '../../constants/chart-layout.js';
 import { handleStaleChunk } from '../../utils/handle-stale-chunk.js';
 import type { IntervalBAFeedAlert } from '../../hooks/useIntervalBAFeed.js';
@@ -301,9 +302,9 @@ export const IntervalBARow = memo(function IntervalBARow({
             <span
               title={moneyness.tooltip}
               className={`cursor-help rounded border px-1.5 py-0.5 font-sans text-[10px] font-bold ${moneyness.cls}`}
-              aria-label={moneyness.tooltip}
             >
               {moneyness.label}
+              <SrHint>{moneyness.tooltip}</SrHint>
             </span>
           )}
         </span>
