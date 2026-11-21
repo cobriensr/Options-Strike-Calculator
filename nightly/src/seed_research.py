@@ -13,8 +13,10 @@ its manifest entries.
 The path is the image's (`Dockerfile`; `;` between the folders on Windows): the modules import
 each other flat, and `research_derive` pulls in the shared scripts. Settings are
 `config.load_settings()` as the nightly job reads them, so the whole nightly environment is
-needed, not only `R2_*`. Run it against the checkout that holds the files: a fresh worktree
-has no `docs/tmp/`.
+needed, not only `R2_*`. Run it against the main checkout, which holds the owner's untracked
+reports: a worktree holds only the tracked files, a subset of `docs/tmp/`, so it seeds a
+fraction of them and still exits 0, and since a run never overwrites, whatever it puts at the
+tracking state key first stays there.
 
 What it does (`SEED_RULES` is the table of what goes where):
 
@@ -270,8 +272,9 @@ def main(argv: list[str] | None = None) -> int:
         "--dry-run", action="store_true", help="write nothing; report what a run would do"
     )
     args = parser.parse_args(argv)
-    # A typo'd root, or one with none of the files (a fresh worktree, say), would match nothing
-    # and report a clean run of zeros: both stop here, before settings and the store.
+    # A typo'd root, or one with none of the files (an empty folder, say), would match nothing
+    # and report a clean run of zeros: both stop here, before settings and the store. A worktree
+    # root is not caught: it holds the tracked subset, so it matches and seeds only that.
     if not args.repo_root.is_dir():
         print("error: --repo-root is not a directory", file=sys.stderr)
         return 2

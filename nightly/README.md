@@ -15,7 +15,7 @@ Each run:
    days of catch-up (`CATCHUP_MAX_DAYS`). The calendar starts at 2026-01-02
    (`TAPE_START`). A planned day starts only inside the window under "How much of
    the run the tape gets". At the measured pace (204 s a day at the median, 324 s
-   the slowest) its 6,900 s start about 33 days a night, 21 at the slowest, so
+   the slowest) its 6,900 s start about 34 days a night, 22 at the slowest, so
    the 30 fit at the median pace and not at the slowest: a night lands up to 30
    days, and a longer backlog or the slowest pace takes more nights.
 2. For each planned day, newest first: downloads the zip from UW, converts it to
@@ -92,17 +92,19 @@ The reserve is the sum of the fourteen steps' `min_seconds`: `enrich-outcomes` 9
 900 + 300 + 1,800 + 900 + 8 × 300 + 2 × 600 = 7,500. The cap's 8,400 is 7,500 − 900 +
 1,800. Every step added to `STEPS` takes its `min_seconds` out of the window.
 
-A night starts about the window divided by the seconds one day takes. On Railway a day
-takes 204 s to land at the median (86 days, 2026-10-29 to 11-12; 245 s at the 90th
-percentile, 324 s the slowest), and the two 30-day catch-up nights took 5,956 s and
-6,110 s in all, so each fit inside 6,900 s. Worked from those pace figures and rounded
-down, the 6,900 s window starts about 33 days at the median pace (6,900 ÷ 204 = 33.8)
-and about 21 at the slowest (6,900 ÷ 324 = 21.3). At the cap's 6,000 s it is about 29
-(29.4) and 18 (18.5). So at 6,900 s the 30-day cap (`CATCHUP_MAX_DAYS`), not the window,
-sets how many land at the median pace, and at the cap's 6,000 s the window does. At the
-slowest pace a full 30-day backlog takes two nights either way. These are calculated from
-the earlier pace, not measured on a night with the research steps in; the plan's Task 16
-(`docs/superpowers/plans/2026-11-05-nightly-pipeline-phase3.md`) adds the measured days
+A night starts about the window divided by the seconds one day takes, rounded up: the
+first day starts at once, so a window of W seconds admits the starts at 0, p, 2p, ...
+below W. On Railway a day takes 204 s to land at the median (86 days, 2026-10-29 to
+11-12; 245 s at the 90th percentile, 324 s the slowest), and the two 30-day catch-up
+nights took 5,956 s and 6,110 s in all, so each fit inside 6,900 s. Worked that way
+from those pace figures, the 6,900 s window starts about 34 days at the median pace
+(6,900 ÷ 204 = 33.8) and about 22 at the slowest (6,900 ÷ 324 = 21.3). At the cap's
+6,000 s it is about 30 (29.4) and 19 (18.5). So at the median pace the 30-day cap
+(`CATCHUP_MAX_DAYS`) and the window are about equal at the cap's 6,000 s, and the cap
+is the lower limit at 6,900 s. At the slowest pace a full 30-day backlog takes two
+nights either way. These are calculated from the earlier pace, not measured on a night
+with the research steps in; Task 16, Step 4 of
+`docs/superpowers/plans/2026-11-05-nightly-pipeline-phase3.md` adds the measured days
 per night.
 
 `test_pipeline_order_and_reserve` (`tests/test_pipeline.py`) pins the step order and
@@ -985,7 +987,8 @@ residue mails again.
 The research steps keep their state, reports and logs in the same bucket as the tape,
 under `research/` (the bucket named by `R2_BUCKET_FULLTAPE`). In the table, `{session}`
 is the run's last completed session and `{day}` a tape day. A rerun for the same
-session overwrites that session's keys, and the job never deletes an object under
+session overwrites that session's keys. The job deletes only an object it has just
+written and could not verify (`r2_store.verify_upload_size`), and nothing else under
 `research/`. **State** is read back by the job; **output** is for you.
 
 | Key                                                                                                                | Holds                                 | Written by                   | Kind             |
@@ -1006,6 +1009,11 @@ session overwrites that session's keys, and the job never deletes an object unde
 | `research/quality-sim/{session}/lottery-quality-sim-{session}.csv`                                                 | per-fire tier simulation              | `quality-sim`                | output           |
 | `research/takeit-drift/{session}/takeit-drift-{session}.md`, `reliability_{feed}_{session}.png`                    | the drift report and its plots        | `takeit-drift`               | output           |
 
+In the tracking row the seed writes only the state key, never the dated snapshot. The
+seed also writes the earlier dated reports, plots and simulation CSVs under
+`research/{family}/{date}/` (`SEED_RULES` in `src/seed_research.py`), which the report
+rows above do not list as written by it.
+
 To browse them, open the Cloudflare dashboard, then R2, then the bucket, then the
 `research/` prefix, and download an object to read it. The reports are Markdown, CSV
 and PNG files; the parquet files are state, not reports.
@@ -1020,7 +1028,8 @@ from Neon. Six report scripts
 `score-lineage` and `lottery-tracking`) score fires against the weights version the
 `active` pointer names in the store, and their report text names it. If that read
 fails the script exits non-zero and writes nothing, with no fallback to the frozen
-weights JSON. `research-derive`, `eod-flow-rollup`, `quality-sim` and `takeit-drift` run
+weights JSON; the alert reads `script exited 1 (_report_weights.ActiveWeightsError)`.
+`research-derive`, `eod-flow-rollup`, `quality-sim` and `takeit-drift` run
 in the job's own process; the other seven steps run their script as a subprocess.
 
 **The logs.** `research/_logs/{session}/{step}.log` holds everything a step's script
@@ -1055,14 +1064,22 @@ the tape's ETag does (`seed` is fresh for no other family).
   is going is overwritten. Edit it outside 07:15–12:30 UTC, Tuesday to Saturday.
 - **A malformed manifest fails the step** (`derive manifest is malformed`) and is never
   reset silently, a stored JSON `null` included. The top level must be exactly
-  `version` (1) and `families`, with known family names and ISO-date keys.
+  `version` (1) and `families`, with known family names and ISO-date keys. The two
+  fire-family reports read the manifest too, so a malformed one also raises
+  `ManifestError` in `exit-policy-report` and `flow-timing-report`: two exception
+  events beside the `derive manifest is malformed` alert.
 - **To force a re-derive** of one family's day, download the manifest, delete that
-  day's entry under that family, and upload it to the same key. The next night the day
-  is stale and is rebuilt. Deleting a chains day's `seed` entry makes the step rebuild
-  that day from the tape, overwriting the seeded object.
+  day's entry under that family, and upload it to the same key. The day is then stale,
+  and is rebuilt when the step reaches it: its tape must be in R2, and the step works
+  newest first within its 900 s per-day budget and the 3-failure cap. Deleting a chains
+  day's `seed` entry makes the step rebuild that day from the tape, overwriting the
+  seeded object. Do not re-run the seed afterwards: it marks every local chains day
+  that has no entry as `seed` again.
 - **Deleting only the derived object does not force one.** The manifest still calls the
   day fresh, so `research-derive` skips it and the fire-family report ends `partial`
-  with `derived day missing` until the entry goes too.
+  with `derived day missing` until the entry goes too. A chains object has no such
+  check: if only it is deleted, the rollup and `whale-plots` just lack that day, with
+  no alert.
 - **Deleting the whole manifest** makes every day of every family stale, the seeded
   chains days included: it is a full rebuild over many nights, not a way to redo one day.
 
@@ -1072,10 +1089,17 @@ The research state that lived only on the owner's machine goes into R2 once, wit
 `seed_research` (`nightly/src/seed_research.py`; its docstring is the reference and
 `SEED_RULES` the table of what goes where): the by-day chains files, the tracking CSV,
 the earlier reports under `docs/tmp/` and the Take-It reliability plots under
-`ml/plots/`. It is a local tool and the job never runs it. From `nightly/`, on Windows:
+`ml/plots/`. It is a local tool and the job never runs it. From `nightly/`, on Windows
+the command below is written for Git Bash (the same form fails in PowerShell):
 
 ```bash
 PYTHONPATH="src;../scripts;../ml/src" .venv/Scripts/python.exe -m seed_research --repo-root <the main checkout> [--dry-run]
+```
+
+In PowerShell set the variable first:
+
+```powershell
+$env:PYTHONPATH = "src;../scripts;../ml/src"; .venv/Scripts/python.exe -m seed_research --repo-root <the main checkout> [--dry-run]
 ```
 
 On POSIX the path separator is `:`:
@@ -1084,17 +1108,21 @@ On POSIX the path separator is `:`:
 PYTHONPATH=src:../scripts:../ml/src python -m seed_research --repo-root <the main checkout> [--dry-run]
 ```
 
-- `--repo-root` is the checkout that holds the files. A worktree's `docs/tmp/` is
-  empty, so point it at the main checkout. A root that matches no file exits 2.
+- Point `--repo-root` at the main checkout. A worktree holds only the tracked files, and
+  most of the earlier reports exist only in the main checkout's untracked `docs/tmp/`,
+  so a worktree root seeds a fraction of them and still exits 0. Because the seed never
+  overwrites, whatever it puts at the tracking state key first stays there. A root that
+  matches no file at all exits 2.
 - It needs the whole nightly environment (`load_settings`: every required variable in
   the table above, not only the `R2_*` ones), and it writes to the real bucket.
 - It never overwrites: a key already in R2 is skipped, whatever the local file holds,
   so a rerun is safe and picks up where a failure stopped.
-- Each chains day whose object is in R2 and has no manifest entry is marked `seed` in the
-  manifest. An entry that is already there is never replaced.
+- Each chains day among the local files that has no manifest entry is marked `seed` in
+  the manifest. An entry that is already there is never replaced.
 - `--dry-run` writes no object and no manifest; the counts say what a real run would do.
 - It prints counts per rule and in total (`uploaded`, `skipped_existing`,
-  `chains_marked_seed`). An error prints its class name, never a path or a value.
+  `chains_marked_seed`). A store or file error prints its class name, never a value; a
+  bad file name prints that file's repo-relative path.
 - Exit codes: `0` ok; `1` an upload, a store read or a file read failed; `2` a bad
   file name, bad arguments, a root with no matching file, or invalid settings.
 - Run it outside the nightly window (Tuesday to Saturday, about 07:15–12:30 UTC): it
@@ -1128,7 +1156,7 @@ Otherwise it is empty. It never changes the grouping.
 | `nightly step failed`                           | error   | A step finished `failed` without raising. `enrich-outcomes`: a day failed, came back with no outcomes or priced none. `outcome-check`: a recent session has no outcomes. `lottery-refit` never ends `failed`: it raises (exception row below). Read the alerts below and the run log.                                                         |
 | `nightly step partial`                          | warning | A step ran out of time with work left for the next night (`days_left` in `counts`). Expected while the history drains; look only if it persists. `lottery-refit`: a promotion was deferred (`promotion_deferred`); the shadow stays and the next night judges it again (the third night in a row also sends `promotion deferred repeatedly`). |
 | `nightly step skipped_deadline`                 | error   | A step started with less than its own reserve left, so it did not run (the later steps still did). The tape or an earlier step overran its share; the next night runs it again.                                                                                                                                                               |
-| `nightly step failed` with a research `detail`  | error   | A research step ended `failed` (or raised, see the exception rows). The `detail` is one of the fixed phrases in "Research step alerts", each with its meaning and fix.                                                                                                                                                                        |
+| `nightly step failed` with a research `detail`  | error   | A research step ended `failed`. The `detail` is one of the fixed phrases in "Research step alerts", each with its meaning and fix.                                                                                                                                                                                                            |
 | `nightly step partial` with a research `detail` | warning | `research-derive`: stale days left (expected on catch-up nights) or the last session's tape not landed. `eod-flow-rollup`: the latest session is not in the rollup. A fire-family report: `derived day missing`. See "Research step alerts".                                                                                                  |
 | `nightly outcomes all null`                     | error   | `outcome-check`: a table has fires on one of the last 3 sessions (`OUTCOME_CHECK_SESSIONS`) and none has an outcome. Tags `table`, `day`; extras `rows`, `with_outcome`. One issue per table and day. See below.                                                                                                                              |
 | `nightly outcomes mostly null`                  | warning | `outcome-check`: fewer than 95% (`LOW_OUTCOME_SHARE`) of a table-day's fires have an outcome. One warning per run; `days` lists `table:day`. Fires the tape cannot price stay without one (see "Enrichment").                                                                                                                                 |
@@ -1195,23 +1223,23 @@ or an exception class name, never a ticker, a day, a path or a message. Counts a
 the `counts` extra and in the log line `research-report <step> ...`. A failed report
 step publishes only its log.
 
-| Step                                                                                            | Status  | `detail`                                     | Meaning                                                                                                                                                                                                          | What to do                                                                                                                                                                                                         |
-| ----------------------------------------------------------------------------------------------- | ------- | -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `research-derive`                                                                               | failed  | `a day failed to derive`                     | A day raised: its download, a build, a derive, an upload or the manifest save. Each failed day also sends an exception tagged `step` and `day`. The day stays stale.                                             | Read those exceptions (class name only) and the `research-derive <day> failed (<Class>)` log line. See the failure cap below.                                                                                      |
-| `research-derive`                                                                               | failed  | `derive manifest is malformed`               | The manifest in R2 is not one the step wrote: not valid JSON, a stored `null`, a wrong shape, an unknown family or a bad entry. Nothing was read or written.                                                     | Repair the JSON in R2 by hand, outside 07:15–12:30 UTC. Do not delete it: that makes every day stale. See "The derive manifest".                                                                                   |
-| `research-derive`                                                                               | partial | `days left for the next night`               | Stale days remain: less than 900 s (`RESEARCH_DAY_BUDGET_SECONDS`) of the step's time was left. `days_left` has the number.                                                                                      | Expected on catch-up nights: the first nights after the seed, a version bump or a forced re-derive. Look only if `days_left` stops falling.                                                                        |
-| `research-derive`                                                                               | partial | `latest session tape not landed`             | Every stale day was derived, but the last session's tape is not in R2.                                                                                                                                           | Look at the tape day's own alert. The run that lands the tape derives it the same night.                                                                                                                           |
-| `eod-flow-rollup`                                                                               | failed  | `no chains days`                             | No chains state in R2 to roll up. Nothing is published.                                                                                                                                                          | Check `research/eod-flow/by-day/` and the `research-derive` result; the seed fills it from local files.                                                                                                            |
-| `eod-flow-rollup`                                                                               | partial | `latest session not in rollup`               | The rollup was published, but its newest day is older than the last session. Usually `research-derive` did not reach that day.                                                                                   | Clears once `research-derive` has derived the day, so expect it on the nights `research-derive` is partial.                                                                                                        |
-| a report step (`whale-plots`, `exit-policy-report`, `flow-timing-report`, `feature-audit`, ...) | failed  | `script exited N`, `script exited N (Class)` | The script exited non-zero. `N` is its exit code, or 128 plus the signal if it was killed (137 is SIGKILL, often the out-of-memory killer). `Class` is the exception class its log ends with, when it names one. | Read `research/_logs/{session}/{step}.log`. A bare `script exited 1` has no class: the log's last line was not one (a psycopg2 error can end on an indented `LINE` or caret line), so read the traceback above it. |
-| a report step                                                                                   | failed  | `script timed out`                           | The script was still running at the step's deadline and was killed.                                                                                                                                              | Read the log for how far it got; look for a slow query (each is cut at 300 s) or an input that grew.                                                                                                               |
-| a report step                                                                                   | failed  | `no output written`                          | The script exited 0 but an output file is missing or empty (for instance `exit_policy_search.py` found no derived day).                                                                                          | Read the log. For a fire-family report, check that `research-derive` has derived days.                                                                                                                             |
-| `exit-policy-report`, `flow-timing-report`                                                      | partial | `derived day missing`                        | The report found fewer derived days in R2 than the manifest vouches for (`inputs_missing`). It still published from the days there.                                                                              | Compare the names under `research/exit-policy/derived/` (or `flow-timing/derived/`) with that family's manifest entries, then delete the missing days' entries so `research-derive` rebuilds them.                 |
-| `lottery-tracking`                                                                              | failed  | `tracking state missing`                     | `research/lottery-tracking/state/lottery-tracking.csv` is not in R2. The step never starts a new file.                                                                                                           | Run the seed, or restore the file.                                                                                                                                                                                 |
-| `lottery-tracking`                                                                              | failed  | `tracking state header changed`              | The tracker's new header is not the old one with columns appended at the end (reordered, renamed or shortened), or the stored state is zero bytes. Only the log is published.                                    | Migrate the state CSV in R2 by hand to the tracker's new layout. Appended columns pass.                                                                                                                            |
-| `lottery-tracking`                                                                              | failed  | `tracking state shrank`                      | The rewritten file has fewer data rows than the state the step downloaded. Only the log is published, so the state in R2 is unchanged.                                                                           | Read the log for why the tracker dropped rows and fix that.                                                                                                                                                        |
-| `quality-sim`                                                                                   | failed  | `no scored fires`                            | The simulation CSV has no data row: no scored fire in its 90-day window. Only the log is published.                                                                                                              | Read the log; check that recent fires carry scores.                                                                                                                                                                |
-| `takeit-drift`                                                                                  | failed  | `no drift metrics`                           | The run wrote no `ml_` metric row to `takeit_health_daily`, whether or not plots were drawn. Nothing is published under `research/takeit-drift/`.                                                                | Read the log: it ends with the report's text, which says why.                                                                                                                                                      |
+| Step                                                                                            | Status  | `detail`                                     | Meaning                                                                                                                                                                                                                                           | What to do                                                                                                                                                                                                                                                                           |
+| ----------------------------------------------------------------------------------------------- | ------- | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `research-derive`                                                                               | failed  | `a day failed to derive`                     | A day raised: its download, a build, a derive, an upload or the manifest save. Each failed day also sends an exception tagged `step` and `day`. The day stays stale, except when only the manifest save failed and a later day's save records it. | Read those exceptions (class name only) and the `research-derive <day> failed (<Class>)` log line. See the failure cap below.                                                                                                                                                        |
+| `research-derive`                                                                               | failed  | `derive manifest is malformed`               | The manifest in R2 is not one the step wrote: not valid JSON, a stored `null`, a wrong shape, an unknown family or a bad entry. Nothing was read or written.                                                                                      | Repair the JSON in R2 by hand, outside 07:15–12:30 UTC. Do not delete it: that makes every day stale. See "The derive manifest".                                                                                                                                                     |
+| `research-derive`                                                                               | partial | `days left for the next night`               | Stale days remain: less than 900 s (`RESEARCH_DAY_BUDGET_SECONDS`) of the step's time was left. `days_left` has the number.                                                                                                                       | Expected on catch-up nights: the first nights after the seed, a version bump or a forced re-derive. Look only if `days_left` stops falling.                                                                                                                                          |
+| `research-derive`                                                                               | partial | `latest session tape not landed`             | Every stale day was derived, but the last session's tape is not in R2.                                                                                                                                                                            | Look at the tape day's own alert. The run that lands the tape derives it the same night.                                                                                                                                                                                             |
+| `eod-flow-rollup`                                                                               | failed  | `no chains days`                             | No chains state in R2 to roll up. Nothing is published.                                                                                                                                                                                           | Check `research/eod-flow/by-day/` and the `research-derive` result; the seed fills it from local files.                                                                                                                                                                              |
+| `eod-flow-rollup`                                                                               | partial | `latest session not in rollup`               | The rollup was published, but its newest day is older than the last session. Usually `research-derive` did not reach that day.                                                                                                                    | Clears once `research-derive` has derived the day, so expect it on the nights `research-derive` is partial.                                                                                                                                                                          |
+| a report step (`whale-plots`, `exit-policy-report`, `flow-timing-report`, `feature-audit`, ...) | failed  | `script exited N`, `script exited N (Class)` | The script exited non-zero. `N` is its exit code, or 128 plus the signal if it was killed (137 is SIGKILL, often the out-of-memory killer). `Class` is the exception class its log ends with, when it names one.                                  | Read `research/_logs/{session}/{step}.log`. A bare `script exited 1` has no class: the log's last line was not one (a psycopg2 error can end on an indented `LINE` or caret line), so read the traceback above it.                                                                   |
+| a report step                                                                                   | failed  | `script timed out`                           | The script was still running at the step's deadline and was killed.                                                                                                                                                                               | Read the log for how far it got; look for a slow query (each is cut at 300 s) or an input that grew.                                                                                                                                                                                 |
+| a report step                                                                                   | failed  | `no output written`                          | The script exited 0 but an output file is missing or empty (for instance `exit_policy_search.py` found no derived day).                                                                                                                           | Read the log. For a fire-family report, check that `research-derive` has derived days.                                                                                                                                                                                               |
+| `exit-policy-report`, `flow-timing-report`                                                      | partial | `derived day missing`                        | The report found fewer derived days in R2 than the manifest vouches for (`inputs_missing`). It still published from the days there.                                                                                                               | Compare the names under `research/exit-policy/derived/` (or `flow-timing/derived/`) with that family's manifest entries, then delete the missing days' entries so `research-derive` rebuilds them.                                                                                   |
+| `lottery-tracking`                                                                              | failed  | `tracking state missing`                     | `research/lottery-tracking/state/lottery-tracking.csv` is not in R2. The step never starts a new file.                                                                                                                                            | Copy the newest `research/lottery-tracking/{session}/lottery-tracking.csv` snapshot to `research/lottery-tracking/state/lottery-tracking.csv`. Run the seed only on the first night, before a snapshot exists: it uploads the owner's local copy and loses every row appended since. |
+| `lottery-tracking`                                                                              | failed  | `tracking state header changed`              | The tracker's new header is not the old one with columns appended at the end (reordered, renamed or shortened), or the stored state is zero bytes. Only the log is published.                                                                     | Migrate the state CSV in R2 by hand to the tracker's new layout. Appended columns pass.                                                                                                                                                                                              |
+| `lottery-tracking`                                                                              | failed  | `tracking state shrank`                      | The rewritten file has fewer data rows than the state the step downloaded. Only the log is published, so the state in R2 is unchanged.                                                                                                            | Read the log for why the tracker dropped rows and fix that.                                                                                                                                                                                                                          |
+| `quality-sim`                                                                                   | failed  | `no scored fires`                            | The simulation CSV has no data row: no scored fire in its 90-day window. Only the log is published.                                                                                                                                               | Read the log; check that recent fires carry scores.                                                                                                                                                                                                                                  |
+| `takeit-drift`                                                                                  | failed  | `no drift metrics`                           | The run wrote no `ml_` metric row to `takeit_health_daily`, whether or not plots were drawn. Nothing is published under `research/takeit-drift/`.                                                                                                 | Read the log: it ends with the report's text, which says why.                                                                                                                                                                                                                        |
 
 A research step that raises instead (R2, Neon, an import error) is the exception row
 of the table above. `quality-sim` and `takeit-drift` publish their log before they
@@ -1222,9 +1250,10 @@ so it stays stale and is tried again the next night. The step stops after
 `RESEARCH_MAX_DAY_FAILURES` (3) failed days in a night and carries nothing over, so
 if the same three days fail every night they use the cap before any older stale day is
 tried, and those older days never derive. The cure is to fix what makes those days
-fail (the exception events name each day) or to take them out of the stale set. The
-code has no exclusion list: the one entry it never re-derives is a chains day marked
-`seed`.
+fail (the exception events name each day). The only exclusion is per chains day: write
+`seed` as that day's manifest entry, and only if its object in R2 is already right,
+because it then counts as fresh and is never rebuilt. A fire-family day has no manual
+exclusion.
 
 The Sentry cron monitor `nightly-tape` (crontab `15 7 * * 2-6`, UTC) checks the
 run in and out:

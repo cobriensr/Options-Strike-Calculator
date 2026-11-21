@@ -15,7 +15,7 @@ R2 bucket (the one named by `R2_BUCKET_FULLTAPE`), under `research/eod-flow/`:
 
 - `research/eod-flow/by-day/{day}-chains.parquet`: the per-day chain aggregates.
 - `research/eod-flow/{session}/cumulative-rollup.json` and `cumulative-headlines.txt`:
-  the rollup and its headlines, rewritten every night for that night's session.
+  the rollup and its headlines, written each night under that night's session folder.
 
 Read `cumulative-headlines.txt` there for the daily review. The R2 layout, the
 manifest that decides which days are rebuilt, and the alerts are in
