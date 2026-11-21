@@ -27,9 +27,9 @@ export const TEST_INCLUDE = [
  * covers the imports of the files it imports, so they start nothing. Two things
  * still put it here. A use of the module past the mock, in it or in a file it
  * reaches (a `require`, `getBuiltinModule`, `vi.importActual`). And a file it
- * loads with `import()`, `require()` or `vi.importActual()` that names the
- * module, since the factory may be loading it and then it gets the real
- * module. A factory that wraps the real module does start children.
+ * loads with `import()`, `require()` or `vi.importActual()` that names or
+ * reaches the module, since the factory may be loading it and then it gets the
+ * real module. A factory that wraps the real module does start children.
  */
 export const SPAWN_TEST_FILES = [
   'api/__tests__/no-database-guard.test.ts',

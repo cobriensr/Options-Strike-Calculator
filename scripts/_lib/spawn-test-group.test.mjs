@@ -42,9 +42,14 @@ import config, { SPAWN_TEST_FILES, TEST_INCLUDE } from '../../vite.config.ts';
  * wraps the real module, so its file counts.
  *
  * The limits of a guard that reads literals: a probe source built inside a
- * template string, two `vi.mock` calls for the same module, and a `/*` inside a
- * template literal can each hide a spawn from it. The file then just runs at
- * full width, in `main`.
+ * template string, two `vi.mock` calls for the same module, a load with a
+ * non-literal path or a computed specifier (`new URL(...)`, `path.join`, a
+ * variable), a factory that calls a helper that does the load, a type argument
+ * that contains a parenthesis (`importActual<() => void>('./b')`,
+ * `importActual<typeof import('./a')>('./b')`), a `/*` inside a template
+ * literal, and a line where the comment stripping runs from a slash-star in
+ * one string to a star-slash in another can each hide a spawn from it. The
+ * file then just runs at full width, in `main`.
  *
  * Tinyglobby loads through vitest's own dependency tree, the copy vitest
  * globs with.
@@ -79,13 +84,19 @@ const PARAMETERLESS_FACTORY =
 /** A quoted relative path, as in vercel-build-file-set.mjs. */
 const RELATIVE_LITERAL = /(['"`])(\.{1,2}\/[^'"`\r\n]*)\1/g;
 
+/** A block comment that opens and closes on one line. */
+const INLINE_COMMENT = /\/\*.*?\*\//g;
+
 /**
  * A relative path loaded at run time: `import('./x')`, `require('./x')` or
- * `vi.importActual('./x')`. A mock factory that does this gets the real module
- * for the file and for everything the file reaches.
+ * `vi.importActual('./x')`, with an optional type argument before the
+ * parenthesis (`importActual<T>(...)`). Read from code whose inline block
+ * comments are gone, so `import(/* @vite-ignore *\/ './x')` matches too. A
+ * mock factory that does this gets the real module for the file and for
+ * everything the file reaches.
  */
 const LOADED_LITERAL =
-  /\b(?:import|require|importActual)\s*\(\s*(['"`])(\.{1,2}\/[^'"`\r\n]*)\1/g;
+  /\b(?:import|require|importActual)(?:\s*<[^()]*>)?\s*\(\s*(['"`])(\.{1,2}\/[^'"`\r\n]*)\1/g;
 
 const CODE_FILE = /\.[cm]?[jt]sx?$/;
 const EXTENSIONS = [
@@ -184,7 +195,11 @@ function createDetector(read) {
         bypasses: bypassesMock(code),
         replaces: PARAMETERLESS_FACTORY.test(code),
         dependencies: resolveAll(file, code, RELATIVE_LITERAL),
-        loaded: resolveAll(file, code, LOADED_LITERAL),
+        loaded: resolveAll(
+          file,
+          code.replace(INLINE_COMMENT, ' '),
+          LOADED_LITERAL,
+        ),
       };
       infos.set(file, info);
     }
@@ -376,6 +391,14 @@ describe('the detector, on small trees of files', () => {
     [
       'vi.importActual',
       `const { real } = await vi.importActual('./fx-real.mjs');`,
+    ],
+    [
+      'vi.importActual with a type argument',
+      `const { real } = await vi.importActual<Record<string, any>>('./fx-real.mjs');`,
+    ],
+    [
+      'an import() with a comment inside the parentheses',
+      `const { real } = await import(/* @vite-ignore */ './fx-real.mjs');`,
     ],
   ])(
     'finds a plain import in a helper that the factory loads with %s',
