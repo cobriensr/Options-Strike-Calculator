@@ -702,10 +702,12 @@ def test_run_script_times_out_and_kills_the_child(rig: Rig, tmp_path: Path) -> N
     log = tmp_path / "sleepy.log"
     started = time.monotonic()
 
-    run = run_script(script, [], log_path=log, timeout=2.0, env={})
+    # 10 s, not 2: interpreter start-up under machine load must not outlast the timeout, or
+    # "started" is never printed.
+    run = run_script(script, [], log_path=log, timeout=10.0, env={})
 
     assert run == ScriptRun(None, True, None)
-    assert time.monotonic() - started < 20  # the script would run for 30 s
+    assert time.monotonic() - started < 25  # the script would run for 30 s
     assert "started" in log.read_text(encoding="utf-8")  # what it printed before the kill
     beats = heartbeat.stat().st_size
     assert beats > 0

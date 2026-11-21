@@ -275,7 +275,9 @@ def test_scripts_import_in_the_image_layout(tmp_path: Path):
         },
         capture_output=True,
         text=True,
-        timeout=120,
+        # The child imports pandas, polars, duckdb and matplotlib and builds a font cache,
+        # which took more than 120 s on a loaded machine; a hang still fails.
+        timeout=300,
         check=False,
     )
 
