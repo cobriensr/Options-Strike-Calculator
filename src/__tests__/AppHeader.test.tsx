@@ -616,6 +616,20 @@ describe('AppHeader', () => {
       expect(badge).not.toHaveAttribute('title');
     });
 
+    it('shows a red STALE badge with an ageless title for a regular-session quote once the session is closed', () => {
+      // useQuoteStaleness reads NOT_STALE at `closed`, so the label used to
+      // fall back to the quote's own marketOpen: true and read LIVE on a quote
+      // nothing had replaced since the regular session.
+      renderWithQuotes(300, { marketOpen: true, session: 'closed' });
+      const badge = screen.getByText(/^● STALE$/);
+      expect(badge.style.color).toContain('var(--color-danger)');
+      expect(badge).toHaveAttribute(
+        'title',
+        'Last quote is from the regular session — no update since',
+      );
+      expect(screen.queryByText(/^● LIVE$/)).not.toBeInTheDocument();
+    });
+
     it('keeps the CLOSED label in pre-market but still titles stale quotes', () => {
       // quotes.marketOpen drives the label (RTH only); the session drives
       // staleness, which also runs pre-market for the 08:30 CT prep.

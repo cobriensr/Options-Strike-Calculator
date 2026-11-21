@@ -46,6 +46,7 @@ A public visitor (no owner or guest session) should never call an owner-or-guest
    - Files: `useMarketData.ts`, `useMarketData.fetchers.ts`, their tests.
    - Landed as 1 commit: the hook reads `isAuthenticated` at render; public sends the events request alone (`fetchForwardEvents`); the mount effect re-runs on a mode flip with an `AbortController` and writes nothing after an abort; the poll gate follows the mode and a late poll reply re-reads it; the AUD-M17 `isOwner` state and its 2xx probe are gone, and `needsAuth` is the owner's prompt only (false for a guest and while public).
    - Fix round 1: `hasData` masked for public (closes the `/api/chain` path after a downgrade, the stale quote badge and the notification prompt); the mount guard re-reads the mode.
+   - Fix round 2: loading ends when the mode goes public mid-fetch; the header badge never reads LIVE on a regular-session quote at `closed` (pre-existing, found in review).
 5. **Licensed-cache purge (audit section 4).**
    - Add one `clearLicensedClientCaches()` that removes `openingFlowSignal.lastGood*`, `regime0dte:lastgood` and every `feed-union:*` key.
    - Call it from one App effect: `if (!isAuthenticated) purge()`. That covers three cases: a session that starts public (expired or cleared cookie), the interceptor's downgrade, and guest logout.
