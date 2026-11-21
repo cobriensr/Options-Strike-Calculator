@@ -691,13 +691,13 @@ describe('the previous-close cross-check', () => {
       [BACKTEST_DATE, 7356.73, 7356.73],
     ]);
     expect(formatReport(result)).toContain(
-      'Previous close within 0.05 of outcomes.settlement: 2 dates',
+      'Previous close within 3.00 of outcomes.settlement: 2 dates',
     );
   });
 
-  it('skips a date whose previous close is more than 0.05 from the settlement, and lists both', async () => {
+  it('skips a date whose previous close is more than 3.00 from the settlement, and lists both', async () => {
     await db.query(
-      "UPDATE outcomes SET settlement = 7560.00 WHERE date = '2026-11-04'",
+      "UPDATE outcomes SET settlement = 7550.00 WHERE date = '2026-11-04'",
     );
 
     const result = await dry();
@@ -709,7 +709,7 @@ describe('the previous-close cross-check', () => {
     });
     expect(result.dates[1]?.skippedDate).toBeNull();
     expect(formatReport(result)).toContain(
-      `${LIVE_DATE}: previous close 7560.87, settlement 7560.00, difference 0.87`,
+      `${LIVE_DATE}: previous close 7560.87, settlement 7550.00, difference 10.87`,
     );
     expect(progressLines()).toContain(
       `${LIVE_DATE} skipped prev-close-mismatch`,
@@ -717,6 +717,31 @@ describe('the previous-close cross-check', () => {
     // The planned rows of the other date still reach the plan file.
     const updates = readJson(result.planFile).updates as unknown[];
     expect(updates).toHaveLength(2);
+  });
+
+  it('plans a date whose settlement is 0.55 from the previous close, and lists it with the difference', async () => {
+    // A fetch-outcomes backfill stores the official close, which is not the
+    // 5-minute close /api/history gives as the previous close.
+    await db.query(
+      "UPDATE outcomes SET settlement = 7561.42 WHERE date = '2026-11-04'",
+    );
+
+    const result = await dry();
+
+    expect(result.dates[0]).toMatchObject({
+      date: LIVE_DATE,
+      skippedDate: null,
+      previousClose: 7560.87,
+      settlement: 7561.42,
+    });
+    expect(result.dates[0]?.results.some((r) => r.kind === 'update')).toBe(
+      true,
+    );
+    const text = formatReport(result);
+    expect(text).toContain(
+      'Previous close within 3.00 of outcomes.settlement: 2 dates',
+    );
+    expect(text).toContain(`: 1 date: ${LIVE_DATE} (0.55)`);
   });
 
   it('plans a date with no settlement row, and lists it as not cross-checked', async () => {

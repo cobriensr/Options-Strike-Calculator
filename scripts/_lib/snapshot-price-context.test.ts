@@ -913,33 +913,77 @@ describe('planDate: a date skipped whole', () => {
 
 // ── planDate: the outcomes.settlement cross-check ───────────────────────────
 
-describe('planDate: previous close against outcomes.settlement (G1b, 0.05)', () => {
+describe('planDate: previous close against outcomes.settlement (G1b, 3.00)', () => {
   const rows = [row(1, '8:35 AM CT'), row(2, '9:00 AM CT')];
   const h = history(LIVE_DATE, PRIOR_OF_LIVE); // previous close 7560.87
+  // A round close: 7003 - 7000 is exactly 3 in floating point, so 3.00 and 3.01
+  // test the tolerance itself, and 7003.004 and 7003.006 test the rounding to
+  // whole cents on either side of it (3.004 is 300 cents, 3.006 is 301).
+  const round = history(LIVE_DATE, { date: '2026-11-04', close: 7000 });
 
-  it.each([7560.87, 7560.9, 7560.82, 7560.92, 7560.8200000001])(
-    'plans the date when the settlement is %s: within 0.05',
-    (settlement) => {
-      const plan = planDate(LIVE_DATE, rows, h, settlement);
+  it.each([
+    ['the same', 7000],
+    ['0.05 above', 7000.05],
+    ['0.05 below', 6999.95],
+    ['2.55 above (an official close against a 5-minute close)', 7002.55],
+    ['2.55 below', 6997.45],
+    ['3.00 above', 7003],
+    ['3.00 below', 6997],
+    ['3.004 above (rounds to 300 cents)', 7003.004],
+    ['3.004 below (rounds to 300 cents)', 6996.996],
+  ])('plans the date when the settlement is %s: %f', (_name, settlement) => {
+    const plan = planDate(LIVE_DATE, rows, round, settlement);
 
-      expect(plan.skippedDate).toBeUndefined();
-      expect(plan.previousClose).toBe(7560.87);
-      expect(updates(plan.results)).toHaveLength(2);
-    },
-  );
+    expect(plan.skippedDate).toBeUndefined();
+    expect(plan.previousClose).toBe(7000);
+    expect(updates(plan.results)).toHaveLength(2);
+  });
 
-  it.each([7560.93, 7560.81, 7356.73, 7720.39])(
-    'skips the date as prev-close-mismatch when the settlement is %s',
-    (settlement) => {
-      const plan = planDate(LIVE_DATE, rows, h, settlement);
+  it.each([
+    ['3.01 above', 7003.01],
+    ['3.01 below', 6996.99],
+    ['3.006 above (rounds to 301 cents)', 7003.006],
+    ['3.006 below (rounds to 301 cents)', 6996.994],
+    ['10.00 above', 7010],
+  ])(
+    'skips the date as prev-close-mismatch when the settlement is %s: %f',
+    (_name, settlement) => {
+      const plan = planDate(LIVE_DATE, rows, round, settlement);
 
       expect(plan).toEqual({
         results: [],
         skippedDate: 'prev-close-mismatch',
-        previousClose: 7560.87,
+        previousClose: 7000,
       });
     },
   );
+
+  it('skips the wrong-week close the check exists for: 11-06 stored 7720.39 against the real 7356.73', () => {
+    const plan = planDate(
+      BACKTEST_DATE,
+      [row(1, '8:35 AM CT', {}, BACKTEST_DATE)],
+      history(BACKTEST_DATE, PRIOR_OF_BACKTEST),
+      7720.39,
+    );
+
+    expect(plan).toEqual({
+      results: [],
+      skippedDate: 'prev-close-mismatch',
+      previousClose: 7356.73,
+    });
+  });
+
+  it('plans the 03-05 case: the official close 6869.50 against the 5-minute close 6868.95', () => {
+    const plan = planDate(
+      LIVE_DATE,
+      rows,
+      history(LIVE_DATE, { date: '2026-11-04', close: 6868.95 }),
+      6869.5,
+    );
+
+    expect(plan.skippedDate).toBeUndefined();
+    expect(plan.previousClose).toBe(6868.95);
+  });
 
   it('plans the date, unchecked, when there is no settlement row', () => {
     const plan = planDate(LIVE_DATE, rows, h, null);
@@ -1677,17 +1721,108 @@ describe('formatReport', () => {
     const text = formatReport(dryRunOf(dates));
 
     expect(text).toContain(
-      'Previous close within 0.05 of outcomes.settlement: 1 date',
+      'Previous close within 3.00 of outcomes.settlement: 1 date',
+    );
+    expect(text).not.toContain('within 0.05');
+    expect(text).toContain(
+      "a settlement from the end-of-day run is the last 5-minute bar's close, the same feed as the previous close",
     );
     expect(text).toContain(
-      'the settlement is from the same Schwab 5-minute feed, fetched on its own day',
+      'one from a fetch-outcomes backfill is the official close, which can differ from the 5-minute close by a point or two',
     );
-    expect(text).toContain(
-      'the session was complete, not an official-close check',
-    );
+    expect(text).not.toContain('not an official-close check');
     expect(text).toMatch(
       /Previous close not cross-checked \(no outcomes.settlement for the prior trading day\), planned anyway: 1 date: 2026-11-06/,
     );
+  });
+
+  describe('the planned dates whose previous close is more than 0.05 from the settlement', () => {
+    const LIST_HEAD =
+      "Previous close more than 0.05 from outcomes.settlement, planned (the prior day's settlement is likely the official close from a fetch-outcomes backfill):";
+
+    /** A planned date: its history's previous close is 7000, or `close`. */
+    const planned = (
+      date: string,
+      prior: string,
+      settlement: number | null,
+      close = 7000,
+    ): DatePlan =>
+      datePlan(
+        date,
+        [row(1, '9:00 AM CT', {}, date)],
+        'ok',
+        history(date, { date: prior, close }),
+        null,
+        settlement,
+      );
+
+    const listLine = (text: string): string =>
+      text.split('\n').find((l) => l.startsWith(LIST_HEAD)) ?? '';
+
+    it('prints "0 dates" when every planned date matches to 0.05 or better', () => {
+      const text = formatReport(dryRunOf(dates));
+
+      expect(listLine(text)).toBe(`${LIST_HEAD} 0 dates`);
+    });
+
+    it('lists each planned date more than 0.05 away with its difference to the cent, and no other', () => {
+      const text = formatReport(
+        dryRunOf([
+          planned('2026-11-02', '2026-10-30', 7000.55),
+          // 0.03 away: close enough that nobody needs to look.
+          planned('2026-11-03', '2026-11-02', 7000.03),
+          // Exactly 0.05 away. 7000.05 - 7000 is 0.05000000000018 in floating
+          // point, so only a whole-cent comparison keeps it off the list.
+          planned('2026-11-04', '2026-11-03', 7000.05),
+          planned('2026-11-05', '2026-11-04', 7000.06),
+          // The settlement below the previous close: 7356.73 - 7354.18.
+          planned('2026-11-06', '2026-11-05', 7354.18, 7356.73),
+          // Skipped as prev-close-mismatch (100.00 away): it is not planned.
+          planned('2026-11-09', '2026-11-06', 7100),
+          // No settlement row: not cross-checked, so nothing to compare.
+          planned('2026-11-10', '2026-11-09', null),
+          // Exactly the same.
+          planned('2026-11-11', '2026-11-10', 7000),
+          // 0.50 from its settlement, so within 3.00 and more than 0.05 off,
+          // but a close of 0.5 gives a gap no column holds: skipped whole as
+          // bad-previous-close, so not planned and not on the list.
+          planned('2026-11-12', '2026-11-11', 1, 0.5),
+        ]),
+      );
+
+      expect(listLine(text)).toBe(
+        `${LIST_HEAD} 3 dates: 2026-11-02 (0.55), 2026-11-05 (0.06), 2026-11-06 (2.55)`,
+      );
+      expect(text).toContain(
+        'Previous close within 3.00 of outcomes.settlement: 6 dates',
+      );
+      expect(text).toMatch(/bad-previous-close:\s+1 date \(1 row\)/);
+      expect(text).toContain('2026-11-12: previous close 0.5');
+      expect(listLine(text)).not.toContain('2026-11-12');
+    });
+
+    it('caps the list at 30 dates and says how many more', () => {
+      const many = Array.from({ length: 32 }, (_, i): DatePlan => {
+        const date = `2026-03-${String(i + 1).padStart(2, '0')}`;
+        return {
+          date,
+          rows: [],
+          fetch: 'ok',
+          fetchDetail: null,
+          results: [],
+          skippedDate: null,
+          pickChange: null,
+          previousClose: 7000,
+          settlement: 7001,
+        };
+      });
+
+      const line = listLine(formatReport(dryRunOf(many)));
+
+      expect(line).toContain(`${LIST_HEAD} 32 dates: 2026-03-01 (1.00)`);
+      expect(line).toContain('2026-03-30 (1.00), and 2 more');
+      expect(line).not.toContain('2026-03-31');
+    });
   });
 
   it('says why each other date was skipped whole', () => {

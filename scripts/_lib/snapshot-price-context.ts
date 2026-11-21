@@ -7,7 +7,7 @@
  * it (scripts/_lib/**).
  *
  * Every row gets what the as-of rule lets it know (`priceContextAsOf`, G2)
- * and the official close of the target's prior trading day (G1b):
+ * and the close of the target's prior trading day (G1b):
  * - a row with no usable `spx_open` (NULL, NaN, or not above 0) and a slot at
  *   or after 8:30 CT gets all five columns: `spx_open`, `spx_high`,
  *   `spx_low`, `prev_close` and `overnight_gap`;
@@ -34,10 +34,14 @@
  *   that is not what `/api/history` sends);
  * - it has fewer candles than its session;
  * - it has no previous day that is the target's prior trading day;
- * - that previous close is more than 0.05 from `outcomes.settlement` of the
- *   prior trading day (the G1b acceptance rule), or gives a gap or a price no
- *   column can hold. A date with no settlement row is planned anyway and
- *   listed as not cross-checked.
+ * - that previous close is more than 3.00 from `outcomes.settlement` of the
+ *   prior trading day (the G1b acceptance rule: a settlement from a
+ *   fetch-outcomes backfill is the official close, up to ~2.55 from the
+ *   5-minute close this script plans from, and a wrong-week close misses by
+ *   tens of points or more), or gives a gap or a price no column can hold. A
+ *   date with no settlement row is planned anyway and listed as not
+ *   cross-checked. A planned date more than 0.05 from its settlement is
+ *   listed too.
  * Nothing is half-filled, and a skip is never silent. The dry run is meant to
  * predict the apply: no value it plans can overflow its column, and the
  * planner never throws on a value it cannot write.
@@ -108,8 +112,28 @@ const FIRST_SLOT_CT = CASH_OPEN_MIN_ET - ET_AHEAD_OF_CT_MIN;
 /** DECIMAL(10,2) holds prices below this; DECIMAL(6,2) holds gaps below 1e4. */
 const MAX_PRICE = 1e8;
 const MAX_GAP_PCT = 1e4;
-/** The G1b acceptance rule: a previous close within 0.05 of the settlement. */
-const SETTLEMENT_TOLERANCE_CENTS = 5;
+/**
+ * The G1b acceptance rule: a previous close within 3.00 of the settlement
+ * (owner decision, 2026-11-20; it was 0.05).
+ *
+ * `outcomes.settlement` has two writers. The end-of-day main run of
+ * `api/cron/fetch-outcomes.ts` stores the last 5-minute bar's close, the same
+ * feed as `/api/history`'s `previousDay.close` this script plans from. The
+ * fill-only `?backfill=true` run stores Schwab's official daily close, which
+ * differs from the 5-minute close by up to about 2.55 points: the 2026-11-19
+ * dry run skipped 23 dates at 0.05 with differences of 0.14 to 2.55, each
+ * after a day whose outcomes row a backfill wrote. The error G1b guards
+ * against, a previous close from the wrong week, misses by tens to hundreds of
+ * points (11-06: stored 7720.39, real 7356.73, 363.66 apart). And
+ * `previousCloseOf` already requires `previousDay.date` to be the target's
+ * prior trading day, which is what guards the session itself.
+ */
+const SETTLEMENT_TOLERANCE_CENTS = 300;
+/**
+ * The dry run lists a planned date whose previous close is more than this
+ * (0.05) from the settlement, so a backfilled settlement stays visible.
+ */
+const SETTLEMENT_REPORT_CENTS = 5;
 /** Rows listed in each "and N more" list of the report. */
 const LIST_SHOWN = 30;
 /**
@@ -339,10 +363,23 @@ function updateOf(
   };
 }
 
-/** The previous close and `outcomes.settlement` agree to 0.05, in whole cents. */
+/**
+ * How far the previous close is from `outcomes.settlement`, in whole cents.
+ * Rounded, never compared as a float: 7000.05 - 7000 is 0.05000000000018.
+ */
+function settlementCents(previousClose: number, settlement: number): number {
+  return Math.round(Math.abs(previousClose - settlement) * 100);
+}
+
+/**
+ * The previous close and `outcomes.settlement` agree to 3.00, in whole cents.
+ * Wide enough for a settlement that is the official close (a fetch-outcomes
+ * backfill) against a previous close that is the last 5-minute bar's close.
+ */
 function withinSettlement(previousClose: number, settlement: number): boolean {
-  const cents = Math.round(Math.abs(previousClose - settlement) * 100);
-  return cents <= SETTLEMENT_TOLERANCE_CENTS;
+  return (
+    settlementCents(previousClose, settlement) <= SETTLEMENT_TOLERANCE_CENTS
+  );
 }
 
 /**
@@ -479,8 +516,10 @@ function gapFits(
 /**
  * Plan one date's rows. A date with no history, with fewer candles than its
  * session holds, with no usable previous day, whose previous close is more
- * than 0.05 from `settlement` (`outcomes.settlement` of the prior trading
- * day, null when there is none), or whose previous close no column can hold,
+ * than 3.00 from `settlement` (`outcomes.settlement` of the prior trading
+ * day, null when there is none; 3.00 so a settlement that is the official
+ * close, from a fetch-outcomes backfill, passes against the 5-minute close),
+ * or whose previous close no column can hold,
  * is skipped whole (`skippedDate`, and no row results). Otherwise each row is
  * planned alone, in input order. `previousClose` is the close the history
  * gave, once it is a valid one, whether or not the date went on.
@@ -796,10 +835,12 @@ five, as the as-of rule lets its slot know them; a row with an open (a replay
 wrote it) gets its high and low as of the slot, which removes the 5-minute
 peek, and its previous close and gap; one whose open is not the open as of its
 slot is skipped as open-mismatch. The previous close is the close of the target's
-prior trading day, and must be within 0.05 of that day's outcomes.settlement
-(a date with no settlement row is planned and listed as not cross-checked). A
-date whose history cannot be read or is empty, is short of candles, or has no
-usable previous close is skipped whole and reported.
+prior trading day, and must be within 3.00 of that day's outcomes.settlement (a
+settlement a fetch-outcomes backfill wrote is the official close, which can
+differ from this 5-minute close by a point or two; the report lists the planned
+dates more than 0.05 off). A date with no settlement row is planned and listed
+as not cross-checked. A date whose history cannot be read or is empty, is short
+of candles, or has no usable previous close is skipped whole and reported.
 
 Two steps. First a dry run, the default: it reads every snapshot date in the
 range, fetches /api/history once per date with a pause (run it outside
@@ -2165,13 +2206,25 @@ function crossCheckLines(dates: readonly DatePlan[]): string[] {
   );
   const checked = planned.filter((d) => d.settlement != null);
   const unchecked = planned.filter((d) => d.settlement == null);
-  const list =
-    unchecked.length === 0
-      ? ''
-      : `: ${shownList(unchecked.map((d) => d.date))}`;
+  // The report's numbers come from the constants, so they cannot drift.
+  const inDollars = (cents: number): string => (cents / 100).toFixed(2);
+  const within = inDollars(SETTLEMENT_TOLERANCE_CENTS);
+  const reported = inDollars(SETTLEMENT_REPORT_CENTS);
+  // Planned, yet more than 0.05 off: the likely cause is a settlement that is
+  // the official close (a fetch-outcomes backfill), so the owner sees each one.
+  const off = planned.flatMap((d) => {
+    if (d.previousClose == null || d.settlement == null) return [];
+    const cents = settlementCents(d.previousClose, d.settlement);
+    return cents > SETTLEMENT_REPORT_CENTS
+      ? [`${d.date} (${inDollars(cents)})`]
+      : [];
+  });
+  const listOf = (items: readonly string[]): string =>
+    items.length === 0 ? '' : `: ${shownList(items)}`;
   return [
-    `Previous close within 0.05 of outcomes.settlement: ${plural(checked.length, 'date')} (the settlement is from the same Schwab 5-minute feed, fetched on its own day, so a match shows the session was complete, not an official-close check)`,
-    `Previous close not cross-checked (no outcomes.settlement for the prior trading day), planned anyway: ${plural(unchecked.length, 'date')}${list}`,
+    `Previous close within ${within} of outcomes.settlement: ${plural(checked.length, 'date')} (a settlement from the end-of-day run is the last 5-minute bar's close, the same feed as the previous close; one from a fetch-outcomes backfill is the official close, which can differ from the 5-minute close by a point or two)`,
+    `Previous close more than ${reported} from outcomes.settlement, planned (the prior day's settlement is likely the official close from a fetch-outcomes backfill): ${plural(off.length, 'date')}${listOf(off)}`,
+    `Previous close not cross-checked (no outcomes.settlement for the prior trading day), planned anyway: ${plural(unchecked.length, 'date')}${listOf(unchecked.map((d) => d.date))}`,
   ];
 }
 
