@@ -58,9 +58,9 @@ Line numbers are at c5672aec9.
 | 25 | `VIXTermStructure/RatioCard.tsx:78` | `aria-label={\`15-minute change ${...}\`}`, shows the delta and `/ {spanMin}m` | **H**: hint `` `${trajectory.spanMin}-minute change` ``. The old label said "15-minute" whatever the span. |
 | 26 | `DarkPoolLevels/LevelRow.tsx:51` empty bar `div` | `aria-label={\`${premium} premium\`}` | If the row shows the premium as text: **D** plus `aria-hidden="true"` on the bar. Otherwise **I**, keep label. |
 | 27 | `DeltaStrikesTable.tsx:40` mobile card wrapper | `aria-label="Delta strikes"`, `md:hidden` | **S**, matching the desktop `<section aria-label="Delta strikes">` at :101. Confirm the two are never both displayed. |
-| 28 | `FuturesCalculator/FuturesGrid.tsx:100` | `aria-label={\`${label} ${name}\`}`, shows `label` | **H**: hint = `name`. |
+| 28 | `FuturesCalculator/FuturesGrid.tsx:100` | `aria-label={\`${label} ${name}\`}`, shows `label` | **D** (was H: hint = `name`). The card already shows `name` as visible subtext (`<div>{name}</div>` below the changes row), so a hint would be read twice. |
 | 29 | `FuturesCalculator/ScenarioInputs.tsx:185` contracts stepper | both `aria-labelledby` and `aria-label="Contracts"` | **G** |
-| 30 | `IntervalBAFeed/IntervalBARow.tsx:300` moneyness badge | label = `title` = `moneyness.tooltip` | **H**: hint = `moneyness.tooltip`. |
+| 30 | `IntervalBAFeed/IntervalBARow.tsx:300` moneyness badge | label = `title` = `moneyness.tooltip` | **H**: hint = the part of `moneyness.tooltip` the pill does not already say (`srText`: the spot / strike relation, and for OTM the distance to ITM). Every tooltip begins by restating the pill's label and percentage, so the verbatim tooltip would be read twice. `title` unchanged, built from `srText`. |
 
 ## Test pattern
 
