@@ -74,11 +74,36 @@ empty slots without anyone asking.
   - The Redis history cache (`history:v3:<date>`, 90-day TTL) holds the
     wrong value too, so the fix must repair it on read or change the cache
     key.
-  - **Definition:** `prev_close` is the official close of the previous
-    session. For live rows it is the quote's `prevClose`. For backtest and
-    server rows it comes from a target-relative source. Acceptance: it
-    equals that session's `outcomes.settlement` within 0.05. Decision 15
-    covers a missing prior session and the VIX family.
+  - **Definition:** `prev_close` is the previous session's close. For live
+    rows it is the quote's `prevClose`. For backtest and server rows it is
+    the previous session's last 5-minute close, from a target-relative
+    source. Acceptance: it is within 3.00 of that session's
+    `outcomes.settlement` (the owner's 2026-11-20 decision, below; it was
+    0.05). Decision 15 covers a missing prior session and the VIX family.
+  - **Decision (owner, 2026-11-20): acceptance loosened to 3.00.** The
+    backfill's cross-check (`SETTLEMENT_TOLERANCE_CENTS`) now accepts a
+    previous close within 3.00 of `outcomes.settlement`, not 0.05.
+    - Why. `outcomes.settlement` has two writers. The end-of-day main run of
+      `api/cron/fetch-outcomes.ts` stores the last 5-minute bar's close, the
+      same feed as `/api/history`'s `previousDay.close`, which the backfill
+      uses. The fill-only `?backfill=true` run stores Schwab's official daily
+      close. The two differ by up to about 2.55 points.
+    - Evidence. The 11-19 dry run skipped 23 dates as prev-close-mismatch,
+      with differences of 0.14 to 2.55. Each follows a day whose outcomes row
+      came from a backfill: 03-02 to 03-24 from a 2026-03-25 backfill, and
+      09-29, 09-30, 10-08, 10-09 and 10-12 to 10-15 from the 2026-11-19
+      backfill. Example, 03-05: the script's previous close is 6868.95, the
+      settlement is 6869.50 (the official close), and the stored row holds
+      6946.13.
+    - Why 3.00 is still safe. The wrong-week error this check exists for
+      misses by tens to hundreds of points (11-06: stored 7720.39, real
+      7356.73, 363.66 apart). And `previousCloseOf` already requires
+      `previousDay.date` to be the target's prior trading day, which guards
+      the session itself.
+    - Visibility. The dry-run report lists each planned date whose previous
+      close is more than 0.05 from its settlement, with the difference, so a
+      backfilled settlement does not pass unseen. The prev-close-mismatch skip
+      and its report block are unchanged, and now fire only beyond 3.00.
 - **G2. No look-ahead.** A row labelled with slot T holds only data known at
   T. This covers the page's backtest mode and server-built rows.
 - **G3. One implementation of the row math.** The page and the server call
@@ -267,6 +292,11 @@ How the server gets the row math:
       either way.
     - Chosen for phase 1: `/api/history` serves each symbol's `previousClose`
       as the previous session's last 5-minute close (`previousDay.close`).
+    - **Decision (owner, 2026-11-20): acceptance loosened to 3.00.** That
+      5-minute close is checked against `outcomes.settlement`, and a
+      settlement from a `fetch-outcomes` backfill is Schwab's official close,
+      up to about 2.55 away (03-05: 6868.95 against 6869.50). The rule in G1b
+      is now 3.00, not 0.05; see the G1b decision for the evidence.
     - **A hole in the previous session serves 0, not an older close.**
       - Only the target's prior trading day (`priorTradingDay` in
         `src/data/marketHours.ts`) counts as the previous session.

@@ -32,9 +32,12 @@ The work also backfills history.
     s + 5.
   - At 8:30 CT no bar has ended, so open, high and low are all the first
     bar's open.
-- **`prev_close` definition** (spec G1b). It is the official close of the
-  previous session. Acceptance: it equals that session's
-  `outcomes.settlement` within 0.05.
+- **`prev_close` definition** (spec G1b). It is the previous session's last
+  5-minute close. Acceptance: it is within 3.00 of that session's
+  `outcomes.settlement` (owner decision, 2026-11-20; it was 0.05). A
+  settlement from a `fetch-outcomes` backfill is the official close, which
+  differs from the 5-minute close by up to about 2.55. See the "Decision
+  (owner, 2026-11-20)" under G1b in the spec.
 - **Overnight gap:** `(spxOpen − prevClose) / prevClose × 100`, unrounded,
   as `useRangeAnalysis` computes it today.
 - **`.js` imports.** `src/utils/snapshot-slot.ts` uses explicit `.js`
