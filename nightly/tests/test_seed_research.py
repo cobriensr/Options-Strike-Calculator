@@ -449,7 +449,7 @@ def test_main_exits_2_on_bad_arguments(
 def test_main_exits_2_when_no_file_matches_a_rule(
     s3, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ):
-    # A directory that holds none of the files (a fresh worktree, say) would otherwise report a
+    # A directory that holds none of the files (an empty folder, say) would otherwise report a
     # clean run of zeros. The settings are invalid too, so the fixed line also shows the check
     # comes before they are read.
     monkeypatch.delenv("DATABASE_URL")

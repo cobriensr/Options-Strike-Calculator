@@ -27,11 +27,12 @@ What it does (`SEED_RULES` is the table of what goes where):
   files, whose seed mark needs the day; a chains file must be named exactly
   `YYYY-MM-DD-chains.parquet`, the name the derive step keys by day. Every name is checked
   before anything uploads (`plan_seed`), so a bad name stops the run with nothing written.
-- Each chains day whose object is in R2 after the run and that has no manifest entry is
-  marked `SEED` (the derive step never rebuilds a seeded chains day). An entry already there,
-  a fingerprint the derive step wrote, is never replaced. The manifest is read before the
-  first upload, so a malformed one stops the run with nothing written, and written once, only
-  when a day was marked.
+- Each chains day among the local files in the plan that has no manifest entry is marked
+  `SEED` (the derive step never rebuilds a seeded chains day); its object is in R2 by then,
+  uploaded or already there. A chains day in R2 with no local file is never marked. An entry
+  already there, a fingerprint the derive step wrote, is never replaced. The manifest is read
+  before the first upload, so a malformed one stops the run with nothing written, and written
+  once, only when a day was marked.
 - `--dry-run` writes nothing, no object and no manifest, and reports what a real run would do.
 
 A run is safe to repeat: a failure part-way leaves what was uploaded in place, and the rerun
