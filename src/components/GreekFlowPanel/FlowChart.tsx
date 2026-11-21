@@ -115,7 +115,8 @@ function FlowChartInner({
     return (
       <div
         className="text-secondary font-mono text-[9px]"
-        aria-label={ariaLabel}
+        role="img"
+        aria-label={`${ariaLabel}, waiting for at least 2 points`}
       >
         waiting for ≥2 points
       </div>
