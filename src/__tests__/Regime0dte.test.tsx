@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 
 import Regime0dte from '../components/Regime0dte';
+import { genericElementsWithAriaLabel, srHintText } from './helpers/aria';
 import type { Regime0dteResponse } from '../hooks/useRegime0dte';
 import {
   GammaProfileMini,
@@ -182,6 +183,16 @@ function mockHook(
   });
 }
 
+/**
+ * The gate chip. A gate's label is shown twice (the SectionBox badge and the
+ * chip), and only the chip carries a hidden hint.
+ */
+function gateChip(label: string): HTMLElement {
+  const chip = screen.getAllByText(label).find((el) => srHintText(el) !== null);
+  if (chip == null) throw new Error(`no gate chip with a hint for ${label}`);
+  return chip;
+}
+
 describe('Regime0dte panel shell', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -191,11 +202,15 @@ describe('Regime0dte panel shell', () => {
     mockHook({ isWindowOpen: true, displayData: LEAN_DOWN_DATA });
     render(<Regime0dte />);
 
-    // Gate chip — text + aria-label convey "lean down" (not colour alone).
+    // Gate chip — text + a hidden hint convey "lean down" (not colour alone).
     // "Lean down" appears twice (the SectionBox badge + the chip), so the
-    // chip is pinned by its descriptive aria-label.
-    const chip = screen.getByLabelText(/Gamma gate: lean down/i);
+    // chip is the one carrying the hint.
+    const chip = gateChip('Lean down');
     expect(chip).toHaveTextContent('Lean down');
+    expect(srHintText(chip)).toBe(
+      'gamma gate, deep negative gamma, downside risk',
+    );
+    expect(chip).not.toHaveAttribute('aria-label');
 
     // The honest note line.
     expect(
@@ -253,9 +268,10 @@ describe('Regime0dte panel shell', () => {
     mockHook({ isWindowOpen: true, displayData: UNKNOWN_DATA });
     render(<Regime0dte />);
 
-    // The chip is pinned by its "no read" aria-label and shows the no-read copy.
-    const chip = screen.getByLabelText(/Gamma gate: no read/i);
+    // The chip is the "No read" one carrying a hint, and shows the no-read copy.
+    const chip = gateChip('No read');
     expect(chip).toHaveTextContent(/No read/i);
+    expect(srHintText(chip)).toBe('gamma gate, insufficient data');
 
     // Honest "this is not a calm/neutral verdict" note is surfaced.
     expect(
@@ -264,12 +280,51 @@ describe('Regime0dte panel shell', () => {
 
     // It must NOT present as any of the three real verdicts.
     expect(chip).not.toHaveTextContent(/Calm/i);
-    expect(
-      screen.queryByLabelText(/Gamma gate: calm/i),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByLabelText(/Gamma gate: lean down/i),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/Calm \/ mean-revert/)).not.toBeInTheDocument();
+    expect(screen.queryByText('Lean down')).not.toBeInTheDocument();
+    expect(screen.queryByText(/positive gamma/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/downside risk/)).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ['calm', 'Calm / mean-revert', 'gamma gate, positive gamma, tight range'],
+    ['big_move', 'Big move likely', 'gamma gate, direction unconfirmed'],
+    [
+      'lean_down',
+      'Lean down',
+      'gamma gate, deep negative gamma, downside risk',
+    ],
+    ['unknown', 'No read', 'gamma gate, insufficient data'],
+  ] as const)(
+    'gives the %s gate chip a hidden hint and no aria-label on its bare span',
+    (gate, label, hint) => {
+      mockHook({
+        isWindowOpen: true,
+        displayData: { ...LEAN_DOWN_DATA, gate },
+      });
+      const { container } = render(<Regime0dte />);
+
+      const chip = gateChip(label);
+      expect(srHintText(chip)).toBe(hint);
+      expect(chip).not.toHaveAttribute('aria-label');
+      expect(genericElementsWithAriaLabel(container)).toEqual([]);
+    },
+  );
+
+  it('leaves the inner wrapper unnamed: the 0DTE Gamma Regime region names the panel', () => {
+    mockHook({ isWindowOpen: true, displayData: LEAN_DOWN_DATA });
+    render(<Regime0dte />);
+
+    // ARIA 1.2 prohibits naming a generic div. The SectionBox region carries
+    // the name, and the sr-only h3 still gives the panel a heading.
+    const region = screen.getByRole('region', { name: '0DTE Gamma Regime' });
+    const heading = within(region).getByRole('heading', {
+      level: 3,
+      name: '0DTE Gamma Regime',
+    });
+    expect(heading.parentElement).not.toHaveAttribute('aria-labelledby');
+    expect(heading.parentElement).not.toHaveAttribute('aria-label');
+    expect(region.querySelector('[aria-labelledby]')).toBeNull();
   });
 
   it('renders without throwing when all series are absent (empty-constant path)', () => {

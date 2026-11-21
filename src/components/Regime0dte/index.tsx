@@ -25,13 +25,12 @@ import { useMemo } from 'react';
 
 import { useRegime0dte } from '../../hooks/useRegime0dte.js';
 import { SectionBox } from '../ui';
+import { SrHint } from '../ui/SrHint.js';
 import { GammaProfileMini, type GammaStrike } from './GammaProfileMini';
 import { IvSparkline, type IvSparkPoint } from './IvSparkline';
 import { CandleStrip, type StripCandle } from './CandleStrip';
 import { TriggerLights } from './TriggerLights';
 import { gateMeta } from './gate';
-
-const REGIME_0DTE_HEADING_ID = 'regime-0dte-heading';
 
 // Stable module-level empty fallbacks. The hook returns a fresh `data` object
 // every 45s poll; passing `data.gexStrikes ?? []` would allocate a NEW array
@@ -53,10 +52,8 @@ export default function Regime0dte(): React.ReactElement {
 
   return (
     <SectionBox label="0DTE Gamma Regime" badge={badge} collapsible>
-      <div aria-labelledby={REGIME_0DTE_HEADING_ID}>
-        <h3 id={REGIME_0DTE_HEADING_ID} className="sr-only">
-          0DTE Gamma Regime
-        </h3>
+      <div>
+        <h3 className="sr-only">0DTE Gamma Regime</h3>
 
         {error && (
           <div
@@ -126,7 +123,6 @@ function RegimePanel({
       <div className="flex flex-wrap items-center gap-3">
         <span
           className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 font-sans text-[11px] font-semibold ${meta.chipClass}`}
-          aria-label={meta.ariaLabel}
         >
           {!meta.isReal && (
             <span aria-hidden="true" className="opacity-70">
@@ -134,6 +130,7 @@ function RegimePanel({
             </span>
           )}
           {meta.label}
+          <SrHint>{meta.srText}</SrHint>
         </span>
         <p className="text-secondary m-0 font-sans text-[12px] leading-snug">
           {meta.isReal
