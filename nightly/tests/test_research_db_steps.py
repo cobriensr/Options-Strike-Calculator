@@ -147,13 +147,16 @@ class Rig:
     def body(self, key: str) -> bytes:
         return self.s3.get_object(Bucket=BUCKET, Key=key)["Body"].read()
 
-    def use_db(self, conn: Any) -> None:
+    def use_db(self, conn: Any, connect_prints: str | None = None) -> None:
         """Hand `conn` out from research_db_steps' connect_db, as resources.connect_db does:
-        autocommit on, closed when the step is done with it, however it ends."""
+        autocommit on, closed when the step is done with it, however it ends. `connect_prints`
+        is a line to write to stderr while connecting, as connect_with_retry's retry notes do."""
 
         @contextmanager
         def fake_connect(_settings: Settings) -> Iterator[Any]:
             self.events.append("connect")
+            if connect_prints is not None:
+                print(connect_prints, file=sys.stderr)
             conn.autocommit = True
             try:
                 yield conn
@@ -221,16 +224,35 @@ args = parser.parse_args()
 print(MARKER)
 with args.csv.open(newline="", encoding="utf-8") as handle:
     rows = list(csv.reader(handle))
-header, data = rows[0], rows[1:]
+# A zero-byte file has no rows: the real tracker starts from its own COLUMNS then.
+header, data = (rows[0], rows[1:]) if rows else (["date", "run_at", "n_fires_today"], [])
 if ACTION == "append":
     data.append(["2026-11-11", "t3", "7"])
 elif ACTION == "replace":
     data[-1] = ["2026-11-10", "t2b", "9"]
 elif ACTION == "drop":
     data = data[:-1]
-elif ACTION == "header":
+elif ACTION == "addcol":  # a column appended at the end, the rows padded
     header = [*header, "extra"]
     data = [[*row, ""] for row in data]
+elif ACTION == "addcol-append":  # the same, and tonight's row
+    header = [*header, "extra"]
+    data = [[*row, ""] for row in data]
+    data.append(["2026-11-11", "t3", "7", "x"])
+elif ACTION == "addcol-drop":  # the same, and a row lost
+    header = [*header, "extra"]
+    data = [[*row, ""] for row in data[:-1]]
+elif ACTION == "reorder":  # the first two columns swapped
+    header = [header[1], header[0], *header[2:]]
+    data = [[row[1], row[0], *row[2:]] for row in data]
+elif ACTION == "rename":  # a column renamed
+    header = [header[0], "ran_at", *header[2:]]
+elif ACTION == "dropcol":  # the last column removed
+    header = header[:-1]
+    data = [row[:-1] for row in data]
+elif ACTION == "prepend":  # a column inserted at the front
+    header = ["extra", *header]
+    data = [["", *row] for row in data]
 elif ACTION == "truncate":
     data = []
 elif ACTION == "crash":
@@ -492,15 +514,86 @@ def test_tracking_a_script_that_empties_the_file_is_a_shrink(rig: Rig, puts: lis
     assert rig.body(STATE_KEY) == STATE_TEXT.encode("utf-8")
 
 
-def test_tracking_a_changed_header_is_the_same_failure(rig: Rig, puts: list[str]) -> None:
+def test_tracking_a_column_appended_at_the_end_is_not_a_header_change(
+    rig: Rig, puts: list[str]
+) -> None:
     rig.put_state()
-    rig.tracker("header")  # same rows, one more column
+    rig.tracker("addcol")  # the tracker's own contract: new columns go at the end; same rows
+
+    result = run_tracking(rig.ctx())
+
+    assert asserted_valid(result) == StepResult(
+        "ok", {"rows_before": 2, "rows_after": 2, "files_uploaded": 2, "log_uploaded": 1}, ""
+    )
+    assert puts == [TRACKING_LOG_KEY, SNAPSHOT_KEY, STATE_KEY]
+    assert rig.body(STATE_KEY).decode().splitlines()[0] == f"{STATE_HEADER},extra"
+    assert rig.body(STATE_KEY) == rig.body(SNAPSHOT_KEY)
+
+
+def test_tracking_appended_columns_with_a_new_row_count_the_rows(rig: Rig, puts: list[str]) -> None:
+    rig.put_state()
+    rig.tracker("addcol-append")
+
+    result = run_tracking(rig.ctx())
+
+    assert asserted_valid(result) == StepResult(
+        "ok", {"rows_before": 2, "rows_after": 3, "files_uploaded": 2, "log_uploaded": 1}, ""
+    )
+    assert puts == [TRACKING_LOG_KEY, SNAPSHOT_KEY, STATE_KEY]
+    lines = rig.body(STATE_KEY).decode().splitlines()
+    assert lines[0] == f"{STATE_HEADER},extra"
+    assert lines[-1] == "2026-11-11,t3,7,x"
+
+
+@pytest.mark.parametrize(
+    "action",
+    ["reorder", "rename", "dropcol", "prepend"],
+    ids=["reordered", "renamed", "a column removed", "a column inserted first"],
+)
+def test_tracking_any_other_header_change_fails_and_uploads_only_the_log(
+    rig: Rig, puts: list[str], action: str
+) -> None:
+    rig.put_state()
+    rig.tracker(action)  # same rows, a different header
 
     result = run_tracking(rig.ctx())
 
     assert asserted_valid(result) == StepResult(
         "failed",
         {"rows_before": 2, "rows_after": 2, "files_uploaded": 0, "log_uploaded": 1},
+        "tracking state header changed",
+    )
+    assert puts == [TRACKING_LOG_KEY]
+    assert rig.body(STATE_KEY) == STATE_TEXT.encode("utf-8")
+    assert step_is_gone(rig, TRACKING)
+
+
+def test_tracking_a_zero_byte_state_fails_as_a_header_change(rig: Rig, puts: list[str]) -> None:
+    rig.put_state("")  # there is no header to extend: nothing here may start a new file
+    rig.tracker("append")  # the real tracker writes its own header and the night's row
+
+    result = run_tracking(rig.ctx())
+
+    assert asserted_valid(result) == StepResult(
+        "failed",
+        {"rows_before": 0, "rows_after": 1, "files_uploaded": 0, "log_uploaded": 1},
+        "tracking state header changed",
+    )
+    assert puts == [TRACKING_LOG_KEY]
+    assert rig.body(STATE_KEY) == b""
+
+
+def test_tracking_a_lost_row_is_a_shrink_even_with_an_appended_column(
+    rig: Rig, puts: list[str]
+) -> None:
+    rig.put_state()
+    rig.tracker("addcol-drop")  # the header is fine; one row is gone
+
+    result = run_tracking(rig.ctx())
+
+    assert asserted_valid(result) == StepResult(
+        "failed",
+        {"rows_before": 2, "rows_after": 1, "files_uploaded": 0, "log_uploaded": 1},
         "tracking state shrank",
     )
     assert puts == [TRACKING_LOG_KEY]
@@ -722,12 +815,14 @@ def test_tracking_logs_its_name_status_counts_and_seconds(
     rig.put_state()
     rig.tracker("append")
 
-    with caplog.at_level(logging.INFO, logger="research_reports"):
+    with caplog.at_level(logging.INFO, logger="research_db_steps"):
         run_tracking(rig.ctx())
 
-    (record,) = [r for r in caplog.records if r.name == "research_reports"]
+    # The line comes from this module's own logger, in the report steps' line format.
+    (record,) = [r for r in caplog.records if r.name == "research_db_steps"]
     message = record.getMessage()
     assert record.levelno == logging.INFO
+    assert message.startswith(f"research-report {TRACKING} ok ")
     assert TRACKING in message
     assert "ok" in message
     assert "rows_after=3" in message
@@ -980,11 +1075,12 @@ def test_quality_sim_logs_its_name_status_counts_and_seconds(
 ) -> None:
     rig.use_db(sim_conn())
 
-    with caplog.at_level(logging.INFO, logger="research_reports"):
+    with caplog.at_level(logging.INFO, logger="research_db_steps"):
         run_quality_sim(rig.ctx())
 
-    (record,) = [r for r in caplog.records if r.name == "research_reports"]
+    (record,) = [r for r in caplog.records if r.name == "research_db_steps"]
     message = record.getMessage()
+    assert message.startswith(f"research-report {QUALITY_SIM} ok ")
     assert QUALITY_SIM in message
     assert "csv_rows=5" in message
     assert "seconds=" in message
@@ -1154,8 +1250,24 @@ def test_drift_zero_metrics_fails(rig: Rig, puts: list[str]) -> None:
     )
     assert conn.upserts == []
     assert puts == [DRIFT_LOG_KEY]  # no report, no plots: a failed run publishes no outputs
+    assert rig.keys("research/takeit-drift/") == []
+    assert rig.keys("research/") == [DRIFT_LOG_KEY]
+    # The evidence for why no AUC was written is the report run_drift wrote, so it is in the log.
+    log = rig.body(DRIFT_LOG_KEY).decode()
+    assert f"# TAKE-IT drift report — {SESSION}" in log
+    assert "- auc_7d_peak: n/a" in log
     assert conn.closed
     assert step_is_gone(rig, DRIFT)
+
+
+def test_drift_a_run_with_metrics_does_not_copy_the_report_into_the_log(rig: Rig) -> None:
+    rig.use_db(drift_conn())
+
+    run_takeit_drift(rig.ctx())
+
+    # The report is published as a file; the log keeps to what the research code printed.
+    assert "# TAKE-IT drift report" not in rig.body(DRIFT_LOG_KEY).decode()
+    assert DRIFT_REPORT_KEY in rig.keys(f"research/takeit-drift/{SESSION}/")
 
 
 def test_drift_one_feed_with_metrics_is_ok(rig: Rig) -> None:
@@ -1191,9 +1303,7 @@ def test_drift_runs_without_autocommit(rig: Rig, monkeypatch: pytest.MonkeyPatch
     assert report_dir.is_relative_to(rig.work)  # the step's own folder
 
 
-def test_a_failing_upsert_commits_nothing_and_fails_the_step(
-    rig: Rig, puts: list[str], capfd: pytest.CaptureFixture[str]
-) -> None:
+def test_a_failing_upsert_commits_nothing_and_fails_the_step(rig: Rig, puts: list[str]) -> None:
     conn = drift_conn(fail_on_upsert=2)
     rig.use_db(conn)
     outcomes: list[steps.StepOutcome] = []
@@ -1243,6 +1353,59 @@ def test_drift_a_missing_dependency_fails_before_any_connection(
 
     assert rig.events == []  # no connection was opened for a step that could not start
     assert puts == [DRIFT_LOG_KEY]
+
+
+@pytest.mark.parametrize("step", [QUALITY_SIM, DRIFT])
+def test_stdout_and_stderr_are_the_originals_after_a_step_whose_research_call_raises(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch, step: str
+) -> None:
+    originals = (sys.stdout, sys.stderr)
+    inside: list[tuple[object, object]] = []
+
+    def raising(*args: object, **kwargs: object) -> None:
+        inside.append((sys.stdout, sys.stderr))
+        raise RuntimeError("the research call failed")
+
+    if step == QUALITY_SIM:
+        monkeypatch.setattr(enrich_lottery_outcomes, "refit_ticker_inversion_stats", raising)
+        rig.use_db(sim_conn())
+    else:
+        monkeypatch.setattr(takeit_drift_monitor, "run_drift", raising)
+        rig.use_db(drift_conn())
+
+    with pytest.raises(RuntimeError, match="the research call failed"):
+        run_step(step, rig.ctx())
+
+    (seen,) = inside
+    assert seen[0] is not originals[0]  # the research call did run with the output redirected
+    assert seen[1] is not originals[1]
+    assert sys.stdout is originals[0]
+    assert sys.stderr is originals[1]
+
+
+@pytest.mark.parametrize("step", [QUALITY_SIM, DRIFT])
+def test_the_connection_is_opened_outside_the_redirect_and_only_the_research_call_inside(
+    rig: Rig, capsys: pytest.CaptureFixture[str], step: str
+) -> None:
+    # connect_with_retry's notes (a class name only, never a host) belong in the job's log, where
+    # the owner looks first when Neon is down; what the research code prints belongs in the file.
+    note = "[retry] connect attempt 1/3 failed (OperationalError)"
+    if step == QUALITY_SIM:
+        rig.use_db(sim_conn(), connect_prints=note)
+        log_key, inside = SIM_LOG_KEY, "[ticker-quality] 6 tickers seen"
+    else:
+        rig.use_db(drift_conn(), connect_prints=note)
+        log_key, inside = DRIFT_LOG_KEY, None
+
+    result = run_step(step, rig.ctx())
+
+    assert result.status == "ok"
+    log = rig.body(log_key).decode()
+    assert "OperationalError" not in log
+    assert "[retry]" not in log
+    assert note in capsys.readouterr().err  # on the job's own stderr
+    if inside is not None:
+        assert inside in log  # the research call's output is still in the log
 
 
 def test_drift_output_never_reaches_the_job(
@@ -1314,11 +1477,12 @@ def test_drift_logs_its_name_status_counts_and_seconds(
 ) -> None:
     rig.use_db(drift_conn())
 
-    with caplog.at_level(logging.INFO, logger="research_reports"):
+    with caplog.at_level(logging.INFO, logger="research_db_steps"):
         run_takeit_drift(rig.ctx())
 
-    (record,) = [r for r in caplog.records if r.name == "research_reports"]
+    (record,) = [r for r in caplog.records if r.name == "research_db_steps"]
     message = record.getMessage()
+    assert message.startswith(f"research-report {DRIFT} ok ")
     assert DRIFT in message
     assert "metrics_written=8" in message
     assert "seconds=" in message

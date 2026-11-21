@@ -6,27 +6,38 @@ publishers.
 
 - `lottery-tracking` keeps one growing CSV in R2. The step downloads it, runs
   `scripts/daily_tracker.py --csv` on it as a subprocess (D6: no R2, UW or Sentry secret in the
-  child), and stores the rewritten file twice, the dated snapshot first and the state last. The
-  state never shrinks: a header that changed, or fewer data rows than the step downloaded,
-  fails the step before either object is written. A missing state fails too, and never starts a
-  new file.
+  child), and stores the rewritten file twice, the dated snapshot first and the state last.
+  Neither object is written unless the state kept its rows and its columns. Status:
+  - `ok`: the new header is the old one with columns appended at the end (the tracker's own
+    contract, `COLUMNS` in scripts/daily_tracker.py), and no data row was lost.
+  - `failed`, `tracking state missing`: there is no state in R2 (a new file is never started).
+  - `failed`, `script exited {code}` (plus ` ({class})` when the log names one) or `script timed
+    out`: the script did not finish.
+  - `failed`, `tracking state header changed`: the new header is anything but the old one with
+    columns appended (reordered, renamed, shortened), or there is no old header (a zero-byte
+    state) to extend.
+  - `failed`, `tracking state shrank`: fewer data rows than the step downloaded.
+  Only the log is published when it fails.
 - `quality-sim` runs `enrich_lottery_outcomes.refit_ticker_inversion_stats`, which only reads,
   in this process, and publishes the simulation CSV it writes. No scored fire fails the step.
 - `takeit-drift` runs `takeit_drift_monitor.run_drift` in this process and publishes the report
   and the reliability plots. The connection is the step's own and autocommit is turned off on
   it: `run_drift` upserts a day's metrics and commits once after the last, or rolls back and
   raises, and under the autocommit `connect_db` hands over a failed upsert would leave part of
-  a day. No metric written fails the step, even when the plots exist. The monitor's own `main`
-  is never called.
+  a day. No metric written fails the step, even when the plots exist, and then nothing is
+  published under `research/takeit-drift/`: the report's text is appended to the log, which is.
+  The monitor's own `main` is never called.
 
 Isolation. The two in-process steps run research code that prints (counts, tickers, a rollback
-note) and warns (pandas, matplotlib). Their stdout and stderr go to the step's log file for the
-length of the run, and that file is published, so none of it reaches the job's logs or Sentry.
-The tracker's output goes to its log through `run_script`. What the step reports is a name, a
-status, counts and a fixed phrase: at most an exit code or an exception class, never a ticker,
-a strike, a price, a date or an exception's text. An exception (R2, the database, the research
-code) propagates to `run_steps`, which reports the step failed by class name; the log is
-published first, as the evidence, and an upload that fails then never replaces the error.
+note) and warns (pandas, matplotlib). Their stdout and stderr go to the step's log file while
+that code runs (the connection is opened and closed outside the redirect, so its retry lines,
+which name a class only, stay in the job's log), and the file is published, so none of the
+research code's output reaches the job's logs or Sentry. The tracker's output goes to its log
+through `run_script`. What the step reports is a name, a status, counts and a fixed phrase: at
+most an exit code or an exception class, never a ticker, a strike, a price, a date or an
+exception's text. An exception (R2, the database, the research code) propagates to
+`run_steps`, which reports the step failed by class name; the log is published first, as the
+evidence, and an upload that fails then never replaces the error.
 
 Register the steps through `pipeline.lazy_group_step` and never import this module at pipeline
 load. Its imports pull no sklearn, scipy or sqlalchemy (the image has none), and the research
@@ -44,12 +55,12 @@ from pathlib import Path
 from time import monotonic
 
 from research_reports import (
-    _IN,
-    _LOG,
-    _OUT,
-    _failure_detail,
-    _log_step,
-    _prepare,
+    IN_DIR,
+    LOG_NAME,
+    OUT_DIR,
+    failure_detail,
+    log_step,
+    prepare_step_dir,
     publish,
     publish_log,
     run_script,
@@ -75,6 +86,7 @@ _TRACKING_SCRIPT = "scripts/daily_tracker.py"
 # Fixed phrases: they are part of the `nightly step failed` fingerprint.
 _STATE_MISSING_DETAIL = "tracking state missing"
 _STATE_SHRANK_DETAIL = "tracking state shrank"
+_HEADER_CHANGED_DETAIL = "tracking state header changed"
 _NO_FIRES_DETAIL = "no scored fires"
 _NO_METRICS_DETAIL = "no drift metrics"
 
@@ -99,6 +111,16 @@ def csv_rows(path: Path) -> int:
 
 def _csv_header(path: Path) -> list[str]:
     return next(_csv_lines(path), [])
+
+
+def _extends(old: list[str], new: list[str]) -> bool:
+    """Whether `new` is `old` with columns appended at the end, or equal to it.
+
+    That is the one change the tracker's own contract allows (the comment on `COLUMNS` in
+    scripts/daily_tracker.py: add a column at the end, never reorder). No `old` header (a
+    zero-byte state) has nothing to extend, so it never matches.
+    """
+    return bool(old) and new[: len(old)] == old
 
 
 def publish_state_csv(
@@ -126,7 +148,7 @@ def _track(
     ctx: StepContext, store: ResearchStore, work: Path, counts: dict[str, int]
 ) -> StepResult:
     """The part of `run_tracking` that works on the downloaded state; fills `counts` as it goes."""
-    state = work / _IN / _TRACKING_FILE
+    state = work / IN_DIR / _TRACKING_FILE
     if not store.get_file(TRACKING_STATE_KEY, state):
         return StepResult("failed", counts, _STATE_MISSING_DETAIL)
     counts["rows_before"] = rows_before = csv_rows(state)
@@ -134,18 +156,18 @@ def _track(
     run = run_script(
         _TRACKING_SCRIPT,
         ["--csv", str(state)],
-        log_path=work / _LOG,
+        log_path=work / LOG_NAME,
         timeout=ctx.seconds_left(),
         env=script_env(ctx.settings, TRACKING_STEP),
     )
     # The log goes first: it is the evidence when anything after it fails.
-    counts["log_uploaded"] = publish_log(store, work / _LOG, ctx.last_session, TRACKING_STEP)
-    detail = _failure_detail(run, (), work / _OUT)  # no output globs: the file is rewritten
+    counts["log_uploaded"] = publish_log(store, work / LOG_NAME, ctx.last_session, TRACKING_STEP)
+    detail = failure_detail(run, (), work / OUT_DIR)  # no output globs: the file is rewritten
     if detail:
         return StepResult("failed", counts, detail)
     counts["rows_after"] = csv_rows(state)
-    if _csv_header(state) != header:
-        return StepResult("failed", counts, _STATE_SHRANK_DETAIL)
+    if not _extends(header, _csv_header(state)):
+        return StepResult("failed", counts, _HEADER_CHANGED_DETAIL)
     try:
         counts["files_uploaded"] = publish_state_csv(
             store, TRACKING_STATE_KEY, _snapshot_key(ctx), state, rows_before
@@ -163,32 +185,27 @@ def run_tracking(ctx: StepContext) -> StepResult:
     """
     started = monotonic()
     store = ResearchStore(ctx.settings)
-    counts = dict.fromkeys(("rows_before", "rows_after", "files_uploaded", "log_uploaded"), 0)
-    work = _prepare(TRACKING_STEP)
+    counts: dict[str, int] = dict.fromkeys(
+        ("rows_before", "rows_after", "files_uploaded", "log_uploaded"), 0
+    )
+    work = prepare_step_dir(TRACKING_STEP)
     try:
         result = _track(ctx, store, work, counts)
     finally:
         shutil.rmtree(work, ignore_errors=True)
-    _log_step(TRACKING_STEP, result, started)
+    log_step(log, TRACKING_STEP, result, started)
     return result
 
 
 @contextmanager
-def _in_process(
+def _log_on_error(
     store: ResearchStore, log_path: Path, ctx: StepContext, step: str
 ) -> Iterator[None]:
-    """Run research code with stdout and stderr in the step's log file, and nowhere else.
-
-    An Exception from the body publishes the log first, as the evidence for the failure, and
-    then propagates; an upload that fails then is logged by class name and never replaces it.
-    """
+    """On an Exception from the body, publish the step's log first, as the evidence for the
+    failure, and then let the error propagate. An upload that fails then is logged by class
+    name and never replaces it."""
     try:
-        with (
-            log_path.open("w", encoding="utf-8", errors="replace") as sink,
-            redirect_stdout(sink),
-            redirect_stderr(sink),
-        ):
-            yield
+        yield
     except Exception:
         try:
             publish_log(store, log_path, ctx.last_session, step)
@@ -197,31 +214,55 @@ def _in_process(
         raise
 
 
+@contextmanager
+def _captured(log_path: Path) -> Iterator[None]:
+    """Send stdout and stderr to the end of the step's log file for the length of the block, and
+    nowhere else. The research code's output is the only thing run inside one."""
+    with (
+        log_path.open("a", encoding="utf-8", errors="replace") as sink,
+        redirect_stdout(sink),
+        redirect_stderr(sink),
+    ):
+        yield
+
+
+def _append_report_to_log(log_path: Path, report_path: Path) -> None:
+    """Add the drift report's text to the step's log. A run with no metric publishes nothing
+    under research/takeit-drift/, so the report, which says why, goes where the evidence goes."""
+    text = report_path.read_text(encoding="utf-8", errors="replace")
+    with log_path.open("a", encoding="utf-8", errors="replace") as sink:
+        sink.write(f"\n--- {report_path.name} ---\n{text}\n")
+
+
 def run_quality_sim(ctx: StepContext) -> StepResult:
     """Simulate the ticker-quality tiers over the last 90 days of fires and publish the CSV."""
     started = monotonic()
     store = ResearchStore(ctx.settings)
-    counts = dict.fromkeys(("csv_rows", "files_uploaded", "log_uploaded"), 0)
-    work = _prepare(QUALITY_SIM_STEP)
+    counts: dict[str, int] = dict.fromkeys(("csv_rows", "files_uploaded", "log_uploaded"), 0)
+    work = prepare_step_dir(QUALITY_SIM_STEP)
+    log_path = work / LOG_NAME
     try:
-        sim_csv = work / _OUT / f"lottery-quality-sim-{ctx.last_session.isoformat()}.csv"
-        with _in_process(store, work / _LOG, ctx, QUALITY_SIM_STEP):
-            from enrich_lottery_outcomes import refit_ticker_inversion_stats
+        sim_csv = work / OUT_DIR / f"lottery-quality-sim-{ctx.last_session.isoformat()}.csv"
+        with _log_on_error(store, log_path, ctx, QUALITY_SIM_STEP):
+            with _captured(log_path):
+                from enrich_lottery_outcomes import refit_ticker_inversion_stats
 
-            with connect_db(ctx.settings) as conn:
+            # The connection is opened and closed outside the redirect: its retry lines name a
+            # class only, and the job's log is where the owner looks when Neon is down.
+            with connect_db(ctx.settings) as conn, _captured(log_path):
                 refit_ticker_inversion_stats(conn, sim_csv_path=sim_csv)
-        counts["log_uploaded"] = publish_log(store, work / _LOG, ctx.last_session, QUALITY_SIM_STEP)
+        counts["log_uploaded"] = publish_log(store, log_path, ctx.last_session, QUALITY_SIM_STEP)
         counts["csv_rows"] = csv_rows(sim_csv)
         if counts["csv_rows"] == 0:  # the header alone is no result
             result = StepResult("failed", counts, _NO_FIRES_DETAIL)
         else:
             counts["files_uploaded"], _ = publish(
-                store, work / _OUT, QUALITY_SIM_STEP, ctx.last_session
+                store, work / OUT_DIR, QUALITY_SIM_STEP, ctx.last_session
             )
             result = StepResult("ok", counts)
     finally:
         shutil.rmtree(work, ignore_errors=True)
-    _log_step(QUALITY_SIM_STEP, result, started)
+    log_step(log, QUALITY_SIM_STEP, result, started)
     return result
 
 
@@ -229,34 +270,44 @@ def run_takeit_drift(ctx: StepContext) -> StepResult:
     """Run the Take-It drift monitor for the last session; publish its report and plots."""
     started = monotonic()
     store = ResearchStore(ctx.settings)
-    counts = dict.fromkeys(
+    counts: dict[str, int] = dict.fromkeys(
         ("metrics_written", "plots_written", "files_uploaded", "log_uploaded"), 0
     )
-    work = _prepare(DRIFT_STEP)
+    work = prepare_step_dir(DRIFT_STEP)
+    log_path = work / LOG_NAME
     try:
-        with _in_process(store, work / _LOG, ctx, DRIFT_STEP):
-            # First use of matplotlib in this process (Agg, set by the image's MPLBACKEND and by
-            # the module itself), so nothing here imports it before a step runs.
-            import takeit_drift_monitor
+        with _log_on_error(store, log_path, ctx, DRIFT_STEP):
+            with _captured(log_path):
+                # First use of matplotlib in this process (Agg, set by the image's MPLBACKEND and
+                # by the module itself), so nothing here imports it before a step runs.
+                import takeit_drift_monitor
 
+            # The connection is opened and closed outside the redirect: its retry lines name a
+            # class only, and the job's log is where the owner looks when Neon is down.
             with connect_db(ctx.settings) as conn:
                 # connect_db's autocommit would commit each upsert as it ran; run_drift commits
                 # once after the last, or rolls back on an error.
                 conn.autocommit = False
-                run = takeit_drift_monitor.run_drift(
-                    conn, ctx.last_session, work / _OUT, work / _OUT
-                )
+                with _captured(log_path):
+                    run = takeit_drift_monitor.run_drift(
+                        conn, ctx.last_session, work / OUT_DIR, work / OUT_DIR
+                    )
         counts["metrics_written"] = run.metrics_written
         counts["plots_written"] = len(run.plot_paths)
-        counts["log_uploaded"] = publish_log(store, work / _LOG, ctx.last_session, DRIFT_STEP)
-        if run.metrics_written == 0:  # a run with no metric is a failure, plots or not
+        no_metrics = run.metrics_written == 0  # a run with no metric is a failure, plots or not
+        if no_metrics:
+            _append_report_to_log(log_path, run.report_path)
+        counts["log_uploaded"] = publish_log(store, log_path, ctx.last_session, DRIFT_STEP)
+        if no_metrics:
             result = StepResult("failed", counts, _NO_METRICS_DETAIL)
         else:
-            counts["files_uploaded"], _ = publish(store, work / _OUT, DRIFT_STEP, ctx.last_session)
+            counts["files_uploaded"], _ = publish(
+                store, work / OUT_DIR, DRIFT_STEP, ctx.last_session
+            )
             result = StepResult("ok", counts)
     finally:
         shutil.rmtree(work, ignore_errors=True)
-    _log_step(DRIFT_STEP, result, started)
+    log_step(log, DRIFT_STEP, result, started)
     return result
 
 

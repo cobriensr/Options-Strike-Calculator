@@ -83,8 +83,12 @@ _MISSING_INPUT_DETAIL = "derived day missing"
 _NO_DAYS_DETAIL = "no chains days"
 _NOT_IN_ROLLUP_DETAIL = "latest session not in rollup"
 
-# What a step keeps under RESEARCH_WORK_DIR/reports/{step}/.
-_IN, _OUT, _HOME, _MPL, _LOG = "in", "out", "home", "matplotlib", "step.log"
+# What a step keeps under RESEARCH_WORK_DIR/reports/{step}/. The first three names are public:
+# research_db_steps' steps keep the same layout.
+IN_DIR = "in"  # what the step downloads before it runs
+OUT_DIR = "out"  # what the step publishes
+LOG_NAME = "step.log"  # the step's log file, in the step's own folder
+_HOME, _MPL = "home", "matplotlib"
 # The names a script inherits from the job; every other name is built here or left out.
 _INHERITED_ENV = ("PATH", "PYTHONPATH", "POLARS_MAX_THREADS")
 # A day for `_state_prefix`: any day names the folder its file lives in.
@@ -339,12 +343,12 @@ REPORTS: tuple[ScriptReport, ...] = (
 STEP_NAMES: frozenset[str] = frozenset({ROLLUP_STEP, *(report.step for report in REPORTS)})
 
 
-def _prepare(step: str) -> Path:
+def prepare_step_dir(step: str) -> Path:
     """An empty folder for the step (an earlier run's is removed) with its subfolders made."""
     work = _step_dir(step)
     if work.exists():
         shutil.rmtree(work)
-    for name in (_IN, _OUT, _HOME, _MPL):
+    for name in (IN_DIR, OUT_DIR, _HOME, _MPL):
         (work / name).mkdir(parents=True)
     return work
 
@@ -406,7 +410,7 @@ def _outputs_written(out_dir: Path, patterns: Sequence[str]) -> bool:
     )
 
 
-def _failure_detail(run: ScriptRun, patterns: Sequence[str], out_dir: Path) -> str:
+def failure_detail(run: ScriptRun, patterns: Sequence[str], out_dir: Path) -> str:
     """The fixed phrase for a run that did not produce its report, or "" for one that did."""
     if run.timed_out:
         return _TIMED_OUT_DETAIL
@@ -418,9 +422,10 @@ def _failure_detail(run: ScriptRun, patterns: Sequence[str], out_dir: Path) -> s
     return ""
 
 
-def _log_step(step: str, result: StepResult, started: float) -> None:
-    """One line: the step, its status, its counts and its seconds. Nothing of a script's."""
-    log.log(
+def log_step(logger: logging.Logger, step: str, result: StepResult, started: float) -> None:
+    """One line, through the caller's logger: the step, its status, its counts and its seconds.
+    Nothing of a script's."""
+    logger.log(
         logging.INFO if result.status == "ok" else logging.WARNING,
         "research-report %s %s %s seconds=%.1f",
         step,
@@ -435,22 +440,22 @@ def run_report(report: ScriptReport, ctx: StepContext) -> StepResult:
     """Run one report script and publish its outputs and its log to R2."""
     started = monotonic()
     store = ResearchStore(ctx.settings)
-    work = _prepare(report.step)
+    work = prepare_step_dir(report.step)
     try:
-        synced, missing = _sync_inputs(report, ctx, store, work / _IN)
+        synced, missing = _sync_inputs(report, ctx, store, work / IN_DIR)
         run = run_script(
             report.script,
-            report.extra_args(ctx.last_session, work / _IN, work / _OUT),
-            log_path=work / _LOG,
+            report.extra_args(ctx.last_session, work / IN_DIR, work / OUT_DIR),
+            log_path=work / LOG_NAME,
             timeout=ctx.seconds_left(),
             env=script_env(ctx.settings, report.step),
         )
         # The log goes first: it is the evidence when anything after it fails.
-        log_uploaded = publish_log(store, work / _LOG, ctx.last_session, report.step)
-        detail = _failure_detail(run, report.outputs, work / _OUT)
+        log_uploaded = publish_log(store, work / LOG_NAME, ctx.last_session, report.step)
+        detail = failure_detail(run, report.outputs, work / OUT_DIR)
         files = size = 0
         if not detail:
-            files, size = publish(store, work / _OUT, report.family, ctx.last_session)
+            files, size = publish(store, work / OUT_DIR, report.family, ctx.last_session)
     finally:
         shutil.rmtree(work, ignore_errors=True)
     counts = {
@@ -468,7 +473,7 @@ def run_report(report: ScriptReport, ctx: StepContext) -> StepResult:
         result = StepResult("partial", counts, _MISSING_INPUT_DETAIL)
     else:
         result = StepResult("ok", counts)
-    _log_step(report.step, result, started)
+    log_step(log, report.step, result, started)
     return result
 
 
@@ -476,16 +481,16 @@ def run_rollup(ctx: StepContext) -> StepResult:
     """The cumulative EOD-flow rollup and headlines over every chains day, published to R2."""
     started = monotonic()
     store = ResearchStore(ctx.settings)
-    work = _prepare(ROLLUP_STEP)
+    work = prepare_step_dir(ROLLUP_STEP)
     try:
-        store.sync_down(_state_prefix("chains"), work / _IN)
-        rolled = rollup(work / _IN)
+        store.sync_down(_state_prefix("chains"), work / IN_DIR)
+        rolled = rollup(work / IN_DIR)
         days = rolled["days"]
         counts = {"days": len(days), "files_uploaded": 0, "bytes_uploaded": 0}
         if not days:
             result = StepResult("failed", counts, _NO_DAYS_DETAIL)
         else:
-            out = work / _OUT
+            out = work / OUT_DIR
             (out / "cumulative-rollup.json").write_bytes(
                 json.dumps(rolled, indent=2, default=str).encode("utf-8")
             )
@@ -500,7 +505,7 @@ def run_rollup(ctx: StepContext) -> StepResult:
                 result = StepResult("ok", counts)
     finally:
         shutil.rmtree(work, ignore_errors=True)
-    _log_step(ROLLUP_STEP, result, started)
+    log_step(log, ROLLUP_STEP, result, started)
     return result
 
 

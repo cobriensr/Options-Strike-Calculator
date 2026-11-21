@@ -43,11 +43,17 @@ from config import Settings, load_settings
 from constants import DB_CONNECT_TIMEOUT_SECONDS, DB_STATEMENT_TIMEOUT_MS, RESEARCH_WORK_DIR
 from research_derive import FAMILY_KEYS, Manifest
 from research_reports import (
+    IN_DIR,
+    LOG_NAME,
+    OUT_DIR,
     REPORTS,
     STEP_NAMES,
     ScriptReport,
     ScriptRun,
     error_class,
+    failure_detail,
+    log_step,
+    prepare_step_dir,
     publish,
     publish_log,
     run_report,
@@ -763,6 +769,78 @@ def test_publish_log_uploads_to_the_logs_folder_of_the_session(rig: Rig, tmp_pat
 def test_publish_log_of_a_missing_log_uploads_nothing(rig: Rig, tmp_path: Path) -> None:
     assert publish_log(ResearchStore(rig.settings), tmp_path / "none.log", LAST_SESSION, "x") == 0
     assert rig.keys() == []
+
+
+# --- the helpers research_db_steps shares ----------------------------------------------------
+
+
+def test_prepare_step_dir_makes_an_empty_folder_with_the_step_layout(rig: Rig) -> None:
+    stale = rig.work / "reports" / "some-step" / OUT_DIR
+    stale.mkdir(parents=True)
+    (stale / "old.md").write_text("stale", encoding="utf-8")
+
+    work = prepare_step_dir("some-step")
+
+    assert work == rig.work / "reports" / "some-step"
+    assert sorted(path.name for path in work.iterdir()) == sorted(
+        [IN_DIR, OUT_DIR, "home", "matplotlib"]
+    )
+    assert list((work / OUT_DIR).iterdir()) == []  # an earlier run's output is gone
+    assert LOG_NAME == "step.log"
+    assert not (work / LOG_NAME).exists()  # the log is the step's to create
+
+
+@pytest.mark.parametrize(
+    ("run", "expected"),
+    [
+        (ScriptRun(None, True, None), "script timed out"),
+        (ScriptRun(1, False, None), "script exited 1"),
+        (ScriptRun(1, False, "ValueError"), "script exited 1 (ValueError)"),
+        (ScriptRun(137, False, None), "script exited 137"),
+        (ScriptRun(0, False, None), ""),
+    ],
+    ids=["timed out", "exit code", "exit code and class", "killed", "clean exit"],
+)
+def test_failure_detail_is_a_fixed_phrase_with_at_most_a_code_and_a_class(
+    tmp_path: Path, run: ScriptRun, expected: str
+) -> None:
+    assert failure_detail(run, (), tmp_path) == expected
+
+
+def test_failure_detail_wants_every_output_glob_to_match_a_non_empty_file(tmp_path: Path) -> None:
+    clean = ScriptRun(0, False, None)
+    patterns = ("a-*.md", "b-*.csv")
+    (tmp_path / "a-1.md").write_text("x", encoding="utf-8")
+
+    assert failure_detail(clean, patterns, tmp_path) == "no output written"
+
+    (tmp_path / "b-1.csv").write_text("", encoding="utf-8")  # an empty file is no output
+
+    assert failure_detail(clean, patterns, tmp_path) == "no output written"
+
+    (tmp_path / "b-1.csv").write_text("x", encoding="utf-8")
+
+    assert failure_detail(clean, patterns, tmp_path) == ""
+
+
+def test_log_step_writes_its_line_through_the_logger_it_is_given(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    mine = logging.getLogger("some_other_step_module")
+    ok = StepResult("ok", {"files_uploaded": 2, "log_uploaded": 1})
+    partial = StepResult("partial", {"files_uploaded": 0}, "derived day missing")
+
+    with caplog.at_level(logging.INFO):
+        log_step(mine, "feature-audit", ok, time.monotonic())
+        log_step(mine, "whale-plots", partial, time.monotonic())
+
+    first, second = [r for r in caplog.records if r.name == "some_other_step_module"]
+    assert first.levelno == logging.INFO
+    assert first.getMessage().startswith(
+        "research-report feature-audit ok files_uploaded=2 log_uploaded=1 seconds="
+    )
+    assert second.levelno == logging.WARNING  # anything but ok
+    assert second.getMessage().startswith("research-report whale-plots partial files_uploaded=0 ")
 
 
 # --- run_report -----------------------------------------------------------------------------
