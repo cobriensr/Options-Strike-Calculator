@@ -55,11 +55,15 @@ nightly/          Full Tape lander and post-tape steps (Python, Railway cron ser
                   (a cron set on the Railway service, the morning after each session) it downloads each missing session's UW options Full Tape, converts it
                   to Parquet with polars and uploads one object per day to Cloudflare R2
                   (fulltape/{date}-fulltape.parquet), newest missing day first. Plans up to 30 days, starts a day only inside the window the
-                  steps' reserve leaves (11,400 s of the 5 h run; nightly/README.md). Re-lands a recent day whose UW ETag changed, and marks a day unavailable only
+                  steps' reserve leaves (6,900 s of the 5 h run, 6,000 s at the enrich budget's cap; nightly/README.md). Re-lands a recent day whose UW ETag changed, and marks a day unavailable only
                   on UW's own evidence. Then `enrich-outcomes` fills the outcome, provenance and marker columns of lottery_finder_fires and
                   silent_boom_alerts from the tape (that step's only Neon writes), `outcome-check` alerts on sessions with no outcomes, and
                   `lottery-refit` builds and judges a shadow candidate of the lottery weights in `lottery_score_versions` (promotion, which
                   rewrites live scores, stays off until the owner's go-ahead).
+                  Then eleven research steps: `research-derive` keeps per-day derived state, and ten report steps (the EOD-flow rollup, whale plots,
+                  the exit-policy, flow-timing, feature-audit, outcome-mining and score-lineage reports, the lottery tracking CSV, the quality sim and
+                  the Take-It drift report) publish state, dated outputs and logs under `research/` in the same R2 bucket (layout in nightly/README.md).
+                  `takeit-drift` also writes `ml_`-prefixed metric rows to `takeit_health_daily`; the other research steps only read Neon.
                   Runs once and exits: 0 ok, 1 a day did not land or a step failed or was skipped, 2 bad config, 3 watchdog, 143 SIGTERM.
                   Sentry server_name=nightly plus the `nightly-tape` cron monitor. Env: UW_API_KEY, R2_*, DATABASE_URL, SENTRY_DSN.
                   Own Dockerfile, README.md (runbook and alert meanings), requirements.txt + requirements-dev.txt,
@@ -375,7 +379,7 @@ see `docs/superpowers/specs/archive-volume-seed-2026-04-18.md`.
 - **Long-running functions**: `api/analyze.ts`, `api/cron/curate-lessons.ts` and `api/cron/curate-periscope-lessons.ts` (780s), `api/cron/backfill-futures-gaps.ts` (800s), and 300s crons such as `api/cron/build-features.ts`. Full list: `vercel.json` `functions`.
 - **DB setup**: `POST /api/journal/init` creates all tables and runs all migrations
 - **Railway services**: `sidecar/`, `uw-stream/` and `nightly/` (a cron service that runs once and exits), each with its own Dockerfile and env vars in Railway, not Vercel. `sidecar/` and `uw-stream/` keep `railway.toml` `watchPatterns`. `nightly/` has no `railway.toml`: its cron schedule, restart policy and watch paths are set on the Railway service (see `nightly/README.md`). Sidecar env: `DATABASE_URL` (only for its `/health` db check), `SENTRY_DSN`, `TAKEIT_*`, `ARCHIVE_*`. Nightly env: `UW_API_KEY`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_ENDPOINT_URL`, `R2_BUCKET_FULLTAPE`, `DATABASE_URL`, optional `SENTRY_DSN`.
-- **Nightly pushes** — push any change to a `nightly` watch path after 15:00 CT and outside 07:15–12:30 UTC. The image builds from the repo root, so the watch paths include shared files under `scripts/` and `ml/src/` and the root `.dockerignore` (the list is in `nightly/README.md`). Why: a push to one redeploys the service, and a deploy during a run (about 07:15–12:30 UTC) can kill it. Easy to miss: those files look like ordinary `scripts/` and `ml/` edits.
+- **Nightly pushes** — push any change to a `nightly` watch path after 15:00 CT and outside 07:15–12:30 UTC. The image builds from the repo root, so the watch paths include shared files under `scripts/` and `ml/src/` and the root `.dockerignore` (the list is in `nightly/README.md`), among them the research report scripts such as `scripts/daily_tracker.py` and `scripts/feature_audit.py` and `ml/src/takeit_drift_monitor.py`. Why: a push to one redeploys the service, and a deploy during a run (about 07:15–12:30 UTC) can kill it. Easy to miss: those files look like ordinary `scripts/` and `ml/` edits.
 
 ## Anthropic Integration
 
