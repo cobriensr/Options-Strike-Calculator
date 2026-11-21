@@ -13,10 +13,13 @@ const snippet = (el: Element): string => el.outerHTML.slice(0, 160);
 /**
  * HTML elements whose implicit ARIA role prohibits a name (ARIA 1.2:
  * generic, paragraph, emphasis, strong, code, subscript, superscript,
- * deletion, insertion). Elements that may be named (`section`, `th`, `td`,
- * `svg`, headings, ...) are not listed.
+ * deletion, insertion, caption). Elements that may be named (`section`, `th`,
+ * `td`, `svg`, headings, ...) are not listed.
+ *
+ * One list for two guards: the runtime helper below and the source scan in
+ * `generic-aria-scan.ts`.
  */
-const GENERIC_TAGS = [
+export const GENERIC_TAGS = [
   'span',
   'div',
   'p',
@@ -32,6 +35,8 @@ const GENERIC_TAGS = [
   'ins',
   's',
   'u',
+  'caption',
+  'figcaption',
 ] as const;
 const GENERIC_SELECTOR = GENERIC_TAGS.join(',');
 
