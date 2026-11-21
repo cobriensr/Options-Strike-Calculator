@@ -537,7 +537,8 @@ jobs:
         run: >-
           docker run --rm --network none --entrypoint python nightly-ci
           -c "import weights_store, lottery_scoring, pipeline, outcome_check,
-          enrich_step, refit_step, research_store, backfill_lottery_scores,
+          enrich_step, refit_step, research_store, research_derive,
+          research_reports, research_db_steps, backfill_lottery_scores,
           _eod_flow, _report_weights, exit_policy_search, flow_inversion_timing,
           feature_audit, daily_tracker, mine_outcome_patterns,
           score_lineage_audit, whale_plots, takeit_drift_monitor,
