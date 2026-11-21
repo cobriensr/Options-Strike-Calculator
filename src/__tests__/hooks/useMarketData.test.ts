@@ -1449,6 +1449,37 @@ describe('useMarketData: access mode', () => {
       expect(result.current.quotesFetchedAt).toBeNull();
     });
 
+    it('leaves events null, stops loading and reports to Sentry when the forward list is malformed', async () => {
+      access.mode = 'public';
+      const fetchMock = mockFetchResponses({
+        events: {
+          status: 200,
+          body: {
+            events: 'nope',
+            startDate: eventsBody.startDate,
+            endDate: eventsBody.endDate,
+          },
+        },
+      });
+      globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+      const { result } = renderHook(() => useMarketData());
+      await waitFor(() => expect(result.current.loading).toBe(false));
+
+      expect(requestedUrls(fetchMock)).toEqual([EVENTS_URL]);
+      expect(result.current.data.events).toBeNull();
+      expect(mockCaptureUnlessAuth).toHaveBeenCalledTimes(1);
+      const [error, options] = mockCaptureUnlessAuth.mock.calls[0]!;
+      expect((error as Error).message).toBe(
+        'events response failed schema validation',
+      );
+      expect(options).toMatchObject({
+        contexts: {
+          events: { request: 'forward', issueCount: expect.any(Number) },
+        },
+      });
+    });
+
     it('stops loading when the events request fails, and does not retry it', async () => {
       access.mode = 'public';
       vi.setSystemTime(REGULAR_HOURS);
@@ -1538,9 +1569,62 @@ describe('useMarketData: access mode', () => {
       expect(result.current.data.quotes).toEqual(mockQuotes);
       expect(result.current.data.intraday).toEqual(mockIntraday);
       expect(result.current.data.yesterday).toEqual(mockYesterday);
-      expect(result.current.hasData).toBe(true);
       expect(result.current.fetchedAt).toBe(fetchedAtBefore);
       expect(result.current.quotesFetchedAt).toBe(quotesFetchedAtBefore);
+    });
+
+    it('reports no market data after the flip, though the quote is still held', async () => {
+      // `hasData` is what App reads for "there is market context": it enables
+      // the chain fetch, lists the market panels, shows the quote badge, the
+      // notification prompt and PreMarketInput. A public visitor gets none of
+      // that, so it reads false while public even though `data` keeps the quote.
+      access.mode = 'guest';
+      globalThis.fetch = mockFetchResponses({
+        events: { status: 200, body: eventsBody },
+      }) as unknown as typeof fetch;
+
+      const { result, rerender } = renderHook(() => useMarketData());
+      await waitFor(() => expect(result.current.hasData).toBe(true));
+      expect(result.current.data.quotes).toEqual(mockQuotes);
+
+      access.mode = 'public';
+      rerender();
+      await settle();
+
+      expect(result.current.hasData).toBe(false);
+      expect(result.current.data.quotes).toEqual(mockQuotes);
+    });
+
+    it('reports market data again once a guest signs back in and the fan-out lands', async () => {
+      access.mode = 'guest';
+      globalThis.fetch = mockFetchResponses({
+        events: { status: 200, body: eventsBody },
+      }) as unknown as typeof fetch;
+
+      const { result, rerender } = renderHook(() => useMarketData());
+      await waitFor(() => expect(result.current.hasData).toBe(true));
+
+      access.mode = 'public';
+      rerender();
+      await settle();
+      expect(result.current.hasData).toBe(false);
+
+      // The next sign-in's quote is a different one: the fan-out replaced it.
+      const newerQuotes = {
+        ...mockQuotes,
+        spx: { ...mockQuotes.spx, price: 7001 },
+      };
+      globalThis.fetch = mockFetchResponses({
+        quotes: { status: 200, body: newerQuotes },
+        events: { status: 200, body: eventsBody },
+      }) as unknown as typeof fetch;
+      access.mode = 'guest';
+      rerender();
+      await waitFor(() =>
+        expect(result.current.data.quotes?.spx?.price).toBe(7001),
+      );
+
+      expect(result.current.hasData).toBe(true);
     });
 
     it('reads needsAuth as false after the flip, though the owner had it true', async () => {
@@ -1616,6 +1700,43 @@ describe('useMarketData: access mode', () => {
         expect(result.current.data.quotes).toBeNull();
       },
     );
+
+    it('writes nothing from a mount reply that lands once the mode is public but before the rerender', async () => {
+      // The cookie went public and App has not re-rendered the hook yet, so the
+      // effect's cleanup has not aborted the run. The reply reads the live mode
+      // itself.
+      access.mode = 'guest';
+      const { fetchMock, releases } = heldFetch({ honoursAbort: false });
+      globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+      const { result, rerender } = renderHook(() => useMarketData());
+      expect(fetchMock).toHaveBeenCalledTimes(5);
+
+      access.mode = 'public';
+      for (const release of releases) release();
+      await settle();
+
+      expect(result.current.data.quotes).toBeNull();
+      expect(result.current.data.intraday).toBeNull();
+      expect(result.current.data.yesterday).toBeNull();
+      expect(result.current.data.movers).toBeNull();
+      expect(result.current.data.events).toBeNull();
+      expect(result.current.hasData).toBe(false);
+      expect(result.current.fetchedAt).toBeNull();
+      expect(result.current.quotesFetchedAt).toBeNull();
+      // The reply returned before it reached `setLoading(false)`: the hook is
+      // still waiting, and the next render's public run is what ends it.
+      expect(result.current.loading).toBe(true);
+
+      rerender();
+      expect(requestedUrls(fetchMock).slice(5)).toEqual([EVENTS_URL]);
+      releases[5]!();
+      await settle();
+
+      expect(result.current.loading).toBe(false);
+      expect(result.current.data.events).toEqual(eventsBody);
+      expect(result.current.data.quotes).toBeNull();
+    });
 
     it('writes nothing from a poll reply that lands after the flip', async () => {
       access.mode = 'guest';

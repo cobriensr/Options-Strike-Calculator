@@ -1,5 +1,5 @@
 import { Fragment, createElement, type ReactNode } from 'react';
-import { render, waitFor } from '@testing-library/react';
+import { act, render, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ToastContext } from '../hooks/useToast';
 import App from '../App';
@@ -28,6 +28,13 @@ type Mode = 'owner' | 'guest' | 'public';
 const h = vi.hoisted(() => ({
   access: { mode: 'owner' as 'owner' | 'guest' | 'public' },
   market: { current: {} as Record<string, unknown> },
+  /**
+   * What `useMarketData` returns. The default hands back `market.current`; the
+   * one test that needs the real hook swaps in its implementation.
+   */
+  useMarketData: vi.fn(),
+  /** What the history hook reports: true while a past date's history shows. */
+  history: { hasHistory: false },
   /**
    * True: the PanelRouter stand-in renders only the ids the registry lists, as
    * the real router does. False: it renders every id in `renderedPanels`, so a
@@ -105,7 +112,13 @@ vi.mock('../hooks/useAccessSession', () => ({
   }),
 }));
 vi.mock('../hooks/useMarketData', () => ({
-  useMarketData: () => h.market.current,
+  useMarketData: () => h.useMarketData(),
+}));
+// The real useMarketData reads the access mode itself. Everything else in the
+// module stays real, and the mode is the one the access-session mock reports.
+vi.mock('../utils/auth', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../utils/auth')>()),
+  getAccessMode: () => h.access.mode,
 }));
 vi.mock('../hooks/useChainData', () => ({ useChainData: h.useChainData }));
 vi.mock('../hooks/useAlertPolling', () => ({
@@ -131,7 +144,7 @@ vi.mock('../hooks/useComputedSignals', () => ({
 // ---- Hooks that fetch or persist, stubbed to inert values -------------------
 vi.mock('../hooks/useVixData', () => ({ useVixData: () => h.vix }));
 vi.mock('../hooks/useHistoryData', () => ({
-  useHistoryData: () => ({ hasHistory: false, history: null }),
+  useHistoryData: () => ({ hasHistory: h.history.hasHistory, history: null }),
   useHistoryVixOHLCFallback: vi.fn(),
 }));
 vi.mock('../hooks/useVix1dData', () => ({ useVix1dData: () => ({}) }));
@@ -394,6 +407,8 @@ function allPollingGates(value: boolean) {
 describe('App polling gate (market clock AND owner-or-guest)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    h.useMarketData.mockImplementation(() => h.market.current);
+    h.history.hasHistory = false;
     h.useChainData.mockReturnValue({ chain: null });
     h.useAlertPolling.mockReturnValue(h.alertState);
     h.useIntervalBAAlerts.mockReturnValue(h.intervalBAAlertState);
@@ -736,6 +751,64 @@ describe('App polling gate (market clock AND owner-or-guest)', () => {
       expect(lastArgAt(h.marketRegimeSection, 0)).toEqual(
         expect.objectContaining({ marketOpen: false, showFlowRegime: false }),
       );
+    });
+  });
+
+  // Here useMarketData is the real hook (everything else is still mocked), fed
+  // a quote by a stubbed /api/quotes. It keeps `data` when a visitor drops to
+  // public, so what App reads as "market data" has to come from the hook's own
+  // `hasData`, which reads false for a public visitor.
+  describe('a drop to public, with the real useMarketData', () => {
+    const realFetch = globalThis.fetch;
+
+    beforeEach(async () => {
+      const actual = await vi.importActual<
+        typeof import('../hooks/useMarketData')
+      >('../hooks/useMarketData');
+      h.useMarketData.mockImplementation(actual.useMarketData);
+      // Only /api/quotes answers; every other request fails, as an unstubbed
+      // fetch does in this suite.
+      globalThis.fetch = vi.fn((url: string) =>
+        url === '/api/quotes'
+          ? Promise.resolve({
+              ok: true,
+              status: 200,
+              json: () =>
+                Promise.resolve({ marketOpen: true, spx: { price: 6000 } }),
+            })
+          : Promise.reject(new TypeError('fetch failed')),
+      ) as unknown as typeof fetch;
+    });
+
+    afterEach(() => {
+      globalThis.fetch = realFetch;
+    });
+
+    it('keeps the chain fetch off for a visitor who had a past date selected', async () => {
+      h.access.mode = 'guest';
+      const { rerender } = mountApp();
+      // The quote lands: market data is there, and the live view enables the
+      // chain.
+      await waitFor(() => expect(lastArgAt(h.useChainData, 0)).toBe(true));
+
+      // A past date's history shows, so the chain is off.
+      h.history.hasHistory = true;
+      rerender(appElement());
+      expect(lastArgAt(h.useChainData, 0)).toBe(false);
+
+      // The session drops to public and the history hook clears its history.
+      // The quote the market hook keeps must not turn the chain back on:
+      // /api/chain is owner-or-guest, so the request would be a 401.
+      h.useChainData.mockClear();
+      h.access.mode = 'public';
+      h.history.hasHistory = false;
+      rerender(appElement());
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+
+      expect(h.useChainData).toHaveBeenCalled();
+      expect(new Set(argsAt(h.useChainData, 0))).toEqual(new Set([false]));
     });
   });
 });

@@ -144,8 +144,12 @@ export interface MarketDataState {
   data: MarketData;
   loading: boolean;
   /**
-   * True if any Schwab data loaded successfully (owner or guest). It stays
-   * true after a drop to public: the data already loaded is kept.
+   * True for an owner or guest once at least one gated endpoint (quotes,
+   * intraday or yesterday) has answered. Always false for a public visitor,
+   * including one who dropped to public after data loaded: `data` keeps what
+   * was loaded (the calculator's inputs from the kept quote still work), but
+   * a public visitor gets what a fresh public visitor gets from every consumer
+   * of this flag (no market panels, no chain fetch, no quote badge).
    */
   hasData: boolean;
   /**
@@ -291,7 +295,10 @@ export function useMarketData(): MarketDataState {
   // unmount cancels the requests in flight. An abort comes back from
   // `fetchJson` as `{ status: 0 }`, which would count as a failure, and a reply
   // already on its way can still resolve after the abort; so after the await a
-  // run that was aborted writes nothing at all.
+  // run that was aborted writes nothing at all. The authenticated branch also
+  // re-reads the live mode: when the cookie goes public App re-renders the hook
+  // and the cleanup aborts the run, but a reply can land in the gap before
+  // that commit, with the signal still clean.
   useEffect(() => {
     const controller = new AbortController();
     const { signal } = controller;
@@ -308,7 +315,8 @@ export function useMarketData(): MarketDataState {
     }
 
     fetchAllEndpoints(signal).then((results) => {
-      if (signal.aborted) return;
+      // Before `setLoading(false)` too: the next render's public run ends it.
+      if (signal.aborted || getAccessMode() === 'public') return;
 
       // AUD-M16: process results and run ALL side effects OUTSIDE the setData
       // updater. The updater must be pure (return new state only) — under
@@ -473,8 +481,15 @@ export function useMarketData(): MarketDataState {
     return () => clearInterval(id);
   }, []);
 
+  // Masked at return, as `needsAuth` is: `data` keeps what a downgrade found
+  // (the licensed caches are purged elsewhere, and the calculator's inputs
+  // from the kept quote still work), but every consumer of this flag reads it
+  // as "this visitor has market context". Left true after a drop to public it
+  // enabled the chain fetch for a visitor who had selected a past date, kept
+  // the quote badge and the notification prompt up, and mounted PreMarketInput.
   const hasData =
-    data.quotes != null || data.intraday != null || data.yesterday != null;
+    isAuthenticated &&
+    (data.quotes != null || data.intraday != null || data.yesterday != null);
 
   // FE-STATE-002: backward-compat `marketOpen` alias. Historically
   // consumers checked `data.quotes?.marketOpen` or the hook-level

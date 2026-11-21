@@ -45,6 +45,7 @@ A public visitor (no owner or guest session) should never call an owner-or-guest
    - Fix the stale header comment ("require an owner session cookie").
    - Files: `useMarketData.ts`, `useMarketData.fetchers.ts`, their tests.
    - Landed as 1 commit: the hook reads `isAuthenticated` at render; public sends the events request alone (`fetchForwardEvents`); the mount effect re-runs on a mode flip with an `AbortController` and writes nothing after an abort; the poll gate follows the mode and a late poll reply re-reads it; the AUD-M17 `isOwner` state and its 2xx probe are gone, and `needsAuth` is the owner's prompt only (false for a guest and while public).
+   - Fix round 1: `hasData` masked for public (closes the `/api/chain` path after a downgrade, the stale quote badge and the notification prompt); the mount guard re-reads the mode.
 5. **Licensed-cache purge (audit section 4).**
    - Add one `clearLicensedClientCaches()` that removes `openingFlowSignal.lastGood*`, `regime0dte:lastgood` and every `feed-union:*` key.
    - Call it from one App effect: `if (!isAuthenticated) purge()`. That covers three cases: a session that starts public (expired or cleared cookie), the interceptor's downgrade, and guest logout.
@@ -129,7 +130,7 @@ Registry entries a public visitor gets (not behind `isAuthenticated`):
   - `useMarketData` -> **OFFENDER E**
   - `useHistoryData` -> **OFFENDER D**
   - `useChainData(market.hasData && !hasHistory, liveMarketOpen)`: `enabled` is false for public (`hasData` false). OK. `fetchChain` even treats 401 as
-    "public visitor" (`useChainData.ts:17`).
+    "public visitor" (`useChainData.ts:17`). This holds after a downgrade too, since Phase 4 fix round 1: `useMarketData` keeps `data` but masks `hasData` for public.
   - `useDarkPoolLevels`: `isOwner` gate before any fetch (`:249-252`). OK.
   - `usePeriscopeExposure`: `canFetch` gate before fetch and poll (`:93-94,106,156`). OK.
   - `useGexTarget`: `isOwner` gate on the bulk-load effect and poll (`:526,541`). OK.
@@ -216,7 +217,7 @@ A and B go away by registry-gating `sec-premarket`. C by gating the effect on ow
 | `useAlertPolling` | `/api/alerts` | `checkIsOwner()` gates the eager fetch and the poll |
 | `useIntervalBAAlerts` | `/api/interval-ba-alerts` | `hasSession` gate |
 | `useDarkPoolLevels`, `usePeriscopeExposure`, `useGexTarget`, `useVixTrajectory`, `useSchwabAuthStatus` | various | own gates, see 1.2 |
-| `useChainData` | `/api/chain` | `enabled` false for public |
+| `useChainData` | `/api/chain` | `enabled` false for public (`hasData` is false for public, after a downgrade too: the hook masks it) |
 | All `GatedSection` panels (`App.tsx:1062-1294`) | UW / GEXBot | `hasMarketContext` = `isAuthenticated && hasMarketOrSnapshot`, and registry omits the entry |
 | `OptionsAlertsView` | LotteryFinder / SilentBoom feeds | static prompt when `!hasMarketContext` |
 | `useVixData`, `useVix1dData`, `useEventsForDate`, forward `/api/events` | public endpoints | guards read, no auth |
