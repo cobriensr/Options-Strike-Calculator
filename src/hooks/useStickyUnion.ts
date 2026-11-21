@@ -123,8 +123,12 @@ interface UseStickyUnionOptions<T> {
 const MAX_UNION_ENTRIES = 8000;
 /** Trailing-debounce window for the durable localStorage write. */
 const PERSIST_DEBOUNCE_MS = 1000;
-/** Prefix all day-scoped feed slots share, used by the stale-key sweep. */
-const FEED_UNION_PREFIX = 'feed-union:';
+/**
+ * Prefix all day-scoped feed slots share, used by the stale-key sweep and by
+ * `clearLicensedClientCaches` (src/lib), which removes every slot when access
+ * drops to public.
+ */
+export const FEED_UNION_PREFIX = 'feed-union:';
 
 function isStorageAvailable(): boolean {
   return (

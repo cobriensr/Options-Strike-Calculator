@@ -70,7 +70,9 @@ export interface Regime0dteResponse {
   persistEndCtMin?: number;
 }
 
-const STORAGE_KEY = 'regime0dte:lastgood';
+// Also read by `clearLicensedClientCaches` (src/lib), which removes this slot
+// when access drops to public.
+export const STORAGE_KEY = 'regime0dte:lastgood';
 
 /**
  * Polling-window predicate: the session is open (a trading day, 08:30 CT up to

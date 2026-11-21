@@ -145,7 +145,9 @@ const INITIAL_STATE: State = {
   fetchedAt: null,
 };
 
-const STORAGE_KEY_LIVE = 'openingFlowSignal.lastGood';
+// Also read by `clearLicensedClientCaches` (src/lib), which removes this slot
+// and every `<key>:<date>` slot when access drops to public.
+export const STORAGE_KEY_LIVE = 'openingFlowSignal.lastGood';
 
 /**
  * Per-date localStorage slot.
