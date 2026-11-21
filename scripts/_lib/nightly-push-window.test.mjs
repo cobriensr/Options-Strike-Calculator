@@ -15,10 +15,24 @@
  * prove the hook finds the entry, the entry reads git's stdin and git stops
  * the push on its exit code.
  */
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import path from 'node:path';
 import { Readable } from 'node:stream';
-import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
 import {
   imageSources,
   inBlockedWindow,
@@ -50,6 +64,51 @@ const INSIDE_WINDOW = new Date('2026-11-24T09:00:00Z');
 const BYPASS = 'NIGHTLY_PUSH_WINDOW_OK';
 const ZERO = '0'.repeat(40);
 
+/**
+ * The nightly cron's start, from the crontab literal in nightly/src/main.py.
+ * Throws on any other form, so a rewrite of that line fails the test that
+ * reads it instead of being skipped.
+ */
+function readCronStart() {
+  const source = readFileSync(
+    path.join(ROOT, 'nightly', 'src', 'main.py'),
+    'utf8',
+  );
+  const match = /"value":\s*"(\d+) (\d+) \* \* 2-6"/.exec(source);
+  if (match === null) {
+    throw new Error(
+      'nightly/src/main.py: no `"value": "<minute> <hour> * * 2-6"` crontab; teach this reader the new form',
+    );
+  }
+  return { minute: Number(match[1]), hour: Number(match[2]) };
+}
+
+/**
+ * A seconds constant of nightly/src/constants.py: an int, or a product of ints
+ * (`5 * 3600`). Throws on any other form.
+ */
+function readSeconds(name) {
+  const source = readFileSync(
+    path.join(ROOT, 'nightly', 'src', 'constants.py'),
+    'utf8',
+  );
+  const prefix = `${name} = `;
+  const line = source
+    .split('\n')
+    .find((candidate) => candidate.startsWith(prefix));
+  if (line === undefined) {
+    throw new Error(`nightly/src/constants.py: no line "${prefix}..."`);
+  }
+  const expression = line.slice(prefix.length).split('#')[0].trim();
+  const factors = expression.split('*').map((factor) => factor.trim());
+  if (!factors.every((factor) => /^\d+$/.test(factor))) {
+    throw new Error(
+      `nightly/src/constants.py: ${name} is "${expression}", not an int or a product of ints; teach this reader the new form`,
+    );
+  }
+  return factors.reduce((product, factor) => product * Number(factor), 1);
+}
+
 describe('inBlockedWindow', () => {
   it.each([
     ['07:14:59', false],
@@ -79,6 +138,22 @@ describe('inBlockedWindow', () => {
     // 2026-11-22 is a Sunday, when the cron does not run: the window is by
     // clock only, so a manual run that day is protected too.
     expect(inBlockedWindow(new Date('2026-11-22T09:00:00Z'))).toBe(true);
+  });
+
+  it("is the nightly cron's start plus its run deadline and watchdog grace", () => {
+    // 07:15 (crontab in nightly/src/main.py) + 5 h + 900 s = 12:30. Reading
+    // them keeps the window from being left behind when either one changes.
+    const { hour, minute } = readCronStart();
+    const start = Date.UTC(2026, 10, 24, hour, minute);
+    const runMs =
+      (readSeconds('RUN_DEADLINE_SECONDS') +
+        readSeconds('WATCHDOG_GRACE_SECONDS')) *
+      1000;
+
+    expect(inBlockedWindow(new Date(start - 1000))).toBe(false);
+    expect(inBlockedWindow(new Date(start))).toBe(true);
+    expect(inBlockedWindow(new Date(start + runMs - 1000))).toBe(true);
+    expect(inBlockedWindow(new Date(start + runMs))).toBe(false);
   });
 });
 
@@ -175,6 +250,31 @@ describe('imageSources', () => {
       'scripts/b.py',
       ...WATCHED,
     ]);
+  });
+
+  it('reads an ADD of a local source like a COPY', () => {
+    const dockerfile = [
+      'ADD --chown=nightly:nightly scripts/a.py ./scripts/',
+      'add scripts/b.py scripts/c.py ./more/',
+    ].join('\n');
+
+    expect(imageSources(dockerfile)).toEqual([
+      'scripts/a.py',
+      'scripts/b.py',
+      'scripts/c.py',
+      ...WATCHED,
+    ]);
+  });
+
+  it.each([
+    ['an http URL', 'http://example.com/a?x=1.tar.gz'],
+    ['an https URL', 'https://example.com/a.tar.gz'],
+    ['a git repository', 'git@github.com:owner/repo.git'],
+  ])('skips an ADD source that is %s', (_label, remote) => {
+    const dockerfile = `ADD ${remote} scripts/a.py /opt/`;
+
+    // The URL's `?` would be an unmatchable glob if it were not skipped first.
+    expect(imageSources(dockerfile)).toEqual(['scripts/a.py', ...WATCHED]);
   });
 
   it('names the Dockerfile and .dockerignore even when no COPY does', () => {
@@ -323,9 +423,13 @@ function commitOn(repo, parent, changes, moves = []) {
   return git(repo, 'rev-parse', 'HEAD');
 }
 
-/** One stdin line of git's pre-push hook. */
-function pushLine(local, remote, ref = 'refs/heads/feature') {
-  return `${ref} ${local} ${ref} ${remote}`;
+/**
+ * One stdin line of git's pre-push hook, `<local ref> <local oid> <remote ref>
+ * <remote oid>`. Pushes `local` to the remote's main unless told otherwise:
+ * main is the one ref the guard checks.
+ */
+function pushLine(local, remote, remoteRef = 'refs/heads/main') {
+  return `refs/heads/work ${local} ${remoteRef} ${remote}`;
 }
 
 describe('main', () => {
@@ -372,9 +476,12 @@ describe('main', () => {
       ['nightly/Dockerfile', { 'nightly/Dockerfile': 'FROM changed\n' }],
       ['.dockerignore', { '.dockerignore': 'changed\n' }],
       ['a new file under nightly/src/', { 'nightly/src/jobs/step.py': 'x\n' }],
+      // Without `-z` git quotes this name ("nightly/src/caf\303\251.py") and
+      // it no longer matches the prefix.
+      ['a non-ASCII name under nightly/src/', { 'nightly/src/café.py': 'x\n' }],
       ['an exact file the image copies', { 'scripts/_cli_paths.py': 'new\n' }],
       ['the deletion of an image file', { 'scripts/_cli_paths.py': null }],
-    ])('blocks a push that changes only %s', async (file, changes) => {
+    ])('blocks a push to main that changes only %s', async (file, changes) => {
       const tip = commitOn(repo, base, changes);
 
       const { code, output } = await runMain([pushLine(tip, base)]);
@@ -388,14 +495,17 @@ describe('main', () => {
       ['nightly/tests/', { 'nightly/tests/test_new.py': 'x\n' }],
       ['api/', { 'api/other.ts': 'x\n' }],
       ['nothing at all', {}],
-    ])('allows a push that changes only %s', async (_label, changes) => {
-      const tip = commitOn(repo, base, changes);
+    ])(
+      'allows a push to main that changes only %s',
+      async (_label, changes) => {
+        const tip = commitOn(repo, base, changes);
 
-      const { code, output } = await runMain([pushLine(tip, base)]);
+        const { code, output } = await runMain([pushLine(tip, base)]);
 
-      expect(code).toBe(0);
-      expect(output).toBe('');
-    });
+        expect(code).toBe(0);
+        expect(output).toBe('');
+      },
+    );
 
     it('allows a push with no ref lines', async () => {
       expect(await runMain([])).toEqual({ code: 0, output: '' });
@@ -442,7 +552,7 @@ describe('main', () => {
       });
     });
 
-    it('diffs a new branch against origin/main, not against its parent', async () => {
+    it('diffs a main the remote lacks against origin/main, not against its parent', async () => {
       const first = commitOn(repo, base, { 'nightly/Dockerfile': 'edit\n' });
       const tip = commitOn(repo, first, { 'api/handler.ts': 'edit\n' });
 
@@ -452,7 +562,7 @@ describe('main', () => {
       expect(output).toContain('nightly/Dockerfile');
     });
 
-    it('allows a new branch that changes no image file', async () => {
+    it('allows a main the remote lacks when it changes no image file', async () => {
       const tip = commitOn(repo, base, { 'api/new-branch.ts': 'x\n' });
 
       expect(await runMain([pushLine(tip, ZERO)])).toEqual({
@@ -461,7 +571,7 @@ describe('main', () => {
       });
     });
 
-    it('does not count what origin/main gained after a new branch forked', async () => {
+    it('does not count what origin/main gained after the local history forked', async () => {
       const gained = commitOn(repo, base, { 'nightly/src/gained.py': 'x\n' });
       const tip = commitOn(repo, base, { 'api/side.ts': 'x\n' });
       git(repo, 'update-ref', 'refs/remotes/origin/main', gained);
@@ -476,26 +586,61 @@ describe('main', () => {
       }
     });
 
-    it('checks every pushed ref, and one clean ref does not hide a blocked one', async () => {
-      const clean = commitOn(repo, base, { 'api/clean.ts': 'x\n' });
-      const dirty = commitOn(repo, base, {
-        'nightly/src/a.py': 'a\n',
-        'nightly/src/b.py': 'b\n',
+    it.each([
+      ['a branch other than main', 'refs/heads/feature'],
+      ['a new branch other than main', 'refs/heads/feature', ZERO],
+      ['a tag', 'refs/tags/v1', ZERO],
+    ])(
+      'allows an image change pushed to %s',
+      async (_label, remoteRef, remote = base) => {
+        const tip = commitOn(repo, base, { 'nightly/Dockerfile': 'edit\n' });
+
+        // Railway deploys main only, so the other ref is not even diffed.
+        expect(await runMain([pushLine(tip, remote, remoteRef)])).toEqual({
+          code: 0,
+          output: '',
+        });
+      },
+    );
+
+    it('does not look at a ref other than main, whatever its remote sha', async () => {
+      const tip = commitOn(repo, base, { 'nightly/Dockerfile': 'edit\n' });
+      const unknown = 'f'.repeat(40);
+
+      expect(
+        await runMain([pushLine(tip, unknown, 'refs/heads/feature')]),
+      ).toEqual({ code: 0, output: '' });
+    });
+
+    it('refuses a push of several refs when main is the one with the image change', async () => {
+      const elsewhere = commitOn(repo, base, {
+        'nightly/src/on_feature.py': 'x\n',
       });
-      const alsoDirty = commitOn(repo, base, { 'nightly/src/a.py': 'a2\n' });
+      const toMain = commitOn(repo, base, { 'nightly/src/on_main.py': 'x\n' });
 
       const { code, output } = await runMain([
         pushLine(ZERO, base, 'refs/heads/gone'),
-        pushLine(clean, base, 'refs/heads/clean'),
-        pushLine(dirty, base, 'refs/heads/dirty'),
-        pushLine(alsoDirty, base, 'refs/heads/also-dirty'),
+        pushLine(elsewhere, base, 'refs/heads/feature'),
+        pushLine(toMain, base),
       ]);
 
       expect(code).toBe(1);
-      expect(output).toContain('nightly/src/b.py');
-      // a.py is in two refs and listed once.
-      expect(output.split('nightly/src/a.py')).toHaveLength(2);
-      expect(output).not.toContain('api/clean.ts');
+      expect(output).toContain('nightly/src/on_main.py');
+      expect(output).not.toContain('on_feature.py');
+    });
+
+    it('allows a push of several refs when only a ref other than main has the image change', async () => {
+      const elsewhere = commitOn(repo, base, {
+        'nightly/src/on_feature.py': 'x\n',
+      });
+      const toMain = commitOn(repo, base, { 'api/on_main.ts': 'x\n' });
+
+      expect(
+        await runMain([
+          pushLine(elsewhere, base, 'refs/heads/feature'),
+          pushLine(toMain, base),
+        ]),
+      ).toEqual({ code: 0, output: '' });
     });
 
     it('names the window end and the bypass, and prints no environment value', async () => {
@@ -530,19 +675,25 @@ describe('main', () => {
   });
 
   describe('when it cannot tell what a push changes', () => {
-    it('blocks a remote sha the repo does not have, naming the sha and the bypass', async () => {
+    it('tells a stale clone to fetch when the remote main is a commit it does not have', async () => {
       const unknown = 'f'.repeat(40);
       const tip = commitOn(repo, base, { 'api/handler.ts': 'edit\n' });
 
       const { code, output } = await runMain([pushLine(tip, unknown)]);
 
       expect(code).toBe(1);
-      expect(output).toContain('could not check');
+      expect(output).toContain('has not fetched');
+      expect(output).toContain('git fetch origin');
       expect(output).toContain(unknown);
-      expect(output).toContain(`${BYPASS}=1`);
+      // The advice comes first and the override last, as the last resort.
+      expect(output.indexOf('git fetch origin')).toBeLessThan(
+        output.indexOf(`${BYPASS}=1`),
+      );
+      expect(output.trimEnd().split('\n').at(-1)).toContain(`${BYPASS}=1`);
+      expect(output).not.toContain('could not check');
     });
 
-    it('blocks a new branch when there is no origin/main to diff against', async () => {
+    it('blocks a main the remote lacks when there is no origin/main to diff against', async () => {
       const { code, output } = await runMain([pushLine(lonelyHead, ZERO)], {
         gitDir: path.join(lonelyRepo, '.git'),
       });
@@ -628,6 +779,17 @@ describe('.githooks/pre-push in this repo', () => {
     );
   });
 
+  it('skips itself, saying so on stderr, when node is not on the PATH, before it execs', () => {
+    const lines = readFileSync(HOOK, 'utf8').split('\n');
+    const guard = lines.indexOf(
+      "command -v node >/dev/null 2>&1 || { echo 'pre-push: node not found, nightly push guard skipped' >&2; exit 0; }",
+    );
+    const exec = lines.findIndex((line) => line.startsWith('exec node '));
+
+    expect(guard).toBeGreaterThan(0);
+    expect(guard).toBeLessThan(exec);
+  });
+
   it('is executable in the index, so git runs it on Linux and macOS', () => {
     // Windows ignores the mode (core.fileMode=false); CI's ubuntu checkout
     // skips a 100644 hook with only a hint, and the guard would never run.
@@ -651,19 +813,28 @@ describe('git push through the real hook', () => {
 
   let work;
   let base;
+  let remote;
   let branchSeq = 0;
 
   beforeAll(() => {
     ({ repo: work, base } = seededRepo('npw-work-'));
-    const remoteParent = makeTempDir('npw-remote-');
-    git(remoteParent, 'init', '--bare', '-q', '-b', 'main', 'remote.git');
-    git(work, 'remote', 'add', 'origin', path.join(remoteParent, 'remote.git'));
-    // No hooks yet (they are passed per push below), so this goes through,
-    // and it leaves refs/remotes/origin/main for the pushes that follow.
-    git(work, 'push', '-q', 'origin', 'main');
   });
 
-  /** A new branch at a commit on base that writes `changes`; returns its name. */
+  // A fresh bare remote with main at base for every test, so that one test's
+  // push never makes the next one's non-fast-forward.
+  beforeEach(() => {
+    const remoteParent = makeTempDir('npw-remote-');
+    git(remoteParent, 'init', '--bare', '-q', '-b', 'main', 'remote.git');
+    remote = path.join(remoteParent, 'remote.git');
+    if (git(work, 'remote') === 'origin')
+      git(work, 'remote', 'remove', 'origin');
+    git(work, 'remote', 'add', 'origin', remote);
+    // No hooks yet (they are passed per push below), so this goes through,
+    // and it leaves refs/remotes/origin/main at base.
+    git(work, 'push', '-q', 'origin', `${base}:refs/heads/main`);
+  });
+
+  /** A local branch at a commit on base that writes `changes`; its name. */
   function newBranch(changes) {
     branchSeq += 1;
     const name = `case-${branchSeq}`;
@@ -671,11 +842,17 @@ describe('git push through the real hook', () => {
     return name;
   }
 
-  /** `git push origin <branch>` through .githooks, at the clock's time. */
-  function hookedPush(branch, { at = INSIDE_WINDOW, env = {} } = {}) {
+  /**
+   * `git push origin <refspec>` through .githooks, at the clock's time. `git`
+   * is the executable to run and `env` any extra environment (cleanEnv).
+   */
+  function hookedPush(
+    refspec,
+    { at = INSIDE_WINDOW, env = {}, executable = 'git' } = {},
+  ) {
     return spawnChild(
-      'git',
-      ['-c', `core.hooksPath=${HOOKS_DIR}`, 'push', 'origin', branch],
+      executable,
+      ['-c', `core.hooksPath=${HOOKS_DIR}`, 'push', 'origin', refspec],
       {
         cwd: work,
         env: cleanEnv(
@@ -689,68 +866,156 @@ describe('git push through the real hook', () => {
     );
   }
 
-  function remoteTip(branch) {
-    return git(work, 'ls-remote', '--heads', 'origin', branch);
+  /** What the remote's `ref` points at: "<sha>\t<ref>", or '' when absent. */
+  function remoteRef(ref) {
+    return git(work, 'ls-remote', 'origin', ref);
   }
 
-  it('stops a new branch that changes an image file, and the branch never arrives', () => {
+  function sha(ref) {
+    return git(work, 'rev-parse', ref);
+  }
+
+  it('stops an image change pushed to main, and main never moves', () => {
     const branch = newBranch({ 'nightly/src/new_step.py': 'x\n' });
 
-    const result = hookedPush(branch);
+    const result = hookedPush(`${branch}:main`);
 
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain('nightly/src/new_step.py');
     expect(result.stderr).toContain(`${BYPASS}=1`);
-    expect(remoteTip(branch)).toBe('');
+    expect(remoteRef('refs/heads/main')).toContain(base);
   });
 
   it('lets the same push through with the bypass', () => {
     const branch = newBranch({ 'nightly/src/new_step.py': 'x\n' });
 
-    const result = hookedPush(branch, { env: { [BYPASS]: '1' } });
+    const result = hookedPush(`${branch}:main`, { env: { [BYPASS]: '1' } });
 
     expect(result.status).toBe(0);
-    expect(remoteTip(branch)).toContain(`refs/heads/${branch}`);
+    expect(remoteRef('refs/heads/main')).toContain(sha(branch));
   });
 
   it('lets the same push through outside the window', () => {
     const branch = newBranch({ 'nightly/src/new_step.py': 'x\n' });
 
-    const result = hookedPush(branch, {
+    const result = hookedPush(`${branch}:main`, {
       at: new Date('2026-11-24T13:00:00Z'),
     });
 
     expect(result.status).toBe(0);
-    expect(remoteTip(branch)).toContain(`refs/heads/${branch}`);
+    expect(remoteRef('refs/heads/main')).toContain(sha(branch));
   });
 
-  it('lets a push that changes no image file through inside the window', () => {
+  it('lets a push to main that changes no image file through inside the window', () => {
     const branch = newBranch({ 'api/other.ts': 'x\n' });
 
-    const result = hookedPush(branch);
+    const result = hookedPush(`${branch}:main`);
 
     expect(result.status).toBe(0);
-    expect(remoteTip(branch)).toContain(`refs/heads/${branch}`);
+    expect(remoteRef('refs/heads/main')).toContain(sha(branch));
   });
 
-  it('stops an update of a branch already on the remote (remote..local)', () => {
+  it('lets an image change through when it goes to a branch other than main', () => {
+    const branch = newBranch({ 'nightly/src/new_step.py': 'x\n' });
+
+    const result = hookedPush(`${branch}:refs/heads/side`);
+
+    expect(result.status).toBe(0);
+    expect(remoteRef('refs/heads/side')).toContain(sha(branch));
+    expect(remoteRef('refs/heads/main')).toContain(base);
+  });
+
+  it('stops a second push to main that changes an image file (remote..local)', () => {
     const branch = newBranch({ 'api/first.ts': 'x\n' });
-    expect(hookedPush(branch).status).toBe(0);
-    const pushed = remoteTip(branch);
+    expect(hookedPush(`${branch}:main`).status).toBe(0);
+    const pushed = sha(branch);
     git(
       work,
       'branch',
       '-f',
       branch,
-      commitOn(work, branch, {
-        'scripts/_cli_paths.py': 'changed\n',
-      }),
+      commitOn(work, branch, { 'scripts/_cli_paths.py': 'changed\n' }),
     );
 
-    const result = hookedPush(branch);
+    const result = hookedPush(`${branch}:main`);
 
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain('scripts/_cli_paths.py');
-    expect(remoteTip(branch)).toBe(pushed);
+    expect(remoteRef('refs/heads/main')).toContain(pushed);
+  });
+
+  it('tells a clone that has not fetched to fetch, when someone else pushed to main', () => {
+    const otherParent = makeTempDir('npw-other-');
+    git(otherParent, 'clone', '-q', remote, 'clone');
+    const other = path.join(otherParent, 'clone');
+    writeFiles(other, { 'api/theirs.ts': 'theirs\n' });
+    git(other, 'add', '-A');
+    git(other, 'commit', '-q', '-m', 'another session');
+    git(other, 'push', '-q', 'origin', 'HEAD:main');
+    const theirs = git(other, 'rev-parse', 'HEAD');
+    const branch = newBranch({ 'api/mine.ts': 'mine\n' });
+
+    const result = hookedPush(`${branch}:main`);
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('git fetch origin');
+    expect(result.stderr).toContain(theirs);
+    expect(remoteRef('refs/heads/main')).toContain(theirs);
+  });
+
+  it('is skipped, saying so, when node is not on the PATH: the push goes through', () => {
+    const branch = newBranch({ 'nightly/src/new_step.py': 'x\n' });
+    // git by its full path (found while node is still on the PATH), and a PATH
+    // without any directory that holds node, so the hook cannot find it.
+    const executable = findOnPath('git');
+
+    const result = hookedPush(`${branch}:main`, {
+      executable,
+      env: { [PATH_NAME]: pathWithoutNode() },
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain(
+      'pre-push: node not found, nightly push guard skipped',
+    );
+    expect(remoteRef('refs/heads/main')).toContain(sha(branch));
   });
 });
+
+/** This process's PATH variable under the name it has here (Path on Windows). */
+const PATH_NAME =
+  Object.keys(process.env).find((key) => key.toUpperCase() === 'PATH') ??
+  'PATH';
+
+/** This process's PATH, as a list of directories. */
+function pathDirs() {
+  return (process.env[PATH_NAME] ?? '')
+    .split(path.delimiter)
+    .filter((dir) => dir !== '');
+}
+
+/** True when the directory holds a node executable. */
+function holdsNode(dir) {
+  return ['node', 'node.exe'].some((name) => existsSync(path.join(dir, name)));
+}
+
+/** The full path of an executable on this process's PATH. */
+function findOnPath(name) {
+  for (const dir of pathDirs()) {
+    for (const candidate of [name, `${name}.exe`]) {
+      const full = path.join(dir, candidate);
+      if (existsSync(full)) return full;
+    }
+  }
+  throw new Error(`${name} is not on the PATH`);
+}
+
+/**
+ * This process's PATH minus every directory that holds node. Not an empty
+ * PATH: on Windows git.exe needs its own directories on it to start.
+ */
+function pathWithoutNode() {
+  return pathDirs()
+    .filter((dir) => !holdsNode(dir))
+    .join(path.delimiter);
+}

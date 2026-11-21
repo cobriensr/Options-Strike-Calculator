@@ -6,23 +6,28 @@
  * here: inside that window a push that changes one of those files is refused.
  *
  * "A file the image is built from" is read from nightly/Dockerfile of the
- * checkout this module lives in: every COPY source that is not a build-stage
- * copy (`--from`), plus the Dockerfile and the root .dockerignore, which no
- * COPY names but which decide what the build holds. Not the whole nightly/
- * folder: its README and tests are not in the image, so pushing them is safe.
- * An image file added to the Dockerfile is therefore guarded with no change
- * here. A COPY source this module cannot match (a glob, a variable, a
- * heredoc) makes `imageSources` throw, which the real-Dockerfile test turns
- * into a failure in review, and `main` into a refused push.
+ * checkout this module lives in: every COPY or ADD source that is a local
+ * path and not a build-stage copy (`--from`), plus the Dockerfile and the root
+ * .dockerignore, which no COPY names but which decide what the build holds.
+ * Not the whole nightly/ folder: its README and tests are not in the image,
+ * so pushing them is safe. An image file added to the Dockerfile is therefore
+ * guarded with no change here. A source this module cannot match (a glob, a
+ * variable, a heredoc) makes `imageSources` throw, which the real-Dockerfile
+ * test turns into a failure in review, and `main` into a refused push.
  *
- * `main` diffs every ref git offers on stdin, `<remote>..<local>`; a branch
- * the remote lacks is diffed against origin/main instead (see the comment in
- * `pushedPaths`). A deletion adds nothing to the remote's tree and is
- * allowed. When it cannot tell what a push changes (a remote sha this repo
- * lacks, no origin/main, a line it cannot read) the push is refused inside
- * the window: a guard that waved those through would fail open on the pushes
- * that matter. Both refusals name the override, NIGHTLY_PUSH_WINDOW_OK=1,
- * the owner's call for a deploy that has to go out now.
+ * Only a push to main is checked: the Railway `nightly` service deploys from
+ * its source branch, main, in its one environment (production), so no other
+ * ref can redeploy it. That rule rests on Railway's source branch being main;
+ * if the service is pointed at another branch, DEPLOY_REF must follow.
+ * `main` diffs each line pushing to main, `<remote>..<local>`; when the remote
+ * has no main yet, against origin/main instead (see `pushedPaths`). A
+ * deletion adds nothing to the remote's tree and is allowed. When it cannot
+ * tell what a push changes the push is refused inside the window: a guard
+ * that waved those through would fail open on the pushes that matter. The
+ * common cause, a remote commit this clone has not fetched, is told apart and
+ * its message leads with `git fetch origin`; every refusal ends by naming the
+ * override, NIGHTLY_PUSH_WINDOW_OK=1, the owner's last resort for a deploy
+ * that has to go out now.
  *
  * Git runs with the env it is given, in the repository the hook is run for.
  * Nothing in the messages comes from the environment.
@@ -37,11 +42,19 @@ import { git } from './git-run.mjs';
  * cannot wait, with no code change, and the hook is run by git, which gives
  * the owner no flag to pass.
  */
-export const BYPASS_ENV = 'NIGHTLY_PUSH_WINDOW_OK';
+const BYPASS_ENV = 'NIGHTLY_PUSH_WINDOW_OK';
 
-/** The nightly cron's run, UTC: starts 07:15, and its 5 h cap ends by 12:30. */
+/**
+ * The nightly cron's run, UTC: starts 07:15 (`15 7 * * 2-6` in
+ * nightly/src/main.py) and ends with RUN_DEADLINE_SECONDS plus
+ * WATCHDOG_GRACE_SECONDS (5 h + 900 s, nightly/src/constants.py), 12:30. The
+ * test file reads both and fails when this window drifts from them.
+ */
 const WINDOW_START = { hour: 7, minute: 15 };
 const WINDOW_END = { hour: 12, minute: 30 };
+
+/** The one ref whose push Railway builds. */
+const DEPLOY_REF = 'refs/heads/main';
 
 const MS_PER_DAY = 86_400_000;
 
@@ -54,16 +67,22 @@ const MAX_PATHS_SHOWN = 5;
  */
 const WATCHED_BESIDES_COPY = ['nightly/Dockerfile', '.dockerignore'];
 
-/** What a pushed branch the remote lacks is compared with. */
+/** What a main the remote lacks is compared with. */
 const NEW_BRANCH_BASE = 'origin/main';
 
 /** nightly/Dockerfile of the checkout this file is in. */
 const DOCKERFILE = new URL('../../nightly/Dockerfile', import.meta.url);
 
-/** A COPY flag: `--chown=...`, `--chmod=...`, `--from=...`, `--link`. */
+/** A COPY or ADD flag: `--chown=...`, `--chmod=...`, `--from=...`, `--link`. */
 const COPY_FLAG = /^(--\S+)\s+/;
 
-/** A COPY source this module cannot match by path: a glob, a variable, a heredoc. */
+/** The instructions whose sources are files of the build context. */
+const COPY_INSTRUCTION = /^(?:COPY|ADD)\s/i;
+
+/** An ADD source that is fetched, not read from the build context. */
+const REMOTE_SOURCE = /^(?:https?:\/\/|git@)/i;
+
+/** A source this module cannot match by path: a glob, a variable, a heredoc. */
 const UNMATCHABLE_SOURCE = /[*?[\]$<]/;
 
 /** A git object id: SHA-1 or SHA-256. */
@@ -120,16 +139,18 @@ function instructions(dockerfileText) {
 }
 
 /**
- * The sources of one COPY instruction, or none for another instruction or a
- * `--from` copy out of a build stage.
+ * The local sources of one COPY or ADD instruction, or none for another
+ * instruction, a `--from` copy out of a build stage, and an ADD of a URL or a
+ * git repository.
  *
  * @param {string} instruction
  * @returns {string[]}
  */
 function copySources(instruction) {
-  if (!/^COPY\s/i.test(instruction)) return [];
+  const keyword = COPY_INSTRUCTION.exec(instruction);
+  if (keyword === null) return [];
 
-  let rest = instruction.slice('COPY'.length).trim();
+  let rest = instruction.slice(keyword[0].length).trim();
   let fromStage = false;
   for (
     let flag = COPY_FLAG.exec(rest);
@@ -143,7 +164,10 @@ function copySources(instruction) {
 
   const args = rest.startsWith('[') ? jsonArgs(rest) : rest.split(/\s+/);
   // The last argument is the destination.
-  return args.slice(0, -1).map(normalizeSource);
+  return args
+    .slice(0, -1)
+    .filter((source) => !REMOTE_SOURCE.test(source))
+    .map(normalizeSource);
 }
 
 /** The JSON array form, `COPY ["a", "b", "dst/"]`. */
@@ -155,7 +179,9 @@ function jsonArgs(rest) {
     parsed = null;
   }
   if (!Array.isArray(parsed) || !parsed.every((s) => typeof s === 'string')) {
-    throw new Error(`unsupported COPY source in nightly/Dockerfile: ${rest}`);
+    throw new Error(
+      `unsupported COPY/ADD source in nightly/Dockerfile: ${rest}`,
+    );
   }
   return parsed;
 }
@@ -163,18 +189,20 @@ function jsonArgs(rest) {
 /** Without a leading `./`; the whole build context is `.`. */
 function normalizeSource(source) {
   if (UNMATCHABLE_SOURCE.test(source)) {
-    throw new Error(`unsupported COPY source in nightly/Dockerfile: ${source}`);
+    throw new Error(
+      `unsupported COPY/ADD source in nightly/Dockerfile: ${source}`,
+    );
   }
   const bare = source.replace(/^(?:\.\/)+/, '');
   return bare === '' ? '.' : bare;
 }
 
 /**
- * Every file or directory the nightly image is built from: the source of each
- * COPY that does not read from a build stage, in file order, then
+ * Every file or directory the nightly image is built from: the local source of
+ * each COPY or ADD that does not read from a build stage, in file order, then
  * nightly/Dockerfile and .dockerignore. A directory source ends with `/` as
- * the Dockerfile writes it. Throws when a COPY names a source that cannot be
- * matched by path (a glob, a variable, a heredoc).
+ * the Dockerfile writes it. Throws when an instruction names a source that
+ * cannot be matched by path (a glob, a variable, a heredoc).
  *
  * @param {string} dockerfileText
  * @returns {string[]}
@@ -211,11 +239,11 @@ export function touchedImagePaths(changed, sources) {
  * `<local ref> <local oid> <remote ref> <remote oid>`.
  *
  * @param {string} line
- * @returns {{ localOid: string, remoteOid: string }}
+ * @returns {{ localOid: string, remoteRef: string, remoteOid: string }}
  */
 function parsePushLine(line) {
   const fields = line.trim().split(/\s+/);
-  const [, localOid, , remoteOid] = fields;
+  const [, localOid, remoteRef, remoteOid] = fields;
   // The ids go into a git command line: only a real object id may.
   if (
     fields.length !== 4 ||
@@ -224,10 +252,42 @@ function parsePushLine(line) {
   ) {
     throw new Error(`unexpected pre-push line: ${line}`);
   }
-  return { localOid, remoteOid };
+  return { localOid, remoteRef, remoteOid };
 }
 
 const isZeroOid = (oid) => /^0+$/.test(oid);
+
+/**
+ * The remote's main is a commit this clone does not have: someone else pushed
+ * to it and this clone has not fetched since. The diff cannot be made, and
+ * the fix is `git fetch`, not the override.
+ */
+class UnfetchedRemoteError extends Error {
+  /** @param {string} oid */
+  constructor(oid) {
+    super(`the remote's main is at ${oid}, a commit this clone does not have`);
+    this.name = 'UnfetchedRemoteError';
+  }
+}
+
+/**
+ * Whether this repository holds `oid` as a commit. `rev-parse --verify
+ * --quiet` exits 1 for an object it lacks, and any other failure (no
+ * repository) is a GitError from the runner.
+ *
+ * @param {string} oid
+ * @param {NodeJS.ProcessEnv} env
+ */
+function hasCommit(oid, env) {
+  const found = git(
+    ['rev-parse', '--verify', '--quiet', `${oid}^{commit}`],
+    env,
+    {
+      okStatuses: [0, 1],
+    },
+  );
+  return found.trim() !== '';
+}
 
 /**
  * Paths that differ across `range`. `--no-renames` lists both names of a
@@ -244,14 +304,17 @@ function changedPaths(range, env) {
 }
 
 /**
- * Every path the push would change, over all the refs git offers.
+ * Every path the push would change in the remote's main. Only the lines whose
+ * remote ref is DEPLOY_REF count (a line is still read and checked for form,
+ * whatever its ref):
  *
- * - An existing remote branch: `<remote>..<local>`, the commits that would be
- *   added, which is what Railway sees in a push to main.
- * - A branch the remote lacks: `origin/main...<local>`, the changes since the
- *   branch left origin/main. Three dots, not two: with two, whatever main
- *   gained since the branch forked would count as this push's.
- * - A deletion: nothing.
+ * - main exists on the remote: `<remote>..<local>`, the commits that would be
+ *   added, which is what Railway sees in a push to main. Throws
+ *   UnfetchedRemoteError when the remote commit is not in this clone.
+ * - the remote has no main: `origin/main...<local>`, the changes since the
+ *   local history left origin/main. Three dots, not two: with two, whatever
+ *   main gained since the fork would count as this push's.
+ * - a deletion: nothing.
  *
  * @param {string} stdinText
  * @param {NodeJS.ProcessEnv} env
@@ -261,12 +324,14 @@ function pushedPaths(stdinText, env) {
   const changed = [];
   for (const line of stdinText.split(/\r?\n/)) {
     if (line.trim() === '') continue;
-    const { localOid, remoteOid } = parsePushLine(line);
-    if (isZeroOid(localOid)) continue;
-    const range = isZeroOid(remoteOid)
-      ? `${NEW_BRANCH_BASE}...${localOid}`
-      : `${remoteOid}..${localOid}`;
-    changed.push(...changedPaths(range, env));
+    const { localOid, remoteRef, remoteOid } = parsePushLine(line);
+    if (remoteRef !== DEPLOY_REF || isZeroOid(localOid)) continue;
+    if (isZeroOid(remoteOid)) {
+      changed.push(...changedPaths(`${NEW_BRANCH_BASE}...${localOid}`, env));
+      continue;
+    }
+    if (!hasCommit(remoteOid, env)) throw new UnfetchedRemoteError(remoteOid);
+    changed.push(...changedPaths(`${remoteOid}..${localOid}`, env));
   }
   return changed;
 }
@@ -291,6 +356,13 @@ function blockedMessage(paths) {
 
 /** @param {unknown} err */
 function unverifiedMessage(err) {
+  if (err instanceof UnfetchedRemoteError) {
+    return [
+      'nightly-push-window: origin has commits this clone has not fetched; run `git fetch origin`, rebase, and push again.',
+      `(${err.message}, so the push cannot be checked, and it is inside the nightly run window, ${clock(WINDOW_START)} to ${clock(WINDOW_END)}.)`,
+      `Last resort, to push as it is: set ${BYPASS_ENV}=1 for this one push.`,
+    ].join('\n');
+  }
   const why = err instanceof Error ? err.message : String(err);
   return [
     `nightly-push-window: could not check this push (${why}).`,
@@ -317,7 +389,7 @@ export async function main({ stdin, env, now }) {
   try {
     const sources = imageSources(readFileSync(DOCKERFILE, 'utf8'));
     const changed = pushedPaths(await text(stdin), env);
-    touched = [...new Set(touchedImagePaths(changed, sources))];
+    touched = touchedImagePaths(changed, sources);
   } catch (err) {
     console.error(unverifiedMessage(err));
     return 1;

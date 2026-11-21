@@ -1,7 +1,14 @@
 #!/bin/sh
-# Pre-push guard: refuses a push that would redeploy the nightly Railway
-# service while its run is going (07:15-12:30 UTC). Git feeds this hook the
-# refs being pushed on stdin; exec passes it through to the node script.
+# Pre-push guard: refuses a push to main that would redeploy the nightly
+# Railway service while its run is going (07:15-12:30 UTC). Git feeds this
+# hook the refs being pushed on stdin; exec passes it through to the node
+# script.
 # Override for one push: NIGHTLY_PUSH_WINDOW_OK=1 git push
 # Enable once per clone: git config core.hooksPath .githooks
+#
+# Trade-off: when node is not on the hook's PATH (a GUI git client that does
+# not load the shell profile, say) the guard is skipped, with a line on
+# stderr, rather than failing every push at every hour. A push in the window
+# is then not checked.
+command -v node >/dev/null 2>&1 || { echo 'pre-push: node not found, nightly push guard skipped' >&2; exit 0; }
 exec node "$(dirname "$0")/../scripts/nightly-push-window.mjs"
