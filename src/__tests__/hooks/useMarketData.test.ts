@@ -1701,10 +1701,10 @@ describe('useMarketData: access mode', () => {
       },
     );
 
-    it('writes nothing from a mount reply that lands once the mode is public but before the rerender', async () => {
-      // The cookie went public and App has not re-rendered the hook yet, so the
-      // effect's cleanup has not aborted the run. The reply reads the live mode
-      // itself.
+    it('ends loading and writes nothing else from a mount reply that lands once the mode is public but before the rerender', async () => {
+      // The cookie went public and App has not re-rendered the hook yet (an
+      // expiry or a manual clear sends no notification), so the effect's
+      // cleanup has not aborted the run. The reply reads the live mode itself.
       access.mode = 'guest';
       const { fetchMock, releases } = heldFetch({ honoursAbort: false });
       globalThis.fetch = fetchMock as unknown as typeof fetch;
@@ -1722,12 +1722,16 @@ describe('useMarketData: access mode', () => {
       expect(result.current.data.movers).toBeNull();
       expect(result.current.data.events).toBeNull();
       expect(result.current.hasData).toBe(false);
+      expect(result.current.needsAuth).toBe(false);
       expect(result.current.fetchedAt).toBeNull();
       expect(result.current.quotesFetchedAt).toBeNull();
-      // The reply returned before it reached `setLoading(false)`: the hook is
-      // still waiting, and the next render's public run is what ends it.
-      expect(result.current.loading).toBe(true);
+      // Nothing would re-render the hook to end the wait, so the reply ends it
+      // itself: the visitor can no longer use the data, but must not be left
+      // loading.
+      expect(result.current.loading).toBe(false);
 
+      // The next render sees the public mode and sends the events request;
+      // its reply stores events and leaves everything else as it was.
       rerender();
       expect(requestedUrls(fetchMock).slice(5)).toEqual([EVENTS_URL]);
       releases[5]!();
@@ -1736,6 +1740,7 @@ describe('useMarketData: access mode', () => {
       expect(result.current.loading).toBe(false);
       expect(result.current.data.events).toEqual(eventsBody);
       expect(result.current.data.quotes).toBeNull();
+      expect(result.current.fetchedAt).toBeNull();
     });
 
     it('writes nothing from a poll reply that lands after the flip', async () => {

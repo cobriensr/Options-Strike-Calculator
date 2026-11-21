@@ -298,7 +298,10 @@ export function useMarketData(): MarketDataState {
   // run that was aborted writes nothing at all. The authenticated branch also
   // re-reads the live mode: when the cookie goes public App re-renders the hook
   // and the cleanup aborts the run, but a reply can land in the gap before
-  // that commit, with the signal still clean.
+  // that commit, with the signal still clean, or the cookie can go public with
+  // no notification at all (an expiry, a manual clear) and nothing re-renders
+  // the hook. That reply writes nothing but `loading`, which it ends itself so
+  // the visitor is not left waiting on data they can no longer use.
   useEffect(() => {
     const controller = new AbortController();
     const { signal } = controller;
@@ -315,8 +318,11 @@ export function useMarketData(): MarketDataState {
     }
 
     fetchAllEndpoints(signal).then((results) => {
-      // Before `setLoading(false)` too: the next render's public run ends it.
-      if (signal.aborted || getAccessMode() === 'public') return;
+      if (signal.aborted) return;
+      if (getAccessMode() === 'public') {
+        setLoading(false);
+        return;
+      }
 
       // AUD-M16: process results and run ALL side effects OUTSIDE the setData
       // updater. The updater must be pure (return new state only) — under

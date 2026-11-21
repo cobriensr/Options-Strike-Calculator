@@ -116,9 +116,13 @@ vi.mock('../hooks/useMarketData', () => ({
 }));
 // The real useMarketData reads the access mode itself. Everything else in the
 // module stays real, and the mode is the one the access-session mock reports.
+// `checkIsOwner` is redirected too: the real one calls the module's own
+// `getAccessMode`, which a mock of the export does not reach, so without this
+// it would keep answering the DEV owner while `getAccessMode` said otherwise.
 vi.mock('../utils/auth', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../utils/auth')>()),
   getAccessMode: () => h.access.mode,
+  checkIsOwner: () => h.access.mode === 'owner',
 }));
 vi.mock('../hooks/useChainData', () => ({ useChainData: h.useChainData }));
 vi.mock('../hooks/useAlertPolling', () => ({
@@ -407,6 +411,7 @@ function allPollingGates(value: boolean) {
 describe('App polling gate (market clock AND owner-or-guest)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    h.access.mode = 'owner';
     h.useMarketData.mockImplementation(() => h.market.current);
     h.history.hasHistory = false;
     h.useChainData.mockReturnValue({ chain: null });
