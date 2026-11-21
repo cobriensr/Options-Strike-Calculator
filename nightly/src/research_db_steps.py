@@ -40,8 +40,11 @@ exception's text. An exception (R2, the database, the research code) propagates 
 evidence, and an upload that fails then never replaces the error.
 
 Register the steps through `pipeline.lazy_group_step` and never import this module at pipeline
-load. Its imports pull no sklearn, scipy or sqlalchemy (the image has none), and the research
-code, matplotlib and pandas among it, is imported when a step runs.
+load. Its imports pull no sklearn, scipy or sqlalchemy (the image has none). They do load
+`research_reports` and with it pandas, psycopg2, duckdb and the exit-policy and flow-timing
+scripts (through `research_derive`), so an import failure in any of those fails every research
+step, not only the one that needs it. Only matplotlib and `takeit_drift_monitor` are left to
+the step that uses them.
 """
 
 from __future__ import annotations

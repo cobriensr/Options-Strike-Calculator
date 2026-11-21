@@ -1,6 +1,6 @@
 # Lottery Pipeline Runbook
 
-Daily / weekly cadence for keeping the lottery_finder enrichment + research artifacts current. Last refreshed: 2026-05-06.
+Daily / weekly cadence for keeping the lottery_finder enrichment + research artifacts current. Last refreshed: 2026-11-21.
 
 ## TL;DR — what to run when
 

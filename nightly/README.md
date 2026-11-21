@@ -183,6 +183,13 @@ retried until the next night unless someone runs `railway cron run --service nig
 A kill during `research-derive` loses at most the day in flight: the manifest is saved
 once per day, after that day's objects (see "The derive manifest").
 
+**Push guard.** `.githooks/pre-push` (`scripts/nightly-push-window.mjs`) refuses a push
+to main that changes a file the image is built from during 07:15 to 12:30 UTC, and
+`NIGHTLY_PUSH_WINDOW_OK=1 git push` passes one push. It does not enforce the 15:00 CT rule,
+and it needs `git config core.hooksPath .githooks` once per clone. A clone that has not
+fetched origin's main is told to `git fetch origin`, rebase and push again. With no `node`
+on the hook's PATH it prints a line and lets the push through.
+
 ## Env vars
 
 Set on the Railway `nightly` service. Boot fails naming the field if a required
@@ -1291,6 +1298,11 @@ on the 2026-06-15 tape (11.6M rows). The image sets `POLARS_MAX_THREADS=4`
 (`Dockerfile`), which lowers the peak. Give the Railway service at least 8 GB of
 memory. Free disk in the work dir (`/tmp/nightly`) must be at least 15 GiB before
 each day starts; the zip and the Parquet for one day are both on disk at once.
+
+That figure is the converter's alone. `research-derive` runs later, in the job's own
+process: it uses DuckDB with a 4 GB memory limit (`connect` in `scripts/_eod_flow.py`) and
+builds pandas frames for the largest day. After the first night with the research steps,
+record Railway's peak memory from its metrics here, beside the 3.66 GB figure.
 
 ## Run it locally once
 
