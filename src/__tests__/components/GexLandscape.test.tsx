@@ -13,6 +13,7 @@ import {
 } from '../../components/GexLandscape/constants';
 import { StrikeTable } from '../../components/GexLandscape/StrikeTable';
 import type { BiasMetrics } from '../../components/GexLandscape/types';
+import { genericElementsWithAriaLabel, srHintText } from '../helpers/aria';
 
 // ── Mocks ──────────────────────────────────────────────────────────────────────
 //
@@ -318,19 +319,21 @@ describe('GexLandscape', () => {
   describe('vol reinforcement', () => {
     it('shows ↑↑ for reinforcing strikes', () => {
       renderLandscape();
-      const reinforcing = screen.getAllByLabelText('Vol reinforcing');
+      const reinforcing = screen.getAllByRole('img', {
+        name: /^Reinforcing —/,
+      });
       expect(reinforcing.length).toBeGreaterThan(0);
     });
 
     it('shows ↓↓ for opposing strikes', () => {
       renderLandscape();
-      const opposing = screen.getAllByLabelText('Vol opposing');
+      const opposing = screen.getAllByRole('img', { name: /^Opposing —/ });
       expect(opposing.length).toBeGreaterThan(0);
     });
 
     it('shows — for neutral strikes', () => {
       renderLandscape();
-      const neutral = screen.getAllByLabelText('Vol neutral');
+      const neutral = screen.getAllByRole('img', { name: /^Neutral —/ });
       expect(neutral.length).toBeGreaterThan(0);
     });
   });
@@ -793,8 +796,8 @@ describe('StrikeTable — Δ%, ATM row and reinforcement marks carry no gamma or
       ],
       1,
     );
-    const up = screen.getByLabelText('Vol reinforcing');
-    const down = screen.getByLabelText('Vol opposing');
+    const up = screen.getByRole('img', { name: /^Reinforcing —/ });
+    const down = screen.getByRole('img', { name: /^Opposing —/ });
     for (const el of [up, down]) {
       expect(el.className).not.toMatch(/emerald|green|red|amber/);
     }
@@ -830,6 +833,90 @@ describe('StrikeTable — Δ%, ATM row and reinforcement marks carry no gamma or
     }
     expect(up.title).toMatch(/growing/);
     expect(down.title).toMatch(/shrinking/);
+  });
+});
+
+// ── StrikeTable badge and mark names ──────────────────────────────────
+//
+// ARIA 1.2 prohibits naming a bare span, so the New / Anchor badges say
+// what they mean through a hidden SrHint, and the ↑↑ / ↓↓ / — marks (glyphs
+// only) are role="img" with the meaning as their label. Every title stays.
+
+describe('StrikeTable — New / Anchor badges and vol marks name themselves in ways screen readers read', () => {
+  const SPOT = 5900;
+  const ROWS = [
+    makeStrike(5950, SPOT, 5e8, 1e6, 'reinforcing'),
+    makeStrike(5900, SPOT, 5e8, 1e6, 'opposing'),
+    makeStrike(5850, SPOT, 5e8, 1e6, 'neutral'),
+  ];
+
+  function renderBadgeTable() {
+    const map = new Map(ROWS.map((r) => [r.strike, 1] as const));
+    return render(
+      <StrikeTable
+        rows={ROWS}
+        currentPrice={SPOT}
+        spotStrike={ROWS[1] ?? null}
+        maxChanged5mStrike={null}
+        maxChanged15mStrike={null}
+        maxChanged30mStrike={null}
+        gexDelta5mMap={map}
+        gexDelta15mMap={map}
+        gexDelta30mMap={map}
+        spotRowRef={{ current: null }}
+        justEntered={new Set([5950])}
+        oldestStrike={5850}
+      />,
+    );
+  }
+
+  it('says why a strike is New in a hint, not an aria-label, and keeps the title', () => {
+    renderBadgeTable();
+    const badge = screen.getByText('New');
+    expect(srHintText(badge)).toBe('just entered Top 5 on the latest snapshot');
+    expect(badge).not.toHaveAttribute('aria-label');
+    expect(badge).toHaveAttribute(
+      'title',
+      'Just entered Top 5 on the latest snapshot',
+    );
+  });
+
+  it('says why a strike is the Anchor in a hint, not an aria-label, and keeps the title', () => {
+    renderBadgeTable();
+    const badge = screen.getByText('Anchor');
+    expect(srHintText(badge)).toBe(
+      'oldest strike in the Top 5 — in the set longest this session',
+    );
+    expect(badge).not.toHaveAttribute('aria-label');
+    expect(badge).toHaveAttribute(
+      'title',
+      'Oldest strike in the Top 5 — in the set longest this session',
+    );
+  });
+
+  it.each([
+    [
+      '↑↑',
+      "Reinforcing — all three Δ% windows move with the netGamma sign; the strike's gamma is growing in that sign.",
+    ],
+    [
+      '↓↓',
+      "Opposing — all three Δ% windows move against the netGamma sign; the strike's gamma is shrinking toward zero.",
+    ],
+    [
+      '—',
+      'Neutral — mixed direction across the three windows, or sparse data (any null / zero prior value).',
+    ],
+  ])('names the %s mark as an image labelled with its title', (glyph, text) => {
+    renderBadgeTable();
+    const mark = screen.getByRole('img', { name: text });
+    expect(mark).toHaveTextContent(glyph);
+    expect(mark).toHaveAttribute('title', text);
+  });
+
+  it('leaves no bare span or div with an aria-label', () => {
+    const { container } = renderBadgeTable();
+    expect(genericElementsWithAriaLabel(container)).toEqual([]);
   });
 });
 
@@ -1050,12 +1137,12 @@ describe.each([
 
   it('clears the Top 5 anchor at the roll', () => {
     feedTheSession(vi.fn());
-    expect(screen.queryAllByLabelText('Anchor strike')).toHaveLength(1);
+    expect(screen.queryAllByText('Anchor')).toHaveLength(1);
 
     crossMidnight();
 
     // Anchor, not New: New lags one render, which was already so.
-    expect(screen.queryAllByLabelText('Anchor strike')).toHaveLength(0);
+    expect(screen.queryAllByText('Anchor')).toHaveLength(0);
   });
 
   it('clears the price trend at the roll', () => {
