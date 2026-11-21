@@ -125,7 +125,6 @@ export function MinuteScrubber({
             ? 'border-emerald-500/70 bg-emerald-950/40 text-emerald-200'
             : 'border-amber-500/70 bg-amber-950/40 text-amber-200'
         }`}
-        aria-label={isLive ? 'Live' : 'Scrubbed'}
       >
         {isLive ? 'Live' : 'Scrubbed'}
       </span>

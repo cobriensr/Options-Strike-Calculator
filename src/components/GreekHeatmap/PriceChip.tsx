@@ -6,6 +6,8 @@
  * that's the regime chip's job.
  */
 
+import { SrHint } from '../ui/SrHint.js';
+
 interface PriceChipProps {
   ticker: string;
   price: number | null;
@@ -14,12 +16,10 @@ interface PriceChipProps {
 export function PriceChip({ ticker, price }: PriceChipProps) {
   const display = price === null ? '—' : `$${price.toFixed(2)}`;
   return (
-    <span
-      className="inline-flex items-center gap-1 rounded-md border border-neutral-700 bg-neutral-900/60 px-2.5 py-1 text-xs font-medium text-neutral-200"
-      aria-label={`${ticker} current price ${display}`}
-    >
+    <span className="inline-flex items-center gap-1 rounded-md border border-neutral-700 bg-neutral-900/60 px-2.5 py-1 text-xs font-medium text-neutral-200">
       <span className="text-neutral-400">{ticker}</span>
       <span className="tabular-nums">{display}</span>
+      <SrHint>current price</SrHint>
     </span>
   );
 }

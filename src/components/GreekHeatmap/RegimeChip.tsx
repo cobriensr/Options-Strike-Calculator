@@ -8,6 +8,7 @@
  */
 
 import { formatNetGexShort } from '../../utils/format-magnitude';
+import { SrHint } from '../ui/SrHint.js';
 
 interface RegimeChipProps {
   regime: 'Long Γ' | 'Short Γ' | null;
@@ -19,6 +20,7 @@ export function RegimeChip({ regime, netGexK }: RegimeChipProps) {
     return (
       <span
         className="inline-flex items-center gap-1 rounded-md border border-neutral-800 bg-neutral-900/60 px-2.5 py-1 text-xs font-medium text-neutral-500"
+        role="img"
         aria-label="Regime unavailable"
       >
         —
@@ -33,10 +35,10 @@ export function RegimeChip({ regime, netGexK }: RegimeChipProps) {
   return (
     <span
       className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium tabular-nums ${chipClass}`}
-      aria-label={`Dealer regime ${regime}, net GEX ${magnitude}`}
     >
       <span>{regime}</span>
       <span className="opacity-80">{magnitude}</span>
+      <SrHint>dealer regime and net GEX</SrHint>
     </span>
   );
 }
