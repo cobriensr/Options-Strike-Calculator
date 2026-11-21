@@ -939,6 +939,7 @@ describe('useStickyUnion: same-commit rehydrate', () => {
     items: Alert[];
     storageKey: string;
     retain?: (a: Alert) => boolean;
+    tombstones?: ReadonlySet<string>;
   }
 
   /** Every committed render's key and the ids it returned, in order. */
@@ -949,11 +950,12 @@ describe('useStickyUnion: same-commit rehydrate', () => {
           createElement(StrictMode, null, children)
       : undefined;
     const hook = renderHook(
-      ({ items, storageKey, retain }: Props) => {
+      ({ items, storageKey, retain, tombstones }: Props) => {
         const rows = useStickyUnion<Alert>(items, {
           key: keyFn,
           storageKey,
           ...(retain !== undefined && { retain }),
+          ...(tombstones !== undefined && { tombstones }),
         });
         useEffect(() => {
           committed.push({ storageKey, ids: rows.map((r) => r.id) });
@@ -1127,6 +1129,89 @@ describe('useStickyUnion: same-commit rehydrate', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  // A retracted row still in storage must never draw, not even for the commit
+  // that carries the key. The ingest effect evicts it, but it runs after that
+  // commit, so the render read has to skip tombstoned keys itself.
+  it('never commits a tombstoned stored row on a mount', () => {
+    seed('tomb-mount', [
+      { id: 'x', pct: 1 },
+      { id: 'y', pct: 2 },
+    ]);
+
+    const { committed } = renderRecorded({
+      items: [],
+      storageKey: 'tomb-mount',
+      tombstones: new Set(['x']),
+    });
+
+    expect(committed.length).toBeGreaterThan(0);
+    for (const c of committed) expect(c.ids).toEqual(['y']);
+  });
+
+  it('never commits a tombstoned stored row under a new key, and the eviction still reaches storage', () => {
+    vi.useFakeTimers();
+    try {
+      seed('tomb-B', [
+        { id: 'x', pct: 1 },
+        { id: 'y', pct: 2 },
+      ]);
+      const tombstones = new Set(['x']);
+      const { committed, rerender } = renderRecorded({
+        items: [{ id: 'a', pct: 9 }],
+        storageKey: 'tomb-A',
+        tombstones,
+      });
+
+      rerender({ items: [], storageKey: 'tomb-B', tombstones });
+
+      const underB = idsUnder(committed, 'tomb-B');
+      expect(underB.length).toBeGreaterThan(0);
+      for (const ids of underB) expect(ids).toEqual(['y']);
+      // The ingest effect still evicts it, and the persisted blob follows.
+      act(() => {
+        vi.advanceTimersByTime(1_000);
+      });
+      const persisted = JSON.parse(
+        localStorage.getItem('tomb-B') ?? '[]',
+      ) as Array<[string, Alert]>;
+      expect(persisted.map(([k]) => k)).toEqual(['y']);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not re-read storage on a re-render, even when the tombstones are a new Set every render', () => {
+    seed('tomb-reread', [
+      { id: 'x', pct: 1 },
+      { id: 'y', pct: 2 },
+    ]);
+    const getItem = vi.spyOn(Storage.prototype, 'getItem');
+    const { rerender } = renderHook(
+      ({ n }: { n: number }) => {
+        const rows = useStickyUnion<Alert>([], {
+          key: keyFn,
+          storageKey: 'tomb-reread',
+          // A new Set, and a new retain closure, on every render.
+          tombstones: new Set(['x']),
+          retain: () => true,
+        });
+        return { n, rows };
+      },
+      { initialProps: { n: 0 } },
+    );
+    const after = (): number =>
+      getItem.mock.calls.filter((c) => c[0] === 'tomb-reread').length;
+    const baseline = after();
+    expect(baseline).toBeGreaterThan(0);
+
+    rerender({ n: 1 });
+    rerender({ n: 2 });
+    rerender({ n: 3 });
+
+    expect(after()).toBe(baseline);
+    getItem.mockRestore();
   });
 
   it('does not loop: an `items` array that is a fresh reference every render commits a bounded number of times', () => {

@@ -72,9 +72,11 @@
  * actually CHANGES the union (tracked by a per-item dirty check,
  * O(incoming) not O(union)). Those effects fire only on `items` /
  * `storageKey` changes, so a stable `items` reference cannot drive a
- * re-render loop. Render reads storage but never writes it and never
- * touches a ref's contents, so a Strict Mode double render or a discarded
- * concurrent render changes nothing.
+ * re-render loop. The render read of the slot (`readRetainedRows`) reads
+ * storage but never writes it and touches no ref. The only ref writes in
+ * render are the latest-value refs (key fn, tombstones, retain), plain
+ * assignments of this render's props, so a Strict Mode double render or a
+ * discarded concurrent render changes nothing.
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -172,18 +174,23 @@ function readUnion<T>(storageKey: string): Map<string, T> {
 }
 
 /**
- * The rows a slot holds that `retain` still accepts, in stored order. A read
- * and nothing else: it writes no storage, touches no ref and keeps no state, so
- * running it twice (a Strict Mode double render, a discarded concurrent render)
- * gives the same rows and changes nothing. The hydrate effect does the healing
- * write; this only says what that effect is about to hold.
+ * The rows a slot holds that `retain` still accepts and `tombstones` has not
+ * retracted, in stored order. A read and nothing else: it writes no storage,
+ * touches no ref and keeps no state, so running it twice (a Strict Mode double
+ * render, a discarded concurrent render) gives the same rows and changes
+ * nothing. The hydrate effect does the healing write; this only says what that
+ * effect is about to hold.
  */
 function readRetainedRows<T>(
   storageKey: string,
   retain: ((item: T) => boolean) | undefined,
+  tombstones: ReadonlySet<string> | undefined,
 ): T[] {
   const rows: T[] = [];
-  for (const row of readUnion<T>(storageKey).values()) {
+  for (const [k, row] of readUnion<T>(storageKey)) {
+    // A retracted key never draws, even for the commit that carries the slot:
+    // the ingest effect evicts it, but only after that commit.
+    if (tombstones?.has(k)) continue;
     if (retain == null || retain(row)) rows.push(row);
   }
   return rows;
@@ -344,11 +351,15 @@ export function useStickyUnion<T>(
   // What the current slot holds before any ingest has changed it, read in
   // render so the commit that carries a new key (or the first mount) already
   // returns that key's own rows. A pure read (see `readRetainedRows`), memoized
-  // on the key. `retain` is left out of the deps on purpose: callers pass a
-  // fresh closure every render, and a tightened floor reaches the rows through
-  // the ingest effect, which purges and re-snapshots.
+  // on the key. `retain` and `tombstones` are left out of the deps on purpose,
+  // the trade-off being that the read uses the ones in hand when the key
+  // arrives: callers pass a fresh closure (and may pass a fresh Set) every
+  // render, and keying the memo on either would re-read and re-parse storage
+  // on every render. A floor tightened, or a row retracted, later in the key's
+  // life reaches the rows through the ingest effect, which purges, evicts and
+  // re-snapshots.
   const hydrated = useMemo(
-    () => readRetainedRows<T>(storageKey, retain),
+    () => readRetainedRows<T>(storageKey, retain, tombstones),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [storageKey],
   );
