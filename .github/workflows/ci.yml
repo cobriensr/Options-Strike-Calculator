@@ -545,3 +545,32 @@ jobs:
           score_components, sys;
           loaded = {'sklearn', 'scipy', 'sqlalchemy'} & set(sys.modules);
           assert not loaded, loaded"
+
+      # The step above imports with `python -c`. The job starts the seven report
+      # scripts differently, as `python /app/<path> <args>` subprocesses
+      # (REPORTS in nightly/src/research_reports.py, plus scripts/daily_tracker.py
+      # from research_db_steps.py), so this runs each one that way in the image:
+      # the entry point, argparse and sys.path from the script's own folder. --help
+      # parses arguments and exits 0 before anything reads a secret or opens a
+      # connection, and no network keeps that true. No env is passed in. Every
+      # script runs, so one run names all that fail. The list is fixed text, with
+      # no workflow expression in it.
+      - name: Run the report scripts' entry points in the image
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        working-directory: .
+        run: |
+          status=0
+          for script in \
+            ml/src/whale_plots.py \
+            scripts/exit_policy_search.py \
+            scripts/flow_inversion_timing.py \
+            scripts/feature_audit.py \
+            scripts/mine_outcome_patterns.py \
+            scripts/score_lineage_audit.py \
+            scripts/daily_tracker.py
+          do
+            echo "python /app/${script} --help"
+            docker run --rm --network none --entrypoint python nightly-ci \
+              "/app/${script}" --help > /dev/null || status=1
+          done
+          exit "$status"
