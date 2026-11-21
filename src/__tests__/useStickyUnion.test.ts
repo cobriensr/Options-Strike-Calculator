@@ -6,7 +6,9 @@
  * the union, and the union survives a page refresh via localStorage.
  */
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
+import { StrictMode, createElement, useEffect, type ReactNode } from 'react';
 import { renderHook, act } from '@testing-library/react';
+import { useETToday } from '../hooks/useETToday';
 import { useStickyUnion } from '../hooks/useStickyUnion';
 
 interface Alert {
@@ -260,6 +262,16 @@ describe('useStickyUnion', () => {
 
   // ── #7 stale-key sweep + size cap ────────────────────────────────────
   describe('#7 stale-key sweep', () => {
+    // The sweep is relative to the live day (the shared ET clock), so these
+    // run on 2026-06-07, the date their `current` keys carry.
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(new Date('2026-06-07T17:00:00Z'));
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
     it('removes stale same-feed keys on mount, keeping current + unrelated', () => {
       localStorage.setItem(
         'feed-union:lottery:2026-06-06',
@@ -533,14 +545,17 @@ describe('useStickyUnion', () => {
           useStickyUnion<Alert>(items, { key: keyFn, storageKey: 'dirty' }),
         { initialProps: { items } },
       );
+      // One debounce window, not runAllTimers: the hook subscribes to the ET
+      // clock (useETToday), whose timer re-arms itself, so "all timers" never
+      // ends.
       act(() => {
-        vi.runAllTimers();
+        vi.advanceTimersByTime(1_000);
       });
       const setSpy = vi.spyOn(Storage.prototype, 'setItem');
       // Re-ingest the SAME content via a brand-new array reference.
       rerender({ items: [{ id: 'a', pct: 10 }] });
       act(() => {
-        vi.runAllTimers();
+        vi.advanceTimersByTime(1_000);
       });
       expect(setSpy).not.toHaveBeenCalled();
       setSpy.mockRestore();
@@ -903,5 +918,390 @@ describe('useStickyUnion', () => {
       });
       expect(result.current.map((r) => r.id)).toEqual(['a']);
     });
+  });
+});
+
+// ============================================================
+// Same-commit rehydrate (docs/superpowers/specs/panel-date-rollover-2026-11-14.md,
+// Phase 9)
+//
+// The panels key the union by date (`feed-union:<feed>:<date>:<sig>`), so a
+// date change, or the roll at ET midnight, changes `storageKey`. The hook used
+// to reset and rehydrate in an effect on that change, so the commit that
+// carried the new key still returned the old key's snapshot: yesterday's rows
+// drew under the new date for one commit. These tests record the value
+// returned by every COMMITTED render (an effect with no deps runs after each),
+// not `result.current`, which only shows the last one.
+// ============================================================
+
+describe('useStickyUnion: same-commit rehydrate', () => {
+  interface Props {
+    items: Alert[];
+    storageKey: string;
+    retain?: (a: Alert) => boolean;
+  }
+
+  /** Every committed render's key and the ids it returned, in order. */
+  function renderRecorded(initialProps: Props, strict = false) {
+    const committed: { storageKey: string; ids: string[] }[] = [];
+    const wrapper = strict
+      ? ({ children }: { children: ReactNode }) =>
+          createElement(StrictMode, null, children)
+      : undefined;
+    const hook = renderHook(
+      ({ items, storageKey, retain }: Props) => {
+        const rows = useStickyUnion<Alert>(items, {
+          key: keyFn,
+          storageKey,
+          ...(retain !== undefined && { retain }),
+        });
+        useEffect(() => {
+          committed.push({ storageKey, ids: rows.map((r) => r.id) });
+        });
+        return rows;
+      },
+      { initialProps, ...(wrapper !== undefined && { wrapper }) },
+    );
+    return { ...hook, committed };
+  }
+
+  const seed = (slot: string, rows: Alert[]): void => {
+    localStorage.setItem(slot, JSON.stringify(rows.map((r) => [r.id, r])));
+  };
+  const idsUnder = (
+    committed: { storageKey: string; ids: string[] }[],
+    slot: string,
+  ) => committed.filter((c) => c.storageKey === slot).map((c) => c.ids);
+
+  it('never commits the old key’s rows under the new key', () => {
+    seed('slot-B', [{ id: 'b1', pct: 5 }]);
+    const { committed, rerender } = renderRecorded({
+      items: [
+        { id: 'a1', pct: 1 },
+        { id: 'a2', pct: 2 },
+      ],
+      storageKey: 'slot-A',
+    });
+    expect(idsUnder(committed, 'slot-A').at(-1)).toEqual(['a1', 'a2']);
+
+    // The panel passes [] when it is not on the live view (a past date).
+    rerender({ items: [], storageKey: 'slot-B' });
+
+    const underB = idsUnder(committed, 'slot-B');
+    expect(underB.length).toBeGreaterThan(0);
+    // Every commit under B returns B's own stored row, the first one included.
+    expect(underB.every((ids) => ids.join() === 'b1')).toBe(true);
+  });
+
+  it('the commit that carries a new key holds that key’s stored rows, and ingest then adds to them', () => {
+    seed('day-2', [{ id: 'b1', pct: 5 }]);
+    const { committed, result, rerender } = renderRecorded({
+      items: [{ id: 'a1', pct: 1 }],
+      storageKey: 'day-1',
+    });
+
+    rerender({ items: [{ id: 'b2', pct: 6 }], storageKey: 'day-2' });
+
+    // Ingest sees the hydrated union: b1 from storage, b2 from the payload.
+    expect(result.current.map((r) => r.id)).toEqual(['b1', 'b2']);
+    for (const ids of idsUnder(committed, 'day-2')) {
+      expect(ids).not.toContain('a1');
+      expect(ids).toContain('b1');
+    }
+  });
+
+  it('a key with nothing stored commits an empty list at once, not the old rows', () => {
+    const { committed, rerender } = renderRecorded({
+      items: [{ id: 'a1', pct: 1 }],
+      storageKey: 'day-1',
+    });
+
+    rerender({ items: [], storageKey: 'day-2' });
+
+    // Every commit under the new key is empty, the first one included. (A
+    // second, identical commit follows: the effect drops the old key's rows
+    // from state.)
+    const underDay2 = idsUnder(committed, 'day-2');
+    expect(underDay2.length).toBeGreaterThan(0);
+    expect(underDay2.every((ids) => ids.length === 0)).toBe(true);
+  });
+
+  it('the first committed render of a mount already holds the stored rows', () => {
+    seed('mount-slot', [
+      { id: 'a', pct: 1 },
+      { id: 'b', pct: 2 },
+    ]);
+
+    const { committed } = renderRecorded({
+      items: [],
+      storageKey: 'mount-slot',
+    });
+
+    expect(committed[0]?.ids).toEqual(['a', 'b']);
+  });
+
+  it('returning to a key restores its rows, not the rows held when it was left', () => {
+    seed('day-1', [{ id: 'a1', pct: 1 }]);
+    const { committed, rerender } = renderRecorded({
+      items: [{ id: 'a2', pct: 2 }],
+      storageKey: 'day-1',
+    });
+    // a2 was ingested under day-1; leave and come back, with a new floor that
+    // rejects it. The hydrate drops it, so the return must not show it.
+    rerender({ items: [], storageKey: 'day-2' });
+    rerender({
+      items: [],
+      storageKey: 'day-1',
+      retain: (a) => a.pct < 2,
+    });
+
+    expect(idsUnder(committed, 'day-1').at(-1)).toEqual(['a1']);
+  });
+
+  it('applies retain to the rows of the new key in the same commit and heals the slot after it', () => {
+    seed('floor-slot', [
+      { id: 'low', pct: 5 },
+      { id: 'high', pct: 50 },
+    ]);
+    const { committed, rerender } = renderRecorded({
+      items: [],
+      storageKey: 'other-slot',
+    });
+
+    rerender({
+      items: [],
+      storageKey: 'floor-slot',
+      retain: (a) => a.pct >= 20,
+    });
+
+    for (const ids of idsUnder(committed, 'floor-slot')) {
+      expect(ids).toEqual(['high']);
+    }
+    const healed = JSON.parse(
+      localStorage.getItem('floor-slot') ?? '[]',
+    ) as Array<[string, Alert]>;
+    expect(healed.map(([k]) => k)).toEqual(['high']);
+  });
+
+  it('flushes the old slot’s pending write when the key changes', () => {
+    vi.useFakeTimers();
+    try {
+      const { rerender } = renderRecorded({
+        items: [{ id: 'a1', pct: 1 }],
+        storageKey: 'day-1',
+      });
+      expect(localStorage.getItem('day-1')).toBeNull(); // debounced, not yet written
+
+      rerender({ items: [], storageKey: 'day-2' });
+
+      const flushed = JSON.parse(
+        localStorage.getItem('day-1') ?? '[]',
+      ) as Array<[string, Alert]>;
+      expect(flushed.map(([k]) => k)).toEqual(['a1']);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('under StrictMode a key change commits only the new key’s rows and the render itself writes nothing', () => {
+    vi.useFakeTimers();
+    try {
+      seed('slot-B', [{ id: 'b1', pct: 5 }]);
+      const { committed, rerender } = renderRecorded(
+        { items: [{ id: 'a1', pct: 1 }], storageKey: 'slot-A' },
+        true,
+      );
+      // Let A's debounced write land, then count writes across the key change.
+      act(() => {
+        vi.advanceTimersByTime(1_000);
+      });
+      const setItem = vi.spyOn(Storage.prototype, 'setItem');
+
+      rerender({ items: [], storageKey: 'slot-B' });
+
+      expect(setItem).not.toHaveBeenCalled();
+      setItem.mockRestore();
+      const underB = idsUnder(committed, 'slot-B');
+      expect(underB.length).toBeGreaterThan(0);
+      expect(underB.every((ids) => ids.join() === 'b1')).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not loop: an `items` array that is a fresh reference every render commits a bounded number of times', () => {
+    seed('loop-slot', [{ id: 'a', pct: 1 }]);
+    let commits = 0;
+    renderHook(() => {
+      // A new `[]` on every render, as the panels pass while disengaged.
+      const rows = useStickyUnion<Alert>([], {
+        key: keyFn,
+        storageKey: 'loop-slot',
+      });
+      useEffect(() => {
+        commits += 1;
+      });
+      return rows;
+    });
+    expect(commits).toBeLessThan(5);
+  });
+});
+
+// ============================================================
+// Sweep relative to the live day (same spec, Phase 9)
+//
+// The panels build `feed-union:<feed>:<date>:<sig>` from the date being VIEWED.
+// The sweep deletes the same feed's slots whose date is not the live day, the
+// shared ET clock their `date` follows (`useFollowedDate` reads `useETToday`).
+// It used to run once, on mount, relative to the mount key's date: a union from
+// yesterday lingered after the midnight roll, and a panel mounted on a past
+// date swept today's slots. It must never run relative to the key's date, or a
+// detour to yesterday deletes today's union, which the panels promise survives
+// it. Today here is 2026-06-07 (ET); the roll case crosses into 2026-06-08.
+// ============================================================
+
+describe('useStickyUnion: sweep relative to the live day', () => {
+  const TODAY = '2026-06-07';
+  const NEXT = '2026-06-08';
+  const PAST = '2026-06-03';
+  const slot = (feed: string, date: string, sig?: string): string =>
+    sig === undefined
+      ? `feed-union:${feed}:${date}`
+      : `feed-union:${feed}:${date}:${sig}`;
+  const put = (k: string): void =>
+    localStorage.setItem(k, JSON.stringify([['x', { id: 'x', pct: 1 }]]));
+  const has = (k: string): boolean => localStorage.getItem(k) !== null;
+
+  /** Slots that no sweep may touch, whatever the date. */
+  const bystanders = [
+    slot('silent-boom', PAST, 'sigA'),
+    slot('lottery-reignited', TODAY, 'sigA'),
+    'feed-union:lottery',
+    'feed-union',
+    'unrelated',
+  ];
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** A panel's hook: key = feed + the date it is on + a filter signature. */
+  function renderFeed(date: string, items: Alert[] = []) {
+    return renderHook(
+      (p: { date: string; items: Alert[] }) =>
+        useStickyUnion<Alert>(p.items, {
+          key: keyFn,
+          storageKey: slot('lottery', p.date, 'sigA'),
+        }),
+      { initialProps: { date, items } },
+    );
+  }
+
+  it('deletes the same feed’s other days on mount and keeps every slot of the live day', () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date(`${TODAY}T17:00:00Z`));
+    put(slot('lottery', PAST, 'sigA'));
+    put(slot('lottery', NEXT, 'sigA'));
+    put(slot('lottery', TODAY, 'sigB'));
+    put(slot('lottery', TODAY));
+    for (const k of bystanders) localStorage.setItem(k, 'keep-me');
+
+    renderFeed(TODAY);
+
+    expect(has(slot('lottery', PAST, 'sigA'))).toBe(false);
+    expect(has(slot('lottery', NEXT, 'sigA'))).toBe(false);
+    expect(has(slot('lottery', TODAY, 'sigB'))).toBe(true);
+    expect(has(slot('lottery', TODAY))).toBe(true);
+    for (const k of bystanders) expect(localStorage.getItem(k)).toBe('keep-me');
+  });
+
+  it('a panel mounted on a past date sweeps the other past days, not the live day’s slots', () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date(`${TODAY}T17:00:00Z`));
+    put(slot('lottery', TODAY, 'sigA'));
+    put(slot('lottery', TODAY, 'sigB'));
+    put(slot('lottery', '2026-06-01', 'sigA'));
+    for (const k of bystanders) localStorage.setItem(k, 'keep-me');
+
+    renderFeed(PAST);
+
+    // Relative to the key's date (PAST) this deleted today's slots.
+    expect(has(slot('lottery', TODAY, 'sigA'))).toBe(true);
+    expect(has(slot('lottery', TODAY, 'sigB'))).toBe(true);
+    expect(has(slot('lottery', '2026-06-01', 'sigA'))).toBe(false);
+    for (const k of bystanders) expect(localStorage.getItem(k)).toBe('keep-me');
+  });
+
+  it('a detour to a past date deletes nothing of the live day’s, and the union is there on return', () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date(`${TODAY}T17:00:00Z`));
+    put(slot('lottery', TODAY, 'sigB'));
+    const { result, rerender } = renderFeed(TODAY, [{ id: 'a', pct: 1 }]);
+
+    rerender({ date: PAST, items: [] });
+
+    // The key's slot for today was flushed on the key change, and kept.
+    expect(has(slot('lottery', TODAY, 'sigA'))).toBe(true);
+    expect(has(slot('lottery', TODAY, 'sigB'))).toBe(true);
+
+    rerender({ date: TODAY, items: [] });
+    expect(result.current.map((r) => r.id)).toEqual(['a']);
+  });
+
+  it('does not sweep when only the key changes within the live day, or when the key is not a feed-union key', () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date(`${TODAY}T17:00:00Z`));
+    const { rerender } = renderFeed(TODAY);
+    // Written after the mount sweep, on a day that is not the live day.
+    put(slot('lottery', PAST, 'sigA'));
+
+    rerender({ date: TODAY, items: [{ id: 'a', pct: 1 }] });
+    rerender({ date: PAST, items: [] });
+
+    expect(has(slot('lottery', PAST, 'sigA'))).toBe(true);
+
+    const plain = renderHook(() =>
+      useStickyUnion<Alert>([], { key: keyFn, storageKey: 'not-a-feed-key' }),
+    );
+    expect(plain.result.current).toEqual([]);
+    expect(has(slot('lottery', PAST, 'sigA'))).toBe(true);
+  });
+
+  it('the roll deletes the prior day’s slots, the one flushed in that commit included, and keeps the new day’s, other feeds, malformed and unrelated keys', () => {
+    vi.useFakeTimers();
+    // 23:59:30 ET on TODAY. The panel's key follows the shared ET clock.
+    vi.setSystemTime(new Date('2026-06-08T03:59:30Z'));
+    put(slot('lottery', TODAY, 'sigB'));
+    for (const k of bystanders) localStorage.setItem(k, 'keep-me');
+    const { rerender } = renderHook(
+      ({ items }: { items: Alert[] }) => {
+        const today = useETToday();
+        return useStickyUnion<Alert>(items, {
+          key: keyFn,
+          storageKey: slot('lottery', today, 'sigA'),
+        });
+      },
+      { initialProps: { items: [] as Alert[] } },
+    );
+    // Written after the mount sweep: the new day's own slot and a sibling.
+    put(slot('lottery', NEXT, 'sigB'));
+    expect(has(slot('lottery', TODAY, 'sigB'))).toBe(true);
+
+    // An ingest half a second before the roll stages a debounced write for
+    // the old day's slot; the roll (1 s past midnight) lands inside its window.
+    act(() => {
+      vi.advanceTimersByTime(30_500);
+    });
+    rerender({ items: [{ id: 'a', pct: 1 }] });
+    expect(has(slot('lottery', TODAY, 'sigA'))).toBe(false); // staged, not written
+    act(() => {
+      vi.advanceTimersByTime(600);
+    });
+
+    // The commit that carried the new day flushed the old slot, then swept it.
+    expect(has(slot('lottery', TODAY, 'sigA'))).toBe(false);
+    expect(has(slot('lottery', TODAY, 'sigB'))).toBe(false);
+    expect(has(slot('lottery', NEXT, 'sigB'))).toBe(true);
+    for (const k of bystanders) expect(localStorage.getItem(k)).toBe('keep-me');
   });
 });

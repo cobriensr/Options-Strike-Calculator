@@ -122,7 +122,9 @@ panels follow the new date too".
 - **Dark pool LIVE** on a past date clears the scrub but stays on the past
   date. It should also return to following today.
 - **Union keys in `useStickyUnion`** for other dates are swept only on mount.
-  Sweep on a date change too, so yesterday's slot doesn't linger.
+  Sweep on a date change too, so yesterday's slot doesn't linger. Fixed in
+  Phase 9, relative to the live day and not to the key (see "Found while
+  building Phase 9").
 - **0DTE regime (`useRegime0dte` / `usePolledWindowSignal`).** A tab open
   overnight shows yesterday's last payload as live when the 08:30 CT window
   opens. It stays until the first poll, a full interval later. Date-check
@@ -200,7 +202,8 @@ panels follow the new date too".
   commit that carries the new key still returns the old key's snapshot:
   yesterday's union rows show under the new date for one commit, then go
   (checked with a profiler probe, not kept). Lottery Finder uses the same
-  hook and has the same single commit. This is Phase 9's to fix, in the hook.
+  hook and has the same single commit. Fixed in Phase 9, in the hook (see
+  "Found while building Phase 9", below).
 - **Test fixtures** dated their alerts with the CT date. They use
   `getETToday()`.
 
@@ -276,6 +279,45 @@ panels follow the new date too".
   click add a tick as well; the review found four quick clicks flashed the
   label, so the polls have their own counter.
 
+### Found while building Phase 9
+
+- **The rehydrate is now in the commit that carries the key.** The hook held
+  its returned rows in one `useState` and reset and rehydrated them in an
+  effect on `storageKey`, so a key change committed once with the old key's
+  rows. The ingested rows are now state tagged with their slot (the Interval
+  B/A `responseKey` pattern), and the hook returns them only while the tag is
+  the current `storageKey`; otherwise it returns what the current slot holds,
+  read in render by a pure, memoized read (`readRetainedRows`, keyed on the
+  key). The read writes no storage and touches no ref, so a Strict Mode double
+  render or a discarded render changes nothing. The effect still flushes the
+  old slot's pending write, builds the working union, reseeds the seen
+  counters, applies `retain` with its healing write, and runs before the ingest
+  effect. It also drops state held for a slot we left, so coming back to a slot
+  returns what it holds now, not what it held when it was left. The test
+  records the value every committed render returns; it is red on the effect-only
+  version. Two side effects: the first render of a mount already returns the
+  stored rows (it returned `[]`, then the rows), and a key change that follows
+  an ingest commits a second time with the same output (the state drop).
+- **The sweep is relative to the live day, not to the key.** The panels build
+  `feed-union:<feed>:${date}:${sig}` from the date being viewed. The old sweep
+  ran once, on mount, relative to the mount key's date, which was wrong two
+  ways: a union from yesterday lingered after the midnight roll until the next
+  reload, and a panel mounted on a past date deleted today's slots. A sweep
+  relative to the key on every key change would be worse: a detour to
+  yesterday would delete today's union, which the panels promise survives a
+  detour. The hook now sweeps the same feed's slots whose date is not the live
+  day, on mount and whenever the live day changes. The live day is `useETToday()`,
+  the clock the panels' `date` follows (`useFollowedDate` wraps it), so the key
+  and the sweep turn over in the same commit. A key change inside the live day
+  (a filter, a detour) does not sweep. Other feeds, malformed keys, unrelated
+  keys and every same-day signature sibling survive. The sweep effect is
+  declared after the hydrate effect, whose flush of the old slot's pending
+  write must come first: at the roll, a sweep that ran before it would be
+  undone by the write recreating yesterday's slot.
+- **A side effect on the tests.** The hook now subscribes to the ET clock, whose
+  timer re-arms itself, so a test with fake timers cannot call `runAllTimers`
+  (it never ends); the one that did advances one debounce window instead.
+
 ## Phases
 
 Each phase is one commit of 5 files or fewer. Each runs `npm run review`,
@@ -334,8 +376,9 @@ mutation.
        pushes past 5 files, split per hook.
 8. **Interval B/A.** `IntervalBAFeed` and `useIntervalBAFeed`: `max` and
    the poll gate go on the shared clock, plus tests.
-9. **`useStickyUnion`.** Sweep other-date keys on a date change, plus its
-   test.
+9. **`useStickyUnion`.** Rehydrate in the commit that carries the key, and
+   sweep other-day keys relative to the live day on mount and at the roll, plus
+   its tests.
 10. **0DTE regime.** Date-check the live payload and fetch when the window
     opens, in `usePolledWindowSignal` and/or `useRegime0dte`, plus tests.
 

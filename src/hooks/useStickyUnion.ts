@@ -38,14 +38,26 @@
  * Keyed by `storageKey`. On mount and whenever `storageKey` changes the
  * in-memory union RESETS and rehydrates from `localStorage[storageKey]`
  * (a JSON array of [key, value] pairs; absent/malformed → empty). The
+ * rehydrate is in the SAME commit as the key: the returned rows are tagged
+ * with the slot they belong to, and while the ingested rows are another slot's
+ * the hook returns what the current slot holds, read in render (a pure,
+ * memoized read; the effect then builds the working union from the same slot).
+ * No committed render ever returns rows from a key other than `storageKey`,
+ * and the first render of a mount already holds the stored rows. The
  * durable write is DEBOUNCED (`PERSIST_DEBOUNCE_MS`): the in-memory union
  * and returned snapshot update synchronously, only the localStorage write
  * lags and coalesces. The pending write is force-flushed on slot change,
  * React unmount, AND page lifecycle (`pagehide` / `hidden` visibility) so a
  * fire ingested moments before a hard refresh or tab close is never lost.
- * A new `storageKey` (e.g. a new trading day) starts a fresh union; a
- * one-time mount sweep removes only stale PRIOR-DAY slots for the same feed
- * token (date-aware, so same-day filter-signature siblings all coexist).
+ * A new `storageKey` (e.g. a new trading day) starts a fresh union. A sweep
+ * removes the same feed token's slots on any day but the LIVE day, on mount
+ * and whenever the live day changes (the ET-midnight roll), so yesterday's
+ * union does not linger (date-aware, so same-day filter-signature siblings all
+ * coexist). The live day is the shared ET clock (`useETToday`), the one the
+ * panels' `date` follows, NOT the date in `storageKey`: a picked past date
+ * changes the key, and a sweep relative to it would delete today's union on a
+ * detour to yesterday, which the panels promise survives it. A key change
+ * inside the live day does not sweep.
  *
  * Resilience
  * ----------
@@ -55,14 +67,18 @@
  *
  * Render safety
  * -------------
- * The union map lives in a ref; the returned array is held in state and
- * only replaced with a fresh array when an ingest actually CHANGES the
- * union (tracked by a per-item dirty check, O(incoming) not O(union)).
- * Those effects fire only on `items` / `storageKey` changes, so a stable
- * `items` reference cannot drive a re-render loop.
+ * The union map lives in a ref; the ingested rows are held in state (tagged
+ * with their slot) and only replaced with a fresh array when an ingest
+ * actually CHANGES the union (tracked by a per-item dirty check,
+ * O(incoming) not O(union)). Those effects fire only on `items` /
+ * `storageKey` changes, so a stable `items` reference cannot drive a
+ * re-render loop. Render reads storage but never writes it and never
+ * touches a ref's contents, so a Strict Mode double render or a discarded
+ * concurrent render changes nothing.
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useETToday } from './useETToday';
 
 interface UseStickyUnionOptions<T> {
   /** Stable identity for an item. Two items with the same key are "the same". */
@@ -155,6 +171,24 @@ function readUnion<T>(storageKey: string): Map<string, T> {
   }
 }
 
+/**
+ * The rows a slot holds that `retain` still accepts, in stored order. A read
+ * and nothing else: it writes no storage, touches no ref and keeps no state, so
+ * running it twice (a Strict Mode double render, a discarded concurrent render)
+ * gives the same rows and changes nothing. The hydrate effect does the healing
+ * write; this only says what that effect is about to hold.
+ */
+function readRetainedRows<T>(
+  storageKey: string,
+  retain: ((item: T) => boolean) | undefined,
+): T[] {
+  const rows: T[] = [];
+  for (const row of readUnion<T>(storageKey).values()) {
+    if (retain == null || retain(row)) rows.push(row);
+  }
+  return rows;
+}
+
 /** Best-effort persist of an already-serialized union string. */
 function persistUnion(storageKey: string, serialized: string): void {
   if (!isStorageAvailable()) return;
@@ -168,23 +202,17 @@ function persistUnion(storageKey: string, serialized: string): void {
 /** The literal token that opens every feed-union storageKey, sans trailing `:`. */
 const FEED_UNION_TOKEN = 'feed-union';
 
-interface FeedScope {
-  /** The `<feed>` token, e.g. `lottery` or `lottery-reignited`. */
-  feed: string;
-  /** The `<date>` segment, e.g. `2026-06-07`. */
-  date: string;
-}
-
 /**
- * Parse a storageKey of the form `feed-union:<feed>:<date>[:<sig>...]` into
- * its feed + date segments. Returns `null` when the key does not match the
- * scheme or is malformed (fewer than three segments) — callers then no-op.
+ * The `<feed>` token (e.g. `lottery` or `lottery-reignited`) of a storageKey of
+ * the form `feed-union:<feed>:<date>[:<sig>...]`. Returns `null` when the key
+ * does not match the scheme or is malformed (fewer than three segments, or an
+ * empty feed or date) — callers then no-op.
  *
- * Date-aware (NOT lastIndexOf-based) so a later filter-signature suffix on
+ * Segment-aware (NOT lastIndexOf-based) so a later filter-signature suffix on
  * the storageKey cannot mislead the stale-key sweep into deleting a live
  * same-day sibling union belonging to a different filter setting.
  */
-function parseFeedScope(storageKey: string): FeedScope | null {
+function parseFeedToken(storageKey: string): string | null {
   if (!storageKey.startsWith(FEED_UNION_PREFIX)) return null;
   const segments = storageKey.split(':');
   // ['feed-union', <feed>, <date>, ...maybe <sig>] — need at least 3, with
@@ -192,25 +220,26 @@ function parseFeedScope(storageKey: string): FeedScope | null {
   if (segments.length < 3) return null;
   const [token, feed, date] = segments;
   if (token !== FEED_UNION_TOKEN || !feed || !date) return null;
-  return { feed, date };
+  return feed;
 }
 
 /**
- * One-time mount sweep: delete every localStorage slot for the SAME feed
- * token on a DIFFERENT date (stale prior days). Bounded, guarded,
- * best-effort.
+ * Stale-key sweep: delete every localStorage slot for `feed` on a date that is
+ * not `liveDay`. Bounded, guarded, best-effort.
+ *
+ * `liveDay` is the day on the shared ET clock, NOT the date the panel happens
+ * to be viewing: a picked past date changes the storageKey, and a sweep
+ * relative to it would delete today's union on a detour to yesterday.
  *
  * Suffix-proof: keys are matched by parsed segments, not string prefix, so
- * ALL of the current day's slots survive — including filter-signature
+ * ALL of the live day's slots survive — including filter-signature
  * siblings (`feed-union:<feed>:<date>:<sigA>`, `...:<sigB>`), each of which
- * holds its own never-vanish union. Only prior-day slots for THIS feed are
+ * holds its own never-vanish union. Only other-day slots for THIS feed are
  * removed. Distinct feed tokens (e.g. `lottery-reignited` vs `lottery`),
  * other feeds, malformed keys, and unrelated keys are all left untouched.
  */
-function sweepStaleKeys(storageKey: string): void {
+function sweepStaleKeys(feed: string, liveDay: string): void {
   if (!isStorageAvailable()) return;
-  const scope = parseFeedScope(storageKey);
-  if (scope == null) return;
   try {
     const ls = window.localStorage;
     const toDelete: string[] = [];
@@ -219,13 +248,9 @@ function sweepStaleKeys(storageKey: string): void {
       if (k == null) continue;
       const segments = k.split(':');
       if (segments.length < 3) continue; // malformed — skip
-      const [token, feed, date] = segments;
-      // Same feed token, DIFFERENT date → stale prior-day slot for this feed.
-      if (
-        token === FEED_UNION_TOKEN &&
-        feed === scope.feed &&
-        date !== scope.date
-      ) {
+      const [token, slotFeed, date] = segments;
+      // Same feed token, a date other than the live day → a stale slot.
+      if (token === FEED_UNION_TOKEN && slotFeed === feed && date !== liveDay) {
         toDelete.push(k);
       }
     }
@@ -309,10 +334,24 @@ export function useStickyUnion<T>(
     payload: string;
   } | null>(null);
 
-  // The returned snapshot lives in state so React re-renders when the
-  // union grows/updates. We only ever set it to a NEW array when content
-  // actually changed, so a stable `items` reference cannot drive a loop.
-  const [snapshot, setSnapshot] = useState<T[]>([]);
+  // The rows last ingested, tagged with the slot they belong to. State, so
+  // React re-renders when the union grows or updates; set only when an ingest
+  // actually changed the union, so a stable `items` reference cannot drive a
+  // loop. The tag is what makes a key change safe: `live` is returned only
+  // while its slot is the current `storageKey`, so a commit that carries a new
+  // key can never return the old key's rows (the response-key pattern).
+  const [live, setLive] = useState<{ slot: string; rows: T[] } | null>(null);
+  // What the current slot holds before any ingest has changed it, read in
+  // render so the commit that carries a new key (or the first mount) already
+  // returns that key's own rows. A pure read (see `readRetainedRows`), memoized
+  // on the key. `retain` is left out of the deps on purpose: callers pass a
+  // fresh closure every render, and a tightened floor reaches the rows through
+  // the ingest effect, which purges and re-snapshots.
+  const hydrated = useMemo(
+    () => readRetainedRows<T>(storageKey, retain),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [storageKey],
+  );
 
   // Flush any pending debounced write immediately (used on slot change +
   // unmount). Clears the timer and writes the staged payload synchronously.
@@ -342,18 +381,20 @@ export function useStickyUnion<T>(
     }, PERSIST_DEBOUNCE_MS);
   };
 
-  // One-time stale-key sweep on first mount (bounded cleanup of prior days).
-  useEffect(() => {
-    sweepStaleKeys(storageKey);
-    // Intentionally mount-only: re-sweeping on every storageKey change would
-    // be redundant (a new day's reset already replaces the union) and the
-    // initial mount key is representative of the feed prefix.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  // The live day, from the shared ET clock the panels' `date` follows
+  // (`useFollowedDate` reads `useETToday`), and the feed this hook serves. The
+  // sweep below is relative to the live day, never to the date in
+  // `storageKey`: a picked past date changes the key, and a sweep relative to
+  // it would delete today's union on a detour to yesterday.
+  const liveDay = useETToday();
+  const feed = parseFeedToken(storageKey);
 
   // Reset + hydrate whenever the slot changes. Runs before the ingest
   // effect below on the same commit, so ingest sees the fresh union. Any
-  // pending write for the OLD slot is flushed first so it isn't lost.
+  // pending write for the OLD slot is flushed first so it isn't lost. The rows
+  // this returns to the caller were already read in render (`hydrated`); this
+  // effect builds the working union and counters from the same slot, and does
+  // the healing write.
   useEffect(() => {
     flushPersist();
     const union = readUnion<T>(storageKey);
@@ -388,8 +429,23 @@ export function useStickyUnion<T>(
     for (const k of union.keys()) seen.set(k, ++clock);
     seenRef.current = seen;
     seenClockRef.current = clock;
-    setSnapshot([...union.values()]);
+    // Drop rows held for a slot we are no longer on, so coming back to it
+    // returns what it holds now (re-read in render and retain-filtered), not
+    // the rows it held when it was left.
+    setLive((prev) => (prev != null && prev.slot !== storageKey ? null : prev));
   }, [storageKey]);
+
+  // Sweep the same feed's slots on any day but the live one: on mount, and
+  // whenever the live day changes (the ET-midnight roll), so yesterday's union
+  // does not linger. A key change inside the live day (a filter, a detour to a
+  // past date) is not a reason to sweep, and does not run it. Declared AFTER the
+  // hydrate effect on purpose: at the roll the panel's key and the live day
+  // change in the same commit, and that effect flushes the old slot's pending
+  // write first, so the sweep removes the slot instead of the write recreating
+  // it. Bounded cleanup, best-effort.
+  useEffect(() => {
+    if (feed != null) sweepStaleKeys(feed, liveDay);
+  }, [feed, liveDay]);
 
   // Ingest `items`: upsert each (skipping degenerate/tombstoned keys), pin
   // the rest, evict tombstones, then persist + re-snapshot ONLY when the
@@ -470,7 +526,7 @@ export function useStickyUnion<T>(
     enforceCap(union, seen, protectedKeys);
 
     schedulePersist(storageKey, JSON.stringify([...union]));
-    setSnapshot([...union.values()]);
+    setLive({ slot: storageKey, rows: [...union.values()] });
   }, [items, storageKey, tombstones]);
 
   // Flush any pending debounced write on unmount so a final ingest is not
@@ -504,5 +560,6 @@ export function useStickyUnion<T>(
     // flushPersist closes over refs only (stable across renders); mount-only.
   }, []);
 
-  return snapshot;
+  // The ingested rows if they are this slot's, else what this slot holds.
+  return live != null && live.slot === storageKey ? live.rows : hydrated;
 }
