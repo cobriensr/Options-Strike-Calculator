@@ -43,6 +43,7 @@ import {
   type PeriscopeSelectedSlot,
 } from './hooks/usePeriscopeExposure';
 import { useAccessSession } from './hooks/useAccessSession';
+import { clearLicensedClientCaches } from './lib/licensed-client-caches';
 import { usePanelPrefs } from './hooks/usePanelPrefs';
 import {
   getPanelRegistry,
@@ -279,6 +280,21 @@ export default function StrikeCalculator() {
       .querySelector('meta[name="theme-color"]')
       ?.setAttribute('content', darkMode ? '#121212' : '#f4f1eb');
   }, [darkMode]);
+
+  // A visitor with no owner or guest session keeps no Unusual Whales or
+  // GEXBot data in this browser. Nothing else removes the last-good caches
+  // when access drops, and this one effect on the mode covers all three ways
+  // a visitor ends up public: a page that loads public (the cookie lapsed
+  // between visits), the auth interceptor dropping the session mid-visit, and
+  // a guest signing out. A write still on its way when the mode drops (a reply
+  // in flight, a feed's debounced save) cannot land after this runs: the panel
+  // hosting it unmounts in the same commit (the registry and the alerts view
+  // list those for owner or guest only), and the unmount aborts the request or
+  // flushes the save first. licensed-client-caches.late-write.test.tsx pins
+  // that. DEV builds always resolve to owner, so this never runs there.
+  useEffect(() => {
+    if (!isAuthenticated) clearLicensedClientCaches();
+  }, [isAuthenticated]);
 
   // Data hooks
   const market = useMarketData();

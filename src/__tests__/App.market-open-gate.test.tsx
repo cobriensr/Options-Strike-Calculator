@@ -355,6 +355,15 @@ function marketFor(s: Scenario, hasData = true): Record<string, unknown> {
   };
 }
 
+/** A viewer with this access mode, in a live session with a quote. */
+const viewer = (mode: Mode): Scenario => ({
+  name: mode,
+  mode,
+  clockOpen: true,
+  quotesFlag: true,
+  gate: mode !== 'public',
+});
+
 // One value for every render: App's `toast` is a dependency of a callback the
 // panelMap memo depends on, so a new object per render would rebuild the map.
 const TOAST = { show: vi.fn() };
@@ -619,14 +628,6 @@ describe('App polling gate (market clock AND owner-or-guest)', () => {
   // `isOwner` from the one access mode, so the anchors it renders are the
   // registry's answer to each viewer.
   describe('Charts & History panels, by access mode', () => {
-    const viewer = (mode: Mode): Scenario => ({
-      name: mode,
-      mode,
-      clockOpen: true,
-      quotesFlag: true,
-      gate: mode !== 'public',
-    });
-
     it.each([
       { mode: 'owner', charts: true, history: true },
       { mode: 'guest', charts: true, history: false },
@@ -756,6 +757,154 @@ describe('App polling gate (market clock AND owner-or-guest)', () => {
       expect(lastArgAt(h.marketRegimeSection, 0)).toEqual(
         expect.objectContaining({ marketOpen: false, showFlowRegime: false }),
       );
+    });
+  });
+
+  // A visitor with no owner or guest session keeps no UW or GEXBot data in this
+  // browser, however they got to public: a page that loads public (the cookie
+  // lapsed between visits), the auth interceptor dropping the session mid-visit,
+  // or a guest signing out. App reads one access mode for all three, so one
+  // effect on it purges. The key names belong to the writers; the util's own
+  // test (licensed-client-caches.test.ts) pins them, and this block pins when
+  // App calls it.
+  describe('licensed client caches', () => {
+    const LICENSED_KEYS = [
+      'openingFlowSignal.lastGood',
+      'openingFlowSignal.lastGood:2026-11-20',
+      'regime0dte:lastgood',
+      'feed-union:lottery:2026-11-20:sig',
+      'feed-union:lottery-reignited:2026-11-20:sig',
+      'feed-union:silent-boom:2026-11-20:sig',
+    ] as const;
+    // Preferences the purge must leave alone.
+    const KEPT: Record<string, string> = {
+      'lottery.sortMode': '"newest"',
+      'sc-panel-prefs-v1': '{"hidden":["sec-gex-target"],"order":[]}',
+    };
+
+    function seedLicensed(): void {
+      for (const key of LICENSED_KEYS) localStorage.setItem(key, 'cached');
+    }
+
+    function licensedPresent(): string[] {
+      return LICENSED_KEYS.filter((key) => localStorage.getItem(key) !== null);
+    }
+
+    function keptNow(): Record<string, string | null> {
+      return Object.fromEntries(
+        Object.keys(KEPT).map((key) => [key, localStorage.getItem(key)]),
+      );
+    }
+
+    beforeEach(() => {
+      localStorage.clear();
+      for (const [key, value] of Object.entries(KEPT)) {
+        localStorage.setItem(key, value);
+      }
+      h.market.current = marketFor(viewer('owner'));
+    });
+
+    afterEach(() => {
+      localStorage.clear();
+    });
+
+    it('removes them when the page loads public', () => {
+      h.access.mode = 'public';
+      seedLicensed();
+
+      mountApp();
+
+      expect(licensedPresent()).toEqual([]);
+      expect(keptNow()).toEqual(KEPT);
+    });
+
+    it.each(['owner', 'guest'] as const)(
+      'removes nothing when the page loads as %s',
+      (mode) => {
+        h.access.mode = mode;
+        h.market.current = marketFor(viewer(mode));
+        seedLicensed();
+
+        mountApp();
+
+        expect(licensedPresent()).toEqual(LICENSED_KEYS);
+        expect(keptNow()).toEqual(KEPT);
+      },
+    );
+
+    it.each(['owner', 'guest'] as const)(
+      'removes them when %s access drops to public without a remount',
+      (mode) => {
+        h.access.mode = mode;
+        h.market.current = marketFor(viewer(mode));
+        seedLicensed();
+        const { rerender } = mountApp();
+        expect(licensedPresent()).toEqual(LICENSED_KEYS);
+
+        h.access.mode = 'public';
+        rerender(appElement());
+
+        expect(licensedPresent()).toEqual([]);
+        expect(keptNow()).toEqual(KEPT);
+      },
+    );
+
+    it('removes nothing when the owner becomes a guest', () => {
+      // isAuthenticated holds across this flip, so the effect does not re-run.
+      h.access.mode = 'owner';
+      seedLicensed();
+      const { rerender } = mountApp();
+
+      h.access.mode = 'guest';
+      rerender(appElement());
+
+      expect(licensedPresent()).toEqual(LICENSED_KEYS);
+    });
+
+    it('removes nothing on sign-in, and keeps what is written after it', () => {
+      h.access.mode = 'public';
+      seedLicensed();
+      const { rerender } = mountApp();
+      expect(licensedPresent()).toEqual([]);
+
+      // Written while public, so before the sign-in lands.
+      localStorage.setItem('regime0dte:lastgood', 'written before sign-in');
+      h.access.mode = 'guest';
+      h.market.current = marketFor(viewer('guest'));
+      rerender(appElement());
+      expect(localStorage.getItem('regime0dte:lastgood')).toBe(
+        'written before sign-in',
+      );
+
+      // Written by the guest's panels, then more renders.
+      localStorage.setItem('openingFlowSignal.lastGood', 'written as guest');
+      rerender(appElement());
+      rerender(appElement());
+
+      expect(licensedPresent()).toEqual([
+        'openingFlowSignal.lastGood',
+        'regime0dte:lastgood',
+      ]);
+      expect(keptNow()).toEqual(KEPT);
+    });
+
+    it('removes them again on a second drop, not only the first', () => {
+      h.access.mode = 'guest';
+      h.market.current = marketFor(viewer('guest'));
+      seedLicensed();
+      const { rerender } = mountApp();
+
+      h.access.mode = 'public';
+      rerender(appElement());
+      expect(licensedPresent()).toEqual([]);
+
+      h.access.mode = 'guest';
+      rerender(appElement());
+      seedLicensed();
+      h.access.mode = 'public';
+      rerender(appElement());
+
+      expect(licensedPresent()).toEqual([]);
     });
   });
 
