@@ -64,7 +64,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 
-export interface UseStickyUnionOptions<T> {
+interface UseStickyUnionOptions<T> {
   /** Stable identity for an item. Two items with the same key are "the same". */
   key: (item: T) => string;
   /** localStorage slot; changing it resets + rehydrates the union. */
