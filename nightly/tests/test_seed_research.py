@@ -30,6 +30,7 @@ from seed_research import SeedItem, SeedNameError, SeedResult, plan_seed, run_se
 
 BUCKET = "test-bucket"
 BY_DAY = "scripts/eod-flow-analysis/output/by-day"
+BY_DAY_PREFIX = "research/eod-flow/by-day/"
 TRACKING_KEY = "research/lottery-tracking/state/lottery-tracking.csv"
 CHAINS_DAYS = [date(2026, 4, 13), date(2026, 4, 14)]
 
@@ -192,6 +193,9 @@ def test_plan_maps_each_rule(repo: Path):
         "ml/plots/takeit-drift/reliability_lottery_latest.png",
         f"{BY_DAY}/latest-chains.parquet",  # the chains rule needs the day for its seed mark
         f"{BY_DAY}/2026-04-15-2026-04-16-chains.parquet",
+        # One valid date, but not the YYYY-MM-DD-chains.parquet the derive step keys by day: it
+        # would upload under a key nothing reads and get no seed mark.
+        f"{BY_DAY}/x-2026-04-13-chains.parquet",
         "docs/tmp/lottery-score-lineage-2026-05-09..md",  # a key the store refuses
     ],
 )
@@ -227,6 +231,23 @@ def test_existing_keys_are_never_overwritten(s3, store: ResearchStore, repo: Pat
     for item in items:
         if item.key not in kept:
             assert _body(s3, item.key) == item.path.read_bytes()
+
+
+def test_a_key_that_only_starts_with_a_seed_key_does_not_count_as_existing(
+    s3, store: ResearchStore, repo: Path
+):
+    # The listing is by prefix, so it returns this sibling too; existence is the exact key.
+    sibling = f"{TRACKING_KEY}.bak"
+    _put(s3, sibling, b"an old backup of the tracking state")
+    items = plan_seed(repo)
+
+    result = run_seed(store, items, dry_run=False)
+
+    assert result == SeedResult(
+        uploaded=len(items), skipped_existing=0, chains_marked_seed=len(CHAINS_DAYS)
+    )
+    assert _body(s3, TRACKING_KEY) == (repo / "docs/tmp/lottery-tracking.csv").read_bytes()
+    assert _body(s3, sibling) == b"an old backup of the tracking state"
 
 
 def test_chains_days_are_marked_seed_once(s3, store: ResearchStore, repo: Path):
@@ -425,6 +446,27 @@ def test_main_exits_2_on_bad_arguments(
     assert seed_research.main(["--repo-root", str(repo / "docs/tmp/notes.md")]) == 2
 
 
+def test_main_exits_2_when_no_file_matches_a_rule(
+    s3, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+):
+    # A directory that holds none of the files (a fresh worktree, say) would otherwise report a
+    # clean run of zeros. The settings are invalid too, so the fixed line also shows the check
+    # comes before they are read.
+    monkeypatch.delenv("DATABASE_URL")
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    only_decoys = tmp_path / "only-decoys"
+    for relative in DECOYS:
+        _write(only_decoys, relative)
+
+    for root in (bare, only_decoys):
+        assert seed_research.main(["--repo-root", str(root)]) == 2
+        out, err = capsys.readouterr()
+        assert out == ""
+        assert err == "error: no file under --repo-root matches a seed rule\n"
+    assert _snapshot(s3) == {}
+
+
 def test_main_exits_2_on_invalid_settings(
     s3, repo: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ):
@@ -486,6 +528,31 @@ def test_main_exits_1_when_the_listing_fails_before_any_upload(
     assert out == ""
     assert err == "error: ClientError\n"
     assert _snapshot(s3) == {}
+
+
+def test_main_exits_1_when_the_manifest_write_fails_and_the_rerun_marks(
+    s3, repo: Path, capsys: pytest.CaptureFixture[str]
+):
+    chains_keys = sorted(key for key in EXPECTED.values() if key.startswith(BY_DAY_PREFIX))
+
+    with patch.object(ResearchStore, "put_json", side_effect=_client_error()):
+        code = seed_research.main(["--repo-root", str(repo)])
+
+    out, err = capsys.readouterr()
+    assert code == 1
+    assert err == "error: ClientError\n"
+    # The chains objects are up. The marks were not stored, and no later rule ran.
+    assert out == ""
+    assert sorted(_snapshot(s3)) == chains_keys
+
+    # With the failure gone, the rerun skips the objects and stores the marks.
+    assert seed_research.main(["--repo-root", str(repo)]) == 0
+    out, _ = capsys.readouterr()
+    assert out.splitlines()[0] == (
+        "research/eod-flow/by-day/: uploaded=0 skipped_existing=2 chains_marked_seed=2"
+    )
+    assert out.splitlines()[-1] == _total_line(10, 2, 2)
+    assert sorted(_snapshot(s3)) == sorted([*EXPECTED.values(), MANIFEST_KEY])
 
 
 def test_main_exits_1_on_a_malformed_manifest_before_any_upload(

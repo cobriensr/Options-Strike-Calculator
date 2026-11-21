@@ -3,7 +3,10 @@
 The research steps read their state from `research/` in the bucket and extend it: the per-day
 chains aggregates, the lottery-tracking CSV, the dated reports. Until this runs, that state
 exists only in the owner's checkout (`scripts/` and `docs/tmp/`, the take-it drift plots under
-`ml/plots/`). It is a local tool, run once, by hand. The nightly job never calls it.
+`ml/plots/`). It is a local tool, run once, by hand. The nightly job never calls it. Run it
+outside the nightly job's window (Tue-Sat, about 07:15-12:30 UTC): it writes the same keys and
+the derive manifest, and takes no lock, so an overlap could overwrite a night's object or drop
+its manifest entries.
 
     PYTHONPATH=nightly/src:scripts:ml/src python -m seed_research --repo-root <checkout> [--dry-run]
 
@@ -19,8 +22,9 @@ What it does (`SEED_RULES` is the table of what goes where):
   the nightly steps own those objects from their first run on (the tracking CSV most of all).
 - Existence is read with one listing per rule's key prefix, never one request per file.
 - A name must carry exactly one YYYY-MM-DD when its key uses `{date}`, and for the chains
-  files, whose seed mark needs the day. Every name is checked before anything uploads
-  (`plan_seed`), so a bad name stops the run with nothing written.
+  files, whose seed mark needs the day; a chains file must be named exactly
+  `YYYY-MM-DD-chains.parquet`, the name the derive step keys by day. Every name is checked
+  before anything uploads (`plan_seed`), so a bad name stops the run with nothing written.
 - Each chains day whose object is in R2 after the run and that has no manifest entry is
   marked `SEED` (the derive step never rebuilds a seeded chains day). An entry already there,
   a fingerprint the derive step wrote, is never replaced. The manifest is read before the
@@ -31,9 +35,10 @@ What it does (`SEED_RULES` is the table of what goes where):
 A run is safe to repeat: a failure part-way leaves what was uploaded in place, and the rerun
 skips it and goes on from there, marks included. Each rule runs on its own, in table order, so
 a rule's counts print as it finishes. Exit codes: 0 ok; 1 an upload, a store read or a file
-read failed; 2 a bad file name, bad arguments or invalid settings. The output is counts per
-rule and in total, and an error is its class name: never a path, a file's content or a
-setting's value, which is why no logging is configured here either.
+read failed; 2 a bad file name, bad arguments, a root with no file for any rule, or invalid
+settings. The output is counts per rule and in total, and an error is its class name: never a
+path, a file's content or a setting's value, which is why no logging is configured here
+either.
 """
 
 from __future__ import annotations
@@ -57,8 +62,11 @@ from research_store import ResearchKeyError, ResearchStore, _check
 # A date is YYYY-MM-DD and not part of a longer run of digits.
 _DATE = re.compile(r"(?<!\d)\d{4}-\d{2}-\d{2}(?!\d)")
 _CHAINS_KEY = "research/eod-flow/by-day/{name}"
-# The chains object of a day, as `research_derive.FAMILY_KEYS["chains"]` names it.
-_CHAINS_OBJECT = re.compile(r"research/eod-flow/by-day/(\d{4}-\d{2}-\d{2})-chains\.parquet")
+# A chains file's whole name, and the chains object of a day: as
+# `research_derive.FAMILY_KEYS["chains"]` names it, one per day.
+_CHAINS_NAME = r"(\d{4}-\d{2}-\d{2})-chains\.parquet"
+_CHAINS_FILE = re.compile(_CHAINS_NAME)
+_CHAINS_OBJECT = re.compile(_CHAINS_KEY.format(name=_CHAINS_NAME))
 
 
 @dataclass(frozen=True)
@@ -148,6 +156,10 @@ def _plan_rule(repo_root: Path, rule: SeedRule) -> list[SeedItem]:
             continue
         label = path.relative_to(repo_root).as_posix()
         day = _session_day(label, path.name).isoformat() if needs_date else ""
+        if rule.key == _CHAINS_KEY and _CHAINS_FILE.fullmatch(path.name) is None:
+            # `*-chains.parquet` also takes `x-2026-04-13-chains.parquet`: it would upload under
+            # a key the derive step never looks up, and no seed mark could name its day.
+            raise SeedNameError(f"{label}: the name must be exactly YYYY-MM-DD-chains.parquet")
         key = rule.key.format(name=path.name, date=day)
         # The store's own key rule (under `research/`, no `..`, no backslash), applied now so
         # that a name it would refuse stops the run before the first upload, not in the middle.
@@ -258,7 +270,8 @@ def main(argv: list[str] | None = None) -> int:
         "--dry-run", action="store_true", help="write nothing; report what a run would do"
     )
     args = parser.parse_args(argv)
-    # A typo'd root would match no file and report a clean run of zeros.
+    # A typo'd root, or one with none of the files (a fresh worktree, say), would match nothing
+    # and report a clean run of zeros: both stop here, before settings and the store.
     if not args.repo_root.is_dir():
         print("error: --repo-root is not a directory", file=sys.stderr)
         return 2
@@ -266,6 +279,9 @@ def main(argv: list[str] | None = None) -> int:
         items = plan_seed(args.repo_root)
     except SeedNameError as exc:
         print(f"error: {exc}", file=sys.stderr)
+        return 2
+    if not items:
+        print("error: no file under --repo-root matches a seed rule", file=sys.stderr)
         return 2
     try:
         settings = load_settings()
