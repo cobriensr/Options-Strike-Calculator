@@ -183,8 +183,8 @@ export function ScenarioInputs({
             Contracts
           </span>
           <div
+            role="group"
             aria-labelledby="fc-contracts-label"
-            aria-label="Contracts"
             className="bg-input border-edge-strong flex h-[43px] items-center rounded-lg border-[1.5px]"
           >
             <button

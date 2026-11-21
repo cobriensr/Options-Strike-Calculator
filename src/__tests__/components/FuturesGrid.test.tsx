@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import FuturesGrid from '../../components/FuturesCalculator/FuturesGrid';
 import type { FuturesSnapshot } from '../../hooks/useFuturesData';
+import { genericElementsWithAriaLabel } from '../helpers/aria';
 
 // ── Helpers ───────────────────────────────────────────────
 
@@ -47,6 +48,28 @@ describe('FuturesGrid: renders all symbol cards', () => {
     expect(screen.getByText('/CL')).toBeInTheDocument();
     expect(screen.getByText('/GC')).toBeInTheDocument();
     expect(screen.getByText('Gold')).toBeInTheDocument();
+  });
+
+  it('shows each symbol and its name as text, with no aria-label on the bare span', () => {
+    const { container } = render(
+      <FuturesGrid snapshots={makeAllSnapshots()} esSpxBasis={null} />,
+    );
+
+    // The name is already the card's visible subtext, so a hint or a label
+    // on the symbol would make a screen reader say it twice.
+    const names = [
+      ['/ES', 'S&P 500'],
+      ['/NQ', 'Nasdaq 100'],
+      ['/ZN', '10Y Treasury'],
+      ['/RTY', 'Russell 2000'],
+      ['/CL', 'Crude Oil'],
+      ['/GC', 'Gold'],
+    ] as const;
+    for (const [symbol, name] of names) {
+      expect(screen.getByText(symbol)).not.toHaveAttribute('aria-label');
+      expect(screen.getByText(name)).toBeInTheDocument();
+    }
+    expect(genericElementsWithAriaLabel(container)).toEqual([]);
   });
 
   it('has no VX or DX labels', () => {
