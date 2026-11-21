@@ -138,6 +138,18 @@ Skip the plan doc only for:
 
 When in doubt, write the plan. A plan doc is ~10 minutes; rediscovering scope is much more.
 
+**Adversarial review (owner rule, 2026-11-20).** Every spec in `docs/superpowers/specs/` and every plan in `docs/superpowers/plans/` gets a hostile read by a fresh agent before the owner sees it. Why: the author checks their own doc against their own beliefs, so a wrong premise survives until someone who doesn't share them reads the code.
+
+- After writing a spec or plan, dispatch the `spec-reviewer` agent (`.claude/agents/spec-reviewer.md`, local-only) with `model: "opus"`. A PostToolUse hook (`spec-review-reminder.sh`) reminds you after each Write there.
+- The brief gives only the doc's path; for a plan, also the path of the spec it implements. Leave out your reasoning, so the review isn't anchored on it.
+- Settle the findings marked `author` yourself, in the doc.
+- Bring the owner only the findings marked `owner`, in one message, most important first.
+- Hand the doc over with a short list of what the review changed.
+- One review per doc. Re-review only when the fixes changed the design, and at most twice; then hand it over with what's still open.
+- For a spec written during brainstorming, the spec-reviewer replaces the builder check: its report also covers what a builder would have to guess.
+- For a plan, run writing-plans' self-review first, then the spec-reviewer. This overrides that skill's "not a subagent dispatch" line.
+- Skip it for an edit that only records status (an "As built" note, a checked box) and for docs outside those two folders, such as `docs/tmp/` reports.
+
 ### Tests Are Mandatory (TDD Preferred)
 
 Every new feature, endpoint, hook, component, cron, or pure utility ships with tests **in the same commit**. No exceptions for "I'll add tests later" — later never comes, and untested code masquerading as shipped code is how silent failures land in production.
