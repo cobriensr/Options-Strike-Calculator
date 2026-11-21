@@ -1461,6 +1461,102 @@ def test_drift_output_of_a_failing_run_stays_in_the_log(
     assert MARKER not in captured.out + captured.err
 
 
+# --- the step log is appended to, never truncated -------------------------------------------
+#
+# The step opens its log for each writer: the import of the research module, the research call and,
+# on a drift run with no metric, the report's text. Each must add to what is there. A module the
+# test process has already imported prints nothing when a step imports it again, so these tests
+# put stand-ins that print at import time on the import path in place of the real modules.
+
+IMPORT_OUT, IMPORT_ERR = "stdout while importing", "stderr while importing"
+CALL_OUT, CALL_ERR = "stdout of the research call", "stderr of the research call"
+REPORT_TEXT = "the drift report's own text"
+PHASE_LINES = [IMPORT_OUT, IMPORT_ERR, CALL_OUT, CALL_ERR]
+
+QUALITY_SIM_STAND_IN = f"""
+import sys
+
+print({IMPORT_OUT!r})
+print({IMPORT_ERR!r}, file=sys.stderr)
+
+
+def refit_ticker_inversion_stats(conn, sim_csv_path=None):
+    print({CALL_OUT!r})
+    print({CALL_ERR!r}, file=sys.stderr)
+    sim_csv_path.write_text("fire_id,ticker\\n1,AAA\\n", encoding="utf-8")
+"""
+
+
+def drift_stand_in(metrics_written: int) -> str:
+    return f"""
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+
+print({IMPORT_OUT!r})
+print({IMPORT_ERR!r}, file=sys.stderr)
+
+
+def run_drift(conn, as_of, report_dir, plot_dir):
+    print({CALL_OUT!r})
+    print({CALL_ERR!r}, file=sys.stderr)
+    report = Path(report_dir) / f"takeit-drift-{{as_of.isoformat()}}.md"
+    report.write_text({REPORT_TEXT!r} + "\\n", encoding="utf-8")
+    return SimpleNamespace(report_path=report, plot_paths=(), metrics_written={metrics_written})
+"""
+
+
+def put_stand_in(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, name: str, source: str) -> None:
+    """Take `name`'s place on the import path with a module that prints when it is imported. The
+    real module comes back in sys.modules when the test ends."""
+    folder = tmp_path / "stand-ins"
+    folder.mkdir(exist_ok=True)
+    (folder / f"{name}.py").write_text(source, encoding="utf-8")
+    monkeypatch.syspath_prepend(str(folder))
+    monkeypatch.delitem(sys.modules, name)
+
+
+@pytest.mark.parametrize("step", [QUALITY_SIM, DRIFT])
+def test_the_step_log_keeps_the_import_output_when_the_research_call_adds_its_own(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, step: str
+) -> None:
+    if step == QUALITY_SIM:
+        put_stand_in(monkeypatch, tmp_path, "enrich_lottery_outcomes", QUALITY_SIM_STAND_IN)
+        rig.use_db(sim_conn())
+        run, log_key = run_quality_sim, SIM_LOG_KEY
+    else:
+        put_stand_in(monkeypatch, tmp_path, "takeit_drift_monitor", drift_stand_in(1))
+        rig.use_db(drift_conn())
+        run, log_key = run_takeit_drift, DRIFT_LOG_KEY
+
+    result = run(rig.ctx())
+
+    assert result.status == "ok"
+    # The import's lines came first and are still there when the research call's follow them:
+    # the second redirect opens the same file and adds to it.
+    assert rig.body(log_key).decode().splitlines() == PHASE_LINES
+
+
+def test_the_zero_metrics_report_is_added_after_what_the_research_code_wrote_to_the_log(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # On a run that wrote no metric the warnings the research code printed are the other half of
+    # the evidence, so the report goes after them and does not replace them.
+    put_stand_in(monkeypatch, tmp_path, "takeit_drift_monitor", drift_stand_in(0))
+    rig.use_db(drift_conn())
+
+    result = run_takeit_drift(rig.ctx())
+
+    assert (result.status, result.detail) == ("failed", "no drift metrics")
+    lines = rig.body(DRIFT_LOG_KEY).decode().splitlines()
+    assert lines[:4] == PHASE_LINES
+    assert [line for line in lines[4:] if line] == [
+        f"--- takeit-drift-{SESSION}.md ---",
+        REPORT_TEXT,
+    ]
+    assert rig.keys("research/takeit-drift/") == []
+
+
 def test_drift_never_calls_the_monitors_own_main(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
     # main() opens its own connection from the ml utils, parses sys.argv and returns an exit code.
     main = create_autospec(takeit_drift_monitor.main, side_effect=AssertionError("main called"))
