@@ -122,10 +122,17 @@ export interface EndpointResults {
  * reaches state; processEndpointResults then leaves `events` as it was. A valid
  * body is returned as received: the schema leaves out `cached` and `asOf`, and
  * would strip them from a stored parse.
+ *
+ * `/api/events` is the one public endpoint of the five, so it is also the only
+ * request a public visitor makes: useMarketData calls this alone for them
+ * instead of `fetchAllEndpoints`.
  */
-async function fetchForwardEvents(): Promise<FetchResult<EventsResponse>> {
+export async function fetchForwardEvents(
+  signal?: AbortSignal,
+): Promise<FetchResult<EventsResponse>> {
   const result = await fetchJson<EventsResponse>(
     `/api/events?days=${FORWARD_EVENT_DAYS}`,
+    signal,
   );
   if ('error' in result) return result;
   try {
@@ -137,14 +144,22 @@ async function fetchForwardEvents(): Promise<FetchResult<EventsResponse>> {
   return result;
 }
 
-/** Fetch all five endpoints in parallel. */
-export async function fetchAllEndpoints(): Promise<EndpointResults> {
+/**
+ * Fetch all five endpoints in parallel: the owner-or-guest fan-out. Quotes,
+ * intraday, yesterday and movers are owner-or-guest, so a public visitor
+ * never gets here (see `fetchForwardEvents`). An aborted request comes back as
+ * `{ status: 0 }`, so a caller that aborts must check its own signal before it
+ * reads the results.
+ */
+export async function fetchAllEndpoints(
+  signal?: AbortSignal,
+): Promise<EndpointResults> {
   const [quotes, intraday, yesterday, events, movers] = await Promise.all([
-    fetchJson<QuotesResponse>('/api/quotes'),
-    fetchJson<IntradayResponse>('/api/intraday'),
-    fetchJson<YesterdayResponse>('/api/yesterday'),
-    fetchForwardEvents(),
-    fetchJson<MoversResponse>('/api/movers'),
+    fetchJson<QuotesResponse>('/api/quotes', signal),
+    fetchJson<IntradayResponse>('/api/intraday', signal),
+    fetchJson<YesterdayResponse>('/api/yesterday', signal),
+    fetchForwardEvents(signal),
+    fetchJson<MoversResponse>('/api/movers', signal),
   ]);
 
   return { quotes, intraday, yesterday, events, movers };

@@ -10,10 +10,13 @@
  *
  * Each endpoint is independent — if one fails, the others still load.
  *
- * OWNER GATING: The API endpoints require an owner session cookie.
- * Public visitors get 401s, which this hook silently ignores — the
- * calculator works normally with manual input. Only the site owner
- * (after visiting /api/auth/init) gets live data auto-fill.
+ * ACCESS GATING: quotes, intraday, yesterday and movers are owner-or-guest
+ * endpoints (events is public). A public visitor makes only the events
+ * request, so the calculator works with manual input and the browser sends
+ * no request that is bound to 401. The mount fetch and the poll both follow
+ * the live access mode, read at every render: a guest key entered without a
+ * reload fetches all five and starts the poll, and a drop to public aborts
+ * what is in flight, stops the poll and keeps the data already loaded.
  *
  * Auto-refreshes quotes every 60s during market hours, stops after close.
  *
@@ -21,15 +24,16 @@
  * `useMarketData.fetchers.ts` for independent testability.
  */
 
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { POLL_INTERVALS } from '../constants';
-import { checkIsOwner } from '../utils/auth';
+import { getAccessMode } from '../utils/auth';
 import { usePolling } from './usePolling';
 import { isTradingDay, isHalfDay } from '../data/marketHours';
 import type { QuotesResponse, IntradayResponse } from '../types/api';
 import {
   fetchJson,
   fetchAllEndpoints,
+  fetchForwardEvents,
   processEndpointResults,
 } from './useMarketData.fetchers';
 import type { MarketData } from './useMarketData.fetchers';
@@ -139,9 +143,17 @@ export function computeMarketSession(now: Date): MarketSession {
 export interface MarketDataState {
   data: MarketData;
   loading: boolean;
-  /** True if any data loaded successfully (owner is authenticated) */
+  /**
+   * True if any Schwab data loaded successfully (owner or guest). It stays
+   * true after a drop to public: the data already loaded is kept.
+   */
   hasData: boolean;
-  /** True if Schwab auth is expired (needs /api/auth/init) */
+  /**
+   * True for the owner when Schwab auth is expired (needs /api/auth/init):
+   * every owner-or-guest endpoint answered 401 and none succeeded. Always
+   * false for a guest, who has no Schwab login to renew, and for a public
+   * visitor.
+   */
   needsAuth: boolean;
   /**
    * Epoch milliseconds of the last successful fetch on any endpoint.
@@ -203,6 +215,25 @@ const REFRESH_INTERVAL_MS = POLL_INTERVALS.MARKET_DATA;
 const SESSION_TICK_MS = 15_000;
 
 export function useMarketData(): MarketDataState {
+  // The live access mode, read at every render and never frozen in a ref or
+  // state: App re-renders this hook on each mode change (useAccessSession), so
+  // a guest key entered without a reload starts the fetch and the poll, and a
+  // drop to public stops them. `isAuthenticated` means owner or guest, the two
+  // modes the quotes, intraday, yesterday and movers endpoints accept.
+  //
+  // This replaces AUD-M17's `isOwner` state, which started as the sc-hint
+  // cookie and flipped true on any 2xx, so a valid HttpOnly session behind a
+  // missing hint still got live data, and which nothing ever set false. That
+  // 2xx probe is dropped on purpose. `sc-hint` and `sc-owner` are built in one
+  // place (api/_lib/auth-helpers.ts) with the same Path and Max-Age, and
+  // `whoami` renews both together; the interceptor
+  // (src/utils/authInterceptor.ts) clears the hint only when `whoami` reports
+  // the session public. A missing hint over a valid session therefore happens
+  // only after the owner clears the cookie by hand, and the rest of the app
+  // renders public in that state too. The cost if that is wrong: an owner who
+  // cleared `sc-hint` by hand gets no live quotes until they sign in again.
+  const isAuthenticated = getAccessMode() !== 'public';
+
   const [data, setData] = useState<MarketData>({
     quotes: null,
     intraday: null,
@@ -210,14 +241,14 @@ export function useMarketData(): MarketDataState {
     events: null,
     movers: null,
   });
-  // AUD-M16: mirror the latest `data` on a ref so `fetchAll` can feed the
+  // AUD-M16: mirror the latest `data` on a ref so the mount fetch can feed the
   // current snapshot to `processEndpointResults` (which carries-forward
   // non-updated endpoints) WITHOUT depending on `data` in its dep array.
-  // Keeping `fetchAll` identity stable preserves the original behavior where
-  // the mount effect fires exactly once. Previously this carry-forward was
-  // done via the functional `setData(prev => …)` updater; moving side effects
-  // out of the updater (so it stays pure under StrictMode double-invoke)
-  // means we read `prev` from this ref instead.
+  // Keeping `data` out of the deps preserves the behavior where the mount
+  // effect runs only when the access mode changes. Previously this
+  // carry-forward was done via the functional `setData(prev => …)` updater;
+  // moving side effects out of the updater (so it stays pure under StrictMode
+  // double-invoke) means we read `prev` from this ref instead.
   const dataRef = useRef(data);
   dataRef.current = data;
   const [loading, setLoading] = useState(true);
@@ -236,82 +267,93 @@ export function useMarketData(): MarketDataState {
   const [session, setSession] = useState<MarketSession>(() =>
     computeMarketSession(new Date()),
   );
-  // Track if the owner cookie is present (any endpoint returned 200,
-  // or the sc-hint cookie exists from a prior auth session).
-  //
-  // AUD-M17: owner status is STATE (mirrored on a ref) rather than a bare
-  // ref. `checkIsOwner()` reads the sc-hint cookie at first render; when the
-  // hint is missing but the HttpOnly owner session is valid, the mount
-  // fetch's 200 is what flips this, and the polling gate
-  // `[isOwner, session !== 'closed']` must re-evaluate on that flip. A bare
-  // ref mutated in `fetchAll` would flip silently without re-rendering, so
-  // usePolling would never start. The ref mirror lets `fetchAll` read the
-  // latest value without being recreated.
-  const [isOwner, setIsOwner] = useState<boolean>(() => checkIsOwner());
-  const isOwnerRef = useRef(isOwner);
-  isOwnerRef.current = isOwner;
   // AUD-M16 / AUD-M17: consecutive-failure streak is STATE (mirrored on a
   // ref). State so that crossing the backoff threshold re-renders and
   // usePolling re-schedules at the doubled cadence (a bare ref read at
   // render never re-renders, so the documented backoff was dead code). The
   // ref mirror lets the mount-fetch and the poll tick read/update the latest
-  // streak without recreating `fetchAll`. Mirrors useChainData's pattern.
+  // streak without re-running the mount effect. Mirrors useChainData's
+  // pattern. A public visitor never touches it.
   const [consecutiveFails, setConsecutiveFails] = useState(0);
   const consecutiveFailsRef = useRef(0);
 
-  const fetchAll = useCallback(async () => {
-    const results = await fetchAllEndpoints();
-
-    // AUD-M16: process results and run ALL side effects OUTSIDE the setData
-    // updater. The updater must be pure (return new state only) — under
-    // React StrictMode the updater is invoked twice, so any side effect
-    // inside it (ref mutation, nested setState, Date.now()) would run twice
-    // per fetch, e.g. double-incrementing the fail streak and halving the
-    // backoff threshold.
-    const { nextData, anySuccess, anyAuthError, quotesSuccess } =
-      processEndpointResults(dataRef.current, results);
-
-    // Only show needsAuth if the user previously had data (was authenticated)
-    // but now gets 401s. Don't show it for public visitors who never auth'd.
-    // Read the ref BEFORE updating it so we can detect the transition.
-    setNeedsAuth(anyAuthError && !anySuccess && isOwnerRef.current);
-
-    if (anySuccess && !isOwnerRef.current) {
-      isOwnerRef.current = true;
-      setIsOwner(true);
-    }
-
-    if (anySuccess) {
-      if (consecutiveFailsRef.current !== 0) {
-        consecutiveFailsRef.current = 0;
-        setConsecutiveFails(0);
-      }
-    } else if (!anyAuthError) {
-      // Only count as a failure if it wasn't just a 401 (public visitor)
-      const next = consecutiveFailsRef.current + 1;
-      consecutiveFailsRef.current = next;
-      setConsecutiveFails(next);
-    }
-
-    const now = Date.now();
-    if (anySuccess) {
-      setFetchedAt(now);
-    }
-    // FE-STATE-001: track quote-specific freshness independently.
-    if (quotesSuccess) {
-      setQuotesFetchedAt(now);
-    }
-
-    setData(nextData);
-    setLoading(false);
-  }, []);
-
-  // Fetch on mount
+  // Fetch on mount, and again whenever the access mode crosses between public
+  // and authenticated.
+  //
+  //   - Authenticated (owner or guest): the five-endpoint fan-out.
+  //   - Public: the events request alone. The other four are owner-or-guest
+  //     and could only answer 401, so they are not sent, and nothing about
+  //     their absence counts as a failure: the fail streak, `needsAuth` and
+  //     both freshness stamps stay as they were. `loading` ends when the
+  //     events request settles.
+  //
+  // The run's AbortController is aborted by the cleanup, so a flip or an
+  // unmount cancels the requests in flight. An abort comes back from
+  // `fetchJson` as `{ status: 0 }`, which would count as a failure, and a reply
+  // already on its way can still resolve after the abort; so after the await a
+  // run that was aborted writes nothing at all.
   useEffect(() => {
-    fetchAll();
-  }, [fetchAll]);
+    const controller = new AbortController();
+    const { signal } = controller;
 
-  // Auto-refresh polling (only if owner is authenticated).
+    if (!isAuthenticated) {
+      fetchForwardEvents(signal).then((result) => {
+        if (signal.aborted) return;
+        if ('data' in result) {
+          setData((prev) => ({ ...prev, events: result.data }));
+        }
+        setLoading(false);
+      });
+      return () => controller.abort();
+    }
+
+    fetchAllEndpoints(signal).then((results) => {
+      if (signal.aborted) return;
+
+      // AUD-M16: process results and run ALL side effects OUTSIDE the setData
+      // updater. The updater must be pure (return new state only) — under
+      // React StrictMode the updater is invoked twice, so any side effect
+      // inside it (ref mutation, nested setState, Date.now()) would run twice
+      // per fetch, e.g. double-incrementing the fail streak and halving the
+      // backoff threshold.
+      const { nextData, anySuccess, anyAuthError, quotesSuccess } =
+        processEndpointResults(dataRef.current, results);
+
+      // needsAuth is the owner's Schwab re-auth prompt (/api/auth/init): every
+      // gated endpoint denied this session and none succeeded. A guest has no
+      // Schwab login to renew, so only the owner raises it. The mode is read
+      // as the reply lands, not as the run started.
+      setNeedsAuth(anyAuthError && !anySuccess && getAccessMode() === 'owner');
+
+      if (anySuccess) {
+        if (consecutiveFailsRef.current !== 0) {
+          consecutiveFailsRef.current = 0;
+          setConsecutiveFails(0);
+        }
+      } else if (!anyAuthError) {
+        // Only count as a failure if it wasn't just a 401 (a signed-in
+        // session the server no longer honours)
+        const next = consecutiveFailsRef.current + 1;
+        consecutiveFailsRef.current = next;
+        setConsecutiveFails(next);
+      }
+
+      const now = Date.now();
+      if (anySuccess) {
+        setFetchedAt(now);
+      }
+      // FE-STATE-001: track quote-specific freshness independently.
+      if (quotesSuccess) {
+        setQuotesFetchedAt(now);
+      }
+
+      setData(nextData);
+      setLoading(false);
+    });
+    return () => controller.abort();
+  }, [isAuthenticated]);
+
+  // Auto-refresh polling (only while owner or guest is authenticated).
   //
   // FE-STATE-002 gate split:
   //   - QUOTES poll runs in pre-market / regular / after-hours. The SPX/VIX
@@ -323,11 +365,11 @@ export function useMarketData(): MarketDataState {
   //     on `!openingRangeComplete` so we stop fetching it once the 30-min
   //     window has closed.
   //
-  // Extracted to `usePolling`. The gate `[isOwner, session !== 'closed']`
-  // matches the original `if (isOwnerRef.current && session !== 'closed')`
-  // guard, but reads `isOwner` STATE so the gate re-evaluates when the mount
-  // fetch proves an owner session the sc-hint cookie didn't show (AUD-M17 —
-  // a bare ref read here would never start polling).
+  // Extracted to `usePolling`. The gate `[isAuthenticated, session !==
+  // 'closed']` reads the live access mode at render, so a guest login starts
+  // the poll and a drop to public clears the interval. A request already in
+  // flight when the interval clears still gets its reply, and the reply checks
+  // the mode again (see `droppedToPublic` below).
   //
   // AUD-M17: backoff (interval doubling on 3+ consecutive failures) is driven
   // by `consecutiveFails` STATE, not the ref. The ref read at render never
@@ -346,8 +388,14 @@ export function useMarketData(): MarketDataState {
       // (AUD-M18), and (c) feed the consecutive-failure counter (AUD-M17).
       let quotesSucceeded = false;
       let quotesAuthError = false;
+      // The mode as a reply lands, not as the poll started: a reply that
+      // arrives after the visitor dropped to public writes nothing, so the
+      // licensed Schwab data a downgrade keeps is not refreshed behind it and
+      // the fail streak does not move.
+      const droppedToPublic = () => getAccessMode() === 'public';
       const fetches: Promise<void>[] = [
         fetchJson<QuotesResponse>('/api/quotes').then((result) => {
+          if (droppedToPublic()) return;
           if ('data' in result) {
             quotesSucceeded = true;
             setData((prev) => ({ ...prev, quotes: result.data }));
@@ -363,6 +411,7 @@ export function useMarketData(): MarketDataState {
       if (session === 'regular' && !openingRangeComplete) {
         fetches.push(
           fetchJson<IntradayResponse>('/api/intraday').then((result) => {
+            if (droppedToPublic()) return;
             if ('data' in result) {
               setData((prev) => ({
                 ...prev,
@@ -374,6 +423,8 @@ export function useMarketData(): MarketDataState {
       }
 
       Promise.all(fetches).then(() => {
+        if (droppedToPublic()) return;
+
         // AUD-M18: only advance freshness fields on a successful quotes
         // fetch. The contract says `fetchedAt` is the "last successful"
         // fetch; bumping it after an all-failed poll would mask a stale
@@ -387,10 +438,9 @@ export function useMarketData(): MarketDataState {
 
         // AUD-M17: drive the consecutive-failure counter from the poll path
         // so backoff can actually engage. Reset on success; increment only
-        // on a genuine failure (not a 401, which is just a public visitor or
-        // an expired session — neither is a transient error worth backing
-        // off for). The quotes endpoint is the gating signal here since it
-        // runs in every poll.
+        // on a genuine failure (not a 401, which is an expired session, not a
+        // transient error worth backing off for). The quotes endpoint is the
+        // gating signal here since it runs in every poll.
         if (quotesSucceeded) {
           if (consecutiveFailsRef.current !== 0) {
             consecutiveFailsRef.current = 0;
@@ -404,7 +454,7 @@ export function useMarketData(): MarketDataState {
       });
     },
     REFRESH_INTERVAL_MS * backoff,
-    [isOwner, session !== 'closed'],
+    [isAuthenticated, session !== 'closed'],
   );
 
   // FE-STATE-002: wall-clock tick that advances `session` across phase
@@ -432,14 +482,19 @@ export function useMarketData(): MarketDataState {
   // call sites that haven't been migrated to `session` keep working.
   const marketOpen = session === 'regular';
 
+  // The owner's re-auth prompt reads false while public, whatever an earlier
+  // signed-in session left in state: the mount effect's public branch does not
+  // touch it, and a derived value cannot lag a render behind the mode.
+  const needsAuthPrompt = needsAuth && isAuthenticated;
+
   // AUD-H6: stabilize the returned object's identity so a parent `useMemo`
   // keyed on it (App.tsx's panelMap memo barrier) holds when the underlying
   // data hasn't changed. Every field below is already individually
-  // render-stable — `data` / `loading` / `needsAuth` / `fetchedAt` /
-  // `quotesFetchedAt` / `session` are useState values, and `hasData` /
-  // `marketOpen` are derived primitives. Only the object literal wrapper was
-  // churning its reference every render; useMemo holds it constant until one
-  // of the listed deps changes. Values and semantics are unchanged.
+  // render-stable — `data` / `loading` / `fetchedAt` / `quotesFetchedAt` /
+  // `session` are useState values, and `hasData` / `needsAuth` / `marketOpen`
+  // are derived primitives. Only the object literal wrapper was churning its
+  // reference every render; useMemo holds it constant until one of the listed
+  // deps changes. Values and semantics are unchanged.
   //
   // F1: keep wall-clock-derived values (like quote age) OUT of this return.
   // A periodic tick here changes the identity on every tick and re-renders
@@ -450,7 +505,7 @@ export function useMarketData(): MarketDataState {
       data,
       loading,
       hasData,
-      needsAuth,
+      needsAuth: needsAuthPrompt,
       fetchedAt,
       quotesFetchedAt,
       session,
@@ -460,7 +515,7 @@ export function useMarketData(): MarketDataState {
       data,
       loading,
       hasData,
-      needsAuth,
+      needsAuthPrompt,
       fetchedAt,
       quotesFetchedAt,
       session,

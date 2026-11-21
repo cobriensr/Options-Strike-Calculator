@@ -3,11 +3,21 @@ import { renderHook, waitFor, act } from '@testing-library/react';
 import { StrictMode, createElement, type ReactNode } from 'react';
 import { useMarketData, computeMarketSession } from '../../hooks/useMarketData';
 import { captureUnlessAuth } from '../../lib/sentry-helpers';
+import type { AccessMode } from '../../utils/auth';
 
 vi.mock('../../lib/sentry-helpers', () => ({
   captureUnlessAuth: vi.fn(),
 }));
 const mockCaptureUnlessAuth = vi.mocked(captureUnlessAuth);
+
+// The hook reads its access mode at every render, so a test flips it between
+// renders. `getAccessMode` is the one function the hook imports. The default
+// is 'owner', which is what vitest's `import.meta.env.DEV` resolves to, so a
+// test that never touches the mode keeps the meaning it had.
+const access = vi.hoisted(() => ({ mode: 'owner' as AccessMode }));
+vi.mock('../../utils/auth', () => ({
+  getAccessMode: () => access.mode,
+}));
 
 // Wrapper that mounts the hook under React StrictMode so updaters and effects
 // are double-invoked in dev, exactly as they are in the real app's
@@ -175,6 +185,7 @@ const SESSION_CLOSED_WEEKEND = new Date(Date.UTC(2026, 3, 11, 14, 0, 0));
 
 beforeEach(() => {
   mockCaptureUnlessAuth.mockReset();
+  access.mode = 'owner';
   vi.useFakeTimers({ shouldAdvanceTime: true });
   // Default to a closed session so tests that don't advance timers never
   // accidentally trigger the auto-refresh interval. Tests that need
@@ -232,21 +243,36 @@ describe('useMarketData: basic behavior', () => {
 // ============================================================
 
 describe('useMarketData: owner gating', () => {
-  it('silently handles all-401s (public visitor)', async () => {
-    globalThis.fetch = mockFetchResponses({
-      quotes: { status: 401, body: { error: 'Not authenticated' } },
-      intraday: { status: 401, body: { error: 'Not authenticated' } },
-      yesterday: { status: 401, body: { error: 'Not authenticated' } },
-    }) as unknown as typeof fetch;
+  // A public visitor makes none of these requests (see "public visitor"
+  // below). The all-401 case is a signed-in session the server no longer
+  // honours: a guest key that was revoked, or an owner whose cookie lapsed
+  // before the interceptor cleared the hint.
+  it.each<AccessMode>(['owner', 'guest'])(
+    'silently handles all-401s from a %s whose session is gone',
+    async (mode) => {
+      access.mode = mode;
+      const denied = { status: 401, body: { error: 'Not authenticated' } };
+      const fetchMock = mockFetchResponses({
+        quotes: denied,
+        intraday: denied,
+        yesterday: denied,
+        movers: denied,
+      });
+      globalThis.fetch = fetchMock as unknown as typeof fetch;
 
-    const { result } = renderHook(() => useMarketData());
-    await waitFor(() => expect(result.current.loading).toBe(false));
+      const { result } = renderHook(() => useMarketData());
+      await waitFor(() => expect(result.current.loading).toBe(false));
 
-    expect(result.current.data.quotes).toBeNull();
-    expect(result.current.data.intraday).toBeNull();
-    expect(result.current.data.yesterday).toBeNull();
-    expect(result.current.hasData).toBe(false);
-  });
+      // The five-endpoint fan-out ran, and each 401 was dropped silently.
+      expect(fetchMock).toHaveBeenCalledTimes(5);
+      expect(result.current.data.quotes).toBeNull();
+      expect(result.current.data.intraday).toBeNull();
+      expect(result.current.data.yesterday).toBeNull();
+      expect(result.current.data.movers).toBeNull();
+      expect(result.current.hasData).toBe(false);
+      expect(mockCaptureUnlessAuth).not.toHaveBeenCalled();
+    },
+  );
 
   it('partial success: one endpoint works, others 401', async () => {
     globalThis.fetch = mockFetchResponses({
@@ -645,39 +671,58 @@ describe('useMarketData: AbortError and TimeoutError branches', () => {
 });
 
 // ============================================================
-// NEEDS AUTH BRANCH (line 185)
+// NEEDS AUTH: THE OWNER'S SCHWAB RE-AUTH PROMPT
 // ============================================================
 
-describe('useMarketData: needsAuth transition (line 185)', () => {
-  it('sets needsAuth when owner was previously authenticated but now gets 401s', async () => {
-    // Set sc-hint cookie so isOwnerRef starts as true (simulates prior auth session)
-    Object.defineProperty(document, 'cookie', {
-      value: 'sc-hint=1',
-      writable: true,
-      configurable: true,
+describe('useMarketData: needsAuth', () => {
+  // All four owner-or-guest endpoints return 401; events (public) returns 200.
+  function allGatedDenied() {
+    const denied = { status: 401, body: { error: 'Not authenticated' } };
+    return mockFetchResponses({
+      quotes: denied,
+      intraday: denied,
+      yesterday: denied,
+      movers: denied,
     });
+  }
 
-    // All owner-gated endpoints return 401, events returns 200 (public)
-    const fetchMock = mockFetchResponses({
-      quotes: { status: 401, body: { error: 'Not authenticated' } },
-      intraday: { status: 401, body: { error: 'Not authenticated' } },
-      yesterday: { status: 401, body: { error: 'Not authenticated' } },
-      movers: { status: 401, body: { error: 'Not authenticated' } },
-    });
-    globalThis.fetch = fetchMock as unknown as typeof fetch;
+  it('is true for the owner when every gated endpoint answers 401', async () => {
+    access.mode = 'owner';
+    globalThis.fetch = allGatedDenied() as unknown as typeof fetch;
 
     const { result } = renderHook(() => useMarketData());
     await waitFor(() => expect(result.current.loading).toBe(false));
 
-    // isOwnerRef was true from cookie, all gated endpoints 401'd, no success
+    // No gated endpoint succeeded and at least one was denied: the Schwab
+    // login behind the owner's session is gone, so the header offers Re-auth.
     expect(result.current.needsAuth).toBe(true);
+  });
 
-    // Clean up cookie
-    Object.defineProperty(document, 'cookie', {
-      value: '',
-      writable: true,
-      configurable: true,
-    });
+  it('stays false for a guest whose gated endpoints all answer 401', async () => {
+    // needsAuth is the owner's Schwab re-auth prompt (/api/auth/init). A guest
+    // has no Schwab login to renew, so the same replies must not raise it.
+    access.mode = 'guest';
+    globalThis.fetch = allGatedDenied() as unknown as typeof fetch;
+
+    const { result } = renderHook(() => useMarketData());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.needsAuth).toBe(false);
+  });
+
+  it('stays false for the owner when one gated endpoint still succeeds', async () => {
+    access.mode = 'owner';
+    globalThis.fetch = mockFetchResponses({
+      quotes: { status: 200, body: mockQuotes },
+      intraday: { status: 401, body: { error: 'Not authenticated' } },
+      yesterday: { status: 401, body: { error: 'Not authenticated' } },
+      movers: { status: 401, body: { error: 'Not authenticated' } },
+    }) as unknown as typeof fetch;
+
+    const { result } = renderHook(() => useMarketData());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(result.current.needsAuth).toBe(false);
   });
 });
 
@@ -1293,5 +1338,493 @@ describe('useMarketData: AUD-M16/M17/M18 regressions', () => {
     // Both freshness timestamps must be pinned to the last SUCCESSFUL fetch.
     expect(result.current.fetchedAt).toBe(fetchedAtBefore);
     expect(result.current.quotesFetchedAt).toBe(quotesFetchedAtBefore);
+  });
+});
+
+// ============================================================
+// ACCESS MODE: A PUBLIC VISITOR MAKES NO OWNER-OR-GUEST REQUEST
+// ============================================================
+//
+// /api/quotes, /api/intraday, /api/yesterday and /api/movers are owner-or-guest;
+// /api/events is public. The hook reads the live access mode at render, so a
+// test flips `access.mode` and calls `rerender`, as App does when
+// useAccessSession reports a change.
+
+describe('useMarketData: access mode', () => {
+  const GATED_URLS = [
+    '/api/quotes',
+    '/api/intraday',
+    '/api/yesterday',
+    '/api/movers',
+  ];
+  const EVENTS_URL = '/api/events?days=30';
+  const eventsBody = {
+    events: [],
+    startDate: '2026-04-09',
+    endDate: '2026-05-09',
+    cached: false,
+    asOf: '2026-04-09T14:00:00Z',
+  };
+
+  type FetchMock = ReturnType<typeof mockFetchResponses>;
+
+  function requestedUrls(fetchMock: { mock: { calls: unknown[][] } }) {
+    return fetchMock.mock.calls.map((call) => call[0] as string);
+  }
+
+  function gatedUrls(fetchMock: { mock: { calls: unknown[][] } }) {
+    return requestedUrls(fetchMock).filter((url) => GATED_URLS.includes(url));
+  }
+
+  function quotesCalls(fetchMock: { mock: { calls: unknown[][] } }) {
+    return requestedUrls(fetchMock).filter((url) => url === '/api/quotes')
+      .length;
+  }
+
+  /** Let every promise a render or a timer started run to its end. */
+  async function settle() {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+  }
+
+  /**
+   * A fetch that answers only when the test says so. `releases[i]` answers
+   * request i with the endpoint's normal reply. With `honoursAbort` an aborted
+   * request rejects with an AbortError, as a real fetch does; without it the
+   * request ignores the abort and still answers when released.
+   */
+  function heldFetch({ honoursAbort }: { honoursAbort: boolean }) {
+    const reply = mockFetchResponses({
+      events: { status: 200, body: eventsBody },
+    });
+    const releases: Array<() => void> = [];
+    const fetchMock = vi.fn(
+      (url: string, init?: RequestInit) =>
+        new Promise<unknown>((resolve, reject) => {
+          releases.push(() => resolve(reply(url, init)));
+          if (honoursAbort) {
+            init?.signal?.addEventListener(
+              'abort',
+              () =>
+                reject(
+                  new DOMException('The operation was aborted.', 'AbortError'),
+                ),
+              { once: true },
+            );
+          }
+        }),
+    );
+    return { fetchMock, releases };
+  }
+
+  describe('public visitor', () => {
+    it('makes one request, to the events endpoint, and none from the poll', async () => {
+      access.mode = 'public';
+      vi.setSystemTime(REGULAR_HOURS);
+      const fetchMock: FetchMock = mockFetchResponses({
+        events: { status: 200, body: eventsBody },
+      });
+      globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+      const { result } = renderHook(() => useMarketData());
+      expect(result.current.loading).toBe(true);
+      await waitFor(() => expect(result.current.loading).toBe(false));
+
+      expect(requestedUrls(fetchMock)).toEqual([EVENTS_URL]);
+      expect(result.current.data.events).toEqual(eventsBody);
+      expect(result.current.hasData).toBe(false);
+      expect(result.current.needsAuth).toBe(false);
+      expect(result.current.fetchedAt).toBeNull();
+      expect(result.current.quotesFetchedAt).toBeNull();
+
+      // A regular session opens the poll gate for a guest. For a public
+      // visitor three poll intervals still send nothing.
+      expect(result.current.session).toBe('regular');
+      await act(async () => {
+        vi.advanceTimersByTime(180_000);
+      });
+      expect(requestedUrls(fetchMock)).toEqual([EVENTS_URL]);
+      expect(result.current.fetchedAt).toBeNull();
+      expect(result.current.quotesFetchedAt).toBeNull();
+    });
+
+    it('stops loading when the events request fails, and does not retry it', async () => {
+      access.mode = 'public';
+      vi.setSystemTime(REGULAR_HOURS);
+      const fetchMock = mockFetchResponses({
+        events: { status: 500, body: { error: 'Internal error' } },
+      });
+      globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+      const { result } = renderHook(() => useMarketData());
+      await waitFor(() => expect(result.current.loading).toBe(false));
+
+      expect(requestedUrls(fetchMock)).toEqual([EVENTS_URL]);
+      expect(result.current.data.events).toBeNull();
+      expect(result.current.needsAuth).toBe(false);
+      await act(async () => {
+        vi.advanceTimersByTime(180_000);
+      });
+      expect(requestedUrls(fetchMock)).toEqual([EVENTS_URL]);
+    });
+  });
+
+  describe('signing in without a reload (public to guest)', () => {
+    it('fetches each of the five endpoints once, then polls quotes', async () => {
+      access.mode = 'public';
+      vi.setSystemTime(REGULAR_HOURS);
+      const fetchMock = mockFetchResponses({
+        events: { status: 200, body: eventsBody },
+      });
+      globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+      const { result, rerender } = renderHook(() => useMarketData());
+      await waitFor(() => expect(result.current.loading).toBe(false));
+      expect(requestedUrls(fetchMock)).toEqual([EVENTS_URL]);
+
+      fetchMock.mockClear();
+      access.mode = 'guest';
+      rerender();
+      await waitFor(() => expect(result.current.hasData).toBe(true));
+
+      expect([...requestedUrls(fetchMock)].sort()).toEqual(
+        [...GATED_URLS, EVENTS_URL].sort(),
+      );
+      expect(result.current.data.quotes).toEqual(mockQuotes);
+      expect(result.current.data.yesterday).toEqual(mockYesterday);
+      expect(result.current.quotesFetchedAt).not.toBeNull();
+
+      // The poll gate opened with the mode: a minute later quotes refresh.
+      fetchMock.mockClear();
+      await act(async () => {
+        vi.advanceTimersByTime(60_000);
+      });
+      expect(requestedUrls(fetchMock)).toContain('/api/quotes');
+    });
+  });
+
+  describe('dropping to public (guest to public)', () => {
+    it('sends no owner-or-guest request after the flip, and keeps the loaded data', async () => {
+      access.mode = 'guest';
+      vi.setSystemTime(REGULAR_HOURS);
+      const fetchMock = mockFetchResponses({
+        events: { status: 200, body: eventsBody },
+      });
+      globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+      const { result, rerender } = renderHook(() => useMarketData());
+      await waitFor(() =>
+        expect(result.current.quotesFetchedAt).not.toBeNull(),
+      );
+      const fetchedAtBefore = result.current.fetchedAt;
+      const quotesFetchedAtBefore = result.current.quotesFetchedAt;
+
+      fetchMock.mockClear();
+      access.mode = 'public';
+      rerender();
+      await settle();
+
+      // The flip asks for events alone, then the poll gate stays shut.
+      expect(requestedUrls(fetchMock)).toEqual([EVENTS_URL]);
+      await act(async () => {
+        vi.advanceTimersByTime(180_000);
+      });
+      expect(gatedUrls(fetchMock)).toEqual([]);
+      expect(requestedUrls(fetchMock)).toEqual([EVENTS_URL]);
+
+      // Schwab data already loaded stays (the licensed caches are purged
+      // elsewhere), and neither freshness stamp moves.
+      expect(result.current.data.quotes).toEqual(mockQuotes);
+      expect(result.current.data.intraday).toEqual(mockIntraday);
+      expect(result.current.data.yesterday).toEqual(mockYesterday);
+      expect(result.current.hasData).toBe(true);
+      expect(result.current.fetchedAt).toBe(fetchedAtBefore);
+      expect(result.current.quotesFetchedAt).toBe(quotesFetchedAtBefore);
+    });
+
+    it('reads needsAuth as false after the flip, though the owner had it true', async () => {
+      access.mode = 'owner';
+      const denied = { status: 401, body: { error: 'Not authenticated' } };
+      globalThis.fetch = mockFetchResponses({
+        quotes: denied,
+        intraday: denied,
+        yesterday: denied,
+        movers: denied,
+      }) as unknown as typeof fetch;
+
+      const { result, rerender } = renderHook(() => useMarketData());
+      await waitFor(() => expect(result.current.needsAuth).toBe(true));
+
+      access.mode = 'public';
+      rerender();
+      await settle();
+
+      expect(result.current.needsAuth).toBe(false);
+    });
+
+    it.each([
+      ['honours the abort', true],
+      ['ignores the abort and answers late', false],
+    ])(
+      'writes nothing from a mount fetch still in flight at the flip, whose request %s',
+      async (_name, honoursAbort) => {
+        access.mode = 'guest';
+        const { fetchMock, releases } = heldFetch({ honoursAbort });
+        globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+        const { result, rerender } = renderHook(() => useMarketData());
+        expect(fetchMock).toHaveBeenCalledTimes(5);
+        const mountSignals = fetchMock.mock.calls.map(
+          (call) => call[1]?.signal,
+        );
+        expect(mountSignals.every((signal) => signal?.aborted === false)).toBe(
+          true,
+        );
+
+        access.mode = 'public';
+        rerender();
+
+        // The effect run that sent the five requests aborted all of them, and
+        // the public run sent events alone.
+        expect(mountSignals.every((signal) => signal?.aborted === true)).toBe(
+          true,
+        );
+        expect(requestedUrls(fetchMock).slice(5)).toEqual([EVENTS_URL]);
+
+        // The five mount requests answer now. An aborted fetch has already
+        // rejected, so only the abort-ignoring mock delivers a reply.
+        for (const release of releases.slice(0, 5)) release();
+        await settle();
+
+        expect(result.current.data.quotes).toBeNull();
+        expect(result.current.data.intraday).toBeNull();
+        expect(result.current.data.yesterday).toBeNull();
+        expect(result.current.data.movers).toBeNull();
+        expect(result.current.data.events).toBeNull();
+        expect(result.current.hasData).toBe(false);
+        expect(result.current.fetchedAt).toBeNull();
+        expect(result.current.quotesFetchedAt).toBeNull();
+        // Still waiting for the public run's own events reply: nothing a
+        // late mount reply did ended the loading state.
+        expect(result.current.loading).toBe(true);
+
+        releases[5]!();
+        await settle();
+        expect(result.current.loading).toBe(false);
+        expect(result.current.data.events).toEqual(eventsBody);
+        expect(result.current.data.quotes).toBeNull();
+      },
+    );
+
+    it('writes nothing from a poll reply that lands after the flip', async () => {
+      access.mode = 'guest';
+      vi.setSystemTime(REGULAR_HOURS);
+      const normal = mockFetchResponses();
+      globalThis.fetch = normal as unknown as typeof fetch;
+
+      const { result, rerender } = renderHook(() => useMarketData());
+      await waitFor(() =>
+        expect(result.current.quotesFetchedAt).not.toBeNull(),
+      );
+      const fetchedAtBefore = result.current.fetchedAt;
+      const quotesFetchedAtBefore = result.current.quotesFetchedAt;
+
+      // The next quotes poll is held open; every other request answers.
+      let answerQuotes: (reply: unknown) => void = () => {};
+      globalThis.fetch = vi.fn((url: string, init?: RequestInit) =>
+        url === '/api/quotes'
+          ? new Promise((resolve) => {
+              answerQuotes = resolve;
+            })
+          : normal(url, init),
+      ) as unknown as typeof fetch;
+      await act(async () => {
+        vi.advanceTimersByTime(60_000);
+      });
+      expect(quotesCalls(vi.mocked(globalThis.fetch))).toBe(1);
+
+      access.mode = 'public';
+      rerender();
+      await settle();
+
+      // The reply arrives after the flip, carrying a new SPX price.
+      answerQuotes({
+        ok: true,
+        status: 200,
+        json: () =>
+          Promise.resolve({
+            ...mockQuotes,
+            spx: { ...mockQuotes.spx, price: 7001 },
+          }),
+      });
+      await settle();
+
+      expect(result.current.data.quotes).toEqual(mockQuotes);
+      expect(result.current.fetchedAt).toBe(fetchedAtBefore);
+      expect(result.current.quotesFetchedAt).toBe(quotesFetchedAtBefore);
+    });
+  });
+
+  describe('request lifecycle', () => {
+    it.each<AccessMode>(['owner', 'guest', 'public'])(
+      'makes no new request when a %s visitor rerenders in the same mode',
+      async (mode) => {
+        access.mode = mode;
+        vi.setSystemTime(REGULAR_HOURS);
+        const fetchMock = mockFetchResponses();
+        globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+        const { result, rerender } = renderHook(() => useMarketData());
+        await waitFor(() => expect(result.current.loading).toBe(false));
+        const callsAfterMount = fetchMock.mock.calls.length;
+        expect(callsAfterMount).toBe(mode === 'public' ? 1 : 5);
+
+        rerender();
+        rerender();
+        await settle();
+
+        expect(fetchMock.mock.calls.length).toBe(callsAfterMount);
+      },
+    );
+
+    it('aborts its in-flight requests on unmount', async () => {
+      access.mode = 'guest';
+      const { fetchMock } = heldFetch({ honoursAbort: false });
+      globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+      const { unmount } = renderHook(() => useMarketData());
+      const signals = fetchMock.mock.calls.map((call) => call[1]?.signal);
+      expect(signals).toHaveLength(5);
+      expect(signals.every((signal) => signal?.aborted === false)).toBe(true);
+
+      unmount();
+
+      expect(signals.every((signal) => signal?.aborted === true)).toBe(true);
+    });
+  });
+
+  describe('consecutive-failure streak', () => {
+    // A poll that fails (not a 401) adds one to the streak; three in a row
+    // double the interval to two minutes. These tests read the streak through
+    // that cadence: with the streak at 1 the next poll comes after 60 s, at 3
+    // it does not.
+
+    it('is not moved by a public visitor whose events request fails', async () => {
+      vi.setSystemTime(REGULAR_HOURS);
+      const failing = vi.fn(() => Promise.reject(new Error('Network error')));
+      globalThis.fetch = failing as unknown as typeof fetch;
+
+      // A guest mount in which all five requests fail: streak 1.
+      access.mode = 'guest';
+      const { result, rerender } = renderHook(() => useMarketData());
+      await waitFor(() => expect(result.current.loading).toBe(false));
+      expect(failing).toHaveBeenCalledTimes(5);
+
+      // A public stretch whose only request fails too.
+      access.mode = 'public';
+      rerender();
+      await settle();
+      expect(failing).toHaveBeenCalledTimes(6);
+
+      // Back to a guest, whose five requests fail again: streak 2, not 3.
+      access.mode = 'guest';
+      rerender();
+      await settle();
+      expect(failing).toHaveBeenCalledTimes(11);
+
+      // At a streak of 2 the poll still comes after 60 s.
+      failing.mockClear();
+      await act(async () => {
+        vi.advanceTimersByTime(60_000);
+      });
+      expect(quotesCalls(failing)).toBe(1);
+    });
+
+    it('is not moved by a mount fetch the flip aborted', async () => {
+      vi.setSystemTime(REGULAR_HOURS);
+      // Every request hangs until the hook aborts it. fetchJson turns that
+      // abort into `{ status: 0 }`, which a hook that read it would count as
+      // a failure.
+      const { fetchMock: hanging } = heldFetch({ honoursAbort: true });
+      globalThis.fetch = hanging as unknown as typeof fetch;
+
+      access.mode = 'guest';
+      const { result, rerender } = renderHook(() => useMarketData());
+      // The first guest mount is aborted by the flip to public, and so is the
+      // second, which that flip back to guest started.
+      for (let i = 0; i < 2; i++) {
+        access.mode = 'public';
+        rerender();
+        await settle();
+        access.mode = 'guest';
+        rerender();
+        await settle();
+      }
+      expect(result.current.loading).toBe(true);
+
+      // The third guest mount is aborted too, and the fourth has replies:
+      // they are plain failures, one counted failure in all.
+      const failing = vi.fn(() => Promise.reject(new Error('Network error')));
+      globalThis.fetch = failing as unknown as typeof fetch;
+      access.mode = 'public';
+      rerender();
+      await settle();
+      access.mode = 'guest';
+      rerender();
+      await settle();
+      await waitFor(() => expect(result.current.loading).toBe(false));
+
+      // One counted failure, not four: the poll still comes after 60 s.
+      failing.mockClear();
+      await act(async () => {
+        vi.advanceTimersByTime(60_000);
+      });
+      expect(quotesCalls(failing)).toBe(1);
+    });
+
+    it('is not moved by a poll failure that lands after the flip', async () => {
+      vi.setSystemTime(REGULAR_HOURS);
+      // A guest mount whose five requests fail outright: streak 1.
+      const failing = vi.fn(() => Promise.reject(new Error('Network error')));
+      globalThis.fetch = failing as unknown as typeof fetch;
+      access.mode = 'guest';
+      const { result, rerender } = renderHook(() => useMarketData());
+      await waitFor(() => expect(result.current.loading).toBe(false));
+
+      // The next poll's requests are held open.
+      const failHeld: Array<(error: Error) => void> = [];
+      globalThis.fetch = vi.fn(
+        () =>
+          new Promise((_resolve, reject) => {
+            failHeld.push(reject);
+          }),
+      ) as unknown as typeof fetch;
+      await act(async () => {
+        vi.advanceTimersByTime(60_000);
+      });
+      expect(failHeld.length).toBeGreaterThan(0);
+
+      // The visitor drops to public, then the held poll fails. That reply
+      // writes nothing, so it adds nothing to the streak.
+      access.mode = 'public';
+      rerender();
+      for (const fail of failHeld) fail(new Error('Network error'));
+      await settle();
+
+      // Back to a guest whose five requests fail again: streak 2, not 3.
+      failing.mockClear();
+      globalThis.fetch = failing as unknown as typeof fetch;
+      access.mode = 'guest';
+      rerender();
+      await settle();
+      expect(failing).toHaveBeenCalledTimes(5);
+
+      failing.mockClear();
+      await act(async () => {
+        vi.advanceTimersByTime(60_000);
+      });
+      expect(quotesCalls(failing)).toBe(1);
+    });
   });
 });
