@@ -713,6 +713,25 @@ def test_env_file_supplies_the_database_url_when_the_environment_has_none(
     assert run.urls == ['postgresql://from-file/db']
 
 
+@pytest.mark.parametrize('module', [mining, lineage], ids=['mining', 'lineage'])
+def test_connect_leaves_the_connect_timeout_to_libpq(module, monkeypatch):
+    """No `connect_timeout` argument: it would beat the PGCONNECT_TIMEOUT the
+    nightly sets for a report's child, which the other Neon reports follow."""
+    monkeypatch.setenv('DATABASE_URL', FAKE_URL)
+    monkeypatch.delenv('DATABASE_URL_UNPOOLED', raising=False)
+    calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+
+    def connect(*args, **kwargs):
+        calls.append((args, kwargs))
+        return FakeConnection(SESSION)
+
+    monkeypatch.setattr(psycopg2, 'connect', connect)
+
+    module.connect()
+
+    assert calls == [((FAKE_URL,), {'sslmode': 'require'})]
+
+
 # ── failure ──────────────────────────────────────────────────────────────────
 
 

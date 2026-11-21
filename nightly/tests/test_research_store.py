@@ -318,6 +318,22 @@ def test_get_file_closes_the_body_when_the_dest_dir_cannot_be_made(
     assert list(tmp_path.rglob("*")) == []
 
 
+def test_get_file_closes_the_body_when_the_response_has_no_content_length(
+    store: ResearchStore, tmp_path: Path
+) -> None:
+    # A response without ContentLength fails before the stream is read: the body must still
+    # be closed (it would otherwise hold its connection) and nothing is left on disk.
+    body = _Body([b"abc"])
+    response = {"Body": body}
+    with (
+        patch.object(store._client, "get_object", return_value=response),
+        pytest.raises(KeyError, match="ContentLength"),
+    ):
+        store.get_file(KEY, tmp_path / "out" / "r.md")
+    assert body.closed is True
+    assert list(tmp_path.rglob("*")) == []
+
+
 @pytest.mark.parametrize(
     "failure",
     [

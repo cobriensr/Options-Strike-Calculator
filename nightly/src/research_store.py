@@ -140,11 +140,11 @@ class ResearchStore:
         response = self._get(key)
         if response is None:
             return False
-        expected = response["ContentLength"]
-        part = _part_path(dest)
         written = 0
         # Closing covers everything from here, the mkdir too; only the `.part` is unlinked.
         with closing(response["Body"]) as body:
+            expected = response["ContentLength"]
+            part = _part_path(dest)
             dest.parent.mkdir(parents=True, exist_ok=True)
             try:
                 with part.open("wb") as out:
