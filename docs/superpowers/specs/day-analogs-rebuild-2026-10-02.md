@@ -15,7 +15,7 @@ retired as a runtime dependency.
 | ------------------------------------- | --------------------------------------------------------- |
 | P0 parity (archive vs `futures_bars`) | Done in this branch. Results are in "Phase 0 results".    |
 | Window-independent correctness fixes  | Done in this branch (`fix(analogs): …`).                  |
-| P1 – P3                               | Not started. P1 waits on the owner confirming the window. |
+| P1 – P3                               | Not started. Window confirmed 2026-11-20; P1a is next.    |
 
 ## Findings (verified read-only, 2026-10-02)
 
@@ -68,9 +68,9 @@ retired as a runtime dependency.
 - **Backend switch.** `fetchSimilarDaysContext` picks its backend from
   `DAY_ANALOG_BACKEND`. `'features'` selects `day_features`; anything else,
   including unset, selects the text embeddings. The **code default is
-  `'text'`**; the prod value is unknown. `.env.example` describes the
-  variable as `'pgvector' (default) | 'in_memory'`, which is stale. It is
-  not edited here because CLAUDE.md forbids editing `.env*`.
+  `'text'`**. Production leaves the variable unset (checked 2026-11-20),
+  so live calls use the text embeddings. The `.env.example` comment now
+  describes the variable correctly.
 - **Query text.** The query text comes from `/archive/day-summary`, which
   returns the **full-day** format, including the day's range and close.
   That does not match the first-hour corpus (4,696 of 4,948 rows), and in
@@ -137,8 +137,8 @@ analyze time. The proposed vector, for minutes 0..N−1:
 The front month is the top-volume **outright** for the day; spreads and
 options are excluded. P0 measured this window as `cash`.
 
-**Open question for the owner.** Confirm the 08:30 CT window. The current
-window is the overnight UTC-day first hour.
+**Decided 2026-11-20.** The owner confirmed the 08:30 CT window and the N
+policy in open question 2. It replaces the overnight UTC-day first hour.
 
 ## Phases
 
@@ -306,19 +306,20 @@ P1 is split to respect the five-files-per-phase rule.
 
 ## Open questions (default picks noted)
 
-1. **Window.** Default: the 08:30 CT cash open. The owner's lead, not yet
-   explicitly confirmed.
-2. **N policy.** Default: store N ∈ {15, 30, 60}. The query uses the
-   largest N that is no greater than the minutes elapsed. There is no block
-   before 08:45 CT.
+1. **Window.** Decided 2026-11-20: the 08:30 CT cash open, confirmed by
+   the owner.
+2. **N policy.** Decided 2026-11-20 with the window. Store N ∈ {15, 30, 60}.
+   The query uses the largest N that is no greater than the minutes
+   elapsed. There is no block before 08:45 CT.
 3. **Labels.** Default: the ES cash-session range. SPX cash data in
    `index_candles_1m` only starts on 2026-02-26.
 4. **Text backend.** Default: keep it and re-embed in P2, then decide from
    the v2 calibration whether the deterministic features backend makes it
    redundant.
-5. **`DAY_ANALOG_BACKEND`.** The prod value is unknown and the code default
-   is `'text'`. The owner should check Vercel and fix the stale
-   `.env.example` comment.
+5. **`DAY_ANALOG_BACKEND`.** Resolved 2026-11-20: it is unset in every
+   Vercel environment, so production runs the code default, `'text'`.
+   P1b must wire the text path, not only the features path. The
+   `.env.example` comment is accurate.
 6. **Contaminated span.** Default: exclude it. There is no clean minute
    source for 2026-04-20 → 06-15.
 
