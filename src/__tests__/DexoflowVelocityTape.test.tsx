@@ -34,9 +34,16 @@ function shownText(el: Element): string {
   return copy.textContent ?? '';
 }
 
+/** The value cells' spans (the ones carrying a verdict hint), in order. */
+function valueSpans(container: HTMLElement): Element[] {
+  return Array.from(container.querySelectorAll('td > span')).filter(
+    (el) => srHintText(el) !== null,
+  );
+}
+
 /** The verdict each value cell says in its hidden hint, in document order. */
 function verdictHints(container: HTMLElement): string[] {
-  return Array.from(container.querySelectorAll('td > span'))
+  return valueSpans(container)
     .map((el) => srHintText(el))
     .filter((hint): hint is string => hint !== null);
 }
@@ -434,8 +441,13 @@ describe('<DexoflowVelocityTape>', () => {
     expect(text).toContain('+0.07');
     expect(text).toContain('−0.50');
     expect(text).not.toMatch(/\d\.\d{3,}/);
-    // The zero cell shows "0" and says "flat" in its hint.
-    expect(text).toMatch(/0$/);
+    // Each cell shows its arrow glyph and value, and says its verdict in the
+    // hint. The zero cell shows exactly "─0": not "0.00", not "+0".
+    expect(valueSpans(container).map((el) => shownText(el))).toEqual([
+      '▲+0.07',
+      '▼−0.50',
+      '─0',
+    ]);
     expect(verdictHints(container)).toEqual(['positive', 'negative', 'flat']);
   });
 

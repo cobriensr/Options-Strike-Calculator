@@ -705,7 +705,8 @@ describe('PriceChart: momentum badge', () => {
     const badge = getByText('DRIFT \u25BC');
     expect(badge.textContent).toContain('\u26A1');
     const glyph = badge.querySelector('[aria-hidden="true"]');
-    expect(glyph?.textContent).toContain('\u26A1');
+    // Exactly what the chip showed before: a space, then the glyph.
+    expect(glyph?.textContent).toBe(' \u26A1');
     expect(srHintText(badge)).toBe('momentum, range expanding');
     expect(badge).not.toHaveAttribute('aria-label');
     expect(genericElementsWithAriaLabel(container)).toEqual([]);
