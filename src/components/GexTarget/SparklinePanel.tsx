@@ -237,7 +237,6 @@ export const SparklinePanel = memo(function SparklinePanel({
               <div
                 key={s.strike}
                 className={`-mx-1 flex items-center gap-2 rounded px-1 ${isAtm ? 'bg-sky-500/10' : ''}`}
-                aria-label={`Strike ${s.strike}`}
               >
                 {/* Strike label */}
                 <span

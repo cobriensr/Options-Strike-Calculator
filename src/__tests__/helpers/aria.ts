@@ -11,18 +11,45 @@ export const squashText = (s: string | null | undefined): string =>
 const snippet = (el: Element): string => el.outerHTML.slice(0, 160);
 
 /**
- * Every element under `root` that has an `aria-label` but no role and isn't
- * natively interactive, as short HTML snippets for a readable failure.
+ * HTML elements whose implicit ARIA role prohibits a name (ARIA 1.2:
+ * generic, paragraph, emphasis, strong, code, subscript, superscript,
+ * deletion, insertion). Elements that may be named (`section`, `th`, `td`,
+ * `svg`, headings, ...) are not listed.
+ */
+const GENERIC_TAGS = [
+  'span',
+  'div',
+  'p',
+  'i',
+  'b',
+  'em',
+  'strong',
+  'small',
+  'code',
+  'sub',
+  'sup',
+  'del',
+  'ins',
+  's',
+  'u',
+] as const;
+const GENERIC_SELECTOR = GENERIC_TAGS.join(',');
+
+/**
+ * Every element under `root` that has an `aria-label` but no explicit role
+ * and is a bare generic element (a `span`, `div`, `p`, ...), as short HTML
+ * snippets for a readable failure.
  *
- * ARIA 1.2 prohibits naming a generic element (a bare span or div), and
- * screen readers mostly ignore the label, so the text never reaches the
- * user. A badge's explanation belongs in a visually hidden `<SrHint>`
- * inside the badge instead. An element with an explicit role (`img`,
- * `group`, ...) is fine and is not reported.
+ * ARIA 1.2 prohibits naming a generic element, and screen readers mostly
+ * ignore the label, so the text never reaches the user. A badge's
+ * explanation belongs in a visually hidden `<SrHint>` inside the badge
+ * instead. An element with an explicit role (`img`, `group`, ...) is fine
+ * and is not reported, and neither is an element that may carry a name
+ * (a `<section>` region, a `<th>`, a `<button>`).
  */
 export function genericElementsWithAriaLabel(root: ParentNode): string[] {
   return Array.from(root.querySelectorAll('[aria-label]'))
-    .filter((el) => !el.hasAttribute('role') && !el.matches(NATIVELY_NAMED))
+    .filter((el) => !el.hasAttribute('role') && el.matches(GENERIC_SELECTOR))
     .map(snippet);
 }
 

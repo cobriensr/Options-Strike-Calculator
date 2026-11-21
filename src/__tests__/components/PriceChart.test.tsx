@@ -12,6 +12,7 @@ import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { PriceChart } from '../../components/GexTarget/PriceChart';
 import type { SPXCandle } from '../../hooks/useGexTarget';
 import type { TargetScore, StrikeScore } from '../../utils/gex-target';
+import { genericElementsWithAriaLabel, srHintText } from '../helpers/aria';
 
 // ── lightweight-charts mock ───────────────────────────────────────────
 // vi.mock factories are hoisted above all variable declarations, so mock
@@ -647,7 +648,7 @@ describe('PriceChart: momentum badge', () => {
   // The badge (lines 400-413) only renders when momentum.signal !== 'flat'.
   // A 'flat' signal collapses the branch so nothing is rendered.
   it('renders the signal label when momentum.signal is non-flat', () => {
-    const { getByLabelText } = render(
+    const { container, getByText } = render(
       <PriceChart
         candles={[makeCandle()]}
         previousClose={null}
@@ -667,12 +668,18 @@ describe('PriceChart: momentum badge', () => {
         }}
       />,
     );
-    // signalLabel('bullish') renders as visible text inside the badge.
-    expect(getByLabelText(/momentum:/i)).toBeInTheDocument();
+    // signalLabel('drift-up') renders as visible text inside the badge, and
+    // the badge says what it is through a hidden hint, not an aria-label
+    // (ARIA 1.2 prohibits naming a bare span).
+    const badge = getByText('DRIFT ▲');
+    expect(srHintText(badge)).toBe('momentum');
+    expect(badge).not.toHaveAttribute('aria-label');
+    expect(badge.querySelector('[aria-hidden="true"]')).toBeNull();
+    expect(genericElementsWithAriaLabel(container)).toEqual([]);
   });
 
-  it('appends the lightning glyph when rangeExpanding is true', () => {
-    const { getByLabelText } = render(
+  it('appends the lightning glyph, hidden from screen readers, when rangeExpanding is true', () => {
+    const { container, getByText } = render(
       <PriceChart
         candles={[makeCandle()]}
         previousClose={null}
@@ -693,12 +700,19 @@ describe('PriceChart: momentum badge', () => {
       />,
     );
     // The badge should include the ⚡ glyph (\u26A1).
-    const badge = getByLabelText(/momentum:/i);
+    // It is wrapped so a screen reader skips it, and the hint says the range
+    // is expanding in words.
+    const badge = getByText('DRIFT \u25BC');
     expect(badge.textContent).toContain('\u26A1');
+    const glyph = badge.querySelector('[aria-hidden="true"]');
+    expect(glyph?.textContent).toContain('\u26A1');
+    expect(srHintText(badge)).toBe('momentum, range expanding');
+    expect(badge).not.toHaveAttribute('aria-label');
+    expect(genericElementsWithAriaLabel(container)).toEqual([]);
   });
 
   it('omits the badge when momentum.signal is "flat"', () => {
-    const { queryByLabelText } = render(
+    const { queryByText } = render(
       <PriceChart
         candles={[makeCandle()]}
         previousClose={null}
@@ -718,11 +732,12 @@ describe('PriceChart: momentum badge', () => {
         }}
       />,
     );
-    expect(queryByLabelText(/momentum:/i)).not.toBeInTheDocument();
+    expect(queryByText('FLAT')).not.toBeInTheDocument();
+    expect(queryByText(/momentum/i)).not.toBeInTheDocument();
   });
 
   it('omits the badge when momentum prop is undefined', () => {
-    const { queryByLabelText } = render(
+    const { queryByText } = render(
       <PriceChart
         candles={[makeCandle()]}
         previousClose={null}
@@ -731,7 +746,7 @@ describe('PriceChart: momentum badge', () => {
         openingPutStrike={null}
       />,
     );
-    expect(queryByLabelText(/momentum:/i)).not.toBeInTheDocument();
+    expect(queryByText(/momentum/i)).not.toBeInTheDocument();
   });
 });
 
