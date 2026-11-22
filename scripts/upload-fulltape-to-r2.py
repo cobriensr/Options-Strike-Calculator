@@ -17,7 +17,7 @@ Auth — required env vars (set in .env.local):
     R2_ACCESS_KEY_ID
     R2_SECRET_ACCESS_KEY
     R2_ENDPOINT_URL          # https://<account-id>.r2.cloudflarestorage.com
-    R2_BUCKET_FULLTAPE       # e.g. theta-options-fulltape
+    R2_BUCKET_FULLTAPE       # the private bucket's name
 
 Usage:
     # One-shot upload everything missing in R2:

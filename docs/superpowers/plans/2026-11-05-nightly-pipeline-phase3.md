@@ -23,7 +23,7 @@
 
 ## Facts measured for this plan (read-only, 2026-11-05)
 
-- **R2 (`theta-options-fulltape`):**
+- **R2 (the private bucket, `R2_BUCKET_FULLTAPE`):**
   - 212 tape objects, 2026-01-02 → 11-04. That equals `calendar_nyse.trading_days` for the range, so **05-29 is landed** too.
   - 243.6 GB in all; median object 1.09 GB, largest 1.74 GB. Every ETag is multipart.
   - Top-level prefixes are `fulltape/` and `gexbot-eod/`. `research/` is empty.
@@ -99,7 +99,7 @@
 | `research/quality-sim/{session}/lottery-quality-sim-{session}.csv` | per-fire tier sim | `quality-sim` | output |
 | `research/takeit-drift/{session}/takeit-drift-{session}.md`, `reliability_{feed}_{session}.png` | drift report and plots | `takeit-drift` | output |
 
-The owner browses it in the Cloudflare dashboard: R2 → `theta-options-fulltape` → `research/`.
+The owner browses it in the Cloudflare dashboard: R2 → the private bucket (`R2_BUCKET_FULLTAPE`) → `research/`.
 
 ### D6 — how report steps run
 

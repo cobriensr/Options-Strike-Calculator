@@ -221,7 +221,7 @@ private R2 bucket, so a complete 2-second history of all GEXBot data builds up f
 ## Decided
 
 - **Separate job**, not part of the nightly UW pipeline (owner).
-- **Destination: the existing private R2 bucket** (`R2_BUCKET_FULLTAPE`, today `theta-options-fulltape`),
+- **Destination: the existing private R2 bucket** (`R2_BUCKET_FULLTAPE`),
   key `gexbot-eod/{TICKER}/{YYYY-MM-DD}.zip` (owner chose the bucket; the key layout is the one the nightly
   pipeline spec picked). Stored exactly as delivered.
 - **All tickers** `/tickers` returns, read at run time, from all three groups (owner: "everything we can").

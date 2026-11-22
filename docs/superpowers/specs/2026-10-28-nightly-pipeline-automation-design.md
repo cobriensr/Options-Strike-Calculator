@@ -27,7 +27,7 @@ The owner asked for the whole process: downloading the file, saving it, uploadin
   - Dates back to 2025-12-10 are still served.
   - Response headers show a 100,000,000 request cap.
 - **What's already stored:**
-  - R2 bucket `theta-options-fulltape`: 112 objects `fulltape/YYYY-MM-DD-fulltape.parquet`, 2026-01-02 → 2026-06-15 (05-29 missing), 138.7 GB, 42 columns (40 source columns plus `date` and `ingested_at`).
+  - The private R2 bucket (`R2_BUCKET_FULLTAPE`): 112 objects `fulltape/YYYY-MM-DD-fulltape.parquet`, 2026-01-02 → 2026-06-15 (05-29 missing), 138.7 GB, 42 columns (40 source columns plus `date` and `ingested_at`).
   - Blob `flow/`: 46 days, 04-13 → 06-16, 28 GB.
   - Local per-day chain files for 04-13 → 06-16 (44 files) exist in this checkout's `scripts/eod-flow-analysis/output/by-day/`. Only 04-13 → 05-15 are tracked in git.
 
