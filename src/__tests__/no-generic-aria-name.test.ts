@@ -42,6 +42,7 @@ import {
   titledElementsWithoutHint,
   titledGenericsWithoutHint,
 } from './helpers/aria';
+import { appSourceFiles } from './helpers/app-source-files';
 import { findGenericAriaNames } from './helpers/generic-aria-scan';
 
 const scan = (source: string): string[] =>
@@ -608,21 +609,6 @@ describe('titledGenericsWithoutHint', () => {
     ]);
   });
 });
-
-/**
- * Every .tsx file under src/ that ships in the app, as a forward-slash path
- * from src/: not under a `__tests__` folder, and not a colocated test file.
- */
-function appSourceFiles(srcDir: string): string[] {
-  return readdirSync(srcDir, { recursive: true, encoding: 'utf8' })
-    .map((p) => p.replaceAll('\\', '/'))
-    .filter(
-      (p) =>
-        p.endsWith('.tsx') &&
-        !/\.(test|spec)\.tsx$/.test(p) &&
-        !p.split('/').includes('__tests__'),
-    );
-}
 
 describe('src/ generic-element name guard', () => {
   const srcDir = resolve(process.cwd(), 'src');

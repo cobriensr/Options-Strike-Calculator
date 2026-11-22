@@ -5,11 +5,12 @@ const GENERIC = new Set<string>(GENERIC_TAGS);
 const NAME_ATTRS = new Set(['aria-label', 'aria-labelledby']);
 
 /**
- * The value of a `role` attribute written as a string literal (`role="x"`,
+ * The value of a JSX attribute written as a string literal (`role="x"`,
  * `role={'x'}`, ``role={`x`}``), or null for anything else: no value, or an
- * expression the scan can't read (`role={r}`).
+ * expression the scan can't read (`role={r}`). Shared with the title scan in
+ * `title-hint-scan.ts`.
  */
-function literalRole(attr: ts.JsxAttribute): string | null {
+export function literalText(attr: ts.JsxAttribute): string | null {
   const init = attr.initializer;
   if (init == null) return null;
   const value = ts.isJsxExpression(init) ? init.expression : init;
@@ -58,7 +59,7 @@ export function findGenericAriaNames(
     const attrs = properties.filter(ts.isJsxAttribute);
     const role = attrs.find((a) => a.name.getText(file) === 'role');
     if (role != null) {
-      const literal = literalRole(role);
+      const literal = literalText(role);
       if (literal == null || !countsAsNoRole(literal)) return;
     }
     for (const attr of attrs) {
