@@ -17,14 +17,62 @@ describe('getPanelRegistry', () => {
     expect(ids).toEqual([
       'sec-datetime',
       'sec-spot-price',
-      'sec-premarket-futures',
       'sec-advanced',
       'sec-iv',
       'sec-risk',
       'sec-regime',
-      'sec-positions',
       'results',
     ]);
+  });
+
+  // Pre-Market Futures Inputs mounts PreMarketInput only when `market.hasData`,
+  // which is never true for a public visitor, and Position Monitor renders null
+  // for anyone but the owner. Either one listed for a viewer who cannot see it
+  // is a nav and prefs entry that opens an empty anchor.
+  it('omits sec-premarket-futures and sec-positions for a public visitor, with or without market data', () => {
+    for (const hasMarketOrSnapshot of [true, false]) {
+      const ids = getPanelRegistry({
+        ...PUBLIC,
+        hasMarketOrSnapshot,
+      }).map((e) => e.id);
+      expect(ids).not.toContain('sec-premarket-futures');
+      expect(ids).not.toContain('sec-positions');
+    }
+  });
+
+  it('lists sec-premarket-futures but not sec-positions for a guest, with or without market data', () => {
+    for (const hasMarketOrSnapshot of [true, false]) {
+      const ids = getPanelRegistry({ ...GUEST, hasMarketOrSnapshot }).map(
+        (e) => e.id,
+      );
+      expect(ids).toContain('sec-premarket-futures');
+      expect(ids).not.toContain('sec-positions');
+    }
+  });
+
+  it('keeps sec-premarket-futures and sec-positions in their old places for the owner, with or without market data', () => {
+    for (const hasMarketOrSnapshot of [true, false]) {
+      const entries = getPanelRegistry({ ...OWNER, hasMarketOrSnapshot });
+      const ids = entries.map((e) => e.id);
+
+      // Right after Pre-Market Signals, before Advanced.
+      expect(ids.indexOf('sec-premarket-futures')).toBe(
+        ids.indexOf('sec-premarket') + 1,
+      );
+      expect(ids.indexOf('sec-advanced')).toBe(
+        ids.indexOf('sec-premarket-futures') + 1,
+      );
+      // First of the Trading group, ahead of the tracker and BWB.
+      const trading = entries
+        .filter((e) => e.group === 'Trading')
+        .map((e) => e.id);
+      expect(trading).toEqual(['sec-positions', 'sec-tracker', 'sec-bwb']);
+      expect(entries.find((e) => e.id === 'sec-positions')).toEqual({
+        id: 'sec-positions',
+        label: 'Position Monitor',
+        group: 'Trading',
+      });
+    }
   });
 
   // Both cards in Pre-Market Signals (the opening-flow signal and the pin
@@ -177,12 +225,14 @@ describe('getPanelRegistry', () => {
     },
   );
 
-  it('differs between the owner and a guest by sec-history alone', () => {
+  it('differs between the owner and a guest by sec-history and sec-positions alone', () => {
+    // The two panels that render nothing for a guest.
+    const ownerOnly = new Set(['sec-history', 'sec-positions']);
     for (const hasMarketOrSnapshot of [true, false]) {
       const owner = getPanelRegistry({ ...OWNER, hasMarketOrSnapshot });
       const guest = getPanelRegistry({ ...GUEST, hasMarketOrSnapshot });
 
-      expect(guest).toEqual(owner.filter((e) => e.id !== 'sec-history'));
+      expect(guest).toEqual(owner.filter((e) => !ownerOnly.has(e.id)));
     }
   });
 

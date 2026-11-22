@@ -76,6 +76,10 @@ describe('App panel alignment', () => {
     // checked at all.
     expect(registryIds).toContain('sec-history');
     expect(registryIds).toContain('sec-charts');
+    // Position Monitor is the owner's alone, and Pre-Market Futures Inputs an
+    // owner's or guest's, so the union has to include them for the same reason.
+    expect(registryIds).toContain('sec-positions');
+    expect(registryIds).toContain('sec-premarket-futures');
 
     const rendererKeys = extractRendererKeys(appSource);
     const missing = registryIds.filter((id) => !rendererKeys.has(id));

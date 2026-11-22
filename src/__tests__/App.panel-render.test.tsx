@@ -64,6 +64,11 @@ describe('Default-order panel render contract', () => {
     expect(sequence.indexOf('sec-history')).toBe(
       sequence.indexOf('sec-charts') + 1,
     );
+    // ...and of Position Monitor, which opens the Trading group
+    expect(sequence).toContain('sec-positions');
+    expect(sequence.indexOf('sec-tracker')).toBe(
+      sequence.indexOf('sec-positions') + 1,
+    );
   });
 
   it('guest with market data: gets Chart Analysis but not the owner-only Analysis History', () => {
@@ -79,6 +84,10 @@ describe('Default-order panel render contract', () => {
     }
     expect(sequence).toContain('sec-charts');
     expect(sequence).not.toContain('sec-history');
+    // Position Monitor renders nothing for a guest; Pre-Market Futures does
+    // render for one (a guest has market data).
+    expect(sequence).not.toContain('sec-positions');
+    expect(sequence).toContain('sec-premarket-futures');
   });
 
   it('public visitor (no auth, no market): hides auth/market-only panels', () => {
@@ -101,6 +110,10 @@ describe('Default-order panel render contract', () => {
     expect(sequence).not.toContain('sec-periscope-lessons');
     // Owner-only panels must NOT appear
     expect(sequence).not.toContain('sec-history');
+    expect(sequence).not.toContain('sec-positions');
+    // Nor a panel that mounts only with market data, which a public visitor
+    // never has
+    expect(sequence).not.toContain('sec-premarket-futures');
     // Market-only panels must NOT appear
     expect(sequence).not.toContain('sec-darkpool');
     expect(sequence).not.toContain('sec-gex-target');
@@ -109,7 +122,6 @@ describe('Default-order panel render contract', () => {
     // Always-on panels still appear
     expect(sequence).toContain('sec-datetime');
     expect(sequence).toContain('sec-regime');
-    expect(sequence).toContain('sec-positions');
     expect(sequence).toContain('results');
   });
 

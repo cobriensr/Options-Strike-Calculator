@@ -59,19 +59,26 @@ export function getPanelRegistry(
   // "HTTP 401" (or last session's cached opening-flow data). No panel, nav or
   // prefs entry for them. Listed here to keep the panel between Spot Price and
   // Pre-Market Futures Inputs.
+  //
+  // Pre-Market Futures Inputs mounts its input only when `market.hasData`, which
+  // is never true for a public visitor, so a public entry would open an empty
+  // anchor. A guest keeps it: they have market data, and the input does its
+  // sums client-side without calling the owner-only endpoint.
   if (isAuthenticated) {
-    list.push({
-      id: 'sec-premarket',
-      label: 'Pre-Market Signals',
-      group: 'Inputs',
-    });
+    list.push(
+      {
+        id: 'sec-premarket',
+        label: 'Pre-Market Signals',
+        group: 'Inputs',
+      },
+      {
+        id: 'sec-premarket-futures',
+        label: 'Pre-Market Futures Inputs',
+        group: 'Inputs',
+      },
+    );
   }
   list.push(
-    {
-      id: 'sec-premarket-futures',
-      label: 'Pre-Market Futures Inputs',
-      group: 'Inputs',
-    },
     { id: 'sec-advanced', label: 'Advanced', group: 'Inputs' },
     { id: 'sec-iv', label: 'Implied Volatility', group: 'Inputs' },
     { id: 'sec-risk', label: 'Risk Calculator', group: 'Inputs' },
@@ -199,11 +206,16 @@ export function getPanelRegistry(
       },
     );
   }
-  list.push({
-    id: 'sec-positions',
-    label: 'Position Monitor',
-    group: 'Trading',
-  });
+  // PositionMonitor renders nothing for anyone but the owner, so a guest or
+  // public visitor listed here would only get a nav and prefs entry that leads
+  // to an empty anchor.
+  if (isOwner) {
+    list.push({
+      id: 'sec-positions',
+      label: 'Position Monitor',
+      group: 'Trading',
+    });
+  }
   if (isAuthenticated) {
     list.push(
       { id: 'sec-tracker', label: 'Contract Tracker', group: 'Trading' },

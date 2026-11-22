@@ -86,9 +86,12 @@ describe('PanelPrefsModal', () => {
       />,
     );
     expect(screen.getByText('Date & Time')).toBeInTheDocument();
-    expect(screen.getByText('Position Monitor')).toBeInTheDocument();
-    // Owner-only: a public visitor has no Analysis History to show or hide.
+    // Owner-only: a public visitor has no Position Monitor or Analysis History
+    // to show or hide (the first renders nothing for them).
+    expect(screen.queryByText('Position Monitor')).toBeNull();
     expect(screen.queryByText('Analysis History')).toBeNull();
+    // It mounts only with market data, which a public visitor never has.
+    expect(screen.queryByText('Pre-Market Futures Inputs')).toBeNull();
     expect(screen.queryByText('Dark Pool Levels')).toBeNull();
     expect(screen.queryByText('Futures Calculator')).toBeNull();
     expect(screen.queryByText('BWB Calculator')).toBeNull();
@@ -114,6 +117,36 @@ describe('PanelPrefsModal', () => {
     expect(
       screen.getByRole('checkbox', { name: /Hide Chart Analysis/ }),
     ).toBeChecked();
+  });
+
+  it('offers a guest Pre-Market Futures Inputs but not Position Monitor', () => {
+    render(
+      <PanelPrefsModal
+        isOpen
+        onClose={() => undefined}
+        panelPrefs={makePrefs()}
+        isAuthenticated
+        isOwner={false}
+        hasMarketOrSnapshot
+      />,
+    );
+    expect(screen.getByText('Pre-Market Futures Inputs')).toBeInTheDocument();
+    expect(screen.queryByText('Position Monitor')).toBeNull();
+  });
+
+  it('offers the owner Position Monitor and Pre-Market Futures Inputs', () => {
+    render(
+      <PanelPrefsModal
+        isOpen
+        onClose={() => undefined}
+        panelPrefs={makePrefs()}
+        isAuthenticated
+        isOwner
+        hasMarketOrSnapshot
+      />,
+    );
+    expect(screen.getByText('Position Monitor')).toBeInTheDocument();
+    expect(screen.getByText('Pre-Market Futures Inputs')).toBeInTheDocument();
   });
 
   it('offers the owner an Analysis History checkbox', () => {
