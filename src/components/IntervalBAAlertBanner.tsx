@@ -29,6 +29,8 @@ import {
 import { theme } from '../themes';
 import { formatTimeCT } from '../utils/component-formatters';
 import { tintedSurface } from '../utils/ui-utils';
+import { SIDE_SR_TEXT, SIDE_TITLE } from './IntervalBAFeed/side-text';
+import { SrHint } from './ui/SrHint';
 
 interface IntervalBAAlertBannerProps {
   alerts: IntervalBAAlert[];
@@ -176,15 +178,12 @@ export default function IntervalBAAlertBanner({
             <div className="min-w-0 flex-1">
               <div className="mb-1 flex items-center gap-2">
                 <span
-                  title={
-                    alert.option_type === 'C'
-                      ? 'CALL — ask-side buyers paid up for upside calls. Bullish directional bet.'
-                      : 'PUT — ask-side buyers paid up for downside puts. Bearish directional bet.'
-                  }
+                  title={SIDE_TITLE[alert.option_type]}
                   className="cursor-help rounded px-1.5 py-0.5 font-sans text-[10px] font-bold"
                   style={sideBadge}
                 >
                   {alert.option_type === 'C' ? 'CALL' : 'PUT'}
+                  <SrHint>{SIDE_SR_TEXT[alert.option_type]}</SrHint>
                 </span>
                 {alert.confluence_tickers.length > 0 && (
                   <span
@@ -195,6 +194,7 @@ export default function IntervalBAAlertBanner({
                       .sort()
                       .map((t) => `+${t}`)
                       .join(' ')}
+                    <SrHint>same direction within about 90 seconds</SrHint>
                   </span>
                 )}
                 <span className="font-sans text-xs font-semibold">

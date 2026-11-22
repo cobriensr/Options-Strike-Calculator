@@ -5,6 +5,11 @@ import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import IntervalBAAlertBanner from '../components/IntervalBAAlertBanner';
 import type { IntervalBAAlert } from '../hooks/useIntervalBAAlerts';
+import {
+  genericElementsWithAriaLabel,
+  srHintText,
+  titledGenericsWithoutHint,
+} from './helpers/aria';
 
 const sample: IntervalBAAlert = {
   id: 42,
@@ -271,5 +276,82 @@ describe('IntervalBAAlertBanner', () => {
     expect(
       screen.getByLabelText('Hide muted indicator until next mute toggle'),
     ).toBeInTheDocument();
+  });
+});
+
+// The pills keep their `title` for mouse hover. A title on a bare span never
+// reaches a screen reader, so each pill carries the explanation as a hidden
+// hint, its last child. The toast is a `role="alert"`, so a screen reader
+// reads every hint on every announcement: each stays short (60 characters).
+describe('IntervalBAAlertBanner: hidden hints for the pills', () => {
+  const MAX_LIVE_HINT = 60;
+
+  it.each([
+    [
+      'C' as const,
+      'CALL',
+      'CALL — ask-side buyers paid up for upside calls. Bullish directional bet.',
+      'buyers paid the ask for upside calls, bullish',
+    ],
+    [
+      'P' as const,
+      'PUT',
+      'PUT — ask-side buyers paid up for downside puts. Bearish directional bet.',
+      'buyers paid the ask for downside puts, bearish',
+    ],
+  ])(
+    'explains the %s side pill in a short hidden hint, not an aria-label, and keeps the title',
+    (optionType, label, title, hint) => {
+      const { container } = render(
+        <IntervalBAAlertBanner
+          alerts={[{ ...sample, option_type: optionType }]}
+          onAcknowledge={async () => {}}
+        />,
+      );
+      const pill = screen.getByText(label);
+      expect(srHintText(pill)).toBe(hint);
+      expect(srHintText(pill)!.length).toBeLessThanOrEqual(MAX_LIVE_HINT);
+      expect(pill).toHaveAttribute('title', title);
+      expect(pill).not.toHaveAttribute('aria-label');
+      // The hint is inside the announced alert, so it is read with it.
+      expect(screen.getByRole('alert')).toContainElement(pill);
+      expect(genericElementsWithAriaLabel(container)).toEqual([]);
+      expect(titledGenericsWithoutHint(container)).toEqual([]);
+    },
+  );
+
+  it('explains the confluence pill in a short hidden hint, not an aria-label, and keeps the title', () => {
+    const { container } = render(
+      <IntervalBAAlertBanner
+        alerts={[{ ...sample, confluence_tickers: ['SPY', 'QQQ'] }]}
+        onAcknowledge={async () => {}}
+      />,
+    );
+    // The partners are the pill's visible text, so the hint leaves them out.
+    const pill = screen.getByText('+QQQ +SPY');
+    expect(srHintText(pill)).toBe('same direction within about 90 seconds');
+    expect(srHintText(pill)!.length).toBeLessThanOrEqual(MAX_LIVE_HINT);
+    expect(pill).toHaveAttribute(
+      'title',
+      'Cross-symbol confluence — SPY + QQQ fired same-direction within ~90s.',
+    );
+    expect(pill).not.toHaveAttribute('aria-label');
+    expect(screen.getByRole('alert')).toContainElement(pill);
+    expect(genericElementsWithAriaLabel(container)).toEqual([]);
+    expect(titledGenericsWithoutHint(container)).toEqual([]);
+  });
+
+  it('gives a solo alert no confluence pill and leaves no titled pill without a hint', () => {
+    const { container } = render(
+      <IntervalBAAlertBanner
+        alerts={[sample, { ...sample, id: 43, option_type: 'P' }]}
+        onAcknowledge={async () => {}}
+        onToggleMute={() => {}}
+      />,
+    );
+    expect(
+      container.querySelector('[title^="Cross-symbol confluence"]'),
+    ).toBeNull();
+    expect(titledGenericsWithoutHint(container)).toEqual([]);
   });
 });
