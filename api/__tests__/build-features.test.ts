@@ -19,13 +19,19 @@ vi.mock('../_lib/logger.js', () => ({
   default: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
-// Spy on captureException only; the rest of the Sentry surface stays real.
+// Spy on captureException and captureMessage only; the rest of the Sentry
+// surface stays real.
 const mockCaptureException = vi.hoisted(() => vi.fn());
+const mockCaptureMessage = vi.hoisted(() => vi.fn());
 vi.mock('../_lib/sentry.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../_lib/sentry.js')>();
   return {
     ...actual,
-    Sentry: { ...actual.Sentry, captureException: mockCaptureException },
+    Sentry: {
+      ...actual.Sentry,
+      captureException: mockCaptureException,
+      captureMessage: mockCaptureMessage,
+    },
   };
 });
 
@@ -911,7 +917,9 @@ describe('build-features handler', () => {
         featuresBuilt: 1,
         errors: 0,
       });
+      // Not an error to Sentry: the one event is the no-pick warning.
       expect(mockCaptureException).not.toHaveBeenCalled();
+      expect(mockCaptureMessage).toHaveBeenCalledTimes(1);
     });
 
     it('leaves spx_open null when outcomes has no day_open either', async () => {
@@ -996,17 +1004,145 @@ describe('build-features handler', () => {
         expect.stringContaining(NO_TRUSTED_ROW),
       );
     });
+
+    // ── Alerting: a no-pick date must not be visible only in the log ──
+
+    const ALERT = 'build-features: no trusted snapshot row';
+
+    /** Trusted rows, so the date has a pick. */
+    const trustedRows = () => [snapshotRow('10:00 AM CT', FILLED)];
+
+    /**
+     * A backfill over `dates`, each date's snapshot rows from `rowsOf`. Keyed
+     * on SQL text; the date is the last value bound in the snapshot read.
+     */
+    function mockDates(
+      dates: string[],
+      rowsOf: (date: string) => Record<string, unknown>[],
+      insertFails = false,
+    ) {
+      mockSql.mockImplementation(
+        (strings: TemplateStringsArray, ...values: unknown[]) => {
+          const text = strings.join(' ');
+          if (text.includes('SELECT DISTINCT date FROM flow_data')) {
+            return Promise.resolve(dates.map((date) => ({ date })));
+          }
+          if (text.includes('FROM market_snapshots')) {
+            return Promise.resolve(rowsOf(String(values.at(-1))));
+          }
+          if (insertFails && text.includes('INSERT INTO training_features')) {
+            return Promise.reject(new Error('write failed'));
+          }
+          return Promise.resolve([]);
+        },
+      );
+    }
+
+    async function backfill() {
+      const req = mockRequest({
+        method: 'GET',
+        query: { backfill: 'true' },
+        headers: { authorization: 'Bearer test-secret' },
+      });
+      const res = mockResponse();
+      await handler(req, res);
+      return res;
+    }
+
+    it('sends one Sentry warning, with a stable fingerprint, the date and the per-reason counts', async () => {
+      mockSnapshotRows(untrustedRows());
+
+      await buildDate();
+
+      expect(mockCaptureMessage).toHaveBeenCalledTimes(1);
+      expect(mockCaptureMessage).toHaveBeenCalledWith(ALERT, {
+        level: 'warning',
+        fingerprint: ['build-features', 'no-trusted-snapshot-row'],
+        extra: {
+          dates: ['2026-03-24'],
+          count: 1,
+          rejected: { 'stale-tab': 1, 'saved-late': 1 },
+        },
+      });
+    });
+
+    it('sends one warning per run, however many dates have no pick', async () => {
+      const dates = ['2026-03-23', '2026-03-24', '2026-03-25'];
+      mockDates(dates, () => untrustedRows());
+
+      const res = await backfill();
+
+      expect(mockCaptureMessage).toHaveBeenCalledTimes(1);
+      expect(mockCaptureMessage).toHaveBeenCalledWith(
+        ALERT,
+        expect.objectContaining({
+          extra: {
+            dates,
+            count: 3,
+            // Summed over the dates: 3 stale tabs, 3 late saves.
+            rejected: { 'stale-tab': 3, 'saved-late': 3 },
+          },
+        }),
+      );
+      expect(res._json).toMatchObject({
+        status: 'success',
+        featuresBuilt: 3,
+        noPickDates: 3,
+      });
+    });
+
+    it('names only the dates with no pick when the run has others that do', async () => {
+      mockDates(['2026-03-23', '2026-03-24', '2026-03-25'], (date) =>
+        date === '2026-03-24' ? untrustedRows() : trustedRows(),
+      );
+
+      const res = await backfill();
+
+      expect(mockCaptureMessage).toHaveBeenCalledTimes(1);
+      expect(mockCaptureMessage.mock.calls[0]![1]).toMatchObject({
+        extra: { dates: ['2026-03-24'], count: 1 },
+      });
+      expect(res._json).toMatchObject({ noPickDates: 1, featuresBuilt: 3 });
+    });
+
+    it('sends nothing, and reports noPickDates 0, when every date has a pick', async () => {
+      mockSnapshotRows(trustedRows());
+
+      const res = await buildDate();
+
+      expect(mockCaptureMessage).not.toHaveBeenCalled();
+      expect(res._json).toMatchObject({ status: 'success', noPickDates: 0 });
+    });
+
+    it('does not count a date whose write failed: that is an error, not a no-pick date', async () => {
+      mockDates(['2026-03-24'], () => untrustedRows(), true);
+
+      const res = await backfill();
+
+      expect(res._json).toMatchObject({
+        status: 'error',
+        featuresBuilt: 0,
+        errors: 1,
+        noPickDates: 0,
+      });
+      expect(mockCaptureException).toHaveBeenCalledWith(
+        expect.objectContaining({ message: 'write failed' }),
+      );
+      expect(mockCaptureMessage).not.toHaveBeenCalled();
+    });
   });
 
   it('leaves a date with no snapshot rows unchanged: no warning, completeness as computed', async () => {
     mockSnapshotRows([]);
 
-    await buildDate();
+    const res = await buildDate();
 
     expect(logger.warn).not.toHaveBeenCalledWith(
       expect.anything(),
       expect.stringContaining(NO_TRUSTED_ROW),
     );
+    expect(mockCaptureMessage).not.toHaveBeenCalled();
+    expect(res._json).toMatchObject({ noPickDates: 0 });
     expect(featureUpsertValue('feature_completeness')).toBeGreaterThan(0);
     expect(featureUpsertValue('vix')).toBeUndefined();
   });

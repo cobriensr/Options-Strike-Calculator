@@ -187,8 +187,10 @@ under "Repair runs after deploy".
 
 Most ML readers keep a day only when `feature_completeness >= 0.80`:
 `ml/src/clustering.py:930`, `ml/src/explore.py:68`,
-`ml/src/phase2_early.py:764`, `ml/src/milestone_check.py:91` and
-`api/ml/export.ts:90`.
+`ml/src/phase2_early.py:764` and `ml/src/milestone_check.py:91`.
+`api/ml/export.ts:90` applies the same filter only when the caller passes
+`minFeatureCompleteness`. Its default is 0 (`export.ts:52`), so a plain export
+includes completeness-0 days.
 
 **Completeness can't drop that low on its own.**
 - `computeCompleteness` (`api/_lib/build-features-upsert.ts:131-142`) divides
@@ -204,12 +206,27 @@ Most ML readers keep a day only when `feature_completeness >= 0.80`:
 - It is 0, not NULL, because the COALESCE upsert can't write NULL.
 - When a later run finds a trusted pick (a phase 5 fill, a phase 6 rebuild),
   completeness is recomputed as usual.
-- Two places read completeness for status rather than training. A 0 must read
-  as "no 10:00 view", not as a pipeline failure, in both:
-  - `latestCompleteness` (`build-features.ts:363`);
-  - `ml/src/health.py:136-150`.
-  The builder checks both and adjusts wording or thresholds there if a 0
-  would raise a false alarm.
+- **Status readers** (settled after code review, 2026-11-22). A 0 reads as
+  "no 10:00 view", not as low completeness:
+  - `ml/src/health.py` `check_completeness`:
+    - rows at 0 are labelled "no 10:00 view (no trusted snapshot row)" and
+      listed on their own info line;
+    - they are left out of the below-90% count and both trend means.
+  - `ml/src/milestone_check.py`: its average of the last 10 days leaves 0s
+    out and reports their count separately.
+- **Alerting** (author call after code review; it goes beyond the first
+  draft, which asked only for a log line). A no-pick date must not be visible
+  only in pino. Why: if live rows ever stopped carrying `spx_low`/`spx_high`,
+  every new day would fail `no-price-range` and silently leave training.
+  - The run collects its no-pick dates.
+  - After the loop it sends one Sentry warning per run, `build-features: no
+    trusted snapshot row`, with a stable fingerprint and the dates and
+    per-reason counts in `extra`.
+  - It adds `noPickDates` (a count) to the returned metadata. That lands in
+    Axiom's `meta`, not as a new top-level key.
+  - `latestCompleteness` stays as is; `noPickDates` explains a 0 there.
+  - The run status stays `success`, because a no-pick date is a data state,
+    not a failed write.
 - **A date with no snapshot rows at all is unchanged.** Its keys stay absent,
   as today, and it can still score high.
   - That is an existing gap outside this decision.
@@ -451,5 +468,5 @@ These are asks on
 - Where the warning's per-reason counts are built, and its exact wording.
 - Whether `featureSnapshotRejection` takes the CT sample time as a parameter
   or reads the module constant (the constant, unless a test needs otherwise).
-- The wording or threshold changes in `latestCompleteness` and
-  `ml/src/health.py`, if a 0 would read as a failure there.
+- The exact Sentry fingerprint and `extra` shape, and the health.py and
+  milestone_check.py wording.

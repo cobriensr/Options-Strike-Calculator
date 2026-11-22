@@ -287,16 +287,48 @@ export function pickFeatureSnapshot<T extends SnapshotCandidate>(
   return nearestToSampleTime(withOpen) ?? nearestToSampleTime(trusted);
 }
 
+type RejectionCounts = Partial<Record<FeatureSnapshotRejection, number>>;
+
 /** How many of `rows` each test rejected, for the no-pick warning. */
-function rejectionCounts(
-  rows: readonly SnapshotTrustRow[],
-): Partial<Record<FeatureSnapshotRejection, number>> {
-  const counts: Partial<Record<FeatureSnapshotRejection, number>> = {};
+function rejectionCounts(rows: readonly SnapshotTrustRow[]): RejectionCounts {
+  const counts: RejectionCounts = {};
   for (const row of rows) {
     const reason = featureSnapshotRejection(row);
     if (reason != null) counts[reason] = (counts[reason] ?? 0) + 1;
   }
   return counts;
+}
+
+/** A date built with snapshot rows but no trusted one: no 10:00 view. */
+interface NoPickDate {
+  date: string;
+  rejected: RejectionCounts;
+}
+
+/** One Sentry event per run, so a no-pick date is not visible only in pino. */
+const NO_PICK_ALERT = 'build-features: no trusted snapshot row';
+
+/**
+ * Warn Sentry that these dates were built with no trusted snapshot row. Why it
+ * is not only a log line: if live rows stopped carrying `spx_low` and
+ * `spx_high`, every new day would fail `no-price-range` and silently leave
+ * training. One event per run whatever the number of dates, under one
+ * fingerprint, with the dates and the rejection counts summed over them. A
+ * no-pick date is a data state, not a failed write, so the run stays
+ * `success`.
+ */
+function reportNoPickDates(noPick: readonly NoPickDate[]): void {
+  const rejected: RejectionCounts = {};
+  for (const { rejected: counts } of noPick) {
+    for (const reason of Object.keys(counts) as FeatureSnapshotRejection[]) {
+      rejected[reason] = (rejected[reason] ?? 0) + (counts[reason] ?? 0);
+    }
+  }
+  Sentry.captureMessage(NO_PICK_ALERT, {
+    level: 'warning',
+    fingerprint: ['build-features', 'no-trusted-snapshot-row'],
+    extra: { dates: noPick.map((d) => d.date), count: noPick.length, rejected },
+  });
 }
 
 /**
@@ -329,9 +361,13 @@ function snapshotFeatures(s: SnapshotRow | undefined): FeatureRow {
 
 // Build features for a single date
 
-async function buildFeaturesForDate(
-  dateStr: string,
-): Promise<FeatureRow | null> {
+/** A date's features, and whether it was built with no trusted snapshot row. */
+interface BuiltDate {
+  features: FeatureRow;
+  noPick: NoPickDate | null;
+}
+
+async function buildFeaturesForDate(dateStr: string): Promise<BuiltDate> {
   const sql = getDb();
   const features: FeatureRow = { date: dateStr };
 
@@ -359,8 +395,11 @@ async function buildFeaturesForDate(
   )) as (SnapshotRow & SnapshotTrustRow)[];
 
   // A date with rows but none trusted has no 10:00 view: its snapshot features
-  // are null and its completeness 0 (below), so it does not train.
-  let noTrustedPick = false;
+  // are null and its completeness 0 (below), so it does not train. These NULLs
+  // do not replace values already stored: the upsert COALESCEs every column.
+  // Clearing the stored values is the spec's one-off blanking run (2026-11-22
+  // feature snapshot trust design, "Repair runs after deploy"), not this cron.
+  let noPick: NoPickDate | null = null;
   if (snapshots.length > 0) {
     const s = pickFeatureSnapshot(snapshots);
     Object.assign(features, snapshotFeatures(s));
@@ -373,13 +412,9 @@ async function buildFeaturesForDate(
     features.is_event_day =
       eventFlags.length > 0 ? eventFlags.includes(true) : null;
     if (s == null) {
-      noTrustedPick = true;
+      noPick = { date: dateStr, rejected: rejectionCounts(snapshots) };
       logger.warn(
-        {
-          date: dateStr,
-          rows: snapshots.length,
-          rejected: rejectionCounts(snapshots),
-        },
+        { date: dateStr, rows: snapshots.length, rejected: noPick.rejected },
         'build-features: no trusted snapshot row, snapshot features left empty',
       );
     }
@@ -435,11 +470,10 @@ async function buildFeaturesForDate(
 
   // 0, not NULL: the upsert keeps the stored value over a NULL. The ML readers
   // keep a day only at 0.80 or more, so a 0 keeps this date out of training.
-  features.feature_completeness = noTrustedPick
-    ? 0
-    : computeCompleteness(features);
+  features.feature_completeness =
+    noPick == null ? computeCompleteness(features) : 0;
 
-  return features;
+  return { features, noPick };
 }
 
 // Wrapped main cron.
@@ -540,17 +574,19 @@ const wrappedCron = withCronInstrumentation(
     let labelsExtracted = 0;
     let errors = 0;
     let latestCompleteness: number | undefined;
+    // Dates written with no trusted snapshot row (completeness 0), not dates
+    // whose write failed: those are errors.
+    const noPickDates: NoPickDate[] = [];
 
     for (const dateStr of dates) {
       try {
-        const features = await buildFeaturesForDate(dateStr);
-        if (features) {
-          await upsertFeatures(features);
-          featuresBuilt++;
-          latestCompleteness = features.feature_completeness as
-            | number
-            | undefined;
-        }
+        const { features, noPick } = await buildFeaturesForDate(dateStr);
+        await upsertFeatures(features);
+        featuresBuilt++;
+        latestCompleteness = features.feature_completeness as
+          | number
+          | undefined;
+        if (noPick != null) noPickDates.push(noPick);
 
         const labels = await extractLabelsForDate(dateStr);
         if (labels) {
@@ -567,14 +603,23 @@ const wrappedCron = withCronInstrumentation(
       }
     }
 
+    if (noPickDates.length > 0) reportNoPickDates(noPickDates);
+
     log.info(
-      { dates: dates.length, featuresBuilt, labelsExtracted, errors },
+      {
+        dates: dates.length,
+        featuresBuilt,
+        labelsExtracted,
+        errors,
+        noPickDates: noPickDates.length,
+      },
       'build-features: completed',
     );
 
     return {
       // Every date failing is 'error' (red Sentry monitor), not 'partial';
-      // no dates to process is 'success'.
+      // no dates to process is 'success'. A no-pick date is a data state, not
+      // a failure, so it never moves the status.
       status: deriveCronStatus(errors, dates.length),
       metadata: {
         dates: dates.length,
@@ -582,6 +627,9 @@ const wrappedCron = withCronInstrumentation(
         labelsExtracted,
         errors,
         completeness: latestCompleteness,
+        // Explains a completeness of 0. Not an Axiom top-level key
+        // (api/_lib/axiom-fields.ts), so it is reported inside `meta`.
+        noPickDates: noPickDates.length,
       },
     };
   },
