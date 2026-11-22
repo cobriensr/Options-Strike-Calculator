@@ -10,6 +10,7 @@
 import { memo } from 'react';
 import { theme } from '../../themes';
 import { tint } from '../../utils/ui-utils';
+import { SrHint } from '../ui/SrHint.js';
 import type { FuturesSnapshot } from '../../hooks/useFuturesData';
 
 /** Human-readable labels for futures symbols */
@@ -49,13 +50,26 @@ function changeColor(pct: number | null): string {
   return theme.textMuted;
 }
 
+type VolumeLevel = 'HEAVY' | 'ELEVATED' | 'NORMAL';
+
 function volumeLabel(
   ratio: number | null,
-): { text: string; color: string } | null {
+): { text: VolumeLevel; color: string } | null {
   if (ratio == null) return null;
   if (ratio >= 2) return { text: 'HEAVY', color: theme.red };
   if (ratio >= 1.5) return { text: 'ELEVATED', color: theme.caution };
   return { text: 'NORMAL', color: theme.textMuted };
+}
+
+/**
+ * Screen-reader text for the volume badge. The HEAVY / ELEVATED level is
+ * otherwise only the badge colour. NORMAL names no level: it covers every
+ * ratio under 1.5, so "normal volume" would be wrong on a 0.3x day, and the
+ * ratio the badge shows already says it.
+ */
+function volumeHint(level: VolumeLevel): string {
+  const named = level === 'NORMAL' ? '' : `${level.toLowerCase()} `;
+  return `${named}volume versus its 20-day average`;
 }
 
 function formatPrice(symbol: string, price: number): string {
@@ -109,6 +123,7 @@ const FuturesGrid = memo(function FuturesGrid({
                   title={`Volume: ${s.volumeRatio.toFixed(1)}x 20-day avg`}
                 >
                   {s.volumeRatio.toFixed(1)}x
+                  <SrHint>{volumeHint(vol.text)}</SrHint>
                 </span>
               )}
             </div>
@@ -126,6 +141,7 @@ const FuturesGrid = memo(function FuturesGrid({
                 title="1-hour change"
               >
                 1H {formatChange(s.change1hPct)}
+                <SrHint>1-hour change</SrHint>
               </span>
               <span
                 className="font-mono text-[11px] font-medium"
@@ -133,6 +149,7 @@ const FuturesGrid = memo(function FuturesGrid({
                 title="Day change"
               >
                 D {formatChange(s.changeDayPct)}
+                <SrHint>day change</SrHint>
               </span>
             </div>
 
@@ -147,10 +164,11 @@ const FuturesGrid = memo(function FuturesGrid({
                   backgroundColor: tint(theme.accent, '10'),
                   color: theme.accent,
                 }}
-                title="ES - SPX fair value basis"
+                title="ES price minus SPX (raw basis)"
               >
                 Basis: {esSpxBasis >= 0 ? '+' : ''}
                 {esSpxBasis.toFixed(2)} pts
+                <SrHint>ES price minus SPX</SrHint>
               </div>
             )}
           </div>

@@ -2,7 +2,12 @@ import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import FuturesGrid from '../../components/FuturesCalculator/FuturesGrid';
 import type { FuturesSnapshot } from '../../hooks/useFuturesData';
-import { genericElementsWithAriaLabel } from '../helpers/aria';
+import {
+  genericElementsWithAriaLabel,
+  srHintText,
+  titledGenericsWithoutHint,
+  visibleText,
+} from '../helpers/aria';
 
 // ── Helpers ───────────────────────────────────────────────
 
@@ -161,11 +166,15 @@ describe('FuturesGrid: change colors', () => {
       />,
     );
 
+    // The visible text is pinned exactly, hint left out; the hint is the
+    // title's meaning for a screen reader (sites 85 and 86).
     const oneHour = screen.getByTitle('1-hour change');
-    expect(oneHour.textContent).toBe('1H +0.50%');
+    expect(visibleText(oneHour)).toBe('1H +0.50%');
+    expect(srHintText(oneHour)).toBe('1-hour change');
 
     const dayChange = screen.getByTitle('Day change');
-    expect(dayChange.textContent).toBe('D +1.20%');
+    expect(visibleText(dayChange)).toBe('D +1.20%');
+    expect(srHintText(dayChange)).toBe('day change');
   });
 
   it('shows red color for negative changes', () => {
@@ -177,13 +186,15 @@ describe('FuturesGrid: change colors', () => {
     );
 
     const oneHour = screen.getByTitle('1-hour change');
-    expect(oneHour.textContent).toBe('1H -0.30%');
+    expect(visibleText(oneHour)).toBe('1H -0.30%');
+    expect(srHintText(oneHour)).toBe('1-hour change');
 
     const dayChange = screen.getByTitle('Day change');
-    expect(dayChange.textContent).toBe('D -0.75%');
+    expect(visibleText(dayChange)).toBe('D -0.75%');
+    expect(srHintText(dayChange)).toBe('day change');
   });
 
-  it('shows dash for null change values', () => {
+  it('shows dash for null change values, and still tells a screen reader which change it is', () => {
     render(
       <FuturesGrid
         snapshots={[makeSnapshot({ change1hPct: null, changeDayPct: null })]}
@@ -191,11 +202,15 @@ describe('FuturesGrid: change colors', () => {
       />,
     );
 
+    // Pinned on the visible text: the hint's own " — " separator would
+    // satisfy a `toContain('—')` on the whole textContent.
     const oneHour = screen.getByTitle('1-hour change');
-    expect(oneHour.textContent).toContain('—');
+    expect(visibleText(oneHour)).toBe('1H —');
+    expect(srHintText(oneHour)).toBe('1-hour change');
 
     const dayChange = screen.getByTitle('Day change');
-    expect(dayChange.textContent).toContain('—');
+    expect(visibleText(dayChange)).toBe('D —');
+    expect(srHintText(dayChange)).toBe('day change');
   });
 });
 
@@ -226,7 +241,7 @@ describe('FuturesGrid: volume badge', () => {
     expect(screen.queryByText(/x$/)).not.toBeInTheDocument();
   });
 
-  it('shows HEAVY label in title for high volume', () => {
+  it('titles the badge with its ratio and the 20-day average', () => {
     render(
       <FuturesGrid
         snapshots={[makeSnapshot({ volumeRatio: 2.5 })]}
@@ -237,6 +252,37 @@ describe('FuturesGrid: volume badge', () => {
     const badge = screen.getByText('2.5x');
     expect(badge).toHaveAttribute('title', 'Volume: 2.5x 20-day avg');
   });
+
+  // The HEAVY / ELEVATED level is otherwise only the badge colour, so a
+  // screen reader gets it as hidden text (site 84). The NORMAL band (every
+  // ratio under 1.5, down to a 0.3x day) names no level: "normal volume"
+  // would be wrong at 0.3x, and the ratio the badge shows already says it.
+  // The hint never repeats the ratio.
+  it.each([
+    [2.5, 'heavy volume versus its 20-day average'],
+    [2, 'heavy volume versus its 20-day average'],
+    [1.7, 'elevated volume versus its 20-day average'],
+    [1.5, 'elevated volume versus its 20-day average'],
+    [1.49, 'volume versus its 20-day average'],
+    [1.2, 'volume versus its 20-day average'],
+    [0.3, 'volume versus its 20-day average'],
+  ])(
+    'tells a screen reader what a %sx ratio means, without repeating the ratio',
+    (volumeRatio, hint) => {
+      const { container } = render(
+        <FuturesGrid
+          snapshots={[makeSnapshot({ volumeRatio })]}
+          esSpxBasis={null}
+        />,
+      );
+
+      const badge = screen.getByText(`${volumeRatio.toFixed(1)}x`);
+      expect(visibleText(badge)).toBe(`${volumeRatio.toFixed(1)}x`);
+      expect(srHintText(badge)).toBe(hint);
+      expect(srHintText(badge)).not.toMatch(/normal/i);
+      expect(titledGenericsWithoutHint(container)).toEqual([]);
+    },
+  );
 
   it('shows volume badge for elevated volume (1.5x-2x)', () => {
     render(
@@ -299,14 +345,43 @@ describe('FuturesGrid: ES-SPX basis annotation', () => {
     expect(screen.queryByText(/Basis:/)).not.toBeInTheDocument();
   });
 
-  it('has correct title attribute on basis element', () => {
-    render(
+  // deriveEsSpxBasis is `es.price - spx` (api/futures/snapshot.ts), with no
+  // fair-value adjustment, so the title says "raw basis", not "fair value".
+  // The hint is the same meaning without the "(raw basis)" the line's own
+  // "Basis:" label already says (site 87).
+  it.each([
+    [5, 'Basis: +5.00 pts'],
+    [-2.25, 'Basis: -2.25 pts'],
+  ])(
+    'titles a %s basis as the raw ES minus SPX difference and reads that to a screen reader',
+    (esSpxBasis, shown) => {
+      const { container } = render(
+        <FuturesGrid
+          snapshots={[makeSnapshot({ symbol: 'ES' })]}
+          esSpxBasis={esSpxBasis}
+        />,
+      );
+
+      const basis = screen.getByTitle('ES price minus SPX (raw basis)');
+      expect(visibleText(basis)).toBe(shown);
+      expect(srHintText(basis)).toBe('ES price minus SPX');
+      expect(screen.queryByTitle(/fair value/i)).not.toBeInTheDocument();
+      expect(titledGenericsWithoutHint(container)).toEqual([]);
+    },
+  );
+});
+
+describe('FuturesGrid: every titled element reads to a screen reader', () => {
+  it('leaves no titled generic element without a hint on a full grid', () => {
+    const { container } = render(
       <FuturesGrid
-        snapshots={[makeSnapshot({ symbol: 'ES' })]}
-        esSpxBasis={5.0}
+        snapshots={makeAllSnapshots({ volumeRatio: 2.2 })}
+        esSpxBasis={3.2}
       />,
     );
 
-    expect(screen.getByTitle('ES - SPX fair value basis')).toBeInTheDocument();
+    // 6 cards x (volume badge, 1H change, day change) plus the ES basis.
+    expect(container.querySelectorAll('[title]')).toHaveLength(19);
+    expect(titledGenericsWithoutHint(container)).toEqual([]);
   });
 });
