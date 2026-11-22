@@ -17,7 +17,10 @@
  *     but not shown, so a new-session-day pre-first-fetch render, a failed
  *     first fetch, or a Neon blip on a fresh day can't paint yesterday's
  *     payload as live. The check runs each render, so a `todayStr` that
- *     turns (the caller re-renders at its midnight) drops the payload.
+ *     turns (the caller re-renders at its midnight) drops the payload. A 2xx
+ *     whose payload is not dated today is reported as an `error` (it names
+ *     both dates) rather than hidden in silence, and clears on the first poll
+ *     where they agree.
  *
  *   - **Window-gated polling.** The recurring fetch interval is gated on the
  *     window predicate itself (`usePolling(..., [isWindowOpen])`) — it does
@@ -59,6 +62,11 @@ export interface PolledWindowSignalState<T> {
 export interface PolledWindowSignalResult<
   T,
 > extends PolledWindowSignalState<T> {
+  /**
+   * The payload to render: dated today, fetched or cached, else null. `data`
+   * and `fetchedAt` are the raw last fetch, not date-checked; only
+   * `displayData` is.
+   */
   displayData: T | null;
   isWindowOpen: boolean;
   refresh: () => void;
@@ -201,10 +209,19 @@ export function usePolledWindowSignal<T extends DatedPayload>(
       const json = (await res.json()) as T;
 
       if (ctrl.signal.aborted) return;
+      // A 2xx whose payload is not dated today is hidden by the display date
+      // check; say so, or the panel would sit on "loading" for as long as the
+      // dates disagree (a client clock that lags after sleep, a server on
+      // another day). It clears on the first poll where they agree.
+      const expected = optsRef.current.todayStr();
+      const got = json.date ? `dated ${json.date}` : 'undated';
       setState({
         data: json,
         loading: false,
-        error: null,
+        error:
+          json.date === expected
+            ? null
+            : `Payload is ${got}, but today is ${expected}`,
         fetchedAt: Date.now(),
       });
       writeCache<T>(key, {

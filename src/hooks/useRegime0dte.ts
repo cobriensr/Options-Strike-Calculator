@@ -109,7 +109,7 @@ export function useRegime0dte(): PolledWindowSignalResult<Regime0dteResponse> {
   // the panel re-renders at ET midnight and a payload dated the day before is
   // dropped then, badge included. The payload's `date` is the CT date
   // (`api/regime-0dte.ts`). The two dates agree from 08:30 to 15:00 CT, the
-  // only hours a payload is made, and differ only from 23:00 to 24:00 CT, when
+  // only hours the hook fetches, and differ only from 23:00 to 24:00 CT, when
   // the window is closed: the day's last read clears an hour before CT midnight.
   const today = useETToday();
   return usePolledWindowSignal<Regime0dteResponse>({

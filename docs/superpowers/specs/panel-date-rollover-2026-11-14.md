@@ -347,18 +347,34 @@ panels follow the new date too".
   so the date gate and the header badge turn over at ET midnight, in the same
   commit as every other panel. The server stamps the payload with the CT date
   (`api/regime-0dte.ts`). The two dates agree for all of 08:30 to 15:00 CT, the
-  only hours a payload is made, and differ only from 23:00 to 24:00 CT, when
-  the window is closed; the day's last read clears an hour before CT midnight.
+  only hours the hook fetches (the server answers at any hour, but the window
+  is closed outside them), and differ only from 23:00 to 24:00 CT, when the
+  window is closed; the day's last read clears an hour before CT midnight.
 - **The badge is not window-gated (decision).** With the date check and the ET
   clock, the badge shows the day's last gate after the close and clears at ET
   midnight, so a weekend or a holiday Monday shows none.
+- **A wrong-dated 2xx is an error, not silence (decision).** A 2xx whose payload
+  is not dated today is hidden by the display check. If the fetch set
+  `error: null`, the panel would say "loading" for as long as the dates
+  disagree (a client clock that lags after sleep, a server on another day). It
+  now sets `error` to `Payload is dated <date>, but today is <today>` (or
+  "undated"), which the panel's alert shows above "No regime read for today
+  yet. It retries automatically.", and it clears on the first poll where the
+  dates agree. Tests assert `error` by value for that case, a network failure
+  and a body that is not JSON. `data` and `fetchedAt` stay the raw last fetch;
+  only `displayData` is date-checked, and the result type says so.
 - **The tests move the clock while mounted.** The old `useRegime0dte` tests
   mocked `getCTTime` and `getCTDateStr`, which cannot cross a day. They now pin
   the real clock and move it (the window and the ET date both read `Date`).
   Each step is its own `act`: a single `act` around a weekend defers the
   `isWindowOpen=false` commit and batches it with the open, so the flag never
   flips and the test proves nothing. A recorder logs the payload date shown by
-  every committed render.
+  every committed render, with the clock when it committed. "Nothing stale
+  after ET midnight" is asserted over every commit at or after the instant,
+  the roll's own included: taking an index after the act that crosses the roll
+  skipped that commit, so a stale render at the roll, healed by the next,
+  passed. A mutant stale only at the first roll passed the old assertion and
+  fails the new one.
 
 ## Phases
 

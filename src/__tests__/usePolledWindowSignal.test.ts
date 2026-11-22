@@ -293,6 +293,70 @@ describe('usePolledWindowSignal: a day boundary crossed while mounted', () => {
     expect(result.current.displayData).toBeNull();
   });
 
+  // A 2xx whose payload is not dated today (a client clock that lags after
+  // sleep, a server on another day) is hidden by the date check. Saying nothing
+  // would leave the panel on "loading" for as long as the dates disagree, so it
+  // is an error, by value, and it clears on the first poll where they agree.
+  it('surfaces an error naming both dates when a 2xx is not dated today, and clears it once they agree', async () => {
+    today = MON;
+    fetchMock.mockResolvedValue(ok(payload({ date: FRI, value: 1 })));
+    const { result } = renderRecorded();
+    await step(0);
+
+    expect(result.current.error).toBe(
+      'Payload is dated 2026-06-05, but today is 2026-06-08',
+    );
+    expect(result.current.displayData).toBeNull();
+    expect(result.current.loading).toBe(false);
+
+    fetchMock.mockResolvedValue(ok(payload({ date: MON, value: 2 })));
+    await step(45_000);
+
+    expect(result.current.error).toBeNull();
+    expect(result.current.displayData?.value).toBe(2);
+  });
+
+  it('names an undated 2xx as undated', async () => {
+    today = MON;
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ value: 1 }) });
+    const { result } = renderRecorded();
+    await step(0);
+
+    expect(result.current.error).toBe(
+      'Payload is undated, but today is 2026-06-08',
+    );
+    expect(result.current.displayData).toBeNull();
+  });
+
+  it('surfaces a network failure by its message and shows no payload', async () => {
+    today = MON;
+    fetchMock.mockRejectedValue(new Error('network down'));
+    const { result } = renderRecorded();
+    await step(0);
+
+    expect(result.current.error).toBe('network down');
+    expect(result.current.displayData).toBeNull();
+    expect(result.current.loading).toBe(false);
+  });
+
+  it('surfaces a 2xx whose body is not JSON by its message and shows no payload', async () => {
+    today = MON;
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => {
+        throw new SyntaxError('Unexpected token < in JSON at position 0');
+      },
+    });
+    const { result } = renderRecorded();
+    await step(0);
+
+    expect(result.current.error).toBe(
+      'Unexpected token < in JSON at position 0',
+    );
+    expect(result.current.displayData).toBeNull();
+    expect(result.current.loading).toBe(false);
+  });
+
   it('makes exactly one fetch for a mount inside the window', async () => {
     fetchMock.mockResolvedValue(ok(payload({ date: FRI, value: 1 })));
     renderRecorded();

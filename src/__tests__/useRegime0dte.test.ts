@@ -134,6 +134,26 @@ describe('useRegime0dte', () => {
     );
   });
 
+  it('surfaces an error, and shows nothing, when the server answers with another day’s payload', async () => {
+    // The clock is 2026-06-05 10:00 CT and the server stamps 2026-06-04: a
+    // payload the date check hides. Silence would leave the panel on "loading".
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => makeResponse({ date: '2026-06-04' }),
+    });
+
+    const { result } = renderHook(() => useRegime0dte());
+
+    await waitFor(() => {
+      expect(result.current.error).not.toBeNull();
+    });
+    expect(result.current.error).toBe(
+      'Payload is dated 2026-06-04, but today is 2026-06-05',
+    );
+    expect(result.current.displayData).toBeNull();
+    expect(result.current.isWindowOpen).toBe(true);
+  });
+
   it('makes exactly one fetch for a mount inside the window, then polls at its cadence', async () => {
     vi.useFakeTimers({ now: ctInstant('2026-06-05', 10, 0) });
     fetchMock.mockResolvedValue({ ok: true, json: async () => makeResponse() });
@@ -373,18 +393,35 @@ describe('useRegime0dte across days while mounted', () => {
   });
 
   function renderRecorded() {
-    const committed: { open: boolean; date: string | null }[] = [];
+    // `at` is the fake clock when the render committed, so a test can ask for
+    // every commit at or after an instant, the roll's own included.
+    const committed: { open: boolean; date: string | null; at: number }[] = [];
     const hook = renderHook(() => {
       const r = useRegime0dte();
       useEffect(() => {
         committed.push({
           open: r.isWindowOpen,
           date: r.displayData?.date ?? null,
+          at: Date.now(),
         });
       });
       return r;
     });
     return { ...hook, committed };
+  }
+
+  /**
+   * The commits made at or after `instant`. Never empty: the roll itself
+   * commits at ET midnight plus the store's 1 s, so a test that filters on
+   * time cannot pass by looking at nothing.
+   */
+  function commitsFrom(
+    committed: { open: boolean; date: string | null; at: number }[],
+    instant: number,
+  ) {
+    const late = committed.filter((c) => c.at >= instant);
+    expect(late.length).toBeGreaterThan(0);
+    return late;
   }
 
   /** One act per step: advance the fake clock to a CT wall clock. */
@@ -426,7 +463,8 @@ describe('useRegime0dte across days while mounted', () => {
     // ET midnight is 23:00 CT: the badge source clears, an hour before CT's.
     await advanceTo(FRI, 23, 1);
     expect(hook.result.current.displayData).toBeNull();
-    const afterMidnight = hook.committed.length;
+    // Saturday 00:00 ET, the instant the clock's own roll comes 1 s after.
+    const etMidnight = Date.parse('2026-06-06T04:00:00Z');
 
     await advanceTo(SAT, 12, 0);
     await advanceTo(SUN, 12, 0);
@@ -435,7 +473,7 @@ describe('useRegime0dte across days while mounted', () => {
     expect(hook.result.current.isWindowOpen).toBe(false);
     expect(hook.result.current.displayData).toBeNull();
     expect(fetchMock.mock.calls.length).toBe(callsBeforeMonday);
-    return { ...hook, afterMidnight, callsBeforeMonday };
+    return { ...hook, etMidnight, callsBeforeMonday };
   }
 
   it('shows no payload after ET midnight, and fetches at once when Monday’s window opens', async () => {
@@ -449,8 +487,9 @@ describe('useRegime0dte across days while mounted', () => {
     expect(t.result.current.isWindowOpen).toBe(true);
     expect(fetchMock.mock.calls.length).toBe(t.callsBeforeMonday + 1);
     expect(t.result.current.displayData?.date).toBe(MON);
-    // From ET midnight on, no committed render showed Friday's payload.
-    for (const c of t.committed.slice(t.afterMidnight)) {
+    // From ET midnight on, the roll's commit included, no committed render
+    // showed Friday's payload.
+    for (const c of commitsFrom(t.committed, t.etMidnight)) {
       expect(c.date).not.toBe(FRI);
     }
   });
@@ -472,7 +511,7 @@ describe('useRegime0dte across days while mounted', () => {
       expect(t.result.current.displayData).toBeNull();
       expect(t.result.current.error).toBe('HTTP 500');
     }
-    for (const c of t.committed.slice(t.afterMidnight)) {
+    for (const c of commitsFrom(t.committed, t.etMidnight)) {
       expect(c.date).toBeNull();
     }
   });
@@ -495,7 +534,8 @@ describe('useRegime0dte across days while mounted', () => {
     expect(result.current.isWindowOpen).toBe(false);
     await advanceTo(FRI_H, 23, 1);
     expect(result.current.displayData).toBeNull();
-    const afterMidnight = committed.length;
+    // Saturday 2026-09-05 00:00 ET.
+    const etMidnight = Date.parse('2026-09-05T04:00:00Z');
     const calls = fetchMock.mock.calls.length;
 
     // Monday 08:31, mid-day and the evening: the holiday keeps it shut.
@@ -508,7 +548,7 @@ describe('useRegime0dte across days while mounted', () => {
     expect(result.current.isWindowOpen).toBe(false);
     expect(result.current.displayData).toBeNull();
     expect(fetchMock.mock.calls.length).toBe(calls);
-    for (const c of committed.slice(afterMidnight)) {
+    for (const c of commitsFrom(committed, etMidnight)) {
       expect(c.date).toBeNull();
     }
 
