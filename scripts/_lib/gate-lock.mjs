@@ -43,6 +43,15 @@ export const HANDSHAKE_MS = 2_000;
  */
 export const RETRY_MS = 250;
 
+/**
+ * How many refused connects in a row make a waiter say it is waiting. One is
+ * the blip a handover makes (the name is listed for a moment after its holder
+ * went), two is still a blip; three in a row, about half a second at RETRY_MS,
+ * is a name that is taken but answers nobody, and the waiter would otherwise
+ * stay silent for the whole wait cap.
+ */
+export const REFUSALS_BEFORE_ANNOUNCING = 3;
+
 /** A waiter gives up after this long: about four gates of queue. */
 export const WAIT_CAP_MS = 120 * 60_000;
 
@@ -80,8 +89,9 @@ const MINUTE_MS = 60_000;
  * directory, so every worktree of the repo gets the same name. Throws (ENOENT)
  * when that directory does not exist.
  *
- * A pipe path on Windows, a Linux abstract socket (the leading NUL) elsewhere:
- * neither leaves a file behind to go stale.
+ * A pipe path on Windows, a Linux abstract socket (the leading NUL): neither
+ * leaves a file behind to go stale. Any other platform throws, so a gate there
+ * fails at once and says why, not after two hours of listens that cannot work.
  *
  * @param {string} rawCommonDir
  * @param {string} cwd
@@ -89,6 +99,11 @@ const MINUTE_MS = 60_000;
  */
 export function gatePipeName(rawCommonDir, cwd) {
   const windows = process.platform === 'win32';
+  if (!windows && process.platform !== 'linux') {
+    throw new Error(
+      `review-gate: the gate lock supports Windows and Linux, not ${process.platform}`,
+    );
+  }
   const real = realpathSync.native(path.resolve(cwd, rawCommonDir));
   // realpath already returns the on-disk case on Windows, which does not tell
   // `C:` from `c:`; lowercasing too keeps the name from depending on that.
@@ -174,6 +189,20 @@ function sameHolder(a, b) {
  *   closing sends the waiter straight to trying; the fallback tick sends it
  *   there too, and that never opens a second connection.
  *
+ * The lock rules (R6):
+ *
+ * - No renew and no TTL. The OS ties the lock to this process: it is held for
+ *   as long as the process lives and has not released, and a process that dies
+ *   in any way frees it at once.
+ * - It fails closed. It resolves only after a successful `listen`. Every other
+ *   outcome (an error, a name that answers nobody, a holder that hangs up) is
+ *   reported or waited out and retried, and the wait cap rejects. Nothing is
+ *   ever read as "free" without a `listen` that said so.
+ * - The wait cap (120 min) is longer than one hold cap (75 min), so a queue
+ *   that is moving is not cut off by it.
+ * - The caller must exit non-zero on a rejection and must never run its chain
+ *   without the lock.
+ *
  * @param {{
  *   pipeName: string,
  *   holder: { worktree: string },
@@ -196,6 +225,17 @@ export function acquireGateLock({ pipeName, holder, onWait }) {
     let known = null;
     /** Whether anything has been shown yet, for `announce`. */
     let announced = false;
+    /**
+     * The holder whose hang-up was last answered with an immediate retry
+     * (undefined: none yet; null: an unknown holder).
+     */
+    let lastRetried;
+    /**
+     * Refused connects so far. It is never reset: a connection that opens
+     * always announces, after which `announce` does nothing more, so the count
+     * only ever matters while nothing has been shown.
+     */
+    let refusals = 0;
     let fallbackTimer;
     let retryTimer;
     let progressTimer;
@@ -266,12 +306,13 @@ export function acquireGateLock({ pipeName, holder, onWait }) {
           }
           return;
         }
+        // The warning says it. A "waiting for the gate" line here would name a
+        // holder nobody has seen.
         warn(
           `cannot take the gate lock ${shown(pipeName)}: ${codeOf(err)}; ` +
             `trying again in ${FALLBACK_MS / 1000} s`,
         );
         phase = 'idle';
-        announce(known);
       };
       server.once('error', onError);
       server.listen(pipeName, () => {
@@ -328,13 +369,24 @@ export function acquireGateLock({ pipeName, holder, onWait }) {
         client = null;
         clearTimeout(handshakeTimer);
         if (handshaken) {
-          // The holder released, or died: take its place if we can.
-          if (phase === 'idle') tryListen();
+          // The holder released, or died: take its place if we can, at once.
+          // A holder that is still there to connect to after it hung up (not
+          // a real gate, which never comes back) is retried after a pause the
+          // second time, or the two would loop with nothing between them.
+          if (phase === 'idle') {
+            const again =
+              lastRetried !== undefined && sameHolder(lastRetried, known);
+            lastRetried = known;
+            if (again) retrySoon();
+            else tryListen();
+          }
           return;
         }
         if (!connected && err !== undefined) {
           const code = codeOf(err);
           if (code === 'ENOENT' || code === 'ECONNREFUSED') {
+            refusals += 1;
+            if (refusals >= REFUSALS_BEFORE_ANNOUNCING) announce(known);
             retrySoon();
             return;
           }
@@ -343,7 +395,6 @@ export function acquireGateLock({ pipeName, holder, onWait }) {
               `trying again in ${FALLBACK_MS / 1000} s`,
           );
           phase = 'idle';
-          announce(known);
           return;
         }
         // Connected, then hung up before it said who it is.

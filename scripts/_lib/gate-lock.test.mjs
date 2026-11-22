@@ -25,6 +25,7 @@ import {
   HANDSHAKE_MS,
   HOLD_CAP_MS,
   PROGRESS_MS,
+  REFUSALS_BEFORE_ANNOUNCING,
   RETRY_MS,
   WAIT_CAP_MS,
   acquireGateLock,
@@ -50,6 +51,14 @@ setupScratchGit();
  */
 const TEST_TIMEOUT = 30_000;
 
+/**
+ * How long a test waits, in real time, for one thing it expects to happen (a
+ * line, a connection, a release). Past it the wait fails and names the thing,
+ * so a guard that is broken fails its test in seconds and says what never
+ * came, instead of hanging until TEST_TIMEOUT and then hanging the clean-up.
+ */
+const WAIT_DEADLINE_MS = 10_000;
+
 const T0 = Date.UTC(2026, 10, 22, 12, 0, 0);
 const MINUTE = 60_000;
 const MODULE_URL = new URL('./gate-lock.mjs', import.meta.url).href;
@@ -74,6 +83,28 @@ function turn() {
   return new Promise((resolve) => setImmediate(resolve));
 }
 
+/**
+ * `promise`, or a failure naming `what` once WAIT_DEADLINE_MS of real time has
+ * passed. Real timers: the fake clock is whatever the test left it at.
+ */
+function soon(promise, what) {
+  let timer;
+  const deadline = new Promise((_resolve, reject) => {
+    timer = realSetTimeout(
+      () =>
+        reject(
+          new Error(
+            `gave up after ${WAIT_DEADLINE_MS / 1000} s waiting for ${what}`,
+          ),
+        ),
+      WAIT_DEADLINE_MS,
+    );
+  });
+  return Promise.race([promise, deadline]).finally(() =>
+    realClearTimeout(timer),
+  );
+}
+
 /** The calls to an `onWait`, and a promise for the nth one. */
 function recorder() {
   const calls = [];
@@ -90,13 +121,16 @@ function recorder() {
     },
     reach(count) {
       if (calls.length >= count) return Promise.resolve();
-      return new Promise((resolve) => waiting.push({ count, resolve }));
+      return soon(
+        new Promise((resolve) => waiting.push({ count, resolve })),
+        `waiting line ${count}`,
+      );
     },
   };
 }
 
-/** A promise for the nth of something that happens one at a time. */
-function counter() {
+/** A count of something that happens one at a time, and a promise for the nth. */
+function counter(label) {
   let count = 0;
   let waiting = [];
   return {
@@ -113,31 +147,63 @@ function counter() {
     },
     reach(target) {
       if (count >= target) return Promise.resolve();
-      return new Promise((resolve) => waiting.push({ target, resolve }));
+      return soon(
+        new Promise((resolve) => waiting.push({ target, resolve })),
+        `${label} number ${target}`,
+      );
     },
   };
 }
 
 /** A promise for the socket or server closing. (events.once rejects on an 'error'.) */
 function closed(emitter) {
-  return new Promise((resolve) => emitter.once('close', resolve));
+  return soon(
+    new Promise((resolve) => emitter.once('close', resolve)),
+    'a socket to close',
+  );
 }
 
-/** The holder's line, as a client sees it (net.createConnection: see below). */
+/**
+ * The holder's line, as a client sees it (net.createConnection: see below).
+ * Rejects on an error, a close before the line, or WAIT_DEADLINE_MS, and
+ * destroys its socket whichever way it ends.
+ */
 function readHolderLine(pipeName) {
   return new Promise((resolve, reject) => {
     const socket = net.createConnection(pipeName);
     let text = '';
+    const finish = (error, line) => {
+      realClearTimeout(timer);
+      socket.destroy();
+      if (error) reject(error);
+      else resolve(line);
+    };
+    const timer = realSetTimeout(
+      () =>
+        finish(new Error(`no holder line within ${WAIT_DEADLINE_MS / 1000} s`)),
+      WAIT_DEADLINE_MS,
+    );
     socket.setEncoding('utf8');
     socket.on('data', (chunk) => {
       text += chunk;
       const end = text.indexOf('\n');
       if (end === -1) return;
-      socket.destroy();
-      resolve(JSON.parse(text.slice(0, end)));
+      try {
+        finish(undefined, JSON.parse(text.slice(0, end)));
+      } catch (error) {
+        finish(error);
+      }
     });
-    socket.on('error', reject);
+    socket.on('error', (error) => finish(error));
+    socket.on('close', () =>
+      finish(new Error('the holder closed before it sent its line')),
+    );
   });
+}
+
+/** A lock's release, failing with that named if it does not finish. */
+function release(lock) {
+  return soon(lock.release(), 'a lock to release');
 }
 
 const cleanups = [];
@@ -180,9 +246,9 @@ const realSleep = (ms) => new Promise((resolve) => realSetTimeout(resolve, ms));
  * milliseconds after its holder is gone (a probe on 11-21 saw up to 300 ms),
  * and then the waiter's listen fails once, its connect finds nothing, and it
  * takes the lock at its RETRY_MS retry. So the fake clock moves here in
- * retry-sized steps, each after a real quarter second for the sockets, and
+ * retry-sized steps, each after a real tenth of a second for the sockets, and
  * never as far as the fallback tick: a handover that needs that is a missed
- * close event, and fails.
+ * close event, and fails (after about six seconds of real time).
  */
 async function handover(promise) {
   const started = Date.now();
@@ -192,7 +258,7 @@ async function handover(promise) {
   };
   promise.then(mark, mark);
   while (!done) {
-    await Promise.race([promise.catch(() => {}), realSleep(250)]);
+    await Promise.race([promise.catch(() => {}), realSleep(100)]);
     if (done) break;
     vi.advanceTimersByTime(RETRY_MS);
     expect(Date.now() - started).toBeLessThan(FALLBACK_MS - RETRY_MS);
@@ -204,14 +270,23 @@ async function handover(promise) {
  * Release every lock won and let every waiter that is left win in its turn,
  * so no test leaves a pipe held or a socket open for the next one. A waiter
  * parked on a retry timer needs the fake clock to move, so each round moves
- * it, then gives the sockets a few real milliseconds.
+ * it, then gives the sockets a few real milliseconds. It gives up, and says
+ * so, after WAIT_DEADLINE_MS of real time, so a test that broke a guard fails
+ * in its own words and does not hang its hook.
  */
 async function drain() {
+  const started = performance.now();
   for (;;) {
+    if (performance.now() - started > WAIT_DEADLINE_MS) {
+      const open = tracked.filter((entry) => !entry.settled).length;
+      throw new Error(
+        `clean-up gave up after ${WAIT_DEADLINE_MS / 1000} s with ${open} waiter(s) still waiting`,
+      );
+    }
     const winner = tracked.find((entry) => entry.lock && !entry.released);
     if (winner) {
       winner.released = true;
-      await winner.lock.release();
+      await release(winner.lock);
       continue;
     }
     const open = tracked.filter((entry) => !entry.settled);
@@ -237,7 +312,7 @@ async function drain() {
  */
 async function fakeHolder(pipeName, onConnection = () => {}) {
   const sockets = [];
-  const connections = counter();
+  const connections = counter('a connection to the stand-in holder');
   const server = new net.Server((socket) => {
     sockets.push(socket);
     socket.on('error', () => {});
@@ -254,11 +329,30 @@ async function fakeHolder(pipeName, onConnection = () => {}) {
     async close() {
       for (const socket of sockets) socket.destroy();
       if (server.listening)
-        await new Promise((resolve) => server.close(resolve));
+        await soon(
+          new Promise((resolve) => server.close(resolve)),
+          'the stand-in holder to close',
+        );
     },
   };
   cleanups.push(() => holder.close());
   return holder;
+}
+
+/**
+ * Connect to `squatter` `times` times, each a round trip through its server:
+ * the next starts when the last has arrived. The server takes connections in
+ * order, so a lock that connected in between would show in its count, and a
+ * lock that sits on its timer would not.
+ */
+async function probe(pipeName, squatter, times) {
+  for (let i = 0; i < times; i += 1) {
+    const target = squatter.connections.count + 1;
+    const socket = net.createConnection(pipeName);
+    socket.on('error', () => {});
+    cleanups.push(() => socket.destroy());
+    await squatter.connections.reach(target);
+  }
 }
 
 /** A holder in a child process, so the test can kill it the hard way. */
@@ -319,7 +413,7 @@ async function spawnHolder(pipeName, worktree) {
 function spyOnConnect() {
   const original = net.connect;
   const sockets = [];
-  const made = counter();
+  const made = counter('a connect by the lock');
   vi.spyOn(net, 'connect').mockImplementation((...args) => {
     const socket = original(...args);
     sockets.push(socket);
@@ -447,6 +541,15 @@ describe('gatePipeName', { timeout: TEST_TIMEOUT }, () => {
     const repo = makeTempDir('gate-lock-missing-');
     expect(() => gatePipeName('.git', repo)).toThrow(/ENOENT/);
   });
+
+  it('refuses a platform it has no lock name for, instead of failing to listen for two hours', () => {
+    const repo = makeTempDir('gate-lock-platform-');
+    mkdirSync(path.join(repo, '.git'));
+    pretendPlatform('darwin');
+    expect(() => gatePipeName('.git', repo)).toThrow(
+      /supports Windows and Linux, not darwin/,
+    );
+  });
 });
 
 describe('the lock', { timeout: TEST_TIMEOUT }, () => {
@@ -502,7 +605,7 @@ describe('the lock', { timeout: TEST_TIMEOUT }, () => {
     const waiter = acquire(pipe, 'wt-B', wait.onWait);
     await wait.reach(1);
 
-    await holder.release();
+    await release(holder);
     // At most a retry's worth of fake time passes, never a fallback tick: the
     // holder's socket closing hands the lock over.
     await handover(waiter);
@@ -515,12 +618,12 @@ describe('the lock', { timeout: TEST_TIMEOUT }, () => {
     const pipe = uniquePipe();
     const holder = await acquire(pipe, 'wt-A');
 
-    await holder.release();
-    await holder.release();
+    await release(holder);
+    await release(holder);
 
     const again = await acquire(pipe, 'wt-B');
     expect(await readHolderLine(pipe)).toMatchObject({ worktree: 'wt-B' });
-    await again.release();
+    await release(again);
   });
 
   it(
@@ -563,7 +666,7 @@ describe('the lock', { timeout: TEST_TIMEOUT }, () => {
         [...remaining].map((i) => [i, waits[i].calls.length]),
       );
       winners.length = 0;
-      await holder.release();
+      await release(holder);
       await handover(Promise.race([...remaining].map((i) => waiters[i])));
       await turn();
       expect(winners).toHaveLength(1);
@@ -717,24 +820,57 @@ describe('the lock', { timeout: TEST_TIMEOUT }, () => {
       await wait.reach(1);
       expect(wait.calls[0].holder).toBeNull();
 
-      // Probe connections go through the same server, one round trip each.
-      // A waiter that retried at once would get in among them and the count
-      // would run past the probes; a waiter that waits for its timer does not.
-      const probes = 5;
-      for (let i = 0; i < probes; i += 1) {
-        const probe = net.createConnection(pipe);
-        probe.on('error', () => {});
-        await squatter.connections.reach(2 + i);
-      }
-      expect(squatter.connections.count).toBe(1 + probes);
+      // A waiter that retried at once would get in among the probes and the
+      // count would run past them; a waiter that waits for its timer does not.
+      await probe(pipe, squatter, 5);
+      expect(squatter.connections.count).toBe(1 + 5);
       expect(connects.sockets).toHaveLength(1);
 
-      // It tries again when the retry delay has passed, and the same unknown
-      // holder is not announced a second time.
-      vi.advanceTimersByTime(RETRY_MS);
-      await squatter.connections.reach(2 + probes);
+      // One millisecond short of the retry delay, still nothing; the
+      // millisecond that completes it brings the retry. The delay is pinned to
+      // RETRY_MS here, not only to whatever RETRY_MS is.
+      vi.advanceTimersByTime(RETRY_MS - 1);
+      await probe(pipe, squatter, 1);
+      expect(squatter.connections.count).toBe(1 + 5 + 1);
+      expect(connects.sockets).toHaveLength(1);
+
+      vi.advanceTimersByTime(1);
+      await squatter.connections.reach(1 + 5 + 1 + 1);
       await closed(connects.sockets[1]);
       expect(connects.sockets).toHaveLength(2);
+      // The same unknown holder is not announced a second time.
+      expect(wait.calls).toHaveLength(1);
+    });
+
+    it('does not spin on a holder that names itself and hangs up, again and again', async () => {
+      const connects = spyOnConnect();
+      const pipe = uniquePipe();
+      const line = `${JSON.stringify({ pid: 4321, worktree: 'flaky-wt', startedAt: T0 })}\n`;
+      const squatter = await fakeHolder(pipe, (socket) => socket.end(line));
+      const wait = recorder();
+      acquire(pipe, 'wt-B', wait.onWait);
+      await wait.reach(1);
+      expect(wait.calls[0].holder).toMatchObject({ worktree: 'flaky-wt' });
+
+      // The first hang-up is how a real handover looks, so it is retried at
+      // once: one more connect. The same holder hanging up again is something
+      // squatting on the name, and the retry after it waits for its timer.
+      await connects.made.reach(2);
+      await closed(connects.sockets[1]);
+      await probe(pipe, squatter, 5);
+      expect(connects.sockets).toHaveLength(2);
+      expect(squatter.connections.count).toBe(2 + 5);
+
+      vi.advanceTimersByTime(RETRY_MS - 1);
+      await probe(pipe, squatter, 1);
+      expect(connects.sockets).toHaveLength(2);
+
+      vi.advanceTimersByTime(1);
+      await connects.made.reach(3);
+      await closed(connects.sockets[2]);
+      await probe(pipe, squatter, 1);
+      expect(connects.sockets).toHaveLength(3);
+      // The holder is the same one each time: one line, however many rounds.
       expect(wait.calls).toHaveLength(1);
     });
   });
@@ -754,14 +890,14 @@ describe('the lock', { timeout: TEST_TIMEOUT }, () => {
     // on the one-minute progress line.)
     vi.advanceTimersByTime(2 * FALLBACK_MS);
     expect(servers()).toHaveLength(madeBefore + 1);
-    await once(servers().at(-1), 'error');
+    await soon(once(servers().at(-1), 'error'), 'the listen to fail');
     expect(connects.sockets).toHaveLength(1);
 
     // Each later tick is one more listen that finds the name taken, and
     // still no second connection.
     vi.advanceTimersByTime(FALLBACK_MS);
     expect(servers()).toHaveLength(madeBefore + 2);
-    await once(servers().at(-1), 'error');
+    await soon(once(servers().at(-1), 'error'), 'the listen to fail');
     expect(connects.sockets).toHaveLength(1);
     expect(wait.calls).toHaveLength(1);
   });
@@ -776,7 +912,7 @@ describe('the lock', { timeout: TEST_TIMEOUT }, () => {
     await wait.reach(1);
     expect(vi.getTimerCount()).toBeGreaterThan(0);
 
-    await holder.release();
+    await release(holder);
     await handover(waiter);
 
     expect(vi.getTimerCount()).toBe(0);
@@ -808,16 +944,64 @@ describe('the lock', { timeout: TEST_TIMEOUT }, () => {
     const waiter = acquire(pipe, 'wt-A');
     await connects.made.reach(1);
     await closed(connects.sockets[0]);
-    await turn();
-    expect(isSettled(waiter)).toBe(false);
 
-    vi.advanceTimersByTime(RETRY_MS);
-    await waiter;
+    // One millisecond short of the retry delay the waiter has not retried: a
+    // retry that fired early would have taken the free name in the real tenth
+    // of a second given here. The millisecond that completes it does.
+    vi.advanceTimersByTime(RETRY_MS - 1);
+    await realSleep(100);
+    expect(isSettled(waiter)).toBe(false);
+    vi.advanceTimersByTime(1);
+    await soon(waiter, 'the retry to take the lock');
     expect(connects.sockets).toHaveLength(1);
   });
 
+  it('keeps its retry delay long enough that a taken but unreachable name cannot spin', () => {
+    expect(RETRY_MS).toBeGreaterThanOrEqual(100);
+  });
+
+  it('says so once, as an unknown holder, when the name is taken but nothing answers', async () => {
+    const connects = spyOnConnect();
+    const pipe = uniquePipe();
+    // Every listen finds the name taken, and every connect finds nothing: a
+    // broken name, not a handover. The first refusal is the blip a handover
+    // makes and prints nothing; the third says something is wrong.
+    vi.spyOn(net.Server.prototype, 'listen').mockImplementation(function () {
+      process.nextTick(() =>
+        this.emit('error', codeError('in use', 'EADDRINUSE')),
+      );
+      return this;
+    });
+    const wait = recorder();
+    acquire(pipe, 'wt-A', wait.onWait);
+
+    for (let refusal = 1; refusal <= REFUSALS_BEFORE_ANNOUNCING; refusal += 1) {
+      await connects.made.reach(refusal);
+      await closed(connects.sockets[refusal - 1]);
+      if (refusal < REFUSALS_BEFORE_ANNOUNCING) {
+        expect(wait.calls).toEqual([]);
+        vi.advanceTimersByTime(RETRY_MS);
+      }
+    }
+
+    await wait.reach(1);
+    expect(wait.calls[0].holder).toBeNull();
+    expect(wait.calls[0].line).toBe(
+      'review-gate: waiting for the gate held by an unknown holder',
+    );
+
+    // Said once: the next refusal adds no line.
+    vi.advanceTimersByTime(RETRY_MS);
+    await connects.made.reach(REFUSALS_BEFORE_ANNOUNCING + 1);
+    await closed(connects.sockets[REFUSALS_BEFORE_ANNOUNCING]);
+    expect(wait.calls).toHaveLength(1);
+  });
+
   it('reports a listen error that is not EADDRINUSE by code, and retries it', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const warned = counter('a warning');
+    const warn = vi
+      .spyOn(console, 'warn')
+      .mockImplementation(() => warned.hit());
     vi.spyOn(net.Server.prototype, 'listen').mockImplementationOnce(
       function () {
         process.nextTick(() =>
@@ -830,7 +1014,7 @@ describe('the lock', { timeout: TEST_TIMEOUT }, () => {
     const wait = recorder();
 
     const waiter = acquire(pipe, 'wt-A', wait.onWait);
-    await wait.reach(1);
+    await warned.reach(1);
     await turn();
 
     // Not free: the error is not a verdict on the name, and nothing is held.
@@ -838,15 +1022,21 @@ describe('the lock', { timeout: TEST_TIMEOUT }, () => {
     expect(warn).toHaveBeenCalledTimes(1);
     expect(warn.mock.calls[0][0]).toContain('EACCES');
     expect(warn.mock.calls[0][0]).toContain(pipe.replaceAll('\0', '@'));
-    expect(wait.calls[0].holder).toBeNull();
+    // The warning says it. A "waiting for the gate" line would name a holder
+    // that is not there.
+    expect(wait.calls).toEqual([]);
 
     // The next tick tries again, and this time the name is free.
     vi.advanceTimersByTime(FALLBACK_MS);
-    await waiter;
+    await soon(waiter, 'the retry to take the lock');
+    expect(wait.calls).toEqual([]);
   });
 
   it('reports a connect error that is not a missing holder by code, and retries it', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const warned = counter('a warning');
+    const warn = vi
+      .spyOn(console, 'warn')
+      .mockImplementation(() => warned.hit());
     const pipe = uniquePipe();
     const squatter = await fakeHolder(pipe);
     vi.spyOn(net, 'connect').mockImplementationOnce(() => {
@@ -859,13 +1049,16 @@ describe('the lock', { timeout: TEST_TIMEOUT }, () => {
     const wait = recorder();
 
     const waiter = acquire(pipe, 'wt-B', wait.onWait);
-    await wait.reach(1);
+    await warned.reach(1);
     await turn();
 
     expect(isSettled(waiter)).toBe(false);
     expect(warn).toHaveBeenCalledTimes(1);
     expect(warn.mock.calls[0][0]).toContain('EACCES');
+    expect(warn.mock.calls[0][0]).toContain(pipe.replaceAll('\0', '@'));
     expect(squatter.connections.count).toBe(0);
+    // The warning says it; no holder has been seen to wait for.
+    expect(wait.calls).toEqual([]);
 
     // The tick after it finds the name taken and connects for real.
     vi.advanceTimersByTime(FALLBACK_MS);
@@ -882,7 +1075,10 @@ describe('the lock', { timeout: TEST_TIMEOUT }, () => {
     await wait.reach(1);
 
     vi.advanceTimersByTime(WAIT_CAP_MS);
-    const error = await waiter.catch((caught) => caught);
+    const error = await soon(
+      waiter.catch((caught) => caught),
+      'the wait cap to reject',
+    );
 
     expect(error).toBeInstanceOf(Error);
     expect(error.message).toContain('wt-A');
@@ -923,7 +1119,10 @@ describe('the lock', { timeout: TEST_TIMEOUT }, () => {
     await wait.reach(1);
 
     vi.advanceTimersByTime(WAIT_CAP_MS);
-    const error = await waiter.catch((caught) => caught);
+    const error = await soon(
+      waiter.catch((caught) => caught),
+      'the wait cap to reject',
+    );
 
     expect(error.message).toContain('unknown holder');
     expect(error.message).toContain('report to the owner');
@@ -934,11 +1133,11 @@ describe('the lock', { timeout: TEST_TIMEOUT }, () => {
     const pipe = uniquePipe();
     // Hold the first listen back, so the cap fires while it is in flight.
     const realListen = net.Server.prototype.listen;
-    let release = () => {};
+    let startListen = () => {};
     vi.spyOn(net.Server.prototype, 'listen').mockImplementationOnce(function (
       ...args
     ) {
-      release = () => realListen.apply(this, args);
+      startListen = () => realListen.apply(this, args);
       return this;
     });
     const waiter = acquire(pipe, 'wt-A');
@@ -946,8 +1145,8 @@ describe('the lock', { timeout: TEST_TIMEOUT }, () => {
     await expect(waiter).rejects.toThrow(/report to the owner/);
 
     const server = servers()[0];
-    release();
-    await once(server, 'listening');
+    startListen();
+    await soon(once(server, 'listening'), 'the held-back listen to finish');
 
     // The listen succeeded after the caller was told "no": it must not keep
     // the name, or every later gate would queue behind a lock nobody has.
