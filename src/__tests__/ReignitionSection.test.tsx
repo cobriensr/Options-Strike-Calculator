@@ -13,6 +13,11 @@ import type {
   LotteryFire,
   LotteryFireMacro,
 } from '../components/LotteryFinder/types';
+import {
+  srHintText,
+  titledElementsNeedingHint,
+  titledGenericsWithoutHint,
+} from './helpers/aria';
 
 // Stub LotteryRow so the test focuses on the section's own behavior.
 // The stub exposes the fire id + the snapshot it received so we can
@@ -369,5 +374,59 @@ describe('ReignitionSection: populated', () => {
       expect(ds.exitPolicy).toBe('realizedHard30mPct');
       expect(ds.marketOpen).toBe('true');
     }
+  });
+});
+
+describe('ReignitionSection: hover text for screen readers', () => {
+  const FLOOR_BLIND_HINT =
+    'ranks by cadence, skipping the Take-It floor, score, premium and quality filters';
+
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  function renderSection() {
+    return render(
+      <ReignitionSection
+        fires={[makeFire({ id: 1, underlyingSymbol: 'QQQ' })]}
+        exitPolicy="realizedTrail30_10Pct"
+        marketOpen={true}
+        getFlowSnapshot={() => null}
+      />,
+    );
+  }
+
+  it('explains the floor-blind pill without repeating its label, and keeps its title', () => {
+    renderSection();
+    const pill = screen.getByTestId('reignition-floorblind-pill');
+    expect(srHintText(pill)).toBe(FLOOR_BLIND_HINT);
+    expect(pill).toHaveAttribute(
+      'title',
+      "Floor-blind: this panel ranks by fire cadence and ignores the TAKE-IT floor, score, premium, and quality filters (it still respects ticker/type/mode/TOD). It surfaces the day's most re-ignited chains even when the model scored them below your floor — so it can show movers the main list hides.",
+    );
+  });
+
+  it('reads the hint as part of the section name, which the heading names', () => {
+    renderSection();
+    const region = screen.getByRole('region', { name: /Hot Right Now/ });
+    // dom-accessibility-api joins the pill and its hint without the space a
+    // browser keeps, so the pill's own words are left out of the match.
+    expect(region).toHaveAccessibleName(
+      expect.stringContaining(`— ${FLOOR_BLIND_HINT}`),
+    );
+  });
+
+  it('keeps the hint from matching the "ignores the TAKE-IT floor" caption query', () => {
+    renderSection();
+    // Only the wide-screen caption says "ignores"; the hint says "skipping".
+    expect(screen.getAllByText(/ignores the TAKE-IT floor/i)).toHaveLength(1);
+  });
+
+  it('leaves no titled generic element without a hint, and the pill is the only one it checks', () => {
+    const { container } = renderSection();
+    expect(titledElementsNeedingHint(container)).toEqual([
+      screen.getByTestId('reignition-floorblind-pill'),
+    ]);
+    expect(titledGenericsWithoutHint(container)).toEqual([]);
   });
 });

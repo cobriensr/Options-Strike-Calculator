@@ -55,6 +55,7 @@ import {
   type FilterChipColor,
 } from '../ui/filter-toolbar-tokens.js';
 import { FilterChip } from '../ui/FilterChip.js';
+import { SrHint } from '../ui/SrHint.js';
 
 const PAGE_SIZE = 50;
 /** localStorage keys for persisting user preferences. */
@@ -1378,7 +1379,7 @@ export function LotteryFinderSection({
           activeColor="amber"
           testId="lottery-show-filtered-toggle"
           onClick={() => setShowFilteredTickers(!showFilteredTickers)}
-          title="Show filtered tickers — bypass the server-side Q1/Q2 inversion-quality suppression and include the bottom-quintile tickers. Off by default."
+          title="Show filtered tickers — bypass the server-side Q1/Q2 inversion-quality suppression and include the bottom-two-quintile tickers. Off by default."
           ariaPressed={showFilteredTickers}
         >
           Show filtered tickers
@@ -1774,6 +1775,7 @@ export function LotteryFinderSection({
                   title="Filtered to the selected 1-minute point-in-time bucket"
                 >
                   (1-min)
+                  <SrHint>filtered to the selected 1-minute bucket</SrHint>
                 </span>
               )}
             </div>
@@ -1816,6 +1818,7 @@ export function LotteryFinderSection({
                   title="Last updated"
                 >
                   {formatTimeCT(fetchedAt)} CT
+                  <SrHint>last updated</SrHint>
                 </span>
               )}
               {isHistorical && (
@@ -1824,6 +1827,9 @@ export function LotteryFinderSection({
                   title="Historical replay — showing the selected past day, no live polling"
                 >
                   replay
+                  <SrHint>
+                    showing the selected past day, no live polling
+                  </SrHint>
                 </span>
               )}
             </div>
@@ -1889,7 +1895,7 @@ export function LotteryFinderSection({
                 {suppressedCount} chain{suppressedCount === 1 ? '' : 's'} for{' '}
                 {date} matched the filters but{' '}
                 {suppressedCount === 1 ? 'was' : 'were'} hidden by the
-                inversion-quality filter (bottom-quintile ticker). Toggle{' '}
+                inversion-quality filter (bottom-two-quintile ticker). Toggle{' '}
                 <span className="font-medium text-neutral-200">
                   Show filtered tickers
                 </span>{' '}
@@ -1933,9 +1939,13 @@ export function LotteryFinderSection({
                 {suppressedCount > 0 && !showFilteredTickers && (
                   <span
                     className="ml-2 text-neutral-600"
-                    title="Chains in bottom-quintile (Q1/Q2) inversion-quality tickers, hidden by default. Toggle “Show filtered tickers” in the MODE row to include them."
+                    title="Chains in bottom-two-quintile (Q1/Q2) inversion-quality tickers, hidden by default. Toggle “Show filtered tickers” in the MODE row to include them."
                   >
                     ({suppressedCount} hidden by quality filter)
+                    <SrHint>
+                      chains from Q1/Q2 inversion-quality tickers, hidden by
+                      default; turn on Show filtered tickers to include them
+                    </SrHint>
                   </span>
                 )}
                 {convictionFloor !== 'all' && (

@@ -68,6 +68,11 @@ vi.mock('../components/LotteryFinder/LotteryRow', () => ({
 }));
 
 import { LotteryFinderSection } from '../components/LotteryFinder';
+import {
+  srHintText,
+  titledElementsNeedingHint,
+  titledGenericsWithoutHint,
+} from './helpers/aria';
 
 // ── Fixtures ──────────────────────────────────────────────────────────
 
@@ -417,6 +422,21 @@ describe('LotteryFinderSection: suppressed-count hint + filter chips', () => {
       screen.getByText(/1 chain .* was hidden by the inversion-quality filter/),
     ).toBeInTheDocument();
     expect(screen.getByText(/to view it\./)).toBeInTheDocument();
+  });
+
+  it('empty state: names the two bottom quintiles, not one, in the visible sentence', () => {
+    // The server suppresses quintiles 1 and 2 (api/lottery-finder.ts), so the
+    // sentence says "bottom-two-quintile" like the titles beside it.
+    mockUseLotteryFinder.mockReturnValue(
+      feedResult({ fires: [], total: 0, suppressedCount: 3 }),
+    );
+    render(<LotteryFinderSection marketOpen={false} />);
+    expect(
+      screen.getByText(
+        /hidden by the inversion-quality filter \(bottom-two-quintile ticker\)\. Toggle/,
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/bottom-quintile/)).not.toBeInTheDocument();
   });
 
   it('header hint: "(N hidden by quality filter)" renders when fires present and toggle off', () => {
@@ -3247,5 +3267,161 @@ describe('LotteryFinderSection: typing a date', () => {
     expect(since.length).toBeGreaterThan(0);
     expect(new Set(since.map((a) => a.date))).toEqual(new Set(['2026-04-21']));
     expect(dateInput().value).toBe('2026-04-21');
+  });
+});
+
+// ============================================================
+// Hover text for screen readers
+// ============================================================
+//
+// The toolbar's "(1-min)", "last updated" and "replay" tags and the "hidden
+// by quality filter" note explained themselves only through a `title`, which a
+// screen reader never announces. Each now carries a visually hidden hint as
+// its last child. The ticker-group and row children are stubbed above, so the
+// whole-panel guard here sees the panel, the banners and the Hot Right Now
+// section.
+
+describe('LotteryFinderSection: hover text for screen readers', () => {
+  const PAST = '2026-05-08';
+  const SUPPRESSED_TITLE =
+    'Chains in bottom-two-quintile (Q1/Q2) inversion-quality tickers, hidden by default. Toggle “Show filtered tickers” in the MODE row to include them.';
+
+  const aFire = () =>
+    makeFire({
+      id: 1,
+      optionChainId: 'AAPL260508C00200000',
+      underlyingSymbol: 'AAPL',
+      strike: 200,
+    });
+
+  it('explains the 1-minute tag without repeating it, and keeps its title', () => {
+    mockUseLotteryFinder.mockReturnValue(
+      feedResult({ fires: [aFire()], total: 1 }),
+    );
+    render(<LotteryFinderSection marketOpen={true} />);
+    expect(screen.queryByText('(1-min)')).not.toBeInTheDocument();
+    stepBackOneMinute();
+    const tag = screen.getByText('(1-min)');
+    expect(srHintText(tag)).toBe('filtered to the selected 1-minute bucket');
+    expect(tag).toHaveAttribute(
+      'title',
+      'Filtered to the selected 1-minute point-in-time bucket',
+    );
+  });
+
+  it('explains the last-updated time without repeating it, and keeps its title', () => {
+    mockUseLotteryFinder.mockReturnValue(
+      feedResult({
+        fires: [aFire()],
+        total: 1,
+        fetchedAt: Date.parse(PINNED_NOW),
+      }),
+    );
+    render(<LotteryFinderSection marketOpen={true} />);
+    const stamp = screen.getByTitle('Last updated');
+    expect(srHintText(stamp)).toBe('last updated');
+    // The visible words are the time (the pinned clock is 12:00 CT), which
+    // the hint must not repeat.
+    expect(stamp).toHaveTextContent(/^12:00 CT — last updated$/);
+    expect(screen.queryByText('replay')).not.toBeInTheDocument();
+  });
+
+  it('shows no last-updated tag until the feed has answered', () => {
+    mockUseLotteryFinder.mockReturnValue(
+      feedResult({ fires: [aFire()], total: 1, fetchedAt: null }),
+    );
+    render(<LotteryFinderSection marketOpen={true} />);
+    expect(screen.queryByTitle('Last updated')).not.toBeInTheDocument();
+  });
+
+  it('explains the replay tag on a past day, and drops the last-updated tag there', () => {
+    mockUseLotteryFinder.mockReturnValue(
+      feedResult({
+        fires: [aFire()],
+        total: 1,
+        fetchedAt: Date.parse(PINNED_NOW),
+      }),
+    );
+    render(<LotteryFinderSection marketOpen={true} />);
+    pick(PAST);
+    const tag = screen.getByText('replay');
+    expect(srHintText(tag)).toBe(
+      'showing the selected past day, no live polling',
+    );
+    expect(tag).toHaveAttribute(
+      'title',
+      'Historical replay — showing the selected past day, no live polling',
+    );
+    expect(screen.queryByTitle('Last updated')).not.toBeInTheDocument();
+  });
+
+  it('explains the hidden-by-quality-filter note, and its title no longer says bottom-quintile', () => {
+    mockUseLotteryFinder.mockReturnValue(
+      feedResult({ fires: [aFire()], total: 1, suppressedCount: 4 }),
+    );
+    render(<LotteryFinderSection marketOpen={false} />);
+    const note = screen.getByText('(4 hidden by quality filter)');
+    expect(srHintText(note)).toBe(
+      'chains from Q1/Q2 inversion-quality tickers, hidden by default; turn on Show filtered tickers to include them',
+    );
+    // The hint adds words but not a second "hidden by quality filter".
+    expect(screen.getAllByText(/hidden by quality filter/)).toHaveLength(1);
+    expect(note).toHaveAttribute('title', SUPPRESSED_TITLE);
+  });
+
+  it('names the two bottom quintiles on the Show filtered tickers button', () => {
+    render(<LotteryFinderSection marketOpen={false} />);
+    expect(screen.getByTestId('lottery-show-filtered-toggle')).toHaveAttribute(
+      'title',
+      'Show filtered tickers — bypass the server-side Q1/Q2 inversion-quality suppression and include the bottom-two-quintile tickers. Off by default.',
+    );
+  });
+
+  it('leaves no titled generic element without a hint on a live, scrubbed panel with every tag showing', () => {
+    mockUseLotteryFinder.mockReturnValue(
+      feedResult({
+        fires: [aFire()],
+        reignitedFires: [
+          makeFire({
+            id: 2,
+            optionChainId: 'TSLA260508C00250000',
+            underlyingSymbol: 'TSLA',
+            strike: 250,
+            reignited: true,
+          }),
+        ],
+        total: 1,
+        suppressedCount: 4,
+        fetchedAt: Date.parse(PINNED_NOW),
+      }),
+    );
+    const { container } = render(<LotteryFinderSection marketOpen={true} />);
+    stepBackOneMinute();
+    // The guard reaches the panel tags and the Hot Right Now pill.
+    const needing = titledElementsNeedingHint(container);
+    expect(needing).toContain(screen.getByText('(1-min)'));
+    expect(needing).toContain(screen.getByTitle('Last updated'));
+    expect(needing).toContain(screen.getByText('(4 hidden by quality filter)'));
+    expect(needing).toContain(screen.getByTestId('reignition-floorblind-pill'));
+    // ... and both banners: a tier count (the tier banner) and a no-data
+    // metric (the day banner, whose fire carries no macro), so a banner that
+    // loses a hint fails this guard too.
+    expect(needing).toContain(
+      screen.getByTitle(/^Tier 2 fires on the current page/),
+    );
+    expect(needing).toContain(screen.getByText('Market Tide —'));
+    expect(titledGenericsWithoutHint(container)).toEqual([]);
+  });
+
+  it('leaves no titled generic element without a hint on a past day', () => {
+    mockUseLotteryFinder.mockReturnValue(
+      feedResult({ fires: [aFire()], total: 1, suppressedCount: 4 }),
+    );
+    const { container } = render(<LotteryFinderSection marketOpen={true} />);
+    pick(PAST);
+    expect(titledElementsNeedingHint(container)).toContain(
+      screen.getByText('replay'),
+    );
+    expect(titledGenericsWithoutHint(container)).toEqual([]);
   });
 });

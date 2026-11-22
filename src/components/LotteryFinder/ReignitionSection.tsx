@@ -18,6 +18,7 @@ import { memo, useId, useState } from 'react';
 import type { ExitPolicy, LotteryFire } from './types.js';
 import { LotteryRow } from './LotteryRow.js';
 import { disclosureA11yProps } from '../ui/disclosure.js';
+import { SrHint } from '../ui/SrHint.js';
 import type { TickerNetFlowSnapshot } from '../../hooks/useTickerNetFlowBatch.js';
 
 /** Persist the user's collapse choice so it survives a poll-driven remount
@@ -124,6 +125,10 @@ function ReignitionSectionInner({
             data-testid="reignition-floorblind-pill"
           >
             floor-blind
+            <SrHint>
+              ranks by cadence, skipping the Take-It floor, score, premium and
+              quality filters
+            </SrHint>
           </span>
         </h3>
         <p className="hidden text-[10px] text-orange-200/70 sm:block">

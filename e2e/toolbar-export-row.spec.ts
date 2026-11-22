@@ -58,8 +58,10 @@ async function expectExportOnDateLine(region: Locator) {
 async function switchToHistorical(region: Locator) {
   await region.getByLabel('Select trading day').fill(HISTORICAL_DATE);
   // The "replay" caption replaces the live "HH:MM CT" stamp — waiting on
-  // it guarantees the historical re-render (widest state) is complete.
-  await expect(region.getByText('replay', { exact: true })).toBeVisible();
+  // it guarantees the historical re-render (widest state) is complete. The
+  // caption carries a visually hidden hint after its word, so an exact text
+  // match no longer fits; match its start instead.
+  await expect(region.getByText(/^replay\b/)).toBeVisible();
   await expect(
     region.getByRole('button', { name: 'All day', exact: true }),
   ).toBeVisible();
@@ -74,10 +76,12 @@ async function switchToHistorical(region: Locator) {
 async function pickFirstBucket(
   region: Locator,
   selectName: RegExp,
-  bucketCaption: string,
+  bucketCaption: RegExp,
 ) {
   await region.getByLabel(selectName).selectOption({ index: 1 });
-  await expect(region.getByText(bucketCaption, { exact: true })).toBeVisible();
+  // The caption carries a visually hidden hint after its words, so an exact
+  // text match no longer fits; the caller matches its start.
+  await expect(region.getByText(bucketCaption)).toBeVisible();
 }
 
 function getRegions(page: Page) {
@@ -102,7 +106,7 @@ test.describe('Toolbar export row stays on one line', () => {
     const { lottery } = getRegions(page);
     await expect(lottery).toBeVisible();
     await switchToHistorical(lottery);
-    await pickFirstBucket(lottery, /Jump to a specific minute/, '(1-min)');
+    await pickFirstBucket(lottery, /Jump to a specific minute/, /^\(1-min\)/);
     await expectExportOnDateLine(lottery);
   });
 
@@ -123,7 +127,7 @@ test.describe('Toolbar export row stays on one line', () => {
     await pickFirstBucket(
       silentBoom,
       /Jump to a specific 5-min bucket/,
-      '(5-min)',
+      /^\(5-min\)/,
     );
     await expectExportOnDateLine(silentBoom);
   });
