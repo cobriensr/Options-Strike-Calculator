@@ -361,6 +361,56 @@ def _fill_frame(days: dict[date, int] | None = None) -> pd.DataFrame:
     )
 
 
+# (ticker, fires on 11-03, 11-04, 11-05, fires with no peak, % of high peaks on each day)
+BOUNDARY_TICKERS = [
+    ('AAA', (33, 33, 35), 2, (90, 90, 90)),  # 99 fires with a peak at the end
+    ('BBB', (34, 33, 35), 2, (80, 80, 80)),  # 100
+    ('CCC', (34, 33, 34), 0, (70, 70, 70)),  # 101
+    ('DDD', (100, 10, 10), 0, (60, 60, 60)),  # 100 from the first day on
+    ('EEE', (60, 60, 20), 3, (50, 50, 50)),
+    ('FFF', (100, 30, 30), 0, (40, 40, 40)),
+    ('GGG', (10, 10, 10), 0, (30, 30, 30)),  # never near 100
+    ('HHH', (50, 50, 50), 0, (75, 75, 100)),  # tied with III until the last day
+    ('III', (50, 50, 50), 0, (75, 75, 0)),
+]  # fmt: skip
+
+
+def _boundary_frame() -> pd.DataFrame:
+    """Fires built to cross the tracker's edges, without random numbers.
+
+    - tickers with 99, 100 and 101 fires that have a peak (`n >= 100` keeps the
+      last two), some of them with fires that have no peak at all;
+    - a peak of exactly 50.0 (a hit) and one of 49.99 on every ticker;
+    - null scores and null flow inversions;
+    - HHH and III with equal counts and rates up to 11-04, so their ranks tie;
+    - the rows in no date order, as a table scan gives them.
+    """
+    days = [date(2026, 11, 3), date(2026, 11, 4), date(2026, 11, 5)]
+    rows = []
+    for ticker, per_day, no_peak, high_pct in BOUNDARY_TICKERS:
+        position = 0
+        for day, count, pct in zip(days, per_day, high_pct, strict=True):
+            for _ in range(count):
+                if 1 <= position <= no_peak:
+                    peak = np.nan
+                elif position == 7:
+                    peak = 50.0
+                elif position == 8:
+                    peak = 49.99
+                elif (position * 37) % 100 < pct:
+                    peak = 51.0 + position % 40
+                else:
+                    peak = 0.5 + position % 49
+                rows.append((day, ticker, peak))
+                position += 1
+    i = np.arange(len(rows))
+    frame = pd.DataFrame(rows, columns=['date', 'ticker', 'peak'])
+    frame['mode'] = np.where(i % 3 == 0, 'B_multi_day_DTE1_3', 'A_intraday_0DTE')
+    frame['score'] = np.where(i % 13 == 4, np.nan, (i * 7) % 20 + 5)
+    frame['flow_inv'] = np.where(i % 11 == 3, np.nan, (i * 37) % 101 - 40.0)
+    return frame.iloc[(i * 7919) % len(frame)].reset_index(drop=True)
+
+
 def _write_tracking_csv(path: Path, dates: list[str]) -> None:
     """A tracking file whose rows are the given dates, each carrying its own marker."""
     with path.open('w', newline='', encoding='utf-8') as f:
@@ -436,6 +486,43 @@ GOLDEN_FILL_ROWS = {
         'top1_ticker': NON_ASCII_TICKER, 'top1_n': '160', 'top1_rate': '56.25',
         'top2_ticker': 'SPY', 'top2_n': '160', 'top2_rate': '53.12',
         'top3_ticker': '', 'top3_n': '', 'top3_rate': '',
+    },
+}  # fmt: skip
+
+
+# The old code's row for each date of _boundary_frame(), recorded the same way. 11-03: two
+# tickers at exactly 100 fires. 11-04: HHH and III tie at the top (the two ticker names
+# are left out; see the test). 11-05: AAA has 99 fires with a peak and is out, BBB has 100
+# and CCC 101 and are in.
+GOLDEN_BOUNDARY_ROWS = {
+    '2026-11-03': {
+        'date': '2026-11-03', 'n_fires_today': '471', 'n_fires_total_window': '471',
+        'days_in_window': '1', 't1_today': '191', 't2_today': '91', 't3_today': '189',
+        'flow_inv_n': '428', 'flow_inv_mean_pct': '10.339', 'flow_inv_sharpe': '0.3549',
+        't2plus_n': '257', 't2plus_mean_pct': '11.214', 't2plus_sharpe': '0.3813',
+        'modeB_n': '139', 'modeB_mean_pct': '10.058', 'modeB_sharpe': '0.3365',
+        'top1_ticker': 'DDD', 'top1_n': '100', 'top1_rate': '60.0',
+        'top2_ticker': 'FFF', 'top2_n': '100', 'top2_rate': '41.0',
+        'top3_ticker': '', 'top3_n': '', 'top3_rate': '',
+    },
+    '2026-11-04': {
+        'date': '2026-11-04', 'n_fires_today': '309', 'n_fires_total_window': '780',
+        'days_in_window': '2', 't1_today': '130', 't2_today': '57', 't3_today': '122',
+        'flow_inv_n': '709', 'flow_inv_mean_pct': '10.24', 'flow_inv_sharpe': '0.3491',
+        't2plus_n': '425', 't2plus_mean_pct': '10.111', 't2plus_sharpe': '0.3441',
+        'modeB_n': '234', 'modeB_mean_pct': '10.35', 'modeB_sharpe': '0.3487',
+        'top1_n': '100', 'top1_rate': '75.0', 'top2_n': '100', 'top2_rate': '75.0',
+        'top3_ticker': 'DDD', 'top3_n': '110', 'top3_rate': '60.91',
+    },
+    '2026-11-05': {
+        'date': '2026-11-05', 'n_fires_today': '274', 'n_fires_total_window': '1054',
+        'days_in_window': '3', 't1_today': '116', 't2_today': '47', 't3_today': '111',
+        'flow_inv_n': '958', 'flow_inv_mean_pct': '9.931', 'flow_inv_sharpe': '0.3389',
+        't2plus_n': '573', 't2plus_mean_pct': '9.883', 't2plus_sharpe': '0.3373',
+        'modeB_n': '320', 'modeB_mean_pct': '9.891', 'modeB_sharpe': '0.3378',
+        'top1_ticker': 'HHH', 'top1_n': '150', 'top1_rate': '83.33',
+        'top2_ticker': 'BBB', 'top2_n': '100', 'top2_rate': '78.43',
+        'top3_ticker': 'CCC', 'top3_n': '101', 'top3_rate': '70.3',
     },
 }  # fmt: skip
 
@@ -757,6 +844,7 @@ def test_tracker_without_a_last_date_writes_the_newest_date_only(
         pytest.param('not-a-date', id='text'),
         pytest.param('2026-13-45', id='no_such_day'),
         pytest.param('20261230', id='not_yyyy_mm_dd'),  # a later date, if it were read
+        pytest.param('2026-W45-7', id='iso_week_date'),  # 11-08 to fromisoformat
         pytest.param('', id='blank'),
     ],
 )
@@ -791,7 +879,7 @@ def test_tracker_reads_fire_dates_that_come_as_timestamps(
 
 
 def test_tracker_with_a_csv_ahead_of_the_fires_writes_the_newest_date_only(
-    tmp_path, monkeypatch, default_dir
+    tmp_path, monkeypatch, default_dir, capsys
 ):
     run = tracker_run(tmp_path, monkeypatch)
     _serve(monkeypatch, 'read_sql', _fill_frame())
@@ -800,6 +888,156 @@ def test_tracker_with_a_csv_ahead_of_the_fires_writes_the_newest_date_only(
     run.main(run.argv)
 
     assert [r['date'] for r in _read_rows(run.output)] == ['2026-11-09', '2026-11-05']
+    # The step stays ok, so its log has to say why nothing was filled.
+    assert (
+        "[track] CSV's last row 2026-11-09 is newer than the newest enriched fire date "
+        '2026-11-05\n'
+    ) in capsys.readouterr().out
+
+
+def test_tracker_says_nothing_of_the_csv_being_ahead_when_it_is_not(
+    tmp_path, monkeypatch, default_dir, capsys
+):
+    run = tracker_run(tmp_path, monkeypatch)
+    _serve(monkeypatch, 'read_sql', _fill_frame())
+    # Behind the fires, at the newest fire date, and with no row to go by.
+    for dates in (['2026-11-02'], ['2026-11-05'], []):
+        _write_tracking_csv(run.output, dates)
+
+        run.main(run.argv)
+
+        assert 'is newer than' not in capsys.readouterr().out
+
+
+def test_tracker_starts_the_fill_after_the_newest_date_when_the_csv_is_out_of_order(
+    tmp_path, monkeypatch, default_dir
+):
+    run = tracker_run(tmp_path, monkeypatch)
+    _serve(monkeypatch, 'read_sql', _fill_frame())
+    _write_tracking_csv(run.output, ['2026-11-04', '2026-11-02'])  # the last row is the older
+    before = _read_rows(run.output)
+
+    run.main(run.argv)
+
+    after = _read_rows(run.output)
+    assert after[:2] == before  # 11-04 is not a date to fill: the file has it already
+    assert [r['date'] for r in after[2:]] == ['2026-11-05']
+
+
+def test_tracker_rows_match_the_old_code_at_the_edges(tmp_path, monkeypatch, default_dir):
+    """Fires with 99, 100 and 101 of a ticker's peaks, a peak of exactly 50, null scores,
+    null flow inversions and a tie: the rows are the ones the code before the fill wrote.
+    """
+    run = tracker_run(tmp_path, monkeypatch)
+    _serve(monkeypatch, 'read_sql', _boundary_frame())
+    _write_tracking_csv(run.output, ['2026-11-02'])
+
+    run.main(run.argv)
+
+    rows = {r['date']: _without_run_at(r) for r in _read_rows(run.output)[1:]}
+    # HHH and III tie on 11-04 (both 100 peaks, 75.0). Which of them numpy's sort puts first
+    # depends on the CPU's SIMD path, so the order is not a literal here: it is what the
+    # old code's own expression (groupby, then sort_values) gives on this host for these fires.
+    fires = _boundary_frame()
+    window = fires[fires['date'] <= date(2026, 11, 4)]
+    table = window.groupby('ticker').agg(
+        n=('peak', 'count'), rate=('peak', lambda s: (s >= 50).mean() * 100)
+    )
+    ranked = table[table['n'] >= 100].sort_values('rate', ascending=False)
+    tied = [rows['2026-11-04'].pop('top1_ticker'), rows['2026-11-04'].pop('top2_ticker')]
+    assert set(tied) == {'HHH', 'III'}
+    assert tied == list(ranked.index[:2])
+    assert rows == GOLDEN_BOUNDARY_ROWS
+
+
+# ── --rebuild ────────────────────────────────────────────────────────────────
+
+
+def test_tracker_rebuild_writes_a_row_for_every_enriched_date_and_drops_the_old_rows(
+    tmp_path, monkeypatch, default_dir, capsys, legacy_text_default
+):
+    run = tracker_run(tmp_path, monkeypatch)
+    _serve(monkeypatch, 'read_sql', _fill_frame())
+    # Stale rows for two dates with fires, and one for a date with none.
+    _write_tracking_csv(run.output, ['2026-11-02', '2026-11-03', '2026-11-04'])
+    _ticking_clock(monkeypatch)
+
+    run.main([*run.argv, '--rebuild'])
+
+    after = _read_rows(run.output)
+    assert [r['date'] for r in after] == ['2026-11-03', '2026-11-04', '2026-11-05']
+    # The rows the fill path computes for those dates, none of the stale values.
+    assert {r['date']: _without_run_at(r) for r in after} == GOLDEN_FILL_ROWS
+    assert {r['run_at'] for r in after} == {'2026-11-06T01:00:00+00:00'}  # one for the run
+    header = run.output.read_text(encoding='utf-8').splitlines()[0]
+    assert header == ','.join(daily_tracker.COLUMNS)
+    out = capsys.readouterr().out
+    assert '[track] rebuilt 3 dates (2026-11-03 .. 2026-11-05), replacing 3 rows\n' in out
+    assert (
+        '[track] 1 earlier dates have no enriched fires now and were dropped\n' in out
+    )
+    assert '[track] 2026-11-05: 100 new fires (T1=45 T2=20 T3=35)' in out  # the newest row
+    assert 'filled' not in out
+
+
+def test_tracker_rebuild_without_a_csv_file_writes_every_date(
+    tmp_path, monkeypatch, default_dir, capsys
+):
+    run = tracker_run(tmp_path, monkeypatch)
+    _serve(monkeypatch, 'read_sql', _fill_frame())
+    csv_path = run.out_dir / 'fresh.csv'  # a file that is not there yet
+
+    run.main(['--csv', str(csv_path), '--rebuild'])
+
+    rows = _read_rows(csv_path)
+    assert {r['date']: _without_run_at(r) for r in rows} == GOLDEN_FILL_ROWS
+    out = capsys.readouterr().out
+    assert '[track] rebuilt 3 dates (2026-11-03 .. 2026-11-05), replacing 0 rows\n' in out
+    assert 'dropped' not in out
+
+
+def test_tracker_rebuild_counts_only_dates_that_lost_their_fires_as_dropped(
+    tmp_path, monkeypatch, default_dir, capsys
+):
+    run = tracker_run(tmp_path, monkeypatch)
+    _serve(monkeypatch, 'read_sql', _fill_frame())
+    # 11-03 is rebuilt, and the row with no date is thrown away as well but is no date.
+    _write_tracking_csv(run.output, ['2026-11-03', 'not-a-date'])
+
+    run.main([*run.argv, '--rebuild'])
+
+    assert [r['date'] for r in _read_rows(run.output)] == [
+        '2026-11-03', '2026-11-04', '2026-11-05'
+    ]  # fmt: skip
+    out = capsys.readouterr().out
+    assert 'replacing 2 rows' in out
+    assert 'dropped' not in out
+
+
+def test_tracker_rebuild_with_no_enriched_fires_exits_and_leaves_the_csv_alone(
+    tmp_path, monkeypatch, default_dir
+):
+    run = tracker_run(tmp_path, monkeypatch)
+    _serve(monkeypatch, 'read_sql', pd.DataFrame(columns=['date', 'score']))
+    before = run.output.read_bytes()
+
+    with pytest.raises(SystemExit) as exit_info:
+        run.main([*run.argv, '--rebuild'])
+
+    assert 'no enriched fires' in str(exit_info.value.code)
+    assert run.output.read_bytes() == before
+    assert _snapshot(default_dir) == {}
+
+
+def test_tracker_help_says_rebuild_discards_the_rows_in_the_file(capsys):
+    with pytest.raises(SystemExit):
+        daily_tracker.parse_args(['--help'])
+
+    # The last mention is the option's own entry (the usage line and the docstring
+    # come before it), so this is the option's help text.
+    entry = ' '.join(capsys.readouterr().out.split()).rsplit('--rebuild', 1)[-1]
+    assert 'every enriched fire date' in entry
+    assert 'discards the rows already in the file' in entry
 
 
 def test_tracker_with_no_enriched_fires_exits_and_leaves_the_csv_alone(

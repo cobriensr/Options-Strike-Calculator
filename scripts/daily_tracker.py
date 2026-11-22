@@ -10,7 +10,15 @@ with no enriched fires gets no row. With no CSV, or one with no row whose
 date parses, it writes the newest date only and never the whole history.
 When no date is newer than the CSV's last row it writes the newest date
 again, so re-running on the same date overwrites that date's row rather
-than duplicating. One timestamp (`run_at`) marks every row of a run.
+than duplicating. One timestamp (`run_at`) marks every row of a run. When the
+CSV's last row is newer than the newest enriched fire date, nothing can be
+filled and the run says so.
+
+`--rebuild` writes a row for EVERY enriched fire date, each as of its date,
+and discards the rows already in the file, which afterwards holds exactly
+the rebuilt rows. It is for after outcomes were re-enriched, when the
+stored rows no longer match the data they were computed on. It overwrites
+the file it is given, so run it on a copy.
 
 Read-only against the DB except for its own CSV rewrite.
 
@@ -19,10 +27,10 @@ stored score, read from the store (phase 3 D8). A weights read that fails ends
 the run before any fire is read or the CSV is touched; there is no fallback.
 
 Usage:
-    ml/.venv/Scripts/python scripts/daily_tracker.py [--csv PATH]
+    ml/.venv/Scripts/python scripts/daily_tracker.py [--csv PATH] [--rebuild]
 
 --csv is the tracking file to read and rewrite (default: the one under
-docs/tmp).
+docs/tmp). --rebuild recomputes the whole file (see above).
 """
 
 from __future__ import annotations
@@ -30,6 +38,7 @@ from __future__ import annotations
 import argparse
 import csv
 import os
+import re
 import sys
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -41,6 +50,7 @@ import psycopg2
 ROOT = Path(__file__).resolve().parent.parent
 ENV_FILE = ROOT / '.env.local'
 CSV_PATH = ROOT / 'docs' / 'tmp' / 'lottery-tracking.csv'
+_CSV_DATE = re.compile(r'[0-9]{4}-[0-9]{2}-[0-9]{2}')
 
 sys.path.insert(0, str(ROOT / 'scripts'))
 from _cli_paths import load_env_file  # noqa: E402
@@ -86,8 +96,11 @@ def _as_date(value) -> date:
 
 
 def _csv_date(raw: str | None) -> date | None:
-    """A row's `date` as a date, or None when it is blank or not YYYY-MM-DD."""
-    if raw is None or len(raw) != 10:
+    """A row's `date` as a date, or None when it is blank or not YYYY-MM-DD.
+
+    The shape is checked first: `date.fromisoformat` alone also takes 2026-W45-3.
+    """
+    if raw is None or not _CSV_DATE.fullmatch(raw):
         return None
     try:
         return date.fromisoformat(raw)
@@ -95,12 +108,17 @@ def _csv_date(raw: str | None) -> date | None:
         return None
 
 
-def dates_to_write(days: list[date], last_date: date | None) -> list[date]:
+def dates_to_write(
+    days: list[date], last_date: date | None, rebuild: bool = False
+) -> list[date]:
     """The fire dates (ascending) that get a row this run.
 
     Every date after the CSV's last row; the newest date alone when there is no
-    such row (a new file never gets the whole history) or no date is newer.
+    such row (a new file never gets the whole history) or no date is newer. A
+    rebuild is every date.
     """
+    if rebuild:
+        return days
     if last_date is None:
         return days[-1:]
     return [d for d in days if d > last_date] or days[-1:]
@@ -112,6 +130,7 @@ def build_rows(
     t2_cutoff: int,
     last_date: date | None,
     run_at: str,
+    rebuild: bool = False,
 ) -> list[dict]:
     """One CSV row per date `dates_to_write` picks, each as of that date.
 
@@ -122,7 +141,7 @@ def build_rows(
     """
     codes, uniques = pd.factorize(df['date'], sort=True)
     days = [_as_date(u) for u in uniques]
-    targets = dates_to_write(days, last_date)
+    targets = dates_to_write(days, last_date, rebuild)
 
     order = np.argsort(codes, kind='stable')
     codes = codes[order]
@@ -231,6 +250,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=CSV_PATH,
         help='The tracking CSV to update (default: docs/tmp under the repo root).',
     )
+    parser.add_argument(
+        '--rebuild',
+        action='store_true',
+        help='Write a row for every enriched fire date, each as of its date. This '
+        'discards the rows already in the file, so run it on a copy.',
+    )
     return parser.parse_args(argv)
 
 
@@ -272,26 +297,41 @@ def main(argv: list[str] | None = None) -> None:
     last_date = max((d for d in csv_dates if d is not None), default=None)
 
     run_at = datetime.now(timezone.utc).isoformat(timespec='seconds')
-    new_rows = build_rows(df, t1_cutoff, t2_cutoff, last_date, run_at)
+    new_rows = build_rows(
+        df, t1_cutoff, t2_cutoff, last_date, run_at, rebuild=args.rebuild
+    )
 
     # Idempotent: a row already there for a date being written is replaced (so
     # re-running after a partial enrichment doesn't duplicate); the new rows go
-    # after the others, oldest date first.
+    # after the others, oldest date first. A rebuild keeps none of the old rows.
     written = {r['date'] for r in new_rows}
-    existing = [r for r in existing if r.get('date') not in written]
-    existing.extend(new_rows)
+    kept = [] if args.rebuild else [r for r in existing if r.get('date') not in written]
+    merged = [*kept, *new_rows]
 
     args.csv.parent.mkdir(parents=True, exist_ok=True)
     with args.csv.open('w', newline='', encoding='utf-8') as f:
         w = csv.DictWriter(f, fieldnames=COLUMNS, extrasaction='ignore')
         w.writeheader()
-        for r in existing:
+        for r in merged:
             w.writerow(r)
 
     row = new_rows[-1]
-    if len(new_rows) > 1:
-        print(f'[track] filled {len(new_rows)} dates '
-              f'({new_rows[0]["date"]} .. {row["date"]})')
+    if args.rebuild:
+        print(f'[track] rebuilt {len(new_rows)} dates '
+              f'({new_rows[0]["date"]} .. {row["date"]}), replacing {len(existing)} rows')
+        had_a_row = {r['date'] for r in existing if _csv_date(r.get('date')) is not None}
+        dropped = had_a_row - written
+        if dropped:
+            print(f'[track] {len(dropped)} earlier dates have no enriched fires now '
+                  'and were dropped')
+    else:
+        if last_date is not None and row['date'] < last_date.isoformat():
+            # Nothing could be filled; the step stays ok, so its log has to say why.
+            print(f"[track] CSV's last row {last_date} is newer than "
+                  f'the newest enriched fire date {row["date"]}')
+        if len(new_rows) > 1:
+            print(f'[track] filled {len(new_rows)} dates '
+                  f'({new_rows[0]["date"]} .. {row["date"]})')
     print(f'[track] {row["date"]}: '
           f'{row["n_fires_today"]:,} new fires '
           f'(T1={row["t1_today"]} T2={row["t2_today"]} T3={row["t3_today"]})')
@@ -299,7 +339,7 @@ def main(argv: list[str] | None = None) -> None:
           f'{row["n_fires_total_window"]:,} fires, '
           f'flow_inv Sharpe={row["flow_inv_sharpe"]} '
           f'(T2+={row["t2plus_sharpe"]}, ModeB={row["modeB_sharpe"]})')
-    print(f'[track] CSV → {args.csv}  ({len(existing)} rows)')
+    print(f'[track] CSV → {args.csv}  ({len(merged)} rows)')
 
 
 if __name__ == '__main__':

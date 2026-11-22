@@ -704,6 +704,20 @@ def test_invalid_active_weights_fail_the_report_without_a_fallback(
         assert [c.closed for c in harness.conns] == [True]
 
 
+@pytest.mark.parametrize('failure', FAILURES)
+def test_tracker_rebuild_reads_the_active_weights_first_too(
+    failure: Exception, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    harness = Harness(TRACKER, tmp_path, monkeypatch)
+    harness.failure = failure
+
+    with pytest.raises(report_weights.ActiveWeightsError):
+        daily_tracker.main([*TRACKER.args(tmp_path), '--rebuild'])
+
+    assert harness.events == ['connect', 'pointer:active']  # no fire was read
+    assert list(tmp_path.rglob('*')) == []  # and no file written
+
+
 # Runs a report script as `__main__` the way the nightly does (a subprocess), with
 # the connection and the weights read faked inside it: the read fails with a DB
 # error whose text holds a password.
