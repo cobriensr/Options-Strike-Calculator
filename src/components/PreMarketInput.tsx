@@ -13,11 +13,17 @@
  * there.
  *
  * Saves to /api/pre-market endpoint and stores in AnalysisContext.
+ *
+ * `/api/pre-market` is owner-only (`guardOwnerEndpoint`), so only the owner
+ * loads and saves. A guest keeps the typed fields, the gap preview and the
+ * overnight range (client-side math on what they type) but the component
+ * never calls the endpoint for them: no GET, and no Save button to POST.
  */
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { captureUnlessAuth } from '../lib/sentry-helpers';
 import { SectionBox, ErrorMsg } from './ui';
 import { tinyLbl, inputCls } from '../utils/ui-utils';
+import { checkIsOwner } from '../utils/auth';
 import type { PreMarketData } from '../types/api';
 
 interface PreMarketInputProps {
@@ -50,6 +56,11 @@ export default function PreMarketInput({
   const [autoFilled, setAutoFilled] = useState(false);
   const [error, setError] = useState('');
 
+  // Read at every render, never frozen: App re-renders this panel on a mode
+  // change, so a downgrade drops the Save button and stops the load without
+  // a remount.
+  const isOwner = checkIsOwner();
+
   // Load existing data for this date
   useEffect(() => {
     // Reset all fields + flags before loading so a date with no saved data
@@ -63,6 +74,9 @@ export default function PreMarketInput({
     setAutoFilled(false);
     setError('');
 
+    // Owner-only endpoint: a guest would only draw a 401.
+    if (!isOwner) return;
+
     const controller = new AbortController();
     async function load() {
       try {
@@ -71,6 +85,9 @@ export default function PreMarketInput({
         });
         if (!res.ok) return;
         const json = await res.json();
+        // A reply for a run the cleanup aborted (a date change, or a drop
+        // from owner access) writes nothing.
+        if (controller.signal.aborted) return;
         if (json.data) {
           const d = json.data as PreMarketData;
           if (d.globexHigh != null) setGlobexHigh(String(d.globexHigh));
@@ -88,7 +105,7 @@ export default function PreMarketInput({
     }
     load();
     return () => controller.abort();
-  }, [date, apiBase]);
+  }, [date, apiBase, isOwner]);
 
   const handleSave = useCallback(async () => {
     setError('');
@@ -190,19 +207,21 @@ export default function PreMarketInput({
       badge={autoFilled ? 'Auto-filled \u2713' : saved ? '\u2713 Saved' : null}
       collapsible
       headerRight={
-        <button
-          type="button"
-          onClick={handleSave}
-          disabled={saving}
-          className={
-            'cursor-pointer rounded-md border-[1.5px] px-3.5 py-1.5 font-sans text-xs font-semibold transition-colors duration-100 ' +
-            (saving
-              ? 'border-edge-strong bg-chip-bg text-muted cursor-not-allowed opacity-60'
-              : 'border-chip-active-border bg-chip-active-bg text-chip-active-text hover:brightness-110')
-          }
-        >
-          {saving ? 'Saving\u2026' : saved ? 'Update' : 'Save'}
-        </button>
+        isOwner ? (
+          <button
+            type="button"
+            onClick={handleSave}
+            disabled={saving}
+            className={
+              'cursor-pointer rounded-md border-[1.5px] px-3.5 py-1.5 font-sans text-xs font-semibold transition-colors duration-100 ' +
+              (saving
+                ? 'border-edge-strong bg-chip-bg text-muted cursor-not-allowed opacity-60'
+                : 'border-chip-active-border bg-chip-active-bg text-chip-active-text hover:brightness-110')
+            }
+          >
+            {saving ? 'Saving\u2026' : saved ? 'Update' : 'Save'}
+          </button>
+        ) : undefined
       }
     >
       {/* ES Overnight Section */}

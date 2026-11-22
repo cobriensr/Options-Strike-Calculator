@@ -59,6 +59,12 @@ A public visitor (no owner or guest session) should never call an owner-or-guest
    - `PreMarketInput`: skip its owner-only `/api/pre-market` GET for guests.
    - Fix the stale "guest 401s" comment in `useVixData.ts`.
    - Files: `usePanelPrefs.ts` and its test, `PreMarketInput.tsx` and its test, `useVixData.ts`.
+   - Landed as 2 commits: (1) `usePanelPrefs` and its tests; (2) `PreMarketInput` and its tests, the `useVixData` comment, and this note.
+   - `usePanelPrefs`: the hook reads `getAccessMode()` at render. The GET effect (deps `[mode, cached]`) re-runs on a flip, and a reply that was aborted, or that lands when the live mode is no longer the run's, writes nothing. `isLoaded` follows the mode: false while a guest GET is in flight, true for public (it still has no consumer outside the hook, which is pre-existing dead state, left in place).
+   - The audit's premise that `pendingBodyRef` already protects a touched axis held only for owner and guest: a public edit never reached it, because `persist` returned first. `persist` now records the edit in every mode and sends it in none while public, so an axis changed before a guest sign-in keeps its local value against the server layout and goes out with the next flush (the debounce, `pagehide` or unmount), alone in its PUT body.
+   - Downgrade: the flush effect's cleanup sends only when the live mode is still the one the edits were made under (an unmount), and otherwise drops the queue and the debounce timer. A drop to public would only 401, and an owner and guest swap would write one identity's edit into the other's layout.
+   - `PreMarketInput`: reads `checkIsOwner()` at render, with the mode in the load effect's deps. A non-owner sends no GET (the effect still resets the fields) and gets no Save button; the typed fields, gap preview and overnight range stay. A GET reply after an abort writes nothing. No other client code reaches `/api/pre-market` (the `main.tsx` BotID entries are its paths).
+   - `useVixData`: comment only. `/api/vix-ohlc` is public, and the `msg.includes('401')` line is left as it is.
 
 ## Data dependencies
 

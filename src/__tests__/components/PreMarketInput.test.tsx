@@ -1,12 +1,21 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import PreMarketInput from '../../components/PreMarketInput';
+import type { AccessMode } from '../../utils/auth';
+
+// The panel reads its access mode at every render, so a test flips it between
+// renders. `checkIsOwner` is the one function the component imports.
+const access = vi.hoisted(() => ({ mode: 'owner' as AccessMode }));
+vi.mock('../../utils/auth', () => ({
+  checkIsOwner: () => access.mode === 'owner',
+}));
 
 describe('PreMarketInput', () => {
   let fetchMock: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
+    access.mode = 'owner';
     fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       json: () => Promise.resolve({ data: null }),
@@ -340,5 +349,160 @@ describe('PreMarketInput', () => {
     expect(screen.getByLabelText(/Globex Low/)).toHaveValue('5690.25');
     expect(screen.getByLabelText(/Globex Close/)).toHaveValue('5710.75');
     expect(screen.getByLabelText(/Globex VWAP/)).toHaveValue('5705.00');
+  });
+
+  // ── Access mode ───────────────────────────────────────────
+  // /api/pre-market is owner-only (guardOwnerEndpoint), so a guest would only
+  // draw a 401 on the GET and a red "Save failed" on the POST. A guest keeps
+  // the typed fields and the previews, which are client-side math.
+
+  describe('as a guest', () => {
+    beforeEach(() => {
+      access.mode = 'guest';
+    });
+
+    it('sends no request to /api/pre-market on mount', async () => {
+      render(<PreMarketInput date="2026-03-28" />);
+      // Let any effect-started request settle, so the absence means something.
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      expect(screen.getByText('Pre-Market Futures')).toBeInTheDocument();
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('sends no request when the date changes', async () => {
+      const { rerender } = render(<PreMarketInput date="2026-03-28" />);
+      rerender(<PreMarketInput date="2026-03-29" />);
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('renders no Save or Update button', () => {
+      render(<PreMarketInput date="2026-03-28" />);
+
+      expect(screen.getByText('Pre-Market Futures')).toBeInTheDocument();
+      expect(
+        screen.queryByRole('button', { name: /Save|Update/i }),
+      ).not.toBeInTheDocument();
+    });
+
+    it('still renders the gap preview and the overnight range from typed values, with no request', async () => {
+      const user = userEvent.setup();
+      render(<PreMarketInput date="2026-03-28" prevClose={5700} />);
+
+      await user.type(screen.getByLabelText(/Globex High/), '5720');
+      await user.type(screen.getByLabelText(/Globex Low/), '5690');
+      await user.type(screen.getByLabelText(/Globex Close/), '5720');
+
+      expect(screen.getByText('30.0 pts')).toBeInTheDocument();
+      expect(screen.getByText('+20.0')).toBeInTheDocument();
+      expect(screen.getByText('UP')).toBeInTheDocument();
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('when the access mode changes without a remount', () => {
+    it('owner to guest: the Save button goes, nothing more is requested, and owner-loaded values clear', async () => {
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            data: {
+              globexHigh: 5720,
+              globexLow: 5690,
+              globexClose: 5710,
+              savedAt: '2026-03-28T12:00:00Z',
+            },
+          }),
+      });
+      const { rerender } = render(<PreMarketInput date="2026-03-28" />);
+      await waitFor(() => {
+        expect(screen.getByLabelText(/Globex High/)).toHaveValue('5720');
+      });
+      expect(
+        screen.getByRole('button', { name: /Update/i }),
+      ).toBeInTheDocument();
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+
+      access.mode = 'guest';
+      rerender(<PreMarketInput date="2026-03-28" />);
+
+      expect(
+        screen.queryByRole('button', { name: /Save|Update/i }),
+      ).not.toBeInTheDocument();
+      // The load effect re-ran for the new mode: it reset the fields and, as a
+      // guest, requested nothing.
+      expect(screen.getByLabelText(/Globex High/)).toHaveValue('');
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('owner to guest: a GET still in flight writes nothing when it answers late', async () => {
+      let resolveGet!: (value: unknown) => void;
+      fetchMock.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveGet = resolve;
+          }),
+      );
+      const { rerender } = render(<PreMarketInput date="2026-03-28" />);
+      const signal = (fetchMock.mock.calls[0]?.[1] as RequestInit).signal;
+
+      access.mode = 'guest';
+      rerender(<PreMarketInput date="2026-03-28" />);
+      expect(signal?.aborted).toBe(true);
+
+      await act(async () => {
+        resolveGet({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              data: {
+                globexHigh: 5720,
+                globexLow: 5690,
+                globexClose: 5710,
+                savedAt: '2026-03-28T12:00:00Z',
+              },
+            }),
+        });
+        await new Promise((r) => setTimeout(r, 30));
+      });
+
+      expect(screen.getByLabelText(/Globex High/)).toHaveValue('');
+      expect(screen.getByLabelText(/Globex Close/)).toHaveValue('');
+      expect(screen.queryByText(/Saved/)).not.toBeInTheDocument();
+    });
+
+    it('guest to owner: the load runs and the Save button appears', async () => {
+      access.mode = 'guest';
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            data: { globexHigh: 5720, savedAt: '2026-03-28T12:00:00Z' },
+          }),
+      });
+      const { rerender } = render(<PreMarketInput date="2026-03-28" />);
+      expect(fetchMock).not.toHaveBeenCalled();
+
+      access.mode = 'owner';
+      rerender(<PreMarketInput date="2026-03-28" />);
+
+      await waitFor(() => {
+        expect(screen.getByLabelText(/Globex High/)).toHaveValue('5720');
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock).toHaveBeenCalledWith(
+        '/api/pre-market?date=2026-03-28',
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      );
+      expect(
+        screen.getByRole('button', { name: /Update/i }),
+      ).toBeInTheDocument();
+    });
   });
 });
