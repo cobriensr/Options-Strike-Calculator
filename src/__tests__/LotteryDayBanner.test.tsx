@@ -5,6 +5,11 @@ import type {
   LotteryFire,
   LotteryFireMacro,
 } from '../components/LotteryFinder/types';
+import {
+  srHintText,
+  titledElementsNeedingHint,
+  titledGenericsWithoutHint,
+} from './helpers/aria';
 
 // ── Fixture factory ──────────────────────────────────────────
 
@@ -365,5 +370,100 @@ describe('LotteryDayBanner: formatLarge magnitude branches', () => {
     );
     // No suffix; rounded to integer
     expect(screen.getByText(/Market Tide ⬆ \+42/)).toBeInTheDocument();
+  });
+});
+
+// ============================================================
+// Hover text for screen readers
+// ============================================================
+
+describe('LotteryDayBanner: hover text for screen readers', () => {
+  const NO_DATA_HINT =
+    'no data: early-session fire before the macro tables filled, or a backfilled fire without macro';
+  const TIDE_HINT =
+    'net call minus net put premium at the latest fire; positive means calls dominate, negative means puts dominate';
+  // The labels already say "0DTE" and "SPX", so the hints leave both out.
+  const ZERO_DTE_HINT = 'net call minus net put premium at the latest fire';
+  const GAMMA_HINT =
+    'dealer gamma sign at the latest fire: green is long gamma (vol-suppressing), red is short gamma (vol-amplifying), white is zero';
+  const TIDE_TITLE =
+    'Market Tide NCP - NPP at the latest fire time. Positive = net call premium dominant; negative = net put premium dominant. Display-only; not a selection signal (see spec Appendix A).';
+  const ZERO_DTE_TITLE =
+    'zero_dte_greek_flow NCP - NPP at the latest fire time. Same direction signal but limited to 0DTE prints. Display-only.';
+  const GAMMA_TITLE =
+    'SPX dealer gamma_oi sign at the latest fire time. 🟢 positive = dealers long gamma (vol-suppressing); 🔴 negative = dealers short gamma (vol-amplifying). Display-only.';
+
+  const renderMacro = (macro: Partial<LotteryFireMacro>) =>
+    render(
+      <LotteryDayBanner fires={[makeFire({ macro: makeMacro(macro) })]} />,
+    );
+
+  it.each([
+    ['Market Tide —', TIDE_TITLE],
+    ['0DTE Flow —', ZERO_DTE_TITLE],
+    ['SPX Gamma —', GAMMA_TITLE],
+  ])(
+    'gives the no-data %s placeholder one shared hint and keeps its title',
+    (text, tooltip) => {
+      renderMacro({});
+      const el = screen.getByText(text);
+      expect(srHintText(el)).toBe(NO_DATA_HINT);
+      expect(el).toHaveAttribute(
+        'title',
+        `${tooltip}\n\n(no data — early-session fire before macro tables populated, or backfilled fire without macro)`,
+      );
+    },
+  );
+
+  it.each([
+    [1, '🟢'],
+    [-1, '🔴'],
+    [0, '⚪'],
+  ])(
+    'explains the SPX Gamma sign (%s) without repeating the dot, and keeps its title',
+    (value, dot) => {
+      renderMacro({ spxSpotGammaOi: value });
+      const el = screen.getByText(`SPX Gamma ${dot}`);
+      expect(srHintText(el)).toBe(GAMMA_HINT);
+      expect(el).toHaveAttribute('title', GAMMA_TITLE);
+    },
+  );
+
+  it.each([
+    [1500, '⬆ +1.5k'],
+    [-2_500_000, '⬇ -2.5M'],
+    [0, '→ +0'],
+  ])('explains Market Tide (%s) and keeps its title', (value, shown) => {
+    renderMacro({ mktTideDiff: value });
+    const el = screen.getByText(`Market Tide ${shown}`);
+    expect(srHintText(el)).toBe(TIDE_HINT);
+    expect(el).toHaveAttribute('title', TIDE_TITLE);
+  });
+
+  it.each([
+    [250, '⬆ +250'],
+    [-250, '⬇ -250'],
+    [0, '→ +0'],
+  ])('explains 0DTE Flow (%s) and keeps its title', (value, shown) => {
+    renderMacro({ zeroDteDiff: value });
+    const el = screen.getByText(`0DTE Flow ${shown}`);
+    expect(srHintText(el)).toBe(ZERO_DTE_HINT);
+    expect(el).toHaveAttribute('title', ZERO_DTE_TITLE);
+  });
+
+  it('leaves no titled generic element without a hint when all three metrics have no data', () => {
+    const { container } = renderMacro({});
+    expect(titledElementsNeedingHint(container)).toHaveLength(3);
+    expect(titledGenericsWithoutHint(container)).toEqual([]);
+  });
+
+  it('leaves no titled generic element without a hint when all three metrics have data', () => {
+    const { container } = renderMacro({
+      mktTideDiff: 1500,
+      zeroDteDiff: -250,
+      spxSpotGammaOi: 1,
+    });
+    expect(titledElementsNeedingHint(container)).toHaveLength(3);
+    expect(titledGenericsWithoutHint(container)).toEqual([]);
   });
 });

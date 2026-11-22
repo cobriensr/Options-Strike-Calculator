@@ -5,6 +5,11 @@ import type {
   LotteryFire,
   LotteryFireMacro,
 } from '../components/LotteryFinder/types';
+import {
+  srHintText,
+  titledElementsNeedingHint,
+  titledGenericsWithoutHint,
+} from './helpers/aria';
 
 // ── Fixture factory ──────────────────────────────────────────
 
@@ -397,5 +402,216 @@ describe('LotteryTierBanner: footer', () => {
       />,
     );
     expect(screen.getByText('counts on current page')).toBeInTheDocument();
+  });
+});
+
+// ============================================================
+// Hover text for screen readers
+// ============================================================
+
+describe('LotteryTierBanner: hover text for screen readers', () => {
+  const CUTOFFS = {
+    version: 'refit-2026-11-13',
+    tier1MinScore: 16,
+    tier2MinScore: 12,
+  };
+  const twoFires: LotteryFire[] = [
+    makeFire({ id: 1, scoreTier: 'tier1', score: 20 }),
+    makeFire({ id: 2, scoreTier: 'tier2', score: 14 }),
+  ];
+
+  describe('headline', () => {
+    it.each([
+      [
+        'a page that is part of a longer day',
+        twoFires,
+        372,
+        /This page · 2 fires/,
+        'Tier breakdown below covers the 2 fires on this page; 372 fired across the full day.',
+      ],
+      [
+        'a one-fire page of a longer day',
+        [twoFires[0]!],
+        372,
+        /This page · 1 fire/,
+        'Tier breakdown below covers the 1 fire on this page; 372 fired across the full day.',
+      ],
+    ])(
+      'repeats the title as the hint for %s',
+      (_name, fires, total, text, title) => {
+        render(<LotteryTierBanner fires={fires} total={total} />);
+        const headline = screen.getByText(text);
+        expect(srHintText(headline)).toBe(title);
+        expect(headline).toHaveAttribute('title', title);
+      },
+    );
+
+    it.each([
+      [
+        'a page that holds the whole day',
+        twoFires,
+        /This page · 2 fires/,
+        'All 2 fires today are shown on this page.',
+      ],
+      [
+        'a one-fire day',
+        [twoFires[0]!],
+        /This page · 1 fire/,
+        'All 1 fire today are shown on this page.',
+      ],
+    ])(
+      'gives %s a hint that keeps the word today out',
+      (_name, fires, text, title) => {
+        render(<LotteryTierBanner fires={fires} total={fires.length} />);
+        const headline = screen.getByText(text);
+        expect(srHintText(headline)).toBe(
+          'every fire of the day is on this page',
+        );
+        expect(headline).toHaveAttribute('title', title);
+        // No text on the page says "today": the hint does not either.
+        expect(screen.queryByText(/today/)).not.toBeInTheDocument();
+      },
+    );
+  });
+
+  describe('tier counts', () => {
+    it.each([
+      [
+        '🔥🔥🔥 1',
+        'Tier 1 fires on the current page (qas ≥ 16). Historical high-peak rate ~80%, measured on the 06-17 seed weights.',
+      ],
+      [
+        '🔥🔥 1',
+        'Tier 2 fires on the current page (qas 12–15). Historical high-peak rate ~63%, measured on the 06-17 seed weights.',
+      ],
+      [
+        '🔥 0',
+        'Tier 3 fires on the current page (qas < 12). Historical high-peak rate ~32%, measured on the 06-17 seed weights.',
+      ],
+    ])(
+      'repeats the title of %s as the hint, with the cutoffs',
+      (text, title) => {
+        render(
+          <LotteryTierBanner fires={twoFires} total={2} cutoffs={CUTOFFS} />,
+        );
+        const count = screen.getByText(text);
+        expect(srHintText(count)).toBe(title);
+        expect(count).toHaveAttribute('title', title);
+      },
+    );
+
+    it.each([
+      [
+        '🔥🔥🔥 1',
+        'Tier 1 fires on the current page. Historical high-peak rate ~80%, measured on the 06-17 seed weights.',
+      ],
+      [
+        '🔥🔥 1',
+        'Tier 2 fires on the current page. Historical high-peak rate ~63%, measured on the 06-17 seed weights.',
+      ],
+      [
+        '🔥 0',
+        'Tier 3 fires on the current page. Historical high-peak rate ~32%, measured on the 06-17 seed weights.',
+      ],
+    ])(
+      'repeats the title of %s as the hint, before the cutoffs arrive',
+      (text, title) => {
+        render(<LotteryTierBanner fires={twoFires} total={2} />);
+        const count = screen.getByText(text);
+        expect(srHintText(count)).toBe(title);
+        expect(count).toHaveAttribute('title', title);
+      },
+    );
+  });
+
+  describe('dominant ticker and top score', () => {
+    const fires: LotteryFire[] = [
+      makeFire({ id: 1, underlyingSymbol: 'AAPL', score: 20, strike: 200 }),
+      makeFire({ id: 2, underlyingSymbol: 'AAPL', score: 18 }),
+      makeFire({
+        id: 3,
+        underlyingSymbol: 'TSLA',
+        score: 12,
+        strike: 250,
+        optionType: 'P',
+      }),
+    ];
+
+    it('explains the dominant ticker without naming it, and keeps its title', () => {
+      render(<LotteryTierBanner fires={fires} total={3} />);
+      const pill = screen.getByText('top:');
+      expect(srHintText(pill)).toBe(
+        'most fires of any ticker on the current page',
+      );
+      expect(pill).toHaveAttribute(
+        'title',
+        "AAPL dominates today's lottery feed with 2 fires on the current page.",
+      );
+      // The hint is the pill's own last child, after the ticker spans.
+      expect(pill.lastElementChild).toHaveClass('sr-only');
+    });
+
+    it('explains the top score with the contract, without naming the ticker, and keeps its title', () => {
+      render(<LotteryTierBanner fires={fires} total={3} />);
+      const pill = screen.getByText('top score:');
+      expect(srHintText(pill)).toBe(
+        '200C, highest-scoring fire in the current view',
+      );
+      expect(pill).toHaveAttribute(
+        'title',
+        'Highest-scoring fire in the current view: AAPL 200C at score 20.',
+      );
+      expect(pill.lastElementChild).toHaveClass('sr-only');
+    });
+
+    it('names a put contract in the top-score hint', () => {
+      render(
+        <LotteryTierBanner
+          fires={[
+            makeFire({
+              id: 1,
+              underlyingSymbol: 'TSLA',
+              score: 30,
+              strike: 250,
+              optionType: 'P',
+            }),
+          ]}
+          total={1}
+        />,
+      );
+      expect(srHintText(screen.getByText('top score:'))).toBe(
+        '250P, highest-scoring fire in the current view',
+      );
+    });
+
+    it('keeps the ticker queries to the two ticker spans: neither hint names one', () => {
+      render(<LotteryTierBanner fires={fires} total={3} />);
+      // One in the dominant-ticker pill, one in the top-score pill.
+      expect(screen.getAllByText('AAPL')).toHaveLength(2);
+    });
+  });
+
+  it('leaves no titled generic element without a hint, and reaches all six', () => {
+    const { container } = render(
+      <LotteryTierBanner
+        fires={[
+          makeFire({ id: 1, scoreTier: 'tier1', score: 20 }),
+          makeFire({ id: 2, scoreTier: 'tier2', score: 14 }),
+        ]}
+        total={372}
+        cutoffs={CUTOFFS}
+      />,
+    );
+    // Headline, three tier counts, dominant ticker and top score.
+    expect(titledElementsNeedingHint(container)).toHaveLength(6);
+    expect(titledGenericsWithoutHint(container)).toEqual([]);
+  });
+
+  it('leaves no titled generic element without a hint when the page holds the whole day', () => {
+    const { container } = render(
+      <LotteryTierBanner fires={twoFires} total={2} />,
+    );
+    expect(titledElementsNeedingHint(container)).toHaveLength(6);
+    expect(titledGenericsWithoutHint(container)).toEqual([]);
   });
 });

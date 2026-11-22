@@ -1,5 +1,6 @@
 import { useMemo } from 'react';
 import type { LotteryFire } from './types.js';
+import { SrHint } from '../ui/SrHint.js';
 
 interface LotteryDayBannerProps {
   fires: LotteryFire[];
@@ -58,18 +59,21 @@ export function LotteryDayBanner({ fires }: LotteryDayBannerProps) {
           value={tideDiff}
           format="signed"
           tooltip="Market Tide NCP - NPP at the latest fire time. Positive = net call premium dominant; negative = net put premium dominant. Display-only; not a selection signal (see spec Appendix A)."
+          srText="net call minus net put premium at the latest fire; positive means calls dominate, negative means puts dominate"
         />
         <DayMetric
           label="0DTE Flow"
           value={zeroDteDiff}
           format="signed"
           tooltip="zero_dte_greek_flow NCP - NPP at the latest fire time. Same direction signal but limited to 0DTE prints. Display-only."
+          srText="net call minus net put premium at the latest fire"
         />
         <DayMetric
           label="SPX Gamma"
           value={spxGamma}
           format="sign-only"
           tooltip="SPX dealer gamma_oi sign at the latest fire time. 🟢 positive = dealers long gamma (vol-suppressing); 🔴 negative = dealers short gamma (vol-amplifying). Display-only."
+          srText="dealer gamma sign at the latest fire: green is long gamma (vol-suppressing), red is short gamma (vol-amplifying), white is zero"
         />
 
         <span className="ml-auto text-[10px] text-neutral-600">
@@ -80,21 +84,31 @@ export function LotteryDayBanner({ fires }: LotteryDayBannerProps) {
   );
 }
 
+/**
+ * What a screen reader gets for a metric that has no data, the same for all
+ * three. The title keeps the metric's own tooltip with this reason after it;
+ * the hint says only why the value is missing.
+ */
+const NO_DATA_HINT =
+  'no data: early-session fire before the macro tables filled, or a backfilled fire without macro';
+
 interface DayMetricProps {
   label: string;
   value: number | null;
   format: 'signed' | 'sign-only';
   tooltip: string;
+  /** The hover text for a screen reader, in words that don't repeat the label. */
+  srText: string;
 }
 
-function DayMetric({ label, value, format, tooltip }: DayMetricProps) {
+function DayMetric({ label, value, format, tooltip, srText }: DayMetricProps) {
   if (value == null) {
     return (
       <span
         className="font-mono text-neutral-500"
         title={`${tooltip}\n\n(no data — early-session fire before macro tables populated, or backfilled fire without macro)`}
       >
-        {label} —
+        {label} —<SrHint>{NO_DATA_HINT}</SrHint>
       </span>
     );
   }
@@ -104,6 +118,7 @@ function DayMetric({ label, value, format, tooltip }: DayMetricProps) {
     return (
       <span className="font-mono text-neutral-300" title={tooltip}>
         {label} {dot}
+        <SrHint>{srText}</SrHint>
       </span>
     );
   }
@@ -120,6 +135,7 @@ function DayMetric({ label, value, format, tooltip }: DayMetricProps) {
   return (
     <span className={`font-mono ${cls}`} title={tooltip}>
       {label} {arrow} {formatted}
+      <SrHint>{srText}</SrHint>
     </span>
   );
 }

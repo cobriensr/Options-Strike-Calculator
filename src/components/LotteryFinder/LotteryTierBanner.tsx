@@ -1,5 +1,6 @@
 import { useMemo } from 'react';
 import type { LotteryFinderResponse, LotteryFire } from './types.js';
+import { SrHint } from '../ui/SrHint.js';
 
 type TierCutoffs = NonNullable<LotteryFinderResponse['tierCutoffs']>;
 
@@ -98,22 +99,27 @@ export function LotteryTierBanner({
   // stays explicit.
   const pageCount = fires.length;
   const hasMoreToday = total > pageCount;
+  const fireWord = pageCount === 1 ? 'fire' : 'fires';
+  // The headline's title and its hint for a screen reader. With more fires on
+  // the day than on the page the hint repeats the title. When the page holds
+  // the whole day the title says "today", and `LotteryTierBanner.test.tsx`
+  // asserts no text in that branch says it, so the hint is a variant without
+  // the word.
+  const headlineTitle = hasMoreToday
+    ? `Tier breakdown below covers the ${pageCount.toLocaleString()} ${fireWord} on this page; ${total.toLocaleString()} fired across the full day.`
+    : `All ${pageCount.toLocaleString()} ${fireWord} today are shown on this page.`;
+  const headlineHint = hasMoreToday
+    ? headlineTitle
+    : 'every fire of the day is on this page';
+  // One title per tier, shared by the count's title and its hint.
+  const tier1Title = tierTitle(1, cutoffs, '80%');
+  const tier2Title = tierTitle(2, cutoffs, '63%');
+  const tier3Title = tierTitle(3, cutoffs, '32%');
 
   return (
     <div className="rounded border border-neutral-800 bg-neutral-950 p-2">
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-[11px]">
-        <span
-          className="font-semibold text-neutral-300"
-          title={
-            hasMoreToday
-              ? `Tier breakdown below covers the ${pageCount.toLocaleString()} fire${
-                  pageCount === 1 ? '' : 's'
-                } on this page; ${total.toLocaleString()} fired across the full day.`
-              : `All ${pageCount.toLocaleString()} fire${
-                  pageCount === 1 ? '' : 's'
-                } today are shown on this page.`
-          }
-        >
+        <span className="font-semibold text-neutral-300" title={headlineTitle}>
           This page · {pageCount.toLocaleString()} fire
           {pageCount === 1 ? '' : 's'}
           {hasMoreToday && (
@@ -121,25 +127,20 @@ export function LotteryTierBanner({
               of {total.toLocaleString()} today
             </span>
           )}
+          <SrHint>{headlineHint}</SrHint>
         </span>
 
-        <span
-          className="font-mono text-rose-300"
-          title={tierTitle(1, cutoffs, '80%')}
-        >
+        <span className="font-mono text-rose-300" title={tier1Title}>
           🔥🔥🔥 {t1}
+          <SrHint>{tier1Title}</SrHint>
         </span>
-        <span
-          className="font-mono text-amber-300"
-          title={tierTitle(2, cutoffs, '63%')}
-        >
+        <span className="font-mono text-amber-300" title={tier2Title}>
           🔥🔥 {t2}
+          <SrHint>{tier2Title}</SrHint>
         </span>
-        <span
-          className="font-mono text-neutral-400"
-          title={tierTitle(3, cutoffs, '32%')}
-        >
+        <span className="font-mono text-neutral-400" title={tier3Title}>
           🔥 {t3}
+          <SrHint>{tier3Title}</SrHint>
         </span>
 
         {dominantTicker && (
@@ -154,6 +155,7 @@ export function LotteryTierBanner({
             <span className="font-mono text-neutral-400">
               ×{dominantTicker[1]}
             </span>
+            <SrHint>most fires of any ticker on the current page</SrHint>
           </span>
         )}
 
@@ -167,6 +169,7 @@ export function LotteryTierBanner({
               {topFire.underlyingSymbol}
             </span>{' '}
             <span className="font-mono text-neutral-400">{topFire.score}</span>
+            <SrHint>{`${topFire.strike}${topFire.optionType}, highest-scoring fire in the current view`}</SrHint>
           </span>
         )}
 
