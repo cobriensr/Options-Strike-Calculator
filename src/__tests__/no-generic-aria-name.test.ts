@@ -34,7 +34,14 @@
 import { describe, it, expect } from 'vitest';
 import { readdirSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { GENERIC_TAGS, genericElementsWithAriaLabel } from './helpers/aria';
+import {
+  GENERIC_TAGS,
+  genericElementsWithAriaLabel,
+  srHintText,
+  titledElementsNeedingHint,
+  titledElementsWithoutHint,
+  titledGenericsWithoutHint,
+} from './helpers/aria';
 import { findGenericAriaNames } from './helpers/generic-aria-scan';
 
 const scan = (source: string): string[] =>
@@ -359,6 +366,197 @@ describe('genericElementsWithAriaLabel', () => {
     const root = document.createElement('div');
     root.innerHTML = html;
     expect(genericElementsWithAriaLabel(root)).toEqual([]);
+  });
+});
+
+const rootWith = (html: string): HTMLElement => {
+  const root = document.createElement('div');
+  root.innerHTML = html;
+  return root;
+};
+
+describe('titledElementsNeedingHint', () => {
+  // A title is mouse-only. An element is exempt only when a real role names
+  // it, the same rule genericElementsWithAriaLabel uses.
+  it.each([
+    ['a span with no role', '<span title="Explains it">E1</span>'],
+    [
+      'a span with an empty role',
+      '<span role="" title="Explains it">E1</span>',
+    ],
+    [
+      'a span with a whitespace-only role',
+      '<span role="  " title="Explains it">E1</span>',
+    ],
+    [
+      'a span with role="none"',
+      '<span role="none" title="Explains it">E1</span>',
+    ],
+    [
+      'a span with role="presentation"',
+      '<span role="presentation" title="Explains it">E1</span>',
+    ],
+    [
+      'a span whose first role token is presentational',
+      '<span role=" None img" title="Explains it">E1</span>',
+    ],
+  ])('needs a hint on %s', (_name, html) => {
+    expect(titledElementsNeedingHint(rootWith(html))).toHaveLength(1);
+  });
+
+  it.each([
+    [
+      'a span with a real role',
+      '<span role="img" title="Explains it">E1</span>',
+    ],
+    [
+      'a span whose first role token is real',
+      '<span role="img none" title="Explains it">E1</span>',
+    ],
+    ['a button', '<button title="Explains it">E1</button>'],
+    ['a link', '<a href="/x" title="Explains it">E1</a>'],
+    ['an element that shows its title text', '<span title="E1">E1</span>'],
+    ['an element with an empty title', '<span title="  ">E1</span>'],
+  ])('does not need a hint on %s', (_name, html) => {
+    expect(titledElementsNeedingHint(rootWith(html))).toEqual([]);
+  });
+});
+
+describe('srHintText', () => {
+  const hintOf = (html: string): string | null =>
+    srHintText(rootWith(html).firstElementChild as Element);
+
+  it('reads the hint that is the last child, without its dash', () => {
+    expect(
+      hintOf('<span>E1<span class="sr-only"> — explains it</span></span>'),
+    ).toBe('explains it');
+  });
+
+  it('reads no hint when another element follows the sr-only span', () => {
+    expect(
+      hintOf(
+        '<span>E1<span class="sr-only"> — explains it</span><span>late</span></span>',
+      ),
+    ).toBeNull();
+  });
+
+  it('reads no hint from an element with none, or one nested a level down', () => {
+    expect(hintOf('<span>E1</span>')).toBeNull();
+    expect(
+      hintOf(
+        '<span><span>E1<span class="sr-only"> — nested</span></span></span>',
+      ),
+    ).toBeNull();
+  });
+});
+
+describe('titledGenericsWithoutHint', () => {
+  it('reports a titled span with no hint', () => {
+    const root = rootWith('<span title="Explains it">E1</span>');
+    expect(titledGenericsWithoutHint(root)).toEqual([
+      '<span title="Explains it">E1</span>',
+    ]);
+  });
+
+  it('reports a titled span with role="none"', () => {
+    const root = rootWith('<span role="none" title="Explains it">E1</span>');
+    expect(titledGenericsWithoutHint(root)).toEqual([
+      '<span role="none" title="Explains it">E1</span>',
+    ]);
+  });
+
+  it.each(GENERIC_TAGS)('reports a titled <%s> with no hint', (tag) => {
+    const root = document.createElement('div');
+    const el = document.createElement(tag);
+    el.setAttribute('title', 'Explains it');
+    el.textContent = 'E1';
+    root.appendChild(el);
+    expect(titledGenericsWithoutHint(root)).toHaveLength(1);
+  });
+
+  it('does not report a titled span with a hint as a direct child', () => {
+    const root = rootWith(
+      '<span title="Explains it">E1<span class="sr-only"> — explains it</span></span>',
+    );
+    expect(titledGenericsWithoutHint(root)).toEqual([]);
+  });
+
+  it('reports a titled span whose hint is nested one level down', () => {
+    const root = rootWith(
+      '<span title="Explains it"><span>E1<span class="sr-only"> — Explains it</span></span></span>',
+    );
+    expect(titledGenericsWithoutHint(root)).toHaveLength(1);
+    expect(titledElementsWithoutHint(root)).toHaveLength(1);
+  });
+
+  // SrHint is the LAST direct child, so an element added after it is a defect
+  // the guard has to see (the hint would no longer read last). The hint says
+  // what the title says, which is how most hints here read. A hint that no
+  // longer comes last must not count as visible text either, or the element
+  // would look like it shows its own title and slip past.
+  it.each([
+    [
+      'a span',
+      '<span title="Explains it">E1<span class="sr-only"> — Explains it</span><span>late</span></span>',
+    ],
+    [
+      'several elements',
+      '<span title="Explains it">E1<span class="sr-only"> — Explains it</span><b>x</b><i>y</i></span>',
+    ],
+    [
+      'an element between two hints',
+      '<span title="Explains it">E1<span class="sr-only"> — Explains it</span><b>x</b><span class="sr-only"> — Explains it</span><i>y</i></span>',
+    ],
+  ])(
+    'reports a hint that repeats the title when it is followed by %s',
+    (_name, html) => {
+      expect(titledGenericsWithoutHint(rootWith(html))).toHaveLength(1);
+      expect(titledElementsWithoutHint(rootWith(html))).toHaveLength(1);
+    },
+  );
+
+  it('accepts a hint that comes last after other child elements', () => {
+    const root = rootWith(
+      '<span title="Explains it">E1<b>x</b><span class="sr-only"> — a</span></span>',
+    );
+    expect(titledGenericsWithoutHint(root)).toEqual([]);
+  });
+
+  it('accepts a last-child hint that repeats the title', () => {
+    const html =
+      '<span title="Explains it">E1<b>x</b><span class="sr-only"> — Explains it</span></span>';
+    expect(titledGenericsWithoutHint(rootWith(html))).toEqual([]);
+    expect(titledElementsWithoutHint(rootWith(html))).toEqual([]);
+  });
+
+  it('does not report a titled label or a titled td', () => {
+    const root = rootWith(
+      '<label title="Explains it">Filter</label>' +
+        '<table><tbody><tr><td title="Explains it">12</td></tr></tbody></table>',
+    );
+    // The all-tags check sees both, so only the generic filter spares them.
+    expect(titledElementsWithoutHint(root)).toHaveLength(2);
+    expect(titledGenericsWithoutHint(root)).toEqual([]);
+  });
+
+  it('does not report a titled span with a real role', () => {
+    const root = rootWith('<span role="img" title="Explains it">E1</span>');
+    expect(titledGenericsWithoutHint(root)).toEqual([]);
+  });
+
+  it('does not report a span that already shows its title text', () => {
+    const root = rootWith('<span title="E1">E1</span>');
+    expect(titledGenericsWithoutHint(root)).toEqual([]);
+  });
+
+  it('reports a generic beside a label and leaves the label out', () => {
+    const root = rootWith(
+      '<label title="Explains it">Filter</label>' +
+        '<span title="Also explains">E1</span>',
+    );
+    expect(titledGenericsWithoutHint(root)).toEqual([
+      '<span title="Also explains">E1</span>',
+    ]);
   });
 });
 

@@ -78,12 +78,15 @@ export function genericElementsWithAriaLabel(root: ParentNode): string[] {
     .map(snippet);
 }
 
-/** The `SrHint` span that is a direct child of `badge`, if it has one. */
+/**
+ * The `SrHint` span that is the last element child of `badge`, if it has one.
+ * A hint is always the last child, so an `sr-only` span with another element
+ * after it is not counted: whatever was added behind it would otherwise pass
+ * unnoticed.
+ */
 function ownHint(badge: Element): Element | null {
-  return (
-    Array.from(badge.children).find((c) => c.classList.contains('sr-only')) ??
-    null
-  );
+  const last = badge.lastElementChild;
+  return last != null && last.classList.contains('sr-only') ? last : null;
 }
 
 /**
@@ -96,20 +99,30 @@ export function srHintText(badge: Element): string | null {
   return (hint.textContent ?? '').replace(/^\s*—\s*/, '').trim();
 }
 
-/** The text a sighted user reads in `el`: everything but its own hint. */
+/**
+ * The text a sighted user reads in `el`: everything but its hidden hints.
+ * Every `sr-only` descendant is left out, at any depth, not only the
+ * last-child hint that {@link ownHint} recognizes. A hint with an element
+ * after it, or one nested a level down, is hidden all the same; counting its
+ * text as visible would let a title it repeats pass as shown, and the
+ * misplaced hint would go unreported.
+ */
 function visibleText(el: Element): string {
   const copy = el.cloneNode(true) as Element;
-  const hint = ownHint(copy);
-  if (hint != null) copy.removeChild(hint);
+  for (const hint of copy.querySelectorAll('.sr-only')) {
+    hint.remove();
+  }
   return squashText(copy.textContent);
 }
 
 /**
  * Every element under `root` whose `title` a screen reader would never
  * hear: it has a non-empty `title`, and
- * - no role (an `img` or `group` is named some other way),
+ * - no real role (an `img` or `group` is named some other way; an empty or
+ *   presentational role does not count, see {@link countsAsNoRole}),
  * - isn't natively interactive (a button or link is named by its content),
- * - doesn't already show its title text (its own hint left out).
+ * - doesn't already show its title text (every `.sr-only` descendant left
+ *   out, see {@link visibleText}).
  * A `title` is mouse-only, so such an element needs a `<SrHint>` as a
  * direct child.
  */
@@ -117,7 +130,9 @@ export function titledElementsNeedingHint(root: ParentNode): Element[] {
   return Array.from(root.querySelectorAll('[title]')).filter((el) => {
     const title = squashText(el.getAttribute('title'));
     if (title === '') return false;
-    if (el.hasAttribute('role') || el.matches(NATIVELY_NAMED)) return false;
+    const role = el.getAttribute('role');
+    const hasRole = role != null && !countsAsNoRole(role);
+    if (hasRole || el.matches(NATIVELY_NAMED)) return false;
     return !visibleText(el).includes(title);
   });
 }
@@ -126,5 +141,17 @@ export function titledElementsNeedingHint(root: ParentNode): Element[] {
 export function titledElementsWithoutHint(root: ParentNode): string[] {
   return titledElementsNeedingHint(root)
     .filter((el) => ownHint(el) == null)
+    .map(snippet);
+}
+
+/**
+ * Snippets of the {@link titledElementsWithoutHint} limited to bare generic
+ * elements (`GENERIC_TAGS`: a `span`, `div`, `p`, ...), the same boundary as
+ * {@link genericElementsWithAriaLabel}. Titled elements that are not generic
+ * (a `<label>`, a `<td>`) are out of scope here.
+ */
+export function titledGenericsWithoutHint(root: ParentNode): string[] {
+  return titledElementsNeedingHint(root)
+    .filter((el) => el.matches(GENERIC_SELECTOR) && ownHint(el) == null)
     .map(snippet);
 }
