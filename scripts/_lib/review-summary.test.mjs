@@ -694,6 +694,25 @@ describe('the machine-wide gate lock (the `run` header, waiting, and the two cap
     },
   );
 
+  it('credits a failed `review-gate clear` after a wait to type-check, not to the wait', () => {
+    // `clear` is the chain's first step and prints no banner before it, so
+    // the chain has started even though the type-check banner never came.
+    const message =
+      'review-gate clear failed: EPERM: operation not permitted, unlink F:\\work\\repo\\.git\\review-gate.json';
+    const waiting = fixture('pass-after-wait.txt')
+      .split('\n')
+      .slice(0, 7)
+      .join('\n');
+    const log = `${waiting}\n${message}\n`;
+
+    expect(statusesOf(log)).toEqual(expectedStatuses(0, true));
+    expect(detailOf(log, 'type-check')).toEqual([message]);
+    const summary = summarizeReviewLog(log);
+    expect(summary.ok).toBe(false);
+    expect(summary.lines[0]).toBe(`gate lock           pass  ${WAITED_NOTE}`);
+    expect(summary.lines.join('\n')).not.toContain('ends while waiting');
+  });
+
   it('is not ok when `run` failed, even if every stage after it passed', () => {
     // Not a log `npm run review` makes (a failed `run` starts no chain), but
     // two logs run together, or a failure printed late, must not read as a pass.
@@ -760,6 +779,13 @@ describe('the machine-wide gate lock (the `run` header, waiting, and the two cap
 
       expect(statusesOf(typeCheckZone)).toEqual(expectedStatuses(0, true));
       expect(statusesOf(viteZone)).toEqual(expectedStatuses(3, true));
+    });
+
+    it('fails the seal when the cap line comes after it, with only the cap line to show', () => {
+      const sealed = `${fixture('pass.txt').trimEnd()}\n${HOLD_CAP_LINE}\n`;
+
+      expect(statusesOf(sealed)).toEqual(expectedStatuses(7, true));
+      expect(detailOf(sealed, 'seal')).toEqual([HOLD_CAP_LINE]);
     });
 
     it('shows a long cap line whole: the runner already cuts the command it names', () => {

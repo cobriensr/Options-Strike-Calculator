@@ -19,7 +19,7 @@ import {
 } from 'node:fs';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { gatePipeName } from './gate-lock.mjs';
+import { WAIT_CAP_MS, gatePipeName } from './gate-lock.mjs';
 import {
   CLI,
   DRIFTED,
@@ -338,11 +338,14 @@ const RAN_MARKER_CHAIN =
   "node -e \"require('fs').writeFileSync('ran.txt', 'x')\"";
 
 /**
- * What the wait cap is shortened to in the fail-closed test. Long enough that
- * the holder's line reaches the waiter first on a loaded machine, so the
- * message can name the holder.
+ * What the wait cap is shortened to in the fail-closed test. The cap clock
+ * starts when the waiter calls acquire, and the holder's line has to arrive
+ * and be read before it fires for the message to name the holder. A starved
+ * waiter (the whole gate runs on a machine other sessions are loading) can
+ * take seconds to read that line, so this is generous, and the test still
+ * costs only this long.
  */
-const FAST_CAP_MS = 1_500;
+const FAST_CAP_MS = 5_000;
 
 /** A scratch package.json whose `review:steps` is `steps`; its path. */
 function writePackage(dir, steps) {
@@ -647,16 +650,16 @@ describe('review-gate run', () => {
   });
 
   it('fails closed: a gate that waits out the wait cap exits 1 and never runs the chain', async () => {
-    // Test only: the 120 min wait cap becomes FAST_CAP_MS in the child. The
-    // preload changes nothing else, and only setTimeout calls of exactly the
-    // cap's length.
+    // Test only: the wait cap (WAIT_CAP_MS, 120 min) becomes FAST_CAP_MS in
+    // the child. The preload changes nothing else, and only setTimeout calls
+    // of exactly the cap's length.
     write(
       repo,
       'fast-wait-cap.cjs',
       [
         'const realSetTimeout = globalThis.setTimeout;',
         'globalThis.setTimeout = (fn, ms, ...rest) =>',
-        `  realSetTimeout(fn, ms === 7_200_000 ? ${FAST_CAP_MS} : ms, ...rest);`,
+        `  realSetTimeout(fn, ms === ${WAIT_CAP_MS} ? ${FAST_CAP_MS} : ms, ...rest);`,
       ].join('\n'),
     );
     writePackage(repo, RAN_MARKER_CHAIN);
@@ -672,7 +675,9 @@ describe('review-gate run', () => {
     expect(code).toBe(1);
     // The lock's message, with the CLI's prefix and not the lock's own as well.
     expect(waiter.out.stderr).toMatch(
-      /review-gate run failed: gave up after waiting 120 min for the gate in holder-wt \(pid \d+, running \d+ min\)/,
+      new RegExp(
+        `review-gate run failed: gave up after waiting ${WAIT_CAP_MS / 60_000} min for the gate in holder-wt \\(pid \\d+, running \\d+ min\\)`,
+      ),
     );
     expect(waiter.out.stderr).not.toContain('failed: review-gate:');
     expect(existsSync(path.join(repo, 'ran.txt'))).toBe(false);

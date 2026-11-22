@@ -396,7 +396,8 @@ function settleEslint(scan) {
  * The `gate lock` line: null for a log with nothing about the lock in it.
  * Otherwise `fail` when `run` itself failed (the wait cap among the reasons) or
  * the log ends while still waiting, and `pass` for a run that waited and then
- * started the chain. `chainStarted` is whether the type-check banner was seen.
+ * started the chain. `chainStarted` is whether the chain started: the
+ * type-check banner was seen, or its first step, `clear`, failed.
  *
  * @returns {{ status: 'pass' | 'fail', details: string[], note: string } | null}
  */
@@ -499,7 +500,10 @@ export function parseReviewLog(text, { root } = {}) {
   // The hold cap fails the stage it interrupted, whatever else the stage's own
   // output said: the stages after it were never reached.
   if (scan.holdCap !== null) scan.evidence[scan.holdCap.id].failed = true;
-  const chainStarted = state.zone >= ZONE['type-check'];
+  // The chain's first step, `clear`, prints no banner before it, so a failed
+  // `clear` is proof that the chain started, banner or not.
+  const chainStarted =
+    state.zone >= ZONE['type-check'] || scan.clearFailed !== '';
   const gate = settleGate(scan, chainStarted);
   // The review banner alone makes type-check "seen". A log that ends in the
   // gate zone never started the chain, so type-check was not reached.

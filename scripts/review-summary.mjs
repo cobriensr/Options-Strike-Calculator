@@ -9,7 +9,10 @@
  * Prints pass, fail or not reached for type-check, eslint, prettier, vite
  * build, the build-output check, vitest, the coverage floor and the seal; a
  * failed stage is followed by its first few error lines, and the seal line
- * ends the output when the log has one.
+ * ends the output when the log has one. A `gate lock` line comes first when
+ * the log has output from the machine-wide gate lock (a wait for it, or a
+ * failure of `run` before the chain), and a hold-cap kill fails the stage the
+ * log was in.
  *
  * Exit codes: 0 every stage passed, 1 a stage failed or was not reached,
  * 2 the input could not be read or holds no review output.
