@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import FuturesPanel from '../../components/FuturesCalculator/FuturesPanel';
 import type { FuturesDataState } from '../../hooks/useFuturesData';
 import { useFuturesData } from '../../hooks/useFuturesData';
+import { srHintText, titledGenericsWithoutHint } from '../helpers/aria';
 
 vi.mock('../../hooks/useFuturesData', () => ({
   useFuturesData: vi.fn(),
@@ -108,6 +109,51 @@ describe('FuturesPanel: historical picker', () => {
     expect(screen.getByText('VIEWING HISTORICAL')).toBeInTheDocument();
   });
 
+  // Site 88. The pill sits in a role="status" live region, which a screen
+  // reader re-reads when it appears, so its hint is capped at 60 characters.
+  it('tells a screen reader what the VIEWING HISTORICAL pill means, in a short live-region hint', () => {
+    mockState();
+    const { container } = render(<FuturesPanel />);
+
+    fireEvent.change(screen.getByLabelText('Historical futures timestamp'), {
+      target: { value: '2026-04-17T09:30' },
+    });
+
+    const pill = screen.getByText('VIEWING HISTORICAL');
+    expect(pill.parentElement).toHaveAttribute('role', 'status');
+    expect(pill).toHaveAttribute(
+      'title',
+      'Showing a historical snapshot — click Now to return to live data',
+    );
+    const hint = srHintText(pill);
+    expect(hint).toBe('a snapshot, not live; click Now to return to live data');
+    expect(hint?.length).toBeLessThanOrEqual(60);
+    // The hint is absolutely positioned, so the badge must contain it.
+    expect(pill).toHaveClass('relative');
+    expect(titledGenericsWithoutHint(container)).toEqual([]);
+  });
+
+  // The hint sends the user to "Now". The button's accessible name must
+  // contain that visible word (WCAG 2.5.3, Label in Name), or a screen
+  // reader user hears a different name for the control the hint points at.
+  it('names the control the VIEWING HISTORICAL hint points at: the button reads Now', () => {
+    mockState();
+    render(<FuturesPanel />);
+
+    fireEvent.change(screen.getByLabelText('Historical futures timestamp'), {
+      target: { value: '2026-04-17T09:30' },
+    });
+
+    const nowBtn = screen.getByRole('button', {
+      name: 'Now: reset to live data',
+    });
+    expect(nowBtn).toHaveAccessibleName('Now: reset to live data');
+    expect(nowBtn).toHaveTextContent('Now');
+    expect(srHintText(screen.getByText('VIEWING HISTORICAL'))).toContain(
+      'click Now',
+    );
+  });
+
   it('Now button clears the picker and reverts to live mode', async () => {
     const user = userEvent.setup();
     mockState();
@@ -122,7 +168,7 @@ describe('FuturesPanel: historical picker', () => {
     expect(screen.getByText('VIEWING HISTORICAL')).toBeInTheDocument();
 
     const nowBtn = screen.getByRole('button', {
-      name: 'Reset to live data',
+      name: 'Now: reset to live data',
     });
     expect(nowBtn).not.toBeDisabled();
     await user.click(nowBtn);
@@ -138,7 +184,7 @@ describe('FuturesPanel: historical picker', () => {
     render(<FuturesPanel />);
 
     const nowBtn = screen.getByRole('button', {
-      name: 'Reset to live data',
+      name: 'Now: reset to live data',
     });
     expect(nowBtn).toBeDisabled();
   });

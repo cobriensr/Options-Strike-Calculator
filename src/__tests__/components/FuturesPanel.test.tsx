@@ -84,13 +84,17 @@ describe('FuturesPanel: loading state', () => {
     expect(busyEl).toBeInTheDocument();
   });
 
-  it('shows Loading text on refresh button when loading', () => {
+  it('shows Loading text on refresh button when loading, and its name contains that text', () => {
     mockState({ loading: true, snapshots: [] });
     render(<FuturesPanel />);
 
-    expect(
-      screen.getByRole('button', { name: 'Refresh futures data' }),
-    ).toHaveTextContent('Loading...');
+    // WCAG 2.5.3 (Label in Name): while loading the button shows
+    // "Loading...", so its accessible name must contain it too.
+    const button = screen.getByRole('button', {
+      name: 'Loading... refreshing futures data',
+    });
+    expect(button).toHaveTextContent('Loading...');
+    expect(button).toHaveAccessibleName('Loading... refreshing futures data');
   });
 
   it('does not show skeleton when loading with existing data', () => {
@@ -238,13 +242,13 @@ describe('FuturesPanel: refresh button', () => {
     ).toBeInTheDocument();
   });
 
-  it('shows Refresh text when not loading', () => {
+  it('shows Refresh text when not loading, and its name contains that text', () => {
     mockState({ loading: false });
     render(<FuturesPanel />);
 
-    expect(
-      screen.getByRole('button', { name: 'Refresh futures data' }),
-    ).toHaveTextContent('Refresh');
+    const button = screen.getByRole('button', { name: 'Refresh futures data' });
+    expect(button).toHaveTextContent('Refresh');
+    expect(button).toHaveAccessibleName('Refresh futures data');
   });
 
   it('calls refresh when clicked', async () => {
@@ -264,7 +268,9 @@ describe('FuturesPanel: refresh button', () => {
     render(<FuturesPanel />);
 
     expect(
-      screen.getByRole('button', { name: 'Refresh futures data' }),
+      screen.getByRole('button', {
+        name: 'Loading... refreshing futures data',
+      }),
     ).toBeDisabled();
   });
 });

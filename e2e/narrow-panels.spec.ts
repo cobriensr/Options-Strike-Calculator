@@ -71,8 +71,15 @@ test.describe('Panels on a phone', () => {
     ).toContainText(/\d{1,2}:\d{2}\s?[AP]M/);
     await expectInsideCard(futures, [
       futures.getByLabel('Historical futures timestamp'),
-      futures.getByRole('button', { name: 'Reset to live data' }),
-      futures.getByRole('button', { name: 'Refresh futures data' }),
+      // Exact: a substring would pass on the old "Reset to live data" name
+      futures.getByRole('button', {
+        name: 'Now: reset to live data',
+        exact: true,
+      }),
+      // A poll puts the button in its loading state, which renames it
+      futures.getByRole('button', {
+        name: /^(Refresh|Loading\.\.\. refreshing) futures data$/,
+      }),
     ]);
     await expectNoSidewaysScroll(page);
   });

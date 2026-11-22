@@ -145,6 +145,7 @@ export default function FuturesPanel({
                 label="VIEWING HISTORICAL"
                 color={theme.caution}
                 title="Showing a historical snapshot — click Now to return to live data"
+                srHint="a snapshot, not live; click Now to return to live data"
               />
             </span>
           )}
@@ -171,7 +172,7 @@ export default function FuturesPanel({
               color: theme.accent,
               border: `1px solid ${tint(theme.accent, '25')}`,
             }}
-            aria-label="Reset to live data"
+            aria-label="Now: reset to live data"
           >
             Now
           </button>
@@ -185,7 +186,11 @@ export default function FuturesPanel({
               color: theme.accent,
               border: `1px solid ${tint(theme.accent, '25')}`,
             }}
-            aria-label="Refresh futures data"
+            aria-label={
+              loading
+                ? 'Loading... refreshing futures data'
+                : 'Refresh futures data'
+            }
           >
             {loading ? 'Loading...' : 'Refresh'}
           </button>
