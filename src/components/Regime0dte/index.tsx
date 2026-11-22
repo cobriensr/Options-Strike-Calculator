@@ -11,10 +11,12 @@
  *   - CandleStrip        — 30-min SPX candle squares with the persistence divider
  *
  * Outside the 08:30–15:00 CT session (`!isWindowOpen`) the panel renders a
- * "waiting for the open" placeholder rather than drawing the visuals on empty
- * data. Inside it, before a payload dated today has landed (the first fetch of
- * the day, or one that failed), it says it is loading, or that there is no read
- * yet and it retries, never "waiting for the open". The header badge follows
+ * placeholder rather than drawing the visuals on empty data: "waiting for the
+ * open", or "closed for the day" after the close of a trading day, or "needs
+ * owner or guest access" for a public visitor. Inside it, before a payload
+ * dated today has landed (the first fetch of the day, or one that failed), it
+ * says it is loading, or that there is no read yet and it retries, never
+ * "waiting for the open". The header badge follows
  * `displayData` and is not window-gated: it shows the day's last gate after the
  * close and clears when the payload is no longer dated today (ET midnight).
  *
@@ -28,6 +30,8 @@
 import { useMemo } from 'react';
 
 import { useRegime0dte } from '../../hooks/useRegime0dte.js';
+import { getAccessMode } from '../../utils/auth.js';
+import { regime0dteSessionPhase } from '../../utils/regime-0dte-window.js';
 import { SectionBox } from '../ui';
 import { GammaProfileMini, type GammaStrike } from './GammaProfileMini';
 import { IvSparkline, type IvSparkPoint } from './IvSparkline';
@@ -51,17 +55,33 @@ const EMPTY_CANDLES = Object.freeze([] as StripCandle[]) as StripCandle[];
 
 /**
  * What the body says when there is no panel to draw (no payload dated today).
- * Closed window: the next open. Open window: it is past 08:30, so "waiting for
- * the open" would be wrong. Either the first read of the day is on its way
- * (loading), or it failed (the alert above has the error; the poll retries).
+ *
+ * Open window: it is past 08:30, so "waiting for the open" would be wrong.
+ * Either the first read of the day is on its way (loading), or it failed (the
+ * alert above has the error; the poll retries).
+ *
+ * Closed window, by cause, since "waiting for the open" is true of only one:
+ * - a public visitor: the hook holds the window closed for them (the endpoint
+ *   is owner-or-guest), so no clock time would ever open it;
+ * - after the close on a trading day: the day is over;
+ * - before the open, or on a weekend or holiday: waiting for the open.
+ * The clock is read when the panel renders. It re-renders when the window
+ * flips (the close, the open) and at ET midnight, so "closed for the day" is
+ * set at the close and may outlast CT midnight until the next render, when it
+ * is still true ("the next read starts at the 08:30 CT open").
  */
 function placeholderCopy(isWindowOpen: boolean, error: string | null): string {
-  if (!isWindowOpen) {
-    return 'Waiting for the open. The 0DTE gamma regime auto-updates between 08:30 and 15:00 CT on trading days.';
+  if (isWindowOpen) {
+    return error == null
+      ? 'Loading today’s regime read…'
+      : 'No regime read for today yet. It retries automatically.';
   }
-  return error == null
-    ? 'Loading today’s regime read…'
-    : 'No regime read for today yet. It retries automatically.';
+  if (getAccessMode() === 'public') {
+    return 'The regime read needs owner or guest access.';
+  }
+  return regime0dteSessionPhase(new Date()) === 'after-close'
+    ? 'Closed for the day. The next read starts at the 08:30 CT open.'
+    : 'Waiting for the open. The 0DTE gamma regime auto-updates between 08:30 and 15:00 CT on trading days.';
 }
 
 export default function Regime0dte(): React.ReactElement {

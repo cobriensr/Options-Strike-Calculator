@@ -1,8 +1,10 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 
 import Regime0dte from '../components/Regime0dte';
 import type { Regime0dteResponse } from '../hooks/useRegime0dte';
+import { getAccessMode, type AccessMode } from '../utils/auth';
+import { ctWallClockToUtcIso } from '../utils/timezone';
 import {
   GammaProfileMini,
   type GammaStrike,
@@ -26,6 +28,10 @@ const { mockUseRegime0dte } = vi.hoisted(() => ({
 }));
 vi.mock('../hooks/useRegime0dte.js', () => ({
   useRegime0dte: mockUseRegime0dte,
+}));
+// The access mode is read from a cookie (and is always 'owner' in a dev build).
+vi.mock('../utils/auth', () => ({
+  getAccessMode: vi.fn(() => 'owner'),
 }));
 
 const STRIKES: GammaStrike[] = [
@@ -182,9 +188,25 @@ function mockHook(
   });
 }
 
+/** Pin the (Date-only) fake clock to a CT wall clock. */
+function setCt(date: string, hour: number, minute: number): void {
+  vi.setSystemTime(
+    new Date(ctWallClockToUtcIso(date, hour * 60 + minute) as string),
+  );
+}
+
 describe('Regime0dte panel shell', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // The closed-window copy reads the clock. Default: a trading Monday, before
+    // the open, for an owner.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    setCt('2026-06-08', 7, 0);
+    vi.mocked(getAccessMode).mockReturnValue('owner');
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it('renders the gate label and all four sub-viz from displayData', () => {
@@ -328,6 +350,136 @@ describe('Regime0dte panel shell', () => {
     for (const gate of [/lean down/i, /big move/i, /calm/i]) {
       expect(screen.queryByText(gate)).not.toBeInTheDocument();
     }
+  });
+
+  // The window is closed for three different reasons, and "Waiting for the
+  // open" is true for only some of them. Each case is pinned by its full text.
+  describe('closed-window copy', () => {
+    const WAITING_FOR_THE_OPEN =
+      'Waiting for the open. The 0DTE gamma regime auto-updates between 08:30 and 15:00 CT on trading days.';
+    const CLOSED_FOR_THE_DAY =
+      'Closed for the day. The next read starts at the 08:30 CT open.';
+    const NEEDS_ACCESS = 'The regime read needs owner or guest access.';
+
+    interface ClosedCase {
+      name: string;
+      date: string;
+      hour: number;
+      minute: number;
+      access?: AccessMode;
+      copy: string;
+    }
+    const cases: ClosedCase[] = [
+      {
+        name: 'at the close on a trading day',
+        date: '2026-06-08',
+        hour: 15,
+        minute: 0,
+        copy: CLOSED_FOR_THE_DAY,
+      },
+      {
+        name: 'late evening of a trading day',
+        date: '2026-06-08',
+        hour: 23,
+        minute: 59,
+        copy: CLOSED_FOR_THE_DAY,
+      },
+      {
+        name: 'after the early close on a half-day',
+        date: '2026-11-27',
+        hour: 12,
+        minute: 0,
+        copy: CLOSED_FOR_THE_DAY,
+      },
+      {
+        name: 'after the close on a trading day, for a guest',
+        date: '2026-06-08',
+        hour: 16,
+        minute: 0,
+        access: 'guest',
+        copy: CLOSED_FOR_THE_DAY,
+      },
+      {
+        name: 'a minute before the open on a trading day',
+        date: '2026-06-08',
+        hour: 8,
+        minute: 29,
+        copy: WAITING_FOR_THE_OPEN,
+      },
+      {
+        name: 'a Saturday, in the hours after a normal close',
+        date: '2026-06-06',
+        hour: 16,
+        minute: 0,
+        copy: WAITING_FOR_THE_OPEN,
+      },
+      {
+        name: 'an NYSE holiday, in the hours after a normal close',
+        date: '2026-11-26',
+        hour: 16,
+        minute: 0,
+        copy: WAITING_FOR_THE_OPEN,
+      },
+      {
+        name: 'a public visitor in the middle of the session',
+        date: '2026-06-08',
+        hour: 10,
+        minute: 0,
+        access: 'public',
+        copy: NEEDS_ACCESS,
+      },
+      {
+        name: 'a public visitor after the close',
+        date: '2026-06-08',
+        hour: 16,
+        minute: 0,
+        access: 'public',
+        copy: NEEDS_ACCESS,
+      },
+      {
+        name: 'a public visitor before the open',
+        date: '2026-06-08',
+        hour: 7,
+        minute: 0,
+        access: 'public',
+        copy: NEEDS_ACCESS,
+      },
+    ];
+
+    it.each(cases)('says the right thing: $name', (c) => {
+      setCt(c.date, c.hour, c.minute);
+      vi.mocked(getAccessMode).mockReturnValue(c.access ?? 'owner');
+      mockHook({ isWindowOpen: false, displayData: null });
+      render(<Regime0dte />);
+
+      const all = [WAITING_FOR_THE_OPEN, CLOSED_FOR_THE_DAY, NEEDS_ACCESS];
+      expect(screen.getByText(c.copy)).toBeInTheDocument();
+      for (const other of all.filter((copy) => copy !== c.copy)) {
+        expect(screen.queryByText(other)).not.toBeInTheDocument();
+      }
+    });
+
+    it('keeps the day’s gate badge on the closed copy after the close', () => {
+      setCt('2026-06-08', 15, 30);
+      mockHook({ isWindowOpen: false, displayData: LEAN_DOWN_DATA });
+      render(<Regime0dte />);
+
+      expect(screen.getByText(CLOSED_FOR_THE_DAY)).toBeInTheDocument();
+      // The chip is not drawn (no panel), so the one "Lean down" is the badge.
+      expect(screen.getByText('Lean down')).toBeInTheDocument();
+    });
+
+    // Inside the window the closed copy never applies, whatever the clock says.
+    it('does not use the closed copy while the window is open', () => {
+      setCt('2026-06-08', 16, 0);
+      mockHook({ isWindowOpen: true, displayData: null, error: null });
+      render(<Regime0dte />);
+
+      expect(
+        screen.getByText(/Loading today.s regime read/i),
+      ).toBeInTheDocument();
+      expect(screen.queryByText(CLOSED_FOR_THE_DAY)).not.toBeInTheDocument();
+    });
   });
 
   it('shows the waiting-for-open placeholder and no visuals when closed', () => {

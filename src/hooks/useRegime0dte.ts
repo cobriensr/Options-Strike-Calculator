@@ -21,9 +21,8 @@
  */
 
 import { POLL_INTERVALS } from '../constants/index.js';
-import { isTradingDay, getMarketCloseHourET } from '../data/marketHours.js';
 import { getAccessMode } from '../utils/auth.js';
-import { getCTTime, getCTDateStr } from '../utils/timezone.js';
+import { regime0dteSessionPhase } from '../utils/regime-0dte-window.js';
 import {
   usePolledWindowSignal,
   type PolledWindowSignalResult,
@@ -74,34 +73,17 @@ export interface Regime0dteResponse {
 const STORAGE_KEY = 'regime0dte:lastgood';
 
 /**
- * Polling-window predicate. True only on a trading day (not a weekend or NYSE
- * holiday), from 08:30 CT up to the day's close: 15:00 CT normally, 12:00 CT on
- * a half-day. This is the window over which the gamma gate, IV-break, and
- * candle triggers are meaningful. Outside it the hook stops fetching.
+ * Polling-window predicate: the session is open (a trading day, 08:30 CT up to
+ * the day's close; see `regime0dteSessionPhase`). This is the window over which
+ * the gamma gate, IV-break, and candle triggers are meaningful. Outside it the
+ * hook stops fetching.
  *
- * `getMarketCloseHourET` is an ET hour; ET is always one hour ahead of CT, so
- * the close in CT minutes is `(closeHourET - 1) * 60`. A null close (a listed
- * holiday) is closed; a weekend has a normal close hour, so `isTradingDay` is
- * what rules it out.
- */
-function inPollingWindow(now: Date): boolean {
-  const ctDate = getCTDateStr(now);
-  const closeHourET = getMarketCloseHourET(ctDate);
-  if (closeHourET === null || !isTradingDay(ctDate)) return false;
-  const { hour, minute } = getCTTime(now);
-  const totalMinutes = hour * 60 + minute;
-  const windowOpen = 8 * 60 + 30; // 08:30 CT
-  const windowClose = (closeHourET - 1) * 60;
-  return totalMinutes >= windowOpen && totalMinutes < windowClose;
-}
-
-/**
  * /api/regime-0dte is owner-or-guest, so the window is closed for a public
  * visitor: no mount fetch, no poll, no 401 for the panel to show as an alert.
  * The primitive routes all three through this predicate.
  */
 function inLiveWindow(now: Date): boolean {
-  return getAccessMode() !== 'public' && inPollingWindow(now);
+  return getAccessMode() !== 'public' && regime0dteSessionPhase(now) === 'open';
 }
 
 export function useRegime0dte(): PolledWindowSignalResult<Regime0dteResponse> {
