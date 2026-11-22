@@ -86,7 +86,9 @@ COLUMNS = [
 MIN_STATS_N = 30
 
 
-def window_stats(flows: np.ndarray, codes: np.ndarray, n_days: int):
+def window_stats(
+    flows: np.ndarray, codes: np.ndarray, n_days: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """For each date, the stats of a cohort's flow inversions up to that date.
 
     `flows` are the cohort's fires in date order and `codes[i]` is the date index of
@@ -94,24 +96,32 @@ def window_stats(flows: np.ndarray, codes: np.ndarray, n_days: int):
     their mean and their Sharpe (mean over the sample std, 0.0 when the std is 0). The
     mean and the Sharpe are NaN while the count is under MIN_STATS_N. These are what
     pandas gives on the window's prefix (mean, then `std(ddof=1)`), without reading
-    the prefix again for every date.
+    the prefix again for every date, with the two exceptions below.
 
-    The mean is the running sum over the running count, as pandas takes it (a sum that
-    is exact stays exact: a window of whole numbers, or a tie at the last rounded
-    place, comes out as pandas has it). The std comes from M2. Each date gets its
-    count, its mean and its M2 (the sum of squared deviations from its own mean, taken
-    in two passes), by bincount. The dates are then merged in order with the pairwise
-    update of Chan et al.: `n = na + nb`, `delta = mean_b - mean_a`,
-    `mean = mean_a + delta*nb/n`, `M2 = M2a + M2b + delta**2*na*nb/n`. The
-    sum-of-squares shortcut is not an option: it loses the variance to cancellation
-    when the mean is large next to the spread.
+    The mean is the running sum over the running count, as pandas takes it. Where the
+    sum is exact in both orders (whole numbers, dyadic fractions) it is pandas' mean to
+    the bit, and a tie at the last rounded place rounds the same way. Where the sum is
+    inexact, the running sum over dates and pandas' pairwise sum over the prefix can
+    land one ulp apart, and a mean that ties exactly at the last rounded place may
+    round the other way (one in the last place).
+
+    The std comes from M2. Each date gets its count, its mean and its M2 (the sum of
+    squared deviations from its own mean, taken in two passes), by bincount. The dates
+    are then merged in order with the pairwise update of Chan et al.: `n = na + nb`,
+    `delta = mean_b - mean_a`, `mean = mean_a + delta*nb/n`,
+    `M2 = M2a + M2b + delta**2*na*nb/n`. The sum-of-squares shortcut is not an option:
+    it loses the variance to cancellation when the mean is large next to the spread.
 
     For M2 the values are shifted by the cohort's first flow. Without it `delta` is a
     difference of two large, rounded means, and a mean of 1e8 over a spread of 1 costs
     the Sharpe about nine digits (a relative error of 2e-9 against pandas); shifted,
-    the merge works on numbers of the size of the spread. A flow that is the same value
-    throughout shifts to exact zeros, so its std is 0 and its Sharpe 0.0, as pandas
-    gives it.
+    the merge works on numbers of the size of the spread.
+
+    A flow that is the same value throughout shifts to exact zeros, so its std is 0 and
+    its Sharpe 0.0. pandas gives the same when its own sum is exact (5.0, forty times).
+    When the sum is inexact (33.3, a hundred times) pandas takes its std from a mean
+    that is one ulp off and gives a Sharpe of about 1e15; this gives 0.0, which is what
+    the window is.
     """
     present = ~np.isnan(flows)
     flows, codes = flows[present], codes[present]
@@ -212,9 +222,11 @@ def build_rows(
     day_ids = np.arange(n_days)
     tier_by_day = np.bincount(codes * 3 + tier, minlength=n_days * 3).reshape(n_days, 3)
 
+    # The size of each window: the fires dated on or before each date.
+    ends_all = np.searchsorted(codes, day_ids, side='right')
+
     # The three cohorts' flow-inversion stats for every window, from running aggregates:
     # their fires are in date order too, so each is one pass over its own fires.
-    ends_all = np.searchsorted(codes, day_ids, side='right')
     in_t2plus = tier < 2
     cohort_stats = {
         'all': window_stats(flow_inv, codes, n_days),

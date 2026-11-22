@@ -1319,12 +1319,24 @@ def test_tracker_a_cohort_whose_flow_inversions_are_all_null_is_blank():
 
 
 @pytest.mark.filterwarnings('error')
-def test_tracker_constant_flow_inversions_have_a_sharpe_of_zero_not_blank():
-    fires = _fires_of([(date(2026, 11, 2), 'A_intraday_0DTE', 20.0, [5.0] * 40)])
+@pytest.mark.parametrize(
+    ('value', 'count'),
+    [
+        pytest.param(5.0, 40, id='an_exact_sum'),
+        # 33.3 has no exact binary form, so pandas' sum of a hundred of them is a
+        # little off, its mean with it, and it reports a Sharpe of about 1e15 from the
+        # noise. The window is constant: its std is 0 and its Sharpe is 0.0. These are
+        # literals, not pandas' values, because pandas' is the garbage.
+        pytest.param(33.3, 100, id='an_inexact_sum'),
+    ],
+)
+def test_tracker_constant_flow_inversions_have_a_sharpe_of_zero_not_blank(value, count):
+    fires = _fires_of([(date(2026, 11, 2), 'A_intraday_0DTE', 20.0, [value] * count)])
 
     (row,) = daily_tracker.build_rows(fires, 16, 12, 'now')
 
-    assert (row['flow_inv_n'], row['flow_inv_mean_pct'], row['flow_inv_sharpe']) == (40, 5.0, 0.0)
+    got = (row['flow_inv_n'], row['flow_inv_mean_pct'], row['flow_inv_sharpe'])
+    assert got == (count, value, 0.0)
 
 
 def test_tracker_has_no_rebuild_flag_any_more(tmp_path, monkeypatch, default_dir, capsys):
