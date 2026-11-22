@@ -14,9 +14,9 @@
  * - `navigateFallback: '/index.html'` with denylist for `/api/` and the
  *   BotID challenge path — `createHandlerBoundToURL('/index.html')` +
  *   `NavigationRoute` with `denylist` below.
- * - Runtime `NetworkOnly` bypass for `/api/` (GET + POST) — prevents
- *   Chrome's 5-min SW fetch-event timeout from killing long-running
- *   Claude Opus analysis calls at 300s. Registered via `registerRoute`.
+ * - `/api/` has no route, on purpose: the browser serves it outside the
+ *   fetch event, so a long `api/analyze` call can't hit its timeout. See
+ *   "/api/ has no route" below before adding one.
  * - `StaleWhileRevalidate` for `/vix-data.json` — served from
  *   `vix-data-cache`.
  * - `StaleWhileRevalidate` for `fonts.googleapis.com` stylesheets —
@@ -31,11 +31,7 @@ import {
   precacheAndRoute,
 } from 'workbox-precaching';
 import { NavigationRoute, registerRoute } from 'workbox-routing';
-import {
-  CacheFirst,
-  NetworkOnly,
-  StaleWhileRevalidate,
-} from 'workbox-strategies';
+import { CacheFirst, StaleWhileRevalidate } from 'workbox-strategies';
 import { CacheableResponsePlugin } from 'workbox-cacheable-response';
 import { ExpirationPlugin } from 'workbox-expiration';
 
@@ -53,12 +49,17 @@ registerRoute(
   }),
 );
 
-// ── /api/ bypass ────────────────────────────────────────────────────
-// Prevents Chrome's 5-min SW fetch-event timeout from killing long
-// Claude Opus analysis calls at 300s. NetworkOnly short-circuits the
-// SW's FetchEvent lifecycle entirely.
-registerRoute(/^\/api\//, new NetworkOnly(), 'GET');
-registerRoute(/^\/api\//, new NetworkOnly(), 'POST');
+// ── /api/ has no route, on purpose ──────────────────────────────────
+// A request no route matches gets no respondWith() from Workbox, so the
+// browser serves it itself, outside this worker's fetch event. That keeps
+// a long api/analyze call (up to 780 s) from hitting the fetch-event
+// timeout. Do not add an /api/ route: any handler, NetworkOnly included,
+// makes Workbox call respondWith() and brings that timeout back. Two
+// NetworkOnly routes stood here once and never matched: RegExpRoute tests
+// the whole url.href ("https://..."), which a pattern starting `^\/` can't
+// match. The navigation route above skips /api/ through its denylist, which
+// NavigationRoute tests against the pathname. API responses are never
+// cached by this worker.
 
 // ── /vix-data.json — StaleWhileRevalidate ───────────────────────────
 registerRoute(

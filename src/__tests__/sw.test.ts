@@ -9,6 +9,7 @@
  * registration) are no-op'd; we focus on the listeners with non-trivial
  * logic: `message` (SKIP_WAITING), `activate` (clients.claim), `push`, and
  * `notificationclick` (open or focus the notification's same-origin url).
+ * The `registerRoute` calls are recorded, to pin that no route handles /api/.
  */
 
 import {
@@ -20,6 +21,7 @@ import {
   it,
   vi,
 } from 'vitest';
+import { NavigationRoute, registerRoute } from 'workbox-routing';
 
 // ── Workbox mocks — allow the SW module to import without side effects ──
 vi.mock('workbox-precaching', () => ({
@@ -35,6 +37,8 @@ vi.mock('workbox-routing', () => ({
 
 vi.mock('workbox-strategies', () => ({
   CacheFirst: vi.fn(),
+  // sw.ts no longer uses it. Kept so a route that brings it back fails the
+  // /api/ routing test by name, not with a missing-export error.
   NetworkOnly: vi.fn(),
   StaleWhileRevalidate: vi.fn(),
 }));
@@ -62,6 +66,10 @@ const showNotification = vi.fn().mockResolvedValue(undefined);
 const matchAll = vi.fn().mockResolvedValue([]);
 const openWindow = vi.fn().mockResolvedValue(null);
 
+type RouteCall = Parameters<typeof registerRoute>;
+/** The `registerRoute` calls the module load made, kept for the routing tests. */
+let routeCalls: RouteCall[] = [];
+
 const mockSelf = {
   __WB_MANIFEST: [] as Array<{ url: string; revision: string }>,
   addEventListener: vi.fn((type: string, fn: CapturedListener) =>
@@ -84,6 +92,7 @@ beforeAll(async () => {
   // Dynamic import after the global is stubbed — top-level workbox calls
   // and listener registrations run as a side effect of this import.
   await import('../sw.js');
+  routeCalls = [...vi.mocked(registerRoute).mock.calls];
 });
 
 afterAll(() => {
@@ -119,6 +128,89 @@ describe('sw — module load', () => {
     expect(listeners.has('activate')).toBe(true);
     expect(listeners.has('push')).toBe(true);
     expect(listeners.has('notificationclick')).toBe(true);
+  });
+});
+
+describe('sw — routing leaves /api/ to the browser', () => {
+  // A route that handles a request makes workbox-routing call
+  // event.respondWith(), which keeps the request inside the fetch event and
+  // its timeout; api/analyze runs up to 780 s. With no matching route
+  // workbox calls nothing and the browser serves the request itself. So no
+  // route may handle an /api/ request, NetworkOnly included. `routeHandles`
+  // mirrors how workbox-routing decides, per registered route:
+  //   - RegExp: RegExpRoute runs it against the whole `url.href`, which
+  //     starts with "https://", so a pattern anchored with ^\/ never matches;
+  //   - function: called with { url, sameOrigin, request, event };
+  //   - NavigationRoute: only `navigate` requests, denylist and allowlist
+  //     tested against pathname + search;
+  //   - the route's method (default GET) must equal the request's.
+  interface FakeRequest {
+    method: 'GET' | 'POST';
+    mode: 'cors' | 'navigate';
+    path: string;
+  }
+
+  function routeHandles(call: RouteCall, req: FakeRequest): boolean {
+    const [capture, , routeMethod = 'GET'] = call;
+    if (routeMethod !== req.method) return false;
+    const url = new URL(req.path, ORIGIN);
+    const sameOrigin = url.origin === ORIGIN;
+    if (typeof capture === 'string') {
+      return new URL(capture, ORIGIN).href === url.href;
+    }
+    if (capture instanceof RegExp) {
+      const result = capture.exec(url.href);
+      return result !== null && (sameOrigin || result.index === 0);
+    }
+    if (typeof capture === 'function') {
+      const request = { method: req.method, mode: req.mode };
+      return Boolean(capture({ url, sameOrigin, request } as never));
+    }
+    // `NavigationRoute` is mocked, so the instance is empty; its constructor
+    // arguments carry the options it would match with.
+    const nav = vi.mocked(NavigationRoute).mock;
+    const index = nav.instances.indexOf(capture as never);
+    if (index === -1) {
+      throw new Error('sw.ts registered a route this helper cannot evaluate');
+    }
+    if (req.mode !== 'navigate') return false;
+    const options = nav.calls[index]?.[1];
+    const target = url.pathname + url.search;
+    if ((options?.denylist ?? []).some((re) => re.test(target))) return false;
+    return (options?.allowlist ?? [/./]).some((re) => re.test(target));
+  }
+
+  const handlersOf = (req: FakeRequest) =>
+    routeCalls.filter((call) => routeHandles(call, req));
+
+  it('sees the routes that do exist (control for the cases below)', () => {
+    const get = { method: 'GET', mode: 'cors' } as const;
+    expect(routeCalls.length).toBeGreaterThan(0);
+    expect(handlersOf({ ...get, path: '/vix-data.json' })).toHaveLength(1);
+    expect(
+      handlersOf({
+        ...get,
+        path: 'https://fonts.googleapis.com/css2?family=Inter',
+      }),
+    ).toHaveLength(1);
+    expect(
+      handlersOf({ method: 'GET', mode: 'navigate', path: '/' }),
+    ).toHaveLength(1);
+  });
+
+  it.each([
+    ['GET', 'cors', '/api/analyze'],
+    ['POST', 'cors', '/api/analyze'],
+    ['GET', 'cors', '/api/ml/plots?limit=5'],
+    ['POST', 'cors', '/api/journal'],
+    ['GET', 'cors', '/api/'],
+    // Opening the Schwab login in the tab is a navigation: the SPA fallback
+    // must not answer it with index.html.
+    ['GET', 'navigate', '/api/auth/init'],
+    ['GET', 'navigate', '/api/auth/callback?code=abc'],
+    ['GET', 'navigate', '/149e9513-01fa-4fb0-aad4-566afd725d1b/challenge'],
+  ] as const)('no route handles %s (%s) %s', (method, mode, path) => {
+    expect(handlersOf({ method, mode, path })).toEqual([]);
   });
 });
 
