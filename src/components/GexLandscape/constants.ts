@@ -206,8 +206,12 @@ export const VERDICT_META: Record<BiasMetrics['verdict'], VerdictMeta> = {
   },
 };
 
-/** Shared tail for every verdict tooltip: what the numbers are. */
-const VERDICT_TOOLTIP_TAIL =
+/**
+ * Shared tail for every verdict tooltip: what the numbers are. Exported
+ * because the verdict badge's screen-reader hint is this tail alone; the rest
+ * of the tooltip repeats the description beside the badge.
+ */
+export const VERDICT_TOOLTIP_TAIL =
   'Computed from GEXBot gamma in its taker-side sign over the strikes within ±50 pts of spot. It describes taker positioning; it is not a forecast of where price goes.';
 
 /** The largest-|γ| strike's position, in tooltip wording. */

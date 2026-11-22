@@ -4,7 +4,9 @@
  * `classify` maps (netGamma, netCharm) to one of the four quadrant labels.
  * `getDirection` maps (strike, price) to ceiling / floor / atm using
  *   `SPX_SPOT_BAND` (SPX-only since Phase 3 of the MM swap).
- * `signalTooltip` and `charmTooltip` render the per-cell tooltip text.
+ * `signalTooltip` and `charmTooltip` render the per-cell tooltip text;
+ *   `takerSideWords`, `positionBand` and `charmHint` are the words they and
+ *   the strike table's screen-reader hints share.
  * `computeVolReinforcement` maps (netGamma, Δ5m/15m/30m) to delta-trend
  *   agreement per Locked Decision #1 of the 1-min GexBot rebuild spec
  *   (docs/superpowers/specs/gex-landscape-1min-gexbot-rebuild-2026-05-26.md).
@@ -30,6 +32,33 @@ export function getDirection(strike: number, price: number): Direction {
 }
 
 /**
+ * Which side the takers hold of a strike's gamma and charm, for a class. One
+ * source for the per-cell tooltip (`signalTooltip`) and the words a screen
+ * reader hears on the class badge, so the two cannot drift apart.
+ */
+export function takerSideWords(cls: GexClassification): {
+  gamma: 'long' | 'short';
+  charm: 'long' | 'short';
+} {
+  return {
+    gamma:
+      cls === 'max-launchpad' || cls === 'fading-launchpad' ? 'short' : 'long',
+    charm: cls === 'max-launchpad' || cls === 'sticky-pin' ? 'long' : 'short',
+  };
+}
+
+/**
+ * Where a strike sits against spot, in words: outside the spot band above or
+ * below it, or inside it. Shared by `signalTooltip` and the position cell's
+ * screen-reader hint.
+ */
+export function positionBand(dir: Direction): string {
+  if (dir === 'ceiling') return `more than ${SPX_SPOT_BAND} pts above spot`;
+  if (dir === 'floor') return `more than ${SPX_SPOT_BAND} pts below spot`;
+  return `within ${SPX_SPOT_BAND} pts of spot`;
+}
+
+/**
  * Per-cell signal tooltip: which side traders hold at the strike and where
  * it sits. GEXBot gamma and charm are classified taker flow in the
  * vendor's taker-side sign (owner decision D1 revised, 2026-10-29), so the
@@ -37,17 +66,8 @@ export function getDirection(strike: number, price: number): Direction {
  * does not apply and is not stated.
  */
 export function signalTooltip(cls: GexClassification, dir: Direction): string {
-  const gamma =
-    cls === 'max-launchpad' || cls === 'fading-launchpad' ? 'short' : 'long';
-  const charm =
-    cls === 'max-launchpad' || cls === 'sticky-pin' ? 'long' : 'short';
-  const position =
-    dir === 'ceiling'
-      ? `more than ${SPX_SPOT_BAND} pts above spot`
-      : dir === 'floor'
-        ? `more than ${SPX_SPOT_BAND} pts below spot`
-        : `within ${SPX_SPOT_BAND} pts of spot`;
-  return `In GEXBot's taker-side sign, traders (takers) are net ${gamma} gamma and net ${charm} charm at this strike, which sits ${position}.`;
+  const { gamma, charm } = takerSideWords(cls);
+  return `In GEXBot's taker-side sign, traders (takers) are net ${gamma} gamma and net ${charm} charm at this strike, which sits ${positionBand(dir)}.`;
 }
 
 /**
@@ -59,6 +79,15 @@ export function charmTooltip(netCharm: number): string {
   return netCharm >= 0
     ? 'Positive GEXBot charm (taker-side sign): traders are net long charm at this strike.'
     : 'Negative GEXBot charm (taker-side sign): traders are net short charm at this strike.';
+}
+
+/**
+ * The short form of `charmTooltip` for a screen reader: the visible value is
+ * only a signed number, so this says which side of charm the takers hold.
+ * Splits at the same point as `charmTooltip` (zero counts as long).
+ */
+export function charmHint(netCharm: number): string {
+  return netCharm >= 0 ? 'takers net long charm' : 'takers net short charm';
 }
 
 /**

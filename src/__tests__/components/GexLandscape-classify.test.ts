@@ -14,9 +14,13 @@
 
 import { describe, expect, it } from 'vitest';
 import {
+  charmHint,
+  charmTooltip,
   computeVolReinforcement,
   getDirection,
+  positionBand,
   signalTooltip,
+  takerSideWords,
 } from '../../components/GexLandscape/classify';
 import {
   CLASS_META,
@@ -26,10 +30,14 @@ import {
   SPX_SPOT_BAND,
   VERDICT_META,
   VERDICT_TOOLTIP,
+  VERDICT_TOOLTIP_TAIL,
   takerSignHex,
   trendColor,
 } from '../../components/GexLandscape/constants';
-import type { GexClassification } from '../../components/GexLandscape/types';
+import type {
+  Direction,
+  GexClassification,
+} from '../../components/GexLandscape/types';
 import { dealerClaims } from '../helpers/dealer-claims';
 
 describe('getDirection — SPX-only spot band', () => {
@@ -228,6 +236,154 @@ describe('signalTooltip — taker-side description', () => {
     }
     expect(dealerClaims(CLS_TOOLTIP[cls])).toEqual([]);
     expect(dealerClaims(CLASS_META[cls].badge)).toEqual([]);
+  });
+});
+
+// signalTooltip is rebuilt from takerSideWords and positionBand (the words the
+// screen-reader hints on the strike table reuse). Every class x direction is
+// pinned as a literal, so the refactor cannot move a byte of any tooltip.
+describe('signalTooltip — byte-identical for every class and direction', () => {
+  const TABLE: Array<[GexClassification, Direction, string]> = [
+    [
+      'max-launchpad',
+      'ceiling',
+      "In GEXBot's taker-side sign, traders (takers) are net short gamma and net long charm at this strike, which sits more than 25 pts above spot.",
+    ],
+    [
+      'max-launchpad',
+      'floor',
+      "In GEXBot's taker-side sign, traders (takers) are net short gamma and net long charm at this strike, which sits more than 25 pts below spot.",
+    ],
+    [
+      'max-launchpad',
+      'atm',
+      "In GEXBot's taker-side sign, traders (takers) are net short gamma and net long charm at this strike, which sits within 25 pts of spot.",
+    ],
+    [
+      'fading-launchpad',
+      'ceiling',
+      "In GEXBot's taker-side sign, traders (takers) are net short gamma and net short charm at this strike, which sits more than 25 pts above spot.",
+    ],
+    [
+      'fading-launchpad',
+      'floor',
+      "In GEXBot's taker-side sign, traders (takers) are net short gamma and net short charm at this strike, which sits more than 25 pts below spot.",
+    ],
+    [
+      'fading-launchpad',
+      'atm',
+      "In GEXBot's taker-side sign, traders (takers) are net short gamma and net short charm at this strike, which sits within 25 pts of spot.",
+    ],
+    [
+      'sticky-pin',
+      'ceiling',
+      "In GEXBot's taker-side sign, traders (takers) are net long gamma and net long charm at this strike, which sits more than 25 pts above spot.",
+    ],
+    [
+      'sticky-pin',
+      'floor',
+      "In GEXBot's taker-side sign, traders (takers) are net long gamma and net long charm at this strike, which sits more than 25 pts below spot.",
+    ],
+    [
+      'sticky-pin',
+      'atm',
+      "In GEXBot's taker-side sign, traders (takers) are net long gamma and net long charm at this strike, which sits within 25 pts of spot.",
+    ],
+    [
+      'weakening-pin',
+      'ceiling',
+      "In GEXBot's taker-side sign, traders (takers) are net long gamma and net short charm at this strike, which sits more than 25 pts above spot.",
+    ],
+    [
+      'weakening-pin',
+      'floor',
+      "In GEXBot's taker-side sign, traders (takers) are net long gamma and net short charm at this strike, which sits more than 25 pts below spot.",
+    ],
+    [
+      'weakening-pin',
+      'atm',
+      "In GEXBot's taker-side sign, traders (takers) are net long gamma and net short charm at this strike, which sits within 25 pts of spot.",
+    ],
+  ];
+
+  it.each(TABLE)('%s, %s', (cls, dir, expected) => {
+    expect(signalTooltip(cls, dir)).toBe(expected);
+  });
+});
+
+describe('takerSideWords — which side the takers hold, per class', () => {
+  it.each([
+    ['max-launchpad', { gamma: 'short', charm: 'long' }],
+    ['fading-launchpad', { gamma: 'short', charm: 'short' }],
+    ['sticky-pin', { gamma: 'long', charm: 'long' }],
+    ['weakening-pin', { gamma: 'long', charm: 'short' }],
+  ] as const)('%s', (cls, words) => {
+    expect(takerSideWords(cls)).toEqual(words);
+  });
+
+  it('agrees with the class tooltip that names the same two sides', () => {
+    for (const cls of CLASSES) {
+      const { gamma, charm } = takerSideWords(cls);
+      expect(CLS_TOOLTIP[cls]).toContain(
+        `net ${gamma} gamma and net ${charm} charm`,
+      );
+    }
+  });
+});
+
+describe('positionBand — where the strike sits, in words', () => {
+  it.each([
+    ['ceiling', 'more than 25 pts above spot'],
+    ['floor', 'more than 25 pts below spot'],
+    ['atm', 'within 25 pts of spot'],
+  ] as const)('%s', (dir, words) => {
+    expect(positionBand(dir)).toBe(words);
+  });
+
+  it.each(['ceiling', 'floor', 'atm'] as const)(
+    '%s makes no dealer claim',
+    (dir) => {
+      expect(dealerClaims(positionBand(dir))).toEqual([]);
+    },
+  );
+});
+
+describe('charmHint — which side of charm the takers hold', () => {
+  it.each([
+    [2e6, 'takers net long charm'],
+    [1, 'takers net long charm'],
+    [0, 'takers net long charm'],
+    [-1, 'takers net short charm'],
+    [-2e6, 'takers net short charm'],
+  ])('netCharm %s -> %s', (netCharm, words) => {
+    expect(charmHint(netCharm)).toBe(words);
+  });
+
+  it('splits at the same point as charmTooltip', () => {
+    for (const netCharm of [5e6, 0, -5e6]) {
+      const side = charmHint(netCharm).match(/net (long|short) charm/)?.[1];
+      expect(charmTooltip(netCharm)).toContain(`net ${side} charm`);
+    }
+  });
+
+  it('makes no dealer claim', () => {
+    expect(dealerClaims(charmHint(1))).toEqual([]);
+    expect(dealerClaims(charmHint(-1))).toEqual([]);
+  });
+});
+
+describe('VERDICT_TOOLTIP_TAIL — the shared end of every verdict tooltip', () => {
+  it('is the exact sentence the verdict tooltips end with', () => {
+    expect(VERDICT_TOOLTIP_TAIL).toBe(
+      'Computed from GEXBot gamma in its taker-side sign over the strikes within ±50 pts of spot. It describes taker positioning; it is not a forecast of where price goes.',
+    );
+    for (const text of Object.values(VERDICT_TOOLTIP)) {
+      expect(text.endsWith(VERDICT_TOOLTIP_TAIL)).toBe(true);
+    }
+  });
+
+  it('makes no dealer claim', () => {
+    expect(dealerClaims(VERDICT_TOOLTIP_TAIL)).toEqual([]);
   });
 });
 
