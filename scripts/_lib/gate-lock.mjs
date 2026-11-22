@@ -231,9 +231,9 @@ export function acquireGateLock({ pipeName, holder, onWait }) {
      */
     let lastRetried;
     /**
-     * Refused connects so far. It is never reset: a connection that opens
-     * always announces, after which `announce` does nothing more, so the count
-     * only ever matters while nothing has been shown.
+     * Refused connects in a row. A listen or connect that fails some other way
+     * starts the count again. (A connection that opens needs no reset: it
+     * always announces, after which `announce` does nothing more.)
      */
     let refusals = 0;
     let fallbackTimer;
@@ -313,6 +313,7 @@ export function acquireGateLock({ pipeName, holder, onWait }) {
             `trying again in ${FALLBACK_MS / 1000} s`,
         );
         phase = 'idle';
+        refusals = 0;
       };
       server.once('error', onError);
       server.listen(pipeName, () => {
@@ -395,6 +396,7 @@ export function acquireGateLock({ pipeName, holder, onWait }) {
               `trying again in ${FALLBACK_MS / 1000} s`,
           );
           phase = 'idle';
+          refusals = 0;
           return;
         }
         // Connected, then hung up before it said who it is.

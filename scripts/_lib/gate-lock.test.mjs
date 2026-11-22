@@ -997,6 +997,76 @@ describe('the lock', { timeout: TEST_TIMEOUT }, () => {
     expect(wait.calls).toHaveLength(1);
   });
 
+  it.each([
+    [
+      'a connect error',
+      () =>
+        vi.mocked(net.connect).mockImplementationOnce(() => {
+          const socket = new net.Socket();
+          process.nextTick(() =>
+            socket.destroy(codeError('connect EACCES', 'EACCES')),
+          );
+          return socket;
+        }),
+    ],
+    [
+      'a listen error',
+      () =>
+        vi
+          .mocked(net.Server.prototype.listen)
+          .mockImplementationOnce(function () {
+            process.nextTick(() =>
+              this.emit('error', codeError('listen EACCES', 'EACCES')),
+            );
+            return this;
+          }),
+    ],
+  ])(
+    'counts only refused connects that come one after another: %s starts the count again',
+    async (_what, breakTheRun) => {
+      const warned = counter('a warning');
+      vi.spyOn(console, 'warn').mockImplementation(() => warned.hit());
+      const connects = spyOnConnect();
+      const pipe = uniquePipe();
+      vi.spyOn(net.Server.prototype, 'listen').mockImplementation(function () {
+        process.nextTick(() =>
+          this.emit('error', codeError('in use', 'EADDRINUSE')),
+        );
+        return this;
+      });
+      const wait = recorder();
+      acquire(pipe, 'wt-A', wait.onWait);
+      const refused = async (nth) => {
+        await connects.made.reach(nth);
+        await closed(connects.sockets[nth - 1]);
+      };
+
+      // Two refusals, then something else goes wrong once.
+      await refused(1);
+      vi.advanceTimersByTime(RETRY_MS);
+      await refused(2);
+      breakTheRun();
+      vi.advanceTimersByTime(RETRY_MS);
+      await warned.reach(1);
+      expect(wait.calls).toEqual([]);
+
+      // Refusals 3 and 4 are only the first two of a new run, though four have
+      // happened in all.
+      vi.advanceTimersByTime(FALLBACK_MS);
+      await refused(3);
+      expect(wait.calls).toEqual([]);
+      vi.advanceTimersByTime(RETRY_MS);
+      await refused(4);
+      expect(wait.calls).toEqual([]);
+
+      // The third of the run speaks.
+      vi.advanceTimersByTime(RETRY_MS);
+      await refused(5);
+      await wait.reach(1);
+      expect(wait.calls[0].holder).toBeNull();
+    },
+  );
+
   it('reports a listen error that is not EADDRINUSE by code, and retries it', async () => {
     const warned = counter('a warning');
     const warn = vi
