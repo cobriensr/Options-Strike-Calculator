@@ -1,5 +1,6 @@
 import { useMemo } from 'react';
 import type { SilentBoomAlert } from './types.js';
+import { SrHint } from '../ui/SrHint.js';
 
 /**
  * Display floor for the spike-ratio baseline — must match
@@ -14,6 +15,14 @@ const SPIKE_BASELINE_DISPLAY_FLOOR = 100;
 /** The floored spike ratio the row badge displays (×N burst). */
 const flooredSpikeRatio = (a: SilentBoomAlert): number =>
   a.spikeVolume / Math.max(a.baselineVolume, SPIKE_BASELINE_DISPLAY_FLOOR);
+
+/** Each tier count's title, which is also its hint for a screen reader. */
+const TIER1_TITLE =
+  'Tier 1 fires on the current page (score ≥ 21). Historically ~5% of daily fires; ~56% peak ≥ 50%.';
+const TIER2_TITLE =
+  'Tier 2 fires on the current page (score 8–20). Historically ~19% of daily fires; ~37% peak ≥ 50%.';
+const TIER3_TITLE =
+  'Tier 3 fires on the current page (score < 8). Historically ~76% of daily fires; ~8% peak ≥ 50%.';
 
 interface SilentBoomDayBannerProps {
   alerts: SilentBoomAlert[];
@@ -92,23 +101,17 @@ export function SilentBoomDayBanner({
             tier1 is sparse enough (~5% of fires) that the in-page count
             is usually the day total when the user is on page 0. We
             label this explicitly. */}
-        <span
-          className="font-mono text-rose-300"
-          title="Tier 1 fires on the current page (score ≥ 21). Historically ~5% of daily fires; ~56% peak ≥ 50%."
-        >
+        <span className="font-mono text-rose-300" title={TIER1_TITLE}>
           🔥🔥🔥 {t1}
+          <SrHint>{TIER1_TITLE}</SrHint>
         </span>
-        <span
-          className="font-mono text-amber-300"
-          title="Tier 2 fires on the current page (score 8–20). Historically ~19% of daily fires; ~37% peak ≥ 50%."
-        >
+        <span className="font-mono text-amber-300" title={TIER2_TITLE}>
           🔥🔥 {t2}
+          <SrHint>{TIER2_TITLE}</SrHint>
         </span>
-        <span
-          className="font-mono text-neutral-400"
-          title="Tier 3 fires on the current page (score < 8). Historically ~76% of daily fires; ~8% peak ≥ 50%."
-        >
+        <span className="font-mono text-neutral-400" title={TIER3_TITLE}>
           🔥 {t3}
+          <SrHint>{TIER3_TITLE}</SrHint>
         </span>
 
         {/* Dominant ticker — quick read on which symbol is generating
@@ -125,6 +128,7 @@ export function SilentBoomDayBanner({
             <span className="font-mono text-neutral-400">
               ×{dominantTicker[1]}
             </span>
+            <SrHint>most alerts of any ticker on the current page</SrHint>
           </span>
         )}
 
@@ -133,7 +137,7 @@ export function SilentBoomDayBanner({
         {topAlert != null && (
           <span
             className="text-neutral-500"
-            title={`Largest spike ratio in the current view: ${topAlert.underlyingSymbol} ${topAlert.strike}${topAlert.optionType} at ${flooredSpikeRatio(topAlert).toFixed(0)}× baseline (floored at 100 to match the row badge).`}
+            title={`Largest spike ratio in the current view: ${topAlert.underlyingSymbol} ${topAlert.strike}${topAlert.optionType} at ${flooredSpikeRatio(topAlert).toFixed(0)}× baseline (baseline volume counted as at least ${SPIKE_BASELINE_DISPLAY_FLOOR}, to match the row badge).`}
           >
             loudest:{' '}
             <span className="font-mono text-neutral-200">
@@ -142,6 +146,7 @@ export function SilentBoomDayBanner({
             <span className="font-mono text-neutral-400">
               ×{flooredSpikeRatio(topAlert).toFixed(0)}
             </span>
+            <SrHint>{`${topAlert.strike}${topAlert.optionType}, largest spike ratio in the current view`}</SrHint>
           </span>
         )}
 

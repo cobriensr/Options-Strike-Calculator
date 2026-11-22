@@ -51,6 +51,7 @@ import {
   type FilterChipColor,
 } from '../ui/filter-toolbar-tokens.js';
 import { FilterChip } from '../ui/FilterChip.js';
+import { SrHint } from '../ui/SrHint.js';
 import { isOtm, usableSpot } from '../../utils/moneyness.js';
 import { DEFAULT_TAKEIT_FLOOR } from '../../constants/takeit.js';
 
@@ -1499,6 +1500,7 @@ export function SilentBoomSection({
           title="Choose which realized exit % is shown as the primary number on every alert. Peak is a look-ahead reference; the 30m / 60m / 120m / EOD options are tradeable horizons from the spike bucket start."
         >
           exit
+          <SrHint>sets which outcome % shows first on every alert</SrHint>
         </span>
         {EXIT_POLICIES.map((p) => (
           <FilterChip
@@ -1679,6 +1681,7 @@ export function SilentBoomSection({
                   title="Filtered to the selected 5-minute bucket"
                 >
                   (5-min)
+                  <SrHint>filtered to the selected 5-minute bucket</SrHint>
                 </span>
               )}
             </div>
@@ -1716,6 +1719,7 @@ export function SilentBoomSection({
                   title="Last updated"
                 >
                   {formatTimeCT(fetchedAt)} CT
+                  <SrHint>last updated</SrHint>
                 </span>
               )}
               {isHistorical && (
@@ -1724,6 +1728,9 @@ export function SilentBoomSection({
                   title="Historical replay — showing the selected past day, no live polling"
                 >
                   replay
+                  <SrHint>
+                    showing the selected past day, no live polling
+                  </SrHint>
                 </span>
               )}
             </div>
@@ -1821,6 +1828,10 @@ export function SilentBoomSection({
                         title="Rows on the current page removed by client-side filter chips (bucket scrub, hide-ghosts, hide-gated, hide-counter-flow, moneyness). They still count toward the day total above."
                       >
                         ({clientHiddenCount} hidden by filters)
+                        <SrHint>
+                          removed by the filter chips on this page; still
+                          counted in the day total
+                        </SrHint>
                       </span>
                     )}
                   </>

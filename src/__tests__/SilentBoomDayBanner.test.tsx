@@ -2,6 +2,11 @@ import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { SilentBoomDayBanner } from '../components/SilentBoom/SilentBoomDayBanner';
 import type { SilentBoomAlert } from '../components/SilentBoom/types';
+import {
+  srHintText,
+  titledElementsNeedingHint,
+  titledGenericsWithoutHint,
+} from './helpers/aria';
 
 // ── Fixture factory ──────────────────────────────────────────
 
@@ -304,5 +309,111 @@ describe('SilentBoomDayBanner: footer', () => {
       />,
     );
     expect(screen.getByText('counts on current page')).toBeInTheDocument();
+  });
+});
+
+// ============================================================
+// Hover text for screen readers
+// ============================================================
+
+describe('SilentBoomDayBanner: hover text for screen readers', () => {
+  const mixed = [
+    makeAlert({ id: 1, scoreTier: 'tier1', score: 22 }),
+    makeAlert({ id: 2, scoreTier: 'tier2', score: 14 }),
+    makeAlert({ id: 3, scoreTier: 'tier3', score: 6 }),
+  ];
+
+  it.each([
+    [
+      '🔥🔥🔥 1',
+      'Tier 1 fires on the current page (score ≥ 21). Historically ~5% of daily fires; ~56% peak ≥ 50%.',
+    ],
+    [
+      '🔥🔥 1',
+      'Tier 2 fires on the current page (score 8–20). Historically ~19% of daily fires; ~37% peak ≥ 50%.',
+    ],
+    [
+      '🔥 1',
+      'Tier 3 fires on the current page (score < 8). Historically ~76% of daily fires; ~8% peak ≥ 50%.',
+    ],
+  ])('repeats the title of the %s count as its hint', (text, title) => {
+    render(<SilentBoomDayBanner alerts={mixed} total={3} />);
+    const count = screen.getByText(text);
+    expect(srHintText(count)).toBe(title);
+    expect(count).toHaveAttribute('title', title);
+  });
+
+  it('explains the dominant ticker without naming it, and keeps its title', () => {
+    render(
+      <SilentBoomDayBanner
+        alerts={[
+          makeAlert({ id: 1, underlyingSymbol: 'NVDA' }),
+          makeAlert({ id: 2, underlyingSymbol: 'NVDA' }),
+          makeAlert({ id: 3, underlyingSymbol: 'TSLA' }),
+        ]}
+        total={3}
+      />,
+    );
+    const pill = screen.getByText('top:');
+    expect(srHintText(pill)).toBe(
+      'most alerts of any ticker on the current page',
+    );
+    expect(pill).toHaveAttribute(
+      'title',
+      "NVDA dominates today's silent-boom feed with 2 alerts on the current page.",
+    );
+    // The hint sits after the ticker and count spans, as the pill's own last child.
+    expect(pill.lastElementChild).toHaveClass('sr-only');
+  });
+
+  it('explains the loudest alert with the contract, and the title says the floor is on the baseline', () => {
+    render(
+      <SilentBoomDayBanner
+        alerts={[
+          makeAlert({
+            id: 1,
+            underlyingSymbol: 'SNDK',
+            strike: 450,
+            optionType: 'P',
+            spikeRatio: 8500,
+            spikeVolume: 17_000,
+            baselineVolume: 2,
+          }),
+        ]}
+        total={1}
+      />,
+    );
+    const pill = screen.getByText('loudest:');
+    expect(srHintText(pill)).toBe(
+      '450P, largest spike ratio in the current view',
+    );
+    expect(pill).toHaveAttribute(
+      'title',
+      'Largest spike ratio in the current view: SNDK 450P at 170× baseline (baseline volume counted as at least 100, to match the row badge).',
+    );
+    expect(pill.lastElementChild).toHaveClass('sr-only');
+  });
+
+  it('keeps the ticker queries to the two ticker spans: neither hint names one', () => {
+    render(
+      <SilentBoomDayBanner
+        alerts={[
+          makeAlert({ id: 1, underlyingSymbol: 'NVDA' }),
+          makeAlert({ id: 2, underlyingSymbol: 'NVDA' }),
+        ]}
+        total={2}
+      />,
+    );
+    // One in the dominant-ticker pill, one in the loudest pill.
+    expect(screen.getAllByText('NVDA')).toHaveLength(2);
+  });
+
+  it('leaves no titled generic element without a hint, and reaches all five', () => {
+    const { container } = render(
+      <SilentBoomDayBanner alerts={mixed} total={3} />,
+    );
+    // Three tier counts, the dominant ticker and the loudest alert.
+    expect(titledElementsNeedingHint(container)).toHaveLength(5);
+    expect(titledGenericsWithoutHint(container)).toEqual([]);
   });
 });

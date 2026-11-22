@@ -51,6 +51,11 @@ vi.mock('../components/SilentBoom/SilentBoomTickerGroup', () => ({
 }));
 
 import { SilentBoomSection } from '../components/SilentBoom';
+import {
+  srHintText,
+  titledElementsNeedingHint,
+  titledGenericsWithoutHint,
+} from './helpers/aria';
 
 // ── Fixture factory ───────────────────────────────────────────────────
 
@@ -2647,5 +2652,183 @@ describe('SilentBoomSection: typing a date', () => {
     expect(since.length).toBeGreaterThan(0);
     expect(new Set(since.map((a) => a.date))).toEqual(new Set(['2026-04-21']));
     expect(dateInput().value).toBe('2026-04-21');
+  });
+});
+
+// ============================================================
+// Hover text for screen readers
+// ============================================================
+//
+// The toolbar's "exit" label and "(5-min)", "last updated" and "replay" tags,
+// and the "hidden by filters" note, explained themselves only through a
+// `title`, which a screen reader never announces. Each now carries a visually
+// hidden hint as its last child. The ticker-group children are stubbed above,
+// so the whole-panel guard here sees the panel and both banners.
+
+describe('SilentBoomSection: hover text for screen readers', () => {
+  const PAST = '2026-05-08';
+
+  const anAlert = () =>
+    makeAlert({ id: 1, optionChainId: 'AAPL260508C00200000' });
+  /** Two ghost prints (stripped by hide-ghosts) and one healthy alert. */
+  const mixedAlerts = () => [
+    makeAlert({
+      id: 1,
+      optionChainId: 'V1',
+      baselineVolume: 10,
+      spikeRatio: 200,
+    }),
+    makeAlert({
+      id: 2,
+      optionChainId: 'V2',
+      baselineVolume: 10,
+      spikeRatio: 200,
+    }),
+    makeAlert({
+      id: 3,
+      optionChainId: 'V3',
+      baselineVolume: 500,
+      spikeRatio: 10,
+    }),
+  ];
+
+  it('explains the exit label without repeating it, and keeps its title', () => {
+    render(<SilentBoomSection marketOpen={false} />);
+    const label = screen.getByText('exit');
+    expect(srHintText(label)).toBe(
+      'sets which outcome % shows first on every alert',
+    );
+    expect(label).toHaveAttribute(
+      'title',
+      'Choose which realized exit % is shown as the primary number on every alert. Peak is a look-ahead reference; the 30m / 60m / 120m / EOD options are tradeable horizons from the spike bucket start.',
+    );
+  });
+
+  it('explains the 5-minute tag without repeating it, and keeps its title', () => {
+    mockUseSilentBoomFeed.mockReturnValue(
+      feedResult({ alerts: [anAlert()], total: 1 }),
+    );
+    render(<SilentBoomSection marketOpen={true} />);
+    expect(screen.queryByText('(5-min)')).not.toBeInTheDocument();
+    stepBackOneBucket();
+    const tag = screen.getByText('(5-min)');
+    expect(srHintText(tag)).toBe('filtered to the selected 5-minute bucket');
+    expect(tag).toHaveAttribute(
+      'title',
+      'Filtered to the selected 5-minute bucket',
+    );
+  });
+
+  it('explains the last-updated time without repeating it, and keeps its title', () => {
+    mockUseSilentBoomFeed.mockReturnValue(
+      feedResult({
+        alerts: [anAlert()],
+        total: 1,
+        fetchedAt: Date.parse(PINNED_NOW),
+      }),
+    );
+    render(<SilentBoomSection marketOpen={true} />);
+    const stamp = screen.getByTitle('Last updated');
+    expect(srHintText(stamp)).toBe('last updated');
+    // The visible words are the time (the pinned clock is 12:00 CT), which
+    // the hint must not repeat.
+    expect(stamp).toHaveTextContent(/^12:00 CT — last updated$/);
+    expect(screen.queryByText('replay')).not.toBeInTheDocument();
+  });
+
+  it('shows no last-updated tag until the feed has answered', () => {
+    mockUseSilentBoomFeed.mockReturnValue(
+      feedResult({ alerts: [anAlert()], total: 1, fetchedAt: null }),
+    );
+    render(<SilentBoomSection marketOpen={true} />);
+    expect(screen.queryByTitle('Last updated')).not.toBeInTheDocument();
+  });
+
+  it('explains the replay tag on a past day, and drops the last-updated tag there', () => {
+    mockUseSilentBoomFeed.mockReturnValue(
+      feedResult({
+        alerts: [anAlert()],
+        total: 1,
+        fetchedAt: Date.parse(PINNED_NOW),
+      }),
+    );
+    render(<SilentBoomSection marketOpen={true} />);
+    pick(PAST);
+    const tag = screen.getByText('replay');
+    expect(srHintText(tag)).toBe(
+      'showing the selected past day, no live polling',
+    );
+    expect(tag).toHaveAttribute(
+      'title',
+      'Historical replay — showing the selected past day, no live polling',
+    );
+    expect(screen.queryByTitle('Last updated')).not.toBeInTheDocument();
+  });
+
+  it('explains the hidden-by-filters note without repeating it, and keeps its title', () => {
+    mockUseSilentBoomFeed.mockReturnValue(
+      feedResult({ alerts: mixedAlerts(), total: 3 }),
+    );
+    render(<SilentBoomSection marketOpen={false} />);
+    fireEvent.click(screen.getByText(/hide ghosts/i));
+    const note = screen.getByText('(2 hidden by filters)');
+    expect(srHintText(note)).toBe(
+      'removed by the filter chips on this page; still counted in the day total',
+    );
+    // The hint adds words but not a second "hidden by filters".
+    expect(screen.getAllByText(/hidden by filters/)).toHaveLength(1);
+    expect(note).toHaveAttribute(
+      'title',
+      'Rows on the current page removed by client-side filter chips (bucket scrub, hide-ghosts, hide-gated, hide-counter-flow, moneyness). They still count toward the day total above.',
+    );
+  });
+
+  it('leaves no titled generic element without a hint on a live panel with every tag showing', () => {
+    mockUseSilentBoomFeed.mockReturnValue(
+      feedResult({
+        alerts: mixedAlerts(),
+        total: 3,
+        fetchedAt: Date.parse(PINNED_NOW),
+      }),
+    );
+    const { container } = render(<SilentBoomSection marketOpen={true} />);
+    fireEvent.click(screen.getByText(/hide ghosts/i));
+    // The guard reaches the exit label and the two tags in the live view.
+    const needing = titledElementsNeedingHint(container);
+    expect(needing).toContain(screen.getByText('exit'));
+    expect(needing).toContain(screen.getByTitle('Last updated'));
+    expect(needing).toContain(screen.getByText('(2 hidden by filters)'));
+    // ... and both banners: a tier count (the day banner) and a no-data
+    // metric (the regime banner, whose alerts carry no macro), so a banner
+    // that loses a hint fails this guard too.
+    expect(needing).toContain(
+      screen.getByTitle(/^Tier 2 fires on the current page/),
+    );
+    expect(needing).toContain(screen.getByText('Market Tide —'));
+    expect(titledGenericsWithoutHint(container)).toEqual([]);
+  });
+
+  it('leaves no titled generic element without a hint on a scrubbed bucket', () => {
+    mockUseSilentBoomFeed.mockReturnValue(
+      feedResult({ alerts: [anAlert()], total: 1 }),
+    );
+    const { container } = render(<SilentBoomSection marketOpen={true} />);
+    stepBackOneBucket();
+    expect(titledElementsNeedingHint(container)).toContain(
+      screen.getByText('(5-min)'),
+    );
+    expect(titledGenericsWithoutHint(container)).toEqual([]);
+  });
+
+  it('leaves no titled generic element without a hint on a past day', () => {
+    mockUseSilentBoomFeed.mockReturnValue(
+      feedResult({ alerts: [anAlert()], total: 1 }),
+    );
+    const { container } = render(<SilentBoomSection marketOpen={true} />);
+    pick(PAST);
+    expect(titledElementsNeedingHint(container)).toContain(
+      screen.getByText('replay'),
+    );
+    expect(titledGenericsWithoutHint(container)).toEqual([]);
   });
 });
