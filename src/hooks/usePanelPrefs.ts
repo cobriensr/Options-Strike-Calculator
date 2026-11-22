@@ -19,11 +19,16 @@
  *
  * The access mode is read live, so it can change without a remount. A
  * public visitor who signs in with a guest key gets the same GET and the
- * same PUTs from that moment on; an axis they changed while public keeps
- * its local value against the server layout and is sent with the next
- * flush. A guest or owner whose access drops to public stops sending, and
- * an edit still queued at that moment is dropped (the cookie is gone, so
- * the PUT could only 401).
+ * same PUTs from that moment on. The GET applies each axis by the mount
+ * rule, so the guest's saved layout wins over an edit made while public
+ * (as on a reload), and such an edit is never queued, so never sent. A
+ * guest or owner whose access drops to public stops sending, and an edit
+ * still queued at that moment is dropped (the cookie is gone, so the PUT
+ * could only 401).
+ *
+ * An axis edited as an owner or guest since the GET began is never
+ * overwritten by its reply, even when the debounce has already sent it
+ * (`touchedAxesRef`), so a slow GET cannot undo a fresh edit.
  *
  * Mutations are optimistic: setters update local state synchronously,
  * write to localStorage via the `[hidden, order, groupOrder]` effect,
@@ -51,8 +56,8 @@
  *
  * `isLoaded` is true immediately for public visitors (no fetch) and
  * flips true on owner/guest after the GET resolves (success or failure).
- * It follows the live mode: it goes false while the GET of a public to
- * guest sign-in is in flight, and true again on a drop to public.
+ * It follows the live mode: it is false for a guest while that sign-in's
+ * GET is in flight, and true again on a drop to public.
  * Callers can gate render on `isLoaded` to avoid a flash-of-default
  * layout for returning users with customized order.
  *
@@ -61,7 +66,7 @@
  *   - docs/superpowers/specs/panel-reordering-2026-05-17.md (orders)
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { getAccessMode } from '../utils/auth.js';
+import { getAccessMode, type AccessMode } from '../utils/auth.js';
 
 const DEBOUNCE_MS = 500;
 const STORAGE_KEY = 'sc-panel-prefs-v1';
@@ -185,6 +190,9 @@ interface PartialBody {
   groupOrder?: string[];
 }
 
+type AxisKey = keyof PartialBody;
+const AXES: readonly AxisKey[] = ['hiddenPanels', 'panelOrder', 'groupOrder'];
+
 export function usePanelPrefs(): PanelPrefs {
   // The live access mode, read at every render and never frozen in a ref or
   // state: App re-renders this hook on each mode change (useAccessSession), so
@@ -206,18 +214,30 @@ export function usePanelPrefs(): PanelPrefs {
   const [groupOrder, setGroupOrderState] = useState<readonly string[]>(
     () => cached.groupOrder,
   );
-  const [isLoaded, setIsLoaded] = useState(() => mode === 'public');
+  // The mode whose server GET last settled, success or failure. `isLoaded`
+  // is derived from it at render, so no render shows a guest as loaded before
+  // that guest's own GET has answered. The public run resets it to null, so a
+  // second sign-in waits for its own GET rather than reusing the first's.
+  const [loadedMode, setLoadedMode] = useState<AccessMode | null>(null);
+  const isLoaded = mode === 'public' || loadedMode === mode;
   const pendingPutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // The latest body the debounce timer will send. Held in a ref so the
-  // flush path (pagehide / unmount) can grab the most recent state even
-  // if React state has moved on, AND so the GET handler can check
-  // axis-presence to avoid clobbering user changes that happened
-  // pre-load. Keys present = "user touched this axis"; cleared after a
-  // successful send. A public visitor's edits are recorded here too, but
-  // nothing sends them while public: they wait for a guest sign-in, where
-  // they keep their axis against the server layout and go out with the
-  // next flush.
+  // The latest body the debounce timer will send: the "not yet sent" queue
+  // and nothing else. Held in a ref so the flush path (pagehide / unmount)
+  // can grab the most recent state even if React state has moved on. Keys
+  // present = "queued for the next send"; cleared after a send. Only an
+  // owner or guest edit lands here: a public visitor's edit is never queued.
   const pendingBodyRef = useRef<PartialBody>({});
+  // The axes the user edited, as an owner or guest, since the current GET run
+  // began. The GET reply skips each of them, so it cannot overwrite an edit
+  // the user made while it was out. Unlike the queue above, a send does not
+  // clear it: the debounce can send an edit before a slow GET answers, and
+  // the reply must still leave that axis alone. It is cleared when a run
+  // starts, when a run has applied its reply, and when the queue is dropped.
+  const touchedAxesRef = useRef<Set<AxisKey>>(new Set());
+  // The latest state, for the GET reply to compare a server axis against what
+  // is on screen when it lands (not the mount-time seed).
+  const latestRef = useRef({ hidden, order, groupOrder });
+  latestRef.current = { hidden, order, groupOrder };
 
   // Mirror state to localStorage on every change so the next mount can
   // paint synchronously. Runs for all access modes (incl. public) — the
@@ -234,18 +254,19 @@ export function usePanelPrefs(): PanelPrefs {
   }, [hidden, order, groupOrder]);
 
   // Runs on mount and again whenever the access mode changes, so a guest key
-  // entered without a reload loads that guest's layout. Re-running is safe:
-  // `pendingBodyRef` still holds every axis the user touched (a public
-  // visitor's included), and the cleanup aborts a request a second flip
-  // supersedes.
+  // entered without a reload loads that guest's layout, by the same rule a
+  // reload uses. Re-running is safe: an axis edited since the run began is
+  // skipped (`touchedAxesRef`), and the cleanup aborts a request a second
+  // flip supersedes. An edit made while public is not protected: the saved
+  // layout wins over it, and it was never queued, so it is never sent.
   useEffect(() => {
     if (mode === 'public') {
-      // Nothing to load, so the layout is as loaded as it will get. This also
-      // ends the wait of a GET that a drop to public just aborted.
-      setIsLoaded(true);
+      // Nothing to load for a public visitor, and nothing loaded for any
+      // identity. This also ends the wait of a GET a drop to public aborted.
+      setLoadedMode(null);
       return;
     }
-    setIsLoaded(false);
+    touchedAxesRef.current.clear();
     const abort = new AbortController();
     // A reply is stale once its run was aborted, or once the live mode is no
     // longer the one this run started under: the cookie can go before App
@@ -256,53 +277,52 @@ export function usePanelPrefs(): PanelPrefs {
         const res = await fetch('/api/panel-prefs', { signal: abort.signal });
         if (isStale()) return;
         if (!res.ok) {
-          setIsLoaded(true);
+          setLoadedMode(mode);
           return;
         }
         const data = (await res.json()) as PanelPrefsResponse;
         if (isStale()) return;
-        // Only apply axes the user HASN'T touched since mount —
-        // otherwise the GET overwrites the user's pre-load toggle /
-        // drag with stored state. Touched-axis presence is encoded as
-        // key presence in pendingBodyRef. Additionally, skip axes
-        // where the server returned an empty array but localStorage
-        // had a non-empty seed — see `shouldApplyServerAxis()` for
-        // why (keepalive PUT loss across cmd+shift+r).
-        const pending = pendingBodyRef.current;
+        // Apply each axis by the mount rule, except one the user edited
+        // since this run began: the GET must not overwrite an edit made
+        // while it was out, even one the debounce has already sent. The
+        // rule: apply the server value unless it would clear a non-empty
+        // local one (see `shouldApplyServerAxis()` for why: keepalive PUT
+        // loss across cmd+shift+r). "Local" is what is on screen as the
+        // reply lands, which after a sign-in is not the mount-time seed.
+        const touched = touchedAxesRef.current;
+        const local = latestRef.current;
         const serverHidden = data.hiddenPanels;
         const serverOrder = data.panelOrder ?? [];
         const serverGroupOrder = data.groupOrder ?? [];
         if (
-          !('hiddenPanels' in pending) &&
-          shouldApplyServerAxis(serverHidden, cached.hiddenPanels)
+          !touched.has('hiddenPanels') &&
+          shouldApplyServerAxis(serverHidden, [...local.hidden])
         ) {
           setHidden(new Set(serverHidden));
         }
         if (
-          !('panelOrder' in pending) &&
-          shouldApplyServerAxis(serverOrder, cached.panelOrder)
+          !touched.has('panelOrder') &&
+          shouldApplyServerAxis(serverOrder, local.order)
         ) {
           setOrderState(serverOrder);
         }
         if (
-          !('groupOrder' in pending) &&
-          shouldApplyServerAxis(serverGroupOrder, cached.groupOrder)
+          !touched.has('groupOrder') &&
+          shouldApplyServerAxis(serverGroupOrder, local.groupOrder)
         ) {
           setGroupOrderState(serverGroupOrder);
         }
-        setIsLoaded(true);
+        touched.clear();
+        setLoadedMode(mode);
       } catch (err) {
         if ((err as Error).name === 'AbortError' || isStale()) return;
-        setIsLoaded(true);
+        setLoadedMode(mode);
       }
     })();
     return () => {
       abort.abort();
     };
-    // `cached` is the once-per-mount localStorage seed (useMemo with []
-    // deps); listing it satisfies react-hooks/exhaustive-deps and is
-    // referentially stable, so only a mode change re-runs this effect.
-  }, [mode, cached]);
+  }, [mode]);
 
   const sendPut = useCallback((body: PartialBody, keepalive: boolean) => {
     // `keepalive: true` lets the request outlive the page when fired
@@ -319,17 +339,25 @@ export function usePanelPrefs(): PanelPrefs {
 
   const persist = useCallback(
     (patch: PartialBody) => {
+      // A public visitor has no server layout to write. Their edit shows on
+      // screen and reaches localStorage through the mirror effect above, but
+      // it is never queued, so nothing can send it later: not under a guest
+      // sign-in, whose saved layout wins over it.
+      if (mode === 'public') return;
+      for (const axis of AXES) {
+        if (patch[axis] !== undefined) touchedAxesRef.current.add(axis);
+      }
       // Merge the new per-axis change into the pending body. Earlier
       // touches stick around so a toggle + drag in the same debounce
-      // window both make it into one PUT. Recorded in every mode: a
-      // public visitor's touch must still protect its axis when a guest
-      // sign-in runs the server GET.
+      // window both make it into one PUT.
       pendingBodyRef.current = { ...pendingBodyRef.current, ...patch };
-      // A public visitor has no server layout to write, and no timer runs
-      // for them: the edit waits in the pending body for a sign-in.
-      if (mode === 'public') return;
       if (pendingPutRef.current) clearTimeout(pendingPutRef.current);
       pendingPutRef.current = setTimeout(() => {
+        // The cookie can change before App re-renders the hook and the
+        // cleanup drops this timer. A PUT then would 401, or write this
+        // edit into the other identity's layout: the same rule as the
+        // flush cleanup below.
+        if (getAccessMode() !== mode) return;
         const body = pendingBodyRef.current;
         if (Object.keys(body).length > 0) {
           // Optimistic update stays on failure; user can re-toggle /
@@ -369,6 +397,7 @@ export function usePanelPrefs(): PanelPrefs {
       pendingPutRef.current = null;
     }
     pendingBodyRef.current = {};
+    touchedAxesRef.current.clear();
   }, []);
 
   useEffect(() => {

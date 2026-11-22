@@ -748,13 +748,16 @@ describe('usePanelPrefs — access mode changes without a remount', () => {
       expect(putBody(putCalls()[0])).toEqual({ hiddenPanels: ['sec-a'] });
     });
 
-    it('keeps an axis the visitor changed while public, and sends it once signed in', async () => {
+    // The saved layout wins at sign-in, as it does on a reload: a public
+    // visitor's edit is not protected from the GET and is never sent.
+    it('lets a non-empty saved axis replace an edit made while public, and sends nothing for it', async () => {
       vi.mocked(getAccessMode).mockReturnValue('public');
       const { result, rerender } = renderHook(() => usePanelPrefs());
 
-      // Touched before the flip, while public: local only, no request.
+      // Edited before the flip, while public: local only, no request.
       act(() => {
         result.current.toggle('sec-local');
+        result.current.setOrder(['sec-local-a', 'sec-local-b']);
       });
       expect(fetchMock).not.toHaveBeenCalled();
 
@@ -771,20 +774,165 @@ describe('usePanelPrefs — access mode changes without a remount', () => {
         expect(result.current.isLoaded).toBe(true);
       });
 
-      // The touched axis keeps the local value; the untouched axes take the
-      // guest's server layout.
-      expect(result.current.isHidden('sec-local')).toBe(true);
-      expect(result.current.isHidden('sec-server')).toBe(false);
+      expect(result.current.isHidden('sec-server')).toBe(true);
+      expect(result.current.isHidden('sec-local')).toBe(false);
       expect(result.current.order).toEqual(['sec-spot-price']);
       expect(result.current.groupOrder).toEqual(['Trading']);
 
-      // The kept edit reaches the server on the next flush, and only that
-      // axis is sent, so the stored order axes stay untouched.
+      act(() => {
+        window.dispatchEvent(new Event('pagehide'));
+      });
+      await flushDebounce();
+      expect(putCalls()).toHaveLength(0);
+    });
+
+    it('keeps an edit made while public when the saved axis is empty, and sends it only once edited as a guest', async () => {
+      vi.mocked(getAccessMode).mockReturnValue('public');
+      const { result, rerender } = renderHook(() => usePanelPrefs());
+
+      act(() => {
+        result.current.toggle('sec-local');
+      });
+
+      fetchMock.mockResolvedValueOnce(jsonResponse({ hiddenPanels: [] }));
+      vi.mocked(getAccessMode).mockReturnValue('guest');
+      rerender();
+      await waitFor(() => {
+        expect(result.current.isLoaded).toBe(true);
+      });
+
+      // An empty saved axis keeps the local value (the mount rule), but the
+      // visitor's edit is not sent on its own account.
+      expect(result.current.isHidden('sec-local')).toBe(true);
+      act(() => {
+        window.dispatchEvent(new Event('pagehide'));
+      });
+      await flushDebounce();
+      expect(putCalls()).toHaveLength(0);
+
+      // Edited as a guest, the axis goes out with the guest's own edit.
+      act(() => {
+        result.current.toggle('sec-guest');
+      });
       act(() => {
         window.dispatchEvent(new Event('pagehide'));
       });
       expect(putCalls()).toHaveLength(1);
-      expect(putBody(putCalls()[0])).toEqual({ hiddenPanels: ['sec-local'] });
+      expect(new Set(putBody(putCalls()[0])?.hiddenPanels as string[])).toEqual(
+        new Set(['sec-local', 'sec-guest']),
+      );
+    });
+
+    it('does not send an emptied axis over the saved layout after a reset while public', async () => {
+      window.localStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify({
+          hiddenPanels: ['sec-old-local'],
+          panelOrder: [],
+          groupOrder: [],
+        }),
+      );
+      vi.mocked(getAccessMode).mockReturnValue('public');
+      const { result, rerender } = renderHook(() => usePanelPrefs());
+
+      act(() => {
+        result.current.reset();
+      });
+      expect(result.current.hidden.size).toBe(0);
+
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse({
+          hiddenPanels: ['guest-saved-1', 'guest-saved-2'],
+        }),
+      );
+      vi.mocked(getAccessMode).mockReturnValue('guest');
+      rerender();
+      await waitFor(() => {
+        expect(result.current.isLoaded).toBe(true);
+      });
+
+      // The guest sees their two saved panels, and nothing wipes them.
+      expect([...result.current.hidden].sort()).toEqual([
+        'guest-saved-1',
+        'guest-saved-2',
+      ]);
+      act(() => {
+        window.dispatchEvent(new Event('pagehide'));
+      });
+      await flushDebounce();
+      expect(putCalls()).toHaveLength(0);
+    });
+
+    it('keeps an edit made after the flip when a slow GET answers after the debounce sent it', async () => {
+      vi.mocked(getAccessMode).mockReturnValue('public');
+      const { result, rerender } = renderHook(() => usePanelPrefs());
+      // A public edit: the saved layout replaces it, and it is never sent.
+      act(() => {
+        result.current.toggle('sec-public');
+      });
+
+      const get = deferredResponse();
+      fetchMock.mockImplementationOnce(() => get.promise);
+      vi.mocked(getAccessMode).mockReturnValue('guest');
+      rerender();
+
+      act(() => {
+        result.current.setOrder(['sec-a', 'sec-b']);
+      });
+      await flushDebounce();
+      // The debounce sent the guest's edit, and only that axis.
+      expect(putCalls()).toHaveLength(1);
+      expect(putBody(putCalls()[0])).toEqual({
+        panelOrder: ['sec-a', 'sec-b'],
+      });
+
+      await act(async () => {
+        get.resolve(
+          jsonResponse({
+            hiddenPanels: ['sec-server'],
+            panelOrder: ['sec-z'],
+            groupOrder: ['Trading'],
+          }),
+        );
+        await settle();
+      });
+
+      // The edited axis keeps the user's value; every axis not touched since
+      // the GET started takes the server's.
+      expect(result.current.order).toEqual(['sec-a', 'sec-b']);
+      expect(result.current.isHidden('sec-server')).toBe(true);
+      expect(result.current.isHidden('sec-public')).toBe(false);
+      expect(result.current.groupOrder).toEqual(['Trading']);
+      expect(putCalls()).toHaveLength(1);
+    });
+
+    it('lets a later sign-in GET apply an axis that an earlier run skipped as touched', async () => {
+      // An edit made under one run shields its axis from that run's reply
+      // only: a later sign-in starts from an empty touched set.
+      vi.mocked(getAccessMode).mockReturnValue('guest');
+      const first = deferredResponse();
+      fetchMock.mockImplementationOnce(() => first.promise);
+      const { result, rerender } = renderHook(() => usePanelPrefs());
+      act(() => {
+        result.current.toggle('sec-guest-edit');
+      });
+      await act(async () => {
+        first.resolve(jsonResponse({ hiddenPanels: ['sec-server-1'] }));
+        await settle();
+      });
+      expect(result.current.isHidden('sec-guest-edit')).toBe(true);
+
+      vi.mocked(getAccessMode).mockReturnValue('public');
+      rerender();
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse({ hiddenPanels: ['sec-server-2'] }),
+      );
+      vi.mocked(getAccessMode).mockReturnValue('guest');
+      rerender();
+      await waitFor(() => {
+        expect(result.current.isHidden('sec-server-2')).toBe(true);
+      });
+      expect(result.current.isHidden('sec-guest-edit')).toBe(false);
     });
   });
 
@@ -816,16 +964,59 @@ describe('usePanelPrefs — access mode changes without a remount', () => {
         expect.any(Function),
       );
 
+      // Public: the edit shows locally, queues nothing, and no flush sends it.
       act(() => {
         result.current.toggle('sec-a');
       });
-      // A listener left registered would flush this edit at once.
       act(() => {
         window.dispatchEvent(new Event('pagehide'));
       });
       await flushDebounce();
 
       expect(result.current.isHidden('sec-a')).toBe(true);
+      expect(putCalls()).toHaveLength(0);
+    });
+
+    it('sends no PUT from a timer set under guest when the cookie went public before it fired', async () => {
+      const { result } = await renderLoadedGuest();
+
+      act(() => {
+        result.current.toggle('sec-a');
+      });
+      // The cookie goes before App re-renders the hook, so nothing has
+      // cleaned the timer up: the timer re-reads the live mode itself.
+      vi.mocked(getAccessMode).mockReturnValue('public');
+      await flushDebounce();
+
+      expect(putCalls()).toHaveLength(0);
+    });
+
+    it('sends no edit of a dropped guest session when the next guest signs in', async () => {
+      const { result, rerender } = await renderLoadedGuest();
+
+      act(() => {
+        result.current.toggle('sec-first-guest');
+      });
+      vi.mocked(getAccessMode).mockReturnValue('public');
+      rerender();
+
+      fetchMock.mockResolvedValueOnce(
+        jsonResponse({ hiddenPanels: ['sec-second-guest'] }),
+      );
+      vi.mocked(getAccessMode).mockReturnValue('guest');
+      rerender();
+      await waitFor(() => {
+        expect(result.current.isHidden('sec-second-guest')).toBe(true);
+      });
+
+      act(() => {
+        window.dispatchEvent(new Event('pagehide'));
+      });
+      await flushDebounce();
+
+      // The first guest's queued edit died with that session: the second
+      // guest's layout is the saved one, and no PUT carries the old edit.
+      expect(result.current.isHidden('sec-first-guest')).toBe(false);
       expect(putCalls()).toHaveLength(0);
     });
 
@@ -979,6 +1170,149 @@ describe('usePanelPrefs — access mode changes without a remount', () => {
       });
       expect(result.current.isHidden('sec-owner-layout')).toBe(true);
       expect(result.current.isHidden('sec-guest-layout')).toBe(false);
+    });
+  });
+
+  describe('a GET that answers after the debounce has sent an edit', () => {
+    it('keeps the edited axis on screen for an owner on mount, with no second PUT', async () => {
+      vi.mocked(getAccessMode).mockReturnValue('owner');
+      const get = deferredResponse();
+      fetchMock.mockImplementationOnce(() => get.promise);
+      const { result } = renderHook(() => usePanelPrefs());
+
+      act(() => {
+        result.current.toggle('sec-a');
+      });
+      await flushDebounce();
+      // The debounce sent the edit while the GET was still out.
+      expect(putCalls()).toHaveLength(1);
+      expect(putBody(putCalls()[0])).toEqual({ hiddenPanels: ['sec-a'] });
+
+      await act(async () => {
+        get.resolve(
+          jsonResponse({
+            hiddenPanels: ['sec-server'],
+            panelOrder: ['sec-spot-price'],
+          }),
+        );
+        await settle();
+      });
+
+      // The edit stays (the server already holds it), the untouched axis
+      // takes the server's value, and nothing is sent again.
+      expect(result.current.isHidden('sec-a')).toBe(true);
+      expect(result.current.isHidden('sec-server')).toBe(false);
+      expect(result.current.order).toEqual(['sec-spot-price']);
+      act(() => {
+        window.dispatchEvent(new Event('pagehide'));
+      });
+      expect(putCalls()).toHaveLength(1);
+    });
+
+    it('keeps an axis flushed by pagehide while the GET was out', async () => {
+      vi.mocked(getAccessMode).mockReturnValue('owner');
+      const get = deferredResponse();
+      fetchMock.mockImplementationOnce(() => get.promise);
+      const { result } = renderHook(() => usePanelPrefs());
+
+      act(() => {
+        result.current.setGroupOrder(['Trading', 'Inputs']);
+      });
+      act(() => {
+        window.dispatchEvent(new Event('pagehide'));
+      });
+      expect(putCalls()).toHaveLength(1);
+
+      await act(async () => {
+        get.resolve(jsonResponse({ hiddenPanels: [], groupOrder: ['Other'] }));
+        await settle();
+      });
+
+      expect(result.current.groupOrder).toEqual(['Trading', 'Inputs']);
+    });
+  });
+
+  describe('isLoaded follows the mode', () => {
+    it('is never true in a guest render before that sign-in GET settles, on every sign-in', async () => {
+      vi.mocked(getAccessMode).mockReturnValue('public');
+      const renders: Array<{
+        mode: string;
+        isLoaded: boolean;
+        settled: boolean;
+      }> = [];
+      let settled = true;
+      const { result, rerender } = renderHook(() => {
+        const prefs = usePanelPrefs();
+        renders.push({
+          mode: getAccessMode(),
+          isLoaded: prefs.isLoaded,
+          settled,
+        });
+        return prefs;
+      });
+
+      async function signIn(layout: string) {
+        const get = deferredResponse();
+        fetchMock.mockImplementationOnce(() => get.promise);
+        settled = false;
+        vi.mocked(getAccessMode).mockReturnValue('guest');
+        rerender();
+        expect(result.current.isLoaded).toBe(false);
+        // Renders from here on come after the reply, so they may be loaded.
+        settled = true;
+        await act(async () => {
+          get.resolve(jsonResponse({ hiddenPanels: [layout] }));
+          await settle();
+        });
+        expect(result.current.isLoaded).toBe(true);
+      }
+
+      await signIn('sec-first');
+      // A drop to public has nothing to load.
+      vi.mocked(getAccessMode).mockReturnValue('public');
+      rerender();
+      expect(result.current.isLoaded).toBe(true);
+      // The second sign-in must wait for its own GET, not reuse the first's.
+      await signIn('sec-second');
+
+      expect(
+        renders.filter((r) => r.mode === 'guest' && r.isLoaded && !r.settled),
+      ).toEqual([]);
+    });
+
+    it('is false for a guest who replaces a loaded owner, until the guest GET settles', async () => {
+      vi.mocked(getAccessMode).mockReturnValue('owner');
+      fetchMock.mockResolvedValueOnce(jsonResponse({ hiddenPanels: [] }));
+      const { result, rerender } = renderHook(() => usePanelPrefs());
+      await waitFor(() => {
+        expect(result.current.isLoaded).toBe(true);
+      });
+
+      // No public render between the two: the owner's settled GET must not
+      // count as the guest's.
+      const get = deferredResponse();
+      fetchMock.mockImplementationOnce(() => get.promise);
+      vi.mocked(getAccessMode).mockReturnValue('guest');
+      rerender();
+      expect(result.current.isLoaded).toBe(false);
+
+      await act(async () => {
+        get.resolve(jsonResponse({ hiddenPanels: [] }));
+        await settle();
+      });
+      expect(result.current.isLoaded).toBe(true);
+    });
+
+    it('ends the wait when a GET in flight is cut off by a drop to public', async () => {
+      vi.mocked(getAccessMode).mockReturnValue('guest');
+      fetchMock.mockImplementationOnce(() => new Promise<Response>(() => {}));
+      const { result, rerender } = renderHook(() => usePanelPrefs());
+      expect(result.current.isLoaded).toBe(false);
+
+      vi.mocked(getAccessMode).mockReturnValue('public');
+      rerender();
+
+      expect(result.current.isLoaded).toBe(true);
     });
   });
 
