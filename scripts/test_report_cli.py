@@ -938,6 +938,102 @@ def test_tracker_reads_a_missing_column_of_an_old_row_as_blank_and_ignores_extra
     assert '[track] 1 of 2 earlier rows changed\n' in capsys.readouterr().out
 
 
+@pytest.mark.parametrize('stale_first', [True, False], ids=['stale_first', 'stale_last'])
+def test_tracker_compares_the_later_of_two_rows_for_one_date(
+    stale_first, tmp_path, monkeypatch, default_dir, capsys
+):
+    def two_rows_for_11_04(path: Path) -> None:
+        rows = _read_rows(path)
+        stale = {**rows[1], 'top1_n': '999'}
+        pair = [stale, rows[1]] if stale_first else [rows[1], stale]
+        with path.open('w', newline='', encoding='utf-8') as f:
+            writer = csv.DictWriter(f, fieldnames=daily_tracker.COLUMNS)
+            writer.writeheader()
+            writer.writerows([rows[0], *pair, rows[2]])
+
+    out = _tracker_run_twice(tmp_path, monkeypatch, capsys, between=two_rows_for_11_04)
+
+    assert 'replacing 4 rows' in out
+    # The later row is the old file's row for the date: the current one, or the stale one.
+    assert f'[track] {0 if stale_first else 1} of 3 earlier rows changed\n' in out
+
+
+# ── an old file that cannot be read cleanly ──────────────────────────────────
+
+
+def _rerun_over(tmp_path, monkeypatch, capsys, damage) -> tuple[str, list[dict[str, str]]]:
+    """Run twice, `damage` touching the file between them; return the second run's output
+    and the rows its file holds."""
+    out = _tracker_run_twice(tmp_path, monkeypatch, capsys, between=damage)
+    return out, _read_rows(tmp_path / 'state' / 'twice.csv')
+
+
+def _assert_the_whole_series(rows: list[dict[str, str]]) -> None:
+    assert {r['date']: _without_run_at(r) for r in rows} == GOLDEN_FILL_ROWS
+
+
+def test_tracker_reads_an_old_file_with_an_invalid_byte_and_counts_the_damaged_row(
+    tmp_path, monkeypatch, default_dir, capsys
+):
+    def invalid_byte(path: Path) -> None:
+        # 0xA3 is a pound sign in cp1252 and not UTF-8: the 11-04 row's first ticker.
+        path.write_bytes(path.read_bytes().replace(b'SPY', b'SP\xa3', 1))
+
+    out, rows = _rerun_over(tmp_path, monkeypatch, capsys, invalid_byte)
+
+    _assert_the_whole_series(rows)
+    assert '[track] 1 of 3 earlier rows changed\n' in out  # the replaced byte is a change
+    assert 'could not be read' not in out
+
+
+def test_tracker_reads_an_old_file_that_starts_with_a_byte_order_mark(
+    tmp_path, monkeypatch, default_dir, capsys
+):
+    def add_bom(path: Path) -> None:
+        path.write_bytes(b'\xef\xbb\xbf' + path.read_bytes())  # what Excel's CSV UTF-8 writes
+
+    out, rows = _rerun_over(tmp_path, monkeypatch, capsys, add_bom)
+
+    _assert_the_whole_series(rows)
+    assert '[track] 0 of 3 earlier rows changed\n' in out  # the rows were found, not lost
+    assert 'replacing 3 rows' in out
+    assert 'could not be read' not in out
+    assert not (tmp_path / 'state' / 'twice.csv').read_bytes().startswith(b'\xef\xbb\xbf')
+
+
+def test_tracker_does_not_swallow_an_error_of_the_file_system(
+    tmp_path, monkeypatch, default_dir, capsys
+):
+    run = tracker_run(tmp_path, monkeypatch)
+    a_directory = tmp_path / 'state' / 'a-directory'
+    a_directory.mkdir()
+
+    with pytest.raises(OSError):  # PermissionError here, IsADirectoryError on Linux
+        run.main(['--csv', str(a_directory)])
+
+    assert 'could not be read' not in capsys.readouterr().out  # that is for a bad CSV
+
+
+def test_tracker_replaces_an_old_file_that_is_not_csv_and_says_so(
+    tmp_path, monkeypatch, default_dir, capsys
+):
+    def oversized_field(path: Path) -> None:
+        rows = _read_rows(path)
+        rows[1]['top1_ticker'] = 'x' * 200_000  # past the csv module's 131,072 limit
+        with path.open('w', newline='', encoding='utf-8') as f:
+            writer = csv.DictWriter(f, fieldnames=daily_tracker.COLUMNS)
+            writer.writeheader()
+            writer.writerows(rows)
+
+    out, rows = _rerun_over(tmp_path, monkeypatch, capsys, oversized_field)
+
+    _assert_the_whole_series(rows)
+    assert '[track] the earlier file could not be read as CSV: nothing to compare\n' in out
+    assert 'replacing 0 rows' in out
+    assert 'earlier rows changed' not in out
+    assert 'dropped' not in out
+
+
 def test_tracker_prints_no_changed_rows_line_without_a_row_with_a_strict_date(
     tmp_path, monkeypatch, default_dir, capsys
 ):

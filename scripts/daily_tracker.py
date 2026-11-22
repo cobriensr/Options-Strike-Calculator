@@ -20,6 +20,9 @@ YYYY-MM-DD (any other row is dropped and counted nowhere):
   new rows, how many differ in any column but `run_at` (compared as the CSV
   holds it; a column the old file lacks reads as blank). Not printed when the
   old file has no such row. A revision of history shows here.
+An old file that cannot be read as CSV (a field past the csv module's size
+limit) is replaced all the same, with one line saying so and no comparison;
+a BOM and bytes that are not UTF-8 are read (the bad ones as U+FFFD).
 
 Read-only against the DB except for its own CSV rewrite.
 
@@ -109,7 +112,9 @@ def _csv_date(raw: str | None) -> date | None:
 
 
 def _read_rows(path: Path) -> list[dict[str, str]]:
-    with path.open(encoding='utf-8') as f:
+    # The way the nightly step reads the state (utf-8-sig, bad bytes replaced), so a
+    # file it takes for healthy is one this reads; newline='' is what csv asks for.
+    with path.open(newline='', encoding='utf-8-sig', errors='replace') as f:
         return list(csv.DictReader(f))
 
 
@@ -276,7 +281,15 @@ def main(argv: list[str] | None = None) -> None:
 
     # The rows already there, read only to report what this run changes. The file is
     # written whole from the fires, so none of them is kept.
-    existing = _read_rows(args.csv) if args.csv.exists() else []
+    existing: list[dict[str, str]] = []
+    if args.csv.exists():
+        try:
+            existing = _read_rows(args.csv)
+        except csv.Error:
+            # Nothing in it feeds the new file, and failing here would leave the
+            # step red every night; the previous night's snapshot and git keep it.
+            print('[track] the earlier file could not be read as CSV: '
+                  'nothing to compare')
 
     run_at = datetime.now(timezone.utc).isoformat(timespec='seconds')
     new_rows = build_rows(df, t1_cutoff, t2_cutoff, run_at)
