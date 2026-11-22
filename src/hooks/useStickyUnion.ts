@@ -206,8 +206,8 @@ function persistUnion(storageKey: string, serialized: string): void {
   }
 }
 
-/** The literal token that opens every feed-union storageKey, sans trailing `:`. */
-const FEED_UNION_TOKEN = 'feed-union';
+/** The token that opens every feed-union storageKey: the prefix sans its `:`. */
+const FEED_UNION_TOKEN = FEED_UNION_PREFIX.slice(0, -1);
 
 /**
  * The `<feed>` token (e.g. `lottery` or `lottery-reignited`) of a storageKey of

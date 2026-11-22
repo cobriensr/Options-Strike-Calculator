@@ -20,6 +20,7 @@ import { useSilentBoomFeed } from '../../hooks/useSilentBoomFeed.js';
 import { useSilentBoomTickerCounts } from '../../hooks/useSilentBoomTickerCounts.js';
 import { useNeverVanishFeed } from '../../hooks/useNeverVanishFeed.js';
 import { useTickerNetFlowBatch } from '../../hooks/useTickerNetFlowBatch.js';
+import { FEED_UNION_PREFIX } from '../../lib/licensed-cache-keys.js';
 import { ctSessionBounds } from '../LotteryFinder/ct-window.js';
 import { SilentBoomDayBanner } from './SilentBoomDayBanner.js';
 import { SilentBoomRegimeBanner } from './SilentBoomRegimeBanner.js';
@@ -803,7 +804,7 @@ export function SilentBoomSection({
     tod: todFilter,
     ticker: tickerFilter,
   });
-  const alertsStorageKey = `feed-union:silent-boom:${date}:${filterSig}`;
+  const alertsStorageKey = `${FEED_UNION_PREFIX}silent-boom:${date}:${filterSig}`;
   const alertKey = useCallback(
     (a: SilentBoomAlert) => `${a.optionChainId}|${a.bucketCt}`,
     [],

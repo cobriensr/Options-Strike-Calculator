@@ -20,6 +20,7 @@ import { useLotteryFinder } from '../../hooks/useLotteryFinder.js';
 import { useLotteryFinderTickerCounts } from '../../hooks/useLotteryFinderTickerCounts.js';
 import { useNeverVanishFeed } from '../../hooks/useNeverVanishFeed.js';
 import { useTickerNetFlowBatch } from '../../hooks/useTickerNetFlowBatch.js';
+import { FEED_UNION_PREFIX } from '../../lib/licensed-cache-keys.js';
 import { ctSessionBounds } from './ct-window.js';
 import { isFireOtm } from './fire-spot.js';
 import { DEFAULT_TAKEIT_FLOOR } from '../../constants/takeit.js';
@@ -749,8 +750,8 @@ export function LotteryFinderSection({
     showAll: showFilteredTickers,
     ticker: tickerFilter,
   });
-  const firesStorageKey = `feed-union:lottery:${date}:${filterSig}`;
-  const reignitedStorageKey = `feed-union:lottery-reignited:${date}:${filterSig}`;
+  const firesStorageKey = `${FEED_UNION_PREFIX}lottery:${date}:${filterSig}`;
+  const reignitedStorageKey = `${FEED_UNION_PREFIX}lottery-reignited:${date}:${filterSig}`;
   const fireKey = useCallback((f: LotteryFire) => f.optionChainId, []);
   const fireSymbol = useCallback((f: LotteryFire) => f.underlyingSymbol, []);
 

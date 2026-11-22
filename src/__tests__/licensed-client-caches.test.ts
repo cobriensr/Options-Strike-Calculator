@@ -35,6 +35,8 @@ const KEPT_ENTRIES: Record<string, string> = {
   // `feed-union` somewhere in the key, but not as its prefix.
   'old-feed-union:lottery:2026-11-20:sig-a': 'not a feed slot',
   'prefs.feed-union.collapsed': '1',
+  // Starts with `feed-union`, but not with `feed-union:` (the prefix's colon).
+  'feed-union-prefs': '1',
   // Sibling names of the opening-flow and regime slots.
   'openingFlowSignal.lastGoodNote': 'not the cache',
   'regime0dte:lastgood-note': 'not the cache',
