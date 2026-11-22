@@ -48,10 +48,11 @@ Each run:
      `quality-sim` and `takeit-drift` each publish a dated report, plot set or CSV under
      `research/`, and every one but the rollup publishes its log (see "Research
      outputs"). The rollup and `whale-plots` read the chains state and the two fire
-     reports read the derived state. `lottery-tracking` extends one growing CSV, and the
-     others read Neon alone. The seven steps that run a script do it as a subprocess
-     with no R2, UW or Sentry secret in its environment, and its output goes to the
-     step's log in R2, not to the job's logs or Sentry.
+     reports read the derived state. `lottery-tracking` extends one growing CSV with a
+     row for every enriched fire date after the file's last row, so a night it missed is
+     filled on the next run, and the others read Neon alone. The seven steps that run a
+     script do it as a subprocess with no R2, UW or Sentry secret in its environment,
+     and its output goes to the step's log in R2, not to the job's logs or Sentry.
 
    Each step has its own deadline, which leaves every later step its reserve. A
    step never starts work its budget cannot cover, but a unit of work that
