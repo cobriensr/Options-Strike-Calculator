@@ -30,6 +30,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { z } from 'zod';
 import { POLL_INTERVALS } from '../constants/index.js';
+// Named in a leaf module so `clearLicensedClientCaches` can remove this slot
+// and every `<key>:<date>` slot when access drops to public.
+import { OPENING_FLOW_LAST_GOOD_KEY as STORAGE_KEY_LIVE } from '../lib/licensed-cache-keys.js';
 import {
   claimReport,
   INVALID_SHAPE_ERROR,
@@ -144,10 +147,6 @@ const INITIAL_STATE: State = {
   error: null,
   fetchedAt: null,
 };
-
-// Also read by `clearLicensedClientCaches` (src/lib), which removes this slot
-// and every `<key>:<date>` slot when access drops to public.
-export const STORAGE_KEY_LIVE = 'openingFlowSignal.lastGood';
 
 /**
  * Per-date localStorage slot.

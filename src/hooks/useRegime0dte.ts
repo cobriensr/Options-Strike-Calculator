@@ -21,6 +21,9 @@
  */
 
 import { POLL_INTERVALS } from '../constants/index.js';
+// Named in a leaf module so `clearLicensedClientCaches` can remove this slot
+// when access drops to public.
+import { REGIME_0DTE_LAST_GOOD_KEY as STORAGE_KEY } from '../lib/licensed-cache-keys.js';
 import { getAccessMode } from '../utils/auth.js';
 import { regime0dteSessionPhase } from '../utils/regime-0dte-window.js';
 import {
@@ -69,10 +72,6 @@ export interface Regime0dteResponse {
   bandPct?: number;
   persistEndCtMin?: number;
 }
-
-// Also read by `clearLicensedClientCaches` (src/lib), which removes this slot
-// when access drops to public.
-export const STORAGE_KEY = 'regime0dte:lastgood';
 
 /**
  * Polling-window predicate: the session is open (a trading day, 08:30 CT up to

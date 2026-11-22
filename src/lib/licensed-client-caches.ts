@@ -16,8 +16,10 @@
  *   - every `feed-union:` key (useStickyUnion, slots named by LotteryFinder and
  *     SilentBoom): the Lottery Finder and Silent Boom fires seen that day.
  *
- * Each name comes from the hook that writes it. No React in here: it only
- * touches storage, so App calls it from one effect on the access mode.
+ * The key names live in `licensed-cache-keys.ts`, a leaf module the writing
+ * hooks import too, so naming them here pulls no hook into the entry chunk. No
+ * React in here: it only touches storage, so App calls it from one effect on
+ * the access mode.
  *
  * Storage can throw (access denied, a private window), and one key that will
  * not go must not stop the others, so every storage call sits in its own
@@ -27,18 +29,23 @@
  * (Phase 5).
  */
 
-import { STORAGE_KEY_LIVE as OPENING_FLOW_KEY } from '../hooks/useOpeningFlowSignal.js';
-import { STORAGE_KEY as REGIME_0DTE_KEY } from '../hooks/useRegime0dte.js';
-import { FEED_UNION_PREFIX } from '../hooks/useStickyUnion.js';
+import {
+  FEED_UNION_PREFIX,
+  OPENING_FLOW_LAST_GOOD_KEY,
+  REGIME_0DTE_LAST_GOOD_KEY,
+} from './licensed-cache-keys.js';
 
 /** Prefix of the per-date opening-flow slots: `<live key>:<YYYY-MM-DD>`. */
-const OPENING_FLOW_DATED_PREFIX = `${OPENING_FLOW_KEY}:`;
+const OPENING_FLOW_DATED_PREFIX = `${OPENING_FLOW_LAST_GOOD_KEY}:`;
 
 /**
  * The slots whose full name is known. They are removed by name, so they go
  * even when the scan for the prefixed ones below throws.
  */
-const FIXED_KEYS: readonly string[] = [OPENING_FLOW_KEY, REGIME_0DTE_KEY];
+const FIXED_KEYS: readonly string[] = [
+  OPENING_FLOW_LAST_GOOD_KEY,
+  REGIME_0DTE_LAST_GOOD_KEY,
+];
 
 function isPrefixedLicensedKey(key: string): boolean {
   return (

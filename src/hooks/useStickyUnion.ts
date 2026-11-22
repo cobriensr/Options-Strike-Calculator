@@ -80,6 +80,9 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+// Prefix all day-scoped feed slots share, used by the stale-key sweep. Named in
+// a leaf module so `clearLicensedClientCaches` can purge every slot.
+import { FEED_UNION_PREFIX } from '../lib/licensed-cache-keys.js';
 import { useETToday } from './useETToday';
 
 interface UseStickyUnionOptions<T> {
@@ -123,13 +126,6 @@ interface UseStickyUnionOptions<T> {
 const MAX_UNION_ENTRIES = 8000;
 /** Trailing-debounce window for the durable localStorage write. */
 const PERSIST_DEBOUNCE_MS = 1000;
-/**
- * Prefix all day-scoped feed slots share, used by the stale-key sweep and by
- * `clearLicensedClientCaches` (src/lib), which removes every slot when access
- * drops to public.
- */
-export const FEED_UNION_PREFIX = 'feed-union:';
-
 function isStorageAvailable(): boolean {
   return (
     typeof window !== 'undefined' &&
