@@ -663,16 +663,17 @@ describe('archive-gexbot-eod', () => {
       expect(vi.getTimerCount()).toBe(0);
     });
 
+    // The title formats the first two values, so `calls` comes before `make`.
     it.each([
-      ['http 408', () => http(408), 3],
+      ['http 408', 3, () => http(408)],
       [
         'bad_response',
-        () => ({ kind: 'bad_response', reason: 'no_length' }),
         3,
+        () => ({ kind: 'bad_response', reason: 'no_length' }),
       ],
-      ['http 404', () => http(404), 1],
-      ['http 400', () => http(400), 1],
-    ])('%s: makes %i attempts', async (_name, make, calls) => {
+      ['http 404', 1, () => http(404)],
+      ['http 400', 1, () => http(400)],
+    ])('%s: makes %i attempts', async (_name, calls, make) => {
       setTickers(['A']);
       // A ticker we used to capture: its 404 is a failure, not a new listing.
       eod.listTickersStoredOnOrBefore.mockResolvedValue(new Set(['A']));
@@ -985,6 +986,27 @@ describe('archive-gexbot-eod', () => {
         'archive-gexbot-eod',
         expect.objectContaining({ status: 'success' }),
       );
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it('books a never-stored ticker that fails with a 5xx and then 404s as noReport', async () => {
+      setTickers(['ANT']);
+      eod.requestEodReport
+        .mockResolvedValueOnce(http(503))
+        .mockResolvedValue(http(404));
+      const res = await run();
+      const json = res._json as Json;
+      expect(json.status).toBe('success');
+      expect(json.noReport).toEqual(['ANT']);
+      expect(json.failed).toEqual([]);
+      expect(json.leftover).toEqual([]);
+      expect(json.leftoverAfterFailure).toEqual([]);
+      expect(json.retried).toBe(1);
+      expect(json.recoveredByRetry).toBe(0);
+      // The 503 asks nothing; only the 404 asks, once.
+      expect(eod.requestEodReport).toHaveBeenCalledTimes(2);
+      expect(eod.listTickersStoredOnOrBefore).toHaveBeenCalledTimes(1);
+      expect(mockCapture).not.toHaveBeenCalled();
       expect(vi.getTimerCount()).toBe(0);
     });
 

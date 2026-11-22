@@ -36,6 +36,7 @@ vi.mock('../_lib/sentry.js', () => ({
 vi.mock('../_lib/axiom.js', () => ({ reportCronRun: mockReport }));
 vi.mock('../_lib/gexbot-eod.js', () => eod);
 
+import { AXIOM_TOP_LEVEL_KEYS } from '../_lib/axiom-fields.js';
 import handler from '../cron/audit-gexbot-eod.js';
 
 const AUTH = { authorization: 'Bearer test-secret' };
@@ -338,22 +339,33 @@ describe('audit-gexbot-eod', () => {
       );
     });
 
-    it('throws when the stored-before set lacks SPX, reporting nothing', async () => {
-      // An emptied or badly restored table would put every ticker under
-      // newListings, and a total loss would read as success.
-      setTickers(['SPX', 'NDX'], ['bad/ticker']);
-      eod.listStoredTickers.mockResolvedValue(new Set());
-      eod.listTickersStoredOnOrBefore.mockResolvedValue(new Set());
-      const res = await run();
-      expect(res._status).toBe(500);
-      expect(mockException).toHaveBeenCalledTimes(1);
-      const [err] = mockException.mock.calls[0] as [Error];
-      expect(err.message).toContain('SPX');
-      expect(mockReport).toHaveBeenCalledWith(
-        'audit-gexbot-eod',
-        expect.objectContaining({ status: 'error' }),
-      );
-      expect(mockCapture).not.toHaveBeenCalled();
+    it.each([
+      ['empty', new Set<string>(), new Set<string>()],
+      // A table restored without SPX but with other tickers: not empty.
+      ['non-empty but without SPX', new Set(['NDX']), new Set(['NDX', 'ROKU'])],
+    ])(
+      'throws when the stored-before set is %s, reporting nothing',
+      async (_name, stored, storedBefore) => {
+        // Without the guard, the tickers missing here would all go under
+        // newListings, and a total loss would read as success.
+        setTickers(['SPX', 'NDX', 'ROKU'], ['bad/ticker']);
+        eod.listStoredTickers.mockResolvedValue(stored);
+        eod.listTickersStoredOnOrBefore.mockResolvedValue(storedBefore);
+        const res = await run();
+        expect(res._status).toBe(500);
+        expect(mockException).toHaveBeenCalledTimes(1);
+        const [err] = mockException.mock.calls[0] as [Error];
+        expect(err.message).toContain('SPX');
+        expect(mockReport).toHaveBeenCalledWith(
+          'audit-gexbot-eod',
+          expect.objectContaining({ status: 'error' }),
+        );
+        expect(mockCapture).not.toHaveBeenCalled();
+      },
+    );
+
+    it('keeps newListings out of the Axiom top-level columns', () => {
+      expect(AXIOM_TOP_LEVEL_KEYS.has('newListings')).toBe(false);
     });
 
     it('surfaces a rejected stored-before query as a thrown error', async () => {
