@@ -53,13 +53,13 @@ registerRoute(
 // A request no route matches gets no respondWith() from Workbox, so the
 // browser serves it itself, outside this worker's fetch event. That keeps
 // a long api/analyze call (up to 780 s) from hitting the fetch-event
-// timeout. Do not add an /api/ route: any handler, NetworkOnly included,
-// makes Workbox call respondWith() and brings that timeout back. Two
-// NetworkOnly routes stood here once and never matched: RegExpRoute tests
-// the whole url.href ("https://..."), which a pattern starting `^\/` can't
-// match. The navigation route above skips /api/ through its denylist, which
-// NavigationRoute tests against the pathname. API responses are never
-// cached by this worker.
+// timeout. Do not add an /api/ route or a setDefaultHandler: any handler,
+// NetworkOnly included, makes Workbox call respondWith() and brings that
+// timeout back. Two NetworkOnly routes stood here once and never matched:
+// RegExpRoute tests the whole url.href ("https://..."), which a pattern
+// starting `^\/` can't match. The navigation route above skips /api/ through
+// its denylist, which NavigationRoute tests against the pathname and search.
+// API responses are never cached by this worker.
 
 // ── /vix-data.json — StaleWhileRevalidate ───────────────────────────
 registerRoute(
