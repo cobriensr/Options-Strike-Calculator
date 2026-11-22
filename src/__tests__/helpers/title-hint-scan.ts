@@ -1,6 +1,6 @@
 import ts from 'typescript';
 import { GENERIC_TAGS, countsAsNoRole, squashText } from './aria';
-import { literalText } from './generic-aria-scan';
+import { literalText } from './jsx-literal';
 
 const GENERIC = new Set<string>(GENERIC_TAGS);
 
@@ -60,7 +60,7 @@ function yields(expression: ts.Expression): Yields {
   if (
     node.kind === ts.SyntaxKind.NullKeyword ||
     node.kind === ts.SyntaxKind.FalseKeyword ||
-    (ts.isIdentifier(node) && node.text === 'undefined')
+    isUndefinedLiteral(node)
   ) {
     return 'nothing';
   }
@@ -110,6 +110,45 @@ function endsInHint(children: readonly ts.JsxChild[]): boolean {
   );
 }
 
+const isUndefinedLiteral = (node: ts.Expression): boolean => {
+  const value = unwrap(node);
+  return ts.isIdentifier(value) && value.text === 'undefined';
+};
+
+/**
+ * Whether an attribute is written as nothing: an empty or blank string literal
+ * (`""`, `{''}`), or a literal `undefined`. A dynamic expression is never
+ * nothing here, because the scan can't tell what it resolves to.
+ */
+function isWrittenAsNothing(attr: ts.JsxAttribute): boolean {
+  const text = literalText(attr);
+  if (text != null) return text.trim() === '';
+  const { initializer } = attr;
+  return (
+    initializer != null &&
+    ts.isJsxExpression(initializer) &&
+    initializer.expression != null &&
+    isUndefinedLiteral(initializer.expression)
+  );
+}
+
+/**
+ * Whether an `aria-hidden` attribute is literally true: `"true"`, `{'true'}`,
+ * `{true}`, or the bare attribute (React renders it as `"true"`). `"false"`,
+ * `{false}` and a dynamic expression are not.
+ */
+function isLiterallyTrue(attr: ts.JsxAttribute): boolean {
+  const { initializer } = attr;
+  if (initializer == null) return true;
+  const text = literalText(attr);
+  if (text != null) return text.trim().toLowerCase() === 'true';
+  return (
+    ts.isJsxExpression(initializer) &&
+    initializer.expression != null &&
+    unwrap(initializer.expression).kind === ts.SyntaxKind.TrueKeyword
+  );
+}
+
 /** The element's only content is its own title text (nothing to explain). */
 function showsItsTitle(
   title: ts.JsxAttribute,
@@ -141,13 +180,27 @@ function showsItsTitle(
  *   (`role={r}`); an empty or presentational role (`none`, `presentation`)
  *   does not count as a role, see `countsAsNoRole`;
  * - has a spread attribute (`{...props}` may carry a role or a hint);
- * - has an empty or blank string-literal title, which shows nothing;
- * - is a string-literal title that equals the element's only child text, so
- *   the title says nothing the text does not.
+ * - has a title written as nothing: an empty or blank string literal, or a
+ *   literal `undefined`;
+ * - has a title that is a string literal equal to the element's only child
+ *   text, so the title says nothing the text does not;
+ * - is `aria-hidden` (`"true"`, `{true}` or a bare `aria-hidden`), or sits
+ *   inside such an intrinsic element: a screen reader skips it and all it
+ *   holds, so a hint there would never be read. A component's `aria-hidden`
+ *   (`<Icon aria-hidden>`) hides nothing the scan can see.
  *
- * What it does not see, on purpose: a `title` on an element that has its own
- * role (`<button>`, `<a>`, `<td>`, `<label>`, ...) and on any component other
- * than `StatusBadge`, and a hint that a component adds from inside.
+ * A `<StatusBadge>` counts as having a hint when it has an `srHint` that is
+ * not written as nothing (an empty or blank string literal, or a literal
+ * `undefined`).
+ *
+ * What it does not see, on purpose:
+ * - a `title` on an element that has its own role (`<button>`, `<a>`, `<td>`,
+ *   `<label>`, ...) and on any component other than `StatusBadge`;
+ * - a hint that a component adds from inside;
+ * - a dynamic value, which it trusts: `role={r}` counts as a role, and
+ *   `srHint={h}` counts as a hint even when `h` is empty or undefined at run
+ *   time. A dynamic `aria-hidden={h}` is the exception: it hides nothing, so
+ *   the element is flagged.
  *
  * Each hit carries the line of the `title` attribute, the tag, and the title
  * initializer's source text with its whitespace collapsed (so a hit keeps its
@@ -167,6 +220,11 @@ export function findTitleOnlyGenerics(
   );
   const found: TitleOnlyGeneric[] = [];
 
+  const attrOf = (opening: ts.JsxOpeningLikeElement, name: string) =>
+    opening.attributes.properties
+      .filter(ts.isJsxAttribute)
+      .find((a) => a.name.getText(file) === name);
+
   const check = (
     opening: ts.JsxOpeningLikeElement,
     children: readonly ts.JsxChild[],
@@ -175,21 +233,18 @@ export function findTitleOnlyGenerics(
     if (!ts.isIdentifier(tagName)) return;
     const isBadge = tagName.text === HINT_PROP_COMPONENT;
     if (!isBadge && !GENERIC.has(tagName.text)) return;
-    const { properties } = opening.attributes;
-    if (properties.some((p) => ts.isJsxSpreadAttribute(p))) return;
+    if (opening.attributes.properties.some((p) => ts.isJsxSpreadAttribute(p))) {
+      return;
+    }
 
-    const attrs = properties.filter(ts.isJsxAttribute);
-    const named = (name: string) =>
-      attrs.find((a) => a.name.getText(file) === name);
-    const title = named('title');
-    if (title == null) return;
-    const literal = literalText(title);
-    if (literal != null && literal.trim() === '') return;
+    const title = attrOf(opening, 'title');
+    if (title == null || isWrittenAsNothing(title)) return;
 
     if (isBadge) {
-      if (named('srHint') != null) return;
+      const hint = attrOf(opening, 'srHint');
+      if (hint != null && !isWrittenAsNothing(hint)) return;
     } else {
-      const role = named('role');
+      const role = attrOf(opening, 'role');
       if (role != null) {
         const roleText = literalText(role);
         if (roleText == null || !countsAsNoRole(roleText)) return;
@@ -205,12 +260,24 @@ export function findTitleOnlyGenerics(
     });
   };
 
-  const visit = (node: ts.Node) => {
-    if (ts.isJsxElement(node)) check(node.openingElement, node.children);
-    else if (ts.isJsxSelfClosingElement(node)) check(node, []);
-    ts.forEachChild(node, visit);
+  // `hidden`: an intrinsic ancestor is aria-hidden, so nothing below it is read.
+  const visit = (node: ts.Node, hidden: boolean) => {
+    let hiddenHere = hidden;
+    if (ts.isJsxElement(node) || ts.isJsxSelfClosingElement(node)) {
+      const opening = ts.isJsxElement(node) ? node.openingElement : node;
+      const hide = attrOf(opening, 'aria-hidden');
+      hiddenHere =
+        hidden ||
+        (ts.isIdentifier(opening.tagName) &&
+          /^[a-z]/.test(opening.tagName.text) &&
+          hide != null &&
+          isLiterallyTrue(hide));
+      if (!hiddenHere)
+        check(opening, ts.isJsxElement(node) ? node.children : []);
+    }
+    ts.forEachChild(node, (child) => visit(child, hiddenHere));
   };
-  visit(file);
+  visit(file, false);
   return found;
 }
 

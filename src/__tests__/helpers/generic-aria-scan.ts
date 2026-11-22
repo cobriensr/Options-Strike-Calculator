@@ -1,21 +1,9 @@
 import ts from 'typescript';
 import { GENERIC_TAGS, countsAsNoRole } from './aria';
+import { literalText } from './jsx-literal';
 
 const GENERIC = new Set<string>(GENERIC_TAGS);
 const NAME_ATTRS = new Set(['aria-label', 'aria-labelledby']);
-
-/**
- * The value of a JSX attribute written as a string literal (`role="x"`,
- * `role={'x'}`, ``role={`x`}``), or null for anything else: no value, or an
- * expression the scan can't read (`role={r}`). Shared with the title scan in
- * `title-hint-scan.ts`.
- */
-export function literalText(attr: ts.JsxAttribute): string | null {
-  const init = attr.initializer;
-  if (init == null) return null;
-  const value = ts.isJsxExpression(init) ? init.expression : init;
-  return value != null && ts.isStringLiteralLike(value) ? value.text : null;
-}
 
 /**
  * Every intrinsic JSX element in `source` that is a bare generic element (a

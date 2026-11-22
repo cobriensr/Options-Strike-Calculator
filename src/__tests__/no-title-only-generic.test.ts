@@ -189,6 +189,63 @@ describe('findTitleOnlyGenerics', () => {
       'span',
       '"x"',
     ],
+    // An srHint written as nothing is no hint: SrHint would render an empty
+    // dash. A dynamic srHint stays accepted (a known blind spot, below).
+    [
+      'a StatusBadge with an empty srHint',
+      '<StatusBadge label="A" title="x" srHint="" />',
+      'StatusBadge',
+      '"x"',
+    ],
+    [
+      'a StatusBadge with a blank srHint',
+      '<StatusBadge label="A" title="x" srHint="  " />',
+      'StatusBadge',
+      '"x"',
+    ],
+    [
+      'a StatusBadge with an empty string-expression srHint',
+      '<StatusBadge label="A" title="x" srHint={\'\'} />',
+      'StatusBadge',
+      '"x"',
+    ],
+    [
+      'a StatusBadge with a literal undefined srHint',
+      '<StatusBadge label="A" title="x" srHint={undefined} />',
+      'StatusBadge',
+      '"x"',
+    ],
+    // aria-hidden hides an element only when it is literally true.
+    [
+      'a span with aria-hidden="false"',
+      '<span aria-hidden="false" title="x">a</span>',
+      'span',
+      '"x"',
+    ],
+    [
+      'a span with aria-hidden={false}',
+      '<span aria-hidden={false} title="x">a</span>',
+      'span',
+      '"x"',
+    ],
+    [
+      'a span whose aria-hidden is a non-literal expression',
+      '<span aria-hidden={hidden} title="x">a</span>',
+      'span',
+      '"x"',
+    ],
+    [
+      'a span inside an ancestor with aria-hidden="false"',
+      '<div aria-hidden="false"><span title="x">a</span></div>',
+      'span',
+      '"x"',
+    ],
+    [
+      'a span inside a component with aria-hidden (a known blind spot)',
+      '<Icon aria-hidden="true"><span title="x">a</span></Icon>',
+      'span',
+      '"x"',
+    ],
   ])('flags %s', (_name, source, tag, title) => {
     expect(scan(source)).toEqual([{ line: 1, tag, title }]);
   });
@@ -292,6 +349,48 @@ describe('findTitleOnlyGenerics', () => {
     ],
     ['a span with an empty title', '<span title="">a</span>'],
     ['a span with a blank title', '<span title="  ">a</span>'],
+    [
+      'a span with a literal undefined title',
+      '<span title={undefined}>a</span>',
+    ],
+    // A screen reader skips an aria-hidden element and everything in it, so a
+    // hint there would never be read.
+    [
+      'a span with aria-hidden="true"',
+      '<span aria-hidden="true" title="x">a</span>',
+    ],
+    [
+      'a span with aria-hidden={true}',
+      '<span aria-hidden={true} title="x">a</span>',
+    ],
+    [
+      'a span with aria-hidden as a string expression',
+      '<span aria-hidden={\'true\'} title="x">a</span>',
+    ],
+    [
+      'a span with a bare aria-hidden (React renders "true")',
+      '<span aria-hidden title="x">a</span>',
+    ],
+    [
+      'a span with aria-hidden after the title',
+      '<span title="x" aria-hidden="true">a</span>',
+    ],
+    [
+      'a self-closing span with aria-hidden',
+      '<span aria-hidden="true" title="x" />',
+    ],
+    [
+      'a span inside an aria-hidden div',
+      '<div aria-hidden="true"><span title="x">a</span></div>',
+    ],
+    [
+      'a span deep inside an aria-hidden svg, through an expression',
+      '<svg aria-hidden="true"><g>{ok && <span title="x">a</span>}</g></svg>',
+    ],
+    [
+      'a StatusBadge inside an aria-hidden div',
+      '<div aria-hidden="true"><StatusBadge label="A" title="x" /></div>',
+    ],
     ['a span with no title', '<span className="x">a</span>'],
     [
       'a span with a spread, which may carry a role',
@@ -380,6 +479,16 @@ describe('findTitleOnlyGenerics', () => {
       ');',
     ].join('\n');
     expect(scan(source)).toEqual([{ line: 4, tag: 'span', title: '"bad"' }]);
+  });
+
+  it('hides only the aria-hidden element and what is inside it, not its siblings', () => {
+    const source = [
+      '<>',
+      '  <div aria-hidden="true"><span title="in">a</span></div>',
+      '  <span title="after">b</span>',
+      '</>',
+    ].join('\n');
+    expect(scan(source)).toEqual([{ line: 3, tag: 'span', title: '"after"' }]);
   });
 
   it('flags both an outer and an inner element that lack a hint', () => {
@@ -481,12 +590,17 @@ describe('applyExemptions', () => {
 });
 
 const CHIP_IN_TOGGLE =
-  'A chip inside the ticker-group toggle button. The button name already ' +
-  'measures 396-397 of its 400-character cap (pinned by existing tests), so a ' +
-  'hint would push it over.';
+  'A chip inside the ticker-group toggle button, whose hidden text joins the ' +
+  "button's accessible name. Its visible text already explains it (the " +
+  'count, strikes, premium, last-hit time or best peak), so it keeps only a ' +
+  'title. LotteryFinderTickerGroup.test.tsx and SilentBoomTickerGroup.test.tsx ' +
+  "pin that set ('keeps a hint on exactly the chips whose visible text is " +
+  "cryptic') and the cap on the button's name.";
 const EXPIRY_CHIP =
   'The expiry chip inside the contract link. Its text already shows the ' +
-  'expiry and the DTE, so a hint would only repeat it.';
+  'expiry and the DTE, so a hint would only repeat it. LotteryRow.test.tsx ' +
+  'and SilentBoomRow.test.tsx pin it as the one titled chip without a hint ' +
+  '(`expiryChip`).';
 
 /**
  * The owner's exemptions: titled plain elements that stay without a hint, each
@@ -576,7 +690,9 @@ const EXEMPTIONS: TitleExemption[] = [
       '{`${fmtTime(run.startTs)}–${fmtTime(run.endTs)} — ${KIND_LABEL[run.kind]} (${run.pointCount} min)`}',
     reason:
       'The timeline run bars are children of a role="img" whose aria-label ' +
-      'names the whole timeline, so a hint inside one would never be read.',
+      'names the whole timeline, so a hint inside one would never be read. An ' +
+      "image's children are not read. GreekFlowPanel.test.tsx filters the runs " +
+      'out of its hint check by test id.',
   },
   {
     file: 'src/components/Tracker/ContractRow.tsx',
