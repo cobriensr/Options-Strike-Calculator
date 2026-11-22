@@ -9,6 +9,7 @@
 import { theme } from '../themes';
 import { tint } from '../utils/ui-utils';
 import { DateInput } from './ui/DateInput';
+import { SrHint } from './ui/SrHint';
 
 export interface ScrubControlsProps {
   timestamp: string | null;
@@ -49,6 +50,10 @@ export interface ScrubControlsProps {
 }
 
 const DEFAULT_STALE_THRESHOLD_MS = 5 * 60_000;
+
+/** What the DELAYED badge means: its hover text ends with it and a screen
+ *  reader hears it after the badge. */
+const STALE_FEED_HINT = 'the upstream feed has not sent new data';
 
 /** Format an ISO timestamp to "HH:MM AM/PM CT" in Central Time. */
 function fmtTimeCT(iso: string): string {
@@ -175,9 +180,9 @@ export function ScrubControls({
       {isLive && isStale && (
         <span
           className="rounded bg-amber-500/20 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-amber-400"
-          title={`Latest data is ${staleMinutes}m old — upstream feed has not emitted new alerts`}
+          title={`Latest data is ${staleMinutes}m old — ${STALE_FEED_HINT}`}
         >
-          DELAYED {staleMinutes}m
+          DELAYED {staleMinutes}m<SrHint>{STALE_FEED_HINT}</SrHint>
         </span>
       )}
       {isScrubbed && (

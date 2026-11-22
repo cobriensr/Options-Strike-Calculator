@@ -18,6 +18,7 @@ import type {
   BiasMetrics,
   DriftTarget,
 } from '../../components/GexLandscape/types';
+import type { GexLandscapeFreshness } from '../../hooks/useGexLandscapeData';
 import {
   genericElementsWithAriaLabel,
   srHintText,
@@ -38,6 +39,8 @@ vi.mock('../../utils/auth', () => ({ checkIsOwner: () => true }));
 // The mock takes (marketOpen, date, at) so a test can read what the panel
 // asks for; the typed signature keeps the unused parameters honest.
 interface LandscapeData {
+  /** Absent = null, as the real hook before its first response. */
+  freshness?: GexLandscapeFreshness | null;
   strikes: GexStrikeLevel[];
   timestamps: string[];
   gexDelta5mMap: Map<number, number | null>;
@@ -152,9 +155,11 @@ interface RenderOptions {
   canScrubPrev?: boolean;
   canScrubNext?: boolean;
   marketOpen?: boolean;
+  freshness?: GexLandscapeFreshness | null;
 }
 
-function renderLandscape(opts: RenderOptions = {}) {
+/** Point the mocked data and scrub hooks at one display state. */
+function mockLandscape(opts: RenderOptions = {}) {
   const {
     strikes = baseStrikes,
     timestamps = ['2026-04-13T19:40:00.000Z', '2026-04-13T19:45:00.000Z'],
@@ -163,10 +168,11 @@ function renderLandscape(opts: RenderOptions = {}) {
     isScrubbed = false,
     canScrubPrev = false,
     canScrubNext = false,
-    marketOpen = true,
+    freshness = null,
   } = opts;
 
   dataMock.mockReturnValue({
+    freshness,
     strikes,
     timestamps,
     gexDelta5mMap: new Map<number, number | null>(),
@@ -187,10 +193,33 @@ function renderLandscape(opts: RenderOptions = {}) {
     scrubTo: vi.fn(),
     scrubLive: vi.fn(),
   });
+}
 
+function renderLandscape(opts: RenderOptions = {}) {
+  mockLandscape(opts);
   return render(
     <CollapseAllContext.Provider value={collapseSignal}>
-      <GexLandscape marketOpen={marketOpen} />
+      <GexLandscape marketOpen={opts.marketOpen ?? true} />
+    </CollapseAllContext.Provider>,
+  );
+}
+
+/**
+ * Re-render a mounted panel against a new display state. The panel is
+ * memoized, so a new `onBiasChange` each call is what makes React re-render
+ * it and read the mocked hooks again.
+ */
+function rerenderLandscape(
+  view: ReturnType<typeof renderLandscape>,
+  opts: RenderOptions = {},
+) {
+  mockLandscape(opts);
+  view.rerender(
+    <CollapseAllContext.Provider value={collapseSignal}>
+      <GexLandscape
+        marketOpen={opts.marketOpen ?? true}
+        onBiasChange={() => undefined}
+      />
     </CollapseAllContext.Provider>,
   );
 }
@@ -1677,5 +1706,433 @@ describe.each([
     crossMidnight();
 
     expect(onBiasChange.mock.calls.at(-1)?.[0]).not.toContain('Price trend');
+  });
+});
+
+// ============================================================
+// A STALLED FEED (site 96)
+//
+// The badge turns from LIVE to DELAYED once the data on screen is 3 minutes
+// old, and an empty panel says why. The age is the server's (`ageSec` plus
+// the response's `Age` header, summed in the hook) plus the time since the
+// response arrived, so the client clock is never set against `asOf`. The
+// panel re-reads the clock every 15 s, only while the age applies: live,
+// market open, and the server agreeing it is open. Every case starts at a
+// fixed instant on a session morning.
+// ============================================================
+
+describe('GexLandscape: a stalled feed', () => {
+  const NOW = Date.parse('2026-11-20T15:30:00.000Z'); // 9:30 AM CT, a Friday
+  const MIN = 60_000;
+  const TICK_MS = 15_000;
+  const HINT = 'the upstream feed has not sent new data';
+  const GENERIC = 'No strike data available';
+  const SOME_PANELS = 'Some GEX panels have no capture in the last 5 minutes';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.useFakeTimers({
+      toFake: [
+        'setTimeout',
+        'clearTimeout',
+        'setInterval',
+        'clearInterval',
+        'Date',
+      ],
+    });
+    vi.setSystemTime(NOW);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  /** A live response's freshness, received just now. */
+  function freshnessOf(
+    over: Partial<GexLandscapeFreshness> = {},
+  ): GexLandscapeFreshness {
+    return {
+      serverMarketOpen: true,
+      reason: null,
+      dataAgeMsAtReceipt: 5_000,
+      lastCaptureAgeMsAtReceipt: null,
+      receivedAt: Date.now(),
+      ...over,
+    };
+  }
+
+  /**
+   * A `no_slot` response: no strikes, the day's capture minutes only.
+   * `stampAgeMs` is the last minute stamp's age on the SERVER's clock when
+   * the response arrived (the hook's `lastCaptureAgeMsAtReceipt`); the stamps
+   * are laid out to match, so the message names the right time. Null = no
+   * capture minute today.
+   */
+  function noSlot(stampAgeMs: number | null, over = {}): RenderOptions {
+    return {
+      strikes: [],
+      timestamps:
+        stampAgeMs == null
+          ? []
+          : [
+              new Date(NOW - stampAgeMs - MIN).toISOString(),
+              new Date(NOW - stampAgeMs).toISOString(),
+            ],
+      freshness: freshnessOf({
+        reason: 'no_slot',
+        dataAgeMsAtReceipt: null,
+        lastCaptureAgeMsAtReceipt: stampAgeMs,
+      }),
+      ...over,
+    };
+  }
+
+  /** The ids of the 15 s intervals the panel has started so far. */
+  function tickIntervals(spy: {
+    mock: { calls: unknown[][]; results: Array<{ value: unknown }> };
+  }): unknown[] {
+    return spy.mock.calls.flatMap((call, i) =>
+      call[1] === TICK_MS ? [spy.mock.results[i]?.value] : [],
+    );
+  }
+
+  const advance = (ms: number) => {
+    act(() => {
+      vi.advanceTimersByTime(ms);
+    });
+  };
+
+  describe('data on screen goes stale', () => {
+    it('shows LIVE at 2 min 45 s, then DELAYED 3m one 15 s tick later, with no new response', () => {
+      const { container } = renderLandscape({
+        freshness: freshnessOf({ dataAgeMsAtReceipt: 2 * MIN + 45_000 }),
+      });
+      expect(screen.getAllByText('LIVE').length).toBeGreaterThan(0);
+      expect(screen.queryByText(/^DELAYED/)).toBeNull();
+
+      // Just short of the tick: the age on screen has not been re-read yet.
+      advance(TICK_MS - 1);
+      expect(screen.queryByText(/^DELAYED/)).toBeNull();
+
+      advance(1);
+      const badge = screen.getByText('DELAYED 3m');
+      expect(srHintText(badge)).toBe(HINT);
+      expect(badge).toHaveAttribute(
+        'title',
+        'Latest data is 3m old — the upstream feed has not sent new data',
+      );
+      expect(screen.queryAllByText('LIVE')).toHaveLength(0);
+      // The strikes stay on screen: DELAYED labels the data, it doesn't hide it.
+      expect(screen.getAllByText('Takers −γ +charm').length).toBeGreaterThan(0);
+      expect(titledGenericsWithoutHint(container)).toEqual([]);
+    });
+
+    it('counts a response that lands between ticks from its own arrival, not the stale clock', () => {
+      // The clock was last read at mount. A response lands 10 s later with a
+      // capture already 3 min 5 s old: the age must not be pulled back by the
+      // 10 s the clock has not yet caught up with.
+      const view = renderLandscape({
+        freshness: freshnessOf({ dataAgeMsAtReceipt: 5_000 }),
+      });
+      advance(10_000);
+      rerenderLandscape(view, {
+        freshness: freshnessOf({
+          dataAgeMsAtReceipt: 3 * MIN + 5_000,
+          receivedAt: Date.now(),
+        }),
+      });
+      expect(screen.getByText('DELAYED 3m')).toBeDefined();
+    });
+
+    it('reads the clock again when the age starts to apply, not one tick later', () => {
+      // Live and fresh, then scrubbed for 5 minutes (no ticks while scrubbed),
+      // then back to live while the hook still holds the old live response.
+      const stored = freshnessOf({ dataAgeMsAtReceipt: 100_000 });
+      const view = renderLandscape({ freshness: stored });
+      rerenderLandscape(view, { isScrubbed: true, freshness: stored });
+      advance(5 * MIN);
+      rerenderLandscape(view, { freshness: stored });
+      // 100 s + the 5 minutes that passed = 6 min 40 s, read at once.
+      expect(screen.getByText('DELAYED 6m')).toBeDefined();
+    });
+  });
+
+  describe('an empty panel says why', () => {
+    it('shows the stall message and DELAYED when the last capture stamp is 6 minutes old', () => {
+      const { container } = renderLandscape(noSlot(6 * MIN));
+      // 15:24:00Z is 9:24 AM CT (CST, UTC-6).
+      expect(
+        screen.getByText('Feed stalled: last capture 9:24 AM CT'),
+      ).toBeDefined();
+      expect(screen.queryByText(GENERIC)).toBeNull();
+      // The badge shows the stamp's age less the 60 s the minute truncation
+      // can hide (a lower bound on the true age): 6 min - 1 min = 5 min.
+      const badge = screen.getByText('DELAYED 5m');
+      expect(srHintText(badge)).toBe(HINT);
+      expect(titledGenericsWithoutHint(container)).toEqual([]);
+    });
+
+    it.each([6 * MIN, MIN])(
+      'makes no dealer claim in the message, badge or tooltip (last capture %i ms old)',
+      (lastAgoMs) => {
+        renderLandscape(noSlot(lastAgoMs));
+        const titles = Array.from(
+          document.querySelectorAll<HTMLElement>('[title]'),
+        ).map((el) => el.title);
+        const text = [document.body.textContent ?? '', ...titles].join('\n');
+        expect(text).toMatch(/Feed stalled|Some GEX panels/);
+        expect(dealerClaims(text)).toEqual([]);
+      },
+    );
+
+    it('says only some panels are missing, and stays LIVE, when the last capture is 1 minute old', () => {
+      renderLandscape(noSlot(MIN));
+      expect(screen.getByText(SOME_PANELS)).toBeDefined();
+      expect(screen.queryByText(GENERIC)).toBeNull();
+      expect(screen.queryByText(/^DELAYED/)).toBeNull();
+      expect(screen.getAllByText('LIVE').length).toBeGreaterThan(0);
+    });
+
+    it('turns the same panel from some-panels to stalled when the stamp ages past 4 minutes', () => {
+      // Stamp 3 min 50 s old (lower bound 2 min 50 s): some panels. One tick
+      // later it is 4 min 5 s old (lower bound 3 min 5 s): stalled.
+      renderLandscape(noSlot(3 * MIN + 50_000));
+      expect(screen.getByText(SOME_PANELS)).toBeDefined();
+      expect(screen.queryByText(/^DELAYED/)).toBeNull();
+
+      advance(TICK_MS);
+      expect(
+        screen.getByText(/^Feed stalled: last capture \d{1,2}:\d{2} [AP]M CT$/),
+      ).toBeDefined();
+      expect(screen.getByText('DELAYED 3m')).toBeDefined();
+    });
+
+    // The stamp is truncated to the minute, so its age overstates the real
+    // capture's by up to 60 s. The split is the threshold plus that 60 s:
+    // 3 min + 60 s = 4 min, inclusive.
+    it.each([
+      [4 * MIN - 1, SOME_PANELS],
+      [4 * MIN, 'Feed stalled: last capture 9:26 AM CT'],
+    ])(
+      'with the last capture stamp %i ms old, the message is "%s"',
+      (stampAgeMs, message) => {
+        renderLandscape(noSlot(stampAgeMs));
+        expect(screen.getByText(message)).toBeDefined();
+        expect(screen.queryByText(/^DELAYED/) == null).toBe(
+          message === SOME_PANELS,
+        );
+      },
+    );
+
+    it('a healthy gamma feed missing only a charm panel never shows stalled or DELAYED (stamp up to 2 min old)', () => {
+      renderLandscape(noSlot(2 * MIN));
+      advance(TICK_MS);
+      expect(screen.getByText(SOME_PANELS)).toBeDefined();
+      expect(screen.queryByText(/^DELAYED/)).toBeNull();
+    });
+
+    // The age comes from the server's clock (carried in freshness), never
+    // from the client clock against the stamps: a client clock far off the
+    // server's must not change the verdict in either direction.
+    it('ignores a client clock that disagrees with the stamps: server says fresh, stamps look months old', () => {
+      renderLandscape({
+        ...noSlot(2 * MIN),
+        timestamps: ['2026-04-13T19:40:00.000Z', '2026-04-13T19:45:00.000Z'],
+      });
+      expect(screen.getByText(SOME_PANELS)).toBeDefined();
+      expect(screen.queryByText(/^DELAYED/)).toBeNull();
+      expect(screen.getAllByText('LIVE').length).toBeGreaterThan(0);
+    });
+
+    it('ignores a client clock that disagrees with the stamps: server says stalled, stamps look fresh', () => {
+      renderLandscape({
+        ...noSlot(6 * MIN),
+        timestamps: [
+          new Date(NOW - MIN).toISOString(),
+          new Date(NOW).toISOString(),
+        ],
+      });
+      expect(screen.getByText(/^Feed stalled/)).toBeDefined();
+      expect(screen.getByText('DELAYED 5m')).toBeDefined();
+    });
+
+    it.each([
+      [
+        'no_spot',
+        (): RenderOptions => ({
+          ...noSlot(6 * MIN),
+          freshness: freshnessOf({
+            reason: 'no_spot',
+            dataAgeMsAtReceipt: null,
+            lastCaptureAgeMsAtReceipt: 6 * MIN,
+          }),
+        }),
+      ],
+      ['no captures today', (): RenderOptions => noSlot(null)],
+      [
+        'an unparseable stamp (the hook yields no age)',
+        (): RenderOptions => ({
+          ...noSlot(null),
+          timestamps: ['garbage'],
+        }),
+      ],
+    ])('keeps the generic text and no DELAYED for %s', (_label, build) => {
+      renderLandscape(build());
+      expect(screen.getByText(GENERIC)).toBeDefined();
+      expect(screen.queryByText(/^DELAYED/)).toBeNull();
+      expect(screen.queryByText(SOME_PANELS)).toBeNull();
+    });
+
+    it('names no capture time it does not have: the badge still shows the age, the message stays generic', () => {
+      // The hook has an age, but the panel has not mirrored any capture
+      // minute yet (it lags the hook by one render), so there is no time to
+      // print after "last capture".
+      renderLandscape({ ...noSlot(6 * MIN), timestamps: [] });
+      expect(screen.getByText(GENERIC)).toBeDefined();
+      expect(screen.queryByText(/^Feed stalled/)).toBeNull();
+      expect(screen.getByText('DELAYED 5m')).toBeDefined();
+    });
+  });
+
+  describe('where the age does not apply', () => {
+    // Each gate on its own, against both a stale data response and a stale
+    // `no_slot` one: no DELAYED, and the empty panel keeps its generic text.
+    const gates: Array<
+      [string, RenderOptions, Partial<GexLandscapeFreshness>]
+    > = [
+      ['the server says the market is closed', {}, { serverMarketOpen: false }],
+      ['the market is closed', { marketOpen: false }, {}],
+      ['the panel is scrubbed', { isScrubbed: true }, {}],
+    ];
+
+    // Each case first shows the stale panel live, so DELAYED or the message
+    // is known to appear, then closes the one gate. (A panel scrubbed from
+    // the start never mirrors the day's capture minutes, which would make
+    // the no_slot case pass with the gate gone.)
+    it.each(gates)('drops DELAYED on stale data when %s', (_l, opts, over) => {
+      const stale = { dataAgeMsAtReceipt: 10 * MIN };
+      const view = renderLandscape({ freshness: freshnessOf(stale) });
+      expect(screen.getByText('DELAYED 10m')).toBeDefined();
+
+      rerenderLandscape(view, {
+        ...opts,
+        freshness: freshnessOf({ ...stale, ...over }),
+      });
+      advance(TICK_MS);
+      expect(screen.queryByText(/^DELAYED/)).toBeNull();
+    });
+
+    it.each(gates)(
+      'drops the stalled-feed message on a stale no_slot when %s',
+      (_l, opts, over) => {
+        const base = noSlot(6 * MIN);
+        const view = renderLandscape(base);
+        expect(screen.getByText(/^Feed stalled/)).toBeDefined();
+
+        rerenderLandscape(view, {
+          ...base,
+          ...opts,
+          freshness: freshnessOf({
+            reason: 'no_slot',
+            dataAgeMsAtReceipt: null,
+            lastCaptureAgeMsAtReceipt: 6 * MIN,
+            ...over,
+          }),
+        });
+        expect(screen.getByText(GENERIC)).toBeDefined();
+        expect(screen.queryByText(/^Feed stalled/)).toBeNull();
+        expect(screen.queryByText(/^DELAYED/)).toBeNull();
+      },
+    );
+
+    it('leaving a scrub never shows the scrubbed response age, only the live one once it lands', () => {
+      // While scrubbed the hook holds no freshness (the stored response came
+      // from a scrub), and after leaving, none until the live one lands.
+      const view = renderLandscape({ isScrubbed: true, freshness: null });
+      expect(screen.queryByText(/^DELAYED/)).toBeNull();
+
+      rerenderLandscape(view, { freshness: null });
+      advance(5 * MIN);
+      expect(screen.queryByText(/^DELAYED/)).toBeNull();
+      expect(screen.getAllByText('LIVE').length).toBeGreaterThan(0);
+
+      rerenderLandscape(view, {
+        freshness: freshnessOf({ dataAgeMsAtReceipt: 20_000 }),
+      });
+      expect(screen.queryByText(/^DELAYED/)).toBeNull();
+      expect(screen.getAllByText('LIVE').length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('the 15 s clock', () => {
+    it('starts one interval while the age applies, and clears that interval on unmount', () => {
+      const setIntervalSpy = vi.spyOn(globalThis, 'setInterval');
+      const clearIntervalSpy = vi.spyOn(globalThis, 'clearInterval');
+      const { unmount } = renderLandscape({ freshness: freshnessOf() });
+
+      const ids = tickIntervals(setIntervalSpy);
+      expect(ids).toHaveLength(1);
+      expect(clearIntervalSpy).not.toHaveBeenCalledWith(ids[0]);
+
+      unmount();
+      expect(clearIntervalSpy).toHaveBeenCalledWith(ids[0]);
+    });
+
+    it('clears the interval when the panel is scrubbed and starts none while it is', () => {
+      const setIntervalSpy = vi.spyOn(globalThis, 'setInterval');
+      const clearIntervalSpy = vi.spyOn(globalThis, 'clearInterval');
+      const stored = freshnessOf();
+      const view = renderLandscape({ freshness: stored });
+      const [first] = tickIntervals(setIntervalSpy);
+
+      rerenderLandscape(view, { isScrubbed: true, freshness: stored });
+      expect(clearIntervalSpy).toHaveBeenCalledWith(first);
+      advance(10 * MIN);
+      expect(tickIntervals(setIntervalSpy)).toHaveLength(1);
+
+      // Leaving the scrub starts a fresh interval.
+      rerenderLandscape(view, { freshness: stored });
+      expect(tickIntervals(setIntervalSpy)).toHaveLength(2);
+    });
+
+    it('clears the interval when the market closes', () => {
+      const setIntervalSpy = vi.spyOn(globalThis, 'setInterval');
+      const clearIntervalSpy = vi.spyOn(globalThis, 'clearInterval');
+      const stored = freshnessOf();
+      const view = renderLandscape({ freshness: stored });
+      const [first] = tickIntervals(setIntervalSpy);
+
+      rerenderLandscape(view, { marketOpen: false, freshness: stored });
+      expect(clearIntervalSpy).toHaveBeenCalledWith(first);
+      advance(10 * MIN);
+      expect(screen.queryByText(/^DELAYED/)).toBeNull();
+      expect(tickIntervals(setIntervalSpy)).toHaveLength(1);
+    });
+
+    // Each case builds its freshness inside the test, after the fake clock is
+    // set: a table value would call `freshnessOf()` (and so `Date.now()`)
+    // while the tests are being collected, on the real clock.
+    it.each([
+      ['there is no freshness yet', (): RenderOptions => ({ freshness: null })],
+      [
+        'the server says the market is closed',
+        (): RenderOptions => ({
+          freshness: freshnessOf({ serverMarketOpen: false }),
+        }),
+      ],
+      [
+        'the market is closed',
+        (): RenderOptions => ({ marketOpen: false, freshness: freshnessOf() }),
+      ],
+      [
+        'the panel is scrubbed',
+        (): RenderOptions => ({ isScrubbed: true, freshness: freshnessOf() }),
+      ],
+    ])('starts no interval when %s', (_label, build) => {
+      const setIntervalSpy = vi.spyOn(globalThis, 'setInterval');
+      renderLandscape(build());
+      expect(tickIntervals(setIntervalSpy)).toHaveLength(0);
+    });
   });
 });

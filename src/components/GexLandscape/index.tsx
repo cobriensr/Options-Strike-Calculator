@@ -53,6 +53,7 @@ import { usePersistedState } from '../../hooks/usePersistedState';
 import { useScrubController } from '../../hooks/useScrubController';
 import { useTopStrikesTracker } from '../../hooks/useTopStrikesTracker';
 import { useFollowedDate } from '../../hooks/useFollowedDate';
+import { formatTimeCT } from '../../utils/component-formatters';
 import { BiasPanel } from './BiasPanel';
 import { ClassificationLegend } from './ClassificationLegend';
 import { ScrubControls } from '../ScrubControls';
@@ -95,6 +96,28 @@ const PRICE_TREND_WINDOW_MS = 30 * 60 * 1000;
  * absorb jitter at slot boundaries before old points get pruned.
  */
 const PRICE_TREND_BUFFER_CUTOFF_MS = 31 * 60 * 1000;
+
+/**
+ * The age at which the LIVE badge turns into DELAYED: 3 minutes. A staleness
+ * timeout, local to this panel the way ScrubControls keeps its own default.
+ *
+ * Healthy data can reach about 135 s, the sum of four waits: captures land
+ * once a minute (SPX gamma_zero gaps on 2026-11-19 and 11-20: median 60 s,
+ * maximum 63 s); a response sits up to 10 s at the edge (/api/gex-landscape
+ * caches a live reply for 10 s); the panel polls every 60 s
+ * (POLL_INTERVALS.PERISCOPE); and the request takes about 2 s. 3 minutes
+ * leaves about 45 s of margin and still means at least one capture was
+ * missed. That margin holds only with the 10 s edge cache: the old 30 s + 30 s
+ * one would make the badge flicker.
+ *
+ * The server stops serving a live capture after 5 minutes
+ * (STALENESS_CUTOFF_MS in api/_lib/periscope-gexbot.ts). Between 3 and about
+ * 5 minutes the numbers show under DELAYED; past that, the stalled-feed
+ * message shows. A throttled background tab can poll less often, and on
+ * return it shows DELAYED until the next poll lands: the data on screen
+ * really is that old.
+ */
+const GEX_STALE_THRESHOLD_MS = 3 * 60_000;
 
 export interface GexLandscapeProps {
   /** Whether the equity market is currently open (drives polling + LIVE badge). */
@@ -157,6 +180,7 @@ const GexLandscape = memo(function GexLandscape({
   const at = pinDate === selectedDate ? scrubTimestamp : null;
 
   const {
+    freshness,
     strikes,
     timestamps,
     gexDelta5mMap,
@@ -185,6 +209,70 @@ const GexLandscape = memo(function GexLandscape({
 
   const timestamp = scrubTimestamp ?? liveTimestamps.at(-1) ?? null;
   const isLive = scrubTimestamp == null && marketOpen;
+
+  // How old the data on screen is, for the DELAYED badge and the empty-panel
+  // message. It applies only while the panel is live, the market is open and
+  // the server says the same: a scrub, the close or a pre-open response says
+  // nothing about the feed. The hook gives no freshness for a response it
+  // fetched with `at`, so a scrub's age never reads as live.
+  const freshnessApplies = isLive && freshness?.serverMarketOpen === true;
+  // The clock the age grows against between polls. It ticks only while the
+  // age applies, and the effect returns its cleanup, so a scrubbed panel, a
+  // closed market and an unmounted panel run no interval.
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    if (!freshnessApplies) return;
+    // The clock was last read when the age last applied: read it again now.
+    setNowMs(Date.now());
+    // 15 s keeps the badge within a quarter-minute of the threshold.
+    const id = setInterval(() => setNowMs(Date.now()), 15_000);
+    return () => clearInterval(id);
+  }, [freshnessApplies]);
+
+  const lastCapture = liveTimestamps.at(-1) ?? null;
+  let lastDataAgeMs: number | null = null;
+  if (freshnessApplies && freshness != null) {
+    // Time since the response arrived, by this clock. A response that landed
+    // after the last tick has `receivedAt` ahead of the clock: count that as
+    // no time since, never as negative.
+    const sinceReceiptMs = Math.max(0, nowMs - freshness.receivedAt);
+    if (freshness.dataAgeMsAtReceipt != null) {
+      // The server's measured age of the capture at receipt, plus the time
+      // since.
+      lastDataAgeMs = freshness.dataAgeMsAtReceipt + sinceReceiptMs;
+    } else if (
+      freshness.reason === 'no_slot' &&
+      freshness.lastCaptureAgeMsAtReceipt != null
+    ) {
+      // No data to measure, so the age of the day's last capture MINUTE on
+      // the server's clock (never the client's), plus the time since receipt.
+      // That minute stamp is truncated: the real capture is 0 to 60 s newer
+      // than it, so the figure overstates the capture's age by up to 60 s.
+      // Take 60 s off to get a lower bound on the true age, and the same
+      // 3-minute threshold then never fires early:
+      //   lower bound >= 3 min  <=>  stamp age >= 3 min + 60 s = 4 min.
+      // A healthy gamma feed that is only missing a charm or vanna panel
+      // has a stamp under about 2 minutes old (a capture a minute, at most
+      // 63 s apart, plus the 60 s truncation), so it can't show "Feed
+      // stalled" or DELAYED; a real stall shows up to 60 s later than it
+      // would on an exact stamp. The badge's minutes are that lower bound.
+      lastDataAgeMs = Math.max(
+        0,
+        freshness.lastCaptureAgeMsAtReceipt + sinceReceiptMs - 60_000,
+      );
+    }
+  }
+  let emptyMessage = 'No strike data available';
+  if (
+    freshness?.reason === 'no_slot' &&
+    lastDataAgeMs != null &&
+    lastCapture != null
+  ) {
+    emptyMessage =
+      lastDataAgeMs >= GEX_STALE_THRESHOLD_MS
+        ? `Feed stalled: last capture ${formatTimeCT(lastCapture)} CT`
+        : 'Some GEX panels have no capture in the last 5 minutes';
+  }
 
   // `scrubLive` resets the scrub pin AND goes back to following today
   // (mirrors the original useGexPerStrike behaviour — a single button
@@ -410,6 +498,8 @@ const GexLandscape = memo(function GexLandscape({
       onRefresh={refresh}
       loading={loading}
       sectionLabel="GEX landscape"
+      lastDataAgeMs={lastDataAgeMs}
+      staleThresholdMs={GEX_STALE_THRESHOLD_MS}
       // Locked Decision #4: /api/gex-landscape scrubs today only against
       // gexbot_api_capture — no `?date=` parameter is accepted. The
       // shared ScrubControls would render a no-op picker otherwise, which
@@ -442,7 +532,7 @@ const GexLandscape = memo(function GexLandscape({
     return (
       <SectionBox label="GEX LANDSCAPE" headerRight={headerRight} collapsible>
         <div className="text-muted py-8 text-center font-mono text-[13px]">
-          No strike data available
+          {emptyMessage}
         </div>
       </SectionBox>
     );

@@ -8,6 +8,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { ScrubControls } from '../../components/ScrubControls';
+import { srHintText, titledGenericsWithoutHint } from '../helpers/aria';
 
 function defaultProps(
   overrides: Partial<Parameters<typeof ScrubControls>[0]> = {},
@@ -117,5 +118,82 @@ describe('ScrubControls', () => {
       'Refresh GEX landscape',
     ) as HTMLButtonElement;
     expect(refresh.disabled).toBe(true);
+  });
+});
+
+// Site 96: the DELAYED badge. The GEX landscape passes a 3-minute threshold;
+// the badge's hover text names the feed, not "alerts" (the panel shows GEX
+// strike data), and a screen reader hears the same words.
+describe('ScrubControls DELAYED badge (site 96)', () => {
+  const HINT = 'the upstream feed has not sent new data';
+
+  it('flips from LIVE to DELAYED 3m exactly at a 180 000 ms threshold', () => {
+    const { rerender, container } = render(
+      <ScrubControls
+        {...defaultProps({ lastDataAgeMs: 179_999, staleThresholdMs: 180_000 })}
+      />,
+    );
+    expect(screen.queryByText(/^DELAYED/)).toBeNull();
+    expect(screen.getAllByText('LIVE').length).toBeGreaterThan(0);
+
+    rerender(
+      <ScrubControls
+        {...defaultProps({ lastDataAgeMs: 180_000, staleThresholdMs: 180_000 })}
+      />,
+    );
+    const badge = screen.getByText('DELAYED 3m');
+    expect(srHintText(badge)).toBe(HINT);
+    expect(badge).toHaveAttribute(
+      'title',
+      'Latest data is 3m old — the upstream feed has not sent new data',
+    );
+    // The LIVE pill gives way to the DELAYED one.
+    expect(screen.queryAllByText('LIVE')).toHaveLength(0);
+    expect(titledGenericsWithoutHint(container)).toEqual([]);
+  });
+
+  it.each([
+    [12 * 60_000, 12],
+    [7 * 60_000 + 59_999, 7],
+  ])(
+    'floors %i ms to %i whole minutes in the badge, title and hint',
+    (lastDataAgeMs, minutes) => {
+      render(
+        <ScrubControls
+          {...defaultProps({ lastDataAgeMs, staleThresholdMs: 180_000 })}
+        />,
+      );
+      const badge = screen.getByText(`DELAYED ${minutes}m`);
+      expect(badge).toHaveAttribute(
+        'title',
+        `Latest data is ${minutes}m old — the upstream feed has not sent new data`,
+      );
+      expect(srHintText(badge)).toBe(HINT);
+    },
+  );
+
+  it('keeps the 5-minute default threshold for a caller that passes none', () => {
+    const { rerender } = render(
+      <ScrubControls {...defaultProps({ lastDataAgeMs: 299_999 })} />,
+    );
+    expect(screen.queryByText(/^DELAYED/)).toBeNull();
+    rerender(<ScrubControls {...defaultProps({ lastDataAgeMs: 300_000 })} />);
+    expect(screen.getByText('DELAYED 5m')).toBeDefined();
+  });
+
+  it('shows no DELAYED badge when the panel is not live', () => {
+    const { container } = render(
+      <ScrubControls
+        {...defaultProps({
+          isLive: false,
+          isScrubbed: true,
+          lastDataAgeMs: 900_000,
+          staleThresholdMs: 180_000,
+        })}
+      />,
+    );
+    expect(screen.queryByText(/^DELAYED/)).toBeNull();
+    expect(screen.getByText('SCRUBBED')).toBeDefined();
+    expect(titledGenericsWithoutHint(container)).toEqual([]);
   });
 });
