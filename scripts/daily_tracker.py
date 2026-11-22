@@ -17,8 +17,11 @@ filled and the run says so.
 `--rebuild` writes a row for EVERY enriched fire date, each as of its date,
 and discards the rows already in the file, which afterwards holds exactly
 the rebuilt rows. It is for after outcomes were re-enriched, when the
-stored rows no longer match the data they were computed on. It overwrites
-the file it is given, so run it on a copy.
+stored rows no longer match the data they were computed on. It is also the
+fix after a weights promotion: that moves the active cutoffs, so rows written
+before it no longer compare with rows written after it, and a rebuild puts
+the whole series on one set of cutoffs. It overwrites the file it is given,
+so run it on a copy.
 
 Read-only against the DB except for its own CSV rewrite.
 

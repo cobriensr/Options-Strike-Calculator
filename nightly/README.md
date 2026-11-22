@@ -1040,12 +1040,15 @@ weights JSON; the alert reads `script exited 1 (_report_weights.ActiveWeightsErr
 `research-derive`, `eod-flow-rollup`, `quality-sim` and `takeit-drift` run
 in the job's own process; the other seven steps run their script as a subprocess.
 
-**Rebuilding the tracking CSV.** The nightly never recomputes a row it has written, so
-after outcomes are re-enriched the old rows no longer match the data they were computed
-on. To redo the whole file, run `scripts/daily_tracker.py --csv COPY --rebuild` locally
-on a copy of the state, with the database URL in the environment, and put the file back
-at the state key. It writes one row for every enriched fire date, each as of its date,
-and discards the rows the copy held. Overwriting the state is the owner's call, so ask
+**Rebuilding the tracking CSV.** The nightly never recomputes an older row, so after
+outcomes are re-enriched the old rows no longer match the data they were computed on.
+A weights promotion does the same to the tiers: it moves the active cutoffs, so rows
+written before it no longer compare with rows written after it, and a rebuild puts the
+whole series on one set of cutoffs. To redo the whole file, run
+`scripts/daily_tracker.py --csv COPY --rebuild` locally on a copy of the state, with the
+database URL in the environment, and put the file back at the state key. It writes one
+row for every enriched fire date, each as of its date, and discards the rows the copy
+held. Overwriting the state is the owner's call, so ask
 before doing it (the R2 rule). The nightly never passes `--rebuild`; its next run
 extends the rebuilt file as it does any other.
 
