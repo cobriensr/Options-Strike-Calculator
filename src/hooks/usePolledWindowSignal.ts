@@ -20,14 +20,16 @@
  *     turns (the caller re-renders at its midnight) drops the payload. A 2xx
  *     whose payload is not dated today is reported as an `error` (it names
  *     both dates) rather than hidden in silence, and clears on the first poll
- *     where they agree.
+ *     where they agree, or in the render where `todayStr` catches up with it.
+ *     The returned `error` is null while the window is closed.
  *
  *   - **Window-gated polling.** The recurring fetch interval is gated on the
  *     window predicate itself (`usePolling(..., [isWindowOpen])`) — it does
  *     NOT tick outside the window. A separate, lightweight once-a-minute
  *     watcher recomputes `isWindowOpen`, and only writes state when the flag
- *     actually flips, so outside the window there is no fetch and no per-tick
- *     setState churn.
+ *     actually flips or a stored error is to be dropped (once, after the
+ *     close), so outside the window there is no fetch and no per-tick setState
+ *     churn.
  *
  *   - **Fetch when the window opens.** An effect keyed on `isWindowOpen`
  *     fetches whenever the flag is true: once at mount if the window is
@@ -38,8 +40,9 @@
  *     one watcher; the fetch-on-open effect and the recurring fetch both read
  *     it rather than recomputing the predicate in two places.
  *
- * Persistence semantics: after every successful fetch the payload is mirrored
- * to `storageKey`. On mount the cache is read once; if its `date` matches
+ * Persistence semantics: after every successful fetch whose payload is dated
+ * today, it is mirrored to `storageKey`; a wrong-dated, undated or null body
+ * never replaces it. On mount the cache is read once; if its `date` matches
  * today it seeds `displayData`, otherwise it is dropped.
  */
 
@@ -244,13 +247,15 @@ export function usePolledWindowSignal<T extends DatedPayload>(
         fetchedAt: Date.now(),
         dateMismatch,
       });
-      // A null body carries nothing to keep: it must not overwrite the last-good
-      // payload, in storage or in the display fallback.
-      if (json != null) {
+      // Only a payload dated today is a last-good one. A wrong-dated, undated
+      // or null body must not replace it, in storage or in the display
+      // fallback; it is kept in `state.data` only (the clock catching up with
+      // it shows it from there).
+      if (json?.date === expected) {
         writeCache<T>(key, {
           data: json,
           savedAt: new Date().toISOString(),
-          date: json.date ?? '',
+          date: expected,
         });
         setCachedData(json);
       }
@@ -271,10 +276,22 @@ export function usePolledWindowSignal<T extends DatedPayload>(
   }, []);
 
   // Recompute the window flag from the single watcher's predicate and publish
-  // it only on a flip.
+  // it only on a flip. While the window is closed, also drop the stored error:
+  // the next window's first fetch is still out when it opens, and the last
+  // window's error would otherwise be on screen until that fetch answered.
+  // (The `error` the hook returns is already null while closed; this clears
+  // what is stored, and is a no-op once it is clear. `dateMismatch` is only
+  // ever set together with an error, so a null error means both are clear.)
   const syncWindow = useCallback((): void => {
     const open = optsRef.current.inWindow(new Date());
     setIsWindowOpen((prev) => (prev === open ? prev : open));
+    if (!open) {
+      setState((prev) =>
+        prev.error === null
+          ? prev
+          : { ...prev, error: null, dateMismatch: false },
+      );
+    }
   }, []);
 
   // Fetch whenever the window is open: once at mount if it already is, and at
@@ -286,10 +303,10 @@ export function usePolledWindowSignal<T extends DatedPayload>(
     if (isWindowOpen) void fetchOnce();
   }, [isWindowOpen, fetchOnce]);
 
-  // Lightweight window watcher: re-checks the predicate once a minute and only
-  // setStates on a flip. No fetch here — it exists to notice the window
-  // opening/closing; the effect above fetches on the open and the gated poll
-  // below keeps it fresh.
+  // Lightweight window watcher: re-checks the predicate once a minute and
+  // setStates only on a flip or to clear a stored error. No fetch here — it
+  // exists to notice the window opening/closing; the effect above fetches on
+  // the open and the gated poll below keeps it fresh.
   usePolling(syncWindow, WINDOW_WATCH_MS, []);
 
   // Recurring fetch — GATED on the window flag. Outside the window this
@@ -324,6 +341,8 @@ export function usePolledWindowSignal<T extends DatedPayload>(
     //   the payload (the shared clock can lag the server's date by a tick);
     // - nothing fetches while the window is closed, so any error left over
     //   from the last fetch would sit over "waiting for the open" all weekend.
+    //   The watcher drops the stored one at its next tick; this covers the
+    //   render of the close itself and a fetch that answers between ticks.
     const resolved = dateMismatch && fetched.data?.date === today;
     return {
       ...fetched,

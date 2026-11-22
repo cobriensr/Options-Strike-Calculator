@@ -351,24 +351,58 @@ describe('usePolledWindowSignal: a day boundary crossed while mounted', () => {
     expect(result.current.loading).toBe(false);
   });
 
-  // A null body carries nothing to keep, so it must not wipe what is.
-  it('leaves the last-good cache in place when a 2xx body is null', async () => {
+  // The last-good cache holds a payload dated today. A 2xx that is not dated
+  // today is not a better last-good: it must not replace it, in storage or in
+  // the display fallback.
+  it.each([
+    {
+      name: 'a wrong-dated 2xx',
+      body: () => payload({ date: FRI, value: 1 }),
+      error: 'Payload is dated 2026-06-05, but today is 2026-06-08',
+    },
+    {
+      name: 'an undated 2xx',
+      body: () => ({ value: 1 }),
+      error: 'Payload is undated, but today is 2026-06-08',
+    },
+    {
+      name: 'a null 2xx body',
+      body: () => null,
+      error: 'Payload is undated, but today is 2026-06-08',
+    },
+  ])(
+    'leaves a good today-dated cache in place for $name',
+    async ({ body, error }) => {
+      today = MON;
+      seedCache(MON, 7);
+      fetchMock.mockResolvedValue({ ok: true, json: async () => body() });
+      const { result } = renderRecorded();
+      await step(0);
+
+      expect(result.current.error).toBe(error);
+      expect(result.current.displayData?.value).toBe(7);
+      const stored = JSON.parse(localStorage.getItem(STORAGE_KEY)!) as {
+        data: TestPayload;
+        date: string;
+      };
+      expect(stored.data.value).toBe(7);
+      expect(stored.date).toBe(MON);
+    },
+  );
+
+  // The other half of that rule: a payload dated today does replace it.
+  it('replaces the cache with a payload dated today', async () => {
     today = MON;
     seedCache(MON, 7);
-    fetchMock.mockResolvedValue({ ok: true, json: async () => null });
+    fetchMock.mockResolvedValue(ok(payload({ date: MON, value: 8 })));
     const { result } = renderRecorded();
     await step(0);
 
-    expect(result.current.error).toBe(
-      'Payload is undated, but today is 2026-06-08',
-    );
-    expect(result.current.displayData?.value).toBe(7);
+    expect(result.current.displayData?.value).toBe(8);
     const stored = JSON.parse(localStorage.getItem(STORAGE_KEY)!) as {
       data: TestPayload;
-      date: string;
     };
-    expect(stored.data.value).toBe(7);
-    expect(stored.date).toBe(MON);
+    expect(stored.data.value).toBe(8);
   });
 
   // The wrong-date error is a verdict on the payload against the clock at the
@@ -490,6 +524,76 @@ describe('usePolledWindowSignal: a day boundary crossed while mounted', () => {
       expect(result.current.error).toBeNull();
     },
   );
+
+  // The window watcher drops the stored error at its next tick after the close.
+  // A fetch that answers between ticks lands after that, with the window shut.
+  it('returns no error for a fetch that answers after the window has closed', async () => {
+    let answer: (v: unknown) => void = () => {};
+    fetchMock.mockReturnValue(
+      new Promise((resolve) => {
+        answer = resolve;
+      }),
+    );
+    const { result } = renderRecorded();
+    await step(0);
+
+    open = false;
+    await step(60_000);
+    expect(result.current.isWindowOpen).toBe(false);
+    expect(result.current.loading).toBe(true);
+
+    await act(async () => {
+      answer({ ok: false, status: 503 });
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    expect(result.current.loading).toBe(false);
+    expect(result.current.error).toBeNull();
+  });
+
+  // Clearing the stored error is a one-off after the close, not a per-tick
+  // write: a closed window with nothing to clear commits nothing on a tick.
+  it('commits nothing on the watcher ticks of a closed window with no error', async () => {
+    open = false;
+    const { committed } = renderRecorded();
+    await step(0);
+    const settled = committed.length;
+
+    await step(10 * 60_000);
+
+    expect(committed.length).toBe(settled);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  // The error left by the last poll of a window must not be on screen when the
+  // next window opens: its first fetch is still out, and the panel would show
+  // Friday's "HTTP 503" until that fetch answered.
+  it('does not show the last window’s error when the next one opens and its first fetch is held', async () => {
+    fetchMock.mockResolvedValue({ ok: false, status: 503 });
+    const { result, committed } = renderRecorded();
+    await step(0);
+    expect(result.current.error).toBe('HTTP 503');
+
+    // Friday's close, then a weekend of watcher ticks.
+    open = false;
+    await step(60_000);
+    await step(2 * 24 * 60 * 60_000);
+    expect(result.current.error).toBeNull();
+
+    // Monday's open, with the fetch held.
+    fetchMock.mockReturnValue(new Promise(() => {}));
+    const before = committed.length;
+    open = true;
+    today = MON;
+    await step(60_000);
+
+    expect(result.current.isWindowOpen).toBe(true);
+    expect(result.current.loading).toBe(true);
+    expect(result.current.error).toBeNull();
+    const fromTheOpen = committed.slice(before).filter((c) => c.open);
+    expect(fromTheOpen.length).toBeGreaterThan(0);
+    for (const c of fromTheOpen) expect(c.error).toBeNull();
+  });
 
   it('surfaces a network failure by its message and shows no payload', async () => {
     today = MON;

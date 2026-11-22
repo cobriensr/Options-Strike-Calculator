@@ -373,16 +373,25 @@ panels follow the new date too".
   the store still says Friday, then catches up, and the alert goes in that
   render, not at the next poll). A fetch start sets only `loading`, so an error
   that persists does not blink to "loading" on every poll. A `null` 2xx body
-  reads "Payload is undated, but today is …" instead of throwing, and does not
-  overwrite the last-good payload in storage or in the display fallback. Known
-  edge: after a close, the stored error is still in state, so the first fetch
-  of the next window shows it until that fetch answers.
+  reads "Payload is undated, but today is …" instead of throwing.
+- **The last-good cache takes only a payload dated today (round 2).** A
+  wrong-dated, undated or null 2xx is kept in `state.data` (the clock catching
+  up with it shows it from there) but never written to storage or to the
+  display fallback, so it cannot replace a good one.
+- **The stored error is dropped while the window is closed (round 2).** The
+  once-a-minute watcher, which already runs while closed, clears the stored
+  `error` and `dateMismatch` (a no-op once clear, so no per-tick commit). Without
+  it the last poll's error, say Friday's "HTTP 503", was on screen again at
+  Monday's open until the first fetch answered. The returned `error` is still
+  null while closed, which covers the render of the close and a fetch that
+  answers between ticks.
 - **The closed panel says why (round 2).** `placeholderCopy` tells three
   closed cases apart: a public visitor ("The regime read needs owner or guest
   access.": the hook holds the window closed for them, so no clock time opens
-  it), after the close on a trading day ("Closed for the day. The next read
-  starts at the 08:30 CT open."), and before the open or on a weekend or
-  holiday ("Waiting for the open…"). The window arithmetic is shared:
+  it; the panel registry never mounts the panel for a public visitor, so this
+  branch is defensive), after the close on a trading day ("Closed for the day.
+  The next read starts at the next 08:30 CT open."), and before the open or on a
+  weekend or holiday ("Waiting for the open…"). The window arithmetic is shared:
   `regime0dteSessionPhase` (`src/utils/regime-0dte-window.ts`) returns
   `no-session`, `before-open`, `open` or `after-close`, and the hook polls only
   in `open`. The panel reads the clock when it renders, which it does at the
