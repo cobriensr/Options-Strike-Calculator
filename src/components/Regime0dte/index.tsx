@@ -10,9 +10,13 @@
  *   - IvSparkline        — morning put-IV series with the break dot
  *   - CandleStrip        — 30-min SPX candle squares with the persistence divider
  *
- * Outside the 08:30–15:00 CT session (`!isWindowOpen`) or before any data has
- * landed, the panel renders a "waiting for the open" placeholder rather than
- * drawing the visuals on empty data.
+ * Outside the 08:30–15:00 CT session (`!isWindowOpen`) the panel renders a
+ * "waiting for the open" placeholder rather than drawing the visuals on empty
+ * data. Inside it, before a payload dated today has landed (the first fetch of
+ * the day, or one that failed), it says it is loading, or that there is no read
+ * yet and it retries, never "waiting for the open". The header badge follows
+ * `displayData` and is not window-gated: it shows the day's last gate after the
+ * close and clears when the payload is no longer dated today (ET midnight).
  *
  * Mirrors the SectionBox idiom in `MarketRegimeSection` and the last-good
  * `displayData` consumption in `OpeningFlowSignal`.
@@ -45,6 +49,21 @@ const EMPTY_STRIKES = Object.freeze([] as GammaStrike[]) as GammaStrike[];
 const EMPTY_IV = Object.freeze([] as IvSparkPoint[]) as IvSparkPoint[];
 const EMPTY_CANDLES = Object.freeze([] as StripCandle[]) as StripCandle[];
 
+/**
+ * What the body says when there is no panel to draw (no payload dated today).
+ * Closed window: the next open. Open window: it is past 08:30, so "waiting for
+ * the open" would be wrong. Either the first read of the day is on its way
+ * (loading), or it failed (the alert above has the error; the poll retries).
+ */
+function placeholderCopy(isWindowOpen: boolean, error: string | null): string {
+  if (!isWindowOpen) {
+    return 'Waiting for the open. The 0DTE gamma regime auto-updates between 08:30 and 15:00 CT on trading days.';
+  }
+  return error == null
+    ? 'Loading today’s regime read…'
+    : 'No regime read for today yet. It retries automatically.';
+}
+
 export default function Regime0dte(): React.ReactElement {
   const { displayData, isWindowOpen, error } = useRegime0dte();
 
@@ -69,8 +88,7 @@ export default function Regime0dte(): React.ReactElement {
 
         {!showPanel ? (
           <p className="text-secondary font-sans text-[12px] leading-relaxed">
-            Waiting for the open. The 0DTE gamma regime auto-updates between
-            08:30 and 15:00 CT on trading days.
+            {placeholderCopy(isWindowOpen, error)}
           </p>
         ) : (
           <RegimePanel data={displayData} />

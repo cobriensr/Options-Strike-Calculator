@@ -294,6 +294,42 @@ describe('Regime0dte panel shell', () => {
     expect(screen.getByText(/no candles/i)).toBeInTheDocument();
   });
 
+  // With the window open and no read for today (the first fetch of the day is in
+  // flight, or it failed), "waiting for the open" is wrong: it is past 08:30.
+  it('says it is loading, not waiting for the open, when the window is open and no read has landed', () => {
+    mockHook({ isWindowOpen: true, displayData: null, error: null });
+    render(<Regime0dte />);
+
+    expect(
+      screen.getByText(/Loading today.s regime read/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Waiting for the open/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('shows the error and says there is no read yet, not waiting for the open, when the window is open and the fetch failed', () => {
+    mockHook({ isWindowOpen: true, displayData: null, error: 'HTTP 500' });
+    render(<Regime0dte />);
+
+    expect(screen.getByRole('alert')).toHaveTextContent('HTTP 500');
+    expect(
+      screen.getByText(/No regime read for today yet/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Waiting for the open/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Loading today/i)).not.toBeInTheDocument();
+  });
+
+  it('shows no gate badge and waits for the open when the window is closed and nothing is dated today', () => {
+    mockHook({ isWindowOpen: false, displayData: null });
+    render(<Regime0dte />);
+
+    expect(screen.getByText(/Waiting for the open/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Loading today/i)).not.toBeInTheDocument();
+    for (const gate of [/lean down/i, /big move/i, /calm/i]) {
+      expect(screen.queryByText(gate)).not.toBeInTheDocument();
+    }
+  });
+
   it('shows the waiting-for-open placeholder and no visuals when closed', () => {
     mockHook({ isWindowOpen: false, displayData: LEAN_DOWN_DATA });
     render(<Regime0dte />);
