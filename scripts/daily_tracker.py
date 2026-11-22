@@ -13,12 +13,12 @@ when its old rows matter.
 
 What a run prints of the file it replaces, from its rows whose `date` is
 YYYY-MM-DD (any other row is dropped and counted only in K):
-- `rebuilt M dates (first .. last), replacing K rows`: K counts every row;
+- `rebuilt T dates (first .. last), replacing K rows`: K counts every row;
 - `J earlier dates have no enriched fires now and were dropped: d1, d2, ...`, when
   J > 0: the dates the old file had that have no row now, oldest first, ten at
-  most (then ` (+N more)`). The dates are in this log only: the nightly step
+  most (then ` (+L more)`). The dates are in this log only: the nightly step
   reports a count, never a date;
-- `R of N earlier rows changed`: of the N dates in both the old file and the
+- `R of M earlier rows changed`: of the M dates in both the old file and the
   new rows, how many differ in any column but `run_at` (compared as the CSV
   holds it; a column the old file lacks reads as blank). Not printed when the
   old file has no such row. A revision of history shows here.
@@ -90,7 +90,7 @@ COLUMNS = [
 
 # Fewer non-null flow inversions than this and a window's stats are blank.
 MIN_STATS_N = 30
-# The most dates the "were dropped" line names; the rest are counted (+N more).
+# The most dates the "were dropped" line names; the rest are counted (+L more).
 MAX_DROPPED_SHOWN = 10
 
 

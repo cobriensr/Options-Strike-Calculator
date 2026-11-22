@@ -279,6 +279,48 @@ Phase 1 and its test.
 - The seed, beyond the README sentences in Phase 2.
 - Charting the series.
 
+## As built (2026-11-22)
+
+All three phases were built on `feat/nightly-phase3` and pushed together.
+
+| Commits | Scope |
+|---|---|
+| b21c7cf6f | This plan |
+| db8cbe2fe, 86177994d | Phase 1 |
+| c0c21a5e9, 9f8b11bab, bf1b3db35 | Phase 2 |
+| aa59bac3f, fa4396188 | Phase 3 |
+| 98789f8f2, dba5673b8 | The final whole-branch review's fixes |
+
+Each phase was reviewed and re-reviewed, and then the branch as a whole was.
+
+**Departures from the text above:**
+1. **The dropped line names the lost dates.** They are listed ascending, at most 10, then
+   `(+k more)`, in the tracker's R2 log only. The step's report and Sentry still carry the count
+   and the fixed phrase.
+2. **Top-3 ties sort stably (ticker ascending).** The nightly rebuild then doesn't depend on the
+   host's numpy sort path, which could flip tied tickers in old rows and count them as changed.
+   The edges golden test's tie order moved (HHH before III); no other golden value changed. On the
+   real 192-row state there were 0 ties between adjacent top-3 slots.
+3. **An old file that can't be read as CSV is reported and replaced, not fatal.** The tracker
+   prints `the earlier file could not be read as CSV: nothing to compare`, and the step treats such
+   a state as having no header and no dates. A state with no data rows also has no header to keep.
+4. **Phase 3's merge shifts each cohort's values by its first non-null flow first.** The plain
+   Chan merge lost about nine digits on the 1e8-offset test. The mean is the running sum over the
+   running count. There are two known differences from the old prefix `stats()`:
+   - a mean that ties exactly at the last printed place can round the other way when the sum is
+     inexact;
+   - a constant flow gives a Sharpe of 0.0, where pandas' inexact sum gave about 1e15 for 33.3
+     a hundred times.
+
+**Measured:**
+- **Phase 3 acceptance 1** (one read-only Neon read of 1,159,255 fires, fed to both versions): 0
+  of 4,800 fields differ, and `build_rows` went from 4.1 s to 0.4 s.
+- **Synthetic, 700 dates over 6.2M fires:** 1.8 s, was 91.8 s.
+- **The final review's end-to-end run** (the real tracker through `run_tracking`, moto for R2):
+  - a clean night is `ok` with `0 of 192 earlier rows changed`;
+  - a lost date is `partial`, sends one Sentry warning and exits 0;
+  - the night after is `ok`.
+
 ## What the adversarial review changed (2026-11-22)
 
 1. **README timing.** The README edits that name the flag or the fill moved into Phase 1, so the
