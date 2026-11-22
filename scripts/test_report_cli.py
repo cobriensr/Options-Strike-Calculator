@@ -1125,6 +1125,208 @@ def test_tracker_rows_match_the_old_code_at_the_edges(tmp_path, monkeypatch, def
     assert rows == GOLDEN_BOUNDARY_ROWS
 
 
+# ── the cohorts' window stats, from running aggregates ──────────────────────
+
+COHORT_PREFIXES = ('flow_inv', 't2plus', 'modeB')
+SIGNIFICANT = 30  # fewer non-null flow inversions than this and a window's stats are blank
+
+
+def _prefix_stats(values) -> tuple[int, float, float]:
+    """The tracker's stats() as it was before the running aggregates: pandas on the whole
+    window prefix. It is the reference the aggregates have to equal."""
+    s = pd.to_numeric(values, errors='coerce').dropna()
+    n = len(s)
+    if n < SIGNIFICANT:
+        return n, np.nan, np.nan
+    mean = float(s.mean())
+    std = float(s.std(ddof=1)) if n > 1 else 0.0
+    return n, mean, mean / std if std > 0 else 0.0
+
+
+def _expected_cohort_fields(fires: pd.DataFrame, day: date, t1=16, t2=12) -> dict:
+    """The nine stats fields of `day`'s row, from pandas on that day's window."""
+    window = fires[fires['date'] <= day]
+
+    def classify(score):  # the tracker's tiers: a null score is T3
+        if not pd.notna(score):
+            return 'T3'
+        return 'T1' if score >= t1 else 'T2' if score >= t2 else 'T3'
+
+    tier = window['score'].apply(classify)
+    cohorts = {
+        'flow_inv': window,
+        't2plus': window[tier.isin(['T1', 'T2'])],
+        'modeB': window[window['mode'] == 'B_multi_day_DTE1_3'],
+    }
+    fields: dict = {}
+    for prefix, part in cohorts.items():
+        n, mean, sharpe = _prefix_stats(part['flow_inv'])
+        fields[f'{prefix}_n'] = n
+        fields[f'{prefix}_mean_pct'] = '' if np.isnan(mean) else round(mean, 3)
+        fields[f'{prefix}_sharpe'] = '' if np.isnan(sharpe) else round(sharpe, 4)
+    return fields
+
+
+def _cohort_fields(row: dict) -> dict:
+    return {
+        f'{prefix}_{name}': row[f'{prefix}_{name}']
+        for prefix in COHORT_PREFIXES
+        for name in ('n', 'mean_pct', 'sharpe')
+    }
+
+
+def _fires_of(spec) -> pd.DataFrame:
+    """Fires from (day, mode, score, flow inversions) groups: one fire per flow value."""
+    records = [
+        (day, mode, score, flow) for day, mode, score, flows in spec for flow in flows
+    ]
+    frame = pd.DataFrame(records, columns=['date', 'mode', 'score', 'flow_inv'])
+    return frame.assign(peak=60.0, ticker='AAA')
+
+
+def _random_fires(seed: int) -> pd.DataFrame:
+    """A random frame built to hit the corners: dates whose flow inversions are all null,
+    nulls elsewhere, null scores, a Mode B that starts late, and flows that are constant
+    (std 0) on the first two dates for odd seeds."""
+    rng = np.random.default_rng(seed)
+    offsets = sorted(rng.choice(60, size=int(rng.integers(12, 24)), replace=False))
+    spec = []
+    for k, offset in enumerate(offsets):
+        n = int(rng.integers(1, 90)) if k >= 2 else int(rng.integers(40, 90))
+        flows = rng.normal(5, 40, n)
+        flows[rng.random(n) < 0.1] = np.nan
+        if rng.random() < 0.2:
+            flows[:] = np.nan  # a date with fires and no flow inversion at all
+        if seed % 2 == 1 and k < 2:
+            flows[:] = 5.0
+        mode_b = (rng.random(n) < 0.4) & (k >= 4)  # Mode B is empty until the fifth date
+        scores = rng.integers(0, 25, n).astype(float)
+        scores[rng.random(n) < 0.05] = np.nan
+        day = date(2026, 9, 1) + timedelta(days=int(offset))
+        for flow, b, score in zip(flows, mode_b, scores, strict=True):
+            spec.append((day, 'B_multi_day_DTE1_3' if b else 'A_intraday_0DTE', score, [flow]))
+    return _fires_of(spec)
+
+
+@pytest.mark.filterwarnings('error')  # no 0/0 from an empty date or cohort
+@pytest.mark.parametrize('seed', range(8))
+def test_tracker_window_stats_equal_pandas_on_every_window_prefix(seed):
+    fires = _random_fires(seed)
+
+    rows = daily_tracker.build_rows(fires, 16, 12, 'now')
+
+    days = sorted(fires['date'].unique())
+    assert [r['date'] for r in rows] == [d.isoformat() for d in days]
+    for row, day in zip(rows, days, strict=True):
+        assert _cohort_fields(row) == _expected_cohort_fields(fires, day), day
+
+
+@pytest.mark.filterwarnings('error')
+def test_tracker_window_stats_survive_a_mean_that_is_large_next_to_the_spread():
+    # 1e8 plus unit noise: Σx² − (Σx)²/n loses every digit of the variance here.
+    rng = np.random.default_rng(11)
+    sizes = [60, 45, 80, 50, 70, 55, 65, 40]
+    spec = [
+        (date(2026, 11, 2 + k), 'B_multi_day_DTE1_3' if i % 2 else 'A_intraday_0DTE', 20.0, [flow])
+        for k, size in enumerate(sizes)
+        for i, flow in enumerate(1e8 + rng.normal(0, 1, size))
+    ]
+    fires = _fires_of(spec)
+
+    rows = daily_tracker.build_rows(fires, 16, 12, 'now')
+
+    for row, day in zip(rows, sorted(fires['date'].unique()), strict=True):
+        window = fires[fires['date'] <= day]
+        for prefix, part in (
+            ('flow_inv', window),
+            ('t2plus', window),  # every score is a T1
+            ('modeB', window[window['mode'] == 'B_multi_day_DTE1_3']),
+        ):
+            n, mean, sharpe = _prefix_stats(part['flow_inv'])
+            assert row[f'{prefix}_n'] == n
+            if n >= SIGNIFICANT:  # to the places the row is rounded to
+                assert row[f'{prefix}_mean_pct'] == pytest.approx(mean, abs=6e-4), (day, prefix)
+                assert row[f'{prefix}_sharpe'] == pytest.approx(sharpe, abs=6e-5), (day, prefix)
+            else:
+                assert row[f'{prefix}_mean_pct'] == row[f'{prefix}_sharpe'] == ''
+
+
+@pytest.mark.filterwarnings('error')
+def test_tracker_a_date_with_no_flow_inversion_leaves_each_cohorts_window_as_it_was():
+    b, a = 'B_multi_day_DTE1_3', 'A_intraday_0DTE'
+    rng = np.random.default_rng(5)
+
+    def mixed(day, n, flows):
+        modes = [b if i % 2 else a for i in range(n)]
+        return [(day, mode, 20.0, [flow]) for mode, flow in zip(modes, flows, strict=True)]
+
+    spec = (
+        mixed(date(2026, 11, 2), 70, rng.normal(5, 40, 70))
+        + mixed(date(2026, 11, 3), 10, [np.nan] * 10)  # fires, no flow inversion
+        + mixed(date(2026, 11, 4), 20, rng.normal(5, 40, 20))
+    )
+    fires = _fires_of(spec)
+
+    first, empty, last = daily_tracker.build_rows(fires, 16, 12, 'now')
+
+    assert _cohort_fields(empty) == _cohort_fields(first)
+    assert first['modeB_n'] == 35 and first['modeB_sharpe'] != ''  # a real window, not blanks
+    assert last['flow_inv_n'] == first['flow_inv_n'] + 20
+    for row, day in zip((first, empty, last), sorted(fires['date'].unique()), strict=True):
+        assert _cohort_fields(row) == _expected_cohort_fields(fires, day)
+
+
+@pytest.mark.filterwarnings('error')
+def test_tracker_a_cohort_empty_until_a_later_date_stays_blank_until_it_reaches_30():
+    b, a = 'B_multi_day_DTE1_3', 'A_intraday_0DTE'
+    rng = np.random.default_rng(6)
+    spec = [
+        (date(2026, 11, 2), a, 20.0, rng.normal(5, 40, 50)),  # no Mode B at all
+        (date(2026, 11, 3), a, 20.0, rng.normal(5, 40, 50)),
+        (date(2026, 11, 4), b, 20.0, rng.normal(5, 40, 29)),  # 29: one short
+        (date(2026, 11, 5), b, 20.0, rng.normal(5, 40, 1)),  # 30: the first window with stats
+        (date(2026, 11, 6), b, 20.0, rng.normal(5, 40, 12)),
+    ]
+    fires = _fires_of(spec)
+
+    rows = daily_tracker.build_rows(fires, 16, 12, 'now')
+
+    assert [r['modeB_n'] for r in rows] == [0, 0, 29, 30, 42]
+    assert [r['modeB_mean_pct'] == '' for r in rows] == [True, True, True, False, False]
+    assert [r['modeB_sharpe'] == '' for r in rows] == [True, True, True, False, False]
+    for row, day in zip(rows, sorted(fires['date'].unique()), strict=True):
+        assert _cohort_fields(row) == _expected_cohort_fields(fires, day)
+
+
+@pytest.mark.filterwarnings('error')
+def test_tracker_a_cohort_whose_flow_inversions_are_all_null_is_blank():
+    spec = [
+        # The T1 fires have no flow inversion at all; the T3 fires do.
+        (date(2026, 11, 2), 'A_intraday_0DTE', 20.0, [np.nan] * 40),
+        (date(2026, 11, 2), 'A_intraday_0DTE', 3.0, list(np.linspace(-20, 40, 50))),
+        (date(2026, 11, 3), 'A_intraday_0DTE', 20.0, [np.nan] * 40),
+        (date(2026, 11, 3), 'A_intraday_0DTE', 3.0, list(np.linspace(-10, 50, 50))),
+    ]
+    fires = _fires_of(spec)
+
+    rows = daily_tracker.build_rows(fires, 16, 12, 'now')
+
+    for row in rows:
+        assert (row['t2plus_n'], row['t2plus_mean_pct'], row['t2plus_sharpe']) == (0, '', '')
+        assert row['flow_inv_n'] >= 50 and row['flow_inv_sharpe'] != ''
+    for row, day in zip(rows, sorted(fires['date'].unique()), strict=True):
+        assert _cohort_fields(row) == _expected_cohort_fields(fires, day)
+
+
+@pytest.mark.filterwarnings('error')
+def test_tracker_constant_flow_inversions_have_a_sharpe_of_zero_not_blank():
+    fires = _fires_of([(date(2026, 11, 2), 'A_intraday_0DTE', 20.0, [5.0] * 40)])
+
+    (row,) = daily_tracker.build_rows(fires, 16, 12, 'now')
+
+    assert (row['flow_inv_n'], row['flow_inv_mean_pct'], row['flow_inv_sharpe']) == (40, 5.0, 0.0)
+
+
 def test_tracker_has_no_rebuild_flag_any_more(tmp_path, monkeypatch, default_dir, capsys):
     run = tracker_run(tmp_path, monkeypatch)
     before = run.output.read_bytes()

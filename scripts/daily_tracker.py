@@ -82,15 +82,72 @@ COLUMNS = [
 ]
 
 
-def stats(s):
-    s = pd.to_numeric(s, errors='coerce').dropna()
-    n = len(s)
-    if n < 30:
-        return n, np.nan, np.nan
-    mean = float(s.mean())
-    std = float(s.std(ddof=1)) if n > 1 else 0.0
-    sharpe = mean / std if std > 0 else 0.0
-    return n, mean, sharpe
+# Fewer non-null flow inversions than this and a window's stats are blank.
+MIN_STATS_N = 30
+
+
+def window_stats(flows: np.ndarray, codes: np.ndarray, n_days: int):
+    """For each date, the stats of a cohort's flow inversions up to that date.
+
+    `flows` are the cohort's fires in date order and `codes[i]` is the date index of
+    `flows[i]`. Returns three arrays of length `n_days`: the count of non-null flows,
+    their mean and their Sharpe (mean over the sample std, 0.0 when the std is 0). The
+    mean and the Sharpe are NaN while the count is under MIN_STATS_N. These are what
+    pandas gives on the window's prefix (mean, then `std(ddof=1)`), without reading
+    the prefix again for every date.
+
+    The mean is the running sum over the running count, as pandas takes it (a sum that
+    is exact stays exact: a window of whole numbers, or a tie at the last rounded
+    place, comes out as pandas has it). The std comes from M2. Each date gets its
+    count, its mean and its M2 (the sum of squared deviations from its own mean, taken
+    in two passes), by bincount. The dates are then merged in order with the pairwise
+    update of Chan et al.: `n = na + nb`, `delta = mean_b - mean_a`,
+    `mean = mean_a + delta*nb/n`, `M2 = M2a + M2b + delta**2*na*nb/n`. The
+    sum-of-squares shortcut is not an option: it loses the variance to cancellation
+    when the mean is large next to the spread.
+
+    For M2 the values are shifted by the cohort's first flow. Without it `delta` is a
+    difference of two large, rounded means, and a mean of 1e8 over a spread of 1 costs
+    the Sharpe about nine digits (a relative error of 2e-9 against pandas); shifted,
+    the merge works on numbers of the size of the spread. A flow that is the same value
+    throughout shifts to exact zeros, so its std is 0 and its Sharpe 0.0, as pandas
+    gives it.
+    """
+    present = ~np.isnan(flows)
+    flows, codes = flows[present], codes[present]
+    shifted = flows - (float(flows[0]) if flows.size else 0.0)
+    day_n = np.bincount(codes, minlength=n_days)
+    day_sum = np.bincount(codes, weights=flows, minlength=n_days)
+    with np.errstate(divide='ignore', invalid='ignore'):  # no flow that date: 0/0
+        day_mean = np.bincount(codes, weights=shifted, minlength=n_days) / day_n
+    deviation = shifted - day_mean[codes]
+    day_m2 = np.bincount(codes, weights=deviation * deviation, minlength=n_days)
+
+    count = np.zeros(n_days, dtype=np.int64)
+    total = np.zeros(n_days)
+    m2 = np.zeros(n_days)
+    n_a, mean_a, m2_a, sum_a = 0, 0.0, 0.0, 0.0
+    for k in range(n_days):
+        n_b = int(day_n[k])
+        sum_a += float(day_sum[k])
+        if n_b == 0:  # nothing new: the window is as it was
+            pass
+        elif n_a == 0:  # the first date with a flow: its own values, no 0/0
+            n_a, mean_a, m2_a = n_b, float(day_mean[k]), float(day_m2[k])
+        else:
+            delta = float(day_mean[k]) - mean_a
+            n = n_a + n_b
+            mean_a += delta * n_b / n
+            m2_a += float(day_m2[k]) + delta * delta * n_a * n_b / n
+            n_a = n
+        count[k], total[k], m2[k] = n_a, sum_a, m2_a
+
+    with np.errstate(divide='ignore', invalid='ignore'):  # n of 0 or 1: unused below 30
+        mean = total / count
+        std = np.sqrt(m2 / (count - 1))
+        sharpe = np.where(std > 0, mean / std, 0.0)
+    blank = count < MIN_STATS_N
+    return count, np.where(blank, np.nan, mean), np.where(blank, np.nan, sharpe)
 
 
 def _as_date(value) -> date:
@@ -155,22 +212,19 @@ def build_rows(
     day_ids = np.arange(n_days)
     tier_by_day = np.bincount(codes * 3 + tier, minlength=n_days * 3).reshape(n_days, 3)
 
-    # A cohort's fires are in date order too, so its window for day k is its first
-    # `ends[k]` fires.
-    def window_end(mask) -> np.ndarray:
-        return np.searchsorted(codes[mask], day_ids, side='right')
-
-    in_t2plus = tier < 2
+    # The three cohorts' flow-inversion stats for every window, from running aggregates:
+    # their fires are in date order too, so each is one pass over its own fires.
     ends_all = np.searchsorted(codes, day_ids, side='right')
-    cohorts = {
-        'all': (flow_inv, ends_all),
-        't2plus': (flow_inv[in_t2plus], window_end(in_t2plus)),
-        'modeB': (flow_inv[is_mode_b], window_end(is_mode_b)),
+    in_t2plus = tier < 2
+    cohort_stats = {
+        'all': window_stats(flow_inv, codes, n_days),
+        't2plus': window_stats(flow_inv[in_t2plus], codes[in_t2plus], n_days),
+        'modeB': window_stats(flow_inv[is_mode_b], codes[is_mode_b], n_days),
     }
 
-    def window_stats(cohort: str, k: int):
-        flows, ends = cohorts[cohort]
-        return stats(pd.Series(flows[: ends[k]]))
+    def stats_at(cohort: str, k: int) -> tuple[int, float, float]:
+        count, mean, sharpe = cohort_stats[cohort]
+        return int(count[k]), float(mean[k]), float(sharpe[k])
 
     # Per ticker and date, the running count of fires, of fires with a peak and of
     # fires with peak >= 50, so a window's ticker table is one column of each.
@@ -190,9 +244,9 @@ def build_rows(
     rows = []
     for k, day in enumerate(days):
         today = tier_by_day[k]
-        n_total, fi_mean, fi_sharpe = window_stats('all', k)
-        t2_n, t2_mean, t2_sharpe = window_stats('t2plus', k)
-        mB_n, mB_mean, mB_sharpe = window_stats('modeB', k)
+        n_total, fi_mean, fi_sharpe = stats_at('all', k)
+        t2_n, t2_mean, t2_sharpe = stats_at('t2plus', k)
+        mB_n, mB_mean, mB_sharpe = stats_at('modeB', k)
 
         # Top tickers by high-peak rate (n ≥ 100 to keep CIs meaningful).
         seen = fires_by[:, k] > 0
