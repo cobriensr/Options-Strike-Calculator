@@ -42,7 +42,7 @@ xgboost>=2.1
 pytest-cov>=6.0
 # Exact pin: ruff's formatter output shifts between releases, and CI runs `ruff format --check`.
 ruff==0.17.3
-anthropic>=0.94.0
+anthropic>=2.8.0
 yfinance>=1.2.1
 smartmoneyconcepts==0.0.27
 hypothesis>=6.0
