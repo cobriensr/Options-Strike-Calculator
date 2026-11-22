@@ -65,7 +65,14 @@
  *   - docs/superpowers/specs/panel-prefs-2026-05-17.md (visibility)
  *   - docs/superpowers/specs/panel-reordering-2026-05-17.md (orders)
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { getAccessMode, type AccessMode } from '../utils/auth.js';
 
 const DEBOUNCE_MS = 500;
@@ -234,10 +241,15 @@ export function usePanelPrefs(): PanelPrefs {
   // the reply must still leave that axis alone. It is cleared when a run
   // starts, when a run has applied its reply, and when the queue is dropped.
   const touchedAxesRef = useRef<Set<AxisKey>>(new Set());
-  // The latest state, for the GET reply to compare a server axis against what
-  // is on screen when it lands (not the mount-time seed).
+  // The layout on screen, for the GET reply to compare a server axis against
+  // (not the mount-time seed). Written in a layout effect, not during render,
+  // so it holds only a committed value, never one from a render React threw
+  // away. No microtask can run between a commit and its layout effects, so the
+  // reply still reads what is on screen.
   const latestRef = useRef({ hidden, order, groupOrder });
-  latestRef.current = { hidden, order, groupOrder };
+  useLayoutEffect(() => {
+    latestRef.current = { hidden, order, groupOrder };
+  }, [hidden, order, groupOrder]);
 
   // Mirror state to localStorage on every change so the next mount can
   // paint synchronously. Runs for all access modes (incl. public) — the
