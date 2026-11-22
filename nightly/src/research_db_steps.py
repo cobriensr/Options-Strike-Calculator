@@ -4,19 +4,26 @@ Each publishes its dated outputs under `research/` in R2 and its log to `researc
 the report steps of `research_reports` do, and reuses that module's runner, environment and
 publishers.
 
-- `lottery-tracking` keeps one growing CSV in R2. The step downloads it, runs
+- `lottery-tracking` rewrites one CSV in R2 every night: a row for every enriched fire date, each
+  as of its own date. The step downloads the stored file if there is one, runs
   `scripts/daily_tracker.py --csv` on it as a subprocess (D6: no R2, UW or Sentry secret in the
-  child), and stores the rewritten file twice, the dated snapshot first and the state last.
-  Neither object is written unless the state kept its rows and its columns. Status:
+  child), and stores the rewritten file twice, the dated snapshot first and the state last. A
+  missing, zero-byte or header-only state is not a failure: it has no header to extend and no
+  dates, and the tracker writes a new file. Before the script runs, which rewrites the file in
+  place, the step reads the old header and the old dates (the strict `YYYY-MM-DD` ones, as the
+  tracker counts them; a file it cannot read as CSV counts as having none). Status:
   - `ok`: the new header is the old one with columns appended at the end (the tracker's own
-    contract, `COLUMNS` in scripts/daily_tracker.py), and no data row was lost.
-  - `failed`, `tracking state missing`: there is no state in R2 (a new file is never started).
+    contract, `COLUMNS` in scripts/daily_tracker.py), and every old date has a row.
+  - `partial`, `tracking dates dropped`: the snapshot and the state are published, but a date
+    the old state had has no row tonight (its fires were deleted or lost their outcomes).
+    `dates_dropped` counts them. The next night compares against the new state, so it alerts
+    once; the lost row stays in the previous night's snapshot. Row counts cannot show it: a
+    night that loses one date and gains another keeps the count.
   - `failed`, `script exited {code}` (plus ` ({class})` when the log names one) or `script timed
     out`: the script did not finish.
-  - `failed`, `tracking state header changed`: the new header is anything but the old one with
-    columns appended (reordered, renamed, shortened), or there is no old header (a zero-byte
-    state) to extend.
-  - `failed`, `tracking state shrank`: fewer data rows than the step downloaded.
+  - `failed`, `tracking state header changed`: there is an old header and the new header is
+    anything but it with columns appended (reordered, renamed, shortened), or the new file has
+    no header.
   Only the log is published when it fails.
 - `quality-sim` runs `enrich_lottery_outcomes.refit_ticker_inversion_stats`, which only reads,
   in this process, and publishes the simulation CSV it writes. No scored fire fails the step.
@@ -51,9 +58,11 @@ from __future__ import annotations
 
 import csv
 import logging
+import re
 import shutil
 from collections.abc import Iterator
-from contextlib import contextmanager, redirect_stderr, redirect_stdout
+from contextlib import contextmanager, redirect_stderr, redirect_stdout, suppress
+from datetime import date
 from pathlib import Path
 from time import monotonic
 
@@ -86,16 +95,16 @@ TRACKING_STATE_KEY = f"{RESEARCH_PREFIX}{TRACKING_STEP}/state/lottery-tracking.c
 _TRACKING_FILE = "lottery-tracking.csv"
 _TRACKING_SCRIPT = "scripts/daily_tracker.py"
 
-# Fixed phrases: they are part of the `nightly step failed` fingerprint.
-_STATE_MISSING_DETAIL = "tracking state missing"
-_STATE_SHRANK_DETAIL = "tracking state shrank"
+# Fixed phrases: they are part of the `nightly step failed` / `partial` fingerprint.
 _HEADER_CHANGED_DETAIL = "tracking state header changed"
+_DATES_DROPPED_DETAIL = "tracking dates dropped"
 _NO_FIRES_DETAIL = "no scored fires"
 _NO_METRICS_DETAIL = "no drift metrics"
 
-
-class StateShrankError(Exception):
-    """The file to store as the tracking state has fewer data rows than the state it grew from."""
+# What the tracker counts as a date of a tracking file: `_CSV_DATE` and `_csv_date` in
+# scripts/daily_tracker.py, kept equal here (the step never imports the script). Only a strict
+# YYYY-MM-DD that is a day of the calendar: not an ISO week date, a compact one, text or blank.
+_TRACKING_DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 
 
 def _csv_lines(path: Path) -> Iterator[list[str]]:
@@ -112,8 +121,32 @@ def csv_rows(path: Path) -> int:
     return max(0, sum(1 for _ in _csv_lines(path)) - 1)
 
 
-def _csv_header(path: Path) -> list[str]:
-    return next(_csv_lines(path), [])
+def _is_tracking_date(text: str) -> bool:
+    if not _TRACKING_DATE.fullmatch(text):
+        return False
+    try:
+        date.fromisoformat(text)
+    except ValueError:  # 2026-13-45
+        return False
+    return True
+
+
+def _read_tracking_file(path: Path) -> tuple[list[str], set[str], int]:
+    """The header, the set of dates and the number of data rows of a tracking CSV.
+
+    The dates are those of the `date` column that the tracker would count (`_TRACKING_DATE`):
+    a blank or malformed one is no date. An empty file has no header and no dates.
+    """
+    rows = _csv_lines(path)
+    header = next(rows, [])
+    column = header.index("date") if "date" in header else None
+    dates: set[str] = set()
+    data_rows = 0
+    for row in rows:
+        data_rows += 1
+        if column is not None and column < len(row) and _is_tracking_date(row[column]):
+            dates.add(row[column])
+    return header, dates, data_rows
 
 
 def _extends(old: list[str], new: list[str]) -> bool:
@@ -121,23 +154,18 @@ def _extends(old: list[str], new: list[str]) -> bool:
 
     That is the one change the tracker's own contract allows (the comment on `COLUMNS` in
     scripts/daily_tracker.py: add a column at the end, never reorder). No `old` header (a
-    zero-byte state) has nothing to extend, so it never matches.
+    missing, zero-byte or unreadable state) has nothing to keep, so anything extends it.
     """
-    return bool(old) and new[: len(old)] == old
+    return new[: len(old)] == old
 
 
-def publish_state_csv(
-    store: ResearchStore, state_key: str, snapshot_key: str, path: Path, rows_before: int
-) -> int:
+def publish_state_csv(store: ResearchStore, state_key: str, snapshot_key: str, path: Path) -> int:
     """Store `path` as the dated snapshot, then as the state; the number of objects written.
 
-    StateShrankError, before anything is written, when `path` has fewer data rows than
-    `rows_before`. The snapshot goes first: a failure between the two puts leaves the old state
-    (the next run reads it, redoes the day and overwrites the snapshot at the same key), where
-    the other order would leave a state no snapshot backs.
+    The snapshot goes first: a failure between the two puts leaves the old state (the next run
+    reads it, redoes the night and overwrites the snapshot at the same key), where the other
+    order would leave a state no snapshot backs.
     """
-    if csv_rows(path) < rows_before:
-        raise StateShrankError(snapshot_key)
     store.put_file(snapshot_key, path)
     store.put_file(state_key, path)
     return 2
@@ -152,10 +180,13 @@ def _track(
 ) -> StepResult:
     """The part of `run_tracking` that works on the downloaded state; fills `counts` as it goes."""
     state = work / IN_DIR / _TRACKING_FILE
-    if not store.get_file(TRACKING_STATE_KEY, state):
-        return StepResult("failed", counts, _STATE_MISSING_DETAIL)
-    counts["rows_before"] = rows_before = csv_rows(state)
-    header = _csv_header(state)
+    header: list[str] = []
+    old_dates: set[str] = set()
+    if store.get_file(TRACKING_STATE_KEY, state):
+        # Before the script runs: it rewrites this file in place. A file that cannot be read
+        # as CSV has no header to keep and no dates to lose (the tracker replaces it too).
+        with suppress(csv.Error):
+            header, old_dates, counts["rows_before"] = _read_tracking_file(state)
     run = run_script(
         _TRACKING_SCRIPT,
         ["--csv", str(state)],
@@ -168,28 +199,31 @@ def _track(
     detail = failure_detail(run, (), work / OUT_DIR)  # no output globs: the file is rewritten
     if detail:
         return StepResult("failed", counts, detail)
-    counts["rows_after"] = csv_rows(state)
-    if not _extends(header, _csv_header(state)):
+    new_header, new_dates, counts["rows_after"] = _read_tracking_file(state)
+    # A file with no header is no tracking file, whatever the old one was.
+    if not new_header or not _extends(header, new_header):
         return StepResult("failed", counts, _HEADER_CHANGED_DETAIL)
-    try:
-        counts["files_uploaded"] = publish_state_csv(
-            store, TRACKING_STATE_KEY, _snapshot_key(ctx), state, rows_before
-        )
-    except StateShrankError:
-        return StepResult("failed", counts, _STATE_SHRANK_DETAIL)
+    lost = old_dates - new_dates
+    counts["dates_dropped"] = len(lost)
+    counts["files_uploaded"] = publish_state_csv(
+        store, TRACKING_STATE_KEY, _snapshot_key(ctx), state
+    )
+    if lost:
+        return StepResult("partial", counts, _DATES_DROPPED_DETAIL)
     return StepResult("ok", counts)
 
 
 def run_tracking(ctx: StepContext) -> StepResult:
     """Run the daily tracker on the stored tracking CSV and store the file it rewrote.
 
-    Counts: `rows_before` (the data rows downloaded), `rows_after` (0 until the script has run
-    and exited 0), `files_uploaded` (the snapshot and the state) and `log_uploaded`.
+    Counts: `rows_before` (the data rows downloaded, 0 with no state), `rows_after` (0 until the
+    script has run and exited 0), `dates_dropped` (the old dates with no row in the new file, 0
+    until then too), `files_uploaded` (the snapshot and the state) and `log_uploaded`.
     """
     started = monotonic()
     store = ResearchStore(ctx.settings)
     counts: dict[str, int] = dict.fromkeys(
-        ("rows_before", "rows_after", "files_uploaded", "log_uploaded"), 0
+        ("rows_before", "rows_after", "dates_dropped", "files_uploaded", "log_uploaded"), 0
     )
     work = prepare_step_dir(TRACKING_STEP)
     try:

@@ -40,7 +40,6 @@ from config import Settings, load_settings
 from research_db_steps import (
     STEP_NAMES,
     TRACKING_STATE_KEY,
-    StateShrankError,
     csv_rows,
     publish_state_csv,
     run_quality_sim,
@@ -82,7 +81,19 @@ DRIFT_PLOT_KEYS = [
 # A tracking file as the nightly last stored it: CRLF, as csv.writer wrote it.
 STATE_HEADER = "date,run_at,n_fires_today"
 STATE_TEXT = f"{STATE_HEADER}\r\n2026-11-09,t1,5\r\n2026-11-10,t2,6\r\n"
-NO_TRACKING_COUNTS = {"rows_before": 0, "rows_after": 0, "files_uploaded": 0, "log_uploaded": 0}
+NO_TRACKING_COUNTS = {
+    "rows_before": 0,
+    "rows_after": 0,
+    "files_uploaded": 0,
+    "log_uploaded": 0,
+    "dates_dropped": 0,
+}
+
+
+def tracking_counts(**changes: int) -> dict[str, int]:
+    """A tracking step's counts: all zero but the ones named."""
+    return {**NO_TRACKING_COUNTS, **changes}
+
 
 # --- the rig ---------------------------------------------------------------------------------
 
@@ -222,16 +233,29 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--csv", type=Path, required=True)
 args = parser.parse_args()
 print(MARKER)
-with args.csv.open(newline="", encoding="utf-8") as handle:
-    rows = list(csv.reader(handle))
-# A zero-byte file has no rows: the real tracker starts from its own COLUMNS then.
+# The rows that are no date: what a hand edit leaves in a state file.
+ODD_DATES = ("", "not-a-date", "2026-13-45", "2026-W45-3", "20261110")
+rows = []
+# "fresh" never reads the file (the real tracker reads an old file only to report on it, and
+# takes one it cannot parse for empty); a missing or zero-byte file has no rows either.
+if ACTION != "fresh" and args.csv.exists():
+    with args.csv.open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.reader(handle))
+# No rows: the real tracker starts from its own COLUMNS then.
 header, data = (rows[0], rows[1:]) if rows else (["date", "run_at", "n_fires_today"], [])
-if ACTION == "append":
+if ACTION in ("append", "fresh"):
     data.append(["2026-11-11", "t3", "7"])
 elif ACTION == "replace":
     data[-1] = ["2026-11-10", "t2b", "9"]
-elif ACTION == "drop":
+elif ACTION == "drop":  # the newest date is gone, nothing takes its place
     data = data[:-1]
+elif ACTION == "swap":  # the newest date is replaced by a later one: the same row count
+    data[-1] = ["2026-11-11", "t3", "7"]
+elif ACTION == "dropodd":  # the rows with no date are gone, the dates are kept
+    data = [row for row in data if row[0] not in ODD_DATES]
+elif ACTION == "blank":  # exits 0 with nothing written at all
+    args.csv.write_bytes(b"")
+    sys.exit(0)
 elif ACTION == "addcol":  # a column appended at the end, the rows padded
     header = [*header, "extra"]
     data = [[*row, ""] for row in data]
@@ -420,50 +444,29 @@ def test_publish_state_csv_writes_the_snapshot_then_the_state(
     path = tmp_path / "t.csv"
     path.write_bytes(STATE_TEXT.encode("utf-8"))
 
-    files = publish_state_csv(ResearchStore(rig.settings), STATE_KEY, SNAPSHOT_KEY, path, 2)
+    files = publish_state_csv(ResearchStore(rig.settings), STATE_KEY, SNAPSHOT_KEY, path)
 
     assert files == 2
     assert puts == [SNAPSHOT_KEY, STATE_KEY]
     assert rig.body(SNAPSHOT_KEY) == rig.body(STATE_KEY) == STATE_TEXT.encode("utf-8")
 
 
-def test_publish_state_csv_refuses_fewer_rows_and_writes_nothing(
-    rig: Rig, tmp_path: Path, puts: list[str]
-) -> None:
-    path = tmp_path / "t.csv"
-    path.write_bytes(f"{STATE_HEADER}\r\n2026-11-09,t1,5\r\n".encode())
-    rig.put_state()
-
-    with pytest.raises(StateShrankError):
-        publish_state_csv(ResearchStore(rig.settings), STATE_KEY, SNAPSHOT_KEY, path, 2)
-
-    assert puts == []
-    assert rig.keys("research/lottery-tracking/") == [STATE_KEY]  # the old state, untouched
-    assert rig.body(STATE_KEY) == STATE_TEXT.encode("utf-8")
-
-
-def test_publish_state_csv_accepts_the_same_number_of_rows(rig: Rig, tmp_path: Path) -> None:
-    path = tmp_path / "t.csv"
-    path.write_bytes(STATE_TEXT.replace("t2", "t2b").encode("utf-8"))
-
-    files = publish_state_csv(ResearchStore(rig.settings), STATE_KEY, SNAPSHOT_KEY, path, 2)
-
-    assert files == 2
-
-
 # --- lottery-tracking ------------------------------------------------------------------------
 
 
-def test_tracking_state_missing_fails_and_writes_nothing(rig: Rig, puts: list[str]) -> None:
-    rig.tracker("append")  # a script that would write: it must never run
+def test_tracking_without_a_stored_state_writes_a_new_one(rig: Rig, puts: list[str]) -> None:
+    rig.tracker("append")  # a script that writes its own file: there is none to read
 
     result = run_tracking(rig.ctx())
 
     assert asserted_valid(result) == StepResult(
-        "failed", NO_TRACKING_COUNTS, "tracking state missing"
+        "ok",
+        tracking_counts(rows_after=1, files_uploaded=2, log_uploaded=1),
+        "",
     )
-    assert puts == []
-    assert rig.keys() == []  # no state, no snapshot, not even a log: the script never ran
+    assert puts == [TRACKING_LOG_KEY, SNAPSHOT_KEY, STATE_KEY]
+    expected = f"{STATE_HEADER}\r\n2026-11-11,t3,7\r\n".encode()
+    assert rig.body(STATE_KEY) == rig.body(SNAPSHOT_KEY) == expected
     assert step_is_gone(rig, TRACKING)
 
 
@@ -483,35 +486,123 @@ def test_tracking_an_unreadable_state_is_an_error_and_not_a_missing_one(
     assert step_is_gone(rig, TRACKING)
 
 
-def test_tracking_csv_never_shrinks(rig: Rig, puts: list[str]) -> None:
+def test_tracking_reads_the_old_dates_before_the_script_rewrites_the_file(
+    rig: Rig, puts: list[str]
+) -> None:
     rig.put_state()
-    rig.tracker("drop")
+    rig.tracker("drop")  # the script rewrites the downloaded file in place and loses 11-10
+
+    result = run_tracking(rig.ctx())
+
+    # Read after the script, the old file would be the new one and no date would be lost.
+    assert asserted_valid(result) == StepResult(
+        "partial",
+        tracking_counts(
+            rows_before=2, rows_after=1, files_uploaded=2, log_uploaded=1, dates_dropped=1
+        ),
+        "tracking dates dropped",
+    )
+    # The night is published all the same: the log, the snapshot, then the state.
+    assert puts == [TRACKING_LOG_KEY, SNAPSHOT_KEY, STATE_KEY]
+    one_row = f"{STATE_HEADER}\r\n2026-11-09,t1,5\r\n".encode()
+    assert rig.body(STATE_KEY) == rig.body(SNAPSHOT_KEY) == one_row
+    assert step_is_gone(rig, TRACKING)
+
+
+def test_tracking_a_date_replaced_by_another_keeps_the_row_count_and_is_partial(
+    rig: Rig, puts: list[str]
+) -> None:
+    rig.put_state()
+    rig.tracker("swap")  # 11-10 is lost, 11-11 is new: two rows before, two after
 
     result = run_tracking(rig.ctx())
 
     assert asserted_valid(result) == StepResult(
-        "failed",
-        {"rows_before": 2, "rows_after": 1, "files_uploaded": 0, "log_uploaded": 1},
-        "tracking state shrank",
+        "partial",
+        tracking_counts(
+            rows_before=2, rows_after=2, files_uploaded=2, log_uploaded=1, dates_dropped=1
+        ),
+        "tracking dates dropped",
     )
-    # No snapshot and no state PUT. The log is the one object: it is what shows the script's rows.
-    assert puts == [TRACKING_LOG_KEY]
-    assert rig.keys("research/") == [TRACKING_LOG_KEY, STATE_KEY]
-    assert rig.body(STATE_KEY) == STATE_TEXT.encode("utf-8")
-    assert step_is_gone(rig, TRACKING)
+    assert puts == [TRACKING_LOG_KEY, SNAPSHOT_KEY, STATE_KEY]
 
 
-def test_tracking_a_script_that_empties_the_file_is_a_shrink(rig: Rig, puts: list[str]) -> None:
+def test_tracking_a_script_that_leaves_no_rows_loses_every_date(rig: Rig, puts: list[str]) -> None:
     rig.put_state()
     rig.tracker("truncate")
 
     result = run_tracking(rig.ctx())
 
-    assert result.status == "failed"
-    assert result.detail == "tracking state shrank"
+    assert result.status == "partial"
+    assert result.detail == "tracking dates dropped"
     assert (result.counts["rows_before"], result.counts["rows_after"]) == (2, 0)
-    assert puts == [TRACKING_LOG_KEY]
-    assert rig.body(STATE_KEY) == STATE_TEXT.encode("utf-8")
+    assert result.counts["dates_dropped"] == 2
+    assert puts == [TRACKING_LOG_KEY, SNAPSHOT_KEY, STATE_KEY]
+
+
+def test_tracking_a_lost_date_is_partial_with_an_appended_column_too(
+    rig: Rig, puts: list[str]
+) -> None:
+    rig.put_state()
+    rig.tracker("addcol-drop")  # the header is fine; one row is gone
+
+    result = run_tracking(rig.ctx())
+
+    assert asserted_valid(result) == StepResult(
+        "partial",
+        tracking_counts(
+            rows_before=2, rows_after=1, files_uploaded=2, log_uploaded=1, dates_dropped=1
+        ),
+        "tracking dates dropped",
+    )
+    assert puts == [TRACKING_LOG_KEY, SNAPSHOT_KEY, STATE_KEY]
+    assert rig.body(STATE_KEY).decode().splitlines()[0] == f"{STATE_HEADER},extra"
+
+
+def test_tracking_a_row_with_no_date_that_the_new_file_lacks_is_not_a_lost_date(
+    rig: Rig, puts: list[str]
+) -> None:
+    # A hand edit leaves rows like these: a blank date, text, a day that does not exist, an ISO
+    # week date and a compact one. None is a date (the tracker's own rule), so none can be lost.
+    odd = ",t0,1\r\nnot-a-date,t0,2\r\n2026-13-45,t0,3\r\n2026-W45-3,t0,4\r\n20261110,t0,5\r\n"
+    rig.put_state(STATE_TEXT + odd)
+    rig.tracker("dropodd")
+
+    result = run_tracking(rig.ctx())
+
+    assert asserted_valid(result) == StepResult(
+        "ok",
+        tracking_counts(rows_before=7, rows_after=2, files_uploaded=2, log_uploaded=1),
+        "",
+    )
+    assert puts == [TRACKING_LOG_KEY, SNAPSHOT_KEY, STATE_KEY]
+    assert rig.body(STATE_KEY) == rig.body(SNAPSHOT_KEY) == STATE_TEXT.encode("utf-8")
+
+
+def test_tracking_an_old_date_in_a_state_with_a_byte_order_mark_is_read(
+    rig: Rig, puts: list[str]
+) -> None:
+    rig.put_state("﻿" + STATE_TEXT)  # saved from Excel as CSV UTF-8
+    rig.tracker("drop")
+
+    result = run_tracking(rig.ctx())
+
+    # The first name is `date`, not `﻿date`: 11-09 and 11-10 are both read, and 11-10 is lost.
+    assert (result.status, result.counts["dates_dropped"]) == ("partial", 1)
+
+
+def test_tracking_a_state_that_cannot_be_read_as_csv_is_replaced(rig: Rig, puts: list[str]) -> None:
+    # Past the csv module's field limit: nothing to read a header or a date from, and the
+    # tracker takes the file for empty as well (the real one reads it only to report).
+    rig.put_state(f"{STATE_HEADER}\r\n2026-11-09,{'x' * 200_000},5\r\n")
+    rig.tracker("fresh")
+
+    result = run_tracking(rig.ctx())
+
+    assert asserted_valid(result) == StepResult(
+        "ok", tracking_counts(rows_after=1, files_uploaded=2, log_uploaded=1), ""
+    )
+    assert puts == [TRACKING_LOG_KEY, SNAPSHOT_KEY, STATE_KEY]
 
 
 def test_tracking_a_column_appended_at_the_end_is_not_a_header_change(
@@ -523,7 +614,7 @@ def test_tracking_a_column_appended_at_the_end_is_not_a_header_change(
     result = run_tracking(rig.ctx())
 
     assert asserted_valid(result) == StepResult(
-        "ok", {"rows_before": 2, "rows_after": 2, "files_uploaded": 2, "log_uploaded": 1}, ""
+        "ok", tracking_counts(rows_before=2, rows_after=2, files_uploaded=2, log_uploaded=1), ""
     )
     assert puts == [TRACKING_LOG_KEY, SNAPSHOT_KEY, STATE_KEY]
     assert rig.body(STATE_KEY).decode().splitlines()[0] == f"{STATE_HEADER},extra"
@@ -537,7 +628,7 @@ def test_tracking_appended_columns_with_a_new_row_count_the_rows(rig: Rig, puts:
     result = run_tracking(rig.ctx())
 
     assert asserted_valid(result) == StepResult(
-        "ok", {"rows_before": 2, "rows_after": 3, "files_uploaded": 2, "log_uploaded": 1}, ""
+        "ok", tracking_counts(rows_before=2, rows_after=3, files_uploaded=2, log_uploaded=1), ""
     )
     assert puts == [TRACKING_LOG_KEY, SNAPSHOT_KEY, STATE_KEY]
     lines = rig.body(STATE_KEY).decode().splitlines()
@@ -560,7 +651,7 @@ def test_tracking_any_other_header_change_fails_and_uploads_only_the_log(
 
     assert asserted_valid(result) == StepResult(
         "failed",
-        {"rows_before": 2, "rows_after": 2, "files_uploaded": 0, "log_uploaded": 1},
+        tracking_counts(rows_before=2, rows_after=2, log_uploaded=1),
         "tracking state header changed",
     )
     assert puts == [TRACKING_LOG_KEY]
@@ -568,36 +659,38 @@ def test_tracking_any_other_header_change_fails_and_uploads_only_the_log(
     assert step_is_gone(rig, TRACKING)
 
 
-def test_tracking_a_zero_byte_state_fails_as_a_header_change(rig: Rig, puts: list[str]) -> None:
-    rig.put_state("")  # there is no header to extend: nothing here may start a new file
+@pytest.mark.parametrize(
+    "text",
+    ["", f"{STATE_HEADER}\r\n"],
+    ids=["a zero-byte state", "a header only"],
+)
+def test_tracking_a_state_with_no_rows_has_nothing_to_lose_and_no_header_to_keep(
+    rig: Rig, puts: list[str], text: str
+) -> None:
+    rig.put_state(text)
     rig.tracker("append")  # the real tracker writes its own header and the night's row
 
     result = run_tracking(rig.ctx())
 
     assert asserted_valid(result) == StepResult(
-        "failed",
-        {"rows_before": 0, "rows_after": 1, "files_uploaded": 0, "log_uploaded": 1},
-        "tracking state header changed",
+        "ok", tracking_counts(rows_after=1, files_uploaded=2, log_uploaded=1), ""
     )
-    assert puts == [TRACKING_LOG_KEY]
-    assert rig.body(STATE_KEY) == b""
+    assert puts == [TRACKING_LOG_KEY, SNAPSHOT_KEY, STATE_KEY]
+    expected = f"{STATE_HEADER}\r\n2026-11-11,t3,7\r\n".encode()
+    assert rig.body(STATE_KEY) == rig.body(SNAPSHOT_KEY) == expected
 
 
-def test_tracking_a_lost_row_is_a_shrink_even_with_an_appended_column(
-    rig: Rig, puts: list[str]
-) -> None:
-    rig.put_state()
-    rig.tracker("addcol-drop")  # the header is fine; one row is gone
+def test_tracking_a_file_with_no_header_is_never_stored(rig: Rig, puts: list[str]) -> None:
+    rig.put_state("")  # nothing to extend, so only an empty result could still go wrong
+    rig.tracker("blank")  # a script that exits 0 and writes nothing
 
     result = run_tracking(rig.ctx())
 
     assert asserted_valid(result) == StepResult(
-        "failed",
-        {"rows_before": 2, "rows_after": 1, "files_uploaded": 0, "log_uploaded": 1},
-        "tracking state shrank",
+        "failed", tracking_counts(log_uploaded=1), "tracking state header changed"
     )
     assert puts == [TRACKING_LOG_KEY]
-    assert rig.body(STATE_KEY) == STATE_TEXT.encode("utf-8")
+    assert rig.body(STATE_KEY) == b""
 
 
 def test_tracking_publishes_snapshot_then_state(rig: Rig, puts: list[str]) -> None:
@@ -607,7 +700,7 @@ def test_tracking_publishes_snapshot_then_state(rig: Rig, puts: list[str]) -> No
     result = run_tracking(rig.ctx())
 
     assert asserted_valid(result) == StepResult(
-        "ok", {"rows_before": 2, "rows_after": 3, "files_uploaded": 2, "log_uploaded": 1}, ""
+        "ok", tracking_counts(rows_before=2, rows_after=3, files_uploaded=2, log_uploaded=1), ""
     )
     # The log first (it is the evidence when anything after it fails), then the snapshot, and
     # the state last: a failure between the two leaves the old state and a rerun redoes the day.
@@ -625,6 +718,7 @@ def test_tracking_a_same_day_row_replaced_keeps_the_size_and_publishes(rig: Rig)
 
     assert result.status == "ok"
     assert (result.counts["rows_before"], result.counts["rows_after"]) == (2, 2)
+    assert result.counts["dates_dropped"] == 0
     assert b"t2b" in rig.body(STATE_KEY)
 
 
@@ -694,7 +788,7 @@ def test_tracking_a_failing_script_names_the_class_only_and_uploads_only_its_log
 
     assert asserted_valid(result) == StepResult(
         "failed",
-        {"rows_before": 2, "rows_after": 0, "files_uploaded": 0, "log_uploaded": 1},
+        tracking_counts(rows_before=2, log_uploaded=1),
         "script exited 1 (ValueError)",
     )
     assert puts == [TRACKING_LOG_KEY]
@@ -729,7 +823,7 @@ def test_tracking_a_timeout_kills_the_script_and_fails(rig: Rig, puts: list[str]
     assert time.monotonic() - started < 30  # the script would sleep for 600 s
     assert asserted_valid(result) == StepResult(
         "failed",
-        {"rows_before": 2, "rows_after": 0, "files_uploaded": 0, "log_uploaded": 1},
+        tracking_counts(rows_before=2, log_uploaded=1),
         "script timed out",
     )
     assert puts == [TRACKING_LOG_KEY]
@@ -826,8 +920,26 @@ def test_tracking_logs_its_name_status_counts_and_seconds(
     assert TRACKING in message
     assert "ok" in message
     assert "rows_after=3" in message
+    assert "dates_dropped=0" in message
     assert "seconds=" in message
     assert "2026" not in message
+
+
+def test_tracking_logs_the_dates_it_dropped_as_a_count_and_never_a_date(
+    rig: Rig, caplog: pytest.LogCaptureFixture
+) -> None:
+    rig.put_state()
+    rig.tracker("drop")
+
+    with caplog.at_level(logging.INFO, logger="research_db_steps"):
+        result = run_tracking(rig.ctx())
+
+    (record,) = [r for r in caplog.records if r.name == "research_db_steps"]
+    message = record.getMessage()
+    assert message.startswith(f"research-report {TRACKING} partial ")
+    assert "dates_dropped=1" in message
+    assert "2026" not in message  # a count and a fixed phrase, never the date that was lost
+    assert "2026" not in result.detail
 
 
 # --- quality-sim -----------------------------------------------------------------------------
