@@ -106,7 +106,7 @@ Establish the training-data substrate AND resolve the structure-outlier data qua
 
 **Files:**
 
-- `scripts/sync_lottery_score_weights.py` — extend to emit the new schema (currently only handles ticker + mode + price + tod + option_type)
+- the TS-weights sync script (since deleted) — extend to emit the new schema (currently only handles ticker + mode + price + tod + option_type)
 - `api/_lib/lottery-score-weights.ts` — gets rewritten by the sync script with new weights structure
 
 **Verify:**

@@ -10,10 +10,9 @@
  * weights is a new version in the store, never an edit here.
  *
  * Nothing regenerates this file. It used to be synced from
- * `ml/data/lottery_score_weights.json` by
- * `scripts/sync_lottery_score_weights.py` during `make refit`. Now `make
- * refit` is a pair of dry runs, that script has no caller, and the JSON it
- * reads no longer exists. Edit this file by hand.
+ * `ml/data/lottery_score_weights.json` by a generator script during `make
+ * refit`. Now `make refit` is a pair of dry runs, that script is deleted,
+ * and the JSON it read no longer exists. Edit this file by hand.
  *
  * The V1 scorer below (`computeLotteryScore`, `lotteryScoreTier` and the
  * constants they read) serves no cron or endpoint. Its callers are
@@ -133,9 +132,8 @@ export function computeLotteryScore(args: {
  * showed -7pp/-16pp lift reversal in the same study.
  *
  * NOTE: `api/lottery-finder.ts` and
- * `api/__tests__/lottery-score-weights.test.ts` call this. A copy of it is
- * also baked into `render_ts()` in `scripts/sync_lottery_score_weights.py`,
- * which nothing runs now; `make refit` no longer regenerates this file.
+ * `api/__tests__/lottery-score-weights.test.ts` call this. `make refit` no
+ * longer regenerates this file.
  */
 export function gammaScoreAdjustment(
   gamma: number | null,

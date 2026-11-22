@@ -1152,7 +1152,7 @@ The description cites the spec and D5, says NULL `score_version` means "scored b
    - `ml/output/lottery_score_weights.json` is frozen as the seed's source and no longer written.
    - `make refit` is a dry run.
    - `backfill_lottery_scores.py` writes only with `--write`.
-   - Pre-existing and left alone: the legacy `scripts/sync_lottery_score_weights.py`, which reads the stale `ml/data/` JSON.
+   - Pre-existing and left alone here: the legacy TS-weights generator, which read the stale `ml/data/` JSON. It has since been deleted (cleanup batch A, 2026-11-22).
    - The bare cutoffs are now computed with the full scorer (Monday override and composites); the old `apply_weights` skipped both.
 10. **A rejected refit doesn't fail the step or the run** (exit 0). Its Sentry error notice is the alert, so the cron monitor doesn't page twice.
 11. **The client asks for `minTier`** instead of hard-coding 13/10. That affects three endpoints.
