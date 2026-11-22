@@ -12,6 +12,7 @@
  */
 
 import { formatTimeCT } from '../../utils/component-formatters';
+import { SrHint } from '../ui/SrHint';
 
 interface DataAgeBadgeProps {
   asOf: string | null;
@@ -29,6 +30,7 @@ export function DataAgeBadge({ asOf }: DataAgeBadgeProps) {
       title="Snapshot timestamp (Central Time)"
     >
       as of {time} CT
+      <SrHint>snapshot time, Central Time</SrHint>
     </span>
   );
 }

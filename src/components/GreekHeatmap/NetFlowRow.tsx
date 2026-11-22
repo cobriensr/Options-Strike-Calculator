@@ -14,6 +14,7 @@
 
 import type { GreekHeatmapNetFlow } from '../../hooks/useGreekHeatmap';
 import { formatPremiumShort } from '../../utils/format-magnitude';
+import { SrHint } from '../ui/SrHint';
 
 interface NetFlowRowProps {
   netFlow: GreekHeatmapNetFlow | null;
@@ -49,6 +50,9 @@ export function NetFlowRow({ netFlow }: NetFlowRowProps) {
           title={`Net call premium · ${formatVol(netFlow.cumulativeCallVol)} contracts`}
         >
           {formatPremiumShort(netFlow.cumulativeCallPrem)}
+          <SrHint>
+            {`net call premium, ${formatVol(netFlow.cumulativeCallVol)} contracts`}
+          </SrHint>
         </span>
       </div>
       <div className="flex flex-col">
@@ -60,6 +64,9 @@ export function NetFlowRow({ netFlow }: NetFlowRowProps) {
           title={`Net put premium · ${formatVol(netFlow.cumulativePutVol)} contracts`}
         >
           {formatPremiumShort(netFlow.cumulativePutPrem)}
+          <SrHint>
+            {`net put premium, ${formatVol(netFlow.cumulativePutVol)} contracts`}
+          </SrHint>
         </span>
       </div>
       <div className="flex flex-col">
@@ -71,6 +78,7 @@ export function NetFlowRow({ netFlow }: NetFlowRowProps) {
           title="NCP + NPP"
         >
           {formatPremiumShort(total)}
+          <SrHint>net call premium plus net put premium</SrHint>
         </span>
       </div>
     </div>

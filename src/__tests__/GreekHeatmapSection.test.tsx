@@ -8,7 +8,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 import type {
@@ -26,7 +26,11 @@ vi.mock('../hooks/useGreekHeatmap', () => ({
 }));
 
 import { GreekHeatmapSection } from '../components/GreekHeatmap';
-import { genericElementsWithAriaLabel, srHintText } from './helpers/aria';
+import {
+  genericElementsWithAriaLabel,
+  srHintText,
+  titledGenericsWithoutHint,
+} from './helpers/aria';
 
 function makeStrike(
   strike: number,
@@ -113,6 +117,14 @@ describe('GreekHeatmapSection', () => {
     expect(srHintText(chip)).toBe('current price');
     expect(chip).not.toHaveAttribute('aria-label');
     expect(genericElementsWithAriaLabel(container)).toEqual([]);
+  });
+
+  it('shows the snapshot time with a hidden hint saying what it is, and leaves no titled generic element without a hint', () => {
+    const { container } = render(<GreekHeatmapSection marketOpen={true} />);
+    const badge = screen.getByText(/^as of \d/);
+    expect(srHintText(badge)).toBe('snapshot time, Central Time');
+    expect(badge).toHaveAttribute('title', 'Snapshot timestamp (Central Time)');
+    expect(titledGenericsWithoutHint(container)).toEqual([]);
   });
 
   it('shows the Long Γ regime chip with magnitude scaled to M/B', () => {
@@ -243,6 +255,76 @@ describe('GreekHeatmapSection', () => {
     expect(screen.getByText('Total')).toBeInTheDocument();
   });
 
+  // Each value is a bare span whose title is mouse-only, so it says what the
+  // number is in a hidden hint after it, with the contract count the title
+  // carries. The visible text and the titles stay as they were.
+  describe('net-flow values', () => {
+    /** The value span under a net-flow label ("NCP", "NPP" or "Total"). */
+    const valueUnder = (label: string, shown: string) =>
+      within(screen.getByText(label).parentElement as HTMLElement).getByText(
+        shown,
+      );
+
+    it('says what each value is in a hidden hint, and keeps the titles', () => {
+      // Fixture: call 1,716 over 6 contracts, put 1,990 over 17.
+      const { container } = render(<GreekHeatmapSection marketOpen={true} />);
+
+      const ncp = valueUnder('NCP', '$1.7K');
+      expect(srHintText(ncp)).toBe('net call premium, 6 contracts');
+      expect(ncp).toHaveAttribute('title', 'Net call premium · 6 contracts');
+
+      const npp = valueUnder('NPP', '$2.0K');
+      expect(srHintText(npp)).toBe('net put premium, 17 contracts');
+      expect(npp).toHaveAttribute('title', 'Net put premium · 17 contracts');
+
+      const total = valueUnder('Total', '$3.7K');
+      expect(srHintText(total)).toBe('net call premium plus net put premium');
+      expect(total).toHaveAttribute('title', 'NCP + NPP');
+
+      for (const value of [ncp, npp, total]) {
+        expect(value).not.toHaveAttribute('aria-label');
+      }
+      expect(titledGenericsWithoutHint(container)).toEqual([]);
+    });
+
+    it('formats a large contract count the same way in the hint as in the title', () => {
+      mockUseGreekHeatmap.mockReturnValue({
+        data: makeData({
+          netFlow: {
+            cumulativeCallPrem: 2_500_000,
+            cumulativeCallVol: 12_345,
+            cumulativePutPrem: -750_000,
+            cumulativePutVol: 6_789,
+            asOf: '2026-05-15T16:30:01Z',
+          },
+        }),
+        loading: false,
+        error: null,
+        refresh: mockRefresh,
+      });
+      render(<GreekHeatmapSection marketOpen={true} />);
+
+      const calls = (12_345).toLocaleString();
+      const puts = (6_789).toLocaleString();
+      const ncp = valueUnder('NCP', '$2.50M');
+      expect(srHintText(ncp)).toBe(`net call premium, ${calls} contracts`);
+      expect(ncp).toHaveAttribute(
+        'title',
+        `Net call premium · ${calls} contracts`,
+      );
+      const npp = valueUnder('NPP', '-$750.0K');
+      expect(srHintText(npp)).toBe(`net put premium, ${puts} contracts`);
+      expect(npp).toHaveAttribute(
+        'title',
+        `Net put premium · ${puts} contracts`,
+      );
+      // The total is the same sentence whichever way it points.
+      expect(srHintText(valueUnder('Total', '$1.75M'))).toBe(
+        'net call premium plus net put premium',
+      );
+    });
+  });
+
   it('shows a loading message when data is null and loading is true', () => {
     mockUseGreekHeatmap.mockReturnValue({
       data: null,
@@ -337,6 +419,60 @@ describe('GreekHeatmapSection', () => {
     // Stale-badge Retry still wires to refresh.
     fireEvent.click(screen.getByRole('button', { name: /retry/i }));
     expect(mockRefresh).toHaveBeenCalledTimes(1);
+  });
+
+  // The failing poll's error text is the strip's title, which is mouse-only:
+  // it never reached a screen reader. A hidden hint after the Retry button
+  // reads it, outside the button so Retry keeps its name.
+  describe('the stale strip', () => {
+    const staleStrip = () =>
+      screen.getByText(/stale — last good snapshot/i)
+        .parentElement as HTMLElement;
+
+    it('reads the poll error in a hidden hint after Retry, and keeps it as the title', () => {
+      mockUseGreekHeatmap.mockReturnValue({
+        data: makeData(),
+        loading: false,
+        error: 'poll boom',
+        stale: true,
+        refresh: mockRefresh,
+      });
+      const { container } = render(<GreekHeatmapSection marketOpen={true} />);
+
+      const strip = staleStrip();
+      expect(strip).toHaveAttribute('title', 'poll boom');
+      expect(srHintText(strip)).toBe('poll boom');
+      // The hint comes right after the button, and Retry keeps its own name.
+      const retry = screen.getByRole('button', { name: 'Retry' });
+      expect(retry.nextElementSibling).toBe(strip.lastElementChild);
+      expect(strip).not.toHaveAttribute('aria-label');
+      expect(titledGenericsWithoutHint(container)).toEqual([]);
+    });
+
+    // No error text means nothing to read: a hint would be a bare " — ".
+    it.each([
+      ['no error text', null],
+      ['an empty error string', ''],
+    ])('adds no hint when there is %s', (_name, error) => {
+      mockUseGreekHeatmap.mockReturnValue({
+        data: makeData(),
+        loading: false,
+        error,
+        stale: true,
+        refresh: mockRefresh,
+      });
+      const { container } = render(<GreekHeatmapSection marketOpen={true} />);
+
+      const strip = staleStrip();
+      // The title is the error text, so it is absent or empty.
+      expect(strip.getAttribute('title') ?? '').toBe('');
+      expect(strip.querySelector('.sr-only')).toBeNull();
+      expect(srHintText(strip)).toBeNull();
+      expect(strip.lastElementChild).toBe(
+        screen.getByRole('button', { name: 'Retry' }),
+      );
+      expect(titledGenericsWithoutHint(container)).toEqual([]);
+    });
   });
 
   it('renders an empty-state hint when chainStrikes is empty and asOf is null', () => {

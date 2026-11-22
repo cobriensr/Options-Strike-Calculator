@@ -31,6 +31,7 @@ import { useFollowedDate } from '../../hooks/useFollowedDate';
 import { useGreekHeatmap } from '../../hooks/useGreekHeatmap';
 import { DateInput } from '../ui/DateInput';
 import { SectionBox } from '../ui/SectionBox';
+import { SrHint } from '../ui/SrHint';
 
 import { DataAgeBadge } from './DataAgeBadge';
 import { GreekHeatmapTable } from './GreekHeatmapTable';
@@ -298,7 +299,8 @@ function GreekHeatmapBody({ marketOpen }: GreekHeatmapSectionProps) {
               showing the prior good snapshot. Muted amber (matches the
               Historical badge) rather than the rose error banner, so the
               grid stays the focus. The failing error text is preserved in
-              the title for hover/triage. */}
+              the title for hover/triage, and in a hidden hint (after Retry,
+              so the button keeps its name) for a screen reader. */}
           {stale && (
             <div
               className="flex items-center justify-between rounded-md border border-amber-500/50 bg-amber-950/30 px-2 py-1 text-[10px] tracking-wide text-amber-200/90"
@@ -308,6 +310,7 @@ function GreekHeatmapBody({ marketOpen }: GreekHeatmapSectionProps) {
                 ⚠ Stale — last good snapshot{data.asOf ? ` (${data.asOf})` : ''}
               </span>
               <RetryButton onClick={() => refresh()} tone="amber" />
+              {error != null && error !== '' && <SrHint>{error}</SrHint>}
             </div>
           )}
           <NetFlowRow netFlow={data.netFlow} />
