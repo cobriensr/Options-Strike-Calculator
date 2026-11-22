@@ -8,14 +8,16 @@
  * Thin wrapper over `usePolledWindowSignal` — that primitive owns the polling,
  * window-gating, abort-per-fetch, and last-good cache machinery. This file
  * supplies only the regime-specific config: the endpoint URL, the cache slot,
- * the 45s cadence, the market-calendar window predicate, and the CT "today"
- * staleness key. The exported `Regime0dteResponse` type and the window bounds
- * stay local.
+ * the 45s cadence, the market-calendar window predicate, and the "today"
+ * staleness key, the shared ET clock. The exported `Regime0dteResponse` type
+ * and the window bounds stay local.
  *
  * Outside the session window the hook does not fetch — it returns the last
- * known state (from localStorage, but only when that cache is dated *today* in
- * CT) and reports `isWindowOpen=false` so the panel can show a "waiting for
- * open" placeholder. A prior-session-day cache is never surfaced as live.
+ * known state (the day's last payload or its localStorage copy, but only when
+ * dated *today*) and reports `isWindowOpen=false` so the panel can show a
+ * "waiting for open" placeholder. A prior-session-day payload, fetched or
+ * cached, is never surfaced as live; it clears at ET midnight, and the first
+ * fetch of a session day is made when the window opens.
  */
 
 import { POLL_INTERVALS } from '../constants/index.js';
@@ -26,6 +28,7 @@ import {
   usePolledWindowSignal,
   type PolledWindowSignalResult,
 } from './usePolledWindowSignal.js';
+import { useETToday } from './useETToday.js';
 
 export type Gate = 'calm' | 'big_move' | 'lean_down' | 'unknown';
 
@@ -102,11 +105,18 @@ function inLiveWindow(now: Date): boolean {
 }
 
 export function useRegime0dte(): PolledWindowSignalResult<Regime0dteResponse> {
+  // The staleness key is the shared ET clock (`useETToday`), read in render, so
+  // the panel re-renders at ET midnight and a payload dated the day before is
+  // dropped then, badge included. The payload's `date` is the CT date
+  // (`api/regime-0dte.ts`). The two dates agree from 08:30 to 15:00 CT, the
+  // only hours a payload is made, and differ only from 23:00 to 24:00 CT, when
+  // the window is closed: the day's last read clears an hour before CT midnight.
+  const today = useETToday();
   return usePolledWindowSignal<Regime0dteResponse>({
     url: '/api/regime-0dte',
     storageKey: STORAGE_KEY,
     pollMs: POLL_INTERVALS.REGIME_0DTE,
     inWindow: inLiveWindow,
-    todayStr: () => getCTDateStr(new Date()),
+    todayStr: () => today,
   });
 }

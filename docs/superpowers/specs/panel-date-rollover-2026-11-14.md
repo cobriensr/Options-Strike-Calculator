@@ -129,7 +129,21 @@ panels follow the new date too".
   overnight shows yesterday's last payload as live when the 08:30 CT window
   opens. It stays until the first poll, a full interval later. Date-check
   `state.data` the way the cache already is, and fetch at once when the
-  window opens.
+  window opens. Traced, and fixed in Phase 10:
+  - `displayData` was `state.data ?? (cache dated today ? cache : null)`: the
+    date guard covered only the cache, so a fetched payload from the Friday a
+    tab was opened on went straight through.
+  - The fetch effect ran once, at mount. The once-a-minute watcher only set
+    `isWindowOpen`, never fetched. So after Monday's 08:30 CT open the flag
+    flipped on the watcher's next tick (0 to 60 s later), the panel drew
+    Friday's payload as live at once, and the first fetch was the 45 s poll
+    that starts when the flag flips: 45 to 105 s after the open. With every
+    fetch after the open failing, Friday's payload stayed up indefinitely
+    (a failed fetch keeps `state.data`).
+  - The panel's `useRegime0dte` took "today" from the CT wall clock in render,
+    and nothing re-rendered it at midnight. The header badge came from
+    `displayData` with no window gate, so over a weekend or a Monday holiday it
+    kept showing Friday's gate.
 - **Stale comments.** `LotteryFinder/index.tsx:462` says "ET-midnight
   auto-roll" but the code compares the CT date.
 
@@ -317,6 +331,34 @@ panels follow the new date too".
 - **A side effect on the tests.** The hook now subscribes to the ET clock, whose
   timer re-arms itself, so a test with fake timers cannot call `runAllTimers`
   (it never ends); the one that did advances one debounce window instead.
+
+### Found while building Phase 10
+
+- **The payload is date-checked like the cache.** `displayData` is a payload
+  only when its `date` is today, fetched or cached. A fetched payload from a
+  prior day stays in `state` (it is not cleared), but is not shown.
+- **The window opening fetches.** The fetch effect is keyed on `isWindowOpen`
+  (the flag the watcher publishes), not on mount: it fetches when the flag is
+  true, so a mount inside the window is still one fetch, and a flip to open
+  fetches at once. The first read of a session day lands within a minute of the
+  open (the watcher's tick) instead of 45 to 105 s after it. There is no
+  boundary-aligned timer.
+- **One clock.** `useRegime0dte` takes "today" from `useETToday()`, per rule 3,
+  so the date gate and the header badge turn over at ET midnight, in the same
+  commit as every other panel. The server stamps the payload with the CT date
+  (`api/regime-0dte.ts`). The two dates agree for all of 08:30 to 15:00 CT, the
+  only hours a payload is made, and differ only from 23:00 to 24:00 CT, when
+  the window is closed; the day's last read clears an hour before CT midnight.
+- **The badge is not window-gated (decision).** With the date check and the ET
+  clock, the badge shows the day's last gate after the close and clears at ET
+  midnight, so a weekend or a holiday Monday shows none.
+- **The tests move the clock while mounted.** The old `useRegime0dte` tests
+  mocked `getCTTime` and `getCTDateStr`, which cannot cross a day. They now pin
+  the real clock and move it (the window and the ET date both read `Date`).
+  Each step is its own `act`: a single `act` around a weekend defers the
+  `isWindowOpen=false` commit and batches it with the open, so the flag never
+  flips and the test proves nothing. A recorder logs the payload date shown by
+  every committed render.
 
 ## Phases
 

@@ -9,12 +9,15 @@
  * This collapses the previously-forked machinery shared by `useRegime0dte`
  * and (formerly) `useOpeningFlowSignal` into one correct implementation:
  *
- *   - **Cache-staleness guard.** `displayData` falls back to the cached
- *     payload ONLY when `cached.date === todayStr()`. A cache written on a
- *     prior session day is never surfaced as "today's" data — it is ignored
- *     for display (and cleared from storage on read) so a new-session-day
- *     pre-first-fetch render, or a Neon blip on a fresh day, can't paint
- *     yesterday's payload as live.
+ *   - **Staleness guard.** `displayData` is a payload ONLY when its
+ *     `date === todayStr()`, whether it came from a fetch or from the cache.
+ *     A cache written on a prior session day is ignored for display (and
+ *     cleared from storage on read), and a fetched payload from a prior day,
+ *     which a tab left open across a weekend still holds in state, is held
+ *     but not shown, so a new-session-day pre-first-fetch render, a failed
+ *     first fetch, or a Neon blip on a fresh day can't paint yesterday's
+ *     payload as live. The check runs each render, so a `todayStr` that
+ *     turns (the caller re-renders at its midnight) drops the payload.
  *
  *   - **Window-gated polling.** The recurring fetch interval is gated on the
  *     window predicate itself (`usePolling(..., [isWindowOpen])`) — it does
@@ -23,10 +26,14 @@
  *     actually flips, so outside the window there is no fetch and no per-tick
  *     setState churn.
  *
+ *   - **Fetch when the window opens.** An effect keyed on `isWindowOpen`
+ *     fetches whenever the flag is true: once at mount if the window is
+ *     already open, and at once when the watcher sees it open (within a
+ *     minute of the open), not a poll interval later.
+ *
  *   - **Single source of truth for `isWindowOpen`.** The flag is derived from
- *     one watcher; the mount-eager-fetch and the recurring fetch share one
- *     code path (`maybeFetch`) rather than recomputing the predicate in two
- *     places.
+ *     one watcher; the fetch-on-open effect and the recurring fetch both read
+ *     it rather than recomputing the predicate in two places.
  *
  * Persistence semantics: after every successful fetch the payload is mirrored
  * to `storageKey`. On mount the cache is read once; if its `date` matches
@@ -66,7 +73,11 @@ export interface PolledWindowSignalOptions {
   pollMs: number;
   /** Window predicate — true while the hook should be live-fetching. */
   inWindow: (now: Date) => boolean;
-  /** Today's date string (YYYY-MM-DD) in the caller's TZ — the staleness key. */
+  /**
+   * Today's date string (YYYY-MM-DD) — the staleness key. Read in render, so
+   * a caller that wants the payload to turn over at midnight must re-render
+   * then (read the shared clock, `useETToday`, and return its value).
+   */
   todayStr: () => string;
 }
 
@@ -215,24 +226,26 @@ export function usePolledWindowSignal<T extends DatedPayload>(
     // stable; the effect/poll deps don't churn when callers pass inline opts.
   }, []);
 
-  // One code path for both the eager mount fetch and the recurring tick:
-  // recompute the window flag from the single watcher's predicate, publish it
-  // only on a flip, and fetch only while open.
-  const syncWindow = useCallback((): boolean => {
+  // Recompute the window flag from the single watcher's predicate and publish
+  // it only on a flip.
+  const syncWindow = useCallback((): void => {
     const open = optsRef.current.inWindow(new Date());
     setIsWindowOpen((prev) => (prev === open ? prev : open));
-    return open;
   }, []);
 
-  // Eager mount fetch — only when the window is open. Outside the window we
-  // leave the panel on its (today-only) last-good cache and never hit origin.
+  // Fetch whenever the window is open: once at mount if it already is, and at
+  // once whenever it opens. Keyed on the flag, not on mount, so the first
+  // fetch of a session day is not a poll interval after the open. A mount
+  // inside the window is still exactly one fetch. Outside the window we leave
+  // the panel on its (today-dated) last-good cache and never hit origin.
   useEffect(() => {
-    if (syncWindow()) void fetchOnce();
-  }, [syncWindow, fetchOnce]);
+    if (isWindowOpen) void fetchOnce();
+  }, [isWindowOpen, fetchOnce]);
 
   // Lightweight window watcher: re-checks the predicate once a minute and only
-  // setStates on a flip. No fetch here — this exists purely to notice the
-  // window opening/closing so the gated poll below can start/stop.
+  // setStates on a flip. No fetch here — it exists to notice the window
+  // opening/closing; the effect above fetches on the open and the gated poll
+  // below keeps it fresh.
   usePolling(syncWindow, WINDOW_WATCH_MS, []);
 
   // Recurring fetch — GATED on the window flag. Outside the window this
@@ -247,11 +260,18 @@ export function usePolledWindowSignal<T extends DatedPayload>(
 
   useEffect(() => () => abortRef.current?.abort(), []);
 
-  // Staleness guard for display: fresh fetch wins; otherwise fall back to the
-  // cache ONLY when it is today-dated.
+  // Staleness guard for display: a payload is shown only when it is dated
+  // today, the fetched one and the cached one alike. A fresh, today-dated fetch
+  // wins; otherwise fall back to the cache. A fetched payload from a prior day
+  // (a tab left open from Friday's close, a failed first fetch on Monday) is
+  // never shown as live: it is held in state, not displayed.
   const today = todayStr();
-  const displayData: T | null =
-    state.data ?? (cachedData?.date === today ? cachedData : null);
+  const isToday = (d: T | null): d is T => d != null && d.date === today;
+  const displayData: T | null = isToday(state.data)
+    ? state.data
+    : isToday(cachedData)
+      ? cachedData
+      : null;
 
   return useMemo(
     () => ({
