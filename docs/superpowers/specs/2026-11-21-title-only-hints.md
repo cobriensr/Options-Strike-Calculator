@@ -456,7 +456,9 @@ The owner asked for this on 2026-11-22 ("yeah lets do that too"). The `/api/peri
 **Rule.** The same rule as Task 18, applied on each success path:
 - A live (non-historical) read gets `setCacheHeaders(res, 10, 0)` when its response carries data, or when `marketOpen`.
 - Otherwise it gets `setCacheHeaders(res, 300, 60)`.
-- A historical or scrubbed read keeps `setCacheHeaders(res, 300, 60)` (exposure and strikes already split on `isHistoricalRead`; map's scrub path follows the same rule).
+- A historical or scrubbed read keeps `setCacheHeaders(res, 300, 60)` (exposure and strikes already split on `isHistoricalRead`).
+  - As built: `periscope-map` takes no date, time or `at` param, so it has no historical path.
+  - As built: all four endpoints call one shared `setLiveReadCache(res, { historical, hasData, marketOpen })` in `api/_lib/live-read-cache.ts`, which has its own truth-table test.
 - An error response sets no cache header.
 
 Move each call from before the queries to the point where the response kind is known.
@@ -480,7 +482,11 @@ Commits: `perf(periscope): Cache the live Periscope map for 10 seconds, not up t
   - At the open, the pre-open responses that carry data are cached for only 10 s once Task 18 lands, so the first poll after 9:30 ET gets a fresh session response. The `serverMarketOpen` gate still keeps DELAYED off any pre-open response that slips through. The panel doesn't poll before the open anyway, because `isLive` needs the prop `marketOpen`.
 - **Age.**
   - With data: `dataAgeMsAtReceipt + (now − receivedAt)`.
-  - On `no_slot`: now minus the last entry of `liveTimestamps`, when there is one. This one case uses the client clock against minute-truncated stamps. The panel is already abnormal there, and the error runs toward DELAYED.
+  - On `no_slot` (as built, changed in review): the age is measured on the server's clock, not the client's.
+    - The hook stores `lastCaptureAgeMsAtReceipt` = `max(0, Date.parse(asOf) − Date.parse(last availableMinutes)) + Age×1000`. On `no_slot`, `asOf` is the server's `new Date()`.
+    - The panel's age is that value plus the time since receipt, minus 60 s for the minute-stamp truncation. The age is then a lower bound, so "Feed stalled" and DELAYED fire at a stamp age of at least 4 minutes, and a healthy gamma feed can't trip them.
+  - As built: the hook builds its derived arrays and maps once per response (`useMemo`), and the top-strikes tracker keeps an equal empty Set. This fixed a re-render loop that predated this plan: about 18,700 commits/s with no response, about 830/s with data. The real-hook integration test `GexLandscape.freshness.integration.test.tsx` guards it with a `<Profiler>` commit count.
+  - As built: the hook refetches when `marketOpen` changes, so a panel left open overnight gets fresh data at the open instead of waiting up to 60 s for the first poll.
   - A clock state ticks every 15 s, only while freshness applies, so the age grows between polls. The effect returns its cleanup and stops when the panel is scrubbed, the market closes, or the panel unmounts (R1).
 - **Badge.** Pass `lastDataAgeMs` and `staleThresholdMs={GEX_STALE_THRESHOLD_MS}` to `ScrubControls`.
 - **Empty-state message.** It changes only while freshness applies and the response is `no_slot`. Format the time with the existing `formatTimeCT` in `src/utils/component-formatters.ts`.
