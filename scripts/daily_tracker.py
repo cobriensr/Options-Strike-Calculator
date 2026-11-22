@@ -1,27 +1,25 @@
 #!/usr/bin/env python
-"""Append rows of headline lottery metrics to docs/tmp/lottery-tracking.csv.
+"""Rewrite docs/tmp/lottery-tracking.csv: one row of headline lottery metrics per date.
 
-Designed to run after `make refit` + `make enrich` complete. Writes a
-short row for every enriched fire date after the CSV's last row, each
-computed as of its own date (the window is cut at that date), so
-day-over-day drift in the edge can be charted without re-running every
-analysis and a run that was missed is filled by the next one. A date
-with no enriched fires gets no row. With no CSV, or one with no row whose
-date parses, it writes the newest date only and never the whole history.
-When no date is newer than the CSV's last row it writes the newest date
-again, so re-running on the same date overwrites that date's row rather
-than duplicating. One timestamp (`run_at`) marks every row of a run. When the
-CSV's last row is newer than the newest enriched fire date, nothing can be
-filled and the run says so.
+Designed to run after `make refit` + `make enrich` complete. Every run
+writes a row for every enriched fire date, oldest first, each computed as
+of its own date (the window is cut at that date) on today's data and the
+active weights, and shares one timestamp (`run_at`). A date with no
+enriched fires gets no row. The rows already in the file are not kept, so
+a revision of past data (outcomes re-enriched, fires added or corrected,
+a weights promotion that moves the tier cutoffs) never leaves a jump
+between old and new rows. The file is rewritten whole, so run it on a copy
+when its old rows matter.
 
-`--rebuild` writes a row for EVERY enriched fire date, each as of its date,
-and discards the rows already in the file, which afterwards holds exactly
-the rebuilt rows. It is for after outcomes were re-enriched, when the
-stored rows no longer match the data they were computed on. It is also the
-fix after a weights promotion: that moves the active cutoffs, so rows written
-before it no longer compare with rows written after it, and a rebuild puts
-the whole series on one set of cutoffs. It overwrites the file it is given,
-so run it on a copy.
+What a run prints of the file it replaces, from its rows whose `date` is
+YYYY-MM-DD (any other row is dropped and counted nowhere):
+- `rebuilt M dates (first .. last), replacing K rows`: K counts every row;
+- `J earlier dates have no enriched fires now and were dropped`, when J > 0:
+  dates the old file had that have no row now;
+- `R of M earlier rows changed`: of the M dates in both the old file and the
+  new rows, how many differ in any column but `run_at` (compared as the CSV
+  holds it; a column the old file lacks reads as blank). Not printed when the
+  old file has no such row. A revision of history shows here.
 
 Read-only against the DB except for its own CSV rewrite.
 
@@ -30,10 +28,9 @@ stored score, read from the store (phase 3 D8). A weights read that fails ends
 the run before any fire is read or the CSV is touched; there is no fallback.
 
 Usage:
-    ml/.venv/Scripts/python scripts/daily_tracker.py [--csv PATH] [--rebuild]
+    ml/.venv/Scripts/python scripts/daily_tracker.py [--csv PATH]
 
---csv is the tracking file to read and rewrite (default: the one under
-docs/tmp). --rebuild recomputes the whole file (see above).
+--csv is the tracking file to rewrite (default: the one under docs/tmp).
 """
 
 from __future__ import annotations
@@ -111,31 +108,26 @@ def _csv_date(raw: str | None) -> date | None:
         return None
 
 
-def dates_to_write(
-    days: list[date], last_date: date | None, rebuild: bool = False
-) -> list[date]:
-    """The fire dates (ascending) that get a row this run.
+def _read_rows(path: Path) -> list[dict[str, str]]:
+    with path.open(encoding='utf-8') as f:
+        return list(csv.DictReader(f))
 
-    Every date after the CSV's last row; the newest date alone when there is no
-    such row (a new file never gets the whole history) or no date is newer. A
-    rebuild is every date.
+
+def _differs(old: dict[str, str], new: dict[str, str]) -> bool:
+    """Whether two rows differ in a column other than `run_at`.
+
+    A column the old row lacks (a shorter header) reads as blank, and a column of
+    the old row that is no longer in COLUMNS is not looked at.
     """
-    if rebuild:
-        return days
-    if last_date is None:
-        return days[-1:]
-    return [d for d in days if d > last_date] or days[-1:]
+    return any(
+        (old.get(c) or '') != (new.get(c) or '') for c in COLUMNS if c != 'run_at'
+    )
 
 
 def build_rows(
-    df: pd.DataFrame,
-    t1_cutoff: int,
-    t2_cutoff: int,
-    last_date: date | None,
-    run_at: str,
-    rebuild: bool = False,
+    df: pd.DataFrame, t1_cutoff: int, t2_cutoff: int, run_at: str
 ) -> list[dict]:
-    """One CSV row per date `dates_to_write` picks, each as of that date.
+    """One CSV row per enriched fire date, ascending, each as of that date.
 
     A row's window is the fires dated on or before its date; its `*_today` fields
     are the fires dated on it. The frame is ordered by date once and every window
@@ -144,7 +136,6 @@ def build_rows(
     """
     codes, uniques = pd.factorize(df['date'], sort=True)
     days = [_as_date(u) for u in uniques]
-    targets = dates_to_write(days, last_date, rebuild)
 
     order = np.argsort(codes, kind='stable')
     codes = codes[order]
@@ -192,8 +183,7 @@ def build_rows(
     high_by = running(cell[peak >= 50])
 
     rows = []
-    for day in targets:
-        k = days.index(day)
+    for k, day in enumerate(days):
         today = tier_by_day[k]
         n_total, fi_mean, fi_sharpe = window_stats('all', k)
         t2_n, t2_mean, t2_sharpe = window_stats('t2plus', k)
@@ -251,13 +241,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         '--csv',
         type=Path,
         default=CSV_PATH,
-        help='The tracking CSV to update (default: docs/tmp under the repo root).',
-    )
-    parser.add_argument(
-        '--rebuild',
-        action='store_true',
-        help='Write a row for every enriched fire date, each as of its date. This '
-        'discards the rows already in the file, so run it on a copy.',
+        help='The tracking CSV to rewrite (default: docs/tmp under the repo root).',
     )
     return parser.parse_args(argv)
 
@@ -290,51 +274,39 @@ def main(argv: list[str] | None = None) -> None:
     if df.empty:
         sys.exit('[track] no enriched fires found — nothing to record')
 
-    # The rows already there. A row whose date does not parse stays in the file and
-    # takes no part in choosing the dates.
-    existing = []
-    if args.csv.exists():
-        with args.csv.open(encoding='utf-8') as f:
-            existing = list(csv.DictReader(f))
-    csv_dates = (_csv_date(r.get('date')) for r in existing)
-    last_date = max((d for d in csv_dates if d is not None), default=None)
+    # The rows already there, read only to report what this run changes. The file is
+    # written whole from the fires, so none of them is kept.
+    existing = _read_rows(args.csv) if args.csv.exists() else []
 
     run_at = datetime.now(timezone.utc).isoformat(timespec='seconds')
-    new_rows = build_rows(
-        df, t1_cutoff, t2_cutoff, last_date, run_at, rebuild=args.rebuild
-    )
-
-    # Idempotent: a row already there for a date being written is replaced (so
-    # re-running after a partial enrichment doesn't duplicate); the new rows go
-    # after the others, oldest date first. A rebuild keeps none of the old rows.
-    written = {r['date'] for r in new_rows}
-    kept = [] if args.rebuild else [r for r in existing if r.get('date') not in written]
-    merged = [*kept, *new_rows]
+    new_rows = build_rows(df, t1_cutoff, t2_cutoff, run_at)
 
     args.csv.parent.mkdir(parents=True, exist_ok=True)
     with args.csv.open('w', newline='', encoding='utf-8') as f:
         w = csv.DictWriter(f, fieldnames=COLUMNS, extrasaction='ignore')
         w.writeheader()
-        for r in merged:
+        for r in new_rows:
             w.writerow(r)
 
     row = new_rows[-1]
-    if args.rebuild:
-        print(f'[track] rebuilt {len(new_rows)} dates '
-              f'({new_rows[0]["date"]} .. {row["date"]}), replacing {len(existing)} rows')
-        had_a_row = {r['date'] for r in existing if _csv_date(r.get('date')) is not None}
-        dropped = had_a_row - written
-        if dropped:
-            print(f'[track] {len(dropped)} earlier dates have no enriched fires now '
-                  'and were dropped')
-    else:
-        if last_date is not None and row['date'] < last_date.isoformat():
-            # Nothing could be filled; the step stays ok, so its log has to say why.
-            print(f"[track] CSV's last row {last_date} is newer than "
-                  f'the newest enriched fire date {row["date"]}')
-        if len(new_rows) > 1:
-            print(f'[track] filled {len(new_rows)} dates '
-                  f'({new_rows[0]["date"]} .. {row["date"]})')
+    print(f'[track] rebuilt {len(new_rows)} dates '
+          f'({new_rows[0]["date"]} .. {row["date"]}), replacing {len(existing)} rows')
+    # Only a row whose date is YYYY-MM-DD is a date of the old file. If two rows hold
+    # the same date, the later one is the old file's row for it.
+    old_by_date = {
+        r['date']: r for r in existing if _csv_date(r.get('date')) is not None
+    }
+    written = {r['date'] for r in new_rows}
+    dropped = old_by_date.keys() - written
+    if dropped:
+        print(f'[track] {len(dropped)} earlier dates have no enriched fires now '
+              'and were dropped')
+    if old_by_date:
+        # Compared as the file holds them, so read back what was just written.
+        held = {r['date']: r for r in _read_rows(args.csv)}
+        both = old_by_date.keys() & held.keys()
+        changed = sum(1 for d in both if _differs(old_by_date[d], held[d]))
+        print(f'[track] {changed} of {len(both)} earlier rows changed')
     print(f'[track] {row["date"]}: '
           f'{row["n_fires_today"]:,} new fires '
           f'(T1={row["t1_today"]} T2={row["t2_today"]} T3={row["t3_today"]})')
@@ -342,7 +314,7 @@ def main(argv: list[str] | None = None) -> None:
           f'{row["n_fires_total_window"]:,} fires, '
           f'flow_inv Sharpe={row["flow_inv_sharpe"]} '
           f'(T2+={row["t2plus_sharpe"]}, ModeB={row["modeB_sharpe"]})')
-    print(f'[track] CSV → {args.csv}  ({len(merged)} rows)')
+    print(f'[track] CSV → {args.csv}  ({len(new_rows)} rows)')
 
 
 if __name__ == '__main__':

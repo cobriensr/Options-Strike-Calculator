@@ -48,9 +48,9 @@ Each run:
      `quality-sim` and `takeit-drift` each publish a dated report, plot set or CSV under
      `research/`, and every one but the rollup publishes its log (see "Research
      outputs"). The rollup and `whale-plots` read the chains state and the two fire
-     reports read the derived state. `lottery-tracking` extends one growing CSV with a
-     row for every enriched fire date after the file's last row, so a night it missed is
-     filled on the next run. The others read Neon alone. The seven steps that run a
+     reports read the derived state. `lottery-tracking` rewrites its CSV whole every night,
+     with a row for every enriched fire date, each as of its own date on that night's data
+     and the active weights. The others read Neon alone. The seven steps that run a
      script do it as a subprocess with no R2, UW or Sentry secret in its environment,
      and its output goes to the step's log in R2, not to the job's logs or Sentry.
 
@@ -1030,7 +1030,7 @@ and PNG files; the parquet files are state, not reports.
 `exit-policy-report` and `flow-timing-report` read the derived state of the days the
 manifest calls fresh, and Neon for the fires. None of the four reads the tape.
 `feature-audit`, `outcome-mining`, `score-lineage`, `quality-sim` and `takeit-drift` read
-Neon alone, and `lottery-tracking` extends the stored tracking CSV with what it reads
+Neon alone, and `lottery-tracking` rewrites the stored tracking CSV from what it reads
 from Neon. Six report scripts
 (`exit-policy-report`, `flow-timing-report`, `feature-audit`, `outcome-mining`,
 `score-lineage` and `lottery-tracking`) score fires against the weights version the
@@ -1040,17 +1040,17 @@ weights JSON; the alert reads `script exited 1 (_report_weights.ActiveWeightsErr
 `research-derive`, `eod-flow-rollup`, `quality-sim` and `takeit-drift` run
 in the job's own process; the other seven steps run their script as a subprocess.
 
-**Rebuilding the tracking CSV.** The nightly never recomputes an older row, so after
-outcomes are re-enriched the old rows no longer match the data they were computed on.
-A weights promotion does the same to the tiers: it moves the active cutoffs, so rows
-written before it no longer compare with rows written after it, and a rebuild puts the
-whole series on one set of cutoffs. To redo the whole file, run
-`scripts/daily_tracker.py --csv COPY --rebuild` locally on a copy of the state, with the
-database URL in the environment, and put the file back at the state key. It writes one
-row for every enriched fire date, each as of its date, and discards the rows the copy
-held. Overwriting the state is the owner's call, so ask
-before doing it (the R2 rule). The nightly never passes `--rebuild`; its next run
-extends the rebuilt file as it does any other.
+**The tracking CSV is rebuilt every night.** `lottery-tracking` writes one row for every
+enriched fire date, each as of its own date on that night's data and the active weights.
+A revision of past data (outcomes re-enriched, fires added or corrected, a weights
+promotion that moves the tier cutoffs) therefore leaves no jump between old and new
+rows, and there is nothing to run by hand. What each night saw is kept in that night's
+dated snapshot (`research/lottery-tracking/{session}/lottery-tracking.csv`, written
+before the state); it lasts while the bucket has no lifecycle rule for `research/`,
+which only the Cloudflare dashboard shows. The tracker's line
+`[track] R of M earlier rows changed` in the step's log says how many of the dates the
+file had the night before differ now in any column but `run_at`; a revision of history
+shows there.
 
 **The logs.** `research/_logs/{session}/{step}.log` holds everything a step's script
 printed: all of `whale-plots`, `exit-policy-report`, `flow-timing-report`,

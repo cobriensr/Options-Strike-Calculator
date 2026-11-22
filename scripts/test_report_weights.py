@@ -705,17 +705,22 @@ def test_invalid_active_weights_fail_the_report_without_a_fallback(
 
 
 @pytest.mark.parametrize('failure', FAILURES)
-def test_tracker_rebuild_reads_the_active_weights_first_too(
+def test_tracker_reads_the_active_weights_before_any_fire_or_file(
     failure: Exception, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # The tracker's own run, with a tracking file already there to be rewritten.
     harness = Harness(TRACKER, tmp_path, monkeypatch)
     harness.failure = failure
+    existing = TRACKER.written(tmp_path)
+    existing.parent.mkdir()
+    existing.write_text('date\n2026-11-03\n', encoding='utf-8')
 
     with pytest.raises(report_weights.ActiveWeightsError):
-        daily_tracker.main([*TRACKER.args(tmp_path), '--rebuild'])
+        daily_tracker.main(TRACKER.args(tmp_path))
 
     assert harness.events == ['connect', 'pointer:active']  # no fire was read
-    assert list(tmp_path.rglob('*')) == []  # and no file written
+    assert existing.read_text(encoding='utf-8') == 'date\n2026-11-03\n'  # nor the file touched
+    assert list(tmp_path.rglob('*')) == [existing.parent, existing]
 
 
 # Runs a report script as `__main__` the way the nightly does (a subprocess), with
