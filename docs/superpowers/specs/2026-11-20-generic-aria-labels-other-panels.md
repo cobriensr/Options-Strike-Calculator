@@ -52,7 +52,7 @@ Line numbers are at c5672aec9.
 | 16 | `Regime0dte/index.tsx:56` inner `div` | `aria-labelledby={REGIME_0DTE_HEADING_ID}` inside `SectionBox label="0DTE Gamma Regime"` | **D**. Keep the `h3`. |
 | 17–18 | `GexLandscape/StrikeTable.tsx:216,225` New / Anchor badges | short label plus a longer `title` | **H**: hint = the `title` text. |
 | 19–21 | `GexLandscape/StrikeTable.tsx:328,337,346` ↑↑ / ↓↓ / — | label "Vol reinforcing / opposing / neutral" plus a `title` that starts with the meaning word | **I**: `aria-label` = the `title` text. |
-| 22 | `Gexbot/ConvexityMatrix.tsx:220` cell `div` | label = `title` = `cellTitle(cell)` | **H**: hint = `cellTitle(cell)` less any part the cell already shows (ticker, DTE). |
+| 22 | `Gexbot/ConvexityMatrix.tsx:220` cell `div` | label = `title` = `cellTitle(cell)` | **H**: hint = the convexity name and reading (`cellHint(cell)`). The ticker, the DTE and the value stay out, because the cell shows all three. `title` stays the whole `cellTitle(cell)`. |
 | 23 | `Gexbot/DexoflowVelocityTape.tsx:167` | `aria-label={\`${verdict} ${value}\`}`, shows an `aria-hidden` glyph and the value | **H**: hint = `verdict`. |
 | 24 | `GreekFlowPanel/FlowChart.tsx:116` "waiting for ≥2 points" placeholder | `aria-label={ariaLabel}` (the chart's name) | **I**: `aria-label={\`${ariaLabel}, waiting for at least 2 points\`}`. |
 | 25 | `VIXTermStructure/RatioCard.tsx:78` | `aria-label={\`15-minute change ${...}\`}`, shows the delta and `/ {spanMin}m` | **H**: hint `` `${trajectory.spanMin}-minute change` ``. The old label said "15-minute" whatever the span. |
@@ -60,7 +60,7 @@ Line numbers are at c5672aec9.
 | 27 | `DeltaStrikesTable.tsx:40` mobile card wrapper | `aria-label="Delta strikes"`, `md:hidden` | **S**, matching the desktop `<section aria-label="Delta strikes">` at :101. Confirm the two are never both displayed. |
 | 28 | `FuturesCalculator/FuturesGrid.tsx:100` | `aria-label={\`${label} ${name}\`}`, shows `label` | **D** (was H: hint = `name`). The card already shows `name` as visible subtext (`<div>{name}</div>` below the changes row), so a hint would be read twice. |
 | 29 | `FuturesCalculator/ScenarioInputs.tsx:185` contracts stepper | both `aria-labelledby` and `aria-label="Contracts"` | **G** |
-| 30 | `IntervalBAFeed/IntervalBARow.tsx:300` moneyness badge | label = `title` = `moneyness.tooltip` | **H**: hint = the part of `moneyness.tooltip` the pill does not already say (`srText`: the spot / strike relation, and for OTM the distance to ITM). Every tooltip begins by restating the pill's label and percentage, so the verbatim tooltip would be read twice. `title` unchanged, built from `srText`. |
+| 30 | `IntervalBAFeed/IntervalBARow.tsx:300` moneyness badge | label = `title` = `moneyness.tooltip` | **H**: hint = the part of `moneyness.tooltip` the pill does not already say (`srText`: the spot / strike relation, and for OTM the distance to ITM). Every tooltip begins by restating the pill's label (and, for ITM and OTM, its percentage), so the verbatim tooltip would be read twice. `title` unchanged, built from `srText`. |
 
 ## Test pattern
 
@@ -123,15 +123,17 @@ Same five steps. Commit: `fix(a11y): Name the dark-pool, delta-strike, futures a
 
 **Files:**
 - Create: `src/__tests__/helpers/generic-aria-scan.ts`, `src/__tests__/no-generic-aria-name.test.ts`
+- Modify: `src/__tests__/helpers/aria.ts` (export `GENERIC_TAGS`)
 
 **Interfaces:**
-- Produces: `findGenericAriaNames(fileName: string, source: string): string[]` in the helper. It returns one `"<line>: <tag> <attr>"` entry per offending element.
+- Produces: `findGenericAriaNames(fileName: string, source: string): string[]` in the helper. It returns one `"<line>: <tag> <attr>"` entry per naming attribute, at the attribute's line, so an element with both `aria-label` and `aria-labelledby` yields two.
 
 - [ ] Write the detector's fixture tests first, on inline source strings:
   - flagged: `<span aria-label="x">a</span>`, `<div aria-labelledby="h" />`, `<p aria-label="x">a</p>`
   - not flagged: `<span role="img" aria-label="x">↑</span>`, `<button aria-label="x" />`, `<section aria-label="x" />`, `<fieldset aria-label="x" />`, `<span {...props} aria-label="x" />` (a spread may carry a role), `<Badge aria-label="x" />` (components are out of scope)
-- [ ] Implement `findGenericAriaNames` with `ts.createSourceFile(..., ScriptKind.TSX)`. An element is flagged when its tag is intrinsic and in `GENERIC_TAGS = ['span','div','p','i','b','em','strong','small','code','sub','sup','del','ins','s','u']` (ARIA 1.2's naming-prohibited roles: generic, paragraph, emphasis, strong, code, subscript, superscript, deletion, insertion), it has `aria-label` or `aria-labelledby`, and it has neither a `role` attribute nor a spread attribute.
-- [ ] Add the repo scan: every `src/**/*.tsx` outside `__tests__/` folders, read with `node:fs`, expecting `[]`, with a failure message naming `file:line tag attr` and the fix ("use `<SrHint>` or a role; see `src/components/ui/SrHint.tsx`").
+- [ ] Implement `findGenericAriaNames` with `ts.createSourceFile(..., ScriptKind.TSX)`. An element is flagged when its tag is intrinsic and in `GENERIC_TAGS`, it has `aria-label` or `aria-labelledby`, and it has no role and no spread attribute. `GENERIC_TAGS` is one list of 17 tags, exported from `src/__tests__/helpers/aria.ts` and shared with the runtime helper `genericElementsWithAriaLabel` (which also checks `aria-labelledby`): `span`, `div`, `p`, `i`, `b`, `em`, `strong`, `small`, `code`, `sub`, `sup`, `del`, `ins`, `s`, `u`, `caption`, `figcaption` (ARIA 1.2's naming-prohibited roles: generic, paragraph, emphasis, strong, code, subscript, superscript, deletion, insertion, caption). The test writes the 17 tags out, so a change to the list is a deliberate test edit.
+  - A presentational role counts as no role. `none` and `presentation` (a string literal, first token, any case) are ignored by browsers when `aria-label` is present, so the element is still a named generic. Any other role exempts, and so does a non-literal expression (`role={r}`): a documented blind spot.
+- [ ] Add the repo scan: every `src/**/*.tsx` outside `__tests__/` folders, skipping colocated `*.test.tsx` and `*.spec.tsx` files, read with `node:fs`, expecting `[]`, with a failure message naming `file:line tag attr` and the fix ("use `<SrHint>` or a role; see `src/components/ui/SrHint.tsx`").
 - [ ] Run it; it passes on the branch after Tasks 1–4.
 - [ ] `npm run review` green, then commit: `test(a11y): Fail when a bare span or div is given a screen-reader name`.
 
