@@ -41,20 +41,38 @@ export const GENERIC_TAGS = [
 const GENERIC_SELECTOR = GENERIC_TAGS.join(',');
 
 /**
- * Every element under `root` that has an `aria-label` but no explicit role
- * and is a bare generic element (a `span`, `div`, `p`, ...), as short HTML
- * snippets for a readable failure.
+ * Whether a `role` value is presentational: its first token (case and
+ * padding aside) is `none` or `presentation`. Those roles strip an element's
+ * semantics, but a browser ignores them when a global ARIA attribute such as
+ * `aria-label` is present, so such an element is still a named generic and
+ * must not count as having a role. Shared by the runtime helper below and the
+ * source scan in `generic-aria-scan.ts`.
+ */
+export function isPresentationalRole(role: string): boolean {
+  const first = role.trim().toLowerCase().split(/\s+/)[0];
+  return first === 'none' || first === 'presentation';
+}
+
+/**
+ * Every element under `root` that has an `aria-label` or `aria-labelledby`
+ * but no role and is a bare generic element (a `span`, `div`, `p`, ...), as
+ * short HTML snippets for a readable failure.
  *
  * ARIA 1.2 prohibits naming a generic element, and screen readers mostly
  * ignore the label, so the text never reaches the user. A badge's
  * explanation belongs in a visually hidden `<SrHint>` inside the badge
- * instead. An element with an explicit role (`img`, `group`, ...) is fine
- * and is not reported, and neither is an element that may carry a name
- * (a `<section>` region, a `<th>`, a `<button>`).
+ * instead. An element with a role (`img`, `group`, ...) is fine and is not
+ * reported, and neither is an element that may carry a name (a `<section>`
+ * region, a `<th>`, a `<button>`). A presentational role (`none`,
+ * `presentation`) does not count as a role, see {@link isPresentationalRole}.
  */
 export function genericElementsWithAriaLabel(root: ParentNode): string[] {
-  return Array.from(root.querySelectorAll('[aria-label]'))
-    .filter((el) => !el.hasAttribute('role') && el.matches(GENERIC_SELECTOR))
+  return Array.from(root.querySelectorAll('[aria-label],[aria-labelledby]'))
+    .filter((el) => {
+      const role = el.getAttribute('role');
+      const hasRole = role != null && !isPresentationalRole(role);
+      return !hasRole && el.matches(GENERIC_SELECTOR);
+    })
     .map(snippet);
 }
 
