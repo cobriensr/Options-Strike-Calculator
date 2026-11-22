@@ -104,12 +104,14 @@ builds every tape day from `CHAINS_START` on.
 Edit constants at the top of `scripts/_eod_flow.py`:
 
 ```python
-WATCHLIST = ["SPXW", "NDXP", "SPY", "QQQ", "IWM", "NVDA", "SNDK"]
 MIN_VOL_OI_RATIO = 5.0
 MIN_PREMIUM = 100_000
 ```
 
-If you tighten these, bump `CHAINS_VERSION` in the same file and re-run locally with
+The watchlist tickers (SPXW, NDXP, SPY, QQQ, IWM, NVDA, SNDK) are not a constant: the
+rollup's SQL spells them out in its `IN (...)` lists.
+
+If you tighten the two floors, bump `CHAINS_VERSION` in the same file and re-run locally with
 `--force` on every day to regenerate the parquets at the new floor. The nightly job
 reads a bumped version as a stale fingerprint and rebuilds each chains day over the
 following nights, except the days seeded from the retired CSV archive, which it never

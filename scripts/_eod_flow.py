@@ -33,10 +33,6 @@ from zoneinfo import ZoneInfo
 
 import duckdb
 
-# Detector ticker watchlist (post 2026-04-24 expansion). The rollup's SQL spells the
-# same tickers out; this list is carried over as it was.
-WATCHLIST = ["SPXW", "NDXP", "SPY", "QQQ", "IWM", "NVDA", "SNDK"]
-
 # Per-day parquet filters (keep file size small)
 MIN_VOL_OI_RATIO = 5.0
 MIN_PREMIUM = 100_000  # $100K floor for parquet inclusion

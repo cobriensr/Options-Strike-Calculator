@@ -52,7 +52,6 @@ import time
 from collections.abc import Iterable
 from datetime import date, datetime
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 import pandas as pd
 import psycopg2
@@ -80,8 +79,6 @@ from enrich_lottery_outcomes import (  # noqa: E402
     simulate_flow_inversion,
     resample_minute_mid,
 )
-
-_CT_TZ = ZoneInfo('America/Chicago')
 
 # Bump when derive_day's numbers change: the nightly re-derives every day.
 DERIVE_VERSION = 1

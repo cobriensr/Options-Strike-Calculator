@@ -68,7 +68,6 @@ VALID_EQUITY_TYPE = {"ADR", "Common Stock", "ETF", "Index", "Other", "Unit"}
 
 SANITY_FLOOR_ROWS = 1_000_000
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_INPUT_DIR = Path.home() / "Downloads" / "EOD-OptionFlow"
 # Full unfiltered archive of the source CSV. Written BEFORE any filtering so
 # the CSV is recoverable to its original row count even if a reader's filter

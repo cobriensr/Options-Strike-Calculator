@@ -22,8 +22,7 @@ from __future__ import annotations
 import json
 import os
 import sys
-from collections import defaultdict
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from http.client import HTTPException
 from pathlib import Path
 from urllib.parse import urlencode
@@ -316,7 +315,7 @@ def main() -> None:
     lines: list[str] = []
     lines.append('# Calendar Context Findings — E1, E5, PCS Monday')
     lines.append('')
-    lines.append(f'**Generated:** 2026-05-21  ')
+    lines.append('**Generated:** 2026-05-21  ')
     lines.append(f'**Sample window:** {sample_start} → {sample_end}  ')
     lines.append(f'**Total trades:** {len(trades)} (E1={int((trades.trade_type=="long_call_e1").sum())}, E5={int((trades.trade_type=="long_put_e5").sum())}, PCS={int((trades.trade_type=="pcs_monday").sum())})  ')
     lines.append('')
