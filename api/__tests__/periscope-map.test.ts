@@ -60,6 +60,7 @@ vi.mock('../../src/utils/timezone.js', () => ({
 }));
 
 import handler from '../periscope-map.js';
+import { setCacheHeaders, isMarketOpen } from '../_lib/api-helpers.js';
 
 const PAYLOAD = {
   mini_contracts: [
@@ -241,5 +242,122 @@ describe('/api/periscope-map', () => {
     expect(res._status).toBe(200);
     const body = res._json as Record<string, unknown>;
     expect(body.priorAvailable).toBe(false);
+  });
+});
+
+describe('/api/periscope-map cache headers', () => {
+  // The map is live-only (no date or time param), so it has no historical
+  // case. A live response that carries data, or any live response during the
+  // session, is cached 10 s with no stale reuse; a no-data response while the
+  // market is closed keeps 300 s + 60 s. An error sets no cache header.
+  const LIVE_SHORT: [number, number] = [10, 0];
+  const LONG: [number, number] = [300, 60];
+
+  async function call() {
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'GET',
+        headers: { authorization: 'Bearer test-secret' },
+      }),
+      res,
+    );
+    return res;
+  }
+
+  /** Queue the reads for a complete response (no prior, no cone). */
+  function queueFullResponse(): void {
+    const latestAt = new Date(Date.now() - 30_000);
+    mockSql
+      .mockResolvedValueOnce([]) // availableSlots
+      .mockResolvedValueOnce([{ captured_at: latestAt, raw_response: PAYLOAD }])
+      .mockResolvedValueOnce([{ captured_at: latestAt, raw_response: PAYLOAD }])
+      .mockResolvedValueOnce([{ captured_at: latestAt, raw_response: PAYLOAD }])
+      .mockResolvedValueOnce([{ close: '7515' }])
+      .mockResolvedValue([]); // no prior, no cone
+  }
+
+  /** Queue the reads for fresh panels but no SPX candle. */
+  function queueNoSpot(): void {
+    const capturedAt = new Date(Date.now() - 60_000);
+    mockSql
+      .mockResolvedValueOnce([]) // availableSlots
+      .mockResolvedValueOnce([
+        { captured_at: capturedAt, raw_response: PAYLOAD },
+      ])
+      .mockResolvedValueOnce([
+        { captured_at: capturedAt, raw_response: PAYLOAD },
+      ])
+      .mockResolvedValueOnce([
+        { captured_at: capturedAt, raw_response: PAYLOAD },
+      ])
+      .mockResolvedValueOnce([]); // SPX spot
+  }
+
+  it.each([
+    ['in session', true],
+    ['pre-open', false],
+  ])(
+    'caches a live response that carries data for 10 s with no stale reuse (%s)',
+    async (_label, open) => {
+      vi.mocked(isMarketOpen).mockReturnValue(open);
+      queueFullResponse();
+      const res = await call();
+      expect((res._json as { data: unknown }).data).not.toBeNull();
+      expect(setCacheHeaders).toHaveBeenCalledTimes(1);
+      expect(setCacheHeaders).toHaveBeenCalledWith(res, ...LIVE_SHORT);
+    },
+  );
+
+  it.each([
+    ['no_slot', true, LIVE_SHORT],
+    ['no_slot', false, LONG],
+    ['no_spot', true, LIVE_SHORT],
+    ['no_spot', false, LONG],
+  ] as const)(
+    'a live %s response uses the right cache (marketOpen: %s)',
+    async (reason, open, expected) => {
+      vi.mocked(isMarketOpen).mockReturnValue(open);
+      if (reason === 'no_slot') mockSql.mockResolvedValue([]);
+      else queueNoSpot();
+      const res = await call();
+      expect(res._json).toMatchObject({ data: null, reason });
+      expect(setCacheHeaders).toHaveBeenCalledTimes(1);
+      expect(setCacheHeaders).toHaveBeenCalledWith(res, ...expected);
+    },
+  );
+
+  it('sets no cache header on a transient DB error (503)', async () => {
+    mockSql.mockRejectedValue(new TransientDbError('db attempt timeout'));
+    const res = await call();
+    expect(res._status).toBe(503);
+    expect(setCacheHeaders).not.toHaveBeenCalled();
+  });
+
+  it('sets no cache header on a generic DB error (500)', async () => {
+    mockSql.mockRejectedValue(new Error('Neon pool exhausted'));
+    const res = await call();
+    expect(res._status).toBe(500);
+    expect(mockSentryCapture).toHaveBeenCalledTimes(1);
+    expect(setCacheHeaders).not.toHaveBeenCalled();
+  });
+
+  it('sets no cache header when a later read fails after the panels loaded', async () => {
+    const capturedAt = new Date(Date.now() - 60_000);
+    mockSql
+      .mockResolvedValueOnce([]) // availableSlots
+      .mockResolvedValueOnce([
+        { captured_at: capturedAt, raw_response: PAYLOAD },
+      ])
+      .mockResolvedValueOnce([
+        { captured_at: capturedAt, raw_response: PAYLOAD },
+      ])
+      .mockResolvedValueOnce([
+        { captured_at: capturedAt, raw_response: PAYLOAD },
+      ])
+      .mockRejectedValueOnce(new Error('spot read failed'));
+    const res = await call();
+    expect(res._status).toBe(500);
+    expect(setCacheHeaders).not.toHaveBeenCalled();
   });
 });

@@ -36,7 +36,8 @@
 
 import { Sentry, metrics } from './_lib/sentry.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { setCacheHeaders, isMarketOpen } from './_lib/api-helpers.js';
+import { isMarketOpen } from './_lib/api-helpers.js';
+import { setLiveReadCache } from './_lib/live-read-cache.js';
 import { guardOwnerOrGuestEndpoint } from './_lib/guest-auth.js';
 import { getDb, withDbRetry } from './_lib/db.js';
 import { sendDbErrorResponse } from './_lib/transient-db-response.js';
@@ -213,11 +214,6 @@ export default async function handler(
     const marketOpen = isMarketOpen();
     const date = getETDateStr(new Date()); // today CT
 
-    // Cache: edge 30s live / 300s after-hours, SWR 30s live / 60s after-hours.
-    // Panel polls at POLL_INTERVALS.PERISCOPE (60s) so the cache + SWR keeps
-    // the worst-case rendered staleness around 30-90s even with the cache layer.
-    setCacheHeaders(res, marketOpen ? 30 : 300, marketOpen ? 30 : 60);
-
     // Available slots backs the prev/next stepper. The stepper is meant
     // for historical replay (date picker active) — for live mode we still
     // return the day's slots so the user can step back into history without
@@ -226,6 +222,7 @@ export default async function handler(
 
     const latest = await fetchLatestGexbotSlot(date);
     if (latest == null) {
+      setLiveReadCache(res, { historical: false, hasData: false, marketOpen });
       done({ status: 200 });
       res.status(200).json({
         marketOpen,
@@ -239,6 +236,7 @@ export default async function handler(
 
     const spot = await fetchSpxSpot(date, latest.capturedAt);
     if (spot == null) {
+      setLiveReadCache(res, { historical: false, hasData: false, marketOpen });
       done({ status: 200 });
       res.status(200).json({
         marketOpen,
@@ -271,6 +269,7 @@ export default async function handler(
       (Date.now() - new Date(latest.capturedAt).getTime()) / 1000,
     );
 
+    setLiveReadCache(res, { historical: false, hasData: true, marketOpen });
     done({ status: 200 });
     res.status(200).json({
       marketOpen,
