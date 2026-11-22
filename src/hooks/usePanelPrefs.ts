@@ -17,6 +17,14 @@
  * paint-on-mount cache. Public visitors skip the server round-trip
  * entirely; localStorage is their only store.
  *
+ * The access mode is read live, so it can change without a remount. A
+ * public visitor who signs in with a guest key gets the same GET and the
+ * same PUTs from that moment on; an axis they changed while public keeps
+ * its local value against the server layout and is sent with the next
+ * flush. A guest or owner whose access drops to public stops sending, and
+ * an edit still queued at that moment is dropped (the cookie is gone, so
+ * the PUT could only 401).
+ *
  * Mutations are optimistic: setters update local state synchronously,
  * write to localStorage via the `[hidden, order, groupOrder]` effect,
  * and schedule a debounced `PUT` that bundles per-axis changes — only
@@ -43,6 +51,8 @@
  *
  * `isLoaded` is true immediately for public visitors (no fetch) and
  * flips true on owner/guest after the GET resolves (success or failure).
+ * It follows the live mode: it goes false while the GET of a public to
+ * guest sign-in is in flight, and true again on a drop to public.
  * Callers can gate render on `isLoaded` to avoid a flash-of-default
  * layout for returning users with customized order.
  *
@@ -176,7 +186,11 @@ interface PartialBody {
 }
 
 export function usePanelPrefs(): PanelPrefs {
-  const initialMode = useRef(getAccessMode()).current;
+  // The live access mode, read at every render and never frozen in a ref or
+  // state: App re-renders this hook on each mode change (useAccessSession), so
+  // a guest key entered without a reload loads and saves that guest's server
+  // layout, and a drop to public stops the requests.
+  const mode = getAccessMode();
   // Synchronous localStorage seed — paints last-known visibility/order
   // before the async server GET resolves. `useMemo` with empty deps
   // runs once per mount so we don't re-parse on every render. The
@@ -192,14 +206,17 @@ export function usePanelPrefs(): PanelPrefs {
   const [groupOrder, setGroupOrderState] = useState<readonly string[]>(
     () => cached.groupOrder,
   );
-  const [isLoaded, setIsLoaded] = useState(() => initialMode === 'public');
+  const [isLoaded, setIsLoaded] = useState(() => mode === 'public');
   const pendingPutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // The latest body the debounce timer will send. Held in a ref so the
   // flush path (pagehide / unmount) can grab the most recent state even
   // if React state has moved on, AND so the GET handler can check
   // axis-presence to avoid clobbering user changes that happened
   // pre-load. Keys present = "user touched this axis"; cleared after a
-  // successful send.
+  // successful send. A public visitor's edits are recorded here too, but
+  // nothing sends them while public: they wait for a guest sign-in, where
+  // they keep their axis against the server layout and go out with the
+  // next flush.
   const pendingBodyRef = useRef<PartialBody>({});
 
   // Mirror state to localStorage on every change so the next mount can
@@ -216,17 +233,34 @@ export function usePanelPrefs(): PanelPrefs {
     });
   }, [hidden, order, groupOrder]);
 
+  // Runs on mount and again whenever the access mode changes, so a guest key
+  // entered without a reload loads that guest's layout. Re-running is safe:
+  // `pendingBodyRef` still holds every axis the user touched (a public
+  // visitor's included), and the cleanup aborts a request a second flip
+  // supersedes.
   useEffect(() => {
-    if (initialMode === 'public') return;
+    if (mode === 'public') {
+      // Nothing to load, so the layout is as loaded as it will get. This also
+      // ends the wait of a GET that a drop to public just aborted.
+      setIsLoaded(true);
+      return;
+    }
+    setIsLoaded(false);
     const abort = new AbortController();
+    // A reply is stale once its run was aborted, or once the live mode is no
+    // longer the one this run started under: the cookie can go before App
+    // re-renders the hook, and the reply can land in that gap.
+    const isStale = () => abort.signal.aborted || getAccessMode() !== mode;
     void (async () => {
       try {
         const res = await fetch('/api/panel-prefs', { signal: abort.signal });
+        if (isStale()) return;
         if (!res.ok) {
           setIsLoaded(true);
           return;
         }
         const data = (await res.json()) as PanelPrefsResponse;
+        if (isStale()) return;
         // Only apply axes the user HASN'T touched since mount —
         // otherwise the GET overwrites the user's pre-load toggle /
         // drag with stored state. Touched-axis presence is encoded as
@@ -258,7 +292,7 @@ export function usePanelPrefs(): PanelPrefs {
         }
         setIsLoaded(true);
       } catch (err) {
-        if ((err as Error).name === 'AbortError') return;
+        if ((err as Error).name === 'AbortError' || isStale()) return;
         setIsLoaded(true);
       }
     })();
@@ -267,8 +301,8 @@ export function usePanelPrefs(): PanelPrefs {
     };
     // `cached` is the once-per-mount localStorage seed (useMemo with []
     // deps); listing it satisfies react-hooks/exhaustive-deps and is
-    // referentially stable so this effect still only fires once.
-  }, [initialMode, cached]);
+    // referentially stable, so only a mode change re-runs this effect.
+  }, [mode, cached]);
 
   const sendPut = useCallback((body: PartialBody, keepalive: boolean) => {
     // `keepalive: true` lets the request outlive the page when fired
@@ -285,11 +319,15 @@ export function usePanelPrefs(): PanelPrefs {
 
   const persist = useCallback(
     (patch: PartialBody) => {
-      if (initialMode === 'public') return;
       // Merge the new per-axis change into the pending body. Earlier
       // touches stick around so a toggle + drag in the same debounce
-      // window both make it into one PUT.
+      // window both make it into one PUT. Recorded in every mode: a
+      // public visitor's touch must still protect its axis when a guest
+      // sign-in runs the server GET.
       pendingBodyRef.current = { ...pendingBodyRef.current, ...patch };
+      // A public visitor has no server layout to write, and no timer runs
+      // for them: the edit waits in the pending body for a sign-in.
+      if (mode === 'public') return;
       if (pendingPutRef.current) clearTimeout(pendingPutRef.current);
       pendingPutRef.current = setTimeout(() => {
         const body = pendingBodyRef.current;
@@ -303,7 +341,7 @@ export function usePanelPrefs(): PanelPrefs {
         pendingPutRef.current = null;
       }, DEBOUNCE_MS);
     },
-    [initialMode, sendPut],
+    [mode, sendPut],
   );
 
   // Flush the latest pending body immediately. Called on hook unmount
@@ -322,8 +360,19 @@ export function usePanelPrefs(): PanelPrefs {
     }
   }, [sendPut]);
 
+  // Throw away what is queued, unsent. Used when the identity the edits were
+  // made under is gone, so a PUT could only 401 (a drop to public) or would
+  // write them into another identity's layout (owner and guest swap).
+  const dropPending = useCallback(() => {
+    if (pendingPutRef.current) {
+      clearTimeout(pendingPutRef.current);
+      pendingPutRef.current = null;
+    }
+    pendingBodyRef.current = {};
+  }, []);
+
   useEffect(() => {
-    if (initialMode === 'public') return;
+    if (mode === 'public') return;
     const onPageHide = () => flushPending();
     // pagehide doesn't fire on iOS Safari when the user swipes the
     // browser away — visibilitychange→hidden does, so listen to both.
@@ -336,10 +385,13 @@ export function usePanelPrefs(): PanelPrefs {
       window.removeEventListener('pagehide', onPageHide);
       document.removeEventListener('visibilitychange', onVisibilityChange);
       // Final flush on component unmount — covers SPA teardown paths
-      // that don't trigger pagehide.
-      flushPending();
+      // that don't trigger pagehide. This cleanup also runs when the mode
+      // changes, and by then the live mode is no longer the one the edits
+      // were made under: drop them instead of sending.
+      if (getAccessMode() === mode) flushPending();
+      else dropPending();
     };
-  }, [initialMode, flushPending]);
+  }, [mode, flushPending, dropPending]);
 
   const isHidden = useCallback((id: string) => hidden.has(id), [hidden]);
 
