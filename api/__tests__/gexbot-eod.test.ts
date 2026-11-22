@@ -25,6 +25,7 @@ import {
   indexExistingObject,
   latestEligibleReportDate,
   listStoredTickers,
+  listTickersStoredOnOrBefore,
   parseEodDisposition,
   requestEodReport,
   storeEodReport,
@@ -662,6 +663,39 @@ describe('listStoredTickers', () => {
   it('propagates a DB reject', async () => {
     mockSql.mockRejectedValueOnce(new Error('connection lost'));
     await expect(listStoredTickers('2026-10-28')).rejects.toThrow(
+      'connection lost',
+    );
+  });
+});
+
+// What the SQL selects (on or before, not after) is run against real Postgres
+// in gexbot-eod-stored-before-pglite.test.ts; these cover the wrapper.
+describe('listTickersStoredOnOrBefore', () => {
+  it('bounds the query with retries and a per-attempt timeout', async () => {
+    await listTickersStoredOnOrBefore('2026-11-20');
+    expect(mockRetry).toHaveBeenCalledTimes(1);
+    expect(mockRetry).toHaveBeenCalledWith(expect.any(Function), 2, 10_000);
+  });
+
+  it('returns a Set of the tickers and binds the date once', async () => {
+    mockSql.mockResolvedValueOnce([{ ticker: 'SPX' }, { ticker: 'ROKU' }]);
+    const out = await listTickersStoredOnOrBefore('2026-11-20');
+    expect(out).toEqual(new Set(['SPX', 'ROKU']));
+    expect(mockSql).toHaveBeenCalledTimes(1);
+    expect(mockSql.mock.calls[0]?.slice(1)).toEqual(['2026-11-20']);
+  });
+
+  it('selects one row per ticker with report_date <= the bound', async () => {
+    await listTickersStoredOnOrBefore('2026-11-20');
+    const sqlText = (mockSql.mock.calls[0]?.[0] as string[]).join('?');
+    expect(sqlText).toContain('SELECT DISTINCT ticker');
+    expect(sqlText).toContain('FROM gexbot_eod_reports');
+    expect(sqlText).toMatch(/report_date <= \?/);
+  });
+
+  it('propagates a DB reject', async () => {
+    mockSql.mockRejectedValueOnce(new Error('connection lost'));
+    await expect(listTickersStoredOnOrBefore('2026-11-20')).rejects.toThrow(
       'connection lost',
     );
   });

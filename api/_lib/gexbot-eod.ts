@@ -324,3 +324,21 @@ export async function listStoredTickers(date: string): Promise<Set<string>> {
   )) as { ticker: string }[];
   return new Set(rows.map((r) => r.ticker));
 }
+
+/**
+ * Tickers with a stored report dated on or before `date`. A listed ticker
+ * missing from this set had never been captured as of `date`: a new listing
+ * (spec Amendment 2), not a lost report. One row per ticker, about 60 rows.
+ */
+export async function listTickersStoredOnOrBefore(
+  date: string,
+): Promise<Set<string>> {
+  const sql = getDb();
+  const rows = (await withDbRetry(
+    () =>
+      sql`SELECT DISTINCT ticker FROM gexbot_eod_reports WHERE report_date <= ${date}`,
+    DB_RETRIES,
+    DB_ATTEMPT_TIMEOUT_MS,
+  )) as { ticker: string }[];
+  return new Set(rows.map((r) => r.ticker));
+}
