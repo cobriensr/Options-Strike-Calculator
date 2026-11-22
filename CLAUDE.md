@@ -180,17 +180,23 @@ If you're unsure whether a change needs a test: it does. The cost of writing one
 
 **1. Implement** — Write the failing test first (see "Tests Are Mandatory" above), then the code. Investigate first, understand existing patterns, then make changes.
 
-**2. Verify** — Run `npm run review` (which chains `node scripts/review-gate.mjs clear && npm run type-check` (tsc for src, api and scripts) `&& eslint . && prettier --write && vite build && node scripts/check-build-output.mjs && vitest run --coverage && node scripts/check-coverage-floor.mjs && node scripts/review-gate.mjs seal`). **NEVER report a task as finished without running this full pipeline first.** Running tests on the files you touched is not enough — type errors and lint violations from your changes regularly surface in unrelated files (transitive type narrowing, prettier reformatting, etc.). Fix any failures. If it still fails after 2 fix attempts, proceed to step 3 with the failure details.
+**2. Verify** — Run `npm run review` (that is `node scripts/review-gate.mjs run`, which takes the machine-wide gate lock and then runs the `review:steps` script, which chains `node scripts/review-gate.mjs clear && npm run type-check` (tsc for src, api and scripts) `&& eslint . && prettier --write && vite build && node scripts/check-build-output.mjs && vitest run --coverage && node scripts/check-coverage-floor.mjs && node scripts/review-gate.mjs seal`). **NEVER report a task as finished without running this full pipeline first.** Running tests on the files you touched is not enough — type errors and lint violations from your changes regularly surface in unrelated files (transitive type narrowing, prettier reformatting, etc.). Fix any failures. If it still fails after 2 fix attempts, proceed to step 3 with the failure details.
 
 **Commit gate:** Claude's commits are gated. `.githooks/pre-commit` blocks a commit whose staged files differ from what the last passing `npm run review` sealed, and names them. The fix is to re-run `npm run review` and commit again. Design: `docs/superpowers/specs/commit-gate-2026-10-28.md`.
 
 - One-time setup per clone: `git config core.hooksPath .githooks`.
 - A Claude hook denies `--no-verify`. The owner makes any unreviewed commit from their own terminal, which isn't gated.
+- **One gate at a time (machine-wide lock).** Every worktree and session shares one lock, so a gate may wait its turn. A queued gate prints `review-gate: waiting for the gate in <worktree> (pid N, running M min)` at once and every minute. Spec: `docs/superpowers/specs/gate-lock-2026-11-21.md`.
+  - A gate still waiting after 120 min exits 1. Report that to the owner; never stop another session's process.
+  - A gate whose chain runs past 75 min is killed, whole process tree, and exits 1 with `review-gate: the chain hit the 75 min hold cap`.
+  - A stuck holder frees the lock the moment its process exits, because the OS holds it: there is no lock file to delete.
+  - Known gap: a force-killed runner frees the lock at once while its steps may still run, so two gates can overlap until they end.
+  - `npm run review:steps` is the chain alone: it takes no lock and cannot seal. Run `npm run review`.
 
 **CPU load (owner rule, 2026-11-21).** The owner works at this Windows box while sessions run, and every session and subagent shares its 16 cores. These rules apply to every session and every subagent.
 
 - Never start synthetic CPU load, such as busy loops, stress tools, or many copies of a command to slow the box down. To show a fix holds up under load, measure the cost directly, for example per-test and per-hook durations from the reporter. Why: on 2026-11-21, 48 busy loops pinned every core for 20 minutes. The PreToolUse shell guard then timed out and blocked every session's shell, the stop command included.
-- Each session runs one heavy command at a time: a gate, a multi-file vitest run, a mutant sweep or a build. While your own gate runs, don't dispatch a reviewer or verifier that runs tests.
+- Each session runs one heavy command at a time: a gate, a multi-file vitest run, a mutant sweep or a build. While your own gate runs, don't dispatch a reviewer or verifier that runs tests. Gates across sessions queue on the machine-wide lock (see "Commit gate").
 - A background process you start must end on its own, or be stopped in the same command, before your turn ends.
 - If shell calls start failing on the env-shell-guard timeout, look for runaway processes before anything else. Stop only the ones your session started.
 
