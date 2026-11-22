@@ -22,6 +22,7 @@ vi.mock('../../api/_lib/db.js', () => ({
   withDbRetry: <T>(fn: () => Promise<T>): Promise<T> => fn(),
 }));
 
+import { parseEntryTimeMinutes } from '../../src/utils/entry-time.js';
 import type { SlotCandle } from '../../src/utils/snapshot-slot.js';
 import {
   exitCodeOfApply,
@@ -105,22 +106,36 @@ const history = (
 const PRIOR_OF_LIVE = { date: '2026-11-04', close: 7560.87 };
 const PRIOR_OF_BACKTEST = { date: '2026-11-05', close: 7356.73 };
 
+/**
+ * A row as `readRows` returns it: no price context stored yet, and trusted as
+ * far as build-features can tell otherwise (a live save on its own date at its
+ * own slot, the spot inside the range a plan would give it).
+ */
 const row = (
   id: number,
   entryTime: string,
   over: Partial<SnapshotRowIn> = {},
   date = LIVE_DATE,
-): SnapshotRowIn => ({
-  id,
-  date,
-  entry_time: entryTime,
-  spx_open: null,
-  spx_high: null,
-  spx_low: null,
-  prev_close: null,
-  overnight_gap: null,
-  ...over,
-});
+): SnapshotRowIn => {
+  const slot = parseEntryTimeMinutes(entryTime);
+  return {
+    id,
+    date,
+    entry_time: entryTime,
+    spx: '7490.00',
+    spx_open: null,
+    spx_high: null,
+    spx_low: null,
+    prev_close: null,
+    overnight_gap: null,
+    is_backtest: false,
+    flag_reliable: true,
+    saved_day_offset: 0,
+    // A label with no clock time has no slot to be on time for.
+    saved_minutes_ct: Number.isNaN(slot) ? 600 : slot,
+    ...over,
+  };
+};
 
 /** planDate with no outcomes.settlement row for the prior day, unless given. */
 const planDate = (
@@ -1131,56 +1146,106 @@ describe('planDate: out-of-range values never reach the writer', () => {
 // ── The feature-pick report ─────────────────────────────────────────────────
 
 describe('featurePickChange', () => {
-  const idle = (id: number, entryTime: string, open: string | null) =>
-    row(id, entryTime, { spx_open: open });
+  // The range a replayed row stores: the day's high and low as of its slot on
+  // the live date's candles (7505 and 7470 from 9:05 AM CT on).
+  const RANGE = { spx_high: '7505.00', spx_low: '7470.00' };
+
+  /** A row with its stored open, and the range when `ranged`. */
+  const idle = (
+    id: number,
+    entryTime: string,
+    open: string | null,
+    ranged = true,
+    over: Partial<SnapshotRowIn> = {},
+  ) =>
+    row(id, entryTime, { spx_open: open, ...(ranged ? RANGE : {}), ...over });
+
+  const planOf = (rows: readonly SnapshotRowIn[]) =>
+    planDate(LIVE_DATE, rows, history(LIVE_DATE, PRIOR_OF_LIVE)).results;
 
   it('reports the date whose chosen row changes once a later row gets its open', () => {
-    // Before: only row 1 has an open, so it is the pick. After: row 2, at
-    // 10:00 AM CT, has one too and is nearest the sample time.
+    // Before: only row 1 has an open, so it is the pick (row 2 has no range,
+    // so it is not trusted yet). After: row 2, at 10:00 AM CT, has an open and
+    // a range too and is nearest the sample time.
     const rows = [
-      idle(1, '8:35 AM CT', '7487.00'),
-      idle(2, '10:00 AM CT', null),
+      idle(1, '9:05 AM CT', '7487.00'),
+      idle(2, '10:00 AM CT', null, false),
     ];
-    const plan = planDate(LIVE_DATE, rows, history(LIVE_DATE, PRIOR_OF_LIVE));
 
-    expect(featurePickChange(rows, plan.results)).toEqual({ from: 1, to: 2 });
+    expect(featurePickChange(rows, planOf(rows))).toEqual({ from: 1, to: 2 });
   });
 
   it('reports nothing when the pick does not move', () => {
-    const rows = [idle(1, '8:35 AM CT', null), idle(2, '10:00 AM CT', null)];
-    const plan = planDate(LIVE_DATE, rows, history(LIVE_DATE, PRIOR_OF_LIVE));
+    const rows = [idle(1, '9:05 AM CT', null), idle(2, '10:00 AM CT', null)];
 
     // Neither row has an open before: the pick is the one nearest 10:00 (2).
     // Both have one after: still 2.
-    expect(featurePickChange(rows, plan.results)).toBeNull();
+    expect(featurePickChange(rows, planOf(rows))).toBeNull();
   });
 
   it('treats a stored NaN as no open, before the plan and after it', () => {
     const rows = [
-      idle(1, '8:35 AM CT', 'NaN'),
+      idle(1, '9:05 AM CT', 'NaN'),
       idle(2, '9:55 AM CT', '7487.00'),
     ];
-    const plan = planDate(LIVE_DATE, rows, history(LIVE_DATE, PRIOR_OF_LIVE));
 
     // Before: row 2 alone has an open. After: row 1 has one too, but row 2 is
     // still nearer 10:00.
-    expect(featurePickChange(rows, plan.results)).toBeNull();
+    expect(featurePickChange(rows, planOf(rows))).toBeNull();
   });
 
   it('reads the rows in id order whatever order they come in', () => {
     const rows = [
-      idle(2, '10:00 AM CT', null),
-      idle(1, '8:35 AM CT', '7487.00'),
+      idle(2, '10:00 AM CT', null, false),
+      idle(1, '9:05 AM CT', '7487.00'),
     ];
-    const plan = planDate(LIVE_DATE, rows, history(LIVE_DATE, PRIOR_OF_LIVE));
 
-    expect(featurePickChange(rows, plan.results)).toEqual({ from: 1, to: 2 });
+    expect(featurePickChange(rows, planOf(rows))).toEqual({ from: 1, to: 2 });
   });
 
   it('reports nothing for a date with no update', () => {
-    const rows = [idle(1, '8:35 AM CT', null)];
+    const rows = [idle(1, '9:05 AM CT', null)];
 
     expect(featurePickChange(rows, [])).toBeNull();
+  });
+
+  it('reports a date whose plan makes its only row trusted', () => {
+    // No range stored, so build-features rejects the row today (no-price-range)
+    // and the date has no pick. The plan gives it an open and the range as of
+    // its slot, with the stored spot inside it.
+    const rows = [row(1, '10:00 AM CT')];
+    const results = planOf(rows);
+
+    expect(results[0]).toMatchObject({ kind: 'update', fill: 'all' });
+    expect(featurePickChange(rows, results)).toEqual({ from: null, to: 1 });
+  });
+
+  it('judges the after pick on the planned range: a spot outside it stays untrusted', () => {
+    // The plan's range from 10:00 AM CT is 7470 to 7505. SPX 7600 is more than
+    // 10 points above it, so the row is still rejected after the plan.
+    const rows = [row(1, '10:00 AM CT', { spx: '7600.00' })];
+
+    expect(featurePickChange(rows, planOf(rows))).toBeNull();
+  });
+
+  it('keeps a row the plan cannot rescue untrusted: a stale tab and a late save', () => {
+    const rows = [
+      idle(1, '9:05 AM CT', '7487.00'),
+      // Saved the next day at its slot's clock time.
+      row(2, '10:00 AM CT', { saved_day_offset: 1, saved_minutes_ct: 600 }),
+      // Saved 41 minutes after its slot.
+      row(3, '9:55 AM CT', { saved_minutes_ct: 595 + 41 }),
+    ];
+
+    // Rows 2 and 3 get an open and a range, but their save times stay as they
+    // were: row 1 is the pick before and after.
+    expect(featurePickChange(rows, planOf(rows))).toBeNull();
+  });
+
+  it('is not moved by a pick that rests on nothing: no trusted row before or after', () => {
+    const rows = [row(1, '8:35 AM CT'), row(2, '11:30 AM CT')];
+
+    expect(featurePickChange(rows, planOf(rows))).toBeNull();
   });
 });
 
@@ -2260,9 +2325,18 @@ describe('formatReport', () => {
   });
 
   it('names the dates whose feature pick changes', () => {
+    // Row 1 is trusted today (open and range stored); row 2, nearer 10:00 AM
+    // CT, has no range, so it is rejected until the plan fills one.
     const changing = datePlan(
       LIVE_DATE,
-      [row(1, '8:35 AM CT', { spx_open: '7487.00' }), row(2, '10:00 AM CT')],
+      [
+        row(1, '9:05 AM CT', {
+          spx_open: '7487.00',
+          spx_high: '7505.00',
+          spx_low: '7470.00',
+        }),
+        row(2, '10:00 AM CT'),
+      ],
       'ok',
       history(LIVE_DATE, PRIOR_OF_LIVE),
     );
@@ -2270,6 +2344,19 @@ describe('formatReport', () => {
     const text = formatReport(dryRunOf([changing]));
 
     expect(text).toContain(`${LIVE_DATE}: row 1 -> row 2`);
+  });
+
+  it('names a date that has no pick today and gets one from the plan', () => {
+    const gained = datePlan(
+      LIVE_DATE,
+      [row(1, '10:00 AM CT')],
+      'ok',
+      history(LIVE_DATE, PRIOR_OF_LIVE),
+    );
+
+    const text = formatReport(dryRunOf([gained]));
+
+    expect(text).toContain(`${LIVE_DATE}: none -> row 1`);
   });
 
   it('prints the reconciliation of the rows read, and the plan file with the apply command', () => {

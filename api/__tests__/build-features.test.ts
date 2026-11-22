@@ -3,7 +3,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
-const mockSql = vi.fn().mockResolvedValue([]);
+// `unsafe` is the Neon client's raw-SQL splice: the snapshot read puts the
+// shared trust columns into its template with it. The stub returns the text,
+// so a test can see what was spliced.
+const mockSql = Object.assign(vi.fn().mockResolvedValue([]), {
+  unsafe: vi.fn((text: string) => text),
+});
 
 vi.mock('../_lib/db.js', () => ({
   getDb: vi.fn(() => mockSql),
@@ -26,9 +31,13 @@ vi.mock('../_lib/sentry.js', async (importOriginal) => {
 
 import handler, {
   config,
+  featureSnapshotRejection,
   pickFeatureSnapshot,
+  SNAPSHOT_TRUST_COLUMNS_SQL,
+  type FeatureSnapshotRejection,
 } from '../cron/build-features.js';
 import logger from '../_lib/logger.js';
+import { parseEntryTimeMinutes } from '../../src/utils/entry-time.js';
 
 // Fixed times for deterministic tests
 // Tuesday 2026-03-24 at 5:30 PM ET = 21:30 UTC (inside post-close window)
@@ -81,15 +90,48 @@ function featureUpsertValue(column: string): unknown {
 }
 
 /**
- * Answer the date's market_snapshots query with `rows`; every other query
+ * Answer the date's market_snapshots query with `rows`, and the outcomes
+ * `day_open` fallback with `dayOpen` (no row when null); every other query
  * resolves to []. Keyed on the SQL text so it does not depend on call order.
  */
-function mockSnapshotRows(rows: Record<string, unknown>[]) {
-  mockSql.mockImplementation((strings: TemplateStringsArray) =>
-    Promise.resolve(
-      strings.join(' ').includes('FROM market_snapshots') ? rows : [],
-    ),
-  );
+function mockSnapshotRows(
+  rows: Record<string, unknown>[],
+  dayOpen: string | null = null,
+) {
+  mockSql.mockImplementation((strings: TemplateStringsArray) => {
+    const text = strings.join(' ');
+    if (text.includes('FROM market_snapshots')) return Promise.resolve(rows);
+    if (dayOpen != null && /SELECT day_open FROM outcomes/.test(text)) {
+      return Promise.resolve([{ day_open: dayOpen }]);
+    }
+    return Promise.resolve([]);
+  });
+}
+
+/**
+ * The columns `featureSnapshotRejection` reads, for a row that passes every
+ * test: an on-time same-day live save at its own slot, SPX inside its range.
+ * NUMERIC columns are text, as the Neon driver returns them. A label with no
+ * clock time has no slot to be on time for, so its save time is 10:00.
+ */
+type RejectionInput = Parameters<typeof featureSnapshotRejection>[0];
+
+function trustedColumns(
+  entryTime: string,
+  overrides: Partial<RejectionInput> = {},
+): RejectionInput {
+  const slot = parseEntryTimeMinutes(entryTime);
+  return {
+    entry_time: entryTime,
+    spx: '5700',
+    spx_low: '5690',
+    spx_high: '5710',
+    is_backtest: false,
+    flag_reliable: true,
+    saved_day_offset: 0,
+    saved_minutes_ct: Number.isNaN(slot) ? 600 : slot,
+    ...overrides,
+  };
 }
 
 /** A market_snapshots row as the Neon driver returns it (NUMERIC as text). */
@@ -98,7 +140,7 @@ function snapshotRow(
   overrides: Record<string, unknown> = {},
 ): Record<string, unknown> {
   return {
-    entry_time: entryTime,
+    ...trustedColumns(entryTime),
     vix: '18',
     spx_open: '5700',
     is_event_day: false,
@@ -588,7 +630,7 @@ describe('build-features handler', () => {
 
   // ── The day's snapshot sample and event flag ──────────────
   // buildFeaturesForDate reads every market_snapshots row of the date. It
-  // samples the one nearest 10:00 AM CT (pickFeatureSnapshot) and ORs
+  // samples the trusted one nearest 10:00 AM CT (pickFeatureSnapshot) and ORs
   // is_event_day over all of them, so neither depends on which row the
   // sample lands on.
 
@@ -608,12 +650,37 @@ describe('build-features handler', () => {
     );
     expect(call).toBeDefined();
     const text = sqlText(call!);
-    // pickFeatureSnapshot falls back to the first row, which must be the
-    // lowest id, and needs the labels to choose by clock rather than by text.
+    // The pick needs the labels to choose by clock rather than by text, and
+    // breaks a tie toward the earlier slot, so it needs the rows in id order.
     expect(text).toMatch(/\bentry_time\b/);
     expect(text).toMatch(/ORDER BY id ASC/);
     expect(text).not.toMatch(/\bLIMIT\b/);
-    expect(call![1]).toBe('2026-03-24');
+    // The date is the one bound value; the trust columns are spliced as text.
+    expect(call!.slice(1)).toContain('2026-03-24');
+  });
+
+  it('reads the columns the trust rule needs, and splices the shared trust text', async () => {
+    mockSnapshotRows([snapshotRow('10:00 AM CT')]);
+
+    const req = mockRequest({
+      method: 'GET',
+      query: { date: '2026-03-24' },
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    await handler(req, mockResponse());
+
+    const call = mockSql.mock.calls.find(
+      (c) =>
+        Array.isArray(c[0]) && sqlText(c).includes('FROM market_snapshots'),
+    );
+    const text = sqlText(call!);
+    for (const column of ['spx', 'spx_low', 'spx_high']) {
+      expect(text).toMatch(new RegExp(String.raw`\b${column},`));
+    }
+    // The script reads the same text (scripts/_lib/snapshot-price-context.ts),
+    // and its pglite test runs it against a real database.
+    expect(mockSql.unsafe).toHaveBeenCalledWith(SNAPSHOT_TRUST_COLUMNS_SQL);
+    expect(call!.slice(1)).toContain(SNAPSHOT_TRUST_COLUMNS_SQL);
   });
 
   it('samples the 10:00 AM CT row, not the text-first one', async () => {
@@ -724,6 +791,224 @@ describe('build-features handler', () => {
     expect(mockCaptureException).toHaveBeenCalledWith(
       expect.objectContaining({ message: 'snapshot read failed' }),
     );
+  });
+
+  // ── Untrusted snapshot rows ───────────────────────────────
+  // A row saved on a later day at its slot's clock time (a stale browser tab),
+  // or long after its slot, holds a quote from another time. The sample skips
+  // such rows, and a date with none left stores no snapshot features.
+
+  const NO_TRUSTED_ROW = 'no trusted snapshot row';
+
+  async function buildDate(date = '2026-03-24') {
+    const req = mockRequest({
+      method: 'GET',
+      query: { date },
+      headers: { authorization: 'Bearer test-secret' },
+    });
+    const res = mockResponse();
+    await handler(req, res);
+    return res;
+  }
+
+  it('skips a nearer stale-tab row and reads the earlier trusted one (2026-07-15)', async () => {
+    // Row 4795 is a live 9:50 save; row 4869 says 10:00 but was saved the next
+    // day at 10:01, a tab left open on the old date.
+    mockSnapshotRows([
+      snapshotRow('9:50 AM CT', {
+        vix: '15.81',
+        spx_open: '7571.72',
+        saved_minutes_ct: 592,
+      }),
+      snapshotRow('10:00 AM CT', {
+        vix: '15.85',
+        spx_open: '7571.72',
+        saved_day_offset: 1,
+        saved_minutes_ct: 601,
+      }),
+    ]);
+
+    await buildDate('2026-07-15');
+
+    expect(featureUpsertValue('vix')).toBe(15.81);
+    expect(logger.warn).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.stringContaining(NO_TRUSTED_ROW),
+    );
+  });
+
+  describe('a date with snapshot rows but no trusted one', () => {
+    // The 17 copied fields besides spx_open, as training_features names them.
+    const COPIED_FIELDS = [
+      'vix',
+      'vix1d',
+      'vix9d',
+      'vvix',
+      'vix1d_vix_ratio',
+      'vix_vix9d_ratio',
+      'regime_zone',
+      'cluster_mult',
+      'dow_mult',
+      'dow_label',
+      'sigma',
+      'hours_remaining',
+      'ic_ceiling',
+      'put_spread_ceiling',
+      'call_spread_ceiling',
+      'opening_range_signal',
+      'opening_range_pct_consumed',
+    ];
+
+    // Full snapshot values, so a leak from a rejected row shows up.
+    const FILLED = {
+      vix: '19',
+      vix1d: '15.2',
+      vix9d: '20.1',
+      vvix: '90',
+      vix1d_vix_ratio: '0.82',
+      vix_vix9d_ratio: '0.92',
+      regime_zone: 'RED',
+      cluster_mult: '1.5',
+      dow_mult_hl: '1.2',
+      dow_label: 'Tue',
+      sigma: '25',
+      hours_remaining: '6.5',
+      ic_ceiling: '12',
+      put_spread_ceiling: '15',
+      call_spread_ceiling: '15',
+      opening_range_signal: 'BULLISH',
+      opening_range_pct_consumed: '0.45',
+    };
+
+    const untrustedRows = (eventFlags: [boolean, boolean] = [true, false]) => [
+      // A stale tab: the next day, at the slot's own clock time.
+      snapshotRow('10:00 AM CT', {
+        ...FILLED,
+        saved_day_offset: 1,
+        saved_minutes_ct: 601,
+        is_event_day: eventFlags[0],
+      }),
+      // A catch-up save: 41 minutes after its slot.
+      snapshotRow('9:55 AM CT', {
+        ...FILLED,
+        saved_minutes_ct: 636,
+        is_event_day: eventFlags[1],
+      }),
+    ];
+
+    it('writes null for every copied snapshot field and takes spx_open from outcomes.day_open', async () => {
+      mockSnapshotRows(untrustedRows(), '5712.5');
+
+      const res = await buildDate();
+
+      for (const column of COPIED_FIELDS) {
+        expect(featureUpsertValue(column), column).toBeNull();
+      }
+      expect(featureUpsertValue('spx_open')).toBe(5712.5);
+      // The run is not a failure: the date was built, with no 10:00 view.
+      expect(res._json).toMatchObject({
+        status: 'success',
+        featuresBuilt: 1,
+        errors: 0,
+      });
+      expect(mockCaptureException).not.toHaveBeenCalled();
+    });
+
+    it('leaves spx_open null when outcomes has no day_open either', async () => {
+      mockSnapshotRows(untrustedRows());
+
+      await buildDate();
+
+      expect(featureUpsertValue('spx_open')).toBeNull();
+    });
+
+    it('stores feature_completeness 0, so the 0.80 training filter drops the date', async () => {
+      mockSnapshotRows(untrustedRows(), '5712.5');
+
+      await buildDate();
+
+      expect(featureUpsertValue('feature_completeness')).toBe(0);
+    });
+
+    it.each([
+      ['an untrusted row names it', [true, false] as [boolean, boolean], true],
+      ['no row names it', [false, false] as [boolean, boolean], false],
+    ])(
+      'still stores is_event_day from every row of the date when %s',
+      async (_label, flags, expected) => {
+        mockSnapshotRows(untrustedRows(flags));
+
+        await buildDate();
+
+        expect(featureUpsertValue('is_event_day')).toBe(expected);
+      },
+    );
+
+    it('warns once, naming the date and how many rows failed each reason', async () => {
+      mockSnapshotRows([
+        ...untrustedRows(),
+        // A second stale tab, two days late.
+        snapshotRow('10:05 AM CT', {
+          ...FILLED,
+          saved_day_offset: 2,
+          saved_minutes_ct: 606,
+        }),
+        // A row the window rules out: 8:30 AM CT.
+        snapshotRow('8:30 AM CT', { ...FILLED }),
+      ]);
+
+      await buildDate();
+
+      const warns = vi
+        .mocked(logger.warn)
+        .mock.calls.filter(([, message]) =>
+          String(message).includes(NO_TRUSTED_ROW),
+        );
+      expect(warns).toHaveLength(1);
+      expect(warns[0]![0]).toEqual({
+        date: '2026-03-24',
+        rows: 4,
+        rejected: { 'stale-tab': 2, 'saved-late': 1, 'outside-window': 1 },
+      });
+    });
+
+    it('treats a row with no usable range as untrusted (2026-01-02, row 247)', async () => {
+      // A late-March quote (SPX 6506, VIX 26.78) in a January row with no
+      // range: nothing to check it against.
+      mockSnapshotRows([
+        snapshotRow('9:05 AM CT', {
+          ...FILLED,
+          vix: '26.78',
+          spx: '6506',
+          spx_low: null,
+          spx_high: null,
+          saved_day_offset: 78,
+          saved_minutes_ct: 841,
+        }),
+      ]);
+
+      await buildDate('2026-01-02');
+
+      expect(featureUpsertValue('vix')).toBeNull();
+      expect(featureUpsertValue('feature_completeness')).toBe(0);
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ rejected: { 'no-price-range': 1 } }),
+        expect.stringContaining(NO_TRUSTED_ROW),
+      );
+    });
+  });
+
+  it('leaves a date with no snapshot rows unchanged: no warning, completeness as computed', async () => {
+    mockSnapshotRows([]);
+
+    await buildDate();
+
+    expect(logger.warn).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.stringContaining(NO_TRUSTED_ROW),
+    );
+    expect(featureUpsertValue('feature_completeness')).toBeGreaterThan(0);
+    expect(featureUpsertValue('vix')).toBeUndefined();
   });
 
   // ── Single-date param ─────────────────────────────────────
@@ -1038,7 +1323,7 @@ describe('build-features handler', () => {
     // chosen in TypeScript; this one is its 10:00 AM CT sample)
     mockSql.mockResolvedValueOnce([
       {
-        entry_time: '10:00 AM CT',
+        ...trustedColumns('10:00 AM CT'),
         vix: '18.5',
         vix1d: '15.2',
         vix9d: '20.1',
@@ -2041,22 +2326,369 @@ describe('build-features handler', () => {
   });
 });
 
+// ── featureSnapshotRejection ────────────────────────────────
+// One row at a time, the first test it fails. The base row is trusted: a live
+// 10:00 AM CT save made on its own date at 10:00, SPX 5700 in 5690-5710.
+
+describe('featureSnapshotRejection', () => {
+  type Case = [
+    label: string,
+    entryTime: string,
+    overrides: Partial<RejectionInput>,
+    expected: FeatureSnapshotRejection | null,
+  ];
+
+  /** A slot's minutes, so a case can say "saved 11 minutes after its slot". */
+  const SLOT = 600;
+
+  it.each<Case>([
+    ['a trusted row passes', '10:00 AM CT', {}, null],
+
+    // 1. a readable slot
+    ['"pre-market" has no slot', 'pre-market', {}, 'no-slot'],
+    ['a free-form label has no slot', 'open', {}, 'no-slot'],
+    ['an ET label is read on the CT clock', '11:00 AM ET', {}, null],
+
+    // 2. the window, 9:00 to 11:00 AM CT, both ends in
+    [
+      '9:00 AM CT, the first minute of the window, passes',
+      '9:00 AM CT',
+      {},
+      null,
+    ],
+    [
+      '11:00 AM CT, the last minute of the window, passes',
+      '11:00 AM CT',
+      {},
+      null,
+    ],
+    ['8:55 AM CT is outside the window', '8:55 AM CT', {}, 'outside-window'],
+    ['11:05 AM CT is outside the window', '11:05 AM CT', {}, 'outside-window'],
+
+    // 3. not saved before its own date
+    [
+      'a row saved the day before its date fails',
+      '10:00 AM CT',
+      { saved_day_offset: -1 },
+      'saved-before-date',
+    ],
+
+    // 4. same day: not before the slot
+    [
+      'a same-day save 1 minute before its slot passes',
+      '10:00 AM CT',
+      { saved_minutes_ct: SLOT - 1 },
+      null,
+    ],
+    [
+      'a same-day save 2 minutes before its slot fails',
+      '10:00 AM CT',
+      { saved_minutes_ct: SLOT - 2 },
+      'saved-before-slot',
+    ],
+
+    // 5. same day: not long after the slot
+    [
+      'a same-day save 10 minutes after its slot passes',
+      '10:00 AM CT',
+      { saved_minutes_ct: SLOT + 10 },
+      null,
+    ],
+    [
+      'a same-day save 11 minutes after its slot fails',
+      '10:00 AM CT',
+      { saved_minutes_ct: SLOT + 11 },
+      'saved-late',
+    ],
+    [
+      'the 2026-03-26 catch-up: a 9:55 row saved 41 minutes late fails',
+      '9:55 AM CT',
+      { saved_minutes_ct: 636 },
+      'saved-late',
+    ],
+
+    // 6. a later-day save, not at the slot's clock time (a stale tab)
+    [
+      'a next-day save at the slot clock time is a stale tab',
+      '10:00 AM CT',
+      { saved_day_offset: 1, saved_minutes_ct: SLOT },
+      'stale-tab',
+    ],
+    [
+      'a later-day save 10 minutes after the slot clock time is a stale tab',
+      '10:00 AM CT',
+      { saved_day_offset: 3, saved_minutes_ct: SLOT + 10 },
+      'stale-tab',
+    ],
+    [
+      'a later-day save 10 minutes before the slot clock time is a stale tab',
+      '10:00 AM CT',
+      { saved_day_offset: 3, saved_minutes_ct: SLOT - 10 },
+      'stale-tab',
+    ],
+    [
+      'a later-day save 11 minutes after the slot clock time passes',
+      '10:00 AM CT',
+      { saved_day_offset: 3, saved_minutes_ct: SLOT + 11 },
+      null,
+    ],
+    [
+      'a later-day save 11 minutes before the slot clock time passes',
+      '10:00 AM CT',
+      { saved_day_offset: 3, saved_minutes_ct: SLOT - 11 },
+      null,
+    ],
+    [
+      'a replay repair saved days later in the evening passes',
+      '10:00 AM CT',
+      { saved_day_offset: 5, saved_minutes_ct: 20 * 60 },
+      null,
+    ],
+
+    // 7. a usable price and range
+    ['a NULL spx fails', '10:00 AM CT', { spx: null }, 'no-price-range'],
+    [
+      'a NULL spx_low fails',
+      '10:00 AM CT',
+      { spx_low: null },
+      'no-price-range',
+    ],
+    [
+      'a NULL spx_high fails',
+      '10:00 AM CT',
+      { spx_high: null },
+      'no-price-range',
+    ],
+    ['a stored NaN spx fails', '10:00 AM CT', { spx: 'NaN' }, 'no-price-range'],
+    [
+      'a stored NaN spx_high fails',
+      '10:00 AM CT',
+      { spx_high: 'NaN' },
+      'no-price-range',
+    ],
+    [
+      'an empty spx_low fails',
+      '10:00 AM CT',
+      { spx_low: '' },
+      'no-price-range',
+    ],
+
+    // 8. SPX inside its range, give or take 10
+    ['spx 10 below spx_low passes', '10:00 AM CT', { spx: '5680' }, null],
+    [
+      'spx 10.01 below spx_low fails',
+      '10:00 AM CT',
+      { spx: '5679.99' },
+      'spx-outside-range',
+    ],
+    ['spx 10 above spx_high passes', '10:00 AM CT', { spx: '5720' }, null],
+    [
+      'spx 10.01 above spx_high fails',
+      '10:00 AM CT',
+      { spx: '5720.01' },
+      'spx-outside-range',
+    ],
+    [
+      'NUMERIC text with decimals parses (inside)',
+      '10:00 AM CT',
+      { spx: '6925.40', spx_low: '6915.15', spx_high: '6936.20' },
+      null,
+    ],
+    [
+      'NUMERIC text with decimals parses (outside)',
+      '10:00 AM CT',
+      { spx: '6947.00', spx_low: '6915.15', spx_high: '6936.20' },
+      'spx-outside-range',
+    ],
+    [
+      'the 2026-03-27 row 359 placeholder (SPX 5720) is outside its range',
+      '10:00 AM CT',
+      { spx: '5720', spx_low: '6408.95', spx_high: '6453.89' },
+      'spx-outside-range',
+    ],
+
+    // The first failing test is the one named.
+    [
+      'the window is judged before the save time',
+      '8:00 AM CT',
+      { saved_day_offset: -1, spx: null },
+      'outside-window',
+    ],
+    [
+      'the save time is judged before the price',
+      '10:00 AM CT',
+      { saved_minutes_ct: SLOT + 11, spx: null },
+      'saved-late',
+    ],
+
+    // Reliable backtest rows skip tests 3-5 and keep 6, 7 and 8.
+    [
+      'a reliable backtest saved 638 minutes after its slot passes (2026-10-28 row 5877)',
+      '10:00 AM CT',
+      { is_backtest: true, flag_reliable: true, saved_minutes_ct: 1238 },
+      null,
+    ],
+    [
+      'the same row with the flag not reliable fails saved-late',
+      '10:00 AM CT',
+      { is_backtest: true, flag_reliable: false, saved_minutes_ct: 1238 },
+      'saved-late',
+    ],
+    [
+      'a live row on a reliable date gets no exemption',
+      '10:00 AM CT',
+      { is_backtest: false, flag_reliable: true, saved_minutes_ct: 1238 },
+      'saved-late',
+    ],
+    [
+      'a NULL flag is not a backtest',
+      '10:00 AM CT',
+      { is_backtest: null, flag_reliable: true, saved_minutes_ct: 1238 },
+      'saved-late',
+    ],
+    [
+      'a reliable backtest saved before its date passes',
+      '10:00 AM CT',
+      { is_backtest: true, flag_reliable: true, saved_day_offset: -1 },
+      null,
+    ],
+    [
+      'a reliable backtest saved before its slot passes',
+      '10:00 AM CT',
+      { is_backtest: true, flag_reliable: true, saved_minutes_ct: SLOT - 30 },
+      null,
+    ],
+    [
+      'a reliable backtest saved at the slot clock time on a later day is a stale tab',
+      '10:00 AM CT',
+      {
+        is_backtest: true,
+        flag_reliable: true,
+        saved_day_offset: 1,
+        saved_minutes_ct: SLOT,
+      },
+      'stale-tab',
+    ],
+    [
+      'a reliable backtest replayed in the evening of a later day passes',
+      '10:00 AM CT',
+      {
+        is_backtest: true,
+        flag_reliable: true,
+        saved_day_offset: 1,
+        saved_minutes_ct: 20 * 60,
+      },
+      null,
+    ],
+    [
+      'a reliable backtest outside its SPX range still fails',
+      '10:00 AM CT',
+      {
+        is_backtest: true,
+        flag_reliable: true,
+        saved_minutes_ct: 1238,
+        spx: '5679.99',
+      },
+      'spx-outside-range',
+    ],
+    [
+      'a reliable backtest with no range still fails',
+      '10:00 AM CT',
+      {
+        is_backtest: true,
+        flag_reliable: true,
+        saved_minutes_ct: 1238,
+        spx_low: null,
+      },
+      'no-price-range',
+    ],
+    [
+      'a backtest saved before the flag was fixed gets every test',
+      '10:00 AM CT',
+      {
+        is_backtest: true,
+        flag_reliable: false,
+        saved_day_offset: 1,
+        saved_minutes_ct: SLOT + 1,
+      },
+      'stale-tab',
+    ],
+  ])('%s', (_label, entryTime, overrides, expected) => {
+    expect(featureSnapshotRejection(trustedColumns(entryTime, overrides))).toBe(
+      expected,
+    );
+  });
+
+  it.each<[string, RejectionInput, FeatureSnapshotRejection | null]>([
+    [
+      '2026-07-15 row 4795, the real 9:50 save',
+      {
+        ...trustedColumns('9:50 AM CT'),
+        spx: '7568',
+        spx_low: '7553.87',
+        spx_high: '7581.5',
+        saved_minutes_ct: 592,
+      },
+      null,
+    ],
+    [
+      '2026-07-15 row 4869, the 10:00 save made the next day at 10:01',
+      {
+        ...trustedColumns('10:00 AM CT'),
+        spx: '7565',
+        spx_low: '7552.96',
+        spx_high: '7581.5',
+        saved_day_offset: 1,
+        saved_minutes_ct: 601,
+      },
+      'stale-tab',
+    ],
+    [
+      '2026-01-02 row 247, a late-March quote with no range',
+      {
+        ...trustedColumns('9:05 AM CT'),
+        spx: '6506',
+        spx_low: null,
+        spx_high: null,
+        saved_day_offset: 78,
+        saved_minutes_ct: 841,
+      },
+      'no-price-range',
+    ],
+    [
+      '2026-03-27 row 367, 40 points under the day low as of 10:10',
+      {
+        ...trustedColumns('10:10 AM CT'),
+        spx: '6369',
+        spx_low: '6408.95',
+        spx_high: '6453.89',
+        saved_minutes_ct: 613,
+      },
+      'spx-outside-range',
+    ],
+  ])('real data: %s', (_label, row, expected) => {
+    expect(featureSnapshotRejection(row)).toBe(expected);
+  });
+});
+
 // ── pickFeatureSnapshot ─────────────────────────────────────
 // The rows arrive in id order (the query's ORDER BY id ASC). Each case lists
-// [entry_time, spx_open] pairs and the index of the row it must pick.
+// [entry_time, spx_open] pairs and the index of the row it must pick, or null
+// when no row is trusted. Every row is a trusted live save unless a case says
+// otherwise.
 
 describe('pickFeatureSnapshot', () => {
   type Pair = [entryTime: string, spxOpen: string | null];
 
   function pick(pairs: Pair[]) {
     const rows = pairs.map(([entry_time, spx_open]) => ({
-      entry_time,
+      ...trustedColumns(entry_time),
       spx_open,
     }));
     return { rows, picked: pickFeatureSnapshot(rows) };
   }
 
-  it.each<[string, Pair[], number]>([
+  it.each<[string, Pair[], number | null]>([
     [
       'the row at 10:00 over earlier and later ones',
       [
@@ -2118,26 +2750,43 @@ describe('pickFeatureSnapshot', () => {
       'the next row when the 10:00 one has a null open',
       [
         ['10:00 AM CT', null],
-        ['11:05 AM CT', '5702'],
+        ['10:55 AM CT', '5702'],
       ],
       1,
     ],
     [
-      'a usable row far from 10:00 over a closer one with no open',
+      'the 10:00 row with no open when the only row with an open is outside the window (11:05)',
+      [
+        ['10:00 AM CT', null],
+        ['11:05 AM CT', '5702'],
+      ],
+      0,
+    ],
+    [
+      'a usable row far from 10:00 over closer ones with no open',
+      [
+        ['10:00 AM CT', 'NaN'],
+        ['10:05 AM CT', 'NaN'],
+        ['10:55 AM CT', '5702'],
+      ],
+      2,
+    ],
+    [
+      'the nearest row with no open when the only row with an open is outside the window (1:30 PM)',
       [
         ['10:00 AM CT', 'NaN'],
         ['10:05 AM CT', 'NaN'],
         ['1:30 PM CT', '5702'],
       ],
-      2,
+      0,
     ],
     [
-      'the 11:05 row over a pre-market one',
+      'no row when the only row with a clock time is 11:05, outside the window',
       [
         ['pre-market', '5700'],
         ['11:05 AM CT', '5702'],
       ],
-      1,
+      null,
     ],
     [
       'an ET label read on the CT clock (11:00 AM ET is 10:00 AM CT)',
@@ -2165,14 +2814,14 @@ describe('pickFeatureSnapshot', () => {
       ],
       2,
     ],
-    ['the only row, though it is pre-market', [['pre-market', '5700']], 0],
+    ['no row when the only row is pre-market', [['pre-market', '5700']], null],
     [
-      'the first row when no label parses',
+      'no row when no label parses',
       [
         ['pre-market', 'NaN'],
         ['open', '5700'],
       ],
-      0,
+      null,
     ],
     [
       'a parseable row with no open over a pre-market row that has one',
@@ -2184,7 +2833,9 @@ describe('pickFeatureSnapshot', () => {
     ],
   ])('picks %s', (_label, pairs, expectedIndex) => {
     const { rows, picked } = pick(pairs);
-    expect(picked).toBe(rows[expectedIndex]);
+    expect(picked).toBe(
+      expectedIndex == null ? undefined : rows[expectedIndex],
+    );
   });
 
   it('returns undefined for a date with no rows', () => {
@@ -2199,5 +2850,104 @@ describe('pickFeatureSnapshot', () => {
     const before = structuredClone(rows);
     pickFeatureSnapshot(rows);
     expect(rows).toEqual(before);
+  });
+
+  // ── Untrusted rows ──────────────────────────────────────────
+
+  /** A row with an open, trusted unless `overrides` break it. */
+  const row = (
+    entryTime: string,
+    overrides: Partial<RejectionInput> = {},
+    spxOpen: string | null = '5700',
+  ) => ({ ...trustedColumns(entryTime, overrides), spx_open: spxOpen });
+
+  const STALE_TAB = { saved_day_offset: 1, saved_minutes_ct: 600 };
+
+  it('prefers a farther trusted row to a nearer untrusted one', () => {
+    const rows = [row('9:50 AM CT'), row('10:00 AM CT', STALE_TAB)];
+
+    expect(pickFeatureSnapshot(rows)).toBe(rows[0]);
+  });
+
+  it('prefers a trusted row with no open to an untrusted row with one', () => {
+    const rows = [row('10:00 AM CT', STALE_TAB), row('10:30 AM CT', {}, null)];
+
+    expect(pickFeatureSnapshot(rows)).toBe(rows[1]);
+  });
+
+  it('keeps the open preference among trusted rows', () => {
+    const rows = [
+      row('10:00 AM CT', {}, null),
+      row('10:30 AM CT'),
+      row('9:55 AM CT', STALE_TAB),
+    ];
+
+    expect(pickFeatureSnapshot(rows)).toBe(rows[1]);
+  });
+
+  it('sends a tie among trusted rows to the earlier slot, whatever sits between', () => {
+    const rows = [
+      row('10:05 AM CT'),
+      row('10:00 AM CT', STALE_TAB),
+      row('9:55 AM CT'),
+    ];
+
+    expect(pickFeatureSnapshot(rows)).toBe(rows[2]);
+  });
+
+  it('returns undefined when no row is trusted', () => {
+    const rows = [
+      row('10:00 AM CT', STALE_TAB),
+      row('9:55 AM CT', { saved_minutes_ct: 636 }),
+      row('10:05 AM CT', { spx_low: null }),
+      row('11:05 AM CT'),
+    ];
+
+    expect(pickFeatureSnapshot(rows)).toBeUndefined();
+  });
+
+  it('picks the 9:50 save over the stale-tab 10:00 one on 2026-07-15', () => {
+    const live = {
+      ...row('9:50 AM CT', {
+        spx: '7568',
+        spx_low: '7553.87',
+        spx_high: '7581.5',
+        saved_minutes_ct: 592,
+      }),
+      id: 4795,
+    };
+    const staleTab = {
+      ...row('10:00 AM CT', {
+        spx: '7565',
+        spx_low: '7552.96',
+        spx_high: '7581.5',
+        saved_day_offset: 1,
+        saved_minutes_ct: 601,
+      }),
+      id: 4869,
+    };
+
+    expect(pickFeatureSnapshot([live, staleTab])?.id).toBe(4795);
+  });
+
+  it('picks nothing on 2026-03-26, where every 9:00-11:00 row was a catch-up or a placeholder', () => {
+    const rows = [
+      // 9:55 saved at 10:36, SPX 6541 in range, but 41 minutes late.
+      row('9:55 AM CT', {
+        spx: '6541',
+        spx_low: '6533.11',
+        spx_high: '6573.22',
+        saved_minutes_ct: 636,
+      }),
+      // 10:00 holds the SPX 5720 placeholder, far below the day's range.
+      row('10:00 AM CT', {
+        spx: '5720',
+        spx_low: '6533.11',
+        spx_high: '6573.22',
+        saved_minutes_ct: 1337,
+      }),
+    ];
+
+    expect(pickFeatureSnapshot(rows)).toBeUndefined();
   });
 });

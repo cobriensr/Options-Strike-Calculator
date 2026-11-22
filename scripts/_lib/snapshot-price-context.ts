@@ -74,7 +74,11 @@ import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { z } from 'zod';
 
-import { pickFeatureSnapshot } from '../../api/cron/build-features.js';
+import {
+  pickFeatureSnapshot,
+  SNAPSHOT_TRUST_COLUMNS_SQL,
+  type SnapshotTrustColumns,
+} from '../../api/cron/build-features.js';
 import { getDb, withDbRetry } from '../../api/_lib/db.js';
 import {
   CASH_OPEN_MIN_ET,
@@ -185,12 +189,17 @@ export type StoredDecimal = string | null;
 
 export type PriceValues = Record<PriceColumn, StoredDecimal>;
 
-/** A `market_snapshots` row, with the DECIMAL columns as the raw text read. */
-export interface SnapshotRowIn extends PriceValues {
+/**
+ * A `market_snapshots` row, with the DECIMAL columns as the raw text read. The
+ * stored spot (`spx`) and the trust columns are what build-features reads to
+ * judge the row (`featureSnapshotRejection`); no plan writes them.
+ */
+export interface SnapshotRowIn extends PriceValues, SnapshotTrustColumns {
   id: number;
   /** `YYYY-MM-DD` */
   date: string;
   entry_time: string;
+  spx: StoredDecimal;
 }
 
 /** What `/api/history` gave for one date, reduced to what the plan reads. */
@@ -565,31 +574,37 @@ export function planDate(
 
 /**
  * The row `build-features` would pick for the date (`pickFeatureSnapshot`,
- * rows in id order, the same `spx_open` and `entry_time` it reads) before the
- * planned updates and after them. null when the pick does not change; the
- * owner rebuilds `training_features` only for the dates that report one.
+ * rows in id order, the same columns it reads: `entry_time`, `spx_open`, the
+ * range and the trust columns) before the planned updates and after them. The
+ * "after" pick reads the planned `spx_open`, `spx_high` and `spx_low`, which
+ * can turn a row with no range into a trusted one, and the stored `spx` and
+ * trust columns, which no plan changes. A side is null when the date has no
+ * trusted row. Returns null when the pick does not change; the owner rebuilds
+ * `training_features` only for the dates that report a change.
  */
 export function featurePickChange(
   rows: readonly SnapshotRowIn[],
   results: readonly PlanResult[],
 ): { from: number | null; to: number | null } | null {
-  const plannedOpen = new Map<number, string>();
+  const planned = new Map<number, PlannedUpdate['after']>();
   for (const result of results) {
-    if (result.kind === 'update' && result.after.spx_open != null) {
-      plannedOpen.set(result.id, result.after.spx_open);
-    }
+    if (result.kind === 'update') planned.set(result.id, result.after);
   }
   const ordered = [...rows].sort((a, b) => a.id - b.id);
-  const pick = (open: (row: SnapshotRowIn) => StoredDecimal) =>
+  const pick = (afterPlan: boolean) =>
     pickFeatureSnapshot(
-      ordered.map((row) => ({
-        id: row.id,
-        entry_time: row.entry_time,
-        spx_open: open(row),
-      })),
+      ordered.map((row) => {
+        const after = afterPlan ? planned.get(row.id) : undefined;
+        return {
+          ...row,
+          spx_open: after?.spx_open ?? row.spx_open,
+          spx_high: after?.spx_high ?? row.spx_high,
+          spx_low: after?.spx_low ?? row.spx_low,
+        };
+      }),
     )?.id ?? null;
-  const from = pick((row) => row.spx_open);
-  const to = pick((row) => plannedOpen.get(row.id) ?? row.spx_open);
+  const from = pick(false);
+  const to = pick(true);
   return from === to ? null : { from, to };
 }
 
@@ -973,18 +988,26 @@ async function readDates(
   return rows.map((r) => r.day);
 }
 
-/** One date's rows, in id order. DECIMAL columns are read as text. */
+/**
+ * One date's rows, in id order. DECIMAL columns are read as text. The trust
+ * columns are the SQL text build-features reads (SNAPSHOT_TRUST_COLUMNS_SQL),
+ * which is a constant, so it goes into the text of a `sql.query` call; the date
+ * is the one bound value.
+ */
 async function readRows(sql: Sql, date: string): Promise<SnapshotRowIn[]> {
-  const rows = (await withDbRetry(
-    () => sql`
-      SELECT id, to_char(date, 'YYYY-MM-DD') AS date, entry_time,
-             spx_open::text AS spx_open, spx_high::text AS spx_high,
-             spx_low::text AS spx_low, prev_close::text AS prev_close,
-             overnight_gap::text AS overnight_gap
-        FROM market_snapshots
-       WHERE date = ${date}::date
-       ORDER BY id
-    `,
+  const rows = (await withDbRetry(() =>
+    sql.query(
+      `SELECT id, to_char(date, 'YYYY-MM-DD') AS date, entry_time,
+              spx::text AS spx, spx_open::text AS spx_open,
+              spx_high::text AS spx_high, spx_low::text AS spx_low,
+              prev_close::text AS prev_close,
+              overnight_gap::text AS overnight_gap,
+              ${SNAPSHOT_TRUST_COLUMNS_SQL}
+         FROM market_snapshots
+        WHERE date = $1::date
+        ORDER BY id`,
+      [date],
+    ),
   )) as SnapshotRowIn[];
   return rows;
 }

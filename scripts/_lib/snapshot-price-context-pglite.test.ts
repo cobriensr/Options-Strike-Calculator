@@ -7,9 +7,12 @@
  * snapshot-price-context.test.ts covers the pure plan. This runs every read
  * and write on pglite (Postgres in WASM), against a market_snapshots table
  * with the production DECIMAL types (api/_lib/db.ts: spx_open, spx_high,
- * spx_low and prev_close DECIMAL(10,2), overnight_gap DECIMAL(6,2)) and an
- * outcomes table with its settlement DECIMAL(10,2), so rounding, NaN, NULL and
- * the guards behave as they do in Neon. Three module boundaries are replaced:
+ * spx_low and prev_close DECIMAL(10,2), overnight_gap DECIMAL(6,2)), the
+ * `is_backtest` and `created_at` columns the build-features trust rule reads
+ * (its SQL text, SNAPSHOT_TRUST_COLUMNS_SQL, runs here against real Postgres,
+ * time-zone cases included) and an outcomes table with its settlement
+ * DECIMAL(10,2), so rounding, NaN, NULL and the guards behave as they do in
+ * Neon. Three module boundaries are replaced:
  * `getDb()` returns a neon-shaped client over pglite, `fetch` serves
  * /api/history from memory (one case uses a real loopback server), and the
  * pause between fetches returns at once. No database, network or sleep is
@@ -74,7 +77,9 @@ vi.mock('node:fs', async (importOriginal) => {
   return { ...real, default: { ...real, writeFileSync }, writeFileSync };
 });
 
+import { SNAPSHOT_TRUST_COLUMNS_SQL } from '../../api/cron/build-features.js';
 import { priorTradingDay } from '../../src/data/marketHours.js';
+import { parseEntryTimeMinutes } from '../../src/utils/entry-time.js';
 import type { SlotCandle } from '../../src/utils/snapshot-slot.js';
 import {
   exitCodeOfApply,
@@ -197,6 +202,10 @@ beforeAll(async () => {
       spx_low       DECIMAL(10,2),
       prev_close    DECIMAL(10,2),
       overnight_gap DECIMAL(6,2),
+      is_backtest   BOOLEAN DEFAULT FALSE,
+      -- No default: every seed names its first-save time, so no test reads
+      -- the wall clock.
+      created_at    TIMESTAMPTZ NOT NULL,
       UNIQUE (date, entry_time)
     )
   `);
@@ -218,15 +227,33 @@ beforeAll(async () => {
     const error = failWhen?.(text, statements.length) ?? null;
     return error ? Promise.reject(error) : inner(strings, ...params);
   };
-  holder.sql = Object.assign(tag, {
-    query: inner.query,
-    transaction: inner.transaction,
-  });
+  // `sql.query` (the row read) is counted and failed like the tagged template.
+  const query = (text: string, params?: unknown[]) => {
+    statements.push(text);
+    const error = failWhen?.(text, statements.length) ?? null;
+    return error ? Promise.reject(error) : inner.query(text, params);
+  };
+  holder.sql = Object.assign(tag, { query, transaction: inner.transaction });
 });
 
 afterAll(async () => {
   await db.close();
 });
+
+/**
+ * What a seed row says about its save and its spot. By default a row is a live
+ * save on its own date at its own slot (a label with no clock time: 8:30 AM),
+ * with the spot 7400.00, so build-features trusts it as far as the save goes.
+ */
+interface SeedOpts {
+  /** The stored spot; null stores none. */
+  spx?: string | null;
+  /** The first save, as CT wall-clock text: `YYYY-MM-DD HH:MM`. */
+  savedAtCt?: string;
+  /** The first save, as an exact instant: `2026-10-28T05:00:00Z`. */
+  createdAt?: string;
+  backtest?: boolean;
+}
 
 type Seed = [
   date: string,
@@ -236,24 +263,37 @@ type Seed = [
   low?: string | null,
   prevClose?: string | null,
   gap?: string | null,
+  opts?: SeedOpts,
 ];
 
+const clockText = (minutes: number): string =>
+  `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`;
+
 async function seed(rows: readonly Seed[]): Promise<void> {
-  for (const [date, time, open, high, low, prev, gap] of rows) {
+  for (const [date, time, open, high, low, prev, gap, opts = {}] of rows) {
+    const slot = parseEntryTimeMinutes(time);
+    const savedAtCt =
+      opts.savedAtCt ?? `${date} ${clockText(Number.isNaN(slot) ? 510 : slot)}`;
     await db.query(
       `INSERT INTO market_snapshots
-         (date, entry_time, spx_open, spx_high, spx_low, prev_close,
-          overnight_gap)
+         (date, entry_time, spx, spx_open, spx_high, spx_low, prev_close,
+          overnight_gap, is_backtest, created_at)
        VALUES ($1::date, $2, $3::numeric, $4::numeric, $5::numeric,
-               $6::numeric, $7::numeric)`,
+               $6::numeric, $7::numeric, $8::numeric, $9::boolean,
+               COALESCE($10::timestamptz,
+                        $11::timestamp AT TIME ZONE 'America/Chicago'))`,
       [
         date,
         time,
+        opts.spx === undefined ? '7400.00' : opts.spx,
         open ?? null,
         high ?? null,
         low ?? null,
         prev ?? null,
         gap ?? null,
+        opts.backtest ?? false,
+        opts.createdAt ?? null,
+        savedAtCt,
       ],
     );
   }
@@ -290,8 +330,8 @@ async function seedAll(): Promise<void> {
     [BACKTEST_DATE, '9:30 AM CT', '7377.65'], // 6: open only
     ['2099-01-01', '9:00 AM CT'], // 7: the future
   ]);
-  // The stored spot is not part of any plan: it keeps its value.
-  await db.query('UPDATE market_snapshots SET spx = 7400.00');
+  // The stored spot (7400.00, the seed's default) is not part of any plan: it
+  // keeps its value.
   await db.query(
     `INSERT INTO outcomes (date, settlement)
      VALUES ('2026-11-04', 7560.87), ('2026-11-05', 7356.73)`,
@@ -497,16 +537,98 @@ describe('a dry run', () => {
 
   it('names the dates whose feature pick changes', async () => {
     await seed([
-      ['2026-11-04', '8:35 AM CT', '7400.00', null, null, '7500.00', '-1.33'],
-      ['2026-11-04', '10:00 AM CT'],
+      // 8: a live 9:05 save with its open and range, so it is trusted.
+      [
+        '2026-11-04',
+        '9:05 AM CT',
+        '7400.00',
+        '7410.00',
+        '7390.00',
+        '7500.00',
+        '-1.33',
+      ],
+      // 9: nearer 10:00, but with no range stored it is not trusted until the
+      // plan gives it one that holds its spot.
+      [
+        '2026-11-04',
+        '10:00 AM CT',
+        null,
+        null,
+        null,
+        null,
+        null,
+        { spx: '7490.00' },
+      ],
     ]);
 
     const result = await dry();
 
     const day = result.dates.find((d) => d.date === '2026-11-04');
-    // Row 8 is the one with an open, row 9 the one nearest 10:00 AM CT.
     expect(day?.pickChange).toEqual({ from: 8, to: 9 });
     expect(formatReport(result)).toContain('2026-11-04: row 8 -> row 9');
+  });
+
+  it('reads each row with its spot and its trust columns', async () => {
+    const result = await dry();
+
+    expect(result.dates[0]?.rows[0]).toMatchObject({
+      id: 1,
+      spx: '7400.00',
+      is_backtest: false,
+      flag_reliable: true,
+      saved_day_offset: 0,
+      saved_minutes_ct: 515, // 8:35 AM CT, saved at its own slot
+    });
+  });
+
+  it('does not let the plan rescue a stale-tab row, read through the real trust SQL', async () => {
+    await seed([
+      // 8: a trusted live save.
+      [
+        '2026-11-04',
+        '9:05 AM CT',
+        '7400.00',
+        '7410.00',
+        '7390.00',
+        '7500.00',
+        '-1.33',
+      ],
+      // 9: says 10:00 AM CT but was saved the next day at 10:01 CT.
+      [
+        '2026-11-04',
+        '10:00 AM CT',
+        null,
+        null,
+        null,
+        null,
+        null,
+        { spx: '7490.00', savedAtCt: '2026-11-05 10:01' },
+      ],
+    ]);
+
+    const result = await dry();
+
+    const day = result.dates.find((d) => d.date === '2026-11-04');
+    expect(day?.results.find((r) => r.id === 9)).toMatchObject({
+      kind: 'update',
+      fill: 'all',
+    });
+    expect(day?.rows.find((r) => r.id === 9)).toMatchObject({
+      saved_day_offset: 1,
+      saved_minutes_ct: 601,
+    });
+    expect(day?.pickChange).toBeNull();
+  });
+
+  it('surfaces a DB error on the row read by name', async () => {
+    failWhen = (text) =>
+      /FROM market_snapshots/.test(text) && /^\s*SELECT id/.test(text)
+        ? new Error('permission denied for table market_snapshots')
+        : null;
+
+    await expect(dry()).rejects.toThrow(
+      'permission denied for table market_snapshots',
+    );
   });
 
   it('reads only the dates in --since and --until, and never a date after today', async () => {
@@ -778,6 +900,142 @@ describe('the previous-close cross-check', () => {
 
     await expect(dry()).rejects.toThrow('permission denied for table outcomes');
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+// ── The trust columns: the SQL text build-features shares ───────────────────
+
+describe('SNAPSHOT_TRUST_COLUMNS_SQL', () => {
+  interface Trust {
+    is_backtest: boolean | null;
+    flag_reliable: boolean;
+    saved_day_offset: number;
+    saved_minutes_ct: number;
+  }
+
+  /** Seed one row and read the shared text for it, from a real Postgres. */
+  async function trustOf(
+    date: string,
+    opts: SeedOpts,
+    entryTime = '10:00 AM CT',
+  ): Promise<Trust> {
+    await seed([[date, entryTime, null, null, null, null, null, opts]]);
+    const { rows } = await db.query<Trust>(
+      `SELECT ${SNAPSHOT_TRUST_COLUMNS_SQL}
+         FROM market_snapshots
+        WHERE date = $1::date AND entry_time = $2`,
+      [date, entryTime],
+    );
+    expect(rows).toHaveLength(1);
+    return rows[0]!;
+  }
+
+  it('puts a 23:30 CT save, 05:30Z the next UTC day, on its own CT day at minute 1410', async () => {
+    // 2026-11-03 is CST. The UTC date of the instant is the 4th.
+    const trust = await trustOf('2026-11-03', {
+      createdAt: '2026-11-04T05:30:00Z',
+    });
+
+    expect(trust).toMatchObject({
+      saved_day_offset: 0,
+      saved_minutes_ct: 1410,
+    });
+  });
+
+  it('reads 15:30Z as 9:30 AM CST (570) after the 2026-11-01 change', async () => {
+    const trust = await trustOf('2026-11-02', {
+      createdAt: '2026-11-02T15:30:00Z',
+    });
+
+    // In CDT the same instant would read 10:30 (630).
+    expect(trust).toMatchObject({ saved_day_offset: 0, saved_minutes_ct: 570 });
+  });
+
+  it('reads 14:30Z as 9:30 AM CDT (570) before the change', async () => {
+    const trust = await trustOf('2026-10-30', {
+      createdAt: '2026-10-30T14:30:00Z',
+    });
+
+    expect(trust).toMatchObject({ saved_day_offset: 0, saved_minutes_ct: 570 });
+  });
+
+  it.each([
+    ['04:59Z, the evening of 10-27 CDT, is not reliable', '04:59', false],
+    ['05:00Z, 00:00 on 10-28 CDT, is reliable', '05:00', true],
+  ])('the flag cutover: %s', async (_label, time, reliable) => {
+    const trust = await trustOf('2026-10-28', {
+      createdAt: `2026-10-28T${time}:00Z`,
+      backtest: true,
+    });
+
+    expect(trust).toMatchObject({ is_backtest: true, flag_reliable: reliable });
+  });
+
+  it.each([
+    [
+      'a save the day before its date',
+      '2026-11-03',
+      '2026-11-02T20:00:00Z',
+      -1,
+      840,
+    ],
+    ['a save three days later', '2026-11-02', '2026-11-05T15:30:00Z', 3, 570],
+  ])(
+    'counts the CT days between the date and the save: %s',
+    async (_l, date, at, days, minutes) => {
+      const trust = await trustOf(date, { createdAt: at });
+
+      expect(trust).toMatchObject({
+        saved_day_offset: days,
+        saved_minutes_ct: minutes,
+      });
+    },
+  );
+
+  it('gives the same answers whatever the session time zone is', async () => {
+    await seed([
+      [
+        '2026-11-03',
+        '10:00 AM CT',
+        null,
+        null,
+        null,
+        null,
+        null,
+        { createdAt: '2026-11-04T05:30:00Z' },
+      ],
+    ]);
+    const read = () =>
+      db.query<Trust>(
+        `SELECT ${SNAPSHOT_TRUST_COLUMNS_SQL}
+           FROM market_snapshots WHERE date = '2026-11-03'`,
+      );
+    await db.query("SET TIME ZONE 'Asia/Tokyo'");
+    try {
+      const { rows } = await read();
+
+      expect(rows[0]).toMatchObject({
+        flag_reliable: true,
+        saved_day_offset: 0,
+        saved_minutes_ct: 1410,
+      });
+    } finally {
+      await db.query('RESET TIME ZONE');
+    }
+  });
+
+  it('is false for is_backtest on a live row, and passes a backtest row through', async () => {
+    const live = await trustOf('2026-11-03', {
+      createdAt: '2026-11-03T16:00:00Z',
+    });
+    const replayed = await trustOf(
+      '2026-11-04',
+      { createdAt: '2026-11-05T01:00:00Z', backtest: true },
+      '9:55 AM CT',
+    );
+
+    expect(live.is_backtest).toBe(false);
+    expect(replayed.is_backtest).toBe(true);
   });
 });
 

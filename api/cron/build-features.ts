@@ -10,8 +10,10 @@
  * Weekends and NYSE holidays are never built, whatever selects the date.
  *
  * A date's static features (VIX, regime, SPX open, ...) come from its
- * market_snapshots row nearest 10:00 AM CT (pickFeatureSnapshot), and
- * is_event_day is true when any of its rows says so.
+ * market_snapshots row nearest 10:00 AM CT (pickFeatureSnapshot) among the
+ * rows that can be trusted (featureSnapshotRejection), and is_event_day is
+ * true when any of its rows says so. A date with rows but none trusted stores
+ * no snapshot features and feature_completeness 0, so it does not train.
  *
  * Feature engineering is split into focused modules:
  *   build-features-flow.ts   - flow checkpoint NCP/NPP + agreement
@@ -25,6 +27,7 @@
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { getDb, withDbRetry } from '../_lib/db.js';
+import logger from '../_lib/logger.js';
 import { Sentry } from '../_lib/sentry.js';
 import {
   deriveCronStatus,
@@ -102,11 +105,149 @@ function toDateStr(val: unknown): string {
  */
 const FEATURE_SAMPLE_MINUTES_CT = 600;
 
-/** The two fields `pickFeatureSnapshot` reads from a market_snapshots row. */
-type SnapshotCandidate = Pick<SnapshotRow, 'spx_open'> & { entry_time: string };
+/**
+ * A row is a candidate only when its slot is within this many minutes of the
+ * sample time: 9:00 to 11:00 AM CT, both ends in (owner decision 2026-11-22).
+ */
+const FEATURE_SAMPLE_WINDOW_MINUTES = 60;
+/**
+ * A same-day save may come this many minutes before its slot (a clock a minute
+ * fast) and no more.
+ */
+const SAME_DAY_EARLY_MINUTES = 1;
+/**
+ * A same-day save may come this many minutes after its slot. Live saves lag 4
+ * minutes at the 90th percentile; the 2026-03-26 catch-up rows lagged 41 or
+ * more.
+ */
+const SAME_DAY_LATE_MINUTES = 10;
+/**
+ * A save made on a later day within this many minutes of its slot's clock time
+ * is a browser tab left open on an old date, saving the live quote under the
+ * old slot. The replay repairs, saved days later mostly in the evening, are
+ * kept.
+ */
+const STALE_TAB_MINUTES = 10;
+/**
+ * The row's SPX may sit this many points outside its own day's high-low range
+ * as of its slot. 10 keeps out the 9:05 rows before 2026-03-05, whose range
+ * cannot be trusted either; 20 would take five of them back (spec
+ * 2026-11-22-feature-snapshot-trust-design.md).
+ */
+const SPX_RANGE_TOLERANCE = 10;
+
+/**
+ * The columns that say when a market_snapshots row was saved, as SQL text. All
+ * time-zone math stays here, in Postgres. One text serves two readers: this
+ * cron splices it into its snapshot read, and
+ * scripts/_lib/snapshot-price-context.ts into the read behind its pick
+ * report. That script's pglite test runs the same text on a real database,
+ * time-zone cases included.
+ * - `is_backtest`: the stored flag. It is inverted on rows saved before
+ *   2026-10-28 and reliable from then on (fixed on 2026-10-27 between 20:27
+ *   and 22:44 CT).
+ * - `flag_reliable`: the row was first saved on or after that day, 00:00 CT.
+ * - `saved_day_offset`: the CT calendar day of the first save minus the row's
+ *   `date`, in days.
+ * - `saved_minutes_ct`: the CT clock time of the first save, in minutes after
+ *   midnight.
+ * `created_at` is the first insert's time: an ON CONFLICT update never
+ * changes it.
+ */
+export const SNAPSHOT_TRUST_COLUMNS_SQL = `is_backtest,
+  (created_at >= TIMESTAMPTZ '2026-10-28 00:00 America/Chicago') AS flag_reliable,
+  ((created_at AT TIME ZONE 'America/Chicago')::date - date) AS saved_day_offset,
+  (EXTRACT(HOUR FROM created_at AT TIME ZONE 'America/Chicago')::int * 60
+    + EXTRACT(MINUTE FROM created_at AT TIME ZONE 'America/Chicago')::int) AS saved_minutes_ct`;
+
+/** The columns `SNAPSHOT_TRUST_COLUMNS_SQL` selects, as the driver returns them. */
+export interface SnapshotTrustColumns {
+  is_backtest: boolean | null;
+  flag_reliable: boolean;
+  saved_day_offset: number;
+  saved_minutes_ct: number;
+}
+
+/** What `featureSnapshotRejection` reads from a market_snapshots row. */
+export interface SnapshotTrustRow extends SnapshotTrustColumns {
+  entry_time: string;
+  /** NUMERIC, so text from the driver. */
+  spx: string | null;
+  spx_low: string | null;
+  spx_high: string | null;
+}
+
+/** The fields `pickFeatureSnapshot` reads from a market_snapshots row. */
+type SnapshotCandidate = Pick<SnapshotRow, 'spx_open'> & SnapshotTrustRow;
+
+/** Why a snapshot row cannot be a date's 10:00 view. */
+export type FeatureSnapshotRejection =
+  | 'no-slot'
+  | 'outside-window'
+  | 'saved-before-date'
+  | 'saved-before-slot'
+  | 'saved-late'
+  | 'stale-tab'
+  | 'no-price-range'
+  | 'spx-outside-range';
+
+/**
+ * The first test the row fails, or null when it can be trusted as the date's
+ * 10:00 view. The tests, in order:
+ * 1. its `entry_time` reads as a clock time (`no-slot`);
+ * 2. the slot is within an hour of 10:00 AM CT (`outside-window`);
+ * 3. it was not saved before its own date (`saved-before-date`);
+ * 4. saved the same day, it was not saved before its slot
+ *    (`saved-before-slot`);
+ * 5. and not long after it (`saved-late`);
+ * 6. saved on a later day, it was not at the slot's clock time: a stale tab
+ *    (`stale-tab`);
+ * 7. `spx`, `spx_low` and `spx_high` are all usable numbers
+ *    (`no-price-range`);
+ * 8. `spx` is inside its range, give or take SPX_RANGE_TOLERANCE
+ *    (`spx-outside-range`).
+ * A reliable backtest row (`is_backtest`, first saved from 2026-10-28) skips
+ * tests 3 to 5: it is built from candles for its own slot, so the time it was
+ * first saved says nothing about its values, and a later replay that updated
+ * it in place left that first time behind. It keeps test 6, because a tab
+ * still running code from before the flag fix, left on an old date, makes
+ * stale rows even with the flag set.
+ */
+export function featureSnapshotRejection(
+  row: SnapshotTrustRow,
+): FeatureSnapshotRejection | null {
+  const slot = parseEntryTimeMinutes(row.entry_time);
+  if (Number.isNaN(slot)) return 'no-slot';
+  if (
+    Math.abs(slot - FEATURE_SAMPLE_MINUTES_CT) > FEATURE_SAMPLE_WINDOW_MINUTES
+  ) {
+    return 'outside-window';
+  }
+
+  const offset = row.saved_day_offset;
+  const lag = row.saved_minutes_ct - slot;
+  const reliableBacktest = row.is_backtest === true && row.flag_reliable;
+  if (!reliableBacktest) {
+    if (offset < 0) return 'saved-before-date';
+    if (offset === 0) {
+      if (lag < -SAME_DAY_EARLY_MINUTES) return 'saved-before-slot';
+      if (lag > SAME_DAY_LATE_MINUTES) return 'saved-late';
+    }
+  }
+  if (offset > 0 && Math.abs(lag) <= STALE_TAB_MINUTES) return 'stale-tab';
+
+  const spx = num(row.spx);
+  const low = num(row.spx_low);
+  const high = num(row.spx_high);
+  if (spx == null || low == null || high == null) return 'no-price-range';
+  if (spx < low - SPX_RANGE_TOLERANCE || spx > high + SPX_RANGE_TOLERANCE) {
+    return 'spx-outside-range';
+  }
+  return null;
+}
 
 /** The first of `rows` nearest the sample time; a tie goes to the earlier. */
-function nearestToSampleTime<T extends SnapshotCandidate>(
+function nearestToSampleTime<T extends { entry_time: string }>(
   rows: readonly T[],
 ): T | undefined {
   let best: T | undefined;
@@ -130,19 +271,60 @@ function nearestToSampleTime<T extends SnapshotCandidate>(
 }
 
 /**
- * The snapshot a date's static features are read from. Among rows with a
- * usable `spx_open` (not NULL, not NaN: early snapshots store NaN before the
- * cash open) and a readable `entry_time`, the one nearest 10:00 AM CT, the
- * earlier on a tie. When no row qualifies, the same rule over every row with
- * a readable time, and when none has one (only "pre-market"), the first row.
- * `rows` must be in id order, and `entry_time` is compared as a clock time:
- * as text "10:00 AM CT" sorts before "8:30 AM CT".
+ * The snapshot a date's static features are read from. Among the trusted rows
+ * (`featureSnapshotRejection`), those with a usable `spx_open` (not NULL, not
+ * NaN: early snapshots store NaN before the cash open) first: the one nearest
+ * 10:00 AM CT, the earlier on a tie. When none has an open, the same rule over
+ * every trusted row. When no row is trusted, undefined: the date has no 10:00
+ * view. `rows` must be in id order, and `entry_time` is compared as a clock
+ * time: as text "10:00 AM CT" sorts before "8:30 AM CT".
  */
 export function pickFeatureSnapshot<T extends SnapshotCandidate>(
   rows: readonly T[],
 ): T | undefined {
-  const withOpen = rows.filter((row) => num(row.spx_open) != null);
-  return nearestToSampleTime(withOpen) ?? nearestToSampleTime(rows) ?? rows[0];
+  const trusted = rows.filter((row) => featureSnapshotRejection(row) == null);
+  const withOpen = trusted.filter((row) => num(row.spx_open) != null);
+  return nearestToSampleTime(withOpen) ?? nearestToSampleTime(trusted);
+}
+
+/** How many of `rows` each test rejected, for the no-pick warning. */
+function rejectionCounts(
+  rows: readonly SnapshotTrustRow[],
+): Partial<Record<FeatureSnapshotRejection, number>> {
+  const counts: Partial<Record<FeatureSnapshotRejection, number>> = {};
+  for (const row of rows) {
+    const reason = featureSnapshotRejection(row);
+    if (reason != null) counts[reason] = (counts[reason] ?? 0) + 1;
+  }
+  return counts;
+}
+
+/**
+ * The 18 static features copied from the picked snapshot row. With no row
+ * every one is an explicit null, not an absent key, so nothing downstream has
+ * to tell the two apart.
+ */
+function snapshotFeatures(s: SnapshotRow | undefined): FeatureRow {
+  return {
+    vix: num(s?.vix),
+    vix1d: num(s?.vix1d),
+    vix9d: num(s?.vix9d),
+    vvix: num(s?.vvix),
+    vix1d_vix_ratio: num(s?.vix1d_vix_ratio),
+    vix_vix9d_ratio: num(s?.vix_vix9d_ratio),
+    regime_zone: s?.regime_zone ?? null,
+    cluster_mult: num(s?.cluster_mult),
+    dow_mult: num(s?.dow_mult_hl),
+    dow_label: s?.dow_label ?? null,
+    spx_open: num(s?.spx_open),
+    sigma: num(s?.sigma),
+    hours_remaining: num(s?.hours_remaining),
+    ic_ceiling: num(s?.ic_ceiling),
+    put_spread_ceiling: num(s?.put_spread_ceiling),
+    call_spread_ceiling: num(s?.call_spread_ceiling),
+    opening_range_signal: s?.opening_range_signal ?? null,
+    opening_range_pct_consumed: num(s?.opening_range_pct_consumed),
+  };
 }
 
 // Build features for a single date
@@ -156,6 +338,8 @@ async function buildFeaturesForDate(
   // 1. Static features from market_snapshots
   // Read every row of the date (about 80 at most) and sample one in
   // TypeScript: entry_time is text, so SQL cannot order it by clock time.
+  // The trust columns are the SQL text shared with the price-context script,
+  // spliced in raw: it is a constant of this module.
   const snapshots = (await withDbRetry(
     () => sql`
       SELECT entry_time,
@@ -163,35 +347,23 @@ async function buildFeaturesForDate(
              regime_zone, cluster_mult, dow_mult_hl, dow_label,
              spx_open, sigma, hours_remaining,
              ic_ceiling, put_spread_ceiling, call_spread_ceiling,
-             opening_range_signal, opening_range_pct_consumed, is_event_day
+             opening_range_signal, opening_range_pct_consumed, is_event_day,
+             spx, spx_low, spx_high,
+             ${sql.unsafe(SNAPSHOT_TRUST_COLUMNS_SQL)}
       FROM market_snapshots
       WHERE date = ${dateStr}
       ORDER BY id ASC
     `,
     2,
     10_000,
-  )) as (SnapshotRow & { entry_time: string })[];
+  )) as (SnapshotRow & SnapshotTrustRow)[];
 
-  const s = pickFeatureSnapshot(snapshots);
-  if (s) {
-    features.vix = num(s.vix);
-    features.vix1d = num(s.vix1d);
-    features.vix9d = num(s.vix9d);
-    features.vvix = num(s.vvix);
-    features.vix1d_vix_ratio = num(s.vix1d_vix_ratio);
-    features.vix_vix9d_ratio = num(s.vix_vix9d_ratio);
-    features.regime_zone = s.regime_zone;
-    features.cluster_mult = num(s.cluster_mult);
-    features.dow_mult = num(s.dow_mult_hl);
-    features.dow_label = s.dow_label;
-    features.spx_open = num(s.spx_open);
-    features.sigma = num(s.sigma);
-    features.hours_remaining = num(s.hours_remaining);
-    features.ic_ceiling = num(s.ic_ceiling);
-    features.put_spread_ceiling = num(s.put_spread_ceiling);
-    features.call_spread_ceiling = num(s.call_spread_ceiling);
-    features.opening_range_signal = s.opening_range_signal;
-    features.opening_range_pct_consumed = num(s.opening_range_pct_consumed);
+  // A date with rows but none trusted has no 10:00 view: its snapshot features
+  // are null and its completeness 0 (below), so it does not train.
+  let noTrustedPick = false;
+  if (snapshots.length > 0) {
+    const s = pickFeatureSnapshot(snapshots);
+    Object.assign(features, snapshotFeatures(s));
     // The flag is the date's, not the sampled row's: bool_or over every row,
     // which is NULL only when no row carries a flag. A row saved before the
     // event lookup could name the day stays false while a later one is true.
@@ -200,6 +372,17 @@ async function buildFeaturesForDate(
       .filter((flag) => flag != null);
     features.is_event_day =
       eventFlags.length > 0 ? eventFlags.includes(true) : null;
+    if (s == null) {
+      noTrustedPick = true;
+      logger.warn(
+        {
+          date: dateStr,
+          rows: snapshots.length,
+          rejected: rejectionCounts(snapshots),
+        },
+        'build-features: no trusted snapshot row, snapshot features left empty',
+      );
+    }
   }
 
   // Fall back to outcomes.day_open if snapshots didn't provide spx_open
@@ -250,7 +433,11 @@ async function buildFeaturesForDate(
   )) as NopeTickRow[];
   Object.assign(features, engineerNopeFeatures(nopeRows, dateStr));
 
-  features.feature_completeness = computeCompleteness(features);
+  // 0, not NULL: the upsert keeps the stored value over a NULL. The ML readers
+  // keep a day only at 0.80 or more, so a 0 keeps this date out of training.
+  features.feature_completeness = noTrustedPick
+    ? 0
+    : computeCompleteness(features);
 
   return features;
 }
