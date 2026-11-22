@@ -133,8 +133,8 @@ Files: `GexLandscape/BiasPanel.tsx`, `StrikeTable.tsx`, `classify.ts`, `constant
 | 43 | `…/index.tsx:1821` | `replay` | **H** `showing the selected past day, no live polling` |
 | 44 | `…/index.tsx:1933` | `(4 hidden by quality filter)` | **H** `chains from Q1/Q2 inversion-quality tickers, hidden by default; turn on Show filtered tickers to include them`. Keep `hidden by quality filter` out of the hint (`LotteryFinderSection.test.tsx:438,453`). **W**: `bottom-quintile (Q1/Q2)` → `bottom-two-quintile (Q1/Q2)`. The API suppresses quintiles 1 and 2 (`api/lottery-finder.ts:858-869`). |
 | 45 | `…/LotteryDayBanner.tsx:93` metric, no-data branch (3 metrics) | `Market Tide —` | **H** one module const: `no data: early-session fire before the macro tables filled, or a backfilled fire without macro` |
-| 46 | `…/LotteryDayBanner.tsx:105` SPX Gamma sign | `SPX Gamma 🟢` | **H** via a new `srText` prop on `DayMetric`: `SPX dealer gamma sign at the latest fire: green is long gamma (vol-suppressing), red is short gamma (vol-amplifying)` |
-| 47 | `…/LotteryDayBanner.tsx:121` signed metrics | `Market Tide ⬆ +1.2M` | **H** via `srText`. Market Tide: `net call minus net put premium at the latest fire; positive means calls dominate, negative means puts dominate`. 0DTE Flow: `net call minus net put premium on 0DTE prints at the latest fire`. |
+| 46 | `…/LotteryDayBanner.tsx:105` SPX Gamma sign | `SPX Gamma 🟢` | **H** via a new `srText` prop on `DayMetric`: `dealer gamma sign at the latest fire: green is long gamma (vol-suppressing), red is short gamma (vol-amplifying), white is zero` (as built; the label already says "SPX") |
+| 47 | `…/LotteryDayBanner.tsx:121` signed metrics | `Market Tide ⬆ +1.2M` | **H** via `srText`. Market Tide: `net call minus net put premium at the latest fire; positive means calls dominate, negative means puts dominate`. 0DTE Flow: `net call minus net put premium at the latest fire` (as built; the label already says "0DTE"). |
 | 48 | `…/LotteryTierBanner.tsx:105` headline | `This page · 25 fires of 100 today` | **H**, per branch. When `hasMoreToday`, the hint is the title string, hoisted to one const used for both. When the page holds the whole day, the hint is `every fire of the day is on this page`, which keeps the word "today" out, because `LotteryTierBanner.test.tsx:219` asserts no text says it in that branch. |
 | 49–51 | `…/LotteryTierBanner.tsx:126,132,138` tier counts | `🔥🔥🔥 3` | **H** `tierTitle(n, cutoffs, rate)`, computed once per tier and used for both. |
 | 52 | `…/LotteryTierBanner.tsx:146` dominant ticker | `top: AAPL ×12` | **H** `most fires of any ticker on the current page` |
@@ -150,7 +150,7 @@ Exempt here, unchanged and pinned by tests:
 
 | # | Site | Visible | Fix |
 |---|---|---|---|
-| 55 | `SilentBoom/index.tsx:1496` exit label | `EXIT` | **H** `sets the primary exit % on every alert` |
+| 55 | `SilentBoom/index.tsx:1496` exit label | `EXIT` | **H** `sets which outcome % shows first on every alert` (as built; "exit" repeated the label, and "realized" was wrong for the peak option) |
 | 56 | `…/index.tsx:1676` | `(5-min)` | **H** `filtered to the selected 5-minute bucket` |
 | 57 | `…/index.tsx:1713` | `12:34 CT` | **H** `last updated` |
 | 58 | `…/index.tsx:1721` | `replay` | **H** `showing the selected past day, no live polling` |
@@ -159,8 +159,8 @@ Exempt here, unchanged and pinned by tests:
 | 63 | `…/SilentBoomDayBanner.tsx:117` dominant ticker | `top: AAPL ×12` | **H** `most alerts of any ticker on the current page` |
 | 64 | `…/SilentBoomDayBanner.tsx:134` loudest | `loudest: AAPL ×150` | **H** `` `${topAlert.strike}${topAlert.optionType}, largest spike ratio in the current view` ``. Keep the ticker out (`SilentBoomDayBanner.test.tsx` `getAllByText('NVDA')`). **W**: `(floored at 100 to match the row badge)` → `(baseline volume counted as at least 100, to match the row badge)`. The floor is on the baseline (`:13-16`), not on the ratio. |
 | 65 | `…/SilentBoomRegimeBanner.tsx:89` no-data branch | `Market Tide —` | **H** one const: `no data: alert fired outside the macro window or before the macro tables filled` |
-| 66 | `…/SilentBoomRegimeBanner.tsx:101` SPX Gamma sign | `SPX Gamma 🟢` | **H** via `srText`: `SPX dealer gamma sign at the latest alert: green is long gamma (vol-suppressing), red is short gamma (vol-amplifying)` |
-| 67 | `…/SilentBoomRegimeBanner.tsx:115` signed metrics | `Market Tide ⬆ +1.2M` | **H** via `srText`. Market Tide: `net call minus net put premium at the latest alert; positive means calls dominate, negative means puts dominate`. 0DTE Flow: `net call minus net put premium on 0DTE prints at the latest alert`. |
+| 66 | `…/SilentBoomRegimeBanner.tsx:101` SPX Gamma sign | `SPX Gamma 🟢` | **H** via `srText`: `dealer gamma sign at the latest alert: green is long gamma (vol-suppressing), red is short gamma (vol-amplifying), white is zero` (as built) |
+| 67 | `…/SilentBoomRegimeBanner.tsx:115` signed metrics | `Market Tide ⬆ +1.2M` | **H** via `srText`. Market Tide: `net call minus net put premium at the latest alert; positive means calls dominate, negative means puts dominate`. 0DTE Flow: `net call minus net put premium at the latest alert` (as built). |
 
 ### Interval B/A (sites 68–76)
 
