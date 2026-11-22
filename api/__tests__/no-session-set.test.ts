@@ -40,7 +40,7 @@
  * opens with an SQL comment, or `set_config(..., false)`.
  */
 
-import { describe, it, expect } from 'vitest';
+import { beforeAll, describe, it, expect } from 'vitest';
 import { readdirSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import ts from 'typescript';
@@ -357,6 +357,18 @@ describe('findSessionSets', () => {
 describe('api/ session SET guard', () => {
   const apiDir = resolve(process.cwd(), 'api');
   const files = apiSourceFiles(apiDir);
+  let offenders: string[];
+
+  // Reads and parses every api/ source file with the TypeScript compiler: 0.6 s
+  // idle, 19 s on a loaded machine. That is the scan itself, not a cold start,
+  // so it runs under a hook timeout of its own and the test asserts its result.
+  beforeAll(() => {
+    offenders = files.flatMap((file) =>
+      findSessionSets(readFileSync(resolve(apiDir, file), 'utf8')).map(
+        ({ line, text }) => `api/${file}:${line}: ${text}`,
+      ),
+    );
+  }, 120_000);
 
   it('scans the api tree, not an empty or wrong directory', () => {
     expect(files.length).toBeGreaterThan(100);
@@ -378,11 +390,6 @@ describe('api/ session SET guard', () => {
   });
 
   it('has no plain SET, and no SET LOCAL outside a batch, in any api/ source file', () => {
-    const offenders = files.flatMap((file) =>
-      findSessionSets(readFileSync(resolve(apiDir, file), 'utf8')).map(
-        ({ line, text }) => `api/${file}:${line}: ${text}`,
-      ),
-    );
     expect(
       offenders,
       'The Neon HTTP driver runs each query in its own session, so a plain ' +

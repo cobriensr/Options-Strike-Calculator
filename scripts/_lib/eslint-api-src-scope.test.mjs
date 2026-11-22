@@ -323,9 +323,15 @@ describe('eslint: the .js extension rule covers every src/ file api/ imports', (
   let eslint;
   const files = srcFilesImportedByApi(ROOT);
 
-  beforeAll(() => {
+  // The first config lookup loads eslint.config.ts and its plugins (2.8 s idle,
+  // 79 to 85 s on a loaded machine); pay it here, under this hook's own
+  // timeout, not in the first case's 60 s.
+  beforeAll(async () => {
     eslint = new ESLint({ cwd: ROOT });
-  });
+    await eslint.calculateConfigForFile(
+      path.join(ROOT, 'src/utils/timezone.ts'),
+    );
+  }, 300_000);
 
   it('finds the known api/-imported src/ files (the walk is not empty)', () => {
     expect(files).toContain('src/utils/timezone.ts');

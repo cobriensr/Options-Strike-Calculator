@@ -138,9 +138,14 @@ const CASES = [
 describe('eslint: browser code must not import api/', () => {
   let eslint;
 
-  beforeAll(() => {
+  // The first lint loads eslint.config.ts and its plugins (2.8 s idle, 79 to
+  // 85 s on a loaded machine); pay it here, under this hook's own timeout, not
+  // in the first case's 60 s. Later ESLint instances in this file reuse it.
+  beforeAll(async () => {
     eslint = new ESLint({ cwd: ROOT });
-  });
+    const [, file, code] = CASES[0];
+    await guardRuleIds(eslint, file, code);
+  }, 300_000);
 
   it.each(CASES)(
     '%s',

@@ -1,6 +1,6 @@
 // @vitest-environment node
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest';
 
 const { mockSql, mockWithDbRetry } = vi.hoisted(() => ({
   mockSql: vi.fn().mockResolvedValue([]),
@@ -15,6 +15,17 @@ vi.mock('../_lib/db.js', () => ({
 import { insertCaptureRows } from '../_lib/gexbot-store.js';
 
 describe('insertCaptureRows', () => {
+  // The real withDbRetry, for the retry test below. Loading the real db module
+  // (the Neon driver, the logger, Sentry) is a cold import, 15 s under load, so
+  // it is paid here under the hook's own timeout, not in that test's 15 s.
+  let realWithDbRetry: typeof import('../_lib/db.js').withDbRetry;
+
+  beforeAll(async () => {
+    const actual =
+      await vi.importActual<typeof import('../_lib/db.js')>('../_lib/db.js');
+    realWithDbRetry = actual.withDbRetry;
+  }, 120_000);
+
   beforeEach(() => {
     vi.resetAllMocks();
     mockSql.mockResolvedValue([]);
@@ -156,9 +167,7 @@ describe('insertCaptureRows', () => {
 
   it('succeeds when the first INSERT attempt hits a transient error and the retry lands', async () => {
     // Real withDbRetry: a retryable Neon error backs off 1 s, then retries.
-    const actual =
-      await vi.importActual<typeof import('../_lib/db.js')>('../_lib/db.js');
-    mockWithDbRetry.mockImplementation(actual.withDbRetry);
+    mockWithDbRetry.mockImplementation(realWithDbRetry);
     mockSql
       .mockRejectedValueOnce(new Error('fetch failed'))
       .mockResolvedValueOnce([]);
