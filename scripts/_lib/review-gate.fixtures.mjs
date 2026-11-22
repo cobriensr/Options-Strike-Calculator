@@ -30,15 +30,30 @@ export const DRIFTED =
 
 /**
  * Gate inputs each test sets explicitly instead of inheriting, so cleanEnv
- * drops them along with GIT_*: CLAUDECODE (set in Claude Code's shells) and
+ * drops them along with GIT_*: CLAUDECODE (set in Claude Code's shells),
  * npm_lifecycle_event (set to "review" when `npm run review` runs these
- * tests). cleanEnv matches names upper-cased.
+ * tests) and npm_package_json (the path of this repo's package.json then: the
+ * `run` subcommand would read the real `review:steps` from it, not the
+ * scratch repo's). cleanEnv matches names upper-cased.
  */
-const DROPPED_ENV = new Set(['CLAUDECODE', 'NPM_LIFECYCLE_EVENT']);
+const DROPPED_ENV = new Set([
+  'CLAUDECODE',
+  'NPM_LIFECYCLE_EVENT',
+  'NPM_PACKAGE_JSON',
+]);
 
 /**
- * Run a command with every gate input set explicitly (cleanEnv plus
- * `extraEnv`); returns `{ status, stdout, stderr }` whatever its exit code.
+ * The environment of a gate child: every gate input set explicitly (cleanEnv
+ * plus `extraEnv`). Shared by `run` below and by tests that spawn the CLI
+ * asynchronously.
+ */
+export function gateEnv(extraEnv = {}) {
+  return cleanEnv(extraEnv, DROPPED_ENV);
+}
+
+/**
+ * Run a command with every gate input set explicitly (gateEnv); returns
+ * `{ status, stdout, stderr }` whatever its exit code.
  * Throws when it can't be spawned, or runs past SLOW_CHILD_TIMEOUT: a commit
  * runs the whole gate hook, which makes many git calls of its own. The error
  * names the command, the limit and the stderr so far (spawnChild).
@@ -47,7 +62,7 @@ export function run(cwd, command, args, extraEnv = {}) {
   // Test-only: `git` from PATH, as the module under test and the hook use.
   return spawnChild(command, args, {
     cwd,
-    env: cleanEnv(extraEnv, DROPPED_ENV),
+    env: gateEnv(extraEnv),
     encoding: 'utf8',
     timeout: SLOW_CHILD_TIMEOUT,
     windowsHide: true,
