@@ -190,12 +190,10 @@ export function useVixData(
         // An AbortError (cleanup) is expected, so it is filtered out before
         // capturing. /api/vix-ohlc is public ("no owner check"), so no auth
         // gate answers 401 here, and a non-2xx reply returns null above
-        // instead of throwing: the '401' message check below never matches
-        // an HTTP status. Network failures and any other error reach Sentry.
+        // instead of throwing. Network failures, a body that fails to parse
+        // and any other error reach Sentry.
         if (err instanceof DOMException && err.name === 'AbortError') return;
         if (controller.signal.aborted) return;
-        const msg = err instanceof Error ? err.message : String(err);
-        if (msg.includes('401')) return;
         captureUnlessAuth(err, {
           level: 'warning',
           tags: { context: 'vix_ohlc_fetch' },

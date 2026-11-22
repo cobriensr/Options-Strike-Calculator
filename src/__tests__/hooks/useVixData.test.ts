@@ -23,6 +23,8 @@ vi.mock('../../utils/csvParser', () => ({
   parseVixCSV: vi.fn(() => mockVixMap),
 }));
 
+vi.mock('../../lib/sentry-helpers', () => ({ captureUnlessAuth: vi.fn() }));
+
 // Re-import after mock registration so we can control return values
 import {
   loadCachedVixData,
@@ -30,6 +32,9 @@ import {
   cacheVixData,
 } from '../../utils/vixStorage';
 
+import { captureUnlessAuth } from '../../lib/sentry-helpers';
+
+const mockedCapture = vi.mocked(captureUnlessAuth);
 const mockedLoadCached = vi.mocked(loadCachedVixData);
 const mockedLoadStatic = vi.mocked(loadStaticVixData);
 const mockedCache = vi.mocked(cacheVixData);
@@ -685,7 +690,47 @@ describe('useVixData', () => {
       await waitFor(() => {
         expect(fetchSpy).toHaveBeenCalled();
       });
+      // Let the response chain finish, so "not captured" means something.
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 0));
+      });
 
+      expect(result.current.vixOHLC).toBeNull();
+      // A non-2xx reply returns null; it is not an error to report.
+      expect(mockedCapture).not.toHaveBeenCalled();
+
+      fetchSpy.mockRestore();
+    });
+
+    it('reports a thrown error whose message contains "401" instead of swallowing it', async () => {
+      // A truncated 200 body fails JSON parsing with the offset in the
+      // message. It is a real failure, not an HTTP status.
+      const parseError = new SyntaxError(
+        'Unterminated string in JSON at position 401',
+      );
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+        ok: true,
+        json: async () => {
+          throw parseError;
+        },
+      } as unknown as Response);
+
+      const { result } = renderWith();
+
+      await waitFor(() => expect(result.current.vixDataLoaded).toBe(true));
+
+      act(() => {
+        result.current.setSelectedDate('2026-03-26');
+      });
+
+      await waitFor(() => {
+        expect(mockedCapture).toHaveBeenCalledWith(
+          parseError,
+          expect.objectContaining({
+            tags: { context: 'vix_ohlc_fetch' },
+          }),
+        );
+      });
       expect(result.current.vixOHLC).toBeNull();
 
       fetchSpy.mockRestore();
