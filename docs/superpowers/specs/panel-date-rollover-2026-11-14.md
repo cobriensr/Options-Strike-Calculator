@@ -363,6 +363,31 @@ panels follow the new date too".
   dates agree. Tests assert `error` by value for that case, a network failure
   and a body that is not JSON. `data` and `fetchedAt` stay the raw last fetch;
   only `displayData` is date-checked, and the result type says so.
+- **The returned `error` is derived, and ends with the read it describes
+  (round 2).** The fetch stores `error` and a `dateMismatch` flag (state, set
+  only where the wrong-date error is set; a failed fetch resets it). The hook
+  returns `error` as null when the window is closed (nothing fetches, so a
+  left-over error would sit over "waiting for the open" all weekend), and when
+  `dateMismatch` is set and the stored payload is dated today (the shared ET
+  clock can lag the server by a tick: the fetch lands on Monday's payload while
+  the store still says Friday, then catches up, and the alert goes in that
+  render, not at the next poll). A fetch start sets only `loading`, so an error
+  that persists does not blink to "loading" on every poll. A `null` 2xx body
+  reads "Payload is undated, but today is …" instead of throwing, and does not
+  overwrite the last-good payload in storage or in the display fallback. Known
+  edge: after a close, the stored error is still in state, so the first fetch
+  of the next window shows it until that fetch answers.
+- **The closed panel says why (round 2).** `placeholderCopy` tells three
+  closed cases apart: a public visitor ("The regime read needs owner or guest
+  access.": the hook holds the window closed for them, so no clock time opens
+  it), after the close on a trading day ("Closed for the day. The next read
+  starts at the 08:30 CT open."), and before the open or on a weekend or
+  holiday ("Waiting for the open…"). The window arithmetic is shared:
+  `regime0dteSessionPhase` (`src/utils/regime-0dte-window.ts`) returns
+  `no-session`, `before-open`, `open` or `after-close`, and the hook polls only
+  in `open`. The panel reads the clock when it renders, which it does at the
+  window flip and at ET midnight; "closed for the day" can outlast CT midnight
+  until the next render, and is still true then.
 - **The tests move the clock while mounted.** The old `useRegime0dte` tests
   mocked `getCTTime` and `getCTDateStr`, which cannot cross a day. They now pin
   the real clock and move it (the window and the ET date both read `Date`).
