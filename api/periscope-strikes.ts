@@ -21,19 +21,18 @@
  *                     slot at-or-before (date, time). Omitted = latest.
  *   ?spot=...         Optional fresher SPX spot override.
  *
- * Cache:
- *   Live (no date/time): 30s + 30s during RTH, 300s + 60s after hours
+ * Cache (set per success response; an error sets none):
+ *   Live (no date/time): 10s edge, no stale reuse, when the response carries
+ *                        a slot or the market is open; 300s + 60s for a
+ *                        no-slot reply outside RTH
  *   Picked slot: 300s + 60s — historical, immutable
  *
  * Auth: owner OR guest — same policy as /api/periscope-exposure.
  */
 
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import {
-  setCacheHeaders,
-  isMarketOpen,
-  guardOwnerOrGuestEndpoint,
-} from './_lib/api-helpers.js';
+import { isMarketOpen, guardOwnerOrGuestEndpoint } from './_lib/api-helpers.js';
+import { setLiveReadCache } from './_lib/live-read-cache.js';
 import {
   fetchLatestPeriscopeSlot,
   fetchPriorPeriscopeSlot,
@@ -132,12 +131,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         asOf = endOfMinute(iso);
       }
 
-      if (isHistoricalRead) {
-        setCacheHeaders(res, 300, 60);
-      } else {
-        setCacheHeaders(res, marketOpen ? 30 : 300, marketOpen ? 30 : 60);
-      }
-
       const spotParam = (req.query.spot as string | undefined) ?? '';
       const spotFromQuery = Number.parseFloat(spotParam);
       const spot: number | null =
@@ -149,6 +142,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       const slot = await fetchLatestPeriscopeSlot(date, asOf);
       if (slot == null) {
+        setLiveReadCache(res, {
+          historical: isHistoricalRead,
+          hasData: false,
+          marketOpen,
+        });
         done({ status: 200 });
         return res.status(200).json({
           marketOpen,
@@ -163,6 +161,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       const prior = await fetchPriorPeriscopeSlot(date, slot.capturedAt);
 
+      setLiveReadCache(res, {
+        historical: isHistoricalRead,
+        hasData: true,
+        marketOpen,
+      });
       done({ status: 200 });
       res.status(200).json({
         marketOpen,

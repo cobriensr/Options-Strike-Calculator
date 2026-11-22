@@ -17,9 +17,10 @@
  *                     known slot for the date.
  *   ?spot=...         Optional fresher SPX spot override.
  *
- * Cache:
- *   Live (no date/time params): 30s edge + 30s SWR during RTH,
- *                               300s + 60s after hours.
+ * Cache (set per success response; an error sets none):
+ *   Live (no date/time params): 10s edge, no stale reuse, when the response
+ *                               carries data or the market is open;
+ *                               300s + 60s for a no-data reply outside RTH.
  *   Picked slot: 300s + 60s — historical, immutable.
  *
  * Response shape:
@@ -37,11 +38,8 @@
 
 import { Sentry, metrics } from './_lib/sentry.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import {
-  setCacheHeaders,
-  isMarketOpen,
-  guardOwnerOrGuestEndpoint,
-} from './_lib/api-helpers.js';
+import { isMarketOpen, guardOwnerOrGuestEndpoint } from './_lib/api-helpers.js';
+import { setLiveReadCache } from './_lib/live-read-cache.js';
 import { buildPeriscopeView } from './_lib/periscope-format.js';
 import type { PeriscopeView } from './_lib/periscope-format.js';
 import {
@@ -110,14 +108,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         asOf = endOfMinute(iso);
       }
 
-      // Cache: live reads get the short window; historical reads are
-      // immutable so cache aggressively.
-      if (isHistoricalRead) {
-        setCacheHeaders(res, 300, 60);
-      } else {
-        setCacheHeaders(res, marketOpen ? 30 : 300, marketOpen ? 30 : 60);
-      }
-
       // Spot can come from query param (when frontend has a fresher
       // value than the DB) or fall back to index_candles_1m, capped at
       // asOf so historical reads don't leak future spot.
@@ -133,6 +123,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       if (spot == null) {
         // No spot at all — can't rank levels. Return marketOpen + null
         // data so the panel can show "waiting for SPX spot".
+        setLiveReadCache(res, {
+          historical: isHistoricalRead,
+          hasData: false,
+          marketOpen,
+        });
         done({ status: 200 });
         return res.status(200).json({
           marketOpen,
@@ -170,6 +165,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         data = view;
       }
 
+      setLiveReadCache(res, {
+        historical: isHistoricalRead,
+        hasData: data != null,
+        marketOpen,
+      });
       done({ status: 200 });
       res.status(200).json({
         marketOpen,

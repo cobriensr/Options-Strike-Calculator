@@ -253,3 +253,122 @@ describe('GET /api/periscope-strikes', () => {
     expect(mockSql).not.toHaveBeenCalled();
   });
 });
+
+describe('GET /api/periscope-strikes cache headers', () => {
+  // A live (no date/time) response that carries a slot, or any live response
+  // during the session, is cached 10 s with no stale reuse. A no-slot live
+  // response while the market is closed, and every historical read (a past
+  // slot is immutable), keep 300 s + 60 s. An error sets no cache header.
+  const LIVE_SHORT: [number, number] = [10, 0];
+  const LONG: [number, number] = [300, 60];
+
+  /** Queue the reads for a slot with strikes and no prior. */
+  function queueSlot(): void {
+    mockSql
+      .mockResolvedValueOnce([{ close: '7337' }]) // fetchSpxSpot
+      .mockResolvedValueOnce([{ captured_at: '2026-05-12T18:40:00Z' }]) // slots
+      .mockResolvedValueOnce([{ captured_at: '2026-05-12T18:40:00Z' }]) // latest
+      .mockResolvedValueOnce([
+        { panel: 'gamma', strike: 7350, value: '5000.00' },
+      ]) // loadSlot
+      .mockResolvedValueOnce([{ captured_at: null }]); // prior
+  }
+
+  /** Queue the reads for no periscope slot (capturedAt: null, strikes: []). */
+  function queueNoSlot(): void {
+    mockSql
+      .mockResolvedValueOnce([{ close: '7337.07' }]) // fetchSpxSpot
+      .mockResolvedValueOnce([]) // fetchAvailableSlots
+      .mockResolvedValueOnce([{ captured_at: null }]); // latest slot
+  }
+
+  it.each([
+    ['in session', true],
+    ['pre-open', false],
+  ])(
+    'caches a live response that carries a slot for 10 s with no stale reuse (%s)',
+    async (_label, open) => {
+      mockIsMarketOpen.mockReturnValue(open);
+      queueSlot();
+      const { req, res } = makeReqRes();
+      await handler(req, res as never);
+      expect((res.body as { strikes: unknown[] }).strikes).toHaveLength(1);
+      expect(mockSetCacheHeaders).toHaveBeenCalledTimes(1);
+      expect(mockSetCacheHeaders).toHaveBeenCalledWith(res, ...LIVE_SHORT);
+    },
+  );
+
+  it.each([
+    ['in session', true, LIVE_SHORT],
+    ['closed', false, LONG],
+  ] as const)(
+    'a live no-slot response uses the right cache (%s)',
+    async (_label, open, expected) => {
+      mockIsMarketOpen.mockReturnValue(open);
+      queueNoSlot();
+      const { req, res } = makeReqRes();
+      await handler(req, res as never);
+      expect(res.body).toMatchObject({ capturedAt: null, strikes: [] });
+      expect(mockSetCacheHeaders).toHaveBeenCalledTimes(1);
+      expect(mockSetCacheHeaders).toHaveBeenCalledWith(res, ...expected);
+    },
+  );
+
+  it.each([
+    ['date only', { date: '2026-05-12' }],
+    ['time only', { time: '13:40' }],
+    ['date and time', { date: '2026-05-12', time: '13:40' }],
+  ])(
+    'keeps 300 s + 60 s for a historical read with a slot, even in session (%s)',
+    async (_label, query) => {
+      mockIsMarketOpen.mockReturnValue(true);
+      queueSlot();
+      const { req, res } = makeReqRes(query);
+      await handler(req, res as never);
+      expect((res.body as { strikes: unknown[] }).strikes).toHaveLength(1);
+      expect(mockSetCacheHeaders).toHaveBeenCalledTimes(1);
+      expect(mockSetCacheHeaders).toHaveBeenCalledWith(res, ...LONG);
+    },
+  );
+
+  it('keeps 300 s + 60 s for a historical no-slot response, even in session', async () => {
+    mockIsMarketOpen.mockReturnValue(true);
+    queueNoSlot();
+    const { req, res } = makeReqRes({ date: '2026-05-12' });
+    await handler(req, res as never);
+    expect(res.body).toMatchObject({ capturedAt: null, strikes: [] });
+    expect(mockSetCacheHeaders).toHaveBeenCalledTimes(1);
+    expect(mockSetCacheHeaders).toHaveBeenCalledWith(res, ...LONG);
+  });
+
+  it('sets no cache header on a DB error (500), live or historical', async () => {
+    mockSql.mockRejectedValue(new Error('connection refused'));
+    const live = makeReqRes();
+    await handler(live.req, live.res as never);
+    const historical = makeReqRes({ date: '2026-05-12' });
+    await handler(historical.req, historical.res as never);
+    expect(live.res.statusCode).toBe(500);
+    expect(historical.res.statusCode).toBe(500);
+    expect(mockSetCacheHeaders).not.toHaveBeenCalled();
+  });
+
+  it('sets no cache header when a later read fails after the spot loaded', async () => {
+    mockSql
+      .mockResolvedValueOnce([{ close: '7337' }]) // fetchSpxSpot
+      .mockRejectedValueOnce(new Error('slots read failed')); // fetchAvailableSlots
+    const { req, res } = makeReqRes();
+    await handler(req, res as never);
+    expect(res.statusCode).toBe(500);
+    expect(mockSetCacheHeaders).not.toHaveBeenCalled();
+  });
+
+  it('sets no cache header on a 400 for a malformed date or time', async () => {
+    const badDate = makeReqRes({ date: 'not-a-date' });
+    await handler(badDate.req, badDate.res as never);
+    const badTime = makeReqRes({ date: '2026-05-12', time: '25:99' });
+    await handler(badTime.req, badTime.res as never);
+    expect(badDate.res.statusCode).toBe(400);
+    expect(badTime.res.statusCode).toBe(400);
+    expect(mockSetCacheHeaders).not.toHaveBeenCalled();
+  });
+});
