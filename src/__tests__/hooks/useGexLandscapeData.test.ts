@@ -18,6 +18,10 @@
  *   - 401 → loading false, error stays null (matches the project's
  *     "public visitors stay idle" idiom)
  *   - Vol-reinforcement is computed from the same deltas the maps expose
+ *   - Freshness: capture age at receipt = (ageSec + the `Age` header) × 1000,
+ *     the server's marketOpen / reason, null before the first response and
+ *     for any response fetched with `at` (keyed on the `at` it was fetched
+ *     with, not the panel's current one)
  */
 
 import {
@@ -29,7 +33,7 @@ import {
   afterEach,
   type MockInstance,
 } from 'vitest';
-import { renderHook, waitFor } from '@testing-library/react';
+import { act, renderHook, waitFor } from '@testing-library/react';
 
 const { mockGetAccessMode } = vi.hoisted(() => ({
   mockGetAccessMode: vi.fn(),
@@ -87,10 +91,14 @@ function makeResponse(
   };
 }
 
-function jsonResponse(payload: unknown, status = 200): Response {
+function jsonResponse(
+  payload: unknown,
+  status = 200,
+  headers: Record<string, string> = {},
+): Response {
   return new Response(JSON.stringify(payload), {
     status,
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', ...headers },
   });
 }
 
@@ -610,5 +618,482 @@ describe('useGexLandscapeData — edge cases', () => {
     expect('naiveDelta5mMap' in result.current).toBe(false);
     expect('naiveDelta10mMap' in result.current).toBe(false);
     expect('naiveDelta30mMap' in result.current).toBe(false);
+  });
+});
+
+describe('useGexLandscapeData — freshness', () => {
+  const SCRUB_AT = '2026-05-26T18:30:00.000Z';
+  const oneStrike = {
+    spot: 7340,
+    strikes: [makeRow({ strike: 7350, gamma: 5000 })],
+  };
+
+  it('is null before the first response lands', async () => {
+    mockFetch(() => new Promise<Response>(() => undefined));
+    const { result } = renderHook(() =>
+      useGexLandscapeData(true, '2026-05-26'),
+    );
+    expect(result.current.loading).toBe(true);
+    expect(result.current.freshness).toBeNull();
+  });
+
+  it('adds ageSec and the Age header: ageSec 40 + Age 20 = 60 000 ms', async () => {
+    mockFetch(() =>
+      jsonResponse(makeResponse({ data: oneStrike, ageSec: 40 }), 200, {
+        Age: '20',
+      }),
+    );
+    const before = Date.now();
+    const { result } = renderHook(() =>
+      useGexLandscapeData(true, '2026-05-26'),
+    );
+    await waitFor(() => expect(result.current.freshness).not.toBeNull());
+    expect(result.current.freshness).toMatchObject({
+      serverMarketOpen: true,
+      reason: null,
+      dataAgeMsAtReceipt: 60_000,
+    });
+    // receivedAt is the arrival time, used only as a delta by the panel.
+    expect(result.current.freshness!.receivedAt).toBeGreaterThanOrEqual(before);
+    expect(result.current.freshness!.receivedAt).toBeLessThanOrEqual(
+      Date.now(),
+    );
+  });
+
+  it('counts a missing Age header as 0', async () => {
+    mockFetch(() =>
+      jsonResponse(makeResponse({ data: oneStrike, ageSec: 40 })),
+    );
+    const { result } = renderHook(() =>
+      useGexLandscapeData(true, '2026-05-26'),
+    );
+    await waitFor(() => expect(result.current.freshness).not.toBeNull());
+    expect(result.current.freshness?.dataAgeMsAtReceipt).toBe(40_000);
+  });
+
+  it.each([['garbage'], ['-5'], ['']])(
+    'counts an unusable Age header (%j) as 0',
+    async (age) => {
+      mockFetch(() =>
+        jsonResponse(makeResponse({ data: oneStrike, ageSec: 40 }), 200, {
+          Age: age,
+        }),
+      );
+      const { result } = renderHook(() =>
+        useGexLandscapeData(true, '2026-05-26'),
+      );
+      await waitFor(() => expect(result.current.freshness).not.toBeNull());
+      expect(result.current.freshness?.dataAgeMsAtReceipt).toBe(40_000);
+    },
+  );
+
+  it('has no data age when a data response carries no ageSec', async () => {
+    // JSON.stringify drops the undefined field, so the body has no ageSec.
+    mockFetch(() =>
+      jsonResponse(makeResponse({ data: oneStrike, ageSec: undefined }), 200, {
+        Age: '20',
+      }),
+    );
+    const { result } = renderHook(() =>
+      useGexLandscapeData(true, '2026-05-26'),
+    );
+    await waitFor(() => expect(result.current.freshness).not.toBeNull());
+    expect(result.current.freshness?.dataAgeMsAtReceipt).toBeNull();
+  });
+
+  it.each([['no_slot' as const], ['no_spot' as const]])(
+    'a %s response yields its reason and no data age, whatever the Age header says',
+    async (reason) => {
+      mockFetch(() =>
+        jsonResponse(
+          makeResponse({ data: null, reason, ageSec: undefined }),
+          200,
+          {
+            Age: '20',
+          },
+        ),
+      );
+      const { result } = renderHook(() =>
+        useGexLandscapeData(true, '2026-05-26'),
+      );
+      await waitFor(() => expect(result.current.freshness).not.toBeNull());
+      expect(result.current.freshness).toMatchObject({
+        reason,
+        dataAgeMsAtReceipt: null,
+      });
+    },
+  );
+
+  it.each([[true], [false]])(
+    'serverMarketOpen follows the response (marketOpen: %s)',
+    async (open) => {
+      mockFetch(() =>
+        jsonResponse(makeResponse({ marketOpen: open, data: oneStrike })),
+      );
+      const { result } = renderHook(() =>
+        useGexLandscapeData(true, '2026-05-26'),
+      );
+      await waitFor(() => expect(result.current.freshness).not.toBeNull());
+      expect(result.current.freshness?.serverMarketOpen).toBe(open);
+    },
+  );
+
+  it('is null for a scrubbed (at) fetch, though the response carries data', async () => {
+    mockFetch(() =>
+      jsonResponse(makeResponse({ data: oneStrike, ageSec: 12 }), 200, {
+        Age: '3',
+      }),
+    );
+    const { result } = renderHook(() =>
+      useGexLandscapeData(true, '2026-05-26', SCRUB_AT),
+    );
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.strikes).toHaveLength(1);
+    expect(result.current.freshness).toBeNull();
+  });
+
+  it('after leaving a scrub, stays null until the live response lands, then reflects it', async () => {
+    let releaseLive: ((r: Response) => void) | undefined;
+    mockFetch((url) => {
+      if (url.includes('at=')) {
+        return jsonResponse(makeResponse({ data: oneStrike, ageSec: 900 }));
+      }
+      return new Promise<Response>((resolve) => {
+        releaseLive = resolve;
+      });
+    });
+    const { result, rerender } = renderHook(
+      ({ at }: { at: string | null }) =>
+        useGexLandscapeData(true, '2026-05-26', at),
+      { initialProps: { at: SCRUB_AT as string | null } },
+    );
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.freshness).toBeNull();
+
+    rerender({ at: null });
+    await waitFor(() => expect(releaseLive).toBeDefined());
+    // The live request is in flight; the stored response is still the
+    // scrubbed one, so its age must not surface as live freshness.
+    expect(result.current.freshness).toBeNull();
+
+    await act(async () => {
+      releaseLive?.(
+        jsonResponse(makeResponse({ data: oneStrike, ageSec: 12 }), 200, {
+          Age: '3',
+        }),
+      );
+    });
+    await waitFor(() => expect(result.current.freshness).not.toBeNull());
+    expect(result.current.freshness?.dataAgeMsAtReceipt).toBe(15_000);
+  });
+
+  it('goes null again once a scrubbed response replaces a live one', async () => {
+    mockFetch((url) =>
+      jsonResponse(
+        makeResponse({
+          data: oneStrike,
+          ageSec: url.includes('at=') ? 900 : 12,
+        }),
+      ),
+    );
+    const { result, rerender } = renderHook(
+      ({ at }: { at: string | null }) =>
+        useGexLandscapeData(true, '2026-05-26', at),
+      { initialProps: { at: null as string | null } },
+    );
+    await waitFor(() =>
+      expect(result.current.freshness?.dataAgeMsAtReceipt).toBe(12_000),
+    );
+    rerender({ at: SCRUB_AT });
+    await waitFor(() => expect(result.current.freshness).toBeNull());
+  });
+
+  it('is null on a 401 (public-visitor idiom)', async () => {
+    mockFetch(() => new Response('Unauthorized', { status: 401 }));
+    const { result } = renderHook(() =>
+      useGexLandscapeData(true, '2026-05-26'),
+    );
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.freshness).toBeNull();
+  });
+
+  it('keeps the last live freshness when a later poll fails, and reports the error', async () => {
+    let call = 0;
+    mockFetch(() => {
+      call += 1;
+      return call === 1
+        ? jsonResponse(makeResponse({ data: oneStrike, ageSec: 12 }))
+        : new Response('Server Error', { status: 500 });
+    });
+    const { result } = renderHook(() =>
+      useGexLandscapeData(true, '2026-05-26'),
+    );
+    await waitFor(() => expect(result.current.freshness).not.toBeNull());
+    act(() => result.current.refresh());
+    await waitFor(() =>
+      expect(result.current.error).toBe('gex-landscape: HTTP 500'),
+    );
+    expect(result.current.freshness?.dataAgeMsAtReceipt).toBe(12_000);
+  });
+
+  // R4: a good response, then a refresh that fails two other ways. Each
+  // surfaces its error by name and keeps the last live freshness and strikes.
+  it('keeps the last live freshness and reports a JSON error when a 2xx body is not JSON', async () => {
+    let call = 0;
+    mockFetch(() => {
+      call += 1;
+      return call === 1
+        ? jsonResponse(makeResponse({ data: oneStrike, ageSec: 12 }))
+        : new Response('not json', { status: 200 });
+    });
+    const { result } = renderHook(() =>
+      useGexLandscapeData(true, '2026-05-26'),
+    );
+    await waitFor(() => expect(result.current.freshness).not.toBeNull());
+    act(() => result.current.refresh());
+    await waitFor(() => expect(result.current.error).toMatch(/JSON/));
+    expect(result.current.freshness?.dataAgeMsAtReceipt).toBe(12_000);
+    expect(result.current.strikes).toHaveLength(1);
+  });
+
+  it('keeps the last live freshness and reports "Failed to fetch" when fetch rejects', async () => {
+    let call = 0;
+    mockFetch(() => {
+      call += 1;
+      if (call === 1) {
+        return jsonResponse(makeResponse({ data: oneStrike, ageSec: 12 }));
+      }
+      throw new TypeError('Failed to fetch');
+    });
+    const { result } = renderHook(() =>
+      useGexLandscapeData(true, '2026-05-26'),
+    );
+    await waitFor(() => expect(result.current.freshness).not.toBeNull());
+    act(() => result.current.refresh());
+    await waitFor(() => expect(result.current.error).toBe('Failed to fetch'));
+    expect(result.current.freshness?.dataAgeMsAtReceipt).toBe(12_000);
+    expect(result.current.strikes).toHaveLength(1);
+  });
+});
+
+// On `no_slot` there is no capture to measure, so the panel needs the last
+// capture minute's age on the SERVER's clock: asOf (the server's `new Date()`
+// on that reply) minus the day's last availableMinutes entry, plus the edge
+// `Age`. The client clock never enters.
+describe('useGexLandscapeData — lastCaptureAgeMsAtReceipt (no_slot)', () => {
+  const noSlot = (over: Partial<GexLandscapeResponse> = {}) =>
+    makeResponse({
+      data: null,
+      reason: 'no_slot',
+      ageSec: undefined,
+      asOf: '2026-11-20T15:30:10.000Z',
+      availableMinutes: [
+        '2026-11-20T15:27:00.000Z',
+        '2026-11-20T15:28:00.000Z',
+      ],
+      ...over,
+    });
+
+  async function freshnessOfResponse(
+    body: GexLandscapeResponse,
+    headers: Record<string, string> = {},
+  ) {
+    mockFetch(() => jsonResponse(body, 200, headers));
+    const { result } = renderHook(() =>
+      useGexLandscapeData(true, '2026-05-26'),
+    );
+    await waitFor(() => expect(result.current.freshness).not.toBeNull());
+    return result.current.freshness!;
+  }
+
+  it('is asOf minus the last capture minute plus the Age header: 130 s + 5 s = 135 000 ms', async () => {
+    const f = await freshnessOfResponse(noSlot(), { Age: '5' });
+    expect(f.lastCaptureAgeMsAtReceipt).toBe(135_000);
+    expect(f.dataAgeMsAtReceipt).toBeNull();
+    expect(f.reason).toBe('no_slot');
+  });
+
+  it('counts a missing Age header as 0', async () => {
+    const f = await freshnessOfResponse(noSlot());
+    expect(f.lastCaptureAgeMsAtReceipt).toBe(130_000);
+  });
+
+  it('does not depend on the client clock', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2001-01-01T00:00:00.000Z'));
+    const f = await freshnessOfResponse(noSlot(), { Age: '5' });
+    expect(f.lastCaptureAgeMsAtReceipt).toBe(135_000);
+  });
+
+  it('is never negative when the last minute stamp is ahead of asOf', async () => {
+    const f = await freshnessOfResponse(
+      noSlot({ asOf: '2026-11-20T15:20:00.000Z' }),
+      { Age: '5' },
+    );
+    expect(f.lastCaptureAgeMsAtReceipt).toBe(5_000);
+  });
+
+  it.each([
+    ['no captures today', { availableMinutes: [] }],
+    ['an unparseable last minute', { availableMinutes: ['garbage'] }],
+    ['an unparseable asOf', { asOf: 'garbage' }],
+    ['a no_spot reply', { reason: 'no_spot' as const }],
+  ])('is null for %s', async (_label, over) => {
+    const f = await freshnessOfResponse(noSlot(over), { Age: '5' });
+    expect(f.lastCaptureAgeMsAtReceipt).toBeNull();
+  });
+
+  // R4: a malformed reply. The body is an unchecked cast, so a `no_slot` reply
+  // can arrive without the list. That is "no capture minute", not a throw
+  // inside the freshness build (which the fetch's catch would turn into an
+  // error banner and a lost response).
+  it('treats a no_slot body with no availableMinutes field as no capture minute, with no error', async () => {
+    mockFetch(() =>
+      jsonResponse(
+        // JSON.stringify drops an undefined field, so the body lacks the key.
+        noSlot({ availableMinutes: undefined as unknown as string[] }),
+        200,
+        { Age: '5' },
+      ),
+    );
+    const { result } = renderHook(() =>
+      useGexLandscapeData(true, '2026-05-26'),
+    );
+    await waitFor(() => expect(result.current.freshness).not.toBeNull());
+    expect(result.current.freshness?.reason).toBe('no_slot');
+    expect(result.current.freshness?.lastCaptureAgeMsAtReceipt).toBeNull();
+    expect(result.current.error).toBeNull();
+    expect(result.current.timestamps).toEqual([]);
+  });
+
+  it('is null on a response that carries data', async () => {
+    const f = await freshnessOfResponse(
+      makeResponse({
+        data: { spot: 7340, strikes: [makeRow({ strike: 7350, gamma: 1 })] },
+        ageSec: 40,
+      }),
+      { Age: '5' },
+    );
+    expect(f.lastCaptureAgeMsAtReceipt).toBeNull();
+    expect(f.dataAgeMsAtReceipt).toBe(45_000);
+  });
+});
+
+// C1 (the render loop). The panel's effects depend on the identity of these
+// values (`timestamps` is mirrored into state by an effect; `strikes` feeds
+// the Top 5 tracker through `topFive`), so a render with no new response must
+// hand back the very same references. Built inline per render, they loop.
+describe('useGexLandscapeData — derived values are stable between responses', () => {
+  const oneStrike = {
+    spot: 7340,
+    strikes: [
+      makeRow({ strike: 7350, gamma: 5000, gammaPrev5m: 4500 }),
+      makeRow({ strike: 7375, gamma: 3000, gammaPrev5m: 2500 }),
+    ],
+  };
+
+  it.each([
+    [
+      'a stored response',
+      () => jsonResponse(makeResponse({ data: oneStrike })),
+      true,
+      2,
+    ],
+    ['a pending fetch', () => new Promise<Response>(() => undefined), false, 0],
+    ['a 401', () => new Response('Unauthorized', { status: 401 }), true, 0],
+  ])(
+    'a rerender with no new response returns the same arrays and Maps (%s)',
+    async (_label, respond, settles, rowCount) => {
+      mockFetch(respond);
+      let renders = 0;
+      const { result, rerender } = renderHook(() => {
+        renders += 1;
+        return useGexLandscapeData(true, '2026-05-26');
+      });
+      if (settles) {
+        await waitFor(() => expect(result.current.loading).toBe(false));
+      } else {
+        expect(result.current.loading).toBe(true);
+      }
+      expect(result.current.strikes).toHaveLength(rowCount);
+      const first = result.current;
+      const rendersBefore = renders;
+
+      rerender();
+      rerender();
+
+      expect(renders).toBeGreaterThan(rendersBefore);
+      expect(result.current.strikes).toBe(first.strikes);
+      expect(result.current.timestamps).toBe(first.timestamps);
+      expect(result.current.gexDelta5mMap).toBe(first.gexDelta5mMap);
+      expect(result.current.gexDelta15mMap).toBe(first.gexDelta15mMap);
+      expect(result.current.gexDelta30mMap).toBe(first.gexDelta30mMap);
+    },
+  );
+
+  it('builds new ones when a new response lands', async () => {
+    let call = 0;
+    mockFetch(() => {
+      call += 1;
+      return jsonResponse(
+        makeResponse({
+          data: {
+            spot: 7340,
+            strikes: [makeRow({ strike: 7350, gamma: 5000 * call })],
+          },
+        }),
+      );
+    });
+    const { result } = renderHook(() =>
+      useGexLandscapeData(true, '2026-05-26'),
+    );
+    await waitFor(() => expect(result.current.strikes).toHaveLength(1));
+    const first = result.current.strikes;
+
+    act(() => result.current.refresh());
+    await waitFor(() =>
+      expect(result.current.strikes[0]?.netGamma).toBe(10_000),
+    );
+    expect(result.current.strikes).not.toBe(first);
+  });
+});
+
+// I1. `usePolling` never fetches when its gates flip, so a panel left open
+// across the open would hold the previous session's response until the first
+// poll, a minute later. A session edge refetches at once.
+describe('useGexLandscapeData — session edge', () => {
+  it('refetches at once when marketOpen flips, open or close, with no timer advance', async () => {
+    const calls: string[] = [];
+    mockFetch((url) => {
+      calls.push(url);
+      return jsonResponse(
+        makeResponse({
+          data: { spot: 7340, strikes: [makeRow({ strike: 7350, gamma: 1 })] },
+          ageSec: calls.length === 1 ? 40 : 5,
+        }),
+      );
+    });
+    const { result, rerender } = renderHook(
+      ({ open }: { open: boolean }) => useGexLandscapeData(open, '2026-05-26'),
+      { initialProps: { open: false } },
+    );
+    await waitFor(() =>
+      expect(result.current.freshness?.dataAgeMsAtReceipt).toBe(40_000),
+    );
+    expect(calls).toHaveLength(1);
+
+    // The open: the fetch is issued as the effect runs, before any timer.
+    rerender({ open: true });
+    expect(calls).toHaveLength(2);
+    await waitFor(() =>
+      expect(result.current.freshness?.dataAgeMsAtReceipt).toBe(5_000),
+    );
+
+    // The close is an edge too; a rerender that changes nothing is not.
+    rerender({ open: false });
+    expect(calls).toHaveLength(3);
+    rerender({ open: false });
+    expect(calls).toHaveLength(3);
+    expect(calls.every((u) => u === '/api/gex-landscape')).toBe(true);
   });
 });
