@@ -1050,7 +1050,10 @@ before the state); it lasts while the bucket has no lifecycle rule for `research
 which only the Cloudflare dashboard shows. The tracker's line
 `[track] R of M earlier rows changed` in the step's log says how many of the dates the
 file had the night before differ now in any column but `run_at`; a revision of history
-shows there.
+shows there. If the stored file cannot be read as CSV, the log says
+`[track] the earlier file could not be read as CSV: nothing to compare`: the run replaced
+it and compared nothing, which needs no action (the previous night's snapshot has the
+old file).
 
 **The logs.** `research/_logs/{session}/{step}.log` holds everything a step's script
 printed: all of `whale-plots`, `exit-policy-report`, `flow-timing-report`,
