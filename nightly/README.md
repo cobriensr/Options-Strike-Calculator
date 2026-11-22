@@ -50,7 +50,7 @@ Each run:
      outputs"). The rollup and `whale-plots` read the chains state and the two fire
      reports read the derived state. `lottery-tracking` extends one growing CSV with a
      row for every enriched fire date after the file's last row, so a night it missed is
-     filled on the next run, and the others read Neon alone. The seven steps that run a
+     filled on the next run. The others read Neon alone. The seven steps that run a
      script do it as a subprocess with no R2, UW or Sentry secret in its environment,
      and its output goes to the step's log in R2, not to the job's logs or Sentry.
 
@@ -1039,6 +1039,15 @@ fails the script exits non-zero and writes nothing, with no fallback to the froz
 weights JSON; the alert reads `script exited 1 (_report_weights.ActiveWeightsError)`.
 `research-derive`, `eod-flow-rollup`, `quality-sim` and `takeit-drift` run
 in the job's own process; the other seven steps run their script as a subprocess.
+
+**Rebuilding the tracking CSV.** The nightly never recomputes a row it has written, so
+after outcomes are re-enriched the old rows no longer match the data they were computed
+on. To redo the whole file, run `scripts/daily_tracker.py --csv COPY --rebuild` locally
+on a copy of the state, with the database URL in the environment, and put the file back
+at the state key. It writes one row for every enriched fire date, each as of its date,
+and discards the rows the copy held. Overwriting the state is the owner's call, so ask
+before doing it (the R2 rule). The nightly never passes `--rebuild`; its next run
+extends the rebuilt file as it does any other.
 
 **The logs.** `research/_logs/{session}/{step}.log` holds everything a step's script
 printed: all of `whale-plots`, `exit-policy-report`, `flow-timing-report`,
