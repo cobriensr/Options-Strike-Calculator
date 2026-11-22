@@ -125,5 +125,11 @@
     "vite": "^7.3.7",
     "vite-plugin-pwa": "^1.2.0",
     "vitest": "^4.1.12"
+  },
+  "allowScripts": {
+    "@sentry/cli@2.58.6": true,
+    "esbuild@0.27.0": true,
+    "esbuild@0.28.2": true,
+    "unrs-resolver@1.12.2": true
   }
 }
