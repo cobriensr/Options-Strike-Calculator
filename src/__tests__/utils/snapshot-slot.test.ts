@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { priceContextAsOf, type SlotCandle } from '../../utils/snapshot-slot';
+import {
+  priceContextAsOf,
+  spxSlotStateAsOf,
+  symbolPriceAsOf,
+  type SlotCandle,
+} from '../../utils/snapshot-slot';
 
 // The 9:30 ET open on a winter date (EST, UTC-5) and a summer date (EDT,
 // UTC-4). The rule reads the ET wall clock, so both must give one answer.
@@ -356,4 +361,531 @@ describe.each(SESSION_OPENS)('priceContextAsOf (%s session)', (_zone, open) => {
       }
     });
   });
+});
+
+// ── As-of slot state (snapshot builder phase 2, call 1) ─────────────────────
+//
+// A bar that starts at ET minute s has ended at slot T when s + 5 <= T. A day
+// of bars here starts at 9:30 ET on 2026-07-15 (EDT, so 13:30 UTC) and bar i
+// starts 5 * i minutes later. Slots are CT minutes since midnight, so 8:30 CT
+// (the 9:30 ET open) is 510 and 9:00 CT (10:00 ET) is 540.
+
+const AS_OF_OPEN_MS = Date.UTC(2026, 6, 15, 13, 30);
+const BAR_MS = 5 * MINUTE_MS;
+const OPEN_MIN_ET = 570; // 9:30 ET
+const CT_BEHIND_ET_MIN = 60;
+
+/** Bar i: open 6000 + i, high 6003 + i, low 5998 + i, close 6001 + i. */
+function asOfDay(count: number): SlotCandle[] {
+  return Array.from({ length: count }, (_, i) => ({
+    datetime: AS_OF_OPEN_MS + i * BAR_MS,
+    open: 6000 + i,
+    high: 6003 + i,
+    low: 5998 + i,
+    close: 6001 + i,
+  }));
+}
+
+/** ET minute of day a candle of `asOfDay` starts at, read off its datetime. */
+function startMinuteOf(candle: SlotCandle): number {
+  return OPEN_MIN_ET + (candle.datetime - AS_OF_OPEN_MS) / MINUTE_MS;
+}
+
+/**
+ * A copy of `day` with everything the as-of rule forbids at `slot` replaced
+ * by `bad`: all four prices of a bar that has not started, and the high, low
+ * and close of a bar that has started but not ended. A bar that has ended is
+ * left alone, and so is the open of a running bar, which is a print.
+ */
+function withFutureReplaced(
+  day: readonly SlotCandle[],
+  slotMinuteCT: number,
+  bad: number,
+): SlotCandle[] {
+  const slotET = slotMinuteCT + CT_BEHIND_ET_MIN;
+  return day.map((c) => {
+    const start = startMinuteOf(c);
+    if (start + 5 <= slotET) return c;
+    if (start <= slotET) return { ...c, high: bad, low: bad, close: bad };
+    return { ...c, open: bad, high: bad, low: bad, close: bad };
+  });
+}
+
+type OpeningRangeWant = {
+  high: number;
+  low: number;
+  rangePts: number;
+  complete: boolean;
+} | null;
+
+// 8:30 to 3:05 PM CT, the slots the sweeps run (505 is before the open).
+const SWEEP_SLOTS = Array.from({ length: 401 }, (_, i) => 505 + i);
+
+const FUTURE_VALUES = [
+  ['9999', 9999],
+  ['NaN', Number.NaN],
+] as const;
+
+describe('withFutureReplaced (the sweeps’ perturbation)', () => {
+  it('leaves ended bars and the running bar’s open alone, and replaces the rest', () => {
+    const day = asOfDay(8);
+    // 8:40 CT = 9:40 ET: bars 0 and 1 ended, bar 2 is running (9:40 start).
+    const copy = withFutureReplaced(day, 520, 9999);
+    expect(copy.slice(0, 2)).toEqual(day.slice(0, 2));
+    expect(copy[2]).toEqual({
+      datetime: day[2]!.datetime,
+      open: 6002,
+      high: 9999,
+      low: 9999,
+      close: 9999,
+    });
+    for (const c of copy.slice(3)) {
+      expect([c.open, c.high, c.low, c.close]).toEqual([
+        9999, 9999, 9999, 9999,
+      ]);
+    }
+  });
+});
+
+describe('spxSlotStateAsOf: the as-of table (78 bars)', () => {
+  const day = asOfDay(78);
+
+  it.each<[string, number, number, number, number, OpeningRangeWant, number]>([
+    // [label, slotMinuteCT, spot, high, low, openingRange, entryIndex]
+    ['8:30', 510, 6000, 6000, 6000, null, -1],
+    [
+      '8:35',
+      515,
+      6001,
+      6003,
+      5998,
+      { high: 6003, low: 5998, rangePts: 5, complete: false },
+      0,
+    ],
+    [
+      '8:55',
+      535,
+      6005,
+      6007,
+      5998,
+      { high: 6007, low: 5998, rangePts: 9, complete: false },
+      4,
+    ],
+    [
+      '9:00',
+      540,
+      6006,
+      6008,
+      5998,
+      { high: 6008, low: 5998, rangePts: 10, complete: true },
+      5,
+    ],
+    [
+      '9:05',
+      545,
+      6007,
+      6009,
+      5998,
+      { high: 6008, low: 5998, rangePts: 10, complete: true },
+      6,
+    ],
+    [
+      '2:55 PM',
+      895,
+      6077,
+      6079,
+      5998,
+      { high: 6008, low: 5998, rangePts: 10, complete: true },
+      76,
+    ],
+    [
+      '3:00 PM',
+      900,
+      6078,
+      6080,
+      5998,
+      { high: 6008, low: 5998, rangePts: 10, complete: true },
+      77,
+    ],
+  ])('%s CT', (_label, slot, spot, high, low, openingRange, entryIndex) => {
+    expect(spxSlotStateAsOf(day, slot)).toEqual({
+      spot,
+      runningOHLC: { open: 6000, high, low, last: spot },
+      openingRange,
+      entryIndex,
+    });
+  });
+});
+
+describe('spxSlotStateAsOf: a half day (42 bars)', () => {
+  const half = asOfDay(42); // the last bar starts 12:55 ET and ends 1:00 PM ET
+
+  it.each([
+    ['11:55 CT, the last bar still running', 715, 6041, 40],
+    ['12:00 CT, the last bar has ended', 720, 6042, 41],
+    ['12:30 CT, after the close', 750, 6042, 41],
+  ])('%s', (_label, slot, spot, entryIndex) => {
+    const state = spxSlotStateAsOf(half, slot);
+    expect(state?.spot).toBe(spot);
+    expect(state?.entryIndex).toBe(entryIndex);
+    expect(state?.runningOHLC.last).toBe(spot);
+  });
+});
+
+describe('spxSlotStateAsOf: today’s partial session (10 bars)', () => {
+  // The page fetches today's candles once, so the last bar may still run.
+  // The last bar starts 10:15 ET and ends 10:20 ET (9:20 CT).
+  const partial = asOfDay(10);
+
+  it.each([
+    ['9:17 CT, inside the last bar: the bar before it', 557, 6009, 8],
+    ['9:20 CT, the last bar has ended', 560, 6010, 9],
+    ['10:00 CT, long after every bar', 600, 6010, 9],
+  ])('%s', (_label, slot, spot, entryIndex) => {
+    const state = spxSlotStateAsOf(partial, slot);
+    expect(state?.spot).toBe(spot);
+    expect(state?.entryIndex).toBe(entryIndex);
+  });
+});
+
+describe('spxSlotStateAsOf: a slot between 5-minute marks', () => {
+  // The time picker and the live sync snap to 5 minutes, but the server
+  // builder takes any minute.
+  const day = asOfDay(78);
+
+  it('8:37 CT: the first bar has ended, the second is running', () => {
+    const state = spxSlotStateAsOf(day, 517);
+    expect(state?.spot).toBe(6001);
+    expect(state?.entryIndex).toBe(0);
+    expect(state?.runningOHLC).toEqual({
+      open: 6000,
+      high: 6003,
+      low: 5998,
+      last: 6001,
+    });
+  });
+
+  it('8:34 CT: no bar has ended yet, so the first bar’s open', () => {
+    expect(spxSlotStateAsOf(day, 514)).toEqual({
+      spot: 6000,
+      runningOHLC: { open: 6000, high: 6000, low: 6000, last: 6000 },
+      openingRange: null,
+      entryIndex: -1,
+    });
+  });
+
+  it('8:59 CT: the opening range is still partial, 9:00 CT completes it', () => {
+    expect(spxSlotStateAsOf(day, 539)?.openingRange).toEqual({
+      high: 6007,
+      low: 5998,
+      rangePts: 9,
+      complete: false,
+    });
+    expect(spxSlotStateAsOf(day, 540)?.openingRange?.complete).toBe(true);
+  });
+});
+
+describe('spxSlotStateAsOf: a gap mid-session', () => {
+  // Drop the 9:45 ET bar (index 3). The 9:50 ET bar moves to index 3.
+  const gap = asOfDay(78).filter((_, i) => i !== 3);
+
+  it('8:55 CT: the last ended bar is the one after the gap, at its array index', () => {
+    const state = spxSlotStateAsOf(gap, 535);
+    expect(state?.spot).toBe(6005);
+    expect(state?.entryIndex).toBe(3);
+  });
+
+  it('8:50 CT: the last ended bar is the one before the gap', () => {
+    // 9:50 ET = 590: the 9:45 bar (missing) would have ended here; the 9:40
+    // bar (index 2) is the last that did.
+    const state = spxSlotStateAsOf(gap, 530);
+    expect(state?.spot).toBe(6003);
+    expect(state?.entryIndex).toBe(2);
+  });
+
+  it('9:00 CT: the opening range still completes', () => {
+    expect(spxSlotStateAsOf(gap, 540)?.openingRange).toEqual({
+      high: 6008,
+      low: 5998,
+      rangePts: 10,
+      complete: true,
+    });
+  });
+});
+
+describe('spxSlotStateAsOf: the opening range', () => {
+  it('takes bars that start before 10:00 ET, not the bar that starts at 10:00', () => {
+    const day = asOfDay(78).map((c, i) =>
+      i === 6 ? { ...c, high: 7000, low: 5000 } : c,
+    );
+    // 9:05 CT: bar 6 (10:00 ET) has ended. It moves the running range, not
+    // the opening range.
+    const state = spxSlotStateAsOf(day, 545);
+    expect(state?.runningOHLC).toEqual({
+      open: 6000,
+      high: 7000,
+      low: 5000,
+      last: 6007,
+    });
+    expect(state?.openingRange).toEqual({
+      high: 6008,
+      low: 5998,
+      rangePts: 10,
+      complete: true,
+    });
+  });
+
+  it('rounds the range to 2 decimals', () => {
+    // 7000.3 - 6990.1 is 10.199999999999818 in floating point.
+    const day = [
+      {
+        datetime: AS_OF_OPEN_MS,
+        open: 6995,
+        high: 7000.3,
+        low: 6990.1,
+        close: 6996,
+      },
+      {
+        datetime: AS_OF_OPEN_MS + BAR_MS,
+        open: 6996,
+        high: 6999,
+        low: 6991,
+        close: 6997,
+      },
+    ];
+    expect(spxSlotStateAsOf(day, 520)?.openingRange).toEqual({
+      high: 7000.3,
+      low: 6990.1,
+      rangePts: 10.2,
+      complete: false,
+    });
+  });
+
+  it('is null, not zero-width, while no opening-range bar has ended', () => {
+    const state = spxSlotStateAsOf(asOfDay(78), 510);
+    expect(state).not.toBeNull();
+    expect(state?.openingRange).toBeNull();
+  });
+});
+
+describe('spxSlotStateAsOf: before the open and bad input', () => {
+  const day = asOfDay(78);
+
+  it('8:29 CT, before the open, is null', () => {
+    expect(spxSlotStateAsOf(day, 509)).toBeNull();
+  });
+
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])(
+    'a slot of %s is null',
+    (slot) => {
+      expect(spxSlotStateAsOf(day, slot)).toBeNull();
+    },
+  );
+
+  it('no candles is null', () => {
+    expect(spxSlotStateAsOf([], 540)).toBeNull();
+  });
+
+  it('a session whose first bar starts 9:35 ET is null', () => {
+    expect(spxSlotStateAsOf(day.slice(1), 540)).toBeNull();
+    expect(spxSlotStateAsOf(day.slice(1), 510)).toBeNull();
+  });
+
+  it.each([
+    ['NaN', Number.NaN],
+    ['zero', 0],
+    ['negative', -1],
+    ['Infinity', Number.POSITIVE_INFINITY],
+  ])(
+    'a %s close on the last ended bar is null, not another bar’s close',
+    (_n, bad) => {
+      const bars = day.map((c, i) => (i === 5 ? { ...c, close: bad } : c));
+      // 9:00 CT: bar 5 is the last ended bar.
+      expect(spxSlotStateAsOf(bars, 540)).toBeNull();
+      // 8:55 CT: bar 5 is still running, so its close is not read.
+      expect(spxSlotStateAsOf(bars, 535)?.spot).toBe(6005);
+      // 9:05 CT: bar 6 is the last ended bar, with a good close.
+      expect(spxSlotStateAsOf(bars, 545)?.spot).toBe(6007);
+    },
+  );
+
+  it.each([
+    ['NaN', Number.NaN],
+    ['Infinity', Number.POSITIVE_INFINITY],
+    ['-Infinity', Number.NEGATIVE_INFINITY],
+    ['nanosecond-epoch', 1.7e18],
+  ])(
+    'a %s datetime on any bar is null at every slot, and never throws',
+    (_n, bad) => {
+      const bars = day.map((c, i) => (i === 2 ? { ...c, datetime: bad } : c));
+      for (const slot of [510, 515, 545, 895]) {
+        expect(spxSlotStateAsOf(bars, slot), `slot ${slot}`).toBeNull();
+      }
+    },
+  );
+});
+
+describe('look-ahead sweep (spec G2): spxSlotStateAsOf', () => {
+  const day = asOfDay(78);
+
+  it.each(FUTURE_VALUES)(
+    'bars the slot has not ended, replaced with %s, change nothing',
+    (_name, bad) => {
+      for (const slot of SWEEP_SLOTS) {
+        const want = spxSlotStateAsOf(day, slot);
+        // Not vacuous: from the open on there is a state to compare.
+        if (slot >= 510) expect(want, `slot ${slot}`).not.toBeNull();
+        expect(
+          spxSlotStateAsOf(withFutureReplaced(day, slot, bad), slot),
+          `slot ${slot}`,
+        ).toEqual(want);
+      }
+    },
+  );
+});
+
+describe('symbolPriceAsOf', () => {
+  describe('a full day of bars (78)', () => {
+    const day = asOfDay(78);
+
+    it.each([
+      ['8:30 CT, the first bar running: its open', 510, 6000],
+      ['8:35 CT: the first bar’s close', 515, 6001],
+      ['9:00 CT: bar 5’s close', 540, 6006],
+      ['2:55 PM CT: bar 76’s close', 895, 6077],
+      ['3:05 PM CT, after every bar: the last close', 905, 6078],
+    ])('%s', (_label, slot, want) => {
+      expect(symbolPriceAsOf(day, slot)).toBe(want);
+    });
+
+    it('is null before the first bar starts', () => {
+      expect(symbolPriceAsOf(day, 509)).toBeNull();
+    });
+  });
+
+  describe('a sparse series, one bar starting 11:00 ET', () => {
+    const sparse: SlotCandle[] = [
+      {
+        datetime: AS_OF_OPEN_MS + 90 * MINUTE_MS, // 11:00 ET
+        open: 15.1,
+        high: 15.6,
+        low: 15,
+        close: 15.3,
+      },
+    ];
+
+    it.each([
+      ['9:55 CT, before the bar starts', 595, null],
+      ['10:00 CT, the bar starts: its open', 600, 15.1],
+      ['10:04 CT, the bar still runs: its open', 604, 15.1],
+      ['10:05 CT, the bar has ended: its close', 605, 15.3],
+      ['3:00 PM CT: its close', 900, 15.3],
+    ])('%s', (_label, slot, want) => {
+      expect(symbolPriceAsOf(sparse, slot)).toBe(want);
+    });
+  });
+
+  describe('a series with a gap', () => {
+    // 10:00 ET and 10:30 ET bars only.
+    const gappy: SlotCandle[] = [
+      {
+        datetime: AS_OF_OPEN_MS + 30 * MINUTE_MS,
+        open: 15,
+        high: 15.5,
+        low: 14.9,
+        close: 15.2,
+      },
+      {
+        datetime: AS_OF_OPEN_MS + 60 * MINUTE_MS,
+        open: 16,
+        high: 16.5,
+        low: 15.9,
+        close: 16.2,
+      },
+    ];
+
+    it.each([
+      ['9:00 CT, first bar running: its open', 540, 15],
+      ['9:05 CT, first bar ended: its close', 545, 15.2],
+      // The second bar has started but not ended, and a bar has ended, so
+      // the first bar's close wins over the second bar's open.
+      ['9:30 CT, second bar running: the first bar’s close', 570, 15.2],
+      ['9:35 CT, second bar ended: its close', 575, 16.2],
+    ])('%s', (_label, slot, want) => {
+      expect(symbolPriceAsOf(gappy, slot)).toBe(want);
+    });
+  });
+
+  describe('bad input', () => {
+    const day = asOfDay(78);
+
+    it.each([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])(
+      'a slot of %s is null',
+      (slot) => {
+        expect(symbolPriceAsOf(day, slot)).toBeNull();
+      },
+    );
+
+    it('no candles is null', () => {
+      expect(symbolPriceAsOf([], 540)).toBeNull();
+    });
+
+    it.each([
+      ['NaN', Number.NaN],
+      ['zero', 0],
+      ['negative', -1],
+      ['Infinity', Number.POSITIVE_INFINITY],
+    ])(
+      'a %s close on the last ended bar is null, not another bar’s value',
+      (_n, bad) => {
+        const bars = day.map((c, i) => (i === 5 ? { ...c, close: bad } : c));
+        expect(symbolPriceAsOf(bars, 540)).toBeNull();
+        expect(symbolPriceAsOf(bars, 535)).toBe(6005);
+      },
+    );
+
+    it.each([
+      ['NaN', Number.NaN],
+      ['zero', 0],
+    ])('a %s open on the first bar, while it runs, is null', (_n, bad) => {
+      const bars = day.map((c, i) => (i === 0 ? { ...c, open: bad } : c));
+      expect(symbolPriceAsOf(bars, 510)).toBeNull();
+      expect(symbolPriceAsOf(bars, 515)).toBe(6001);
+    });
+
+    // The module-wide rule, as priceContextAsOf has it: a bar that can't be
+    // placed on the clock makes the whole series null at every slot.
+    it.each([
+      ['NaN', Number.NaN],
+      ['Infinity', Number.POSITIVE_INFINITY],
+      ['-Infinity', Number.NEGATIVE_INFINITY],
+      ['nanosecond-epoch', 1.7e18],
+    ])(
+      'a %s datetime on bar 2 is null at every slot, and never throws',
+      (_n, bad) => {
+        const bars = day.map((c, i) => (i === 2 ? { ...c, datetime: bad } : c));
+        for (const slot of [515, 545, 895]) {
+          expect(symbolPriceAsOf(bars, slot), `slot ${slot}`).toBeNull();
+        }
+      },
+    );
+  });
+});
+
+describe('look-ahead sweep (spec G2): symbolPriceAsOf', () => {
+  const day = asOfDay(78);
+
+  it.each(FUTURE_VALUES)(
+    'bars the slot has not ended, replaced with %s, change nothing',
+    (_name, bad) => {
+      for (const slot of SWEEP_SLOTS) {
+        const want = symbolPriceAsOf(day, slot);
+        if (slot >= 510) expect(want, `slot ${slot}`).not.toBeNull();
+        expect(
+          symbolPriceAsOf(withFutureReplaced(day, slot, bad), slot),
+          `slot ${slot}`,
+        ).toBe(want);
+      }
+    },
+  );
 });

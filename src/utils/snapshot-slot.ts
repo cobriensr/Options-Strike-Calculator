@@ -12,6 +12,9 @@ import { getETTotalMinutes } from './timezone.js';
 /** Length of a history candle, labelled by its start. */
 const BAR_MINUTES = 5;
 
+/** 10:00 ET, in ET minutes after midnight: the opening range ends here. */
+const OPENING_RANGE_END_MIN_ET = 10 * 60;
+
 export interface SlotCandle {
   /** Bar start, epoch milliseconds. */
   readonly datetime: number;
@@ -59,12 +62,7 @@ export function priceContextAsOf(
 
   const first = candles[0];
   if (first == null) return null;
-  // A bar with no usable start time can't be placed on the clock, so there is
-  // no telling whether it has ended. The ET formatter throws on an invalid
-  // Date, which covers NaN, infinities and values past the Date range.
-  if (!candles.every((c) => !Number.isNaN(new Date(c.datetime).getTime()))) {
-    return null;
-  }
+  if (!allBarsPlaceable(candles)) return null;
   if (startMinuteET(first) !== CASH_OPEN_MIN_ET) return null;
   if (!isPrice(first.open)) return null;
 
@@ -81,6 +79,159 @@ export function priceContextAsOf(
     if (candle.low < low) low = candle.low;
   }
   return { open: first.open, high, low };
+}
+
+/** The SPX state a snapshot slot may know, from bars ended by the slot. */
+export interface SpxSlotState {
+  readonly spot: number;
+  readonly runningOHLC: {
+    readonly open: number;
+    readonly high: number;
+    readonly low: number;
+    readonly last: number;
+  };
+  /** Null until the first opening-range bar has ended (8:30 CT). */
+  readonly openingRange: {
+    readonly high: number;
+    readonly low: number;
+    readonly rangePts: number;
+    readonly complete: boolean;
+  } | null;
+  /** Index in `candles` of the last bar ended by the slot; -1 when none has. */
+  readonly entryIndex: number;
+}
+
+/**
+ * The SPX spot, running range, opening range and entry index at a snapshot
+ * slot, from the bars that have ended by it.
+ *
+ * The as-of rule (server snapshot builder spec, call 1): "A row at slot T
+ * uses only bars that end at or before T."
+ * - Spot is the close of the bar ending at T, the last bar ended by the slot.
+ *   At 8:30 CT no bar has ended, so spot is the first bar's open.
+ * - The running high and low cover the bars ended by T. At 8:30 the open,
+ *   high, low and last are all the first bar's open. `priceContextAsOf`
+ *   supplies open, high and low.
+ * - The opening range covers the bars that start before 10:00 ET and have
+ *   ended by T: partial before 9:00 CT (10:00 ET), complete from then on.
+ *   It is null until the first of them has ended, at 8:35 CT. It is null
+ *   rather than a zero-width range because a range with high at or below low
+ *   is flagged as an input error by the opening-range card.
+ *
+ * Null over a guessed value: `null` whenever `priceContextAsOf` is null (a
+ * slot that is not finite or is before the open, no candles, a first bar not
+ * at 9:30 ET, a bar with an invalid `datetime`, a bad price on a bar that has
+ * ended), and when the spot is not a finite price above 0. It never throws:
+ * it runs during App render.
+ *
+ * `candles` is one regular session of 5-minute bars, labelled by their start
+ * and sorted ascending, as `/api/history` serves them. A missing bar does not
+ * break it: `entryIndex` is the position, in this array, of the last bar that
+ * ended by the slot.
+ *
+ * @param slotMinuteCT Minutes since midnight CT, as `parseEntryTimeMinutes`
+ * returns them: 8:30 AM CT is 510. Any minute is accepted, not only the
+ * 5-minute marks.
+ */
+export function spxSlotStateAsOf(
+  candles: readonly SlotCandle[],
+  slotMinuteCT: number,
+): SpxSlotState | null {
+  const range = priceContextAsOf(candles, slotMinuteCT);
+  if (range == null) return null;
+
+  const slotET = slotMinuteCT + ET_AHEAD_OF_CT_MIN;
+  let entryIndex = -1;
+  let openingBars = 0;
+  let openingHigh = Number.NEGATIVE_INFINITY;
+  let openingLow = Number.POSITIVE_INFINITY;
+  for (const [index, candle] of candles.entries()) {
+    const start = startMinuteET(candle);
+    if (start + BAR_MINUTES > slotET) continue;
+    entryIndex = index;
+    if (start >= OPENING_RANGE_END_MIN_ET) continue;
+    openingBars += 1;
+    if (candle.high > openingHigh) openingHigh = candle.high;
+    if (candle.low < openingLow) openingLow = candle.low;
+  }
+
+  const spot = entryIndex >= 0 ? candles[entryIndex]?.close : candles[0]?.open;
+  if (spot == null || !isPrice(spot)) return null;
+
+  return {
+    spot,
+    runningOHLC: {
+      open: range.open,
+      high: range.high,
+      low: range.low,
+      last: spot,
+    },
+    openingRange:
+      openingBars === 0
+        ? null
+        : {
+            high: openingHigh,
+            low: openingLow,
+            rangePts: Math.round((openingHigh - openingLow) * 100) / 100,
+            complete: slotET >= OPENING_RANGE_END_MIN_ET,
+          },
+    entryIndex,
+  };
+}
+
+/**
+ * One symbol's price at a snapshot slot: SPX is not the only series the
+ * as-of rule covers, "VIX, VIX1D, VIX9D and VVIX follow the same rule on
+ * their own candles."
+ *
+ * The close of the last bar ended by the slot. When no bar has ended, the
+ * open of the last bar that has started (at 8:30 CT, the first bar's open).
+ * Otherwise null. A series may be sparse (VIX1D often is), so there is no
+ * 9:30 first-bar requirement.
+ *
+ * Null over a guessed value, never another bar's: `null` when the slot is not
+ * finite, there are no candles, any bar's `datetime` is invalid (no telling
+ * whether it has ended, at any slot), or the chosen value is not a finite
+ * price above 0. Bars the slot has not ended are not looked at, apart from
+ * the open of a bar that has started.
+ *
+ * @param slotMinuteCT Minutes since midnight CT, as `parseEntryTimeMinutes`
+ * returns them: 8:30 AM CT is 510.
+ */
+export function symbolPriceAsOf(
+  candles: readonly SlotCandle[],
+  slotMinuteCT: number,
+): number | null {
+  if (!Number.isFinite(slotMinuteCT)) return null;
+  if (candles.length === 0 || !allBarsPlaceable(candles)) return null;
+
+  const slotET = slotMinuteCT + ET_AHEAD_OF_CT_MIN;
+  let lastEnded = -1;
+  let lastStarted = -1;
+  for (const [index, candle] of candles.entries()) {
+    const start = startMinuteET(candle);
+    if (start <= slotET) lastStarted = index;
+    if (start + BAR_MINUTES <= slotET) lastEnded = index;
+  }
+
+  let price: number | undefined;
+  if (lastEnded >= 0) {
+    price = candles[lastEnded]?.close;
+  } else if (lastStarted >= 0) {
+    price = candles[lastStarted]?.open;
+  }
+  return price != null && isPrice(price) ? price : null;
+}
+
+/**
+ * True when every bar's start is a time a Date can hold. A bar with no usable
+ * start time can't be placed on the clock, so there is no telling whether it
+ * has ended. The ET formatter throws on an invalid Date, which covers NaN,
+ * infinities and values past the Date range, so this runs before any bar is
+ * placed on the clock.
+ */
+function allBarsPlaceable(candles: readonly SlotCandle[]): boolean {
+  return candles.every((c) => !Number.isNaN(new Date(c.datetime).getTime()));
 }
 
 function startMinuteET(candle: SlotCandle): number {
