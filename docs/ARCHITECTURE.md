@@ -553,7 +553,7 @@ Schedules are UTC, with the ET time in EDT. Jobs that must land at a fixed ET ti
 | `repair-futures-blocks`       | 22:15 (6:15 PM)                                  | Repairs `futures_blocks` from UW REST for blocks the websocket dropped                                               |
 | `fetch-market-internals`      | Mon–Fri 22:30 (6:30 PM)                          | Schwab's settled 1-min $TICK, $ADD, $VOLD, $TRIN bars for the last 5 sessions → `market_internals` (upsert; none in session) |
 | `fetch-day-ohlc`              | Tue–Sat 23:00 (7:00 PM)                          | OHLC + excursions on the prior trading day's `day_embeddings` row                                                    |
-| `audit-gexbot-eod`            | Mon–Fri 22:30, 23:30                             | Information-only loss report: GEXBot EOD reports missing after the window closes (a new listing is not a loss)       |
+| `audit-gexbot-eod`            | Mon–Fri 22:30, 23:30 (6:30, 7:30 PM)             | Information-only loss report: GEXBot EOD reports missing after the window closes (a new listing is not a loss)       |
 | `archive-gexbot-eod`          | Daily 02:00, hourly 12:00–21:00, 23:00           | GEXBot EOD report ZIPs (60 tickers) → private R2, `gexbot_eod_reports`; hourly retries until the window closes       |
 | `curate-lessons`              | Sat 03:00                                        | Weekly lessons curation pipeline                                                                                     |
 | `backup-tables`               | Sun 05:00                                        | Database backup to Vercel Blob                                                                                       |

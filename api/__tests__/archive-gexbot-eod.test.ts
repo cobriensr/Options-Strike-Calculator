@@ -1003,7 +1003,9 @@ describe('archive-gexbot-eod', () => {
       expect(json.leftoverAfterFailure).toEqual([]);
       expect(json.retried).toBe(1);
       expect(json.recoveredByRetry).toBe(0);
-      // The 503 asks nothing; only the 404 asks, once.
+      // Two report requests, the 503 and then the 404. The stored-before
+      // helper is queried once in the run. Its promise is shared, so one call
+      // doesn't show which of the two responses made it.
       expect(eod.requestEodReport).toHaveBeenCalledTimes(2);
       expect(eod.listTickersStoredOnOrBefore).toHaveBeenCalledTimes(1);
       expect(mockCapture).not.toHaveBeenCalled();
