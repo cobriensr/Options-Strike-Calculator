@@ -3,6 +3,7 @@ import type { BWBLegs } from '../../types';
 import { mkTh, mkTd } from '../../utils/ui-utils';
 import { formatDollars } from '../../utils/format-magnitude.js';
 import { ScrollHint } from '../ui';
+import { SrHint } from '../ui/SrHint.js';
 
 /**
  * One breakeven for a credit BWB; "low–high" for a debit BWB, which
@@ -229,6 +230,9 @@ export default function BWBPnLProfileTable({
                         title="Log-normal PoP (without fat-tail adjustment)"
                       >
                         {(r.pop * 100).toFixed(1)}%
+                        <SrHint>
+                          log-normal PoP, without the fat-tail adjustment
+                        </SrHint>
                       </div>
                     </td>
                     <td

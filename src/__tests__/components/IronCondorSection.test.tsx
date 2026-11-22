@@ -9,6 +9,11 @@ import {
 import userEvent from '@testing-library/user-event';
 import IronCondorSection from '../../components/IronCondorSection';
 import type { CalculationResults, DeltaRow, DeltaRowError } from '../../types';
+import {
+  srHintText,
+  titledGenericsWithoutHint,
+  visibleText,
+} from '../helpers/aria';
 
 const exportMock = vi.hoisted(() => ({
   exportPnLComparison: vi.fn(),
@@ -420,6 +425,26 @@ describe('IronCondorSection', () => {
     // Two delta groups × 3 sub-rows each = 6 data rows + 1 header = 7 total
     const allRows = within(pnlTable).getAllByRole('row');
     expect(allRows).toHaveLength(7);
+  });
+
+  it('names the struck-through log-normal PoP for screen readers, in every P&L row', () => {
+    const { container } = renderSection({ allDeltas: [makeDeltaRow(10)] });
+    const pnlTable = screen.getByRole('table', {
+      name: 'Iron condor P&L by delta',
+    });
+    const struck = within(pnlTable).getAllByTitle(
+      'Log-normal PoP (without fat-tail adjustment)',
+    );
+    // One per row: put spread, call spread and iron condor
+    expect(struck).toHaveLength(3);
+    for (const el of struck) {
+      expect(srHintText(el)).toBe(
+        'log-normal PoP, without the fat-tail adjustment',
+      );
+      // The sighted text is the bare percentage, with no hint words in it
+      expect(visibleText(el)).toMatch(/^\d+\.\d%$/);
+    }
+    expect(titledGenericsWithoutHint(container)).toEqual([]);
   });
 
   // ============================================================

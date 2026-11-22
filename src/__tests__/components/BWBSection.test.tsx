@@ -9,6 +9,11 @@ import {
 import BWBSection from '../../components/BWBSection';
 import { calcAllDeltas, calcTimeToExpiry } from '../../utils/calculator';
 import type { CalculationResults, DeltaRow, DeltaRowError } from '../../types';
+import {
+  srHintText,
+  titledGenericsWithoutHint,
+  visibleText,
+} from '../helpers/aria';
 
 // ============================================================
 // MODULE MOCK (hoisted by vitest)
@@ -315,6 +320,24 @@ describe('BWBSection', () => {
     const putRow = within(pnlTable).getByText('Put BWB').closest('tr')!;
     expect(within(putRow).getByText('5705\u20135745')).toBeInTheDocument();
     expect(within(putRow).getByText('571\u2013574')).toBeInTheDocument();
+  });
+
+  it('names the struck-through log-normal PoP for screen readers, in every P&L row', () => {
+    const { container } = renderSection();
+    const pnlTable = screen.getByRole('table', { name: 'BWB P&L by delta' });
+    const struck = within(pnlTable).getAllByTitle(
+      'Log-normal PoP (without fat-tail adjustment)',
+    );
+    // One per row: the put BWB and the call BWB
+    expect(struck).toHaveLength(2);
+    for (const el of struck) {
+      expect(srHintText(el)).toBe(
+        'log-normal PoP, without the fat-tail adjustment',
+      );
+      // The sighted text is the bare percentage, with no hint words in it
+      expect(visibleText(el)).toMatch(/^\d+\.\d%$/);
+    }
+    expect(titledGenericsWithoutHint(container)).toEqual([]);
   });
 
   // ============================================================
