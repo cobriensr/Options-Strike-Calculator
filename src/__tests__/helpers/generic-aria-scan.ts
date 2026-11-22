@@ -1,5 +1,5 @@
 import ts from 'typescript';
-import { GENERIC_TAGS, isPresentationalRole } from './aria';
+import { GENERIC_TAGS, countsAsNoRole } from './aria';
 
 const GENERIC = new Set<string>(GENERIC_TAGS);
 const NAME_ATTRS = new Set(['aria-label', 'aria-labelledby']);
@@ -29,9 +29,10 @@ function literalRole(attr: ts.JsxAttribute): string | null {
  * or a role. An element with a role is not reported, and neither is one with
  * a spread attribute (`{...props}` may carry a role) or a component
  * (`<Badge>`, `<motion.span>`): only a lower-case tag in the list counts.
- * A presentational role (`none`, `presentation`) written as a string literal
- * does not count as a role, because a browser ignores it next to an
- * `aria-label`. A `role` the scan can't read (`role={r}`) counts as one.
+ * A `role` written as a string literal that is empty, whitespace-only or
+ * presentational (`none`, `presentation`) does not count as a role, because a
+ * browser ignores it next to an `aria-label` (see `countsAsNoRole`). A `role`
+ * the scan can't read (`role={r}`) counts as one.
  *
  * The source is parsed as TSX, so comments, strings and JSX text never match.
  */
@@ -58,7 +59,7 @@ export function findGenericAriaNames(
     const role = attrs.find((a) => a.name.getText(file) === 'role');
     if (role != null) {
       const literal = literalRole(role);
-      if (literal == null || !isPresentationalRole(literal)) return;
+      if (literal == null || !countsAsNoRole(literal)) return;
     }
     for (const attr of attrs) {
       const name = attr.name.getText(file);

@@ -16,8 +16,9 @@
  * match. It flags an intrinsic element whose tag is in GENERIC_TAGS
  * (helpers/aria.ts, the list the runtime helper
  * `genericElementsWithAriaLabel` uses too) that carries `aria-label` or
- * `aria-labelledby` and has no role and no spread attribute. A presentational
- * role (`none` or `presentation`, first token, any case) counts as no role:
+ * `aria-labelledby` and has no role and no spread attribute. An empty or
+ * whitespace-only role counts as no role (a browser ignores it), and so does a
+ * presentational one (`none` or `presentation`, first token, any case):
  * browsers ignore it when a global ARIA attribute such as `aria-label` is
  * present, so the element is still a named generic.
  *
@@ -164,6 +165,27 @@ describe('findGenericAriaNames', () => {
       '<span role="presentation img" aria-label="x">a</span>',
       ['1: span aria-label'],
     ],
+    // A browser ignores an empty role, so it names a generic just the same.
+    [
+      'an empty role',
+      '<span role="" aria-label="x">a</span>',
+      ['1: span aria-label'],
+    ],
+    [
+      'a whitespace-only role',
+      '<span role="  " aria-label="x">a</span>',
+      ['1: span aria-label'],
+    ],
+    [
+      'an empty role as a string-literal expression',
+      '<div role={\'\'} aria-labelledby="h" />',
+      ['1: div aria-labelledby'],
+    ],
+    [
+      'a blank role as a template literal',
+      '<span role={` `} aria-label="x">a</span>',
+      ['1: span aria-label'],
+    ],
   ])('flags %s', (_name, source, expected) => {
     expect(scan(source)).toEqual(expected);
   });
@@ -185,6 +207,7 @@ describe('findGenericAriaNames', () => {
       'a span whose first role token is a real role',
       '<span role="img none" aria-label="x" />',
     ],
+    ['a real role with padding', '<span role=" img " aria-label="x" />'],
     // A known blind spot, pinned so the header's claim stays true: a
     // non-literal role is trusted even if it resolves to `none` at run time.
     [
@@ -311,6 +334,8 @@ describe('genericElementsWithAriaLabel', () => {
       'a presentational role first in a fallback list',
       '<span role="none img" aria-label="x"></span>',
     ],
+    ['an empty role', '<span role="" aria-label="x"></span>'],
+    ['a whitespace-only role', '<span role="  " aria-label="x"></span>'],
   ])('reports %s', (_name, html) => {
     const root = document.createElement('div');
     root.innerHTML = html;
@@ -323,6 +348,7 @@ describe('genericElementsWithAriaLabel', () => {
       'a span whose first role token is a real role',
       '<span role="img none" aria-label="x"></span>',
     ],
+    ['a real role with padding', '<span role=" img " aria-label="x"></span>'],
     ['a section', '<section aria-label="y"></section>'],
     [
       'a div named by a heading, with a role',
