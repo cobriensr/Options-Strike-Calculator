@@ -358,7 +358,7 @@ describe('Regime0dte panel shell', () => {
     const WAITING_FOR_THE_OPEN =
       'Waiting for the open. The 0DTE gamma regime auto-updates between 08:30 and 15:00 CT on trading days.';
     const CLOSED_FOR_THE_DAY =
-      'Closed for the day. The next read starts at the 08:30 CT open.';
+      'Closed for the day. The next read starts at the next 08:30 CT open.';
     const NEEDS_ACCESS = 'The regime read needs owner or guest access.';
 
     interface ClosedCase {

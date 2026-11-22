@@ -23,8 +23,8 @@ describe('getPanelRegistry', () => {
     ]);
   });
 
-  // /api/regime-0dte is withDbReader(..., 'owner-or-guest'): a public visitor
-  // could only ever see "Waiting for the open" in the panel, or a 401.
+  // /api/regime-0dte is withDbReader(..., 'owner-or-guest'): the panel is never
+  // mounted for a public visitor, who could only get a placeholder or a 401.
   it('omits sec-regime-0dte for a public visitor, with or without market data', () => {
     for (const hasMarketOrSnapshot of [true, false]) {
       const ids = getPanelRegistry({

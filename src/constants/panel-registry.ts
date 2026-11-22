@@ -57,8 +57,9 @@ export function getPanelRegistry(
     { id: 'sec-risk', label: 'Risk Calculator', group: 'Inputs' },
     { id: 'sec-regime', label: 'Market Regime', group: 'Market Context' },
   ];
-  // /api/regime-0dte is owner-or-guest, so a public visitor gets no panel for
-  // it (only "Waiting for the open", or a 401), and no nav or prefs entry.
+  // /api/regime-0dte is owner-or-guest, so the panel is never mounted for a
+  // public visitor (it could only show a placeholder or a 401), and it has no
+  // nav or prefs entry.
   if (isAuthenticated) {
     list.push({
       id: 'sec-regime-0dte',

@@ -62,13 +62,14 @@ const EMPTY_CANDLES = Object.freeze([] as StripCandle[]) as StripCandle[];
  *
  * Closed window, by cause, since "waiting for the open" is true of only one:
  * - a public visitor: the hook holds the window closed for them (the endpoint
- *   is owner-or-guest), so no clock time would ever open it;
+ *   is owner-or-guest), so no clock time would ever open it. This branch is
+ *   defensive: the panel registry never mounts the panel for a public visitor;
  * - after the close on a trading day: the day is over;
  * - before the open, or on a weekend or holiday: waiting for the open.
  * The clock is read when the panel renders. It re-renders when the window
  * flips (the close, the open) and at ET midnight, so "closed for the day" is
  * set at the close and may outlast CT midnight until the next render, when it
- * is still true ("the next read starts at the 08:30 CT open").
+ * is still true ("the next read starts at the next 08:30 CT open").
  */
 function placeholderCopy(isWindowOpen: boolean, error: string | null): string {
   if (isWindowOpen) {
@@ -80,7 +81,7 @@ function placeholderCopy(isWindowOpen: boolean, error: string | null): string {
     return 'The regime read needs owner or guest access.';
   }
   return regime0dteSessionPhase(new Date()) === 'after-close'
-    ? 'Closed for the day. The next read starts at the 08:30 CT open.'
+    ? 'Closed for the day. The next read starts at the next 08:30 CT open.'
     : 'Waiting for the open. The 0DTE gamma regime auto-updates between 08:30 and 15:00 CT on trading days.';
 }
 
