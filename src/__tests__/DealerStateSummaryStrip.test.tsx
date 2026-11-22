@@ -3,6 +3,7 @@ import { render, screen, within } from '@testing-library/react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
 import { DealerStateSummaryStrip } from '../components/Gexbot/DealerStateSummaryStrip';
+import { srHintText, titledGenericsWithoutHint } from './helpers/aria';
 import { dealerClaims } from './helpers/dealer-claims';
 import type { SnapshotsLatestRow, VelocityRow } from '../hooks/useGexbotData';
 
@@ -395,6 +396,83 @@ describe('<DealerStateSummaryStrip>', () => {
         'title',
         expect.stringContaining('never under 0.25'),
       );
+    });
+
+    // The sub-line's title is mouse-only on a div, so a hidden hint reads it to
+    // a screen reader. The strip is a live region, which is read again when
+    // its content changes, so the hint stays short. It says what the number
+    // is and how the tile is ranked, but not "of typical": a floored pick
+    // reads "× the 0.25 floor". It also avoids "raw", which the tile test
+    // bans.
+    describe('the sub-line hint', () => {
+      const HINT = 'last-minute change in taker delta, ranked by that multiple';
+      const TITLE =
+        "Last-minute change in taker delta (Δ agg_dex) as a multiple of this ticker's own typical minute (its session median, never under 0.25). Ranked by that multiple, not by raw size, because sizes are not comparable across tickers. A grey tile means nothing reached 3×.";
+      /** The most a hint inside a live region may say. */
+      const MAX_LIVE_HINT = 60;
+      const subline = () => within(tile()).getByTitle(/own typical minute/);
+
+      it.each([
+        [
+          'a rising change against its typical minute',
+          'SPX',
+          1.2,
+          0.4,
+          '3.0× typical',
+        ],
+        ['a falling change', 'SPY', -1.2, 0.3, '4.0× typical'],
+        [
+          'a change quoted against the floor',
+          'HYG',
+          0.9,
+          0,
+          '3.6× the 0.25 floor',
+        ],
+        ['a quiet pick under 3x', 'SPX', 1.0, 0.5, '2.0× typical'],
+      ])(
+        'says what the number is for %s, and keeps the title',
+        (_name, ticker, dAggDex, typical, shown) => {
+          mockViews(
+            SNAP,
+            velocityState([
+              makeVelocity(ticker, { dAggDex, typicalAbsDAggDex: typical }),
+            ]),
+          );
+          const { container } = render(<DealerStateSummaryStrip marketOpen />);
+          const el = subline();
+          expect(el).toHaveTextContent(shown);
+          expect(srHintText(el)).toBe(HINT);
+          expect(srHintText(el)!.length).toBeLessThanOrEqual(MAX_LIVE_HINT);
+          expect(el).toHaveAttribute('title', TITLE);
+          expect(el).not.toHaveAttribute('aria-label');
+          expect(titledGenericsWithoutHint(container)).toEqual([]);
+        },
+      );
+
+      it('does not repeat the visible "typical" or "floor", and carries no banned wording', () => {
+        expect(HINT).not.toMatch(/typical|floor|raw|cross-ticker/i);
+        expect(dealerClaims(HINT)).toEqual([]);
+      });
+
+      it.each([
+        ['no pick', velocityState([]), false],
+        [
+          'a failed read with nothing to show',
+          {
+            rows: [],
+            loading: false,
+            error: 'Internal error (HTTP 500)',
+            freshestAt: null,
+          },
+          true,
+        ],
+      ])('adds no hint to the empty tile: %s', (_name, velocity, failed) => {
+        mockViews(SNAP, velocity);
+        const { container } = render(<DealerStateSummaryStrip marketOpen />);
+        expect(tile()).toHaveTextContent(failed ? 'velocity read failed' : '—');
+        expect(container.querySelector('.sr-only')).toBeNull();
+        expect(titledGenericsWithoutHint(container)).toEqual([]);
+      });
     });
 
     it('shows a falling change as taker −Δ flow', () => {

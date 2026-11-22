@@ -174,6 +174,7 @@ function SiblingBarBody({
           title={`No sibling snapshot near the ${asOfLabel} · context, unvalidated`}
         >
           no data
+          <SrHint>{`no sibling snapshot near the ${asOfLabel}`}</SrHint>
         </span>
       )}
     </span>

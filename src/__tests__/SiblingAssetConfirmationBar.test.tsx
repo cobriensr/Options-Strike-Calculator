@@ -4,8 +4,18 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 
 import { SiblingAssetConfirmationBar } from '../components/Gexbot/SiblingAssetConfirmationBar';
 import type { SiblingConfirmRow } from '../hooks/useGexbotData';
-import { genericElementsWithAriaLabel, srHintText } from './helpers/aria';
+import {
+  genericElementsWithAriaLabel,
+  srHintText,
+  titledGenericsWithoutHint,
+} from './helpers/aria';
 import { dealerClaims } from './helpers/dealer-claims';
+
+/**
+ * The most a hint on an element that repeats in every row may say. The bar is
+ * on every Lottery Finder and Silent Boom row, so its hint stays short.
+ */
+const MAX_ROW_HINT = 60;
 
 const mockUseGexbotData = vi.fn();
 vi.mock('../hooks/useGexbotData', async () => {
@@ -227,6 +237,40 @@ describe('<SiblingAssetConfirmationBar>', () => {
     expect(noData.getAttribute('title')).not.toMatch(/fire time/);
   });
 
+  // "no data" is shown once per bar, and every Lottery Finder and Silent Boom
+  // row carries a bar, so its hint is a short per-row one. The title is mouse-
+  // only on a span; the hint says the same, without repeating "no data".
+  it.each(['latest fire', '5-min bucket start'])(
+    'says where the missing snapshot is looked for in a short hidden hint, keeping the title (%s)',
+    (asOfLabel) => {
+      loaded([makeRow('SPY', 'none'), makeRow('QQQ', 'none')]);
+      const { container } = renderBar('call', FIRED_AT, asOfLabel);
+      const noData = screen.getByText('no data');
+      expect(srHintText(noData)).toBe(
+        `no sibling snapshot near the ${asOfLabel}`,
+      );
+      expect(srHintText(noData)!.length).toBeLessThanOrEqual(MAX_ROW_HINT);
+      expect(noData).toHaveAttribute(
+        'title',
+        `No sibling snapshot near the ${asOfLabel} · context, unvalidated`,
+      );
+      expect(noData).not.toHaveAttribute('aria-label');
+      expect(genericElementsWithAriaLabel(container)).toEqual([]);
+      expect(titledGenericsWithoutHint(container)).toEqual([]);
+    },
+  );
+
+  it('leaves no titled generic element without a hint when the bar has pills', () => {
+    loaded([
+      makeRow('SPY', 'agree'),
+      makeRow('QQQ', 'disagree'),
+      makeRow('IWM', 'none'),
+    ]);
+    const { container } = renderBar();
+    expect(container.querySelectorAll('[title]')).toHaveLength(3);
+    expect(titledGenericsWithoutHint(container)).toEqual([]);
+  });
+
   it('omits null readings from the tooltip', () => {
     loaded([
       makeRow('SPY', 'agree', { netDex: 1_500_000, zgr: null }),
@@ -275,5 +319,18 @@ describe('<SiblingAssetConfirmationBar>', () => {
       .filter(Boolean)
       .join(' ');
     expect(dealerClaims(`${container.textContent ?? ''} ${attrs}`)).toEqual([]);
+  });
+
+  it('carries no dealer or market-maker wording in the no-data state either', () => {
+    loaded([makeRow('SPY', 'none'), makeRow('QQQ', 'none')]);
+    const { container } = renderBar('call', FIRED_AT, '5-min bucket start');
+    const noData = screen.getByText('no data');
+    // The hint is part of the text content and the title is an attribute.
+    expect(container.textContent).toContain(srHintText(noData)!);
+    expect(
+      dealerClaims(
+        `${container.textContent ?? ''} ${noData.getAttribute('title') ?? ''}`,
+      ),
+    ).toEqual([]);
   });
 });

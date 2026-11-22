@@ -23,6 +23,7 @@ import {
   useGexbotData,
   type SnapshotsLatestRow,
 } from '../../hooks/useGexbotData';
+import { SrHint } from '../ui/SrHint';
 import { GEXBOT_UNDERLYING_ORDER } from './ticker-order';
 import { deriveGammaSign, type GammaSign } from './types';
 import {
@@ -305,6 +306,15 @@ const QUIET_LABEL = `quiet · nothing ≥ ${UNUSUAL_MULTIPLE}× typical`;
 const LOUDEST_TITLE = `Last-minute change in taker delta (Δ agg_dex) as a multiple of this ticker's own typical minute (its session median, never under ${TYPICAL_FLOOR}). Ranked by that multiple, not by raw size, because sizes are not comparable across tickers. A grey tile means nothing reached ${UNUSUAL_MULTIPLE}×.`;
 
 /**
+ * What a screen reader gets after the sub-line, which sits in a live region
+ * and is read again on every change, so it stays short. It names the number
+ * and how the tile is ranked. It says nothing about "typical": a floored pick
+ * reads "× the 0.25 floor", and the title has the whole definition.
+ */
+const LOUDEST_HINT =
+  'last-minute change in taker delta, ranked by that multiple';
+
+/**
  * One decimal. A pick that is not unusual rounds down, so a ratio just under
  * the multiple (2.96) never prints as "3.0×" beside "nothing ≥ 3× typical".
  * EPSILON keeps an exact tenth that floating point lands just under
@@ -377,6 +387,7 @@ function LoudestTile({ pick, readFailed }: LoudestTileProps) {
       >
         {flowLabel} {formatTakerDelta(pick.dAggDex)} ·{' '}
         {formatRatio(pick.ratio, pick.unusual)}× {against}
+        <SrHint>{LOUDEST_HINT}</SrHint>
       </div>
       <div className="text-tertiary text-[9px] leading-tight tracking-wide uppercase">
         {pick.unusual ? LOUDEST_LABEL : QUIET_LABEL}
