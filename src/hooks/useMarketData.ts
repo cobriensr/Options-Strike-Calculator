@@ -16,7 +16,8 @@
  * no request that is bound to 401. The mount fetch and the poll both follow
  * the live access mode, read at every render: a guest key entered without a
  * reload fetches all five and starts the poll, and a drop to public aborts
- * what is in flight, stops the poll and keeps the data already loaded.
+ * the mount fetch in flight, stops the poll (a poll reply already on its way
+ * writes nothing) and keeps the data already loaded.
  *
  * Auto-refreshes quotes every 60s during market hours, stops after close.
  *
