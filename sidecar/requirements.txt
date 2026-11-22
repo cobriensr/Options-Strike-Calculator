@@ -27,7 +27,7 @@ pytz>=2024.1
 # health server (port 8080), so Flask is NOT a dep — http.server handles
 # the wire format.
 joblib>=1.3.0
-numpy>=1.26.0
+numpy>=2.5.4
 pandas>=2.1.0
 # Pinned to the training version (ml/requirements.txt): the Take-It
 # bundles pickle sklearn estimators (IsotonicRegression calibrators), and
