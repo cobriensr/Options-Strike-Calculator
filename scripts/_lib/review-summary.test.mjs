@@ -563,6 +563,230 @@ describe('a failed `review-gate clear`', () => {
   });
 });
 
+describe('the machine-wide gate lock (the `run` header, waiting, and the two caps)', () => {
+  // pass-after-wait, fail-wait-cap and fail-hold-cap-vitest are trimmed real
+  // logs of the shape `npm run review` now has (`node scripts/review-gate.mjs
+  // run` in the banner), with the lines the lock, the CLI and the runner print.
+  const WAITED_NOTE =
+    'waited for the gate in F:/work/repo-b (pid 7312, running 0 min)';
+  const WAIT_CAP_MESSAGE =
+    'review-gate run failed: gave up after waiting 120 min for the gate in F:/work/repo-b (pid 7312, running 61 min). ' +
+    'The hold cap ends a hung holder at 75 min, so a long wait is queue, not a hang. ' +
+    "Do not stop another session's process; report to the owner.";
+  const HOLD_CAP_LINE =
+    'review-gate: the chain hit the 75 min hold cap and is being killed. Running at that moment: ' +
+    '"C:\\Program Files\\nodejs\\node.exe" C:/work/repo/node_modules/vitest/dist/workers/forks.js.';
+
+  /** The stage lines of a summary: not the details, not the seal line. */
+  const stageLines = (log) =>
+    summarizeReviewLog(log).lines.filter(
+      (l) => !l.startsWith(' ') && !l.startsWith('review-gate: sealed'),
+    );
+
+  /** `log` with `lines` inserted before the first line that starts `before`. */
+  function insertBefore(log, before, ...lines) {
+    const all = log.split('\n');
+    const at = all.findIndex((l) => l.startsWith(before));
+    expect(at, `no line starts with ${before}`).toBeGreaterThanOrEqual(0);
+    all.splice(at, 0, ...lines);
+    return all.join('\n');
+  }
+
+  describe('a run that waited its turn and then passed', () => {
+    const log = fixture('pass-after-wait.txt');
+
+    it('passes every stage, reads the new banner, and is ok', () => {
+      expect(statusesOf(log)).toEqual(expectedStatuses(8, false));
+      expect(summarizeReviewLog(log).ok).toBe(true);
+    });
+
+    it('prints a gate lock line first, naming the last holder it waited for', () => {
+      const { lines } = summarizeReviewLog(log);
+
+      expect(lines).toHaveLength(10);
+      expect(lines[0]).toBe(`gate lock           pass  ${WAITED_NOTE}`);
+      expect(lines[1]).toMatch(/^type-check\s+pass$/);
+      expect(lines.at(-1)).toMatch(/^review-gate: sealed tree /);
+    });
+
+    it('prints no gate lock line for a run that did not wait', () => {
+      expect(stageLines(fixture('pass.txt'))).toHaveLength(8);
+      expect(summarizeReviewLog(fixture('pass.txt')).lines[0]).toMatch(
+        /^type-check\s+pass$/,
+      );
+    });
+
+    it('reads a waiting line behind the PowerShell "npm : " prefix the same', () => {
+      const prefixed = log.replace(
+        'review-gate: waiting for the gate in F:/work/repo-b',
+        'npm : review-gate: waiting for the gate in F:/work/repo-b',
+      );
+      expect(prefixed).not.toBe(log);
+      expect(summarizeReviewLog(prefixed)).toEqual(summarizeReviewLog(log));
+    });
+  });
+
+  describe('a run still waiting when the log ends', () => {
+    const waiting = fixture('pass-after-wait.txt')
+      .split('\n')
+      .slice(0, 7)
+      .join('\n');
+
+    it('fails the gate lock line and leaves every stage not reached', () => {
+      const summary = summarizeReviewLog(waiting);
+
+      expect(summary.recognised).toBe(true);
+      expect(summary.ok).toBe(false);
+      expect(statusesOf(waiting)).toEqual(expectedStatuses(0, false));
+      expect(summary.lines.slice(0, 3)).toEqual([
+        'gate lock           fail',
+        '  no result: the log ends while waiting for the gate',
+        '  review-gate: waiting for the gate in F:/work/repo-b (pid 7312, running 0 min)',
+      ]);
+    });
+  });
+
+  describe('a run that gave up after the wait cap (real shape)', () => {
+    const log = fixture('fail-wait-cap.txt');
+
+    it('fails the gate lock line with the message, and no stage at all', () => {
+      const summary = summarizeReviewLog(log);
+
+      expect(summary.recognised).toBe(true);
+      expect(summary.ok).toBe(false);
+      expect(statusesOf(log)).toEqual(expectedStatuses(0, false));
+      expect(summary.lines[0]).toBe('gate lock           fail');
+      expect(summary.lines[1]).toBe(`  ${WAIT_CAP_MESSAGE}`);
+    });
+
+    it('does not read the cap message, which says "hold cap", as a hold-cap kill', () => {
+      // A hold-cap kill fails a stage. This one reaches none.
+      expect(
+        parseReviewLog(log).stages.every((s) => s.status === 'not reached'),
+      ).toBe(true);
+      expect(summarizeReviewLog(log).lines.join('\n')).not.toContain(
+        'the chain hit the',
+      );
+    });
+  });
+
+  it.each([
+    [
+      'no review:steps script',
+      'review-gate run: no "review:steps" script in F:\\work\\repo\\package.json',
+    ],
+    [
+      'a git failure',
+      'review-gate run failed: git rev-parse --git-common-dir: fatal: not a git repository',
+    ],
+  ])(
+    'shows another failure of `run` before the chain as the gate lock failing (%s)',
+    (_what, message) => {
+      const lines = fixture('pass-after-wait.txt').split('\n').slice(0, 4);
+      const log = `${lines.join('\n')}\n${message}\n`;
+
+      expect(statusesOf(log)).toEqual(expectedStatuses(0, false));
+      expect(summarizeReviewLog(log).lines.slice(0, 2)).toEqual([
+        'gate lock           fail',
+        `  ${message}`,
+      ]);
+      expect(summarizeReviewLog(log).ok).toBe(false);
+    },
+  );
+
+  it('is not ok when `run` failed, even if every stage after it passed', () => {
+    // Not a log `npm run review` makes (a failed `run` starts no chain), but
+    // two logs run together, or a failure printed late, must not read as a pass.
+    const log = insertBefore(
+      fixture('pass-after-wait.txt'),
+      '> 0dte-strike-calculator@1.0.0 type-check',
+      'review-gate run failed: something before the chain',
+    );
+
+    expect(statusesOf(log)).toEqual(expectedStatuses(8, false));
+    expect(summarizeReviewLog(log).lines[0]).toBe('gate lock           fail');
+    expect(summarizeReviewLog(log).ok).toBe(false);
+  });
+
+  it('ignores gate lock text that a test prints inside the chain', () => {
+    // Vitest output can say anything. Once type-check has started, the lock
+    // is no longer being waited for.
+    const log = insertBefore(
+      fixture('pass.txt'),
+      ' RUN',
+      'review-gate: waiting for the gate in somewhere (pid 1, running 1 min)',
+      'review-gate run failed: a test printing this',
+    );
+
+    expect(statusesOf(log)).toEqual(expectedStatuses(8, false));
+    expect(stageLines(log)).toHaveLength(8);
+    expect(summarizeReviewLog(log).ok).toBe(true);
+  });
+
+  describe('a run killed at the hold cap', () => {
+    const log = fixture('fail-hold-cap-vitest.txt');
+
+    it('fails vitest, the stage it interrupted, and reaches no stage after it', () => {
+      expect(statusesOf(log)).toEqual(expectedStatuses(5, true));
+      expect(summarizeReviewLog(log).ok).toBe(false);
+    });
+
+    it('shows the cap line, with what was running, first under that stage', () => {
+      expect(detailOf(log, 'vitest')[0]).toBe(HOLD_CAP_LINE);
+      const { lines } = summarizeReviewLog(log);
+      const at = lines.findIndex((l) => /^vitest\s+fail$/.test(l));
+      expect(lines[at + 1]).toBe(`  ${HOLD_CAP_LINE}`);
+    });
+
+    it('prints no gate lock line, because the run did not wait', () => {
+      expect(summarizeReviewLog(log).lines[0]).toMatch(/^type-check\s+pass$/);
+    });
+
+    it('reads the cap line behind the PowerShell "npm : " prefix the same', () => {
+      const prefixed = log.replace(
+        'review-gate: the chain hit the',
+        'npm : review-gate: the chain hit the',
+      );
+      expect(prefixed).not.toBe(log);
+      expect(summarizeReviewLog(prefixed)).toEqual(summarizeReviewLog(log));
+    });
+
+    it('fails the stage it was in, whichever that is', () => {
+      const pass = fixture('pass.txt').split('\n');
+      const banner = pass.findIndex((l) => l.startsWith('> tsc --noEmit'));
+      const vite = pass.findIndex((l) => l.includes('vite v'));
+      const typeCheckZone = `${pass.slice(0, banner + 1).join('\n')}\n\n${HOLD_CAP_LINE}\n`;
+      const viteZone = `${pass.slice(0, vite + 2).join('\n')}\n${HOLD_CAP_LINE}\n`;
+
+      expect(statusesOf(typeCheckZone)).toEqual(expectedStatuses(0, true));
+      expect(statusesOf(viteZone)).toEqual(expectedStatuses(3, true));
+    });
+
+    it('shows a long cap line whole: the runner already cuts the command it names', () => {
+      // The command is cut to 200 characters by the runner, which leaves the
+      // line longer than the 200 the summary clips other lines to.
+      const long = `${HOLD_CAP_LINE.slice(0, HOLD_CAP_LINE.indexOf('node.exe'))}node.exe" ${'x'.repeat(200)}.`;
+      expect(long.length).toBeGreaterThan(250);
+
+      const details = detailOf(log.replace(HOLD_CAP_LINE, long), 'vitest');
+      expect(details[0]).toBe(long);
+    });
+
+    it('matches the cap line by its prefix, not by the words "hold cap"', () => {
+      const noisy = insertBefore(
+        fixture('pass.txt'),
+        ' RUN',
+        'The hold cap ends a hung holder at 75 min',
+        'Error: the chain hit the hold cap in a test',
+        'a test says review-gate: the chain hit the cap, mid-line',
+      );
+
+      expect(statusesOf(noisy)).toEqual(expectedStatuses(8, false));
+      expect(summarizeReviewLog(noisy).ok).toBe(true);
+    });
+  });
+});
+
 describe('the "npm : " prefix Windows PowerShell 5.1 puts on the first stderr line', () => {
   /** `log` with `npm : ` in front of its first line that starts with `start`. */
   function prefixed(log, start) {
@@ -623,6 +847,31 @@ describe('review-summary CLI', { timeout: CHILD_TEST_TIMEOUT }, () => {
     expect(result.status).toBe(1);
     expectStage(result.stdout, 'type-check', 'fail');
     expect(result.stdout).toContain('error TS2493');
+  });
+
+  it('exits 0 for a run that waited and passed, with the gate lock line first', () => {
+    const result = run([fixturePath('pass-after-wait.txt')]);
+
+    expect(result.status).toBe(0);
+    const lines = result.stdout.trimEnd().split('\n');
+    expect(lines).toHaveLength(10);
+    expect(lines[0]).toMatch(/^gate lock\s+pass\s+waited for the gate in /);
+  });
+
+  it('exits 1 for a run that gave up on the gate, and prints why', () => {
+    const result = run([fixturePath('fail-wait-cap.txt')]);
+
+    expect(result.status).toBe(1);
+    expect(result.stdout.split('\n')[0]).toMatch(/^gate lock\s+fail$/);
+    expect(result.stdout).toContain('gave up after waiting 120 min');
+  });
+
+  it('exits 1 for a run killed at the hold cap, and says which stage', () => {
+    const result = run([fixturePath('fail-hold-cap-vitest.txt')]);
+
+    expect(result.status).toBe(1);
+    expectStage(result.stdout, 'vitest', 'fail');
+    expect(result.stdout).toContain('the chain hit the 75 min hold cap');
   });
 
   it('reads the log from stdin when no file is given', () => {

@@ -10,6 +10,14 @@
  * the log ends in, without a result line, counts as failed: a killed or
  * truncated run must not read as a pass.
  *
+ * Before the chain starts, `npm run review` takes the machine-wide gate lock
+ * (scripts/review-gate.mjs `run`) and may wait for it. What it prints then,
+ * and nothing printed after the type-check banner, is a zone of its own in
+ * front of type-check: waiting lines, and a failure of `run` itself (the wait
+ * cap among them). It is shown as a `gate lock` line ahead of the stages, and
+ * only for a log that has such lines. A hold-cap kill, which the runner prints
+ * while the chain runs, fails the stage the log was in.
+ *
  * The vitest section is mostly pino JSON lines (`{"level":"error",...}`)
  * that tests print on purpose while they exercise error paths. They are test
  * output, not gate output, and are skipped before anything else looks at a
@@ -80,6 +88,16 @@ const SEAL_FAILED = /^(?:\S+ : )?review-gate seal failed:/;
 // `review-gate clear` runs before type-check, so its failure belongs there.
 const CLEAR_FAILED = /^(?:\S+ : )?review-gate clear failed:/;
 const SHELL_PREFIX = /^\S+ : /;
+// The gate lock. `run` prints these before the chain starts: a line for each
+// holder it queues behind (gate-lock.mjs) and, when it cannot go on, its own
+// message: `review-gate run failed: ...` (the 120 min wait cap among them) or
+// `review-gate run: ...` (a usage problem, such as no review:steps).
+const GATE_WAITING = /^(?:\S+ : )?review-gate: waiting for the gate\b/;
+const GATE_RUN_FAILED = /^(?:\S+ : )?review-gate run(?: failed)?: /;
+// The runner (gate-runner.mjs) prints this when the chain outlives the hold
+// cap. It is matched by the start of the line only: the wait-cap message says
+// "hold cap" too, and so can any test.
+const HOLD_CAP = /^(?:\S+ : )?review-gate: the chain hit the\b/;
 
 /** Lines that start a later zone, as [zone, test]. Zones only move forward. */
 const ZONE_STARTS = [
@@ -167,6 +185,10 @@ function emptyScan() {
     clearFailed: '',
     sealFailed: '',
     sealLine: '',
+    gateWaiting: [],
+    gateFailure: '',
+    /** @type {{ id: string, line: string } | null} */
+    holdCap: null,
   };
 }
 
@@ -292,6 +314,24 @@ function scanVitest(scan, line) {
 
 /** Fold one cleaned line into the scan. */
 function scanLine(scan, line, state, root) {
+  if (HOLD_CAP.test(line)) {
+    // The stage the log was in. Output starts a stage's zone, so a stage that
+    // prints nothing yet (the build-output check before its first line) is
+    // charged to the one before it; the line itself says what was running.
+    const zone = Math.max(state.zone, ZONE['type-check']);
+    scan.holdCap ??= { id: STAGES[zone].id, line: withoutShellPrefix(line) };
+    return;
+  }
+  if (state.zone < ZONE['type-check']) {
+    if (GATE_WAITING.test(line)) {
+      scan.gateWaiting.push(withoutShellPrefix(line));
+      return;
+    }
+    if (GATE_RUN_FAILED.test(line)) {
+      scan.gateFailure ||= withoutShellPrefix(line);
+      return;
+    }
+  }
   if (CLEAR_FAILED.test(line)) {
     scan.evidence['type-check'].failed = true;
     scan.clearFailed = withoutShellPrefix(line);
@@ -352,6 +392,37 @@ function settleEslint(scan) {
     errors.length > 0 || scan.eslintSummaryErrors > 0;
 }
 
+/**
+ * The `gate lock` line: null for a log with nothing about the lock in it.
+ * Otherwise `fail` when `run` itself failed (the wait cap among the reasons) or
+ * the log ends while still waiting, and `pass` for a run that waited and then
+ * started the chain. `chainStarted` is whether the type-check banner was seen.
+ *
+ * @returns {{ status: 'pass' | 'fail', details: string[], note: string } | null}
+ */
+function settleGate(scan, chainStarted) {
+  const waiting = scan.gateWaiting.at(-1);
+  if (scan.gateFailure !== '') {
+    // Not clipped: the message is bounded by the CLI, and its end says what to
+    // do (the wait cap: report to the owner, stop nobody's process).
+    return { status: 'fail', details: [scan.gateFailure], note: '' };
+  }
+  if (waiting === undefined) return null;
+  if (!chainStarted) {
+    return {
+      status: 'fail',
+      details: [
+        'no result: the log ends while waiting for the gate',
+        clip(waiting),
+      ],
+      note: '',
+    };
+  }
+  // `review-gate: waiting for the gate in <worktree> (pid N, running M min)`
+  const holder = waiting.replace(/^review-gate: waiting /, '');
+  return { status: 'pass', details: [], note: `waited ${holder}` };
+}
+
 /** `list` capped to MAX_DETAILS, plus a count of the rest. */
 function capped(list) {
   if (list.length <= MAX_DETAILS) return list;
@@ -394,8 +465,14 @@ function detailsFor(id, scan) {
         [scan.floorFooter, ...scan.floorViolations].filter(Boolean).map(clip),
       );
     default:
-      return [clip(scan.sealFailed)];
+      return scan.sealFailed === '' ? [] : [clip(scan.sealFailed)];
   }
+}
+
+/** `details` of a failed stage, with the hold-cap line first when it hit that stage. */
+function withHoldCap(id, details, scan) {
+  // Not clipped: the runner already cuts the command it names.
+  return scan.holdCap?.id === id ? [scan.holdCap.line, ...details] : details;
 }
 
 /**
@@ -419,6 +496,14 @@ export function parseReviewLog(text, { root } = {}) {
   }
   settleVitest(scan);
   settleEslint(scan);
+  // The hold cap fails the stage it interrupted, whatever else the stage's own
+  // output said: the stages after it were never reached.
+  if (scan.holdCap !== null) scan.evidence[scan.holdCap.id].failed = true;
+  const chainStarted = state.zone >= ZONE['type-check'];
+  const gate = settleGate(scan, chainStarted);
+  // The review banner alone makes type-check "seen". A log that ends in the
+  // gate zone never started the chain, so type-check was not reached.
+  if (gate !== null && !chainStarted) scan.evidence['type-check'].seen = false;
 
   let reached = -1;
   for (const [index, { id }] of STAGES.entries()) {
@@ -433,7 +518,7 @@ export function parseReviewLog(text, { root } = {}) {
         id,
         label,
         status: 'fail',
-        details: detailsFor(id, scan),
+        details: withHoldCap(id, detailsFor(id, scan), scan),
         note: '',
       };
     }
@@ -456,7 +541,12 @@ export function parseReviewLog(text, { root } = {}) {
     return { id, label, status: 'not reached', details: [], note: '' };
   });
 
-  return { recognised: reached >= 0, stages, sealLine: scan.sealLine };
+  return {
+    recognised: reached >= 0 || gate !== null,
+    stages,
+    sealLine: scan.sealLine,
+    gate,
+  };
 }
 
 /**
@@ -466,9 +556,11 @@ export function parseReviewLog(text, { root } = {}) {
  * @param {ReturnType<typeof parseReviewLog>} parsed
  * @returns {string[]}
  */
-function formatSummary({ stages, sealLine }) {
+function formatSummary({ stages, sealLine, gate }) {
   const lines = [];
-  for (const { label, status, details, note } of stages) {
+  const all =
+    gate === null ? stages : [{ label: 'gate lock', ...gate }, ...stages];
+  for (const { label, status, details, note } of all) {
     const suffix = note ? `  ${note}` : '';
     lines.push(`${label.padEnd(LABEL_WIDTH)}${status}${suffix}`);
     for (const detail of details) lines.push(`  ${detail}`);
@@ -488,6 +580,7 @@ export function summarizeReviewLog(text, options) {
   const parsed = parseReviewLog(text, options);
   const ok =
     parsed.recognised &&
+    (parsed.gate === null || parsed.gate.status === 'pass') &&
     parsed.stages.every((stage) => stage.status === 'pass');
   return {
     recognised: parsed.recognised,
