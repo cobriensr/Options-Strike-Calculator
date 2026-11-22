@@ -157,6 +157,7 @@ describe('MarketRegimeSection', () => {
           errors={{}}
           skewPct={0}
           selectedDate="2026-03-12"
+          etToday="2026-03-12"
           market={{ ...mockMarket, marketOpen: !open }}
           marketOpen={open}
           showFlowRegime={true}
@@ -187,6 +188,7 @@ describe('MarketRegimeSection', () => {
           errors={{}}
           skewPct={0}
           selectedDate="2026-03-12"
+          etToday="2026-03-12"
           market={mockMarket}
           marketOpen={true}
           showFlowRegime={showFlowRegime}
@@ -208,6 +210,7 @@ describe('MarketRegimeSection', () => {
         errors={{}}
         skewPct={0}
         selectedDate="2026-03-12"
+        etToday="2026-03-12"
         market={mockMarket}
         marketOpen={false}
         showFlowRegime={true}
@@ -227,6 +230,7 @@ describe('MarketRegimeSection', () => {
         errors={{}}
         skewPct={0}
         selectedDate="2026-03-12"
+        etToday="2026-03-12"
         market={mockMarket}
         marketOpen={false}
         showFlowRegime={true}
@@ -248,6 +252,7 @@ describe('MarketRegimeSection', () => {
         errors={{}}
         skewPct={0}
         selectedDate="2026-03-12"
+        etToday="2026-03-12"
         market={mockMarket}
         marketOpen={false}
         showFlowRegime={true}
@@ -269,6 +274,7 @@ describe('MarketRegimeSection', () => {
         errors={{}}
         skewPct={0}
         selectedDate="2026-03-12"
+        etToday="2026-03-12"
         market={mockMarket}
         marketOpen={false}
         showFlowRegime={true}
@@ -289,6 +295,7 @@ describe('MarketRegimeSection', () => {
         errors={{}}
         skewPct={0}
         selectedDate="2026-03-12"
+        etToday="2026-03-12"
         market={mockMarket}
         marketOpen={false}
         showFlowRegime={true}
@@ -312,6 +319,7 @@ describe('MarketRegimeSection', () => {
         errors={{}}
         skewPct={0}
         selectedDate="2026-03-12"
+        etToday="2026-03-12"
         market={mockMarket}
         marketOpen={false}
         showFlowRegime={true}
@@ -332,6 +340,7 @@ describe('MarketRegimeSection', () => {
         errors={{}}
         skewPct={0}
         selectedDate="2026-03-12"
+        etToday="2026-03-12"
         market={mockMarket}
         marketOpen={false}
         showFlowRegime={true}
@@ -419,6 +428,7 @@ describe('MarketRegimeSection', () => {
         errors={{}}
         skewPct={0}
         selectedDate="2026-03-12"
+        etToday="2026-03-12"
         market={mockMarket}
         marketOpen={false}
         showFlowRegime={true}
@@ -443,6 +453,7 @@ describe('MarketRegimeSection', () => {
         errors={{}}
         skewPct={0}
         selectedDate="2026-03-12"
+        etToday="2026-03-12"
         market={mockMarket}
         marketOpen={false}
         showFlowRegime={true}
@@ -488,6 +499,7 @@ describe('MarketRegimeSection', () => {
         errors={{}}
         skewPct={0}
         selectedDate="2026-03-12"
+        etToday="2026-03-12"
         market={mockMarket}
         marketOpen={false}
         showFlowRegime={true}
@@ -525,6 +537,7 @@ describe('MarketRegimeSection', () => {
           errors={{}}
           skewPct={0}
           selectedDate="2026-03-12"
+          etToday="2026-03-12"
           market={mockMarket}
           marketOpen={false}
           showFlowRegime={true}
@@ -569,6 +582,7 @@ describe('MarketRegimeSection', () => {
           errors={{}}
           skewPct={0}
           selectedDate="2026-03-12"
+          etToday="2026-03-12"
           market={mockMarket}
           marketOpen={false}
           showFlowRegime={true}
@@ -589,6 +603,7 @@ describe('MarketRegimeSection', () => {
           errors={{}}
           skewPct={0}
           selectedDate="2026-03-12"
+          etToday="2026-03-12"
           market={mockMarket}
           marketOpen={false}
           showFlowRegime={true}
@@ -688,6 +703,7 @@ describe('MarketRegimeSection', () => {
           errors={{}}
           skewPct={0}
           selectedDate="2026-03-12"
+          etToday="2026-03-12"
           market={liveMarket}
           marketOpen={false}
           showFlowRegime={true}
@@ -715,13 +731,15 @@ describe('MarketRegimeSection', () => {
     });
   });
 
-  // The opening-range card on a past date. At the 8:30 CT open no
-  // opening-range bar has ended, so the snapshot's range is null. The card must
-  // then be empty: not today's live range, and not a made-up default. Its edits
-  // reset at the next slot, which the slot label tells apart where the candle
-  // does not (8:30 and 8:35 CT share the first bar, and so do the two slots
-  // around a missing SPX bar).
-  describe('Opening Range card', () => {
+  // The opening-range card and the live feed on a past date. At the 8:30 CT
+  // open no opening-range bar has ended, so the snapshot's range is null. The
+  // card must then be empty: not today's live range, and not a made-up
+  // default. Its edits reset at the next slot, which the slot label tells apart
+  // where the candle does not (8:30 and 8:35 CT share the first bar, and so do
+  // the two slots around a missing SPX bar). A past date with no history
+  // snapshot (a weekend, a holiday, a failed fetch, a date older than the
+  // history reaches) takes no live values either: the feed is today's.
+  describe('the selected date and slot', () => {
     const CANDLE = {
       datetime: 1710000000000,
       time: '09:30',
@@ -745,6 +763,7 @@ describe('MarketRegimeSection', () => {
     const snapshotAt = (
       openingRange: HistorySnapshot['openingRange'],
       candleIndex: number,
+      candle: HistorySnapshot['candle'] = CANDLE,
     ): HistorySnapshot => ({
       spot: 6001,
       spy: 600.1,
@@ -757,15 +776,56 @@ describe('MarketRegimeSection', () => {
       vix9d: 16,
       vvix: 90,
       previousClose: 5995,
-      candle: CANDLE,
+      candle,
       candleIndex,
       totalCandles: 78,
     });
-    // Today's live range, deliberately far from every snapshot range here.
+    const quote = (price: number, open: number, prevClose: number) => ({
+      price,
+      open,
+      high: price,
+      low: price,
+      prevClose,
+      change: price - prevClose,
+      changePct: ((price - prevClose) / prevClose) * 100,
+    });
+    const nvda = {
+      symbol: 'NVDA',
+      name: 'NVIDIA',
+      change: 2.1,
+      price: 130,
+      volume: 1_000_000,
+    };
+    // Today's live feed, deliberately far from every snapshot here: a 7000/6900
+    // opening range, a 1.05% overnight gap and a concentrated move.
     const liveMarket: MarketDataState = {
       ...mockMarket,
       data: {
         ...mockMarket.data,
+        quotes: {
+          spy: quote(576, 576, 570),
+          spx: quote(5780, 5760, 5700),
+          vix: quote(18, 18, 17.5),
+          vix1d: null,
+          vix9d: null,
+          vvix: null,
+          marketOpen: true,
+          asOf: '2026-03-12T15:00:00Z',
+        },
+        movers: {
+          up: [nvda],
+          down: [],
+          analysis: {
+            concentrated: true,
+            megaCapCount: 1,
+            megaCapSymbols: ['NVDA'],
+            bias: 'bullish',
+            topUp: nvda,
+            topDown: null,
+          },
+          marketOpen: true,
+          asOf: '2026-03-12T15:00:00Z',
+        },
         intraday: {
           today: { open: 6950, high: 7000, low: 6900, last: 6980 },
           openingRange: {
@@ -792,6 +852,7 @@ describe('MarketRegimeSection', () => {
           errors={{}}
           skewPct={0}
           selectedDate="2026-03-12"
+          etToday="2026-03-12"
           market={liveMarket}
           marketOpen={false}
           showFlowRegime={false}
@@ -883,19 +944,47 @@ describe('MarketRegimeSection', () => {
       expect(highInput().value).toBe('6008.00');
     });
 
-    it('keeps an edit while the slot label stays the same', async () => {
+    it('keeps an edit while the slot label stays the same, though the candle moves', async () => {
+      // A new candle and index under the same label: only the label can be
+      // what keeps the card, so the old candle key would drop the edit here.
       const user = userEvent.setup();
-      const snapshot = snapshotAt(COMPLETE_RANGE, 5);
       const { rerenderWith } = renderCard({
-        historySnapshot: snapshot,
+        historySnapshot: snapshotAt(COMPLETE_RANGE, 5),
         entryTimeLabel: '9:00 AM CT',
       });
       await user.clear(highInput());
       await user.type(highInput(), '6050');
 
-      rerenderWith({ historySnapshot: { ...snapshot, spot: 6002 } });
+      rerenderWith({
+        historySnapshot: snapshotAt(COMPLETE_RANGE, 6, {
+          ...CANDLE,
+          datetime: CANDLE.datetime + 300_000,
+        }),
+      });
 
       expect(highInput().value).toBe('6050');
+    });
+
+    it('drops an edit when only the date moves on, at the same slot label', async () => {
+      // Two past dates with history, the time picker unchanged.
+      const user = userEvent.setup();
+      const { rerenderWith } = renderCard({
+        selectedDate: '2026-03-10',
+        historySnapshot: snapshotAt(COMPLETE_RANGE, 5),
+        entryTimeLabel: '9:00 AM CT',
+      });
+      await user.clear(highInput());
+      await user.type(highInput(), '6050');
+
+      rerenderWith({
+        selectedDate: '2026-03-09',
+        historySnapshot: snapshotAt(COMPLETE_RANGE, 5, {
+          ...CANDLE,
+          datetime: CANDLE.datetime - 86_400_000,
+        }),
+      });
+
+      expect(highInput().value).toBe('6008.00');
     });
 
     it('falls back to the candle and its index when there is no slot label', async () => {
@@ -909,6 +998,80 @@ describe('MarketRegimeSection', () => {
       rerenderWith({ historySnapshot: snapshotAt(COMPLETE_RANGE, 5) });
 
       expect(highInput().value).toBe('6008.00');
+    });
+
+    describe('a past date with no history snapshot', () => {
+      // A weekend, a holiday, a failed history fetch, or a date older than the
+      // history reaches: nothing says what the range was, and today's live
+      // range is not it.
+      const past = { selectedDate: '2026-03-10', etToday: '2026-03-12' };
+
+      it("is empty, not today's live range", () => {
+        renderCard(past);
+
+        expect(highInput().value).toBe('');
+        expect(lowInput().value).toBe('');
+        expect(
+          screen.queryByText(/high must be greater/i),
+        ).not.toBeInTheDocument();
+        expect(screen.queryByText('RANGE INTACT')).not.toBeInTheDocument();
+      });
+
+      it('drops a range typed on one such date when the date moves to another', async () => {
+        const user = userEvent.setup();
+        const { rerenderWith } = renderCard(past);
+        await user.type(highInput(), '6010');
+        await user.type(lowInput(), '5990');
+        expect(highInput().value).toBe('6010');
+
+        rerenderWith({ selectedDate: '2026-03-09' });
+
+        expect(highInput().value).toBe('');
+        expect(lowInput().value).toBe('');
+      });
+
+      it("keeps today's live fill when the date is today", () => {
+        renderCard({ selectedDate: '2026-03-12', etToday: '2026-03-12' });
+
+        expect(highInput().value).toBe('7000.00');
+        expect(lowInput().value).toBe('6900.00');
+      });
+    });
+
+    // Pre-Trade Signals reads today's quotes (the overnight gap) and today's
+    // movers (the breadth). Both are today's, so a past date shows neither,
+    // and the card, which renders nothing when it has no signal, is absent.
+    describe('Pre-Trade Signals and the live feed', () => {
+      const GAP_CARD = 'Overnight Gap';
+      const BREADTH_CARD = 'Move Breadth';
+
+      it("shows today's gap and breadth on today", () => {
+        renderCard({});
+
+        expect(screen.getByText(GAP_CARD)).toBeInTheDocument();
+        expect(screen.getByText(BREADTH_CARD)).toBeInTheDocument();
+      });
+
+      it('shows neither on a past date with no history snapshot', () => {
+        renderCard({ selectedDate: '2026-03-10', etToday: '2026-03-12' });
+
+        expect(screen.queryByText(GAP_CARD)).not.toBeInTheDocument();
+        expect(screen.queryByText(BREADTH_CARD)).not.toBeInTheDocument();
+        expect(screen.queryByText('Pre-Trade Signals')).not.toBeInTheDocument();
+      });
+
+      it('shows no live gap or breadth on a past date with a snapshot, as before', () => {
+        renderCard({
+          selectedDate: '2026-03-10',
+          etToday: '2026-03-12',
+          historySnapshot: snapshotAt(COMPLETE_RANGE, 5),
+        });
+
+        expect(screen.queryByText(BREADTH_CARD)).not.toBeInTheDocument();
+        // The snapshot's own open and previous close give its own gap.
+        expect(screen.getByText(GAP_CARD)).toBeInTheDocument();
+        expect(screen.queryByText('+1.05%')).not.toBeInTheDocument();
+      });
     });
   });
 });

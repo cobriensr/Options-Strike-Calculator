@@ -861,6 +861,14 @@ export default function StrikeCalculator() {
     gexLandscapeBias: gexBiasContext,
   });
 
+  // The slot a history snapshot is read at, as the time picker shows it. The
+  // cards that reset an edit at the next slot (the term structure, the
+  // opening range) key on it: the candle can't tell slots apart where no new
+  // bar has ended.
+  const entryTimeLabel = historySnapshot
+    ? `${timeHour}:${timeMinute} ${timeAmPm} ${timezone}`
+    : undefined;
+
   // Two-level panel renderer map — outer iterates resolved groups,
   // inner iterates panel ids within each group. Each closure captures
   // ~15 hooks from this component by lexical scope; extracting to
@@ -1015,6 +1023,7 @@ export default function StrikeCalculator() {
                 selectedDate={vix.selectedDate}
                 etToday={vix.etToday}
                 historySnapshot={historySnapshot}
+                entryTimeLabel={entryTimeLabel}
                 onUseVix1dAsSigma={handleUseVix1dAsSigma}
                 termShape={signals.vixTermShape}
                 termShapeAdvice={signals.vixTermShapeAdvice}
@@ -1045,17 +1054,14 @@ export default function StrikeCalculator() {
                 errors={errors}
                 skewPct={skewPct}
                 selectedDate={vix.selectedDate}
+                etToday={vix.etToday}
                 market={market}
                 marketOpen={liveMarketOpen}
                 showFlowRegime={isAuthenticated}
                 cluster={cluster}
                 historySnapshot={historySnapshot}
                 historyCandles={historyData.history?.spx.candles}
-                entryTimeLabel={
-                  historySnapshot
-                    ? `${timeHour}:${timeMinute} ${timeAmPm} ${timezone}`
-                    : undefined
-                }
+                entryTimeLabel={entryTimeLabel}
                 signals={signals}
                 chain={chainData.chain}
                 defaultCollapsed
@@ -1467,6 +1473,7 @@ export default function StrikeCalculator() {
       darkPool,
       directIVInput,
       effectiveRatio,
+      entryTimeLabel,
       errors,
       gexTarget,
       handleAnalysisSaved,

@@ -38,6 +38,13 @@ interface Props {
    */
   etToday: string;
   historySnapshot?: HistorySnapshot | null;
+  /**
+   * The slot a history snapshot is read at, as the time picker shows it
+   * ('8:30 AM CT'). The term-structure card keys on it, so an edit resets at
+   * the next slot. Without it the card falls back to the snapshot's candle
+   * and index.
+   */
+  entryTimeLabel?: string;
   onUseVix1dAsSigma: (sigma: number) => void;
   termShape?: string | null;
   termShapeAdvice?: string | null;
@@ -61,6 +68,7 @@ export default function IVInputSection({
   selectedDate,
   etToday,
   historySnapshot,
+  entryTimeLabel,
   onUseVix1dAsSigma,
   termShape,
   termShapeAdvice,
@@ -102,12 +110,22 @@ export default function IVInputSection({
   const pastDate = isPastETDate(selectedDate, etToday);
   const liveQuotes = pastDate ? null : market.data.quotes;
   // Remount the card when its source changes, so a value it took from an
-  // earlier source (today's live VIX1D, say) can't stay on a past date.
-  const termStructureKey = historySnapshot
-    ? `hist-${historySnapshot.candle.datetime}`
-    : pastDate
-      ? `past-${selectedDate}`
-      : 'live';
+  // earlier source (today's live VIX1D, say) can't stay on a past date, and an
+  // edit resets at the next slot. The slot label tells slots apart exactly.
+  // The candle does not: under the as-of rule it is the same first bar at 8:30
+  // and 8:35 CT, and the same last ended bar either side of a missing SPX bar.
+  // The date separates two dates read at the same label. Without a label, the
+  // candle and its index are the best identity there is.
+  const historySlotKey = historySnapshot
+    ? (entryTimeLabel ??
+      `${historySnapshot.candle.datetime}:${historySnapshot.candleIndex}`)
+    : null;
+  let termStructureKey = 'live';
+  if (historySlotKey != null) {
+    termStructureKey = `hist-${selectedDate}-${historySlotKey}`;
+  } else if (pastDate) {
+    termStructureKey = `past-${selectedDate}`;
+  }
 
   return (
     <SectionBox

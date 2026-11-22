@@ -17,6 +17,7 @@ import type { ClusterMultiplier } from '../hooks/useClusterMultiplier';
 import type { HistorySnapshot } from '../hooks/useHistoryData';
 import type { ChainResponse, HistoryCandle } from '../types/api';
 import type { ComputedSignals } from '../hooks/useComputedSignals';
+import { isPastETDate } from '../utils/timezone';
 
 interface Props {
   dVix: string;
@@ -24,6 +25,11 @@ interface Props {
   errors: Record<string, string>;
   skewPct: number;
   selectedDate: string;
+  /**
+   * Today's ET date from the clock `selectedDate` follows (useVixData's), so
+   * "past" turns in the render the date moves, not before it.
+   */
+  etToday: string;
   market: MarketDataState;
   /**
    * Whether the flow-regime badge may poll: App's clock AND owner-or-guest flag
@@ -56,6 +62,7 @@ export default function MarketRegimeSection({
   errors,
   skewPct,
   selectedDate,
+  etToday,
   market,
   marketOpen,
   showFlowRegime,
@@ -87,15 +94,32 @@ export default function MarketRegimeSection({
     ? [regimeBadge, 'cluster edited'].filter(Boolean).join(' \u00b7 ')
     : regimeBadge;
 
+  // The live feed (quotes, movers, yesterday, the intraday range) is today's.
+  // A history snapshot carries its own values for the selected date, and a
+  // past date with no snapshot (a weekend, a holiday, a failed history fetch,
+  // a date older than the history reaches) has none to show: neither may fall
+  // back to today's. "Past" is judged against etToday, the clock the selected
+  // date follows, as IVInputSection does.
+  const pastDate = isPastETDate(selectedDate, etToday);
+  const liveData = historySnapshot || pastDate ? null : market.data;
+
   // What an edit in the opening-range card is tied to, so it resets at the
-  // next slot. The slot label tells slots apart exactly. The candle does not:
-  // under the as-of rule it is the same first bar at 8:30 and 8:35 CT, and the
-  // same last ended bar either side of a missing SPX bar. Without a label,
-  // the candle and its index are the best identity there is.
+  // next slot and on the next date. The slot label tells slots apart exactly.
+  // The candle does not: under the as-of rule it is the same first bar at 8:30
+  // and 8:35 CT, and the same last ended bar either side of a missing SPX bar.
+  // The date separates two dates read at the same label. Without a label, the
+  // candle and its index are the best identity there is. A past date with no
+  // snapshot is keyed on the date alone.
   const historySlotKey = historySnapshot
     ? (entryTimeLabel ??
       `${historySnapshot.candle.datetime}:${historySnapshot.candleIndex}`)
     : null;
+  let openingRangeKey = 'live-or';
+  if (historySlotKey != null) {
+    openingRangeKey = `hist-or-${selectedDate}-${historySlotKey}`;
+  } else if (pastDate) {
+    openingRangeKey = `past-or-${selectedDate}`;
+  }
 
   return (
     <SectionBox
@@ -162,24 +186,20 @@ export default function MarketRegimeSection({
                 />
                 <div className="mt-5">
                   <OpeningRangeCheck
-                    key={
-                      historySlotKey == null
-                        ? 'live-or'
-                        : `hist-or-${historySlotKey}`
-                    }
+                    key={openingRangeKey}
                     vix={vixNum ?? 0}
                     spot={results.spot}
                     selectedDate={selectedDate}
                     initialRange={
-                      historySnapshot
-                        ? (historySnapshot.openingRange ?? undefined)
-                        : (market.data.intraday?.openingRange ?? undefined)
+                      historySnapshot?.openingRange ??
+                      liveData?.intraday?.openingRange ??
+                      undefined
                     }
                   />
                 </div>
                 <div className="mt-5">
                   <PreTradeSignals
-                    quotes={historySnapshot ? null : market.data.quotes}
+                    quotes={liveData?.quotes ?? null}
                     yesterday={
                       historySnapshot
                         ? historySnapshot.yesterday
@@ -189,9 +209,9 @@ export default function MarketRegimeSection({
                               asOf: '',
                             }
                           : null
-                        : market.data.yesterday
+                        : (liveData?.yesterday ?? null)
                     }
-                    movers={historySnapshot ? null : market.data.movers}
+                    movers={liveData?.movers ?? null}
                     vixPrevClose={historySnapshot?.vixPrevClose ?? undefined}
                     spxOpen={historySnapshot?.runningOHLC.open ?? undefined}
                     spxPrevClose={historySnapshot?.previousClose ?? undefined}

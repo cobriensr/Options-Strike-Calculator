@@ -318,7 +318,7 @@ describe('IVInputSection', () => {
     }
 
     /** A history snapshot at `datetime`, with no VIX1D, VIX9D or VVIX. */
-    function snapshotAt(datetime: number): HistorySnapshot {
+    function snapshotAt(datetime: number, candleIndex = 24): HistorySnapshot {
       return {
         spot: 5750,
         spy: 575,
@@ -339,13 +339,15 @@ describe('IVInputSection', () => {
           low: 5746,
           close: 5750,
         },
-        candleIndex: 24,
+        candleIndex,
         totalCandles: 78,
       };
     }
 
     // 2026-03-10 11:30 ET
     const PAST_CANDLE = Date.parse('2026-03-10T15:30:00Z');
+    // 2026-03-09 11:30 ET, the same time on the day before
+    const EARLIER_DAY_CANDLE = Date.parse('2026-03-09T15:30:00Z');
 
     it('does not fill a past date without VIX1D, VIX9D or VVIX from live quotes', () => {
       renderSection({
@@ -414,6 +416,95 @@ describe('IVInputSection', () => {
       );
 
       expectNothingOffered();
+    });
+
+    // The card is tied to the slot, not to the candle. Under the as-of rule
+    // the candle is the same first bar at 8:30 and 8:35 CT (and the same last
+    // ended bar either side of a missing SPX bar), so the candle alone could
+    // not reset an edit at the next slot.
+    describe('keyed on the slot', () => {
+      async function typeVix1d() {
+        const user = userEvent.setup();
+        await user.type(screen.getByLabelText(/VIX1D/), '15.5');
+        expect(
+          screen.getByRole('button', { name: /use vix1d as/i }),
+        ).toBeInTheDocument();
+      }
+
+      it('drops a VIX1D typed at one slot when the slot moves on, on the same candle', async () => {
+        const { props, rerender } = renderSection({
+          dVix: '20.5',
+          market: liveMarket,
+          selectedDate: '2026-03-10',
+          historySnapshot: snapshotAt(PAST_CANDLE),
+          entryTimeLabel: '8:30 AM CT',
+        });
+        await typeVix1d();
+
+        rerender(<IVInputSection {...props} entryTimeLabel="8:35 AM CT" />);
+
+        expectNothingOffered();
+      });
+
+      it('drops a typed VIX1D when only the date moves on, at the same slot label', async () => {
+        const { props, rerender } = renderSection({
+          dVix: '20.5',
+          market: liveMarket,
+          selectedDate: '2026-03-10',
+          historySnapshot: snapshotAt(PAST_CANDLE),
+          entryTimeLabel: '10:30 AM CT',
+        });
+        await typeVix1d();
+
+        rerender(
+          <IVInputSection
+            {...props}
+            selectedDate="2026-03-09"
+            historySnapshot={snapshotAt(EARLIER_DAY_CANDLE)}
+          />,
+        );
+
+        expectNothingOffered();
+      });
+
+      it('keeps a typed VIX1D while the slot label stays the same, though the candle moves', async () => {
+        const { props, rerender } = renderSection({
+          dVix: '20.5',
+          market: liveMarket,
+          selectedDate: '2026-03-10',
+          historySnapshot: snapshotAt(PAST_CANDLE, 24),
+          entryTimeLabel: '10:30 AM CT',
+        });
+        await typeVix1d();
+
+        rerender(
+          <IVInputSection
+            {...props}
+            historySnapshot={snapshotAt(PAST_CANDLE + 300_000, 25)}
+          />,
+        );
+
+        expect(screen.getByLabelText(/VIX1D/)).toHaveValue('15.5');
+      });
+
+      it('falls back to the candle and its index when there is no slot label', async () => {
+        const { props, rerender } = renderSection({
+          dVix: '20.5',
+          market: liveMarket,
+          selectedDate: '2026-03-10',
+          historySnapshot: snapshotAt(PAST_CANDLE, 24),
+        });
+        await typeVix1d();
+
+        rerender(
+          <IVInputSection
+            {...props}
+            historySnapshot={snapshotAt(PAST_CANDLE, 25)}
+          />,
+        );
+
+        expectNothingOffered();
+      });
     });
 
     it("does not poll today's VIX trajectory for a past date without history", () => {

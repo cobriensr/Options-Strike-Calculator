@@ -337,4 +337,5 @@ export function historySnapshotAt(
 - **Page backtest saves.** Until the server refuses them (spec call 13, phase 5), browsing a past date keeps overwriting that date's stored backtest rows (`db-snapshots.ts:236-238`).
   - After Task 5 those writes carry as-of SPX, opening range and VIX, but still the VIX1D midpoint, which phase 3 fixes.
   - A tab on an old bundle still writes look-ahead rows.
-  - Phase 6 rebuilds every backtest row, so the mix is temporary. Whether to bring call 13 forward is an owner question (2026-11-22).
+  - Phase 6 rebuilds every backtest row, so the mix is temporary.
+  - **Owner, 2026-11-22: keep the page's backtest saves until phase 5.** The PC replay repair drives the page, so refusing these saves now would also remove the only repair path until the phase-5 fill and phase-6 rebuild exist. Phase 5 makes the server write these rows and refuse the page's in one step.
