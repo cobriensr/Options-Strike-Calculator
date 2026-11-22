@@ -12,6 +12,7 @@ const { mockCapture, mockException, mockReport, mockError, eod } = vi.hoisted(
     eod: {
       fetchEodTickers: vi.fn(),
       listStoredTickers: vi.fn(),
+      listTickersStoredOnOrBefore: vi.fn(),
     },
   }),
 );
@@ -64,6 +65,12 @@ describe('audit-gexbot-eod', () => {
     process.env = { ...originalEnv };
     process.env.CRON_SECRET = 'test-secret';
     eod.listStoredTickers.mockResolvedValue(new Set(['SPX', 'NDX']));
+    // Every ticker the tests below list has a stored report on or before the
+    // audited date, so a missing one is a loss. The new-listing tests
+    // override it.
+    eod.listTickersStoredOnOrBefore.mockResolvedValue(
+      new Set(['SPX', 'NDX', 'QQQ', 'Z', 'A']),
+    );
     setTickers(['SPX', 'NDX']);
   });
 
@@ -109,6 +116,7 @@ describe('audit-gexbot-eod', () => {
       vi.setSystemTime(new Date(now));
       const res = await run();
       expect(eod.listStoredTickers).toHaveBeenCalledWith(want);
+      expect(eod.listTickersStoredOnOrBefore).toHaveBeenCalledWith(want);
       expect((res._json as Json).date).toBe(want);
     },
   );
@@ -123,6 +131,7 @@ describe('audit-gexbot-eod', () => {
     expect(body.message).toBe('no download window closed today');
     expect(eod.fetchEodTickers).not.toHaveBeenCalled();
     expect(eod.listStoredTickers).not.toHaveBeenCalled();
+    expect(eod.listTickersStoredOnOrBefore).not.toHaveBeenCalled();
     expect(mockCapture).not.toHaveBeenCalled();
   });
 
@@ -212,5 +221,153 @@ describe('audit-gexbot-eod', () => {
       'audit-gexbot-eod',
       expect.objectContaining({ status: 'error' }),
     );
+  });
+
+  // Spec Amendment 2: a listed ticker with no stored report on or before the
+  // audited date is a new listing, not a loss.
+  describe('a listed ticker with no captured report yet', () => {
+    const NEW_LISTING_FP = ['gexbot-eod', 'new-listing'];
+    const MISSED_FP = ['gexbot-eod', 'missed-window'];
+
+    function fingerprints(): string[] {
+      return mockCapture.mock.calls.map(
+        ([, o]) => (o as { fingerprint: string[] }).fingerprint[1] ?? '',
+      );
+    }
+
+    it('lists a never-stored ticker under newListings: success, one warning, not missing', async () => {
+      setTickers(['SPX', 'NDX', 'ANT']);
+      eod.listStoredTickers.mockResolvedValue(new Set(['SPX', 'NDX']));
+      eod.listTickersStoredOnOrBefore.mockResolvedValue(
+        new Set(['SPX', 'NDX']),
+      );
+      const res = await run();
+      const body = res._json as Json;
+      expect(body.status).toBe('success');
+      expect(body.newListings).toEqual(['ANT']);
+      expect(body.missing).toEqual([]);
+      expect(body.tickers).toBe(3);
+      expect(mockCapture).toHaveBeenCalledTimes(1);
+      expect(mockCapture).toHaveBeenCalledWith(
+        'GEXBot lists tickers with no captured report yet: ANT',
+        {
+          level: 'warning',
+          fingerprint: NEW_LISTING_FP,
+          extra: { date: DATE, newListings: ['ANT'] },
+        },
+      );
+      expect(mockError).not.toHaveBeenCalled();
+      expect(mockReport).toHaveBeenCalledWith(
+        'audit-gexbot-eod',
+        expect.objectContaining({ status: 'success' }),
+      );
+      expect(eod.listTickersStoredOnOrBefore).toHaveBeenCalledTimes(1);
+    });
+
+    it('sends one warning for several new listings, in /tickers order', async () => {
+      setTickers(['SPX', 'B2', 'NDX', 'B1']);
+      eod.listStoredTickers.mockResolvedValue(new Set(['SPX', 'NDX']));
+      eod.listTickersStoredOnOrBefore.mockResolvedValue(
+        new Set(['SPX', 'NDX']),
+      );
+      const body = (await run())._json as Json;
+      expect(body.newListings).toEqual(['B2', 'B1']);
+      expect(mockCapture).toHaveBeenCalledTimes(1);
+      expect(mockCapture).toHaveBeenCalledWith(
+        'GEXBot lists tickers with no captured report yet: B2, B1',
+        expect.objectContaining({ fingerprint: NEW_LISTING_FP }),
+      );
+    });
+
+    it('sends no new-listing warning when every listed ticker was stored before', async () => {
+      const body = (await run())._json as Json;
+      expect(body.newListings).toEqual([]);
+      expect(mockCapture).not.toHaveBeenCalled();
+    });
+
+    it('asks "stored before" for the audited date and treats a ticker first stored after it as new', async () => {
+      setTickers(['SPX', 'NDX', 'ANT']);
+      eod.listStoredTickers.mockResolvedValue(new Set(['SPX', 'NDX']));
+      // ANT's first report is dated after DATE: stored on or before any later
+      // date, but not on or before DATE.
+      eod.listTickersStoredOnOrBefore.mockImplementation(async (d: string) =>
+        d === DATE ? new Set(['SPX', 'NDX']) : new Set(['SPX', 'NDX', 'ANT']),
+      );
+      const body = (await run())._json as Json;
+      expect(eod.listTickersStoredOnOrBefore).toHaveBeenCalledWith(DATE);
+      expect(body.status).toBe('success');
+      expect(body.newListings).toEqual(['ANT']);
+      expect(body.missing).toEqual([]);
+    });
+
+    it('still reports a ticker stored before and missing on the date as lost', async () => {
+      setTickers(['SPX', 'ROKU']);
+      eod.listStoredTickers.mockResolvedValue(new Set(['SPX']));
+      eod.listTickersStoredOnOrBefore.mockResolvedValue(
+        new Set(['SPX', 'ROKU']),
+      );
+      const body = (await run())._json as Json;
+      expect(body.status).toBe('error');
+      expect(body.missing).toEqual(['ROKU']);
+      expect(body.newListings).toEqual([]);
+      expect(mockCapture).toHaveBeenCalledTimes(1);
+      expect(mockCapture).toHaveBeenCalledWith(
+        expect.stringContaining('lost'),
+        expect.objectContaining({
+          level: 'error',
+          fingerprint: MISSED_FP,
+        }),
+      );
+    });
+
+    it('splits one run: the lost ticker is an error, the new listing a warning', async () => {
+      setTickers(['SPX', 'ROKU', 'ANT']);
+      eod.listStoredTickers.mockResolvedValue(new Set(['SPX']));
+      eod.listTickersStoredOnOrBefore.mockResolvedValue(
+        new Set(['SPX', 'ROKU']),
+      );
+      const body = (await run())._json as Json;
+      expect(body.status).toBe('error');
+      expect(body.missing).toEqual(['ROKU']);
+      expect(body.newListings).toEqual(['ANT']);
+      expect(body.message).toContain('1 tickers');
+      expect(fingerprints().sort()).toEqual(['missed-window', 'new-listing']);
+      expect(mockCapture).toHaveBeenCalledWith(
+        'GEXBot lists tickers with no captured report yet: ANT',
+        expect.objectContaining({ level: 'warning' }),
+      );
+    });
+
+    it('throws when the stored-before set lacks SPX, reporting nothing', async () => {
+      // An emptied or badly restored table would put every ticker under
+      // newListings, and a total loss would read as success.
+      setTickers(['SPX', 'NDX'], ['bad/ticker']);
+      eod.listStoredTickers.mockResolvedValue(new Set());
+      eod.listTickersStoredOnOrBefore.mockResolvedValue(new Set());
+      const res = await run();
+      expect(res._status).toBe(500);
+      expect(mockException).toHaveBeenCalledTimes(1);
+      const [err] = mockException.mock.calls[0] as [Error];
+      expect(err.message).toContain('SPX');
+      expect(mockReport).toHaveBeenCalledWith(
+        'audit-gexbot-eod',
+        expect.objectContaining({ status: 'error' }),
+      );
+      expect(mockCapture).not.toHaveBeenCalled();
+    });
+
+    it('surfaces a rejected stored-before query as a thrown error', async () => {
+      eod.listTickersStoredOnOrBefore.mockRejectedValue(
+        new Error('connection lost'),
+      );
+      const res = await run();
+      expect(res._status).toBe(500);
+      expect(mockException).toHaveBeenCalledTimes(1);
+      expect(mockReport).toHaveBeenCalledWith(
+        'audit-gexbot-eod',
+        expect.objectContaining({ status: 'error' }),
+      );
+      expect(mockCapture).not.toHaveBeenCalled();
+    });
   });
 });

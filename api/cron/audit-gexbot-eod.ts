@@ -22,6 +22,12 @@
  * error check-in and Axiom event) plus one Sentry message. A `/tickers` or
  * DB failure throws through the wrapper.
  *
+ * A listed ticker with no stored report on or before the audited date was
+ * never captured: a new listing (Amendment 2), not a loss. It goes under
+ * `metadata.newListings` with one `new-listing` Sentry warning and does not
+ * change the status. If the stored-before set lacks SPX the table looks
+ * emptied, and the audit throws instead of reporting.
+ *
  * Environment: CRON_SECRET, DATABASE_URL
  */
 
@@ -31,7 +37,11 @@ import {
   withCronInstrumentation,
   type CronResult,
 } from '../_lib/cron-instrumentation.js';
-import { fetchEodTickers, listStoredTickers } from '../_lib/gexbot-eod.js';
+import {
+  fetchEodTickers,
+  listStoredTickers,
+  listTickersStoredOnOrBefore,
+} from '../_lib/gexbot-eod.js';
 import { Sentry } from '../_lib/sentry.js';
 
 export default withCronInstrumentation(
@@ -44,7 +54,20 @@ export default withCronInstrumentation(
     const date = priorTradingDay(today);
     const { tickers, rejected } = await fetchEodTickers();
     const stored = await listStoredTickers(date);
-    const missing = tickers.filter((t) => !stored.has(t));
+    const storedBefore = await listTickersStoredOnOrBefore(date);
+    // SPX has been stored every trading day since 2026-10-28 and nothing
+    // deletes from the table. Without it, an emptied or badly restored table
+    // would file every ticker under `newListings`, and a total loss would
+    // read as success plus a warning.
+    if (!storedBefore.has('SPX')) {
+      throw new Error(
+        `audit-gexbot-eod: no stored SPX report on or before ${date}; the reports table looks emptied`,
+      );
+    }
+    const absent = tickers.filter((t) => !stored.has(t));
+    // Never captured as of `date`: a new listing GEXBot has no report for yet.
+    const newListings = absent.filter((t) => !storedBefore.has(t));
+    const missing = absent.filter((t) => storedBefore.has(t));
     if (rejected.length > 0) {
       // Information only: rejected tickers can never be stored, so they never
       // count as missing and do not change the audit status.
@@ -57,10 +80,24 @@ export default withCronInstrumentation(
         },
       );
     }
+    if (newListings.length > 0) {
+      // Information only: a ticker with no earlier report is not a loss and
+      // does not change the audit status. Once its first report is stored it
+      // stops appearing here.
+      Sentry.captureMessage(
+        `GEXBot lists tickers with no captured report yet: ${newListings.join(', ')}`,
+        {
+          level: 'warning',
+          fingerprint: ['gexbot-eod', 'new-listing'],
+          extra: { date, newListings },
+        },
+      );
+    }
     const metadata = {
       date,
       tickers: tickers.length,
       missing,
+      newListings,
       rejectedTickers: rejected,
     };
 
