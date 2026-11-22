@@ -19,6 +19,7 @@ import {
 } from 'node:fs';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { holderArgv } from './gate-lock.fixtures.mjs';
 import { WAIT_CAP_MS, gatePipeName } from './gate-lock.mjs';
 import {
   CLI,
@@ -324,13 +325,6 @@ function chainShell() {
 /** A path as a bash command line can take it. */
 const forBash = (file) => file.replaceAll('\\', '/');
 
-/** What a holder child runs: take the lock, say so, and stay alive holding it. */
-const HOLDER_SCRIPT = `
-const [, pipeName, worktree, moduleUrl] = process.argv;
-const { acquireGateLock } = await import(moduleUrl);
-await acquireGateLock({ pipeName, holder: { worktree }, onWait: () => {} });
-console.log('held');
-`;
 const LOCK_MODULE_URL = new URL('./gate-lock.mjs', import.meta.url).href;
 
 /** A chain that leaves a file behind, so a test can tell whether it ran. */
@@ -448,15 +442,10 @@ function spawnCollected(args, cwd, extraEnv = {}) {
 
 /** A child that holds this repository's gate lock, as a gate in another session would. */
 async function startHolder(repo, worktree) {
+  // The lock name goes to the child URI-encoded: on Linux it starts with NUL,
+  // which an argument cannot carry (holderArgv).
   const holder = spawnCollected(
-    [
-      '--input-type=module',
-      '-e',
-      HOLDER_SCRIPT,
-      gatePipeName('.git', repo),
-      worktree,
-      LOCK_MODULE_URL,
-    ],
+    holderArgv(gatePipeName('.git', repo), worktree, LOCK_MODULE_URL),
     repo,
   );
   await soon(holder.reaches('stdout', /held/), 'the holder to take the lock');

@@ -14,7 +14,7 @@
  * out.
  */
 
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import { mkdirSync, realpathSync } from 'node:fs';
 import net from 'node:net';
@@ -31,6 +31,7 @@ import {
   acquireGateLock,
   gatePipeName,
 } from './gate-lock.mjs';
+import { holderArgv } from './gate-lock.fixtures.mjs';
 import {
   FIXTURE_TIMEOUT,
   git,
@@ -62,14 +63,6 @@ const WAIT_DEADLINE_MS = 10_000;
 const T0 = Date.UTC(2026, 10, 22, 12, 0, 0);
 const MINUTE = 60_000;
 const MODULE_URL = new URL('./gate-lock.mjs', import.meta.url).href;
-
-/** What a holder child runs: take the lock, say so, and stay alive holding it. */
-const HOLDER_SCRIPT = `
-const [, pipeName, worktree, moduleUrl] = process.argv;
-const { acquireGateLock } = await import(moduleUrl);
-await acquireGateLock({ pipeName, holder: { worktree }, onWait: () => {} });
-console.log('held');
-`;
 
 /** A fresh, unused pipe name: the real gatePipeName over a scratch repo dir. */
 function uniquePipe() {
@@ -359,14 +352,7 @@ async function probe(pipeName, squatter, times) {
 async function spawnHolder(pipeName, worktree) {
   const child = spawn(
     process.execPath,
-    [
-      '--input-type=module',
-      '-e',
-      HOLDER_SCRIPT,
-      pipeName,
-      worktree,
-      MODULE_URL,
-    ],
+    holderArgv(pipeName, worktree, MODULE_URL),
     { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true },
   );
   let stderr = '';
@@ -463,6 +449,43 @@ afterEach(async () => {
   await drain();
   vi.useRealTimers();
 }, TEST_TIMEOUT);
+
+describe('the lock name a test hands to a child process', () => {
+  // The Linux form of the name starts with NUL (an abstract socket). Only a
+  // Linux run has such a name, so these tests hand the child one made by hand,
+  // and the checks are about the argument, not the socket.
+  const abstractName = '\0strike-calc-review-gate-0123456789ab';
+
+  it('cannot be an argument as it is: spawn refuses a NUL, on every platform', () => {
+    expect(() => spawn(process.execPath, ['-e', '0', abstractName])).toThrow(
+      /null bytes/,
+    );
+  });
+
+  it('is URI-encoded in the holder child argv, and the child decodes it whole', () => {
+    const argv = holderArgv(abstractName, 'holder-wt', MODULE_URL);
+
+    expect(argv.some((arg) => arg.includes('\0'))).toBe(false);
+    // argv[3] is the lock name (after the flags and the script).
+    const decoded = spawnSync(
+      process.execPath,
+      [
+        '-e',
+        'process.stdout.write(JSON.stringify(decodeURIComponent(process.argv[1])))',
+        argv[3],
+      ],
+      { encoding: 'utf8', windowsHide: true },
+    );
+    expect(JSON.parse(decoded.stdout)).toBe(abstractName);
+  });
+
+  it('takes any other name through the same way, a Windows pipe path included', () => {
+    const windowsName = '\\\\.\\pipe\\strike-calc-review-gate-0123456789ab';
+    const argv = holderArgv(windowsName, 'holder-wt', MODULE_URL);
+
+    expect(decodeURIComponent(argv[3])).toBe(windowsName);
+  });
+});
 
 describe('gatePipeName', { timeout: TEST_TIMEOUT }, () => {
   // Real git, six spawns: on a loaded machine that took 34 s (11-22), so this
