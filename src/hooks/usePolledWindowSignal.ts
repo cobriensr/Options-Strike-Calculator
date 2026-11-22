@@ -59,6 +59,19 @@ export interface PolledWindowSignalState<T> {
   fetchedAt: number | null;
 }
 
+/**
+ * What the last fetch left behind. `error` is that fetch's verdict as stored;
+ * the `error` the hook returns is derived from it each render.
+ */
+interface FetchState<T> extends PolledWindowSignalState<T> {
+  /**
+   * The last fetch was a 2xx not dated the day then expected, and `error` names
+   * both dates. Kept apart from `error` so the render can tell this error,
+   * which the clock catching up resolves, from a failed fetch, which it doesn't.
+   */
+  dateMismatch: boolean;
+}
+
 export interface PolledWindowSignalResult<
   T,
 > extends PolledWindowSignalState<T> {
@@ -173,11 +186,12 @@ export function usePolledWindowSignal<T extends DatedPayload>(
   const optsRef = useRef(opts);
   optsRef.current = opts;
 
-  const [state, setState] = useState<PolledWindowSignalState<T>>({
+  const [state, setState] = useState<FetchState<T>>({
     data: null,
     loading: false,
     error: null,
     fetchedAt: null,
+    dateMismatch: false,
   });
 
   // Cached payload, gated through the staleness guard on first read.
@@ -198,7 +212,9 @@ export function usePolledWindowSignal<T extends DatedPayload>(
     const ctrl = new AbortController();
     abortRef.current = ctrl;
 
-    setState((prev) => ({ ...prev, loading: true, error: null }));
+    // Only `loading` moves here. The last read's error stays up until this
+    // one answers, or an error that persists blinks to "loading" on every poll.
+    setState((prev) => ({ ...prev, loading: true }));
 
     try {
       const res = await fetch(u, {
@@ -206,30 +222,38 @@ export function usePolledWindowSignal<T extends DatedPayload>(
         signal: ctrl.signal,
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const json = (await res.json()) as T;
+      // `null` is valid JSON, hence `json?.`: a 2xx with a null body is an
+      // undated payload, not a TypeError.
+      const json = (await res.json()) as T | null;
 
       if (ctrl.signal.aborted) return;
       // A 2xx whose payload is not dated today is hidden by the display date
       // check; say so, or the panel would sit on "loading" for as long as the
       // dates disagree (a client clock that lags after sleep, a server on
-      // another day). It clears on the first poll where they agree.
+      // another day). It clears on the first poll where they agree, or in the
+      // render where `todayStr` catches up with the payload.
       const expected = optsRef.current.todayStr();
-      const got = json.date ? `dated ${json.date}` : 'undated';
+      const dateMismatch = json?.date !== expected;
+      const got = json?.date ? `dated ${json.date}` : 'undated';
       setState({
         data: json,
         loading: false,
-        error:
-          json.date === expected
-            ? null
-            : `Payload is ${got}, but today is ${expected}`,
+        error: dateMismatch
+          ? `Payload is ${got}, but today is ${expected}`
+          : null,
         fetchedAt: Date.now(),
+        dateMismatch,
       });
-      writeCache<T>(key, {
-        data: json,
-        savedAt: new Date().toISOString(),
-        date: json.date ?? '',
-      });
-      setCachedData(json);
+      // A null body carries nothing to keep: it must not overwrite the last-good
+      // payload, in storage or in the display fallback.
+      if (json != null) {
+        writeCache<T>(key, {
+          data: json,
+          savedAt: new Date().toISOString(),
+          date: json.date ?? '',
+        });
+        setCachedData(json);
+      }
     } catch (err) {
       if (err instanceof DOMException && err.name === 'AbortError') return;
       if (ctrl.signal.aborted) return;
@@ -237,6 +261,9 @@ export function usePolledWindowSignal<T extends DatedPayload>(
         ...prev,
         loading: false,
         error: getErrorMessage(err),
+        // This error is a failed fetch, not a wrong date: the clock catching up
+        // with an older read must not hide it.
+        dateMismatch: false,
       }));
     }
     // `url`/`storageKey` are read via optsRef so this stays referentially
@@ -290,13 +317,20 @@ export function usePolledWindowSignal<T extends DatedPayload>(
       ? cachedData
       : null;
 
-  return useMemo(
-    () => ({
-      ...state,
+  return useMemo(() => {
+    const { dateMismatch, error: stored, ...fetched } = state;
+    // The error is a verdict on the last read, and it ends when the read does:
+    // - a wrong-date error ends in the render where `todayStr` catches up with
+    //   the payload (the shared clock can lag the server's date by a tick);
+    // - nothing fetches while the window is closed, so any error left over
+    //   from the last fetch would sit over "waiting for the open" all weekend.
+    const resolved = dateMismatch && fetched.data?.date === today;
+    return {
+      ...fetched,
+      error: isWindowOpen && !resolved ? stored : null,
       displayData,
       isWindowOpen,
       refresh: fetchOnce,
-    }),
-    [state, displayData, isWindowOpen, fetchOnce],
-  );
+    };
+  }, [state, today, displayData, isWindowOpen, fetchOnce]);
 }
