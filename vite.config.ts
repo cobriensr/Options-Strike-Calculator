@@ -40,6 +40,7 @@ export const SPAWN_TEST_FILES = [
   'scripts/_lib/candles-backfill.test.mjs',
   'scripts/_lib/coverage-floor.test.mjs',
   'scripts/_lib/flow-data-backfill.test.mjs',
+  'scripts/_lib/gate-lock.test.mjs',
   'scripts/_lib/git-run.test.mjs',
   'scripts/_lib/greek-nope-backfill.cli.test.mjs',
   'scripts/_lib/net-prem-ticks-backfill.test.mjs',
