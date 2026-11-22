@@ -23,6 +23,7 @@ import {
   type PinSetupStatus,
 } from '../../hooks/usePinSetupStatus';
 import { DateInput } from '../ui/DateInput';
+import { SrHint } from '../ui/SrHint';
 import Sparkline from './Sparkline';
 import {
   formatEvaluatedAt,
@@ -160,7 +161,10 @@ export default memo(function PinSetupTile({ marketOpen }: Props) {
             )}
             {/* The latest fetch failed and this is the last good status
                 (staleMinutes above is frozen with it). The error text is in
-                the title for hover/triage, as in GreekHeatmap's stale strip. */}
+                the title for hover/triage, as in GreekHeatmap's stale strip,
+                and in a hidden hint for screen readers. The role="alert"
+                above shows it only when there is no data, so the two never
+                both read. */}
             {error && (
               <span
                 className="rounded px-1.5 py-0.5 font-sans text-[9px] font-bold tracking-wider uppercase"
@@ -171,6 +175,7 @@ export default memo(function PinSetupTile({ marketOpen }: Props) {
                 title={error}
               >
                 ⚠ update failed
+                <SrHint>{error}</SrHint>
               </span>
             )}
           </div>

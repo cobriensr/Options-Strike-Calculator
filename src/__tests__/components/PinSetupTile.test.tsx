@@ -10,6 +10,11 @@ vi.mock('../../hooks/usePinSetupStatus', () => ({
 
 import PinSetupTile from '../../components/PinSetupTile';
 import type { PinSetupStatus } from '../../hooks/usePinSetupStatus';
+import {
+  srHintText,
+  titledGenericsWithoutHint,
+  visibleText,
+} from '../helpers/aria';
 
 const SETDATE = vi.fn();
 const REFRESH = vi.fn();
@@ -188,20 +193,26 @@ describe('PinSetupTile', () => {
     expect(screen.queryByText(/stale/i)).not.toBeInTheDocument();
   });
 
-  it('flags the last good status when the latest fetch failed', () => {
-    // A failed or malformed poll keeps the last good status (the hook's
-    // contract); without a flag the tile looks live while frozen.
-    mockHook(makeStatus({ staleMinutes: 1 }), {
-      error: 'invalid response shape',
-    });
-    render(<PinSetupTile marketOpen={true} />);
+  it.each(['invalid response shape', 'HTTP 503'])(
+    'flags the last good status when the latest fetch failed, with the hook error as title and hint (%s)',
+    (error) => {
+      // A failed or malformed poll keeps the last good status (the hook's
+      // contract); without a flag the tile looks live while frozen.
+      mockHook(makeStatus({ staleMinutes: 1 }), { error });
+      const { container } = render(<PinSetupTile marketOpen={true} />);
 
-    const flag = screen.getByText(/update failed/i);
-    expect(flag).toHaveAttribute('title', 'invalid response shape');
-    // The last good status still renders, and the no-data alert doesn't.
-    expect(screen.getByText('7500')).toBeInTheDocument();
-    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
-  });
+      const flag = screen.getByText(/update failed/i);
+      expect(flag).toHaveAttribute('title', error);
+      // The title is hover-only, so the reason is also a hidden hint, and the
+      // sighted text stays the bare flag.
+      expect(srHintText(flag)).toBe(error);
+      expect(visibleText(flag)).toBe('⚠ update failed');
+      // The last good status still renders, and the no-data alert doesn't.
+      expect(screen.getByText('7500')).toBeInTheDocument();
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+      expect(titledGenericsWithoutHint(container)).toEqual([]);
+    },
+  );
 
   it('shows no update-failed flag when the latest fetch succeeded', () => {
     mockHook(makeStatus());
