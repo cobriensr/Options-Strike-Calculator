@@ -11,6 +11,7 @@
 
 import {
   afterEach,
+  beforeAll,
   beforeEach,
   describe,
   expect,
@@ -18,6 +19,8 @@ import {
   vi,
   type MockInstance,
 } from 'vitest';
+
+import { warmCliImport } from './cli-warm-import.js';
 
 const {
   config,
@@ -56,6 +59,13 @@ const originalDatabaseUrl = process.env.DATABASE_URL;
 let log: MockInstance<typeof console.log>;
 let error: MockInstance<typeof console.error>;
 let exit: MockInstance<typeof process.exit>;
+
+// The first import of the CLI transforms its module graph (15 to 19 s under
+// load); pay that here, under this hook's timeout, not in the first test's 15 s.
+beforeAll(
+  () => warmCliImport(() => import('../backfill-market-internals.js')),
+  120_000,
+);
 
 const CLEAN_REPORT = {
   apply: false,
