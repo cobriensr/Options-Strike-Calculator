@@ -111,7 +111,7 @@ async function runCli(...args: string[]): Promise<unknown> {
   vi.resetModules();
   process.argv = ['node', 'rescore-lottery-v2-after-flow-backfill.ts', ...args];
   await import('../rescore-lottery-v2-after-flow-backfill.js');
-  await vi.waitFor(() => expect(exit).toHaveBeenCalled());
+  await vi.waitFor(() => expect(exit).toHaveBeenCalled(), { timeout: 5_000 });
   return exit.mock.calls[0]?.[0];
 }
 
@@ -119,8 +119,9 @@ const printed = (spy: MockInstance<typeof console.log>): string =>
   spy.mock.calls.map((call) => String(call[0])).join('\n');
 
 describe('rescore-lottery-v2-after-flow-backfill CLI', () => {
-  // Each case imports the CLI afresh. Keep this file to 9 CLI imports or fewer:
-  // past 10 fresh imports in one file Node warns about a listener leak.
+  // Each case imports the CLI afresh, and so does the beforeAll warm import.
+  // This file makes 9 fresh imports (8 cases and the warm one): past 10 in one
+  // file Node warns about a listener leak, so one more case still fits.
 
   it('is a dry run when only --since is given, and prints the host and report, never the credentials', async () => {
     expect(await runCli('--since', '2026-10-29')).toBe(0);

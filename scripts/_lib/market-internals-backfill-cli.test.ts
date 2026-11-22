@@ -125,7 +125,7 @@ async function runCli(...args: string[]): Promise<unknown> {
   vi.resetModules();
   process.argv = ['node', 'backfill-market-internals.ts', ...args];
   await import('../backfill-market-internals.js');
-  await vi.waitFor(() => expect(exit).toHaveBeenCalled());
+  await vi.waitFor(() => expect(exit).toHaveBeenCalled(), { timeout: 5_000 });
   return exit.mock.calls[0]?.[0];
 }
 

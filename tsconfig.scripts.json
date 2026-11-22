@@ -72,6 +72,7 @@
     "scripts/_lib/futures-bar-repair.test.ts",
     "scripts/_lib/futures-bar-rules.ts",
     "scripts/_lib/futures-bar-test-helpers.ts",
+    "scripts/_lib/cli-warm-import.ts",
     "scripts/backfill-strike-all.ts",
     "scripts/_lib/strike-all-backfill.ts",
     "scripts/_lib/strike-all-backfill.test.ts",

@@ -140,7 +140,7 @@ async function runCli(...args: string[]): Promise<unknown> {
   vi.resetModules();
   process.argv = ['node', 'correct-doubled-fire-flow.ts', ...args];
   await import('../correct-doubled-fire-flow.js');
-  await vi.waitFor(() => expect(exit).toHaveBeenCalled());
+  await vi.waitFor(() => expect(exit).toHaveBeenCalled(), { timeout: 5_000 });
   return exit.mock.calls[0]?.[0];
 }
 
@@ -148,8 +148,10 @@ const printed = (spy: MockInstance<typeof console.log>): string =>
   spy.mock.calls.map((call) => String(call[0])).join('\n');
 
 describe('correct-doubled-fire-flow CLI', () => {
-  // Each case imports the CLI afresh. Keep this file to 9 CLI imports or fewer:
-  // past 10 fresh imports in one file Node warns about a listener leak.
+  // Each case imports the CLI afresh, and so does the beforeAll warm import.
+  // This file makes 10 fresh imports (9 cases and the warm one): past 10 in one
+  // file Node warns about a listener leak, so a new case needs an existing one
+  // folded into another first.
 
   it('is a dry run when only --since is given, and prints the host and report, never the credentials', async () => {
     expect(await runCli('--since', '2026-10-29')).toBe(0);
