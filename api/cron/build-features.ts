@@ -309,15 +309,39 @@ interface NoPickDate {
 const NO_PICK_ALERT = 'build-features: no trusted snapshot row';
 
 /**
- * Warn Sentry that these dates were built with no trusted snapshot row. Why it
+ * How a run chose its dates: the scheduled post-close run (today), an explicit
+ * `?date=`, or a backfill (`?backfill=true`, or the first run on an empty
+ * training_features table).
+ */
+type RunMode = 'daily' | 'date' | 'backfill';
+
+/**
+ * The event's level by run mode. Only a daily run reaches the owner: a new day
+ * leaving training is the silent loss this alert exists for, and the project's
+ * high-priority issue rule skips warnings. `?date=` and backfill runs repair
+ * and rebuild known dates (a backfill names the known no-pick ones), so they
+ * stay warnings.
+ */
+const NO_PICK_LEVEL: Record<RunMode, 'error' | 'warning'> = {
+  daily: 'error',
+  date: 'warning',
+  backfill: 'warning',
+};
+
+/**
+ * Tell Sentry that these dates were built with no trusted snapshot row. Why it
  * is not only a log line: if live rows stopped carrying `spx_low` and
  * `spx_high`, every new day would fail `no-price-range` and silently leave
- * training. One event per run whatever the number of dates, under one
- * fingerprint, with the dates and the rejection counts summed over them. A
- * no-pick date is a data state, not a failed write, so the run stays
- * `success`.
+ * training. One event per run whatever the number of dates, with the dates and
+ * the rejection counts summed over them. A no-pick date is a data state, not a
+ * failed write, so the run stays `success`.
+ *
+ * Each run mode has its own fingerprint (and a `build_features.mode` tag).
+ * With one shared fingerprint, the first event would come from a repair
+ * rebuild, and a later live regression would land as a repeat event on that
+ * open issue, which emails nobody.
  */
-function reportNoPickDates(noPick: readonly NoPickDate[]): void {
+function reportNoPickDates(noPick: readonly NoPickDate[], mode: RunMode): void {
   const rejected: RejectionCounts = {};
   for (const { rejected: counts } of noPick) {
     for (const reason of Object.keys(counts) as FeatureSnapshotRejection[]) {
@@ -325,8 +349,9 @@ function reportNoPickDates(noPick: readonly NoPickDate[]): void {
     }
   }
   Sentry.captureMessage(NO_PICK_ALERT, {
-    level: 'warning',
-    fingerprint: ['build-features', 'no-trusted-snapshot-row'],
+    level: NO_PICK_LEVEL[mode],
+    fingerprint: ['build-features', 'no-trusted-snapshot-row', mode],
+    tags: { 'build_features.mode': mode },
     extra: { dates: noPick.map((d) => d.date), count: noPick.length, rejected },
   });
 }
@@ -512,16 +537,20 @@ const wrappedCron = withCronInstrumentation(
     );
     log.info({ date: today, sources: coverage }, 'flow_data coverage');
 
-    // Determine which dates to process
+    // Determine which dates to process, and in which mode (for the no-pick
+    // alert)
     let dates: string[];
+    let mode: RunMode;
 
     if (dateParam != null) {
       // Explicit single-date mode - highest precedence. Used for
       // refetching one day after a cron miss or freshness investigation.
       dates = [dateParam];
+      mode = 'date';
       log.info({ date: dateParam }, 'build-features: single-date mode');
     } else if (backfill) {
       // Process all historical dates with flow data
+      mode = 'backfill';
       const rows = await withDbRetry(
         () => sql`
           SELECT DISTINCT date FROM flow_data ORDER BY date ASC
@@ -540,6 +569,7 @@ const wrappedCron = withCronInstrumentation(
       const count = Number(countResult[0]!.cnt);
 
       if (count === 0) {
+        mode = 'backfill';
         const rows = await withDbRetry(
           () => sql`
             SELECT DISTINCT date FROM flow_data ORDER BY date ASC
@@ -553,6 +583,7 @@ const wrappedCron = withCronInstrumentation(
           'build-features: empty table, backfilling all dates',
         );
       } else {
+        mode = 'daily';
         dates = [getETDateStr(new Date())];
       }
     }
@@ -574,8 +605,10 @@ const wrappedCron = withCronInstrumentation(
     let labelsExtracted = 0;
     let errors = 0;
     let latestCompleteness: number | undefined;
-    // Dates written with no trusted snapshot row (completeness 0), not dates
-    // whose write failed: those are errors.
+    // Dates whose features row was written with no trusted snapshot row
+    // (completeness 0). A date whose features write failed is an error and is
+    // not here. A labels write that fails after the features row was written
+    // leaves the date here and also counts in `errors`.
     const noPickDates: NoPickDate[] = [];
 
     for (const dateStr of dates) {
@@ -603,7 +636,7 @@ const wrappedCron = withCronInstrumentation(
       }
     }
 
-    if (noPickDates.length > 0) reportNoPickDates(noPickDates);
+    if (noPickDates.length > 0) reportNoPickDates(noPickDates, mode);
 
     log.info(
       {

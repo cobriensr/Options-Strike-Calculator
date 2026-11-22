@@ -1013,19 +1013,24 @@ describe('build-features handler', () => {
     const trustedRows = () => [snapshotRow('10:00 AM CT', FILLED)];
 
     /**
-     * A backfill over `dates`, each date's snapshot rows from `rowsOf`. Keyed
-     * on SQL text; the date is the last value bound in the snapshot read.
+     * A run over `dates`, each date's snapshot rows from `rowsOf`. Keyed on
+     * SQL text; the date is the last value bound in the snapshot read.
+     * `trainingRows` is what `SELECT COUNT(*) FROM training_features` says: 0
+     * makes a daily run the first-run backfill.
      */
     function mockDates(
       dates: string[],
       rowsOf: (date: string) => Record<string, unknown>[],
-      insertFails = false,
+      { insertFails = false, trainingRows = 5 } = {},
     ) {
       mockSql.mockImplementation(
         (strings: TemplateStringsArray, ...values: unknown[]) => {
           const text = strings.join(' ');
           if (text.includes('SELECT DISTINCT date FROM flow_data')) {
             return Promise.resolve(dates.map((date) => ({ date })));
+          }
+          if (text.includes('SELECT COUNT(*) AS cnt FROM training_features')) {
+            return Promise.resolve([{ cnt: String(trainingRows) }]);
           }
           if (text.includes('FROM market_snapshots')) {
             return Promise.resolve(rowsOf(String(values.at(-1))));
@@ -1038,10 +1043,10 @@ describe('build-features handler', () => {
       );
     }
 
-    async function backfill() {
+    async function run(query: Record<string, string>) {
       const req = mockRequest({
         method: 'GET',
-        query: { backfill: 'true' },
+        query,
         headers: { authorization: 'Bearer test-secret' },
       });
       const res = mockResponse();
@@ -1049,7 +1054,9 @@ describe('build-features handler', () => {
       return res;
     }
 
-    it('sends one Sentry warning, with a stable fingerprint, the date and the per-reason counts', async () => {
+    const backfill = () => run({ backfill: 'true' });
+
+    it('sends one Sentry event, with the date and the per-reason counts (a ?date= run)', async () => {
       mockSnapshotRows(untrustedRows());
 
       await buildDate();
@@ -1057,13 +1064,80 @@ describe('build-features handler', () => {
       expect(mockCaptureMessage).toHaveBeenCalledTimes(1);
       expect(mockCaptureMessage).toHaveBeenCalledWith(ALERT, {
         level: 'warning',
-        fingerprint: ['build-features', 'no-trusted-snapshot-row'],
+        fingerprint: ['build-features', 'no-trusted-snapshot-row', 'date'],
+        tags: { 'build_features.mode': 'date' },
         extra: {
           dates: ['2026-03-24'],
           count: 1,
           rejected: { 'stale-tab': 1, 'saved-late': 1 },
         },
       });
+    });
+
+    // ── The run mode: its own fingerprint, tag and level ──
+    // Every backfill names the known no-pick dates, so a shared fingerprint
+    // would let the first repair run own the issue, and a later daily
+    // regression would be a repeat event that emails nobody. The daily run is
+    // the one that must reach the owner, so it sends at error.
+
+    type Mode = 'daily' | 'date' | 'backfill';
+    const MODE_RUNS: Array<
+      [
+        label: string,
+        mode: Mode,
+        level: string,
+        query: Record<string, string>,
+        trainingRows: number,
+      ]
+    > = [
+      ['a daily run', 'daily', 'error', {}, 5],
+      ['a ?date= run', 'date', 'warning', { date: '2026-03-24' }, 5],
+      ['a ?backfill=true run', 'backfill', 'warning', { backfill: 'true' }, 5],
+      // The first run on an empty training_features table backfills every date.
+      ['the first run, on an empty table', 'backfill', 'warning', {}, 0],
+    ];
+
+    async function runWithNoPick(
+      query: Record<string, string>,
+      trainingRows: number,
+    ) {
+      mockDates(['2026-03-24'], () => untrustedRows(), { trainingRows });
+      return run(query);
+    }
+
+    it.each(MODE_RUNS)(
+      '%s sends mode %s at level %s',
+      async (_label, mode, level, query, trainingRows) => {
+        const res = await runWithNoPick(query, trainingRows);
+
+        expect(mockCaptureMessage).toHaveBeenCalledTimes(1);
+        expect(mockCaptureMessage).toHaveBeenCalledWith(
+          ALERT,
+          expect.objectContaining({
+            level,
+            fingerprint: ['build-features', 'no-trusted-snapshot-row', mode],
+            tags: { 'build_features.mode': mode },
+          }),
+        );
+        // Whatever the level, the run is not a failure.
+        expect(res._json).toMatchObject({ status: 'success', noPickDates: 1 });
+      },
+    );
+
+    it('gives a daily run and a backfill different fingerprints and tags', async () => {
+      await runWithNoPick({}, 5);
+      await runWithNoPick({ backfill: 'true' }, 5);
+      await runWithNoPick({ date: '2026-03-24' }, 5);
+
+      const sent = mockCaptureMessage.mock.calls.map(([, context]) => context);
+      expect(sent).toHaveLength(3);
+      expect(new Set(sent.map((c) => c.fingerprint.join('/'))).size).toBe(3);
+      expect(sent.map((c) => c.tags['build_features.mode'])).toEqual([
+        'daily',
+        'backfill',
+        'date',
+      ]);
+      expect(sent.map((c) => c.level)).toEqual(['error', 'warning', 'warning']);
     });
 
     it('sends one warning per run, however many dates have no pick', async () => {
@@ -1115,7 +1189,7 @@ describe('build-features handler', () => {
     });
 
     it('does not count a date whose write failed: that is an error, not a no-pick date', async () => {
-      mockDates(['2026-03-24'], () => untrustedRows(), true);
+      mockDates(['2026-03-24'], () => untrustedRows(), { insertFails: true });
 
       const res = await backfill();
 

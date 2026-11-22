@@ -219,9 +219,22 @@ includes completeness-0 days.
   only in pino. Why: if live rows ever stopped carrying `spx_low`/`spx_high`,
   every new day would fail `no-price-range` and silently leave training.
   - The run collects its no-pick dates.
-  - After the loop it sends one Sentry warning per run, `build-features: no
-    trusted snapshot row`, with a stable fingerprint and the dates and
-    per-reason counts in `extra`.
+  - After the loop it sends one Sentry event per run, `build-features: no
+    trusted snapshot row`, with the dates and per-reason counts in `extra`.
+  - **Each run mode gets its own fingerprint** (daily, `?date=`,
+    `?backfill=true`), both in the fingerprint and as a
+    `build_features.mode` tag.
+    - Why: every backfill names the 28 known no-pick dates.
+    - With one shared fingerprint, the first event would come from a repair
+      rebuild. A later live regression would then land as a repeat event on
+      that open issue, and repeat events email nobody (memory
+      sentry-cron-alert-routing).
+  - **Daily runs send at `error`; `?date=` and backfill runs at `warning`.**
+    - The project's high-priority issue rule skips warnings.
+    - A new day leaving training is the "data silently lost" case the alert
+      exists for, so its first daily event emails the owner.
+    - Repair runs only list known gaps.
+    - No Sentry rule changes.
   - It adds `noPickDates` (a count) to the returned metadata. That lands in
     Axiom's `meta`, not as a new top-level key.
   - `latestCompleteness` stays as is; `noPickDates` explains a 0 there.
