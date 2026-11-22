@@ -79,7 +79,7 @@ function readStepsCmd() {
  *
  * @returns {Promise<number>}
  */
-async function runChain() {
+async function runUnderLock() {
   // Read the script first: a repo with no `review:steps` fails at once, not
   // after a turn in the queue.
   const stepsCmd = readStepsCmd();
@@ -139,7 +139,7 @@ const COMMANDS = new Map([
     },
   ],
   ['check', check],
-  ['run', runChain],
+  ['run', runUnderLock],
 ]);
 
 /**

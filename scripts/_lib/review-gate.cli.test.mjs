@@ -42,10 +42,7 @@ import {
   makeTempDir,
   setupScratchGit,
 } from './scratch-git.fixtures.mjs';
-import {
-  CHILD_TEST_TIMEOUT,
-  CHILD_TIMEOUT,
-} from './spawn-timeout.fixtures.mjs';
+import { CHILD_TIMEOUT } from './spawn-timeout.fixtures.mjs';
 
 setupScratchGit();
 
@@ -336,6 +333,17 @@ console.log('held');
 `;
 const LOCK_MODULE_URL = new URL('./gate-lock.mjs', import.meta.url).href;
 
+/** A chain that leaves a file behind, so a test can tell whether it ran. */
+const RAN_MARKER_CHAIN =
+  "node -e \"require('fs').writeFileSync('ran.txt', 'x')\"";
+
+/**
+ * What the wait cap is shortened to in the fail-closed test. Long enough that
+ * the holder's line reaches the waiter first on a loaded machine, so the
+ * message can name the holder.
+ */
+const FAST_CAP_MS = 1_500;
+
 /** A scratch package.json whose `review:steps` is `steps`; its path. */
 function writePackage(dir, steps) {
   const scripts = steps === undefined ? {} : { 'review:steps': steps };
@@ -452,7 +460,9 @@ async function startHolder(repo, worktree) {
   return holder;
 }
 
-describe('review-gate run', { timeout: CHILD_TEST_TIMEOUT }, () => {
+// No timeout of its own: these tests start children, so they take the file's
+// FIXTURE_TIMEOUT, which sits above SLOW_CHILD_TIMEOUT (spawn-timeout.fixtures.mjs).
+describe('review-gate run', () => {
   let repo = '';
 
   beforeEach(() => {
@@ -612,27 +622,60 @@ describe('review-gate run', { timeout: CHILD_TEST_TIMEOUT }, () => {
       npm_config_script_shell: chainShell(),
     });
     // Not queued behind the holder: a missing script is found before the lock.
-    const { code } = await soon(gateRun.exited, 'the run to fail', 15_000);
+    const { code } = await soon(gateRun.exited, 'the run to fail');
 
     expect(code).toBe(2);
     expect(gateRun.out.stderr).toContain('no "review:steps" script in');
     expect(gateRun.out.stderr).not.toContain('waiting for the gate');
   });
 
-  it('exits 1 and never runs the chain unlocked when the lock cannot be set up', () => {
-    // Not a git repository: there is no common dir to name the lock after.
+  it('exits 1 and runs nothing when git cannot name the repository (not a git repository)', () => {
+    // No common dir to name the lock after: the run fails at `git rev-parse`,
+    // before the lock is involved. The next test is the one for the lock.
     const outside = makeTempDir('review-gate-nogit-');
-    writePackage(
-      outside,
-      "node -e \"require('fs').writeFileSync('ran.txt', 'x')\"",
-    );
+    writePackage(outside, RAN_MARKER_CHAIN);
 
-    const result = runCli(outside);
+    const result = runCli(outside, {
+      // Keep git from finding a repository above the temp dir.
+      GIT_CEILING_DIRECTORIES: path.dirname(outside),
+    });
 
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('review-gate run failed:');
     expect(result.stderr).toContain('not a git repository');
     expect(existsSync(path.join(outside, 'ran.txt'))).toBe(false);
+  });
+
+  it('fails closed: a gate that waits out the wait cap exits 1 and never runs the chain', async () => {
+    // Test only: the 120 min wait cap becomes FAST_CAP_MS in the child. The
+    // preload changes nothing else, and only setTimeout calls of exactly the
+    // cap's length.
+    write(
+      repo,
+      'fast-wait-cap.cjs',
+      [
+        'const realSetTimeout = globalThis.setTimeout;',
+        'globalThis.setTimeout = (fn, ms, ...rest) =>',
+        `  realSetTimeout(fn, ms === 7_200_000 ? ${FAST_CAP_MS} : ms, ...rest);`,
+      ].join('\n'),
+    );
+    writePackage(repo, RAN_MARKER_CHAIN);
+    await startHolder(repo, 'holder-wt');
+
+    const waiter = spawnCollected(
+      ['--require', path.join(repo, 'fast-wait-cap.cjs'), CLI, 'run'],
+      repo,
+      { npm_config_script_shell: chainShell() },
+    );
+    const { code } = await soon(waiter.exited, 'the capped wait to end');
+
+    expect(code).toBe(1);
+    // The lock's message, with the CLI's prefix and not the lock's own as well.
+    expect(waiter.out.stderr).toMatch(
+      /review-gate run failed: gave up after waiting 120 min for the gate in holder-wt \(pid \d+, running \d+ min\)/,
+    );
+    expect(waiter.out.stderr).not.toContain('failed: review-gate:');
+    expect(existsSync(path.join(repo, 'ran.txt'))).toBe(false);
   });
 
   it('waits for a holder in another worktree of the same repository, names it, and runs when it is gone', async () => {
@@ -653,8 +696,11 @@ describe('review-gate run', { timeout: CHILD_TEST_TIMEOUT }, () => {
       'the waiting line',
     );
 
-    expect(line[0]).toBe(
-      `review-gate: waiting for the gate in holder-wt (pid ${holder.child.pid}, running 0 min)\n`,
+    // The holder's running time is whatever the machine's speed made it.
+    expect(line[0]).toMatch(
+      new RegExp(
+        `^review-gate: waiting for the gate in holder-wt \\(pid ${holder.child.pid}, running \\d+ min\\)\\n$`,
+      ),
     );
     await new Promise((resolve) => setTimeout(resolve, 300));
     expect(waiter.child.exitCode).toBeNull();
