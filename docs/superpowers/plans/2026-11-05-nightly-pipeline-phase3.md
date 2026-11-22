@@ -195,7 +195,7 @@ The owner browses it in the Cloudflare dashboard: R2 → `theta-options-fulltape
    - `test_manifest_survives_a_failure_mid_run` (Task 8).
 4. **Honest status:**
    - a script that exits 0 having written nothing fails (`exit_policy_search.py`'s "no archive day" path does this today);
-   - missing tracking state fails, and the state CSV never shrinks;
+   - missing tracking state fails, and the state CSV never shrinks (superseded by `docs/superpowers/specs/2026-11-21-lottery-tracker-nightly-rebuild.md`, 2026-11-22: no state is `ok`, a lost date is `partial` with `tracking dates dropped`, and there is no shrink check);
    - a rollup that lacks the last session is `partial`.
 
    Pinned by:
@@ -921,6 +921,7 @@ def run_step(name: str, ctx: StepContext) -> StepResult   # the entry point lazy
 
 **Behavior:**
 - **`lottery-tracking`:**
+  - **Superseded** by `docs/superpowers/specs/2026-11-21-lottery-tracker-nightly-rebuild.md` (2026-11-22): a missing state is `ok` (the tracker writes a new file), a lost date is `partial` with `tracking dates dropped` (the old dates are read before the script rewrites the file), and there is no shrink check, so `StateShrankError`, the `rows_before` argument of `publish_state_csv`, `tracking state missing`, `tracking state shrank` and `test_tracking_csv_never_shrinks` are gone. The bullets below are the original contract.
   - `get_file(TRACKING_STATE_KEY)`. A missing object fails with `tracking state missing`; it never starts a new file.
   - Run `scripts/daily_tracker.py --csv <tmp>` through `run_script` (D6). Its exit must be 0.
   - The header must be unchanged and the rows must not shrink; otherwise it fails with `tracking state shrank` and nothing is uploaded.

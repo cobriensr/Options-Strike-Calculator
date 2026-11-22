@@ -1,12 +1,12 @@
 """The one-time seed: the research state that lives only on the owner's machine, into R2.
 
-The research steps read their state from `research/` in the bucket and extend it: the per-day
-chains aggregates, the lottery-tracking CSV, the dated reports. Until this runs, that state
-exists only in the owner's checkout (`scripts/` and `docs/tmp/`, the take-it drift plots under
-`ml/plots/`). It is a local tool, run once, by hand. The nightly job never calls it. Run it
-outside the nightly job's window (Tue-Sat, about 07:15-12:30 UTC): it writes the same keys and
-the derive manifest, and takes no lock, so an overlap could overwrite a night's object or drop
-its manifest entries.
+The research steps read their state from `research/` in the bucket and extend or rewrite it:
+the per-day chains aggregates, the lottery-tracking CSV, the dated reports. Until this runs,
+that state exists only in the owner's checkout (`scripts/` and `docs/tmp/`, the take-it drift
+plots under `ml/plots/`). It is a local tool, run once, by hand. The nightly job never calls
+it. Run it outside the nightly job's window (Tue-Sat, about 07:15-12:30 UTC): it writes the
+same keys and the derive manifest, and takes no lock, so an overlap could overwrite a night's
+object or drop its manifest entries.
 
     PYTHONPATH=nightly/src:scripts:ml/src python -m seed_research --repo-root <checkout> [--dry-run]
 
@@ -15,8 +15,9 @@ each other flat, and `research_derive` pulls in the shared scripts. Settings are
 `config.load_settings()` as the nightly job reads them, so the whole nightly environment is
 needed, not only `R2_*`. Run it against the main checkout, which holds the owner's untracked
 reports: a worktree holds only the tracked files, a subset of `docs/tmp/`, so it seeds a
-fraction of them and still exits 0, and since a run never overwrites, whatever it puts at the
-tracking state key first stays there.
+fraction of them and still exits 0. The nightly rewrites the tracking state every night and
+needs no seeded one, so the seed's tracking row is no longer needed; it is left in place, and it
+still never overwrites a state that exists.
 
 What it does (`SEED_RULES` is the table of what goes where):
 
