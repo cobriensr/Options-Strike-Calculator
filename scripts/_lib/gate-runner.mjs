@@ -15,12 +15,13 @@ import { HOLD_CAP_MS } from './gate-lock.mjs';
 const MINUTE_MS = 60_000;
 
 /**
- * How long the runner waits, after it has killed the chain, for the chain to
- * report that it is gone. Past it the runner stops waiting, so a chain that
- * will not die cannot keep the lock for ever (the lock frees when the runner
- * exits, however the chain is doing).
+ * How long the runner waits, from the moment it decides to kill the chain, for
+ * the chain to report that it is gone. The kill itself counts: a taskkill that
+ * never returns must not keep the runner, and so the lock, for ever. Past it
+ * the runner stops waiting and carries on (the lock frees when the runner
+ * exits, however the chain is doing). It is also the limit given to taskkill.
  */
-const KILL_WAIT_MS = 10_000;
+export const KILL_WAIT_MS = 10_000;
 
 /** How long reading the process list may take. It only feeds one log line. */
 const LIST_TIMEOUT_MS = 10_000;
@@ -135,12 +136,19 @@ function listProcesses() {
   });
 }
 
-/** What the chain was running, or null when the process list cannot be read. */
+/**
+ * What the chain was running: `{ listed, command }`. `listed` is false when the
+ * process list could not be read at all; `command` is null when it was read but
+ * held nothing under the chain.
+ */
 async function runningStage(pid) {
   try {
-    return deepestCommand(pid, await listProcesses());
+    return {
+      listed: true,
+      command: deepestCommand(pid, await listProcesses()),
+    };
   } catch {
-    return null;
+    return { listed: false, command: null };
   }
 }
 
@@ -164,11 +172,15 @@ function killTree(child, windows) {
     childProcess.execFile(
       systemPath('taskkill.exe'),
       ['/T', '/F', '/PID', String(child.pid)],
-      { windowsHide: true },
+      { windowsHide: true, timeout: KILL_WAIT_MS },
       (error, _stdout, stderr) => {
         if (error?.code === 'ENOENT') {
           // No taskkill to run: the shell at least can be stopped.
           child.kill('SIGKILL');
+        } else if (error?.killed) {
+          console.error(
+            `review-gate: taskkill did not finish in ${KILL_WAIT_MS / 1000} s; the chain may still be running`,
+          );
         } else if (error && error.code !== 128) {
           // 128 is "no such process": the chain is already gone, which is fine.
           console.error(
@@ -200,11 +212,13 @@ async function releaseLock(lock) {
 function runChain({ stepsCmd, shell, windows, onSpawn }) {
   return new Promise((resolve, reject) => {
     // The command is this repo's own `review:steps` script, run through the
-    // shell npm itself would use, exactly as `npm run` runs it.
+    // shell npm itself would use, exactly as `npm run` runs it. On Linux the
+    // chain leads a process group of its own, so the whole group can be
+    // signalled.
     const child = childProcess.spawn(stepsCmd, {
       shell,
       stdio: 'inherit',
-      detached: !windows,
+      detached: process.platform === 'linux',
     });
     onSpawn(child);
     let exited = false;
@@ -223,18 +237,34 @@ function runChain({ stepsCmd, shell, windows, onSpawn }) {
       // The chain may have finished while the process list was being read.
       if (exited) return;
       capped = true;
+      // Armed before the kill, not after it: a kill that never returns must
+      // not keep the runner waiting.
+      giveUpTimer = setTimeout(() => finish(1), KILL_WAIT_MS);
+      let running = 'not known';
+      if (stage.command !== null) running = stage.command;
+      else if (!stage.listed) {
+        running = 'not known (the process list could not be read)';
+      }
       console.error(
         `review-gate: the chain hit the ${HOLD_CAP_MS / MINUTE_MS} min hold cap and is being killed. ` +
-          `Running at that moment: ${stage ?? 'not known (the process list could not be read)'}.`,
+          `Running at that moment: ${running}.`,
       );
       await killTree(child, windows);
-      if (!exited) giveUpTimer = setTimeout(() => finish(1), KILL_WAIT_MS);
     };
 
     capTimer = setTimeout(() => {
       void onCap();
     }, HOLD_CAP_MS);
-    child.once('error', (error) => {
+    child.on('error', (error) => {
+      if (child.pid !== undefined) {
+        // Raised after the chain started (a kill or a signal that failed): the
+        // chain is still running, so the runner keeps waiting for its exit.
+        console.error(
+          `review-gate: error from the chain process: ${error?.message ?? error}`,
+        );
+        return;
+      }
+      // No pid: the chain never started.
       exited = true;
       clearTimeout(capTimer);
       clearTimeout(giveUpTimer);
@@ -261,10 +291,12 @@ function runChain({ stepsCmd, shell, windows, onSpawn }) {
  * dies in any way frees it. The runner is called only with the lock already
  * held, and releases it in a `finally`: on pass, on fail, on a spawn failure
  * (which rejects) and at the hold cap. The hold cap (75 min) is what keeps a
- * hung chain from holding every other session's gate for ever, and it is
- * shorter than the wait cap (120 min) a queued gate gives up at. A chain that
- * outlives the runner (a hard kill of the runner) is not stopped: that is the
- * known gap in the spec.
+ * hung chain from holding every other session's gate for ever. The worst case
+ * of one hold is the cap plus about 20 s: up to 10 s to read the process list
+ * for the cap message, then the kill and the wait for the chain's exit, which
+ * share one 10 s limit (KILL_WAIT_MS). That is still well under the wait cap
+ * (120 min) a queued gate gives up at. A chain that outlives the runner (a
+ * hard kill of the runner) is not stopped: that is the known gap in the spec.
  *
  * While the chain runs, SIGINT and SIGTERM do not end the runner. On Linux the
  * chain is a process group of its own, so the signal is forwarded to the group;
