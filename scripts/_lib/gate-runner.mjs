@@ -155,17 +155,23 @@ async function runningStage(pid) {
 /**
  * Kill the chain and everything under it: the whole tree, not just its shell.
  * Windows has no process groups to signal, so `taskkill /T /F` walks the tree
- * by parent pid. Elsewhere the chain was started as a group leader
- * (`detached`) and the whole group gets SIGKILL.
+ * by parent pid. On Linux the chain was started as a group leader (`detached`)
+ * and the whole group gets SIGKILL. Anywhere else (nothing supports the lock
+ * there, see gatePipeName) only the shell can be stopped.
  */
-function killTree(child, windows) {
+function killTree(child, platform) {
   return new Promise((resolve) => {
-    if (!windows) {
+    if (platform === 'linux') {
       try {
         process.kill(-child.pid, 'SIGKILL');
       } catch {
         child.kill('SIGKILL');
       }
+      resolve();
+      return;
+    }
+    if (platform !== 'win32') {
+      child.kill('SIGKILL');
       resolve();
       return;
     }
@@ -209,16 +215,16 @@ async function releaseLock(lock) {
  * stops a hung chain: the runner names what was running, kills the whole tree
  * and resolves 1. Rejects when the chain cannot be spawned.
  */
-function runChain({ stepsCmd, shell, windows, onSpawn }) {
+function runChain({ stepsCmd, shell, platform, onSpawn }) {
   return new Promise((resolve, reject) => {
     // The command is this repo's own `review:steps` script, run through the
     // shell npm itself would use, exactly as `npm run` runs it. On Linux the
     // chain leads a process group of its own, so the whole group can be
-    // signalled.
+    // signalled; the kill and the signal forwarding below match this.
     const child = childProcess.spawn(stepsCmd, {
       shell,
       stdio: 'inherit',
-      detached: process.platform === 'linux',
+      detached: platform === 'linux',
     });
     onSpawn(child);
     let exited = false;
@@ -249,7 +255,7 @@ function runChain({ stepsCmd, shell, windows, onSpawn }) {
         `review-gate: the chain hit the ${HOLD_CAP_MS / MINUTE_MS} min hold cap and is being killed. ` +
           `Running at that moment: ${running}.`,
       );
-      await killTree(child, windows);
+      await killTree(child, platform);
     };
 
     capTimer = setTimeout(() => {
@@ -300,9 +306,9 @@ function runChain({ stepsCmd, shell, windows, onSpawn }) {
  *
  * While the chain runs, SIGINT and SIGTERM do not end the runner. On Linux the
  * chain is a process group of its own, so the signal is forwarded to the group;
- * on Windows Ctrl+C already reaches the chain through the console. Either way
- * the runner waits for the chain to exit, then releases. The listeners are
- * removed when the run ends.
+ * on Windows Ctrl+C already reaches the chain through the console, and on any
+ * other platform nothing is forwarded. Either way the runner waits for the
+ * chain to exit, then releases. The listeners are removed when the run ends.
  *
  * @param {{
  *   stepsCmd: string,
@@ -312,11 +318,12 @@ function runChain({ stepsCmd, shell, windows, onSpawn }) {
  * @returns {Promise<number>}
  */
 export async function runGate({ stepsCmd, shell, lock }) {
-  const windows = process.platform === 'win32';
+  const { platform } = process;
   let chain = null;
   const forwarders = ['SIGINT', 'SIGTERM'].map((signal) => {
     const listener = () => {
-      if (windows || chain?.pid === undefined) return;
+      // Only a Linux chain is a process group to forward to.
+      if (platform !== 'linux' || chain?.pid === undefined) return;
       try {
         process.kill(-chain.pid, signal);
       } catch {
@@ -330,7 +337,7 @@ export async function runGate({ stepsCmd, shell, lock }) {
     return await runChain({
       stepsCmd,
       shell,
-      windows,
+      platform,
       onSpawn: (child) => {
         chain = child;
       },

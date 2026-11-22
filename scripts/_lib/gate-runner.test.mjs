@@ -83,8 +83,17 @@ async function waitFor(check, what, ms = WAIT_DEADLINE_MS) {
  * Kill a process and everything under it, for the real-chain tests' clean-up:
  * the same tool the runner uses on Windows, a plain kill elsewhere. Never
  * throws, because it runs after a test that may already have failed.
+ *
+ * Only a process that is still alive is touched. Windows reuses pids, so a
+ * pid the test has already seen die may be somebody else's by now, another
+ * session's included: a test that has watched a pid die forgets it (sets it
+ * to undefined) and this is never called for it. What is alive here is what
+ * the test started and never saw die, or, in a rare race, a new owner of a
+ * pid that died in the last moments, which the clean-up runs too soon after to
+ * make likely.
  */
 function killTreeNow(pid) {
+  if (pid === undefined || !isAlive(pid)) return;
   try {
     if (process.platform === 'win32') {
       const taskkill = path.win32.join(
@@ -295,8 +304,11 @@ describe('runGate, with a fake chain', { timeout: TEST_TIMEOUT }, () => {
     expectSignalListenersRestored(before);
   });
 
-  it('forwards nothing on Windows, where Ctrl+C already reaches the chain, but still waits for it', async () => {
-    pretendPlatform('win32');
+  it.each([
+    ['win32', 'where Ctrl+C already reaches the chain'],
+    ['darwin', 'where the chain is not a process group of its own'],
+  ])('forwards nothing on %s, %s, but still waits for it', async (platform) => {
+    pretendPlatform(platform);
     const kill = vi.spyOn(process, 'kill').mockImplementation(() => true);
     const { child } = fakeChain();
     const lock = fakeLock();
@@ -635,6 +647,26 @@ describe('runGate, with a fake chain', { timeout: TEST_TIMEOUT }, () => {
     expect(child.kill).toHaveBeenCalledWith('SIGKILL');
   });
 
+  it('kills only the shell where the chain is neither a process group nor reachable by taskkill', async () => {
+    pretendPlatform('darwin');
+    vi.useFakeTimers(FAKE_TIMERS);
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const kill = vi.spyOn(process, 'kill').mockImplementation(() => true);
+    const tools = fakeTools({ list: '' });
+    const { child } = fakeChain(4242);
+
+    const run = runGate({ stepsCmd: 'x', shell: '/bin/sh', lock: fakeLock() });
+    vi.advanceTimersByTime(HOLD_CAP_MS);
+    await waitFor(() => child.kill.mock.calls.length > 0, 'the shell kill');
+    child.emit('exit', null, 'SIGKILL');
+
+    expect(await run).toBe(1);
+    expect(child.kill).toHaveBeenCalledWith('SIGKILL');
+    // No group to signal: it was not started as a group leader.
+    expect(kill).not.toHaveBeenCalled();
+    expect(tools.taskkills).toHaveLength(0);
+  });
+
   it('keeps waiting for the chain when an error comes from it after it has started', async () => {
     const error = vi.spyOn(console, 'error').mockImplementation(() => {});
     const { child } = fakeChain(4242);
@@ -853,8 +885,25 @@ describe('runGate, with a real chain', { timeout: CHILD_TEST_TIMEOUT }, () => {
 
     expect(await soon(run, 'the chain to exit', CHILD_TIMEOUT)).toBe(5);
     expect(aliveAtRelease).toBe(false);
+    // The chain was seen to be gone: its pid is forgotten, so the clean-up
+    // never kills whatever Windows hands that pid to next.
+    chainPid = undefined;
     expect(lock.release).toHaveBeenCalledTimes(1);
     expectSignalListenersRestored(before);
+  });
+
+  it('has a clean-up that never touches a pid that is not alive, or none at all', () => {
+    const { pid: gone } = childProcess.spawnSync(process.execPath, ['-e', '0']);
+    expect(isAlive(gone)).toBe(false);
+    const spawnSync = vi.spyOn(childProcess, 'spawnSync');
+    const kill = vi.spyOn(process, 'kill');
+
+    killTreeNow(gone);
+    killTreeNow(undefined);
+
+    expect(spawnSync).not.toHaveBeenCalled();
+    // The liveness check itself is `kill(pid, 0)`; nothing stronger.
+    expect(kill.mock.calls.every(([, signal]) => signal === 0)).toBe(true);
   });
 
   it('kills the whole chain at the hold cap, grandchild included, and names what was running', async () => {
@@ -922,6 +971,9 @@ describe('runGate, with a real chain', { timeout: CHILD_TEST_TIMEOUT }, () => {
       'the chain and its grandchild to die',
       CHILD_TIMEOUT,
     );
+    // Both were seen to die: their pids are forgotten, so the clean-up never
+    // kills whatever Windows hands those pids to next.
+    tree = undefined;
     expect(lock.release).toHaveBeenCalledTimes(1);
     expectSignalListenersRestored(before);
     const lines = error.mock.calls.map((call) => String(call[0]));
