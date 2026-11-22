@@ -28,6 +28,13 @@
  * `notYetPublished` results stop the run (`stopReason` `not_published`) so a
  * late GEXBot does not cost 60 requests per hourly run.
  *
+ * A 404 for a ticker with no stored report on or before the expected date is
+ * a new listing GEXBot has no report for yet (Amendment 2). It is booked
+ * `noReport`: no retry, no Sentry message, the `notYetPublished` streak
+ * untouched, and counted in neither `attempted` nor `failed`. It is listed in
+ * `metadata.noReport` and logged once. A 404 for a ticker stored before, and
+ * every other 4xx, stays `failed`.
+ *
  * Status: `deriveCronStatus(failed, attempted)`; leftovers make a would-be
  * `success` into `partial`. A lost day is reported by the separate audit cron
  * after the window closes.
@@ -48,6 +55,7 @@ import {
   indexExistingObject,
   latestEligibleReportDate,
   listStoredTickers,
+  listTickersStoredOnOrBefore,
   requestEodReport,
   storeEodReport,
 } from '../_lib/gexbot-eod.js';
@@ -81,7 +89,15 @@ type StopReason = 'quota' | 'budget' | 'not_published';
 
 /** What one attempt at one ticker came to. */
 type Attempt =
-  | { kind: 'stored' | 'indexed' | 'skipped' | 'not_published' | 'leftover' }
+  | {
+      kind:
+        | 'stored'
+        | 'indexed'
+        | 'skipped'
+        | 'not_published'
+        | 'no_report'
+        | 'leftover';
+    }
   | { kind: 'failed'; reason: string; err?: unknown; retryable: boolean };
 
 /**
@@ -146,6 +162,22 @@ export default withCronInstrumentation(
     const expectedStored = await storedFor(expected);
     const todo = tickers.filter((t) => !expectedStored.has(t));
 
+    // Tickers with a stored report on or before `expected`, asked on the
+    // run's first 404 only and shared by every ticker after it. A ticker not
+    // in it has never been captured, so its 404 is a new listing. Dropped on
+    // rejection so a retry asks again (R1); nothing outlives the run.
+    let storedBefore: Promise<Set<string>> | undefined;
+    const storedBeforeExpected = (): Promise<Set<string>> => {
+      if (storedBefore == null) {
+        const p = listTickersStoredOnOrBefore(expected);
+        storedBefore = p;
+        p.catch(() => {
+          storedBefore = undefined;
+        });
+      }
+      return storedBefore;
+    };
+
     const stopAfterNotPublished = notPublishedStopAfter(todo.length);
     const elapsed = (): number => Date.now() - ctx.startTimeMs;
     const controller = new AbortController();
@@ -171,6 +203,9 @@ export default withCronInstrumentation(
     // Consecutive notYetPublished results, in completion order.
     let notPublishedStreak = 0;
     const failed: { ticker: string; reason: string }[] = [];
+    // Listed tickers that answered 404 and have never been stored: a new
+    // listing with no report yet. Not failed, not attempted (Amendment 2).
+    const noReport: string[] = [];
     const leftover: string[] = [];
     // Leftover tickers that had failed at least once, with the last reason.
     const leftoverAfterFailure: { ticker: string; reason: string }[] = [];
@@ -216,6 +251,16 @@ export default withCronInstrumentation(
           return { kind: 'leftover' };
         }
         if (res.kind === 'http_error') {
+          // A 404 for a ticker we have never stored is a new listing GEXBot
+          // has no report for yet. For one we used to capture it stays a
+          // failure. Any other status is unchanged.
+          if (
+            res.status === 404 &&
+            !(await storedBeforeExpected()).has(ticker)
+          ) {
+            noReport.push(ticker);
+            return { kind: 'no_report' };
+          }
           return {
             kind: 'failed',
             reason: `http_${res.status}`,
@@ -307,6 +352,9 @@ export default withCronInstrumentation(
       if (afterRetry && (kind === 'stored' || kind === 'indexed')) {
         recoveredByRetry += 1;
       }
+      // A 404 for a new listing says nothing about whether GEXBot is late:
+      // it neither advances nor resets the streak.
+      if (kind === 'no_report') return;
       if (kind !== 'not_published') {
         notPublishedStreak = 0;
         return;
@@ -408,6 +456,12 @@ export default withCronInstrumentation(
         extra: { expectedDate: expected, entryCountWarnings },
       });
     }
+    if (noReport.length > 0) {
+      ctx.logger.info(
+        { expected, noReport },
+        'archive-gexbot-eod listed tickers with no report yet',
+      );
+    }
     ctx.logger.info(
       { expected, stored, indexedFromR2, failed: failed.length, stopReason },
       'archive-gexbot-eod completed',
@@ -427,6 +481,7 @@ export default withCronInstrumentation(
         skippedCount: skipped,
         notYetPublished,
         failed,
+        noReport,
         leftover,
         leftoverAfterFailure,
         stopReason,

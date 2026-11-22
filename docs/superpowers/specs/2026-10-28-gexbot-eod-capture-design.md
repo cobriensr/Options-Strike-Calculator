@@ -69,6 +69,59 @@ UTC in EDT, and 22:00 UTC to 22:00 UTC in EST (from 2026-11-02).
   "GEXBot EOD reports lost for <date>: <n> tickers (download window closed; automatic retries could not
   capture them)". It is information only; there is nothing to run.
 
+## Amendment 2 (2026-11-21): a listed ticker with no report yet
+
+**What happened.** Around the evening of Friday 2026-11-20, GEXBot's `/tickers` list began including `ANT`, and `/hist/eod/ANT` answers 404 on every request.
+- `gexbot_eod_reports` holds 59 tickers for each trading day from 11-12 to 11-20, and never `ANT`. It held 60 on 10-28 and 10-29. `ROKU` left the list some time between then and 11-12, and `ANT` brought it back to 60 (an unauthenticated `/tickers` call on 11-21 returns 60, with `ANT` and without `ROKU`). GEXBot both adds and drops tickers.
+- From 02:00 UTC on 11-21, every hourly capture run had one ticker to fetch, `ANT`. Each one recorded it as `failed` (`http_404`) and ended with status `error`.
+- That raised Sentry's cron failure ("Cron failure: archive-gexbot-eod") and the `capture-failed` message ("GEXBot EOD capture had failures", escalating) on every run: 12 events by 23:00 UTC.
+- Monday's audit would then have reported Friday's `ANT` as a lost report.
+
+**Owner decision, 2026-11-21:** treat "not found" on a ticker we have never stored as "not published yet" instead of a failure, so a new listing stops turning the job red every hour, while a real missed day still shows up as lost.
+
+**What this overrides.**
+- It overrides the "Cron status is honest" constraint and Goal 3 for one case: a never-stored ticker's 404 no longer counts toward the run's status.
+- It also departs from the owner's literal wording. Booking it as `notYetPublished` would count it in `attempted`, and a listing GEXBot never publishes would then keep every run off `success` indefinitely. It gets its own bucket instead (A).
+- Everything else about status is unchanged.
+
+**Rules.**
+- **A. Capture: a new listing's 404 is `noReport`, not `failed`.**
+  - When a ticker's report request answers 404 and the ticker has no stored report dated on or before `expected`, the result is a new bucket, `noReport`:
+    - it gets no retry inside the run (unchanged for 4xx);
+    - it is counted in neither `attempted` nor `failed`. `deriveCronStatus` already leaves no-op legs out of its total, and counting it would turn a run where every real ticker failed from `error` into `partial`, which sends an ok check-in (`cron-instrumentation.ts`), so an unpublished listing would keep the cron monitor green through a real outage. A run whose only ticker is `noReport` ends `success`, since `deriveCronStatus(0, 0)` is `success`;
+    - it leaves the `notYetPublished` streak alone: it neither advances nor resets it. A 404 says nothing about whether GEXBot is late (Amendment 1 resets the streak on "any other outcome"; this one is the exception);
+    - it sends no Sentry message;
+    - the run lists those tickers under the metadata key `noReport` (inside `meta`, not a new Axiom top-level key) and logs them once at info level.
+  - Any other 4xx, and a 404 for a ticker that has a stored report dated on or before `expected`, stays `failed` as before. A ticker we used to capture that loses its report is a real problem.
+  - Each later run asks again, so a new ticker's first report is stored as soon as GEXBot serves one. The cost is one request per new listing per run, at most 12 a day each.
+- **B. "Stored before": one shared helper.** A helper in `api/_lib/gexbot-eod.ts` returns the set of tickers that have a stored report dated on or before D. It is one `SELECT DISTINCT ticker` over `gexbot_eod_reports`, about 60 rows, through the same `withDbRetry` as `listStoredTickers`.
+  - **Capture (A):** asks for it lazily, on the run's first 404 only. It holds the result as one run-scoped promise shared by concurrent tickers, and drops it if the query rejects, the same as `storedFor`. A run with no 404 makes no extra query.
+  - **Audit (C):** asks for it once per run.
+  - **State:** none outlives the run (R1).
+- **C. Loss report: a never-captured ticker is a new listing, not a loss.**
+  - A listed ticker with no stored report dated on or before the audited date is reported under the metadata key `newListings`, not under `missing`. It doesn't change the audit status.
+  - The audit sends one Sentry warning per run with fingerprint `['gexbot-eod','new-listing']`: "GEXBot lists tickers with no captured report yet: <tickers>".
+  - A ticker that has an earlier stored report and is missing on the audited date stays in `missing` (a loss, status `error`, `missed-window`), unchanged.
+  - **Guard:** if the "stored before" set does not contain `SPX`, the audit throws instead of reporting. An emptied or badly restored table would otherwise file every ticker under `newListings`, and a total loss would read as `success` plus a warning. `SPX` has been stored every day since 10-28, and nothing deletes from the table.
+- **D. What this gives up.** If a new ticker's first report really exists but every capture attempt in its window fails for some other reason (5xx, a bad ZIP, R2), the audit calls it a new listing, not a loss. When the attempts end `failed`, each of those capture runs sends `capture-failed`, so it is still loud. When they only ever end in `leftover` (a 429, the budget, or the `not_published` stop), a run with only leftovers sends no Sentry event, so for a never-stored ticker that case is quiet apart from the audit's daily `new-listing` warning.
+- **D2. A re-added ticker (owner decision, 2026-11-21: accept it).** Suppose GEXBot drops a ticker and later lists it again (`ROKU` was dropped after 10-29), and it answers 404 until that ticker's first new report. It has stored history, so it is not "new":
+  - each capture run books it `failed` (red), until GEXBot publishes it, usually by the next evening;
+  - the audit reports that day as lost.
+
+  The owner chose this false alarm over a "no stored report in the last N trading days" rule. That rule would also silence a ticker that kept failing for a real reason after N days. Re-adds look rare: one drop seen in a month.
+- **E. Rollout.**
+  - **Vercel only.** No migration, no env var, no schedule change.
+  - **After deploy:** once a capture run after the deploy ends `success` with `ANT` under `noReport`, resolve the two open Sentry issues for this (the cron failure and `capture-failed`).
+  - **Monday 11-23:** the first audit at 22:30 UTC should report `ANT` under `newListings` and send the `new-listing` warning, not `missed-window`.
+- **Files.**
+  - **Commit 1:** `api/_lib/gexbot-eod.ts` (the helper), `api/__tests__/gexbot-eod.test.ts`, `api/cron/archive-gexbot-eod.ts`, `api/__tests__/archive-gexbot-eod.test.ts`, and this amendment.
+  - **Commit 2:** `api/cron/audit-gexbot-eod.ts` and `api/__tests__/audit-gexbot-eod.test.ts`.
+- **As built (2026-11-22).**
+  - **Names.** The helper is `listTickersStoredOnOrBefore(date)`. The capture's outcome kind is `no_report`, like `not_published`; the metadata key is `noReport`, as in rule A.
+  - **A rejected helper query.** The ticker is `failed` with the error's reason, like any DB error, so it is retried (3 attempts, 15 s and 45 s apart). The rejected promise is dropped, so each retry asks again.
+  - **The guard.** When the "stored before" set lacks `SPX`, the audit throws `audit-gexbot-eod: no stored SPX report on or before <date>; the reports table looks emptied` before it sends anything, the rejected-tickers warning included.
+  - **A real-SQL test.** "On or before" is the SQL, so the helper also has `api/__tests__/gexbot-eod-stored-before-pglite.test.ts` (pglite, the real migration #195). That is a sixth file, over the five-file commit cap, so the work landed in three commits: the helper with its two test files, the capture with this amendment, the audit.
+
 ## Goal
 
 Every trading day, save GEXBot's full end-of-day report for every ticker our key can access into the

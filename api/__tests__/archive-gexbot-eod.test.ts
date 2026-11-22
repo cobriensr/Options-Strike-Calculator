@@ -3,12 +3,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mockRequest, mockResponse } from './helpers';
 
-const { mockCapture, mockException, mockReport, mockWarn, eod, zip } =
+const { mockCapture, mockException, mockReport, mockWarn, mockInfo, eod, zip } =
   vi.hoisted(() => ({
     mockCapture: vi.fn(),
     mockException: vi.fn(),
     mockReport: vi.fn(),
     mockWarn: vi.fn(),
+    mockInfo: vi.fn(),
     eod: {
       fetchEodTickers: vi.fn(),
       latestEligibleReportDate: vi.fn(),
@@ -16,12 +17,13 @@ const { mockCapture, mockException, mockReport, mockWarn, eod, zip } =
       storeEodReport: vi.fn(),
       indexExistingObject: vi.fn(),
       listStoredTickers: vi.fn(),
+      listTickersStoredOnOrBefore: vi.fn(),
     },
     zip: { validateEodZip: vi.fn() },
   }));
 
 vi.mock('../_lib/logger.js', () => ({
-  default: { info: vi.fn(), warn: mockWarn, error: vi.fn() },
+  default: { info: mockInfo, warn: mockWarn, error: vi.fn() },
 }));
 
 // cronGuard reports a failed secret check through this module; its own
@@ -49,6 +51,7 @@ vi.mock('../_lib/gexbot-eod-zip.js', async () => {
   return { ...zip, EodZipError };
 });
 
+import { AXIOM_TOP_LEVEL_KEYS } from '../_lib/axiom-fields.js';
 import { EodZipError } from '../_lib/gexbot-eod-zip.js';
 import handler, { config } from '../cron/archive-gexbot-eod.js';
 
@@ -109,6 +112,9 @@ describe('archive-gexbot-eod', () => {
     process.env.GEXBOT_API_KEY = 'key';
     eod.latestEligibleReportDate.mockReturnValue(EXPECTED);
     eod.listStoredTickers.mockResolvedValue(new Set());
+    // No ticker has a stored report on or before the expected date, so a 404
+    // is a new listing. A test about a ticker we used to capture overrides it.
+    eod.listTickersStoredOnOrBefore.mockResolvedValue(new Set());
     eod.indexExistingObject.mockResolvedValue('absent');
     eod.storeEodReport.mockImplementation(async (a: { body: Uint8Array }) => ({
       key: 'k',
@@ -668,6 +674,8 @@ describe('archive-gexbot-eod', () => {
       ['http 400', () => http(400), 1],
     ])('%s: makes %i attempts', async (_name, make, calls) => {
       setTickers(['A']);
+      // A ticker we used to capture: its 404 is a failure, not a new listing.
+      eod.listTickersStoredOnOrBefore.mockResolvedValue(new Set(['A']));
       eod.requestEodReport.mockImplementation(async () => make());
       const res = await run();
       expect(eod.requestEodReport).toHaveBeenCalledTimes(calls);
@@ -938,6 +946,262 @@ describe('archive-gexbot-eod', () => {
         { ticker: 'A', reason: 'http_503' },
       ]);
       expect(vi.getTimerCount()).toBe(0);
+    });
+  });
+
+  // Spec Amendment 2: a 404 for a ticker with no stored report on or before
+  // the expected date is a new listing, not a failure.
+  describe('a listed ticker with no report yet', () => {
+    const http = (status: number) => ({ kind: 'http_error' as const, status });
+    const after = <T>(ms: number, value: T) =>
+      new Promise<T>((resolve) => setTimeout(() => resolve(value), ms));
+    const STALE = '2026-10-27';
+
+    function noReportLogs() {
+      return mockInfo.mock.calls.filter(
+        ([o]) => (o as { noReport?: string[] } | undefined)?.noReport != null,
+      );
+    }
+
+    it('books a never-stored 404 as noReport: success, no alert, no retry', async () => {
+      setTickers(['ANT']);
+      eod.requestEodReport.mockResolvedValue(http(404));
+      const res = await run();
+      const json = res._json as Json;
+      expect(res._status).toBe(200);
+      expect(json.status).toBe('success');
+      expect(json.noReport).toEqual(['ANT']);
+      expect(json.failed).toEqual([]);
+      expect(json.leftover).toEqual([]);
+      expect(json.notYetPublished).toBe(0);
+      expect(json.stopReason).toBeNull();
+      expect(json.retried).toBe(0);
+      expect(eod.requestEodReport).toHaveBeenCalledTimes(1);
+      expect(eod.listTickersStoredOnOrBefore).toHaveBeenCalledTimes(1);
+      expect(eod.listTickersStoredOnOrBefore).toHaveBeenCalledWith(EXPECTED);
+      expect(mockCapture).not.toHaveBeenCalled();
+      expect(mockException).not.toHaveBeenCalled();
+      expect(mockReport).toHaveBeenCalledWith(
+        'archive-gexbot-eod',
+        expect.objectContaining({ status: 'success' }),
+      );
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it('logs the noReport tickers once, at info level', async () => {
+      setTickers(['ANT', 'NEW']);
+      eod.requestEodReport.mockResolvedValue(http(404));
+      await run();
+      const logs = noReportLogs();
+      expect(logs).toHaveLength(1);
+      const [fields] = logs[0] as [{ expected: string; noReport: string[] }];
+      expect(fields.expected).toBe(EXPECTED);
+      expect([...fields.noReport].sort()).toEqual(['ANT', 'NEW']);
+    });
+
+    it('logs nothing about noReport when no ticker has none', async () => {
+      eod.requestEodReport.mockImplementation(async () => ok());
+      await run();
+      expect(noReportLogs()).toHaveLength(0);
+    });
+
+    it('keeps noReport out of the Axiom top-level columns', () => {
+      expect(AXIOM_TOP_LEVEL_KEYS.has('noReport')).toBe(false);
+    });
+
+    it('ends success when a stored ticker and a noReport ticker share a run', async () => {
+      setTickers(['SPX', 'ANT']);
+      eod.requestEodReport.mockImplementation(async (_k: string, t: string) =>
+        t === 'ANT' ? http(404) : ok(),
+      );
+      const res = await run();
+      const json = res._json as Json;
+      expect(json.status).toBe('success');
+      expect(json.storedCount).toBe(1);
+      expect(json.rows).toBe(1);
+      expect(json.noReport).toEqual(['ANT']);
+      expect(json.failed).toEqual([]);
+      expect(mockCapture).not.toHaveBeenCalled();
+    });
+
+    it('keeps a 404 for a ticker stored before as failed (http_404)', async () => {
+      setTickers(['ROKU']);
+      eod.listTickersStoredOnOrBefore.mockResolvedValue(new Set(['ROKU']));
+      eod.requestEodReport.mockResolvedValue(http(404));
+      const res = await run();
+      const json = res._json as Json;
+      expect(json.failed).toEqual([{ ticker: 'ROKU', reason: 'http_404' }]);
+      expect(json.noReport).toEqual([]);
+      expect(json.status).toBe('error');
+      expect(eod.requestEodReport).toHaveBeenCalledTimes(1);
+      expect(failureCaptures()).toHaveLength(1);
+      expect(eod.listTickersStoredOnOrBefore).toHaveBeenCalledWith(EXPECTED);
+    });
+
+    it('splits one run: the stored-before 404 fails, the never-stored one is noReport', async () => {
+      setTickers(['ROKU', 'ANT']);
+      eod.listTickersStoredOnOrBefore.mockResolvedValue(new Set(['ROKU']));
+      eod.requestEodReport.mockResolvedValue(http(404));
+      const json = (await run())._json as Json;
+      expect(json.failed).toEqual([{ ticker: 'ROKU', reason: 'http_404' }]);
+      expect(json.noReport).toEqual(['ANT']);
+      expect(json.status).toBe('error');
+      expect(failureCaptures()).toHaveLength(1);
+      expect(eod.listTickersStoredOnOrBefore).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([400, 403, 410])(
+      'keeps a %i for a never-stored ticker as failed and asks no stored-before query',
+      async (status) => {
+        setTickers(['ANT']);
+        eod.requestEodReport.mockResolvedValue(http(status));
+        const json = (await run())._json as Json;
+        expect(json.failed).toEqual([
+          { ticker: 'ANT', reason: `http_${status}` },
+        ]);
+        expect(json.noReport).toEqual([]);
+        expect(json.status).toBe('error');
+        expect(eod.listTickersStoredOnOrBefore).not.toHaveBeenCalled();
+        expect(failureCaptures()).toHaveLength(1);
+      },
+    );
+
+    it('ends error, not partial, when 59 tickers fail and one is noReport', async () => {
+      const real = Array.from({ length: 59 }, (_, i) => `T${i}`);
+      setTickers([...real, 'ANT']);
+      // 400 is not retried, so the run stays inside the budget.
+      eod.requestEodReport.mockImplementation(async (_k: string, t: string) =>
+        t === 'ANT' ? http(404) : http(400),
+      );
+      const res = await run();
+      const json = res._json as Json;
+      expect(json.status).toBe('error');
+      expect(json.failed).toHaveLength(59);
+      expect(json.noReport).toEqual(['ANT']);
+      expect(failureCaptures()).toHaveLength(1);
+      expect(mockReport).toHaveBeenCalledWith(
+        'archive-gexbot-eod',
+        expect.objectContaining({ status: 'error' }),
+      );
+    });
+
+    it('makes no stored-before query when no ticker answers 404', async () => {
+      setTickers(['A', 'B', 'C']);
+      eod.listStoredTickers.mockImplementation(async (d: string) =>
+        d === STALE ? new Set(['C']) : new Set(),
+      );
+      eod.requestEodReport.mockImplementation(async (_k: string, t: string) => {
+        if (t === 'B') return http(400);
+        return ok({ servedDate: t === 'C' ? STALE : EXPECTED });
+      });
+      await run();
+      expect(eod.listTickersStoredOnOrBefore).not.toHaveBeenCalled();
+    });
+
+    it('shares one stored-before query between concurrent 404s', async () => {
+      setTickers(['A', 'B', 'C']);
+      // Slow enough that all three are waiting on it together.
+      eod.listTickersStoredOnOrBefore.mockImplementation(() =>
+        after(10, new Set<string>()),
+      );
+      eod.requestEodReport.mockResolvedValue(http(404));
+      const json = (await run())._json as Json;
+      expect(eod.listTickersStoredOnOrBefore).toHaveBeenCalledTimes(1);
+      expect([...json.noReport].sort()).toEqual(['A', 'B', 'C']);
+      expect(json.status).toBe('success');
+    });
+
+    it('fails a ticker whose stored-before query rejects, with the error reason', async () => {
+      setTickers(['ANT']);
+      eod.requestEodReport.mockResolvedValue(http(404));
+      eod.listTickersStoredOnOrBefore.mockRejectedValue(
+        new Error('connection lost'),
+      );
+      const res = await run();
+      const json = res._json as Json;
+      expect(json.failed).toEqual([
+        { ticker: 'ANT', reason: 'error: connection lost' },
+      ]);
+      expect(json.noReport).toEqual([]);
+      expect(json.status).toBe('error');
+      expect(failureCaptures()).toHaveLength(1);
+      // Retried like any DB error; each attempt asks again because the
+      // rejected promise is dropped.
+      expect(eod.requestEodReport).toHaveBeenCalledTimes(3);
+      expect(eod.listTickersStoredOnOrBefore).toHaveBeenCalledTimes(3);
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it('drops a rejected stored-before query so the retry asks again', async () => {
+      setTickers(['A', 'B']);
+      eod.listTickersStoredOnOrBefore
+        .mockRejectedValueOnce(new Error('blip'))
+        .mockResolvedValue(new Set());
+      eod.requestEodReport.mockResolvedValue(http(404));
+      const json = (await run())._json as Json;
+      expect([...json.noReport].sort()).toEqual(['A', 'B']);
+      expect(json.failed).toEqual([]);
+      expect(json.status).toBe('success');
+      expect(eod.listTickersStoredOnOrBefore).toHaveBeenCalledTimes(2);
+      expect(mockCapture).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    describe('the notYetPublished streak', () => {
+      /** Each ticker's request ends at its own time, so completion order is fixed. */
+      function answer(
+        plan: Record<string, [number, 'stale' | 'fresh' | '404']>,
+      ) {
+        eod.listStoredTickers.mockImplementation(async (d: string) =>
+          d === STALE
+            ? new Set(
+                Object.entries(plan)
+                  .filter(([, [, kind]]) => kind === 'stale')
+                  .map(([t]) => t),
+              )
+            : new Set(),
+        );
+        eod.requestEodReport.mockImplementation(
+          async (_k: string, t: string) => {
+            const [ms, kind] = plan[t] ?? [0, 'fresh'];
+            await after(ms, null);
+            if (kind === '404') return http(404);
+            return ok({ servedDate: kind === 'stale' ? STALE : EXPECTED });
+          },
+        );
+      }
+
+      it('does not reset it: not_published, noReport, not_published, not_published stops the run', async () => {
+        setTickers(['A', 'B', 'C', 'D']);
+        answer({
+          A: [10, 'stale'],
+          B: [20, '404'],
+          C: [30, 'stale'],
+          D: [50, 'stale'],
+        });
+        const json = (await run())._json as Json;
+        expect(json.notYetPublished).toBe(3);
+        expect(json.noReport).toEqual(['B']);
+        expect(json.stopReason).toBe('not_published');
+        expect(json.status).toBe('partial');
+      });
+
+      it('does not advance it: not_published, not_published, noReport does not stop the run', async () => {
+        setTickers(['A', 'B', 'C', 'D']);
+        answer({
+          A: [10, 'stale'],
+          B: [20, 'stale'],
+          C: [30, '404'],
+          D: [40, 'fresh'],
+        });
+        const json = (await run())._json as Json;
+        expect(json.notYetPublished).toBe(2);
+        expect(json.noReport).toEqual(['C']);
+        expect(json.storedCount).toBe(1);
+        expect(json.stopReason).toBeNull();
+        expect(json.leftover).toEqual([]);
+        expect(json.status).toBe('partial');
+      });
     });
   });
 });
