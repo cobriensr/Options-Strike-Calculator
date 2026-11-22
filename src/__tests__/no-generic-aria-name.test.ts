@@ -440,6 +440,39 @@ describe('srHintText', () => {
     ).toBeNull();
   });
 
+  // A screen reader reads an element's content in order. A hint with visible
+  // text after it would be read before that text, so it does not count.
+  it('reads no hint when visible text follows the sr-only span', () => {
+    expect(
+      hintOf('<span title="x">a<span class="sr-only"> — x</span>b</span>'),
+    ).toBeNull();
+    expect(
+      hintOf('<span><span class="sr-only"> — explains it</span>E1</span>'),
+    ).toBeNull();
+  });
+
+  it('reads the hint when only whitespace follows it', () => {
+    expect(
+      hintOf(
+        '<span>E1<span class="sr-only"> — explains it</span>  \n\t </span>',
+      ),
+    ).toBe('explains it');
+  });
+
+  // A comment node shows nothing and is read as nothing, like whitespace.
+  it('reads the hint when only a comment node follows it', () => {
+    expect(
+      hintOf(
+        '<span>E1<span class="sr-only"> — explains it</span><!-- note --></span>',
+      ),
+    ).toBe('explains it');
+    expect(
+      hintOf(
+        '<span>E1<span class="sr-only"> — explains it</span> <!-- a --> <!-- b --></span>',
+      ),
+    ).toBe('explains it');
+  });
+
   it('reads no hint from an element with none, or one nested a level down', () => {
     expect(hintOf('<span>E1</span>')).toBeNull();
     expect(
@@ -514,6 +547,22 @@ describe('titledGenericsWithoutHint', () => {
       expect(titledElementsWithoutHint(rootWith(html))).toHaveLength(1);
     },
   );
+
+  // The same order rule for text: a hint with visible text behind it is read
+  // before that text, so the element has no usable hint. The hint is hidden
+  // all the same, so it must not count as shown text either.
+  it('reports a hint that is followed by visible text', () => {
+    const html = '<span title="x">a<span class="sr-only"> — x</span>b</span>';
+    expect(titledGenericsWithoutHint(rootWith(html))).toEqual([html]);
+    expect(titledElementsWithoutHint(rootWith(html))).toEqual([html]);
+  });
+
+  it('accepts a hint that is followed only by whitespace', () => {
+    const html =
+      '<span title="x">a<span class="sr-only"> — x</span>\n  \t</span>';
+    expect(titledGenericsWithoutHint(rootWith(html))).toEqual([]);
+    expect(titledElementsWithoutHint(rootWith(html))).toEqual([]);
+  });
 
   it('accepts a hint that comes last after other child elements', () => {
     const root = rootWith(

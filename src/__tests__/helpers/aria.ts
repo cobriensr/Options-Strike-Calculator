@@ -79,14 +79,27 @@ export function genericElementsWithAriaLabel(root: ParentNode): string[] {
 }
 
 /**
- * The `SrHint` span that is the last element child of `badge`, if it has one.
- * A hint is always the last child, so an `sr-only` span with another element
- * after it is not counted: whatever was added behind it would otherwise pass
- * unnoticed.
+ * The `SrHint` span that is the last child node of `badge`, if it has one.
+ * A hint is always the last child: a screen reader reads an element's content
+ * in order, and the hint follows the label it explains. An `sr-only` span with
+ * another element or any visible text after it is not counted, so whatever
+ * was added behind it, or a hint placed before trailing text, does not pass
+ * unnoticed. Whitespace-only text and comment nodes after the hint show
+ * nothing and are skipped.
  */
 function ownHint(badge: Element): Element | null {
-  const last = badge.lastElementChild;
-  return last != null && last.classList.contains('sr-only') ? last : null;
+  let last = badge.lastChild;
+  while (
+    last != null &&
+    (last.nodeType === Node.COMMENT_NODE ||
+      (last.nodeType === Node.TEXT_NODE &&
+        (last.textContent ?? '').trim() === ''))
+  ) {
+    last = last.previousSibling;
+  }
+  return last instanceof Element && last.classList.contains('sr-only')
+    ? last
+    : null;
 }
 
 /**
@@ -105,9 +118,10 @@ export function srHintText(badge: Element): string | null {
  * last-child hint that {@link ownHint} recognizes. A hint with an element
  * after it, or one nested a level down, is hidden all the same; counting its
  * text as visible would let a title it repeats pass as shown, and the
- * misplaced hint would go unreported.
+ * misplaced hint would go unreported. Whitespace is collapsed, see
+ * {@link squashText}.
  */
-function visibleText(el: Element): string {
+export function visibleText(el: Element): string {
   const copy = el.cloneNode(true) as Element;
   for (const hint of copy.querySelectorAll('.sr-only')) {
     hint.remove();
