@@ -5,6 +5,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 
 import { RollingStatsBar } from '../components/GammaNodeDetector/RollingStatsBar';
 import type { AggregateStats } from '../hooks/useGammaWeeklyStats';
+import { srHintText, titledGenericsWithoutHint } from './helpers/aria';
 
 // Auth-mode mock — RollingStatsBar uses `getAccessMode()` indirectly via
 // useGammaWeeklyStats; we need it to return a non-public value so the
@@ -128,5 +129,56 @@ describe('RollingStatsBar', () => {
     expect(link.getAttribute('href')).toContain('from=2026-04-21');
     expect(link.getAttribute('href')).toContain('to=2026-05-21');
     expect(link.getAttribute('href')).toContain('format=csv');
+  });
+
+  describe('hover text for screen readers', () => {
+    it('gives the stats error its message as a hint, keeping the title', async () => {
+      fetchMock.mockResolvedValueOnce(new Response('nope', { status: 500 }));
+      const { container } = render(<RollingStatsBar marketOpen />);
+      const badge = await screen.findByText('stats error');
+      expect(srHintText(badge)).toBe('fetch failed: 500');
+      expect(badge).toHaveAttribute('title', 'fetch failed: 500');
+      expect(titledGenericsWithoutHint(container)).toEqual([]);
+    });
+
+    it('hints a request that threw, with the thrown message', async () => {
+      fetchMock.mockRejectedValueOnce(new Error('network down'));
+      render(<RollingStatsBar marketOpen />);
+      const badge = await screen.findByText('stats error');
+      expect(srHintText(badge)).toBe('network down');
+      expect(badge).toHaveAttribute('title', 'network down');
+    });
+
+    it('says how many fires still await their +30m backfill', async () => {
+      mockResponse(makeStats({ n_total: 18, n_with_outcome: 15 }));
+      const { container } = render(<RollingStatsBar marketOpen />);
+      const note = await screen.findByText('(15 outcomes)');
+      expect(srHintText(note)).toBe('3 fires still awaiting +30m backfill');
+      expect(note).toHaveAttribute(
+        'title',
+        '3 fires still awaiting +30m backfill',
+      );
+      expect(titledGenericsWithoutHint(container)).toEqual([]);
+    });
+
+    it('uses the singular for one fire awaiting its backfill', async () => {
+      mockResponse(makeStats({ n_total: 18, n_with_outcome: 17 }));
+      render(<RollingStatsBar marketOpen />);
+      const note = await screen.findByText('(17 outcomes)');
+      expect(srHintText(note)).toBe('1 fire still awaiting +30m backfill');
+      expect(note).toHaveAttribute(
+        'title',
+        '1 fire still awaiting +30m backfill',
+      );
+    });
+
+    it('says all outcomes are resolved when none are pending', async () => {
+      mockResponse(makeStats({ n_total: 18, n_with_outcome: 18 }));
+      const { container } = render(<RollingStatsBar marketOpen />);
+      const note = await screen.findByText('(18 outcomes)');
+      expect(srHintText(note)).toBe('All outcomes resolved');
+      expect(note).toHaveAttribute('title', 'All outcomes resolved');
+      expect(titledGenericsWithoutHint(container)).toEqual([]);
+    });
   });
 });

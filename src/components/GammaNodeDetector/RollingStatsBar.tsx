@@ -19,10 +19,12 @@
 
 import { memo, useState } from 'react';
 
+import { SrHint } from '../ui/SrHint';
 import { theme } from '../../themes';
 import { tint } from '../../utils/ui-utils';
 import {
   useGammaWeeklyStats,
+  type AggregateStats,
   type WindowDays,
 } from '../../hooks/useGammaWeeklyStats';
 
@@ -46,6 +48,24 @@ function formatMeanEdge(pts: number | null): string {
 function meanEdgeColor(pts: number | null): string {
   if (pts == null) return theme.textMuted;
   return pts >= 0 ? theme.green : theme.red;
+}
+
+/**
+ * "(N outcomes)", with how many fires still await their +30m backfill as the
+ * hover title and, word for word, as a hint for screen readers.
+ */
+function OutcomesNote({ stats }: Readonly<{ stats: AggregateStats }>) {
+  const pending = stats.n_total - stats.n_with_outcome;
+  const note =
+    pending === 0
+      ? 'All outcomes resolved'
+      : `${pending} fire${pending === 1 ? '' : 's'} still awaiting +30m backfill`;
+  return (
+    <span className="text-muted font-mono text-[10px]" title={note}>
+      ({stats.n_with_outcome} outcomes)
+      <SrHint>{note}</SrHint>
+    </span>
+  );
 }
 
 export const RollingStatsBar = memo(function RollingStatsBar({
@@ -97,6 +117,7 @@ export const RollingStatsBar = memo(function RollingStatsBar({
           title={error}
         >
           stats error
+          <SrHint>{error}</SrHint>
         </span>
       )}
 
@@ -105,16 +126,7 @@ export const RollingStatsBar = memo(function RollingStatsBar({
           <span className="text-primary font-mono text-[11px] font-semibold">
             {data.n_total} fire{data.n_total === 1 ? '' : 's'}
           </span>
-          <span
-            className="text-muted font-mono text-[10px]"
-            title={
-              data.n_with_outcome === data.n_total
-                ? 'All outcomes resolved'
-                : `${data.n_total - data.n_with_outcome} fires still awaiting +30m backfill`
-            }
-          >
-            ({data.n_with_outcome} outcomes)
-          </span>
+          <OutcomesNote stats={data} />
           <span
             className="font-mono text-[11px] font-semibold"
             style={{

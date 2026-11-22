@@ -20,6 +20,7 @@
 
 import { memo } from 'react';
 
+import { SrHint } from '../ui/SrHint';
 import { StatusBadge } from '../ui/StatusBadge';
 import { theme } from '../../themes';
 import { tint } from '../../utils/ui-utils';
@@ -100,6 +101,10 @@ function PreDayFilterLine({ data }: Readonly<{ data: GammaSetupsResponse }>) {
         title="Pre-day filter is firing: prior 5d return < -1% AND prior IV rank > 25"
       >
         pre-day filter active ({ret}, {iv})
+        <SrHint>
+          fires when the prior 5-day return is below -1% and the prior IV rank
+          is above 25
+        </SrHint>
       </span>
     );
   }
@@ -109,6 +114,10 @@ function PreDayFilterLine({ data }: Readonly<{ data: GammaSetupsResponse }>) {
       title="Pre-day filter inactive — requires prior 5d return < -1% AND prior IV rank > 25"
     >
       pre-day filter inactive
+      <SrHint>
+        needs the prior 5-day return below -1% and the prior IV rank above 25 to
+        fire
+      </SrHint>
     </span>
   );
 }
@@ -125,6 +134,7 @@ function AntiFilterChips({ filters }: Readonly<{ filters: AntiFilter[] }>) {
           title={f.title}
         >
           {f.label}
+          <SrHint>{f.title}</SrHint>
         </span>
       ))}
     </div>
@@ -141,12 +151,14 @@ function GammaContext({ data }: Readonly<{ data: GammaSetupsResponse }>) {
         <span title="Nearest positive-γ ceiling above current spot">
           ceiling {ceiling.strike}
           <span className="text-tertiary"> ({formatGexK(ceiling.gex)})</span>
+          <SrHint>nearest positive-gamma strike above current spot</SrHint>
         </span>
       )}
       {floor != null && (
         <span title="Nearest positive-γ floor below current spot">
           floor {floor.strike}
           <span className="text-tertiary"> ({formatGexK(floor.gex)})</span>
+          <SrHint>nearest positive-gamma strike below current spot</SrHint>
         </span>
       )}
     </div>
@@ -170,8 +182,10 @@ export const DayConfidenceBanner = memo(function DayConfidenceBanner({
           <StatusBadge label={tier} color={confidenceColor(tier)} />
         ) : (
           <span
+            role="img"
+            aria-label="no confidence tier on weekends"
             className="text-muted font-mono text-[10px]"
-            title="No confidence tier outside the weekday RTH window"
+            title="No confidence tier on weekends"
           >
             —
           </span>

@@ -18,6 +18,7 @@
 
 import { memo } from 'react';
 
+import { SrHint } from '../ui/SrHint';
 import { theme } from '../../themes';
 import { tint } from '../../utils/ui-utils';
 import { isUwTunedRulePaused } from '../../utils/uw-tuned-pause';
@@ -49,15 +50,25 @@ function signalLabel(signal: SignalType): string {
   }
 }
 
-function signalTitle(signal: SignalType): string {
+/**
+ * What the signal is, in lower case, for the screen-reader hint after the
+ * badge. The hover title is `${label} — ${Description}` built from this, so
+ * the two never drift apart.
+ */
+function signalHint(signal: SignalType): string {
   switch (signal) {
     case 'e1_long_call':
-      return 'E1 — Long call on +γ ceiling breakthrough + 3-bar hold';
+      return 'long call on +γ ceiling breakthrough + 3-bar hold';
     case 'e5_long_put':
-      return 'E5 — Long put on failed-reversal breakdown of +γ floor';
+      return 'long put on failed-reversal breakdown of +γ floor';
     case 'pcs_monday':
-      return 'PCS — Put credit spread on Monday +γ floor rejection';
+      return 'put credit spread on Monday +γ floor rejection';
   }
+}
+
+function signalTitle(signal: SignalType): string {
+  const hint = signalHint(signal);
+  return `${signalLabel(signal)} — ${hint.charAt(0).toUpperCase()}${hint.slice(1)}`;
 }
 
 function setupDescription(fire: GammaSetupFire): string {
@@ -110,6 +121,7 @@ export const FireRow = memo(function FireRow({ fire }: FireRowProps) {
         title={signalTitle(fire.signal_type)}
       >
         {signalLabel(fire.signal_type)}
+        <SrHint>{signalHint(fire.signal_type)}</SrHint>
       </span>
       <span className="text-primary font-sans text-xs font-medium">
         Strike {fire.node_strike}
@@ -121,6 +133,9 @@ export const FireRow = memo(function FireRow({ fire }: FireRowProps) {
           title="Fired on GEXBot taker-flow data; the E1/E5/PCS rules were tuned on UW Periscope data."
         >
           GEXBot data
+          <SrHint>
+            GEXBot taker flow; rules were tuned on UW Periscope data
+          </SrHint>
         </span>
       )}
       {hasOutcome && outcomePts != null && (
@@ -130,6 +145,7 @@ export const FireRow = memo(function FireRow({ fire }: FireRowProps) {
           title="Realized direction-adjusted return at +30m vs fire bar close"
         >
           {outcomeText(outcomePts)}
+          <SrHint>direction-adjusted return from the fire bar close</SrHint>
         </span>
       )}
       <span className="text-muted ml-auto shrink-0 font-mono text-[11px]">

@@ -8,7 +8,13 @@ import { DayConfidenceBanner } from '../components/GammaNodeDetector/DayConfiden
 import type {
   GammaSetupFire,
   GammaSetupsResponse,
+  SignalType,
 } from '../hooks/useGammaSetups';
+import {
+  srHintText,
+  titledElementsNeedingHint,
+  titledGenericsWithoutHint,
+} from './helpers/aria';
 
 // ── Fixture builders ───────────────────────────────────────────
 
@@ -123,6 +129,80 @@ describe('FireRow', () => {
     render(<FireRow fire={makeFire({ fired_at: '2026-05-21T14:30:00Z' })} />);
     expect(screen.queryByText('GEXBot data')).toBeNull();
   });
+
+  // A hint is read in every row of the fire list, so each stays short.
+  const ROW_HINT_MAX = 60;
+
+  describe('hover text for screen readers', () => {
+    it.each<[SignalType, string, string, string]>([
+      [
+        'e1_long_call',
+        'E1',
+        'long call on +γ ceiling breakthrough + 3-bar hold',
+        'E1 — Long call on +γ ceiling breakthrough + 3-bar hold',
+      ],
+      [
+        'e5_long_put',
+        'E5',
+        'long put on failed-reversal breakdown of +γ floor',
+        'E5 — Long put on failed-reversal breakdown of +γ floor',
+      ],
+      [
+        'pcs_monday',
+        'PCS',
+        'put credit spread on Monday +γ floor rejection',
+        'PCS — Put credit spread on Monday +γ floor rejection',
+      ],
+    ])(
+      'gives the %s badge a hint and keeps its title',
+      (signal, label, hint, title) => {
+        render(<FireRow fire={makeFire({ signal_type: signal })} />);
+        const badge = screen.getByText(label);
+        expect(srHintText(badge)).toBe(hint);
+        expect(srHintText(badge)!.length).toBeLessThanOrEqual(ROW_HINT_MAX);
+        expect(badge).toHaveAttribute('title', title);
+        // The row's own text must not pick up the hint as a second match.
+        expect(screen.getAllByText(label)).toHaveLength(1);
+      },
+    );
+
+    it('gives the GEXBot data badge a hint and keeps its title', () => {
+      render(<FireRow fire={makeFire({ fired_at: '2026-06-02T14:30:00Z' })} />);
+      const chip = screen.getByText('GEXBot data');
+      expect(srHintText(chip)).toBe(
+        'GEXBot taker flow; rules were tuned on UW Periscope data',
+      );
+      expect(srHintText(chip)!.length).toBeLessThanOrEqual(ROW_HINT_MAX);
+      expect(chip).toHaveAttribute(
+        'title',
+        'Fired on GEXBot taker-flow data; the E1/E5/PCS rules were tuned on UW Periscope data.',
+      );
+    });
+
+    it('gives the realized-return text a hint and keeps its title', () => {
+      render(<FireRow fire={makeFire({ ret_30m: 5.4 })} />);
+      const outcome = screen.getByText('+5.4 pts @ +30m');
+      expect(srHintText(outcome)).toBe(
+        'direction-adjusted return from the fire bar close',
+      );
+      expect(srHintText(outcome)!.length).toBeLessThanOrEqual(ROW_HINT_MAX);
+      expect(outcome).toHaveAttribute(
+        'title',
+        'Realized direction-adjusted return at +30m vs fire bar close',
+      );
+    });
+
+    it('leaves no titled generic element without a hint when the badge, the data-source chip and the outcome all show', () => {
+      const { container } = render(
+        <FireRow
+          fire={makeFire({ fired_at: '2026-06-02T14:30:00Z', ret_30m: -2.5 })}
+        />,
+      );
+      // The badge, the data-source chip and the outcome: all three reached.
+      expect(titledElementsNeedingHint(container)).toHaveLength(3);
+      expect(titledGenericsWithoutHint(container)).toEqual([]);
+    });
+  });
 });
 
 describe('DayConfidenceBanner', () => {
@@ -196,5 +276,129 @@ describe('DayConfidenceBanner', () => {
       />,
     );
     expect(screen.getByText('Weekend')).toBeDefined();
+  });
+
+  describe('hover text for screen readers', () => {
+    const firingData = (): GammaSetupsResponse =>
+      makeResponse({
+        dow_label: 'Monday',
+        confidence_tier: 'MAXIMUM',
+        pre_day_filter_fires: true,
+        prior_5d_ret: -0.018,
+        prior_iv_rank: 32,
+        anti_filters: {
+          is_fomc_day: true,
+          is_dom_1_5: true,
+          is_dom_16_20: true,
+        },
+      });
+
+    it('explains the firing pre-day filter without repeating its label', () => {
+      render(<DayConfidenceBanner data={firingData()} />);
+      const line = screen.getByText(/pre-day filter active/);
+      expect(srHintText(line)).toBe(
+        'fires when the prior 5-day return is below -1% and the prior IV rank is above 25',
+      );
+      expect(line).toHaveAttribute(
+        'title',
+        'Pre-day filter is firing: prior 5d return < -1% AND prior IV rank > 25',
+      );
+    });
+
+    it('explains the inactive pre-day filter without repeating its label', () => {
+      render(<DayConfidenceBanner data={makeResponse()} />);
+      const line = screen.getByText('pre-day filter inactive');
+      expect(srHintText(line)).toBe(
+        'needs the prior 5-day return below -1% and the prior IV rank above 25 to fire',
+      );
+      expect(line).toHaveAttribute(
+        'title',
+        'Pre-day filter inactive — requires prior 5d return < -1% AND prior IV rank > 25',
+      );
+    });
+
+    it.each([
+      [
+        'FOMC DAY',
+        'FOMC days historically destroy the E1 long-call edge (-13.75 Δ in backtest, n=4)',
+      ],
+      [
+        'DOM 1-5',
+        'Early-month days break E5 long-put edge (-18.82 Δ in backtest, n=12)',
+      ],
+      [
+        'DOM 16-20',
+        'Mid-month gamma void weakens E1 long-call edge (-1.43 Δ in backtest, n=24)',
+      ],
+    ])('gives the %s chip its explanation as a hint', (label, text) => {
+      render(<DayConfidenceBanner data={firingData()} />);
+      const chip = screen.getByText(label);
+      expect(srHintText(chip)).toBe(text);
+      expect(chip).toHaveAttribute('title', text);
+    });
+
+    it('explains the ceiling and the floor', () => {
+      render(<DayConfidenceBanner data={makeResponse()} />);
+      const ceiling = screen.getByText(/ceiling 7415/);
+      const floor = screen.getByText(/floor 7390/);
+      expect(srHintText(ceiling)).toBe(
+        'nearest positive-gamma strike above current spot',
+      );
+      expect(srHintText(floor)).toBe(
+        'nearest positive-gamma strike below current spot',
+      );
+      expect(ceiling).toHaveAttribute(
+        'title',
+        'Nearest positive-γ ceiling above current spot',
+      );
+      expect(floor).toHaveAttribute(
+        'title',
+        'Nearest positive-γ floor below current spot',
+      );
+    });
+
+    it('names the no-tier dash and says it is a weekend case', () => {
+      render(
+        <DayConfidenceBanner
+          data={makeResponse({ dow_label: null, confidence_tier: null })}
+        />,
+      );
+      const dash = screen.getByRole('img', {
+        name: 'no confidence tier on weekends',
+      });
+      expect(dash).toHaveTextContent('—');
+      expect(dash).toHaveAttribute('title', 'No confidence tier on weekends');
+    });
+
+    it('shows no no-tier dash when the day has a tier', () => {
+      render(<DayConfidenceBanner data={makeResponse()} />);
+      expect(screen.queryByRole('img')).toBeNull();
+    });
+
+    it.each([
+      [
+        'a firing filter with every anti-filter chip and a floor and ceiling',
+        firingData,
+      ],
+      [
+        'an inactive filter with no tier, no chips and no floor or ceiling',
+        () =>
+          makeResponse({
+            dow_label: null,
+            confidence_tier: null,
+            nearest_floor: null,
+            nearest_ceiling: null,
+          }),
+      ],
+    ])('leaves no titled generic element without a hint: %s', (_n, build) => {
+      const { container } = render(<DayConfidenceBanner data={build()} />);
+      expect(titledGenericsWithoutHint(container)).toEqual([]);
+    });
+
+    it('reaches every hinted element when everything shows', () => {
+      const { container } = render(<DayConfidenceBanner data={firingData()} />);
+      // pre-day line, three chips, ceiling and floor.
+      expect(titledElementsNeedingHint(container)).toHaveLength(6);
+    });
   });
 });
