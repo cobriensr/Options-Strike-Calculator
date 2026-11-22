@@ -20,6 +20,7 @@
  */
 
 import { memo, useId, useMemo } from 'react';
+import { fmtCompact } from './fmt-compact';
 
 interface FlowChartProps {
   /** Active series (cumulative, sign-colored). */
@@ -188,19 +189,6 @@ function FlowChartInner({
       </text>
     </svg>
   );
-}
-
-/**
- * Compact number formatter for axis labels. Cumulative Greek flow values
- * range from ~1e2 to ~1e7+ — Intl `compactDisplay` short-form keeps the
- * label legible without per-magnitude branching.
- */
-function fmtCompact(n: number): string {
-  if (!Number.isFinite(n)) return '—';
-  return n.toLocaleString('en-US', {
-    notation: 'compact',
-    maximumFractionDigits: 1,
-  });
 }
 
 export const FlowChart = memo(FlowChartInner);
