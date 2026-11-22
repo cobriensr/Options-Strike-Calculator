@@ -1,5 +1,6 @@
 import { theme } from '../../themes';
 import { tint } from '../../utils/ui-utils';
+import { SrHint } from '../ui/SrHint.js';
 
 export interface RatioTrajectory {
   /** Signed delta (current − baseline). */
@@ -78,13 +79,13 @@ export default function RatioCard({
           <div
             className="font-mono text-[10px] font-semibold tracking-tight"
             style={{ color: trajectoryHue }}
-            aria-label={`15-minute change ${formatDelta(trajectory.delta)}`}
           >
             {formatDelta(trajectory.delta)}
             <span className="text-muted ml-1 font-sans font-normal">
               {'/ '}
               {trajectory.spanMin}m
             </span>
+            <SrHint>{`${trajectory.spanMin}-minute change`}</SrHint>
           </div>
         )}
       </div>

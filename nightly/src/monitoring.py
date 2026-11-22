@@ -9,7 +9,7 @@ finding b11). The leak paths, and what closes each:
 - Signed URLs: httpx logs every request line at INFO, and the SDK's httpx
   integration puts the raw query in a breadcrumb's `http.query`. `scrub_event`
   strips the query from every URL anywhere in the event and drops those keys.
-- Data-library error text quotes values: polars and pyarrow quote cells, psycopg2's
+- Data-library error text quotes values: polars, pyarrow and DuckDB quote cells, psycopg2's
   `DETAIL: Failing row contains (...)` quotes a row and its connect errors name the Neon
   host. So the value of an exception from one of those libraries, or raised with one of
   their frames on its stack (a callback they call), is replaced. A builtin raised by C
@@ -43,8 +43,11 @@ RefitNotice = Literal[
 
 DATA_LIBRARY_REDACTED = "<redacted data-library message>"
 MAX_EXCEPTION_VALUE = 300
-# Root packages whose exceptions quote data. A polars runtime ships as `_polars_*`.
-_DATA_LIBRARY_ROOTS = frozenset({"polars", "pandas", "pyarrow", "numpy", "psycopg2"})
+# Root packages whose exceptions quote data. A polars runtime ships as `_polars_*`. DuckDB's
+# exception classes live in its C extension `_duckdb`; `duckdb` is the Python layer over it.
+_DATA_LIBRARY_ROOTS = frozenset(
+    {"polars", "pandas", "pyarrow", "numpy", "psycopg2", "duckdb", "_duckdb"}
+)
 # Statuses that are expected now and then (UW posts late; old days age out).
 _WARNING_STATUSES = frozenset({"not_posted", "unavailable"})
 # A URL up to its query or fragment, which is dropped. The run before `?` is bounded

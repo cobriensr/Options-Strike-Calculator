@@ -27,11 +27,24 @@ import {
   signalTooltip,
 } from './classify';
 import { fmtGex, fmtPct } from './formatters';
+import { SrHint } from '../ui/SrHint.js';
 
 /**
  * Strike | Class | Position | NetGamma | NetCharm | NetVanna | Δ5m | Δ15m | Δ30m | Vol Reinf.
  */
 const COLS = 'grid-cols-[76px_130px_1fr_88px_76px_76px_64px_64px_64px_64px]';
+
+/**
+ * What each vol-reinforcement mark means. The marks are glyphs (↑↑ / ↓↓ / —),
+ * so the same text is the mouse-hover `title` and the `role="img"` label a
+ * screen reader reads in place of the glyph.
+ */
+const VOL_REINFORCING_TEXT =
+  "Reinforcing — all three Δ% windows move with the netGamma sign; the strike's gamma is growing in that sign.";
+const VOL_OPPOSING_TEXT =
+  "Opposing — all three Δ% windows move against the netGamma sign; the strike's gamma is shrinking toward zero.";
+const VOL_NEUTRAL_TEXT =
+  'Neutral — mixed direction across the three windows, or sparse data (any null / zero prior value).';
 
 export interface StrikeTableProps {
   rows: GexStrikeLevel[];
@@ -216,18 +229,21 @@ export function StrikeTable({
                   <span
                     className="animate-fade-in-up inline-block rounded bg-sky-500/20 px-1.5 py-0.5 font-mono text-[9px] font-bold tracking-wider text-sky-300 uppercase ring-1 ring-sky-400/40"
                     title="Just entered Top 5 on the latest snapshot"
-                    aria-label="New entry"
                   >
                     New
+                    <SrHint>just entered Top 5 on the latest snapshot</SrHint>
                   </span>
                 )}
                 {isAnchor && (
                   <span
                     className="inline-block rounded bg-amber-500/15 px-1.5 py-0.5 font-mono text-[9px] font-bold tracking-wider text-amber-300 uppercase ring-1 ring-amber-400/30"
                     title="Oldest strike in the Top 5 — in the set longest this session"
-                    aria-label="Anchor strike"
                   >
                     Anchor
+                    <SrHint>
+                      oldest strike in the Top 5 — in the set longest this
+                      session
+                    </SrHint>
                   </span>
                 )}
               </div>
@@ -327,8 +343,9 @@ export function StrikeTable({
                 {s.volReinforcement === 'reinforcing' && (
                   <span
                     className="text-secondary font-mono text-[12px] font-bold"
-                    title="Reinforcing — all three Δ% windows move with the netGamma sign; the strike's gamma is growing in that sign."
-                    aria-label="Vol reinforcing"
+                    title={VOL_REINFORCING_TEXT}
+                    role="img"
+                    aria-label={VOL_REINFORCING_TEXT}
                   >
                     ↑↑
                   </span>
@@ -336,8 +353,9 @@ export function StrikeTable({
                 {s.volReinforcement === 'opposing' && (
                   <span
                     className="text-secondary font-mono text-[12px] font-bold"
-                    title="Opposing — all three Δ% windows move against the netGamma sign; the strike's gamma is shrinking toward zero."
-                    aria-label="Vol opposing"
+                    title={VOL_OPPOSING_TEXT}
+                    role="img"
+                    aria-label={VOL_OPPOSING_TEXT}
                   >
                     ↓↓
                   </span>
@@ -345,8 +363,9 @@ export function StrikeTable({
                 {s.volReinforcement === 'neutral' && (
                   <span
                     className="text-muted font-mono text-[12px]"
-                    title="Neutral — mixed direction across the three windows, or sparse data (any null / zero prior value)."
-                    aria-label="Vol neutral"
+                    title={VOL_NEUTRAL_TEXT}
+                    role="img"
+                    aria-label={VOL_NEUTRAL_TEXT}
                   >
                     —
                   </span>

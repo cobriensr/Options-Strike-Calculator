@@ -24,6 +24,7 @@ import type {
   OpeningFlowResponse,
   OpeningFlowTicket,
 } from '../hooks/useOpeningFlowSignal';
+import { genericElementsWithAriaLabel } from './helpers/aria';
 
 const fetchMock = vi.fn();
 globalThis.fetch = fetchMock as unknown as typeof fetch;
@@ -74,6 +75,25 @@ describe('OpeningFlowSignal', () => {
       json: async () => makeResponse({ windowStatus: 'before_open' }),
     });
     render(<OpeningFlowSignal />);
+    expect(
+      screen.getByRole('heading', { name: /opening flow signal/i }),
+    ).toBeInTheDocument();
+  });
+
+  it('leaves its wrapper div unnamed: the Pre-Market Signals region already names the panel', () => {
+    // ARIA 1.2 prohibits naming a generic div, and the panel only renders
+    // inside PreMarketSignals' SectionBox (a named region), so the wrapper
+    // carries no aria-labelledby. The heading still names the panel itself.
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => makeResponse({ windowStatus: 'before_open' }),
+    });
+    const { container } = render(<OpeningFlowSignal />);
+    const wrapper = container.firstElementChild;
+    expect(wrapper?.tagName).toBe('DIV');
+    expect(wrapper).not.toHaveAttribute('aria-labelledby');
+    expect(wrapper).not.toHaveAttribute('aria-label');
+    expect(genericElementsWithAriaLabel(container)).toEqual([]);
     expect(
       screen.getByRole('heading', { name: /opening flow signal/i }),
     ).toBeInTheDocument();

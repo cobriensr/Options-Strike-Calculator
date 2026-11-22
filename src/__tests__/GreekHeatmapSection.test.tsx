@@ -26,6 +26,7 @@ vi.mock('../hooks/useGreekHeatmap', () => ({
 }));
 
 import { GreekHeatmapSection } from '../components/GreekHeatmap';
+import { genericElementsWithAriaLabel, srHintText } from './helpers/aria';
 
 function makeStrike(
   strike: number,
@@ -102,16 +103,42 @@ describe('GreekHeatmapSection', () => {
     ).toBeInTheDocument();
   });
 
-  it('shows the underlying price chip', () => {
-    render(<GreekHeatmapSection marketOpen={true} />);
-    expect(screen.getByText('$562.50')).toBeInTheDocument();
+  it('shows the underlying price chip, saying what the price is in a hidden hint', () => {
+    const { container } = render(<GreekHeatmapSection marketOpen={true} />);
+    const price = screen.getByText('$562.50');
+    expect(price).toBeInTheDocument();
+    // The chip is a bare span: it names its price with a SrHint, not an
+    // aria-label (ARIA 1.2 prohibits naming a generic element).
+    const chip = price.parentElement as HTMLElement;
+    expect(srHintText(chip)).toBe('current price');
+    expect(chip).not.toHaveAttribute('aria-label');
+    expect(genericElementsWithAriaLabel(container)).toEqual([]);
   });
 
   it('shows the Long Γ regime chip with magnitude scaled to M/B', () => {
-    render(<GreekHeatmapSection marketOpen={true} />);
+    const { container } = render(<GreekHeatmapSection marketOpen={true} />);
     expect(screen.getByText('Long Γ')).toBeInTheDocument();
     // netGexK = 1591.2 (thousands of dollars = $1.59M) renders as $1.6M.
     expect(screen.getByText('+$1.6M')).toBeInTheDocument();
+    const chip = screen.getByText('Long Γ').parentElement as HTMLElement;
+    expect(srHintText(chip)).toBe('dealer regime and net GEX');
+    expect(chip).not.toHaveAttribute('aria-label');
+    expect(genericElementsWithAriaLabel(container)).toEqual([]);
+  });
+
+  it('shows an image-role dash named "Regime unavailable" when the regime is unknown', () => {
+    mockUseGreekHeatmap.mockReturnValue({
+      data: makeData({ regime: null, netGexK: null }),
+      loading: false,
+      error: null,
+      refresh: mockRefresh,
+    });
+    const { container } = render(<GreekHeatmapSection marketOpen={true} />);
+    expect(
+      screen.getByRole('img', { name: 'Regime unavailable' }),
+    ).toHaveTextContent('—');
+    expect(screen.queryByText('Long Γ')).not.toBeInTheDocument();
+    expect(genericElementsWithAriaLabel(container)).toEqual([]);
   });
 
   it('renders the ticker dropdown with SPY selected by default', () => {
@@ -195,8 +222,12 @@ describe('GreekHeatmapSection', () => {
 
   it('renders the full-chain heatmap rows with strike values', () => {
     render(<GreekHeatmapSection marketOpen={true} />);
-    // ATM badge only appears in the heatmap table.
-    expect(screen.getByText('ATM')).toBeInTheDocument();
+    // ATM badge only appears in the heatmap table, and spells itself out in
+    // a hidden hint rather than an aria-label on its bare span.
+    const atmBadge = screen.getByText('ATM');
+    expect(atmBadge).toBeInTheDocument();
+    expect(srHintText(atmBadge)).toBe('at the money');
+    expect(atmBadge).not.toHaveAttribute('aria-label');
     // Strike values appear in BOTH the callout chips AND the heatmap
     // rows — assert by row id to avoid ambiguity. Non-integer strikes
     // (e.g. 562.5) use `_` instead of `.` so the id is selector-safe.
@@ -340,7 +371,10 @@ describe('GreekHeatmapSection', () => {
     expect(
       screen.getByRole('button', { name: /next minute/i }),
     ).toBeInTheDocument();
-    expect(screen.getByLabelText(/^live$/i)).toBeInTheDocument();
+    // The chip's visible text already says "Live"; it carries no aria-label.
+    const chip = screen.getByText('Live');
+    expect(chip).not.toHaveAttribute('aria-label');
+    expect(screen.queryByText('Scrubbed')).not.toBeInTheDocument();
   });
 
   it('disables the scrubber when intradayRange.count <= 1', () => {
@@ -373,6 +407,10 @@ describe('GreekHeatmapSection', () => {
       | undefined;
     expect(lastCall?.at).toBe('2026-05-15T16:29:00.000Z');
     expect(lastCall?.enabled).toBe(false);
+    // The chip flips to its visible "Scrubbed" text, still with no aria-label.
+    const chip = screen.getByText('Scrubbed');
+    expect(chip).not.toHaveAttribute('aria-label');
+    expect(screen.queryByText('Live')).not.toBeInTheDocument();
   });
 
   it('Jump to live button resets scrubbedAt to null AND re-enables polling', () => {

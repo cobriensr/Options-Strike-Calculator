@@ -31,6 +31,7 @@ import type {
   SeriesType,
 } from 'lightweight-charts';
 import { SectionBox } from '../ui';
+import { SrHint } from '../ui/SrHint.js';
 import type { SPXCandle } from '../../hooks/useGexTarget';
 import type { NopePoint } from '../../hooks/useNopeIntraday';
 import type { TargetScore } from '../../utils/gex-target';
@@ -463,10 +464,14 @@ export const PriceChart = memo(function PriceChart({
             background: `${signalColor(momentum.signal)}15`,
             border: `1px solid ${signalColor(momentum.signal)}40`,
           }}
-          aria-label={`Momentum: ${signalLabel(momentum.signal)}`}
         >
           {signalLabel(momentum.signal)}
-          {momentum.rangeExpanding && ' \u26A1'}
+          {momentum.rangeExpanding && (
+            <span aria-hidden="true"> {'\u26A1'}</span>
+          )}
+          <SrHint>
+            {momentum.rangeExpanding ? 'momentum, range expanding' : 'momentum'}
+          </SrHint>
         </span>
       )}
 

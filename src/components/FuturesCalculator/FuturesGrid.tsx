@@ -97,9 +97,7 @@ const FuturesGrid = memo(function FuturesGrid({
             {/* Symbol header */}
             <div className="mb-1.5 flex items-baseline justify-between">
               <span className="font-sans text-[11px] font-bold tracking-wide">
-                <span className="text-accent" aria-label={`${label} ${name}`}>
-                  {label}
-                </span>
+                <span className="text-accent">{label}</span>
               </span>
               {vol && s.volumeRatio != null && (
                 <span

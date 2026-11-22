@@ -27,6 +27,7 @@ import {
   useGexbotData,
   type ConvexityTrendRow,
 } from '../../hooks/useGexbotData';
+import { SrHint } from '../ui/SrHint.js';
 import { Sparkline } from './Sparkline';
 import { GEXBOT_UNDERLYING_ORDER } from './ticker-order';
 import { formatDte } from './types';
@@ -128,16 +129,30 @@ function formatZcvr(value: number): string {
   return `${value > 0 ? '+' : '−'}${body}`;
 }
 
+const CONVEXITY_NAME = 'net convexity (zcvr)';
+
+/** What the cell's tone says in words ("no data" when it has no reading). */
+function cellRead(cell: CellData): string {
+  if (cell.latest == null) return 'no data';
+  if (cell.tone === 'buying') return 'net option buying';
+  if (cell.tone === 'selling') return 'net option selling';
+  return 'neutral';
+}
+
+/** Mouse-hover text: the whole reading, ticker, value and DTE included. */
 function cellTitle(cell: CellData): string {
-  const head = `${cell.ticker} net convexity (zcvr)`;
-  if (cell.latest == null) return `${head}: no data`;
-  const read =
-    cell.tone === 'buying'
-      ? 'net option buying'
-      : cell.tone === 'selling'
-        ? 'net option selling'
-        : 'neutral';
-  return `${head}: ${read} (${formatZcvr(cell.latest)}), ${formatDte(cell.minDte)}`;
+  const head = `${cell.ticker} ${CONVEXITY_NAME}`;
+  if (cell.latest == null) return `${head}: ${cellRead(cell)}`;
+  return `${head}: ${cellRead(cell)} (${formatZcvr(cell.latest)}), ${formatDte(cell.minDte)}`;
+}
+
+/**
+ * Screen-reader hint: only what the cell does not already show. The cell
+ * shows its ticker, DTE and value, so those stay out; the reading is the
+ * part a sighted user gets from colour.
+ */
+function cellHint(cell: CellData): string {
+  return `${CONVEXITY_NAME}: ${cellRead(cell)}`;
 }
 
 function ConvexityMatrixInner({ marketOpen }: ConvexityMatrixProps) {
@@ -222,7 +237,6 @@ function ConvexityMatrixInner({ marketOpen }: ConvexityMatrixProps) {
               data-testid={`convexity-cell-${cell.ticker}`}
               data-intensity={cell.intensity}
               title={cellTitle(cell)}
-              aria-label={cellTitle(cell)}
               className={`flex flex-col rounded-sm border ${styles.border} ${styles.bg} px-2 py-1.5`}
             >
               <div className="flex items-baseline justify-between">
@@ -242,6 +256,7 @@ function ConvexityMatrixInner({ marketOpen }: ConvexityMatrixProps) {
               <div className={styles.stroke}>
                 <Sparkline values={cell.values} width={80} height={20} />
               </div>
+              <SrHint>{cellHint(cell)}</SrHint>
             </div>
           );
         })}

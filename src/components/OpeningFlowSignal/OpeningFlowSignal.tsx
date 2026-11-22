@@ -49,13 +49,10 @@ export function OpeningFlowSignal(): React.ReactElement {
     );
 
   return (
-    <div aria-labelledby="opening-flow-heading">
+    <div>
       <header className="mb-2 flex items-start justify-between gap-2">
         <div className="min-w-0">
-          <h3
-            id="opening-flow-heading"
-            className="text-tertiary font-sans text-[11px] font-bold tracking-[0.08em] uppercase"
-          >
+          <h3 className="text-tertiary font-sans text-[11px] font-bold tracking-[0.08em] uppercase">
             Opening Flow Signal
           </h3>
           <p className="text-muted mt-0.5 font-sans text-[10px]">

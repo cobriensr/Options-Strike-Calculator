@@ -25,7 +25,9 @@ Rules for a step's author, because the scrubber cannot catch these:
   original, with its text, in the chain Sentry sends. (Inside a callback that polars or
   pandas calls, such as `map_elements` or `apply`, the library's frames are on the stack
   and the scrubber does redact it.)
-- `StepResult.detail` is a fixed phrase: no dates, counts, ids or exception text. It is
+- `StepResult.detail` is a fixed phrase. It may name an exit code or an exception class
+  (`script exited 1 (ValueError)`), which says which failure it is and nothing of the
+  data; it never carries a ticker, strike, price, count, date or exception text. It is
   part of the Sentry fingerprint (`monitoring.report_step`), so a detail that varies
   opens a new issue, and sends a new email, every night.
 
@@ -77,8 +79,9 @@ class StepContext:
 class StepResult:
     """A step's report. `counts` maps snake_case names to ints >= 0 (never row data, and
     plain ints: a numpy integer is not one). `detail` is a fixed phrase, safe to log and
-    to send to Sentry: no dates, counts, ids or exception text, since it is part of the
-    Sentry fingerprint and a varying one opens a new issue and email every night.
+    to send to Sentry: at most an exit code or an exception class name, and never a
+    ticker, strike, price, count, date or exception text, since it is part of the Sentry
+    fingerprint and a varying one opens a new issue and email every night.
     `partial` means work is left for the next night."""
 
     status: StepStatus

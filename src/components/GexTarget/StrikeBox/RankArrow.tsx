@@ -10,6 +10,10 @@
  * The numeric `delta` is positive when the strike improved (i.e., `prevRank
  * - currentRank`), so callers can pass it through unchanged for the up/down
  * cases. `Math.abs` is used for the down label to drop the leading minus.
+ *
+ * Each state is a glyph with no words a screen reader could use, so each is
+ * `role="img"` with an `aria-label`: ARIA 1.2 prohibits naming a bare span,
+ * and a screen reader would drop the label.
  */
 
 import { theme } from '../../../themes';
@@ -25,6 +29,7 @@ export function RankArrow({ info }: Readonly<{ info: RankChangeInfo }>) {
     return (
       <span
         style={{ color: '#7c7cff', fontSize: 9, fontWeight: 700 }}
+        role="img"
         aria-label="New entry"
       >
         NEW
@@ -34,6 +39,7 @@ export function RankArrow({ info }: Readonly<{ info: RankChangeInfo }>) {
     return (
       <span
         style={{ color: theme.green }}
+        role="img"
         aria-label={`Rank improved by ${info.delta}`}
       >
         ↑{info.delta}
@@ -43,13 +49,18 @@ export function RankArrow({ info }: Readonly<{ info: RankChangeInfo }>) {
     return (
       <span
         style={{ color: theme.red }}
+        role="img"
         aria-label={`Rank worsened by ${Math.abs(info.delta)}`}
       >
         ↓{Math.abs(info.delta)}
       </span>
     );
   return (
-    <span style={{ color: theme.textMuted }} aria-label="Rank unchanged">
+    <span
+      style={{ color: theme.textMuted }}
+      role="img"
+      aria-label="Rank unchanged"
+    >
       &mdash;
     </span>
   );

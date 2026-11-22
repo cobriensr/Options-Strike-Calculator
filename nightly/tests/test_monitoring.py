@@ -19,6 +19,7 @@ from time import monotonic
 from typing import Any, get_args
 from unittest.mock import create_autospec, patch
 
+import duckdb
 import numpy as np
 import pandas as pd
 import polars as pl
@@ -230,6 +231,56 @@ def test_scrub_redacts_data_library_messages(exc: BaseException, root: str) -> N
     assert NEON_HOST not in json.dumps(scrubbed)
 
 
+def _duckdb_error() -> BaseException:
+    """A real DuckDB conversion error: its message quotes the cell it could not convert."""
+    try:
+        duckdb.connect().execute(f"SELECT '{TAPE_VALUE}'::INTEGER")
+    except duckdb.Error as exc:
+        return exc
+    raise AssertionError("duckdb accepted the cast")
+
+
+def test_scrub_redacts_duckdb_messages() -> None:
+    # `_eod_flow.rollup` and `build_chains` run DuckDB in the job's own process.
+    event = _exception_event(_duckdb_error())
+    (value,) = _values(event)
+    assert value["module"].split(".")[0] == "_duckdb"  # the C extension owns the classes
+    assert TAPE_VALUE in value["value"]  # the leak guarded
+
+    scrubbed = scrub_event(event, {})
+
+    assert scrubbed is not None
+    (value,) = _values(scrubbed)
+    assert value["value"] == REDACTED
+    assert value["type"] == "ConversionException"  # the class name still reaches Sentry
+    assert TAPE_VALUE not in json.dumps(scrubbed)
+
+
+@pytest.mark.parametrize("module", ["duckdb", "duckdb.experimental", "_duckdb", "_duckdb.sub"])
+def test_scrub_redacts_every_duckdb_module_spelling(module: str) -> None:
+    # The classes live in `_duckdb`; the Python layer over it is `duckdb`, and a builtin
+    # raised from one of its frames quotes values too.
+    own = {"level": "error", "exception": {"values": [{"module": module, "value": TAPE_VALUE}]}}
+    from_frame = {
+        "level": "error",
+        "exception": {
+            "values": [
+                {
+                    "module": "builtins",
+                    "type": "ValueError",
+                    "value": TAPE_VALUE,
+                    "stacktrace": {"frames": [{"module": module}]},
+                }
+            ]
+        },
+    }
+
+    for event in (own, from_frame):
+        scrubbed = scrub_event(event, {})
+        assert scrubbed is not None
+        assert _values(scrubbed)[0]["value"] == REDACTED
+
+
 @pytest.mark.parametrize(
     "module", ["polars", "polars.exceptions", "_polars_runtime_32", "_polars_runtime_32.errors"]
 )
@@ -250,6 +301,8 @@ def test_scrub_redacts_every_polars_module_spelling(module: str) -> None:
     [
         "polarsx",
         "xpolars.errors",
+        "duckdbx.errors",
+        "xduckdb",
         "pandas_ext.errors",
         "numpy_financial",
         "psycopg2_pool",

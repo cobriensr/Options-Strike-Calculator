@@ -55,7 +55,7 @@ export default function LevelRow({
             backgroundColor: theme.accent,
             opacity: 0.6,
           }}
-          aria-label={`${formatPremium(level.totalPremium)} premium`}
+          aria-hidden="true"
         />
       </td>
 

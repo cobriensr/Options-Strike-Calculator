@@ -14,6 +14,7 @@ import {
 import { GEXBOT_UNDERLYING_ORDER } from '../components/Gexbot/ticker-order';
 import type { VelocityRow } from '../hooks/useGexbotData';
 import { dealerClaims } from './helpers/dealer-claims';
+import { genericElementsWithAriaLabel, srHintText } from './helpers/aria';
 
 const mockUseGexbotData = vi.fn();
 vi.mock('../hooks/useGexbotData', async () => {
@@ -25,6 +26,27 @@ vi.mock('../hooks/useGexbotData', async () => {
     useGexbotData: (...args: unknown[]) => mockUseGexbotData(...args),
   };
 });
+
+/** What a sighted user reads in `el`: its text without the hidden hints. */
+function shownText(el: Element): string {
+  const copy = el.cloneNode(true) as Element;
+  for (const hint of copy.querySelectorAll('.sr-only')) hint.remove();
+  return copy.textContent ?? '';
+}
+
+/** The value cells' spans (the ones carrying a verdict hint), in order. */
+function valueSpans(container: HTMLElement): Element[] {
+  return Array.from(container.querySelectorAll('td > span')).filter(
+    (el) => srHintText(el) !== null,
+  );
+}
+
+/** The verdict each value cell says in its hidden hint, in document order. */
+function verdictHints(container: HTMLElement): string[] {
+  return valueSpans(container)
+    .map((el) => srHintText(el))
+    .filter((hint): hint is string => hint !== null);
+}
 
 function makeRow(overrides: Partial<VelocityRow>): VelocityRow {
   return {
@@ -328,19 +350,31 @@ describe('<DexoflowVelocityTape>', () => {
     const cells = Array.from(row.querySelectorAll('td')).slice(1);
     expect(cells).toHaveLength(3);
     for (const cell of cells) {
-      expect(cell.textContent).toContain('—');
-      expect(cell.textContent).not.toMatch(/\+0|0\.00/);
+      // The hidden hint's separator is also a dash, so read what is shown.
+      expect(shownText(cell)).toContain('—');
+      expect(shownText(cell)).not.toMatch(/\+0|0\.00/);
     }
   });
 
   it('keeps a genuine zero change visible as flat, distinct from a dash', () => {
     mockRows([makeRow({ ticker: 'SPX', dAggDex: 0, dZgr: 0, dZcvr: 0 })]);
     const { container } = render(<DexoflowVelocityTape marketOpen />);
-    const labels = Array.from(
-      container.querySelectorAll('td span[aria-label]'),
-    ).map((el) => el.getAttribute('aria-label'));
-    expect(labels).toHaveLength(3);
-    for (const label of labels) expect(label).toMatch(/^flat /);
+    // Each value cell is a bare span: it names its verdict with a hint, not
+    // an aria-label (ARIA 1.2 prohibits naming a generic element).
+    expect(verdictHints(container)).toEqual(['flat', 'flat', 'flat']);
+    expect(genericElementsWithAriaLabel(container)).toEqual([]);
+  });
+
+  it('says "no data" in the hint of a null cell, and "positive" / "negative" for signed ones', () => {
+    mockRows([
+      makeRow({ ticker: 'SPX', dAggDex: 100, dZgr: -100, dZcvr: null }),
+    ]);
+    const { container } = render(<DexoflowVelocityTape marketOpen />);
+    expect(verdictHints(container)).toEqual([
+      'positive',
+      'negative',
+      'no data',
+    ]);
   });
 
   it('uses emerald for positive, rose for negative', () => {
@@ -402,14 +436,19 @@ describe('<DexoflowVelocityTape>', () => {
   it('shows sub-unit values to 2 decimals and a zero as 0', () => {
     mockRows([makeRow({ ticker: 'SPX', dAggDex: 0.07, dZgr: -0.5, dZcvr: 0 })]);
     const { container } = render(<DexoflowVelocityTape marketOpen />);
-    const text = container.querySelector('tbody')?.textContent ?? '';
+    const tbody = container.querySelector('tbody')!;
+    const text = shownText(tbody);
     expect(text).toContain('+0.07');
     expect(text).toContain('−0.50');
     expect(text).not.toMatch(/\d\.\d{3,}/);
-    const labels = Array.from(
-      container.querySelectorAll('td span[aria-label]'),
-    ).map((el) => el.getAttribute('aria-label'));
-    expect(labels).toContain('flat 0');
+    // Each cell shows its arrow glyph and value, and says its verdict in the
+    // hint. The zero cell shows exactly "─0": not "0.00", not "+0".
+    expect(valueSpans(container).map((el) => shownText(el))).toEqual([
+      '▲+0.07',
+      '▼−0.50',
+      '─0',
+    ]);
+    expect(verdictHints(container)).toEqual(['positive', 'negative', 'flat']);
   });
 
   it('shows only the 14 underlyings, never the futures views', () => {

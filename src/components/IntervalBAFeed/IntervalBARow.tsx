@@ -15,6 +15,7 @@ import { useNetFlowHistory } from '../../hooks/useNetFlowHistory.js';
 import { useTickerCandles } from '../../hooks/useTickerCandles.js';
 import { ContractTapeChart } from '../charts/ContractTapeChart.js';
 import ErrorBoundary from '../ErrorBoundary.js';
+import { SrHint } from '../ui/SrHint.js';
 import { EXPANDED_ROW_CHART_HEIGHT } from '../../constants/chart-layout.js';
 import { handleStaleChunk } from '../../utils/handle-stale-chunk.js';
 import type { IntervalBAFeedAlert } from '../../hooks/useIntervalBAFeed.js';
@@ -109,7 +110,15 @@ type Moneyness = {
   pct: number;
   label: string;
   cls: string;
+  /** Mouse-hover sentence: the pill's own words, then `srText`. */
   tooltip: string;
+  /**
+   * Screen-reader hint: only what the pill does not already show. The pill
+   * shows its `label` ("ITM 1.7%"), so this is the spot / strike relation
+   * (and, for OTM, the distance to ITM) without the label's words again.
+   * `tooltip` is built from it, so the two cannot drift.
+   */
+  srText: string;
 };
 
 function getMoneyness(
@@ -122,36 +131,43 @@ function getMoneyness(
       ? ((spot - strike) / spot) * 100
       : ((strike - spot) / spot) * 100;
   const abs = Math.abs(signed);
+  const spotText = spot.toFixed(2);
+  const isCall = optionType === 'C';
+  const side = isCall ? 'Call' : 'Put';
   if (abs <= 0.05) {
+    const srText = `spot ${spotText} is within ±0.05% of strike ${strike}.`;
     return {
       state: 'ATM',
       pct: signed,
       label: 'ATM',
       cls: 'border-neutral-500/40 bg-neutral-800/60 text-neutral-200',
-      tooltip: `ATM — spot ${spot.toFixed(2)} is within ±0.05% of strike ${strike}.`,
+      tooltip: `ATM — ${srText}`,
+      srText,
     };
   }
   if (signed > 0) {
+    // A call is ITM below spot, a put above it.
+    const srText = `spot ${spotText} ${isCall ? '>' : '<'} strike ${strike}.`;
     return {
       state: 'ITM',
       pct: signed,
       label: `ITM ${formatMoneynessPct(signed)}`,
       cls: 'border-emerald-500/40 bg-emerald-950/30 text-emerald-200',
-      tooltip:
-        optionType === 'C'
-          ? `Call is ITM by ${formatMoneynessPct(signed)} — spot ${spot.toFixed(2)} > strike ${strike}.`
-          : `Put is ITM by ${formatMoneynessPct(signed)} — spot ${spot.toFixed(2)} < strike ${strike}.`,
+      tooltip: `${side} is ITM by ${formatMoneynessPct(signed)} — ${srText}`,
+      srText,
     };
   }
+  const needs = isCall
+    ? `Needs ${(strike - spot).toFixed(2)} pts of upside to go ITM.`
+    : `Needs ${(spot - strike).toFixed(2)} pts of downside to go ITM.`;
+  const srText = `spot ${spotText} ${isCall ? '<' : '>'} strike ${strike}. ${needs}`;
   return {
     state: 'OTM',
     pct: signed,
     label: `OTM ${formatMoneynessPct(signed)}`,
     cls: 'border-amber-500/40 bg-amber-950/30 text-amber-200',
-    tooltip:
-      optionType === 'C'
-        ? `Call is OTM by ${formatMoneynessPct(signed)} — spot ${spot.toFixed(2)} < strike ${strike}. Needs ${(strike - spot).toFixed(2)} pts of upside to go ITM.`
-        : `Put is OTM by ${formatMoneynessPct(signed)} — spot ${spot.toFixed(2)} > strike ${strike}. Needs ${(spot - strike).toFixed(2)} pts of downside to go ITM.`,
+    tooltip: `${side} is OTM by ${formatMoneynessPct(signed)} — ${srText}`,
+    srText,
   };
 }
 
@@ -301,9 +317,9 @@ export const IntervalBARow = memo(function IntervalBARow({
             <span
               title={moneyness.tooltip}
               className={`cursor-help rounded border px-1.5 py-0.5 font-sans text-[10px] font-bold ${moneyness.cls}`}
-              aria-label={moneyness.tooltip}
             >
               {moneyness.label}
+              <SrHint>{moneyness.srText}</SrHint>
             </span>
           )}
         </span>

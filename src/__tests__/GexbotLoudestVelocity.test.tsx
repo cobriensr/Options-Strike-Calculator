@@ -15,6 +15,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { DealerStateSummaryStrip } from '../components/Gexbot/DealerStateSummaryStrip';
 import { DexoflowVelocityTape } from '../components/Gexbot/DexoflowVelocityTape';
 import type { VelocityRow } from '../hooks/useGexbotData';
+import { srHintText } from './helpers/aria';
 
 const mockFetchJson = vi.fn();
 vi.mock('../hooks/useMarketData.fetchers', () => ({
@@ -86,11 +87,11 @@ describe('LOUDEST tile and velocity tape together', () => {
   });
 
   it.each([
-    ['positive', 1.2, /taker \+Δ flow \+1\.20/, 'positive +1.20'],
-    ['negative', -1.2, /taker −Δ flow −1\.20/, 'negative −1.20'],
+    ['positive', 1.2, /taker \+Δ flow \+1\.20/, '+1.20'],
+    ['negative', -1.2, /taker −Δ flow −1\.20/, '−1.20'],
   ])(
     'agree on a %s change for the same row',
-    async (_name, dAggDex, tileText, cellLabel) => {
+    async (verdict, dAggDex, tileText, shownValue) => {
       serve([
         velocityRow('SPX', { dAggDex, typicalAbsDAggDex: 0.4 }),
         velocityRow('QQQ', { dAggDex: 0.1, typicalAbsDAggDex: 0.4 }),
@@ -100,8 +101,11 @@ describe('LOUDEST tile and velocity tape together', () => {
       const spxRow = within(tape)
         .getAllByRole('row')
         .find((r) => r.textContent?.startsWith('SPX'))!;
-      const tapeCell = spxRow.querySelector('td span[aria-label]');
-      expect(tapeCell?.getAttribute('aria-label')).toBe(cellLabel);
+      // The first value cell shows the value and says its verdict in a
+      // hidden hint (a bare span can't carry an aria-label).
+      const tapeCell = spxRow.querySelectorAll('td')[1]?.querySelector('span');
+      expect(tapeCell).toHaveTextContent(shownValue);
+      expect(srHintText(tapeCell!)).toBe(verdict);
 
       await waitFor(() =>
         expect(

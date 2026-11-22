@@ -3,7 +3,8 @@
 Railway cron service (`nightly`) that lands the Unusual Whales options Full Tape
 in Cloudflare R2: one Parquet object per trading day. After the tape it fills the
 Lottery Finder and Silent Boom outcomes in Neon from that tape, checks that
-recent sessions have them, and refits the Lottery Finder score weights from them.
+recent sessions have them, refits the Lottery Finder score weights from them, and
+keeps the research state, reports and logs in the same bucket under `research/`.
 It runs once and exits.
 
 ## What it does
@@ -14,8 +15,9 @@ Each run:
    days of catch-up (`CATCHUP_MAX_DAYS`). The calendar starts at 2026-01-02
    (`TAPE_START`). A planned day starts only inside the window under "How much of
    the run the tape gets". At the measured pace (204 s a day at the median, 324 s
-   the slowest) its 11,400 s start about 55 days a night, 35 at the slowest, so
-   all 30 fit: a night lands up to 30 days and a longer backlog takes more nights.
+   the slowest) its 6,900 s start about 34 days a night, 22 at the slowest, so
+   the 30 fit at the median pace and not at the slowest: a night lands up to 30
+   days, and a longer backlog or the slowest pace takes more nights.
 2. For each planned day, newest first: downloads the zip from UW, converts it to
    Parquet with polars (zstd level 3), checks it (see "Row and day checks"), and
    uploads it to R2. The upload is checked against the local byte count. A
@@ -37,6 +39,20 @@ Each run:
      (see "Alert meanings").
    - `lottery-refit` moves one candidate version of the Lottery Finder score weights
      one step through its lifecycle, on tonight's outcomes (see "Refit").
+   - `research-derive` keeps the per-day state the research reports read: the chains
+     aggregates, and the per-fire exit-policy and flow-timing values. It rebuilds each
+     day whose stored fingerprint is stale, newest first, from a tape it downloads
+     itself (up to 600 s a day; `enrich-outcomes` fetched the same day separately).
+   - `eod-flow-rollup`, `whale-plots`, `exit-policy-report`, `flow-timing-report`,
+     `feature-audit`, `outcome-mining`, `score-lineage`, `lottery-tracking`,
+     `quality-sim` and `takeit-drift` each publish a dated report, plot set or CSV under
+     `research/`, and every one but the rollup publishes its log (see "Research
+     outputs"). The rollup and `whale-plots` read the chains state and the two fire
+     reports read the derived state. `lottery-tracking` extends one growing CSV with a
+     row for every enriched fire date after the file's last row, so a night it missed is
+     filled on the next run. The others read Neon alone. The seven steps that run a
+     script do it as a subprocess with no R2, UW or Sentry secret in its environment,
+     and its output goes to the step's log in R2, not to the job's logs or Sentry.
 
    Each step has its own deadline, which leaves every later step its reserve. A
    step never starts work its budget cannot cover, but a unit of work that
@@ -54,35 +70,49 @@ Logs go to stdout: Railway labels every stderr line an error.
 ### How much of the run the tape gets
 
 The tape and the steps share the 5 h run. The tape stops at the run deadline less
-the steps' reserve (`reserve_seconds(STEPS)`, the sum of their `min_seconds`), and
-starts a day only with `DAY_BUDGET_SECONDS` of that left. So a day starts only in
-the first `RUN_DEADLINE_SECONDS − reserve − DAY_BUDGET_SECONDS` seconds of the run:
+the steps' reserve (`reserve_seconds(STEPS)`, the sum of their `min_seconds`;
+`main.py` passes it as the tape's deadline), and starts a day only with
+`DAY_BUDGET_SECONDS` of that left. So a day starts only in the first
+`RUN_DEADLINE_SECONDS − reserve − DAY_BUDGET_SECONDS` seconds of the run. The table
+is for the steps registered now, with `ENRICH_DAY_BUDGET_SECONDS` at its shipped 900 s
+and, in the last column, at its 1,800 s cap:
 
-| Quantity                                                                                                            | Seconds             |
-| ------------------------------------------------------------------------------------------------------------------- | ------------------- |
-| Run deadline (`RUN_DEADLINE_SECONDS`)                                                                               | 18,000 (5 h)        |
-| Steps' reserve: `ENRICH_DAY_BUDGET_SECONDS` 900 + `OUTCOME_CHECK_BUDGET_SECONDS` 300 + `REFIT_BUDGET_SECONDS` 1,800 | 3,000               |
-| Tape deadline: 18,000 − 3,000                                                                                       | 15,000 (4 h 10 min) |
-| Minimum left to start a day (`DAY_BUDGET_SECONDS`)                                                                  | 3,600               |
-| Window in which a day may start: 15,000 − 3,600                                                                     | 11,400 (3 h 10 min) |
+| Quantity                                           | Seconds (enrich 900) | Seconds (enrich at its 1,800 cap) |
+| -------------------------------------------------- | -------------------- | --------------------------------- |
+| Run deadline (`RUN_DEADLINE_SECONDS`)              | 18,000 (5 h)         | 18,000 (5 h)                      |
+| Steps' reserve (the sum below)                     | 7,500                | 8,400                             |
+| Tape stop: 18,000 − reserve                        | 10,500 (2 h 55 min)  | 9,600 (2 h 40 min)                |
+| Minimum left to start a day (`DAY_BUDGET_SECONDS`) | 3,600                | 3,600                             |
+| Window in which a day may start: tape stop − 3,600 | 6,900 (1 h 55 min)   | 6,000 (1 h 40 min)                |
 
-A night starts about 11,400 divided by the seconds one day takes. On Railway a day
-takes 204 s to land at the median (86 days, 2026-10-29 to 11-12; 245 s at the 90th
-percentile, 324 s the slowest), and the two 30-day catch-up nights took 5,956 s and
-6,110 s. So the window could start about 55 days at the median pace and 35 at the
-slowest, and the 30-day cap (`CATCHUP_MAX_DAYS`), not the window, sets how many
-land. Every step added to `STEPS` takes its `min_seconds` out of the window. It is
-11,400 s with phase 4's refit step in (still above 30 days at the slowest pace). It
-would fall to 10,500 s if `ENRICH_DAY_BUDGET_SECONDS` were raised to its 1,800 cap
-(the plan's 10,500 to 11,400 s range). The plan puts it at 6,900 s once phase 3's
-research and report steps are in too (enrich budget at 900 s; the stage table in D2
-of `docs/superpowers/plans/2026-10-29-nightly-pipeline-phase2.md`). At 6,900 s the
-slowest pace starts about 21 days, so a full 30-day backlog may then take two
-nights.
+The reserve is the sum of the fourteen steps' `min_seconds`: `enrich-outcomes` 900
+(`ENRICH_DAY_BUDGET_SECONDS`), `outcome-check` 300 (`OUTCOME_CHECK_BUDGET_SECONDS`),
+`lottery-refit` 1,800 (`REFIT_BUDGET_SECONDS`), `research-derive` 900
+(`RESEARCH_DAY_BUDGET_SECONDS`), eight report steps at 300 (`REPORT_BUDGET_SECONDS`) and
+`exit-policy-report` and `flow-timing-report` at 600 (`LARGE_REPORT_BUDGET_SECONDS`):
+900 + 300 + 1,800 + 900 + 8 × 300 + 2 × 600 = 7,500. The cap's 8,400 is 7,500 − 900 +
+1,800. Every step added to `STEPS` takes its `min_seconds` out of the window.
+
+A night starts about the window divided by the seconds one day takes, rounded up: the
+first day starts at once, so a window of W seconds admits the starts at 0, p, 2p, ...
+below W. On Railway a day takes 204 s to land at the median (86 days, 2026-10-29 to
+11-12; 245 s at the 90th percentile, 324 s the slowest), and the two 30-day catch-up
+nights took 5,956 s and 6,110 s in all, so each fit inside 6,900 s. Worked that way
+from those pace figures, the 6,900 s window starts about 34 days at the median pace
+(6,900 ÷ 204 = 33.8) and about 22 at the slowest (6,900 ÷ 324 = 21.3). At the cap's
+6,000 s it is about 30 (29.4) and 19 (18.5). So at the median pace the 30-day cap
+(`CATCHUP_MAX_DAYS`) and the window are about equal at the cap's 6,000 s, and the cap
+is the lower limit at 6,900 s. At the slowest pace a full 30-day backlog takes two
+nights either way. These are calculated from the earlier pace, not measured on a night
+with the research steps in; Task 16, Step 4 of
+`docs/superpowers/plans/2026-11-05-nightly-pipeline-phase3.md` adds the measured days
+per night.
+
 `test_pipeline_order_and_reserve` (`tests/test_pipeline.py`) pins the step order and
 each step's reserve, and `test_deadline_constants_bound_the_run`
 (`tests/test_main.py`) fails if the reserve leaves less than two
-`DAY_BUDGET_SECONDS` of the run for the tape.
+`DAY_BUDGET_SECONDS` of the run for the tape (at the cap, 8,400 + 2 × 3,600 = 15,600 is
+within the 18,000 s run).
 
 Constants (deadlines, retries, thresholds) live in `src/constants.py`, not in
 env vars. Design and decisions:
@@ -101,11 +131,11 @@ config-file path (config-as-code is deprecated).
 - Restart policy `NEVER`: a failed run alerts and waits for the next night
   instead of looping and re-downloading the tape.
 - Root directory `/` (the repo root) and Dockerfile path `/nightly/Dockerfile`.
-  The build context is the repo root because the image copies ten files from
-  outside `nightly/`: the enrich scripts, the refit modules and what they import
-  (`IMAGE_FILES` in `tests/test_image_layout.py`; build it with
+  The build context is the repo root because the image copies twenty-one files from
+  outside `nightly/`: the enrich scripts, the refit modules, the research reports and
+  what they import (`IMAGE_FILES` in `tests/test_image_layout.py`; build it with
   `docker build -f nightly/Dockerfile .`).
-- Watch paths, exactly these fourteen: only the image inputs redeploy, so doc and test
+- Watch paths, exactly these twenty-five: only the image inputs redeploy, so doc and test
   edits don't.
   - `/nightly/Dockerfile`
   - `/nightly/requirements.txt`
@@ -117,10 +147,21 @@ config-file path (config-as-code is deprecated).
   - `/scripts/backfill_lottery_scores.py`
   - `/scripts/enrich_lottery_outcomes.py`
   - `/scripts/enrich_silent_boom_outcomes.py`
+  - `/scripts/_eod_flow.py`
+  - `/scripts/_report_weights.py`
+  - `/scripts/exit_policy_search.py`
+  - `/scripts/flow_inversion_timing.py`
+  - `/scripts/feature_audit.py`
+  - `/scripts/daily_tracker.py`
+  - `/scripts/mine_outcome_patterns.py`
+  - `/scripts/score_lineage_audit.py`
   - `/ml/src/lottery_exit_policies.py`
   - `/ml/src/lottery_refit_gates.py`
   - `/ml/src/lottery_scoring.py`
   - `/ml/src/lottery_weights.py`
+  - `/ml/src/whale_plots.py`
+  - `/ml/src/takeit_drift_monitor.py`
+  - `/ml/src/score_components.py`
 
 A file added to or removed from the image changes six places together, listed at
 the top of the `Dockerfile`: its `COPY` lines, these watch paths, the root
@@ -131,9 +172,24 @@ of `IMAGE_FILES`.
 **Push hazard.** A redeploy during a run (about 07:15 to 12:30 UTC) can stop the
 run. A push that touches any watch path redeploys the service, and the list above
 includes files that other work edits: the shared scripts under `scripts/`, the ones
-under `ml/src/` and the root `.dockerignore`. Push any change to a watch path
-after 15:00 CT and outside 07:15 to 12:30 UTC. A killed run isn't retried until
-the next night unless someone runs `railway cron run --service nightly`.
+under `ml/src/` and the root `.dockerignore`. The research steps added more of them:
+the six report scripts (`scripts/exit_policy_search.py`,
+`scripts/flow_inversion_timing.py`, `scripts/feature_audit.py`,
+`scripts/daily_tracker.py`, `scripts/mine_outcome_patterns.py` and
+`scripts/score_lineage_audit.py`), their helpers `scripts/_eod_flow.py` and
+`scripts/_report_weights.py`, and `ml/src/whale_plots.py`,
+`ml/src/takeit_drift_monitor.py` and `ml/src/score_components.py`. Push any change to
+a watch path after 15:00 CT and outside 07:15 to 12:30 UTC. A killed run isn't
+retried until the next night unless someone runs `railway cron run --service nightly`.
+A kill during `research-derive` loses at most the day in flight: the manifest is saved
+once per day, after that day's objects (see "The derive manifest").
+
+**Push guard.** `.githooks/pre-push` (`scripts/nightly-push-window.mjs`) refuses a push
+to main that changes a file the image is built from during 07:15 to 12:30 UTC, and
+`NIGHTLY_PUSH_WINDOW_OK=1 git push` passes one push. It does not enforce the 15:00 CT rule,
+and it needs `git config core.hooksPath .githooks` once per clone. A clone that has not
+fetched origin's main is told to `git fetch origin`, rebase and push again. With no `node`
+on the hook's PATH it prints a line and lets the push through.
 
 ## Env vars
 
@@ -146,12 +202,14 @@ one is missing. There is no `.env` reading and no secrets on the command line.
 | `R2_ACCESS_KEY_ID`     | yes      | Cloudflare R2 access key                             |
 | `R2_SECRET_ACCESS_KEY` | yes      | Cloudflare R2 secret                                 |
 | `R2_ENDPOINT_URL`      | yes      | R2 S3 endpoint; must start with `https://`           |
-| `R2_BUCKET_FULLTAPE`   | yes      | Bucket that holds the `fulltape/` prefix             |
+| `R2_BUCKET_FULLTAPE`   | yes      | Bucket that holds `fulltape/` and `research/`        |
 | `DATABASE_URL`         | yes      | Neon URL; scheme `postgres://` or `postgresql://`    |
 | `SENTRY_DSN`           | no       | Without it Sentry is off; a malformed one fails boot |
 
 The same variable names are in the repo `CLAUDE.md` env table. The bucket also
-holds `gexbot-eod/`, written by another job; this service never touches it.
+holds `gexbot-eod/`, written by another job; this service never touches it. The
+research steps add no variable: they write under `research/` in the same bucket and
+read `DATABASE_URL`.
 
 `DATABASE_URL` is a Railway reference to uw-stream's variable
 (`${{uw-stream.DATABASE_URL}}`), so a rotation reaches both services. The steps
@@ -161,10 +219,14 @@ use it: `enrich-outcomes` updates rows in `lottery_finder_fires` and
 (`lottery_score_versions`, `lottery_score_pointers`) and writes a candidate's row
 in `lottery_score_versions`. A promotion, which ships off, also rewrites `score`
 and `score_version` in `lottery_finder_fires`, writes `lottery_fire_value_snapshots`
-and moves the `active` pointer. The refit reads no other variable. It may be
-Neon's pooled URL. The job connects to the direct host instead (`-pooler` removed from the
-first host label, same credentials), because the pooler rejects the statement
-timeout the job sets at connect (`DB_STATEMENT_TIMEOUT_MS`, 300 s).
+and moves the `active` pointer. The refit reads no other variable. The research
+steps use it too, almost all for reads: only `takeit-drift` writes, upserting
+`ml_`-prefixed metric rows (`ml_auc_7d_peak`, `ml_auc_30d_peak`, `ml_auc_7d_realized`,
+`ml_auc_30d_realized`) into `takeit_health_daily`, one per feed and metric on
+(`date`, `feed`, `metric_name`). The variable may be Neon's pooled URL. The job
+connects to the direct host instead (`-pooler` removed from the first host label, same
+credentials), because the pooler rejects the statement timeout the job sets at connect
+(`DB_STATEMENT_TIMEOUT_MS`, 300 s).
 
 ## Where the days live in R2
 
@@ -928,6 +990,167 @@ a promotion write the same fires. It connects with `DATABASE_URL` from `.env.loc
 which is the production database. Resolve the Sentry issue afterwards, so the next
 residue mails again.
 
+## Research outputs
+
+The research steps keep their state, reports and logs in the same bucket as the tape,
+under `research/` (the bucket named by `R2_BUCKET_FULLTAPE`). In the table, `{session}`
+is the run's last completed session and `{day}` a tape day. A rerun for the same
+session overwrites that session's keys. The job deletes only an object it has just
+written and could not verify (`r2_store.verify_upload_size`), and nothing else under
+`research/`. **State** is read back by the job; **output** is for you.
+
+| Key                                                                                                                | Holds                                 | Written by                   | Kind             |
+| ------------------------------------------------------------------------------------------------------------------ | ------------------------------------- | ---------------------------- | ---------------- |
+| `research/_state/derive-manifest.json`                                                                             | family, then day, then fingerprint    | `research-derive`, the seed  | state            |
+| `research/_logs/{session}/{step}.log`                                                                              | a step's captured stdout and stderr   | every research step but two  | diagnostics      |
+| `research/eod-flow/by-day/{day}-chains.parquet`                                                                    | per-chain end-of-day aggregates       | `research-derive`, the seed  | state            |
+| `research/eod-flow/{session}/cumulative-rollup.json`, `cumulative-headlines.txt`                                   | the rollup and its headlines          | `eod-flow-rollup`            | output           |
+| `research/whale-plots/{session}/*.png`                                                                             | the charts                            | `whale-plots`                | output           |
+| `research/exit-policy/derived/{day}.parquet`                                                                       | per-fire exit-policy values           | `research-derive`            | state            |
+| `research/exit-policy/{session}/lottery-exit-policy-search-*.md`                                                   | report                                | `exit-policy-report`         | output           |
+| `research/flow-timing/derived/{day}.parquet`                                                                       | per-fire inversion timing             | `research-derive`            | state            |
+| `research/flow-timing/{session}/flow-inversion-timing-*.md`                                                        | report                                | `flow-timing-report`         | output           |
+| `research/feature-audit/{session}/lottery-feature-audit-*.md`                                                      | report                                | `feature-audit`              | output           |
+| `research/outcome-mining/{session}/lottery-composite-candidates-*.md`                                              | report                                | `outcome-mining`             | output           |
+| `research/score-lineage/{session}/lottery-score-lineage-*.md`                                                      | report                                | `score-lineage`              | output           |
+| `research/lottery-tracking/state/lottery-tracking.csv`; `research/lottery-tracking/{session}/lottery-tracking.csv` | the appended tracking CSV; a snapshot | `lottery-tracking`, the seed | state + snapshot |
+| `research/quality-sim/{session}/lottery-quality-sim-{session}.csv`                                                 | per-fire tier simulation              | `quality-sim`                | output           |
+| `research/takeit-drift/{session}/takeit-drift-{session}.md`, `reliability_{feed}_{session}.png`                    | the drift report and its plots        | `takeit-drift`               | output           |
+
+In the tracking row the seed writes only the state key, never the dated snapshot. The
+seed also writes the earlier dated reports, plots and simulation CSVs under
+`research/{family}/{date}/` (`SEED_RULES` in `src/seed_research.py`), which the report
+rows above do not list as written by it.
+
+To browse them, open the Cloudflare dashboard, then R2, then the bucket, then the
+`research/` prefix, and download an object to read it. The reports are Markdown, CSV
+and PNG files; the parquet files are state, not reports.
+
+**Where each report reads.** `eod-flow-rollup` and `whale-plots` read the chains state.
+`exit-policy-report` and `flow-timing-report` read the derived state of the days the
+manifest calls fresh, and Neon for the fires. None of the four reads the tape.
+`feature-audit`, `outcome-mining`, `score-lineage`, `quality-sim` and `takeit-drift` read
+Neon alone, and `lottery-tracking` extends the stored tracking CSV with what it reads
+from Neon. Six report scripts
+(`exit-policy-report`, `flow-timing-report`, `feature-audit`, `outcome-mining`,
+`score-lineage` and `lottery-tracking`) score fires against the weights version the
+`active` pointer names in the store, and their report text names it. If that read
+fails the script exits non-zero and writes nothing, with no fallback to the frozen
+weights JSON; the alert reads `script exited 1 (_report_weights.ActiveWeightsError)`.
+`research-derive`, `eod-flow-rollup`, `quality-sim` and `takeit-drift` run
+in the job's own process; the other seven steps run their script as a subprocess.
+
+**Rebuilding the tracking CSV.** The nightly never recomputes an older row, so after
+outcomes are re-enriched the old rows no longer match the data they were computed on.
+A weights promotion does the same to the tiers: it moves the active cutoffs, so rows
+written before it no longer compare with rows written after it, and a rebuild puts the
+whole series on one set of cutoffs. To redo the whole file, run
+`scripts/daily_tracker.py --csv COPY --rebuild` locally on a copy of the state, with the
+database URL in the environment, and put the file back at the state key. It writes one
+row for every enriched fire date, each as of its date, and discards the rows the copy
+held. Overwriting the state is the owner's call, so ask
+before doing it (the R2 rule). The nightly never passes `--rebuild`; its next run
+extends the rebuilt file as it does any other.
+
+**The logs.** `research/_logs/{session}/{step}.log` holds everything a step's script
+printed: all of `whale-plots`, `exit-policy-report`, `flow-timing-report`,
+`feature-audit`, `outcome-mining`, `score-lineage` and `lottery-tracking`, and what the
+research code of `quality-sim` and `takeit-drift` printed. `research-derive` and
+`eod-flow-rollup` write none. A step publishes its log every night it runs the script,
+whether it succeeded or failed, and before its outputs. It is the only place that
+output appears: Railway's log and Sentry get a step's name, status, counts, exit code
+and an exception class name, never text. When a research step fails, read its log first.
+`takeit-drift`'s log also holds the report's text when no metric was written.
+
+### The derive manifest
+
+`research/_state/derive-manifest.json` is `{"version": 1, "families": {...}}`, where
+each family (`chains`, `exit-policy`, `flow-timing`) maps a day to a fingerprint. A
+day is fresh when its entry equals the fingerprint its tape and fires give now:
+
+| Family        | Fingerprint                                                                               |
+| ------------- | ----------------------------------------------------------------------------------------- |
+| `chains`      | `{tape ETag}\|v{CHAINS_VERSION}`, or the literal `seed`                                   |
+| `exit-policy` | `{tape ETag}\|v{DERIVE_VERSION}\|{md5}` over the day's enriched fires                     |
+| `flow-timing` | `{tape ETag}\|v{DERIVE_VERSION}\|{md5}` over the ids of the day's fires with an inversion |
+
+So a re-landed tape, a new version, or a fire that gains an outcome or an inversion
+makes the day stale, and `research-derive` rebuilds it, newest first. A chains day marked
+`seed` is one seeded from the retired CSV archive: it is never re-derived, whatever
+the tape's ETag does (`seed` is fresh for no other family).
+
+- **A run rewrites the whole manifest.** It reads it at the start and saves it after
+  each day it derives, once that day's objects are in R2. A hand edit made while a run
+  is going is overwritten. Edit it outside 07:15–12:30 UTC, Tuesday to Saturday.
+- **A malformed manifest fails the step** (`derive manifest is malformed`) and is never
+  reset silently, a stored JSON `null` included. The top level must be exactly
+  `version` (1) and `families`, with known family names and ISO-date keys. The two
+  fire-family reports read the manifest too, so a malformed one also raises
+  `ManifestError` in `exit-policy-report` and `flow-timing-report`: two exception
+  events beside the `derive manifest is malformed` alert.
+- **To force a re-derive** of one family's day, download the manifest, delete that
+  day's entry under that family, and upload it to the same key. The day is then stale,
+  and is rebuilt when the step reaches it: its tape must be in R2, and the step works
+  newest first within its 900 s per-day budget and the 3-failure cap. Deleting a chains
+  day's `seed` entry makes the step rebuild that day from the tape, overwriting the
+  seeded object. Do not re-run the seed afterwards: it marks every local chains day
+  that has no entry as `seed` again.
+- **Deleting only the derived object does not force one.** The manifest still calls the
+  day fresh, so `research-derive` skips it and the fire-family report ends `partial`
+  with `derived day missing` until the entry goes too. A chains object has no such
+  check: if only it is deleted, the rollup and `whale-plots` just lack that day, with
+  no alert, unless it is the last session's day. Then `eod-flow-rollup` ends `partial`
+  (`latest session not in rollup`) every night until the day's chains entry goes too.
+- **Deleting the whole manifest** makes every day of every family stale, the seeded
+  chains days included: it is a full rebuild over many nights, not a way to redo one day.
+
+### Seeding `research/` once
+
+The research state that lived only on the owner's machine goes into R2 once, with
+`seed_research` (`nightly/src/seed_research.py`; its docstring is the reference and
+`SEED_RULES` the table of what goes where): the by-day chains files, the tracking CSV,
+the earlier reports under `docs/tmp/` and the Take-It reliability plots under
+`ml/plots/`. It is a local tool and the job never runs it. From `nightly/`, on Windows
+the command below is written for Git Bash (the same form fails in PowerShell):
+
+```bash
+PYTHONPATH="src;../scripts;../ml/src" .venv/Scripts/python.exe -m seed_research --repo-root <the main checkout> [--dry-run]
+```
+
+In PowerShell set the variable first. It stays set for that session, and
+`Remove-Item Env:PYTHONPATH` clears it:
+
+```powershell
+$env:PYTHONPATH = "src;../scripts;../ml/src"; .venv/Scripts/python.exe -m seed_research --repo-root <the main checkout> [--dry-run]
+```
+
+On POSIX the path separator is `:`:
+
+```bash
+PYTHONPATH=src:../scripts:../ml/src python -m seed_research --repo-root <the main checkout> [--dry-run]
+```
+
+- Point `--repo-root` at the main checkout. A worktree holds only the tracked files, and
+  most of the earlier reports exist only in the main checkout's untracked `docs/tmp/`,
+  so a worktree root seeds a fraction of them and still exits 0. Because the seed never
+  overwrites, whatever it puts at the tracking state key first stays there. A root that
+  matches no file at all exits 2.
+- It needs the whole nightly environment (`load_settings`: every required variable in
+  the table above, not only the `R2_*` ones), and it writes to the real bucket.
+- It never overwrites: a key already in R2 is skipped, whatever the local file holds,
+  so a rerun is safe and picks up where a failure stopped.
+- Each chains day among the local files that has no manifest entry is marked `seed` in
+  the manifest. An entry that is already there is never replaced.
+- `--dry-run` writes no object and no manifest; the counts say what a real run would do.
+- It prints counts per rule and in total (`uploaded`, `skipped_existing`,
+  `chains_marked_seed`). A store or file error prints its class name, never a value; a
+  bad file name prints that file's repo-relative path.
+- Exit codes: `0` ok; `1` an upload, a store read or a file read failed; `2` a bad
+  file name, bad arguments, a root with no matching file, or invalid settings.
+- Run it outside the nightly window (Tuesday to Saturday, about 07:15–12:30 UTC): it
+  writes the same keys and the manifest and takes no lock, so an overlap could
+  overwrite a night's object or drop its manifest entries.
+
 ## Alert meanings
 
 All Sentry events carry the tag `service=nightly` (`server_name=nightly`). A day
@@ -955,6 +1178,8 @@ Otherwise it is empty. It never changes the grouping.
 | `nightly step failed`                           | error   | A step finished `failed` without raising. `enrich-outcomes`: a day failed, came back with no outcomes or priced none. `outcome-check`: a recent session has no outcomes. `lottery-refit` never ends `failed`: it raises (exception row below). Read the alerts below and the run log.                                                         |
 | `nightly step partial`                          | warning | A step ran out of time with work left for the next night (`days_left` in `counts`). Expected while the history drains; look only if it persists. `lottery-refit`: a promotion was deferred (`promotion_deferred`); the shadow stays and the next night judges it again (the third night in a row also sends `promotion deferred repeatedly`). |
 | `nightly step skipped_deadline`                 | error   | A step started with less than its own reserve left, so it did not run (the later steps still did). The tape or an earlier step overran its share; the next night runs it again.                                                                                                                                                               |
+| `nightly step failed` with a research `detail`  | error   | A research step ended `failed`. The `detail` is one of the fixed phrases in "Research step alerts", each with its meaning and fix.                                                                                                                                                                                                            |
+| `nightly step partial` with a research `detail` | warning | `research-derive`: stale days left (expected on catch-up nights) or the last session's tape not landed. `eod-flow-rollup`: the latest session is not in the rollup. A fire-family report: `derived day missing`. See "Research step alerts".                                                                                                  |
 | `nightly outcomes all null`                     | error   | `outcome-check`: a table has fires on one of the last 3 sessions (`OUTCOME_CHECK_SESSIONS`) and none has an outcome. Tags `table`, `day`; extras `rows`, `with_outcome`. One issue per table and day. See below.                                                                                                                              |
 | `nightly outcomes mostly null`                  | warning | `outcome-check`: fewer than 95% (`LOW_OUTCOME_SHARE`) of a table-day's fires have an outcome. One warning per run; `days` lists `table:day`. Fires the tape cannot price stay without one (see "Enrichment").                                                                                                                                 |
 | `nightly refit promoted`                        | warning | `lottery-refit`: a shadow passed its gates and was promoted: the live scores were rewritten and `active` moved. One issue per version. See "Refit".                                                                                                                                                                                           |
@@ -1013,6 +1238,45 @@ from another writer (the feed's), the shares stay near 100%, so `nightly outcome
 null` stays quiet and the step's own `nightly step failed` event and the `priced none`
 log line are the only signs.
 
+**Research step alerts.** A research step's `nightly step failed` or `nightly step
+partial` event carries one of these fixed `detail` phrases (they are part of the
+fingerprint, so one reason stays one issue). A phrase carries at most an exit code
+or an exception class name, never a ticker, a day, a path or a message. Counts are in
+the `counts` extra and in the log line `research-report <step> ...`. A failed report
+step publishes only its log.
+
+| Step                                                                                            | Status  | `detail`                                     | Meaning                                                                                                                                                                                                                                           | What to do                                                                                                                                                                                                                                                                                                                        |
+| ----------------------------------------------------------------------------------------------- | ------- | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `research-derive`                                                                               | failed  | `a day failed to derive`                     | A day raised: its download, a build, a derive, an upload or the manifest save. Each failed day also sends an exception tagged `step` and `day`. The day stays stale, except when only the manifest save failed and a later day's save records it. | Read those exceptions (class name only) and the `research-derive <day> failed (<Class>)` log line. See the failure cap below.                                                                                                                                                                                                     |
+| `research-derive`                                                                               | failed  | `derive manifest is malformed`               | The manifest in R2 is not one the step wrote: not valid JSON, a stored `null`, a wrong shape, an unknown family or a bad entry. Nothing was read or written.                                                                                      | Repair the JSON in R2 by hand, outside 07:15–12:30 UTC. Do not delete it: that makes every day stale. See "The derive manifest".                                                                                                                                                                                                  |
+| `research-derive`                                                                               | partial | `days left for the next night`               | Stale days remain: less than 900 s (`RESEARCH_DAY_BUDGET_SECONDS`) of the step's time was left. `days_left` has the number.                                                                                                                       | Expected on catch-up nights: the first nights after the seed, a version bump or a forced re-derive. Look only if `days_left` stops falling.                                                                                                                                                                                       |
+| `research-derive`                                                                               | partial | `latest session tape not landed`             | Every stale day was derived, but the last session's tape is not in R2.                                                                                                                                                                            | Look at the tape day's own alert. The run that lands the tape derives it the same night.                                                                                                                                                                                                                                          |
+| `eod-flow-rollup`                                                                               | failed  | `no chains days`                             | No chains state in R2 to roll up. Nothing is published.                                                                                                                                                                                           | Check `research/eod-flow/by-day/` and the `research-derive` result; the seed fills it from local files.                                                                                                                                                                                                                           |
+| `eod-flow-rollup`                                                                               | partial | `latest session not in rollup`               | The rollup was published, but its newest day is older than the last session. Usually `research-derive` did not reach that day.                                                                                                                    | Clears once `research-derive` has derived the day, so expect it on the nights `research-derive` is partial. If the day's chains entry is still in the manifest (its object was deleted), it will not clear by itself: delete that day's chains entry, outside 07:15–12:30 UTC, and `research-derive` rebuilds it on its next run. |
+| a report step (`whale-plots`, `exit-policy-report`, `flow-timing-report`, `feature-audit`, ...) | failed  | `script exited N`, `script exited N (Class)` | The script exited non-zero. `N` is its exit code, or 128 plus the signal if it was killed (137 is SIGKILL, often the out-of-memory killer). `Class` is the exception class its log ends with, when it names one.                                  | Read `research/_logs/{session}/{step}.log`. A bare `script exited 1` has no class: the log's last line was not one (a psycopg2 error can end on an indented `LINE` or caret line), so read the traceback above it.                                                                                                                |
+| a report step                                                                                   | failed  | `script timed out`                           | The script was still running at the step's deadline and was killed.                                                                                                                                                                               | Read the log for how far it got; look for a slow query (each is cut at 300 s) or an input that grew.                                                                                                                                                                                                                              |
+| a report step                                                                                   | failed  | `no output written`                          | The script exited 0 but an output file is missing or empty (for instance `exit_policy_search.py` found no derived day).                                                                                                                           | Read the log. For a fire-family report, check that `research-derive` has derived days.                                                                                                                                                                                                                                            |
+| `exit-policy-report`, `flow-timing-report`                                                      | partial | `derived day missing`                        | The report found fewer derived days in R2 than the manifest vouches for (`inputs_missing`). It still published from the days there.                                                                                                               | Compare the names under `research/exit-policy/derived/` (or `flow-timing/derived/`) with that family's manifest entries, then delete the missing days' entries so `research-derive` rebuilds them.                                                                                                                                |
+| `lottery-tracking`                                                                              | failed  | `tracking state missing`                     | `research/lottery-tracking/state/lottery-tracking.csv` is not in R2. The step never starts a new file.                                                                                                                                            | Copy the newest `research/lottery-tracking/{session}/lottery-tracking.csv` snapshot to `research/lottery-tracking/state/lottery-tracking.csv`. Run the seed only on the first night, before a snapshot exists: it uploads the owner's local copy and loses every row appended since.                                              |
+| `lottery-tracking`                                                                              | failed  | `tracking state header changed`              | The tracker's new header is not the old one with columns appended at the end (reordered, renamed or shortened), or the stored state is zero bytes. Only the log is published.                                                                     | Migrate the state CSV in R2 by hand to the tracker's new layout. Appended columns pass.                                                                                                                                                                                                                                           |
+| `lottery-tracking`                                                                              | failed  | `tracking state shrank`                      | The rewritten file has fewer data rows than the state the step downloaded. Only the log is published, so the state in R2 is unchanged.                                                                                                            | Read the log for why the tracker dropped rows and fix that.                                                                                                                                                                                                                                                                       |
+| `quality-sim`                                                                                   | failed  | `no scored fires`                            | The simulation CSV has no data row: no scored fire in its 90-day window. Only the log is published.                                                                                                                                               | Read the log; check that recent fires carry scores.                                                                                                                                                                                                                                                                               |
+| `takeit-drift`                                                                                  | failed  | `no drift metrics`                           | The run wrote no `ml_` metric row to `takeit_health_daily`, whether or not plots were drawn. Nothing is published under `research/takeit-drift/`.                                                                                                 | Read the log: it ends with the report's text, which says why.                                                                                                                                                                                                                                                                     |
+
+A research step that raises instead (R2, Neon, an import error) is the exception row
+of the table above. `quality-sim` and `takeit-drift` publish their log before they
+re-raise, and a report step publishes its log before its outputs.
+
+**`research-derive`'s failure cap has no memory.** A day that fails is not recorded
+(bar the manifest-save case above), so it stays stale and is tried again the next night. The step stops after
+`RESEARCH_MAX_DAY_FAILURES` (3) failed days in a night and carries nothing over, so
+if the same three days fail every night they use the cap before any older stale day is
+tried, and those older days never derive. The cure is to fix what makes those days
+fail (the exception events name each day). The only exclusion is per chains day: write
+`seed` as that day's manifest entry, and only if its object in R2 is already right,
+because it then counts as fresh and is never rebuilt. A fire-family day has no manual
+exclusion.
+
 The Sentry cron monitor `nightly-tape` (crontab `15 7 * * 2-6`, UTC) checks the
 run in and out:
 
@@ -1048,6 +1312,11 @@ on the 2026-06-15 tape (11.6M rows). The image sets `POLARS_MAX_THREADS=4`
 memory. Free disk in the work dir (`/tmp/nightly`) must be at least 15 GiB before
 each day starts; the zip and the Parquet for one day are both on disk at once.
 
+That figure is the converter's alone. `research-derive` runs later, in the job's own
+process: it uses DuckDB with a 4 GB memory limit (`connect` in `scripts/_eod_flow.py`) and
+builds pandas frames for the largest day. After the first night with the research steps,
+record Railway's peak memory from its metrics here, beside the 3.66 GB figure.
+
 ## Run it locally once
 
 Set the env vars above in your shell (not a file in the repo), then:
@@ -1062,8 +1331,9 @@ The modules import each other flat, so `src/`, the repo's `scripts/` and its `ml
 must be on the path: the Dockerfile sets `PYTHONPATH=/app/src:/app/scripts:/app/ml/src`,
 and a local shell run from `nightly/` needs `PYTHONPATH=src:../scripts:../ml/src`.
 A local run uses the real R2 bucket, the real UW key and the database `DATABASE_URL`
-names, which `enrich-outcomes` updates and `lottery-refit` writes to. It uses `/tmp/nightly` as its work dir, which
-is a Unix path.
+names, which `enrich-outcomes` updates, and `lottery-refit` and `takeit-drift` write to.
+It uses `/tmp/nightly` as its work dir, which is a Unix path. The one-time seed has its own
+command, under "Seeding `research/` once".
 
 ## Tests
 

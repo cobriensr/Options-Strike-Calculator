@@ -90,7 +90,7 @@ def connect():
         sys.exit("DATABASE_URL not set")
 
     print("Connecting to database...")
-    return psycopg2.connect(db_url, sslmode="require", connect_timeout=15)
+    return psycopg2.connect(db_url, sslmode="require")
 
 
 def fetch_fires(conn, as_of: date) -> pd.DataFrame:

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { SparklinePanel } from '../../components/GexTarget/SparklinePanel';
 import type { StrikeScore, MagnetFeatures } from '../../utils/gex-target';
+import { genericElementsWithAriaLabel } from '../helpers/aria';
 
 // ── Fixture helpers ───────────────────────────────────────────────────
 
@@ -73,11 +74,15 @@ describe('SparklinePanel: empty state', () => {
 });
 
 describe('SparklinePanel: strike rows', () => {
-  it('renders an accessible row for each strike', () => {
+  it('renders a row for each strike, named by its visible strike number', () => {
     const leaderboard = [makeStrike(5800), makeStrike(5750)];
-    render(<SparklinePanel leaderboard={leaderboard} />);
-    expect(screen.getByLabelText('Strike 5800')).toBeInTheDocument();
-    expect(screen.getByLabelText('Strike 5750')).toBeInTheDocument();
+    const { container } = render(<SparklinePanel leaderboard={leaderboard} />);
+    expect(screen.getByText('5800')).toBeInTheDocument();
+    expect(screen.getByText('5750')).toBeInTheDocument();
+    // The row is a bare div that already shows its strike; an aria-label on
+    // it would be ignored by screen readers (ARIA 1.2) and repeat the text.
+    expect(genericElementsWithAriaLabel(container)).toEqual([]);
+    expect(container.querySelector('[aria-label^="Strike"]')).toBeNull();
   });
 
   it('renders all strikes passed in (parent pre-slices to top 5)', () => {
@@ -85,8 +90,8 @@ describe('SparklinePanel: strike rows', () => {
     // pre-computes top5ByGex before passing the leaderboard down.
     const strikes = [5800, 5750, 5700, 5650, 5600].map((s) => makeStrike(s));
     render(<SparklinePanel leaderboard={strikes} />);
-    expect(screen.getByLabelText('Strike 5800')).toBeInTheDocument();
-    expect(screen.getByLabelText('Strike 5600')).toBeInTheDocument();
+    expect(screen.getByText('5800')).toBeInTheDocument();
+    expect(screen.getByText('5600')).toBeInTheDocument();
   });
 
   it('shows the strike number as a text label', () => {

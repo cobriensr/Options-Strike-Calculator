@@ -12,3 +12,11 @@ pandas>=3.0.2,<3.1
 numpy>=2.4.4,<2.5
 pyarrow>=23.0.1,<24
 psycopg2-binary>=2.9.11,<2.10
+# The research reports (phase 3). DuckDB is the ml pin: 2.0 binds ns timestamps differently
+# (TIMESTAMPTZ_NS), so it stays below 1.6. matplotlib draws the whale-plot and drift PNGs,
+# Agg only (MPLBACKEND in the Dockerfile).
+duckdb>=1.5.6,<1.6
+matplotlib>=3.10.8,<3.11
+# Deliberately absent: scikit-learn, scipy, SQLAlchemy and xgboost. The reports and the refit
+# modules need none of them; lottery_refit_gates writes its own Spearman, and
+# test_scripts_import_in_the_image_layout fails if an image module imports one at load.

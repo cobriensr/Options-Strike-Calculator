@@ -43,6 +43,7 @@ export const SPAWN_TEST_FILES = [
   'scripts/_lib/git-run.test.mjs',
   'scripts/_lib/greek-nope-backfill.cli.test.mjs',
   'scripts/_lib/net-prem-ticks-backfill.test.mjs',
+  'scripts/_lib/nightly-push-window.test.mjs',
   'scripts/_lib/prune-worktrees.ledger.test.mjs',
   'scripts/_lib/prune-worktrees.races.test.mjs',
   'scripts/_lib/prune-worktrees.test.mjs',

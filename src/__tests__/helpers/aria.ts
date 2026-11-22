@@ -11,18 +11,70 @@ export const squashText = (s: string | null | undefined): string =>
 const snippet = (el: Element): string => el.outerHTML.slice(0, 160);
 
 /**
- * Every element under `root` that has an `aria-label` but no role and isn't
- * natively interactive, as short HTML snippets for a readable failure.
+ * HTML elements whose implicit ARIA role prohibits a name (ARIA 1.2:
+ * generic, paragraph, emphasis, strong, code, subscript, superscript,
+ * deletion, insertion, caption). Elements that may be named (`section`, `th`,
+ * `td`, `svg`, headings, ...) are not listed.
  *
- * ARIA 1.2 prohibits naming a generic element (a bare span or div), and
- * screen readers mostly ignore the label, so the text never reaches the
- * user. A badge's explanation belongs in a visually hidden `<SrHint>`
- * inside the badge instead. An element with an explicit role (`img`,
- * `group`, ...) is fine and is not reported.
+ * One list for two guards: the runtime helper below and the source scan in
+ * `generic-aria-scan.ts`.
+ */
+export const GENERIC_TAGS = [
+  'span',
+  'div',
+  'p',
+  'i',
+  'b',
+  'em',
+  'strong',
+  'small',
+  'code',
+  'sub',
+  'sup',
+  'del',
+  'ins',
+  's',
+  'u',
+  'caption',
+  'figcaption',
+] as const;
+const GENERIC_SELECTOR = GENERIC_TAGS.join(',');
+
+/**
+ * Whether a `role` value leaves the element without a role that can carry a
+ * name, so a bare generic element with it is still a named generic. That is
+ * a value that is empty or only whitespace (a browser ignores an empty role),
+ * or a presentational one: its first token (case and padding aside) is `none`
+ * or `presentation`, which strip an element's semantics but are ignored when
+ * a global ARIA attribute such as `aria-label` is present. Shared by the
+ * runtime helper below and the source scan in `generic-aria-scan.ts`, so both
+ * apply one rule.
+ */
+export function countsAsNoRole(role: string): boolean {
+  const first = role.trim().toLowerCase().split(/\s+/)[0];
+  return first === '' || first === 'none' || first === 'presentation';
+}
+
+/**
+ * Every element under `root` that has an `aria-label` or `aria-labelledby`
+ * but no role and is a bare generic element (a `span`, `div`, `p`, ...), as
+ * short HTML snippets for a readable failure.
+ *
+ * ARIA 1.2 prohibits naming a generic element, and screen readers mostly
+ * ignore the label, so the text never reaches the user. A badge's
+ * explanation belongs in a visually hidden `<SrHint>` inside the badge
+ * instead. An element with a role (`img`, `group`, ...) is fine and is not
+ * reported, and neither is an element that may carry a name (a `<section>`
+ * region, a `<th>`, a `<button>`). An empty or presentational role (`none`,
+ * `presentation`) does not count as a role, see {@link countsAsNoRole}.
  */
 export function genericElementsWithAriaLabel(root: ParentNode): string[] {
-  return Array.from(root.querySelectorAll('[aria-label]'))
-    .filter((el) => !el.hasAttribute('role') && !el.matches(NATIVELY_NAMED))
+  return Array.from(root.querySelectorAll('[aria-label],[aria-labelledby]'))
+    .filter((el) => {
+      const role = el.getAttribute('role');
+      const hasRole = role != null && !countsAsNoRole(role);
+      return !hasRole && el.matches(GENERIC_SELECTOR);
+    })
     .map(snippet);
 }
 

@@ -4,6 +4,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 
 import { ConvexityMatrix } from '../components/Gexbot/ConvexityMatrix';
 import type { ConvexityTrendRow } from '../hooks/useGexbotData';
+import { genericElementsWithAriaLabel, srHintText } from './helpers/aria';
 
 const mockUseGexbotData = vi.fn();
 vi.mock('../hooks/useGexbotData', async () => {
@@ -220,20 +221,54 @@ describe('<ConvexityMatrix>', () => {
     });
   });
 
-  it('exposes the cell details to assistive tech via aria-label', () => {
+  it('exposes the cell reading to assistive tech in a hint, without repeating what the cell shows', () => {
     mockUseGexbotData.mockReturnValue({
       rows: [makeTrend('SPX', [-1310], 0)],
       loading: false,
       error: null,
       freshestAt: '2026-05-19T14:00:00Z',
     });
-    render(<ConvexityMatrix marketOpen />);
+    const { container } = render(<ConvexityMatrix marketOpen />);
     const cell = screen.getByTestId('convexity-cell-SPX');
-    expect(cell).toHaveAttribute('aria-label', cell.getAttribute('title'));
+    // The cell is a bare div: ARIA 1.2 prohibits naming it, so the reading
+    // sits in a hidden hint. The cell already shows the ticker, the DTE and
+    // the value, so the hint leaves all three out; the title keeps the lot.
+    expect(srHintText(cell)).toBe('net convexity (zcvr): net option selling');
+    expect(cell).not.toHaveAttribute('aria-label');
     expect(cell).toHaveAttribute(
-      'aria-label',
-      expect.stringContaining('net option selling'),
+      'title',
+      'SPX net convexity (zcvr): net option selling (−1,310), 0DTE',
     );
+    expect(genericElementsWithAriaLabel(container)).toEqual([]);
+  });
+
+  it.each([
+    ['net option buying', [100, 300, 500]],
+    ['neutral', [0]],
+  ])('reads %s in the hint', (read, values) => {
+    mockUseGexbotData.mockReturnValue({
+      rows: [makeTrend('SPX', values)],
+      loading: false,
+      error: null,
+      freshestAt: '2026-05-19T14:00:00Z',
+    });
+    render(<ConvexityMatrix marketOpen />);
+    expect(srHintText(screen.getByTestId('convexity-cell-SPX'))).toBe(
+      `net convexity (zcvr): ${read}`,
+    );
+  });
+
+  it('reads "no data" in the hint of a ticker with no reading', () => {
+    mockUseGexbotData.mockReturnValue({
+      rows: [makeTrend('SPX', [1.0, 1.1, 1.2])],
+      loading: false,
+      error: null,
+      freshestAt: '2026-05-19T14:00:00Z',
+    });
+    render(<ConvexityMatrix marketOpen />);
+    const empty = screen.getByTestId('convexity-cell-NDX');
+    expect(srHintText(empty)).toBe('net convexity (zcvr): no data');
+    expect(empty).toHaveAttribute('title', 'NDX net convexity (zcvr): no data');
   });
 
   it('legend says shade is vs typical and never bullish/bearish', () => {

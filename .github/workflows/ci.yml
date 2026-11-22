@@ -108,11 +108,15 @@ jobs:
               # an edit to it must run this job.
               - 'src/data/marketHours.ts'
               - '.github/workflows/ci.yml'
-            # The nightly image builds from the repo root and runs ten shared files
-            # (IMAGE_FILES in nightly/tests/test_image_layout.py). The tests that
-            # pin them and .dockerignore, which decides what the build sees, count
-            # too. scripts/test_enrich_provenance.py imports the fulltape script,
-            # which is not an image file. Pytest run from the root loads
+            # The nightly image builds from the repo root and runs twenty-one shared
+            # files (IMAGE_FILES in nightly/tests/test_image_layout.py). The tests
+            # that pin them and .dockerignore, which decides what the build sees,
+            # count too. Three scripts that are not image files are loaded by those
+            # tests: scripts/test_enrich_provenance.py imports the fulltape script,
+            # scripts/test_research_flow_window.py imports tune_flow_inversion.py and
+            # scripts/test_eod_flow.py runs eod-flow-analysis/analyze.py. That test
+            # also reads the schema of a tracked file, the by-day chains parquet
+            # for 2026-04-13, so the list names it. Pytest run from the root loads
             # scripts/conftest.py for the scripts tests, and ml/conftest.py and
             # ml/pyproject.toml for the ml tests. Those tests also read four api
             # files, so the list names them. Keep this list, that tuple, the
@@ -126,20 +130,44 @@ jobs:
               - 'scripts/backfill_lottery_scores.py'
               - 'scripts/enrich_lottery_outcomes.py'
               - 'scripts/enrich_silent_boom_outcomes.py'
+              - 'scripts/_eod_flow.py'
+              - 'scripts/_report_weights.py'
+              - 'scripts/exit_policy_search.py'
+              - 'scripts/flow_inversion_timing.py'
+              - 'scripts/feature_audit.py'
+              - 'scripts/daily_tracker.py'
+              - 'scripts/mine_outcome_patterns.py'
+              - 'scripts/score_lineage_audit.py'
               - 'ml/src/lottery_exit_policies.py'
               - 'ml/src/lottery_refit_gates.py'
               - 'ml/src/lottery_scoring.py'
               - 'ml/src/lottery_weights.py'
+              - 'ml/src/whale_plots.py'
+              - 'ml/src/takeit_drift_monitor.py'
+              - 'ml/src/score_components.py'
               - 'scripts/test_tape_reader.py'
               - 'scripts/test_cli_paths.py'
               - 'scripts/test_pipeline_retry.py'
               - 'scripts/test_enrich_*.py'
               - 'scripts/test_backfill_lottery_scores.py'
+              - 'scripts/test_eod_flow.py'
+              - 'scripts/test_policy_timing_derive.py'
+              - 'scripts/test_report_cli.py'
+              - 'scripts/test_report_weights.py'
+              - 'scripts/test_feature_audit.py'
+              - 'scripts/test_research_flow_window.py'
               - 'scripts/enrich_silent_boom_outcomes_fulltape.py'
+              - 'scripts/tune_flow_inversion.py'
+              - 'scripts/eod-flow-analysis/analyze.py'
+              - 'scripts/eod-flow-analysis/output/by-day/2026-04-13-chains.parquet'
               - 'scripts/conftest.py'
               - 'ml/tests/test_lottery_weights.py'
               - 'ml/tests/test_lottery_refit_gates.py'
               - 'ml/tests/test_lottery_scoring.py'
+              - 'ml/tests/test_whale_plots.py'
+              - 'ml/tests/test_takeit_drift_monitor.py'
+              - 'ml/tests/test_score_components.py'
+              - 'ml/tests/test_lottery_ticker_quality.py'
               - 'ml/conftest.py'
               - 'ml/pyproject.toml'
               # The api files those tests read: the score-parity fixtures
@@ -420,10 +448,27 @@ jobs:
           scripts/backfill_lottery_scores.py
           scripts/enrich_lottery_outcomes.py
           scripts/enrich_silent_boom_outcomes.py
+          scripts/_eod_flow.py
+          scripts/_report_weights.py
+          scripts/exit_policy_search.py
+          scripts/flow_inversion_timing.py
+          scripts/feature_audit.py
+          scripts/daily_tracker.py
+          scripts/mine_outcome_patterns.py
+          scripts/score_lineage_audit.py
           ml/src/lottery_exit_policies.py
           ml/src/lottery_refit_gates.py
           ml/src/lottery_scoring.py
           ml/src/lottery_weights.py
+          ml/src/whale_plots.py
+          ml/src/takeit_drift_monitor.py
+          ml/src/score_components.py
+          scripts/test_eod_flow.py
+          scripts/test_policy_timing_derive.py
+          scripts/test_report_cli.py
+          scripts/test_report_weights.py
+          scripts/test_feature_audit.py
+          scripts/test_research_flow_window.py
 
       - name: Shared image file tests
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
@@ -438,12 +483,19 @@ jobs:
           scripts/test_enrich_missing_archive.py
           scripts/test_enrich_provenance.py
           scripts/test_enrich_r2_cli.py
+          scripts/test_eod_flow.py
+          scripts/test_policy_timing_derive.py
+          scripts/test_report_cli.py
+          scripts/test_report_weights.py
+          scripts/test_feature_audit.py
+          scripts/test_research_flow_window.py
 
       # Separate from the step above because ml/ has its own pytest rootdir and
-      # conftest ([tool.pytest.ini_options] in ml/pyproject.toml). The scipy test,
-      # ml/tests/test_lottery_refit_gates_scipy.py, runs in the ml job only: this
-      # environment has no scipy.
-      - name: Refit module tests
+      # conftest ([tool.pytest.ini_options] in ml/pyproject.toml). Two tests run in
+      # the ml job only, because this environment has no scipy and no scikit-learn:
+      # ml/tests/test_lottery_refit_gates_scipy.py and
+      # ml/tests/test_takeit_drift_auc_sklearn.py.
+      - name: ml module tests
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         working-directory: .
         run: >-
@@ -451,6 +503,10 @@ jobs:
           ml/tests/test_lottery_weights.py
           ml/tests/test_lottery_refit_gates.py
           ml/tests/test_lottery_scoring.py
+          ml/tests/test_whale_plots.py
+          ml/tests/test_takeit_drift_monitor.py
+          ml/tests/test_score_components.py
+          ml/tests/test_lottery_ticker_quality.py
 
       # The only check of the .dockerignore semantics: nightly/tests/test_image_layout.py
       # reads text and cannot see a later pattern re-exclude a file, but a COPY of an
@@ -464,14 +520,15 @@ jobs:
       # The tests above run in the dev environment, a superset of the runtime
       # requirements (moto alone pulls in requests, werkzeug and cryptography), so a
       # shared script that gains an import the image lacks still passes them. This
-      # imports the steps, including the refit step, inside the built image, which
-      # has only requirements.txt. weights_store and lottery_scoring come first:
-      # the enrich scripts put ml/src on sys.path when they load, so after them
-      # a PYTHONPATH without /app/ml/src would still pass. As in
-      # nightly/tests/test_image_layout.py, only PYTHONPATH may resolve them. The
-      # image has no scipy. A top-level `import scipy` in one of these modules fails
-      # the step by itself, with ModuleNotFoundError. The sys.modules assert is the
-      # second net: it fires if scipy ever reaches the image (as a transitive
+      # imports the steps, including the refit step, the research store and the
+      # research files, inside the built image, which has only requirements.txt.
+      # weights_store and lottery_scoring come first: the enrich and report scripts
+      # put ml/src on sys.path when they load, so after them a PYTHONPATH without
+      # /app/ml/src would still pass. As in nightly/tests/test_image_layout.py, only
+      # PYTHONPATH may resolve them. The image has no scikit-learn, scipy or
+      # SQLAlchemy. A top-level import of one of them in these modules fails the step
+      # by itself, with ModuleNotFoundError. The sys.modules assert is the second
+      # net: it fires if one of the three ever reaches the image (as a transitive
       # dependency, say) and one of these imports starts to load it. Importing loads
       # no settings and opens no connection; no network keeps it so.
       - name: Import the steps in the image
@@ -480,5 +537,40 @@ jobs:
         run: >-
           docker run --rm --network none --entrypoint python nightly-ci
           -c "import weights_store, lottery_scoring, pipeline, outcome_check,
-          enrich_step, refit_step, backfill_lottery_scores, sys;
-          assert 'scipy' not in sys.modules"
+          enrich_step, refit_step, research_store, research_derive,
+          research_reports, research_db_steps, backfill_lottery_scores,
+          _eod_flow, _report_weights, exit_policy_search, flow_inversion_timing,
+          feature_audit, daily_tracker, mine_outcome_patterns,
+          score_lineage_audit, whale_plots, takeit_drift_monitor,
+          score_components, sys;
+          loaded = {'sklearn', 'scipy', 'sqlalchemy'} & set(sys.modules);
+          assert not loaded, loaded"
+
+      # The step above imports with `python -c`. The job starts the seven report
+      # scripts differently, as `python /app/<path> <args>` subprocesses
+      # (REPORTS in nightly/src/research_reports.py, plus scripts/daily_tracker.py
+      # from research_db_steps.py), so this runs each one that way in the image:
+      # the entry point, argparse and sys.path from the script's own folder. --help
+      # parses arguments and exits 0 before anything reads a secret or opens a
+      # connection, and no network keeps that true. No env is passed in. Every
+      # script runs, so one run names all that fail. The list is fixed text, with
+      # no workflow expression in it.
+      - name: Run the report scripts' entry points in the image
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        working-directory: .
+        run: |
+          status=0
+          for script in \
+            ml/src/whale_plots.py \
+            scripts/exit_policy_search.py \
+            scripts/flow_inversion_timing.py \
+            scripts/feature_audit.py \
+            scripts/mine_outcome_patterns.py \
+            scripts/score_lineage_audit.py \
+            scripts/daily_tracker.py
+          do
+            echo "python /app/${script} --help"
+            docker run --rm --network none --entrypoint python nightly-ci \
+              "/app/${script}" --help > /dev/null || status=1
+          done
+          exit "$status"

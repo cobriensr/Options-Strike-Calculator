@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import DeltaStrikesTable from '../../components/DeltaStrikesTable';
 import type { DeltaRow, DeltaRowError } from '../../types';
+import { genericElementsWithAriaLabel } from '../helpers/aria';
 
 function makeDeltaRow(delta: 5 | 8 | 10 | 12 | 15 | 20 = 10): DeltaRow {
   return {
@@ -41,6 +42,28 @@ describe('DeltaStrikesTable', () => {
     expect(
       screen.getByRole('table', { name: /Strike prices by delta/ }),
     ).toBeInTheDocument();
+  });
+
+  it('names the mobile cards and the desktop table as one "Delta strikes" region each, shown at opposite breakpoints', () => {
+    const { container } = render(
+      <DeltaStrikesTable allDeltas={[makeDeltaRow()]} spot={5700} />,
+    );
+    // ARIA 1.2 prohibits naming a bare div, so the mobile card list is a
+    // <section>, like the desktop table's. JSDOM honors no CSS, so both are
+    // in the tree here; in a browser exactly one of them is displayed.
+    const regions = screen.getAllByRole('region', { name: 'Delta strikes' });
+    expect(regions).toHaveLength(2);
+    const [cards, desktop] = regions as [HTMLElement, HTMLElement];
+    expect(cards.tagName).toBe('SECTION');
+    expect(cards).toHaveClass('md:hidden');
+    expect(cards).not.toContainElement(
+      screen.getByRole('table', { name: /Strike prices by delta/ }),
+    );
+    expect(desktop.closest('.hidden')).toHaveClass('md:block');
+    expect(desktop).toContainElement(
+      screen.getByRole('table', { name: /Strike prices by delta/ }),
+    );
+    expect(genericElementsWithAriaLabel(container)).toEqual([]);
   });
 
   it('renders column headers', () => {

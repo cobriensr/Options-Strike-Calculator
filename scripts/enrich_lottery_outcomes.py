@@ -20,8 +20,9 @@ Computes:
   - realized_eod_pct
   - peak_ceiling_pct
   - minutes_to_peak
-  - realized_flow_inversion_pct (second pass — needs net_flow_per_ticker_history;
-    runs `make backfill-flow` first if that table is empty for the date)
+  - realized_flow_inversion_pct (second pass — waits for net_flow_per_ticker_history,
+    which the fetch-net-flow-history cron fills; a day with no flow is not listed
+    by list_work_dates)
 
 The Vercel enrich cron writes the same rows, so every write here is
 conditional and tagged, and every count is what the database says it wrote.

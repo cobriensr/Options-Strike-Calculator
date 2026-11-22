@@ -175,7 +175,7 @@ describe('IntervalBAFeed', () => {
     });
     render(<IntervalBAFeed />);
     await waitFor(() => {
-      expect(screen.getByText(/5800/)).toBeInTheDocument();
+      expect(screen.getByText('5800')).toBeInTheDocument();
     });
     expect(screen.getByText('CALL')).toBeInTheDocument();
     expect(screen.getByText('EXTREME')).toBeInTheDocument();
@@ -259,7 +259,7 @@ describe('IntervalBAFeed', () => {
     });
     render(<IntervalBAFeed />);
     await waitFor(() => {
-      expect(screen.getByText(/5800/)).toBeInTheDocument();
+      expect(screen.getByText('5800')).toBeInTheDocument();
     });
     // Pill content is the alphabetically sorted "+QQQ +SPY" string.
     expect(screen.getByText('+QQQ +SPY')).toBeInTheDocument();
@@ -279,7 +279,7 @@ describe('IntervalBAFeed', () => {
     });
     render(<IntervalBAFeed />);
     await waitFor(() => {
-      expect(screen.getByText(/5800/)).toBeInTheDocument();
+      expect(screen.getByText('5800')).toBeInTheDocument();
     });
     // No "+TICKER" pill rendered.
     expect(screen.queryByText(/^\+/)).not.toBeInTheDocument();
@@ -321,7 +321,7 @@ describe('IntervalBAFeed', () => {
     });
     render(<IntervalBAFeed />);
     await waitFor(() => {
-      expect(screen.getByText(/ITM/)).toBeInTheDocument();
+      expect(screen.getByText(/^ITM/)).toBeInTheDocument();
     });
   });
 

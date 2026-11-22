@@ -21,8 +21,13 @@ import type { Gate } from '../../hooks/useRegime0dte';
 export interface GateMeta {
   /** Short human label shown in the chip. */
   label: string;
-  /** Screen-reader description so state is conveyed by text, not colour alone. */
-  ariaLabel: string;
+  /**
+   * Screen-reader text for a `<SrHint>` inside the chip, so state is conveyed
+   * by text, not colour alone. It adds only what `label` does not already say
+   * (the chip's identity and what the verdict implies); the label is read
+   * first, so repeating it would make a screen reader say it twice.
+   */
+  srText: string;
   /** Tailwind classes for the chip (bg + border + text). */
   chipClass: string;
   /**
@@ -36,19 +41,19 @@ export interface GateMeta {
 const GATE_META: Record<Gate, GateMeta> = {
   calm: {
     label: 'Calm / mean-revert',
-    ariaLabel: 'Gamma gate: calm — positive gamma, mean-revert / tight range',
+    srText: 'gamma gate, positive gamma, tight range',
     chipClass: 'border-emerald-500/40 bg-emerald-500/15 text-emerald-200',
     isReal: true,
   },
   big_move: {
     label: 'Big move likely',
-    ariaLabel: 'Gamma gate: big move likely, direction unconfirmed',
+    srText: 'gamma gate, direction unconfirmed',
     chipClass: 'border-amber-500/40 bg-amber-500/15 text-amber-200',
     isReal: true,
   },
   lean_down: {
     label: 'Lean down',
-    ariaLabel: 'Gamma gate: lean down — deep negative gamma, downside risk',
+    srText: 'gamma gate, deep negative gamma, downside risk',
     chipClass: 'border-red-500/40 bg-red-500/15 text-red-200',
     isReal: true,
   },
@@ -56,7 +61,7 @@ const GATE_META: Record<Gate, GateMeta> = {
     // Deliberately distinct from the three real verdicts: a dashed/hollow
     // "no read" chip (not a muted slate look-alike of `calm`).
     label: 'No read',
-    ariaLabel: 'Gamma gate: no read — insufficient data',
+    srText: 'gamma gate, insufficient data',
     chipClass:
       'border-dashed border-slate-500/70 bg-transparent text-slate-400',
     isReal: false,

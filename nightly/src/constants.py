@@ -90,6 +90,24 @@ PROMOTION_CUTOFF_UTC = time(12, 30)
 # feed's scores and tiers, which needs the owner's go-ahead (plan Task 23), so it is turned
 # on by a commit that flips this constant, never by an env var (R7).
 PROMOTION_ENABLED = False
+# Phase 3, the research steps. Two directories, side by side and never nested: the derive step
+# writes and spills into the first, and `open_reader` empties the second (its tape days).
+RESEARCH_WORK_DIR = WORK_DIR / "research"
+RESEARCH_TAPE_DIR = WORK_DIR / "research-tape"
+# A research-derive day starts only with this much step time left: a download held to the tape
+# reader's FETCH_DEADLINE_SECONDS (600 s; the bound is checked between reads, so a stalled read
+# can pass it, and the watchdog bounds the run) plus about 2x the 90 s local derive of the
+# largest day (15,964 fires). It stays at or below FETCH_DEADLINE_SECONDS + 300, or D2's row
+# of the budget table changes first.
+RESEARCH_DAY_BUDGET_SECONDS = 900
+# Failed days after which research-derive stops for the night: each costs a download and a
+# Sentry exception, and a layout the derive cannot read breaks every day alike.
+RESEARCH_MAX_DAY_FAILURES = 3
+# The report steps' rows of D2's budget table, what a night reserves for each: eight steps at
+# REPORT_BUDGET_SECONDS (2,400 s) and the two that pull every enriched fire at
+# LARGE_REPORT_BUDGET_SECONDS (1,200 s).
+REPORT_BUDGET_SECONDS = 300
+LARGE_REPORT_BUDGET_SECONDS = 600
 # UW's 403 names this token's boundary, and a full plan reaches back about 2 years: a
 # boundary newer than this many days before the last session means the entitlement
 # shrank, not that UW lacks the day, so it never marks one.

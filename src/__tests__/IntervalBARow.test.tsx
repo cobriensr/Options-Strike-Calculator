@@ -11,6 +11,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import type { IntervalBAFeedAlert } from '../hooks/useIntervalBAFeed';
+import { genericElementsWithAriaLabel, srHintText } from './helpers/aria';
 
 // ── Mocks ─────────────────────────────────────────────────────────────
 
@@ -150,15 +151,69 @@ describe('IntervalBARow — summary line', () => {
 
   it('shows ITM pill when call strike is below spot', () => {
     renderRow(makeAlert({ strike: 5700, underlying_price: 5800 }));
-    expect(screen.getByText(/ITM/)).toBeInTheDocument();
+    expect(screen.getByText(/^ITM/)).toBeInTheDocument();
   });
 
   it('shows ITM pill for a put with strike above spot', () => {
     renderRow(
       makeAlert({ option_type: 'P', strike: 5900, underlying_price: 5800 }),
     );
-    expect(screen.getByText(/ITM/)).toBeInTheDocument();
+    expect(screen.getByText(/^ITM/)).toBeInTheDocument();
   });
+
+  // The title is the whole sentence and has not changed. The hint is only the
+  // part the pill does not already show: the pill reads "ITM 1.7%", so the
+  // hint leaves out "Call is ITM by 1.7% —" and adds the spot / strike
+  // relation (and, for an OTM pill, how far it is from ITM).
+  it.each([
+    [
+      'ATM',
+      { strike: 5800, underlying_price: 5800 },
+      /^ATM$/,
+      'ATM — spot 5800.00 is within ±0.05% of strike 5800.',
+      'spot 5800.00 is within ±0.05% of strike 5800.',
+    ],
+    [
+      'ITM call',
+      { strike: 5700, underlying_price: 5800 },
+      /^ITM 1\.7%$/,
+      'Call is ITM by 1.7% — spot 5800.00 > strike 5700.',
+      'spot 5800.00 > strike 5700.',
+    ],
+    [
+      'OTM call',
+      { strike: 5900, underlying_price: 5800 },
+      /^OTM 1\.7%$/,
+      'Call is OTM by 1.7% — spot 5800.00 < strike 5900. Needs 100.00 pts of upside to go ITM.',
+      'spot 5800.00 < strike 5900. Needs 100.00 pts of upside to go ITM.',
+    ],
+    [
+      'ITM put',
+      { option_type: 'P' as const, strike: 5900, underlying_price: 5800 },
+      /^ITM 1\.7%$/,
+      'Put is ITM by 1.7% — spot 5800.00 < strike 5900.',
+      'spot 5800.00 < strike 5900.',
+    ],
+    [
+      'OTM put',
+      { option_type: 'P' as const, strike: 5700, underlying_price: 5800 },
+      /^OTM 1\.7%$/,
+      'Put is OTM by 1.7% — spot 5800.00 > strike 5700. Needs 100.00 pts of downside to go ITM.',
+      'spot 5800.00 > strike 5700. Needs 100.00 pts of downside to go ITM.',
+    ],
+  ])(
+    'explains the %s pill in a hidden hint that does not repeat the pill, not an aria-label, and keeps the title',
+    (_name, overrides, pillText, title, hint) => {
+      const { container } = renderRow(makeAlert(overrides));
+      // The pill is a bare span: ARIA 1.2 prohibits naming it, so its
+      // explanation sits inside it as a SrHint.
+      const pill = screen.getByText(pillText);
+      expect(srHintText(pill)).toBe(hint);
+      expect(pill).not.toHaveAttribute('aria-label');
+      expect(pill).toHaveAttribute('title', title);
+      expect(genericElementsWithAriaLabel(container)).toEqual([]);
+    },
+  );
 
   it('hides the moneyness pill when underlying_price is missing', () => {
     renderRow(makeAlert({ underlying_price: null }));

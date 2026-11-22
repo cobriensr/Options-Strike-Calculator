@@ -22,6 +22,7 @@ import { useMemo } from 'react';
 
 import type { GreekHeatmapTopStrike } from '../../hooks/useGreekHeatmap';
 import { formatSignedShort } from '../../utils/format-magnitude';
+import { SrHint } from '../ui/SrHint.js';
 
 import { tooltipFor } from './tooltipText';
 
@@ -144,11 +145,9 @@ export function GreekHeatmapTable({
                 <td className={`px-3 py-1.5 tabular-nums ${strikeClass}`}>
                   {s.strike}
                   {isAtm && (
-                    <span
-                      className="ml-1.5 rounded bg-amber-400/15 px-1 text-[9px] tracking-wide text-amber-300/90 uppercase"
-                      aria-label="At-the-money"
-                    >
+                    <span className="ml-1.5 rounded bg-amber-400/15 px-1 text-[9px] tracking-wide text-amber-300/90 uppercase">
                       ATM
+                      <SrHint>at the money</SrHint>
                     </span>
                   )}
                 </td>

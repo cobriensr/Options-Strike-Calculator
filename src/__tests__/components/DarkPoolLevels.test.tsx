@@ -3,10 +3,18 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import DarkPoolLevels from '../../components/DarkPoolLevels';
 import type { DarkPoolLevel } from '../../hooks/useDarkPoolLevels';
+import { genericElementsWithAriaLabel } from '../helpers/aria';
 
 const noop = vi.fn();
 
 // ── Helpers ───────────────────────────────────────────────
+
+/** The premium bars: the decorative `aria-hidden` divs inside the rows. */
+function premiumBars(container: HTMLElement): NodeListOf<HTMLElement> {
+  return container.querySelectorAll<HTMLElement>(
+    'tr td > div[aria-hidden="true"]',
+  );
+}
 
 function makeLevel(overrides: Partial<DarkPoolLevel> = {}): DarkPoolLevel {
   return {
@@ -270,7 +278,7 @@ describe('DarkPoolLevels: premium bar sizing', () => {
       makeLevel({ level: 6575, totalPremium: 1_000_000_000 }),
       makeLevel({ level: 6555, totalPremium: 500_000_000 }),
     ];
-    render(
+    const { container } = render(
       <DarkPoolLevels
         selectedDate="2026-04-02"
         levels={levels}
@@ -281,11 +289,11 @@ describe('DarkPoolLevels: premium bar sizing', () => {
       />,
     );
 
-    const barLabels = screen.getAllByLabelText(/premium/);
-    expect(barLabels).toHaveLength(2);
+    const bars = premiumBars(container);
+    expect(bars).toHaveLength(2);
 
-    const bar1 = barLabels[0] as HTMLElement;
-    const bar2 = barLabels[1] as HTMLElement;
+    const bar1 = bars[0] as HTMLElement;
+    const bar2 = bars[1] as HTMLElement;
     expect(bar1.style.width).toBe('100%');
     expect(bar2.style.width).toBe('50%');
   });
@@ -295,7 +303,7 @@ describe('DarkPoolLevels: premium bar sizing', () => {
       makeLevel({ level: 6575, totalPremium: 10_000_000_000 }),
       makeLevel({ level: 6555, totalPremium: 100_000 }),
     ];
-    render(
+    const { container } = render(
       <DarkPoolLevels
         selectedDate="2026-04-02"
         levels={levels}
@@ -306,8 +314,7 @@ describe('DarkPoolLevels: premium bar sizing', () => {
       />,
     );
 
-    const barLabels = screen.getAllByLabelText(/premium/);
-    const smallBar = barLabels[1] as HTMLElement;
+    const smallBar = premiumBars(container)[1] as HTMLElement;
     expect(smallBar.style.width).toBe('2%');
   });
 });
@@ -382,8 +389,8 @@ describe('DarkPoolLevels: accessibility', () => {
     expect(rows).toHaveLength(3);
   });
 
-  it('premium bars have aria-label with formatted value', () => {
-    render(
+  it('hides the premium bar from screen readers; the row shows the premium as text', () => {
+    const { container } = render(
       <DarkPoolLevels
         selectedDate="2026-04-02"
         levels={[makeLevel({ totalPremium: 500_000_000 })]}
@@ -393,7 +400,13 @@ describe('DarkPoolLevels: accessibility', () => {
         onRefresh={noop}
       />,
     );
-    expect(screen.getByLabelText('$500M premium')).toBeInTheDocument();
+    // The bar is an empty div, so ARIA 1.2 prohibits naming it. Its value is
+    // already the row's "$500M" cell, so the bar is decoration.
+    expect(screen.getByText('$500M')).toBeInTheDocument();
+    const bars = premiumBars(container);
+    expect(bars).toHaveLength(1);
+    expect(bars[0]).not.toHaveAttribute('aria-label');
+    expect(genericElementsWithAriaLabel(container)).toEqual([]);
   });
 });
 

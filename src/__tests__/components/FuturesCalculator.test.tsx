@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import FuturesCalculator from '../../components/FuturesCalculator';
+import { genericElementsWithAriaLabel } from '../helpers/aria';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -521,6 +522,23 @@ describe('FuturesCalculator — Clear button', () => {
 // ── Contracts stepper ────────────────────────────────────────────────────────
 
 describe('FuturesCalculator — contracts stepper', () => {
+  it('is a group named by its visible "Contracts" label, with no aria-label on the bare div', () => {
+    const { container } = render(<FuturesCalculator />);
+
+    // ARIA 1.2 prohibits naming a generic div, so the stepper is a group and
+    // its name comes from the visible label through aria-labelledby alone.
+    const group = screen.getByRole('group', { name: 'Contracts' });
+    expect(group).toHaveAttribute('aria-labelledby', 'fc-contracts-label');
+    expect(group).not.toHaveAttribute('aria-label');
+    expect(
+      within(group).getByRole('button', { name: 'Increase contracts' }),
+    ).toBeInTheDocument();
+    expect(
+      within(group).getByRole('button', { name: 'Decrease contracts' }),
+    ).toBeInTheDocument();
+    expect(genericElementsWithAriaLabel(container)).toEqual([]);
+  });
+
   it('increments on + click', async () => {
     const user = userEvent.setup();
     render(<FuturesCalculator />);
