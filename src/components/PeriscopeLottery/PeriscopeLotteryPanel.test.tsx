@@ -9,6 +9,11 @@ import { act, render, screen, within, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { PeriscopeLotteryPanel } from './PeriscopeLotteryPanel';
 import type { PeriscopeLotteryFire } from './types';
+import {
+  srHintText,
+  titledGenericsWithoutHint,
+  visibleText,
+} from '../../__tests__/helpers/aria';
 
 const mockFeed = vi.fn();
 const lastArgs = vi.fn<(args: unknown) => void>();
@@ -164,6 +169,121 @@ describe('PeriscopeLotteryPanel', () => {
     // peak 250% · eod -0.50R
     expect(screen.getByText(/peak 250%/)).toBeInTheDocument();
     expect(screen.getByText(/-0.50R/)).toBeInTheDocument();
+  });
+
+  it('gives the outcome pill its peak R as a screen-reader hint, and keeps the hover title', () => {
+    mockFeed.mockReturnValue({
+      fires: [
+        baseFire({
+          outcomeLocked: true,
+          peakPct: 250,
+          realizedRPeak: 249,
+          realizedREod: -0.5,
+        }),
+      ],
+      loading: false,
+      error: null,
+      fetchedAt: Date.now(),
+      refresh: vi.fn(),
+    });
+    const { container } = render(<PeriscopeLotteryPanel marketOpen={true} />);
+    const pill = screen.getByText(/peak 250%/);
+    expect(pill).toHaveAttribute('title', 'peak 250% (R=249.0) · eod -0.50R');
+    expect(srHintText(pill)).toBe('at peak, R=249.0');
+    // The sighted text is unchanged: the R figure is only in the title
+    expect(visibleText(pill)).toBe('peak 250% · eod -0.50R');
+    expect(titledGenericsWithoutHint(container)).toEqual([]);
+  });
+
+  it.each([
+    { realizedRPeak: 249, hint: 'at peak, R=249.0' },
+    { realizedRPeak: 0.9, hint: 'at peak, R=0.9' },
+    { realizedRPeak: -0.5, hint: 'at peak, R=-0.5' },
+    // A runaway multiple still keeps the per-row hint short
+    { realizedRPeak: 12345678.9, hint: 'at peak, R=12345678.9' },
+  ])(
+    'keeps the outcome pill hint short in a per-row list ($hint)',
+    ({ realizedRPeak, hint }) => {
+      mockFeed.mockReturnValue({
+        fires: [baseFire({ outcomeLocked: true, realizedRPeak })],
+        loading: false,
+        error: null,
+        fetchedAt: Date.now(),
+        refresh: vi.fn(),
+      });
+      render(<PeriscopeLotteryPanel marketOpen={true} />);
+      const text = srHintText(screen.getByText(/peak 250%/));
+      expect(text).toBe(hint);
+      expect(text!.length).toBeLessThanOrEqual(60);
+    },
+  );
+
+  it('drops the empty R from the outcome pill title when there is no peak R, so the title equals the visible text and needs no hint', () => {
+    mockFeed.mockReturnValue({
+      fires: [
+        baseFire({
+          outcomeLocked: true,
+          peakPct: 250,
+          realizedRPeak: null,
+          realizedREod: -0.5,
+        }),
+      ],
+      loading: false,
+      error: null,
+      fetchedAt: Date.now(),
+      refresh: vi.fn(),
+    });
+    const { container } = render(<PeriscopeLotteryPanel marketOpen={true} />);
+    const pill = screen.getByText(/peak 250%/);
+    expect(pill).toHaveAttribute('title', 'peak 250% · eod -0.50R');
+    expect(visibleText(pill)).toBe('peak 250% · eod -0.50R');
+    expect(srHintText(pill)).toBeNull();
+    expect(titledGenericsWithoutHint(container)).toEqual([]);
+  });
+
+  it('keeps the outcome pill title equal to its text when peak and EOD are both missing', () => {
+    mockFeed.mockReturnValue({
+      fires: [
+        baseFire({
+          outcomeLocked: true,
+          peakPct: null,
+          realizedRPeak: null,
+          realizedREod: null,
+        }),
+      ],
+      loading: false,
+      error: null,
+      fetchedAt: Date.now(),
+      refresh: vi.fn(),
+    });
+    const { container } = render(<PeriscopeLotteryPanel marketOpen={true} />);
+    const pill = screen.getByText('peak — · eod —');
+    expect(pill).toHaveAttribute('title', 'peak — · eod —');
+    expect(srHintText(pill)).toBeNull();
+    expect(titledGenericsWithoutHint(container)).toEqual([]);
+  });
+
+  it('keeps the peak R in the title and hint when peak and EOD are missing', () => {
+    mockFeed.mockReturnValue({
+      fires: [
+        baseFire({
+          outcomeLocked: true,
+          peakPct: null,
+          realizedRPeak: 1,
+          realizedREod: null,
+        }),
+      ],
+      loading: false,
+      error: null,
+      fetchedAt: Date.now(),
+      refresh: vi.fn(),
+    });
+    const { container } = render(<PeriscopeLotteryPanel marketOpen={true} />);
+    const pill = screen.getByText('peak — · eod —');
+    expect(pill).toHaveAttribute('title', 'peak — (R=1.0) · eod —');
+    expect(srHintText(pill)).toBe('at peak, R=1.0');
+    expect(visibleText(pill)).toBe('peak — · eod —');
+    expect(titledGenericsWithoutHint(container)).toEqual([]);
   });
 
   it('omits outcome pill when outcome not yet locked', () => {

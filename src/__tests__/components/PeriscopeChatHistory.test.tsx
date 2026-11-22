@@ -2,6 +2,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ReactNode } from 'react';
+import {
+  genericElementsWithAriaLabel,
+  titledGenericsWithoutHint,
+} from '../helpers/aria';
 
 // Stub SectionBox so its `defaultCollapsed` doesn't hide our content
 // from the tests. We're testing the panel's data flow, not the
@@ -269,6 +273,65 @@ describe('<PeriscopeChatHistory />', () => {
     await user.click(screen.getByRole('button', { name: /^mid-day$/i }));
     expect(screen.getByText('Read row.')).toBeInTheDocument();
     expect(screen.queryByText('Debrief row.')).not.toBeInTheDocument();
+  });
+
+  it('names the calibration stars as one image inside the row toggle, so a screen reader does not read a run of "black star"', async () => {
+    setStandardRoutes({
+      dates: [{ date: '2026-04-30', total: 3, reads: 3, debriefs: 0 }],
+      rowsByDate: {
+        '2026-04-30': [
+          makeListItem({
+            id: 3,
+            calibration_quality: 4,
+            prose_excerpt: 'Four star read.',
+          }),
+          // Zero and null both show no stars at all
+          makeListItem({
+            id: 2,
+            calibration_quality: 0,
+            prose_excerpt: 'Zero star read.',
+          }),
+          makeListItem({
+            id: 1,
+            calibration_quality: null,
+            prose_excerpt: 'Unrated read.',
+          }),
+        ],
+      },
+    });
+    const user = userEvent.setup();
+
+    const { container } = render(<PeriscopeChatHistory />);
+    await waitFor(() => {
+      expect(
+        screen.getByRole('option', { name: /Apr 30, 2026/ }),
+      ).toBeInTheDocument();
+    });
+    await user.selectOptions(screen.getByLabelText('Date'), '2026-04-30');
+    await waitFor(() => {
+      expect(screen.getByText('Four star read.')).toBeInTheDocument();
+    });
+
+    // The glyph run is one image with the whole meaning; the hover title stays
+    const stars = screen.getByRole('img', {
+      name: 'calibration quality 4 of 5',
+    });
+    expect(stars).toHaveAttribute('title', '4/5 stars');
+    expect(stars).toHaveTextContent('★★★★');
+    // Only the rated row has one
+    expect(screen.getAllByRole('img')).toHaveLength(1);
+
+    // It sits inside the row's toggle button, whose name now carries the label
+    const toggles = screen.getAllByRole('button', {
+      name: /calibration quality 4 of 5/,
+    });
+    expect(toggles).toHaveLength(1);
+    expect(toggles[0]).toContainElement(stars);
+    expect(toggles[0]).toHaveAttribute('aria-expanded', 'false');
+    expect(toggles[0]).not.toHaveAccessibleName(/★/);
+
+    expect(genericElementsWithAriaLabel(container)).toEqual([]);
+    expect(titledGenericsWithoutHint(container)).toEqual([]);
   });
 });
 

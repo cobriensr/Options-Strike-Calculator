@@ -13,6 +13,7 @@
 import { useMemo } from 'react';
 import { SectionBox } from '../ui';
 import { DateInput } from '../ui/DateInput.js';
+import { SrHint } from '../ui/SrHint.js';
 import { UwTunedPausedBanner } from '../ui/UwTunedPausedBanner.js';
 import { useFollowedDate } from '../../hooks/useFollowedDate.js';
 import { usePeriscopeLotteryFeed } from '../../hooks/usePeriscopeLotteryFeed.js';
@@ -319,8 +320,14 @@ function OutcomePill({
 }): React.ReactElement {
   const peakLabel = peakPct == null ? '—' : `${Math.round(peakPct)}%`;
   const rPeakLabel =
-    realizedRPeak == null ? '—' : `R=${realizedRPeak.toFixed(1)}`;
+    realizedRPeak == null ? null : `R=${realizedRPeak.toFixed(1)}`;
   const eodLabel = realizedREod == null ? '—' : `${realizedREod.toFixed(2)}R`;
+  // The title adds the peak R. With none, it is the visible text, so the pill
+  // has nothing to hide from a screen reader and no hint.
+  const title =
+    rPeakLabel == null
+      ? `peak ${peakLabel} · eod ${eodLabel}`
+      : `peak ${peakLabel} (${rPeakLabel}) · eod ${eodLabel}`;
   const ok = (realizedRPeak ?? -1) >= 0.5;
   // Outcome pill: green when peak hit ≥ +50% (R ≥ 0.5), neutral chip
   // otherwise. Theme tokens (success vs chip) keep the contrast valid
@@ -331,9 +338,10 @@ function OutcomePill({
   return (
     <span
       className={`rounded border px-1.5 py-0.5 font-mono text-[9px] ${tone}`}
-      title={`peak ${peakLabel} (${rPeakLabel}) · eod ${eodLabel}`}
+      title={title}
     >
       peak {peakLabel} · eod {eodLabel}
+      {rPeakLabel != null && <SrHint>{`at peak, ${rPeakLabel}`}</SrHint>}
     </span>
   );
 }

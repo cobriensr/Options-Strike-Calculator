@@ -457,6 +457,8 @@ export default function PeriscopeChatHistory() {
                     {item.calibration_quality != null &&
                       item.calibration_quality > 0 && (
                         <span
+                          role="img"
+                          aria-label={`calibration quality ${item.calibration_quality} of 5`}
                           className="text-yellow-400"
                           title={`${item.calibration_quality}/5 stars`}
                         >
