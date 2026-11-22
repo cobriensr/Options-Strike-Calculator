@@ -1,5 +1,6 @@
 import { useMemo } from 'react';
 import type { SilentBoomAlert } from './types.js';
+import { SrHint } from '../ui/SrHint.js';
 
 interface SilentBoomRegimeBannerProps {
   alerts: SilentBoomAlert[];
@@ -54,18 +55,21 @@ export function SilentBoomRegimeBanner({
           value={tideDiff}
           format="signed"
           tooltip="Market Tide NCP - NPP at the latest alert's spike-bucket time. Positive = net call premium dominant; negative = net put premium dominant. Display-only — not a selection signal."
+          srText="net call minus net put premium at the latest alert; positive means calls dominate, negative means puts dominate"
         />
         <RegimeMetric
           label="0DTE Flow"
           value={zeroDteDiff}
           format="signed"
           tooltip="zero_dte_greek_flow NCP - NPP at the latest alert's spike-bucket time. Same direction signal but limited to 0DTE prints. Display-only."
+          srText="net call minus net put premium at the latest alert"
         />
         <RegimeMetric
           label="SPX Gamma"
           value={spxGamma}
           format="sign-only"
           tooltip="SPX dealer gamma_oi sign at the latest alert's spike-bucket time. 🟢 positive = dealers long gamma (vol-suppressing); 🔴 negative = dealers short gamma (vol-amplifying). Display-only."
+          srText="dealer gamma sign at the latest alert: green is long gamma (vol-suppressing), red is short gamma (vol-amplifying), white is zero"
         />
 
         <span className="ml-auto text-[10px] text-neutral-600">
@@ -76,21 +80,37 @@ export function SilentBoomRegimeBanner({
   );
 }
 
+/**
+ * What a screen reader gets for a metric that has no data, the same for all
+ * three. The title keeps the metric's own tooltip with this reason after it;
+ * the hint says only why the value is missing.
+ */
+const NO_DATA_HINT =
+  'no data: alert fired outside the macro window or before the macro tables filled';
+
 interface RegimeMetricProps {
   label: string;
   value: number | null;
   format: 'signed' | 'sign-only';
   tooltip: string;
+  /** The hover text for a screen reader, in words that don't repeat the label. */
+  srText: string;
 }
 
-function RegimeMetric({ label, value, format, tooltip }: RegimeMetricProps) {
+function RegimeMetric({
+  label,
+  value,
+  format,
+  tooltip,
+  srText,
+}: RegimeMetricProps) {
   if (value == null) {
     return (
       <span
         className="font-mono text-neutral-500"
         title={`${tooltip}\n\n(no data — alert fired outside the macro window or before macro tables were populated)`}
       >
-        {label} —
+        {label} —<SrHint>{NO_DATA_HINT}</SrHint>
       </span>
     );
   }
@@ -100,6 +120,7 @@ function RegimeMetric({ label, value, format, tooltip }: RegimeMetricProps) {
     return (
       <span className="font-mono text-neutral-300" title={tooltip}>
         {label} {dot}
+        <SrHint>{srText}</SrHint>
       </span>
     );
   }
@@ -114,6 +135,7 @@ function RegimeMetric({ label, value, format, tooltip }: RegimeMetricProps) {
   return (
     <span className={`font-mono ${cls}`} title={tooltip}>
       {label} {arrow} {formatLarge(value)}
+      <SrHint>{srText}</SrHint>
     </span>
   );
 }
