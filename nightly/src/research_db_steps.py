@@ -187,6 +187,9 @@ def _track(
         # as CSV has no header to keep and no dates to lose (the tracker replaces it too).
         with suppress(csv.Error):
             header, old_dates, counts["rows_before"] = _read_tracking_file(state)
+        # With no data rows there is nothing to protect, whatever the header says.
+        if not counts["rows_before"]:
+            header = []
     run = run_script(
         _TRACKING_SCRIPT,
         ["--csv", str(state)],

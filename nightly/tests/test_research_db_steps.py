@@ -559,6 +559,40 @@ def test_tracking_a_lost_date_is_partial_with_an_appended_column_too(
     assert rig.body(STATE_KEY).decode().splitlines()[0] == f"{STATE_HEADER},extra"
 
 
+def test_the_steps_date_rule_is_the_trackers() -> None:
+    # The step keeps its own copy of the tracker's rule (it never imports the script at run
+    # time), so this is what makes a change to one side fail here and not on a night.
+    import daily_tracker
+
+    assert research_db_steps._TRACKING_DATE.pattern == daily_tracker._CSV_DATE.pattern
+    assert research_db_steps._TRACKING_DATE.flags == daily_tracker._CSV_DATE.flags
+    # The same date in other scripts' digits: unicode digits in a date are no date.
+    arabic_indic = str.maketrans("0123456789", "".join(chr(0x0660 + d) for d in range(10)))
+    full_width = str.maketrans("0123456789", "".join(chr(0xFF10 + d) for d in range(10)))
+    edges = [
+        "2026-11-10",
+        "2024-02-29",  # a leap day
+        "2000-02-29",
+        "2026-02-29",  # not one
+        "1900-02-29",
+        "0000-01-01",
+        "2026-13-45",
+        "2026-11-31",
+        "2026-W45-3",
+        "20261110",
+        "2026-11-10".translate(arabic_indic),
+        "2026-11-10".translate(full_width),
+        "2026-11-10\n",
+        " 2026-11-10",
+        "not-a-date",
+        "",
+    ]
+    for text in edges:
+        assert research_db_steps._is_tracking_date(text) == (
+            daily_tracker._csv_date(text) is not None
+        ), repr(text)
+
+
 def test_tracking_a_row_with_no_date_that_the_new_file_lacks_is_not_a_lost_date(
     rig: Rig, puts: list[str]
 ) -> None:
@@ -582,12 +616,13 @@ def test_tracking_a_row_with_no_date_that_the_new_file_lacks_is_not_a_lost_date(
 def test_tracking_an_old_date_in_a_state_with_a_byte_order_mark_is_read(
     rig: Rig, puts: list[str]
 ) -> None:
-    rig.put_state("﻿" + STATE_TEXT)  # saved from Excel as CSV UTF-8
+    byte_order_mark = chr(0xFEFF)
+    rig.put_state(byte_order_mark + STATE_TEXT)  # saved from Excel as CSV UTF-8
     rig.tracker("drop")
 
     result = run_tracking(rig.ctx())
 
-    # The first name is `date`, not `﻿date`: 11-09 and 11-10 are both read, and 11-10 is lost.
+    # The first name is `date`, not BOM + `date`: 11-09 and 11-10 are both read, 11-10 is lost.
     assert (result.status, result.counts["dates_dropped"]) == ("partial", 1)
 
 
@@ -660,15 +695,21 @@ def test_tracking_any_other_header_change_fails_and_uploads_only_the_log(
 
 
 @pytest.mark.parametrize(
-    "text",
-    ["", f"{STATE_HEADER}\r\n"],
-    ids=["a zero-byte state", "a header only"],
+    ("text", "action"),
+    [
+        ("", "append"),
+        (f"{STATE_HEADER}\r\n", "append"),
+        # `append` copies the header it reads, so it could not tell this one from the first
+        # two: `fresh` writes the tracker's own header whatever the state held.
+        ("date,something_else\r\n", "fresh"),
+    ],
+    ids=["a zero-byte state", "a header only", "a header only, another header"],
 )
 def test_tracking_a_state_with_no_rows_has_nothing_to_lose_and_no_header_to_keep(
-    rig: Rig, puts: list[str], text: str
+    rig: Rig, puts: list[str], text: str, action: str
 ) -> None:
     rig.put_state(text)
-    rig.tracker("append")  # the real tracker writes its own header and the night's row
+    rig.tracker(action)  # the real tracker writes its own header and the night's row
 
     result = run_tracking(rig.ctx())
 
