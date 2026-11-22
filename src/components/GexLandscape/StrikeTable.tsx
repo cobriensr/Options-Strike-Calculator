@@ -21,10 +21,13 @@ import type { Ref } from 'react';
 import type { GexStrikeLevel } from './types';
 import { CLASS_META, CLS_TOOLTIP, takerSignHex, trendColor } from './constants';
 import {
+  charmHint,
   charmTooltip,
   classify,
   getDirection,
+  positionBand,
   signalTooltip,
+  takerSideWords,
 } from './classify';
 import { fmtGex, fmtPct } from './formatters';
 import { SrHint } from '../ui/SrHint.js';
@@ -33,6 +36,39 @@ import { SrHint } from '../ui/SrHint.js';
  * Strike | Class | Position | NetGamma | NetCharm | NetVanna | Δ5m | Δ15m | Δ30m | Vol Reinf.
  */
 const COLS = 'grid-cols-[76px_130px_1fr_88px_76px_76px_64px_64px_64px_64px]';
+
+/**
+ * What each column header means. The header word is all a sighted user sees,
+ * and the same text is its mouse-hover `title`; a screen reader never reads a
+ * `title`, so each header also carries it as a hidden `SrHint`. One constant
+ * per header, so the two cannot drift apart. The three Greek headers keep
+ * their closing "not a market-maker position": it denies a claim, and the
+ * dealer-claim scan allows exactly that phrase.
+ */
+const POSITION_HEADER_TEXT =
+  "Taker side of the strike's GEXBot gamma and where the strike sits relative to spot (25-pt band).";
+const NET_GAMMA_HEADER_TEXT =
+  "GEXBot dollar gamma per strike from the 1-min capture, in GEXBot's taker-side sign: positive = traders (takers) are net long gamma at this strike, negative = net short. A taker-flow measure, not a market-maker position.";
+const NET_CHARM_HEADER_TEXT =
+  "GEXBot dollar charm per strike, in GEXBot's taker-side sign: positive = traders (takers) are net long charm at this strike, negative = net short. A taker-flow measure, not a market-maker position.";
+const NET_VANNA_HEADER_TEXT =
+  "GEXBot dollar vanna per strike, in GEXBot's taker-side sign: positive = traders (takers) are net long vanna at this strike, negative = net short. A taker-flow measure, not a market-maker position.";
+const DELTA_5M_HEADER_TEXT =
+  "% change in dollar gamma vs. the slot 5 min ago (GEXBot's shortest priors window) — shows the freshest sign flips and the fastest changes.";
+const DELTA_15M_HEADER_TEXT =
+  '% change in dollar gamma vs. the slot 15 min ago. Smooths the shorter-window noise; useful for setup detection between bigger windows.';
+const DELTA_30M_HEADER_TEXT =
+  '% change in dollar gamma vs. the slot 30 min ago. Catches session-scale build/unwind.';
+/**
+ * The Vol Reinf. title spells the three states with their glyphs (↑↑ / ↓↓ /
+ * —). The hint is a trimmed variant: it names the states in words, because a
+ * screen reader reads the glyphs as nothing useful, and drops the title's
+ * opening "Vol Reinforcement" that the header already shows.
+ */
+const VOL_REINF_TITLE =
+  "Vol Reinforcement — delta-trend agreement. ↑↑ (reinforcing): all three Δ% windows move with the netGamma sign, so the strike's gamma is growing in that sign. ↓↓ (opposing): all three move against it, so it is shrinking toward zero. — (neutral): mixed / sparse / no data.";
+const VOL_REINF_HINT =
+  "delta-trend agreement. Reinforcing: all three Δ% windows move with the netGamma sign, so the strike's gamma is growing in that sign. Opposing: all three move against it, so it is shrinking toward zero. Neutral: mixed, sparse or no data";
 
 /**
  * What each vol-reinforcement mark means. The marks are glyphs (↑↑ / ↓↓ / —),
@@ -93,53 +129,58 @@ export function StrikeTable({
       >
         <div className="px-3 py-2 text-right">Strike</div>
         <div className="px-3 py-2">Classification</div>
-        <div
-          className="cursor-help px-3 py-2"
-          title="Taker side of the strike's GEXBot gamma and where the strike sits relative to spot (25-pt band)."
-        >
+        <div className="cursor-help px-3 py-2" title={POSITION_HEADER_TEXT}>
           Position
+          <SrHint>{POSITION_HEADER_TEXT}</SrHint>
         </div>
         <div
           className="cursor-help px-3 py-2 text-right"
-          title="GEXBot dollar gamma per strike from the 1-min capture, in GEXBot's taker-side sign: positive = traders (takers) are net long gamma at this strike, negative = net short. A taker-flow measure, not a market-maker position."
+          title={NET_GAMMA_HEADER_TEXT}
         >
           NetGamma
+          <SrHint>{NET_GAMMA_HEADER_TEXT}</SrHint>
         </div>
         <div
           className="cursor-help px-3 py-2 text-right"
-          title="GEXBot dollar charm per strike, in GEXBot's taker-side sign: positive = traders (takers) are net long charm at this strike, negative = net short. A taker-flow measure, not a market-maker position."
+          title={NET_CHARM_HEADER_TEXT}
         >
           NetCharm
+          <SrHint>{NET_CHARM_HEADER_TEXT}</SrHint>
         </div>
         <div
           className="cursor-help px-3 py-2 text-right"
-          title="GEXBot dollar vanna per strike, in GEXBot's taker-side sign: positive = traders (takers) are net long vanna at this strike, negative = net short. A taker-flow measure, not a market-maker position."
+          title={NET_VANNA_HEADER_TEXT}
         >
           NetVanna
+          <SrHint>{NET_VANNA_HEADER_TEXT}</SrHint>
         </div>
         <div
           className="cursor-help px-3 py-2 text-right"
-          title="% change in dollar gamma vs. the slot 5 min ago (GEXBot's shortest priors window) — shows the freshest sign flips and the fastest changes."
+          title={DELTA_5M_HEADER_TEXT}
         >
           Δ5m
+          <SrHint>{DELTA_5M_HEADER_TEXT}</SrHint>
         </div>
         <div
           className="cursor-help px-3 py-2 text-right"
-          title="% change in dollar gamma vs. the slot 15 min ago. Smooths the shorter-window noise; useful for setup detection between bigger windows."
+          title={DELTA_15M_HEADER_TEXT}
         >
           Δ15m
+          <SrHint>{DELTA_15M_HEADER_TEXT}</SrHint>
         </div>
         <div
           className="cursor-help px-3 py-2 text-right"
-          title="% change in dollar gamma vs. the slot 30 min ago. Catches session-scale build/unwind."
+          title={DELTA_30M_HEADER_TEXT}
         >
           Δ30m
+          <SrHint>{DELTA_30M_HEADER_TEXT}</SrHint>
         </div>
         <div
           className="cursor-help px-3 py-2 text-center"
-          title="Vol Reinforcement — delta-trend agreement. ↑↑ (reinforcing): all three Δ% windows move with the netGamma sign, so the strike's gamma is growing in that sign. ↓↓ (opposing): all three move against it, so it is shrinking toward zero. — (neutral): mixed / sparse / no data."
+          title={VOL_REINF_TITLE}
         >
           Vol Reinf.
+          <SrHint>{VOL_REINF_HINT}</SrHint>
         </div>
       </div>
 
@@ -161,6 +202,7 @@ export function StrikeTable({
           const dir = getDirection(s.strike, currentPrice);
           const cls = classify(s.netGamma, s.netCharm);
           const meta = CLASS_META[cls];
+          const sides = takerSideWords(cls);
           const pct5m = gexDelta5mMap.get(s.strike) ?? null;
           const pct15m = gexDelta15mMap.get(s.strike) ?? null;
           const pct30m = gexDelta30mMap.get(s.strike) ?? null;
@@ -213,6 +255,7 @@ export function StrikeTable({
                   >
                     {isAboveSpot ? '+' : '−'}
                     {Math.abs(s.strike - currentPrice).toLocaleString()} pts
+                    <SrHint>{isAboveSpot ? 'above spot' : 'below spot'}</SrHint>
                   </span>
                 )}
               </div>
@@ -224,6 +267,7 @@ export function StrikeTable({
                   title={CLS_TOOLTIP[cls]}
                 >
                   {meta.badge}
+                  <SrHint>{`takers net ${sides.gamma} gamma, net ${sides.charm} charm`}</SrHint>
                 </span>
                 {isNew && (
                   <span
@@ -268,6 +312,7 @@ export function StrikeTable({
                   title={signalTooltip(cls, dir)}
                 >
                   {meta.signal(dir)}
+                  <SrHint>{positionBand(dir)}</SrHint>
                 </span>
               </div>
 
@@ -289,6 +334,7 @@ export function StrikeTable({
                   title={charmTooltip(s.netCharm)}
                 >
                   {fmtGex(s.netCharm)}
+                  <SrHint>{charmHint(s.netCharm)}</SrHint>
                 </span>
               </div>
 

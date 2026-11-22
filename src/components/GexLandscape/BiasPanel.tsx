@@ -18,11 +18,36 @@ import {
   GAMMA_SIGN_CLASSES,
   VERDICT_META,
   VERDICT_TOOLTIP,
+  VERDICT_TOOLTIP_TAIL,
   takerSignHex,
   trendColor,
 } from './constants';
 import { fmtGex, fmtPct } from './formatters';
 import type { BiasMetrics, DriftTarget } from './types';
+import { SrHint } from '../ui/SrHint.js';
+
+/**
+ * Hover text that is also read aloud. Each element keeps it as its `title`
+ * and carries it as a hidden `SrHint` too (or, for the three glyph-only
+ * marks, as the `role="img"` label), because a `title` alone never reaches a
+ * screen reader. One constant per text, so the two cannot drift apart.
+ */
+const TOP_GAMMA_TEXT =
+  'The strike with the largest absolute GEXBot gamma within ±50 pts of spot: its distance from spot, strike and taker-side value.';
+const REINFORCING_MARK_TEXT =
+  "Reinforcing — Δ5m, Δ15m and Δ30m all move with this strike's gamma sign, so its gamma is growing in that sign";
+const OPPOSING_MARK_TEXT =
+  "Opposing — Δ5m, Δ15m and Δ30m all move against this strike's gamma sign, so its gamma is shrinking toward zero";
+const CONFLUENCE_MARK_TEXT =
+  'Most actively changing gamma strike (largest |Δ| in a 5m, 15m or 30m window)';
+
+/**
+ * Trend ladder: the title opens with "Average % change", so the hint is a
+ * trimmed variant that also says what F and C are, since the cells show only
+ * the letters.
+ */
+const TREND_LADDER_HINT =
+  'average % change in GEXBot dollar gamma in taker-side sign. F is the strikes more than 25 pts below spot and C the strikes more than 25 pts above, each against the value 5, 15 and 30 min ago';
 
 export interface BiasPanelProps {
   bias: BiasMetrics;
@@ -50,6 +75,10 @@ export function BiasPanel({
     isDrifting && bias.priceTrend
       ? ` (${bias.priceTrend.changePts > 0 ? '+' : ''}${bias.priceTrend.changePts.toFixed(1)} pts / 30m)`
       : '';
+  const regimeHint =
+    bias.regime === 'positive'
+      ? "Sum of GEXBot gamma over the strikes within ±50 pts of spot, in GEXBot's taker-side sign: positive, so traders (takers) are net long gamma across the window."
+      : "Sum of GEXBot gamma over the strikes within ±50 pts of spot, in GEXBot's taker-side sign: negative, so traders (takers) are net short gamma across the window.";
 
   return (
     <div className={`mb-3 rounded-lg border p-3 ${vm.bg} ${vm.border}`}>
@@ -61,6 +90,8 @@ export function BiasPanel({
             title={VERDICT_TOOLTIP[bias.verdict]}
           >
             {vm.label}
+            {/* The rest of the title repeats the description beside it. */}
+            <SrHint>{VERDICT_TOOLTIP_TAIL}</SrHint>
           </span>
           <span className="text-secondary font-mono text-[11px]">
             {vm.desc}
@@ -71,26 +102,20 @@ export function BiasPanel({
         </div>
         <span
           className={`shrink-0 cursor-help rounded px-1.5 py-0.5 font-mono text-[10px] font-bold ${regimeTone.bg} ${regimeTone.color}`}
-          title={
-            bias.regime === 'positive'
-              ? "Sum of GEXBot gamma over the strikes within ±50 pts of spot, in GEXBot's taker-side sign: positive, so traders (takers) are net long gamma across the window."
-              : "Sum of GEXBot gamma over the strikes within ±50 pts of spot, in GEXBot's taker-side sign: negative, so traders (takers) are net short gamma across the window."
-          }
+          title={regimeHint}
         >
           {bias.regime === 'positive' ? 'NET LONG γ' : 'NET SHORT γ'}{' '}
           <span className="font-normal opacity-70">
             {fmtGex(bias.totalNetGex)}
           </span>
+          <SrHint>{regimeHint}</SrHint>
         </span>
       </div>
 
       {/* Metrics row — top |γ| strike, top strikes either side, trend ladder */}
       <div className="grid grid-cols-[auto_1px_1fr_1px_1fr_1px_auto] items-start gap-x-4">
         {/* Top |γ| strike (`gravity*` fields) */}
-        <div
-          className="cursor-help"
-          title="The strike with the largest absolute GEXBot gamma within ±50 pts of spot: its distance from spot, strike and taker-side value."
-        >
+        <div className="cursor-help" title={TOP_GAMMA_TEXT}>
           <div
             className="mb-0.5 font-mono text-[9px] font-semibold tracking-wider uppercase"
             style={{ color: 'var(--color-tertiary)' }}
@@ -115,6 +140,7 @@ export function BiasPanel({
           >
             {bias.gravityStrike.toLocaleString()} · {fmtGex(bias.gravityGex)}
           </div>
+          <SrHint>{TOP_GAMMA_TEXT}</SrHint>
         </div>
 
         {/* Divider */}
@@ -220,7 +246,9 @@ function DriftTargetColumn({
               {t.volReinforcement === 'reinforcing' && (
                 <span
                   className="text-secondary font-mono text-[9px]"
-                  title="Reinforcing — Δ5m, Δ15m and Δ30m all move with this strike's gamma sign, so its gamma is growing in that sign"
+                  title={REINFORCING_MARK_TEXT}
+                  role="img"
+                  aria-label={REINFORCING_MARK_TEXT}
                 >
                   ↑↑
                 </span>
@@ -228,7 +256,9 @@ function DriftTargetColumn({
               {t.volReinforcement === 'opposing' && (
                 <span
                   className="text-secondary font-mono text-[9px]"
-                  title="Opposing — Δ5m, Δ15m and Δ30m all move against this strike's gamma sign, so its gamma is shrinking toward zero"
+                  title={OPPOSING_MARK_TEXT}
+                  role="img"
+                  aria-label={OPPOSING_MARK_TEXT}
                 >
                   ↓↓
                 </span>
@@ -236,15 +266,19 @@ function DriftTargetColumn({
               {isConfluence && (
                 <span
                   className="font-mono text-[9px] text-amber-400"
-                  title="Most actively changing gamma strike (largest |Δ| in a 5m, 15m or 30m window)"
+                  title={CONFLUENCE_MARK_TEXT}
+                  role="img"
+                  aria-label={CONFLUENCE_MARK_TEXT}
                 >
                   ⚡
                 </span>
               )}
+              <SrHint>{CLS_TOOLTIP[t.cls]}</SrHint>
             </div>
           );
         })
       )}
+      <SrHint>{title}</SrHint>
     </div>
   );
 }
@@ -290,6 +324,7 @@ function TrendLadder({ bias }: TrendLadderProps) {
           />
         ))}
       </div>
+      <SrHint>{TREND_LADDER_HINT}</SrHint>
     </div>
   );
 }
@@ -315,6 +350,7 @@ function TrendRow({ label, floor, ceil }: TrendRowProps) {
         title={`F: avg Δ${label} of the strikes below spot`}
       >
         F {fmtPct(floor)}
+        <SrHint>{`average Δ${label} of the strikes below spot`}</SrHint>
       </span>
       <span
         className="font-mono text-[11px] font-semibold"
@@ -322,6 +358,7 @@ function TrendRow({ label, floor, ceil }: TrendRowProps) {
         title={`C: avg Δ${label} of the strikes above spot`}
       >
         C {fmtPct(ceil)}
+        <SrHint>{`average Δ${label} of the strikes above spot`}</SrHint>
       </span>
     </>
   );

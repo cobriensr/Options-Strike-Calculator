@@ -9,11 +9,20 @@ import { BiasPanel } from '../../components/GexLandscape/BiasPanel';
 import {
   CLASS_META,
   GAMMA_SIGN_HEX,
+  VERDICT_META,
+  VERDICT_TOOLTIP,
   trendColor,
 } from '../../components/GexLandscape/constants';
 import { StrikeTable } from '../../components/GexLandscape/StrikeTable';
-import type { BiasMetrics } from '../../components/GexLandscape/types';
-import { genericElementsWithAriaLabel, srHintText } from '../helpers/aria';
+import type {
+  BiasMetrics,
+  DriftTarget,
+} from '../../components/GexLandscape/types';
+import {
+  genericElementsWithAriaLabel,
+  srHintText,
+  titledGenericsWithoutHint,
+} from '../helpers/aria';
 
 // ── Mocks ──────────────────────────────────────────────────────────────────────
 //
@@ -274,6 +283,22 @@ describe('GexLandscape', () => {
     });
   });
 
+  describe('hover text for screen readers', () => {
+    // The whole panel, both tabs: every titled bare span or div carries the
+    // meaning of its title in a hidden hint (BiasPanel and StrikeTable sites
+    // are pinned one by one below).
+    it('gives every titled generic element a hint on the Landscape tab', () => {
+      const { container } = renderLandscape();
+      expect(titledGenericsWithoutHint(container)).toEqual([]);
+    });
+
+    it('gives every titled generic element a hint on the Top 5 tab', () => {
+      const { container } = renderLandscape();
+      fireEvent.click(screen.getByRole('tab', { name: 'Top 5 GEX' }));
+      expect(titledGenericsWithoutHint(container)).toEqual([]);
+    });
+  });
+
   describe('spot indicator', () => {
     it('marks the nearest strike to current price with ATM label', () => {
       renderLandscape();
@@ -317,9 +342,14 @@ describe('GexLandscape', () => {
   });
 
   describe('vol reinforcement', () => {
+    // The bias panel above the table has ↑↑ / ↓↓ marks of its own, named the
+    // same way, so these two look in the strike table only.
     it('shows ↑↑ for reinforcing strikes', () => {
       renderLandscape();
-      const reinforcing = screen.getAllByRole('img', {
+      const table = within(
+        screen.getByRole('list', { name: 'GEX strike landscape' }),
+      );
+      const reinforcing = table.getAllByRole('img', {
         name: /^Reinforcing —/,
       });
       expect(reinforcing.length).toBeGreaterThan(0);
@@ -327,7 +357,10 @@ describe('GexLandscape', () => {
 
     it('shows ↓↓ for opposing strikes', () => {
       renderLandscape();
-      const opposing = screen.getAllByRole('img', { name: /^Opposing —/ });
+      const table = within(
+        screen.getByRole('list', { name: 'GEX strike landscape' }),
+      );
+      const opposing = table.getAllByRole('img', { name: /^Opposing —/ });
       expect(opposing.length).toBeGreaterThan(0);
     });
 
@@ -917,6 +950,495 @@ describe('StrikeTable — New / Anchor badges and vol marks name themselves in w
   it('leaves no bare span or div with an aria-label', () => {
     const { container } = renderBadgeTable();
     expect(genericElementsWithAriaLabel(container)).toEqual([]);
+  });
+});
+
+// ── BiasPanel hover text reaches screen readers ───────────────────────
+//
+// Role-less elements that explained themselves only through `title` (mouse
+// hover) now carry the same meaning in a hidden SrHint, as their last direct
+// child. The `title` of each stays byte for byte; the three glyph-only marks
+// are images labelled with their meaning. A hint never repeats the label the
+// element already shows, so some are a trimmed variant of the title.
+
+const REGIME_TITLES = {
+  positive:
+    "Sum of GEXBot gamma over the strikes within ±50 pts of spot, in GEXBot's taker-side sign: positive, so traders (takers) are net long gamma across the window.",
+  negative:
+    "Sum of GEXBot gamma over the strikes within ±50 pts of spot, in GEXBot's taker-side sign: negative, so traders (takers) are net short gamma across the window.",
+} as const;
+
+const TAIL =
+  'Computed from GEXBot gamma in its taker-side sign over the strikes within ±50 pts of spot. It describes taker positioning; it is not a forecast of where price goes.';
+
+const TARGET_UP_REINFORCING: DriftTarget = {
+  strike: 5950,
+  cls: 'sticky-pin',
+  netGamma: 5e8,
+  volReinforcement: 'reinforcing',
+};
+const TARGET_UP_OPPOSING: DriftTarget = {
+  strike: 5975,
+  cls: 'max-launchpad',
+  netGamma: -5e8,
+  volReinforcement: 'opposing',
+};
+const TARGET_DOWN_A: DriftTarget = {
+  strike: 5850,
+  cls: 'weakening-pin',
+  netGamma: 5e8,
+  volReinforcement: 'neutral',
+};
+const TARGET_DOWN_B: DriftTarget = {
+  strike: 5825,
+  cls: 'fading-launchpad',
+  netGamma: -5e8,
+  volReinforcement: 'neutral',
+};
+
+/** A panel that reaches every site: four target rows, both marks, the ⚡. */
+function renderHintPanel(overrides: Partial<BiasMetrics> = {}) {
+  return render(
+    <BiasPanel
+      bias={makeBias({
+        upsideTargets: [TARGET_UP_REINFORCING, TARGET_UP_OPPOSING],
+        downsideTargets: [TARGET_DOWN_A, TARGET_DOWN_B],
+        ...overrides,
+      })}
+      maxChanged5mStrike={5950}
+      maxChanged15mStrike={null}
+      maxChanged30mStrike={null}
+    />,
+  );
+}
+
+describe('BiasPanel — verdict badge', () => {
+  it.each(Object.keys(VERDICT_META) as Array<keyof typeof VERDICT_META>)(
+    '%s: the hint is the shared tail, the title is the whole tooltip',
+    (verdict) => {
+      renderBias(makeBias({ verdict }));
+      const label = screen.getByText(VERDICT_META[verdict].label);
+      expect(srHintText(label)).toBe(TAIL);
+      expect(label).toHaveAttribute('title', VERDICT_TOOLTIP[verdict]);
+    },
+  );
+
+  it('keeps the full title of the long-gamma verdict byte for byte', () => {
+    renderBias(makeBias());
+    expect(screen.getByText('▲ TOP ABOVE · LONG γ')).toHaveAttribute(
+      'title',
+      `The strike with the largest absolute gamma sits more than 25 pts above spot, and net taker gamma is positive (traders net long gamma). ${TAIL}`,
+    );
+  });
+
+  it('does not say again what the description beside it already says', () => {
+    renderBias(makeBias());
+    const hint = srHintText(screen.getByText('▲ TOP ABOVE · LONG γ'));
+    expect(hint).not.toContain('Largest |γ| strike');
+    expect(hint).not.toContain('net taker gamma is positive');
+  });
+});
+
+describe('BiasPanel — net-gamma badge', () => {
+  it.each([
+    ['positive', /NET LONG γ/],
+    ['negative', /NET SHORT γ/],
+  ] as const)(
+    '%s regime: title and hint carry the same sentence',
+    (regime, label) => {
+      renderBias(
+        makeBias({ regime, totalNetGex: regime === 'positive' ? 2.5e9 : -1e9 }),
+      );
+      const badge = screen.getByText(label);
+      expect(badge).toHaveAttribute('title', REGIME_TITLES[regime]);
+      expect(srHintText(badge)).toBe(REGIME_TITLES[regime]);
+    },
+  );
+
+  it('keeps the signed value in the badge text, hint last', () => {
+    renderBias(makeBias());
+    const badge = screen.getByText(/NET LONG γ/);
+    expect(badge.textContent).toContain('+2.5B');
+    expect(badge.lastElementChild).toHaveClass('sr-only');
+  });
+});
+
+describe('BiasPanel — top-gamma block, target columns and target rows', () => {
+  it('the top-gamma block carries its title as a hint', () => {
+    renderHintPanel();
+    const text =
+      'The strike with the largest absolute GEXBot gamma within ±50 pts of spot: its distance from spot, strike and taker-side value.';
+    const block = screen.getByText('Top |γ| strike')
+      .parentElement as HTMLElement;
+    expect(block).toHaveAttribute('title', text);
+    expect(srHintText(block)).toBe(text);
+  });
+
+  it.each([
+    [
+      '▲ Top |γ| above',
+      'The two strikes more than 25 pts above spot with the largest absolute GEXBot gamma, with their taker-side classification.',
+    ],
+    [
+      '▼ Top |γ| below',
+      'The two strikes more than 25 pts below spot with the largest absolute GEXBot gamma, with their taker-side classification.',
+    ],
+  ])('the %s column carries its title as a hint', (label, text) => {
+    renderHintPanel();
+    const column = screen.getByText(label).parentElement as HTMLElement;
+    expect(column).toHaveAttribute('title', text);
+    expect(srHintText(column)).toBe(text);
+    // The rows come first; the hint is the last child of the column.
+    expect(column.lastElementChild).toHaveClass('sr-only');
+  });
+
+  it('an empty column still carries its hint', () => {
+    renderBias(makeBias());
+    const column = screen.getByText('▲ Top |γ| above')
+      .parentElement as HTMLElement;
+    expect(srHintText(column)).toContain('The two strikes more than 25 pts');
+  });
+
+  it.each([
+    [
+      '5,950',
+      "In GEXBot's taker-side sign, traders (takers) are net long gamma and net long charm at this strike.",
+    ],
+    [
+      '5,975',
+      "In GEXBot's taker-side sign, traders (takers) are net short gamma and net long charm at this strike.",
+    ],
+    [
+      '5,850',
+      "In GEXBot's taker-side sign, traders (takers) are net long gamma and net short charm at this strike.",
+    ],
+    [
+      '5,825',
+      "In GEXBot's taker-side sign, traders (takers) are net short gamma and net short charm at this strike.",
+    ],
+  ])(
+    'the %s target row carries its class tooltip as a hint',
+    (strike, text) => {
+      renderHintPanel();
+      const row = screen.getByText(strike).parentElement as HTMLElement;
+      expect(row).toHaveAttribute('title', text);
+      expect(srHintText(row)).toBe(text);
+    },
+  );
+
+  it('puts the row hint after the optional marks, as the last child', () => {
+    renderHintPanel();
+    // 5950 carries the reinforcing mark and the confluence bolt.
+    const row = screen.getByText('5,950').parentElement as HTMLElement;
+    const marks = within(row).getAllByRole('img');
+    expect(marks).toHaveLength(2);
+    expect(row.lastElementChild).toHaveClass('sr-only');
+    expect(row.lastElementChild).not.toBe(marks.at(-1));
+  });
+});
+
+describe('BiasPanel — ↑↑ / ↓↓ / ⚡ marks are labelled images', () => {
+  it.each([
+    [
+      '↑↑',
+      "Reinforcing — Δ5m, Δ15m and Δ30m all move with this strike's gamma sign, so its gamma is growing in that sign",
+    ],
+    [
+      '↓↓',
+      "Opposing — Δ5m, Δ15m and Δ30m all move against this strike's gamma sign, so its gamma is shrinking toward zero",
+    ],
+    [
+      '⚡',
+      'Most actively changing gamma strike (largest |Δ| in a 5m, 15m or 30m window)',
+    ],
+  ])('names the %s mark as an image labelled with its title', (glyph, text) => {
+    renderHintPanel();
+    const mark = screen.getByRole('img', { name: text });
+    expect(mark).toHaveTextContent(glyph);
+    expect(mark).toHaveAttribute('title', text);
+  });
+
+  it('leaves no bare span or div with an aria-label', () => {
+    const { container } = renderHintPanel();
+    expect(genericElementsWithAriaLabel(container)).toEqual([]);
+  });
+});
+
+describe('BiasPanel — trend ladder and its F / C cells', () => {
+  it('the ladder carries the F and C key in a hint, and keeps its title', () => {
+    renderHintPanel();
+    const ladder = screen.getByText('Trend Ladder')
+      .parentElement as HTMLElement;
+    expect(ladder).toHaveAttribute(
+      'title',
+      "Average % change in GEXBot dollar gamma (taker-side sign) for the strikes more than 25 pts below spot (F) and above spot (C), vs. the value N min ago. Three rows at GEXBot's priors windows (t-5 / t-15 / t-30 min).",
+    );
+    expect(srHintText(ladder)).toBe(
+      'average % change in GEXBot dollar gamma in taker-side sign. F is the strikes more than 25 pts below spot and C the strikes more than 25 pts above, each against the value 5, 15 and 30 min ago',
+    );
+  });
+
+  // Distinct values per row so each cell is found by its own text; the 30m
+  // row is null, which shows an em dash.
+  it.each([
+    ['5m', 'F +2.5%', 'C +3.5%'],
+    ['15m', 'F −1.2%', 'C −2.2%'],
+    ['30m', 'F —', 'C —'],
+  ])('the %s row: F and C say which strikes they average', (win, f, c) => {
+    renderBias(
+      makeBias({
+        floorTrend5m: 2.5,
+        ceilingTrend5m: 3.5,
+        floorTrend15m: -1.2,
+        ceilingTrend15m: -2.2,
+        floorTrend30m: null,
+        ceilingTrend30m: null,
+      }),
+    );
+    const floor = screen.getByText(f);
+    const ceil = screen.getByText(c);
+    expect(floor).toHaveAttribute(
+      'title',
+      `F: avg Δ${win} of the strikes below spot`,
+    );
+    expect(ceil).toHaveAttribute(
+      'title',
+      `C: avg Δ${win} of the strikes above spot`,
+    );
+    expect(srHintText(floor)).toBe(`average Δ${win} of the strikes below spot`);
+    expect(srHintText(ceil)).toBe(`average Δ${win} of the strikes above spot`);
+    // Per-row hints stay short: three rows, two cells each.
+    expect(srHintText(floor)?.length).toBeLessThanOrEqual(60);
+    expect(srHintText(ceil)?.length).toBeLessThanOrEqual(60);
+  });
+
+  it('gives every titled generic element in the whole panel a hint', () => {
+    const { container } = renderHintPanel();
+    expect(titledGenericsWithoutHint(container)).toEqual([]);
+  });
+
+  it('keeps the panel free of dealer claims and arrow glyphs in its text', () => {
+    renderBias(makeBias());
+    expect(document.body.textContent).not.toMatch(/[↑↓]/);
+    expect(dealerClaims(document.body.textContent ?? '')).toEqual([]);
+  });
+});
+
+// ── StrikeTable hover text reaches screen readers ─────────────────────
+
+describe('StrikeTable — column headers', () => {
+  const SPOT = 5900;
+  const ROWS = [makeStrike(SPOT, SPOT, 5e8, 1e6)];
+
+  function renderHeaders() {
+    const map = new Map(ROWS.map((r) => [r.strike, 1] as const));
+    return render(
+      <StrikeTable
+        rows={ROWS}
+        currentPrice={SPOT}
+        spotStrike={ROWS[0] ?? null}
+        maxChanged5mStrike={null}
+        maxChanged15mStrike={null}
+        maxChanged30mStrike={null}
+        gexDelta5mMap={map}
+        gexDelta15mMap={map}
+        gexDelta30mMap={map}
+        spotRowRef={{ current: null }}
+      />,
+    );
+  }
+
+  // The header word is the label, so the hint carries the title's meaning.
+  // `not a market-maker position` is the one dealer phrase a title may keep:
+  // it denies the claim.
+  it.each([
+    [
+      'Position',
+      "Taker side of the strike's GEXBot gamma and where the strike sits relative to spot (25-pt band).",
+    ],
+    [
+      'NetGamma',
+      "GEXBot dollar gamma per strike from the 1-min capture, in GEXBot's taker-side sign: positive = traders (takers) are net long gamma at this strike, negative = net short. A taker-flow measure, not a market-maker position.",
+    ],
+    [
+      'NetCharm',
+      "GEXBot dollar charm per strike, in GEXBot's taker-side sign: positive = traders (takers) are net long charm at this strike, negative = net short. A taker-flow measure, not a market-maker position.",
+    ],
+    [
+      'NetVanna',
+      "GEXBot dollar vanna per strike, in GEXBot's taker-side sign: positive = traders (takers) are net long vanna at this strike, negative = net short. A taker-flow measure, not a market-maker position.",
+    ],
+    [
+      'Δ5m',
+      "% change in dollar gamma vs. the slot 5 min ago (GEXBot's shortest priors window) — shows the freshest sign flips and the fastest changes.",
+    ],
+    [
+      'Δ15m',
+      '% change in dollar gamma vs. the slot 15 min ago. Smooths the shorter-window noise; useful for setup detection between bigger windows.',
+    ],
+    [
+      'Δ30m',
+      '% change in dollar gamma vs. the slot 30 min ago. Catches session-scale build/unwind.',
+    ],
+  ])('the %s header carries its title as a hint', (header, text) => {
+    renderHeaders();
+    const cell = screen.getByText(header);
+    expect(cell).toHaveAttribute('title', text);
+    expect(srHintText(cell)).toBe(text);
+  });
+
+  it('the Vol Reinf. header carries a trimmed hint without the glyphs', () => {
+    renderHeaders();
+    const cell = screen.getByText('Vol Reinf.');
+    expect(cell).toHaveAttribute(
+      'title',
+      "Vol Reinforcement — delta-trend agreement. ↑↑ (reinforcing): all three Δ% windows move with the netGamma sign, so the strike's gamma is growing in that sign. ↓↓ (opposing): all three move against it, so it is shrinking toward zero. — (neutral): mixed / sparse / no data.",
+    );
+    const hint = srHintText(cell);
+    expect(hint).toBe(
+      "delta-trend agreement. Reinforcing: all three Δ% windows move with the netGamma sign, so the strike's gamma is growing in that sign. Opposing: all three move against it, so it is shrinking toward zero. Neutral: mixed, sparse or no data",
+    );
+    expect(hint).not.toMatch(/[↑↓—]/);
+  });
+
+  it('gives every titled generic element in the header and row a hint', () => {
+    const { container } = renderHeaders();
+    expect(titledGenericsWithoutHint(container)).toEqual([]);
+  });
+});
+
+describe('StrikeTable — per-row distance, class, position and charm cells', () => {
+  const SPOT = 5900;
+  const ROWS = [
+    makeStrike(5950, SPOT, -5e8, 1e6), // max-launchpad, above the band
+    makeStrike(SPOT, SPOT, 5e8, 1e6), // sticky-pin, the spot row
+    makeStrike(5910, SPOT, 5e8, -1e6), // weakening-pin, inside the band
+    makeStrike(5850, SPOT, -5e8, -1e6), // fading-launchpad, below the band
+  ];
+
+  function renderRows() {
+    const map = new Map(ROWS.map((r) => [r.strike, 1] as const));
+    return render(
+      <StrikeTable
+        rows={ROWS}
+        currentPrice={SPOT}
+        spotStrike={ROWS[1] ?? null}
+        maxChanged5mStrike={null}
+        maxChanged15mStrike={null}
+        maxChanged30mStrike={null}
+        gexDelta5mMap={map}
+        gexDelta15mMap={map}
+        gexDelta30mMap={map}
+        spotRowRef={{ current: null }}
+        showAtmDistance
+      />,
+    );
+  }
+
+  const CASES = [
+    {
+      name: 'above the band',
+      index: 0,
+      distance: ['+50 pts', '50 points above spot', 'above spot'],
+      badge: [
+        'Takers −γ +charm',
+        "In GEXBot's taker-side sign, traders (takers) are net short gamma and net long charm at this strike.",
+        'takers net short gamma, net long charm',
+      ],
+      position: [
+        'Taker-short γ above spot',
+        "In GEXBot's taker-side sign, traders (takers) are net short gamma and net long charm at this strike, which sits more than 25 pts above spot.",
+        'more than 25 pts above spot',
+      ],
+      charm: [
+        '+1.0M',
+        'Positive GEXBot charm (taker-side sign): traders are net long charm at this strike.',
+        'takers net long charm',
+      ],
+    },
+    {
+      name: 'inside the band',
+      index: 2,
+      distance: ['+10 pts', '10 points above spot', 'above spot'],
+      badge: [
+        'Takers +γ −charm',
+        "In GEXBot's taker-side sign, traders (takers) are net long gamma and net short charm at this strike.",
+        'takers net long gamma, net short charm',
+      ],
+      position: [
+        'Taker-long γ at spot',
+        "In GEXBot's taker-side sign, traders (takers) are net long gamma and net short charm at this strike, which sits within 25 pts of spot.",
+        'within 25 pts of spot',
+      ],
+      charm: [
+        '−1.0M',
+        'Negative GEXBot charm (taker-side sign): traders are net short charm at this strike.',
+        'takers net short charm',
+      ],
+    },
+    {
+      name: 'below the band',
+      index: 3,
+      distance: ['−50 pts', '50 points below spot', 'below spot'],
+      badge: [
+        'Takers −γ −charm',
+        "In GEXBot's taker-side sign, traders (takers) are net short gamma and net short charm at this strike.",
+        'takers net short gamma, net short charm',
+      ],
+      position: [
+        'Taker-short γ below spot',
+        "In GEXBot's taker-side sign, traders (takers) are net short gamma and net short charm at this strike, which sits more than 25 pts below spot.",
+        'more than 25 pts below spot',
+      ],
+      charm: [
+        '−1.0M',
+        'Negative GEXBot charm (taker-side sign): traders are net short charm at this strike.',
+        'takers net short charm',
+      ],
+    },
+  ] as const;
+
+  it.each(CASES)(
+    'the row $name: distance, class, position and charm each say it in a hint',
+    (c) => {
+      renderRows();
+      const row = within(
+        screen.getAllByRole('listitem')[c.index] as HTMLElement,
+      );
+      for (const [text, title, hint] of [
+        c.distance,
+        c.badge,
+        c.position,
+        c.charm,
+      ]) {
+        const cell = row.getByText(text);
+        expect(cell).toHaveAttribute('title', title);
+        expect(srHintText(cell)).toBe(hint);
+        // Per-row hints stay short: a 20-row table is read through.
+        expect(srHintText(cell)?.length).toBeLessThanOrEqual(60);
+      }
+    },
+  );
+
+  it('the spot row has no distance cell, and still names its class and charm', () => {
+    renderRows();
+    const row = within(screen.getAllByRole('listitem')[1] as HTMLElement);
+    expect(row.queryByText(/pts$/)).toBeNull();
+    const badge = srHintText(row.getByText('Takers +γ +charm'));
+    const position = srHintText(row.getByText('Taker-long γ at spot'));
+    const charm = srHintText(row.getByText('+1.0M'));
+    expect(badge).toBe('takers net long gamma, net long charm');
+    expect(position).toBe('within 25 pts of spot');
+    expect(charm).toBe('takers net long charm');
+    // Per-row hints stay short, here as in the other rows.
+    for (const hint of [badge, position, charm]) {
+      expect(hint?.length).toBeLessThanOrEqual(60);
+    }
+  });
+
+  it('every titled generic element in every row has a hint', () => {
+    const { container } = renderRows();
+    expect(titledGenericsWithoutHint(container)).toEqual([]);
   });
 });
 
