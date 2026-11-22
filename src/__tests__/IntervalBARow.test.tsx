@@ -9,9 +9,20 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, within } from '@testing-library/react';
 import type { IntervalBAFeedAlert } from '../hooks/useIntervalBAFeed';
-import { genericElementsWithAriaLabel, srHintText } from './helpers/aria';
+import {
+  genericElementsWithAriaLabel,
+  srHintText,
+  titledGenericsWithoutHint,
+} from './helpers/aria';
+
+/**
+ * The most a hint on an element that repeats in every row may say. A feed of
+ * rows is read one row after another, so a long explanation stays on the
+ * title.
+ */
+const MAX_ROW_HINT = 60;
 
 // ── Mocks ─────────────────────────────────────────────────────────────
 
@@ -220,9 +231,129 @@ describe('IntervalBARow — summary line', () => {
     expect(screen.queryByText(/ATM|ITM|OTM/)).not.toBeInTheDocument();
   });
 
+  // The pill reads "EXTREME", and the title keeps its whole sentence. The hint
+  // is the premium band and its place in the tiers, which the label does not
+  // say. None of the hints says "floor": the flag test below queries /floor/.
+  it.each([
+    [
+      'extreme' as const,
+      'EXTREME',
+      'EXTREME — bucket total premium ≥ $1M. The highest tier; an aggregate this large in a 5-min ask-side bucket is structurally rare for SPX/SPXW/SPY/QQQ.',
+      'bucket total premium at least $1M, the highest tier',
+    ],
+    [
+      'critical' as const,
+      'CRITICAL',
+      'CRITICAL — bucket total premium $500K–$1M. Above the noise floor; meaningful concentration of ask-side buying.',
+      'bucket total premium $500K to $1M, the middle tier',
+    ],
+    [
+      'warning' as const,
+      'WARNING',
+      'WARNING — bucket total premium $250K–$500K. Cleared the $250K floor + ≥75% ask ratio, but smaller-tier conviction than CRITICAL/EXTREME.',
+      'bucket total premium $250K to $500K, the lowest tier',
+    ],
+  ])(
+    'explains the %s severity pill in a short hidden hint, not an aria-label, and keeps the title',
+    (severity, label, title, hint) => {
+      const { container } = renderRow(makeAlert({ severity }));
+      const pill = screen.getByText(label);
+      expect(srHintText(pill)).toBe(hint);
+      expect(srHintText(pill)!.length).toBeLessThanOrEqual(MAX_ROW_HINT);
+      expect(pill).toHaveAttribute('title', title);
+      expect(pill).not.toHaveAttribute('aria-label');
+      expect(genericElementsWithAriaLabel(container)).toEqual([]);
+    },
+  );
+
+  it.each([
+    [
+      'C' as const,
+      'CALL',
+      'CALL — ask-side buyers paid up for upside calls. Bullish directional bet.',
+      'buyers paid the ask for upside calls, bullish',
+    ],
+    [
+      'P' as const,
+      'PUT',
+      'PUT — ask-side buyers paid up for downside puts. Bearish directional bet.',
+      'buyers paid the ask for downside puts, bearish',
+    ],
+  ])(
+    'explains the %s side pill in a short hidden hint, not an aria-label, and keeps the title',
+    (optionType, label, title, hint) => {
+      const { container } = renderRow(makeAlert({ option_type: optionType }));
+      const pill = screen.getByText(label);
+      expect(srHintText(pill)).toBe(hint);
+      expect(srHintText(pill)!.length).toBeLessThanOrEqual(MAX_ROW_HINT);
+      expect(pill).toHaveAttribute('title', title);
+      expect(pill).not.toHaveAttribute('aria-label');
+      expect(genericElementsWithAriaLabel(container)).toEqual([]);
+    },
+  );
+
   it('renders the +PARTNER pill (alphabetically sorted) when confluence_tickers is populated', () => {
     renderRow(makeAlert({ confluence_tickers: ['SPY', 'QQQ'] }));
     expect(screen.getByText('+QQQ +SPY')).toBeInTheDocument();
+  });
+
+  // The title is the definition only. It used to add a CALL hit-rate lift
+  // (53% solo to 61% with a partner) measured on SPXW calls in one backfill:
+  // the pill also shows on puts, SPY and QQQ, and the live alerts did not
+  // show the lift.
+  it('explains the confluence pill in a short hidden hint and a title that is only the definition', () => {
+    const { container } = renderRow(
+      makeAlert({ confluence_tickers: ['SPY', 'QQQ'] }),
+    );
+    const pill = screen.getByText('+QQQ +SPY');
+    expect(srHintText(pill)).toBe(
+      'cross-symbol confluence within about 90 seconds',
+    );
+    expect(srHintText(pill)!.length).toBeLessThanOrEqual(MAX_ROW_HINT);
+    expect(pill).toHaveAttribute(
+      'title',
+      'Cross-symbol confluence — SPY + QQQ fired same-direction within ~90s of this alert.',
+    );
+    expect(pill.getAttribute('title')).not.toMatch(/hit-rate|backfill|%/);
+    expect(pill).not.toHaveAttribute('aria-label');
+    expect(genericElementsWithAriaLabel(container)).toEqual([]);
+  });
+
+  // The block shows "86%" over "ratio"; the title's whole sentence stays. The
+  // hint is the definition and the bar, without the word "ratio" again.
+  it('explains the ratio block in a short hidden hint, the last child of the block that holds the title', () => {
+    const { container } = renderRow(makeAlert({ ratio_pct: 85.5 }));
+    const block = screen.getByText('ratio').parentElement!;
+    expect(block).toHaveAttribute(
+      'title',
+      'Ask-side premium ÷ total bucket premium. ≥75% is the structural-anomaly threshold for SPX/SPY/QQQ — informed-flow conviction signature.',
+    );
+    expect(srHintText(block)).toBe(
+      'ask-side share of bucket premium; 75% is the anomaly bar',
+    );
+    expect(srHintText(block)!.length).toBeLessThanOrEqual(MAX_ROW_HINT);
+    expect(block).not.toHaveAttribute('aria-label');
+    expect(genericElementsWithAriaLabel(container)).toEqual([]);
+  });
+
+  // Every titled span in a row, in both states, reaches a screen reader.
+  it.each([
+    ['collapsed', false],
+    ['expanded', true],
+  ])('leaves no titled generic without a hint when %s', (_state, expand) => {
+    const { container } = renderRow(
+      makeAlert({
+        confluence_tickers: ['SPY', 'QQQ'],
+        strike: 5900,
+        underlying_price: 5800,
+      }),
+    );
+    if (expand) {
+      fireEvent.click(
+        screen.getByRole('button', { name: /Expand charts for SPXW/i }),
+      );
+    }
+    expect(titledGenericsWithoutHint(container)).toEqual([]);
   });
 
   it('omits the confluence pill when the array is empty', () => {
@@ -415,5 +546,101 @@ describe('IntervalBARow — expand toggle', () => {
     const chart = await screen.findByTestId('ticker-netflow-chart');
     expect(chart).toBeInTheDocument();
     expect(chart).toHaveAttribute('data-symbol', 'SPXW');
+  });
+});
+
+// The expanded panel repeats the contract in its header: the side as one
+// letter and the moneyness pill. Each keeps its title, and a hidden hint
+// carries it to a screen reader.
+describe('IntervalBARow — detail panel hints', () => {
+  // This file's two stub charts are each a `<div aria-label>`, a bare generic
+  // the scan would report. They are test scaffolding, not the row's own
+  // markup. The net-flow stub is lazy: it renders at once once an earlier test
+  // in the file has loaded it, so both are excluded, not only the tape stub.
+  // A snippet is the element's own opening tag (and what follows, cut at 160
+  // characters), so `startsWith` drops only a stub's own snippet. A snippet
+  // that merely contains a stub, an ancestor of it with an aria-label, stays.
+  const STUB_CHARTS = ['contract-tape-chart', 'ticker-netflow-chart'];
+  const withoutStubChart = (snippets: string[]) =>
+    snippets.filter(
+      (s) =>
+        !STUB_CHARTS.some((id) => s.startsWith(`<div data-testid="${id}"`)),
+    );
+
+  /** The contract tape panel, which holds the header's letter and pill. */
+  function openTapePanel(alert: IntervalBAFeedAlert) {
+    const view = renderRow(alert);
+    fireEvent.click(
+      screen.getByRole('button', { name: /Expand charts for SPXW/i }),
+    );
+    return {
+      ...view,
+      panel: screen.getByTestId('contract-tape-chart').parentElement!,
+    };
+  }
+
+  it.each([
+    ['C' as const, 'C', 'Call', 'call'],
+    ['P' as const, 'P', 'Put', 'put'],
+  ])(
+    'explains the %s side letter in a hidden hint, not an aria-label, and keeps the title',
+    (optionType, letter, title, hint) => {
+      const { container, panel } = openTapePanel(
+        makeAlert({ option_type: optionType }),
+      );
+      const el = within(panel).getByText(letter);
+      expect(srHintText(el)).toBe(hint);
+      expect(srHintText(el)!.length).toBeLessThanOrEqual(MAX_ROW_HINT);
+      expect(el).toHaveAttribute('title', title);
+      expect(el).not.toHaveAttribute('aria-label');
+      expect(withoutStubChart(genericElementsWithAriaLabel(container))).toEqual(
+        [],
+      );
+      expect(titledGenericsWithoutHint(container)).toEqual([]);
+    },
+  );
+
+  // The same pill as the summary line's: the same title, and the same hint
+  // (moneyness.srText), which leaves out the pill's own words.
+  it.each([
+    [
+      'ATM',
+      { strike: 5800, underlying_price: 5800 },
+      /^ATM$/,
+      'ATM — spot 5800.00 is within ±0.05% of strike 5800.',
+      'spot 5800.00 is within ±0.05% of strike 5800.',
+    ],
+    [
+      'ITM call',
+      { strike: 5700, underlying_price: 5800 },
+      /^ITM 1\.7%$/,
+      'Call is ITM by 1.7% — spot 5800.00 > strike 5700.',
+      'spot 5800.00 > strike 5700.',
+    ],
+    [
+      'OTM put',
+      { option_type: 'P' as const, strike: 5700, underlying_price: 5800 },
+      /^OTM 1\.7%$/,
+      'Put is OTM by 1.7% — spot 5800.00 > strike 5700. Needs 100.00 pts of downside to go ITM.',
+      'spot 5800.00 > strike 5700. Needs 100.00 pts of downside to go ITM.',
+    ],
+  ])(
+    'explains the %s moneyness pill in a hidden hint that does not repeat the pill, and keeps the title',
+    (_name, overrides, pillText, title, hint) => {
+      const { container, panel } = openTapePanel(makeAlert(overrides));
+      const pill = within(panel).getByText(pillText);
+      expect(srHintText(pill)).toBe(hint);
+      expect(pill).toHaveAttribute('title', title);
+      expect(pill).not.toHaveAttribute('aria-label');
+      expect(withoutStubChart(genericElementsWithAriaLabel(container))).toEqual(
+        [],
+      );
+      expect(titledGenericsWithoutHint(container)).toEqual([]);
+    },
+  );
+
+  it('shows no moneyness pill in the panel when underlying_price is missing', () => {
+    const { panel } = openTapePanel(makeAlert({ underlying_price: null }));
+    expect(within(panel).queryByText(/ATM|ITM|OTM/)).not.toBeInTheDocument();
   });
 });

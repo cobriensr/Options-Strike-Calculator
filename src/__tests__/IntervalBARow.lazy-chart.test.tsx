@@ -10,10 +10,11 @@
  */
 
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, within } from '@testing-library/react';
 import ErrorBoundary from '../components/ErrorBoundary';
 import { EXPANDED_ROW_CHART_HEIGHT } from '../constants/chart-layout';
 import type { IntervalBAFeedAlert } from '../hooks/useIntervalBAFeed';
+import { srHintText, titledGenericsWithoutHint } from './helpers/aria';
 
 const { idle } = vi.hoisted(() => ({
   idle: {
@@ -136,6 +137,30 @@ describe('IntervalBARow — lazy net-flow chart', () => {
     expect(screen.getByTestId('ticker-netflow-chart')).toBeInTheDocument();
     expect(screen.queryByText('Loading chart…')).toBeNull();
     expect(chartModuleLoads).toBe(1);
+  });
+
+  // The expanded panel with the lazy chart loaded: the header's side letter
+  // and moneyness pill carry their hover text as hidden hints, and no titled
+  // span anywhere in the row is left without one.
+  it('gives the expanded panel header its hidden hints once the chart has loaded', async () => {
+    const IntervalBARow = await loadRow();
+    const { container } = render(
+      <IntervalBARow
+        alert={{ ...alert, confluence_tickers: ['QQQ'] }}
+        date="2026-03-27"
+        marketOpen={false}
+      />,
+    );
+    expand('SPXW');
+    await screen.findByTestId('ticker-netflow-chart');
+
+    const panel = screen.getByTestId('contract-tape-chart').parentElement!;
+    expect(srHintText(within(panel).getByText('C'))).toBe('call');
+    // SPXW 5800 call at spot 5795: OTM by 0.09%.
+    expect(srHintText(within(panel).getByText(/^OTM 0\.09%$/))).toBe(
+      'spot 5795.00 < strike 5800. Needs 5.00 pts of upside to go ITM.',
+    );
+    expect(titledGenericsWithoutHint(container)).toEqual([]);
   });
 
   it('contains a failed chart import to its panel, leaving the row and the feed', async () => {

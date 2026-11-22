@@ -16,6 +16,7 @@ import { useTickerCandles } from '../../hooks/useTickerCandles.js';
 import { ContractTapeChart } from '../charts/ContractTapeChart.js';
 import ErrorBoundary from '../ErrorBoundary.js';
 import { SrHint } from '../ui/SrHint.js';
+import { SIDE_SR_TEXT, SIDE_TITLE } from './side-text.js';
 import { EXPANDED_ROW_CHART_HEIGHT } from '../../constants/chart-layout.js';
 import { handleStaleChunk } from '../../utils/handle-stale-chunk.js';
 import type { IntervalBAFeedAlert } from '../../hooks/useIntervalBAFeed.js';
@@ -173,7 +174,20 @@ function getMoneyness(
 
 const SEVERITY_STYLES: Record<
   IntervalBAFeedAlert['severity'],
-  { stripe: string; badge: string; label: string; tooltip: string }
+  {
+    stripe: string;
+    badge: string;
+    label: string;
+    /** Mouse-hover sentence. */
+    tooltip: string;
+    /**
+     * Screen-reader hint, read once per row: the premium band and its tier,
+     * without the pill's own word, and short (at most 60 characters). It
+     * leaves out the word "floor": `IntervalBARow.test.tsx` queries /floor/
+     * for the sweep / floor flag.
+     */
+    srText: string;
+  }
 > = {
   extreme: {
     stripe: 'border-l-rose-400',
@@ -181,6 +195,7 @@ const SEVERITY_STYLES: Record<
     label: 'EXTREME',
     tooltip:
       'EXTREME — bucket total premium ≥ $1M. The highest tier; an aggregate this large in a 5-min ask-side bucket is structurally rare for SPX/SPXW/SPY/QQQ.',
+    srText: 'bucket total premium at least $1M, the highest tier',
   },
   critical: {
     stripe: 'border-l-orange-400',
@@ -188,6 +203,7 @@ const SEVERITY_STYLES: Record<
     label: 'CRITICAL',
     tooltip:
       'CRITICAL — bucket total premium $500K–$1M. Above the noise floor; meaningful concentration of ask-side buying.',
+    srText: 'bucket total premium $500K to $1M, the middle tier',
   },
   warning: {
     stripe: 'border-l-amber-400',
@@ -195,6 +211,7 @@ const SEVERITY_STYLES: Record<
     label: 'WARNING',
     tooltip:
       'WARNING — bucket total premium $250K–$500K. Cleared the $250K floor + ≥75% ask ratio, but smaller-tier conviction than CRITICAL/EXTREME.',
+    srText: 'bucket total premium $250K to $500K, the lowest tier',
   },
 };
 
@@ -295,6 +312,7 @@ export const IntervalBARow = memo(function IntervalBARow({
           className={`cursor-help rounded px-1.5 py-0.5 font-sans text-[9px] font-bold ${sev.badge}`}
         >
           {sev.label}
+          <SrHint>{sev.srText}</SrHint>
         </span>
 
         {/* Contract — ticker + strike + type pill + moneyness */}
@@ -304,14 +322,11 @@ export const IntervalBARow = memo(function IntervalBARow({
           </span>
           <span className="text-neutral-100">{formatStrike(alert.strike)}</span>
           <span
-            title={
-              isCall
-                ? 'CALL — ask-side buyers paid up for upside calls. Bullish directional bet.'
-                : 'PUT — ask-side buyers paid up for downside puts. Bearish directional bet.'
-            }
+            title={SIDE_TITLE[alert.option_type]}
             className={`cursor-help rounded px-1.5 py-0.5 font-sans text-[10px] font-bold ${sideBadge}`}
           >
             {isCall ? 'CALL' : 'PUT'}
+            <SrHint>{SIDE_SR_TEXT[alert.option_type]}</SrHint>
           </span>
           {moneyness && (
             <span
@@ -327,13 +342,14 @@ export const IntervalBARow = memo(function IntervalBARow({
         {/* Confluence partners pill — only render when populated. */}
         {alert.confluence_tickers.length > 0 && (
           <span
-            title={`Cross-symbol confluence — ${alert.confluence_tickers.join(' + ')} fired same-direction within ~90s of this alert. CALL hit-rate lifts from 53% solo to 61% with at least one partner (per 2026-05-12 backfill analysis).`}
+            title={`Cross-symbol confluence — ${alert.confluence_tickers.join(' + ')} fired same-direction within ~90s of this alert.`}
             className="inline-flex cursor-help items-center gap-0.5 rounded border border-sky-500/40 bg-sky-500/15 px-1.5 py-0.5 font-sans text-[10px] font-bold text-sky-200"
           >
             {[...alert.confluence_tickers]
               .sort()
               .map((t) => `+${t}`)
               .join(' ')}
+            <SrHint>cross-symbol confluence within about 90 seconds</SrHint>
           </span>
         )}
 
@@ -346,6 +362,9 @@ export const IntervalBARow = memo(function IntervalBARow({
             {alert.ratio_pct.toFixed(0)}%
           </span>
           <span className="text-[10px] text-neutral-500">ratio</span>
+          <SrHint>
+            ask-side share of bucket premium; 75% is the anomaly bar
+          </SrHint>
         </span>
 
         {/* Total premium */}
@@ -431,6 +450,7 @@ export const IntervalBARow = memo(function IntervalBARow({
                   title={isCall ? 'Call' : 'Put'}
                 >
                   {isCall ? 'C' : 'P'}
+                  <SrHint>{isCall ? 'call' : 'put'}</SrHint>
                 </span>
                 {moneyness && (
                   <span
@@ -438,6 +458,7 @@ export const IntervalBARow = memo(function IntervalBARow({
                     title={moneyness.tooltip}
                   >
                     {moneyness.label}
+                    <SrHint>{moneyness.srText}</SrHint>
                   </span>
                 )}
                 <span className="text-neutral-600">·</span>

@@ -10,6 +10,7 @@ import {
 } from '@testing-library/react';
 import { IntervalBAFeed } from '../components/IntervalBAFeed/IntervalBAFeed';
 import type { IntervalBAFeedAlert } from '../hooks/useIntervalBAFeed';
+import { srHintText, titledGenericsWithoutHint } from './helpers/aria';
 
 // Shorten the feed's auto-poll so the polling cases below step a few
 // milliseconds, not ten seconds, each. Only the polling cases set marketOpen.
@@ -257,12 +258,28 @@ describe('IntervalBAFeed', () => {
         warning: 0,
       },
     });
-    render(<IntervalBAFeed />);
+    const { container } = render(<IntervalBAFeed />);
     await waitFor(() => {
       expect(screen.getByText('5800')).toBeInTheDocument();
     });
     // Pill content is the alphabetically sorted "+QQQ +SPY" string.
     expect(screen.getByText('+QQQ +SPY')).toBeInTheDocument();
+    // A row with every pill: severity, side, moneyness, confluence, ratio.
+    expect(titledGenericsWithoutHint(container)).toEqual([]);
+  });
+
+  // The title is the filter's definition. It used to add a hit-rate lift from
+  // one backfill, which the live alerts did not bear out. A button's title is
+  // its accessible description, so it needs no hint.
+  it('words the confluence-only filter title as the filter alone', async () => {
+    render(<IntervalBAFeed />);
+    await screen.findByText(/No SPXW Interval B\/A alerts/i);
+    expect(
+      screen.getByRole('button', { name: /confluence only/i }),
+    ).toHaveAttribute(
+      'title',
+      'Only show alerts that fired with at least one same-direction partner from SPY/SPXW/QQQ within ~90s.',
+    );
   });
 
   it('does NOT render the pill when confluence_tickers is empty', async () => {
@@ -1022,7 +1039,7 @@ describe('IntervalBAFeed: a live feed whose upstream hangs', () => {
   const UPDATED = /^updated \d{2}:\d{2}:\d{2} CT$/;
 
   it('labels the updated stamp stale once three polls are unanswered and a fourth is in flight, and a fresh response clears it', async () => {
-    render(<IntervalBAFeed marketOpen />);
+    const { container } = render(<IntervalBAFeed marketOpen />);
     await answerLatest();
     expect(screen.getByText(UPDATED)).toBeInTheDocument();
     expect(screen.queryByText('stale')).toBeNull();
@@ -1037,8 +1054,13 @@ describe('IntervalBAFeed: a live feed whose upstream hangs', () => {
     expect(screen.getByText('stale')).toBeInTheDocument();
     expect(screen.getByText('stale')).toHaveAttribute(
       'title',
-      expect.stringContaining('Three polls in a row went unanswered'),
+      'Three polls in a row went unanswered. The rows shown may be out of date.',
     );
+    // The title is mouse-only on a span, so a hidden hint says the same.
+    expect(srHintText(screen.getByText('stale'))).toBe(
+      'three polls in a row went unanswered; the rows shown may be out of date',
+    );
+    expect(titledGenericsWithoutHint(container)).toEqual([]);
     expect(screen.getByText(UPDATED)).toBeInTheDocument();
     expect(screen.getByText('5800')).toBeInTheDocument();
 

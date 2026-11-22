@@ -19,6 +19,7 @@
 import { useMemo, useState } from 'react';
 import { SectionBox } from '../ui/SectionBox';
 import { DateInput } from '../ui/DateInput';
+import { SrHint } from '../ui/SrHint';
 import { TimeInputCT } from '../ui/TimeInputCT';
 import { useFollowedDate } from '../../hooks/useFollowedDate';
 import { useIntervalBAFeed } from '../../hooks/useIntervalBAFeed';
@@ -151,6 +152,10 @@ export function IntervalBAFeed({
                   title="Three polls in a row went unanswered. The rows shown may be out of date."
                 >
                   stale
+                  <SrHint>
+                    three polls in a row went unanswered; the rows shown may be
+                    out of date
+                  </SrHint>
                 </span>
               )}
               <button
@@ -251,7 +256,7 @@ export function IntervalBAFeed({
               type="button"
               onClick={() => setConfluenceOnly((v) => !v)}
               aria-pressed={confluenceOnly}
-              title="Only show alerts that fired with at least one same-direction partner from SPY/SPXW/QQQ within ~90s. Confluence cohort: +8pp CALL hit-rate vs solo (2026-05-12 backfill)."
+              title="Only show alerts that fired with at least one same-direction partner from SPY/SPXW/QQQ within ~90s."
               className={`${CHIP_BASE} ${confluenceOnly ? CHIP_ACTIVE : CHIP_INACTIVE}`}
             >
               confluence only
