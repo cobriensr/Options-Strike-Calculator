@@ -1484,12 +1484,17 @@ describe('AnalysisHistory', () => {
 
       await user.selectOptions(screen.getByLabelText('Date'), '2025-02-28');
 
+      // Both reads wait. The Entry Time select shows 11:30 AM as soon as the
+      // times load, because the browser shows the first option while
+      // `selectedTime` is still '' (React selects it too). The time and mode
+      // auto-select effects run after that commit, and the content needs both,
+      // so a read of the content right after the select would race them.
       await waitFor(() => {
         expect(screen.getByLabelText('Entry Time')).toHaveValue('11:30 AM');
+        expect(
+          screen.getAllByText('SECOND DATE CONDOR').length,
+        ).toBeGreaterThan(0);
       });
-      expect(screen.getAllByText('SECOND DATE CONDOR').length).toBeGreaterThan(
-        0,
-      );
       expect(screen.queryByText(FIRST_STRUCTURE)).not.toBeInTheDocument();
     });
   });
