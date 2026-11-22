@@ -164,7 +164,7 @@ export const lotteryFinderQuerySchema = z
     // src/components/LotteryFinder/index.tsx:651-653.
     minTakeitProb: z.coerce.number().min(0).max(1).optional(),
     /**
-     * Phase 3 escape hatch: when 'true', server bypasses the bottom-quintile
+     * Phase 3 escape hatch: when 'true', server bypasses the bottom-two-quintile
      * inversion-quality filter and returns all surviving fires regardless of
      * ticker quintile. Off by default — the lottery feed is intentionally
      * narrowed by default.
@@ -488,7 +488,7 @@ export const lotteryFinderTickerCountsQuerySchema = z
      *  feed stay aligned. NULL takeit rows are excluded when active. */
     minTakeitProb: z.coerce.number().min(0).max(1).optional(),
     /** Mirror of `showAll` on `lotteryFinderQuerySchema`. When 'true',
-     *  bypass the bottom-quintile inversion-quality suppression so the
+     *  bypass the bottom-two-quintile inversion-quality suppression so the
      *  chip strip matches the feed under the "Show filtered tickers"
      *  toggle. Off by default — chip totals reflect the same Q1/Q2
      *  suppression the feed applies, preventing the confusion of a

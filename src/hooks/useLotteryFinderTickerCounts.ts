@@ -56,7 +56,7 @@ interface UseLotteryFinderTickerCountsArgs {
    *  stay aligned with the TAKE-IT-filtered feed. 0 = no floor. */
   minTakeitProb?: number;
   /** Mirror of `showAll` on the feed hook. When true, the count
-   *  endpoint bypasses the bottom-quintile inversion-quality
+   *  endpoint bypasses the bottom-two-quintile inversion-quality
    *  suppression so the chip strip matches the feed under the
    *  "Show filtered tickers" toggle. Off by default — the chip
    *  totals stay aligned with the narrowed default feed instead of
