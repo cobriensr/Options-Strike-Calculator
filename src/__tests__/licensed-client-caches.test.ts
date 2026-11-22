@@ -3,10 +3,11 @@ import { clearLicensedClientCaches } from '../lib/licensed-client-caches';
 
 /**
  * The browser keys that hold Unusual Whales or GEXBot data, as they sit in a
- * visitor's storage today. Literals on purpose: the util takes its names from
- * the writers' constants, so a writer that renames its key would move the
- * util with it and leave the old key in every browser that already has it.
- * This list fails on that rename instead.
+ * visitor's storage today. Literals on purpose: the util and the writing hooks
+ * take their names from one leaf module (`licensed-cache-keys.ts`), so renaming
+ * a key there would move the util and the writer together and leave the old
+ * key in every browser that already has it. This list fails on that rename
+ * instead.
  */
 const LICENSED_KEYS = [
   'openingFlowSignal.lastGood',

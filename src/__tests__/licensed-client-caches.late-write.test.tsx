@@ -43,28 +43,34 @@ interface InFlight {
 }
 let inFlight: InFlight[] = [];
 
-/** A fetch that stays pending until the test replies, and rejects on abort. */
+/**
+ * A fetch that stays pending until the test replies, and rejects on abort.
+ * `afterEach` puts the real one back (`vi.unstubAllGlobals`).
+ */
 function stubFetch(): void {
   inFlight = [];
-  globalThis.fetch = vi.fn(
-    (url: string, init: RequestInit) =>
-      new Promise((resolve, reject) => {
-        const signal = init.signal as AbortSignal;
-        signal.addEventListener('abort', () =>
-          reject(new DOMException('aborted', 'AbortError')),
-        );
-        inFlight.push({
-          url,
-          signal,
-          reply: (body) =>
-            resolve({
-              ok: true,
-              status: 200,
-              json: () => Promise.resolve(body),
-            }),
-        });
-      }),
-  ) as unknown as typeof fetch;
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(
+      (url: string, init: RequestInit) =>
+        new Promise((resolve, reject) => {
+          const signal = init.signal as AbortSignal;
+          signal.addEventListener('abort', () =>
+            reject(new DOMException('aborted', 'AbortError')),
+          );
+          inFlight.push({
+            url,
+            signal,
+            reply: (body) =>
+              resolve({
+                ok: true,
+                status: 200,
+                json: () => Promise.resolve(body),
+              }),
+          });
+        }),
+    ),
+  );
 }
 
 /** Let the continuations of a settled promise run, inside act. */
@@ -168,6 +174,7 @@ describe.each(WRITERS)('$name write in flight at a downgrade', (writer) => {
 
   afterEach(() => {
     vi.useRealTimers();
+    vi.unstubAllGlobals();
     localStorage.clear();
   });
 
