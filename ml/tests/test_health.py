@@ -415,6 +415,130 @@ class TestCheckCompleteness:
         assert "<< LOW" in captured.out
 
 
+# ── check_completeness: days with no 10:00 view ──────────────
+
+NO_VIEW = "no 10:00 view (no trusted snapshot row)"
+
+
+def _set_completeness(df: pd.DataFrame, values: dict[int, float]) -> pd.DataFrame:
+    """Set feature_completeness at row positions (0 = oldest of the 10)."""
+    column = df.columns.get_loc("feature_completeness")
+    for position, value in values.items():
+        df.iloc[position, column] = value
+    return df
+
+
+class TestCheckCompletenessNoView:
+    """A day at completeness 0 has no trusted snapshot row to sample: it is
+    'no 10:00 view', not low completeness, and stays out of the checks."""
+
+    def _run(self, mock_load, df):
+        mock_load.return_value = df
+        warnings: list[str] = []
+        failures: list[str] = []
+        check_completeness(warnings, failures)
+        return warnings, failures
+
+    @patch("health.load_data")
+    def test_zero_day_is_labelled_and_not_flagged_low(self, mock_load, capsys):
+        df = _set_completeness(_make_features_df(n=10, completeness=0.95), {3: 0.0})
+
+        warnings, failures = self._run(mock_load, df)
+
+        out = capsys.readouterr().out
+        zero_line = next(
+            line for line in out.splitlines() if f"{df.index[3]:%Y-%m-%d}" in line
+        )
+        assert f"<< {NO_VIEW}" in zero_line
+        assert "<< LOW" not in out
+        assert warnings == []
+        assert failures == []
+
+    @patch("health.load_data")
+    def test_zero_days_listed_on_their_own_info_line(self, mock_load, capsys):
+        df = _set_completeness(
+            _make_features_df(n=10, completeness=0.95), {3: 0.0, 7: 0.0}
+        )
+
+        self._run(mock_load, df)
+
+        info = [
+            line
+            for line in capsys.readouterr().out.splitlines()
+            if line.strip().startswith("INFO:")
+        ]
+        assert len(info) == 1
+        assert f"{NO_VIEW} on 2 of last 10 days" in info[0]
+        assert f"{df.index[3]:%Y-%m-%d}" in info[0]
+        assert f"{df.index[7]:%Y-%m-%d}" in info[0]
+
+    @patch("health.load_data")
+    def test_no_info_line_when_every_day_has_a_view(self, mock_load, capsys):
+        self._run(mock_load, _make_features_df(n=10, completeness=0.95))
+
+        assert "INFO:" not in capsys.readouterr().out
+
+    @patch("health.load_data")
+    def test_zero_days_are_left_out_of_the_below_90_count(self, mock_load, capsys):
+        df = _set_completeness(
+            _make_features_df(n=10, completeness=0.95),
+            {1: 0.0, 2: 0.0, 5: 0.85},
+        )
+
+        warnings, _ = self._run(mock_load, df)
+
+        low = [w for w in warnings if "below 90%" in w]
+        assert low == ["Feature completeness below 90% on 1 of last 10 days"]
+
+    @patch("health.load_data")
+    def test_zero_day_in_the_last_half_is_no_false_trend_warning(
+        self, mock_load, capsys
+    ):
+        # Counted as 0, the last-5 mean would be 0.76 against 0.95.
+        df = _set_completeness(_make_features_df(n=10, completeness=0.95), {7: 0.0})
+
+        warnings, _ = self._run(mock_load, df)
+
+        assert [w for w in warnings if "trending down" in w] == []
+        assert "stable or improving" in capsys.readouterr().out
+
+    @patch("health.load_data")
+    def test_trend_means_are_taken_over_days_with_a_view(self, mock_load, capsys):
+        # Prior 5: four at 0.97 and a zero. Last 5: 0.92. Counting the zero
+        # would put the prior mean at 0.776, below the last, and hide the dip.
+        df = _make_features_df(n=10, completeness=0.97)
+        _set_completeness(df, {2: 0.0, 5: 0.92, 6: 0.92, 7: 0.92, 8: 0.92, 9: 0.92})
+
+        warnings, _ = self._run(mock_load, df)
+
+        trend = [w for w in warnings if "trending down" in w]
+        assert len(trend) == 1
+        assert "92.00% vs 97.00%" in trend[0]
+
+    @patch("health.load_data")
+    def test_trend_skipped_when_a_half_has_no_day_with_a_view(self, mock_load, capsys):
+        df = _set_completeness(
+            _make_features_df(n=10, completeness=0.95), {0: 0, 1: 0, 2: 0, 3: 0, 4: 0}
+        )
+
+        warnings, _ = self._run(mock_load, df)
+
+        assert [w for w in warnings if "trending" in w] == []
+        assert "Trend check skipped" in capsys.readouterr().out
+
+    @patch("health.load_data")
+    def test_all_zero_window_does_not_crash_or_warn(self, mock_load, capsys):
+        df = _set_completeness(
+            _make_features_df(n=10, completeness=0.95), {i: 0.0 for i in range(10)}
+        )
+
+        warnings, failures = self._run(mock_load, df)
+
+        assert warnings == []
+        assert failures == []
+        assert f"{NO_VIEW} on 10 of last 10 days" in capsys.readouterr().out
+
+
 # ── check_labels ──────────────────────────────────────────────
 
 

@@ -52,6 +52,24 @@ def business_days_between(d1: datetime, d2: datetime) -> int:
 # ── Data Counting ─────────────────────────────────────────────
 
 
+def summarize_recent_completeness(values) -> tuple[float | None, int]:
+    """Average completeness of the days that have a 10:00 view, and how many
+    days have none.
+
+    build-features stores feature_completeness 0 for a date whose snapshot
+    rows are all untrusted (no trusted snapshot row to sample). Such a day is
+    not a low-completeness day: it is counted apart and left out of the
+    average. A NULL is unknown, so it is neither averaged nor counted.
+    Returns (None, n) when no day has a view.
+    """
+    known = [float(v) for v in values if v is not None]
+    measured = [v for v in known if v != 0]
+    no_view = len(known) - len(measured)
+    if not measured:
+        return None, no_view
+    return sum(measured) / len(measured), no_view
+
+
 def count_data() -> dict:
     """Query database for data volume metrics."""
     conn = get_connection()
@@ -102,17 +120,17 @@ def count_data() -> dict:
         """)
         class_dist = cur.fetchall()
 
-        # Recent 10 days avg completeness
+        # Last 10 days' completeness. A day at 0 has no 10:00 view (no trusted
+        # snapshot row), so it is counted apart, not averaged in.
         cur.execute("""
-            SELECT AVG(feature_completeness)
-            FROM (
-                SELECT feature_completeness
-                FROM training_features
-                ORDER BY date DESC
-                LIMIT 10
-            ) t
+            SELECT feature_completeness
+            FROM training_features
+            ORDER BY date DESC
+            LIMIT 10
         """)
-        recent_completeness = cur.fetchone()[0]
+        recent_completeness, recent_no_view_days = summarize_recent_completeness(
+            [row[0] for row in cur.fetchall()]
+        )
 
     finally:
         conn.close()
@@ -140,6 +158,7 @@ def count_data() -> dict:
         "ic_days": ic_days,
         "sit_out_days": sit_out_days,
         "recent_completeness": recent_completeness,
+        "recent_no_view_days": recent_no_view_days,
     }
 
 
@@ -248,6 +267,12 @@ def print_quality(data: dict) -> None:
     rc = data["recent_completeness"]
     rc_str = f"{rc:.2%}" if rc is not None else "N/A"
     print(f"  Avg completeness (last 10 days): {rc_str}")
+    no_view = data["recent_no_view_days"]
+    if no_view > 0:
+        print(
+            f"  Days in the last 10 with no 10:00 view "
+            f"(no trusted snapshot row): {no_view}"
+        )
 
     # Label coverage
     total = data["total_days"]

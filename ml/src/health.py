@@ -26,6 +26,11 @@ from utils import (
 
 # ── Constants ──────────────────────────────────────────────────
 
+#: What a training_features row at feature_completeness 0 is called: a date
+#: whose market_snapshots rows were all rejected by build-features'
+#: featureSnapshotRejection, so it has no 10:00 view and does not train.
+NO_VIEW_LABEL = "no 10:00 view (no trusted snapshot row)"
+
 KEY_FEATURE_COLUMNS = [
     "vix",
     "gex_oi_t1",
@@ -148,13 +153,31 @@ def check_completeness(warnings: list[str], _failures: list[str]) -> None:
     df = df.sort_index()
     completeness = df["feature_completeness"].astype(float)
 
+    # build-features stores 0 for a date whose snapshot rows are all untrusted:
+    # no 10:00 view, so it is not a training day. That is a data state, not low
+    # completeness, so it is labelled apart and left out of the checks below.
+    no_view = completeness == 0
+
     subsection("Last 10 Days")
     for dt, val in completeness.items():
-        flag = " << LOW" if val < 0.90 else ""
+        if val == 0:
+            flag = f" << {NO_VIEW_LABEL}"
+        elif val < 0.90:
+            flag = " << LOW"
+        else:
+            flag = ""
         print(f"  {dt:%Y-%m-%d}  {val:.2%}{flag}")
 
+    no_view_days = completeness[no_view]
+    if len(no_view_days) > 0:
+        listed = ", ".join(f"{dt:%Y-%m-%d}" for dt in no_view_days.index)
+        print(
+            f"\n  INFO: {NO_VIEW_LABEL} on {len(no_view_days)} of last "
+            f"{len(completeness)} days: {listed} (left out of the checks below)"
+        )
+
     # Check for any day below 0.90
-    low_days = completeness[completeness < 0.90]
+    low_days = completeness[(completeness < 0.90) & ~no_view]
     if len(low_days) > 0:
         msg = (
             f"Feature completeness below 90% on "
@@ -163,10 +186,16 @@ def check_completeness(warnings: list[str], _failures: list[str]) -> None:
         warnings.append(msg)
         print(f"\n  WARN: {msg}")
 
-    # Trend check: last 5 vs prior 5
-    if len(completeness) >= 10:
-        prior_5 = completeness.iloc[:5].mean()
-        last_5 = completeness.iloc[5:].mean()
+    # Trend check: last 5 vs prior 5, over the days that have a 10:00 view
+    prior_measured = completeness.iloc[:5][completeness.iloc[:5] != 0]
+    last_measured = completeness.iloc[5:][completeness.iloc[5:] != 0]
+    if len(completeness) < 10:
+        print(f"\n  Only {len(completeness)} days available; need 10 for trend check")
+    elif prior_measured.empty or last_measured.empty:
+        print("\n  Trend check skipped: a 5-day half has no day with a 10:00 view")
+    else:
+        prior_5 = prior_measured.mean()
+        last_5 = last_measured.mean()
         print(f"\n  Prior 5-day avg: {prior_5:.2%}")
         print(f"  Last  5-day avg: {last_5:.2%}")
         if last_5 < prior_5:
@@ -179,8 +208,6 @@ def check_completeness(warnings: list[str], _failures: list[str]) -> None:
             print(f"  WARN: {msg}")
         else:
             print(verdict(True, "completeness stable or improving"))
-    else:
-        print(f"\n  Only {len(completeness)} days available; need 10 for trend check")
 
 
 # ── Check 3: Label Extraction Health ───────────────────────────

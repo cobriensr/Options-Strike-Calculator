@@ -11,6 +11,7 @@ Run:
 """
 
 from datetime import date, datetime
+from decimal import Decimal
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -26,6 +27,7 @@ from milestone_check import (
     print_data_summary,
     print_milestones,
     print_quality,
+    summarize_recent_completeness,
 )
 
 # ── Helpers ──────────────────────────────────────────────────
@@ -43,6 +45,7 @@ def _make_data(
     ic_days: int = 3,
     sit_out_days: int = 0,
     recent_completeness: float | None = 0.92,
+    recent_no_view_days: int = 0,
 ) -> dict:
     """Build a data dict matching the shape returned by count_data()."""
     return {
@@ -63,6 +66,7 @@ def _make_data(
         "ic_days": ic_days,
         "sit_out_days": sit_out_days,
         "recent_completeness": recent_completeness,
+        "recent_no_view_days": recent_no_view_days,
     }
 
 
@@ -445,6 +449,66 @@ class TestPrintQuality:
         out = capsys.readouterr().out
         assert "N/A" in out
 
+    def test_no_view_days_reported_apart_from_the_average(self, capsys):
+        """Days with no 10:00 view get their own line, with their count."""
+        data = _make_data(recent_completeness=0.92, recent_no_view_days=2)
+        print_quality(data)
+        out = capsys.readouterr().out
+        assert "Avg completeness (last 10 days): 92.00%" in out
+        assert "no 10:00 view (no trusted snapshot row): 2" in out
+
+    def test_no_view_line_absent_when_every_day_has_a_view(self, capsys):
+        """No line about missing 10:00 views when there are none."""
+        data = _make_data(recent_no_view_days=0)
+        print_quality(data)
+        out = capsys.readouterr().out
+        assert "no 10:00 view" not in out
+
+    def test_all_days_without_a_view_shows_na_and_the_count(self, capsys):
+        """An all-zero window has no average to show, only the count."""
+        data = _make_data(recent_completeness=None, recent_no_view_days=10)
+        print_quality(data)
+        out = capsys.readouterr().out
+        assert "Avg completeness (last 10 days): N/A" in out
+        assert "no 10:00 view (no trusted snapshot row): 10" in out
+
+
+# ── summarize_recent_completeness ────────────────────────────
+
+
+class TestSummarizeRecentCompleteness:
+    """The last-10 average leaves days with no 10:00 view (0) out."""
+
+    def test_zeros_are_left_out_of_the_average_and_counted(self):
+        avg, no_view = summarize_recent_completeness([0.90, 0.0, 0.80, 0.0])
+        assert avg == pytest.approx(0.85)
+        assert no_view == 2
+
+    def test_no_zeros_is_a_plain_average(self):
+        avg, no_view = summarize_recent_completeness([0.90, 0.80])
+        assert avg == pytest.approx(0.85)
+        assert no_view == 0
+
+    def test_all_zeros_has_no_average(self):
+        assert summarize_recent_completeness([0.0] * 10) == (None, 10)
+
+    def test_no_rows_has_no_average_and_no_count(self):
+        assert summarize_recent_completeness([]) == (None, 0)
+
+    def test_null_completeness_is_neither_averaged_nor_counted(self):
+        """A NULL is unknown, not a day with no view."""
+        avg, no_view = summarize_recent_completeness([None, 0.90, 0.0])
+        assert avg == pytest.approx(0.90)
+        assert no_view == 1
+
+    def test_accepts_the_decimals_the_driver_returns(self):
+        avg, no_view = summarize_recent_completeness(
+            [Decimal("0.900"), Decimal("0.000"), Decimal("0.700")]
+        )
+        assert avg == pytest.approx(0.80)
+        assert no_view == 1
+        assert isinstance(avg, float)
+
     def test_label_coverage_displayed(self, capsys):
         """Output includes label coverage as fraction and percentage."""
         data = _make_data(total_days=100, labeled_days=75)
@@ -580,20 +644,23 @@ class TestCountData:
         # 4. outcome_days
         # 5. complete_days
         # 6. class_dist (fetchall)
-        # 7. recent_completeness
+        # 7. the last 10 days' completeness (fetchall)
         mock_cursor.fetchone.side_effect = [
             (42,),  # total_days
             (date(2025, 12, 1), date(2026, 3, 15)),  # date range
             (30,),  # labeled_days
             (25,),  # outcome_days
             (35,),  # complete_days
-            (0.88,),  # recent_completeness
         ]
-        mock_cursor.fetchall.return_value = [
-            ("wide_ic", 15),
-            ("bwb", 10),
-            ("sit_out", 3),
-            ("IC_directional", 2),
+        mock_cursor.fetchall.side_effect = [
+            [
+                ("wide_ic", 15),
+                ("bwb", 10),
+                ("sit_out", 3),
+                ("IC_directional", 2),
+            ],
+            # One day at 0 has no 10:00 view: counted, not averaged in.
+            [(Decimal("0.900"),), (Decimal("0.000"),), (Decimal("0.860"),)],
         ]
         mock_get_conn.return_value = mock_conn
 
@@ -606,6 +673,7 @@ class TestCountData:
         assert result["first_date"] == date(2025, 12, 1)
         assert result["last_date"] == date(2026, 3, 15)
         assert result["recent_completeness"] == pytest.approx(0.88)
+        assert result["recent_no_view_days"] == 1
         assert "wide_ic" in result["class_counts"]
         assert "bwb" in result["class_counts"]
         assert "sit_out" in result["class_counts"]
@@ -643,11 +711,13 @@ class TestCountData:
             (5,),
             (4,),
             (8,),
-            (0.75,),
         ]
-        mock_cursor.fetchall.return_value = [
-            (None, 3),
-            ("bwb", 2),
+        mock_cursor.fetchall.side_effect = [
+            [
+                (None, 3),
+                ("bwb", 2),
+            ],
+            [(0.75,)],
         ]
         mock_get_conn.return_value = mock_conn
 
@@ -669,13 +739,15 @@ class TestCountData:
             (15,),
             (12,),
             (18,),
-            (0.90,),
         ]
-        mock_cursor.fetchall.return_value = [
-            ("wide_IC", 5),
-            ("iron condor", 3),
-            ("IRON CONDOR narrow", 2),
-            ("bwb", 5),
+        mock_cursor.fetchall.side_effect = [
+            [
+                ("wide_IC", 5),
+                ("iron condor", 3),
+                ("IRON CONDOR narrow", 2),
+                ("bwb", 5),
+            ],
+            [(0.90,)],
         ]
         mock_get_conn.return_value = mock_conn
 
@@ -699,9 +771,8 @@ class TestCountData:
             (0,),
             (0,),
             (5,),
-            (None,),
         ]
-        mock_cursor.fetchall.return_value = []
+        mock_cursor.fetchall.side_effect = [[], []]
         mock_get_conn.return_value = mock_conn
 
         result = count_data()
@@ -709,6 +780,9 @@ class TestCountData:
         assert result["class_counts"] == {}
         assert result["ic_days"] == 0
         assert result["sit_out_days"] == 0
+        # No rows: no average and no days without a view.
+        assert result["recent_completeness"] is None
+        assert result["recent_no_view_days"] == 0
 
 
 # ── Edge Cases ───────────────────────────────────────────────
