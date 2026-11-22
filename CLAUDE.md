@@ -183,6 +183,13 @@ If you're unsure whether a change needs a test: it does. The cost of writing one
 - One-time setup per clone: `git config core.hooksPath .githooks`.
 - A Claude hook denies `--no-verify`. The owner makes any unreviewed commit from their own terminal, which isn't gated.
 
+**CPU load (owner rule, 2026-11-21).** The owner works at this Windows box while sessions run, and every session and subagent shares its 16 cores. These rules apply to every session and every subagent.
+
+- Never start synthetic CPU load, such as busy loops, stress tools, or many copies of a command to slow the box down. To show a fix holds up under load, measure the cost directly, for example per-test and per-hook durations from the reporter. Why: on 2026-11-21, 48 busy loops pinned every core for 20 minutes. The PreToolUse shell guard then timed out and blocked every session's shell, the stop command included.
+- Each session runs one heavy command at a time: a gate, a multi-file vitest run, a mutant sweep or a build. While your own gate runs, don't dispatch a reviewer or verifier that runs tests.
+- A background process you start must end on its own, or be stopped in the same command, before your turn ends.
+- If shell calls start failing on the env-shell-guard timeout, look for runaway processes before anything else. Stop only the ones your session started.
+
 **3. Self-Review** — Launch a **reviewer subagent** to evaluate the implementation with fresh eyes. The subagent must:
 
 - Run `git diff` to read every changed file
