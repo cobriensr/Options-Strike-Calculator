@@ -156,7 +156,13 @@ export function useTopStrikesTracker(
 
     prevSetRef.current = currentSet;
 
-    setJustEntered(added);
+    // Never replace an empty Set with another empty one: a new reference
+    // re-renders the panel, which hands this hook a `topFive` with a new
+    // identity if anything upstream rebuilds it, which re-runs this effect.
+    // Returning `prev` bails out, so an unchanged tick costs no render.
+    setJustEntered((prev) =>
+      added.size === 0 && prev.size === 0 ? prev : added,
+    );
     setOldestStrike(nextOldest);
 
     if (setChanged && isLive && !muted) {

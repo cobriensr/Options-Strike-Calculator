@@ -106,11 +106,11 @@ function makeStrike(strike: number, netGamma = 1e9): GexStrikeLevel {
 const BASE = [7100, 7110, 7120, 7130, 7140].map((s) => makeStrike(s));
 
 // Stable empty array reference for the "empty topFive" test. Passing an
-// inline `[]` causes a new array reference on every render, which the
-// hook's useEffect dep-array treats as a change — the effect then calls
-// setJustEntered(new Set()), triggering a re-render, and the loop runs
-// away until V8 OOMs. Production is safe because GexLandscape wraps
-// topFive in useMemo. Use this module-scope constant in tests instead.
+// inline `[]` from the render callback gives the hook a new array on every
+// render, which its useEffect dep-array treats as a change. The hook now
+// keeps an equal empty Set (see the empty-Set guard tests below), so that no
+// longer loops, but a test that breaks the guard would run away until V8
+// OOMs. Use this module-scope constant in tests instead.
 const EMPTY_TOP_FIVE: GexStrikeLevel[] = [];
 
 // ── Lifecycle ─────────────────────────────────────────────
@@ -375,6 +375,64 @@ describe('useTopStrikesTracker', () => {
 
     expect(result.current.justEntered.has(7100)).toBe(true);
     expect([7110, 7120, 7130, 7140]).toContain(result.current.oldestStrike);
+  });
+
+  // The empty-Set guard. An unchanged tick must keep the SAME Set: a new
+  // empty one is a new reference, which re-renders the panel, and a parent
+  // that rebuilds `topFive` each render then re-runs the effect, so the pair
+  // loops. These cases hand the hook a new array of the same strikes by hand
+  // (a one-shot `rerender`), so a broken guard fails them instead of looping.
+  describe('an unchanged tick leaves justEntered alone', () => {
+    const t0 = '2026-04-22T18:00:00Z';
+    const tick = (topFive: GexStrikeLevel[], timestamp = t0) => ({
+      topFive,
+      timestamp,
+      isLive: true,
+      muted: false,
+    });
+
+    it('keeps the same empty Set when a new array of the same strikes arrives', () => {
+      const { result, rerender } = renderHook(
+        (props: Parameters<typeof useTopStrikesTracker>[0]) =>
+          useTopStrikesTracker(props),
+        { initialProps: tick(BASE) },
+      );
+      const first = result.current.justEntered;
+      expect(first.size).toBe(0);
+
+      rerender(tick([...BASE]));
+      expect(result.current.justEntered).toBe(first);
+      rerender(tick([...BASE].reverse(), '2026-04-22T18:01:00Z'));
+      expect(result.current.justEntered).toBe(first);
+    });
+
+    it('keeps the same empty Set for an empty Top 5 given a new array', () => {
+      const { result, rerender } = renderHook(
+        (props: Parameters<typeof useTopStrikesTracker>[0]) =>
+          useTopStrikesTracker(props),
+        { initialProps: tick([]) },
+      );
+      const first = result.current.justEntered;
+
+      rerender(tick([]));
+      expect(result.current.justEntered).toBe(first);
+    });
+
+    it('still sets NEW on a swap, then clears it on the next unchanged tick', () => {
+      const swapped = [...BASE.slice(0, 4), makeStrike(7150)];
+      const { result, rerender } = renderHook(
+        (props: Parameters<typeof useTopStrikesTracker>[0]) =>
+          useTopStrikesTracker(props),
+        { initialProps: tick(BASE) },
+      );
+
+      rerender(tick(swapped, '2026-04-22T18:01:00Z'));
+      expect([...result.current.justEntered]).toEqual([7150]);
+
+      // The same set again: the guard must not keep the stale non-empty Set.
+      rerender(tick([...swapped], '2026-04-22T18:02:00Z'));
+      expect(result.current.justEntered.size).toBe(0);
+    });
   });
 
   it('chime fires again on each subsequent set change', () => {
