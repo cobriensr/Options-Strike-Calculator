@@ -32,12 +32,22 @@
  *      three at the same minute mark).
  *
  * Auth: owner OR guest (read-only). Identical to /api/periscope-map.
- * Cache: edge 30s live / 300s after-hours, SWR 30s live / 60s after-hours.
+ * Cache, chosen per response once its kind is known (an error sets none), by
+ * `setLiveReadCache` (`_lib/live-read-cache.ts`, shared with the Periscope
+ * readers):
+ *   - live, response carries data: 10s edge, no stale reuse. A capture under
+ *     5 minutes old means captures are running (the pre-open included), so
+ *     healthy data never sits at the edge for a minute.
+ *   - live, during the session, no_slot / no_spot: 10s edge, so a recovering
+ *     feed shows within seconds.
+ *   - scrubbed (`at` set): 300s edge + 60s SWR. A past minute doesn't change.
+ *   - live, outside the session, no data: 300s edge + 60s SWR.
  */
 
 import { Sentry, metrics } from './_lib/sentry.js';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { setCacheHeaders, isMarketOpen } from './_lib/api-helpers.js';
+import { isMarketOpen } from './_lib/api-helpers.js';
+import { setLiveReadCache } from './_lib/live-read-cache.js';
 import { guardOwnerOrGuestEndpoint } from './_lib/guest-auth.js';
 import { getDb, withDbRetry } from './_lib/db.js';
 import { DB_RETRY_ATTEMPTS, DB_RETRY_TIMEOUT_MS } from './_lib/constants.js';
@@ -258,11 +268,11 @@ export default async function handler(
     const marketOpen = isMarketOpen();
     const date = getETDateStr(new Date()); // today CT
 
-    // Edge TTL 30s live / 300s after-hours; SWR 30s live / 60s after-hours.
-    // Mirrors /api/periscope-map — same gexbot cadence on both endpoints.
-    setCacheHeaders(res, marketOpen ? 30 : 300, marketOpen ? 30 : 60);
-
     const scrubAt = parseScrubAt(req.query.at);
+
+    // Cache headers are set on each success path below, not up front, so an
+    // error reply carries none.
+    const scrubbed = scrubAt != null;
 
     // Available minutes is small (~390 rows max for a full session) and
     // backs the scrub stepper — fetch unconditionally so the panel can
@@ -276,6 +286,11 @@ export default async function handler(
     const [gammaSlot, charmSlot, vannaSlot] = panelSlots;
 
     if (gammaSlot == null || charmSlot == null || vannaSlot == null) {
+      setLiveReadCache(res, {
+        historical: scrubbed,
+        hasData: false,
+        marketOpen,
+      });
       done({ status: 200 });
       res.status(200).json({
         marketOpen,
@@ -299,6 +314,11 @@ export default async function handler(
 
     const spot = await fetchSpxSpot(date, latestCapturedAt.toISOString());
     if (spot == null) {
+      setLiveReadCache(res, {
+        historical: scrubbed,
+        hasData: false,
+        marketOpen,
+      });
       done({ status: 200 });
       res.status(200).json({
         marketOpen,
@@ -318,6 +338,7 @@ export default async function handler(
 
     const ageSec = Math.round((Date.now() - latestCapturedAt.getTime()) / 1000);
 
+    setLiveReadCache(res, { historical: scrubbed, hasData: true, marketOpen });
     done({ status: 200 });
     res.status(200).json({
       marketOpen,

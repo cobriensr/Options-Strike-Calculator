@@ -68,6 +68,7 @@ vi.mock('../../src/utils/timezone.js', () => ({
 
 import handler from '../gex-landscape.js';
 import { TransientDbError } from '../_lib/db.js';
+import { setCacheHeaders, isMarketOpen } from '../_lib/api-helpers.js';
 
 /**
  * A full row in GEXBot mini_contracts shape — `value` populates
@@ -443,5 +444,182 @@ describe('/api/gex-landscape', () => {
     expect(res._status).toBe(503);
     expect(res._headers['Retry-After']).toBe('5');
     expect(mockSentryCapture).not.toHaveBeenCalled();
+  });
+});
+
+describe('/api/gex-landscape cache headers', () => {
+  // A live response that carries data is cached for 10 s with no stale
+  // reuse, so healthy data never sits at the edge for a minute (the panel's
+  // 3-minute DELAYED threshold counts on that). A response with no data, a
+  // closed market or a scrubbed minute keeps the long 300 s + 60 s window.
+  const LIVE_SHORT: [number, number] = [10, 0];
+  const LONG: [number, number] = [300, 60];
+
+  /** Queue the DB reads for a complete live-or-scrubbed response. */
+  function queueFullResponse(capturedAt: Date): void {
+    mockSql
+      .mockResolvedValueOnce([{ minute: capturedAt }]) // availableMinutes
+      .mockResolvedValueOnce([
+        { captured_at: capturedAt, raw_response: GAMMA_PAYLOAD },
+      ])
+      .mockResolvedValueOnce([
+        { captured_at: capturedAt, raw_response: CHARM_PAYLOAD },
+      ])
+      .mockResolvedValueOnce([
+        { captured_at: capturedAt, raw_response: VANNA_PAYLOAD },
+      ])
+      .mockResolvedValueOnce([{ close: '5947.12' }]); // SPX spot
+  }
+
+  /** Queue the DB reads for a response with all three slots but no spot. */
+  function queueNoSpot(capturedAt: Date): void {
+    mockSql
+      .mockResolvedValueOnce([]) // availableMinutes
+      .mockResolvedValueOnce([
+        { captured_at: capturedAt, raw_response: GAMMA_PAYLOAD },
+      ])
+      .mockResolvedValueOnce([
+        { captured_at: capturedAt, raw_response: CHARM_PAYLOAD },
+      ])
+      .mockResolvedValueOnce([
+        { captured_at: capturedAt, raw_response: VANNA_PAYLOAD },
+      ])
+      .mockResolvedValueOnce([]); // SPX spot
+  }
+
+  async function call(query: Record<string, string> = {}) {
+    const res = mockResponse();
+    await handler(
+      mockRequest({
+        method: 'GET',
+        headers: { authorization: 'Bearer test-secret' },
+        query,
+      }),
+      res,
+    );
+    return res;
+  }
+
+  it.each([
+    ['in session', true],
+    ['pre-open', false],
+  ])(
+    'caches a live response that carries data for 10 s with no stale reuse (%s)',
+    async (_label, open) => {
+      vi.mocked(isMarketOpen).mockReturnValue(open);
+      queueFullResponse(new Date(Date.now() - 30_000));
+      const res = await call();
+      expect((res._json as { data: unknown }).data).not.toBeNull();
+      expect(setCacheHeaders).toHaveBeenCalledTimes(1);
+      expect(setCacheHeaders).toHaveBeenCalledWith(res, ...LIVE_SHORT);
+    },
+  );
+
+  it('caches a live no_slot response for 10 s during the session, so a recovering feed shows within seconds', async () => {
+    vi.mocked(isMarketOpen).mockReturnValue(true);
+    mockSql.mockResolvedValue([]);
+    const res = await call();
+    expect(res._json).toMatchObject({ data: null, reason: 'no_slot' });
+    expect(setCacheHeaders).toHaveBeenCalledTimes(1);
+    expect(setCacheHeaders).toHaveBeenCalledWith(res, ...LIVE_SHORT);
+  });
+
+  it('caches a live no_spot response for 10 s during the session', async () => {
+    vi.mocked(isMarketOpen).mockReturnValue(true);
+    queueNoSpot(new Date(Date.now() - 60_000));
+    const res = await call();
+    expect(res._json).toMatchObject({ data: null, reason: 'no_spot' });
+    expect(setCacheHeaders).toHaveBeenCalledTimes(1);
+    expect(setCacheHeaders).toHaveBeenCalledWith(res, ...LIVE_SHORT);
+  });
+
+  it('keeps 300 s + 60 s for a live no_slot response while the market is closed', async () => {
+    vi.mocked(isMarketOpen).mockReturnValue(false);
+    mockSql.mockResolvedValue([]);
+    const res = await call();
+    expect(res._json).toMatchObject({ data: null, reason: 'no_slot' });
+    expect(setCacheHeaders).toHaveBeenCalledTimes(1);
+    expect(setCacheHeaders).toHaveBeenCalledWith(res, ...LONG);
+  });
+
+  it('keeps 300 s + 60 s for a live no_spot response while the market is closed', async () => {
+    vi.mocked(isMarketOpen).mockReturnValue(false);
+    queueNoSpot(new Date(Date.now() - 60_000));
+    const res = await call();
+    expect(res._json).toMatchObject({ data: null, reason: 'no_spot' });
+    expect(setCacheHeaders).toHaveBeenCalledTimes(1);
+    expect(setCacheHeaders).toHaveBeenCalledWith(res, ...LONG);
+  });
+
+  it('keeps 300 s + 60 s for a scrubbed response, even in session, because a past minute never changes', async () => {
+    vi.mocked(isMarketOpen).mockReturnValue(true);
+    queueFullResponse(new Date('2026-05-26T19:29:00.000Z'));
+    const res = await call({ at: '2026-05-26T19:30:00.000Z' });
+    expect((res._json as { data: unknown }).data).not.toBeNull();
+    expect(setCacheHeaders).toHaveBeenCalledTimes(1);
+    expect(setCacheHeaders).toHaveBeenCalledWith(res, ...LONG);
+  });
+
+  it('keeps 300 s + 60 s for a scrubbed no_slot response in session (scrubbed beats the session rule)', async () => {
+    vi.mocked(isMarketOpen).mockReturnValue(true);
+    mockSql.mockResolvedValue([]);
+    const res = await call({ at: '2026-05-26T08:00:00.000Z' });
+    expect(res._json).toMatchObject({ data: null, reason: 'no_slot' });
+    expect(setCacheHeaders).toHaveBeenCalledTimes(1);
+    expect(setCacheHeaders).toHaveBeenCalledWith(res, ...LONG);
+  });
+
+  it('keeps 300 s + 60 s for a scrubbed no_spot response in session (scrubbed beats the session rule)', async () => {
+    vi.mocked(isMarketOpen).mockReturnValue(true);
+    queueNoSpot(new Date('2026-05-26T19:29:00.000Z'));
+    const res = await call({ at: '2026-05-26T19:30:00.000Z' });
+    expect(res._json).toMatchObject({ data: null, reason: 'no_spot' });
+    expect(setCacheHeaders).toHaveBeenCalledTimes(1);
+    expect(setCacheHeaders).toHaveBeenCalledWith(res, ...LONG);
+  });
+
+  it('treats a malformed ?at as a live request: 10 s for a response with data', async () => {
+    vi.mocked(isMarketOpen).mockReturnValue(true);
+    queueFullResponse(new Date(Date.now() - 60_000));
+    const res = await call({ at: 'not-a-date' });
+    expect((res._json as { data: unknown }).data).not.toBeNull();
+    expect(setCacheHeaders).toHaveBeenCalledTimes(1);
+    expect(setCacheHeaders).toHaveBeenCalledWith(res, ...LIVE_SHORT);
+  });
+
+  it('sets no cache header on a generic DB error (500)', async () => {
+    mockSql.mockRejectedValue(new Error('connection refused'));
+    const res = await call();
+    expect(res._status).toBe(500);
+    expect(mockSentryCapture).toHaveBeenCalledTimes(1);
+    expect(setCacheHeaders).not.toHaveBeenCalled();
+  });
+
+  it('sets no cache header on a transient DB error (503)', async () => {
+    mockSql.mockRejectedValue(
+      new TransientDbError(new Error('db attempt timeout')),
+    );
+    const res = await call();
+    expect(res._status).toBe(503);
+    expect(setCacheHeaders).not.toHaveBeenCalled();
+  });
+
+  it('sets no cache header when the spot read fails after the panels loaded', async () => {
+    const capturedAt = new Date(Date.now() - 60_000);
+    mockSql
+      .mockResolvedValueOnce([]) // availableMinutes
+      .mockResolvedValueOnce([
+        { captured_at: capturedAt, raw_response: GAMMA_PAYLOAD },
+      ])
+      .mockResolvedValueOnce([
+        { captured_at: capturedAt, raw_response: CHARM_PAYLOAD },
+      ])
+      .mockResolvedValueOnce([
+        { captured_at: capturedAt, raw_response: VANNA_PAYLOAD },
+      ])
+      .mockRejectedValueOnce(new Error('spot read failed'));
+    const res = await call();
+    expect(res._status).toBe(500);
+    expect(setCacheHeaders).not.toHaveBeenCalled();
   });
 });
