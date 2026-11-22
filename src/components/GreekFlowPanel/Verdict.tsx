@@ -5,6 +5,7 @@
 
 import { memo, useMemo } from 'react';
 import type { DivergenceResult, GreekFlowRow } from '../../hooks/useGreekFlow';
+import { SrHint } from '../ui/SrHint';
 import {
   KIND_LABEL,
   computeVerdict,
@@ -167,6 +168,9 @@ function VerdictTimelineInner({ spyRows, qqqRows }: VerdictTimelineProps) {
         >
           Regime changes:{' '}
           <span className="text-primary">{summary.decisiveTransitions}</span>
+          <SrHint>
+            {`only changes between kinds other than no-trade; all transitions, including no-trade churn: ${summary.transitions}`}
+          </SrHint>
         </span>
       </div>
     </div>

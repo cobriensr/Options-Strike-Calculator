@@ -2,6 +2,11 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { GreekFlowPanel } from '../../components/GreekFlowPanel';
+import {
+  srHintText,
+  titledElementsNeedingHint,
+  titledGenericsWithoutHint,
+} from '../helpers/aria';
 import type {
   DivergenceResult,
   GreekFlowMetrics,
@@ -353,6 +358,92 @@ describe('GreekFlowPanel', () => {
     expect(runs).toHaveLength(1);
     expect(runs[0]).toHaveAttribute('data-verdict-kind', 'directional-bear');
     expect(runs[0]?.getAttribute('style')).toContain('width: 100%');
+  });
+
+  // ── Hover text for screen readers ─────────────────────────
+
+  /**
+   * Four timeline points whose verdicts run bear → pin → no-trade → bear:
+   * three transitions, of which only the first (bear → pin) is between two
+   * kinds other than no-trade.
+   */
+  function churnReturn(): UseGreekFlowReturn {
+    const spyPattern: ReadonlyArray<readonly [1 | -1, 1 | -1]> = [
+      [-1, -1],
+      [1, -1],
+      [1, 1],
+      [-1, -1],
+    ];
+    const spyRows = spyPattern.map(([d, v], i) => fakeRow('SPY', i, d, v));
+    const qqqRows = spyPattern.map((_, i) => fakeRow('QQQ', i, -1, -1));
+    return {
+      data: {
+        date: '2026-04-28',
+        scope: '0dte',
+        tickers: {
+          SPY: { rows: spyRows, metrics: emptyMetrics() },
+          QQQ: { rows: qqqRows, metrics: emptyMetrics() },
+        },
+        divergence: divergenceFor(div(-1, -1), div(-1, -1)),
+        asOf: '2026-04-28T21:00:00.000Z',
+      },
+      loading: false,
+      error: null,
+      refresh: vi.fn(),
+    };
+  }
+
+  it('explains the regime-change count in a hint, keeping its title', () => {
+    mockUseGreekFlow.mockReturnValue(churnReturn());
+    render(<GreekFlowPanel marketOpen={true} />);
+    const label = screen.getByText(/Regime changes:/);
+    expect(label).toHaveTextContent(/^Regime changes: 1/);
+    expect(srHintText(label)).toBe(
+      'only changes between kinds other than no-trade; all transitions, including no-trade churn: 3',
+    );
+    expect(label).toHaveAttribute(
+      'title',
+      'Decisive regime changes between non-no-trade kinds. Total transitions including no-trade churn: 3.',
+    );
+  });
+
+  it('shows zero regime changes and zero transitions for a steady session', () => {
+    mockUseGreekFlow.mockReturnValue(happyPathReturn());
+    render(<GreekFlowPanel marketOpen={true} />);
+    const label = screen.getByText(/Regime changes:/);
+    expect(srHintText(label)).toBe(
+      'only changes between kinds other than no-trade; all transitions, including no-trade churn: 0',
+    );
+    expect(label).toHaveAttribute(
+      'title',
+      'Decisive regime changes between non-no-trade kinds. Total transitions including no-trade churn: 0.',
+    );
+  });
+
+  it('names the slope placeholder in every chart cell', () => {
+    mockUseGreekFlow.mockReturnValue(happyPathReturn());
+    render(<GreekFlowPanel marketOpen={true} />);
+    // Two tickers, two fields: four cells, each with an empty-slope dash.
+    expect(
+      screen.getAllByRole('img', {
+        name: 'not enough points to compute the slope',
+      }),
+    ).toHaveLength(4);
+  });
+
+  it('leaves no titled generic element without a hint, apart from the timeline runs', () => {
+    mockUseGreekFlow.mockReturnValue(churnReturn());
+    const { container } = render(<GreekFlowPanel marketOpen={true} />);
+    // The timeline runs are titled spans inside a `role="img"` bar that is
+    // named as a whole ("Verdict timeline through the session"). An image's
+    // children are not read, so a hint inside a run would never be heard.
+    const runs = container.querySelectorAll(
+      '[data-testid="greek-flow-timeline-run"]',
+    );
+    expect(runs.length).toBeGreaterThan(0);
+    runs.forEach((run) => run.remove());
+    expect(titledElementsNeedingHint(container)).toHaveLength(1);
+    expect(titledGenericsWithoutHint(container)).toEqual([]);
   });
 });
 

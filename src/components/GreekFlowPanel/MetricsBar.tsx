@@ -23,6 +23,8 @@ import type {
   FlipResult,
   SlopeResult,
 } from '../../hooks/useGreekFlow';
+import { SrHint } from '../ui/SrHint';
+import { fmtCompact } from './fmt-compact';
 
 interface MetricsBarProps {
   slope: SlopeResult;
@@ -46,6 +48,8 @@ function SlopeBadge({ slope }: { slope: SlopeResult }) {
   if (slope.slope == null) {
     return (
       <span
+        role="img"
+        aria-label="not enough points to compute the slope"
         className="text-secondary border-edge rounded border px-1 py-px"
         title="Insufficient points for slope"
       >
@@ -60,12 +64,14 @@ function SlopeBadge({ slope }: { slope: SlopeResult }) {
       : slope.slope < 0
         ? 'text-rose-400'
         : 'text-secondary';
+  const perMin = slope.slope.toFixed(2);
   return (
     <span
       className={`${color} border-edge rounded border px-1 py-px`}
-      title={`Slope (last 15 min): ${slope.slope.toFixed(2)} per min`}
+      title={`Slope (last 15 min): ${perMin} per min`}
     >
       {arrow} slope
+      <SrHint>{`last 15 min: ${perMin} per min`}</SrHint>
     </span>
   );
 }
@@ -78,24 +84,32 @@ function FlipBadge({ flip }: { flip: FlipResult }) {
       : flip.currentSign === -1
         ? 'text-rose-400 border-rose-400/40'
         : 'text-secondary';
+  const time = fmtTime(flip.atTimestamp);
   return (
     <span
       className={`${color} rounded border bg-transparent px-1 py-px`}
-      title={`Sign flip in last 30 min at ${fmtTime(flip.atTimestamp)} (mag ${flip.magnitude.toFixed(0)})`}
+      title={`Sign flip in last 30 min at ${time ?? '—'} (mag ${flip.magnitude.toFixed(0)})`}
     >
       flip
+      <SrHint>
+        {`sign changed within 30 min${atClause(time)} (magnitude ${fmtCompact(flip.magnitude)})`}
+      </SrHint>
     </span>
   );
 }
 
 function CliffBadge({ cliff }: { cliff: CliffResult }) {
   if (cliff.atTimestamp == null || cliff.magnitude === 0) return null;
+  const time = fmtTime(cliff.atTimestamp);
   return (
     <span
       className="rounded border border-amber-400/40 px-1 py-px text-amber-400"
-      title={`10-min cliff at ${fmtTime(cliff.atTimestamp)} (mag ${cliff.magnitude.toFixed(0)})`}
+      title={`10-min cliff at ${time ?? '—'} (mag ${cliff.magnitude.toFixed(0)})`}
     >
       cliff
+      <SrHint>
+        {`over 10 min${atClause(time)} (magnitude ${fmtCompact(cliff.magnitude)})`}
+      </SrHint>
     </span>
   );
 }
@@ -108,14 +122,21 @@ function DivergenceBadge({ divergence }: { divergence: DivergenceResult }) {
       title="SPY and QQQ have opposite signs on this field"
     >
       ⇄ div
+      <SrHint>SPY and QQQ have opposite signs on this field</SrHint>
     </span>
   );
 }
 
-function fmtTime(iso: string | null): string {
-  if (!iso) return '—';
+/** ", at 1:30 PM" for a hint, or nothing when there is no usable time. */
+function atClause(time: string | null): string {
+  return time == null ? '' : `, at ${time}`;
+}
+
+/** The time of day in Chicago, or null for a missing or invalid timestamp. */
+function fmtTime(iso: string | null): string | null {
+  if (!iso) return null;
   const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return '—';
+  if (Number.isNaN(d.getTime())) return null;
   return d.toLocaleTimeString('en-US', {
     hour: 'numeric',
     minute: '2-digit',
