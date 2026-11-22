@@ -8,6 +8,7 @@ import {
   StatusBadge,
   ErrorMsg,
 } from '../../components/ui';
+import { srHintText } from '../helpers/aria';
 
 describe('SectionBox', () => {
   it('renders label and children', () => {
@@ -317,6 +318,55 @@ describe('StatusBadge', () => {
     );
     expect(container.querySelector('.sr-only')).toBeNull();
     expect(container.firstElementChild?.textContent).toBe('LIVE');
+  });
+
+  // The hint is absolutely positioned (sr-only). Without a positioned parent
+  // it anchors to a far ancestor and, near the edge of the header's sideways
+  // scroller, could widen the page. So srHint makes the badge `relative`, the
+  // way shortLabel does, with no visible change.
+  describe('positioning of the hidden hint', () => {
+    it('is relative when srHint is set without shortLabel, and keeps the phone padding off', () => {
+      const { container } = render(
+        <StatusBadge
+          label="STALE"
+          color="#fbbf24"
+          dot
+          srHint="quotes 100s old"
+        />,
+      );
+      const badge = container.firstElementChild as HTMLElement;
+      expect(badge).toHaveClass('relative');
+      expect(badge).not.toHaveClass('max-sm:px-2');
+      expect(srHintText(badge)).toBe('quotes 100s old');
+    });
+
+    it('is relative once, with the phone padding, when both shortLabel and srHint are set', () => {
+      const { container } = render(
+        <StatusBadge
+          label="NO INTRADAY"
+          shortLabel="NO ID"
+          color="#f87171"
+          dot
+          srHint="no candles for 2026-05-08"
+        />,
+      );
+      const badge = container.firstElementChild as HTMLElement;
+      expect(
+        badge.className.split(/\s+/).filter((c) => c === 'relative'),
+      ).toEqual(['relative']);
+      expect(badge).toHaveClass('max-sm:px-2');
+      expect(srHintText(badge)).toBe('no candles for 2026-05-08');
+      // The hint is the outer badge's own last child, not part of the
+      // aria-hidden short label or the max-sm:sr-only full label.
+      expect(badge.lastElementChild).toHaveClass('sr-only', 'normal-case');
+    });
+
+    it('is not relative when neither shortLabel nor srHint is set', () => {
+      const { container } = render(
+        <StatusBadge label="LIVE" color="#4ade80" dot />,
+      );
+      expect(container.firstElementChild).not.toHaveClass('relative');
+    });
   });
 });
 

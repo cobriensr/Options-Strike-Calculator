@@ -11,6 +11,11 @@ import type { CollapseSignal } from '../components/collapse-context';
 import type { MarketSession, useMarketData } from '../hooks/useMarketData';
 import type { useHistoryData } from '../hooks/useHistoryData';
 import type { ViewMode } from '../hooks/useViewMode';
+import {
+  srHintText,
+  titledGenericsWithoutHint,
+  visibleText,
+} from './helpers/aria';
 
 // Counts SchwabExpiryBadge stub renders: a proxy for "did AppHeader itself
 // re-render", since the stub is a plain (non-memo) child of the header.
@@ -480,13 +485,15 @@ describe('AppHeader', () => {
   });
 
   it('shortens the backtest pills on a phone but keeps their full text for screen readers', () => {
+    const error = 'no candles for 2026-05-08';
     renderHeader({
       isBacktestMode: true,
-      historyData: makeHistory({ error: 'no candles for 2026-05-08' }),
+      historyData: makeHistory({ error }),
     });
     for (const [full, short] of [
       ['● BACKTEST', 'BT'],
-      ['● NO INTRADAY', 'NO ID'],
+      // The NO INTRADAY pill also reads the history error, after the label.
+      [`● NO INTRADAY — ${error}`, 'NO ID'],
     ] as const) {
       const shortLabel = screen.getByText(short, { exact: true });
       expect(shortLabel).toHaveAttribute('aria-hidden', 'true');
@@ -500,9 +507,40 @@ describe('AppHeader', () => {
       expect(exposed.textContent).toBe(full);
     }
     // The tooltip still carries the history error.
-    expect(screen.getByTitle('no candles for 2026-05-08')).toHaveTextContent(
-      '● NO INTRADAY',
+    expect(screen.getByTitle(error)).toHaveTextContent('● NO INTRADAY');
+  });
+
+  // Site 89: the NO INTRADAY pill's error was a mouse-only title.
+  describe('NO INTRADAY pill hint', () => {
+    it.each(['no candles for 2026-05-08', 'invalid response shape'])(
+      'reads the history error "%s" to a screen reader, keeps it as the title and adds no visible text',
+      (error) => {
+        const { container } = renderHeader({
+          isBacktestMode: true,
+          historyData: makeHistory({ error }),
+        });
+        const badge = screen.getByTitle(error);
+        expect(badge).toHaveAttribute('title', error);
+        expect(srHintText(badge)).toBe(error);
+        // What a sighted user reads is unchanged: the short label (phone)
+        // and the dot + full label (wider), with the hint left out.
+        expect(visibleText(badge)).toBe('NO ID● NO INTRADAY');
+        expect(badge).toHaveClass('relative');
+        expect(titledGenericsWithoutHint(container)).toEqual([]);
+      },
     );
+
+    it('shows no NO INTRADAY pill, so no hint, while the history loads or when there is no error', () => {
+      const { container, rerender, props } = renderHeader({
+        isBacktestMode: true,
+        historyData: makeHistory({ loading: true, error: 'late error' }),
+      });
+      expect(screen.queryByText(/NO INTRADAY/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/late error/)).not.toBeInTheDocument();
+      rerender(<AppHeader {...props} historyData={makeHistory()} />);
+      expect(screen.queryByText(/NO INTRADAY/)).not.toBeInTheDocument();
+      expect(titledGenericsWithoutHint(container)).toEqual([]);
+    });
   });
 
   it('keeps the owner order in the DOM, so focus follows it: toggle, pills, Schwab warning, Re-auth, Access, tools', () => {
@@ -637,6 +675,85 @@ describe('AppHeader', () => {
       const badge = screen.getByText(/^● CLOSED$/);
       expect(badge.style.color).toContain('var(--color-muted)');
       expect(badge).toHaveAttribute('title', 'Quotes 100s old');
+    });
+
+    // Site 90: the quote age was a mouse-only title. The hint is the title
+    // without the label it would repeat (STALE / CLOSED), lower-cased.
+    describe('hint for a screen reader', () => {
+      it.each([
+        [
+          'a caution STALE badge',
+          100,
+          {},
+          '● STALE',
+          'Quotes 100s old',
+          'quotes 100s old',
+        ],
+        [
+          'a red STALE badge',
+          200,
+          {},
+          '● STALE',
+          'Quotes 200s old — 3+ missed polls',
+          'quotes 200s old — 3+ missed polls',
+        ],
+        [
+          'a CLOSED badge with stale pre-market quotes',
+          100,
+          { marketOpen: false, session: 'pre-market' as MarketSession },
+          '● CLOSED',
+          'Quotes 100s old',
+          'quotes 100s old',
+        ],
+        [
+          'a STALE badge for a regular-session quote once the session is closed',
+          300,
+          { marketOpen: true, session: 'closed' as MarketSession },
+          '● STALE',
+          'Last quote is from the regular session — no update since',
+          'last quote is from the regular session, no update since',
+        ],
+      ])(
+        'reads the age after %s, and keeps the title',
+        (_name, ageSec, opts, label, title, hint) => {
+          const { container } = renderWithQuotes(ageSec, opts);
+          const badge = screen.getByText(label);
+          expect(badge).toHaveAttribute('title', title);
+          expect(srHintText(badge)).toBe(hint);
+          // Nothing visible changes: the label alone, the hint left out.
+          expect(visibleText(badge)).toBe(label);
+          // The hint is absolutely positioned, so the badge must contain it.
+          expect(badge).toHaveClass('relative');
+          expect(titledGenericsWithoutHint(container)).toEqual([]);
+        },
+      );
+
+      it.each([
+        ['a fresh LIVE badge', 10, {}],
+        [
+          'a CLOSED badge with no stale quotes',
+          300,
+          { marketOpen: false, session: 'closed' as MarketSession },
+        ],
+      ])('adds no hint to %s, which has no title', (_name, ageSec, opts) => {
+        const { container } = renderWithQuotes(ageSec, opts);
+        const badge = screen.getByText(/^● (LIVE|CLOSED)$/);
+        expect(badge).not.toHaveAttribute('title');
+        expect(srHintText(badge)).toBeNull();
+        expect(badge).not.toHaveClass('relative');
+        expect(titledGenericsWithoutHint(container)).toEqual([]);
+      });
+
+      it('gains the hint when a LIVE badge turns STALE as the clock passes 90 s', () => {
+        renderWithQuotes(0);
+        expect(srHintText(screen.getByText(/^● LIVE$/))).toBeNull();
+        act(() => {
+          vi.advanceTimersByTime(95_000);
+        });
+        expect(srHintText(screen.getByText(/^● STALE$/))).toBe(
+          'quotes 95s old',
+        );
+      });
     });
   });
 

@@ -14,6 +14,9 @@ import { SrHint } from './SrHint.js';
  * width (visually hidden on a phone), and the short form is aria-hidden.
  * The badge is then `relative`, so the hidden label is positioned and
  * clipped with it inside a scrolling row instead of widening the page.
+ * The same goes for `srHint`: its sr-only span is absolutely positioned
+ * too, so a badge with a hint is `relative` whether or not it has a
+ * `shortLabel`.
  */
 export const StatusBadge = memo(function StatusBadge({
   label,
@@ -30,9 +33,9 @@ export const StatusBadge = memo(function StatusBadge({
   title?: string;
   srHint?: string;
 }) {
-  const cls =
-    'rounded-full px-2.5 py-0.5 font-mono text-[10px] font-semibold' +
-    (shortLabel == null ? '' : ' relative max-sm:px-2');
+  let cls = 'rounded-full px-2.5 py-0.5 font-mono text-[10px] font-semibold';
+  if (shortLabel != null) cls += ' relative max-sm:px-2';
+  else if (srHint != null) cls += ' relative';
   const style = {
     backgroundColor: `color-mix(in srgb, ${color} 9%, transparent)`,
     color,

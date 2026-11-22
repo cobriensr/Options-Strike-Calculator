@@ -220,6 +220,7 @@ export default function AppHeader({
               color={theme.red}
               dot
               title={historyData.error}
+              srHint={historyData.error}
             />
           )}
           {!isBacktestMode && market.hasData && (

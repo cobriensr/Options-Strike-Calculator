@@ -53,6 +53,7 @@ export default function QuoteStatusBadge({
         color={theme.red}
         dot
         title="Last quote is from the regular session — no update since"
+        srHint="last quote is from the regular session, no update since"
       />
     );
   }
@@ -68,10 +69,22 @@ export default function QuoteStatusBadge({
         : theme.green
     : theme.textMuted;
   const missedPolls = isVeryStale ? ' — 3+ missed polls' : '';
-  const title =
+  const age =
     isStale && staleAgeSec != null
-      ? `Quotes ${staleAgeSec}s old${missedPolls}`
+      ? `${staleAgeSec}s old${missedPolls}`
       : undefined;
+  // The hint is the title in lower case: after the label it reads as a
+  // clause, not a new sentence.
+  const title = age == null ? undefined : `Quotes ${age}`;
+  const srHint = age == null ? undefined : `quotes ${age}`;
 
-  return <StatusBadge label={label} color={color} dot title={title} />;
+  return (
+    <StatusBadge
+      label={label}
+      color={color}
+      dot
+      title={title}
+      srHint={srHint}
+    />
+  );
 }
