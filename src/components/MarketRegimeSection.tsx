@@ -87,6 +87,16 @@ export default function MarketRegimeSection({
     ? [regimeBadge, 'cluster edited'].filter(Boolean).join(' \u00b7 ')
     : regimeBadge;
 
+  // What an edit in the opening-range card is tied to, so it resets at the
+  // next slot. The slot label tells slots apart exactly. The candle does not:
+  // under the as-of rule it is the same first bar at 8:30 and 8:35 CT, and the
+  // same last ended bar either side of a missing SPX bar. Without a label,
+  // the candle and its index are the best identity there is.
+  const historySlotKey = historySnapshot
+    ? (entryTimeLabel ??
+      `${historySnapshot.candle.datetime}:${historySnapshot.candleIndex}`)
+    : null;
+
   return (
     <SectionBox
       label="Market Regime"
@@ -153,17 +163,17 @@ export default function MarketRegimeSection({
                 <div className="mt-5">
                   <OpeningRangeCheck
                     key={
-                      historySnapshot
-                        ? `hist-or-${historySnapshot.candle.datetime}`
-                        : 'live-or'
+                      historySlotKey == null
+                        ? 'live-or'
+                        : `hist-or-${historySlotKey}`
                     }
                     vix={vixNum ?? 0}
                     spot={results.spot}
                     selectedDate={selectedDate}
                     initialRange={
-                      historySnapshot?.openingRange ??
-                      market.data.intraday?.openingRange ??
-                      undefined
+                      historySnapshot
+                        ? (historySnapshot.openingRange ?? undefined)
+                        : (market.data.intraday?.openingRange ?? undefined)
                     }
                   />
                 </div>

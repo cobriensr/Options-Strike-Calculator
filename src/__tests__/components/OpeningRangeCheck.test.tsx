@@ -36,10 +36,26 @@ describe('OpeningRangeCheck: rendering', () => {
     expect(screen.getByText(/enter a vix value/i)).toBeInTheDocument();
   });
 
-  it('shows analysis from seeded defaults when VIX is set', () => {
+  it('shows analysis once a range is typed and VIX is set', () => {
     render(<OpeningRangeCheck vix={20} spot={6800} />);
-    // Defaults (5735/5705) produce an analysis immediately
+    // No range is seeded: the analysis waits for one to be typed.
+    enterRange('6810', '6790');
     expect(screen.getByText('RANGE INTACT')).toBeInTheDocument();
+  });
+
+  // A made-up default range would read as that day's data (a green "RANGE
+  // INTACT" from a range nobody entered), so nothing is shown until a range
+  // is typed or auto-filled.
+  it('shows no analysis, no error and the prompt while both inputs are empty', () => {
+    render(<OpeningRangeCheck vix={20} spot={6800} />);
+    expect(screen.queryByText('RANGE INTACT')).not.toBeInTheDocument();
+    expect(screen.queryByText('MODERATE')).not.toBeInTheDocument();
+    expect(screen.queryByText('RANGE EXHAUSTED')).not.toBeInTheDocument();
+    expect(screen.queryByText(/expected median/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/high must be greater/i)).not.toBeInTheDocument();
+    expect(
+      screen.getByText(/first 30 minutes of trading/i),
+    ).toBeInTheDocument();
   });
 });
 
@@ -263,12 +279,12 @@ describe('OpeningRangeCheck: auto-fill from live data', () => {
     expect(highInput.value).toBe('6850');
   });
 
-  it('shows seeded defaults when no initialRange provided', () => {
+  it('starts with empty inputs when no initialRange is provided', () => {
     render(<OpeningRangeCheck vix={20} spot={6800} />);
     const highInput = screen.getByLabelText(/30-min high/i) as HTMLInputElement;
     const lowInput = screen.getByLabelText(/30-min low/i) as HTMLInputElement;
-    expect(highInput.value).toBe('5735');
-    expect(lowInput.value).toBe('5705');
+    expect(highInput.value).toBe('');
+    expect(lowInput.value).toBe('');
   });
 
   it('auto-fill triggers analysis display', () => {

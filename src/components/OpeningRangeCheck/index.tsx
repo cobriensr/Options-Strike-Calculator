@@ -42,11 +42,13 @@ export default function OpeningRangeCheck({
   selectedDate,
   initialRange,
 }: Props) {
-  const [openHigh, setOpenHigh] = useState('5735');
-  const [openLow, setOpenLow] = useState('5705');
+  // Empty until a range is typed or auto-filled: a made-up default would read
+  // as that day's data (a green "RANGE INTACT" from a range nobody entered).
+  const [openHigh, setOpenHigh] = useState('');
+  const [openLow, setOpenLow] = useState('');
   const userEdited = useRef(false);
 
-  // Auto-fill from live data (overwrites defaults but respects user edits)
+  // Auto-fill from live data (respects user edits)
   useEffect(() => {
     if (initialRange && !userEdited.current) {
       setOpenHigh(initialRange.high.toFixed(2));

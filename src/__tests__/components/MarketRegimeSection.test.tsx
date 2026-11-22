@@ -1,3 +1,4 @@
+import type { ComponentProps } from 'react';
 import { describe, it, expect, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -711,6 +712,203 @@ describe('MarketRegimeSection', () => {
     it('uses the live feed when there is no snapshot (today)', () => {
       renderWith();
       expect(screen.getByText(RV_IV_CARD)).toBeInTheDocument();
+    });
+  });
+
+  // The opening-range card on a past date. At the 8:30 CT open no
+  // opening-range bar has ended, so the snapshot's range is null. The card must
+  // then be empty: not today's live range, and not a made-up default. Its edits
+  // reset at the next slot, which the slot label tells apart where the candle
+  // does not (8:30 and 8:35 CT share the first bar, and so do the two slots
+  // around a missing SPX bar).
+  describe('Opening Range card', () => {
+    const CANDLE = {
+      datetime: 1710000000000,
+      time: '09:30',
+      open: 6000,
+      high: 6003,
+      low: 5998,
+      close: 6001,
+    };
+    const PARTIAL_RANGE = {
+      high: 6003,
+      low: 5998,
+      rangePts: 5,
+      complete: false,
+    };
+    const COMPLETE_RANGE = {
+      high: 6008,
+      low: 5998,
+      rangePts: 10,
+      complete: true,
+    };
+    const snapshotAt = (
+      openingRange: HistorySnapshot['openingRange'],
+      candleIndex: number,
+    ): HistorySnapshot => ({
+      spot: 6001,
+      spy: 600.1,
+      runningOHLC: { open: 6000, high: 6003, low: 5998, last: 6001 },
+      openingRange,
+      yesterday: null,
+      vix: 18,
+      vixPrevClose: 18,
+      vix1d: 14,
+      vix9d: 16,
+      vvix: 90,
+      previousClose: 5995,
+      candle: CANDLE,
+      candleIndex,
+      totalCandles: 78,
+    });
+    // Today's live range, deliberately far from every snapshot range here.
+    const liveMarket: MarketDataState = {
+      ...mockMarket,
+      data: {
+        ...mockMarket.data,
+        intraday: {
+          today: { open: 6950, high: 7000, low: 6900, last: 6980 },
+          openingRange: {
+            high: 7000,
+            low: 6900,
+            rangePts: 100,
+            minutes: 30,
+            complete: true,
+          },
+          previousClose: 6940,
+          candleCount: 6,
+          marketOpen: true,
+          asOf: '2026-03-12T15:00:00Z',
+        },
+      },
+    };
+
+    type SectionProps = ComponentProps<typeof MarketRegimeSection>;
+    function renderCard(overrides: Partial<SectionProps>) {
+      const element = (extra: Partial<SectionProps>) => (
+        <MarketRegimeSection
+          dVix="18"
+          results={makeResults()}
+          errors={{}}
+          skewPct={0}
+          selectedDate="2026-03-12"
+          market={liveMarket}
+          marketOpen={false}
+          showFlowRegime={false}
+          cluster={noCluster}
+          signals={defaultSignals}
+          chain={null}
+          {...overrides}
+          {...extra}
+        />
+      );
+      const view = render(element({}));
+      return {
+        rerenderWith: (extra: Partial<SectionProps>) =>
+          view.rerender(element(extra)),
+      };
+    }
+
+    const highInput = () =>
+      screen.getByLabelText(/30-min high/i) as HTMLInputElement;
+    const lowInput = () =>
+      screen.getByLabelText(/30-min low/i) as HTMLInputElement;
+
+    it('is empty at the open, with no live range and no error, on a past date', () => {
+      renderCard({
+        historySnapshot: snapshotAt(null, -1),
+        entryTimeLabel: '8:30 AM CT',
+      });
+
+      expect(highInput().value).toBe('');
+      expect(lowInput().value).toBe('');
+      expect(
+        screen.queryByText(/high must be greater/i),
+      ).not.toBeInTheDocument();
+      expect(screen.queryByText('RANGE INTACT')).not.toBeInTheDocument();
+    });
+
+    it("shows the snapshot's range, not today's live one, when the snapshot has one", () => {
+      renderCard({
+        historySnapshot: snapshotAt(PARTIAL_RANGE, 0),
+        entryTimeLabel: '8:35 AM CT',
+      });
+
+      expect(highInput().value).toBe('6003.00');
+      expect(lowInput().value).toBe('5998.00');
+    });
+
+    it("fills from today's live range when there is no history snapshot", () => {
+      renderCard({});
+
+      expect(highInput().value).toBe('7000.00');
+      expect(lowInput().value).toBe('6900.00');
+    });
+
+    it('drops a range typed at 8:30 CT at the next slot, on the same candle', async () => {
+      const user = userEvent.setup();
+      const { rerenderWith } = renderCard({
+        historySnapshot: snapshotAt(null, -1),
+        entryTimeLabel: '8:30 AM CT',
+      });
+      await user.type(highInput(), '6010');
+      await user.type(lowInput(), '5990');
+      expect(highInput().value).toBe('6010');
+      expect(lowInput().value).toBe('5990');
+
+      rerenderWith({
+        historySnapshot: snapshotAt(PARTIAL_RANGE, 0),
+        entryTimeLabel: '8:35 AM CT',
+      });
+
+      expect(highInput().value).toBe('6003.00');
+      expect(lowInput().value).toBe('5998.00');
+    });
+
+    it('drops an edit when only the slot label changes, on the same candle and index', async () => {
+      // The two slots around a missing SPX bar: the last ended bar does not
+      // change, so neither do the candle and its index.
+      const user = userEvent.setup();
+      const snapshot = snapshotAt(COMPLETE_RANGE, 5);
+      const { rerenderWith } = renderCard({
+        historySnapshot: snapshot,
+        entryTimeLabel: '9:00 AM CT',
+      });
+      await user.clear(highInput());
+      await user.type(highInput(), '6050');
+      expect(highInput().value).toBe('6050');
+
+      rerenderWith({ entryTimeLabel: '9:05 AM CT' });
+
+      expect(highInput().value).toBe('6008.00');
+    });
+
+    it('keeps an edit while the slot label stays the same', async () => {
+      const user = userEvent.setup();
+      const snapshot = snapshotAt(COMPLETE_RANGE, 5);
+      const { rerenderWith } = renderCard({
+        historySnapshot: snapshot,
+        entryTimeLabel: '9:00 AM CT',
+      });
+      await user.clear(highInput());
+      await user.type(highInput(), '6050');
+
+      rerenderWith({ historySnapshot: { ...snapshot, spot: 6002 } });
+
+      expect(highInput().value).toBe('6050');
+    });
+
+    it('falls back to the candle and its index when there is no slot label', async () => {
+      const user = userEvent.setup();
+      const { rerenderWith } = renderCard({
+        historySnapshot: snapshotAt(PARTIAL_RANGE, 0),
+      });
+      await user.clear(highInput());
+      await user.type(highInput(), '6050');
+
+      rerenderWith({ historySnapshot: snapshotAt(COMPLETE_RANGE, 5) });
+
+      expect(highInput().value).toBe('6008.00');
     });
   });
 });
