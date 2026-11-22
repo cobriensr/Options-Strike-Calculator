@@ -39,7 +39,7 @@ import re
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -337,6 +337,113 @@ def _read_rows(path: Path) -> list[dict[str, str]]:
         return list(csv.DictReader(f))
 
 
+FILL_DAYS = {date(2026, 11, 3): 20, date(2026, 11, 4): 200, date(2026, 11, 5): 100}
+
+
+def _fill_frame(days: dict[date, int] | None = None) -> pd.DataFrame:
+    """Fires on a few dates, made without random numbers so the rows they give are exact.
+
+    In FILL_DAYS 11-03 has 20 fires, under the 30 a stats block needs, so its blocks
+    are blank. By the end of 11-04 each of the two tickers has over 100 fires, so
+    the top-ticker slots fill.
+    """
+    sizes = days or FILL_DAYS
+    i = np.arange(sum(sizes.values()))
+    return pd.DataFrame(
+        {
+            'date': np.repeat(np.array(list(sizes), dtype=object), list(sizes.values())),
+            'mode': np.where(i % 3 == 0, 'B_multi_day_DTE1_3', 'A_intraday_0DTE'),
+            'score': ((i * 7) % 20 + 5).astype(float),
+            'peak': ((i * i * 7 + i) % 113).astype(float),
+            'flow_inv': ((i * 37) % 101 - 40).astype(float),
+            'ticker': np.where(i % 2 == 0, 'SPY', NON_ASCII_TICKER),
+        }
+    )
+
+
+def _write_tracking_csv(path: Path, dates: list[str]) -> None:
+    """A tracking file whose rows are the given dates, each carrying its own marker."""
+    with path.open('w', newline='', encoding='utf-8') as f:
+        writer = csv.DictWriter(f, fieldnames=daily_tracker.COLUMNS)
+        writer.writeheader()
+        for d in dates:
+            writer.writerow(
+                {'date': d, 'run_at': f'seed-{d}', 'n_fires_today': '77',
+                 'top1_ticker': NON_ASCII_TICKER}
+            )  # fmt: skip
+
+
+def _ticking_clock(monkeypatch) -> None:
+    """The tracker's clock, a second later on every read of it."""
+    seconds = iter(range(60))
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 11, 6, 1, 0, next(seconds), tzinfo=tz)
+
+    monkeypatch.setattr(daily_tracker, 'datetime', Clock)
+
+
+# What the tracker wrote BEFORE it filled gaps, recorded from that code (run_at left
+# out). The new code has to write the same fields for the same fires.
+#
+# The row for the newest date of _tracker_frame() (240 fires, 11-03 and 11-04), the
+# file _seed_tracking_csv makes. Its last row is 11-04 as well, so the old and the new
+# code both write the one row, for 11-04.
+GOLDEN_TRACKER_ROW = {
+    'date': '2026-11-04', 'n_fires_today': '120', 'n_fires_total_window': '240',
+    'days_in_window': '2', 't1_today': '22', 't2_today': '39', 't3_today': '59',
+    'flow_inv_n': '240', 'flow_inv_mean_pct': '9.243', 'flow_inv_sharpe': '0.232',
+    't2plus_n': '122', 't2plus_mean_pct': '7.648', 't2plus_sharpe': '0.187',
+    'modeB_n': '122', 'modeB_mean_pct': '10.645', 'modeB_sharpe': '0.2582',
+    'top1_ticker': NON_ASCII_TICKER, 'top1_n': '120', 'top1_rate': '60.0',
+    'top2_ticker': 'SPY', 'top2_n': '120', 'top2_rate': '50.83',
+    'top3_ticker': '', 'top3_n': '', 'top3_rate': '',
+}  # fmt: skip
+
+# The row the old code wrote for each date of _fill_frame(), run on that frame cut at
+# the date (the old code writes the row of the newest date it reads). The 11-03 row has
+# blank stats (20 fires) and no top tickers; the 11-05 row's top ticker is the other
+# one than 11-04's.
+GOLDEN_FILL_ROWS = {
+    '2026-11-03': {
+        'date': '2026-11-03', 'n_fires_today': '20', 'n_fires_total_window': '20',
+        'days_in_window': '1', 't1_today': '9', 't2_today': '4', 't3_today': '7',
+        'flow_inv_n': '20', 'flow_inv_mean_pct': '', 'flow_inv_sharpe': '',
+        't2plus_n': '13', 't2plus_mean_pct': '', 't2plus_sharpe': '',
+        'modeB_n': '7', 'modeB_mean_pct': '', 'modeB_sharpe': '',
+        'top1_ticker': '', 'top1_n': '', 'top1_rate': '',
+        'top2_ticker': '', 'top2_n': '', 'top2_rate': '',
+        'top3_ticker': '', 'top3_n': '', 'top3_rate': '',
+    },
+    '2026-11-04': {
+        'date': '2026-11-04', 'n_fires_today': '200', 'n_fires_total_window': '220',
+        'days_in_window': '2', 't1_today': '90', 't2_today': '40', 't3_today': '70',
+        'flow_inv_n': '220', 'flow_inv_mean_pct': '9.605', 'flow_inv_sharpe': '0.328',
+        't2plus_n': '143', 't2plus_mean_pct': '9.713', 't2plus_sharpe': '0.3273',
+        'modeB_n': '74', 'modeB_mean_pct': '9.716', 'modeB_sharpe': '0.3253',
+        'top1_ticker': 'SPY', 'top1_n': '110', 'top1_rate': '55.45',
+        'top2_ticker': NON_ASCII_TICKER, 'top2_n': '110', 'top2_rate': '54.55',
+        'top3_ticker': '', 'top3_n': '', 'top3_rate': '',
+    },
+    '2026-11-05': {
+        'date': '2026-11-05', 'n_fires_today': '100', 'n_fires_total_window': '320',
+        'days_in_window': '3', 't1_today': '45', 't2_today': '20', 't3_today': '35',
+        'flow_inv_n': '320', 'flow_inv_mean_pct': '9.812', 'flow_inv_sharpe': '0.3355',
+        't2plus_n': '208', 't2plus_mean_pct': '10.062', 't2plus_sharpe': '0.3439',
+        'modeB_n': '107', 'modeB_mean_pct': '8.598', 'modeB_sharpe': '0.2932',
+        'top1_ticker': NON_ASCII_TICKER, 'top1_n': '160', 'top1_rate': '56.25',
+        'top2_ticker': 'SPY', 'top2_n': '160', 'top2_rate': '53.12',
+        'top3_ticker': '', 'top3_n': '', 'top3_rate': '',
+    },
+}  # fmt: skip
+
+
+def _without_run_at(row: dict[str, str]) -> dict[str, str]:
+    return {k: v for k, v in row.items() if k != 'run_at'}
+
+
 def tracker_run(tmp_path, monkeypatch) -> Run:
     state = tmp_path / 'state'
     state.mkdir()
@@ -514,6 +621,185 @@ def test_tracker_csv_path_is_respected_and_row_replaced(
     assert _snapshot(run.out_dir).keys() == {'lottery-tracking.csv'}
     assert _snapshot(default_dir) == {}
     assert _snapshot(SHIPPED_DOCS_TMP) == shipped_before
+
+
+def test_tracker_row_for_the_newest_date_is_the_one_it_always_wrote(
+    tmp_path, monkeypatch, default_dir
+):
+    run = tracker_run(tmp_path, monkeypatch)
+
+    run.main(run.argv)
+
+    rows = _read_rows(run.output)
+    assert [r['date'] for r in rows] == ['2026-11-03', '2026-11-04']  # one row written
+    assert _without_run_at(rows[-1]) == GOLDEN_TRACKER_ROW
+    assert rows[-1]['run_at'].startswith('20')  # an ISO timestamp, not the stale marker
+
+
+def test_tracker_fills_every_fire_date_after_the_csvs_last_row(
+    tmp_path, monkeypatch, default_dir, capsys, legacy_text_default
+):
+    run = tracker_run(tmp_path, monkeypatch)
+    _serve(monkeypatch, 'read_sql', _fill_frame())
+    _write_tracking_csv(run.output, ['2026-11-01', '2026-11-02'])
+    before = _read_rows(run.output)
+    _ticking_clock(monkeypatch)
+
+    run.main(run.argv)
+
+    after = _read_rows(run.output)
+    assert after[:2] == before  # the rows already there, untouched and in order
+    assert [r['date'] for r in after] == [
+        '2026-11-01', '2026-11-02', '2026-11-03', '2026-11-04', '2026-11-05'
+    ]  # fmt: skip
+    filled = after[2:]
+    # Each row is as of its own date: the old code's row for the frame cut there.
+    assert {r['date']: _without_run_at(r) for r in filled} == GOLDEN_FILL_ROWS
+    assert [
+        (r['n_fires_today'], r['n_fires_total_window'], r['days_in_window'])
+        for r in filled
+    ] == [('20', '20', '1'), ('200', '220', '2'), ('100', '320', '3')]
+    # One timestamp for the run: the clock moves on every read, so one per row differs.
+    assert {r['run_at'] for r in filled} == {'2026-11-06T01:00:00+00:00'}
+    header = run.output.read_text(encoding='utf-8').splitlines()[0]
+    assert header == ','.join(daily_tracker.COLUMNS)
+    out = capsys.readouterr().out
+    assert '[track] filled 3 dates (2026-11-03 .. 2026-11-05)' in out
+    assert '[track] 2026-11-05: 100 new fires (T1=45 T2=20 T3=35)' in out  # newest row
+    assert '(5 rows)' in out
+
+
+def test_tracker_writes_no_row_for_a_date_without_fires(
+    tmp_path, monkeypatch, default_dir, capsys
+):
+    run = tracker_run(tmp_path, monkeypatch)
+    _serve(
+        monkeypatch,
+        'read_sql',
+        _fill_frame({date(2026, 11, 3): 20, date(2026, 11, 5): 100}),  # none on 11-04
+    )
+    _write_tracking_csv(run.output, ['2026-11-02'])
+
+    run.main(run.argv)
+
+    after = _read_rows(run.output)
+    assert [r['date'] for r in after] == ['2026-11-02', '2026-11-03', '2026-11-05']
+    # The gap is not a day of the window: 120 fires over two dates.
+    assert (after[-1]['n_fires_total_window'], after[-1]['days_in_window']) == ('120', '2')
+    assert '[track] filled 2 dates (2026-11-03 .. 2026-11-05)' in capsys.readouterr().out
+
+
+def test_tracker_does_not_rewrite_the_last_rows_date_when_later_dates_exist(
+    tmp_path, monkeypatch, default_dir
+):
+    run = tracker_run(tmp_path, monkeypatch)
+    _serve(monkeypatch, 'read_sql', _fill_frame())
+    _write_tracking_csv(run.output, ['2026-11-03', '2026-11-04'])
+    before = _read_rows(run.output)
+
+    run.main(run.argv)
+
+    after = _read_rows(run.output)
+    assert after[:2] == before  # 11-04 has fires, but its row is the file's own
+    assert [r['date'] for r in after] == ['2026-11-03', '2026-11-04', '2026-11-05']
+
+
+def test_tracker_rerun_after_a_fill_replaces_the_newest_row_only(
+    tmp_path, monkeypatch, default_dir, capsys
+):
+    run = tracker_run(tmp_path, monkeypatch)
+    _serve(monkeypatch, 'read_sql', _fill_frame())
+    _write_tracking_csv(run.output, ['2026-11-02'])
+    run.main(run.argv)
+    first = _read_rows(run.output)
+    _ticking_clock(monkeypatch)
+    capsys.readouterr()
+
+    run.main(run.argv)  # nothing new since: the last date is the file's last
+
+    second = _read_rows(run.output)
+    assert [r['date'] for r in second] == [r['date'] for r in first]
+    assert second[:-1] == first[:-1]
+    assert _without_run_at(second[-1]) == _without_run_at(first[-1])
+    assert second[-1]['run_at'] == '2026-11-06T01:00:00+00:00'  # rewritten by this run
+    assert 'filled' not in capsys.readouterr().out  # one date is not a fill
+
+
+@pytest.mark.parametrize(
+    'seed',
+    [
+        pytest.param(None, id='no_file'),
+        pytest.param([], id='header_only'),
+        pytest.param(['not-a-date'], id='no_row_with_a_date'),
+    ],
+)
+def test_tracker_without_a_last_date_writes_the_newest_date_only(
+    seed, tmp_path, monkeypatch, default_dir, capsys
+):
+    run = tracker_run(tmp_path, monkeypatch)
+    _serve(monkeypatch, 'read_sql', _fill_frame())
+    csv_path = run.out_dir / 'fresh.csv'  # a file that is not there yet
+    if seed is not None:
+        _write_tracking_csv(csv_path, seed)
+
+    run.main(['--csv', str(csv_path)])
+
+    rows = _read_rows(csv_path)
+    # Never the whole history into a file with no last date; an odd row stays.
+    assert [r['date'] for r in rows] == [*(seed or []), '2026-11-05']
+    assert _without_run_at(rows[-1]) == GOLDEN_FILL_ROWS['2026-11-05']
+    assert 'filled' not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    'odd_date',
+    [
+        pytest.param('not-a-date', id='text'),
+        pytest.param('2026-13-45', id='no_such_day'),
+        pytest.param('20261230', id='not_yyyy_mm_dd'),  # a later date, if it were read
+        pytest.param('', id='blank'),
+    ],
+)
+def test_tracker_ignores_a_row_whose_date_does_not_parse_but_keeps_it(
+    odd_date, tmp_path, monkeypatch, default_dir
+):
+    run = tracker_run(tmp_path, monkeypatch)
+    _serve(monkeypatch, 'read_sql', _fill_frame())
+    _write_tracking_csv(run.output, ['2026-11-02', odd_date])
+    before = _read_rows(run.output)
+
+    run.main(run.argv)
+
+    after = _read_rows(run.output)
+    assert after[:2] == before  # the odd row stays where it was
+    assert [r['date'] for r in after[2:]] == ['2026-11-03', '2026-11-04', '2026-11-05']
+
+
+def test_tracker_reads_fire_dates_that_come_as_timestamps(
+    tmp_path, monkeypatch, default_dir
+):
+    run = tracker_run(tmp_path, monkeypatch)
+    frame = _fill_frame()
+    frame['date'] = pd.to_datetime(frame['date'])  # datetime64, not date objects
+    _serve(monkeypatch, 'read_sql', frame)
+    _write_tracking_csv(run.output, ['2026-11-02'])
+
+    run.main(run.argv)
+
+    filled = _read_rows(run.output)[1:]
+    assert {r['date']: _without_run_at(r) for r in filled} == GOLDEN_FILL_ROWS
+
+
+def test_tracker_with_a_csv_ahead_of_the_fires_writes_the_newest_date_only(
+    tmp_path, monkeypatch, default_dir
+):
+    run = tracker_run(tmp_path, monkeypatch)
+    _serve(monkeypatch, 'read_sql', _fill_frame())
+    _write_tracking_csv(run.output, ['2026-11-09'])
+
+    run.main(run.argv)
+
+    assert [r['date'] for r in _read_rows(run.output)] == ['2026-11-09', '2026-11-05']
 
 
 def test_tracker_with_no_enriched_fires_exits_and_leaves_the_csv_alone(
