@@ -25,6 +25,7 @@ from utils import (
     _MERGE_SECTION_SQL,
     GEX_FEATURES_T1T2,
     GREEK_FEATURES_CORE,
+    NO_VIEW_LABEL,
     VOLATILITY_FEATURES,
     get_connection,
     load_data,
@@ -91,6 +92,25 @@ class TestFeatureGroupConstants:
         all_features = VOLATILITY_FEATURES + GEX_FEATURES_T1T2 + GREEK_FEATURES_CORE
         for feat in all_features:
             assert feat.strip() != "", "Empty string found in feature groups"
+
+
+# ── NO_VIEW_LABEL ─────────────────────────────────────────────
+
+
+class TestNoViewLabel:
+    """One label for a training_features day at completeness 0, shared by the
+    two status readers (health.py and milestone_check.py)."""
+
+    def test_text(self):
+        assert NO_VIEW_LABEL == "no 10:00 view (no trusted snapshot row)"
+
+    def test_health_and_milestone_check_use_the_shared_label(self):
+        """Their names are the utils object itself, not a copy of its text."""
+        import health
+        import milestone_check
+
+        assert health.NO_VIEW_LABEL is NO_VIEW_LABEL
+        assert milestone_check.NO_VIEW_LABEL is NO_VIEW_LABEL
 
 
 # ── load_env tests ─────────────────────────────────────────────

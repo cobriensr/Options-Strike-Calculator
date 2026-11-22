@@ -38,6 +38,12 @@ warnings.filterwarnings("ignore", category=ConstantInputWarning)
 # so we climb three parents: utils/ → src/ → ml/.
 ML_ROOT = Path(__file__).resolve().parent.parent.parent
 
+#: What a training_features row at feature_completeness 0 is called: a date
+#: whose market_snapshots rows were all rejected by build-features'
+#: featureSnapshotRejection, so it has no 10:00 view and does not train. One
+#: label for the two status readers, health.py and milestone_check.py.
+NO_VIEW_LABEL = "no 10:00 view (no trusted snapshot row)"
+
 # ── Feature Groups (shared across scripts) ─────────────────
 # Canonical lists used by clustering.py, phase2_early.py, etc.
 # Scripts may extend these with their own additions.

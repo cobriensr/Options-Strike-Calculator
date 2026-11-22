@@ -15,6 +15,7 @@ import sys
 from datetime import datetime, timedelta
 
 from utils import (
+    NO_VIEW_LABEL,
     get_connection,
     load_data,
     save_section_findings,
@@ -25,11 +26,6 @@ from utils import (
 )
 
 # ── Constants ──────────────────────────────────────────────────
-
-#: What a training_features row at feature_completeness 0 is called: a date
-#: whose market_snapshots rows were all rejected by build-features'
-#: featureSnapshotRejection, so it has no 10:00 view and does not train.
-NO_VIEW_LABEL = "no 10:00 view (no trusted snapshot row)"
 
 KEY_FEATURE_COLUMNS = [
     "vix",

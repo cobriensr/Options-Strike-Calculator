@@ -11,7 +11,9 @@ Requires: pip install psycopg2-binary pandas
 """
 
 import sys
+from collections.abc import Iterable
 from datetime import datetime, timedelta
+from decimal import Decimal
 
 try:
     import pandas as pd
@@ -20,7 +22,7 @@ except ImportError:
     print("  ml/.venv/Scripts/pip install psycopg2-binary pandas")
     sys.exit(1)
 
-from utils import get_connection, section, subsection, takeaway
+from utils import NO_VIEW_LABEL, get_connection, section, subsection, takeaway
 
 # ── Helpers ───────────────────────────────────────────────────
 
@@ -52,7 +54,9 @@ def business_days_between(d1: datetime, d2: datetime) -> int:
 # ── Data Counting ─────────────────────────────────────────────
 
 
-def summarize_recent_completeness(values) -> tuple[float | None, int]:
+def summarize_recent_completeness(
+    values: Iterable[Decimal | float | None],
+) -> tuple[float | None, int]:
     """Average completeness of the days that have a 10:00 view, and how many
     days have none.
 
@@ -269,10 +273,7 @@ def print_quality(data: dict) -> None:
     print(f"  Avg completeness (last 10 days): {rc_str}")
     no_view = data["recent_no_view_days"]
     if no_view > 0:
-        print(
-            f"  Days in the last 10 with no 10:00 view "
-            f"(no trusted snapshot row): {no_view}"
-        )
+        print(f"  Days in the last 10 with {NO_VIEW_LABEL}: {no_view}")
 
     # Label coverage
     total = data["total_days"]
