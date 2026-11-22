@@ -319,7 +319,7 @@ def _tracker_frame() -> pd.DataFrame:
 
 
 def _seed_tracking_csv(path: Path) -> None:
-    """Two earlier rows: 11-03 (stays as is) and a stale 11-04 (to be replaced)."""
+    """Two earlier rows, 11-03 and a stale 11-04; a run computes both again."""
     with path.open('w', newline='', encoding='utf-8') as f:
         writer = csv.DictWriter(f, fieldnames=daily_tracker.COLUMNS)
         writer.writeheader()
@@ -491,9 +491,10 @@ GOLDEN_FILL_ROWS = {
 
 
 # The old code's row for each date of _boundary_frame(), recorded the same way. 11-03: two
-# tickers at exactly 100 fires. 11-04: HHH and III tie at the top (the two ticker names
-# are left out; see the test). 11-05: AAA has 99 fires with a peak and is out, BBB has 100
-# and CCC 101 and are in.
+# tickers at exactly 100 fires. 11-04: HHH and III tie at the top, and a tie keeps ticker
+# order (HHH first), the one value changed since the recording: the old code left it to
+# numpy's sort, which put III first on a CPU with AVX-512. 11-05: AAA has 99 fires with a
+# peak and is out, BBB has 100 and CCC 101 and are in.
 GOLDEN_BOUNDARY_ROWS = {
     '2026-11-03': {
         'date': '2026-11-03', 'n_fires_today': '471', 'n_fires_total_window': '471',
@@ -511,7 +512,8 @@ GOLDEN_BOUNDARY_ROWS = {
         'flow_inv_n': '709', 'flow_inv_mean_pct': '10.24', 'flow_inv_sharpe': '0.3491',
         't2plus_n': '425', 't2plus_mean_pct': '10.111', 't2plus_sharpe': '0.3441',
         'modeB_n': '234', 'modeB_mean_pct': '10.35', 'modeB_sharpe': '0.3487',
-        'top1_n': '100', 'top1_rate': '75.0', 'top2_n': '100', 'top2_rate': '75.0',
+        'top1_ticker': 'HHH', 'top1_n': '100', 'top1_rate': '75.0',
+        'top2_ticker': 'III', 'top2_n': '100', 'top2_rate': '75.0',
         'top3_ticker': 'DDD', 'top3_n': '110', 'top3_rate': '60.91',
     },
     '2026-11-05': {
@@ -754,7 +756,7 @@ def test_tracker_writes_a_row_for_every_enriched_date_and_nothing_else(
     out = capsys.readouterr().out
     lines = [
         '[track] rebuilt 3 dates (2026-11-03 .. 2026-11-05), replacing 3 rows\n',
-        '[track] 1 earlier dates have no enriched fires now and were dropped\n',
+        '[track] 1 earlier dates have no enriched fires now and were dropped: 2026-11-02\n',
         '[track] 2 of 2 earlier rows changed\n',
         '[track] 2026-11-05: 100 new fires (T1=45 T2=20 T3=35)\n',
     ]
@@ -911,8 +913,38 @@ def test_tracker_does_not_count_a_dropped_date_as_an_earlier_row(
 
     out = _tracker_run_twice(tmp_path, monkeypatch, capsys, between=add_a_date_with_no_fires)
 
-    assert '[track] 1 earlier dates have no enriched fires now and were dropped\n' in out
+    dropped = '[track] 1 earlier dates have no enriched fires now and were dropped: 2026-11-02\n'
+    assert dropped in out
     assert '[track] 0 of 3 earlier rows changed\n' in out  # 11-02 is not one of the 3
+
+
+@pytest.mark.parametrize(
+    ('count', 'shown'),
+    [
+        pytest.param(1, ['2026-10-01'], id='one'),
+        pytest.param(10, [f'2026-10-{d:02d}' for d in range(1, 11)], id='exactly_ten'),
+        pytest.param(12, [f'2026-10-{d:02d}' for d in range(1, 11)], id='twelve_shows_ten'),
+    ],
+)
+def test_tracker_names_the_dropped_dates_oldest_first_ten_at_most(
+    count, shown, tmp_path, monkeypatch, default_dir, capsys
+):
+    run = tracker_run(tmp_path, monkeypatch)
+    _serve(monkeypatch, 'read_sql', _fill_frame())
+    # Written newest first: the line lists them oldest first whatever the file's order.
+    gone = [f'2026-10-{d:02d}' for d in range(count, 0, -1)]
+    _write_tracking_csv(run.output, [*gone, '2026-11-03'])
+
+    run.main(run.argv)
+
+    more = f' (+{count - 10} more)' if count > 10 else ''
+    line = (
+        f'[track] {count} earlier dates have no enriched fires now and were dropped: '
+        f'{", ".join(shown)}{more}\n'
+    )
+    out = capsys.readouterr().out
+    assert line in out
+    assert out.count('were dropped') == 1
 
 
 def test_tracker_reads_a_missing_column_of_an_old_row_as_blank_and_ignores_extra_ones(
@@ -1101,7 +1133,12 @@ def test_tracker_reads_fire_dates_that_come_as_timestamps(
 
 def test_tracker_rows_match_the_old_code_at_the_edges(tmp_path, monkeypatch, default_dir):
     """Fires with 99, 100 and 101 of a ticker's peaks, a peak of exactly 50, null scores,
-    null flow inversions and a tie: the rows are the ones the code before the fill wrote.
+    null flow inversions and a tie: the rows are the ones the code before the fill wrote,
+    but for the order of the tie (see GOLDEN_BOUNDARY_ROWS).
+
+    HHH and III tie on 11-04 (both 100 peaks, 75.0). A tie keeps ticker order, whatever
+    CPU the run is on: numpy's default sort orders equal keys by its SIMD path, and the
+    whole series is recomputed every night, so a host change must not move a row.
     """
     run = tracker_run(tmp_path, monkeypatch)
     _serve(monkeypatch, 'read_sql', _boundary_frame())
@@ -1110,18 +1147,10 @@ def test_tracker_rows_match_the_old_code_at_the_edges(tmp_path, monkeypatch, def
     run.main(run.argv)
 
     rows = {r['date']: _without_run_at(r) for r in _read_rows(run.output)}
-    # HHH and III tie on 11-04 (both 100 peaks, 75.0). Which of them numpy's sort puts first
-    # depends on the CPU's SIMD path, so the order is not a literal here: it is what the
-    # old code's own expression (groupby, then sort_values) gives on this host for these fires.
-    fires = _boundary_frame()
-    window = fires[fires['date'] <= date(2026, 11, 4)]
-    table = window.groupby('ticker').agg(
-        n=('peak', 'count'), rate=('peak', lambda s: (s >= 50).mean() * 100)
+    assert (rows['2026-11-04']['top1_ticker'], rows['2026-11-04']['top2_ticker']) == (
+        'HHH',
+        'III',
     )
-    ranked = table[table['n'] >= 100].sort_values('rate', ascending=False)
-    tied = [rows['2026-11-04'].pop('top1_ticker'), rows['2026-11-04'].pop('top2_ticker')]
-    assert set(tied) == {'HHH', 'III'}
-    assert tied == list(ranked.index[:2])
     assert rows == GOLDEN_BOUNDARY_ROWS
 
 

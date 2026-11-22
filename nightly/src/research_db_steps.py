@@ -219,9 +219,11 @@ def _track(
 def run_tracking(ctx: StepContext) -> StepResult:
     """Run the daily tracker on the stored tracking CSV and store the file it rewrote.
 
-    Counts: `rows_before` (the data rows downloaded, 0 with no state), `rows_after` (0 until the
-    script has run and exited 0), `dates_dropped` (the old dates with no row in the new file, 0
-    until then too), `files_uploaded` (the snapshot and the state) and `log_uploaded`.
+    Counts: `rows_before` (the data rows downloaded, 0 with no state or one that cannot be read
+    as CSV), `rows_after` (0 until the script has run and exited 0), `dates_dropped` (the old
+    dates with no row in the new file, 0 until then too: the tracker's own log in R2 names
+    them, this report never does), `files_uploaded` (the snapshot and the state) and
+    `log_uploaded`.
     """
     started = monotonic()
     store = ResearchStore(ctx.settings)

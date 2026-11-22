@@ -12,14 +12,18 @@ between old and new rows. The file is rewritten whole, so run it on a copy
 when its old rows matter.
 
 What a run prints of the file it replaces, from its rows whose `date` is
-YYYY-MM-DD (any other row is dropped and counted nowhere):
+YYYY-MM-DD (any other row is dropped and counted only in K):
 - `rebuilt M dates (first .. last), replacing K rows`: K counts every row;
-- `J earlier dates have no enriched fires now and were dropped`, when J > 0:
-  dates the old file had that have no row now;
-- `R of M earlier rows changed`: of the M dates in both the old file and the
+- `J earlier dates have no enriched fires now and were dropped: d1, d2, ...`, when
+  J > 0: the dates the old file had that have no row now, oldest first, ten at
+  most (then ` (+N more)`). The dates are in this log only: the nightly step
+  reports a count, never a date;
+- `R of N earlier rows changed`: of the N dates in both the old file and the
   new rows, how many differ in any column but `run_at` (compared as the CSV
   holds it; a column the old file lacks reads as blank). Not printed when the
   old file has no such row. A revision of history shows here.
+Tickers tied on the high-peak rate keep ticker order in the top 3, so the series
+does not depend on the host's sort.
 An old file that cannot be read as CSV (a field past the csv module's size
 limit) is replaced all the same, with one line saying so and no comparison;
 a BOM and bytes that are not UTF-8 are read (the bad ones as U+FFFD).
@@ -59,8 +63,10 @@ sys.path.insert(0, str(ROOT / 'scripts'))
 from _cli_paths import load_env_file  # noqa: E402
 from _report_weights import load_active_weights  # noqa: E402
 
-# Order of CSV columns. Adding a new column at the end is safe (existing
-# rows just get a blank trailing field on read). Don't reorder.
+# Order of CSV columns. Adding a new column at the end is safe: the nightly step
+# accepts a header that only appends columns, and every run recomputes every row. On
+# the night a column is added the changed-rows line counts every row (blank against a
+# value). Don't reorder.
 COLUMNS = [
     'date',                  # the enriched fire date this row is as of
     'run_at',                # ISO UTC timestamp of this run
@@ -84,6 +90,8 @@ COLUMNS = [
 
 # Fewer non-null flow inversions than this and a window's stats are blank.
 MIN_STATS_N = 30
+# The most dates the "were dropped" line names; the rest are counted (+N more).
+MAX_DROPPED_SHOWN = 10
 
 
 def window_stats(
@@ -269,7 +277,11 @@ def build_rows(
             },
             index=pd.Index(tickers[seen], name='ticker'),
         )
-        eligible = grouped[grouped['n'] >= 100].sort_values('rate', ascending=False)
+        # A stable sort: tied rates keep the index order (ticker, ascending). The
+        # default sort orders ties by numpy's SIMD path, which differs between hosts.
+        eligible = grouped[grouped['n'] >= 100].sort_values(
+            'rate', ascending=False, kind='stable'
+        )
         top3 = list(eligible.head(3).itertuples())
         while len(top3) < 3:
             top3.append(None)
@@ -376,10 +388,13 @@ def main(argv: list[str] | None = None) -> None:
         r['date']: r for r in existing if _csv_date(r.get('date')) is not None
     }
     written = {r['date'] for r in new_rows}
-    dropped = old_by_date.keys() - written
+    dropped = sorted(old_by_date.keys() - written)
     if dropped:
+        # The dates go to this log only (R2); the step's report and Sentry name none.
+        shown = ', '.join(dropped[:MAX_DROPPED_SHOWN])
+        more = len(dropped) - MAX_DROPPED_SHOWN
         print(f'[track] {len(dropped)} earlier dates have no enriched fires now '
-              'and were dropped')
+              f'and were dropped: {shown}' + (f' (+{more} more)' if more > 0 else ''))
     if old_by_date:
         # Compared as the file holds them, so read back what was just written.
         held = {r['date']: r for r in _read_rows(args.csv)}
