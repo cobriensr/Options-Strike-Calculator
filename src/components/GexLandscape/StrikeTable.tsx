@@ -25,7 +25,7 @@ import {
   charmTooltip,
   classify,
   getDirection,
-  positionBand,
+  positionDistance,
   signalTooltip,
   takerSideWords,
 } from './classify';
@@ -186,7 +186,7 @@ export function StrikeTable({
 
       {/* Scrollable rows */}
       <div
-        className="max-h-[540px] overflow-y-auto"
+        className="relative max-h-[540px] overflow-y-auto"
         role="list"
         aria-label="GEX strike landscape"
       >
@@ -267,7 +267,7 @@ export function StrikeTable({
                   title={CLS_TOOLTIP[cls]}
                 >
                   {meta.badge}
-                  <SrHint>{`takers net ${sides.gamma} gamma, net ${sides.charm} charm`}</SrHint>
+                  <SrHint>{`net ${sides.gamma} gamma, net ${sides.charm} charm`}</SrHint>
                 </span>
                 {isNew && (
                   <span
@@ -312,7 +312,7 @@ export function StrikeTable({
                   title={signalTooltip(cls, dir)}
                 >
                   {meta.signal(dir)}
-                  <SrHint>{positionBand(dir)}</SrHint>
+                  <SrHint>{positionDistance(dir)}</SrHint>
                 </span>
               </div>
 

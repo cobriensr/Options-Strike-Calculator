@@ -5,8 +5,8 @@
  * `getDirection` maps (strike, price) to ceiling / floor / atm using
  *   `SPX_SPOT_BAND` (SPX-only since Phase 3 of the MM swap).
  * `signalTooltip` and `charmTooltip` render the per-cell tooltip text;
- *   `takerSideWords`, `positionBand` and `charmHint` are the words they and
- *   the strike table's screen-reader hints share.
+ *   `takerSideWords`, `positionBand`, `positionDistance` and `charmHint` are
+ *   the words they and the strike table's screen-reader hints share.
  * `computeVolReinforcement` maps (netGamma, Δ5m/15m/30m) to delta-trend
  *   agreement per Locked Decision #1 of the 1-min GexBot rebuild spec
  *   (docs/superpowers/specs/gex-landscape-1min-gexbot-rebuild-2026-05-26.md).
@@ -48,14 +48,27 @@ export function takerSideWords(cls: GexClassification): {
 }
 
 /**
+ * How far a strike sits from spot, in words, with the side left out: outside
+ * the spot band, or inside it. The position cell already reads "above spot",
+ * "below spot" or "at spot", so its screen-reader hint is this alone and does
+ * not say the side twice.
+ */
+export function positionDistance(dir: Direction): string {
+  return dir === 'atm'
+    ? `within ${SPX_SPOT_BAND} pts`
+    : `more than ${SPX_SPOT_BAND} pts`;
+}
+
+/**
  * Where a strike sits against spot, in words: outside the spot band above or
- * below it, or inside it. Shared by `signalTooltip` and the position cell's
- * screen-reader hint.
+ * below it, or inside it. Used by `signalTooltip`, whose sentence has no
+ * visible text beside it, so it names the side.
  */
 export function positionBand(dir: Direction): string {
-  if (dir === 'ceiling') return `more than ${SPX_SPOT_BAND} pts above spot`;
-  if (dir === 'floor') return `more than ${SPX_SPOT_BAND} pts below spot`;
-  return `within ${SPX_SPOT_BAND} pts of spot`;
+  const distance = positionDistance(dir);
+  if (dir === 'ceiling') return `${distance} above spot`;
+  if (dir === 'floor') return `${distance} below spot`;
+  return `${distance} of spot`;
 }
 
 /**

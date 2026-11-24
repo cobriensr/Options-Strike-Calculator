@@ -19,6 +19,7 @@ import {
   computeVolReinforcement,
   getDirection,
   positionBand,
+  positionDistance,
   signalTooltip,
   takerSideWords,
 } from '../../components/GexLandscape/classify';
@@ -329,6 +330,32 @@ describe('takerSideWords — which side the takers hold, per class', () => {
       );
     }
   });
+});
+
+// The position cell already says "above spot", "below spot" or "at spot", so
+// its hint adds only how far: positionBand with the side words dropped.
+describe('positionDistance — how far the strike sits from spot, in words', () => {
+  it.each([
+    ['ceiling', 'more than 25 pts'],
+    ['floor', 'more than 25 pts'],
+    ['atm', 'within 25 pts'],
+  ] as const)('%s', (dir, words) => {
+    expect(positionDistance(dir)).toBe(words);
+  });
+
+  it.each(['ceiling', 'floor', 'atm'] as const)(
+    '%s is how positionBand starts, so the two cannot drift apart',
+    (dir) => {
+      expect(positionBand(dir).startsWith(positionDistance(dir))).toBe(true);
+    },
+  );
+
+  it.each(['ceiling', 'floor', 'atm'] as const)(
+    '%s says nothing of the side, which the cell shows',
+    (dir) => {
+      expect(positionDistance(dir)).not.toMatch(/above|below|spot/);
+    },
+  );
 });
 
 describe('positionBand — where the strike sits, in words', () => {

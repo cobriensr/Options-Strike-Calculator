@@ -370,6 +370,20 @@ describe('GexLandscape', () => {
     });
   });
 
+  describe('row scroller', () => {
+    it('is positioned so the hidden hints in its rows stay inside it', () => {
+      // The strike grid is wider than a phone, so its rows scroll sideways
+      // (overflow-y-auto computes overflow-x to auto). The rows' SrHints are
+      // position: absolute with no offsets; only a positioned scroller
+      // contains and clips them, so an unpositioned one lets a hint widen
+      // the page.
+      renderLandscape();
+      expect(
+        screen.getByRole('list', { name: 'GEX strike landscape' }),
+      ).toHaveClass('overflow-y-auto', 'relative');
+    });
+  });
+
   describe('vol reinforcement', () => {
     // The bias panel above the table has ↑↑ / ↓↓ marks of its own, named the
     // same way, so these two look in the strike table only.
@@ -1372,12 +1386,12 @@ describe('StrikeTable — per-row distance, class, position and charm cells', ()
       badge: [
         'Takers −γ +charm',
         "In GEXBot's taker-side sign, traders (takers) are net short gamma and net long charm at this strike.",
-        'takers net short gamma, net long charm',
+        'net short gamma, net long charm',
       ],
       position: [
         'Taker-short γ above spot',
         "In GEXBot's taker-side sign, traders (takers) are net short gamma and net long charm at this strike, which sits more than 25 pts above spot.",
-        'more than 25 pts above spot',
+        'more than 25 pts',
       ],
       charm: [
         '+1.0M',
@@ -1392,12 +1406,12 @@ describe('StrikeTable — per-row distance, class, position and charm cells', ()
       badge: [
         'Takers +γ −charm',
         "In GEXBot's taker-side sign, traders (takers) are net long gamma and net short charm at this strike.",
-        'takers net long gamma, net short charm',
+        'net long gamma, net short charm',
       ],
       position: [
         'Taker-long γ at spot',
         "In GEXBot's taker-side sign, traders (takers) are net long gamma and net short charm at this strike, which sits within 25 pts of spot.",
-        'within 25 pts of spot',
+        'within 25 pts',
       ],
       charm: [
         '−1.0M',
@@ -1412,12 +1426,12 @@ describe('StrikeTable — per-row distance, class, position and charm cells', ()
       badge: [
         'Takers −γ −charm',
         "In GEXBot's taker-side sign, traders (takers) are net short gamma and net short charm at this strike.",
-        'takers net short gamma, net short charm',
+        'net short gamma, net short charm',
       ],
       position: [
         'Taker-short γ below spot',
         "In GEXBot's taker-side sign, traders (takers) are net short gamma and net short charm at this strike, which sits more than 25 pts below spot.",
-        'more than 25 pts below spot',
+        'more than 25 pts',
       ],
       charm: [
         '−1.0M',
@@ -1449,15 +1463,29 @@ describe('StrikeTable — per-row distance, class, position and charm cells', ()
     },
   );
 
+  it('the class and position hints leave out the words their cell already shows', () => {
+    renderRows();
+    const row = within(screen.getAllByRole('listitem')[0] as HTMLElement);
+    // Read in a row as "Takers −γ +charm — net short gamma, net long charm"
+    // and "Taker-short γ above spot — more than 25 pts".
+    expect(srHintText(row.getByText('Takers −γ +charm'))).not.toMatch(
+      /takers/i,
+    );
+    expect(srHintText(row.getByText('Taker-short γ above spot'))).not.toMatch(
+      /taker|above|below|spot/i,
+    );
+  });
+
   it('the spot row has no distance cell, and still names its class and charm', () => {
     renderRows();
     const row = within(screen.getAllByRole('listitem')[1] as HTMLElement);
-    expect(row.queryByText(/pts$/)).toBeNull();
+    // A signed distance such as "+50 pts"; the position hint also ends in "pts"
+    expect(row.queryByText(/^[+−][\d,]+ pts$/)).toBeNull();
     const badge = srHintText(row.getByText('Takers +γ +charm'));
     const position = srHintText(row.getByText('Taker-long γ at spot'));
     const charm = srHintText(row.getByText('+1.0M'));
-    expect(badge).toBe('takers net long gamma, net long charm');
-    expect(position).toBe('within 25 pts of spot');
+    expect(badge).toBe('net long gamma, net long charm');
+    expect(position).toBe('within 25 pts');
     expect(charm).toBe('takers net long charm');
     // Per-row hints stay short, here as in the other rows.
     for (const hint of [badge, position, charm]) {
