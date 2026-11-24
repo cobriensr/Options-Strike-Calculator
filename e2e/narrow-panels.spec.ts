@@ -1,5 +1,5 @@
 import { test, expect, type Locator, type Page } from '@playwright/test';
-import { fillVix } from './helpers/calculator';
+import { fillVix, setEntryTime } from './helpers/calculator';
 
 /**
  * Rows that don't wrap run past their card on a phone. These two now wrap:
@@ -8,6 +8,11 @@ import { fillVix } from './helpers/calculator';
  *     the Futures panel once its data loads and a time badge joins the
  *     title (the controls drop to their own right-aligned line);
  *   - the hedge calculator's IC Δ chips in the strike results card.
+ *
+ * Tables that sit behind a disclosure are the other trap: their visually
+ * hidden text (the "(gain)/(loss)" spans, a SrHint) is position: absolute,
+ * and a horizontal scroller that is not positioned does not contain it, so
+ * opening the table can widen the page. The last describe opens each one.
  */
 
 /** The card's content edge: its right side minus border and padding. */
@@ -100,6 +105,67 @@ test.describe('Panels on a phone', () => {
     const chips = results.locator('button[aria-pressed]');
     await expect(chips.first()).toBeVisible();
     await expectInsideCard(results, await chips.all());
+    await expectNoSidewaysScroll(page);
+  });
+});
+
+test.describe('Tables behind a disclosure on a phone', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.route('**/api/**', (route) => route.abort());
+    await page.setViewportSize({ width: 375, height: 812 }); // iPhone X
+    await page.goto('/');
+    await setEntryTime(page);
+    await page.getByLabel('SPY Price').fill('679');
+    await page.getByLabel(/SPX Price/).fill('6790');
+    await fillVix(page, '19');
+    await expect(
+      page.locator('#results').getByText('All Delta Strikes'),
+    ).toBeVisible({ timeout: 5000 });
+    // Baseline: the results alone fit, so a failure below is the table
+    await expectNoSidewaysScroll(page);
+  });
+
+  test('the hedge scenario tables fit once "Show P&L Scenario Table" opens them', async ({
+    page,
+  }) => {
+    const results = page.locator('#results');
+    await results
+      .getByRole('button', { name: /Show.*P&L Scenario Table/ })
+      .click();
+
+    await expect(
+      results.getByRole('table', { name: 'Hedge P&L crash scenarios' }),
+    ).toBeVisible();
+    await expect(
+      results.getByRole('table', { name: 'Hedge P&L rally scenarios' }),
+    ).toBeVisible();
+    await expectNoSidewaysScroll(page);
+  });
+
+  test('the iron condor legs and P&L tables fit', async ({ page }) => {
+    const results = page.locator('#results');
+    await expect(
+      results.getByRole('table', { name: 'Iron condor legs by delta' }),
+    ).toBeVisible();
+    await expect(
+      results.getByRole('table', { name: 'Iron condor P&L by delta' }),
+    ).toBeVisible();
+    await expectNoSidewaysScroll(page);
+  });
+
+  test('the BWB legs and P&L tables fit once "Show BWB" opens them', async ({
+    page,
+  }) => {
+    // Advanced starts collapsed and its Show BWB chip is the only switch
+    await page.getByRole('button', { name: 'Show BWB' }).click();
+
+    const results = page.locator('#results');
+    await expect(
+      results.getByRole('table', { name: 'BWB legs by delta' }),
+    ).toBeVisible();
+    await expect(
+      results.getByRole('table', { name: 'BWB P&L by delta' }),
+    ).toBeVisible();
     await expectNoSidewaysScroll(page);
   });
 });
