@@ -6092,4 +6092,50 @@ export const MIGRATIONS: Migration[] = [
       sql`DROP INDEX IF EXISTS ws_net_flow_per_ticker_uq`,
     ],
   },
+  {
+    id: 211,
+    description:
+      'Create day_analog_windows, the cash-open analog windows of the day-analogs rebuild (spec: docs/superpowers/specs/day-analogs-rebuild-2026-10-02.md; plan: docs/superpowers/plans/2026-11-24-day-analogs-p1a.md). One row per CT trading date, feature set and window length N: the vector of the first N minutes of the 08:30 CT cash session, its prediction-only summary, and the labels of the full session. Columns: date is the CT trading date; feature_set names the vector recipe (the first is cash_open_pct_change_v2), so a v1 and a v2 recipe can coexist through the cut-over; n_minutes is N and is 15, 30 or 60 (CHECK); symbol is the instrument (ES) and contract the dated outright the bars came from, such as ESZ6 (NULL when unknown); source is archive for the rows P2 backfills up to 2026-04-17 and futures_bars after that (CHECK); features is the window vector, the close of each minute from 08:30 to 08:30+N-1 CT carried forward over gaps, divided by the open of the 08:30 bar, minus 1; summary is the prediction-only text of the window (open, N-minute delta, high, low, range and volume, nothing after the last window minute); embedding and embedding_model hold the text-backend embedding (vector(2000) and its model name) and are both NULL or both set (CHECK); vix_bucket is low, normal, elevated or crisis (CHECK) and is the bucket of the VIX close of the trading day before date, so it is known before the open and never reflects the day itself (owner decision 2026-11-24: a sell-off day closes with a higher VIX, which would drift big-range days into the higher buckets); session_open, session_high, session_low and session_close are the 08:30 CT open, high, low and last close of the full cash session in ES points, and range_pt (high minus low), up_exc (high minus open) and down_exc (open minus low) are measured from that open; all seven stay NULL until that session is complete; created_at is the write time. features is an untyped vector so that one column carries all three window lengths, and a CHECK ties vector_dims(features) to n_minutes. A plain HNSW index needs fixed dimensions, so a per-N partial expression index such as (features::vector(15)) WHERE n_minutes = 15 stays possible later. There are no vector indexes yet: the query shape that decides them (one HNSW per N, partial on n_minutes, or iterative scan) is written in P1b, which picks the index from its own EXPLAIN, and an index on an empty table buys nothing. The primary key (date, feature_set, n_minutes) is the upsert target. Nothing reads or writes the table until P1b, so the apply order is free.',
+    statements: (sql) => [
+      // The extension comes from #2 (and #73), so a fresh database has it
+      // here; no CREATE EXTENSION. `features` is an untyped `vector` on
+      // purpose: one column holds the 15-, 30- and 60-minute windows, and
+      // the dims CHECK pins each row's length to its n_minutes. Probed on
+      // production 2026-11-24 (pgvector 0.8.0): vector_dims() takes an
+      // untyped vector, and an untyped vector column is allowed.
+      sql`
+        CREATE TABLE IF NOT EXISTS day_analog_windows (
+          date            DATE NOT NULL,
+          feature_set     TEXT NOT NULL,
+          n_minutes       SMALLINT NOT NULL,
+          symbol          TEXT NOT NULL,
+          contract        TEXT,
+          source          TEXT NOT NULL,
+          features        vector NOT NULL,
+          summary         TEXT NOT NULL,
+          embedding       vector(2000),
+          embedding_model TEXT,
+          vix_bucket      TEXT,
+          session_open    DOUBLE PRECISION,
+          session_high    DOUBLE PRECISION,
+          session_low     DOUBLE PRECISION,
+          session_close   DOUBLE PRECISION,
+          range_pt        DOUBLE PRECISION,
+          up_exc          DOUBLE PRECISION,
+          down_exc        DOUBLE PRECISION,
+          created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          PRIMARY KEY (date, feature_set, n_minutes),
+          CONSTRAINT day_analog_windows_n_chk CHECK (n_minutes IN (15, 30, 60)),
+          CONSTRAINT day_analog_windows_dims_chk
+            CHECK (vector_dims(features) = n_minutes),
+          CONSTRAINT day_analog_windows_source_chk
+            CHECK (source IN ('archive', 'futures_bars')),
+          CONSTRAINT day_analog_windows_vix_chk
+            CHECK (vix_bucket IN ('low', 'normal', 'elevated', 'crisis')),
+          CONSTRAINT day_analog_windows_embedding_chk
+            CHECK ((embedding IS NULL) = (embedding_model IS NULL))
+        )
+      `,
+    ],
+  },
 ];
