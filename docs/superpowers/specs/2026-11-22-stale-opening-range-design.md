@@ -72,7 +72,7 @@ There are four steps (1a–1c for the opening range, 1d for yesterday), each thr
 
 - **`api/intraday.ts`:**
   - **`sessionDate`:** add `sessionDate: string | null`, which is `latestETDate`, or `null` when Schwab returns no candles.
-  - **`complete`:** true only when the 6 opening-range bars exist and the data proves the 9:55 ET bar has closed: `sessionDate` is before today's ET date, or a bar starting at or after 10:00 ET is present. A clock check alone would trust a 9:55 bar that Schwab may still be revising.
+  - **`complete`:** true when at least one opening-range bar exists (a bar starting before 10:00 ET) and the window is closed: `sessionDate` is before today's ET date, or a bar starting at or after 10:00 ET is present. A clock check alone would trust a 9:55 bar that Schwab may still be revising, and a count of 6 bars can include the 9:55 bar while it runs. All six are not required: a later bar proves no opening-range bar can still change, and a permanently missing 9:45 bar would otherwise keep the client polling every 60 s all day, with a short cache after the close. `minutes` still reports the real bar count (25 on a gapped day). With no bar before 10:00 ET the range is null.
   - **Cache:** on a trading day, use the short cache (the market-open cache) unless `sessionDate` is today and `complete` is true. This also covers today's pre-9:30 indicative bars, which make `sessionDate` today with a null range.
 - **`src/types/api.ts`:** add `readonly sessionDate: string | null` to `IntradayResponse`. The client validates no schema for `/api/intraday` (it uses a plain `fetchJson<T>`, `useMarketData.fetchers.ts:59-104`).
 - **`api/__tests__/intraday.test.ts`:**
@@ -81,6 +81,7 @@ There are four steps (1a–1c for the opening range, 1d for yesterday), each thr
   - a holiday gives the last session's date;
   - no candles gives `sessionDate: null`;
   - 6 bars and no 10:00 ET bar gives `complete: false`; with a 10:00 ET bar, `complete: true`;
+  - a missing 9:45 bar with a 10:00 ET bar gives `complete: true` and `minutes: 25`;
   - today's pre-9:30 bars only: `sessionDate` today, range null, short cache.
 - **Fixtures.** No typed test fixture builds an `IntradayResponse`. The bodies that need `sessionDate` are the untyped fetch mocks in `useMarketData.test.ts` (1b) and `MarketRegimeSection.test.tsx` (1c).
 

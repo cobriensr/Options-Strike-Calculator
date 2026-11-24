@@ -5,15 +5,15 @@
  * `api/` imports it, so every non-type relative import here needs `.js`.
  */
 
-import { CASH_OPEN_MIN_ET } from '../data/marketHours.js';
+import {
+  CASH_OPEN_MIN_ET,
+  OPENING_RANGE_END_MIN_ET,
+} from '../data/marketHours.js';
 import { ET_AHEAD_OF_CT_MIN } from './entry-time.js';
 import { getETTotalMinutes } from './timezone.js';
 
 /** Length of a history candle, labelled by its start. */
 const BAR_MINUTES = 5;
-
-/** 10:00 ET, in ET minutes after midnight: the opening range ends here. */
-const OPENING_RANGE_END_MIN_ET = 10 * 60;
 
 export interface SlotCandle {
   /** Bar start, epoch milliseconds. */

@@ -246,6 +246,12 @@ export function priorTradingDay(date: string): string {
 export const CASH_OPEN_MIN_ET = 9 * 60 + 30;
 
 /**
+ * 10:00 ET, in ET minutes after midnight: the 30-minute opening range ends
+ * here. A 5-minute bar belongs to the range when it starts before this.
+ */
+export const OPENING_RANGE_END_MIN_ET = 10 * 60;
+
+/**
  * Expected one-minute bars in the cash session on `date`: 390 on a full
  * day (09:30–16:00 ET), 210 on an early-close half day (09:30–13:00 ET),
  * 0 on weekends, holidays and malformed dates. Used to tell a complete

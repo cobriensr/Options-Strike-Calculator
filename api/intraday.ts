@@ -32,7 +32,11 @@ import {
   guardOwnerOrGuestEndpoint,
 } from './_lib/api-helpers.js';
 import { getETTotalMinutes, getETDateStr } from '../src/utils/timezone.js';
-import { CASH_OPEN_MIN_ET, isTradingDay } from '../src/data/marketHours.js';
+import {
+  CASH_OPEN_MIN_ET,
+  OPENING_RANGE_END_MIN_ET,
+  isTradingDay,
+} from '../src/data/marketHours.js';
 
 // ============================================================
 // TYPES
@@ -59,21 +63,23 @@ interface SchwabPriceHistory {
 // HELPERS
 // ============================================================
 
-/** 10:00 AM ET, in ET minutes after midnight: the 30-minute opening range ends here. */
-const OPENING_RANGE_END_MIN_ET = 600;
-
 /** 6 bars of 5 minutes make the 30-minute opening range. */
 const OPENING_RANGE_BARS = 6;
 
 /**
  * Compute the 30-minute opening range from one session's 5-min candles: the
- * bars that start before 10:00 AM ET (at most 6, 9:30–9:55).
+ * bars that start before 10:00 AM ET (at most 6, 9:30–9:55). Null when none
+ * does. `minutes` is how much of the window the bars cover, so a gapped day
+ * reports less than 30.
  *
- * `complete` means the range can no longer change: all 6 bars exist and the
- * data shows the 9:55 bar has closed, because the session is a past one or a
- * bar starting at or after 10:00 is present. A clock check alone would trust a
- * 9:55 bar that Schwab may still be revising, and six bars alone can include
- * the 9:55 bar while it runs.
+ * `complete` means the window is closed and the range can no longer change:
+ * the session is a past one, or a bar starting at or after 10:00 is present.
+ * That bar is the data's proof that the 9:55 bar has closed. A clock check
+ * alone would trust a 9:55 bar that Schwab may still be revising, and six
+ * bars alone can include the 9:55 bar while it runs. All six are not
+ * required: a later bar proves no opening-range bar can still change, and a
+ * permanently missing 9:45 bar would otherwise keep the client polling all
+ * day.
  */
 function computeOpeningRange(
   candles: SchwabCandle[],
@@ -97,9 +103,7 @@ function computeOpeningRange(
   const laterBarPresent = candles.some(
     (c) => getETTotalMinutes(new Date(c.datetime)) >= OPENING_RANGE_END_MIN_ET,
   );
-  const complete =
-    orCandles.length === OPENING_RANGE_BARS &&
-    (sessionIsPast || laterBarPresent);
+  const complete = sessionIsPast || laterBarPresent;
 
   let high = -Infinity;
   let low = Infinity;

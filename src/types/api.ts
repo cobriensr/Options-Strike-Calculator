@@ -47,10 +47,12 @@ export interface IntradayResponse {
   } | null;
   /**
    * The ET date (YYYY-MM-DD) of the session the range and OHLC are from: today
-   * once today's first bar has come, else the last session's (before the open,
-   * on a weekend or a holiday). Null when Schwab returned no candles. A client
-   * that holds this body across a session boundary reads it against today's
-   * ET date to tell a current range from a previous session's.
+   * once today has a bar, else the last session's (before the open, on a
+   * weekend or a holiday). Before the open, Schwab's indicative bars before
+   * 9:30 make it today with `today` and `openingRange` null. Null when Schwab
+   * returned no candles. A client that holds this body across a session
+   * boundary reads it against today's ET date to tell a current range from a
+   * previous session's.
    */
   readonly sessionDate: string | null;
   readonly previousClose: number;

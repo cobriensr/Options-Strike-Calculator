@@ -19,6 +19,7 @@ vi.mock('../_lib/sentry.js', () => ({
 }));
 
 import handler from '../intraday.js';
+import { Sentry } from '../_lib/sentry.js';
 import {
   guardOwnerOrGuestEndpoint,
   schwabFetch,
@@ -146,6 +147,7 @@ describe('GET /api/intraday', () => {
 
   it('returns 500 when handler throws unexpected error', async () => {
     vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(false);
+    vi.mocked(Sentry.captureException).mockClear();
     vi.mocked(schwabFetch).mockImplementation(() => {
       throw new Error('Crash');
     });
@@ -154,6 +156,11 @@ describe('GET /api/intraday', () => {
     await handler(mockRequest(), res);
     expect(res._status).toBe(500);
     expect(res._json).toEqual({ error: 'Internal server error' });
+    // The failure is surfaced to Sentry, by the error itself.
+    expect(Sentry.captureException).toHaveBeenCalledTimes(1);
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'Crash' }),
+    );
   });
 
   it('handles empty candle data', async () => {
@@ -265,37 +272,60 @@ describe('GET /api/intraday', () => {
 //
 // The response says which session its range is from (`sessionDate`), so the
 // client can tell today's from a held previous session's. The range is
-// complete only once the data shows the 9:55 ET bar has closed. Every time
-// here is an exact UTC constant in November (EST, UTC-5) and the system clock
-// is pinned: the cache and "complete" both depend on today's ET date.
+// complete once the opening-range window is closed: the session is a past one,
+// or a bar starting at or after 10:00 ET is present. Every time here is an
+// exact UTC constant, November (EST, UTC-5) unless a test passes JUN (EDT,
+// UTC-4), and the system clock is pinned: the cache and "complete" both
+// depend on today's ET date.
 
-/** A 5-minute bar starting at ET `hour:minute` on 2026-11-`day` (EST). */
-function barAt(day: number, hour: number, minute: number, price = 5500) {
+/** A month (0-based) and how many hours ET is behind UTC on its dates. */
+interface Zone {
+  readonly month: number;
+  readonly offset: number;
+}
+const NOV: Zone = { month: 10, offset: 5 };
+const JUN: Zone = { month: 5, offset: 4 };
+
+/** A 5-minute bar starting at ET `hour:minute` on 2026-`zone`-`day`. */
+function barAt(
+  day: number,
+  hour: number,
+  minute: number,
+  price = 5500,
+  zone: Zone = NOV,
+) {
   return {
     open: price,
     high: price + 10,
     low: price - 10,
     close: price + 5,
     volume: 1000,
-    datetime: Date.UTC(2026, 10, day, hour + 5, minute),
+    datetime: Date.UTC(2026, zone.month, day, hour + zone.offset, minute),
   };
 }
 
 /** `count` consecutive bars from ET `hour:minute`, the price rising a point a bar. */
-function barsFrom(day: number, hour: number, minute: number, count: number) {
+function barsFrom(
+  day: number,
+  hour: number,
+  minute: number,
+  count: number,
+  zone: Zone = NOV,
+) {
   return Array.from({ length: count }, (_, i) => {
     const start = hour * 60 + minute + i * 5;
-    return barAt(day, Math.floor(start / 60), start % 60, 5500 + i);
+    return barAt(day, Math.floor(start / 60), start % 60, 5500 + i, zone);
   });
 }
 
 /** A full regular session: 9:30 to 15:55 ET, 78 bars. */
-const fullSession = (day: number) => barsFrom(day, 9, 30, 78);
+const fullSession = (day: number, zone: Zone = NOV) =>
+  barsFrom(day, 9, 30, 78, zone);
 
 // Mon 2026-11-23, Tue 11-24, Wed 11-25, Thu 11-26 (Thanksgiving), Fri 11-20
 // and Sat 11-21, as UTC instants at a given ET time.
-const et = (day: number, hour: number, minute: number) =>
-  Date.UTC(2026, 10, day, hour + 5, minute);
+const et = (day: number, hour: number, minute: number, zone: Zone = NOV) =>
+  Date.UTC(2026, zone.month, day, hour + zone.offset, minute);
 
 describe('GET /api/intraday: sessionDate, complete and the cache', () => {
   beforeEach(() => {
@@ -395,6 +425,33 @@ describe('GET /api/intraday: sessionDate, complete and the cache', () => {
       expect(setCacheHeaders).toHaveBeenLastCalledWith(res, ...SHORT_CACHE);
     });
 
+    it('is today with no range when the first bar is at or after 10:00 ET, and the short cache', async () => {
+      // Tue 17:00 ET, a late feed: the session starts at 10:00, so no bar
+      // starts before 10:00 and there is no opening range to report. The
+      // running OHLC still comes from the bars.
+      const { res, json } = await callAt(
+        et(24, 17, 0),
+        barsFrom(24, 10, 0, 6),
+        false,
+      );
+
+      expect(json.sessionDate).toBe('2026-11-24');
+      expect(json.openingRange).toBeNull();
+      expect(json.today).not.toBeNull();
+      expect(json.candleCount).toBe(6);
+      expect(setCacheHeaders).toHaveBeenLastCalledWith(res, ...SHORT_CACHE);
+    });
+
+    it('judges today by the ET date across the UTC date line (Tue 20:00 ET is Wed 01:00 UTC)', async () => {
+      // A UTC "today" would be Wednesday, so Tuesday's session would look
+      // past and its final body would be cached short.
+      const { res, json } = await callAt(et(24, 20, 0), fullSession(24), false);
+
+      expect(json.sessionDate).toBe('2026-11-24');
+      expect(json.openingRange?.complete).toBe(true);
+      expect(setCacheHeaders).toHaveBeenLastCalledWith(res, ...LONG_CACHE);
+    });
+
     it('is the last session on a holiday, with the long cache', async () => {
       // Thu 11-26 (Thanksgiving) 11:00 ET: the last session was Wed 11-25.
       const { res, json } = await callAt(
@@ -455,16 +512,28 @@ describe('GET /api/intraday: sessionDate, complete and the cache', () => {
       expect(json.openingRange?.complete).toBe(true);
     });
 
-    it('is false with fewer than six bars, whatever follows', async () => {
-      // 9:45 is missing: five opening-range bars and a 10:00 bar. The range
-      // is not the whole 30 minutes, so it is not complete.
+    it('is false with a few bars of today and no 10:00 ET bar', async () => {
+      const { json } = await callAt(
+        et(24, 9, 42),
+        barsFrom(24, 9, 30, 3),
+        true,
+      );
+
+      expect(json.openingRange?.minutes).toBe(15);
+      expect(json.openingRange?.complete).toBe(false);
+    });
+
+    it('is true with a missing 9:45 bar once a 10:00 ET bar proves the window closed', async () => {
+      // Five opening-range bars and a 10:00 bar: no opening-range bar can
+      // still arrive in order, and waiting for the sixth would keep the client
+      // polling all day. `minutes` still says how much of the window there is.
       const bars = barsFrom(24, 9, 30, 8).filter(
         (_, i) => i !== 3, // the 9:45 ET bar
       );
       const { json } = await callAt(et(24, 10, 10), bars, true);
 
       expect(json.openingRange?.minutes).toBe(25);
-      expect(json.openingRange?.complete).toBe(false);
+      expect(json.openingRange?.complete).toBe(true);
     });
 
     it("is true for a previous session's six bars: that session is over", async () => {
@@ -479,14 +548,41 @@ describe('GET /api/intraday: sessionDate, complete and the cache', () => {
       expect(json.openingRange?.complete).toBe(true);
     });
 
-    it("is false for a previous session's five bars", async () => {
+    it("is true for a previous session's five bars: nothing newer can arrive", async () => {
       const { json } = await callAt(
         et(24, 9, 15),
         barsFrom(23, 9, 30, 5),
         false,
       );
 
-      expect(json.openingRange?.complete).toBe(false);
+      expect(json.openingRange?.minutes).toBe(25);
+      expect(json.openingRange?.complete).toBe(true);
+    });
+
+    describe('in EDT (UTC-4)', () => {
+      // Tue 2026-06-09: 9:30 ET is 13:30 UTC and 10:00 ET is 14:00 UTC, one
+      // hour earlier on the UTC clock than in November.
+      it('is false with six bars and no 10:00 ET bar', async () => {
+        const { json } = await callAt(
+          et(9, 9, 57, JUN),
+          barsFrom(9, 9, 30, 6, JUN),
+          true,
+        );
+
+        expect(json.sessionDate).toBe('2026-06-09');
+        expect(json.openingRange?.minutes).toBe(30);
+        expect(json.openingRange?.complete).toBe(false);
+      });
+
+      it('flips to true at the 10:00 ET bar, 14:00 UTC', async () => {
+        const { json } = await callAt(
+          et(9, 10, 2, JUN),
+          barsFrom(9, 9, 30, 7, JUN),
+          true,
+        );
+
+        expect(json.openingRange?.complete).toBe(true);
+      });
     });
 
     it('takes the range from the bars that start before 10:00 ET only', async () => {
