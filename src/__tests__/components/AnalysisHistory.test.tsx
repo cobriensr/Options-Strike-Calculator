@@ -1,13 +1,33 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import type { ComponentProps } from 'react';
 import AnalysisHistory from '../../components/ChartAnalysis/AnalysisHistory';
+import type PickerType from '../../components/ChartAnalysis/AnalysisHistoryPicker';
 import type { AnalysisResult } from '../../components/ChartAnalysis/types';
 import { captureUnlessAuth } from '../../lib/sentry-helpers';
 import type { AccessMode } from '../../utils/auth';
 
 vi.mock('../../lib/sentry-helpers', () => ({ captureUnlessAuth: vi.fn() }));
 const mockCaptureUnlessAuth = vi.mocked(captureUnlessAuth);
+
+// The real picker, wrapped to record the props of every render it gets. Each
+// one is a frame the panel painted, so a test can check the frames between a
+// reply landing and the content showing, which a `waitFor` can't see.
+type PickerProps = ComponentProps<typeof PickerType>;
+const pickerFrames = vi.hoisted(() => [] as PickerProps[]);
+vi.mock('../../components/ChartAnalysis/AnalysisHistoryPicker', async () => {
+  const actual = await vi.importActual<{ default: typeof PickerType }>(
+    '../../components/ChartAnalysis/AnalysisHistoryPicker',
+  );
+  const Real = actual.default;
+  return {
+    default: (props: PickerProps) => {
+      pickerFrames.push(props);
+      return <Real {...props} />;
+    },
+  };
+});
 
 // The panel reads its access mode at every render, so a test flips it between
 // renders. `checkIsOwner` is the one function the component imports.
@@ -146,6 +166,7 @@ describe('AnalysisHistory', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     mockCaptureUnlessAuth.mockClear();
+    pickerFrames.length = 0;
     access.mode = 'owner';
   });
 
@@ -279,8 +300,29 @@ describe('AnalysisHistory', () => {
       });
     });
 
-    it('auto-selects first available time', async () => {
-      vi.stubGlobal('fetch', mockFetch());
+    // The time select shows its first option whether or not `selectedTime`
+    // names it (the browser picks the first option for an unmatched value), so
+    // its value alone proves nothing about the selection. The analysis does:
+    // it renders only for a chosen time and mode.
+    it('opens on the first time, in the preferred mode, with its analysis showing', async () => {
+      const analyses = [
+        makeEntry(1, 'entry', '10:00 AM', {
+          structure: 'ENTRY AT TEN',
+          analysis: makeAnalysis({ structure: 'ENTRY AT TEN' }),
+        }),
+        makeEntry(2, 'entry', '10:30 AM', {
+          structure: 'ENTRY AT TEN THIRTY',
+          analysis: makeAnalysis({ structure: 'ENTRY AT TEN THIRTY' }),
+        }),
+        makeEntry(3, 'midday', '10:00 AM', {
+          structure: 'MIDDAY AT TEN',
+          analysis: makeAnalysis({
+            mode: 'midday',
+            structure: 'MIDDAY AT TEN',
+          }),
+        }),
+      ];
+      vi.stubGlobal('fetch', mockFetch(DATES, analyses));
       const user = userEvent.setup();
       render(<AnalysisHistory />);
 
@@ -291,9 +333,80 @@ describe('AnalysisHistory', () => {
       await user.selectOptions(screen.getByLabelText('Date'), '2025-03-01');
 
       await waitFor(() => {
-        const timePicker = screen.getByLabelText('Entry Time');
-        expect(timePicker).toHaveValue('10:00 AM');
+        expect(screen.getByLabelText('Entry Time')).toHaveValue('10:00 AM');
+        expect(screen.getAllByText('ENTRY AT TEN').length).toBeGreaterThan(0);
       });
+      expect(screen.queryByText('MIDDAY AT TEN')).not.toBeInTheDocument();
+      expect(screen.queryByText('ENTRY AT TEN THIRTY')).not.toBeInTheDocument();
+    });
+
+    // Before the user picks a mode the panel shows the first one present, in
+    // the order Pre-Trade, Mid-Day, Review.
+    it.each([
+      ['Pre-Trade over Mid-Day and Review', ['review', 'midday', 'entry']],
+      ['Mid-Day over Review when there is no Pre-Trade', ['review', 'midday']],
+      ['Review when it is the only mode', ['review']],
+    ] as const)('opens on %s', async (_label, modes) => {
+      const analyses = modes.map((mode, i) =>
+        makeEntry(i + 1, mode, '10:00 AM', {
+          structure: `${mode.toUpperCase()} VIEW`,
+          analysis: makeAnalysis({
+            mode,
+            structure: `${mode.toUpperCase()} VIEW`,
+          }),
+        }),
+      );
+      vi.stubGlobal('fetch', mockFetch(DATES, analyses));
+      const user = userEvent.setup();
+      render(<AnalysisHistory />);
+      await waitFor(() => {
+        expect(screen.getByText(/Select a date/)).toBeInTheDocument();
+      });
+
+      await user.selectOptions(screen.getByLabelText('Date'), '2025-03-01');
+
+      const first = ['entry', 'midday', 'review'].find((m) =>
+        (modes as readonly string[]).includes(m),
+      )!;
+      await waitFor(() => {
+        expect(
+          screen.getAllByText(`${first.toUpperCase()} VIEW`).length,
+        ).toBeGreaterThan(0);
+      });
+      for (const other of modes.filter((m) => m !== first)) {
+        expect(
+          screen.queryByText(`${other.toUpperCase()} VIEW`),
+        ).not.toBeInTheDocument();
+      }
+    });
+
+    // The reply, the time, the mode and the analysis all arrive in one commit.
+    // Setting the time and mode in effects painted two frames first: the times
+    // with nothing chosen and no content, and then the times and the mode
+    // tabs with no mode active. A trader would see the panel flash blank.
+    it('paints the first time, its mode and its analysis in the same frame as the times', async () => {
+      vi.stubGlobal('fetch', mockFetch());
+      const user = userEvent.setup();
+      render(<AnalysisHistory />);
+      await waitFor(() => {
+        expect(screen.getByText(/Select a date/)).toBeInTheDocument();
+      });
+      pickerFrames.length = 0;
+
+      await user.selectOptions(screen.getByLabelText('Date'), '2025-03-01');
+      await waitFor(() => {
+        expect(screen.getAllByText('IRON CONDOR').length).toBeGreaterThan(0);
+      });
+
+      const withTimes = pickerFrames.filter((f) => f.availableTimes.length > 0);
+      expect(withTimes.length).toBeGreaterThan(0);
+      expect(
+        withTimes.map((f) => [
+          f.selectedTime,
+          f.selectedMode,
+          f.selectedAnalysis?.id ?? null,
+        ]),
+      ).toEqual(withTimes.map(() => ['10:00 AM', 'entry', 1]));
     });
   });
 
@@ -725,6 +838,99 @@ describe('AnalysisHistory', () => {
           screen.getAllByText('IRON CONDOR').length,
         ).toBeGreaterThanOrEqual(1);
       });
+    });
+  });
+
+  // The run index lives apart from the date, time and mode, so it has to be
+  // reset with them: a date whose first time and mode has two runs used to open
+  // on run 2 if the last one was left on run 2.
+  describe('the run a new set of analyses opens on', () => {
+    /** Two entry runs at 10:00 AM, told apart by their structure text. */
+    function twoRuns(prefix: string, firstId: number) {
+      return [
+        makeEntry(firstId, 'entry', '10:00 AM', {
+          structure: `${prefix} RUN ONE`,
+          analysis: makeAnalysis({ structure: `${prefix} RUN ONE` }),
+          createdAt: '2025-03-01T14:00:00Z',
+        }),
+        makeEntry(firstId + 1, 'entry', '10:00 AM', {
+          structure: `${prefix} RUN TWO`,
+          analysis: makeAnalysis({ structure: `${prefix} RUN TWO` }),
+          createdAt: '2025-03-01T15:00:00Z',
+        }),
+      ];
+    }
+
+    /** Both dates have two runs; leaves the first date showing run 2. */
+    async function openFirstDateOnRunTwo(props: { refreshKey?: number } = {}) {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockImplementation((url: string) => {
+          if (url.includes('dates=true')) {
+            return Promise.resolve(jsonResponse({ dates: DATES }));
+          }
+          const analyses = url.includes('date=2025-03-01')
+            ? twoRuns('FIRST', 1)
+            : twoRuns('SECOND', 3);
+          return Promise.resolve(jsonResponse({ analyses }));
+        }),
+      );
+      const user = userEvent.setup();
+      const rendered = render(<AnalysisHistory {...props} />);
+      await waitFor(() => {
+        expect(screen.getByText(/Select a date/)).toBeInTheDocument();
+      });
+      await user.selectOptions(screen.getByLabelText('Date'), '2025-03-01');
+      await waitFor(() => {
+        expect(screen.getAllByText('FIRST RUN ONE').length).toBeGreaterThan(0);
+      });
+
+      await user.click(
+        within(screen.getByRole('group', { name: 'Run' })).getByRole('button', {
+          name: '2',
+        }),
+      );
+      await waitFor(() => {
+        expect(screen.getAllByText('FIRST RUN TWO').length).toBeGreaterThan(0);
+      });
+      return { ...rendered, user };
+    }
+
+    it('opens another date on its first run', async () => {
+      const { user } = await openFirstDateOnRunTwo();
+
+      await user.selectOptions(screen.getByLabelText('Date'), '2025-02-28');
+
+      await waitFor(() => {
+        expect(screen.getAllByText('SECOND RUN ONE').length).toBeGreaterThan(0);
+      });
+      expect(screen.queryByText('SECOND RUN TWO')).not.toBeInTheDocument();
+    });
+
+    it('opens the next date on its first run after a mode filter change', async () => {
+      const { user } = await openFirstDateOnRunTwo();
+
+      // The filter tab comes before the Type tab of the same name in the DOM
+      await user.click(
+        screen.getAllByRole('button', { name: 'Pre-Trade' })[0]!,
+      );
+      await user.selectOptions(screen.getByLabelText('Date'), '2025-02-28');
+
+      await waitFor(() => {
+        expect(screen.getAllByText('SECOND RUN ONE').length).toBeGreaterThan(0);
+      });
+      expect(screen.queryByText('SECOND RUN TWO')).not.toBeInTheDocument();
+    });
+
+    it('reopens the same date on its first run when a refreshKey bump reloads it', async () => {
+      const { rerender } = await openFirstDateOnRunTwo({ refreshKey: 0 });
+
+      rerender(<AnalysisHistory refreshKey={1} />);
+
+      await waitFor(() => {
+        expect(screen.getAllByText('FIRST RUN ONE').length).toBeGreaterThan(0);
+      });
+      expect(screen.queryByText('FIRST RUN TWO')).not.toBeInTheDocument();
     });
   });
 
@@ -1484,17 +1690,17 @@ describe('AnalysisHistory', () => {
 
       await user.selectOptions(screen.getByLabelText('Date'), '2025-02-28');
 
-      // Both reads wait. The Entry Time select shows 11:30 AM as soon as the
-      // times load, because the browser shows the first option while
-      // `selectedTime` is still '' (React selects it too). The time and mode
-      // auto-select effects run after that commit, and the content needs both,
-      // so a read of the content right after the select would race them.
+      // Only the time select waits. It shows 11:30 AM as soon as the times
+      // load, and the content is read at once after it, with no wait of its
+      // own: the time and mode are derived in the same render as the times, so
+      // nothing can land between them. (Two effects used to set them after
+      // that commit, and this read raced them.)
       await waitFor(() => {
         expect(screen.getByLabelText('Entry Time')).toHaveValue('11:30 AM');
-        expect(
-          screen.getAllByText('SECOND DATE CONDOR').length,
-        ).toBeGreaterThan(0);
       });
+      expect(screen.getAllByText('SECOND DATE CONDOR').length).toBeGreaterThan(
+        0,
+      );
       expect(screen.queryByText(FIRST_STRUCTURE)).not.toBeInTheDocument();
     });
   });

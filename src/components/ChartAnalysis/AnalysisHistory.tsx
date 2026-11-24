@@ -23,6 +23,9 @@ import { summarizeZodIssues } from '../../lib/response-guard';
 const DATES_ERROR_MESSAGE = 'Failed to load analysis dates';
 const ANALYSES_ERROR_MESSAGE = 'Failed to load analyses for this date';
 
+/** The mode a time opens on before the user picks one: the first present. */
+const MODE_ORDER: readonly AnalysisMode[] = ['entry', 'midday', 'review'];
+
 // ── Component ──────────────────────────────────────────────
 
 interface Props {
@@ -161,11 +164,17 @@ export default function AnalysisHistory({
     setLoading(true);
     // The previous date's analyses go before the request, so a reply that
     // fails (a non-ok status, a body that isn't JSON, a rejected fetch)
-    // leaves none on screen under this date, and the time and mode
-    // auto-selects have none to pick from while it is in flight.
+    // leaves none on screen under this date, and the time and mode derived
+    // from them have none to show while it is in flight.
     setAnalyses([]);
     setSelectedTime('');
     setSelectedMode('');
+    // Each request brings a new set of runs (another date, or the same date
+    // again after a refreshKey bump), and they open on the first. A filter
+    // change clears the date, so the next pick comes through here as well.
+    // Without this a date whose first time and mode has two runs would open
+    // on run 2 if the last date was left on run 2.
+    setSelectedRunIndex(0);
 
     (async () => {
       try {
@@ -232,53 +241,52 @@ export default function AnalysisHistory({
     return times.sort((a, b) => minutes(a) - minutes(b));
   }, [filteredAnalyses]);
 
-  // ── Derived: available modes for selected time ─────────
+  // ── Derived: the time and mode shown ───────────────────
+  //
+  // `selectedTime` and `selectedMode` hold only what the user picked. What the
+  // panel shows follows from them and the loaded analyses in the same render,
+  // so a date's reply paints with its first time and mode already chosen. Two
+  // effects used to set them after the reply, which painted blank frames
+  // first: the times with no content, then the mode tabs with none active.
+  // A pick that is not in the loaded analyses falls back like an empty one.
+
+  const effectiveTime = availableTimes.includes(selectedTime)
+    ? selectedTime
+    : (availableTimes[0] ?? '');
 
   const availableModes = useMemo(() => {
-    if (!selectedTime) return [];
+    if (!effectiveTime) return [];
     return filteredAnalyses
-      .filter((a) => a.entryTime === selectedTime)
+      .filter((a) => a.entryTime === effectiveTime)
       .map((a) => a.mode);
-  }, [filteredAnalyses, selectedTime]);
+  }, [filteredAnalyses, effectiveTime]);
 
-  // ── Derived: runs at selected (time, mode) ─────────────
+  // With a mode filter on, the filtered analyses hold that mode alone, so the
+  // preferred order below lands on it without a branch of its own.
+  let effectiveMode: AnalysisMode | '' = '';
+  if (selectedMode && availableModes.includes(selectedMode)) {
+    effectiveMode = selectedMode;
+  } else if (availableModes.length > 0) {
+    effectiveMode =
+      MODE_ORDER.find((m) => availableModes.includes(m)) ?? availableModes[0]!;
+  }
+
+  // ── Derived: runs at the shown (time, mode) ────────────
 
   const runsAtTimeMode = useMemo(() => {
-    if (!selectedTime || !selectedMode) return [];
+    if (!effectiveTime || !effectiveMode) return [];
     return filteredAnalyses
-      .filter((a) => a.entryTime === selectedTime && a.mode === selectedMode)
+      .filter((a) => a.entryTime === effectiveTime && a.mode === effectiveMode)
       .sort(
         (a, b) =>
           new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
       );
-  }, [filteredAnalyses, selectedTime, selectedMode]);
+  }, [filteredAnalyses, effectiveTime, effectiveMode]);
 
   const selectedAnalysis = useMemo(() => {
     if (runsAtTimeMode.length === 0) return null;
     return runsAtTimeMode[selectedRunIndex] ?? runsAtTimeMode[0] ?? null;
   }, [runsAtTimeMode, selectedRunIndex]);
-
-  // ── Auto-select first time when times load ─────────────
-
-  useEffect(() => {
-    if (availableTimes.length > 0 && !selectedTime) {
-      setSelectedTime(availableTimes[0]!);
-    }
-  }, [availableTimes, selectedTime]);
-
-  // ── Auto-select mode when modes load ───────────────────
-
-  useEffect(() => {
-    if (availableModes.length > 0 && !selectedMode) {
-      if (modeFilter !== 'all') {
-        setSelectedMode(modeFilter as AnalysisMode);
-      } else {
-        const preferred: AnalysisMode[] = ['entry', 'midday', 'review'];
-        const first = preferred.find((m) => availableModes.includes(m));
-        setSelectedMode(first ?? availableModes[0]!);
-      }
-    }
-  }, [availableModes, selectedMode, modeFilter]);
 
   // ── Reset downstream when time changes ─────────────────
 
@@ -334,10 +342,10 @@ export default function AnalysisHistory({
         selectedDate={selectedDate}
         onDateChange={setSelectedDate}
         availableTimes={availableTimes}
-        selectedTime={selectedTime}
+        selectedTime={effectiveTime}
         onTimeChange={handleTimeChange}
         availableModes={availableModes}
-        selectedMode={selectedMode}
+        selectedMode={effectiveMode}
         onModeChange={setSelectedMode}
         runsAtTimeMode={runsAtTimeMode}
         selectedRunIndex={selectedRunIndex}
