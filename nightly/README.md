@@ -42,7 +42,9 @@ Each run:
    - `research-derive` keeps the per-day state the research reports read: the chains
      aggregates, and the per-fire exit-policy and flow-timing values. It rebuilds each
      day whose stored fingerprint is stale, newest first, from a tape it downloads
-     itself (up to 600 s a day; `enrich-outcomes` fetched the same day separately).
+     itself (up to 600 s a day; `enrich-outcomes` fetched the same day separately). A
+     day that fails on three sessions is set aside, warned about once, and retried a
+     week later, then less and less often (see "The derive failure memory").
    - `eod-flow-rollup`, `whale-plots`, `exit-policy-report`, `flow-timing-report`,
      `feature-audit`, `outcome-mining`, `score-lineage`, `lottery-tracking`,
      `quality-sim` and `takeit-drift` each publish a dated report, plot set or CSV under
@@ -182,7 +184,10 @@ the six report scripts (`scripts/exit_policy_search.py`,
 a watch path after 15:00 CT and outside 07:15 to 12:30 UTC. A killed run isn't
 retried until the next night unless someone runs `railway cron run --service nightly`.
 A kill during `research-derive` loses at most the day in flight: the manifest is saved
-once per day, after that day's objects (see "The derive manifest").
+once per day, after that day's objects (see "The derive manifest"). A redeploy's SIGTERM
+is never counted against that day; a kill that gives the run no chance to clean up
+(out of memory, SIGKILL) is counted as one failed session of it by the next run (see
+"The derive failure memory").
 
 **Push guard.** `.githooks/pre-push` (`scripts/nightly-push-window.mjs`) refuses a push
 to main that changes a file the image is built from during 07:15 to 12:30 UTC, and
@@ -1002,6 +1007,7 @@ written and could not verify (`r2_store.verify_upload_size`), and nothing else u
 | Key                                                                                                                | Holds                                                     | Written by                   | Kind             |
 | ------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------- | ---------------------------- | ---------------- |
 | `research/_state/derive-manifest.json`                                                                             | family, then day, then fingerprint                        | `research-derive`, the seed  | state            |
+| `research/_state/derive-failures.json`                                                                             | the days that keep failing, and the day in flight         | `research-derive`            | state            |
 | `research/_logs/{session}/{step}.log`                                                                              | a step's captured stdout and stderr                       | every research step but two  | diagnostics      |
 | `research/eod-flow/by-day/{day}-chains.parquet`                                                                    | per-chain end-of-day aggregates                           | `research-derive`, the seed  | state            |
 | `research/eod-flow/{session}/cumulative-rollup.json`, `cumulative-headlines.txt`                                   | the rollup and its headlines                              | `eod-flow-rollup`            | output           |
@@ -1107,6 +1113,62 @@ the tape's ETag does (`seed` is fresh for no other family).
 - **Deleting the whole manifest** makes every day of every family stale, the seeded
   chains days included: it is a full rebuild over many nights, not a way to redo one day.
 
+### The derive failure memory
+
+`research/_state/derive-failures.json` is what `research-derive` remembers from the
+nights before, so a day that keeps failing stops taking one of the step's three failure
+slots every night, blocking the older stale days and turning the step red. It is its own
+object: the manifest keeps its shape, so a rollback to older code still reads it.
+
+```json
+{
+  "version": 1,
+  "attempting": { "day": "2026-11-05", "session": "2026-11-11" },
+  "days": {
+    "2026-11-05": {
+      "nights": 2,
+      "target": "chains=...;exit-policy=...",
+      "last_session": "2026-11-11",
+      "set_aside_on": null,
+      "retry_days": 7
+    }
+  }
+}
+```
+
+- **`nights`** counts failed sessions, keyed by `last_session`: a re-run on the same
+  session never counts a second one. `target` is the day's stale families and their
+  fingerprints. A re-landed tape, a version bump or changed fires changes it, and the day
+  then starts over (no failed sessions, not set aside).
+- **Set aside.** The third failed session (`RESEARCH_SET_ASIDE_NIGHTS`) sets the day
+  aside. It sends `nightly research day set aside` once, and from then on it is skipped
+  (`days_set_aside` in the counts, never a failure and never `days_left`). The night it
+  crosses the threshold by raising is still `failed`.
+- **Retry.** `RESEARCH_SET_ASIDE_RETRY_DAYS` (7) calendar days after the session it
+  failed on, the day is tried again. A retry that derives is forgotten. One that fails is
+  counted in `days_retry_failed`, not `days_failed`, so the step stays green; its
+  exception is still sent. It is set aside again for twice as long, 14 and then 28
+  (`RESEARCH_SET_ASIDE_RETRY_DAYS_MAX`) days, where it stays: a day that never recovers
+  costs one attempt a month. A failed retry sends no second warning, and counts toward
+  the 3-failure cap of the night.
+- **A killed run.** `attempting` is saved before a day starts and cleared when it ends.
+  A run killed outright (out of memory, SIGKILL, the watchdog) leaves it, and the next
+  run counts one failed session of that day, keyed by the marker's own session; a third
+  one sets the day aside (warning `cause` `run died`), and a killed retry is a failed
+  retry. A redeploy's SIGTERM clears the marker instead, so it is never counted. A day
+  left for the budget or the cap is never marked.
+- **Reading it.** A missing object is an empty memory. A malformed one is logged by class,
+  read as empty and replaced by the next save. One the store cannot read (an R2 error)
+  is logged by class, and that night runs with no memory at all: nothing is set aside,
+  counted or saved, and the stored object is not touched.
+- **Saving.** Every save writes the whole object, twice per day tried. A save that fails
+  is logged by class and changes no outcome; the next save carries it.
+- **To clear a set-aside day by hand** there is no tool: a changed target or a retry clears
+  it, and deleting the object clears every day. Do that outside 07:15–12:30 UTC.
+- **Do not overlap runs.** A `railway cron run` while the scheduled run is going reads the
+  other run's marker as a kill, and the two overwrite each other's memory, as they do the
+  manifest.
+
 ### Seeding `research/` once
 
 The research state that lived only on the owner's machine goes into R2 once, with
@@ -1184,6 +1246,7 @@ Otherwise it is empty. It never changes the grouping.
 | `nightly step skipped_deadline`                 | error   | A step started with less than its own reserve left, so it did not run (the later steps still did). The tape or an earlier step overran its share; the next night runs it again.                                                                                                                                                               |
 | `nightly step failed` with a research `detail`  | error   | A research step ended `failed`. The `detail` is one of the fixed phrases in "Research step alerts", each with its meaning and fix.                                                                                                                                                                                                            |
 | `nightly step partial` with a research `detail` | warning | `research-derive`: stale days left (expected on catch-up nights) or the last session's tape not landed. `eod-flow-rollup`: the latest session is not in the rollup. A fire-family report: `derived day missing`. `lottery-tracking`: `tracking dates dropped` (a date the stored state had has no row tonight). See "Research step alerts".   |
+| `nightly research day set aside`                | warning | `research-derive`: a day failed its third session (or a killed run left its third marker) and is set aside, then retried later. Tags `step`, `day`; extra `cause` (the exception class, or `run died`). One issue per day: resolve it once the cause is fixed. See "The derive failure memory".                                               |
 | `nightly outcomes all null`                     | error   | `outcome-check`: a table has fires on one of the last 3 sessions (`OUTCOME_CHECK_SESSIONS`) and none has an outcome. Tags `table`, `day`; extras `rows`, `with_outcome`. One issue per table and day. See below.                                                                                                                              |
 | `nightly outcomes mostly null`                  | warning | `outcome-check`: fewer than 95% (`LOW_OUTCOME_SHARE`) of a table-day's fires have an outcome. One warning per run; `days` lists `table:day`. Fires the tape cannot price stay without one (see "Enrichment").                                                                                                                                 |
 | `nightly refit promoted`                        | warning | `lottery-refit`: a shadow passed its gates and was promoted: the live scores were rewritten and `active` moved. One issue per version. See "Refit".                                                                                                                                                                                           |
@@ -1251,7 +1314,7 @@ step publishes only its log.
 
 | Step                                                                                            | Status  | `detail`                                     | Meaning                                                                                                                                                                                                                                                                                                                  | What to do                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | ----------------------------------------------------------------------------------------------- | ------- | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `research-derive`                                                                               | failed  | `a day failed to derive`                     | A day raised: its download, a build, a derive, an upload or the manifest save. Each failed day also sends an exception tagged `step` and `day`. The day stays stale, except when only the manifest save failed and a later day's save records it.                                                                        | Read those exceptions (class name only) and the `research-derive <day> failed (<Class>)` log line. See the failure cap below.                                                                                                                                                                                                                                                                                                                                                     |
+| `research-derive`                                                                               | failed  | `a day failed to derive`                     | A day raised: its download, a build, a derive, an upload or the manifest save. Each failed day also sends an exception tagged `step` and `day`. The day stays stale, except when only the manifest save failed and a later day's save records it. A failed retry of a set-aside day never causes this.                   | Read those exceptions (class name only) and the `research-derive <day> failed (<Class>)` log line. A day that fails on three sessions is set aside (see "The derive failure memory"); the failure cap is below.                                                                                                                                                                                                                                                                   |
 | `research-derive`                                                                               | failed  | `derive manifest is malformed`               | The manifest in R2 is not one the step wrote: not valid JSON, a stored `null`, a wrong shape, an unknown family or a bad entry. Nothing was read or written.                                                                                                                                                             | Repair the JSON in R2 by hand, outside 07:15–12:30 UTC. Do not delete it: that makes every day stale. See "The derive manifest".                                                                                                                                                                                                                                                                                                                                                  |
 | `research-derive`                                                                               | partial | `days left for the next night`               | Stale days remain: less than 900 s (`RESEARCH_DAY_BUDGET_SECONDS`) of the step's time was left. `days_left` has the number.                                                                                                                                                                                              | Expected on catch-up nights: the first nights after the seed, a version bump or a forced re-derive. Look only if `days_left` stops falling.                                                                                                                                                                                                                                                                                                                                       |
 | `research-derive`                                                                               | partial | `latest session tape not landed`             | Every stale day was derived, but the last session's tape is not in R2.                                                                                                                                                                                                                                                   | Look at the tape day's own alert. The run that lands the tape derives it the same night.                                                                                                                                                                                                                                                                                                                                                                                          |
@@ -1270,15 +1333,17 @@ A research step that raises instead (R2, Neon, an import error) is the exception
 of the table above. `quality-sim` and `takeit-drift` publish their log before they
 re-raise, and a report step publishes its log before its outputs.
 
-**`research-derive`'s failure cap has no memory.** A day that fails is not recorded
-(bar the manifest-save case above), so it stays stale and is tried again the next night. The step stops after
-`RESEARCH_MAX_DAY_FAILURES` (3) failed days in a night and carries nothing over, so
-if the same three days fail every night they use the cap before any older stale day is
-tried, and those older days never derive. The cure is to fix what makes those days
-fail (the exception events name each day). The only exclusion is per chains day: write
-`seed` as that day's manifest entry, and only if its object in R2 is already right,
-because it then counts as fresh and is never rebuilt. A fire-family day has no manual
-exclusion.
+**`research-derive`'s failure cap, and what it remembers.** The step stops after
+`RESEARCH_MAX_DAY_FAILURES` (3) failed days in a night, and a failed retry of a
+set-aside day counts toward it too. A day that fails stays stale and is tried again the
+next night, for three sessions; then it is set aside (see "The derive failure memory"),
+so it no longer uses a slot, blocks the older stale days or turns the step `failed`
+every night. The cure is still to fix what makes the day fail (the exception events name
+each day, and `nightly research day set aside` says when one was set aside): its next
+retry then derives it, or a changed tape makes it a new day at once. The only manual
+exclusion is per chains day: write `seed` as that day's manifest entry, and only if its
+object in R2 is already right, because it then counts as fresh and is never rebuilt. A
+fire-family day has no manual exclusion.
 
 The Sentry cron monitor `nightly-tape` (crontab `15 7 * * 2-6`, UTC) checks the
 run in and out:
