@@ -29,6 +29,8 @@ import { useState, useEffect, useMemo, useRef } from 'react';
 import { POLL_INTERVALS } from '../constants';
 import { getAccessMode } from '../utils/auth';
 import { usePolling } from './usePolling';
+import { useETToday } from './useETToday';
+import { getETToday } from '../utils/timezone';
 import { isTradingDay, isHalfDay } from '../data/marketHours';
 import type { QuotesResponse, IntradayResponse } from '../types/api';
 import {
@@ -239,6 +241,12 @@ export function useMarketData(): MarketDataState {
   // cleared `sc-hint` by hand gets no live quotes until they sign in again.
   const isAuthenticated = getAccessMode() !== 'public';
 
+  // Today's ET date, from the app's one clock: it changes at ET midnight. The
+  // mount fetch below depends on it, so a tab held across midnight refetches
+  // every one-shot endpoint (yesterday, events, movers, the quote, the
+  // intraday body) for the new day instead of keeping the old day's.
+  const etToday = useETToday();
+
   const [data, setData] = useState<MarketData>({
     quotes: null,
     intraday: null,
@@ -250,10 +258,11 @@ export function useMarketData(): MarketDataState {
   // current snapshot to `processEndpointResults` (which carries-forward
   // non-updated endpoints) WITHOUT depending on `data` in its dep array.
   // Keeping `data` out of the deps preserves the behavior where the mount
-  // effect runs only when the access mode changes. Previously this
-  // carry-forward was done via the functional `setData(prev => …)` updater;
-  // moving side effects out of the updater (so it stays pure under StrictMode
-  // double-invoke) means we read `prev` from this ref instead.
+  // effect runs only when the access mode or the ET date changes. Previously
+  // this carry-forward was done via the functional `setData(prev => …)`
+  // updater; moving side effects out of the updater (so it stays pure under
+  // StrictMode double-invoke) means we read `prev` from this ref instead. The
+  // poll reads the held intraday body from it too, at tick time.
   const dataRef = useRef(data);
   dataRef.current = data;
   const [loading, setLoading] = useState(true);
@@ -282,8 +291,8 @@ export function useMarketData(): MarketDataState {
   const [consecutiveFails, setConsecutiveFails] = useState(0);
   const consecutiveFailsRef = useRef(0);
 
-  // Fetch on mount, and again whenever the access mode crosses between public
-  // and authenticated.
+  // Fetch on mount, again whenever the access mode crosses between public and
+  // authenticated, and again when the ET date changes.
   //
   //   - Authenticated (owner or guest): the five-endpoint fan-out.
   //   - Public: the events request alone. The other four are owner-or-guest
@@ -366,7 +375,9 @@ export function useMarketData(): MarketDataState {
       setLoading(false);
     });
     return () => controller.abort();
-  }, [isAuthenticated]);
+    // `etToday` is not read in the effect: a new ET day is a reason to run it
+    // again, which is why it is a dependency.
+  }, [isAuthenticated, etToday]);
 
   // Auto-refresh polling (only while owner or guest is authenticated).
   //
@@ -376,9 +387,13 @@ export function useMarketData(): MarketDataState {
   //     prep workflow depends on seeing them before RTH opens — this is the
   //     whole point of FE-STATE-002.
   //   - INTRADAY (opening-range) poll only makes sense during RTH because
-  //     the opening range is a strictly 09:30-10:00 ET concept. Also gated
-  //     on `!openingRangeComplete` so we stop fetching it once the 30-min
-  //     window has closed.
+  //     the opening range is a strictly 09:30-10:00 ET concept. It also stops
+  //     once the held range is today's and complete. A complete range from a
+  //     previous session does not count: the page can hold one (loaded before
+  //     today's first bar, or left open overnight), and `sessionDate` says
+  //     which session it is from. The date and the held body are read when the
+  //     poll ticks, not when the hook last rendered, so a tab that slept
+  //     across midnight asks again at its first tick.
   //
   // Extracted to `usePolling`. The gate `[isAuthenticated, session !==
   // 'closed']` reads the live access mode at render, so a guest login starts
@@ -393,7 +408,6 @@ export function useMarketData(): MarketDataState {
   // re-renders, `backoff` recomputes, and usePolling re-schedules. The poll
   // tick below also feeds the fail counter (previously only the mount fetch
   // did), so a failing poll can actually engage the backoff.
-  const openingRangeComplete = data.intraday?.openingRange?.complete ?? false;
   const backoff = consecutiveFails >= 3 ? 2 : 1;
 
   usePolling(
@@ -422,8 +436,13 @@ export function useMarketData(): MarketDataState {
 
       // Opening-range refresh: RTH-only. The 30-min opening range is a
       // strictly 09:30-10:00 ET concept — fetching it in pre-market or
-      // after-hours would return stale or empty data and waste quota.
-      if (session === 'regular' && !openingRangeComplete) {
+      // after-hours would return stale or empty data and waste quota. Stops
+      // once the held range is today's and complete.
+      const held = dataRef.current.intraday;
+      const todaysRangeComplete =
+        held?.sessionDate === getETToday() &&
+        held.openingRange?.complete === true;
+      if (session === 'regular' && !todaysRangeComplete) {
         fetches.push(
           fetchJson<IntradayResponse>('/api/intraday').then((result) => {
             if (droppedToPublic()) return;

@@ -94,6 +94,10 @@ const mockIntraday = {
     minutes: 30,
     complete: true,
   },
+  // The session the range is from: the date of the REGULAR_HOURS,
+  // PRE_MARKET and AFTER_HOURS instants below, so a held range reads as
+  // today's complete one in those tests.
+  sessionDate: '2026-04-09',
   previousClose: 6795.99,
   candleCount: 78,
   marketOpen: false,
@@ -1193,6 +1197,209 @@ describe('useMarketData: FE-STATE-002 session gating', () => {
     });
     expect(fetchMock.mock.calls.length).toBe(initialCalls);
     expect(result.current.session).toBe('closed');
+  });
+});
+
+// ============================================================
+// THE OPENING RANGE IS ONLY TODAY'S, AND A NEW ET DAY REFETCHES
+// ============================================================
+//
+// /api/intraday dates the range it returns (`sessionDate`). A tab loaded before
+// today's first bar, or held overnight or over a weekend, holds a previous
+// session's range with `complete: true`. That must not stop the poll: only
+// today's complete range does. And a new ET day refetches every one-shot
+// endpoint, which the mount fetch alone would never do for a held tab.
+
+describe('useMarketData: only today’s complete opening range stops the intraday poll', () => {
+  const mockQuotesOpen = { ...mockQuotes, marketOpen: true };
+
+  // Thu 2026-04-09 and the sessions around it (EDT, UTC-4).
+  const FRIDAY_OPEN = new Date(Date.UTC(2026, 3, 10, 14, 0, 0)); // Fri 10:00 ET
+  const MONDAY_930 = new Date(Date.UTC(2026, 3, 13, 13, 30, 0)); // Mon 09:30 ET
+  const THURSDAY_2355 = new Date(Date.UTC(2026, 3, 10, 3, 55, 0)); // Thu 23:55 ET
+
+  const heldBody = (sessionDate: string | null, complete: boolean) =>
+    ({
+      ...mockIntraday,
+      sessionDate,
+      openingRange: { ...mockIntraday.openingRange, complete },
+    }) as unknown as Record<string, unknown>;
+
+  function mockWithIntraday(body: Record<string, unknown>) {
+    const fetchMock = mockFetchResponses({
+      quotes: {
+        status: 200,
+        body: mockQuotesOpen as unknown as Record<string, unknown>,
+      },
+      intraday: { status: 200, body },
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    return fetchMock;
+  }
+
+  const urlsFrom = (
+    fetchMock: ReturnType<typeof mockFetchResponses>,
+    from: number,
+  ) =>
+    fetchMock.mock.calls
+      .slice(from)
+      .map((call: [string, ...unknown[]]) => call[0]);
+
+  it('re-polls /api/intraday in regular hours when the held complete range is a previous session’s', async () => {
+    // Loaded in pre-market with Wednesday's complete range: the server had
+    // no bar for today yet, so it answered with the last session's.
+    vi.setSystemTime(PRE_MARKET);
+    const fetchMock = mockWithIntraday(heldBody('2026-04-08', true));
+    const { result } = renderHook(() => useMarketData());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    const initialCalls = fetchMock.mock.calls.length;
+
+    // The open arrives: the session tick flips to regular, then the poll.
+    vi.setSystemTime(REGULAR_HOURS);
+    await act(async () => {
+      vi.advanceTimersByTime(15_000);
+    });
+    expect(result.current.session).toBe('regular');
+    await act(async () => {
+      vi.advanceTimersByTime(45_000);
+    });
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.length).toBeGreaterThan(initialCalls),
+    );
+
+    expect(urlsFrom(fetchMock, initialCalls)).toContain('/api/intraday');
+  });
+
+  it('does not re-poll /api/intraday once today’s range is complete', async () => {
+    vi.setSystemTime(REGULAR_HOURS);
+    const fetchMock = mockWithIntraday(heldBody('2026-04-09', true));
+    const { result } = renderHook(() => useMarketData());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    const initialCalls = fetchMock.mock.calls.length;
+
+    await act(async () => {
+      vi.advanceTimersByTime(60_000);
+    });
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.length).toBeGreaterThan(initialCalls),
+    );
+
+    const urls = urlsFrom(fetchMock, initialCalls);
+    expect(urls).toContain('/api/quotes');
+    expect(urls).not.toContain('/api/intraday');
+  });
+
+  it('keeps polling /api/intraday while today’s range is still partial', async () => {
+    vi.setSystemTime(REGULAR_HOURS);
+    const fetchMock = mockWithIntraday(heldBody('2026-04-09', false));
+    const { result } = renderHook(() => useMarketData());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    const initialCalls = fetchMock.mock.calls.length;
+
+    await act(async () => {
+      vi.advanceTimersByTime(60_000);
+    });
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.length).toBeGreaterThan(initialCalls),
+    );
+
+    expect(urlsFrom(fetchMock, initialCalls)).toContain('/api/intraday');
+  });
+
+  it('re-polls a tab held from Friday into Monday at 9:30 ET, with no re-render in between', async () => {
+    // Friday's range was complete and the poll had stopped asking. The date
+    // is read when the poll ticks, not when the hook last rendered.
+    vi.setSystemTime(FRIDAY_OPEN);
+    const fetchMock = mockWithIntraday(heldBody('2026-04-10', true));
+    const { result } = renderHook(() => useMarketData());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    const initialCalls = fetchMock.mock.calls.length;
+
+    await act(async () => {
+      vi.advanceTimersByTime(60_000);
+    });
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.length).toBeGreaterThan(initialCalls),
+    );
+    // Friday: today's complete range, so no intraday request.
+    expect(urlsFrom(fetchMock, initialCalls)).not.toContain('/api/intraday');
+    const fridayCalls = fetchMock.mock.calls.length;
+
+    // The laptop wakes on Monday at 9:30 ET, in the same regular session.
+    vi.setSystemTime(MONDAY_930);
+    await act(async () => {
+      vi.advanceTimersByTime(60_000);
+    });
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.length).toBeGreaterThan(fridayCalls),
+    );
+
+    expect(urlsFrom(fetchMock, fridayCalls)).toContain('/api/intraday');
+  });
+
+  describe('crossing ET midnight', () => {
+    it('refetches every one-shot endpoint, though the session is closed', async () => {
+      vi.setSystemTime(THURSDAY_2355);
+      const fetchMock = mockWithIntraday(heldBody('2026-04-09', true));
+      const { result } = renderHook(() => useMarketData());
+      await waitFor(() => expect(result.current.loading).toBe(false));
+      expect(result.current.session).toBe('closed');
+      expect(fetchMock.mock.calls.length).toBe(5);
+
+      // Six minutes later it is Friday 00:01 ET.
+      await act(async () => {
+        vi.advanceTimersByTime(6 * 60_000);
+      });
+      await waitFor(() => expect(fetchMock.mock.calls.length).toBe(10));
+
+      // The same five requests as the mount fetch made.
+      expect([...urlsFrom(fetchMock, 5)].sort()).toEqual(
+        urlsFrom(fetchMock, 0).slice(0, 5).sort(),
+      );
+      for (const endpoint of [
+        '/api/quotes',
+        '/api/intraday',
+        '/api/yesterday',
+        '/api/events',
+        '/api/movers',
+      ]) {
+        expect(
+          urlsFrom(fetchMock, 5).some((url) => url.startsWith(endpoint)),
+          endpoint,
+        ).toBe(true);
+      }
+    });
+
+    it('does not refetch before midnight', async () => {
+      vi.setSystemTime(THURSDAY_2355);
+      const fetchMock = mockWithIntraday(heldBody('2026-04-09', true));
+      const { result } = renderHook(() => useMarketData());
+      await waitFor(() => expect(result.current.loading).toBe(false));
+
+      await act(async () => {
+        vi.advanceTimersByTime(3 * 60_000);
+      });
+
+      expect(fetchMock.mock.calls.length).toBe(5);
+    });
+
+    it('refetches only the events request for a public visitor', async () => {
+      access.mode = 'public';
+      vi.setSystemTime(THURSDAY_2355);
+      const fetchMock = mockWithIntraday(heldBody('2026-04-09', true));
+      const { result } = renderHook(() => useMarketData());
+      await waitFor(() => expect(result.current.loading).toBe(false));
+      expect(fetchMock.mock.calls.length).toBe(1);
+
+      await act(async () => {
+        vi.advanceTimersByTime(6 * 60_000);
+      });
+      await waitFor(() => expect(fetchMock.mock.calls.length).toBe(2));
+
+      expect(
+        urlsFrom(fetchMock, 0).every((url) => url.startsWith('/api/events')),
+      ).toBe(true);
+    });
   });
 });
 
