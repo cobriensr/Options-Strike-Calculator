@@ -118,10 +118,27 @@ merging writer.
 | Span (UTC)              | Writer                                                                       | Front-month rule                                                 | Notes                                                                                                                                                  |
 | ----------------------- | ---------------------------------------------------------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | 2025-04-06 → 2026-04-05 | `scripts/backfill-futures.ts` (Databento `ES.c.0`, `ON CONFLICT DO NOTHING`) | Calendar roll: holds the expiring contract through expiry Friday | During roll week the expiring contract is still used while volume has already moved to the next one. On expiry Friday there are no bars from 08:30 CT. |
-| 2026-04-05 → ~06-15     | Live Databento sidecar writer (`_resolve_symbol`)                            | Every outright month is mapped to `'ES'` and merged              | `ON CONFLICT` keeps **open = first write**, high = GREATEST, low = LEAST and close = last write, so back-month carry contaminates open and high.       |
-| ~06-16 → 09-03          | Same live writer                                                             | Same                                                             | The proxy flags are quiet. This span cannot be checked against the archive.                                                                            |
-| 09-04 → 09-29           | None                                                                         | —                                                                | Gap left by the Databento cancellation.                                                                                                                |
-| 09-30 →                 | uw-stream `futures_trades` plus the `backfill-futures-gaps` cron             | Cumulative UTC-day volume, outrights only                        | Not independently verified.                                                                                                                            |
+| 2026-04-05 → 06-15      | Live Databento sidecar writer (`_resolve_symbol`)                            | Every outright month is mapped to `'ES'` and merged              | `ON CONFLICT` keeps **open = first write**, high = GREATEST, low = LEAST and close = last write, so back-month carry contaminated open and high. **Repaired 2026-11-07**; see below. |
+| 06-15 14:10Z → 07-27    | The daily `ES.c.0` gap cron                                                  | Calendar roll; cannot mix months                                 | The live Databento session stopped at 06-15 14:10Z. This span cannot be checked against the archive.                                                   |
+| 07-28 → 11-11           | Re-derived 2026-11-13 from UW REST trades                                    | One contract per CME session, chosen at the 17:00 CT open        | Includes the September hole (09-04 → 09-28), filled 2026-11-06 (136,974 bars). ES has full days throughout.                                            |
+| 11-12 →                 | uw-stream `futures_trades` plus the `backfill-futures-gaps` cron             | The same session rule, stored in `futures_front_month`           | Every bar records its `contract`.                                                                                                                      |
+
+**Repairs.**
+
+- **Contract mix, 2026-11-07**
+  (`docs/superpowers/specs/futures-contract-mix-repair-2026-11-06.md`).
+  ES 04-05 → 04-17 was rebuilt from the frozen archive, and 04-20 →
+  06-15 14:11Z from `futures_trade_ticks`. The tick rule matched the
+  archive's ESM6 on all but one of 2,760 test minutes.
+- **Re-checked read-only on 2026-11-24.** Of the 51 CT dates in 2026-04-06
+  → 06-15 with cash-hour bars, 0 have a bar with an open gap or a
+  reverting spike over 15 pt. That count includes CME-only holiday
+  sessions, such as Memorial Day; there are 50 NYSE trading days.
+- **September hole, 2026-11-06**
+  (`docs/superpowers/specs/2026-11-06-futures-sept-bar-backfill.md`).
+- **Session front month, 2026-11-13**
+  (`docs/superpowers/specs/2026-11-06-futures-session-front-month.md`,
+  Phase 6). Since 07-28, every contract change falls at 17:00 CT.
 
 ## Window decision
 
@@ -192,18 +209,39 @@ P1 is split to respect the five-files-per-phase rule.
     **prediction-only** summary: open, N-minute delta, N-minute
     high/low/range and N-minute volume. Nothing after minute N is
     included.
-  - It **refuses** a window that carries a contamination flag (open gap or
-    reverting spike over 15 pt) or has fewer than `MIN_BARS` bars.
+  - It **refuses** a window with an open gap over 15 pt (on a window bar,
+    or on the bar right after the window, where a bad last close shows)
+    or with fewer than `MIN_BARS` bars. The session labels use the same
+    gap check.
+  - **Owner decision 2026-11-24: the reverting-spike half of the P0 flag
+    is dropped.** After the repair, across the 417 CT dates with
+    cash-hour bars from 2025-04-06 to 2026-11-23 (about 411 NYSE trading
+    days; the rest are CME-only holiday sessions), the spike rule fired
+    only on real fast
+    moves: 2025-04-07, 04-09 and 04-10, 2026-06-17, 06-26 and 11-23. All
+    26 of its bars opened within 0.75 pt of the previous close. The gap
+    rule fired on none of them. It is the merge-writer signature, and a
+    stray bad closing print shows up as a gap on the next bar.
   - A new table (migration) holds `(date, feature_set, n_minutes)` →
     `vector(N)`, the v2 summary, source, symbol, VIX bucket and
     cash-session labels. It is keyed so v1 and v2 can coexist through the
     cut-over.
 - **P1b — wiring.**
-  - The analyze fetchers query v2 with the largest N that is no greater
-    than the minutes elapsed since 08:30 CT. There is no block before
-    08:45 CT.
+  - The analyze fetchers query v2 with the largest window the builder
+    returns ok. A window is ready 75 s after it ends, and a refused one
+    falls back to the next smaller (open question 2). There is no block
+    before 08:46:15 CT.
   - `embed-yesterday` writes the v2 row for the prior trading day from
     `futures_bars`, keeping the completeness guard.
+  - **VIX bucket (owner decision 2026-11-24).** A row's `vix_bucket` is
+    `vixBucketOf` of the VIX close of the **trading day before** that
+    row's date, and the analyze side buckets today the same way. It
+    never uses the day's own close or the live VIX. A day's own close
+    already reflects how that day went: a sell-off closes with a higher
+    VIX, which would drift big-range days into the higher buckets. The
+    morning VIX on screen is measured at a different time than any
+    stored close. v1 (`day_embeddings`) keeps its same-day buckets until
+    P2 drops it.
   - The block stays empty until P2 fills the corpus. That is acceptable
     because live calls get nothing today.
 - **Basis sanity check.** Add a daily check of the ES − SPX basis at 08:30
@@ -217,9 +255,9 @@ P1 is split to respect the five-files-per-phase rule.
     front-month rule and the cash window. **Do not** use `futures_bars`
     for this span: its roll weeks follow `ES.c.0`, and it has no cash
     bars on expiry Fridays.
-  - **2026-04-18 → present:** from `futures_bars`. **Exclude** days the
-    proxy flags, which is the live-writer span 2026-04-20 → ~06-15. The
-    Sept gap stays a hole.
+  - **2026-04-18 → present:** from `futures_bars`, through the builder's
+    checks. The repaired span 2026-04-20 → 06-15 is included (owner
+    decision 2026-11-24). The September gap was filled on 2026-11-06.
 - **Labels.** Re-label every row with the **cash-session** range, up
   excursion and down excursion measured from the 08:30 CT open, half-day
   aware. Use ES points throughout; the default is ES, see the open
@@ -227,11 +265,23 @@ P1 is split to respect the five-files-per-phase rule.
 - **Text summaries.** Re-embed the v2 text summaries (~4.9K OpenAI calls,
   about $0.05) if the text backend is kept.
 - **VIX bucket.** Backfill `vix_bucket` on every row from
-  `public/vix-data.json` and `outcomes.vix_close`.
+  `public/vix-data.json` and `outcomes.vix_close`, using the **prior
+  trading day's** close (see P1b).
+- **Parity with the TypeScript builder (owner decision 2026-11-24).** The
+  Python backfill must pass every case in
+  `api/__tests__/fixtures/day-analog-parity.json`. P1a commits that
+  shared file of sample bars and hand-computed expected results:
+  vectors, summaries, labels and refusal reasons. The TS builder already
+  passes it, and `ml/tests/test_day_analog_backfill.py` runs the same
+  file. A rule mismatch between the two programs would quietly degrade
+  the matches; this makes it fail a test instead.
 - **Validate before cut-over.** Re-run the `compare-analog-backends`
   calibration (cohort p90 hit rate against a target of 80%) on v2 with
-  cash labels and strictly earlier neighbours. Then switch the reads to v2
-  and drop v1.
+  cash labels and strictly earlier neighbours.
+  - Also compare a summary variant that gives high and low as distances
+    from the open, without absolute prices (owner decision 2026-11-24:
+    keep prices until this test says otherwise).
+  - Then switch the reads to v2 and drop v1.
 
 ### P3 — Retire the sidecar archive
 
@@ -257,9 +307,9 @@ P1 is split to respect the five-files-per-phase rule.
 | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | P0    | `ml/src/day_analog_parity.py` (new), `ml/tests/test_day_analog_parity.py` (new), this spec                                                                                                                                                                                                                                                                          |
 | Fixes | `api/_lib/day-embeddings.ts`, `api/_lib/day-features.ts`, `api/_lib/postgres-day-summary.ts`, `api/cron/embed-yesterday.ts`, `api/cron/fetch-day-ohlc.ts`, `src/data/marketHours.ts`, `vercel.json`, `api/_lib/cron-schedules.ts`, plus their tests                                                                                                                 |
-| P1a   | `api/_lib/day-analog-builder.ts` (new), `api/_lib/db-migrations.ts`, `api/__tests__/db.test.ts`, `api/__tests__/day-analog-builder.test.ts` (new)                                                                                                                                                                                                                   |
+| P1a   | `api/_lib/day-analog-builder.ts` (new), `api/_lib/db-migrations.ts`, `api/__tests__/db.test.ts`, `api/__tests__/day-analog-builder.test.ts` (new), `api/__tests__/fixtures/day-analog-parity.json` (new), `api/_lib/postgres-day-summary.ts` (exports)                                                                                                                                                                                                                   |
 | P1b   | `api/_lib/analyze-context-fetchers.ts`, `api/_lib/analog-range-forecast.ts`, `api/_lib/day-features.ts`, `api/cron/embed-yesterday.ts`, plus tests                                                                                                                                                                                                                  |
-| P2    | `ml/src/day_analog_backfill.py` (new; reuses the P0 loaders), `scripts/backfill-day-vix-bucket.mjs`, `scripts/compare-analog-backends.mjs` (v2 + cash labels), then a cleanup migration dropping v1                                                                                                                                                                 |
+| P2    | `ml/src/day_analog_backfill.py` (new; reuses the P0 loaders), `ml/tests/test_day_analog_backfill.py` (new; runs the P1a parity fixture), `scripts/backfill-day-vix-bucket.mjs`, `scripts/compare-analog-backends.mjs` (v2 + cash labels), then a cleanup migration dropping v1                                                                                                                                                                 |
 | P3    | `sidecar/src/{health,main,archive_query,front_month,archive_seeder}.py`, `sidecar/tests/test_{archive_query,front_month,archive_seeder,archive_concurrency,health,main}.py`, `api/_lib/archive-sidecar.ts`, `api/__tests__/archive-sidecar.test.ts`, the crons above, `docs/{ARCHITECTURE,FEATURES,ONBOARDING}.md`, the CLAUDE.md env table, `sidecar/railway.toml` |
 
 ## Data dependencies
@@ -286,12 +336,16 @@ P1 is split to respect the five-files-per-phase rule.
    - **High:** GREATEST keeps the back month's premium.
    - **Rule:** never embed or label from this span without the flag check,
      and never take high/low from it.
+   - **Resolved 2026-11-24.** The 2026-11-07 repair rebuilt the span (see
+     the provenance table), and 0 of its 51 cash days flag now. It is
+     used with the normal checks.
 2. **Neighbour sensitivity.** One contaminated minute replaces most of a
    day's 15 neighbours, and roll-week basis drift (about 2e-4) replaces 1–2
    of them. The builder must refuse flagged windows, not repair them.
-3. **Holes.** `futures_bars` has no data for 2026-09-04 → 09-29, and SPX
-   candles have none for 07-23 → 09-07. UW REST 1-minute candles only reach
-   about 3.5 trading days back, so these holes stay.
+3. **Holes.** SPX candles have none for 07-23 → 09-07. UW REST 1-minute
+   candles only reach about 3.5 trading days back, so that hole stays.
+   The `futures_bars` hole (2026-09-04 → 09-28) was filled on 2026-11-06
+   from UW REST trades, which are complete from 2026-07-26.
 4. **UW-era front month is unverified** against an independent source. The
    P1 basis check is the guard.
 5. **`src/data/marketHours.ts` only lists 2025–2026 holidays.**
@@ -311,6 +365,12 @@ P1 is split to respect the five-files-per-phase rule.
 2. **N policy.** Decided 2026-11-20 with the window. Store N ∈ {15, 30, 60}.
    The query uses the largest N that is no greater than the minutes
    elapsed. There is no block before 08:45 CT.
+   - **Refined 2026-11-24 (owner).** A window counts as passed 75 s after
+     it ends, once its last bar and the bar after it have landed (uw-stream
+     writes a minute only when the next minute prints). So the first block
+     appears at 08:46:15.
+   - When the largest passed window is refused, analyze uses the largest
+     one that passed its checks, and the block names its length.
 3. **Labels.** Default: the ES cash-session range. SPX cash data in
    `index_candles_1m` only starts on 2026-02-26.
 4. **Text backend.** Default: keep it and re-embed in P2, then decide from
@@ -320,8 +380,9 @@ P1 is split to respect the five-files-per-phase rule.
    Vercel environment, so production runs the code default, `'text'`.
    P1b must wire the text path, not only the features path. The
    `.env.example` comment is accurate.
-6. **Contaminated span.** Default: exclude it. There is no clean minute
-   source for 2026-04-20 → 06-15.
+6. **Contaminated span.** Decided 2026-11-24: include it. The
+   2026-11-07 repair rebuilt 2026-04-20 → 06-15 from
+   `futures_trade_ticks`, so a clean minute source now exists.
 
 ## Thresholds / constants
 
@@ -332,7 +393,8 @@ P1 is split to respect the five-files-per-phase rule.
 | Cohort size               | 15                                           | `TOP_K`; `COHORT_SIZE`                 |
 | Parity tolerance          | 1e-4 per-day max abs diff                    | `PARITY_TOL`                           |
 | Contamination threshold   | 2 ticks = 0.50 pt                            | `CONTAM_PTS`                           |
-| Proxy flag                | open gap or reverting close spike over 15 pt | `PROXY_JUMP_PTS`                       |
+| Proxy flag (P0)           | open gap or reverting close spike over 15 pt | `PROXY_JUMP_PTS`                       |
+| Builder refusal (P1a)     | open gap over 15 pt (spike dropped 11-24)    | `PROXY_JUMP_PTS`                       |
 | Wide-bar flag             | over 20 pt; informational only               | `PROXY_WIDE_PTS`                       |
 | Cash open                 | 08:30 CT (America/Chicago)                   | `CASH_OPEN_MIN_CT`                     |
 | Full cash session         | 390 one-minute bars                          | `cashSessionMinutes()`                 |
@@ -469,6 +531,10 @@ flag):
    weeks follow `ES.c.0`, and expiry Fridays have no cash bars.
 3. **Exclude the contaminated span.** Drop the flagged 2026-04-20 →
    ~06-15 days, and take no high/low labels from them.
+
+**Updated 2026-11-24 (owner).** Precondition 1 now refuses on the open
+gap only, and precondition 3 is withdrawn, because the span was repaired
+on 2026-11-07. See P1a.
 
 `futures_bars` is otherwise a faithful source. Outside roll weeks and the
 merge writer it matches the archive minute-for-minute: 0 bad minutes in
