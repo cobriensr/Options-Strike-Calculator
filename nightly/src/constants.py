@@ -103,6 +103,15 @@ RESEARCH_DAY_BUDGET_SECONDS = 900
 # Failed days after which research-derive stops for the night: each costs a download and a
 # Sentry exception, and a layout the derive cannot read breaks every day alike.
 RESEARCH_MAX_DAY_FAILURES = 3
+# Failed sessions after which research-derive sets a day aside, so it stops taking a failure
+# slot every night. The same number as the per-night cap above.
+RESEARCH_SET_ASIDE_NIGHTS = 3
+# A set-aside day is tried again this many calendar days after the session it was set aside
+# on: a week catches an outside cause clearing (an R2 or Neon issue) with no one stepping in.
+RESEARCH_SET_ASIDE_RETRY_DAYS = 7
+# Each retry that fails doubles the wait (7, 14, 28) and it stays here, so a day that never
+# recovers costs one attempt a month.
+RESEARCH_SET_ASIDE_RETRY_DAYS_MAX = 28
 # The report steps' rows of D2's budget table, what a night reserves for each: eight steps at
 # REPORT_BUDGET_SECONDS (2,400 s) and the two that pull every enriched fire at
 # LARGE_REPORT_BUDGET_SECONDS (1,200 s).

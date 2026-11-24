@@ -13,10 +13,11 @@ import hashlib
 import io
 import json
 import logging
-from collections.abc import Callable, Iterator
+import re
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, call, create_autospec, patch
@@ -45,6 +46,9 @@ from constants import (
     REPORT_BUDGET_SECONDS,
     RESEARCH_DAY_BUDGET_SECONDS,
     RESEARCH_MAX_DAY_FAILURES,
+    RESEARCH_SET_ASIDE_NIGHTS,
+    RESEARCH_SET_ASIDE_RETRY_DAYS,
+    RESEARCH_SET_ASIDE_RETRY_DAYS_MAX,
     RESEARCH_TAPE_DIR,
     RESEARCH_WORK_DIR,
     WORK_DIR,
@@ -85,12 +89,17 @@ FAILED_DETAIL = "a day failed to derive"
 MANIFEST_DETAIL = "derive manifest is malformed"
 PARTIAL_DETAIL = "days left for the next night"
 NOT_LANDED_DETAIL = "latest session tape not landed"
+FAILURES_KEY = "research/_state/derive-failures.json"
+SET_ASIDE_MESSAGE = "nightly research day set aside"
+EMPTY_MEMORY: dict[str, Any] = {"version": 1, "attempting": None, "days": {}}
 COUNT_NAMES = {
     "days_planned",
     "days_derived",
     "days_left",
     "days_failed",
+    "days_retry_failed",
     "days_tape_missing",
+    "days_set_aside",
     "chains_written",
     "exit_policy_written",
     "flow_timing_written",
@@ -139,6 +148,19 @@ def capture_exception(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     mock = create_autospec(sentry_sdk.capture_exception)
     monkeypatch.setattr(sentry_sdk, "capture_exception", mock)
     return mock
+
+
+@pytest.fixture
+def capture_message(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
+    mock = create_autospec(sentry_sdk.capture_message)
+    monkeypatch.setattr(sentry_sdk, "capture_message", mock)
+    return mock
+
+
+class _Killed(BaseException):
+    """A run that dies where it stands: no Exception and no SystemExit, so nothing in the step
+    handles it and nothing after it runs, as with a SIGKILL, an out-of-memory kill or the
+    watchdog's `os._exit`."""
 
 
 def tape_body(day: date, generation: int = 0) -> bytes:
@@ -251,6 +273,31 @@ class Rig:
         raw = self.manifest_bytes()
         return None if raw is None else json.loads(raw)
 
+    # the failure memory
+    def put_failures(self, body: object) -> None:
+        raw = body if isinstance(body, bytes) else json.dumps(body).encode()
+        self.s3.put_object(Bucket=BUCKET, Key=FAILURES_KEY, Body=raw)
+
+    def failures_bytes(self) -> bytes | None:
+        try:
+            return self.s3.get_object(Bucket=BUCKET, Key=FAILURES_KEY)["Body"].read()
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] == "NoSuchKey":
+                return None
+            raise
+
+    def failures(self) -> dict[str, Any] | None:
+        raw = self.failures_bytes()
+        return None if raw is None else json.loads(raw)
+
+    def failure_writes(self) -> list[dict[str, Any]]:
+        """The memory as each PUT of it wrote it, in order, over the last run."""
+        return [
+            json.loads(params["Body"])
+            for op, params in self.calls
+            if op == "PutObject" and params["Key"] == FAILURES_KEY
+        ]
+
     def keys(self) -> list[str]:
         pages = self.s3.get_paginator("list_objects_v2").paginate(Bucket=BUCKET)
         return sorted(o["Key"] for page in pages for o in page.get("Contents", []))
@@ -282,8 +329,13 @@ class Rig:
         finally:
             self.calls = list(self.api_calls)
 
-    def puts(self) -> list[str]:
+    def all_puts(self) -> list[str]:
         return [params["Key"] for op, params in self.calls if op == "PutObject"]
+
+    def puts(self) -> list[str]:
+        """The derived objects and the manifest the run wrote; the failure memory's own PUTs
+        are `failure_writes`."""
+        return [key for key in self.all_puts() if key != FAILURES_KEY]
 
 
 @pytest.fixture
@@ -446,13 +498,100 @@ def _full_counts(days: int, **overrides: int) -> dict[str, int]:
         "days_derived": days,
         "days_left": 0,
         "days_failed": 0,
+        "days_retry_failed": 0,
         "days_tape_missing": 0,
+        "days_set_aside": 0,
         "chains_written": days,
         "exit_policy_written": days,
         "flow_timing_written": days,
         "rows_written": days * DAY_ROWS,
     }
     return {**counts, **overrides}
+
+
+_ACCOUNTED = (
+    "days_derived",
+    "days_failed",
+    "days_retry_failed",
+    "days_tape_missing",
+    "days_left",
+    "days_set_aside",
+)
+
+
+def _assert_balanced(counts: Mapping[str, int]) -> None:
+    """Every planned day is in exactly one of the outcome counts."""
+    assert counts["days_planned"] == sum(counts[name] for name in _ACCOUNTED), dict(counts)
+
+
+def _session(offset: int) -> date:
+    """The session `offset` calendar days after LAST_SESSION: only the dates' distance counts."""
+    return LAST_SESSION + timedelta(days=offset)
+
+
+def _night(rig: Rig, settings: Settings, clock: Clock, offset: int) -> StepResult:
+    """One run on `_session(offset)`, whose tape is landed, as the last session's is."""
+    session = _session(offset)
+    if session not in rig.generations:
+        rig.land(session)
+    return rig.run(_ctx(settings, clock, last_session=session))
+
+
+def _killed_night(rig: Rig, settings: Settings, clock: Clock, offset: int) -> None:
+    with pytest.raises(_Killed):
+        _night(rig, settings, clock, offset)
+
+
+# The day the memory tests make fail: the oldest, so every other day is tried before it.
+FAIL_DAY = DAYS[0]
+
+
+def _fail(rig: Rig, day: date = FAIL_DAY, *, text: str = "row 7 of ep-x.neon.tech") -> None:
+    rig.fetch_errors[day] = RuntimeError(text)
+
+
+def _heal(rig: Rig, day: date = FAIL_DAY) -> None:
+    rig.fetch_errors.pop(day, None)
+
+
+def _target_of(rig: Rig, day: date) -> str:
+    """A day's memory target as the step spells it: its stale families and their target
+    fingerprints, in FAMILIES order, `family=fingerprint` joined by `;`. Every family is
+    stale for a day that has fires and nothing derived; chains alone for any other."""
+    families = [f for f in FAMILIES if f == "chains" or day in rig.precheck[f]]
+    return ";".join(f"{family}={rig.target(family, day)}" for family in families)
+
+
+def _iso(day: date | None) -> str | None:
+    return None if day is None else day.isoformat()
+
+
+def _expected_entry(
+    rig: Rig,
+    day: date,
+    *,
+    nights: int,
+    last: date | None,
+    set_aside: date | None = None,
+    retry_days: int = 7,
+) -> dict[str, Any]:
+    return {
+        "nights": nights,
+        "target": _target_of(rig, day),
+        "last_session": _iso(last),
+        "set_aside_on": _iso(set_aside),
+        "retry_days": retry_days,
+    }
+
+
+def _memory(rig: Rig) -> dict[str, Any]:
+    stored = rig.failures()
+    assert stored is not None, "no failure memory was stored"
+    return stored
+
+
+def _entry(rig: Rig, day: date) -> dict[str, Any]:
+    return _memory(rig)["days"][day.isoformat()]
 
 
 # --- constants ---------------------------------------------------------------------------
@@ -463,6 +602,9 @@ def test_phase_three_constants_are_the_briefs() -> None:
     assert WORK_DIR / "research-tape" == RESEARCH_TAPE_DIR
     assert RESEARCH_DAY_BUDGET_SECONDS == 900
     assert RESEARCH_MAX_DAY_FAILURES == 3
+    assert RESEARCH_SET_ASIDE_NIGHTS == 3
+    assert RESEARCH_SET_ASIDE_RETRY_DAYS == 7
+    assert RESEARCH_SET_ASIDE_RETRY_DAYS_MAX == 28
     assert REPORT_BUDGET_SECONDS == 300
     assert LARGE_REPORT_BUDGET_SECONDS == 600
 
@@ -489,6 +631,7 @@ def test_the_state_keys_follow_the_layout() -> None:
     assert FAMILY_KEYS["flow-timing"](day) == "research/flow-timing/derived/2026-11-05.parquet"
     assert set(FAMILY_KEYS) == set(FAMILIES)
     assert MANIFEST_KEY == "research/_state/derive-manifest.json"
+    assert research_derive.FAILURES_KEY == FAILURES_KEY  # beside the manifest, never in it
     assert SEED == "seed"
 
 
@@ -755,9 +898,12 @@ def test_derives_stale_days_newest_first_with_one_fetch_each(
     assert result.status == "ok"
     assert result.detail == ""
     assert dict(result.counts) == _full_counts(5)
-    expected_keys = sorted([MANIFEST_KEY] + [FAMILY_KEYS[f](day) for f in FAMILIES for day in DAYS])
+    expected_keys = sorted(
+        [MANIFEST_KEY, FAILURES_KEY] + [FAMILY_KEYS[f](day) for f in FAMILIES for day in DAYS]
+    )
     assert rig.research_keys() == expected_keys
     assert rig.manifest() == rig.expected_manifest(DAYS)
+    assert rig.failures() == EMPTY_MEMORY  # a night with no failure leaves nothing in it
 
 
 def test_the_objects_hold_what_the_families_built(
@@ -781,10 +927,20 @@ def test_each_object_is_stored_before_the_manifest_and_the_manifest_is_saved_onc
 ) -> None:
     rig.run(_ctx(settings, clock))
 
+    # The marker goes out before a day starts, and the memory is saved once more when it ends:
+    # two PUTs of it a day.
     expected: list[str] = []
     for day in NEWEST_FIRST:
-        expected += [_chains_key(day), _exit_key(day), _timing_key(day), MANIFEST_KEY]
-    assert rig.puts() == expected
+        expected += [
+            FAILURES_KEY,
+            _chains_key(day),
+            _exit_key(day),
+            _timing_key(day),
+            MANIFEST_KEY,
+            FAILURES_KEY,
+        ]
+    assert rig.all_puts() == expected
+    assert len(rig.failure_writes()) == 2 * len(DAYS)
 
 
 def test_the_work_files_are_removed_as_each_day_ends(
@@ -1420,9 +1576,10 @@ def test_a_save_that_fails_once_fails_its_day_and_a_later_save_still_records_it(
     attempts: list[str] = []
 
     def failing_once(self: ResearchStore, key: str, obj: object) -> None:
-        attempts.append(key)
-        if len(attempts) == 1:
-            raise ClientError({"Error": {"Code": "InternalError"}}, "PutObject")
+        if key == MANIFEST_KEY:  # the failure memory's own saves are not what this test fails
+            attempts.append(key)
+            if len(attempts) == 1:
+                raise ClientError({"Error": {"Code": "InternalError"}}, "PutObject")
         real_put_json(self, key, obj)
 
     monkeypatch.setattr(ResearchStore, "put_json", failing_once)
@@ -1655,9 +1812,10 @@ def test_the_counts_add_up_to_the_days_planned(
 
     c = result.counts
     assert c["days_planned"] == 5
-    assert c["days_planned"] == (
-        c["days_derived"] + c["days_failed"] + c["days_tape_missing"] + c["days_left"]
-    )
+    assert c["days_derived"] == 3
+    assert c["days_failed"] == 1
+    assert c["days_tape_missing"] == 1
+    _assert_balanced(c)
 
 
 def test_one_log_line_per_day_names_the_date_families_rows_and_seconds(
@@ -1814,3 +1972,983 @@ def test_a_release_that_raises_does_not_replace_a_kill(
         rig.run(_ctx(settings, clock))
 
     rig.reader.__exit__.assert_called_once()
+
+
+# --- the failure memory: set aside and retry ----------------------------------------------
+
+
+def test_a_failed_day_is_remembered_in_the_documented_shape(
+    rig: Rig, settings: Settings, clock: Clock, capture_exception: MagicMock
+) -> None:
+    _fail(rig)
+
+    result = _night(rig, settings, clock, 0)
+
+    assert result.counts["days_failed"] == 1
+    assert rig.failures() == {
+        "version": 1,
+        "attempting": None,
+        "days": {
+            FAIL_DAY.isoformat(): {
+                "nights": 1,
+                "target": _target_of(rig, FAIL_DAY),
+                "last_session": _session(0).isoformat(),
+                "set_aside_on": None,
+                "retry_days": 7,
+            }
+        },
+    }
+    assert set(rig.manifest() or {}) == {"version", "families"}  # the manifest stays strict
+
+
+def test_the_target_names_only_the_families_that_are_stale(
+    rig: Rig, settings: Settings, clock: Clock, capture_exception: MagicMock
+) -> None:
+    _night(rig, settings, clock, 0)  # every family of every day is derived
+    rig.set_fires("exit-policy", FAIL_DAY, fires_frame(FAIL_DAY, n=3))  # one family moves on
+    _fail(rig)
+
+    _night(rig, settings, clock, 1)
+
+    target = f"exit-policy={rig.target('exit-policy', FAIL_DAY)}"
+    assert _entry(rig, FAIL_DAY)["target"] == target
+
+
+def test_a_day_failing_on_three_sessions_is_set_aside_once_and_then_skipped(
+    rig: Rig,
+    settings: Settings,
+    clock: Clock,
+    capture_exception: MagicMock,
+    capture_message: MagicMock,
+) -> None:
+    _fail(rig)
+
+    for offset in (0, 1):
+        _assert_balanced(_night(rig, settings, clock, offset).counts)
+        assert _entry(rig, FAIL_DAY)["set_aside_on"] is None
+    capture_message.assert_not_called()
+    third = _night(rig, settings, clock, 2)
+
+    # The night a day crosses the threshold by raising is a failed one, and it is warned about.
+    assert (third.status, third.counts["days_failed"]) == ("failed", 1)
+    _assert_balanced(third.counts)
+    assert _entry(rig, FAIL_DAY) == _expected_entry(
+        rig, FAIL_DAY, nights=3, last=_session(2), set_aside=_session(2)
+    )
+    capture_message.assert_called_once_with(
+        SET_ASIDE_MESSAGE,
+        level="warning",
+        tags={"step": STEP_NAME, "day": FAIL_DAY.isoformat()},
+        extras={"cause": "RuntimeError"},
+        fingerprint=[SET_ASIDE_MESSAGE, FAIL_DAY.isoformat()],
+    )
+
+    rig.events.clear()
+    fourth = _night(rig, settings, clock, 3)
+
+    assert (fourth.status, fourth.detail) == ("ok", "")
+    assert fourth.counts["days_failed"] == 0
+    assert fourth.counts["days_set_aside"] == 1
+    _assert_balanced(fourth.counts)
+    assert str(FAIL_DAY) not in _isos(rig.events, "fetch")  # not downloaded
+    assert capture_exception.call_count == 3  # nor reported
+    capture_message.assert_called_once()
+
+
+def test_a_rerun_on_the_session_a_day_was_set_aside_on_skips_it_and_warns_once(
+    rig: Rig,
+    settings: Settings,
+    clock: Clock,
+    capture_exception: MagicMock,
+    capture_message: MagicMock,
+) -> None:
+    _fail(rig)
+    for offset in range(3):
+        _night(rig, settings, clock, offset)
+
+    again = _night(rig, settings, clock, 2)
+
+    assert (again.status, again.counts["days_set_aside"], again.counts["days_failed"]) == (
+        "ok",
+        1,
+        0,
+    )
+    capture_message.assert_called_once()
+
+
+def test_reruns_on_one_session_count_one_failed_session(
+    rig: Rig,
+    settings: Settings,
+    clock: Clock,
+    capture_exception: MagicMock,
+    capture_message: MagicMock,
+) -> None:
+    _fail(rig)
+
+    for _ in range(4):
+        result = _night(rig, settings, clock, 0)
+
+    assert result.counts["days_failed"] == 1  # still tried each time: it is not set aside
+    assert _entry(rig, FAIL_DAY) == _expected_entry(rig, FAIL_DAY, nights=1, last=_session(0))
+    assert capture_exception.call_count == 4  # and still reported each time
+    capture_message.assert_not_called()
+
+
+def test_a_set_aside_day_that_derives_on_its_retry_is_forgotten(
+    rig: Rig, settings: Settings, clock: Clock, capture_exception: MagicMock
+) -> None:
+    _fail(rig)
+    for offset in range(3):
+        _night(rig, settings, clock, offset)
+    _heal(rig)
+
+    early = _night(rig, settings, clock, 8)  # six calendar days after the set-aside
+    assert (early.counts["days_set_aside"], early.counts["days_derived"]) == (1, 1)
+    assert FAIL_DAY.isoformat() in _memory(rig)["days"]
+    rig.events.clear()
+    retry = _night(rig, settings, clock, 9)  # seven
+
+    assert (retry.status, retry.counts["days_set_aside"], retry.counts["days_failed"]) == (
+        "ok",
+        0,
+        0,
+    )
+    assert retry.counts["days_derived"] == 2  # the session's day and the retry
+    _assert_balanced(retry.counts)
+    assert str(FAIL_DAY) in _isos(rig.events, "fetch")
+    assert FAIL_DAY.isoformat() not in _memory(rig)["days"]
+    assert FAIL_DAY.isoformat() in (rig.manifest() or {})["families"]["chains"]
+
+
+def test_a_failed_retry_stays_green_backs_off_to_the_cap_and_never_warns_again(
+    rig: Rig,
+    settings: Settings,
+    clock: Clock,
+    capture_exception: MagicMock,
+    capture_message: MagicMock,
+) -> None:
+    _fail(rig)
+    for offset in range(3):
+        _night(rig, settings, clock, offset)
+    set_aside_offset = 2
+
+    for wait, doubled in ((7, 14), (14, 28), (28, 28), (28, 28)):
+        early = _night(rig, settings, clock, set_aside_offset + wait - 1)
+        assert (early.counts["days_set_aside"], early.counts["days_retry_failed"]) == (1, 0)
+        set_aside_offset += wait
+
+        retry = _night(rig, settings, clock, set_aside_offset)
+
+        assert (retry.status, retry.detail) == ("ok", "")
+        assert retry.counts["days_failed"] == 0
+        assert retry.counts["days_retry_failed"] == 1
+        _assert_balanced(retry.counts)
+        assert _entry(rig, FAIL_DAY) == _expected_entry(
+            rig,
+            FAIL_DAY,
+            nights=3,
+            last=_session(2),
+            set_aside=_session(set_aside_offset),
+            retry_days=doubled,
+        )
+    assert capture_exception.call_count == 3 + 4  # every retry is still reported
+    capture_message.assert_called_once()  # but the day was set aside, and warned about, once
+
+
+def test_failed_retries_count_toward_the_per_night_cap(
+    rig: Rig,
+    settings: Settings,
+    clock: Clock,
+    capture_exception: MagicMock,
+    capture_message: MagicMock,
+) -> None:
+    failing = DAYS[:3]
+    for day in failing:
+        _fail(rig, day)
+    for offset in range(3):
+        _night(rig, settings, clock, offset)
+    assert capture_message.call_count == 3
+    older = date(2026, 11, 4)
+    rig.land(older)  # stale for the first time on the night the three retries are due
+    rig.events.clear()
+
+    retry = _night(rig, settings, clock, 9)
+
+    assert retry.counts["days_retry_failed"] == 3
+    assert retry.counts["days_failed"] == 0
+    assert retry.counts["days_left"] == 1
+    assert (retry.status, retry.detail) == ("partial", PARTIAL_DETAIL)
+    _assert_balanced(retry.counts)
+    assert str(older) not in _isos(rig.events, "fetch")
+
+
+def test_three_always_failing_days_stop_blocking_older_days_once_they_are_set_aside(
+    rig: Rig,
+    settings: Settings,
+    clock: Clock,
+    capture_exception: MagicMock,
+    capture_message: MagicMock,
+) -> None:
+    older = date(2026, 11, 4)
+    rig.land(older)
+    for day in DAYS[:3]:
+        _fail(rig, day)
+
+    for offset in range(3):
+        blocked = _night(rig, settings, clock, offset)
+        assert (blocked.counts["days_failed"], blocked.counts["days_left"]) == (3, 1)
+    rig.events.clear()
+    freed = _night(rig, settings, clock, 3)
+
+    assert freed.counts["days_set_aside"] == 3
+    assert freed.counts["days_failed"] == 0
+    assert freed.counts["days_left"] == 0
+    assert (freed.status, freed.detail) == ("ok", "")
+    _assert_balanced(freed.counts)
+    assert str(older) in _isos(rig.events, "fetch")
+    assert _chains_key(older) in rig.research_keys()
+
+
+# --- the failure memory: killed runs ------------------------------------------------------
+
+
+def test_the_marker_is_in_r2_before_the_days_download_starts(
+    rig: Rig, settings: Settings, clock: Clock
+) -> None:
+    seen: list[object] = []
+    original = rig.reader.fetch_day.side_effect
+
+    def watching(day: date, deadline: float | None = None) -> Path | None:
+        seen.append((rig.failures() or {}).get("attempting"))
+        return original(day, deadline=deadline)
+
+    rig.reader.fetch_day.side_effect = watching
+
+    rig.run(_ctx(settings, clock))
+
+    assert seen == [
+        {"day": day.isoformat(), "session": LAST_SESSION.isoformat()} for day in NEWEST_FIRST
+    ]
+
+
+def test_three_killed_sessions_set_the_day_aside_with_the_run_died_warning(
+    rig: Rig, settings: Settings, clock: Clock, capture_message: MagicMock
+) -> None:
+    rig.fetch_errors[FAIL_DAY] = _Killed()
+
+    for offset in range(3):
+        _killed_night(rig, settings, clock, offset)
+        assert _memory(rig)["attempting"] == {
+            "day": FAIL_DAY.isoformat(),
+            "session": _session(offset).isoformat(),
+        }
+    # A kill is counted by the next run, which finds its marker.
+    assert _entry(rig, FAIL_DAY)["nights"] == 2
+    capture_message.assert_not_called()
+
+    fourth = _night(rig, settings, clock, 3)
+
+    # Set aside on the session of the third kill, not on tonight's.
+    assert _memory(rig) == {
+        "version": 1,
+        "attempting": None,
+        "days": {
+            FAIL_DAY.isoformat(): _expected_entry(
+                rig, FAIL_DAY, nights=3, last=_session(2), set_aside=_session(2)
+            )
+        },
+    }
+    capture_message.assert_called_once_with(
+        SET_ASIDE_MESSAGE,
+        level="warning",
+        tags={"step": STEP_NAME, "day": FAIL_DAY.isoformat()},
+        extras={"cause": "run died"},
+        fingerprint=[SET_ASIDE_MESSAGE, FAIL_DAY.isoformat()],
+    )
+    # That night's status comes from its own attempts: the dead run was a failed check-in.
+    assert (fourth.status, fourth.counts["days_set_aside"], fourth.counts["days_failed"]) == (
+        "ok",
+        1,
+        0,
+    )
+    _assert_balanced(fourth.counts)
+
+
+def test_a_rerun_on_the_session_of_a_kill_counts_that_session_once(
+    rig: Rig, settings: Settings, clock: Clock, capture_message: MagicMock
+) -> None:
+    rig.fetch_errors[FAIL_DAY] = _Killed()
+
+    for _ in range(4):
+        _killed_night(rig, settings, clock, 0)
+
+    assert _entry(rig, FAIL_DAY) == _expected_entry(rig, FAIL_DAY, nights=1, last=_session(0))
+    assert _memory(rig)["attempting"] == {
+        "day": FAIL_DAY.isoformat(),
+        "session": _session(0).isoformat(),
+    }
+    capture_message.assert_not_called()
+
+
+def test_a_marker_for_a_session_already_counted_adds_nothing_to_a_set_aside_day(
+    rig: Rig,
+    settings: Settings,
+    clock: Clock,
+    capture_exception: MagicMock,
+    capture_message: MagicMock,
+) -> None:
+    _fail(rig)
+    for offset in range(3):
+        _night(rig, settings, clock, offset)  # set aside on session 2, its third failed session
+    before = _entry(rig, FAIL_DAY)
+    stored = _memory(rig)
+    stored["attempting"] = {"day": FAIL_DAY.isoformat(), "session": _session(2).isoformat()}
+    rig.put_failures(stored)
+
+    result = _night(rig, settings, clock, 3)
+
+    # The session is the day's last counted one: a failed retry would have doubled the wait.
+    assert _entry(rig, FAIL_DAY) == before
+    assert _memory(rig)["attempting"] is None
+    assert (result.counts["days_set_aside"], result.counts["days_retry_failed"]) == (1, 0)
+    capture_message.assert_called_once()  # the set-aside's own
+
+
+def test_a_killed_retry_is_a_failed_retry_set_aside_again_with_no_new_warning(
+    rig: Rig,
+    settings: Settings,
+    clock: Clock,
+    capture_exception: MagicMock,
+    capture_message: MagicMock,
+) -> None:
+    _fail(rig)
+    for offset in range(3):
+        _night(rig, settings, clock, offset)
+    rig.fetch_errors[FAIL_DAY] = _Killed()
+    _killed_night(rig, settings, clock, 9)  # the retry kills the run
+
+    after = _night(rig, settings, clock, 10)
+
+    # Counted against the session of the kill (9), and doubled; skipped tonight, so not tried.
+    assert _entry(rig, FAIL_DAY) == _expected_entry(
+        rig, FAIL_DAY, nights=3, last=_session(2), set_aside=_session(9), retry_days=14
+    )
+    assert _memory(rig)["attempting"] is None
+    assert (after.status, after.counts["days_set_aside"], after.counts["days_failed"]) == (
+        "ok",
+        1,
+        0,
+    )
+    _assert_balanced(after.counts)
+    capture_message.assert_called_once()  # the first set-aside's
+
+
+def test_a_set_aside_found_at_planning_is_saved_though_no_day_is_tried_after_it(
+    rig: Rig,
+    settings: Settings,
+    clock: Clock,
+    capture_exception: MagicMock,
+    capture_message: MagicMock,
+) -> None:
+    _fail(rig)
+    for offset in (0, 1):
+        _night(rig, settings, clock, offset)  # two failed sessions
+    stored = _memory(rig)
+    stored["attempting"] = {"day": FAIL_DAY.isoformat(), "session": _session(2).isoformat()}
+    rig.put_failures(stored)  # a third, ended by a kill
+    # Session 3's tape is not landed: the day the dead run left is the only stale one, and it
+    # is set aside as the night is planned, so nothing is tried and no later save follows.
+    rig.events.clear()
+
+    result = rig.run(_ctx(settings, clock, last_session=_session(3)))
+
+    assert (result.counts["days_planned"], result.counts["days_set_aside"]) == (1, 1)
+    assert _isos(rig.events, "fetch") == []
+    capture_message.assert_called_once()  # the warning goes out once: it is saved, not repeated
+    assert _entry(rig, FAIL_DAY) == _expected_entry(
+        rig, FAIL_DAY, nights=3, last=_session(2), set_aside=_session(2)
+    )
+    assert _memory(rig)["attempting"] is None
+
+
+def test_a_marker_whose_day_is_no_longer_stale_is_dropped_with_no_count_and_no_warning(
+    rig: Rig, settings: Settings, clock: Clock, capture_message: MagicMock
+) -> None:
+    _night(rig, settings, clock, 0)  # every day derived and in the manifest
+    # The run died after it saved the manifest for the day and before it cleared the marker.
+    rig.put_failures(
+        {
+            "version": 1,
+            "attempting": {"day": DAYS[2].isoformat(), "session": _session(0).isoformat()},
+            "days": {},
+        }
+    )
+
+    result = _night(rig, settings, clock, 1)
+
+    assert (result.counts["days_failed"], result.counts["days_set_aside"]) == (0, 0)
+    assert rig.failures() == EMPTY_MEMORY  # no entry came of the marker
+    capture_message.assert_not_called()
+
+
+def test_a_leftover_marker_is_counted_after_a_changed_target_resets_the_day(
+    rig: Rig,
+    settings: Settings,
+    clock: Clock,
+    capture_exception: MagicMock,
+    capture_message: MagicMock,
+) -> None:
+    _fail(rig)
+    for offset in (0, 1):
+        _night(rig, settings, clock, offset)
+    stored = _memory(rig)
+    stored["attempting"] = {"day": FAIL_DAY.isoformat(), "session": _session(2).isoformat()}
+    rig.put_failures(stored)  # the run on session 2 died on the day
+    rig.land(FAIL_DAY, generation=1)  # and UW has re-landed the day since
+
+    _night(rig, settings, clock, 3)
+
+    # Reset first, so the death is the new situation's first failed session, not a third one:
+    # it, and tonight's failure, make two.
+    capture_message.assert_not_called()
+    assert _entry(rig, FAIL_DAY) == _expected_entry(rig, FAIL_DAY, nights=2, last=_session(3))
+
+
+def test_sigterm_clears_the_marker_so_a_shutdown_is_never_counted(
+    rig: Rig, settings: Settings, clock: Clock, capture_message: MagicMock
+) -> None:
+    stopped = NEWEST_FIRST[2]
+    rig.fetch_errors[stopped] = SystemExit(143)
+
+    with pytest.raises(SystemExit):
+        rig.run(_ctx(settings, clock))
+
+    marked = [write["attempting"] is not None for write in rig.failure_writes()]
+    assert marked == [True, False, True, False, True, False]  # the last clear is the SIGTERM's
+    assert rig.failures() == EMPTY_MEMORY
+    _heal(rig, stopped)
+
+    result = rig.run(_ctx(settings, clock))
+
+    assert result.counts["days_failed"] == 0
+    assert rig.failures() == EMPTY_MEMORY  # nothing was counted for the stopped day
+    capture_message.assert_not_called()
+
+
+def test_a_marker_save_that_fails_during_sigterm_does_not_replace_the_exit(
+    rig: Rig, settings: Settings, clock: Clock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rig.fetch_errors[NEWEST_FIRST[0]] = SystemExit(143)
+    _failure_saves_fail(monkeypatch)
+
+    with pytest.raises(SystemExit) as raised:
+        rig.run(_ctx(settings, clock))
+
+    assert raised.value.code == 143
+
+
+def test_a_day_left_for_the_budget_is_never_marked(
+    rig: Rig, settings: Settings, clock: Clock
+) -> None:
+    ctx = _ctx(settings, clock, left=2 * RESEARCH_DAY_BUDGET_SECONDS + 1)
+    rig.build_chains.side_effect = _advancing(rig, clock, RESEARCH_DAY_BUDGET_SECONDS)
+
+    result = rig.run(ctx)
+
+    assert result.counts["days_left"] == 3
+    marked = [write["attempting"] for write in rig.failure_writes() if write["attempting"]]
+    assert marked == [
+        {"day": day.isoformat(), "session": LAST_SESSION.isoformat()} for day in NEWEST_FIRST[:2]
+    ]
+    assert rig.failures() == EMPTY_MEMORY
+
+
+def test_a_day_left_for_the_failure_cap_is_never_marked(
+    rig: Rig, settings: Settings, clock: Clock, capture_exception: MagicMock
+) -> None:
+    for day in DAYS:
+        _fail(rig, day)
+
+    result = rig.run(_ctx(settings, clock))
+
+    assert result.counts["days_left"] == 2
+    marked = [write["attempting"] for write in rig.failure_writes() if write["attempting"]]
+    assert [m["day"] for m in marked] == [day.isoformat() for day in NEWEST_FIRST[:3]]
+
+
+# --- the failure memory: bookkeeping ------------------------------------------------------
+
+
+def test_a_tape_missing_day_clears_its_marker_and_keeps_its_entry(
+    rig: Rig, settings: Settings, clock: Clock, capture_exception: MagicMock
+) -> None:
+    _fail(rig)
+    _night(rig, settings, clock, 0)
+    before = _entry(rig, FAIL_DAY)
+    _heal(rig)
+    rig.missing_tape.add(FAIL_DAY)
+
+    result = _night(rig, settings, clock, 1)
+
+    assert result.counts["days_tape_missing"] == 1
+    _assert_balanced(result.counts)
+    assert [w["attempting"] for w in rig.failure_writes()][-2:] == [
+        {"day": FAIL_DAY.isoformat(), "session": _session(1).isoformat()},
+        None,
+    ]
+    assert _entry(rig, FAIL_DAY) == before  # the miss is no failure and no recovery
+
+
+@pytest.mark.parametrize("change", ["etag", "fires", "chains-version", "derive-version"])
+def test_a_changed_target_makes_the_day_new(
+    rig: Rig,
+    settings: Settings,
+    clock: Clock,
+    capture_exception: MagicMock,
+    capture_message: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+    change: str,
+) -> None:
+    _fail(rig)
+    for offset in (0, 1):
+        _night(rig, settings, clock, offset)
+    assert _entry(rig, FAIL_DAY)["nights"] == 2
+    if change == "etag":
+        rig.land(FAIL_DAY, generation=1)
+    elif change == "fires":
+        rig.set_fires("exit-policy", FAIL_DAY, fires_frame(FAIL_DAY, n=3))
+    elif change == "chains-version":
+        monkeypatch.setattr(research_derive, "CHAINS_VERSION", 2)
+    else:
+        monkeypatch.setattr(exit_policy_search, "DERIVE_VERSION", 2)
+
+    result = _night(rig, settings, clock, 2)
+
+    # Without the reset this would be the third failed session: set aside, and warned about.
+    assert (result.counts["days_failed"], result.counts["days_set_aside"]) == (1, 0)
+    assert _entry(rig, FAIL_DAY) == _expected_entry(rig, FAIL_DAY, nights=1, last=_session(2))
+    capture_message.assert_not_called()
+
+
+def test_a_changed_target_ends_a_set_aside_and_the_day_warns_again_under_the_same_issue(
+    rig: Rig,
+    settings: Settings,
+    clock: Clock,
+    capture_exception: MagicMock,
+    capture_message: MagicMock,
+) -> None:
+    _fail(rig)
+    for offset in range(3):
+        _night(rig, settings, clock, offset)
+    rig.land(FAIL_DAY, generation=1)  # UW re-landed the tape
+
+    tried = _night(rig, settings, clock, 3)
+
+    assert (tried.counts["days_failed"], tried.counts["days_set_aside"]) == (1, 0)
+    assert _entry(rig, FAIL_DAY) == _expected_entry(rig, FAIL_DAY, nights=1, last=_session(3))
+    _night(rig, settings, clock, 4)
+    _night(rig, settings, clock, 5)
+    first, second = capture_message.call_args_list
+    assert first.kwargs["fingerprint"] == second.kwargs["fingerprint"]
+    assert capture_message.call_count == 2
+
+
+def test_entries_for_days_that_are_no_longer_stale_are_pruned(
+    rig: Rig, settings: Settings, clock: Clock, capture_exception: MagicMock
+) -> None:
+    _fail(rig)
+    _night(rig, settings, clock, 0)
+    assert FAIL_DAY.isoformat() in _memory(rig)["days"]
+    rig.unland(FAIL_DAY)  # no tape, so no target: the day is not stale any more
+
+    result = _night(rig, settings, clock, 0)
+
+    assert result.counts["days_planned"] == 0
+    assert rig.failures() == EMPTY_MEMORY
+    assert len(rig.failure_writes()) == 1  # the pruning is saved though no day is tried
+
+
+def test_an_unchanged_memory_is_not_saved_on_a_night_with_nothing_to_derive(
+    rig: Rig, settings: Settings, clock: Clock
+) -> None:
+    _night(rig, settings, clock, 0)
+
+    _night(rig, settings, clock, 0)
+
+    assert rig.failure_writes() == []
+
+
+_GOOD_ENTRY: dict[str, Any] = {
+    "nights": 1,
+    "target": "chains=a|v1",
+    "last_session": "2026-11-06",
+    "set_aside_on": None,
+    "retry_days": 7,
+}
+
+
+def _memory_body(**changes: Any) -> bytes:
+    body: dict[str, Any] = {"version": 1, "attempting": None, "days": {"2026-11-05": _GOOD_ENTRY}}
+    return json.dumps({**body, **changes}).encode()
+
+
+def _entry_body(**changes: Any) -> bytes:
+    return _memory_body(days={"2026-11-05": {**_GOOD_ENTRY, **changes}})
+
+
+BAD_MEMORIES: dict[str, bytes] = {
+    "not json": b"{oops",
+    "not utf-8": b"\xff\xfe\x00",
+    "a list": b"[]",
+    "a number": b"7",
+    "no version": json.dumps({"attempting": None, "days": {}}).encode(),
+    "version 2": _memory_body(version=2),
+    "version true": _memory_body(version=True),
+    "an extra top-level key": _memory_body(extra=1),
+    "no attempting": json.dumps({"version": 1, "days": {}}).encode(),
+    "no days": json.dumps({"version": 1, "attempting": None}).encode(),
+    "attempting a list": _memory_body(attempting=[]),
+    "attempting without a session": _memory_body(attempting={"day": "2026-11-05"}),
+    "attempting with an extra key": _memory_body(
+        attempting={"day": "2026-11-05", "session": "2026-11-06", "x": 1}
+    ),
+    "attempting day not a date": _memory_body(
+        attempting={"day": "yesterday", "session": "2026-11-06"}
+    ),
+    "attempting session not spelled as isoformat": _memory_body(
+        attempting={"day": "2026-11-05", "session": "20261106"}
+    ),
+    "days a list": _memory_body(days=[]),
+    "a day that is not a date": _memory_body(days={"ep-x.neon.tech": _GOOD_ENTRY}),
+    "an entry that is not an object": _memory_body(days={"2026-11-05": 3}),
+    "an entry without retry_days": _memory_body(
+        days={"2026-11-05": {k: v for k, v in _GOOD_ENTRY.items() if k != "retry_days"}}
+    ),
+    "an entry with an extra field": _entry_body(extra=1),
+    "nights negative": _entry_body(nights=-1),
+    "nights a bool": _entry_body(nights=True),
+    "nights text": _entry_body(nights="1"),
+    "target empty": _entry_body(target=""),
+    "target not text": _entry_body(target=5),
+    "last_session not a date": _entry_body(last_session="soon"),
+    "set_aside_on not spelled as isoformat": _entry_body(set_aside_on="20261106"),
+    "retry_days zero": _entry_body(retry_days=0),
+    "retry_days a bool": _entry_body(retry_days=True),
+}
+
+
+@pytest.mark.parametrize("body", BAD_MEMORIES.values(), ids=BAD_MEMORIES.keys())
+def test_a_malformed_memory_is_logged_by_class_read_as_empty_and_replaced_by_the_next_save(
+    rig: Rig,
+    settings: Settings,
+    clock: Clock,
+    capture_exception: MagicMock,
+    caplog: pytest.LogCaptureFixture,
+    body: bytes,
+) -> None:
+    rig.put_failures(body)
+    _fail(rig)
+
+    with caplog.at_level(logging.INFO, logger="research_derive"):
+        result = _night(rig, settings, clock, 0)
+
+    assert (result.status, result.counts["days_failed"], result.counts["days_derived"]) == (
+        "failed",
+        1,
+        4,
+    )
+    assert rig.failures() == {
+        "version": 1,
+        "attempting": None,
+        "days": {FAIL_DAY.isoformat(): _expected_entry(rig, FAIL_DAY, nights=1, last=_session(0))},
+    }
+    malformed = [r for r in caplog.records if "failure memory" in r.getMessage()]
+    assert len(malformed) == 1
+    assert malformed[0].levelno == logging.WARNING
+    assert re.fullmatch(
+        r"research-derive: failure memory is malformed \(\w+\); starting empty",
+        malformed[0].getMessage(),
+    )
+    assert "ep-x" not in caplog.text  # the body, and the failing day's exception text
+
+
+def _unreadable_memory(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The store refuses the memory's key and nothing else, as an R2 outage on one read would."""
+    denied = ClientError({"Error": {"Code": "AccessDenied"}}, "GetObject")
+    real_get_json = ResearchStore.get_json
+
+    def get_json(self: ResearchStore, key: str) -> object | None:
+        if key == FAILURES_KEY:
+            raise denied
+        return real_get_json(self, key)
+
+    monkeypatch.setattr(ResearchStore, "get_json", get_json)
+
+
+def test_a_memory_the_store_cannot_read_means_no_filter_and_no_save_that_night(
+    rig: Rig,
+    settings: Settings,
+    clock: Clock,
+    capture_exception: MagicMock,
+    capture_message: MagicMock,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _fail(rig)
+    for offset in range(3):
+        _night(rig, settings, clock, offset)  # set aside on session 2
+    stored = rig.failures_bytes()
+    _unreadable_memory(monkeypatch)
+    rig.events.clear()
+
+    with caplog.at_level(logging.INFO, logger="research_derive"):
+        result = _night(rig, settings, clock, 3)
+
+    assert str(FAIL_DAY) in _isos(rig.events, "fetch")  # nothing is known of it: it is tried
+    assert (result.status, result.counts["days_failed"], result.counts["days_set_aside"]) == (
+        "failed",
+        1,
+        0,
+    )
+    assert rig.failure_writes() == []
+    assert rig.failures_bytes() == stored  # the valid memory is not overwritten from an empty one
+    assert capture_message.call_count == 1  # tonight's failure sends no warning of its own
+    unread = [r for r in caplog.records if "failure memory not read" in r.getMessage()]
+    assert len(unread) == 1
+    assert unread[0].levelno == logging.WARNING
+    assert "ClientError" in unread[0].getMessage()
+    assert "AccessDenied" not in caplog.text
+
+
+def test_a_memory_the_store_cannot_read_converts_no_marker(
+    rig: Rig,
+    settings: Settings,
+    clock: Clock,
+    capture_exception: MagicMock,
+    capture_message: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _fail(rig)
+    for offset in (0, 1):
+        _night(rig, settings, clock, offset)  # two failed sessions
+    stored = _memory(rig)
+    stored["attempting"] = {"day": FAIL_DAY.isoformat(), "session": _session(2).isoformat()}
+    rig.put_failures(stored)  # a third, ended by a kill
+    before = rig.failures_bytes()
+    _unreadable_memory(monkeypatch)
+
+    _night(rig, settings, clock, 3)
+
+    capture_message.assert_not_called()  # counted, it would have set the day aside
+    assert rig.failure_writes() == []
+    assert rig.failures_bytes() == before
+
+
+def test_a_memory_the_store_cannot_read_leaves_an_ok_night_ok(
+    rig: Rig, settings: Settings, clock: Clock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _unreadable_memory(monkeypatch)
+
+    result = rig.run(_ctx(settings, clock))
+
+    assert (result.status, result.detail) == ("ok", "")
+    assert dict(result.counts) == _full_counts(5)
+    assert rig.failure_writes() == []
+    assert rig.failures_bytes() is None
+    assert rig.manifest() == rig.expected_manifest(DAYS)
+
+
+@pytest.mark.parametrize("outcome", ["derived", "failed", "tape-missing", "sigterm"])
+def test_a_memory_the_store_cannot_read_is_written_by_no_outcome(
+    rig: Rig,
+    settings: Settings,
+    clock: Clock,
+    capture_exception: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+    outcome: str,
+) -> None:
+    rig.put_failures(EMPTY_MEMORY)  # something valid to lose
+    before = rig.failures_bytes()
+    _unreadable_memory(monkeypatch)
+    if outcome == "failed":
+        _fail(rig)
+    elif outcome == "tape-missing":
+        rig.missing_tape.add(FAIL_DAY)
+    elif outcome == "sigterm":
+        rig.fetch_errors[FAIL_DAY] = SystemExit(143)
+
+    if outcome == "sigterm":
+        with pytest.raises(SystemExit):
+            rig.run(_ctx(settings, clock))
+    else:
+        rig.run(_ctx(settings, clock))
+
+    assert rig.failure_writes() == []
+    assert rig.failures_bytes() == before
+
+
+def _failure_saves_fail(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every PUT of the memory is refused; the manifest and the objects go through."""
+    denied = ClientError({"Error": {"Code": "AccessDenied"}}, "PutObject")
+    real_put_json = ResearchStore.put_json
+
+    def put_json(self: ResearchStore, key: str, obj: object) -> None:
+        if key == FAILURES_KEY:
+            raise denied
+        real_put_json(self, key, obj)
+
+    monkeypatch.setattr(ResearchStore, "put_json", put_json)
+
+
+def test_a_memory_that_will_not_save_is_logged_by_class_and_changes_no_outcome(
+    rig: Rig,
+    settings: Settings,
+    clock: Clock,
+    capture_exception: MagicMock,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _failure_saves_fail(monkeypatch)
+    _fail(rig)
+
+    with caplog.at_level(logging.INFO, logger="research_derive"):
+        result = rig.run(_ctx(settings, clock))
+
+    assert (result.status, result.detail) == ("failed", FAILED_DETAIL)
+    assert dict(result.counts) == _full_counts(
+        5,
+        days_derived=4,
+        days_failed=1,
+        chains_written=4,
+        exit_policy_written=4,
+        flow_timing_written=4,
+        rows_written=4 * DAY_ROWS,
+    )
+    assert rig.manifest() == rig.expected_manifest(DAYS[1:])
+    assert rig.failures_bytes() is None
+    unsaved = [r for r in caplog.records if "failure memory not saved" in r.getMessage()]
+    assert len(unsaved) == 2 * len(DAYS)  # each of the day's two saves is tried and logged
+    assert all(r.levelno == logging.WARNING and "ClientError" in r.getMessage() for r in unsaved)
+    assert "AccessDenied" not in caplog.text
+    assert capture_exception.call_count == 1
+
+
+def test_a_later_save_carries_what_an_earlier_one_lost(
+    rig: Rig,
+    settings: Settings,
+    clock: Clock,
+    capture_exception: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_put_json = ResearchStore.put_json
+    refused: list[str] = []
+
+    def put_json_refusing_the_first_memory_save(self: ResearchStore, key: str, obj: object) -> None:
+        if key == FAILURES_KEY and not refused:
+            refused.append(key)
+            raise ClientError({"Error": {"Code": "InternalError"}}, "PutObject")
+        real_put_json(self, key, obj)
+
+    monkeypatch.setattr(ResearchStore, "put_json", put_json_refusing_the_first_memory_save)
+    _fail(rig)
+
+    rig.run(_ctx(settings, clock))
+
+    assert refused == [FAILURES_KEY]
+    assert rig.failures() == {
+        "version": 1,
+        "attempting": None,
+        "days": {FAIL_DAY.isoformat(): _expected_entry(rig, FAIL_DAY, nights=1, last=LAST_SESSION)},
+    }
+
+
+def test_every_planned_day_lands_in_exactly_one_count(
+    rig: Rig,
+    settings: Settings,
+    clock: Clock,
+    capture_exception: MagicMock,
+    capture_message: MagicMock,
+) -> None:
+    # Seven stale days, newest first, and each of the six outcomes at least once.
+    derived, missing, skipped, retried, failed_a, failed_b, left = (
+        DAYS[4],
+        DAYS[3],
+        DAYS[2],
+        DAYS[1],
+        DAYS[0],
+        date(2026, 11, 4),
+        date(2026, 11, 3),
+    )
+    rig.land(failed_b)
+    rig.land(left)
+    rig.missing_tape.add(missing)
+    for day in (retried, failed_a, failed_b):
+        _fail(rig, day)
+
+    def set_aside(day: date, on: date) -> dict[str, Any]:
+        return {
+            "nights": 3,
+            "target": _target_of(rig, day),
+            "last_session": on.isoformat(),
+            "set_aside_on": on.isoformat(),
+            "retry_days": 7,
+        }
+
+    rig.put_failures(
+        {
+            "version": 1,
+            "attempting": None,
+            "days": {
+                skipped.isoformat(): set_aside(skipped, LAST_SESSION - timedelta(days=2)),
+                retried.isoformat(): set_aside(retried, LAST_SESSION - timedelta(days=7)),
+            },
+        }
+    )
+
+    result = rig.run(_ctx(settings, clock))
+
+    c = result.counts
+    assert (
+        c["days_planned"],
+        c["days_derived"],
+        c["days_tape_missing"],
+        c["days_set_aside"],
+        c["days_retry_failed"],
+        c["days_failed"],
+        c["days_left"],
+    ) == (7, 1, 1, 1, 1, 2, 1)
+    _assert_balanced(c)
+    assert result.status == "failed"  # a retry's failure alone would not have made it so
+    assert _entry(rig, retried) == _expected_entry(
+        rig,
+        retried,
+        nights=3,
+        last=LAST_SESSION - timedelta(days=7),
+        set_aside=LAST_SESSION,
+        retry_days=14,
+    )
+    assert derived.isoformat() not in _memory(rig)["days"]
+
+
+def test_nothing_logged_or_reported_carries_row_data_or_exception_text(
+    rig: Rig,
+    settings: Settings,
+    clock: Clock,
+    capture_message: MagicMock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    _fail(rig, text="row 7 of ep-x.neon.tech")
+
+    with caplog.at_level(logging.INFO, logger="research_derive"):
+        for offset in range(4):
+            _night(rig, settings, clock, offset)
+
+    capture_message.assert_called_once()
+    surfaces = (
+        repr(capture_message.call_args_list),
+        caplog.text,
+        (rig.failures_bytes() or b"").decode(),
+    )
+    for text in surfaces:
+        assert "row 7" not in text
+        assert "ep-x" not in text
