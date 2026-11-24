@@ -45,6 +45,14 @@ export interface IntradayResponse {
     readonly minutes: number;
     readonly complete: boolean;
   } | null;
+  /**
+   * The ET date (YYYY-MM-DD) of the session the range and OHLC are from: today
+   * once today's first bar has come, else the last session's (before the open,
+   * on a weekend or a holiday). Null when Schwab returned no candles. A client
+   * that holds this body across a session boundary reads it against today's
+   * ET date to tell a current range from a previous session's.
+   */
+  readonly sessionDate: string | null;
   readonly previousClose: number;
   readonly candleCount: number;
   readonly marketOpen: boolean;

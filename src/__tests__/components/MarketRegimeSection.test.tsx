@@ -837,6 +837,7 @@ describe('MarketRegimeSection', () => {
             minutes: 30,
             complete: true,
           },
+          sessionDate: '2026-03-12',
           previousClose: 6940,
           candleCount: 6,
           marketOpen: true,
