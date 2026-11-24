@@ -142,8 +142,10 @@ describe('App date-clock wiring', () => {
   });
 
   it('resolves the option chain once, none for a snapshot or a past date, and hands it to both readers', () => {
-    // useChainData fetches the live /api/chain on a past date with no history,
-    // and keeps its last chain once history is on, so its raw value is today's.
+    // The hook's raw value is not always the shown view's: it keeps its last
+    // chain in state when its fetch turns off (today to a past date), and
+    // today scrubbed back to a candle-covered slot has a history snapshot while
+    // the hook is still fetching.
     expect(appCode).toMatch(
       /const liveChain =\s*historySnapshot \|\| analysisIsBacktest\s*\? null\s*: chainData\.chain;/,
     );

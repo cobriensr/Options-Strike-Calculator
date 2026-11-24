@@ -853,10 +853,12 @@ export default function StrikeCalculator() {
 
   // Today's option chain, resolved once for everything that reads it: the
   // Settlement Pin Risk card and the analyze context's top-OI strikes and skew.
-  // /api/chain is today's, and useChainData keeps the last chain it loaded once
-  // history is on and fetches the live one on a past date with no history, so
-  // its raw value is not the selected date's. A history snapshot or a past date
-  // gets none.
+  // /api/chain is today's, and the hook's raw value is not always the shown
+  // view's, for two reasons. It keeps its last chain in state when `enabled`
+  // turns off, so moving from today to a past date leaves today's chain in
+  // `chainData.chain`. And today scrubbed back to a slot the candles cover has
+  // a history snapshot, and the live chain must not show beside it, though the
+  // hook is still fetching. A history snapshot or a past date gets none.
   const liveChain =
     historySnapshot || analysisIsBacktest ? null : chainData.chain;
 
