@@ -26,6 +26,10 @@ On 2026-11-22 the owner added the GEX landscape freshness fix ("yes"). That make
 
 - **No visible change.** Visible text, classes, colors and layout stay as they are, and so does where a tooltip appears on hover. Wrapping a glyph in `<span aria-hidden="true">` is allowed. The one exception is Tasks 18–19: the GEX landscape freshness display the owner approved.
 - **Hint text goes through `<SrHint>` only,** as the element's last *direct* child. `srHintText` and `titledElementsNeedingHint` read direct children only. If the hint is conditional (`{x != null && <SrHint>…</SrHint>}`), it is still the last child. No ad-hoc `sr-only` spans.
+  - As built (final review): `SrHint` carries no position offsets, so its 1 px box stays beside its text.
+  - Any horizontal scroller that holds a hint or a raw `sr-only` element must itself be `relative`, as `ScrollHint`'s scroller is. An unpositioned `overflow-x-auto` box lets an absolute child escape it and widen a phone page: the hedge scenario table's `(gain)/(loss)` spans took a 375 px page to 500 px.
+  - An earlier hotfix (`1c27761e1`) pinned every hint at `top-0 left-0` instead. For most hints that anchored the box to the page's top-left corner, which VoiceOver on iOS may scroll to. The final review replaced it.
+  - `e2e/narrow-panels.spec.ts` opens each table behind a disclosure at 375 px and checks that the page doesn't scroll sideways.
 - **Keep every `title` byte-identical,** except the ten W sites, whose new text the table gives. When a site builds its title from a new `srText`/hint constant, a test pins the full title string. Add no new `title`.
 - **A hint never repeats what the element already shows.** Where the title starts with or contains the visible label, the hint is a trimmed variant: a separate constant or field, the `Moneyness.srText` pattern (`IntervalBARow.tsx:113-145`).
 - **Per-row hints are short.** A hint on an element that repeats in every row of a table, feed or list is at most 60 characters (see Thresholds). The long explanation stays on the column header or in the `title`.
@@ -88,7 +92,7 @@ On 2026-11-22 the owner added the GEX landscape freshness fix ("yes"). That make
 | 8 | `…/FireRow.tsx:119` GEXBot data badge (per row) | `GEXBot data` | **H** `GEXBot taker flow; rules were tuned on UW Periscope data` |
 | 9 | `…/FireRow.tsx:127` outcome (per row) | `+5.4 pts @ +30m` | **H** `direction-adjusted return from the fire bar close` |
 | 10 | `…/RollingStatsBar.tsx:94` stats error | `stats error` | **H** `{error}`. Add the missing error-state test. |
-| 11 | `…/RollingStatsBar.tsx:108` outcomes note | `(18 outcomes)` | **H**: hoist the title ternary to one const and use it for both. **W**: `` `${n} fires still awaiting +30m backfill` `` → pluralize (`1 fire still awaiting …`). |
+| 11 | `…/RollingStatsBar.tsx:108` outcomes note | `(18 outcomes)` | **H**: hoist the title ternary to one const and use it for both. **W**: `` `${n} fires still awaiting +30m backfill` `` → pluralize (`1 fire still awaiting …`). As built, trimmed in the final review: with nothing pending the hint is `all resolved`. It was `All outcomes resolved`, which repeated the label and was the only capitalised hint. |
 | 12 | `GreekFlowPanel/MetricsBar.tsx:48` slope placeholder | `—` | **I** `not enough points to compute the slope`. This keeps `MetricsBar.test.tsx:50, 211-212` (`textContent === '—'`, one span) passing. |
 | 13 | `…/MetricsBar.tsx:64` slope badge (per row) | `↑ slope` | **H** `` `last 15 min: ${slope.slope.toFixed(2)} per min` `` |
 | 14 | `…/MetricsBar.tsx:82` flip badge (per row) | `flip` | **H** `` `sign changed within 30 min, at ${time} (magnitude ${mag})` ``, where `mag` is in compact notation (`1.2M`), like `FlowChart.tsx:199-203` (`Intl.NumberFormat` `notation: 'compact'`); share one formatter. The raw `toFixed(0)` can run 9 digits and break the 60-character cap. Drop the `at …` clause whenever `fmtTime(...)` returns `—`, which covers a null and an invalid timestamp. Test with magnitude 123456789. The title is unchanged. |
@@ -120,8 +124,8 @@ Files: `GexLandscape/BiasPanel.tsx`, `StrikeTable.tsx`, `classify.ts`, `constant
 | 33–35 | `StrikeTable.tsx:120,126,132` Δ5m / Δ15m / Δ30m headers | the header word | **H** the title text. |
 | 36 | `StrikeTable.tsx:138` Vol Reinf. header | `Vol Reinf.` | **H** `delta-trend agreement. Reinforcing: all three Δ% windows move with the netGamma sign, so the strike's gamma is growing in that sign. Opposing: all three move against it, so it is shrinking toward zero. Neutral: mixed, sparse or no data` |
 | 37 | `StrikeTable.tsx:205` signed distance (per row) | `+15 pts` | **H** `above spot` / `below spot` |
-| 38 | `StrikeTable.tsx:222` class badge (per row) | `Takers −γ +charm` | **H** `` `takers net ${gamma} gamma, net ${charm} charm` ``. The shared piece is a new `takerSideWords(cls): { gamma: 'long' \| 'short'; charm: 'long' \| 'short' }` in `classify.ts`. `signalTooltip` takes its two words from it and still builds its own sentence, which stays byte-identical. The hint string is built from the same words. |
-| 39 | `StrikeTable.tsx:266` position signal (per row) | `Taker-short γ above spot` | **H** a new `positionBand(dir)` in `classify.ts`: `` `more than ${SPX_SPOT_BAND} pts above spot` `` / `below spot` / `` `within ${SPX_SPOT_BAND} pts of spot` ``. `signalTooltip` reuses it. |
+| 38 | `StrikeTable.tsx:222` class badge (per row) | `Takers −γ +charm` | **H** `` `takers net ${gamma} gamma, net ${charm} charm` ``. The shared piece is a new `takerSideWords(cls): { gamma: 'long' \| 'short'; charm: 'long' \| 'short' }` in `classify.ts`. `signalTooltip` takes its two words from it and still builds its own sentence, which stays byte-identical. The hint string is built from the same words. As built, trimmed in the final review: the hint is `` `net ${gamma} gamma, net ${charm} charm` ``, without `takers`, which the badge already shows. |
+| 39 | `StrikeTable.tsx:266` position signal (per row) | `Taker-short γ above spot` | **H** a new `positionBand(dir)` in `classify.ts`: `` `more than ${SPX_SPOT_BAND} pts above spot` `` / `below spot` / `` `within ${SPX_SPOT_BAND} pts of spot` ``. `signalTooltip` reuses it. As built, trimmed in the final review: the hint comes from a new `positionDistance(dir)`, `` `more than ${SPX_SPOT_BAND} pts` `` / `` `within ${SPX_SPOT_BAND} pts` ``, because the cell already says above, below or at spot. `positionBand` is built from it, so the title stays byte-identical. |
 | 40 | `StrikeTable.tsx:286` charm value (per row) | `+2.0M` | **H** a new `charmHint(netCharm)`: `takers net long charm` (≥ 0) / `takers net short charm`. Same split as `charmTooltip`. |
 
 ### Lottery Finder panel and banners (sites 41–54)
@@ -168,11 +172,11 @@ Files: `IntervalBAAlertBanner.tsx`, `IntervalBAFeed/IntervalBAFeed.tsx`, `Interv
 
 | # | Site | Visible | Fix |
 |---|---|---|---|
-| 68 | `IntervalBAAlertBanner.tsx:178` side pill (live: `role="alert"` toast) | `CALL` / `PUT` | **H** `SIDE_SR_TEXT[side]`: `buyers paid the ask for upside calls, bullish` / `buyers paid the ask for downside puts, bearish`. The title stays the current literal. |
+| 68 | `IntervalBAAlertBanner.tsx:178` side pill (live: `role="alert"` toast) | `CALL` / `PUT` | **H** `SIDE_SR_TEXT[side]`: `buyers paid the ask for upside calls, bullish` / `buyers paid the ask for downside puts, bearish`. The title stays the current literal. As built, trimmed in the final review: `buyers paid the ask for upside, bullish` / `buyers paid the ask for downside, bearish`, without `calls`/`puts`, which the pill already shows. |
 | 69 | `IntervalBAAlertBanner.tsx:190` confluence pill (live: toast) | `+QQQ +SPY` | **H** `same direction within about 90 seconds` |
 | 70 | `IntervalBAFeed/IntervalBAFeed.tsx:149` | `stale` | **H** `three polls in a row went unanswered; the rows shown may be out of date` |
 | 71 | `IntervalBARow.tsx:293` severity pill (per row) | `EXTREME` / `CRITICAL` / `WARNING` | **H** a new `srText` field in `SEVERITY_STYLES`: `bucket total premium at least $1M, the highest tier` / `bucket total premium $500K to $1M, the middle tier` (no "floor": `IntervalBARow.test.tsx:238` queries `/floor/`) / `bucket total premium $250K to $500K, the lowest tier`. `tooltip` is unchanged. |
-| 72 | `IntervalBARow.tsx:306` side pill (per row) | `CALL` / `PUT` | **H** `SIDE_SR_TEXT[side]` (shared with site 68). |
+| 72 | `IntervalBARow.tsx:306` side pill (per row) | `CALL` / `PUT` | **H** `SIDE_SR_TEXT[side]` (shared with site 68, so trimmed with it). |
 | 73 | `IntervalBARow.tsx:329` confluence pill (per row) | `+QQQ +SPY` | **H** `cross-symbol confluence within about 90 seconds`. **W**: drop the title's hit-rate sentence (`CALL hit-rate lifts from 53% solo to 61% with at least one partner (per 2026-05-12 backfill analysis).`). The title keeps only the confluence definition (see the note below the table). |
 | 74 | `IntervalBARow.tsx:341` ratio block (per row) | `86% ratio` | **H** `ask-side share of bucket premium; 75% is the anomaly bar` |
 | 75 | `IntervalBARow.tsx:429` side letter (per row, detail panel) | `C` / `P` | **H** `call` / `put` |
@@ -553,6 +557,20 @@ Commit: `fix(gex): Show DELAYED and a stalled-feed message when the landscape da
 - [ ] Run it. It passes on the branch after Tasks 0–19, and fails when one fixed site's hint is removed. Check that by hand, then revert.
 - [ ] `npm run review` green, then commit: `test(a11y): Fail when a plain element explains itself only in hover text`.
 
+### Final review fixes (as built)
+
+The whole-branch review found no critical issues. These fixes landed in one wave, `afae8f959..a3646e3c5`:
+
+- **Hint containment.** See the Global Constraints note on `SrHint`. `relative` went on the `ScrollHint` scroller, the hedge scenario section, the two Options Alerts panes, the GEX landscape rows list and the Greek heatmap scroller. The audit also covered `overflow-y-auto` boxes, because `overflow-y: auto` computes `overflow-x` to `auto` too.
+- **Four hints that repeated their visible words** (sites 11, 38, 39, 68/72): trimmed. The site rows give the new text. Every title is unchanged.
+- **AnalysisHistory** (`ChartAnalysis/AnalysisHistory.tsx`), outside the site tables:
+  - It set the shown time and mode in two effects, so a new date painted blank frames before its analysis showed.
+  - Both are now derived in render. The time is the user's pick if it's still offered, else the first time. The mode is the user's pick if it's still offered, else the first of entry, midday, review.
+  - The run index now resets on every new load (another date, a filter change, a refresh), so a new date opens on run 1, not run 2.
+  - The list of modes at a time is deduplicated. The Type group used to show whenever a time held 2 or more analyses, so two runs of one mode showed a Type group with a single button. It now shows only when there are 2 or more modes to choose between.
+- **AnalysisHistoryPicker:** the filter, Type and Run buttons showed the selected one by colour only. They now set `aria-pressed`.
+- **`no-generic-aria-name.test.ts`** parses the tree in a `beforeAll(…, 60_000)`, as the new guard does.
+
 ## Open questions
 
 None. My default calls:
@@ -564,3 +582,4 @@ None. My default calls:
 ## Notes for the owner (found, not changed)
 
 - **The futures volume level is color-only for sighted users too.** Site 84 gives screen readers the word. Showing `HEAVY`/`ELEVATED` on screen would be a visible change, so it is not in this plan.
+- **The Lottery Finder and Silent Boom rows were not measured at phone width.** No e2e spec mocks their feeds. The claim that their `flex-wrap` rows keep each hint inside the pane rests on reading the code. The panes are `relative` as a backstop.
