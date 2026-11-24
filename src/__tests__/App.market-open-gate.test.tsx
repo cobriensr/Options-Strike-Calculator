@@ -436,6 +436,7 @@ describe('App polling gate (market clock AND owner-or-guest)', () => {
     globalThis.location.hash = '';
     h.routeByRegistry.on = true;
     h.panelPrefs.isHidden = () => false;
+    h.vix.selectedDate = h.vix.etToday;
   });
 
   describe.each(SCENARIOS)('$name', (s) => {
@@ -908,6 +909,64 @@ describe('App polling gate (market clock AND owner-or-guest)', () => {
     });
   });
 
+  // The chain fetch (useChainData's first argument) is the live /api/chain, so
+  // it follows the selected date, not whether history has loaded: since
+  // useHistoryData also fetches today's candles, `hasHistory` is true on
+  // today once the first candle exists, and gating on it would freeze the
+  // chain for the rest of the session.
+  describe('the chain fetch and the selected date', () => {
+    beforeEach(() => {
+      h.market.current = marketFor(viewer('owner'));
+    });
+
+    it('is on for today with no history', () => {
+      // "Today" is the mock clock's 2026-11-18, a past date by the wall clock:
+      // judging "past" against the wall clock would turn this off.
+      mountApp();
+
+      expect(new Set(argsAt(h.useChainData, 0))).toEqual(new Set([true]));
+    });
+
+    it("stays on for today once today's history has loaded", () => {
+      h.history.hasHistory = true;
+      mountApp();
+
+      expect(new Set(argsAt(h.useChainData, 0))).toEqual(new Set([true]));
+    });
+
+    it.each([
+      ['with history', true],
+      ['without history (a weekend, a holiday, a failed fetch)', false],
+    ])('is off for a past date %s', (_label, hasHistory) => {
+      h.vix.selectedDate = '2026-11-17';
+      h.history.hasHistory = hasHistory;
+      mountApp();
+
+      expect(new Set(argsAt(h.useChainData, 0))).toEqual(new Set([false]));
+    });
+
+    it('turns off when the date moves to a past one, and back on at today', () => {
+      h.history.hasHistory = true;
+      const { rerender } = mountApp();
+      expect(lastArgAt(h.useChainData, 0)).toBe(true);
+
+      h.vix.selectedDate = '2026-11-17';
+      rerender(appElement());
+      expect(lastArgAt(h.useChainData, 0)).toBe(false);
+
+      h.vix.selectedDate = h.vix.etToday;
+      rerender(appElement());
+      expect(lastArgAt(h.useChainData, 0)).toBe(true);
+    });
+
+    it('is off without market data, whatever the date', () => {
+      h.market.current = marketFor(viewer('owner'), false);
+      mountApp();
+
+      expect(new Set(argsAt(h.useChainData, 0))).toEqual(new Set([false]));
+    });
+  });
+
   // Here useMarketData is the real hook (everything else is still mocked), fed
   // a quote by a stubbed /api/quotes. It keeps `data` when a visitor drops to
   // public, so what App reads as "market data" has to come from the hook's own
@@ -945,16 +1004,19 @@ describe('App polling gate (market clock AND owner-or-guest)', () => {
       // chain.
       await waitFor(() => expect(lastArgAt(h.useChainData, 0)).toBe(true));
 
-      // A past date's history shows, so the chain is off.
+      // A past date is selected, so the chain is off.
+      h.vix.selectedDate = '2026-11-17';
       h.history.hasHistory = true;
       rerender(appElement());
       expect(lastArgAt(h.useChainData, 0)).toBe(false);
 
-      // The session drops to public and the history hook clears its history.
-      // The quote the market hook keeps must not turn the chain back on:
-      // /api/chain is owner-or-guest, so the request would be a 401.
+      // The session drops to public, on today, and the history hook clears its
+      // history. The quote the market hook keeps must not turn the chain back
+      // on: /api/chain is owner-or-guest, so the request would be a 401. The
+      // date is today so that only the access mode can keep it off.
       h.useChainData.mockClear();
       h.access.mode = 'public';
+      h.vix.selectedDate = h.vix.etToday;
       h.history.hasHistory = false;
       rerender(appElement());
       await act(async () => {

@@ -323,10 +323,6 @@ export default function StrikeCalculator() {
   );
   const historyData = useHistoryData(vix.selectedDate);
   const vix1dStatic = useVix1dData();
-  const chainData = useChainData(
-    market.hasData && !historyData.hasHistory,
-    liveMarketOpen,
-  );
   const alertState = useAlertPolling(liveMarketOpen);
   const intervalBAMute = useIntervalBAMute();
   const intervalBAAlertState = useIntervalBAAlerts(
@@ -567,6 +563,17 @@ export default function StrikeCalculator() {
   // follows: at ET midnight a date that follows today moves with it in the
   // same render, so a tab open across midnight stays on today, never "past".
   const analysisIsBacktest = isPastETDate(vix.selectedDate, vix.etToday);
+
+  // /api/chain is today's live chain, so its fetch follows the selected date,
+  // not whether history has loaded: useHistoryData also fetches today's
+  // candles, so `hasHistory` is true on today once the first candle exists,
+  // and gating on it left the chain unfetched or frozen at one pre-history
+  // fetch for the rest of the session. Today scrubbed back keeps fetching;
+  // `liveChain` below keeps that chain off the scrubbed-back view.
+  const chainData = useChainData(
+    market.hasData && !analysisIsBacktest,
+    liveMarketOpen,
+  );
 
   // The selected date's market events, resolved once for everything that
   // reads them: the snapshot save's event-day flag and names, the analyze
