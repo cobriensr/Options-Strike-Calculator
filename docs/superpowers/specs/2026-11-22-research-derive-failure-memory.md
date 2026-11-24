@@ -131,8 +131,9 @@ directly from `research_derive.py`, as `outcome_check.py` and `tape_job.py` do.
 - Extra: `cause`, which is the exception class of the failure that crossed the threshold, or the
   fixed phrase `run died` when a marker conversion did.
 - No row data and no exception text.
-- A day set aside again after a new situation re-uses its issue. Resolve the issue when the cause
-  is fixed, or the repeat emails nobody.
+- A day set aside again after a new situation re-uses its issue. Since 2026-11-24 the project
+  auto-resolves an issue after 12 quiet hours, so the repeat regresses it and emails again; no
+  one has to resolve it by hand.
 
 ### Status
 
