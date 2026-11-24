@@ -31,7 +31,7 @@
  * - elements that may be named (`section`, `fieldset`, `svg`, `td`, ...).
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import { readdirSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import {
@@ -613,6 +613,20 @@ describe('titledGenericsWithoutHint', () => {
 describe('src/ generic-element name guard', () => {
   const srcDir = resolve(process.cwd(), 'src');
   const files = appSourceFiles(srcDir);
+  let offenders: string[] = [];
+
+  // Reads and parses every app source file with the TypeScript compiler. A
+  // whole-tree parse timed out at the default 15 s under machine load in
+  // api/__tests__/no-session-set.test.ts, so the scan runs in a hook with a
+  // 60 s limit of its own and the test asserts its result.
+  beforeAll(() => {
+    offenders = files.flatMap((file) =>
+      findGenericAriaNames(
+        file,
+        readFileSync(resolve(srcDir, file), 'utf8'),
+      ).map((hit) => `src/${file}:${hit}`),
+    );
+  }, 60_000);
 
   it('scans the app tree, not an empty or wrong directory', () => {
     expect(files.length).toBeGreaterThan(100);
@@ -637,12 +651,6 @@ describe('src/ generic-element name guard', () => {
   });
 
   it('gives no bare span, div or other generic element a screen-reader name', () => {
-    const offenders = files.flatMap((file) =>
-      findGenericAriaNames(
-        file,
-        readFileSync(resolve(srcDir, file), 'utf8'),
-      ).map((hit) => `src/${file}:${hit}`),
-    );
     expect(
       offenders,
       'ARIA 1.2 prohibits naming a generic element, and screen readers mostly ' +
