@@ -1161,7 +1161,9 @@ object: the manifest keeps its shape, so a rollback to older code still reads it
   read as empty and replaced by the next save. One the store cannot read (an R2 error)
   is logged by class, and that night runs with no memory at all: nothing is set aside,
   counted or saved, and the stored object is not touched.
-- **Saving.** Every save writes the whole object, twice per day tried. A save that fails
+- **Saving.** Every save writes the whole object, twice per day tried (the marker before,
+  the outcome after), and once after planning when the plan pruned, reset or converted
+  something: on a night where nothing is tried that is the only save. A save that fails
   is logged by class and changes no outcome; the next save carries it.
 - **To clear a set-aside day by hand** there is no tool: a changed target or a retry clears
   it, and deleting the object clears every day. Do that outside 07:15–12:30 UTC.
