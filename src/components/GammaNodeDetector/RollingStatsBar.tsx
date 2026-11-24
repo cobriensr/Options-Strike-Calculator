@@ -52,18 +52,19 @@ function meanEdgeColor(pts: number | null): string {
 
 /**
  * "(N outcomes)", with how many fires still await their +30m backfill as the
- * hover title and, word for word, as a hint for screen readers.
+ * hover title and as a hint for screen readers. The hint is the title's
+ * words, except that it drops "outcomes" when none are pending: the cell
+ * already says it, and a hint starts lower case after its dash.
  */
 function OutcomesNote({ stats }: Readonly<{ stats: AggregateStats }>) {
   const pending = stats.n_total - stats.n_with_outcome;
-  const note =
-    pending === 0
-      ? 'All outcomes resolved'
-      : `${pending} fire${pending === 1 ? '' : 's'} still awaiting +30m backfill`;
+  const awaiting = `${pending} fire${pending === 1 ? '' : 's'} still awaiting +30m backfill`;
+  const title = pending === 0 ? 'All outcomes resolved' : awaiting;
+  const hint = pending === 0 ? 'all resolved' : awaiting;
   return (
-    <span className="text-muted font-mono text-[10px]" title={note}>
+    <span className="text-muted font-mono text-[10px]" title={title}>
       ({stats.n_with_outcome} outcomes)
-      <SrHint>{note}</SrHint>
+      <SrHint>{hint}</SrHint>
     </span>
   );
 }

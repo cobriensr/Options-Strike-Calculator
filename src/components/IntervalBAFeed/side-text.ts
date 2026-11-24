@@ -19,11 +19,12 @@ export const SIDE_TITLE: Record<'C' | 'P', string> = {
 
 /**
  * Screen-reader hint for the pill. The pill shows only "CALL" or "PUT", so
- * this leaves those words out and says what the print was: who paid which
- * side, and which way the bet leans. Both the toast and the row repeat it on
- * every announcement or row, so each stays well under 60 characters.
+ * this leaves those words out, "calls" and "puts" with them, and says what
+ * the print was: who paid which side, and which way the bet leans. Both the
+ * toast and the row repeat it on every announcement or row, so each stays
+ * well under 60 characters.
  */
 export const SIDE_SR_TEXT: Record<'C' | 'P', string> = {
-  C: 'buyers paid the ask for upside calls, bullish',
-  P: 'buyers paid the ask for downside puts, bearish',
+  C: 'buyers paid the ask for upside, bullish',
+  P: 'buyers paid the ask for downside, bearish',
 };

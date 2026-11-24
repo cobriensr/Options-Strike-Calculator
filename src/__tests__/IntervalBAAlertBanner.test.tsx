@@ -291,13 +291,13 @@ describe('IntervalBAAlertBanner: hidden hints for the pills', () => {
       'C' as const,
       'CALL',
       'CALL — ask-side buyers paid up for upside calls. Bullish directional bet.',
-      'buyers paid the ask for upside calls, bullish',
+      'buyers paid the ask for upside, bullish',
     ],
     [
       'P' as const,
       'PUT',
       'PUT — ask-side buyers paid up for downside puts. Bearish directional bet.',
-      'buyers paid the ask for downside puts, bearish',
+      'buyers paid the ask for downside, bearish',
     ],
   ])(
     'explains the %s side pill in a short hidden hint, not an aria-label, and keeps the title',
@@ -310,6 +310,8 @@ describe('IntervalBAAlertBanner: hidden hints for the pills', () => {
       );
       const pill = screen.getByText(label);
       expect(srHintText(pill)).toBe(hint);
+      // The pill already says CALL or PUT, so the hint does not
+      expect(srHintText(pill)).not.toMatch(new RegExp(label, 'i'));
       expect(srHintText(pill)!.length).toBeLessThanOrEqual(MAX_LIVE_HINT);
       expect(pill).toHaveAttribute('title', title);
       expect(pill).not.toHaveAttribute('aria-label');

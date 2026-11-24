@@ -176,7 +176,7 @@ describe('RollingStatsBar', () => {
       mockResponse(makeStats({ n_total: 18, n_with_outcome: 18 }));
       const { container } = render(<RollingStatsBar marketOpen />);
       const note = await screen.findByText('(18 outcomes)');
-      expect(srHintText(note)).toBe('All outcomes resolved');
+      expect(srHintText(note)).toBe('all resolved');
       expect(note).toHaveAttribute('title', 'All outcomes resolved');
       expect(titledGenericsWithoutHint(container)).toEqual([]);
     });
