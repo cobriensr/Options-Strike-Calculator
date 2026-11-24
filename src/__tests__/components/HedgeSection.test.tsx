@@ -188,6 +188,26 @@ describe('HedgeSection', () => {
     expect(screen.getByText('Rally Scenarios (SPX rises)')).toBeInTheDocument();
   });
 
+  it('positions each scenario scroller so its hidden (gain)/(loss) text stays contained', async () => {
+    // The table's sr-only (gain)/(loss) spans are position: absolute with no
+    // offsets. In an unpositioned overflow-x-auto section they sat past the
+    // right edge of a 375px phone (scrollWidth 375 -> 500 once the table
+    // opened). A positioned scroller contains and clips them.
+    const user = userEvent.setup();
+    renderHedge();
+    await user.click(
+      screen.getByRole('button', { name: /show p&l scenario table/i }),
+    );
+
+    const scrollers = screen.getAllByRole('region', {
+      name: 'Hedge scenarios',
+    });
+    expect(scrollers).toHaveLength(2);
+    for (const scroller of scrollers) {
+      expect(scroller).toHaveClass('overflow-x-auto', 'relative');
+    }
+  });
+
   it('clicking a different hedge delta updates the selection', async () => {
     const user = userEvent.setup();
     renderHedge();

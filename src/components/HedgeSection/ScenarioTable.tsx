@@ -16,7 +16,7 @@ export default function ScenarioTable({
 }: Readonly<Props>) {
   return (
     <section
-      className="border-edge overflow-x-auto rounded-[10px] border"
+      className="border-edge relative overflow-x-auto rounded-[10px] border"
       aria-label="Hedge scenarios"
     >
       <table
