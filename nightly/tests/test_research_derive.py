@@ -2447,6 +2447,79 @@ def test_a_marker_save_that_fails_during_sigterm_does_not_replace_the_exit(
     assert raised.value.code == 143
 
 
+def _sigterm_on_memory_save(
+    monkeypatch: pytest.MonkeyPatch, match: Callable[[Any], bool], *, after_put: bool
+) -> None:
+    """SIGTERM (`main` turns it into SystemExit(143)) lands in the first save of the memory
+    that `match`es its content: after the PUT reached R2, while its response is read
+    (`after_put`), or before it was sent. It lands once: the saves after it go through."""
+    real_put_json = ResearchStore.put_json
+    fired: list[bool] = []
+
+    def put_json(self: ResearchStore, key: str, obj: object) -> None:
+        hit = key == FAILURES_KEY and not fired and match(obj)
+        if hit:
+            fired.append(True)
+        if hit and not after_put:
+            raise SystemExit(143)
+        real_put_json(self, key, obj)
+        if hit:
+            raise SystemExit(143)
+
+    monkeypatch.setattr(ResearchStore, "put_json", put_json)
+
+
+def test_a_sigterm_while_the_marker_save_returns_is_never_counted(
+    rig: Rig,
+    settings: Settings,
+    clock: Clock,
+    capture_exception: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _fail(rig)
+    # The marker is in R2 when the signal lands, before the day's own try body is entered.
+    _sigterm_on_memory_save(
+        monkeypatch,
+        lambda memory: (memory["attempting"] or {}).get("day") == FAIL_DAY.isoformat(),
+        after_put=True,
+    )
+
+    with pytest.raises(SystemExit) as raised:
+        _night(rig, settings, clock, 0)
+
+    assert raised.value.code == 143
+    assert _memory(rig)["attempting"] is None
+
+    _night(rig, settings, clock, 1)  # the day now really fails: its first failed session
+
+    assert _entry(rig, FAIL_DAY) == _expected_entry(rig, FAIL_DAY, nights=1, last=_session(1))
+
+
+def test_a_sigterm_in_an_outcome_save_still_stores_the_outcome_with_the_marker_cleared(
+    rig: Rig,
+    settings: Settings,
+    clock: Clock,
+    capture_exception: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _fail(rig)
+    # The day failed, and the signal lands before the save that records it is sent.
+    _sigterm_on_memory_save(
+        monkeypatch,
+        lambda memory: memory["attempting"] is None and FAIL_DAY.isoformat() in memory["days"],
+        after_put=False,
+    )
+
+    with pytest.raises(SystemExit):
+        _night(rig, settings, clock, 0)
+
+    assert rig.failures() == {
+        "version": 1,
+        "attempting": None,
+        "days": {FAIL_DAY.isoformat(): _expected_entry(rig, FAIL_DAY, nights=1, last=_session(0))},
+    }
+
+
 def test_a_day_left_for_the_budget_is_never_marked(
     rig: Rig, settings: Settings, clock: Clock
 ) -> None:

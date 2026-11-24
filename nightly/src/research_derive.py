@@ -719,11 +719,34 @@ def _derive_day(
     etag: str,
     counts: dict[str, int],
 ) -> None:
+    """One stale day, marked in the memory from before it starts to after its outcome is saved.
+
+    A SIGTERM (`main` raises SystemExit) can land anywhere in that span, the marker's own save
+    and the outcome's included, so one handler covers all of it: it clears the marker, best
+    effort, and the exit goes on. A shutdown is then never counted against the day.
+    """
+    try:
+        _run_day(ctx, reader, store, manifest, memory, day, families, etag, counts)
+    except SystemExit:
+        memory.clear_attempt(store)
+        raise
+
+
+def _run_day(
+    ctx: StepContext,
+    reader: TapeReader,
+    store: ResearchStore,
+    manifest: Manifest,
+    memory: FailureMemory,
+    day: date,
+    families: tuple[FamilyName, ...],
+    etag: str,
+    counts: dict[str, int],
+) -> None:
     """One stale day: its counts join `counts` whether it finished or raised.
 
     Whatever it stored in R2 before an exception is counted (it is there), but not the day as
-    derived. The memory marks the day before it starts and records its outcome once it ends:
-    a SIGTERM (SystemExit) only clears the marker, so a shutdown is never counted against it.
+    derived. The memory marks the day before it starts and records its outcome once it ends.
     """
     iso = day.isoformat()
     started = monotonic()
@@ -738,9 +761,6 @@ def _derive_day(
         # The event is scrubbed in before_send; the log and the counts keep the class only.
         error = type(exc).__name__
         sentry_sdk.capture_exception(exc, tags={"step": _STEP, "day": iso})
-    except SystemExit:
-        memory.clear_attempt(store)
-        raise
     finally:
         _release(reader, day)
     for family in progress.families:
