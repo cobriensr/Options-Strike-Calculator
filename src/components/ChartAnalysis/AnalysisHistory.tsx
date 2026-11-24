@@ -254,11 +254,14 @@ export default function AnalysisHistory({
     ? selectedTime
     : (availableTimes[0] ?? '');
 
+  // Each mode once, in the order it first appears, however many runs it has:
+  // the picker shows its Type choice when this holds two or more modes.
   const availableModes = useMemo(() => {
     if (!effectiveTime) return [];
-    return filteredAnalyses
+    const modes = filteredAnalyses
       .filter((a) => a.entryTime === effectiveTime)
       .map((a) => a.mode);
+    return [...new Set(modes)];
   }, [filteredAnalyses, effectiveTime]);
 
   // With a mode filter on, the filtered analyses hold that mode alone, so the

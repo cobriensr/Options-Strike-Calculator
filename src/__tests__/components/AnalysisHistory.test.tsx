@@ -410,6 +410,64 @@ describe('AnalysisHistory', () => {
     });
   });
 
+  // The Type group is a choice between modes, so it needs two or more distinct
+  // ones. A time with two runs of one mode used to show it with one button,
+  // because the modes were listed once per run.
+  describe('the Type group counts distinct modes, not runs', () => {
+    async function openFirstDate(analyses: typeof ANALYSES) {
+      vi.stubGlobal('fetch', mockFetch(DATES, analyses));
+      const user = userEvent.setup();
+      render(<AnalysisHistory />);
+      await waitFor(() => {
+        expect(screen.getByText(/Select a date/)).toBeInTheDocument();
+      });
+      await user.selectOptions(screen.getByLabelText('Date'), '2025-03-01');
+      return user;
+    }
+
+    it('shows no Type group for two runs of one mode, and still the two runs', async () => {
+      await openFirstDate([
+        makeEntry(1, 'entry', '10:00 AM', {
+          createdAt: '2025-03-01T14:00:00Z',
+        }),
+        makeEntry(2, 'entry', '10:00 AM', {
+          createdAt: '2025-03-01T15:00:00Z',
+        }),
+      ]);
+
+      const runs = within(await screen.findByRole('group', { name: 'Run' }));
+      expect(runs.getAllByRole('button')).toHaveLength(2);
+      expect(
+        screen.queryByRole('group', { name: 'Type' }),
+      ).not.toBeInTheDocument();
+    });
+
+    it('shows the Type group for two modes, each with two runs', async () => {
+      await openFirstDate([
+        makeEntry(1, 'entry', '10:00 AM', {
+          createdAt: '2025-03-01T14:00:00Z',
+        }),
+        makeEntry(2, 'entry', '10:00 AM', {
+          createdAt: '2025-03-01T15:00:00Z',
+        }),
+        makeEntry(3, 'midday', '10:00 AM', {
+          createdAt: '2025-03-01T16:00:00Z',
+        }),
+        makeEntry(4, 'midday', '10:00 AM', {
+          createdAt: '2025-03-01T17:00:00Z',
+        }),
+      ]);
+
+      const types = within(await screen.findByRole('group', { name: 'Type' }));
+      expect(types.getAllByRole('button').map((b) => b.textContent)).toEqual([
+        'Pre-Trade',
+        'Mid-Day',
+      ]);
+      const runs = within(screen.getByRole('group', { name: 'Run' }));
+      expect(runs.getAllByRole('button')).toHaveLength(2);
+    });
+  });
+
   describe('mode tabs for selected time', () => {
     it('shows mode tabs when multiple modes available for a time', async () => {
       vi.stubGlobal('fetch', mockFetch());
