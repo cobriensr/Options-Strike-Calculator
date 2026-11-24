@@ -118,6 +118,7 @@ export default function AnalysisHistoryPicker({
             <button
               key={key}
               type="button"
+              aria-pressed={active}
               onClick={() => onModeFilterChange(key)}
               className="cursor-pointer rounded-full px-3 py-1.5 font-mono text-[10px] font-semibold transition-all duration-100"
               style={{
@@ -203,6 +204,7 @@ export default function AnalysisHistoryPicker({
                   <button
                     key={m}
                     type="button"
+                    aria-pressed={active}
                     onClick={() => {
                       onModeChange(m);
                       onRunIndexChange(0);
@@ -238,6 +240,7 @@ export default function AnalysisHistoryPicker({
                   <button
                     key={run.id}
                     type="button"
+                    aria-pressed={active}
                     onClick={() => onRunIndexChange(i)}
                     className="cursor-pointer rounded-md px-3 py-2 font-mono text-[10px] font-semibold transition-all duration-100"
                     style={{
