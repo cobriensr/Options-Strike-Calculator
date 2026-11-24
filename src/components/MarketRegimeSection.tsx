@@ -40,8 +40,9 @@ interface Props {
   /**
    * Whether to show the flow-regime badge: App passes `isAuthenticated`.
    * /api/flow-regime is owner-or-guest, so a public visitor's badge could only
-   * read "No flow regime read yet", which is not true. Past dates
-   * (`historySnapshot`) never show it.
+   * read "No flow regime read yet", which is not true. A history snapshot or a
+   * past date (with or without a snapshot) never shows it: it reads today's
+   * flow.
    */
   showFlowRegime: boolean;
   /** App's cluster multiplier (useClusterMultiplier): the panel shows it, and
@@ -102,6 +103,9 @@ export default function MarketRegimeSection({
   // date follows, as IVInputSection does.
   const pastDate = isPastETDate(selectedDate, etToday);
   const liveData = historySnapshot || pastDate ? null : market.data;
+  // The option chain is today's too. App resolves it the same way, so a
+  // chain arriving here on a snapshot or a past date is a stale one.
+  const liveChain = liveData ? chain : null;
 
   // What an edit in the opening-range card is tied to, so it resets at the
   // next slot and on the next date. The slot label tells slots apart exactly.
@@ -151,7 +155,7 @@ export default function MarketRegimeSection({
       {showRegime && (
         <div className="mt-4">
           <VIXRangeAnalysis vix={vixNum} spot={results?.spot ?? null} />
-          {showFlowRegime && !historySnapshot && (
+          {showFlowRegime && liveData != null && (
             <div className="mt-4">
               <FlowRegimeBadge marketOpen={marketOpen} />
             </div>
@@ -238,13 +242,13 @@ export default function MarketRegimeSection({
                     </div>
                   )}
 
-                {/* Pin Risk / OI Analysis (live chain only) */}
-                {chain && chain.puts.length > 0 && (
+                {/* Pin Risk / OI Analysis (today's live chain only) */}
+                {liveChain && liveChain.puts.length > 0 && (
                   <div className="mt-5">
                     <div className="text-tertiary mb-2 font-sans text-[10px] font-bold tracking-[0.12em] uppercase">
                       Settlement Pin Risk
                     </div>
-                    <PinRiskAnalysis chain={chain} spot={results.spot} />
+                    <PinRiskAnalysis chain={liveChain} spot={results.spot} />
                   </div>
                 )}
 

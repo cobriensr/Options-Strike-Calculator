@@ -117,6 +117,47 @@ describe('App date-clock wiring', () => {
     expect(props).toMatch(/^\s+etToday=\{vix\.etToday\}$/m);
   });
 
+  it('hands MarketRegimeSection the date clock, which decides what it takes from the live feed', () => {
+    // A wall-clock getETToday() in its place would compile.
+    const props = /<MarketRegimeSection([\s\S]*?)\/>/.exec(appCode)?.[1];
+    expect(props).toMatch(/^\s+selectedDate=\{vix\.selectedDate\}$/m);
+    expect(props).toMatch(/^\s+etToday=\{vix\.etToday\}$/m);
+  });
+
+  it('hands both cards that key on the slot the one entryTimeLabel', () => {
+    // The prop is optional on IVInputSection, so leaving it out compiles and
+    // quietly falls back to the candle key.
+    for (const card of ['IVInputSection', 'MarketRegimeSection']) {
+      const props = new RegExp(String.raw`<${card}([\s\S]*?)\/>`).exec(
+        appCode,
+      )?.[1];
+      expect(props, card).toMatch(/^\s+entryTimeLabel=\{entryTimeLabel\}$/m);
+    }
+  });
+
+  it("defines entryTimeLabel as the time picker's own text, only for a history snapshot", () => {
+    expect(appCode).toMatch(
+      /const entryTimeLabel = historySnapshot\s*\? `\$\{timeHour\}:\$\{timeMinute\} \$\{timeAmPm\} \$\{timezone\}`\s*: undefined;/,
+    );
+  });
+
+  it('resolves the option chain once, none for a snapshot or a past date, and hands it to both readers', () => {
+    // useChainData fetches the live /api/chain on a past date with no history,
+    // and keeps its last chain once history is on, so its raw value is today's.
+    expect(appCode).toMatch(
+      /const liveChain =\s*historySnapshot \|\| analysisIsBacktest\s*\? null\s*: chainData\.chain;/,
+    );
+    expect(appCode.match(/\bchainData\.chain\b/g)).toHaveLength(1);
+    const context = /useAnalysisContext\(\{([\s\S]*?)\n {2}\}\);/.exec(
+      appCode,
+    )?.[1];
+    expect(context).toMatch(/^\s+chain: liveChain,$/m);
+    const card = /<MarketRegimeSection([\s\S]*?)\/>/.exec(appCode)?.[1];
+    expect(card).toMatch(/^\s+chain=\{liveChain\}$/m);
+    // The panel map is memoized: its deps must carry the resolved value.
+    expect(appCode).toMatch(/^\s+liveChain,$/m);
+  });
+
   it('hands AdvancedSection the date clock, which decides its no-VIX-data hint', () => {
     const props = /<AdvancedSection([\s\S]*?)\/>/.exec(appCode)?.[1];
     expect(props).toMatch(/^\s+selectedDate=\{vix\.selectedDate\}$/m);

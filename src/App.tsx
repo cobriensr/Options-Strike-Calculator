@@ -844,6 +844,15 @@ export default function StrikeCalculator() {
     return list;
   }, [panelRegistry, resolvedGroups, resolvedPanelsByGroup, hiddenPanels]);
 
+  // Today's option chain, resolved once for everything that reads it: the
+  // Settlement Pin Risk card and the analyze context's top-OI strikes and skew.
+  // /api/chain is today's, and useChainData keeps the last chain it loaded once
+  // history is on and fetches the live one on a past date with no history, so
+  // its raw value is not the selected date's. A history snapshot or a past date
+  // gets none.
+  const liveChain =
+    historySnapshot || analysisIsBacktest ? null : chainData.chain;
+
   const analysisContext = useAnalysisContext({
     selectedDate: vix.selectedDate,
     timeHour,
@@ -857,7 +866,7 @@ export default function StrikeCalculator() {
     clusterMult,
     isBacktest: analysisIsBacktest,
     events: selectedDateEvents,
-    chain: chainData.chain,
+    chain: liveChain,
     gexLandscapeBias: gexBiasContext,
   });
 
@@ -1063,7 +1072,7 @@ export default function StrikeCalculator() {
                 historyCandles={historyData.history?.spx.candles}
                 entryTimeLabel={entryTimeLabel}
                 signals={signals}
-                chain={chainData.chain}
+                chain={liveChain}
                 defaultCollapsed
               />
             </LazySection>
@@ -1463,7 +1472,6 @@ export default function StrikeCalculator() {
       breakevenTarget,
       bwbNarrowWidth,
       bwbWideMultiplier,
-      chainData.chain,
       chevronUrl,
       cluster,
       contracts,
@@ -1496,6 +1504,7 @@ export default function StrikeCalculator() {
       historySnapshot,
       isAuthenticated,
       ivMode,
+      liveChain,
       liveMarketOpen,
       market,
       multiplier,

@@ -1,5 +1,5 @@
 import type { ComponentProps } from 'react';
-import { describe, it, expect, vi } from 'vitest';
+import { beforeEach, describe, it, expect, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import MarketRegimeSection from '../../components/MarketRegimeSection';
@@ -9,6 +9,8 @@ import type { MarketDataState } from '../../hooks/useMarketData';
 import type { ComputedSignals } from '../../hooks/useComputedSignals';
 import type { ClusterMultiplier } from '../../hooks/useClusterMultiplier';
 import type {
+  ChainResponse,
+  ChainStrike,
   DaySummary,
   HistoryCandle,
   QuotesResponse,
@@ -1071,6 +1073,101 @@ describe('MarketRegimeSection', () => {
         // The snapshot's own open and previous close give its own gap.
         expect(screen.getByText(GAP_CARD)).toBeInTheDocument();
         expect(screen.queryByText('+1.05%')).not.toBeInTheDocument();
+      });
+    });
+
+    // The badge polls today's /api/flow-regime, so a snapshot or a past date
+    // (with or without one) shows no badge at all.
+    describe('the flow-regime badge', () => {
+      beforeEach(() => flowRegimeBadge.mockClear());
+
+      it.each([
+        ['renders on today', {}, 1],
+        [
+          'does not render on a past date with no history snapshot',
+          { selectedDate: '2026-03-10' },
+          0,
+        ],
+        [
+          'does not render on a past date with a history snapshot',
+          {
+            selectedDate: '2026-03-10',
+            historySnapshot: snapshotAt(COMPLETE_RANGE, 5),
+          },
+          0,
+        ],
+        [
+          'does not render on today at an earlier slot (a history snapshot)',
+          { historySnapshot: snapshotAt(COMPLETE_RANGE, 5) },
+          0,
+        ],
+      ])('the badge %s', (_label, props, renders) => {
+        renderCard({ showFlowRegime: true, etToday: '2026-03-12', ...props });
+
+        expect(flowRegimeBadge).toHaveBeenCalledTimes(renders);
+      });
+    });
+
+    // The Settlement Pin Risk card reads today's option chain: its top-OI
+    // strikes are today's, so against a past date's spot it could raise a
+    // PIN RISK that is not that date's.
+    describe("Settlement Pin Risk and today's option chain", () => {
+      const strike = (price: number, oi: number): ChainStrike => ({
+        strike: price,
+        bid: 1,
+        ask: 2,
+        mid: 1.5,
+        delta: -0.1,
+        gamma: 0.001,
+        theta: -0.5,
+        vega: 0.1,
+        iv: 0.2,
+        volume: 100,
+        oi,
+        itm: false,
+      });
+      // The spot in these renders is 5700: a high-OI strike right on it.
+      const CHAIN: ChainResponse = {
+        underlying: { symbol: '$SPX', price: 5700, prevClose: 5690 },
+        expirationDate: '2026-03-12',
+        daysToExpiration: 0,
+        contractCount: 2,
+        puts: [strike(5700, 20000)],
+        calls: [strike(5700, 15000)],
+        targetDeltas: {},
+        asOf: '2026-03-12T15:00:00Z',
+      };
+
+      it('shows the card, and its PIN RISK, on today', () => {
+        renderCard({ chain: CHAIN });
+
+        expect(screen.getByText('Settlement Pin Risk')).toBeInTheDocument();
+        expect(screen.getByText('PIN RISK')).toBeInTheDocument();
+      });
+
+      it.each([
+        [
+          'a past date with no history snapshot',
+          { selectedDate: '2026-03-10' },
+        ],
+        [
+          'a past date with a history snapshot',
+          {
+            selectedDate: '2026-03-10',
+            historySnapshot: snapshotAt(COMPLETE_RANGE, 5),
+          },
+        ],
+        [
+          'today at an earlier slot (a history snapshot)',
+          { historySnapshot: snapshotAt(COMPLETE_RANGE, 5) },
+        ],
+      ])('shows no card on %s', (_label, props) => {
+        renderCard({ chain: CHAIN, etToday: '2026-03-12', ...props });
+
+        expect(
+          screen.queryByText('Settlement Pin Risk'),
+        ).not.toBeInTheDocument();
+        expect(screen.queryByText('PIN RISK')).not.toBeInTheDocument();
       });
     });
   });
