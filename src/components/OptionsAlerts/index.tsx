@@ -64,7 +64,7 @@ export function OptionsAlertsView({
     >
       <section
         aria-label="Lottery Finder alerts"
-        className="border-edge min-h-0 min-w-0 flex-1 overflow-y-auto border-b xl:border-r xl:border-b-0"
+        className="border-edge relative min-h-0 min-w-0 flex-1 overflow-y-auto border-b xl:border-r xl:border-b-0"
       >
         <ErrorBoundary label="Lottery Finder">
           <Suspense fallback={<SkeletonSection lines={6} />}>
@@ -74,7 +74,7 @@ export function OptionsAlertsView({
       </section>
       <section
         aria-label="Silent Boom alerts"
-        className="min-h-0 min-w-0 flex-1 overflow-y-auto"
+        className="relative min-h-0 min-w-0 flex-1 overflow-y-auto"
       >
         <ErrorBoundary label="Silent Boom">
           <Suspense fallback={<SkeletonSection lines={6} />}>

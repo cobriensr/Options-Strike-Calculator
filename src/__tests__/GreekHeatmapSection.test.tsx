@@ -248,6 +248,17 @@ describe('GreekHeatmapSection', () => {
     expect(document.getElementById('heatmap-strike-570')).not.toBeNull();
   });
 
+  it('positions the heatmap scroller so hidden hints in its rows stay inside it', () => {
+    // overflow-y-auto also scrolls sideways (overflow-x computes to auto),
+    // and the ATM badge's SrHint is position: absolute with no offsets. Only
+    // a positioned scroller contains and clips it.
+    render(<GreekHeatmapSection marketOpen={true} />);
+    const scroller = document
+      .getElementById('heatmap-strike-560')!
+      .closest('.overflow-y-auto');
+    expect(scroller).toHaveClass('relative');
+  });
+
   it('renders the net-flow row labels', () => {
     render(<GreekHeatmapSection marketOpen={true} />);
     expect(screen.getByText('NCP')).toBeInTheDocument();

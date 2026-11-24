@@ -64,4 +64,18 @@ describe('OptionsAlertsView', () => {
     expect(lottery.className).toContain('xl:border-b-0');
     expect(lottery.className).toContain('xl:border-r');
   });
+
+  it('positions both panes so the hidden hints in their rows stay inside them', () => {
+    // An overflow-y-auto box also scrolls sideways (its overflow-x computes
+    // to auto), and the rows' hints (SrHint) are position: absolute with no
+    // offsets. Only a positioned ancestor contains and clips them, so an
+    // unpositioned pane lets a hint past the phone's edge widen the page.
+    render(<OptionsAlertsView marketOpen hasMarketContext />);
+    for (const name of [/lottery finder alerts/i, /silent boom alerts/i]) {
+      expect(screen.getByRole('region', { name })).toHaveClass(
+        'overflow-y-auto',
+        'relative',
+      );
+    }
+  });
 });

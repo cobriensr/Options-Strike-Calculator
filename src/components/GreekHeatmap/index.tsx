@@ -314,7 +314,7 @@ function GreekHeatmapBody({ marketOpen }: GreekHeatmapSectionProps) {
             </div>
           )}
           <NetFlowRow netFlow={data.netFlow} />
-          <div className="max-h-[60vh] overflow-y-auto">
+          <div className="relative max-h-[60vh] overflow-y-auto">
             <GreekHeatmapTable
               chainStrikes={visibleStrikes}
               atmStrike={data.atmStrike}
