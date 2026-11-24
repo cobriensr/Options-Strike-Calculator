@@ -29,7 +29,9 @@ export function ScrollHint({
 
   return (
     <div className={className ? `relative ${className}` : 'relative'}>
-      <div ref={ref} onScroll={check} className="overflow-x-auto">
+      {/* `relative`: the scroller must contain and clip the absolutely
+          positioned screen-reader hints (SrHint) inside its tables. */}
+      <div ref={ref} onScroll={check} className="relative overflow-x-auto">
         {children}
       </div>
       {canScroll && (

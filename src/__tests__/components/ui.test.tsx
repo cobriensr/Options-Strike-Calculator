@@ -167,6 +167,21 @@ describe('ScrollHint', () => {
     expect(fade).not.toBeInTheDocument();
   });
 
+  it('positions its scroller so a screen-reader hint inside stays contained', () => {
+    // SrHint is position: absolute with no offsets. An absolute child is
+    // clipped and contained only by a positioned ancestor, so the scroller
+    // itself must be `relative`: otherwise a hint in a right-most column sits
+    // past the phone's edge and the whole page scrolls sideways (the BWB and
+    // iron condor P&L tables once did, at scrollWidth 586 on a 375px screen).
+    const { container } = render(
+      <ScrollHint>
+        <div>Content</div>
+      </ScrollHint>,
+    );
+    const scrollEl = container.querySelector('.overflow-x-auto')!;
+    expect(scrollEl).toHaveClass('relative');
+  });
+
   it('uses ResizeObserver to check overflow', () => {
     const observeFn = vi.fn();
     const disconnectFn = vi.fn();

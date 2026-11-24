@@ -37,18 +37,25 @@ describe('SrHint', () => {
     expect(hint).toHaveClass('sr-only', 'normal-case', 'select-none');
   });
 
-  it('pins itself to its containing block corner so it cannot widen the page', () => {
+  it('carries no offset class, so its box stays beside the text it explains', () => {
     // sr-only is position: absolute with no offsets, so the hint keeps the
-    // static position it would have had in the flow. Inside a table in a
-    // horizontal scroller that is the right-most column, and a scroller that
-    // is not itself positioned does not clip it: the hint sat at x=585 on a
-    // 375px phone and made the whole page scroll sideways. top-0 left-0 puts
-    // it at its containing block's corner, which is always on screen.
-    // jsdom has no layout, so this pins the classes; the e2e specs
-    // (responsive.spec.ts, narrow-panels.spec.ts) measure scrollWidth.
+    // static position it would have had in the flow, right after its label.
+    // An offset such as top-0 left-0 moves it to the corner of its
+    // containing block, which for most rows is the page origin. A screen
+    // reader that scrolls to its reading position (VoiceOver on iOS) would
+    // then jump to the top of the page at every hint. Inside a horizontal
+    // scroller the scroller has to be positioned instead (ScrollHint is);
+    // see ui.test.tsx. jsdom has no layout, so this pins the classes and the
+    // e2e specs (responsive.spec.ts, narrow-panels.spec.ts) measure
+    // scrollWidth.
     const { container } = render(<SrHint>Explains the badge.</SrHint>);
     const hint = container.querySelector('.sr-only')!;
-    expect(hint).toHaveClass('sr-only', 'top-0', 'left-0');
+    const offsets = [...hint.classList].filter((name) =>
+      /^-?(top|left|right|bottom|inset|inset-x|inset-y|start|end)(-|$)/.test(
+        name,
+      ),
+    );
+    expect(offsets).toEqual([]);
   });
 
   it('keeps the visible label and the hint apart when read in one run', () => {
