@@ -109,3 +109,37 @@ describe('openingRangeSignal: inputs that are not a price', () => {
     expect(openingRangeSignal(high, low, spot, 2)).toBeNull();
   });
 });
+
+// What the function does with inputs it does not reject. The live hook never
+// reaches these, and a caller that reads a stored row checks `Number.isFinite`
+// before it calls: the function reads a negative spot, an infinite high and a
+// NaN median as they come, and these rows pin that so a change to `!!spot` or
+// to the median guard does not slip through.
+describe('openingRangeSignal: inputs it reads as they come', () => {
+  it('a negative spot reads a negative consumed value and grades GREEN', () => {
+    expect(openingRangeSignal(5723, 5700, -5700, 0.88)).toEqual({
+      consumed: -0.4585326953748007,
+      signal: 'GREEN',
+    });
+  });
+
+  it.each<[string, number, number, number, number, number]>([
+    ['two infinite prices', Infinity, Infinity, 10000, 2, Number.NaN],
+    ['an infinite high', Infinity, 5700, 5700, 0.88, Infinity],
+  ])(
+    '%s read a non-finite consumed value and grade RED',
+    (_label, high, low, spot, median, consumed) => {
+      expect(openingRangeSignal(high, low, spot, median)).toEqual({
+        consumed,
+        signal: 'RED',
+      });
+    },
+  );
+
+  it('a NaN median consumes nothing, as a median of 0 does', () => {
+    expect(openingRangeSignal(5723, 5700, 5700, Number.NaN)).toEqual({
+      consumed: 0,
+      signal: 'GREEN',
+    });
+  });
+});

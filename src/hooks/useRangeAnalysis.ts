@@ -244,8 +244,9 @@ export function useRangeAnalysis(
     const orData = historySnapshot
       ? historySnapshot.openingRange
       : liveOpeningRange;
-    // The formula and its grade live in openingRangeSignal, which the repair of
-    // stored rows calls too. It reads null for a range that is not a price.
+    // The formula and its grade live in openingRangeSignal, which the stale-row
+    // repair (scripts/repair-stale-opening-range.ts) calls too. It reads null
+    // for a range that is not a price.
     const reading = orData
       ? openingRangeSignal(orData.high, orData.low, spot, medianHlPct)
       : null;
