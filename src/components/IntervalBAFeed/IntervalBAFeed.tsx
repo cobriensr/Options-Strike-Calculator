@@ -311,8 +311,8 @@ export function IntervalBAFeed({
           </div>
         ) : alerts.length === 0 ? (
           <div className="rounded border border-neutral-800 bg-neutral-950 p-3 text-sm text-neutral-400">
-            No SPXW Interval B/A alerts on {date} between {startTime} and{' '}
-            {endTime} CT matching the active filters.
+            No Interval B/A alerts on {date} between {startTime} and {endTime}{' '}
+            CT matching the active filters.
           </div>
         ) : (
           <div className="space-y-1">

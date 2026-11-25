@@ -171,9 +171,7 @@ describe('IntervalBAFeed', () => {
   it('shows empty-state copy when no alerts return', async () => {
     render(<IntervalBAFeed />);
     await waitFor(() => {
-      expect(
-        screen.getByText(/No SPXW Interval B\/A alerts/i),
-      ).toBeInTheDocument();
+      expect(screen.getByText(/No Interval B\/A alerts/i)).toBeInTheDocument();
     });
   });
 
@@ -287,7 +285,7 @@ describe('IntervalBAFeed', () => {
   // its accessible description, so it needs no hint.
   it('words the confluence-only filter title as the filter alone', async () => {
     render(<IntervalBAFeed />);
-    await screen.findByText(/No SPXW Interval B\/A alerts/i);
+    await screen.findByText(/No Interval B\/A alerts/i);
     expect(
       screen.getByRole('button', { name: /confluence only/i }),
     ).toHaveAttribute(
@@ -523,9 +521,7 @@ describe('IntervalBAFeed', () => {
       }),
     } as Response);
     await waitFor(() => {
-      expect(
-        screen.getByText(/No SPXW Interval B\/A alerts/i),
-      ).toBeInTheDocument();
+      expect(screen.getByText(/No Interval B\/A alerts/i)).toBeInTheDocument();
     });
   });
 
