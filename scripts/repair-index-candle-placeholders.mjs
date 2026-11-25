@@ -39,7 +39,20 @@
  * puts the backed-up rows back with their own id and created_at. It is a dry
  * run too until --apply comes with it, and needs no UW key, no Schwab and no
  * market-hours wait. Undo runs newest first: undoing an older run over a newer
- * one fails and changes nothing.
+ * one fails and changes nothing. A `--lottery-spots` manifest says so in its
+ * `kind`, and the same flag undoes it (it puts the old spot and distance back).
+ *
+ * `--lottery-spots` runs after the gap days' candles are repaired (the `gap`
+ * list), takes no --symbol, --list or --date, and corrects the stale
+ * `spot_at_event` and `strike_dist` of the gap days' periscope_lottery_fires
+ * from those candles (scripts/_lib/lottery-spot-repair.mjs has the rules).
+ * Dry run unless --apply: it prints how many fires would change, how many no
+ * longer pass their own filter (they are kept, not deleted) and each fire with
+ * no same-day SPX bar (left unchanged). With --apply the old values go to a
+ * JSONL backup and a manifest beside it first, then one transaction updates
+ * the two columns and nothing else. It needs only DATABASE_URL (no UW key, no
+ * Schwab call) and keeps only the 08:15-15:30 CT guard, so run it after 15:00
+ * CT, once the candle repair is done.
  *
  * Schwab: the token record is read from the PRODUCTION Upstash Redis and, when
  * it has run out, refreshed in place with a compare-and-set, so the repair
@@ -56,18 +69,23 @@
  *     --symbol NDX --list ndx-repair [--apply]
  *   node --env-file=.env.local scripts/repair-index-candle-placeholders.mjs \
  *     --undo docs/tmp/spx-candle-repair/<symbol>-<date>-<stamp>.manifest.json [--apply]
+ *   node --env-file=.env.local scripts/repair-index-candle-placeholders.mjs \
+ *     --lottery-spots [--apply]
+ *   node --env-file=.env.local scripts/repair-index-candle-placeholders.mjs \
+ *     --undo docs/tmp/spx-candle-repair/lottery-spots-<stamp>.manifest.json [--apply]
  *
  * Flags:
- *   --symbol SPX|NDX   required, except with --undo
+ *   --symbol SPX|NDX   required, except with --undo and --lottery-spots
  *   --list <name>      one of spx-repair, ndx-repair, ndx-fill, gap
  *   --date YYYY-MM-DD  one date, which must be in a list of that symbol
  *   --apply            write (default: dry run)
  *   --undo <manifest>  restore a run, from its manifest
+ *   --lottery-spots    correct the gap days' lottery fire spots (alone)
  *
  * Environment: UW_API_KEY; DATABASE_URL; UPSTASH_REDIS_REST_URL /
  * UPSTASH_REDIS_REST_TOKEN (or KV_REST_API_URL / KV_REST_API_TOKEN);
  * SCHWAB_CLIENT_ID, SCHWAB_CLIENT_SECRET. The repair needs all of them, the
- * undo only DATABASE_URL.
+ * undo and --lottery-spots only DATABASE_URL.
  *
  * Exit codes: 0 every date done, 1 a date was skipped or failed (or a key is
  * missing, or the run aborted), 2 bad flags, 3 a guard refused or stopped the
@@ -102,6 +120,14 @@ import {
   repairGuardRefusal,
   undoRepair,
 } from './_lib/index-candle-repair.mjs';
+import {
+  describeUndoLotterySpots,
+  lotterySpotLines,
+  lotterySpotsGuardRefusal,
+  manifestKind,
+  repairLotterySpots,
+  undoLotterySpots,
+} from './_lib/lottery-spot-repair.mjs';
 import { readSchwabEnv } from './_lib/schwab-local.mjs';
 
 let plan;
@@ -117,13 +143,22 @@ const DATABASE_URL = process.env.DATABASE_URL;
 const secrets = { uwKey: UW_API_KEY, databaseUrl: DATABASE_URL };
 const say = (line = '') => console.log(redact(line, secrets));
 
-/** The undo: report the plan, and with --apply run it. Returns the exit code. */
+/**
+ * The undo: report the plan, and with --apply run it. Returns the exit code.
+ * The manifest's `kind` picks the repair: a lottery-spots one or, with none,
+ * an index-candle one.
+ */
 async function runUndo() {
+  const lottery = (await manifestKind(plan.manifest)) === 'lottery-spots';
+  const what = lottery
+    ? 'periscope_lottery_fires spot repair'
+    : 'index_candles_1m repair';
   say(
-    `index_candles_1m repair UNDO${plan.apply ? '' : ' (DRY RUN: nothing written)'}: ` +
+    `${what} UNDO${plan.apply ? '' : ' (DRY RUN: nothing written)'}: ` +
       plan.manifest,
   );
-  for (const line of await describeUndo(plan.manifest)) say(line);
+  const describe = lottery ? describeUndoLotterySpots : describeUndo;
+  for (const line of await describe(plan.manifest)) say(line);
   if (!plan.apply) {
     say('DRY RUN: nothing written. Re-run with --apply to undo.');
     return EXIT_OK;
@@ -131,6 +166,14 @@ async function runUndo() {
   if (!DATABASE_URL) {
     console.error('Missing DATABASE_URL (run with --env-file=.env.local)');
     return EXIT_FAILED;
+  }
+  if (lottery) {
+    const { restored } = await undoLotterySpots(
+      neon(DATABASE_URL),
+      plan.manifest,
+    );
+    say(`restored the spot and distance of ${restored} fires`);
+    return EXIT_OK;
   }
   const { removed, restored } = await undoRepair(
     neon(DATABASE_URL),
@@ -232,10 +275,53 @@ async function runRepair() {
   return summary.exitCode;
 }
 
+/**
+ * The gap days' lottery fire spots: report the plan, and with --apply write
+ * it. Only the market-hours guard applies (no Schwab call is made). Returns
+ * the exit code.
+ */
+async function runLotterySpots() {
+  const { apply } = plan;
+  const refusal = lotterySpotsGuardRefusal();
+  if (refusal) {
+    console.error(refusal);
+    return EXIT_GUARD_STOP;
+  }
+  if (!DATABASE_URL) {
+    console.error('Missing DATABASE_URL (run with --env-file=.env.local)');
+    return EXIT_FAILED;
+  }
+  // Before the plan is read: a worktree with no git in reach must not get as
+  // far as an update.
+  const backupDir = apply ? backupDirFromGit() : undefined;
+
+  say(
+    `Correcting periscope_lottery_fires spot_at_event and strike_dist on the ` +
+      `gap days${apply ? '' : ' (DRY RUN: no Neon writes, no backup)'}`,
+  );
+  if (backupDir != null) say(`  backups: ${backupDir}`);
+  const result = await repairLotterySpots(neon(DATABASE_URL), {
+    apply,
+    backupDir,
+  });
+  for (const line of lotterySpotLines(result, { apply })) say(line);
+  if (!apply) {
+    say('(dry run: nothing written. Re-run with --apply to update.)');
+  }
+  return EXIT_OK;
+}
+
+const RUNNERS = {
+  repair: runRepair,
+  undo: runUndo,
+  'lottery-spots': runLotterySpots,
+};
+
 try {
-  process.exitCode = plan.mode === 'undo' ? await runUndo() : await runRepair();
+  process.exitCode = await RUNNERS[plan.mode]();
 } catch (err) {
-  const what = plan.mode === 'undo' ? 'undo' : 'repair';
-  console.error(redact(`${what} aborted: ${err?.message ?? err}`, secrets));
+  console.error(
+    redact(`${plan.mode} aborted: ${err?.message ?? err}`, secrets),
+  );
   process.exitCode = EXIT_FAILED;
 }

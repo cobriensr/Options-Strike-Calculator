@@ -542,8 +542,11 @@ function requestProblem({ symbol, date, list, rows, ratio, backupDir, apply }) {
   return null;
 }
 
-/** 20261125T231500123Z: sortable, no colons (Windows). */
-function stampOf(now) {
+/**
+ * 20261125T231500123Z: sortable, no colons (Windows). The lottery-spot repair
+ * (lottery-spot-repair.mjs) stamps its files the same way.
+ */
+export function stampOf(now) {
   return now.toISOString().replaceAll(/[-:.]/g, '');
 }
 
@@ -967,16 +970,24 @@ const VALUE_FLAGS = new Map([
  * which returns `{ mode: 'repair', symbol, list, dates, apply }` (a --date
  * must belong to a list of that symbol; `list` is that list), or
  *   --undo <manifest>  [--apply]
- * which returns `{ mode: 'undo', manifest, apply }`. Without --apply both only
+ * which returns `{ mode: 'undo', manifest, apply }`, or
+ *   --lottery-spots  [--apply]
+ * which returns `{ mode: 'lottery-spots', apply }` and takes no other flag
+ * (scripts/_lib/lottery-spot-repair.mjs). Without --apply all three only
  * report: the default is a dry run.
  */
 export function parseRepairArgs(argv) {
   const got = { symbol: null, list: null, date: null, undo: null };
   let apply = false;
+  let lotterySpots = false;
   for (let i = 0; i < argv.length; i++) {
     const flag = argv[i];
     if (flag === '--apply') {
       apply = true;
+      continue;
+    }
+    if (flag === '--lottery-spots') {
+      lotterySpots = true;
       continue;
     }
     const spec = VALUE_FLAGS.get(flag);
@@ -987,6 +998,12 @@ export function parseRepairArgs(argv) {
     got[spec.key] = value;
   }
 
+  if (lotterySpots) {
+    if (Object.values(got).some((value) => value != null)) {
+      throw new Error('--lottery-spots takes only --apply');
+    }
+    return { mode: 'lottery-spots', apply };
+  }
   if (got.undo != null) {
     if (got.symbol != null || got.list != null || got.date != null) {
       throw new Error('--undo takes only --apply');
