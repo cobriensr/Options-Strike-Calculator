@@ -550,28 +550,30 @@ def _runs_tape_rule(settings: LiveSettings) -> bool:
 
 _SETTINGS_COLUMNS: tuple[str, ...] = tuple(f.name for f in fields(LiveSettings))
 # The latest row that booted before the day's 00:00 CT, which covers the day's start, and every
-# row that booted during the day. With no earlier row the lower bound is the day's start.
+# row that booted before the session's end. With no earlier row the lower bound is the day's
+# start.
 _COVERING_SETTINGS_SQL = (
     f"SELECT {', '.join(_SETTINGS_COLUMNS)} FROM interval_ba_live_settings"
     " WHERE booted_at >= coalesce("
     "(SELECT max(booted_at) FROM interval_ba_live_settings WHERE booted_at < %(start)s),"
     " %(start)s)"
-    " AND booted_at < %(end)s"
+    " AND booted_at < %(session_end)s"
     " ORDER BY booted_at"
 )
 
 
 def read_covering_settings(conn: psycopg2.extensions.connection, day: date) -> list[LiveSettings]:
-    """The settings rows that cover `day`, oldest first: the latest that booted before the day's
-    00:00 CT, and every one that booted during the CT day.
+    """The settings rows that cover `day`'s session, oldest first: the latest that booted before
+    the day's 00:00 CT, and every one that booted before 16:00 CT that day.
 
-    The bounds are CT midnights from zoneinfo, so a DST day is 23 or 25 hours long. It returns
-    [] only for a day before the first row ever written.
+    SPXW 0DTE prints end at 15:59 CT, so a settings change deployed after the close belongs to
+    the next session and never rewrites this one's rule. The bounds come from zoneinfo, so they
+    hold across DST. It returns [] only for a day before the first row ever written.
     """
     ct = ZoneInfo("America/Chicago")
     bounds = {
         "start": datetime.combine(day, time(), tzinfo=ct),
-        "end": datetime.combine(day + timedelta(days=1), time(), tzinfo=ct),
+        "session_end": datetime.combine(day, time(16), tzinfo=ct),
     }
     with conn.cursor() as cur:
         cur.execute(_COVERING_SETTINGS_SQL, bounds)
@@ -688,11 +690,12 @@ class DayPlan:
     """One live day's pass (spec 6.4): what it found, and the exact write set.
 
     The comparison counts (tape_alerts, live_rows, live_missed, live_only, value_mismatched,
-    matched) and the inserts cover the on tickers: those on in every covering settings row, or
-    all three when insert_missed is False or no row covers the day. The removals, flags and
-    spots cover every row of the day. The write counts (inserted, removed, flags_changed,
-    spot_filled) are the rows planned in a dry run and the rows the database reports on apply.
-    sha256 is over the four write lists, so a stored plan can be checked against a fresh one.
+    matched) and the inserts cover the on tickers: those on in every covering settings row (none
+    when a covering row has the detector off), or all three when insert_missed is False or no
+    row covers the day. The removals, flags and spots cover every row of the day. The write
+    counts (inserted, removed, flags_changed, spot_filled) are the rows planned in a dry run and
+    the rows the database reports on apply. sha256 is over the day and the four write lists, in
+    canonical order, so a stored plan can be checked against a fresh one.
     """
 
     day: date
@@ -732,11 +735,12 @@ class DayPlan:
         removes = tuple(d["removes"])
         flag_updates = tuple((row_id, sweep, floor) for row_id, sweep, floor in d["flag_updates"])
         spot_updates = tuple((row_id, Decimal(price)) for row_id, price in d["spot_updates"])
-        sha256 = _write_set_sha(inserts, removes, flag_updates, spot_updates)
+        day = date.fromisoformat(d["day"])
+        sha256 = _write_set_sha(day, inserts, removes, flag_updates, spot_updates)
         if sha256 != d["sha256"]:
-            raise ValueError(f"DayPlan {d['day']}: the write lists do not match its sha256")
+            raise ValueError(f"DayPlan {d['day']}: the day and write lists do not match its sha256")
         return cls(
-            day=date.fromisoformat(d["day"]),
+            day=day,
             **{name: d[name] for name in _PLAN_COUNTS},
             inserts=inserts,
             removes=removes,
@@ -804,23 +808,29 @@ def _write_set_json(
 
 
 def _write_set_sha(
+    day: date,
     inserts: Sequence[TapeAlert],
     removes: Sequence[int],
     flag_updates: Sequence[tuple[int, bool, bool]],
     spot_updates: Sequence[tuple[int, Decimal]],
 ) -> str:
-    """sha256 of the four write lists' canonical JSON: sorted keys, no spaces."""
-    text = json.dumps(
-        _write_set_json(inserts, removes, flag_updates, spot_updates),
-        sort_keys=True,
-        separators=(",", ":"),
-    )
+    """sha256 of the day and its four write lists, as canonical JSON (keys sorted, no spaces).
+    The inserts are hashed in key order, so the sha does not depend on replay_day's sort; the
+    other three lists are built sorted by row id."""
+    payload = {
+        "day": day.isoformat(),
+        **_write_set_json(
+            sorted(inserts, key=lambda alert: alert.key), removes, flag_updates, spot_updates
+        ),
+    }
+    text = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def _on_tickers(settings: Sequence[LiveSettings]) -> frozenset[str]:
-    """The tickers on in every covering row; a row with the detector off has none on. All three
-    when no row covers the day, which holds the inserts anyway."""
+    """The tickers on in every covering row. A row with the detector off has none on, so a day
+    with one counts nothing (its inserts are held as well). All three when no row covers the
+    day, which holds the inserts too."""
     on = frozenset(TICKERS)
     for row in settings:
         on &= frozenset(row.tickers) if row.enabled else frozenset()
@@ -828,12 +838,13 @@ def _on_tickers(settings: Sequence[LiveSettings]) -> frozenset[str]:
 
 
 def _hold_reason(settings: Sequence[LiveSettings]) -> str | None:
-    """Why the day's inserts are held (spec 6.4 step 2), the first that applies, or None."""
+    """Why the day's inserts are held (spec 6.4 step 2), the first that applies, or None. The
+    detector off in any covering row holds them: live fired nothing while it was off."""
     if not settings:
         return "no live settings record"
     if not all(_runs_tape_rule(row) for row in settings):
         return "live settings differ from the tape rule"
-    if not any(row.enabled for row in settings):
+    if not all(row.enabled for row in settings):
         return "live detector off"
     return None
 
@@ -972,7 +983,7 @@ def _plan_day(
         removes=removes,
         flag_updates=flag_updates,
         spot_updates=spot_updates,
-        sha256=_write_set_sha(inserts, removes, flag_updates, spot_updates),
+        sha256=_write_set_sha(day, inserts, removes, flag_updates, spot_updates),
     )
 
 
@@ -1014,6 +1025,11 @@ def _write_day(conn: psycopg2.extensions.connection, plan: DayPlan) -> DayPlan:
     return done
 
 
+class PlanChanged(ValueError):  # noqa: N818 - name fixed by the task interface
+    """heal_day's fresh plan for a day is not the one the caller expected: the day's rows, the
+    tape or the code moved since that plan was made. Nothing was written."""
+
+
 def heal_day(
     conn: psycopg2.extensions.connection,
     con: duckdb.DuckDBPyConnection,
@@ -1023,12 +1039,13 @@ def heal_day(
     *,
     insert_missed: bool,
     apply: bool,
+    expect_sha256: str | None = None,
 ) -> DayPlan:
     """One live day's pass over its rows (spec 6.4), in one transaction.
 
     1. Replay the day, read its rows, and compare the two on the key over the on tickers.
     2. With insert_missed, hold the inserts when no settings row covers the day, a covering row
-       ran another rule, or every covering row had the detector off.
+       ran another rule, or any covering row had the detector off.
     3. With insert_missed and nothing held, insert the on tickers' tape alerts at keys with no
        row of either source, as source 'replay'.
     4. Delete the replay rows whose key the replay no longer fires (a re-landed tape), unless
@@ -1043,7 +1060,12 @@ def heal_day(
 
     With apply False nothing is written. With apply True steps 3 to 7 commit together, and any
     error rolls the whole day back, marker included, and propagates, so the day is retried.
-    The connection's autocommit is off for the call and restored after.
+    With expect_sha256, a fresh plan whose sha256 differs raises PlanChanged before any write,
+    on a dry run as well, so a plan the owner approved is applied exactly or not at all.
+
+    `conn` must be idle when called: autocommit on, or committed or rolled back after any read
+    (read_covering_settings included). psycopg2 refuses to switch autocommit inside a
+    transaction. Autocommit is off for the call and restored after.
 
     Raises ValueError for a day before LIVE_START, for insert_missed before INSERT_MISSED_FROM
     (live ran another rule then), and, from replay_day, for a tape with no row for the day: a
@@ -1060,6 +1082,10 @@ def heal_day(
     conn.autocommit = False
     try:
         plan = _plan_day(conn, con, tape, day, settings, insert_missed=insert_missed)
+        if expect_sha256 is not None and plan.sha256 != expect_sha256:
+            raise PlanChanged(
+                f"{day}: the fresh plan's sha256 {plan.sha256} is not the expected {expect_sha256}"
+            )
         if apply:
             plan = _write_day(conn, plan)
             conn.commit()
@@ -1073,5 +1099,7 @@ def heal_day(
             conn.rollback()
         raise
     finally:
-        if not conn.closed:
+        # Nor may restoring autocommit, which psycopg2 refuses on a closed connection and inside
+        # the transaction a failed rollback left open.
+        with contextlib.suppress(psycopg2.Error):
             conn.autocommit = previous

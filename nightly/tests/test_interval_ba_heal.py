@@ -13,8 +13,10 @@ import json
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass, fields, replace
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
+from typing import Any
+from zoneinfo import ZoneInfo
 
 import duckdb
 import psycopg2
@@ -27,6 +29,7 @@ from interval_ba_replay import (
     DayPlan,
     LiveRow,
     LiveSettings,
+    PlanChanged,
     TapeAlert,
     default_settings,
     heal_day,
@@ -85,9 +88,10 @@ class _FakeConn:
     """Just enough of a psycopg2 connection for heal_day and its readers.
 
     As in psycopg2, a statement with autocommit off opens a transaction that only commit or
-    rollback ends, and autocommit cannot change inside one. A page's RETURNING gives one id per
-    row: the row's own id for an UPDATE or a DELETE, a new one for an INSERT. `fail_on` makes
-    the first statement whose SQL contains it raise.
+    rollback ends, and autocommit cannot change inside one or on a closed connection. A page's
+    RETURNING gives one id per row: the row's own id for an UPDATE or a DELETE, a new one for an
+    INSERT. The settings SELECT returns the rows its WHERE keeps (the PGlite probe of that SQL
+    checked the same selection). `fail_on` makes the first statement whose SQL contains it raise.
     """
 
     encoding = "UTF8"  # execute_values encodes its SQL with the connection's encoding
@@ -115,6 +119,8 @@ class _FakeConn:
 
     @autocommit.setter
     def autocommit(self, value: bool) -> None:
+        if self.closed:
+            raise psycopg2.InterfaceError("connection already closed")
         if self.in_transaction:
             raise psycopg2.ProgrammingError("set_session cannot be used inside a transaction")
         self._autocommit = value
@@ -166,7 +172,8 @@ class _FakeCursor:
             raise psycopg2.OperationalError("server closed the connection unexpectedly")
         conn.statements.append(_Statement(text, params, conn.autocommit))
         if "FROM interval_ba_live_settings" in text:
-            self._result = list(conn.settings)
+            assert isinstance(params, dict)
+            self._result = _covering(conn.settings, params["start"], params["session_end"])
         elif text.lstrip().startswith("SELECT"):
             self._result = list(conn.rows)
         elif text.startswith("INSERT INTO interval_ba_alerts"):
@@ -181,6 +188,16 @@ class _FakeCursor:
 
     def fetchall(self) -> list[tuple[object, ...]]:
         return self._result
+
+
+def _covering(
+    rows: Sequence[tuple[Any, ...]], start: datetime, session_end: datetime
+) -> list[tuple[Any, ...]]:
+    """The settings SQL's WHERE: booted_at from the latest boot before `start` (or `start`)
+    up to `session_end`, oldest first. booted_at is a row's first value."""
+    earlier = [row[0] for row in rows if row[0] < start]
+    lower = max(earlier) if earlier else start
+    return sorted((row for row in rows if lower <= row[0] < session_end), key=lambda row: row[0])
 
 
 def _settings_row(settings: LiveSettings) -> tuple[object, ...]:
@@ -663,15 +680,24 @@ def test_held_when_codes_differ(tmp_path, con):
     assert _counts(plan) == {**BASE_COUNTS, "inserted": 0, "inserts_held": HELD_OTHER_RULE}
 
 
-def test_held_when_detector_off(tmp_path, con):
+@pytest.mark.parametrize(
+    "settings",
+    [
+        [replace(default_settings(), enabled=False)],
+        # On in the morning, switched off by a mid-session redeploy: still held.
+        [default_settings(), replace(default_settings(), enabled=False)],
+    ],
+    ids=["off-all-day", "off-part-of-the-day"],
+)
+def test_held_when_detector_off(tmp_path, con, settings):
     tape = _day_tape(tmp_path)
     _, rows = _scenario(con, tape)
     db = _FakeConn(rows)
 
-    plan = _heal(db, con, tape, [replace(default_settings(), enabled=False)], apply=True)
+    plan = _heal(db, con, tape, settings, apply=True)
 
     _assert_held(db, plan, HELD_OFF)
-    # With the detector off no ticker was on: the comparison counts nothing.
+    # A row with the detector off has no ticker on: the comparison counts nothing.
     assert _counts(plan) == {
         **BASE_COUNTS,
         "tape_alerts": 0,
@@ -719,8 +745,9 @@ def test_held_reason_precedence(tmp_path, con):
 
     assert held([off, off_other_rule]) == HELD_OTHER_RULE
     assert held([off, off]) == HELD_OFF
-    # One row on is enough not to hold for "off".
-    assert held([off, default_settings()]) is None
+    # One row off holds them, though another is on.
+    assert held([off, default_settings()]) == HELD_OFF
+    assert held([default_settings(), default_settings()]) is None
 
 
 def test_settings_as_the_database_returns_them_are_the_tape_rule(tmp_path, con):
@@ -776,10 +803,11 @@ def test_on_tickers_are_on_in_every_covering_row(tmp_path, con):
     )  # A, B, D, E; 101, 102, 104
     assert plan.inserts == (alerts[SPY_P], alerts[QQQ_P])
 
-    # A row with the detector off has no ticker on, so nothing is counted or inserted.
+    # A row with the detector off has no ticker on, so nothing is counted, and the inserts are
+    # held for it.
     plan = _heal(_FakeConn(rows), con, tape, [morning, replace(morning, enabled=False)])
 
-    assert plan.inserts_held is None
+    assert plan.inserts_held == HELD_OFF
     assert (plan.tape_alerts, plan.live_rows, plan.inserts) == (0, 0, ())
     assert plan.flag_updates == ((101, True, False),)
 
@@ -802,6 +830,34 @@ def test_mid_day_boot_with_other_codes_holds_inserts(tmp_path, con):
     assert [s.booted_at for s in settings] == [before.booted_at, mid_day.booted_at]
     assert plan.inserts_held == HELD_OTHER_RULE
     assert plan.inserts == ()
+
+
+@pytest.mark.parametrize(
+    ("boot_ct", "held"),
+    [("15:30", HELD_OTHER_RULE), ("18:00", None)],
+    ids=["before-the-close", "after-the-close"],
+)
+def test_boot_after_the_close_does_not_change_the_sessions_rule(tmp_path, con, boot_ct, held):
+    # SPXW 0DTE prints end at 15:59 CT: a settings change deployed after the close belongs to
+    # the next session.
+    tape = _day_tape(tmp_path)
+    _, rows = _scenario(con, tape)
+    ct = ZoneInfo("America/Chicago")
+    before = replace(default_settings(), booted_at=datetime(2026, 11, 16, 20, 0, tzinfo=ct))
+    other_codes = replace(
+        default_settings(),
+        booted_at=datetime.combine(DAY, time.fromisoformat(boot_ct), tzinfo=ct),
+        multi_leg_codes=MULTI_LEG_CODES | {"mfto"},
+    )
+    db = _FakeConn(rows, [_settings_row(before), _settings_row(other_codes)])
+
+    plan = _heal(db, con, tape, read_covering_settings(db, DAY))
+
+    assert plan.inserts_held == held
+    # Either way the next session runs under the new row.
+    assert [s.booted_at for s in read_covering_settings(db, DAY + timedelta(days=1))] == [
+        other_codes.booted_at
+    ]
 
 
 def test_outage_day_with_no_live_rows_is_not_held(tmp_path, con):
@@ -874,22 +930,79 @@ def test_db_error_mid_day_rolls_back_and_writes_no_marker(tmp_path, con):
     assert not [s for s in db.writes() if "interval_ba_tape_days" in s.sql]
 
 
-def test_failed_rollback_keeps_the_original_error(tmp_path, con):
+@pytest.mark.parametrize(
+    "closes", [True, False], ids=["connection-closed", "transaction-left-open"]
+)
+def test_failed_rollback_keeps_the_original_error(tmp_path, con, closes):
+    # The rollback fails, and with it restoring autocommit: psycopg2 refuses that on a closed
+    # connection and inside the transaction the failed rollback left open. Neither refusal may
+    # replace the error that started it.
     tape = _day_tape(tmp_path)
     _, rows = _scenario(con, tape)
     db = _FakeConn(rows, fail_on="SET underlying_price")
 
-    def dead_rollback() -> None:
-        db.closed = 2
+    def failed_rollback() -> None:
+        if closes:
+            db.closed = 2
         raise psycopg2.InterfaceError("connection already closed")
 
-    db.rollback = dead_rollback  # type: ignore[method-assign]
+    db.rollback = failed_rollback  # type: ignore[method-assign]
 
     with pytest.raises(psycopg2.OperationalError, match="server closed the connection"):
         _heal(db, con, tape, [default_settings()], apply=True)
 
     assert db.commits == 0
-    assert db.autocommit is False  # a closed connection is left alone
+    assert db.in_transaction is True
+    assert db.autocommit is False  # the restore was refused, quietly
+
+
+def test_expected_sha_mismatch_raises_before_any_write(tmp_path, con):
+    tape = _day_tape(tmp_path)
+    _, rows = _scenario(con, tape)
+    fresh = _heal(_FakeConn(rows), con, tape, [default_settings()]).sha256
+    stale = "0" * 64
+
+    for apply in (True, False):
+        db = _FakeConn(rows)
+        with pytest.raises(PlanChanged, match=f"sha256 {fresh} is not the expected {stale}"):
+            heal_day(
+                db,
+                con,
+                tape,
+                DAY,
+                [default_settings()],
+                insert_missed=True,
+                apply=apply,
+                expect_sha256=stale,
+            )
+
+        assert db.writes() == []
+        assert (db.commits, db.rollbacks) == (0, 1)
+        assert db.autocommit is True
+    assert issubclass(PlanChanged, ValueError)
+
+
+def test_expected_sha_match_applies(tmp_path, con):
+    tape = _day_tape(tmp_path)
+    _, rows = _scenario(con, tape)
+    planned = _heal(_FakeConn(rows), con, tape, [default_settings()])
+    db = _FakeConn(rows)
+
+    plan = heal_day(
+        db,
+        con,
+        tape,
+        DAY,
+        [default_settings()],
+        insert_missed=True,
+        apply=True,
+        expect_sha256=planned.sha256,
+    )
+
+    assert plan.sha256 == planned.sha256
+    assert _counts(plan) == BASE_COUNTS
+    assert db.commits == 1
+    assert db.write("INSERT INTO interval_ba_tape_days")
 
 
 def test_tape_without_the_day_raises_and_writes_nothing(tmp_path, con):
@@ -948,8 +1061,9 @@ def test_dayplan_json_round_trips(tmp_path, con):
     stored = json.loads(json.dumps(plan.to_json()))
 
     assert DayPlan.from_json(stored) == plan
-    # The sha256 covers each of the four write lists: a changed list is refused.
+    # The sha256 covers the day and each of the four write lists: a change to any is refused.
     for name, other in [
+        ("day", "2026-11-18"),
         ("inserts", []),
         ("removes", [203]),
         ("flag_updates", [[101, True, True]]),
@@ -957,6 +1071,13 @@ def test_dayplan_json_round_trips(tmp_path, con):
     ]:
         with pytest.raises(ValueError, match="sha256"):
             DayPlan.from_json({**stored, name: other})
+
+    # The inserts are hashed in key order, not replay_day's order.
+    outage = _heal(_FakeConn([]), con, tape, [default_settings()])
+    assert len(outage.inserts) == 6
+    stored_outage = json.loads(json.dumps(outage.to_json()))
+    stored_outage["inserts"] = stored_outage["inserts"][::-1]
+    assert DayPlan.from_json(stored_outage).sha256 == outage.sha256
 
     # An insert with no spot to take crosses too.
     bare = _write_tape(
@@ -985,39 +1106,39 @@ def test_read_live_rows_reads_the_days_rows_of_both_sources(tmp_path, con):
 
 
 @pytest.mark.parametrize(
-    ("day", "start", "end"),
+    ("day", "start", "session_end"),
     [
         (
             date(2026, 11, 17),
             datetime(2026, 11, 17, 6, tzinfo=UTC),
-            datetime(2026, 11, 18, 6, tzinfo=UTC),
+            datetime(2026, 11, 17, 22, tzinfo=UTC),
         ),
-        # CDT begins at 02:00 on 03-08: a 23-hour day.
+        # CDT begins at 02:00 on 03-08: 00:00 is CST, 16:00 is CDT.
         (
             date(2026, 3, 8),
             datetime(2026, 3, 8, 6, tzinfo=UTC),
-            datetime(2026, 3, 9, 5, tzinfo=UTC),
+            datetime(2026, 3, 8, 21, tzinfo=UTC),
         ),
-        # CST returns at 02:00 on 11-01: a 25-hour day.
+        # CST returns at 02:00 on 11-01: 00:00 is CDT, 16:00 is CST.
         (
             date(2026, 11, 1),
             datetime(2026, 11, 1, 5, tzinfo=UTC),
-            datetime(2026, 11, 2, 6, tzinfo=UTC),
+            datetime(2026, 11, 1, 22, tzinfo=UTC),
         ),
     ],
 )
-def test_read_covering_settings_bounds_the_ct_day_across_dst(day, start, end):
+def test_read_covering_settings_bounds_the_ct_session_across_dst(day, start, session_end):
     row = replace(default_settings(), booted_at=start - timedelta(hours=3))
     db = _FakeConn([], [_settings_row(row)])
 
     settings = read_covering_settings(db, day)
 
     (select,) = db.statements
-    assert select.params == {"start": start, "end": end}
-    # The latest row before 00:00 CT, then every row of the day.
+    assert select.params == {"start": start, "session_end": session_end}
+    # The latest row before 00:00 CT, then every row booted before 16:00 CT.
     assert "max(booted_at)" in select.sql
     assert "booted_at < %(start)s" in select.sql
-    assert "booted_at < %(end)s" in select.sql
+    assert "booted_at < %(session_end)s" in select.sql
     assert select.sql.rstrip().endswith("ORDER BY booted_at")
     assert settings == [row]
     assert type(settings[0].tickers) is tuple

@@ -331,7 +331,7 @@ CI filters in `.github/workflows/ci.yml`:
 - **`nightly`:** those three uw-stream files join it, so a uw-stream-only change runs the test. The `uw_stream` filter already does the same for `src/data/marketHours.ts` (`ci.yml:106-109`).
 - **`ml`:** `nightly/src/interval_ba_replay.py` joins it, because `scripts/test_interval_ba_tape.py` imports the module and the scripts tests run in the `ml` job (`ci.yml:69-80, 318-320`).
 
-### 6.4 One day's pass over live rows: `heal_day(conn, con, tape, day, settings, *, insert_missed, apply) -> DayPlan`
+### 6.4 One day's pass over live rows: `heal_day(conn, con, tape, day, settings, *, insert_missed, apply, expect_sha256=None) -> DayPlan`
 
 This also lives in the shared module. It is used only for days on or after `LIVE_START = 2026-05-13`, and it refuses an earlier day.
 
@@ -342,7 +342,7 @@ This also lives in the shared module. It is used only for days on or after `LIVE
 
 **`settings`, the live settings that cover the day.**
 
-- **The nightly step reads them from `interval_ba_live_settings`.** The covering rows are the latest row with `booted_at` before the day's 00:00 CT, plus every row during the day.
+- **The nightly step reads them from `interval_ba_live_settings`.** The covering rows are the latest row with `booted_at` before the day's 00:00 CT, plus every row booted before 16:00 CT that day. SPXW 0DTE prints end at 15:59 CT, so a settings change deployed after the close covers the next session and never rewrites this one's rule.
 - **The tool's `heal` mode** may pass the code defaults with all three tickers on (`--assume-default-settings`), but only for days before the first `interval_ba_live_settings` row. The §8.2 parity run is the evidence that 10-29 onward ran the defaults.
 
 The steps:
@@ -353,14 +353,14 @@ The steps:
 2. **Settings check (only when `insert_missed`).** The inserts are held when:
    - no row covers the day (`inserts_held = 'no live settings record'`);
    - a covering row's ratio, floor, window, share, codes or confluence window differs from the module's constants (`'live settings differ from the tape rule'`);
-   - `enabled` is false in every covering row (`'live detector off'`).
+   - `enabled` is false in any covering row (`'live detector off'`). Live fired nothing while it was off, so the tape must not add alerts for that day.
 3. **Insert what live missed (only when `insert_missed` and not held).** Tape alerts for on tickers whose key has no row are INSERTed as `source = 'replay'`, with `ON CONFLICT DO NOTHING`.
 4. **Remove stale replay rows.** Delete `source = 'replay'` rows on the day whose key the replay no longer fires. Only a re-landed tape makes any. Nothing is removed when the replay fired no alerts at all: an empty replay with live rows present means the tape read broke, not that the alerts went away.
 5. **Flags on live rows.** `UPDATE ... SET top_trade_is_sweep, top_trade_is_floor WHERE id = v.id AND source = 'live' AND (the two flags) IS DISTINCT FROM (v.sweep, v.floor)`.
 6. **SPXW spot on live rows.** `UPDATE ... SET underlying_price WHERE id = v.id AND source = 'live' AND underlying_price IS NULL`, with `live_spot`.
 7. **Record the day.** Upsert the `interval_ba_tape_days` row.
 
-It returns a `DayPlan`: the counts and the exact write set (ids and values per UPDATE, ids to delete, rows to insert), with a sha256 over it.
+It returns a `DayPlan`: the counts and the exact write set (ids and values per UPDATE, ids to delete, rows to insert), with a sha256 over the day and the write set in canonical order.
 
 Writes and what it never touches:
 
@@ -368,6 +368,7 @@ Writes and what it never touches:
 - **Autocommit is switched off for the day.** The nightly's `connect_db` connection is autocommit (`resources.py:49,66`). `heal_day` sets `autocommit = False`, commits at the end, and rolls back on any exception.
 - **A failed day leaves no row and no marker,** so it is retried.
 - **The dry run.** With `apply = False` nothing is written.
+- **The approved plan, exactly.** With `expect_sha256`, a fresh plan whose sha256 differs raises `PlanChanged` (a `ValueError`) before any write, on a dry run too. The transaction rolls back. The tool passes the sha from `plan.json`, so a day whose rows, tape or code moved since the owner saw the plan is never applied.
 - **Never touched:**
   - a live row's other columns, and `acknowledged` on any row;
   - `underlying_price` on a row that already has one;
