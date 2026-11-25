@@ -60,11 +60,13 @@ describe('<GexbotSection>', () => {
     expect(container.textContent ?? '').not.toMatch(/skew/i);
   });
 
-  it('mounts the 6 remaining child components (drives empty-state testids)', () => {
+  it('mounts the 8 child components (drives empty-state testids)', () => {
     render(<GexbotSection marketOpen spxSpot={6750} />);
     expect(
       screen.getByTestId('dealer-state-summary-strip-empty'),
     ).toBeInTheDocument();
+    expect(screen.getByTestId('expected-move-tile-empty')).toBeInTheDocument();
+    expect(screen.getByTestId('net-vanna-tile-empty')).toBeInTheDocument();
     expect(screen.getByTestId('strike-mover-ladder-empty')).toBeInTheDocument();
     expect(screen.getByTestId('charm-clock-empty')).toBeInTheDocument();
     expect(screen.getByTestId('gamma-compass-empty')).toBeInTheDocument();

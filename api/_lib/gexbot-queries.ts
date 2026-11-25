@@ -10,13 +10,27 @@
  * tables are empty — the frontend renders empty-state for that case.
  * `getSiblingConfirmation` returns one no-data row per sibling instead (and
  * `[]` only for a ticker with no siblings). `getLatestGexbotSnapshotAt`
- * returns `null` when no row is in its window. A DB failure propagates from
- * every helper (after `withDbRetry`); `api/gexbot.ts` turns it into a 500
- * plus a Sentry capture.
+ * returns `null` when no row is in its window. `getExpectedMove` returns `[]`
+ * when there is no fresh capture (or only a replay of the prior session), and
+ * one row naming the reason when there is a capture but no move can be
+ * computed from it. A DB failure propagates from every helper (after
+ * `withDbRetry`); `api/gexbot.ts` turns it into a 500 plus a Sentry capture.
  */
 
 import { getDb, withDbRetry } from './db.js';
 import { GEXBOT_TICKERS } from './gexbot-client.js';
+import {
+  computeExpectedMove,
+  isPriorSessionStamp,
+  type ExpectedMove,
+} from './gexbot-expected-move.js';
+import {
+  decodeStrikeIvs,
+  PANEL_TO_CATEGORY,
+  STALENESS_CUTOFF_MS,
+  TICKER,
+  type GexbotStatePayload,
+} from './periscope-gexbot.js';
 
 // Per-attempt timeout for read queries — same budget the rest of the
 // codebase uses. 3 attempts × 10s = 30s fail-fast, before Vercel's
@@ -186,24 +200,48 @@ interface RawSnapshotsRow {
   min_dte: unknown;
 }
 
+/**
+ * The newest snapshot per ticker, with two bounds on what counts as "latest":
+ *
+ * - Freshness: `captured_at` within 15 minutes. Fetch crons run 1/min, so
+ *   anything older is stale (cron-down, ticker decommissioned, weekend) and
+ *   shouldn't appear. Also bounds the DISTINCT ON scan to recent rows in the
+ *   (ticker, captured_at DESC) index.
+ * - Stale vendor stamp: a row whose `source_timestamp` (Unix seconds)
+ *   predates today's ET midnight is the vendor replaying a finished
+ *   session's last snapshot (VIX's prior close at the 09:30 open), so its
+ *   values describe yesterday however fresh `captured_at` is. It is skipped
+ *   and the ticker falls back to an older fresh row, or has none for a
+ *   minute. A NULL stamp carries no evidence either way and is kept. The
+ *   same rule the sibling, fire-time and velocity reads apply; here it keeps
+ *   yesterday's `zvanna` out of the SPX net −vanna tile at the open.
+ *
+ * "Now" is a bound JS clock reading rather than SQL `now()`, so the whole
+ * statement is evaluated against one instant.
+ */
 export async function getLatestSnapshots(): Promise<SnapshotsLatestRow[]> {
   const sql = getDb();
-  // 15-min freshness window: fetch crons run 1/min, so anything older
-  // is stale (cron-down, ticker decommissioned, weekend) and shouldn't
-  // appear in "latest" results. Also bounds the DISTINCT ON scan to
-  // recent rows in the (ticker, captured_at DESC) index.
+  const nowIso = new Date().toISOString();
   const rows = (await withDbRetry(
     () => sql`
-      SELECT DISTINCT ON (ticker)
-        ticker, captured_at,
-        spot, zero_gamma,
-        z_mlgamma, z_msgamma, zcvr, zgr, zvanna, zcharm,
-        o_mlgamma, o_msgamma, ocvr, ogr, ovanna, ocharm,
-        one_dexoflow, one_gexoflow, one_cvroflow,
-        min_dte
-      FROM gexbot_snapshots
-      WHERE captured_at >= now() - INTERVAL '15 minutes'
-      ORDER BY ticker, captured_at DESC
+      WITH bounds AS (
+        SELECT
+          ${nowIso}::timestamptz AS now_ts,
+          date_trunc('day', ${nowIso}::timestamptz AT TIME ZONE 'America/New_York')
+            AT TIME ZONE 'America/New_York' AS day_start
+      )
+      SELECT DISTINCT ON (s.ticker)
+        s.ticker, s.captured_at,
+        s.spot, s.zero_gamma,
+        s.z_mlgamma, s.z_msgamma, s.zcvr, s.zgr, s.zvanna, s.zcharm,
+        s.o_mlgamma, s.o_msgamma, s.ocvr, s.ogr, s.ovanna, s.ocharm,
+        s.one_dexoflow, s.one_gexoflow, s.one_cvroflow,
+        s.min_dte
+      FROM gexbot_snapshots s, bounds b
+      WHERE s.captured_at >= b.now_ts - INTERVAL '15 minutes'
+        AND (s.source_timestamp IS NULL
+             OR s.source_timestamp >= extract(epoch FROM b.day_start))
+      ORDER BY s.ticker, s.captured_at DESC
     `,
     READ_RETRIES,
     READ_TIMEOUT_MS,
@@ -690,4 +728,91 @@ export async function getLatestGexbotSnapshotAt(
         ? row.captured_at
         : new Date(row.captured_at),
   };
+}
+
+// ────────────────────────────────────────────────────────────
+// Query: ±1σ expected move from the latest per-strike IV
+// ────────────────────────────────────────────────────────────
+
+export interface ExpectedMoveRow extends ExpectedMove {
+  ticker: string;
+  capturedAt: string;
+  /** The moment the move is computed for: the vendor's snapshot timestamp. */
+  asOf: string;
+}
+
+/** The vendor's snapshot `timestamp` (Unix seconds) as a Date, if usable. */
+function vendorTime(timestamp: unknown): Date | null {
+  const seconds = toNum(timestamp);
+  if (seconds == null || seconds <= 0) return null;
+  const at = new Date(seconds * 1000);
+  return Number.isNaN(at.getTime()) ? null : at;
+}
+
+/**
+ * GEXBot's ±1σ expected move for SPX, from the call and put IV in the latest
+ * `gamma_zero` state capture. The vendor documents the same row layout for
+ * every state Greek category, so the IVs sit at the same positions in any of
+ * them (docs.gexbot.com/apidocs/state/state-op); it does not say the values
+ * are identical across categories, so only this one is read, with no
+ * fallback to another. It is already polled each minute. Same ticker and
+ * 5-minute freshness contract as the other per-strike readers.
+ *
+ * The move is computed as of the vendor's own `timestamp`, not the request
+ * time, so the IVs and the time left describe the same moment; a capture
+ * with no usable timestamp falls back to `captured_at`.
+ *
+ * `[]` when no capture is fresh, and also when the vendor's `timestamp`
+ * falls on an earlier ET date than `captured_at`: the vendor replaying the
+ * last session's final snapshot at the open. Its IVs belong to a session that
+ * has ended, but today's has not, so the tile waits ("awaiting") rather than
+ * reporting a closed session. One row otherwise: a capture the move cannot
+ * be computed from (no spot, no `min_dte`, no ATM IV, past the session close)
+ * comes back with `expectedMove: null` and the reason in `unavailable`, so
+ * the tile can say why instead of looking empty.
+ */
+export async function getExpectedMove(): Promise<ExpectedMoveRow[]> {
+  const sql = getDb();
+  const category = PANEL_TO_CATEGORY.gamma;
+  const cutoff = new Date(Date.now() - STALENESS_CUTOFF_MS).toISOString();
+  const rows = (await withDbRetry(
+    () => sql`
+      SELECT captured_at, raw_response
+      FROM gexbot_api_capture
+      WHERE ticker = ${TICKER}
+        AND endpoint = 'state'
+        AND category = ${category}
+        AND captured_at >= ${cutoff}::timestamptz
+      ORDER BY captured_at DESC
+      LIMIT 1
+    `,
+    READ_RETRIES,
+    READ_TIMEOUT_MS,
+  )) as { captured_at: Date | string; raw_response: unknown }[];
+
+  const row = rows[0];
+  if (!row) return [];
+
+  const payload: GexbotStatePayload =
+    typeof row.raw_response === 'object' && row.raw_response !== null
+      ? (row.raw_response as GexbotStatePayload)
+      : {};
+  const capturedAt = new Date(row.captured_at);
+  const vendorAt = vendorTime(payload.timestamp);
+  if (vendorAt != null && isPriorSessionStamp(vendorAt, capturedAt)) return [];
+  const asOf = vendorAt ?? capturedAt;
+
+  return [
+    {
+      ticker: TICKER,
+      capturedAt: capturedAt.toISOString(),
+      asOf: asOf.toISOString(),
+      ...computeExpectedMove({
+        spot: toNum(payload.spot),
+        minDte: toNum(payload.min_dte),
+        strikes: decodeStrikeIvs(payload),
+        asOf,
+      }),
+    },
+  ];
 }

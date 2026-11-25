@@ -353,6 +353,8 @@ export type EventsQuery = z.infer<typeof eventsQuerySchema>;
  *                          zcvr per ticker, plus its session-typical |Δ|
  *   - `convexity-trend`  → 60-min zcvr timeseries per ticker
  *   - `maxchange-winners` → latest maxchange winner per (ticker, category)
+ *   - `expected-move`    → SPX ±1σ expected move from the latest per-strike
+ *                          IV (0 or 1 row)
  *   - `sibling-confirm`  → requires `ticker` + `side` + `at`; returns each
  *                          sibling's taker-flow direction at the alert's
  *                          fire time
@@ -368,6 +370,7 @@ export const gexbotQuerySchema = z
       'velocity',
       'convexity-trend',
       'maxchange-winners',
+      'expected-move',
       'sibling-confirm',
     ]),
     ticker: z

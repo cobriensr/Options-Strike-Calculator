@@ -9,12 +9,14 @@ vi.mock('../_lib/api-helpers.js', () => ({
 }));
 
 const {
+  mockGetExpectedMove,
   mockGetLatest,
   mockGetTrend,
   mockGetMax,
   mockGetSibling,
   mockGetVelocity,
 } = vi.hoisted(() => ({
+  mockGetExpectedMove: vi.fn(),
   mockGetLatest: vi.fn(),
   mockGetTrend: vi.fn(),
   mockGetMax: vi.fn(),
@@ -23,6 +25,7 @@ const {
 }));
 
 vi.mock('../_lib/gexbot-queries.js', () => ({
+  getExpectedMove: mockGetExpectedMove,
   getVelocityTape: mockGetVelocity,
   getLatestSnapshots: mockGetLatest,
   getConvexityTrend: mockGetTrend,
@@ -52,6 +55,7 @@ describe('GET /api/gexbot', () => {
     mockGetMax.mockResolvedValue([]);
     mockGetSibling.mockResolvedValue([]);
     mockGetVelocity.mockResolvedValue([]);
+    mockGetExpectedMove.mockResolvedValue([]);
   });
 
   it('returns 405 for non-GET', async () => {
@@ -162,6 +166,59 @@ describe('GET /api/gexbot', () => {
         tags: { route: '/api/gexbot', view: 'velocity' },
       }),
     );
+  });
+
+  it('returns 200 with rows for expected-move', async () => {
+    const row = {
+      ticker: 'SPX',
+      capturedAt: '2025-07-23T15:13:14.000Z',
+      asOf: '2025-07-23T15:13:12.000Z',
+      spot: 6326.27,
+      minDte: 0,
+      atmStrike: 6325,
+      atmIv: 0.11,
+      dteFraction: 0.19916666666666666,
+      expectedMove: 16.25557378390728,
+      lower: 6310.014426216093,
+      upper: 6342.525573783908,
+      unavailable: null,
+    };
+    mockGetExpectedMove.mockResolvedValue([row]);
+    const res = mockResponse();
+    await handler(
+      mockRequest({ method: 'GET', query: { view: 'expected-move' } }),
+      res,
+    );
+    expect(res._status).toBe(200);
+    expect(res._json).toEqual({ rows: [row] });
+    expect(mockGetExpectedMove).toHaveBeenCalledTimes(1);
+  });
+
+  it('surfaces an expected-move DB failure as 500 and a Sentry capture', async () => {
+    mockGetExpectedMove.mockRejectedValue(new Error('connection lost'));
+    const res = mockResponse();
+    await handler(
+      mockRequest({ method: 'GET', query: { view: 'expected-move' } }),
+      res,
+    );
+    expect(res._status).toBe(500);
+    expect(Sentry.captureException).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'connection lost' }),
+      expect.objectContaining({
+        tags: { route: '/api/gexbot', view: 'expected-move' },
+      }),
+    );
+  });
+
+  it('keeps expected-move behind the owner-or-guest guard', async () => {
+    // GEXBot-derived values are licensed data: never served unguarded.
+    vi.mocked(guardOwnerOrGuestEndpoint).mockResolvedValue(true);
+    const res = mockResponse();
+    await handler(
+      mockRequest({ method: 'GET', query: { view: 'expected-move' } }),
+      res,
+    );
+    expect(mockGetExpectedMove).not.toHaveBeenCalled();
   });
 
   it('returns 200 with rows for convexity-trend', async () => {

@@ -268,6 +268,27 @@ describe('<CharmClock>', () => {
     expect(screen.getByText(/time to close: 2h 30m/)).toBeInTheDocument();
   });
 
+  it('reads the session as over once the market closes during a live session', () => {
+    // 19:59:30Z = 15:59:30 ET. The gate stops the ticking, which would leave
+    // the clock there and the by-close column coloured until the next open.
+    vi.setSystemTime(new Date('2026-05-19T19:59:30Z'));
+    mockUseGexbotData.mockReturnValue({
+      rows: [makeRow({ ticker: 'SPX', spot: 5985, zcharm: 47 })],
+      loading: false,
+      error: null,
+      freshestAt: '2026-05-19T19:59:00Z',
+    });
+    const { rerender } = render(<CharmClock marketOpen />);
+    expect(screen.getByTestId('charm-bias-SPX')).toHaveTextContent(/▲\s*BUYS/);
+
+    rerender(<CharmClock marketOpen={false} />);
+    expect(screen.getByText(/time to close: 0h 00m/)).toBeInTheDocument();
+    expect(screen.getByTestId('charm-by-close-SPX')).toHaveTextContent(
+      '$0 MM/hr',
+    );
+    expect(screen.getByTestId('charm-bias-SPX')).toHaveTextContent(/FLAT/);
+  });
+
   it('refreshes the clock when the tab becomes visible again', () => {
     mockUseGexbotData.mockReturnValue({
       rows: [makeRow({ ticker: 'SPX', spot: 5985, zcharm: 47 })],

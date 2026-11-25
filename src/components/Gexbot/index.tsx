@@ -19,7 +19,9 @@ import { CharmClock } from './CharmClock';
 import { ConvexityMatrix } from './ConvexityMatrix';
 import { DealerStateSummaryStrip } from './DealerStateSummaryStrip';
 import { DexoflowVelocityTape } from './DexoflowVelocityTape';
+import { ExpectedMoveTile } from './ExpectedMoveTile';
 import { GammaCompass } from './GammaCompass';
+import { NetVannaTile } from './NetVannaTile';
 import { StrikeMoverLadder } from './StrikeMoverLadder';
 
 interface GexbotSectionProps {
@@ -36,6 +38,10 @@ function GexbotSectionInner({ marketOpen, spxSpot }: GexbotSectionProps) {
     <SectionBox label="GEXBot Taker Flow" collapsible>
       <div className="flex flex-col gap-3">
         <DealerStateSummaryStrip marketOpen={marketOpen} />
+        <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+          <ExpectedMoveTile marketOpen={marketOpen} />
+          <NetVannaTile marketOpen={marketOpen} />
+        </div>
         <StrikeMoverLadder marketOpen={marketOpen} spxSpot={spxSpot} />
         <CharmClock marketOpen={marketOpen} />
         <GammaCompass marketOpen={marketOpen} />

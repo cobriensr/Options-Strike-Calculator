@@ -18,13 +18,13 @@
  * Spec: docs/superpowers/specs/gexbot-frontend-2026-05-16.md
  */
 
-import { memo, useEffect, useMemo, useState } from 'react';
+import { memo, useMemo } from 'react';
 
-import { getETToday, getETCloseUtcIso } from '../../utils/timezone';
 import {
   useGexbotData,
   type SnapshotsLatestRow,
 } from '../../hooks/useGexbotData';
+import { formatHoursMinutes, useHoursToClose } from './session-clock';
 import { formatDte } from './types';
 
 interface CharmClockProps {
@@ -42,22 +42,6 @@ const SPEC = { view: 'snapshots-latest' as const };
 const SESSION_HOURS = 6.5;
 /** Minimum bar fill % so a tiny-but-nonzero value still produces a visible nub. */
 const MIN_BAR_PCT = 4;
-/** Re-read the wall clock once a minute; the readout shows minutes. */
-const CLOCK_TICK_MS = 60_000;
-
-function hoursToClose(now: Date): number {
-  const today = getETToday();
-  const closeIso = getETCloseUtcIso(today);
-  if (!closeIso) return 0;
-  const ms = new Date(closeIso).getTime() - now.getTime();
-  return Math.max(0, ms / 3_600_000);
-}
-
-function formatHoursMinutes(hours: number): string {
-  const h = Math.floor(hours);
-  const m = Math.floor((hours - h) * 60);
-  return `${h}h ${m.toString().padStart(2, '0')}m`;
-}
 
 /**
  * zcharm is already in $MM per hour. Keep ~3 significant digits across the
@@ -91,31 +75,11 @@ function toneClass(byClose: number): string {
   return 'text-tertiary';
 }
 
-/** Wall clock that re-renders every `intervalMs`; the interval is cleaned up. */
-function useNow(intervalMs: number | null): Date {
-  const [now, setNow] = useState(() => new Date());
-  useEffect(() => {
-    if (intervalMs == null) return undefined;
-    const tick = () => setNow(new Date());
-    // Catch up after a closed-market or hidden-tab gap, then keep ticking.
-    tick();
-    const onVisible = () => {
-      if (document.visibilityState === 'visible') tick();
-    };
-    document.addEventListener('visibilitychange', onVisible);
-    const id = setInterval(tick, intervalMs);
-    return () => {
-      clearInterval(id);
-      document.removeEventListener('visibilitychange', onVisible);
-    };
-  }, [intervalMs]);
-  return now;
-}
-
 function CharmClockInner({ marketOpen }: CharmClockProps) {
   const { rows, loading, error } = useGexbotData(SPEC, marketOpen);
-  const now = useNow(marketOpen ? CLOCK_TICK_MS : null);
-  const hoursRemaining = useMemo(() => hoursToClose(now), [now]);
+  // 0 while the market is closed, so "By close" and the EOD bias clear at the
+  // close instead of keeping the last tick's tiny, still-coloured values.
+  const hoursRemaining = useHoursToClose(marketOpen);
 
   const charmRows = useMemo<CharmRow[]>(() => {
     const sessionFraction = hoursRemaining / SESSION_HOURS;

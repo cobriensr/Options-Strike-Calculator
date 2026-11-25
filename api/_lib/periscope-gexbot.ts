@@ -150,3 +150,54 @@ export function decodeStrikesWithHistory(
   }
   return out;
 }
+
+export interface DecodedStrikeIv {
+  /**
+   * Listed strike as the vendor sent it. Not rounded, unlike `DecodedStrike`:
+   * ETF chains list half-dollar strikes, and the ATM pick needs the real one.
+   */
+  strike: number;
+  /** Call implied vol as a fraction (0.126 = 12.6%); null when not quoted. */
+  callIv: number | null;
+  /** Put implied vol, same unit and rule. */
+  putIv: number | null;
+}
+
+/** GEXBot's own EOD files write an IV above this (1000%) as 0. */
+const MAX_IVOL = 10;
+
+/**
+ * One IV slot. The vendor sends 0 where it has no quote, so 0 means absent,
+ * as does anything negative, non-finite or over `MAX_IVOL`.
+ */
+function readIvol(raw: unknown): number | null {
+  if (raw == null) return null;
+  const v = Number(raw);
+  return Number.isFinite(v) && v > 0 && v <= MAX_IVOL ? v : null;
+}
+
+/**
+ * Decode the call and put implied vols GEXBot sends at positions 1 and 2 of
+ * every `mini_contracts` row (the Options Profile "skew dots"). The vendor
+ * documents the same row layout for every state Greek category
+ * (docs.gexbot.com/apidocs/state/state-op), so the columns sit at the same
+ * positions in any capture. It does not say the values match across
+ * categories; callers read one category and do not fall back to another.
+ *
+ * A row is kept on a finite strike alone: unlike `decodeStrikes`, a null
+ * Greek at position 3 does not drop it, because the IV does not depend on it.
+ */
+export function decodeStrikeIvs(
+  payload: GexbotStatePayload,
+): DecodedStrikeIv[] {
+  const arr = payload.mini_contracts;
+  if (!Array.isArray(arr)) return [];
+  const out: DecodedStrikeIv[] = [];
+  for (const row of arr) {
+    if (!Array.isArray(row) || row.length < 3 || row[0] == null) continue;
+    const strike = Number(row[0]);
+    if (!Number.isFinite(strike)) continue;
+    out.push({ strike, callIv: readIvol(row[1]), putIv: readIvol(row[2]) });
+  }
+  return out;
+}

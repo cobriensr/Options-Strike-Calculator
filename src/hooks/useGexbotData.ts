@@ -87,6 +87,31 @@ export interface MaxchangeWinnerRow {
   };
 }
 
+/**
+ * GEXBot's ±1σ expected move for one ticker, as of the vendor snapshot.
+ * `unavailable` is null exactly when `expectedMove` is a number; otherwise
+ * it names why the latest capture could not produce one.
+ */
+export interface ExpectedMoveRow {
+  ticker: string;
+  capturedAt: string;
+  /** The vendor snapshot time the move is computed for, ISO 8601. */
+  asOf: string;
+  spot: number | null;
+  /** Calendar days to the expiry the IVs belong to (0 = same-day). */
+  minDte: number | null;
+  atmStrike: number | null;
+  /** Smoothed ATM IV as a fraction (0.11 = 11%). */
+  atmIv: number | null;
+  /** Days to expiry, including the part of today that is left. */
+  dteFraction: number | null;
+  /** One standard deviation, in index points. */
+  expectedMove: number | null;
+  lower: number | null;
+  upper: number | null;
+  unavailable: 'no_spot' | 'no_dte' | 'expired' | 'no_atm_iv' | null;
+}
+
 export interface SiblingConfirmRow {
   ticker: string;
   /**
@@ -109,6 +134,7 @@ export type GexbotView =
   | { view: 'velocity' }
   | { view: 'convexity-trend' }
   | { view: 'maxchange-winners' }
+  | { view: 'expected-move' }
   | {
       view: 'sibling-confirm';
       ticker: string;
@@ -122,6 +148,7 @@ interface ViewPayload {
   velocity: VelocityRow[];
   'convexity-trend': ConvexityTrendRow[];
   'maxchange-winners': MaxchangeWinnerRow[];
+  'expected-move': ExpectedMoveRow[];
   'sibling-confirm': SiblingConfirmRow[];
 }
 

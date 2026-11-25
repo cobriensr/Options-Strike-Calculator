@@ -25,6 +25,7 @@ import {
 } from '../../hooks/useGexbotData';
 import { SrHint } from '../ui/SrHint';
 import { GEXBOT_UNDERLYING_ORDER } from './ticker-order';
+import { toneClasses } from './tile-tone';
 import { deriveGammaSign, type GammaSign } from './types';
 import {
   EPSILON,
@@ -63,32 +64,6 @@ function formatCTClock(iso: string | null): string {
     minute: '2-digit',
     timeZone: 'America/Chicago',
   });
-}
-
-function toneClasses(sign: GammaSign): {
-  container: string;
-  accent: string;
-  headline: string;
-} {
-  if (sign === 'long') {
-    return {
-      container: 'border-emerald-500/30 bg-emerald-500/5',
-      accent: 'bg-emerald-400',
-      headline: 'text-emerald-300',
-    };
-  }
-  if (sign === 'short') {
-    return {
-      container: 'border-rose-500/30 bg-rose-500/5',
-      accent: 'bg-rose-400',
-      headline: 'text-rose-300',
-    };
-  }
-  return {
-    container: 'border-white/10 bg-white/[0.02]',
-    accent: 'bg-white/20',
-    headline: 'text-tertiary',
-  };
 }
 
 interface BreadthCounts {

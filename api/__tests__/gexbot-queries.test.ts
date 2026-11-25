@@ -1,6 +1,6 @@
 // @vitest-environment node
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const { mockSql } = vi.hoisted(() => ({
   mockSql: vi.fn(),
@@ -14,6 +14,7 @@ vi.mock('../_lib/db.js', () => ({
 import {
   FIRE_TIME_MAX_AGE_SECONDS,
   getConvexityTrend,
+  getExpectedMove,
   getLatestGexbotSnapshotAt,
   getLatestSnapshots,
   getMaxchangeWinners,
@@ -614,6 +615,181 @@ describe('gexbot-queries', () => {
       expect(row).not.toBeNull();
       expect(row!.capturedAt).toBeInstanceOf(Date);
       expect(row!.oneCvroflow).toBeNull();
+    });
+  });
+
+  // ── getExpectedMove ──────────────────────────────────────
+
+  describe('getExpectedMove', () => {
+    // 11:13:12 ET on a regular session; the vendor stamps seconds.
+    const AS_OF_S = 1753283592;
+    const CAPTURED = new Date('2025-07-23T15:13:14Z');
+
+    function capture(overrides: Record<string, unknown> = {}) {
+      return {
+        captured_at: CAPTURED,
+        raw_response: {
+          timestamp: AS_OF_S,
+          ticker: 'SPX',
+          spot: 6326.27,
+          min_dte: 0,
+          mini_contracts: [
+            [6320, 0.12, 0.12, 1, [], 0, null],
+            [6325, 0.1, 0.12, 1, [], 0, null],
+            [6330, 0.1, 0.1, 1, [], 0, null],
+          ],
+          ...overrides,
+        },
+      };
+    }
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('returns [] when there is no fresh capture row', async () => {
+      mockSql.mockResolvedValueOnce([]);
+      expect(await getExpectedMove()).toEqual([]);
+    });
+
+    it('reads the latest SPX gamma_zero state capture inside the 5-minute window', async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2025-07-23T15:13:30Z'));
+      mockSql.mockResolvedValueOnce([]);
+      await getExpectedMove();
+      expect(mockSql).toHaveBeenCalledTimes(1);
+      const args = (mockSql.mock.calls[0] as unknown[]).slice(1);
+      expect(args).toEqual(['SPX', 'gamma_zero', '2025-07-23T15:08:30.000Z']);
+      const text = (mockSql.mock.calls[0]?.[0] as string[]).join('?');
+      expect(text).toContain('FROM gexbot_api_capture');
+      expect(text).toContain("endpoint = 'state'");
+      expect(text).toContain('ORDER BY captured_at DESC');
+      expect(text).toContain('LIMIT 1');
+    });
+
+    it('computes the move as of the vendor timestamp', async () => {
+      mockSql.mockResolvedValueOnce([capture()]);
+      const [row] = await getExpectedMove();
+      expect(row).toMatchObject({
+        ticker: 'SPX',
+        capturedAt: '2025-07-23T15:13:14.000Z',
+        asOf: '2025-07-23T15:13:12.000Z',
+        spot: 6326.27,
+        minDte: 0,
+        atmStrike: 6325,
+        unavailable: null,
+      });
+      expect(row!.atmIv).toBeCloseTo(0.11, 12);
+      expect(row!.expectedMove).toBeCloseTo(16.25557378390728, 9);
+      expect(row!.lower).toBeCloseTo(6310.014426216093, 9);
+      expect(row!.upper).toBeCloseTo(6342.525573783908, 9);
+    });
+
+    it('falls back to captured_at when the payload has no usable timestamp', async () => {
+      mockSql.mockResolvedValueOnce([
+        {
+          ...capture({ timestamp: 'soon' }),
+          captured_at: CAPTURED.toISOString(),
+        },
+      ]);
+      const [row] = await getExpectedMove();
+      expect(row!.asOf).toBe('2025-07-23T15:13:14.000Z');
+      expect(row!.unavailable).toBeNull();
+      // Two seconds later than the vendor stamp, so slightly less time left.
+      expect(row!.dteFraction).toBeCloseTo(17206 / 86400, 12);
+    });
+
+    it.each([
+      ['zero', 0],
+      ['negative', -1],
+      ['beyond the Date range', 1e20],
+    ])('falls back to captured_at for a %s timestamp', async (_label, ts) => {
+      mockSql.mockResolvedValueOnce([capture({ timestamp: ts })]);
+      const [row] = await getExpectedMove();
+      expect(row!.asOf).toBe('2025-07-23T15:13:14.000Z');
+      expect(row!.unavailable).toBeNull();
+    });
+
+    it('treats a replayed prior-session timestamp as no fresh data, not as "session closed"', async () => {
+      // The vendor can repeat the prior close at the open; the IVs then
+      // describe a session that ended yesterday. Today's session has not
+      // closed, so the tile must wait (an empty read) rather than say so.
+      mockSql.mockResolvedValueOnce([
+        capture({ timestamp: Date.parse('2025-07-22T20:00:00Z') / 1000 }),
+      ]);
+      expect(await getExpectedMove()).toEqual([]);
+    });
+
+    it('compares the stamp to the capture by ET date: 23:00 ET the night before is prior-session', async () => {
+      // 03:00Z on the 23rd is 23:00 ET on the 22nd; the capture is 13:31Z.
+      mockSql.mockResolvedValueOnce([
+        {
+          ...capture({ timestamp: Date.parse('2025-07-23T03:00:00Z') / 1000 }),
+          captured_at: new Date('2025-07-23T13:31:00Z'),
+        },
+      ]);
+      expect(await getExpectedMove()).toEqual([]);
+    });
+
+    it('still says "expired" for a same-day stamp at the close: the session did end', async () => {
+      // Captured at 16:03 ET with the vendor's final 16:00:00 ET snapshot.
+      mockSql.mockResolvedValueOnce([
+        {
+          ...capture({ timestamp: Date.parse('2025-07-23T20:00:00Z') / 1000 }),
+          captured_at: new Date('2025-07-23T20:03:00Z'),
+        },
+      ]);
+      const [row] = await getExpectedMove();
+      expect(row!.asOf).toBe('2025-07-23T20:00:00.000Z');
+      expect(row!.unavailable).toBe('expired');
+      expect(row!.expectedMove).toBeNull();
+    });
+
+    it('says "expired" on a half day from 13:00 ET', async () => {
+      // 2026-11-27 closes at 13:00 ET (18:00Z). Captured 13:00:02 ET.
+      mockSql.mockResolvedValueOnce([
+        {
+          ...capture({ timestamp: Date.parse('2026-11-27T18:00:01Z') / 1000 }),
+          captured_at: new Date('2026-11-27T18:00:02Z'),
+        },
+      ]);
+      const [row] = await getExpectedMove();
+      expect(row!.unavailable).toBe('expired');
+    });
+
+    it('names a capture with no IV at the ATM strike instead of guessing', async () => {
+      mockSql.mockResolvedValueOnce([
+        capture({ mini_contracts: [[6325, 0, 0, 1, [], 0, null]] }),
+      ]);
+      const [row] = await getExpectedMove();
+      expect(row!.unavailable).toBe('no_atm_iv');
+      expect(row!.expectedMove).toBeNull();
+      expect(row!.spot).toBe(6326.27);
+    });
+
+    it('names a malformed payload (no spot, no strikes) as no_spot', async () => {
+      mockSql.mockResolvedValueOnce([
+        { captured_at: CAPTURED, raw_response: null },
+      ]);
+      const [row] = await getExpectedMove();
+      expect(row).toMatchObject({
+        ticker: 'SPX',
+        spot: null,
+        minDte: null,
+        expectedMove: null,
+        unavailable: 'no_spot',
+      });
+    });
+
+    it('names a missing min_dte as no_dte', async () => {
+      mockSql.mockResolvedValueOnce([capture({ min_dte: undefined })]);
+      const [row] = await getExpectedMove();
+      expect(row!.unavailable).toBe('no_dte');
+    });
+
+    it('propagates a DB failure', async () => {
+      mockSql.mockRejectedValueOnce(new Error('connection lost'));
+      await expect(getExpectedMove()).rejects.toThrow('connection lost');
     });
   });
 });

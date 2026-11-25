@@ -46,6 +46,22 @@ describe('useGexbotData', () => {
       );
     });
 
+    it('builds the expected-move URL with no extra params', async () => {
+      mockFetchJson.mockResolvedValue({
+        data: {
+          rows: [{ ticker: 'SPX', capturedAt: '2025-07-23T15:13:14.000Z' }],
+        },
+      });
+      const { result } = renderHook(() =>
+        useGexbotData({ view: 'expected-move' }, true),
+      );
+      await waitFor(() => expect(result.current.loading).toBe(false));
+      expect(mockFetchJson).toHaveBeenCalledWith(
+        '/api/gexbot?view=expected-move',
+      );
+      expect(result.current.freshestAt).toBe('2025-07-23T15:13:14.000Z');
+    });
+
     it('builds URL with ticker + side + fire time for sibling-confirm', async () => {
       mockFetchJson.mockResolvedValue({ data: { rows: [] } });
       renderHook(() =>

@@ -2,6 +2,7 @@
 
 import { describe, it, expect } from 'vitest';
 import {
+  decodeStrikeIvs,
   decodeStrikes,
   decodeStrikesWithHistory,
   type GexbotStatePayload,
@@ -155,5 +156,79 @@ describe('decodeStrikesWithHistory', () => {
 
   it('returns [] when mini_contracts is absent', () => {
     expect(decodeStrikesWithHistory({})).toEqual([]);
+  });
+});
+
+describe('decodeStrikeIvs', () => {
+  it('lifts call IV (position 1) and put IV (position 2), strike unrounded', () => {
+    const payload: GexbotStatePayload = {
+      mini_contracts: [
+        [632.5, 0.21, 0.24, 5, [], 0, null],
+        [6310, 0.126, 0.137, 52.36, [51.41, 57.72, 30.76], 0, null],
+      ],
+    };
+    expect(decodeStrikeIvs(payload)).toEqual([
+      { strike: 632.5, callIv: 0.21, putIv: 0.24 },
+      { strike: 6310, callIv: 0.126, putIv: 0.137 },
+    ]);
+  });
+
+  it('maps a 0, negative, non-finite or missing IV to null', () => {
+    // The vendor writes 0 where it has no quote (far-OTM puts below).
+    const payload: GexbotStatePayload = {
+      mini_contracts: [
+        [6510, 0.426, 0, 0, [0, 0, 0], 0, null],
+        [6000, null, 'x', 1, [], 0, null],
+        [6005, -0.1, Number.NaN, 1, [], 0, null],
+        [6010, undefined, Number.POSITIVE_INFINITY, 1, [], 0, null],
+      ],
+    };
+    expect(decodeStrikeIvs(payload)).toEqual([
+      { strike: 6510, callIv: 0.426, putIv: null },
+      { strike: 6000, callIv: null, putIv: null },
+      { strike: 6005, callIv: null, putIv: null },
+      { strike: 6010, callIv: null, putIv: null },
+    ]);
+  });
+
+  it('treats an IV above 10 (1000%) as absent', () => {
+    // The vendor's own EOD files write such values as 0.
+    const payload: GexbotStatePayload = {
+      mini_contracts: [[6400, 10.01, 10, 1, [], 0, null]],
+    };
+    expect(decodeStrikeIvs(payload)).toEqual([
+      { strike: 6400, callIv: null, putIv: 10 },
+    ]);
+  });
+
+  it('keeps a row whose Greek (position 3) is null: IV does not need it', () => {
+    const payload: GexbotStatePayload = {
+      mini_contracts: [[6325, 0.11, 0.12, null, [], 0, null]],
+    };
+    expect(decodeStrikeIvs(payload)).toEqual([
+      { strike: 6325, callIv: 0.11, putIv: 0.12 },
+    ]);
+  });
+
+  it('drops non-array rows, rows shorter than 3 and rows with no usable strike', () => {
+    const payload: GexbotStatePayload = {
+      mini_contracts: [
+        'nope' as unknown as unknown[],
+        [6325, 0.11],
+        [null, 0.11, 0.12, 1, [], 0, null],
+        ['abc', 0.11, 0.12, 1, [], 0, null],
+        [6330, 0.1, 0.1, 1, [], 0, null],
+      ],
+    };
+    expect(decodeStrikeIvs(payload)).toEqual([
+      { strike: 6330, callIv: 0.1, putIv: 0.1 },
+    ]);
+  });
+
+  it('returns [] when mini_contracts is absent or not an array', () => {
+    expect(decodeStrikeIvs({})).toEqual([]);
+    expect(
+      decodeStrikeIvs({ mini_contracts: 'x' as unknown as unknown[][] }),
+    ).toEqual([]);
   });
 });

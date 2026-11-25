@@ -12,6 +12,8 @@
  *                                (Δagg_dex, Δzgr, Δzcvr via LAG)
  *   ?view=convexity-trend      → 60-min zcvr timeseries per ticker
  *   ?view=maxchange-winners    → latest maxchange winner per (ticker, cat)
+ *   ?view=expected-move        → SPX ±1σ expected move from the latest
+ *                                per-strike IV (GEXBot's documented formula)
  *   ?view=sibling-confirm      → requires &ticker=AAPL&side=call|put&at=<ISO
  *                                fire time>: sibling taker-flow direction then
  *
@@ -27,6 +29,7 @@ import {
 } from './_lib/api-helpers.js';
 import {
   getConvexityTrend,
+  getExpectedMove,
   getLatestSnapshots,
   getMaxchangeWinners,
   getSiblingConfirmation,
@@ -72,6 +75,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         break;
       case 'maxchange-winners':
         body = { rows: await getMaxchangeWinners() };
+        break;
+      case 'expected-move':
+        body = { rows: await getExpectedMove() };
         break;
       case 'sibling-confirm': {
         // Zod .refine guarantees these are set, but TS narrowing
