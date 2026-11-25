@@ -1,10 +1,11 @@
 /**
  * useMarketData — React hook for live Schwab market data.
  *
- * Fetches from five independent endpoints in parallel on mount:
+ * Fetches from five independent endpoints in parallel on mount, and again when
+ * the ET date changes (a tab held across midnight):
  *   /api/quotes    → SPY, SPX, VIX, VIX1D, VIX9D
  *   /api/intraday  → today's SPX OHLC + 30-min opening range
- *   /api/yesterday → prior day SPX OHLC for clustering
+ *   /api/yesterday → prior day SPX OHLC for clustering (asked for by ET date)
  *   /api/events    → economic calendar events
  *   /api/movers    → market movers
  *
@@ -19,7 +20,12 @@
  * the mount fetch in flight, stops the poll (a poll reply already on its way
  * writes nothing) and keeps the data already loaded.
  *
- * Auto-refreshes quotes every 60s during market hours, stops after close.
+ * Auto-refreshes every 60s from pre-market to the end of extended hours (not
+ * while the session is closed):
+ *   - quotes, always;
+ *   - the intraday body, in regular hours, until the held opening range is
+ *     today's and complete;
+ *   - yesterday, while the held day is not the last completed session.
  *
  * Fetch logic and result processing are extracted to
  * `useMarketData.fetchers.ts` for independent testability.
@@ -249,8 +255,9 @@ export function useMarketData(): MarketDataState {
 
   // Today's ET date, from the app's one clock: it changes at ET midnight. The
   // mount fetch below depends on it, so a tab held across midnight refetches
-  // every one-shot endpoint (yesterday, events, movers, the quote, the
-  // intraday body) for the new day instead of keeping the old day's.
+  // all five endpoints (the quote, the intraday body, yesterday, events and
+  // movers) for the new day instead of keeping the old day's. The poll below
+  // reads the date again at each tick instead of using this render's.
   const etToday = useETToday();
 
   const [data, setData] = useState<MarketData>({
@@ -381,8 +388,8 @@ export function useMarketData(): MarketDataState {
       setLoading(false);
     });
     return () => controller.abort();
-    // `etToday` is not read in the effect: a new ET day is a reason to run it
-    // again, which is why it is a dependency.
+    // `etToday` builds the yesterday URL above (fetchAllEndpoints), and a new
+    // ET day is what runs the effect again, so a held tab asks for the new day.
   }, [isAuthenticated, etToday]);
 
   // Auto-refresh polling (only while owner or guest is authenticated).
@@ -447,8 +454,10 @@ export function useMarketData(): MarketDataState {
       // Yesterday: asked for again while the held day is not the last
       // completed session before today. The mount fetch can have been served a
       // body a day old by the edge cache, or the tab can have been held across
-      // midnight; a failed refetch at midnight heals on the next tick instead
-      // of holding all day.
+      // midnight. This poll is off while the session is 'closed', so a failed
+      // refetch at midnight heals from the first pre-market tick (about 04:00
+      // ET on a trading day), not across a weekend or a holiday. A failed
+      // reply leaves the held day alone, and the next tick asks again.
       if (
         currentYesterday(dataRef.current.yesterday?.yesterday, etNow) == null
       ) {

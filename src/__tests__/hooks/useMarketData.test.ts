@@ -1591,6 +1591,130 @@ describe('useMarketData: yesterday follows the ET date', () => {
       '/api/yesterday?d=2026-04-10',
     );
   });
+
+  // The re-poll's failure modes. The held day stays what it was, because a
+  // failed reply is not a day, and the next tick asks again.
+  describe('a yesterday re-poll that fails', () => {
+    const answered = (body: unknown) =>
+      Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve(body),
+      });
+
+    /**
+     * A fetch whose /api/yesterday request number `n` is answered by
+     * `answer(n)`; every other endpoint answers normally. `calls()` counts the
+     * yesterday requests made.
+     */
+    function mockYesterdayAnswers(answer: (n: number) => Promise<unknown>) {
+      const rest = mockFetchResponses();
+      let yesterdayCalls = 0;
+      const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+        if (!url.includes('/api/yesterday')) return rest(url, init);
+        yesterdayCalls += 1;
+        return answer(yesterdayCalls);
+      });
+      globalThis.fetch = fetchMock as unknown as typeof fetch;
+      return { calls: () => yesterdayCalls };
+    }
+
+    it.each([
+      [
+        'a 500',
+        () =>
+          Promise.resolve({
+            ok: false,
+            status: 500,
+            json: () => Promise.resolve({ error: 'upstream down' }),
+          }),
+      ],
+      [
+        'a 200 whose body is not JSON',
+        () =>
+          Promise.resolve({
+            ok: true,
+            status: 200,
+            json: () => Promise.reject(new SyntaxError('Unexpected token <')),
+          }),
+      ],
+      [
+        'a network error',
+        () => Promise.reject(new TypeError('Failed to fetch')),
+      ],
+      [
+        'a timeout',
+        () =>
+          Promise.reject(
+            new DOMException('The operation timed out.', 'TimeoutError'),
+          ),
+      ],
+    ])(
+      'answered with %s leaves the held day alone, and the next tick asks again',
+      async (_label, failure) => {
+        vi.setSystemTime(PRE_MARKET);
+        // The mount fetch holds the stale Tuesday; every re-poll then fails.
+        const { calls } = mockYesterdayAnswers((n) =>
+          n === 1 ? answered(staleYesterday) : failure(),
+        );
+        const { result } = renderHook(() => useMarketData());
+        await waitFor(() => expect(result.current.loading).toBe(false));
+        expect(result.current.data.yesterday?.yesterday?.date).toBe(
+          '2026-04-07',
+        );
+
+        await act(async () => {
+          vi.advanceTimersByTime(60_000);
+        });
+        await waitFor(() => expect(calls()).toBe(2));
+        expect(result.current.data.yesterday?.yesterday?.date).toBe(
+          '2026-04-07',
+        );
+
+        await act(async () => {
+          vi.advanceTimersByTime(60_000);
+        });
+        await waitFor(() => expect(calls()).toBe(3));
+        expect(result.current.data.yesterday?.yesterday?.date).toBe(
+          '2026-04-07',
+        );
+      },
+    );
+
+    it('writes nothing when its reply lands after the visitor dropped to public', async () => {
+      vi.setSystemTime(PRE_MARKET);
+      let release = () => {};
+      const { calls } = mockYesterdayAnswers((n) =>
+        n === 1
+          ? answered(staleYesterday)
+          : new Promise((resolve) => {
+              release = () =>
+                resolve({
+                  ok: true,
+                  status: 200,
+                  json: () => Promise.resolve(mockYesterday),
+                });
+            }),
+      );
+      const { result } = renderHook(() => useMarketData());
+      await waitFor(() => expect(result.current.loading).toBe(false));
+
+      await act(async () => {
+        vi.advanceTimersByTime(60_000);
+      });
+      await waitFor(() => expect(calls()).toBe(2));
+
+      // The session drops to public with the re-poll still in flight, then the
+      // reply, a current day, arrives.
+      access.mode = 'public';
+      await act(async () => {
+        release();
+        await Promise.resolve();
+      });
+
+      expect(result.current.data.yesterday?.yesterday?.date).toBe('2026-04-07');
+    });
+  });
 });
 
 // ============================================================

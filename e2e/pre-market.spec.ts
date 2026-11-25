@@ -1,6 +1,8 @@
 import { test, expect, type Page } from '@playwright/test';
 import { dateTimeSection } from './helpers/calculator';
 import { buildApiFetchMock, MOCK_QUOTES } from './helpers/mock-fetch';
+import { priorTradingDay } from '../src/data/marketHours';
+import { getETDateStr } from '../src/utils/timezone';
 
 // The browser clock is pinned, as entry-time.spec.ts does. The app opens on
 // today's ET date, and the gap preview's prior close comes from the live
@@ -27,7 +29,46 @@ const TWO_MINUTES_BEFORE_ET_MIDNIGHT = '2026-11-10T04:58:00Z';
 const NIGHT_DATE = '2026-11-09';
 const NEXT_DATE = '2026-11-10';
 
-/** Stub the API the pre-market section needs; `now` stamps /api/yesterday. */
+/** The calendar date `days` after `date` (YYYY-MM-DD). */
+function addDays(date: string, days: number): string {
+  const d = new Date(`${date}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+/**
+ * /api/yesterday answers per ET date, as the real one does for the date the
+ * page asks with (`?d=`): the last trading day before it. The page takes
+ * yesterday only when that is the case, so a fixed fixture date would be
+ * rejected and the gap preview would lose its prior close. A tab left open
+ * across ET midnight asks again with the new date, so the answers cover `now`'s
+ * ET date and the days after it.
+ */
+function yesterdayMocks(now: string) {
+  const first = getETDateStr(new Date(now));
+  const mocks: Record<string, { body: unknown }> = {};
+  for (let days = 0; days < 4; days += 1) {
+    const etToday = addDays(first, days);
+    mocks[`/api/yesterday?d=${etToday}`] = {
+      body: {
+        yesterday: {
+          date: priorTradingDay(etToday),
+          open: 6780,
+          high: 6830,
+          low: 6750,
+          close: 6790,
+          rangePct: 1.18,
+          rangePts: 80,
+        },
+        twoDaysAgo: null,
+        asOf: new Date(now).toISOString(),
+      },
+    };
+  }
+  return mocks;
+}
+
+/** Stub the API the pre-market section needs; `now` dates /api/yesterday. */
 async function mockPreMarketApi(page: Page, now: string) {
   await page.addInitScript(
     buildApiFetchMock({
@@ -39,21 +80,7 @@ async function mockPreMarketApi(page: Page, now: string) {
       // Provide yesterday data so prevClose is available for gap preview.
       // Without this, gapPreview depends on results?.spot which requires
       // the calculator to run during market hours.
-      '/api/yesterday': {
-        body: {
-          yesterday: {
-            date: '2026-03-27',
-            open: 6780,
-            high: 6830,
-            low: 6750,
-            close: 6790,
-            rangePct: 1.18,
-            rangePts: 80,
-          },
-          twoDaysAgo: null,
-          asOf: new Date(now).toISOString(),
-        },
-      },
+      ...yesterdayMocks(now),
     }),
   );
 }

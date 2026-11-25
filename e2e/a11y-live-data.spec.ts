@@ -3,10 +3,14 @@ import AxeBuilder from '@axe-core/playwright';
 import { openSection, setEntryTime } from './helpers/calculator';
 import { buildApiFetchMock, MOCK_QUOTES } from './helpers/mock-fetch';
 import type { MoversResponse } from '../src/types/api';
+import { priorTradingDay } from '../src/data/marketHours';
+import { getETToday } from '../src/utils/timezone';
 
+// The page takes yesterday only when it is the last trading day before today's
+// ET date, so the fixture names that day on the test's own clock.
 const MOCK_YESTERDAY = {
   yesterday: {
-    date: '2026-03-27',
+    date: priorTradingDay(getETToday()),
     open: 6750,
     high: 6810,
     low: 6720,
