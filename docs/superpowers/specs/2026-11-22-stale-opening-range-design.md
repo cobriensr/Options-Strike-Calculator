@@ -133,6 +133,15 @@ There are four steps (1a–1c for the opening range, 1d for yesterday), each thr
 - The new function gets its own table test: consumed and signal at each `classifyOpeningRange` boundary, a zero range, and `medianHlPct` 0.
 - The repair script imports the same function and never copies the formula.
 
+**As built (2026-11-25).**
+- **The function.** `src/utils/opening-range-signal.ts` exports `openingRangeSignal(high, low, spot, medianHlPct): OpeningRangeReading | null`, where `OpeningRangeReading` is `{ consumed, signal }` and `signal` is the legacy label `'GREEN' | 'MODERATE' | 'RED'` (`OpeningRangeLabel`). It has no React in it and its only imports are `classifyOpeningRange` and a type.
+  - **Phase 3 calls it as** `openingRangeSignal(asOf.high, asOf.low, row.spx, row.median_hl_pct)` with each stored NUMERIC read as a number. A `null` result means there is nothing to grade: write NULL for both columns, as at 8:30 CT.
+  - **`consumed` is the unrounded float**, as the live card has always stored it. A null or undefined median is read as 1, and a median of 0 or less gives 0. Phase 3 decides for itself whether a stored `median_hl_pct` of NULL is to be graded at all: the function would read it as 1, which is the live hook's fallback.
+  - **Null for inputs that are not a price:** a `high` or `low` not above 0 (including NaN), or a `spot` that is 0 or NaN. The hook never reached the formula with those, so the live behaviour is the same.
+- **`useRangeAnalysis` calls it** and has no formula of its own. Its tests are unchanged and pass.
+- **Zero behaviour change, checked two ways.** The existing hook, signals and classifier tests pass untouched. And a one-off differential run compared the old inline block (behind its two guards) with the function over 14,400 combinations of high, low, spot and median, including 0, negatives, NaN, Infinity and null medians: no difference in `consumed` (compared with `Object.is`), in the label or in which inputs are skipped.
+- **A reversed range** (high under low) reads negative `consumed` and GREEN, and a zero-width range reads 0 and GREEN. That is the live behaviour and the table test pins it. `OpeningRangeCheck` flags such an input as an error on screen; the signal never did.
+
 ## Phase 3: repair the stored rows (script, owner OK on the run)
 
 **Files** follow the existing pattern (`scripts/backfill-snapshot-price-context.ts` with `scripts/_lib/snapshot-price-context.ts`): a CLI plus a pure library, with unit, pglite and CLI tests. Schwab candles come through `scripts/_lib/schwab-local.mjs`.
