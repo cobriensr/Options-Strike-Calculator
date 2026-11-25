@@ -145,19 +145,32 @@ export async function fetchForwardEvents(
 }
 
 /**
+ * The yesterday request for an ET date. The endpoint answers with the last
+ * completed session before today and ignores the parameter; it is there so the
+ * URL differs from day to day, and a body the edge cache made on one day can
+ * never be served for another.
+ */
+export function yesterdayUrl(etToday: string): string {
+  return `/api/yesterday?d=${etToday}`;
+}
+
+/**
  * Fetch all five endpoints in parallel: the owner-or-guest fan-out. Quotes,
  * intraday, yesterday and movers are owner-or-guest, so a public visitor
  * never gets here (see `fetchForwardEvents`). An aborted request comes back as
  * `{ status: 0 }`, so a caller that aborts must check its own signal before it
  * reads the results.
+ *
+ * @param etToday Today's ET date, for the yesterday request.
  */
 export async function fetchAllEndpoints(
+  etToday: string,
   signal?: AbortSignal,
 ): Promise<EndpointResults> {
   const [quotes, intraday, yesterday, events, movers] = await Promise.all([
     fetchJson<QuotesResponse>('/api/quotes', signal),
     fetchJson<IntradayResponse>('/api/intraday', signal),
-    fetchJson<YesterdayResponse>('/api/yesterday', signal),
+    fetchJson<YesterdayResponse>(yesterdayUrl(etToday), signal),
     fetchForwardEvents(signal),
     fetchJson<MoversResponse>('/api/movers', signal),
   ]);

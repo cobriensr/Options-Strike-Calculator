@@ -6,10 +6,17 @@ import {
   setEntryTime,
 } from './helpers/calculator';
 import { buildApiFetchMock, MOCK_QUOTES } from './helpers/mock-fetch';
+import { priorTradingDay } from '../src/data/marketHours';
+import { getETToday } from '../src/utils/timezone';
+
+// The page takes yesterday only when it is the last trading day before today's
+// ET date, so the fixtures name that day on the test's own clock, not a fixed
+// date that turns stale.
+const PRIOR_SESSION = priorTradingDay(getETToday());
 
 const MOCK_YESTERDAY = {
   yesterday: {
-    date: '2026-03-27',
+    date: PRIOR_SESSION,
     open: 6780,
     high: 6830,
     low: 6750,
@@ -23,7 +30,7 @@ const MOCK_YESTERDAY = {
 
 const MOCK_YESTERDAY_SMALL_RANGE = {
   yesterday: {
-    date: '2026-03-27',
+    date: PRIOR_SESSION,
     open: 6780,
     high: 6800,
     low: 6766,

@@ -104,9 +104,11 @@ const mockIntraday = {
   asOf: '2026-03-11T20:00:00Z',
 };
 
+// The last trading day before the REGULAR_HOURS, PRE_MARKET and AFTER_HOURS
+// instants (Thu 2026-04-09): the one currentYesterday accepts for them.
 const mockYesterday = {
   yesterday: {
-    date: '2026-03-10',
+    date: '2026-04-08',
     open: 6681,
     high: 6810,
     low: 6636,
@@ -167,6 +169,16 @@ function mockFetchResponses(
       json: () => Promise.resolve(endpoint.body),
     });
   });
+}
+
+/** The URLs a fetch mock was called with, from call number `from` on. */
+function urlsFrom(
+  fetchMock: ReturnType<typeof mockFetchResponses>,
+  from: number,
+) {
+  return fetchMock.mock.calls
+    .slice(from)
+    .map((call: [string, ...unknown[]]) => call[0]);
 }
 
 // FE-STATE-002: instants used to drive the client-side session classifier.
@@ -1237,14 +1249,6 @@ describe('useMarketData: only today’s complete opening range stops the intrada
     return fetchMock;
   }
 
-  const urlsFrom = (
-    fetchMock: ReturnType<typeof mockFetchResponses>,
-    from: number,
-  ) =>
-    fetchMock.mock.calls
-      .slice(from)
-      .map((call: [string, ...unknown[]]) => call[0]);
-
   it('re-polls /api/intraday in regular hours when the held complete range is a previous session’s', async () => {
     // Loaded in pre-market with Wednesday's complete range: the server had
     // no bar for today yet, so it answered with the last session's.
@@ -1352,9 +1356,12 @@ describe('useMarketData: only today’s complete opening range stops the intrada
       });
       await waitFor(() => expect(fetchMock.mock.calls.length).toBe(10));
 
-      // The same five requests as the mount fetch made.
-      expect([...urlsFrom(fetchMock, 5)].sort()).toEqual(
-        urlsFrom(fetchMock, 0).slice(0, 5).sort(),
+      // The same five endpoints as the mount fetch made (yesterday's URL
+      // carries the ET date, which is the new day's now).
+      const endpointsOf = (urls: string[]) =>
+        urls.map((url) => url.split('?')[0]).sort();
+      expect(endpointsOf(urlsFrom(fetchMock, 5))).toEqual(
+        endpointsOf(urlsFrom(fetchMock, 0).slice(0, 5)),
       );
       for (const endpoint of [
         '/api/quotes',
@@ -1400,6 +1407,189 @@ describe('useMarketData: only today’s complete opening range stops the intrada
         urlsFrom(fetchMock, 0).every((url) => url.startsWith('/api/events')),
       ).toBe(true);
     });
+  });
+});
+
+// ============================================================
+// YESTERDAY IS THE LAST COMPLETED SESSION, ASKED FOR BY ET DATE
+// ============================================================
+//
+// /api/yesterday names the last completed session before today. Served from an
+// edge cache a day old, or held by a tab across midnight, it names a day that
+// is no longer yesterday (every live row on 2026-11-24 used Friday). The
+// request carries the ET date, so a cached body from another day is never
+// reused, and the poll asks again while the held day is not the last trading
+// day before today (currentYesterday).
+
+describe('useMarketData: yesterday follows the ET date', () => {
+  // Thu 2026-04-09 is the date of REGULAR_HOURS and PRE_MARKET; the last
+  // trading day before it is Wed 04-08, which is mockYesterday's date.
+  const staleYesterday = {
+    ...mockYesterday,
+    yesterday: { ...mockYesterday.yesterday, date: '2026-04-07' },
+  };
+
+  it('asks for /api/yesterday with the ET date of the mount', async () => {
+    vi.setSystemTime(REGULAR_HOURS);
+    const fetchMock = mockFetchResponses();
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    const { result } = renderHook(() => useMarketData());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    expect(urlsFrom(fetchMock, 0)).toContain('/api/yesterday?d=2026-04-09');
+  });
+
+  it('asks again with the new date after ET midnight', async () => {
+    vi.setSystemTime(new Date(Date.UTC(2026, 3, 10, 3, 55, 0))); // Thu 23:55 ET
+    const fetchMock = mockFetchResponses();
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    const { result } = renderHook(() => useMarketData());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(urlsFrom(fetchMock, 0)).toContain('/api/yesterday?d=2026-04-09');
+
+    await act(async () => {
+      vi.advanceTimersByTime(6 * 60_000);
+    });
+    await waitFor(() => expect(fetchMock.mock.calls.length).toBe(10));
+
+    expect(urlsFrom(fetchMock, 5)).toContain('/api/yesterday?d=2026-04-10');
+  });
+
+  it('re-polls /api/yesterday while the held day is not the last completed session', async () => {
+    vi.setSystemTime(PRE_MARKET);
+    const fetchMock = mockFetchResponses({
+      yesterday: {
+        status: 200,
+        body: staleYesterday as unknown as Record<string, unknown>,
+      },
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    const { result } = renderHook(() => useMarketData());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    const initialCalls = fetchMock.mock.calls.length;
+
+    await act(async () => {
+      vi.advanceTimersByTime(60_000);
+    });
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.length).toBeGreaterThan(initialCalls),
+    );
+
+    expect(urlsFrom(fetchMock, initialCalls)).toContain(
+      '/api/yesterday?d=2026-04-09',
+    );
+  });
+
+  it('heals: the re-poll replaces a stale day, then stops asking', async () => {
+    vi.setSystemTime(PRE_MARKET);
+    const rest = mockFetchResponses();
+    let yesterdayCalls = 0;
+    // The first answer is the stale day (a body from a day-old edge cache);
+    // the next is the right one.
+    const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+      if (!url.includes('/api/yesterday')) return rest(url, init);
+      yesterdayCalls += 1;
+      const body = yesterdayCalls === 1 ? staleYesterday : mockYesterday;
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve(body),
+      });
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    const { result } = renderHook(() => useMarketData());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.data.yesterday?.yesterday?.date).toBe('2026-04-07');
+
+    await act(async () => {
+      vi.advanceTimersByTime(60_000);
+    });
+    await waitFor(() =>
+      expect(result.current.data.yesterday?.yesterday?.date).toBe('2026-04-08'),
+    );
+    expect(yesterdayCalls).toBe(2);
+
+    await act(async () => {
+      vi.advanceTimersByTime(60_000);
+    });
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(8),
+    );
+    expect(yesterdayCalls).toBe(2);
+  });
+
+  it('does not re-poll a yesterday that is the last completed session', async () => {
+    vi.setSystemTime(PRE_MARKET);
+    const fetchMock = mockFetchResponses();
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    const { result } = renderHook(() => useMarketData());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    const initialCalls = fetchMock.mock.calls.length;
+
+    await act(async () => {
+      vi.advanceTimersByTime(60_000);
+    });
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.length).toBeGreaterThan(initialCalls),
+    );
+
+    expect(
+      urlsFrom(fetchMock, initialCalls).some((url) =>
+        url.startsWith('/api/yesterday'),
+      ),
+    ).toBe(false);
+  });
+
+  it('re-polls when Schwab answered with no completed day at all', async () => {
+    vi.setSystemTime(PRE_MARKET);
+    const fetchMock = mockFetchResponses({
+      yesterday: {
+        status: 200,
+        body: {
+          yesterday: null,
+          twoDaysAgo: null,
+          asOf: '2026-04-09T12:00:00Z',
+        },
+      },
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    const { result } = renderHook(() => useMarketData());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    const initialCalls = fetchMock.mock.calls.length;
+
+    await act(async () => {
+      vi.advanceTimersByTime(60_000);
+    });
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.length).toBeGreaterThan(initialCalls),
+    );
+
+    expect(urlsFrom(fetchMock, initialCalls)).toContain(
+      '/api/yesterday?d=2026-04-09',
+    );
+  });
+
+  it('asks with the date of the tick, for a tab held from Thursday into Friday', async () => {
+    // Thursday's yesterday (Wed 04-08) is the right one all day Thursday. On
+    // Friday it is a day old, and the poll that finds it so names Friday.
+    vi.setSystemTime(REGULAR_HOURS);
+    const fetchMock = mockFetchResponses();
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    const { result } = renderHook(() => useMarketData());
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    const initialCalls = fetchMock.mock.calls.length;
+
+    vi.setSystemTime(new Date(Date.UTC(2026, 3, 10, 14, 0, 0))); // Fri 10:00 ET
+    await act(async () => {
+      vi.advanceTimersByTime(60_000);
+    });
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.length).toBeGreaterThan(initialCalls),
+    );
+
+    expect(urlsFrom(fetchMock, initialCalls)).toContain(
+      '/api/yesterday?d=2026-04-10',
+    );
   });
 });
 
@@ -1558,10 +1748,12 @@ describe('useMarketData: AUD-M16/M17/M18 regressions', () => {
 // useAccessSession reports a change.
 
 describe('useMarketData: access mode', () => {
+  // Yesterday's request carries the ET date; every test here pins
+  // REGULAR_HOURS, Thu 2026-04-09.
   const GATED_URLS = [
     '/api/quotes',
     '/api/intraday',
-    '/api/yesterday',
+    '/api/yesterday?d=2026-04-09',
     '/api/movers',
   ];
   const EVENTS_URL = '/api/events?days=30';

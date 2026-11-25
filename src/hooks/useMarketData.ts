@@ -31,13 +31,19 @@ import { getAccessMode } from '../utils/auth';
 import { usePolling } from './usePolling';
 import { useETToday } from './useETToday';
 import { getETToday } from '../utils/timezone';
+import { currentYesterday } from '../utils/current-yesterday';
 import { isTradingDay, isHalfDay } from '../data/marketHours';
-import type { QuotesResponse, IntradayResponse } from '../types/api';
+import type {
+  QuotesResponse,
+  IntradayResponse,
+  YesterdayResponse,
+} from '../types/api';
 import {
   fetchJson,
   fetchAllEndpoints,
   fetchForwardEvents,
   processEndpointResults,
+  yesterdayUrl,
 } from './useMarketData.fetchers';
 import type { MarketData } from './useMarketData.fetchers';
 
@@ -327,7 +333,7 @@ export function useMarketData(): MarketDataState {
       return () => controller.abort();
     }
 
-    fetchAllEndpoints(signal).then((results) => {
+    fetchAllEndpoints(etToday, signal).then((results) => {
       if (signal.aborted) return;
       if (getAccessMode() === 'public') {
         setLoading(false);
@@ -434,14 +440,35 @@ export function useMarketData(): MarketDataState {
         }),
       ];
 
+      // The ET date is read when the poll ticks, not when the hook last
+      // rendered: a tab that slept across midnight asks for the new day.
+      const etNow = getETToday();
+
+      // Yesterday: asked for again while the held day is not the last
+      // completed session before today. The mount fetch can have been served a
+      // body a day old by the edge cache, or the tab can have been held across
+      // midnight; a failed refetch at midnight heals on the next tick instead
+      // of holding all day.
+      if (
+        currentYesterday(dataRef.current.yesterday?.yesterday, etNow) == null
+      ) {
+        fetches.push(
+          fetchJson<YesterdayResponse>(yesterdayUrl(etNow)).then((result) => {
+            if (droppedToPublic()) return;
+            if ('data' in result) {
+              setData((prev) => ({ ...prev, yesterday: result.data }));
+            }
+          }),
+        );
+      }
+
       // Opening-range refresh: RTH-only. The 30-min opening range is a
       // strictly 09:30-10:00 ET concept — fetching it in pre-market or
       // after-hours would return stale or empty data and waste quota. Stops
       // once the held range is today's and complete.
       const held = dataRef.current.intraday;
       const todaysRangeComplete =
-        held?.sessionDate === getETToday() &&
-        held.openingRange?.complete === true;
+        held?.sessionDate === etNow && held.openingRange?.complete === true;
       if (session === 'regular' && !todaysRangeComplete) {
         fetches.push(
           fetchJson<IntradayResponse>('/api/intraday').then((result) => {
