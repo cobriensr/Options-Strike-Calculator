@@ -649,8 +649,11 @@ export default function StrikeCalculator() {
     liveVvix: market.data.quotes?.vvix?.price ?? undefined,
     // Only the current session's range: the held body can be a previous
     // session's, read against the same ET clock the selected date follows.
-    liveOpeningRange:
-      currentOpeningRange(market.data.intraday, vix.etToday) ?? undefined,
+    // And none on a past date, where today's range is not that date's: its
+    // history snapshot supplies the range, and has none yet at the open.
+    liveOpeningRange: analysisIsBacktest
+      ? undefined
+      : (currentOpeningRange(market.data.intraday, vix.etToday) ?? undefined),
     liveSpx: market.data.quotes?.spx ?? undefined,
     quotesMarketOpen: market.data.quotes?.marketOpen ?? false,
     liveYesterdayHigh: yesterday?.high,

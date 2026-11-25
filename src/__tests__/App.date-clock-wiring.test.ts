@@ -160,14 +160,17 @@ describe('App date-clock wiring', () => {
     expect(appCode).toMatch(/^\s+liveChain,$/m);
   });
 
-  it('builds the signals’ live opening range from the current one, against the date clock', () => {
+  it('builds the signals’ live opening range from the current one, against the date clock, and none for a past date', () => {
     // The held /api/intraday body can be a previous session's. A raw
     // `market.data.intraday?.openingRange` would compile and read it as today's.
+    // And on a past date today's range, though current, is not that date's:
+    // the history snapshot supplies the range, and null at the open means "no
+    // range yet", not "ask the live feed".
     const inputs = /useComputedSignals\(\{([\s\S]*?)\n {2}\}\);/.exec(
       appCode,
     )?.[1];
     expect(inputs).toMatch(
-      /^\s+liveOpeningRange:\s*currentOpeningRange\(\s*market\.data\.intraday,\s*vix\.etToday,?\s*\) \?\? undefined,$/m,
+      /^\s+liveOpeningRange:\s*analysisIsBacktest\s*\?\s*undefined\s*:\s*\(?currentOpeningRange\(\s*market\.data\.intraday,\s*vix\.etToday,?\s*\) \?\? undefined\)?,$/m,
     );
     expect(appCode).toMatch(
       /^import \{ currentOpeningRange \} from '\.\/utils\/current-opening-range';$/m,

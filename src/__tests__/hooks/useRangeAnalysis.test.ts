@@ -361,6 +361,53 @@ describe('useRangeAnalysis — history snapshot RV', () => {
 });
 
 // ============================================================
+// Opening range source: the history snapshot's, or the live one, never both
+// ============================================================
+
+describe('useRangeAnalysis — opening range source', () => {
+  const LIVE_RANGE = { high: 7000, low: 6900 };
+
+  it('reads no opening range from a history snapshot that has none yet, whatever the live one is', () => {
+    // At the open of a past date no opening-range bar has ended, so the
+    // snapshot's range is null. Falling back to the live range would grade
+    // that date on today's range.
+    const result = render({
+      historySnapshot: makeSnapshot({ openingRange: null }),
+      liveOpeningRange: LIVE_RANGE,
+    });
+
+    expect(result.openingRangeHigh).toBeNull();
+    expect(result.openingRangeLow).toBeNull();
+    expect(result.openingRangePctConsumed).toBeNull();
+    expect(result.openingRangeSignal).toBeNull();
+  });
+
+  it("reads the history snapshot's range over the live one", () => {
+    const result = render({
+      historySnapshot: makeSnapshot({
+        openingRange: { high: 5710, low: 5695, rangePts: 15, complete: true },
+      }),
+      liveOpeningRange: LIVE_RANGE,
+    });
+
+    expect(result.openingRangeHigh).toBe(5710);
+    expect(result.openingRangeLow).toBe(5695);
+    expect(result.openingRangeSignal).not.toBeNull();
+  });
+
+  it('reads the live range when there is no history snapshot', () => {
+    const result = render({
+      historySnapshot: null,
+      liveOpeningRange: { high: 5720, low: 5690 },
+    });
+
+    expect(result.openingRangeHigh).toBe(5720);
+    expect(result.openingRangeLow).toBe(5690);
+    expect(result.openingRangeSignal).not.toBeNull();
+  });
+});
+
+// ============================================================
 // Price context from the live SPX quote
 // ============================================================
 

@@ -238,7 +238,12 @@ export function useRangeAnalysis(
     const etMinutes = etHour * 60 + etMinute;
     result.openingRangeAvailable = etMinutes >= 600; // 10:00 AM ET
 
-    const orData = historySnapshot?.openingRange ?? liveOpeningRange;
+    // With a history snapshot, its range is the whole answer. It is null at
+    // the open, before the first opening-range bar has ended, and falling back
+    // to the live range then would grade a past date on today's.
+    const orData = historySnapshot
+      ? historySnapshot.openingRange
+      : liveOpeningRange;
     if (orData && orData.high > 0 && orData.low > 0) {
       result.openingRangeHigh = orData.high;
       result.openingRangeLow = orData.low;
