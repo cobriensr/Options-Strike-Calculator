@@ -386,9 +386,49 @@ describe('IntervalBARow — summary line', () => {
     expect(screen.getByText('spx')).toBeInTheDocument();
   });
 
+  // The spot is the row's own underlying: the index for SPXW, the ETF price for
+  // SPY and QQQ. A "spx" caption under an ETF price read as an index level.
+  it.each([
+    {
+      ticker: 'SPXW',
+      chain: 'SPXW260327C05800000',
+      price: 5795,
+      caption: 'spx',
+    },
+    { ticker: 'SPY', chain: 'SPY260327C00580000', price: 579, caption: 'spy' },
+    { ticker: 'QQQ', chain: 'QQQ260327C00480000', price: 481, caption: 'qqq' },
+  ])(
+    'captions the $ticker row spot as "$caption"',
+    ({ ticker, chain, price, caption }) => {
+      renderRow(
+        makeAlert({
+          ticker,
+          option_chain: chain,
+          underlying_price: price,
+        }),
+      );
+      expect(screen.getByText(String(price))).toBeInTheDocument();
+      expect(screen.getByText(caption)).toBeInTheDocument();
+      for (const other of ['spx', 'spy', 'qqq'].filter((c) => c !== caption)) {
+        expect(screen.queryByText(other)).not.toBeInTheDocument();
+      }
+    },
+  );
+
   it('omits the underlying spot block when missing', () => {
     renderRow(makeAlert({ underlying_price: null }));
     expect(screen.queryByText('spx')).not.toBeInTheDocument();
+  });
+
+  it('omits the underlying spot caption on an ETF row when the spot is missing', () => {
+    renderRow(
+      makeAlert({
+        ticker: 'SPY',
+        option_chain: 'SPY260327C00580000',
+        underlying_price: null,
+      }),
+    );
+    expect(screen.queryByText('spy')).not.toBeInTheDocument();
   });
 
   it('omits the top trade block when top_trade_premium is null', () => {

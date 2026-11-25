@@ -389,11 +389,14 @@ export const IntervalBARow = memo(function IntervalBARow({
           </span>
         )}
 
-        {/* Underlying spot */}
+        {/* Underlying spot: the index level on an SPXW row, the ETF price on an
+            SPY or QQQ row, so the caption names the row's own underlying. */}
         {alert.underlying_price != null && (
           <span className="flex flex-col items-end text-neutral-400">
             <span>{alert.underlying_price.toFixed(0)}</span>
-            <span className="text-[10px] text-neutral-500">spx</span>
+            <span className="text-[10px] text-neutral-500">
+              {alert.ticker === 'SPXW' ? 'spx' : alert.ticker.toLowerCase()}
+            </span>
           </span>
         )}
 

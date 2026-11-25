@@ -150,8 +150,22 @@ describe('IntervalBAFeed', () => {
     render(<IntervalBAFeed />);
     expect(screen.getByText(/Interval B\/A History/i)).toBeInTheDocument();
     expect(
-      screen.getByText(/Historical SPXW Interval B\/A/i),
+      screen.getByText(/SPXW, SPY and QQQ Interval B\/A ask-side alerts/i),
     ).toBeInTheDocument();
+  });
+
+  // Spec 2026-11-24-interval-ba-rebuild-design.md section 6.7, verbatim: the
+  // history is the live feed plus a tape rebuild, across all three tickers.
+  it('says where the history comes from, in the spec copy', () => {
+    render(<IntervalBAFeed />);
+    expect(
+      screen.getByText(
+        "SPXW, SPY and QQQ Interval B/A ask-side alerts. Pick a date and intraday CT time window — the table shows every alert that fired in that slice; click ↗ to open the contract on Unusual Whales. Alerts before the live feed started (May 13 2026) and from the days it was down (Jul 22 – Sep 4) were rebuilt from the Full Tape with today's rule. The rest are the live alerts as they fired; since Oct 29 the tape also adds, the next morning, any the live feed missed.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/Historical SPXW|Backfilled from Full Tape/i),
+    ).not.toBeInTheDocument();
   });
 
   it('shows empty-state copy when no alerts return', async () => {

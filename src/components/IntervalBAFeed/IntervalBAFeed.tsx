@@ -1,5 +1,6 @@
 /**
- * IntervalBAFeed — historical backtest panel for SPXW Interval B/A alerts.
+ * IntervalBAFeed — historical backtest panel for SPXW, SPY and QQQ Interval
+ * B/A alerts.
  *
  * Pick a calendar date (it follows today's ET date across midnight unless
  * you pick another) + an intraday CT time window (08:30–15:00 default)
@@ -10,8 +11,8 @@
  *
  * Distinct from `IntervalBAAlertBanner` (the live bottom-right toast
  * for unacknowledged alerts) — this is the analytical / backtest
- * surface against the 6,851 backfilled rows + every live alert the
- * daemon writes from here on.
+ * surface over every alert in the table: the live ones as they fired, the
+ * days rebuilt from the Full Tape, and the ones the tape added later.
  *
  * Spec: docs/superpowers/specs/interval-ba-ask-alert-2026-05-12.md.
  */
@@ -112,11 +113,13 @@ export function IntervalBAFeed({
     <SectionBox label="Interval B/A History" collapsible>
       <div className="space-y-3">
         <p className="text-[11px] text-neutral-500">
-          Historical SPXW Interval B/A ask-side alerts. Pick a date and intraday
-          CT time window — table shows every alert that fired in that slice,
-          click ↗ to open the contract on Unusual Whales. Backfilled from Full
-          Tape parquets Jan 2 → May 11 2026; live rows append as the uw-stream
-          daemon emits them.
+          SPXW, SPY and QQQ Interval B/A ask-side alerts. Pick a date and
+          intraday CT time window — the table shows every alert that fired in
+          that slice; click ↗ to open the contract on Unusual Whales. Alerts
+          before the live feed started (May 13 2026) and from the days it was
+          down (Jul 22 – Sep 4) were rebuilt from the Full Tape with today's
+          rule. The rest are the live alerts as they fired; since Oct 29 the
+          tape also adds, the next morning, any the live feed missed.
         </p>
 
         <div className="space-y-2 rounded-lg border border-neutral-800/80 bg-neutral-950/40 p-2.5">
