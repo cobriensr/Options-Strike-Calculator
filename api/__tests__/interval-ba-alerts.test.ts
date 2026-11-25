@@ -160,6 +160,34 @@ describe('GET /api/interval-ba-alerts', () => {
     expect(mockSql).toHaveBeenCalledTimes(1);
   });
 
+  it("limits the since query to today's ET expiry", async () => {
+    // Rebuilt history and tape-added rows carry past-day expiries but a fired_at
+    // later than an open tab's cursor. Without the expiry bound the chime would
+    // fire for them. 02:30Z is still the previous ET day (22:30 EDT), so a UTC
+    // date slice would bind '2026-05-13' and fail this.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-05-13T02:30:00Z'));
+    try {
+      mockSql.mockResolvedValue([]);
+      const since = '2026-05-12T17:00:00Z';
+
+      const res = mockResponse();
+      await getHandler(mockRequest({ method: 'GET', query: { since } }), res);
+
+      expect(res._status).toBe(200);
+      expect(mockSql).toHaveBeenCalledTimes(1);
+      const call = mockSql.mock.calls[0] as unknown[];
+      const strings = call[0] as TemplateStringsArray;
+      // Placeholders in order: the cursor, then today's ET expiry.
+      expect(strings.join('?')).toMatch(
+        /WHERE a\.fired_at > \?\s+AND a\.expiry = \?/,
+      );
+      expect(call.slice(1)).toEqual([since, '2026-05-12']);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('returns 400 for a malformed ?since= without touching the DB (AUD-M42)', async () => {
     mockSql.mockResolvedValue([]);
     const res = mockResponse();

@@ -10,8 +10,9 @@
  * (OPRA compliance, same provenance as /api/alerts).
  *
  * Query params:
- *   ?since=ISO8601  — return alerts with fired_at > this timestamp
- *   (default: all unacknowledged alerts for today's expiry, max 20)
+ *   ?since=ISO8601  — return alerts for today's expiry with fired_at >
+ *   this timestamp (default: all unacknowledged alerts for today's
+ *   expiry, max 20)
  *
  * Response shape:
  *   { alerts: IntervalBAAlertRow[] }
@@ -198,6 +199,11 @@ export default withDbReader(
     // ITM/OTM pill consistently with SPY/QQQ rows. The lateral
     // subquery short-circuits on non-SPXW tickers via the inner
     // `a.ticker = 'SPXW'` guard, so SPY/QQQ rows pay no JOIN cost.
+    //
+    // The `since` (banner poll) branch is bounded to today's expiry as well
+    // as the cursor: past-day rows (rebuilt history, or alerts added from the
+    // tape the next morning) can carry a fired_at later than an open tab's
+    // cursor and must never reach the chime.
     const rawRows = since
       ? await withDbRetry(
           () => sql`
@@ -220,7 +226,7 @@ export default withDbReader(
               ORDER BY c.timestamp DESC
               LIMIT 1
             ) spx ON TRUE
-            WHERE a.fired_at > ${since}
+            WHERE a.fired_at > ${since} AND a.expiry = ${today}
             ORDER BY a.fired_at DESC
             LIMIT 20
           `,
