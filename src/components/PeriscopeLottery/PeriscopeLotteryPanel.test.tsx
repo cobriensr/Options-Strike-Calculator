@@ -380,6 +380,46 @@ describe('PeriscopeLotteryPanel', () => {
   });
 });
 
+// The Δstrike cell shows where the strike sits against spot: + above it,
+// − below it. The feed's strikeDist is signed on the fire's own side (call:
+// strike − spot, put: spot − strike), so the shown number is +strikeDist for
+// a call and −strikeDist for a put, printed with its real sign. A fire whose
+// spot was repaired after the fact can have a negative strikeDist (the spot
+// moved past the strike); a fixed sign in front of it read "+-10.0".
+describe('PeriscopeLotteryPanel Δstrike', () => {
+  /** The text of the Δstrike cell of the only row on screen. */
+  function strikeOffsetText(): string | null | undefined {
+    const row = screen.getByTestId('periscope-lottery-row');
+    return within(row).getByText('Δstrike').nextElementSibling?.textContent;
+  }
+
+  it.each([
+    // What a fire shows today: unchanged.
+    { fireType: 'call_lottery', strikeDist: 17.86, shown: '+17.9' },
+    { fireType: 'put_lottery', strikeDist: 12.5, shown: '−12.5' },
+    // A repaired fire whose spot passed the strike: the real side, one sign.
+    { fireType: 'call_lottery', strikeDist: -10, shown: '−10.0' },
+    { fireType: 'put_lottery', strikeDist: -10, shown: '+10.0' },
+    // Never "−0.0" for a put exactly at spot (−strikeDist would be −0).
+    { fireType: 'put_lottery', strikeDist: 0, shown: '+0.0' },
+  ] as const)(
+    'shows a $fireType at strikeDist $strikeDist as $shown',
+    ({ fireType, strikeDist, shown }) => {
+      mockFeed.mockReturnValue({
+        fires: [baseFire({ fireType, strikeDist })],
+        loading: false,
+        error: null,
+        fetchedAt: Date.now(),
+        refresh: vi.fn(),
+      });
+      render(<PeriscopeLotteryPanel marketOpen={true} />);
+
+      expect(strikeOffsetText()).toBe(shown);
+      expect(strikeOffsetText()).not.toMatch(/[+−]-/);
+    },
+  );
+});
+
 describe('PeriscopeLotteryPanel pause on GEXBot data', () => {
   const feed = (over: Record<string, unknown>) =>
     mockFeed.mockReturnValue({

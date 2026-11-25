@@ -207,7 +207,14 @@ function LotteryRow({
 }): React.ReactElement {
   const occ = buildSpxwOcc(date, sideLabel, fire.tradeStrike);
   const fireTimeCt = fmtCt(fire.fireTime);
-  const distSign = sideLabel === 'call' ? '+' : '−';
+  // Where the strike sits against spot, from the value: + above it, − below.
+  // strikeDist is signed on the fire's own side (call: strike − spot, put:
+  // spot − strike), so the offset is +strikeDist for a call and −strikeDist
+  // for a put. It is negative only for a fire whose spot was repaired after
+  // the fact and had moved past the strike; a fixed sign would print "+-10.0".
+  const strikeOffset =
+    sideLabel === 'call' ? fire.strikeDist : -fire.strikeDist;
+  const offsetSign = strikeOffset < 0 ? '−' : '+';
   const gammaAbs = Math.abs(fire.greekPost);
   const gexDollarsB =
     fire.gexDollars == null ? null : fire.gexDollars / 1_000_000_000;
@@ -234,8 +241,8 @@ function LotteryRow({
         <div>
           <dt className="text-muted inline">Δstrike </dt>
           <dd className="inline">
-            {distSign}
-            {fire.strikeDist.toFixed(1)}
+            {offsetSign}
+            {Math.abs(strikeOffset).toFixed(1)}
           </dd>
         </div>
         <div>

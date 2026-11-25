@@ -17,6 +17,9 @@ export interface PeriscopeLotteryFire {
   eventStrike: number;
   tradeStrike: number;
   spotAtEvent: number;
+  /** Signed on the fire's own side: strike − spot for a call, spot − strike
+   *  for a put. Negative only on a fire whose spot was repaired after the
+   *  fact (the gap days' candles) and moved past the strike. */
   strikeDist: number;
   greekPost: number;
   greekDelta: number;
