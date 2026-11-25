@@ -311,6 +311,7 @@ def _counts(plan: DayPlan) -> dict[str, object]:
         "inserted",
         "inserts_held",
         "removed",
+        "acknowledged_kept",
         "flags_changed",
         "flags_unmatched",
         "spot_filled",
@@ -333,6 +334,7 @@ BASE_COUNTS: dict[str, object] = {
     "inserted": 1,
     "inserts_held": None,
     "removed": 1,
+    "acknowledged_kept": 0,
     "flags_changed": 1,
     "flags_unmatched": 1,
     "spot_filled": 1,
@@ -428,6 +430,7 @@ def test_updates_touch_only_flags_and_null_spxw_spot_on_live_rows(tmp_path, con)
 
     delete = db.write("DELETE")
     assert "a.source = 'replay'" in delete.sql
+    assert "NOT a.acknowledged" in delete.sql  # an acknowledgement is never deleted
     assert delete.params == [(202,)]
     live_ids = {row.id for row in rows if row.source == "live"}
     assert not live_ids & {params[0] for params in delete.params}  # type: ignore[union-attr]
@@ -895,6 +898,37 @@ def test_stale_replay_rows_removed_live_rows_kept(tmp_path, con):
     # The replay row the tape still fires stays, and is not inserted again.
     assert alerts[SPY_P] not in plan.inserts
     assert plan.live_only == 1
+
+
+def test_acknowledged_stale_replay_row_is_kept_and_counted(tmp_path, con):
+    # A second stale replay row, 203, that someone acknowledged: the delete would lose it.
+    tape = _day_tape(tmp_path)
+    _, rows = _scenario(con, tape)
+    acked = replace(_unfired(203, _chain("SPY", "C", 695), source="replay"), acknowledged=True)
+    db = _FakeConn([*rows, acked])
+
+    plan = _heal(db, con, tape, [default_settings()], apply=True)
+
+    assert plan.removes == (202,)
+    assert (plan.removed, plan.acknowledged_kept) == (1, 1)
+    assert db.write("DELETE").params == [(202,)]
+    # The count survives the plan file; the sha covers the write lists only.
+    stored = json.loads(json.dumps(plan.to_json()))
+    assert stored["acknowledged_kept"] == 1
+    assert DayPlan.from_json(stored) == plan
+
+
+def test_only_acknowledged_stale_rows_send_no_delete(tmp_path, con):
+    tape = _day_tape(tmp_path)
+    _, rows = _scenario(con, tape)
+    rows = [replace(row, acknowledged=True) if row.id == 202 else row for row in rows]
+    db = _FakeConn(rows)
+
+    plan = _heal(db, con, tape, [default_settings()], apply=True)
+
+    assert plan.removes == ()
+    assert (plan.removed, plan.acknowledged_kept) == (0, 1)
+    assert not [s for s in db.writes() if s.sql.startswith("DELETE")]
 
 
 def test_empty_replay_removes_nothing(tmp_path, con):

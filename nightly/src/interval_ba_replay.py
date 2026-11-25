@@ -145,7 +145,8 @@ class Replay:
 
 @dataclass(frozen=True)
 class LiveRow:
-    """An `interval_ba_alerts` row as the tape pass reads it, of either source."""
+    """An `interval_ba_alerts` row as the tape pass reads it, of either source. `acknowledged`
+    is read, never written: a stale replay row that holds one is kept (spec 6.4)."""
 
     id: int
     option_chain: str
@@ -163,6 +164,7 @@ class LiveRow:
     top_trade_is_floor: bool | None
     underlying_price: Decimal | None
     source: str  # 'live' or 'replay'
+    acknowledged: bool = False
 
     @property
     def key(self) -> tuple[str, datetime]:
@@ -694,8 +696,10 @@ class DayPlan:
     when a covering row has the detector off), or all three when insert_missed is False or no
     row covers the day. The removals, flags and spots cover every row of the day. The write
     counts (inserted, removed, flags_changed, spot_filled) are the rows planned in a dry run and
-    the rows the database reports on apply. sha256 is over the day and the four write lists, in
-    canonical order, so a stored plan can be checked against a fresh one.
+    the rows the database reports on apply. acknowledged_kept counts the stale replay rows not
+    removed because they hold an acknowledgement, which a delete would lose. sha256 is over the
+    day and the four write lists, in canonical order, so a stored plan can be checked against a
+    fresh one.
     """
 
     day: date
@@ -708,6 +712,7 @@ class DayPlan:
     inserted: int
     inserts_held: str | None
     removed: int
+    acknowledged_kept: int
     flags_changed: int
     flags_unmatched: int
     spot_filled: int
@@ -859,10 +864,10 @@ _COMPARED_COLUMNS = (
     "top_trade_size",
 )
 
-# Step 4. Only a replay row is ever deleted.
+# Step 4. Only a replay row is ever deleted, and never one someone acknowledged.
 _REMOVE_SQL = (
     "DELETE FROM interval_ba_alerts AS a USING (VALUES %s) AS v(id)"
-    " WHERE a.id = v.id AND a.source = 'replay'"
+    " WHERE a.id = v.id AND a.source = 'replay' AND NOT a.acknowledged"
     " RETURNING a.id"
 )
 # Step 5. The two flags on a live row, only where they change.
@@ -941,13 +946,14 @@ def _plan_day(
         inserts = tuple(alert for alert in tape_on.values() if alert.key not in taken)
 
     # Step 4: replay rows the replay no longer fires. An empty replay with rows present means
-    # the tape read broke, not that the alerts went away, so it removes nothing.
+    # the tape read broke, not that the alerts went away, so it removes nothing. A stale row
+    # someone acknowledged is kept and counted: the delete would lose the acknowledgement.
     fired = {alert.key for alert in replay.alerts}
-    removes: tuple[int, ...] = ()
-    if fired:
-        removes = tuple(
-            sorted(row.id for row in rows if row.source == "replay" and row.key not in fired)
-        )
+    stale = (
+        [row for row in rows if row.source == "replay" and row.key not in fired] if fired else []
+    )
+    removes = tuple(sorted(row.id for row in stale if not row.acknowledged))
+    acknowledged_kept = sum(1 for row in stale if row.acknowledged)
 
     # Step 5: the flags of every live row whose top trade the tape names, where they change.
     flags = top_trade_flags(con, tape, day, live)
@@ -975,6 +981,7 @@ def _plan_day(
         inserted=len(inserts),
         inserts_held=held,
         removed=len(removes),
+        acknowledged_kept=acknowledged_kept,
         flags_changed=len(flag_updates),
         flags_unmatched=sum(1 for row in live if flags[row.id] is None),
         spot_filled=len(spot_updates),
@@ -1049,7 +1056,7 @@ def heal_day(
     3. With insert_missed and nothing held, insert the on tickers' tape alerts at keys with no
        row of either source, as source 'replay'.
     4. Delete the replay rows whose key the replay no longer fires (a re-landed tape), unless
-       the replay fired nothing.
+       the replay fired nothing. One that holds an acknowledgement is kept (acknowledged_kept).
     5. Correct the sweep and floor flags on live rows from their top trade on the tape.
     6. Fill a blank SPXW spot on live rows (live_spot).
     7. Upsert the day's interval_ba_tape_days row.

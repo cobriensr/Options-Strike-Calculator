@@ -27,6 +27,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import importlib.util
+import io
 import itertools
 import json
 import os
@@ -305,6 +306,7 @@ def connect(env: dict[str, str], *, readonly: bool) -> Any:
         direct_dsn(env["DATABASE_URL"]),
         connect_timeout=30,
         application_name="interval-ba-tape",
+        # Replaces any options= the URL carries, as in nightly's connect_db.
         options=_SESSION_OPTIONS,
     )
     if readonly:
@@ -647,21 +649,24 @@ def check_backup_kept(run: Path) -> None:
         raise BackupFailedError("backup: backup.jsonl no longer matches backup.json; the run stops")
 
 
-def read_backup(run: Path) -> list[Any]:
-    """Every record of the run's backup.jsonl, from bytes that hash to backup.json's sha256 (one
-    read, so the check and the parse see the same file). BackupFailedError when they do not,
-    or when a line does not parse."""
+def read_backup(run: Path) -> Iterator[Any]:
+    """The records of the run's backup.jsonl, one at a time, from bytes checked here, before the
+    first, against backup.json's sha256 (one read, so the check and the parse see the same
+    file). BackupFailedError when they do not match, or when a line does not parse."""
     record = json.loads((run / "backup.json").read_text(encoding="utf-8"))
     data = (run / "backup.jsonl").read_bytes()
     if hashlib.sha256(data).hexdigest() != record["sha256"]:
         raise BackupFailedError("backup: backup.jsonl no longer matches backup.json; the run stops")
-    records = []
-    for n, line in enumerate(data.splitlines(), start=1):
+    return _backup_records(data)
+
+
+def _backup_records(data: bytes) -> Iterator[Any]:
+    for n, line in enumerate(io.BytesIO(data), start=1):
         try:
-            records.append(json.loads(line))
+            parsed = json.loads(line)
         except ValueError:
             raise BackupFailedError(f"backup: line {n} of backup.jsonl does not parse") from None
-    return records
+        yield parsed
 
 
 # --- The apply driver -------------------------------------------------------------------------

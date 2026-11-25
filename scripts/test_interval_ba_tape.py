@@ -2425,6 +2425,7 @@ def resign_heal_day(run: Path, day: date, edit: Callable[[dict[str, Any]], None]
     "forgery",
     [
         "removes a live row",
+        "removes a row the backup lacks",
         "updates a row the backup lacks",
         "updates a replay row's flags",
         "updates a replay row's spot",
@@ -2445,6 +2446,9 @@ def test_undo_stops_on_a_heal_plan_the_run_did_not_apply(world: World, forgery: 
     if forgery == "removes a live row":
         resign_heal_day(run, JUNE, lambda d: d.update(removes=[setup["flag_row"]]))
         named: tuple[str, ...] = (str(setup["flag_row"]), "live")
+    elif forgery == "removes a row the backup lacks":  # on a day this run's apply wrote
+        resign_heal_day(run, JUNE, lambda d: d.update(removes=[999999]))
+        named = ("999999", "does not hold")
     elif forgery == "updates a row the backup lacks":
         resign_heal_day(run, JUNE, lambda d: d["flag_updates"].append([999999, True, False]))
         named = ("999999", "does not hold")
@@ -2917,3 +2921,133 @@ def test_export_refuses_an_object_that_appeared_during_the_run(world: World):
     assert world.s3.puts == []
     assert world.s3.objects[("bucket-sekret", EXPORT_KEY)] == (b"another export", {})
     assert not (run / "export.json").exists()
+
+
+# --- Fix round 1 ------------------------------------------------------------------------------
+
+
+def test_heal_dry_run_flags_a_stale_replay_row_that_holds_an_acknowledgement(world: World):
+    setup = live_day(world, JUNE)
+    stale = stale_replay_row(world, setup, JUNE)
+    world.db.rows[stale]["acknowledged"] = True
+
+    code, out, run = world.dry_run(JUNE, command="heal")
+
+    assert code == 1
+    assert "FLAG" in out and "2026-06-02" in out and "acknowledgement" in out
+    plan = runs.load_plan(run)
+    entry = plan["days"]["2026-06-02"]
+    assert (entry["remove"], entry["acknowledged_kept"]) == (0, 1)
+    assert plan["acknowledged_kept"] == {"2026-06-02": 1}
+    report = (run / "report.md").read_text(encoding="utf-8")
+    assert "2026-06-02: 1 stale replay row(s) hold an acknowledgement" in report
+    # The plan applies, and the acknowledged row stays as it was.
+    kept = copy.deepcopy(world.db.rows[stale])
+    code, out = world.apply(run, command="heal")
+    assert code == 0, out
+    assert world.db.rows[stale] == kept
+
+
+def test_undo_leaves_a_removal_another_writer_made_before_the_backup(world: World):
+    setup = live_day(world, JUNE)
+    stale = stale_replay_row(world, setup, JUNE)
+    code, out, run = world.dry_run(JUNE, command="heal")
+    assert code == 0, out
+    plan = ibr.DayPlan.from_json(
+        json.loads((run / "days" / "2026-06-02.json").read_text(encoding="utf-8"))
+    )
+    assert plan.removes == (stale,)
+    # Before the apply another writer makes every write of the plan, the removal included, so
+    # the backup never holds the removed row and the apply finds the day in its end state.
+    del world.db.rows[stale]
+    for row_id, sweep, floor in plan.flag_updates:
+        world.db.rows[row_id].update(top_trade_is_sweep=sweep, top_trade_is_floor=floor)
+    for row_id, price in plan.spot_updates:
+        world.db.rows[row_id]["underlying_price"] = price
+    world.db.tape_days[JUNE] = {"day": JUNE}
+    rows_before = copy.deepcopy(world.db.rows)
+    code, out = world.apply(run, command="heal")
+    assert code == 0, out
+    marker = json.loads((run / "2026-06-02.applied").read_text(encoding="utf-8"))
+    assert marker["how"] == "end state"
+
+    code, out = world.undo(run)
+
+    assert code == 0, out
+    assert world.db.rows == rows_before
+    undone = json.loads((run / "2026-06-02.undone").read_text(encoding="utf-8"))
+    assert (undone["reinserted"], undone["left"]) == (0, 1)
+
+
+def test_heal_apply_stops_when_the_tape_cannot_be_read(world: World):
+    live_day(world, OCT29)
+    world.db.settings.append(settings_row(ct(OCT28, "07:00:00")))
+    code, out, run = world.dry_run(OCT29, command="heal")
+    assert code == 0, out
+    write_tape(Path(world.tapes["2026-10-29"]), [filler(OCT28)])  # holds no 10-29 row
+    rows_before = copy.deepcopy(world.db.rows)
+
+    code, out = world.apply(run, command="heal")
+
+    assert code == 1
+    assert "2026-10-29" in out and "ValueError" in out
+    assert world.db.writes() == [] and world.db.rows == rows_before
+    assert OCT29 not in world.db.tape_days
+    assert not (run / "2026-10-29.applied").exists()
+
+
+def test_export_stops_when_the_start_check_is_denied(world: World):
+    export_days(world)
+    world.s3.fail["head_object"] = ClientError(
+        {"Error": {"Code": "403", "Message": "Forbidden for bucket-sekret"}}, "HeadObject"
+    )
+
+    code, out = world.run("export", "--from", "2026-03-10", "--to", "2026-03-11")
+
+    assert code == 1
+    assert "ClientError" in out and "Forbidden" not in out
+    assert world.s3.puts == [] and not world.runs.exists()
+
+
+def test_undo_stops_on_a_backup_line_that_does_not_parse(world: World):
+    two_full_days(world)
+    code, out, run = world.dry_run(FULL_A)
+    assert code == 0, out
+    code, out = world.apply(run)
+    assert code == 0, out
+    data = (run / "backup.jsonl").read_bytes() + b"{not json\n"
+    (run / "backup.jsonl").write_bytes(data)
+    record = json.loads((run / "backup.json").read_text(encoding="utf-8"))
+    record["sha256"] = hashlib.sha256(data).hexdigest()
+    (run / "backup.json").write_text(json.dumps(record), encoding="utf-8")
+    writes = len(world.db.writes())
+
+    code, out = world.undo(run)
+
+    assert code == 1
+    assert "line 3 of backup.jsonl does not parse" in out
+    assert len(world.db.writes()) == writes and not (run / "2026-03-10.undone").exists()
+
+
+def test_undo_leaves_an_unmarked_day_with_nothing_to_put_back(world: World):
+    live_day(world, JUNE)
+    (alert,) = world.tape(JUNE2, fires(JUNE2, ("15:00:00", chain("SPY", "C", 670, JUNE2))))
+    add_live(world, alert)  # nothing to change: an empty plan, so its rows are its end state
+    code, out, run = world.dry_run(JUNE, JUNE2, command="heal")
+    assert code == 0, out
+    # The apply stops before 06-03 (the nightly window opens), so 06-03 has no marker.
+    world.clock = lambda: (
+        datetime(2026, 11, 26, 7, 20, tzinfo=UTC)
+        if (run / "2026-06-02.applied").exists()
+        else SAFE_NOW
+    )
+    code, out = world.apply(run, command="heal")
+    assert code == 3
+    world.clock = lambda: SAFE_NOW
+
+    code, out = world.undo(run)
+
+    assert code == 0, out
+    assert (run / "2026-06-02.undone").exists()
+    assert not (run / "2026-06-03.undone").exists()
+    assert "2026-06-03: not applied by this run" in out

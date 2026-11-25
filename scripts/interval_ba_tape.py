@@ -24,7 +24,8 @@ Modes:
   live missed, under the day's covering interval_ba_live_settings rows, which hold the inserts
   when they ran another rule, had the detector off, or are missing. The flag assumes the code's
   rule, all three tickers on, for a day no row covers, and only for such a day. A day whose
-  inserts are held is flagged (exit 1).
+  inserts are held, or with a stale replay row kept because it holds an acknowledgement, is
+  flagged (exit 1).
 - `heal --apply --run <folder> --expect-insert N --expect-remove N --expect-flags N
   --expect-spot N`: applies that plan, one heal_day per day with the plan's sha256 as
   expect_sha256.
@@ -980,6 +981,7 @@ _HEAL_DIAGNOSTICS = (
     "live_only",
     "value_mismatched",
     "flags_unmatched",
+    "acknowledged_kept",
     "root_label_mismatch",
 )
 
@@ -1115,6 +1117,10 @@ def _heal_plan_json(entries: dict[str, dict[str, Any]], assume_default: bool) ->
         "root_label_mismatch": sum(e["root_label_mismatch"] for e in entries.values()),
         "totals": {name: sum(e[name] for e in entries.values()) for name in _HEAL_EXPECT},
         "held": {day: e["inserts_held"] for day, e in entries.items() if e["inserts_held"]},
+        # Stale replay rows the plan keeps because someone acknowledged them.
+        "acknowledged_kept": {
+            day: e["acknowledged_kept"] for day, e in entries.items() if e["acknowledged_kept"]
+        },
         "days": entries,
     }
 
@@ -1144,6 +1150,11 @@ def _heal_report(run: Path, plan: dict[str, Any]) -> str:
         "",
     ]
     flags = [f"- **{day}: inserts held: {reason}.**" for day, reason in plan["held"].items()]
+    flags += [
+        f"- **{day}: {kept} stale replay row(s) hold an acknowledgement; the plan keeps them"
+        " rather than lose it.**"
+        for day, kept in plan["acknowledged_kept"].items()
+    ]
     flags += [
         f"- **{day}: the tape fires no alert, but the day has {e['live_rows']} live rows.**"
         for day, e in days.items()
@@ -1231,11 +1242,19 @@ def _heal_dry_run(args: argparse.Namespace, out: runs.Output) -> int:
         f" flags {totals['flags']}, spot {totals['spot']}"
     )
     out.say(f"report: {run / 'report.md'}")
+    flagged = False
     if plan_json["held"]:
         held = ", ".join(f"{day} ({reason})" for day, reason in plan_json["held"].items())
         out.say(f"FLAG: inserts held on {held} (report.md)", err=True)
-        return 1
-    return 0
+        flagged = True
+    if plan_json["acknowledged_kept"]:
+        kept = ", ".join(f"{day} ({n})" for day, n in plan_json["acknowledged_kept"].items())
+        out.say(
+            f"FLAG: stale replay rows that hold an acknowledgement, kept, on {kept} (report.md)",
+            err=True,
+        )
+        flagged = True
+    return 1 if flagged else 0
 
 
 def _load_heal_day(run: Path, day: date, entry: dict[str, Any]) -> HealDay:
@@ -1625,11 +1644,18 @@ def _undo_heal(
     plan: Any,
     backup: dict[int, dict],
     backup_ids: set[int],
+    *,
+    wrote_it: bool,
 ) -> UndoDay:
     """What a heal day wrote, put back where it still holds what the heal wrote: its inserts
     deleted (rows the backup never held, still with the inserted values), its removed replay
     rows put back with their ids where their key is free, and its flags and spots set back to
     the backup's where they still hold the heal's values. The rest is counted as left.
+
+    `wrote_it` is a day this run's own transaction applied (marked "applied"). Every row it
+    removed was in the backup, so one missing stops the undo. A day found in its end state was
+    written by someone else before the backup, which then need not hold the rows they removed:
+    there a missing one is only left.
 
     A live row is never deleted or inserted: the DELETE and the UPDATEs carry the source in their
     SQL, with the values they expect, so a row that moved during the undo fails the count check
@@ -1651,6 +1677,9 @@ def _undo_heal(
     kept_keys = {row.key for row in rows if row.id not in deletes}
     inserts = []
     for row_id in plan.removes:
+        if row_id not in backup and not wrote_it:
+            left += 1
+            continue
         then = _backup_row(day, backup, row_id, "removed")
         if then["source"] != "replay":
             raise CheckFailedError(
@@ -1694,11 +1723,12 @@ def _undo_day(
     backup: tuple[dict[date, dict[int, dict]], set[int]],
     allow_market_hours: bool,
 ) -> tuple[dict[str, int], int] | None:
-    """One day, in one transaction: None for a day the run neither marked nor left in its
-    planned end state (untouched), else the counts written and the restores left. The marker is
-    written after the commit."""
+    """One day, in one transaction: None for a day left alone (the run neither marked it nor
+    left it in its planned end state, or it is unmarked with nothing to restore), else the
+    counts written and the restores left. The marker is written after the commit."""
     by_day, backup_ids = backup
-    applied = runs.marker_path(run, day.isoformat()).exists()
+    marker = runs.marker_path(run, day.isoformat())
+    applied = marker.exists()
     try:
         with conn.cursor() as cur:
             runs.set_local_timeouts(cur)
@@ -1716,8 +1746,20 @@ def _undo_day(
         undo = (
             _undo_rebuild(rows, backup_day)
             if mode == "rebuild"
-            else _undo_heal(day, rows, planned.plan, backup_day, backup_ids)
+            else _undo_heal(
+                day,
+                rows,
+                planned.plan,
+                backup_day,
+                backup_ids,
+                # "end state": the apply found the day already written, by someone else.
+                wrote_it=applied
+                and json.loads(marker.read_text(encoding="utf-8")).get("how") != "end state",
+            )
         )
+        if not applied and not (undo.deletes or undo.inserts or undo.flags or undo.spots):
+            conn.rollback()  # in its end state with nothing to put back: no run wrote it
+            return None
         acked = [row.id for row in rows if row.id in undo.deletes and row.acknowledged]
         if acked:
             raise CheckFailedError(
@@ -1822,7 +1864,10 @@ def _undo(args: argparse.Namespace, out: runs.Output) -> int:
                     conn, run, mode.name, day, planned[day], backup, args.allow_market_hours
                 )
             if result is None:
-                out.say(f"{day}: not applied by this run, nor in its planned end state; left alone")
+                out.say(
+                    f"{day}: not applied by this run (no marker, and none of its writes to put"
+                    " back); left alone"
+                )
                 continue
             counts, left = result
             undone += 1
