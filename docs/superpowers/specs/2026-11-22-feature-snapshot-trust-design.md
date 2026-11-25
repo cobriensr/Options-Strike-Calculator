@@ -81,7 +81,7 @@ Definitions:
 | 6 | If `offset > 0`: `|saved − slot| > 10` | `stale-tab` |
 | 7 | `spx`, `spx_low` and `spx_high` are all usable numbers | `no-price-range` |
 | 8 | `spx_low − 10 ≤ spx ≤ spx_high + 10` | `spx-outside-range` |
-| 9 | Not (first saved at or after `MISSING_YESTERDAY_CUTOFF` with a NULL `cluster_mult` or a NULL `rv_annualized`) | `missing-yesterday` |
+| 9 | `cluster_mult` is not NULL, and `rv_annualized` is not NULL on a row first saved at or after `MISSING_YESTERDAY_CUTOFF` (2026-11-25 00:00 CT) | `missing-yesterday` |
 
 **Test 9 (added 2026-11-25)** keeps out a row the app saved while it had no
 current yesterday. Spec: `2026-11-25-missing-yesterday-marking-design.md`.
@@ -89,16 +89,21 @@ current yesterday. Spec: `2026-11-25-missing-yesterday-marking-design.md`.
   until it has the last completed session. A row saved in that gap used to
   store a multiplier of 1, which reads like a real "no clustering" day and
   feeds the day's features. The app now saves null for the multiplier, both
-  tilts and RV in the gap (`clusterMultForSave`), and `/api/snapshot` saves
-  the row anyway and alerts on it.
-- **Cutoff:** `MISSING_YESTERDAY_CUTOFF` = 2026-11-25 00:00 CT. Every row
-  first saved at or after it was written by the new app, so a null there
-  means "no yesterday".
-- **Rows from before are judged as they were.** History already has empty
-  values for ordinary reasons (checked 2026-11-25): about one row a date with
-  no multiplier (the `pre-market` row, which fails test 1 anyway) and about
-  1,300 rows from January to August with no RV. A plain null test would blank
-  those dates on a rebuild, so test 9 only reads rows from the cutoff on.
+  tilts and RV in the gap (`clusterMultForSave`, applied in the save's payload
+  assembly), `/api/snapshot` saves the row anyway and reports it at `error`,
+  and a key saved marked is posted again once yesterday arrives within the
+  slot.
+- **A null multiplier is untrusted on any date.** All 121 existing rows with
+  one are `pre-market` rows (checked 2026-11-25), which test 1 already
+  rejects, so no existing pick changes. This half also catches an old row
+  rewritten in place without yesterday (a replay, the phase 6 rebuild), since
+  `created_at` is kept on a rewrite.
+- **A null RV counts only from the cutoff.** History already has about 1,300
+  slot rows with no RV, mostly January to August, from before RV was saved on
+  every row. A plain null test would blank those dates on a rebuild. The
+  cutoff is fixed, not tied to the deploy: an old-app row saved after it in a
+  gap has a multiplier of 1 and a null RV, so it is rejected, and an old-app
+  row with yesterday has both and stays trusted. A delayed push is harmless.
 - **Every row takes it,** reliable backtests included: a replay row with no
   yesterday has the same fake 1.0 problem.
 - **It is the last test,** so the reason on a row that fails an earlier test

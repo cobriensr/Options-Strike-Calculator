@@ -358,6 +358,16 @@ close.
    - the strikes flatten and payload assembly (`useSnapshotSave.ts`);
    - the slot label.
 
+   The payload assembly carries one rule the builder must keep (spec
+   2026-11-25-missing-yesterday-marking-design.md, part 1): with no cluster
+   inputs (`cluster.signal.cluster == null`) the row's `clusterMult` is null,
+   and so are `clusterPutMult` and `clusterCallMult`, which are nulled in the
+   payload when the meta's `clusterMult` is null. The meta's `clusterMult` must
+   come from `clusterMultForSave` (`src/utils/volatility-cluster.ts`), not from
+   `cluster.signal.mult`, whose working value is 1. A builder that skips the
+   rule writes a fake 1.0 again; the phase 4 parity test compares its row with
+   the page's field for field, so it needs a fixture day with no yesterday.
+
    Existing hook tests and the parity harness
    `src/__tests__/hooks/liveSessionSave.test.ts` must stay green. Each moved
    file joins `API_COMPILED_SRC` (`eslint.config.ts`), with `.js` import

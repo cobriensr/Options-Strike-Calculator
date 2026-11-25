@@ -6,19 +6,19 @@ When the app has no current "yesterday" (the prior session's open, high and low)
 
 ## Why
 
-Since the yesterday fix of 2026-11-24 (main f2648119d..49f280df9), the app shows nothing for RV/IV and the cluster multiplier until it holds the last completed session, instead of an older one. On screen that is honest. But a row saved in that gap stores:
+Since the yesterday fix of 2026-11-24 (main 4b3013d46..49f280df9), the app shows nothing for RV/IV and the cluster multiplier until it holds the last completed session, instead of an older one. On screen that is honest. But a row saved in that gap stores:
 
-- `cluster_mult = 1` and `cluster_put_mult = cluster_call_mult = 1`. `computeClusterSignal` returns its no-data fallback `{ rangePct: null, cluster: null, mult: 1 }` (src/utils/volatility-cluster.ts:31), App passes `cluster.signal.mult` to the save (src/App.tsx:631), and `useRegimeClassification` sets both tilts to that 1 when it has no yesterday.
-- `rv_annualized`, `rv_iv_ratio` and `rv_iv_label` as null (`useRangeAnalysis` leaves them null without yesterday's high and low).
+- `cluster_mult = 1` and `cluster_put_mult = cluster_call_mult = 1`. `computeClusterSignal` returns its no-data fallback `{ rangePct: null, cluster: null, mult: 1 }` (src/utils/volatility-cluster.ts:31). App passes `cluster.signal.mult` to the save (src/App.tsx:631, :701), and `useRegimeClassification` sets both tilts to that 1 (src/hooks/useRegimeClassification.ts:184-186).
+- `rv_annualized`, `rv_iv_ratio` and `rv_iv_label` as null, because `useRangeAnalysis` leaves them null without yesterday's high and low (:269-289).
 - Range estimates and delta ceilings computed as if the multiplier were 1.
 
-`build-features` copies `cluster_mult` into the day's features unchanged, so a 10:00 row saved in the gap feeds a fake 1.0 to the ML data, as the months of 1.0 rows found on 2026-11-07 did. Nothing alerts: the `yesterday.wrong_day` counter (api/yesterday.ts) counts only the server answering with the wrong day, not the app's own request failing.
+`build-features` copies `cluster_mult` into the day's features unchanged (api/cron/build-features.ts:373). So a 10:00 row saved in the gap feeds a fake 1.0 to the ML data, as the months of 1.0 rows found on 2026-11-07 did. Nothing alerts: the `yesterday.wrong_day` counter (api/yesterday.ts:204) counts only the server answering with the wrong day, not the app's own request failing.
 
-How often: rarely and briefly. The app re-asks for yesterday every poll tick in the session while it lacks the current one, so a gap lasts as long as Schwab's daily candle is late or requests fail.
+How often: rarely and briefly. The app re-asks for yesterday every poll tick in the session while it lacks the current one, so a gap lasts as long as Schwab's daily candle is late or requests fail. This frequency is not measured.
 
 ## Approaches
 
-1. **Save but mark (chosen by the owner, 2026-11-25 00:06 CT).** The row is saved with the yesterday-derived multipliers empty, the server raises an alert for a live row that arrives without them, and the feature build does not pick such a row. Every slot keeps a row, and nothing fake reaches the features.
+1. **Save but mark (chosen by the owner, 2026-11-25 00:06 CT).** The row is saved with the yesterday-derived multipliers empty, the owner gets an email for a live row that arrives without them, and the feature build does not pick such a row. Every slot keeps a row, and nothing fake reaches the features.
 2. **Don't save until yesterday arrives.** No incomplete rows, but the slots in the gap stay empty until the planned server snapshot builder fills them, the same trade as the 8:30 stale-quote refusal on 2026-11-17.
 3. **The server fills yesterday in.** It fits the owner's backend rule best, but the range estimates and ceilings are computed in the browser from the multiplier. They would still assume 1, so the row would contradict itself until the snapshot builder moves that logic to the server (server-snapshot-builder spec, phases 3-6).
 
@@ -26,73 +26,106 @@ Approach 3 is where this ends up once the server builder writes rows; approach 1
 
 ## Design
 
-### 1. The app saves empty multipliers when it had none
+### 1. The save posts empty multipliers when the cluster had no inputs
 
-- A row's `clusterMult`, `clusterPutMult` and `clusterCallMult` are null whenever the cluster signal had no inputs: `cluster.signal.cluster == null` (no yesterday range, or no VIX). The owner's manual edit of yesterday's range counts as inputs.
-- What the screen shows is unchanged: the panels keep using 1 as the working value, as today.
-- RV, RV/IV and its label are already null in that case; no change.
-- The range estimates and ceilings on such a row stay as computed (at a multiplier of 1). The empty multiplier marks the whole row as built without yesterday, and part 3 keeps it out of the features.
-- `/api/snapshot` already accepts a null `clusterMult` (`num` in api/_lib/validation/snapshot.ts, `?? null` in api/_lib/db-snapshots.ts). Check that the two tilt fields do too.
+- **Where:** in the payload assembly in `src/hooks/useSnapshotSave.ts`, not in App. Server-builder phase 3 moves that assembly into `src/utils`, and its phase 4 parity test compares the builder's row with the page's field for field (docs/superpowers/specs/2026-11-17-server-snapshot-builder-design.md). With the rule in App, the builder would write 1.0 again.
+- **What:** the save's meta gains a flag saying whether the cluster had inputs (`cluster.signal.cluster != null`). When the flag is false, the payload's `clusterMult`, `clusterPutMult` and `clusterCallMult` are all null. The tilts come from `signals`, not the meta (useSnapshotSave.ts:479-480), so all three are nulled in the payload assembly.
+- **The screen is unchanged.** The panels keep 1 as the working value, as today.
+- **RV, RV/IV and its label** are already null in that case.
+- **The range estimates and ceilings** on such a row stay as computed, at a multiplier of 1. The empty multiplier marks the whole row, and part 3 keeps it out of the features.
+- **The server already accepts null** for all three multipliers: `num` is nullable (api/_lib/validation/common.ts:93), and the save writes `?? null` (api/_lib/db-snapshots.ts:161, :174).
+- **Re-post once the gap closes.**
+  - Each key posts once per session, and a 200 keeps it marked (useSnapshotSave.ts:394-408, :526-529). So a gap of a few seconds at the start of a slot would leave that slot's row empty for good, though yesterday arrives within the slot.
+  - A key saved with the mark (the same predicate as parts 2 and 3: `clusterMult` or `rvAnnualized` null) is posted once more when the mark clears, but only while that key is still the page's entry time. This is the same window as the existing re-post of a refused key.
+  - **The re-post is armed only by the marked POST's 200 response,** not when it is sent.
+    - The key is marked before the fetch (useSnapshotSave.ts:408). Quotes and yesterday land in separate `setData` calls (useMarketData.ts:439-447, :465-470), and a save can take up to two 10 s tries (db-snapshots.ts:130-243).
+    - So yesterday can arrive while the marked POST is still in flight. A re-post sent then can commit first, and the marked insert can land second and leave the row marked, with the one re-post spent.
+    - If the mark has already cleared by the time the 200 lands, the re-post goes out at once.
+  - The live upsert overwrites the row in place and keeps `created_at`.
+- **The owner's manual edit of yesterday's range** (author's call; the owner can override):
+  - An edit gives the cluster inputs, so the multiplier is saved as typed. RV ignores edits (useRangeAnalysis.ts:269-271), so it stays null. A row saved in a gap with an edit therefore still alerts and is still not trusted. Hand-typed values don't make a row trustworthy for the features.
+  - A half-typed or reversed edit while yesterday is present gives a null cluster: `parse('')` is NaN, so `computeClusterSignal` returns its no-data value. That row is marked and alerts although yesterday exists. It is rare, and the mark is honest about what was used.
 
-### 2. The server alerts on a live row without yesterday's fields
+### 2. The server emails the owner about a live row without yesterday's fields
 
-In `api/snapshot.ts`, after the existing refusals, a live save (`isBacktest !== true`) for a slot (not the `pre-market` row, which never carries these fields) whose `rvAnnualized` or `clusterMult` is null:
+In `api/snapshot.ts`, after the existing refusals, a live save (`isBacktest !== true`) whose `rvAnnualized` or `clusterMult` is null:
 
-- is saved as sent (no refusal);
-- increments `metrics.increment('snapshot.missing_yesterday_fields')`;
-- raises one Sentry warning per date: `Sentry.captureMessage('snapshot.missing_yesterday_fields', …)` with tag `snapshot_gap: missing_yesterday_fields`, fingerprint `['snapshot-missing-yesterday-fields', date]`, and extra `{ date, entryTime, rvMissing, clusterMissing }`. One issue per date, so a ten-minute gap is one alert.
+- **is saved as sent,** with no refusal;
+- **is counted:** `metrics.increment('snapshot.missing_yesterday_fields')`;
+- **is reported:** `Sentry.captureMessage('snapshot.missing_yesterday_fields', …)` at level `error`.
+  - It carries tag `snapshot_gap: missing_yesterday_fields`, fingerprint `['snapshot-missing-yesterday-fields', date]`, and extra `{ date, entryTime, rvMissing, clusterMissing }`.
+  - **Every qualifying save calls it.** Sentry groups the calls by the fingerprint into one issue per date. There is no in-memory record of dates already reported (R1).
+  - **Why `error`:** the project's existing high-priority issue rule emails the owner on a new `error` issue and skips warnings. That is how the feature build's daily no-pick report reaches the owner (build-features.ts:318-329; trust spec "No Sentry rule changes"). So this needs no new Sentry rule and no rule change. Each date opens a new issue, which means one email per date with a gap.
 
-This catches the gap whatever its cause (a late Schwab candle, a failed request, a stale tab), because the server judges what arrives. Backtest rows are not alerted: the replay driver checks them.
+Only `/api/snapshot` sees slot saves; the `pre-market` row is written by api/pre-market.ts and api/cron/auto-prefill-premarket.ts, so it needs no exclusion. Backtest rows are not reported: the replay driver checks them.
 
-### 3. The feature build won't pick an unmarked-yesterday row
+### 3. The feature build won't pick a row without yesterday's fields
 
-`featureSnapshotRejection` (api/cron/build-features.ts) gets one more test. A row with `created_at` at or after `MISSING_YESTERDAY_CUTOFF` whose `cluster_mult` or `rv_annualized` is null is not trusted. The existing rules then apply unchanged: the pick moves to the nearest trusted row within ±60 min of 10:00 CT; if there is none, the day gets no snapshot features, and the existing no-pick report fires.
+`featureSnapshotRejection` (api/cron/build-features.ts) gets one more test, with its own named rejection reason (it shows in the no-pick counts). A row is not trusted when either holds:
 
-The cutoff matters. Older history already has empty values for ordinary reasons, checked 2026-11-25: about one row per date with no multiplier (the `pre-market` row), and about 1,300 rows from January to August with no RV. Judged by the new test, a rebuild would blank those dates. Rows before the cutoff are judged as they are today.
+- `cluster_mult IS NULL`, on any date. Checked 2026-11-25: all 121 existing rows with a null multiplier are `pre-market` rows, and test 1 already rejects those because they have no slot. So no existing pick changes. This half also catches an old row rewritten in place without yesterday, such as by a replay or the phase 6 rebuild, which keep `created_at`.
+- `rv_annualized IS NULL` on a row with `created_at >= '2026-11-25 00:00 America/Chicago'`. Older history has about 1,300 slot rows with no RV, mostly January to August, from before RV was saved on every row. Judging those would blank their dates on a rebuild.
+  - The cutoff is fixed now, not tied to the deploy. An old-app row saved after it in a gap stores multiplier 1 with RV null, so it is rejected, which is right. An old-app row with yesterday has both, so it stays trusted. A cutoff that lands before a delayed push is harmless, and stale PWA tabs are covered.
 
-- `MISSING_YESTERDAY_CUTOFF` = 00:00 CT on the first day after parts 1 and 2 are live in production, so every row the test judges was saved by the new app. The builder sets the exact value when the deploy date is known.
-- `scripts/_lib/snapshot-price-context.ts` (`featurePickChange`) follows the same rule. If it calls `featureSnapshotRejection`, it follows automatically; if it has its own copy, change it too.
-- Update docs/superpowers/specs/2026-11-22-feature-snapshot-trust-design.md with the new test.
+How both readers get it:
 
-### 4. The alert rule (owner OK required at creation)
-
-A Sentry issue alert that emails the owner when an issue tagged `snapshot_gap: missing_yesterday_fields` is first seen. Model it on the rule that routes the feature build's no-pick email. Sentry alert-rule changes need the owner's explicit OK, so this step waits for it. Parts 1-3 ship without it.
+- **One computed column.** Add it to `SNAPSHOT_TRUST_COLUMNS_SQL` and its field to `SnapshotTrustColumns`, e.g. `(cluster_mult IS NULL OR (rv_annualized IS NULL AND created_at >= TIMESTAMPTZ '2026-11-25 00:00 America/Chicago')) AS missing_yesterday`. That keeps all time-zone math in Postgres, as the module requires.
+- **Both readers splice that text:** build-features and `scripts/_lib/snapshot-price-context.ts` (`readRows`, used by `featurePickChange`). Neither selects `rv_annualized` today, so the script would otherwise read undefined.
+- **A pglite test at the cutoff instant** goes in the `SNAPSHOT_TRUST_COLUMNS_SQL` suite (snapshot-price-context-pglite.test.ts).
+- **The rest of the rule is unchanged.** The pick moves to the nearest trusted row within ±60 min of 10:00 CT. With none, the day gets no snapshot features and the existing no-pick report fires.
+- **Docs:** add the test to docs/superpowers/specs/2026-11-22-feature-snapshot-trust-design.md. Add a line to the server-builder spec saying its payload assembly carries part 1's rule.
 
 ## Non-goals
 
-- Computing yesterday on the server (approach 3): the snapshot builder's job.
-- Repairing the legacy 1.0 rows saved since 2026-08-25 that were never replayed (an open follow-up in the snapshot-replay-repair notes).
+- Computing yesterday on the server (approach 3). That is the snapshot builder's job.
+- Repairing the legacy 1.0 rows saved since 2026-08-25 that were never replayed. That is an open follow-up in the snapshot-replay-repair notes.
 - Changing what the screen shows during a gap.
-- Alerting on backtest rows.
+- Reporting backtest rows.
+
+## Known limits
+
+- **Two open tabs.** A live re-save overwrites every column (db-snapshots.ts:184-238). If tab B is in a gap and saves 10:00 after tab A saved good values, the row is nulled. Tab B's own re-post (part 1) restores the values once its yesterday arrives, while 10:00 is still its slot. An empty mark is still better than a fake 1.0.
+- **An email per date with any gap,** including a gap a re-post heals within seconds. If that proves noisy, revisit, for example by reporting only rows still null when the slot ends. That would need the server builder.
 
 ## Files
 
-- Part 1: src/App.tsx (or src/hooks/useSnapshotSave.ts, wherever the save's meta is built), with tests in the App wiring test or the save hook's test.
-- Part 2: api/snapshot.ts and api/__tests__/snapshot.test.ts.
-- Part 3: api/cron/build-features.ts and its test, scripts/_lib/snapshot-price-context.ts if it has its own copy, and the trust spec.
-- Part 4: no repo files. A Sentry rule, with the owner's OK.
+- **Part 1:**
+  - src/hooks/useSnapshotSave.ts (payload rule, flag, re-post) and src/App.tsx (pass the flag);
+  - tests in the save hook's suite and src/__tests__/App.cluster-mult-wiring.test.ts.
+  - Two existing tests assert today's behaviour and must change, not be "fixed" back:
+    - src/__tests__/hooks/liveSessionSave.test.ts:973-1003 expects 1 for all three multipliers on a date with no previous day;
+    - src/__tests__/App.cluster-mult-wiring.test.ts:33, :78-83 pin the `clusterMult` wiring literal.
+  - Keep each commit to 5 files or fewer.
+- **Part 2:** api/snapshot.ts and api/__tests__/snapshot.test.ts.
+- **Part 3:** split across two commits so each stays at 5 files or fewer:
+  - one: build-features.ts and its test; scripts/_lib/snapshot-price-context-pglite.test.ts; and the fixtures in scripts/_lib/snapshot-price-context.test.ts (:121-137) and scripts/_lib/snapshot-price-context-cli.test.ts (:68-82), which break the type-check once `missing_yesterday` is a required field.
+    - `snapshot-price-context.ts` itself likely needs no change: `readRows` already splices `SNAPSHOT_TRUST_COLUMNS_SQL` (:1005), and `SnapshotRowIn` extends `SnapshotTrustColumns` (:197). Keep the field required.
+  - two: the trust spec and the server-builder spec lines.
+- **The cutoff is safe from the start:** a production SELECT at 2026-11-25 00:22 CT found no rows of any kind created since `2026-11-25 00:00 America/Chicago`.
 
 ## Constraints
 
-- No new column and no migration. The mark is the empty multiplier plus the row's `created_at`.
-- Push parts 1-3 together (they touch `api/` and `src/`), after the 15:00 CT close on a weekday.
-- Tests: TDD. A save without yesterday posts null multipliers, and a save with one posts numbers. The server alerts once per date for a live slot row and not for a backtest row or the pre-market row, and it still saves. The trust test rejects a post-cutoff row with a null multiplier or RV, and keeps a pre-cutoff one. Each with the failure modes R4 asks for.
+- **No new column and no migration.** The mark is the empty multiplier, plus the row's `created_at` for RV.
+- **Push parts 1-3 together,** outside the owner's trading day (not between the pre-open and the 15:00 CT close on a weekday).
+- **Tests: TDD**, each with the failure modes R4 asks for:
+  - a save without cluster inputs posts null for all three multipliers, and a save with them posts numbers;
+  - a marked key re-posts once when the mark clears while it is still the entry time, and not after the slot has moved on. With an owner's edit held, the mark clears once RV arrives;
+  - when yesterday arrives while the marked POST is still pending, the re-post waits for that POST's 200, then goes out;
+  - the server reports every qualifying live save, at `error` with the per-date fingerprint and the date in extras, and still saves it. It does not report a backtest row;
+  - the trust column is true for a null multiplier on any date, and for null RV at and after the cutoff instant but not before it. A pre-cutoff slot row with null RV stays trusted.
 
 ## As built (parts 1 to 3, 2026-11-25)
 
-Where the build differs from the text above, and why.
+The build follows the spec. Where it differs from the text above, and how each part landed:
 
-- **Part 1.** `clusterMultForSave(signal)` in `src/utils/volatility-cluster.ts` is `null` when `signal.cluster == null`, else `signal.mult`. App passes it to `buildSnapshotMeta`, and a pure helper means the live-session harness test runs the same rule as App.
-  - The two tilts are nulled in `useSnapshotSave`'s payload when the meta's multiplier is null, not in the signals. The screen, the Volatility Clustering panel and the analyze context still read the working value 1.
-  - The server schema already accepted null for all three (`num` is `nullable().optional()`); a validation test now pins the whole gap row (multiplier, tilts, RV, RV/IV and its label all null).
-  - A real multiplier of exactly 1 (a cluster whose bucket gives 1) still saves as 1: the rule is `cluster == null`, not `mult === 1`.
-- **Part 2.** The alert runs after a successful save of a live row, in `api/snapshot.ts`. A save that fails has its own report (`captureException`), and a row that was never saved cannot feed the features, so it raises no gap alert.
-  - There is no `pre-market` guard in the handler: that row is written by `/api/pre-market`, and a live post under that label is refused by the quote check (`bad-entry-time`, 422) before this check. A test pins the refusal, so the alert cannot fire for it.
-  - A field left out of the body counts as missing, as a null does. The warning also writes one pino line per such save (about one a slot during a gap).
-  - Sentry groups every event of a date under the fingerprint `['snapshot-missing-yesterday-fields', date]`, so a gap that spans slots is one issue.
-- **Part 3.** The rule is a column the database computes, like `flag_reliable`: `SNAPSHOT_TRUST_COLUMNS_SQL` gains `missing_yesterday` (`created_at >= MISSING_YESTERDAY_CUTOFF AND (cluster_mult IS NULL OR rv_annualized IS NULL)`), and `featureSnapshotRejection` returns `missing-yesterday` when it is true, as its last test. The Chicago-time comparison stays in Postgres, and a pglite test runs the real text on both sides of the cutoff and under another session time zone.
-  - `scripts/_lib/snapshot-price-context.ts` needed no change: it reads the same SQL text and calls `pickFeatureSnapshot`, so its pick report follows the rule. A pglite test shows the plan cannot rescue such a row.
-  - A reliable backtest row takes the test too.
-  - If the deploy slips past the open, the old app's rows in a gap carry a multiplier of 1 but still a null RV, so the RV half of the test catches them.
-- **Trust spec.** `2026-11-22-feature-snapshot-trust-design.md` has the new test 9.
-- **Not done here.** Part 4, the Sentry alert rule, waits for the owner's OK.
+- **Part 1, where the rule lives.** `clusterMultForSave(signal)` (`src/utils/volatility-cluster.ts`) is null when `signal.cluster == null`, else `signal.mult`. App passes it as the save meta's `clusterMult`, and a pure helper means the live-session harness runs the same rule as App.
+  - The payload assembly in `useSnapshotSave.ts` nulls `clusterPutMult` and `clusterCallMult` when the meta's multiplier is null (they come from `signals`, which keep the working value 1 for the screen). The meta's multiplier must come from `clusterMultForSave`, which is what server-builder phase 3 has to keep (a line in that spec says so).
+  - A real multiplier of exactly 1 still saves as 1: the rule is `cluster == null`, not `mult === 1`.
+- **Part 1, the re-post.** A key saved marked (payload `clusterMult` or `rvAnnualized` null) is armed when its POST is answered 200, and a tick re-runs the save effect then. The effect posts the key once more if its mark has cleared and it is still the entry time, so a mark that cleared while the POST was in flight posts at once, and one that clears later posts on the next run. A key whose marked POST got a 400, or was aborted, is not armed.
+  - The mark's predicate is the server's and the trust column's: no multiplier or no RV. With an owner's edit held, the multiplier is set and RV stays null, so the re-post waits for RV.
+- **Part 2.** Every live save with a null or absent `rvAnnualized` or `clusterMult` is counted and reported at `error` with the per-date fingerprint, after the row is saved. A save the database rejects is not reported here (its own report fires), and a backtest row is not reported. There is no `pre-market` exclusion: that row is not written by this endpoint, and a live post with that label is refused (`bad-entry-time`, 422) before the check, which a test pins. Nothing remembers dates already reported.
+- **Part 3.** One computed column, `missing_yesterday` in `SNAPSHOT_TRUST_COLUMNS_SQL`: `cluster_mult IS NULL OR (rv_annualized IS NULL AND created_at >= TIMESTAMPTZ '2026-11-25 00:00 America/Chicago')`. `featureSnapshotRejection` returns `missing-yesterday` for it as its last test, reliable backtests included. The field is required on `SnapshotTrustColumns`, so the fixtures in `snapshot-price-context.test.ts` and `snapshot-price-context-cli.test.ts` carry it.
+  - `scripts/_lib/snapshot-price-context.ts` needed no change: `readRows` already splices the SQL text and `featurePickChange` calls `pickFeatureSnapshot`. A pglite test shows the plan cannot rescue such a row.
+  - The pglite suite runs the real text one second either side of the cutoff, for each field null, for old rows with no RV (trusted) and with no multiplier (rejected), and under a Tokyo session time zone.
+- **Docs.** The trust spec has test 9, and the server-builder spec has the line for its payload assembly.
+- **Not done here.** Part 4 is not needed: the report is at `error`, so the existing high-priority rule emails the owner and no Sentry rule is added.
