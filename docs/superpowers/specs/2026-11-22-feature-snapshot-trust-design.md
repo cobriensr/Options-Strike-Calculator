@@ -81,6 +81,32 @@ Definitions:
 | 6 | If `offset > 0`: `|saved − slot| > 10` | `stale-tab` |
 | 7 | `spx`, `spx_low` and `spx_high` are all usable numbers | `no-price-range` |
 | 8 | `spx_low − 10 ≤ spx ≤ spx_high + 10` | `spx-outside-range` |
+| 9 | Not (first saved at or after `MISSING_YESTERDAY_CUTOFF` with a NULL `cluster_mult` or a NULL `rv_annualized`) | `missing-yesterday` |
+
+**Test 9 (added 2026-11-25)** keeps out a row the app saved while it had no
+current yesterday. Spec: `2026-11-25-missing-yesterday-marking-design.md`.
+- **Why:** since the yesterday fix of 2026-11-24 the app holds no yesterday
+  until it has the last completed session. A row saved in that gap used to
+  store a multiplier of 1, which reads like a real "no clustering" day and
+  feeds the day's features. The app now saves null for the multiplier, both
+  tilts and RV in the gap (`clusterMultForSave`), and `/api/snapshot` saves
+  the row anyway and alerts on it.
+- **Cutoff:** `MISSING_YESTERDAY_CUTOFF` = 2026-11-25 00:00 CT. Every row
+  first saved at or after it was written by the new app, so a null there
+  means "no yesterday".
+- **Rows from before are judged as they were.** History already has empty
+  values for ordinary reasons (checked 2026-11-25): about one row a date with
+  no multiplier (the `pre-market` row, which fails test 1 anyway) and about
+  1,300 rows from January to August with no RV. A plain null test would blank
+  those dates on a rebuild, so test 9 only reads rows from the cutoff on.
+- **Every row takes it,** reliable backtests included: a replay row with no
+  yesterday has the same fake 1.0 problem.
+- **It is the last test,** so the reason on a row that fails an earlier test
+  does not change.
+- **How:** SQL, like `flag_reliable`. `SNAPSHOT_TRUST_COLUMNS_SQL` computes a
+  `missing_yesterday` boolean on the database, so the Chicago-time math stays
+  there. `scripts/_lib/snapshot-price-context.ts` reads the same text, so its
+  pick report follows the rule.
 
 **Reliable backtest rows skip tests 3–5.**
 - **Which rows:** `is_backtest = true` and first saved on or after
@@ -104,7 +130,8 @@ Definitions:
     `backup-flip-1116-0830.mjs`) and not yet overwritten by a replay.
   - A tab like that left on an old date makes stale-tab rows, and test 6
     catches them.
-- **Rows saved before 10-28 get all eight tests,** whatever their flag. On
+- **Rows saved before 10-28 get all nine tests,** whatever their flag (test
+  9 cannot fire on them: it reads only rows from its cutoff on). On
   those rows the flag is inverted. Also, the 03-26 catch-up rows carry
   `is_backtest = false`, which before 10-28 meant a backtest save, and they
   are still junk.
