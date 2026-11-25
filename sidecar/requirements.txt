@@ -4,7 +4,7 @@ psycopg2>=2.9.9
 # try/except, so a rebuild on 3.x would run with no Sentry. Move to 3.x
 # deliberately, after changing that call.
 sentry-sdk>=2.0.0,<3
-pydantic>=2.7.0
+pydantic>=2.14.3
 pydantic-settings>=2.3.0
 python-dotenv>=1.0.0
 # Pinned to the last 1.x release. DuckDB 2.0.0 (2026-10-21) binds the
