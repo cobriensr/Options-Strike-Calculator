@@ -23,6 +23,7 @@ import {
   type DayAnalogBuild,
   type LabelResult,
   type Refusal,
+  type SummaryFields,
   type WindowResult,
 } from '../_lib/day-analog-builder.js';
 import {
@@ -888,14 +889,8 @@ describe('matches every case in the shared parity fixture', () => {
 
   describe.each(fixture.summaries)('summary: $name', (c) => {
     it('matches its expectation exactly', () => {
-      const w: AnalogWindow = {
-        ...c.window,
-        features: [],
-        summary: '',
-        bars: c.window.nMinutes,
-        contract: null,
-      };
-      expect(formatWindowSummary(w)).toBe(c.expect);
+      const fields: SummaryFields = c.window;
+      expect(formatWindowSummary(fields)).toBe(c.expect);
     });
   });
 });
@@ -942,6 +937,25 @@ function at(date: string, hour: number, minute: number, second = 0): Date {
 
 const status = (r: { ok: true } | { ok: false; reason: Refusal }): string =>
   r.ok ? 'ok' : r.reason;
+
+/** A build whose every window and whose labels were refused for `reason`. */
+const refusedEverywhere = (date: string, reason: Refusal): DayAnalogBuild => ({
+  date,
+  windows: ANALOG_WINDOW_MINUTES.map(
+    (nMinutes): WindowResult => ({ ok: false, nMinutes, reason }),
+  ),
+  labels: { ok: false, reason },
+});
+
+/** True when a NaN sits anywhere in a result, at any depth. */
+function containsNaN(value: unknown): boolean {
+  if (typeof value === 'number') return Number.isNaN(value);
+  if (Array.isArray(value)) return value.some(containsNaN);
+  if (value !== null && typeof value === 'object') {
+    return Object.values(value).some(containsNaN);
+  }
+  return false;
+}
 
 /** Each window's result and the labels' result, as one comparable object. */
 const statuses = (b: DayAnalogBuild) => ({
@@ -1019,6 +1033,28 @@ describe('buildDayAnalogWindows', () => {
       reason: 'incomplete',
     });
     expect((await buildHalf(15)).labels.ok).toBe(true);
+  });
+
+  it('holds a window until 75 s after its end on a CDT date', async () => {
+    // 2026-03-09 is CDT: 08:30 CT is 13:30Z here, not the 14:30Z of the CST
+    // dates above, so a fixed offset would shift every edge by an hour.
+    const cdt = '2026-03-09';
+    mockFetch.mockResolvedValue([
+      ...stored(cdt, OPEN - 60, flat(60)),
+      ...stored(cdt, OPEN, flat(40)), // 08:30 - 09:09
+    ]);
+    const build = (second: number) =>
+      buildDayAnalogWindows(cdt, at(cdt, 9, 1, second));
+
+    // N = 30 ends 09:00 CDT; 09:01:15 CDT is its edge.
+    expect(statuses(await build(14))).toEqual({
+      windows: ['ok', 'incomplete', 'incomplete'],
+      labels: 'incomplete',
+    });
+    expect(statuses(await build(15))).toEqual({
+      windows: ['ok', 'ok', 'incomplete'],
+      labels: 'incomplete',
+    });
   });
 
   it('drops the still-forming bar from the series', async () => {
@@ -1106,35 +1142,49 @@ describe('buildDayAnalogWindows', () => {
     });
   });
 
-  it('refuses a bar whose price text is malformed', async () => {
-    const day = fullDayStored(DATE);
-    const corrupt = (ctMinutes: number): StoredFuturesBar[] =>
-      day.map((b) =>
-        b.ts === isoAt(DATE, ctMinutes) ? { ...b, close: 'abc' } : b,
-      );
+  // 'NaN' is what a NUMERIC column can really hold; '' reads as 0, which the
+  // `<= 0` check refuses.
+  it.each(['abc', 'NaN', ''])(
+    'refuses a bar whose price text is %j as bad_bar',
+    async (text) => {
+      const day = fullDayStored(DATE);
+      const corrupt = (ctMinutes: number): StoredFuturesBar[] =>
+        day.map((b) =>
+          b.ts === isoAt(DATE, ctMinutes) ? { ...b, close: text } : b,
+        );
 
-    // 08:35 is inside every window and the session.
-    mockFetch.mockResolvedValue(corrupt(ct(8, 35)));
-    expect(await buildDayAnalogWindows(DATE, at(DATE, 15, 5))).toEqual({
-      date: DATE,
-      windows: ANALOG_WINDOW_MINUTES.map((nMinutes) => ({
-        ok: false,
-        nMinutes,
-        reason: 'bad_bar',
-      })),
-      labels: { ok: false, reason: 'bad_bar' },
-    });
+      // 08:35 is inside every window and the session.
+      mockFetch.mockResolvedValue(corrupt(ct(8, 35)));
+      const early = await buildDayAnalogWindows(DATE, at(DATE, 15, 5));
+      expect(early).toEqual(refusedEverywhere(DATE, 'bad_bar'));
+      expect(containsNaN(early)).toBe(false);
 
-    // 10:00 is past every window: only the labels read it.
-    mockFetch.mockResolvedValue(corrupt(ct(10, 0)));
-    const late = await buildDayAnalogWindows(DATE, at(DATE, 15, 5));
-    expect(statuses(late)).toEqual({
-      windows: ['ok', 'ok', 'ok'],
-      labels: 'bad_bar',
-    });
-    for (const w of late.windows.map(okWindow)) {
-      expect(w.features.every(Number.isFinite)).toBe(true);
-    }
+      // 10:00 is past every window: only the labels read it.
+      mockFetch.mockResolvedValue(corrupt(ct(10, 0)));
+      const late = await buildDayAnalogWindows(DATE, at(DATE, 15, 5));
+      expect(statuses(late)).toEqual({
+        windows: ['ok', 'ok', 'ok'],
+        labels: 'bad_bar',
+      });
+      expect(containsNaN(late)).toBe(false);
+    },
+  );
+
+  it('gives no_anchor on every window and the labels for an empty read', async () => {
+    mockFetch.mockResolvedValue([]);
+
+    // After the close, so no window is held back as incomplete.
+    expect(await buildDayAnalogWindows(DATE, at(DATE, 15, 5))).toEqual(
+      refusedEverywhere(DATE, 'no_anchor'),
+    );
+  });
+
+  it('gives no_anchor everywhere for an invalid asOf, which drops every bar', async () => {
+    mockFetch.mockResolvedValue(fullDayStored(DATE));
+
+    expect(await buildDayAnalogWindows(DATE, new Date(Number.NaN))).toEqual(
+      refusedEverywhere(DATE, 'no_anchor'),
+    );
   });
 
   it('rejects when the database read fails', async () => {

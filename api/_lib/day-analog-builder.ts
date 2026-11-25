@@ -17,6 +17,14 @@
  * minute relative to the 08:30 anchor, so the gap check can see the bar
  * before the anchor and the bar after the last one.
  *
+ * The read span is part of the rule set. `buildDayAnalogWindows` reads
+ * exactly the bars in [07:30 CT, session end + 1 min), so the labels' bar
+ * after the session can only be the 15:00 bar (12:00 on a half day), while
+ * a window's bar after is the first later bar in that span, whatever its
+ * minute. A port must trim its series to exactly that span before it applies
+ * the rules below. Without the trim, a missing 15:00 bar plus a 15:01 bar
+ * 20 pt off the 14:59 close would be `flagged` instead of `ok`.
+ *
  * Every rule below is mirrored by P2's Python writer
  * (`ml/src/day_analog_backfill.py`), which must pass every case in
  * `api/__tests__/fixtures/day-analog-parity.json` (plan decisions 6, 10
@@ -31,14 +39,20 @@
  *     `too_few_bars` (a window under MIN_BARS; a session under
  *     cashSessionMinutes), `bad_bar`, `mixed_contract`, `flagged`.
  *   - `bad_bar`: a price that is not finite or not above 0, or a volume
- *     that is not finite or is negative. It covers the bar before the
- *     anchor and the bar after the last one, because the gap check reads
- *     their close and open. NUMERIC can hold `NaN`, which compares false
- *     with everything, so it must be refused here, before it reaches a
- *     vector, a range or the gap rule.
+ *     that is not finite or is negative. It checks the whole bar, all four
+ *     prices and the volume, on every window or session bar and on the bar
+ *     before the anchor and the bar after the last one, not only the close
+ *     and open the gap rule reads. NUMERIC can hold `NaN`, which compares
+ *     false with everything, so it must be refused here, before it reaches
+ *     a vector, a range or the gap rule. A price text that does not parse
+ *     is `bad_bar` too: JS `Number('abc')` is NaN, but Python
+ *     `float('abc')` raises, so a port must map the error to `bad_bar`.
  *   - `mixed_contract`: two distinct non-null contracts after folding the
  *     spelling to root, month code and last year digit (`ESZ26` is
- *     `ESZ6`). A NULL contract is unknown and is accepted.
+ *     `ESZ6`), compared over the window or session bars only, not the bar
+ *     before the anchor or the bar after the last one. A NULL contract is
+ *     unknown and is accepted. A window's `contract` is that one folded
+ *     name, or null when every bar's contract is NULL.
  *   - `flagged` (open gap only): a bar has a gap when its open is more
  *     than PROXY_JUMP_PTS from the close of the neighbouring bar before it
  *     in the series, whatever that bar's minute. A window or session is
@@ -67,6 +81,12 @@
  *     must never round the integer volume: 1,150 is `1.1K` because the
  *     float 1.15 sits just below the tie, and rounding 1150 would give
  *     `1.2K`. 999,999 prints `1000.0K`.
+ *
+ * Callers of `buildDayAnalogWindows` (P1b): `asOf` must be a valid Date, as
+ * an invalid one drops every bar and returns `no_anchor` everywhere. A
+ * backtest passes the simulated analysis time. On a trading day, a
+ * `no_anchor` from a window that is ready (the 15-minute window at
+ * 08:46:15 CT) means the read had no anchor bar: surface it as an outage.
  */
 
 import {
@@ -74,13 +94,14 @@ import {
   isTradingDay,
 } from '../../src/data/marketHours.js';
 import { ctWallClockToUtcIso } from '../../src/utils/timezone.js';
+import { SESSION_OPEN_MIN_CT } from './constants.js';
 import { fetchFuturesBars, type StoredFuturesBar } from './futures-bars.js';
 import { formatDelta, formatVolume } from './postgres-day-summary.js';
 
 export const DAY_ANALOG_FEATURE_SET = 'cash_open_pct_change_v2';
 export const ANALOG_WINDOW_MINUTES = [15, 30, 60] as const;
 export type AnalogWindowMinutes = (typeof ANALOG_WINDOW_MINUTES)[number];
-export const CASH_OPEN_MIN_CT = 8 * 60 + 30;
+export const CASH_OPEN_MIN_CT = SESSION_OPEN_MIN_CT;
 export const MIN_BARS = 10;
 export const PROXY_JUMP_PTS = 15;
 export const WINDOW_GRACE_MS = 75_000;
@@ -168,6 +189,17 @@ function foldEsContract(contract: string): string {
   return contract.replace(/^(ES[FGHJKMNQUVXZ])\d?(\d)$/, '$1$2');
 }
 
+/**
+ * The 08:30 CT open of `date` as a UTC instant in ms, or null when `date`
+ * is not a trading day. The one place the anchor instant is derived.
+ */
+function cashOpenMs(date: string): number | null {
+  const iso = isTradingDay(date)
+    ? ctWallClockToUtcIso(date, CASH_OPEN_MIN_CT)
+    : null;
+  return iso === null ? null : Date.parse(iso);
+}
+
 type Selection =
   | {
       ok: true;
@@ -188,12 +220,9 @@ function selectCashBars(
   count: number,
   minBars: number,
 ): Selection {
-  const anchorIso = isTradingDay(date)
-    ? ctWallClockToUtcIso(date, CASH_OPEN_MIN_CT)
-    : null;
-  if (anchorIso === null) return { ok: false, reason: 'not_trading_day' };
+  const anchorMs = cashOpenMs(date);
+  if (anchorMs === null) return { ok: false, reason: 'not_trading_day' };
 
-  const anchorMs = Date.parse(anchorIso);
   const anchor = bars.find((bar) => Date.parse(bar.ts) === anchorMs);
   if (anchor === undefined) return { ok: false, reason: 'no_anchor' };
 
@@ -294,7 +323,7 @@ export function buildCashWindow(
 }
 
 /** What the summary line reads from a window, so it can be built first. */
-type SummaryFields = Pick<
+export type SummaryFields = Pick<
   AnalogWindow,
   'nMinutes' | 'open' | 'close' | 'high' | 'low' | 'volume'
 >;
@@ -392,12 +421,8 @@ export async function buildDayAnalogWindows(
   date: string,
   asOf: Date = new Date(),
 ): Promise<DayAnalogBuild> {
-  const sessionMinutes = cashSessionMinutes(date);
-  const start = isTradingDay(date)
-    ? ctWallClockToUtcIso(date, CASH_OPEN_MIN_CT - LEAD_IN_MINUTES)
-    : null;
-  const end = ctWallClockToUtcIso(date, CASH_OPEN_MIN_CT + sessionMinutes + 1);
-  if (start === null || end === null) {
+  const anchorMs = cashOpenMs(date);
+  if (anchorMs === null) {
     return {
       date,
       windows: ANALOG_WINDOW_MINUTES.map(
@@ -411,9 +436,19 @@ export async function buildDayAnalogWindows(
     };
   }
 
+  // A zone change falls on a Sunday at 02:00 local, so on a trading day the
+  // minutes either side of the 08:30 CT open are elapsed minutes.
+  const sessionMinutes = cashSessionMinutes(date);
+  const stamp = (minutesFromOpen: number): string =>
+    new Date(anchorMs + minutesFromOpen * MS_PER_MINUTE).toISOString();
   const asOfMs = asOf.getTime();
-  const anchorMs = Date.parse(start) + LEAD_IN_MINUTES * MS_PER_MINUTE;
-  const series = (await fetchFuturesBars('ES', start, end))
+  const series = (
+    await fetchFuturesBars(
+      'ES',
+      stamp(-LEAD_IN_MINUTES),
+      stamp(sessionMinutes + 1),
+    )
+  )
     .filter((row) => Date.parse(row.ts) + MS_PER_MINUTE <= asOfMs)
     .map(toAnalogBar);
   const incomplete = (minutes: number): boolean =>
